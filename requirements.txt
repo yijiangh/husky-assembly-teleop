@@ -1,0 +1,3 @@
+# pybullet_planning -e git+https://github.com/yijiangh/pybullet_planning.git@yh/disable_ghalton
+compas_fab==1.0.2
+numpy<1.25.0
