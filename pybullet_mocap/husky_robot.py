@@ -1,5 +1,6 @@
 from rclpy.node import Node
 
+from std_msgs.msg._header import Header
 from tf2_msgs.msg._tf_message import TFMessage
 from geometry_msgs.msg._transform import Transform
 from geometry_msgs.msg._twist import Twist
@@ -8,7 +9,8 @@ from sensor_msgs.msg._joy import Joy
 import numpy as np
 
 class HuskyRobotInterface:
-    xpos = 0
+    position = np.zeros(3)
+    rotation = np.zeros(4)
     
     def __init__(self, node: Node, name='/a200_0804'):
         self.node = node
@@ -33,10 +35,12 @@ class HuskyRobotInterface:
         self.node.get_logger().info(f'Husky Monitor startet on "{name}"!')
 
     def tf_callback(self, msg: TFMessage):
-        ts: Transform = msg.transforms[0].transform
-        pos = np.array((ts.translation.x, ts.translation.y, ts.translation.z))
-        self.xpos = pos[0]
-        #self.get_logger().info(f'Position {np.around(pos, decimals=2)}')
+        header: Header = msg.transforms[0].header
+        if header.frame_id == 'odom':
+            ts: Transform = msg.transforms[0].transform
+            self.position = np.array((ts.translation.x, ts.translation.y, ts.translation.z))
+            self.rotation = np.array((ts.rotation.x, ts.rotation.y, ts.rotation.z, ts.rotation.w))
+            #self.get_logger().info(f'Position {np.around(pos, decimals=2)}')
     
     # for debugging intermittent joy control
     # joy node sometimes periodically sends zero values even tough stick is held continuously...

@@ -9,8 +9,8 @@ import pybullet as p
 from pybullet_mocap.husky_robot import HuskyRobotInterface
 from pybullet_mocap.lib import DATA_DIRECTORY
 
-HUSKYU_JOINT_NAMES = [
-                    #   'x', 'y', 'theta', 
+HUSKY_JOINT_NAMES = ['x', 'y', 'theta']
+HUSKY_UR5e_JOINT_NAMES = [
                       "ur_arm_shoulder_pan_joint", 
                       "ur_arm_shoulder_lift_joint",
                       "ur_arm_elbow_joint", 
@@ -21,9 +21,9 @@ HUSKYU_JOINT_NAMES = [
 TOOL0_FROM_TIP = pp.Pose(point=(0, 0, 73.65 * 1e-3))
 
 def load_robot(ik_from_arm_base=True, load_calib_tip=False):
+    # robot_srdf = os.path.join(DATA_DIRECTORY, 'husky_urdf/mt_husky_moveit_config/config/husky.srdf')
     # robot_urdf = os.path.join(DATA_DIRECTORY,'husky_urdf/mt_husky_moveit_config/urdf/husky_ur5_e.urdf')
     robot_urdf = os.path.join(DATA_DIRECTORY,'husky_urdf/mt_husky_moveit_config/urdf/husky_ur5_e_no_base_joint.urdf')
-    # robot_srdf = os.path.join(DATA_DIRECTORY, 'husky_urdf/mt_husky_moveit_config/config/husky.srdf')
 
     if load_calib_tip:
         gripper_obj = os.path.join(DATA_DIRECTORY,'calibration_tip.stl')
@@ -38,10 +38,10 @@ def load_robot(ik_from_arm_base=True, load_calib_tip=False):
     robot = pp.load_pybullet(robot_urdf, fixed_base=False, cylinder=False)
     robot_pose = pp.get_pose(robot)
 
-    # # Convert your YUP_TFORM to a pose
-    # y_up_quaternion = p.getQuaternionFromEuler([-np.pi/2, np.pi/2, 0])
-    # base_position, _ = p.getBasePositionAndOrientation(robot)
-    # p.resetBasePositionAndOrientation(robot, base_position, y_up_quaternion)
+    # Convert your YUP_TFORM to a pose
+    y_up_quaternion = p.getQuaternionFromEuler([-np.pi/2, np.pi/2, 0])
+    base_position, _ = p.getBasePositionAndOrientation(robot)
+    p.resetBasePositionAndOrientation(robot, base_position, y_up_quaternion)
 
     tool0_pose = pp.get_link_pose(robot, pp.link_from_name(robot, 'ur_arm_tool0'))
     # pp.draw_pose(tool0_pose)
@@ -55,7 +55,7 @@ def load_robot(ik_from_arm_base=True, load_calib_tip=False):
     # tcp_pose = pp.get_link_pose(robot, pp.link_from_name(robot, 'central_tcp'))
     # pp.draw_pose(tcp_pose)
 
-    return robot, ee_attachment
+    return robot, ee, ee_attachment
 
 def create_transformation_matrix(p0, p1, p2):
     p0 = np.array(p0)
@@ -96,45 +96,52 @@ class HuskyMonitor(Node):
         # start pybullet simulator
         pp.connect(use_gui=True, shadows=True, color=[0.9, 0.9, 1.0])
         # y-up to be consistent with mocap
-        p.configureDebugVisualizer(p.COV_ENABLE_Y_AXIS_UP, 1, physicsClientId=pp.CLIENT)
+        #p.configureDebugVisualizer(p.COV_ENABLE_Y_AXIS_UP, 1, physicsClientId=pp.CLIENT)
         # turn on the GUI panels
         p.configureDebugVisualizer(p.COV_ENABLE_GUI, 1, physicsClientId=pp.CLIENT)
 
         self.param_slider = p.addUserDebugParameter("a slider", 0.0, 1.0, 0.0)
         
+        # draw world frame
         pp.draw_pose(pp.unit_pose(), 0.1)
+        
+        # load robot models
         with pp.LockRenderer():
             with pp.HideOutput():
-                robot, ee_attachment = load_robot(load_calib_tip=True)
-            pp.set_color(robot, pp.apply_alpha(pp.GREY, 0.3))
-            
-            box = pp.create_box(0.25, 0.20, 0.01, color=pp.apply_alpha(pp.GREY, 0.3))
+                self.robot, self.ee, self.ee_attachment = load_robot(load_calib_tip=False)
+            #pp.set_color(self.robot, pp.apply_alpha(pp.GREY, 0.5))
         
-        world_from_tool0 = pp.get_link_pose(robot, pp.link_from_name(robot, 'ur_arm_tool0'))
+        return
+        
+        world_from_tool0 = pp.get_link_pose(self.robot, pp.link_from_name(self.robot, 'ur_arm_tool0'))
         pts = np.array([[602.47,1047.38,-1019.17],
                     [597.30,997.52,-1012.96],
                     [609.12,1038.14,-1069.54]]) * 1e-3
         world_from_tip = pp.pose_from_tform(create_transformation_matrix(*pts))
-        arm_joints = pp.joints_from_names(robot, HUSKYU_JOINT_NAMES)
+        arm_joints = pp.joints_from_names(self.robot, HUSKY_UR5e_JOINT_NAMES)
         
         arm_conf = np.deg2rad(np.array(
             [12.56, -102.02, -74.55, 0.34, 355.99, 77.03]
         ))
-        pp.set_joint_positions(robot, arm_joints, arm_conf)
-        ee_attachment.assign()
+        pp.set_joint_positions(self.robot, arm_joints, arm_conf)
+        self.ee_attachment.assign()
+        
         
         # an example for getting the relative transformation between two links of the robot
-        world_from_base_link = pp.get_link_pose(robot, pp.link_from_name(robot, 'world_link'))
-        world_from_tool0 = pp.get_link_pose(robot, pp.link_from_name(robot, 'ur_arm_tool0'))
+        world_from_base_link = pp.get_link_pose(self.robot, pp.link_from_name(self.robot, 'world_link'))
+        world_from_tool0 = pp.get_link_pose(self.robot, pp.link_from_name(self.robot, 'ur_arm_tool0'))
 
         # arm_base_from_tool0 = pp.get_relative_pose(robot, pp.link_from_name(robot, 'ur_arm_base_link'), pp.link_from_name(robot, 'ur_arm_tool0'))
         tool0_from_base_link = pp.multiply(pp.invert(world_from_tool0), world_from_base_link)
         tip_from_tool0 = pp.invert(TOOL0_FROM_TIP)
         world_from_base_link = pp.multiply(world_from_tip, tip_from_tool0, tool0_from_base_link)
 
-        pp.set_pose(robot, world_from_base_link)
-        world_from_tool0 = pp.get_link_pose(robot, pp.link_from_name(robot, 'ur_arm_tool0'))
-        ee_attachment.assign()
+        pp.set_pose(self.robot, world_from_base_link)
+        
+        return
+        
+        world_from_tool0 = pp.get_link_pose(self.robot, pp.link_from_name(self.robot, 'ur_arm_tool0'))
+        self.ee_attachment.assign()
         #print(world_from_base_link)
         pp.draw_pose(world_from_tool0)
         pp.draw_pose(world_from_tip)
@@ -146,7 +153,7 @@ class HuskyMonitor(Node):
         
     # --- --- --- --- --- UPDATE --- --- --- --- --- 
     def update_pybullet(self):
-        p.addUserDebugPoints(pointPositions=[[self.husky.xpos*100,0,0]],pointColorsRGB=[[0.9, 0.9, 0.0]],lifeTime=1.1,pointSize=10)
+        pp.set_pose(self.robot, pp.Pose(self.husky.position, p.getEulerFromQuaternion(self.husky.rotation)))
 
 
 
