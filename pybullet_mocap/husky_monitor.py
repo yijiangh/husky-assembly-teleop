@@ -36,7 +36,6 @@ def load_robot(ik_from_arm_base=True, load_calib_tip=False):
     assert os.path.exists(gripper_obj)
 
     robot = pp.load_pybullet(robot_urdf, fixed_base=False, cylinder=False)
-    # Get the current pose of the robot
     robot_pose = pp.get_pose(robot)
 
     # # Convert your YUP_TFORM to a pose
@@ -76,6 +75,7 @@ def create_transformation_matrix(p0, p1, p2):
     T[:3, 3] = p0
     return T
 
+# Calculate transformation from T_A to T_B
 def find_t_bet(T_A, T_B):
     # Calculate the inverse of T_A
     T_A_inv = np.linalg.inv(T_A)
@@ -83,17 +83,15 @@ def find_t_bet(T_A, T_B):
     T_A_to_B = np.dot(T_A_inv, T_B)
     return T_A_to_B
 
-
 class HuskyMonitor(Node):
     def __init__(self):
         super().__init__('husky_monitor')
         
-        self.husky = HuskyRobotInterface(self)
-                
-        self.timer = self.create_timer(0.05, self.timer_callback)
-        
+        self.husky = HuskyRobotInterface(self)  
+        self.timer = self.create_timer(0.05, self.update_pybullet)
         self.start_pybullet()
         
+    # --- --- --- --- --- SETUP --- --- --- --- --- 
     def start_pybullet(self):
         # start pybullet simulator
         pp.connect(use_gui=True, shadows=True, color=[0.9, 0.9, 1.0])
@@ -145,11 +143,15 @@ class HuskyMonitor(Node):
         
         correction_matrix=find_t_bet(pp.tform_from_pose(mocap_pose_training),pp.tform_from_pose(world_from_base_link))
         print(correction_matrix.tolist())
-    
-    def timer_callback(self):
-        #p.addUserDebugText(text="AAAA", textPosition=[0,100,100])
+        
+    # --- --- --- --- --- UPDATE --- --- --- --- --- 
+    def update_pybullet(self):
         p.addUserDebugPoints(pointPositions=[[self.husky.xpos*100,0,0]],pointColorsRGB=[[0.9, 0.9, 0.0]],lifeTime=1.1,pointSize=10)
 
+
+
+
+# --- --- --- --- --- MAIN --- --- --- --- --- 
 def main(args=None):
     rclpy.init(args=args)
 
@@ -159,8 +161,6 @@ def main(args=None):
 
     husky_monitor.destroy_node()
     rclpy.shutdown()
-
-
 
 if __name__ == '__main__':     
     main()
