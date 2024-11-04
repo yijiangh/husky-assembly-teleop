@@ -6,6 +6,7 @@ import pybullet_planning as pp
 import pybullet as p
 
 from pybullet_mocap.husky_robot import HuskyRobotInterface
+from pybullet_mocap.lib import DATA_DIRECTORY
     
 class HuskyMonitor(Node):
     def __init__(self):
