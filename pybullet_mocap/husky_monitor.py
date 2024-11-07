@@ -1,3 +1,4 @@
+from pybullet_mocap.utils import plan_transit_motion
 import rclpy
 from rclpy.node import Node
 
@@ -5,9 +6,10 @@ import os
 import numpy as np
 import pybullet_planning as pp
 import pybullet as p
+from scipy.spatial.transform import Rotation as R
 
 from pybullet_mocap.husky_robot import HuskyRobotInterface
-from pybullet_mocap.lib import DATA_DIRECTORY
+from pybullet_mocap import DATA_DIRECTORY
 
 HUSKY_JOINT_NAMES = ['x', 'y', 'theta']
 HUSKY_UR5e_JOINT_NAMES = ["ur_arm_shoulder_pan_joint", 
@@ -91,11 +93,22 @@ class HuskyMonitor(Node):
         self.timer = self.create_timer(0.05, self.update_pybullet)
         
         self.buttons = []
-        self.husky_odom_offset = np.zeros(3)
+        self.state_sliders = []
+        self.planned_trajectory = None
         self.start_pybullet()
     
     def reset_odom(self):
-        self.husky_odom_offset = self.husky.position
+        self.husky.odom_offset = self.husky.raw_position
+        
+    def plan(self):
+        self.planned_trajectory = plan_transit_motion(
+                    self.robot,
+                    current_joint_slider_values,
+                    [self.ee_attachment],
+                    [],
+                    debug=False,
+                    disabled_collisions=False,
+                )
     
     # --- --- --- --- --- SETUP --- --- --- --- --- 
     def start_pybullet(self):
@@ -107,6 +120,10 @@ class HuskyMonitor(Node):
         # Build UI
         self.buttons.append(Button('Reset Odom', self.reset_odom))
         
+        self.state_sliders.append(p.addUserDebugParameter("x", -5.0, 5.0, 0))
+        self.state_sliders.append(p.addUserDebugParameter("x", -5.0, 5.0, 0))
+        self.state_sliders.append(p.addUserDebugParameter("yaw", -np.pi, np.pi, 0))
+        
         # draw world frame
         pp.draw_pose(pp.unit_pose(), 0.1)
         
@@ -114,6 +131,9 @@ class HuskyMonitor(Node):
         with pp.LockRenderer():
             with pp.HideOutput():
                 self.robot, self.ee, self.ee_attachment = load_robot(load_calib_tip=False)
+                
+                self.goal_robot, self.goal_ee, self.goal_ee_attachment = load_robot(load_calib_tip=False)
+                pp.set_color(self.goal_robot, [0, 0.2, 0.5, 0.7])
         
     # --- --- --- --- --- UPDATE --- --- --- --- --- 
     def update_pybullet(self):
@@ -121,11 +141,17 @@ class HuskyMonitor(Node):
             b.update()
         
         # update robot state
-        shown_pos = self.husky.position - self.husky_odom_offset
-        pp.set_pose(self.robot, pp.Pose(shown_pos, self.husky.rotation))
+        pp.set_pose(self.robot, (self.husky.position, self.husky.rotation))
         arm_joints = pp.joints_from_names(self.robot, HUSKY_UR5e_JOINT_NAMES)
         pp.set_joint_positions(self.robot, arm_joints, self.husky.arm)
         self.ee_attachment.assign()
+        
+        # update goal robot state
+        state_slider_values = [p.readUserDebugParameter(ps) for ps in self.state_sliders]
+        self.goal_pos = np.array((state_slider_values[0], state_slider_values[1], 0))
+        self.goal_rot = R.from_euler("z", state_slider_values[2], degrees=False)
+        pp.set_pose(self.goal_robot, (self.goal_pos, self.goal_rot.as_quat()))
+        self.goal_ee_attachment.assign()
 
 
 # --- --- --- --- --- MAIN --- --- --- --- --- 
