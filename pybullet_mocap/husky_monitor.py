@@ -9,6 +9,7 @@ import pybullet as p
 from scipy.spatial.transform import Rotation as R
 
 from pybullet_mocap.husky_robot import HuskyRobotInterface
+from pybullet_mocap.husky_robot import UR5e_HOME_STATE
 from pybullet_mocap import DATA_DIRECTORY
 
 HUSKY_JOINT_NAMES = ['x', 'y', 'theta']
@@ -45,7 +46,7 @@ def load_robot(ik_from_arm_base=True, load_calib_tip=False):
     
     ee_attachment = pp.create_attachment(robot, pp.link_from_name(robot, 'ur_arm_tool0'), ee)
 
-    return robot, ee, ee_attachment
+    return HuskyModel(robot, ee, ee_attachment)
 
 def create_transformation_matrix(p0, p1, p2):
     p0 = np.array(p0)
@@ -65,14 +66,6 @@ def create_transformation_matrix(p0, p1, p2):
     T[:3, 3] = p0
     return T
 
-# Calculate transformation from T_A to T_B
-def find_t_bet(T_A, T_B):
-    # Calculate the inverse of T_A
-    T_A_inv = np.linalg.inv(T_A)
-    # Correct order to find transformation from A to B
-    T_A_to_B = np.dot(T_A_inv, T_B)
-    return T_A_to_B
-
 class Button:
     def __init__(self, name, action):
         self.dbg_param = p.addUserDebugParameter(name, 1.0, 0.0, 0.0)
@@ -84,6 +77,18 @@ class Button:
         if new_value != self.prev_value:
             self.prev_value = new_value
             self.action()
+            
+class HuskyModel():
+    def __init__(self, robot, ee, ee_attachment):
+       self.robot = robot
+       self.ee = ee
+       self.ee_attachment = ee_attachment
+       
+    def set_pose(self, base_pose, arm_joint_states):
+        pp.set_pose(self.robot, base_pose)
+        arm_joints = pp.joints_from_names(self.robot, HUSKY_UR5e_JOINT_NAMES)
+        pp.set_joint_positions(self.robot, arm_joints, arm_joint_states)
+        self.ee_attachment.assign()
         
 class HuskyMonitor(Node):
     def __init__(self):
@@ -94,21 +99,27 @@ class HuskyMonitor(Node):
         
         self.buttons = []
         self.state_sliders = []
+        self.joint_state_sliders = []
         self.planned_trajectory = None
         self.start_pybullet()
     
     def reset_odom(self):
-        self.husky.odom_offset = self.husky.raw_position
+        self.husky.odom_offset = self.husky.raw_odom_position
+        
+    def reset_goal(self):
+        pass # can debug sliders even be set from code in pybullet?
         
     def plan(self):
-        self.planned_trajectory = plan_transit_motion(
-                    self.robot,
-                    current_joint_slider_values,
-                    [self.ee_attachment],
-                    [],
-                    debug=False,
-                    disabled_collisions=False,
-                )
+        pass # TODO
+    
+    def send_motion_command(self):
+        self.husky.send_base_twist_cmd(0.1, 0.0)
+        self.get_logger().info('Sent motion command!')
+        
+    def send_arm_command(self):
+        joint_state_slider_values = np.array([p.readUserDebugParameter(ps) for ps in self.joint_state_sliders])
+        self.husky.send_arm_cmd(joint_state_slider_values)
+        self.get_logger().info('Sent arm command!')
     
     # --- --- --- --- --- SETUP --- --- --- --- --- 
     def start_pybullet(self):
@@ -117,23 +128,38 @@ class HuskyMonitor(Node):
         # turn on the GUI panels
         p.configureDebugVisualizer(p.COV_ENABLE_GUI, 1, physicsClientId=pp.CLIENT)
         
-        # Build UI
-        self.buttons.append(Button('Reset Odom', self.reset_odom))
-        
-        self.state_sliders.append(p.addUserDebugParameter("x", -5.0, 5.0, 0))
-        self.state_sliders.append(p.addUserDebugParameter("x", -5.0, 5.0, 0))
-        self.state_sliders.append(p.addUserDebugParameter("yaw", -np.pi, np.pi, 0))
-        
         # draw world frame
         pp.draw_pose(pp.unit_pose(), 0.1)
         
         # load robot models
         with pp.LockRenderer():
             with pp.HideOutput():
-                self.robot, self.ee, self.ee_attachment = load_robot(load_calib_tip=False)
+                self.huskyModel = load_robot(load_calib_tip=False)
                 
-                self.goal_robot, self.goal_ee, self.goal_ee_attachment = load_robot(load_calib_tip=False)
-                pp.set_color(self.goal_robot, [0, 0.2, 0.5, 0.7])
+                self.goalModel = load_robot(load_calib_tip=False)
+                pp.set_color(self.goalModel.robot, [0, 0.2, 0.5, 0.7])
+                pp.set_color(self.goalModel.ee, [0, 0.2, 0.5, 0.7])
+                
+        # Build UI
+        self.buttons.append(Button('Reset Odom', self.reset_odom))
+        self.buttons.append(Button('Reset Goal State', self.reset_goal))
+        
+        self.state_sliders.append(p.addUserDebugParameter("x", -5.0, 5.0, 0))
+        self.state_sliders.append(p.addUserDebugParameter("x", -5.0, 5.0, 0))
+        self.state_sliders.append(p.addUserDebugParameter("yaw", -np.pi, np.pi, 0))
+        
+        self.buttons.append(Button('Send Motion Command', self.send_motion_command))
+        
+        for i, j in enumerate(pp.joints_from_names(self.huskyModel.robot, HUSKY_UR5e_JOINT_NAMES)):
+            lower, upper = pp.get_joint_limits(self.huskyModel.robot, j)
+            self.joint_state_sliders.append(p.addUserDebugParameter(f'Joint {i}', lower, upper, UR5e_HOME_STATE[i]))
+            
+        self.buttons.append(Button('Send Arm Command', self.send_arm_command))
+
+        self.gripper_slider = p.addUserDebugParameter("gripper", 0, 1.0)
+        self.buttons.append(Button('Gripper Set', lambda: self.husky.send_gripper_cmd(p.readUserDebugParameter(self.gripper_slider), 0.1)))
+        self.buttons.append(Button('Gripper Open', lambda: self.husky.send_gripper_cmd(0.0, 0.1)))
+        self.buttons.append(Button('Gripper Close', lambda: self.husky.send_gripper_cmd(0.7, 0.1)))
         
     # --- --- --- --- --- UPDATE --- --- --- --- --- 
     def update_pybullet(self):
@@ -141,17 +167,14 @@ class HuskyMonitor(Node):
             b.update()
         
         # update robot state
-        pp.set_pose(self.robot, (self.husky.position, self.husky.rotation))
-        arm_joints = pp.joints_from_names(self.robot, HUSKY_UR5e_JOINT_NAMES)
-        pp.set_joint_positions(self.robot, arm_joints, self.husky.arm)
-        self.ee_attachment.assign()
+        self.huskyModel.set_pose((self.husky.position, self.husky.rotation), self.husky.arm_joint_states)
         
         # update goal robot state
         state_slider_values = [p.readUserDebugParameter(ps) for ps in self.state_sliders]
         self.goal_pos = np.array((state_slider_values[0], state_slider_values[1], 0))
         self.goal_rot = R.from_euler("z", state_slider_values[2], degrees=False)
-        pp.set_pose(self.goal_robot, (self.goal_pos, self.goal_rot.as_quat()))
-        self.goal_ee_attachment.assign()
+        joint_state_slider_values = np.array([p.readUserDebugParameter(ps) for ps in self.joint_state_sliders])
+        self.goalModel.set_pose((self.goal_pos, self.goal_rot.as_quat()), joint_state_slider_values)
 
 
 # --- --- --- --- --- MAIN --- --- --- --- --- 
