@@ -1,4 +1,3 @@
-from pybullet_mocap.utils import plan_transit_motion
 import rclpy
 from rclpy.node import Node
 
@@ -11,6 +10,10 @@ from scipy.spatial.transform import Rotation as R
 from pybullet_mocap.husky_robot import HuskyRobotInterface
 from pybullet_mocap.husky_robot import UR5e_HOME_STATE
 from pybullet_mocap import DATA_DIRECTORY
+
+from pybullet_mocap.utils import plan_transit_motion
+from pybullet_mocap.planner import RRTStar, fill_yaw_angle
+from pybullet_mocap.controller import State
 
 HUSKY_JOINT_NAMES = ['x', 'y', 'theta']
 HUSKY_UR5e_JOINT_NAMES = ["ur_arm_shoulder_pan_joint", 
@@ -105,6 +108,7 @@ class HuskyMonitor(Node):
         self.state_sliders.append(p.addUserDebugParameter("x", -5.0, 5.0, 0))
         self.state_sliders.append(p.addUserDebugParameter("yaw", -np.pi, np.pi, 0))
         
+        self.buttons.append(Button('Plan', self.plan))
         self.buttons.append(Button('Send Motion Command', self.send_motion_command))
         
         for i, j in enumerate(pp.joints_from_names(self.huskyModel.robot, HUSKY_UR5e_JOINT_NAMES)):
@@ -119,7 +123,51 @@ class HuskyMonitor(Node):
         self.buttons.append(Button('Gripper Close', lambda: self.husky.send_gripper_cmd(0.7, 0.1)))
         
     def plan(self):
-        pass # TODO
+        joint_state_slider_values = np.array([p.readUserDebugParameter(ps) for ps in self.joint_state_sliders])
+        self.planned_trajectory = plan_transit_motion(
+                    self.huskyModel.robot,
+                    joint_state_slider_values,
+                    [self.huskyModel.ee_attachment],
+                    [],
+                    debug=True,
+                    disabled_collisions=False,
+                )
+        
+        x_range = (-3, 3)
+        y_range = (-3, 3)
+        
+        ob_x_list = [np.inf] # what is this?
+        ob_y_list = [np.inf]
+        
+        rrt_star = RRTStar(
+                    0.2, *x_range, *y_range, robot_size=0.1, avoid_dist=0.25
+                )
+        start_point, start_ori = pp.get_pose(self.huskyModel.robot)
+        start_pose = (
+            start_point[0],
+            start_point[1],
+            R.from_quat(start_ori).as_euler("zyx")[0],
+        )
+        goal_point, goal_ori = pp.get_pose(self.goalModel.robot)
+        goal_pose = (
+            goal_point[0],
+            goal_point[1],
+            R.from_quat(goal_ori).as_euler("zyx")[0],
+        )
+        x_list, y_list = rrt_star.plan(
+                    ob_x_list, ob_y_list, *(start_pose[:2]), *(goal_pose[:2])
+                )
+        yaw_list = fill_yaw_angle(start_pose[-1], goal_pose[-1], x_list, y_list)
+        targets = [
+                    State(x, y, yaw)
+                    for x, y, yaw in zip(x_list, y_list, yaw_list)
+                ]
+        
+        points = [(x, y, 0) for x, y in zip(x_list, y_list)]
+        with pp.LockRenderer():
+            pp.add_segments(points)
+        
+
     
     def send_motion_command(self):
         self.husky.send_base_twist_cmd(0.1, 0.0)
