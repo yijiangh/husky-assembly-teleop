@@ -48,24 +48,6 @@ def load_robot(ik_from_arm_base=True, load_calib_tip=False):
 
     return HuskyModel(robot, ee, ee_attachment)
 
-def create_transformation_matrix(p0, p1, p2):
-    p0 = np.array(p0)
-    p1 = np.array(p1)
-    p2 = np.array(p2)
-    x = p1 - p0  # Direction along what you define as the X-axis
-    y = p2 - p0  # Direction along what you define as the Z-axis
-    x_normalized = x / np.linalg.norm(x)
-    y_normalized = y / np.linalg.norm(y)
-    z = np.cross(x_normalized, y_normalized)  # This ensures Y is up and the system remains right-handed
-    z_normalized = z / np.linalg.norm(z)
-    T = np.eye(4)
-    T[:3, 0] = x_normalized
-    T[:3, 1] = y_normalized
-    T[:3, 2] = z_normalized
-    #T[:3, 3] = pp.tform_point(ZUP_FROM_YUP,p0)
-    T[:3, 3] = p0
-    return T
-
 class Button:
     def __init__(self, name, action):
         self.dbg_param = p.addUserDebugParameter(name, 1.0, 0.0, 0.0)
@@ -106,8 +88,35 @@ class HuskyMonitor(Node):
     def reset_odom(self):
         self.husky.odom_offset = self.husky.raw_odom_position
         
-    def reset_goal(self):
-        pass # can debug sliders even be set from code in pybullet?
+    def reset_ui(self):
+        # reset all sliders to default value by recreating them...
+        # pybullet seems to lack a setUserDebugParameter() method :(
+        p.removeAllUserParameters()
+        self.buttons.clear()
+        self.state_sliders.clear()
+        self.joint_state_sliders.clear()
+        self.build_ui()
+    
+    def build_ui(self):
+        self.buttons.append(Button('Reset Odom', self.reset_odom))
+        self.buttons.append(Button('Reset Goal State', self.reset_ui))
+        
+        self.state_sliders.append(p.addUserDebugParameter("x", -5.0, 5.0, 0))
+        self.state_sliders.append(p.addUserDebugParameter("x", -5.0, 5.0, 0))
+        self.state_sliders.append(p.addUserDebugParameter("yaw", -np.pi, np.pi, 0))
+        
+        self.buttons.append(Button('Send Motion Command', self.send_motion_command))
+        
+        for i, j in enumerate(pp.joints_from_names(self.huskyModel.robot, HUSKY_UR5e_JOINT_NAMES)):
+            lower, upper = pp.get_joint_limits(self.huskyModel.robot, j)
+            self.joint_state_sliders.append(p.addUserDebugParameter(f'Joint {i}', lower, upper, self.husky.arm_joint_states[i]))
+            
+        self.buttons.append(Button('Send Arm Command', self.send_arm_command))
+
+        self.gripper_slider = p.addUserDebugParameter("gripper", 0, 1.0)
+        self.buttons.append(Button('Gripper Set', lambda: self.husky.send_gripper_cmd(p.readUserDebugParameter(self.gripper_slider), 0.1)))
+        self.buttons.append(Button('Gripper Open', lambda: self.husky.send_gripper_cmd(0.0, 0.1)))
+        self.buttons.append(Button('Gripper Close', lambda: self.husky.send_gripper_cmd(0.7, 0.1)))
         
     def plan(self):
         pass # TODO
@@ -140,26 +149,8 @@ class HuskyMonitor(Node):
                 pp.set_color(self.goalModel.robot, [0, 0.2, 0.5, 0.7])
                 pp.set_color(self.goalModel.ee, [0, 0.2, 0.5, 0.7])
                 
-        # Build UI
-        self.buttons.append(Button('Reset Odom', self.reset_odom))
-        self.buttons.append(Button('Reset Goal State', self.reset_goal))
-        
-        self.state_sliders.append(p.addUserDebugParameter("x", -5.0, 5.0, 0))
-        self.state_sliders.append(p.addUserDebugParameter("x", -5.0, 5.0, 0))
-        self.state_sliders.append(p.addUserDebugParameter("yaw", -np.pi, np.pi, 0))
-        
-        self.buttons.append(Button('Send Motion Command', self.send_motion_command))
-        
-        for i, j in enumerate(pp.joints_from_names(self.huskyModel.robot, HUSKY_UR5e_JOINT_NAMES)):
-            lower, upper = pp.get_joint_limits(self.huskyModel.robot, j)
-            self.joint_state_sliders.append(p.addUserDebugParameter(f'Joint {i}', lower, upper, UR5e_HOME_STATE[i]))
-            
-        self.buttons.append(Button('Send Arm Command', self.send_arm_command))
-
-        self.gripper_slider = p.addUserDebugParameter("gripper", 0, 1.0)
-        self.buttons.append(Button('Gripper Set', lambda: self.husky.send_gripper_cmd(p.readUserDebugParameter(self.gripper_slider), 0.1)))
-        self.buttons.append(Button('Gripper Open', lambda: self.husky.send_gripper_cmd(0.0, 0.1)))
-        self.buttons.append(Button('Gripper Close', lambda: self.husky.send_gripper_cmd(0.7, 0.1)))
+        # UI
+        self.build_ui()
         
     # --- --- --- --- --- UPDATE --- --- --- --- --- 
     def update_pybullet(self):
