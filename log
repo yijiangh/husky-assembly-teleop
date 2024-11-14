@@ -1,0 +1,103 @@
+ros2 launch crl-husky crl_ur5e.launch.py
+[INFO] [launch]: All log files can be found below /home/administrator/.ros/log/2024-11-14-15-38-33-492207-cpr-a200-0804-67972
+[INFO] [launch]: Default logging verbosity is set to INFO
+[INFO] [dashboard_client-2]: process started with pid [67983]
+[INFO] [controller_stopper_node-4]: process started with pid [67987]
+[INFO] [ur_ros2_control_node-1]: process started with pid [67981]
+[INFO] [tool_communication.py-3]: process started with pid [67985]
+[INFO] [urscript_interface-5]: process started with pid [67995]
+[INFO] [robot_state_publisher-6]: process started with pid [68015]
+[INFO] [rviz2-7]: process started with pid [68019]
+[INFO] [spawner-8]: process started with pid [68022]
+[INFO] [spawner-9]: process started with pid [68028]
+[INFO] [spawner-10]: process started with pid [68034]
+[controller_stopper_node-4] [INFO] [1731598714.468736931] [Controller stopper]: Waiting for switch controller service to come up on controller_manager/switch_controller
+[dashboard_client-2] [INFO] [1731598714.548811252] [UR_Client_Library:]: Connected: Universal Robots Dashboard Server
+[dashboard_client-2] 
+[ur_ros2_control_node-1] [WARN] [1731598714.582179584] [a200_0804.ur5e.controller_manager]: 'update_rate' parameter not set, using default value.
+[ur_ros2_control_node-1] [WARN] [1731598714.582303844] [a200_0804.ur5e.controller_manager]: [Deprecated] Passing the robot description parameter directly to the control_manager node is deprecated. Use '~/robot_description' topic from 'robot_state_publisher' instead.
+[ur_ros2_control_node-1] text not specified in the tf_prefix tag
+[ur_ros2_control_node-1] [INFO] [1731598714.589451812] [resource_manager]: Loading hardware 'ur5e' 
+[ur_ros2_control_node-1] [INFO] [1731598714.607732019] [resource_manager]: Initialize hardware 'ur5e' 
+[ur_ros2_control_node-1] [INFO] [1731598714.607819323] [resource_manager]: Successful initialization of hardware 'ur5e'
+[ur_ros2_control_node-1] [INFO] [1731598714.609924978] [resource_manager]: 'configure' hardware 'ur5e' 
+[ur_ros2_control_node-1] [INFO] [1731598714.609961731] [URPositionHardwareInterface]: Starting ...please wait...
+[ur_ros2_control_node-1] [INFO] [1731598714.609989047] [URPositionHardwareInterface]: Initializing driver...
+[ur_ros2_control_node-1] [INFO] [1731598714.642207108] [UR_Client_Library:]: SCHED_FIFO OK, priority 99
+[ur_ros2_control_node-1] [INFO] [1731598714.642293242] [UR_Client_Library:]: Negotiated RTDE protocol version to 2.
+[ur_ros2_control_node-1] [INFO] [1731598714.642490489] [UR_Client_Library:]: Setting up RTDE communication with frequency 500.000000
+[rviz2-7] qt.qpa.xcb: could not connect to display 
+[rviz2-7] qt.qpa.plugin: Could not load the Qt platform plugin "xcb" in "" even though it was found.
+[rviz2-7] This application failed to start because no Qt platform plugin could be initialized. Reinstalling the application may fix this problem.
+[rviz2-7] 
+[rviz2-7] Available platform plugins are: eglfs, linuxfb, minimal, minimalegl, offscreen, vnc, xcb.
+[rviz2-7] 
+[robot_state_publisher-6] [INFO] [1731598714.746281589] [a200_0804.ur5e.robot_state_publisher]: got segment base
+[robot_state_publisher-6] [INFO] [1731598714.746390379] [a200_0804.ur5e.robot_state_publisher]: got segment base_link
+[robot_state_publisher-6] [INFO] [1731598714.746401395] [a200_0804.ur5e.robot_state_publisher]: got segment base_link_inertia
+[robot_state_publisher-6] [INFO] [1731598714.746408289] [a200_0804.ur5e.robot_state_publisher]: got segment flange
+[robot_state_publisher-6] [INFO] [1731598714.746414228] [a200_0804.ur5e.robot_state_publisher]: got segment forearm_link
+[robot_state_publisher-6] [INFO] [1731598714.746420091] [a200_0804.ur5e.robot_state_publisher]: got segment ft_frame
+[robot_state_publisher-6] [INFO] [1731598714.746425715] [a200_0804.ur5e.robot_state_publisher]: got segment shoulder_link
+[robot_state_publisher-6] [INFO] [1731598714.746431406] [a200_0804.ur5e.robot_state_publisher]: got segment tool0
+[robot_state_publisher-6] [INFO] [1731598714.746436923] [a200_0804.ur5e.robot_state_publisher]: got segment upper_arm_link
+[robot_state_publisher-6] [INFO] [1731598714.746442632] [a200_0804.ur5e.robot_state_publisher]: got segment world
+[robot_state_publisher-6] [INFO] [1731598714.746448343] [a200_0804.ur5e.robot_state_publisher]: got segment wrist_1_link
+[robot_state_publisher-6] [INFO] [1731598714.746453930] [a200_0804.ur5e.robot_state_publisher]: got segment wrist_2_link
+[robot_state_publisher-6] [INFO] [1731598714.746459546] [a200_0804.ur5e.robot_state_publisher]: got segment wrist_3_link
+[tool_communication.py-3] [INFO] [1731598715.155258149] [a200_0804.ur5e.ur_tool_comm]: 192.168.131.40
+[tool_communication.py-3] [INFO] [1731598715.158945302] [a200_0804.ur5e.ur_tool_comm]: Remote device is available at '/tmp/ttyUR'
+[tool_communication.py-3] [INFO] [1731598715.159375002] [a200_0804.ur5e.ur_tool_comm]: Starting socat with following command:
+[tool_communication.py-3] socat pty,link=/tmp/ttyUR,raw,ignoreeof,waitslave tcp:192.168.131.40:54321
+[ur_ros2_control_node-1] [INFO] [1731598715.668380175] [URPositionHardwareInterface]: Calibration checksum: 'calib_6851184858945596520'.
+[ERROR] [rviz2-7]: process has died [pid 68019, exit code -6, cmd '/opt/ros/humble/lib/rviz2/rviz2 -d /opt/ros/humble/share/ur_description/rviz/view_robot.rviz --ros-args -r __node:=rviz2 -r __ns:=/a200_0804/ur5e'].
+[spawner-10] [INFO] [1731598716.043261349] [a200_0804.ur5e.spawner_forward_position_controller]: waiting for service /a200_0804/ur5e/controller_manager/list_controllers to become available...
+[spawner-8] [INFO] [1731598716.151473601] [a200_0804.ur5e.spawner_scaled_joint_trajectory_controller]: waiting for service /a200_0804/ur5e/controller_manager/list_controllers to become available...
+[spawner-9] [INFO] [1731598716.161457438] [a200_0804.ur5e.spawner_joint_state_broadcaster]: waiting for service /a200_0804/ur5e/controller_manager/list_controllers to become available...
+[ur_ros2_control_node-1] [INFO] [1731598716.725831841] [URPositionHardwareInterface]: Calibration checked successfully.
+[ur_ros2_control_node-1] [INFO] [1731598716.725953970] [URPositionHardwareInterface]: System successfully started!
+[ur_ros2_control_node-1] [INFO] [1731598716.725988479] [resource_manager]: Successful 'configure' of hardware 'ur5e'
+[ur_ros2_control_node-1] [INFO] [1731598716.726085747] [resource_manager]: 'activate' hardware 'ur5e' 
+[ur_ros2_control_node-1] [INFO] [1731598716.726102738] [URPositionHardwareInterface]: Activating HW interface
+[ur_ros2_control_node-1] [INFO] [1731598716.726118691] [resource_manager]: Successful 'activate' of hardware 'ur5e'
+[controller_stopper_node-4] [INFO] [1731598716.755728917] [Controller stopper]: Service available
+[controller_stopper_node-4] [INFO] [1731598716.755795592] [Controller stopper]: Waiting for list controllers service to come up on controller_manager/list_controllers
+[controller_stopper_node-4] [INFO] [1731598716.755887019] [Controller stopper]: Service available
+[ur_ros2_control_node-1] [INFO] [1731598716.788066491] [UR_Client_Library:]: SCHED_FIFO OK, priority 99
+[ur_ros2_control_node-1] [INFO] [1731598716.808139879] [a200_0804.ur5e.controller_manager]: Loading controller 'forward_position_controller'
+[spawner-10] [INFO] [1731598716.880588525] [a200_0804.ur5e.spawner_forward_position_controller]: Loaded forward_position_controller
+[ur_ros2_control_node-1] [INFO] [1731598716.890230876] [a200_0804.ur5e.controller_manager]: Configuring controller 'forward_position_controller'
+[ur_ros2_control_node-1] [INFO] [1731598716.897384135] [a200_0804.ur5e.forward_position_controller]: configure successful
+[ur_ros2_control_node-1] [INFO] [1731598716.919252504] [a200_0804.ur5e.controller_manager]: Loading controller 'scaled_joint_trajectory_controller'
+[ur_ros2_control_node-1] [WARN] [1731598717.024577153] [a200_0804.ur5e.scaled_joint_trajectory_controller]: [Deprecated]: "allow_nonzero_velocity_at_trajectory_end" is set to true. The default behavior will change to false.
+[ur_ros2_control_node-1] [INFO] [1731598717.028162410] [a200_0804.ur5e.controller_manager]: Loading controller 'joint_state_broadcaster'
+[spawner-8] [INFO] [1731598717.030733116] [a200_0804.ur5e.spawner_scaled_joint_trajectory_controller]: Loaded scaled_joint_trajectory_controller
+[spawner-9] [INFO] [1731598717.059008760] [a200_0804.ur5e.spawner_joint_state_broadcaster]: Loaded joint_state_broadcaster
+[ur_ros2_control_node-1] [INFO] [1731598717.061214646] [a200_0804.ur5e.controller_manager]: Configuring controller 'joint_state_broadcaster'
+[ur_ros2_control_node-1] [INFO] [1731598717.061296111] [a200_0804.ur5e.joint_state_broadcaster]: 'joints' or 'interfaces' parameter is empty. All available state interfaces will be published
+[spawner-9] [INFO] [1731598717.088835186] [a200_0804.ur5e.spawner_joint_state_broadcaster]: Configured and activated joint_state_broadcaster
+[ur_ros2_control_node-1] [INFO] [1731598717.118011591] [a200_0804.ur5e.controller_manager]: Configuring controller 'scaled_joint_trajectory_controller'
+[ur_ros2_control_node-1] [INFO] [1731598717.118180272] [a200_0804.ur5e.scaled_joint_trajectory_controller]: No specific joint names are used for command interfaces. Using 'joints' parameter.
+[ur_ros2_control_node-1] [INFO] [1731598717.118201893] [a200_0804.ur5e.scaled_joint_trajectory_controller]: Command interfaces are [position] and state interfaces are [position velocity].
+[ur_ros2_control_node-1] [INFO] [1731598717.118225896] [a200_0804.ur5e.scaled_joint_trajectory_controller]: Using 'splines' interpolation method.
+[ur_ros2_control_node-1] [INFO] [1731598717.124678006] [a200_0804.ur5e.scaled_joint_trajectory_controller]: Controller state will be published at 100.00 Hz.
+[ur_ros2_control_node-1] [INFO] [1731598717.127438277] [a200_0804.ur5e.scaled_joint_trajectory_controller]: Action status changes will be monitored at 20.00 Hz.
+[INFO] [spawner-10]: process has finished cleanly [pid 68034]
+[ur_ros2_control_node-1] [INFO] [1731598717.181143096] [a200_0804.ur5e.controller_manager]: Loading controller 'io_and_status_controller'
+[spawner-9] [INFO] [1731598717.230132507] [a200_0804.ur5e.spawner_joint_state_broadcaster]: Loaded io_and_status_controller
+[spawner-8] [INFO] [1731598717.260793778] [a200_0804.ur5e.spawner_scaled_joint_trajectory_controller]: Configured and activated scaled_joint_trajectory_controller
+[ur_ros2_control_node-1] [INFO] [1731598717.314804810] [a200_0804.ur5e.controller_manager]: Configuring controller 'io_and_status_controller'
+[spawner-9] [INFO] [1731598717.358882896] [a200_0804.ur5e.spawner_joint_state_broadcaster]: Configured and activated io_and_status_controller
+[ur_ros2_control_node-1] [INFO] [1731598717.361652999] [a200_0804.ur5e.controller_manager]: Switch controller timeout is set to 0, using default 1s!
+[ur_ros2_control_node-1] [INFO] [1731598717.378116664] [a200_0804.ur5e.controller_manager]: Loading controller 'speed_scaling_state_broadcaster'
+[ur_ros2_control_node-1] [INFO] [1731598717.405608255] [a200_0804.ur5e.speed_scaling_state_broadcaster]: Loading UR SpeedScalingStateBroadcaster with tf_prefix: 
+[spawner-9] [INFO] [1731598717.408814416] [a200_0804.ur5e.spawner_joint_state_broadcaster]: Loaded speed_scaling_state_broadcaster
+[ur_ros2_control_node-1] [INFO] [1731598717.412195544] [a200_0804.ur5e.controller_manager]: Configuring controller 'speed_scaling_state_broadcaster'
+[ur_ros2_control_node-1] [INFO] [1731598717.412266617] [a200_0804.ur5e.speed_scaling_state_broadcaster]: Publisher rate set to : 100.0 Hz
+[INFO] [spawner-8]: process has finished cleanly [pid 68022]
+[spawner-9] [INFO] [1731598717.438885329] [a200_0804.ur5e.spawner_joint_state_broadcaster]: Configured and activated speed_scaling_state_broadcaster
+[ur_ros2_control_node-1] [INFO] [1731598717.623225048] [a200_0804.ur5e.controller_manager]: Loading controller 'force_torque_sensor_broadcaster'
+[spawner-9] [INFO] [1731598717.679050828] [a200_0804.ur5e.spawner_joint_state_broadcaster]: Loaded force_torque_sensor_broadcaster
+[ur_ros2_control_node-1] [INFO] [1731598717.681963411] [a200_0804.ur5e.controller_manager]: Configuring controller 'force_torque_sensor_broadcaster'
+[spawner-9] [INFO] [1731598717.710108530] [a200_0804.ur5e.spawner_joint_state_broadcaster]: Configured and activated force_torque_sensor_broadcaster
+[INFO] [spawner-9]: process has finished cleanly [pid 68028]

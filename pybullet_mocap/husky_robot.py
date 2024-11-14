@@ -26,6 +26,8 @@ from scipy.spatial.transform import Rotation as R
 
 UR5e_HOME_STATE = np.array([0, -np.pi/2, 0, -np.pi/2, 0, 0])
 ARM_JOINT_NAMES = ['shoulder_pan_joint', 'shoulder_lift_joint', 'elbow_joint', 'wrist_1_joint', 'wrist_2_joint', 'wrist_3_joint']
+#ARM_JOINT_NAMES = ['/a200_0804/ur5e/' + x for x in ARM_JOINT_NAMES]
+#ARM_JOINT_NAMES = ['/' + x for x in ARM_JOINT_NAMES]
 
 
 class HuskyRobotInterface:
@@ -116,11 +118,9 @@ class HuskyRobotInterface:
         goal.command.max_effort = effort
         self.act_gripper.send_goal_async(goal)
     
-    def send_arm_cmd(self, arm_joint_goals, duration_s=30):
-        self.node.get_logger().info(f"Current state: \t{self.arm_joint_states}")
-        self.node.get_logger().info(f"Goal state: \t{arm_joint_goals}")
-        
-        time.sleep(30)
+    def send_arm_cmd(self, arm_joint_goals, duration_s=5):
+        self.node.get_logger().info(f"Current state: \t{np.round(self.arm_joint_states, 2)}")
+        self.node.get_logger().info(f"Goal state: \t{np.round(arm_joint_goals, 2)}")
         
         goal = FollowJointTrajectory.Goal()
         goal.trajectory = JointTrajectory()
@@ -128,7 +128,7 @@ class HuskyRobotInterface:
         goal.trajectory.joint_names = ARM_JOINT_NAMES
         point = JointTrajectoryPoint()
         point.positions = list(arm_joint_goals)
-        point.velocities = [0., 0., 0., 0., 0., 0.]
+        #point.velocities = [0., 0., 0., 0., 0., 0.]
         point.time_from_start = Duration(sec=duration_s, nanosec=0)
         goal.trajectory.points.append(point)
 
@@ -143,7 +143,7 @@ class HuskyRobotInterface:
         goal_handle = future.result()
         if not goal_handle.accepted:
             self.node.get_logger().error("Goal rejected :(")
-            raise RuntimeError("Goal rejected :(")
+            return
 
         self.node.get_logger().info("Goal accepted :)")
 
@@ -155,11 +155,9 @@ class HuskyRobotInterface:
         status = future.result().status
         self.node.get_logger().info(f"Done with result: {self.status_to_str(status)}")
         if status != GoalStatus.STATUS_SUCCEEDED:
-            if result.error_code != FollowJointTrajectory.Result.SUCCESSFUL:
-                self.node.get_logger().error(
-                    f"Done with result: {self.error_code_to_str(result.error_code)}"
-                )
-            raise RuntimeError("Executing trajectory failed. " + result.error_string)
+            self.node.get_logger().error(
+                f"Done with result: {self.error_code_to_str(result.error_code)}"
+            )
 
     @staticmethod
     def error_code_to_str(error_code):
