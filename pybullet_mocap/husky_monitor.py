@@ -8,12 +8,12 @@ import pybullet as p
 from scipy.spatial.transform import Rotation as R
 
 from pybullet_mocap.husky_robot import HuskyRobotInterface
-from pybullet_mocap.husky_robot import UR5e_HOME_STATE
 from pybullet_mocap import DATA_DIRECTORY
 
 from pybullet_mocap.utils import plan_transit_motion
 from pybullet_mocap.planner import RRTStar, fill_yaw_angle
-from pybullet_mocap.controller import State
+from pybullet_mocap.controller import Stanley, State
+from pybullet_planning.utils import RED
 
 HUSKY_JOINT_NAMES = ['x', 'y', 'theta']
 HUSKY_UR5e_JOINT_NAMES = ["ur_arm_shoulder_pan_joint", 
@@ -24,6 +24,12 @@ HUSKY_UR5e_JOINT_NAMES = ["ur_arm_shoulder_pan_joint",
                       "ur_arm_wrist_3_joint" ]
 
 TOOL0_FROM_TIP = pp.Pose(point=(0, 0, 73.65 * 1e-3))
+
+DEFAULT_GREY = [0.2, 0.2, 0.2, 0.7]
+GOAL_BLUE = [0, 0.2, 0.5, 0.7]
+TRAJECTORY_GREEN = [0, 0.5, 0.2, 0.7]
+
+ROBOT_START_POS = [-np.array((0,0,0)), -np.array((0,1,0)), -np.array((0,2,0))]
 
 def load_robot(ik_from_arm_base=True, load_calib_tip=False):
     # robot_srdf = os.path.join(DATA_DIRECTORY, 'husky_urdf/mt_husky_moveit_config/config/husky.srdf')
@@ -68,6 +74,7 @@ class HuskyModel():
        self.robot = robot
        self.ee = ee
        self.ee_attachment = ee_attachment
+       self.old_color = None
        
     def set_pose(self, base_pose, arm_joint_states):
         pp.set_pose(self.robot, base_pose)
@@ -75,26 +82,38 @@ class HuskyModel():
         pp.set_joint_positions(self.robot, arm_joints, arm_joint_states)
         self.ee_attachment.assign()
         
+    def set_color(self, new_color):
+        if self.old_color != new_color:
+            self.old_color = new_color
+            pp.set_color(self.robot, new_color)
+            pp.set_color(self.ee, new_color)
+        
 class HuskyMonitor(Node):
     def __init__(self):
         super().__init__('husky_monitor')
         
-        self.huskyInterfaces = [HuskyRobotInterface(self, name='/a200_0804')] #, HuskyRobotInterface(self, name='/a200_0805')]
+        self.huskyInterfaces = [HuskyRobotInterface(self, name='/a200_0804'), HuskyRobotInterface(self, name='/a200_0805')]
         self.timer = self.create_timer(0.05, self.update_pybullet)
+        
+        self.huskyModels = []
         
         self.buttons = []
         self.state_sliders = []
         self.joint_state_sliders = []
-        self.planned_trajectory = None
+        self.planned_arm_trajectory = None
+        self.planned_base_trajectory = None
+        self.goal_pos = np.zeros(3)
+        self.goal_rot = R.identity()
+        self.goal_arm_pose = np.zeros(6)
         self.start_pybullet()
     
     def reset_odom(self):
-        for hi in self.huskyInterfaces:
-            hi.odom_offset = hi.raw_odom_position
+        for i, hi in enumerate(self.huskyInterfaces):
+            hi.odom_offset = ROBOT_START_POS[i] + hi.raw_odom_position
     
     def plan(self):
         joint_state_slider_values = np.array([p.readUserDebugParameter(ps) for ps in self.joint_state_sliders])
-        self.planned_trajectory = plan_transit_motion(
+        self.planned_arm_trajectory = plan_transit_motion(
                     self.huskyModels.robot,
                     joint_state_slider_values,
                     [self.huskyModels.ee_attachment],
@@ -102,6 +121,8 @@ class HuskyMonitor(Node):
                     debug=True,
                     disabled_collisions=False,
                 )
+        
+        print(self.planned_arm_trajectory)
         
         x_range = (-3, 3)
         y_range = (-3, 3)
@@ -133,10 +154,32 @@ class HuskyMonitor(Node):
                     for x, y, yaw in zip(x_list, y_list, yaw_list)
                 ]
         
-        points = [(x, y, 0) for x, y in zip(x_list, y_list)]
+        points = [(x, y, 0.0) for x, y in zip(x_list, y_list)]
         with pp.LockRenderer():
             pp.add_segments(points)
+            
+        controller = Stanley(
+                targets[0],
+                targets,
+                dt=0.1,
+                max_steps=2000,
+                switch_distance=0.2,
+                max_velocity=0.2,
+                max_angle_velocity=np.pi,
+                stanley_gain=0.75,
+                position_tolerance=0.05,
+                yaw_tolerance=0.1,
+            )
         
+        x_list_ctrl, y_list_ctrl, yaw_list_ctrl = controller.run()
+        self.planned_base_trajectory = [
+                State(x, y, yaw)
+                for x, y, yaw in zip(x_list_ctrl, y_list_ctrl, yaw_list_ctrl)
+            ]
+        
+        points = [(x, y, 0.0) for x, y in zip(x_list_ctrl, y_list_ctrl)]
+        with pp.LockRenderer():
+            pp.add_segments(points, color=RED)
 
     
     def send_motion_command(self):
@@ -147,7 +190,19 @@ class HuskyMonitor(Node):
     def send_arm_command(self):
         joint_state_slider_values = np.array([p.readUserDebugParameter(ps) for ps in self.joint_state_sliders])
         for hi in self.huskyInterfaces:
-            hi.send_arm_cmd(joint_state_slider_values)
+            hi.send_arm_cmd([joint_state_slider_values], dt=5)
+        self.get_logger().info('Sent arm command!')
+        
+    def send_arm_wave(self):
+        for hi in self.huskyInterfaces:
+            if not np.isclose(hi.arm_joint_states, [0, -np.pi/2, 0, -np.pi/2, 0, 0], atol=0.1).all():
+                self.get_logger().warn(f'Husky {hi} is not in correct wave start pose!')
+                return
+        
+        N = 10
+        traj = [np.array([0, -np.pi/2, 0, -np.pi/2, np.sin((x+1)/N*2*np.pi), 0]) for x in range(N)]
+        for hi in self.huskyInterfaces:
+            hi.send_arm_cmd(traj, dt=10/N)
         self.get_logger().info('Sent arm command!')
         
     def send_gripper_command(self):
@@ -165,6 +220,8 @@ class HuskyMonitor(Node):
         self.build_ui()
     
     def build_ui(self):
+        self.time_slider = p.addUserDebugParameter("time", 0.0, 1.0, 1.0)
+        
         self.buttons.append(Button('Reset Odom', self.reset_odom))
         self.buttons.append(Button('Reset Goal State', self.reset_ui))
         
@@ -175,11 +232,12 @@ class HuskyMonitor(Node):
         self.buttons.append(Button('Plan', self.plan))
         self.buttons.append(Button('Send Motion Command', self.send_motion_command))
         
-        for i, j in enumerate(pp.joints_from_names(self.huskyModels.robot, HUSKY_UR5e_JOINT_NAMES)):
-            lower, upper = pp.get_joint_limits(self.huskyModels.robot, j)
+        for i, j in enumerate(pp.joints_from_names(self.huskyModels[0].robot, HUSKY_UR5e_JOINT_NAMES)):
+            lower, upper = pp.get_joint_limits(self.huskyModels[0].robot, j)
             self.joint_state_sliders.append(p.addUserDebugParameter(f'Joint {i}', lower, upper, self.huskyInterfaces[0].arm_joint_states[i]))
             
         self.buttons.append(Button('Send Arm Command', self.send_arm_command))
+        self.buttons.append(Button('Send Arm Wave', self.send_arm_wave))
 
         self.gripper_slider = p.addUserDebugParameter("gripper", 0, 1.0)
         self.buttons.append(Button('Gripper Set', self.send_gripper_command))
@@ -197,11 +255,14 @@ class HuskyMonitor(Node):
         # load robot models
         with pp.LockRenderer():
             with pp.HideOutput():
-                self.huskyModels = load_robot(load_calib_tip=False)
+                for i, hi in enumerate(self.huskyInterfaces):
+                    self.huskyModels.append(load_robot(load_calib_tip=False))
+                    hi.odom_offset = ROBOT_START_POS[i]
+                    hi.position = -ROBOT_START_POS[i]
+            
                 
                 self.goalModel = load_robot(load_calib_tip=False)
-                pp.set_color(self.goalModel.robot, [0, 0.2, 0.5, 0.7])
-                pp.set_color(self.goalModel.ee, [0, 0.2, 0.5, 0.7])
+                self.goalModel.set_color(GOAL_BLUE)
                 
         # UI
         self.build_ui()
@@ -212,17 +273,31 @@ class HuskyMonitor(Node):
             b.update()
         
         # update robot state
-        #self.huskyModel.set_pose((self.husky.position, self.husky.rotation), self.husky.arm_joint_states)
+        for i, hi in enumerate(self.huskyInterfaces):
+            self.huskyModels[i].set_pose((hi.position, hi.rotation), hi.arm_joint_states)
         
         # update goal robot state
         state_slider_values = [p.readUserDebugParameter(ps) for ps in self.state_sliders]
         self.goal_pos = np.array((state_slider_values[0], state_slider_values[1], 0))
         self.goal_rot = R.from_euler("z", state_slider_values[2], degrees=False)
-        joint_state_slider_values = np.array([p.readUserDebugParameter(ps) for ps in self.joint_state_sliders])
-        self.goalModel.set_pose((self.goal_pos, self.goal_rot.as_quat()), joint_state_slider_values)
+        self.goal_arm_pose = np.array([p.readUserDebugParameter(ps) for ps in self.joint_state_sliders])
+            
+        preview_time = p.readUserDebugParameter(self.time_slider)
+        if self.planned_base_trajectory is None or np.isclose(preview_time, 1.0):
+            self.goalModel.set_pose((self.goal_pos, self.goal_rot.as_quat()), self.goal_arm_pose)
+        elif self.planned_base_trajectory is not None:
+            arm_traj_idx = int(preview_time * (len(self.planned_arm_trajectory) - 1))
+            arm_pose = self.planned_arm_trajectory[arm_traj_idx]
+            
+            base_traj_idx = int(preview_time * (len(self.planned_base_trajectory) - 1))
+            pos = (self.planned_base_trajectory[base_traj_idx].x, self.planned_base_trajectory[base_traj_idx].y, 0.0)
+            rot = R.from_euler("z", self.planned_base_trajectory[base_traj_idx].yaw, degrees=False)
+            
+            self.goalModel.set_pose((pos, rot.as_quat()), arm_pose)
+            
         
         # arm test TODO
-        self.huskyModels.set_pose((self.goal_pos, self.goal_rot.as_quat()), self.huskyInterfaces[0].arm_joint_states)
+        #self.huskyModels.set_pose((self.goal_pos, self.goal_rot.as_quat()), self.huskyInterfaces[0].arm_joint_states)
 
 
 # --- --- --- --- --- MAIN --- --- --- --- --- 

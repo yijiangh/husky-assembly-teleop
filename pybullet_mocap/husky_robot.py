@@ -70,7 +70,7 @@ class HuskyRobotInterface:
             GripperCommand,
             name + '/gripper/robotiq_gripper_controller/gripper_cmd',
         )
-        self.act_gripper.wait_for_server(timeout_sec=5.0)
+        self.act_gripper.wait_for_server(timeout_sec=2.5)
         self.node.get_logger().info(f'Gripper Action Server {self.act_gripper.server_is_ready()}')
         
         self.act_arm = ActionClient(
@@ -78,20 +78,21 @@ class HuskyRobotInterface:
             FollowJointTrajectory,
             name + '/ur5e/scaled_joint_trajectory_controller/follow_joint_trajectory',
         )
-        self.act_arm.wait_for_server(timeout_sec=5.0)
+        self.act_arm.wait_for_server(timeout_sec=2.5)
         self.node.get_logger().info(f'Arm Action Server {self.act_arm.server_is_ready()}')
         
         # done --- --- --- --- ---
         self.node.get_logger().info(f'Husky Monitor startet on "{name}"!')
 
     def tf_callback(self, msg: TFMessage):
-        header: Header = msg.transforms[0].header
-        if header.frame_id == 'odom':
-            ts: Transform = msg.transforms[0].transform
-            self.raw_odom_position =  np.array((ts.translation.x, ts.translation.y, ts.translation.z))
-            self.position = self.raw_odom_position - self.odom_offset
-            self.rotation = np.array((ts.rotation.x, ts.rotation.y, ts.rotation.z, ts.rotation.w))
-            #self.get_logger().info(f'Position {np.around(pos, decimals=2)}')
+        for transform in msg.transforms:
+            header: Header = transform.header
+            if header.frame_id == 'odom':
+                ts: Transform = transform.transform
+                self.raw_odom_position =  np.array((ts.translation.x, ts.translation.y, ts.translation.z))
+                self.position = self.raw_odom_position - self.odom_offset
+                self.rotation = np.array((ts.rotation.x, ts.rotation.y, ts.rotation.z, ts.rotation.w))
+                #self.node.get_logger().info(f'Position {np.around(self.position, decimals=2)}')
     
     # for debugging intermittent joy control
     # joy node sometimes periodically sends zero values even tough stick is held continuously...
@@ -118,19 +119,20 @@ class HuskyRobotInterface:
         goal.command.max_effort = effort
         self.act_gripper.send_goal_async(goal)
     
-    def send_arm_cmd(self, arm_joint_goals, duration_s=5):
-        self.node.get_logger().info(f"Current state: \t{np.round(self.arm_joint_states, 2)}")
-        self.node.get_logger().info(f"Goal state: \t{np.round(arm_joint_goals, 2)}")
-        
+    def send_arm_cmd(self, arm_joint_positions, dt=10):
         goal = FollowJointTrajectory.Goal()
         goal.trajectory = JointTrajectory()
         
         goal.trajectory.joint_names = ARM_JOINT_NAMES
-        point = JointTrajectoryPoint()
-        point.positions = list(arm_joint_goals)
-        #point.velocities = [0., 0., 0., 0., 0., 0.]
-        point.time_from_start = Duration(sec=duration_s, nanosec=0)
-        goal.trajectory.points.append(point)
+        for i, waypoint in enumerate(arm_joint_positions):
+            point = JointTrajectoryPoint()
+            point.positions = list(waypoint)
+            #point.velocities = [0., 0., 0., 0., 0., 0.]
+            time_from_start = dt*(i+1)
+            sec = np.floor(time_from_start)
+            nano = time_from_start - sec
+            point.time_from_start = Duration(sec=int(sec), nanosec=int(nano*1000000))
+            goal.trajectory.points.append(point)
 
         goal.goal_time_tolerance = Duration(sec=0, nanosec=500000000)
         goal.goal_tolerance = [
