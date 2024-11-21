@@ -126,11 +126,13 @@ class HuskyMonitor(Node):
             hi.odom_offset = ROBOT_START_POS[i] + hi.raw_odom_position
     
     def plan(self):
+        huskyModel = self.huskyModels[0]
+        
         joint_state_slider_values = np.array([p.readUserDebugParameter(ps) for ps in self.joint_state_sliders])
         self.planned_arm_trajectory = plan_transit_motion(
-                    self.huskyModels.robot,
+                    huskyModel.robot,
                     joint_state_slider_values,
-                    [self.huskyModels.ee_attachment],
+                    [huskyModel.ee_attachment],
                     [],
                     debug=True,
                     disabled_collisions=False,
@@ -147,7 +149,7 @@ class HuskyMonitor(Node):
         rrt_star = RRTStar(
                     0.2, *x_range, *y_range, robot_size=0.1, avoid_dist=0.25
                 )
-        start_point, start_ori = pp.get_pose(self.huskyModels.robot)
+        start_point, start_ori = pp.get_pose(huskyModel.robot)
         start_pose = (
             start_point[0],
             start_point[1],
