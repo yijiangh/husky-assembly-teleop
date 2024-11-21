@@ -213,10 +213,17 @@ class HuskyMonitor(Node):
                 self.get_logger().warn(f'Husky {hi} is not in correct wave start pose!')
                 return
         
-        N = 10
-        traj = [np.array([0, -np.pi/2, 0, -np.pi/2, np.sin((x+1)/N*2*np.pi), 0]) for x in range(N)]
+        N = 20 # number of waypoints (N+1 with starting point)
+        TIME = 20
+        
+        ts = list(np.linspace(0, TIME, N+1))[1:]
+        time_scaling = lambda t: t/TIME*2*np.pi
+        
+        traj_pos = [np.array([0, -np.pi/2, -np.sin(time_scaling(t)), -np.pi/2 + np.sin(time_scaling(t)), 0, 0]) for t in ts]
+        traj_vel = [1 / TIME * 2*np.pi * np.array([0, 0, -np.cos(time_scaling(t)), np.cos(time_scaling(t)), 0, 0]) for t in ts]
+        
         for hi in self.huskyInterfaces:
-            hi.send_arm_cmd(traj, dt=10/N)
+            hi.send_arm_cmd(traj_pos, traj_vel, dt=TIME/N)
         self.get_logger().info('Sent arm command!')
         
     def send_gripper_command(self):

@@ -121,7 +121,12 @@ class HuskyRobotInterface:
         goal.command.max_effort = effort
         self.act_gripper.send_goal_async(goal)
     
-    def send_arm_cmd(self, arm_joint_positions, dt=10):
+    def send_arm_cmd(self, arm_joint_positions, arm_joint_velocities=None, dt=10):
+        if arm_joint_velocities is not None:
+            if len(arm_joint_positions) != len(arm_joint_velocities):
+                self.node.get_logger().error("trajectory must have equal number of position and velocity entries!")
+                return
+        
         goal = FollowJointTrajectory.Goal()
         goal.trajectory = JointTrajectory()
         
@@ -129,7 +134,8 @@ class HuskyRobotInterface:
         for i, waypoint in enumerate(arm_joint_positions):
             point = JointTrajectoryPoint()
             point.positions = list(waypoint)
-            #point.velocities = [0., 0., 0., 0., 0., 0.]
+            if arm_joint_velocities is not None:
+                point.velocities = list(arm_joint_velocities[i])
             time_from_start = dt*(i+1)
             sec = np.floor(time_from_start)
             nano = time_from_start - sec
