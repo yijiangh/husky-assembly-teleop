@@ -39,15 +39,17 @@ class HuskyRobotInterface:
     
     arm_joint_states = UR5e_HOME_STATE
     
-    def __init__(self, node: Node, name='/a200_0804'):
+    def __init__(self, node: Node, name='/a200_0804', use_odom=True):
         self.node = node
+        self.name = name
         
         # Listeners --- --- --- --- ---
-        self.sub_tf = self.node.create_subscription(
-            TFMessage,
-            name + '/tf',
-            self.tf_callback,
-            10)
+        if use_odom:
+            self.sub_tf = self.node.create_subscription(
+                TFMessage,
+                name + '/tf',
+                self.tf_callback,
+                10)
         
         self.sub_joy = self.node.create_subscription(
             Joy,
@@ -55,7 +57,7 @@ class HuskyRobotInterface:
             self.joy_callback,
             10)
         
-        self.seb_arm = self.node.create_subscription(
+        self.sub_arm = self.node.create_subscription(
             JointState,
             name + '/ur5e/joint_states',
             self.arm_callback,

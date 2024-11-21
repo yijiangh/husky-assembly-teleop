@@ -1,3 +1,4 @@
+import time
 import rclpy
 from rclpy.node import Node
 
@@ -15,6 +16,8 @@ from pybullet_mocap.planner import RRTStar, fill_yaw_angle
 from pybullet_mocap.controller import Stanley, State
 from pybullet_planning.utils import RED
 
+from pybullet_mocap.optitrack.NatNetClient import NatNetClient
+
 HUSKY_JOINT_NAMES = ['x', 'y', 'theta']
 HUSKY_UR5e_JOINT_NAMES = ["ur_arm_shoulder_pan_joint", 
                       "ur_arm_shoulder_lift_joint",
@@ -30,6 +33,15 @@ GOAL_BLUE = [0, 0.2, 0.5, 0.7]
 TRAJECTORY_GREEN = [0, 0.5, 0.2, 0.7]
 
 ROBOT_START_POS = [-np.array((0,0,0)), -np.array((0,1,0)), -np.array((0,2,0))]
+
+CLIENT_IP = '192.168.0.7' # Set to your own IP
+MOCAP_IP = '192.168.0.117' # set to the mocap PC's IP, get this from Motive Settings>Streaming pane->Local interface
+
+# the dictionary key is the rigid body id you find in the Motive software, the name doesn't matter
+name_from_mocap_id = {
+    1004 : '/a200_0804',
+    1033 : '/a200_0805',
+}
 
 def load_robot(ik_from_arm_base=True, load_calib_tip=False):
     # robot_srdf = os.path.join(DATA_DIRECTORY, 'husky_urdf/mt_husky_moveit_config/config/husky.srdf')
@@ -92,7 +104,8 @@ class HuskyMonitor(Node):
     def __init__(self):
         super().__init__('husky_monitor')
         
-        self.huskyInterfaces = [HuskyRobotInterface(self, name='/a200_0804'), HuskyRobotInterface(self, name='/a200_0805')]
+        self.huskyInterfaces = [HuskyRobotInterface(self, name='/a200_0804', use_odom=False), HuskyRobotInterface(self, name='/a200_0805', use_odom=False)]
+        #self.huskyInterfaces = [HuskyRobotInterface(self, name='/a200_0804', use_odom=False)]
         self.timer = self.create_timer(0.05, self.update_pybullet)
         
         self.huskyModels = []
@@ -106,6 +119,7 @@ class HuskyMonitor(Node):
         self.goal_rot = R.identity()
         self.goal_arm_pose = np.zeros(6)
         self.start_pybullet()
+        self.start_mocap()
     
     def reset_odom(self):
         for i, hi in enumerate(self.huskyInterfaces):
@@ -266,6 +280,36 @@ class HuskyMonitor(Node):
                 
         # UI
         self.build_ui()
+        
+    def start_mocap(self):
+        print('Starting mocap!')
+        mocap_client = NatNetClient()
+        mocap_client.set_client_address(CLIENT_IP)
+        mocap_client.set_server_address(MOCAP_IP)
+        mocap_client.set_use_multicast(False)
+        mocap_client.print_level = 1
+        # Configure the streaming client to call our rigid body handler on the emulator to send data out.
+        mocap_client.rigid_body_listener = self.receive_rigid_body_frame
+        
+        if mocap_client.run():
+            start_connect = time.time()
+            while not mocap_client.connected():
+                time.sleep(0.25)
+                if time.time() - start_connect > 5:
+                    break
+            print(f"mocap client connected: {mocap_client.connected()}")
+        else:
+            print('Failed to run mocap client!')
+        
+    def receive_rigid_body_frame(self, id, pos, rot):
+        if id not in name_from_mocap_id:
+            return
+        
+        name = name_from_mocap_id[id]
+        for hi in self.huskyInterfaces:
+            if hi.name == name:
+                hi.position = np.array((pos[2], pos[0], pos[1]))
+                hi.rotation = np.array((rot[2], rot[0], rot[1], rot[3]))
         
     # --- --- --- --- --- UPDATE --- --- --- --- --- 
     def update_pybullet(self):
