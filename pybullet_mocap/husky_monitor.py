@@ -3,6 +3,7 @@ import rclpy
 from rclpy.node import Node
 
 import os
+from matplotlib import pyplot as plt
 import numpy as np
 import pybullet_planning as pp
 import pybullet as p
@@ -104,16 +105,20 @@ class HuskyMonitor(Node):
     def __init__(self):
         super().__init__('husky_monitor')
         
-        self.huskyInterfaces = [HuskyRobotInterface(self, name='/a200_0804', use_odom=False), HuskyRobotInterface(self, name='/a200_0805', use_odom=False)]
-        #self.huskyInterfaces = [HuskyRobotInterface(self, name='/a200_0804', use_odom=False)]
+        #self.huskyInterfaces = [HuskyRobotInterface(self, name='/a200_0804', use_odom=False), HuskyRobotInterface(self, name='/a200_0805', use_odom=False)]
+        self.huskyInterfaces = [HuskyRobotInterface(self, name='/a200_0804', use_odom=False)]
         self.timer = self.create_timer(0.05, self.update_pybullet)
+        
+        self.tasks = []
         
         self.huskyModels = []
         
         self.buttons = []
         self.state_sliders = []
         self.joint_state_sliders = []
+        self.pid_sliders = []
         self.planned_arm_trajectory = None
+        self.plan_traj_seg = None
         self.planned_base_trajectory = None
         self.goal_pos = np.zeros(3)
         self.goal_rot = R.identity()
@@ -131,7 +136,7 @@ class HuskyMonitor(Node):
         start_pos = hi.position
         start_rot = R.from_quat(hi.rotation)
         
-        N = 50
+        N = 200
         radius = 1
         angle = np.pi
         arc_trajectory = [(np.array([np.sin(i/N * angle) * radius, np.cos(i/N * angle) * radius - radius, 0]), R.from_euler("z", -i/N * angle)) for i in range(N+1)]
@@ -139,10 +144,89 @@ class HuskyMonitor(Node):
         
         points = [pos for pos, rot in arc_trajectory]
         with pp.LockRenderer():
-            pp.add_segments(points)
+            if self.plan_traj_seg is not None:
+                pp.remove_handles(self.plan_traj_seg)
+            self.plan_traj_seg = pp.add_segments(points)
             
         self.planned_base_trajectory = arc_trajectory
+    
+    def execute_base_trajectory(self):
+        if self.planned_base_trajectory is None:
+            self.get_logger().warn('Trajectory must be planned before executing!')
+            return
+        
+        fig, (ax_traj, ax_ortho) = plt.subplots(2, 1)
+        actual_trajectory = []
+        ortho_error_list = []
+        para_error_list = []
+        rot_error_list = []
+        
+        hi = self.huskyInterfaces[0]
+        
+        k_p = np.array([2.0, 1.0])
+        k_p_ortho = 24 #p.readUserDebugParameter(self.pid_sliders[0])
+        
+        time_start = time.time()
+        total_time = 10
+        def exec():
+            nonlocal time_start
+            nonlocal actual_trajectory
+            nonlocal ortho_error_list
+            nonlocal para_error_list
+            nonlocal rot_error_list
+            exec_time = time.time() - time_start
+            
+            N = len(self.planned_base_trajectory)    
+            dt = (total_time / (N - 1))
+        
+            base_traj_idx = min(int(exec_time / total_time * (N - 1)), N-1)
+            base_traj_next_idx = min(int(exec_time / total_time * (N - 1))+1, N-1)
+            target_pos, target_rot  = self.planned_base_trajectory[base_traj_idx]
+            next_target_pos, next_target_rot = self.planned_base_trajectory[base_traj_next_idx]
+            target_vel = np.linalg.norm((next_target_pos - target_pos)) / dt
+            target_rot_vel = ((R.from_quat(target_rot).inv() * R.from_quat(next_target_rot)).as_euler("zxy")[0]) / dt
+            
+            current_pos, current_rot = (hi.position, hi.rotation)
+            
+            actual_trajectory.append(current_pos)
+            
+            # split pos error into parallel and orthogonal components
+            pos_error = target_pos - current_pos
+            pos_error_local = R.from_quat(current_rot).inv().apply(pos_error)
+            pos_err_para, pos_err_ortho = pos_error_local[0], pos_error_local[1]
+            para_error_list.append(pos_err_para)
+            ortho_error_list.append(pos_err_ortho)
+            
+            # adjust target angle to reduce ortho pos error
+            rot_offset = k_p_ortho * np.arctan2(pos_err_ortho, 1.0) * target_vel
+            print(f'pos_err_ortho {pos_err_ortho} pos_err_para {pos_err_para} rot_offset {rot_offset}')
+            rot_error = ((R.from_quat(current_rot).inv() * R.from_quat(target_rot)).as_euler("zxy")[0]) + rot_offset
+            rot_error_list.append(rot_error)
+            
+            twist = k_p * np.array([pos_err_para, rot_error]) + np.array([target_vel, target_rot_vel])
 
+            hi.send_base_twist_cmd(twist[0], twist[1])
+            
+            converged = np.abs(pos_err_para) < 0.05 and np.abs(rot_error) < 0.05
+            if exec_time < 2*total_time and (exec_time < total_time or not converged):
+                return True
+            
+            points = np.array([pos for pos, _ in self.planned_base_trajectory])
+            actual_trajectory = np.array(actual_trajectory)
+            
+            ax_traj.plot(points[:,0], points[:,1])
+            ax_traj.plot(actual_trajectory[:,0], actual_trajectory[:,1])
+            ax_traj.set_aspect(1.0)
+            ax_ortho.plot(para_error_list, label='para')
+            ax_ortho.plot(ortho_error_list, label='ortho')
+            ax_ortho.plot(rot_error_list, label='rot')
+            ax_ortho.legend()
+            fig.savefig("trajectory.png")
+            plt.close(fig)
+            
+            return False
+        
+        self.tasks.append(exec)
     
     def send_motion_command(self):
         for hi in self.huskyInterfaces:
@@ -223,8 +307,10 @@ class HuskyMonitor(Node):
         self.state_sliders.append(p.addUserDebugParameter("x", -5.0, 5.0, 0))
         self.state_sliders.append(p.addUserDebugParameter("yaw", -np.pi, np.pi, 0))
         
+        self.pid_sliders.append(p.addUserDebugParameter("P", 0, 100, 24))
+        
         self.buttons.append(Button('Plan', self.plan))
-        self.buttons.append(Button('Send Motion Command', self.send_motion_command))
+        self.buttons.append(Button('Exec', self.execute_base_trajectory))
         
         for i, j in enumerate(pp.joints_from_names(self.huskyModels[0].robot, HUSKY_UR5e_JOINT_NAMES)):
             lower, upper = pp.get_joint_limits(self.huskyModels[0].robot, j)
@@ -293,6 +379,16 @@ class HuskyMonitor(Node):
                 goal_arm_pose = self.planned_arm_trajectory[arm_traj_idx]
             
         self.goalModel.set_pose(goal_pose, goal_arm_pose)
+        
+        # run tasks
+        i = 0
+        while i < len(self.tasks):
+            task = self.tasks[i]
+            if task():
+                i += 1
+            else:
+                self.tasks.remove(task)
+                
 
 
 # --- --- --- --- --- MAIN --- --- --- --- --- 
