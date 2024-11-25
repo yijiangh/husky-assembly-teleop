@@ -126,76 +126,22 @@ class HuskyMonitor(Node):
             hi.odom_offset = ROBOT_START_POS[i] + hi.raw_odom_position
     
     def plan(self):
-        huskyModel = self.huskyModels[0]
+        hi = self.huskyInterfaces[0]
         
-        joint_state_slider_values = np.array([p.readUserDebugParameter(ps) for ps in self.joint_state_sliders])
-        self.planned_arm_trajectory = plan_transit_motion(
-                    huskyModel.robot,
-                    joint_state_slider_values,
-                    [huskyModel.ee_attachment],
-                    [],
-                    debug=True,
-                    disabled_collisions=False,
-                )
+        start_pos = hi.position
+        start_rot = R.from_quat(hi.rotation)
         
-        print(self.planned_arm_trajectory)
+        N = 50
+        radius = 1
+        angle = np.pi
+        arc_trajectory = [(np.array([np.sin(i/N * angle) * radius, np.cos(i/N * angle) * radius - radius, 0]), R.from_euler("z", -i/N * angle)) for i in range(N+1)]
+        arc_trajectory = [(start_pos + start_rot.apply(pos), (start_rot * rot).as_quat()) for pos, rot in arc_trajectory]
         
-        x_range = (-3, 3)
-        y_range = (-3, 3)
-        
-        ob_x_list = [np.inf] # what is this?
-        ob_y_list = [np.inf]
-        
-        rrt_star = RRTStar(
-                    0.2, *x_range, *y_range, robot_size=0.1, avoid_dist=0.25
-                )
-        start_point, start_ori = pp.get_pose(huskyModel.robot)
-        start_pose = (
-            start_point[0],
-            start_point[1],
-            R.from_quat(start_ori).as_euler("zyx")[0],
-        )
-        goal_point, goal_ori = pp.get_pose(self.goalModel.robot)
-        goal_pose = (
-            goal_point[0],
-            goal_point[1],
-            R.from_quat(goal_ori).as_euler("zyx")[0],
-        )
-        x_list, y_list = rrt_star.plan(
-                    ob_x_list, ob_y_list, *(start_pose[:2]), *(goal_pose[:2])
-                )
-        yaw_list = fill_yaw_angle(start_pose[-1], goal_pose[-1], x_list, y_list)
-        targets = [
-                    State(x, y, yaw)
-                    for x, y, yaw in zip(x_list, y_list, yaw_list)
-                ]
-        
-        points = [(x, y, 0.0) for x, y in zip(x_list, y_list)]
+        points = [pos for pos, rot in arc_trajectory]
         with pp.LockRenderer():
             pp.add_segments(points)
             
-        controller = Stanley(
-                targets[0],
-                targets,
-                dt=0.1,
-                max_steps=2000,
-                switch_distance=0.2,
-                max_velocity=0.2,
-                max_angle_velocity=np.pi,
-                stanley_gain=0.75,
-                position_tolerance=0.05,
-                yaw_tolerance=0.1,
-            )
-        
-        x_list_ctrl, y_list_ctrl, yaw_list_ctrl = controller.run()
-        self.planned_base_trajectory = [
-                State(x, y, yaw)
-                for x, y, yaw in zip(x_list_ctrl, y_list_ctrl, yaw_list_ctrl)
-            ]
-        
-        points = [(x, y, 0.0) for x, y in zip(x_list_ctrl, y_list_ctrl)]
-        with pp.LockRenderer():
-            pp.add_segments(points, color=RED)
+        self.planned_base_trajectory = arc_trajectory
 
     
     def send_motion_command(self):
@@ -242,30 +188,7 @@ class HuskyMonitor(Node):
         self.joint_state_sliders.clear()
         self.build_ui()
     
-    def build_ui(self):
-        self.time_slider = p.addUserDebugParameter("time", 0.0, 1.0, 1.0)
-        
-        self.buttons.append(Button('Reset Odom', self.reset_odom))
-        self.buttons.append(Button('Reset Goal State', self.reset_ui))
-        
-        self.state_sliders.append(p.addUserDebugParameter("x", -5.0, 5.0, 0))
-        self.state_sliders.append(p.addUserDebugParameter("x", -5.0, 5.0, 0))
-        self.state_sliders.append(p.addUserDebugParameter("yaw", -np.pi, np.pi, 0))
-        
-        self.buttons.append(Button('Plan', self.plan))
-        self.buttons.append(Button('Send Motion Command', self.send_motion_command))
-        
-        for i, j in enumerate(pp.joints_from_names(self.huskyModels[0].robot, HUSKY_UR5e_JOINT_NAMES)):
-            lower, upper = pp.get_joint_limits(self.huskyModels[0].robot, j)
-            self.joint_state_sliders.append(p.addUserDebugParameter(f'Joint {i}', lower, upper, self.huskyInterfaces[0].arm_joint_states[i]))
-            
-        self.buttons.append(Button('Send Arm Command', self.send_arm_command))
-        self.buttons.append(Button('Send Arm Wave', self.send_arm_wave))
-
-        self.gripper_slider = p.addUserDebugParameter("gripper", 0, 1.0)
-        self.buttons.append(Button('Gripper Set', self.send_gripper_command))
-    
-    # --- --- --- --- --- SETUP --- --- --- --- --- 
+    # --- --- --- --- --- SETUP PYBULLET --- --- --- --- ---
     def start_pybullet(self):
         # start pybullet simulator
         pp.connect(use_gui=True, shadows=True, color=[0.9, 0.9, 1.0])
@@ -290,6 +213,30 @@ class HuskyMonitor(Node):
         # UI
         self.build_ui()
         
+    def build_ui(self):
+        self.time_slider = p.addUserDebugParameter("time", 0.0, 1.0, 1.0)
+        
+        self.buttons.append(Button('Reset Odom', self.reset_odom))
+        self.buttons.append(Button('Reset Goal State', self.reset_ui))
+        
+        self.state_sliders.append(p.addUserDebugParameter("x", -5.0, 5.0, 0))
+        self.state_sliders.append(p.addUserDebugParameter("x", -5.0, 5.0, 0))
+        self.state_sliders.append(p.addUserDebugParameter("yaw", -np.pi, np.pi, 0))
+        
+        self.buttons.append(Button('Plan', self.plan))
+        self.buttons.append(Button('Send Motion Command', self.send_motion_command))
+        
+        for i, j in enumerate(pp.joints_from_names(self.huskyModels[0].robot, HUSKY_UR5e_JOINT_NAMES)):
+            lower, upper = pp.get_joint_limits(self.huskyModels[0].robot, j)
+            self.joint_state_sliders.append(p.addUserDebugParameter(f'Joint {i}', lower, upper, self.huskyInterfaces[0].arm_joint_states[i]))
+            
+        self.buttons.append(Button('Send Arm Command', self.send_arm_command))
+        self.buttons.append(Button('Send Arm Wave', self.send_arm_wave))
+
+        self.gripper_slider = p.addUserDebugParameter("gripper", 0, 1.0)
+        self.buttons.append(Button('Gripper Set', self.send_gripper_command))
+    
+    # --- --- --- --- --- MOCAP --- --- --- --- --- 
     def start_mocap(self):
         print('Starting mocap!')
         mocap_client = NatNetClient()
@@ -297,7 +244,6 @@ class HuskyMonitor(Node):
         mocap_client.set_server_address(MOCAP_IP)
         mocap_client.set_use_multicast(False)
         mocap_client.print_level = 1
-        # Configure the streaming client to call our rigid body handler on the emulator to send data out.
         mocap_client.rigid_body_listener = self.receive_rigid_body_frame
         
         if mocap_client.run():
@@ -336,21 +282,17 @@ class HuskyMonitor(Node):
         self.goal_arm_pose = np.array([p.readUserDebugParameter(ps) for ps in self.joint_state_sliders])
             
         preview_time = p.readUserDebugParameter(self.time_slider)
-        if self.planned_base_trajectory is None or np.isclose(preview_time, 1.0):
-            self.goalModel.set_pose((self.goal_pos, self.goal_rot.as_quat()), self.goal_arm_pose)
-        elif self.planned_base_trajectory is not None:
-            arm_traj_idx = int(preview_time * (len(self.planned_arm_trajectory) - 1))
-            arm_pose = self.planned_arm_trajectory[arm_traj_idx]
+        goal_pose = (self.goal_pos, self.goal_rot.as_quat())
+        goal_arm_pose = self.goal_arm_pose
+        if not np.isclose(preview_time, 1.0):
+            if self.planned_base_trajectory:
+                base_traj_idx = int(preview_time * (len(self.planned_base_trajectory) - 1))
+                goal_pose = self.planned_base_trajectory[base_traj_idx]
+            if self.planned_arm_trajectory:
+                arm_traj_idx = int(preview_time * (len(self.planned_arm_trajectory) - 1))
+                goal_arm_pose = self.planned_arm_trajectory[arm_traj_idx]
             
-            base_traj_idx = int(preview_time * (len(self.planned_base_trajectory) - 1))
-            pos = (self.planned_base_trajectory[base_traj_idx].x, self.planned_base_trajectory[base_traj_idx].y, 0.0)
-            rot = R.from_euler("z", self.planned_base_trajectory[base_traj_idx].yaw, degrees=False)
-            
-            self.goalModel.set_pose((pos, rot.as_quat()), arm_pose)
-            
-        
-        # arm test TODO
-        #self.huskyModels.set_pose((self.goal_pos, self.goal_rot.as_quat()), self.huskyInterfaces[0].arm_joint_states)
+        self.goalModel.set_pose(goal_pose, goal_arm_pose)
 
 
 # --- --- --- --- --- MAIN --- --- --- --- --- 
