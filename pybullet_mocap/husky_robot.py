@@ -26,18 +26,24 @@ from scipy.spatial.transform import Rotation as R
 
 UR5e_HOME_STATE = np.array([0, -np.pi/2, 0, -np.pi/2, 0, 0])
 ARM_JOINT_NAMES = ['shoulder_pan_joint', 'shoulder_lift_joint', 'elbow_joint', 'wrist_1_joint', 'wrist_2_joint', 'wrist_3_joint']
-#ARM_JOINT_NAMES = ['/a200_0804/ur5e/' + x for x in ARM_JOINT_NAMES]
-#ARM_JOINT_NAMES = ['/' + x for x in ARM_JOINT_NAMES]
 
-
+def quaterinion_2_angular_velocity(q1, q2, dt):
+    return (2 / dt) * np.array([
+        q1[3]*q2[0] - q1[0]*q2[3] - q1[1]*q2[2] + q1[2]*q2[1],
+        q1[3]*q2[1] + q1[0]*q2[2] - q1[1]*q2[3] - q1[2]*q2[0],
+        q1[3]*q2[2] - q1[0]*q2[1] + q1[1]*q2[0] - q1[2]*q2[3]])
+        
 class HuskyRobotInterface:
     position = np.zeros(3)
-    raw_odom_position = np.zeros(3)
     rotation = R.as_quat(R.identity())
     
-    odom_offset = np.zeros(3)
+    velocity = np.zeros(3)
+    angular_velocity = np.zeros(3)
     
     arm_joint_states = UR5e_HOME_STATE
+    
+    odom_offset = np.zeros(3)
+    _odom_position = np.zeros(3)
     
     def __init__(self, node: Node, name='/a200_0804', use_odom=True):
         self.node = node
@@ -72,7 +78,7 @@ class HuskyRobotInterface:
             GripperCommand,
             name + '/gripper/robotiq_gripper_controller/gripper_cmd',
         )
-        self.act_gripper.wait_for_server(timeout_sec=2.5)
+        #self.act_gripper.wait_for_server(timeout_sec=2.5)
         self.node.get_logger().info(f'Gripper Action Server {self.act_gripper.server_is_ready()}')
         
         self.act_arm = ActionClient(
@@ -80,7 +86,7 @@ class HuskyRobotInterface:
             FollowJointTrajectory,
             name + '/ur5e/scaled_joint_trajectory_controller/follow_joint_trajectory',
         )
-        self.act_arm.wait_for_server(timeout_sec=2.5)
+        #self.act_arm.wait_for_server(timeout_sec=2.5)
         self.node.get_logger().info(f'Arm Action Server {self.act_arm.server_is_ready()}')
         
         # done --- --- --- --- ---
@@ -91,10 +97,44 @@ class HuskyRobotInterface:
             header: Header = transform.header
             if header.frame_id == 'odom':
                 ts: Transform = transform.transform
-                self.raw_odom_position =  np.array((ts.translation.x, ts.translation.y, ts.translation.z))
-                self.position = self.raw_odom_position - self.odom_offset
+                self._odom_position =  np.array((ts.translation.x, ts.translation.y, ts.translation.z))
+                self.position = self._odom_position - self.odom_offset
                 self.rotation = np.array((ts.rotation.x, ts.rotation.y, ts.rotation.z, ts.rotation.w))
                 #self.node.get_logger().info(f'Position {np.around(self.position, decimals=2)}')
+    
+    _last_mocap_data = 0
+    _velocity_samples = []
+    _angular_velocity_samples = []
+    _velocity_samples_time = []
+    velocity_filter_time = 0.2
+    def mocap_callback(self, pos, rot, ts):
+        dt = ts - self._last_mocap_data
+        self._last_mocap_data = ts
+        dp = pos - self.position
+        
+        v = dp / dt
+        w = quaterinion_2_angular_velocity(self.rotation, rot, dt)
+        
+        # drop too old samples
+        if len(self._velocity_samples_time) > 0:
+            i = 0
+            while i < len(self._velocity_samples_time) and ts - self._velocity_samples_time[i] > self.velocity_filter_time:
+                i += 1
+            self._velocity_samples = self._velocity_samples[i:]
+            self._angular_velocity_samples = self._angular_velocity_samples[i:]
+            self._velocity_samples_time = self._velocity_samples_time[i:]
+            
+        # add new sample
+        self._velocity_samples.append(v)
+        self._angular_velocity_samples.append(w)
+        self._velocity_samples_time.append(ts)
+        
+        # take mean of all samples
+        self.velocity = np.mean(self._velocity_samples, axis=0)
+        self.angular_velocity = np.mean(self._angular_velocity_samples, axis=0)
+        
+        self.position = pos
+        self.rotation = rot
     
     # for debugging intermittent joy control
     # joy node sometimes periodically sends zero values even tough stick is held continuously...
@@ -111,8 +151,8 @@ class HuskyRobotInterface:
     
     def send_base_twist_cmd(self, x_dot, theta_dot):
         msg = Twist()
-        msg.linear.x = x_dot
-        msg.angular.z = theta_dot
+        msg.linear.x = x_dot * 2 # TODO figure out why husky always moves at half speed
+        msg.angular.z = theta_dot * 2
         self.pub_cmd_vel.publish(msg)
         
     def send_gripper_cmd(self, pos, effort):

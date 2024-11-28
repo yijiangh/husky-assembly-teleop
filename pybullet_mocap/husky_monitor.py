@@ -105,7 +105,7 @@ class HuskyMonitor(Node):
     def __init__(self):
         super().__init__('husky_monitor')
         
-        #self.huskyInterfaces = [HuskyRobotInterface(self, name='/a200_0804', use_odom=False), HuskyRobotInterface(self, name='/a200_0805', use_odom=False)]
+        # self.huskyInterfaces = [HuskyRobotInterface(self, name='/a200_0804', use_odom=False), HuskyRobotInterface(self, name='/a200_0805', use_odom=False)]
         self.huskyInterfaces = [HuskyRobotInterface(self, name='/a200_0804', use_odom=False)]
         self.timer = self.create_timer(0.05, self.update_pybullet)
         
@@ -128,7 +128,7 @@ class HuskyMonitor(Node):
     
     def reset_odom(self):
         for i, hi in enumerate(self.huskyInterfaces):
-            hi.odom_offset = ROBOT_START_POS[i] + hi.raw_odom_position
+            hi.odom_offset = ROBOT_START_POS[i] + hi._odom_position
     
     def plan(self):
         hi = self.huskyInterfaces[0]
@@ -149,22 +149,54 @@ class HuskyMonitor(Node):
             self.plan_traj_seg = pp.add_segments(points)
             
         self.planned_base_trajectory = arc_trajectory
+        
+    def plan_corner(self):
+        hi = self.huskyInterfaces[0]
+        
+        start_pos = hi.position
+        start_rot = R.from_quat(hi.rotation)
+        
+        N = 200
+        angle = 0.75 * np.pi
+        distance = 1.0
+        discrete_trajectory = (
+            [(np.array([i/N * distance, 0, 0]), R.identity()) for i in range(N+1)] +
+            [(np.array([distance, 0, 0]), R.from_euler("z", -i/N * angle)) for i in range(N+1)] + 
+            [(np.array([distance + np.cos(angle) * i/N * distance, -np.sin(angle) * i/N * distance, 0]), R.from_euler("z", -angle)) for i in range(N+1)]
+        )
+        discrete_trajectory = [(start_pos + start_rot.apply(pos), (start_rot * rot).as_quat()) for pos, rot in discrete_trajectory]
+        
+        points = [pos for pos, rot in discrete_trajectory]
+        with pp.LockRenderer():
+            if self.plan_traj_seg is not None:
+                pp.remove_handles(self.plan_traj_seg)
+            self.plan_traj_seg = pp.add_segments(points)
+            
+        self.planned_base_trajectory = discrete_trajectory
     
     def execute_base_trajectory(self):
         if self.planned_base_trajectory is None:
             self.get_logger().warn('Trajectory must be planned before executing!')
             return
         
-        fig, (ax_traj, ax_ortho) = plt.subplots(2, 1)
         actual_trajectory = []
         ortho_error_list = []
         para_error_list = []
         rot_error_list = []
+        rot_vel_error_list = []
+        ortho_vel_error_list = []
+        para_vel_error_list = []
+        
+        vel_list = []
+        target_vel_list = []
+        ang_vel_list = []
+        target_ang_vel_list = []
         
         hi = self.huskyInterfaces[0]
         
-        k_p = np.array([2.0, 1.0])
-        k_p_ortho = 24 #p.readUserDebugParameter(self.pid_sliders[0])
+        k_p = np.array([3.0, 5.0])
+        k_d = np.array([0.2, 0.5])
+        k_p_ortho = 5 # 5 #p.readUserDebugParameter(self.pid_sliders[0])
         
         time_start = time.time()
         total_time = 10
@@ -174,53 +206,91 @@ class HuskyMonitor(Node):
             nonlocal ortho_error_list
             nonlocal para_error_list
             nonlocal rot_error_list
+            nonlocal vel_list
+            nonlocal ang_vel_list
+            nonlocal target_ang_vel_list
             exec_time = time.time() - time_start
             
             N = len(self.planned_base_trajectory)    
             dt = (total_time / (N - 1))
-        
+
+            # get trajectory data
             base_traj_idx = min(int(exec_time / total_time * (N - 1)), N-1)
             base_traj_next_idx = min(int(exec_time / total_time * (N - 1))+1, N-1)
+            
             target_pos, target_rot  = self.planned_base_trajectory[base_traj_idx]
             next_target_pos, next_target_rot = self.planned_base_trajectory[base_traj_next_idx]
-            target_vel = np.linalg.norm((next_target_pos - target_pos)) / dt
+            
+            target_vel = np.linalg.norm((next_target_pos - target_pos) / dt)
             target_rot_vel = ((R.from_quat(target_rot).inv() * R.from_quat(next_target_rot)).as_euler("zxy")[0]) / dt
             
+            # get current data
             current_pos, current_rot = (hi.position, hi.rotation)
-            
-            actual_trajectory.append(current_pos)
+            current_vel, current_rot_vel = (hi.velocity, hi.angular_velocity[2])
             
             # split pos error into parallel and orthogonal components
             pos_error = target_pos - current_pos
             pos_error_local = R.from_quat(current_rot).inv().apply(pos_error)
             pos_err_para, pos_err_ortho = pos_error_local[0], pos_error_local[1]
-            para_error_list.append(pos_err_para)
-            ortho_error_list.append(pos_err_ortho)
+            
+            vel_local = R.from_quat(current_rot).inv().apply(current_vel)
+            vel_para, vel_ortho = vel_local[0], vel_local[1]
+            
+            vel_err_para = target_vel - vel_para
+            vel_err_ortho = 0 - vel_ortho
             
             # adjust target angle to reduce ortho pos error
+            # rot_error = np.arctan2(pos_err_ortho, pos_err_para) # actual error to drive directly to next waypoint
             rot_offset = k_p_ortho * np.arctan2(pos_err_ortho, 1.0) * target_vel
-            print(f'pos_err_ortho {pos_err_ortho} pos_err_para {pos_err_para} rot_offset {rot_offset}')
-            rot_error = ((R.from_quat(current_rot).inv() * R.from_quat(target_rot)).as_euler("zxy")[0]) + rot_offset
-            rot_error_list.append(rot_error)
+            rot_err = ((R.from_quat(current_rot).inv() * R.from_quat(target_rot)).as_euler("zxy")[0]) + rot_offset
             
-            twist = k_p * np.array([pos_err_para, rot_error]) + np.array([target_vel, target_rot_vel])
+            rot_vel_err = target_rot_vel - current_rot_vel
+            
+            target_vel_list.append(target_vel)
+            target_ang_vel_list.append(target_rot_vel)
+            vel_list.append(np.linalg.norm(current_vel))
+            ang_vel_list.append(current_rot_vel)
+            
+            actual_trajectory.append(current_pos)
+            
+            para_error_list.append(pos_err_para)
+            ortho_error_list.append(pos_err_ortho)
+            rot_error_list.append(rot_err)
+            
+            para_vel_error_list.append(vel_err_para)
+            ortho_vel_error_list.append(vel_err_ortho)
+            rot_vel_error_list.append(rot_vel_err)
+            
+            twist = k_p * np.array([pos_err_para, rot_err]) + k_d * np.array([vel_err_para, rot_vel_err]) # + np.array([target_vel, target_rot_vel])
 
             hi.send_base_twist_cmd(twist[0], twist[1])
             
-            converged = np.abs(pos_err_para) < 0.05 and np.abs(rot_error) < 0.05
+            converged = np.abs(pos_err_para) < 0.05 and np.abs(rot_err) < 0.05
             if exec_time < 2*total_time and (exec_time < total_time or not converged):
                 return True
             
             points = np.array([pos for pos, _ in self.planned_base_trajectory])
             actual_trajectory = np.array(actual_trajectory)
             
+            fig, ((ax_traj, ax_tmp), (ax_vel, ax_rot_vel), (ax_err, ax_vel_err)) = plt.subplots(3, 2)
             ax_traj.plot(points[:,0], points[:,1])
             ax_traj.plot(actual_trajectory[:,0], actual_trajectory[:,1])
             ax_traj.set_aspect(1.0)
-            ax_ortho.plot(para_error_list, label='para')
-            ax_ortho.plot(ortho_error_list, label='ortho')
-            ax_ortho.plot(rot_error_list, label='rot')
-            ax_ortho.legend()
+            ax_err.plot(para_error_list, label='para')
+            ax_err.plot(ortho_error_list, label='ortho')
+            ax_err.plot(rot_error_list, label='rot')
+            ax_err.legend()
+            ax_vel_err.plot(para_vel_error_list, label='v para')
+            ax_vel_err.plot(ortho_vel_error_list, label='v ortho')
+            ax_vel_err.plot(rot_vel_error_list, label='w rot')
+            ax_vel_err.legend()
+            ax_vel.plot(vel_list, label='v real')
+            ax_vel.plot(target_vel_list, label='v target')
+            ax_vel.legend()
+            ax_rot_vel.plot(ang_vel_list, label='w real')
+            ax_rot_vel.plot(target_ang_vel_list, label='w target')
+            ax_rot_vel.legend()
+            fig.set_dpi(300)
             fig.savefig("trajectory.png")
             plt.close(fig)
             
@@ -309,7 +379,9 @@ class HuskyMonitor(Node):
         
         self.pid_sliders.append(p.addUserDebugParameter("P", 0, 100, 24))
         
+        self.buttons.append(Button('Move', self.send_motion_command))
         self.buttons.append(Button('Plan', self.plan))
+        self.buttons.append(Button('Plan_Corner', self.plan_corner))
         self.buttons.append(Button('Exec', self.execute_base_trajectory))
         
         for i, j in enumerate(pp.joints_from_names(self.huskyModels[0].robot, HUSKY_UR5e_JOINT_NAMES)):
@@ -331,6 +403,7 @@ class HuskyMonitor(Node):
         mocap_client.set_use_multicast(False)
         mocap_client.print_level = 1
         mocap_client.rigid_body_listener = self.receive_rigid_body_frame
+        mocap_client.new_frame_listener = self.receive_mocap_frame
         
         if mocap_client.run():
             start_connect = time.time()
@@ -341,7 +414,8 @@ class HuskyMonitor(Node):
             print(f"mocap client connected: {mocap_client.connected()}")
         else:
             print('Failed to run mocap client!')
-        
+    
+    _mocap_rigidbody_cache = {}
     def receive_rigid_body_frame(self, id, pos, rot):
         if id not in name_from_mocap_id:
             return
@@ -349,8 +423,16 @@ class HuskyMonitor(Node):
         name = name_from_mocap_id[id]
         for hi in self.huskyInterfaces:
             if hi.name == name:
-                hi.position = np.array((pos[2], pos[0], pos[1]))
-                hi.rotation = np.array((rot[2], rot[0], rot[1], rot[3]))
+                self._mocap_rigidbody_cache[name] = (pos, rot)
+    
+    def receive_mocap_frame(self, data):
+        for hi in self.huskyInterfaces:
+            if hi.name not in self._mocap_rigidbody_cache:
+                continue
+            (pos, rot) = self._mocap_rigidbody_cache[hi.name]
+            ts = data['timestamp']
+            hi.mocap_callback(np.array((pos[2], pos[0], pos[1])), np.array((rot[2], rot[0], rot[1], rot[3])), ts)
+        self._mocap_rigidbody_cache.clear()
         
     # --- --- --- --- --- UPDATE --- --- --- --- --- 
     def update_pybullet(self):
