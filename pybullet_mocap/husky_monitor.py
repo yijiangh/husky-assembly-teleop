@@ -11,6 +11,8 @@ from scipy.spatial.transform import Rotation as R
 
 from pybullet_mocap.husky_robot import HuskyRobotInterface
 from pybullet_mocap import DATA_DIRECTORY
+import pybullet_mocap.husky_world as world
+from pybullet_mocap.common import Husky, TrackedObject, HuskyObject
 
 from pybullet_mocap.utils import plan_transit_motion
 from pybullet_mocap.planner import RRTStar, fill_yaw_angle
@@ -33,42 +35,8 @@ DEFAULT_GREY = [0.2, 0.2, 0.2, 0.7]
 GOAL_BLUE = [0, 0.2, 0.5, 0.7]
 TRAJECTORY_GREEN = [0, 0.5, 0.2, 0.7]
 
-ROBOT_START_POS = [-np.array((0,0,0)), -np.array((0,1,0)), -np.array((0,2,0))]
-
 CLIENT_IP = '192.168.0.7' # Set to your own IP
 MOCAP_IP = '192.168.0.117' # set to the mocap PC's IP, get this from Motive Settings>Streaming pane->Local interface
-
-# the dictionary key is the rigid body id you find in the Motive software, the name doesn't matter
-name_from_mocap_id = {
-    1004 : '/a200_0804',
-    1033 : '/a200_0805',
-}
-
-def load_robot(ik_from_arm_base=True, load_calib_tip=False):
-    # robot_srdf = os.path.join(DATA_DIRECTORY, 'husky_urdf/mt_husky_moveit_config/config/husky.srdf')
-    robot_urdf = os.path.join(DATA_DIRECTORY,'husky_urdf/mt_husky_moveit_config/urdf/husky_ur5_e.urdf')
-    # robot_urdf = os.path.join(DATA_DIRECTORY,'husky_urdf/mt_husky_moveit_config/urdf/husky_ur5_e_no_base_joint.urdf')
-
-    if load_calib_tip:
-        gripper_obj = os.path.join(DATA_DIRECTORY,'calibration_tip.stl')
-        gripper_scale = 1
-    else:
-        gripper_obj = os.path.join(DATA_DIRECTORY,'husky_urdf/robotiq_85/meshes/static/robotiq_85_close_20mm.obj')
-        gripper_scale = 1
-
-    assert os.path.exists(robot_urdf)
-    assert os.path.exists(gripper_obj)
-
-    robot = pp.load_pybullet(robot_urdf, fixed_base=False, cylinder=False)
-    robot_pose = pp.get_pose(robot)
-
-    tool0_pose = pp.get_link_pose(robot, pp.link_from_name(robot, 'ur_arm_tool0'))
-    ee = pp.create_obj(gripper_obj, scale=gripper_scale) 
-    pp.set_pose(ee, pp.multiply(tool0_pose, pp.Pose(euler=pp.Euler(yaw=-np.pi/2))))
-    
-    ee_attachment = pp.create_attachment(robot, pp.link_from_name(robot, 'ur_arm_tool0'), ee)
-
-    return HuskyModel(robot, ee, ee_attachment)
 
 class Button:
     def __init__(self, name, action):
@@ -81,37 +49,19 @@ class Button:
         if new_value != self.prev_value:
             self.prev_value = new_value
             self.action()
-            
-class HuskyModel():
-    def __init__(self, robot, ee, ee_attachment):
-       self.robot = robot
-       self.ee = ee
-       self.ee_attachment = ee_attachment
-       self.old_color = None
-       
-    def set_pose(self, base_pose, arm_joint_states):
-        pp.set_pose(self.robot, base_pose)
-        arm_joints = pp.joints_from_names(self.robot, HUSKY_UR5e_JOINT_NAMES)
-        pp.set_joint_positions(self.robot, arm_joints, arm_joint_states)
-        self.ee_attachment.assign()
-        
-    def set_color(self, new_color):
-        if self.old_color != new_color:
-            self.old_color = new_color
-            pp.set_color(self.robot, new_color)
-            pp.set_color(self.ee, new_color)
         
 class HuskyMonitor(Node):
     def __init__(self):
         super().__init__('husky_monitor')
         
-        # self.huskyInterfaces = [HuskyRobotInterface(self, name='/a200_0804', use_odom=False), HuskyRobotInterface(self, name='/a200_0805', use_odom=False)]
-        self.huskyInterfaces = [HuskyRobotInterface(self, name='/a200_0804', use_odom=False)]
+        self.husky_interfaces = []
         self.timer = self.create_timer(0.05, self.update_pybullet)
         
         self.tasks = []
         
-        self.huskyModels = []
+        self.husky_objects = []
+        self.tracked_objects = []
+        self.name_from_mocap_id = {}
         
         self.buttons = []
         self.state_sliders = []
@@ -125,13 +75,22 @@ class HuskyMonitor(Node):
         self.goal_arm_pose = np.zeros(6)
         self.start_pybullet()
         self.start_mocap()
-    
-    def reset_odom(self):
-        for i, hi in enumerate(self.huskyInterfaces):
-            hi.odom_offset = ROBOT_START_POS[i] + hi._odom_position
+        
+        world.init(self)
+
+        self.build_ui()
+        
+    def add_tracked_object(self, obstacle: TrackedObject):
+        self.tracked_objects.append(obstacle)
+        self.name_from_mocap_id[obstacle.mocap_id] = obstacle.name
+        
+    def add_husky(self, husky: Husky):
+        self.husky_interfaces.append(husky.interface)
+        self.husky_objects.append(husky.object)
+        self.name_from_mocap_id[husky.mocap_id] = husky.name
     
     def plan(self):
-        hi = self.huskyInterfaces[0]
+        hi = self.husky_interfaces[0]
         
         start_pos = hi.position
         start_rot = R.from_quat(hi.rotation)
@@ -151,7 +110,7 @@ class HuskyMonitor(Node):
         self.planned_base_trajectory = arc_trajectory
         
     def plan_corner(self):
-        hi = self.huskyInterfaces[0]
+        hi = self.husky_interfaces[0]
         
         start_pos = hi.position
         start_rot = R.from_quat(hi.rotation)
@@ -192,7 +151,7 @@ class HuskyMonitor(Node):
         ang_vel_list = []
         target_ang_vel_list = []
         
-        hi = self.huskyInterfaces[0]
+        hi = self.husky_interfaces[0]
         
         k_p = np.array([3.0, 5.0])
         k_d = np.array([0.2, 0.5])
@@ -299,18 +258,18 @@ class HuskyMonitor(Node):
         self.tasks.append(exec)
     
     def send_motion_command(self):
-        for hi in self.huskyInterfaces:
+        for hi in self.husky_interfaces:
             hi.send_base_twist_cmd(0.1, 0.0)
         self.get_logger().info('Sent motion command!')
         
     def send_arm_command(self):
         joint_state_slider_values = np.array([p.readUserDebugParameter(ps) for ps in self.joint_state_sliders])
-        for hi in self.huskyInterfaces:
+        for hi in self.husky_interfaces:
             hi.send_arm_cmd([joint_state_slider_values], dt=5)
         self.get_logger().info('Sent arm command!')
         
     def send_arm_wave(self):
-        for hi in self.huskyInterfaces:
+        for hi in self.husky_interfaces:
             if not np.isclose(hi.arm_joint_states, [0, -np.pi/2, 0, -np.pi/2, 0, 0], atol=0.1).all():
                 self.get_logger().warn(f'Husky {hi} is not in correct wave start pose!')
                 return
@@ -324,12 +283,12 @@ class HuskyMonitor(Node):
         traj_pos = [np.array([0, -np.pi/2, -np.sin(time_scaling(t)), -np.pi/2 + np.sin(time_scaling(t)), 0, 0]) for t in ts]
         traj_vel = [1 / TIME * 2*np.pi * np.array([0, 0, -np.cos(time_scaling(t)), np.cos(time_scaling(t)), 0, 0]) for t in ts]
         
-        for hi in self.huskyInterfaces:
+        for hi in self.husky_interfaces:
             hi.send_arm_cmd(traj_pos, traj_vel, dt=TIME/N)
         self.get_logger().info('Sent arm command!')
         
     def send_gripper_command(self):
-        for hi in self.huskyInterfaces:
+        for hi in self.husky_interfaces:
             hi.send_gripper_cmd(p.readUserDebugParameter(self.gripper_slider), 0.1)
         self.get_logger().info('Sent gripper command!')
         
@@ -351,26 +310,16 @@ class HuskyMonitor(Node):
         
         # draw world frame
         pp.draw_pose(pp.unit_pose(), 0.1)
-        
-        # load robot models
+
+        # load goal robot model
         with pp.LockRenderer():
-            with pp.HideOutput():
-                for i, hi in enumerate(self.huskyInterfaces):
-                    self.huskyModels.append(load_robot(load_calib_tip=False))
-                    hi.odom_offset = ROBOT_START_POS[i]
-                    hi.position = -ROBOT_START_POS[i]
-            
-                
-                self.goalModel = load_robot(load_calib_tip=False)
+            with pp.HideOutput():                
+                self.goalModel = HuskyObject()
                 self.goalModel.set_color(GOAL_BLUE)
-                
-        # UI
-        self.build_ui()
         
     def build_ui(self):
         self.time_slider = p.addUserDebugParameter("time", 0.0, 1.0, 1.0)
         
-        self.buttons.append(Button('Reset Odom', self.reset_odom))
         self.buttons.append(Button('Reset Goal State', self.reset_ui))
         
         self.state_sliders.append(p.addUserDebugParameter("x", -5.0, 5.0, 0))
@@ -384,9 +333,9 @@ class HuskyMonitor(Node):
         self.buttons.append(Button('Plan_Corner', self.plan_corner))
         self.buttons.append(Button('Exec', self.execute_base_trajectory))
         
-        for i, j in enumerate(pp.joints_from_names(self.huskyModels[0].robot, HUSKY_UR5e_JOINT_NAMES)):
-            lower, upper = pp.get_joint_limits(self.huskyModels[0].robot, j)
-            self.joint_state_sliders.append(p.addUserDebugParameter(f'Joint {i}', lower, upper, self.huskyInterfaces[0].arm_joint_states[i]))
+        for i, j in enumerate(pp.joints_from_names(self.husky_objects[0].robot, HUSKY_UR5e_JOINT_NAMES)):
+            lower, upper = pp.get_joint_limits(self.husky_objects[0].robot, j)
+            self.joint_state_sliders.append(p.addUserDebugParameter(f'Joint {i}', lower, upper, self.husky_interfaces[0].arm_joint_states[i]))
             
         self.buttons.append(Button('Send Arm Command', self.send_arm_command))
         self.buttons.append(Button('Send Arm Wave', self.send_arm_wave))
@@ -417,31 +366,47 @@ class HuskyMonitor(Node):
     
     _mocap_rigidbody_cache = {}
     def receive_rigid_body_frame(self, id, pos, rot):
-        if id not in name_from_mocap_id:
+        if id not in self.name_from_mocap_id:
             return
         
-        name = name_from_mocap_id[id]
-        for hi in self.huskyInterfaces:
+        pos = np.array((pos[2], pos[0], pos[1]))
+        rot = np.array((rot[2], rot[0], rot[1], rot[3]))       
+        
+        name = self.name_from_mocap_id[id]
+        for hi in self.husky_interfaces:
             if hi.name == name:
+                self._mocap_rigidbody_cache[name] = (pos, rot)
+                
+        for o in self.tracked_objects:
+            if o.name == name:
                 self._mocap_rigidbody_cache[name] = (pos, rot)
     
     def receive_mocap_frame(self, data):
-        for hi in self.huskyInterfaces:
+        ts = data['timestamp']
+        for hi in self.husky_interfaces:
             if hi.name not in self._mocap_rigidbody_cache:
                 continue
             (pos, rot) = self._mocap_rigidbody_cache[hi.name]
-            ts = data['timestamp']
-            hi.mocap_callback(np.array((pos[2], pos[0], pos[1])), np.array((rot[2], rot[0], rot[1], rot[3])), ts)
+            hi.mocap_callback(pos, rot, ts)
+        for o in self.tracked_objects:
+            if o.name not in self._mocap_rigidbody_cache:
+                continue
+            (pos, rot) = self._mocap_rigidbody_cache[o.name]
+            o.mocap_callback(pos, rot, ts)
         self._mocap_rigidbody_cache.clear()
         
     # --- --- --- --- --- UPDATE --- --- --- --- --- 
     def update_pybullet(self):
         for b in self.buttons:
             b.update()
+            
+        # update tracked objects
+        for i, o in enumerate(self.tracked_objects):
+            o.set_pose((o.pos, o.rot))
         
         # update robot state
-        for i, hi in enumerate(self.huskyInterfaces):
-            self.huskyModels[i].set_pose((hi.position, hi.rotation), hi.arm_joint_states)
+        for i, hi in enumerate(self.husky_interfaces):
+            self.husky_objects[i].set_pose((hi.position, hi.rotation), hi.arm_joint_states)
         
         # update goal robot state
         state_slider_values = [p.readUserDebugParameter(ps) for ps in self.state_sliders]
@@ -470,6 +435,8 @@ class HuskyMonitor(Node):
                 i += 1
             else:
                 self.tasks.remove(task)
+                
+        world.update(self)
                 
 
 
