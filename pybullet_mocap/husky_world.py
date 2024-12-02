@@ -21,7 +21,7 @@ def update(monitor):
 
 def plan_to_goal(monitor):
     base, arm = plan_base_motion(huskies[0], (monitor.goal_pos, monitor.goal_rot), monitor.goal_arm_pose, boxes)
-    monitor.planned_base_trajectory = base
+    monitor.set_base_trajectry(base)
     monitor.planned_arm_trajectory = arm
     
 def move_to_goal(monitor):

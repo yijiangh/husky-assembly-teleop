@@ -4,27 +4,11 @@ from scipy.spatial.transform import Rotation as R
 import pybullet as p
 import pybullet_planning as pp
 
-from pybullet_mocap.common import Husky, HuskyObject
-from pybullet_mocap.controller import Stanley, State
+from pybullet_mocap.common import Husky, HuskyObject, lerp, quat_lerp
 from pybullet_mocap.planner import RRTStar, fill_yaw_angle
 from pybullet_mocap.utils import plan_transit_motion
-from pybullet_planning.utils import RED
 
-def lerp(a, b, t):
-    return a + t * (b - a)
-
-def quat_lerp(q1, q2, t):
-    if np.dot(q1,q2) < 0:
-        q2 = -q2
-    
-    res = lerp(q1, q2, t)
-    res /= np.linalg.norm(res)
-    
-    return res
-
-
-
-def plan_base_motion(husky: Husky, goal_pose, arm_goal_pose, obstacles):
+def plan_base_motion(husky: Husky, goal_pose, arm_goal_pose, obstacles):    
     planned_arm_trajectory = plan_transit_motion(
                 husky.object.robot,
                 arm_goal_pose,
@@ -64,20 +48,11 @@ def plan_base_motion(husky: Husky, goal_pose, arm_goal_pose, obstacles):
             )
     yaw_list = fill_yaw_angle(start_pose_2d[-1], goal_pose_2d[-1], x_list, y_list)
     
-    points = [(x, y, 0.0) for x, y in zip(x_list, y_list)]
-    with pp.LockRenderer():
-        pp.add_segments(points)
-        
-    
     planned_base_trajectory_rrt = [
         (np.array((x, y, 0)), R.from_euler('z', yaw).as_quat()) for x, y, yaw in zip(x_list, y_list, yaw_list)
     ]
-        
-    planned_pos_yaw = [
-        (np.array((x, y, 0)), yaw)
-        for x, y, yaw in zip(x_list, y_list, yaw_list)
-    ]
-        
+     
+    # compute timestamps using max velocities   
     time_stamps = []
     t = 0
     for i in range(len(planned_base_trajectory_rrt)-1):
@@ -92,6 +67,7 @@ def plan_base_motion(husky: Husky, goal_pose, arm_goal_pose, obstacles):
         t += dt
     time_stamps.append(t)
     
+    # resample with 0.1s timestep
     planned_base_trajectory = []
     i = 0
     for t2 in np.arange(0, t, 0.1):
@@ -102,12 +78,6 @@ def plan_base_motion(husky: Husky, goal_pose, arm_goal_pose, obstacles):
         inter_pos = lerp(planned_base_trajectory_rrt[i-1][0], planned_base_trajectory_rrt[i][0], dt_norm)
         inter_rot = quat_lerp(planned_base_trajectory_rrt[i-1][1], planned_base_trajectory_rrt[i][1], dt_norm)
         planned_base_trajectory.append((inter_pos, inter_rot))
-    
-    points = [
-        pos for pos, _ in planned_base_trajectory
-    ]
-    with pp.LockRenderer():
-        pp.add_segments(points, color=RED)
         
     return planned_base_trajectory, planned_arm_trajectory
 

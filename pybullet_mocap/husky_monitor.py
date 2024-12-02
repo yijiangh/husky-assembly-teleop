@@ -88,6 +88,19 @@ class HuskyMonitor(Node):
         self.husky_interfaces.append(husky.interface)
         self.husky_objects.append(husky.object)
         self.name_from_mocap_id[husky.mocap_id] = husky.name
+        
+    def set_base_trajectry(self, base_trajectory):
+            self.planned_base_trajectory = base_trajectory
+            
+            # draw
+            points = [
+                pos for pos, _ in self.planned_base_trajectory
+            ]
+            with pp.LockRenderer():
+                with pp.HideOutput():
+                    if self.plan_traj_seg is not None:
+                       pp.remove_all_debug()
+                    self.plan_traj_seg = pp.add_segments(points)
     
     def execute_base_trajectory(self):
         if self.planned_base_trajectory is None:
@@ -112,7 +125,7 @@ class HuskyMonitor(Node):
         hi = self.husky_interfaces[0]
         
         k_p = np.array([3.0, 5.0])
-        k_d = 0 * np.array([0.2, 0.5])
+        k_d = 0.5 * np.array([0.2, 0.5])
         k_p_ortho = 5 # 5 #p.readUserDebugParameter(self.pid_sliders[0])
         
         time_start = time.time()
@@ -182,7 +195,7 @@ class HuskyMonitor(Node):
             ortho_vel_error_list.append(vel_err_ortho)
             rot_vel_error_list.append(rot_vel_err)
             
-            twist = k_p * np.array([pos_err_para, rot_err]) + k_d * np.array([vel_err_para, rot_vel_err]) # + np.array([target_vel, target_rot_vel])
+            twist = k_p * np.array([pos_err_para, rot_err]) + k_d * np.array([vel_err_para, rot_vel_err]) + np.array([target_vel, target_rot_vel])
 
             hi.send_base_twist_cmd(twist[0], twist[1])
             

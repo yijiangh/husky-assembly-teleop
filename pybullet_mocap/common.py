@@ -12,7 +12,20 @@ HUSKY_UR5e_JOINT_NAMES = ["ur_arm_shoulder_pan_joint",
                       "ur_arm_wrist_2_joint", 
                       "ur_arm_wrist_3_joint" ]
 
+def lerp(a, b, t):
+    return a + t * (b - a)
+
+def quat_lerp(q1, q2, t):
+    if np.dot(q1,q2) < 0:
+        q2 = -q2
+    
+    res = lerp(q1, q2, t)
+    res /= np.linalg.norm(res)
+    
+    return res
+
 class TrackedObject:
+    """PyBullet objects with pose tracked using mocap"""
     def __init__(self, monitor, name, mocap_id, pos, rot, scale, model_file):
         self.name = name
         self.mocap_id = mocap_id
@@ -60,6 +73,7 @@ def load_robot(ik_from_arm_base=True, load_calib_tip=False):
     return robot, ee, ee_attachment
 
 class Husky():
+    """A husky interface with corresponding husky object."""
     def __init__(self, monitor, name, mocap_id=None, pos=np.zeros(3), rot=np.array((0, 0, 0, 1))):
         self.name = name
         self.mocap_id = mocap_id
@@ -72,6 +86,7 @@ class Husky():
         monitor.add_husky(self)
 
 class HuskyObject():
+    """Collection of pybullet objects representing a husky"""
     def __init__(self):
         with pp.LockRenderer():
             with pp.HideOutput():
