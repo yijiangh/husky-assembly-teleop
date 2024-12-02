@@ -316,8 +316,8 @@ def fill_yaw_angle(start_yaw, goal_yaw, x_list, y_list):
     yaw_list = np.zeros(n_points)
 
     # Set the start and goal yaw
-    yaw_list[0] = -start_yaw
-    yaw_list[-1] = -goal_yaw
+    yaw_list[0] = start_yaw
+    yaw_list[-1] = goal_yaw
 
     # Calculate yaw for each intermediate point
     for i in range(1, n_points - 1):

@@ -1,4 +1,5 @@
 from pybullet_mocap.common import Husky, TrackedObject
+from pybullet_mocap.husky_planning import plan_base_motion
 from pybullet_mocap.husky_robot import HuskyRobotInterface
 
 import numpy as np
@@ -18,5 +19,10 @@ def init(monitor):
 def update(monitor):
     pass
 
-def plan_base_motion(monitor):
-    pass
+def plan_to_goal(monitor):
+    base, arm = plan_base_motion(huskies[0], (monitor.goal_pos, monitor.goal_rot), monitor.goal_arm_pose, boxes)
+    monitor.planned_base_trajectory = base
+    monitor.planned_arm_trajectory = arm
+    
+def move_to_goal(monitor):
+    monitor.execute_base_trajectory()
