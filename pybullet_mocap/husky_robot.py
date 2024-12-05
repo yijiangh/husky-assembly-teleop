@@ -1,4 +1,15 @@
+"""
+The husky robot inteface handling:
+
+- ROS2 communication
+- State estimation
+"""
+
 import time
+import numpy as np  
+from scipy.spatial.transform import Rotation as R
+
+# ROS
 from rclpy.node import Node
 from rclpy.action import ActionClient
 
@@ -20,18 +31,12 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from control_msgs.action import FollowJointTrajectory
 from control_msgs.msg import JointTolerance
 
-import numpy as np  
+# pybullet_mocap
 import pybullet as p
-from scipy.spatial.transform import Rotation as R
+from pybullet_mocap.common import quaterinion_2_angular_velocity
 
 UR5e_HOME_STATE = np.array([0, -np.pi/2, 0, -np.pi/2, 0, 0])
 ARM_JOINT_NAMES = ['shoulder_pan_joint', 'shoulder_lift_joint', 'elbow_joint', 'wrist_1_joint', 'wrist_2_joint', 'wrist_3_joint']
-
-def quaterinion_2_angular_velocity(q1, q2, dt):
-    return (2 / dt) * np.array([
-        q1[3]*q2[0] - q1[0]*q2[3] - q1[1]*q2[2] + q1[2]*q2[1],
-        q1[3]*q2[1] + q1[0]*q2[2] - q1[1]*q2[3] - q1[2]*q2[0],
-        q1[3]*q2[2] - q1[0]*q2[1] + q1[1]*q2[0] - q1[2]*q2[3]])
         
 class HuskyRobotInterface:
     position = np.zeros(3)
@@ -40,12 +45,12 @@ class HuskyRobotInterface:
     velocity = np.zeros(3)
     angular_velocity = np.zeros(3)
     
-    arm_joint_states = UR5e_HOME_STATE
+    arm_joint_pose = UR5e_HOME_STATE
     
     odom_offset = np.zeros(3)
     _odom_position = np.zeros(3)
     
-    def __init__(self, node: Node, name='/a200_0804', use_odom=True):
+    def __init__(self, node: Node, name='/a200_0804', use_odom=True, connect_arm=True, connect_gripper=True):
         self.node = node
         self.name = name
         
@@ -78,19 +83,21 @@ class HuskyRobotInterface:
             GripperCommand,
             name + '/gripper/robotiq_gripper_controller/gripper_cmd',
         )
-        #self.act_gripper.wait_for_server(timeout_sec=2.5)
-        self.node.get_logger().info(f'Gripper Action Server {self.act_gripper.server_is_ready()}')
+        if connect_gripper:
+            self.act_gripper.wait_for_server(timeout_sec=2.5)
+            self.node.get_logger().info(f'Gripper Action Server {self.act_gripper.server_is_ready()}')
         
         self.act_arm = ActionClient(
             self.node,
             FollowJointTrajectory,
             name + '/ur5e/scaled_joint_trajectory_controller/follow_joint_trajectory',
         )
-        #self.act_arm.wait_for_server(timeout_sec=2.5)
-        self.node.get_logger().info(f'Arm Action Server {self.act_arm.server_is_ready()}')
+        if connect_arm:
+            self.act_arm.wait_for_server(timeout_sec=2.5)
+            self.node.get_logger().info(f'Arm Action Server {self.act_arm.server_is_ready()}')
         
         # done --- --- --- --- ---
-        self.node.get_logger().info(f'Husky Monitor startet on "{name}"!')
+        self.node.get_logger().info(f'Husky "{name}" is ready!')
 
     def tf_callback(self, msg: TFMessage):
         for transform in msg.transforms:
@@ -135,19 +142,13 @@ class HuskyRobotInterface:
         
         self.position = pos
         self.rotation = rot
-    
-    # for debugging intermittent joy control
-    # joy node sometimes periodically sends zero values even tough stick is held continuously...
-    def joy_callback(self, msg: Joy):
-        pass
-        #self.node.get_logger().info(f'Velocity {msg}')
         
     def arm_callback(self, msg: JointState):
         arm_pos = msg.position
         reorder = []
         for name in ARM_JOINT_NAMES:
             reorder.append(msg.name.index(name))
-        self.arm_joint_states = np.array(arm_pos)[reorder]
+        self.arm_joint_pose = np.array(arm_pos)[reorder]
     
     def send_base_twist_cmd(self, x_dot, theta_dot):
         msg = Twist()
@@ -162,10 +163,19 @@ class HuskyRobotInterface:
         self.act_gripper.send_goal_async(goal)
     
     def send_arm_cmd(self, arm_joint_positions, arm_joint_velocities=None, dt=10):
+        """
+        Send a joint trajectory to the arm
+        
+        Important: The arm must be in the correct start pose as the first waypoint of the trajectory has timestep 0!
+        """
         if arm_joint_velocities is not None:
             if len(arm_joint_positions) != len(arm_joint_velocities):
                 self.node.get_logger().error("trajectory must have equal number of position and velocity entries!")
                 return
+            
+        if not np.isclose(self.arm_joint_pose, arm_joint_positions[0], atol=0.1).all():
+            self.get_logger().warn(f'Arm of husky {self.name} is not in correct start pose!')
+            return
         
         goal = FollowJointTrajectory.Goal()
         goal.trajectory = JointTrajectory()
@@ -176,7 +186,7 @@ class HuskyRobotInterface:
             point.positions = list(waypoint)
             if arm_joint_velocities is not None:
                 point.velocities = list(arm_joint_velocities[i])
-            time_from_start = dt*(i+1)
+            time_from_start = dt*i
             sec = np.floor(time_from_start)
             nano = time_from_start - sec
             point.time_from_start = Duration(sec=int(sec), nanosec=int(nano*1000000))

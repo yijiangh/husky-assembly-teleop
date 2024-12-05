@@ -1,23 +1,30 @@
+""" 
+This module contains functions for planning the motion of the Husky robot.
+"""
 
 import numpy as np
 from scipy.spatial.transform import Rotation as R
+
 import pybullet as p
 import pybullet_planning as pp
 
-from pybullet_mocap.common import Husky, HuskyObject, lerp, quat_lerp
+from pybullet_mocap.common import Husky, lerp, quat_lerp
 from pybullet_mocap.planner import RRTStar, fill_yaw_angle
 from pybullet_mocap.utils import plan_transit_motion
 
-def plan_base_motion(husky: Husky, goal_pose, arm_goal_pose, obstacles):    
+def plan_arm_motion(husky: Husky, arm_goal_pose, obstacles):
     planned_arm_trajectory = plan_transit_motion(
                 husky.object.robot,
                 arm_goal_pose,
                 [husky.object.ee_attachment],
                 [],
-                debug=True,
+                debug=False,
                 disabled_collisions=False,
             )
     
+    return planned_arm_trajectory
+
+def plan_base_motion(husky: Husky, goal_pose, obstacles):    
     x_range = (-3, 3)
     y_range = (-3, 3)
     
@@ -79,36 +86,46 @@ def plan_base_motion(husky: Husky, goal_pose, arm_goal_pose, obstacles):
         inter_rot = quat_lerp(planned_base_trajectory_rrt[i-1][1], planned_base_trajectory_rrt[i][1], dt_norm)
         planned_base_trajectory.append((inter_pos, inter_rot))
         
-    return planned_base_trajectory, planned_arm_trajectory
+    return planned_base_trajectory
 
-def plan_arc(husky: Husky):
+def plan_arc(husky: Husky, radius=1, angle=np.pi):
+    """plans a circular arc trajectory"""
     hi = husky.interface
     
     start_pos = hi.position
     start_rot = R.from_quat(hi.rotation)
     
     N = 200
-    radius = 1
-    angle = np.pi
     arc_trajectory = [(np.array([np.sin(i/N * angle) * radius, np.cos(i/N * angle) * radius - radius, 0]), R.from_euler("z", -i/N * angle)) for i in range(N+1)]
     arc_trajectory = [(start_pos + start_rot.apply(pos), (start_rot * rot).as_quat()) for pos, rot in arc_trajectory]
         
     return arc_trajectory
     
-def plan_corner(husky: Husky):
+def plan_corner(husky: Husky, distance1=1.0, angle=0.75 * np.pi, distance2=1.0):
+    """plans a corner trajectory (straight, turn, straight)"""
     hi = husky.interface
     
     start_pos = hi.position
     start_rot = R.from_quat(hi.rotation)
     
     N = 200
-    angle = 0.75 * np.pi
-    distance = 1.0
     discrete_trajectory = (
-        [(np.array([i/N * distance, 0, 0]), R.identity()) for i in range(N+1)] +
-        [(np.array([distance, 0, 0]), R.from_euler("z", -i/N * angle)) for i in range(N+1)] + 
-        [(np.array([distance + np.cos(angle) * i/N * distance, -np.sin(angle) * i/N * distance, 0]), R.from_euler("z", -angle)) for i in range(N+1)]
+        [(np.array([i/N * distance1, 0, 0]), R.identity()) for i in range(N+1)] +
+        [(np.array([distance1, 0, 0]), R.from_euler("z", -i/N * angle)) for i in range(N+1)] + 
+        [(np.array([distance1 + np.cos(angle) * i/N * distance2, -np.sin(angle) * i/N * distance2, 0]), R.from_euler("z", -angle)) for i in range(N+1)]
     )
     discrete_trajectory = [(start_pos + start_rot.apply(pos), (start_rot * rot).as_quat()) for pos, rot in discrete_trajectory]
         
     return discrete_trajectory
+
+def plan_arm_wave(husky: Husky):
+    ts = list(np.linspace(0, TIME, N+1))[1:]
+    time_scaling = lambda t: t/TIME*2*np.pi
+    
+    N = 20 # number of waypoints (N+1 with starting point)
+    TIME = 20
+    
+    traj_pos = [np.array([0, -np.pi/2, -np.sin(time_scaling(t)), -np.pi/2 + np.sin(time_scaling(t)), 0, 0]) for t in ts]
+    traj_vel = [1 / TIME * 2*np.pi * np.array([0, 0, -np.cos(time_scaling(t)), np.cos(time_scaling(t)), 0, 0]) for t in ts]
+
+    return traj_pos, traj_vel
