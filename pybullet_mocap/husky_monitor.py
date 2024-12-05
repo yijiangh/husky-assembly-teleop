@@ -138,8 +138,8 @@ class HuskyMonitor(Node):
         self.buttons.append(Button('Plan', lambda: world.plan_to_goal(self)))
         self.buttons.append(Button('Exec Base', lambda: world.move_to_goal(self)))
         
-        for i, j in enumerate(pp.joints_from_names(self.husky[0].object.robot, HUSKY_UR5e_JOINT_NAMES)):
-            lower, upper = pp.get_joint_limits(self.husky[0].object.robot, j)
+        for i, j in enumerate(pp.joints_from_names(self.huskies[0].object.robot, HUSKY_UR5e_JOINT_NAMES)):
+            lower, upper = pp.get_joint_limits(self.huskies[0].object.robot, j)
             self.joint_state_sliders.append(p.addUserDebugParameter(f'Joint {i}', lower, upper, self.huskies[0].interface.arm_joint_pose[i]))
         
         self.buttons.append(Button('Plan', lambda: world.plan_arm_to_goal(self)))
@@ -213,7 +213,7 @@ class HuskyMonitor(Node):
         # update robot state
         for i, h in enumerate(self.huskies):
             hi = h.interface
-            h.object[i].set_pose((hi.position, hi.rotation), hi.arm_joint_pose)
+            h.object.set_pose((hi.position, hi.rotation), hi.arm_joint_pose)
         
         # update goal robot state
         state_slider_values = [p.readUserDebugParameter(ps) for ps in self.state_sliders]
@@ -225,7 +225,7 @@ class HuskyMonitor(Node):
         self.goal_arm_pose = np.array([p.readUserDebugParameter(ps) for ps in self.joint_state_sliders])
             
         preview_time = p.readUserDebugParameter(self.time_slider)
-        goal_pose = (self.goal_pos, self.goal_rot)
+        goal_pose = self.goal_pose
         goal_arm_pose = self.goal_arm_pose
         if not np.isclose(preview_time, 1.0):
             if self.planned_base_trajectory:

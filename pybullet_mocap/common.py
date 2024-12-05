@@ -4,6 +4,7 @@ A collection of common functions and classes used in the pybullet_mocap package.
 
 import os
 import numpy as np
+import pybullet as p
 
 import pybullet_planning as pp
 
@@ -26,7 +27,7 @@ def load_robot(ik_from_arm_base=True, load_calib_tip=False):
     # robot_urdf = os.path.join(DATA_DIRECTORY,'husky_urdf/mt_husky_moveit_config/urdf/husky_ur5_e_no_base_joint.urdf')
 
     if load_calib_tip:
-        gripper_obj = os.path.join(DATA_DIRECTORY,'calibration_tip.stl')
+        gripper_obj = os.path.join(DATA_DIRECTORY,'calibration_probe.obj')
         gripper_scale = 1
     else:
         gripper_obj = os.path.join(DATA_DIRECTORY,'husky_urdf/robotiq_85/meshes/static/robotiq_85_close_20mm.obj')
@@ -85,7 +86,7 @@ class HuskyObject():
     def __init__(self):
         with pp.LockRenderer():
             with pp.HideOutput():
-                robot, ee, ee_attachment = load_robot(load_calib_tip=False)
+                robot, ee, ee_attachment = load_robot(load_calib_tip=True)
                 self.robot = robot
                 self.ee = ee
                 self.ee_attachment = ee_attachment
@@ -129,9 +130,3 @@ def quat_lerp(q1, q2, t):
     res /= np.linalg.norm(res)
     
     return res
-
-def quaterinion_2_angular_velocity(q1, q2, dt):
-    return (2 / dt) * np.array([
-        q1[3]*q2[0] - q1[0]*q2[3] - q1[1]*q2[2] + q1[2]*q2[1],
-        q1[3]*q2[1] + q1[0]*q2[2] - q1[1]*q2[3] - q1[2]*q2[0],
-        q1[3]*q2[2] - q1[0]*q2[1] + q1[1]*q2[0] - q1[2]*q2[3]])

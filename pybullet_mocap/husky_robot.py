@@ -33,11 +33,16 @@ from control_msgs.msg import JointTolerance
 
 # pybullet_mocap
 import pybullet as p
-from pybullet_mocap.common import quaterinion_2_angular_velocity
 
 UR5e_HOME_STATE = np.array([0, -np.pi/2, 0, -np.pi/2, 0, 0])
 ARM_JOINT_NAMES = ['shoulder_pan_joint', 'shoulder_lift_joint', 'elbow_joint', 'wrist_1_joint', 'wrist_2_joint', 'wrist_3_joint']
-        
+
+def quaterinion_2_angular_velocity(q1, q2, dt):
+    return (2 / dt) * np.array([
+        q1[3]*q2[0] - q1[0]*q2[3] - q1[1]*q2[2] + q1[2]*q2[1],
+        q1[3]*q2[1] + q1[0]*q2[2] - q1[1]*q2[3] - q1[2]*q2[0],
+        q1[3]*q2[2] - q1[0]*q2[1] + q1[1]*q2[0] - q1[2]*q2[3]])
+
 class HuskyRobotInterface:
     position = np.zeros(3)
     rotation = R.as_quat(R.identity())
@@ -61,12 +66,6 @@ class HuskyRobotInterface:
                 name + '/tf',
                 self.tf_callback,
                 10)
-        
-        self.sub_joy = self.node.create_subscription(
-            Joy,
-            name + '/joy_teleop/joy',
-            self.joy_callback,
-            10)
         
         self.sub_arm = self.node.create_subscription(
             JointState,
