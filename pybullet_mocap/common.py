@@ -103,6 +103,9 @@ class HuskyObject():
             self.old_color = new_color
             pp.set_color(self.robot, new_color)
             pp.set_color(self.ee, new_color)
+            
+    def get_ee_pose(self):
+        return pp.get_pose(self.ee)
 
 class Button:
     def __init__(self, name, action):

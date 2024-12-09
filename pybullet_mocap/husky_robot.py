@@ -51,6 +51,7 @@ class HuskyRobotInterface:
     angular_velocity = np.zeros(3)
     
     arm_joint_pose = UR5e_HOME_STATE
+    is_arm_executing = False
     
     odom_offset = np.zeros(3)
     _odom_position = np.zeros(3)
@@ -161,7 +162,7 @@ class HuskyRobotInterface:
         goal.command.max_effort = effort
         self.act_gripper.send_goal_async(goal)
     
-    def send_arm_cmd(self, arm_joint_positions, arm_joint_velocities=None, dt=10):
+    def send_arm_cmd(self, arm_joint_positions, arm_joint_velocities=None, time=10):
         """
         Send a joint trajectory to the arm
         
@@ -173,8 +174,11 @@ class HuskyRobotInterface:
                 return
             
         if not np.isclose(self.arm_joint_pose, arm_joint_positions[0], atol=0.1).all():
-            self.get_logger().warn(f'Arm of husky {self.name} is not in correct start pose!')
+            self.node.get_logger().warn(f'Arm of husky {self.name} is not in correct start pose!')
+            self.node.get_logger().warn(f'{self.arm_joint_pose} vs {arm_joint_positions[0]}')
             return
+        
+        dt = time / (len(arm_joint_positions) - 1)
         
         goal = FollowJointTrajectory.Goal()
         goal.trajectory = JointTrajectory()
@@ -190,11 +194,15 @@ class HuskyRobotInterface:
             nano = time_from_start - sec
             point.time_from_start = Duration(sec=int(sec), nanosec=int(nano*1000000))
             goal.trajectory.points.append(point)
-
+        
+        goal.path_tolerance = [
+            JointTolerance(position=1.0, velocity=1.0, name=joint_name) for joint_name in ARM_JOINT_NAMES
+        ]
         goal.goal_time_tolerance = Duration(sec=0, nanosec=500000000)
         goal.goal_tolerance = [
             JointTolerance(position=0.01, velocity=0.01, name=joint_name) for joint_name in ARM_JOINT_NAMES
         ]
+        self.is_arm_executing = True
         send_goal_future = self.act_arm.send_goal_async(goal)
         send_goal_future.add_done_callback(self.goal_response_callback)
     
@@ -202,9 +210,11 @@ class HuskyRobotInterface:
         goal_handle = future.result()
         if not goal_handle.accepted:
             self.node.get_logger().error("Goal rejected :(")
+            self.is_arm_executing = False
             return
 
         self.node.get_logger().info("Goal accepted :)")
+        self.is_arm_executing = True
 
         get_result_future = goal_handle.get_result_async()
         get_result_future.add_done_callback(self.get_result_callback)
@@ -213,6 +223,7 @@ class HuskyRobotInterface:
         result = future.result().result
         status = future.result().status
         self.node.get_logger().info(f"Done with result: {self.status_to_str(status)}")
+        self.is_arm_executing = False
         if status != GoalStatus.STATUS_SUCCEEDED:
             self.node.get_logger().error(
                 f"Done with result: {self.error_code_to_str(result.error_code)}"

@@ -24,7 +24,7 @@ from pybullet_mocap import DATA_DIRECTORY
 import pybullet_mocap.husky_world as world
 from pybullet_mocap.husky_robot import HuskyRobotInterface
 from pybullet_mocap.common import (
-    Button, Husky, TrackedObject, HuskyObject, HUSKY_UR5e_JOINT_NAMES, HUSKY_JOINT_NAMES
+    Button, Husky, TrackedObject, HuskyObject, HUSKY_UR5e_JOINT_NAMES, HUSKY_JOINT_NAMES, lerp
 )
 
 from pybullet_mocap.optitrack.NatNetClient import NatNetClient
@@ -61,9 +61,9 @@ class HuskyMonitor(Node):
         self.goal_gripper = 0.0
         self.goal_arm_pose = np.zeros(6)
 
-        self.planned_arm_trajectory = None
+        self.planned_arm_trajectory = (None, None, None)
         self.plan_traj_seg = None
-        self.planned_base_trajectory = None
+        self.planned_base_trajectory = (None, None)
 
         # call setup code
         self.start_pybullet()
@@ -83,13 +83,13 @@ class HuskyMonitor(Node):
         self.huskies.append(husky)
         self.name_from_mocap_id[husky.mocap_id] = husky.name
         
-    def set_base_trajectry(self, base_trajectory: List[Tuple[np.ndarray, np.ndarray]]):
+    def set_base_trajectry(self, base_trajectory: Tuple[List[Tuple[np.ndarray, np.ndarray]], float]):
             """ set base trajectory for visualization"""
             self.planned_base_trajectory = base_trajectory
             
             # draw
             points = [
-                pos for pos, _ in self.planned_base_trajectory
+                pos for pos, _ in self.planned_base_trajectory[0]
             ]
             with pp.LockRenderer():
                 with pp.HideOutput():
@@ -97,7 +97,7 @@ class HuskyMonitor(Node):
                        pp.remove_all_debug()
                     self.plan_traj_seg = pp.add_segments(points)
     
-    def set_arm_trajectory(self, arm_trajectory: List[np.ndarray]):
+    def set_arm_trajectory(self, arm_trajectory: Tuple[List[np.ndarray], List[np.ndarray] | None, float]):
         """ set arm trajectory for visualization"""
         self.planned_arm_trajectory = arm_trajectory
         
@@ -131,9 +131,13 @@ class HuskyMonitor(Node):
         
         self.buttons.append(Button('Reset Goal State', self.reset_ui))
         
-        self.state_sliders.append(p.addUserDebugParameter("x", -5.0, 5.0, 0))
-        self.state_sliders.append(p.addUserDebugParameter("x", -5.0, 5.0, 0))
-        self.state_sliders.append(p.addUserDebugParameter("yaw", -np.pi, np.pi, 0))
+        pose2d = pp.pose2d_from_pose((self.huskies[0].interface.position, self.huskies[0].interface.rotation), tolerance=0.1)
+        
+        self.state_sliders.append(p.addUserDebugParameter("x", -5.0, 5.0, pose2d[0]))
+        self.state_sliders.append(p.addUserDebugParameter("x", -5.0, 5.0, pose2d[1]))
+        self.state_sliders.append(p.addUserDebugParameter("yaw", -np.pi, np.pi, pose2d[2]))
+        
+        self.buttons.append(Button('Calibrate', lambda: world.calibrate_button(self)))
         
         self.buttons.append(Button('Plan', lambda: world.plan_to_goal(self)))
         self.buttons.append(Button('Exec Base', lambda: world.move_to_goal(self)))
@@ -228,25 +232,30 @@ class HuskyMonitor(Node):
         goal_pose = self.goal_pose
         goal_arm_pose = self.goal_arm_pose
         if not np.isclose(preview_time, 1.0):
-            if self.planned_base_trajectory:
-                base_traj_idx = int(preview_time * (len(self.planned_base_trajectory) - 1))
-                goal_pose = self.planned_base_trajectory[base_traj_idx]
-            if self.planned_arm_trajectory:
-                arm_traj_idx = int(preview_time * (len(self.planned_arm_trajectory) - 1))
-                goal_arm_pose = self.planned_arm_trajectory[arm_traj_idx]
+            if self.planned_base_trajectory[0] is not None:
+                N = len(self.planned_base_trajectory[0])
+                base_traj_idx = int(preview_time * (N - 1))
+                goal_pose = self.planned_base_trajectory[0][base_traj_idx]
+            if self.planned_arm_trajectory[0] is not None:
+                N = len(self.planned_arm_trajectory[0])
+                arm_traj_idx_float = preview_time * (N - 1)
+                arm_traj_idx = int(arm_traj_idx_float)
+                dt = arm_traj_idx_float - arm_traj_idx
+                arm_traj_idx_plus = min(int(preview_time * (N - 1) + 1), N)
+                goal_arm_pose = lerp(self.planned_arm_trajectory[0][arm_traj_idx], self.planned_arm_trajectory[0][arm_traj_idx_plus], dt)
             
         self.goal_model.set_pose(goal_pose, goal_arm_pose)
-        
+                        
         # run tasks
-        i = 0
-        while i < len(self.tasks):
-            task = self.tasks[i]
-            if task():
-                i += 1
-            else:
-                self.tasks.remove(task)
+        for t in self.tasks:
+            try:
+               next(t)
+            except StopIteration:
+                self.tasks.remove(t)
+
                 
         world.update(self)
+    
                 
 
 

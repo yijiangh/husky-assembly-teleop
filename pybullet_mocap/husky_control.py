@@ -12,8 +12,7 @@ from typing import List, Tuple
 
 from pybullet_mocap.common import Husky
 
-def execute_base_trajectory(monitor, husky: Husky, trajectory: List[Tuple[np.ndarray, np.ndarray]]):
-    # --- task setup code ---
+def execute_base_trajectory(monitor, husky: Husky, trajectory: Tuple[List[Tuple[np.ndarray, np.ndarray]], float]):
     actual_trajectory = []
     actual_rots = []
     target_rots = []
@@ -36,31 +35,22 @@ def execute_base_trajectory(monitor, husky: Husky, trajectory: List[Tuple[np.nda
     k_p_ortho = 5 # 5 #p.readUserDebugParameter(self.pid_sliders[0])
     
     time_start = time.time()
-    total_time = 10
-
-    # --- --- task run code --- ---
-    def exec():
-        nonlocal time_start
-        nonlocal actual_trajectory
-        nonlocal actual_rots
-        nonlocal target_rots
-        nonlocal ortho_error_list
-        nonlocal para_error_list
-        nonlocal rot_error_list
-        nonlocal vel_list
-        nonlocal ang_vel_list
-        nonlocal target_ang_vel_list
+    total_time = trajectory[1]
+    
+    yield
+    
+    while True:
         exec_time = time.time() - time_start
         
-        N = len(trajectory)    
+        N = len(trajectory[0])    
         dt = (total_time / (N - 1))
 
         # get trajectory data
         base_traj_idx = min(int(exec_time / total_time * (N - 1)), N-1)
         base_traj_next_idx = min(int(exec_time / total_time * (N - 1))+1, N-1)
         
-        target_pos, target_rot  = trajectory[base_traj_idx]
-        next_target_pos, next_target_rot = trajectory[base_traj_next_idx]
+        target_pos, target_rot  = trajectory[0][base_traj_idx]
+        next_target_pos, next_target_rot = trajectory[0][base_traj_next_idx]
         
         target_vel = np.linalg.norm((next_target_pos - target_pos) / dt)
         target_rot_vel = ((R.from_quat(target_rot).inv() * R.from_quat(next_target_rot)).as_euler("zxy")[0]) / dt
@@ -110,36 +100,34 @@ def execute_base_trajectory(monitor, husky: Husky, trajectory: List[Tuple[np.nda
         
         converged = np.abs(pos_err_para) < 0.05 and np.abs(rot_err) < 0.05
         if exec_time < 2*total_time and (exec_time < total_time or not converged):
-            return True # task needs to keep running
+            yield
+        else:
+            break
         
-        points = np.array([pos for pos, _ in trajectory])
-        actual_trajectory = np.array(actual_trajectory)
-        
-        fig, ((ax_traj, ax_traj_rot), (ax_vel, ax_rot_vel), (ax_err, ax_vel_err)) = plt.subplots(3, 2)
-        ax_traj.plot(points[:,0], points[:,1])
-        ax_traj.plot(actual_trajectory[:,0], actual_trajectory[:,1])
-        ax_traj.set_aspect(1.0)
-        ax_traj_rot.plot(target_rots, label='target')
-        ax_traj_rot.plot(actual_rots, label='actual')
-        ax_traj_rot.legend()
-        ax_err.plot(para_error_list, label='para')
-        ax_err.plot(ortho_error_list, label='ortho')
-        ax_err.plot(rot_error_list, label='rot')
-        ax_err.legend()
-        ax_vel_err.plot(para_vel_error_list, label='v para')
-        ax_vel_err.plot(ortho_vel_error_list, label='v ortho')
-        ax_vel_err.plot(rot_vel_error_list, label='w rot')
-        ax_vel_err.legend()
-        ax_vel.plot(vel_list, label='v real')
-        ax_vel.plot(target_vel_list, label='v target')
-        ax_vel.legend()
-        ax_rot_vel.plot(ang_vel_list, label='w real')
-        ax_rot_vel.plot(target_ang_vel_list, label='w target')
-        ax_rot_vel.legend()
-        fig.set_dpi(300)
-        fig.savefig("trajectory.png")
-        plt.close(fig)
-        
-        return False # task is finished
+    points = np.array([pos for pos, _ in trajectory[0]])
+    actual_trajectory = np.array(actual_trajectory)
     
-    monitor.tasks.append(exec)
+    fig, ((ax_traj, ax_traj_rot), (ax_vel, ax_rot_vel), (ax_err, ax_vel_err)) = plt.subplots(3, 2)
+    ax_traj.plot(points[:,0], points[:,1])
+    ax_traj.plot(actual_trajectory[:,0], actual_trajectory[:,1])
+    ax_traj.set_aspect(1.0)
+    ax_traj_rot.plot(target_rots, label='target')
+    ax_traj_rot.plot(actual_rots, label='actual')
+    ax_traj_rot.legend()
+    ax_err.plot(para_error_list, label='para')
+    ax_err.plot(ortho_error_list, label='ortho')
+    ax_err.plot(rot_error_list, label='rot')
+    ax_err.legend()
+    ax_vel_err.plot(para_vel_error_list, label='v para')
+    ax_vel_err.plot(ortho_vel_error_list, label='v ortho')
+    ax_vel_err.plot(rot_vel_error_list, label='w rot')
+    ax_vel_err.legend()
+    ax_vel.plot(vel_list, label='v real')
+    ax_vel.plot(target_vel_list, label='v target')
+    ax_vel.legend()
+    ax_rot_vel.plot(ang_vel_list, label='w real')
+    ax_rot_vel.plot(target_ang_vel_list, label='w target')
+    ax_rot_vel.legend()
+    fig.set_dpi(300)
+    fig.savefig("trajectory.png")
+    plt.close(fig)
