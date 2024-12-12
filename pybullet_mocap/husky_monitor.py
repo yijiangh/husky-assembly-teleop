@@ -60,6 +60,7 @@ class HuskyMonitor(Node):
         self.goal_pose = (np.zeros(3), np.array([0, 0, 0, 1]))
         self.goal_gripper = 0.0
         self.goal_arm_pose = np.zeros(6)
+        self.show_goal_state = True
 
         self.planned_arm_trajectory = (None, None, None)
         self.plan_traj_seg = None
@@ -109,6 +110,9 @@ class HuskyMonitor(Node):
         self.state_sliders.clear()
         self.joint_state_sliders.clear()
         self.build_ui()
+        
+    def toggle_show_goal_state(self):
+        self.show_goal_state = not self.show_goal_state
     
     # --- --- --- --- --- SETUP PYBULLET --- --- --- --- ---
     def start_pybullet(self):
@@ -129,6 +133,7 @@ class HuskyMonitor(Node):
     def build_ui(self):
         self.time_slider = p.addUserDebugParameter("time", 0.0, 1.0, 1.0)
         
+        self.buttons.append(Button('Toggle Goal/Trajectory', self.toggle_show_goal_state))
         self.buttons.append(Button('Reset Goal State', self.reset_ui))
         
         pose2d = pp.pose2d_from_pose((self.huskies[0].interface.position, self.huskies[0].interface.rotation), tolerance=0.1)
@@ -137,8 +142,6 @@ class HuskyMonitor(Node):
         self.state_sliders.append(p.addUserDebugParameter("x", -5.0, 5.0, pose2d[1]))
         self.state_sliders.append(p.addUserDebugParameter("yaw", -np.pi, np.pi, pose2d[2]))
         
-        self.buttons.append(Button('Calibrate', lambda: world.calibrate_button(self)))
-        
         self.buttons.append(Button('Plan', lambda: world.plan_to_goal(self)))
         self.buttons.append(Button('Exec Base', lambda: world.move_to_goal(self)))
         
@@ -146,6 +149,7 @@ class HuskyMonitor(Node):
             lower, upper = pp.get_joint_limits(self.huskies[0].object.robot, j)
             self.joint_state_sliders.append(p.addUserDebugParameter(f'Joint {i}', lower, upper, self.huskies[0].interface.arm_joint_pose[i]))
         
+        self.buttons.append(Button('Calibrate', lambda: world.calibrate_button(self)))
         self.buttons.append(Button('Plan', lambda: world.plan_arm_to_goal(self)))
         self.buttons.append(Button('Plan Wave', lambda: world.plan_arm_wave(self)))
         self.buttons.append(Button('Exec Arm', lambda: world.execute_arm_trajectory(self)))
@@ -231,7 +235,7 @@ class HuskyMonitor(Node):
         preview_time = p.readUserDebugParameter(self.time_slider)
         goal_pose = self.goal_pose
         goal_arm_pose = self.goal_arm_pose
-        if not np.isclose(preview_time, 1.0):
+        if not self.show_goal_state:
             if self.planned_base_trajectory[0] is not None:
                 N = len(self.planned_base_trajectory[0])
                 base_traj_idx = int(preview_time * (N - 1))
@@ -241,7 +245,7 @@ class HuskyMonitor(Node):
                 arm_traj_idx_float = preview_time * (N - 1)
                 arm_traj_idx = int(arm_traj_idx_float)
                 dt = arm_traj_idx_float - arm_traj_idx
-                arm_traj_idx_plus = min(int(preview_time * (N - 1) + 1), N)
+                arm_traj_idx_plus = min(int(preview_time * (N - 1) + 1), N-1)
                 goal_arm_pose = lerp(self.planned_arm_trajectory[0][arm_traj_idx], self.planned_arm_trajectory[0][arm_traj_idx_plus], dt)
             
         self.goal_model.set_pose(goal_pose, goal_arm_pose)

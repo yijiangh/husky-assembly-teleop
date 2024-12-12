@@ -70,10 +70,10 @@ class TrackedObject:
 
 class Husky():
     """A husky interface with corresponding husky object."""
-    def __init__(self, monitor, name, mocap_id=None, pos=np.zeros(3), rot=np.array((0, 0, 0, 1))):
+    def __init__(self, monitor, name, mocap_id=None, pos=np.zeros(3), rot=np.array((0, 0, 0, 1)), connect_arm=True, connect_gripper=True):
         self.name = name
         self.mocap_id = mocap_id
-        self.interface = HuskyRobotInterface(monitor, name, use_odom=(mocap_id is None))
+        self.interface = HuskyRobotInterface(monitor, name, use_odom=(mocap_id is None), connect_arm=connect_arm, connect_gripper=connect_gripper)
         self.object = HuskyObject()
         
         self.interface.position = pos
