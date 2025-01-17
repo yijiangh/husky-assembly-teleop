@@ -17,12 +17,12 @@ boxes = []
 huskies = []
 
 def init(monitor):
-    boxes.append(TrackedObject(monitor, 'box1', 4457, np.zeros(3), np.array((0, 0, 0, 1)), 0.2, 'cube.obj'))
-    boxes.append(TrackedObject(monitor, 'box2', 4484, np.zeros(3), np.array((0, 0, 0, 1)), 0.2, 'cube.obj'))
-    boxes.append(TrackedObject(monitor, 'box3', 1031, np.zeros(3), np.array((0, 0, 0, 1)), 0.2, 'cube.obj'))
+    #boxes.append(TrackedObject(monitor, 'box1', 4457, np.zeros(3), np.array((0, 0, 0, 1)), 0.2, 'cube.obj'))
+    #boxes.append(TrackedObject(monitor, 'box2', 4484, np.zeros(3), np.array((0, 0, 0, 1)), 0.2, 'cube.obj'))
+    #boxes.append(TrackedObject(monitor, 'box3', 1031, np.zeros(3), np.array((0, 0, 0, 1)), 0.2, 'cube.obj'))
     
-    huskies.append(Husky(monitor, name='/a200_0804', mocap_id=1004, pos=np.array((0,0,0)), connect_gripper=False))
-    # huskies.append(Husky(monitor, name='/a200_0805', mocap_id=1033, pos=np.array((0,1,0)), connect_gripper=False))
+    huskies.append(Husky(monitor, name='/a200_0804', mocap_id=1004, pos=np.array((0,0,0)), connect_gripper=True))
+    huskies.append(Husky(monitor, name='/a200_0805', mocap_id=1033, pos=np.array((0,1,0)), connect_gripper=False))
 
 def update(monitor):
     pass
@@ -100,6 +100,9 @@ def execute_arm_trajectory(monitor):
         return
     huskies[0].interface.send_arm_cmd(*monitor.planned_arm_trajectory)
     
+    # TESTING SIMULTANEOUS ARM WAVE
+    huskies[1].interface.send_arm_cmd(*monitor.planned_arm_trajectory)
+    
 def move_to_goal(monitor):
     if monitor.planned_base_trajectory[0] is None:
         monitor.get_logger().warn('Base trajectory must be planed before executing!')
@@ -108,4 +111,4 @@ def move_to_goal(monitor):
     
 
 def set_gripper(monitor):
-    huskies[0].interface.set_gripper(monitor.goal_gripper)
+    huskies[0].interface.send_gripper_cmd(monitor.goal_gripper, 0.1)

@@ -113,6 +113,7 @@ class HuskyMonitor(Node):
         
     def toggle_show_goal_state(self):
         self.show_goal_state = not self.show_goal_state
+        self.goal_model.set_color(GOAL_BLUE if self.show_goal_state else TRAJECTORY_GREEN)
     
     # --- --- --- --- --- SETUP PYBULLET --- --- --- --- ---
     def start_pybullet(self):
