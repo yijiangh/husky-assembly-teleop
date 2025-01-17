@@ -152,8 +152,8 @@ class HuskyRobotInterface:
     
     def send_base_twist_cmd(self, x_dot, theta_dot):
         msg = Twist()
-        msg.linear.x = x_dot * 2 # TODO figure out why husky always moves at half speed
-        msg.angular.z = theta_dot * 2
+        msg.linear.x = x_dot
+        msg.angular.z = theta_dot
         self.pub_cmd_vel.publish(msg)
         
     def send_gripper_cmd(self, pos, effort):
