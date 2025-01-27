@@ -15,12 +15,16 @@ Install python dependencies:
 pip install -r requirements.txt
 ```
 
-Building and run:
+Build and run:
 ```
+cd workspace
 colcon build
 source install/setup.bash
 ros2 run pybullet_mocap husky_monitor
 ```
+
+Changes to python scripts need a rebuild too! Use `colcon build && ros2 run pybullet_mocap husky_monitor` to run both commands at once. Alternatively, look into `colcon build --symlink-install`.
+
 
 Read the [Mocap wiki](https://gitlab.inf.ethz.ch/crl/crl-wiki/-/wikis/HW/OptiTrack) for more information on how to create a rigid body in Motive and how to set the IP address of the OptiTrack server.
 
@@ -36,11 +40,11 @@ Read the [Mocap wiki](https://gitlab.inf.ethz.ch/crl/crl-wiki/-/wikis/HW/OptiTra
 ### Register a new rigid body in Motive
 6. Then, you will need to register a new rigid body by selecting a few markers on the Motive software, follow [the documentation](https://docs.optitrack.com/motive/rigid-body-tracking). Next, note the `Streaming ID` of the rigid body you just registered. You can find this by clicking on the rigid body in the `Assets` panel in Motive. \
 \
-Alternatively, activate an already extisting rigid body in the `Assets` panel.
+Alternatively, activate an already existing rigid body in the `Assets` panel.
 
 ### Calibrate rigid body
 
-Add the 3d model to the object in motive and move the pivot until the model aligns with the markers. If more precision is needed, use a probe to sample corners on the real object. These additional probe points can be used to improve the alignment of the model.
+Add the 3D model to the object in motive and move the pivot until the model aligns with the markers. If more precision is needed, use a probe to sample corners on the real object. These additional probe points can be used to improve the alignment of the model.
 
 ### Edit the python script to add your rigid body
 
