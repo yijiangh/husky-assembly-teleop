@@ -20,11 +20,9 @@ from rclpy.node import Node
 import pybullet as p
 import pybullet_planning as pp
 
-from pybullet_mocap import DATA_DIRECTORY
 import pybullet_mocap.husky_world as world
-from pybullet_mocap.husky_robot import HuskyRobotInterface
 from pybullet_mocap.common import (
-    Button, Husky, TrackedObject, HuskyObject, HUSKY_UR5e_JOINT_NAMES, HUSKY_JOINT_NAMES, lerp
+    Button, Slider, SliderGroup, Husky, TrackedObject, HuskyObject, AssemblyObject, HUSKY_UR5e_JOINT_NAMES, lerp
 )
 
 from pybullet_mocap.optitrack.NatNetClient import NatNetClient
@@ -35,6 +33,7 @@ DEFAULT_GREY = [0.2, 0.2, 0.2, 0.7]
 GOAL_BLUE = [0, 0.2, 0.5, 0.7]
 TRAJECTORY_GREEN = [0, 0.5, 0.2, 0.7]
 
+USE_MOCAP = False
 CLIENT_IP = '192.168.0.7' # Set to your own IP
 MOCAP_IP = '192.168.0.117' # set to the mocap PC's IP, get this from Motive Settings>Streaming pane->Local interface
         
@@ -50,11 +49,19 @@ class HuskyMonitor(Node):
         self.huskies = []
         self.tracked_objects = []
         self.name_from_mocap_id = {}
+
+        self.assembly_objects = []
+        self.current_seq_index = 0
         
         # UI
         self.buttons = []
+        self.assembly_position_sliders = []
         self.state_sliders = []
         self.joint_state_sliders = []
+        self.assembly_goal_position_slider_group = None
+
+        self.selected_robot_slider = None
+        self.selected_robot_id = 0
         
         # goal and trajectory interface
         self.goal_pose = (np.zeros(3), np.array([0, 0, 0, 1]))
@@ -68,16 +75,21 @@ class HuskyMonitor(Node):
 
         # call setup code
         self.start_pybullet()
-        self.start_mocap()
+        if USE_MOCAP:
+            self.start_mocap()
         
         world.init(self)
 
         self.build_ui()
+        self.update_partial_assembly()
         
     def add_tracked_object(self, obstacle: TrackedObject):
         """Registers an object to be tracked by mocap"""
         self.tracked_objects.append(obstacle)
         self.name_from_mocap_id[obstacle.mocap_id] = obstacle.name
+
+    def add_assembly_objects(self, aobject: AssemblyObject):
+        self.assembly_objects.append(aobject)
         
     def add_husky(self, husky: Husky):
         """Registers a husky to connect to ROS and be tracked by mocap"""
@@ -107,6 +119,7 @@ class HuskyMonitor(Node):
         # pybullet seems to lack a setUserDebugParameter() method :(
         p.removeAllUserParameters()
         self.buttons.clear()
+        self.assembly_position_sliders.clear()
         self.state_sliders.clear()
         self.joint_state_sliders.clear()
         self.build_ui()
@@ -114,6 +127,37 @@ class HuskyMonitor(Node):
     def toggle_show_goal_state(self):
         self.show_goal_state = not self.show_goal_state
         self.goal_model.set_color(GOAL_BLUE if self.show_goal_state else TRAJECTORY_GREEN)
+
+    def update_selected_robot_id(self, robot_id):
+        self.selected_robot_id = np.clip(int(robot_id), 0, len(self.huskies)-1)
+        # update goal pose based on sensed base pose since we are teleoperating the base
+        hi = self.huskies[self.selected_robot_id].interface
+        self.goal_pose = (hi.position, hi.rotation)
+
+    def show_previous_in_sequence(self):
+        if self.current_seq_index >= 1:
+            self.current_seq_index -= 1
+            self.update_partial_assembly()
+
+    def show_next_in_sequence(self):
+        if self.current_seq_index < len(self.assembly_objects) - 1:
+            self.current_seq_index += 1
+            self.update_partial_assembly()
+
+    def update_partial_assembly(self):
+        for i, obj in enumerate(self.assembly_objects):
+            if i <= self.current_seq_index:
+                obj.show()
+            else:
+                obj.hide()
+
+    def update_assembly_goal_position(self, centroid):
+        for i, obj in enumerate(self.assembly_objects):
+            obj.update_goal_pose((np.array(centroid) + obj.archived_goal_position, obj.goal_pose[1]))
+        self.update_partial_assembly()
+
+    def update_traj_goal_configuration(self):
+        self.goal_model.set_pose(self.goal_pose, self.goal_arm_pose)
     
     # --- --- --- --- --- SETUP PYBULLET --- --- --- --- ---
     def start_pybullet(self):
@@ -132,27 +176,34 @@ class HuskyMonitor(Node):
                 self.goal_model.set_color(GOAL_BLUE)
         
     def build_ui(self):
+        # default_base_position = [0,0,0]
+        # self.assembly_goal_position_slider_group = SliderGroup(["target base {}".format(t) for t in ["x","y","z"]], self.update_assembly_goal_position, [0, -5, 0], [5,5,1], default_base_position)
+
+        self.buttons.append(Button('Prev in sequence', self.show_previous_in_sequence))
+        self.buttons.append(Button('Next in sequence', self.show_next_in_sequence))
+
+        self.selected_robot_slider = Slider("robot id", self.update_selected_robot_id, 0, len(self.huskies)+1, 0)
+        # p.addUserDebugParameter("robot id", 0, len(self.huskies)+1, 0)
+
         self.time_slider = p.addUserDebugParameter("time", 0.0, 1.0, 1.0)
         
         self.buttons.append(Button('Toggle Goal/Trajectory', self.toggle_show_goal_state))
         self.buttons.append(Button('Reset Goal State', self.reset_ui))
         
-        pose2d = pp.pose2d_from_pose((self.huskies[0].interface.position, self.huskies[0].interface.rotation), tolerance=0.1)
-        
-        self.state_sliders.append(p.addUserDebugParameter("x", -5.0, 5.0, pose2d[0]))
-        self.state_sliders.append(p.addUserDebugParameter("x", -5.0, 5.0, pose2d[1]))
-        self.state_sliders.append(p.addUserDebugParameter("yaw", -np.pi, np.pi, pose2d[2]))
-        
-        self.buttons.append(Button('Plan', lambda: world.plan_to_goal(self)))
-        self.buttons.append(Button('Exec Base', lambda: world.move_to_goal(self)))
+        # pose2d = pp.pose2d_from_pose((self.huskies[0].interface.position, self.huskies[0].interface.rotation), tolerance=0.1)
+        # self.state_sliders.append(p.addUserDebugParameter("x", -5.0, 5.0, pose2d[0]))
+        # self.state_sliders.append(p.addUserDebugParameter("y", -5.0, 5.0, pose2d[1]))
+        # self.state_sliders.append(p.addUserDebugParameter("yaw", -np.pi, np.pi, pose2d[2]))
+        # self.buttons.append(Button('Plan base', lambda: world.plan_to_goal(self)))
+        # self.buttons.append(Button('Exec Base', lambda: world.move_to_goal(self)))
         
         for i, j in enumerate(pp.joints_from_names(self.huskies[0].object.robot, HUSKY_UR5e_JOINT_NAMES)):
             lower, upper = pp.get_joint_limits(self.huskies[0].object.robot, j)
             self.joint_state_sliders.append(p.addUserDebugParameter(f'Joint {i}', lower, upper, self.huskies[0].interface.arm_joint_pose[i]))
         
         self.buttons.append(Button('Calibrate', lambda: world.calibrate_button(self)))
-        self.buttons.append(Button('Plan', lambda: world.plan_arm_to_goal(self)))
-        self.buttons.append(Button('Plan Wave', lambda: world.plan_arm_wave(self)))
+        self.buttons.append(Button('Plan arm', lambda: world.plan_arm_to_goal(self)))
+        self.buttons.append(Button('Plan arm wave', lambda: world.plan_arm_wave(self)))
         self.buttons.append(Button('Exec Arm', lambda: world.execute_arm_trajectory(self)))
 
         self.gripper_slider = p.addUserDebugParameter("gripper", 0, 1.0)
@@ -184,6 +235,7 @@ class HuskyMonitor(Node):
         if id not in self.name_from_mocap_id:
             return
         
+        # y up to z up
         pos = np.array((pos[2], pos[0], pos[1]))
         rot = np.array((rot[2], rot[0], rot[1], rot[3]))       
         
@@ -214,7 +266,7 @@ class HuskyMonitor(Node):
     def update(self):
         for b in self.buttons:
             b.update()
-            
+ 
         # update tracked objects
         for i, o in enumerate(self.tracked_objects):
             o.set_pose((o.pos, o.rot))
@@ -223,15 +275,20 @@ class HuskyMonitor(Node):
         for i, h in enumerate(self.huskies):
             hi = h.interface
             h.object.set_pose((hi.position, hi.rotation), hi.arm_joint_pose)
+
+        self.selected_robot_slider.update()
         
         # update goal robot state
-        state_slider_values = [p.readUserDebugParameter(ps) for ps in self.state_sliders]
-        self.goal_pose = (
-            np.array((state_slider_values[0], state_slider_values[1], 0)),
-            R.from_euler("z", state_slider_values[2], degrees=False).as_quat()
-        )
+        # state_slider_values = [p.readUserDebugParameter(ps) for ps in self.state_sliders]
+        # self.goal_pose = (
+        #     np.array((state_slider_values[0], state_slider_values[1], 0)),
+        #     R.from_euler("z", state_slider_values[2], degrees=False).as_quat()
+        # )
         self.goal_gripper = p.readUserDebugParameter(self.gripper_slider)
         self.goal_arm_pose = np.array([p.readUserDebugParameter(ps) for ps in self.joint_state_sliders])
+
+        # update assembly goal position
+        # self.assembly_goal_position_slider_group.update()
             
         preview_time = p.readUserDebugParameter(self.time_slider)
         goal_pose = self.goal_pose

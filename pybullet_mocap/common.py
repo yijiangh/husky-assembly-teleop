@@ -47,6 +47,26 @@ def load_robot(ik_from_arm_base=True, load_calib_tip=False):
 
     return robot, ee, ee_attachment
 
+class AssemblyObject:
+    def __init__(self, monitor, index: int, pb_body, init_pose, goal_pose):
+        self.name = index
+        self.body = pb_body
+        self.init_pose = init_pose
+        self.archived_goal_position = goal_pose[0]
+        self.goal_pose = goal_pose
+
+        monitor.add_assembly_objects(self)
+
+    def show(self):
+        pp.set_pose(self.body, self.goal_pose)
+
+    def hide(self):
+        pp.set_pose(self.body, self.init_pose)
+
+    def update_goal_pose(self, goal_pose):
+        self.goal_pose = goal_pose
+
+
 class TrackedObject:
     """PyBullet objects with pose tracked using mocap"""
     def __init__(self, monitor, name, mocap_id, pos, rot, scale, model_file):
@@ -119,6 +139,30 @@ class Button:
             self.prev_value = new_value
             self.action()
 
+class Slider:
+    def __init__(self, name, action, min_val=0.0, max_val=1.0, current_val=0.0):
+        self.dbg_param = p.addUserDebugParameter(name, min_val, max_val, current_val)
+        self.prev_value = p.readUserDebugParameter(self.dbg_param)
+        self.action = action
+        
+    def update(self):
+        new_value = p.readUserDebugParameter(self.dbg_param)
+        if new_value != self.prev_value:
+            self.prev_value = new_value
+            self.action(new_value)
+
+class SliderGroup:
+    def __init__(self, names, action, min_vals, max_vals, current_vals):
+        self.dbg_params = [p.addUserDebugParameter(name, min_val, max_val, current_val) for name, min_val, max_val, current_val in zip(names, min_vals, max_vals, current_vals)]
+        self.prev_values = [p.readUserDebugParameter(dbgp) for dbgp in self.dbg_params]
+        self.action = action
+        
+    def update(self):
+        new_values = [p.readUserDebugParameter(param) for param in self.dbg_params]
+        # use numpy to determin if any value has changed
+        if not np.allclose(new_values, self.prev_values):
+            self.prev_values = new_values
+            self.action(new_values)
 
 # --- --- QUATERNION AND MATH FUNCTIONS --- ---
 
