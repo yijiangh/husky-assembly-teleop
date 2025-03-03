@@ -25,16 +25,19 @@ def init(monitor):
     #boxes.append(TrackedObject(monitor, 'box3', 1031, np.zeros(3), np.array((0, 0, 0, 1)), 0.2, 'cube.obj'))
     
     Husky(monitor, name='/a200_0804', mocap_id=1004, pos=np.array((0,0,0)), connect_arm=CONNECT_ROBOT, connect_gripper=CONNECT_ROBOT)
-    Husky(monitor, name='/a200_0805', mocap_id=1033, pos=np.array((0,1,0)), connect_gripper=False)
+    # Husky(monitor, name='/a200_0805', mocap_id=1033, pos=np.array((0,1,0)), connect_gripper=False)
 
     line_pt_pairs, contact_id_pairs, bar_radius = parse_mt_geometric(MT_FILE_NAME)
     line_pts_flattened = flatten_list(np.array(line_pt_pairs))
     radius_per_edge = [bar_radius] * int(len(line_pts_flattened)/2)
 
-    # compute the centroid of the line_pts_flattened
+    # # compute the centroid of the line_pts_flattened
     centroid = np.mean(line_pts_flattened, axis=0)
     # move the line_pts_flattened to the origin
     line_pts_flattened -= centroid
+    # TODO: set in rhino
+    # line_pts_flattened += [1.5,0,0.3]
+    line_pts_flattened += [1.5,0,0.5]
 
     element_bodies = create_collision_bodies(line_pts_flattened, radius_per_edge, viewer=True)
     half_coupler_from_contact_pair = create_couplers(line_pts_flattened, contact_id_pairs)
@@ -61,8 +64,13 @@ def plan_arm_wave(monitor):
 
 def plan_arm_to_goal(monitor):
     hi = monitor.huskies[monitor.selected_robot_id].interface
-    monitor.set_arm_trajectory(([hi.arm_joint_pose, monitor.goal_arm_pose], None, 10))
-    # monitor.set_arm_trajectory(planning.plan_arm_motion(huskies[0], monitor.goal_arm_pose, boxes))
+    # monitor.set_arm_trajectory(([hi.arm_joint_pose, monitor.goal_arm_pose], None, 10))
+    monitor.set_arm_trajectory(planning.plan_arm_motion(monitor.huskies[monitor.selected_robot_id], monitor.goal_arm_pose, []))
+
+def plan_arm_to_transfer_element(monitor):
+    obstacles = [monitor.assembly_objects[i].body for i in range(monitor.current_seq_index)]
+    transfer_element = monitor.assembly_objects[monitor.current_seq_index]
+    monitor.set_arm_trajectory(planning.plan_arm_to_transfer_element(monitor.huskies[monitor.selected_robot_id], transfer_element, obstacles))
 
 calibration_running = False
 calibration_confirm = False

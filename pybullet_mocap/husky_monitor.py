@@ -33,10 +33,13 @@ DEFAULT_GREY = [0.2, 0.2, 0.2, 0.7]
 GOAL_BLUE = [0, 0.2, 0.5, 0.7]
 TRAJECTORY_GREEN = [0, 0.5, 0.2, 0.7]
 
+EXISTING_ELEMENT_COLOR = pp.RED
+CURRENT_ELEMENT_COLOR = pp.BLUE
+
 USE_MOCAP = False
 CLIENT_IP = '192.168.0.7' # Set to your own IP
 MOCAP_IP = '192.168.0.117' # set to the mocap PC's IP, get this from Motive Settings>Streaming pane->Local interface
-        
+  
 class HuskyMonitor(Node):
     def __init__(self):
         super().__init__('husky_monitor')
@@ -56,9 +59,9 @@ class HuskyMonitor(Node):
         # UI
         self.buttons = []
         self.assembly_position_sliders = []
-        self.state_sliders = []
         self.joint_state_sliders = []
         self.assembly_goal_position_slider_group = None
+        self.base_state_slider_group = None
 
         self.selected_robot_slider = None
         self.selected_robot_id = 0
@@ -69,6 +72,7 @@ class HuskyMonitor(Node):
         self.goal_arm_pose = np.zeros(6)
         self.show_goal_state = True
 
+        # list of conf, attachment other than the ee, ?
         self.planned_arm_trajectory = (None, None, None)
         self.plan_traj_seg = None
         self.planned_base_trajectory = (None, None)
@@ -110,8 +114,9 @@ class HuskyMonitor(Node):
                        pp.remove_all_debug()
                     self.plan_traj_seg = pp.add_segments(points)
     
-    def set_arm_trajectory(self, arm_trajectory: Tuple[List[np.ndarray], List[np.ndarray] | None, float]):
+    def set_arm_trajectory(self, arm_trajectory):
         """ set arm trajectory for visualization"""
+        # : Tuple[List[np.ndarray], List[np.ndarray] | None, float]
         self.planned_arm_trajectory = arm_trajectory
         
     def reset_ui(self):
@@ -120,7 +125,6 @@ class HuskyMonitor(Node):
         p.removeAllUserParameters()
         self.buttons.clear()
         self.assembly_position_sliders.clear()
-        self.state_sliders.clear()
         self.joint_state_sliders.clear()
         self.build_ui()
         
@@ -148,16 +152,36 @@ class HuskyMonitor(Node):
         for i, obj in enumerate(self.assembly_objects):
             if i <= self.current_seq_index:
                 obj.show()
+                pp.set_color(obj.body, EXISTING_ELEMENT_COLOR)
             else:
                 obj.hide()
+        pp.set_color(self.assembly_objects[self.current_seq_index].body, CURRENT_ELEMENT_COLOR)
+
+        # if the partial assembly changes, the previously planned arm trajectory is invalidated
+        self.planned_arm_trajectory = (None, None, None)
 
     def update_assembly_goal_position(self, centroid):
         for i, obj in enumerate(self.assembly_objects):
             obj.update_goal_pose((np.array(centroid) + obj.archived_goal_position, obj.goal_pose[1]))
         self.update_partial_assembly()
 
+    def update_base_conf(self, base_conf):
+        base_pose = pp.pose_from_base_values(base_conf)
+        self.huskies[self.selected_robot_id].interface.position = base_pose[0]
+        self.huskies[self.selected_robot_id].interface.rotation = base_pose[1]
+        # since we are teloperating the base, update the base goal pose
+        self.goal_pose = base_pose
+        
+        # if the base changes, the previously planned arm trajectory is invalidated
+        self.planned_arm_trajectory = (None, None, None)
+
     def update_traj_goal_configuration(self):
         self.goal_model.set_pose(self.goal_pose, self.goal_arm_pose)
+
+    def plan_arm_to_transfer_element(self):
+        world.plan_arm_to_transfer_element(self)
+        self.show_goal_state = True
+        self.toggle_show_goal_state()
     
     # --- --- --- --- --- SETUP PYBULLET --- --- --- --- ---
     def start_pybullet(self):
@@ -190,24 +214,29 @@ class HuskyMonitor(Node):
         self.buttons.append(Button('Toggle Goal/Trajectory', self.toggle_show_goal_state))
         self.buttons.append(Button('Reset Goal State', self.reset_ui))
         
-        # pose2d = pp.pose2d_from_pose((self.huskies[0].interface.position, self.huskies[0].interface.rotation), tolerance=0.1)
-        # self.state_sliders.append(p.addUserDebugParameter("x", -5.0, 5.0, pose2d[0]))
-        # self.state_sliders.append(p.addUserDebugParameter("y", -5.0, 5.0, pose2d[1]))
-        # self.state_sliders.append(p.addUserDebugParameter("yaw", -np.pi, np.pi, pose2d[2]))
+        if not USE_MOCAP:
+            pose2d = pp.pose2d_from_pose((self.huskies[self.selected_robot_id].interface.position, self.huskies[self.selected_robot_id].interface.rotation), tolerance=0.1)
+            self.teleop_base_slider_group = SliderGroup(["teleop base {}".format(t) for t in ["x","y","yaw"]], self.update_base_conf, [-5.0, -5.0, -np.pi], [5.0,5.0,np.pi], pose2d)
+            # self.state_sliders.append(p.addUserDebugParameter("x", -5.0, 5.0, pose2d[0]))
+            # self.state_sliders.append(p.addUserDebugParameter("y", -5.0, 5.0, pose2d[1]))
+            # self.state_sliders.append(p.addUserDebugParameter("yaw", -np.pi, np.pi, pose2d[2]))
+
         # self.buttons.append(Button('Plan base', lambda: world.plan_to_goal(self)))
         # self.buttons.append(Button('Exec Base', lambda: world.move_to_goal(self)))
-        
-        for i, j in enumerate(pp.joints_from_names(self.huskies[0].object.robot, HUSKY_UR5e_JOINT_NAMES)):
-            lower, upper = pp.get_joint_limits(self.huskies[0].object.robot, j)
-            self.joint_state_sliders.append(p.addUserDebugParameter(f'Joint {i}', lower, upper, self.huskies[0].interface.arm_joint_pose[i]))
-        
-        self.buttons.append(Button('Calibrate', lambda: world.calibrate_button(self)))
-        self.buttons.append(Button('Plan arm', lambda: world.plan_arm_to_goal(self)))
-        self.buttons.append(Button('Plan arm wave', lambda: world.plan_arm_wave(self)))
+               
+        # self.buttons.append(Button('Calibrate', lambda: world.calibrate_button(self)))
+        self.buttons.append(Button('Plan arm to assemble current element', self.plan_arm_to_transfer_element))
         self.buttons.append(Button('Exec Arm', lambda: world.execute_arm_trajectory(self)))
+
+        # self.buttons.append(Button('Plan arm wave', lambda: world.plan_arm_wave(self)))
 
         self.gripper_slider = p.addUserDebugParameter("gripper", 0, 1.0)
         self.buttons.append(Button('Exec Gripper', lambda: world.set_gripper(self)))
+
+        for i, j in enumerate(pp.joints_from_names(self.huskies[0].object.robot, HUSKY_UR5e_JOINT_NAMES)):
+            lower, upper = pp.get_joint_limits(self.huskies[0].object.robot, j)
+            self.joint_state_sliders.append(p.addUserDebugParameter(f'Joint {i}', lower, upper, self.huskies[0].interface.arm_joint_pose[i]))
+        self.buttons.append(Button('Plan arm to conf target', lambda: world.plan_arm_to_goal(self)))
     
     # --- --- --- --- --- MOCAP --- --- --- --- --- 
     def start_mocap(self):
@@ -277,6 +306,7 @@ class HuskyMonitor(Node):
             h.object.set_pose((hi.position, hi.rotation), hi.arm_joint_pose)
 
         self.selected_robot_slider.update()
+        self.teleop_base_slider_group.update()
         
         # update goal robot state
         # state_slider_values = [p.readUserDebugParameter(ps) for ps in self.state_sliders]
@@ -298,6 +328,7 @@ class HuskyMonitor(Node):
                 N = len(self.planned_base_trajectory[0])
                 base_traj_idx = int(preview_time * (N - 1))
                 goal_pose = self.planned_base_trajectory[0][base_traj_idx]
+
             if self.planned_arm_trajectory[0] is not None:
                 N = len(self.planned_arm_trajectory[0])
                 arm_traj_idx_float = preview_time * (N - 1)
@@ -305,7 +336,15 @@ class HuskyMonitor(Node):
                 dt = arm_traj_idx_float - arm_traj_idx
                 arm_traj_idx_plus = min(int(preview_time * (N - 1) + 1), N-1)
                 goal_arm_pose = lerp(self.planned_arm_trajectory[0][arm_traj_idx], self.planned_arm_trajectory[0][arm_traj_idx_plus], dt)
-            
+
+            if self.planned_arm_trajectory[1] is not None:
+                # update attached object based on FK
+                obj = self.planned_arm_trajectory[1]
+                gripper_tcp_from_object = obj.grasp
+                world_from_tcp = self.goal_model.get_link_pose_from_name("ur_arm_tool0")
+                object_pose = pp.multiply(world_from_tcp, gripper_tcp_from_object)
+                obj.set_pose(object_pose)
+ 
         self.goal_model.set_pose(goal_pose, goal_arm_pose)
                         
         # run tasks

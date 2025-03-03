@@ -48,12 +48,13 @@ def load_robot(ik_from_arm_base=True, load_calib_tip=False):
     return robot, ee, ee_attachment
 
 class AssemblyObject:
-    def __init__(self, monitor, index: int, pb_body, init_pose, goal_pose):
+    def __init__(self, monitor, index: int, pb_body, init_pose, goal_pose, grasp=None):
         self.name = index
         self.body = pb_body
         self.init_pose = init_pose
         self.archived_goal_position = goal_pose[0]
         self.goal_pose = goal_pose
+        self.grasp = grasp # gripper_tcp_from_object
 
         monitor.add_assembly_objects(self)
 
@@ -66,7 +67,12 @@ class AssemblyObject:
     def update_goal_pose(self, goal_pose):
         self.goal_pose = goal_pose
 
+    def update_grasp(self, grasp):
+        self.grasp = grasp
 
+    def set_pose(self, pose):
+        pp.set_pose(self.body, pose)
+    
 class TrackedObject:
     """PyBullet objects with pose tracked using mocap"""
     def __init__(self, monitor, name, mocap_id, pos, rot, scale, model_file):
@@ -77,7 +83,7 @@ class TrackedObject:
         
         with pp.LockRenderer():
             with pp.HideOutput():
-                self.pp_object = pp.create_obj(os.path.join(DATA_DIRECTORY, model_file), scale=scale)
+                self.body = pp.create_obj(os.path.join(DATA_DIRECTORY, model_file), scale=scale)
         
         monitor.add_tracked_object(self)
         
@@ -86,7 +92,7 @@ class TrackedObject:
         self.rot = rot
         
     def set_pose(self, base_pose):
-        pp.set_pose(self.pp_object, base_pose)
+        pp.set_pose(self.body, base_pose)
 
 class Husky():
     """A husky interface with corresponding husky object."""
@@ -106,7 +112,7 @@ class HuskyObject():
     def __init__(self):
         with pp.LockRenderer():
             with pp.HideOutput():
-                robot, ee, ee_attachment = load_robot(load_calib_tip=True)
+                robot, ee, ee_attachment = load_robot(load_calib_tip=False)
                 self.robot = robot
                 self.ee = ee
                 self.ee_attachment = ee_attachment
@@ -126,6 +132,9 @@ class HuskyObject():
             
     def get_ee_pose(self):
         return pp.get_pose(self.ee)
+
+    def get_link_pose_from_name(self, link_name):
+        return pp.get_link_pose(self.robot, pp.link_from_name(self.robot, link_name))
 
 class Button:
     def __init__(self, name, action):

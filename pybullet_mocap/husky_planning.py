@@ -13,13 +13,13 @@ import pybullet as p
 import pybullet_planning as pp
 
 from pybullet_mocap.common import Husky, lerp, quat_lerp
-from pybullet_mocap.planner import RRTStar, fill_yaw_angle
-from pybullet_mocap.utils import plan_transit_motion
+from pybullet_mocap.base_planner import RRTStar, fill_yaw_angle
+from pybullet_mocap.utils import plan_transit_motion, plan_transfer_motion
 from pybullet_mocap import DATA_DIRECTORY
 
 solver = TracIKSolver(
     os.path.join(DATA_DIRECTORY,'husky_urdf/mt_husky_moveit_config/urdf/husky_ur5_e_no_base_joint.urdf'),
-    'base_footprint',
+    'ur_arm_base_link',
     'ur_arm_tool0'
 )
 
@@ -35,14 +35,27 @@ def plan_arm_motion(husky: Husky, arm_goal_pose, obstacles):
                 husky.object.robot,
                 arm_goal_pose,
                 [husky.object.ee_attachment],
-                [],
+                obstacles,
                 debug=False,
                 disabled_collisions=False,
             )
     
     planned_arm_trajectory = [np.array(p) for p in planned_arm_trajectory]
-    
     return (planned_arm_trajectory, None, 10)
+
+def plan_arm_to_transfer_element(husky: Husky, transfer_element, obstacles):
+    trajectory, grasp = plan_transfer_motion(
+        husky.object.robot,
+        solver, 
+        transfer_element.body, 
+        [husky.object.ee_attachment],
+        obstacles, 
+        debug=False, 
+        disabled_collisions=None)
+    planned_arm_trajectory = [np.array(p) for p in trajectory]
+    transfer_element.update_grasp(grasp)
+
+    return (planned_arm_trajectory, transfer_element, 10)
 
 def plan_base_motion(husky: Husky, goal_pose, obstacles):    
     x_range = (-3, 3)
