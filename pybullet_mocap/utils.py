@@ -212,9 +212,9 @@ def plan_transfer_motion(robot, ik_solver, bar_body, attachments, obstacles,
                                                                 custom_limits=custom_limits, 
                                                                 max_distance=0)
 
-                    transit_path = None
+                    transfer_path = None
                     if pp.check_initial_end(start_conf, detach_conf, transfer_collision_fn, diagnosis=debug):
-                        transit_path = pp.solve_motion_plan(start_conf, detach_conf, 
+                        transfer_path = pp.solve_motion_plan(start_conf, detach_conf, 
                                                         distance_fn, sample_fn, extend_fn,
                                                         transfer_collision_fn,
                                                         algorithm='birrt', 
@@ -224,18 +224,20 @@ def plan_transfer_motion(robot, ik_solver, bar_body, attachments, obstacles,
                                                         coarse_waypoints=False,
                                                         ) 
                     else:
-                        notify('initial and end confs for transit motion are not valid')
+                        notify('initial and end confs for transfer motion are not valid')
 
-                    if transit_path is None:
+                    if transfer_path is None:
                         continue
-                    elif plan_retract_to_home_motion(robot, ik_solver, bar_body, attachments, obstacles, plan_transit_home=False) is None:
-                        notify('transit path rejected due to invalid retraction path')
-                        continue
-                    else:
+
+                    pp.set_joint_positions(robot, movable_joints, transfer_path[-1])
+                    # pp.wait_if_gui()
+                    if plan_retract_to_home_motion(robot, ik_solver, bar_body, attachments, obstacles, plan_transit_home=False) is None:
                         # retry if no retraction is found
-                        notify('transit path found: transit {} pts'.format(len(transit_path)))
+                        notify('transfer path rejected due to invalid retraction path')
+                        continue
+                    notify('transfer path found: {} pts'.format(len(transfer_path)))
 
-                    path = transit_path
+                    path = transfer_path
                     grasp = tool0_from_object
                     break
             else:
@@ -330,7 +332,7 @@ def plan_retract_to_home_motion(robot, ik_solver, bar_body, attachments, obstacl
     pregrasp_poses = list(pp.interpolate_poses(arm_base_from_tool0, arm_base_from_pregrasp, 
                                                pos_step_size=POS_STEP_SIZE, ori_step_size=ORI_STEP_SIZE))
 
-    debug = True
+    debug = 0
     for i, fpose in enumerate(pregrasp_poses[1:]):
         retreat_conf = ik_solver.ik(pp.tform_from_pose(fpose), qinit=retreat_path[-1])
         if retreat_conf is None or retreat_collision_fn(retreat_conf, diagnosis=debug):
