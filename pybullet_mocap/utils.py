@@ -1,33 +1,17 @@
 import sys, os, argparse
-import time
-import random
 import socket, json
-import struct
-from threading import Thread
-# from plyer import notification
 
 import numpy as np
 import pybullet_planning as pp
 
-from pybullet_mocap.optitrack.NatNetClient import NatNetClient
-from pybullet_mocap.optitrack.Utils import print_configuration
 from pybullet_mocap import DATA_DIRECTORY
+from pybullet_planning import multiply, Pose, Euler, Point
 from tracikpy import TracIKSolver
 # import ikfast_ur5e
 
 from compas_robots import RobotModel
 from compas_fab.robots import RobotSemantics
 from compas_fab.robots import Robot as RobotClass
-
-LOCAL_SERVER = False
-# ! Emre might need to set it to 180
-CLIENT_IP = '192.168.0.7' # Set to your own IP
-LOCAL_SERVER_IP = 'localhost' # '127.0.0.1'
-MOCAP_IP = '192.168.0.117'
-
-HUSKY_IP = '192.168.0.113'
-HUSKY_UDP_PORT = 65432
-HUSKY_TCP_PORT = 54321
 
 HERE = os.path.dirname(__file__)
 
@@ -60,86 +44,7 @@ WHEEL_JOINT_NAMES = [
 JOINT_JUMP_THRESHOLD = np.pi/3
 POS_STEP_SIZE = 0.01
 ORI_STEP_SIZE = np.pi/18
-
-name_from_mocap_id = {
-    1028 : 'husky0804',
-    1011 : 'bar',
-    1030 : 'foundation_bar',
-    # 1029 : 'greybox',
-    # 1032 : 'ur_shoulder_link',
-}
-
-# goal registar for optitrack to overwrite
-rigid_body_poses = {}
-
-###################
-
-# This is a callback function that gets connected to the NatNet client. It is called once per rigid body per frame
-def receive_rigid_body_frame( new_id, position, rotation ):
-    global rigid_body_poses
-    rigid_body_poses[new_id] = (position, rotation)
-    # print( "Received frame for rigid body", new_id )
-    # print( "Received frame for rigid body", new_id," ",position," ",rotation )
-
-def send_base_arm_trajectory_command(socket_server, joint_names, joint_positions, time_steps):
-    # check if jointPositions and timeSteps have the same size
-    if (len(joint_positions) != len(time_steps)):
-        print("Error: jointPositions and timeSteps have different sizes")
-        return
-
-    traj = [] # create an empty array
-    for i in range(len(joint_positions)):
-        if (len(joint_positions[i]) != 8):
-            print("Error: jointPositions[" + str(i) + "] has length " + str(len(joint_positions[i])) + " instead of 8")
-            return
-        traj_point = {}
-        traj_point["xVel"] = joint_positions[i][0]
-        traj_point["angVel"] = joint_positions[i][1]
-        traj_point["q1"] = joint_positions[i][2]
-        traj_point["q2"] = joint_positions[i][3]
-        traj_point["q3"] = joint_positions[i][4]
-        traj_point["q4"] = joint_positions[i][5]
-        traj_point["q5"] = joint_positions[i][6]
-        traj_point["q6"] = joint_positions[i][7]
-        traj_point["time_from_start"] = time_steps[i]
-        traj.append(traj_point)
-
-    j = {}
-    j["trajectory"] = traj
-    j["joint_names"] = joint_names
-
-    j_file = json.dumps(j)
-    encoded_json = j_file.encode('utf-8')
-    msg = struct.pack('>I', len(encoded_json)) + encoded_json
-    print("***************************")
-    print("Sending goal trajectory with pts = " + str(len(joint_positions)) + " and duration = " + str(time_steps[-1]))
-    print('Data size = %d' % len(encoded_json))
-
-    try:
-        socket_server.sendall(msg)
-    except socket.error as e:
-        print("error while sending: %s" %e)
-
-########################
-
-def send_gripper_command(socket_server, gripper_pos):
-    assert gripper_pos >= 0 and gripper_pos <= 255
-    j = {}
-    j["gripper_pos"] = gripper_pos
-
-    j_file = json.dumps(j)
-    encoded_json = j_file.encode('utf-8')
-    msg = struct.pack('>I', len(encoded_json)) + encoded_json
-    print("***************************")
-    print("Sending goal gripper pose = " + str(gripper_pos))
-    print('Data size = %d' % len(encoded_json))
-
-    try:
-        socket_server.sendall(msg)
-    except socket.error as e:
-        print("error while sending: %s" %e)
-
-########################
+RETRACTION_LENGTH = 0.1
 
 def load_robot(load_calib_tip=False):
     robot_urdf = os.path.join(DATA_DIRECTORY,'husky_urdf/mt_husky_moveit_config/urdf/husky_ur5_e_no_base_joint.urdf')
@@ -230,9 +135,6 @@ def check_path(joints, path, collision_fn=None, jump_threshold=None, diagnosis=F
                 return False
     return True
 
-ORTHOGONAL_GROUND = True
-from itertools import cycle
-from pybullet_planning import multiply, Pose, Euler, Point
 def get_grasp_pose(direction, angle, offset=1e-3):
     # tool0_from_object
     #direction = Pose(euler=Euler(roll=np.pi / 2, pitch=direction))
@@ -384,6 +286,70 @@ def plan_transit_motion(robot, end_conf, attachments, obstacles, debug=False, di
                 notify('transit path found: transit {} pts'.format(len(transit_path)))
 
     return transit_path
+
+def plan_retract_to_home_motion(robot, ik_solver, bar_body, attachments, obstacles, 
+                             debug=False, disabled_collisions=None):
+    # plan a linear retract motion along negative z-axis, then a transit motion to home conf
+    from pybullet_mocap.husky_robot import UR5e_HOME_STATE
+
+    # * plan retract motion
+    custom_limits = get_custom_limits(robot, {})
+    resolutions = np.ones(6) * 0.05
+    disabled_collisions = disabled_collisions or {}
+    extra_disabled_collisions = [
+        ((robot, pp.link_from_name(robot, 'ur_arm_wrist_3_link')), 
+         (attachments[0].child, pp.BASE_LINK)), 
+         # pp.link_from_name(ee_body, 'robotiq_85_base_link'))),
+        ((bar_body, pp.BASE_LINK), 
+         (attachments[0].child, pp.BASE_LINK)),
+    ]
+
+    movable_joints = pp.joints_from_names(robot, HUSKY_JOINT_NAMES)
+    tool_link = pp.link_from_name(robot, 'ur_arm_tool0')
+
+    sample_fn = pp.get_sample_fn(robot, movable_joints, custom_limits=custom_limits)
+    distance_fn = pp.get_distance_fn(robot, movable_joints) #, weights=weights)
+    extend_fn = pp.get_extend_fn(robot, movable_joints, resolutions=resolutions)
+
+    retreat_collision_fn = pp.get_collision_fn(robot, movable_joints, obstacles=obstacles,
+                                                attachments=attachments, 
+                                                self_collisions=1,
+                                                disabled_collisions=disabled_collisions, 
+                                                extra_disabled_collisions=extra_disabled_collisions,
+                                                custom_limits=custom_limits, 
+                                                max_distance=0)
+
+    # ! assuming current robot pose is at grasp
+    arm_base_from_tool0 = pp.get_relative_pose(robot, tool_link, pp.link_from_name(robot, 'ur_arm_base_link'))
+    current_conf = pp.get_joint_positions(robot, movable_joints)
+
+    tool0_from_pregrasp = pp.Pose(point=[0,0,-RETRACTION_LENGTH])
+    arm_base_from_pregrasp = pp.multiply(arm_base_from_tool0, tool0_from_pregrasp)
+
+    retreat_path = [current_conf]
+    pregrasp_poses = list(pp.interpolate_poses(arm_base_from_tool0, arm_base_from_pregrasp, 
+                                               pos_step_size=POS_STEP_SIZE, ori_step_size=ORI_STEP_SIZE))
+
+    debug = True
+    for fpose in pregrasp_poses[1:]:
+        retreat_conf = ik_solver.ik(pp.tform_from_pose(fpose), qinit=retreat_path[-1])
+        if retreat_conf is None or retreat_collision_fn(retreat_conf, diagnosis=debug):
+            notify('ik can\'t find an ik solution for retreat conf')
+            break
+        else:
+            retreat_path.append(retreat_conf)
+
+    if len(retreat_path) != len(pregrasp_poses) or \
+        not check_path(movable_joints, retreat_path, jump_threshold=JOINT_JUMP_THRESHOLD):
+        return None
+
+    # * plan transit motion
+    pp.set_joint_positions(robot, movable_joints, retreat_path[-1])
+    transit_path = plan_transit_motion(robot, UR5e_HOME_STATE, attachments, obstacles, debug=debug, disabled_collisions=disabled_collisions)
+    if transit_path is None:
+        return None
+
+    return retreat_path + transit_path    
 
 ############################
 

@@ -14,7 +14,7 @@ import pybullet_planning as pp
 
 from pybullet_mocap.common import Husky, lerp, quat_lerp
 from pybullet_mocap.base_planner import RRTStar, fill_yaw_angle
-from pybullet_mocap.utils import plan_transit_motion, plan_transfer_motion
+from pybullet_mocap.utils import plan_transit_motion, plan_transfer_motion, plan_retract_to_home_motion
 from pybullet_mocap import DATA_DIRECTORY
 
 solver = TracIKSolver(
@@ -31,7 +31,7 @@ def arm_ik(husky: Husky, ee_pose: Tuple[np.ndarray, np.ndarray]):
     return qout
 
 def plan_arm_motion(husky: Husky, arm_goal_pose, obstacles):
-    planned_arm_trajectory = plan_transit_motion(
+    trajectory = plan_transit_motion(
                 husky.object.robot,
                 arm_goal_pose,
                 [husky.object.ee_attachment],
@@ -39,9 +39,10 @@ def plan_arm_motion(husky: Husky, arm_goal_pose, obstacles):
                 debug=False,
                 disabled_collisions=False,
             )
-    
-    planned_arm_trajectory = [np.array(p) for p in planned_arm_trajectory]
-    return (planned_arm_trajectory, None, 10)
+    if trajectory is None:
+        return (None, None, None, None)
+    planned_arm_trajectory = [np.array(p) for p in trajectory]
+    return (planned_arm_trajectory, None, 10, None)
 
 def plan_arm_to_transfer_element(husky: Husky, transfer_element, obstacles):
     trajectory, grasp = plan_transfer_motion(
@@ -51,11 +52,28 @@ def plan_arm_to_transfer_element(husky: Husky, transfer_element, obstacles):
         [husky.object.ee_attachment],
         obstacles, 
         debug=False, 
-        disabled_collisions=None)
+        disabled_collisions=None
+        )
+    if trajectory is None:
+        return (None, None, None, None)
     planned_arm_trajectory = [np.array(p) for p in trajectory]
     transfer_element.update_grasp(grasp)
+    return (planned_arm_trajectory, None, 10, transfer_element)
 
-    return (planned_arm_trajectory, transfer_element, 10)
+def plan_arm_to_retract_to_home(husky: Husky, transfer_element, obstacles):
+    trajectory = plan_retract_to_home_motion(
+        husky.object.robot,
+        solver, 
+        transfer_element.body, 
+        [husky.object.ee_attachment],
+        obstacles, 
+        debug=False, 
+        disabled_collisions=None
+        )
+    if trajectory is None:
+        return (None, None, None, None)
+    planned_arm_trajectory = [np.array(p) for p in trajectory]
+    return (planned_arm_trajectory, None, 10, None)
 
 def plan_base_motion(husky: Husky, goal_pose, obstacles):    
     x_range = (-3, 3)

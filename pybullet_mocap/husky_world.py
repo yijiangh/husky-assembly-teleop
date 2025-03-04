@@ -63,14 +63,17 @@ def plan_arm_wave(monitor):
     monitor.set_arm_trajectory(planning.plan_arm_wave(monitor.huskies[monitor.selected_robot_id]))
 
 def plan_arm_to_goal(monitor):
-    hi = monitor.huskies[monitor.selected_robot_id].interface
-    # monitor.set_arm_trajectory(([hi.arm_joint_pose, monitor.goal_arm_pose], None, 10))
     monitor.set_arm_trajectory(planning.plan_arm_motion(monitor.huskies[monitor.selected_robot_id], monitor.goal_arm_pose, []))
 
 def plan_arm_to_transfer_element(monitor):
     obstacles = [monitor.assembly_objects[i].body for i in range(monitor.current_seq_index)]
     transfer_element = monitor.assembly_objects[monitor.current_seq_index]
     monitor.set_arm_trajectory(planning.plan_arm_to_transfer_element(monitor.huskies[monitor.selected_robot_id], transfer_element, obstacles))
+
+def plan_arm_to_retract_to_home(monitor):
+    obstacles = [monitor.assembly_objects[i].body for i in range(monitor.current_seq_index)]
+    transfer_element = monitor.assembly_objects[monitor.current_seq_index]
+    monitor.set_arm_trajectory(planning.plan_arm_to_retract_to_home(monitor.huskies[monitor.selected_robot_id], transfer_element, obstacles))
 
 calibration_running = False
 calibration_confirm = False
@@ -132,17 +135,19 @@ def execute_arm_trajectory(monitor):
         monitor.get_logger().warn('Arm trajectory must be planed before executing!')
         return
 
-    monitor.huskies[monitor.selected_robot_id].interface.send_arm_cmd(*monitor.planned_arm_trajectory)
-    
-    # TESTING SIMULTANEOUS ARM WAVE
-    # huskies[1].interface.send_arm_cmd(*monitor.planned_arm_trajectory)
-    
+    monitor.huskies[monitor.selected_robot_id].interface.send_arm_cmd(*monitor.planned_arm_trajectory[:3])
+     
 def move_base_to_goal(monitor):
     if monitor.planned_base_trajectory[0] is None:
         monitor.get_logger().warn('Base trajectory must be planed before executing!')
         return
     monitor.tasks.append(control.execute_base_trajectory(monitor, monitor.huskies[0], monitor.planned_base_trajectory))
     
+def open_gripper_full(monitor):
+    monitor.huskies[monitor.selected_robot_id].interface.send_gripper_cmd(1.0, 0.1)
+
+def close_gripper_for_bar(monitor):
+    monitor.huskies[monitor.selected_robot_id].interface.send_gripper_cmd(0.1, 0.1)
 
 def set_gripper(monitor):
     monitor.huskies[monitor.selected_robot_id].interface.send_gripper_cmd(monitor.goal_gripper, 0.1)
