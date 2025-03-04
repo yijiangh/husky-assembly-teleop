@@ -44,7 +44,7 @@ WHEEL_JOINT_NAMES = [
 JOINT_JUMP_THRESHOLD = np.pi/3
 POS_STEP_SIZE = 0.01
 ORI_STEP_SIZE = np.pi/18
-RETRACTION_LENGTH = 0.1
+RETRACTION_LENGTH = 0.05
 
 def load_robot(load_calib_tip=False):
     robot_urdf = os.path.join(DATA_DIRECTORY,'husky_urdf/mt_husky_moveit_config/urdf/husky_ur5_e_no_base_joint.urdf')
@@ -195,8 +195,8 @@ def plan_transfer_motion(robot, ik_solver, bar_body, attachments, obstacles,
                 world_from_arm_base = pp.get_link_pose(robot, pp.link_from_name(robot, "ur_arm_base_link"))
                 arm_base_from_tool0 = pp.multiply(pp.invert(world_from_arm_base), world_from_tool0)
 
-                pp.draw_pose(world_from_tool0)
-                pp.draw_pose(world_from_arm_base)
+                # pp.draw_pose(world_from_tool0)
+                # pp.draw_pose(world_from_arm_base)
                 # pp.wait_if_gui()
 
                 detach_conf = ik_solver.ik(pp.tform_from_pose(arm_base_from_tool0))
@@ -228,7 +228,11 @@ def plan_transfer_motion(robot, ik_solver, bar_body, attachments, obstacles,
 
                     if transit_path is None:
                         continue
+                    elif plan_retract_to_home_motion(robot, ik_solver, bar_body, attachments, obstacles, plan_transit_home=False) is None:
+                        notify('transit path rejected due to invalid retraction path')
+                        continue
                     else:
+                        # retry if no retraction is found
                         notify('transit path found: transit {} pts'.format(len(transit_path)))
 
                     path = transit_path
@@ -262,7 +266,7 @@ def plan_transit_motion(robot, end_conf, attachments, obstacles, debug=False, di
 
     transit_path = None
     with pp.WorldSaver():
-        with pp.LockRenderer(True):
+        with pp.LockRenderer(0):
             # * plan transit motion from current conf to pregrasp conf
             start_conf = pp.get_joint_positions(robot, movable_joints)
             # print('start conf: ', start_conf)
@@ -288,7 +292,7 @@ def plan_transit_motion(robot, end_conf, attachments, obstacles, debug=False, di
     return transit_path
 
 def plan_retract_to_home_motion(robot, ik_solver, bar_body, attachments, obstacles, 
-                             debug=False, disabled_collisions=None):
+                             debug=False, disabled_collisions=None, plan_transit_home=True):
     # plan a linear retract motion along negative z-axis, then a transit motion to home conf
     from pybullet_mocap.husky_robot import UR5e_HOME_STATE
 
@@ -306,10 +310,6 @@ def plan_retract_to_home_motion(robot, ik_solver, bar_body, attachments, obstacl
 
     movable_joints = pp.joints_from_names(robot, HUSKY_JOINT_NAMES)
     tool_link = pp.link_from_name(robot, 'ur_arm_tool0')
-
-    sample_fn = pp.get_sample_fn(robot, movable_joints, custom_limits=custom_limits)
-    distance_fn = pp.get_distance_fn(robot, movable_joints) #, weights=weights)
-    extend_fn = pp.get_extend_fn(robot, movable_joints, resolutions=resolutions)
 
     retreat_collision_fn = pp.get_collision_fn(robot, movable_joints, obstacles=obstacles,
                                                 attachments=attachments, 
@@ -331,10 +331,10 @@ def plan_retract_to_home_motion(robot, ik_solver, bar_body, attachments, obstacl
                                                pos_step_size=POS_STEP_SIZE, ori_step_size=ORI_STEP_SIZE))
 
     debug = True
-    for fpose in pregrasp_poses[1:]:
+    for i, fpose in enumerate(pregrasp_poses[1:]):
         retreat_conf = ik_solver.ik(pp.tform_from_pose(fpose), qinit=retreat_path[-1])
         if retreat_conf is None or retreat_collision_fn(retreat_conf, diagnosis=debug):
-            notify('ik can\'t find an ik solution for retreat conf')
+            notify('ik can\'t find an ik solution for retreat conf at pose #{}/{}'.format(i+1, len(pregrasp_poses)))
             break
         else:
             retreat_path.append(retreat_conf)
@@ -344,10 +344,12 @@ def plan_retract_to_home_motion(robot, ik_solver, bar_body, attachments, obstacl
         return None
 
     # * plan transit motion
-    pp.set_joint_positions(robot, movable_joints, retreat_path[-1])
-    transit_path = plan_transit_motion(robot, UR5e_HOME_STATE, attachments, obstacles, debug=debug, disabled_collisions=disabled_collisions)
-    if transit_path is None:
-        return None
+    transit_path = []
+    if plan_transit_home:
+        pp.set_joint_positions(robot, movable_joints, retreat_path[-1])
+        transit_path = plan_transit_motion(robot, UR5e_HOME_STATE, attachments, obstacles, debug=debug, disabled_collisions=disabled_collisions)
+        if transit_path is None:
+            return None
 
     return retreat_path + transit_path    
 

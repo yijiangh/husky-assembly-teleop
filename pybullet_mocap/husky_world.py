@@ -18,26 +18,33 @@ MT_FILE_NAME = "one_tet_MT_contact.json"
 assembly_objects = []
 CONNECT_ROBOT = False
 
-def init(monitor):
+def init(monitor): 
+    # * add robots
+    Husky(monitor, name='/a200_0804', mocap_id=1004, pos=np.array((0,0,0)), connect_arm=CONNECT_ROBOT, connect_gripper=CONNECT_ROBOT)
+    # Husky(monitor, name='/a200_0805', mocap_id=1033, pos=np.array((0,1,0)), connect_gripper=False)
+
+    # * add static obstacles
+    monitor.add_static_obstacles(pp.create_plane(color=(0.9, 0.9, 0.9, 1)))
+
+    # * add tracked obstacles
     # TODO use one tracked box to indicate where to put the assembly
     #boxes.append(TrackedObject(monitor, 'box1', 4457, np.zeros(3), np.array((0, 0, 0, 1)), 0.2, 'cube.obj'))
     #boxes.append(TrackedObject(monitor, 'box2', 4484, np.zeros(3), np.array((0, 0, 0, 1)), 0.2, 'cube.obj'))
     #boxes.append(TrackedObject(monitor, 'box3', 1031, np.zeros(3), np.array((0, 0, 0, 1)), 0.2, 'cube.obj'))
-    
-    Husky(monitor, name='/a200_0804', mocap_id=1004, pos=np.array((0,0,0)), connect_arm=CONNECT_ROBOT, connect_gripper=CONNECT_ROBOT)
-    # Husky(monitor, name='/a200_0805', mocap_id=1033, pos=np.array((0,1,0)), connect_gripper=False)
 
+    # * add assembly objects
     line_pt_pairs, contact_id_pairs, bar_radius = parse_mt_geometric(MT_FILE_NAME)
     line_pts_flattened = flatten_list(np.array(line_pt_pairs))
     radius_per_edge = [bar_radius] * int(len(line_pts_flattened)/2)
 
     # # compute the centroid of the line_pts_flattened
-    centroid = np.mean(line_pts_flattened, axis=0)
-    # move the line_pts_flattened to the origin
-    line_pts_flattened -= centroid
+    # centroid = np.mean(line_pts_flattened, axis=0)
+    # # move the line_pts_flattened to the origin
+    # line_pts_flattened -= centroid
+    # line_pts_flattened += [1.5,0,0.5]
+
     # TODO: set in rhino
-    # line_pts_flattened += [1.5,0,0.3]
-    line_pts_flattened += [1.5,0,0.5]
+    line_pts_flattened += np.array([3.3, -0.5, 0.1])
 
     element_bodies = create_collision_bodies(line_pts_flattened, radius_per_edge, viewer=True)
     half_coupler_from_contact_pair = create_couplers(line_pts_flattened, contact_id_pairs)
@@ -63,15 +70,16 @@ def plan_arm_wave(monitor):
     monitor.set_arm_trajectory(planning.plan_arm_wave(monitor.huskies[monitor.selected_robot_id]))
 
 def plan_arm_to_goal(monitor):
-    monitor.set_arm_trajectory(planning.plan_arm_motion(monitor.huskies[monitor.selected_robot_id], monitor.goal_arm_pose, []))
+    obstacles = [monitor.assembly_objects[i].body for i in range(monitor.current_seq_index)] + monitor.static_obstacles
+    monitor.set_arm_trajectory(planning.plan_arm_motion(monitor.huskies[monitor.selected_robot_id], monitor.goal_arm_pose, obstacles))
 
 def plan_arm_to_transfer_element(monitor):
-    obstacles = [monitor.assembly_objects[i].body for i in range(monitor.current_seq_index)]
+    obstacles = [monitor.assembly_objects[i].body for i in range(monitor.current_seq_index)] + monitor.static_obstacles
     transfer_element = monitor.assembly_objects[monitor.current_seq_index]
     monitor.set_arm_trajectory(planning.plan_arm_to_transfer_element(monitor.huskies[monitor.selected_robot_id], transfer_element, obstacles))
 
 def plan_arm_to_retract_to_home(monitor):
-    obstacles = [monitor.assembly_objects[i].body for i in range(monitor.current_seq_index)]
+    obstacles = [monitor.assembly_objects[i].body for i in range(monitor.current_seq_index)] + monitor.static_obstacles
     transfer_element = monitor.assembly_objects[monitor.current_seq_index]
     monitor.set_arm_trajectory(planning.plan_arm_to_retract_to_home(monitor.huskies[monitor.selected_robot_id], transfer_element, obstacles))
 

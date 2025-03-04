@@ -55,6 +55,7 @@ class HuskyMonitor(Node):
         self.tracked_objects = []
         self.name_from_mocap_id = {}
 
+        self.static_obstacles = []
         self.assembly_objects = []
         self.current_seq_index = 0
         
@@ -96,6 +97,9 @@ class HuskyMonitor(Node):
 
     def add_assembly_objects(self, aobject: AssemblyObject):
         self.assembly_objects.append(aobject)
+
+    def add_static_obstacles(self, pb_body):
+        self.static_obstacles.append(pb_body)
         
     def add_husky(self, husky: Husky):
         """Registers a husky to connect to ROS and be tracked by mocap"""
@@ -197,12 +201,23 @@ class HuskyMonitor(Node):
             # fake execution in sim
             if self.planned_arm_trajectory[0] is None:
                 self.get_logger().warn('Arm trajectory must be planed before executing!')
-            else:
+            else: 
                 ho = self.huskies[self.selected_robot_id].object
                 hi = self.huskies[self.selected_robot_id].interface
+                if self.planned_arm_trajectory[3] is not None:
+                    obj = self.planned_arm_trajectory[3]
+                    gripper_tcp_from_object = obj.grasp
+
                 for conf in self.planned_arm_trajectory[0]:
                     hi.arm_joint_pose = conf
                     ho.set_pose((hi.position, hi.rotation), conf)
+
+                    if self.planned_arm_trajectory[3] is not None:
+                        # update attached object based on FK
+                        world_from_tcp = ho.get_link_pose_from_name("ur_arm_tool0")
+                        object_pose = pp.multiply(world_from_tcp, gripper_tcp_from_object)
+                        obj.set_pose(object_pose)
+
                     pp.wait_for_duration(0.01)
     
     # --- --- --- --- --- SETUP PYBULLET --- --- --- --- ---
