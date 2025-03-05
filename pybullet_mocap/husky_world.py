@@ -16,7 +16,7 @@ from pybullet_mocap.scaffolding import parse_mt_geometric, create_collision_bodi
 MT_FILE_NAME = "one_tet_MT_contact.json"
 # huskies = []
 assembly_objects = []
-CONNECT_ROBOT = False
+CONNECT_ROBOT = True
 
 def init(monitor): 
     # * add robots
@@ -44,7 +44,7 @@ def init(monitor):
     # line_pts_flattened += [1.5,0,0.5]
 
     # TODO: set in rhino
-    line_pts_flattened += np.array([3.3, -0.5, 0.1])
+    line_pts_flattened += np.array([2.8, -0.5, 0.1])
 
     element_bodies = create_collision_bodies(line_pts_flattened, radius_per_edge, viewer=True)
     half_coupler_from_contact_pair = create_couplers(line_pts_flattened, contact_id_pairs)
@@ -142,7 +142,6 @@ def execute_arm_trajectory(monitor):
     if monitor.planned_arm_trajectory[0] is None:
         monitor.get_logger().warn('Arm trajectory must be planed before executing!')
         return
-
     monitor.huskies[monitor.selected_robot_id].interface.send_arm_cmd(*monitor.planned_arm_trajectory[:3])
      
 def move_base_to_goal(monitor):
@@ -152,10 +151,10 @@ def move_base_to_goal(monitor):
     monitor.tasks.append(control.execute_base_trajectory(monitor, monitor.huskies[0], monitor.planned_base_trajectory))
     
 def open_gripper_full(monitor):
-    monitor.huskies[monitor.selected_robot_id].interface.send_gripper_cmd(1.0, 0.1)
+    monitor.huskies[monitor.selected_robot_id].interface.send_gripper_cmd(0.0, 0.1)
 
 def close_gripper_for_bar(monitor):
-    monitor.huskies[monitor.selected_robot_id].interface.send_gripper_cmd(0.1, 0.1)
+    monitor.huskies[monitor.selected_robot_id].interface.send_gripper_cmd(0.6, 0.1)
 
 def set_gripper(monitor):
     monitor.huskies[monitor.selected_robot_id].interface.send_gripper_cmd(monitor.goal_gripper, 0.1)

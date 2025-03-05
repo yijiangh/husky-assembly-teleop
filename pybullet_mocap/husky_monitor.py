@@ -21,6 +21,7 @@ import pybullet as p
 import pybullet_planning as pp
 
 import pybullet_mocap.husky_world as world
+from pybullet_mocap.husky_robot import UR5e_HOME_STATE
 from pybullet_mocap.common import (
     Button, Slider, SliderGroup, Husky, TrackedObject, HuskyObject, AssemblyObject, HUSKY_UR5e_JOINT_NAMES, lerp
 )
@@ -36,8 +37,8 @@ TRAJECTORY_GREEN = [0, 0.5, 0.2, 0.7]
 EXISTING_ELEMENT_COLOR = pp.RED
 CURRENT_ELEMENT_COLOR = pp.BLUE
 
-USE_MOCAP = False
-FAKE_HARDWARE = True
+USE_MOCAP = True
+FAKE_HARDWARE = False
 
 CLIENT_IP = '192.168.0.7' # Set to your own IP
 MOCAP_IP = '192.168.0.117' # set to the mocap PC's IP, get this from Motive Settings>Streaming pane->Local interface
@@ -72,7 +73,7 @@ class HuskyMonitor(Node):
         # goal and trajectory interface
         self.goal_pose = (np.zeros(3), np.array([0, 0, 0, 1]))
         self.goal_gripper = 0.0
-        self.goal_arm_pose = np.zeros(6)
+        self.goal_arm_pose = UR5e_HOME_STATE
         self.show_goal_state = True
 
         # list of conf, velocity, total time, attachment other than the ee
@@ -175,8 +176,8 @@ class HuskyMonitor(Node):
         base_pose = pp.pose_from_base_values(base_conf)
         self.huskies[self.selected_robot_id].interface.position = base_pose[0]
         self.huskies[self.selected_robot_id].interface.rotation = base_pose[1]
-        # since we are teloperating the base, update the base goal pose
-        self.goal_pose = base_pose
+        # # since we are teloperating the base, update the base goal pose
+        # self.goal_pose = base_pose
         
         # if the base changes, the previously planned arm trajectory is invalidated
         self.planned_arm_trajectory = (None, None, None, None)
@@ -265,9 +266,10 @@ class HuskyMonitor(Node):
         self.buttons.append(Button('Plan arm to retract to home', self.plan_arm_to_retract_to_home))
         self.buttons.append(Button('Exec Arm', self.execute_arm_trajectory))
 
-        # self.buttons.append(Button('Plan arm wave', lambda: world.plan_arm_wave(self)))
-        # self.gripper_slider = p.addUserDebugParameter("gripper", 0, 1.0, 0.1)
-        # self.buttons.append(Button('Exec Gripper', lambda: world.set_gripper(self)))
+        self.buttons.append(Button('Plan arm wave', lambda: world.plan_arm_wave(self)))
+
+        self.gripper_slider = p.addUserDebugParameter("gripper", 0, 1.0, 0.1)
+        self.buttons.append(Button('Exec Gripper', lambda: world.set_gripper(self)))
 
         self.buttons.append(Button('Open Gripper', lambda: world.open_gripper_full(self)))
         self.buttons.append(Button('Close Gripper', lambda: world.close_gripper_for_bar(self)))
@@ -343,9 +345,12 @@ class HuskyMonitor(Node):
         for i, h in enumerate(self.huskies):
             hi = h.interface
             h.object.set_pose((hi.position, hi.rotation), hi.arm_joint_pose)
+            # set the goal pose of base since we are teleoperating the base
+            self.goal_pose = (hi.position, hi.rotation)
 
         self.selected_robot_slider.update()
-        self.teleop_base_slider_group.update()
+        if not USE_MOCAP:
+            self.teleop_base_slider_group.update()
         
         # update goal robot state
         # state_slider_values = [p.readUserDebugParameter(ps) for ps in self.state_sliders]
@@ -353,7 +358,7 @@ class HuskyMonitor(Node):
         #     np.array((state_slider_values[0], state_slider_values[1], 0)),
         #     R.from_euler("z", state_slider_values[2], degrees=False).as_quat()
         # )
-        # self.goal_gripper = p.readUserDebugParameter(self.gripper_slider)
+        self.goal_gripper = p.readUserDebugParameter(self.gripper_slider)
         self.goal_arm_pose = np.array([p.readUserDebugParameter(ps) for ps in self.joint_state_sliders])
 
         # update assembly goal position
@@ -374,7 +379,8 @@ class HuskyMonitor(Node):
                 arm_traj_idx = int(arm_traj_idx_float)
                 dt = arm_traj_idx_float - arm_traj_idx
                 arm_traj_idx_plus = min(int(preview_time * (N - 1) + 1), N-1)
-                goal_arm_pose = lerp(self.planned_arm_trajectory[0][arm_traj_idx], self.planned_arm_trajectory[0][arm_traj_idx_plus], dt)
+                goal_arm_pose = self.planned_arm_trajectory[0][arm_traj_idx]
+                # lerp(self.planned_arm_trajectory[0][arm_traj_idx], self.planned_arm_trajectory[0][arm_traj_idx_plus], dt)
 
             if self.planned_arm_trajectory[3] is not None:
                 # update attached object based on FK

@@ -31,7 +31,7 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from control_msgs.action import FollowJointTrajectory
 from control_msgs.msg import JointTolerance
 
-UR5e_HOME_STATE = np.array([0, -np.pi/2, 0, -np.pi/2, 0, 0])
+UR5e_HOME_STATE = np.array([0, -np.pi/2, 0, -np.pi/2, 0, np.pi/2])
 ARM_JOINT_NAMES = ['shoulder_pan_joint', 'shoulder_lift_joint', 'elbow_joint', 'wrist_1_joint', 'wrist_2_joint', 'wrist_3_joint']
 
 def quaterinion_2_angular_velocity(q1, q2, dt):
@@ -189,13 +189,13 @@ class HuskyRobotInterface:
             time_from_start = dt*i
             sec = np.floor(time_from_start)
             nano = time_from_start - sec
-            point.time_from_start = Duration(sec=int(sec), nanosec=int(nano*1000000))
+            point.time_from_start = Duration(sec=int(sec), nanosec=int(nano*1e9))
             goal.trajectory.points.append(point)
-        
+  
         goal.path_tolerance = [
             JointTolerance(position=1.0, velocity=1.0, name=joint_name) for joint_name in ARM_JOINT_NAMES
         ]
-        goal.goal_time_tolerance = Duration(sec=0, nanosec=500000000)
+        goal.goal_time_tolerance = Duration(sec=10, nanosec=0)
         goal.goal_tolerance = [
             JointTolerance(position=0.01, velocity=0.01, name=joint_name) for joint_name in ARM_JOINT_NAMES
         ]
