@@ -23,8 +23,6 @@ solver = TracIKSolver(
     'ur_arm_tool0'
 )
 
-TRAJ_TIME = 20
-
 def arm_ik(husky: Husky, ee_pose: Tuple[np.ndarray, np.ndarray]):
     hi = husky.interface
     # TODO why is it off by 90 degrees?
@@ -32,7 +30,7 @@ def arm_ik(husky: Husky, ee_pose: Tuple[np.ndarray, np.ndarray]):
     qout = solver.ik(pp.tform_from_pose(ee_pose), qinit=hi.arm_joint_pose)
     return qout
 
-def plan_arm_motion(husky: Husky, arm_goal_pose, obstacles):
+def plan_arm_motion(husky: Husky, arm_goal_pose, obstacles, traj_time):
     trajectory = plan_transit_motion(
                 husky.object.robot,
                 arm_goal_pose,
@@ -44,9 +42,9 @@ def plan_arm_motion(husky: Husky, arm_goal_pose, obstacles):
     if trajectory is None:
         return (None, None, None, None)
     planned_arm_trajectory = [np.array(p) for p in trajectory]
-    return (planned_arm_trajectory, None, TRAJ_TIME, None)
+    return (planned_arm_trajectory, None, traj_time, None)
 
-def plan_arm_to_transfer_element(husky: Husky, transfer_element, obstacles):
+def plan_arm_to_transfer_element(husky: Husky, transfer_element, obstacles, traj_time):
     trajectory, grasp = plan_transfer_motion(
         husky.object.robot,
         solver, 
@@ -60,9 +58,9 @@ def plan_arm_to_transfer_element(husky: Husky, transfer_element, obstacles):
         return (None, None, None, None)
     planned_arm_trajectory = [np.array(p) for p in trajectory]
     transfer_element.update_grasp(grasp)
-    return (planned_arm_trajectory, None, TRAJ_TIME, transfer_element)
+    return (planned_arm_trajectory, None, traj_time, transfer_element)
 
-def plan_arm_to_retract_to_home(husky: Husky, transfer_element, obstacles):
+def plan_arm_to_retract_to_home(husky: Husky, transfer_element, obstacles, traj_time):
     trajectory = plan_retract_to_home_motion(
         husky.object.robot,
         solver, 
@@ -75,7 +73,7 @@ def plan_arm_to_retract_to_home(husky: Husky, transfer_element, obstacles):
     if trajectory is None:
         return (None, None, None, None)
     planned_arm_trajectory = [np.array(p) for p in trajectory]
-    return (planned_arm_trajectory, None, TRAJ_TIME, None)
+    return (planned_arm_trajectory, None, traj_time, None)
 
 def plan_base_motion(husky: Husky, goal_pose, obstacles):    
     x_range = (-3, 3)
@@ -171,14 +169,13 @@ def plan_corner(husky: Husky, distance1=1.0, angle=0.75 * np.pi, distance2=1.0):
         
     return discrete_trajectory
 
-def plan_arm_wave(husky: Husky):
+def plan_arm_wave(husky: Husky, trajectory_time):
     N = 20 # number of waypoints
-    TIME = 20
     
-    ts = list(np.linspace(0, TIME, N))[0:]
-    time_scaling = lambda t: t/TIME*2*np.pi
+    ts = list(np.linspace(0, trajectory_time, N))[0:]
+    time_scaling = lambda t: t/trajectory_time*2*np.pi
     
     traj_pos = [np.array([0, -np.pi/2, -np.sin(time_scaling(t)), -np.pi/2 + np.sin(time_scaling(t)), 0, 0]) for t in ts]
-    traj_vel = [1 / TIME * 2*np.pi * np.array([0, 0, -np.cos(time_scaling(t)), np.cos(time_scaling(t)), 0, 0]) for t in ts]
+    traj_vel = [1 / trajectory_time * 2*np.pi * np.array([0, 0, -np.cos(time_scaling(t)), np.cos(time_scaling(t)), 0, 0]) for t in ts]
 
-    return traj_pos, traj_vel, TIME, None
+    return traj_pos, traj_vel, trajectory_time, None

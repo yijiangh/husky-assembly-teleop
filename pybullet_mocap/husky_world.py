@@ -20,7 +20,8 @@ MT_FILE_NAME = "one_tet_MT_contact.json"
 # huskies = []
 assembly_objects = []
 
-CALIB_DATA_DIR = "/home/yijiangh/ros2_ws/src/pybullet_mocap/data/calibration_data"
+# CALIB_DATA_DIR = "/home/yijiangh/ros2_ws/src/pybullet_mocap/data/calibration_data"
+CALIB_DATA_DIR = "/home/yijiangh/ros2_ws/src/husky-asembly-teleop/data/calibration_data"
 
 def init(monitor): 
     # * add robots
@@ -33,7 +34,7 @@ def init(monitor):
 
     # * add tracked obstacles
     # TODO use one tracked box to indicate where to put the assembly
-    TrackedObject(monitor, 'calib_tool', 4457, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
+    TrackedObject(monitor, 'calib_tool', 4497, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
 
     #boxes.append(TrackedObject(monitor, 'box1', 4457, np.zeros(3), np.array((0, 0, 0, 1)), 0.2, 'cube.obj'))
     #boxes.append(TrackedObject(monitor, 'box2', 4484, np.zeros(3), np.array((0, 0, 0, 1)), 0.2, 'cube.obj'))
@@ -74,21 +75,21 @@ def plan_base_to_goal(monitor):
     monitor.set_base_trajectry(base)
 
 def plan_arm_wave(monitor):
-    monitor.set_arm_trajectory(planning.plan_arm_wave(monitor.huskies[monitor.selected_robot_id]))
+    monitor.set_arm_trajectory(planning.plan_arm_wave(monitor.huskies[monitor.selected_robot_id], monitor.trajectory_time))
 
 def plan_arm_to_goal(monitor):
     obstacles = [monitor.assembly_objects[i].body for i in range(monitor.current_seq_index)] + monitor.static_obstacles
-    monitor.set_arm_trajectory(planning.plan_arm_motion(monitor.huskies[monitor.selected_robot_id], monitor.goal_arm_pose, obstacles))
+    monitor.set_arm_trajectory(planning.plan_arm_motion(monitor.huskies[monitor.selected_robot_id], monitor.goal_arm_pose, obstacles, monitor.trajectory_time))
 
 def plan_arm_to_transfer_element(monitor):
     obstacles = [monitor.assembly_objects[i].body for i in range(monitor.current_seq_index)] + monitor.static_obstacles
     transfer_element = monitor.assembly_objects[monitor.current_seq_index]
-    monitor.set_arm_trajectory(planning.plan_arm_to_transfer_element(monitor.huskies[monitor.selected_robot_id], transfer_element, obstacles))
+    monitor.set_arm_trajectory(planning.plan_arm_to_transfer_element(monitor.huskies[monitor.selected_robot_id], transfer_element, obstacles, monitor.trajectory_time))
 
 def plan_arm_to_retract_to_home(monitor):
     obstacles = [monitor.assembly_objects[i].body for i in range(monitor.current_seq_index)] + monitor.static_obstacles
     transfer_element = monitor.assembly_objects[monitor.current_seq_index]
-    monitor.set_arm_trajectory(planning.plan_arm_to_retract_to_home(monitor.huskies[monitor.selected_robot_id], transfer_element, obstacles))
+    monitor.set_arm_trajectory(planning.plan_arm_to_retract_to_home(monitor.huskies[monitor.selected_robot_id], transfer_element, obstacles, monitor.trajectory_time))
 
 # calibration_running = False
 # calibration_confirm = False
@@ -108,7 +109,8 @@ def calibrate_button(monitor, tool_mocap_name):
     if mocap_pose is None:
         monitor.get_logger().warn(f'Mocap {tool_mocap_name} not found!')
         return
-    monitor.append_calibration_data({'joint_conf' : list(hi.arm_joint_pose), "mocap_pose" : mocap_pose})
+    pp.draw_pose(mocap_pose)
+    monitor.append_calibration_data({'joint_conf' : list(hi.arm_joint_pose), "mocap_pose" : [list(v) for v in mocap_pose]})
 
 def save_calibration(monitor):
     print(monitor.calibration_data)
@@ -180,7 +182,7 @@ def execute_arm_trajectory(monitor):
     if monitor.planned_arm_trajectory[0] is None:
         monitor.get_logger().warn('Arm trajectory must be planed before executing!')
         return
-    monitor.huskies[monitor.selected_robot_id].interface.send_arm_cmd(*monitor.planned_arm_trajectory[:3])
+    monitor.huskies[monitor.selected_robot_id].interface.send_arm_cmd(monitor.planned_arm_trajectory[0], monitor.planned_arm_trajectory[1], monitor.trajectory_time)
      
 def move_base_to_goal(monitor):
     if monitor.planned_base_trajectory[0] is None:

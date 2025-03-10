@@ -41,8 +41,8 @@ CLIENT_IP = '192.168.0.7' # Set to your own IP
 MOCAP_IP = '192.168.0.117' # set to the mocap PC's IP, get this from Motive Settings>Streaming pane->Local interface
   
 class HuskyMonitor(Node):
-    USE_MOCAP = False
-    FAKE_HARDWARE = True
+    USE_MOCAP = True
+    FAKE_HARDWARE = False
 
     def __init__(self):
         super().__init__('husky_monitor')
@@ -76,6 +76,8 @@ class HuskyMonitor(Node):
         self.goal_gripper = 0.0
         self.goal_arm_pose = UR5e_HOME_STATE
         self.show_goal_state = True
+
+        self.trajectory_time = 20
 
         # list of conf, velocity, total time, attachment other than the ee
         self.planned_arm_trajectory = (None, None, None, None)
@@ -152,6 +154,9 @@ class HuskyMonitor(Node):
         # update goal pose based on sensed base pose since we are teleoperating the base
         hi = self.huskies[self.selected_robot_id].interface
         self.goal_pose = (hi.position, hi.rotation)
+
+    def update_trajectory_time(self, time):
+        self.trajectory_time = time
 
     def show_previous_in_sequence(self):
         if self.current_seq_index >= 1:
@@ -258,6 +263,8 @@ class HuskyMonitor(Node):
         self.selected_robot_slider = Slider("robot id", self.update_selected_robot_id, 0, len(self.huskies)+1, 0)
         # p.addUserDebugParameter("robot id", 0, len(self.huskies)+1, 0)
 
+        self.trajectory_time_slider = Slider("traj time", self.update_trajectory_time, 1.0, 30.0, 10.0)
+
         self.time_slider = p.addUserDebugParameter("time", 0.0, 1.0, 1.0)
         
         self.buttons.append(Button('Toggle Goal/Trajectory', self.toggle_show_goal_state))
@@ -362,7 +369,9 @@ class HuskyMonitor(Node):
             self.goal_pose = (hi.position, hi.rotation)
 
         self.selected_robot_slider.update()
-        if not USE_MOCAP:
+        self.trajectory_time_slider.update()
+
+        if not self.USE_MOCAP:
             self.teleop_base_slider_group.update()
         
         # update goal robot state
