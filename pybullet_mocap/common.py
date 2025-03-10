@@ -75,15 +75,17 @@ class AssemblyObject:
     
 class TrackedObject:
     """PyBullet objects with pose tracked using mocap"""
-    def __init__(self, monitor, name, mocap_id, pos, rot, scale, model_file):
+    def __init__(self, monitor, name, mocap_id, pos, rot, scale, model_file=None):
         self.name = name
         self.mocap_id = mocap_id
         self.pos = pos
         self.rot = rot
         
-        with pp.LockRenderer():
-            with pp.HideOutput():
-                self.body = pp.create_obj(os.path.join(DATA_DIRECTORY, model_file), scale=scale)
+        self.body = None
+        if model_file:
+            with pp.LockRenderer():
+                with pp.HideOutput():
+                    self.body = pp.create_obj(os.path.join(DATA_DIRECTORY, model_file), scale=scale)
         
         monitor.add_tracked_object(self)
         
@@ -92,7 +94,8 @@ class TrackedObject:
         self.rot = rot
         
     def set_pose(self, base_pose):
-        pp.set_pose(self.body, base_pose)
+        if self.body:
+            pp.set_pose(self.body, base_pose)
 
 class Husky():
     """A husky interface with corresponding husky object."""

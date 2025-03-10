@@ -2,25 +2,30 @@
 This module contains the world definition and high level actions or sequences of actions for the huskies.
 """
 
-import asyncio
+import os
 import asyncio.runners
 import numpy as np
 
 import pybullet_planning as pp
 
-from pybullet_mocap.common import Husky, TrackedObject, AssemblyObject
+from pybullet_mocap import DATA_DIRECTORY
+from pybullet_mocap.common import Husky, TrackedObject, AssemblyObject, HUSKY_UR5e_JOINT_NAMES
 import pybullet_mocap.husky_planning as planning
 import pybullet_mocap.husky_control as control
 from pybullet_mocap.scaffolding import parse_mt_geometric, create_collision_bodies, create_couplers, flatten_list
+import json
+from datetime import datetime
 
 MT_FILE_NAME = "one_tet_MT_contact.json"
 # huskies = []
 assembly_objects = []
-CONNECT_ROBOT = True
+
+CALIB_DATA_DIR = "/home/yijiangh/ros2_ws/src/pybullet_mocap/data/calibration_data"
 
 def init(monitor): 
     # * add robots
-    Husky(monitor, name='/a200_0804', mocap_id=1004, pos=np.array((0,0,0)), connect_arm=CONNECT_ROBOT, connect_gripper=CONNECT_ROBOT)
+    Husky(monitor, name='/a200_0804', mocap_id=1004, pos=np.array((0,0,0)), 
+          connect_arm=not monitor.FAKE_HARDWARE, connect_gripper=not monitor.FAKE_HARDWARE)
     # Husky(monitor, name='/a200_0805', mocap_id=1033, pos=np.array((0,1,0)), connect_gripper=False)
 
     # * add static obstacles
@@ -28,6 +33,8 @@ def init(monitor):
 
     # * add tracked obstacles
     # TODO use one tracked box to indicate where to put the assembly
+    TrackedObject(monitor, 'calib_tool', 4457, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
+
     #boxes.append(TrackedObject(monitor, 'box1', 4457, np.zeros(3), np.array((0, 0, 0, 1)), 0.2, 'cube.obj'))
     #boxes.append(TrackedObject(monitor, 'box2', 4484, np.zeros(3), np.array((0, 0, 0, 1)), 0.2, 'cube.obj'))
     #boxes.append(TrackedObject(monitor, 'box3', 1031, np.zeros(3), np.array((0, 0, 0, 1)), 0.2, 'cube.obj'))
@@ -83,57 +90,88 @@ def plan_arm_to_retract_to_home(monitor):
     transfer_element = monitor.assembly_objects[monitor.current_seq_index]
     monitor.set_arm_trajectory(planning.plan_arm_to_retract_to_home(monitor.huskies[monitor.selected_robot_id], transfer_element, obstacles))
 
-calibration_running = False
-calibration_confirm = False
-def calibrate_button(monitor):
-    global calibration_running, calibration_confirm
-    if not calibration_running:
-        calibration_running = True
-        calibration_confirm = False
-        monitor.tasks.append(task_calibrate(monitor))
+# calibration_running = False
+# calibration_confirm = False
+def calibrate_button(monitor, tool_mocap_name):
+    # record current joint conf and add to record
+    hi = monitor.huskies[monitor.selected_robot_id].interface
+    ho = monitor.huskies[monitor.selected_robot_id].object
+    # fetch calibration mocap set frame
+    mocap_pose = None
+    if monitor.USE_MOCAP:
+        for i, o in enumerate(monitor.tracked_objects):
+            if o.name == tool_mocap_name:
+                mocap_pose = (o.pos, o.rot)
     else:
-        calibration_confirm = True
+        mocap_pose = ho.get_link_pose_from_name("ur_arm_tool0")
 
+    if mocap_pose is None:
+        monitor.get_logger().warn(f'Mocap {tool_mocap_name} not found!')
+        return
+    monitor.append_calibration_data({'joint_conf' : list(hi.arm_joint_pose), "mocap_pose" : mocap_pose})
+
+def save_calibration(monitor):
+    print(monitor.calibration_data)
+    # save monitor.calibration_data to json, file name with time stamp
+    # save to data/calibration_data
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+    filename = os.path.join(CALIB_DATA_DIR, f"calibration_{timestamp}.json")
+
+    with open(filename, 'w') as f:
+        json.dump(monitor.calibration_data, f, indent=4)
+
+    monitor.get_logger().info(f"Calibration data saved to {filename}")
+ 
 def task_calibrate(monitor):
     global calibration_running, calibration_confirm
     hi = monitor.huskies[monitor.selected_robot_id].interface
+    ho = monitor.huskies[monitor.selected_robot_id].object
     # to get goal_ee_pose as husky[0] pose pp.multiply((hi.position, hi.rotation), pp.invert(monitor.goal_pose), monitor.goal_model.get_ee_pose())
-    ee_pose_0 = monitor.huskies[monitor.selected_robot_id].object.get_ee_pose()
-    ee_pose_x = pp.multiply(ee_pose_0, pp.Pose(point=pp.Point(x=0.1)))
-    ee_pose_y = pp.multiply(ee_pose_0, pp.Pose(point=pp.Point(y=0.1)))
-    # local frame: [ee_pose_0, ee_pose_x, ee_pose_y, ee_pose_0]
-    
-    world_ee_poses = [
-        pp.Pose(point=pp.Point(2, -1, 1), euler=pp.Euler(roll=np.pi/2, yaw=-np.pi/2)),
-        pp.Pose(point=pp.Point(2.5, -1, 1.2)),
-        pp.Pose(point=pp.Point(2, 0, 1), euler=pp.Euler(roll=np.pi/2, yaw=-np.pi/2)),
-        pp.Pose(point=pp.Point(2.5, 0, 1.2)),
-        pp.Pose(point=pp.Point(2, 1, 1), euler=pp.Euler(roll=np.pi/2, yaw=-np.pi/2)),
-        pp.Pose(point=pp.Point(2.5, 1, 1.2))
-        ]
-    
-    draw_list = []
-    for pose in world_ee_poses:
-        pp.remove_handles(draw_list)
-        draw_list = pp.draw_pose(pose)
+    current_conf = hi.arm_joint_pose
+   
+    # linearly interpolate joint 0 from joint conf from -np.pi/2 to np.pi/2 different from the current joint 0
+    joint_0_limit = pp.get_joint_limits(ho.robot, pp.joint_from_name(ho.robot, HUSKY_UR5e_JOINT_NAMES[0]))
+    joint_1_limit = pp.get_joint_limits(ho.robot, pp.joint_from_name(ho.robot, HUSKY_UR5e_JOINT_NAMES[1]))
+
+    DELTA = np.pi/3
+    steps = 10
+    joint_confs = []
+    for i in range(steps):
+        joint_0_value = current_conf[0] + (i+1) * DELTA/steps
+        if joint_0_value < joint_0_limit[1]:
+            new_conf = np.copy(current_conf)
+            new_conf[0] = joint_0_value
+            joint_confs.append(new_conf)
+
+    print(joint_confs)
+
+    # draw_list = []
+    for conf in joint_confs:
+        # pp.remove_handles(draw_list)
+        # draw_list = pp.draw_pose(pose)
         while True:
+            # print('is arm executing', hi.is_arm_executing)
             if hi.is_arm_executing:
                 break
+
+            # print('caliberation confirm is', calibration_confirm)
             if calibration_confirm:
                 calibration_confirm = False
                 
-                arm_joint_pose = planning.arm_ik(monitor.huskies[monitor.selected_robot_id], pose)
-                if arm_joint_pose is None:
-                    monitor.get_logger().warn('Ik for calibration failed!')
-                    monitor.set_arm_trajectory((None, None, 2))
-                else:
-                    monitor.set_arm_trajectory(([hi.arm_joint_pose, arm_joint_pose], None, 5))
+                # arm_joint_pose = planning.arm_ik(monitor.huskies[monitor.selected_robot_id], pose)
+                # if arm_joint_pose is None:
+                #     monitor.get_logger().warn('Ik for calibration failed!')
+                #     monitor.set_arm_trajectory((None, None, 2, None))
+                # else:
+
+                monitor.set_arm_trajectory(([hi.arm_joint_pose, conf], None, 5, None))
+
             yield
         
         while hi.is_arm_executing:
             yield # wait for execution to finish
             
-    pp.remove_handles(draw_list)
+    # pp.remove_handles(draw_list)
     
     monitor.get_logger().info('Calibration squence finished!')
     calibration_running = False

@@ -37,16 +37,15 @@ TRAJECTORY_GREEN = [0, 0.5, 0.2, 0.7]
 EXISTING_ELEMENT_COLOR = pp.RED
 CURRENT_ELEMENT_COLOR = pp.BLUE
 
-USE_MOCAP = True
-FAKE_HARDWARE = False
-
 CLIENT_IP = '192.168.0.7' # Set to your own IP
 MOCAP_IP = '192.168.0.117' # set to the mocap PC's IP, get this from Motive Settings>Streaming pane->Local interface
   
 class HuskyMonitor(Node):
+    USE_MOCAP = False
+    FAKE_HARDWARE = True
+
     def __init__(self):
         super().__init__('husky_monitor')
-        
         self.tick_timer = self.create_timer(0.05, self.update)
         
         # simple async tasks to be executed every tick
@@ -59,6 +58,8 @@ class HuskyMonitor(Node):
         self.static_obstacles = []
         self.assembly_objects = []
         self.current_seq_index = 0
+
+        self.calibration_data = []
         
         # UI
         self.buttons = []
@@ -83,7 +84,7 @@ class HuskyMonitor(Node):
 
         # call setup code
         self.start_pybullet()
-        if USE_MOCAP:
+        if self.USE_MOCAP:
             self.start_mocap()
         
         world.init(self)
@@ -125,6 +126,13 @@ class HuskyMonitor(Node):
         """ set arm trajectory for visualization"""
         # : Tuple[List[np.ndarray], List[np.ndarray] | None, float]
         self.planned_arm_trajectory = arm_trajectory
+
+    def append_calibration_data(self, data):
+        self.calibration_data.append(data)
+
+    def record_calibration_data(self):
+        world.save_calibration(self)
+        self.calibration_data = []
         
     def reset_ui(self):
         # reset all sliders to default value by recreating them...
@@ -196,7 +204,7 @@ class HuskyMonitor(Node):
         self.toggle_show_goal_state()
 
     def execute_arm_trajectory(self):
-        if not FAKE_HARDWARE:
+        if not self.FAKE_HARDWARE:
             world.execute_arm_trajectory(self)
         else:
             # fake execution in sim
@@ -218,8 +226,11 @@ class HuskyMonitor(Node):
                         world_from_tcp = ho.get_link_pose_from_name("ur_arm_tool0")
                         object_pose = pp.multiply(world_from_tcp, gripper_tcp_from_object)
                         obj.set_pose(object_pose)
-
+                    
+                    hi.is_arm_executing = True
                     pp.wait_for_duration(0.01)
+
+                hi.is_arm_executing = False
     
     # --- --- --- --- --- SETUP PYBULLET --- --- --- --- ---
     def start_pybullet(self):
@@ -252,7 +263,7 @@ class HuskyMonitor(Node):
         self.buttons.append(Button('Toggle Goal/Trajectory', self.toggle_show_goal_state))
         self.buttons.append(Button('Reset Goal State', self.reset_ui))
         
-        if not USE_MOCAP:
+        if not self.USE_MOCAP:
             pose2d = pp.pose2d_from_pose((self.huskies[self.selected_robot_id].interface.position, self.huskies[self.selected_robot_id].interface.rotation), tolerance=0.1)
             self.teleop_base_slider_group = SliderGroup(["teleop base {}".format(t) for t in ["x","y","yaw"]], self.update_base_conf, [-5.0, -5.0, -np.pi], [5.0,5.0,np.pi], pose2d)
             # self.state_sliders.append(p.addUserDebugParameter("x", -5.0, 5.0, pose2d[0]))
@@ -261,7 +272,9 @@ class HuskyMonitor(Node):
         # self.buttons.append(Button('Plan base', lambda: world.plan_to_goal(self)))
         # self.buttons.append(Button('Exec Base', lambda: world.move_to_goal(self)))
                
-        # self.buttons.append(Button('Calibrate', lambda: world.calibrate_button(self)))
+        self.buttons.append(Button('Record current calib conf', lambda: world.calibrate_button(self, 'calib_tool')))
+        self.buttons.append(Button('Export calib conf to json', self.record_calibration_data))
+
         self.buttons.append(Button('Plan arm to assemble current element', self.plan_arm_to_transfer_element))
         self.buttons.append(Button('Plan arm to retract to home', self.plan_arm_to_retract_to_home))
         self.buttons.append(Button('Exec Arm', self.execute_arm_trajectory))
@@ -377,10 +390,11 @@ class HuskyMonitor(Node):
                 N = len(self.planned_arm_trajectory[0])
                 arm_traj_idx_float = preview_time * (N - 1)
                 arm_traj_idx = int(arm_traj_idx_float)
-                dt = arm_traj_idx_float - arm_traj_idx
-                arm_traj_idx_plus = min(int(preview_time * (N - 1) + 1), N-1)
                 goal_arm_pose = self.planned_arm_trajectory[0][arm_traj_idx]
-                # lerp(self.planned_arm_trajectory[0][arm_traj_idx], self.planned_arm_trajectory[0][arm_traj_idx_plus], dt)
+
+                # dt = arm_traj_idx_float - arm_traj_idx
+                # arm_traj_idx_plus = min(int(preview_time * (N - 1) + 1), N-1)
+                # goal_arm_pose = lerp(self.planned_arm_trajectory[0][arm_traj_idx], self.planned_arm_trajectory[0][arm_traj_idx_plus], dt)
 
             if self.planned_arm_trajectory[3] is not None:
                 # update attached object based on FK
