@@ -28,8 +28,7 @@ def init(monitor):
     # * add robots
     Husky(monitor, name='/a200_0804', mocap_id=1004, pos=np.array((0,0,0)), 
           connect_arm=not monitor.FAKE_HARDWARE, connect_gripper=not monitor.FAKE_HARDWARE, 
-          calibration=monitor.CALIBRATION,
-          base_calibration_file=os.path.join(CALIB_DATA_DIR, 'calibrated_transformation_0804.json'))
+          calibration=monitor.CALIBRATION)
     # Husky(monitor, name='/a200_0805', mocap_id=1033, pos=np.array((0,1,0)), connect_gripper=False)
 
     # * add static obstacles

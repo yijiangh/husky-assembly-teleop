@@ -369,7 +369,7 @@ class HuskyMonitor(Node):
             world_from_mocap = self._mocap_rigidbody_cache[h.name]
             # apply calibrated base transformation here
             # we keep the raw mocap data in _mocap_rigidbody_cache
-            calibrated_pose = pp.multiply(world_from_mocap, h.base_mocap_from_base_footprint)
+            calibrated_pose = pp.multiply(world_from_mocap, h.mocap_from_mobile_base_link)
             h.interface.mocap_callback(np.array(calibrated_pose[0]), np.array(calibrated_pose[1]), ts)
 
         for o in self.tracked_objects:
@@ -395,7 +395,7 @@ class HuskyMonitor(Node):
             # set the goal pose of base since we are teleoperating the base
             self.goal_pose = (hi.position, hi.rotation)
 
-        # pp.draw_pose(self.goal_model.get_link_pose_from_name("ur_arm_base_link"))
+        pp.draw_pose(self.goal_model.get_link_pose_from_name("ur_arm_base_link"))
 
         self.selected_robot_slider.update()
         self.trajectory_time_slider.update()

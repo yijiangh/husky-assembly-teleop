@@ -5,7 +5,6 @@ A collection of common functions and classes used in the pybullet_mocap package.
 import os
 import numpy as np
 import pybullet as p
-import json
 
 import pybullet_planning as pp
 
@@ -112,13 +111,10 @@ class Husky():
         self.interface.position = pos
         self.interface.rotation = rot
 
-        self.base_mocap_from_base_footprint = pp.Pose(point=np.zeros(3))
+        self.mocap_from_mobile_base_link = pp.Pose(point=np.zeros(3))
         if base_calibration_file:
-            # read from json
-            with open(base_calibration_file, 'r') as file:
-                data = json.load(file)
-            pose = data['base_mocap_from_base_footprint']
-            self.base_mocap_from_base_footprint = (pose[0], pose[1])
+            # TODO read from file
+            pass
         
         monitor.add_husky(self)
 
