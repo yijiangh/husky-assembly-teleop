@@ -95,88 +95,84 @@ def plan_arm_to_retract_to_home(monitor):
 # calibration_confirm = False
 def calibrate_button(monitor, tool_mocap_name):
     # record current joint conf and add to record
-    hi = monitor.huskies[monitor.selected_robot_id].interface
-    ho = monitor.huskies[monitor.selected_robot_id].object
+    h = monitor.huskies[monitor.selected_robot_id]
+    hi = h.interface
+    ho = h.object
     # fetch calibration mocap set frame
-    mocap_pose = None
+    flange_mocap_pose = None
+    base_mocap_pose = None
     if monitor.USE_MOCAP:
-        for i, o in enumerate(monitor.tracked_objects):
-            if o.name == tool_mocap_name:
-                mocap_pose = (o.pos, o.rot)
+        # need to get the raw data from mocap
+        if h.name in monitor._mocap_rigidbody_cache:
+            base_mocap_pose = monitor._mocap_rigidbody_cache[h.name]
+        if tool_mocap_name in monitor._mocap_rigidbody_cache:
+            flange_mocap_pose = monitor._mocap_rigidbody_cache[tool_mocap_name]
     else:
-        mocap_pose = ho.get_link_pose_from_name("ur_arm_tool0")
+        base_mocap_pose = ho.get_link_pose_from_name("base_footprint")
+        flange_mocap_pose = ho.get_link_pose_from_name("ur_arm_tool0")
 
-    if mocap_pose is None:
+    tool0_fk_pose = ho.get_link_pose_from_name("ur_arm_tool0")
+    tool_0_fk_from_mocap = pp.multiply(pp.invert(tool0_fk_pose), flange_mocap_pose)
+
+    if flange_mocap_pose is None:
         monitor.get_logger().warn(f'Mocap {tool_mocap_name} not found!')
         return
-    pp.draw_pose(mocap_pose)
-    monitor.append_calibration_data({'joint_conf' : list(hi.arm_joint_pose), "mocap_pose" : [list(v) for v in mocap_pose]})
+    pp.draw_pose(flange_mocap_pose)
+    monitor.append_calibration_data(
+        {'joint_conf' : list(hi.arm_joint_pose), 
+         'base_mocap_pose' : [list(v) for v in base_mocap_pose],
+         "flange_mocap_pose" : [list(v) for v in flange_mocap_pose],
+         'tool0_fk_pose' : [list(v) for v in tool0_fk_pose],
+         'tool0_fk_from_mocap' : [list(v) for v in tool_0_fk_from_mocap],
+         })
 
-def save_calibration(monitor):
+def save_calibration(monitor, filename_suffix=""):
     print(monitor.calibration_data)
     # save monitor.calibration_data to json, file name with time stamp
     # save to data/calibration_data
     timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-    filename = os.path.join(CALIB_DATA_DIR, f"calibration_{timestamp}.json")
+    filename = os.path.join(CALIB_DATA_DIR, f"calibration_{timestamp}_{filename_suffix}.json")
 
     with open(filename, 'w') as f:
-        json.dump(monitor.calibration_data, f, indent=4)
+        json.dump({'raw_data' : monitor.calibration_data}, f, indent=4)
 
     monitor.get_logger().info(f"Calibration data saved to {filename}")
  
-def task_calibrate(monitor):
+def calibrate_joint(monitor, joint_id, tool_mocap_name):
     global calibration_running, calibration_confirm
     hi = monitor.huskies[monitor.selected_robot_id].interface
     ho = monitor.huskies[monitor.selected_robot_id].object
-    # to get goal_ee_pose as husky[0] pose pp.multiply((hi.position, hi.rotation), pp.invert(monitor.goal_pose), monitor.goal_model.get_ee_pose())
     current_conf = hi.arm_joint_pose
+    goal_conf = monitor.goal_arm_pose
+    # check if values are close between current conf and goal conf, except for the joint id
+    diff_vec = np.abs(np.array(current_conf) - np.array(goal_conf))
+    diff_vec[joint_id] = 0
+    if np.all(diff_vec < 1e-4):
+        monitor.get_logger().warn(f'Current conf and goal conf differs in axes other than the target joint {joint_id}: {diff_vec}!')
+        return
    
     # linearly interpolate joint 0 from joint conf from -np.pi/2 to np.pi/2 different from the current joint 0
-    joint_0_limit = pp.get_joint_limits(ho.robot, pp.joint_from_name(ho.robot, HUSKY_UR5e_JOINT_NAMES[0]))
-    joint_1_limit = pp.get_joint_limits(ho.robot, pp.joint_from_name(ho.robot, HUSKY_UR5e_JOINT_NAMES[1]))
+    joint_limit = pp.get_joint_limits(ho.robot, pp.joint_from_name(ho.robot, HUSKY_UR5e_JOINT_NAMES[joint_id]))
 
-    DELTA = np.pi/3
-    steps = 10
-    joint_confs = []
+    steps = 40
+    # interpolate between current conf and goal conf
     for i in range(steps):
-        joint_0_value = current_conf[0] + (i+1) * DELTA/steps
-        if joint_0_value < joint_0_limit[1]:
-            new_conf = np.copy(current_conf)
-            new_conf[0] = joint_0_value
-            joint_confs.append(new_conf)
+        joint_conf = np.array(current_conf) + (i+1)/steps * (np.array(goal_conf) - np.array(current_conf))
+        monitor.huskies[monitor.selected_robot_id].interface.send_arm_cmd([hi.arm_joint_pose, joint_conf], None, monitor.trajectory_time)
 
-    print(joint_confs)
+        # execute the trajectory and wait for extra 2 secs after its done
+        if hi.is_arm_executing:
+            while hi.is_arm_executing:
+                pass
+            else:
+                pp.wait_for_duration(1)
+        else:
+            pp.wait_for_duration(monitor.trajectory_time + 1)
 
-    # draw_list = []
-    for conf in joint_confs:
-        # pp.remove_handles(draw_list)
-        # draw_list = pp.draw_pose(pose)
-        while True:
-            # print('is arm executing', hi.is_arm_executing)
-            if hi.is_arm_executing:
-                break
+        pp.wait_for_user('The tool has stabilize?')
+        calibrate_button(monitor, tool_mocap_name)
 
-            # print('caliberation confirm is', calibration_confirm)
-            if calibration_confirm:
-                calibration_confirm = False
-                
-                # arm_joint_pose = planning.arm_ik(monitor.huskies[monitor.selected_robot_id], pose)
-                # if arm_joint_pose is None:
-                #     monitor.get_logger().warn('Ik for calibration failed!')
-                #     monitor.set_arm_trajectory((None, None, 2, None))
-                # else:
-
-                monitor.set_arm_trajectory(([hi.arm_joint_pose, conf], None, 5, None))
-
-            yield
-        
-        while hi.is_arm_executing:
-            yield # wait for execution to finish
-            
-    # pp.remove_handles(draw_list)
-    
-    monitor.get_logger().info('Calibration squence finished!')
-    calibration_running = False
+    save_calibration(monitor, f"joint_{joint_id}")
     
 def execute_arm_trajectory(monitor):
     if monitor.planned_arm_trajectory[0] is None:

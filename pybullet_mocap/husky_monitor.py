@@ -279,9 +279,6 @@ class HuskyMonitor(Node):
         # self.buttons.append(Button('Plan base', lambda: world.plan_to_goal(self)))
         # self.buttons.append(Button('Exec Base', lambda: world.move_to_goal(self)))
                
-        self.buttons.append(Button('Record current calib conf', lambda: world.calibrate_button(self, 'calib_tool')))
-        self.buttons.append(Button('Export calib conf to json', self.record_calibration_data))
-
         self.buttons.append(Button('Plan arm to assemble current element', self.plan_arm_to_transfer_element))
         self.buttons.append(Button('Plan arm to retract to home', self.plan_arm_to_retract_to_home))
         self.buttons.append(Button('Exec Arm', self.execute_arm_trajectory))
@@ -298,6 +295,14 @@ class HuskyMonitor(Node):
             lower, upper = pp.get_joint_limits(self.huskies[0].object.robot, j)
             self.joint_state_sliders.append(p.addUserDebugParameter(f'Joint {i}', lower, upper, self.huskies[0].interface.arm_joint_pose[i]))
         self.buttons.append(Button('Plan arm to conf target', lambda: world.plan_arm_to_goal(self)))
+
+        self.buttons.append(Button('Record current calib conf', lambda: world.calibrate_button(self, 'calib_tool')))
+        self.buttons.append(Button('Export calib conf to json', self.record_calibration_data))
+
+        self.buttons.append(Button('Calib joint 0', lambda: world.calibrate_joint(self, 0, 'calib_tool')))
+        self.buttons.append(Button('Set joint 0 to zero', self.set_goal_joint_0_to_zero))
+        self.buttons.append(Button('Calib joint 1', lambda: world.calibrate_joint(self, 1, 'calib_tool')))
+
     
     # --- --- --- --- --- MOCAP --- --- --- --- --- 
     def start_mocap(self):
@@ -343,8 +348,12 @@ class HuskyMonitor(Node):
         for h in self.huskies:
             if h.name not in self._mocap_rigidbody_cache:
                 continue
-            (pos, rot) = self._mocap_rigidbody_cache[h.name]
-            h.interface.mocap_callback(pos, rot, ts)
+            world_from_mocap = self._mocap_rigidbody_cache[h.name]
+            # apply calibrated base transformation here
+            # we keep the raw mocap data in _mocap_rigidbody_cache
+            calibrated_pose = pp.multiply(world_from_mocap, h.mocap_from_mobile_base_link)
+            h.interface.mocap_callback(*calibrated_pose, ts)
+
         for o in self.tracked_objects:
             if o.name not in self._mocap_rigidbody_cache:
                 continue

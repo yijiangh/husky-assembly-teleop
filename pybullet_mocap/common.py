@@ -23,15 +23,18 @@ HUSKY_UR5e_JOINT_NAMES = ["ur_arm_shoulder_pan_joint",
 
 def load_robot(ik_from_arm_base=True, load_calib_tip=False):
     # robot_srdf = os.path.join(DATA_DIRECTORY, 'husky_urdf/mt_husky_moveit_config/config/husky.srdf')
-    robot_urdf = os.path.join(DATA_DIRECTORY,'husky_urdf/mt_husky_moveit_config/urdf/husky_ur5_e.urdf')
-    # robot_urdf = os.path.join(DATA_DIRECTORY,'husky_urdf/mt_husky_moveit_config/urdf/husky_ur5_e_no_base_joint.urdf')
+    # robot_urdf = os.path.join(DATA_DIRECTORY,'husky_urdf/mt_husky_moveit_config/urdf/husky_ur5_e.urdf')
+    robot_urdf = os.path.join(DATA_DIRECTORY,'husky_urdf/mt_husky_moveit_config/urdf/husky_ur5_e_no_base_joint.urdf')
 
     if load_calib_tip:
-        gripper_obj = os.path.join(DATA_DIRECTORY,'calibration_probe.obj')
-        gripper_scale = 1
+        # gripper_obj = os.path.join(DATA_DIRECTORY,'calibration_probe.obj')
+        # gripper_scale = 1
+        # ee = pp.create_obj(gripper_obj, scale=gripper_scale) 
+        ee = pp.create_box(0.15, 0.15, 0.05)
     else:
         gripper_obj = os.path.join(DATA_DIRECTORY,'husky_urdf/robotiq_85/meshes/static/robotiq_85_close_20mm.obj')
         gripper_scale = 1
+        ee = pp.create_obj(gripper_obj, scale=gripper_scale) 
 
     assert os.path.exists(robot_urdf)
     assert os.path.exists(gripper_obj)
@@ -40,7 +43,6 @@ def load_robot(ik_from_arm_base=True, load_calib_tip=False):
     robot_pose = pp.get_pose(robot)
 
     tool0_pose = pp.get_link_pose(robot, pp.link_from_name(robot, 'ur_arm_tool0'))
-    ee = pp.create_obj(gripper_obj, scale=gripper_scale) 
     pp.set_pose(ee, pp.multiply(tool0_pose, pp.Pose(euler=pp.Euler(yaw=-np.pi/2))))
     
     ee_attachment = pp.create_attachment(robot, pp.link_from_name(robot, 'ur_arm_tool0'), ee)
@@ -99,7 +101,7 @@ class TrackedObject:
 
 class Husky():
     """A husky interface with corresponding husky object."""
-    def __init__(self, monitor, name, mocap_id=None, pos=np.zeros(3), rot=np.array((0, 0, 0, 1)), connect_arm=True, connect_gripper=True):
+    def __init__(self, monitor, name, mocap_id=None, pos=np.zeros(3), rot=np.array((0, 0, 0, 1)), connect_arm=True, connect_gripper=True, base_calibration_file=None):
         self.name = name
         self.mocap_id = mocap_id
         self.interface = HuskyRobotInterface(monitor, name, use_odom=(mocap_id is None), connect_arm=connect_arm, connect_gripper=connect_gripper)
@@ -107,6 +109,11 @@ class Husky():
         
         self.interface.position = pos
         self.interface.rotation = rot
+
+        self.mocap_from_mobile_base_link = pp.Pose(point=np.zeros(3))
+        if base_calibration_file:
+            # TODO read from file
+            pass
         
         monitor.add_husky(self)
 
