@@ -11,8 +11,8 @@ from skspatial.plotting import plot_3d
 import matplotlib.pyplot as plt
 import numpy as np
 
-data_batch = 'j0'
-EXPORT = True
+data_batch = 'j1'
+EXPORT = False
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 data_folder = os.path.join(HERE, data_batch)
@@ -145,5 +145,5 @@ Points(centers).plot_3d(ax, c='g', depthshade=False),
 for o, v in zip(centers, normals):
     Line(point=o, direction=v).plot_3d(ax, t_1=-7, t_2=7, c='r')
 
-plt.show()
 plt.savefig(os.path.join(data_folder, f'{data_batch}.png'))
+plt.show()

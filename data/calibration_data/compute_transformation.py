@@ -10,6 +10,18 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 j0_data_file_path = os.path.join(HERE, 'j0', 'j0_analysis.json')
 j1_data_file_path = os.path.join(HERE, 'j1', 'j1_analysis.json')
 
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger()
+
+# Create file handler
+file_handler = logging.FileHandler(os.path.join(HERE, f'compute_tf_log.txt'))
+file_handler.setLevel(logging.INFO)
+file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+
+# Add handlers to the logger
+logger.addHandler(file_handler)
+
 # parse the json file
 with open(j0_data_file_path, 'r') as file:
     j0_data = json.load(file)
@@ -30,15 +42,15 @@ intersect_point = line_j0.intersect_line(line_j1, check_coplanar=False)
 
 # use numpy to compute compute angle between j0_axis and j1_axis
 angle = np.rad2deg(Vector(j0_axis).angle_between(Vector(j1_axis)))
-print(f'angle between j0_axis and j1_axis: {angle}')
+logger.info(f'angle between j0_axis and j1_axis: {angle}')
 
 # project intersection point onto both lines and check the distance
 proj_j0 = line_j0.project_point(intersect_point)
 proj_j1 = line_j1.project_point(intersect_point)
 dist_j0 = np.linalg.norm(proj_j0 - intersect_point)
 dist_j1 = np.linalg.norm(proj_j1 - intersect_point)
-print(f'distance between intersection point and projected point on j0_axis: {dist_j0}')
-print(f'distance between intersection point and projected point on j1_axis: {dist_j1}')
+logger.info(f'distance between intersection point and projected point on j0_axis: {dist_j0}')
+logger.info(f'distance between intersection point and projected point on j1_axis: {dist_j1}')
 
 # plot
 ax = plt.figure().add_subplot(projection='3d')
@@ -46,8 +58,8 @@ line_j0.plot_3d(ax, t_1=0, t_2=0.2, c='b')
 line_j1.plot_3d(ax, t_1=0, t_2=0.2, c='g')
 intersect_point.plot_3d(ax, c='k')
 
-# move intersect_point along j0_axis for a distance of 0.163
-arm_base_link_origin = intersect_point - 0.163 * line_j0.direction
+# move intersect_point along j0_axis for a distance of 0.163, 0.1625
+arm_base_link_origin = intersect_point - 0.1625 * line_j0.direction
 base_link_x_axis = Line(point=arm_base_link_origin, direction=j1_axis)
 base_link_z_axis = Line(point=arm_base_link_origin, direction=j0_axis)
 y_axis = np.cross(base_link_z_axis.direction, base_link_x_axis.direction)
@@ -69,7 +81,8 @@ transformation_matrix[:3, 3] = arm_base_link_origin
 world_from_arm_base_link = pp.pose_from_tform(transformation_matrix)
 
 pp.connect(use_gui=True, shadows=True, color=[0.9, 0.9, 1.0])
-robot_urdf = os.path.join('/home/yijiangh/ros2_ws/src/husky-asembly-teleop/data','husky_urdf/mt_husky_moveit_config/urdf/husky_ur5_e_no_base_joint.urdf')
+robot_urdf = os.path.join('/home/yijiangh/ros2_ws/src/pybullet_mocap/data','husky_urdf/mt_husky_moveit_config/urdf/husky_ur5_e_no_base_joint.urdf')
+# robot_urdf = os.path.join('/home/yijiangh/ros2_ws/src/husky-asembly-teleop/data','husky_urdf/mt_husky_moveit_config/urdf/husky_ur5_e_no_base_joint.urdf')
 with pp.HideOutput():
     robot = pp.load_pybullet(robot_urdf, fixed_base=False, cylinder=False)
 pp.set_pose(robot, world_from_base_mocap)
