@@ -43,6 +43,7 @@ MOCAP_IP = '192.168.0.117' # set to the mocap PC's IP, get this from Motive Sett
 class HuskyMonitor(Node):
     USE_MOCAP = True
     FAKE_HARDWARE = False
+    CALIBRATION = True
 
     def __init__(self):
         super().__init__('husky_monitor')
@@ -77,7 +78,7 @@ class HuskyMonitor(Node):
         self.goal_arm_pose = UR5e_HOME_STATE
         self.show_goal_state = True
 
-        self.trajectory_time = 20
+        self.trajectory_time = 2 if self.CALIBRATION else 10
 
         # list of conf, velocity, total time, attachment other than the ee
         self.planned_arm_trajectory = (None, None, None, None)
@@ -136,14 +137,14 @@ class HuskyMonitor(Node):
         world.save_calibration(self)
         self.calibration_data = []
         
-    def reset_ui(self):
+    def reset_ui(self, target_conf=None):
         # reset all sliders to default value by recreating them...
         # pybullet seems to lack a setUserDebugParameter() method :(
         p.removeAllUserParameters()
         self.buttons.clear()
         self.assembly_position_sliders.clear()
         self.joint_state_sliders.clear()
-        self.build_ui()
+        self.build_ui(target_conf)
         
     def toggle_show_goal_state(self):
         self.show_goal_state = not self.show_goal_state
@@ -236,6 +237,20 @@ class HuskyMonitor(Node):
                     pp.wait_for_duration(0.01)
 
                 hi.is_arm_executing = False
+
+    def set_goal_joint_0_to_zero(self):
+        self.goal_arm_pose[0] = 0.0
+        self.reset_ui(self.goal_arm_pose)
+
+    def execute_one_step(self):
+        # pop the first element from planned_arm_trajectory
+        if self.planned_arm_trajectory[0] is None:
+            self.get_logger().warn('Arm trajectory must be planed before executing!')
+        else:
+            conf = self.planned_arm_trajectory[0].pop(0)
+            world.execute_arm_conf(self, conf)
+            # self.goal_arm_pose = conf
+            # self.show_goal_state = True
     
     # --- --- --- --- --- SETUP PYBULLET --- --- --- --- ---
     def start_pybullet(self):
@@ -250,10 +265,10 @@ class HuskyMonitor(Node):
         # load goal robot model
         with pp.LockRenderer():
             with pp.HideOutput():                
-                self.goal_model = HuskyObject()
+                self.goal_model = HuskyObject(calibration=self.CALIBRATION)
                 self.goal_model.set_color(GOAL_BLUE)
         
-    def build_ui(self):
+    def build_ui(self, target_conf=None):
         # default_base_position = [0,0,0]
         # self.assembly_goal_position_slider_group = SliderGroup(["target base {}".format(t) for t in ["x","y","z"]], self.update_assembly_goal_position, [0, -5, 0], [5,5,1], default_base_position)
 
@@ -263,7 +278,7 @@ class HuskyMonitor(Node):
         self.selected_robot_slider = Slider("robot id", self.update_selected_robot_id, 0, len(self.huskies)+1, 0)
         # p.addUserDebugParameter("robot id", 0, len(self.huskies)+1, 0)
 
-        self.trajectory_time_slider = Slider("traj time", self.update_trajectory_time, 1.0, 30.0, 10.0)
+        self.trajectory_time_slider = Slider("traj time", self.update_trajectory_time, 1.0, 30.0, self.trajectory_time)
 
         self.time_slider = p.addUserDebugParameter("time", 0.0, 1.0, 1.0)
         
@@ -293,15 +308,18 @@ class HuskyMonitor(Node):
 
         for i, j in enumerate(pp.joints_from_names(self.huskies[0].object.robot, HUSKY_UR5e_JOINT_NAMES)):
             lower, upper = pp.get_joint_limits(self.huskies[0].object.robot, j)
-            self.joint_state_sliders.append(p.addUserDebugParameter(f'Joint {i}', lower, upper, self.huskies[0].interface.arm_joint_pose[i]))
+            if target_conf is None:
+                self.joint_state_sliders.append(p.addUserDebugParameter(f'Joint {i}', lower, upper, self.huskies[0].interface.arm_joint_pose[i]))
+            else:
+                self.joint_state_sliders.append(p.addUserDebugParameter(f'Joint {i}', lower, upper, target_conf[i]))
         self.buttons.append(Button('Plan arm to conf target', lambda: world.plan_arm_to_goal(self)))
-
-        self.buttons.append(Button('Record current calib conf', lambda: world.calibrate_button(self, 'calib_tool')))
-        self.buttons.append(Button('Export calib conf to json', self.record_calibration_data))
 
         self.buttons.append(Button('Calib joint 0', lambda: world.calibrate_joint(self, 0, 'calib_tool')))
         self.buttons.append(Button('Set joint 0 to zero', self.set_goal_joint_0_to_zero))
         self.buttons.append(Button('Calib joint 1', lambda: world.calibrate_joint(self, 1, 'calib_tool')))
+        self.buttons.append(Button('Execute one step', self.execute_one_step))
+        self.buttons.append(Button('Record current calib conf', lambda: world.calibrate_button(self, 'calib_tool')))
+        self.buttons.append(Button('Export calib conf to json', self.record_calibration_data))
 
     
     # --- --- --- --- --- MOCAP --- --- --- --- --- 
@@ -352,14 +370,14 @@ class HuskyMonitor(Node):
             # apply calibrated base transformation here
             # we keep the raw mocap data in _mocap_rigidbody_cache
             calibrated_pose = pp.multiply(world_from_mocap, h.mocap_from_mobile_base_link)
-            h.interface.mocap_callback(*calibrated_pose, ts)
+            h.interface.mocap_callback(np.array(calibrated_pose[0]), np.array(calibrated_pose[1]), ts)
 
         for o in self.tracked_objects:
             if o.name not in self._mocap_rigidbody_cache:
                 continue
             (pos, rot) = self._mocap_rigidbody_cache[o.name]
             o.mocap_callback(pos, rot, ts)
-        self._mocap_rigidbody_cache.clear()
+        # self._mocap_rigidbody_cache.clear()
         
     # --- --- --- --- --- UPDATE --- --- --- --- --- 
     def update(self):

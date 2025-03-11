@@ -4,6 +4,7 @@ This module contains the world definition and high level actions or sequences of
 
 import os
 import asyncio.runners
+import asyncio
 import numpy as np
 
 import pybullet_planning as pp
@@ -26,7 +27,8 @@ CALIB_DATA_DIR = "/home/yijiangh/ros2_ws/src/husky-asembly-teleop/data/calibrati
 def init(monitor): 
     # * add robots
     Husky(monitor, name='/a200_0804', mocap_id=1004, pos=np.array((0,0,0)), 
-          connect_arm=not monitor.FAKE_HARDWARE, connect_gripper=not monitor.FAKE_HARDWARE)
+          connect_arm=not monitor.FAKE_HARDWARE, connect_gripper=not monitor.FAKE_HARDWARE, 
+          calibration=monitor.CALIBRATION)
     # Husky(monitor, name='/a200_0805', mocap_id=1033, pos=np.array((0,1,0)), connect_gripper=False)
 
     # * add static obstacles
@@ -143,37 +145,48 @@ def calibrate_joint(monitor, joint_id, tool_mocap_name):
     hi = monitor.huskies[monitor.selected_robot_id].interface
     ho = monitor.huskies[monitor.selected_robot_id].object
     current_conf = hi.arm_joint_pose
-    goal_conf = monitor.goal_arm_pose
+    goal_conf = np.copy(monitor.goal_arm_pose)
     # check if values are close between current conf and goal conf, except for the joint id
     diff_vec = np.abs(np.array(current_conf) - np.array(goal_conf))
     diff_vec[joint_id] = 0
-    if np.all(diff_vec < 1e-4):
+    if not np.all(diff_vec < 1e-4):
         monitor.get_logger().warn(f'Current conf and goal conf differs in axes other than the target joint {joint_id}: {diff_vec}!')
         return
    
     # linearly interpolate joint 0 from joint conf from -np.pi/2 to np.pi/2 different from the current joint 0
     joint_limit = pp.get_joint_limits(ho.robot, pp.joint_from_name(ho.robot, HUSKY_UR5e_JOINT_NAMES[joint_id]))
 
-    steps = 40
+    steps = 20
     # interpolate between current conf and goal conf
+    joint_confs = []
     for i in range(steps):
         joint_conf = np.array(current_conf) + (i+1)/steps * (np.array(goal_conf) - np.array(current_conf))
-        monitor.huskies[monitor.selected_robot_id].interface.send_arm_cmd([hi.arm_joint_pose, joint_conf], None, monitor.trajectory_time)
+        joint_confs.append(joint_conf)
+        # monitor.goal_arm_pose(joint_conf)
+        # monitor.huskies[monitor.selected_robot_id].interface.send_arm_cmd([hi.arm_joint_pose, joint_conf], None, monitor.trajectory_time)
 
+        # print(f'Executing: {hi.is_arm_executing}')
         # execute the trajectory and wait for extra 2 secs after its done
-        if hi.is_arm_executing:
-            while hi.is_arm_executing:
-                pass
-            else:
-                pp.wait_for_duration(1)
-        else:
-            pp.wait_for_duration(monitor.trajectory_time + 1)
+        # if hi.is_arm_executing:
+        #     while hi.is_arm_executing:
+        #         pass
+        #     else:
+        #         pp.wait_for_duration(1)
+        # else:
+        # pp.wait_for_duration(monitor.trajectory_time + 1)
+        # await asyncio.sleep(monitor.trajectory_time + 1)
 
-        pp.wait_for_user('The tool has stabilize?')
-        calibrate_button(monitor, tool_mocap_name)
+        # pp.wait_for_user('The tool has stabilize?')
+        # calibrate_button(monitor, tool_mocap_name)
+    # save_calibration(monitor, f"joint_{joint_id}")
 
-    save_calibration(monitor, f"joint_{joint_id}")
+    monitor.set_arm_trajectory((joint_confs, None, monitor.trajectory_time, None))
     
+def execute_arm_conf(monitor, conf):
+    hi = monitor.huskies[monitor.selected_robot_id].interface
+    monitor.huskies[monitor.selected_robot_id].interface.send_arm_cmd([hi.arm_joint_pose, conf], 
+                                                                      None, monitor.trajectory_time)
+
 def execute_arm_trajectory(monitor):
     if monitor.planned_arm_trajectory[0] is None:
         monitor.get_logger().warn('Arm trajectory must be planed before executing!')

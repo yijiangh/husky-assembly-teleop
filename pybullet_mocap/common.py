@@ -31,13 +31,14 @@ def load_robot(ik_from_arm_base=True, load_calib_tip=False):
         # gripper_scale = 1
         # ee = pp.create_obj(gripper_obj, scale=gripper_scale) 
         ee = pp.create_box(0.15, 0.15, 0.05)
+        pp.set_color(ee, pp.apply_alpha(pp.GREY, 0.3))
     else:
         gripper_obj = os.path.join(DATA_DIRECTORY,'husky_urdf/robotiq_85/meshes/static/robotiq_85_close_20mm.obj')
+        assert os.path.exists(gripper_obj)
         gripper_scale = 1
         ee = pp.create_obj(gripper_obj, scale=gripper_scale) 
 
     assert os.path.exists(robot_urdf)
-    assert os.path.exists(gripper_obj)
 
     robot = pp.load_pybullet(robot_urdf, fixed_base=False, cylinder=False)
     robot_pose = pp.get_pose(robot)
@@ -101,11 +102,11 @@ class TrackedObject:
 
 class Husky():
     """A husky interface with corresponding husky object."""
-    def __init__(self, monitor, name, mocap_id=None, pos=np.zeros(3), rot=np.array((0, 0, 0, 1)), connect_arm=True, connect_gripper=True, base_calibration_file=None):
+    def __init__(self, monitor, name, mocap_id=None, pos=np.zeros(3), rot=np.array((0, 0, 0, 1)), connect_arm=True, connect_gripper=True, base_calibration_file=None, calibration=False):
         self.name = name
         self.mocap_id = mocap_id
         self.interface = HuskyRobotInterface(monitor, name, use_odom=(mocap_id is None), connect_arm=connect_arm, connect_gripper=connect_gripper)
-        self.object = HuskyObject()
+        self.object = HuskyObject(calibration)
         
         self.interface.position = pos
         self.interface.rotation = rot
@@ -119,10 +120,10 @@ class Husky():
 
 class HuskyObject():
     """Collection of pybullet objects representing a husky"""
-    def __init__(self):
+    def __init__(self, calibration=False):
         with pp.LockRenderer():
             with pp.HideOutput():
-                robot, ee, ee_attachment = load_robot(load_calib_tip=False)
+                robot, ee, ee_attachment = load_robot(load_calib_tip=calibration)
                 self.robot = robot
                 self.ee = ee
                 self.ee_attachment = ee_attachment
