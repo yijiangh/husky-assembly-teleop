@@ -22,7 +22,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger()
 
 # Create file handler
-file_handler = logging.FileHandler(os.path.join(data_folder, f'circle_fitting_log_{data_batch}.txt'))
+file_handler = logging.FileHandler(os.path.join(data_folder, f'circle_fitting_log_{data_batch}.txt'), mode='w')
 file_handler.setLevel(logging.INFO)
 file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
 

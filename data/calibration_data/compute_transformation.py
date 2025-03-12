@@ -14,8 +14,8 @@ j1_data_file_path = os.path.join(HERE, 'j1', 'j1_analysis.json')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger()
 
-# Create file handler
-file_handler = logging.FileHandler(os.path.join(HERE, f'compute_tf_log.txt'))
+# Create file handler with mode 'w' to overwrite the file
+file_handler = logging.FileHandler(os.path.join(HERE, f'compute_tf_log.txt'), mode='w')
 file_handler.setLevel(logging.INFO)
 file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
 
@@ -78,11 +78,31 @@ transformation_matrix[:3, 0] = base_link_x_axis.direction
 transformation_matrix[:3, 1] = base_link_y_axis.direction
 transformation_matrix[:3, 2] = base_link_z_axis.direction
 transformation_matrix[:3, 3] = arm_base_link_origin
-world_from_arm_base_link = pp.pose_from_tform(transformation_matrix)
+archived_world_from_arm_base_link = pp.pose_from_tform(transformation_matrix)
+print('archived world_from_arm_base_link:', archived_world_from_arm_base_link)
+
+# pos = [-0.15230583157880548, -0.22670053440281182, 0.45918053486473576]
+# quat = [0.7071064366734807, -0.0006980078314821615, -0.0016077630143434593, -0.7071049533825158]
+# world_from_arm_base_link = (np.array(pos), np.array(quat))
+tf = np.zeros((4, 4))
+# tf[:3, 0] = base_link_x_axis.direction
+# tf[:3, 1] = base_link_y_axis.direction
+# tf[:3, 2] = base_link_z_axis.direction
+# tf[:3, 3] = arm_base_link_origin
+tf[:3, 0] =  [-0.9997421890256512, 0.022665070266295655, -0.0013601735269150803]
+tf[:3, 1] =  [-0.022669366323271264, -0.9997377963610777, 0.0032308447188740875]
+tf[:3, 2] =  [-0.001286589561893986, 0.0032608460435939986, 0.9999938557663138]
+tf[:3, 3] =  [-0.15230583157880548, -0.22670053440281182, 0.45918053486473576]
+world_from_arm_base_link = pp.pose_from_tform(tf)
+print('new world_from_arm_base_link:', world_from_arm_base_link)
+
+print('origin difference:', np.array(archived_world_from_arm_base_link[0]) - np.array(world_from_arm_base_link[0]))
+print('quat difference:', np.array(archived_world_from_arm_base_link[1]) - np.array(world_from_arm_base_link[1]))
 
 pp.connect(use_gui=True, shadows=True, color=[0.9, 0.9, 1.0])
-robot_urdf = os.path.join('/home/yijiangh/ros2_ws/src/pybullet_mocap/data','husky_urdf/mt_husky_moveit_config/urdf/husky_ur5_e_no_base_joint.urdf')
+# robot_urdf = os.path.join('/home/yijiangh/ros2_ws/src/pybullet_mocap/data','husky_urdf/mt_husky_moveit_config/urdf/husky_ur5_e_no_base_joint.urdf')
 # robot_urdf = os.path.join('/home/yijiangh/ros2_ws/src/husky-asembly-teleop/data','husky_urdf/mt_husky_moveit_config/urdf/husky_ur5_e_no_base_joint.urdf')
+robot_urdf = os.path.join(r'D:\0_Project\03-2025_husky_assembly\Code\husky-asembly-teleop\data',r'husky_urdf\mt_husky_moveit_config\urdf\husky_ur5_e_no_base_joint.urdf')
 with pp.HideOutput():
     robot = pp.load_pybullet(robot_urdf, fixed_base=False, cylinder=False)
 pp.set_pose(robot, world_from_base_mocap)

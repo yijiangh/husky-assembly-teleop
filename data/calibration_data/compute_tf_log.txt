@@ -1,6 +1,3 @@
-2025-03-11 21:54:27,745 - INFO - angle between j0_axis and j1_axis: 89.97808778752346
-2025-03-11 21:54:27,756 - INFO - distance between intersection point and projected point on j0_axis: 1.1102230246251565e-16
-2025-03-11 21:54:27,756 - INFO - distance between intersection point and projected point on j1_axis: 0.0005984311852725902
-2025-03-11 21:55:05,989 - INFO - angle between j0_axis and j1_axis: 89.97808778752346
-2025-03-11 21:55:06,000 - INFO - distance between intersection point and projected point on j0_axis: 1.1102230246251565e-16
-2025-03-11 21:55:06,000 - INFO - distance between intersection point and projected point on j1_axis: 0.0005984311852725902
+2025-03-12 14:59:22,943 - INFO - angle between j0_axis and j1_axis: 89.97808778752346
+2025-03-12 14:59:22,943 - INFO - distance between intersection point and projected point on j0_axis: 1.1102230246251565e-16
+2025-03-12 14:59:22,944 - INFO - distance between intersection point and projected point on j1_axis: 0.0005984311852725902

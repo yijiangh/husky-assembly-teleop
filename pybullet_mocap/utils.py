@@ -23,11 +23,11 @@ zup_from_yup = pp.pose_from_tform(yup_tform)
 
 # <link name="bar_tcp"/>
 # <joint name="tool0-bar_tcp_fixed_joint" type="fixed">
-#   <origin rpy="0 0 3.141592653589793" xyz="0 0 0.138"/>
+#   <origin rpy="0 0 3.141592653589793" xyz="0 0 0.152"/>
 #   <parent link="robotiq_85_mount"/>
 #   <child link="bar_tcp"/>
 # </joint>
-TOOL0_FROM_GRIPPER_TCP = pp.Pose(point=(0, 0, 0.138), euler=pp.Euler(yaw=np.pi))
+TOOL0_FROM_GRIPPER_TCP = pp.Pose(point=(0, 0, 0.152), euler=pp.Euler(yaw=np.pi))
 
 HUSKY_JOINT_NAMES = [
                       "ur_arm_shoulder_pan_joint", 

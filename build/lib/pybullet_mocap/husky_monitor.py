@@ -28,8 +28,6 @@ from pybullet_mocap.common import (
 
 from pybullet_mocap.optitrack.NatNetClient import NatNetClient
 
-TOOL0_FROM_TIP = pp.Pose(point=(0, 0, 73.65 * 1e-3))
-
 DEFAULT_GREY = [0.2, 0.2, 0.2, 0.7]
 GOAL_BLUE = [0, 0.2, 0.5, 0.7]
 TRAJECTORY_GREEN = [0, 0.5, 0.2, 0.7]

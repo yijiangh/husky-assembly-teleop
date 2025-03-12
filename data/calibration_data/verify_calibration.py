@@ -16,13 +16,15 @@ HUSKY_UR5e_JOINT_NAMES = ["ur_arm_shoulder_pan_joint",
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 data_folder = os.path.join(HERE, 'verification')
+# data_folder = os.path.join(HERE, 'j0')
+# data_folder = os.path.join(HERE, 'j1')
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger()
 
 # Create file handler
-file_handler = logging.FileHandler(os.path.join(data_folder, f'log.txt'))
+file_handler = logging.FileHandler(os.path.join(data_folder, f'log.txt'), mode='w')
 file_handler.setLevel(logging.INFO)
 file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
 
@@ -31,7 +33,8 @@ logger.addHandler(file_handler)
 
 pp.connect(use_gui=False, shadows=True, color=[0.9, 0.9, 1.0])
 # robot_urdf = os.path.join('/home/yijiangh/ros2_ws/src/husky-asembly-teleop/data','husky_urdf/mt_husky_moveit_config/urdf/husky_ur5_e_no_base_joint.urdf')
-robot_urdf = os.path.join('/home/yijiangh/ros2_ws/src/pybullet_mocap/data', 'husky_urdf/mt_husky_moveit_config/urdf/husky_ur5_e_no_base_joint.urdf')
+# robot_urdf = os.path.join('/home/yijiangh/ros2_ws/src/pybullet_mocap/data', 'husky_urdf/mt_husky_moveit_config/urdf/husky_ur5_e_no_base_joint.urdf')
+robot_urdf = os.path.join(r'D:\0_Project\03-2025_husky_assembly\Code\husky-asembly-teleop\data',r'husky_urdf\mt_husky_moveit_config\urdf\husky_ur5_e_no_base_joint.urdf')
 with pp.HideOutput():
     robot = pp.load_pybullet(robot_urdf, fixed_base=False, cylinder=False)
 
@@ -42,6 +45,7 @@ base_mocap_from_base_footprint = data['base_mocap_from_base_footprint']
 
 json_files = [f for f in os.listdir(data_folder) if f.startswith('calibration_') and f.endswith('.json')]
 tool0_from_flange_mocap_batches = []
+joint_confs = []
 for i, file_name in enumerate(json_files):
     logger.info('Working on file: %s', file_name)
     file_path = os.path.join(data_folder, file_name)
@@ -65,12 +69,16 @@ for i, file_name in enumerate(json_files):
         tool0_from_flange_mocap = pp.multiply(pp.invert(world_from_tool0), flange_mocap_pose)
 
         tool0_from_flange_mocap_batches.append(tool0_from_flange_mocap) 
+        joint_confs.append(conf)
 
         pp.draw_pose(world_from_tool0)
         pp.draw_pose(flange_mocap_pose)
         pp.draw_pose(tool0_from_flange_mocap)
 
 pp.wait_if_gui()
+
+fig = plt.figure()
+ax = plt.subplot(111)
 
 origins = [pose[0] for pose in tool0_from_flange_mocap_batches]
 origin_mean = np.mean(origins, axis=0)
@@ -79,7 +87,7 @@ distances = [1e3 * np.linalg.norm(origin - origin_mean) for origin in origins]
 logger.info('Max origin distance to mean: %f', max(distances))
 
 # plot distance in a line plot
-plt.plot(distances, label='origin to mean distance (mm)')
+ax.plot(distances, label='origin to mean distance (mm)')
 
 tfs = [pp.matrix_from_quat(pose[1]) for pose in tool0_from_flange_mocap_batches]
 for i in range(3):
@@ -94,10 +102,20 @@ for i in range(3):
 
     logger.info(f'Axis {i}')
     logger.info('Max axis angle to mean vec: %f', np.mean(x_angles))
-    plt.plot(x_angles, label=f'axis {i} to mean angle (deg)')
+    ax.plot(x_angles, label=f'axis {i} to mean angle (deg)')
 
-plt.legend()
-plt.show()
+for i in range(6):
+    ax.plot([conf[i] for conf in joint_confs], label=f'joint value {i}')
+
+# Shrink current axis by 20%
+box = ax.get_position()
+ax.set_position([box.x0, box.y0, box.width * 0.8, box.height])
+
+# Put a legend to the right of the current axis
+ax.legend(loc='center left', bbox_to_anchor=(1, 0.5))
+# plt.legend()
+
 plt.savefig(os.path.join(data_folder, 'verification.png'))
+plt.show()
 
 pp.disconnect()
