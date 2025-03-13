@@ -43,7 +43,7 @@ MOCAP_IP = '192.168.0.117' # set to the mocap PC's IP, get this from Motive Sett
 class HuskyMonitor(Node):
     USE_MOCAP = True
     FAKE_HARDWARE = False
-    CALIBRATION = True
+    CALIBRATION = False
 
     def __init__(self):
         super().__init__('husky_monitor')
