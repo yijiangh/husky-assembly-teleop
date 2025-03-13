@@ -5,14 +5,17 @@
 
 import json, os
 import logging, datetime
+from turtle import Vec2D
 from circle_fitting_3d import Circle3D
-from skspatial.objects import Line, Points, Point
+from matplotlib.pylab import normal
+from skspatial.objects import Line, Points, Point, Vector, Plane
 from skspatial.plotting import plot_3d
 import matplotlib.pyplot as plt
 import numpy as np
+import pybullet_planning as pp
 
-data_batch = 'j1'
-EXPORT = False
+data_batch = 'j0'
+EXPORT = True
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 data_folder = os.path.join(HERE, data_batch)
@@ -52,21 +55,17 @@ for i, file_name in enumerate(json_files):
     base_mocap_origins = []
     base_mocap_quats = []
     for entry in data['raw_data']:
-        mocap_pose = entry.get("flange_mocap_pose", [])
+        flange_mocap_pose = entry.get("flange_mocap_pose", [])
         base_mocap_pose = entry.get("base_mocap_pose", [])
-        if mocap_pose:
-            origin = mocap_pose[0]  # Assuming the first element is the origin
+        if flange_mocap_pose and base_mocap_pose:
+            base_from_flange = pp.multiply(pp.invert(base_mocap_pose), flange_mocap_pose)
+            origin = base_from_flange[0]  # Assuming the first element is the origin
             points.append(origin)
-        if base_mocap_pose:
+
             base_mocap_origins.append(base_mocap_pose[0])
             base_mocap_quats.append(base_mocap_pose[1])
 
     circle_3d = Circle3D(points)
-    centers.append(circle_3d.center)
-    normals.append(circle_3d.normal)
-    radius.append(circle_3d.radius)
-    all_points.extend(points)
-
     distances = []
     for point in points:
         point = Point(point)
@@ -78,24 +77,33 @@ for i, file_name in enumerate(json_files):
     max_pt_project_distance.append(max(distances))
 
     base_mocap_origins = np.array(base_mocap_origins)
-    mean = np.mean(base_mocap_origins, axis=0)
-    base_origin_distances = np.linalg.norm(base_mocap_origins - mean, axis=1)
+    base_mocap_origin_mean = np.mean(base_mocap_origins, axis=0)
+    base_origin_distances = np.linalg.norm(base_mocap_origins - base_mocap_origin_mean, axis=1)
     logger.info('max distance between base_mocap_origins and mean: %s', max(base_origin_distances))
 
     base_mocap_quats = np.array(base_mocap_quats)
-    mean = np.mean(base_mocap_quats, axis=0)
-    base_quat_distance = np.linalg.norm(base_mocap_quats - mean, axis=1)
+    base_mocap_quat_mean = np.mean(base_mocap_quats, axis=0)
+    base_quat_distance = np.linalg.norm(base_mocap_quats - base_mocap_quat_mean, axis=1)
     logger.info('max distance between base_mocap_quats and mean: %s', max(base_quat_distance))
+
+    # ! use the averaged base mocap pose to transform the fitted circle back to the world frame
+    world_from_base_mocap = (base_mocap_origin_mean, base_mocap_quat_mean)
+    centers.append(pp.tform_point(world_from_base_mocap, circle_3d.center))
+    tf = pp.tform_from_pose(world_from_base_mocap)
+    world_from_normal = tf[:3, :3] @ circle_3d.normal
+    normals.append(world_from_normal)
+    radius.append(circle_3d.radius)
+    all_points.extend(pp.apply_affine(world_from_base_mocap, points))
 
     if EXPORT:
         take_data = {
             'file_name': file_name,
             'raw_data': data['raw_data'], 
-            'center': list(circle_3d.center), 
-            'radius': circle_3d.radius, 
-            'normal': list(circle_3d.normal), 
-            'base_origin_distances_to_mean': list(base_origin_distances), 
-            'base_quat_distances_to_mean': list(base_quat_distance),
+            'center': list(centers[-1]), 
+            'radius': radius[-1], 
+            'normal': list(normals[-1]), 
+            # 'base_origin_distances_to_mean': list(base_origin_distances), 
+            # 'base_quat_distances_to_mean': list(base_quat_distance),
             }
         new_data['takes'].append(take_data)
 
@@ -106,25 +114,34 @@ logger.info('max_pt_project_distance: %s', max_pt_project_distance)
 
 angle_diff = []
 for n in normals:
-    angle_diff.append(np.rad2deg(n.angle_between(line_fit.direction)))
-logger.info('angle diff between center normals and fitted line (deg): %s', angle_diff)
+    v = Vector(n)
+    if v.angle_between(line_fit.direction) > np.pi/2:
+        line_fit.direction = -line_fit.direction
+    angle_diff.append(np.rad2deg(v.angle_between(line_fit.direction)))
+logger.info('angle diff between center normals and fitted line (deg): %s', list(angle_diff))
 
-mean_center = np.mean(normals, axis=0)
+mean_normal = np.mean(normals, axis=0)
 mean_angle_diff = []
 for n in normals:
-    mean_angle_diff.append(np.rad2deg(n.angle_between(mean_center)))
-logger.info('angle diff between center normals and mean normal (deg): %s', mean_angle_diff)
+    v = Vector(n)
+    mean_angle_diff.append(np.rad2deg(v.angle_between(mean_normal)))
+logger.info('angle diff between center normals and mean normal (deg): %s', list(mean_angle_diff))
 
-# compute the max distance difference between centers and the mean center
-mean_center = np.mean(centers, axis=0)
-center_distances = np.linalg.norm(centers - mean_center, axis=1)
+# projection on a plane with the averaged fitted normal and then compute the distance to the center
+project_plane = Plane(point=centers[0], normal=mean_normal)
+projected_centers = [project_plane.project_point(center) for center in centers]
+# compute the max distance difference between projected centers and the mean center
+mean_projected_center = np.mean(projected_centers, axis=0)
+center_distances = np.linalg.norm(projected_centers - mean_projected_center, axis=1)
 logger.info('max distance between centers and mean center: %s', max(center_distances))
 
-# compute distance between line_fit.point and each point in centers, then take the max
-distances = []
-for center in centers:
-    distances.append(np.linalg.norm(line_fit.point - center))
-logger.info('max distance between centers and line_fit.point: %s', max(distances))
+# # compute distance between line_fit.point and each point in centers, then take the max
+# distances = []
+# for center in centers:
+#     distances.append(np.linalg.norm(line_fit.point - center))
+projected_fitted_point = project_plane.project_point(line_fit.point)
+center_distances = np.linalg.norm(projected_centers - projected_fitted_point, axis=1)
+logger.info('max distance between centers and line_fit.point: %s', max(center_distances))
 
 if EXPORT:
     analysis_file_path = os.path.join(data_folder, f'{data_batch}_analysis.json')
@@ -139,11 +156,12 @@ if EXPORT:
 
 ax = plt.figure().add_subplot(projection='3d')
 
-line_fit.plot_3d(ax, t_1=-7, t_2=7, c='k'),
+line_len = 0.5
+line_fit.plot_3d(ax, t_1=-line_len, t_2=line_len, c='k'),
 Points(all_points).plot_3d(ax, c='b', depthshade=False),
 Points(centers).plot_3d(ax, c='g', depthshade=False),
 for o, v in zip(centers, normals):
-    Line(point=o, direction=v).plot_3d(ax, t_1=-7, t_2=7, c='r')
+    Line(point=o, direction=v).plot_3d(ax, t_1=-line_len, t_2=line_len, c='r')
 
 plt.savefig(os.path.join(data_folder, f'{data_batch}.png'))
 plt.show()

@@ -15,9 +15,10 @@ HUSKY_UR5e_JOINT_NAMES = ["ur_arm_shoulder_pan_joint",
                       "ur_arm_wrist_3_joint" ]
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-data_folder = os.path.join(HERE, 'verification')
-# data_folder = os.path.join(HERE, 'j0')
-# data_folder = os.path.join(HERE, 'j1')
+# data_batch = 'verification'
+# data_batch = 'j0'
+data_batch = 'j1'
+data_folder = os.path.join(HERE, data_batch)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -105,7 +106,7 @@ for i in range(3):
     ax.plot(x_angles, label=f'axis {i} to mean angle (deg)')
 
 for i in range(6):
-    ax.plot([conf[i] for conf in joint_confs], label=f'joint value {i}')
+    ax.plot([conf[i] for conf in joint_confs], label=f'joint value {i}', linewidth=0.2)
 
 # Shrink current axis by 20%
 box = ax.get_position()
@@ -115,7 +116,7 @@ ax.set_position([box.x0, box.y0, box.width * 0.8, box.height])
 ax.legend(loc='center left', bbox_to_anchor=(1, 0.5))
 # plt.legend()
 
-plt.savefig(os.path.join(data_folder, 'verification.png'))
+plt.savefig(os.path.join(data_folder, f'verification_{data_batch}.png'))
 plt.show()
 
 pp.disconnect()

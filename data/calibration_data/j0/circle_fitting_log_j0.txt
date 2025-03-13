@@ -1,55 +1,18 @@
-2025-03-11 15:57:12,440 - INFO - Working on file: calibration_20250311_1411_.json
-2025-03-11 15:57:20,331 - INFO - max distance between base_mocap_origins and mean: 0.00025026782686873357
-2025-03-11 15:57:20,331 - INFO - max distance between base_mocap_quats and mean: 0.0007931329041013101
-2025-03-11 15:57:20,520 - INFO - Working on file: calibration_20250311_1403_.json
-2025-03-11 15:57:33,917 - INFO - Working on file: calibration_20250311_1411_.json
-2025-03-11 15:57:42,369 - INFO - max distance between base_mocap_origins and mean: 0.00025026782686873357
-2025-03-11 15:57:42,369 - INFO - max distance between base_mocap_quats and mean: 0.0007931329041013101
-2025-03-11 15:57:42,544 - INFO - Working on file: calibration_20250311_1403_.json
-2025-03-11 15:58:05,142 - INFO - max distance between base_mocap_origins and mean: 0.00017512673463989712
-2025-03-11 15:58:05,143 - INFO - max distance between base_mocap_quats and mean: 0.0004938031749321716
-2025-03-11 15:58:05,443 - INFO - Working on file: calibration_20250311_1415_.json
-2025-03-11 15:58:14,006 - INFO - max distance between base_mocap_origins and mean: 0.00020790969507749314
-2025-03-11 15:58:14,006 - INFO - max distance between base_mocap_quats and mean: 0.00047797456832706866
-2025-03-11 15:58:14,217 - INFO - Working on file: calibration_20250311_1407_.json
-2025-03-11 15:58:23,247 - INFO - max distance between base_mocap_origins and mean: 0.00017408722153688054
-2025-03-11 15:58:23,247 - INFO - max distance between base_mocap_quats and mean: 0.0003881296298535963
-2025-03-11 15:58:23,430 - INFO - j0 axis fix : [-0.00131252  0.00330304  0.99999368]
-2025-03-11 15:58:23,437 - INFO - angle diff between fitted line and center normals (deg): [0.037685741020598865, 0.03443589172397118, 0.05525838497217992, 0.005236502045290553]
-2025-03-11 15:58:23,438 - INFO - max_pt_project_distance: [0.0004019949919715021, 0.0004139740642233628, 0.00027155294307560496, 0.000349685212141312]
-2025-03-11 16:17:08,137 - INFO - Working on file: calibration_20250311_1411_.json
-2025-03-11 16:17:15,777 - INFO - max distance between base_mocap_origins and mean: 0.00025026782686873357
-2025-03-11 16:17:15,778 - INFO - max distance between base_mocap_quats and mean: 0.0007931329041013101
-2025-03-11 16:17:15,946 - INFO - Working on file: calibration_20250311_1403_.json
-2025-03-11 16:17:36,799 - INFO - max distance between base_mocap_origins and mean: 0.00017512673463989712
-2025-03-11 16:17:36,800 - INFO - max distance between base_mocap_quats and mean: 0.0004938031749321716
-2025-03-11 16:17:37,091 - INFO - Working on file: calibration_20250311_1415_.json
-2025-03-11 16:17:45,363 - INFO - max distance between base_mocap_origins and mean: 0.00020790969507749314
-2025-03-11 16:17:45,363 - INFO - max distance between base_mocap_quats and mean: 0.00047797456832706866
-2025-03-11 16:17:45,538 - INFO - Working on file: calibration_20250311_1407_.json
-2025-03-11 16:17:53,672 - INFO - max distance between base_mocap_origins and mean: 0.00017408722153688054
-2025-03-11 16:17:53,672 - INFO - max distance between base_mocap_quats and mean: 0.0003881296298535963
-2025-03-11 16:17:53,848 - INFO - j0 fitted axis : [-0.00131252  0.00330304  0.99999368]
-2025-03-11 16:17:53,849 - INFO - max_pt_project_distance: [0.0004019949919715021, 0.0004139740642233628, 0.00027155294307560496, 0.000349685212141312]
-2025-03-11 16:17:53,854 - INFO - angle diff between center normals and fitted line (deg): [0.037685741020598865, 0.03443589172397118, 0.05525838497217992, 0.005236502045290553]
-2025-03-11 16:17:53,854 - INFO - angle diff between center normals and mean normal (deg): [0.037606677927479626, 0.031645729097026204, 0.05664977659223931, 0.005462526658778507]
-2025-03-11 16:17:53,854 - INFO - max distance between centers and mean center: 0.29906261776528303
-2025-03-11 16:17:53,859 - INFO - max distance between centers and line_fit.point: 0.29906261776528303
-2025-03-11 21:34:27,495 - INFO - Working on file: calibration_20250311_1407_.json
-2025-03-11 21:34:34,452 - INFO - max distance between base_mocap_origins and mean: 0.00017408722153688054
-2025-03-11 21:34:34,452 - INFO - max distance between base_mocap_quats and mean: 0.0003881296298535963
-2025-03-11 21:34:34,452 - INFO - Working on file: calibration_20250311_1403_.json
-2025-03-11 21:34:51,825 - INFO - max distance between base_mocap_origins and mean: 0.00017512673463989712
-2025-03-11 21:34:51,825 - INFO - max distance between base_mocap_quats and mean: 0.0004938031749321716
-2025-03-11 21:34:51,825 - INFO - Working on file: calibration_20250311_1415_.json
-2025-03-11 21:34:58,929 - INFO - max distance between base_mocap_origins and mean: 0.00020790969507749314
-2025-03-11 21:34:58,930 - INFO - max distance between base_mocap_quats and mean: 0.00047797456832706866
-2025-03-11 21:34:58,930 - INFO - Working on file: calibration_20250311_1411_.json
-2025-03-11 21:35:05,361 - INFO - max distance between base_mocap_origins and mean: 0.00025026782686873357
-2025-03-11 21:35:05,361 - INFO - max distance between base_mocap_quats and mean: 0.0007931329041013101
-2025-03-11 21:35:05,363 - INFO - j0 fitted axis : [-0.00131252  0.00330304  0.99999368]
-2025-03-11 21:35:05,363 - INFO - max_pt_project_distance: [0.000349685212141312, 0.0004139740642233628, 0.00027155294307560496, 0.0004019949919715021]
-2025-03-11 21:35:05,368 - INFO - angle diff between center normals and fitted line (deg): [0.005236502045290553, 0.03443589172397118, 0.05525838497217992, 0.037685741020598865]
-2025-03-11 21:35:05,368 - INFO - angle diff between center normals and mean normal (deg): [0.005462526658778507, 0.031645729097026204, 0.05664977659223931, 0.037606677927479626]
-2025-03-11 21:35:05,368 - INFO - max distance between centers and mean center: 0.29906261776528303
-2025-03-11 21:35:05,372 - INFO - max distance between centers and line_fit.point: 0.29906261776528303
+2025-03-13 14:39:35,737 - INFO - Working on file: calibration_20250311_1403_.json
+2025-03-13 14:39:36,306 - INFO - max distance between base_mocap_origins and mean: 0.00017512673463989712
+2025-03-13 14:39:36,306 - INFO - max distance between base_mocap_quats and mean: 0.0004938031749321716
+2025-03-13 14:39:36,323 - INFO - Working on file: calibration_20250311_1407_.json
+2025-03-13 14:39:36,534 - INFO - max distance between base_mocap_origins and mean: 0.00017408722153688054
+2025-03-13 14:39:36,534 - INFO - max distance between base_mocap_quats and mean: 0.0003881296298535963
+2025-03-13 14:39:36,550 - INFO - Working on file: calibration_20250311_1411_.json
+2025-03-13 14:39:36,751 - INFO - max distance between base_mocap_origins and mean: 0.00025026782686873357
+2025-03-13 14:39:36,751 - INFO - max distance between base_mocap_quats and mean: 0.0007931329041013101
+2025-03-13 14:39:36,751 - INFO - Working on file: calibration_20250311_1415_.json
+2025-03-13 14:39:36,968 - INFO - max distance between base_mocap_origins and mean: 0.00020790969507749314
+2025-03-13 14:39:36,983 - INFO - max distance between base_mocap_quats and mean: 0.00047797456832706866
+2025-03-13 14:39:36,983 - INFO - j0 fitted axis : [ 0.00148145 -0.00361484 -0.99999237]
+2025-03-13 14:39:36,983 - INFO - max_pt_project_distance: [np.float64(0.0002530527660403782), np.float64(0.00031660547593133625), np.float64(0.00035105972089718556), np.float64(0.0002898852058260685)]
+2025-03-13 14:39:36,983 - INFO - angle diff between center normals and fitted line (deg): [np.float64(0.018600902447091873), np.float64(0.00962703977541359), np.float64(0.03867379731898304), np.float64(0.07800951763866225)]
+2025-03-13 14:39:36,983 - INFO - angle diff between center normals and mean normal (deg): [np.float64(0.028899641240029007), np.float64(0.0044010423270711115), np.float64(0.044608052605658706), np.float64(0.06887261257571178)]
+2025-03-13 14:39:36,990 - INFO - max distance between centers and mean center: 0.0005714595723853538
+2025-03-13 14:39:36,990 - INFO - max distance between centers and line_fit.point: 0.0005714595723853818
