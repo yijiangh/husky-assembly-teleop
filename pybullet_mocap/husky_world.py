@@ -55,7 +55,7 @@ def init(monitor):
     # line_pts_flattened += [1.5,0,0.5]
 
     # TODO: set in rhino
-    line_pts_flattened += np.array([2.8, -0.5, 0.1])
+    line_pts_flattened += np.array([0.5, -0.5, 0.1])
 
     element_bodies = create_collision_bodies(line_pts_flattened, radius_per_edge, viewer=True)
     half_coupler_from_contact_pair = create_couplers(line_pts_flattened, contact_id_pairs)
