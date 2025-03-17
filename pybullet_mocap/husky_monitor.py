@@ -422,6 +422,7 @@ class HuskyMonitor(Node):
             if self.planned_base_trajectory[0] is not None:
                 N = len(self.planned_base_trajectory[0])
                 base_traj_idx = int(preview_time * (N - 1))
+                # TODO sometime the trajectory preview gets cut off halfway
                 goal_pose = self.planned_base_trajectory[0][base_traj_idx]
 
             if self.planned_arm_trajectory[0] is not None:

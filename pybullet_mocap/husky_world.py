@@ -37,7 +37,8 @@ def init(monitor):
 
     # * add tracked obstacles
     # TODO use one tracked box to indicate where to put the assembly
-    TrackedObject(monitor, 'calib_tool', 4497, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
+    if monitor.CALIBRATION:
+        TrackedObject(monitor, 'calib_tool', 4497, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
 
     #boxes.append(TrackedObject(monitor, 'box1', 4457, np.zeros(3), np.array((0, 0, 0, 1)), 0.2, 'cube.obj'))
     #boxes.append(TrackedObject(monitor, 'box2', 4484, np.zeros(3), np.array((0, 0, 0, 1)), 0.2, 'cube.obj'))
@@ -55,7 +56,7 @@ def init(monitor):
     # line_pts_flattened += [1.5,0,0.5]
 
     # TODO: set in rhino
-    line_pts_flattened += np.array([0.5, -0.5, 0.1])
+    line_pts_flattened += np.array([1.5, -0.5, 0.11])
 
     element_bodies = create_collision_bodies(line_pts_flattened, radius_per_edge, viewer=True)
     half_coupler_from_contact_pair = create_couplers(line_pts_flattened, contact_id_pairs)
