@@ -44,7 +44,7 @@ WHEEL_JOINT_NAMES = [
 JOINT_JUMP_THRESHOLD = np.pi/3
 POS_STEP_SIZE = 0.01
 ORI_STEP_SIZE = np.pi/18
-RETRACTION_LENGTH = 0.05
+RETRACTION_LENGTH = 0.1
 
 def load_robot(load_calib_tip=False):
     robot_urdf = os.path.join(DATA_DIRECTORY,'husky_urdf/mt_husky_moveit_config/urdf/husky_ur5_e_no_base_joint.urdf')

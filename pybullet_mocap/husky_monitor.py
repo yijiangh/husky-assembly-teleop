@@ -278,7 +278,7 @@ class HuskyMonitor(Node):
         self.selected_robot_slider = Slider("robot id", self.update_selected_robot_id, 0, len(self.huskies)+1, 0)
         # p.addUserDebugParameter("robot id", 0, len(self.huskies)+1, 0)
 
-        self.trajectory_time_slider = Slider("traj time", self.update_trajectory_time, 1.0, 30.0, self.trajectory_time)
+        self.trajectory_time_slider = Slider("traj time", self.update_trajectory_time, 1.0, 60.0, self.trajectory_time)
 
         self.time_slider = p.addUserDebugParameter("time", 0.0, 1.0, 1.0)
         
@@ -421,6 +421,7 @@ class HuskyMonitor(Node):
         if not self.show_goal_state:
             if self.planned_base_trajectory[0] is not None:
                 N = len(self.planned_base_trajectory[0])
+                print('N:', N)
                 base_traj_idx = int(preview_time * (N - 1))
                 # TODO sometime the trajectory preview gets cut off halfway
                 goal_pose = self.planned_base_trajectory[0][base_traj_idx]

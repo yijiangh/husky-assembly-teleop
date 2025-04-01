@@ -203,7 +203,7 @@ def move_base_to_goal(monitor):
     monitor.tasks.append(control.execute_base_trajectory(monitor, monitor.huskies[0], monitor.planned_base_trajectory))
     
 def open_gripper_full(monitor):
-    monitor.huskies[monitor.selected_robot_id].interface.send_gripper_cmd(0.0, 0.1)
+    monitor.huskies[monitor.selected_robot_id].interface.send_gripper_cmd(0.426, 0.1)
 
 def close_gripper_for_bar(monitor):
     monitor.huskies[monitor.selected_robot_id].interface.send_gripper_cmd(0.6, 0.1)
