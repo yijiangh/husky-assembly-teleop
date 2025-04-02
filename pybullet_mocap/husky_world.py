@@ -29,9 +29,9 @@ def init(monitor):
     # 1004
     Husky(monitor, name='/a200_0804', mocap_id=4568, pos=np.array((0,0,0)), 
           connect_arm=not monitor.FAKE_HARDWARE, connect_gripper=not monitor.FAKE_HARDWARE, 
-          calibration=monitor.CALIBRATION)
-        #   calibration=monitor.CALIBRATION,
-        #   base_calibration_file=os.path.join(CALIB_DATA_DIR, 'calibrated_transformation_0804.json'))
+        #   calibration=monitor.CALIBRATION)
+          calibration=monitor.CALIBRATION,
+          base_calibration_file=os.path.join(CALIB_DATA_DIR, 'calibrated_transformation_0804.json'))
 
     # Husky(monitor, name='/a200_0805', mocap_id=1033, pos=np.array((0,1,0)), connect_gripper=False)
 
@@ -60,7 +60,7 @@ def init(monitor):
 
     # TODO: set in rhino
     # line_pts_flattened += np.array([1.5, -0.5, 0.11])
-    line_pts_flattened += np.array([1, -0.5, 0.11])
+    line_pts_flattened += np.array([-1.5, -0.5, 0.11])
 
     element_bodies = create_collision_bodies(line_pts_flattened, radius_per_edge, viewer=True)
     half_coupler_from_contact_pair = create_couplers(line_pts_flattened, contact_id_pairs)
@@ -129,19 +129,30 @@ def calibrate_button(monitor, tool_mocap_name):
         flange_mocap_pose = ho.get_link_pose_from_name("ur_arm_tool0")
 
     tool0_fk_pose = ho.get_link_pose_from_name("ur_arm_tool0")
-    tool_0_fk_from_mocap = pp.multiply(pp.invert(tool0_fk_pose), flange_mocap_pose)
 
     if flange_mocap_pose is None:
-        monitor.get_logger().warn(f'Mocap {tool_mocap_name} not found!')
-        return
-    pp.draw_pose(flange_mocap_pose)
-    monitor.append_calibration_data(
-        {'joint_conf' : list(hi.arm_joint_pose), 
-         'base_mocap_pose' : [list(v) for v in base_mocap_pose],
-         "flange_mocap_pose" : [list(v) for v in flange_mocap_pose],
-         'tool0_fk_pose' : [list(v) for v in tool0_fk_pose],
-         'tool0_fk_from_mocap' : [list(v) for v in tool_0_fk_from_mocap],
-         })
+        if monitor.CALIBRATION:
+            monitor.get_logger().warn(f'Mocap {tool_mocap_name} not found!')
+            return
+        else:
+            pp.draw_pose(base_mocap_pose)
+            monitor.append_calibration_data(
+                {'joint_conf' : list(hi.arm_joint_pose), 
+                 'base_mocap_pose' : [list(v) for v in base_mocap_pose],
+                 "flange_mocap_pose" : [],
+                 'tool0_fk_pose' : [list(v) for v in tool0_fk_pose],
+                 'tool0_fk_from_mocap' : [],
+                 })
+    else:
+        tool_0_fk_from_mocap = pp.multiply(pp.invert(tool0_fk_pose), flange_mocap_pose)
+        pp.draw_pose(flange_mocap_pose)
+        monitor.append_calibration_data(
+            {'joint_conf' : list(hi.arm_joint_pose), 
+             'base_mocap_pose' : [list(v) for v in base_mocap_pose],
+             "flange_mocap_pose" : [list(v) for v in flange_mocap_pose],
+             'tool0_fk_pose' : [list(v) for v in tool0_fk_pose],
+             'tool0_fk_from_mocap' : [list(v) for v in tool_0_fk_from_mocap],
+             })
 
 def save_calibration(monitor, filename_suffix=""):
     print(monitor.calibration_data)

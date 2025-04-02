@@ -48,7 +48,7 @@ def plan_arm_to_transfer_element(husky: Husky, transfer_element, obstacles, traj
     free_path, linear_path, grasp = plan_transfer_motion(
         husky.object.robot,
         solver, 
-        transfer_element.body, 
+        transfer_element, 
         [husky.object.ee_attachment],
         obstacles, 
         grasp=grasp,

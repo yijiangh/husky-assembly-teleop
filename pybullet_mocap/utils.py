@@ -145,7 +145,7 @@ def get_grasp_pose(direction, angle, offset=1e-3):
                     # Pose(euler=Euler(roll=(1-reverse) * np.pi)
                     )
 
-def plan_transfer_motion(robot, ik_solver, bar_body, attachments, obstacles, 
+def plan_transfer_motion(robot, ik_solver, transfer_element, attachments, obstacles, 
                        grasp=None,
                        debug=False, disabled_collisions=None):
     # plan a transit motion from init conf to pick_approach conf  
@@ -163,6 +163,7 @@ def plan_transfer_motion(robot, ik_solver, bar_body, attachments, obstacles,
     movable_joints = pp.joints_from_names(robot, HUSKY_JOINT_NAMES)
     tool_link = pp.link_from_name(robot, 'ur_arm_tool0')
     gripper_tcp_from_tool0 = pp.invert(TOOL0_FROM_GRIPPER_TCP)
+    bar_body = transfer_element.body
 
     sample_fn = pp.get_sample_fn(robot, movable_joints, custom_limits=custom_limits)
     distance_fn = pp.get_distance_fn(robot, movable_joints) #, weights=weights)
@@ -178,9 +179,9 @@ def plan_transfer_motion(robot, ik_solver, bar_body, attachments, obstacles,
     # ! we enforce the grasp is at the center of the bar now
     grasp_gen = pp.get_side_cylinder_grasps(bar_body, safety_margin_length=height/2-0.0)
 
-    debug = True
+    debug = 0
 
-    world_from_object = pp.get_pose(bar_body)
+    world_from_object = transfer_element.goal_pose
     # * sample grasp and IK, and plan for approach motion
     grasp_attempts = 50 if grasp is None else 1
     linear_path_num = 5
