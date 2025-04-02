@@ -44,7 +44,7 @@ WHEEL_JOINT_NAMES = [
 JOINT_JUMP_THRESHOLD = np.pi/3
 POS_STEP_SIZE = 0.01
 ORI_STEP_SIZE = np.pi/18
-RETRACTION_LENGTH = 0.05
+RETRACTION_LENGTH = 0.1
 
 def load_robot(load_calib_tip=False):
     robot_urdf = os.path.join(DATA_DIRECTORY,'husky_urdf/mt_husky_moveit_config/urdf/husky_ur5_e_no_base_joint.urdf')
@@ -146,8 +146,11 @@ def get_grasp_pose(direction, angle, offset=1e-3):
                     )
 
 def plan_transfer_motion(robot, ik_solver, bar_body, attachments, obstacles, 
+                       grasp=None,
                        debug=False, disabled_collisions=None):
     # plan a transit motion from init conf to pick_approach conf  
+    # if grasp is not None, use a pre-computed grasp pose instead of sampling a new one
+
     custom_limits = get_custom_limits(robot, {})
     resolutions = np.ones(6) * 0.05
     disabled_collisions = disabled_collisions or {}
@@ -174,24 +177,33 @@ def plan_transfer_motion(robot, ik_solver, bar_body, attachments, obstacles,
     center, (_, height) = pp.approximate_as_cylinder(bar_body)
     grasp_gen = pp.get_side_cylinder_grasps(bar_body, safety_margin_length=height/2-0.05)
 
-    # debug = True
+    debug = True
 
     world_from_object = pp.get_pose(bar_body)
     # * sample grasp and IK, and plan for approach motion
-    grasp_attempts = 50
+    grasp_attempts = 50 if grasp is None else 1
+    linear_path_num = 5
+
     detach_conf = None
-    path = None
-    grasp = None
+    free_path = None
+    linear_path = None
     start_conf = pp.get_joint_positions(robot, movable_joints)
     with pp.WorldSaver():
         with pp.LockRenderer(0):
             for g_id in range(grasp_attempts):
-                print('Grasp attempt #{}/{}'.format(g_id, grasp_attempts))
-                gripper_from_object = next(grasp_gen)
-                tool0_from_object = pp.multiply(pp.invert(gripper_tcp_from_tool0), gripper_from_object)
+                if grasp is None:
+                    print('Grasp attempt #{}/{}'.format(g_id, grasp_attempts))
+                    gripper_from_object = next(grasp_gen)
+                    tool0_from_object = pp.multiply(pp.invert(gripper_tcp_from_tool0), gripper_from_object)
+                else:
+                    print('Reusing grasp.')
+                    tool0_from_object = grasp
+
                 # world_from_gripper_tcp = pp.multiply(world_from_object, pp.invert(gripper_from_object))
                 world_from_tool0 = pp.multiply(world_from_object, pp.invert(tool0_from_object))
 
+                # the arm base link pose has been updated already by the main loop in monitor before the planning starts, 
+                # but will not change during planning, so we should wait until the robot settles down and then start planning
                 world_from_arm_base = pp.get_link_pose(robot, pp.link_from_name(robot, "ur_arm_base_link"))
                 arm_base_from_tool0 = pp.multiply(pp.invert(world_from_arm_base), world_from_tool0)
 
@@ -199,7 +211,12 @@ def plan_transfer_motion(robot, ik_solver, bar_body, attachments, obstacles,
                 # pp.draw_pose(world_from_arm_base)
                 # pp.wait_if_gui()
 
-                detach_conf = ik_solver.ik(pp.tform_from_pose(arm_base_from_tool0))
+                detach_conf = ik_solver.ik(pp.tform_from_pose(arm_base_from_tool0), qinit=start_conf)
+
+                # TODO should compute a last-chunk linear trajectory based on bar workspace trajectory
+                # ideally use the neighboring bar's contact normal to derive a non-blocking direction cone
+                # For now, I will just approx the linear movement with the last 20 traj points of the transfer motion
+
                 if detach_conf is not None:
                     pp.set_joint_positions(robot, movable_joints, detach_conf)
                     # element_attachment = pp.create_attachment(robot, tool_link, bar_body)
@@ -220,7 +237,7 @@ def plan_transfer_motion(robot, ik_solver, bar_body, attachments, obstacles,
                                                         algorithm='birrt', 
                                                         max_time=10, 
                                                         max_iterations=20, 
-                                                        smooth=20, diagnosis=debug,
+                                                        smooth=20, diagnosis=False,
                                                         coarse_waypoints=False,
                                                         ) 
                     else:
@@ -237,13 +254,19 @@ def plan_transfer_motion(robot, ik_solver, bar_body, attachments, obstacles,
                         continue
                     notify('transfer path found: {} pts'.format(len(transfer_path)))
 
-                    path = transfer_path
+                    if len(transfer_path) <= linear_path_num:
+                        free_path = []
+                        linear_path = transfer_path
+                    else:
+                        free_path = transfer_path[:-linear_path_num]
+                        linear_path = transfer_path[-linear_path_num:]
+
                     grasp = tool0_from_object
                     break
             else:
                 notify("no ik solution after {} grasp attempts".format(grasp_attempts))
 
-    return path, grasp
+    return free_path, linear_path, grasp
 
 def plan_transit_motion(robot, end_conf, attachments, obstacles, debug=False, disabled_collisions=None):
     custom_limits = get_custom_limits(robot, {})

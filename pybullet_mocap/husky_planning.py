@@ -44,21 +44,30 @@ def plan_arm_motion(husky: Husky, arm_goal_pose, obstacles, traj_time):
     planned_arm_trajectory = [np.array(p) for p in trajectory]
     return (planned_arm_trajectory, None, traj_time, None)
 
-def plan_arm_to_transfer_element(husky: Husky, transfer_element, obstacles, traj_time):
-    trajectory, grasp = plan_transfer_motion(
+def plan_arm_to_transfer_element(husky: Husky, transfer_element, obstacles, traj_time, grasp=None):
+    free_path, linear_path, grasp = plan_transfer_motion(
         husky.object.robot,
         solver, 
         transfer_element.body, 
         [husky.object.ee_attachment],
         obstacles, 
+        grasp=grasp,
         debug=False, 
         disabled_collisions=None
         )
-    if trajectory is None:
-        return (None, None, None, None)
-    planned_arm_trajectory = [np.array(p) for p in trajectory]
+
+    if free_path is None or linear_path is None:
+        return (None, None, None)
+
+    planned_arm_trajectory = [np.array(p) for p in free_path + linear_path]
     transfer_element.update_grasp(grasp)
-    return (planned_arm_trajectory, None, traj_time, transfer_element)
+
+    fm_time = len(free_path) / len(planned_arm_trajectory)
+    lm_time = len(linear_path) / len(planned_arm_trajectory)
+
+    return (planned_arm_trajectory, None, traj_time, transfer_element), \
+           (np.array(free_path), None, fm_time, transfer_element), \
+           (np.array(linear_path), None, lm_time, transfer_element)
 
 def plan_arm_to_retract_to_home(husky: Husky, transfer_element, obstacles, traj_time):
     trajectory = plan_retract_to_home_motion(

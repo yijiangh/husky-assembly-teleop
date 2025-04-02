@@ -28,8 +28,9 @@ def init(monitor):
     # * add robots
     Husky(monitor, name='/a200_0804', mocap_id=1004, pos=np.array((0,0,0)), 
           connect_arm=not monitor.FAKE_HARDWARE, connect_gripper=not monitor.FAKE_HARDWARE, 
-          calibration=monitor.CALIBRATION,
-          base_calibration_file=os.path.join(CALIB_DATA_DIR, 'calibrated_transformation_0804.json'))
+          calibration=monitor.CALIBRATION)
+
+        #   base_calibration_file=os.path.join(CALIB_DATA_DIR, 'calibrated_transformation_0804.json'))
     # Husky(monitor, name='/a200_0805', mocap_id=1033, pos=np.array((0,1,0)), connect_gripper=False)
 
     # * add static obstacles
@@ -37,7 +38,8 @@ def init(monitor):
 
     # * add tracked obstacles
     # TODO use one tracked box to indicate where to put the assembly
-    TrackedObject(monitor, 'calib_tool', 4497, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
+    if monitor.CALIBRATION:
+        TrackedObject(monitor, 'calib_tool', 4497, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
 
     #boxes.append(TrackedObject(monitor, 'box1', 4457, np.zeros(3), np.array((0, 0, 0, 1)), 0.2, 'cube.obj'))
     #boxes.append(TrackedObject(monitor, 'box2', 4484, np.zeros(3), np.array((0, 0, 0, 1)), 0.2, 'cube.obj'))
@@ -55,7 +57,8 @@ def init(monitor):
     # line_pts_flattened += [1.5,0,0.5]
 
     # TODO: set in rhino
-    line_pts_flattened += np.array([0.5, -0.5, 0.1])
+    # line_pts_flattened += np.array([1.5, -0.5, 0.11])
+    line_pts_flattened += np.array([1, -0.5, 0.11])
 
     element_bodies = create_collision_bodies(line_pts_flattened, radius_per_edge, viewer=True)
     half_coupler_from_contact_pair = create_couplers(line_pts_flattened, contact_id_pairs)
@@ -84,10 +87,19 @@ def plan_arm_to_goal(monitor):
     obstacles = [monitor.assembly_objects[i].body for i in range(monitor.current_seq_index)] + monitor.static_obstacles
     monitor.set_arm_trajectory(planning.plan_arm_motion(monitor.huskies[monitor.selected_robot_id], monitor.goal_arm_pose, obstacles, monitor.trajectory_time))
 
-def plan_arm_to_transfer_element(monitor):
+def plan_arm_to_transfer_element(monitor, grasp=None):
     obstacles = [monitor.assembly_objects[i].body for i in range(monitor.current_seq_index)] + monitor.static_obstacles
     transfer_element = monitor.assembly_objects[monitor.current_seq_index]
-    monitor.set_arm_trajectory(planning.plan_arm_to_transfer_element(monitor.huskies[monitor.selected_robot_id], transfer_element, obstacles, monitor.trajectory_time))
+    full_traj, free_traj, linear_traj = planning.plan_arm_to_transfer_element(
+        monitor.huskies[monitor.selected_robot_id], 
+        transfer_element, 
+        obstacles, 
+        monitor.trajectory_time, 
+        grasp=grasp
+        )
+    monitor.set_arm_trajectory(full_traj)
+    monitor.free_arm_trajectory = free_traj
+    monitor.linear_arm_trajectory = linear_traj
 
 def plan_arm_to_retract_to_home(monitor):
     obstacles = [monitor.assembly_objects[i].body for i in range(monitor.current_seq_index)] + monitor.static_obstacles
@@ -188,11 +200,12 @@ def execute_arm_conf(monitor, conf):
     monitor.huskies[monitor.selected_robot_id].interface.send_arm_cmd([hi.arm_joint_pose, conf], 
                                                                       None, monitor.trajectory_time)
 
-def execute_arm_trajectory(monitor):
-    if monitor.planned_arm_trajectory[0] is None:
+def execute_arm_trajectory(monitor, trajectory):
+    if trajectory is None:
         monitor.get_logger().warn('Arm trajectory must be planed before executing!')
         return
-    monitor.huskies[monitor.selected_robot_id].interface.send_arm_cmd(monitor.planned_arm_trajectory[0], monitor.planned_arm_trajectory[1], monitor.trajectory_time)
+    # trajectory confs, velocity, total time
+    monitor.huskies[monitor.selected_robot_id].interface.send_arm_cmd(trajectory[0], trajectory[1], monitor.trajectory_time)
      
 def move_base_to_goal(monitor):
     if monitor.planned_base_trajectory[0] is None:
@@ -201,7 +214,7 @@ def move_base_to_goal(monitor):
     monitor.tasks.append(control.execute_base_trajectory(monitor, monitor.huskies[0], monitor.planned_base_trajectory))
     
 def open_gripper_full(monitor):
-    monitor.huskies[monitor.selected_robot_id].interface.send_gripper_cmd(0.0, 0.1)
+    monitor.huskies[monitor.selected_robot_id].interface.send_gripper_cmd(0.426, 0.1)
 
 def close_gripper_for_bar(monitor):
     monitor.huskies[monitor.selected_robot_id].interface.send_gripper_cmd(0.6, 0.1)

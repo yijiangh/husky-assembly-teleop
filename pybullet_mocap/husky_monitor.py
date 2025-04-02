@@ -39,8 +39,8 @@ CLIENT_IP = '192.168.0.7' # Set to your own IP
 MOCAP_IP = '192.168.0.117' # set to the mocap PC's IP, get this from Motive Settings>Streaming pane->Local interface
   
 class HuskyMonitor(Node):
-    USE_MOCAP = True
-    FAKE_HARDWARE = False
+    USE_MOCAP = 0
+    FAKE_HARDWARE = 1
     CALIBRATION = False
 
     def __init__(self):
@@ -80,6 +80,9 @@ class HuskyMonitor(Node):
 
         # list of conf, velocity, total time, attachment other than the ee
         self.planned_arm_trajectory = (None, None, None, None)
+        self.free_arm_trajectory = None
+        self.linear_arm_trajectory = None
+
         self.plan_traj_seg = None
         self.planned_base_trajectory = (None, None)
 
@@ -197,7 +200,16 @@ class HuskyMonitor(Node):
     def update_traj_goal_configuration(self):
         self.goal_model.set_pose(self.goal_pose, self.goal_arm_pose)
 
-    def plan_arm_to_transfer_element(self):
+    def plan_arm_to_transfer_element_reuse_grasp(self):
+        if self.planned_arm_trajectory[3] is not None:
+            obj = self.planned_arm_trajectory[3]
+            world.plan_arm_to_transfer_element(self, obj.grasp)
+            self.show_goal_state = True
+            self.toggle_show_goal_state()
+        else:
+            print('No grasp saved in the planned trajectory to reuse!')
+
+    def plan_arm_to_transfer_element(self, grasp=None):
         world.plan_arm_to_transfer_element(self)
         self.show_goal_state = True
         self.toggle_show_goal_state()
@@ -207,25 +219,41 @@ class HuskyMonitor(Node):
         self.show_goal_state = True
         self.toggle_show_goal_state()
 
-    def execute_arm_trajectory(self):
+    def execute_linear_trajectory(self):
+        # only execute part of the traj returned by transfer planning
+        if self.linear_arm_trajectory is None:
+            print('Linear arm trajectory is not planned!')
+        else:
+            self.execute_arm_trajectory(self.linear_arm_trajectory)
+
+    def execute_free_trajectory(self):
+        if self.free_arm_trajectory is None:
+            print('Free arm trajectory is not planned!')
+        else:
+            self.execute_arm_trajectory(self.free_arm_trajectory)
+
+    def execute_arm_trajectory(self, trajectory=None):
+        if trajectory is None:
+            trajectory = self.planned_arm_trajectory
+
         if not self.FAKE_HARDWARE:
-            world.execute_arm_trajectory(self)
+            world.execute_arm_trajectory(self, trajectory)
         else:
             # fake execution in sim
-            if self.planned_arm_trajectory[0] is None:
+            if trajectory is None:
                 self.get_logger().warn('Arm trajectory must be planed before executing!')
             else: 
                 ho = self.huskies[self.selected_robot_id].object
                 hi = self.huskies[self.selected_robot_id].interface
-                if self.planned_arm_trajectory[3] is not None:
-                    obj = self.planned_arm_trajectory[3]
+                if trajectory[3] is not None:
+                    obj = trajectory[3]
                     gripper_tcp_from_object = obj.grasp
 
-                for conf in self.planned_arm_trajectory[0]:
+                for conf in trajectory[0]:
                     hi.arm_joint_pose = conf
                     ho.set_pose((hi.position, hi.rotation), conf)
 
-                    if self.planned_arm_trajectory[3] is not None:
+                    if trajectory[3] is not None:
                         # update attached object based on FK
                         world_from_tcp = ho.get_link_pose_from_name("ur_arm_tool0")
                         object_pose = pp.multiply(world_from_tcp, gripper_tcp_from_object)
@@ -276,7 +304,7 @@ class HuskyMonitor(Node):
         self.selected_robot_slider = Slider("robot id", self.update_selected_robot_id, 0, len(self.huskies)+1, 0)
         # p.addUserDebugParameter("robot id", 0, len(self.huskies)+1, 0)
 
-        self.trajectory_time_slider = Slider("traj time", self.update_trajectory_time, 1.0, 30.0, self.trajectory_time)
+        self.trajectory_time_slider = Slider("traj time", self.update_trajectory_time, 1.0, 60.0, self.trajectory_time)
 
         self.time_slider = p.addUserDebugParameter("time", 0.0, 1.0, 1.0)
         
@@ -284,6 +312,7 @@ class HuskyMonitor(Node):
         self.buttons.append(Button('Reset Goal State', self.reset_ui))
         
         if not self.USE_MOCAP:
+            # teleop base when no mocap
             pose2d = pp.pose2d_from_pose((self.huskies[self.selected_robot_id].interface.position, self.huskies[self.selected_robot_id].interface.rotation), tolerance=0.1)
             self.teleop_base_slider_group = SliderGroup(["teleop base {}".format(t) for t in ["x","y","yaw"]], self.update_base_conf, [-5.0, -5.0, -np.pi], [5.0,5.0,np.pi], pose2d)
             # self.state_sliders.append(p.addUserDebugParameter("x", -5.0, 5.0, pose2d[0]))
@@ -293,10 +322,15 @@ class HuskyMonitor(Node):
         # self.buttons.append(Button('Exec Base', lambda: world.move_to_goal(self)))
                
         self.buttons.append(Button('Plan arm to assemble current element', self.plan_arm_to_transfer_element))
-        self.buttons.append(Button('Plan arm to retract to home', self.plan_arm_to_retract_to_home))
-        self.buttons.append(Button('Exec Arm', self.execute_arm_trajectory))
+        self.buttons.append(Button('Plan arm to assemble, reuse grasp', self.plan_arm_to_transfer_element_reuse_grasp))
 
-        self.buttons.append(Button('Plan arm wave', lambda: world.plan_arm_wave(self)))
+        self.buttons.append(Button('Plan arm to retract to home', self.plan_arm_to_retract_to_home))
+
+        self.buttons.append(Button('Exec Arm Traj', self.execute_arm_trajectory))
+        self.buttons.append(Button('Exec Free Motion', self.execute_free_trajectory))
+        self.buttons.append(Button('Exec Linear Motion', self.execute_linear_trajectory))
+
+        # self.buttons.append(Button('Plan arm wave', lambda: world.plan_arm_wave(self)))
 
         self.gripper_slider = p.addUserDebugParameter("gripper", 0, 1.0, 0.1)
         self.buttons.append(Button('Exec Gripper', lambda: world.set_gripper(self)))
@@ -341,6 +375,7 @@ class HuskyMonitor(Node):
         else:
             print('Failed to run mocap client!')
     
+    # mocap updates are happening in a separate thread
     _mocap_rigidbody_cache = {}
     def receive_rigid_body_frame(self, id, pos, rot):
         if id not in self.name_from_mocap_id:
@@ -389,6 +424,7 @@ class HuskyMonitor(Node):
         # update robot state
         for i, h in enumerate(self.huskies):
             hi = h.interface
+            # these position and rotation are updated by mocap in a differen thread
             h.object.set_pose((hi.position, hi.rotation), hi.arm_joint_pose)
             # set the goal pose of base since we are teleoperating the base
             self.goal_pose = (hi.position, hi.rotation)
@@ -419,7 +455,9 @@ class HuskyMonitor(Node):
         if not self.show_goal_state:
             if self.planned_base_trajectory[0] is not None:
                 N = len(self.planned_base_trajectory[0])
+                print('N:', N)
                 base_traj_idx = int(preview_time * (N - 1))
+                # TODO sometime the trajectory preview gets cut off halfway
                 goal_pose = self.planned_base_trajectory[0][base_traj_idx]
 
             if self.planned_arm_trajectory[0] is not None:
