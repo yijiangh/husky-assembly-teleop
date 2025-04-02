@@ -175,7 +175,8 @@ def plan_transfer_motion(robot, ik_solver, bar_body, attachments, obstacles,
     # Assuming the bar body is already at the target pose, managed by the monitor side
     # See: https://pybullet-planning.readthedocs.io/en/latest/reference/generated/pybullet_planning.primitives.grasp_gen.get_side_cylinder_grasps.html#pybullet_planning.primitives.grasp_gen.get_side_cylinder_grasps
     center, (_, height) = pp.approximate_as_cylinder(bar_body)
-    grasp_gen = pp.get_side_cylinder_grasps(bar_body, safety_margin_length=height/2-0.05)
+    # ! we enforce the grasp is at the center of the bar now
+    grasp_gen = pp.get_side_cylinder_grasps(bar_body, safety_margin_length=height/2-0.0)
 
     debug = True
 
