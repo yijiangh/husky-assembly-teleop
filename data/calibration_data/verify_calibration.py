@@ -15,8 +15,8 @@ HUSKY_UR5e_JOINT_NAMES = ["ur_arm_shoulder_pan_joint",
                       "ur_arm_wrist_3_joint" ]
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-# data_batch = 'verification'
-data_batch = 'j0'
+data_batch = 'verification'
+# data_batch = 'j0'
 # data_batch = 'j1'
 data_folder = os.path.join(HERE, data_batch)
 
@@ -32,7 +32,7 @@ file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(mes
 # Add handlers to the logger
 logger.addHandler(file_handler)
 
-pp.connect(use_gui=False, shadows=True, color=[0.9, 0.9, 1.0])
+pp.connect(use_gui=1, shadows=True, color=[0.9, 0.9, 1.0])
 # robot_urdf = os.path.join('/home/yijiangh/ros2_ws/src/husky-asembly-teleop/data','husky_urdf/mt_husky_moveit_config/urdf/husky_ur5_e_no_base_joint.urdf')
 # robot_urdf = os.path.join('/home/yijiangh/ros2_ws/src/pybullet_mocap/data', 'husky_urdf/mt_husky_moveit_config/urdf/husky_ur5_e_no_base_joint.urdf')
 robot_urdf = os.path.join(r'D:\0_Project\03-2025_husky_assembly\Code\husky-asembly-teleop\data',r'husky_urdf\mt_husky_moveit_config\urdf\husky_ur5_e_no_base_joint.urdf')
