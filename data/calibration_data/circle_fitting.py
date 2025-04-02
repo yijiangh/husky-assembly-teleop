@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pybullet_planning as pp
 
-data_batch = 'j0'
+data_batch = 'j1'
 EXPORT = True
 
 HERE = os.path.dirname(os.path.abspath(__file__))

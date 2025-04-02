@@ -16,8 +16,8 @@ HUSKY_UR5e_JOINT_NAMES = ["ur_arm_shoulder_pan_joint",
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # data_batch = 'verification'
-# data_batch = 'j0'
-data_batch = 'j1'
+data_batch = 'j0'
+# data_batch = 'j1'
 data_folder = os.path.join(HERE, data_batch)
 
 # Configure logging

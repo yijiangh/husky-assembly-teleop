@@ -1,0 +1,18 @@
+2025-04-02 14:35:20,793 - INFO - Working on file: calibration_20250402_1351_.json
+2025-04-02 14:35:20,976 - INFO - max distance between base_mocap_origins and mean: 0.00024882668643159825
+2025-04-02 14:35:20,976 - INFO - max distance between base_mocap_quats and mean: 0.00032354073244855687
+2025-04-02 14:35:20,981 - INFO - Working on file: calibration_20250402_1354_.json
+2025-04-02 14:35:21,180 - INFO - max distance between base_mocap_origins and mean: 0.0002214349820356001
+2025-04-02 14:35:21,180 - INFO - max distance between base_mocap_quats and mean: 0.00025397933516933786
+2025-04-02 14:35:21,184 - INFO - Working on file: calibration_20250402_1357_.json
+2025-04-02 14:35:21,400 - INFO - max distance between base_mocap_origins and mean: 0.00021204342095683856
+2025-04-02 14:35:21,409 - INFO - max distance between base_mocap_quats and mean: 0.00021519918865610166
+2025-04-02 14:35:21,414 - INFO - Working on file: calibration_20250402_1359_.json
+2025-04-02 14:35:21,609 - INFO - max distance between base_mocap_origins and mean: 0.0002594380214681472
+2025-04-02 14:35:21,609 - INFO - max distance between base_mocap_quats and mean: 0.0002685383571390676
+2025-04-02 14:35:21,614 - INFO - j0 fitted axis : [ 5.05786970e-03 -4.01110733e-04 -9.99987128e-01]
+2025-04-02 14:35:21,614 - INFO - max_pt_project_distance: [np.float64(0.0002066141151187773), np.float64(0.00031690380487426023), np.float64(0.00019114447855340816), np.float64(0.0003219092755098724)]
+2025-04-02 14:35:21,614 - INFO - angle diff between center normals and fitted line (deg): [np.float64(0.053152629084950574), np.float64(0.02668876378827921), np.float64(0.03722611733524538), np.float64(0.05518984527134689)]
+2025-04-02 14:35:21,614 - INFO - angle diff between center normals and mean normal (deg): [np.float64(0.044752135001902144), np.float64(0.027459407051974707), np.float64(0.01986370940905913), np.float64(0.022497244602502908)]
+2025-04-02 14:35:21,614 - INFO - max distance between centers and mean center: 0.00031203770373341625
+2025-04-02 14:35:21,614 - INFO - max distance between centers and line_fit.point: 0.0003120377037331875
