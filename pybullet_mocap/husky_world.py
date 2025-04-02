@@ -26,11 +26,12 @@ CALIB_DATA_DIR = "/home/yijiangh/ros2_ws/src/husky-asembly-teleop/data/calibrati
 
 def init(monitor): 
     # * add robots
-    Husky(monitor, name='/a200_0804', mocap_id=1004, pos=np.array((0,0,0)), 
+    # 1004
+    Husky(monitor, name='/a200_0804', mocap_id=4568, pos=np.array((0,0,0)), 
           connect_arm=not monitor.FAKE_HARDWARE, connect_gripper=not monitor.FAKE_HARDWARE, 
           calibration=monitor.CALIBRATION)
-
         #   base_calibration_file=os.path.join(CALIB_DATA_DIR, 'calibrated_transformation_0804.json'))
+
     # Husky(monitor, name='/a200_0805', mocap_id=1033, pos=np.array((0,1,0)), connect_gripper=False)
 
     # * add static obstacles
@@ -39,7 +40,7 @@ def init(monitor):
     # * add tracked obstacles
     # TODO use one tracked box to indicate where to put the assembly
     if monitor.CALIBRATION:
-        TrackedObject(monitor, 'calib_tool', 4497, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
+        TrackedObject(monitor, 'calib_tool', 4569, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
 
     #boxes.append(TrackedObject(monitor, 'box1', 4457, np.zeros(3), np.array((0, 0, 0, 1)), 0.2, 'cube.obj'))
     #boxes.append(TrackedObject(monitor, 'box2', 4484, np.zeros(3), np.array((0, 0, 0, 1)), 0.2, 'cube.obj'))

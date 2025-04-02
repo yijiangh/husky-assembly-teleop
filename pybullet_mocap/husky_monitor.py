@@ -39,9 +39,9 @@ CLIENT_IP = '192.168.0.7' # Set to your own IP
 MOCAP_IP = '192.168.0.117' # set to the mocap PC's IP, get this from Motive Settings>Streaming pane->Local interface
   
 class HuskyMonitor(Node):
-    USE_MOCAP = 0
-    FAKE_HARDWARE = 1
-    CALIBRATION = False
+    USE_MOCAP = 1
+    FAKE_HARDWARE = 0
+    CALIBRATION = 1
 
     def __init__(self):
         super().__init__('husky_monitor')
@@ -464,7 +464,8 @@ class HuskyMonitor(Node):
                 N = len(self.planned_arm_trajectory[0])
                 arm_traj_idx_float = preview_time * (N - 1)
                 arm_traj_idx = int(arm_traj_idx_float)
-                goal_arm_pose = self.planned_arm_trajectory[0][arm_traj_idx]
+                if arm_traj_idx < len(self.planned_arm_trajectory[0]) and len(self.planned_arm_trajectory[0]) > 0:
+                    goal_arm_pose = self.planned_arm_trajectory[0][arm_traj_idx]
 
                 # dt = arm_traj_idx_float - arm_traj_idx
                 # arm_traj_idx_plus = min(int(preview_time * (N - 1) + 1), N-1)
