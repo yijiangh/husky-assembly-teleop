@@ -11,10 +11,10 @@ import pybullet_planning as pp
 
 from pybullet_mocap import DATA_DIRECTORY
 from pybullet_mocap.husky_robot import HuskyRobotInterface
+from pybullet_mocap.utils import HUSKY_JOINT_NAMES
 
 # --- --- PYBULLET OBJECTS --- ---
 
-HUSKY_JOINT_NAMES = ['x', 'y', 'theta']
 HUSKY_UR5e_JOINT_NAMES = ["ur_arm_shoulder_pan_joint", 
                       "ur_arm_shoulder_lift_joint",
                       "ur_arm_elbow_joint", 
@@ -135,7 +135,7 @@ class HuskyObject():
        
     def set_pose(self, base_pose, arm_joint_states):
         pp.set_pose(self.robot, base_pose)
-        arm_joints = pp.joints_from_names(self.robot, HUSKY_UR5e_JOINT_NAMES)
+        arm_joints = pp.joints_from_names(self.robot, HUSKY_JOINT_NAMES)
         pp.set_joint_positions(self.robot, arm_joints, arm_joint_states)
         self.ee_attachment.assign()
         
