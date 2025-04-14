@@ -13,6 +13,7 @@ from pybullet_mocap import DATA_DIRECTORY
 from pybullet_mocap.common import Husky, TrackedObject, AssemblyObject, HUSKY_UR5e_JOINT_NAMES
 import pybullet_mocap.husky_planning as planning
 import pybullet_mocap.husky_control as control
+import pybullet_mocap.utils as utils
 from pybullet_mocap.scaffolding import parse_mt_geometric, create_collision_bodies, create_couplers, flatten_list
 import json
 from datetime import datetime
@@ -21,8 +22,10 @@ MT_FILE_NAME = "one_tet_MT_contact.json"
 # huskies = []
 assembly_objects = []
 
-# CALIB_DATA_DIR = "/home/yijiangh/ros2_ws/src/pybullet_mocap/data/calibration_data"
-CALIB_DATA_DIR = "/home/yijiangh/ros2_ws/src/husky-asembly-teleop/data/calibration_data"
+CALIB_DATA_DIR = "/home/yijiangh/ros2_ws/src/pybullet_mocap/data/calibration_data"
+# check if this directory exist
+if not os.path.exists(CALIB_DATA_DIR):
+    CALIB_DATA_DIR = "/home/yijiangh/ros2_ws/src/husky-asembly-teleop/data/calibration_data"
 
 def init(monitor): 
     # * add robots
@@ -87,7 +90,8 @@ def plan_arm_wave(monitor):
 
 def plan_arm_to_goal(monitor):
     obstacles = [monitor.assembly_objects[i].body for i in range(monitor.current_seq_index)] + monitor.static_obstacles
-    monitor.set_arm_trajectory(planning.plan_arm_motion(monitor.huskies[monitor.selected_robot_id], monitor.goal_arm_pose, obstacles, monitor.trajectory_time))
+    monitor.set_arm_trajectory(planning.plan_arm_motion(monitor.huskies[monitor.selected_robot_id], monitor.goal_arm_pose, obstacles, monitor.trajectory_time,
+                                                        grasped_element=monitor.goal_element, grasp=monitor.goal_bar_grasp))
 
 def plan_arm_to_transfer_element(monitor, grasp=None):
     obstacles = [monitor.assembly_objects[i].body for i in range(monitor.current_seq_index)] + monitor.static_obstacles
@@ -107,6 +111,25 @@ def plan_arm_to_retract_to_home(monitor):
     obstacles = [monitor.assembly_objects[i].body for i in range(monitor.current_seq_index)] + monitor.static_obstacles
     transfer_element = monitor.assembly_objects[monitor.current_seq_index]
     monitor.set_arm_trajectory(planning.plan_arm_to_retract_to_home(monitor.huskies[monitor.selected_robot_id], transfer_element, obstacles, monitor.trajectory_time))
+
+def compute_ik_for_bar(monitor, world_from_bar, theta_index):
+    object_from_tool0 = planning.compute_grasp(theta_index)
+    world_from_tool0 = pp.multiply(world_from_bar, object_from_tool0)
+
+    arm_conf = planning.arm_ik(monitor.huskies[monitor.selected_robot_id], 
+                      world_from_tool0)
+    if arm_conf is None:
+        pp.draw_pose(world_from_tool0)
+        monitor.get_logger().warn("IK failed!")
+        return None, None
+
+    return arm_conf, pp.invert(object_from_tool0)
+
+def update_goal_gripper_model_pose(monitor, world_from_bar, theta_index):
+    object_from_tool0 = planning.compute_grasp(theta_index)
+    world_from_tool0 = pp.multiply(world_from_bar, object_from_tool0, pp.Pose(euler=pp.Euler(yaw=-np.pi/2)))
+    # pp.draw_pose(world_from_tool0)
+    pp.set_pose(monitor.goal_gripper_model, world_from_tool0)
 
 # calibration_running = False
 # calibration_confirm = False
@@ -188,23 +211,6 @@ def calibrate_joint(monitor, joint_id, tool_mocap_name):
     for i in range(steps):
         joint_conf = np.array(current_conf) + (i+1)/steps * (np.array(goal_conf) - np.array(current_conf))
         joint_confs.append(joint_conf)
-        # monitor.goal_arm_pose(joint_conf)
-        # monitor.huskies[monitor.selected_robot_id].interface.send_arm_cmd([hi.arm_joint_pose, joint_conf], None, monitor.trajectory_time)
-
-        # print(f'Executing: {hi.is_arm_executing}')
-        # execute the trajectory and wait for extra 2 secs after its done
-        # if hi.is_arm_executing:
-        #     while hi.is_arm_executing:
-        #         pass
-        #     else:
-        #         pp.wait_for_duration(1)
-        # else:
-        # pp.wait_for_duration(monitor.trajectory_time + 1)
-        # await asyncio.sleep(monitor.trajectory_time + 1)
-
-        # pp.wait_for_user('The tool has stabilize?')
-        # calibrate_button(monitor, tool_mocap_name)
-    # save_calibration(monitor, f"joint_{joint_id}")
 
     monitor.set_arm_trajectory((joint_confs, None, monitor.trajectory_time, None))
     
