@@ -7,6 +7,7 @@ The main ROS2 node for the husky monitor. This node is responsible for:
 - Handling user input
 """
 
+from collections import defaultdict
 import os
 import time, copy
 import numpy as np
@@ -39,10 +40,11 @@ CLIENT_IP = '192.168.0.7' # Set to your own IP
 MOCAP_IP = '192.168.0.117' # set to the mocap PC's IP, get this from Motive Settings>Streaming pane->Local interface
   
 class HuskyMonitor(Node):
-    USE_MOCAP = 0
-    FAKE_HARDWARE = 1
+    USE_MOCAP = 1
+    FAKE_HARDWARE = 0
     CALIBRATION = 0
     BAR_GOAL_MODE = 1
+    BAR_HOLDING_ACCURACY_TEST = 1
 
     def __init__(self):
         super().__init__('husky_monitor')
@@ -432,6 +434,8 @@ class HuskyMonitor(Node):
             self.buttons.append(Button('Calib joint 1', lambda: world.calibrate_joint(self, 1, 'calib_tool')))
             self.buttons.append(Button('Execute one step', self.execute_one_step))
 
+        self.buttons.append(Button('Request,save markerset data', self.send_request_to_mocap))
+
         self.buttons.append(Button('Record current calib conf', lambda: world.calibrate_button(self, 'calib_tool')))
         self.buttons.append(Button('Export calib conf to json', self.record_calibration_data))
 
@@ -439,23 +443,28 @@ class HuskyMonitor(Node):
     # --- --- --- --- --- MOCAP --- --- --- --- --- 
     def start_mocap(self):
         print('Starting mocap!')
-        mocap_client = NatNetClient()
-        mocap_client.set_client_address(CLIENT_IP)
-        mocap_client.set_server_address(MOCAP_IP)
-        mocap_client.set_use_multicast(False)
-        mocap_client.print_level = 1
-        mocap_client.rigid_body_listener = self.receive_rigid_body_frame
-        mocap_client.new_frame_listener = self.receive_mocap_frame
+        self.mocap_client = NatNetClient()
+        self.mocap_client.set_client_address(CLIENT_IP)
+        self.mocap_client.set_server_address(MOCAP_IP)
+        self.mocap_client.set_use_multicast(False)
+        self.mocap_client.print_level = 1
+        self.mocap_client.rigid_body_listener = self.receive_rigid_body_frame
+        self.mocap_client.new_frame_listener = self.receive_mocap_frame
+        if self.BAR_HOLDING_ACCURACY_TEST:
+            self.mocap_client.rigid_body_marker_set_listener = self.receive_rigid_body_marker_set
         
-        if mocap_client.run():
+        if self.mocap_client.run():
             start_connect = time.time()
-            while not mocap_client.connected():
+            while not self.mocap_client.connected():
                 time.sleep(0.25)
                 if time.time() - start_connect > 5:
                     break
-            print(f"mocap client connected: {mocap_client.connected()}")
+            print(f"mocap client connected: {self.mocap_client.connected()}")
         else:
             print('Failed to run mocap client!')
+
+    def send_request_to_mocap(self):
+        self.mocap_client.send_request(self.mocap_client.command_socket, self.mocap_client.NAT_REQUEST_MODELDEF,    "",  (self.mocap_client.server_ip_address, self.mocap_client.command_port) )
     
     # mocap updates are happening in a separate thread
     _mocap_rigidbody_cache = {}
@@ -493,6 +502,27 @@ class HuskyMonitor(Node):
             (pos, rot) = self._mocap_rigidbody_cache[o.name]
             o.mocap_callback(pos, rot, ts)
         # self._mocap_rigidbody_cache.clear()
+
+    _mocap_rigidbody_marker_set_cache = defaultdict(dict)
+    def receive_rigid_body_marker_set(self, id, marker_ids, marker_positions, marker_labels):
+        if id not in self.name_from_mocap_id:
+            return
+
+        name = self.name_from_mocap_id[id]
+        for i in range(len(marker_ids)):
+            mid = marker_ids[i]
+            pos = marker_positions[i]
+            label = marker_labels[i]
+
+            if mid not in self._mocap_rigidbody_marker_set_cache[name]:
+                self._mocap_rigidbody_marker_set_cache[name][mid] = {}
+
+            self._mocap_rigidbody_marker_set_cache[name][mid] = {
+                'marker_positions': pos,
+                'marker_label': label,
+            }
+
+        # print(self._mocap_rigidbody_marker_set_cache)
         
     # --- --- --- --- --- UPDATE --- --- --- --- --- 
     def update(self):

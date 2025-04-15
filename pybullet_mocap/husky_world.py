@@ -46,6 +46,11 @@ def init(monitor):
     if monitor.CALIBRATION:
         TrackedObject(monitor, 'calib_tool', 4569, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
 
+    if monitor.BAR_HOLDING_ACCURACY_TEST:
+        bar_rig = TrackedObject(monitor, 'bar_rig', 4570, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
+        bar_rig.body = pp.create_cylinder(radius=0.01, height=1, color=(1, 0, 0, 0.2))
+        bar_rig.model_base_pose = pp.Pose(euler=pp.Euler(pitch=np.pi/2))
+
     #boxes.append(TrackedObject(monitor, 'box1', 4457, np.zeros(3), np.array((0, 0, 0, 1)), 0.2, 'cube.obj'))
     #boxes.append(TrackedObject(monitor, 'box2', 4484, np.zeros(3), np.array((0, 0, 0, 1)), 0.2, 'cube.obj'))
     #boxes.append(TrackedObject(monitor, 'box3', 1031, np.zeros(3), np.array((0, 0, 0, 1)), 0.2, 'cube.obj'))
@@ -152,6 +157,8 @@ def calibrate_button(monitor, tool_mocap_name):
         flange_mocap_pose = ho.get_link_pose_from_name("ur_arm_tool0")
 
     tool0_fk_pose = ho.get_link_pose_from_name("ur_arm_tool0")
+
+    # TODO if BAR_GOAL_MODE, log markerset
 
     if flange_mocap_pose is None:
         if monitor.CALIBRATION:

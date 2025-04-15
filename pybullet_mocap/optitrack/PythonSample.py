@@ -151,10 +151,13 @@ def my_parse_args(arg_list, args_dict):
 
 if __name__ == "__main__":
 
+    CLIENT_IP = '192.168.0.7' # Set to your own IP
+    MOCAP_IP = '192.168.0.117' # set to the mocap PC's IP, get this from Motive Settings>Streaming pane->Local interface
+
     optionsDict = {}
-    optionsDict["clientAddress"] = "192.168.0.180"
-    optionsDict["serverAddress"] = "192.168.0.117"
-    optionsDict["use_multicast"] = True
+    optionsDict["clientAddress"] = CLIENT_IP
+    optionsDict["serverAddress"] = MOCAP_IP
+    optionsDict["use_multicast"] = False
 
     # This will create a new NatNet client
     optionsDict = my_parse_args(sys.argv, optionsDict)

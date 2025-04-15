@@ -94,6 +94,7 @@ class TrackedObject:
         self.mocap_id = mocap_id
         self.pos = pos
         self.rot = rot
+        self.model_base_pose = None # an additional transformation that should be carried to all pose
         
         self.body = None
         if model_file:
@@ -109,6 +110,8 @@ class TrackedObject:
         
     def set_pose(self, base_pose):
         if self.body:
+            if self.model_base_pose is not None:
+                base_pose = pp.multiply(base_pose, self.model_base_pose)
             pp.set_pose(self.body, base_pose)
 
 class Husky():
