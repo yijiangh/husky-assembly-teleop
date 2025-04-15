@@ -80,7 +80,8 @@ class HuskyMonitor(Node):
         self.goal_model = None
         self.goal_gripper_model = None
 
-        self.goal_bar_pose = pp.unit_pose()
+        self.base_from_goal_bar_pos = None
+        self.world_from_goal_bar_euler = None
         self.goal_element = None 
 
         self.goal_bar_grasp = None
@@ -158,10 +159,6 @@ class HuskyMonitor(Node):
         self.buttons.clear()
         self.assembly_position_sliders.clear()
         self.joint_state_sliders.clear()
-
-        self.goal_bar_grasp = None
-        self.goal_element = None
-
         self.build_ui(target_conf)
         
     def toggle_show_goal_state(self):
@@ -295,24 +292,35 @@ class HuskyMonitor(Node):
             # self.goal_arm_pose = conf
             # self.show_goal_state = True
 
-    def update_bar_goal_pose(self, goal_pose):
+    def get_world_from_bar_goal_pose(self):
         world_from_base_link = self.goal_model.get_link_pose_from_name("base_footprint")
-        world_from_bar = pp.Pose(point=pp.Point(*goal_pose[:3]), euler=pp.Euler(*goal_pose[3:]))
+        world_pos = pp.multiply(world_from_base_link, pp.Pose(point=self.base_from_goal_bar_pos))[0]
+        world_quat = pp.Pose(euler=pp.Euler(*self.world_from_goal_bar_euler))[1]
+        return world_pos, world_quat
+
+    def update_bar_goal_pose(self, slider_inputs):
+        # ! keep bar pos relative to the robot base, but orientation absolute to the world
+        self.base_from_goal_bar_pos = pp.Point(*slider_inputs[:3])
+        self.world_from_goal_bar_euler = pp.Euler(*slider_inputs[3:])
 
         # world_from_bar = pp.Pose(point=pp.Point(0.8, 0, 1.4), euler=pp.Euler(roll=np.pi/2))
-
-        # world_from_bar = pp.multiply(world_from_base_link, base_link_from_bar_goal_pose)
-        # pp.draw_pose(world_from_bar)
-        self.goal_bar_pose = world_from_bar
-        self.goal_element.set_pose(world_from_bar)
-        world.update_goal_gripper_model_pose(self, self.goal_bar_pose, self.grasp_theta_index)
+        goal_bar_pose = self.get_world_from_bar_goal_pose()
+        self.goal_element.set_pose(goal_bar_pose)
+        world.update_goal_gripper_model_pose(self, goal_bar_pose, self.grasp_theta_index)
 
     def next_grasp_theta(self):
         self.grasp_theta_index = (self.grasp_theta_index + 1) % 4
-        world.update_goal_gripper_model_pose(self, self.goal_bar_pose, self.grasp_theta_index)
+        world.update_goal_gripper_model_pose(self, self.get_world_from_bar_goal_pose(), self.grasp_theta_index)
+
+    def rotate_bar_euler_angle(self, angle, axis='roll'):
+        goal_bar_pose = pp.multiply(self.get_world_from_bar_goal_pose(), pp.Pose(euler=pp.Euler(**{axis: angle})))
+        self.world_from_goal_bar_euler = pp.euler_from_quat(goal_bar_pose[1])
+        self.goal_element.set_pose(goal_bar_pose)
+        world.update_goal_gripper_model_pose(self, goal_bar_pose, self.grasp_theta_index)
+        self.reset_ui()
 
     def compute_ik_for_bar(self):
-        arm_conf, grasp = world.compute_ik_for_bar(self, self.goal_bar_pose, self.grasp_theta_index)
+        arm_conf, grasp = world.compute_ik_for_bar(self, self.get_world_from_bar_goal_pose(), self.grasp_theta_index)
         if arm_conf is not None and grasp is not None:
             self.goal_arm_pose = arm_conf
             self.goal_bar_grasp = grasp
@@ -360,6 +368,7 @@ class HuskyMonitor(Node):
             # self.state_sliders.append(p.addUserDebugParameter("x", -5.0, 5.0, pose2d[0]))
             # self.state_sliders.append(p.addUserDebugParameter("y", -5.0, 5.0, pose2d[1]))
             # self.state_sliders.append(p.addUserDebugParameter("yaw", -np.pi, np.pi, pose2d[2]))
+
         # self.buttons.append(Button('Plan base', lambda: world.plan_to_goal(self)))
         # self.buttons.append(Button('Exec Base', lambda: world.move_to_goal(self)))
                
@@ -383,17 +392,32 @@ class HuskyMonitor(Node):
             self.buttons.append(Button('Open Gripper', lambda: world.open_gripper_full(self)))
             self.buttons.append(Button('Close Gripper', lambda: world.close_gripper_for_bar(self)))
 
+        self.buttons.append(Button('Compute ik', self.compute_ik_for_bar))
+        self.buttons.append(Button('Plan arm to conf target', lambda: world.plan_arm_to_goal(self)))
+
         # bar_goal_pose_slider_group
         if self.BAR_GOAL_MODE:
+            if self.base_from_goal_bar_pos is None or self.world_from_goal_bar_euler is None:
+                bar_target_euler = pp.Euler(roll=np.pi/2)
+                pos, quat = pp.Pose(point=pp.Point(0.8, 0, 1.4), euler=bar_target_euler)
+            else:
+                pos, quat = self.base_from_goal_bar_pos, pp.quat_from_euler(self.world_from_goal_bar_euler)
+
+            euler = pp.euler_from_quat(quat)
             self.bar_goal_pose_slider_group = SliderGroup([
-                "bar {} wrt base".format(t) for t in ["x","y","z", "r", "p", "y"]], 
+                "bar {}".format(t) for t in ["x","y","z", "r", "p", "y"]], 
                 self.update_bar_goal_pose, 
                 [-2, -2, -2, -np.pi, -np.pi, -np.pi], 
                 [2,  2,  2, np.pi,  np.pi,  np.pi], 
-                [0,0,0, 0, 0, 0]
+                [pos[0], pos[1], pos[2], euler[0], euler[1], euler[2]]
                 )
+            self.update_bar_goal_pose(list(pos) + list(euler))
+
+            self.buttons.append(Button('Step bar r', lambda : self.rotate_bar_euler_angle(np.pi/2, 'roll')))
+            self.buttons.append(Button('Step bar p', lambda : self.rotate_bar_euler_angle(np.pi/2, 'pitch')))
+            self.buttons.append(Button('Step bar y', lambda : self.rotate_bar_euler_angle(np.pi/2, 'yaw')))
+
             self.buttons.append(Button('Step grasp theta', self.next_grasp_theta))
-            self.buttons.append(Button('Compute ik', self.compute_ik_for_bar))
         else:
             for i, j in enumerate(pp.joints_from_names(self.huskies[0].object.robot, HUSKY_UR5e_JOINT_NAMES)):
                 lower, upper = pp.get_joint_limits(self.huskies[0].object.robot, j)
@@ -402,8 +426,6 @@ class HuskyMonitor(Node):
                 else:
                     self.joint_state_sliders.append(p.addUserDebugParameter(f'Joint {i}', lower, upper, target_conf[i]))
             
-        self.buttons.append(Button('Plan arm to conf target', lambda: world.plan_arm_to_goal(self)))
-
         if self.CALIBRATION:
             self.buttons.append(Button('Calib joint 0', lambda: world.calibrate_joint(self, 0, 'calib_tool')))
             self.buttons.append(Button('Set joint 0 to zero', self.set_goal_joint_0_to_zero))
