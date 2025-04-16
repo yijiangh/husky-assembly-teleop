@@ -23,8 +23,8 @@ solver = TracIKSolver(
     'ur_arm_tool0'
 )
 
-def compute_grasp(theta_index):
-    theta = (theta_index % 4) * np.pi/2
+def compute_grasp(theta_index, grasp_partition=4):
+    theta = (theta_index % grasp_partition) * (2*np.pi/grasp_partition)
     longitude_x = pp.Pose(euler=pp.Euler(pitch=np.pi/2))
     rotate_around_x_axis = pp.Pose(euler=pp.Euler(theta, 0, 0))
     rotate_around_z = pp.Pose(euler=[0, 0, np.pi/2])

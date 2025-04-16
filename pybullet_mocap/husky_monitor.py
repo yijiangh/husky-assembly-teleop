@@ -46,6 +46,8 @@ class HuskyMonitor(Node):
     BAR_GOAL_MODE = 1
     BAR_HOLDING_ACCURACY_TEST = 1
 
+    GRASP_PARTITION = 8
+
     def __init__(self):
         super().__init__('husky_monitor')
         self.tick_timer = self.create_timer(0.05, self.update)
@@ -62,6 +64,7 @@ class HuskyMonitor(Node):
         self.current_seq_index = 0
 
         self.calibration_data = []
+        self.marker_set_data = []
         
         # UI
         self.buttons = []
@@ -153,6 +156,10 @@ class HuskyMonitor(Node):
     def record_calibration_data(self):
         world.save_calibration(self)
         self.calibration_data = []
+
+    def record_markerset_data(self):
+        world.save_markerset_data(self)
+        self.marker_set_data = []
         
     def reset_ui(self, target_conf=None):
         # reset all sliders to default value by recreating them...
@@ -311,7 +318,7 @@ class HuskyMonitor(Node):
         world.update_goal_gripper_model_pose(self, goal_bar_pose, self.grasp_theta_index)
 
     def next_grasp_theta(self):
-        self.grasp_theta_index = (self.grasp_theta_index + 1) % 4
+        self.grasp_theta_index = (self.grasp_theta_index + 1) % self.GRASP_PARTITION
         world.update_goal_gripper_model_pose(self, self.get_world_from_bar_goal_pose(), self.grasp_theta_index)
 
     def rotate_bar_euler_angle(self, angle, axis='roll'):
@@ -326,6 +333,7 @@ class HuskyMonitor(Node):
         if arm_conf is not None and grasp is not None:
             self.goal_arm_pose = arm_conf
             self.goal_bar_grasp = grasp
+            self.reset_ui(self.goal_arm_pose)
     
     # --- --- --- --- --- SETUP PYBULLET --- --- --- --- ---
     def start_pybullet(self):
@@ -420,7 +428,11 @@ class HuskyMonitor(Node):
             self.buttons.append(Button('Step bar y', lambda : self.rotate_bar_euler_angle(np.pi/2, 'yaw')))
 
             self.buttons.append(Button('Step grasp theta', self.next_grasp_theta))
-        else:
+
+            self.buttons.append(Button('Record markerset data', self.send_request_to_mocap))
+            self.buttons.append(Button('Save markerset data', self.record_markerset_data))
+
+        if True:
             for i, j in enumerate(pp.joints_from_names(self.huskies[0].object.robot, HUSKY_UR5e_JOINT_NAMES)):
                 lower, upper = pp.get_joint_limits(self.huskies[0].object.robot, j)
                 if target_conf is None:
@@ -434,10 +446,9 @@ class HuskyMonitor(Node):
             self.buttons.append(Button('Calib joint 1', lambda: world.calibrate_joint(self, 1, 'calib_tool')))
             self.buttons.append(Button('Execute one step', self.execute_one_step))
 
-        self.buttons.append(Button('Request,save markerset data', self.send_request_to_mocap))
-
         self.buttons.append(Button('Record current calib conf', lambda: world.calibrate_button(self, 'calib_tool')))
         self.buttons.append(Button('Export calib conf to json', self.record_calibration_data))
+        self.buttons.append(Button('Remove all drawing', lambda : pp.remove_all_debug()))
 
     
     # --- --- --- --- --- MOCAP --- --- --- --- --- 
@@ -465,6 +476,8 @@ class HuskyMonitor(Node):
 
     def send_request_to_mocap(self):
         self.mocap_client.send_request(self.mocap_client.command_socket, self.mocap_client.NAT_REQUEST_MODELDEF,    "",  (self.mocap_client.server_ip_address, self.mocap_client.command_port) )
+        time.sleep(1)
+        world.request_marketset_button(self, 'bar_rig')
     
     # mocap updates are happening in a separate thread
     _mocap_rigidbody_cache = {}
@@ -509,21 +522,30 @@ class HuskyMonitor(Node):
             return
 
         name = self.name_from_mocap_id[id]
+        if name not in self._mocap_rigidbody_cache:
+            self.get_logger().warn(f'Mocap {name} not found in rb cache!')
+            return
+        rb_pose = self._mocap_rigidbody_cache[name]
+
         for i in range(len(marker_ids)):
             mid = marker_ids[i]
             pos = marker_positions[i]
+            # y up to z up
+            pos = (pos[2], pos[0], pos[1])
             label = marker_labels[i]
 
             if mid not in self._mocap_rigidbody_marker_set_cache[name]:
                 self._mocap_rigidbody_marker_set_cache[name][mid] = {}
 
+            # ! market data is in the frame of the rb, so need to transform to get coord in world
+            world_from_marker = pp.tform_point(rb_pose, pos)
             self._mocap_rigidbody_marker_set_cache[name][mid] = {
-                'marker_positions': pos,
+                'marker_positions': world_from_marker,
                 'marker_label': label,
             }
 
-        # print(self._mocap_rigidbody_marker_set_cache)
-        
+        print(f'Received marker set data for {name}:', self._mocap_rigidbody_marker_set_cache[name])
+     
     # --- --- --- --- --- UPDATE --- --- --- --- --- 
     def update(self):
         for b in self.buttons:
@@ -561,8 +583,8 @@ class HuskyMonitor(Node):
         if self.BAR_GOAL_MODE:
             self.bar_goal_pose_slider_group.update()
             # update_bar_goal_pose
-        else:
-            self.goal_arm_pose = np.array([p.readUserDebugParameter(ps) for ps in self.joint_state_sliders])
+
+        self.goal_arm_pose = np.array([p.readUserDebugParameter(ps) for ps in self.joint_state_sliders])
 
         # update assembly goal position
         # self.assembly_goal_position_slider_group.update()
