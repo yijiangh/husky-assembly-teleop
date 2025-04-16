@@ -52,7 +52,7 @@ def plan_arm_motion(husky: Husky, arm_goal_pose, obstacles, traj_time, grasped_e
                 arm_goal_pose,
                 attachments,
                 obstacles,
-                debug=1,
+                debug=0,
                 disabled_collisions=False,
             )
 
