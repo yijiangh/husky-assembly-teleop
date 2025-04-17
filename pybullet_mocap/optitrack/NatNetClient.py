@@ -81,6 +81,7 @@ class NatNetClient:
 
         # Set this to a callback method of your choice to receive per-rigid-body data at each frame.
         self.rigid_body_listener = None
+        self.rigid_body_marker_set_listener = None
         self.labeled_marker_listener = None
         self.new_frame_listener  = None
 
@@ -344,6 +345,9 @@ class NatNetClient:
         if self.rigid_body_listener is not None:
             self.rigid_body_listener( new_id, pos, rot )
 
+        # NatNet ver 4 0 0 0 (major minor refers to this)
+        # Server ver 3 0 3 1
+
         # RB Marker Data ( Before version 3.0.  After Version 3.0 Marker data is in description )
         if( major < 3  and major != 0) :
             # Marker count (4 bytes)
@@ -381,6 +385,7 @@ class NatNetClient:
 
             for i in marker_count_range:
                 rigid_body.add_rigid_body_marker(rb_marker_list[i])
+
         if major >= 2 :
             marker_error, = FloatValue.unpack( data[offset:offset+4] )
             offset += 4
@@ -729,6 +734,7 @@ class NatNetClient:
         mocap_data.set_marker_set_data(marker_set_data)
         marker_set_count = marker_set_data.get_marker_set_count()
         unlabeled_markers_count = marker_set_data.get_unlabeled_marker_count()
+        # print("%s\n"%(marker_set_data.get_as_string()))
 
         # Rigid Body Data
         rel_offset, rigid_body_data = self.__unpack_rigid_body_data(data[offset:], (packet_size - offset),major, minor)
@@ -878,7 +884,19 @@ class NatNetClient:
                    marker_offset[0], marker_offset[1], marker_offset[2],marker_name ))
 
             offset = offset3
-        
+
+        # print(rb_desc.rb_marker_list)
+        if self.rigid_body_marker_set_listener is not None:
+            marker_ids = []
+            marker_positions = []
+            marker_labels = []
+            for i in range(len(rb_desc.rb_marker_list)):
+                marker_ids.append(rb_desc.rb_marker_list[i].marker_name)
+                marker_positions.append(rb_desc.rb_marker_list[i].pos)
+                marker_labels.append(rb_desc.rb_marker_list[i].active_label)
+
+            self.rigid_body_marker_set_listener( new_id, marker_ids, marker_positions, marker_labels) 
+
         trace_dd("\tunpack_rigid_body_description processed bytes: ", offset)
         return offset, rb_desc
 

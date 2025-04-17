@@ -13,6 +13,7 @@ from pybullet_mocap import DATA_DIRECTORY
 from pybullet_mocap.common import Husky, TrackedObject, AssemblyObject, HUSKY_UR5e_JOINT_NAMES
 import pybullet_mocap.husky_planning as planning
 import pybullet_mocap.husky_control as control
+import pybullet_mocap.utils as utils
 from pybullet_mocap.scaffolding import parse_mt_geometric, create_collision_bodies, create_couplers, flatten_list
 import json
 from datetime import datetime
@@ -21,17 +22,21 @@ MT_FILE_NAME = "one_tet_MT_contact.json"
 # huskies = []
 assembly_objects = []
 
-# CALIB_DATA_DIR = "/home/yijiangh/ros2_ws/src/pybullet_mocap/data/calibration_data"
-CALIB_DATA_DIR = "/home/yijiangh/ros2_ws/src/husky-asembly-teleop/data/calibration_data"
+DATA_DIR = "/home/yijiangh/ros2_ws/src/pybullet_mocap/data"
+if not os.path.exists(DATA_DIR):
+    DATA_DIR = "/home/yijiangh/ros2_ws/src/husky-asembly-teleop/data"
+
+CALIB_DATA_DIR = os.path.join(DATA_DIR, "calibration_data")
+BAR_HOLDING_ACC_DATA_DIR = os.path.join(DATA_DIR, "bar_holding_acc_data")
 
 def init(monitor): 
     # * add robots
     # 1004
     Husky(monitor, name='/a200_0804', mocap_id=4568, pos=np.array((0,0,0)), 
           connect_arm=not monitor.FAKE_HARDWARE, connect_gripper=not monitor.FAKE_HARDWARE, 
-          calibration=monitor.CALIBRATION)
-        #   calibration=monitor.CALIBRATION,
-        #   base_calibration_file=os.path.join(CALIB_DATA_DIR, 'calibrated_transformation_0804.json'))
+        #   calibration=monitor.CALIBRATION)
+          calibration=monitor.CALIBRATION,
+          base_calibration_file=os.path.join(CALIB_DATA_DIR, 'calibrated_transformation_0804.json'))
 
     # Husky(monitor, name='/a200_0805', mocap_id=1033, pos=np.array((0,1,0)), connect_gripper=False)
 
@@ -42,6 +47,11 @@ def init(monitor):
     # TODO use one tracked box to indicate where to put the assembly
     if monitor.CALIBRATION:
         TrackedObject(monitor, 'calib_tool', 4569, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
+
+    if monitor.BAR_HOLDING_ACCURACY_TEST:
+        bar_rig = TrackedObject(monitor, 'bar_rig', 4570, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
+        bar_rig.body = pp.create_cylinder(radius=0.01, height=1, color=(1, 0, 0, 0.2))
+        bar_rig.model_base_pose = pp.Pose(euler=pp.Euler(roll=np.pi/2))
 
     #boxes.append(TrackedObject(monitor, 'box1', 4457, np.zeros(3), np.array((0, 0, 0, 1)), 0.2, 'cube.obj'))
     #boxes.append(TrackedObject(monitor, 'box2', 4484, np.zeros(3), np.array((0, 0, 0, 1)), 0.2, 'cube.obj'))
@@ -60,7 +70,7 @@ def init(monitor):
 
     # TODO: set in rhino
     # line_pts_flattened += np.array([1.5, -0.5, 0.11])
-    line_pts_flattened += np.array([1, -0.5, 0.11])
+    line_pts_flattened += np.array([-1.5, -0.5, 0.11])
 
     element_bodies = create_collision_bodies(line_pts_flattened, radius_per_edge, viewer=True)
     half_coupler_from_contact_pair = create_couplers(line_pts_flattened, contact_id_pairs)
@@ -87,7 +97,8 @@ def plan_arm_wave(monitor):
 
 def plan_arm_to_goal(monitor):
     obstacles = [monitor.assembly_objects[i].body for i in range(monitor.current_seq_index)] + monitor.static_obstacles
-    monitor.set_arm_trajectory(planning.plan_arm_motion(monitor.huskies[monitor.selected_robot_id], monitor.goal_arm_pose, obstacles, monitor.trajectory_time))
+    monitor.set_arm_trajectory(planning.plan_arm_motion(monitor.huskies[monitor.selected_robot_id], monitor.goal_arm_pose, obstacles, monitor.trajectory_time,
+                                                        grasped_element=monitor.goal_element, grasp=monitor.goal_bar_grasp))
 
 def plan_arm_to_transfer_element(monitor, grasp=None):
     obstacles = [monitor.assembly_objects[i].body for i in range(monitor.current_seq_index)] + monitor.static_obstacles
@@ -108,8 +119,27 @@ def plan_arm_to_retract_to_home(monitor):
     transfer_element = monitor.assembly_objects[monitor.current_seq_index]
     monitor.set_arm_trajectory(planning.plan_arm_to_retract_to_home(monitor.huskies[monitor.selected_robot_id], transfer_element, obstacles, monitor.trajectory_time))
 
-# calibration_running = False
-# calibration_confirm = False
+def compute_ik_for_bar(monitor, world_from_bar, theta_index):
+    object_from_tool0 = planning.compute_grasp(theta_index, monitor.GRASP_PARTITION)
+    world_from_tool0 = pp.multiply(world_from_bar, object_from_tool0)
+
+    arm_conf = planning.arm_ik(monitor.huskies[monitor.selected_robot_id], 
+                      world_from_tool0)
+    if arm_conf is None:
+        pp.draw_pose(world_from_tool0)
+        monitor.get_logger().warn("IK failed!")
+        return None, None
+
+    return arm_conf, pp.invert(object_from_tool0)
+
+def update_goal_gripper_model_pose(monitor, world_from_bar, theta_index):
+    object_from_tool0 = planning.compute_grasp(theta_index, monitor.GRASP_PARTITION)
+    world_from_tool0 = pp.multiply(world_from_bar, object_from_tool0, pp.Pose(euler=pp.Euler(yaw=-np.pi/2)))
+    # pp.draw_pose(world_from_tool0)
+    pp.set_pose(monitor.goal_gripper_model, world_from_tool0)
+
+#################################
+
 def calibrate_button(monitor, tool_mocap_name):
     # record current joint conf and add to record
     h = monitor.huskies[monitor.selected_robot_id]
@@ -129,19 +159,30 @@ def calibrate_button(monitor, tool_mocap_name):
         flange_mocap_pose = ho.get_link_pose_from_name("ur_arm_tool0")
 
     tool0_fk_pose = ho.get_link_pose_from_name("ur_arm_tool0")
-    tool_0_fk_from_mocap = pp.multiply(pp.invert(tool0_fk_pose), flange_mocap_pose)
 
     if flange_mocap_pose is None:
-        monitor.get_logger().warn(f'Mocap {tool_mocap_name} not found!')
-        return
-    pp.draw_pose(flange_mocap_pose)
-    monitor.append_calibration_data(
-        {'joint_conf' : list(hi.arm_joint_pose), 
-         'base_mocap_pose' : [list(v) for v in base_mocap_pose],
-         "flange_mocap_pose" : [list(v) for v in flange_mocap_pose],
-         'tool0_fk_pose' : [list(v) for v in tool0_fk_pose],
-         'tool0_fk_from_mocap' : [list(v) for v in tool_0_fk_from_mocap],
-         })
+        if monitor.CALIBRATION:
+            monitor.get_logger().warn(f'Mocap {tool_mocap_name} not found!')
+            return
+        else:
+            pp.draw_pose(base_mocap_pose)
+            monitor.append_calibration_data(
+                {'joint_conf' : list(hi.arm_joint_pose), 
+                 'base_mocap_pose' : [list(v) for v in base_mocap_pose],
+                 "flange_mocap_pose" : [],
+                 'tool0_fk_pose' : [list(v) for v in tool0_fk_pose],
+                 'tool0_fk_from_mocap' : [],
+                 })
+    else:
+        tool_0_fk_from_mocap = pp.multiply(pp.invert(tool0_fk_pose), flange_mocap_pose)
+        pp.draw_pose(flange_mocap_pose)
+        monitor.append_calibration_data(
+            {'joint_conf' : list(hi.arm_joint_pose), 
+             'base_mocap_pose' : [list(v) for v in base_mocap_pose],
+             "flange_mocap_pose" : [list(v) for v in flange_mocap_pose],
+             'tool0_fk_pose' : [list(v) for v in tool0_fk_pose],
+             'tool0_fk_from_mocap' : [list(v) for v in tool_0_fk_from_mocap],
+             })
 
 def save_calibration(monitor, filename_suffix=""):
     print(monitor.calibration_data)
@@ -154,6 +195,56 @@ def save_calibration(monitor, filename_suffix=""):
         json.dump({'raw_data' : monitor.calibration_data}, f, indent=4)
 
     monitor.get_logger().info(f"Calibration data saved to {filename}")
+
+#################################
+
+def request_marketset_button(monitor, rb_mocap_name):
+    # record current joint conf and add to record
+    h = monitor.huskies[monitor.selected_robot_id]
+    hi = h.interface
+    ho = h.object
+    # fetch calibration mocap set frame
+    base_mocap_pose = None
+    base_link_pose = ho.get_link_pose_from_name("base_footprint")
+
+    if monitor.USE_MOCAP:
+        # need to get the raw data from mocap
+        if h.name in monitor._mocap_rigidbody_cache:
+            base_mocap_pose = monitor._mocap_rigidbody_cache[h.name]
+    else:
+        base_mocap_pose = base_link_pose
+
+    if rb_mocap_name not in monitor._mocap_rigidbody_marker_set_cache:
+        monitor.get_logger().warn(f'Mocap {rb_mocap_name} not found!')
+        return
+    else:
+        rb_marker_data = monitor._mocap_rigidbody_marker_set_cache[rb_mocap_name]
+        for marker_name, marker_data in rb_marker_data.items():
+            pp.draw_point(marker_data['marker_positions'])
+
+        bar_pose = monitor.get_world_from_bar_goal_pose()
+        monitor.marker_set_data.append(
+            {'joint_conf' : list(hi.arm_joint_pose), 
+             'base_mocap_pose' : [list(v) for v in base_mocap_pose],
+             'footprint_base_link_pose' : base_link_pose,
+             rb_mocap_name : rb_marker_data,
+             'world_from_bar_pose' : bar_pose,
+             'bar_euler_angles' : list(pp.euler_from_quat(bar_pose[1])),
+             'theta_index' : monitor.grasp_theta_index,
+             'theta_partition': monitor.GRASP_PARTITION,
+             })
+
+def save_markerset_data(monitor, filename_suffix=""):
+    print(monitor.calibration_data)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+    filename = os.path.join(BAR_HOLDING_ACC_DATA_DIR, f"bar_holding_acc_{timestamp}_{filename_suffix}.json")
+
+    with open(filename, 'w') as f:
+        json.dump({'raw_data' : monitor.marker_set_data}, f, indent=4)
+
+    monitor.get_logger().info(f"Bar holding acc data saved to {filename}")
+
+#################################
  
 def calibrate_joint(monitor, joint_id, tool_mocap_name):
     global calibration_running, calibration_confirm
@@ -177,23 +268,6 @@ def calibrate_joint(monitor, joint_id, tool_mocap_name):
     for i in range(steps):
         joint_conf = np.array(current_conf) + (i+1)/steps * (np.array(goal_conf) - np.array(current_conf))
         joint_confs.append(joint_conf)
-        # monitor.goal_arm_pose(joint_conf)
-        # monitor.huskies[monitor.selected_robot_id].interface.send_arm_cmd([hi.arm_joint_pose, joint_conf], None, monitor.trajectory_time)
-
-        # print(f'Executing: {hi.is_arm_executing}')
-        # execute the trajectory and wait for extra 2 secs after its done
-        # if hi.is_arm_executing:
-        #     while hi.is_arm_executing:
-        #         pass
-        #     else:
-        #         pp.wait_for_duration(1)
-        # else:
-        # pp.wait_for_duration(monitor.trajectory_time + 1)
-        # await asyncio.sleep(monitor.trajectory_time + 1)
-
-        # pp.wait_for_user('The tool has stabilize?')
-        # calibrate_button(monitor, tool_mocap_name)
-    # save_calibration(monitor, f"joint_{joint_id}")
 
     monitor.set_arm_trajectory((joint_confs, None, monitor.trajectory_time, None))
     

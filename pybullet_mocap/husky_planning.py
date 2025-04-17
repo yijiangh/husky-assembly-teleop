@@ -14,7 +14,7 @@ import pybullet_planning as pp
 
 from pybullet_mocap.common import Husky, lerp, quat_lerp
 from pybullet_mocap.base_planner import RRTStar, fill_yaw_angle
-from pybullet_mocap.utils import plan_transit_motion, plan_transfer_motion, plan_retract_to_home_motion
+from pybullet_mocap.utils import plan_transit_motion, plan_transfer_motion, plan_retract_to_home_motion, TOOL0_FROM_GRIPPER_TCP
 from pybullet_mocap import DATA_DIRECTORY
 
 solver = TracIKSolver(
@@ -23,32 +23,55 @@ solver = TracIKSolver(
     'ur_arm_tool0'
 )
 
-def arm_ik(husky: Husky, ee_pose: Tuple[np.ndarray, np.ndarray]):
+def compute_grasp(theta_index, grasp_partition=4):
+    theta = (theta_index % grasp_partition) * (2*np.pi/grasp_partition)
+    longitude_x = pp.Pose(euler=pp.Euler(pitch=np.pi/2))
+    rotate_around_x_axis = pp.Pose(euler=pp.Euler(theta, 0, 0))
+    rotate_around_z = pp.Pose(euler=[0, 0, np.pi/2])
+    object_from_tool0 = pp.multiply(longitude_x, rotate_around_x_axis, rotate_around_z, pp.invert(TOOL0_FROM_GRIPPER_TCP))
+    return object_from_tool0
+
+def arm_ik(husky: Husky, world_from_tool0):
     hi = husky.interface
     # TODO why is it off by 90 degrees?
-    ee_pose = pp.multiply(pp.invert((hi.position, hi.rotation)), ee_pose, pp.Pose(euler=pp.Euler(yaw=np.pi/2)))
-    qout = solver.ik(pp.tform_from_pose(ee_pose), qinit=hi.arm_joint_pose)
+    # ee_pose = pp.multiply(pp.invert((hi.position, hi.rotation)), ee_pose, pp.Pose(euler=pp.Euler(yaw=np.pi/2)))
+
+    world_from_arm_base_link = pp.get_link_pose(husky.object.robot, pp.link_from_name(husky.object.robot, 'ur_arm_base_link'))
+    arm_base_link_from_tool0 = pp.multiply(pp.invert(world_from_arm_base_link), world_from_tool0)
+    qout = solver.ik(pp.tform_from_pose(arm_base_link_from_tool0), qinit=hi.arm_joint_pose)
     return qout
 
-def plan_arm_motion(husky: Husky, arm_goal_pose, obstacles, traj_time):
+def plan_arm_motion(husky: Husky, arm_goal_pose, obstacles, traj_time, grasped_element=None, grasp=None):
+    attachments = [husky.object.ee_attachment]
+    if grasped_element is not None and grasp is not None:
+        robot = husky.object.robot
+        attachments.append(pp.Attachment(robot, pp.link_from_name(robot, 'ur_arm_tool0'), grasp, grasped_element.body))
+
     trajectory = plan_transit_motion(
                 husky.object.robot,
                 arm_goal_pose,
-                [husky.object.ee_attachment],
+                attachments,
                 obstacles,
-                debug=False,
+                debug=0,
                 disabled_collisions=False,
             )
+
     if trajectory is None:
         return (None, None, None, None)
+
     planned_arm_trajectory = [np.array(p) for p in trajectory]
-    return (planned_arm_trajectory, None, traj_time, None)
+
+    if grasped_element is not None and grasp is not None:
+        grasped_element.update_grasp(grasp)
+        return (planned_arm_trajectory, None, traj_time, grasped_element)
+    else:
+        return (planned_arm_trajectory, None, traj_time, None)
 
 def plan_arm_to_transfer_element(husky: Husky, transfer_element, obstacles, traj_time, grasp=None):
     free_path, linear_path, grasp = plan_transfer_motion(
         husky.object.robot,
         solver, 
-        transfer_element.body, 
+        transfer_element, 
         [husky.object.ee_attachment],
         obstacles, 
         grasp=grasp,

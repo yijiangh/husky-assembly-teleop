@@ -51,6 +51,16 @@ def load_robot(ik_from_arm_base=True, load_calib_tip=False):
 
     return robot, ee, ee_attachment
 
+def load_gripper(load_calib_tip=False):
+    if load_calib_tip:
+        gripper_obj = os.path.join(DATA_DIRECTORY,'calibration_tip.stl')
+        gripper_scale = 1
+    else:
+        gripper_obj = os.path.join(DATA_DIRECTORY,'husky_urdf/robotiq_85/meshes/static/robotiq_85_close_20mm.obj')
+        gripper_scale = 1
+
+    return pp.create_obj(gripper_obj, scale=gripper_scale)
+
 class AssemblyObject:
     def __init__(self, monitor, index: int, pb_body, init_pose, goal_pose, grasp=None):
         self.name = index
@@ -84,6 +94,7 @@ class TrackedObject:
         self.mocap_id = mocap_id
         self.pos = pos
         self.rot = rot
+        self.model_base_pose = None # an additional transformation that should be carried to all pose
         
         self.body = None
         if model_file:
@@ -99,6 +110,8 @@ class TrackedObject:
         
     def set_pose(self, base_pose):
         if self.body:
+            if self.model_base_pose is not None:
+                base_pose = pp.multiply(base_pose, self.model_base_pose)
             pp.set_pose(self.body, base_pose)
 
 class Husky():

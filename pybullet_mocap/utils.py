@@ -44,57 +44,7 @@ WHEEL_JOINT_NAMES = [
 JOINT_JUMP_THRESHOLD = np.pi/3
 POS_STEP_SIZE = 0.01
 ORI_STEP_SIZE = np.pi/18
-RETRACTION_LENGTH = 0.1
-
-def load_robot(load_calib_tip=False):
-    robot_urdf = os.path.join(DATA_DIRECTORY,'husky_urdf/mt_husky_moveit_config/urdf/husky_ur5_e_no_base_joint.urdf')
-    robot_srdf = os.path.join(DATA_DIRECTORY, 'husky_urdf/mt_husky_moveit_config/config/husky.srdf')
-
-    if load_calib_tip:
-        gripper_obj = os.path.join(DATA_DIRECTORY,'calibration_tip.stl')
-        gripper_scale = 1
-    else:
-        gripper_obj = os.path.join(DATA_DIRECTORY,'husky_urdf/robotiq_85/meshes/static/robotiq_85_close_20mm.obj')
-        gripper_scale = 1
-
-    # gripper_obj = os.path.join(DATA_DIRECTORY,'husky_urdf/robotiq_85/meshes/static/robotiq_85_open.obj')
-    # robot_urdf = os.path.join(HERE,'robotiq_85/urdf/robotiq_85_gripper_simple.urdf')
-    # robot_urdf = os.path.join(HERE,'mt_husky_dual_ur5_e_moveit_config/urdf/husky_dual_ur5_e.urdf')
-    # print(robot_urdf)
-    assert os.path.exists(robot_urdf)
-    assert os.path.exists(gripper_obj)
-
-    move_group = 'manipulator'
-    robot_model = RobotModel.from_urdf_file(robot_urdf)
-    robot_semantics = RobotSemantics.from_srdf_file(robot_srdf, robot_model)
-    # cp_robot = RobotClass(robot_model, semantics=robot_semantics)
-
-    robot = pp.load_pybullet(robot_urdf, fixed_base=False, cylinder=False)
-
-    # ik_solver = lambda x: [0,0,0,0,0,0]
-    # if not ik_from_arm_base:
-        # ik_solver = TracIKSolver(robot_urdf, "world_link", "ur_arm_tool0")
-    # else:
-    ik_solver = TracIKSolver(robot_urdf, "ur_arm_base_link", "ur_arm_tool0")
-    # pp.camgera_focus_on_body(robot)
-
-    # get disabled collision pairs from SRDF
-    disabled_self_collision_link_names = robot_semantics.disabled_collisions
-    disabled_collisions = get_disabled_collisions(robot, disabled_self_collision_link_names) 
-
-    tool0_pose = pp.get_link_pose(robot, pp.link_from_name(robot, 'ur_arm_tool0'))
-    # pp.draw_pose(tool0_pose)
-    ee = pp.create_obj(gripper_obj, scale=gripper_scale) 
-    pp.set_pose(ee, pp.multiply(tool0_pose, pp.Pose(euler=pp.Euler(yaw=-np.pi/2))))
-    
-    ee_attachment = pp.create_attachment(robot, pp.link_from_name(robot, 'ur_arm_tool0'), ee)
-
-    # tool0_from_ee = pp.Pose(euler=pp.Euler(yaw=-np.pi/2), point=[0,0,0.138])
-    # tcp_pose = pp.multiply(tool0_pose, tool0_from_ee)
-    # tcp_pose = pp.get_link_pose(robot, pp.link_from_name(robot, 'central_tcp'))
-    # pp.draw_pose(tcp_pose)
-
-    return robot, ee_attachment, ik_solver, disabled_collisions
+RETRACTION_LENGTH = 0.1 
 
 def get_disabled_collisions(robot, disabled_self_collision_link_names):
     """get robot's link-link tuples disabled from collision checking
@@ -145,7 +95,7 @@ def get_grasp_pose(direction, angle, offset=1e-3):
                     # Pose(euler=Euler(roll=(1-reverse) * np.pi)
                     )
 
-def plan_transfer_motion(robot, ik_solver, bar_body, attachments, obstacles, 
+def plan_transfer_motion(robot, ik_solver, transfer_element, attachments, obstacles, 
                        grasp=None,
                        debug=False, disabled_collisions=None):
     # plan a transit motion from init conf to pick_approach conf  
@@ -162,7 +112,8 @@ def plan_transfer_motion(robot, ik_solver, bar_body, attachments, obstacles,
 
     movable_joints = pp.joints_from_names(robot, HUSKY_JOINT_NAMES)
     tool_link = pp.link_from_name(robot, 'ur_arm_tool0')
-    gripper_tcp_from_tool0 = pp.invert(TOOL0_FROM_GRIPPER_TCP)
+    # gripper_tcp_from_tool0 = pp.invert(TOOL0_FROM_GRIPPER_TCP)
+    bar_body = transfer_element.body
 
     sample_fn = pp.get_sample_fn(robot, movable_joints, custom_limits=custom_limits)
     distance_fn = pp.get_distance_fn(robot, movable_joints) #, weights=weights)
@@ -178,9 +129,9 @@ def plan_transfer_motion(robot, ik_solver, bar_body, attachments, obstacles,
     # ! we enforce the grasp is at the center of the bar now
     grasp_gen = pp.get_side_cylinder_grasps(bar_body, safety_margin_length=height/2-0.0)
 
-    debug = True
+    debug = 0
 
-    world_from_object = pp.get_pose(bar_body)
+    world_from_object = transfer_element.goal_pose
     # * sample grasp and IK, and plan for approach motion
     grasp_attempts = 50 if grasp is None else 1
     linear_path_num = 5
@@ -195,7 +146,7 @@ def plan_transfer_motion(robot, ik_solver, bar_body, attachments, obstacles,
                 if grasp is None:
                     print('Grasp attempt #{}/{}'.format(g_id, grasp_attempts))
                     gripper_from_object = next(grasp_gen)
-                    tool0_from_object = pp.multiply(pp.invert(gripper_tcp_from_tool0), gripper_from_object)
+                    tool0_from_object = pp.multiply(TOOL0_FROM_GRIPPER_TCP, gripper_from_object)
                 else:
                     print('Reusing grasp.')
                     tool0_from_object = grasp
