@@ -6,6 +6,7 @@ import os
 import asyncio.runners
 import asyncio
 import numpy as np
+import copy
 
 import pybullet_planning as pp
 
@@ -227,11 +228,12 @@ def request_marketset_button(monitor, rb_mocap_name):
             {'joint_conf' : list(hi.arm_joint_pose), 
              'base_mocap_pose' : [list(v) for v in base_mocap_pose],
              'footprint_base_link_pose' : base_link_pose,
-             rb_mocap_name : rb_marker_data,
              'world_from_bar_pose' : bar_pose,
              'bar_euler_angles' : list(pp.euler_from_quat(bar_pose[1])),
-             'theta_index' : monitor.grasp_theta_index,
-             'theta_partition': monitor.GRASP_PARTITION,
+            # needs to make sure the marker set data is not pointing to the same object, so later new data will override the previously saved ones
+             rb_mocap_name : copy.deepcopy(rb_marker_data),
+             'theta_index' : copy.copy(monitor.grasp_theta_index),
+             'theta_partition': copy.copy(monitor.GRASP_PARTITION),
              })
 
 def save_markerset_data(monitor, filename_suffix=""):

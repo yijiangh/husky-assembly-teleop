@@ -15,10 +15,15 @@ HUSKY_UR5e_JOINT_NAMES = ["ur_arm_shoulder_pan_joint",
                       "ur_arm_wrist_3_joint" ]
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-data_batch = 'verification'
+# data_batch = 'verification'
 # data_batch = 'j0'
-# data_batch = 'j1'
-data_folder = os.path.join(HERE, data_batch)
+data_batch = 'j1'
+
+# subfolder = ''
+subfolder = '20250311'
+data_folder = os.path.join(HERE, subfolder, data_batch)
+
+viewer = False
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -32,17 +37,18 @@ file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(mes
 # Add handlers to the logger
 logger.addHandler(file_handler)
 
-pp.connect(use_gui=1, shadows=True, color=[0.9, 0.9, 1.0])
+pp.connect(use_gui=viewer, shadows=True, color=[0.9, 0.9, 1.0])
 # robot_urdf = os.path.join('/home/yijiangh/ros2_ws/src/husky-asembly-teleop/data','husky_urdf/mt_husky_moveit_config/urdf/husky_ur5_e_no_base_joint.urdf')
 # robot_urdf = os.path.join('/home/yijiangh/ros2_ws/src/pybullet_mocap/data', 'husky_urdf/mt_husky_moveit_config/urdf/husky_ur5_e_no_base_joint.urdf')
 robot_urdf = os.path.join(r'D:\0_Project\03-2025_husky_assembly\Code\husky-asembly-teleop\data',r'husky_urdf\mt_husky_moveit_config\urdf\husky_ur5_e_no_base_joint.urdf')
 with pp.HideOutput():
     robot = pp.load_pybullet(robot_urdf, fixed_base=False, cylinder=False)
 
-calib_file_path = os.path.join(HERE, 'calibrated_transformation_0804.json')
+calib_file_path = os.path.join(HERE, subfolder, 'calibrated_transformation_0804.json')
 with open(calib_file_path, 'r') as file:
     data = json.load(file)
-base_mocap_from_base_footprint = data['base_mocap_from_base_footprint']
+# base_mocap_from_base_footprint = data['base_mocap_from_base_footprint']
+base_mocap_from_base_footprint = pp.unit_pose()
 
 json_files = [f for f in os.listdir(data_folder) if f.startswith('calibration_') and f.endswith('.json')]
 tool0_from_flange_mocap_batches = []
