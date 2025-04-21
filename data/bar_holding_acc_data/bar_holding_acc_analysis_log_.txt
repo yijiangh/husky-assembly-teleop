@@ -1,72 +1,72 @@
-2025-04-18 13:27:05,301 - INFO - Working on file: bar_holding_acc_20250416_1443_p1.json
-2025-04-18 13:27:05,301 - INFO - Closest global axis to the line: 0 (angle: 0.44 deg)
-2025-04-18 13:27:05,301 - INFO - Closest global axis to the line: 0 (angle: 0.44 deg)
-2025-04-18 13:27:05,301 - INFO - Closest global axis to the line: 0 (angle: 0.44 deg)
-2025-04-18 13:27:05,301 - INFO - Working on file: bar_holding_acc_20250416_1444_p1.json
-2025-04-18 13:27:05,301 - INFO - Closest global axis to the line: 1 (angle: 0.28 deg)
-2025-04-18 13:27:05,301 - INFO - Closest global axis to the line: 1 (angle: 0.28 deg)
-2025-04-18 13:27:05,301 - INFO - Closest global axis to the line: 1 (angle: 0.28 deg)
-2025-04-18 13:27:05,301 - INFO - Working on file: bar_holding_acc_20250416_1449_p1.json
-2025-04-18 13:27:05,301 - INFO - Closest global axis to the line: 2 (angle: 0.65 deg)
-2025-04-18 13:27:05,301 - INFO - Closest global axis to the line: 2 (angle: 0.65 deg)
-2025-04-18 13:27:05,301 - INFO - Closest global axis to the line: 2 (angle: 0.65 deg)
-2025-04-18 13:27:05,301 - INFO - Closest global axis to the line: 2 (angle: 0.65 deg)
-2025-04-18 13:27:05,307 - INFO - Working on file: bar_holding_acc_20250416_1455_p2x.json
-2025-04-18 13:27:05,307 - INFO - Closest global axis to the line: 0 (angle: 0.75 deg)
-2025-04-18 13:27:05,308 - INFO - Closest global axis to the line: 0 (angle: 0.75 deg)
-2025-04-18 13:27:05,308 - INFO - Closest global axis to the line: 0 (angle: 0.75 deg)
-2025-04-18 13:27:05,308 - INFO - Working on file: bar_holding_acc_20250416_1500_p2yz.json
-2025-04-18 13:27:05,309 - INFO - Closest global axis to the line: 2 (angle: 0.29 deg)
-2025-04-18 13:27:05,309 - INFO - Closest global axis to the line: 2 (angle: 0.29 deg)
-2025-04-18 13:27:05,310 - INFO - Closest global axis to the line: 2 (angle: 0.29 deg)
-2025-04-18 13:27:05,310 - INFO - Closest global axis to the line: 2 (angle: 0.29 deg)
-2025-04-18 13:27:05,311 - INFO - Closest global axis to the line: 2 (angle: 0.29 deg)
-2025-04-18 13:27:05,311 - INFO - Closest global axis to the line: 2 (angle: 0.29 deg)
-2025-04-18 13:27:05,311 - INFO - Working on file: bar_holding_acc_20250416_1506_p3x.json
-2025-04-18 13:27:05,312 - INFO - Closest global axis to the line: 0 (angle: 0.75 deg)
-2025-04-18 13:27:05,312 - INFO - Closest global axis to the line: 0 (angle: 0.75 deg)
-2025-04-18 13:27:05,312 - INFO - Closest global axis to the line: 0 (angle: 0.75 deg)
-2025-04-18 13:27:05,312 - INFO - Working on file: bar_holding_acc_20250416_1511_p3y.json
-2025-04-18 13:27:05,314 - INFO - Closest global axis to the line: 2 (angle: 0.68 deg)
-2025-04-18 13:27:05,314 - INFO - Closest global axis to the line: 2 (angle: 0.68 deg)
-2025-04-18 13:27:05,315 - INFO - Closest global axis to the line: 2 (angle: 0.68 deg)
-2025-04-18 13:27:05,315 - INFO - Working on file: bar_holding_acc_20250416_1512_p3z.json
-2025-04-18 13:27:05,316 - INFO - Closest global axis to the line: 1 (angle: 0.36 deg)
-2025-04-18 13:27:05,316 - INFO - Closest global axis to the line: 1 (angle: 0.36 deg)
-2025-04-18 13:27:05,316 - INFO - Closest global axis to the line: 1 (angle: 0.36 deg)
-2025-04-18 13:27:05,317 - INFO - Working on file: bar_holding_acc_20250416_1518_p4y.json
-2025-04-18 13:27:05,318 - INFO - Closest global axis to the line: 1 (angle: 0.30 deg)
-2025-04-18 13:27:05,318 - INFO - Closest global axis to the line: 1 (angle: 0.30 deg)
-2025-04-18 13:27:05,318 - INFO - Closest global axis to the line: 1 (angle: 0.30 deg)
-2025-04-18 13:27:05,319 - INFO - Working on file: bar_holding_acc_20250416_1523_p4z.json
-2025-04-18 13:27:05,319 - INFO - Closest global axis to the line: 2 (angle: 0.29 deg)
-2025-04-18 13:27:05,320 - INFO - Closest global axis to the line: 2 (angle: 0.29 deg)
-2025-04-18 13:27:05,320 - INFO - Closest global axis to the line: 2 (angle: 0.29 deg)
-2025-04-18 13:27:05,320 - INFO - Working on file: bar_holding_acc_20250416_1526_p4x.json
-2025-04-18 13:27:05,321 - INFO - Closest global axis to the line: 0 (angle: 0.46 deg)
-2025-04-18 13:27:05,321 - INFO - Closest global axis to the line: 0 (angle: 0.46 deg)
-2025-04-18 13:27:05,322 - INFO - Closest global axis to the line: 0 (angle: 0.46 deg)
-2025-04-18 13:27:05,322 - INFO - Working on file: bar_holding_acc_20250416_1530_p5y.json
-2025-04-18 13:27:05,322 - INFO - Closest global axis to the line: 1 (angle: 0.22 deg)
-2025-04-18 13:27:05,322 - INFO - Closest global axis to the line: 1 (angle: 0.22 deg)
-2025-04-18 13:27:05,322 - INFO - Closest global axis to the line: 1 (angle: 0.22 deg)
-2025-04-18 13:27:05,322 - INFO - Working on file: bar_holding_acc_20250416_1533_p5z.json
-2025-04-18 13:27:05,322 - INFO - Closest global axis to the line: 2 (angle: 0.15 deg)
-2025-04-18 13:27:05,322 - INFO - Closest global axis to the line: 2 (angle: 0.15 deg)
-2025-04-18 13:27:05,322 - INFO - Closest global axis to the line: 2 (angle: 0.15 deg)
-2025-04-18 13:27:05,322 - INFO - Working on file: bar_holding_acc_20250416_1542_p5x.json
-2025-04-18 13:27:05,322 - INFO - Closest global axis to the line: 0 (angle: 0.33 deg)
-2025-04-18 13:27:05,322 - INFO - Closest global axis to the line: 0 (angle: 0.33 deg)
-2025-04-18 13:27:05,322 - INFO - Closest global axis to the line: 0 (angle: 0.33 deg)
-2025-04-18 13:27:05,327 - INFO - Working on file: bar_holding_acc_20250416_1546_p6y.json
-2025-04-18 13:27:05,327 - INFO - Closest global axis to the line: 1 (angle: 0.34 deg)
-2025-04-18 13:27:05,328 - INFO - Closest global axis to the line: 1 (angle: 0.34 deg)
-2025-04-18 13:27:05,328 - INFO - Closest global axis to the line: 1 (angle: 0.34 deg)
-2025-04-18 13:27:05,328 - INFO - Working on file: bar_holding_acc_20250416_1548_p6z.json
-2025-04-18 13:27:05,329 - INFO - Closest global axis to the line: 2 (angle: 0.46 deg)
-2025-04-18 13:27:05,329 - INFO - Closest global axis to the line: 2 (angle: 0.46 deg)
-2025-04-18 13:27:05,330 - INFO - Closest global axis to the line: 2 (angle: 0.46 deg)
-2025-04-18 13:27:05,330 - INFO - Working on file: bar_holding_acc_20250416_1550_p6x.json
-2025-04-18 13:27:05,330 - INFO - Closest global axis to the line: 0 (angle: 0.75 deg)
-2025-04-18 13:27:05,331 - INFO - Closest global axis to the line: 0 (angle: 0.75 deg)
-2025-04-18 13:27:05,331 - INFO - Closest global axis to the line: 0 (angle: 0.75 deg)
+2025-04-21 14:32:13,547 - INFO - Working on file: bar_holding_acc_20250416_1443_p1.json
+2025-04-21 14:32:13,555 - INFO - Closest global axis to the line: 0 (angle: 0.44 deg)
+2025-04-21 14:32:13,556 - INFO - Closest global axis to the line: 0 (angle: 0.44 deg)
+2025-04-21 14:32:13,556 - INFO - Closest global axis to the line: 0 (angle: 0.44 deg)
+2025-04-21 14:32:13,556 - INFO - Working on file: bar_holding_acc_20250416_1444_p1.json
+2025-04-21 14:32:13,562 - INFO - Closest global axis to the line: 1 (angle: 0.28 deg)
+2025-04-21 14:32:13,562 - INFO - Closest global axis to the line: 1 (angle: 0.28 deg)
+2025-04-21 14:32:13,563 - INFO - Closest global axis to the line: 1 (angle: 0.28 deg)
+2025-04-21 14:32:13,563 - INFO - Working on file: bar_holding_acc_20250416_1449_p1.json
+2025-04-21 14:32:13,563 - INFO - Closest global axis to the line: 2 (angle: 0.65 deg)
+2025-04-21 14:32:13,564 - INFO - Closest global axis to the line: 2 (angle: 0.65 deg)
+2025-04-21 14:32:13,564 - INFO - Closest global axis to the line: 2 (angle: 0.65 deg)
+2025-04-21 14:32:13,564 - INFO - Closest global axis to the line: 2 (angle: 0.65 deg)
+2025-04-21 14:32:13,565 - INFO - Working on file: bar_holding_acc_20250416_1455_p2x.json
+2025-04-21 14:32:13,565 - INFO - Closest global axis to the line: 0 (angle: 0.75 deg)
+2025-04-21 14:32:13,566 - INFO - Closest global axis to the line: 0 (angle: 0.75 deg)
+2025-04-21 14:32:13,566 - INFO - Closest global axis to the line: 0 (angle: 0.75 deg)
+2025-04-21 14:32:13,566 - INFO - Working on file: bar_holding_acc_20250416_1500_p2yz.json
+2025-04-21 14:32:13,567 - INFO - Closest global axis to the line: 2 (angle: 0.29 deg)
+2025-04-21 14:32:13,568 - INFO - Closest global axis to the line: 2 (angle: 0.29 deg)
+2025-04-21 14:32:13,568 - INFO - Closest global axis to the line: 2 (angle: 0.29 deg)
+2025-04-21 14:32:13,569 - INFO - Closest global axis to the line: 2 (angle: 0.29 deg)
+2025-04-21 14:32:13,569 - INFO - Closest global axis to the line: 2 (angle: 0.29 deg)
+2025-04-21 14:32:13,570 - INFO - Closest global axis to the line: 2 (angle: 0.29 deg)
+2025-04-21 14:32:13,570 - INFO - Working on file: bar_holding_acc_20250416_1506_p3x.json
+2025-04-21 14:32:13,570 - INFO - Closest global axis to the line: 0 (angle: 0.75 deg)
+2025-04-21 14:32:13,571 - INFO - Closest global axis to the line: 0 (angle: 0.75 deg)
+2025-04-21 14:32:13,571 - INFO - Closest global axis to the line: 0 (angle: 0.75 deg)
+2025-04-21 14:32:13,571 - INFO - Working on file: bar_holding_acc_20250416_1511_p3y.json
+2025-04-21 14:32:13,572 - INFO - Closest global axis to the line: 2 (angle: 0.68 deg)
+2025-04-21 14:32:13,573 - INFO - Closest global axis to the line: 2 (angle: 0.68 deg)
+2025-04-21 14:32:13,573 - INFO - Closest global axis to the line: 2 (angle: 0.68 deg)
+2025-04-21 14:32:13,573 - INFO - Working on file: bar_holding_acc_20250416_1512_p3z.json
+2025-04-21 14:32:13,574 - INFO - Closest global axis to the line: 1 (angle: 0.36 deg)
+2025-04-21 14:32:13,574 - INFO - Closest global axis to the line: 1 (angle: 0.36 deg)
+2025-04-21 14:32:13,574 - INFO - Closest global axis to the line: 1 (angle: 0.36 deg)
+2025-04-21 14:32:13,575 - INFO - Working on file: bar_holding_acc_20250416_1518_p4y.json
+2025-04-21 14:32:13,575 - INFO - Closest global axis to the line: 1 (angle: 0.30 deg)
+2025-04-21 14:32:13,576 - INFO - Closest global axis to the line: 1 (angle: 0.30 deg)
+2025-04-21 14:32:13,576 - INFO - Closest global axis to the line: 1 (angle: 0.30 deg)
+2025-04-21 14:32:13,576 - INFO - Working on file: bar_holding_acc_20250416_1523_p4z.json
+2025-04-21 14:32:13,584 - INFO - Closest global axis to the line: 2 (angle: 0.29 deg)
+2025-04-21 14:32:13,584 - INFO - Closest global axis to the line: 2 (angle: 0.29 deg)
+2025-04-21 14:32:13,584 - INFO - Closest global axis to the line: 2 (angle: 0.29 deg)
+2025-04-21 14:32:13,585 - INFO - Working on file: bar_holding_acc_20250416_1526_p4x.json
+2025-04-21 14:32:13,585 - INFO - Closest global axis to the line: 0 (angle: 0.46 deg)
+2025-04-21 14:32:13,586 - INFO - Closest global axis to the line: 0 (angle: 0.46 deg)
+2025-04-21 14:32:13,586 - INFO - Closest global axis to the line: 0 (angle: 0.46 deg)
+2025-04-21 14:32:13,586 - INFO - Working on file: bar_holding_acc_20250416_1530_p5y.json
+2025-04-21 14:32:13,591 - INFO - Closest global axis to the line: 1 (angle: 0.22 deg)
+2025-04-21 14:32:13,592 - INFO - Closest global axis to the line: 1 (angle: 0.22 deg)
+2025-04-21 14:32:13,592 - INFO - Closest global axis to the line: 1 (angle: 0.22 deg)
+2025-04-21 14:32:13,592 - INFO - Working on file: bar_holding_acc_20250416_1533_p5z.json
+2025-04-21 14:32:13,609 - INFO - Closest global axis to the line: 2 (angle: 0.15 deg)
+2025-04-21 14:32:13,609 - INFO - Closest global axis to the line: 2 (angle: 0.15 deg)
+2025-04-21 14:32:13,610 - INFO - Closest global axis to the line: 2 (angle: 0.15 deg)
+2025-04-21 14:32:13,610 - INFO - Working on file: bar_holding_acc_20250416_1542_p5x.json
+2025-04-21 14:32:13,611 - INFO - Closest global axis to the line: 0 (angle: 0.33 deg)
+2025-04-21 14:32:13,611 - INFO - Closest global axis to the line: 0 (angle: 0.33 deg)
+2025-04-21 14:32:13,612 - INFO - Closest global axis to the line: 0 (angle: 0.33 deg)
+2025-04-21 14:32:13,612 - INFO - Working on file: bar_holding_acc_20250416_1546_p6y.json
+2025-04-21 14:32:13,617 - INFO - Closest global axis to the line: 1 (angle: 0.34 deg)
+2025-04-21 14:32:13,618 - INFO - Closest global axis to the line: 1 (angle: 0.34 deg)
+2025-04-21 14:32:13,618 - INFO - Closest global axis to the line: 1 (angle: 0.34 deg)
+2025-04-21 14:32:13,618 - INFO - Working on file: bar_holding_acc_20250416_1548_p6z.json
+2025-04-21 14:32:13,623 - INFO - Closest global axis to the line: 2 (angle: 0.46 deg)
+2025-04-21 14:32:13,623 - INFO - Closest global axis to the line: 2 (angle: 0.46 deg)
+2025-04-21 14:32:13,624 - INFO - Closest global axis to the line: 2 (angle: 0.46 deg)
+2025-04-21 14:32:13,624 - INFO - Working on file: bar_holding_acc_20250416_1550_p6x.json
+2025-04-21 14:32:13,629 - INFO - Closest global axis to the line: 0 (angle: 0.75 deg)
+2025-04-21 14:32:13,630 - INFO - Closest global axis to the line: 0 (angle: 0.75 deg)
+2025-04-21 14:32:13,631 - INFO - Closest global axis to the line: 0 (angle: 0.75 deg)

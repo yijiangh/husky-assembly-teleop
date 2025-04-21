@@ -125,6 +125,7 @@ for i, file_name in enumerate(json_files):
                 'point_centers': [list(center) for center in center_points], 
                 'fitted_line': {'point' : list(line_fit.point), 'direction' : list(line_fit.direction)}, 
                 'closest_axis': closest_axis,
+                'angle_to_closest_axis': display_min_angle,
                 }
             new_data.append(take_data)
 
