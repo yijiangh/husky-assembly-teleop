@@ -1,0 +1,67 @@
+Basic Statistics:
+       footprint_x  ...  angle_deviation
+count    55.000000  ...        55.000000
+mean     -0.461875  ...         0.436495
+std       1.870755  ...         0.193594
+min      -2.924778  ...         0.150988
+25%      -2.621886  ...         0.287778
+50%      -0.371973  ...         0.363947
+75%       1.702260  ...         0.648438
+max       1.784240  ...         0.752936
+
+[8 rows x 5 columns]
+
+Correlation with angle_deviation:
+angle_deviation            1.000000
+distance_com_to_polygon    0.611190
+axis_0                     0.518041
+footprint_y                0.359795
+height_low                 0.068121
+height_mid                 0.049709
+footprint_x                0.013550
+axis_2                    -0.103129
+height_high               -0.118649
+bar_height                -0.162635
+axis_label                -0.345531
+axis_1                    -0.432349
+Name: angle_deviation, dtype: float64
+
+Random Forest Model Performance:
+R² score: 0.3915
+Mean squared error: 0.0224
+
+Feature Importance from Random Forest:
+                   Feature  Importance
+3  distance_com_to_polygon    0.600006
+1              footprint_y    0.196716
+5                   axis_1    0.111385
+2               bar_height    0.025625
+0              footprint_x    0.024513
+4                   axis_0    0.020421
+6                   axis_2    0.008401
+7              height_high    0.005909
+9               height_mid    0.004390
+8               height_low    0.002635
+
+Mutual Information Scores (for non-linear relationships):
+                   Feature  MI Score
+2               bar_height  0.571571
+3  distance_com_to_polygon  0.569409
+1              footprint_y  0.447979
+0              footprint_x  0.376422
+4                   axis_0  0.329077
+6                   axis_2  0.252720
+8               height_low  0.241785
+5                   axis_1  0.222044
+9               height_mid  0.086680
+7              height_high  0.009804
+
+ANOVA Analysis - Effect of axis choice on angle deviation:
+F-statistic: 12.3971, p-value: 0.0000
+There is a statistically significant difference in angle deviation between axes.
+
+ANOVA Analysis - Effect of height category on angle deviation:
+F-statistic: 0.3716, p-value: 0.6914
+No statistically significant difference in angle deviation between height categories.
+
+Analysis complete. Visualizations saved to disk.

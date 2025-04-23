@@ -14,8 +14,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pybullet_planning as pp
 
-data_batch = 'j1'
-EXPORT = True
+data_batch = 'j0'
+EXPORT = False
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 data_folder = os.path.join(HERE, data_batch)
@@ -41,6 +41,9 @@ radius = []
 all_points = []
 max_pt_project_distance = []
 new_data = {'takes': []}
+
+all_base_mocap_pos = []
+all_base_mocap_quats = []
 
 for i, file_name in enumerate(json_files):
     logger.info('Working on file: %s', file_name)
@@ -76,12 +79,14 @@ for i, file_name in enumerate(json_files):
         distances.append(np.linalg.norm(projected_point - point))
     max_pt_project_distance.append(max(distances))
 
+    all_base_mocap_pos.extend(base_mocap_origins)
+    all_base_mocap_quats.extend(base_mocap_quats)
+
     base_mocap_origins = np.array(base_mocap_origins)
     base_mocap_origin_mean = np.mean(base_mocap_origins, axis=0)
     base_origin_distances = np.linalg.norm(base_mocap_origins - base_mocap_origin_mean, axis=1)
     logger.info('max distance between base_mocap_origins and mean: %s', max(base_origin_distances))
 
-    base_mocap_quats = np.array(base_mocap_quats)
     base_mocap_quat_mean = np.mean(base_mocap_quats, axis=0)
     base_quat_distance = np.linalg.norm(base_mocap_quats - base_mocap_quat_mean, axis=1)
     logger.info('max distance between base_mocap_quats and mean: %s', max(base_quat_distance))
@@ -106,6 +111,86 @@ for i, file_name in enumerate(json_files):
             # 'base_quat_distances_to_mean': list(base_quat_distance),
             }
         new_data['takes'].append(take_data)
+
+###################
+# Compute mean of all base mocap positions and analyze deviations
+all_base_mocap_pos = np.array(all_base_mocap_pos)
+base_mocap_pos_mean = np.mean(all_base_mocap_pos, axis=0)
+base_pos_distances = np.linalg.norm(all_base_mocap_pos - base_mocap_pos_mean, axis=1)
+
+logger.info('Mean base mocap position: %s', base_mocap_pos_mean)
+logger.info('Max distance between base_mocap_pos and mean: %.5f', max(base_pos_distances))
+logger.info('Min distance between base_mocap_pos and mean: %.5f', min(base_pos_distances))
+logger.info('Average distance between base_mocap_pos and mean: %.5f', np.mean(base_pos_distances))
+
+# Calculate deviations along each axis
+x_deviations = np.abs(all_base_mocap_pos[:, 0] - base_mocap_pos_mean[0])
+y_deviations = np.abs(all_base_mocap_pos[:, 1] - base_mocap_pos_mean[1])
+z_deviations = np.abs(all_base_mocap_pos[:, 2] - base_mocap_pos_mean[2])
+
+# Plot position deviations by axis
+fig, ax = plt.subplots(figsize=(10, 6))
+indices = np.arange(len(base_pos_distances))
+ax.plot(indices, x_deviations, 'r-', label='X-axis')
+ax.plot(indices, y_deviations, 'g-', label='Y-axis')
+ax.plot(indices, z_deviations, 'b-', label='Z-axis')
+ax.plot(indices, base_pos_distances, 'k--', label='Total distance')
+ax.set_xlabel('Sample index')
+ax.set_ylabel('Distance from mean (m)')
+ax.set_title('Base Mocap Position Deviations by Axis')
+ax.legend()
+plt.savefig(os.path.join(data_folder, f'{data_batch}_mocap_base_pos_deviation_by_axis.png'))
+
+# Log the maximum deviations
+logger.info('Max X-axis deviation: %.5f', max(x_deviations))
+logger.info('Max Y-axis deviation: %.5f', max(y_deviations))
+logger.info('Max Z-axis deviation: %.5f', max(z_deviations))
+
+###################
+
+all_base_mocap_quats = np.array(all_base_mocap_quats)
+
+# Compute rotation matrices from quaternions
+rotation_matrices = np.array([pp.tform_from_pose(([0,0,0],quat)) for quat in all_base_mocap_quats])
+
+# Extract x, y, z axes from each rotation matrix
+x_axes = rotation_matrices[:, :3, 0]  # First column is x-axis
+y_axes = rotation_matrices[:, :3, 1]  # Second column is y-axis
+z_axes = rotation_matrices[:, :3, 2]  # Third column is z-axis
+
+# Compute mean axes
+mean_x_axis = Vector(np.mean(x_axes, axis=0))
+mean_y_axis = Vector(np.mean(y_axes, axis=0))
+mean_z_axis = Vector(np.mean(z_axes, axis=0))
+
+# Normalize mean axes
+mean_x_axis = mean_x_axis.unit()
+mean_y_axis = mean_y_axis.unit()
+mean_z_axis = mean_z_axis.unit()
+
+# Compute angle deviations
+x_deviations = [np.rad2deg(Vector(axis).angle_between(mean_x_axis)) for axis in x_axes]
+y_deviations = [np.rad2deg(Vector(axis).angle_between(mean_y_axis)) for axis in y_axes]
+z_deviations = [np.rad2deg(Vector(axis).angle_between(mean_z_axis)) for axis in z_axes]
+
+logger.info('Max angle deviation for x-axis: %.2f degrees', max(x_deviations))
+logger.info('Max angle deviation for y-axis: %.2f degrees', max(y_deviations))
+logger.info('Max angle deviation for z-axis: %.2f degrees', max(z_deviations))
+
+# Plot the angle deviations
+fig, ax = plt.subplots()
+indices = list(range(len(x_deviations)))
+ax.plot(indices, x_deviations, 'r-', label='X-axis')
+ax.plot(indices, y_deviations, 'g-', label='Y-axis')
+ax.plot(indices, z_deviations, 'b-', label='Z-axis')
+ax.set_xlabel('Sample index')
+ax.set_ylabel('Angle deviation (degrees)')
+ax.set_title('Rotation axes deviations from mean')
+ax.legend()
+plt.savefig(os.path.join(data_folder, f'{data_batch}_mocap_base_axis_deviation_batch_{i}.png'))
+# plt.show()
+
+###################
 
 line_fit = Line.best_fit(centers)
 logger.info(f'{data_batch} fitted axis : {line_fit.direction}')

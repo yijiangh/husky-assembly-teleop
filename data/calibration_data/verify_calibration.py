@@ -16,14 +16,14 @@ HUSKY_UR5e_JOINT_NAMES = ["ur_arm_shoulder_pan_joint",
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # data_batch = 'verification'
-# data_batch = 'j0'
-data_batch = 'j1'
+data_batch = 'j0'
+# data_batch = 'j1'
 
-# subfolder = ''
-subfolder = '20250311'
+subfolder = ''
+# subfolder = '20250311'
 data_folder = os.path.join(HERE, subfolder, data_batch)
 
-viewer = False
+viewer = 0
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -50,9 +50,13 @@ with open(calib_file_path, 'r') as file:
 # base_mocap_from_base_footprint = data['base_mocap_from_base_footprint']
 base_mocap_from_base_footprint = pp.unit_pose()
 
+pp.draw_pose(pp.unit_pose())
+
 json_files = [f for f in os.listdir(data_folder) if f.startswith('calibration_') and f.endswith('.json')]
 tool0_from_flange_mocap_batches = []
+world_from_diff_tfs = []
 joint_confs = []
+delta_x_vecs = []
 for i, file_name in enumerate(json_files):
     logger.info('Working on file: %s', file_name)
     file_path = os.path.join(data_folder, file_name)
@@ -75,12 +79,30 @@ for i, file_name in enumerate(json_files):
         world_from_tool0 = pp.get_link_pose(robot, pp.link_from_name(robot, 'ur_arm_tool0'))
         tool0_from_flange_mocap = pp.multiply(pp.invert(world_from_tool0), flange_mocap_pose)
 
+        base_mocap_from_tool0 = pp.multiply(pp.invert(base_mocap_pose), world_from_tool0)
+        base_mocap_from_flange_mocap = pp.multiply(pp.invert(base_mocap_pose), flange_mocap_pose)
+
+        # decompose the quaternion of base_mocap_from_tool0 and get their x axis
+        axis = 1
+        x_axis_tool0 = pp.tform_from_pose(base_mocap_from_tool0)[:, axis]
+        x_axis_flange = pp.tform_from_pose(base_mocap_from_flange_mocap)[:, axis]
+        vec_diff = x_axis_tool0 + x_axis_flange
+        # np.rad2deg(np.arccos(np.dot(x_axis_tool0, x_axis_flange)))
+        delta_x_vecs.append(vec_diff)
+
         tool0_from_flange_mocap_batches.append(tool0_from_flange_mocap) 
         joint_confs.append(conf)
 
         pp.draw_pose(world_from_tool0)
         pp.draw_pose(flange_mocap_pose)
         pp.draw_pose(tool0_from_flange_mocap)
+
+        pp.draw_pose(base_mocap_from_tool0)
+        pp.draw_pose(base_mocap_from_flange_mocap)
+        # pp.camera_focus_on_point(np.array(base_mocap_from_tool0[0]))
+
+        pp.wait_if_gui('viz')
+        pp.remove_all_debug()
 
 pp.wait_if_gui()
 
@@ -94,25 +116,32 @@ distances = [1e3 * np.linalg.norm(origin - origin_mean) for origin in origins]
 logger.info('Max origin distance to mean: %f', max(distances))
 
 # plot distance in a line plot
-ax.plot(distances, label='origin to mean distance (mm)')
+# ax.plot(distances, label='origin to mean distance (mm)')
 
 tfs = [pp.matrix_from_quat(pose[1]) for pose in tool0_from_flange_mocap_batches]
+# for i in range(3):
+#     x_axes = [tf[:3,i] for tf in tfs]
+#     # compute angle between each axis and the mean
+#     x_axis_mean = np.mean(x_axes, axis=0)
+#     x_axis_mean = x_axis_mean / np.linalg.norm(x_axis_mean)
+#     x_angles = []
+#     for j in range(len(tfs)-1):
+#         angle = np.rad2deg(np.arccos(np.dot(x_axes[j], x_axis_mean)))
+#         x_angles.append(angle)
+
+#     logger.info(f'Axis {i}')
+#     logger.info('Max axis angle to mean vec: %f', np.mean(x_angles))
+#     # Extract first joint values for x-axis
+#     first_joint_values = [conf[0] for conf in joint_confs[:-1]]  # -1 to match length of x_angles
+#     ax.scatter(first_joint_values, x_angles, label=f'axis {i} to mean angle (deg)')
+
+first_joint_values = [conf[0] for conf in joint_confs]  # -1 to match length of x_angles
 for i in range(3):
-    x_axes = [tf[:3,i] for tf in tfs]
-    # compute angle between each axis and the mean
-    x_axis_mean = np.mean(x_axes, axis=0)
-    x_axis_mean = x_axis_mean / np.linalg.norm(x_axis_mean)
-    x_angles = []
-    for j in range(len(tfs)-1):
-        angle = np.rad2deg(np.arccos(np.dot(x_axes[j], x_axis_mean)))
-        x_angles.append(angle)
+    axis_delta_x_vecs = [tf[:3,0][i] for tf in tfs]  # -1 to match length of x_angles
+    ax.scatter(first_joint_values, axis_delta_x_vecs, label=f'diff vec axis {i} to mean angle (deg)')
 
-    logger.info(f'Axis {i}')
-    logger.info('Max axis angle to mean vec: %f', np.mean(x_angles))
-    ax.plot(x_angles, label=f'axis {i} to mean angle (deg)')
-
-for i in range(6):
-    ax.plot([conf[i] for conf in joint_confs], label=f'joint value {i}', linewidth=0.2)
+# for i in range(6):
+#     ax.plot([conf[i] for conf in joint_confs], label=f'joint value {i}', linewidth=0.2)
 
 # Shrink current axis by 20%
 box = ax.get_position()

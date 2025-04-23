@@ -1,6 +1,13 @@
-2025-04-02 15:21:43,693 - INFO - Working on file: calibration_20250402_1455_.json
-2025-04-02 15:21:43,696 - INFO - Working on file: calibration_20250402_1502_.json
-2025-04-02 15:21:43,700 - INFO - Working on file: calibration_20250402_1505_.json
-2025-04-02 15:21:43,702 - INFO - Working on file: calibration_20250402_1508_.json
-2025-04-02 15:21:43,703 - INFO - Working on file: calibration_20250402_1510_.json
-2025-04-02 15:21:44,150 - INFO - Working on file: calibration_20250402_1515_.json
+2025-04-22 12:28:17,267 - INFO - Working on file: calibration_20250402_1455_.json
+2025-04-22 12:28:17,274 - INFO - Working on file: calibration_20250402_1502_.json
+2025-04-22 12:28:17,281 - INFO - Working on file: calibration_20250402_1505_.json
+2025-04-22 12:28:17,289 - INFO - Working on file: calibration_20250402_1508_.json
+2025-04-22 12:28:17,293 - INFO - Working on file: calibration_20250402_1510_.json
+2025-04-22 12:28:17,304 - INFO - Working on file: calibration_20250402_1515_.json
+2025-04-22 12:28:17,444 - INFO - Max origin distance to mean: 2666.988145
+2025-04-22 12:28:17,444 - INFO - Axis 0
+2025-04-22 12:28:17,445 - INFO - Max axis angle to mean vec: 56.802481
+2025-04-22 12:28:17,445 - INFO - Axis 1
+2025-04-22 12:28:17,445 - INFO - Max axis angle to mean vec: 72.489709
+2025-04-22 12:28:17,446 - INFO - Axis 2
+2025-04-22 12:28:17,446 - INFO - Max axis angle to mean vec: 56.377662

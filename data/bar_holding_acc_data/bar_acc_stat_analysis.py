@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -13,6 +14,10 @@ from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.model_selection import train_test_split
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+# Set up logging to file
+log_file = os.path.join(HERE, 'bar_acc_stat_analysis_log.txt')
+sys.stdout = open(log_file, 'w')
 
 # Load the JSON data
 with open(os.path.join(HERE, 'analysis_bar_holding_acc_.json'), 'r') as f:
@@ -36,7 +41,7 @@ for entry in data:
     # Extract the distance from CoM to support polygon center
     distance_com_to_polygon = entry.get('distance_com_to_polygon_center')
     
-    # Extract angle deviation (our output variable)
+    # Extract angle deviation (our output variable), in degrees
     angle_deviation = entry['angle_to_closest_axis']
     
     # Add data to our list
@@ -89,7 +94,7 @@ sns.scatterplot(x='distance_com_to_polygon', y='angle_deviation',
                 hue='axis_label', data=df)
 plt.title('Distance CoM to Polygon vs Angle Deviation')
 plt.xlabel('Distance from CoM to Support Polygon Center')
-plt.ylabel('Angle Deviation (radians)')
+plt.ylabel('Angle Deviation (degrees)')
 plt.savefig(os.path.join(HERE, 'com_distance_vs_angle.png'))
 
 # Figure 2: Boxplot of angle deviation by closest axis
@@ -101,7 +106,7 @@ axis_data = axis_data[axis_data['is_axis'] == 1]
 sns.boxplot(x='axis', y='angle_deviation', data=axis_data)
 plt.title('Angle Deviation by Closest Axis')
 plt.xlabel('Closest Axis')
-plt.ylabel('Angle Deviation (radians)')
+plt.ylabel('Angle Deviation (degrees)')
 plt.savefig(os.path.join(HERE, 'angle_by_axis.png'))
 
 # Figure 3: Boxplot of angle deviation by height category
@@ -113,7 +118,7 @@ height_data = height_data[height_data['is_height'] == 1]
 sns.boxplot(x='height', y='angle_deviation', data=height_data)
 plt.title('Angle Deviation by Bar Height')
 plt.xlabel('Bar Height Category')
-plt.ylabel('Angle Deviation (radians)')
+plt.ylabel('Angle Deviation (degrees)')
 plt.savefig(os.path.join(HERE, 'angle_by_height.png'))
 
 # Figure 4: Footprint position effect on angle deviation (heatmap)
@@ -219,8 +224,15 @@ plt.scatter(df['distance_com_to_polygon'], df['angle_deviation'],
             c=df['bar_height'], cmap='viridis', alpha=0.7)
 plt.colorbar(label='Bar Height')
 plt.xlabel('Distance from CoM to Support Polygon Center')
-plt.ylabel('Angle Deviation (radians)')
+plt.ylabel('Angle Deviation (degrees)')
 plt.title('Distance CoM vs Angle Deviation (colored by bar height)')
 plt.savefig(os.path.join(HERE, 'summary_visualization.png'))
 
 print("\nAnalysis complete. Visualizations saved to disk.")
+
+# Close the file to ensure all output is written
+sys.stdout.close()
+
+# Restore stdout for any remaining prints
+sys.stdout = sys.__stdout__
+print(f"Analysis complete. Results logged to {log_file}")
