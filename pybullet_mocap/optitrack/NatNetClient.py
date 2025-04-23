@@ -31,13 +31,18 @@ def trace( *args ):
 #Used for Data Description functions
 def trace_dd( *args ):
     # uncomment the one you want to use
-    # print( "".join(map(str,args)) )
+    print( "".join(map(str,args)) )
     pass
 
 #Used for MoCap Frame Data functions
 def trace_mf( *args ):
     # uncomment the one you want to use
-    # print( "".join(map(str,args)) )
+    print( "".join(map(str,args)) )
+    pass
+
+def trace_mf_focus( *args ):
+    # uncomment the one you want to use
+    print( "".join(map(str,args)) )
     pass
 
 def get_message_id(data):
@@ -443,36 +448,36 @@ class NatNetClient:
         # Marker set count (4 bytes)
         marker_set_count = int.from_bytes( data[offset:offset+4], byteorder='little' )
         offset += 4
-        trace_mf( "Marker Set Count:", marker_set_count )
+        trace_mf_focus( "Marker Set Count:", marker_set_count )
 
         for i in range( 0, marker_set_count ):
             marker_data = MoCapData.MarkerData()
             # Model name
             model_name, separator, remainder = bytes(data[offset:]).partition( b'\0' )
             offset += len( model_name ) + 1
-            trace_mf( "Model Name      : ", model_name.decode( 'utf-8' ) )
+            trace_mf_focus( "Model Name      : ", model_name.decode( 'utf-8' ) )
             marker_data.set_model_name(model_name)
             # Marker count (4 bytes)
             marker_count = int.from_bytes( data[offset:offset+4], byteorder='little' )
             offset += 4
-            trace_mf( "Marker Count    : ", marker_count )
+            trace_mf_focus( "Marker Count    : ", marker_count )
 
             for j in range( 0, marker_count ):
                 pos = Vector3.unpack( data[offset:offset+12] )
                 offset += 12
-                trace_mf( "\tMarker %3.1d : [%3.2f,%3.2f,%3.2f]"%( j, pos[0], pos[1], pos[2] ))
+                trace_mf_focus( "\tMarker %3.1d : [%3.2f,%3.2f,%3.2f]"%( j, pos[0], pos[1], pos[2] ))
                 marker_data.add_pos(pos)
             marker_set_data.add_marker_data(marker_data)
 
         # Unlabeled markers count (4 bytes)
         unlabeled_markers_count = int.from_bytes( data[offset:offset+4], byteorder='little' )
         offset += 4
-        trace_mf( "Unlabeled Markers Count:", unlabeled_markers_count )
+        trace_mf_focus( "Unlabeled Markers Count:", unlabeled_markers_count )
 
         for i in range( 0, unlabeled_markers_count ):
             pos = Vector3.unpack( data[offset:offset+12] )
             offset += 12
-            trace_mf( "\tMarker %3.1d : [%3.2f,%3.2f,%3.2f]"%( i, pos[0], pos[1], pos[2] ))
+            trace_mf_focus( "\tMarker %3.1d : [%3.2f,%3.2f,%3.2f]"%( i, pos[0], pos[1], pos[2] ))
             marker_set_data.add_unlabeled_marker(pos)
         return offset, marker_set_data
 
@@ -737,6 +742,7 @@ class NatNetClient:
         # print("%s\n"%(marker_set_data.get_as_string()))
 
         # Rigid Body Data
+        # ! rigid_body_listener happens inside here
         rel_offset, rigid_body_data = self.__unpack_rigid_body_data(data[offset:], (packet_size - offset),major, minor)
         offset += rel_offset
         mocap_data.set_rigid_body_data(rigid_body_data)
@@ -749,6 +755,7 @@ class NatNetClient:
         skeleton_count = skeleton_data.get_skeleton_count()
 
         # Labeled Marker Data
+        # ! labeled_marker_listener inside here
         rel_offset, labeled_marker_data = self.__unpack_labeled_marker_data(data[offset:], (packet_size - offset),major, minor)
         offset += rel_offset
         mocap_data.set_labeled_marker_data(labeled_marker_data)
@@ -909,22 +916,22 @@ class NatNetClient:
         name, separator, remainder = bytes(data[offset:]).partition( b'\0' )
         offset += len( name ) + 1
         skeleton_desc.set_name(name)
-        trace_dd( "Name : %s"% name.decode( 'utf-8' ) )
+        # trace_dd( "Name : %s"% name.decode( 'utf-8' ) )
 
         #ID
         new_id = int.from_bytes( data[offset:offset+4], byteorder='little' )
         offset += 4
         skeleton_desc.set_id(new_id)
-        trace_dd( "ID : %3.1d"% new_id )
+        # trace_dd( "ID : %3.1d"% new_id )
 
         # # of RigidBodies
         rigid_body_count = int.from_bytes( data[offset:offset+4], byteorder='little' )
         offset += 4
-        trace_dd( "Rigid Body (Bone) Count : %3.1d" % rigid_body_count)
+        # trace_dd( "Rigid Body (Bone) Count : %3.1d" % rigid_body_count)
 
         # Loop over all Rigid Bodies
         for i in range( 0, rigid_body_count ):
-            trace_dd("Rigid Body (Bone) ", i)
+            # trace_dd("Rigid Body (Bone) ", i)
             offset_tmp, rb_desc_tmp = self.__unpack_rigid_body_description( data[offset:], major, minor )
             offset+= offset_tmp
             skeleton_desc.add_rigid_body_description(rb_desc_tmp)
@@ -939,39 +946,39 @@ class NatNetClient:
             new_id = int.from_bytes( data[offset:offset+4], byteorder='little' )
             offset += 4
             fp_desc.set_id(new_id)
-            trace_dd("\tID : ", str(new_id))
+            # trace_dd("\tID : ", str(new_id))
 
             # Serial Number
             serial_number, separator, remainder = bytes(data[offset:]).partition( b'\0' )
             offset += len( serial_number ) + 1
             fp_desc.set_serial_number(serial_number)
-            trace_dd( "\tSerial Number : ", serial_number.decode( 'utf-8' ) )
+            # trace_dd( "\tSerial Number : ", serial_number.decode( 'utf-8' ) )
 
             # Dimensions
             f_width = FloatValue.unpack( data[offset:offset+4])
             offset += 4
-            trace_dd( "\tWidth  : %3.2f"% f_width)
+            # trace_dd( "\tWidth  : %3.2f"% f_width)
             f_length = FloatValue.unpack( data[offset:offset+4])
             offset += 4
             fp_desc.set_dimensions(f_width[0], f_length[0])
-            trace_dd( "\tLength : %3.2f"% f_length)
+            # trace_dd( "\tLength : %3.2f"% f_length)
 
             # Origin
             origin = Vector3.unpack( data[offset:offset+12] )
             offset += 12
             fp_desc.set_origin(origin[0],origin[1],origin[2])
-            trace_dd( "\tOrigin : %3.2f, %3.2f, %3.2f"%( origin[0], origin[1], origin[2] ))
+            # trace_dd( "\tOrigin : %3.2f, %3.2f, %3.2f"%( origin[0], origin[1], origin[2] ))
 
             # Calibration Matrix 12x12 floats
-            trace_dd("Cal Matrix:")
+            # trace_dd("Cal Matrix:")
             cal_matrix_tmp= [[0.0 for col in range(12)] for row in range(12)]
 
             for i in range(0,12):
                 cal_matrix_row=FPCalMatrixRow.unpack(data[offset:offset+(12*4)])
-                trace_dd("\t%3.1d %3.3e %3.3e %3.3e %3.3e %3.3e %3.3e %3.3e %3.3e %3.3e %3.3e %3.3e %3.3e" % (i
-                      , cal_matrix_row[0], cal_matrix_row[1], cal_matrix_row[2], cal_matrix_row[3]
-                      , cal_matrix_row[4], cal_matrix_row[5], cal_matrix_row[6], cal_matrix_row[7]
-                      , cal_matrix_row[8], cal_matrix_row[9], cal_matrix_row[10], cal_matrix_row[11]))
+                # trace_dd("\t%3.1d %3.3e %3.3e %3.3e %3.3e %3.3e %3.3e %3.3e %3.3e %3.3e %3.3e %3.3e %3.3e" % (i
+                    #   , cal_matrix_row[0], cal_matrix_row[1], cal_matrix_row[2], cal_matrix_row[3]
+                    #   , cal_matrix_row[4], cal_matrix_row[5], cal_matrix_row[6], cal_matrix_row[7]
+                    #   , cal_matrix_row[8], cal_matrix_row[9], cal_matrix_row[10], cal_matrix_row[11]))
                 cal_matrix_tmp[i] = copy.deepcopy(cal_matrix_row)
                 offset += (12*4)
             fp_desc.set_cal_matrix(cal_matrix_tmp)
@@ -979,10 +986,10 @@ class NatNetClient:
             corners = FPCorners.unpack(data[offset:offset + (12*4)])
             offset += (12*4)
             o_2=0
-            trace_dd("Corners:")
+            # trace_dd("Corners:")
             corners_tmp = [[0.0 for col in range(3)] for row in range(4)]
             for i in range(0,4):
-                trace_dd("\t%3.1d %3.3e %3.3e %3.3e"%(i, corners[o_2], corners[o_2+1], corners[o_2+2]))
+                # trace_dd("\t%3.1d %3.3e %3.3e %3.3e"%(i, corners[o_2], corners[o_2+1], corners[o_2+2]))
                 corners_tmp[i][0]=corners[o_2]
                 corners_tmp[i][1]=corners[o_2+1]
                 corners_tmp[i][2]=corners[o_2+2]
@@ -993,27 +1000,27 @@ class NatNetClient:
             plate_type = int.from_bytes( data[offset:offset+4], byteorder='little' )
             offset+=4
             fp_desc.set_plate_type(plate_type)
-            trace_dd ("Plate Type : ", plate_type)
+            # trace_dd ("Plate Type : ", plate_type)
 
             # Channel Data Type int
             channel_data_type = int.from_bytes( data[offset:offset+4], byteorder='little' )
             offset+=4
             fp_desc.set_channel_data_type(channel_data_type)
-            trace_dd("Channel Data Type : ", channel_data_type)
+            # trace_dd("Channel Data Type : ", channel_data_type)
 
             # Number of Channels int
             num_channels = int.from_bytes( data[offset:offset+4], byteorder='little' )
             offset+=4
-            trace_dd("Number of Channels : ", num_channels)
+            # trace_dd("Number of Channels : ", num_channels)
 
             # Channel Names list of NoC strings
             for i in range(0, num_channels):
                 channel_name, separator, remainder = bytes(data[offset:]).partition( b'\0' )
                 offset += len( channel_name ) + 1
-                trace_dd( "\tChannel Name %3.1d: %s"%(i, channel_name.decode( 'utf-8' ) ))
+                # trace_dd( "\tChannel Name %3.1d: %s"%(i, channel_name.decode( 'utf-8' ) ))
                 fp_desc.add_channel_name(channel_name)
 
-        trace_dd("unpackForcePlate processed ", offset, " bytes")
+        # trace_dd("unpackForcePlate processed ", offset, " bytes")
         return offset, fp_desc
 
     def __unpack_device_description(self, data, major, minor):
@@ -1023,44 +1030,44 @@ class NatNetClient:
             # new_id
             new_id = int.from_bytes( data[offset:offset+4], byteorder='little' )
             offset += 4
-            trace_dd("\tID : ", str(new_id))
+            # trace_dd("\tID : ", str(new_id))
 
             # Name
             name, separator, remainder = bytes(data[offset:]).partition( b'\0' )
             offset += len( name ) + 1
-            trace_dd( "\tName : ", name.decode( 'utf-8' ) )
+            # trace_dd( "\tName : ", name.decode( 'utf-8' ) )
 
             # Serial Number
             serial_number, separator, remainder = bytes(data[offset:]).partition( b'\0' )
             offset += len( serial_number ) + 1
-            trace_dd( "\tSerial Number : ", serial_number.decode( 'utf-8' ) )
+            # trace_dd( "\tSerial Number : ", serial_number.decode( 'utf-8' ) )
 
 
             # Device Type int
             device_type = int.from_bytes( data[offset:offset+4], byteorder='little' )
             offset+=4
-            trace_dd ("Device Type : ", device_type)
+            # trace_dd ("Device Type : ", device_type)
 
             # Channel Data Type int
             channel_data_type = int.from_bytes( data[offset:offset+4], byteorder='little' )
             offset+=4
-            trace_dd("Channel Data Type : ", channel_data_type)
+            # trace_dd("Channel Data Type : ", channel_data_type)
 
             device_desc = DataDescriptions.DeviceDescription(new_id,name,serial_number,device_type,channel_data_type)
 
             # Number of Channels int
             num_channels = int.from_bytes( data[offset:offset+4], byteorder='little' )
             offset+=4
-            trace_dd("Number of Channels ", num_channels)
+            # trace_dd("Number of Channels ", num_channels)
 
             # Channel Names list of NoC strings
             for i in range(0, num_channels):
                 channel_name, separator, remainder = bytes(data[offset:]).partition( b'\0' )
                 offset += len( channel_name ) + 1
                 device_desc.add_channel_name(channel_name)
-                trace_dd( "\tChannel ",i," Name : ", channel_name.decode( 'utf-8' ) )
+                # trace_dd( "\tChannel ",i," Name : ", channel_name.decode( 'utf-8' ) )
 
-        trace_dd("unpack_device_description processed ", offset, " bytes")
+        # trace_dd("unpack_device_description processed ", offset, " bytes")
         return offset, device_desc
 
     def __unpack_camera_description(self, data, major, minor):
@@ -1068,17 +1075,17 @@ class NatNetClient:
         # Name
         name, separator, remainder = bytes(data[offset:]).partition( b'\0' )
         offset += len( name ) + 1
-        trace_dd( "\tName       : %s"% name.decode( 'utf-8' ) )
+        # trace_dd( "\tName       : %s"% name.decode( 'utf-8' ) )
         # Position
         position = Vector3.unpack( data[offset:offset+12] )
         offset += 12
-        trace_dd( "\tPosition   : [%3.2f, %3.2f, %3.2f]"% (position[0], position[1], position[2] ))
+        # trace_dd( "\tPosition   : [%3.2f, %3.2f, %3.2f]"% (position[0], position[1], position[2] ))
 
         # Orientation
         orientation = Quaternion.unpack( data[offset:offset+16] )
         offset += 16
-        trace_dd( "\tOrientation: [%3.2f, %3.2f, %3.2f, %3.2f]"% (orientation[0], orientation[1], orientation[2], orientation[3] ))
-        trace_dd("unpack_camera_description processed %3.1d bytes"% offset)
+        # trace_dd( "\tOrientation: [%3.2f, %3.2f, %3.2f, %3.2f]"% (orientation[0], orientation[1], orientation[2], orientation[3] ))
+        # trace_dd("unpack_camera_description processed %3.1d bytes"% offset)
 
         camera_desc=DataDescriptions.CameraDescription(name, position, orientation)
         return offset, camera_desc

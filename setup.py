@@ -34,7 +34,9 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'husky_monitor = pybullet_mocap.husky_monitor:main'
+            'husky_monitor = pybullet_mocap.husky_monitor:main',
+            'optitrack_python_sample = pybullet_mocap.optitrack.PythonSample:main',
+            'test_mocap = pybullet_mocap.optitrack.test_mocap:main'
         ],
     },
 )

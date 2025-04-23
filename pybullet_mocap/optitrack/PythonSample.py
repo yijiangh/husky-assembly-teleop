@@ -20,9 +20,9 @@
 
 import sys
 import time
-from NatNetClient import NatNetClient
-import DataDescriptions
-import MoCapData
+from pybullet_mocap.optitrack.NatNetClient import NatNetClient
+import pybullet_mocap.optitrack.DataDescriptions
+import pybullet_mocap.optitrack.MoCapData
 
 # This is a callback function that gets connected to the NatNet client
 # and called once per mocap frame.
@@ -149,7 +149,7 @@ def my_parse_args(arg_list, args_dict):
     return args_dict
 
 
-if __name__ == "__main__":
+def main():
 
     CLIENT_IP = '192.168.0.7' # Set to your own IP
     MOCAP_IP = '192.168.0.117' # set to the mocap PC's IP, get this from Motive Settings>Streaming pane->Local interface
@@ -293,3 +293,7 @@ if __name__ == "__main__":
                 print("Error: Command %s not recognized"%c1)
             print("Ready...\n")
     print("exiting")
+
+if __name__ == "__main__":
+    main()
+    sys.exit(0)
