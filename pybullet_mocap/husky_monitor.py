@@ -40,7 +40,7 @@ CLIENT_IP = '192.168.0.7' # Set to your own IP
 MOCAP_IP = '192.168.0.117' # set to the mocap PC's IP, get this from Motive Settings>Streaming pane->Local interface
   
 class HuskyMonitor(Node):
-    USE_MOCAP = 1
+    USE_MOCAP = 0
     FAKE_HARDWARE = 1
     CALIBRATION = 0
     BAR_GOAL_MODE = 1
@@ -309,8 +309,8 @@ class HuskyMonitor(Node):
 
     def update_bar_goal_pose(self, slider_inputs):
         # ! keep bar pos relative to the robot base, but orientation absolute to the world
-        self.base_from_goal_bar_pos = pp.Point(*slider_inputs[:3])
-        self.world_from_goal_bar_euler = pp.Euler(*slider_inputs[3:])
+        # self.base_from_goal_bar_pos = pp.Point(*slider_inputs[:3])
+        self.world_from_goal_bar_euler = pp.Euler(*slider_inputs)
 
         # world_from_bar = pp.Pose(point=pp.Point(0.8, 0, 1.4), euler=pp.Euler(roll=np.pi/2))
         goal_bar_pose = self.get_world_from_bar_goal_pose()
@@ -388,10 +388,11 @@ class HuskyMonitor(Node):
         self.buttons.append(Button('Plan arm to retract to home', self.plan_arm_to_retract_to_home))
 
         self.buttons.append(Button('Exec Arm Traj', self.execute_arm_trajectory))
+        self.buttons.append(Button('Exec Arm Traj with servoing', self.execute_arm_trajectory))
 
-        if not self.CALIBRATION:
-            self.buttons.append(Button('Exec Free Motion', self.execute_free_trajectory))
-            self.buttons.append(Button('Exec Linear Motion', self.execute_linear_trajectory))
+        # if not self.CALIBRATION:
+        #     self.buttons.append(Button('Exec Free Motion', self.execute_free_trajectory))
+        #     self.buttons.append(Button('Exec Linear Motion', self.execute_linear_trajectory))
 
         # self.buttons.append(Button('Plan arm wave', lambda: world.plan_arm_wave(self)))
 
@@ -417,17 +418,23 @@ class HuskyMonitor(Node):
             self.bar_goal_pose_slider_group = SliderGroup([
                 "bar {}".format(t) for t in ["x","y","z", "r", "p", "y"]], 
                 self.update_bar_goal_pose, 
-                [-2, -2, -2, -np.pi, -np.pi, -np.pi], 
-                [2,  2,  2, np.pi,  np.pi,  np.pi], 
-                [pos[0], pos[1], pos[2], euler[0], euler[1], euler[2]]
+                [-np.pi, -np.pi, -np.pi], 
+                [np.pi,  np.pi,  np.pi], 
+                [euler[0], euler[1], euler[2]]
+                # [-2, -2, -2, -np.pi, -np.pi, -np.pi], 
+                # [2,  2,  2, np.pi,  np.pi,  np.pi], 
+                # [pos[0], pos[1], pos[2], euler[0], euler[1], euler[2]]
                 )
-            self.update_bar_goal_pose(list(pos) + list(euler))
+            # self.update_bar_goal_pose(list(pos) + list(euler))
+            self.update_bar_goal_pose(list(euler))
 
             self.buttons.append(Button('Step bar r', lambda : self.rotate_bar_euler_angle(np.pi/2, 'roll')))
             self.buttons.append(Button('Step bar p', lambda : self.rotate_bar_euler_angle(np.pi/2, 'pitch')))
             self.buttons.append(Button('Step bar y', lambda : self.rotate_bar_euler_angle(np.pi/2, 'yaw')))
 
-            self.buttons.append(Button('Step grasp theta', self.next_grasp_theta))
+            # self.buttons.append(Button('Step grasp theta', self.next_grasp_theta))
+
+            self.buttons.append(Button('Random sample bar goal pos', self.send_request_to_mocap))
 
             self.buttons.append(Button('Record markerset data', self.send_request_to_mocap))
             self.buttons.append(Button('Save markerset data', self.record_markerset_data))

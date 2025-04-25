@@ -2,7 +2,7 @@
 This module contains the world definition and high level actions or sequences of actions for the huskies.
 """
 
-import os
+import os, time
 import asyncio.runners
 import asyncio
 import numpy as np
@@ -130,6 +130,8 @@ def compute_ik_for_bar(monitor, world_from_bar, theta_index):
         pp.draw_pose(world_from_tool0)
         monitor.get_logger().warn("IK failed!")
         return None, None
+    
+    # TODO: check collision and more attempts
 
     return arm_conf, pp.invert(object_from_tool0)
 
@@ -278,12 +280,58 @@ def execute_arm_conf(monitor, conf):
     monitor.huskies[monitor.selected_robot_id].interface.send_arm_cmd([hi.arm_joint_pose, conf], 
                                                                       None, monitor.trajectory_time)
 
+#################################
+
 def execute_arm_trajectory(monitor, trajectory):
     if trajectory is None:
         monitor.get_logger().warn('Arm trajectory must be planed before executing!')
         return
     # trajectory confs, velocity, total time
     monitor.huskies[monitor.selected_robot_id].interface.send_arm_cmd(trajectory[0], trajectory[1], monitor.trajectory_time)
+
+def execute_task_goal_arm_trajectory_with_servoing(monitor, trajectory, log_data=False):
+    if trajectory is None:
+        monitor.get_logger().warn('Arm trajectory must be planed before executing!')
+        return
+    if trajectory[3] is None:
+        monitor.get_logger().warn('Arm trajectory must be have a grasped element attached to specify task space goal!')
+        return
+
+    num_iters = 5
+    data = [{} for _ in range(num_iters)]
+
+    # get ideal tool0 pose, not related to mocap obs
+    transfer_element = trajectory[3]
+    world_from_tool0 = pp.multiply(transfer_element.goal_pose, pp.invert(transfer_element.grasp))
+
+    hi = monitor.huskies[monitor.selected_robot_id].interface
+    for i in range(num_iters):
+        monitor.get_logger().info(f'Servoing arm trajectory {i+1}/{num_iters}...')
+
+        data[i]['before_exe_footprint_pose'] = hi.position, hi.rotation
+
+        # execute the trajectory
+        monitor.huskies[monitor.selected_robot_id].interface.send_arm_cmd(trajectory[0], trajectory[1], monitor.trajectory_time)
+
+        # wait until it finishes
+        # TODO hopefully the extra 2 seconds will be enough for the mocap estimation to roll in? To be checked
+        time.sleep(monitor.trajectory_time + 2)
+        data[i]['after_exe_footprint_pose'] = hi.position, hi.rotation
+
+        # check if hi.arm_joint_pose and the last conf of trajectory[0] is close
+        diff_vec = np.abs(np.array(hi.arm_joint_pose) - np.array(trajectory[0][-1]))
+        if not np.all(diff_vec < 1e-4):
+            monitor.get_logger().warn(f'Arm joint conf after execution differs from the last conf of trajectory: {diff_vec}!')
+            return
+
+        # plan again for the same task goal
+
+        arm_conf = planning.arm_ik(monitor.huskies[monitor.selected_robot_id], 
+                                   world_from_tool0)
+
+        monitor.set_arm_trajectory(planning.plan_arm_motion(monitor.huskies[monitor.selected_robot_id], monitor.goal_arm_pose, obstacles, monitor.trajectory_time,
+                                                            grasped_element=monitor.goal_element, grasp=monitor.goal_bar_grasp))
+
      
 def move_base_to_goal(monitor):
     if monitor.planned_base_trajectory[0] is None:
@@ -291,6 +339,8 @@ def move_base_to_goal(monitor):
         return
     monitor.tasks.append(control.execute_base_trajectory(monitor, monitor.huskies[0], monitor.planned_base_trajectory))
     
+#################################
+
 def open_gripper_full(monitor):
     monitor.huskies[monitor.selected_robot_id].interface.send_gripper_cmd(0.426, 0.1)
 
