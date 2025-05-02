@@ -144,12 +144,18 @@ def compute_ik_for_bar(monitor, world_from_bar, theta_index, grasp_dist):
     
     return arm_conf, grasp
 
-def randomize_bar_location_for_ik_and_transfer(monitor, bar_goal_quat):
+def randomize_bar_location_for_ik_and_transfer(monitor, bar_goal_quat=None):
     LOC_ATTEMPTS = 10
-    MP_ATTEMPTS = 10
-    TRAJ_MAX_LENGTH = 80
+    MP_ATTEMPTS = 3
+    TRAJ_MAX_LENGTH = 100
 
     BOUNDING_BOX_RANGE = [[0.2, 1.0], [-1.0,1.0], [0.3, 1.4]]
+    AXIS_OPTIONS = [
+        pp.quat_from_euler(np.array([0, np.pi/2, 0])), # global x axis
+        pp.quat_from_euler(np.array([np.pi/2, 0, 0])), # global y axis
+        pp.quat_from_euler(np.array([0, 0, 0])), # global z axis
+    ]
+    # default longitudinal axis of the bar is aligned with the z axis
 
     world_from_base_link = monitor.goal_model.get_link_pose_from_name("base_footprint")
     obstacles = monitor.static_obstacles
@@ -164,8 +170,12 @@ def randomize_bar_location_for_ik_and_transfer(monitor, bar_goal_quat):
             np.random.uniform(BOUNDING_BOX_RANGE[2][0], BOUNDING_BOX_RANGE[2][1])
         ])
 
+        # Randomize the bar quaternion to align with one of the global x, y, z axes
+        if bar_goal_quat is None:
+            bar_goal_quat = AXIS_OPTIONS[np.random.randint(0, len(AXIS_OPTIONS))]
+
         # Keep the world orientation from bar_goal_quat
-        world_from_bar = pp.multiply(world_from_base_link, (rand_pos, bar_goal_quat))
+        world_from_bar = pp.multiply(world_from_base_link, (rand_pos, bar_goal_quat))[0], bar_goal_quat
         pp.draw_pose(world_from_bar)
 
         # * enumerate grasp parameters
@@ -183,12 +193,13 @@ def randomize_bar_location_for_ik_and_transfer(monitor, bar_goal_quat):
                     # * plan arm motion
                     traj = planning.plan_arm_motion(monitor.huskies[monitor.selected_robot_id], arm_conf, obstacles, monitor.trajectory_time,
                                                     grasped_element=monitor.goal_element, grasp=grasp)
-                    if traj is not None and len(traj[0]) < TRAJ_MAX_LENGTH:
-                        return traj, rand_pos, bar_goal_quat, theta_index, grasp_dist
-                    elif traj is None:
-                        monitor.get_logger().warn("Arm motion planning failed!")
+                    if traj[0] is not None:
+                        if len(traj[0]) < TRAJ_MAX_LENGTH:
+                            return traj, rand_pos, bar_goal_quat, theta_index, grasp_dist
+                        else:
+                            monitor.get_logger().warn(f"Arm motion planning trajectory too long {len(traj[0])}!")
                     else:
-                        monitor.get_logger().warn(f"Arm motion planning trajectory too long {len(traj[0])}!")
+                        monitor.get_logger().warn("Arm motion planning failed!")
                 else:
                     monitor.get_logger().warn(f"Motion planning failed after {MP_ATTEMPTS} attempts!")
 

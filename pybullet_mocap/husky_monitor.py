@@ -111,7 +111,11 @@ class HuskyMonitor(Node):
             self.start_mocap()
         
         world.init(self)
-        self.goal_element = AssemblyObject(self, 'b_goal', pp.clone_body(self.assembly_objects[0].body), pp.unit_pose(), 
+
+        # ! an inflated bar for goal
+        goal_bar_body = pp.create_cylinder((0.1)/2, 1.0, mass=pp.STATIC_MASS)
+        far_away_pose = pp.Pose(pp.Point(0,0,100))
+        self.goal_element = AssemblyObject(self, 'b_goal', goal_bar_body, far_away_pose, 
                                            pp.unit_pose())
         pp.set_color(self.goal_element.body, GOAL_BLUE)
 
@@ -177,6 +181,14 @@ class HuskyMonitor(Node):
         self.show_goal_state = not self.show_goal_state
         self.goal_model.set_color(GOAL_BLUE if self.show_goal_state else TRAJECTORY_GREEN)
 
+    def set_to_show_goal_state(self):
+        self.show_goal_state = False
+        self.toggle_show_goal_state()
+
+    def set_to_show_traj_state(self):
+        self.show_goal_state = True
+        self.toggle_show_goal_state()
+
     def update_selected_robot_id(self, robot_id):
         self.selected_robot_id = np.clip(int(robot_id), 0, len(self.huskies)-1)
         # update goal pose based on sensed base pose since we are teleoperating the base
@@ -230,20 +242,17 @@ class HuskyMonitor(Node):
         if self.planned_arm_trajectory[3] is not None:
             obj = self.planned_arm_trajectory[3]
             world.plan_arm_to_transfer_element(self, obj.grasp)
-            self.show_goal_state = True
-            self.toggle_show_goal_state()
+            self.set_to_show_traj_state()
         else:
             print('No grasp saved in the planned trajectory to reuse!')
 
     def plan_arm_to_transfer_element(self, grasp=None):
         world.plan_arm_to_transfer_element(self)
-        self.show_goal_state = True
-        self.toggle_show_goal_state()
+        self.set_to_show_traj_state()
 
     def plan_arm_to_retract_to_home(self):
         world.plan_arm_to_retract_to_home(self)
-        self.show_goal_state = True
-        self.toggle_show_goal_state()
+        self.set_to_show_traj_state()
 
     def execute_linear_trajectory(self):
         # only execute part of the traj returned by transfer planning
@@ -313,6 +322,7 @@ class HuskyMonitor(Node):
     def update_bar_goal_pose(self, slider_inputs):
         # ! keep bar pos relative to the robot base, but orientation absolute to the world
         # print('tiggered')
+
         self.base_from_goal_bar_pos = pp.Point(*slider_inputs[:3])
         self.world_from_goal_bar_euler = pp.Euler(*slider_inputs[3:])
 
@@ -331,6 +341,8 @@ class HuskyMonitor(Node):
         # self.goal_bar_grasp = grasp
 
     def next_grasp_theta(self):
+        self.set_to_show_goal_state()
+
         self.grasp_theta_index = (self.grasp_theta_index + 1) % self.GRASP_PARTITION
         goal_bar_pose = self.get_world_from_bar_goal_pose()
         world.update_goal_gripper_model_pose(self, goal_bar_pose, self.grasp_theta_index, self.grasp_distance)
@@ -343,6 +355,8 @@ class HuskyMonitor(Node):
         #     self.goal_bar_grasp = grasp
 
     def update_grasp_dist(self, value):
+        self.set_to_show_goal_state()
+
         goal_bar_pose = self.get_world_from_bar_goal_pose()
         world.update_goal_gripper_model_pose(self, goal_bar_pose, self.grasp_theta_index, self.grasp_distance)
 
@@ -354,10 +368,12 @@ class HuskyMonitor(Node):
         #     self.goal_bar_grasp = grasp
 
     def rotate_bar_euler_angle(self, angle, axis='roll'):
+        self.set_to_show_goal_state()
+
         goal_bar_pose = pp.multiply(self.get_world_from_bar_goal_pose(), pp.Pose(euler=pp.Euler(**{axis: angle})))
         self.world_from_goal_bar_euler = pp.euler_from_quat(goal_bar_pose[1])
         self.goal_element.set_pose(goal_bar_pose)
-        world.update_goal_gripper_model_pose(self, goal_bar_pose, self.grasp_theta_index)
+        world.update_goal_gripper_model_pose(self, goal_bar_pose, self.grasp_theta_index, self.grasp_distance)
         self.reset_ui()
 
     def compute_ik_for_bar(self):
@@ -368,8 +384,8 @@ class HuskyMonitor(Node):
             self.reset_ui(self.goal_arm_pose)
 
     def sample_bar_location_for_ik_and_transfer(self):
-        goal_bar_pose = self.get_world_from_bar_goal_pose()
-        traj, rand_pos, bar_goal_quat, theta_index, grasp_dist = world.randomize_bar_location_for_ik_and_transfer(self, goal_bar_pose[1])
+        # goal_bar_pose = self.get_world_from_bar_goal_pose()
+        traj, rand_pos, bar_goal_quat, theta_index, grasp_dist = world.randomize_bar_location_for_ik_and_transfer(self) #, goal_bar_pose[1]
 
         self.base_from_goal_bar_pos = pp.Point(*rand_pos)
         self.world_from_goal_bar_euler = pp.euler_from_quat(bar_goal_quat)
@@ -377,6 +393,8 @@ class HuskyMonitor(Node):
         self.set_arm_trajectory(traj)
         self.grasp_theta_index = theta_index
         self.grasp_distance = grasp_dist
+
+        self.set_to_show_traj_state()
     
     # --- --- --- --- --- SETUP PYBULLET --- --- --- --- ---
     def start_pybullet(self):
@@ -480,8 +498,6 @@ class HuskyMonitor(Node):
             self.buttons.append(Button('Step grasp theta', self.next_grasp_theta))
 
             # self.bar_grasp_long_distance_silder = Slider("Grasp dist from mid", self., -0.5, 0.5, 0)
-
-            self.buttons.append(Button('Random sample bar goal pos', self.send_request_to_mocap))
 
             self.buttons.append(Button('Record markerset data', self.send_request_to_mocap))
             self.buttons.append(Button('Save markerset data', self.record_markerset_data))
