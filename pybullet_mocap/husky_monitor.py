@@ -309,10 +309,10 @@ class HuskyMonitor(Node):
         world_pos = pp.multiply(world_from_base_link, pp.Pose(point=self.base_from_goal_bar_pos))[0]
         world_quat = pp.Pose(euler=pp.Euler(*self.world_from_goal_bar_euler))[1]
         return world_pos, world_quat
-
+    
     def update_bar_goal_pose(self, slider_inputs):
         # ! keep bar pos relative to the robot base, but orientation absolute to the world
-        print('tiggered')
+        # print('tiggered')
         self.base_from_goal_bar_pos = pp.Point(*slider_inputs[:3])
         self.world_from_goal_bar_euler = pp.Euler(*slider_inputs[3:])
 
@@ -366,6 +366,17 @@ class HuskyMonitor(Node):
             self.goal_arm_pose = arm_conf
             self.goal_bar_grasp = grasp
             self.reset_ui(self.goal_arm_pose)
+
+    def sample_bar_location_for_ik_and_transfer(self):
+        goal_bar_pose = self.get_world_from_bar_goal_pose()
+        traj, rand_pos, bar_goal_quat, theta_index, grasp_dist = world.randomize_bar_location_for_ik_and_transfer(self, goal_bar_pose[1])
+
+        self.base_from_goal_bar_pos = pp.Point(*rand_pos)
+        self.world_from_goal_bar_euler = pp.euler_from_quat(bar_goal_quat)
+
+        self.set_arm_trajectory(traj)
+        self.grasp_theta_index = theta_index
+        self.grasp_distance = grasp_dist
     
     # --- --- --- --- --- SETUP PYBULLET --- --- --- --- ---
     def start_pybullet(self):
@@ -437,6 +448,8 @@ class HuskyMonitor(Node):
 
         self.buttons.append(Button('Compute ik', self.compute_ik_for_bar))
         self.buttons.append(Button('Plan arm to conf target', lambda: world.plan_arm_to_goal(self)))
+
+        self.buttons.append(Button('Rand bar loc for ik', self.sample_bar_location_for_ik_and_transfer))
 
         # bar_goal_pose_slider_group
         if self.BAR_GOAL_MODE:

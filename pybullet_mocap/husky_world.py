@@ -144,19 +144,61 @@ def compute_ik_for_bar(monitor, world_from_bar, theta_index, grasp_dist):
     
     return arm_conf, grasp
 
-def randomize_bar_location_for_ik_and_transfer(monitor, bar_rig):
-    ATTEMPTS = 10
-    for i in range(ATTEMPTS):
+def randomize_bar_location_for_ik_and_transfer(monitor, bar_goal_quat):
+    LOC_ATTEMPTS = 10
+    MP_ATTEMPTS = 10
+    TRAJ_MAX_LENGTH = 80
+
+    BOUNDING_BOX_RANGE = [[0.2, 1.0], [-1.0,1.0], [0.3, 1.4]]
+
+    world_from_base_link = monitor.goal_model.get_link_pose_from_name("base_footprint")
+    obstacles = monitor.static_obstacles
+    # [monitor.assembly_objects[i].body for i in range(monitor.current_seq_index)] + 
+    for i in range(LOC_ATTEMPTS):
+        monitor.get_logger().info(f"Randomizing bar location {i+1}/{LOC_ATTEMPTS}...")
+
         # * randomize the bar location in the footprint frame of the robot, only keep its world orientation
-        # * randomize the grasp
-        tool0_from_object = planning.compute_grasp(theta_index, monitor.GRASP_PARTITION, grasp_dist)
-        world_from_tool0 = pp.multiply(world_from_bar, object_from_tool0)
+        rand_pos = np.array([
+            np.random.uniform(BOUNDING_BOX_RANGE[0][0], BOUNDING_BOX_RANGE[0][1]),
+            np.random.uniform(BOUNDING_BOX_RANGE[1][0], BOUNDING_BOX_RANGE[1][1]),
+            np.random.uniform(BOUNDING_BOX_RANGE[2][0], BOUNDING_BOX_RANGE[2][1])
+        ])
+
+        # Keep the world orientation from bar_goal_quat
+        world_from_bar = pp.multiply(world_from_base_link, (rand_pos, bar_goal_quat))
+        pp.draw_pose(world_from_bar)
+
+        # * enumerate grasp parameters
+        for theta_index in range(monitor.GRASP_PARTITION):
+            monitor.get_logger().info(f"Grasping bar with id {theta_index+1}/{monitor.GRASP_PARTITION}...")
+
+            grasp_dist = 0.0
+
+            # Compute IK for this configuration
+            arm_conf, grasp = compute_ik_for_bar(monitor, world_from_bar, theta_index, grasp_dist)
+
+            if arm_conf is not None:
+                # plan transit path
+                for _ in range(MP_ATTEMPTS):
+                    # * plan arm motion
+                    traj = planning.plan_arm_motion(monitor.huskies[monitor.selected_robot_id], arm_conf, obstacles, monitor.trajectory_time,
+                                                    grasped_element=monitor.goal_element, grasp=grasp)
+                    if traj is not None and len(traj[0]) < TRAJ_MAX_LENGTH:
+                        return traj, rand_pos, bar_goal_quat, theta_index, grasp_dist
+                    elif traj is None:
+                        monitor.get_logger().warn("Arm motion planning failed!")
+                    else:
+                        monitor.get_logger().warn(f"Arm motion planning trajectory too long {len(traj[0])}!")
+                else:
+                    monitor.get_logger().warn(f"Motion planning failed after {MP_ATTEMPTS} attempts!")
 
 def update_goal_gripper_model_pose(monitor, world_from_bar, theta_index, grasp_dist):
     tool0_from_object = planning.compute_grasp(theta_index, monitor.GRASP_PARTITION, grasp_dist)
     world_from_tool0 = pp.multiply(world_from_bar, pp.invert(tool0_from_object), pp.Pose(euler=pp.Euler(yaw=-np.pi/2)))
     # pp.draw_pose(world_from_tool0)
+    # print("world_from_tool0", world_from_tool0)
     pp.set_pose(monitor.goal_gripper_model, world_from_tool0)
+    # print('finished updating goal gripper model pose')
 
 #################################
 
