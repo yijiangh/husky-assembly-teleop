@@ -31,18 +31,18 @@ def trace( *args ):
 #Used for Data Description functions
 def trace_dd( *args ):
     # uncomment the one you want to use
-    print( "".join(map(str,args)) )
+    # print( "".join(map(str,args)) )
     pass
 
 #Used for MoCap Frame Data functions
 def trace_mf( *args ):
     # uncomment the one you want to use
-    print( "".join(map(str,args)) )
+    # print( "".join(map(str,args)) )
     pass
 
 def trace_mf_focus( *args ):
     # uncomment the one you want to use
-    print( "".join(map(str,args)) )
+    # print( "".join(map(str,args)) )
     pass
 
 def get_message_id(data):
@@ -548,7 +548,6 @@ class NatNetClient:
                 trace_mf("  pos  : [%3.2f, %3.2f, %3.2f]"%(pos[0],pos[1],pos[2]))
                 trace_mf("  size : [%3.2f]"%size)
 
-                labeled_marker_from_model_id[model_id][marker_id] = pos
                 # Version 2.6 and later
                 param = 0
                 if( ( major == 2 and minor >= 6 ) or major > 2):
@@ -564,6 +563,12 @@ class NatNetClient:
                     residual, = FloatValue.unpack( data[offset:offset+4] )
                     offset += 4
                     trace_mf( "  err  : [%3.2f]"% residual )
+
+                labeled_marker_from_model_id[model_id][marker_id] = {
+                    'pos' : pos,
+                    'size' : size,
+                    'error' : residual,
+                }
 
                 labeled_marker = MoCapData.LabeledMarker(tmp_id,pos,size,param, residual)
                 labeled_marker_data.add_labeled_marker(labeled_marker)

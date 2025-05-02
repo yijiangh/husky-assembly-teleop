@@ -41,8 +41,8 @@ CLIENT_IP = '192.168.0.7' # Set to your own IP
 MOCAP_IP = '192.168.0.117' # set to the mocap PC's IP, get this from Motive Settings>Streaming pane->Local interface
   
 class HuskyMonitor(Node):
-    USE_MOCAP = 0
-    FAKE_HARDWARE = 1
+    USE_MOCAP = 1
+    FAKE_HARDWARE = 0
     CALIBRATION = 0
     BAR_GOAL_MODE = 1
     BAR_HOLDING_ACCURACY_TEST = 1
@@ -529,10 +529,11 @@ class HuskyMonitor(Node):
         self.mocap_client.set_server_address(MOCAP_IP)
         self.mocap_client.set_use_multicast(False)
         self.mocap_client.print_level = 1
+
         self.mocap_client.rigid_body_listener = self.receive_rigid_body_frame
         self.mocap_client.new_frame_listener = self.receive_mocap_frame
         if self.BAR_HOLDING_ACCURACY_TEST:
-            self.mocap_client.rigid_body_marker_set_listener = self.receive_rigid_body_marker_set
+            self.mocap_client.labeled_marker_listener = self.receive_labeled_marker
         
         if self.mocap_client.run():
             start_connect = time.time()
@@ -545,8 +546,8 @@ class HuskyMonitor(Node):
             print('Failed to run mocap client!')
 
     def send_request_to_mocap(self):
-        self.mocap_client.send_request(self.mocap_client.command_socket, self.mocap_client.NAT_REQUEST_MODELDEF,    "",  (self.mocap_client.server_ip_address, self.mocap_client.command_port) )
-        time.sleep(1)
+        # self.mocap_client.send_request(self.mocap_client.command_socket, self.mocap_client.NAT_REQUEST_MODELDEF,    "",  (self.mocap_client.server_ip_address, self.mocap_client.command_port) )
+        # time.sleep(1)
         world.request_marketset_button(self, 'bar_rig')
     
     # mocap updates are happening in a separate thread
@@ -586,35 +587,32 @@ class HuskyMonitor(Node):
             o.mocap_callback(pos, rot, ts)
         # self._mocap_rigidbody_cache.clear()
 
-    _mocap_rigidbody_marker_set_cache = defaultdict(dict)
-    def receive_rigid_body_marker_set(self, id, marker_ids, marker_positions, marker_labels):
-        if id not in self.name_from_mocap_id:
-            return
+    _mocap_labeled_marker_cache = defaultdict(dict)
+    def receive_labeled_marker(self, labeled_marker_from_model_id):
+        # print('Received labeled marker data:', labeled_marker_from_model_id)
+        # name = self.name_from_mocap_id[id]
+        # if name not in self._mocap_rigidbody_cache:
+        #     self.get_logger().warn(f'Mocap {name} not found in rb cache!')
+        #     return
+        # rb_pose = self._mocap_rigidbody_cache[name]
 
-        name = self.name_from_mocap_id[id]
-        if name not in self._mocap_rigidbody_cache:
-            self.get_logger().warn(f'Mocap {name} not found in rb cache!')
-            return
-        rb_pose = self._mocap_rigidbody_cache[name]
+        for model_id, marker_datas in labeled_marker_from_model_id.items():
+            if model_id not in self.name_from_mocap_id:
+                continue
 
-        for i in range(len(marker_ids)):
-            mid = marker_ids[i]
-            pos = marker_positions[i]
-            # y up to z up
-            pos = (pos[2], pos[0], pos[1])
-            label = marker_labels[i]
+            name = self.name_from_mocap_id[model_id]
+            if name not in self._mocap_labeled_marker_cache:
+                self._mocap_labeled_marker_cache[name] = {}
 
-            if mid not in self._mocap_rigidbody_marker_set_cache[name]:
-                self._mocap_rigidbody_marker_set_cache[name][mid] = {}
-
-            # ! market data is in the frame of the rb, so need to transform to get coord in world
-            world_from_marker = pp.tform_point(rb_pose, pos)
-            self._mocap_rigidbody_marker_set_cache[name][mid] = {
-                'marker_positions': world_from_marker,
-                'marker_label': label,
-            }
-
-        print(f'Received marker set data for {name}:', self._mocap_rigidbody_marker_set_cache[name])
+            for marker_id, marker_data in marker_datas.items():
+                # y up to z up
+                pos = [marker_data['pos'][2], marker_data['pos'][0], marker_data['pos'][1]]
+                self._mocap_labeled_marker_cache[name][marker_id] = {
+                    'pos': pos,
+                    'size': marker_data['size'],
+                    'error': marker_data['error'],
+                }
+            # print(f'Received marker set data for {name}:', self._mocap_labeled_marker_cache[name])
      
     # --- --- --- --- --- UPDATE --- --- --- --- --- 
     def update(self):

@@ -280,20 +280,22 @@ def request_marketset_button(monitor, rb_mocap_name):
     base_mocap_pose = None
     base_link_pose = ho.get_link_pose_from_name("base_footprint")
 
-    if monitor.USE_MOCAP:
+    if monitor.USE_MOCAP and h.name in monitor._mocap_rigidbody_cache:
         # need to get the raw data from mocap
-        if h.name in monitor._mocap_rigidbody_cache:
             base_mocap_pose = monitor._mocap_rigidbody_cache[h.name]
     else:
         base_mocap_pose = base_link_pose
 
-    if rb_mocap_name not in monitor._mocap_rigidbody_marker_set_cache:
+    # print(monitor._mocap_labeled_marker_cache)
+
+    if rb_mocap_name not in monitor._mocap_labeled_marker_cache:
         monitor.get_logger().warn(f'Mocap {rb_mocap_name} not found!')
         return
     else:
-        rb_marker_data = monitor._mocap_rigidbody_marker_set_cache[rb_mocap_name]
-        for marker_name, marker_data in rb_marker_data.items():
-            pp.draw_point(marker_data['marker_positions'])
+        labeled_marker_data = monitor._mocap_labeled_marker_cache[rb_mocap_name]
+
+        for marker_name, marker_data in labeled_marker_data.items():
+            pp.draw_point(marker_data['pos'])
 
         bar_pose = monitor.get_world_from_bar_goal_pose()
         monitor.marker_set_data.append(
@@ -303,7 +305,7 @@ def request_marketset_button(monitor, rb_mocap_name):
              'world_from_bar_pose' : bar_pose,
              'bar_euler_angles' : list(pp.euler_from_quat(bar_pose[1])),
             # needs to make sure the marker set data is not pointing to the same object, so later new data will override the previously saved ones
-             rb_mocap_name : copy.deepcopy(rb_marker_data),
+             rb_mocap_name : copy.deepcopy(labeled_marker_data),
              'theta_index' : copy.copy(monitor.grasp_theta_index),
              'theta_partition': copy.copy(monitor.GRASP_PARTITION),
              })
