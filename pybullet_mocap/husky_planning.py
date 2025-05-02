@@ -5,6 +5,7 @@ This module contains functions for planning the motion of the Husky robot.
 from typing import Tuple
 import os
 import numpy as np
+import random
 from scipy.spatial.transform import Rotation as R
 
 from tracikpy import TracIKSolver
@@ -14,32 +15,33 @@ import pybullet_planning as pp
 
 from pybullet_mocap.common import Husky, lerp, quat_lerp
 from pybullet_mocap.base_planner import RRTStar, fill_yaw_angle
-from pybullet_mocap.utils import plan_transit_motion, plan_transfer_motion, plan_retract_to_home_motion, TOOL0_FROM_GRIPPER_TCP
+from pybullet_mocap.utils import plan_transit_motion, plan_transfer_motion, plan_retract_to_home_motion, TOOL0_FROM_GRIPPER_TCP, get_arm_ik_for_grasp_bar
 from pybullet_mocap import DATA_DIRECTORY
 
-solver = TracIKSolver(
+IK_SOLVER = TracIKSolver(
     os.path.join(DATA_DIRECTORY,'husky_urdf/mt_husky_moveit_config/urdf/husky_ur5_e_no_base_joint.urdf'),
     'ur_arm_base_link',
     'ur_arm_tool0'
 )
 
-def compute_grasp(theta_index, grasp_partition=4):
+def compute_grasp(theta_index, grasp_partition=4, longitudinal_offset=0.0):
     theta = (theta_index % grasp_partition) * (2*np.pi/grasp_partition)
     longitude_x = pp.Pose(euler=pp.Euler(pitch=np.pi/2))
     rotate_around_x_axis = pp.Pose(euler=pp.Euler(theta, 0, 0))
     rotate_around_z = pp.Pose(euler=[0, 0, np.pi/2])
-    object_from_tool0 = pp.multiply(longitude_x, rotate_around_x_axis, rotate_around_z, pp.invert(TOOL0_FROM_GRIPPER_TCP))
-    return object_from_tool0
 
-def arm_ik(husky: Husky, world_from_tool0):
-    hi = husky.interface
-    # TODO why is it off by 90 degrees?
-    # ee_pose = pp.multiply(pp.invert((hi.position, hi.rotation)), ee_pose, pp.Pose(euler=pp.Euler(yaw=np.pi/2)))
+    height = 1.0
+    assert longitudinal_offset <= height/2, \
+    'safety margin length must be smaller than half of the bounding cylinder\'s height {}'.format(height/2)
+    # longitudinal_offset = random.uniform(-height/2+longitudinal_offset, height/2-longitudinal_offset)
+    translate_along_x_axis = pp.Pose(point=pp.Point(longitudinal_offset,0,0))
 
-    world_from_arm_base_link = pp.get_link_pose(husky.object.robot, pp.link_from_name(husky.object.robot, 'ur_arm_base_link'))
-    arm_base_link_from_tool0 = pp.multiply(pp.invert(world_from_arm_base_link), world_from_tool0)
-    qout = solver.ik(pp.tform_from_pose(arm_base_link_from_tool0), qinit=hi.arm_joint_pose)
-    return qout
+    object_from_tool0 = pp.multiply(longitude_x, translate_along_x_axis, rotate_around_x_axis, rotate_around_z, pp.invert(TOOL0_FROM_GRIPPER_TCP))
+    # pp.get_side_cylinder_grasps
+    return pp.invert(object_from_tool0)
+
+def arm_ik(husky: Husky, world_from_tool0, attachments, obstacles):
+    return get_arm_ik_for_grasp_bar(husky.object.robot, IK_SOLVER, world_from_tool0, attachments, obstacles)
 
 def plan_arm_motion(husky: Husky, arm_goal_pose, obstacles, traj_time, grasped_element=None, grasp=None):
     attachments = [husky.object.ee_attachment]
@@ -70,7 +72,7 @@ def plan_arm_motion(husky: Husky, arm_goal_pose, obstacles, traj_time, grasped_e
 def plan_arm_to_transfer_element(husky: Husky, transfer_element, obstacles, traj_time, grasp=None):
     free_path, linear_path, grasp = plan_transfer_motion(
         husky.object.robot,
-        solver, 
+        IK_SOLVER, 
         transfer_element, 
         [husky.object.ee_attachment],
         obstacles, 
@@ -95,7 +97,7 @@ def plan_arm_to_transfer_element(husky: Husky, transfer_element, obstacles, traj
 def plan_arm_to_retract_to_home(husky: Husky, transfer_element, obstacles, traj_time):
     trajectory = plan_retract_to_home_motion(
         husky.object.robot,
-        solver, 
+        IK_SOLVER, 
         transfer_element.body, 
         [husky.object.ee_attachment],
         obstacles, 

@@ -35,6 +35,7 @@ TRAJECTORY_GREEN = [0, 0.5, 0.2, 0.7]
 
 EXISTING_ELEMENT_COLOR = pp.RED
 CURRENT_ELEMENT_COLOR = pp.BLUE
+DEFAULT_BAR_POS = pp.Point(0.8, 0, 1.3)
 
 CLIENT_IP = '192.168.0.7' # Set to your own IP
 MOCAP_IP = '192.168.0.117' # set to the mocap PC's IP, get this from Motive Settings>Streaming pane->Local interface
@@ -72,6 +73,7 @@ class HuskyMonitor(Node):
         self.joint_state_sliders = []
         self.assembly_goal_position_slider_group = None
         self.bar_goal_pose_slider_group = None
+        self.bar_grasp_long_distance_slider = None
 
         self.selected_robot_slider = None
         self.selected_robot_id = 0
@@ -91,6 +93,7 @@ class HuskyMonitor(Node):
 
         self.goal_bar_grasp = None
         self.grasp_theta_index = 0
+        self.grasp_distance = 0.0 # fixed for now
 
         self.trajectory_time = 2 if self.CALIBRATION else 10
 
@@ -309,17 +312,46 @@ class HuskyMonitor(Node):
 
     def update_bar_goal_pose(self, slider_inputs):
         # ! keep bar pos relative to the robot base, but orientation absolute to the world
-        # self.base_from_goal_bar_pos = pp.Point(*slider_inputs[:3])
-        self.world_from_goal_bar_euler = pp.Euler(*slider_inputs)
+        print('tiggered')
+        self.base_from_goal_bar_pos = pp.Point(*slider_inputs[:3])
+        self.world_from_goal_bar_euler = pp.Euler(*slider_inputs[3:])
+
+        # self.world_from_goal_bar_euler = pp.Euler(*slider_inputs)
 
         # world_from_bar = pp.Pose(point=pp.Point(0.8, 0, 1.4), euler=pp.Euler(roll=np.pi/2))
         goal_bar_pose = self.get_world_from_bar_goal_pose()
         self.goal_element.set_pose(goal_bar_pose)
-        world.update_goal_gripper_model_pose(self, goal_bar_pose, self.grasp_theta_index)
+        world.update_goal_gripper_model_pose(self, goal_bar_pose, self.grasp_theta_index, self.grasp_distance)
+
+        # arm_conf, grasp = world.compute_ik_for_bar(self, goal_bar_pose, self.grasp_theta_index, self.grasp_distance)
+        # print('arm_conf:', arm_conf)
+        # print('grasp:', grasp)
+        # if arm_conf is not None and grasp is not None:
+        #     self.goal_arm_pose = arm_conf
+        # self.goal_bar_grasp = grasp
 
     def next_grasp_theta(self):
         self.grasp_theta_index = (self.grasp_theta_index + 1) % self.GRASP_PARTITION
-        world.update_goal_gripper_model_pose(self, self.get_world_from_bar_goal_pose(), self.grasp_theta_index)
+        goal_bar_pose = self.get_world_from_bar_goal_pose()
+        world.update_goal_gripper_model_pose(self, goal_bar_pose, self.grasp_theta_index, self.grasp_distance)
+
+        # arm_conf, grasp = world.compute_ik_for_bar(self, goal_bar_pose, self.grasp_theta_index, self.grasp_distance)
+        # print('arm_conf:', arm_conf)
+        # print('grasp:', grasp)
+        # if arm_conf is not None and grasp is not None:
+        #     self.goal_arm_pose = arm_conf
+        #     self.goal_bar_grasp = grasp
+
+    def update_grasp_dist(self, value):
+        goal_bar_pose = self.get_world_from_bar_goal_pose()
+        world.update_goal_gripper_model_pose(self, goal_bar_pose, self.grasp_theta_index, self.grasp_distance)
+
+        # arm_conf, grasp = world.compute_ik_for_bar(self, goal_bar_pose, self.grasp_theta_index, self.grasp_distance)
+        # print('arm_conf:', arm_conf)
+        # print('grasp:', grasp)
+        # if arm_conf is not None and grasp is not None:
+        #     self.goal_arm_pose = arm_conf
+        #     self.goal_bar_grasp = grasp
 
     def rotate_bar_euler_angle(self, angle, axis='roll'):
         goal_bar_pose = pp.multiply(self.get_world_from_bar_goal_pose(), pp.Pose(euler=pp.Euler(**{axis: angle})))
@@ -329,7 +361,7 @@ class HuskyMonitor(Node):
         self.reset_ui()
 
     def compute_ik_for_bar(self):
-        arm_conf, grasp = world.compute_ik_for_bar(self, self.get_world_from_bar_goal_pose(), self.grasp_theta_index)
+        arm_conf, grasp = world.compute_ik_for_bar(self, self.get_world_from_bar_goal_pose(), self.grasp_theta_index, self.grasp_distance)
         if arm_conf is not None and grasp is not None:
             self.goal_arm_pose = arm_conf
             self.goal_bar_grasp = grasp
@@ -410,7 +442,7 @@ class HuskyMonitor(Node):
         if self.BAR_GOAL_MODE:
             if self.base_from_goal_bar_pos is None or self.world_from_goal_bar_euler is None:
                 bar_target_euler = pp.Euler(roll=np.pi/2)
-                pos, quat = pp.Pose(point=pp.Point(0.8, 0, 1.4), euler=bar_target_euler)
+                pos, quat = pp.Pose(point=DEFAULT_BAR_POS, euler=bar_target_euler)
             else:
                 pos, quat = self.base_from_goal_bar_pos, pp.quat_from_euler(self.world_from_goal_bar_euler)
 
@@ -418,21 +450,23 @@ class HuskyMonitor(Node):
             self.bar_goal_pose_slider_group = SliderGroup([
                 "bar {}".format(t) for t in ["x","y","z", "r", "p", "y"]], 
                 self.update_bar_goal_pose, 
-                [-np.pi, -np.pi, -np.pi], 
-                [np.pi,  np.pi,  np.pi], 
-                [euler[0], euler[1], euler[2]]
-                # [-2, -2, -2, -np.pi, -np.pi, -np.pi], 
-                # [2,  2,  2, np.pi,  np.pi,  np.pi], 
-                # [pos[0], pos[1], pos[2], euler[0], euler[1], euler[2]]
+                # [-np.pi, -np.pi, -np.pi], 
+                # [np.pi,  np.pi,  np.pi], 
+                # [euler[0], euler[1], euler[2]]
+                [-2, -2, -2, -np.pi, -np.pi, -np.pi], 
+                [2,  2,  2, np.pi,  np.pi,  np.pi], 
+                [pos[0], pos[1], pos[2], euler[0], euler[1], euler[2]]
                 )
-            # self.update_bar_goal_pose(list(pos) + list(euler))
-            self.update_bar_goal_pose(list(euler))
+            self.update_bar_goal_pose(list(pos) + list(euler))
+            # self.update_bar_goal_pose(list(euler))
 
             self.buttons.append(Button('Step bar r', lambda : self.rotate_bar_euler_angle(np.pi/2, 'roll')))
             self.buttons.append(Button('Step bar p', lambda : self.rotate_bar_euler_angle(np.pi/2, 'pitch')))
             self.buttons.append(Button('Step bar y', lambda : self.rotate_bar_euler_angle(np.pi/2, 'yaw')))
 
-            # self.buttons.append(Button('Step grasp theta', self.next_grasp_theta))
+            self.buttons.append(Button('Step grasp theta', self.next_grasp_theta))
+
+            # self.bar_grasp_long_distance_silder = Slider("Grasp dist from mid", self., -0.5, 0.5, 0)
 
             self.buttons.append(Button('Random sample bar goal pos', self.send_request_to_mocap))
 
@@ -590,8 +624,8 @@ class HuskyMonitor(Node):
         if self.BAR_GOAL_MODE:
             self.bar_goal_pose_slider_group.update()
             # update_bar_goal_pose
-
-        self.goal_arm_pose = np.array([p.readUserDebugParameter(ps) for ps in self.joint_state_sliders])
+        else:
+            self.goal_arm_pose = np.array([p.readUserDebugParameter(ps) for ps in self.joint_state_sliders])
 
         # update assembly goal position
         # self.assembly_goal_position_slider_group.update()

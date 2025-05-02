@@ -120,24 +120,41 @@ def plan_arm_to_retract_to_home(monitor):
     transfer_element = monitor.assembly_objects[monitor.current_seq_index]
     monitor.set_arm_trajectory(planning.plan_arm_to_retract_to_home(monitor.huskies[monitor.selected_robot_id], transfer_element, obstacles, monitor.trajectory_time))
 
-def compute_ik_for_bar(monitor, world_from_bar, theta_index):
-    object_from_tool0 = planning.compute_grasp(theta_index, monitor.GRASP_PARTITION)
-    world_from_tool0 = pp.multiply(world_from_bar, object_from_tool0)
+def compute_ik_for_bar(monitor, world_from_bar, theta_index, grasp_dist):
+    obstacles = monitor.static_obstacles
+    # [monitor.assembly_objects[i].body for i in range(monitor.current_seq_index)] + 
+    monitor.goal_element.set_pose(world_from_bar)
 
-    arm_conf = planning.arm_ik(monitor.huskies[monitor.selected_robot_id], 
-                      world_from_tool0)
+    # gripper_from_object
+    grasp = planning.compute_grasp(theta_index, monitor.GRASP_PARTITION, grasp_dist)
+    world_from_tool0 = pp.multiply(world_from_bar, pp.invert(grasp))
+
+    pp.draw_pose(world_from_bar)
+    pp.draw_pose(world_from_tool0)
+
+    husky = monitor.huskies[monitor.selected_robot_id]
+    robot = husky.object.robot
+    attachments = [husky.object.ee_attachment, pp.Attachment(robot, pp.link_from_name(robot, 'ur_arm_tool0'), grasp, monitor.goal_element.body)]
+
+    arm_conf = planning.arm_ik(monitor.huskies[monitor.selected_robot_id], world_from_tool0, attachments, obstacles)
     if arm_conf is None:
         pp.draw_pose(world_from_tool0)
         monitor.get_logger().warn("IK failed!")
         return None, None
     
-    # TODO: check collision and more attempts
+    return arm_conf, grasp
 
-    return arm_conf, pp.invert(object_from_tool0)
+def randomize_bar_location_for_ik_and_transfer(monitor, bar_rig):
+    ATTEMPTS = 10
+    for i in range(ATTEMPTS):
+        # * randomize the bar location in the footprint frame of the robot, only keep its world orientation
+        # * randomize the grasp
+        tool0_from_object = planning.compute_grasp(theta_index, monitor.GRASP_PARTITION, grasp_dist)
+        world_from_tool0 = pp.multiply(world_from_bar, object_from_tool0)
 
-def update_goal_gripper_model_pose(monitor, world_from_bar, theta_index):
-    object_from_tool0 = planning.compute_grasp(theta_index, monitor.GRASP_PARTITION)
-    world_from_tool0 = pp.multiply(world_from_bar, object_from_tool0, pp.Pose(euler=pp.Euler(yaw=-np.pi/2)))
+def update_goal_gripper_model_pose(monitor, world_from_bar, theta_index, grasp_dist):
+    tool0_from_object = planning.compute_grasp(theta_index, monitor.GRASP_PARTITION, grasp_dist)
+    world_from_tool0 = pp.multiply(world_from_bar, pp.invert(tool0_from_object), pp.Pose(euler=pp.Euler(yaw=-np.pi/2)))
     # pp.draw_pose(world_from_tool0)
     pp.set_pose(monitor.goal_gripper_model, world_from_tool0)
 

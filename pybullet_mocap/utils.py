@@ -29,7 +29,7 @@ zup_from_yup = pp.pose_from_tform(yup_tform)
 # </joint>
 TOOL0_FROM_GRIPPER_TCP = pp.Pose(point=(0, 0, 0.152), euler=pp.Euler(yaw=np.pi))
 
-HUSKY_JOINT_NAMES = [
+UR5E_JOINT_NAMES = [
                       "ur_arm_shoulder_pan_joint", 
                       "ur_arm_shoulder_lift_joint",
                       "ur_arm_elbow_joint", 
@@ -95,6 +95,105 @@ def get_grasp_pose(direction, angle, offset=1e-3):
                     # Pose(euler=Euler(roll=(1-reverse) * np.pi)
                     )
 
+def get_arm_ik_for_grasp_bar(robot, ik_solver, world_from_tool0, attachments, obstacles):
+    IK_ATTEMPTS = 10
+    custom_limits = get_custom_limits(robot, {})
+    # disabled_collisions = disabled_collisions or {}
+    extra_disabled_collisions = [
+        ((robot, pp.link_from_name(robot, 'ur_arm_wrist_3_link')), 
+         (attachments[0].child, pp.BASE_LINK)), 
+         # pp.link_from_name(ee_body, 'robotiq_85_base_link'))),
+        ]
+
+    movable_joints = pp.joints_from_names(robot, UR5E_JOINT_NAMES)
+    # tool_link = pp.link_from_name(robot, 'ur_arm_tool0')
+    # bar_body = transfer_element.body
+    # world_from_object = transfer_element.goal_pose
+    # world_from_tool0 = pp.multiply(world_from_object, pp.invert(transfer_element.grasp))
+    # element_attachment = pp.Attachment(robot, tool_link, transfer_element.grasp, bar_body)
+    # final_attachments = attachments + [element_attachment]
+
+    sample_fn = pp.get_sample_fn(robot, movable_joints, custom_limits=custom_limits)
+    collision_fn = pp.get_collision_fn(robot, movable_joints, obstacles=obstacles,
+                                                attachments=attachments, 
+                                                self_collisions=1,
+                                                disabled_collisions={}, 
+                                                extra_disabled_collisions=extra_disabled_collisions,
+                                                custom_limits=custom_limits, 
+                                                max_distance=0)
+
+    world_from_arm_base = pp.get_link_pose(robot, pp.link_from_name(robot, "ur_arm_base_link"))
+    start_conf = pp.get_joint_positions(robot, movable_joints)
+    conf = None
+    
+    diagnose = 0
+    with pp.WorldSaver():
+        with pp.LockRenderer(not diagnose):
+            for i in range(IK_ATTEMPTS):
+                if i == 0:
+                    qinit = start_conf
+                else:
+                    qinit = sample_fn()
+
+                arm_base_from_tool0 = pp.multiply(pp.invert(world_from_arm_base), world_from_tool0)
+                conf = ik_solver.ik(pp.tform_from_pose(arm_base_from_tool0), qinit=qinit)
+
+                if conf is not None and not collision_fn(conf, diagnosis=diagnose):
+                    break
+            else:
+                notify("no ik solution after {} attempts".format(IK_ATTEMPTS))
+                return None
+    return conf
+
+def plan_transit_motion(robot, end_conf, attachments, obstacles, debug=False, disabled_collisions=None):
+    custom_limits = get_custom_limits(robot, {})
+    resolutions = np.ones(6) * 0.05
+    disabled_collisions = disabled_collisions or {}
+    extra_disabled_collisions = [
+        ((robot, pp.link_from_name(robot, 'ur_arm_wrist_3_link')), 
+         (attachments[0].child, pp.BASE_LINK)), 
+        ]
+
+    movable_joints = pp.joints_from_names(robot, UR5E_JOINT_NAMES)
+    sample_fn = pp.get_sample_fn(robot, movable_joints, custom_limits=custom_limits)
+    distance_fn = pp.get_distance_fn(robot, movable_joints) #, weights=weights)
+    extend_fn = pp.get_extend_fn(robot, movable_joints, resolutions=resolutions)
+
+    transit_collision_fn = pp.get_collision_fn(robot, movable_joints, obstacles=obstacles,
+                                                attachments=attachments, 
+                                                self_collisions=1,
+                                                disabled_collisions=disabled_collisions, extra_disabled_collisions=extra_disabled_collisions,
+                                                custom_limits=custom_limits, 
+                                                max_distance=0)
+
+    debug = 0
+    transit_path = None
+    with pp.WorldSaver():
+        with pp.LockRenderer(not debug):
+            # * plan transit motion from current conf to pregrasp conf
+            start_conf = pp.get_joint_positions(robot, movable_joints)
+            # print('start conf: ', start_conf)
+
+            # new_collision_fn = lambda q, diagnosis=False: collision_fn(q, diagnosis=True)
+            if pp.check_initial_end(start_conf, end_conf, transit_collision_fn, diagnosis=debug):
+                transit_path = pp.solve_motion_plan(start_conf, end_conf, 
+                                            distance_fn, sample_fn, extend_fn,
+                                            transit_collision_fn,
+                                            algorithm='birrt', 
+                                            max_time=10, 
+                                            max_iterations=20, 
+                                            smooth=20, diagnosis=debug,
+                                            coarse_waypoints=False,
+                                            ) 
+            else:
+                notify('initial and end conf not valid')
+            if transit_path is None:
+                notify('transit path not found')
+            else:
+                notify('transit path found: transit {} pts'.format(len(transit_path)))
+
+    return transit_path
+
 def plan_transfer_motion(robot, ik_solver, transfer_element, attachments, obstacles, 
                        grasp=None,
                        debug=False, disabled_collisions=None):
@@ -110,7 +209,7 @@ def plan_transfer_motion(robot, ik_solver, transfer_element, attachments, obstac
          # pp.link_from_name(ee_body, 'robotiq_85_base_link'))),
         ]
 
-    movable_joints = pp.joints_from_names(robot, HUSKY_JOINT_NAMES)
+    movable_joints = pp.joints_from_names(robot, UR5E_JOINT_NAMES)
     tool_link = pp.link_from_name(robot, 'ur_arm_tool0')
     # gripper_tcp_from_tool0 = pp.invert(TOOL0_FROM_GRIPPER_TCP)
     bar_body = transfer_element.body
@@ -141,7 +240,7 @@ def plan_transfer_motion(robot, ik_solver, transfer_element, attachments, obstac
     linear_path = None
     start_conf = pp.get_joint_positions(robot, movable_joints)
     with pp.WorldSaver():
-        with pp.LockRenderer(0):
+        with pp.LockRenderer(not debug):
             for g_id in range(grasp_attempts):
                 if grasp is None:
                     print('Grasp attempt #{}/{}'.format(g_id, grasp_attempts))
@@ -220,54 +319,6 @@ def plan_transfer_motion(robot, ik_solver, transfer_element, attachments, obstac
 
     return free_path, linear_path, grasp
 
-def plan_transit_motion(robot, end_conf, attachments, obstacles, debug=False, disabled_collisions=None):
-    custom_limits = get_custom_limits(robot, {})
-    resolutions = np.ones(6) * 0.05
-    disabled_collisions = disabled_collisions or {}
-    extra_disabled_collisions = [
-        ((robot, pp.link_from_name(robot, 'ur_arm_wrist_3_link')), 
-         (attachments[0].child, pp.BASE_LINK)), 
-        ]
-
-    movable_joints = pp.joints_from_names(robot, HUSKY_JOINT_NAMES)
-    sample_fn = pp.get_sample_fn(robot, movable_joints, custom_limits=custom_limits)
-    distance_fn = pp.get_distance_fn(robot, movable_joints) #, weights=weights)
-    extend_fn = pp.get_extend_fn(robot, movable_joints, resolutions=resolutions)
-
-    transit_collision_fn = pp.get_collision_fn(robot, movable_joints, obstacles=obstacles,
-                                                attachments=attachments, 
-                                                self_collisions=1,
-                                                disabled_collisions=disabled_collisions, extra_disabled_collisions=extra_disabled_collisions,
-                                                custom_limits=custom_limits, 
-                                                max_distance=0)
-
-    transit_path = None
-    with pp.WorldSaver():
-        with pp.LockRenderer(0):
-            # * plan transit motion from current conf to pregrasp conf
-            start_conf = pp.get_joint_positions(robot, movable_joints)
-            # print('start conf: ', start_conf)
-
-            # new_collision_fn = lambda q, diagnosis=False: collision_fn(q, diagnosis=True)
-            if pp.check_initial_end(start_conf, end_conf, transit_collision_fn, diagnosis=debug):
-                transit_path = pp.solve_motion_plan(start_conf, end_conf, 
-                                            distance_fn, sample_fn, extend_fn,
-                                            transit_collision_fn,
-                                            algorithm='birrt', 
-                                            max_time=10, 
-                                            max_iterations=20, 
-                                            smooth=20, diagnosis=debug,
-                                            coarse_waypoints=False,
-                                            ) 
-            else:
-                notify('initial and end conf not valid')
-            if transit_path is None:
-                notify('transit path not found')
-            else:
-                notify('transit path found: transit {} pts'.format(len(transit_path)))
-
-    return transit_path
-
 def plan_retract_to_home_motion(robot, ik_solver, bar_body, attachments, obstacles, 
                              debug=False, disabled_collisions=None, plan_transit_home=True):
     # plan a linear retract motion along negative z-axis, then a transit motion to home conf
@@ -285,7 +336,7 @@ def plan_retract_to_home_motion(robot, ik_solver, bar_body, attachments, obstacl
          (attachments[0].child, pp.BASE_LINK)),
     ]
 
-    movable_joints = pp.joints_from_names(robot, HUSKY_JOINT_NAMES)
+    movable_joints = pp.joints_from_names(robot, UR5E_JOINT_NAMES)
     tool_link = pp.link_from_name(robot, 'ur_arm_tool0')
 
     retreat_collision_fn = pp.get_collision_fn(robot, movable_joints, obstacles=obstacles,
