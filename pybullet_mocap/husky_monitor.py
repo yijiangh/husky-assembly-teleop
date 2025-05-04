@@ -299,6 +299,15 @@ class HuskyMonitor(Node):
 
                 hi.is_arm_executing = False
 
+    def execute_arm_trajectory_with_servoing(self, trajectory=None):
+        if trajectory is None:
+            trajectory = self.planned_arm_trajectory
+
+        if self.FAKE_HARDWARE:
+            self.logger.warn('Fake hardware does not support servoing!')
+        else:
+            world.execute_task_goal_arm_trajectory_with_servoing(self, trajectory, log_data=True)
+
     def set_goal_joint_0_to_zero(self):
         self.goal_arm_pose[0] = 0.0
         self.reset_ui(self.goal_arm_pose)

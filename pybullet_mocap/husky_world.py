@@ -372,7 +372,10 @@ def execute_task_goal_arm_trajectory_with_servoing(monitor, trajectory, log_data
     num_iters = 5
     data = [{} for _ in range(num_iters)]
 
+    obstacles = monitor.static_obstacles
+    
     # get ideal tool0 pose, not related to mocap obs
+    # TODO this should be generalized to any world_from_tool0 and attachment
     transfer_element = trajectory[3]
     world_from_tool0 = pp.multiply(transfer_element.goal_pose, pp.invert(transfer_element.grasp))
 
@@ -390,19 +393,104 @@ def execute_task_goal_arm_trajectory_with_servoing(monitor, trajectory, log_data
         time.sleep(monitor.trajectory_time + 2)
         data[i]['after_exe_footprint_pose'] = hi.position, hi.rotation
 
-        # check if hi.arm_joint_pose and the last conf of trajectory[0] is close
-        diff_vec = np.abs(np.array(hi.arm_joint_pose) - np.array(trajectory[0][-1]))
-        if not np.all(diff_vec < 1e-4):
-            monitor.get_logger().warn(f'Arm joint conf after execution differs from the last conf of trajectory: {diff_vec}!')
-            return
+        # compute the difference between the before and after exe footprint pose
+        diff_pos_vec = np.array(hi.position) - np.array(data[i]['before_exe_footprint_pose'][0])
+        diff_quat_vec = np.array(hi.rotation) - np.array(data[i]['before_exe_footprint_pose'][1])
+        monitor.get_logger().info(f'Footprint pose diff: {diff_pos_vec}, {diff_quat_vec}')
+        # raise warning if the diff is strictly zero
+        if np.all(diff_pos_vec < 1e-9) and np.all(diff_quat_vec < 1e-9):
+            monitor.get_logger().warn(f'Footprint pose diff is zero!')
 
-        # plan again for the same task goal
+        # compute current world_from_tool0
+        observed_world_from_tool0 = hi.object.get_link_pose_from_name("ur_arm_tool0")
+        # Compute position distance between observed and ideal tool0 poses
+        pos_distance = np.linalg.norm(np.array(observed_world_from_tool0[0]) - np.array(world_from_tool0[0]))
 
-        arm_conf = planning.arm_ik(monitor.huskies[monitor.selected_robot_id], 
-                                   world_from_tool0)
+        # Extract rotation matrices from quaternions
+        observed_rotation = pp.matrix_from_quat(observed_world_from_tool0[1])
+        ideal_rotation = pp.matrix_from_quat(world_from_tool0[1])
+        
+        # Extract individual axes from rotation matrices
+        observed_axes = [observed_rotation[:3, i] for i in range(3)]  # x, y, z axes
+        ideal_axes = [ideal_rotation[:3, i] for i in range(3)]  # x, y, z axes
+        
+        # Compute angle differences between corresponding axes
+        axis_angles = []
+        axis_names = ['x', 'y', 'z']
+        for i in range(3):
+            # Ensure normalized vectors
+            v1 = observed_axes[i] / np.linalg.norm(observed_axes[i])
+            v2 = ideal_axes[i] / np.linalg.norm(ideal_axes[i])
+            # Compute angle between vectors (in degrees)
+            dot_product = min(1.0, max(-1.0, np.dot(v1, v2)))
+            angle = np.arccos(dot_product) * 180 / np.pi
+            axis_angles.append(angle)
+            monitor.get_logger().info(f'tool0 {axis_names[i]}-axis angle difference: {angle:.4f}°')
 
-        monitor.set_arm_trajectory(planning.plan_arm_motion(monitor.huskies[monitor.selected_robot_id], monitor.goal_arm_pose, obstacles, monitor.trajectory_time,
-                                                            grasped_element=monitor.goal_element, grasp=monitor.goal_bar_grasp))
+        data[i]['observed_world_from_tool0'] = observed_world_from_tool0
+        data[i]['ideal_world_from_tool0'] = world_from_tool0
+        data[i]['world_from_tool0_pos_distance'] = pos_distance
+        data[i]['world_from_tool0_axis_angles'] = axis_angles
+
+        pp.draw_pose(observed_world_from_tool0, length=0.2)  # Visualize observed pose
+        pp.draw_pose(world_from_tool0, length=0.15)  # Visualize ideal pose
+
+        # plan again for the same task goal, the ik will use the current arm conf as initial guess, and should succeed in the first iter
+        arm_conf = planning.arm_ik(monitor.huskies[monitor.selected_robot_id], world_from_tool0)
+
+        trajectory = planning.plan_arm_motion(
+            monitor.huskies[monitor.selected_robot_id], 
+            arm_conf, 
+            obstacles, 
+            monitor.trajectory_time,
+            grasped_element=monitor.goal_element, 
+            grasp=monitor.goal_bar_grasp
+            )
+    
+    # Plot position distance and axis angles across iterations
+    if log_data:
+        import matplotlib.pyplot as plt
+        
+        # Extract data for plotting
+        iterations = list(range(1, num_iters + 1))
+        pos_distances = [d['world_from_tool0_pos_distance'] for d in data]
+        x_angles = [d['world_from_tool0_axis_angles'][0] for d in data]
+        y_angles = [d['world_from_tool0_axis_angles'][1] for d in data]
+        z_angles = [d['world_from_tool0_axis_angles'][2] for d in data]
+        
+        # Create figure with two subplots
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+        
+        # Plot position distance
+        ax1.plot(iterations, pos_distances, 'o-', color='blue')
+        ax1.set_xlabel('Iteration')
+        ax1.set_ylabel('Position Distance (m)')
+        ax1.set_title('Tool0 Position Error Across Iterations')
+        ax1.grid(True)
+        
+        # Plot axis angles
+        ax2.plot(iterations, x_angles, 'o-', color='red', label='X-axis')
+        ax2.plot(iterations, y_angles, 'o-', color='green', label='Y-axis')
+        ax2.plot(iterations, z_angles, 'o-', color='blue', label='Z-axis')
+        ax2.set_xlabel('Iteration')
+        ax2.set_ylabel('Angular Difference (degrees)')
+        ax2.set_title('Tool0 Orientation Error Across Iterations')
+        ax2.legend()
+        ax2.grid(True)
+        
+        plt.tight_layout()
+        
+        # Save the plot
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+        plot_filename = os.path.join(BAR_HOLDING_ACC_DATA_DIR, f"servoing_performance_{timestamp}.png")
+        plt.savefig(plot_filename)
+        monitor.get_logger().info(f"Performance plot saved to {plot_filename}")
+        
+        # Also save the data
+        data_filename = os.path.join(BAR_HOLDING_ACC_DATA_DIR, f"servoing_data_{timestamp}.json")
+        with open(data_filename, 'w') as f:
+            json.dump({'servoing_data': data}, f, default=lambda x: str(x) if isinstance(x, np.ndarray) else x, indent=4)
+        monitor.get_logger().info(f"Servoing data saved to {data_filename}")
 
      
 def move_base_to_goal(monitor):

@@ -106,13 +106,6 @@ def get_arm_ik_for_grasp_bar(robot, ik_solver, world_from_tool0, attachments, ob
         ]
 
     movable_joints = pp.joints_from_names(robot, UR5E_JOINT_NAMES)
-    # tool_link = pp.link_from_name(robot, 'ur_arm_tool0')
-    # bar_body = transfer_element.body
-    # world_from_object = transfer_element.goal_pose
-    # world_from_tool0 = pp.multiply(world_from_object, pp.invert(transfer_element.grasp))
-    # element_attachment = pp.Attachment(robot, tool_link, transfer_element.grasp, bar_body)
-    # final_attachments = attachments + [element_attachment]
-
     sample_fn = pp.get_sample_fn(robot, movable_joints, custom_limits=custom_limits)
     collision_fn = pp.get_collision_fn(robot, movable_joints, obstacles=obstacles,
                                                 attachments=attachments, 
@@ -122,6 +115,7 @@ def get_arm_ik_for_grasp_bar(robot, ik_solver, world_from_tool0, attachments, ob
                                                 custom_limits=custom_limits, 
                                                 max_distance=0)
 
+    # * the robot base pose should be udpated by the main loop in monitor according to mocap observation before the planning starts
     world_from_arm_base = pp.get_link_pose(robot, pp.link_from_name(robot, "ur_arm_base_link"))
     start_conf = pp.get_joint_positions(robot, movable_joints)
     conf = None
