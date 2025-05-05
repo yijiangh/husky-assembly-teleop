@@ -40,8 +40,8 @@ def compute_grasp(theta_index, grasp_partition=4, longitudinal_offset=0.0):
     # pp.get_side_cylinder_grasps
     return pp.invert(object_from_tool0)
 
-def arm_ik(husky: Husky, world_from_tool0, attachments, obstacles):
-    return get_arm_ik_for_grasp_bar(husky.object.robot, IK_SOLVER, world_from_tool0, attachments, obstacles)
+def arm_ik(husky: Husky, world_from_tool0, attachments, obstacles, hint_conf=None):
+    return get_arm_ik_for_grasp_bar(husky.object.robot, IK_SOLVER, world_from_tool0, attachments, obstacles, hint_conf=hint_conf)
 
 def plan_arm_motion(husky: Husky, arm_goal_pose, obstacles, traj_time, grasped_element=None, grasp=None):
     attachments = [husky.object.ee_attachment]

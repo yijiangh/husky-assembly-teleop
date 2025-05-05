@@ -458,7 +458,7 @@ class HuskyMonitor(Node):
         self.buttons.append(Button('Plan arm to retract to home', self.plan_arm_to_retract_to_home))
 
         self.buttons.append(Button('Exec Arm Traj', self.execute_arm_trajectory))
-        self.buttons.append(Button('Exec Arm Traj with servoing', self.execute_arm_trajectory))
+        self.buttons.append(Button('Exec Arm Traj with servoing', self.execute_arm_trajectory_with_servoing))
 
         # if not self.CALIBRATION:
         #     self.buttons.append(Button('Exec Free Motion', self.execute_free_trajectory))

@@ -95,7 +95,7 @@ def get_grasp_pose(direction, angle, offset=1e-3):
                     # Pose(euler=Euler(roll=(1-reverse) * np.pi)
                     )
 
-def get_arm_ik_for_grasp_bar(robot, ik_solver, world_from_tool0, attachments, obstacles):
+def get_arm_ik_for_grasp_bar(robot, ik_solver, world_from_tool0, attachments, obstacles, hint_conf=None):
     IK_ATTEMPTS = 10
     custom_limits = get_custom_limits(robot, {})
     # disabled_collisions = disabled_collisions or {}
@@ -117,7 +117,10 @@ def get_arm_ik_for_grasp_bar(robot, ik_solver, world_from_tool0, attachments, ob
 
     # * the robot base pose should be udpated by the main loop in monitor according to mocap observation before the planning starts
     world_from_arm_base = pp.get_link_pose(robot, pp.link_from_name(robot, "ur_arm_base_link"))
-    start_conf = pp.get_joint_positions(robot, movable_joints)
+    if hint_conf is None:
+        start_conf = pp.get_joint_positions(robot, movable_joints)
+    else:
+        start_conf = hint_conf
     conf = None
     
     diagnose = 0

@@ -7,6 +7,7 @@ import asyncio.runners
 import asyncio
 import numpy as np
 import copy
+import rclpy
 
 import pybullet_planning as pp
 
@@ -129,8 +130,8 @@ def compute_ik_for_bar(monitor, world_from_bar, theta_index, grasp_dist):
     grasp = planning.compute_grasp(theta_index, monitor.GRASP_PARTITION, grasp_dist)
     world_from_tool0 = pp.multiply(world_from_bar, pp.invert(grasp))
 
-    pp.draw_pose(world_from_bar)
-    pp.draw_pose(world_from_tool0)
+    # pp.draw_pose(world_from_bar)
+    # pp.draw_pose(world_from_tool0)
 
     husky = monitor.huskies[monitor.selected_robot_id]
     robot = husky.object.robot
@@ -138,7 +139,6 @@ def compute_ik_for_bar(monitor, world_from_bar, theta_index, grasp_dist):
 
     arm_conf = planning.arm_ik(monitor.huskies[monitor.selected_robot_id], world_from_tool0, attachments, obstacles)
     if arm_conf is None:
-        pp.draw_pose(world_from_tool0)
         monitor.get_logger().warn("IK failed!")
         return None, None
     
@@ -176,7 +176,7 @@ def randomize_bar_location_for_ik_and_transfer(monitor, bar_goal_quat=None):
 
         # Keep the world orientation from bar_goal_quat
         world_from_bar = pp.multiply(world_from_base_link, (rand_pos, bar_goal_quat))[0], bar_goal_quat
-        pp.draw_pose(world_from_bar)
+        # pp.draw_pose(world_from_bar)
 
         # * enumerate grasp parameters
         for theta_index in range(monitor.GRASP_PARTITION):
@@ -394,12 +394,15 @@ def execute_task_goal_arm_trajectory_with_servoing(monitor, trajectory, log_data
 
     obstacles = monitor.static_obstacles
     
+    hi = monitor.huskies[monitor.selected_robot_id].interface
+    ho = monitor.huskies[monitor.selected_robot_id].object
+
     # get ideal tool0 pose, not related to mocap obs
     # TODO this should be generalized to any world_from_tool0 and attachment
     transfer_element = trajectory[3]
     world_from_tool0 = pp.multiply(transfer_element.goal_pose, pp.invert(transfer_element.grasp))
+    attachments = [ho.ee_attachment, pp.Attachment(ho.robot, pp.link_from_name(ho.robot, 'ur_arm_tool0'), transfer_element.grasp, transfer_element.body)]
 
-    hi = monitor.huskies[monitor.selected_robot_id].interface
     for i in range(num_iters):
         monitor.get_logger().info(f'Servoing arm trajectory {i+1}/{num_iters}...')
 
@@ -410,7 +413,17 @@ def execute_task_goal_arm_trajectory_with_servoing(monitor, trajectory, log_data
 
         # wait until it finishes
         # TODO hopefully the extra 2 seconds will be enough for the mocap estimation to roll in? To be checked
-        time.sleep(monitor.trajectory_time + 2)
+        # TODO: ideally this should let the ros node spin until the execution is done, while blocking the thread here
+        # time.sleep(monitor.trajectory_time + 2)
+
+        # Spin ROS node for 1 second to allow updated data to flow
+        monitor.get_logger().info('Spinning ROS node for 1 second to process incoming data...')
+        start_time = time.time()
+        while time.time() - start_time < monitor.trajectory_time + 2:
+            rclpy.spin_once(monitor, timeout_sec=0.1)
+            print('hi position: {}, hi rotation: {}, arm conf: {}'.format(hi.position, hi.rotation, hi.arm_joint_pose))
+        monitor.get_logger().info('Finished spinning ROS node')
+
         data[i]['after_exe_footprint_pose'] = hi.position, hi.rotation
 
         # compute the difference between the before and after exe footprint pose
@@ -422,7 +435,7 @@ def execute_task_goal_arm_trajectory_with_servoing(monitor, trajectory, log_data
             monitor.get_logger().warn(f'Footprint pose diff is zero!')
 
         # compute current world_from_tool0
-        observed_world_from_tool0 = hi.object.get_link_pose_from_name("ur_arm_tool0")
+        observed_world_from_tool0 = ho.get_link_pose_from_name("ur_arm_tool0")
         # Compute position distance between observed and ideal tool0 poses
         pos_distance = np.linalg.norm(np.array(observed_world_from_tool0[0]) - np.array(world_from_tool0[0]))
 
@@ -456,7 +469,11 @@ def execute_task_goal_arm_trajectory_with_servoing(monitor, trajectory, log_data
         pp.draw_pose(world_from_tool0, length=0.15)  # Visualize ideal pose
 
         # plan again for the same task goal, the ik will use the current arm conf as initial guess, and should succeed in the first iter
-        arm_conf = planning.arm_ik(monitor.huskies[monitor.selected_robot_id], world_from_tool0)
+        arm_conf = planning.arm_ik(monitor.huskies[monitor.selected_robot_id], world_from_tool0, attachments, obstacles, hint_conf=trajectory[0][-1])
+
+        if arm_conf is None:
+            monitor.get_logger().warn("IK failed!")
+            return
 
         trajectory = planning.plan_arm_motion(
             monitor.huskies[monitor.selected_robot_id], 
@@ -499,15 +516,26 @@ def execute_task_goal_arm_trajectory_with_servoing(monitor, trajectory, log_data
         ax2.grid(True)
         
         plt.tight_layout()
+
+        # Create a date-specific servoing subfolder
+        servoing_subfolder_name = f"{datetime.now().strftime('%Y%m%d')}-servoing"
+        servoing_subfolder_path = os.path.join(BAR_HOLDING_ACC_DATA_DIR, servoing_subfolder_name)
+
+        # Create the subfolder if it doesn't exist
+        if not os.path.exists(servoing_subfolder_path):
+            os.makedirs(servoing_subfolder_path)
+            monitor.get_logger().info(f"Created servoing subfolder: {servoing_subfolder_path}")
+
+        # Update the plot and data file paths to use the new subfolder
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+        plot_filename = os.path.join(servoing_subfolder_path, f"servoing_performance_{timestamp}.png")
+        data_filename = os.path.join(servoing_subfolder_path, f"servoing_data_{timestamp}.json")
         
         # Save the plot
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-        plot_filename = os.path.join(BAR_HOLDING_ACC_DATA_DIR, f"servoing_performance_{timestamp}.png")
         plt.savefig(plot_filename)
         monitor.get_logger().info(f"Performance plot saved to {plot_filename}")
         
         # Also save the data
-        data_filename = os.path.join(BAR_HOLDING_ACC_DATA_DIR, f"servoing_data_{timestamp}.json")
         with open(data_filename, 'w') as f:
             json.dump({'servoing_data': data}, f, default=lambda x: str(x) if isinstance(x, np.ndarray) else x, indent=4)
         monitor.get_logger().info(f"Servoing data saved to {data_filename}")
