@@ -36,7 +36,8 @@ setup(
         'console_scripts': [
             'husky_monitor = pybullet_mocap.husky_monitor:main',
             'optitrack_python_sample = pybullet_mocap.optitrack.PythonSample:main',
-            'test_mocap = pybullet_mocap.optitrack.test_mocap:main'
+            'test_mocap = pybullet_mocap.optitrack.test_mocap:main',
+            'test_setio = pybullet_mocap.test_setio:main',
         ],
     },
 )
