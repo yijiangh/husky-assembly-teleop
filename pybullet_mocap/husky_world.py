@@ -262,7 +262,17 @@ def save_calibration(monitor, filename_suffix=""):
     # save monitor.calibration_data to json, file name with time stamp
     # save to data/calibration_data
     timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-    filename = os.path.join(CALIB_DATA_DIR, f"calibration_{timestamp}_{filename_suffix}.json")
+    # Create a date subfolder (format: YYYYMMDD)
+    date_subfolder = datetime.now().strftime("%Y%m%d")
+    subfolder_path = os.path.join(CALIB_DATA_DIR, date_subfolder)
+
+    # Create the subfolder if it doesn't exist
+    if not os.path.exists(subfolder_path):
+        os.makedirs(subfolder_path)
+        monitor.get_logger().info(f"Created subfolder: {subfolder_path}")
+
+    # Save the file in the date subfolder
+    filename = os.path.join(subfolder_path, f"calibration_{timestamp}_{filename_suffix}.json")
 
     with open(filename, 'w') as f:
         json.dump({'raw_data' : monitor.calibration_data}, f, indent=4)
@@ -314,7 +324,17 @@ def save_markerset_data(monitor, filename_suffix=""):
     print(monitor.calibration_data)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M")
     filename = os.path.join(BAR_HOLDING_ACC_DATA_DIR, f"bar_holding_acc_{timestamp}_{filename_suffix}.json")
+    # Create a date subfolder (format: YYYYMMDD)
+    date_subfolder = datetime.now().strftime("%Y%m%d")
+    subfolder_path = os.path.join(BAR_HOLDING_ACC_DATA_DIR, date_subfolder)
 
+    # Create the subfolder if it doesn't exist
+    if not os.path.exists(subfolder_path):
+        os.makedirs(subfolder_path)
+        monitor.get_logger().info(f"Created subfolder: {subfolder_path}")
+
+    # Save the file in the date subfolder
+    filename = os.path.join(subfolder_path, f"bar_holding_acc_{timestamp}_{filename_suffix}.json")
     with open(filename, 'w') as f:
         json.dump({'raw_data' : monitor.marker_set_data}, f, indent=4)
 
