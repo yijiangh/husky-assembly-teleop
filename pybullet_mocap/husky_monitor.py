@@ -95,7 +95,7 @@ class HuskyMonitor(Node):
         self.grasp_theta_index = 0
         self.grasp_distance = 0.0 # fixed for now
 
-        self.trajectory_time = 2 if self.CALIBRATION else 10
+        self.trajectory_time = 2 if self.CALIBRATION else 5
 
         # list of conf, velocity, total time, attachment other than the ee
         self.planned_arm_trajectory = (None, None, None, None)

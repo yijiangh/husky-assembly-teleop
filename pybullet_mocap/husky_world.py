@@ -164,11 +164,13 @@ def randomize_bar_location_for_ik_and_transfer(monitor, bar_goal_quat=None):
         monitor.get_logger().info(f"Randomizing bar location {i+1}/{LOC_ATTEMPTS}...")
 
         # * randomize the bar location in the footprint frame of the robot, only keep its world orientation
-        rand_pos = np.array([
-            np.random.uniform(BOUNDING_BOX_RANGE[0][0], BOUNDING_BOX_RANGE[0][1]),
-            np.random.uniform(BOUNDING_BOX_RANGE[1][0], BOUNDING_BOX_RANGE[1][1]),
-            np.random.uniform(BOUNDING_BOX_RANGE[2][0], BOUNDING_BOX_RANGE[2][1])
-        ])
+        # rand_pos = np.array([
+        #     np.random.uniform(BOUNDING_BOX_RANGE[0][0], BOUNDING_BOX_RANGE[0][1]),
+        #     np.random.uniform(BOUNDING_BOX_RANGE[1][0], BOUNDING_BOX_RANGE[1][1]),
+        #     np.random.uniform(BOUNDING_BOX_RANGE[2][0], BOUNDING_BOX_RANGE[2][1])
+        # ])
+        # !!! remove for debugging
+        rand_pos = pp.Point(0.8, 0, 1.3)
 
         # Randomize the bar quaternion to align with one of the global x, y, z axes
         if bar_goal_quat is None:
@@ -195,6 +197,8 @@ def randomize_bar_location_for_ik_and_transfer(monitor, bar_goal_quat=None):
                                                     grasped_element=monitor.goal_element, grasp=grasp)
                     if traj[0] is not None:
                         if len(traj[0]) < TRAJ_MAX_LENGTH:
+                            traj[3].goal_pose = world_from_bar
+                            traj[3].grasp = grasp
                             return traj, rand_pos, bar_goal_quat, theta_index, grasp_dist
                         else:
                             monitor.get_logger().warn(f"Arm motion planning trajectory too long {len(traj[0])}!")
@@ -389,7 +393,7 @@ def execute_task_goal_arm_trajectory_with_servoing(monitor, trajectory, log_data
         monitor.get_logger().warn('Arm trajectory must be have a grasped element attached to specify task space goal!')
         return
 
-    num_iters = 5
+    num_iters = 4
     data = [{} for _ in range(num_iters)]
 
     obstacles = monitor.static_obstacles
@@ -403,13 +407,18 @@ def execute_task_goal_arm_trajectory_with_servoing(monitor, trajectory, log_data
     world_from_tool0 = pp.multiply(transfer_element.goal_pose, pp.invert(transfer_element.grasp))
     attachments = [ho.ee_attachment, pp.Attachment(ho.robot, pp.link_from_name(ho.robot, 'ur_arm_tool0'), transfer_element.grasp, transfer_element.body)]
 
-    for i in range(num_iters):
-        monitor.get_logger().info(f'Servoing arm trajectory {i+1}/{num_iters}...')
+    for iter_i in range(num_iters):
+        monitor.get_logger().info(f'Servoing arm trajectory {iter_i+1}/{num_iters}...')
 
-        data[i]['before_exe_footprint_pose'] = hi.position, hi.rotation
+        data[iter_i]['before_exe_footprint_pose'] = copy.copy(hi.position), copy.copy(hi.rotation)
 
         # execute the trajectory
-        monitor.huskies[monitor.selected_robot_id].interface.send_arm_cmd(trajectory[0], trajectory[1], monitor.trajectory_time)
+        if iter_i != 0:
+            traj_time = 1
+        else:
+            traj_time = trajectory[2] 
+
+        monitor.huskies[monitor.selected_robot_id].interface.send_arm_cmd(trajectory[0], trajectory[1], traj_time)
 
         # wait until it finishes
         # TODO hopefully the extra 2 seconds will be enough for the mocap estimation to roll in? To be checked
@@ -417,27 +426,40 @@ def execute_task_goal_arm_trajectory_with_servoing(monitor, trajectory, log_data
         # time.sleep(monitor.trajectory_time + 2)
 
         # Spin ROS node for 1 second to allow updated data to flow
-        monitor.get_logger().info('Spinning ROS node for 1 second to process incoming data...')
-        start_time = time.time()
-        while time.time() - start_time < monitor.trajectory_time + 2:
-            rclpy.spin_once(monitor, timeout_sec=0.1)
-            print('hi position: {}, hi rotation: {}, arm conf: {}'.format(hi.position, hi.rotation, hi.arm_joint_pose))
-        monitor.get_logger().info('Finished spinning ROS node')
+        spin_time = traj_time + 0.5
+        time.sleep(spin_time)
 
-        data[i]['after_exe_footprint_pose'] = hi.position, hi.rotation
+        # ! for some reasons, the spin_once will make the main node stop working after this function is finished
+        # monitor.get_logger().info(f'Spinning ROS node for {spin_time} second to process incoming data...')
+        # start_time = time.time()
+        # while time.time() - start_time < spin_time:
+        #     rclpy.spin_once(monitor, timeout_sec=0.1)
+        #     print('hi position: {}, hi rotation: {}, arm conf: {}'.format(hi.position, hi.rotation, hi.arm_joint_pose))
+        # monitor.get_logger().info('Finished spinning ROS node')
+
+        # the footprint pose is updated bc the mocap works asynchronously
+        data[iter_i]['after_exe_footprint_pose'] = copy.copy(hi.position), copy.copy(hi.rotation)
 
         # compute the difference between the before and after exe footprint pose
-        diff_pos_vec = np.array(hi.position) - np.array(data[i]['before_exe_footprint_pose'][0])
-        diff_quat_vec = np.array(hi.rotation) - np.array(data[i]['before_exe_footprint_pose'][1])
-        monitor.get_logger().info(f'Footprint pose diff: {diff_pos_vec}, {diff_quat_vec}')
+        diff_pos_vec = np.array(hi.position) - np.array(data[iter_i]['before_exe_footprint_pose'][0])
+        diff_quat_vec = np.array(hi.rotation) - np.array(data[iter_i]['before_exe_footprint_pose'][1])
+        # Convert position difference from meters to millimeters
+        diff_pos_vec_mm = diff_pos_vec * 1000
+        monitor.get_logger().info(f'Footprint pose diff: {diff_pos_vec_mm} mm, quat diff: {diff_quat_vec}')
         # raise warning if the diff is strictly zero
         if np.all(diff_pos_vec < 1e-9) and np.all(diff_quat_vec < 1e-9):
             monitor.get_logger().warn(f'Footprint pose diff is zero!')
+
+        # ! until we make the ros main thread spin properly, we need to manually update the robot base pose in sim accroding to the mocap
+        # ! we assume that the robot arm conf is exactly the last traj point
+        hi.arm_joint_pose = trajectory[0][-1]
+        ho.set_pose((hi.position, hi.rotation), hi.arm_joint_pose)
 
         # compute current world_from_tool0
         observed_world_from_tool0 = ho.get_link_pose_from_name("ur_arm_tool0")
         # Compute position distance between observed and ideal tool0 poses
         pos_distance = np.linalg.norm(np.array(observed_world_from_tool0[0]) - np.array(world_from_tool0[0]))
+        monitor.get_logger().info(f'tool0 pos difference: {pos_distance*1e3:.1f} mm')
 
         # Extract rotation matrices from quaternions
         observed_rotation = pp.matrix_from_quat(observed_world_from_tool0[1])
@@ -450,26 +472,27 @@ def execute_task_goal_arm_trajectory_with_servoing(monitor, trajectory, log_data
         # Compute angle differences between corresponding axes
         axis_angles = []
         axis_names = ['x', 'y', 'z']
-        for i in range(3):
+        for j in range(3):
             # Ensure normalized vectors
-            v1 = observed_axes[i] / np.linalg.norm(observed_axes[i])
-            v2 = ideal_axes[i] / np.linalg.norm(ideal_axes[i])
+            v1 = observed_axes[j] / np.linalg.norm(observed_axes[j])
+            v2 = ideal_axes[j] / np.linalg.norm(ideal_axes[j])
             # Compute angle between vectors (in degrees)
             dot_product = min(1.0, max(-1.0, np.dot(v1, v2)))
             angle = np.arccos(dot_product) * 180 / np.pi
             axis_angles.append(angle)
-            monitor.get_logger().info(f'tool0 {axis_names[i]}-axis angle difference: {angle:.4f}°')
+            monitor.get_logger().info(f'tool0 {axis_names[j]}-axis angle difference: {angle:.4f}°')
 
-        data[i]['observed_world_from_tool0'] = observed_world_from_tool0
-        data[i]['ideal_world_from_tool0'] = world_from_tool0
-        data[i]['world_from_tool0_pos_distance'] = pos_distance
-        data[i]['world_from_tool0_axis_angles'] = axis_angles
+        data[iter_i]['observed_world_from_tool0'] = observed_world_from_tool0
+        data[iter_i]['ideal_world_from_tool0'] = world_from_tool0
+        data[iter_i]['world_from_tool0_pos_distance'] = pos_distance
+        data[iter_i]['world_from_tool0_axis_angles'] = axis_angles
 
         pp.draw_pose(observed_world_from_tool0, length=0.2)  # Visualize observed pose
-        pp.draw_pose(world_from_tool0, length=0.15)  # Visualize ideal pose
+        pp.draw_pose(world_from_tool0, length=0.3, width=2)  # Visualize ideal pose
+        # pp.camera_focus_on_point(world_from_tool0[0])
 
         # plan again for the same task goal, the ik will use the current arm conf as initial guess, and should succeed in the first iter
-        arm_conf = planning.arm_ik(monitor.huskies[monitor.selected_robot_id], world_from_tool0, attachments, obstacles, hint_conf=trajectory[0][-1])
+        arm_conf = planning.arm_ik(monitor.huskies[monitor.selected_robot_id], world_from_tool0, attachments, obstacles) #, hint_conf=trajectory[0][-1])
 
         if arm_conf is None:
             monitor.get_logger().warn("IK failed!")
@@ -479,7 +502,7 @@ def execute_task_goal_arm_trajectory_with_servoing(monitor, trajectory, log_data
             monitor.huskies[monitor.selected_robot_id], 
             arm_conf, 
             obstacles, 
-            monitor.trajectory_time,
+            traj_time,
             grasped_element=monitor.goal_element, 
             grasp=monitor.goal_bar_grasp
             )
@@ -490,7 +513,7 @@ def execute_task_goal_arm_trajectory_with_servoing(monitor, trajectory, log_data
         
         # Extract data for plotting
         iterations = list(range(1, num_iters + 1))
-        pos_distances = [d['world_from_tool0_pos_distance'] for d in data]
+        pos_distances = [d['world_from_tool0_pos_distance']*1e3 for d in data]
         x_angles = [d['world_from_tool0_axis_angles'][0] for d in data]
         y_angles = [d['world_from_tool0_axis_angles'][1] for d in data]
         z_angles = [d['world_from_tool0_axis_angles'][2] for d in data]
@@ -501,7 +524,7 @@ def execute_task_goal_arm_trajectory_with_servoing(monitor, trajectory, log_data
         # Plot position distance
         ax1.plot(iterations, pos_distances, 'o-', color='blue')
         ax1.set_xlabel('Iteration')
-        ax1.set_ylabel('Position Distance (m)')
+        ax1.set_ylabel('Position Distance (mm)')
         ax1.set_title('Tool0 Position Error Across Iterations')
         ax1.grid(True)
         
@@ -534,11 +557,13 @@ def execute_task_goal_arm_trajectory_with_servoing(monitor, trajectory, log_data
         # Save the plot
         plt.savefig(plot_filename)
         monitor.get_logger().info(f"Performance plot saved to {plot_filename}")
-        
+ 
         # Also save the data
         with open(data_filename, 'w') as f:
             json.dump({'servoing_data': data}, f, default=lambda x: str(x) if isinstance(x, np.ndarray) else x, indent=4)
         monitor.get_logger().info(f"Servoing data saved to {data_filename}")
+
+        plt.show()
 
      
 def move_base_to_goal(monitor):
