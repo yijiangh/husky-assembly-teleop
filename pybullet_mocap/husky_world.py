@@ -164,13 +164,12 @@ def randomize_bar_location_for_ik_and_transfer(monitor, bar_goal_quat=None):
         monitor.get_logger().info(f"Randomizing bar location {i+1}/{LOC_ATTEMPTS}...")
 
         # * randomize the bar location in the footprint frame of the robot, only keep its world orientation
-        # rand_pos = np.array([
-        #     np.random.uniform(BOUNDING_BOX_RANGE[0][0], BOUNDING_BOX_RANGE[0][1]),
-        #     np.random.uniform(BOUNDING_BOX_RANGE[1][0], BOUNDING_BOX_RANGE[1][1]),
-        #     np.random.uniform(BOUNDING_BOX_RANGE[2][0], BOUNDING_BOX_RANGE[2][1])
-        # ])
-        # !!! remove for debugging
-        rand_pos = pp.Point(0.8, 0, 1.3)
+        rand_pos = np.array([
+            np.random.uniform(BOUNDING_BOX_RANGE[0][0], BOUNDING_BOX_RANGE[0][1]),
+            np.random.uniform(BOUNDING_BOX_RANGE[1][0], BOUNDING_BOX_RANGE[1][1]),
+            np.random.uniform(BOUNDING_BOX_RANGE[2][0], BOUNDING_BOX_RANGE[2][1])
+        ])
+        # rand_pos = pp.Point(0.8, 0, 1.3)
 
         # Randomize the bar quaternion to align with one of the global x, y, z axes
         if bar_goal_quat is None:
@@ -394,6 +393,7 @@ def execute_task_goal_arm_trajectory_with_servoing(monitor, trajectory, log_data
         return
 
     num_iters = 4
+    settle_time = 2
     data = [{} for _ in range(num_iters)]
 
     obstacles = monitor.static_obstacles
@@ -414,7 +414,7 @@ def execute_task_goal_arm_trajectory_with_servoing(monitor, trajectory, log_data
 
         # execute the trajectory
         if iter_i != 0:
-            traj_time = 1
+            traj_time = 2
         else:
             traj_time = trajectory[2] 
 
@@ -426,7 +426,7 @@ def execute_task_goal_arm_trajectory_with_servoing(monitor, trajectory, log_data
         # time.sleep(monitor.trajectory_time + 2)
 
         # Spin ROS node for 1 second to allow updated data to flow
-        spin_time = traj_time + 0.5
+        spin_time = traj_time + settle_time
         time.sleep(spin_time)
 
         # ! for some reasons, the spin_once will make the main node stop working after this function is finished

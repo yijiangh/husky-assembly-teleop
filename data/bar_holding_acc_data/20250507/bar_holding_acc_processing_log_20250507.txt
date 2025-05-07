@@ -1,0 +1,23 @@
+2025-05-07 13:52:47,475 - INFO - Working on file: bar_holding_acc_20250507_1308_.json
+2025-05-07 13:52:47,480 - INFO - Closest global axis to the line: 1 (angle: 0.32 deg)
+2025-05-07 13:52:47,485 - INFO - Closest global axis to the line: 1 (angle: 0.24 deg)
+2025-05-07 13:52:47,489 - INFO - Closest global axis to the line: 0 (angle: 0.51 deg)
+2025-05-07 13:52:47,491 - WARNING - Distance between 7 and 8 is too large: 0.08314937020584398 m
+2025-05-07 13:52:47,491 - WARNING - Distance between 1 and 3 is too large: 0.0849291221219413 m
+2025-05-07 13:52:47,495 - INFO - Closest global axis to the line: 0 (angle: 0.27 deg)
+2025-05-07 13:52:47,496 - WARNING - Distance between 5 and 6 is too large: 0.08303412620580485 m
+2025-05-07 13:52:47,497 - WARNING - Error for marker 4 is too large: 0.002409 m
+2025-05-07 13:52:47,497 - WARNING - Distance between 1 and 3 is too large: 0.0832198803963522 m
+2025-05-07 13:52:47,500 - INFO - Closest global axis to the line: 1 (angle: 0.43 deg)
+2025-05-07 13:52:47,504 - INFO - Closest global axis to the line: 1 (angle: 0.35 deg)
+2025-05-07 13:52:47,513 - INFO - Closest global axis to the line: 2 (angle: 0.50 deg)
+2025-05-07 13:52:47,517 - INFO - Closest global axis to the line: 0 (angle: 0.32 deg)
+2025-05-07 13:52:47,522 - INFO - Closest global axis to the line: 1 (angle: 0.35 deg)
+2025-05-07 13:52:47,531 - INFO - Closest global axis to the line: 1 (angle: 0.32 deg)
+2025-05-07 13:52:47,532 - INFO - Working on file: bar_holding_acc_20250507_1302_.json
+2025-05-07 13:52:47,536 - INFO - Closest global axis to the line: 0 (angle: 0.65 deg)
+2025-05-07 13:52:47,537 - WARNING - Distance between 1 and 3 is too large: 0.083742334129833 m
+2025-05-07 13:52:47,544 - INFO - Closest global axis to the line: 2 (angle: 0.39 deg)
+2025-05-07 13:52:47,550 - INFO - Closest global axis to the line: 1 (angle: 0.27 deg)
+2025-05-07 13:52:47,554 - INFO - Closest global axis to the line: 0 (angle: 0.53 deg)
+2025-05-07 13:52:47,564 - INFO - Closest global axis to the line: 1 (angle: 0.21 deg)

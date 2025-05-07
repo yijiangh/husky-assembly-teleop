@@ -2,10 +2,19 @@ import os
 import json
 import numpy as np
 import matplotlib.pyplot as plt
+from skspatial.objects import Line
 
 # Define the path to the JSON file
 HERE = os.path.dirname(os.path.abspath(__file__))
 json_file_path = os.path.join(HERE, "bar_holding_acc_20250505_1446_.json")
+
+# Marker name pairs
+MARKER_NAME_PAIRS = [
+    ['5', '6'],
+    ['7', '8'],
+    ['2', '4'],
+    ['1', '3']
+]
 
 # Load the JSON data
 with open(json_file_path, "r") as file:
@@ -14,83 +23,70 @@ with open(json_file_path, "r") as file:
 # Extract raw data
 raw_data = data["raw_data"]
 
-# We have 4 data takes in total, and we want to compare:
-# 1) First take vs Second take
-# 2) Third take vs Fourth take
-comparisons = [(0, 1), (2, 3)]  # Indices for the comparisons
+# Function to compute the angle between two lines
+def compute_angle_between_lines(line1, line2):
+    direction1 = line1.direction / np.linalg.norm(line1.direction)
+    direction2 = line2.direction / np.linalg.norm(line2.direction)
+    angle_rad = np.arccos(np.clip(np.dot(direction1, direction2), -1.0, 1.0))
+    return np.degrees(angle_rad)
 
-# Initialize a dictionary to store position differences
-pos_differences = {}
+# Compute fitted lines for each take
+fitted_lines = []
+marker_position_differences = {pair: [] for pair in MARKER_NAME_PAIRS}
 
-# For each marker (1-8), compute position differences between specified takes
-for marker_id in range(1, 9):
-    marker = str(marker_id)
-    
-    # Compare first take with second take
-    first_pos = np.array(raw_data[0]["bar_rig"][marker]["pos"])
-    second_pos = np.array(raw_data[1]["bar_rig"][marker]["pos"])
-    diff_1_2 = np.linalg.norm(first_pos - second_pos)
-    
-    # Compare third take with fourth take
-    third_pos = np.array(raw_data[2]["bar_rig"][marker]["pos"])
-    fourth_pos = np.array(raw_data[3]["bar_rig"][marker]["pos"])
-    diff_3_4 = np.linalg.norm(third_pos - fourth_pos)
-    
-    # Store both comparisons
-    pos_differences[f"Marker {marker} (Take 1-2)"] = diff_1_2
-    pos_differences[f"Marker {marker} (Take 3-4)"] = diff_3_4
+for take in raw_data:
+    marker_centers = []
+    for marker1, marker2 in MARKER_NAME_PAIRS:
+        pos1 = np.array(take["bar_rig"][marker1]["pos"])
+        pos2 = np.array(take["bar_rig"][marker2]["pos"])
+        center = (pos1 + pos2) / 2  # Average position of the marker pair
+        marker_centers.append(center)
 
-# Calculate mean and standard deviation of position differences
-# Separate Take 1-2 and Take 3-4 for better analysis
-take_1_2_diffs = [diff for key, diff in pos_differences.items() if "Take 1-2" in key]
-take_3_4_diffs = [diff for key, diff in pos_differences.items() if "Take 3-4" in key]
-all_diffs = list(pos_differences.values())
+        # Compute position difference between the two markers
+        distance = np.linalg.norm(pos1 - pos2)
+        marker_position_differences[(marker1, marker2)].append(distance)
 
-# Calculate statistics
-mean_all = np.mean(all_diffs)
-std_all = np.std(all_diffs)
-mean_1_2 = np.mean(take_1_2_diffs)
-std_1_2 = np.std(take_1_2_diffs)
-mean_3_4 = np.mean(take_3_4_diffs)
-std_3_4 = np.std(take_3_4_diffs)
+    # Fit a line using the averaged marker positions
+    line_fit = Line.best_fit(marker_centers)
+    fitted_lines.append(line_fit)
 
-# Print statistics
-print(f"All position differences - Mean: {mean_all:.6f} m, Std: {std_all:.6f} m")
-print(f"Take 1-2 differences - Mean: {mean_1_2:.6f} m, Std: {std_1_2:.6f} m")
-print(f"Take 3-4 differences - Mean: {mean_3_4:.6f} m, Std: {std_3_4:.6f} m")
+# Compute angle differences between specified takes
+angle_diff_1_2 = compute_angle_between_lines(fitted_lines[0], fitted_lines[1])
+angle_diff_3_4 = compute_angle_between_lines(fitted_lines[2], fitted_lines[3])
 
-# Plot the position differences as a scatter plot
+# Plot the angle differences
+plt.figure(figsize=(8, 6))
+x_labels = ["Take 1-2", "Take 3-4"]
+y_values = [angle_diff_1_2, angle_diff_3_4]
+
+plt.bar(x_labels, y_values, color="skyblue", alpha=0.8)
+plt.ylabel("Angle Difference (degrees)")
+plt.title("Angle Differences Between Fitted Lines")
+plt.tight_layout()
+
+# Save the angle difference plot
+angle_diff_plot_path = os.path.join(HERE, "line_angle_differences.png")
+plt.savefig(angle_diff_plot_path)
+plt.show()
+
+print(f"Angle differences plotted and saved to {angle_diff_plot_path}")
+print(f"Angle difference (Take 1-2): {angle_diff_1_2:.2f} degrees")
+print(f"Angle difference (Take 3-4): {angle_diff_3_4:.2f} degrees")
+
+# Plot the marker-to-marker position differences
 plt.figure(figsize=(12, 8))
-markers = sorted(pos_differences.keys())
-x_values = []
-y_values = []
-labels = []
-
-for i, marker in enumerate(markers):
-    # Alternate between take 1-2 and take 3-4 comparisons
-    take_type = "Take 1-2" if "Take 1-2" in marker else "Take 3-4"
-    marker_num = marker.split()[1]
-    
-    x_values.append(i)
-    y_values.append(pos_differences[marker])
-    labels.append(f"{marker_num} ({take_type})")
-
-plt.scatter(x_values, y_values, s=100, c=range(len(x_values)), cmap='viridis')
-
-# Add labels to each point
-for i, label in enumerate(labels):
-    plt.annotate(label, (x_values[i], y_values[i]), 
-                 xytext=(5, 5), textcoords='offset points')
+for pair, distances in marker_position_differences.items():
+    plt.plot(distances, label=f"Marker {pair[0]} - Marker {pair[1]}")
 
 plt.xlabel("Data Take Index")
 plt.ylabel("Position Difference (m)")
-plt.title("Position Differences Between Markers")
+plt.title("Marker-to-Marker Position Differences")
 plt.legend(bbox_to_anchor=(1.05, 1), loc="upper left")
 plt.tight_layout()
 
-# Save the plot
-output_plot_path = os.path.join(HERE, "marker_position_differences.png")
-plt.savefig(output_plot_path)
+# Save the position difference plot
+position_diff_plot_path = os.path.join(HERE, "marker_position_differences.png")
+plt.savefig(position_diff_plot_path)
 plt.show()
 
-print(f"Plot saved to {output_plot_path}")
+print(f"Marker-to-marker position differences plotted and saved to {position_diff_plot_path}")

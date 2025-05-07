@@ -1,6 +1,6 @@
 import json
 import os
-import sys
+import sys, logging
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -13,14 +13,37 @@ from sklearn.feature_selection import mutual_info_regression
 from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.model_selection import train_test_split
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+DATA_BATCH = '20250507'
 
 # Set up logging to file
-log_file = os.path.join(HERE, 'bar_acc_stat_analysis_log.txt')
-sys.stdout = open(log_file, 'w')
+HERE = os.path.dirname(os.path.abspath(__file__))
+data_folder = os.path.join(HERE, DATA_BATCH)
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger()
+
+# Create file handler
+file_handler = logging.FileHandler(os.path.join(data_folder, f'bar_holding_acc_analysis_log_{DATA_BATCH}.txt'), mode='w')
+file_handler.setLevel(logging.INFO)
+file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+
+# Add handlers to the logger
+logger.addHandler(file_handler)
 
 # Load the JSON data
-with open(os.path.join(HERE, 'analysis_bar_holding_acc_.json'), 'r') as f:
+# Search for compiled_bar_holding_acc JSON files in the data folder
+json_files = [f for f in os.listdir(data_folder) if f.startswith('compiled_bar_holding_acc') and f.endswith('.json')]
+
+if not json_files:
+    logger.error(f"Error: No compiled_bar_holding_acc JSON files found in {data_folder}")
+    sys.exit(1)
+
+# Use the first matching file found
+json_file_path = os.path.join(data_folder, json_files[0])
+logger.info(f"Loading data from: {json_file_path}")
+
+with open(json_file_path, 'r') as f:
     data = json.load(f)
 
 # Create a list to hold the extracted data
@@ -42,7 +65,7 @@ for entry in data:
     distance_com_to_polygon = entry.get('distance_com_to_polygon_center')
     
     # Extract angle deviation (our output variable), in degrees
-    angle_deviation = entry['angle_to_closest_axis']
+    angle_deviation = np.deg2rad(entry['angle_to_closest_axis'])
     
     # Add data to our list
     extracted_data.append({
@@ -78,13 +101,13 @@ df['height_category'] = df['bar_height'].apply(categorize_height)
 df = pd.get_dummies(df, columns=['closest_axis', 'height_category'], prefix=['axis', 'height'])
 
 # Display basic statistics
-print("Basic Statistics:")
-print(df.describe())
+logger.info("Basic Statistics:")
+logger.info(df.describe())
 
 # Correlation analysis
-print("\nCorrelation with angle_deviation:")
+logger.info("\nCorrelation with angle_deviation:")
 correlations = df.corr()['angle_deviation'].sort_values(ascending=False)
-print(correlations)
+logger.info(correlations)
 
 # Visualize data
 
@@ -94,8 +117,8 @@ sns.scatterplot(x='distance_com_to_polygon', y='angle_deviation',
                 hue='axis_label', data=df)
 plt.title('Distance CoM to Polygon vs Angle Deviation')
 plt.xlabel('Distance from CoM to Support Polygon Center')
-plt.ylabel('Angle Deviation (degrees)')
-plt.savefig(os.path.join(HERE, 'com_distance_vs_angle.png'))
+plt.ylabel('Angle Deviation (rad)')
+plt.savefig(os.path.join(data_folder, 'com_distance_vs_angle.png'))
 
 # Figure 2: Boxplot of angle deviation by closest axis
 plt.figure(figsize=(10, 6))
@@ -106,8 +129,8 @@ axis_data = axis_data[axis_data['is_axis'] == 1]
 sns.boxplot(x='axis', y='angle_deviation', data=axis_data)
 plt.title('Angle Deviation by Closest Axis')
 plt.xlabel('Closest Axis')
-plt.ylabel('Angle Deviation (degrees)')
-plt.savefig(os.path.join(HERE, 'angle_by_axis.png'))
+plt.ylabel('Angle Deviation (rad)')
+plt.savefig(os.path.join(data_folder, 'angle_by_axis.png'))
 
 # Figure 3: Boxplot of angle deviation by height category
 plt.figure(figsize=(10, 6))
@@ -118,8 +141,8 @@ height_data = height_data[height_data['is_height'] == 1]
 sns.boxplot(x='height', y='angle_deviation', data=height_data)
 plt.title('Angle Deviation by Bar Height')
 plt.xlabel('Bar Height Category')
-plt.ylabel('Angle Deviation (degrees)')
-plt.savefig(os.path.join(HERE, 'angle_by_height.png'))
+plt.ylabel('Angle Deviation (rad)')
+plt.savefig(os.path.join(data_folder, 'angle_by_height.png'))
 
 # Figure 4: Footprint position effect on angle deviation (heatmap)
 plt.figure(figsize=(10, 8))
@@ -133,7 +156,7 @@ sns.heatmap(pivot_table, cmap='viridis')
 plt.title('Mean Angle Deviation by Robot Position')
 plt.xlabel('X Position')
 plt.ylabel('Y Position')
-plt.savefig(os.path.join(HERE, 'position_heatmap.png'))
+plt.savefig(os.path.join(data_folder, 'position_heatmap.png'))
 
 # Feature importance analysis using Random Forest
 X = df.drop(['angle_deviation', 'axis_label'], axis=1)  # Also drop axis_label
@@ -153,9 +176,9 @@ rf.fit(X_train, y_train)
 
 # Evaluate model
 y_pred = rf.predict(X_test)
-print("\nRandom Forest Model Performance:")
-print(f"R² score: {r2_score(y_test, y_pred):.4f}")
-print(f"Mean squared error: {mean_squared_error(y_test, y_pred):.4f}")
+logger.info("\nRandom Forest Model Performance:")
+logger.info(f"R² score: {r2_score(y_test, y_pred):.4f}")
+logger.info(f"Mean squared error: {mean_squared_error(y_test, y_pred):.4f}")
 
 # Calculate feature importance from Random Forest
 feature_importance = pd.DataFrame({
@@ -163,8 +186,8 @@ feature_importance = pd.DataFrame({
     'Importance': rf.feature_importances_
 }).sort_values('Importance', ascending=False)
 
-print("\nFeature Importance from Random Forest:")
-print(feature_importance)
+logger.info("\nFeature Importance from Random Forest:")
+logger.info(feature_importance)
 
 # Calculate mutual information for non-linear relationships
 mi_scores = mutual_info_regression(X_scaled, y)
@@ -173,50 +196,50 @@ mi_df = pd.DataFrame({
     'MI Score': mi_scores
 }).sort_values('MI Score', ascending=False)
 
-print("\nMutual Information Scores (for non-linear relationships):")
-print(mi_df)
+logger.info("\nMutual Information Scores (for non-linear relationships):")
+logger.info(mi_df)
 
 # Visualize feature importance
 plt.figure(figsize=(12, 6))
 sns.barplot(x='Importance', y='Feature', data=feature_importance)
 plt.title('Feature Importance for Predicting Angle Deviation')
 plt.tight_layout()
-plt.savefig(os.path.join(HERE, 'feature_importance.png'))
+plt.savefig(os.path.join(data_folder, 'feature_importance.png'))
 
 # Visualize mutual information
 plt.figure(figsize=(12, 6))
 sns.barplot(x='MI Score', y='Feature', data=mi_df)
 plt.title('Mutual Information Scores for Predicting Angle Deviation')
 plt.tight_layout()
-plt.savefig(os.path.join(HERE, 'mutual_info.png'))
+plt.savefig(os.path.join(data_folder, 'mutual_info.png'))
 
 # ANOVA analysis for categorical variables
 
 # Analyze effect of axis choice on angle deviation
-print("\nANOVA Analysis - Effect of axis choice on angle deviation:")
+logger.info("\nANOVA Analysis - Effect of axis choice on angle deviation:")
 axis_0_angles = df[df['axis_0'] == 1]['angle_deviation']
 axis_1_angles = df[df['axis_1'] == 1]['angle_deviation']
 axis_2_angles = df[df['axis_2'] == 1]['angle_deviation']
 
 f_stat, p_val = stats.f_oneway(axis_0_angles, axis_1_angles, axis_2_angles)
-print(f"F-statistic: {f_stat:.4f}, p-value: {p_val:.4f}")
+logger.info(f"F-statistic: {f_stat:.4f}, p-value: {p_val:.4f}")
 if p_val < 0.05:
-    print("There is a statistically significant difference in angle deviation between axes.")
+    logger.info("There is a statistically significant difference in angle deviation between axes.")
 else:
-    print("No statistically significant difference in angle deviation between axes.")
+    logger.info("No statistically significant difference in angle deviation between axes.")
 
 # Analyze effect of height category on angle deviation
-print("\nANOVA Analysis - Effect of height category on angle deviation:")
+logger.info("\nANOVA Analysis - Effect of height category on angle deviation:")
 low_angles = df[df['height_low'] == 1]['angle_deviation']
 mid_angles = df[df['height_mid'] == 1]['angle_deviation']
 high_angles = df[df['height_high'] == 1]['angle_deviation']
 
 f_stat, p_val = stats.f_oneway(low_angles, mid_angles, high_angles)
-print(f"F-statistic: {f_stat:.4f}, p-value: {p_val:.4f}")
+logger.info(f"F-statistic: {f_stat:.4f}, p-value: {p_val:.4f}")
 if p_val < 0.05:
-    print("There is a statistically significant difference in angle deviation between height categories.")
+    logger.info("There is a statistically significant difference in angle deviation between height categories.")
 else:
-    print("No statistically significant difference in angle deviation between height categories.")
+    logger.info("No statistically significant difference in angle deviation between height categories.")
 
 # Summary visualization - control variables vs angle deviation
 plt.figure(figsize=(10, 6))
@@ -224,15 +247,8 @@ plt.scatter(df['distance_com_to_polygon'], df['angle_deviation'],
             c=df['bar_height'], cmap='viridis', alpha=0.7)
 plt.colorbar(label='Bar Height')
 plt.xlabel('Distance from CoM to Support Polygon Center')
-plt.ylabel('Angle Deviation (degrees)')
+plt.ylabel('Angle Deviation (rad)')
 plt.title('Distance CoM vs Angle Deviation (colored by bar height)')
-plt.savefig(os.path.join(HERE, 'summary_visualization.png'))
+plt.savefig(os.path.join(data_folder, 'summary_visualization.png'))
 
-print("\nAnalysis complete. Visualizations saved to disk.")
-
-# Close the file to ensure all output is written
-sys.stdout.close()
-
-# Restore stdout for any remaining prints
-sys.stdout = sys.__stdout__
-print(f"Analysis complete. Results logged to {log_file}")
+logger.info("\nAnalysis complete. Visualizations saved to disk.")
