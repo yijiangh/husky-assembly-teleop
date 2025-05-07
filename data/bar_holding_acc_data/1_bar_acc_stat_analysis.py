@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
+import pybullet_planning as pp
 from scipy import stats
 from sklearn.linear_model import LinearRegression
 from sklearn.preprocessing import StandardScaler
@@ -52,8 +53,12 @@ extracted_data = []
 # Extract relevant data from each entry
 for entry in data:
     # Extract footprint pose (just use x,y coordinates for simplicity)
-    footprint_x = entry['footprint_pose'][0][0]
-    footprint_y = entry['footprint_pose'][0][1]
+    # footprint_x = entry['footprint_pose'][0][0]
+    # footprint_y = entry['footprint_pose'][0][1]
+    roll, pitch, yaw = pp.euler_from_quat(entry['footprint_pose'][1])
+    logger.info('footprint roll: {:.3f}, pitch: {:.3f}, yaw: {:.3f}'.format(roll, pitch, yaw))
+    footprint_x, footprint_y, footprint_yaw = pp.base_values_from_pose(entry['footprint_pose'], 
+                                                                       tolerance=0.013)
     
     # Extract bar position (height)
     bar_height = entry['fitted_line']['point'][2]
@@ -66,11 +71,12 @@ for entry in data:
     
     # Extract angle deviation (our output variable), in degrees
     angle_deviation = np.deg2rad(entry['angle_to_closest_axis'])
-    
+ 
     # Add data to our list
     extracted_data.append({
         'footprint_x': footprint_x,
         'footprint_y': footprint_y,
+        'footprint_yaw': footprint_yaw,
         'bar_height': bar_height,
         'closest_axis': closest_axis,
         'distance_com_to_polygon': distance_com_to_polygon,
@@ -97,8 +103,25 @@ def categorize_height(height):
 
 df['height_category'] = df['bar_height'].apply(categorize_height)
 
+# Categorize footprint yaw into 8 partitions (0-360 degrees)
+def categorize_yaw(yaw_rad):
+    # Normalize to [0, 2π)
+    yaw_normalized = yaw_rad % (2 * np.pi)
+    # Each partition is 45 degrees (π/4 radians)
+    partition_size = np.pi / 4
+    partition_number = int(yaw_normalized / partition_size)
+    direction_names = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW']
+    return direction_names[partition_number]
+
+df['yaw_category'] = df['footprint_yaw'].apply(categorize_yaw)
+
 # Add one-hot encoding for closest axis and height category
-df = pd.get_dummies(df, columns=['closest_axis', 'height_category'], prefix=['axis', 'height'])
+df = pd.get_dummies(df, columns=['closest_axis', 'height_category', 'yaw_category'], 
+                    prefix=['axis', 'height', 'yaw'])
+
+# Print all column names of the DataFrame
+logger.info("DataFrame columns:")
+logger.info(df.columns.tolist())
 
 # Display basic statistics
 logger.info("Basic Statistics:")
@@ -118,7 +141,7 @@ sns.scatterplot(x='distance_com_to_polygon', y='angle_deviation',
 plt.title('Distance CoM to Polygon vs Angle Deviation')
 plt.xlabel('Distance from CoM to Support Polygon Center')
 plt.ylabel('Angle Deviation (rad)')
-plt.savefig(os.path.join(data_folder, 'com_distance_vs_angle.png'))
+plt.savefig(os.path.join(data_folder, '1_com_distance_vs_angle.png'))
 
 # Figure 2: Boxplot of angle deviation by closest axis
 plt.figure(figsize=(10, 6))
@@ -130,7 +153,7 @@ sns.boxplot(x='axis', y='angle_deviation', data=axis_data)
 plt.title('Angle Deviation by Closest Axis')
 plt.xlabel('Closest Axis')
 plt.ylabel('Angle Deviation (rad)')
-plt.savefig(os.path.join(data_folder, 'angle_by_axis.png'))
+plt.savefig(os.path.join(data_folder, '2_bar_axis_vs_angle.png'))
 
 # Figure 3: Boxplot of angle deviation by height category
 plt.figure(figsize=(10, 6))
@@ -142,7 +165,7 @@ sns.boxplot(x='height', y='angle_deviation', data=height_data)
 plt.title('Angle Deviation by Bar Height')
 plt.xlabel('Bar Height Category')
 plt.ylabel('Angle Deviation (rad)')
-plt.savefig(os.path.join(data_folder, 'angle_by_height.png'))
+plt.savefig(os.path.join(data_folder, '3_bar_height_vs_angle.png'))
 
 # Figure 4: Footprint position effect on angle deviation (heatmap)
 plt.figure(figsize=(10, 8))
@@ -155,8 +178,14 @@ pivot_table = df.pivot_table(
 sns.heatmap(pivot_table, cmap='viridis')
 plt.title('Mean Angle Deviation by Robot Position')
 plt.xlabel('X Position')
-plt.ylabel('Y Position')
-plt.savefig(os.path.join(data_folder, 'position_heatmap.png'))
+
+# Figure 5: Boxplot of angle deviation by yaw category
+plt.figure(figsize=(10, 6))
+sns.boxplot(x='yaw_category', y='angle_deviation', data=df)
+plt.title('Angle Deviation by Footprint Yaw Direction')
+plt.xlabel('Footprint Yaw Direction')
+plt.ylabel('Angle Deviation (rad)')
+plt.savefig(os.path.join(data_folder, '5_yaw_vs_angle.png'))
 
 # Feature importance analysis using Random Forest
 X = df.drop(['angle_deviation', 'axis_label'], axis=1)  # Also drop axis_label

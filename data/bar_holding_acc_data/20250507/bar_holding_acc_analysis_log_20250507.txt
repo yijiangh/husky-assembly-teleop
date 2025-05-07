@@ -1,6 +1,23 @@
-2025-05-07 14:09:58,924 - INFO - Loading data from: /home/yijiangh/ros2_ws/src/husky-asembly-teleop/data/bar_holding_acc_data/20250507/compiled_bar_holding_acc_20250507.json
-2025-05-07 14:09:58,929 - INFO - Basic Statistics:
-2025-05-07 14:09:58,933 - INFO -        footprint_x  footprint_y  ...  distance_com_to_polygon  angle_deviation
+2025-05-07 14:52:59,214 - INFO - Loading data from: /home/yijiangh/ros2_ws/src/husky-asembly-teleop/data/bar_holding_acc_data/20250507/compiled_bar_holding_acc_20250507.json
+2025-05-07 14:52:59,215 - INFO - footprint roll: -0.007, pitch: 0.008, yaw: 0.013
+2025-05-07 14:52:59,215 - INFO - footprint roll: -0.005, pitch: 0.005, yaw: 0.013
+2025-05-07 14:52:59,215 - INFO - footprint roll: -0.003, pitch: 0.006, yaw: 0.013
+2025-05-07 14:52:59,215 - INFO - footprint roll: -0.010, pitch: 0.012, yaw: 0.012
+2025-05-07 14:52:59,215 - INFO - footprint roll: -0.006, pitch: 0.008, yaw: 0.012
+2025-05-07 14:52:59,215 - INFO - footprint roll: -0.005, pitch: 0.007, yaw: 0.012
+2025-05-07 14:52:59,215 - INFO - footprint roll: -0.001, pitch: 0.005, yaw: 0.012
+2025-05-07 14:52:59,215 - INFO - footprint roll: -0.010, pitch: 0.011, yaw: 0.011
+2025-05-07 14:52:59,216 - INFO - footprint roll: -0.006, pitch: 0.007, yaw: 0.012
+2025-05-07 14:52:59,216 - INFO - footprint roll: -0.002, pitch: 0.006, yaw: 0.012
+2025-05-07 14:52:59,216 - INFO - footprint roll: -0.007, pitch: 0.010, yaw: 0.013
+2025-05-07 14:52:59,216 - INFO - footprint roll: -0.006, pitch: 0.008, yaw: 0.013
+2025-05-07 14:52:59,216 - INFO - footprint roll: -0.006, pitch: 0.008, yaw: 0.013
+2025-05-07 14:52:59,216 - INFO - footprint roll: -0.008, pitch: 0.010, yaw: 0.012
+2025-05-07 14:52:59,216 - INFO - footprint roll: -0.006, pitch: 0.008, yaw: 0.013
+2025-05-07 14:52:59,220 - INFO - DataFrame columns:
+2025-05-07 14:52:59,220 - INFO - ['footprint_x', 'footprint_y', 'footprint_yaw', 'bar_height', 'distance_com_to_polygon', 'angle_deviation', 'axis_label', 'axis_0', 'axis_1', 'axis_2', 'height_high', 'height_low', 'height_mid', 'yaw_N']
+2025-05-07 14:52:59,220 - INFO - Basic Statistics:
+2025-05-07 14:52:59,226 - INFO -        footprint_x  footprint_y  ...  distance_com_to_polygon  angle_deviation
 count    15.000000    15.000000  ...                15.000000        15.000000
 mean     -0.396727    -0.067903  ...                 0.161958         0.006575
 std       0.001047     0.000090  ...                 0.025218         0.002147
@@ -10,14 +27,15 @@ min      -0.398257    -0.068007  ...                 0.095175         0.003681
 75%      -0.396367    -0.067818  ...                 0.175971         0.008114
 max      -0.394895    -0.067756  ...                 0.193311         0.011312
 
-[8 rows x 5 columns]
-2025-05-07 14:09:58,943 - INFO - 
+[8 rows x 6 columns]
+2025-05-07 14:52:59,237 - INFO - 
 Correlation with angle_deviation:
-2025-05-07 14:09:58,943 - INFO - angle_deviation            1.000000
+2025-05-07 14:52:59,238 - INFO - angle_deviation            1.000000
 distance_com_to_polygon    0.475529
 axis_0                     0.466776
 height_high                0.353917
 axis_2                     0.222044
+footprint_yaw              0.089755
 bar_height                 0.087929
 height_low                -0.137686
 footprint_y               -0.141595
@@ -25,44 +43,5 @@ height_mid                -0.216231
 axis_label                -0.221311
 footprint_x               -0.289302
 axis_1                    -0.592359
+yaw_N                           NaN
 Name: angle_deviation, dtype: float64
-2025-05-07 14:09:59,632 - INFO - 
-Random Forest Model Performance:
-2025-05-07 14:09:59,633 - INFO - R² score: -0.3588
-2025-05-07 14:09:59,633 - INFO - Mean squared error: 0.0000
-2025-05-07 14:09:59,638 - INFO - 
-Feature Importance from Random Forest:
-2025-05-07 14:09:59,638 - INFO -                    Feature  Importance
-3  distance_com_to_polygon    0.417210
-0              footprint_x    0.234890
-1              footprint_y    0.173351
-2               bar_height    0.094671
-5                   axis_1    0.040982
-7              height_high    0.017391
-6                   axis_2    0.013048
-9               height_mid    0.003410
-8               height_low    0.002793
-4                   axis_0    0.002253
-2025-05-07 14:09:59,655 - INFO - 
-Mutual Information Scores (for non-linear relationships):
-2025-05-07 14:09:59,655 - INFO -                    Feature  MI Score
-5                   axis_1  0.170874
-0              footprint_x  0.092142
-6                   axis_2  0.006349
-1              footprint_y  0.003626
-2               bar_height  0.000000
-3  distance_com_to_polygon  0.000000
-4                   axis_0  0.000000
-7              height_high  0.000000
-8               height_low  0.000000
-9               height_mid  0.000000
-2025-05-07 14:09:59,890 - INFO - 
-ANOVA Analysis - Effect of axis choice on angle deviation:
-2025-05-07 14:09:59,892 - INFO - F-statistic: 3.2554, p-value: 0.0742
-2025-05-07 14:09:59,892 - INFO - No statistically significant difference in angle deviation between axes.
-2025-05-07 14:09:59,892 - INFO - 
-ANOVA Analysis - Effect of height category on angle deviation:
-2025-05-07 14:09:59,893 - INFO - F-statistic: 0.8753, p-value: 0.4417
-2025-05-07 14:09:59,893 - INFO - No statistically significant difference in angle deviation between height categories.
-2025-05-07 14:09:59,999 - INFO - 
-Analysis complete. Visualizations saved to disk.
