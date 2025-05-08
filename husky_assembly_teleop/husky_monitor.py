@@ -79,9 +79,10 @@ class HuskyMonitor(Node):
         self.selected_robot_id = 0
         
         # goal and trajectory interface
+        self.arm_index = 0
         self.goal_base_pose = (np.zeros(3), np.array([0, 0, 0, 1]))
         self.goal_gripper = 0.0
-        self.goal_arm_pose = UR5e_HOME_STATE
+        self.goal_arm_pose = [np.zeros(6), np.zeros(6)]
         self.show_goal_state = True
 
         self.goal_model = None
@@ -98,7 +99,7 @@ class HuskyMonitor(Node):
         self.trajectory_time = 2 if self.CALIBRATION else 5
 
         # list of conf, velocity, total time, attachment other than the ee
-        self.planned_arm_trajectory = (None, None, None, None)
+        self.planned_arm_trajectory = [(None, None, None, None), (None, None, None, None)]
         self.free_arm_trajectory = None
         self.linear_arm_trajectory = None
 
@@ -152,10 +153,15 @@ class HuskyMonitor(Node):
                        pp.remove_all_debug()
                     self.plan_traj_seg = pp.add_segments(points)
     
-    def set_arm_trajectory(self, arm_trajectory):
+    def set_arm_trajectory(self, arm_trajectory, index=0):
         """ set arm trajectory for visualization"""
         # : Tuple[List[np.ndarray], List[np.ndarray] | None, float]
-        self.planned_arm_trajectory = arm_trajectory
+        self.planned_arm_trajectory[index] = arm_trajectory
+
+    def reset_goal_state(self):
+        # TODO somehow breaks trajectory preview
+        self.goal_arm_pose = self.huskies[0].interface.arm_joint_pose
+        self.reset_ui()
 
     def append_calibration_data(self, data):
         self.calibration_data.append(data)
@@ -429,10 +435,12 @@ class HuskyMonitor(Node):
         # default_base_position = [0,0,0]
         # self.assembly_goal_position_slider_group = SliderGroup(["target base {}".format(t) for t in ["x","y","z"]], self.update_assembly_goal_position, [0, -5, 0], [5,5,1], default_base_position)
 
+
         self.buttons.append(Button('Prev in sequence', self.show_previous_in_sequence))
         self.buttons.append(Button('Next in sequence', self.show_next_in_sequence))
 
         self.selected_robot_slider = Slider("robot id", self.update_selected_robot_id, 0, len(self.huskies)+1, 0)
+        self.arm_slider = p.addUserDebugParameter("arm", 0, 1, self.arm_index)
         # p.addUserDebugParameter("robot id", 0, len(self.huskies)+1, 0)
 
         self.trajectory_time_slider = Slider("traj time", self.update_trajectory_time, 1.0, 60.0, self.trajectory_time)
@@ -513,10 +521,11 @@ class HuskyMonitor(Node):
             self.buttons.append(Button('Save markerset data', self.record_markerset_data))
 
         if True:
-            for i, j in enumerate(pp.joints_from_names(self.huskies[0].object.robot, HUSKY_UR5e_JOINT_NAMES)):
+            # TODO use selected robot id
+            for i, j in enumerate(pp.joints_from_names(self.huskies[0].object.robot, self.huskies[0].object.get_arm_joint_names())):
                 lower, upper = pp.get_joint_limits(self.huskies[0].object.robot, j)
                 if target_conf is None:
-                    self.joint_state_sliders.append(p.addUserDebugParameter(f'Joint {i}', lower, upper, self.huskies[0].interface.arm_joint_pose[i]))
+                    self.joint_state_sliders.append(p.addUserDebugParameter(f'Joint {i}', lower, upper, self.huskies[0].interface.arm_joint_pose[0][i]))
                 else:
                     self.joint_state_sliders.append(p.addUserDebugParameter(f'Joint {i}', lower, upper, target_conf[i]))
             
@@ -698,7 +707,7 @@ class HuskyMonitor(Node):
                 obj.set_pose(object_pose)
  
         # always update goal robot based on current slider values
-        self.goal_model.set_pose(goal_base_pose, goal_arm_pose)
+        self.goal_model.set_pose(goal_base_pose, [goal_arm_pose])
                         
         # run tasks
         for t in self.tasks:

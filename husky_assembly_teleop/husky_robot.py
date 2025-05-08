@@ -47,15 +47,19 @@ class HuskyRobotInterface:
     velocity = np.zeros(3)
     angular_velocity = np.zeros(3)
     
-    arm_joint_pose = UR5e_HOME_STATE
-    is_arm_executing = False
+    arm_joint_pose = [UR5e_HOME_STATE]
+    is_arm_executing = [False, False]
     
     odom_offset = np.zeros(3)
     _odom_position = np.zeros(3)
     
-    def __init__(self, node: Node, name='/a200_0804', use_odom=True, connect_arm=True, connect_gripper=True):
+    def __init__(self, node: Node, name='/a200_0804', use_odom=True, connect_arm=True, connect_gripper=True, dual_arm=False):
         self.node = node
         self.name = name
+        self.dual_arm = dual_arm
+        
+        if dual_arm:
+            self.arm_joint_pose.append(UR5e_HOME_STATE)
         
         # Listeners --- --- --- --- ---
         if use_odom:
@@ -64,6 +68,25 @@ class HuskyRobotInterface:
                 name + '/tf',
                 self.tf_callback,
                 10)
+
+        self.sub_arms = []
+        if dual_arm:
+            self.sub_arms.append(self.node.create_subscription(
+                JointState,
+                name + '/left_ur5e/joint_states',
+                lambda msg: self.arm_callback(0, msg),
+                10))
+            self.sub_arms.append(self.node.create_subscription(
+                JointState,
+                name + '/right_ur5e/joint_states',
+                lambda msg: self.arm_callback(1, msg),
+                10))
+        else:
+            self.sub_arms.append(self.node.create_subscription(
+                JointState,
+                name + '/ur5e/joint_states',
+                lambda msg: self.arm_callback(0, msg),
+                10))
         
         self.sub_arm = self.node.create_subscription(
             JointState,
@@ -75,23 +98,53 @@ class HuskyRobotInterface:
         self.pub_cmd_vel = self.node.create_publisher(Twist, name + '/cmd_vel', 10)
         
         # Action Clients
-        self.act_gripper = ActionClient(
-            self.node,
-            GripperCommand,
-            name + '/gripper/robotiq_gripper_controller/gripper_cmd',
-        )
+        # TODO support dual arm
+        self.act_grippers = []
+        if dual_arm:
+            self.act_grippers.append(ActionClient(
+                self.node,
+                GripperCommand,
+                name + '/left_gripper/robotiq_gripper_controller/gripper_cmd',
+            ))
+            self.act_grippers.append(ActionClient(
+                self.node,
+                GripperCommand,
+                name + '/right_gripper/robotiq_gripper_controller/gripper_cmd',
+            ))
+        else:
+            self.act_grippers.append(ActionClient(
+                self.node,
+                GripperCommand,
+                name + '/gripper/robotiq_gripper_controller/gripper_cmd',
+            ))
+    
         if connect_gripper:
-            self.act_gripper.wait_for_server(timeout_sec=2.5)
-            self.node.get_logger().info(f'Gripper Action Server {self.act_gripper.server_is_ready()}')
+            for act_gripper in self.act_grippers:
+                act_gripper.wait_for_server(timeout_sec=2.5)
+                self.node.get_logger().info(f'Gripper Action Server {act_gripper.server_is_ready()}')
         
-        self.act_arm = ActionClient(
-            self.node,
-            FollowJointTrajectory,
-            name + '/ur5e/scaled_joint_trajectory_controller/follow_joint_trajectory',
-        )
+        self.act_arms = []
+        if dual_arm:
+            self.act_arms.append(ActionClient(
+                self.node,
+                FollowJointTrajectory,
+                name + '/left_ur5e/scaled_joint_trajectory_controller/follow_joint_trajectory',
+            ))
+            self.act_arms.append(ActionClient(
+                self.node,
+                FollowJointTrajectory,
+                name + '/right_ur5e/scaled_joint_trajectory_controller/follow_joint_trajectory',
+            ))
+        else:
+            self.act_arms.append(ActionClient(
+                self.node,
+                FollowJointTrajectory,
+                name + '/ur5e/scaled_joint_trajectory_controller/follow_joint_trajectory',
+            ))
         if connect_arm:
-            self.act_arm.wait_for_server(timeout_sec=2.5)
-            self.node.get_logger().info(f'Arm Action Server {self.act_arm.server_is_ready()}')
+            for act_arm in self.act_arms:
+                act_arm.wait_for_server(timeout_sec=2.5)
+                self.node.get_logger().info(f'Arm Action Server {act_arm.server_is_ready()}')
         
         # done --- --- --- --- ---
         self.node.get_logger().info(f'Husky "{name}" is ready!')
@@ -140,12 +193,12 @@ class HuskyRobotInterface:
         self.position = pos
         self.rotation = rot
         
-    def arm_callback(self, msg: JointState):
+    def arm_callback(self, index, msg: JointState):
         arm_pos = msg.position
         reorder = []
         for name in ARM_JOINT_NAMES:
             reorder.append(msg.name.index(name))
-        self.arm_joint_pose = np.array(arm_pos)[reorder]
+        self.arm_joint_pose[index] = np.array(arm_pos)[reorder]
     
     def send_base_twist_cmd(self, x_dot, theta_dot):
         msg = Twist()
@@ -153,13 +206,13 @@ class HuskyRobotInterface:
         msg.angular.z = theta_dot
         self.pub_cmd_vel.publish(msg)
         
-    def send_gripper_cmd(self, pos, effort):
+    def send_gripper_cmd(self, pos, effort, index=0):
         goal = GripperCommand.Goal()
         goal.command.position = pos
         goal.command.max_effort = effort
-        self.act_gripper.send_goal_async(goal)
+        self.act_gripper[index].send_goal_async(goal)
     
-    def send_arm_cmd(self, arm_joint_positions, arm_joint_velocities=None, time=10):
+    def send_arm_cmd(self, arm_joint_positions, arm_joint_velocities=None, time=10, index=0):
         """
         Send a joint trajectory to the arm
         
@@ -170,9 +223,9 @@ class HuskyRobotInterface:
                 self.node.get_logger().error("trajectory must have equal number of position and velocity entries!")
                 return
             
-        if not np.isclose(self.arm_joint_pose, arm_joint_positions[0], atol=0.1).all():
+        if not np.isclose(self.arm_joint_pose[index], arm_joint_positions[0], atol=0.1).all():
             self.node.get_logger().warn(f'Arm of husky {self.name} is not in correct start pose!')
-            self.node.get_logger().warn(f'{self.arm_joint_pose} vs {arm_joint_positions[0]}')
+            self.node.get_logger().warn(f'{self.arm_joint_pose[index]} vs {arm_joint_positions[0]}')
             return
         
         dt = time / (len(arm_joint_positions) - 1)
@@ -199,28 +252,28 @@ class HuskyRobotInterface:
         goal.goal_tolerance = [
             JointTolerance(position=0.01, velocity=0.01, name=joint_name) for joint_name in ARM_JOINT_NAMES
         ]
-        self.is_arm_executing = True
-        send_goal_future = self.act_arm.send_goal_async(goal)
-        send_goal_future.add_done_callback(self.goal_response_callback)
+        self.is_arm_executing[index] = True
+        send_goal_future = self.act_arms[index].send_goal_async(goal)
+        send_goal_future.add_done_callback(lambda fut: self.goal_response_callback(index, fut))
     
-    def goal_response_callback(self, future):
+    def goal_response_callback(self, index, future):
         goal_handle = future.result()
         if not goal_handle.accepted:
             self.node.get_logger().error("Goal rejected :(")
-            self.is_arm_executing = False
+            self.is_arm_executing[index] = False
             return
 
         self.node.get_logger().info("Goal accepted :)")
-        self.is_arm_executing = True
+        self.is_arm_executing[index] = True
 
         get_result_future = goal_handle.get_result_async()
-        get_result_future.add_done_callback(self.get_result_callback)
+        get_result_future.add_done_callback(lambda fut: self.get_result_callback(index, fut))
     
-    def get_result_callback(self, future):
+    def get_result_callback(self, index, future):
         result = future.result().result
         status = future.result().status
         self.node.get_logger().info(f"Done with result: {self.status_to_str(status)}")
-        self.is_arm_executing = False
+        self.is_arm_executing[index] = False
         if status != GoalStatus.STATUS_SUCCEEDED:
             self.node.get_logger().error(
                 f"Done with result: {self.error_code_to_str(result.error_code)}"
