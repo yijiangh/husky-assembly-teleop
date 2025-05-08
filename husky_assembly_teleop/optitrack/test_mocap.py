@@ -1,6 +1,6 @@
 import sys, time
-from pybullet_mocap.optitrack.NatNetClient import NatNetClient
-from pybullet_mocap.optitrack.Utils import print_configuration
+from husky_assembly_teleop.optitrack.NatNetClient import NatNetClient
+from husky_assembly_teleop.optitrack.Utils import print_configuration
 
 CLIENT_IP = '192.168.0.7' # Set to your own IP
 MOCAP_IP = '192.168.0.117'

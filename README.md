@@ -1,4 +1,4 @@
-# pybullet_mocap
+# husky_assembly_teleop
 
 This is a python package for controlling huskies in the mocap space.
 
@@ -20,10 +20,10 @@ Build and run:
 cd workspace
 colcon build
 source install/setup.bash
-ros2 run pybullet_mocap husky_monitor
+ros2 run husky_assembly_teleop husky_monitor
 ```
 
-Changes to python scripts need a rebuild too! Use `colcon build && ros2 run pybullet_mocap husky_monitor` to run both commands at once. Alternatively, look into `colcon build --symlink-install`.
+Changes to python scripts need a rebuild too! Use `colcon build && ros2 run husky_assembly_teleop husky_monitor` to run both commands at once. Alternatively, look into `colcon build --symlink-install`.
 
 
 Read the [Mocap wiki](https://gitlab.inf.ethz.ch/crl/crl-wiki/-/wikis/HW/OptiTrack) for more information on how to create a rigid body in Motive and how to set the IP address of the OptiTrack server.

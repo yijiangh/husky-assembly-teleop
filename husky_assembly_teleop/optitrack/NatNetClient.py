@@ -19,8 +19,8 @@ import struct
 from threading import Thread
 import copy
 import time
-import pybullet_mocap.optitrack.DataDescriptions as DataDescriptions
-import pybullet_mocap.optitrack.MoCapData as MoCapData
+import husky_assembly_teleop.optitrack.DataDescriptions as DataDescriptions
+import husky_assembly_teleop.optitrack.MoCapData as MoCapData
 from collections import defaultdict
 
 def trace( *args ):

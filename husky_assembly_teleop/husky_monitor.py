@@ -21,13 +21,13 @@ from rclpy.node import Node
 import pybullet as p
 import pybullet_planning as pp
 
-import pybullet_mocap.husky_world as world
-from pybullet_mocap.husky_robot import UR5e_HOME_STATE
-from pybullet_mocap.common import (
+import husky_assembly_teleop.husky_world as world
+from husky_assembly_teleop.husky_robot import UR5e_HOME_STATE
+from husky_assembly_teleop.common import (
     Button, Slider, SliderGroup, Husky, TrackedObject, HuskyObject, AssemblyObject, HUSKY_UR5e_JOINT_NAMES, lerp, load_gripper
 )
 
-from pybullet_mocap.optitrack.NatNetClient import NatNetClient
+from husky_assembly_teleop.optitrack.NatNetClient import NatNetClient
 
 DEFAULT_GREY = [0.2, 0.2, 0.2, 0.7]
 GOAL_BLUE = [0, 0.2, 0.5, 0.7]

@@ -20,9 +20,9 @@
 
 import sys
 import time
-from pybullet_mocap.optitrack.NatNetClient import NatNetClient
-import pybullet_mocap.optitrack.DataDescriptions
-import pybullet_mocap.optitrack.MoCapData
+from husky_assembly_teleop.optitrack.NatNetClient import NatNetClient
+import husky_assembly_teleop.optitrack.DataDescriptions
+import husky_assembly_teleop.optitrack.MoCapData
 
 # This is a callback function that gets connected to the NatNet client
 # and called once per mocap frame.

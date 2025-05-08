@@ -4,7 +4,7 @@ import socket, json
 import numpy as np
 import pybullet_planning as pp
 
-from pybullet_mocap import DATA_DIRECTORY
+from husky_assembly_teleop import DATA_DIRECTORY
 from pybullet_planning import multiply, Pose, Euler, Point
 from tracikpy import TracIKSolver
 # import ikfast_ur5e
@@ -319,7 +319,7 @@ def plan_transfer_motion(robot, ik_solver, transfer_element, attachments, obstac
 def plan_retract_to_home_motion(robot, ik_solver, bar_body, attachments, obstacles, 
                              debug=False, disabled_collisions=None, plan_transit_home=True):
     # plan a linear retract motion along negative z-axis, then a transit motion to home conf
-    from pybullet_mocap.husky_robot import UR5e_HOME_STATE
+    from husky_assembly_teleop.husky_robot import UR5e_HOME_STATE
 
     # * plan retract motion
     custom_limits = get_custom_limits(robot, {})

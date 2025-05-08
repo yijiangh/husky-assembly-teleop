@@ -13,10 +13,10 @@ from tracikpy import TracIKSolver
 import pybullet as p
 import pybullet_planning as pp
 
-from pybullet_mocap.common import Husky, lerp, quat_lerp
-from pybullet_mocap.base_planner import RRTStar, fill_yaw_angle
-from pybullet_mocap.utils import plan_transit_motion, plan_transfer_motion, plan_retract_to_home_motion, TOOL0_FROM_GRIPPER_TCP, get_arm_ik_for_grasp_bar
-from pybullet_mocap import DATA_DIRECTORY
+from husky_assembly_teleop.common import Husky, lerp, quat_lerp
+from husky_assembly_teleop.base_planner import RRTStar, fill_yaw_angle
+from husky_assembly_teleop.utils import plan_transit_motion, plan_transfer_motion, plan_retract_to_home_motion, TOOL0_FROM_GRIPPER_TCP, get_arm_ik_for_grasp_bar
+from husky_assembly_teleop import DATA_DIRECTORY
 
 IK_SOLVER = TracIKSolver(
     os.path.join(DATA_DIRECTORY,'husky_urdf/mt_husky_moveit_config/urdf/husky_ur5_e_no_base_joint.urdf'),

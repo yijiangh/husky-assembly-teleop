@@ -2,7 +2,7 @@ import os
 from glob import glob
 from setuptools import find_packages, setup
 
-package_name = 'pybullet_mocap'
+package_name = 'husky_assembly_teleop'
 
 def strip_first_dir(path):
     first_sep = path.strip('/').find('/')
@@ -34,10 +34,10 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'husky_monitor = pybullet_mocap.husky_monitor:main',
-            'optitrack_python_sample = pybullet_mocap.optitrack.PythonSample:main',
-            'test_mocap = pybullet_mocap.optitrack.test_mocap:main',
-            'test_setio = pybullet_mocap.test_setio:main',
+            'husky_monitor = husky_assembly_teleop.husky_monitor:main',
+            'optitrack_python_sample = husky_assembly_teleop.optitrack.PythonSample:main',
+            'test_mocap = husky_assembly_teleop.optitrack.test_mocap:main',
+            'test_setio = husky_assembly_teleop.test_setio:main',
         ],
     },
 )

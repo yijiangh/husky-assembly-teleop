@@ -1,5 +1,5 @@
 """
-A collection of common functions and classes used in the pybullet_mocap package.
+A collection of common functions and classes used in the husky_assembly_teleop package.
 """
 
 import os
@@ -9,9 +9,9 @@ import json
 
 import pybullet_planning as pp
 
-from pybullet_mocap import DATA_DIRECTORY
-from pybullet_mocap.husky_robot import HuskyRobotInterface
-from pybullet_mocap.utils import UR5E_JOINT_NAMES
+from husky_assembly_teleop import DATA_DIRECTORY
+from husky_assembly_teleop.husky_robot import HuskyRobotInterface
+from husky_assembly_teleop.utils import UR5E_JOINT_NAMES
 
 # --- --- PYBULLET OBJECTS --- ---
 

@@ -10,7 +10,7 @@ from scipy.spatial.transform import Rotation as R
 
 from typing import List, Tuple
 
-from pybullet_mocap.common import Husky
+from husky_assembly_teleop.common import Husky
 
 def execute_base_trajectory(monitor, husky: Husky, trajectory: Tuple[List[Tuple[np.ndarray, np.ndarray]], float]):
     actual_trajectory = []

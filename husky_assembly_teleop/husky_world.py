@@ -11,12 +11,12 @@ import rclpy
 
 import pybullet_planning as pp
 
-from pybullet_mocap import DATA_DIRECTORY
-from pybullet_mocap.common import Husky, TrackedObject, AssemblyObject, HUSKY_UR5e_JOINT_NAMES
-import pybullet_mocap.husky_planning as planning
-import pybullet_mocap.husky_control as control
-import pybullet_mocap.utils as utils
-from pybullet_mocap.scaffolding import parse_mt_geometric, create_collision_bodies, create_couplers, flatten_list
+from husky_assembly_teleop import DATA_DIRECTORY
+from husky_assembly_teleop.common import Husky, TrackedObject, AssemblyObject, HUSKY_UR5e_JOINT_NAMES
+import husky_assembly_teleop.husky_planning as planning
+import husky_assembly_teleop.husky_control as control
+import husky_assembly_teleop.utils as utils
+from husky_assembly_teleop.scaffolding import parse_mt_geometric, create_collision_bodies, create_couplers, flatten_list
 import json
 from datetime import datetime
 
@@ -24,7 +24,7 @@ MT_FILE_NAME = "one_tet_MT_contact.json"
 # huskies = []
 assembly_objects = []
 
-DATA_DIR = "/home/yijiangh/ros2_ws/src/pybullet_mocap/data"
+DATA_DIR = "/home/yijiangh/ros2_ws/src/husky_assembly_teleop/data"
 if not os.path.exists(DATA_DIR):
     DATA_DIR = "/home/yijiangh/ros2_ws/src/husky-asembly-teleop/data"
 

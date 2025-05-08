@@ -3,7 +3,7 @@ import numpy as np
 import pybullet_planning as pp
 from typing import Dict
 from collections import defaultdict
-from pybullet_mocap import DATA_DIRECTORY
+from husky_assembly_teleop import DATA_DIRECTORY
 
 COUPLER_DIR = os.path.join(DATA_DIRECTORY, 'coupler')
 SCAFFOLDING_DIR = os.path.join(DATA_DIRECTORY, 'scaffolding_design')
