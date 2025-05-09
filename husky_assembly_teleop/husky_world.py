@@ -30,6 +30,7 @@ if not os.path.exists(DATA_DIR):
 
 CALIB_DATA_DIR = os.path.join(DATA_DIR, "calibration_data")
 BAR_HOLDING_ACC_DATA_DIR = os.path.join(DATA_DIR, "bar_holding_acc_data")
+DUAL_ARM_ACC_DATA_DIR = os.path.join(DATA_DIR, "dual_arm_acc_data")
 
 def init(monitor): 
     # * add robots
@@ -54,6 +55,10 @@ def init(monitor):
         bar_rig = TrackedObject(monitor, 'bar_rig', 4570, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
         bar_rig.body = pp.create_cylinder(radius=0.01, height=1, color=(1, 0, 0, 0.2))
         bar_rig.model_base_pose = pp.Pose(euler=pp.Euler(roll=np.pi/2))
+        
+    if monitor.DUAL_ARM_ACCURACY_TEST:
+        left_EE = TrackedObject(monitor, 'left_EE', 4572, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
+        right_EE = TrackedObject(monitor, 'right_EE', 4573, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
 
     #boxes.append(TrackedObject(monitor, 'box1', 4457, np.zeros(3), np.array((0, 0, 0, 1)), 0.2, 'cube.obj'))
     #boxes.append(TrackedObject(monitor, 'box2', 4484, np.zeros(3), np.array((0, 0, 0, 1)), 0.2, 'cube.obj'))
@@ -342,6 +347,64 @@ def save_markerset_data(monitor, filename_suffix=""):
         json.dump({'raw_data' : monitor.marker_set_data}, f, indent=4)
 
     monitor.get_logger().info(f"Bar holding acc data saved to {filename}")
+
+#################################
+
+def record_dual_arm_E_mocap(monitor):
+    left_EE_mocap_name = "left_EE"
+    right_EE_mocap_name = "right_EE"
+    # record current joint conf and add to record
+    h = monitor.huskies[monitor.selected_robot_id]
+    hi = h.interface
+    ho = h.object
+    left_EE_pose = None
+    right_EE_pose = None
+    # fetch calibration mocap set frame
+    if monitor.USE_MOCAP:
+        # need to get the raw data from mocap
+        if h.name in monitor._mocap_rigidbody_cache:
+            base_mocap_pose = monitor._mocap_rigidbody_cache[h.name]
+        if left_EE_mocap_name in monitor._mocap_rigidbody_cache:
+            left_EE_pose = monitor._mocap_rigidbody_cache[left_EE_mocap_name]
+        else:
+            monitor.get_logger().warn(f'Mocap {left_EE_mocap_name} not found!')
+            return
+        if right_EE_mocap_name in monitor._mocap_rigidbody_cache:
+            right_EE_pose = monitor._mocap_rigidbody_cache[right_EE_mocap_name]
+        else:
+            monitor.get_logger().warn(f'Mocap {right_EE_mocap_name} not found!')
+            return
+    else:
+        monitor.get_logger().warn(f'Mocap must be active to conduct dual arm test!')
+        return
+
+    pp.draw_pose(left_EE_pose)
+    pp.draw_pose(right_EE_pose)
+    
+    monitor.dual_arm_EE_mocap_data.append(
+        {
+            'left_EE_pose': [list(v) for v in left_EE_pose],
+            'right_EE_pose': [list(v) for v in right_EE_pose]
+        }
+    )
+
+def save_dual_arm_E_mocap(monitor, filename_suffix=""):
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+    # Create a date subfolder (format: YYYYMMDD)
+    date_subfolder = datetime.now().strftime("%Y%m%d")
+    subfolder_path = os.path.join(DUAL_ARM_ACC_DATA_DIR, date_subfolder)
+
+    # Create the subfolder if it doesn't exist
+    if not os.path.exists(subfolder_path):
+        os.makedirs(subfolder_path)
+        monitor.get_logger().info(f"Created subfolder: {subfolder_path}")
+
+    # Save the file in the date subfolder
+    filename = os.path.join(subfolder_path, f"dual_arm_acc_{timestamp}_{filename_suffix}.json")
+    with open(filename, 'w') as f:
+        json.dump({'raw_data' : monitor.dual_arm_EE_mocap_data}, f, indent=4)
+
+    monitor.get_logger().info(f"Dual arm acc data saved to {filename}")
 
 #################################
  

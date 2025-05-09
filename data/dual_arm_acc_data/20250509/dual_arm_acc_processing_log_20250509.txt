@@ -1,0 +1,2 @@
+2025-05-09 14:45:17,689 - INFO - Working on file: dual_arm_acc_20250509_1443_.json
+2025-05-09 14:45:17,740 - INFO - Exported plot to /home/jakobgenhart/husky_assistant/workspace/src/husky-asembly-teleop/data/dual_arm_acc_data/20250509/dual_arm_acc_20250509.png

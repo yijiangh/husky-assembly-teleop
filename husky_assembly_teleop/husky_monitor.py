@@ -41,11 +41,12 @@ CLIENT_IP = '192.168.0.7' # Set to your own IP
 MOCAP_IP = '192.168.0.117' # set to the mocap PC's IP, get this from Motive Settings>Streaming pane->Local interface
   
 class HuskyMonitor(Node):
-    USE_MOCAP = 0
+    USE_MOCAP = 1
     FAKE_HARDWARE = 1
     CALIBRATION = 0
     BAR_GOAL_MODE = 1
-    BAR_HOLDING_ACCURACY_TEST = 1
+    BAR_HOLDING_ACCURACY_TEST = 0
+    DUAL_ARM_ACCURACY_TEST = 1
 
     GRASP_PARTITION = 8
 
@@ -66,6 +67,7 @@ class HuskyMonitor(Node):
 
         self.calibration_data = []
         self.marker_set_data = []
+        self.dual_arm_EE_mocap_data = []
         
         # UI
         self.buttons = []
@@ -529,8 +531,13 @@ class HuskyMonitor(Node):
 
             # self.bar_grasp_long_distance_silder = Slider("Grasp dist from mid", self., -0.5, 0.5, 0)
 
-            self.buttons.append(Button('Record markerset data', self.send_request_to_mocap))
-            self.buttons.append(Button('Save markerset data', self.record_markerset_data))
+            if self.BAR_HOLDING_ACCURACY_TEST:
+                self.buttons.append(Button('Record markerset data', self.send_request_to_mocap))
+                self.buttons.append(Button('Save markerset data', self.record_markerset_data))
+            
+            if self.DUAL_ARM_ACCURACY_TEST:
+                self.buttons.append(Button('Record EE mocap pose', lambda: world.record_dual_arm_E_mocap(self)))
+                self.buttons.append(Button('Save EE mocap data', lambda: world.save_dual_arm_E_mocap(self)))
 
         if True:
             # TODO use selected robot id
