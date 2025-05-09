@@ -20,6 +20,8 @@ from husky_assembly_teleop.scaffolding import parse_mt_geometric, create_collisi
 import json
 from datetime import datetime
 
+import matplotlib.pyplot as plt
+
 MT_FILE_NAME = "one_tet_MT_contact.json"
 # huskies = []
 assembly_objects = []
@@ -32,14 +34,44 @@ CALIB_DATA_DIR = os.path.join(DATA_DIR, "calibration_data")
 BAR_HOLDING_ACC_DATA_DIR = os.path.join(DATA_DIR, "bar_holding_acc_data")
 DUAL_ARM_ACC_DATA_DIR = os.path.join(DATA_DIR, "dual_arm_acc_data")
 
-def init(monitor): 
+recorded_data = None
+left_traj = None
+right_traj = None
+
+def init(monitor):
+    global recorded_data, left_traj, right_traj
+    # load recorded data
+    duration = 120
+    with np.load(os.path.join(DATA_DIRECTORY,'recorded_data_20250413_194015.npz'), allow_pickle=True) as data:
+        recorded_data = data['data']
+        
+    # subsample to approx 100ms per sample
+    count = int(100 / (duration * 1000 / len(recorded_data)))
+    #recorded_data = recorded_data[0::count]
+    
+    left_traj = ([np.mod(d['left_sol']+np.pi, 2*np.pi)-np.pi for d in recorded_data], None, duration, None)
+    right_traj = ([np.mod(d['right_sol']+np.pi, 2*np.pi)-np.pi for d in recorded_data], None, duration, None)
+    print(f"Loaded prerecorded trajectories with {len(recorded_data)} samples.")
+    
+    """time_plot = [x[5] for x in left_traj[0]]
+    plt.plot(time_plot)
+    plt.show()"""
+
+    
     # * add robots
     # 1004
-    Husky(monitor, name='/a200_0804', mocap_id=4568, pos=np.array((0,0,0)), 
+    Husky(monitor, name='/a200_0806', mocap_id=4568, pos=np.array((0,0,0)), 
           connect_arm=not monitor.FAKE_HARDWARE, connect_gripper=not monitor.FAKE_HARDWARE, 
         #   calibration=monitor.CALIBRATION)
           calibration=monitor.CALIBRATION,
-          base_calibration_file=os.path.join(CALIB_DATA_DIR, 'calibrated_transformation_0804.json'))
+          dual_arm=True)
+    
+    """Husky(monitor, name='/a200_0804', mocap_id=4568, pos=np.array((0,0,0)), 
+          connect_arm=not monitor.FAKE_HARDWARE, connect_gripper=not monitor.FAKE_HARDWARE, 
+        #   calibration=monitor.CALIBRATION)
+          calibration=monitor.CALIBRATION,
+          dual_arm=False,
+          base_calibration_file=os.path.join(CALIB_DATA_DIR, 'calibrated_transformation_0804.json'))"""
 
     # Husky(monitor, name='/a200_0805', mocap_id=1033, pos=np.array((0,1,0)), connect_gripper=False)
 
@@ -91,6 +123,20 @@ def init(monitor):
     assembly_objects.append([
         AssemblyObject(monitor, 'b{}'.format(i), body, far_away_pose, goal_poses[i]) for i, body in enumerate(element_bodies)
     ])
+    
+step = 0
+def load_trajectory(monitor):
+    global step
+    if step == 0:
+        hi = monitor.huskies[monitor.selected_robot_id].interface
+        monitor.set_arm_trajectory(([hi.arm_joint_pose[0], left_traj[0][0]], None, 10, None), index=0)
+        monitor.set_arm_trajectory(([hi.arm_joint_pose[1], right_traj[0][0]], None, 10, None), index=1)
+        step += 1
+    elif step == 1:
+        monitor.set_arm_trajectory(left_traj, index=0)
+        monitor.set_arm_trajectory(right_traj, index=1)
+        step = 0
+
 
 def update(monitor):
     pass
@@ -645,3 +691,15 @@ def close_gripper_for_bar(monitor):
 
 def set_gripper(monitor):
     monitor.huskies[monitor.selected_robot_id].interface.send_gripper_cmd(monitor.goal_gripper, 0.1)
+    
+####################################
+
+def execute_arm_trajectory_both(monitor):
+    if monitor.planned_arm_trajectory[0][0] is None:
+        monitor.get_logger().warn('Arm trajectory must be planed before executing! [LEFT]')
+        return
+    if monitor.planned_arm_trajectory[1][0] is None:
+        monitor.get_logger().warn('Arm trajectory must be planed before executing! [RIGHT]')
+        return
+    monitor.huskies[monitor.selected_robot_id].interface.send_arm_cmd(*monitor.planned_arm_trajectory[0][0:3], index=0)
+    monitor.huskies[monitor.selected_robot_id].interface.send_arm_cmd(*monitor.planned_arm_trajectory[1][0:3], index=1)

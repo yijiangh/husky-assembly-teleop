@@ -154,6 +154,7 @@ class Husky():
                                              dual_arm=dual_arm
                                              )
         self.object = HuskyObject(calibration=calibration, dual_arm=dual_arm)
+        self.dual_arm = dual_arm
         
         self.interface.position = pos
         self.interface.rotation = rot
@@ -196,6 +197,11 @@ class HuskyObject():
             # print('set_pose arm_joint_states has invalid shape!')
             # return
             raise ValueError(f'set_pose arm_joint_states has invalid shape! {arm_joint_states}')
+        
+        # jg: why was this removed?
+        for (ee, ee_attachment) in self.ee_list:
+            ee_attachment.assign()
+
              
     def set_color(self, new_color):
         if self.old_color != new_color:

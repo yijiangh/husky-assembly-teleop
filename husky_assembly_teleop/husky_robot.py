@@ -206,7 +206,7 @@ class HuskyRobotInterface:
         goal.command.max_effort = effort
         self.act_grippers[index].send_goal_async(goal)
     
-    def send_arm_cmd(self, arm_joint_positions, arm_joint_velocities=None, time=10, index=0):
+    def send_arm_cmd(self, arm_joint_positions, arm_joint_velocities=None, time=10.0, index=0):
         """
         Send a joint trajectory to the arm
         

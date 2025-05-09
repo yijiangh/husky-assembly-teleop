@@ -16,6 +16,7 @@ from scipy.spatial.transform import Rotation as R
 from typing import List, Tuple
 
 import rclpy
+import rclpy.executors
 from rclpy.node import Node
 
 import pybullet as p
@@ -28,10 +29,12 @@ from husky_assembly_teleop.common import (
 )
 
 from husky_assembly_teleop.optitrack.NatNetClient import NatNetClient
+import rclpy.task
 
 DEFAULT_GREY = [0.2, 0.2, 0.2, 0.7]
 GOAL_BLUE = [0, 0.2, 0.5, 0.7]
 TRAJECTORY_GREEN = [0, 0.5, 0.2, 0.7]
+TRANSPARENT = [0, 0.0, 0.0, 0.0]
 
 EXISTING_ELEMENT_COLOR = pp.RED
 CURRENT_ELEMENT_COLOR = pp.BLUE
@@ -42,7 +45,7 @@ MOCAP_IP = '192.168.0.117' # set to the mocap PC's IP, get this from Motive Sett
   
 class HuskyMonitor(Node):
     USE_MOCAP = 1
-    FAKE_HARDWARE = 1
+    FAKE_HARDWARE = 0
     CALIBRATION = 0
     BAR_GOAL_MODE = 1
     BAR_HOLDING_ACCURACY_TEST = 0
@@ -81,7 +84,7 @@ class HuskyMonitor(Node):
         self.selected_robot_id = 0
         
         # goal and trajectory interface
-        self.arm_index = 0
+        self.selected_arm_index = 0
         self.goal_base_pose = (np.zeros(3), np.array([0, 0, 0, 1]))
         self.goal_gripper = 0.0
         self.goal_arm_pose = [np.zeros(6), np.zeros(6)]
@@ -124,6 +127,7 @@ class HuskyMonitor(Node):
 
         self.build_ui()
         self.update_partial_assembly()
+        self.update_goal_model_and_color()
         
     def add_tracked_object(self, obstacle: TrackedObject):
         """Registers an object to be tracked by mocap"""
@@ -205,10 +209,20 @@ class HuskyMonitor(Node):
         self.toggle_show_goal_state()
 
     def update_selected_robot_id(self, robot_id):
-        self.selected_robot_id = np.clip(int(robot_id), 0, len(self.huskies)-1)
-        # update goal pose based on sensed base pose since we are teleoperating the base
-        hi = self.huskies[self.selected_robot_id].interface
-        self.goal_base_pose = (hi.position, hi.rotation)
+        new_id = np.clip(int(robot_id), 0, len(self.huskies)-1)
+        if new_id != self.selected_robot_id:
+            self.selected_robot_id = new_id
+            # update goal pose based on sensed base pose since we are teleoperating the base
+            hi = self.huskies[self.selected_robot_id].interface
+            self.goal_base_pose = (hi.position, hi.rotation)
+            self.update_goal_model_and_color()
+            self.reset_ui()
+            
+    def update_selected_arm_id(self, arm_index):
+        new_index = np.clip(int(arm_index), 0, 1)
+        if new_index != self.selected_arm_index:
+            self.selected_arm_index = new_index
+            self.reset_ui()
 
     def update_trajectory_time(self, time):
         self.trajectory_time = time
@@ -281,17 +295,17 @@ class HuskyMonitor(Node):
             print('Free arm trajectory is not planned!')
         else:
             self.execute_arm_trajectory(self.free_arm_trajectory)
-
+    
     def execute_arm_trajectory(self, trajectory=None):
         # TODO merge dual arm execution into this one
         # Make a trajectory class that contains robot index info
         # Since we are already using compas_fab, consider extending their JointTrajectory class
         # https://compas.dev/compas_fab/latest/api/generated/compas_fab.robots.JointTrajectory.html
         if trajectory is None:
-            trajectory = self.planned_arm_trajectory
+            trajectory = self.planned_arm_trajectory[self.selected_arm_index]
 
         if not self.FAKE_HARDWARE:
-            world.execute_arm_trajectory(self, trajectory, index=self.arm_index)
+            world.execute_arm_trajectory(self, trajectory, index=self.selected_arm_index)
         else:
             # fake execution in sim
             if trajectory is None:
@@ -304,7 +318,7 @@ class HuskyMonitor(Node):
                     gripper_tcp_from_object = obj.grasp
 
                 for conf in trajectory[0]:
-                    hi.arm_joint_pose[self.arm_index] = conf
+                    hi.arm_joint_pose[self.selected_arm_index] = conf
                     ho.set_pose((hi.position, hi.rotation), [conf])
 
                     if trajectory[3] is not None:
@@ -320,7 +334,7 @@ class HuskyMonitor(Node):
 
     def execute_arm_trajectory_with_servoing(self, trajectory=None):
         if trajectory is None:
-            trajectory = self.planned_arm_trajectory[self.arm_index]
+            trajectory = self.planned_arm_trajectory[self.selected_arm_index]
 
         if self.FAKE_HARDWARE:
             self.logger.warn('Fake hardware does not support servoing!')
@@ -439,11 +453,23 @@ class HuskyMonitor(Node):
         # load goal robot model
         with pp.LockRenderer():
             with pp.HideOutput():                
-                self.goal_model = HuskyObject(calibration=self.CALIBRATION)
-                self.goal_model.set_color(GOAL_BLUE)
+                self.goal_model_single = HuskyObject(calibration=self.CALIBRATION)
+                self.goal_model_single.set_color(TRANSPARENT)
+                self.goal_model_single
+                
+                self.goal_model_dual = HuskyObject(calibration=self.CALIBRATION, dual_arm=True)
+                self.goal_model_dual.set_color(TRANSPARENT)
+                
+                self.goal_model = self.goal_model_single
 
                 self.goal_gripper_model = load_gripper(self.CALIBRATION)
                 pp.set_color(self.goal_gripper_model, GOAL_BLUE)
+                
+    def update_goal_model_and_color(self):
+        if self.goal_model.dual_arm != self.huskies[self.selected_robot_id].dual_arm:
+            self.goal_model.set_color(TRANSPARENT)
+            self.goal_model = self.goal_model_dual if self.huskies[self.selected_robot_id].dual_arm else self.goal_model_single
+        self.goal_model.set_color(GOAL_BLUE if self.show_goal_state else TRAJECTORY_GREEN)
         
     def build_ui(self, target_conf=None):
         # default_base_position = [0,0,0]
@@ -453,9 +479,8 @@ class HuskyMonitor(Node):
         self.buttons.append(Button('Prev in sequence', self.show_previous_in_sequence))
         self.buttons.append(Button('Next in sequence', self.show_next_in_sequence))
 
-        self.selected_robot_slider = Slider("robot id", self.update_selected_robot_id, 0, len(self.huskies)+1, 0)
-        self.arm_slider = p.addUserDebugParameter("arm id", 0, 1, self.arm_index)
-        # p.addUserDebugParameter("robot id", 0, len(self.huskies)+1, 0)
+        self.selected_robot_slider = Slider("robot id", self.update_selected_robot_id, 0, len(self.huskies)+1, self.selected_robot_id)
+        self.arm_slider = Slider("arm id", self.update_selected_arm_id, 0, 2, self.selected_arm_index)
 
         self.trajectory_time_slider = Slider("traj time", self.update_trajectory_time, 1.0, 60.0, self.trajectory_time)
 
@@ -536,6 +561,8 @@ class HuskyMonitor(Node):
                 self.buttons.append(Button('Save markerset data', self.record_markerset_data))
             
             if self.DUAL_ARM_ACCURACY_TEST:
+                self.buttons.append(Button('Next Loaded Trajectory', lambda: world.load_trajectory(self)))
+                self.buttons.append(Button('Exec Both Arms', lambda: world.execute_arm_trajectory_both(self)))
                 self.buttons.append(Button('Record EE mocap pose', lambda: world.record_dual_arm_E_mocap(self)))
                 self.buttons.append(Button('Save EE mocap data', lambda: world.save_dual_arm_E_mocap(self)))
 
@@ -544,7 +571,7 @@ class HuskyMonitor(Node):
             for i, j in enumerate(pp.joints_from_names(self.huskies[0].object.robot, self.huskies[0].object.get_arm_joint_names())):
                 lower, upper = pp.get_joint_limits(self.huskies[0].object.robot, j)
                 if target_conf is None:
-                    self.joint_state_sliders.append(p.addUserDebugParameter(f'Joint {i}', lower, upper, self.huskies[0].interface.arm_joint_pose[self.arm_index][i]))
+                    self.joint_state_sliders.append(p.addUserDebugParameter(f'Joint {i}', lower, upper, self.huskies[0].interface.arm_joint_pose[self.selected_arm_index][i]))
                 else:
                     self.joint_state_sliders.append(p.addUserDebugParameter(f'Joint {i}', lower, upper, target_conf[i]))
             
@@ -690,7 +717,7 @@ class HuskyMonitor(Node):
             self.bar_goal_pose_slider_group.update()
             # update_bar_goal_pose
         else:
-            self.goal_arm_pose[self.arm_index] = np.array([p.readUserDebugParameter(ps) for ps in self.joint_state_sliders])
+            self.goal_arm_pose[self.selected_arm_index] = np.array([p.readUserDebugParameter(ps) for ps in self.joint_state_sliders])
 
         # update assembly goal position
         # self.assembly_goal_position_slider_group.update()
@@ -710,13 +737,17 @@ class HuskyMonitor(Node):
                     N = len(self.planned_arm_trajectory[i][0])
                     arm_traj_idx_float = preview_time * (N - 1)
                     arm_traj_idx = int(arm_traj_idx_float)
-                    if arm_traj_idx < len(self.planned_arm_trajectory[i][0]) and len(self.planned_arm_trajectory[i][0]) > 0:
-                        goal_arm_pose[i] = self.planned_arm_trajectory[i][0][arm_traj_idx]
+                    
+                    # jg: i reenabled interpolation to see the whole motion including on sparse trajectories
+                    # jg: the prerecorded trajectory had weird joint values in the >pi ranges which would lead to double rotations and self intersections
+                    
+                    # if arm_traj_idx < len(self.planned_arm_trajectory[i][0]) and len(self.planned_arm_trajectory[i][0]) > 0:
+                        #goal_arm_pose[i] = self.planned_arm_trajectory[i][0][arm_traj_idx]
 
                     # we don't do interpolation here bc I want to see the exact trajectory points
-                    # dt = arm_traj_idx_float - arm_traj_idx
-                    # arm_traj_idx_plus = min(int(preview_time * (N - 1) + 1), N-1)
-                    # goal_arm_pose = lerp(self.planned_arm_trajectory[0][arm_traj_idx], self.planned_arm_trajectory[0][arm_traj_idx_plus], dt)
+                    dt = arm_traj_idx_float - arm_traj_idx
+                    arm_traj_idx_plus = min(int(preview_time * (N - 1) + 1), N-1)
+                    goal_arm_pose[i] = lerp(self.planned_arm_trajectory[i][0][arm_traj_idx], self.planned_arm_trajectory[i][0][arm_traj_idx_plus], dt)
 
                 if self.planned_arm_trajectory[i][3] is not None:
                     # update attached object based on FK
