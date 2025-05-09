@@ -24,9 +24,9 @@ MT_FILE_NAME = "one_tet_MT_contact.json"
 # huskies = []
 assembly_objects = []
 
-DATA_DIR = "/home/yijiangh/ros2_ws/src/husky_assembly_teleop/data"
+DATA_DIR = "/home/jakobgenhart/husky_assistant/workspace/src/husky-asembly-teleop/data"
 if not os.path.exists(DATA_DIR):
-    DATA_DIR = "/home/yijiangh/ros2_ws/src/husky-asembly-teleop/data"
+    DATA_DIR = "/home/jakobgenhart/husky_assistant/workspace/src/husky-asembly-teleop/data"
 
 CALIB_DATA_DIR = os.path.join(DATA_DIR, "calibration_data")
 BAR_HOLDING_ACC_DATA_DIR = os.path.join(DATA_DIR, "bar_holding_acc_data")
