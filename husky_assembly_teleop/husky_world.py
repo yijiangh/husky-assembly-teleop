@@ -135,7 +135,7 @@ def compute_ik_for_bar(monitor, world_from_bar, theta_index, grasp_dist):
 
     husky = monitor.huskies[monitor.selected_robot_id]
     robot = husky.object.robot
-    attachments = [husky.object.ee_attachment, pp.Attachment(robot, pp.link_from_name(robot, 'ur_arm_tool0'), grasp, monitor.goal_element.body)]
+    attachments = [husky.object.ee_list[monitor.arm_index][1], pp.Attachment(robot, pp.link_from_name(robot, 'ur_arm_tool0'), grasp, monitor.goal_element.body)]
 
     arm_conf = planning.arm_ik(monitor.huskies[monitor.selected_robot_id], world_from_tool0, attachments, obstacles)
     if arm_conf is None:
@@ -243,7 +243,7 @@ def calibrate_button(monitor, tool_mocap_name):
         else:
             pp.draw_pose(base_mocap_pose)
             monitor.append_calibration_data(
-                {'joint_conf' : list(hi.arm_joint_pose), 
+                {'joint_conf' : list(hi.arm_joint_pose[monitor.arm_index]), 
                  'base_mocap_pose' : [list(v) for v in base_mocap_pose],
                  "flange_mocap_pose" : [],
                  'tool0_fk_pose' : [list(v) for v in tool0_fk_pose],
@@ -253,7 +253,7 @@ def calibrate_button(monitor, tool_mocap_name):
         tool_0_fk_from_mocap = pp.multiply(pp.invert(tool0_fk_pose), flange_mocap_pose)
         pp.draw_pose(flange_mocap_pose)
         monitor.append_calibration_data(
-            {'joint_conf' : list(hi.arm_joint_pose), 
+            {'joint_conf' : list(hi.arm_joint_pose[monitor.arm_index]), 
              'base_mocap_pose' : [list(v) for v in base_mocap_pose],
              "flange_mocap_pose" : [list(v) for v in flange_mocap_pose],
              'tool0_fk_pose' : [list(v) for v in tool0_fk_pose],
@@ -312,7 +312,7 @@ def request_marketset_button(monitor, rb_mocap_name):
 
         bar_pose = monitor.get_world_from_bar_goal_pose()
         monitor.marker_set_data.append(
-            {'joint_conf' : list(hi.arm_joint_pose), 
+            {'joint_conf' : list(hi.arm_joint_pose[monitor.arm_index]), 
              'base_mocap_pose' : [list(v) for v in base_mocap_pose],
              'footprint_base_link_pose' : base_link_pose,
              'world_from_bar_pose' : bar_pose,
@@ -349,7 +349,7 @@ def calibrate_joint(monitor, joint_id, tool_mocap_name):
     global calibration_running, calibration_confirm
     hi = monitor.huskies[monitor.selected_robot_id].interface
     ho = monitor.huskies[monitor.selected_robot_id].object
-    current_conf = hi.arm_joint_pose
+    current_conf = hi.arm_joint_pose[monitor.arm_index]
     goal_conf = np.copy(monitor.goal_arm_pose)
     # check if values are close between current conf and goal conf, except for the joint id
     diff_vec = np.abs(np.array(current_conf) - np.array(goal_conf))
@@ -372,19 +372,19 @@ def calibrate_joint(monitor, joint_id, tool_mocap_name):
     
 def execute_arm_conf(monitor, conf):
     hi = monitor.huskies[monitor.selected_robot_id].interface
-    monitor.huskies[monitor.selected_robot_id].interface.send_arm_cmd([hi.arm_joint_pose, conf], 
+    monitor.huskies[monitor.selected_robot_id].interface.send_arm_cmd([hi.arm_joint_pose[monitor.arm_index], conf], 
                                                                       None, monitor.trajectory_time)
 
 #################################
 
-def execute_arm_trajectory(monitor, trajectory):
+def execute_arm_trajectory(monitor, trajectory, index=0):
     if trajectory is None:
         monitor.get_logger().warn('Arm trajectory must be planed before executing!')
         return
     # trajectory confs, velocity, total time
-    monitor.huskies[monitor.selected_robot_id].interface.send_arm_cmd(trajectory[0], trajectory[1], monitor.trajectory_time)
+    monitor.huskies[monitor.selected_robot_id].interface.send_arm_cmd(trajectory[index][0], trajectory[index][1], monitor.trajectory_time, index=index)
 
-def execute_task_goal_arm_trajectory_with_servoing(monitor, trajectory, log_data=False):
+def execute_task_goal_arm_trajectory_with_servoing(monitor, trajectory, index=0, log_data=False):
     if trajectory is None:
         monitor.get_logger().warn('Arm trajectory must be planed before executing!')
         return
@@ -405,7 +405,7 @@ def execute_task_goal_arm_trajectory_with_servoing(monitor, trajectory, log_data
     # TODO this should be generalized to any world_from_tool0 and attachment
     transfer_element = trajectory[3]
     world_from_tool0 = pp.multiply(transfer_element.goal_pose, pp.invert(transfer_element.grasp))
-    attachments = [ho.ee_attachment, pp.Attachment(ho.robot, pp.link_from_name(ho.robot, 'ur_arm_tool0'), transfer_element.grasp, transfer_element.body)]
+    attachments = [ho.ee_list[monitor.arm_index][1], pp.Attachment(ho.robot, pp.link_from_name(ho.robot, 'ur_arm_tool0'), transfer_element.grasp, transfer_element.body)]
 
     for iter_i in range(num_iters):
         monitor.get_logger().info(f'Servoing arm trajectory {iter_i+1}/{num_iters}...')
@@ -452,7 +452,7 @@ def execute_task_goal_arm_trajectory_with_servoing(monitor, trajectory, log_data
 
         # ! until we make the ros main thread spin properly, we need to manually update the robot base pose in sim accroding to the mocap
         # ! we assume that the robot arm conf is exactly the last traj point
-        hi.arm_joint_pose = trajectory[0][-1]
+        hi.arm_joint_pose[monitor.arm_index] = trajectory[0][-1]
         ho.set_pose((hi.position, hi.rotation), hi.arm_joint_pose)
 
         # compute current world_from_tool0

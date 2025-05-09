@@ -88,12 +88,6 @@ class HuskyRobotInterface:
                 lambda msg: self.arm_callback(0, msg),
                 10))
         
-        self.sub_arm = self.node.create_subscription(
-            JointState,
-            name + '/ur5e/joint_states',
-            self.arm_callback,
-            10)
-        
         # Publishers --- --- --- --- ---
         self.pub_cmd_vel = self.node.create_publisher(Twist, name + '/cmd_vel', 10)
         
@@ -210,7 +204,7 @@ class HuskyRobotInterface:
         goal = GripperCommand.Goal()
         goal.command.position = pos
         goal.command.max_effort = effort
-        self.act_gripper[index].send_goal_async(goal)
+        self.act_grippers[index].send_goal_async(goal)
     
     def send_arm_cmd(self, arm_joint_positions, arm_joint_velocities=None, time=10, index=0):
         """

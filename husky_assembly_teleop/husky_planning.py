@@ -43,8 +43,8 @@ def compute_grasp(theta_index, grasp_partition=4, longitudinal_offset=0.0):
 def arm_ik(husky: Husky, world_from_tool0, attachments, obstacles, hint_conf=None):
     return get_arm_ik_for_grasp_bar(husky.object.robot, IK_SOLVER, world_from_tool0, attachments, obstacles, hint_conf=hint_conf)
 
-def plan_arm_motion(husky: Husky, arm_goal_pose, obstacles, traj_time, grasped_element=None, grasp=None):
-    attachments = [husky.object.ee_attachment]
+def plan_arm_motion(husky: Husky, arm_goal_pose, obstacles, traj_time, grasped_element=None, grasp=None, arm_index=0):
+    attachments = [husky.object.ee_list[arm_index][1]]
     if grasped_element is not None and grasp is not None:
         robot = husky.object.robot
         attachments.append(pp.Attachment(robot, pp.link_from_name(robot, 'ur_arm_tool0'), grasp, grasped_element.body))
@@ -69,12 +69,12 @@ def plan_arm_motion(husky: Husky, arm_goal_pose, obstacles, traj_time, grasped_e
     else:
         return (planned_arm_trajectory, None, traj_time, None)
 
-def plan_arm_to_transfer_element(husky: Husky, transfer_element, obstacles, traj_time, grasp=None):
+def plan_arm_to_transfer_element(husky: Husky, transfer_element, obstacles, traj_time, grasp=None, arm_index=0):
     free_path, linear_path, grasp = plan_transfer_motion(
         husky.object.robot,
         IK_SOLVER, 
         transfer_element, 
-        [husky.object.ee_attachment],
+        [husky.object.ee_list[arm_index][1]],
         obstacles, 
         grasp=grasp,
         debug=False, 
@@ -94,12 +94,12 @@ def plan_arm_to_transfer_element(husky: Husky, transfer_element, obstacles, traj
            (np.array(free_path), None, fm_time, transfer_element), \
            (np.array(linear_path), None, lm_time, transfer_element)
 
-def plan_arm_to_retract_to_home(husky: Husky, transfer_element, obstacles, traj_time):
+def plan_arm_to_retract_to_home(husky: Husky, transfer_element, obstacles, traj_time, arm_index=0):
     trajectory = plan_retract_to_home_motion(
         husky.object.robot,
         IK_SOLVER, 
         transfer_element.body, 
-        [husky.object.ee_attachment],
+        [husky.object.ee_list[arm_index][1]],
         obstacles, 
         debug=False, 
         disabled_collisions=None

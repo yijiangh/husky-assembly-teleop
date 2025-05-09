@@ -193,8 +193,9 @@ class HuskyObject():
                 arm_joints = pp.joints_from_names(self.robot, self.get_arm_joint_names(index=1))
                 pp.set_joint_positions(self.robot, arm_joints, arm_joint_states[1])
         else:
-            print('set_pose arm_joint_states has invalid shape!')
-            return
+            # print('set_pose arm_joint_states has invalid shape!')
+            # return
+            raise ValueError(f'set_pose arm_joint_states has invalid shape! {arm_joint_states}')
              
     def set_color(self, new_color):
         if self.old_color != new_color:
