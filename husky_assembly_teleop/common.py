@@ -265,6 +265,8 @@ def lerp(a, b, t):
     return a + t * (b - a)
 
 def quat_lerp(q1, q2, t):
+    q1 = np.array(q1)
+    q2 = np.array(q2)
     if np.dot(q1,q2) < 0:
         q2 = -q2
     

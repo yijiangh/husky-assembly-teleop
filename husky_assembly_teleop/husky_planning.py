@@ -213,3 +213,29 @@ def plan_arm_wave(husky: Husky, trajectory_time):
     traj_vel = [1 / trajectory_time * 2*np.pi * np.array([0, 0, -np.cos(time_scaling(t)), np.cos(time_scaling(t)), 0, 0]) for t in ts]
 
     return traj_pos, traj_vel, trajectory_time, None
+
+def plan_dual_arm_motion(husky: Husky):
+    N = 20
+    trajectory_time = 10.0
+    ts = list(np.linspace(0, trajectory_time, N))[0:]
+
+    # base_pose = pp.get_link_pose()
+
+    translate_along_pos_axis = pp.Pose(point=pp.Point(0, 0.25,0))
+    translate_along_neg_axis = pp.Pose(point=pp.Point(0, -0.25,0))
+
+    start_pose = pp.multiply(pp.Pose(np.array([0, 0, 0]), np.array([0, 0, 0])))
+    end_pose = pp.multiply(pp.Pose(np.array([0, 0, 1]), np.array([0, 0, 0])))
+    
+    bar_trajectory = [(start_pose[0] + (end_pose[0] - start_pose[0]) * t / trajectory_time, quat_lerp(start_pose[1], end_pose[1], t / trajectory_time)) for t in ts]
+
+    left_trajectory = [pp.multiply(p, translate_along_pos_axis) for p in bar_trajectory]
+    right_trajectory = [pp.multiply(p, translate_along_neg_axis) for p in bar_trajectory]
+
+    for p in left_trajectory:
+        pp.draw_pose(p)
+        print(p)
+
+    for p in right_trajectory:
+        pp.draw_pose(p)
+        print(p)

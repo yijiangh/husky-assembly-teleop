@@ -127,6 +127,11 @@ def init(monitor):
 step = 0
 def load_trajectory(monitor):
     global step
+
+    # test trajectory generation
+    planning.plan_dual_arm_motion(monitor.huskies[0])
+    return
+
     if step == 0:
         hi = monitor.huskies[monitor.selected_robot_id].interface
         monitor.set_arm_trajectory(([hi.arm_joint_pose[0], left_traj[0][0]], None, 10, None), index=0)
