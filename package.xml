@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>pybullet_mocap</name>
+  <name>husky_assembly_teleop</name>
   <version>0.0.0</version>
   <description>Monitor node for husky robots.</description>
   <maintainer email="jakob.genhart@inf.ethz.ch">Jakob Genhart</maintainer>
@@ -15,6 +15,7 @@
   <depend>tf2_msgs</depend>
   <depend>geometry_msgs</depend>
   <depend>sensor_msgs</depend>
+  <depend>ur_msgs</depend>
 
   <export>
     <build_type>ament_python</build_type>

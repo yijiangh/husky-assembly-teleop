@@ -5,7 +5,7 @@ import numpy as np
 from skspatial.objects import Line, Point, Vector
 import pybullet_planning as pp
 import matplotlib.pyplot as plt
-# from pybullet_mocap.common import load_robot
+# from husky_assembly_teleop.common import load_robot
 
 HUSKY_UR5e_JOINT_NAMES = ["ur_arm_shoulder_pan_joint", 
                       "ur_arm_shoulder_lift_joint",
@@ -39,7 +39,7 @@ logger.addHandler(file_handler)
 
 pp.connect(use_gui=viewer, shadows=True, color=[0.9, 0.9, 1.0])
 # robot_urdf = os.path.join('/home/yijiangh/ros2_ws/src/husky-asembly-teleop/data','husky_urdf/mt_husky_moveit_config/urdf/husky_ur5_e_no_base_joint.urdf')
-# robot_urdf = os.path.join('/home/yijiangh/ros2_ws/src/pybullet_mocap/data', 'husky_urdf/mt_husky_moveit_config/urdf/husky_ur5_e_no_base_joint.urdf')
+# robot_urdf = os.path.join('/home/yijiangh/ros2_ws/src/husky_assembly_teleop/data', 'husky_urdf/mt_husky_moveit_config/urdf/husky_ur5_e_no_base_joint.urdf')
 robot_urdf = os.path.join(r'D:\0_Project\03-2025_husky_assembly\Code\husky-asembly-teleop\data',r'husky_urdf\mt_husky_moveit_config\urdf\husky_ur5_e_no_base_joint.urdf')
 with pp.HideOutput():
     robot = pp.load_pybullet(robot_urdf, fixed_base=False, cylinder=False)
