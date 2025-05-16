@@ -44,8 +44,8 @@ CLIENT_IP = '192.168.0.7' # Set to your own IP
 MOCAP_IP = '192.168.0.117' # set to the mocap PC's IP, get this from Motive Settings>Streaming pane->Local interface
   
 class HuskyMonitor(Node):
-    USE_MOCAP = 0
-    FAKE_HARDWARE = 1
+    USE_MOCAP = 1
+    FAKE_HARDWARE = 0
     CALIBRATION = 0
     BAR_GOAL_MODE = 1
     BAR_HOLDING_ACCURACY_TEST = 0
@@ -562,7 +562,8 @@ class HuskyMonitor(Node):
             
             if self.DUAL_ARM_ACCURACY_TEST:
                 self.buttons.append(Button('Compute Trajectory', lambda: world.load_trajectory(self)))
-                self.buttons.append(Button('Exec Both Arms', lambda: world.execute_arm_trajectory_both(self)))
+                self.buttons.append(Button('Exec Arms', lambda: world.execute_arm_trajectory_both(self)))
+                self.buttons.append(Button('Exec Arms and Record', lambda: self.tasks.append(world.execute_and_log_mocap(self))))
                 self.buttons.append(Button('Record EE mocap pose', lambda: world.record_dual_arm_E_mocap(self)))
                 self.buttons.append(Button('Save EE mocap data', lambda: world.save_dual_arm_E_mocap(self)))
 

@@ -237,29 +237,43 @@ def plan_dual_arm_motion(husky: Husky):
     translate_along_pos_axis = pp.Pose(point=pp.Point(0, 0.25,0))
     translate_along_neg_axis = pp.Pose(point=pp.Point(0, -0.25,0))
 
-    start_pose = pp.multiply(base_pose, pp.Pose([0.5, 0, 0.5], [0, 0, 0]))
-    end_pose = pp.multiply(base_pose, pp.Pose([0.5, 0, 1], [0, 0, 0]))
+    start_pose = pp.multiply(base_pose, pp.Pose([0.5, 0, 0.5], [0, np.pi/2, 0]))
+    end_pose = pp.multiply(base_pose, pp.Pose([0.5, 0, 0.75], [0, np.pi/2, 0]))
     
     bar_trajectory = [(np.array(start_pose[0]) + (np.array(end_pose[0]) - np.array(start_pose[0])) * t / trajectory_time, quat_lerp(start_pose[1], end_pose[1], t / trajectory_time)) for t in ts]
 
     # generate EE trajectories
 
-    left_trajectory = [pp.multiply(p, translate_along_pos_axis) for p in bar_trajectory]
-    right_trajectory = [pp.multiply(p, translate_along_neg_axis) for p in bar_trajectory]
+    ee_trajectories = [[pp.multiply(p, translate_along_pos_axis) for p in bar_trajectory], 
+                       [pp.multiply(p, translate_along_neg_axis) for p in bar_trajectory]]
 
     # solve
 
-    arm_joint_trajectories = [([], None, trajectory_time, None), ([], None, trajectory_time, None)]
+    def try_ik(qinit):
+        arm_joint_trajectories = [([], None, trajectory_time, None), ([], None, trajectory_time, None)]
 
-    for i in range(0,2):
-        qinit = husky.interface.arm_joint_pose[i]
-        arm_joint_trajectories[i][0].append(qinit)
-        for pose in left_trajectory:
-            ik = IK_SOLVER_DUAL[i].ik(pp.tform_from_pose(pose), qinit=qinit)
-            # TODO check for IK failure and retry...
-            arm_joint_trajectories[i][0].append(ik)
-            qinit = ik
-
-    print(arm_joint_trajectories)
-
-    return arm_joint_trajectories
+        for i in range(0,2):
+            for pose in ee_trajectories[i]:
+                attachments = [husky.object.ee_list[i][1]]
+                ik = get_arm_ik_for_grasp_bar(husky.object.robot, IK_SOLVER_DUAL[i], pose, attachments, [], hint_conf=qinit)
+                if ik is None:
+                    print('Dual arm IK failed!')
+                    return None
+                # why does IK sometimes produce weird solutions which are quite far away from qinit?
+                ik = np.mod(ik+np.pi, 2*np.pi)-np.pi
+                arm_joint_trajectories[i][0].append(ik)
+                qinit = ik
+        
+        return arm_joint_trajectories
+        
+    qinit = None
+    for j in range(0, 10):
+        arm_joint_trajectories = try_ik(qinit)
+        if arm_joint_trajectories is not None:
+            print(arm_joint_trajectories)
+            return arm_joint_trajectories
+        print('Dual arm IK retrying with new random init...')
+        qinit = np.random.random((6))
+    
+    print('Dual arm IK does not find a solution!')
+    return None

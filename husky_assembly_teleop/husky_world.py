@@ -34,30 +34,7 @@ CALIB_DATA_DIR = os.path.join(DATA_DIR, "calibration_data")
 BAR_HOLDING_ACC_DATA_DIR = os.path.join(DATA_DIR, "bar_holding_acc_data")
 DUAL_ARM_ACC_DATA_DIR = os.path.join(DATA_DIR, "dual_arm_acc_data")
 
-recorded_data = None
-left_traj = None
-right_traj = None
-
 def init(monitor):
-    global recorded_data, left_traj, right_traj
-    # load recorded data
-    duration = 120
-    with np.load(os.path.join(DATA_DIRECTORY,'recorded_data_20250413_194015.npz'), allow_pickle=True) as data:
-        recorded_data = data['data']
-        
-    # subsample to approx 100ms per sample
-    count = int(100 / (duration * 1000 / len(recorded_data)))
-    #recorded_data = recorded_data[0::count]
-    
-    left_traj = ([np.mod(d['left_sol']+np.pi, 2*np.pi)-np.pi for d in recorded_data], None, duration, None)
-    right_traj = ([np.mod(d['right_sol']+np.pi, 2*np.pi)-np.pi for d in recorded_data], None, duration, None)
-    print(f"Loaded prerecorded trajectories with {len(recorded_data)} samples.")
-    
-    """time_plot = [x[5] for x in left_traj[0]]
-    plt.plot(time_plot)
-    plt.show()"""
-
-    
     # * add robots
     # 1004
     Husky(monitor, name='/a200_0806', mocap_id=4568, pos=np.array((0,0,0)), 
@@ -125,23 +102,21 @@ def init(monitor):
     ])
     
 step = 0
+dual_arm_trajectory = None
 def load_trajectory(monitor):
-    global step
-
-    # test trajectory generation
-    (lt, rt) = planning.plan_dual_arm_motion(monitor.huskies[0])
-    monitor.set_arm_trajectory(lt, index=0)
-    monitor.set_arm_trajectory(rt, index=1)
-    return
+    global step, dual_arm_trajectory
 
     if step == 0:
-        hi = monitor.huskies[monitor.selected_robot_id].interface
-        monitor.set_arm_trajectory(([hi.arm_joint_pose[0], left_traj[0][0]], None, 10, None), index=0)
-        monitor.set_arm_trajectory(([hi.arm_joint_pose[1], right_traj[0][0]], None, 10, None), index=1)
+        dual_arm_trajectory = planning.plan_dual_arm_motion(monitor.huskies[0])
+        if dual_arm_trajectory is not None:
+            hi = monitor.huskies[monitor.selected_robot_id].interface
+            monitor.set_arm_trajectory(([hi.arm_joint_pose[0], dual_arm_trajectory[0][0][0]], None, 10, None), index=0)
+            monitor.set_arm_trajectory(([hi.arm_joint_pose[1], dual_arm_trajectory[1][0][0]], None, 10, None), index=1)
         step += 1
     elif step == 1:
-        monitor.set_arm_trajectory(left_traj, index=0)
-        monitor.set_arm_trajectory(right_traj, index=1)
+        if dual_arm_trajectory is not None:
+            monitor.set_arm_trajectory(dual_arm_trajectory[0], index=0)
+            monitor.set_arm_trajectory(dual_arm_trajectory[1], index=1)
         step = 0
 
 
@@ -458,6 +433,13 @@ def save_dual_arm_E_mocap(monitor, filename_suffix=""):
         json.dump({'raw_data' : monitor.dual_arm_EE_mocap_data}, f, indent=4)
 
     monitor.get_logger().info(f"Dual arm acc data saved to {filename}")
+
+def execute_and_log_mocap(monitor):
+    execute_arm_trajectory_both(monitor)
+    while monitor.huskies[monitor.selected_robot_id].interface.is_arm_executing[0] or monitor.huskies[monitor.selected_robot_id].interface.is_arm_executing[1]:
+        record_dual_arm_E_mocap(monitor)
+        yield
+    save_dual_arm_E_mocap(monitor)
 
 #################################
  
