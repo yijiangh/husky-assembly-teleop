@@ -86,6 +86,23 @@ for entry in data:
 # Convert to DataFrame for easier analysis
 df = pd.DataFrame(extracted_data)
 
+# Calculate average angle deviation and standard deviation
+average_angle_deviation = df['angle_deviation'].mean()
+std_angle_deviation = df['angle_deviation'].std()
+
+# Print the statistics
+logger.info(f"Average angle deviation: {average_angle_deviation:.4f} rad ({np.degrees(average_angle_deviation):.4f} degrees)")
+logger.info(f"Standard deviation: {std_angle_deviation:.4f} rad ({np.degrees(std_angle_deviation):.4f} degrees)")
+
+# Also compute median and interquartile range
+median_angle_deviation = df['angle_deviation'].median()
+q1 = df['angle_deviation'].quantile(0.25)
+q3 = df['angle_deviation'].quantile(0.75)
+iqr = q3 - q1
+
+logger.info(f"Median angle deviation: {median_angle_deviation:.4f} rad ({np.degrees(median_angle_deviation):.4f} degrees)")
+logger.info(f"Interquartile range: {iqr:.4f} rad ({np.degrees(iqr):.4f} degrees)")
+
 # Save original closest_axis before one-hot encoding (for coloring plots)
 df['axis_label'] = df['closest_axis'].astype(str)
 
@@ -104,14 +121,14 @@ def categorize_height(height):
 df['height_category'] = df['bar_height'].apply(categorize_height)
 
 # Categorize footprint yaw into 8 partitions (0-360 degrees)
+YAW_CATEGORIES =['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'] 
 def categorize_yaw(yaw_rad):
     # Normalize to [0, 2π)
     yaw_normalized = yaw_rad % (2 * np.pi)
     # Each partition is 45 degrees (π/4 radians)
     partition_size = np.pi / 4
     partition_number = int(yaw_normalized / partition_size)
-    direction_names = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW']
-    return direction_names[partition_number]
+    return YAW_CATEGORIES[partition_number]
 
 df['yaw_category'] = df['footprint_yaw'].apply(categorize_yaw)
 
@@ -119,9 +136,14 @@ df['yaw_category'] = df['footprint_yaw'].apply(categorize_yaw)
 df = pd.get_dummies(df, columns=['closest_axis', 'height_category', 'yaw_category'], 
                     prefix=['axis', 'height', 'yaw'])
 
-# Print all column names of the DataFrame
-logger.info("DataFrame columns:")
-logger.info(df.columns.tolist())
+# # Remove bar_height and axis_label columns as they are redundant after feature engineering
+# df = df.drop(['bar_height', 'axis_label'], axis=1)
+# logger.info("Dropped redundant columns: bar_height and axis_label")
+
+# Export DataFrame to CSV
+csv_output_path = os.path.join(data_folder, f'bar_holding_acc_data_{DATA_BATCH}.csv')
+df.to_csv(csv_output_path, index=False)
+logger.info(f"DataFrame exported to CSV: {csv_output_path}")
 
 # Display basic statistics
 logger.info("Basic Statistics:")
@@ -129,7 +151,9 @@ logger.info(df.describe())
 
 # Correlation analysis
 logger.info("\nCorrelation with angle_deviation:")
-correlations = df.corr()['angle_deviation'].sort_values(ascending=False)
+# Filter out bar_height and axis_label from correlation analysis
+correlation_columns = [col for col in df.columns if col != 'bar_height' and col != 'axis_label']
+correlations = df[correlation_columns].corr()['angle_deviation'].sort_values(ascending=False)
 logger.info(correlations)
 
 # Visualize data
@@ -181,14 +205,33 @@ plt.xlabel('X Position')
 
 # Figure 5: Boxplot of angle deviation by yaw category
 plt.figure(figsize=(10, 6))
-sns.boxplot(x='yaw_category', y='angle_deviation', data=df)
-plt.title('Angle Deviation by Footprint Yaw Direction')
-plt.xlabel('Footprint Yaw Direction')
-plt.ylabel('Angle Deviation (rad)')
-plt.savefig(os.path.join(data_folder, '5_yaw_vs_angle.png'))
+
+# Get yaw direction columns that actually exist in the dataframe
+yaw_cols = ['yaw_' + n for n in YAW_CATEGORIES if 'yaw_' + n in df.columns]
+
+if yaw_cols:  # Only proceed if we found valid yaw columns
+    yaw_data = pd.melt(df, id_vars=['angle_deviation'], 
+                       value_vars=yaw_cols,
+                       var_name='yaw', value_name='is_yaw_direction')
+    yaw_data = yaw_data[yaw_data['is_yaw_direction'] == 1]
+    
+    # Extract the yaw category from column name for better labeling
+    yaw_data['yaw_category'] = yaw_data['yaw'].str.replace('yaw_', '')
+    
+    sns.boxplot(x='yaw_category', y='angle_deviation', data=yaw_data)
+    plt.title('Angle Deviation by Footprint Yaw Direction')
+    plt.xlabel('Footprint Yaw Direction')
+    plt.ylabel('Angle Deviation (rad)')
+    plt.savefig(os.path.join(data_folder, '5_yaw_vs_angle.png'))
+else:
+    logger.warning("No yaw direction columns found in the dataframe. Skipping yaw vs angle plot.")
 
 # Feature importance analysis using Random Forest
-X = df.drop(['angle_deviation', 'axis_label'], axis=1)  # Also drop axis_label
+# Drop one-hot encoded categorical columns to avoid multicollinearity
+categorical_cols = [col for col in df.columns if col.startswith(('axis_', 'yaw_', 'height_'))]
+logger.info(f"Dropping one-hot encoded columns: {categorical_cols}")
+
+X = df.drop(['angle_deviation', 'axis_label'] + categorical_cols, axis=1)
 y = df['angle_deviation']
 
 # Scale features
@@ -233,14 +276,14 @@ plt.figure(figsize=(12, 6))
 sns.barplot(x='Importance', y='Feature', data=feature_importance)
 plt.title('Feature Importance for Predicting Angle Deviation')
 plt.tight_layout()
-plt.savefig(os.path.join(data_folder, 'feature_importance.png'))
+plt.savefig(os.path.join(data_folder, '6_feature_importance.png'))
 
 # Visualize mutual information
 plt.figure(figsize=(12, 6))
 sns.barplot(x='MI Score', y='Feature', data=mi_df)
 plt.title('Mutual Information Scores for Predicting Angle Deviation')
 plt.tight_layout()
-plt.savefig(os.path.join(data_folder, 'mutual_info.png'))
+plt.savefig(os.path.join(data_folder, '7_mutual_info.png'))
 
 # ANOVA analysis for categorical variables
 
@@ -278,6 +321,33 @@ plt.colorbar(label='Bar Height')
 plt.xlabel('Distance from CoM to Support Polygon Center')
 plt.ylabel('Angle Deviation (rad)')
 plt.title('Distance CoM vs Angle Deviation (colored by bar height)')
-plt.savefig(os.path.join(data_folder, 'summary_visualization.png'))
+plt.savefig(os.path.join(data_folder, '8_summary_visualization.png'))
+
+# Analyze effect of CoM distance on angle deviation
+# Discretize distance_com_to_polygon into quartiles for ANOVA
+logger.info("\nANOVA Analysis - Effect of CoM distance on angle deviation:")
+df['distance_category'] = pd.qcut(df['distance_com_to_polygon'], 4, labels=['Q1', 'Q2', 'Q3', 'Q4'])
+
+# Group angles by distance quartile
+q1_angles = df[df['distance_category'] == 'Q1']['angle_deviation']
+q2_angles = df[df['distance_category'] == 'Q2']['angle_deviation']
+q3_angles = df[df['distance_category'] == 'Q3']['angle_deviation']
+q4_angles = df[df['distance_category'] == 'Q4']['angle_deviation']
+
+# Run ANOVA test
+f_stat, p_val = stats.f_oneway(q1_angles, q2_angles, q3_angles, q4_angles)
+logger.info(f"F-statistic: {f_stat:.4f}, p-value: {p_val:.4f}")
+if p_val < 0.05:
+    logger.info("There is a statistically significant difference in angle deviation between CoM distance quartiles.")
+else:
+    logger.info("No statistically significant difference in angle deviation between CoM distance quartiles.")
+
+# Visualize the relationship with a box plot
+plt.figure(figsize=(10, 6))
+sns.boxplot(x='distance_category', y='angle_deviation', data=df)
+plt.title('Angle Deviation by Distance to Support Polygon (Quartiles)')
+plt.xlabel('Distance from CoM to Support Polygon Center (Quartiles)')
+plt.ylabel('Angle Deviation (rad)')
+plt.savefig(os.path.join(data_folder, '9_com_distance_categories_vs_angle.png'))
 
 logger.info("\nAnalysis complete. Visualizations saved to disk.")
