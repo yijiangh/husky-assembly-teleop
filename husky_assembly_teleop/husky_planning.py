@@ -24,6 +24,17 @@ IK_SOLVER = TracIKSolver(
     'ur_arm_tool0'
 )
 
+IK_SOLVER_DUAL = [TracIKSolver(
+                    os.path.join(DATA_DIRECTORY,'husky_urdf/mt_husky_dual_ur5_e_moveit_config/urdf/husky_dual_ur5_e.urdf'),
+                    'left_ur_arm_base_link',
+                    'left_ur_arm_tool0'
+                ), 
+                TracIKSolver(
+                    os.path.join(DATA_DIRECTORY,'husky_urdf/mt_husky_dual_ur5_e_moveit_config/urdf/husky_dual_ur5_e.urdf'),
+                    'right_ur_arm_base_link',
+                    'right_ur_arm_tool0'
+                )]
+
 def compute_grasp(theta_index, grasp_partition=4, longitudinal_offset=0.0):
     theta = (theta_index % grasp_partition) * (2*np.pi/grasp_partition)
     longitude_x = pp.Pose(euler=pp.Euler(pitch=np.pi/2))
@@ -219,23 +230,36 @@ def plan_dual_arm_motion(husky: Husky):
     trajectory_time = 10.0
     ts = list(np.linspace(0, trajectory_time, N))[0:]
 
-    # base_pose = pp.get_link_pose()
+    # generate bar trajectory (could be input)
+
+    base_pose = pp.get_pose(husky.object.robot)
 
     translate_along_pos_axis = pp.Pose(point=pp.Point(0, 0.25,0))
     translate_along_neg_axis = pp.Pose(point=pp.Point(0, -0.25,0))
 
-    start_pose = pp.multiply(pp.Pose(np.array([0, 0, 0]), np.array([0, 0, 0])))
-    end_pose = pp.multiply(pp.Pose(np.array([0, 0, 1]), np.array([0, 0, 0])))
+    start_pose = pp.multiply(base_pose, pp.Pose([0.5, 0, 0.5], [0, 0, 0]))
+    end_pose = pp.multiply(base_pose, pp.Pose([0.5, 0, 1], [0, 0, 0]))
     
-    bar_trajectory = [(start_pose[0] + (end_pose[0] - start_pose[0]) * t / trajectory_time, quat_lerp(start_pose[1], end_pose[1], t / trajectory_time)) for t in ts]
+    bar_trajectory = [(np.array(start_pose[0]) + (np.array(end_pose[0]) - np.array(start_pose[0])) * t / trajectory_time, quat_lerp(start_pose[1], end_pose[1], t / trajectory_time)) for t in ts]
+
+    # generate EE trajectories
 
     left_trajectory = [pp.multiply(p, translate_along_pos_axis) for p in bar_trajectory]
     right_trajectory = [pp.multiply(p, translate_along_neg_axis) for p in bar_trajectory]
 
-    for p in left_trajectory:
-        pp.draw_pose(p)
-        print(p)
+    # solve
 
-    for p in right_trajectory:
-        pp.draw_pose(p)
-        print(p)
+    arm_joint_trajectories = [([], None, trajectory_time, None), ([], None, trajectory_time, None)]
+
+    for i in range(0,2):
+        qinit = husky.interface.arm_joint_pose[i]
+        arm_joint_trajectories[i][0].append(qinit)
+        for pose in left_trajectory:
+            ik = IK_SOLVER_DUAL[i].ik(pp.tform_from_pose(pose), qinit=qinit)
+            # TODO check for IK failure and retry...
+            arm_joint_trajectories[i][0].append(ik)
+            qinit = ik
+
+    print(arm_joint_trajectories)
+
+    return arm_joint_trajectories

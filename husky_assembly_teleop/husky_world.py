@@ -129,7 +129,9 @@ def load_trajectory(monitor):
     global step
 
     # test trajectory generation
-    planning.plan_dual_arm_motion(monitor.huskies[0])
+    (lt, rt) = planning.plan_dual_arm_motion(monitor.huskies[0])
+    monitor.set_arm_trajectory(lt, index=0)
+    monitor.set_arm_trajectory(rt, index=1)
     return
 
     if step == 0:
