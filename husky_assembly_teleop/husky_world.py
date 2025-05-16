@@ -101,23 +101,63 @@ def init(monitor):
         AssemblyObject(monitor, 'b{}'.format(i), body, far_away_pose, goal_poses[i]) for i, body in enumerate(element_bodies)
     ])
     
-step = 0
+pre_position_trajectory = False
 dual_arm_trajectory = None
-def load_trajectory(monitor):
-    global step, dual_arm_trajectory
-
-    if step == 0:
-        dual_arm_trajectory = planning.plan_dual_arm_motion(monitor.huskies[0])
+bar_pose =  pp.Pose([0.5, 0, 0.5], [0, np.pi/2, 0])
+next_bar_pose = bar_pose
+sphere_center = np.array([0, 0, 0.5])
+def next_dual_arm_bar_trajectory(monitor):
+    global pre_position_trajectory, dual_arm_trajectory, bar_pose, next_bar_pose
+    
+    """
+    def new_traj():
+        pp.draw_pose(bar_pose)
+        bar_traj = []
+        drr = np.array([-np.pi, 0.25, 0.25]) + np.random.random((3)) * np.array([2*np.pi, 1, 1])
+        for j in range(10):
+            arc_len = j * 0.1 * 0.2
+            yrot1 = pp.Pose(euler=[0, drr[0], 0])
+            yoffset = pp.Pose(point=[0, drr[1], 0])
+            zrot = pp.Pose(euler=[0, 0, arc_len/drr[1]])
+            zoffset = pp.Pose(point=[0, 0, drr[2]])
+            yrot = pp.Pose(euler=[0, arc_len/drr[2], 0])
+            bar_traj.append(pp.multiply(bar_pose, zoffset, yrot, pp.invert(zoffset), yoffset, zrot, pp.invert(yoffset)))
+            pp.draw_pose(bar_traj[-1])
+        next_bar_pose = bar_traj[-1]
+        pp.draw_pose(next_bar_pose)
+        
+        return bar_traj
+    """
+    
+    #monitor.set_arm_trajectory(([hi.arm_joint_pose[0], dual_arm_trajectory[0][0][0]], None, 10, None), index=0)
+    #monitor.set_arm_trajectory(([hi.arm_joint_pose[1], dual_arm_trajectory[1][0][0]], None, 10, None), index=1)
+    
+    def new_bar_pose(bar_pose):
+        rand_dir = np.array([-1, -1, -1]) + np.random.random((3)) * 2
+        rand_dir = rand_dir / np.linalg.norm(rand_dir)
+        rand_angle = np.array([-np.pi/4, -np.pi/4, -np.pi/4]) + np.random.random((3)) * np.pi/2
+        
+        rand_pose = pp.Pose(rand_dir*0.2, rand_angle)
+        return pp.multiply(bar_pose, rand_pose)
+    
+    while True:
+        if not pre_position_trajectory:
+            next_bar_pose = new_bar_pose(bar_pose)
+            bar_traj = planning.dual_arm_bar_arc(bar_pose, next_bar_pose, 10)
+            for p in bar_traj:
+                pp.draw_pose(p)
+            dual_arm_trajectory = planning.plan_dual_arm_motion(monitor.huskies[0], bar_traj, monitor.static_obstacles)
         if dual_arm_trajectory is not None:
             hi = monitor.huskies[monitor.selected_robot_id].interface
-            monitor.set_arm_trajectory(([hi.arm_joint_pose[0], dual_arm_trajectory[0][0][0]], None, 10, None), index=0)
-            monitor.set_arm_trajectory(([hi.arm_joint_pose[1], dual_arm_trajectory[1][0][0]], None, 10, None), index=1)
-        step += 1
-    elif step == 1:
-        if dual_arm_trajectory is not None:
-            monitor.set_arm_trajectory(dual_arm_trajectory[0], index=0)
-            monitor.set_arm_trajectory(dual_arm_trajectory[1], index=1)
-        step = 0
+            if np.max(np.abs(hi.arm_joint_pose[0]-dual_arm_trajectory[0][0][0]) > 0.1) or np.max(np.abs(hi.arm_joint_pose[1]-dual_arm_trajectory[1][0][0]) > 0.1):
+                monitor.set_arm_trajectory(([hi.arm_joint_pose[0], dual_arm_trajectory[0][0][0]], None, 10, None), index=0)
+                monitor.set_arm_trajectory(([hi.arm_joint_pose[1], dual_arm_trajectory[1][0][0]], None, 10, None), index=1)
+                pre_position_trajectory = True
+            else:
+                monitor.set_arm_trajectory(dual_arm_trajectory[0], index=0)
+                monitor.set_arm_trajectory(dual_arm_trajectory[1], index=1)
+                pre_position_trajectory = False
+            break
 
 
 def update(monitor):
@@ -435,6 +475,8 @@ def save_dual_arm_E_mocap(monitor, filename_suffix=""):
     monitor.get_logger().info(f"Dual arm acc data saved to {filename}")
 
 def execute_and_log_mocap(monitor):
+    global bar_pose, next_bar_pose
+    bar_pose = next_bar_pose
     execute_arm_trajectory_both(monitor)
     while monitor.huskies[monitor.selected_robot_id].interface.is_arm_executing[0] or monitor.huskies[monitor.selected_robot_id].interface.is_arm_executing[1]:
         record_dual_arm_E_mocap(monitor)

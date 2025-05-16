@@ -27,12 +27,14 @@ IK_SOLVER = TracIKSolver(
 IK_SOLVER_DUAL = [TracIKSolver(
                     os.path.join(DATA_DIRECTORY,'husky_urdf/mt_husky_dual_ur5_e_moveit_config/urdf/husky_dual_ur5_e.urdf'),
                     'left_ur_arm_base_link',
-                    'left_ur_arm_tool0'
+                    'left_ur_arm_tool0',
+                    solve_type='Speed'
                 ), 
                 TracIKSolver(
                     os.path.join(DATA_DIRECTORY,'husky_urdf/mt_husky_dual_ur5_e_moveit_config/urdf/husky_dual_ur5_e.urdf'),
                     'right_ur_arm_base_link',
-                    'right_ur_arm_tool0'
+                    'right_ur_arm_tool0',
+                    solve_type='Speed'
                 )]
 
 def compute_grasp(theta_index, grasp_partition=4, longitudinal_offset=0.0):
@@ -225,7 +227,13 @@ def plan_arm_wave(husky: Husky, trajectory_time):
 
     return traj_pos, traj_vel, trajectory_time, None
 
-def plan_dual_arm_motion(husky: Husky):
+def dual_arm_bar_arc(start_pose, end_pose, trajectory_time):
+    N = 20
+    ts = list(np.linspace(0, trajectory_time, N))[0:]
+    
+    return [(np.array(start_pose[0]) + (np.array(end_pose[0]) - np.array(start_pose[0])) * t / trajectory_time, quat_lerp(start_pose[1], end_pose[1], t / trajectory_time)) for t in ts]
+
+def plan_dual_arm_motion(husky: Husky, bar_trajectory, obstacles):
     N = 20
     trajectory_time = 10.0
     ts = list(np.linspace(0, trajectory_time, N))[0:]
@@ -236,11 +244,6 @@ def plan_dual_arm_motion(husky: Husky):
 
     translate_along_pos_axis = pp.Pose(point=pp.Point(0, 0.25,0))
     translate_along_neg_axis = pp.Pose(point=pp.Point(0, -0.25,0))
-
-    start_pose = pp.multiply(base_pose, pp.Pose([0.5, 0, 0.5], [0, np.pi/2, 0]))
-    end_pose = pp.multiply(base_pose, pp.Pose([0.5, 0, 0.75], [0, np.pi/2, 0]))
-    
-    bar_trajectory = [(np.array(start_pose[0]) + (np.array(end_pose[0]) - np.array(start_pose[0])) * t / trajectory_time, quat_lerp(start_pose[1], end_pose[1], t / trajectory_time)) for t in ts]
 
     # generate EE trajectories
 
@@ -253,21 +256,24 @@ def plan_dual_arm_motion(husky: Husky):
         arm_joint_trajectories = [([], None, trajectory_time, None), ([], None, trajectory_time, None)]
 
         for i in range(0,2):
-            for pose in ee_trajectories[i]:
+            for (j, pose) in enumerate(ee_trajectories[i]):
                 attachments = [husky.object.ee_list[i][1]]
-                ik = get_arm_ik_for_grasp_bar(husky.object.robot, IK_SOLVER_DUAL[i], pose, attachments, [], hint_conf=qinit)
+                ik = get_arm_ik_for_grasp_bar(husky.object.robot, IK_SOLVER_DUAL[i], pose, attachments, obstacles, hint_conf=qinit)
                 if ik is None:
                     print('Dual arm IK failed!')
                     return None
                 # why does IK sometimes produce weird solutions which are quite far away from qinit?
-                ik = np.mod(ik+np.pi, 2*np.pi)-np.pi
+                ik = np.mod(ik+np.pi-qinit, 2*np.pi)-np.pi+qinit
+                if j > 0 and np.max(np.abs(ik-qinit)) > 0.25:
+                    print("Dual arm IK failed because of discontinuity!")
+                    return None
                 arm_joint_trajectories[i][0].append(ik)
                 qinit = ik
         
         return arm_joint_trajectories
         
-    qinit = None
-    for j in range(0, 10):
+    for j in range(0, 2):
+        qinit = husky.interface.arm_joint_pose[j]
         arm_joint_trajectories = try_ik(qinit)
         if arm_joint_trajectories is not None:
             print(arm_joint_trajectories)
