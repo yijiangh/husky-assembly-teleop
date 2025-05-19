@@ -14,7 +14,7 @@ from sklearn.feature_selection import mutual_info_regression
 from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.model_selection import train_test_split
 
-DATA_BATCH = '20250507'
+DATA_BATCH = '20250519_vary_pos_vary_yaw'
 
 # Set up logging to file
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -58,7 +58,7 @@ for entry in data:
     roll, pitch, yaw = pp.euler_from_quat(entry['footprint_pose'][1])
     logger.info('footprint roll: {:.3f}, pitch: {:.3f}, yaw: {:.3f}'.format(roll, pitch, yaw))
     footprint_x, footprint_y, footprint_yaw = pp.base_values_from_pose(entry['footprint_pose'], 
-                                                                       tolerance=0.013)
+                                                                       tolerance=0.02)
     
     # Extract bar position (height)
     bar_height = entry['fitted_line']['point'][2]

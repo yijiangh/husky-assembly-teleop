@@ -19,7 +19,7 @@ MARKER_NAME_PAIRS = [
     ['1', '3']
 ]
 
-DATA_BATCH = '20250507'
+DATA_BATCH = '20250519_vary_pos_vary_yaw'
 EXPORT = 1
 viewer = 0
 

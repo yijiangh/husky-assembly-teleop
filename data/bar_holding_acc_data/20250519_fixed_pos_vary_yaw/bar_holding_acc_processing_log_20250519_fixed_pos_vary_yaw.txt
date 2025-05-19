@@ -1,0 +1,93 @@
+2025-05-19 16:35:07,296 - INFO - Working on file: bar_holding_acc_20250519_1528__fixed_pos_vary_yaw.json
+2025-05-19 16:35:07,297 - WARNING - Distance between 7 and 8 is too small or large: 0.08301470111809765 m
+2025-05-19 16:35:07,308 - INFO - Closest global axis to the line: 2 (angle: 0.15 deg)
+2025-05-19 16:35:07,313 - INFO - Closest global axis to the line: 2 (angle: 0.32 deg)
+2025-05-19 16:35:07,317 - INFO - Closest global axis to the line: 0 (angle: 0.22 deg)
+2025-05-19 16:35:07,321 - INFO - Closest global axis to the line: 2 (angle: 0.76 deg)
+2025-05-19 16:35:07,324 - INFO - Closest global axis to the line: 0 (angle: 0.23 deg)
+2025-05-19 16:35:07,330 - INFO - Closest global axis to the line: 2 (angle: 0.17 deg)
+2025-05-19 16:35:07,331 - WARNING - Error for marker 8 is too large: 0.002041 m
+2025-05-19 16:35:07,331 - WARNING - Error for marker 4 is too large: 0.002367 m
+2025-05-19 16:35:07,335 - INFO - Closest global axis to the line: 0 (angle: 0.32 deg)
+2025-05-19 16:35:07,336 - INFO - Working on file: bar_holding_acc_20250519_1557.json
+2025-05-19 16:35:07,336 - WARNING - Distance between 7 and 8 is too small or large: 0.08317678404310508 m
+2025-05-19 16:35:07,339 - INFO - Closest global axis to the line: 0 (angle: 0.35 deg)
+2025-05-19 16:35:07,346 - INFO - Closest global axis to the line: 0 (angle: 0.34 deg)
+2025-05-19 16:35:07,347 - WARNING - Distance between 7 and 8 is too small or large: 0.08367332037672398 m
+2025-05-19 16:35:07,347 - WARNING - Error for marker 8 is too large: 0.002001 m
+2025-05-19 16:35:07,351 - INFO - Closest global axis to the line: 1 (angle: 0.43 deg)
+2025-05-19 16:35:07,352 - WARNING - Distance between 2 and 4 is too small or large: 0.08301757339035307 m
+2025-05-19 16:35:07,355 - INFO - Closest global axis to the line: 2 (angle: 0.31 deg)
+2025-05-19 16:35:07,361 - INFO - Closest global axis to the line: 2 (angle: 0.30 deg)
+2025-05-19 16:35:07,362 - WARNING - Distance between 2 and 4 is too small or large: 0.08347584711528566 m
+2025-05-19 16:35:07,365 - INFO - Closest global axis to the line: 1 (angle: 0.29 deg)
+2025-05-19 16:35:07,366 - WARNING - Error for marker 6 is too large: 0.002381 m
+2025-05-19 16:35:07,367 - WARNING - Error for marker 8 is too large: 0.002199 m
+2025-05-19 16:35:07,370 - INFO - Closest global axis to the line: 0 (angle: 0.28 deg)
+2025-05-19 16:35:07,371 - WARNING - Distance between 5 and 6 is too small or large: 0.08312476613479874 m
+2025-05-19 16:35:07,371 - WARNING - Distance between 7 and 8 is too small or large: 0.08311952908148416 m
+2025-05-19 16:35:07,374 - INFO - Closest global axis to the line: 1 (angle: 0.15 deg)
+2025-05-19 16:35:07,375 - INFO - Working on file: bar_holding_acc_20250519_1622.json
+2025-05-19 16:35:07,375 - WARNING - Distance between 5 and 6 is too small or large: 0.08357783864886216 m
+2025-05-19 16:35:07,375 - WARNING - Distance between 7 and 8 is too small or large: 0.08371506576988129 m
+2025-05-19 16:35:07,380 - INFO - Closest global axis to the line: 2 (angle: 0.56 deg)
+2025-05-19 16:35:07,381 - WARNING - Error for marker 1 is too large: 0.002011 m
+2025-05-19 16:35:07,385 - INFO - Closest global axis to the line: 0 (angle: 0.29 deg)
+2025-05-19 16:35:07,389 - INFO - Closest global axis to the line: 0 (angle: 0.53 deg)
+2025-05-19 16:35:07,390 - WARNING - Error for marker 6 is too large: 0.002056 m
+2025-05-19 16:35:07,390 - WARNING - Distance between 2 and 4 is too small or large: 0.08319099223701591 m
+2025-05-19 16:35:07,395 - INFO - Closest global axis to the line: 1 (angle: 0.26 deg)
+2025-05-19 16:35:07,400 - INFO - Closest global axis to the line: 1 (angle: 0.28 deg)
+2025-05-19 16:35:07,401 - WARNING - Distance between 7 and 8 is too small or large: 0.08302739129209252 m
+2025-05-19 16:35:07,405 - INFO - Closest global axis to the line: 2 (angle: 0.59 deg)
+2025-05-19 16:35:07,406 - WARNING - Distance between 2 and 4 is too small or large: 0.08321443116769446 m
+2025-05-19 16:35:07,411 - INFO - Closest global axis to the line: 2 (angle: 0.63 deg)
+2025-05-19 16:35:07,412 - WARNING - Distance between 5 and 6 is too small or large: 0.08302513412637527 m
+2025-05-19 16:35:07,417 - INFO - Closest global axis to the line: 2 (angle: 0.35 deg)
+2025-05-19 16:35:07,418 - INFO - Working on file: bar_holding_acc_20250519_1516__fixed_pos_vary_yaw.json
+2025-05-19 16:35:07,418 - WARNING - Distance between 1 and 3 is too small or large: 0.08347931964683095 m
+2025-05-19 16:35:07,422 - INFO - Closest global axis to the line: 2 (angle: 0.18 deg)
+2025-05-19 16:35:07,445 - INFO - Closest global axis to the line: 2 (angle: 0.11 deg)
+2025-05-19 16:35:07,446 - WARNING - Error for marker 2 is too large: 0.002011 m
+2025-05-19 16:35:07,450 - INFO - Closest global axis to the line: 0 (angle: 0.32 deg)
+2025-05-19 16:35:07,451 - WARNING - Distance between 2 and 4 is too small or large: 0.08303993104326995 m
+2025-05-19 16:35:07,454 - INFO - Closest global axis to the line: 1 (angle: 0.35 deg)
+2025-05-19 16:35:07,458 - INFO - Closest global axis to the line: 1 (angle: 0.35 deg)
+2025-05-19 16:35:07,459 - INFO - Working on file: bar_holding_acc_20250519_1536__fixed_pos_vary_yaw.json
+2025-05-19 16:35:07,464 - INFO - Closest global axis to the line: 0 (angle: 0.54 deg)
+2025-05-19 16:35:07,470 - INFO - Closest global axis to the line: 2 (angle: 0.31 deg)
+2025-05-19 16:35:07,474 - INFO - Closest global axis to the line: 0 (angle: 0.35 deg)
+2025-05-19 16:35:07,480 - INFO - Closest global axis to the line: 0 (angle: 0.39 deg)
+2025-05-19 16:35:07,480 - WARNING - Distance between 5 and 6 is too small or large: 0.083098943924618 m
+2025-05-19 16:35:07,480 - WARNING - Distance between 7 and 8 is too small or large: 0.08096793338519997 m
+2025-05-19 16:35:07,485 - INFO - Closest global axis to the line: 2 (angle: 0.44 deg)
+2025-05-19 16:35:07,488 - INFO - Closest global axis to the line: 0 (angle: 0.33 deg)
+2025-05-19 16:35:07,489 - INFO - Working on file: bar_holding_acc_20250519_1522__fixed_pos_vary_yaw.json
+2025-05-19 16:35:07,489 - WARNING - Error for marker 5 is too large: 0.002257 m
+2025-05-19 16:35:07,489 - WARNING - Error for marker 7 is too large: 0.002025 m
+2025-05-19 16:35:07,490 - WARNING - Distance between 1 and 3 is too small or large: 0.08336361453037809 m
+2025-05-19 16:35:07,494 - INFO - Closest global axis to the line: 1 (angle: 0.38 deg)
+2025-05-19 16:35:07,499 - INFO - Closest global axis to the line: 2 (angle: 0.28 deg)
+2025-05-19 16:35:07,504 - INFO - Closest global axis to the line: 2 (angle: 0.22 deg)
+2025-05-19 16:35:07,504 - WARNING - Distance between 2 and 4 is too small or large: 0.08336924643763506 m
+2025-05-19 16:35:07,507 - INFO - Closest global axis to the line: 1 (angle: 0.55 deg)
+2025-05-19 16:35:07,513 - INFO - Closest global axis to the line: 1 (angle: 0.23 deg)
+2025-05-19 16:35:07,514 - INFO - Working on file: bar_holding_acc_20250519_1604.json
+2025-05-19 16:35:07,514 - WARNING - Distance between 5 and 6 is too small or large: 0.07675826906032628 m
+2025-05-19 16:35:07,515 - WARNING - Error for marker 5 is too large: 0.002066 m
+2025-05-19 16:35:07,519 - INFO - Closest global axis to the line: 2 (angle: 0.04 deg)
+2025-05-19 16:35:07,523 - INFO - Closest global axis to the line: 1 (angle: 0.52 deg)
+2025-05-19 16:35:07,523 - WARNING - Distance between 2 and 4 is too small or large: 0.08314537917877145 m
+2025-05-19 16:35:07,529 - INFO - Closest global axis to the line: 2 (angle: 0.05 deg)
+2025-05-19 16:35:07,530 - WARNING - Error for marker 6 is too large: 0.002145 m
+2025-05-19 16:35:07,530 - WARNING - Distance between 7 and 8 is too small or large: 0.08313088318783737 m
+2025-05-19 16:35:07,534 - INFO - Closest global axis to the line: 0 (angle: 0.47 deg)
+2025-05-19 16:35:07,538 - INFO - Closest global axis to the line: 2 (angle: 0.25 deg)
+2025-05-19 16:35:07,543 - INFO - Closest global axis to the line: 0 (angle: 0.27 deg)
+2025-05-19 16:35:07,543 - WARNING - Error for marker 4 is too large: 0.002024 m
+2025-05-19 16:35:07,548 - INFO - Closest global axis to the line: 0 (angle: 0.37 deg)
+2025-05-19 16:35:07,548 - WARNING - Distance between 2 and 4 is too small or large: 0.08321535675296306 m
+2025-05-19 16:35:07,549 - WARNING - Error for marker 2 is too large: 0.002197 m
+2025-05-19 16:35:07,553 - INFO - Closest global axis to the line: 1 (angle: 0.50 deg)
+2025-05-19 16:35:07,565 - INFO - Exported data to /home/yijiangh/ros2_ws/src/husky-asembly-teleop/data/bar_holding_acc_data/20250519_fixed_pos_vary_yaw/compiled_bar_holding_acc_20250519_fixed_pos_vary_yaw.json
+2025-05-19 16:35:08,460 - INFO - Exported plot to /home/yijiangh/ros2_ws/src/husky-asembly-teleop/data/bar_holding_acc_data/20250519_fixed_pos_vary_yaw/bar_holding_acc_20250519_fixed_pos_vary_yaw.png

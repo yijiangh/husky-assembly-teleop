@@ -5,6 +5,7 @@ This module contains the world definition and high level actions or sequences of
 import os, time
 import asyncio.runners
 import asyncio
+from matplotlib.pyplot import bar
 import numpy as np
 import copy
 import rclpy
@@ -224,7 +225,7 @@ def compute_ik_for_bar(monitor, world_from_bar, theta_index, grasp_dist):
     
     return arm_conf, grasp
 
-def randomize_bar_location_for_ik_and_transfer(monitor, bar_goal_quat=None):
+def randomize_bar_location_for_ik_and_transfer(monitor, bar_goal_axis=None):
     LOC_ATTEMPTS = 10
     MP_ATTEMPTS = 3
     TRAJ_MAX_LENGTH = 100
@@ -252,8 +253,11 @@ def randomize_bar_location_for_ik_and_transfer(monitor, bar_goal_quat=None):
         # rand_pos = pp.Point(0.8, 0, 1.3)
 
         # Randomize the bar quaternion to align with one of the global x, y, z axes
-        if bar_goal_quat is None:
+        if bar_goal_axis is None:
             bar_goal_quat = AXIS_OPTIONS[np.random.randint(0, len(AXIS_OPTIONS))]
+        else:
+            assert bar_goal_axis in range(len(AXIS_OPTIONS)), f"Invalid bar goal axis: {bar_goal_axis}"
+            bar_goal_quat = AXIS_OPTIONS[bar_goal_axis]
 
         # Keep the world orientation from bar_goal_quat
         world_from_bar = pp.multiply(world_from_base_link, (rand_pos, bar_goal_quat))[0], bar_goal_quat
@@ -278,6 +282,7 @@ def randomize_bar_location_for_ik_and_transfer(monitor, bar_goal_quat=None):
                         if len(traj[0]) < TRAJ_MAX_LENGTH:
                             traj[3].goal_pose = world_from_bar
                             traj[3].grasp = grasp
+                            monitor.get_logger().info(f"Arm motion planning succeeded with {len(traj[0])} points!")
                             return traj, rand_pos, bar_goal_quat, theta_index, grasp_dist
                         else:
                             monitor.get_logger().warn(f"Arm motion planning trajectory too long {len(traj[0])}!")
@@ -406,10 +411,9 @@ def request_marketset_button(monitor, rb_mocap_name):
 def save_markerset_data(monitor, filename_suffix=""):
     print(monitor.calibration_data)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-    filename = os.path.join(BAR_HOLDING_ACC_DATA_DIR, f"bar_holding_acc_{timestamp}_{filename_suffix}.json")
     # Create a date subfolder (format: YYYYMMDD)
     date_subfolder = datetime.now().strftime("%Y%m%d")
-    subfolder_path = os.path.join(BAR_HOLDING_ACC_DATA_DIR, date_subfolder)
+    subfolder_path = os.path.join(BAR_HOLDING_ACC_DATA_DIR, date_subfolder+f'{filename_suffix}')
 
     # Create the subfolder if it doesn't exist
     if not os.path.exists(subfolder_path):
@@ -417,7 +421,7 @@ def save_markerset_data(monitor, filename_suffix=""):
         monitor.get_logger().info(f"Created subfolder: {subfolder_path}")
 
     # Save the file in the date subfolder
-    filename = os.path.join(subfolder_path, f"bar_holding_acc_{timestamp}_{filename_suffix}.json")
+    filename = os.path.join(subfolder_path, f"bar_holding_acc_{timestamp}.json")
     with open(filename, 'w') as f:
         json.dump({'raw_data' : monitor.marker_set_data}, f, indent=4)
 
