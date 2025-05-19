@@ -1,0 +1,120 @@
+2025-05-19 17:34:47,100 - INFO - Loading data from: /home/yijiangh/ros2_ws/src/husky-asembly-teleop/data/bar_holding_acc_data/20250519_fixed_pos_vary_yaw/compiled_bar_holding_acc_20250519_fixed_pos_vary_yaw.json
+2025-05-19 17:34:47,103 - INFO - footprint roll: -0.010, pitch: 0.008, yaw: -1.539
+2025-05-19 17:34:47,103 - INFO - footprint roll: -0.012, pitch: 0.011, yaw: -1.539
+2025-05-19 17:34:47,103 - INFO - footprint roll: -0.004, pitch: 0.005, yaw: -1.538
+2025-05-19 17:34:47,103 - INFO - footprint roll: -0.005, pitch: 0.007, yaw: -1.539
+2025-05-19 17:34:47,103 - INFO - footprint roll: -0.012, pitch: 0.011, yaw: -1.539
+2025-05-19 17:34:47,103 - INFO - footprint roll: -0.011, pitch: 0.009, yaw: -1.536
+2025-05-19 17:34:47,103 - INFO - footprint roll: -0.009, pitch: 0.010, yaw: -1.536
+2025-05-19 17:34:47,103 - INFO - footprint roll: -0.007, pitch: 0.015, yaw: 0.606
+2025-05-19 17:34:47,103 - INFO - footprint roll: -0.008, pitch: 0.015, yaw: 0.606
+2025-05-19 17:34:47,103 - INFO - footprint roll: -0.001, pitch: 0.010, yaw: 0.606
+2025-05-19 17:34:47,103 - INFO - footprint roll: -0.001, pitch: 0.010, yaw: 0.606
+2025-05-19 17:34:47,103 - INFO - footprint roll: -0.001, pitch: 0.010, yaw: 0.606
+2025-05-19 17:34:47,103 - INFO - footprint roll: -0.004, pitch: 0.014, yaw: 0.606
+2025-05-19 17:34:47,103 - INFO - footprint roll: -0.009, pitch: 0.014, yaw: 0.606
+2025-05-19 17:34:47,103 - INFO - footprint roll: -0.006, pitch: 0.015, yaw: 0.605
+2025-05-19 17:34:47,103 - INFO - footprint roll: 0.001, pitch: 0.007, yaw: 2.520
+2025-05-19 17:34:47,103 - INFO - footprint roll: 0.001, pitch: 0.007, yaw: 2.520
+2025-05-19 17:34:47,103 - INFO - footprint roll: -0.002, pitch: 0.010, yaw: 2.519
+2025-05-19 17:34:47,103 - INFO - footprint roll: 0.000, pitch: 0.009, yaw: 2.520
+2025-05-19 17:34:47,103 - INFO - footprint roll: -0.000, pitch: 0.007, yaw: 2.519
+2025-05-19 17:34:47,103 - INFO - footprint roll: 0.000, pitch: 0.006, yaw: 2.520
+2025-05-19 17:34:47,103 - INFO - footprint roll: 0.001, pitch: 0.007, yaw: 2.519
+2025-05-19 17:34:47,103 - INFO - footprint roll: -0.003, pitch: 0.008, yaw: 2.519
+2025-05-19 17:34:47,103 - INFO - footprint roll: 0.001, pitch: 0.008, yaw: 3.117
+2025-05-19 17:34:47,103 - INFO - footprint roll: -0.005, pitch: 0.011, yaw: 3.116
+2025-05-19 17:34:47,103 - INFO - footprint roll: -0.005, pitch: 0.010, yaw: 3.116
+2025-05-19 17:34:47,103 - INFO - footprint roll: 0.001, pitch: 0.007, yaw: 3.116
+2025-05-19 17:34:47,104 - INFO - footprint roll: -0.003, pitch: 0.008, yaw: 3.116
+2025-05-19 17:34:47,104 - INFO - footprint roll: -0.007, pitch: 0.010, yaw: -0.526
+2025-05-19 17:34:47,104 - INFO - footprint roll: -0.010, pitch: 0.010, yaw: -0.527
+2025-05-19 17:34:47,104 - INFO - footprint roll: -0.002, pitch: 0.004, yaw: -0.527
+2025-05-19 17:34:47,104 - INFO - footprint roll: -0.004, pitch: 0.006, yaw: -0.527
+2025-05-19 17:34:47,104 - INFO - footprint roll: -0.005, pitch: 0.009, yaw: -0.527
+2025-05-19 17:34:47,104 - INFO - footprint roll: -0.002, pitch: 0.005, yaw: -0.523
+2025-05-19 17:34:47,104 - INFO - footprint roll: -0.001, pitch: 0.005, yaw: -2.706
+2025-05-19 17:34:47,104 - INFO - footprint roll: -0.004, pitch: 0.006, yaw: -2.706
+2025-05-19 17:34:47,104 - INFO - footprint roll: -0.001, pitch: 0.007, yaw: -2.706
+2025-05-19 17:34:47,104 - INFO - footprint roll: -0.002, pitch: 0.006, yaw: -2.704
+2025-05-19 17:34:47,104 - INFO - footprint roll: -0.004, pitch: 0.008, yaw: -2.704
+2025-05-19 17:34:47,104 - INFO - footprint roll: -0.004, pitch: 0.010, yaw: 1.570
+2025-05-19 17:34:47,104 - INFO - footprint roll: 0.002, pitch: 0.008, yaw: 1.570
+2025-05-19 17:34:47,104 - INFO - footprint roll: -0.006, pitch: 0.013, yaw: 1.570
+2025-05-19 17:34:47,104 - INFO - footprint roll: -0.007, pitch: 0.014, yaw: 1.568
+2025-05-19 17:34:47,104 - INFO - footprint roll: 0.000, pitch: 0.009, yaw: 1.569
+2025-05-19 17:34:47,104 - INFO - footprint roll: 0.001, pitch: 0.009, yaw: 1.569
+2025-05-19 17:34:47,104 - INFO - footprint roll: -0.003, pitch: 0.012, yaw: 1.568
+2025-05-19 17:34:47,104 - INFO - footprint roll: -0.005, pitch: 0.014, yaw: 1.568
+2025-05-19 17:34:47,107 - INFO - Average angle deviation: 0.0059 rad (0.3384 degrees)
+2025-05-19 17:34:47,107 - INFO - Standard deviation: 0.0026 rad (0.1501 degrees)
+2025-05-19 17:34:47,109 - INFO - Median angle deviation: 0.0056 rad (0.3214 degrees)
+2025-05-19 17:34:47,109 - INFO - Interquartile range: 0.0027 rad (0.1574 degrees)
+2025-05-19 17:34:47,119 - INFO - DataFrame exported to CSV: /home/yijiangh/ros2_ws/src/husky-asembly-teleop/data/bar_holding_acc_data/20250519_fixed_pos_vary_yaw/bar_holding_acc_data_20250519_fixed_pos_vary_yaw.csv
+2025-05-19 17:34:47,119 - INFO - Basic Statistics:
+2025-05-19 17:34:47,125 - INFO -        footprint_x  ...  angle_deviation
+count    47.000000  ...        47.000000
+mean      0.085908  ...         0.005906
+std       0.336154  ...         0.002620
+min      -0.486598  ...         0.000612
+25%      -0.229836  ...         0.004398
+50%       0.052376  ...         0.005609
+75%       0.305766  ...         0.007145
+max       0.598383  ...         0.013266
+
+[8 rows x 6 columns]
+2025-05-19 17:34:47,139 - INFO - 
+Correlation with angle_deviation:
+2025-05-19 17:34:47,140 - INFO - angle_deviation            1.000000
+height_mid                 0.237972
+distance_com_to_polygon    0.196030
+yaw_NW                     0.140846
+yaw_SE                     0.127915
+footprint_x                0.089901
+axis_1                     0.072760
+footprint_y                0.064080
+axis_0                     0.055027
+footprint_yaw              0.033040
+yaw_S                     -0.012407
+height_low                -0.045626
+yaw_W                     -0.078360
+yaw_NE                    -0.094163
+yaw_N                     -0.098740
+axis_2                    -0.117782
+height_high               -0.188476
+Name: angle_deviation, dtype: float64
+2025-05-19 17:34:47,773 - INFO - Dropping one-hot encoded columns: ['axis_label', 'axis_0', 'axis_1', 'axis_2', 'height_high', 'height_low', 'height_mid', 'yaw_N', 'yaw_NE', 'yaw_NW', 'yaw_S', 'yaw_SE', 'yaw_W']
+2025-05-19 17:34:47,862 - INFO - 
+Random Forest Model Performance:
+2025-05-19 17:34:47,863 - INFO - R² score: -0.1329
+2025-05-19 17:34:47,863 - INFO - Mean squared error: 0.0000
+2025-05-19 17:34:47,868 - INFO - 
+Feature Importance from Random Forest:
+2025-05-19 17:34:47,868 - INFO -                    Feature  Importance
+0              footprint_x    0.267718
+1              footprint_y    0.221050
+4  distance_com_to_polygon    0.201515
+3               bar_height    0.169063
+2            footprint_yaw    0.140653
+2025-05-19 17:34:47,884 - INFO - 
+Mutual Information Scores (for non-linear relationships):
+2025-05-19 17:34:47,884 - INFO -                    Feature  MI Score
+1              footprint_y  0.181486
+0              footprint_x  0.074451
+2            footprint_yaw  0.068367
+3               bar_height  0.000000
+4  distance_com_to_polygon  0.000000
+2025-05-19 17:34:48,087 - INFO - 
+ANOVA Analysis - Effect of axis choice on angle deviation:
+2025-05-19 17:34:48,089 - INFO - F-statistic: 0.3170, p-value: 0.7300
+2025-05-19 17:34:48,089 - INFO - No statistically significant difference in angle deviation between axes.
+2025-05-19 17:34:48,089 - INFO - 
+ANOVA Analysis - Effect of height category on angle deviation:
+2025-05-19 17:34:48,090 - INFO - F-statistic: 1.4882, p-value: 0.2369
+2025-05-19 17:34:48,090 - INFO - No statistically significant difference in angle deviation between height categories.
+2025-05-19 17:34:48,191 - INFO - 
+ANOVA Analysis - Effect of CoM distance on angle deviation:
+2025-05-19 17:34:48,194 - INFO - F-statistic: 1.0410, p-value: 0.3841
+2025-05-19 17:34:48,194 - INFO - No statistically significant difference in angle deviation between CoM distance quartiles.
+2025-05-19 17:34:48,288 - INFO - 
+Analysis complete. Visualizations saved to disk.

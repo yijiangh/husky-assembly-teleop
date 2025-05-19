@@ -39,6 +39,8 @@ DEFAULT_BAR_POS = pp.Point(0.8, 0, 1.3)
 
 CLIENT_IP = '192.168.0.7' # Set to your own IP
 MOCAP_IP = '192.168.0.117' # set to the mocap PC's IP, get this from Motive Settings>Streaming pane->Local interface
+
+FILENAME_SUFFIX = '_vary_pos_vary_yaw'
   
 class HuskyMonitor(Node):
     USE_MOCAP = 1
@@ -95,6 +97,7 @@ class HuskyMonitor(Node):
         self.goal_bar_grasp = None
         self.grasp_theta_index = 0
         self.grasp_distance = 0.0 # fixed for now
+        self.goal_element_axis = 0
 
         self.trajectory_time = 2 if self.CALIBRATION else 5
 
@@ -178,7 +181,7 @@ class HuskyMonitor(Node):
         self.calibration_data = []
 
     def record_markerset_data(self):
-        world.save_markerset_data(self)
+        world.save_markerset_data(self, filename_suffix=FILENAME_SUFFIX)
         self.marker_set_data = []
         
     def reset_ui(self, target_conf=None):
@@ -210,6 +213,9 @@ class HuskyMonitor(Node):
 
     def update_trajectory_time(self, time):
         self.trajectory_time = time
+
+    def update_goal_align_axis(self, value):
+        self.goal_element_axis = value
 
     def show_previous_in_sequence(self):
         if self.current_seq_index >= 1:
@@ -411,9 +417,9 @@ class HuskyMonitor(Node):
             self.goal_bar_grasp = grasp
             self.reset_ui(self.goal_arm_pose)
 
-    def sample_bar_location_for_ik_and_transfer(self):
+    def sample_bar_location_for_ik_and_transfer(self, bar_goal_axis=None):
         # goal_bar_pose = self.get_world_from_bar_goal_pose()
-        traj, rand_pos, bar_goal_quat, theta_index, grasp_dist = world.randomize_bar_location_for_ik_and_transfer(self) #, goal_bar_pose[1]
+        traj, rand_pos, bar_goal_quat, theta_index, grasp_dist = world.randomize_bar_location_for_ik_and_transfer(self, bar_goal_axis) #, goal_bar_pose[1]
 
         self.base_from_goal_bar_pos = pp.Point(*rand_pos)
         self.world_from_goal_bar_euler = pp.euler_from_quat(bar_goal_quat)
@@ -497,7 +503,9 @@ class HuskyMonitor(Node):
         self.buttons.append(Button('Compute ik', self.compute_ik_for_bar))
         self.buttons.append(Button('Plan arm to conf target', lambda: world.plan_arm_to_goal(self)))
 
-        self.buttons.append(Button('Rand bar loc for ik', self.sample_bar_location_for_ik_and_transfer))
+        # self.buttons.append(Button('Rand bar loc for ik', self.sample_bar_location_for_ik_and_transfer))
+        self.goal_axis_slider = Slider("bar aligned axis", self.update_goal_align_axis, 0, 2, self.goal_element_axis)
+        self.buttons.append(Button('Rand bar loc for ik, fix axis', lambda : self.sample_bar_location_for_ik_and_transfer(int(self.goal_element_axis))))
 
         # bar_goal_pose_slider_group
         if self.BAR_GOAL_MODE:
@@ -666,6 +674,7 @@ class HuskyMonitor(Node):
 
         self.selected_robot_slider.update()
         self.trajectory_time_slider.update()
+        self.goal_axis_slider.update()
 
         if not self.USE_MOCAP:
             self.teleop_base_slider_group.update()
