@@ -11,6 +11,7 @@ import numpy as np
 import pybullet_planning as pp
 
 from compute_robot_com import *
+import colorlog
 
 MARKER_NAME_PAIRS = [
     ['5', '6'],
@@ -19,7 +20,8 @@ MARKER_NAME_PAIRS = [
     ['1', '3']
 ]
 
-DATA_BATCH = '20250519_vary_pos_vary_yaw'
+# DATA_BATCH = '20250519_vary_pos_vary_yaw'
+DATA_BATCH = '20250519_fixed_pos_vary_yaw'
 EXPORT = 1
 viewer = 0
 
@@ -27,8 +29,26 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 data_folder = os.path.join(HERE, DATA_BATCH)
 
 # Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Configure colorized logging
 logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+# Create console handler with color formatting
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.INFO)
+
+color_formatter = colorlog.ColoredFormatter(
+    '%(log_color)s%(asctime)s - %(levelname)s - %(message)s',
+    log_colors={
+        'DEBUG': 'cyan',
+        'INFO': 'green',
+        'WARNING': 'yellow',
+        'ERROR': 'red',
+        'CRITICAL': 'red,bg_white',
+    }
+)
+console_handler.setFormatter(color_formatter)
+logger.addHandler(console_handler)
 
 # Create file handler
 file_handler = logging.FileHandler(os.path.join(data_folder, f'bar_holding_acc_processing_log_{DATA_BATCH}.txt'), mode='w')
@@ -106,6 +126,69 @@ for i, file_name in enumerate(json_files):
         # Compute the direction vector of the fitted line
         line_direction = line_fit.direction / np.linalg.norm(line_fit.direction)
 
+        # Get target bar pose
+        goal_bar_pos, goal_bar_quat = entry.get("world_from_bar_pose", [])
+        observed_bar_pos = line_fit.point
+
+        # Construct rotation matrix using line_direction as the z-axis
+        # First, find a non-parallel vector to create x and y axes
+        if abs(line_direction[2]) < abs(line_direction[0]) and abs(line_direction[2]) < abs(line_direction[1]):
+            temp_vector = np.array([0, 0, 1])
+        elif abs(line_direction[0]) < abs(line_direction[1]):
+            temp_vector = np.array([1, 0, 0])
+        else:
+            temp_vector = np.array([0, 1, 0])
+
+        # Calculate x-axis (perpendicular to line_direction)
+        x_axis = np.cross(temp_vector, line_direction)
+        x_axis = x_axis / np.linalg.norm(x_axis)
+
+        # Calculate y-axis to complete the right-handed coordinate system
+        y_axis = np.cross(line_direction, x_axis)
+        y_axis = y_axis / np.linalg.norm(y_axis)
+
+        # Construct rotation matrix [x_axis, y_axis, z_axis]
+        rotation_matrix = np.column_stack((x_axis, y_axis, line_direction))
+
+        # Convert rotation matrix to quaternion
+        observed_bar_quat = pp.quat_from_matrix(rotation_matrix)
+
+        observed_tf = pp.tform_from_pose((observed_bar_pos, observed_bar_quat))
+        observed_z = observed_tf[:, 2]
+        # Compare observed_z with line_direction
+        # Calculate the angle between observed_z and line_direction
+        dot_product = np.dot(observed_z[:3], line_direction)
+        # Handle numerical precision by clipping
+        angle = np.arccos(np.clip(dot_product, -1.0, 1.0))
+        # If the vectors are pointing in opposite directions, we need to adjust
+        if angle > np.pi/2:
+            angle = np.pi - angle
+        # Log error if the angle deviation is larger than 1e-5 rad
+        if angle > 1e-5:
+            logger.error(f"Angle deviation between observed_z and line_direction too large: {angle:.8f} rad")
+        else:
+            logger.info(f"Observed_z and line_direction are aligned. Angle: {angle:.8f} rad")
+
+        # Log the observed bar position and orientation
+        logger.info(f"Observed bar position: {observed_bar_pos}")
+        logger.info(f"Observed bar quaternion: {observed_bar_quat}")
+
+        # Calculate average of center points
+        average_center = np.mean(center_points, axis=0)
+
+        # Calculate distance between average center and observed bar position
+        center_error = np.linalg.norm(average_center - observed_bar_pos)
+
+        # Log the distance
+        logger.info(f"Distance between average center and fitted line point: {center_error:.6f} m")
+
+        # Log warning if the error is too large
+        if center_error > 0.001:
+            logger.error(f"Error between average center and fitted line point is too large: {center_error:.6f} m")
+
+        # compute the distance betwen the observed bar position and the goal bar position
+        bar_pos_error = np.linalg.norm(observed_bar_pos - goal_bar_pos)
+
         # Define global axes
         global_axes = {
             0: np.array([1, 0, 0]),
@@ -137,6 +220,43 @@ for i, file_name in enumerate(json_files):
             logger.error(f'No axis found that is close to the line direction. The tolerance {tol} might be too strict.')
             raise ValueError()
 
+        # Extract rotation matrix from goal bar quaternion
+        goal_bar_rotation = pp.matrix_from_quat(goal_bar_quat)
+
+        # Extract the axis from the rotation matrix (we assume Z axis of the bar is the main axis)
+        goal_bar_axis = goal_bar_rotation[:, 2]  # Third column is the Z axis direction
+        goal_bar_axis = goal_bar_axis / np.linalg.norm(goal_bar_axis)  # Normalize
+
+        # Find the closest global axis to the goal bar's orientation
+        goal_closest_axis = None
+        goal_min_angle = float('inf')
+        for axis_name, axis_vector in global_axes.items():
+            # Compute the angle between the goal bar direction and the global axis
+            dot_product = np.dot(goal_bar_axis, axis_vector)
+            angle = np.arccos(np.clip(dot_product, -1.0, 1.0))
+            
+            # Check if the angle is close to 0 or pi
+            if np.isclose(angle, 0, atol=tol) or np.isclose(angle, np.pi, atol=tol):
+                goal_closest_axis = axis_name
+                goal_min_angle = np.arccos(dot_product)
+                break
+            
+            # Update the closest axis if the angle is smaller
+            if angle < goal_min_angle:
+                goal_closest_axis = axis_name
+                goal_min_angle = angle
+
+        # Log the goal bar axis information
+        goal_display_angle = np.rad2deg(goal_min_angle)
+        if goal_display_angle > 90:
+            goal_display_angle = 180 - goal_display_angle
+        logger.info('Closest global axis to the goal bar quat: %s (angle: %.2f deg)', 
+                    goal_closest_axis, goal_display_angle)
+
+        # Check if the observed axis matches the goal axis
+        if goal_closest_axis != closest_axis:
+            logger.error(f"Observed bar axis ({closest_axis}) differs from goal bar axis ({goal_closest_axis})")
+
         display_min_angle = np.rad2deg(min_angle)
         if display_min_angle > 90:
             display_min_angle = 180 - display_min_angle
@@ -147,6 +267,12 @@ for i, file_name in enumerate(json_files):
 
         arm_joints = pp.joints_from_names(robot, HUSKY_UR5e_JOINT_NAMES)
         pp.set_joint_positions(robot, arm_joints, joint_conf)
+
+        # Get the tool0 link pose
+        world_from_tool0 = pp.get_link_pose(robot, pp.link_from_name(robot, 'ur_arm_tool0'))
+        observed_bar_pose = (observed_bar_pos, observed_bar_quat)
+        tool0_from_bar_center = pp.multiply(pp.invert(world_from_tool0), observed_bar_pose)
+        # this is the TOOL0_FROM_GRIPPER_TCP
 
         # Compute center of mass for just the UR5e arm
         arm_com = compute_ur5e_com(robot)
@@ -183,9 +309,11 @@ for i, file_name in enumerate(json_files):
                 'footprint_pose': footprint_pose, 
                 'joint_conf': joint_conf, 
                 'point_centers': [list(center) for center in center_points], 
+                'tool0_from_bar_center' : tool0_from_bar_center,
                 'fitted_line': {'point' : list(line_fit.point), 'direction' : list(line_fit.direction)}, 
                 'closest_axis': closest_axis,
                 'angle_to_closest_axis': display_min_angle, # ! this is degrees!
+                'bar_pos_error' : float(bar_pos_error),
                 'ur5e_com': arm_com.tolist(),
                 'robot_com': robot_com.tolist(),
                 'support_polygon_vertices': [point.tolist() for point in sorted_contact_points],
