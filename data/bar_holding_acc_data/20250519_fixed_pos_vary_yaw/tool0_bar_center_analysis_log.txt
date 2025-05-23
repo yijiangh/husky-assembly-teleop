@@ -1,0 +1,32 @@
+2025-05-23 17:33:38,498 - INFO - Loading data from: d:\0_Project\03-2025_husky_assembly\Code\husky-asembly-teleop\data\bar_holding_acc_data\20250519_fixed_pos_vary_yaw\compiled_bar_holding_acc_20250519_fixed_pos_vary_yaw.json
+2025-05-23 17:33:38,502 - INFO - Found 47 tool0_from_bar_center transformations
+2025-05-23 17:33:38,502 - INFO - Average tool0_from_bar_center position: [ 0.00087748 -0.00019931  0.16408685]
+2025-05-23 17:33:38,502 - INFO - Mean distance from average position: 0.003441 m
+2025-05-23 17:33:38,503 - INFO - Max distance from average position: 0.007345 m
+2025-05-23 17:33:38,503 - INFO - Min distance from average position: 0.001482 m
+2025-05-23 17:33:38,503 - INFO - Standard deviation of distances: 0.001150 m
+2025-05-23 17:33:38,929 - INFO - Average X-axis: [-0.97965099  0.00672165 -0.20059599]
+2025-05-23 17:33:38,930 - INFO - Average Y-axis: [-0.138321    0.00168051  0.99038602]
+2025-05-23 17:33:38,930 - INFO - Average Z-axis: [ 0.00205702  0.99999431 -0.00267478]
+2025-05-23 17:33:38,932 - INFO - X-axis statistics:
+2025-05-23 17:33:38,932 - INFO -   Mean deviation: 82.6144 degrees
+2025-05-23 17:33:38,932 - INFO -   Max deviation: 168.4297 degrees
+2025-05-23 17:33:38,932 - INFO -   Min deviation: 11.5697 degrees
+2025-05-23 17:33:38,932 - INFO -   Standard deviation: 53.2461 degrees
+2025-05-23 17:33:38,933 - INFO - Y-axis statistics:
+2025-05-23 17:33:38,933 - INFO -   Mean deviation: 78.7379 degrees
+2025-05-23 17:33:38,933 - INFO -   Max deviation: 172.0486 degrees
+2025-05-23 17:33:38,933 - INFO -   Min deviation: 7.9485 degrees
+2025-05-23 17:33:38,933 - INFO -   Standard deviation: 54.3048 degrees
+2025-05-23 17:33:38,933 - INFO - Z-axis statistics:
+2025-05-23 17:33:38,933 - INFO -   Mean deviation: 4.1024 degrees
+2025-05-23 17:33:38,934 - INFO -   Max deviation: 179.7823 degrees
+2025-05-23 17:33:38,934 - INFO -   Min deviation: 0.0238 degrees
+2025-05-23 17:33:38,934 - INFO -   Standard deviation: 25.9030 degrees
+2025-05-23 17:33:39,343 - INFO - Using categorical units to plot a list of strings that are all parsable as floats or dates. If these strings should be plotted as numbers, cast to the appropriate data type before plotting.
+2025-05-23 17:33:39,347 - INFO - Using categorical units to plot a list of strings that are all parsable as floats or dates. If these strings should be plotted as numbers, cast to the appropriate data type before plotting.
+2025-05-23 17:33:39,371 - INFO - Using categorical units to plot a list of strings that are all parsable as floats or dates. If these strings should be plotted as numbers, cast to the appropriate data type before plotting.
+2025-05-23 17:33:39,376 - INFO - Using categorical units to plot a list of strings that are all parsable as floats or dates. If these strings should be plotted as numbers, cast to the appropriate data type before plotting.
+2025-05-23 17:33:39,400 - INFO - Using categorical units to plot a list of strings that are all parsable as floats or dates. If these strings should be plotted as numbers, cast to the appropriate data type before plotting.
+2025-05-23 17:33:39,403 - INFO - Using categorical units to plot a list of strings that are all parsable as floats or dates. If these strings should be plotted as numbers, cast to the appropriate data type before plotting.
+2025-05-23 17:33:40,218 - INFO - Analysis completed. All visualizations saved.

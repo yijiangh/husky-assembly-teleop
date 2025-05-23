@@ -208,7 +208,6 @@ def plan_transfer_motion(robot, ik_solver, transfer_element, attachments, obstac
 
     movable_joints = pp.joints_from_names(robot, UR5E_JOINT_NAMES)
     tool_link = pp.link_from_name(robot, 'ur_arm_tool0')
-    # gripper_tcp_from_tool0 = pp.invert(TOOL0_FROM_GRIPPER_TCP)
     bar_body = transfer_element.body
 
     sample_fn = pp.get_sample_fn(robot, movable_joints, custom_limits=custom_limits)
