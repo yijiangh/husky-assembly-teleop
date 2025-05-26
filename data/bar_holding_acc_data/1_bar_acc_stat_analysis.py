@@ -15,6 +15,7 @@ from sklearn.feature_selection import mutual_info_regression
 from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.model_selection import train_test_split
 
+# DATA_BATCH = '20250519_fixed_pos_vary_yaw'
 DATA_BATCH = '20250519_vary_pos_vary_yaw'
 
 # Set up logging to file
@@ -103,7 +104,6 @@ for entry in data:
         'distance_com_to_polygon': distance_com_to_polygon,
         'angle_deviation': angle_deviation,
         'pos_deviation': pos_deviation,
-        'tool0_from_bar_center' : entry['tool0_from_bar_center'],
     })
 
 # Convert to DataFrame for easier analysis
@@ -212,19 +212,19 @@ logger.info(correlations)
 # Add this code after the angle deviation statistics section
 
 # Calculate position deviation statistics
-average_pos_deviation = df['pos_deviation'].mean()
-std_pos_deviation = df['pos_deviation'].std()
-median_pos_deviation = df['pos_deviation'].median()
-q1_pos = df['pos_deviation'].quantile(0.25)
-q3_pos = df['pos_deviation'].quantile(0.75)
-iqr_pos = q3_pos - q1_pos
+average_pos_deviation = df['pos_deviation'].mean() * 1000  # Convert to mm
+std_pos_deviation = df['pos_deviation'].std() * 1000  # Convert to mm
+median_pos_deviation = df['pos_deviation'].median() * 1000  # Convert to mm
+q1_pos = df['pos_deviation'].quantile(0.25) * 1000  # Convert to mm
+q3_pos = df['pos_deviation'].quantile(0.75) * 1000  # Convert to mm
+iqr_pos = q3_pos - q1_pos  # Already in mm
 
 # Log position deviation statistics
 logger.info("\nPosition Deviation Statistics:")
-logger.info(f"Average position deviation: {average_pos_deviation:.4f} m")
-logger.info(f"Standard deviation: {std_pos_deviation:.4f} m")
-logger.info(f"Median position deviation: {median_pos_deviation:.4f} m")
-logger.info(f"Interquartile range: {iqr_pos:.4f} m")
+logger.info(f"Average position deviation: {average_pos_deviation:.2f} mm")
+logger.info(f"Standard deviation: {std_pos_deviation:.2f} mm")
+logger.info(f"Median position deviation: {median_pos_deviation:.2f} mm")
+logger.info(f"Interquartile range: {iqr_pos:.2f} mm")
 
 # --- Combined Visualizations (angle and position deviation) ---
 
@@ -240,11 +240,12 @@ plt.xlabel('Distance from CoM to Support Polygon Center')
 plt.ylabel('Angle Deviation (rad)')
 
 plt.subplot(2, 1, 2)
-sns.scatterplot(x='distance_com_to_polygon', y='pos_deviation', 
+# Convert pos_deviation to mm for plotting
+sns.scatterplot(x='distance_com_to_polygon', y=df['pos_deviation'] * 1000, 
                 hue='axis_label', data=df)
 plt.title('Distance CoM to Polygon vs Position Deviation')
 plt.xlabel('Distance from CoM to Support Polygon Center')
-plt.ylabel('Position Deviation (m)')
+plt.ylabel('Position Deviation (mm)')
 
 plt.tight_layout()
 plt.savefig(os.path.join(data_folder, '1_com_distance_vs_deviations.png'))
@@ -269,10 +270,12 @@ axis_data_pos = pd.melt(df, id_vars=['pos_deviation'],
                      value_vars=['axis_0', 'axis_1', 'axis_2'], 
                      var_name='axis', value_name='is_axis')
 axis_data_pos = axis_data_pos[axis_data_pos['is_axis'] == 1]
-sns.boxplot(x='axis', y='pos_deviation', data=axis_data_pos)
+# Convert pos_deviation to mm for plotting
+axis_data_pos['pos_deviation_mm'] = axis_data_pos['pos_deviation'] * 1000
+sns.boxplot(x='axis', y='pos_deviation_mm', data=axis_data_pos)
 plt.title('Position Deviation by Closest Axis')
 plt.xlabel('Closest Axis')
-plt.ylabel('Position Deviation (m)')
+plt.ylabel('Position Deviation (mm)')
 
 plt.tight_layout()
 plt.savefig(os.path.join(data_folder, '2_bar_axis_vs_deviations.png'))
@@ -297,10 +300,12 @@ height_data_pos = pd.melt(df, id_vars=['pos_deviation'],
                        value_vars=['height_low', 'height_mid', 'height_high'], 
                        var_name='height', value_name='is_height')
 height_data_pos = height_data_pos[height_data_pos['is_height'] == 1]
-sns.boxplot(x='height', y='pos_deviation', data=height_data_pos)
+# Convert pos_deviation to mm for plotting
+height_data_pos['pos_deviation_mm'] = height_data_pos['pos_deviation'] * 1000
+sns.boxplot(x='height', y='pos_deviation_mm', data=height_data_pos)
 plt.title('Position Deviation by Bar Height')
 plt.xlabel('Bar Height Category')
-plt.ylabel('Position Deviation (m)')
+plt.ylabel('Position Deviation (mm)')
 
 plt.tight_layout()
 plt.savefig(os.path.join(data_folder, '3_bar_height_vs_deviations.png'))
@@ -326,17 +331,19 @@ ax1.set_title('Mean Angle Deviation by Robot Position (0.5m grid)')
 ax1.set_xlabel('X Position (m)')
 ax1.set_ylabel('Y Position (m)')
 
-# For position deviation
+# For position deviation - convert to mm
 pivot_table_pos = df.pivot_table(
     values='pos_deviation', 
     index=pd.cut(df['footprint_y'], bins=y_bins),
     columns=pd.cut(df['footprint_x'], bins=x_bins),
     aggfunc='mean'
-)
+) * 1000  # Convert to mm
 sns.heatmap(pivot_table_pos, cmap='viridis', annot=False, ax=ax2)
 ax2.set_title('Mean Position Deviation by Robot Position (0.5m grid)')
 ax2.set_xlabel('X Position (m)')
 ax2.set_ylabel('Y Position (m)')
+cbar = ax2.collections[0].colorbar
+cbar.set_label('Position Deviation (mm)')
 
 plt.tight_layout()
 plt.savefig(os.path.join(data_folder, '4_footprint_position_deviations.png'))
@@ -366,11 +373,13 @@ if yaw_cols:
                            var_name='yaw', value_name='is_yaw_direction')
     yaw_data_pos = yaw_data_pos[yaw_data_pos['is_yaw_direction'] == 1]
     yaw_data_pos['yaw_category'] = yaw_data_pos['yaw'].str.replace('yaw_', '')
+    # Convert pos_deviation to mm for plotting
+    yaw_data_pos['pos_deviation_mm'] = yaw_data_pos['pos_deviation'] * 1000
     
-    sns.boxplot(x='yaw_category', y='pos_deviation', data=yaw_data_pos)
+    sns.boxplot(x='yaw_category', y='pos_deviation_mm', data=yaw_data_pos)
     plt.title('Position Deviation by Footprint Yaw Direction')
     plt.xlabel('Footprint Yaw Direction')
-    plt.ylabel('Position Deviation (m)')
+    plt.ylabel('Position Deviation (mm)')
     
     plt.tight_layout()
     plt.savefig(os.path.join(data_folder, '5_yaw_vs_deviations.png'))
@@ -580,11 +589,11 @@ ax1.set_ylabel('Angle Deviation (rad)')
 ax1.set_title('Distance CoM vs Angle Deviation')
 fig.colorbar(scatter1, ax=ax1, label='Bar Height')
 
-# Position deviation vs CoM distance
-scatter2 = ax2.scatter(df['distance_com_to_polygon'], df['pos_deviation'], 
+# Position deviation vs CoM distance - convert to mm
+scatter2 = ax2.scatter(df['distance_com_to_polygon'], df['pos_deviation'] * 1000, 
                      c=df['bar_height'], cmap='viridis', alpha=0.7)
 ax2.set_xlabel('Distance from CoM to Support Polygon Center')
-ax2.set_ylabel('Position Deviation (m)')
+ax2.set_ylabel('Position Deviation (mm)')
 ax2.set_title('Distance CoM vs Position Deviation')
 fig.colorbar(scatter2, ax=ax2, label='Bar Height')
 
@@ -601,12 +610,14 @@ plt.title('Angle Deviation by Distance to Support Polygon (Quartiles)')
 plt.xlabel('Distance from CoM to Support Polygon Center (Quartiles)')
 plt.ylabel('Angle Deviation (rad)')
 
-# For position deviation
+# For position deviation - convert to mm
 plt.subplot(2, 1, 2)
-sns.boxplot(x='distance_category', y='pos_deviation', data=df)
+# Create a new column for mm display
+df['pos_deviation_mm'] = df['pos_deviation'] * 1000
+sns.boxplot(x='distance_category', y='pos_deviation_mm', data=df)
 plt.title('Position Deviation by Distance to Support Polygon (Quartiles)')
 plt.xlabel('Distance from CoM to Support Polygon Center (Quartiles)')
-plt.ylabel('Position Deviation (m)')
+plt.ylabel('Position Deviation (mm)')
 
 plt.tight_layout()
 plt.savefig(os.path.join(data_folder, '9_com_distance_categories_vs_deviations.png'))
@@ -616,10 +627,104 @@ plt.figure(figsize=(10, 6))
 corr_angle_pos = df['angle_deviation'].corr(df['pos_deviation'])
 logger.info(f"\nCorrelation between angle deviation and position deviation: {corr_angle_pos:.4f}")
 
-sns.scatterplot(x='angle_deviation', y='pos_deviation', hue='axis_label', data=df)
+# Use mm for position deviation
+sns.scatterplot(x='angle_deviation', y='pos_deviation_mm', hue='axis_label', data=df)
 plt.title(f'Angle Deviation vs Position Deviation (Correlation: {corr_angle_pos:.4f})')
 plt.xlabel('Angle Deviation (rad)')
-plt.ylabel('Position Deviation (m)')
+plt.ylabel('Position Deviation (mm)')
 plt.savefig(os.path.join(data_folder, '10_angle_vs_pos_deviation.png'))
+
+# Figure 11: Bar position error vector in tool0 frame
+logger.info("\nAnalyzing bar position error vector in tool0 frame")
+
+# Extract the position error vector data if it exists in the raw data
+position_error_vectors = []
+for entry in data:
+    if 'bar_pos_error_vector_tool0' in entry:
+        position_error_vectors.append({
+            'x': entry['bar_pos_error_vector_tool0'][0],
+            'y': entry['bar_pos_error_vector_tool0'][1],
+            'z': entry['bar_pos_error_vector_tool0'][2],
+            'index': len(position_error_vectors)
+        })
+    
+if position_error_vectors:
+    # Convert to DataFrame for easier analysis
+    error_vector_df = pd.DataFrame(position_error_vectors)
+    
+    # Calculate statistics before outlier removal - convert to mm
+    logger.info(f"Position error vectors before outlier removal: {len(error_vector_df)}")
+    logger.info(f"X range before: {error_vector_df['x'].min():.5f} to {error_vector_df['x'].max():.5f}")
+    logger.info(f"Y range before: {error_vector_df['y'].min():.5f} to {error_vector_df['y'].max():.5f}")
+    logger.info(f"Z range before: {error_vector_df['z'].min():.5f} to {error_vector_df['z'].max():.5f}")
+    
+    # Identify outliers using IQR method for each dimension
+    outlier_indices = set()
+    
+    for dim in ['x', 'y', 'z']:
+        q1 = error_vector_df[dim].quantile(0.25)
+        q3 = error_vector_df[dim].quantile(0.75)
+        iqr = q3 - q1
+        lower_bound = q1 - 1.5 * iqr
+        upper_bound = q3 + 1.5 * iqr
+        
+        # Find indices of outliers in this dimension
+        dim_outliers = error_vector_df[(error_vector_df[dim] < lower_bound) | (error_vector_df[dim] > upper_bound)].index
+        if len(dim_outliers) > 0:
+            logger.warning(f"Detected {len(dim_outliers)} outliers in {dim} dimension")
+            outlier_indices.update(dim_outliers)
+    
+    # Log total outliers to be removed
+    if outlier_indices:
+        logger.warning(f"Removing {len(outlier_indices)} total rows with outliers in any dimension")
+        
+    # Keep only rows that don't have outliers in any dimension
+    error_vector_df = error_vector_df.drop(list(outlier_indices))
+    # Re-index after removing outliers
+    error_vector_df['index'] = range(len(error_vector_df))
+    
+    # Log statistics after outlier removal
+    logger.info(f"Position error vectors after outlier removal: {len(error_vector_df)}")
+    logger.info(f"X range after: {error_vector_df['x'].min() * 1000:.2f} to {error_vector_df['x'].max() * 1000:.2f} mm")
+    logger.info(f"Y range after: {error_vector_df['y'].min() * 1000:.2f} to {error_vector_df['y'].max() * 1000:.2f} mm")
+    logger.info(f"Z range after: {error_vector_df['z'].min() * 1000:.2f} to {error_vector_df['z'].max() * 1000:.2f} mm")
+
+    # Calculate average and std for each component - convert to mm
+    avg_x = error_vector_df['x'].mean() * 1000
+    std_x = error_vector_df['x'].std() * 1000
+    avg_y = error_vector_df['y'].mean() * 1000
+    std_y = error_vector_df['y'].std() * 1000
+    avg_z = error_vector_df['z'].mean() * 1000
+    std_z = error_vector_df['z'].std() * 1000
+
+    # Log the statistics
+    logger.info("Position error vector statistics in tool0 frame:")
+    logger.info(f"X component - Average: {avg_x:.2f} mm, Std Dev: {std_x:.2f} mm")
+    logger.info(f"Y component - Average: {avg_y:.2f} mm, Std Dev: {std_y:.2f} mm")
+    logger.info(f"Z component - Average: {avg_z:.2f} mm, Std Dev: {std_z:.2f} mm")
+
+    # Calculate the overall magnitude of the error vector - convert to mm
+    magnitude = np.sqrt(error_vector_df['x']**2 + error_vector_df['y']**2 + error_vector_df['z']**2) * 1000
+    avg_magnitude = magnitude.mean()
+    std_magnitude = magnitude.std()
+    logger.info(f"Overall magnitude - Average: {avg_magnitude:.2f} mm, Std Dev: {std_magnitude:.2f} mm")
+
+    # Create a line plot with mm scale
+    plt.figure(figsize=(12, 8))
+    
+    plt.plot(error_vector_df['index'], error_vector_df['x'] * 1000, label='X', marker='o', linestyle='-', alpha=0.7)
+    plt.plot(error_vector_df['index'], error_vector_df['y'] * 1000, label='Y', marker='s', linestyle='-', alpha=0.7)
+    plt.plot(error_vector_df['index'], error_vector_df['z'] * 1000, label='Z', marker='^', linestyle='-', alpha=0.7)
+    
+    plt.title('Bar Position Error in Tool0 Frame')
+    plt.xlabel('Sample Index')
+    plt.ylabel('Error (mm)')
+    plt.legend()
+    plt.grid(True)
+    
+    plt.tight_layout()
+    plt.savefig(os.path.join(data_folder, '11_bar_position_error_tool0_frame.png'))
+else:
+    logger.warning("No bar_pos_error_vector_tool0 data found in the input file")
 
 logger.info("\nCombined angle and position deviation analysis complete.")
