@@ -27,7 +27,7 @@ zup_from_yup = pp.pose_from_tform(yup_tform)
 #   <parent link="robotiq_85_mount"/>
 #   <child link="bar_tcp"/>
 # </joint>
-TOOL0_FROM_GRIPPER_TCP = pp.Pose(point=(0, 0, 0.152), euler=pp.Euler(yaw=np.pi))
+TOOL0_FROM_GRIPPER_TCP = pp.Pose(point=(0, 0, 0.152 + 0.012), euler=pp.Euler(yaw=np.pi))
 
 UR5E_JOINT_NAMES = [
                       "ur_arm_shoulder_pan_joint", 
