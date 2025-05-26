@@ -1,0 +1,4 @@
+2025-05-26 19:00:45,432 - INFO - Working on file: dual_arm_acc_20250516_1914_.json
+2025-05-26 19:00:45,436 - INFO - Mean positional offset 0.4841
+2025-05-26 19:00:45,436 - INFO - Mean rotational offset -0.5413 5.5173 176.7523
+2025-05-26 19:00:45,555 - INFO - Exported plot to /media/jakob/SSD/ETH/RA/workspace/src/husky-asembly-teleop/data/dual_arm_acc_data/20250516/dual_arm_acc_20250516.png
