@@ -1,0 +1,14 @@
+2025-05-26 10:15:08,543 - INFO - Loading data from: d:\0_Project\03-2025_husky_assembly\Code\husky-asembly-teleop\data\bar_holding_acc_data\20250519_vary_pos_vary_yaw\compiled_bar_holding_acc_20250519_vary_pos_vary_yaw.json
+2025-05-26 10:15:08,545 - INFO - Found 31 tool0_from_bar_center transformations
+2025-05-26 10:15:08,546 - INFO - Average tool0_from_bar_center position: [0.47, 0.16, 164.28] mm
+2025-05-26 10:15:08,546 - INFO - Mean distance from average position: 3.24 mm
+2025-05-26 10:15:08,546 - INFO - Max distance from average position: 6.15 mm
+2025-05-26 10:15:08,546 - INFO - Min distance from average position: 1.36 mm
+2025-05-26 10:15:08,546 - INFO - Standard deviation of distances: 1.15 mm
+2025-05-26 10:15:09,059 - INFO - Using categorical units to plot a list of strings that are all parsable as floats or dates. If these strings should be plotted as numbers, cast to the appropriate data type before plotting.
+2025-05-26 10:15:09,063 - INFO - Using categorical units to plot a list of strings that are all parsable as floats or dates. If these strings should be plotted as numbers, cast to the appropriate data type before plotting.
+2025-05-26 10:15:09,629 - INFO - Position component deviations:
+2025-05-26 10:15:09,629 - INFO -   X - Mean: 1.47 mm, Std: 1.03 mm
+2025-05-26 10:15:09,629 - INFO -   Y - Mean: 1.88 mm, Std: 1.48 mm
+2025-05-26 10:15:09,629 - INFO -   Z - Mean: 1.37 mm, Std: 1.01 mm
+2025-05-26 10:15:09,845 - INFO - Position analysis completed. All visualizations saved.

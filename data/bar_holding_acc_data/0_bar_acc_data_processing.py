@@ -20,8 +20,8 @@ MARKER_NAME_PAIRS = [
     ['1', '3']
 ]
 
-# DATA_BATCH = '20250519_vary_pos_vary_yaw'
-DATA_BATCH = '20250519_fixed_pos_vary_yaw'
+# DATA_BATCH = '20250519_fixed_pos_vary_yaw'
+DATA_BATCH = '20250519_vary_pos_vary_yaw'
 EXPORT = 1
 viewer = 0
 
@@ -274,6 +274,18 @@ for i, file_name in enumerate(json_files):
         tool0_from_bar_center = pp.multiply(pp.invert(world_from_tool0), observed_bar_pose)
         # this is the TOOL0_FROM_GRIPPER_TCP
 
+        # Compute the position error vector in world frame
+        pos_error_world = observed_bar_pos - goal_bar_pos
+        logger.info(f"Position error in world frame: {pos_error_world}")
+
+        # Get the rotation matrix from world to tool0
+        tool0_rotation_matrix = pp.matrix_from_quat(world_from_tool0[1])
+        tool0_rotation_matrix_transpose = tool0_rotation_matrix.T  # Transpose for inverse rotation
+
+        # Transform the position error vector to tool0 frame
+        pos_error_tool0 = np.dot(tool0_rotation_matrix_transpose, pos_error_world)
+        logger.info(f"Position error in tool0 frame: {pos_error_tool0}")
+
         # Compute center of mass for just the UR5e arm
         arm_com = compute_ur5e_com(robot)
         # print(f"UR5e Arm Center of Mass: {arm_com}")
@@ -314,6 +326,7 @@ for i, file_name in enumerate(json_files):
                 'closest_axis': closest_axis,
                 'angle_to_closest_axis': display_min_angle, # ! this is degrees!
                 'bar_pos_error' : float(bar_pos_error),
+                'bar_pos_error_vector_tool0': pos_error_tool0.tolist(),
                 'ur5e_com': arm_com.tolist(),
                 'robot_com': robot_com.tolist(),
                 'support_polygon_vertices': [point.tolist() for point in sorted_contact_points],
