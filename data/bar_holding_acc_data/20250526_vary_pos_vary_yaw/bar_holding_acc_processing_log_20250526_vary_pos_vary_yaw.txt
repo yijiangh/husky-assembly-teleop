@@ -1,0 +1,168 @@
+2025-05-26 17:01:03,108 - INFO - Working on file: bar_holding_acc_20250526_1623.json
+2025-05-26 17:01:03,113 - INFO - Observed_z and line_direction are aligned. Angle: 0.00000000 rad
+2025-05-26 17:01:03,113 - INFO - Observed bar position: [ 2.29054841 -0.05459572  0.68383628]
+2025-05-26 17:01:03,113 - INFO - Observed bar quaternion: [ 0.00262723  0.00285744 -0.70710101  0.7071019 ]
+2025-05-26 17:01:03,115 - INFO - Distance between average center and fitted line point: 0.000000 m
+2025-05-26 17:01:03,117 - INFO - Closest global axis to the goal bar quat: 2 (angle: 0.00 deg)
+2025-05-26 17:01:03,118 - INFO - Closest global axis to the line: 2 (angle: 0.44 deg)
+2025-05-26 17:01:03,120 - INFO - Position error in world frame: [-0.00222388 -0.00177146 -0.00145018]
+2025-05-26 17:01:03,120 - INFO - Position error in tool0 frame: [0.00222395 0.00145008 0.00177145]
+2025-05-26 17:01:03,125 - INFO - Observed_z and line_direction are aligned. Angle: 0.00000000 rad
+2025-05-26 17:01:03,125 - INFO - Observed bar position: [2.77064192 0.01917017 1.26268485]
+2025-05-26 17:01:03,125 - INFO - Observed bar quaternion: [ 7.07344879e-01 -6.81834226e-04 -6.81374495e-04  7.06867946e-01]
+2025-05-26 17:01:03,127 - INFO - Distance between average center and fitted line point: 0.000000 m
+2025-05-26 17:01:03,129 - INFO - Closest global axis to the goal bar quat: 1 (angle: 0.00 deg)
+2025-05-26 17:01:03,130 - INFO - Closest global axis to the line: 1 (angle: 0.12 deg)
+2025-05-26 17:01:03,132 - INFO - Position error in world frame: [ 0.00257933 -0.00365078  0.00061014]
+2025-05-26 17:01:03,133 - INFO - Position error in tool0 frame: [ 0.00257942 -0.00365072  0.00061016]
+2025-05-26 17:01:03,138 - INFO - Observed_z and line_direction are aligned. Angle: 0.00000000 rad
+2025-05-26 17:01:03,138 - INFO - Observed bar position: [2.77065831 0.01916542 1.2626619 ]
+2025-05-26 17:01:03,139 - INFO - Observed bar quaternion: [ 7.07338873e-01 -6.71638034e-04 -6.71196600e-04  7.06873975e-01]
+2025-05-26 17:01:03,140 - INFO - Distance between average center and fitted line point: 0.000000 m
+2025-05-26 17:01:03,142 - INFO - Closest global axis to the goal bar quat: 1 (angle: 0.00 deg)
+2025-05-26 17:01:03,142 - INFO - Closest global axis to the line: 1 (angle: 0.12 deg)
+2025-05-26 17:01:03,144 - INFO - Position error in world frame: [-0.00022644 -0.00373337  0.001371  ]
+2025-05-26 17:01:03,144 - INFO - Position error in tool0 frame: [-0.00022666 -0.00373331  0.00137112]
+2025-05-26 17:01:03,150 - INFO - Observed_z and line_direction are aligned. Angle: 0.00000000 rad
+2025-05-26 17:01:03,150 - INFO - Observed bar position: [ 2.59414378 -0.20730525  0.96894494]
+2025-05-26 17:01:03,151 - INFO - Observed bar quaternion: [0.50221746 0.49987355 0.49778251 0.50011662]
+2025-05-26 17:01:03,152 - INFO - Distance between average center and fitted line point: 0.000000 m
+2025-05-26 17:01:03,155 - INFO - Closest global axis to the goal bar quat: 0 (angle: 0.00 deg)
+2025-05-26 17:01:03,155 - INFO - Closest global axis to the line: 0 (angle: 0.36 deg)
+2025-05-26 17:01:03,157 - INFO - Position error in world frame: [-0.00037035 -0.00295365 -0.00038794]
+2025-05-26 17:01:03,158 - INFO - Position error in tool0 frame: [-0.00038807  0.0003706   0.0029536 ]
+2025-05-26 17:01:03,158 - INFO - Working on file: bar_holding_acc_20250526_1659.json
+2025-05-26 17:01:03,159 - WARNING - Distance between 5 and 6 is too small or large: 0.08095866432113039 m
+2025-05-26 17:01:03,163 - INFO - Observed_z and line_direction are aligned. Angle: 0.00000000 rad
+2025-05-26 17:01:03,164 - INFO - Observed bar position: [-1.75558579  0.63431757  0.59635238]
+2025-05-26 17:01:03,164 - INFO - Observed bar quaternion: [ 0.0060438   0.01252615 -0.70699582  0.70708095]
+2025-05-26 17:01:03,167 - INFO - Distance between average center and fitted line point: 0.000000 m
+2025-05-26 17:01:03,169 - INFO - Closest global axis to the goal bar quat: 2 (angle: 0.00 deg)
+2025-05-26 17:01:03,169 - INFO - Closest global axis to the line: 2 (angle: 1.59 deg)
+2025-05-26 17:01:03,172 - INFO - Position error in world frame: [ 0.00216079 -0.00074936 -0.00288638]
+2025-05-26 17:01:03,172 - INFO - Position error in tool0 frame: [0.00074941 0.00288617 0.00216104]
+2025-05-26 17:01:03,173 - WARNING - Error for marker 8 is too large: 0.002096 m
+2025-05-26 17:01:03,177 - INFO - Observed_z and line_direction are aligned. Angle: 0.00000000 rad
+2025-05-26 17:01:03,177 - INFO - Observed bar position: [-3.10705981  0.50804867  0.44622058]
+2025-05-26 17:01:03,177 - INFO - Observed bar quaternion: [ 0.70342986 -0.0056087  -0.00566682  0.71071996]
+2025-05-26 17:01:03,179 - INFO - Distance between average center and fitted line point: 0.000000 m
+2025-05-26 17:01:03,182 - INFO - Closest global axis to the goal bar quat: 1 (angle: 0.00 deg)
+2025-05-26 17:01:03,182 - INFO - Closest global axis to the line: 1 (angle: 1.09 deg)
+2025-05-26 17:01:03,185 - INFO - Position error in world frame: [-0.00260267 -0.00185417 -0.00085795]
+2025-05-26 17:01:03,185 - INFO - Position error in tool0 frame: [ 0.00123388 -0.0018542   0.00244691]
+2025-05-26 17:01:03,186 - WARNING - Error for marker 2 is too large: 0.002054 m
+2025-05-26 17:01:03,191 - INFO - Observed_z and line_direction are aligned. Angle: 0.00000000 rad
+2025-05-26 17:01:03,191 - INFO - Observed bar position: [-1.74180518  0.96858792  1.20976415]
+2025-05-26 17:01:03,191 - INFO - Observed bar quaternion: [-0.00597574  0.70045687  0.00586531  0.71364562]
+2025-05-26 17:01:03,193 - INFO - Distance between average center and fitted line point: 0.000000 m
+2025-05-26 17:01:03,194 - INFO - Closest global axis to the goal bar quat: 0 (angle: 0.00 deg)
+2025-05-26 17:01:03,194 - INFO - Closest global axis to the line: 0 (angle: 1.44 deg)
+2025-05-26 17:01:03,198 - INFO - Position error in world frame: [-0.00595032 -0.00214477  0.00521508]
+2025-05-26 17:01:03,198 - INFO - Position error in tool0 frame: [0.00217017 0.00595096 0.00520383]
+2025-05-26 17:01:03,199 - INFO - Working on file: bar_holding_acc_20250526_1645.json
+2025-05-26 17:01:03,204 - INFO - Observed_z and line_direction are aligned. Angle: 0.00000000 rad
+2025-05-26 17:01:03,204 - INFO - Observed bar position: [-1.45428117 -0.63803416  1.21824334]
+2025-05-26 17:01:03,205 - INFO - Observed bar quaternion: [-0.01047317 -0.00894404 -0.70705021  0.70702922]
+2025-05-26 17:01:03,206 - INFO - Distance between average center and fitted line point: 0.000000 m
+2025-05-26 17:01:03,208 - INFO - Closest global axis to the goal bar quat: 2 (angle: 0.00 deg)
+2025-05-26 17:01:03,208 - INFO - Closest global axis to the line: 2 (angle: 1.58 deg)
+2025-05-26 17:01:03,210 - INFO - Position error in world frame: [0.00243251 0.00263519 0.00155399]
+2025-05-26 17:01:03,210 - INFO - Position error in tool0 frame: [ 0.00263501 -0.00155449 -0.00243238]
+2025-05-26 17:01:03,211 - WARNING - Error for marker 3 is too large: 0.002276 m
+2025-05-26 17:01:03,217 - INFO - Observed_z and line_direction are aligned. Angle: 0.00000000 rad
+2025-05-26 17:01:03,217 - INFO - Observed bar position: [-0.96518212 -0.98364508  0.85150635]
+2025-05-26 17:01:03,217 - INFO - Observed bar quaternion: [ 0.50670223  0.50679183 -0.49311464  0.4932067 ]
+2025-05-26 17:01:03,220 - INFO - Distance between average center and fitted line point: 0.000000 m
+2025-05-26 17:01:03,222 - INFO - Closest global axis to the goal bar quat: 1 (angle: 0.00 deg)
+2025-05-26 17:01:03,222 - INFO - Closest global axis to the line: 1 (angle: 1.56 deg)
+2025-05-26 17:01:03,223 - INFO - Position error in world frame: [ 0.00247366 -0.00093675 -0.00204873]
+2025-05-26 17:01:03,224 - INFO - Position error in tool0 frame: [ 0.00204872 -0.00093683  0.00247364]
+2025-05-26 17:01:03,227 - INFO - Observed_z and line_direction are aligned. Angle: 0.00000001 rad
+2025-05-26 17:01:03,227 - INFO - Observed bar position: [-1.66411814 -0.32619832  1.38248457]
+2025-05-26 17:01:03,227 - INFO - Observed bar quaternion: [0.70642237 0.00889864 0.00891446 0.70767844]
+2025-05-26 17:01:03,230 - INFO - Distance between average center and fitted line point: 0.000000 m
+2025-05-26 17:01:03,232 - INFO - Closest global axis to the goal bar quat: 1 (angle: 0.00 deg)
+2025-05-26 17:01:03,233 - INFO - Closest global axis to the line: 1 (angle: 1.45 deg)
+2025-05-26 17:01:03,235 - INFO - Position error in world frame: [ 0.0012044  -0.00257344  0.00112714]
+2025-05-26 17:01:03,235 - INFO - Position error in tool0 frame: [ 0.00120429 -0.00257366  0.00112676]
+2025-05-26 17:01:03,236 - INFO - Working on file: bar_holding_acc_20250526_1657.json
+2025-05-26 17:01:03,240 - INFO - Observed_z and line_direction are aligned. Angle: 0.00000000 rad
+2025-05-26 17:01:03,240 - INFO - Observed bar position: [-0.95861476  0.39865686  0.30096439]
+2025-05-26 17:01:03,241 - INFO - Observed bar quaternion: [ 0.00580394  0.71481815 -0.00593306  0.69926113]
+2025-05-26 17:01:03,259 - INFO - Distance between average center and fitted line point: 0.000000 m
+2025-05-26 17:01:03,261 - INFO - Closest global axis to the goal bar quat: 0 (angle: 0.00 deg)
+2025-05-26 17:01:03,261 - INFO - Closest global axis to the line: 0 (angle: 1.58 deg)
+2025-05-26 17:01:03,265 - INFO - Position error in world frame: [-0.0004531   0.00084104  0.00116051]
+2025-05-26 17:01:03,266 - INFO - Position error in tool0 frame: [-0.00141528  0.00045318 -0.0002259 ]
+2025-05-26 17:01:03,270 - INFO - Observed_z and line_direction are aligned. Angle: 0.00000000 rad
+2025-05-26 17:01:03,270 - INFO - Observed bar position: [-0.98139731  0.78474862  0.35291708]
+2025-05-26 17:01:03,270 - INFO - Observed bar quaternion: [ 0.71191776 -0.00495234 -0.00488493  0.7022284 ]
+2025-05-26 17:01:03,272 - INFO - Distance between average center and fitted line point: 0.000000 m
+2025-05-26 17:01:03,273 - INFO - Closest global axis to the goal bar quat: 1 (angle: 0.00 deg)
+2025-05-26 17:01:03,274 - INFO - Closest global axis to the line: 1 (angle: 1.12 deg)
+2025-05-26 17:01:03,275 - INFO - Position error in world frame: [ 0.00160529  0.00194455 -0.00244033]
+2025-05-26 17:01:03,275 - INFO - Position error in tool0 frame: [0.00059039 0.00194463 0.00286064]
+2025-05-26 17:01:03,280 - INFO - Observed_z and line_direction are aligned. Angle: 0.00000000 rad
+2025-05-26 17:01:03,281 - INFO - Observed bar position: [-1.22530285  0.30964335  0.57029901]
+2025-05-26 17:01:03,281 - INFO - Observed bar quaternion: [ 0.00626751  0.00822401 -0.70705895  0.707079  ]
+2025-05-26 17:01:03,283 - INFO - Distance between average center and fitted line point: 0.000000 m
+2025-05-26 17:01:03,286 - INFO - Closest global axis to the goal bar quat: 2 (angle: 0.00 deg)
+2025-05-26 17:01:03,287 - INFO - Closest global axis to the line: 2 (angle: 1.18 deg)
+2025-05-26 17:01:03,288 - INFO - Position error in world frame: [ 0.00295994  0.00387698 -0.00147929]
+2025-05-26 17:01:03,289 - INFO - Position error in tool0 frame: [-0.00387674  0.00147964  0.00296007]
+2025-05-26 17:01:03,289 - INFO - Working on file: bar_holding_acc_20250526_1643.json
+2025-05-26 17:01:03,292 - INFO - Observed_z and line_direction are aligned. Angle: 0.00000000 rad
+2025-05-26 17:01:03,293 - INFO - Observed bar position: [-0.69126642  0.82989688  0.65579782]
+2025-05-26 17:01:03,293 - INFO - Observed bar quaternion: [-0.00246765  0.70307642  0.00243979  0.71110583]
+2025-05-26 17:01:03,294 - INFO - Distance between average center and fitted line point: 0.000000 m
+2025-05-26 17:01:03,297 - INFO - Closest global axis to the goal bar quat: 0 (angle: 0.00 deg)
+2025-05-26 17:01:03,297 - INFO - Closest global axis to the line: 0 (angle: 0.76 deg)
+2025-05-26 17:01:03,300 - INFO - Position error in world frame: [ 0.00026917  0.00116785 -0.00134148]
+2025-05-26 17:01:03,301 - INFO - Position error in tool0 frame: [ 0.00012275 -0.0002691   0.00177437]
+2025-05-26 17:01:03,302 - WARNING - Error for marker 4 is too large: 0.002009 m
+2025-05-26 17:01:03,305 - INFO - Observed_z and line_direction are aligned. Angle: 0.00000000 rad
+2025-05-26 17:01:03,305 - INFO - Observed bar position: [-0.75520704  0.92103879  0.37333283]
+2025-05-26 17:01:03,306 - INFO - Observed bar quaternion: [0.70643853 0.0028128  0.00281808 0.7077632 ]
+2025-05-26 17:01:03,307 - INFO - Distance between average center and fitted line point: 0.000000 m
+2025-05-26 17:01:03,309 - INFO - Closest global axis to the goal bar quat: 1 (angle: 0.00 deg)
+2025-05-26 17:01:03,309 - INFO - Closest global axis to the line: 1 (angle: 0.47 deg)
+2025-05-26 17:01:03,310 - INFO - Position error in world frame: [-0.00019143  0.00210528 -0.00117778]
+2025-05-26 17:01:03,311 - INFO - Position error in tool0 frame: [0.00096814 0.00210535 0.0006973 ]
+2025-05-26 17:01:03,317 - INFO - Observed_z and line_direction are aligned. Angle: 0.00000000 rad
+2025-05-26 17:01:03,318 - INFO - Observed bar position: [-0.56637009 -0.26580969  0.66411951]
+2025-05-26 17:01:03,318 - INFO - Observed bar quaternion: [-2.09413271e-03  2.28901208e-03  4.79351813e-06  9.99995187e-01]
+2025-05-26 17:01:03,320 - INFO - Distance between average center and fitted line point: 0.000000 m
+2025-05-26 17:01:03,321 - INFO - Closest global axis to the goal bar quat: 2 (angle: 0.00 deg)
+2025-05-26 17:01:03,321 - INFO - Closest global axis to the line: 2 (angle: 0.36 deg)
+2025-05-26 17:01:03,323 - INFO - Position error in world frame: [-0.00027855 -0.00064734 -0.00243065]
+2025-05-26 17:01:03,323 - INFO - Position error in tool0 frame: [ 0.00064736  0.00243065 -0.00027849]
+2025-05-26 17:01:03,324 - INFO - Working on file: bar_holding_acc_20250526_1700.json
+2025-05-26 17:01:03,324 - INFO - Working on file: bar_holding_acc_20250526_1640.json
+2025-05-26 17:01:03,324 - WARNING - Error for marker 3 is too large: 0.002122 m
+2025-05-26 17:01:03,327 - INFO - Observed_z and line_direction are aligned. Angle: 0.00000000 rad
+2025-05-26 17:01:03,327 - INFO - Observed bar position: [0.90069184 1.30387117 0.94091817]
+2025-05-26 17:01:03,328 - INFO - Observed bar quaternion: [0.50046248 0.49775166 0.49952741 0.5022479 ]
+2025-05-26 17:01:03,330 - INFO - Distance between average center and fitted line point: 0.000000 m
+2025-05-26 17:01:03,333 - INFO - Closest global axis to the goal bar quat: 0 (angle: 0.00 deg)
+2025-05-26 17:01:03,333 - INFO - Closest global axis to the line: 0 (angle: 0.37 deg)
+2025-05-26 17:01:03,336 - INFO - Position error in world frame: [ 0.0020285  -0.00069426 -0.00175659]
+2025-05-26 17:01:03,336 - INFO - Position error in tool0 frame: [ 0.00075112 -0.00202859 -0.00173294]
+2025-05-26 17:01:03,337 - WARNING - Distance between 1 and 3 is too small or large: 0.08341847251934376 m
+2025-05-26 17:01:03,340 - INFO - Observed_z and line_direction are aligned. Angle: 0.00000000 rad
+2025-05-26 17:01:03,340 - INFO - Observed bar position: [-0.35047248  0.82772171  1.0407687 ]
+2025-05-26 17:01:03,340 - INFO - Observed bar quaternion: [-6.71707983e-04  3.61337652e-03  2.42715025e-06  9.99993246e-01]
+2025-05-26 17:01:03,342 - INFO - Distance between average center and fitted line point: 0.000000 m
+2025-05-26 17:01:03,343 - INFO - Closest global axis to the goal bar quat: 2 (angle: 0.00 deg)
+2025-05-26 17:01:03,343 - INFO - Closest global axis to the line: 2 (angle: 0.42 deg)
+2025-05-26 17:01:03,345 - INFO - Position error in world frame: [ 0.00502732 -0.00297565  0.00019725]
+2025-05-26 17:01:03,346 - INFO - Position error in tool0 frame: [-0.00145056 -0.0001969   0.00565902]
+2025-05-26 17:01:03,353 - INFO - Observed_z and line_direction are aligned. Angle: 0.00000000 rad
+2025-05-26 17:01:03,353 - INFO - Observed bar position: [0.50087568 1.34313785 1.34664935]
+2025-05-26 17:01:03,353 - INFO - Observed bar quaternion: [ 0.70374348 -0.00344511 -0.00347788  0.71043729]
+2025-05-26 17:01:03,354 - INFO - Distance between average center and fitted line point: 0.000000 m
+2025-05-26 17:01:03,356 - INFO - Closest global axis to the goal bar quat: 1 (angle: 0.00 deg)
+2025-05-26 17:01:03,356 - INFO - Closest global axis to the line: 1 (angle: 0.78 deg)
+2025-05-26 17:01:03,358 - INFO - Position error in world frame: [ 0.00123876 -0.00166429  0.00047165]
+2025-05-26 17:01:03,358 - INFO - Position error in tool0 frame: [ 0.00054263 -0.0016643   0.00120935]
+2025-05-26 17:01:03,364 - INFO - Exported data to /home/yijiangh/ros2_ws/src/husky-asembly-teleop/data/bar_holding_acc_data/20250526_vary_pos_vary_yaw/compiled_bar_holding_acc_20250526_vary_pos_vary_yaw.json
+2025-05-26 17:01:03,828 - INFO - Exported plot to /home/yijiangh/ros2_ws/src/husky-asembly-teleop/data/bar_holding_acc_data/20250526_vary_pos_vary_yaw/bar_holding_acc_20250526_vary_pos_vary_yaw.png

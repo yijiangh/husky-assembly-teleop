@@ -1,0 +1,159 @@
+2025-05-26 17:01:09,745 - INFO - Loading data from: /home/yijiangh/ros2_ws/src/husky-asembly-teleop/data/bar_holding_acc_data/20250526_vary_pos_vary_yaw/compiled_bar_holding_acc_20250526_vary_pos_vary_yaw.json
+2025-05-26 17:01:09,746 - INFO - footprint roll: -0.003, pitch: 0.008, yaw: -0.484
+2025-05-26 17:01:09,746 - INFO - footprint roll: -0.003, pitch: 0.010, yaw: -0.484
+2025-05-26 17:01:09,746 - INFO - footprint roll: -0.003, pitch: 0.010, yaw: -0.484
+2025-05-26 17:01:09,746 - INFO - footprint roll: -0.003, pitch: 0.010, yaw: -0.483
+2025-05-26 17:01:09,746 - INFO - footprint roll: -0.008, pitch: 0.010, yaw: -0.865
+2025-05-26 17:01:09,746 - INFO - footprint roll: -0.003, pitch: 0.005, yaw: -0.865
+2025-05-26 17:01:09,746 - INFO - footprint roll: -0.009, pitch: 0.008, yaw: -0.864
+2025-05-26 17:01:09,746 - INFO - footprint roll: -0.003, pitch: 0.015, yaw: 0.226
+2025-05-26 17:01:09,746 - INFO - footprint roll: -0.001, pitch: 0.013, yaw: 0.227
+2025-05-26 17:01:09,746 - INFO - footprint roll: -0.004, pitch: 0.012, yaw: 0.227
+2025-05-26 17:01:09,747 - INFO - footprint roll: 0.002, pitch: 0.005, yaw: 1.639
+2025-05-26 17:01:09,747 - INFO - footprint roll: 0.002, pitch: 0.008, yaw: 1.639
+2025-05-26 17:01:09,747 - INFO - footprint roll: 0.002, pitch: 0.006, yaw: 1.639
+2025-05-26 17:01:09,747 - INFO - footprint roll: 0.002, pitch: -0.010, yaw: -2.861
+2025-05-26 17:01:09,747 - INFO - footprint roll: 0.004, pitch: -0.009, yaw: -2.861
+2025-05-26 17:01:09,747 - INFO - footprint roll: -0.000, pitch: -0.009, yaw: -2.863
+2025-05-26 17:01:09,747 - INFO - footprint roll: -0.009, pitch: 0.018, yaw: -1.108
+2025-05-26 17:01:09,747 - INFO - footprint roll: -0.003, pitch: 0.014, yaw: -1.108
+2025-05-26 17:01:09,747 - INFO - footprint roll: -0.006, pitch: 0.014, yaw: -1.108
+2025-05-26 17:01:09,749 - WARNING - Detected 1 outliers in position deviation data (above 0.0059)
+2025-05-26 17:01:09,750 - WARNING - Position deviation range: 0.0015 to 0.0082
+2025-05-26 17:01:09,750 - INFO - Outlier details (first 5):
+2025-05-26 17:01:09,750 - WARNING -   Outlier 1: pos_dev=0.0082, angle_dev=0.0251, footprint=(-2.50, 1.31, -0.86), bar_height=1.21
+2025-05-26 17:01:09,750 - INFO - Removed 1 outlier rows, 18 rows remaining
+2025-05-26 17:01:09,751 - INFO - Average angle deviation: 0.0149 rad (0.8524 degrees)
+2025-05-26 17:01:09,751 - INFO - Standard deviation: 0.0095 rad (0.5428 degrees)
+2025-05-26 17:01:09,752 - INFO - Median angle deviation: 0.0135 rad (0.7714 degrees)
+2025-05-26 17:01:09,752 - INFO - Interquartile range: 0.0174 rad (0.9971 degrees)
+2025-05-26 17:01:09,757 - INFO - DataFrame exported to CSV: /home/yijiangh/ros2_ws/src/husky-asembly-teleop/data/bar_holding_acc_data/20250526_vary_pos_vary_yaw/bar_holding_acc_data_20250526_vary_pos_vary_yaw.csv
+2025-05-26 17:01:09,758 - INFO - Basic Statistics:
+2025-05-26 17:01:09,766 - INFO -        footprint_x  footprint_y  ...  angle_deviation  pos_deviation
+count    18.000000    18.000000  ...        18.000000      18.000000
+mean     -0.399196     0.494853  ...         0.014878       0.003311
+std       1.807632     0.830342  ...         0.009474       0.001108
+min      -2.503314    -0.729300  ...         0.002010       0.001503
+25%      -1.925713    -0.162504  ...         0.006709       0.002591
+50%      -0.132120     0.535320  ...         0.013464       0.003250
+75%      -0.071252     1.191902  ...         0.024111       0.003852
+max       2.457186     1.637703  ...         0.027817       0.005845
+
+[8 rows x 7 columns]
+2025-05-26 17:01:09,780 - INFO - 
+Correlation with angle_deviation:
+2025-05-26 17:01:09,781 - INFO - angle_deviation            1.000000
+yaw_N                      0.572225
+footprint_yaw              0.526137
+height_low                 0.428655
+yaw_E                      0.374589
+axis_2                     0.103607
+distance_com_to_polygon    0.041268
+yaw_W                     -0.001620
+axis_1                    -0.027047
+axis_0                    -0.085152
+pos_deviation             -0.112110
+height_high               -0.146513
+yaw_S                     -0.274289
+height_mid                -0.282142
+footprint_y               -0.553435
+yaw_NW                    -0.601121
+footprint_x               -0.868026
+Name: angle_deviation, dtype: float64
+2025-05-26 17:01:09,782 - INFO - 
+Position Deviation Statistics:
+2025-05-26 17:01:09,782 - INFO - Average position deviation: 3.31 mm
+2025-05-26 17:01:09,782 - INFO - Standard deviation: 1.11 mm
+2025-05-26 17:01:09,783 - INFO - Median position deviation: 3.25 mm
+2025-05-26 17:01:09,783 - INFO - Interquartile range: 1.26 mm
+2025-05-26 17:01:10,917 - INFO - Dropping one-hot encoded columns: ['axis_label', 'axis_0', 'axis_1', 'axis_2', 'height_high', 'height_low', 'height_mid', 'yaw_E', 'yaw_N', 'yaw_NW', 'yaw_S', 'yaw_W']
+2025-05-26 17:01:11,071 - INFO - 
+Random Forest Model Performance for Angle Deviation:
+2025-05-26 17:01:11,071 - INFO - R² score: 0.8849
+2025-05-26 17:01:11,072 - INFO - Mean squared error: 0.0000
+2025-05-26 17:01:11,078 - INFO - 
+Random Forest Model Performance for Position Deviation:
+2025-05-26 17:01:11,079 - INFO - R² score: -0.4539
+2025-05-26 17:01:11,079 - INFO - Mean squared error: 0.0000
+2025-05-26 17:01:11,092 - INFO - 
+Feature Importance from Random Forest for Angle Deviation:
+2025-05-26 17:01:11,092 - INFO -                    Feature  Importance
+0              footprint_x    0.548190
+2            footprint_yaw    0.234577
+4  distance_com_to_polygon    0.103812
+1              footprint_y    0.081930
+3               bar_height    0.031491
+2025-05-26 17:01:11,096 - INFO - 
+Feature Importance from Random Forest for Position Deviation:
+2025-05-26 17:01:11,096 - INFO -                    Feature  Importance
+1              footprint_y    0.357478
+2            footprint_yaw    0.308429
+0              footprint_x    0.143614
+4  distance_com_to_polygon    0.120337
+3               bar_height    0.070142
+2025-05-26 17:01:11,283 - INFO - 
+Mutual Information Scores for Angle Deviation (non-linear relationships):
+2025-05-26 17:01:11,283 - INFO -                    Feature  MI Score
+0              footprint_x  0.703177
+2            footprint_yaw  0.210556
+1              footprint_y  0.174934
+4  distance_com_to_polygon  0.053955
+3               bar_height  0.000000
+2025-05-26 17:01:11,294 - INFO - 
+Mutual Information Scores for Position Deviation (non-linear relationships):
+2025-05-26 17:01:11,295 - INFO -                    Feature  MI Score
+0              footprint_x  0.397210
+2            footprint_yaw  0.035757
+1              footprint_y  0.015186
+4  distance_com_to_polygon  0.007911
+3               bar_height  0.000000
+2025-05-26 17:01:11,471 - INFO - 
+ANOVA Analysis - Effect of axis choice on angle deviation:
+2025-05-26 17:01:11,472 - INFO - F-statistic: 0.1003, p-value: 0.9051
+2025-05-26 17:01:11,472 - INFO - No statistically significant difference in angle deviation between axes.
+2025-05-26 17:01:11,472 - INFO - 
+ANOVA Analysis - Effect of axis choice on position deviation:
+2025-05-26 17:01:11,473 - INFO - F-statistic: 4.2633, p-value: 0.0342
+2025-05-26 17:01:11,473 - ERROR - There is a statistically significant difference in position deviation between axes.
+2025-05-26 17:01:11,473 - INFO - 
+ANOVA Analysis - Effect of height category on angle deviation:
+2025-05-26 17:01:11,474 - INFO - F-statistic: 1.7579, p-value: 0.2061
+2025-05-26 17:01:11,474 - INFO - No statistically significant difference in angle deviation between height categories.
+2025-05-26 17:01:11,474 - INFO - 
+ANOVA Analysis - Effect of height category on position deviation:
+2025-05-26 17:01:11,475 - INFO - F-statistic: 1.7103, p-value: 0.2142
+2025-05-26 17:01:11,476 - INFO - No statistically significant difference in position deviation between height categories.
+2025-05-26 17:01:11,476 - INFO - 
+ANOVA Analysis - Effect of CoM distance on angle deviation:
+2025-05-26 17:01:11,478 - INFO - F-statistic: 2.1476, p-value: 0.1400
+2025-05-26 17:01:11,479 - INFO - No statistically significant difference in angle deviation between CoM distance quartiles.
+2025-05-26 17:01:11,479 - INFO - 
+ANOVA Analysis - Effect of CoM distance on position deviation:
+2025-05-26 17:01:11,481 - INFO - F-statistic: 0.1326, p-value: 0.9391
+2025-05-26 17:01:11,481 - INFO - No statistically significant difference in position deviation between CoM distance quartiles.
+2025-05-26 17:01:11,914 - INFO - 
+Correlation between angle deviation and position deviation: -0.1121
+2025-05-26 17:01:12,125 - INFO - 
+CDF Analysis:
+2025-05-26 17:01:12,125 - INFO - 11.1% of angle deviation data is <= 0.005 rad
+2025-05-26 17:01:12,125 - INFO - 88.9% of position deviation data is <= 5 mm
+2025-05-26 17:01:12,125 - INFO - 
+Analyzing bar position error vector in tool0 frame
+2025-05-26 17:01:12,126 - INFO - Position error vectors before outlier removal: 19
+2025-05-26 17:01:12,126 - INFO - X range before: -0.00388 to 0.00264
+2025-05-26 17:01:12,126 - INFO - Y range before: -0.00373 to 0.00595
+2025-05-26 17:01:12,126 - INFO - Z range before: -0.00243 to 0.00566
+2025-05-26 17:01:12,127 - WARNING - Detected 1 outliers in x dimension
+2025-05-26 17:01:12,129 - WARNING - Detected 1 outliers in z dimension
+2025-05-26 17:01:12,129 - WARNING - Removing 2 total rows with outliers in any dimension
+2025-05-26 17:01:12,130 - INFO - Position error vectors after outlier removal: 17
+2025-05-26 17:01:12,130 - INFO - X range after: -1.45 to 2.58 mm
+2025-05-26 17:01:12,130 - INFO - Y range after: -3.73 to 5.95 mm
+2025-05-26 17:01:12,130 - INFO - Z range after: -1.73 to 5.66 mm
+2025-05-26 17:01:12,131 - INFO - Position error vector statistics in tool0 frame:
+2025-05-26 17:01:12,131 - INFO - X component - Average: 0.73 mm, Std Dev: 1.17 mm
+2025-05-26 17:01:12,131 - INFO - Y component - Average: 0.04 mm, Std Dev: 2.57 mm
+2025-05-26 17:01:12,131 - INFO - Z component - Average: 1.77 mm, Std Dev: 1.84 mm
+2025-05-26 17:01:12,132 - INFO - Overall magnitude - Average: 3.46 mm, Std Dev: 1.60 mm
+2025-05-26 17:01:12,271 - INFO - 
+Combined angle and position deviation analysis complete.
