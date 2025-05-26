@@ -21,7 +21,8 @@ MARKER_NAME_PAIRS = [
 ]
 
 # DATA_BATCH = '20250519_fixed_pos_vary_yaw'
-DATA_BATCH = '20250519_vary_pos_vary_yaw'
+# DATA_BATCH = '20250519_vary_pos_vary_yaw'
+DATA_BATCH = '20250526_vary_pos_vary_yaw'
 EXPORT = 1
 viewer = 0
 

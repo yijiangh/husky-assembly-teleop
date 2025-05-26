@@ -433,9 +433,11 @@ class HuskyMonitor(Node):
             self.goal_bar_grasp = grasp
             self.reset_ui(self.goal_arm_pose)
 
-    def sample_bar_location_for_ik_and_transfer(self, bar_goal_axis=None):
+    def sample_bar_location_for_ik_and_transfer(self, bar_goal_axis=None, target_grasp_index=None):
         # goal_bar_pose = self.get_world_from_bar_goal_pose()
-        traj, rand_pos, bar_goal_quat, theta_index, grasp_dist = world.randomize_bar_location_for_ik_and_transfer(self, bar_goal_axis) #, goal_bar_pose[1]
+        traj, rand_pos, bar_goal_quat, theta_index, grasp_dist = world.randomize_bar_location_for_ik_and_transfer(self, bar_goal_axis, target_grasp_index) #, goal_bar_pose[1]
+        if traj is None:
+            return
 
         self.base_from_goal_bar_pos = pp.Point(*rand_pos)
         self.world_from_goal_bar_euler = pp.euler_from_quat(bar_goal_quat)
@@ -533,6 +535,9 @@ class HuskyMonitor(Node):
         # self.buttons.append(Button('Rand bar loc for ik', self.sample_bar_location_for_ik_and_transfer))
         self.goal_axis_slider = Slider("bar aligned axis", self.update_goal_align_axis, 0, 2, self.goal_element_axis)
         self.buttons.append(Button('Rand bar loc for ik, fix axis', lambda : self.sample_bar_location_for_ik_and_transfer(int(self.goal_element_axis))))
+        # self.buttons.append(Button('Rand bar loc for ik, fix axis, side grasp', lambda : self.sample_bar_location_for_ik_and_transfer(
+            # int(self.goal_element_axis), self.grasp_theta_index)
+        # ))
 
         # bar_goal_pose_slider_group
         if self.BAR_GOAL_MODE:

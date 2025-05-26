@@ -55,6 +55,18 @@ def init(monitor):
 
     # * add static obstacles
     monitor.add_static_obstacles(pp.create_plane(color=(0.9, 0.9, 0.9, 1)))
+    
+    wall_right = pp.create_box(10, 0.4, 3)
+    pp.set_color(wall_right, pp.GREY)
+    pp.set_pose(wall_right, pp.Pose(pp.Point(0, 2.6, 0)))
+
+    wall_left = pp.create_box(10, 0.4, 3)
+    pp.set_pose(wall_left, pp.Pose(pp.Point(0, -3.0, 0)))
+    pp.set_color(wall_left, pp.GREY)
+
+    monitor.add_static_obstacles(pp.create_plane(color=(0.9, 0.9, 0.9, 1)))
+    monitor.add_static_obstacles(wall_left)
+    monitor.add_static_obstacles(wall_right)
 
     # * add tracked obstacles
     # TODO use one tracked box to indicate where to put the assembly
@@ -225,7 +237,7 @@ def compute_ik_for_bar(monitor, world_from_bar, theta_index, grasp_dist):
     
     return arm_conf, grasp
 
-def randomize_bar_location_for_ik_and_transfer(monitor, bar_goal_axis=None):
+def randomize_bar_location_for_ik_and_transfer(monitor, bar_goal_axis=None, target_grasp_index=None):
     LOC_ATTEMPTS = 10
     MP_ATTEMPTS = 3
     TRAJ_MAX_LENGTH = 100
@@ -238,8 +250,21 @@ def randomize_bar_location_for_ik_and_transfer(monitor, bar_goal_axis=None):
     ]
     # default longitudinal axis of the bar is aligned with the z axis
 
+    # disabled_collisions = disabled_collisions or {}
+    robot = monitor.huskies[monitor.selected_robot_id].object.robot
+    def check_body_robot_collision(target_body, target_link=pp.BASE_LINK):
+        _, robot_links = pp.expand_links(robot)
+        for rlink in robot_links:
+            if pp.pairwise_link_collision(robot, rlink, target_body, target_link):
+                return True
+
     world_from_base_link = monitor.goal_model.get_link_pose_from_name("base_footprint")
     obstacles = monitor.static_obstacles
+    if target_grasp_index is not None:
+        candidate_grasps = [target_grasp_index]
+    else:
+        candidate_grasps = list(range(monitor.GRASP_PARTITION))
+
     # [monitor.assembly_objects[i].body for i in range(monitor.current_seq_index)] + 
     for i in range(LOC_ATTEMPTS):
         monitor.get_logger().info(f"Randomizing bar location {i+1}/{LOC_ATTEMPTS}...")
@@ -263,8 +288,14 @@ def randomize_bar_location_for_ik_and_transfer(monitor, bar_goal_axis=None):
         world_from_bar = pp.multiply(world_from_base_link, (rand_pos, bar_goal_quat))[0], bar_goal_quat
         # pp.draw_pose(world_from_bar)
 
+        # check if bar is in collision with teh robot body, if so reject immediately
+        # with pp.WorldSaver():
+        pp.set_pose(monitor.goal_element.body, world_from_bar)
+        if check_body_robot_collision(monitor.goal_element.body):
+            continue
+
         # * enumerate grasp parameters
-        for theta_index in range(monitor.GRASP_PARTITION):
+        for theta_index in candidate_grasps:
             monitor.get_logger().info(f"Grasping bar with id {theta_index+1}/{monitor.GRASP_PARTITION}...")
 
             grasp_dist = 0.0
@@ -290,6 +321,8 @@ def randomize_bar_location_for_ik_and_transfer(monitor, bar_goal_axis=None):
                         monitor.get_logger().warn("Arm motion planning failed!")
                 else:
                     monitor.get_logger().warn(f"Motion planning failed after {MP_ATTEMPTS} attempts!")
+
+    return None, None, None, None, None
 
 def update_goal_gripper_model_pose(monitor, world_from_bar, theta_index, grasp_dist):
     tool0_from_object = planning.compute_grasp(theta_index, monitor.GRASP_PARTITION, grasp_dist)

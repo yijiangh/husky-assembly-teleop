@@ -15,8 +15,9 @@ from sklearn.feature_selection import mutual_info_regression
 from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.model_selection import train_test_split
 
-DATA_BATCH = '20250519_fixed_pos_vary_yaw'
+# DATA_BATCH = '20250519_fixed_pos_vary_yaw'
 # DATA_BATCH = '20250519_vary_pos_vary_yaw'
+DATA_BATCH = '20250526_vary_pos_vary_yaw'
 
 # Set up logging to file
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -634,6 +635,53 @@ plt.xlabel('Angle Deviation (rad)')
 plt.ylabel('Position Deviation (mm)')
 plt.savefig(os.path.join(data_folder, '10_angle_vs_pos_deviation.png'))
 
+# Figure 11: CDF Plot for Angle and Position Deviation
+plt.figure(figsize=(12, 10))
+
+# Calculate and plot CDF for angle deviation
+plt.subplot(2, 1, 1)
+angle_data = np.sort(df['angle_deviation'].to_numpy())
+angle_cdf = np.arange(1, len(angle_data) + 1) / len(angle_data)
+
+plt.plot(angle_data, angle_cdf, 'b-', linewidth=2)
+plt.axvline(x=0.005, color='r', linestyle='--')
+
+# Find the percentage of data below 0.005 rad
+angle_below_threshold = np.sum(angle_data <= 0.005) / len(angle_data) * 100
+plt.text(0.006, 0.5, f'{angle_below_threshold:.1f}% <= 0.005 rad', 
+         verticalalignment='center', color='r')
+
+plt.title('Cumulative Distribution Function of Angle Deviation')
+plt.xlabel('Angle Deviation (rad)')
+plt.ylabel('Cumulative Probability')
+plt.grid(True)
+
+# Calculate and plot CDF for position deviation (in mm)
+plt.subplot(2, 1, 2)
+pos_data = np.sort(df['pos_deviation'].to_numpy() * 1000)  # Convert to mm
+pos_cdf = np.arange(1, len(pos_data) + 1) / len(pos_data)
+
+plt.plot(pos_data, pos_cdf, 'g-', linewidth=2)
+plt.axvline(x=5, color='r', linestyle='--')
+
+# Find the percentage of data below 5mm
+pos_below_threshold = np.sum(pos_data <= 5) / len(pos_data) * 100
+plt.text(6, 0.5, f'{pos_below_threshold:.1f}% <= 5mm', 
+         verticalalignment='center', color='r')
+
+plt.title('Cumulative Distribution Function of Position Deviation')
+plt.xlabel('Position Deviation (mm)')
+plt.ylabel('Cumulative Probability')
+plt.grid(True)
+
+plt.tight_layout()
+plt.savefig(os.path.join(data_folder, '11_cdf_plots.png'))
+
+# Log the percentages
+logger.info(f"\nCDF Analysis:")
+logger.info(f"{angle_below_threshold:.1f}% of angle deviation data is <= 0.005 rad")
+logger.info(f"{pos_below_threshold:.1f}% of position deviation data is <= 5 mm")
+
 # Figure 11: Bar position error vector in tool0 frame
 logger.info("\nAnalyzing bar position error vector in tool0 frame")
 
@@ -712,9 +760,9 @@ if position_error_vectors:
     # Create a line plot with mm scale
     plt.figure(figsize=(12, 8))
     
-    plt.plot(error_vector_df['index'], error_vector_df['x'] * 1000, label='X', marker='o', linestyle='-', alpha=0.7)
-    plt.plot(error_vector_df['index'], error_vector_df['y'] * 1000, label='Y', marker='s', linestyle='-', alpha=0.7)
-    plt.plot(error_vector_df['index'], error_vector_df['z'] * 1000, label='Z', marker='^', linestyle='-', alpha=0.7)
+    plt.plot(error_vector_df['index'].to_numpy(), error_vector_df['x'].to_numpy() * 1000, label='X', marker='o', linestyle='-', alpha=0.7)
+    plt.plot(error_vector_df['index'].to_numpy(), error_vector_df['y'].to_numpy() * 1000, label='Y', marker='s', linestyle='-', alpha=0.7)
+    plt.plot(error_vector_df['index'].to_numpy(), error_vector_df['z'].to_numpy() * 1000, label='Z', marker='^', linestyle='-', alpha=0.7)
     
     plt.title('Bar Position Error in Tool0 Frame')
     plt.xlabel('Sample Index')
