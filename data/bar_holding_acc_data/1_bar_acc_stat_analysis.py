@@ -15,9 +15,9 @@ from sklearn.feature_selection import mutual_info_regression
 from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.model_selection import train_test_split
 
-# DATA_BATCH = '20250519_fixed_pos_vary_yaw'
+DATA_BATCH = '20250519_fixed_pos_vary_yaw'
 # DATA_BATCH = '20250519_vary_pos_vary_yaw'
-DATA_BATCH = '20250526_vary_pos_vary_yaw'
+# DATA_BATCH = '20250526_vary_pos_vary_yaw'
 
 # Set up logging to file
 HERE = os.path.dirname(os.path.abspath(__file__))
