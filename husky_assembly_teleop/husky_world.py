@@ -212,6 +212,7 @@ def randomize_bar_location_for_ik_and_transfer(monitor, bar_goal_axis=None, targ
         # with pp.WorldSaver():
         pp.set_pose(monitor.goal_element.body, world_from_bar)
         if check_body_robot_collision(monitor.goal_element.body):
+            monitor.get_logger().warn("Bar in collision with robot body, reject immediately!")
             continue
 
         # * enumerate grasp parameters
