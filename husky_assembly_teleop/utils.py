@@ -191,6 +191,15 @@ def plan_transit_motion(robot, end_conf, attachments, obstacles, debug=False, di
     distance_fn = pp.get_distance_fn(robot, movable_joints) #, weights=weights)
     extend_fn = pp.get_extend_fn(robot, movable_joints, resolutions=resolutions)
 
+    # fixed_links = pp.get_fixed_links(robot)
+    # for ml in fixed_links:
+    #     print('fixed link: {} - {}'.format(pp.get_body_name(robot), pp.get_link_name(robot, ml)))
+
+    moving_links = pp.get_moving_links(robot, movable_joints)
+    # get all links in the robot except for moving links
+    all_links = list(range(pp.get_num_links(robot)))
+    non_moving_links = [link for link in all_links if link not in moving_links]
+
     transit_collision_fn = pp.get_collision_fn(robot, movable_joints, obstacles=obstacles,
                                                 attachments=attachments, 
                                                 self_collisions=1,

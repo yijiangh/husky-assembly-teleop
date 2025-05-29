@@ -46,12 +46,12 @@ MOCAP_IP = '192.168.0.117' # set to the mocap PC's IP, get this from Motive Sett
 FILENAME_SUFFIX = '_vary_pos_vary_yaw'
   
 class HuskyMonitor(Node):
-    USE_MOCAP = 1
-    FAKE_HARDWARE = 0
+    USE_MOCAP = 0
+    FAKE_HARDWARE = 1
     CALIBRATION = 0
-    BAR_GOAL_MODE = 0
-    BAR_HOLDING_ACCURACY_TEST = 0
-    DUAL_ARM_ACCURACY_TEST = 1
+
+    BAR_GOAL_MODE = 1
+    BAR_HOLDING_ACCURACY_TEST = 1
 
     GRASP_PARTITION = 8
 
