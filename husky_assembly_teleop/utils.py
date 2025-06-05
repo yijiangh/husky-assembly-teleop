@@ -167,16 +167,26 @@ def get_arm_ik_for_grasp_bar(robot, ik_solver, world_from_tool0, attachments, ob
                 return None
     return conf
 
-def plan_transit_motion(robot, end_conf, attachments, obstacles, debug=False, disabled_collisions=None):
+def plan_transit_motion(robot, end_conf, attachments, obstacles, debug=False, disabled_collisions=None, dual_arm_index=None):
+    # use correct joint names for dual arm husky
+    joint_names = UR5E_JOINT_NAMES
+    arm_prefix = ""
+    if dual_arm_index==0:
+        arm_prefix = "left_"
+        joint_names = HUSKY_DUAL_UR5e_JOINT_NAMES[0]
+    if dual_arm_index==1:
+        arm_prefix = "right_"
+        joint_names = HUSKY_DUAL_UR5e_JOINT_NAMES[1]
+        
     custom_limits = get_custom_limits(robot, {})
     resolutions = np.ones(6) * 0.05
     disabled_collisions = disabled_collisions or {}
     extra_disabled_collisions = [
-        ((robot, pp.link_from_name(robot, 'ur_arm_wrist_3_link')), 
+        ((robot, pp.link_from_name(robot, arm_prefix + 'ur_arm_wrist_3_link')), 
          (attachments[0].child, pp.BASE_LINK)), 
         ]
 
-    movable_joints = pp.joints_from_names(robot, UR5E_JOINT_NAMES)
+    movable_joints = pp.joints_from_names(robot, joint_names)
     sample_fn = pp.get_sample_fn(robot, movable_joints, custom_limits=custom_limits)
     distance_fn = pp.get_distance_fn(robot, movable_joints) #, weights=weights)
     extend_fn = pp.get_extend_fn(robot, movable_joints, resolutions=resolutions)

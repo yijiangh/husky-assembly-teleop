@@ -38,7 +38,7 @@ def init(monitor):
     # * add robots
     # 1004
     Husky(monitor, name='/a200_0806', mocap_id=4568, pos=np.array((0,0,0)), 
-          connect_arm=not monitor.FAKE_HARDWARE, connect_gripper=not monitor.FAKE_HARDWARE, 
+          connect_arm=not monitor.FAKE_HARDWARE, connect_gripper=False and not monitor.FAKE_HARDWARE, 
         #   calibration=monitor.CALIBRATION)
           calibration=monitor.CALIBRATION,
           dual_arm=True)
@@ -134,7 +134,7 @@ def next_dual_arm_bar_trajectory(monitor):
     #monitor.set_arm_trajectory(([hi.arm_joint_pose[0], dual_arm_trajectory[0][0][0]], None, 10, None), index=0)
     #monitor.set_arm_trajectory(([hi.arm_joint_pose[1], dual_arm_trajectory[1][0][0]], None, 10, None), index=1)
     
-    def new_bar_pose(bar_pose):
+    def new_random_bar_pose(bar_pose):
         rand_dir = np.array([-1, -1, -1]) + np.random.random((3)) * 2
         rand_dir = rand_dir / np.linalg.norm(rand_dir)
         rand_angle = np.array([-np.pi/4, -np.pi/4, -np.pi/4]) + np.random.random((3)) * np.pi/2
@@ -144,7 +144,7 @@ def next_dual_arm_bar_trajectory(monitor):
     
     while True:
         if not pre_position_trajectory:
-            next_bar_pose = new_bar_pose(bar_pose)
+            next_bar_pose = new_random_bar_pose(bar_pose)
             bar_traj = planning.dual_arm_bar_arc(bar_pose, next_bar_pose, 10)
             for p in bar_traj:
                 pp.draw_pose(p)
@@ -152,6 +152,11 @@ def next_dual_arm_bar_trajectory(monitor):
         if dual_arm_trajectory is not None:
             hi = monitor.huskies[monitor.selected_robot_id].interface
             if np.max(np.abs(hi.arm_joint_pose[0]-dual_arm_trajectory[0][0][0]) > 0.1) or np.max(np.abs(hi.arm_joint_pose[1]-dual_arm_trajectory[1][0][0]) > 0.1):
+                # this fails to find transitmotions often, apparently one or both arm configs are in collision... but they arent
+                #L = planning.plan_arm_motion(monitor.huskies[monitor.selected_robot_id], dual_arm_trajectory[0][0][0], [], 10, arm_index=0)
+                #R = planning.plan_arm_motion(monitor.huskies[monitor.selected_robot_id], dual_arm_trajectory[1][0][0], [], 10, arm_index=1)
+                #monitor.set_arm_trajectory(L, index=0)
+                #monitor.set_arm_trajectory(R, index=1)
                 monitor.set_arm_trajectory(([hi.arm_joint_pose[0], dual_arm_trajectory[0][0][0]], None, 10, None), index=0)
                 monitor.set_arm_trajectory(([hi.arm_joint_pose[1], dual_arm_trajectory[1][0][0]], None, 10, None), index=1)
                 pre_position_trajectory = True

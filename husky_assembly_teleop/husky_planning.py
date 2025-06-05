@@ -69,6 +69,7 @@ def plan_arm_motion(husky: Husky, arm_goal_pose, obstacles, traj_time, grasped_e
                 obstacles,
                 debug=0,
                 disabled_collisions=False,
+                dual_arm_index=None if not husky.dual_arm else arm_index
             )
 
     if trajectory is None:
@@ -235,7 +236,7 @@ def dual_arm_bar_arc(start_pose, end_pose, trajectory_time):
 
 def plan_dual_arm_motion(husky: Husky, bar_trajectory, obstacles):
     N = 20
-    trajectory_time = 10.0
+    trajectory_time = 5.0
     ts = list(np.linspace(0, trajectory_time, N))[0:]
 
     # generate bar trajectory (could be input)
