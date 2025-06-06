@@ -46,8 +46,6 @@ centers = []
 fitted_lines = []
 base_positions = []
 
-fig = plt.figure()
-
 for i, file_name in enumerate(json_files):
     logger.info('Working on file: %s', file_name)
     file_path = os.path.join(data_folder, file_name)
@@ -57,6 +55,7 @@ for i, file_name in enumerate(json_files):
         data = json.load(file)
 
     # TODO fix hndling of multiple files
+    fig = plt.figure()
     
     pos_offset_data = []
     rot_offset_data = []
@@ -101,8 +100,12 @@ for i, file_name in enumerate(json_files):
     axr.legend(['X', 'Y', 'Z'])
     axr.grid(True)
 
+    #plt.show()
+    
+    if EXPORT:
+        plt.savefig(os.path.join(data_folder, f'dual_arm_acc_{DATA_BATCH}_{i}.png'))
+
 if EXPORT:
-    plt.savefig(os.path.join(data_folder, f'dual_arm_acc_{DATA_BATCH}.png'))
     logger.info('Exported plot to %s', os.path.join(data_folder, f'dual_arm_acc_{DATA_BATCH}.png'))
 
 plt.show()
