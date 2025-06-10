@@ -19,7 +19,8 @@ MARKER_NAME_PAIRS = [
 
 #DATA_BATCH = '20250509'
 #DATA_BATCH = '20250516'
-DATA_BATCH = '20250605'
+#DATA_BATCH = '20250605'
+DATA_BATCH = '20250610'
 EXPORT = 1
 
 
@@ -39,6 +40,7 @@ file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(mes
 logger.addHandler(file_handler)
 
 json_files = [f for f in os.listdir(data_folder) if f.startswith('dual_arm_acc_') and f.endswith('.json')]
+# TODO: sort json files
 
 new_data = []
 # accumulated data, for drawing
@@ -103,7 +105,7 @@ for i, file_name in enumerate(json_files):
     #plt.show()
     
     if EXPORT:
-        plt.savefig(os.path.join(data_folder, f'dual_arm_acc_{DATA_BATCH}_{i}.png'))
+        plt.savefig(os.path.join(data_folder, f'dual_arm_acc_{DATA_BATCH}_{i+1}.png'))
 
 if EXPORT:
     logger.info('Exported plot to %s', os.path.join(data_folder, f'dual_arm_acc_{DATA_BATCH}.png'))

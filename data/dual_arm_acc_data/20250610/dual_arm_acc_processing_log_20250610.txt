@@ -1,0 +1,19 @@
+2025-06-10 17:34:41,007 - INFO - Working on file: dual_arm_acc_20250610_1724_.json
+2025-06-10 17:34:41,179 - INFO - Mean positional offset 0.4852
+2025-06-10 17:34:41,179 - INFO - Mean rotational offset -0.6248 5.6782 176.9401
+2025-06-10 17:34:41,265 - INFO - Working on file: dual_arm_acc_20250610_1716_.json
+2025-06-10 17:34:41,290 - INFO - Mean positional offset 0.4845
+2025-06-10 17:34:41,290 - INFO - Mean rotational offset -0.2911 5.8484 176.9939
+2025-06-10 17:34:41,375 - INFO - Working on file: dual_arm_acc_20250610_1714_.json
+2025-06-10 17:34:41,403 - INFO - Mean positional offset 0.4839
+2025-06-10 17:34:41,404 - INFO - Mean rotational offset -0.3932 5.7876 177.2876
+2025-06-10 17:34:41,487 - INFO - Working on file: dual_arm_acc_20250610_1725_.json
+2025-06-10 17:34:41,517 - INFO - Mean positional offset 0.4793
+2025-06-10 17:34:41,517 - INFO - Mean rotational offset -2.7305 5.3305 83.7428
+2025-06-10 17:34:41,601 - INFO - Working on file: dual_arm_acc_20250610_1723_.json
+2025-06-10 17:34:41,625 - INFO - Mean positional offset 0.4848
+2025-06-10 17:34:41,626 - INFO - Mean rotational offset -0.3374 5.7575 176.7345
+2025-06-10 17:34:41,703 - INFO - Working on file: dual_arm_acc_20250610_1713_.json
+2025-06-10 17:34:41,728 - INFO - Mean positional offset 0.4840
+2025-06-10 17:34:41,728 - INFO - Mean rotational offset -0.3258 5.9504 177.2168
+2025-06-10 17:34:41,817 - INFO - Exported plot to /home/jakobgenhart/husky_assistant/workspace/src/husky-asembly-teleop/data/dual_arm_acc_data/20250610/dual_arm_acc_20250610.png
