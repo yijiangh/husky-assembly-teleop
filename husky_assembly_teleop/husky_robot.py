@@ -30,6 +30,7 @@ from action_msgs.msg import GoalStatus
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from control_msgs.action import FollowJointTrajectory
 from control_msgs.msg import JointTolerance
+from crl_husky_msgs.msg import MultiArmTrajectory
 
 UR5e_HOME_STATE = np.array([0, -np.pi/2, 0, -np.pi/2, 0, np.pi/2])
 ARM_JOINT_NAMES = ['shoulder_pan_joint', 'shoulder_lift_joint', 'elbow_joint', 'wrist_1_joint', 'wrist_2_joint', 'wrist_3_joint']
@@ -96,6 +97,7 @@ class HuskyRobotInterface:
         if dual_arm:
             self.pub_cmd_arm.append(self.node.create_publisher(JointTrajectory, name + '/left_ur5e/scaled_joint_trajectory_controller/joint_trajectory', 10))
             self.pub_cmd_arm.append(self.node.create_publisher(JointTrajectory, name + '/right_ur5e/scaled_joint_trajectory_controller/joint_trajectory', 10))
+            self.pub_cmd_multi_arm = self.node.create_publisher(MultiArmTrajectory, name + '/multi_arm_joint_trajectory', 10)
         else:
             self.pub_cmd_arm.append(self.node.create_publisher(JointTrajectory, name + '/ur5e/scaled_joint_trajectory_controller/joint_trajectory', 10))
         
@@ -213,6 +215,45 @@ class HuskyRobotInterface:
         goal.command.position = pos
         goal.command.max_effort = effort
         self.act_grippers[index].send_goal_async(goal)
+        
+    def send_dual_arm_cmd(self, multi_arm_trajectory):
+        multitrajectory = MultiArmTrajectory()
+        
+        multitrajectory.trajectory1 = self.to_trajectory_msg(*multi_arm_trajectory[0][0:3], 0)
+        multitrajectory.trajectory2 = self.to_trajectory_msg(*multi_arm_trajectory[1][0:3], 1)
+        
+        if multitrajectory.trajectory1 is None or multitrajectory.trajectory2 is None:
+            return
+        
+        self.pub_cmd_multi_arm.publish(multitrajectory)
+    
+    def to_trajectory_msg(self, arm_joint_positions, arm_joint_velocities=None, time=10.0, index=0):
+        if arm_joint_velocities is not None:
+            if len(arm_joint_positions) != len(arm_joint_velocities):
+                self.node.get_logger().error("trajectory must have equal number of position and velocity entries!")
+                return None
+            
+        if not np.isclose(self.arm_joint_pose[index], arm_joint_positions[0], atol=0.1).all():
+            self.node.get_logger().warn(f'Arm of husky {self.name} is not in correct start pose!')
+            self.node.get_logger().warn(f'{self.arm_joint_pose[index]} vs {arm_joint_positions[0]}')
+            return
+        
+        dt = time / (len(arm_joint_positions) - 1)
+        
+        trajectory = JointTrajectory()
+        trajectory.joint_names = ARM_JOINT_NAMES
+        for i, waypoint in enumerate(arm_joint_positions):
+            point = JointTrajectoryPoint()
+            point.positions = list(waypoint)
+            if arm_joint_velocities is not None:
+                point.velocities = list(arm_joint_velocities[i])
+            time_from_start = dt*i
+            sec = np.floor(time_from_start)
+            nano = time_from_start - sec
+            point.time_from_start = Duration(sec=int(sec), nanosec=int(nano*1e9))
+            trajectory.points.append(point)
+        
+        return trajectory
     
     def send_arm_cmd(self, arm_joint_positions, arm_joint_velocities=None, time=10.0, index=0):
         """

@@ -739,5 +739,6 @@ def execute_arm_trajectory_both(monitor):
     if monitor.planned_arm_trajectory[1][0] is None:
         monitor.get_logger().warn('Arm trajectory must be planed before executing! [RIGHT]')
         return
-    monitor.huskies[monitor.selected_robot_id].interface.send_arm_cmd(*monitor.planned_arm_trajectory[0][0:3], index=0)
-    monitor.huskies[monitor.selected_robot_id].interface.send_arm_cmd(*monitor.planned_arm_trajectory[1][0:3], index=1)
+    monitor.huskies[monitor.selected_robot_id].interface.send_dual_arm_cmd(monitor.planned_arm_trajectory)
+    #monitor.huskies[monitor.selected_robot_id].interface.send_arm_cmd(*monitor.planned_arm_trajectory[0][0:3], index=0)
+    #monitor.huskies[monitor.selected_robot_id].interface.send_arm_cmd(*monitor.planned_arm_trajectory[1][0:3], index=1)
