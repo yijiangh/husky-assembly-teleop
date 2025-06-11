@@ -179,8 +179,8 @@ def plan_arm_wave(monitor):
 
 def plan_arm_to_goal(monitor):
     obstacles = [monitor.assembly_objects[i].body for i in range(monitor.current_seq_index)] + monitor.static_obstacles
-    monitor.set_arm_trajectory(planning.plan_arm_motion(monitor.huskies[monitor.selected_robot_id], monitor.goal_arm_pose, obstacles, monitor.trajectory_time,
-                                                        grasped_element=monitor.goal_element, grasp=monitor.goal_bar_grasp))
+    monitor.set_arm_trajectory(planning.plan_arm_motion(monitor.huskies[monitor.selected_robot_id], monitor.goal_arm_pose[monitor.selected_arm_index], obstacles, monitor.trajectory_time,
+                                                        grasped_element=monitor.goal_element, grasp=monitor.goal_bar_grasp, arm_index=monitor.selected_arm_index), index=monitor.selected_arm_index)
 
 def plan_arm_to_transfer_element(monitor, grasp=None):
     obstacles = [monitor.assembly_objects[i].body for i in range(monitor.current_seq_index)] + monitor.static_obstacles

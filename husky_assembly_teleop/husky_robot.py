@@ -34,6 +34,8 @@ from control_msgs.msg import JointTolerance
 UR5e_HOME_STATE = np.array([0, -np.pi/2, 0, -np.pi/2, 0, np.pi/2])
 ARM_JOINT_NAMES = ['shoulder_pan_joint', 'shoulder_lift_joint', 'elbow_joint', 'wrist_1_joint', 'wrist_2_joint', 'wrist_3_joint']
 
+USE_TRAJECTORY_TOPIC_INTERFACE = True
+
 def quaterinion_2_angular_velocity(q1, q2, dt):
     return (2 / dt) * np.array([
         q1[3]*q2[0] - q1[0]*q2[3] - q1[1]*q2[2] + q1[2]*q2[1],
@@ -90,6 +92,12 @@ class HuskyRobotInterface:
         
         # Publishers --- --- --- --- ---
         self.pub_cmd_vel = self.node.create_publisher(Twist, name + '/cmd_vel', 10)
+        self.pub_cmd_arm = []
+        if dual_arm:
+            self.pub_cmd_arm.append(self.node.create_publisher(JointTrajectory, name + '/left_ur5e/scaled_joint_trajectory_controller/joint_trajectory', 10))
+            self.pub_cmd_arm.append(self.node.create_publisher(JointTrajectory, name + '/right_ur5e/scaled_joint_trajectory_controller/joint_trajectory', 10))
+        else:
+            self.pub_cmd_arm.append(self.node.create_publisher(JointTrajectory, name + '/ur5e/scaled_joint_trajectory_controller/joint_trajectory', 10))
         
         # Action Clients
         # TODO support dual arm
@@ -135,7 +143,7 @@ class HuskyRobotInterface:
                 FollowJointTrajectory,
                 name + '/ur5e/scaled_joint_trajectory_controller/follow_joint_trajectory',
             ))
-        if connect_arm:
+        if connect_arm and not USE_TRAJECTORY_TOPIC_INTERFACE:
             for act_arm in self.act_arms:
                 act_arm.wait_for_server(timeout_sec=2.5)
                 self.node.get_logger().info(f'Arm Action Server {act_arm.server_is_ready()}')
@@ -246,9 +254,13 @@ class HuskyRobotInterface:
         goal.goal_tolerance = [
             JointTolerance(position=0.01, velocity=0.01, name=joint_name) for joint_name in ARM_JOINT_NAMES
         ]
-        self.is_arm_executing[index] = True
-        send_goal_future = self.act_arms[index].send_goal_async(goal)
-        send_goal_future.add_done_callback(lambda fut: self.goal_response_callback(index, fut))
+        if USE_TRAJECTORY_TOPIC_INTERFACE:
+            # TODO handle is_arm_executing for topic interface
+            self.pub_cmd_arm[index].publish(goal.trajectory)
+        else:
+            self.is_arm_executing[index] = True
+            send_goal_future = self.act_arms[index].send_goal_async(goal)
+            send_goal_future.add_done_callback(lambda fut: self.goal_response_callback(index, fut))
     
     def goal_response_callback(self, index, future):
         goal_handle = future.result()

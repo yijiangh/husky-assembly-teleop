@@ -47,7 +47,7 @@ class HuskyMonitor(Node):
     USE_MOCAP = 1
     FAKE_HARDWARE = 0
     CALIBRATION = 0
-    BAR_GOAL_MODE = 1
+    BAR_GOAL_MODE = 0
     BAR_HOLDING_ACCURACY_TEST = 0
     DUAL_ARM_ACCURACY_TEST = 1
 
@@ -222,7 +222,7 @@ class HuskyMonitor(Node):
         new_index = np.clip(int(arm_index), 0, 1)
         if new_index != self.selected_arm_index:
             self.selected_arm_index = new_index
-            self.reset_ui()
+            self.reset_ui(target_conf=self.goal_arm_pose[self.selected_arm_index])
 
     def update_trajectory_time(self, time):
         self.trajectory_time = time
@@ -560,19 +560,18 @@ class HuskyMonitor(Node):
                 self.buttons.append(Button('Record markerset data', self.send_request_to_mocap))
                 self.buttons.append(Button('Save markerset data', self.record_markerset_data))
             
-            if self.DUAL_ARM_ACCURACY_TEST:
-                self.buttons.append(Button('Compute Trajectory', lambda: world.next_dual_arm_bar_trajectory(self)))
-                self.buttons.append(Button('Exec Arms', lambda: world.execute_arm_trajectory_both(self)))
-                self.buttons.append(Button('Exec Arms and Record', lambda: self.tasks.append(world.execute_and_log_mocap(self))))
-                self.buttons.append(Button('Record EE mocap pose', lambda: world.record_dual_arm_E_mocap(self)))
-                self.buttons.append(Button('Save EE mocap data', lambda: world.save_dual_arm_E_mocap(self)))
+        if self.DUAL_ARM_ACCURACY_TEST:
+            self.buttons.append(Button('Compute Trajectory', lambda: world.next_dual_arm_bar_trajectory(self)))
+            self.buttons.append(Button('Exec Arms', lambda: world.execute_arm_trajectory_both(self)))
+            self.buttons.append(Button('Exec Arms and Record', lambda: self.tasks.append(world.execute_and_log_mocap(self))))
+            self.buttons.append(Button('Record EE mocap pose', lambda: world.record_dual_arm_E_mocap(self)))
+            self.buttons.append(Button('Save EE mocap data', lambda: world.save_dual_arm_E_mocap(self)))
 
-        if True:
-            # TODO use selected robot id
-            for i, j in enumerate(pp.joints_from_names(self.huskies[0].object.robot, self.huskies[0].object.get_arm_joint_names())):
-                lower, upper = pp.get_joint_limits(self.huskies[0].object.robot, j)
+        if not self.BAR_GOAL_MODE:
+            for i, j in enumerate(pp.joints_from_names(self.huskies[self.selected_robot_id].object.robot, self.huskies[self.selected_robot_id].object.get_arm_joint_names())):
+                lower, upper = pp.get_joint_limits(self.huskies[self.selected_robot_id].object.robot, j)
                 if target_conf is None:
-                    self.joint_state_sliders.append(p.addUserDebugParameter(f'Joint {i}', lower, upper, self.huskies[0].interface.arm_joint_pose[self.selected_arm_index][i]))
+                    self.joint_state_sliders.append(p.addUserDebugParameter(f'Joint {i}', lower, upper, self.huskies[self.selected_robot_id].interface.arm_joint_pose[self.selected_arm_index][i]))
                 else:
                     self.joint_state_sliders.append(p.addUserDebugParameter(f'Joint {i}', lower, upper, target_conf[i]))
             
@@ -700,6 +699,7 @@ class HuskyMonitor(Node):
         # pp.draw_pose(self.goal_model.get_link_pose_from_name("ur_arm_base_link"))
 
         self.selected_robot_slider.update()
+        self.arm_slider.update()
         self.trajectory_time_slider.update()
 
         if not self.USE_MOCAP:
