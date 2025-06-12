@@ -32,10 +32,13 @@ from control_msgs.action import FollowJointTrajectory
 from control_msgs.msg import JointTolerance
 from crl_husky_msgs.msg import MultiArmTrajectory
 
+from rclpy.qos import QoSProfile
+
 UR5e_HOME_STATE = np.array([0, -np.pi/2, 0, -np.pi/2, 0, np.pi/2])
 ARM_JOINT_NAMES = ['shoulder_pan_joint', 'shoulder_lift_joint', 'elbow_joint', 'wrist_1_joint', 'wrist_2_joint', 'wrist_3_joint']
 
 USE_TRAJECTORY_TOPIC_INTERFACE = True
+ARM_NOT_EXECUTING_TIME = 1
 
 def quaterinion_2_angular_velocity(q1, q2, dt):
     return (2 / dt) * np.array([
@@ -51,7 +54,8 @@ class HuskyRobotInterface:
     angular_velocity = np.zeros(3)
     
     arm_joint_pose = [UR5e_HOME_STATE]
-    is_arm_executing = [False, False]
+    is_arm_executing = [False]
+    last_arm_movement = [0]
     
     odom_offset = np.zeros(3)
     _odom_position = np.zeros(3)
@@ -63,6 +67,11 @@ class HuskyRobotInterface:
         
         if dual_arm:
             self.arm_joint_pose.append(UR5e_HOME_STATE)
+            self.is_arm_executing.append(False)
+            self.last_arm_movement.append(0)
+        
+        q = QoSProfile(depth=10)
+        print(q)
         
         # Listeners --- --- --- --- ---
         if use_odom:
@@ -202,7 +211,17 @@ class HuskyRobotInterface:
         reorder = []
         for name in ARM_JOINT_NAMES:
             reorder.append(msg.name.index(name))
+        old_pose = self.arm_joint_pose[index]
         self.arm_joint_pose[index] = np.array(arm_pos)[reorder]
+        if not np.isclose(old_pose, self.arm_joint_pose[index], atol=1e-2).all():
+            if not self.is_arm_executing[index]:
+                print(f"{index} STARTED MOVING")
+            self.is_arm_executing[index] = True
+            self.last_arm_movement[index] = time.time()
+        elif time.time() - self.last_arm_movement[index] > ARM_NOT_EXECUTING_TIME:
+            if self.is_arm_executing[index]:
+                print(f"{index} FINISHED MOVING")
+            self.is_arm_executing[index] = False
     
     def send_base_twist_cmd(self, x_dot, theta_dot):
         msg = Twist()
@@ -225,6 +244,13 @@ class HuskyRobotInterface:
         if multitrajectory.trajectory1 is None or multitrajectory.trajectory2 is None:
             return
         
+        print("0 SENT MOVING")
+        print("1 SENT MOVING")
+        # assume execution starts immediately
+        self.last_arm_movement[0] = time.time()
+        self.is_arm_executing[0] = True 
+        self.last_arm_movement[1] = time.time()
+        self.is_arm_executing[1] = True
         self.pub_cmd_multi_arm.publish(multitrajectory)
     
     def to_trajectory_msg(self, arm_joint_positions, arm_joint_velocities=None, time=10.0, index=0):
@@ -296,7 +322,10 @@ class HuskyRobotInterface:
             JointTolerance(position=0.01, velocity=0.01, name=joint_name) for joint_name in ARM_JOINT_NAMES
         ]
         if USE_TRAJECTORY_TOPIC_INTERFACE:
-            # TODO handle is_arm_executing for topic interface
+            # assume execution starts immediately
+            self.last_arm_movement[index] = time.time()
+            self.is_arm_executing[index] = True
+            
             self.pub_cmd_arm[index].publish(goal.trajectory)
         else:
             self.is_arm_executing[index] = True
