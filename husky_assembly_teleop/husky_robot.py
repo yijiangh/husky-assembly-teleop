@@ -30,7 +30,10 @@ from action_msgs.msg import GoalStatus
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from control_msgs.action import FollowJointTrajectory
 from control_msgs.msg import JointTolerance
-from crl_husky_msgs.msg import MultiArmTrajectory
+try:
+    from crl_husky_msgs.msg import MultiArmTrajectory
+except ImportError:
+    print("MultiArmTrajectory not found, using single arm interface only.")
 
 from rclpy.qos import QoSProfile
 
@@ -106,7 +109,7 @@ class HuskyRobotInterface:
         if dual_arm:
             self.pub_cmd_arm.append(self.node.create_publisher(JointTrajectory, name + '/left_ur5e/scaled_joint_trajectory_controller/joint_trajectory', 10))
             self.pub_cmd_arm.append(self.node.create_publisher(JointTrajectory, name + '/right_ur5e/scaled_joint_trajectory_controller/joint_trajectory', 10))
-            self.pub_cmd_multi_arm = self.node.create_publisher(MultiArmTrajectory, name + '/multi_arm_joint_trajectory', 10)
+            # self.pub_cmd_multi_arm = self.node.create_publisher(MultiArmTrajectory, name + '/multi_arm_joint_trajectory', 10)
         else:
             self.pub_cmd_arm.append(self.node.create_publisher(JointTrajectory, name + '/ur5e/scaled_joint_trajectory_controller/joint_trajectory', 10))
         
@@ -236,6 +239,8 @@ class HuskyRobotInterface:
         self.act_grippers[index].send_goal_async(goal)
         
     def send_dual_arm_cmd(self, multi_arm_trajectory):
+        raise NotImplementedError("Multi-arm trajectory control is not implemented in this interface.")
+
         multitrajectory = MultiArmTrajectory()
         
         multitrajectory.trajectory1 = self.to_trajectory_msg(*multi_arm_trajectory[0][0:3], 0)
