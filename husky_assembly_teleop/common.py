@@ -64,14 +64,16 @@ def load_robot(ik_from_arm_base=True, load_calib_tip=False, dual_arm=False):
     ee_list = []
 
     left_tool0_pose = pp.get_link_pose(robot, pp.link_from_name(robot, ('left_' if dual_arm else '') + 'ur_arm_tool0'))
-    left_ee = pp.create_obj(gripper_obj, scale=gripper_scale) 
+    left_ee = ee
+    # pp.create_obj(gripper_obj, scale=gripper_scale) 
     pp.set_pose(left_ee, pp.multiply(left_tool0_pose, pp.Pose(euler=pp.Euler(yaw=-np.pi/2))))
     left_ee_attachment = pp.create_attachment(robot, pp.link_from_name(robot, ('left_' if dual_arm else '') + 'ur_arm_tool0'), left_ee)
     ee_list.append((left_ee, left_ee_attachment))
     
     if dual_arm:
         right_tool0_pose = pp.get_link_pose(robot, pp.link_from_name(robot, 'right_ur_arm_tool0'))
-        right_ee = pp.create_obj(gripper_obj, scale=gripper_scale) 
+        right_ee = pp.clone_body(left_ee)
+        # right_ee = pp.create_obj(gripper_obj, scale=gripper_scale) 
         pp.set_pose(right_ee, pp.multiply(right_tool0_pose, pp.Pose(euler=pp.Euler(yaw=-np.pi/2))))
         right_ee_attachment = pp.create_attachment(robot, pp.link_from_name(robot, 'right_ur_arm_tool0'), right_ee)
         ee_list.append((right_ee, right_ee_attachment))

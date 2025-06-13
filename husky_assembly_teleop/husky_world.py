@@ -567,7 +567,7 @@ def execute_arm_trajectory(monitor, trajectory, index=0):
         monitor.get_logger().warn('Arm trajectory must be planed before executing!')
         return
     # trajectory confs, velocity, total time
-    monitor.huskies[monitor.selected_robot_id].interface.send_arm_cmd(trajectory[index][0], trajectory[index][1], monitor.trajectory_time, index=index)
+    monitor.huskies[monitor.selected_robot_id].interface.send_arm_cmd(trajectory[0], trajectory[1], monitor.trajectory_time, index=index)
 
 def execute_task_goal_arm_trajectory_with_servoing(monitor, trajectory, index=0, log_data=False):
     if trajectory is None:

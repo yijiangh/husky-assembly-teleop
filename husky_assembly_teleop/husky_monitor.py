@@ -47,10 +47,10 @@ FILENAME_SUFFIX = '_vary_pos_vary_yaw'
   
 class HuskyMonitor(Node):
     USE_MOCAP = 0
-    FAKE_HARDWARE = 1
-    CALIBRATION = 0
+    FAKE_HARDWARE = 0
+    CALIBRATION = 1
 
-    BAR_GOAL_MODE = 1
+    BAR_GOAL_MODE = 0
     BAR_HOLDING_ACCURACY_TEST = 0
     DUAL_ARM_ACCURACY_TEST = 1
 

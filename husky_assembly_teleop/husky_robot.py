@@ -286,7 +286,7 @@ class HuskyRobotInterface:
         
         return trajectory
     
-    def send_arm_cmd(self, arm_joint_positions, arm_joint_velocities=None, time=10.0, index=0):
+    def send_arm_cmd(self, arm_joint_positions, arm_joint_velocities=None, traj_time=10.0, index=0):
         """
         Send a joint trajectory to the arm
         
@@ -302,7 +302,7 @@ class HuskyRobotInterface:
             self.node.get_logger().warn(f'{self.arm_joint_pose[index]} vs {arm_joint_positions[0]}')
             return
         
-        dt = time / (len(arm_joint_positions) - 1)
+        dt = traj_time / (len(arm_joint_positions) - 1)
         
         goal = FollowJointTrajectory.Goal()
         goal.trajectory = JointTrajectory()
@@ -328,6 +328,7 @@ class HuskyRobotInterface:
         ]
         if USE_TRAJECTORY_TOPIC_INTERFACE:
             # assume execution starts immediately
+            print(f"{index} SENT MOVING")
             self.last_arm_movement[index] = time.time()
             self.is_arm_executing[index] = True
             
