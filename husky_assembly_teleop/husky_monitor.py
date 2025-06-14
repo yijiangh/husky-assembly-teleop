@@ -47,11 +47,11 @@ FILENAME_SUFFIX = '_vary_pos_vary_yaw'
   
 class HuskyMonitor(Node):
     USE_MOCAP = 0
-    FAKE_HARDWARE = 1
+    FAKE_HARDWARE = 0
 
     GRASP_PARTITION = 8
-
     BAR_GOAL_MODE = 0
+
     CALIBRATION = 1
 
     BAR_HOLDING_ACCURACY_TEST = 0
@@ -379,7 +379,7 @@ class HuskyMonitor(Node):
         else:
             # conf = self.planned_arm_trajectory[0].pop(0)
             # world.execute_arm_conf(self, conf)
-            world.execute_arm_trajectory_and_record_each_conf(self, self.planned_arm_trajectory[0], self.trajectory_time)
+            world.execute_arm_trajectory_and_record_each_conf(self, self.planned_arm_trajectory, self.trajectory_time)
 
     def get_world_from_bar_goal_pose(self):
         world_from_base_link = self.goal_model.get_link_pose_from_name("base_footprint")
@@ -744,8 +744,8 @@ class HuskyMonitor(Node):
         #     np.array((state_slider_values[0], state_slider_values[1], 0)),
         #     R.from_euler("z", state_slider_values[2], degrees=False).as_quat()
         # )
-        if not self.FAKE_HARDWARE:
-            self.goal_gripper = p.readUserDebugParameter(self.gripper_slider)
+        # if not self.FAKE_HARDWARE:
+        #     self.goal_gripper = p.readUserDebugParameter(self.gripper_slider)
 
         if self.BAR_GOAL_MODE:
             self.bar_goal_pose_slider_group.update()

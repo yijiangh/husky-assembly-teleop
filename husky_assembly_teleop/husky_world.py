@@ -39,8 +39,8 @@ def init(monitor):
     # * add robots
     # 1004
     Husky(monitor, name='/a200_0806', mocap_id=4568, pos=np.array((0,0,0)), 
-          connect_arm=not monitor.FAKE_HARDWARE, connect_gripper=False and not monitor.FAKE_HARDWARE, 
-        #   calibration=monitor.CALIBRATION)
+          connect_arm=not monitor.FAKE_HARDWARE, 
+          connect_gripper=False and not monitor.FAKE_HARDWARE, 
           calibration=monitor.CALIBRATION,
           dual_arm=True)
     
@@ -188,8 +188,8 @@ def plan_base_to_goal(monitor):
     base = planning.plan_base_motion(monitor.huskies[monitor.selected_robot_id], monitor.goal_pose, [])
     monitor.set_base_trajectry(base)
 
-def plan_arm_wave(monitor):
-    monitor.set_arm_trajectory(planning.plan_arm_wave(monitor.huskies[monitor.selected_robot_id], monitor.trajectory_time))
+# def plan_arm_wave(monitor):
+#     monitor.set_arm_trajectory(planning.plan_arm_wave(monitor.huskies[monitor.selected_robot_id], monitor.trajectory_time))
 
 def plan_arm_to_goal(monitor):
     obstacles = [monitor.assembly_objects[i].body for i in range(monitor.current_seq_index)] + monitor.static_obstacles
@@ -217,14 +217,16 @@ def plan_arm_to_transfer_element(monitor, grasp=None):
         monitor.trajectory_time, 
         grasp=grasp
         )
-    monitor.set_arm_trajectory(full_traj)
+    monitor.set_arm_trajectory(full_traj, index=monitor.selected_arm_index)
     monitor.free_arm_trajectory = free_traj
     monitor.linear_arm_trajectory = linear_traj
 
 def plan_arm_to_retract_to_home(monitor):
     obstacles = [monitor.assembly_objects[i].body for i in range(monitor.current_seq_index)] + monitor.static_obstacles
     transfer_element = monitor.assembly_objects[monitor.current_seq_index]
-    monitor.set_arm_trajectory(planning.plan_arm_to_retract_to_home(monitor.huskies[monitor.selected_robot_id], transfer_element, obstacles, monitor.trajectory_time))
+    monitor.set_arm_trajectory(
+        planning.plan_arm_to_retract_to_home(monitor.huskies[monitor.selected_robot_id], transfer_element, obstacles, monitor.trajectory_time), 
+        index=monitor.selected_arm_index)
 
 def compute_ik_for_bar(monitor, world_from_bar, theta_index, grasp_dist):
     obstacles = monitor.static_obstacles
@@ -551,7 +553,7 @@ def calibrate_joint(monitor, joint_id, tool_mocap_name):
     hi = monitor.huskies[monitor.selected_robot_id].interface
     ho = monitor.huskies[monitor.selected_robot_id].object
     current_conf = hi.arm_joint_pose[monitor.selected_arm_index]
-    goal_conf = np.copy(monitor.goal_arm_pose)
+    goal_conf = np.copy(monitor.goal_arm_pose[monitor.selected_arm_index])
     # check if values are close between current conf and goal conf, except for the joint id
     diff_vec = np.abs(np.array(current_conf) - np.array(goal_conf))
     diff_vec[joint_id] = 0
@@ -568,7 +570,10 @@ def calibrate_joint(monitor, joint_id, tool_mocap_name):
         joint_conf = np.array(current_conf) + (i+1)/steps * (np.array(goal_conf) - np.array(current_conf))
         joint_confs.append(joint_conf)
 
-    monitor.set_arm_trajectory((joint_confs, None, monitor.trajectory_time, None))
+    monitor.set_arm_trajectory(
+        (joint_confs, None, monitor.trajectory_time, None),
+        index=monitor.selected_arm_index
+        )
     monitor.set_to_show_traj_state()
     monitor.active_calib_joint_id = joint_id
     
@@ -582,16 +587,16 @@ def execute_arm_trajectory_and_record_each_conf(monitor, trajectory, time_betwee
     settle_time = 0.5
     hi = monitor.huskies[monitor.selected_robot_id].interface
     for conf in trajectory[0]:
+        print(conf)
         hi.send_arm_cmd(
-            # [hi.arm_joint_pose[monitor.selected_arm_index], conf], 
-            [conf], 
+            [hi.arm_joint_pose[monitor.selected_arm_index], conf], 
+            # [conf], 
             None, 
             time_between_confs
             )
 
         # wait until it finishes
-        spin_time = time_between_confs + settle_time
-        time.sleep(spin_time)
+        time.sleep(time_between_confs + settle_time)
 
         calibrate_button(monitor, monitor.active_calib_tool_name)
 

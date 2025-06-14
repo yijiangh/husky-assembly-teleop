@@ -41,7 +41,7 @@ def load_robot(ik_from_arm_base=True, load_calib_tip=False, dual_arm=False):
     robot_urdf = None
     print('loading robot urdf from:', DATA_DIRECTORY)
     if dual_arm:
-        robot_urdf = os.path.join(DATA_DIRECTORY,'husky_urdf/mt_husky_dual_ur5_e_moveit_config/urdf/husky_dual_ur5_e.urdf')
+        robot_urdf = os.path.join(DATA_DIRECTORY,'husky_urdf/mt_husky_dual_ur5_e_moveit_config/urdf/husky_dual_ur5_e_no_base_joint.urdf')
     else:
         robot_urdf = os.path.join(DATA_DIRECTORY,'husky_urdf/mt_husky_moveit_config/urdf/husky_ur5_e_no_base_joint.urdf')
 
