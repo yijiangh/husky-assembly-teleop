@@ -89,32 +89,27 @@ def init(monitor):
     #boxes.append(TrackedObject(monitor, 'box3', 1031, np.zeros(3), np.array((0, 0, 0, 1)), 0.2, 'cube.obj'))
 
     # * add assembly objects
-    line_pt_pairs, contact_id_pairs, bar_radius = parse_mt_geometric(MT_FILE_NAME)
-    line_pts_flattened = flatten_list(np.array(line_pt_pairs))
-    radius_per_edge = [bar_radius] * int(len(line_pts_flattened)/2)
+    if monitor.ASSEMBLY_MODE:
+        line_pt_pairs, contact_id_pairs, bar_radius = parse_mt_geometric(MT_FILE_NAME)
+        line_pts_flattened = flatten_list(np.array(line_pt_pairs))
+        radius_per_edge = [bar_radius] * int(len(line_pts_flattened)/2)
 
-    # # compute the centroid of the line_pts_flattened
-    # centroid = np.mean(line_pts_flattened, axis=0)
-    # # move the line_pts_flattened to the origin
-    # line_pts_flattened -= centroid
-    # line_pts_flattened += [1.5,0,0.5]
+        # TODO: set in rhino
+        line_pts_flattened += np.array([-1.5, -0.5, 0.11])
 
-    # TODO: set in rhino
-    # line_pts_flattened += np.array([1.5, -0.5, 0.11])
-    line_pts_flattened += np.array([-1.5, -0.5, 0.11])
+        element_bodies = create_collision_bodies(line_pts_flattened, radius_per_edge, viewer=True)
+        # TODO make coupler appear with the substructure
+        half_coupler_from_contact_pair = create_couplers(line_pts_flattened, contact_id_pairs)
 
-    element_bodies = create_collision_bodies(line_pts_flattened, radius_per_edge, viewer=True)
-    half_coupler_from_contact_pair = create_couplers(line_pts_flattened, contact_id_pairs)
+        far_away_pose = pp.Pose(pp.Point(0,0,100))
+        goal_poses = {}
+        for i, e in enumerate(element_bodies):
+            goal_poses[i] = pp.get_pose(e)
 
-    far_away_pose = pp.Pose(pp.Point(0,0,100))
-    goal_poses = {}
-    for i, e in enumerate(element_bodies):
-        goal_poses[i] = pp.get_pose(e)
-
-    # TODO use parsed sequence here
-    assembly_objects.append([
-        AssemblyObject(monitor, 'b{}'.format(i), body, far_away_pose, goal_poses[i]) for i, body in enumerate(element_bodies)
-    ])
+        # TODO use parsed sequence here
+        assembly_objects.append([
+            AssemblyObject(monitor, 'b{}'.format(i), body, far_away_pose, goal_poses[i]) for i, body in enumerate(element_bodies)
+        ])
     
 pre_position_trajectory = False
 dual_arm_trajectory = None
@@ -192,8 +187,19 @@ def plan_arm_wave(monitor):
 
 def plan_arm_to_goal(monitor):
     obstacles = [monitor.assembly_objects[i].body for i in range(monitor.current_seq_index)] + monitor.static_obstacles
-    monitor.set_arm_trajectory(planning.plan_arm_motion(monitor.huskies[monitor.selected_robot_id], monitor.goal_arm_pose[monitor.selected_arm_index], obstacles, monitor.trajectory_time,
-                                                        grasped_element=monitor.goal_element, grasp=monitor.goal_bar_grasp, arm_index=monitor.selected_arm_index), index=monitor.selected_arm_index)
+    monitor.set_arm_trajectory(
+        planning.plan_arm_motion(
+            monitor.huskies[monitor.selected_robot_id], 
+            monitor.goal_arm_pose[monitor.selected_arm_index], 
+            obstacles, 
+            monitor.trajectory_time,
+            grasped_element=monitor.goal_element, 
+            grasp=monitor.goal_bar_grasp, 
+            arm_index=monitor.selected_arm_index
+            ), 
+        index=monitor.selected_arm_index
+        )
+    monitor.set_to_show_traj_state()
 
 def plan_arm_to_transfer_element(monitor, grasp=None):
     obstacles = [monitor.assembly_objects[i].body for i in range(monitor.current_seq_index)] + monitor.static_obstacles
@@ -228,7 +234,7 @@ def compute_ik_for_bar(monitor, world_from_bar, theta_index, grasp_dist):
 
     husky = monitor.huskies[monitor.selected_robot_id]
     robot = husky.object.robot
-    attachments = [husky.object.ee_list[monitor.arm_index][1], pp.Attachment(robot, pp.link_from_name(robot, 'ur_arm_tool0'), grasp, monitor.goal_element.body)]
+    attachments = [husky.object.ee_list[monitor.selected_arm_index][1], pp.Attachment(robot, pp.link_from_name(robot, 'ur_arm_tool0'), grasp, monitor.goal_element.body)]
 
     arm_conf = planning.arm_ik(monitor.huskies[monitor.selected_robot_id], world_from_tool0, attachments, obstacles)
     if arm_conf is None:
@@ -362,7 +368,7 @@ def calibrate_button(monitor, tool_mocap_name):
         else:
             pp.draw_pose(base_mocap_pose)
             monitor.append_calibration_data(
-                {'joint_conf' : list(hi.arm_joint_pose[monitor.arm_index]), 
+                {'joint_conf' : list(hi.arm_joint_pose[monitor.selected_arm_index]), 
                  'base_mocap_pose' : [list(v) for v in base_mocap_pose],
                  "flange_mocap_pose" : [],
                  'tool0_fk_pose' : [list(v) for v in tool0_fk_pose],
@@ -372,7 +378,7 @@ def calibrate_button(monitor, tool_mocap_name):
         tool_0_fk_from_mocap = pp.multiply(pp.invert(tool0_fk_pose), flange_mocap_pose)
         pp.draw_pose(flange_mocap_pose)
         monitor.append_calibration_data(
-            {'joint_conf' : list(hi.arm_joint_pose[monitor.arm_index]), 
+            {'joint_conf' : list(hi.arm_joint_pose[monitor.selected_arm_index]), 
              'base_mocap_pose' : [list(v) for v in base_mocap_pose],
              "flange_mocap_pose" : [list(v) for v in flange_mocap_pose],
              'tool0_fk_pose' : [list(v) for v in tool0_fk_pose],
@@ -431,7 +437,7 @@ def request_marketset_button(monitor, rb_mocap_name):
 
         bar_pose = monitor.get_world_from_bar_goal_pose()
         monitor.marker_set_data.append(
-            {'joint_conf' : list(hi.arm_joint_pose[monitor.arm_index]), 
+            {'joint_conf' : list(hi.arm_joint_pose[monitor.selected_arm_index]), 
              'base_mocap_pose' : [list(v) for v in base_mocap_pose],
              'footprint_base_link_pose' : base_link_pose,
              'world_from_bar_pose' : bar_pose,
@@ -531,10 +537,9 @@ def execute_and_log_mocap(monitor):
 #################################
  
 def calibrate_joint(monitor, joint_id, tool_mocap_name):
-    global calibration_running, calibration_confirm
     hi = monitor.huskies[monitor.selected_robot_id].interface
     ho = monitor.huskies[monitor.selected_robot_id].object
-    current_conf = hi.arm_joint_pose[monitor.arm_index]
+    current_conf = hi.arm_joint_pose[monitor.selected_arm_index]
     goal_conf = np.copy(monitor.goal_arm_pose)
     # check if values are close between current conf and goal conf, except for the joint id
     diff_vec = np.abs(np.array(current_conf) - np.array(goal_conf))
@@ -543,8 +548,7 @@ def calibrate_joint(monitor, joint_id, tool_mocap_name):
         monitor.get_logger().warn(f'Current conf and goal conf differs in axes other than the target joint {joint_id}: {diff_vec}!')
         return
    
-    # linearly interpolate joint 0 from joint conf from -np.pi/2 to np.pi/2 different from the current joint 0
-    joint_limit = pp.get_joint_limits(ho.robot, pp.joint_from_name(ho.robot, HUSKY_UR5e_JOINT_NAMES[joint_id]))
+    # joint_limit = pp.get_joint_limits(ho.robot, pp.joint_from_name(ho.robot, HUSKY_UR5e_JOINT_NAMES[joint_id]))
 
     steps = 20
     # interpolate between current conf and goal conf
@@ -554,10 +558,12 @@ def calibrate_joint(monitor, joint_id, tool_mocap_name):
         joint_confs.append(joint_conf)
 
     monitor.set_arm_trajectory((joint_confs, None, monitor.trajectory_time, None))
+    monitor.set_to_show_traj_state()
     
 def execute_arm_conf(monitor, conf):
+    # execute a single arm conf trajectory
     hi = monitor.huskies[monitor.selected_robot_id].interface
-    monitor.huskies[monitor.selected_robot_id].interface.send_arm_cmd([hi.arm_joint_pose[monitor.arm_index], conf], 
+    monitor.huskies[monitor.selected_robot_id].interface.send_arm_cmd([hi.arm_joint_pose[monitor.selected_arm_index], conf], 
                                                                       None, monitor.trajectory_time)
 
 #################################
@@ -590,7 +596,7 @@ def execute_task_goal_arm_trajectory_with_servoing(monitor, trajectory, index=0,
     # TODO this should be generalized to any world_from_tool0 and attachment
     transfer_element = trajectory[3]
     world_from_tool0 = pp.multiply(transfer_element.goal_pose, pp.invert(transfer_element.grasp))
-    attachments = [ho.ee_list[monitor.arm_index][1], pp.Attachment(ho.robot, pp.link_from_name(ho.robot, 'ur_arm_tool0'), transfer_element.grasp, transfer_element.body)]
+    attachments = [ho.ee_list[monitor.selected_arm_index][1], pp.Attachment(ho.robot, pp.link_from_name(ho.robot, 'ur_arm_tool0'), transfer_element.grasp, transfer_element.body)]
 
     for iter_i in range(num_iters):
         monitor.get_logger().info(f'Servoing arm trajectory {iter_i+1}/{num_iters}...')
@@ -637,7 +643,7 @@ def execute_task_goal_arm_trajectory_with_servoing(monitor, trajectory, index=0,
 
         # ! until we make the ros main thread spin properly, we need to manually update the robot base pose in sim accroding to the mocap
         # ! we assume that the robot arm conf is exactly the last traj point
-        hi.arm_joint_pose[monitor.arm_index] = trajectory[0][-1]
+        hi.arm_joint_pose[monitor.selected_arm_index] = trajectory[0][-1]
         ho.set_pose((hi.position, hi.rotation), hi.arm_joint_pose)
 
         # compute current world_from_tool0
@@ -763,7 +769,7 @@ def open_gripper_full(monitor):
     monitor.huskies[monitor.selected_robot_id].interface.send_gripper_cmd(0.426, 0.1)
 
 def close_gripper_for_bar(monitor):
-    monitor.huskies[monitor.selected_robot_id].interface.send_gripper_cmd(0.6, 0.1)
+    monitor.huskies[monitor.selected_robot_id].interface.send_gripper_cmd(0.8, 0.1)
 
 def set_gripper(monitor):
     monitor.huskies[monitor.selected_robot_id].interface.send_gripper_cmd(monitor.goal_gripper, 0.1)

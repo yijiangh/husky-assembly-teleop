@@ -47,14 +47,17 @@ FILENAME_SUFFIX = '_vary_pos_vary_yaw'
   
 class HuskyMonitor(Node):
     USE_MOCAP = 0
-    FAKE_HARDWARE = 0
-    CALIBRATION = 1
-
-    BAR_GOAL_MODE = 0
-    BAR_HOLDING_ACCURACY_TEST = 0
-    DUAL_ARM_ACCURACY_TEST = 1
+    FAKE_HARDWARE = 1
 
     GRASP_PARTITION = 8
+
+    BAR_GOAL_MODE = 0
+    CALIBRATION = 1
+
+    BAR_HOLDING_ACCURACY_TEST = 0
+    DUAL_ARM_ACCURACY_TEST = 0
+
+    ASSEMBLY_MODE = 0
 
     def __init__(self):
         super().__init__('husky_monitor')
@@ -354,8 +357,7 @@ class HuskyMonitor(Node):
         self.goal_arm_pose[0] = 0.0
         self.reset_ui(self.goal_arm_pose)
 
-    def execute_one_step(self):
-        # pop the first element from planned_arm_trajectory
+    def execute_calib_traj(self):
         if self.planned_arm_trajectory[0] is None:
             self.get_logger().warn('Arm trajectory must be planed before executing!')
         else:
@@ -481,13 +483,6 @@ class HuskyMonitor(Node):
         self.goal_model.set_color(GOAL_BLUE if self.show_goal_state else TRAJECTORY_GREEN)
         
     def build_ui(self, target_conf=None):
-        # default_base_position = [0,0,0]
-        # self.assembly_goal_position_slider_group = SliderGroup(["target base {}".format(t) for t in ["x","y","z"]], self.update_assembly_goal_position, [0, -5, 0], [5,5,1], default_base_position)
-
-
-        self.buttons.append(Button('Prev in sequence', self.show_previous_in_sequence))
-        self.buttons.append(Button('Next in sequence', self.show_next_in_sequence))
-
         self.selected_robot_slider = Slider("robot id", self.update_selected_robot_id, 0, len(self.huskies)+1, self.selected_robot_id)
         self.arm_slider = Slider("arm id", self.update_selected_arm_id, 0, 2, self.selected_arm_index)
 
@@ -509,36 +504,38 @@ class HuskyMonitor(Node):
         # self.buttons.append(Button('Plan base', lambda: world.plan_to_goal(self)))
         # self.buttons.append(Button('Exec Base', lambda: world.move_to_goal(self)))
                
-        self.buttons.append(Button('Plan arm to assemble current element', self.plan_arm_to_transfer_element))
-        self.buttons.append(Button('Plan arm to assemble, reuse grasp', self.plan_arm_to_transfer_element_reuse_grasp))
+        if self.ASSEMBLY_MODE:
+            self.buttons.append(Button('Prev in sequence', self.show_previous_in_sequence))
+            self.buttons.append(Button('Next in sequence', self.show_next_in_sequence))
+            self.buttons.append(Button('Plan arm to assemble current element', self.plan_arm_to_transfer_element))
+            self.buttons.append(Button('Plan arm to assemble, reuse grasp', self.plan_arm_to_transfer_element_reuse_grasp))
+            self.buttons.append(Button('Plan arm to retract to home', self.plan_arm_to_retract_to_home))
 
-        self.buttons.append(Button('Plan arm to retract to home', self.plan_arm_to_retract_to_home))
+        self.buttons.append(Button('Exec S.Arm Traj', self.execute_arm_trajectory))
 
-        self.buttons.append(Button('Exec Arm Traj', self.execute_arm_trajectory))
-        self.buttons.append(Button('Exec Arm Traj with servoing', self.execute_arm_trajectory_with_servoing))
+        if not self.CALIBRATION:
+            # in calibration mode, we do not have task space targets so this is disabled
+            self.buttons.append(Button('Exec S.Arm Traj with servoing', self.execute_arm_trajectory_with_servoing))
 
         # if not self.CALIBRATION:
         #     self.buttons.append(Button('Exec Free Motion', self.execute_free_trajectory))
         #     self.buttons.append(Button('Exec Linear Motion', self.execute_linear_trajectory))
-
         # self.buttons.append(Button('Plan arm wave', lambda: world.plan_arm_wave(self)))
 
         if not self.FAKE_HARDWARE:
-            self.gripper_slider = p.addUserDebugParameter("gripper", 0, 1.0, 0.1)
-            self.buttons.append(Button('Exec Gripper', lambda: world.set_gripper(self)))
-
+            # self.gripper_slider = p.addUserDebugParameter("gripper", 0, 1.0, 0.1)
+            # self.buttons.append(Button('Exec Gripper', lambda: world.set_gripper(self)))
             self.buttons.append(Button('Open Gripper', lambda: world.open_gripper_full(self)))
             self.buttons.append(Button('Close Gripper', lambda: world.close_gripper_for_bar(self)))
 
-        self.buttons.append(Button('Compute ik', self.compute_ik_for_bar))
-        self.buttons.append(Button('Plan arm to conf target', lambda: world.plan_arm_to_goal(self)))
+        # self.buttons.append(Button('Compute ik', self.compute_ik_for_bar))
+        self.buttons.append(Button('Plan arm to conf target', lambda : world.plan_arm_to_goal(self)))
 
-        # self.buttons.append(Button('Rand bar loc for ik', self.sample_bar_location_for_ik_and_transfer))
-        self.goal_axis_slider = Slider("bar aligned axis", self.update_goal_align_axis, 0, 2, self.goal_element_axis)
-        self.buttons.append(Button('Rand bar loc for ik, fix axis', lambda : self.sample_bar_location_for_ik_and_transfer(int(self.goal_element_axis))))
-        # self.buttons.append(Button('Rand bar loc for ik, fix axis, side grasp', lambda : self.sample_bar_location_for_ik_and_transfer(
-            # int(self.goal_element_axis), self.grasp_theta_index)
-        # ))
+        if self.BAR_HOLDING_ACCURACY_TEST:
+            self.goal_axis_slider = Slider("bar aligned axis", self.update_goal_align_axis, 0, 2, self.goal_element_axis)
+            self.buttons.append(Button('Rand bar loc for ik, fix axis', lambda : self.sample_bar_location_for_ik_and_transfer(int(self.goal_element_axis))))
+            self.buttons.append(Button('Record markerset data', self.send_request_to_mocap))
+            self.buttons.append(Button('Save markerset data', self.record_markerset_data))
 
         # bar_goal_pose_slider_group
         if self.BAR_GOAL_MODE:
@@ -569,10 +566,6 @@ class HuskyMonitor(Node):
             self.buttons.append(Button('Step grasp theta', self.next_grasp_theta))
 
             # self.bar_grasp_long_distance_silder = Slider("Grasp dist from mid", self., -0.5, 0.5, 0)
-
-            if self.BAR_HOLDING_ACCURACY_TEST:
-                self.buttons.append(Button('Record markerset data', self.send_request_to_mocap))
-                self.buttons.append(Button('Save markerset data', self.record_markerset_data))
             
         if self.DUAL_ARM_ACCURACY_TEST:
             self.buttons.append(Button('Compute Trajectory', lambda: world.next_dual_arm_bar_trajectory(self)))
@@ -593,8 +586,9 @@ class HuskyMonitor(Node):
             self.buttons.append(Button('Calib joint 0', lambda: world.calibrate_joint(self, 0, 'calib_tool')))
             self.buttons.append(Button('Set joint 0 to zero', self.set_goal_joint_0_to_zero))
             self.buttons.append(Button('Calib joint 1', lambda: world.calibrate_joint(self, 1, 'calib_tool')))
-            self.buttons.append(Button('Execute one step', self.execute_one_step))
+            self.buttons.append(Button('Execute calib traj', self.execute_calib_traj))
 
+        self.dump_sep = Slider("DEBUG utils", lambda : None)
         self.buttons.append(Button('Record current calib conf', lambda: world.calibrate_button(self, 'calib_tool')))
         self.buttons.append(Button('Export calib conf to json', self.record_calibration_data))
         self.buttons.append(Button('Remove all drawing', lambda : pp.remove_all_debug()))
@@ -715,7 +709,9 @@ class HuskyMonitor(Node):
         self.selected_robot_slider.update()
         self.arm_slider.update()
         self.trajectory_time_slider.update()
-        self.goal_axis_slider.update()
+
+        if self.BAR_HOLDING_ACCURACY_TEST:
+            self.goal_axis_slider.update()
 
         if not self.USE_MOCAP:
             self.teleop_base_slider_group.update()
@@ -748,6 +744,7 @@ class HuskyMonitor(Node):
             #     base_traj_idx = int(preview_time * (N - 1))
             #     # TODO sometime the trajectory preview gets cut off halfway
             #     goal_base_pose = self.planned_base_trajectory[0][base_traj_idx]
+
             for i in range(0,2):
                 if self.planned_arm_trajectory[i][0] is not None:
                     N = len(self.planned_arm_trajectory[i][0])
@@ -782,12 +779,8 @@ class HuskyMonitor(Node):
                next(t)
             except StopIteration:
                 self.tasks.remove(t)
-
                 
         world.update(self)
-    
-                
-
 
 # --- --- --- --- --- MAIN --- --- --- --- --- 
 def main(args=None):
