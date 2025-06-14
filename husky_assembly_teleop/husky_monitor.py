@@ -85,6 +85,7 @@ class HuskyMonitor(Node):
         self.assembly_goal_position_slider_group = None
         self.bar_goal_pose_slider_group = None
         self.bar_grasp_long_distance_slider = None
+        self.dump_sep_sliders = []
 
         self.selected_robot_slider = None
         self.selected_robot_id = 0
@@ -102,6 +103,9 @@ class HuskyMonitor(Node):
         self.base_from_goal_bar_pos = None
         self.world_from_goal_bar_euler = None
         self.goal_element = None 
+
+        self.calib_tool_from_robot_arm_id = defaultdict(lambda: defaultdict(lambda: None))
+        self.active_calib_joint_id = None
 
         self.goal_bar_grasp = None
         self.grasp_theta_index = 0
@@ -151,6 +155,17 @@ class HuskyMonitor(Node):
         """Registers a husky to connect to ROS and be tracked by mocap"""
         self.huskies.append(husky)
         self.name_from_mocap_id[husky.mocap_id] = husky.name
+
+    def assign_calibration_tool_to_robot(self, robot_id, arm_id, tool_name):
+        """Assigns a calibration tool to a robot's arm"""
+        if robot_id < 0 or robot_id >= len(self.huskies):
+            raise ValueError(f"Invalid robot_id: {robot_id}")
+        self.calib_tool_from_robot_arm_id[robot_id][arm_id] = tool_name
+
+    @property
+    def active_calib_tool_name(self):
+        """Returns the active calibration tool for the selected robot and arm"""
+        return self.calib_tool_from_robot_arm_id[self.selected_robot_id][self.selected_arm_index]
         
     def set_base_trajectry(self, base_trajectory: Tuple[List[Tuple[np.ndarray, np.ndarray]], float]):
             """ set base trajectory for visualization"""
@@ -201,6 +216,7 @@ class HuskyMonitor(Node):
         self.buttons.clear()
         self.assembly_position_sliders.clear()
         self.joint_state_sliders.clear()
+        self.dump_sep_sliders.clear()
         self.build_ui(target_conf)
         
     def toggle_show_goal_state(self):
@@ -361,10 +377,9 @@ class HuskyMonitor(Node):
         if self.planned_arm_trajectory[0] is None:
             self.get_logger().warn('Arm trajectory must be planed before executing!')
         else:
-            conf = self.planned_arm_trajectory[0].pop(0)
-            world.execute_arm_conf(self, conf)
-            # self.goal_arm_pose = conf
-            # self.show_goal_state = True
+            # conf = self.planned_arm_trajectory[0].pop(0)
+            # world.execute_arm_conf(self, conf)
+            world.execute_arm_trajectory_and_record_each_conf(self, self.planned_arm_trajectory[0], self.trajectory_time)
 
     def get_world_from_bar_goal_pose(self):
         world_from_base_link = self.goal_model.get_link_pose_from_name("base_footprint")
@@ -488,29 +503,33 @@ class HuskyMonitor(Node):
 
         self.trajectory_time_slider = Slider("traj time", self.update_trajectory_time, 1.0, 60.0, self.trajectory_time)
 
-        self.time_slider = p.addUserDebugParameter("time", 0.0, 1.0, 1.0)
+        self.time_slider = p.addUserDebugParameter("Traj viz time", 0.0, 1.0, 1.0)
         
         self.buttons.append(Button('Toggle Goal/Trajectory', self.toggle_show_goal_state))
         self.buttons.append(Button('Reset Goal State', self.reset_ui))
         
         if not self.USE_MOCAP:
             # teleop base when no mocap
+            self.dump_sep_sliders.append(Slider("----------Base Control", lambda : None))
             pose2d = pp.pose2d_from_pose((self.huskies[self.selected_robot_id].interface.position, self.huskies[self.selected_robot_id].interface.rotation), tolerance=0.1)
             self.teleop_base_slider_group = SliderGroup(["teleop base {}".format(t) for t in ["x","y","yaw"]], self.update_base_conf, [-5.0, -5.0, -np.pi], [5.0,5.0,np.pi], pose2d)
             # self.state_sliders.append(p.addUserDebugParameter("x", -5.0, 5.0, pose2d[0]))
             # self.state_sliders.append(p.addUserDebugParameter("y", -5.0, 5.0, pose2d[1]))
             # self.state_sliders.append(p.addUserDebugParameter("yaw", -np.pi, np.pi, pose2d[2]))
-
-        # self.buttons.append(Button('Plan base', lambda: world.plan_to_goal(self)))
-        # self.buttons.append(Button('Exec Base', lambda: world.move_to_goal(self)))
+        else:
+            pass
+            # self.buttons.append(Button('Plan base', lambda: world.plan_to_goal(self)))
+            # self.buttons.append(Button('Exec Base', lambda: world.move_to_goal(self)))
                
         if self.ASSEMBLY_MODE:
+            self.dump_sep_sliders.append(Slider("----------Assembly Control", lambda : None))
             self.buttons.append(Button('Prev in sequence', self.show_previous_in_sequence))
             self.buttons.append(Button('Next in sequence', self.show_next_in_sequence))
             self.buttons.append(Button('Plan arm to assemble current element', self.plan_arm_to_transfer_element))
             self.buttons.append(Button('Plan arm to assemble, reuse grasp', self.plan_arm_to_transfer_element_reuse_grasp))
             self.buttons.append(Button('Plan arm to retract to home', self.plan_arm_to_retract_to_home))
 
+        self.buttons.append(Button('Plan arm to conf target', lambda : world.plan_arm_to_goal(self)))
         self.buttons.append(Button('Exec S.Arm Traj', self.execute_arm_trajectory))
 
         if not self.CALIBRATION:
@@ -529,16 +548,16 @@ class HuskyMonitor(Node):
             self.buttons.append(Button('Close Gripper', lambda: world.close_gripper_for_bar(self)))
 
         # self.buttons.append(Button('Compute ik', self.compute_ik_for_bar))
-        self.buttons.append(Button('Plan arm to conf target', lambda : world.plan_arm_to_goal(self)))
 
         if self.BAR_HOLDING_ACCURACY_TEST:
+            self.dump_sep_sliders.append(Slider("----------Bar Holding Acc Test", lambda : None))
             self.goal_axis_slider = Slider("bar aligned axis", self.update_goal_align_axis, 0, 2, self.goal_element_axis)
             self.buttons.append(Button('Rand bar loc for ik, fix axis', lambda : self.sample_bar_location_for_ik_and_transfer(int(self.goal_element_axis))))
             self.buttons.append(Button('Record markerset data', self.send_request_to_mocap))
             self.buttons.append(Button('Save markerset data', self.record_markerset_data))
 
-        # bar_goal_pose_slider_group
         if self.BAR_GOAL_MODE:
+            self.dump_sep_sliders.append(Slider("----------Bar Target Control", lambda : None))
             if self.base_from_goal_bar_pos is None or self.world_from_goal_bar_euler is None:
                 bar_target_euler = pp.Euler(roll=np.pi/2)
                 pos, quat = pp.Pose(point=DEFAULT_BAR_POS, euler=bar_target_euler)
@@ -568,6 +587,7 @@ class HuskyMonitor(Node):
             # self.bar_grasp_long_distance_silder = Slider("Grasp dist from mid", self., -0.5, 0.5, 0)
             
         if self.DUAL_ARM_ACCURACY_TEST:
+            self.dump_sep_sliders.append(Slider("----------Dual Arm Acc Test", lambda : None))
             self.buttons.append(Button('Compute Trajectory', lambda: world.next_dual_arm_bar_trajectory(self)))
             self.buttons.append(Button('Exec Arms', lambda: world.execute_arm_trajectory_both(self)))
             self.buttons.append(Button('Exec Arms and Record', lambda: self.tasks.append(world.execute_and_log_mocap(self))))
@@ -575,6 +595,7 @@ class HuskyMonitor(Node):
             self.buttons.append(Button('Save EE mocap data', lambda: world.save_dual_arm_E_mocap(self)))
 
         if not self.BAR_GOAL_MODE:
+            self.dump_sep_sliders.append(Slider("----------Joint Target", lambda : None))
             for i, j in enumerate(pp.joints_from_names(self.huskies[self.selected_robot_id].object.robot, self.huskies[self.selected_robot_id].object.get_arm_joint_names())):
                 lower, upper = pp.get_joint_limits(self.huskies[self.selected_robot_id].object.robot, j)
                 if target_conf is None:
@@ -583,13 +604,14 @@ class HuskyMonitor(Node):
                     self.joint_state_sliders.append(p.addUserDebugParameter(f'Joint {i}', lower, upper, target_conf[i]))
             
         if self.CALIBRATION:
-            self.buttons.append(Button('Calib joint 0', lambda: world.calibrate_joint(self, 0, 'calib_tool')))
+            self.dump_sep_sliders.append(Slider("----------Calibration", lambda : None))
+            self.buttons.append(Button('Calib joint 0', lambda: world.calibrate_joint(self, 0, self.active_calib_tool_name)))
             self.buttons.append(Button('Set joint 0 to zero', self.set_goal_joint_0_to_zero))
-            self.buttons.append(Button('Calib joint 1', lambda: world.calibrate_joint(self, 1, 'calib_tool')))
+            self.buttons.append(Button('Calib joint 1', lambda: world.calibrate_joint(self, 1, self.active_calib_tool_name)))
             self.buttons.append(Button('Execute calib traj', self.execute_calib_traj))
 
-        self.dump_sep = Slider("DEBUG utils", lambda : None)
-        self.buttons.append(Button('Record current calib conf', lambda: world.calibrate_button(self, 'calib_tool')))
+        self.dump_sep_sliders.append(Slider("----------DEBUG utils", lambda : None))
+        self.buttons.append(Button('Record current calib conf', lambda: world.calibrate_button(self, self.active_calib_tool_name)))
         self.buttons.append(Button('Export calib conf to json', self.record_calibration_data))
         self.buttons.append(Button('Remove all drawing', lambda : pp.remove_all_debug()))
 

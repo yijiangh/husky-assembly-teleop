@@ -71,7 +71,13 @@ def init(monitor):
     # * add tracked obstacles
     # TODO use one tracked box to indicate where to put the assembly
     if monitor.CALIBRATION:
-        TrackedObject(monitor, 'calib_tool', 4569, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
+        left_tool_name = 'calib_tool_left'
+        TrackedObject(monitor, left_tool_name, 4569, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
+        monitor.assign_calibration_tool_to_robot(0, 0, left_tool_name)
+
+        right_tool_name = 'calib_tool_right'
+        TrackedObject(monitor, right_tool_name, 4569, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
+        monitor.assign_calibration_tool_to_robot(0, 1, right_tool_name)
 
     if monitor.BAR_HOLDING_ACCURACY_TEST:
         bar_rig = TrackedObject(monitor, 'bar_rig', 4570, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
@@ -367,22 +373,26 @@ def calibrate_button(monitor, tool_mocap_name):
             return
         else:
             pp.draw_pose(base_mocap_pose)
-            monitor.append_calibration_data(
-                {'joint_conf' : list(hi.arm_joint_pose[monitor.selected_arm_index]), 
-                 'base_mocap_pose' : [list(v) for v in base_mocap_pose],
-                 "flange_mocap_pose" : [],
-                 'tool0_fk_pose' : [list(v) for v in tool0_fk_pose],
-                 'tool0_fk_from_mocap' : [],
+            monitor.append_calibration_data({
+                    'robot_id' : monitor.selected_robot_id,
+                    'arm_index' : monitor.selected_arm_index,
+                    'joint_conf' : list(hi.arm_joint_pose[monitor.selected_arm_index]), 
+                    'base_mocap_pose' : [list(v) for v in base_mocap_pose],
+                    "flange_mocap_pose" : [],
+                    'tool0_fk_pose' : [list(v) for v in tool0_fk_pose],
+                    'tool0_fk_from_mocap' : [],
                  })
     else:
         tool_0_fk_from_mocap = pp.multiply(pp.invert(tool0_fk_pose), flange_mocap_pose)
         pp.draw_pose(flange_mocap_pose)
-        monitor.append_calibration_data(
-            {'joint_conf' : list(hi.arm_joint_pose[monitor.selected_arm_index]), 
-             'base_mocap_pose' : [list(v) for v in base_mocap_pose],
-             "flange_mocap_pose" : [list(v) for v in flange_mocap_pose],
-             'tool0_fk_pose' : [list(v) for v in tool0_fk_pose],
-             'tool0_fk_from_mocap' : [list(v) for v in tool_0_fk_from_mocap],
+        monitor.append_calibration_data({
+                'robot_id' : monitor.selected_robot_id,
+                'arm_index' : monitor.selected_arm_index,
+                'joint_conf' : list(hi.arm_joint_pose[monitor.selected_arm_index]), 
+                'base_mocap_pose' : [list(v) for v in base_mocap_pose],
+                "flange_mocap_pose" : [list(v) for v in flange_mocap_pose],
+                'tool0_fk_pose' : [list(v) for v in tool0_fk_pose],
+                'tool0_fk_from_mocap' : [list(v) for v in tool_0_fk_from_mocap],
              })
 
 def save_calibration(monitor, filename_suffix=""):
@@ -478,7 +488,6 @@ def record_dual_arm_E_mocap(monitor):
     ho = h.object
     left_EE_pose = None
     right_EE_pose = None
-    # fetch calibration mocap set frame
     if monitor.USE_MOCAP:
         # need to get the raw data from mocap
         if h.name in monitor._mocap_rigidbody_cache:
@@ -537,6 +546,8 @@ def execute_and_log_mocap(monitor):
 #################################
  
 def calibrate_joint(monitor, joint_id, tool_mocap_name):
+    print('Triggered joint calibration for joint id:', joint_id)
+
     hi = monitor.huskies[monitor.selected_robot_id].interface
     ho = monitor.huskies[monitor.selected_robot_id].object
     current_conf = hi.arm_joint_pose[monitor.selected_arm_index]
@@ -559,12 +570,33 @@ def calibrate_joint(monitor, joint_id, tool_mocap_name):
 
     monitor.set_arm_trajectory((joint_confs, None, monitor.trajectory_time, None))
     monitor.set_to_show_traj_state()
+    monitor.active_calib_joint_id = joint_id
     
 def execute_arm_conf(monitor, conf):
     # execute a single arm conf trajectory
     hi = monitor.huskies[monitor.selected_robot_id].interface
     monitor.huskies[monitor.selected_robot_id].interface.send_arm_cmd([hi.arm_joint_pose[monitor.selected_arm_index], conf], 
                                                                       None, monitor.trajectory_time)
+
+def execute_arm_trajectory_and_record_each_conf(monitor, trajectory, time_between_confs=2):
+    settle_time = 0.5
+    hi = monitor.huskies[monitor.selected_robot_id].interface
+    for conf in trajectory[0]:
+        hi.send_arm_cmd(
+            # [hi.arm_joint_pose[monitor.selected_arm_index], conf], 
+            [conf], 
+            None, 
+            time_between_confs
+            )
+
+        # wait until it finishes
+        spin_time = time_between_confs + settle_time
+        time.sleep(spin_time)
+
+        calibrate_button(monitor, monitor.active_calib_tool_name)
+
+    save_calibration(monitor, filename_suffix=monitor.active_calib_joint_id)
+    monitor.calibration_data = []
 
 #################################
 
