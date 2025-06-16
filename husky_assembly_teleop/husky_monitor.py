@@ -109,7 +109,7 @@ class HuskyMonitor(Node):
         self.calib_tool_from_robot_arm_id = defaultdict(lambda: defaultdict(lambda: None))
         self.active_calib_joint_id = None
         self.calib_joint_range = np.pi/2
-        self.calib_fixed_axis = -1
+        self.calib_target_axis = 0
 
         self.goal_bar_grasp = None
         self.grasp_theta_index = 0
@@ -252,8 +252,8 @@ class HuskyMonitor(Node):
     def update_calib_joint_range(self, value):
         self.calib_joint_range = value
 
-    def update_calib_fixed_axis(self, value):
-        self.calib_fixed_axis = np.floor(value)
+    def update_calib_target_axis(self, value):
+        self.calib_target_axis = np.floor(value)
 
     def update_goal_align_axis(self, value):
         self.goal_element_axis = value
@@ -377,6 +377,18 @@ class HuskyMonitor(Node):
     def set_goal_joint_0_to_zero(self):
         self.goal_arm_pose[0] = 0.0
         self.reset_ui(self.goal_arm_pose)
+
+    def sample_calib_traj(self):
+        attachments = [ee[1] for ee in self.huskies[self.selected_robot_id].object.ee_list]
+        obstacles = self.static_obstacles
+        packed_trajs = world.sample_calib_motion(self, self.selected_arm_index, self.calib_target_axis, self.calib_joint_range, 
+                                                 attachments=attachments, obstacles=obstacles)
+
+        if packed_trajs is not None:
+            full_traj, transit_traj, calib_traj = packed_trajs
+            self.set_arm_trajectory(full_traj, index=self.selected_arm_index)
+            self.free_arm_trajectory = transit_traj
+            self.linear_arm_trajectory = calib_traj
 
     def execute_calib_traj(self):
         if self.planned_arm_trajectory[self.selected_arm_index][0] is None:
@@ -541,7 +553,7 @@ class HuskyMonitor(Node):
         if not self.CALIBRATION:
             # in calibration mode, we do not have task space targets so this is disabled
             self.calib_joint_range_slider = Slider("calib joint range", self.update_calib_joint_range, 0.0, np.pi, np.pi/2)
-            self.calib_fixed_axis_slider = Slider("calib fixed joint id", self.update_calib_fixed_axis, -1, 5, -1)
+            self.calib_fixed_axis_slider = Slider("calib target joint id", self.update_calib_target_axis, 0, 1, 0)
             self.buttons.append(Button('Exec S.Arm Traj with servoing', self.execute_arm_trajectory_with_servoing))
 
         # if not self.CALIBRATION:

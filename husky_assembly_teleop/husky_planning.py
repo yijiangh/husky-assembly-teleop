@@ -105,8 +105,8 @@ def plan_arm_to_transfer_element(husky: Husky, transfer_element, obstacles, traj
     lm_time = len(linear_path) / len(planned_arm_trajectory)
 
     return (planned_arm_trajectory, None, traj_time, transfer_element), \
-           (np.array(free_path), None, fm_time, transfer_element), \
-           (np.array(linear_path), None, lm_time, transfer_element)
+           (np.array(free_path), None, fm_time*traj_time, transfer_element), \
+           (np.array(linear_path), None, lm_time*traj_time, transfer_element)
 
 def plan_arm_to_retract_to_home(husky: Husky, transfer_element, obstacles, traj_time, arm_index=0):
     trajectory = plan_retract_to_home_motion(

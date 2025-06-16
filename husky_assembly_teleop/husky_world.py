@@ -349,7 +349,7 @@ def update_goal_gripper_model_pose(monitor, world_from_bar, theta_index, grasp_d
 
 #################################
 
-def sample_calib_motion(monitor, arm_index, target_joint_index, calib_joint_range, attachments=None, obstacles=None, fixed_joint_index=-1):
+def sample_calib_motion(monitor, arm_index, target_joint_index, calib_joint_range, attachments=None, obstacles=None):
     # Sample calibration conf:
     ATTEMPTS = 10
     TRAJ_MAX_LENGTH = 100
@@ -374,9 +374,9 @@ def sample_calib_motion(monitor, arm_index, target_joint_index, calib_joint_rang
     robot = monitor.huskies[monitor.selected_robot_id].object.robot
     hi = monitor.huskies[monitor.selected_robot_id].interface
     custom_limits = get_custom_limits(robot, {})
-    if fixed_joint_index >= 0:
-        target_id = pp.joint_from_name(robot, joint_names[target_joint_index])
-        custom_limits[target_id] = (custom_limits[target_id][0] + calib_joint_range, custom_limits[target_id][0] - calib_joint_range)
+
+    target_id = pp.joint_from_name(robot, joint_names[target_joint_index])
+    custom_limits[target_id] = (custom_limits[target_id][0] + calib_joint_range, custom_limits[target_id][0] - calib_joint_range)
 
     # disabled_collisions = disabled_collisions or {}
     extra_disabled_collisions = [
@@ -418,10 +418,10 @@ def sample_calib_motion(monitor, arm_index, target_joint_index, calib_joint_rang
                     goal_conf = start_conf.copy()
                     goal_conf[target_joint_index] += calib_joint_range
 
-                    joint_confs = []
+                    calib_path = []
                     for i in range(steps):
                         joint_conf = np.array(start_conf) + (i+1)/steps * (np.array(goal_conf) - np.array(current_conf))
-                        joint_confs.append(joint_conf)
+                        calib_path.append(joint_conf)
 
                         if collision_fn(start_conf, diagnosis=diagnose):
                             valid_calib_path = False
@@ -432,6 +432,7 @@ def sample_calib_motion(monitor, arm_index, target_joint_index, calib_joint_rang
                         current_conf = hi.arm_joint_pose[arm_index]
 
                         # * plan transit arm motion
+                        transit_path = None
                         if pp.check_initial_end(current_conf, start_conf, collision_fn, diagnosis=diagnose):
                             transit_path = pp.solve_motion_plan(current_conf, start_conf, 
                                                         distance_fn, sample_fn, extend_fn,
@@ -452,13 +453,22 @@ def sample_calib_motion(monitor, arm_index, target_joint_index, calib_joint_rang
                             if len(transit_path) < TRAJ_MAX_LENGTH:
                                 monitor.get_logger().info(f"Transit planning succeeded with {len(transit_path)} points!")
                                 # - collage both trajectory together for viz, save transit to free_arm_trajectory, save calib to linear_arm_trajectory
-                                return None
+                                planned_arm_trajectory = [np.array(p) for p in transit_path + calib_path]
+
+                                fm_time = len(transit_path) / len(planned_arm_trajectory)
+                                lm_time = len(calib_path) / len(planned_arm_trajectory)
+
+                                # time here will be overwritten anyway
+                                return (planned_arm_trajectory, None, 0.5*len(planned_arm_trajectory), None), \
+                                       (np.array(transit_path), None, fm_time, None), \
+                                       (np.array(calib_path), None, lm_time, None)
+
                             else:
                                 monitor.get_logger().warn(f"Transit planning trajectory too long {len(transit_path)}!")
                         else:
                             monitor.get_logger().warn("Transit planning failed!")
 
-    return start_conf
+    monitor.get_logger().warn(f"Calibration motion planning failed after {ATTEMPTS} attempts!")
 
 def calibrate_button(monitor, tool_mocap_name, index=0):
     # record current joint conf and add to record
