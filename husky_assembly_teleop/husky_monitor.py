@@ -86,6 +86,8 @@ class HuskyMonitor(Node):
         self.bar_goal_pose_slider_group = None
         self.bar_grasp_long_distance_slider = None
         self.dump_sep_sliders = []
+        self.calib_joint_range_slider = None
+        self.calib_fixed_axis_slider = None
 
         self.selected_robot_slider = None
         self.selected_robot_id = 0
@@ -106,6 +108,8 @@ class HuskyMonitor(Node):
 
         self.calib_tool_from_robot_arm_id = defaultdict(lambda: defaultdict(lambda: None))
         self.active_calib_joint_id = None
+        self.calib_joint_range = np.pi/2
+        self.calib_fixed_axis = -1
 
         self.goal_bar_grasp = None
         self.grasp_theta_index = 0
@@ -193,11 +197,6 @@ class HuskyMonitor(Node):
         self.free_arm_trajectory = None
         self.linear_arm_trajectory = None
 
-    def reset_goal_state(self):
-        # TODO somehow breaks trajectory preview
-        self.goal_arm_pose = self.huskies[0].interface.arm_joint_pose
-        self.reset_ui()
-
     def append_calibration_data(self, data):
         self.calibration_data.append(data)
 
@@ -249,6 +248,12 @@ class HuskyMonitor(Node):
 
     def update_trajectory_time(self, time):
         self.trajectory_time = time
+
+    def update_calib_joint_range(self, value):
+        self.calib_joint_range = value
+
+    def update_calib_fixed_axis(self, value):
+        self.calib_fixed_axis = np.floor(value)
 
     def update_goal_align_axis(self, value):
         self.goal_element_axis = value
@@ -377,10 +382,10 @@ class HuskyMonitor(Node):
         if self.planned_arm_trajectory[self.selected_arm_index][0] is None:
             self.get_logger().warn('Arm trajectory must be planed before executing!')
         else:
-            conf = self.planned_arm_trajectory[self.selected_arm_index][0].pop(0)
-            world.execute_arm_conf(self, conf, index=self.selected_arm_index)
+            # conf = self.planned_arm_trajectory[self.selected_arm_index][0].pop(0)
+            # world.execute_arm_conf(self, conf, index=self.selected_arm_index)
 
-            # world.execute_arm_trajectory_and_record_each_conf(self, self.planned_arm_trajectory[self.selected_arm_index], self.trajectory_time, index=self.selected_arm_index)
+            world.execute_arm_trajectory_and_record_each_conf(self, self.planned_arm_trajectory[self.selected_arm_index], self.trajectory_time, index=self.selected_arm_index)
 
     def get_world_from_bar_goal_pose(self):
         world_from_base_link = self.goal_model.get_link_pose_from_name("base_footprint")
@@ -535,6 +540,8 @@ class HuskyMonitor(Node):
 
         if not self.CALIBRATION:
             # in calibration mode, we do not have task space targets so this is disabled
+            self.calib_joint_range_slider = Slider("calib joint range", self.update_calib_joint_range, 0.0, np.pi, np.pi/2)
+            self.calib_fixed_axis_slider = Slider("calib fixed joint id", self.update_calib_fixed_axis, -1, 5, -1)
             self.buttons.append(Button('Exec S.Arm Traj with servoing', self.execute_arm_trajectory_with_servoing))
 
         # if not self.CALIBRATION:

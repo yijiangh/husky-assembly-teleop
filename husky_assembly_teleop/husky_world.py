@@ -13,10 +13,10 @@ import rclpy
 import pybullet_planning as pp
 
 from husky_assembly_teleop import DATA_DIRECTORY
-from husky_assembly_teleop.common import Husky, TrackedObject, AssemblyObject, HUSKY_UR5e_JOINT_NAMES
+from husky_assembly_teleop.common import Husky, TrackedObject, AssemblyObject
 import husky_assembly_teleop.husky_planning as planning
 import husky_assembly_teleop.husky_control as control
-import husky_assembly_teleop.utils as utils
+from husky_assembly_teleop.utils import HUSKY_DUAL_UR5e_JOINT_NAMES, UR5E_JOINT_NAMES, get_custom_limits, notify, plan_transit_motion
 from husky_assembly_teleop.scaffolding import parse_mt_geometric, create_collision_bodies, create_couplers, flatten_list
 import json
 from datetime import datetime
@@ -349,6 +349,117 @@ def update_goal_gripper_model_pose(monitor, world_from_bar, theta_index, grasp_d
 
 #################################
 
+def sample_calib_motion(monitor, arm_index, target_joint_index, calib_joint_range, attachments=None, obstacles=None, fixed_joint_index=-1):
+    # Sample calibration conf:
+    ATTEMPTS = 10
+    TRAJ_MAX_LENGTH = 100
+    steps = 20
+    joint_resolutions = np.ones(6) * 0.05
+
+    attachments = attachments or []
+    obstacles = obstacles or []
+    
+    # use correct joint names for dual arm husky
+    if monitor.huskies[monitor.selected_robot_id].dual_arm:
+        if arm_index == 0:
+            arm_prefix = "left_"
+            joint_names = HUSKY_DUAL_UR5e_JOINT_NAMES[0]
+        else:
+            arm_prefix = "right_"
+            joint_names = HUSKY_DUAL_UR5e_JOINT_NAMES[1]
+    else:
+        joint_names = UR5E_JOINT_NAMES
+        arm_prefix = ""
+
+    robot = monitor.huskies[monitor.selected_robot_id].object.robot
+    hi = monitor.huskies[monitor.selected_robot_id].interface
+    custom_limits = get_custom_limits(robot, {})
+    if fixed_joint_index >= 0:
+        target_id = pp.joint_from_name(robot, joint_names[target_joint_index])
+        custom_limits[target_id] = (custom_limits[target_id][0] + calib_joint_range, custom_limits[target_id][0] - calib_joint_range)
+
+    # disabled_collisions = disabled_collisions or {}
+    extra_disabled_collisions = [
+        ((robot, pp.link_from_name(robot, arm_prefix + 'ur_arm_wrist_3_link')), 
+         (attachments[0].child, pp.BASE_LINK)), 
+         # pp.link_from_name(ee_body, 'robotiq_85_base_link'))),
+        ]
+
+    movable_joints = pp.joints_from_names(robot, joint_names)
+    sample_fn = pp.get_sample_fn(robot, movable_joints, custom_limits=custom_limits)
+    distance_fn = pp.get_distance_fn(robot, movable_joints) #, weights=weights)
+    extend_fn = pp.get_extend_fn(robot, movable_joints, resolutions=joint_resolutions)
+
+    movable_joints = pp.joints_from_names(robot, joint_names)
+    sample_fn = pp.get_sample_fn(robot, movable_joints, custom_limits=custom_limits)
+    collision_fn = pp.get_collision_fn(robot, movable_joints, obstacles=obstacles,
+                                                attachments=attachments, 
+                                                self_collisions=1,
+                                                disabled_collisions={}, 
+                                                extra_disabled_collisions=extra_disabled_collisions,
+                                                custom_limits=custom_limits, 
+                                                max_distance=0)
+
+    # * the robot base pose should be udpated by the main loop in monitor according to mocap observation before the planning starts
+    diagnose = 0
+    with pp.WorldSaver():
+        with pp.LockRenderer(not diagnose):
+            for i in range(ATTEMPTS):
+                valid_calib_path = True
+                start_conf = sample_fn()
+                # - click `execute calib` will first execute the transit path in one go, and then execute the calib path point by point, waiting for the arm to settle before moving to the next point. It will save the calibration data for each point, and in the end export the data to a json file.
+
+                # - check start conf is in collision or not
+                if not collision_fn(start_conf, diagnosis=diagnose):
+                    # - check the interpolated calib path is safe, if not resample
+
+                    # interpolate between current conf and goal conf
+                    # Create goal_conf by copying start_conf and modifying only the target_joint_index value
+                    goal_conf = start_conf.copy()
+                    goal_conf[target_joint_index] += calib_joint_range
+
+                    joint_confs = []
+                    for i in range(steps):
+                        joint_conf = np.array(start_conf) + (i+1)/steps * (np.array(goal_conf) - np.array(current_conf))
+                        joint_confs.append(joint_conf)
+
+                        if collision_fn(start_conf, diagnosis=diagnose):
+                            valid_calib_path = False
+                            break
+
+                    if valid_calib_path:
+                        # - check if the transit path is too long, if so, resample
+                        current_conf = hi.arm_joint_pose[arm_index]
+
+                        # * plan transit arm motion
+                        if pp.check_initial_end(current_conf, start_conf, collision_fn, diagnosis=diagnose):
+                            transit_path = pp.solve_motion_plan(current_conf, start_conf, 
+                                                        distance_fn, sample_fn, extend_fn,
+                                                        collision_fn,
+                                                        algorithm='birrt', 
+                                                        max_time=10, 
+                                                        max_iterations=20, 
+                                                        smooth=20, diagnosis=diagnose,
+                                                        coarse_waypoints=False,
+                                                        ) 
+                        else:
+                            notify('initial and end conf not valid')
+
+                        if transit_path is None:
+                            notify('transit path not found')
+
+                        if transit_path is not None:
+                            if len(transit_path) < TRAJ_MAX_LENGTH:
+                                monitor.get_logger().info(f"Transit planning succeeded with {len(transit_path)} points!")
+                                # - collage both trajectory together for viz, save transit to free_arm_trajectory, save calib to linear_arm_trajectory
+                                return None
+                            else:
+                                monitor.get_logger().warn(f"Transit planning trajectory too long {len(transit_path)}!")
+                        else:
+                            monitor.get_logger().warn("Transit planning failed!")
+
+    return start_conf
+
 def calibrate_button(monitor, tool_mocap_name, index=0):
     # record current joint conf and add to record
     h = monitor.huskies[monitor.selected_robot_id]
@@ -374,8 +485,9 @@ def calibrate_button(monitor, tool_mocap_name, index=0):
         if tool_mocap_name in monitor._mocap_rigidbody_cache:
             flange_mocap_pose = monitor._mocap_rigidbody_cache[tool_mocap_name]
     else:
-        base_mocap_pose = ho.get_link_pose_from_name("base_footprint")
-        flange_mocap_pose = ho.get_link_pose_from_name(tool0_link_name)
+        pass
+        # base_mocap_pose = ho.get_link_pose_from_name("base_footprint")
+        # flange_mocap_pose = ho.get_link_pose_from_name(tool0_link_name)
 
     tool0_fk_pose = ho.get_link_pose_from_name(tool0_link_name)
 
@@ -386,8 +498,8 @@ def calibrate_button(monitor, tool_mocap_name, index=0):
         else:
             pp.draw_pose(base_mocap_pose)
             monitor.append_calibration_data({
-                    'robot_id' : monitor.selected_robot_id,
-                    'arm_index' : monitor.selected_arm_index,
+                    'robot_id' : int(monitor.selected_robot_id),
+                    'arm_index' : int(monitor.selected_arm_index),
                     'joint_conf' : list(hi.arm_joint_pose[monitor.selected_arm_index]), 
                     'base_mocap_pose' : [list(v) for v in base_mocap_pose],
                     "flange_mocap_pose" : [],
@@ -398,8 +510,8 @@ def calibrate_button(monitor, tool_mocap_name, index=0):
         tool_0_fk_from_mocap = pp.multiply(pp.invert(tool0_fk_pose), flange_mocap_pose)
         pp.draw_pose(flange_mocap_pose)
         monitor.append_calibration_data({
-                'robot_id' : monitor.selected_robot_id,
-                'arm_index' : monitor.selected_arm_index,
+                'robot_id' : int(monitor.selected_robot_id),
+                'arm_index' : int(monitor.selected_arm_index),
                 'joint_conf' : list(hi.arm_joint_pose[monitor.selected_arm_index]), 
                 'base_mocap_pose' : [list(v) for v in base_mocap_pose],
                 "flange_mocap_pose" : [list(v) for v in flange_mocap_pose],
@@ -594,13 +706,14 @@ def execute_arm_conf(monitor, conf, index=0):
                                                                       None, monitor.trajectory_time, index=index)
 
 def execute_arm_trajectory_and_record_each_conf(monitor, trajectory, time_between_confs=2, index=0):
-    settle_time = 2
+    settle_time = 1
     hi = monitor.huskies[monitor.selected_robot_id].interface
     last_conf = hi.arm_joint_pose[index]
-    for conf in trajectory[0]:
-        print('last conf:', last_conf, 'conf:', conf)
+    for i, conf in enumerate(trajectory[0]):
+        monitor.get_logger().info(f'Executing arm conf {i+1}/{len(trajectory[0])}...')
+        # print('last conf:', last_conf, 'conf:', conf)
         hi.send_arm_cmd(
-            [last_conf, conf], 
+            [hi.arm_joint_pose[monitor.selected_arm_index], conf], 
             None, 
             time_between_confs,
             index=index
@@ -610,10 +723,13 @@ def execute_arm_trajectory_and_record_each_conf(monitor, trajectory, time_betwee
         time.sleep(time_between_confs + settle_time)
 
         calibrate_button(monitor, monitor.active_calib_tool_name)
+        monitor.get_logger().info(f'Saved calibration data.')
 
         # ! since the joint state is updated in the main thread and is blocked when running this function, 
         # we need to manually update the last conf here
-        last_conf = conf
+        # Todo: change to Jakob's task system to avoid blocking the main thread
+        hi.arm_joint_pose[monitor.selected_arm_index] = conf
+        # last_conf = conf
 
     save_calibration(monitor, filename_suffix=f'arm_{monitor.active_calib_joint_id}')
     monitor.calibration_data = []
