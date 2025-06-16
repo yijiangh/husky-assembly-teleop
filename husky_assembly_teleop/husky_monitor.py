@@ -87,7 +87,7 @@ class HuskyMonitor(Node):
         self.bar_grasp_long_distance_slider = None
         self.dump_sep_sliders = []
         self.calib_joint_range_slider = None
-        self.calib_fixed_axis_slider = None
+        self.calib_target_axis_slider = None
 
         self.selected_robot_slider = None
         self.selected_robot_id = 0
@@ -116,7 +116,7 @@ class HuskyMonitor(Node):
         self.grasp_distance = 0.0 # fixed for now
         self.goal_element_axis = 0
 
-        self.trajectory_time = 2 if self.CALIBRATION else 5
+        self.trajectory_time = 20 if self.CALIBRATION else 5
 
         # list of conf, velocity, total time, attachment other than the ee
         self.planned_arm_trajectory = [(None, None, None, None), (None, None, None, None)]
@@ -253,7 +253,7 @@ class HuskyMonitor(Node):
         self.calib_joint_range = value
 
     def update_calib_target_axis(self, value):
-        self.calib_target_axis = np.floor(value)
+        self.calib_target_axis = int(np.floor(value))
 
     def update_goal_align_axis(self, value):
         self.goal_element_axis = value
@@ -381,7 +381,7 @@ class HuskyMonitor(Node):
     def sample_calib_traj(self):
         attachments = [ee[1] for ee in self.huskies[self.selected_robot_id].object.ee_list]
         obstacles = self.static_obstacles
-        packed_trajs = world.sample_calib_motion(self, self.selected_arm_index, self.calib_target_axis, self.calib_joint_range, 
+        packed_trajs = world.sample_calib_motion(self, int(self.selected_arm_index), int(self.calib_target_axis), self.calib_joint_range, 
                                                  attachments=attachments, obstacles=obstacles)
 
         if packed_trajs is not None:
@@ -389,15 +389,16 @@ class HuskyMonitor(Node):
             self.set_arm_trajectory(full_traj, index=self.selected_arm_index)
             self.free_arm_trajectory = transit_traj
             self.linear_arm_trajectory = calib_traj
+            self.set_to_show_traj_state()
 
     def execute_calib_traj(self):
-        if self.planned_arm_trajectory[self.selected_arm_index][0] is None:
-            self.get_logger().warn('Arm trajectory must be planed before executing!')
+        if self.linear_arm_trajectory is None or self.free_arm_trajectory is None:
+            self.get_logger().warn('Transit and calib trajectories must be planned before executing!')
         else:
             # conf = self.planned_arm_trajectory[self.selected_arm_index][0].pop(0)
             # world.execute_arm_conf(self, conf, index=self.selected_arm_index)
 
-            world.execute_arm_trajectory_and_record_each_conf(self, self.planned_arm_trajectory[self.selected_arm_index], self.trajectory_time, index=self.selected_arm_index)
+            world.execute_arm_trajectory_and_record_each_conf(self, self.free_arm_trajectory, self.linear_arm_trajectory, index=self.selected_arm_index)
 
     def get_world_from_bar_goal_pose(self):
         world_from_base_link = self.goal_model.get_link_pose_from_name("base_footprint")
@@ -552,8 +553,6 @@ class HuskyMonitor(Node):
 
         if not self.CALIBRATION:
             # in calibration mode, we do not have task space targets so this is disabled
-            self.calib_joint_range_slider = Slider("calib joint range", self.update_calib_joint_range, 0.0, np.pi, np.pi/2)
-            self.calib_fixed_axis_slider = Slider("calib target joint id", self.update_calib_target_axis, 0, 1, 0)
             self.buttons.append(Button('Exec S.Arm Traj with servoing', self.execute_arm_trajectory_with_servoing))
 
         # if not self.CALIBRATION:
@@ -625,10 +624,13 @@ class HuskyMonitor(Node):
             
         if self.CALIBRATION:
             self.dump_sep_sliders.append(Slider("----------Calibration", lambda : None))
-            self.buttons.append(Button('Calib joint 0', lambda: world.calibrate_joint(self, 0, self.active_calib_tool_name)))
-            self.buttons.append(Button('Set joint 0 to zero', self.set_goal_joint_0_to_zero))
-            self.buttons.append(Button('Calib joint 1', lambda: world.calibrate_joint(self, 1, self.active_calib_tool_name)))
+            self.calib_joint_range_slider = Slider("calib joint range", self.update_calib_joint_range, 0.0, np.pi, np.pi/2)
+            self.calib_target_axis_slider = Slider("calib target joint id", self.update_calib_target_axis, 0, 1, 0)
+            self.buttons.append(Button('Sample calib path', self.sample_calib_traj))
             self.buttons.append(Button('Execute calib traj', self.execute_calib_traj))
+
+            # self.buttons.append(Button('Set joint 0 to zero', self.set_goal_joint_0_to_zero))
+            # self.buttons.append(Button('Calib joint 1', lambda: world.calibrate_joint(self, 1, self.active_calib_tool_name)))
 
         self.dump_sep_sliders.append(Slider("----------DEBUG utils", lambda : None))
         self.buttons.append(Button('Record current calib conf', lambda: world.calibrate_button(self, self.active_calib_tool_name)))
@@ -751,6 +753,8 @@ class HuskyMonitor(Node):
         self.selected_robot_slider.update()
         self.arm_slider.update()
         self.trajectory_time_slider.update()
+        self.calib_joint_range_slider.update()
+        self.calib_target_axis_slider.update()
 
         if self.BAR_HOLDING_ACCURACY_TEST:
             self.goal_axis_slider.update()
@@ -796,13 +800,13 @@ class HuskyMonitor(Node):
                     # jg: i reenabled interpolation to see the whole motion including on sparse trajectories
                     # jg: the prerecorded trajectory had weird joint values in the >pi ranges which would lead to double rotations and self intersections
                     
-                    # if arm_traj_idx < len(self.planned_arm_trajectory[i][0]) and len(self.planned_arm_trajectory[i][0]) > 0:
-                        #goal_arm_pose[i] = self.planned_arm_trajectory[i][0][arm_traj_idx]
+                    if arm_traj_idx < len(self.planned_arm_trajectory[i][0]) and len(self.planned_arm_trajectory[i][0]) > 0:
+                        goal_arm_pose[i] = self.planned_arm_trajectory[i][0][arm_traj_idx]
 
                     # we don't do interpolation here bc I want to see the exact trajectory points
-                    dt = arm_traj_idx_float - arm_traj_idx
-                    arm_traj_idx_plus = min(int(preview_time * (N - 1) + 1), N-1)
-                    goal_arm_pose[i] = lerp(self.planned_arm_trajectory[i][0][arm_traj_idx], self.planned_arm_trajectory[i][0][arm_traj_idx_plus], dt)
+                    # dt = arm_traj_idx_float - arm_traj_idx
+                    # arm_traj_idx_plus = min(int(preview_time * (N - 1) + 1), N-1)
+                    # goal_arm_pose[i] = lerp(self.planned_arm_trajectory[i][0][arm_traj_idx], self.planned_arm_trajectory[i][0][arm_traj_idx_plus], dt)
 
                 if self.planned_arm_trajectory[i][3] is not None:
                     # update attached object based on FK

@@ -350,8 +350,10 @@ def update_goal_gripper_model_pose(monitor, world_from_bar, theta_index, grasp_d
 #################################
 
 def sample_calib_motion(monitor, arm_index, target_joint_index, calib_joint_range, attachments=None, obstacles=None):
+    assert target_joint_index in [0,1], "only support calibrating for joint 0 or 1 for now"
+
     # Sample calibration conf:
-    ATTEMPTS = 10
+    ATTEMPTS = 100
     TRAJ_MAX_LENGTH = 100
     steps = 20
     joint_resolutions = np.ones(6) * 0.05
@@ -373,10 +375,27 @@ def sample_calib_motion(monitor, arm_index, target_joint_index, calib_joint_rang
 
     robot = monitor.huskies[monitor.selected_robot_id].object.robot
     hi = monitor.huskies[monitor.selected_robot_id].interface
-    custom_limits = get_custom_limits(robot, {})
 
-    target_id = pp.joint_from_name(robot, joint_names[target_joint_index])
-    custom_limits[target_id] = (custom_limits[target_id][0] + calib_joint_range, custom_limits[target_id][0] - calib_joint_range)
+    current_conf = hi.arm_joint_pose[arm_index]
+    custom_limits_from_joint_name = {}
+    # * Set custom limits around current configuration for each joint
+    for i, joint_name in enumerate(joint_names):
+        if i != target_joint_index:  # Skip the target joint as we'll set it separately
+            # Set limits to current value ± π/2
+            custom_limits_from_joint_name[joint_name] = (current_conf[i] - np.pi/2, current_conf[i] + np.pi/2)
+
+    # * For the target joint, set limits to current value ± calib_joint_range
+    target_joint_pb_id = pp.joint_from_name(robot, joint_names[target_joint_index])
+    targt_joint_limits = pp.get_joint_limits(robot, target_joint_pb_id)
+    custom_limits_from_joint_name[joint_names[target_joint_index]] = (targt_joint_limits[0] + calib_joint_range, targt_joint_limits[1] - calib_joint_range)
+
+    # * Clamp the first joint to 0 if target joint == 1
+    if target_joint_index == 1:
+        # clamp the first joint to value 0
+        custom_limits_from_joint_name[joint_names[0]] = (0.0,0.0)
+
+    custom_limits = get_custom_limits(robot, custom_limits_from_joint_name)
+    print(custom_limits)
 
     # disabled_collisions = disabled_collisions or {}
     extra_disabled_collisions = [
@@ -386,19 +405,18 @@ def sample_calib_motion(monitor, arm_index, target_joint_index, calib_joint_rang
         ]
 
     movable_joints = pp.joints_from_names(robot, joint_names)
-    sample_fn = pp.get_sample_fn(robot, movable_joints, custom_limits=custom_limits)
+    transit_sample_fn = pp.get_sample_fn(robot, movable_joints) #, custom_limits=custom_limits)
     distance_fn = pp.get_distance_fn(robot, movable_joints) #, weights=weights)
     extend_fn = pp.get_extend_fn(robot, movable_joints, resolutions=joint_resolutions)
 
-    movable_joints = pp.joints_from_names(robot, joint_names)
     sample_fn = pp.get_sample_fn(robot, movable_joints, custom_limits=custom_limits)
     collision_fn = pp.get_collision_fn(robot, movable_joints, obstacles=obstacles,
-                                                attachments=attachments, 
-                                                self_collisions=1,
-                                                disabled_collisions={}, 
-                                                extra_disabled_collisions=extra_disabled_collisions,
-                                                custom_limits=custom_limits, 
-                                                max_distance=0)
+                                              attachments=attachments, 
+                                              self_collisions=1,
+                                              disabled_collisions={}, 
+                                              extra_disabled_collisions=extra_disabled_collisions,
+                                              custom_limits={}, 
+                                              max_distance=0)
 
     # * the robot base pose should be udpated by the main loop in monitor according to mocap observation before the planning starts
     diagnose = 0
@@ -407,6 +425,7 @@ def sample_calib_motion(monitor, arm_index, target_joint_index, calib_joint_rang
             for i in range(ATTEMPTS):
                 valid_calib_path = True
                 start_conf = sample_fn()
+                print(f'Attempt #{i+1}/{ATTEMPTS}, start_conf: {start_conf} | current conf: {hi.arm_joint_pose[arm_index]}')
                 # - click `execute calib` will first execute the transit path in one go, and then execute the calib path point by point, waiting for the arm to settle before moving to the next point. It will save the calibration data for each point, and in the end export the data to a json file.
 
                 # - check start conf is in collision or not
@@ -415,27 +434,26 @@ def sample_calib_motion(monitor, arm_index, target_joint_index, calib_joint_rang
 
                     # interpolate between current conf and goal conf
                     # Create goal_conf by copying start_conf and modifying only the target_joint_index value
-                    goal_conf = start_conf.copy()
+                    goal_conf = np.copy(start_conf)
                     goal_conf[target_joint_index] += calib_joint_range
 
                     calib_path = []
-                    for i in range(steps):
-                        joint_conf = np.array(start_conf) + (i+1)/steps * (np.array(goal_conf) - np.array(current_conf))
-                        calib_path.append(joint_conf)
-
-                        if collision_fn(start_conf, diagnosis=diagnose):
+                    for j in range(steps):
+                        joint_conf = np.array(start_conf) + (j+1)/steps * (np.array(goal_conf) - np.array(start_conf))
+                        if collision_fn(joint_conf, diagnosis=diagnose):
                             valid_calib_path = False
+                            monitor.get_logger().warn(f"Collision detected at calb conf #{j}/{steps}, resampling...")
                             break
+                        calib_path.append(joint_conf)
 
                     if valid_calib_path:
                         # - check if the transit path is too long, if so, resample
-                        current_conf = hi.arm_joint_pose[arm_index]
-
                         # * plan transit arm motion
                         transit_path = None
                         if pp.check_initial_end(current_conf, start_conf, collision_fn, diagnosis=diagnose):
+                            # TODO: this might plan path that causes collision between the two arms
                             transit_path = pp.solve_motion_plan(current_conf, start_conf, 
-                                                        distance_fn, sample_fn, extend_fn,
+                                                        distance_fn, transit_sample_fn, extend_fn,
                                                         collision_fn,
                                                         algorithm='birrt', 
                                                         max_time=10, 
@@ -444,10 +462,7 @@ def sample_calib_motion(monitor, arm_index, target_joint_index, calib_joint_rang
                                                         coarse_waypoints=False,
                                                         ) 
                         else:
-                            notify('initial and end conf not valid')
-
-                        if transit_path is None:
-                            notify('transit path not found')
+                            notify('Transit initial and end conf not valid')
 
                         if transit_path is not None:
                             if len(transit_path) < TRAJ_MAX_LENGTH:
@@ -455,11 +470,12 @@ def sample_calib_motion(monitor, arm_index, target_joint_index, calib_joint_rang
                                 # - collage both trajectory together for viz, save transit to free_arm_trajectory, save calib to linear_arm_trajectory
                                 planned_arm_trajectory = [np.array(p) for p in transit_path + calib_path]
 
-                                fm_time = len(transit_path) / len(planned_arm_trajectory)
-                                lm_time = len(calib_path) / len(planned_arm_trajectory)
+                                fm_time = monitor.trajectory_time # len(transit_path) / len(planned_arm_trajectory)
+                                lm_time = 2*len(calib_path)
+                                # len(calib_path) / len(planned_arm_trajectory)
 
                                 # time here will be overwritten anyway
-                                return (planned_arm_trajectory, None, 0.5*len(planned_arm_trajectory), None), \
+                                return (planned_arm_trajectory, None, fm_time + lm_time, None), \
                                        (np.array(transit_path), None, fm_time, None), \
                                        (np.array(calib_path), None, lm_time, None)
 
@@ -467,6 +483,8 @@ def sample_calib_motion(monitor, arm_index, target_joint_index, calib_joint_rang
                                 monitor.get_logger().warn(f"Transit planning trajectory too long {len(transit_path)}!")
                         else:
                             monitor.get_logger().warn("Transit planning failed!")
+                else:
+                    monitor.get_logger().warn("Collision detected at start conf, resampling...")
 
     monitor.get_logger().warn(f"Calibration motion planning failed after {ATTEMPTS} attempts!")
 
@@ -680,6 +698,8 @@ def execute_and_log_mocap(monitor):
 #################################
  
 def calibrate_joint(monitor, joint_id, tool_mocap_name):
+    raise DeprecationWarning("This function is deprecated.")
+
     print('Triggered joint calibration for joint id:', joint_id)
 
     hi = monitor.huskies[monitor.selected_robot_id].interface
@@ -715,12 +735,16 @@ def execute_arm_conf(monitor, conf, index=0):
     monitor.huskies[monitor.selected_robot_id].interface.send_arm_cmd([hi.arm_joint_pose[monitor.selected_arm_index], conf], 
                                                                       None, monitor.trajectory_time, index=index)
 
-def execute_arm_trajectory_and_record_each_conf(monitor, trajectory, time_between_confs=2, index=0):
+def execute_arm_trajectory_and_record_each_conf(monitor, transit_traj, calib_traj, time_between_confs=2, index=0):
     settle_time = 1
     hi = monitor.huskies[monitor.selected_robot_id].interface
-    last_conf = hi.arm_joint_pose[index]
-    for i, conf in enumerate(trajectory[0]):
-        monitor.get_logger().info(f'Executing arm conf {i+1}/{len(trajectory[0])}...')
+    # last_conf = hi.arm_joint_pose[index]
+    print(transit_traj)
+
+    execute_arm_trajectory(monitor, transit_traj, index=index)
+
+    for i, conf in enumerate(calib_traj[0]):
+        monitor.get_logger().info(f'Executing arm conf {i+1}/{len(calib_traj[0])}...')
         # print('last conf:', last_conf, 'conf:', conf)
         hi.send_arm_cmd(
             [hi.arm_joint_pose[monitor.selected_arm_index], conf], 
