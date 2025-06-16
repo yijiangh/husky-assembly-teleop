@@ -46,7 +46,7 @@ MOCAP_IP = '192.168.0.117' # set to the mocap PC's IP, get this from Motive Sett
 FILENAME_SUFFIX = '_vary_pos_vary_yaw'
   
 class HuskyMonitor(Node):
-    USE_MOCAP = 0
+    USE_MOCAP = 1
     FAKE_HARDWARE = 0
 
     GRASP_PARTITION = 8
@@ -374,12 +374,13 @@ class HuskyMonitor(Node):
         self.reset_ui(self.goal_arm_pose)
 
     def execute_calib_traj(self):
-        if self.planned_arm_trajectory[0] is None:
+        if self.planned_arm_trajectory[self.selected_arm_index][0] is None:
             self.get_logger().warn('Arm trajectory must be planed before executing!')
         else:
-            # conf = self.planned_arm_trajectory[0].pop(0)
-            # world.execute_arm_conf(self, conf)
-            world.execute_arm_trajectory_and_record_each_conf(self, self.planned_arm_trajectory, self.trajectory_time)
+            conf = self.planned_arm_trajectory[self.selected_arm_index][0].pop(0)
+            world.execute_arm_conf(self, conf, index=self.selected_arm_index)
+
+            # world.execute_arm_trajectory_and_record_each_conf(self, self.planned_arm_trajectory[self.selected_arm_index], self.trajectory_time, index=self.selected_arm_index)
 
     def get_world_from_bar_goal_pose(self):
         world_from_base_link = self.goal_model.get_link_pose_from_name("base_footprint")
@@ -499,7 +500,7 @@ class HuskyMonitor(Node):
         
     def build_ui(self, target_conf=None):
         self.selected_robot_slider = Slider("robot id", self.update_selected_robot_id, 0, len(self.huskies)+1, self.selected_robot_id)
-        self.arm_slider = Slider("arm id", self.update_selected_arm_id, 0, 2, self.selected_arm_index)
+        self.arm_slider = Slider("arm id (0:L,1:R)", self.update_selected_arm_id, 0, 2, self.selected_arm_index)
 
         self.trajectory_time_slider = Slider("traj time", self.update_trajectory_time, 1.0, 60.0, self.trajectory_time)
 
@@ -541,7 +542,7 @@ class HuskyMonitor(Node):
         #     self.buttons.append(Button('Exec Linear Motion', self.execute_linear_trajectory))
         # self.buttons.append(Button('Plan arm wave', lambda: world.plan_arm_wave(self)))
 
-        if not self.FAKE_HARDWARE:
+        if not self.FAKE_HARDWARE and not self.CALIBRATION:
             # self.gripper_slider = p.addUserDebugParameter("gripper", 0, 1.0, 0.1)
             # self.buttons.append(Button('Exec Gripper', lambda: world.set_gripper(self)))
             self.buttons.append(Button('Open Gripper', lambda: world.open_gripper_full(self)))

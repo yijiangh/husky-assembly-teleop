@@ -29,7 +29,7 @@ assembly_objects = []
 
 DATA_DIR = "/home/jakobgenhart/husky_assistant/workspace/src/husky-asembly-teleop/data"
 if not os.path.exists(DATA_DIR):
-    DATA_DIR = "/home/jakobgenhart/husky_assistant/workspace/src/husky-asembly-teleop/data"
+    DATA_DIR = "/home/yijiangh/ros2_ws/src/husky-asembly-teleop/data"
 
 CALIB_DATA_DIR = os.path.join(DATA_DIR, "calibration_data")
 BAR_HOLDING_ACC_DATA_DIR = os.path.join(DATA_DIR, "bar_holding_acc_data")
@@ -38,7 +38,7 @@ DUAL_ARM_ACC_DATA_DIR = os.path.join(DATA_DIR, "dual_arm_acc_data")
 def init(monitor):
     # * add robots
     # 1004
-    Husky(monitor, name='/a200_0806', mocap_id=4568, pos=np.array((0,0,0)), 
+    Husky(monitor, name='/a200_0806', mocap_id=4591, pos=np.array((0,0,0)), 
           connect_arm=not monitor.FAKE_HARDWARE, 
           connect_gripper=False and not monitor.FAKE_HARDWARE, 
           calibration=monitor.CALIBRATION,
@@ -72,11 +72,11 @@ def init(monitor):
     # TODO use one tracked box to indicate where to put the assembly
     if monitor.CALIBRATION:
         left_tool_name = 'calib_tool_left'
-        TrackedObject(monitor, left_tool_name, 4569, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
+        TrackedObject(monitor, left_tool_name, 4572, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
         monitor.assign_calibration_tool_to_robot(0, 0, left_tool_name)
 
         right_tool_name = 'calib_tool_right'
-        TrackedObject(monitor, right_tool_name, 4569, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
+        TrackedObject(monitor, right_tool_name, 4573, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
         monitor.assign_calibration_tool_to_robot(0, 1, right_tool_name)
 
     if monitor.BAR_HOLDING_ACCURACY_TEST:
@@ -349,7 +349,7 @@ def update_goal_gripper_model_pose(monitor, world_from_bar, theta_index, grasp_d
 
 #################################
 
-def calibrate_button(monitor, tool_mocap_name):
+def calibrate_button(monitor, tool_mocap_name, index=0):
     # record current joint conf and add to record
     h = monitor.huskies[monitor.selected_robot_id]
     hi = h.interface
@@ -357,6 +357,16 @@ def calibrate_button(monitor, tool_mocap_name):
     # fetch calibration mocap set frame
     flange_mocap_pose = None
     base_mocap_pose = None
+
+    if index > 0:
+        # must be using the dual arm
+        tool0_link_name = 'right_ur_arm_tool0'
+    else:
+        if pp.has_link(ho.robot, "ur_arm_tool0"):
+            tool0_link_name = 'ur_arm_tool0'
+        else:
+            tool0_link_name = 'left_ur_arm_tool0'
+
     if monitor.USE_MOCAP:
         # need to get the raw data from mocap
         if h.name in monitor._mocap_rigidbody_cache:
@@ -365,9 +375,9 @@ def calibrate_button(monitor, tool_mocap_name):
             flange_mocap_pose = monitor._mocap_rigidbody_cache[tool_mocap_name]
     else:
         base_mocap_pose = ho.get_link_pose_from_name("base_footprint")
-        flange_mocap_pose = ho.get_link_pose_from_name("ur_arm_tool0")
+        flange_mocap_pose = ho.get_link_pose_from_name(tool0_link_name)
 
-    tool0_fk_pose = ho.get_link_pose_from_name("ur_arm_tool0")
+    tool0_fk_pose = ho.get_link_pose_from_name(tool0_link_name)
 
     if flange_mocap_pose is None:
         if monitor.CALIBRATION:
@@ -577,22 +587,23 @@ def calibrate_joint(monitor, joint_id, tool_mocap_name):
     monitor.set_to_show_traj_state()
     monitor.active_calib_joint_id = joint_id
     
-def execute_arm_conf(monitor, conf):
+def execute_arm_conf(monitor, conf, index=0):
     # execute a single arm conf trajectory
     hi = monitor.huskies[monitor.selected_robot_id].interface
     monitor.huskies[monitor.selected_robot_id].interface.send_arm_cmd([hi.arm_joint_pose[monitor.selected_arm_index], conf], 
-                                                                      None, monitor.trajectory_time)
+                                                                      None, monitor.trajectory_time, index=index)
 
-def execute_arm_trajectory_and_record_each_conf(monitor, trajectory, time_between_confs=2):
-    settle_time = 0.5
+def execute_arm_trajectory_and_record_each_conf(monitor, trajectory, time_between_confs=2, index=0):
+    settle_time = 2
     hi = monitor.huskies[monitor.selected_robot_id].interface
+    last_conf = hi.arm_joint_pose[index]
     for conf in trajectory[0]:
-        print(conf)
+        print('last conf:', last_conf, 'conf:', conf)
         hi.send_arm_cmd(
-            [hi.arm_joint_pose[monitor.selected_arm_index], conf], 
-            # [conf], 
+            [last_conf, conf], 
             None, 
-            time_between_confs
+            time_between_confs,
+            index=index
             )
 
         # wait until it finishes
@@ -600,7 +611,11 @@ def execute_arm_trajectory_and_record_each_conf(monitor, trajectory, time_betwee
 
         calibrate_button(monitor, monitor.active_calib_tool_name)
 
-    save_calibration(monitor, filename_suffix=monitor.active_calib_joint_id)
+        # ! since the joint state is updated in the main thread and is blocked when running this function, 
+        # we need to manually update the last conf here
+        last_conf = conf
+
+    save_calibration(monitor, filename_suffix=f'arm_{monitor.active_calib_joint_id}')
     monitor.calibration_data = []
 
 #################################
@@ -635,6 +650,9 @@ def execute_task_goal_arm_trajectory_with_servoing(monitor, trajectory, index=0,
     world_from_tool0 = pp.multiply(transfer_element.goal_pose, pp.invert(transfer_element.grasp))
     attachments = [ho.ee_list[monitor.selected_arm_index][1], pp.Attachment(ho.robot, pp.link_from_name(ho.robot, 'ur_arm_tool0'), transfer_element.grasp, transfer_element.body)]
 
+    # ! IMPORTANT
+    # TODO ** This needs to take selected_arm_index into account, otherwise it will always use the first arm
+
     for iter_i in range(num_iters):
         monitor.get_logger().info(f'Servoing arm trajectory {iter_i+1}/{num_iters}...')
 
@@ -646,7 +664,7 @@ def execute_task_goal_arm_trajectory_with_servoing(monitor, trajectory, index=0,
         else:
             traj_time = trajectory[2] 
 
-        monitor.huskies[monitor.selected_robot_id].interface.send_arm_cmd(trajectory[0], trajectory[1], traj_time)
+        monitor.huskies[monitor.selected_robot_id].interface.send_arm_cmd(trajectory[0], trajectory[1], traj_time, index=index)
 
         # wait until it finishes
         # TODO hopefully the extra 2 seconds will be enough for the mocap estimation to roll in? To be checked
