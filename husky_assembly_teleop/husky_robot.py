@@ -307,7 +307,7 @@ class HuskyRobotInterface:
         print('monitor trajectory time:', traj_time)
         print('dt:', dt)
 
-        return
+        # return
         
         goal = FollowJointTrajectory.Goal()
         goal.trajectory = JointTrajectory()

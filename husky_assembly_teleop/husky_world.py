@@ -354,7 +354,7 @@ def sample_calib_motion(monitor, arm_index, target_joint_index, calib_joint_rang
 
     # Sample calibration conf:
     ATTEMPTS = 100
-    TRAJ_MAX_LENGTH = 100
+    TRAJ_MAX_LENGTH = 130
     steps = 20
     joint_resolutions = np.ones(6) * 0.05
 
@@ -378,11 +378,17 @@ def sample_calib_motion(monitor, arm_index, target_joint_index, calib_joint_rang
 
     current_conf = hi.arm_joint_pose[arm_index]
     custom_limits_from_joint_name = {}
+    original_joint_limits = []
+    for joint_name in joint_names:
+        original_joint_limits.append(pp.get_joint_limits(robot, pp.joint_from_name(robot, joint_name)))
     # * Set custom limits around current configuration for each joint
     for i, joint_name in enumerate(joint_names):
         if i != target_joint_index:  # Skip the target joint as we'll set it separately
-            # Set limits to current value ± π/2
-            custom_limits_from_joint_name[joint_name] = (current_conf[i] - np.pi/2, current_conf[i] + np.pi/2)
+            # Set limits to current value ± pi/2, but ensure within original joint limits
+            custom_limits_from_joint_name[joint_name] = (
+                max(current_conf[i] - np.pi/3, original_joint_limits[i][0]+np.pi/5),
+                min(current_conf[i] + np.pi/3, original_joint_limits[i][1]-np.pi/5)
+            )
 
     # * For the target joint, set limits to current value ± calib_joint_range
     target_joint_pb_id = pp.joint_from_name(robot, joint_names[target_joint_index])
@@ -421,10 +427,13 @@ def sample_calib_motion(monitor, arm_index, target_joint_index, calib_joint_rang
     # * the robot base pose should be udpated by the main loop in monitor according to mocap observation before the planning starts
     diagnose = 0
     with pp.WorldSaver():
-        with pp.LockRenderer(not diagnose):
+        with pp.LockRenderer(False):
             for i in range(ATTEMPTS):
                 valid_calib_path = True
                 start_conf = sample_fn()
+                pp.set_joint_positions(robot, movable_joints, start_conf)
+                # pp.wait_if_gui()
+
                 print(f'Attempt #{i+1}/{ATTEMPTS}, start_conf: {start_conf} | current conf: {hi.arm_joint_pose[arm_index]}')
                 # - click `execute calib` will first execute the transit path in one go, and then execute the calib path point by point, waiting for the arm to settle before moving to the next point. It will save the calibration data for each point, and in the end export the data to a json file.
 
@@ -548,7 +557,7 @@ def calibrate_button(monitor, tool_mocap_name, index=0):
              })
 
 def save_calibration(monitor, filename_suffix=""):
-    print(monitor.calibration_data)
+    # print(monitor.calibration_data)
     # save monitor.calibration_data to json, file name with time stamp
     # save to data/calibration_data
     timestamp = datetime.now().strftime("%Y%m%d_%H%M")
@@ -727,7 +736,6 @@ def calibrate_joint(monitor, joint_id, tool_mocap_name):
         index=monitor.selected_arm_index
         )
     monitor.set_to_show_traj_state()
-    monitor.active_calib_joint_id = joint_id
     
 def execute_arm_conf(monitor, conf, index=0):
     # execute a single arm conf trajectory
@@ -739,9 +747,8 @@ def execute_arm_trajectory_and_record_each_conf(monitor, transit_traj, calib_tra
     settle_time = 1
     hi = monitor.huskies[monitor.selected_robot_id].interface
     # last_conf = hi.arm_joint_pose[index]
-    print(transit_traj)
-
-    execute_arm_trajectory(monitor, transit_traj, index=index)
+    # print(transit_traj)
+    # execute_arm_trajectory(monitor, transit_traj, index=index)
 
     for i, conf in enumerate(calib_traj[0]):
         monitor.get_logger().info(f'Executing arm conf {i+1}/{len(calib_traj[0])}...')
@@ -765,7 +772,7 @@ def execute_arm_trajectory_and_record_each_conf(monitor, transit_traj, calib_tra
         hi.arm_joint_pose[monitor.selected_arm_index] = conf
         # last_conf = conf
 
-    save_calibration(monitor, filename_suffix=f'arm_{monitor.active_calib_joint_id}')
+    save_calibration(monitor, filename_suffix=f'arm_{monitor.selected_arm_index}_j_{monitor.calib_target_axis}')
     monitor.calibration_data = []
 
 #################################

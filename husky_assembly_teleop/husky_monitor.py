@@ -107,7 +107,6 @@ class HuskyMonitor(Node):
         self.goal_element = None 
 
         self.calib_tool_from_robot_arm_id = defaultdict(lambda: defaultdict(lambda: None))
-        self.active_calib_joint_id = None
         self.calib_joint_range = np.pi/2
         self.calib_target_axis = 0
 
@@ -627,6 +626,8 @@ class HuskyMonitor(Node):
             self.calib_joint_range_slider = Slider("calib joint range", self.update_calib_joint_range, 0.0, np.pi, np.pi/2)
             self.calib_target_axis_slider = Slider("calib target joint id", self.update_calib_target_axis, 0, 1, 0)
             self.buttons.append(Button('Sample calib path', self.sample_calib_traj))
+
+            self.buttons.append(Button('Execute transit to calib traj', self.execute_free_trajectory))
             self.buttons.append(Button('Execute calib traj', self.execute_calib_traj))
 
             # self.buttons.append(Button('Set joint 0 to zero', self.set_goal_joint_0_to_zero))
