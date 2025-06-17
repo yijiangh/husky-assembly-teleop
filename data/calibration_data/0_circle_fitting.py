@@ -14,11 +14,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pybullet_planning as pp
 
-data_batch = 'j0'
-EXPORT = False
+date_folder = '20250617'
+data_batch = 'j1'
+EXPORT = 1
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-data_folder = os.path.join(HERE, data_batch)
+data_folder = os.path.join(HERE, date_folder, data_batch)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')

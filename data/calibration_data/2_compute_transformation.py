@@ -7,8 +7,12 @@ import matplotlib.pyplot as plt
 # from husky_assembly_teleop.common import load_robot
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-j0_data_file_path = os.path.join(HERE, 'j0', 'j0_analysis.json')
-j1_data_file_path = os.path.join(HERE, 'j1', 'j1_analysis.json')
+date_folder = '20250617'
+robot_name = '0806'
+arm = 'left'
+
+j0_data_file_path = os.path.join(HERE, date_folder, 'j0', 'j0_analysis.json')
+j1_data_file_path = os.path.join(HERE, date_folder, 'j1', 'j1_analysis.json')
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -100,10 +104,15 @@ tf = np.zeros((4, 4))
 # tf[:3, 2] =  [-0.001631224349593877, 0.0037171145136326547, 0.9999917610494666]
 # tf[:3, 3] =  [-0.1521609966963864, -0.2268741465809331, 0.45994194099363583]
 
-tf[:3, 0] =  [0.9980369377292159, -0.062465439736754745, 0.004509963035678492]
-tf[:3, 1] =  [0.06246597665153058, 0.9980470937203296, 2.1848886877149744e-05]
-tf[:3, 2] =  [-0.004502520300871574, 0.0002599132495342961, 0.9999898298263052]
-tf[:3, 3] =  [-1.213010907097269, -0.470556790202105, 0.45040809879961186]
+# ! Paste from GH for now
+# tf[:3, 0] =  [0.9980369377292159, -0.062465439736754745, 0.004509963035678492]
+# tf[:3, 1] =  [0.06246597665153058, 0.9980470937203296, 2.1848886877149744e-05]
+# tf[:3, 2] =  [-0.004502520300871574, 0.0002599132495342961, 0.9999898298263052]
+# tf[:3, 3] =  [-1.213010907097269, -0.470556790202105, 0.45040809879961186]
+tf[:3, 0] =  [0.9999604249498929, -0.0006239503509846654, 0.008874639146977583]
+tf[:3, 1] =  [-0.0058194383284329325, 0.7086509045750556, 0.7055352787653477]
+tf[:3, 2] =  [-0.006729240044100567, -0.7055590025865413, 0.7086192286394111]
+tf[:3, 3] =  [-0.21960672857421618, -0.1095240574795421, 0.48609758894721256]
 
 world_from_arm_base_link = pp.pose_from_tform(tf)
 print('new world_from_arm_base_link:', world_from_arm_base_link)
@@ -114,13 +123,21 @@ print('quat difference:', np.array(archived_world_from_arm_base_link[1]) - np.ar
 pp.connect(use_gui=True, shadows=True, color=[0.9, 0.9, 1.0])
 # robot_urdf = os.path.join('/home/yijiangh/ros2_ws/src/husky_assembly_teleop/data','husky_urdf/mt_husky_moveit_config/urdf/husky_ur5_e_no_base_joint.urdf')
 # robot_urdf = os.path.join('/home/yijiangh/ros2_ws/src/husky-asembly-teleop/data','husky_urdf/mt_husky_moveit_config/urdf/husky_ur5_e_no_base_joint.urdf')
-robot_urdf = os.path.join(r'D:\0_Project\03-2025_husky_assembly\Code\husky-asembly-teleop\data',r'husky_urdf\mt_husky_moveit_config\urdf\husky_ur5_e_no_base_joint.urdf')
+# robot_urdf = os.path.join(r'D:\0_Project\03-2025_husky_assembly\Code\husky-asembly-teleop\data',r'husky_urdf\mt_husky_moveit_config\urdf\husky_ur5_e_no_base_joint.urdf')
+if robot_name == '0806':
+    robot_urdf = os.path.join(r'D:\0_Project\03-2025_husky_assembly\Code\husky-asembly-teleop\data',r'husky_urdf\mt_husky_dual_ur5_e_moveit_config/urdf/husky_dual_ur5_e_no_base_joint.urdf') 
+else:
+    robot_urdf = os.path.join(r'D:\0_Project\03-2025_husky_assembly\Code\husky-asembly-teleop\data',r'husky_urdf\mt_husky_moveit_config\urdf\husky_ur5_e_no_base_joint.urdf')
 with pp.HideOutput():
     robot = pp.load_pybullet(robot_urdf, fixed_base=False, cylinder=False)
 pp.set_pose(robot, world_from_base_mocap)
 
 base_base_link = pp.link_from_name(robot, "base_footprint")
-arm_base_link = pp.link_from_name(robot, "ur_arm_base_link")
+if robot_name == '0806':
+    arm_base_link = pp.link_from_name(robot, f"{arm}_ur_arm_base_link")
+else:
+    arm_base_link = pp.link_from_name(robot, "ur_arm_base_link")
+
 # this is fixed
 arm_base_link_from_base_footprint = pp.get_relative_pose(robot, base_base_link, arm_base_link)
 
@@ -129,15 +146,19 @@ base_mocap_from_base_footprint = pp.multiply(base_mocap_from_arm_base, arm_base_
 
 # sensed data
 pp.draw_pose(world_from_base_mocap)
+pp.wait_if_gui('world_from_base_mocap')
 pp.draw_pose(world_from_arm_base_link)
+pp.wait_if_gui('world_from_arm_base_link')
 
 world_from_arm_base = pp.multiply(world_from_base_mocap, base_mocap_from_arm_base)
 world_from_base_footprint = pp.multiply(world_from_base_mocap, base_mocap_from_base_footprint)
 pp.draw_pose(world_from_arm_base, length=1.2)
+pp.wait_if_gui('world_from_arm_base')
 pp.draw_pose(world_from_base_footprint, length=1.2)
+pp.wait_if_gui('world_from_base_footprint')
 
 # save this to a json file
-output_file_path = os.path.join(HERE, 'calibrated_transformation_0804.json')
+output_file_path = os.path.join(HERE, f'calibrated_transformation_{robot_name}.json')
 with open(output_file_path, 'w') as file:
     json.dump({
         'base_mocap_from_arm_base': [list(v) for v in base_mocap_from_arm_base],
