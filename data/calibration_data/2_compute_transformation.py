@@ -124,6 +124,8 @@ pp.connect(use_gui=True, shadows=True, color=[0.9, 0.9, 1.0])
 # robot_urdf = os.path.join('/home/yijiangh/ros2_ws/src/husky_assembly_teleop/data','husky_urdf/mt_husky_moveit_config/urdf/husky_ur5_e_no_base_joint.urdf')
 # robot_urdf = os.path.join('/home/yijiangh/ros2_ws/src/husky-asembly-teleop/data','husky_urdf/mt_husky_moveit_config/urdf/husky_ur5_e_no_base_joint.urdf')
 # robot_urdf = os.path.join(r'D:\0_Project\03-2025_husky_assembly\Code\husky-asembly-teleop\data',r'husky_urdf\mt_husky_moveit_config\urdf\husky_ur5_e_no_base_joint.urdf')
+
+# D:\0_Project\03-2025_husky_assembly\Code\husky-asembly-teleop\data
 if robot_name == '0806':
     robot_urdf = os.path.join(r'D:\0_Project\03-2025_husky_assembly\Code\husky-asembly-teleop\data',r'husky_urdf\mt_husky_dual_ur5_e_moveit_config/urdf/husky_dual_ur5_e_no_base_joint.urdf') 
 else:
