@@ -203,7 +203,7 @@ def plan_transit_motion(robot, end_conf, attachments, obstacles, debug=False, di
                                                 custom_limits=custom_limits, 
                                                 max_distance=0)
 
-    debug = 1
+    debug = 0
     transit_path = None
     with pp.WorldSaver():
         with pp.LockRenderer(not debug):
