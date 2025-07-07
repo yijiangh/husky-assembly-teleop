@@ -4,3 +4,6 @@
 [submodule "external/tracikpy"]
 	path = external/tracikpy
 	url = https://github.com/mjd3/tracikpy.git
+[submodule "external/compas_fab"]
+	path = external/compas_fab
+	url = git@github.com:compas-dev/compas_fab.git
