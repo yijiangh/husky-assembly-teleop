@@ -7,3 +7,6 @@
 [submodule "external/compas_fab"]
 	path = external/compas_fab
 	url = git@github.com:compas-dev/compas_fab.git
+[submodule "data/husky_assembly_design_study"]
+	path = data/husky_assembly_design_study
+	url = git@gitlab.inf.ethz.ch:crl/yijiangh/husky_assembly_design_study.git
