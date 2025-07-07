@@ -9,10 +9,6 @@ from pybullet_planning import multiply, Pose, Euler, Point
 from tracikpy import TracIKSolver
 # import ikfast_ur5e
 
-from compas_robots import RobotModel
-from compas_fab.robots import RobotSemantics
-from compas_fab.robots import Robot as RobotClass
-
 HERE = os.path.dirname(__file__)
 
 yup_tform = np.eye(4)

@@ -22,6 +22,7 @@ from rclpy.node import Node
 import pybullet as p
 import pybullet_planning as pp
 
+from husky_assembly_teleop import DATA_DIRECTORY
 import husky_assembly_teleop.husky_world as world
 from husky_assembly_teleop.husky_robot import UR5e_HOME_STATE
 from husky_assembly_teleop.common import (
@@ -29,7 +30,6 @@ from husky_assembly_teleop.common import (
 )
 
 from husky_assembly_teleop.optitrack.NatNetClient import NatNetClient
-import rclpy.task
 
 DEFAULT_GREY = [0.2, 0.2, 0.2, 0.7]
 GOAL_BLUE = [0, 0.2, 0.5, 0.7]
@@ -46,13 +46,13 @@ MOCAP_IP = '192.168.0.117' # set to the mocap PC's IP, get this from Motive Sett
 FILENAME_SUFFIX = '_vary_pos_vary_yaw'
   
 class HuskyMonitor(Node):
-    USE_MOCAP = 1
+    USE_MOCAP = 0
     FAKE_HARDWARE = 0
 
     GRASP_PARTITION = 8
     BAR_GOAL_MODE = 0
 
-    CALIBRATION = 1
+    CALIBRATION = 0
 
     BAR_HOLDING_ACCURACY_TEST = 0
     DUAL_ARM_ACCURACY_TEST = 0
@@ -243,7 +243,7 @@ class HuskyMonitor(Node):
         new_index = np.clip(int(arm_index), 0, 1)
         if new_index != self.selected_arm_index:
             self.selected_arm_index = new_index
-            self.reset_ui(target_conf=self.goal_arm_pose[self.selected_arm_index])
+            self.reset_ui(target_conf=self.goal_arm_pose) #[self.selected_arm_index])
 
     def update_trajectory_time(self, time):
         self.trajectory_time = time
@@ -374,7 +374,7 @@ class HuskyMonitor(Node):
                                                                  log_data=0)
 
     def set_goal_joint_0_to_zero(self):
-        self.goal_arm_pose[0] = 0.0
+        self.goal_arm_pose[self.selected_arm_index][0] = 0.0
         self.reset_ui(self.goal_arm_pose)
 
     def sample_calib_traj(self):
@@ -550,6 +550,28 @@ class HuskyMonitor(Node):
         self.buttons.append(Button('Plan arm to conf target', lambda : world.plan_arm_to_goal(self)))
         self.buttons.append(Button('Exec S.Arm Traj', self.execute_arm_trajectory))
 
+        self.buttons.append(Button(
+               'Load RobotCellState (Vshape))',
+               lambda: world.load_robotcellstate_and_update_goal(
+                   self,
+                   os.path.join(
+                       DATA_DIRECTORY,
+                       'robotx_box',
+                       'v-shape_RobotCellState.json'
+                   )
+               )
+           ))
+      # Button to export planned trajectory to URScript
+        self.buttons.append(Button(
+            'Export URScript (planned traj)',
+            lambda: self.export_planned_trajectory_to_urscript()
+        ))
+        # Button to export planned trajectory to JSON
+        self.buttons.append(Button(
+            'Export Trajectory (JSON)',
+            lambda: self.export_planned_trajectory_to_json()
+        ))
+
         if not self.CALIBRATION:
             # in calibration mode, we do not have task space targets so this is disabled
             self.buttons.append(Button('Exec S.Arm Traj with servoing', self.execute_arm_trajectory_with_servoing))
@@ -613,13 +635,22 @@ class HuskyMonitor(Node):
             self.buttons.append(Button('Save EE mocap data', lambda: world.save_dual_arm_E_mocap(self)))
 
         if not self.BAR_GOAL_MODE:
-            self.dump_sep_sliders.append(Slider("----------Joint Target", lambda : None))
-            for i, j in enumerate(pp.joints_from_names(self.huskies[self.selected_robot_id].object.robot, self.huskies[self.selected_robot_id].object.get_arm_joint_names())):
+            self.dump_sep_sliders.append(Slider("----------Joint Target (Left Arm)", lambda : None))
+            left_joint_names = self.huskies[self.selected_robot_id].object.get_arm_joint_names(index=0)
+            for i, j in enumerate(pp.joints_from_names(self.huskies[self.selected_robot_id].object.robot, left_joint_names)):
                 lower, upper = pp.get_joint_limits(self.huskies[self.selected_robot_id].object.robot, j)
                 if target_conf is None:
-                    self.joint_state_sliders.append(p.addUserDebugParameter(f'Joint {i}', lower, upper, self.huskies[self.selected_robot_id].interface.arm_joint_pose[self.selected_arm_index][i]))
+                    self.joint_state_sliders.append(p.addUserDebugParameter(f'Left Joint {i}', lower, upper, self.goal_arm_pose[0][i]))
                 else:
-                    self.joint_state_sliders.append(p.addUserDebugParameter(f'Joint {i}', lower, upper, target_conf[i]))
+                    self.joint_state_sliders.append(p.addUserDebugParameter(f'Left Joint {i}', lower, upper, target_conf[0][i]))
+            self.dump_sep_sliders.append(Slider("----------Joint Target (Right Arm)", lambda : None))
+            right_joint_names = self.huskies[self.selected_robot_id].object.get_arm_joint_names(index=1)
+            for i, j in enumerate(pp.joints_from_names(self.huskies[self.selected_robot_id].object.robot, right_joint_names)):
+                lower, upper = pp.get_joint_limits(self.huskies[self.selected_robot_id].object.robot, j)
+                if target_conf is None:
+                    self.joint_state_sliders.append(p.addUserDebugParameter(f'Right Joint {i}', lower, upper, self.goal_arm_pose[1][i]))
+                else:
+                    self.joint_state_sliders.append(p.addUserDebugParameter(f'Right Joint {i}', lower, upper, target_conf[1][i]))
             
         if self.CALIBRATION:
             self.dump_sep_sliders.append(Slider("----------Calibration", lambda : None))
@@ -637,8 +668,19 @@ class HuskyMonitor(Node):
         self.buttons.append(Button('Record current calib conf', lambda: world.calibrate_button(self, self.active_calib_tool_name)))
         self.buttons.append(Button('Export calib conf to json', self.record_calibration_data))
         self.buttons.append(Button('Remove all drawing', lambda : pp.remove_all_debug()))
-
-    
+        # Button to load RobotCellState from file and update arm goal configuration
+        self.buttons.append(Button(
+            'Load RobotCellState (robotx_box_A15-S13)',
+            lambda: world.load_robotcellstate_and_update_goal(
+                self,
+                os.path.join(
+                    DATA_DIRECTORY,
+                    'robotx_box',
+                    'robotx_box_A15-S13_RobotCellState.json'
+                )
+            )
+        ))
+  
     # --- --- --- --- --- MOCAP --- --- --- --- --- 
     def start_mocap(self):
         print('Starting mocap!')
@@ -754,8 +796,10 @@ class HuskyMonitor(Node):
         self.selected_robot_slider.update()
         self.arm_slider.update()
         self.trajectory_time_slider.update()
-        self.calib_joint_range_slider.update()
-        self.calib_target_axis_slider.update()
+
+        if self.CALIBRATION:
+            self.calib_joint_range_slider.update()
+            self.calib_target_axis_slider.update()
 
         if self.BAR_HOLDING_ACCURACY_TEST:
             self.goal_axis_slider.update()
@@ -776,7 +820,12 @@ class HuskyMonitor(Node):
             self.bar_goal_pose_slider_group.update()
             # update_bar_goal_pose
         else:
-            self.goal_arm_pose[self.selected_arm_index] = np.array([p.readUserDebugParameter(ps) for ps in self.joint_state_sliders])
+            # Update both arms' goal conf from sliders
+            n_joints = 6
+            left_slider_vals = [p.readUserDebugParameter(ps) for ps in self.joint_state_sliders[:n_joints]]
+            right_slider_vals = [p.readUserDebugParameter(ps) for ps in self.joint_state_sliders[n_joints:2*n_joints]]
+            self.goal_arm_pose[0] = np.array(left_slider_vals)
+            self.goal_arm_pose[1] = np.array(right_slider_vals)
 
         # update assembly goal position
         # self.assembly_goal_position_slider_group.update()
@@ -828,6 +877,68 @@ class HuskyMonitor(Node):
                 self.tasks.remove(t)
                 
         world.update(self)
+
+    def export_planned_trajectory_to_urscript(self, filename='planned_trajectory.script', arm_index=None):
+        """
+        Export the planned arm trajectory to a URScript file for the UR5e robot.
+        The output filename will include the arm index (0 = left, 1 = right).
+        """
+        if arm_index is None:
+            arm_index = self.selected_arm_index
+        traj = self.planned_arm_trajectory[arm_index][0]
+        if traj is None or len(traj) == 0:
+            print('No planned trajectory to export!')
+            return
+
+        # Add arm name ("left" or "right") to the filename before the extension
+        arm_name = "left" if arm_index == 0 else "right"
+        base, ext = os.path.splitext(filename)
+        filename_with_arm = f"{base}_{arm_name}{ext}"
+
+        # URScript header
+        urscript_lines = [
+            'def planned_trajectory():',
+        ]
+        # Reasonable speed and acceleration (can be tuned on the robot)
+        speed = 1.0  # rad/s
+        accel = 2.0  # rad/s^2
+        blend = 0.0  # No blending by default
+        for conf in traj:
+            # URScript expects a list of 6 joint values
+            joint_str = ', '.join([f'{float(j):.6f}' for j in conf])
+            urscript_lines.append(f'    movej([{joint_str}], a={accel}, v={speed})')
+        urscript_lines.append('end')
+
+        # Write to file
+        out_path = os.path.join(os.getcwd(), filename_with_arm)
+        with open(out_path, 'w') as f:
+            f.write('\n'.join(urscript_lines))
+        print(f'URScript exported to {out_path}')
+
+    def export_planned_trajectory_to_json(self, filename='planned_trajectory.json', arm_index=None):
+        """
+        Export the planned arm trajectory to a JSON file as a list of joint configurations.
+        Save to the DATA_DIRECTORY/robotx_box subfolder.
+        """
+        import json
+        if arm_index is None:
+            arm_index = self.selected_arm_index
+        traj = self.planned_arm_trajectory[arm_index][0]
+        if traj is None or len(traj) == 0:
+            print('No planned trajectory to export!')
+            return
+        # Convert numpy arrays to lists
+        traj_list = [list(map(float, conf)) for conf in traj]
+        # Save to DATA_DIRECTORY/robotx_box
+        out_dir = '/home/yijiangh/ros2_ws/src/husky-asembly-teleop/data/robotx_box'
+        os.makedirs(out_dir, exist_ok=True)
+        # Add arm index to the filename before the extension
+        base, ext = os.path.splitext(filename)
+        filename_with_arm = f"{base}_arm{arm_index}{ext}"
+        out_path = os.path.join(out_dir, filename_with_arm)
+        with open(out_path, 'w') as f:
+            json.dump(traj_list, f, indent=2)
+        print(f'Trajectory exported to {out_path}')
 
 # --- --- --- --- --- MAIN --- --- --- --- --- 
 def main(args=None):

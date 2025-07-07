@@ -21,7 +21,10 @@ from husky_assembly_teleop.scaffolding import parse_mt_geometric, create_collisi
 import json
 from datetime import datetime
 
+from compas_fab.robots import RobotCellState
+
 import matplotlib.pyplot as plt
+import compas
 
 MT_FILE_NAME = "one_tet_MT_contact.json"
 # huskies = []
@@ -998,3 +1001,40 @@ def execute_arm_trajectory_both(monitor):
     monitor.huskies[monitor.selected_robot_id].interface.send_dual_arm_cmd(monitor.planned_arm_trajectory)
     #monitor.huskies[monitor.selected_robot_id].interface.send_arm_cmd(*monitor.planned_arm_trajectory[0][0:3], index=0)
     #monitor.huskies[monitor.selected_robot_id].interface.send_arm_cmd(*monitor.planned_arm_trajectory[1][0:3], index=1)
+
+def load_robotcellstate_and_update_goal(monitor, filepath):
+    """
+    Loads a RobotCellState from a JSON file using compas.json_load,
+    and updates the arm goal configuration for both arms in the monitor.
+    """
+    robot_cell_state = compas.json_load(filepath)
+    if not isinstance(robot_cell_state, RobotCellState):
+        monitor.get_logger().warn(f"File {filepath} did not contain a RobotCellState.")
+        return
+    # Update the arm goal configuration for both arms
+    # robot_cell_state.robot_configuration.data['joint_values'] is a list of all joint values
+    # The robot configuration is a compas JointConfiguration, which contains .joint_names and .joint_values
+    joint_config = robot_cell_state.robot_configuration
+    joint_names = getattr(joint_config, 'joint_names', None)
+    joint_values = getattr(joint_config, 'joint_values', None)
+    if joint_names is None or joint_values is None:
+        monitor.get_logger().warn(f"Robot configuration does not contain 'joint_names' or 'joint_values'.")
+        return
+
+    # Get the expected joint names for each arm
+    left_arm_joint_names = monitor.huskies[monitor.selected_robot_id].object.get_arm_joint_names(index=0)
+    right_arm_joint_names = monitor.huskies[monitor.selected_robot_id].object.get_arm_joint_names(index=1)
+
+    # Map joint names to values
+    joint_map = dict(zip(joint_names, joint_values))
+
+    # Assign values to each arm in the correct order
+    try:
+        left_arm_values = [joint_map[name] for name in left_arm_joint_names]
+        right_arm_values = [joint_map[name] for name in right_arm_joint_names]
+        monitor.goal_arm_pose[0] = np.array(left_arm_values)
+        monitor.goal_arm_pose[1] = np.array(right_arm_values)
+        monitor.get_logger().info(f"Loaded RobotCellState from {filepath} and updated both arm goal configurations.")
+        monitor.reset_ui()  # Optionally reset UI to reflect new goals
+    except KeyError as e:
+        monitor.get_logger().warn(f"Joint name {e} not found in loaded RobotCellState.")
