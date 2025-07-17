@@ -1,0 +1,28 @@
+2025-04-22 15:57:06,779 - INFO - Working on file: calibration_20250402_1351_.json
+2025-04-22 15:57:06,962 - INFO - max distance between base_mocap_origins and mean: 0.00024882668643159825
+2025-04-22 15:57:06,962 - INFO - max distance between base_mocap_quats and mean: 0.00032354073244855687
+2025-04-22 15:57:06,967 - INFO - Working on file: calibration_20250402_1354_.json
+2025-04-22 15:57:07,168 - INFO - max distance between base_mocap_origins and mean: 0.0002214349820356001
+2025-04-22 15:57:07,168 - INFO - max distance between base_mocap_quats and mean: 0.00025397933516933786
+2025-04-22 15:57:07,173 - INFO - Working on file: calibration_20250402_1357_.json
+2025-04-22 15:57:07,392 - INFO - max distance between base_mocap_origins and mean: 0.00021204342095683856
+2025-04-22 15:57:07,393 - INFO - max distance between base_mocap_quats and mean: 0.00021519918865610166
+2025-04-22 15:57:07,398 - INFO - Working on file: calibration_20250402_1359_.json
+2025-04-22 15:57:07,598 - INFO - max distance between base_mocap_origins and mean: 0.0002594380214681472
+2025-04-22 15:57:07,599 - INFO - max distance between base_mocap_quats and mean: 0.0002685383571390676
+2025-04-22 15:57:07,604 - INFO - Mean base mocap position: [-0.72632588 -0.51018924  0.62262592]
+2025-04-22 15:57:07,604 - INFO - Max distance between base_mocap_pos and mean: 0.00043
+2025-04-22 15:57:07,604 - INFO - Min distance between base_mocap_pos and mean: 0.00009
+2025-04-22 15:57:07,605 - INFO - Average distance between base_mocap_pos and mean: 0.00022
+2025-04-22 15:57:07,779 - INFO - Max X-axis deviation: 0.00021
+2025-04-22 15:57:07,780 - INFO - Max Y-axis deviation: 0.00042
+2025-04-22 15:57:07,780 - INFO - Max Z-axis deviation: 0.00006
+2025-04-22 15:57:07,786 - INFO - Max angle deviation for x-axis: 0.03 degrees
+2025-04-22 15:57:07,787 - INFO - Max angle deviation for y-axis: 0.06 degrees
+2025-04-22 15:57:07,787 - INFO - Max angle deviation for z-axis: 0.06 degrees
+2025-04-22 15:57:07,897 - INFO - j0 fitted axis : [ 5.05786970e-03 -4.01110733e-04 -9.99987128e-01]
+2025-04-22 15:57:07,897 - INFO - max_pt_project_distance: [np.float64(0.0002066141151187773), np.float64(0.00031690380487426023), np.float64(0.00019114447855340816), np.float64(0.0003219092755098724)]
+2025-04-22 15:57:07,898 - INFO - angle diff between center normals and fitted line (deg): [np.float64(0.053152629084950574), np.float64(0.02668876378827921), np.float64(0.03722611733524538), np.float64(0.05518984527134689)]
+2025-04-22 15:57:07,898 - INFO - angle diff between center normals and mean normal (deg): [np.float64(0.044752135001902144), np.float64(0.027459407051974707), np.float64(0.01986370940905913), np.float64(0.022497244602502908)]
+2025-04-22 15:57:07,899 - INFO - max distance between centers and mean center: 0.00031203770373341625
+2025-04-22 15:57:07,899 - INFO - max distance between centers and line_fit.point: 0.0003120377037331875

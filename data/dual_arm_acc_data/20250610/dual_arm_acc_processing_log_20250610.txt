@@ -1,0 +1,43 @@
+2025-06-11 13:34:34,287 - INFO - Working on file: dual_arm_acc_20250610_1713_.json
+2025-06-11 13:34:34,464 - INFO - Mean positional offset 0.483973
+2025-06-11 13:34:34,464 - INFO - Std positional offset 0.000349
+2025-06-11 13:34:34,464 - INFO - Positional offset range 0.001976
+2025-06-11 13:34:34,464 - INFO - Mean rotational offset -0.325783 5.950389 177.216799
+2025-06-11 13:34:34,464 - INFO - Std rotational offset 0.085869 0.116499 0.249328
+2025-06-11 13:34:34,464 - INFO - Rotational offset range 0.492220
+2025-06-11 13:34:34,578 - INFO - Working on file: dual_arm_acc_20250610_1714_.json
+2025-06-11 13:34:34,606 - INFO - Mean positional offset 0.483908
+2025-06-11 13:34:34,606 - INFO - Std positional offset 0.000306
+2025-06-11 13:34:34,606 - INFO - Positional offset range 0.002041
+2025-06-11 13:34:34,606 - INFO - Mean rotational offset -0.393157 5.787584 177.287650
+2025-06-11 13:34:34,606 - INFO - Std rotational offset 0.131681 0.290698 0.213059
+2025-06-11 13:34:34,606 - INFO - Rotational offset range 0.772728
+2025-06-11 13:34:34,703 - INFO - Working on file: dual_arm_acc_20250610_1716_.json
+2025-06-11 13:34:34,729 - INFO - Mean positional offset 0.484531
+2025-06-11 13:34:34,729 - INFO - Std positional offset 0.000292
+2025-06-11 13:34:34,729 - INFO - Positional offset range 0.000687
+2025-06-11 13:34:34,729 - INFO - Mean rotational offset -0.291082 5.848408 176.993928
+2025-06-11 13:34:34,729 - INFO - Std rotational offset 0.070600 0.110631 0.141269
+2025-06-11 13:34:34,729 - INFO - Rotational offset range 0.349691
+2025-06-11 13:34:34,833 - INFO - Working on file: dual_arm_acc_20250610_1723_.json
+2025-06-11 13:34:34,860 - INFO - Mean positional offset 0.484754
+2025-06-11 13:34:34,860 - INFO - Std positional offset 0.000337
+2025-06-11 13:34:34,860 - INFO - Positional offset range 0.000903
+2025-06-11 13:34:34,860 - INFO - Mean rotational offset -0.337443 5.757459 176.734472
+2025-06-11 13:34:34,860 - INFO - Std rotational offset 0.147454 0.104762 0.135603
+2025-06-11 13:34:34,860 - INFO - Rotational offset range 0.334627
+2025-06-11 13:34:34,954 - INFO - Working on file: dual_arm_acc_20250610_1724_.json
+2025-06-11 13:34:34,983 - INFO - Mean positional offset 0.485164
+2025-06-11 13:34:34,983 - INFO - Std positional offset 0.000616
+2025-06-11 13:34:34,983 - INFO - Positional offset range 0.001730
+2025-06-11 13:34:34,984 - INFO - Mean rotational offset -0.624812 5.678203 176.940102
+2025-06-11 13:34:34,984 - INFO - Std rotational offset 0.329082 0.130748 0.244382
+2025-06-11 13:34:34,984 - INFO - Rotational offset range 0.604889
+2025-06-11 13:34:35,078 - INFO - Working on file: dual_arm_acc_20250610_1725_.json
+2025-06-11 13:34:35,110 - INFO - Mean positional offset 0.479303
+2025-06-11 13:34:35,110 - INFO - Std positional offset 0.008265
+2025-06-11 13:34:35,110 - INFO - Positional offset range 0.018235
+2025-06-11 13:34:35,110 - INFO - Mean rotational offset -2.730454 5.330484 83.742799
+2025-06-11 13:34:35,110 - INFO - Std rotational offset 3.072844 0.503586 156.274020
+2025-06-11 13:34:35,110 - INFO - Rotational offset range 263.658850
+2025-06-11 13:34:35,209 - INFO - Exported plot to /home/jakobgenhart/husky_assistant/workspace/src/husky-asembly-teleop/data/dual_arm_acc_data/20250610/dual_arm_acc_20250610.png

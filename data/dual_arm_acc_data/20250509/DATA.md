@@ -1,0 +1,1 @@
+Baseline: Driving husky around and sampling manually (no fixed rate). Arms dont move.

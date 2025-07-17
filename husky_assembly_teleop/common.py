@@ -38,10 +38,11 @@ HUSKY_DUAL_UR5e_JOINT_NAMES = [["left_ur_arm_shoulder_pan_joint",
 def load_robot(ik_from_arm_base=True, load_calib_tip=False, dual_arm=False):
     # robot_srdf = os.path.join(DATA_DIRECTORY, 'husky_urdf/mt_husky_moveit_config/config/husky.srdf')
     # robot_urdf = os.path.join(DATA_DIRECTORY,'husky_urdf/mt_husky_moveit_config/urdf/husky_ur5_e.urdf')
+    USE_VICTOR_GRIPPER = True
     robot_urdf = None
     print('loading robot urdf from:', DATA_DIRECTORY)
     if dual_arm:
-        robot_urdf = os.path.join(DATA_DIRECTORY,'husky_urdf/mt_husky_dual_ur5_e_moveit_config/urdf/husky_dual_ur5_e.urdf')
+        robot_urdf = os.path.join(DATA_DIRECTORY,'husky_urdf/mt_husky_dual_ur5_e_moveit_config/urdf/husky_dual_ur5_e_no_base_joint.urdf')
     else:
         robot_urdf = os.path.join(DATA_DIRECTORY,'husky_urdf/mt_husky_moveit_config/urdf/husky_ur5_e_no_base_joint.urdf')
 
@@ -49,13 +50,18 @@ def load_robot(ik_from_arm_base=True, load_calib_tip=False, dual_arm=False):
         # gripper_obj = os.path.join(DATA_DIRECTORY,'calibration_probe.obj')
         # gripper_scale = 1
         # ee = pp.create_obj(gripper_obj, scale=gripper_scale) 
-        ee = pp.create_box(0.15, 0.15, 0.05)
+        ee = pp.create_box(0.12, 0.12, 0.12)
         pp.set_color(ee, pp.apply_alpha(pp.GREY, 0.3))
     else:
-        gripper_obj = os.path.join(DATA_DIRECTORY,'husky_urdf/robotiq_85/meshes/static/robotiq_85_close_20mm.obj')
-        assert os.path.exists(gripper_obj)
-        gripper_scale = 1
-        ee = pp.create_obj(gripper_obj, scale=gripper_scale) 
+        # robotiq gripper
+        if USE_VICTOR_GRIPPER:
+            gripper_urdf_path = os.path.join(DATA_DIRECTORY, 'grasp_screw_tool_description/urdf/grasp_screw_tool_unactuated.urdf')
+            ee = pp.load_pybullet(gripper_urdf_path, fixed_base=False, cylinder=False)
+        else:
+            gripper_obj = os.path.join(DATA_DIRECTORY,'husky_urdf/robotiq_85/meshes/static/robotiq_85_close_20mm.obj')
+            assert os.path.exists(gripper_obj)
+            gripper_scale = 1
+            ee = pp.create_obj(gripper_obj, scale=gripper_scale) 
 
     assert os.path.exists(robot_urdf)
 
@@ -64,15 +70,31 @@ def load_robot(ik_from_arm_base=True, load_calib_tip=False, dual_arm=False):
     ee_list = []
 
     left_tool0_pose = pp.get_link_pose(robot, pp.link_from_name(robot, ('left_' if dual_arm else '') + 'ur_arm_tool0'))
-    left_ee = pp.create_obj(gripper_obj, scale=gripper_scale) 
-    pp.set_pose(left_ee, pp.multiply(left_tool0_pose, pp.Pose(euler=pp.Euler(yaw=-np.pi/2))))
+    left_ee = ee
+    # pp.create_obj(gripper_obj, scale=gripper_scale) 
+
+    if not USE_VICTOR_GRIPPER:
+        additional_tool_tf = pp.Pose(point=pp.Point(z=0.12/2 + 0.005)) if load_calib_tip else pp.unit_pose()
+        pp.set_pose(left_ee, pp.multiply(left_tool0_pose, pp.Pose(euler=pp.Euler(yaw=-np.pi/2)), additional_tool_tf))
+    else:
+        # additional_tool_tf = pp.Pose(point=pp.Point(z=0.12/2 + 0.005)) if load_calib_tip else pp.unit_pose()
+        pp.set_pose(left_ee, left_tool0_pose)
+
     left_ee_attachment = pp.create_attachment(robot, pp.link_from_name(robot, ('left_' if dual_arm else '') + 'ur_arm_tool0'), left_ee)
     ee_list.append((left_ee, left_ee_attachment))
     
     if dual_arm:
         right_tool0_pose = pp.get_link_pose(robot, pp.link_from_name(robot, 'right_ur_arm_tool0'))
-        right_ee = pp.create_obj(gripper_obj, scale=gripper_scale) 
-        pp.set_pose(right_ee, pp.multiply(right_tool0_pose, pp.Pose(euler=pp.Euler(yaw=-np.pi/2))))
+        if not USE_VICTOR_GRIPPER:
+            right_ee = pp.clone_body(left_ee)
+        else:
+            right_ee = pp.load_pybullet(gripper_urdf_path, fixed_base=False, cylinder=False)
+
+        if not USE_VICTOR_GRIPPER:
+            pp.set_pose(right_ee, pp.multiply(right_tool0_pose, pp.Pose(euler=pp.Euler(yaw=-np.pi/2)), additional_tool_tf))
+        else:
+            pp.set_pose(right_ee, right_tool0_pose)
+
         right_ee_attachment = pp.create_attachment(robot, pp.link_from_name(robot, 'right_ur_arm_tool0'), right_ee)
         ee_list.append((right_ee, right_ee_attachment))
 
@@ -155,6 +177,7 @@ class Husky():
                                              dual_arm=dual_arm
                                              )
         self.object = HuskyObject(calibration=calibration, dual_arm=dual_arm)
+        self.dual_arm = dual_arm
         
         self.interface.position = pos
         self.interface.rotation = rot
@@ -197,6 +220,11 @@ class HuskyObject():
             # print('set_pose arm_joint_states has invalid shape!')
             # return
             raise ValueError(f'set_pose arm_joint_states has invalid shape! {arm_joint_states}')
+        
+        # jg: why was this removed?
+        for (ee, ee_attachment) in self.ee_list:
+            ee_attachment.assign()
+
              
     def set_color(self, new_color):
         if self.old_color != new_color:
@@ -260,6 +288,8 @@ def lerp(a, b, t):
     return a + t * (b - a)
 
 def quat_lerp(q1, q2, t):
+    q1 = np.array(q1)
+    q2 = np.array(q2)
     if np.dot(q1,q2) < 0:
         q2 = -q2
     

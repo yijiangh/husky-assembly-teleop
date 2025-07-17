@@ -1,6 +1,8 @@
 # We need a special version of pybullet_planning:
 # pip install pybullet_planning git+https://github.com/yijiangh/pybullet_planning.git@yh/disable_ghalton
-compas_fab==1.0.2
+pybullet_planning==0.6.0
+compas_fab==1.1.0 # use wip_process branch
 numpy<1.25.0
 setuptools<=70.0.0
 kdtree==0.16
+matplotlib==3.10.3

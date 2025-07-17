@@ -30,9 +30,18 @@ from action_msgs.msg import GoalStatus
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from control_msgs.action import FollowJointTrajectory
 from control_msgs.msg import JointTolerance
+try:
+    from crl_husky_msgs.msg import MultiArmTrajectory
+except ImportError:
+    print("MultiArmTrajectory not found, using single arm interface only.")
+
+from rclpy.qos import QoSProfile
 
 UR5e_HOME_STATE = np.array([0, -np.pi/2, 0, -np.pi/2, 0, np.pi/2])
 ARM_JOINT_NAMES = ['shoulder_pan_joint', 'shoulder_lift_joint', 'elbow_joint', 'wrist_1_joint', 'wrist_2_joint', 'wrist_3_joint']
+
+USE_TRAJECTORY_TOPIC_INTERFACE = 0
+ARM_NOT_EXECUTING_TIME = 1
 
 def quaterinion_2_angular_velocity(q1, q2, dt):
     return (2 / dt) * np.array([
@@ -48,7 +57,8 @@ class HuskyRobotInterface:
     angular_velocity = np.zeros(3)
     
     arm_joint_pose = [UR5e_HOME_STATE]
-    is_arm_executing = [False, False]
+    is_arm_executing = [False]
+    last_arm_movement = [0]
     
     odom_offset = np.zeros(3)
     _odom_position = np.zeros(3)
@@ -60,6 +70,11 @@ class HuskyRobotInterface:
         
         if dual_arm:
             self.arm_joint_pose.append(UR5e_HOME_STATE)
+            self.is_arm_executing.append(False)
+            self.last_arm_movement.append(0)
+        
+        q = QoSProfile(depth=10)
+        print(q)
         
         # Listeners --- --- --- --- ---
         if use_odom:
@@ -90,6 +105,13 @@ class HuskyRobotInterface:
         
         # Publishers --- --- --- --- ---
         self.pub_cmd_vel = self.node.create_publisher(Twist, name + '/cmd_vel', 10)
+        self.pub_cmd_arm = []
+        if dual_arm:
+            self.pub_cmd_arm.append(self.node.create_publisher(JointTrajectory, name + '/left_ur5e/scaled_joint_trajectory_controller/joint_trajectory', 10))
+            self.pub_cmd_arm.append(self.node.create_publisher(JointTrajectory, name + '/right_ur5e/scaled_joint_trajectory_controller/joint_trajectory', 10))
+            # self.pub_cmd_multi_arm = self.node.create_publisher(MultiArmTrajectory, name + '/multi_arm_joint_trajectory', 10)
+        else:
+            self.pub_cmd_arm.append(self.node.create_publisher(JointTrajectory, name + '/ur5e/scaled_joint_trajectory_controller/joint_trajectory', 10))
         
         # Action Clients
         # TODO support dual arm
@@ -135,7 +157,7 @@ class HuskyRobotInterface:
                 FollowJointTrajectory,
                 name + '/ur5e/scaled_joint_trajectory_controller/follow_joint_trajectory',
             ))
-        if connect_arm:
+        if connect_arm and not USE_TRAJECTORY_TOPIC_INTERFACE:
             for act_arm in self.act_arms:
                 act_arm.wait_for_server(timeout_sec=2.5)
                 self.node.get_logger().info(f'Arm Action Server {act_arm.server_is_ready()}')
@@ -192,7 +214,17 @@ class HuskyRobotInterface:
         reorder = []
         for name in ARM_JOINT_NAMES:
             reorder.append(msg.name.index(name))
+        old_pose = self.arm_joint_pose[index]
         self.arm_joint_pose[index] = np.array(arm_pos)[reorder]
+        if not np.isclose(old_pose, self.arm_joint_pose[index], atol=1e-2).all():
+            if not self.is_arm_executing[index]:
+                print(f"{index} STARTED MOVING")
+            self.is_arm_executing[index] = True
+            self.last_arm_movement[index] = time.time()
+        elif time.time() - self.last_arm_movement[index] > ARM_NOT_EXECUTING_TIME:
+            if self.is_arm_executing[index]:
+                print(f"{index} FINISHED MOVING")
+            self.is_arm_executing[index] = False
     
     def send_base_twist_cmd(self, x_dot, theta_dot):
         msg = Twist()
@@ -205,8 +237,56 @@ class HuskyRobotInterface:
         goal.command.position = pos
         goal.command.max_effort = effort
         self.act_grippers[index].send_goal_async(goal)
+        
+    def send_dual_arm_cmd(self, multi_arm_trajectory):
+        raise NotImplementedError("Multi-arm trajectory control is not implemented in this interface.")
+
+        multitrajectory = MultiArmTrajectory()
+        
+        multitrajectory.trajectory1 = self.to_trajectory_msg(*multi_arm_trajectory[0][0:3], 0)
+        multitrajectory.trajectory2 = self.to_trajectory_msg(*multi_arm_trajectory[1][0:3], 1)
+        
+        if multitrajectory.trajectory1 is None or multitrajectory.trajectory2 is None:
+            return
+        
+        print("0 SENT MOVING")
+        print("1 SENT MOVING")
+        # assume execution starts immediately
+        self.last_arm_movement[0] = time.time()
+        self.is_arm_executing[0] = True 
+        self.last_arm_movement[1] = time.time()
+        self.is_arm_executing[1] = True
+        self.pub_cmd_multi_arm.publish(multitrajectory)
     
-    def send_arm_cmd(self, arm_joint_positions, arm_joint_velocities=None, time=10, index=0):
+    def to_trajectory_msg(self, arm_joint_positions, arm_joint_velocities=None, time=10.0, index=0):
+        if arm_joint_velocities is not None:
+            if len(arm_joint_positions) != len(arm_joint_velocities):
+                self.node.get_logger().error("trajectory must have equal number of position and velocity entries!")
+                return None
+            
+        if not np.isclose(self.arm_joint_pose[index], arm_joint_positions[0], atol=0.1).all():
+            self.node.get_logger().warn(f'Arm of husky {self.name} is not in correct start pose!')
+            self.node.get_logger().warn(f'{self.arm_joint_pose[index]} vs {arm_joint_positions[0]}')
+            return
+        
+        dt = time / (len(arm_joint_positions) - 1)
+        
+        trajectory = JointTrajectory()
+        trajectory.joint_names = ARM_JOINT_NAMES
+        for i, waypoint in enumerate(arm_joint_positions):
+            point = JointTrajectoryPoint()
+            point.positions = list(waypoint)
+            if arm_joint_velocities is not None:
+                point.velocities = list(arm_joint_velocities[i])
+            time_from_start = dt*i
+            sec = np.floor(time_from_start)
+            nano = time_from_start - sec
+            point.time_from_start = Duration(sec=int(sec), nanosec=int(nano*1e9))
+            trajectory.points.append(point)
+        
+        return trajectory
+    
+    def send_arm_cmd(self, arm_joint_positions, arm_joint_velocities=None, traj_time=10.0, index=0):
         """
         Send a joint trajectory to the arm
         
@@ -222,7 +302,12 @@ class HuskyRobotInterface:
             self.node.get_logger().warn(f'{self.arm_joint_pose[index]} vs {arm_joint_positions[0]}')
             return
         
-        dt = time / (len(arm_joint_positions) - 1)
+        dt = traj_time / (len(arm_joint_positions) - 1)
+
+        print('monitor trajectory time:', traj_time)
+        print('dt:', dt)
+
+        # return
         
         goal = FollowJointTrajectory.Goal()
         goal.trajectory = JointTrajectory()
@@ -246,9 +331,17 @@ class HuskyRobotInterface:
         goal.goal_tolerance = [
             JointTolerance(position=0.01, velocity=0.01, name=joint_name) for joint_name in ARM_JOINT_NAMES
         ]
-        self.is_arm_executing[index] = True
-        send_goal_future = self.act_arms[index].send_goal_async(goal)
-        send_goal_future.add_done_callback(lambda fut: self.goal_response_callback(index, fut))
+        if USE_TRAJECTORY_TOPIC_INTERFACE:
+            # assume execution starts immediately
+            print(f"{index} SENT MOVING")
+            self.last_arm_movement[index] = time.time()
+            self.is_arm_executing[index] = True
+            
+            self.pub_cmd_arm[index].publish(goal.trajectory)
+        else:
+            self.is_arm_executing[index] = True
+            send_goal_future = self.act_arms[index].send_goal_async(goal)
+            send_goal_future.add_done_callback(lambda fut: self.goal_response_callback(index, fut))
     
     def goal_response_callback(self, index, future):
         goal_handle = future.result()

@@ -1,0 +1,8 @@
+2025-06-11 13:34:53,031 - INFO - Working on file: dual_arm_acc_20250509_1443_.json
+2025-06-11 13:34:53,209 - INFO - Mean positional offset 0.372105
+2025-06-11 13:34:53,209 - INFO - Std positional offset 0.000349
+2025-06-11 13:34:53,209 - INFO - Positional offset range 0.000645
+2025-06-11 13:34:53,209 - INFO - Mean rotational offset 0.057059 0.694044 -3.413735
+2025-06-11 13:34:53,209 - INFO - Std rotational offset 0.296374 0.173240 0.345635
+2025-06-11 13:34:53,209 - INFO - Rotational offset range 0.739705
+2025-06-11 13:34:53,320 - INFO - Exported plot to /home/jakobgenhart/husky_assistant/workspace/src/husky-asembly-teleop/data/dual_arm_acc_data/20250509/dual_arm_acc_20250509.png

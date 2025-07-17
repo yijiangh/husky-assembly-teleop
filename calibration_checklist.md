@@ -5,22 +5,34 @@ Make sure that the `base_calibration_file` input for Husky class creation in `hu
 ## Joint 0 (z axis of the arm base link)
 1. Recalibrate the camera, make sure you get "exceptional"
 2. Drive the robot to the center of the workspace, jack up the robot base to avoid any movement during calibration
-3. Use the goal pose gui to select a start conf, plan the motion. This conf should be at one end of the joint 0. Make sure that the robot is not too stretched, the weight of the links might deform the joints or tilt the base.
-4. Execute the motion.
-5. Use the goal pose gui to select a goal conf, ONLY move joint 0. 
-6. You can plan the motion to visualize if there is any collision, but DO NOT execute it.
-7. Click on `Calib joint 0` button. This will auto go through all discretized joint 0 values. You have to click enter to continue in the commandline.
-8. Repeat 3-7 to do 10 circles for joint 0. Each circle should have different height by different joint conf. 
+<!-- 3. Use the goal pose gui to select a start conf, plan the motion by clicking ``. This conf should be at one end of the joint 0. Make sure that the robot is not too stretched, the weight of the links might deform the joints or tilt the base. -->
+<!-- 4. Execute the motion by clicking `Exec S.Arm Traj`. -->
+
+Sample calibration conf:
+- set the joint moving range as a slider
+- set the fixed joint index as a slider, -1 means no constraint
+- sample joint limit should be adjusted for the target joint, -+ moving range + buffer for the joint limit
+- check start conf is in collision or not
+- check if the transit path is too long, if so, resample
+- check the interpolated calib path is safe, if not resample
+- collage both trajectory together for viz, save transit to free_arm_trajectory, save calib to linear_arm_trajectory
+- click `execute calib` will first execute the transit path in one go, and then execute the calib path point by point, waiting for the arm to settle before moving to the next point. It will save the calibration data for each point, and in the end export the data to a json file.
+
+<!-- 6. You can plan the motion to visualize if there is any collision, but DO NOT execute it.
+7. Click on `Calib joint 0` button. This will plan a path interpolating between the robot's current conf and the selected goal conf. You should visualize it to ensure satety by sliding the time slider in the gui.
+8. Click on the `Execute calib traj` button to execute the planned path. This will execute each trajectory point one by one, and wait for the arm to settle before moving to the next point. It will save the calibration data for each point, and in the end export the data to a json file. -->
+9. Repeat 3-8 to do at least 4 circles for joint 0. Each circle should have different height by different joint conf. 
 
 ## Joint 1 (x axis and origin of the arm base link)
 1. Click on `Set joint 0 to zero` button to set a goal conf that zeros joint 0 while keeping others the same.
 2. Plan a path, visualiza, and execute it.
 3. Use the goal pose gui to select a start conf, plan the motion. This conf should be at one end of the joint 1. Make sure that the robot is not too stretched, the weight of the links might deform the joints or tilt the base.
 4. Execute the motion.
-5. Use the goal pose gui to select a goal conf, ONLY move joint 1. 
+5. Use the goal pose gui to select a goal conf, **ONLY** move joint 1. 
 6. You can plan the motion to visualize if there is any collision, but DO NOT execute it.
-7. Click on `Calib joint 1` button. This will auto go through all discretized joint 0 values. You have to click enter to continue in the commandline.
-8. Repeat 3-7 to do 10 circles for joint 1. Each circle should have different height by different joint conf. 
+7. Click on `Calib joint 1` button. This will plan a path interpolating between the robot's current conf and the selected goal conf. You should visualize it to ensure satety by sliding the time slider in the gui.
+8. Click on the `Execute calib traj` button to execute the planned path. This will execute each trajectory point one by one, and wait for the arm to settle before moving to the next point. It will save the calibration data for each point, and in the end export the data to a json file.
+9. Repeat 3-8 to do at least 4 circles for joint 0. Each circle should have different height by different joint conf. 
 
 # Data analysis
 

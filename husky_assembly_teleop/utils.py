@@ -9,10 +9,6 @@ from pybullet_planning import multiply, Pose, Euler, Point
 from tracikpy import TracIKSolver
 # import ikfast_ur5e
 
-from compas_robots import RobotModel
-from compas_fab.robots import RobotSemantics
-from compas_fab.robots import Robot as RobotClass
-
 HERE = os.path.dirname(__file__)
 
 yup_tform = np.eye(4)
@@ -36,6 +32,20 @@ UR5E_JOINT_NAMES = [
                       "ur_arm_wrist_1_joint", 
                       "ur_arm_wrist_2_joint", 
                       "ur_arm_wrist_3_joint" ]
+
+HUSKY_DUAL_UR5e_JOINT_NAMES = [["left_ur_arm_shoulder_pan_joint", 
+                      "left_ur_arm_shoulder_lift_joint",
+                      "left_ur_arm_elbow_joint", 
+                      "left_ur_arm_wrist_1_joint", 
+                      "left_ur_arm_wrist_2_joint", 
+                      "left_ur_arm_wrist_3_joint" ],
+                                ["right_ur_arm_shoulder_pan_joint", 
+                      "right_ur_arm_shoulder_lift_joint",
+                      "right_ur_arm_elbow_joint", 
+                      "right_ur_arm_wrist_1_joint", 
+                      "right_ur_arm_wrist_2_joint", 
+                      "right_ur_arm_wrist_3_joint" ]]
+
 WHEEL_JOINT_NAMES = [
                       "front_right_wheel", 
                       "rear_right_wheel",
@@ -97,15 +107,26 @@ def get_grasp_pose(direction, angle, offset=1e-3):
 
 def get_arm_ik_for_grasp_bar(robot, ik_solver, world_from_tool0, attachments, obstacles, hint_conf=None):
     IK_ATTEMPTS = 10
+    
+    # use correct joint names for dual arm husky
+    joint_names = UR5E_JOINT_NAMES
+    arm_prefix = ""
+    if ik_solver.base_link.startswith("left_"):
+        arm_prefix = "left_"
+        joint_names = HUSKY_DUAL_UR5e_JOINT_NAMES[0]
+    if ik_solver.base_link.startswith("right_"):
+        arm_prefix = "right_"
+        joint_names = HUSKY_DUAL_UR5e_JOINT_NAMES[1]
+    
     custom_limits = get_custom_limits(robot, {})
     # disabled_collisions = disabled_collisions or {}
     extra_disabled_collisions = [
-        ((robot, pp.link_from_name(robot, 'ur_arm_wrist_3_link')), 
+        ((robot, pp.link_from_name(robot, arm_prefix + 'ur_arm_wrist_3_link')), 
          (attachments[0].child, pp.BASE_LINK)), 
          # pp.link_from_name(ee_body, 'robotiq_85_base_link'))),
         ]
 
-    movable_joints = pp.joints_from_names(robot, UR5E_JOINT_NAMES)
+    movable_joints = pp.joints_from_names(robot, joint_names)
     sample_fn = pp.get_sample_fn(robot, movable_joints, custom_limits=custom_limits)
     collision_fn = pp.get_collision_fn(robot, movable_joints, obstacles=obstacles,
                                                 attachments=attachments, 
@@ -116,7 +137,7 @@ def get_arm_ik_for_grasp_bar(robot, ik_solver, world_from_tool0, attachments, ob
                                                 max_distance=0)
 
     # * the robot base pose should be udpated by the main loop in monitor according to mocap observation before the planning starts
-    world_from_arm_base = pp.get_link_pose(robot, pp.link_from_name(robot, "ur_arm_base_link"))
+    world_from_arm_base = pp.get_link_pose(robot, pp.link_from_name(robot, ik_solver.base_link))
     if hint_conf is None:
         start_conf = pp.get_joint_positions(robot, movable_joints)
     else:
@@ -142,16 +163,26 @@ def get_arm_ik_for_grasp_bar(robot, ik_solver, world_from_tool0, attachments, ob
                 return None
     return conf
 
-def plan_transit_motion(robot, end_conf, attachments, obstacles, debug=False, disabled_collisions=None):
+def plan_transit_motion(robot, end_conf, attachments, obstacles, debug=False, disabled_collisions=None, dual_arm_index=None):
+    # use correct joint names for dual arm husky
+    joint_names = UR5E_JOINT_NAMES
+    arm_prefix = ""
+    if dual_arm_index==0:
+        arm_prefix = "left_"
+        joint_names = HUSKY_DUAL_UR5e_JOINT_NAMES[0]
+    if dual_arm_index==1:
+        arm_prefix = "right_"
+        joint_names = HUSKY_DUAL_UR5e_JOINT_NAMES[1]
+        
     custom_limits = get_custom_limits(robot, {})
     resolutions = np.ones(6) * 0.05
     disabled_collisions = disabled_collisions or {}
     extra_disabled_collisions = [
-        ((robot, pp.link_from_name(robot, 'ur_arm_wrist_3_link')), 
+        ((robot, pp.link_from_name(robot, arm_prefix + 'ur_arm_wrist_3_link')), 
          (attachments[0].child, pp.BASE_LINK)), 
         ]
 
-    movable_joints = pp.joints_from_names(robot, UR5E_JOINT_NAMES)
+    movable_joints = pp.joints_from_names(robot, joint_names)
     sample_fn = pp.get_sample_fn(robot, movable_joints, custom_limits=custom_limits)
     distance_fn = pp.get_distance_fn(robot, movable_joints) #, weights=weights)
     extend_fn = pp.get_extend_fn(robot, movable_joints, resolutions=resolutions)
