@@ -5,7 +5,7 @@
   <link name="grasp_screw_tool_link">
     <visual>
       <geometry>
-        <mesh filename="package://grasp_screw_tool_description/meshes/collision/grasp_screw_tool_collision.stl"/>
+        <mesh filename="package://grasp_screw_tool_description/meshes/visual/grasp_screw_tool_visual.stl"/>
       </geometry>
     </visual>
     <collision>

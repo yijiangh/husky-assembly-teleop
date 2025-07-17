@@ -38,6 +38,7 @@ HUSKY_DUAL_UR5e_JOINT_NAMES = [["left_ur_arm_shoulder_pan_joint",
 def load_robot(ik_from_arm_base=True, load_calib_tip=False, dual_arm=False):
     # robot_srdf = os.path.join(DATA_DIRECTORY, 'husky_urdf/mt_husky_moveit_config/config/husky.srdf')
     # robot_urdf = os.path.join(DATA_DIRECTORY,'husky_urdf/mt_husky_moveit_config/urdf/husky_ur5_e.urdf')
+    USE_VICTOR_GRIPPER = True
     robot_urdf = None
     print('loading robot urdf from:', DATA_DIRECTORY)
     if dual_arm:
@@ -52,10 +53,15 @@ def load_robot(ik_from_arm_base=True, load_calib_tip=False, dual_arm=False):
         ee = pp.create_box(0.12, 0.12, 0.12)
         pp.set_color(ee, pp.apply_alpha(pp.GREY, 0.3))
     else:
-        gripper_obj = os.path.join(DATA_DIRECTORY,'husky_urdf/robotiq_85/meshes/static/robotiq_85_close_20mm.obj')
-        assert os.path.exists(gripper_obj)
-        gripper_scale = 1
-        ee = pp.create_obj(gripper_obj, scale=gripper_scale) 
+        # robotiq gripper
+        if USE_VICTOR_GRIPPER:
+            gripper_urdf_path = os.path.join(DATA_DIRECTORY, 'grasp_screw_tool_description/urdf/grasp_screw_tool_unactuated.urdf')
+            ee = pp.load_pybullet(gripper_urdf_path, fixed_base=False, cylinder=False)
+        else:
+            gripper_obj = os.path.join(DATA_DIRECTORY,'husky_urdf/robotiq_85/meshes/static/robotiq_85_close_20mm.obj')
+            assert os.path.exists(gripper_obj)
+            gripper_scale = 1
+            ee = pp.create_obj(gripper_obj, scale=gripper_scale) 
 
     assert os.path.exists(robot_urdf)
 
@@ -66,16 +72,29 @@ def load_robot(ik_from_arm_base=True, load_calib_tip=False, dual_arm=False):
     left_tool0_pose = pp.get_link_pose(robot, pp.link_from_name(robot, ('left_' if dual_arm else '') + 'ur_arm_tool0'))
     left_ee = ee
     # pp.create_obj(gripper_obj, scale=gripper_scale) 
-    additional_tool_tf = pp.Pose(point=pp.Point(z=0.12/2 + 0.005)) if load_calib_tip else pp.unit_pose()
-    pp.set_pose(left_ee, pp.multiply(left_tool0_pose, pp.Pose(euler=pp.Euler(yaw=-np.pi/2)), additional_tool_tf))
+
+    if not USE_VICTOR_GRIPPER:
+        additional_tool_tf = pp.Pose(point=pp.Point(z=0.12/2 + 0.005)) if load_calib_tip else pp.unit_pose()
+        pp.set_pose(left_ee, pp.multiply(left_tool0_pose, pp.Pose(euler=pp.Euler(yaw=-np.pi/2)), additional_tool_tf))
+    else:
+        # additional_tool_tf = pp.Pose(point=pp.Point(z=0.12/2 + 0.005)) if load_calib_tip else pp.unit_pose()
+        pp.set_pose(left_ee, left_tool0_pose)
+
     left_ee_attachment = pp.create_attachment(robot, pp.link_from_name(robot, ('left_' if dual_arm else '') + 'ur_arm_tool0'), left_ee)
     ee_list.append((left_ee, left_ee_attachment))
     
     if dual_arm:
         right_tool0_pose = pp.get_link_pose(robot, pp.link_from_name(robot, 'right_ur_arm_tool0'))
-        right_ee = pp.clone_body(left_ee)
-        # right_ee = pp.create_obj(gripper_obj, scale=gripper_scale) 
-        pp.set_pose(right_ee, pp.multiply(right_tool0_pose, pp.Pose(euler=pp.Euler(yaw=-np.pi/2)), additional_tool_tf))
+        if not USE_VICTOR_GRIPPER:
+            right_ee = pp.clone_body(left_ee)
+        else:
+            right_ee = pp.load_pybullet(gripper_urdf_path, fixed_base=False, cylinder=False)
+
+        if not USE_VICTOR_GRIPPER:
+            pp.set_pose(right_ee, pp.multiply(right_tool0_pose, pp.Pose(euler=pp.Euler(yaw=-np.pi/2)), additional_tool_tf))
+        else:
+            pp.set_pose(right_ee, right_tool0_pose)
+
         right_ee_attachment = pp.create_attachment(robot, pp.link_from_name(robot, 'right_ur_arm_tool0'), right_ee)
         ee_list.append((right_ee, right_ee_attachment))
 
