@@ -551,13 +551,15 @@ class HuskyMonitor(Node):
         self.buttons.append(Button('Exec S.Arm Traj', self.execute_arm_trajectory))
 
         self.buttons.append(Button(
-               'Load RobotCellState (Vshape))',
+               'Load RobotCellState',
                lambda: world.load_robotcellstate_and_update_goal(
                    self,
                    os.path.join(
                        DATA_DIRECTORY,
-                       'robotx_box',
-                       'v-shape_RobotCellState.json'
+                        'husky_assembly_design_study',
+                        '250714_robot_centric_IK_grasp_test',
+                        'RobotCellStates',
+                        'robotx_box_A0-IK_test_RobotCellState.json'
                    )
                )
            ))
@@ -796,7 +798,6 @@ class HuskyMonitor(Node):
         self.selected_robot_slider.update()
         self.arm_slider.update()
         self.trajectory_time_slider.update()
-        self.goal_axis_slider.update()
 
         if self.CALIBRATION:
             self.calib_joint_range_slider.update()
