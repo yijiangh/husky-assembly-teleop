@@ -1039,7 +1039,7 @@ def load_robotcellstate_and_update_goal(monitor, filepath):
     except KeyError as e:
         monitor.get_logger().warn(f"Joint name {e} not found in loaded RobotCellState.")
 
-def sample_dual_arm_configuration(monitor, tool0_to_tool0_transform, max_attempts=50, ik_attempts=10, max_path_length=2.0):
+def sample_dual_arm_configuration(monitor, tool0_to_tool0_transform, max_attempts=50, ik_attempts=10):
     """
     Sample a dual-arm configuration with the following steps:
     1. Sample a left arm configuration, reject if collision with static obstacles
@@ -1090,7 +1090,13 @@ def sample_dual_arm_configuration(monitor, tool0_to_tool0_transform, max_attempt
     # Create collision functions for both arms
     left_collision_fn = pp.get_collision_fn(robot, left_joints, obstacles=monitor.static_obstacles)
     right_collision_fn = pp.get_collision_fn(robot, right_joints, obstacles=monitor.static_obstacles)
-    diagnose = True
+    diagnose = 0
+
+    # save the current joint configuration here to use as starting conf for transit planning
+    # start_left_conf = list(pp.get_joint_positions(robot, left_joints))
+    # start_right_conf = list(pp.get_joint_positions(robot, right_joints))
+    current_left_conf = np.copy(husky.interface.arm_joint_pose[0])
+    current_right_conf = np.copy(husky.interface.arm_joint_pose[1])
     
     for attempt in range(max_attempts):
         if attempt % 10 == 0:
@@ -1109,13 +1115,13 @@ def sample_dual_arm_configuration(monitor, tool0_to_tool0_transform, max_attempt
         
         # Get left arm tool0 pose
         left_tool0_pose = pp.get_link_pose(robot, pp.link_from_name(robot, 'left_ur_arm_tool0'))
-        pp.draw_pose(left_tool0_pose, length=0.2)
-        pp.wait_if_gui('left tool0 pose')
+        # pp.draw_pose(left_tool0_pose, length=0.2)
+        # pp.wait_if_gui('left tool0 pose')
         
         # Step 3: Apply transform to get right arm tool0 pose
         right_tool0_pose = pp.multiply(left_tool0_pose, tool0_to_tool0_transform)
-        pp.draw_pose(right_tool0_pose, length=0.2)
-        pp.wait_if_gui('right tool0 pose')
+        # pp.draw_pose(right_tool0_pose, length=0.2)
+        # pp.wait_if_gui('right tool0 pose')
         
         # Step 4: Compute IK for right arm
         right_conf = None
@@ -1149,28 +1155,30 @@ def sample_dual_arm_configuration(monitor, tool0_to_tool0_transform, max_attempt
             continue
             
         # Step 5: Plan transition paths for both arms
-        current_left_conf = husky.interface.arm_joint_pose[0]
-        current_right_conf = husky.interface.arm_joint_pose[1]
+        pp.set_joint_positions(robot, left_joints, current_left_conf)
         
         # Plan left arm transition
         left_trajectory = planning.plan_arm_motion(
             husky, left_conf, monitor.static_obstacles, monitor.trajectory_time, arm_index=0
         )
+        if left_trajectory[0] is None:
+            continue
         
         # Plan right arm transition
+        pp.set_joint_positions(robot, left_joints, left_trajectory[0][-1])
+        pp.set_joint_positions(robot, right_joints, current_right_conf)
         right_trajectory = planning.plan_arm_motion(
             husky, right_conf, monitor.static_obstacles, monitor.trajectory_time, arm_index=1
         )
         
-        # Check if trajectories are valid
-        if (left_trajectory[0] is None or right_trajectory[0] is None):
+        if right_trajectory[0] is None:
             continue
             
         # Check path length
         # Use the number of trajectory points as the path length
         left_path_length = len(left_trajectory[0])
         right_path_length = len(right_trajectory[0])
-        if left_path_length > monitor.MAX_TRAJECTORY_POINTS or right_path_length > monitor.MAX_TRAJECTORY_POINTS:
+        if left_path_length > MAX_TRAJECTORY_POINTS or right_path_length > MAX_TRAJECTORY_POINTS:
             continue
             
         # Success! Return the trajectories

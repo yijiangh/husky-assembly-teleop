@@ -6,6 +6,8 @@ The main ROS2 node for the husky monitor. This node is responsible for:
 - Updating the simulation state
 - Handling user input
 """
+import sys
+print(f"Running with Python: {sys.executable}")
 
 from collections import defaultdict
 import os
@@ -496,25 +498,26 @@ class HuskyMonitor(Node):
             'RobotCellStates',
             'robotx_box_A0-IK_test_GraspTargets.json'
         )
-        
-        try:
-            tool0_to_tool0_transform = world.compute_tool0_to_tool0_transform_from_json(json_filepath)
-        except Exception as e:
-            print(f"Failed to load tool0_to_tool0 transform from JSON: {e}")
-            # Fallback to default transform
-            tool0_to_tool0_transform = pp.Pose(
-                point=pp.Point(0.5, 0, 0),  # 0.5m offset in x direction
-                euler=pp.Euler(0, 0, 0)      # No rotation
-            )
+        self.get_logger().info(f"Loading tool0_to_tool0 transform from JSON: {json_filepath}")
+
+        # try:
+        tool0_to_tool0_transform = world.compute_tool0_to_tool0_transform_from_json(json_filepath)
+        # except Exception as e:
+        #     print(f"Failed to load tool0_to_tool0 transform from JSON: {e}")
+        #     # Fallback to default transform
+        #     tool0_to_tool0_transform = pp.Pose(
+        #         point=pp.Point(0.5, 0, 0),  # 0.5m offset in x direction
+        #         euler=pp.Euler(0, 0, 0)      # No rotation
+        #     )
         
         # Call the world function to sample configuration
-        result = world.sample_dual_arm_configuration(
-            self, 
-            tool0_to_tool0_transform,
-            max_attempts=50,
-            ik_attempts=10,
-            max_path_length=2.0
-        )
+        with pp.WorldSaver():
+            result = world.sample_dual_arm_configuration(
+                self, 
+                tool0_to_tool0_transform,
+                max_attempts=50,
+                ik_attempts=10
+            )
         
         if result is not None:
             left_trajectory, right_trajectory = result
@@ -595,6 +598,9 @@ class HuskyMonitor(Node):
 
         self.buttons.append(Button('Plan arm to conf target', lambda : world.plan_arm_to_goal(self)))
         self.buttons.append(Button('Exec S.Arm Traj', self.execute_arm_trajectory))
+
+        # Add dual arm configuration sampling button
+        self.buttons.append(Button('Sample Dual Arm Config', self.sample_dual_arm_configuration))
 
         self.buttons.append(Button(
                'Load RobotCellState',
@@ -682,9 +688,6 @@ class HuskyMonitor(Node):
             self.buttons.append(Button('Record EE mocap pose', lambda: world.record_dual_arm_E_mocap(self)))
             self.buttons.append(Button('Save EE mocap data', lambda: world.save_dual_arm_E_mocap(self)))
             
-        # Add dual arm configuration sampling button
-        self.buttons.append(Button('Sample Dual Arm Config', self.sample_dual_arm_configuration))
-
         if not self.BAR_GOAL_MODE:
             self.dump_sep_sliders.append(Slider("----------Joint Target (Left Arm)", lambda : None))
             left_joint_names = self.huskies[self.selected_robot_id].object.get_arm_joint_names(index=0)
