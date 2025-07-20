@@ -11,7 +11,6 @@ from collections import defaultdict
 import os
 import time, copy
 import numpy as np
-from scipy.spatial.transform import Rotation as R
 
 from typing import List, Tuple
 
@@ -484,6 +483,53 @@ class HuskyMonitor(Node):
 
         self.set_to_show_traj_state()
     
+    def sample_dual_arm_configuration(self):
+        """
+        Sample a dual-arm configuration and set the trajectories.
+        This method calls the world.sample_dual_arm_configuration function.
+        """
+        # Compute tool0_to_tool0 transform from the JSON file
+        json_filepath = os.path.join(
+            DATA_DIRECTORY,
+            'husky_assembly_design_study',
+            '250714_robot_centric_IK_grasp_test',
+            'RobotCellStates',
+            'robotx_box_A0-IK_test_GraspTargets.json'
+        )
+        
+        try:
+            tool0_to_tool0_transform = world.compute_tool0_to_tool0_transform_from_json(json_filepath)
+        except Exception as e:
+            print(f"Failed to load tool0_to_tool0 transform from JSON: {e}")
+            # Fallback to default transform
+            tool0_to_tool0_transform = pp.Pose(
+                point=pp.Point(0.5, 0, 0),  # 0.5m offset in x direction
+                euler=pp.Euler(0, 0, 0)      # No rotation
+            )
+        
+        # Call the world function to sample configuration
+        result = world.sample_dual_arm_configuration(
+            self, 
+            tool0_to_tool0_transform,
+            max_attempts=50,
+            ik_attempts=10,
+            max_path_length=2.0
+        )
+        
+        if result is not None:
+            left_trajectory, right_trajectory = result
+            
+            # Set the trajectories for both arms
+            self.set_arm_trajectory(left_trajectory, index=0)
+            self.set_arm_trajectory(right_trajectory, index=1)
+            
+            # Show trajectory state
+            self.set_to_show_traj_state()
+            
+            print("Successfully sampled dual-arm configuration!")
+        else:
+            print("Failed to sample valid dual-arm configuration.")
+    
     # --- --- --- --- --- SETUP PYBULLET --- --- --- --- ---
     def start_pybullet(self):
         # start pybullet simulator
@@ -633,6 +679,9 @@ class HuskyMonitor(Node):
             self.buttons.append(Button('Exec Arms and Record', lambda: self.tasks.append(world.execute_and_log_mocap(self))))
             self.buttons.append(Button('Record EE mocap pose', lambda: world.record_dual_arm_E_mocap(self)))
             self.buttons.append(Button('Save EE mocap data', lambda: world.save_dual_arm_E_mocap(self)))
+            
+        # Add dual arm configuration sampling button
+        self.buttons.append(Button('Sample Dual Arm Config', self.sample_dual_arm_configuration))
 
         if not self.BAR_GOAL_MODE:
             self.dump_sep_sliders.append(Slider("----------Joint Target (Left Arm)", lambda : None))

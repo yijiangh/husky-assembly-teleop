@@ -1038,3 +1038,187 @@ def load_robotcellstate_and_update_goal(monitor, filepath):
         monitor.reset_ui()  # Optionally reset UI to reflect new goals
     except KeyError as e:
         monitor.get_logger().warn(f"Joint name {e} not found in loaded RobotCellState.")
+
+def sample_dual_arm_configuration(monitor, tool0_to_tool0_transform, max_attempts=50, ik_attempts=10, max_path_length=2.0):
+    """
+    Sample a dual-arm configuration with the following steps:
+    1. Sample a left arm configuration, reject if collision with static obstacles
+    2. Get left arm tool0 pose in world coordinates
+    3. Apply tool0_to_tool0 transform to get right arm tool0 pose
+    4. Compute IK for right arm, reject if collision with left arm or static obstacles
+    5. Plan transition paths for both arms, reject if path too long or no plan found
+    6. If any step fails, restart from sampling left arm configuration
+    
+    Parameters:
+    -----------
+    monitor : HuskyMonitor
+        The monitor instance containing robot and world state
+    tool0_to_tool0_transform : pp.Pose
+        Transformation from left arm tool0 to right arm tool0
+    max_attempts : int
+        Maximum number of attempts to find a valid configuration
+    ik_attempts : int
+        Maximum number of IK attempts for right arm with random initial guesses
+    max_path_length : float
+        Maximum allowed path length for transition trajectories
+        
+    Returns:
+    --------
+    tuple or None
+        (left_arm_trajectory, right_arm_trajectory) if successful, None if failed
+    """
+    MAX_TRAJECTORY_POINTS = 150
+    husky = monitor.huskies[monitor.selected_robot_id]
+    robot = husky.object.robot
+    
+    # Get joint names for both arms
+    left_joint_names = HUSKY_DUAL_UR5e_JOINT_NAMES[0]
+    right_joint_names = HUSKY_DUAL_UR5e_JOINT_NAMES[1]
+    
+    # Get joint indices
+    left_joints = pp.joints_from_names(robot, left_joint_names)
+    right_joints = pp.joints_from_names(robot, right_joint_names)
+    
+    # Get joint limits
+    left_limits = [pp.get_joint_limits(robot, j) for j in left_joints]
+    right_limits = [pp.get_joint_limits(robot, j) for j in right_joints]
+    
+    # Create sample functions
+    left_sample_fn = pp.get_sample_fn(robot, left_joints)
+    right_sample_fn = pp.get_sample_fn(robot, right_joints)
+    
+    # Create collision functions for both arms
+    left_collision_fn = pp.get_collision_fn(robot, left_joints, obstacles=monitor.static_obstacles)
+    right_collision_fn = pp.get_collision_fn(robot, right_joints, obstacles=monitor.static_obstacles)
+    diagnose = True
+    
+    for attempt in range(max_attempts):
+        if attempt % 10 == 0:
+            print(f"Attempt {attempt}/{max_attempts}")
+            
+        # Step 1: Sample left arm configuration
+        left_conf = left_sample_fn()
+        
+        # Check collision for left arm
+        if left_collision_fn(left_conf, diagnosis=diagnose):
+            continue
+            
+        # Step 2: Get left arm tool0 pose in world coordinates
+        # Set left arm to sampled configuration
+        pp.set_joint_positions(robot, left_joints, left_conf)
+        
+        # Get left arm tool0 pose
+        left_tool0_pose = pp.get_link_pose(robot, pp.link_from_name(robot, 'left_ur_arm_tool0'))
+        pp.draw_pose(left_tool0_pose, length=0.2)
+        pp.wait_if_gui('left tool0 pose')
+        
+        # Step 3: Apply transform to get right arm tool0 pose
+        right_tool0_pose = pp.multiply(left_tool0_pose, tool0_to_tool0_transform)
+        pp.draw_pose(right_tool0_pose, length=0.2)
+        pp.wait_if_gui('right tool0 pose')
+        
+        # Step 4: Compute IK for right arm
+        right_conf = None
+        for ik_attempt in range(ik_attempts):
+            # Use random initial guess for IK
+            if ik_attempt == 0:
+                qinit = pp.get_joint_positions(robot, right_joints)
+            else:
+                qinit = right_sample_fn()
+            
+            # Get right arm base pose
+            right_arm_base_pose = pp.get_link_pose(robot, pp.link_from_name(robot, 'right_ur_arm_base_link'))
+            
+            # Compute IK
+            right_arm_base_from_tool0 = pp.multiply(pp.invert(right_arm_base_pose), right_tool0_pose)
+            
+            # Use the IK solver from planning module
+            from husky_assembly_teleop.husky_planning import IK_SOLVER_DUAL
+            ik_solver = IK_SOLVER_DUAL[1]  # Right arm solver
+            
+            conf = ik_solver.ik(pp.tform_from_pose(right_arm_base_from_tool0), qinit=qinit)
+            
+            if conf is not None:
+                # Check collision for right arm with static obstacles
+                if not right_collision_fn(conf, diagnosis=diagnose):
+                    right_conf = conf
+                    print(f"Found valid right arm configuration on IK attempt {ik_attempt + 1}")
+                    break
+        
+        if right_conf is None:
+            continue
+            
+        # Step 5: Plan transition paths for both arms
+        current_left_conf = husky.interface.arm_joint_pose[0]
+        current_right_conf = husky.interface.arm_joint_pose[1]
+        
+        # Plan left arm transition
+        left_trajectory = planning.plan_arm_motion(
+            husky, left_conf, monitor.static_obstacles, monitor.trajectory_time, arm_index=0
+        )
+        
+        # Plan right arm transition
+        right_trajectory = planning.plan_arm_motion(
+            husky, right_conf, monitor.static_obstacles, monitor.trajectory_time, arm_index=1
+        )
+        
+        # Check if trajectories are valid
+        if (left_trajectory[0] is None or right_trajectory[0] is None):
+            continue
+            
+        # Check path length
+        # Use the number of trajectory points as the path length
+        left_path_length = len(left_trajectory[0])
+        right_path_length = len(right_trajectory[0])
+        if left_path_length > monitor.MAX_TRAJECTORY_POINTS or right_path_length > monitor.MAX_TRAJECTORY_POINTS:
+            continue
+            
+        # Success! Return the trajectories
+        return left_trajectory, right_trajectory
+    
+    # If we get here, no valid configuration was found
+    print(f"Failed to find valid dual-arm configuration after {max_attempts} attempts")
+    return None
+
+def compute_tool0_to_tool0_transform_from_json(json_filepath):
+    """
+    Parse the JSON file containing GraspTarget objects and compute the tool0_to_tool0 transformation.
+    
+    Parameters:
+    -----------
+    json_filepath : str
+        Path to the JSON file containing GraspTarget objects
+        
+    Returns:
+    --------
+    pp.Pose
+        Transformation from first tool0 to second tool0
+    """
+    import json
+    import numpy as np
+    
+    # Load the JSON file
+    with open(json_filepath, 'r') as f:
+        grasp_targets = json.load(f)
+    
+    if len(grasp_targets) < 2:
+        raise ValueError("JSON file must contain at least 2 GraspTarget objects")
+    
+    # Extract the world_from_tool0 transformations
+    world_from_tool0_1_matrix = np.array(grasp_targets[0]["data"]["world_from_tool0"]["data"]["matrix"])
+    world_from_tool0_2_matrix = np.array(grasp_targets[1]["data"]["world_from_tool0"]["data"]["matrix"])
+    
+    # Convert to pybullet_planning poses
+    world_from_tool0_1 = pp.pose_from_tform(world_from_tool0_1_matrix)
+    world_from_tool0_2 = pp.pose_from_tform(world_from_tool0_2_matrix)
+    
+    # Compute tool0_1_from_tool0_2 = world_from_tool0_1 * tool0_2_from_world
+    # tool0_2_from_world = inverse(world_from_tool0_2)
+    tool0_2_from_world = pp.invert(world_from_tool0_2)
+    tool0_1_from_tool0_2 = pp.multiply(world_from_tool0_1, tool0_2_from_world)
+    
+    print(f"Tool0_1 pose: {world_from_tool0_1}")
+    print(f"Tool0_2 pose: {world_from_tool0_2}")
+    print(f"Tool0_1_from_Tool0_2 transformation: {tool0_1_from_tool0_2}")
+    
+    return tool0_1_from_tool0_2
