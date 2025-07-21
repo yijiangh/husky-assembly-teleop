@@ -1282,11 +1282,12 @@ def compute_tool0_to_tool0_transform_from_json(json_filepath):
     
     # Compute tool0_1_from_tool0_2 = world_from_tool0_1 * tool0_2_from_world
     # tool0_2_from_world = inverse(world_from_tool0_2)
-    tool0_2_from_world = pp.invert(world_from_tool0_2)
-    tool0_1_from_tool0_2 = pp.multiply(world_from_tool0_1, tool0_2_from_world)
+    tool0_1_from_world = pp.invert(world_from_tool0_1)
+    # tool0_2_from_world = pp.invert(world_from_tool0_2)
+    tool0_1_from_tool0_2 = pp.multiply(tool0_1_from_world, world_from_tool0_2)
     
-    print(f"Tool0_1 pose: {world_from_tool0_1}")
-    print(f"Tool0_2 pose: {world_from_tool0_2}")
-    print(f"Tool0_1_from_Tool0_2 transformation: {tool0_1_from_tool0_2}")
+    # print(f"Tool0_1 pose: {world_from_tool0_1}")
+    # print(f"Tool0_2 pose: {world_from_tool0_2}")
+    # print(f"Tool0_1_from_Tool0_2 transformation: {tool0_1_from_tool0_2}")
     
     return tool0_1_from_tool0_2
