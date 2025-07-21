@@ -134,7 +134,7 @@ class HuskyMonitor(Node):
         world.init(self)
 
         # ! an inflated bar for goal
-        goal_bar_body = pp.create_cylinder((0.1)/2, 1.0, mass=pp.STATIC_MASS)
+        goal_bar_body = pp.create_cylinder((0.025)/2, 1.0, mass=pp.STATIC_MASS)
         far_away_pose = pp.Pose(pp.Point(0,0,100))
         self.goal_element = AssemblyObject(self, 'b_goal', goal_bar_body, far_away_pose, 
                                            pp.unit_pose())
@@ -501,7 +501,11 @@ class HuskyMonitor(Node):
         self.get_logger().info(f"Loading tool0_to_tool0 transform from JSON: {json_filepath}")
 
         # try:
-        tool0_to_tool0_transform = world.compute_tool0_to_tool0_transform_from_json(json_filepath)
+        tool0_to_tool0_transform, tool0_2_from_bar = world.compute_tool0_to_tool0_transform_from_json(json_filepath)
+
+        husky = self.huskies[self.selected_robot_id]
+        robot = husky.object.robot
+        bar_attachment_right = pp.Attachment(robot, pp.link_from_name(robot, 'right_ur_arm_tool0'), tool0_2_from_bar, self.goal_element.body)
         # except Exception as e:
         #     print(f"Failed to load tool0_to_tool0 transform from JSON: {e}")
         #     # Fallback to default transform
@@ -511,7 +515,7 @@ class HuskyMonitor(Node):
         #     )
         
         # Call the world function to sample configuration
-        attachments = [ee[1] for ee in self.huskies[self.selected_robot_id].object.ee_list]
+        attachments = [ee[1] for ee in self.huskies[self.selected_robot_id].object.ee_list] + [bar_attachment_right]
         with pp.WorldSaver():
             result = world.sample_dual_arm_configuration(
                 self, 

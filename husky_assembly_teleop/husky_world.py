@@ -1091,7 +1091,7 @@ def sample_dual_arm_configuration(monitor, tool0_to_tool0_transform, max_attempt
     
     # Create collision functions for both arms
     left_attachments = [attachments[0]] if attachments is not None else []
-    right_attachments = [attachments[1]] if attachments is not None else []
+    right_attachments = [attachments[1], attachments[2]] if attachments is not None else []
 
     if attachments is not None:
         left_extra_disabled_collisions = [
@@ -1179,6 +1179,8 @@ def sample_dual_arm_configuration(monitor, tool0_to_tool0_transform, max_attempt
                 if not right_collision_fn(conf, diagnosis=diagnose):
                     right_conf = conf
                     print(f"Found valid right arm configuration on IK attempt {ik_attempt + 1}")
+                    # pp.wait_if_gui('right arm conf')
+
                     break
         
         if right_conf is None:
@@ -1275,19 +1277,22 @@ def compute_tool0_to_tool0_transform_from_json(json_filepath):
     # Extract the world_from_tool0 transformations
     world_from_tool0_1_matrix = np.array(grasp_targets[0]["data"]["world_from_tool0"]["data"]["matrix"])
     world_from_tool0_2_matrix = np.array(grasp_targets[1]["data"]["world_from_tool0"]["data"]["matrix"])
+    world_from_bar_matrix = np.array(grasp_targets[1]["data"]['world_from_bar']['data']['matrix'])
     
     # Convert to pybullet_planning poses
     world_from_tool0_1 = pp.pose_from_tform(world_from_tool0_1_matrix)
     world_from_tool0_2 = pp.pose_from_tform(world_from_tool0_2_matrix)
+    world_from_bar = pp.pose_from_tform(world_from_bar_matrix)
     
     # Compute tool0_1_from_tool0_2 = world_from_tool0_1 * tool0_2_from_world
     # tool0_2_from_world = inverse(world_from_tool0_2)
     tool0_1_from_world = pp.invert(world_from_tool0_1)
     # tool0_2_from_world = pp.invert(world_from_tool0_2)
     tool0_1_from_tool0_2 = pp.multiply(tool0_1_from_world, world_from_tool0_2)
+    tool0_2_from_bar = pp.multiply(pp.invert(world_from_tool0_2), world_from_bar)
     
     # print(f"Tool0_1 pose: {world_from_tool0_1}")
     # print(f"Tool0_2 pose: {world_from_tool0_2}")
     # print(f"Tool0_1_from_Tool0_2 transformation: {tool0_1_from_tool0_2}")
     
-    return tool0_1_from_tool0_2
+    return tool0_1_from_tool0_2, tool0_2_from_bar
