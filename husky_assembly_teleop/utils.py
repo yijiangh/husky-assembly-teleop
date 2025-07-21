@@ -164,40 +164,53 @@ def get_arm_ik_for_grasp_bar(robot, ik_solver, world_from_tool0, attachments, ob
     return conf
 
 def plan_transit_motion(robot, end_conf, attachments, obstacles, debug=False, disabled_collisions=None, dual_arm_index=None):
-    # use correct joint names for dual arm husky
+    # Adapted to support dual-arm (composite) planning
     joint_names = UR5E_JOINT_NAMES
     arm_prefix = ""
-    if dual_arm_index==0:
-        arm_prefix = "left_"
-        joint_names = HUSKY_DUAL_UR5e_JOINT_NAMES[0]
-    if dual_arm_index==1:
-        arm_prefix = "right_"
-        joint_names = HUSKY_DUAL_UR5e_JOINT_NAMES[1]
-        
-    custom_limits = get_custom_limits(robot, {})
-    resolutions = np.ones(6) * 0.05
-    disabled_collisions = disabled_collisions or {}
-    extra_disabled_collisions = [
-        ((robot, pp.link_from_name(robot, arm_prefix + 'ur_arm_wrist_3_link')), 
-         (attachments[0].child, pp.BASE_LINK)), 
+    # Dual-arm mode: plan in the composite joint space of both arms
+    if dual_arm_index == "both":
+        joint_names = HUSKY_DUAL_UR5e_JOINT_NAMES[0] + HUSKY_DUAL_UR5e_JOINT_NAMES[1]
+        # Expect attachments to be a list of two (one for each arm)
+        if not (isinstance(attachments, list) and len(attachments) == 2):
+            raise ValueError("In dual-arm mode, attachments must be a list of two (left, right)")
+        extra_disabled_collisions = [
+            # Left arm
+            ((robot, pp.link_from_name(robot, 'left_ur_arm_wrist_3_link')),
+             (attachments[0].child, pp.BASE_LINK)),
+            # Right arm
+            ((robot, pp.link_from_name(robot, 'right_ur_arm_wrist_3_link')),
+             (attachments[1].child, pp.BASE_LINK)),
         ]
+        # Combine both attachments for collision checking
+        all_attachments = attachments
+    else:
+        if dual_arm_index==0:
+            arm_prefix = "left_"
+            joint_names = HUSKY_DUAL_UR5e_JOINT_NAMES[0]
+        if dual_arm_index==1:
+            arm_prefix = "right_"
+            joint_names = HUSKY_DUAL_UR5e_JOINT_NAMES[1]
+        extra_disabled_collisions = [
+            ((robot, pp.link_from_name(robot, arm_prefix + 'ur_arm_wrist_3_link')),
+             (attachments[0].child, pp.BASE_LINK)),
+        ]
+        all_attachments = attachments if isinstance(attachments, list) else [attachments]
+    
+    custom_limits = get_custom_limits(robot, {})
+    resolutions = np.ones(len(joint_names)) * 0.05
+    disabled_collisions = disabled_collisions or {}
 
     movable_joints = pp.joints_from_names(robot, joint_names)
     sample_fn = pp.get_sample_fn(robot, movable_joints, custom_limits=custom_limits)
     distance_fn = pp.get_distance_fn(robot, movable_joints) #, weights=weights)
     extend_fn = pp.get_extend_fn(robot, movable_joints, resolutions=resolutions)
 
-    # fixed_links = pp.get_fixed_links(robot)
-    # for ml in fixed_links:
-    #     print('fixed link: {} - {}'.format(pp.get_body_name(robot), pp.get_link_name(robot, ml)))
-
     moving_links = pp.get_moving_links(robot, movable_joints)
-    # get all links in the robot except for moving links
     all_links = list(range(pp.get_num_links(robot)))
     non_moving_links = [link for link in all_links if link not in moving_links]
 
     transit_collision_fn = pp.get_collision_fn(robot, movable_joints, obstacles=obstacles,
-                                                attachments=attachments, 
+                                                attachments=all_attachments, 
                                                 self_collisions=1,
                                                 disabled_collisions=disabled_collisions, extra_disabled_collisions=extra_disabled_collisions,
                                                 custom_limits=custom_limits, 
@@ -211,7 +224,6 @@ def plan_transit_motion(robot, end_conf, attachments, obstacles, debug=False, di
             start_conf = pp.get_joint_positions(robot, movable_joints)
             # print('start conf: ', start_conf)
 
-            # new_collision_fn = lambda q, diagnosis=False: collision_fn(q, diagnosis=True)
             if pp.check_initial_end(start_conf, end_conf, transit_collision_fn, diagnosis=debug):
                 transit_path = pp.solve_motion_plan(start_conf, end_conf, 
                                             distance_fn, sample_fn, extend_fn,

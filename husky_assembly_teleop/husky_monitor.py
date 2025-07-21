@@ -350,7 +350,7 @@ class HuskyMonitor(Node):
 
                 for conf in trajectory[0]:
                     hi.arm_joint_pose[self.selected_arm_index] = conf
-                    ho.set_pose((hi.position, hi.rotation), [conf])
+                    ho.set_pose((hi.position, hi.rotation), hi.arm_joint_pose)
 
                     if trajectory[3] is not None:
                         # update attached object based on FK
@@ -511,12 +511,14 @@ class HuskyMonitor(Node):
         #     )
         
         # Call the world function to sample configuration
+        attachments = [ee[1] for ee in self.huskies[self.selected_robot_id].object.ee_list]
         with pp.WorldSaver():
             result = world.sample_dual_arm_configuration(
                 self, 
                 tool0_to_tool0_transform,
-                max_attempts=50,
-                ik_attempts=10
+                max_attempts=100,
+                ik_attempts=10,
+                attachments=attachments
             )
         
         if result is not None:
@@ -598,6 +600,7 @@ class HuskyMonitor(Node):
 
         self.buttons.append(Button('Plan arm to conf target', lambda : world.plan_arm_to_goal(self)))
         self.buttons.append(Button('Exec S.Arm Traj', self.execute_arm_trajectory))
+        self.buttons.append(Button('Exec Both Arm Trajs', lambda: world.execute_arm_trajectory_both(self)))
 
         # Add dual arm configuration sampling button
         self.buttons.append(Button('Sample Dual Arm Config', self.sample_dual_arm_configuration))
