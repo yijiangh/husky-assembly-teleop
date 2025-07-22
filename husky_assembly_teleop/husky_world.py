@@ -1296,3 +1296,89 @@ def compute_tool0_to_tool0_transform_from_json(json_filepath):
     # print(f"Tool0_1_from_Tool0_2 transformation: {tool0_1_from_tool0_2}")
     
     return tool0_1_from_tool0_2, tool0_2_from_bar
+
+def plan_both_arms_to_goal(monitor, use_composite=False):
+    """
+    Plan motions for both arms from current to goal joint configurations.
+    If use_composite is False, plan left then right sequentially.
+    If True, plan in the composite joint space.
+    Sets the resulting trajectories in the monitor.
+    """
+    husky = monitor.huskies[monitor.selected_robot_id]
+    robot = husky.object.robot
+    
+    left_joint_names = HUSKY_DUAL_UR5e_JOINT_NAMES[0]
+    right_joint_names = HUSKY_DUAL_UR5e_JOINT_NAMES[1]
+    left_joints = pp.joints_from_names(robot, left_joint_names)
+    right_joints = pp.joints_from_names(robot, right_joint_names)
+    
+    current_left_conf = pp.get_joint_positions(robot, left_joints)
+    current_right_conf = pp.get_joint_positions(robot, right_joints)
+    left_conf = np.array(monitor.goal_arm_pose[0])
+    right_conf = np.array(monitor.goal_arm_pose[1])
+    # Print current joint configuration for both arms
+    print("Current left arm joint configuration:", current_left_conf)
+    print("Current right arm joint configuration:", current_right_conf)
+
+    # Print joint limits for all arm joints
+    all_joint_names = left_joint_names + right_joint_names
+    all_joints = pp.joints_from_names(robot, all_joint_names)
+    lower_limits = [pp.get_joint_info(robot, j).jointLowerLimit for j in all_joints]
+    upper_limits = [pp.get_joint_info(robot, j).jointUpperLimit for j in all_joints]
+    print("All arm joint names:", all_joint_names)
+    print("All arm joint lower limits:", lower_limits)
+    print("All arm joint upper limits:", upper_limits)
+
+    print(f"target left_conf: {left_conf}")
+    print(f"target right_conf: {right_conf}")
+    attachments = [ee[1] for ee in husky.object.ee_list]
+
+    left_trajectory = None
+    right_trajectory = None
+
+    if not use_composite:
+        # Sequential planning: left arm, then right arm
+        pp.set_joint_positions(robot, left_joints, current_left_conf)
+        left_trajectory = planning.plan_arm_motion(
+            husky, left_conf, monitor.static_obstacles, monitor.trajectory_time, arm_index=0, debug=False
+        )
+        if left_trajectory[0] is None:
+            monitor.get_logger().warn('Left arm planning failed!')
+            return
+        # Set left arm to end conf, right arm to current
+        pp.set_joint_positions(robot, left_joints, left_trajectory[0][-1])
+        pp.set_joint_positions(robot, right_joints, current_right_conf)
+        right_trajectory = planning.plan_arm_motion(
+            husky, right_conf, monitor.static_obstacles, monitor.trajectory_time, arm_index=1, debug=False
+        )
+        if right_trajectory[0] is None:
+            monitor.get_logger().warn('Right arm planning failed!')
+            # return
+    else:
+        # Composite planning: plan in the joint space of both arms
+        pp.set_joint_positions(robot, left_joints, current_left_conf)
+        pp.set_joint_positions(robot, right_joints, current_right_conf)
+        composite_goal = np.concatenate([left_conf, right_conf])
+        from husky_assembly_teleop.husky_planning import plan_transit_motion
+        composite_start = np.concatenate([current_left_conf, current_right_conf])
+        composite_path = plan_transit_motion(
+            robot,
+            composite_goal,
+            attachments,
+            monitor.static_obstacles,
+            debug=False,
+            disabled_collisions=None,
+            dual_arm_index="both",
+        )
+        if composite_path is None:
+            monitor.get_logger().warn('Composite planning failed!')
+            return
+        left_trajectory = (np.array([q[:len(left_joints)] for q in composite_path]), None, monitor.trajectory_time, None)
+        right_trajectory = (np.array([q[len(left_joints):] for q in composite_path]), None, monitor.trajectory_time, None)
+
+    # Set the trajectories for both arms
+    monitor.set_arm_trajectory(left_trajectory, index=0)
+    monitor.set_arm_trajectory(right_trajectory, index=1)
+    monitor.set_to_show_traj_state()
+    print("Successfully planned both arms to goal ({} mode)!".format('composite' if use_composite else 'sequential'))
+
