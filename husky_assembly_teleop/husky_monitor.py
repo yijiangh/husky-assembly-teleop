@@ -6,6 +6,8 @@ The main ROS2 node for the husky monitor. This node is responsible for:
 - Updating the simulation state
 - Handling user input
 """
+import sys
+print(f"Running with Python: {sys.executable}")
 
 from collections import defaultdict
 import os
@@ -132,7 +134,7 @@ class HuskyMonitor(Node):
         world.init(self)
 
         # ! an inflated bar for goal
-        goal_bar_body = pp.create_cylinder((0.1)/2, 1.0, mass=pp.STATIC_MASS)
+        goal_bar_body = pp.create_cylinder((0.025)/2, 1.0, mass=pp.STATIC_MASS)
         far_away_pose = pp.Pose(pp.Point(0,0,100))
         self.goal_element = AssemblyObject(self, 'b_goal', goal_bar_body, far_away_pose, 
                                            pp.unit_pose())
@@ -348,7 +350,7 @@ class HuskyMonitor(Node):
 
                 for conf in trajectory[0]:
                     hi.arm_joint_pose[self.selected_arm_index] = conf
-                    ho.set_pose((hi.position, hi.rotation), [conf])
+                    ho.set_pose((hi.position, hi.rotation), hi.arm_joint_pose)
 
                     if trajectory[3] is not None:
                         # update attached object based on FK
@@ -496,25 +498,32 @@ class HuskyMonitor(Node):
             'RobotCellStates',
             'robotx_box_A0-IK_test_GraspTargets.json'
         )
-        
-        try:
-            tool0_to_tool0_transform = world.compute_tool0_to_tool0_transform_from_json(json_filepath)
-        except Exception as e:
-            print(f"Failed to load tool0_to_tool0 transform from JSON: {e}")
-            # Fallback to default transform
-            tool0_to_tool0_transform = pp.Pose(
-                point=pp.Point(0.5, 0, 0),  # 0.5m offset in x direction
-                euler=pp.Euler(0, 0, 0)      # No rotation
-            )
+        self.get_logger().info(f"Loading tool0_to_tool0 transform from JSON: {json_filepath}")
+
+        # try:
+        tool0_to_tool0_transform, tool0_2_from_bar = world.compute_tool0_to_tool0_transform_from_json(json_filepath)
+
+        husky = self.huskies[self.selected_robot_id]
+        robot = husky.object.robot
+        bar_attachment_right = pp.Attachment(robot, pp.link_from_name(robot, 'right_ur_arm_tool0'), tool0_2_from_bar, self.goal_element.body)
+        # except Exception as e:
+        #     print(f"Failed to load tool0_to_tool0 transform from JSON: {e}")
+        #     # Fallback to default transform
+        #     tool0_to_tool0_transform = pp.Pose(
+        #         point=pp.Point(0.5, 0, 0),  # 0.5m offset in x direction
+        #         euler=pp.Euler(0, 0, 0)      # No rotation
+        #     )
         
         # Call the world function to sample configuration
-        result = world.sample_dual_arm_configuration(
-            self, 
-            tool0_to_tool0_transform,
-            max_attempts=50,
-            ik_attempts=10,
-            max_path_length=2.0
-        )
+        attachments = [ee[1] for ee in self.huskies[self.selected_robot_id].object.ee_list] + [bar_attachment_right]
+        with pp.WorldSaver():
+            result = world.sample_dual_arm_configuration(
+                self, 
+                tool0_to_tool0_transform,
+                max_attempts=100,
+                ik_attempts=10,
+                attachments=attachments
+            )
         
         if result is not None:
             left_trajectory, right_trajectory = result
@@ -593,8 +602,16 @@ class HuskyMonitor(Node):
             self.buttons.append(Button('Plan arm to assemble, reuse grasp', self.plan_arm_to_transfer_element_reuse_grasp))
             self.buttons.append(Button('Plan arm to retract to home', self.plan_arm_to_retract_to_home))
 
-        self.buttons.append(Button('Plan arm to conf target', lambda : world.plan_arm_to_goal(self)))
+        self.buttons.append(Button('Plan S.Arm to conf target', lambda : world.plan_arm_to_goal(self)))
         self.buttons.append(Button('Exec S.Arm Traj', self.execute_arm_trajectory))
+        # self.buttons.append(Button('Exec Both Arm Trajs', lambda: world.execute_arm_trajectory_both(self)))
+
+        # Add dual arm configuration sampling button
+        self.buttons.append(Button('Sample Dual Arm Config', self.sample_dual_arm_configuration))
+
+        # Add buttons for planning both arms to goal (sequential and composite)
+        self.buttons.append(Button('Plan Both Arms to Goal (sequential)', lambda: world.plan_both_arms_to_goal(self, use_composite=False)))
+        # self.buttons.append(Button('Plan Both Arms to Goal (composite)', lambda: world.plan_both_arms_to_goal(self, use_composite=True)))
 
         self.buttons.append(Button(
                'Load RobotCellState',
@@ -605,15 +622,12 @@ class HuskyMonitor(Node):
                         'husky_assembly_design_study',
                         '250714_robot_centric_IK_grasp_test',
                         'RobotCellStates',
-                        'robotx_box_A0-IK_test_RobotCellState.json'
+                        # 'robotx_box_A0-IK_test_front3_high2_RobotCellState.json'
+                        'robotx_box_A0-IK_test_left_RobotCellState.json'
                    )
                )
            ))
-      # Button to export planned trajectory to URScript
-        self.buttons.append(Button(
-            'Export URScript (planned traj)',
-            lambda: self.export_planned_trajectory_to_urscript()
-        ))
+
         # Button to export planned trajectory to JSON
         self.buttons.append(Button(
             'Export Trajectory (JSON)',
@@ -682,9 +696,6 @@ class HuskyMonitor(Node):
             self.buttons.append(Button('Record EE mocap pose', lambda: world.record_dual_arm_E_mocap(self)))
             self.buttons.append(Button('Save EE mocap data', lambda: world.save_dual_arm_E_mocap(self)))
             
-        # Add dual arm configuration sampling button
-        self.buttons.append(Button('Sample Dual Arm Config', self.sample_dual_arm_configuration))
-
         if not self.BAR_GOAL_MODE:
             self.dump_sep_sliders.append(Slider("----------Joint Target (Left Arm)", lambda : None))
             left_joint_names = self.huskies[self.selected_robot_id].object.get_arm_joint_names(index=0)
@@ -720,17 +731,17 @@ class HuskyMonitor(Node):
         self.buttons.append(Button('Export calib conf to json', self.record_calibration_data))
         self.buttons.append(Button('Remove all drawing', lambda : pp.remove_all_debug()))
         # Button to load RobotCellState from file and update arm goal configuration
-        self.buttons.append(Button(
-            'Load RobotCellState (robotx_box_A15-S13)',
-            lambda: world.load_robotcellstate_and_update_goal(
-                self,
-                os.path.join(
-                    DATA_DIRECTORY,
-                    'robotx_box',
-                    'robotx_box_A15-S13_RobotCellState.json'
-                )
-            )
-        ))
+        # self.buttons.append(Button(
+        #     'Load RobotCellState (robotx_box_A15-S13)',
+        #     lambda: world.load_robotcellstate_and_update_goal(
+        #         self,
+        #         os.path.join(
+        #             DATA_DIRECTORY,
+        #             'robotx_box',
+        #             'robotx_box_A15-S13_RobotCellState.json'
+        #         )
+        #     )
+        # ))
   
     # --- --- --- --- --- MOCAP --- --- --- --- --- 
     def start_mocap(self):
@@ -928,43 +939,6 @@ class HuskyMonitor(Node):
                 self.tasks.remove(t)
                 
         world.update(self)
-
-    def export_planned_trajectory_to_urscript(self, filename='planned_trajectory.script', arm_index=None):
-        """
-        Export the planned arm trajectory to a URScript file for the UR5e robot.
-        The output filename will include the arm index (0 = left, 1 = right).
-        """
-        if arm_index is None:
-            arm_index = self.selected_arm_index
-        traj = self.planned_arm_trajectory[arm_index][0]
-        if traj is None or len(traj) == 0:
-            print('No planned trajectory to export!')
-            return
-
-        # Add arm name ("left" or "right") to the filename before the extension
-        arm_name = "left" if arm_index == 0 else "right"
-        base, ext = os.path.splitext(filename)
-        filename_with_arm = f"{base}_{arm_name}{ext}"
-
-        # URScript header
-        urscript_lines = [
-            'def planned_trajectory():',
-        ]
-        # Reasonable speed and acceleration (can be tuned on the robot)
-        speed = 1.0  # rad/s
-        accel = 2.0  # rad/s^2
-        blend = 0.0  # No blending by default
-        for conf in traj:
-            # URScript expects a list of 6 joint values
-            joint_str = ', '.join([f'{float(j):.6f}' for j in conf])
-            urscript_lines.append(f'    movej([{joint_str}], a={accel}, v={speed})')
-        urscript_lines.append('end')
-
-        # Write to file
-        out_path = os.path.join(os.getcwd(), filename_with_arm)
-        with open(out_path, 'w') as f:
-            f.write('\n'.join(urscript_lines))
-        print(f'URScript exported to {out_path}')
 
     def export_planned_trajectory_to_json(self, filename='planned_trajectory.json', arm_index=None):
         """

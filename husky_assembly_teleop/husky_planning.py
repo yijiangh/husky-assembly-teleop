@@ -56,7 +56,7 @@ def compute_grasp(theta_index, grasp_partition=4, longitudinal_offset=0.0):
 def arm_ik(husky: Husky, world_from_tool0, attachments, obstacles, hint_conf=None):
     return get_arm_ik_for_grasp_bar(husky.object.robot, IK_SOLVER, world_from_tool0, attachments, obstacles, hint_conf=hint_conf)
 
-def plan_arm_motion(husky: Husky, arm_goal_pose, obstacles, traj_time, grasped_element=None, grasp=None, arm_index=0):
+def plan_arm_motion(husky: Husky, arm_goal_pose, obstacles, traj_time, grasped_element=None, grasp=None, arm_index=0, debug=False):
     attachments = [husky.object.ee_list[arm_index][1]]
     if grasped_element is not None and grasp is not None:
         robot = husky.object.robot
@@ -67,7 +67,7 @@ def plan_arm_motion(husky: Husky, arm_goal_pose, obstacles, traj_time, grasped_e
                 arm_goal_pose,
                 attachments,
                 obstacles,
-                debug=0,
+                debug=debug,
                 disabled_collisions=False,
                 dual_arm_index=None if not husky.dual_arm else arm_index
             )

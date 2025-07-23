@@ -1039,7 +1039,7 @@ def load_robotcellstate_and_update_goal(monitor, filepath):
     except KeyError as e:
         monitor.get_logger().warn(f"Joint name {e} not found in loaded RobotCellState.")
 
-def sample_dual_arm_configuration(monitor, tool0_to_tool0_transform, max_attempts=50, ik_attempts=10, max_path_length=2.0):
+def sample_dual_arm_configuration(monitor, tool0_to_tool0_transform, max_attempts=50, ik_attempts=10, attachments=None):
     """
     Sample a dual-arm configuration with the following steps:
     1. Sample a left arm configuration, reject if collision with static obstacles
@@ -1067,7 +1067,9 @@ def sample_dual_arm_configuration(monitor, tool0_to_tool0_transform, max_attempt
     tuple or None
         (left_arm_trajectory, right_arm_trajectory) if successful, None if failed
     """
-    MAX_TRAJECTORY_POINTS = 150
+    MAX_TRAJECTORY_POINTS = 180
+    PLAN_SEPARATE_TRAJECTORIES = True
+
     husky = monitor.huskies[monitor.selected_robot_id]
     robot = husky.object.robot
     
@@ -1088,9 +1090,43 @@ def sample_dual_arm_configuration(monitor, tool0_to_tool0_transform, max_attempt
     right_sample_fn = pp.get_sample_fn(robot, right_joints)
     
     # Create collision functions for both arms
-    left_collision_fn = pp.get_collision_fn(robot, left_joints, obstacles=monitor.static_obstacles)
-    right_collision_fn = pp.get_collision_fn(robot, right_joints, obstacles=monitor.static_obstacles)
-    diagnose = True
+    left_attachments = [attachments[0]] if attachments is not None else []
+    right_attachments = [attachments[1], attachments[2]] if attachments is not None else []
+
+    if attachments is not None:
+        left_extra_disabled_collisions = [
+        ((robot, pp.link_from_name(robot, 'left_ur_arm_wrist_3_link')), 
+         (attachments[0].child, pp.BASE_LINK)), 
+        ]
+        right_extra_disabled_collisions = [
+        ((robot, pp.link_from_name(robot, 'right_ur_arm_wrist_3_link')), 
+         (attachments[1].child, pp.BASE_LINK)), 
+        ]
+    else:
+        left_extra_disabled_collisions = []
+        right_extra_disabled_collisions = []
+
+    left_collision_fn = pp.get_collision_fn(robot, left_joints, obstacles=monitor.static_obstacles,
+                                              attachments=left_attachments, 
+                                              self_collisions=True,
+                                              disabled_collisions={}, 
+                                              extra_disabled_collisions=left_extra_disabled_collisions,
+                                              custom_limits={}, 
+                                              max_distance=0)
+    right_collision_fn = pp.get_collision_fn(robot, right_joints, obstacles=monitor.static_obstacles,
+                                              attachments=right_attachments, 
+                                              self_collisions=True,
+                                              disabled_collisions={}, 
+                                              extra_disabled_collisions=right_extra_disabled_collisions,
+                                              custom_limits={}, 
+                                              max_distance=0)
+
+    diagnose = False
+    # save the current joint configuration here to use as starting conf for transit planning
+    # start_left_conf = list(pp.get_joint_positions(robot, left_joints))
+    # start_right_conf = list(pp.get_joint_positions(robot, right_joints))
+    current_left_conf = np.copy(husky.interface.arm_joint_pose[0])
+    current_right_conf = np.copy(husky.interface.arm_joint_pose[1])
     
     for attempt in range(max_attempts):
         if attempt % 10 == 0:
@@ -1109,13 +1145,13 @@ def sample_dual_arm_configuration(monitor, tool0_to_tool0_transform, max_attempt
         
         # Get left arm tool0 pose
         left_tool0_pose = pp.get_link_pose(robot, pp.link_from_name(robot, 'left_ur_arm_tool0'))
-        pp.draw_pose(left_tool0_pose, length=0.2)
-        pp.wait_if_gui('left tool0 pose')
+        # pp.draw_pose(left_tool0_pose, length=0.2)
+        # pp.wait_if_gui('left tool0 pose')
         
         # Step 3: Apply transform to get right arm tool0 pose
         right_tool0_pose = pp.multiply(left_tool0_pose, tool0_to_tool0_transform)
-        pp.draw_pose(right_tool0_pose, length=0.2)
-        pp.wait_if_gui('right tool0 pose')
+        # pp.draw_pose(right_tool0_pose, length=0.2)
+        # pp.wait_if_gui('right tool0 pose')
         
         # Step 4: Compute IK for right arm
         right_conf = None
@@ -1143,34 +1179,68 @@ def sample_dual_arm_configuration(monitor, tool0_to_tool0_transform, max_attempt
                 if not right_collision_fn(conf, diagnosis=diagnose):
                     right_conf = conf
                     print(f"Found valid right arm configuration on IK attempt {ik_attempt + 1}")
+                    # pp.wait_if_gui('right arm conf')
+
                     break
         
         if right_conf is None:
             continue
             
-        # Step 5: Plan transition paths for both arms
-        current_left_conf = husky.interface.arm_joint_pose[0]
-        current_right_conf = husky.interface.arm_joint_pose[1]
+        if PLAN_SEPARATE_TRAJECTORIES:
+            # Step 5: Plan transition paths for both arms
+            pp.set_joint_positions(robot, left_joints, current_left_conf)
         
-        # Plan left arm transition
-        left_trajectory = planning.plan_arm_motion(
-            husky, left_conf, monitor.static_obstacles, monitor.trajectory_time, arm_index=0
-        )
+            # Plan left arm transition
+            left_trajectory = planning.plan_arm_motion(
+                husky, left_conf, monitor.static_obstacles, monitor.trajectory_time, arm_index=0
+            )
+            if left_trajectory[0] is None:
+                continue
         
-        # Plan right arm transition
-        right_trajectory = planning.plan_arm_motion(
-            husky, right_conf, monitor.static_obstacles, monitor.trajectory_time, arm_index=1
-        )
+            # Plan right arm transition
+            pp.set_joint_positions(robot, left_joints, left_trajectory[0][-1])
+            pp.set_joint_positions(robot, right_joints, current_right_conf)
+            right_trajectory = planning.plan_arm_motion(
+                husky, right_conf, monitor.static_obstacles, monitor.trajectory_time, arm_index=1
+            )
+        else:
+            # Plan in the composite space of both arms
+            # Set both arms to their current configurations
+            pp.set_joint_positions(robot, left_joints, current_left_conf)
+            pp.set_joint_positions(robot, right_joints, current_right_conf)
+
+            # Concatenate the left and right arm goal configurations
+            composite_goal = np.concatenate([left_conf, right_conf])
+
+            # Plan a path in the composite space
+            from husky_assembly_teleop.husky_planning import plan_transit_motion
+            composite_start = np.concatenate([current_left_conf, current_right_conf])
+            composite_path = plan_transit_motion(
+                robot,
+                composite_goal,
+                attachments,
+                monitor.static_obstacles,
+                debug=False,
+                disabled_collisions=None,
+                dual_arm_index="both",
+                # collision_fn=composite_collision_fn
+            )
+
+            if composite_path is None:
+                continue
+
+            # Split the composite path into left and right arm trajectories
+            left_trajectory = (np.array([q[:len(left_joints)] for q in composite_path]), None, monitor.trajectory_time, None)
+            right_trajectory = (np.array([q[len(left_joints):] for q in composite_path]), None, monitor.trajectory_time, None)
         
-        # Check if trajectories are valid
-        if (left_trajectory[0] is None or right_trajectory[0] is None):
+        if right_trajectory[0] is None:
             continue
             
         # Check path length
         # Use the number of trajectory points as the path length
         left_path_length = len(left_trajectory[0])
         right_path_length = len(right_trajectory[0])
-        if left_path_length > monitor.MAX_TRAJECTORY_POINTS or right_path_length > monitor.MAX_TRAJECTORY_POINTS:
+        if left_path_length > MAX_TRAJECTORY_POINTS or right_path_length > MAX_TRAJECTORY_POINTS:
             continue
             
         # Success! Return the trajectories
@@ -1207,18 +1277,108 @@ def compute_tool0_to_tool0_transform_from_json(json_filepath):
     # Extract the world_from_tool0 transformations
     world_from_tool0_1_matrix = np.array(grasp_targets[0]["data"]["world_from_tool0"]["data"]["matrix"])
     world_from_tool0_2_matrix = np.array(grasp_targets[1]["data"]["world_from_tool0"]["data"]["matrix"])
+    world_from_bar_matrix = np.array(grasp_targets[1]["data"]['world_from_bar']['data']['matrix'])
     
     # Convert to pybullet_planning poses
     world_from_tool0_1 = pp.pose_from_tform(world_from_tool0_1_matrix)
     world_from_tool0_2 = pp.pose_from_tform(world_from_tool0_2_matrix)
+    world_from_bar = pp.pose_from_tform(world_from_bar_matrix)
     
     # Compute tool0_1_from_tool0_2 = world_from_tool0_1 * tool0_2_from_world
     # tool0_2_from_world = inverse(world_from_tool0_2)
-    tool0_2_from_world = pp.invert(world_from_tool0_2)
-    tool0_1_from_tool0_2 = pp.multiply(world_from_tool0_1, tool0_2_from_world)
+    tool0_1_from_world = pp.invert(world_from_tool0_1)
+    # tool0_2_from_world = pp.invert(world_from_tool0_2)
+    tool0_1_from_tool0_2 = pp.multiply(tool0_1_from_world, world_from_tool0_2)
+    tool0_2_from_bar = pp.multiply(pp.invert(world_from_tool0_2), world_from_bar)
     
-    print(f"Tool0_1 pose: {world_from_tool0_1}")
-    print(f"Tool0_2 pose: {world_from_tool0_2}")
-    print(f"Tool0_1_from_Tool0_2 transformation: {tool0_1_from_tool0_2}")
+    # print(f"Tool0_1 pose: {world_from_tool0_1}")
+    # print(f"Tool0_2 pose: {world_from_tool0_2}")
+    # print(f"Tool0_1_from_Tool0_2 transformation: {tool0_1_from_tool0_2}")
     
-    return tool0_1_from_tool0_2
+    return tool0_1_from_tool0_2, tool0_2_from_bar
+
+def plan_both_arms_to_goal(monitor, use_composite=False):
+    """
+    Plan motions for both arms from current to goal joint configurations.
+    If use_composite is False, plan left then right sequentially.
+    If True, plan in the composite joint space.
+    Sets the resulting trajectories in the monitor.
+    """
+    husky = monitor.huskies[monitor.selected_robot_id]
+    robot = husky.object.robot
+    
+    left_joint_names = HUSKY_DUAL_UR5e_JOINT_NAMES[0]
+    right_joint_names = HUSKY_DUAL_UR5e_JOINT_NAMES[1]
+    left_joints = pp.joints_from_names(robot, left_joint_names)
+    right_joints = pp.joints_from_names(robot, right_joint_names)
+    
+    current_left_conf = pp.get_joint_positions(robot, left_joints)
+    current_right_conf = pp.get_joint_positions(robot, right_joints)
+    left_conf = np.array(monitor.goal_arm_pose[0])
+    right_conf = np.array(monitor.goal_arm_pose[1])
+    # Print current joint configuration for both arms
+    print("Current left arm joint configuration:", current_left_conf)
+    print("Current right arm joint configuration:", current_right_conf)
+
+    # Print joint limits for all arm joints
+    all_joint_names = left_joint_names + right_joint_names
+    all_joints = pp.joints_from_names(robot, all_joint_names)
+    lower_limits = [pp.get_joint_info(robot, j).jointLowerLimit for j in all_joints]
+    upper_limits = [pp.get_joint_info(robot, j).jointUpperLimit for j in all_joints]
+    print("All arm joint names:", all_joint_names)
+    print("All arm joint lower limits:", lower_limits)
+    print("All arm joint upper limits:", upper_limits)
+
+    print(f"target left_conf: {left_conf}")
+    print(f"target right_conf: {right_conf}")
+    attachments = [ee[1] for ee in husky.object.ee_list]
+
+    left_trajectory = None
+    right_trajectory = None
+
+    if not use_composite:
+        # Sequential planning: left arm, then right arm
+        pp.set_joint_positions(robot, left_joints, current_left_conf)
+        left_trajectory = planning.plan_arm_motion(
+            husky, left_conf, monitor.static_obstacles, monitor.trajectory_time, arm_index=0, debug=False
+        )
+        if left_trajectory[0] is None:
+            monitor.get_logger().warn('Left arm planning failed!')
+            return
+        # Set left arm to end conf, right arm to current
+        pp.set_joint_positions(robot, left_joints, left_trajectory[0][-1])
+        pp.set_joint_positions(robot, right_joints, current_right_conf)
+        right_trajectory = planning.plan_arm_motion(
+            husky, right_conf, monitor.static_obstacles, monitor.trajectory_time, arm_index=1, debug=False
+        )
+        if right_trajectory[0] is None:
+            monitor.get_logger().warn('Right arm planning failed!')
+            # return
+    else:
+        # Composite planning: plan in the joint space of both arms
+        pp.set_joint_positions(robot, left_joints, current_left_conf)
+        pp.set_joint_positions(robot, right_joints, current_right_conf)
+        composite_goal = np.concatenate([left_conf, right_conf])
+        from husky_assembly_teleop.husky_planning import plan_transit_motion
+        composite_start = np.concatenate([current_left_conf, current_right_conf])
+        composite_path = plan_transit_motion(
+            robot,
+            composite_goal,
+            attachments,
+            monitor.static_obstacles,
+            debug=False,
+            disabled_collisions=None,
+            dual_arm_index="both",
+        )
+        if composite_path is None:
+            monitor.get_logger().warn('Composite planning failed!')
+            return
+        left_trajectory = (np.array([q[:len(left_joints)] for q in composite_path]), None, monitor.trajectory_time, None)
+        right_trajectory = (np.array([q[len(left_joints):] for q in composite_path]), None, monitor.trajectory_time, None)
+
+    # Set the trajectories for both arms
+    monitor.set_arm_trajectory(left_trajectory, index=0)
+    monitor.set_arm_trajectory(right_trajectory, index=1)
+    monitor.set_to_show_traj_state()
+    print("Successfully planned both arms to goal ({} mode)!".format('composite' if use_composite else 'sequential'))
+

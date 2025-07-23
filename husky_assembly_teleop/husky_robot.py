@@ -239,7 +239,7 @@ class HuskyRobotInterface:
         self.act_grippers[index].send_goal_async(goal)
         
     def send_dual_arm_cmd(self, multi_arm_trajectory):
-        raise NotImplementedError("Multi-arm trajectory control is not implemented in this interface.")
+        # raise NotImplementedError("Multi-arm trajectory control is not implemented in this interface.")
 
         multitrajectory = MultiArmTrajectory()
         
