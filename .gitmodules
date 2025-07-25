@@ -1,6 +1,6 @@
 [submodule "data/husky_urdf"]
 	path = data/husky_urdf
-	url = git@gitlab.inf.ethz.ch:crl/husky_urdf.git
+	url = git@github.com:yijiangh/husky_urdf.git
 [submodule "external/tracikpy"]
 	path = external/tracikpy
 	url = https://github.com/mjd3/tracikpy.git
@@ -9,4 +9,4 @@
 	url = https://github.com/compas-dev/compas_fab.git
 [submodule "data/husky_assembly_design_study"]
 	path = data/husky_assembly_design_study
-	url = https://gitlab.inf.ethz.ch/crl/yijiangh/husky_assembly_design_study.git
+	url = git@github.com:yijiangh/husky_assembly_design_study.git
