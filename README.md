@@ -3,7 +3,19 @@
 This is a python package for controlling huskies in the mocap space.
 
 # Installation
+## Clone and update submodules
+Install this library from source by cloning this repo to local and install from source.
+```
+git clone --recursive git@github.com:yijiangh/husky-assembly-teleop.git
+```
+The `--recursive` flag when cloning above is used for initializing all the git submodules. You can learn more about submodules [here](https://github.com/CGAL/cgal-swig-bindings/wiki/Installation).
 
+Later in the development, whenever you need to update the submodules, issue the following:
+```
+git submodule update --init --recursive
+```
+
+## Tracikpy (Linux-only)
 Install system package dependencies for [tracikpy](https://github.com/mjd3/tracikpy):
 ```
 sudo apt-get install libeigen3-dev liborocos-kdl-dev libkdl-parser-dev liburdfdom-dev libnlopt-dev libnlopt-cxx-dev
