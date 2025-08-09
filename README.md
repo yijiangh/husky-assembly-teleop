@@ -15,6 +15,25 @@ Later in the development, whenever you need to update the submodules, issue the 
 git submodule update --init --recursive
 ```
 
+### Updating Submodules
+
+**Using Cursor's Built-in GitHub Plugin:**
+When using Cursor's built-in GitHub plugin, pulling changes will automatically update submodules recursively. The plugin handles submodule updates automatically during pull operations. (I think this is true? Please try!)
+
+**Using Git Command Line:**
+When using git command line, `git pull` will only update the main repository. To update all submodules recursively, you need to run:
+```bash
+git pull
+git submodule update --init --recursive
+```
+
+Alternatively, you can configure git to automatically update submodules during pulls:
+```bash
+git config --global submodule.recurse true
+```
+
+This setting ensures that commands like `git pull` will also update submodules recursively.
+
 ## Tracikpy (Linux-only)
 Install system package dependencies for [tracikpy](https://github.com/mjd3/tracikpy):
 ```
