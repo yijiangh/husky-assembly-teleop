@@ -59,6 +59,8 @@ class HuskyMonitor(Node):
     DUAL_ARM_ACCURACY_TEST = 0
 
     ASSEMBLY_MODE = 0
+    
+    BOARD_VALIDATION = 1
 
     def __init__(self):
         super().__init__('husky_monitor')
@@ -92,6 +94,11 @@ class HuskyMonitor(Node):
 
         self.selected_robot_slider = None
         self.selected_robot_id = 0
+        
+        # Board validation mode variables
+        self.board_validation_state_slider = None
+        self.available_robot_cell_states = []
+        self.selected_state_index = 0
         
         # goal and trajectory interface
         self.selected_arm_index = 0
@@ -140,6 +147,10 @@ class HuskyMonitor(Node):
                                            pp.unit_pose())
         pp.set_color(self.goal_element.body, GOAL_BLUE)
 
+        # Initialize board validation if enabled
+        if self.BOARD_VALIDATION:
+            self.available_robot_cell_states = self._load_available_robot_cell_states()
+        
         self.build_ui()
         self.update_partial_assembly()
         self.update_goal_model_and_color()
@@ -539,6 +550,115 @@ class HuskyMonitor(Node):
         else:
             print("Failed to sample valid dual-arm configuration.")
     
+    def load_board_validation_state(self):
+        """
+        Load a robot cell state for board validation and update the goal robot configuration.
+        """
+        if not self.available_robot_cell_states:
+            print("No robot cell states available!")
+            return
+            
+        if self.selected_state_index >= len(self.available_robot_cell_states):
+            print(f"Invalid state index: {self.selected_state_index}")
+            return
+            
+        selected_state_file = self.available_robot_cell_states[self.selected_state_index]
+        state_filepath = os.path.join(
+            DATA_DIRECTORY,
+            'husky_assembly_design_study',
+            '250808_cindy_calibration_validation',
+            'RobotCellStates',
+            selected_state_file
+        )
+        
+        print(f"Loading robot cell state: {selected_state_file}")
+        
+        try:
+            # Load the robot cell state
+            from compas.data import json_load
+            robot_cell_state = json_load(state_filepath)
+            
+            # Get the robot configuration from the state
+            if hasattr(robot_cell_state, 'robot_configuration'):
+                robot_config = robot_cell_state.robot_configuration
+                
+                # Extract base pose and arm joint states
+                if hasattr(robot_config, 'values') and hasattr(robot_config, 'joint_names'):
+                    # Find base and arm joint values
+                    base_joint_names = ['base_joint_x', 'base_joint_y', 'base_joint_yaw']
+                    from husky_assembly_teleop.utils import HUSKY_DUAL_UR5e_JOINT_NAMES
+                    left_arm_names = HUSKY_DUAL_UR5e_JOINT_NAMES[0]
+                    right_arm_names = HUSKY_DUAL_UR5e_JOINT_NAMES[1]
+
+                    # Extract base pose
+                    base_x = robot_config[base_joint_names[0]] if base_joint_names[0] in robot_config else 0.0
+                    base_y = robot_config[base_joint_names[1]] if base_joint_names[1] in robot_config else 0.0
+                    base_yaw = robot_config[base_joint_names[2]] if base_joint_names[2] in robot_config else 0.0
+                    
+                    # Extract arm joint states
+                    left_arm_joint_values = [robot_config[name] for name in left_arm_names]
+                    right_arm_joint_values = [robot_config[name] for name in right_arm_names]
+
+                    # Update goal robot configuration
+                    self.goal_base_pose = (np.array([base_x, base_y, 0.0]), 
+                                         pp.quat_from_euler(pp.Euler(yaw=base_yaw)))
+                    self.goal_arm_pose[0] = np.array(left_arm_joint_values)
+                    self.goal_arm_pose[1] = np.array(right_arm_joint_values)
+                    
+                    # Update the UI to reflect the new configuration
+                    self.reset_ui(self.goal_arm_pose)
+                    
+                    print(f"Updated goal robot configuration from {selected_state_file}")
+                    print(f"Base pose: {self.goal_base_pose}")
+                    print(f"Left arm joints: {self.goal_arm_pose[0]}")
+                    print(f"Right arm joints: {self.goal_arm_pose[1]}")
+                else:
+                    print("Robot configuration does not have expected structure")
+            else:
+                print("Robot cell state does not contain robot configuration")
+                
+        except Exception as e:
+            print(f"Error loading robot cell state: {e}")
+
+    def update_board_validation_state_index(self, state_index):
+        """
+        Update the selected robot cell state index.
+        """
+        new_index = int(state_index)
+        if 0 <= new_index < len(self.available_robot_cell_states):
+            self.selected_state_index = new_index
+            print(f"Selected state: {self.available_robot_cell_states[self.selected_state_index]}")
+
+    def _load_available_robot_cell_states(self):
+        """
+        Load available robot cell state files from the hardcoded directory.
+        """
+        state_dir = os.path.join(
+            DATA_DIRECTORY,
+            'husky_assembly_design_study',
+            '250808_cindy_calibration_validation',
+            'RobotCellStates'
+        )
+        
+        if not os.path.exists(state_dir):
+            print(f"Robot cell states directory does not exist: {state_dir}")
+            return []
+        
+        # Find all JSON files ending with _RobotCellState.json
+        state_files = []
+        for filename in os.listdir(state_dir):
+            if filename.endswith('_RobotCellState.json'):
+                state_files.append(filename)
+        
+        # Sort files for consistent ordering
+        state_files.sort()
+        
+        print(f"Found {len(state_files)} robot cell state files:")
+        for i, filename in enumerate(state_files):
+            print(f"  {i}: {filename}")
+        
+        return state_files
+    
     # --- --- --- --- --- SETUP PYBULLET --- --- --- --- ---
     def start_pybullet(self):
         # start pybullet simulator
@@ -726,6 +846,27 @@ class HuskyMonitor(Node):
             # self.buttons.append(Button('Set joint 0 to zero', self.set_goal_joint_0_to_zero))
             # self.buttons.append(Button('Calib joint 1', lambda: world.calibrate_joint(self, 1, self.active_calib_tool_name)))
 
+        if self.BOARD_VALIDATION:
+            self.dump_sep_sliders.append(Slider("----------Board Validation", lambda : None))
+            
+            # Load available robot cell states if not already loaded
+            if not self.available_robot_cell_states:
+                self.available_robot_cell_states = self._load_available_robot_cell_states()
+            
+            # Create slider for selecting robot cell state
+            if self.available_robot_cell_states:
+                max_index = len(self.available_robot_cell_states) - 1
+                self.board_validation_state_slider = Slider(
+                    "Robot Cell State", 
+                    self.update_board_validation_state_index, 
+                    0, max_index, self.selected_state_index
+                )
+                
+                # Add button to load the selected state
+                self.buttons.append(Button('Load Board Validation State', self.load_board_validation_state))
+            else:
+                print("No robot cell state files found for board validation")
+
         self.dump_sep_sliders.append(Slider("----------DEBUG utils", lambda : None))
         self.buttons.append(Button('Record current calib conf', lambda: world.calibrate_button(self, self.active_calib_tool_name)))
         self.buttons.append(Button('Export calib conf to json', self.record_calibration_data))
@@ -865,6 +1006,9 @@ class HuskyMonitor(Node):
 
         if self.BAR_HOLDING_ACCURACY_TEST:
             self.goal_axis_slider.update()
+            
+        if self.BOARD_VALIDATION and self.board_validation_state_slider:
+            self.board_validation_state_slider.update()
 
         if not self.USE_MOCAP:
             self.teleop_base_slider_group.update()

@@ -90,7 +90,8 @@ def init(monitor):
         connect_gripper=False and not monitor.FAKE_HARDWARE, 
         calibration=monitor.CALIBRATION,
         dual_arm=True,
-        ee_types=["victor_gripper", "custom_gripper"]  # Specify end effectors for both arms
+        ee_types=["custom_gripper", "custom_gripper"]  # Mixed end effectors
+        # ee_types=["validation_tool_pair"]  # Specify end effectors for both arms
     )
     
     # Example of creating a single-arm robot with robotiq gripper (commented out)
