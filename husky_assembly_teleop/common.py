@@ -35,10 +35,18 @@ HUSKY_DUAL_UR5e_JOINT_NAMES = [["left_ur_arm_shoulder_pan_joint",
                       "right_ur_arm_wrist_2_joint", 
                       "right_ur_arm_wrist_3_joint" ]]
 
-def load_robot(ik_from_arm_base=True, load_calib_tip=False, dual_arm=False):
-    # robot_srdf = os.path.join(DATA_DIRECTORY, 'husky_urdf/mt_husky_moveit_config/config/husky.srdf')
-    # robot_urdf = os.path.join(DATA_DIRECTORY,'husky_urdf/mt_husky_moveit_config/urdf/husky_ur5_e.urdf')
-    USE_VICTOR_GRIPPER = True
+# --- --- END EFFECTOR MANAGEMENT --- ---
+
+def load_robot(dual_arm=False):
+    """
+    Load robot URDF without end effectors.
+    
+    Args:
+        dual_arm: Whether this is a dual-arm robot
+        
+    Returns:
+        robot: PyBullet robot body ID
+    """
     robot_urdf = None
     print('loading robot urdf from:', DATA_DIRECTORY)
     if dual_arm:
@@ -46,59 +54,135 @@ def load_robot(ik_from_arm_base=True, load_calib_tip=False, dual_arm=False):
     else:
         robot_urdf = os.path.join(DATA_DIRECTORY,'husky_urdf/mt_husky_moveit_config/urdf/husky_ur5_e_no_base_joint.urdf')
 
-    if load_calib_tip:
-        # gripper_obj = os.path.join(DATA_DIRECTORY,'calibration_probe.obj')
-        # gripper_scale = 1
-        # ee = pp.create_obj(gripper_obj, scale=gripper_scale) 
-        ee = pp.create_box(0.12, 0.12, 0.12)
-        pp.set_color(ee, pp.apply_alpha(pp.GREY, 0.3))
-    else:
-        # robotiq gripper
-        if USE_VICTOR_GRIPPER:
-            gripper_urdf_path = os.path.join(DATA_DIRECTORY, 'grasp_screw_tool_description/urdf/grasp_screw_tool_unactuated.urdf')
-            ee = pp.load_pybullet(gripper_urdf_path, fixed_base=False, cylinder=False)
-        else:
-            gripper_obj = os.path.join(DATA_DIRECTORY,'husky_urdf/robotiq_85/meshes/static/robotiq_85_close_20mm.obj')
-            assert os.path.exists(gripper_obj)
-            gripper_scale = 1
-            ee = pp.create_obj(gripper_obj, scale=gripper_scale) 
-
     assert os.path.exists(robot_urdf)
-
     robot = pp.load_pybullet(robot_urdf, fixed_base=False, cylinder=False)
     
-    ee_list = []
+    return robot
 
-    left_tool0_pose = pp.get_link_pose(robot, pp.link_from_name(robot, ('left_' if dual_arm else '') + 'ur_arm_tool0'))
-    left_ee = ee
-    # pp.create_obj(gripper_obj, scale=gripper_scale) 
+def create_end_effector(ee_type="victor_gripper", load_calib_tip=False, dual_arm=False):
+    """
+    Create end effector based on type.
+    
+    Args:
+        ee_type: Type of end effector ("victor_gripper", "robotiq_gripper", "custom_gripper", or "calib_tip")
+        load_calib_tip: Whether to load calibration tip (overrides ee_type)
+        dual_arm: Whether this is for a dual-arm robot
+        
+    Returns:
+        ee: PyBullet end effector body ID
+    """
+    if load_calib_tip:
+        ee = pp.create_box(0.12, 0.12, 0.12)
+        pp.set_color(ee, pp.apply_alpha(pp.GREY, 0.3))
+        return ee
+    
+    if ee_type == "victor_gripper":
+        gripper_urdf_path = os.path.join(DATA_DIRECTORY, 'grasp_screw_tool_description/urdf/grasp_screw_tool_unactuated.urdf')
+        ee = pp.load_pybullet(gripper_urdf_path, fixed_base=False, cylinder=False)
+        return ee
+    elif ee_type == "robotiq_gripper":
+        gripper_obj = os.path.join(DATA_DIRECTORY,'husky_urdf/robotiq_85/meshes/static/robotiq_85_close_20mm.obj')
+        assert os.path.exists(gripper_obj)
+        gripper_scale = 1
+        ee = pp.create_obj(gripper_obj, scale=gripper_scale)
+        return ee
+    elif ee_type == "validation_point_tool":
+        problem_name = '250806_RobotX_box_redo'
+        robot_cell = json_load(os.path.join(DESIGN_DATA_DIRECTORY, problem_name, 'RobotCell.json'))
+        with PyBulletClient(connection_type="direct", verbose=True) as client:
+            planner = PyBulletPlanner(client)
+            planner.set_robot_cell(robot_cell)
 
-    if not USE_VICTOR_GRIPPER:
-        additional_tool_tf = pp.Pose(point=pp.Point(z=0.12/2 + 0.005)) if load_calib_tip else pp.unit_pose()
-        pp.set_pose(left_ee, pp.multiply(left_tool0_pose, pp.Pose(euler=pp.Euler(yaw=-np.pi/2)), additional_tool_tf))
+            left_tool = robot_cell.get_attached_tool(robot_cell_state, "base_left_arm_manipulator")
+            right_tool = robot_cell.get_attached_tool(robot_cell_state, "base_right_arm_manipulator")
+
+            left_tool_uid = client.tools_puids[left_tool.name]
+            right_tool_uid = client.tools_puids[right_tool.name]
+ 
+    elif ee_type == "custom_gripper":
+        # Example of adding a new end effector type
+        # You can load from URDF, OBJ, or create a simple geometric shape
+        custom_gripper_path = os.path.join(DATA_DIRECTORY, 'custom_gripper_description/urdf/custom_gripper.urdf')
+        if os.path.exists(custom_gripper_path):
+            # Load from URDF if available
+            ee = pp.load_pybullet(custom_gripper_path, fixed_base=False, cylinder=False)
+        else:
+            # Fallback to simple geometric shape
+            ee = pp.create_cylinder(radius=0.05, height=0.15, color=(0.8, 0.8, 0.8, 1))
+        return ee
     else:
-        # additional_tool_tf = pp.Pose(point=pp.Point(z=0.12/2 + 0.005)) if load_calib_tip else pp.unit_pose()
-        pp.set_pose(left_ee, left_tool0_pose)
+        raise ValueError(f"Unknown end effector type: {ee_type}. Valid types: victor_gripper, robotiq_gripper, custom_gripper, calib_tip")
 
-    left_ee_attachment = pp.create_attachment(robot, pp.link_from_name(robot, ('left_' if dual_arm else '') + 'ur_arm_tool0'), left_ee)
-    ee_list.append((left_ee, left_ee_attachment))
+def attach_end_effectors(robot, ee_list, dual_arm=False):
+    """
+    Attach end effectors to robot tool0 links.
+    
+    Args:
+        robot: PyBullet robot body ID
+        ee_list: List of end effector body IDs
+        dual_arm: Whether this is a dual-arm robot
+        
+    Returns:
+        attached_ee_list: List of (ee_body, ee_attachment) tuples
+    """
+    attached_ee_list = []
+    
+    for i, ee in enumerate(ee_list):
+        if dual_arm:
+            if i == 0:  # Left arm
+                tool0_link_name = 'left_ur_arm_tool0'
+            else:  # Right arm
+                tool0_link_name = 'right_ur_arm_tool0'
+        else:
+            tool0_link_name = 'ur_arm_tool0'
+        
+        tool0_pose = pp.get_link_pose(robot, pp.link_from_name(robot, tool0_link_name))
+        
+        # Set end effector pose
+        pp.set_pose(ee, tool0_pose)
+        
+        # Create attachment
+        ee_attachment = pp.create_attachment(robot, pp.link_from_name(robot, tool0_link_name), ee)
+        attached_ee_list.append((ee, ee_attachment))
+    
+    return attached_ee_list
+
+def load_robot_with_end_effectors(ee_types=None, load_calib_tip=False, dual_arm=False):
+    """
+    Load robot with end effectors (legacy function for backward compatibility).
+    
+    Args:
+        ee_types: List of end effector types
+        load_calib_tip: Whether to load calibration tip
+        dual_arm: Whether this is a dual-arm robot
+        
+    Returns:
+        robot: PyBullet robot body ID
+        attached_ee_list: List of (ee_body, ee_attachment) tuples
+    """
+    robot = load_robot(dual_arm=dual_arm)
+    
+    if ee_types is None:
+        if load_calib_tip:
+            ee_types = ["calib_tip"]
+        else:
+            ee_types = ["victor_gripper"]
     
     if dual_arm:
-        right_tool0_pose = pp.get_link_pose(robot, pp.link_from_name(robot, 'right_ur_arm_tool0'))
-        if not USE_VICTOR_GRIPPER:
-            right_ee = pp.clone_body(left_ee)
+        if len(ee_types) == 1:
+            ee_types = [ee_types[0], ee_types[0]]  # Use same type for both arms
+    
+    ee_list = []
+    for ee_type in ee_types:
+        if ee_type == "calib_tip":
+            ee = create_end_effector(load_calib_tip=True, dual_arm=dual_arm)
         else:
-            right_ee = pp.load_pybullet(gripper_urdf_path, fixed_base=False, cylinder=False)
-
-        if not USE_VICTOR_GRIPPER:
-            pp.set_pose(right_ee, pp.multiply(right_tool0_pose, pp.Pose(euler=pp.Euler(yaw=-np.pi/2)), additional_tool_tf))
-        else:
-            pp.set_pose(right_ee, right_tool0_pose)
-
-        right_ee_attachment = pp.create_attachment(robot, pp.link_from_name(robot, 'right_ur_arm_tool0'), right_ee)
-        ee_list.append((right_ee, right_ee_attachment))
-
-    return robot, ee_list
+            ee = create_end_effector(ee_type=ee_type, dual_arm=dual_arm)
+        ee_list.append(ee)
+    
+    attached_ee_list = attach_end_effectors(robot, ee_list, dual_arm=dual_arm)
+    
+    return robot, attached_ee_list
 
 def load_gripper(load_calib_tip=False):
     if load_calib_tip:
@@ -164,9 +248,16 @@ class TrackedObject:
             pp.set_pose(self.body, base_pose)
 
 class Husky():
-    """A husky interface with corresponding husky object."""
+    """
+    A husky interface with corresponding husky object.
+    
+    End effectors can now be specified at creation time using the ee_types parameter:
+    - For single-arm robots: ee_types=["victor_gripper"] or ee_types=["robotiq_gripper"] or ee_types=["custom_gripper"]
+    - For dual-arm robots: ee_types=["victor_gripper", "victor_gripper"] or ee_types=["robotiq_gripper", "custom_gripper"]
+    - For calibration: set calibration=True (automatically uses calib_tip)
+    """
     def __init__(self, monitor, name, mocap_id=None, pos=np.zeros(3), rot=np.array((0, 0, 0, 1)), 
-                 connect_arm=True, connect_gripper=True, base_calibration_file=None, calibration=False, dual_arm=False):
+                 connect_arm=True, connect_gripper=True, base_calibration_file=None, calibration=False, dual_arm=False, ee_types=None):
         self.name = name
         self.mocap_id = mocap_id
         self.interface = HuskyRobotInterface(monitor, 
@@ -176,7 +267,7 @@ class Husky():
                                              connect_gripper=connect_gripper, 
                                              dual_arm=dual_arm
                                              )
-        self.object = HuskyObject(calibration=calibration, dual_arm=dual_arm)
+        self.object = HuskyObject(calibration=calibration, dual_arm=dual_arm, ee_types=ee_types)
         self.dual_arm = dual_arm
         
         self.interface.position = pos
@@ -193,15 +284,40 @@ class Husky():
         monitor.add_husky(self)
 
 class HuskyObject():
-    """Collection of pybullet objects representing a husky"""
-    def __init__(self, calibration=False, dual_arm=False):
+    """
+    Collection of pybullet objects representing a husky.
+    
+    End effectors are now created and attached during initialization based on the ee_types parameter.
+    This makes it easier to specify different end effectors for different robots at the high level.
+    """
+    def __init__(self, calibration=False, dual_arm=False, ee_types=None):
         with pp.LockRenderer():
             with pp.HideOutput():
-                robot, ee_list = load_robot(load_calib_tip=calibration, dual_arm=dual_arm)
+                robot = load_robot(dual_arm=dual_arm)
                 self.robot = robot
-                self.ee_list = ee_list
-                self.old_color = None
                 self.dual_arm = dual_arm
+                
+                # Handle end effectors
+                if ee_types is None:
+                    if calibration:
+                        ee_types = ["calib_tip"]
+                    else:
+                        ee_types = ["victor_gripper"]
+                
+                if dual_arm:
+                    if len(ee_types) == 1:
+                        ee_types = [ee_types[0], ee_types[0]]  # Use same type for both arms
+                
+                ee_list = []
+                for ee_type in ee_types:
+                    if ee_type == "calib_tip":
+                        ee = create_end_effector(load_calib_tip=True, dual_arm=dual_arm)
+                    else:
+                        ee = create_end_effector(ee_type=ee_type, dual_arm=dual_arm)
+                    ee_list.append(ee)
+                
+                self.ee_list = attach_end_effectors(robot, ee_list, dual_arm=dual_arm)
+                self.old_color = None
        
     def set_pose(self, base_pose, arm_joint_states, index=0):
         """Set pose of base and ur5e arm(s). arm_joint_states must be of shape [[joint_values]] or [[left_joints], [right_joints]]"""        

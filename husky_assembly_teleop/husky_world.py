@@ -38,23 +38,94 @@ CALIB_DATA_DIR = os.path.join(DATA_DIR, "calibration_data")
 BAR_HOLDING_ACC_DATA_DIR = os.path.join(DATA_DIR, "bar_holding_acc_data")
 DUAL_ARM_ACC_DATA_DIR = os.path.join(DATA_DIR, "dual_arm_acc_data")
 
+def create_husky_with_end_effectors(monitor, name, mocap_id=None, pos=np.zeros(3), rot=np.array((0, 0, 0, 1)), 
+                                   connect_arm=True, connect_gripper=True, base_calibration_file=None, 
+                                   calibration=False, dual_arm=False, ee_types=None):
+    """
+    Helper function to create a Husky robot with specified end effectors.
+    
+    Args:
+        monitor: The monitor instance
+        name: Robot name
+        mocap_id: Mocap ID for tracking
+        pos: Initial position
+        rot: Initial rotation
+        connect_arm: Whether to connect to arm hardware
+        connect_gripper: Whether to connect to gripper hardware
+        base_calibration_file: Path to base calibration file
+        calibration: Whether this is for calibration (uses calib_tip)
+        dual_arm: Whether this is a dual-arm robot
+        ee_types: List of end effector types. Options:
+                 - "victor_gripper": Victor gripper
+                 - "robotiq_gripper": Robotiq gripper  
+                 - "custom_gripper": Custom gripper (example)
+                 - "calib_tip": Calibration tip
+                 For dual-arm robots, provide a list of two types.
+                 For single-arm robots, provide a list of one type.
+                 If None, defaults to victor_gripper or calib_tip based on calibration flag.
+    """
+    if ee_types is None:
+        if calibration:
+            ee_types = ["calib_tip"]
+        else:
+            ee_types = ["victor_gripper"]
+    
+    if dual_arm and len(ee_types) == 1:
+        ee_types = [ee_types[0], ee_types[0]]  # Use same type for both arms
+    
+    return Husky(monitor, name=name, mocap_id=mocap_id, pos=pos, rot=rot,
+                connect_arm=connect_arm, connect_gripper=connect_gripper,
+                base_calibration_file=base_calibration_file, calibration=calibration,
+                dual_arm=dual_arm, ee_types=ee_types)
+
 def init(monitor):
     # * add robots
-    # 1004
-    Husky(monitor, name='/a200_0806', mocap_id=4591, pos=np.array((0,0,0)), 
-          connect_arm=not monitor.FAKE_HARDWARE, 
-          connect_gripper=False and not monitor.FAKE_HARDWARE, 
-          calibration=monitor.CALIBRATION,
-          dual_arm=True)
+    # 1004 - Example of creating a dual-arm robot with victor grippers
+    create_husky_with_end_effectors(
+        monitor, 
+        name='/a200_0806', 
+        mocap_id=4591, 
+        pos=np.array((0,0,0)), 
+        connect_arm=not monitor.FAKE_HARDWARE, 
+        connect_gripper=False and not monitor.FAKE_HARDWARE, 
+        calibration=monitor.CALIBRATION,
+        dual_arm=True,
+        ee_types=["victor_gripper", "custom_gripper"]  # Specify end effectors for both arms
+    )
     
-    """Husky(monitor, name='/a200_0804', mocap_id=4568, pos=np.array((0,0,0)), 
-          connect_arm=not monitor.FAKE_HARDWARE, connect_gripper=not monitor.FAKE_HARDWARE, 
-        #   calibration=monitor.CALIBRATION)
-          calibration=monitor.CALIBRATION,
-          dual_arm=False,
-          base_calibration_file=os.path.join(CALIB_DATA_DIR, 'calibrated_transformation_0804.json'))"""
+    # Example of creating a single-arm robot with robotiq gripper (commented out)
+    """create_husky_with_end_effectors(
+        monitor, 
+        name='/a200_0804', 
+        mocap_id=4568, 
+        pos=np.array((0,0,0)), 
+        connect_arm=not monitor.FAKE_HARDWARE, 
+        connect_gripper=not monitor.FAKE_HARDWARE, 
+        calibration=monitor.CALIBRATION,
+        dual_arm=False,
+        ee_types=["robotiq_gripper"],  # Specify end effector for single arm
+        base_calibration_file=os.path.join(CALIB_DATA_DIR, 'calibrated_transformation_0804.json')
+    )"""
 
-    # Husky(monitor, name='/a200_0805', mocap_id=1033, pos=np.array((0,1,0)), connect_gripper=False)
+    # Example of creating a robot with calibration tips
+    """create_husky_with_end_effectors(
+        monitor, 
+        name='/a200_0805', 
+        mocap_id=1033, 
+        pos=np.array((0,1,0)), 
+        calibration=True,  # This will automatically use calib_tip
+        dual_arm=True
+    )"""
+
+    # Example of creating a robot with custom gripper
+    """create_husky_with_end_effectors(
+        monitor, 
+        name='/a200_0807', 
+        mocap_id=4592, 
+        pos=np.array((1,0,0)), 
+        dual_arm=True,
+        ee_types=["custom_gripper", "victor_gripper"]  # Mixed end effectors
+    )"""
 
     # * add static obstacles
     monitor.add_static_obstacles(pp.create_plane(color=(0.9, 0.9, 0.9, 1)))
