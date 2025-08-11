@@ -1099,7 +1099,7 @@ class HuskyMonitor(Node):
         # Convert numpy arrays to lists
         traj_list = [list(map(float, conf)) for conf in traj]
         # Save to DATA_DIRECTORY/robotx_box
-        out_dir = '/home/yijiangh/ros2_ws/src/husky-asembly-teleop/data/robotx_box'
+        out_dir = os.path.join(DATA_DIRECTORY, 'robotx_box')
         os.makedirs(out_dir, exist_ok=True)
         # Add arm index to the filename before the extension
         base, ext = os.path.splitext(filename)

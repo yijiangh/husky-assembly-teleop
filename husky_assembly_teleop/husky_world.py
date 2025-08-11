@@ -30,9 +30,8 @@ MT_FILE_NAME = "one_tet_MT_contact.json"
 # huskies = []
 assembly_objects = []
 
-DATA_DIR = "/home/jakobgenhart/husky_assistant/workspace/src/husky-asembly-teleop/data"
-if not os.path.exists(DATA_DIR):
-    DATA_DIR = "/home/yijiangh/ros2_ws/src/husky-asembly-teleop/data"
+# Use the centralized DATA_DIRECTORY from the package
+DATA_DIR = DATA_DIRECTORY
 
 CALIB_DATA_DIR = os.path.join(DATA_DIR, "calibration_data")
 BAR_HOLDING_ACC_DATA_DIR = os.path.join(DATA_DIR, "bar_holding_acc_data")
@@ -40,7 +39,7 @@ DUAL_ARM_ACC_DATA_DIR = os.path.join(DATA_DIR, "dual_arm_acc_data")
 
 def create_husky_with_end_effectors(monitor, name, mocap_id=None, pos=np.zeros(3), rot=np.array((0, 0, 0, 1)), 
                                    connect_arm=True, connect_gripper=True, base_calibration_file=None, 
-                                   calibration=False, dual_arm=False, ee_types=None):
+                                   calibration=False, dual_arm=False, ee_types=None, force_regenerate=False):
     """
     Helper function to create a Husky robot with specified end effectors.
     
@@ -59,24 +58,23 @@ def create_husky_with_end_effectors(monitor, name, mocap_id=None, pos=np.zeros(3
                  - "victor_gripper": Victor gripper
                  - "robotiq_gripper": Robotiq gripper  
                  - "custom_gripper": Custom gripper (example)
+                 - "validation_tool_pair": Validation tool pair (PointTool and BoardTool)
                  - "calib_tip": Calibration tip
                  For dual-arm robots, provide a list of two types.
                  For single-arm robots, provide a list of one type.
                  If None, defaults to victor_gripper or calib_tip based on calibration flag.
+        force_regenerate: Force regeneration of URDF cache (only used for validation_tool_pair)
     """
     if ee_types is None:
         if calibration:
             ee_types = ["calib_tip"]
         else:
             ee_types = ["victor_gripper"]
-    
-    if dual_arm and len(ee_types) == 1:
-        ee_types = [ee_types[0], ee_types[0]]  # Use same type for both arms
-    
+     
     return Husky(monitor, name=name, mocap_id=mocap_id, pos=pos, rot=rot,
                 connect_arm=connect_arm, connect_gripper=connect_gripper,
                 base_calibration_file=base_calibration_file, calibration=calibration,
-                dual_arm=dual_arm, ee_types=ee_types)
+                dual_arm=dual_arm, ee_types=ee_types, force_regenerate=force_regenerate)
 
 def init(monitor):
     # * add robots
@@ -91,7 +89,8 @@ def init(monitor):
         calibration=monitor.CALIBRATION,
         dual_arm=True,
         # ee_types=["custom_gripper", "custom_gripper"]  # Mixed end effectors
-        ee_types=["validation_tool_pair"]  # Specify end effectors for both arms
+        ee_types=["validation_tool_pair"],  # Specify end effectors for both arms
+        force_regenerate=False
     )
     
     # Example of creating a single-arm robot with robotiq gripper (commented out)
@@ -121,7 +120,7 @@ def init(monitor):
     # Example of creating a robot with custom gripper
     """create_husky_with_end_effectors(
         monitor, 
-        name='/a200_0807', 
+        name='/a200_0806', 
         mocap_id=4592, 
         pos=np.array((1,0,0)), 
         dual_arm=True,

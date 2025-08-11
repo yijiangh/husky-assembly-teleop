@@ -180,7 +180,7 @@ def load_robot(dual_arm=False):
     
     return robot
 
-def create_end_effector(ee_type="victor_gripper", load_calib_tip=False, dual_arm=False):
+def create_end_effector(ee_type="victor_gripper", load_calib_tip=False, dual_arm=False, force_regenerate=False):
     """
     Create end effector based on type.
     
@@ -188,6 +188,7 @@ def create_end_effector(ee_type="victor_gripper", load_calib_tip=False, dual_arm
         ee_type: Type of end effector ("victor_gripper", "robotiq_gripper", "custom_gripper", "validation_tool_pair", or "calib_tip")
         load_calib_tip: Whether to load calibration tip (overrides ee_type)
         dual_arm: Whether this is for a dual-arm robot (only used for validation_tool_pair)
+        force_regenerate: Force regeneration of URDF cache (only used for validation_tool_pair)
         
     Returns:
         ee: PyBullet end effector body ID or list of IDs for validation tool pair
@@ -210,12 +211,17 @@ def create_end_effector(ee_type="victor_gripper", load_calib_tip=False, dual_arm
     elif ee_type == "validation_tool_pair":
         # Hardcoded validation tool configuration
         problem_name = '250808_cindy_calibration_validation'
-        state_file = 'validation_20250808_235435_RobotCellState.json'
+        # Dynamically select any JSON file ending with _RobotCellState.json in the RobotCellStates directory
+        robot_cell_states_dir = os.path.join(DESIGN_DATA_DIRECTORY, problem_name, 'RobotCellStates')
+        state_files = [f for f in os.listdir(robot_cell_states_dir) if f.endswith('_RobotCellState.json')]
+        if not state_files:
+            raise FileNotFoundError(f"No _RobotCellState.json files found in {robot_cell_states_dir}")
 
+        state_file = state_files[0]  # Choose the first one found (could randomize or sort if needed)
         tool_urdf_cache_dir = os.path.join(DESIGN_DATA_DIRECTORY, problem_name, "tool_urdf_cache")
         os.makedirs(tool_urdf_cache_dir, exist_ok=True)
 
-        tool_urdf_paths = generate_and_cache_tool_urdfs(problem_name, state_file, tool_urdf_cache_dir)
+        tool_urdf_paths = generate_and_cache_tool_urdfs(problem_name, state_file, tool_urdf_cache_dir, force_regenerate=force_regenerate)
         
         # Load robot cell and state to get tool assignments
         robot_cell = json_load(os.path.join(DESIGN_DATA_DIRECTORY, problem_name, 'RobotCell.json'))
@@ -372,7 +378,7 @@ class Husky():
     Note: validation_tool_pair loads a predefined pair of validation tools (PointTool and BoardTool)
     """
     def __init__(self, monitor, name, mocap_id=None, pos=np.zeros(3), rot=np.array((0, 0, 0, 1)), 
-                 connect_arm=True, connect_gripper=True, base_calibration_file=None, calibration=False, dual_arm=False, ee_types=None):
+                 connect_arm=True, connect_gripper=True, base_calibration_file=None, calibration=False, dual_arm=False, ee_types=None, force_regenerate=False):
         self.name = name
         self.mocap_id = mocap_id
         self.interface = HuskyRobotInterface(monitor, 
@@ -382,7 +388,7 @@ class Husky():
                                              connect_gripper=connect_gripper, 
                                              dual_arm=dual_arm
                                              )
-        self.object = HuskyObject(calibration=calibration, dual_arm=dual_arm, ee_types=ee_types)
+        self.object = HuskyObject(calibration=calibration, dual_arm=dual_arm, ee_types=ee_types, force_regenerate=force_regenerate)
         self.dual_arm = dual_arm
         
         self.interface.position = pos
@@ -405,7 +411,7 @@ class HuskyObject():
     End effectors are now created and attached during initialization based on the ee_types parameter.
     This makes it easier to specify different end effectors for different robots at the high level.
     """
-    def __init__(self, calibration=False, dual_arm=False, ee_types=None):
+    def __init__(self, calibration=False, dual_arm=False, ee_types=None, force_regenerate=False):
         with pp.LockRenderer(False):
             with pp.HideOutput():
                 robot = load_robot(dual_arm=dual_arm)
@@ -430,13 +436,18 @@ class HuskyObject():
                     if ee_type == "calib_tip":
                         ee = create_end_effector(load_calib_tip=True, dual_arm=dual_arm)
                     else:
-                        ee = create_end_effector(ee_type=ee_type, dual_arm=dual_arm)
+                        ee = create_end_effector(ee_type=ee_type, dual_arm=dual_arm, force_regenerate=force_regenerate)
                     
                     # Handle validation_tool_pair which returns a list
                     if isinstance(ee, list):
                         ee_list.extend(ee)
                     else:
                         ee_list.append(ee)
+
+                if dual_arm:
+                    assert len(ee_list) == 2, f"Expected 2 end effectors for dual_arm, got {len(ee_list)}"
+                else:
+                    assert len(ee_list) == 1, f"Expected 1 end effector for single arm, got {len(ee_list)}"
                 
                 self.ee_list = attach_end_effectors(robot, ee_list, dual_arm=dual_arm)
                 self.old_color = None

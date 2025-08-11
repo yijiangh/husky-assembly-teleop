@@ -24,7 +24,7 @@ setup(
         ('share/' + package_name, ['package.xml']),
         #('share/' + package_name + '/data',  glob(os.path.join('data', '**', '*.*'), recursive=True)),
         #('share/' + package_name + '/data',  [f for f in copy_dir('data', '')]),
-    ] + copy_dir('share/' + package_name + '/data', 'data'),
+    ], #copy_dir('share/' + package_name + '/data', 'data'),
     install_requires=['setuptools'],
     zip_safe=True,
     maintainer='Jakob Genhart',

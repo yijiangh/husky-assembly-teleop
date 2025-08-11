@@ -1,6 +1,43 @@
 import os
 from ament_index_python import get_package_share_directory
 
-DATA_DIRECTORY = os.path.join(get_package_share_directory('husky_assembly_teleop'), 'data')
+def _get_data_directory():
+    """
+    Determine the data directory path.
+    If running from source (development), use the source data directory.
+    Otherwise, use the installed package data directory.
+    """
+    # Get the installed package data directory
+    installed_data_dir = os.path.join(get_package_share_directory('husky_assembly_teleop'), 'data')
+    
+    # Extract workspace path from installed directory
+    # installed_data_dir = /home/yijiangh/ros2_ws/install/husky_assembly_teleop/share/husky_assembly_teleop/data
+    # We want to extract: /home/yijiangh/ros2_ws/
+    
+    # Split the path and find the 'install' directory
+    path_parts = installed_data_dir.split(os.sep)
+    try:
+        install_index = path_parts.index('install')
+        # Everything before 'install' is the workspace path
+        ws_path = os.sep.join(path_parts[:install_index])
+        
+        # Construct source data directory
+        source_data_dir = os.path.join(ws_path, 'src', 'husky-assembly-teleop', 'data')
+        
+        if os.path.exists(source_data_dir):
+            print(f"Using source data directory: {source_data_dir}")
+            return source_data_dir
+        else:
+            print(f"Source data directory not found: {source_data_dir}")
+            print(f"Using installed data directory: {installed_data_dir}")
+            return installed_data_dir
+            
+    except ValueError:
+        # 'install' not found in path, fallback to installed directory
+        print(f"Could not extract workspace path from: {installed_data_dir}")
+        print(f"Using installed data directory: {installed_data_dir}")
+        return installed_data_dir
+
+DATA_DIRECTORY = _get_data_directory()
 DESIGN_DATA_DIRECTORY = os.path.join(DATA_DIRECTORY, 'husky_assembly_design_study')
-RECORD_DIRECTORY = os.path.join(get_package_share_directory('husky_assembly_teleop'), 'recorded_data')
+RECORD_DIRECTORY = os.path.join(DATA_DIRECTORY, '..', 'recorded_data')
