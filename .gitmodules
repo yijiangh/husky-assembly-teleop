@@ -10,3 +10,6 @@
 [submodule "data/husky_assembly_design_study"]
 	path = data/husky_assembly_design_study
 	url = git@github.com:yijiangh/husky_assembly_design_study.git
+[submodule "external/pybullet_planning"]
+	path = external/pybullet_planning
+	url = git@github.com:yijiangh/pybullet_planning.git
