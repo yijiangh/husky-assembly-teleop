@@ -155,7 +155,7 @@ def generate_and_cache_tool_urdfs(problem_name='250806_RobotX_box_redo', state_f
     with open(cache_info_file, 'w') as f:
         json.dump(tool_urdf_paths, f, indent=2)
     
-    print(f"Cached {len(tool_urdf_paths)} tool URDFs")
+    print(f"Cached {len(tool_urdf_paths)} tool URDFs to {tool_urdf_cache_dir}")
     return tool_urdf_paths
 
 def load_robot(dual_arm=False):

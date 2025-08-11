@@ -34,7 +34,36 @@ git config --global submodule.recurse true
 
 This setting ensures that commands like `git pull` will also update submodules recursively.
 
+## Python Virtual Environment Setup
+
+It is **strongly recommended** to use a Python virtual environment (venv) for development and running this package. This is especially important because the ROS2 package depends on Python packages (such as `compas_fab`, included as a submodule) that are being developed together with this package and installed locally in "editable" mode. Using a venv allows you to install and update these packages without affecting your global Python environment, which avoids conflicts and keeps your system clean. See [this ROS2 issue comment](https://github.com/ros2/ros2/issues/1094#issuecomment-2916700723) for more details.
+
+If you use the `--system-site-packages` flag when creating your venv, you can use system-installed tools like `colcon` without needing to install them inside the venv. This approach has been used reliably for years.
+
+### One-time venv setup
+
+```bash
+# One time setup
+python3 -m venv <venv_name> --system-site-packages
+
+# In your build terminal
+<venv_name>/bin/activate
+python3 -m pip install <your_dependencies>
+python3 -m colcon build --symlink-install
+
+# In your running terminal
+<venv_name>/bin/activate
+source install/setup.bash
+ros2 run husky_assembly_teleop husky_monitor
+```
+
+## Mocap Connection Setup
+Read the [Mocap wiki](https://gitlab.inf.ethz.ch/crl/crl-wiki/-/wikis/HW/OptiTrack) for more information on how to create a rigid body in Motive and how to set the IP address of the OptiTrack server.
+
 ## Tracikpy (Linux-only)
+Tracikpy is a minimal yet reliable and fast inverse kinematics solver that simply takes a URDF and a target pose and returns a solution.
+However, it only works on Linux and is very hard to configure on a Windows machine. Thus, atm we couldn't use it for the Grasshopper/Rhino design interface.
+
 Install system package dependencies for [tracikpy](https://github.com/mjd3/tracikpy):
 ```
 sudo apt-get install libeigen3-dev liborocos-kdl-dev libkdl-parser-dev liburdfdom-dev libnlopt-dev libnlopt-cxx-dev
@@ -46,20 +75,13 @@ Install python dependencies:
 pip install -r requirements.txt
 ```
 
-Build and run:
-```
-cd workspace
-colcon build
-source install/setup.bash
-ros2 run husky_assembly_teleop husky_monitor
-```
+# Code Structure
 
-Changes to python scripts need a rebuild too! Use `colcon build && ros2 run husky_assembly_teleop husky_monitor` to run both commands at once. Alternatively, look into `colcon build --symlink-install`.
+This package is intended to be a hardware deployment code. Its relationship to other parts of the overall system is shown below.
 
+![Code Structure](./doc/husky_assembly_code_org.png)
 
-Read the [Mocap wiki](https://gitlab.inf.ethz.ch/crl/crl-wiki/-/wikis/HW/OptiTrack) for more information on how to create a rigid body in Motive and how to set the IP address of the OptiTrack server.
-
-## Usage
+# Usage
 
 ### Initiate network connection
 1. Turn on the power for the TPLink, the OptiTrack system (the Netgear router).
