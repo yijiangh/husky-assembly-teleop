@@ -1069,9 +1069,60 @@ def execute_arm_trajectory_both(monitor):
     if monitor.planned_arm_trajectory[1][0] is None:
         monitor.get_logger().warn('Arm trajectory must be planed before executing! [RIGHT]')
         return
-    monitor.huskies[monitor.selected_robot_id].interface.send_dual_arm_cmd(monitor.planned_arm_trajectory)
-    #monitor.huskies[monitor.selected_robot_id].interface.send_arm_cmd(*monitor.planned_arm_trajectory[0][0:3], index=0)
-    #monitor.huskies[monitor.selected_robot_id].interface.send_arm_cmd(*monitor.planned_arm_trajectory[1][0:3], index=1)
+    
+    if not monitor.FAKE_HARDWARE:
+        monitor.huskies[monitor.selected_robot_id].interface.send_dual_arm_cmd(monitor.planned_arm_trajectory)
+    else:
+        # fake execution in sim for both arms
+        ho = monitor.huskies[monitor.selected_robot_id].object
+        hi = monitor.huskies[monitor.selected_robot_id].interface
+        
+        # Get trajectories for both arms
+        left_trajectory = monitor.planned_arm_trajectory[0]
+        right_trajectory = monitor.planned_arm_trajectory[1]
+        
+        # Get attached objects for both arms
+        left_obj = left_trajectory[3] if left_trajectory[3] is not None else None
+        right_obj = right_trajectory[3] if right_trajectory[3] is not None else None
+        
+        left_gripper_tcp_from_object = left_obj.grasp if left_obj is not None else None
+        right_gripper_tcp_from_object = right_obj.grasp if right_obj is not None else None
+        
+        # Execute both trajectories simultaneously
+        max_points = max(len(left_trajectory[0]), len(right_trajectory[0]))
+        
+        for i in range(max_points):
+            # Update left arm configuration
+            if i < len(left_trajectory[0]):
+                hi.arm_joint_pose[0] = left_trajectory[0][i]
+            
+            # Update right arm configuration  
+            if i < len(right_trajectory[0]):
+                hi.arm_joint_pose[1] = right_trajectory[0][i]
+            
+            # Update robot pose
+            ho.set_pose((hi.position, hi.rotation), hi.arm_joint_pose)
+            
+            # Update attached objects based on FK
+            if left_obj is not None and i < len(left_trajectory[0]):
+                world_from_tcp = ho.get_link_pose_from_name("left_ur_arm_tool0")
+                object_pose = pp.multiply(world_from_tcp, left_gripper_tcp_from_object)
+                left_obj.set_pose(object_pose)
+            
+            if right_obj is not None and i < len(right_trajectory[0]):
+                world_from_tcp = ho.get_link_pose_from_name("right_ur_arm_tool0")
+                object_pose = pp.multiply(world_from_tcp, right_gripper_tcp_from_object)
+                right_obj.set_pose(object_pose)
+            
+            # Set execution flags
+            hi.is_arm_executing[0] = True
+            hi.is_arm_executing[1] = True
+            
+            pp.wait_for_duration(0.01)
+        
+        # Clear execution flags
+        hi.is_arm_executing[0] = False
+        hi.is_arm_executing[1] = False
 
 def load_robotcellstate_and_update_goal(monitor, filepath):
     """

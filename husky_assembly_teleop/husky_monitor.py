@@ -48,7 +48,7 @@ FILENAME_SUFFIX = '_vary_pos_vary_yaw'
   
 class HuskyMonitor(Node):
     USE_MOCAP = 0
-    FAKE_HARDWARE = 0
+    FAKE_HARDWARE = 1
 
     GRASP_PARTITION = 8
     BAR_GOAL_MODE = 0
@@ -612,6 +612,8 @@ class HuskyMonitor(Node):
                     print(f"Base pose: {self.goal_base_pose}")
                     print(f"Left arm joints: {self.goal_arm_pose[0]}")
                     print(f"Right arm joints: {self.goal_arm_pose[1]}")
+
+                    self.set_to_show_goal_state()
                 else:
                     print("Robot configuration does not have expected structure")
             else:
@@ -724,35 +726,41 @@ class HuskyMonitor(Node):
 
         self.buttons.append(Button('Plan S.Arm to conf target', lambda : world.plan_arm_to_goal(self)))
         self.buttons.append(Button('Exec S.Arm Traj', self.execute_arm_trajectory))
-        # self.buttons.append(Button('Exec Both Arm Trajs', lambda: world.execute_arm_trajectory_both(self)))
+        self.buttons.append(Button('Exec Both Arm Trajs', lambda: world.execute_arm_trajectory_both(self)))
 
         # Add dual arm configuration sampling button
         self.buttons.append(Button('Sample Dual Arm Config', self.sample_dual_arm_configuration))
 
         # Add buttons for planning both arms to goal (sequential and composite)
         self.buttons.append(Button('Plan Both Arms to Goal (sequential)', lambda: world.plan_both_arms_to_goal(self, use_composite=False)))
-        # self.buttons.append(Button('Plan Both Arms to Goal (composite)', lambda: world.plan_both_arms_to_goal(self, use_composite=True)))
-
-        self.buttons.append(Button(
-               'Load RobotCellState',
-               lambda: world.load_robotcellstate_and_update_goal(
-                   self,
-                   os.path.join(
-                       DATA_DIRECTORY,
-                        'husky_assembly_design_study',
-                        '250714_robot_centric_IK_grasp_test',
-                        'RobotCellStates',
-                        # 'robotx_box_A0-IK_test_front3_high2_RobotCellState.json'
-                        'robotx_box_A0-IK_test_left_RobotCellState.json'
-                   )
-               )
-           ))
+        self.buttons.append(Button('Plan Both Arms to Goal (composite)', lambda: world.plan_both_arms_to_goal(self, use_composite=True)))
 
         # Button to export planned trajectory to JSON
         self.buttons.append(Button(
             'Export Trajectory (JSON)',
             lambda: self.export_planned_trajectory_to_json()
         ))
+
+        if self.BOARD_VALIDATION:
+            self.dump_sep_sliders.append(Slider("----------Board Validation", lambda : None))
+            
+            # Load available robot cell states if not already loaded
+            if not self.available_robot_cell_states:
+                self.available_robot_cell_states = self._load_available_robot_cell_states()
+            
+            # Create slider for selecting robot cell state
+            if self.available_robot_cell_states:
+                max_index = len(self.available_robot_cell_states) - 1
+                self.board_validation_state_slider = Slider(
+                    "Robot Cell State", 
+                    self.update_board_validation_state_index, 
+                    0, max_index, self.selected_state_index
+                )
+                
+                # Add button to load the selected state
+                self.buttons.append(Button('Load Board Validation State', self.load_board_validation_state))
+            else:
+                print("No robot cell state files found for board validation")
 
         if not self.CALIBRATION:
             # in calibration mode, we do not have task space targets so this is disabled
@@ -845,27 +853,6 @@ class HuskyMonitor(Node):
 
             # self.buttons.append(Button('Set joint 0 to zero', self.set_goal_joint_0_to_zero))
             # self.buttons.append(Button('Calib joint 1', lambda: world.calibrate_joint(self, 1, self.active_calib_tool_name)))
-
-        if self.BOARD_VALIDATION:
-            self.dump_sep_sliders.append(Slider("----------Board Validation", lambda : None))
-            
-            # Load available robot cell states if not already loaded
-            if not self.available_robot_cell_states:
-                self.available_robot_cell_states = self._load_available_robot_cell_states()
-            
-            # Create slider for selecting robot cell state
-            if self.available_robot_cell_states:
-                max_index = len(self.available_robot_cell_states) - 1
-                self.board_validation_state_slider = Slider(
-                    "Robot Cell State", 
-                    self.update_board_validation_state_index, 
-                    0, max_index, self.selected_state_index
-                )
-                
-                # Add button to load the selected state
-                self.buttons.append(Button('Load Board Validation State', self.load_board_validation_state))
-            else:
-                print("No robot cell state files found for board validation")
 
         self.dump_sep_sliders.append(Slider("----------DEBUG utils", lambda : None))
         self.buttons.append(Button('Record current calib conf', lambda: world.calibrate_button(self, self.active_calib_tool_name)))
