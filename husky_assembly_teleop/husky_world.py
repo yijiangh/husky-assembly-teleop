@@ -1475,7 +1475,25 @@ def plan_both_arms_to_goal(monitor, use_composite=False):
         )
         if right_trajectory[0] is None:
             monitor.get_logger().warn('Right arm planning failed!')
-            # return
+            return
+        
+        # Create composite trajectories to show proper timing
+        # Left arm moves first, then right arm moves while left arm holds its final position
+        left_path = left_trajectory[0]
+        right_path = right_trajectory[0]
+        
+        # Pad left trajectory with its final configuration for the duration of right arm movement
+        left_final_conf = left_path[-1]
+        padded_left_path = np.vstack([left_path, np.tile(left_final_conf, (len(right_path), 1))])
+        
+        # Pad right trajectory with its initial configuration for the duration of left arm movement
+        right_initial_conf = right_path[0]  # This should be current_right_conf
+        padded_right_path = np.vstack([np.tile(right_initial_conf, (len(left_path), 1)), right_path])
+        
+        # Create composite trajectories with proper timing
+        total_time = monitor.trajectory_time * 2  # Total time for both movements
+        left_trajectory = (padded_left_path, None, total_time, None)
+        right_trajectory = (padded_right_path, None, total_time, None)
     else:
         # Composite planning: plan in the joint space of both arms
         pp.set_joint_positions(robot, left_joints, current_left_conf)

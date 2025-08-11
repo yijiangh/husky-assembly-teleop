@@ -139,6 +139,9 @@ class HuskyMonitor(Node):
             self.start_mocap()
         
         world.init(self)
+        
+        # Load goal model after robots are created to ensure it matches the actual robot
+        self.load_goal_model()
 
         # ! an inflated bar for goal
         goal_bar_body = pp.create_cylinder((0.025)/2, 1.0, mass=pp.STATIC_MASS)
@@ -670,26 +673,86 @@ class HuskyMonitor(Node):
         
         # draw world frame
         pp.draw_pose(pp.unit_pose(), 0.1)
-
-        # load goal robot model
+        
+    def load_goal_model(self):
+        """
+        Load goal robot model that mirrors the actual robot loaded in world.init.
+        This ensures the goal model has the same configuration as the real robot.
+        """
+        # Get the first husky robot to determine the configuration
+        if not self.huskies:
+            self.get_logger().warn('No husky robots loaded yet. Cannot create goal model.')
+            return
+        
+        # Get the configuration from the first robot
+        first_husky = self.huskies[0]
+        dual_arm = first_husky.dual_arm
+        calibration = self.CALIBRATION
+        
+        # Determine end effector types from the actual robot
+        ee_types = []
+        if hasattr(first_husky.object, 'ee_list'):
+            # Extract end effector types from the actual robot
+            for ee, attachment in first_husky.object.ee_list:
+                # Try to determine the type based on the end effector properties
+                # This is a heuristic approach since we don't store the type directly
+                if hasattr(attachment, 'child') and attachment.child is not None:
+                    # Check if it's a validation tool by looking at the body properties
+                    # For now, we'll use the same logic as in world.init
+                    if calibration:
+                        ee_types.append("calib_tip")
+                    else:
+                        # Default to validation_tool_pair for dual arm, victor_gripper for single arm
+                        if dual_arm:
+                            ee_types.append("validation_tool_pair")
+                        else:
+                            ee_types.append("victor_gripper")
+                    break  # For single arm, we only need one type
+        
+        # If we couldn't determine the types, use defaults
+        if not ee_types:
+            if calibration:
+                ee_types = ["calib_tip"]
+            else:
+                if dual_arm:
+                    ee_types = ["validation_tool_pair"]
+                else:
+                    ee_types = ["victor_gripper"]
+        
+        # Load only the goal model that matches the actual robot configuration
         with pp.LockRenderer():
-            with pp.HideOutput():                
-                self.goal_model_single = HuskyObject(calibration=self.CALIBRATION)
-                self.goal_model_single.set_color(TRANSPARENT)
-                self.goal_model_single
+            with pp.HideOutput():
+                if dual_arm:
+                    # Load dual arm goal model
+                    self.goal_model = HuskyObject(
+                        calibration=calibration, 
+                        dual_arm=True, 
+                        ee_types=ee_types,  # Use all types for dual arm
+                        force_regenerate=False
+                    )
+                    self.goal_model_single = None  # Not needed for dual arm
+                    self.goal_model_dual = self.goal_model
+                else:
+                    # Load single arm goal model
+                    self.goal_model = HuskyObject(
+                        calibration=calibration, 
+                        dual_arm=False, 
+                        ee_types=ee_types[:1] if ee_types else None,  # Take first type for single arm
+                        force_regenerate=False
+                    )
+                    self.goal_model_single = self.goal_model
+                    self.goal_model_dual = None  # Not needed for single arm
                 
-                self.goal_model_dual = HuskyObject(calibration=self.CALIBRATION, dual_arm=True)
-                self.goal_model_dual.set_color(TRANSPARENT)
-                
-                self.goal_model = self.goal_model_single
+                self.goal_model.set_color(TRANSPARENT)
 
-                self.goal_gripper_model = load_gripper(self.CALIBRATION)
+                # Load goal gripper model
+                self.goal_gripper_model = load_gripper(calibration)
                 pp.set_color(self.goal_gripper_model, GOAL_BLUE)
-                
+
     def update_goal_model_and_color(self):
-        if self.goal_model.dual_arm != self.huskies[self.selected_robot_id].dual_arm:
-            self.goal_model.set_color(TRANSPARENT)
-            self.goal_model = self.goal_model_dual if self.huskies[self.selected_robot_id].dual_arm else self.goal_model_single
+        # Since we now load only the goal model that matches the actual robot,
+        # we don't need to switch between single and dual arm models
+        # Just update the color based on the current state
         self.goal_model.set_color(GOAL_BLUE if self.show_goal_state else TRAJECTORY_GREEN)
         
     def build_ui(self, target_conf=None):
