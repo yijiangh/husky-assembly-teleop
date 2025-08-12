@@ -1071,6 +1071,19 @@ def execute_arm_trajectory_both(monitor):
         return
     
     if not monitor.FAKE_HARDWARE:
+        # Update the trajectory time in both planned_arm_trajectory tuples to match monitor.trajectory_time
+        monitor.planned_arm_trajectory[0] = (
+            monitor.planned_arm_trajectory[0][0],
+            monitor.planned_arm_trajectory[0][1],
+            monitor.trajectory_time,
+            monitor.planned_arm_trajectory[0][3]
+        )
+        monitor.planned_arm_trajectory[1] = (
+            monitor.planned_arm_trajectory[1][0],
+            monitor.planned_arm_trajectory[1][1],
+            monitor.trajectory_time,
+            monitor.planned_arm_trajectory[1][3]
+        )
         monitor.huskies[monitor.selected_robot_id].interface.send_dual_arm_cmd(monitor.planned_arm_trajectory)
     else:
         # fake execution in sim for both arms

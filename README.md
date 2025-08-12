@@ -57,6 +57,43 @@ source install/setup.bash
 ros2 run husky_assembly_teleop husky_monitor
 ```
 
+<details>
+<summary><strong>Troubleshooting <code>ros2</code> pkg installation</strong></summary>
+
+<br/>
+
+If you ran into issues related to `setuptools`, try the following **inside** the venv:
+
+1. **Make sure venv tools are current**
+   ```bash
+   python3 -m pip install -U pip wheel
+   ```
+
+2. **Use a safe setuptools for Humble AND a new enough packaging**
+   ```bash
+   python3 -m pip install "setuptools==68.2.2" "packaging>=24.2"
+   ```
+
+   *Optional sanity check: see exactly what you’re using and from where*
+   ```python
+   python3 - <<'PY'
+   import sys, setuptools, packaging
+   print("python:", sys.executable)
+   print("setuptools:", setuptools.__version__)
+   print("packaging:", packaging.__version__)
+   print("packaging path:", packaging.__file__)
+   PY
+   ```
+
+3. **Then clean and rebuild:**
+   ```bash
+   rm -rf build/ install/ log/
+   python3 -m colcon build --symlink-install
+   ```
+
+</details>
+
+
 ## Mocap Connection Setup
 Read the [Mocap wiki](https://gitlab.inf.ethz.ch/crl/crl-wiki/-/wikis/HW/OptiTrack) for more information on how to create a rigid body in Motive and how to set the IP address of the OptiTrack server.
 

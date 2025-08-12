@@ -48,7 +48,7 @@ FILENAME_SUFFIX = '_vary_pos_vary_yaw'
   
 class HuskyMonitor(Node):
     USE_MOCAP = 0
-    FAKE_HARDWARE = 1
+    FAKE_HARDWARE = 0
 
     GRASP_PARTITION = 8
     BAR_GOAL_MODE = 0
