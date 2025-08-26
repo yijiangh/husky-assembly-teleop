@@ -420,14 +420,14 @@ def create_visualization(results, logger, urdf_type):
         logger.info(f"Visualization saved as: calibration_verification_plots_{urdf_type}.png")
         
         # Show the plot
-        plt.show()
+        # plt.show()
         
     except Exception as e:
         logger.info(f"Error creating visualization: {e}")
 
 if __name__ == "__main__":
     # Set this to True to use calibrated URDF, False to use uncalibrated URDF
-    USE_GUI = 1
-    USE_CALIBRATED = 1  # Change this to True to use calibrated URDF
+    USE_GUI = 0
+    URDF_TYPE = "all_calibrated"  # Options: "uncalibrated", "arm_calibrated", "all_calibrated"
     
-    main(gui=USE_GUI, urdf_type=USE_CALIBRATED)
+    main(gui=USE_GUI, urdf_type=URDF_TYPE)

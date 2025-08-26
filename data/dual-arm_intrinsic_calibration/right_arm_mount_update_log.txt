@@ -1,0 +1,63 @@
+2025-08-26 11:27:45,840 - INFO - ================================================================================
+2025-08-26 11:27:45,840 - INFO - RIGHT ARM MOUNT JOINT UPDATE COMPUTATION
+2025-08-26 11:27:45,841 - INFO - ================================================================================
+2025-08-26 11:27:45,841 - INFO - Calibration data:
+2025-08-26 11:27:45,841 - INFO - Translation (mm): [212.6240953249864, 1.3553031333571564, -211.78639375563938]
+2025-08-26 11:27:45,841 - INFO - Rotation RPY (rad): [0.9490934438509175, 1.5636183938674975, 0.9526006707060213]
+2025-08-26 11:27:45,841 - INFO - Final error: 2.1885498204865113
+2025-08-26 11:27:45,841 - INFO - 
+2025-08-26 11:27:45,841 - INFO - Translation (m): [0.2126240953249864, 0.0013553031333571565, -0.21178639375563937]
+2025-08-26 11:27:45,841 - INFO - 
+2025-08-26 11:27:45,846 - INFO - Connected to PyBullet
+2025-08-26 11:27:46,265 - INFO - Loaded URDF: d:\0_Project\03-2025_husky_assembly\Code\husky-assembly-teleop\data\dual-arm_intrinsic_calibration\..\husky_urdf/mt_husky_dual_ur5_e_moveit_config/urdf/husky_dual_ur5_e_no_base_joint_Arm_Calibrated.urdf
+2025-08-26 11:27:46,265 - INFO - 
+2025-08-26 11:27:46,265 - INFO - === Kinematic Chain Analysis ===
+2025-08-26 11:27:46,265 - INFO - Computed left base link inertia pose:
+2025-08-26 11:27:46,265 - INFO -   Position: (0.12114473432302475, 0.1511935144662857, 0.49058234691619873)
+2025-08-26 11:27:46,265 - INFO -   Orientation: (-0.269588828086853, 0.2688785791397095, 0.6562232971191406, 0.6514577269554138)
+2025-08-26 11:27:46,265 - INFO - 
+2025-08-26 11:27:46,266 - INFO - Calibration verification:
+2025-08-26 11:27:46,266 - INFO -   Position error: 2.72 mm
+2025-08-26 11:27:46,266 - INFO -   Orientation error: 0.003994
+2025-08-26 11:27:46,266 - INFO - 
+2025-08-26 11:27:46,266 - INFO - === Computing Right Arm Mount Joint Transformation ===
+2025-08-26 11:27:46,266 - INFO - Computed right_bulkhead_from_right_base:
+2025-08-26 11:27:46,266 - INFO -   Position: (0.0011497288942337036, -0.0006287879659794271, 0.002082839608192444)
+2025-08-26 11:27:46,266 - INFO -   Orientation: (0.002921102801337838, -0.002085240790620446, -0.0017535565420985222, 0.9999920129776001)
+2025-08-26 11:27:46,266 - INFO - 
+2025-08-26 11:27:46,267 - INFO - ================================================================================
+2025-08-26 11:27:46,267 - INFO - COMPUTED TRANSFORMATION
+2025-08-26 11:27:46,267 - INFO - ================================================================================
+2025-08-26 11:27:46,267 - INFO - Computed transformation for right_arm_mount_joint:
+2025-08-26 11:27:46,267 - INFO - rpy: [0.005849556200320057, -0.004160215708736291, -0.0035193052610289406]
+2025-08-26 11:27:46,267 - INFO - xyz: [0.0011497288942337036, -0.0006287879659794271, 0.002082839608192444]
+2025-08-26 11:27:46,267 - INFO - 
+2025-08-26 11:27:46,267 - INFO - ================================================================================
+2025-08-26 11:27:46,267 - INFO - VERIFICATION
+2025-08-26 11:27:46,267 - INFO - ================================================================================
+2025-08-26 11:27:46,267 - INFO - Test right arm base pose (after applying computed transformation):
+2025-08-26 11:27:46,268 - INFO -   Position: (0.121871218085289, -0.15119576454162598, 0.4906498193740845)
+2025-08-26 11:27:46,268 - INFO -   Orientation: (0.2706674337387085, 0.26779985427856445, -0.6557765007019043, 0.6519045829772949)
+2025-08-26 11:27:46,268 - INFO - 
+2025-08-26 11:27:46,268 - INFO - Comparison between test_right_arm_base and world_from_right_base:
+2025-08-26 11:27:46,268 - INFO -   Position error: 2.46 mm
+2025-08-26 11:27:46,268 - INFO -   Orientation error: 0.003994
+2025-08-26 11:27:46,268 - INFO - ================================================================================
+2025-08-26 11:27:46,268 - INFO - UPDATED URDF JOINT DEFINITION
+2025-08-26 11:27:46,268 - INFO - ================================================================================
+2025-08-26 11:27:46,268 - INFO -     <joint name="right_arm_mount_joint" type="fixed">
+        <parent link="right_arm_bulkhead_link" />
+        <child link="right_ur_arm_base_link" />
+        <origin rpy="0.005849556200320057 -0.004160215708736291 -0.0035193052610289406" xyz="0.0011497288942337036 -0.0006287879659794271 0.002082839608192444" />
+    </joint>
+2025-08-26 11:27:46,268 - INFO - 
+2025-08-26 11:27:46,269 - INFO - ================================================================================
+2025-08-26 11:27:46,269 - INFO - SUMMARY
+2025-08-26 11:27:46,269 - INFO - ================================================================================
+2025-08-26 11:27:46,269 - INFO - [OK] Calibration data loaded and converted to meters
+2025-08-26 11:27:46,269 - INFO - [OK] PyBullet robot loaded and poses computed
+2025-08-26 11:27:46,269 - INFO - [OK] Kinematic chain computed using PyBullet functions
+2025-08-26 11:27:46,269 - INFO - The right_arm_mount_joint has been updated with the computed transformation
+2025-08-26 11:27:46,269 - INFO - based on the calibration data and kinematic chain analysis.
+2025-08-26 11:27:46,269 - INFO - 
+2025-08-26 11:27:46,269 - INFO - Log file saved to: d:\0_Project\03-2025_husky_assembly\Code\husky-assembly-teleop\data\dual-arm_intrinsic_calibration\right_arm_mount_update_log.txt
