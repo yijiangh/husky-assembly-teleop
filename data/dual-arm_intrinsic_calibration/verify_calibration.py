@@ -56,7 +56,8 @@ def load_robot_and_data(logger, use_calibrated_urdf=True):
     """
     # Choose URDF file based on parameter
     if use_calibrated_urdf:
-        urdf_filename = "husky_dual_ur5_e_no_base_joint_Calibrated.urdf"
+        # urdf_filename = "husky_dual_ur5_e_no_base_joint_Arm_Calibrated.urdf"
+        urdf_filename = "husky_dual_ur5_e_no_base_joint_All_Calibrated.urdf"
         urdf_type = "calibrated"
     else:
         urdf_filename = "husky_dual_ur5_e_no_base_joint.urdf"
@@ -334,7 +335,7 @@ def create_visualization(results, logger, urdf_type):
 
 if __name__ == "__main__":
     # Set this to True to use calibrated URDF, False to use uncalibrated URDF
-    USE_GUI = 0
-    USE_CALIBRATED = 0  # Change this to True to use calibrated URDF
+    USE_GUI = 1
+    USE_CALIBRATED = 1  # Change this to True to use calibrated URDF
     
     main(gui=USE_GUI, use_calibrated_urdf=USE_CALIBRATED)

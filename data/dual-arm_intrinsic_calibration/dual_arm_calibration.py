@@ -9,6 +9,8 @@ Author: Based on original work by Jingwen Wang
 
 import json
 import numpy as np
+import os
+import logging
 from itertools import combinations
 from scipy.optimize import minimize
 from compas.geometry import (
@@ -20,6 +22,9 @@ import copy
 # Set precision for COMPAS
 import compas
 compas.PRECISION = '12f'
+
+# Define HERE constant for file paths
+HERE = os.path.dirname(os.path.abspath(__file__))
 
 
 def load_calibration_data(json_file_path):
@@ -246,18 +251,33 @@ def main():
     """
     Main function to perform dual-arm intrinsic calibration.
     """
+    # Configure logging
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO) 
+    logger.addHandler(console_handler)
+
+    # Create file handler with URDF type in name
+    urdf_suffix = "calibrated"  # This script is for calibration, so use "calibrated"
+    LOG_PATH = os.path.join(HERE, f"dual_arm_intrinsic_calibration_log_{urdf_suffix}.txt")
+    file_handler = logging.FileHandler(LOG_PATH, mode='w')
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+    logger.addHandler(file_handler)
+
+    logger.info("=== Dual-Arm Intrinsic Calibration ===")
+    
     # Load calibration data
-    import os
     # Ensure the JSON file path is correct relative to this script's location
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    json_file_path = os.path.join(script_dir, "20250822_dual-arm-intrinsic_data.json")
+    json_file_path = os.path.join(HERE, "20250822_dual-arm-intrinsic_data.json")
     left_arm_points, right_arm_points = load_calibration_data(json_file_path)
     
-    print(f"Loaded {len(left_arm_points)} valid data points")
+    logger.info(f"Loaded {len(left_arm_points)} valid data points")
     
     # Step 1: Find valid point combinations
     valid_combinations = get_valid_point_combinations(left_arm_points, right_arm_points)
-    print(f"Found {len(valid_combinations)} valid point combinations")
+    logger.info(f"Found {len(valid_combinations)} valid point combinations")
     
     # Step 2: Compute transformations for all valid combinations
     transformations = []
@@ -269,7 +289,7 @@ def main():
             right_base_from_left_base = compute_transformation_from_triplet(left_triplet, right_triplet)
             transformations.append(right_base_from_left_base)
         except Exception as e:
-            print(f"Warning: Could not compute transformation for combination {left_indices}: {e}")
+            logger.warning(f"Could not compute transformation for combination {left_indices}: {e}")
             continue
     
     if not transformations:
@@ -279,15 +299,15 @@ def main():
     average_transformation = average_transformations(transformations)
     initial_params = transformation_to_parameters(average_transformation)
     
-    print("\n=== Initial Average Transformation ===")
-    print(f"Translation: [{initial_params[0]:.3f}, {initial_params[1]:.3f}, {initial_params[2]:.3f}]")
-    print(f"Rotation (RPY): [{initial_params[3]:.3f}, {initial_params[4]:.3f}, {initial_params[5]:.3f}]")
+    logger.info("\n=== Initial Average Transformation ===")
+    logger.info(f"Translation: [{initial_params[0]:.3f}, {initial_params[1]:.3f}, {initial_params[2]:.3f}] mm")
+    logger.info(f"Rotation (RPY): [{initial_params[3]:.3f}, {initial_params[4]:.3f}, {initial_params[5]:.3f}] rad")
     
     initial_error = error_function(initial_params, left_arm_points, right_arm_points)
-    print(f"Initial error: {initial_error:.3f}")
+    logger.info(f"Initial error: {initial_error:.3f} mm")
     
     # Step 4: Optimize transformation
-    print("\n=== Optimizing Transformation ===")
+    logger.info("\n=== Optimizing Transformation ===")
     
     result = minimize(
         error_function,
@@ -303,12 +323,12 @@ def main():
         optimized_transformation = parameters_to_transformation(optimized_params)
         final_error = error_function(optimized_params, left_arm_points, right_arm_points)
         
-        print("\n=== Optimized Transformation ===")
-        print(f"Translation: [{optimized_params[0]:.3f}, {optimized_params[1]:.3f}, {optimized_params[2]:.3f}]")
-        print(f"Rotation (RPY): [{optimized_params[3]:.3f}, {optimized_params[4]:.3f}, {optimized_params[5]:.3f}]")
-        print(f"Final error: {final_error:.3f}")
-        print(f"Optimization message: {result.message}")
-        print(f"Number of iterations: {result.nit}")
+        logger.info("\n=== Optimized Transformation ===")
+        logger.info(f"Translation: [{optimized_params[0]:.3f}, {optimized_params[1]:.3f}, {optimized_params[2]:.3f}] mm")
+        logger.info(f"Rotation (RPY): [{optimized_params[3]:.3f}, {optimized_params[4]:.3f}, {optimized_params[5]:.3f}] rad")
+        logger.info(f"Final error: {final_error:.3f} mm")
+        logger.info(f"Optimization message: {result.message}")
+        logger.info(f"Number of iterations: {result.nit}")
         
         # Save results
         results = {
@@ -320,13 +340,14 @@ def main():
             'num_data_points': len(left_arm_points)
         }
         
-        with open('calibration_results.json', 'w') as f:
+        output_file = os.path.join(HERE, 'calibration_results.json')
+        with open(output_file, 'w') as f:
             json.dump(results, f, indent=2)
         
-        print("\nResults saved to 'calibration_results.json'")
+        logger.info(f"\nResults saved to: {output_file}")
         
     else:
-        print(f"Optimization failed: {result.message}")
+        logger.error(f"Optimization failed: {result.message}")
 
 
 if __name__ == "__main__":
