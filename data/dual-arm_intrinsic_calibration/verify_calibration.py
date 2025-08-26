@@ -43,30 +43,41 @@ HUSKY_DUAL_UR5e_JOINT_NAMES = [["left_ur_arm_shoulder_pan_joint",
                       "right_ur_arm_wrist_2_joint", 
                       "right_ur_arm_wrist_3_joint" ]]
 
-def load_robot_and_data():
+def load_robot_and_data(logger, use_calibrated_urdf=True):
     """
     Load the robot URDF and calibration data.
     
+    Args:
+        use_calibrated_urdf (bool): If True, use the calibrated URDF, otherwise use uncalibrated
+    
     Returns:
-        tuple: (robot_id, data) where robot_id is the PyBullet robot ID and data is the JSON data
+        tuple: (robot_id, data, urdf_type) where robot_id is the PyBullet robot ID, 
+               data is the JSON data, and urdf_type is a string indicating the URDF type
     """
-    # Load the calibrated URDF
-    urdf_path = os.path.join(r"D:\0_Project\03-2025_husky_assembly\Code\husky-assembly-teleop\data", "husky_urdf", "mt_husky_dual_ur5_e_moveit_config", 
-                            #  "urdf", "husky_dual_ur5_e_no_base_joint_Calibrated.urdf")
-                             "urdf", "husky_dual_ur5_e_no_base_joint.urdf")
+    # Choose URDF file based on parameter
+    if use_calibrated_urdf:
+        urdf_filename = "husky_dual_ur5_e_no_base_joint_Calibrated.urdf"
+        urdf_type = "calibrated"
+    else:
+        urdf_filename = "husky_dual_ur5_e_no_base_joint.urdf"
+        urdf_type = "uncalibrated"
+    
+    # Load the URDF
+    urdf_path = os.path.join(r"D:\0_Project\03-2025_husky_assembly\Code\husky-assembly-teleop\data", "husky_urdf", "mt_husky_dual_ur5_e_moveit_config", "urdf", urdf_filename)
     
     if not os.path.exists(urdf_path):
         raise FileNotFoundError(f"URDF file not found: {urdf_path}")
     
-    robot_id = pp.load_pybullet(urdf_path, fixed_base=True)
+    with pp.HideOutput():
+        robot_id = pp.load_pybullet(urdf_path, fixed_base=True)
     
     # Load calibration data
     json_path = os.path.join(os.path.dirname(__file__), "20250822_dual-arm-intrinsic_data.json")
     with open(json_path, 'r') as f:
         data = json.load(f)
     
-    # logger.info(f"Loaded {len(data)} data entries")
-    return robot_id, data
+    logger.info(f"Loaded {len(data)} data entries")
+    return robot_id, data, urdf_type
 
 def compute_forward_kinematics(robot_id, joint_names, joint_config, arm_side):
     #     Write a python script that does the following:
@@ -102,9 +113,12 @@ def compute_position_difference(pos1, pos2):
     """
     return np.linalg.norm(np.array(pos1) - np.array(pos2))
 
-def main():
+def main(gui=True, use_calibrated_urdf=True):
     """
     Main function to verify dual-arm calibration.
+    
+    Args:
+        use_calibrated_urdf (bool): If True, use the calibrated URDF, otherwise use uncalibrated
     """
     from logging.handlers import RotatingFileHandler
 
@@ -117,25 +131,26 @@ def main():
     console_handler.setLevel(logging.INFO) 
     logger.addHandler(console_handler)
 
-    # Create file handler
-    LOG_PATH = os.path.join(HERE, "dual_arm_intrinsic_calibration_log.txt")
+    # Create file handler with URDF type in name
+    urdf_suffix = "calibrated" if use_calibrated_urdf else "uncalibrated"
+    LOG_PATH = os.path.join(HERE, f"dual_arm_intrinsic_calibration_log_{urdf_suffix}.txt")
     file_handler = logging.FileHandler(LOG_PATH, mode='w')
     file_handler.setLevel(logging.INFO)
     file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
     logger.addHandler(file_handler)
 
     # Example usage
-    logger.info("=== Dual-Arm Calibration Verification ===")
+    logger.info(f"=== Dual-Arm Calibration Verification ({urdf_suffix.upper()} URDF) ===")
     
     # Initialize PyBullet
     # p.connect(p.DIRECT)  # Use DIRECT mode for faster computation
     # p.setAdditionalSearchPath(pybullet_data.getDataPath())
     # p.setGravity(0, 0, -9.81)
-    pp.connect(use_gui=0, shadows=True, color=[0.9, 0.9, 1.0])
+    pp.connect(use_gui=gui, shadows=True, color=[0.9, 0.9, 1.0])
     logger.info("Connected to PyBullet")
  
     # Load robot and data
-    robot_id, data = load_robot_and_data()
+    robot_id, data, urdf_type = load_robot_and_data(logger, use_calibrated_urdf)
     # Get joint indices for each arm using HUSKY_DUAL_UR5e_JOINT_NAMES
     left_joint_names = HUSKY_DUAL_UR5e_JOINT_NAMES[0]
     right_joint_names = HUSKY_DUAL_UR5e_JOINT_NAMES[1]
@@ -170,10 +185,10 @@ def main():
         left_recorded_diff = compute_position_difference(left_base_from_tcp[0], recorded_left_pos)
         right_recorded_diff = compute_position_difference(right_base_from_tcp[0], recorded_right_pos)
 
-        # Skip this entry if left_recorded_diff or right_recorded_diff is larger than 50 mm
-        if left_recorded_diff > 0.05 or right_recorded_diff > 0.05:
-            logger.info(f"  Skipping entry {i+1} - left or right recorded diff > 50 mm (left: {left_recorded_diff*1000:.2f} mm, right: {right_recorded_diff*1000:.2f} mm)")
-            continue
+        # # Skip this entry if left_recorded_diff or right_recorded_diff is larger than 50 mm
+        # if left_recorded_diff > 0.05 or right_recorded_diff > 0.05:
+        #     logger.info(f"  Skipping entry {i+1} - left or right recorded diff > 50 mm (left: {left_recorded_diff*1000:.2f} mm, right: {right_recorded_diff*1000:.2f} mm)")
+        #     continue
         
         # Store results
         result = {
@@ -224,25 +239,27 @@ def main():
         logger.info(f"  Max: {np.max(right_diffs)*1000:.2f}")
         
         # Save results to JSON
-        output_file = os.path.join(HERE, 'calibration_verification_results.json')
+        output_file = os.path.join(HERE, f'calibration_verification_results_{urdf_type}.json')
         with open(output_file, 'w') as f:
             json.dump(results, f, indent=2)
         logger.info(f"\nResults saved to: {output_file}")
         
         # Create visualization
-        create_visualization(results, logger)
+        create_visualization(results, logger, urdf_type)
         
     else:
         logger.info("No valid results to process")
             
     pp.disconnect()
 
-def create_visualization(results, logger):
+def create_visualization(results, logger, urdf_type):
     """
     Create visualization of the results.
     
     Args:
         results: List of result dictionaries
+        logger: Logger instance
+        urdf_type: String indicating the URDF type ("calibrated" or "uncalibrated")
     """
     try:
         # Extract data for plotting
@@ -306,8 +323,8 @@ def create_visualization(results, logger):
         ax4.legend()
         
         plt.tight_layout()
-        plt.savefig(os.path.join(HERE, 'calibration_verification_plots.png'), dpi=300, bbox_inches='tight')
-        logger.info("Visualization saved as: calibration_verification_plots.png")
+        plt.savefig(os.path.join(HERE, f'calibration_verification_plots_{urdf_type}.png'), dpi=300, bbox_inches='tight')
+        logger.info(f"Visualization saved as: calibration_verification_plots_{urdf_type}.png")
         
         # Show the plot
         plt.show()
@@ -316,4 +333,8 @@ def create_visualization(results, logger):
         logger.info(f"Error creating visualization: {e}")
 
 if __name__ == "__main__":
-    main()
+    # Set this to True to use calibrated URDF, False to use uncalibrated URDF
+    USE_GUI = 0
+    USE_CALIBRATED = 0  # Change this to True to use calibrated URDF
+    
+    main(gui=USE_GUI, use_calibrated_urdf=USE_CALIBRATED)

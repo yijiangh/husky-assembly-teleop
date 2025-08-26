@@ -1,0 +1,78 @@
+2025-08-26 09:31:22,683 - INFO - === Dual-Arm Calibration Verification (UNCALIBRATED URDF) ===
+2025-08-26 09:31:22,687 - INFO - Connected to PyBullet
+2025-08-26 09:31:23,093 - INFO - Loaded 11 data entries
+2025-08-26 09:31:23,093 - INFO - 
+Processing entry 1/11
+2025-08-26 09:31:23,094 - INFO -   World TCP difference: 0.84 mm
+2025-08-26 09:31:23,095 - INFO -   Left recorded difference: 2.47 mm
+2025-08-26 09:31:23,095 - INFO -   Right recorded difference: 2.53 mm
+2025-08-26 09:31:23,095 - INFO - 
+Processing entry 2/11
+2025-08-26 09:31:23,095 - INFO -   World TCP difference: 1.19 mm
+2025-08-26 09:31:23,096 - INFO -   Left recorded difference: 2.98 mm
+2025-08-26 09:31:23,107 - INFO -   Right recorded difference: 2.82 mm
+2025-08-26 09:31:23,107 - INFO - 
+Processing entry 3/11
+2025-08-26 09:31:23,107 - INFO -   World TCP difference: 2.33 mm
+2025-08-26 09:31:23,107 - INFO -   Left recorded difference: 1.05 mm
+2025-08-26 09:31:23,107 - INFO -   Right recorded difference: 1.41 mm
+2025-08-26 09:31:23,108 - INFO - 
+Processing entry 4/11
+2025-08-26 09:31:23,108 - INFO -   World TCP difference: 1.07 mm
+2025-08-26 09:31:23,108 - INFO -   Left recorded difference: 1.71 mm
+2025-08-26 09:31:23,108 - INFO -   Right recorded difference: 2.34 mm
+2025-08-26 09:31:23,109 - INFO - 
+Processing entry 5/11
+2025-08-26 09:31:23,109 - INFO -   World TCP difference: 1.63 mm
+2025-08-26 09:31:23,109 - INFO -   Left recorded difference: 2.47 mm
+2025-08-26 09:31:23,110 - INFO -   Right recorded difference: 2.97 mm
+2025-08-26 09:31:23,110 - INFO - 
+Processing entry 6/11
+2025-08-26 09:31:23,110 - INFO -   World TCP difference: 0.72 mm
+2025-08-26 09:31:23,110 - INFO -   Left recorded difference: 2.26 mm
+2025-08-26 09:31:23,111 - INFO -   Right recorded difference: 2.97 mm
+2025-08-26 09:31:23,111 - INFO - 
+Processing entry 7/11
+2025-08-26 09:31:23,111 - INFO -   World TCP difference: 4.87 mm
+2025-08-26 09:31:23,111 - INFO -   Left recorded difference: 0.80 mm
+2025-08-26 09:31:23,112 - INFO -   Right recorded difference: 2.23 mm
+2025-08-26 09:31:23,112 - INFO - 
+Processing entry 8/11
+2025-08-26 09:31:23,112 - INFO -   World TCP difference: 4.42 mm
+2025-08-26 09:31:23,112 - INFO -   Left recorded difference: 1.01 mm
+2025-08-26 09:31:23,113 - INFO -   Right recorded difference: 2.71 mm
+2025-08-26 09:31:23,113 - INFO - 
+Processing entry 9/11
+2025-08-26 09:31:23,113 - INFO -   World TCP difference: 0.99 mm
+2025-08-26 09:31:23,113 - INFO -   Left recorded difference: 2.17 mm
+2025-08-26 09:31:23,114 - INFO -   Right recorded difference: 2.51 mm
+2025-08-26 09:31:23,114 - INFO - 
+Processing entry 10/11
+2025-08-26 09:31:23,114 - INFO -   World TCP difference: 5.52 mm
+2025-08-26 09:31:23,114 - INFO -   Left recorded difference: 2.33 mm
+2025-08-26 09:31:23,114 - INFO -   Right recorded difference: 0.80 mm
+2025-08-26 09:31:23,114 - INFO - 
+Processing entry 11/11
+2025-08-26 09:31:23,114 - INFO -   Skipping entry 11 - left arm conf is null
+2025-08-26 09:31:23,114 - INFO - 
+=== Summary Statistics ===
+2025-08-26 09:31:23,114 - INFO - World TCP differences (mm):
+2025-08-26 09:31:23,114 - INFO -   Mean: 2.36
+2025-08-26 09:31:23,115 - INFO -   Std: 1.76
+2025-08-26 09:31:23,115 - INFO -   Min: 0.72
+2025-08-26 09:31:23,115 - INFO -   Max: 5.52
+2025-08-26 09:31:23,115 - INFO - 
+Left arm recorded differences (mm):
+2025-08-26 09:31:23,115 - INFO -   Mean: 1.92
+2025-08-26 09:31:23,115 - INFO -   Std: 0.70
+2025-08-26 09:31:23,115 - INFO -   Min: 0.80
+2025-08-26 09:31:23,115 - INFO -   Max: 2.98
+2025-08-26 09:31:23,115 - INFO - 
+Right arm recorded differences (mm):
+2025-08-26 09:31:23,115 - INFO -   Mean: 2.33
+2025-08-26 09:31:23,115 - INFO -   Std: 0.67
+2025-08-26 09:31:23,115 - INFO -   Min: 0.80
+2025-08-26 09:31:23,115 - INFO -   Max: 2.97
+2025-08-26 09:31:23,118 - INFO - 
+Results saved to: d:\0_Project\03-2025_husky_assembly\Code\husky-assembly-teleop\data\dual-arm_intrinsic_calibration\calibration_verification_results_uncalibrated.json
+2025-08-26 09:31:23,975 - INFO - Visualization saved as: calibration_verification_plots_uncalibrated.png
