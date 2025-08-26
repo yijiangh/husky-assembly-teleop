@@ -1,0 +1,98 @@
+2025-08-26 17:05:04,137 - INFO - === Dual-Arm Calibration Verification (ALL_CALIBRATED URDF) ===
+2025-08-26 17:05:04,147 - INFO - Connected to PyBullet
+2025-08-26 17:05:04,583 - INFO - Loaded 11 data entries
+2025-08-26 17:05:04,584 - INFO - Calibration transformation:
+2025-08-26 17:05:04,584 - INFO -   Translation (mm): [212.6240953249864, 1.3553031333571564, -211.78639375563938]
+2025-08-26 17:05:04,584 - INFO -   Translation (m): [0.2126240953249864, 0.0013553031333571565, -0.21178639375563937]
+2025-08-26 17:05:04,584 - INFO -   Rotation RPY (rad): [0.9490934438509175, 1.5636183938674975, 0.9526006707060213]
+2025-08-26 17:05:04,584 - INFO - 
+=== Calibration Verification ===
+2025-08-26 17:05:04,584 - INFO - Right base link inertia pose:
+2025-08-26 17:05:04,584 - INFO -   Position: (0.1218712106347084, -0.15119576454162598, 0.4906498193740845)
+2025-08-26 17:05:04,584 - INFO -   Orientation: (0.26779982447624207, -0.2706674337387085, 0.6519045233726501, 0.6557765603065491)
+2025-08-26 17:05:04,584 - INFO - Ground truth left base link inertia pose:
+2025-08-26 17:05:04,584 - INFO -   Position: (0.12250000238418579, 0.14891000092029572, 0.4899899959564209)
+2025-08-26 17:05:04,584 - INFO -   Orientation: (-0.27059805393218994, 0.27059805393218994, 0.6532814502716064, 0.6532815098762512)
+2025-08-26 17:05:04,584 - INFO - Computed left base link inertia pose:
+2025-08-26 17:05:04,584 - INFO -   Position: (0.1224999725818634, 0.1489100158214569, 0.4899899661540985)
+2025-08-26 17:05:04,584 - INFO -   Orientation: (-0.2705981433391571, 0.2705981135368347, 0.6532814502716064, 0.6532814502716064)
+2025-08-26 17:05:04,584 - INFO - 
+Calibration verification results:
+2025-08-26 17:05:04,584 - INFO -   Position error: 0.00 mm
+2025-08-26 17:05:04,584 - INFO -   Orientation error: 0.000000
+2025-08-26 17:05:04,584 - INFO - Position error is acceptable (< 10mm)
+2025-08-26 17:05:04,584 - INFO - 
+Processing entry 1/11
+2025-08-26 17:05:04,584 - INFO -   World TCP difference: 0.46 mm
+2025-08-26 17:05:04,584 - INFO -   Left recorded difference: 0.03 mm
+2025-08-26 17:05:04,584 - INFO -   Right recorded difference: 0.11 mm
+2025-08-26 17:05:04,584 - INFO - 
+Processing entry 2/11
+2025-08-26 17:05:04,584 - INFO -   World TCP difference: 0.26 mm
+2025-08-26 17:05:04,584 - INFO -   Left recorded difference: 0.05 mm
+2025-08-26 17:05:04,584 - INFO -   Right recorded difference: 0.02 mm
+2025-08-26 17:05:04,584 - INFO - 
+Processing entry 3/11
+2025-08-26 17:05:04,584 - INFO -   World TCP difference: 0.40 mm
+2025-08-26 17:05:04,584 - INFO -   Left recorded difference: 0.05 mm
+2025-08-26 17:05:04,584 - INFO -   Right recorded difference: 0.03 mm
+2025-08-26 17:05:04,584 - INFO - 
+Processing entry 4/11
+2025-08-26 17:05:04,584 - INFO -   World TCP difference: 0.59 mm
+2025-08-26 17:05:04,584 - INFO -   Left recorded difference: 0.05 mm
+2025-08-26 17:05:04,584 - INFO -   Right recorded difference: 0.03 mm
+2025-08-26 17:05:04,584 - INFO - 
+Processing entry 5/11
+2025-08-26 17:05:04,584 - INFO -   World TCP difference: 0.33 mm
+2025-08-26 17:05:04,584 - INFO -   Left recorded difference: 0.05 mm
+2025-08-26 17:05:04,584 - INFO -   Right recorded difference: 0.04 mm
+2025-08-26 17:05:04,584 - INFO - 
+Processing entry 6/11
+2025-08-26 17:05:04,584 - INFO -   World TCP difference: 0.34 mm
+2025-08-26 17:05:04,584 - INFO -   Left recorded difference: 0.06 mm
+2025-08-26 17:05:04,584 - INFO -   Right recorded difference: 0.04 mm
+2025-08-26 17:05:04,584 - INFO - 
+Processing entry 7/11
+2025-08-26 17:05:04,584 - INFO -   World TCP difference: 0.61 mm
+2025-08-26 17:05:04,584 - INFO -   Left recorded difference: 0.11 mm
+2025-08-26 17:05:04,593 - INFO -   Right recorded difference: 0.05 mm
+2025-08-26 17:05:04,593 - INFO - 
+Processing entry 8/11
+2025-08-26 17:05:04,593 - INFO -   World TCP difference: 0.67 mm
+2025-08-26 17:05:04,593 - INFO -   Left recorded difference: 0.04 mm
+2025-08-26 17:05:04,593 - INFO -   Right recorded difference: 0.06 mm
+2025-08-26 17:05:04,594 - INFO - 
+Processing entry 9/11
+2025-08-26 17:05:04,594 - INFO -   World TCP difference: 0.49 mm
+2025-08-26 17:05:04,594 - INFO -   Left recorded difference: 0.04 mm
+2025-08-26 17:05:04,594 - INFO -   Right recorded difference: 0.03 mm
+2025-08-26 17:05:04,594 - INFO - 
+Processing entry 10/11
+2025-08-26 17:05:04,594 - INFO -   World TCP difference: 0.55 mm
+2025-08-26 17:05:04,594 - INFO -   Left recorded difference: 0.05 mm
+2025-08-26 17:05:04,594 - INFO -   Right recorded difference: 0.03 mm
+2025-08-26 17:05:04,594 - INFO - 
+Processing entry 11/11
+2025-08-26 17:05:04,596 - INFO -   Skipping entry 11 - left arm conf is null
+2025-08-26 17:05:04,596 - INFO - 
+=== Summary Statistics ===
+2025-08-26 17:05:04,596 - INFO - World TCP differences (mm):
+2025-08-26 17:05:04,596 - INFO -   Mean: 0.47
+2025-08-26 17:05:04,596 - INFO -   Std: 0.13
+2025-08-26 17:05:04,596 - INFO -   Min: 0.26
+2025-08-26 17:05:04,596 - INFO -   Max: 0.67
+2025-08-26 17:05:04,596 - INFO - 
+Left arm recorded differences (mm):
+2025-08-26 17:05:04,596 - INFO -   Mean: 0.05
+2025-08-26 17:05:04,597 - INFO -   Std: 0.02
+2025-08-26 17:05:04,597 - INFO -   Min: 0.03
+2025-08-26 17:05:04,597 - INFO -   Max: 0.11
+2025-08-26 17:05:04,597 - INFO - 
+Right arm recorded differences (mm):
+2025-08-26 17:05:04,597 - INFO -   Mean: 0.04
+2025-08-26 17:05:04,597 - INFO -   Std: 0.02
+2025-08-26 17:05:04,597 - INFO -   Min: 0.02
+2025-08-26 17:05:04,597 - INFO -   Max: 0.11
+2025-08-26 17:05:04,598 - INFO - 
+Results saved to: d:\0_Project\03-2025_husky_assembly\Code\husky-assembly-teleop\data\dual-arm_intrinsic_calibration\calibration_verification_results_all_calibrated.json
+2025-08-26 17:05:05,539 - INFO - Visualization saved as: calibration_verification_plots_all_calibrated.png

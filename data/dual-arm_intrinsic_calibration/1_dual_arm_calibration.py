@@ -259,8 +259,7 @@ def main():
     logger.addHandler(console_handler)
 
     # Create file handler with URDF type in name
-    urdf_suffix = "calibrated"  # This script is for calibration, so use "calibrated"
-    LOG_PATH = os.path.join(HERE, f"dual_arm_intrinsic_calibration_log_{urdf_suffix}.txt")
+    LOG_PATH = os.path.join(HERE, f"dual_arm_intrinsic_calibration_log.txt")
     file_handler = logging.FileHandler(LOG_PATH, mode='w')
     file_handler.setLevel(logging.INFO)
     file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))

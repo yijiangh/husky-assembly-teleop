@@ -1,0 +1,19 @@
+2025-08-26 17:04:55,734 - INFO - === Dual-Arm Intrinsic Calibration ===
+2025-08-26 17:04:55,734 - INFO - Loaded 10 valid data points
+2025-08-26 17:04:55,734 - INFO - Found 120 valid point combinations
+2025-08-26 17:04:55,757 - INFO - 
+=== Initial Average Transformation ===
+2025-08-26 17:04:55,757 - INFO - Translation: [212.809, 1.471, -211.921] mm
+2025-08-26 17:04:55,757 - INFO - Rotation (RPY): [0.994, 1.563, 0.998] rad
+2025-08-26 17:04:55,757 - INFO - Initial error: 2.979 mm
+2025-08-26 17:04:55,757 - INFO - 
+=== Optimizing Transformation ===
+2025-08-26 17:04:55,984 - INFO - 
+=== Optimized Transformation ===
+2025-08-26 17:04:55,984 - INFO - Translation: [212.624, 1.355, -211.786] mm
+2025-08-26 17:04:55,984 - INFO - Rotation (RPY): [0.949, 1.564, 0.953] rad
+2025-08-26 17:04:55,984 - INFO - Final error: 2.189 mm
+2025-08-26 17:04:55,984 - INFO - Optimization message: Optimization terminated successfully.
+2025-08-26 17:04:55,984 - INFO - Number of iterations: 511
+2025-08-26 17:04:55,984 - INFO - 
+Results saved to: d:\0_Project\03-2025_husky_assembly\Code\husky-assembly-teleop\data\dual-arm_intrinsic_calibration\calibration_results.json

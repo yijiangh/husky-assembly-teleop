@@ -145,7 +145,7 @@ def main(gui=True, urdf_type="uncalibrated"):
     logger.addHandler(console_handler)
 
     # Create file handler with URDF type in name
-    LOG_PATH = os.path.join(HERE, f"dual_arm_intrinsic_calibration_log_{urdf_type}.txt")
+    LOG_PATH = os.path.join(HERE, f"dual_arm_verification_log_{urdf_type}.txt")
     file_handler = logging.FileHandler(LOG_PATH, mode='w')
     file_handler.setLevel(logging.INFO)
     file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
@@ -428,6 +428,6 @@ def create_visualization(results, logger, urdf_type):
 if __name__ == "__main__":
     # Set this to True to use calibrated URDF, False to use uncalibrated URDF
     USE_GUI = 0
-    URDF_TYPE = "all_calibrated"  # Options: "uncalibrated", "arm_calibrated", "all_calibrated"
+    URDF_TYPE = "arm_calibrated"  # Options: "uncalibrated", "arm_calibrated", "all_calibrated"
     
     main(gui=USE_GUI, urdf_type=URDF_TYPE)
