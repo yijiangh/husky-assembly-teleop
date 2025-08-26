@@ -569,7 +569,7 @@ class HuskyMonitor(Node):
         state_filepath = os.path.join(
             DATA_DIRECTORY,
             'husky_assembly_design_study',
-            '250808_cindy_calibration_validation',
+            '250826_cindy_calibration_validation',
             'RobotCellStates',
             selected_state_file
         )
@@ -641,7 +641,7 @@ class HuskyMonitor(Node):
         state_dir = os.path.join(
             DATA_DIRECTORY,
             'husky_assembly_design_study',
-            '250808_cindy_calibration_validation',
+            '250826_cindy_calibration_validation',
             'RobotCellStates'
         )
         
