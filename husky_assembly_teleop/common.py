@@ -171,8 +171,10 @@ def load_robot(dual_arm=False):
     robot_urdf = None
     print('loading robot urdf from:', DATA_DIRECTORY)
     if dual_arm:
-        robot_urdf = os.path.join(DATA_DIRECTORY,'husky_urdf/mt_husky_dual_ur5_e_moveit_config/urdf/husky_dual_ur5_e_no_base_joint.urdf')
+        robot_urdf = os.path.join(DATA_DIRECTORY,'husky_urdf/mt_husky_dual_ur5_e_moveit_config/urdf/husky_dual_ur5_e_no_base_joint_All_Calibrated.urdf')
     else:
+        # INSERT_YOUR_CODE
+        print("WARNING: Loading uncalibrated URDF for the single arm Husky robot.")
         robot_urdf = os.path.join(DATA_DIRECTORY,'husky_urdf/mt_husky_moveit_config/urdf/husky_ur5_e_no_base_joint.urdf')
 
     assert os.path.exists(robot_urdf)
@@ -210,7 +212,7 @@ def create_end_effector(ee_type="victor_gripper", load_calib_tip=False, dual_arm
         return ee
     elif ee_type == "validation_tool_pair":
         # Hardcoded validation tool configuration
-        problem_name = '250808_cindy_calibration_validation'
+        problem_name = '250826_cindy_calibration_validation'
         # Dynamically select any JSON file ending with _RobotCellState.json in the RobotCellStates directory
         robot_cell_states_dir = os.path.join(DESIGN_DATA_DIRECTORY, problem_name, 'RobotCellStates')
         state_files = [f for f in os.listdir(robot_cell_states_dir) if f.endswith('_RobotCellState.json')]
