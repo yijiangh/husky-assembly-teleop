@@ -45,6 +45,7 @@ CLIENT_IP = '192.168.0.7' # Set to your own IP
 MOCAP_IP = '192.168.0.117' # set to the mocap PC's IP, get this from Motive Settings>Streaming pane->Local interface
 
 FILENAME_SUFFIX = '_vary_pos_vary_yaw'
+VALIDATION_PROBLEM_NAME = '250826_cindy_calibration_validation'
   
 class HuskyMonitor(Node):
     USE_MOCAP = 0
@@ -569,7 +570,7 @@ class HuskyMonitor(Node):
         state_filepath = os.path.join(
             DATA_DIRECTORY,
             'husky_assembly_design_study',
-            '250826_cindy_calibration_validation',
+            VALIDATION_PROBLEM_NAME,
             'RobotCellStates',
             selected_state_file
         )
@@ -641,7 +642,7 @@ class HuskyMonitor(Node):
         state_dir = os.path.join(
             DATA_DIRECTORY,
             'husky_assembly_design_study',
-            '250826_cindy_calibration_validation',
+            VALIDATION_PROBLEM_NAME,
             'RobotCellStates'
         )
         

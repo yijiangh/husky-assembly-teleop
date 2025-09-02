@@ -1,0 +1,8 @@
+---
+description: for local data analysis without ros2
+globs:
+alwaysApply: true
+---
+
+- Use `C:/Users/yijiangh/.rhinocode/py39-rh8/python.exe` to run python scripts.
+- Always save newly generated data and files to the folder where the script is located.
