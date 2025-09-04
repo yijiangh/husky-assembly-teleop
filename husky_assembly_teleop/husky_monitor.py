@@ -100,6 +100,7 @@ class HuskyMonitor(Node):
         self.board_validation_state_slider = None
         self.available_robot_cell_states = []
         self.selected_state_index = 0
+        self.available_joint_trajectories = []  # Store available JointTrajectory files
         
         # goal and trajectory interface
         self.selected_arm_index = 0
@@ -154,6 +155,7 @@ class HuskyMonitor(Node):
         # Initialize board validation if enabled
         if self.BOARD_VALIDATION:
             self.available_robot_cell_states = self._load_available_robot_cell_states()
+            self.available_joint_trajectories = self._load_available_joint_trajectories()
         
         self.build_ui()
         self.update_partial_assembly()
@@ -577,6 +579,26 @@ class HuskyMonitor(Node):
         
         print(f"Loading robot cell state: {selected_state_file}")
         
+        # Check if there's a corresponding JointTrajectory file with the same prefix
+        state_prefix = selected_state_file.replace('_RobotCellState.json', '')
+        corresponding_trajectory_file = f"{state_prefix}_JointTrajectory.json"
+        trajectory_filepath = os.path.join(
+            DATA_DIRECTORY,
+            'husky_assembly_design_study',
+            VALIDATION_PROBLEM_NAME,
+            'RobotCellStates',
+            corresponding_trajectory_file
+        )
+        
+        if os.path.exists(trajectory_filepath):
+            print(f"Found corresponding joint trajectory: {corresponding_trajectory_file}")
+            # Update the available joint trajectories list to include this file if not already present
+            if corresponding_trajectory_file not in self.available_joint_trajectories:
+                self.available_joint_trajectories.append(corresponding_trajectory_file)
+                self.available_joint_trajectories.sort()
+        else:
+            print(f"No corresponding joint trajectory found for: {selected_state_file}")
+        
         try:
             # Load the robot cell state
             from compas.data import json_load
@@ -626,6 +648,89 @@ class HuskyMonitor(Node):
         except Exception as e:
             print(f"Error loading robot cell state: {e}")
 
+    def load_joint_trajectory(self):
+        """
+        Load a JointTrajectory file and convert it to planned_arm_trajectory format.
+        """
+        if not self.available_joint_trajectories:
+            print("No joint trajectory files available!")
+            return
+            
+        if self.selected_state_index >= len(self.available_joint_trajectories):
+            print(f"Invalid trajectory index: {self.selected_state_index}")
+            return
+            
+        selected_trajectory_file = self.available_joint_trajectories[self.selected_state_index]
+        trajectory_filepath = os.path.join(
+            DATA_DIRECTORY,
+            'husky_assembly_design_study',
+            VALIDATION_PROBLEM_NAME,
+            'RobotCellStates',
+            selected_trajectory_file
+        )
+        
+        print(f"Loading joint trajectory: {selected_trajectory_file}")
+        
+        try:
+            # Load the joint trajectory using standard json
+            import json
+            with open(trajectory_filepath, 'r') as f:
+                joint_trajectory_data = json.load(f)
+            
+            # Extract trajectory data
+            if 'data' in joint_trajectory_data and 'points' in joint_trajectory_data['data']:
+                points = joint_trajectory_data['data']['points']
+                
+                # Get joint names from the trajectory
+                if points and 'joint_names' in points[0]:
+                    joint_names = points[0]['joint_names']
+                    
+                    # Find indices for left and right arm joints
+                    from husky_assembly_teleop.utils import HUSKY_DUAL_UR5e_JOINT_NAMES
+                    left_arm_names = HUSKY_DUAL_UR5e_JOINT_NAMES[0]
+                    right_arm_names = HUSKY_DUAL_UR5e_JOINT_NAMES[1]
+                    
+                    # Find indices for each arm's joints
+                    left_arm_indices = [joint_names.index(name) for name in left_arm_names if name in joint_names]
+                    right_arm_indices = [joint_names.index(name) for name in right_arm_names if name in joint_names]
+                    
+                    if len(left_arm_indices) != 6 or len(right_arm_indices) != 6:
+                        print(f"Warning: Expected 6 joints per arm, got {len(left_arm_indices)} left, {len(right_arm_indices)} right")
+                    
+                    # Extract joint values for each arm
+                    left_arm_trajectory = []
+                    right_arm_trajectory = []
+                    
+                    for point in points:
+                        if 'joint_values' in point:
+                            left_joint_values = [point['joint_values'][i] for i in left_arm_indices]
+                            right_joint_values = [point['joint_values'][i] for i in right_arm_indices]
+                            left_arm_trajectory.append(np.array(left_joint_values))
+                            right_arm_trajectory.append(np.array(right_joint_values))
+                    
+                    # Convert to planned_arm_trajectory format: (configurations, velocities, time, grasped_element)
+                    # For now, we assume no grasped element (None) and no velocity information
+                    left_trajectory_tuple = (left_arm_trajectory, None, self.trajectory_time, None)
+                    right_trajectory_tuple = (right_arm_trajectory, None, self.trajectory_time, None)
+                    
+                    # Set the trajectories
+                    self.set_arm_trajectory(left_trajectory_tuple, index=0)
+                    self.set_arm_trajectory(right_trajectory_tuple, index=1)
+                    
+                    # Show trajectory state
+                    self.set_to_show_traj_state()
+                    
+                    print(f"Successfully loaded joint trajectory from {selected_trajectory_file}")
+                    print(f"Left arm trajectory: {len(left_arm_trajectory)} points")
+                    print(f"Right arm trajectory: {len(right_arm_trajectory)} points")
+                else:
+                    print("Joint trajectory does not have expected joint_names structure")
+            else:
+                print("Joint trajectory does not have expected data structure")
+                
+        except Exception as e:
+            print(f"Error loading joint trajectory: {e}")
+
     def update_board_validation_state_index(self, state_index):
         """
         Update the selected robot cell state index.
@@ -664,6 +769,36 @@ class HuskyMonitor(Node):
             print(f"  {i}: {filename}")
         
         return state_files
+    
+    def _load_available_joint_trajectories(self):
+        """
+        Load available JointTrajectory files from the hardcoded directory.
+        """
+        state_dir = os.path.join(
+            DATA_DIRECTORY,
+            'husky_assembly_design_study',
+            VALIDATION_PROBLEM_NAME,
+            'RobotCellStates'
+        )
+        
+        if not os.path.exists(state_dir):
+            print(f"Robot cell states directory does not exist: {state_dir}")
+            return []
+        
+        # Find all JSON files ending with _JointTrajectory.json
+        trajectory_files = []
+        for filename in os.listdir(state_dir):
+            if filename.endswith('_JointTrajectory.json'):
+                trajectory_files.append(filename)
+        
+        # Sort files for consistent ordering
+        trajectory_files.sort()
+        
+        print(f"Found {len(trajectory_files)} joint trajectory files:")
+        for i, filename in enumerate(trajectory_files):
+            print(f"  {i}: {filename}")
+        
+        return trajectory_files
     
     # --- --- --- --- --- SETUP PYBULLET --- --- --- --- ---
     def start_pybullet(self):
@@ -823,6 +958,10 @@ class HuskyMonitor(Node):
                 
                 # Add button to load the selected state
                 self.buttons.append(Button('Load Board Validation State', self.load_board_validation_state))
+                
+                # Add button to load joint trajectory if available
+                if self.available_joint_trajectories:
+                    self.buttons.append(Button('Load Joint Trajectory', self.load_joint_trajectory))
             else:
                 print("No robot cell state files found for board validation")
 
