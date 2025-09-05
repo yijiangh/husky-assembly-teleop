@@ -6,3 +6,4 @@ alwaysApply: true
 
 - Use `C:/Users/yijiangh/.rhinocode/py39-rh8/python.exe` to run python scripts.
 - Always save newly generated data and files to the folder where the script is located.
+- If a Python script's name is `GH_xxxx.py`, this script is intended to be run as a Python3 Script in Grasshopper on Rhino 8. You should try to make the output data Rhino/Grasshopper friendly, and make use of the `compas_rhino.conversions` functions if applicable.
