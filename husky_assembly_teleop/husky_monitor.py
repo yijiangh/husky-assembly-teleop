@@ -45,7 +45,7 @@ CLIENT_IP = '192.168.0.7' # Set to your own IP
 MOCAP_IP = '192.168.0.117' # set to the mocap PC's IP, get this from Motive Settings>Streaming pane->Local interface
 
 FILENAME_SUFFIX = '_vary_pos_vary_yaw'
-VALIDATION_PROBLEM_NAME = '250826_cindy_calibration_validation'
+VALIDATION_PROBLEM_NAME = '250904_triangle_test'
   
 class HuskyMonitor(Node):
     USE_MOCAP = 0
@@ -124,7 +124,7 @@ class HuskyMonitor(Node):
         self.grasp_distance = 0.0 # fixed for now
         self.goal_element_axis = 0
 
-        self.trajectory_time = 20 if self.CALIBRATION else 5
+        self.trajectory_time = 20 if self.CALIBRATION else 60
 
         # list of conf, velocity, total time, attachment other than the ee
         self.planned_arm_trajectory = [(None, None, None, None), (None, None, None, None)]
@@ -703,9 +703,11 @@ class HuskyMonitor(Node):
                     if calibration:
                         ee_types.append("calib_tip")
                     else:
+                        # TODO make this a parameter that corresponds to the real robot setup
                         # Default to validation_tool_pair for dual arm, victor_gripper for single arm
                         if dual_arm:
-                            ee_types.append("validation_tool_pair")
+                            # ee_types.append("validation_tool_pair")
+                            ee_types.extend(["victor_gripper", "victor_gripper"])
                         else:
                             ee_types.append("victor_gripper")
                     break  # For single arm, we only need one type
