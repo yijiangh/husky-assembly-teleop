@@ -61,7 +61,7 @@ class HuskyMonitor(Node):
 
     ASSEMBLY_MODE = 0
     
-    BOARD_VALIDATION = 0
+    BOARD_VALIDATION = 1
 
     def __init__(self):
         super().__init__('husky_monitor')
@@ -98,9 +98,11 @@ class HuskyMonitor(Node):
         
         # Board validation mode variables
         self.board_validation_state_slider = None
+        self.trajectory_selection_slider = None
         self.available_robot_cell_states = []
         self.selected_state_index = 0
         self.available_joint_trajectories = []  # Store available JointTrajectory files
+        self.selected_trajectory_index = 0
         
         # goal and trajectory interface
         self.selected_arm_index = 0
@@ -656,11 +658,11 @@ class HuskyMonitor(Node):
             print("No joint trajectory files available!")
             return
             
-        if self.selected_state_index >= len(self.available_joint_trajectories):
-            print(f"Invalid trajectory index: {self.selected_state_index}")
+        if self.selected_trajectory_index >= len(self.available_joint_trajectories):
+            print(f"Invalid trajectory index: {self.selected_trajectory_index}")
             return
             
-        selected_trajectory_file = self.available_joint_trajectories[self.selected_state_index]
+        selected_trajectory_file = self.available_joint_trajectories[self.selected_trajectory_index]
         trajectory_filepath = os.path.join(
             DATA_DIRECTORY,
             'husky_assembly_design_study',
@@ -739,6 +741,15 @@ class HuskyMonitor(Node):
         if 0 <= new_index < len(self.available_robot_cell_states):
             self.selected_state_index = new_index
             print(f"Selected state: {self.available_robot_cell_states[self.selected_state_index]}")
+
+    def update_trajectory_index(self, trajectory_index):
+        """
+        Update the selected joint trajectory index.
+        """
+        new_index = int(trajectory_index)
+        if 0 <= new_index < len(self.available_joint_trajectories):
+            self.selected_trajectory_index = new_index
+            print(f"Selected trajectory: {self.available_joint_trajectories[self.selected_trajectory_index]}")
 
     def _load_available_robot_cell_states(self):
         """
@@ -962,8 +973,16 @@ class HuskyMonitor(Node):
                 # Add button to load the selected state
                 self.buttons.append(Button('Load Board Validation State', self.load_board_validation_state))
                 
-                # Add button to load joint trajectory if available
+                # Create slider for selecting joint trajectory
                 if self.available_joint_trajectories:
+                    max_traj_index = len(self.available_joint_trajectories) - 1
+                    self.trajectory_selection_slider = Slider(
+                        "Joint Trajectory", 
+                        self.update_trajectory_index, 
+                        0, max_traj_index, self.selected_trajectory_index
+                    )
+                    
+                    # Add button to load joint trajectory
                     self.buttons.append(Button('Load Joint Trajectory', self.load_joint_trajectory))
             else:
                 print("No robot cell state files found for board validation")
@@ -1213,6 +1232,9 @@ class HuskyMonitor(Node):
             
         if self.BOARD_VALIDATION and self.board_validation_state_slider:
             self.board_validation_state_slider.update()
+            
+        if self.BOARD_VALIDATION and hasattr(self, 'trajectory_selection_slider') and self.trajectory_selection_slider:
+            self.trajectory_selection_slider.update()
 
         if not self.USE_MOCAP:
             pass
