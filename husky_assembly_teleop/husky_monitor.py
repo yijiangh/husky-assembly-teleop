@@ -45,7 +45,7 @@ CLIENT_IP = '192.168.0.7' # Set to your own IP
 MOCAP_IP = '192.168.0.117' # set to the mocap PC's IP, get this from Motive Settings>Streaming pane->Local interface
 
 FILENAME_SUFFIX = '_vary_pos_vary_yaw'
-VALIDATION_PROBLEM_NAME = '250904_triangle_test'
+VALIDATION_PROBLEM_NAME = '250916_Antenna'
   
 class HuskyMonitor(Node):
     USE_MOCAP = 0
@@ -61,7 +61,7 @@ class HuskyMonitor(Node):
 
     ASSEMBLY_MODE = 0
     
-    BOARD_VALIDATION = 1
+    BOARD_VALIDATION = 0
 
     def __init__(self):
         super().__init__('husky_monitor')
@@ -906,12 +906,13 @@ class HuskyMonitor(Node):
         
         if not self.USE_MOCAP:
             # teleop base when no mocap
-            self.dump_sep_sliders.append(Slider("----------Base Control", lambda : None))
-            pose2d = pp.pose2d_from_pose((self.huskies[self.selected_robot_id].interface.position, self.huskies[self.selected_robot_id].interface.rotation), tolerance=0.1)
-            self.teleop_base_slider_group = SliderGroup(["teleop base {}".format(t) for t in ["x","y","yaw"]], self.update_base_conf, [-5.0, -5.0, -np.pi], [5.0,5.0,np.pi], pose2d)
+            # self.dump_sep_sliders.append(Slider("----------Base Control", lambda : None))
+            # pose2d = pp.pose2d_from_pose((self.huskies[self.selected_robot_id].interface.position, self.huskies[self.selected_robot_id].interface.rotation), tolerance=0.1)
+            # self.teleop_base_slider_group = SliderGroup(["teleop base {}".format(t) for t in ["x","y","yaw"]], self.update_base_conf, [-5.0, -5.0, -np.pi], [5.0,5.0,np.pi], pose2d)
             # self.state_sliders.append(p.addUserDebugParameter("x", -5.0, 5.0, pose2d[0]))
             # self.state_sliders.append(p.addUserDebugParameter("y", -5.0, 5.0, pose2d[1]))
             # self.state_sliders.append(p.addUserDebugParameter("yaw", -np.pi, np.pi, pose2d[2]))
+            pass
         else:
             pass
             # self.buttons.append(Button('Plan base', lambda: world.plan_to_goal(self)))
@@ -969,7 +970,8 @@ class HuskyMonitor(Node):
 
         if not self.CALIBRATION:
             # in calibration mode, we do not have task space targets so this is disabled
-            self.buttons.append(Button('Exec S.Arm Traj with servoing', self.execute_arm_trajectory_with_servoing))
+            pass
+            # self.buttons.append(Button('Exec S.Arm Traj with servoing', self.execute_arm_trajectory_with_servoing))
 
         # if not self.CALIBRATION:
         #     self.buttons.append(Button('Exec Free Motion', self.execute_free_trajectory))
@@ -981,6 +983,15 @@ class HuskyMonitor(Node):
             # self.buttons.append(Button('Exec Gripper', lambda: world.set_gripper(self)))
             self.buttons.append(Button('Open Gripper', lambda: world.open_gripper_full(self)))
             self.buttons.append(Button('Close Gripper', lambda: world.close_gripper_for_bar(self)))
+            
+            # New toggle buttons for gripper and screw control
+            self.buttons.append(Button('Toggle Left Gripper', lambda: self.huskies[self.selected_robot_id].interface.toggle_gripper(0)))
+            self.buttons.append(Button('Toggle Left Screw', lambda: self.huskies[self.selected_robot_id].interface.toggle_screw(0)))
+            
+            # Only show right arm buttons if the robot is configured for dual arm
+            if self.huskies[self.selected_robot_id].dual_arm:
+                self.buttons.append(Button('Toggle Right Gripper', lambda: self.huskies[self.selected_robot_id].interface.toggle_gripper(1)))
+                self.buttons.append(Button('Toggle Right Screw', lambda: self.huskies[self.selected_robot_id].interface.toggle_screw(1)))
 
         # self.buttons.append(Button('Compute ik', self.compute_ik_for_bar))
 
@@ -1030,22 +1041,23 @@ class HuskyMonitor(Node):
             self.buttons.append(Button('Save EE mocap data', lambda: world.save_dual_arm_E_mocap(self)))
             
         if not self.BAR_GOAL_MODE:
-            self.dump_sep_sliders.append(Slider("----------Joint Target (Left Arm)", lambda : None))
-            left_joint_names = self.huskies[self.selected_robot_id].object.get_arm_joint_names(index=0)
-            for i, j in enumerate(pp.joints_from_names(self.huskies[self.selected_robot_id].object.robot, left_joint_names)):
-                lower, upper = pp.get_joint_limits(self.huskies[self.selected_robot_id].object.robot, j)
-                if target_conf is None:
-                    self.joint_state_sliders.append(p.addUserDebugParameter(f'Left Joint {i}', lower, upper, self.goal_arm_pose[0][i]))
-                else:
-                    self.joint_state_sliders.append(p.addUserDebugParameter(f'Left Joint {i}', lower, upper, target_conf[0][i]))
-            self.dump_sep_sliders.append(Slider("----------Joint Target (Right Arm)", lambda : None))
-            right_joint_names = self.huskies[self.selected_robot_id].object.get_arm_joint_names(index=1)
-            for i, j in enumerate(pp.joints_from_names(self.huskies[self.selected_robot_id].object.robot, right_joint_names)):
-                lower, upper = pp.get_joint_limits(self.huskies[self.selected_robot_id].object.robot, j)
-                if target_conf is None:
-                    self.joint_state_sliders.append(p.addUserDebugParameter(f'Right Joint {i}', lower, upper, self.goal_arm_pose[1][i]))
-                else:
-                    self.joint_state_sliders.append(p.addUserDebugParameter(f'Right Joint {i}', lower, upper, target_conf[1][i]))
+            pass
+            # self.dump_sep_sliders.append(Slider("----------Joint Target (Left Arm)", lambda : None))
+            # left_joint_names = self.huskies[self.selected_robot_id].object.get_arm_joint_names(index=0)
+            # for i, j in enumerate(pp.joints_from_names(self.huskies[self.selected_robot_id].object.robot, left_joint_names)):
+            #     lower, upper = pp.get_joint_limits(self.huskies[self.selected_robot_id].object.robot, j)
+            #     if target_conf is None:
+            #         self.joint_state_sliders.append(p.addUserDebugParameter(f'Left Joint {i}', lower, upper, self.goal_arm_pose[0][i]))
+            #     else:
+            #         self.joint_state_sliders.append(p.addUserDebugParameter(f'Left Joint {i}', lower, upper, target_conf[0][i]))
+            # self.dump_sep_sliders.append(Slider("----------Joint Target (Right Arm)", lambda : None))
+            # right_joint_names = self.huskies[self.selected_robot_id].object.get_arm_joint_names(index=1)
+            # for i, j in enumerate(pp.joints_from_names(self.huskies[self.selected_robot_id].object.robot, right_joint_names)):
+            #     lower, upper = pp.get_joint_limits(self.huskies[self.selected_robot_id].object.robot, j)
+            #     if target_conf is None:
+            #         self.joint_state_sliders.append(p.addUserDebugParameter(f'Right Joint {i}', lower, upper, self.goal_arm_pose[1][i]))
+            #     else:
+            #         self.joint_state_sliders.append(p.addUserDebugParameter(f'Right Joint {i}', lower, upper, target_conf[1][i]))
             
         if self.CALIBRATION:
             self.dump_sep_sliders.append(Slider("----------Calibration", lambda : None))
@@ -1203,7 +1215,8 @@ class HuskyMonitor(Node):
             self.board_validation_state_slider.update()
 
         if not self.USE_MOCAP:
-            self.teleop_base_slider_group.update()
+            pass
+            # self.teleop_base_slider_group.update()
         
         # update goal robot base state
         # state_slider_values = [p.readUserDebugParameter(ps) for ps in self.state_sliders]
@@ -1219,11 +1232,12 @@ class HuskyMonitor(Node):
             # update_bar_goal_pose
         else:
             # Update both arms' goal conf from sliders
-            n_joints = 6
-            left_slider_vals = [p.readUserDebugParameter(ps) for ps in self.joint_state_sliders[:n_joints]]
-            right_slider_vals = [p.readUserDebugParameter(ps) for ps in self.joint_state_sliders[n_joints:2*n_joints]]
-            self.goal_arm_pose[0] = np.array(left_slider_vals)
-            self.goal_arm_pose[1] = np.array(right_slider_vals)
+            pass
+            # n_joints = 6
+            # left_slider_vals = [p.readUserDebugParameter(ps) for ps in self.joint_state_sliders[:n_joints]]
+            # right_slider_vals = [p.readUserDebugParameter(ps) for ps in self.joint_state_sliders[n_joints:2*n_joints]]
+            # self.goal_arm_pose[0] = np.array(left_slider_vals)
+            # self.goal_arm_pose[1] = np.array(right_slider_vals)
 
         # update assembly goal position
         # self.assembly_goal_position_slider_group.update()
