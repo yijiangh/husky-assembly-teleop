@@ -15,6 +15,7 @@ import time, copy
 import numpy as np
 
 from typing import List, Tuple
+from scipy.spatial.transform import Rotation as R
 
 import rclpy
 import rclpy.executors
@@ -29,8 +30,8 @@ from husky_assembly_teleop.husky_robot import UR5e_HOME_STATE
 from husky_assembly_teleop.common import (
     Button, Slider, SliderGroup, Husky, TrackedObject, HuskyObject, AssemblyObject, HUSKY_UR5e_JOINT_NAMES, lerp, load_gripper
 )
-
 from husky_assembly_teleop.optitrack.NatNetClient import NatNetClient
+from husky_assembly_teleop.utils import pose_from_frame, frame_from_pose, pose_from_transformation, transformation_from_pose
 
 DEFAULT_GREY = [0.2, 0.2, 0.2, 0.7]
 GOAL_BLUE = [0, 0.2, 0.5, 0.7]
@@ -45,7 +46,8 @@ CLIENT_IP = '192.168.0.7' # Set to your own IP
 MOCAP_IP = '192.168.0.117' # set to the mocap PC's IP, get this from Motive Settings>Streaming pane->Local interface
 
 FILENAME_SUFFIX = '_vary_pos_vary_yaw'
-VALIDATION_PROBLEM_NAME = '250916_Antenna'
+# VALIDATION_PROBLEM_NAME = '250905Orientation_test'
+VALIDATION_PROBLEM_NAME = '250707_RobotX_box_demo'
   
 class HuskyMonitor(Node):
     USE_MOCAP = 0
@@ -103,6 +105,10 @@ class HuskyMonitor(Node):
         self.selected_state_index = 0
         self.available_joint_trajectories = []  # Store available JointTrajectory files
         self.selected_trajectory_index = 0
+        
+        # Cache for RobotCell to avoid reloading
+        self._robot_cell_cache = None
+        self._robot_cell_cache_path = None
         
         # goal and trajectory interface
         self.selected_arm_index = 0
@@ -581,30 +587,33 @@ class HuskyMonitor(Node):
         
         print(f"Loading robot cell state: {selected_state_file}")
         
-        # Check if there's a corresponding JointTrajectory file with the same prefix
-        state_prefix = selected_state_file.replace('_RobotCellState.json', '')
-        corresponding_trajectory_file = f"{state_prefix}_JointTrajectory.json"
-        trajectory_filepath = os.path.join(
-            DATA_DIRECTORY,
-            'husky_assembly_design_study',
-            VALIDATION_PROBLEM_NAME,
-            'RobotCellStates',
-            corresponding_trajectory_file
-        )
+        # # Check if there's a corresponding JointTrajectory file with the same prefix
+        # state_prefix = selected_state_file.replace('_RobotCellState.json', '')
+        # corresponding_trajectory_file = f"{state_prefix}_JointTrajectory.json"
+        # trajectory_filepath = os.path.join(
+        #     DATA_DIRECTORY,
+        #     'husky_assembly_design_study',
+        #     VALIDATION_PROBLEM_NAME,
+        #     'RobotCellStates',
+        #     corresponding_trajectory_file
+        # )
         
-        if os.path.exists(trajectory_filepath):
-            print(f"Found corresponding joint trajectory: {corresponding_trajectory_file}")
-            # Update the available joint trajectories list to include this file if not already present
-            if corresponding_trajectory_file not in self.available_joint_trajectories:
-                self.available_joint_trajectories.append(corresponding_trajectory_file)
-                self.available_joint_trajectories.sort()
-        else:
-            print(f"No corresponding joint trajectory found for: {selected_state_file}")
+        # if os.path.exists(trajectory_filepath):
+        #     print(f"Found corresponding joint trajectory: {corresponding_trajectory_file}")
+        #     # Update the available joint trajectories list to include this file if not already present
+        #     if corresponding_trajectory_file not in self.available_joint_trajectories:
+        #         self.available_joint_trajectories.append(corresponding_trajectory_file)
+        #         self.available_joint_trajectories.sort()
+        # else:
+        #     print(f"No corresponding joint trajectory found for: {selected_state_file}")
         
         try:
             # Load the robot cell state
             from compas.data import json_load
             robot_cell_state = json_load(state_filepath)
+            
+            # Load rigid body states as static obstacles
+            self.load_rigid_body_states_as_obstacles(robot_cell_state)
             
             # Get the robot configuration from the state
             if hasattr(robot_cell_state, 'robot_configuration'):
@@ -613,23 +622,16 @@ class HuskyMonitor(Node):
                 # Extract base pose and arm joint states
                 if hasattr(robot_config, 'values') and hasattr(robot_config, 'joint_names'):
                     # Find base and arm joint values
-                    base_joint_names = ['base_joint_x', 'base_joint_y', 'base_joint_yaw']
+                    # base_joint_names = ['base_joint_x', 'base_joint_y', 'base_joint_yaw']
                     from husky_assembly_teleop.utils import HUSKY_DUAL_UR5e_JOINT_NAMES
                     left_arm_names = HUSKY_DUAL_UR5e_JOINT_NAMES[0]
                     right_arm_names = HUSKY_DUAL_UR5e_JOINT_NAMES[1]
-
-                    # Extract base pose
-                    base_x = robot_config[base_joint_names[0]] if base_joint_names[0] in robot_config else 0.0
-                    base_y = robot_config[base_joint_names[1]] if base_joint_names[1] in robot_config else 0.0
-                    base_yaw = robot_config[base_joint_names[2]] if base_joint_names[2] in robot_config else 0.0
-                    
+                  
                     # Extract arm joint states
                     left_arm_joint_values = [robot_config[name] for name in left_arm_names]
                     right_arm_joint_values = [robot_config[name] for name in right_arm_names]
 
                     # Update goal robot configuration
-                    self.goal_base_pose = (np.array([base_x, base_y, 0.0]), 
-                                         pp.quat_from_euler(pp.Euler(yaw=base_yaw)))
                     self.goal_arm_pose[0] = np.array(left_arm_joint_values)
                     self.goal_arm_pose[1] = np.array(right_arm_joint_values)
                     
@@ -637,7 +639,6 @@ class HuskyMonitor(Node):
                     self.reset_ui(self.goal_arm_pose)
                     
                     print(f"Updated goal robot configuration from {selected_state_file}")
-                    print(f"Base pose: {self.goal_base_pose}")
                     print(f"Left arm joints: {self.goal_arm_pose[0]}")
                     print(f"Right arm joints: {self.goal_arm_pose[1]}")
 
@@ -646,9 +647,276 @@ class HuskyMonitor(Node):
                     print("Robot configuration does not have expected structure")
             else:
                 print("Robot cell state does not contain robot configuration")
-                
+
+            if hasattr(robot_cell_state, 'robot_base_frame'):
+                self.goal_base_pose = pose_from_frame(robot_cell_state.robot_base_frame)
+                print(f"Updated goal base pose from {selected_state_file}: {self.goal_base_pose}")
+ 
         except Exception as e:
             print(f"Error loading robot cell state: {e}")
+
+    def _load_robot_cell(self, validation_problem_name):
+        """
+        Load and cache the RobotCell.json file for the given validation problem.
+        
+        Parameters
+        ----------
+        validation_problem_name : str
+            The name of the validation problem directory.
+            
+        Returns
+        -------
+        RobotCell
+            The loaded robot cell.
+        """
+        robot_cell_path = os.path.join(
+            DATA_DIRECTORY,
+            'husky_assembly_design_study',
+            validation_problem_name,
+            'RobotCell.json'
+        )
+        
+        # Check if we already have this robot cell cached
+        if self._robot_cell_cache is not None and self._robot_cell_cache_path == robot_cell_path:
+            return self._robot_cell_cache
+            
+        if not os.path.exists(robot_cell_path):
+            print(f"RobotCell.json not found at: {robot_cell_path}")
+            return None
+            
+        try:
+            from compas.data import json_load
+            robot_cell = json_load(robot_cell_path)
+            
+            # Cache the robot cell
+            self._robot_cell_cache = robot_cell
+            self._robot_cell_cache_path = robot_cell_path
+            
+            print(f"Loaded and cached RobotCell from: {robot_cell_path}")
+            return robot_cell
+            
+        except Exception as e:
+            print(f"Error loading RobotCell: {e}")
+            return None
+
+    def load_rigid_body_states_as_obstacles(self, robot_cell_state):
+        """
+        Load rigid body states from a RobotCellState and create/update static obstacles.
+        
+        Parameters
+        ----------
+        robot_cell_state : RobotCellState
+            The robot cell state containing rigid body states to load as obstacles.
+        """
+        if not hasattr(robot_cell_state, 'rigid_body_states'):
+            print("No rigid body states found in robot cell state")
+            return
+            
+        # Load the RobotCell to get rigid body models
+        robot_cell = self._load_robot_cell(VALIDATION_PROBLEM_NAME)
+        if robot_cell is None:
+            print("Could not load RobotCell, falling back to simple box obstacles")
+            self._load_rigid_body_states_as_simple_obstacles(robot_cell_state)
+            return
+            
+        # Dictionary to track existing obstacles by name
+        existing_obstacles = {}
+        for obstacle in self.static_obstacles:
+            if hasattr(obstacle, 'name'):
+                existing_obstacles[obstacle.name] = obstacle
+        
+        # Process each rigid body state
+        for rigid_body_name, rigid_body_state in robot_cell_state.rigid_body_states.items():
+            # Skip hidden rigid bodies
+            if rigid_body_state.is_hidden:
+                continue
+                
+            # Skip rigid bodies that are attached to tools or links (they move with the robot)
+            if rigid_body_state.attached_to_tool or rigid_body_state.attached_to_link:
+                continue
+                
+            # Get the frame from the rigid body state
+            if rigid_body_state.frame is None:
+                print(f"Warning: No frame data for rigid body {rigid_body_name}")
+                continue
+                
+            # Convert frame to pose (position and quaternion)
+            frame = rigid_body_state.frame
+            position = np.array([frame.point.x, frame.point.y, frame.point.z])
+            
+            # Convert frame axes to quaternion
+            # The frame has xaxis, yaxis, and zaxis (zaxis = xaxis × yaxis)
+            xaxis = np.array([frame.xaxis.x, frame.xaxis.y, frame.xaxis.z])
+            yaxis = np.array([frame.yaxis.x, frame.yaxis.y, frame.yaxis.z])
+            zaxis = np.cross(xaxis, yaxis)
+            
+            # Create rotation matrix from axes
+            rotation_matrix = np.column_stack([xaxis, yaxis, zaxis])
+            
+            # Convert rotation matrix to quaternion
+            rotation = R.from_matrix(rotation_matrix)
+            quaternion = rotation.as_quat()  # [x, y, z, w]
+            
+            # Create pose tuple (position, quaternion)
+            pose = (position, quaternion)
+            
+            # Check if obstacle already exists
+            if rigid_body_name in existing_obstacles:
+                # Update existing obstacle pose
+                obstacle = existing_obstacles[rigid_body_name]
+                if hasattr(obstacle, 'body') and obstacle.body is not None:
+                    pp.set_pose(obstacle.body, pose)
+                    print(f"Updated obstacle {rigid_body_name} pose")
+            else:
+                # Create new obstacle using real collision geometry from RobotCell
+                obstacle_body = self._create_rigid_body_obstacle(rigid_body_name, robot_cell, pose)
+                if obstacle_body is not None:
+                    # Create a simple wrapper to store the obstacle with name
+                    class StaticObstacle:
+                        def __init__(self, name, body):
+                            self.name = name
+                            self.body = body
+                    
+                    obstacle = StaticObstacle(rigid_body_name, obstacle_body)
+                    self.add_static_obstacles(obstacle)
+                    print(f"Created new obstacle {rigid_body_name} with real collision geometry")
+                else:
+                    print(f"Failed to create obstacle {rigid_body_name}, falling back to simple box")
+                    # Fallback to simple box
+                    obstacle_body = pp.create_box(0.1, 0.1, 0.1, color=pp.GREY, mass=pp.STATIC_MASS)
+                    pp.set_pose(obstacle_body, pose)
+                    
+                    class StaticObstacle:
+                        def __init__(self, name, body):
+                            self.name = name
+                            self.body = body
+                    
+                    obstacle = StaticObstacle(rigid_body_name, obstacle_body)
+                    self.add_static_obstacles(obstacle)
+                    print(f"Created fallback box obstacle {rigid_body_name}")
+
+    def _create_rigid_body_obstacle(self, rigid_body_name, robot_cell, pose):
+        """
+        Create a PyBullet obstacle from a rigid body model using real collision geometry.
+        
+        Parameters
+        ----------
+        rigid_body_name : str
+            The name of the rigid body.
+        robot_cell : RobotCell
+            The robot cell containing rigid body models.
+        pose : tuple
+            The pose (position, quaternion) for the obstacle.
+            
+        Returns
+        -------
+        int or None
+            The PyBullet body ID, or None if creation failed.
+        """
+        if rigid_body_name not in robot_cell.rigid_body_models:
+            print(f"Rigid body model {rigid_body_name} not found in RobotCell")
+            return None
+            
+        rigid_body_model = robot_cell.rigid_body_models[rigid_body_name]
+        
+        try:
+            # Create temporary directory for mesh files (similar to PyBullet client)
+            import tempfile
+            temp_dir = tempfile.mkdtemp()
+            
+            # Process visual meshes
+            visual_path = None
+            if rigid_body_model.visual_meshes and len(rigid_body_model.visual_meshes) > 0:
+                from compas.datastructures import Mesh
+                visual_mesh = Mesh()
+                for m in rigid_body_model.visual_meshes_in_meters:
+                    visual_mesh.join(m, precision=12)
+                visual_path = os.path.join(temp_dir, f"{rigid_body_name}_visual.obj")
+                visual_mesh.to_obj(visual_path)
+            
+            # Process collision meshes
+            collision_path = None
+            if rigid_body_model.collision_meshes and len(rigid_body_model.collision_meshes) > 0:
+                from compas.datastructures import Mesh
+                collision_mesh = Mesh()
+                for m in rigid_body_model.collision_meshes_in_meters:
+                    collision_mesh.join(m, precision=12)
+                collision_path = os.path.join(temp_dir, f"{rigid_body_name}_collision.obj")
+                collision_mesh.to_obj(collision_path)
+            
+            # Create PyBullet body from mesh files
+            obstacle_body = pp.create_obj(visual_path or collision_path, mass=pp.STATIC_MASS)
+            
+            if obstacle_body is not None:
+                # Set the pose
+                pp.set_pose(obstacle_body, pose)
+                # Set color
+                pp.set_color(obstacle_body, pp.GREY)
+                
+            # Clean up temporary directory
+            import shutil
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            
+            return obstacle_body
+            
+        except Exception as e:
+            print(f"Error creating rigid body obstacle {rigid_body_name}: {e}")
+            return None
+
+    def _load_rigid_body_states_as_simple_obstacles(self, robot_cell_state):
+        """
+        Fallback method to create simple box obstacles when RobotCell is not available.
+        
+        Parameters
+        ----------
+        robot_cell_state : RobotCellState
+            The robot cell state containing rigid body states to load as obstacles.
+        """
+        # Dictionary to track existing obstacles by name
+        existing_obstacles = {}
+        for obstacle in self.static_obstacles:
+            if hasattr(obstacle, 'name'):
+                existing_obstacles[obstacle.name] = obstacle
+        
+        # Process each rigid body state
+        for rigid_body_name, rigid_body_state in robot_cell_state.rigid_body_states.items():
+            # Skip hidden rigid bodies
+            if rigid_body_state.is_hidden:
+                continue
+                
+            # Skip rigid bodies that are attached to tools or links (they move with the robot)
+            if rigid_body_state.attached_to_tool or rigid_body_state.attached_to_link:
+                continue
+                
+            # Get the frame from the rigid body state
+            if rigid_body_state.frame is None:
+                print(f"Warning: No frame data for rigid body {rigid_body_name}")
+                continue
+                
+            # Convert frame to pose (position and quaternion)
+            pose = pose_from_frame(rigid_body_state.frame)
+           
+            # Check if obstacle already exists
+            if rigid_body_name in existing_obstacles:
+                # Update existing obstacle pose
+                obstacle = existing_obstacles[rigid_body_name]
+                if hasattr(obstacle, 'body') and obstacle.body is not None:
+                    pp.set_pose(obstacle.body, pose)
+                    print(f"Updated obstacle {rigid_body_name} pose")
+            else:
+                # Create simple box obstacle as fallback
+                obstacle_body = pp.create_box(0.1, 0.1, 0.1, color=pp.GREY, mass=pp.STATIC_MASS)
+                pp.set_pose(obstacle_body, pose)
+                
+                # Create a simple wrapper to store the obstacle with name
+                class StaticObstacle:
+                    def __init__(self, name, body):
+                        self.name = name
+                        self.body = body
+                
+                obstacle = StaticObstacle(rigid_body_name, obstacle_body)
+                self.add_static_obstacles(obstacle)
+                print(f"Created fallback box obstacle {rigid_body_name}")
 
     def load_joint_trajectory(self):
         """
