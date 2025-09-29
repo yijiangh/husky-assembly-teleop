@@ -128,7 +128,7 @@ def init(monitor):
     )"""
 
     # * add static obstacles
-    monitor.add_static_obstacles(pp.create_plane(color=(0.9, 0.9, 0.9, 1)))
+    monitor.add_static_obstacles(pp.create_plane(color=(0.9, 0.9, 0.9, 1)), 'base_plane')
     
     wall_right = pp.create_box(10, 0.4, 3)
     pp.set_color(wall_right, pp.GREY)
@@ -138,9 +138,8 @@ def init(monitor):
     pp.set_pose(wall_left, pp.Pose(pp.Point(0, -3.0, 0)))
     pp.set_color(wall_left, pp.GREY)
 
-    monitor.add_static_obstacles(pp.create_plane(color=(0.9, 0.9, 0.9, 1)))
-    monitor.add_static_obstacles(wall_left)
-    monitor.add_static_obstacles(wall_right)
+    monitor.add_static_obstacles(wall_left, 'wall_left')
+    monitor.add_static_obstacles(wall_right, 'wall_right')
 
     # * add tracked obstacles
     # TODO use one tracked box to indicate where to put the assembly
@@ -236,7 +235,7 @@ def next_dual_arm_bar_trajectory(monitor):
             bar_traj = planning.dual_arm_bar_arc(bar_pose, next_bar_pose, 10)
             for p in bar_traj:
                 pp.draw_pose(p)
-            dual_arm_trajectory = planning.plan_dual_arm_motion(monitor.huskies[0], bar_traj, monitor.static_obstacles)
+            dual_arm_trajectory = planning.plan_dual_arm_motion(monitor.huskies[0], bar_traj, list(monitor.static_obstacles.values()))
         if dual_arm_trajectory is not None:
             hi = monitor.huskies[monitor.selected_robot_id].interface
             if np.max(np.abs(hi.arm_joint_pose[0]-dual_arm_trajectory[0][0][0]) > 0.1) or np.max(np.abs(hi.arm_joint_pose[1]-dual_arm_trajectory[1][0][0]) > 0.1):
@@ -266,7 +265,7 @@ def plan_base_to_goal(monitor):
 #     monitor.set_arm_trajectory(planning.plan_arm_wave(monitor.huskies[monitor.selected_robot_id], monitor.trajectory_time))
 
 def plan_arm_to_goal(monitor):
-    obstacles = [monitor.assembly_objects[i].body for i in range(monitor.current_seq_index)] + monitor.static_obstacles
+    obstacles = [monitor.assembly_objects[i].body for i in range(monitor.current_seq_index)] + list(monitor.static_obstacles.values())
     monitor.set_arm_trajectory(
         planning.plan_arm_motion(
             monitor.huskies[monitor.selected_robot_id], 
@@ -282,7 +281,7 @@ def plan_arm_to_goal(monitor):
     monitor.set_to_show_traj_state()
 
 def plan_arm_to_transfer_element(monitor, grasp=None):
-    obstacles = [monitor.assembly_objects[i].body for i in range(monitor.current_seq_index)] + monitor.static_obstacles
+    obstacles = [monitor.assembly_objects[i].body for i in range(monitor.current_seq_index)] + list(monitor.static_obstacles.values())
     transfer_element = monitor.assembly_objects[monitor.current_seq_index]
     full_traj, free_traj, linear_traj = planning.plan_arm_to_transfer_element(
         monitor.huskies[monitor.selected_robot_id], 
@@ -296,14 +295,14 @@ def plan_arm_to_transfer_element(monitor, grasp=None):
     monitor.linear_arm_trajectory = linear_traj
 
 def plan_arm_to_retract_to_home(monitor):
-    obstacles = [monitor.assembly_objects[i].body for i in range(monitor.current_seq_index)] + monitor.static_obstacles
+    obstacles = [monitor.assembly_objects[i].body for i in range(monitor.current_seq_index)] + list(monitor.static_obstacles.values())
     transfer_element = monitor.assembly_objects[monitor.current_seq_index]
     monitor.set_arm_trajectory(
         planning.plan_arm_to_retract_to_home(monitor.huskies[monitor.selected_robot_id], transfer_element, obstacles, monitor.trajectory_time), 
         index=monitor.selected_arm_index)
 
 def compute_ik_for_bar(monitor, world_from_bar, theta_index, grasp_dist):
-    obstacles = monitor.static_obstacles
+    obstacles = list(monitor.static_obstacles.values())
     # [monitor.assembly_objects[i].body for i in range(monitor.current_seq_index)] + 
     monitor.goal_element.set_pose(world_from_bar)
 
@@ -347,7 +346,7 @@ def randomize_bar_location_for_ik_and_transfer(monitor, bar_goal_axis=None, targ
                 return True
 
     world_from_base_link = monitor.goal_model.get_link_pose_from_name("base_footprint")
-    obstacles = monitor.static_obstacles
+    obstacles = list(monitor.static_obstacles.values())
     if target_grasp_index is not None:
         candidate_grasps = [target_grasp_index]
     else:
@@ -870,7 +869,7 @@ def execute_task_goal_arm_trajectory_with_servoing(monitor, trajectory, index=0,
     settle_time = 2
     data = [{} for _ in range(num_iters)]
 
-    obstacles = monitor.static_obstacles
+    obstacles = list(monitor.static_obstacles.values())
     
     hi = monitor.huskies[monitor.selected_robot_id].interface
     ho = monitor.huskies[monitor.selected_robot_id].object
@@ -1241,14 +1240,14 @@ def sample_dual_arm_configuration(monitor, tool0_to_tool0_transform, max_attempt
         left_extra_disabled_collisions = []
         right_extra_disabled_collisions = []
 
-    left_collision_fn = pp.get_collision_fn(robot, left_joints, obstacles=monitor.static_obstacles,
+    left_collision_fn = pp.get_collision_fn(robot, left_joints, obstacles=list(monitor.static_obstacles.values()),
                                               attachments=left_attachments, 
                                               self_collisions=True,
                                               disabled_collisions={}, 
                                               extra_disabled_collisions=left_extra_disabled_collisions,
                                               custom_limits={}, 
                                               max_distance=0)
-    right_collision_fn = pp.get_collision_fn(robot, right_joints, obstacles=monitor.static_obstacles,
+    right_collision_fn = pp.get_collision_fn(robot, right_joints, obstacles=list(monitor.static_obstacles.values()),
                                               attachments=right_attachments, 
                                               self_collisions=True,
                                               disabled_collisions={}, 
@@ -1327,7 +1326,7 @@ def sample_dual_arm_configuration(monitor, tool0_to_tool0_transform, max_attempt
         
             # Plan left arm transition
             left_trajectory = planning.plan_arm_motion(
-                husky, left_conf, monitor.static_obstacles, monitor.trajectory_time, arm_index=0
+                husky, left_conf, list(monitor.static_obstacles.values()), monitor.trajectory_time, arm_index=0
             )
             if left_trajectory[0] is None:
                 continue
@@ -1336,7 +1335,7 @@ def sample_dual_arm_configuration(monitor, tool0_to_tool0_transform, max_attempt
             pp.set_joint_positions(robot, left_joints, left_trajectory[0][-1])
             pp.set_joint_positions(robot, right_joints, current_right_conf)
             right_trajectory = planning.plan_arm_motion(
-                husky, right_conf, monitor.static_obstacles, monitor.trajectory_time, arm_index=1
+                husky, right_conf, list(monitor.static_obstacles.values()), monitor.trajectory_time, arm_index=1
             )
         else:
             # Plan in the composite space of both arms
@@ -1354,7 +1353,7 @@ def sample_dual_arm_configuration(monitor, tool0_to_tool0_transform, max_attempt
                 robot,
                 composite_goal,
                 attachments,
-                monitor.static_obstacles,
+                list(monitor.static_obstacles.values()),
                 debug=False,
                 disabled_collisions=None,
                 dual_arm_index="both",
@@ -1475,7 +1474,7 @@ def plan_both_arms_to_goal(monitor, use_composite=False):
         # Sequential planning: left arm, then right arm
         pp.set_joint_positions(robot, left_joints, current_left_conf)
         left_trajectory = planning.plan_arm_motion(
-            husky, left_conf, monitor.static_obstacles, monitor.trajectory_time, arm_index=0, debug=False
+            husky, left_conf, list(monitor.static_obstacles.values()), monitor.trajectory_time, arm_index=0, debug=False
         )
         if left_trajectory[0] is None:
             monitor.get_logger().warn('Left arm planning failed!')
@@ -1484,7 +1483,7 @@ def plan_both_arms_to_goal(monitor, use_composite=False):
         pp.set_joint_positions(robot, left_joints, left_trajectory[0][-1])
         pp.set_joint_positions(robot, right_joints, current_right_conf)
         right_trajectory = planning.plan_arm_motion(
-            husky, right_conf, monitor.static_obstacles, monitor.trajectory_time, arm_index=1, debug=False
+            husky, right_conf, list(monitor.static_obstacles.values()), monitor.trajectory_time, arm_index=1, debug=False
         )
         if right_trajectory[0] is None:
             monitor.get_logger().warn('Right arm planning failed!')
@@ -1518,7 +1517,7 @@ def plan_both_arms_to_goal(monitor, use_composite=False):
             robot,
             composite_goal,
             attachments,
-            monitor.static_obstacles,
+            list(monitor.static_obstacles.values()),
             debug=False,
             disabled_collisions=None,
             dual_arm_index="both",

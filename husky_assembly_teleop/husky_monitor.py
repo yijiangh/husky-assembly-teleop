@@ -6,7 +6,7 @@ The main ROS2 node for the husky monitor. This node is responsible for:
 - Updating the simulation state
 - Handling user input
 """
-import sys
+import sys, re
 print(f"Running with Python: {sys.executable}")
 
 from collections import defaultdict
@@ -47,7 +47,7 @@ MOCAP_IP = '192.168.0.117' # set to the mocap PC's IP, get this from Motive Sett
 
 FILENAME_SUFFIX = '_vary_pos_vary_yaw'
 # VALIDATION_PROBLEM_NAME = '250905Orientation_test'
-VALIDATION_PROBLEM_NAME = '250707_RobotX_box_demo'
+VALIDATION_PROBLEM_NAME = '250929_New_Anntenna'
   
 class HuskyMonitor(Node):
     USE_MOCAP = 0
@@ -76,7 +76,7 @@ class HuskyMonitor(Node):
         self.tracked_objects = []
         self.name_from_mocap_id = {}
 
-        self.static_obstacles = []
+        self.static_obstacles = {}
         self.assembly_objects = []
         self.current_seq_index = 0
 
@@ -177,8 +177,8 @@ class HuskyMonitor(Node):
     def add_assembly_objects(self, aobject: AssemblyObject):
         self.assembly_objects.append(aobject)
 
-    def add_static_obstacles(self, pb_body):
-        self.static_obstacles.append(pb_body)
+    def add_static_obstacles(self, pb_body, name):
+        self.static_obstacles[name] = pb_body
         
     def add_husky(self, husky: Husky):
         """Registers a husky to connect to ROS and be tracked by mocap"""
@@ -405,7 +405,7 @@ class HuskyMonitor(Node):
 
     def sample_calib_traj(self):
         attachments = [ee[1] for ee in self.huskies[self.selected_robot_id].object.ee_list]
-        obstacles = self.static_obstacles
+        obstacles = list(self.static_obstacles.values())
         packed_trajs = world.sample_calib_motion(self, int(self.selected_arm_index), int(self.calib_target_axis), self.calib_joint_range, 
                                                  attachments=attachments, obstacles=obstacles)
 
@@ -611,9 +611,13 @@ class HuskyMonitor(Node):
             # Load the robot cell state
             from compas.data import json_load
             robot_cell_state = json_load(state_filepath)
+
+            match = re.search(r'_A(\d+)-', selected_state_file)
+            active_bar_name = f"b{match.group(1)}_0" if match else None
+            self.get_logger().info(f"Active bar name: {active_bar_name}")
             
             # Load rigid body states as static obstacles
-            self.load_rigid_body_states_as_obstacles(robot_cell_state)
+            self.load_rigid_body_states_as_obstacles(robot_cell_state, active_bar_name)
             
             # Get the robot configuration from the state
             if hasattr(robot_cell_state, 'robot_configuration'):
@@ -699,7 +703,7 @@ class HuskyMonitor(Node):
             print(f"Error loading RobotCell: {e}")
             return None
 
-    def load_rigid_body_states_as_obstacles(self, robot_cell_state):
+    def load_rigid_body_states_as_obstacles(self, robot_cell_state, active_bar_name):
         """
         Load rigid body states from a RobotCellState and create/update static obstacles.
         
@@ -727,6 +731,9 @@ class HuskyMonitor(Node):
         
         # Process each rigid body state
         for rigid_body_name, rigid_body_state in robot_cell_state.rigid_body_states.items():
+            if active_bar_name and rigid_body_name != active_bar_name:
+                continue
+
             # Skip hidden rigid bodies
             if rigid_body_state.is_hidden:
                 continue
@@ -741,25 +748,8 @@ class HuskyMonitor(Node):
                 continue
                 
             # Convert frame to pose (position and quaternion)
-            frame = rigid_body_state.frame
-            position = np.array([frame.point.x, frame.point.y, frame.point.z])
-            
-            # Convert frame axes to quaternion
-            # The frame has xaxis, yaxis, and zaxis (zaxis = xaxis × yaxis)
-            xaxis = np.array([frame.xaxis.x, frame.xaxis.y, frame.xaxis.z])
-            yaxis = np.array([frame.yaxis.x, frame.yaxis.y, frame.yaxis.z])
-            zaxis = np.cross(xaxis, yaxis)
-            
-            # Create rotation matrix from axes
-            rotation_matrix = np.column_stack([xaxis, yaxis, zaxis])
-            
-            # Convert rotation matrix to quaternion
-            rotation = R.from_matrix(rotation_matrix)
-            quaternion = rotation.as_quat()  # [x, y, z, w]
-            
-            # Create pose tuple (position, quaternion)
-            pose = (position, quaternion)
-            
+            pose = pose_from_frame(rigid_body_state.frame)
+ 
             # Check if obstacle already exists
             if rigid_body_name in existing_obstacles:
                 # Update existing obstacle pose
@@ -772,27 +762,16 @@ class HuskyMonitor(Node):
                 obstacle_body = self._create_rigid_body_obstacle(rigid_body_name, robot_cell, pose)
                 if obstacle_body is not None:
                     # Create a simple wrapper to store the obstacle with name
-                    class StaticObstacle:
-                        def __init__(self, name, body):
-                            self.name = name
-                            self.body = body
-                    
-                    obstacle = StaticObstacle(rigid_body_name, obstacle_body)
-                    self.add_static_obstacles(obstacle)
+                    # obstacle = StaticObstacle(rigid_body_name, obstacle_body)
+                    self.add_static_obstacles(obstacle_body, rigid_body_name)
                     print(f"Created new obstacle {rigid_body_name} with real collision geometry")
                 else:
                     print(f"Failed to create obstacle {rigid_body_name}, falling back to simple box")
                     # Fallback to simple box
                     obstacle_body = pp.create_box(0.1, 0.1, 0.1, color=pp.GREY, mass=pp.STATIC_MASS)
                     pp.set_pose(obstacle_body, pose)
-                    
-                    class StaticObstacle:
-                        def __init__(self, name, body):
-                            self.name = name
-                            self.body = body
-                    
-                    obstacle = StaticObstacle(rigid_body_name, obstacle_body)
-                    self.add_static_obstacles(obstacle)
+                   
+                    self.add_static_obstacles(obstacle_body, rigid_body_name)
                     print(f"Created fallback box obstacle {rigid_body_name}")
 
     def _create_rigid_body_obstacle(self, rigid_body_name, robot_cell, pose):
@@ -907,15 +886,9 @@ class HuskyMonitor(Node):
                 # Create simple box obstacle as fallback
                 obstacle_body = pp.create_box(0.1, 0.1, 0.1, color=pp.GREY, mass=pp.STATIC_MASS)
                 pp.set_pose(obstacle_body, pose)
-                
-                # Create a simple wrapper to store the obstacle with name
-                class StaticObstacle:
-                    def __init__(self, name, body):
-                        self.name = name
-                        self.body = body
-                
-                obstacle = StaticObstacle(rigid_body_name, obstacle_body)
-                self.add_static_obstacles(obstacle)
+                 
+                # obstacle = StaticObstacle(rigid_body_name, obstacle_body)
+                self.add_static_obstacles(obstacle_body, rigid_body_name)
                 print(f"Created fallback box obstacle {rigid_body_name}")
 
     def load_joint_trajectory(self):
@@ -1205,15 +1178,15 @@ class HuskyMonitor(Node):
             self.buttons.append(Button('Plan arm to assemble, reuse grasp', self.plan_arm_to_transfer_element_reuse_grasp))
             self.buttons.append(Button('Plan arm to retract to home', self.plan_arm_to_retract_to_home))
 
-        self.buttons.append(Button('Plan S.Arm to conf target', lambda : world.plan_arm_to_goal(self)))
-        self.buttons.append(Button('Exec S.Arm Traj', self.execute_arm_trajectory))
+        # self.buttons.append(Button('Plan S.Arm to conf target', lambda : world.plan_arm_to_goal(self)))
+        # self.buttons.append(Button('Exec S.Arm Traj', self.execute_arm_trajectory))
         self.buttons.append(Button('Exec Both Arm Trajs', lambda: world.execute_arm_trajectory_both(self)))
 
         # Add dual arm configuration sampling button
-        self.buttons.append(Button('Sample Dual Arm Config', self.sample_dual_arm_configuration))
+        # self.buttons.append(Button('Sample Dual Arm Config', self.sample_dual_arm_configuration))
 
         # Add buttons for planning both arms to goal (sequential and composite)
-        self.buttons.append(Button('Plan Both Arms to Goal (sequential)', lambda: world.plan_both_arms_to_goal(self, use_composite=False)))
+        # self.buttons.append(Button('Plan Both Arms to Goal (sequential)', lambda: world.plan_both_arms_to_goal(self, use_composite=False)))
         self.buttons.append(Button('Plan Both Arms to Goal (composite)', lambda: world.plan_both_arms_to_goal(self, use_composite=True)))
 
         # Button to export planned trajectory to JSON
@@ -1223,7 +1196,7 @@ class HuskyMonitor(Node):
         ))
 
         if self.BOARD_VALIDATION:
-            self.dump_sep_sliders.append(Slider("----------Board Validation", lambda : None))
+            self.dump_sep_sliders.append(Slider("----------State Loading", lambda : None))
             
             # Load available robot cell states if not already loaded
             if not self.available_robot_cell_states:
@@ -1239,7 +1212,7 @@ class HuskyMonitor(Node):
                 )
                 
                 # Add button to load the selected state
-                self.buttons.append(Button('Load Board Validation State', self.load_board_validation_state))
+                self.buttons.append(Button('Load Robot Cell State', self.load_board_validation_state))
                 
                 # Create slider for selecting joint trajectory
                 if self.available_joint_trajectories:
@@ -1266,10 +1239,11 @@ class HuskyMonitor(Node):
         # self.buttons.append(Button('Plan arm wave', lambda: world.plan_arm_wave(self)))
 
         if not self.FAKE_HARDWARE and not self.CALIBRATION:
+            self.dump_sep_sliders.append(Slider("----------Gripper", lambda : None))
             # self.gripper_slider = p.addUserDebugParameter("gripper", 0, 1.0, 0.1)
             # self.buttons.append(Button('Exec Gripper', lambda: world.set_gripper(self)))
-            self.buttons.append(Button('Open Gripper', lambda: world.open_gripper_full(self)))
-            self.buttons.append(Button('Close Gripper', lambda: world.close_gripper_for_bar(self)))
+            # self.buttons.append(Button('Open Gripper', lambda: world.open_gripper_full(self)))
+            # self.buttons.append(Button('Close Gripper', lambda: world.close_gripper_for_bar(self)))
             
             # New toggle buttons for gripper and screw control
             self.buttons.append(Button('Toggle Left Gripper', lambda: self.huskies[self.selected_robot_id].interface.toggle_gripper(0)))
@@ -1480,10 +1454,13 @@ class HuskyMonitor(Node):
         # update robot state
         for i, h in enumerate(self.huskies):
             hi = h.interface
-            # these position and rotation are updated by mocap in a differen thread
-            h.object.set_pose((hi.position, hi.rotation), hi.arm_joint_pose)
-            # set the goal pose of base since we are teleoperating the base
-            self.goal_base_pose = (hi.position, hi.rotation)
+            if self.USE_MOCAP:
+                # these position and rotation are updated by mocap in a differen thread
+                h.object.set_pose((hi.position, hi.rotation), hi.arm_joint_pose)
+                # set the goal pose of base since we are teleoperating the base
+                self.goal_base_pose = (hi.position, hi.rotation)
+            else:
+                h.object.set_pose(self.goal_base_pose, hi.arm_joint_pose)
 
         # pp.draw_pose(self.goal_model.get_link_pose_from_name("ur_arm_base_link"))
 
