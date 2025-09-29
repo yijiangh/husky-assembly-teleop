@@ -612,12 +612,12 @@ class HuskyMonitor(Node):
             from compas.data import json_load
             robot_cell_state = json_load(state_filepath)
 
-            match = re.search(r'_A(\d+)-', selected_state_file)
-            active_bar_name = f"b{match.group(1)}_0" if match else None
-            self.get_logger().info(f"Active bar name: {active_bar_name}")
+            # match = re.search(r'_A(\d+)-', selected_state_file)
+            # active_bar_name = f"b{match.group(1)}_0" if match else None
+            # self.get_logger().info(f"Active bar name: {active_bar_name}")
             
             # Load rigid body states as static obstacles
-            self.load_rigid_body_states_as_obstacles(robot_cell_state, active_bar_name)
+            self.load_rigid_body_states_as_obstacles(robot_cell_state)
             
             # Get the robot configuration from the state
             if hasattr(robot_cell_state, 'robot_configuration'):
@@ -703,7 +703,7 @@ class HuskyMonitor(Node):
             print(f"Error loading RobotCell: {e}")
             return None
 
-    def load_rigid_body_states_as_obstacles(self, robot_cell_state, active_bar_name):
+    def load_rigid_body_states_as_obstacles(self, robot_cell_state):
         """
         Load rigid body states from a RobotCellState and create/update static obstacles.
         
@@ -722,17 +722,11 @@ class HuskyMonitor(Node):
             print("Could not load RobotCell, falling back to simple box obstacles")
             self._load_rigid_body_states_as_simple_obstacles(robot_cell_state)
             return
-            
-        # Dictionary to track existing obstacles by name
-        existing_obstacles = {}
-        for obstacle in self.static_obstacles:
-            if hasattr(obstacle, 'name'):
-                existing_obstacles[obstacle.name] = obstacle
-        
+             
         # Process each rigid body state
         for rigid_body_name, rigid_body_state in robot_cell_state.rigid_body_states.items():
-            if active_bar_name and rigid_body_name != active_bar_name:
-                continue
+            # if active_bar_name and rigid_body_name != active_bar_name:
+            #     continue
 
             # Skip hidden rigid bodies
             if rigid_body_state.is_hidden:
@@ -751,12 +745,10 @@ class HuskyMonitor(Node):
             pose = pose_from_frame(rigid_body_state.frame)
  
             # Check if obstacle already exists
-            if rigid_body_name in existing_obstacles:
+            if rigid_body_name in self.static_obstacles:
                 # Update existing obstacle pose
-                obstacle = existing_obstacles[rigid_body_name]
-                if hasattr(obstacle, 'body') and obstacle.body is not None:
-                    pp.set_pose(obstacle.body, pose)
-                    print(f"Updated obstacle {rigid_body_name} pose")
+                pp.set_pose(self.static_obstacles[rigid_body_name], pose)
+                print(f"Updated obstacle {rigid_body_name} pose")
             else:
                 # Create new obstacle using real collision geometry from RobotCell
                 obstacle_body = self._create_rigid_body_obstacle(rigid_body_name, robot_cell, pose)
@@ -851,12 +843,6 @@ class HuskyMonitor(Node):
         robot_cell_state : RobotCellState
             The robot cell state containing rigid body states to load as obstacles.
         """
-        # Dictionary to track existing obstacles by name
-        existing_obstacles = {}
-        for obstacle in self.static_obstacles:
-            if hasattr(obstacle, 'name'):
-                existing_obstacles[obstacle.name] = obstacle
-        
         # Process each rigid body state
         for rigid_body_name, rigid_body_state in robot_cell_state.rigid_body_states.items():
             # Skip hidden rigid bodies
@@ -876,12 +862,11 @@ class HuskyMonitor(Node):
             pose = pose_from_frame(rigid_body_state.frame)
            
             # Check if obstacle already exists
-            if rigid_body_name in existing_obstacles:
+            if rigid_body_name in self.static_obstacles:
                 # Update existing obstacle pose
-                obstacle = existing_obstacles[rigid_body_name]
-                if hasattr(obstacle, 'body') and obstacle.body is not None:
-                    pp.set_pose(obstacle.body, pose)
-                    print(f"Updated obstacle {rigid_body_name} pose")
+                obstacle = self.static_obstacles[rigid_body_name]
+                pp.set_pose(obstacle, pose)
+                print(f"Updated obstacle {rigid_body_name} pose")
             else:
                 # Create simple box obstacle as fallback
                 obstacle_body = pp.create_box(0.1, 0.1, 0.1, color=pp.GREY, mass=pp.STATIC_MASS)
@@ -1178,15 +1163,15 @@ class HuskyMonitor(Node):
             self.buttons.append(Button('Plan arm to assemble, reuse grasp', self.plan_arm_to_transfer_element_reuse_grasp))
             self.buttons.append(Button('Plan arm to retract to home', self.plan_arm_to_retract_to_home))
 
-        # self.buttons.append(Button('Plan S.Arm to conf target', lambda : world.plan_arm_to_goal(self)))
-        # self.buttons.append(Button('Exec S.Arm Traj', self.execute_arm_trajectory))
+        self.buttons.append(Button('Plan S.Arm to conf target', lambda : world.plan_arm_to_goal(self)))
+        self.buttons.append(Button('Exec S.Arm Traj', self.execute_arm_trajectory))
         self.buttons.append(Button('Exec Both Arm Trajs', lambda: world.execute_arm_trajectory_both(self)))
 
         # Add dual arm configuration sampling button
         # self.buttons.append(Button('Sample Dual Arm Config', self.sample_dual_arm_configuration))
 
         # Add buttons for planning both arms to goal (sequential and composite)
-        # self.buttons.append(Button('Plan Both Arms to Goal (sequential)', lambda: world.plan_both_arms_to_goal(self, use_composite=False)))
+        self.buttons.append(Button('Plan Both Arms to Goal (sequential)', lambda: world.plan_both_arms_to_goal(self, use_composite=False)))
         self.buttons.append(Button('Plan Both Arms to Goal (composite)', lambda: world.plan_both_arms_to_goal(self, use_composite=True)))
 
         # Button to export planned trajectory to JSON
