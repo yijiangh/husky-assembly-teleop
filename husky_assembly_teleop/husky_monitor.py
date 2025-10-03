@@ -47,7 +47,8 @@ MOCAP_IP = '192.168.0.117' # set to the mocap PC's IP, get this from Motive Sett
 
 FILENAME_SUFFIX = '_vary_pos_vary_yaw'
 # VALIDATION_PROBLEM_NAME = '250905Orientation_test'
-VALIDATION_PROBLEM_NAME = '250929_New_Anntenna'
+# VALIDATION_PROBLEM_NAME = '250929_New_Antenna_with_GH_RH_Packed'
+VALIDATION_PROBLEM_NAME = '250902_kissing_experiment'
   
 class HuskyMonitor(Node):
     USE_MOCAP = 0
