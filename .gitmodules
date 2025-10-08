@@ -1,6 +1,6 @@
 [submodule "data/husky_urdf"]
 	path = data/husky_urdf
-	url = https://github.com/yijiangh/husky_urdf.git
+	url = git@github.com:yijiangh/husky_urdf.git
 [submodule "external/tracikpy"]
 	path = external/tracikpy
 	url = https://github.com/mjd3/tracikpy.git
