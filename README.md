@@ -48,6 +48,9 @@ python3 -m venv venv --system-site-packages
 
 # In your build terminal
 source venv/bin/activate
+python3 -m pip install external/compas_fab
+python3 -m pip install external/pybullet_planning
+python3 -m pip install external/tracikpy
 python3 -m pip install <your_dependencies>
 python3 -m colcon build --symlink-install
 

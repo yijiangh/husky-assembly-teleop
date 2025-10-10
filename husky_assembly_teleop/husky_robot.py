@@ -8,6 +8,7 @@ The husky robot inteface handling:
 import time
 import numpy as np  
 from scipy.spatial.transform import Rotation as R
+import pybullet_planning as pp
 
 # ROS
 from rclpy.node import Node
@@ -26,15 +27,17 @@ from control_msgs.action._gripper_command import GripperCommand
 
 # arm
 from sensor_msgs.msg._joint_state import JointState
+from control_msgs.msg._dynamic_joint_state import DynamicJointState
+from control_msgs.msg._interface_value import InterfaceValue
 from builtin_interfaces.msg import Duration
 from action_msgs.msg import GoalStatus
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from control_msgs.action import FollowJointTrajectory
 from control_msgs.msg import JointTolerance
-# try:
+from geometry_msgs.msg import PoseStamped, Point, Quaternion, WrenchStamped
 from crl_husky_msgs.msg import MultiArmTrajectory
-# except ImportError:
-#     print("MultiArmTrajectory not found, using single arm interface only.")
+from ur_msgs.srv._set_force_mode import SetForceMode
+from std_srvs.srv._trigger import Trigger
 
 # SetIO service for gripper and screw control
 from ur_msgs.srv import SetIO
@@ -61,6 +64,7 @@ class HuskyRobotInterface:
     angular_velocity = np.zeros(3)
     
     arm_joint_pose = [UR5e_HOME_STATE]
+    arm_tcp_pose = [pp.Pose()]
     is_arm_executing = [False]
     last_arm_movement = [0]
     
@@ -78,6 +82,7 @@ class HuskyRobotInterface:
         
         if dual_arm:
             self.arm_joint_pose.append(UR5e_HOME_STATE)
+            self.arm_tcp_pose.append(pp.Pose())
             self.is_arm_executing.append(False)
             self.last_arm_movement.append(0)
             self.gripper_states.append(False)
@@ -112,6 +117,26 @@ class HuskyRobotInterface:
                 name + '/ur5e/joint_states',
                 lambda msg: self.arm_callback(0, msg),
                 10))
+            
+        self.sub_dynamic_arm = []
+        if dual_arm:
+            self.sub_dynamic_arm.append(self.node.create_subscription(
+                DynamicJointState,
+                name + '/left_ur5e/dynamic_joint_states',
+                lambda msg: self.dynamic_arm_callback(0, msg),
+                10))
+            self.sub_dynamic_arm.append(self.node.create_subscription(
+                DynamicJointState,
+                name + '/right_ur5e/dynamic_joint_states',
+                lambda msg: self.dynamic_arm_callback(1, msg),
+                10))
+        else:
+            self.sub_dynamic_arm.append(self.node.create_subscription(
+                DynamicJointState,
+                name + '/ur5e/dynamic_joint_states',
+                lambda msg: self.dynamic_arm_callback(0, msg),
+                10))
+
         
         # Publishers --- --- --- --- ---
         self.pub_cmd_vel = self.node.create_publisher(Twist, name + '/cmd_vel', 10)
@@ -122,6 +147,45 @@ class HuskyRobotInterface:
             self.pub_cmd_multi_arm = self.node.create_publisher(MultiArmTrajectory, name + '/multi_arm_joint_trajectory', 10)
         else:
             self.pub_cmd_arm.append(self.node.create_publisher(JointTrajectory, name + '/ur5e/scaled_joint_trajectory_controller/joint_trajectory', 10))
+        
+        self.pub_cmd_arm_cartesian = []
+        if dual_arm:
+            self.pub_cmd_arm_cartesian.append(self.node.create_publisher(PoseStamped, name + '/left_ur5e/target_frame', 10))
+            self.pub_cmd_arm_cartesian.append(self.node.create_publisher(PoseStamped, name + '/right_ur5e/target_frame', 10))
+        else:
+            self.pub_cmd_arm_cartesian.append(self.node.create_publisher(PoseStamped, name + '/ur5e/target_frame', 10))
+            
+        self.pub_cmd_arm_cartesian_force = []
+        if dual_arm:
+            self.pub_cmd_arm_cartesian_force.append(self.node.create_publisher(WrenchStamped, name + '/left_ur5e/target_wrench', 10))
+            self.pub_cmd_arm_cartesian_force.append(self.node.create_publisher(WrenchStamped, name + '/right_ur5e/target_wrench', 10))
+        else:
+            self.pub_cmd_arm_cartesian_force.append(self.node.create_publisher(WrenchStamped, name + '/ur5e/target_wrench', 10))
+        
+        # Service Clients
+        
+        self.force_services = []
+        if dual_arm:
+            self.force_services.append(node.create_client(SetForceMode, name + '/left_ur5e/force_mode_controller/start_force_mode'))
+            self.force_services.append(node.create_client(SetForceMode, name + '/right_ur5e/force_mode_controller/start_force_mode'))
+        else:
+            self.force_services.append(node.create_client(SetForceMode, name + '/ur5e/force_mode_controller/start_force_mode'))
+        
+        for fs in self.force_services:
+            fs.wait_for_service(timeout_sec=2.5)
+            self.node.get_logger().info(f'Force Service Client {fs.service_is_ready()}')
+            
+        self.zero_ft_sensor_client = []
+        if dual_arm:
+            self.zero_ft_sensor_client.append(node.create_client(Trigger, name + '/left_ur5e/io_and_status_controller/zero_ftsensor'))
+            self.zero_ft_sensor_client.append(node.create_client(Trigger, name + '/right_ur5e/io_and_status_controller/zero_ftsensor'))
+        else:
+            self.zero_ft_sensor_client.append(node.create_client(Trigger, name + '/ur5e/io_and_status_controller/zero_ftsensor')) 
+        
+        for fs in self.zero_ft_sensor_client:
+            fs.wait_for_service(timeout_sec=2.5)
+            self.node.get_logger().info(f'Zero FT Sensor Service Client {fs.service_is_ready()}')
+
         
         # Action Clients
         # TODO support dual arm
@@ -200,6 +264,12 @@ class HuskyRobotInterface:
                 self.rotation = np.array((ts.rotation.x, ts.rotation.y, ts.rotation.z, ts.rotation.w))
                 #self.node.get_logger().info(f'Position {np.around(self.position, decimals=2)}')
     
+    def send_base_twist_cmd(self, x_dot, theta_dot):
+        msg = Twist()
+        msg.linear.x = x_dot
+        msg.angular.z = theta_dot
+        self.pub_cmd_vel.publish(msg)
+    
     _last_mocap_data = 0
     _velocity_samples = []
     _angular_velocity_samples = []
@@ -251,11 +321,78 @@ class HuskyRobotInterface:
                 print(f"{index} FINISHED MOVING")
             self.is_arm_executing[index] = False
     
-    def send_base_twist_cmd(self, x_dot, theta_dot):
-        msg = Twist()
-        msg.linear.x = x_dot
-        msg.angular.z = theta_dot
-        self.pub_cmd_vel.publish(msg)
+    def dynamic_arm_callback(self, index, msg: DynamicJointState):
+        tcp_interface_value: InterfaceValue = msg.interface_values[msg.joint_names.index("tcp_pose")]
+        reorder = []
+        for name in ['position.x', 'position.y', 'position.z', 'orientation.x', 'orientation.y', 'orientation.z', 'orientation.w']:
+            reorder.append(tcp_interface_value._interface_names.index(name))
+        
+        data = np.array(tcp_interface_value.values)[reorder]
+        self.arm_tcp_pose[index] = pp.Pose(data[index][0:3], pp.euler_from_quat(data[index][3:7]))
+
+    def zero_ft_sensor(self, index=0):
+        msg = Trigger.Request()
+        self.zero_ft_sensor_client[index].call_async(msg)
+        
+    def send_force_mode_command(self, force, index=0):
+        msg = SetForceMode.Request()
+        msg.task_frame.header.frame_id = 'tool0'
+        msg.task_frame.pose.position.x = 0.0
+        msg.task_frame.pose.position.y = 0.0
+        msg.task_frame.pose.position.z = 0.0
+        
+        msg.task_frame.pose.orientation.x = 0.0
+        msg.task_frame.pose.orientation.y = 0.0
+        msg.task_frame.pose.orientation.z = 0.0
+        msg.task_frame.pose.orientation.w = 1.0
+        
+        msg.selection_vector_x = False
+        msg.selection_vector_y = True
+        msg.selection_vector_z = False
+        
+        msg.selection_vector_rx = False
+        msg.selection_vector_ry = False
+        msg.selection_vector_rz = False
+        
+        msg.speed_limits.linear.x = 0.1
+        msg.speed_limits.linear.y = 0.1
+        msg.speed_limits.linear.z = 0.1
+        
+        msg.speed_limits.angular.x = 0.1
+        msg.speed_limits.angular.y = 0.1
+        msg.speed_limits.angular.z = 0.1
+        
+        msg.type = 2
+        
+        msg.wrench.force.x = force[0]
+        msg.wrench.force.y = force[1]
+        msg.wrench.force.z = force[2]
+        self.force_services[index].call_async(msg)
+        
+    def send_arm_cmd_cartesian(self, pose_arm_local, index=0):
+        msg = PoseStamped()
+        msg.header.frame_id = "base_link"
+        
+        point = pp.point_from_pose(pose_arm_local)
+        quat = pp.quat_from_pose(pose_arm_local)
+        msg.pose.position.x = point[0]
+        msg.pose.position.y = point[1]
+        msg.pose.position.z = point[2]
+        msg.pose.orientation.x = quat[0]
+        msg.pose.orientation.y = quat[1]
+        msg.pose.orientation.z = quat[2]
+        msg.pose.orientation.w = quat[3]
+        self.pub_cmd_arm_cartesian[index].publish(msg)
+        
+    def send_arm_cmd_cartesian_force(self, force_arm_local, index=0):
+        msg = WrenchStamped()
+        msg.header.frame_id = "base_link"
+        
+        msg.wrench.force.x = force_arm_local[0]
+        msg.wrench.force.y = force_arm_local[1]
+        msg.wrench.force.z = force_arm_local[2]
+        
+        self.pub_cmd_arm_cartesian_force[index].publish(msg)
         
     def send_gripper_cmd(self, pos, effort, index=0):
         goal = GripperCommand.Goal()
