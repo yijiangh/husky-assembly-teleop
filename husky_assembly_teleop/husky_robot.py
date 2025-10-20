@@ -328,7 +328,7 @@ class HuskyRobotInterface:
             reorder.append(tcp_interface_value._interface_names.index(name))
         
         data = np.array(tcp_interface_value.values)[reorder]
-        self.arm_tcp_pose[index] = pp.Pose(data[index][0:3], pp.euler_from_quat(data[index][3:7]))
+        self.arm_tcp_pose[index] = pp.Pose(data[0:3], pp.euler_from_quat(data[3:7]))
 
     def zero_ft_sensor(self, index=0):
         msg = Trigger.Request()
