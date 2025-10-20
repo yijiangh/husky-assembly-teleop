@@ -8,6 +8,7 @@ import asyncio
 from matplotlib.pyplot import bar
 import numpy as np
 import copy
+from husky_assembly_teleop.husky_robot import HuskyRobotInterface
 import rclpy
 
 import pybullet_planning as pp
@@ -16,7 +17,7 @@ from husky_assembly_teleop import DATA_DIRECTORY
 from husky_assembly_teleop.common import Husky, TrackedObject, AssemblyObject
 import husky_assembly_teleop.husky_planning as planning
 import husky_assembly_teleop.husky_control as control
-from husky_assembly_teleop.utils import HUSKY_DUAL_UR5e_JOINT_NAMES, UR5E_JOINT_NAMES, get_custom_limits, notify, plan_transit_motion
+from husky_assembly_teleop.utils import HUSKY_DUAL_UR5e_JOINT_NAMES, UR5E_JOINT_NAMES, get_arm_ik_for_grasp_bar, get_custom_limits, notify, plan_transit_motion
 from husky_assembly_teleop.scaffolding import parse_mt_geometric, create_collision_bodies, create_couplers, flatten_list
 import json
 from datetime import datetime
@@ -1534,3 +1535,87 @@ def plan_both_arms_to_goal(monitor, use_composite=False):
     monitor.set_to_show_traj_state()
     print("Successfully planned both arms to goal ({} mode)!".format('composite' if use_composite else 'sequential'))
 
+
+############################## KISSING EXPERIMENT ###########################################
+
+""" 
+Conducts the kissing experiment
+
+Assumes robots are in neutral insertion pose relative to each other.
+Grippers must be closed with installed joints.
+
+"""
+def kissing_experiment(monitor):
+    hi: HuskyRobotInterface = monitor.huskies[monitor.selected_robot_id].interface
+    robot = monitor.huskies[monitor.selected_robot_id].object.robot
+    
+    # store current neutral configuration and pose
+    left_config = hi.arm_joint_pose[0]
+    right_config = hi.arm_joint_pose[1]
+    left_tool0_pose = pp.get_link_pose(robot, pp.link_from_name(robot, 'left_ur_arm_tool0'))
+    right_tool0_pose = pp.get_link_pose(robot, pp.link_from_name(robot, 'right_ur_arm_tool0'))
+    
+    # TODO sample
+    task = kissing_probe_once(monitor)
+    yield
+    while True:
+        try:
+            next(task)
+            yield
+        except StopIteration:
+            break
+
+"""
+Conducts a single kissing motion
+"""
+def kissing_probe_once(monitor):
+    hi: HuskyRobotInterface = monitor.huskies[monitor.selected_robot_id].interface
+    robot = monitor.huskies[monitor.selected_robot_id].object.robot
+    
+    # TODO move robot to offset location
+    
+    # generate insertion trajectory
+    insertion_trajectory = generate_insertion_motion(monitor, 0.04, 0.001875/14)
+    
+    # start screw motor
+    hi.set_screw(True, 0)
+    
+    # execute insertion trajectory
+    hi.send_arm_cmd(insertion_trajectory[0], insertion_trajectory[1], insertion_trajectory[2], index=0)
+    
+    # wait for finished executig or TODO stall or TODO too large force
+    while hi.is_arm_executing[0]:
+        yield
+    
+    # generate retreat motion
+    retreat_trajectory = generate_insertion_motion(monitor, -0.04, 0.001875/14)
+    
+    # retreat and unscrew (custom firmware which turns backwards on False)
+    hi.set_screw(False, 0)
+    
+def generate_insertion_motion(monitor, depth, speed):
+    husky = monitor.huskies[monitor.selected_robot_id]
+    hi: HuskyRobotInterface = husky.interface
+    robot = husky.object.robot
+    
+    obstacles = list(monitor.static_obstacles.values())
+    start_pose = pp.get_link_pose(robot, pp.link_from_name(robot, 'left_ur_arm_tool0'))
+    init_conf = hi.arm_joint_pose[0]
+    
+    single_arm_trajectory = ([], None, abs(depth/speed), None)
+    
+    for i in range(0, 5):
+        pose = pp.multiply(start_pose, pp.Pose(pp.Point(0, 0, i * depth/4.0)))
+        pp.draw_pose(pose)
+        
+        attachments = [husky.object.ee_list[0][1]]
+
+        arm_conf = get_arm_ik_for_grasp_bar(husky.object.robot, planning.IK_SOLVER_DUAL[0], pose, attachments, obstacles, hint_conf=init_conf)
+        if arm_conf is None:
+            monitor.get_logger().warn("IK failed!")
+            return None
+        init_conf = arm_conf
+        single_arm_trajectory[0].append(arm_conf)
+        
+    return single_arm_trajectory
+            

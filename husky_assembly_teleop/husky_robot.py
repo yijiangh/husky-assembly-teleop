@@ -552,17 +552,16 @@ class HuskyRobotInterface:
         
         return future
     
-    def toggle_screw(self, index=0):
+    def set_screw(self, state, index=0):
         """
-        Toggle screw actuation state for the specified arm.
+        Set screw actuation state for the specified arm.
         Uses SetIO service with PIN_TOOL_DOUT0.
         """
         if index >= len(self.setio_clients):
             self.node.get_logger().error(f'Invalid arm index: {index}')
             return
         
-        # Toggle the screw state
-        self.screw_states[index] = not self.screw_states[index]
+        self.screw_states[index] = state
         new_state = SetIO.Request.STATE_ON if self.screw_states[index] else SetIO.Request.STATE_OFF
         
         # Create and send the request
@@ -575,6 +574,13 @@ class HuskyRobotInterface:
         self.node.get_logger().info(f'Screw {index} {"actuated" if self.screw_states[index] else "deactivated"}')
         
         return future
+    
+    def toggle_screw(self, index=0):
+        """
+        Toggle screw actuation state for the specified arm.
+        Uses SetIO service with PIN_TOOL_DOUT0.
+        """
+        return self.set_screw(not self.screw_states[index], index)
 
     @staticmethod
     def error_code_to_str(error_code):

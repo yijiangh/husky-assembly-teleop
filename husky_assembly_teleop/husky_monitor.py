@@ -1334,6 +1334,9 @@ class HuskyMonitor(Node):
         #         )
         #     )
         # ))
+        
+        self.dump_sep_sliders.append(Slider("----------KISSING EXPERIMENT", lambda : None))
+        self.buttons.append(Button('Conduct Kissing Experiment', lambda: self.tasks.append(world.kissing_experiment(self))))
   
     # --- --- --- --- --- MOCAP --- --- --- --- --- 
     def start_mocap(self):
