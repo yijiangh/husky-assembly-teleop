@@ -108,18 +108,18 @@ class HuskyRobotInterface:
         if dual_arm:
             self.sub_arms.append(self.node.create_subscription(
                 JointState,
-                name + '/left_ur5e/joint_states',
+                name + '/left_ur5e/rate_limiter/joint_states',
                 lambda msg: self.arm_callback(0, msg),
                 10))
             self.sub_arms.append(self.node.create_subscription(
                 JointState,
-                name + '/right_ur5e/joint_states',
+                name + '/right_ur5e/rate_limiter/joint_states',
                 lambda msg: self.arm_callback(1, msg),
                 10))
         else:
             self.sub_arms.append(self.node.create_subscription(
                 JointState,
-                name + '/ur5e/joint_states',
+                name + '/ur5e/rate_limiter/joint_states',
                 lambda msg: self.arm_callback(0, msg),
                 10))
             
@@ -127,18 +127,18 @@ class HuskyRobotInterface:
         if dual_arm:
             self.sub_dynamic_arm.append(self.node.create_subscription(
                 DynamicJointState,
-                name + '/left_ur5e/dynamic_joint_states',
+                name + '/left_ur5e/rate_limiter/dynamic_joint_states',
                 lambda msg: self.dynamic_arm_callback(0, msg),
                 10))
             self.sub_dynamic_arm.append(self.node.create_subscription(
                 DynamicJointState,
-                name + '/right_ur5e/dynamic_joint_states',
+                name + '/right_ur5e/rate_limiter/dynamic_joint_states',
                 lambda msg: self.dynamic_arm_callback(1, msg),
                 10))
         else:
             self.sub_dynamic_arm.append(self.node.create_subscription(
                 DynamicJointState,
-                name + '/ur5e/dynamic_joint_states',
+                name + '/ur5e/rate_limiter/dynamic_joint_states',
                 lambda msg: self.dynamic_arm_callback(0, msg),
                 10))
             
@@ -146,18 +146,18 @@ class HuskyRobotInterface:
         if dual_arm:
             self.sub_io_states.append(self.node.create_subscription(
                 IOStates,
-                name + '/left_ur5e/io_and_status_controller/io_states',
+                name + '/left_ur5e/rate_limiter/io_and_status_controller/io_states',
                 lambda msg: self.io_state_callback(0, msg),
                 10))
             self.sub_io_states.append(self.node.create_subscription(
                 IOStates,
-                name + '/right_ur5e/io_and_status_controller/io_states',
+                name + '/right_ur5e/rate_limiter/io_and_status_controller/io_states',
                 lambda msg: self.io_state_callback(1, msg),
                 10))
         else:
             self.sub_io_states.append(self.node.create_subscription(
                 IOStates,
-                name + '/ur5e/io_and_status_controller/io_states',
+                name + '/ur5e/rate_limiter/io_and_status_controller/io_states',
                 lambda msg: self.io_state_callback(0, msg),
                 10))
             
@@ -165,18 +165,18 @@ class HuskyRobotInterface:
         if dual_arm:
             self.sub_ft_sensor.append(self.node.create_subscription(
                 WrenchStamped,
-                name + '/left_ur5e/sub_ft_sensor_wrench',
+                name + '/left_ur5e/rate_limiter/ft_sensor_wrench',
                 lambda msg: self.ft_sensor_callback(0, msg),
                 10))
             self.sub_ft_sensor.append(self.node.create_subscription(
                 WrenchStamped,
-                name + '/right_ur5e/sub_ft_sensor_wrench',
+                name + '/right_ur5e/rate_limiter/ft_sensor_wrench',
                 lambda msg: self.ft_sensor_callback(1, msg),
                 10))
         else:
             self.sub_ft_sensor.append(self.node.create_subscription(
                 WrenchStamped,
-                name + '/ur5e/sub_ft_sensor_wrench',
+                name + '/ur5e/rate_limiter/ft_sensor_wrench',
                 lambda msg: self.ft_sensor_callback(0, msg),
                 10))
 

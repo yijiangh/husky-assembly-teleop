@@ -1337,8 +1337,8 @@ class HuskyMonitor(Node):
         
         self.dump_sep_sliders.append(Slider("----------KISSING EXPERIMENT", lambda : None))
         self.buttons.append(Button('Conduct Kissing Experiment', lambda: self.tasks.append(world.kissing_experiment(self))))
-        self.buttons.append(Button('Move Forward 1cm', lambda: world.move_linear_z(self, 0.01, 0.001)))
-        self.buttons.append(Button('Move Back 1cm', lambda: world.move_linear_z(self, -0.01, 0.001)))
+        self.buttons.append(Button('Move Forward 1cm', lambda: world.move_left_linear_z(self, 0.01, 0.001)))
+        self.buttons.append(Button('Move Back 1cm', lambda: world.move_left_linear_z(self, -0.01, 0.001)))
   
     # --- --- --- --- --- MOCAP --- --- --- --- --- 
     def start_mocap(self):
