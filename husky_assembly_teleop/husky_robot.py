@@ -37,6 +37,7 @@ from control_msgs.msg import JointTolerance
 from geometry_msgs.msg import PoseStamped, Point, Quaternion, WrenchStamped
 from crl_husky_msgs.msg import MultiArmTrajectory
 from ur_msgs.srv._set_force_mode import SetForceMode
+from ur_msgs.msg._io_states import IOStates
 from std_srvs.srv._trigger import Trigger
 
 # SetIO service for gripper and screw control
@@ -65,8 +66,10 @@ class HuskyRobotInterface:
     
     arm_joint_pose = [UR5e_HOME_STATE]
     arm_tcp_pose = [pp.Pose()]
+    arm_ft_sensor = [[0, 0, 0, 0, 0, 0]]
     is_arm_executing = [False]
     last_arm_movement = [0]
+    io_states = [[False for x in range(0,18)]]
     
     # Gripper and screw states for toggle functionality
     gripper_states = [False]  # False = open, True = closed
@@ -83,8 +86,10 @@ class HuskyRobotInterface:
         if dual_arm:
             self.arm_joint_pose.append(UR5e_HOME_STATE)
             self.arm_tcp_pose.append(pp.Pose())
+            self.arm_ft_sensor.append([0, 0, 0, 0, 0, 0])
             self.is_arm_executing.append(False)
             self.last_arm_movement.append(0)
+            self.io_states.append([False for x in range(0,18)])
             self.gripper_states.append(False)
             self.screw_states.append(False)
         
@@ -135,6 +140,44 @@ class HuskyRobotInterface:
                 DynamicJointState,
                 name + '/ur5e/dynamic_joint_states',
                 lambda msg: self.dynamic_arm_callback(0, msg),
+                10))
+            
+        self.sub_io_states = []
+        if dual_arm:
+            self.sub_io_states.append(self.node.create_subscription(
+                IOStates,
+                name + '/left_ur5e/io_and_status_controller/io_states',
+                lambda msg: self.io_state_callback(0, msg),
+                10))
+            self.sub_io_states.append(self.node.create_subscription(
+                IOStates,
+                name + '/right_ur5e/io_and_status_controller/io_states',
+                lambda msg: self.io_state_callback(1, msg),
+                10))
+        else:
+            self.sub_io_states.append(self.node.create_subscription(
+                IOStates,
+                name + '/ur5e/io_and_status_controller/io_states',
+                lambda msg: self.io_state_callback(0, msg),
+                10))
+            
+        self.sub_ft_sensor = []
+        if dual_arm:
+            self.sub_ft_sensor.append(self.node.create_subscription(
+                WrenchStamped,
+                name + '/left_ur5e/sub_ft_sensor_wrench',
+                lambda msg: self.ft_sensor_callback(0, msg),
+                10))
+            self.sub_ft_sensor.append(self.node.create_subscription(
+                WrenchStamped,
+                name + '/right_ur5e/sub_ft_sensor_wrench',
+                lambda msg: self.ft_sensor_callback(1, msg),
+                10))
+        else:
+            self.sub_ft_sensor.append(self.node.create_subscription(
+                WrenchStamped,
+                name + '/ur5e/sub_ft_sensor_wrench',
+                lambda msg: self.ft_sensor_callback(0, msg),
                 10))
 
         
@@ -311,15 +354,16 @@ class HuskyRobotInterface:
             reorder.append(msg.name.index(name))
         old_pose = self.arm_joint_pose[index]
         self.arm_joint_pose[index] = np.array(arm_pos)[reorder]
-        if not np.isclose(old_pose, self.arm_joint_pose[index], atol=1e-2).all():
-            if not self.is_arm_executing[index]:
-                print(f"{index} STARTED MOVING")
-            self.is_arm_executing[index] = True
-            self.last_arm_movement[index] = time.time()
-        elif time.time() - self.last_arm_movement[index] > ARM_NOT_EXECUTING_TIME:
-            if self.is_arm_executing[index]:
-                print(f"{index} FINISHED MOVING")
-            self.is_arm_executing[index] = False
+        if USE_TRAJECTORY_TOPIC_INTERFACE == 1:
+            if not np.isclose(old_pose, self.arm_joint_pose[index], atol=1e-2).all():
+                if not self.is_arm_executing[index]:
+                    print(f"{index} STARTED MOVING")
+                self.is_arm_executing[index] = True
+                self.last_arm_movement[index] = time.time()
+            elif time.time() - self.last_arm_movement[index] > ARM_NOT_EXECUTING_TIME:
+                if self.is_arm_executing[index]:
+                    print(f"{index} FINISHED MOVING")
+                self.is_arm_executing[index] = False
     
     def dynamic_arm_callback(self, index, msg: DynamicJointState):
         tcp_interface_value: InterfaceValue = msg.interface_values[msg.joint_names.index("tcp_pose")]
@@ -329,6 +373,19 @@ class HuskyRobotInterface:
         
         data = np.array(tcp_interface_value.values)[reorder]
         self.arm_tcp_pose[index] = pp.Pose(data[0:3], pp.euler_from_quat(data[3:7]))
+        
+    def io_state_callback(self, index, msg: IOStates):
+        in_states = msg.digital_in_states
+        for i in range(0, 18):
+            pin = in_states[i].pin
+            state = in_states[i].state
+            self.io_states[index][pin] = state
+            
+    def ft_sensor_callback(self, index, msg: WrenchStamped):
+        self.arm_ft_sensor[index] = np.array([
+                msg.wrench.force.x, msg.wrench.force.y, msg.wrench.force.z,
+                msg.wrench.torque.x, msg.wrench.torque.y, msg.wrench.torque.z
+            ])
 
     def zero_ft_sensor(self, index=0):
         msg = Trigger.Request()

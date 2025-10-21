@@ -1572,26 +1572,57 @@ def kissing_probe_once(monitor):
     hi: HuskyRobotInterface = monitor.huskies[monitor.selected_robot_id].interface
     robot = monitor.huskies[monitor.selected_robot_id].object.robot
     
+    # data collected
+    motor_stalled = False
+    trajectory_finished = False
+    force_pofile = []
+    
     # TODO move robot to offset location
     
     # generate insertion trajectory
     insertion_trajectory = generate_insertion_motion(monitor, 0.04, 0.001875/14)
     
-    # start screw motor
-    hi.set_screw(True, 0)
+    # zero ft values
+    hi.zero_ft_sensor(0)
     
-    # execute insertion trajectory
+    # start screw motor and insert
+    hi.set_screw(False, 0)
+    hi.set_screw(True, 0)
     hi.send_arm_cmd(insertion_trajectory[0], insertion_trajectory[1], insertion_trajectory[2], index=0)
     
-    # wait for finished executig or TODO stall or TODO too large force
-    while hi.is_arm_executing[0]:
+    # wait for finished executig or stall or TODO too large force
+    while hi.is_arm_executing[0] and hi.io_states[0][16]:
+        force_pofile.append(hi.arm_ft_sensor[0][0:3])
         yield
+    if not hi.io_states[0][16]:
+        motor_stalled = True
+    if not hi.is_arm_executing[0]:
+        trajectory_finished = True
     
     # generate retreat motion
     retreat_trajectory = generate_insertion_motion(monitor, -0.04, 0.001875/14)
     
     # retreat and unscrew (custom firmware which turns backwards on False)
+    hi.set_screw(True, 0)
     hi.set_screw(False, 0)
+    # hi.send_arm_cmd(retreat_trajectory[0], retreat_trajectory[1], retreat_trajectory[2], index=0)
+    
+    monitor.get_logger().info(f"Kissing probe finished: \n\tmotor_stalled: {motor_stalled}\n\trajectory_finished: {trajectory_finished}\n\tforce_pofile: {force_pofile}")
+    
+def move_linear_z(monitor, length, speed):
+    husky = monitor.huskies[monitor.selected_robot_id]
+    hi: HuskyRobotInterface = husky.interface
+    robot = husky.object.robot
+    
+    if length > 0:
+        hi.set_screw(False, 0)
+        hi.set_screw(True, 0)
+    else:
+        hi.set_screw(True, 0)
+        hi.set_screw(False, 0)
+        
+    trajectory = generate_insertion_motion(monitor, length, speed)
+    hi.send_arm_cmd(trajectory[0], trajectory[1], trajectory[2], index=0)
     
 def generate_insertion_motion(monitor, depth, speed):
     husky = monitor.huskies[monitor.selected_robot_id]
