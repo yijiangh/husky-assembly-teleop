@@ -382,10 +382,10 @@ class HuskyRobotInterface:
             self.io_states[index][pin] = state
             
     def ft_sensor_callback(self, index, msg: WrenchStamped):
-        self.arm_ft_sensor[index] = np.array([
+        self.arm_ft_sensor[index] = [
                 msg.wrench.force.x, msg.wrench.force.y, msg.wrench.force.z,
                 msg.wrench.torque.x, msg.wrench.torque.y, msg.wrench.torque.z
-            ])
+            ]
 
     def zero_ft_sensor(self, index=0):
         msg = Trigger.Request()

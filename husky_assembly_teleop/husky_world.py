@@ -1546,6 +1546,8 @@ Grippers must be closed with installed joints.
 
 """
 Z_MOVE_TO_NEUTRAL = 0.025 # reduce insertion distance... given robot cell state are too far apart
+PROBE_END_WAIT_TIME = 1
+DATA_FOLDER = '/home/jakobgenhart/husky_assistant/workspace_github/src/husky-assembly-teleop/data/kissing_experiment_data'
 def kissing_experiment(monitor):
     hi: HuskyRobotInterface = monitor.huskies[monitor.selected_robot_id].interface
     robot = monitor.huskies[monitor.selected_robot_id].object.robot
@@ -1555,14 +1557,27 @@ def kissing_experiment(monitor):
     right_tool0_pose = pp.get_link_pose(robot, pp.link_from_name(monitor.goal_model.robot, 'right_ur_arm_tool0'))
     
     neutral_pose = pp.multiply(left_tool0_pose, pp.Pose(pp.Point(0, 0, Z_MOVE_TO_NEUTRAL)))
+    pp.draw_pose(neutral_pose)
     
-    reset = generate_reset_trajectory(monitor, 0.001, neutral_pose)
+    monitor.get_logger().info('### MOVE TO NEUTRAL POSE')
+    reset = generate_reset_trajectory(monitor, 0.01, neutral_pose)
     hi.send_arm_cmd(reset[0], reset[1], reset[2], index=0)
     while hi.is_arm_executing[0]:
         yield
     
     # TODO sample
-    task = kissing_probe_once(monitor, neutral_pose)
+    offset = [0.00, 0.00, 0.0, 0.0] # x y (0.005) a b (0.05)
+    
+    starting_pose = pp.multiply(neutral_pose, pp.Pose(pp.Point(offset[0], offset[1], 0), pp.Euler(offset[2], offset[3], 0)))
+    pp.draw_pose(starting_pose)
+    
+    monitor.get_logger().info('### MOVE TO STARTING POSE')
+    start = generate_reset_trajectory(monitor, 0.01, starting_pose)
+    hi.send_arm_cmd(start[0], start[1], start[2], index=0)
+    while hi.is_arm_executing[0]:
+        yield
+    
+    task = kissing_probe_once(monitor, neutral_pose, starting_pose, offset, DATA_FOLDER, 'sample_test')
     yield
     while True:
         try:
@@ -1572,50 +1587,81 @@ def kissing_experiment(monitor):
             break
 
 """
-Conducts a single kissing motion
+Conducts a single kissing motion TODO dont follow local z on rotated starting pose, still follow neutral local z
 """
-def kissing_probe_once(monitor, neutral_start_pose):
+def kissing_probe_once(monitor, neutral_pose, start_pose, offset, file_location, name):
     hi: HuskyRobotInterface = monitor.huskies[monitor.selected_robot_id].interface
     robot = monitor.huskies[monitor.selected_robot_id].object.robot
+    
+    monitor.get_logger().info('### PROBE ONCE')
     
     # data collected
     motor_stalled = False
     trajectory_finished = False
-    force_pofile = []
+    wrench_profile = []
+    pose_left_trajectory = []
+    pose_right_trajectory = []
     
     # TODO move robot to offset location
     
     # generate insertion trajectory
-    insertion_trajectory = generate_insertion_motion(monitor, 0.01, 0.001875/14, neutral_start_pose)
+    insertion_trajectory = generate_insertion_motion(monitor, 0.01, 0.002/14, start_pose)
+    if insertion_trajectory is None:
+        return
     
     # zero ft values
     hi.zero_ft_sensor(0)
     
     # start screw motor and insert
+    start_time = time.time()
     hi.set_screw(False, 0)
     hi.set_screw(True, 0)
-    # hi.send_arm_cmd(insertion_trajectory[0], insertion_trajectory[1], insertion_trajectory[2], index=0)
+    hi.send_arm_cmd(insertion_trajectory[0], insertion_trajectory[1], insertion_trajectory[2], index=0)
     
     # wait for finished executig or stall or TODO too large force
     while hi.is_arm_executing[0] and hi.io_states[0][16]:
-        force_pofile.append(hi.arm_ft_sensor[0][0:3])
+        wrench_profile.append(hi.arm_ft_sensor[0])
+        pose_left_trajectory.append(pp.get_link_pose(robot, pp.link_from_name(robot, 'left_ur_arm_tool0')))
+        pose_right_trajectory.append(pp.get_link_pose(robot, pp.link_from_name(robot, 'right_ur_arm_tool0')))
         yield
     if not hi.io_states[0][16]:
         motor_stalled = True
     if not hi.is_arm_executing[0]:
         trajectory_finished = True
+        
+    monitor.get_logger().info(f'### FINISHED PROBE (stalled={motor_stalled}, trajectory_finished={trajectory_finished})')
+    
+    finish_time = time.time()
+    while time.time() - finish_time < PROBE_END_WAIT_TIME:
+        yield
+        
+    data = {
+        'name': name,
+        'start_time': start_time,
+        'finish_time': finish_time,
+        'neutral_pose': neutral_pose,
+        'starting_pose': start_pose,
+        'offset': offset,
+        'motor_stalled': motor_stalled,
+        'trajectory_finished': trajectory_finished,
+        'wrench_profile': wrench_profile,
+        'pose_left_trajectory': pose_left_trajectory,
+        'pose_right_trajectory': pose_right_trajectory,
+    } 
+    with open(file_location + '/' + name + '.json', 'w') as f:
+        json.dump(data, f, indent=4)
+    
+    monitor.get_logger().info('### RETREAT')
     
     # generate retreat motion
-    retreat_trajectory = generate_insertion_motion(monitor, -0.01, 0.001875/14)
+    retreat_trajectory = generate_insertion_motion(monitor, -0.01, 0.002/14)
+    if retreat_trajectory is None:
+        return
     
     # retreat and unscrew (custom firmware which turns backwards on False)
-    """
     hi.set_screw(True, 0)
     hi.set_screw(False, 0)
     hi.send_arm_cmd(retreat_trajectory[0], retreat_trajectory[1], retreat_trajectory[2], index=0)
-    """
-    
-    monitor.get_logger().info(f"Kissing probe finished: \n\tmotor_stalled: {motor_stalled}\n\trajectory_finished: {trajectory_finished}\n\tforce_pofile: {force_pofile}")
     
 def move_left_linear_z(monitor, length, speed):
     husky = monitor.huskies[monitor.selected_robot_id]
@@ -1644,11 +1690,10 @@ def generate_insertion_motion(monitor, depth, speed, neutral_start_pose=None):
         start_pose = neutral_start_pose
     init_conf = hi.arm_joint_pose[0]
     
-    single_arm_trajectory = ([], None, abs(depth/speed), None)
+    single_arm_trajectory = ([], None, max(1, abs(depth/speed)), None)
     
     for i in range(0, 5):
         pose = pp.multiply(start_pose, pp.Pose(pp.Point(0, 0, i * depth/4.0)))
-        pp.draw_pose(pose)
 
         arm_conf = get_arm_ik_for_grasp_bar(husky.object.robot, planning.IK_SOLVER_DUAL[0], pose, attachments, obstacles, hint_conf=init_conf)
         if arm_conf is None:
@@ -1673,9 +1718,8 @@ def generate_reset_trajectory(monitor, speed, goal_pose):
     # TODO compute distance to compute time
     offset = np.array(pp.point_from_pose(start_pose)) - np.array(pp.point_from_pose(goal_pose))
     distance = np.linalg.norm(offset)
-    print(distance)
     
-    single_arm_trajectory = ([init_conf], None, distance/speed, None)
+    single_arm_trajectory = ([init_conf], None, max(1, distance/speed), None)
     arm_conf = get_arm_ik_for_grasp_bar(husky.object.robot, planning.IK_SOLVER_DUAL[0], goal_pose, attachments, obstacles, hint_conf=init_conf)
     if arm_conf is None:
         monitor.get_logger().warn("IK failed!")
