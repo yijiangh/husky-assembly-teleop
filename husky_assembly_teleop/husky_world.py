@@ -27,6 +27,8 @@ from compas_fab.robots import RobotCellState
 import matplotlib.pyplot as plt
 import compas
 
+import cv2
+
 MT_FILE_NAME = "one_tet_MT_contact.json"
 # huskies = []
 assembly_objects = []
@@ -1546,13 +1548,20 @@ Grippers must be closed with installed joints.
 
 """
 Z_MOVE_TO_NEUTRAL = 0.020 # reduce insertion distance... given robot cell state are too far apart
-Z_MOVE_TO_INSERT = 0.015
+Z_MOVE_TO_INSERT = 0.01
 TIME_PER_ROTATION = 14
 PROBE_END_WAIT_TIME = 1
 DATA_FOLDER = '/home/jakobgenhart/husky_assistant/workspace_github/src/husky-assembly-teleop/data/kissing_experiment_data'
 def kissing_experiment(monitor):
     hi: HuskyRobotInterface = monitor.huskies[monitor.selected_robot_id].interface
     robot = monitor.huskies[monitor.selected_robot_id].object.robot
+    
+    cam0 = None
+    # cam0 = cv2.VideoCapture(0)
+    # frame_height = 1080
+    # frame_width = 1920
+    # cam0.set(cv2.CAP_PROP_FRAME_HEIGHT, frame_height)
+    # cam0.set(cv2.CAP_PROP_FRAME_WIDTH, frame_width)
     
     # store current neutral pose
     left_tool0_pose = pp.get_link_pose(robot, pp.link_from_name(monitor.goal_model.robot, 'left_ur_arm_tool0'))
@@ -1566,9 +1575,9 @@ def kissing_experiment(monitor):
     while hi.is_arm_executing[0]:
         yield
     
-    for i in range(0, 4):        
+    for i in range(0, 10):        
         # sample
-        offset = [0.008 + 0.001 * i, 0.000, 0.0, 0.0] # x y (0.005) a b (0.05)
+        offset = [0.000 + 0.001 * i, 0.000, 0.0, 0.0] # x y (0.005) a b (0.05) # 0.001 * i
         
         # move to starting pose
         starting_pose_left = pp.multiply(neutral_pose, pp.Pose(pp.Point(offset[0], offset[1], 0), pp.Euler(0, 0, 0)))
@@ -1582,7 +1591,7 @@ def kissing_experiment(monitor):
         while hi.is_arm_executing[0] or hi.is_arm_executing[1]:
             yield
         
-        task = kissing_probe_once(monitor, neutral_pose, starting_pose_left, starting_pose_right, offset, DATA_FOLDER, f'offset_{offset[0]}_{offset[1]}_{offset[2]}_{offset[3]}')
+        task = kissing_probe_once(monitor, neutral_pose, starting_pose_left, starting_pose_right, offset, DATA_FOLDER, f'offset_{offset[0]:.3f}_{offset[1]:.3f}_{offset[2]:.3f}_{offset[3]:.3f}', cam0)
         yield
         while True:
             try:
@@ -1590,11 +1599,13 @@ def kissing_experiment(monitor):
                 yield
             except StopIteration:
                 break
+            
+    # cam0.release()
 
 """
 Conducts a single kissing motion TODO dont follow local z on rotated starting pose, still follow neutral local z
 """
-def kissing_probe_once(monitor, neutral_pose, start_pose_left, start_pose_right, offset, file_location, name):
+def kissing_probe_once(monitor, neutral_pose, start_pose_left, start_pose_right, offset, file_location, name, cam0):
     hi: HuskyRobotInterface = monitor.huskies[monitor.selected_robot_id].interface
     robot = monitor.huskies[monitor.selected_robot_id].object.robot
     
@@ -1606,6 +1617,10 @@ def kissing_probe_once(monitor, neutral_pose, start_pose_left, start_pose_right,
     wrench_profile = []
     pose_left_trajectory = []
     pose_right_trajectory = []
+    
+    # video
+    # fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    # out = cv2.VideoWriter(file_location + '/' + name + '.mp4', fourcc, 20.0, (1920, 1080))
     
     # TODO move robot to offset location
     
@@ -1628,6 +1643,14 @@ def kissing_probe_once(monitor, neutral_pose, start_pose_left, start_pose_right,
         wrench_profile.append(hi.arm_ft_sensor[0])
         pose_left_trajectory.append(pp.get_link_pose(robot, pp.link_from_name(robot, 'left_ur_arm_tool0')))
         pose_right_trajectory.append(pp.get_link_pose(robot, pp.link_from_name(robot, 'right_ur_arm_tool0')))
+        
+        # take picture and save to vido
+        ##### TODO this is way too slow (5fps instad of targeted 20), will be even slower with two cams... this slows everything down!
+        # pre_time = time.time()
+        # ret, frame = cam0.read()
+        # out.write(frame)
+        # print(f'frame taken in {time.time()-pre_time}')
+        
         yield
     if not hi.io_states[0][16]:
         motor_stalled = True
@@ -1656,6 +1679,8 @@ def kissing_probe_once(monitor, neutral_pose, start_pose_left, start_pose_right,
     } 
     with open(file_location + '/' + name + '.json', 'w') as f:
         json.dump(data, f, indent=4)
+        
+    # out.release()
     
     monitor.get_logger().info('### RETREAT')
     

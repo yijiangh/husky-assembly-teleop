@@ -6,3 +6,4 @@ numpy<1.25.0
 setuptools<=70.0.0
 kdtree==0.16
 matplotlib==3.10.3
+opencv-python
