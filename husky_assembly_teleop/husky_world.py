@@ -1548,7 +1548,7 @@ Grippers must be closed with installed joints.
 
 """
 Z_MOVE_TO_NEUTRAL = 0.020 # reduce insertion distance... given robot cell state are too far apart
-Z_MOVE_TO_INSERT = 0.01
+Z_MOVE_TO_INSERT = 0.015
 TIME_PER_ROTATION = 14
 PROBE_END_WAIT_TIME = 1
 DATA_FOLDER = '/home/jakobgenhart/husky_assistant/workspace_github/src/husky-assembly-teleop/data/kissing_experiment_data'
@@ -1575,13 +1575,15 @@ def kissing_experiment(monitor):
     while hi.is_arm_executing[0]:
         yield
     
-    for i in range(0, 10):        
+    for i in range(0, 6):        
         # sample
-        offset = [0.000 + 0.001 * i, 0.000, 0.0, 0.0] # x y (0.005) a b (0.05) # 0.001 * i
+        offset = [0.000, 0.000, 0.04 + 0.01 * i, 0.00] # x y (0.005) a b (0.05) # 0.001 * i
         
         # move to starting pose
         starting_pose_left = pp.multiply(neutral_pose, pp.Pose(pp.Point(offset[0], offset[1], 0), pp.Euler(0, 0, 0)))
-        starting_pose_right = pp.multiply(right_tool0_pose, pp.Pose(pp.Point(0, 0, 0), pp.Euler(offset[2], offset[3], 0))) # TODO rotate around screw hole
+        # rotate around screw hole 
+        t_screw_from_tool0 = pp.Pose(pp.Point(0.040, 0, 0.11275), pp.Euler(0, 0, 0))
+        starting_pose_right = pp.multiply(right_tool0_pose, t_screw_from_tool0, pp.Pose(pp.Point(0, 0, 0), pp.Euler(offset[2], offset[3], 0)), pp.invert(t_screw_from_tool0))
         
         monitor.get_logger().info('### MOVE TO STARTING POSE')
         start_left = generate_reset_trajectory(monitor, 0.01, starting_pose_left)
@@ -1758,5 +1760,9 @@ def generate_reset_trajectory(monitor, speed, goal_pose, index=0):
         monitor.get_logger().warn("IK failed!")
         return None
     single_arm_trajectory[0].append(arm_conf)
+    
+    if np.max(np.abs(init_conf - arm_conf)) > 10/360*2*np.pi:
+        monitor.get_logger().warn("too large deviation from start conf - failing IK")
+        return None
     
     return single_arm_trajectory
