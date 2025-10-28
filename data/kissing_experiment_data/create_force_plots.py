@@ -40,7 +40,7 @@ def plot_force_profiles(durations, xs, ys, stalled, force_profiles, out_path: Pa
     # sort by distance from force_profiles
     distances = [np.sqrt(x**2 + y**2) for x, y in zip(xs, ys)]
     sorted_indices = np.argsort(distances)  
-
+    
     # create plot of force vs time, colored gradient by offset distance, dashed if not stalled
     plt.figure(figsize=(8, 6))
     for idx in sorted_indices:
@@ -53,7 +53,7 @@ def plot_force_profiles(durations, xs, ys, stalled, force_profiles, out_path: Pa
     plt.xlabel("Time [s]")
     plt.ylabel("Force [N]")
     plt.title("Force Over Time")
-    plt.legend(fontsize='small', loc='upper right', bbox_to_anchor=(1.15, 1))
+    plt.legend(fontsize='small', loc='upper left')
     plt.tight_layout()
     if out_path:
         plt.savefig(out_path, dpi=200)
@@ -74,8 +74,26 @@ def main():
     if not xs:
         print("no valid offset points to plot")
         return
-    out_file = base_dir / "force_profiles_plot.png"
-    plot_force_profiles(duration, xs, ys, stalled, force_profiles, out_path=out_file)
+    
+    # filter x = 0
+    duration_x0 = [v for v, x in zip(duration, xs) if x == 0]
+    xs_x0 = [v for v, x in zip(xs, xs) if x == 0]
+    ys_x0 = [v for v, x in zip(ys, xs) if x == 0]
+    stalled_x0 = [v for v, x in zip(stalled, xs) if x == 0]
+    force_profiles_x0 = [v for v, x in zip(force_profiles, xs) if x == 0]
+    
+    # filter y = 0
+    duration_y0 = [v for v, y in zip(duration, ys) if y == 0]
+    xs_y0 = [v for v, y in zip(xs, ys) if y == 0]
+    ys_y0 = [v for v, y in zip(ys, ys) if y == 0]
+    stalled_y0 = [v for v, y in zip(stalled, ys) if y == 0]
+    force_profiles_y0 = [v for v, y in zip(force_profiles, ys) if y == 0]
+    
+    out_file_x = base_dir / "force_profiles_x_plot.png"
+    plot_force_profiles(duration_y0, xs_y0, ys_y0, stalled_y0, force_profiles_y0, out_path=out_file_x)
+    
+    out_file_y = base_dir / "force_profiles_y_plot.png"
+    plot_force_profiles(duration_x0, xs_x0, ys_x0, stalled_x0, force_profiles_x0, out_path=out_file_y)
 
 
 if __name__ == "__main__":

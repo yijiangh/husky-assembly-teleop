@@ -1569,6 +1569,8 @@ def kissing_experiment(monitor):
     
     neutral_pose = pp.multiply(left_tool0_pose, pp.Pose(pp.Point(0, 0, Z_MOVE_TO_NEUTRAL)))
     
+    pp.draw_pose(neutral_pose)
+    
     monitor.get_logger().info('### MOVE TO NEUTRAL POSE')
     reset = generate_reset_trajectory(monitor, 0.01, neutral_pose)
     hi.send_arm_cmd(reset[0], reset[1], reset[2], index=0)
@@ -1577,12 +1579,12 @@ def kissing_experiment(monitor):
     
     for i in range(0, 6):        
         # sample
-        offset = [0.000, 0.000, 0.04 + 0.01 * i, 0.00] # x y (0.005) a b (0.05) # 0.001 * i
+        offset = [0.008, 0.000, 0.00, 0.1 + 0.01 * i] # x y (0.005) a b (0.05) # 0.001 * i
         
         # move to starting pose
         starting_pose_left = pp.multiply(neutral_pose, pp.Pose(pp.Point(offset[0], offset[1], 0), pp.Euler(0, 0, 0)))
         # rotate around screw hole 
-        t_screw_from_tool0 = pp.Pose(pp.Point(0.040, 0, 0.11275), pp.Euler(0, 0, 0))
+        t_screw_from_tool0 = pp.Pose(pp.Point(0.040, 0, 0.11275 - 0.0075), pp.Euler(0, 0, 0))
         starting_pose_right = pp.multiply(right_tool0_pose, t_screw_from_tool0, pp.Pose(pp.Point(0, 0, 0), pp.Euler(offset[2], offset[3], 0)), pp.invert(t_screw_from_tool0))
         
         monitor.get_logger().info('### MOVE TO STARTING POSE')

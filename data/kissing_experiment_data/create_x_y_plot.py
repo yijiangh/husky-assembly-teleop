@@ -36,26 +36,33 @@ def plot_offsets(xs, ys, stalled, out_path: Path | None = None):
     # Determine plot limits
     vals = [abs(v) for v in xs] + [abs(v) for v in ys]
     lim = max(vals) if vals else 1.0
-    lim *= 1.05  # small margin
+    lim *= 1.5  # small margin
 
+    # base offset, also flip x to match image
+    data_offset = [-0.002, -0.001]
+    
     # Split stalled and non-stalled points
-    xs_stalled = [x for x, s in zip(xs, stalled) if s]
-    ys_stalled = [y for y, s in zip(ys, stalled) if s]
-    xs_non_stalled = [x for x, s in zip(xs, stalled) if not s]
-    ys_non_stalled = [y for y, s in zip(ys, stalled) if not s]
+    xs_stalled = [(x + data_offset[0]) for x, s in zip(xs, stalled) if s]
+    ys_stalled = [(y + data_offset[1]) for y, s in zip(ys, stalled) if s]
+    xs_non_stalled = [(x + data_offset[0]) for x, s in zip(xs, stalled) if not s]
+    ys_non_stalled = [(y + data_offset[1]) for y, s in zip(ys, stalled) if not s]
 
+    img = plt.imread("screw_spiral.jpg")
+    im_offset = [0, 0.0]
 
     plt.figure(figsize=(6, 6))
     ax = plt.gca()
+    ax.imshow(img, extent=[-0.016 + im_offset[0], 0.016 + im_offset[0], -0.016 + im_offset[1], 0.016 + im_offset[1]])
     ax.set_aspect("equal", adjustable="box")
     ax.set_xlim(-lim, lim)
     ax.set_ylim(-lim, lim)
+    ax.xaxis.set_inverted(True)
     ax.set_autoscale_on(False)
     ax.axhline(0, color="k", linewidth=0.8)
     ax.axvline(0, color="k", linewidth=0.8)
     plt.scatter(xs_non_stalled, ys_non_stalled, color="red", label="Failure")
     plt.scatter(xs_stalled, ys_stalled, color="green", label="Success")
-    plt.legend()
+    plt.legend(loc='upper left')
     plt.grid(True, linestyle="--", alpha=0.5)
     plt.xlabel("X Offset")
     plt.ylabel("Y Offset")
@@ -79,6 +86,7 @@ def main():
     if not xs:
         print("no valid offset points to plot")
         return
+    
     out_file = base_dir / "offset_xy_plot.png"
     plot_offsets(xs, ys, labels, out_path=out_file)
 
