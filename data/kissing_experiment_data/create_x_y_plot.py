@@ -55,7 +55,7 @@ def extract_data(records):
 
 def plot_offsets(data, out_path: Path | None = None):
     # base offset, also flip x to match image
-    data_offset = [-0.002, -0.001]
+    data_offset = [0.0, 0.0, 0.0, 0.0]
 
     data = data.assign(
         x = lambda df: (df["x"] + data_offset[0]) * 1000,
@@ -71,7 +71,7 @@ def plot_offsets(data, out_path: Path | None = None):
     data_non_stalled = data.query("stalled == False")
 
     img = plt.imread("screw_spiral.jpg")
-    im_offset = [0, 0.0]
+    im_offset = [0.0, 0.0]
 
     plt.figure(figsize=(6, 6))
     ax = plt.gca()
@@ -113,7 +113,7 @@ def main():
     data_ab0 = data[np.isclose(data["a"], 0.0) & np.isclose(data["b"], 0.0)]
     
     out_file = base_dir / "offset_xy_plot.png"
-    plot_offsets(data, out_path=out_file)
+    plot_offsets(data_ab0, out_path=out_file)
 
 
 if __name__ == "__main__":

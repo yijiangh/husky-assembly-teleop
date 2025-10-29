@@ -54,7 +54,7 @@ def extract_data(records):
 
 
 def plot_offsets(data, out_path: Path | None = None):
-    data_offset = [-0.002, -0.001, 0.0, 0.0]
+    data_offset = [0.0, 0.0, 0.0, 0.0]
 
     data = data.assign(
         x = lambda df: (df["x"] + data_offset[0]) * 1000,
@@ -108,7 +108,7 @@ def main():
     data_ay0 = data[np.isclose(data["a"], 0.0) & np.isclose(data["y"], 0.0)]
     
     out_file = base_dir / "offset_bx_plot.png"
-    plot_offsets(data, out_path=out_file)
+    plot_offsets(data_ay0, out_path=out_file)
 
 
 if __name__ == "__main__":

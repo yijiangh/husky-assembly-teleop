@@ -1577,9 +1577,9 @@ def kissing_experiment(monitor):
     while hi.is_arm_executing[0]:
         yield
     
-    for i in range(0, 6):        
+    for i in range(0, 9):        
         # sample
-        offset = [0.000, 0.000, 0.00, 0.00] # x y (0.005) a b (0.05) # 0.001 * i
+        offset = [0.000 + 0.001 * i, 0.000, 0.00, 0.00] # x y (0.005) a b (0.05) # 0.001 * i
         
         # move to starting pose
         starting_pose_left = pp.multiply(neutral_pose, pp.Pose(pp.Point(offset[0], offset[1], 0), pp.Euler(0, 0, 0)))
