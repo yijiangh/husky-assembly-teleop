@@ -25,13 +25,13 @@ IK_SOLVER = TracIKSolver(
 )
 
 IK_SOLVER_DUAL = [TracIKSolver(
-                    os.path.join(DATA_DIRECTORY,'husky_urdf/mt_husky_dual_ur5_e_moveit_config/urdf/husky_dual_ur5_e_no_base_joint.urdf'),
+                    os.path.join(DATA_DIRECTORY,'husky_urdf/mt_husky_dual_ur5_e_moveit_config/urdf/husky_dual_ur5_e_no_base_joint_All_Calibrated.urdf'),
                     'left_ur_arm_base_link',
                     'left_ur_arm_tool0',
                     solve_type='Speed'
                 ), 
                 TracIKSolver(
-                    os.path.join(DATA_DIRECTORY,'husky_urdf/mt_husky_dual_ur5_e_moveit_config/urdf/husky_dual_ur5_e_no_base_joint.urdf'),
+                    os.path.join(DATA_DIRECTORY,'husky_urdf/mt_husky_dual_ur5_e_moveit_config/urdf/husky_dual_ur5_e_no_base_joint_All_Calibrated.urdf'),
                     'right_ur_arm_base_link',
                     'right_ur_arm_tool0',
                     solve_type='Speed'

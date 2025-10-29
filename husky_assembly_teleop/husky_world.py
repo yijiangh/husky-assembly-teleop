@@ -1564,8 +1564,8 @@ def kissing_experiment(monitor):
     # cam0.set(cv2.CAP_PROP_FRAME_WIDTH, frame_width)
     
     # store current neutral pose
-    left_tool0_pose = pp.get_link_pose(robot, pp.link_from_name(monitor.goal_model.robot, 'left_ur_arm_tool0'))
-    right_tool0_pose = pp.get_link_pose(robot, pp.link_from_name(monitor.goal_model.robot, 'right_ur_arm_tool0'))
+    left_tool0_pose = pp.get_link_pose(monitor.goal_model.robot, pp.link_from_name(monitor.goal_model.robot, 'left_ur_arm_tool0'))
+    right_tool0_pose = pp.get_link_pose(monitor.goal_model.robot, pp.link_from_name(monitor.goal_model.robot, 'right_ur_arm_tool0'))
     
     neutral_pose = pp.multiply(left_tool0_pose, pp.Pose(pp.Point(0, 0, Z_MOVE_TO_NEUTRAL)))
     
@@ -1579,7 +1579,7 @@ def kissing_experiment(monitor):
     
     for i in range(0, 6):        
         # sample
-        offset = [0.008, 0.000, 0.00, 0.1 + 0.01 * i] # x y (0.005) a b (0.05) # 0.001 * i
+        offset = [0.000, 0.000, 0.00, 0.00] # x y (0.005) a b (0.05) # 0.001 * i
         
         # move to starting pose
         starting_pose_left = pp.multiply(neutral_pose, pp.Pose(pp.Point(offset[0], offset[1], 0), pp.Euler(0, 0, 0)))
