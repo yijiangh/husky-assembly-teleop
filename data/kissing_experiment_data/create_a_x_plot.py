@@ -53,34 +53,44 @@ def extract_data(records):
     return data
 
 
-def plot_force_profiles(data, title, out_path: Path | None = None):
-    # sort by distance from force_profiles
-    data = data.assign(
-        x = lambda df: (df["x"]) * 1000,
-        y = lambda df: (df["y"]) * 1000,
-        distance=lambda df: np.sqrt(df["x"]**2 + df["y"]**2)
-    )
-    data.sort_values(by="distance", inplace=True)
-    
-    # create plot of force vs time, colored gradient by offset distance, dashed if not stalled
-    plt.figure(figsize=(8, 6))
-    for sample in data.itertuples():
-        if not sample.stalled:
-            plt.plot(np.linspace(0, sample.duration, len(sample.force_profile)), sample.force_profile, linestyle='--', color=plt.cm.viridis(sample.distance / max(data.distance)), label=f"Offset {sample.distance:.1f}mm", alpha=0.7)
-        else:
-            plt.plot(np.linspace(0, sample.duration, len(sample.force_profile)), sample.force_profile, linestyle='-', color=plt.cm.viridis(sample.distance / max(data.distance)), label=f"Offset {sample.distance:.1f}mm", alpha=0.7)
+def plot_offsets(data, out_path: Path | None = None):
+    data_offset = [-0.002, -0.001, 0.0, 0.0]
 
-    plt.xlabel("Time [s]")
-    plt.ylabel("Force [N]")
-    plt.title(title)
-    plt.legend(fontsize='small', loc='upper left')
+    data = data.assign(
+        x = lambda df: (df["x"] + data_offset[0]) * 1000,
+        y = lambda df: (df["y"] + data_offset[1]) * 1000,
+        a = lambda df: np.rad2deg(df["a"] + data_offset[2]),
+        b = lambda df: np.rad2deg(df["b"] + data_offset[3])
+    )
+
+    # Determine plot limits
+    max_a = data["a"].abs().max() * 1.5
+    max_x = data["x"].abs().max() * 1.5
+
+    data_stalled = data.query("stalled == True")
+    data_non_stalled = data.query("stalled == False")
+
+    plt.figure(figsize=(6, 6))
+    ax = plt.gca()
+    ax.set_xlim(-max_x, max_x)
+    ax.set_ylim(-max_a, max_a)
+    ax.xaxis.set_inverted(True)
+    ax.set_autoscale_on(False)
+    ax.axhline(0, color="k", linewidth=0.8)
+    ax.axvline(0, color="k", linewidth=0.8)
+    plt.scatter(data_non_stalled["x"], data_non_stalled["a"], color="red", label="Failure")
+    plt.scatter(data_stalled["x"], data_stalled["a"], color="green", label="Success")
+    plt.legend(loc='upper left')
+    plt.grid(True, linestyle="--", alpha=0.5)
+    plt.xlabel("X Offset [mm]")
+    plt.ylabel("A Offset [deg]")
+    plt.title("A X Offset Plot")
     plt.tight_layout()
     if out_path:
         plt.savefig(out_path, dpi=200)
         print(f"saved plot to {out_path}")
     else:
         plt.show()
-
 
 
 def main():
@@ -95,14 +105,10 @@ def main():
     print(data.dtypes)
     print(data.head())
 
-    data_x0 = data[np.isclose(data["x"], 0.0) & np.isclose(data["a"], 0.0) & np.isclose(data["b"], 0.0)]
-    data_y0 = data[np.isclose(data["y"], 0.0) & np.isclose(data["a"], 0.0) & np.isclose(data["b"], 0.0)]
+    data_by0 = data[np.isclose(data["b"], 0.0) & np.isclose(data["y"], 0.0)]
     
-    out_file_x = base_dir / "force_profiles_x_plot.png"
-    plot_force_profiles(data_y0, "Force Profiles along X-axis", out_path=out_file_x)
-    
-    out_file_y = base_dir / "force_profiles_y_plot.png"
-    plot_force_profiles(data_x0, "Force Profiles along Y-axis", out_path=out_file_y)
+    out_file = base_dir / "offset_ax_plot.png"
+    plot_offsets(data, out_path=out_file)
 
 
 if __name__ == "__main__":

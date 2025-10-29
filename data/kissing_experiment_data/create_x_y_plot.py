@@ -1,6 +1,8 @@
 from pathlib import Path
 import json
 import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
 
 
 def get_sample_files(dir_path: Path):
@@ -19,33 +21,54 @@ def load_samples(paths):
     return records
 
 
-def extract_xy(records):
-    xs, ys, stalled = [], [], []
+def extract_data(records):
+    # create data frame for all records
+    duration, xs, ys, a, b, stalled, trajectory_finished, force_profiles = [], [], [], [], [], [], [], []
     for data in records:
         off = data.get("offset")
         if not off or len(off) < 2:
             print(f"warning: no valid offset in {data.get('name')}")
             continue
-        xs.append(off[0])
-        ys.append(off[1])
-        stalled.append(data.get("motor_stalled"))
-    return xs, ys, stalled
+
+        duration.append(data.get("finish_time") - data.get("start_time"))
+        xs.append(float(off[0]))
+        ys.append(float(off[1]))
+        a.append(float(off[2]))
+        b.append(float(off[3]))
+        stalled.append(bool(data.get("motor_stalled")))
+        trajectory_finished.append(bool(data.get("trajectory_finished")))
+        raw_wrench_profile = data.get("wrench_profile")
+        force_profiles.append(np.array([np.linalg.norm(np.array(wrench)[0:3]) for wrench in raw_wrench_profile]))
+
+    data = pd.DataFrame(data={
+        "duration": duration,
+        "x": xs,
+        "y": ys,
+        "a": a,
+        "b": b,
+        "stalled": stalled,
+        "trajectory_finished": trajectory_finished,
+        "force_profile": force_profiles
+    })
+    return data
 
 
-def plot_offsets(xs, ys, stalled, out_path: Path | None = None):
-    # Determine plot limits
-    vals = [abs(v) for v in xs] + [abs(v) for v in ys]
-    lim = max(vals) if vals else 1.0
-    lim *= 1.5  # small margin
-
+def plot_offsets(data, out_path: Path | None = None):
     # base offset, also flip x to match image
     data_offset = [-0.002, -0.001]
-    
-    # Split stalled and non-stalled points
-    xs_stalled = [(x + data_offset[0]) for x, s in zip(xs, stalled) if s]
-    ys_stalled = [(y + data_offset[1]) for y, s in zip(ys, stalled) if s]
-    xs_non_stalled = [(x + data_offset[0]) for x, s in zip(xs, stalled) if not s]
-    ys_non_stalled = [(y + data_offset[1]) for y, s in zip(ys, stalled) if not s]
+
+    data = data.assign(
+        x = lambda df: (df["x"] + data_offset[0]) * 1000,
+        y = lambda df: (df["y"] + data_offset[1]) * 1000
+    )
+
+    # Determine plot limits
+    max_x = data["x"].abs().max()
+    max_y = data["y"].abs().max()
+    lim = max(max_x, max_y) * 1.5  # small margin
+
+    data_stalled = data.query("stalled == True")
+    data_non_stalled = data.query("stalled == False")
 
     img = plt.imread("screw_spiral.jpg")
     im_offset = [0, 0.0]
@@ -60,12 +83,12 @@ def plot_offsets(xs, ys, stalled, out_path: Path | None = None):
     ax.set_autoscale_on(False)
     ax.axhline(0, color="k", linewidth=0.8)
     ax.axvline(0, color="k", linewidth=0.8)
-    plt.scatter(xs_non_stalled, ys_non_stalled, color="red", label="Failure")
-    plt.scatter(xs_stalled, ys_stalled, color="green", label="Success")
+    plt.scatter(data_non_stalled["x"], data_non_stalled["y"], color="red", label="Failure")
+    plt.scatter(data_stalled["x"], data_stalled["y"], color="green", label="Success")
     plt.legend(loc='upper left')
     plt.grid(True, linestyle="--", alpha=0.5)
-    plt.xlabel("X Offset")
-    plt.ylabel("Y Offset")
+    plt.xlabel("X Offset [mm]")
+    plt.ylabel("Y Offset [mm]")
     plt.title("X Y Offset Plot")
     plt.tight_layout()
     if out_path:
@@ -82,13 +105,15 @@ def main():
         print(f"no files matching 'offset_*.json' in {base_dir}")
         return
     records = load_samples(files)
-    xs, ys, labels = extract_xy(records)
-    if not xs:
-        print("no valid offset points to plot")
-        return
+    data = extract_data(records)
+    print(f"loaded {len(data)} valid records")
+    print(data.dtypes)
+    print(data.head())
+
+    data_ab0 = data[np.isclose(data["a"], 0.0) & np.isclose(data["b"], 0.0)]
     
     out_file = base_dir / "offset_xy_plot.png"
-    plot_offsets(xs, ys, labels, out_path=out_file)
+    plot_offsets(data, out_path=out_file)
 
 
 if __name__ == "__main__":
