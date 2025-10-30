@@ -75,7 +75,7 @@ def plot_offsets(data, out_path: Path | None = None):
 
     plt.figure(figsize=(6, 6))
     ax = plt.gca()
-    ax.imshow(img, extent=[-0.016 + im_offset[0], 0.016 + im_offset[0], -0.016 + im_offset[1], 0.016 + im_offset[1]])
+    ax.imshow(img, extent=[-16 + im_offset[0], 16 + im_offset[0], -16 + im_offset[1], 16 + im_offset[1]])
     ax.set_aspect("equal", adjustable="box")
     ax.set_xlim(-lim, lim)
     ax.set_ylim(-lim, lim)
