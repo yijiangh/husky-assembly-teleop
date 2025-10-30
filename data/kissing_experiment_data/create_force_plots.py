@@ -58,17 +58,17 @@ def plot_force_profiles(data, title, out_path: Path | None = None):
     data = data.assign(
         x = lambda df: (df["x"]) * 1000,
         y = lambda df: (df["y"]) * 1000,
-        distance=lambda df: np.sqrt(df["x"]**2 + df["y"]**2)
+        tc_distance=lambda df: df["x"] + df["y"]
     )
-    data.sort_values(by="distance", inplace=True)
+    data.sort_values(by="tc_distance", inplace=True)
     
     # create plot of force vs time, colored gradient by offset distance, dashed if not stalled
     plt.figure(figsize=(8, 6))
     for sample in data.itertuples():
         if not sample.stalled:
-            plt.plot(np.linspace(0, sample.duration, len(sample.force_profile)), sample.force_profile, linestyle='--', color=plt.cm.viridis(sample.distance / max(data.distance)), label=f"Offset {sample.distance:.1f}mm", alpha=0.7)
+            plt.plot(np.linspace(0, sample.duration, len(sample.force_profile)), sample.force_profile, linestyle='--', color=plt.cm.coolwarm(0.5 + sample.tc_distance / max(abs(data.tc_distance))), label=f"Offset {sample.tc_distance:.1f}mm", alpha=0.7)
         else:
-            plt.plot(np.linspace(0, sample.duration, len(sample.force_profile)), sample.force_profile, linestyle='-', color=plt.cm.viridis(sample.distance / max(data.distance)), label=f"Offset {sample.distance:.1f}mm", alpha=0.7)
+            plt.plot(np.linspace(0, sample.duration, len(sample.force_profile)), sample.force_profile, linestyle='-', color=plt.cm.coolwarm(0.5 + sample.tc_distance / max(abs(data.tc_distance))), label=f"Offset {sample.tc_distance:.1f}mm", alpha=0.7)
 
     plt.xlabel("Time [s]")
     plt.ylabel("Force [N]")
