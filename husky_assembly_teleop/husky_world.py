@@ -1576,10 +1576,14 @@ def kissing_experiment(monitor):
     hi.send_arm_cmd(reset[0], reset[1], reset[2], index=0)
     while hi.is_arm_executing[0]:
         yield
+        
+    root2 = 1.414213562
     
-    for i in range(0, 3):        
+    for i in range(0, 5):        
         # sample
-        offset = [0.008 + 0.002 * i, 0.000, 0.00, -0.05] # x y (0.005) a b (0.05) # 0.001 * i
+        offset = [(0.001/root2) * (5 + i), -(0.001/root2) * (5 + i), 0.00, 0.00] # x y (0.005) a b (0.05) # 0.001 * i
+        
+        monitor.get_logger().info(f'### SAMPLED_{offset[0]:.4f}_{offset[1]:.4f}_{offset[2]:.4f}_{offset[3]:.4f}')
         
         # move to starting pose
         starting_pose_left = pp.multiply(neutral_pose, pp.Pose(pp.Point(offset[0], offset[1], 0), pp.Euler(0, 0, 0)))
@@ -1595,7 +1599,7 @@ def kissing_experiment(monitor):
         while hi.is_arm_executing[0] or hi.is_arm_executing[1]:
             yield
         
-        task = kissing_probe_once(monitor, neutral_pose, starting_pose_left, starting_pose_right, offset, DATA_FOLDER, f'offset_{offset[0]:.3f}_{offset[1]:.3f}_{offset[2]:.3f}_{offset[3]:.3f}', cam0)
+        task = kissing_probe_once(monitor, neutral_pose, starting_pose_left, starting_pose_right, offset, DATA_FOLDER, f'offset_{offset[0]:.4f}_{offset[1]:.4f}_{offset[2]:.4f}_{offset[3]:.4f}', cam0)
         yield
         while True:
             try:
