@@ -47,8 +47,8 @@ MOCAP_IP = '192.168.0.117' # set to the mocap PC's IP, get this from Motive Sett
 
 FILENAME_SUFFIX = '_vary_pos_vary_yaw'
 # VALIDATION_PROBLEM_NAME = '250905Orientation_test'
-# VALIDATION_PROBLEM_NAME = '250929_New_Antenna_with_GH_RH_Packed'
-VALIDATION_PROBLEM_NAME = '250902_kissing_experiment'
+VALIDATION_PROBLEM_NAME = '250929_New_Antenna_with_GH_RH_Packed'
+# VALIDATION_PROBLEM_NAME = '250902_kissing_experiment'
   
 class HuskyMonitor(Node):
     USE_MOCAP = 0
@@ -1064,37 +1064,8 @@ class HuskyMonitor(Node):
         calibration = self.CALIBRATION
         
         # Determine end effector types from the actual robot
-        ee_types = []
-        if hasattr(first_husky.object, 'ee_list'):
-            # Extract end effector types from the actual robot
-            for ee, attachment in first_husky.object.ee_list:
-                # Try to determine the type based on the end effector properties
-                # This is a heuristic approach since we don't store the type directly
-                if hasattr(attachment, 'child') and attachment.child is not None:
-                    # Check if it's a validation tool by looking at the body properties
-                    # For now, we'll use the same logic as in world.init
-                    if calibration:
-                        ee_types.append("calib_tip")
-                    else:
-                        # TODO make this a parameter that corresponds to the real robot setup
-                        # Default to validation_tool_pair for dual arm, victor_gripper for single arm
-                        if dual_arm:
-                            # ee_types.append("validation_tool_pair")
-                            ee_types.extend(["victor_gripper", "victor_gripper"])
-                        else:
-                            ee_types.append("victor_gripper")
-                    break  # For single arm, we only need one type
-        
-        # If we couldn't determine the types, use defaults
-        if not ee_types:
-            if calibration:
-                ee_types = ["calib_tip"]
-            else:
-                if dual_arm:
-                    ee_types = ["validation_tool_pair"]
-                else:
-                    ee_types = ["victor_gripper"]
-        
+        ee_types = first_husky.object.ee_types
+
         # Load only the goal model that matches the actual robot configuration
         with pp.LockRenderer():
             with pp.HideOutput():
@@ -1164,15 +1135,15 @@ class HuskyMonitor(Node):
             self.buttons.append(Button('Plan arm to assemble, reuse grasp', self.plan_arm_to_transfer_element_reuse_grasp))
             self.buttons.append(Button('Plan arm to retract to home', self.plan_arm_to_retract_to_home))
 
-        self.buttons.append(Button('Plan S.Arm to conf target', lambda : world.plan_arm_to_goal(self)))
-        self.buttons.append(Button('Exec S.Arm Traj', self.execute_arm_trajectory))
+        # self.buttons.append(Button('Plan S.Arm to conf target', lambda : world.plan_arm_to_goal(self)))
+        # self.buttons.append(Button('Exec S.Arm Traj', self.execute_arm_trajectory))
         self.buttons.append(Button('Exec Both Arm Trajs', lambda: world.execute_arm_trajectory_both(self)))
 
         # Add dual arm configuration sampling button
         # self.buttons.append(Button('Sample Dual Arm Config', self.sample_dual_arm_configuration))
 
         # Add buttons for planning both arms to goal (sequential and composite)
-        self.buttons.append(Button('Plan Both Arms to Goal (sequential)', lambda: world.plan_both_arms_to_goal(self, use_composite=False)))
+        # self.buttons.append(Button('Plan Both Arms to Goal (sequential)', lambda: world.plan_both_arms_to_goal(self, use_composite=False)))
         self.buttons.append(Button('Plan Both Arms to Goal (composite)', lambda: world.plan_both_arms_to_goal(self, use_composite=True)))
 
         # Button to export planned trajectory to JSON
@@ -1430,6 +1401,69 @@ class HuskyMonitor(Node):
      
     # --- --- --- --- --- UPDATE --- --- --- --- --- 
     def update(self):
+        # Handle keyboard events
+        keys = p.getKeyboardEvents()
+        
+        # Debug: Print all key events to identify key codes from different keyboards
+        # if keys:
+        #     print(f"\n=== Keyboard Event Debug ===")
+        #     print(f"Total keys in event: {len(keys)}")
+        #     for key_code, key_state in keys.items():
+        #         if key_state & p.KEY_WAS_TRIGGERED:
+        #             # Print the key code and the corresponding character (if printable)
+        #             try:
+        #                 char = chr(key_code) if key_code > 0 else "N/A"
+        #                 print(f"Key pressed - Code: {key_code}, Character: '{char}', State: {key_state}")
+        #             except ValueError:
+        #                 print(f"Key pressed - Code: {key_code} (non-printable), State: {key_state}")
+                    
+        #             # Print state breakdown to see if we can differentiate by state
+        #             print(f"  State flags: WAS_TRIGGERED={bool(key_state & p.KEY_WAS_TRIGGERED)}, "
+        #                   f"IS_DOWN={bool(key_state & p.KEY_IS_DOWN)}, "
+        #                   f"WAS_RELEASED={bool(key_state & p.KEY_WAS_RELEASED)}")
+        #             print(f"  Raw state value: {key_state}")
+            
+            # Show ALL keys in the event dictionary, even if not triggered
+            # all_codes = list(keys.keys())
+            # print(f"All key codes in this event: {all_codes}")
+            # print(f"===========================\n")
+        
+        # Check if "1" key was pressed (ASCII code 49 or -1 for some keyboards)
+        if (ord("1") in keys and keys[ord("1")] & p.KEY_WAS_TRIGGERED) or \
+            (-1 in keys and keys[-1] & p.KEY_WAS_TRIGGERED):
+            if len(self.huskies) > 0 and self.selected_robot_id < len(self.huskies):
+                self.huskies[self.selected_robot_id].interface.toggle_gripper(0)
+                self.huskies[self.selected_robot_id].interface.toggle_gripper(1)
+                print("Toggled both grippers via keyboard '1'")
+
+        if (ord("2") in keys and keys[ord("2")] & p.KEY_WAS_TRIGGERED):
+            # (-1 in keys and keys[-1] & p.KEY_WAS_TRIGGERED):
+            if len(self.huskies) > 0 and self.selected_robot_id < len(self.huskies):
+                self.huskies[self.selected_robot_id].interface.toggle_screw(0)
+                self.huskies[self.selected_robot_id].interface.toggle_screw(1)
+                print("Toggled both screws via keyboard '2'")
+        
+        # Key "0" to plan both arms to goal
+        if (ord("0") in keys and keys[ord("0")] & p.KEY_WAS_TRIGGERED):
+            print("Planning both arms to goal via keyboard '0'...")
+            world.plan_both_arms_to_goal(self, use_composite=True, debug=False)
+        
+        # Enter key (65309 or 13) to execute both arm trajectories
+        if ((65309 in keys and keys[65309] & p.KEY_WAS_TRIGGERED) or
+            (13 in keys and keys[13] & p.KEY_WAS_TRIGGERED)):
+            print("Executing both arm trajectories via keyboard 'Enter'...")
+            world.execute_arm_trajectory_both(self)
+        
+        # Space key (32) to load board validation state
+        if (32 in keys and keys[32] & p.KEY_WAS_TRIGGERED):
+            print("Loading board validation state via keyboard 'Space'...")
+            self.load_board_validation_state()
+        
+        # Key "9" to load joint trajectory
+        if (ord("9") in keys and keys[ord("9")] & p.KEY_WAS_TRIGGERED):
+            print("Loading joint trajectory via keyboard '9'...")
+            self.load_joint_trajectory()
+        
         for b in self.buttons:
             b.update()
  

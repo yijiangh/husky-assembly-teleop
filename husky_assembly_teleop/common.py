@@ -212,7 +212,8 @@ def create_end_effector(ee_type="victor_gripper", load_calib_tip=False, dual_arm
         return ee
     elif ee_type == "validation_tool_pair":
         # Hardcoded validation tool configuration
-        problem_name = '250826_cindy_calibration_validation'
+        from husky_assembly_teleop.husky_monitor import VALIDATION_PROBLEM_NAME
+        problem_name = VALIDATION_PROBLEM_NAME
         # Dynamically select any JSON file ending with _RobotCellState.json in the RobotCellStates directory
         robot_cell_states_dir = os.path.join(DESIGN_DATA_DIRECTORY, problem_name, 'RobotCellStates')
         state_files = [f for f in os.listdir(robot_cell_states_dir) if f.endswith('_RobotCellState.json')]
@@ -450,7 +451,8 @@ class HuskyObject():
                     assert len(ee_list) == 2, f"Expected 2 end effectors for dual_arm, got {len(ee_list)}"
                 else:
                     assert len(ee_list) == 1, f"Expected 1 end effector for single arm, got {len(ee_list)}"
-                
+
+                self.ee_types = ee_types
                 self.ee_list = attach_end_effectors(robot, ee_list, dual_arm=dual_arm)
                 self.old_color = None
        

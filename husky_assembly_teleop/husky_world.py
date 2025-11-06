@@ -88,8 +88,8 @@ def init(monitor):
         connect_gripper=False and not monitor.FAKE_HARDWARE, 
         calibration=monitor.CALIBRATION,
         dual_arm=True,
-        ee_types=["victor_gripper", "victor_gripper"],  # Mixed end effectors
-        # ee_types=["validation_tool_pair"],  # Specify end effectors for both arms
+        # ee_types=["victor_gripper", "victor_gripper"],  # Mixed end effectors
+        ee_types=["validation_tool_pair"],  # Specify end effectors for both arms
         force_regenerate=False
     )
     
@@ -1431,7 +1431,7 @@ def compute_tool0_to_tool0_transform_from_json(json_filepath):
     
     return tool0_1_from_tool0_2, tool0_2_from_bar
 
-def plan_both_arms_to_goal(monitor, use_composite=False):
+def plan_both_arms_to_goal(monitor, use_composite=False, debug=False):
     """
     Plan motions for both arms from current to goal joint configurations.
     If use_composite is False, plan left then right sequentially.
@@ -1474,7 +1474,7 @@ def plan_both_arms_to_goal(monitor, use_composite=False):
         # Sequential planning: left arm, then right arm
         pp.set_joint_positions(robot, left_joints, current_left_conf)
         left_trajectory = planning.plan_arm_motion(
-            husky, left_conf, list(monitor.static_obstacles.values()), monitor.trajectory_time, arm_index=0, debug=False
+            husky, left_conf, list(monitor.static_obstacles.values()), monitor.trajectory_time, arm_index=0, debug=debug
         )
         if left_trajectory[0] is None:
             monitor.get_logger().warn('Left arm planning failed!')
@@ -1483,7 +1483,7 @@ def plan_both_arms_to_goal(monitor, use_composite=False):
         pp.set_joint_positions(robot, left_joints, left_trajectory[0][-1])
         pp.set_joint_positions(robot, right_joints, current_right_conf)
         right_trajectory = planning.plan_arm_motion(
-            husky, right_conf, list(monitor.static_obstacles.values()), monitor.trajectory_time, arm_index=1, debug=False
+            husky, right_conf, list(monitor.static_obstacles.values()), monitor.trajectory_time, arm_index=1, debug=debug
         )
         if right_trajectory[0] is None:
             monitor.get_logger().warn('Right arm planning failed!')
@@ -1518,7 +1518,7 @@ def plan_both_arms_to_goal(monitor, use_composite=False):
             composite_goal,
             attachments,
             list(monitor.static_obstacles.values()),
-            debug=False,
+            debug=debug,
             disabled_collisions=None,
             dual_arm_index="both",
         )
