@@ -40,6 +40,9 @@ from ur_msgs.srv._set_force_mode import SetForceMode
 from ur_msgs.msg._io_states import IOStates
 from std_srvs.srv._trigger import Trigger
 
+# Controller Manager
+from controller_manager_msgs.srv._switch_controller import SwitchController
+
 # SetIO service for gripper and screw control
 from ur_msgs.srv import SetIO
 
@@ -228,6 +231,17 @@ class HuskyRobotInterface:
         for fs in self.zero_ft_sensor_client:
             fs.wait_for_service(timeout_sec=2.5)
             self.node.get_logger().info(f'Zero FT Sensor Service Client {fs.service_is_ready()}')
+            
+        self.controller_change_service_client = []
+        if dual_arm:
+            self.controller_change_service_client.append(node.create_client(SwitchController, name + '/left_ur5e/controller_manager/switch_controller'))
+            self.controller_change_service_client.append(node.create_client(SwitchController, name + '/right_ur5e/controller_manager/switch_controller'))
+        else:
+            self.controller_change_service_client.append(node.create_client(SwitchController, name + '/ur5e/controller_manager/switch_controller')) 
+        
+        for fs in self.controller_change_service_client:
+            fs.wait_for_service(timeout_sec=2.5)
+            self.node.get_logger().info(f'Switch Controller Service Client {fs.service_is_ready()}')
 
         
         # Action Clients
@@ -296,6 +310,18 @@ class HuskyRobotInterface:
         
         # done --- --- --- --- ---
         self.node.get_logger().info(f'Husky "{name}" is ready!')
+
+    def switch_controller(self, from_ctrl, to_ctrl, arm_id=0):
+        msg = SwitchController.Request()
+        
+        msg.start_asap = True
+        msg.deactivate_controllers = [from_ctrl]
+        msg.activate_controllers = [to_ctrl]
+        msg.strictness = SwitchController.Request.STRICT
+        
+        ret = self.controller_change_service_client[arm_id].call(msg)
+        print(ret)
+        
 
     def tf_callback(self, msg: TFMessage):
         for transform in msg.transforms:

@@ -1579,9 +1579,9 @@ def kissing_experiment(monitor):
         
     root2 = 1.414213562
     
-    for i in range(0, 5):        
+    for i in range(0, 1):        
         # sample
-        offset = [(0.001/root2) * (5 + i), -(0.001/root2) * (5 + i), 0.00, 0.00] # x y (0.005) a b (0.05) # 0.001 * i
+        offset = [0.000, 0.000, 0.00, 0.00] # x y (0.005) a b (0.05) # 0.001 * i
         
         monitor.get_logger().info(f'### SAMPLED_{offset[0]:.4f}_{offset[1]:.4f}_{offset[2]:.4f}_{offset[3]:.4f}')
         
@@ -1633,33 +1633,48 @@ def kissing_probe_once(monitor, neutral_pose, start_pose_left, start_pose_right,
     # TODO move robot to offset location
     
     # generate insertion trajectory
-    insertion_trajectory = generate_insertion_motion(monitor, Z_MOVE_TO_INSERT, 0.002/TIME_PER_ROTATION, start_pose_left)
+    insertion_trajectory, cartesian_trajectory = generate_insertion_motion(monitor, Z_MOVE_TO_INSERT, 0.002/TIME_PER_ROTATION, start_pose_left)
     if insertion_trajectory is None:
         return
     
     # zero ft values
     hi.zero_ft_sensor(0)
     
+    # --- CARTESION INSERTION ---
+    hi.switch_controller('scaled_joint_trajectory_controller', 'cartesian_compliance_controller', 0)
+    
     # start screw motor and insert
     start_time = time.time()
     hi.set_screw(False, 0)
     hi.set_screw(True, 0)
-    hi.send_arm_cmd(insertion_trajectory[0], insertion_trajectory[1], insertion_trajectory[2], index=0)
     
-    # wait for finished executig or stall or TODO too large force TODO detect robot protective stop
-    while hi.is_arm_executing[0] and hi.io_states[0][16]:
-        wrench_profile.append(hi.arm_ft_sensor[0])
-        pose_left_trajectory.append(pp.get_link_pose(robot, pp.link_from_name(robot, 'left_ur_arm_tool0')))
-        pose_right_trajectory.append(pp.get_link_pose(robot, pp.link_from_name(robot, 'right_ur_arm_tool0')))
+    if False:
+        hi.send_arm_cmd(insertion_trajectory[0], insertion_trajectory[1], insertion_trajectory[2], index=0)
         
-        # take picture and save to vido
-        ##### TODO this is way too slow (5fps instad of targeted 20), will be even slower with two cams... this slows everything down!
-        # pre_time = time.time()
-        # ret, frame = cam0.read()
-        # out.write(frame)
-        # print(f'frame taken in {time.time()-pre_time}')
+        # wait for finished executig or stall or TODO too large force TODO detect robot protective stop
+        while hi.is_arm_executing[0] and hi.io_states[0][16]:
+            wrench_profile.append(hi.arm_ft_sensor[0])
+            pose_left_trajectory.append(pp.get_link_pose(robot, pp.link_from_name(robot, 'left_ur_arm_tool0')))
+            pose_right_trajectory.append(pp.get_link_pose(robot, pp.link_from_name(robot, 'right_ur_arm_tool0')))
+            
+            # take picture and save to vido
+            ##### TODO this is way too slow (5fps instad of targeted 20), will be even slower with two cams... this slows everything down!
+            # pre_time = time.time()
+            # ret, frame = cam0.read()
+            # out.write(frame)
+            # print(f'frame taken in {time.time()-pre_time}')
         
         yield
+    else:
+        time_elapsed = time.time() - start_time
+        while hi.io_states[0][16] and time_elapsed < cartesian_trajectory[2]:
+            start_pose_world = cartesian_trajectory[0]
+            end_pose_world = cartesian_trajectory[1]
+            print(time_elapsed)
+            
+            yield
+            
+    
     if not hi.io_states[0][16]:
         motor_stalled = True
     if not hi.is_arm_executing[0]:
@@ -1670,6 +1685,9 @@ def kissing_probe_once(monitor, neutral_pose, start_pose_left, start_pose_right,
     finish_time = time.time()
     while time.time() - finish_time < PROBE_END_WAIT_TIME:
         yield
+        
+    # --- CARTESION INSERTION ---
+    hi.switch_controller('cartesian_compliance_controller', 'scaled_joint_trajectory_controller', 0)
         
     data = {
         'name': name,
@@ -1693,7 +1711,7 @@ def kissing_probe_once(monitor, neutral_pose, start_pose_left, start_pose_right,
     monitor.get_logger().info('### RETREAT')
     
     # generate retreat motion
-    retreat_trajectory = generate_insertion_motion(monitor, -Z_MOVE_TO_INSERT, 0.002/TIME_PER_ROTATION)
+    retreat_trajectory, _ = generate_insertion_motion(monitor, -Z_MOVE_TO_INSERT, 0.002/TIME_PER_ROTATION)
     if retreat_trajectory is None:
         return
     
@@ -1716,7 +1734,7 @@ def move_left_linear_z(monitor, length, speed):
         hi.set_screw(True, 0)
         hi.set_screw(False, 0)
         
-    trajectory = generate_insertion_motion(monitor, length, speed)
+    trajectory, _ = generate_insertion_motion(monitor, length, speed)
     hi.send_arm_cmd(trajectory[0], trajectory[1], trajectory[2], index=0)
     
 def generate_insertion_motion(monitor, depth, speed, neutral_start_pose=None):
@@ -1731,7 +1749,9 @@ def generate_insertion_motion(monitor, depth, speed, neutral_start_pose=None):
         start_pose = neutral_start_pose
     init_conf = hi.arm_joint_pose[0]
     
-    single_arm_trajectory = ([], None, max(1, abs(depth/speed)), None)
+    time = max(1, abs(depth/speed))
+    single_arm_trajectory = ([], None, time, None)
+    cartesian_trajector = [start_pose, pp.multiply(start_pose, pp.Pose(pp.Point(0, 0, depth))), time]
     
     for i in range(0, 5):
         pose = pp.multiply(start_pose, pp.Pose(pp.Point(0, 0, i * depth/4.0)))
@@ -1739,11 +1759,11 @@ def generate_insertion_motion(monitor, depth, speed, neutral_start_pose=None):
         arm_conf = get_arm_ik_for_grasp_bar(husky.object.robot, planning.IK_SOLVER_DUAL[0], pose, attachments, obstacles, hint_conf=init_conf)
         if arm_conf is None:
             monitor.get_logger().warn("IK failed!")
-            return None
+            return None, None
         init_conf = arm_conf
         single_arm_trajectory[0].append(arm_conf)
         
-    return single_arm_trajectory
+    return single_arm_trajectory, cartesian_trajector
             
             
 def generate_reset_trajectory(monitor, speed, goal_pose, index=0):
