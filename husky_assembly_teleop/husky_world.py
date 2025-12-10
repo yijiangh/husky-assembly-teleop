@@ -91,10 +91,19 @@ def init(monitor):
         connect_gripper=False and not monitor.FAKE_HARDWARE, 
         calibration=monitor.CALIBRATION,
         dual_arm=True,
-        ee_types=["victor_gripper", "victor_gripper"],  # Mixed end effectors
+        ee_types=["victor_gripper", "victor_gripper"],
         # ee_types=["validation_tool_pair"],  # Specify end effectors for both arms
         force_regenerate=False
     )
+    
+    """create_husky_with_end_effectors(
+        monitor, 
+        name='/a200_0805', 
+        mocap_id=1033, 
+        pos=np.array((1,0,0)), 
+        dual_arm=False,
+        ee_types=["victor_gripper"]  # Mixed end effectors
+    )"""
     
     # Example of creating a single-arm robot with robotiq gripper (commented out)
     """create_husky_with_end_effectors(
@@ -1581,7 +1590,7 @@ def kissing_experiment(monitor):
     
     for i in range(0, 1):        
         # sample
-        offset = [0.000, 0.000, 0.00, 0.00] # x y (0.005) a b (0.05) # 0.001 * i
+        offset = [0.000, 0.000, 0.05, 0.00] # x y (0.005) a b (0.05) # 0.001 * i
         
         monitor.get_logger().info(f'### SAMPLED_{offset[0]:.4f}_{offset[1]:.4f}_{offset[2]:.4f}_{offset[3]:.4f}')
         
@@ -1609,6 +1618,17 @@ def kissing_experiment(monitor):
                 break
             
     # cam0.release()
+
+def draw_tcp_pose(monitor):
+    hi: HuskyRobotInterface = monitor.huskies[monitor.selected_robot_id].interface
+    robot = monitor.huskies[monitor.selected_robot_id].object.robot
+    world_from_arm_base = pp.get_link_pose(robot, pp.link_from_name(robot, 'left_ur_arm_base_link'))
+    world_from_tool0 = pp.get_link_pose(robot, pp.link_from_name(robot, 'left_ur_arm_tool0'))
+    arm_base_from_tool0 = pp.multiply(pp.invert(world_from_arm_base), world_from_tool0)
+    pp.draw_pose(pp.multiply(world_from_arm_base, hi.arm_tcp_pose[0]))
+    
+    print(f"Tool0 LOCAL {arm_base_from_tool0}")
+    print(f"TCP Pose LOCAL {hi.arm_tcp_pose[0]}")
 
 """
 Conducts a single kissing motion TODO dont follow local z on rotated starting pose, still follow neutral local z
@@ -1642,6 +1662,8 @@ def kissing_probe_once(monitor, neutral_pose, start_pose_left, start_pose_right,
     
     # --- CARTESION INSERTION ---
     hi.switch_controller('scaled_joint_trajectory_controller', 'cartesian_compliance_controller', 0)
+    while hi.active_controller[0] != 'cartesian_compliance_controller':
+        yield
     
     # start screw motor and insert
     start_time = time.time()
@@ -1667,12 +1689,30 @@ def kissing_probe_once(monitor, neutral_pose, start_pose_left, start_pose_right,
         yield
     else:
         time_elapsed = time.time() - start_time
-        while hi.io_states[0][16] and time_elapsed < cartesian_trajectory[2]:
+        # cartesian_trajectory[2] = 5
+        world_from_arm_base = pp.get_link_pose(robot, pp.link_from_name(robot, 'left_ur_arm_base_link'))
+        while hi.io_states[0][16] and time_elapsed < cartesian_trajectory[2] + PROBE_END_WAIT_TIME:
             start_pose_world = cartesian_trajectory[0]
             end_pose_world = cartesian_trajectory[1]
-            print(time_elapsed)
             
+            offset = pp.multiply(end_pose_world,pp.invert(start_pose_world))
+            
+            linear_offset = pp.point_from_pose(offset)
+            quat_1 = pp.quat_from_pose(start_pose_world)
+            quat_2 = pp.quat_from_pose(end_pose_world)
+            
+            t = min(time_elapsed / cartesian_trajectory[2], 1.0)
+            
+            lerped = pp.Pose(np.array(pp.point_from_pose(start_pose_world)) + np.array(linear_offset) * t, pp.euler_from_quat(pp.quaternion_slerp(quat_1, quat_2, t)))
+            arm_base_from_tool0 = pp.multiply(pp.invert(world_from_arm_base), lerped)
+            
+            print(t)
+            pp.draw_pose(lerped)
+            
+            hi.send_arm_cmd_cartesian(arm_base_from_tool0, 0)
+
             yield
+            time_elapsed = time.time() - start_time
             
     
     if not hi.io_states[0][16]:
@@ -1688,6 +1728,8 @@ def kissing_probe_once(monitor, neutral_pose, start_pose_left, start_pose_right,
         
     # --- CARTESION INSERTION ---
     hi.switch_controller('cartesian_compliance_controller', 'scaled_joint_trajectory_controller', 0)
+    while hi.active_controller[0] != 'scaled_joint_trajectory_controller':
+        yield
         
     data = {
         'name': name,

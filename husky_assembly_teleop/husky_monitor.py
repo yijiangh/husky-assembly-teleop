@@ -1343,7 +1343,8 @@ class HuskyMonitor(Node):
         self.dump_sep_sliders.append(Slider("----------CONTROLLERS", lambda : None))
         self.buttons.append(Button('Switch to Compliance', lambda: self.huskies[self.selected_robot_id].interface.switch_controller('scaled_joint_trajectory_controller', 'cartesian_compliance_controller', self.selected_arm_index)))
         self.buttons.append(Button('Switch to Joint', lambda: self.huskies[self.selected_robot_id].interface.switch_controller('cartesian_compliance_controller', 'scaled_joint_trajectory_controller', self.selected_arm_index)))
-  
+        self.buttons.append(Button('Draw TCP Pose', lambda: world.draw_tcp_pose(self)))
+        
     # --- --- --- --- --- MOCAP --- --- --- --- --- 
     def start_mocap(self):
         print('Starting mocap!')

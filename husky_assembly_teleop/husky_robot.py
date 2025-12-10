@@ -68,11 +68,12 @@ class HuskyRobotInterface:
     angular_velocity = np.zeros(3)
     
     arm_joint_pose = [UR5e_HOME_STATE]
-    arm_tcp_pose = [pp.Pose()]
+    arm_tcp_pose = [pp.Pose()] # TODO: This value reported bz UR5e does not correspond to world position nor to local position (relative to base link). Its something weird in between, probably accounting for mounting orientation set in ur5e.
     arm_ft_sensor = [[0, 0, 0, 0, 0, 0]]
     is_arm_executing = [False]
     last_arm_movement = [0]
     io_states = [[False for x in range(0,18)]]
+    active_controller = [""]
     
     # Gripper and screw states for toggle functionality
     gripper_states = [False]  # False = open, True = closed
@@ -93,6 +94,7 @@ class HuskyRobotInterface:
             self.is_arm_executing.append(False)
             self.last_arm_movement.append(0)
             self.io_states.append([False for x in range(0,18)])
+            self.active_controller.append("")
             self.gripper_states.append(False)
             self.screw_states.append(False)
         
@@ -311,7 +313,7 @@ class HuskyRobotInterface:
         # done --- --- --- --- ---
         self.node.get_logger().info(f'Husky "{name}" is ready!')
 
-    def switch_controller(self, from_ctrl, to_ctrl, arm_id=0):
+    def switch_controller(self, from_ctrl, to_ctrl, arm_index=0):
         msg = SwitchController.Request()
         
         msg.start_asap = True
@@ -319,8 +321,18 @@ class HuskyRobotInterface:
         msg.activate_controllers = [to_ctrl]
         msg.strictness = SwitchController.Request.STRICT
         
-        ret = self.controller_change_service_client[arm_id].call(msg)
-        print(ret)
+        print(f"switching from {from_ctrl} to {to_ctrl} on arm {arm_index}")
+        fut = self.controller_change_service_client[arm_index].call_async(msg)
+        
+        def controller_switched_callback(self, new_controller, arm_index, fut):
+            msg = fut.result()
+            if msg.ok:
+                self.active_controller[arm_index] = new_controller
+                print(f"Controller switched to {new_controller}")
+            else:
+                print("Failed to switch controller!")
+                
+        fut.add_done_callback(lambda fut: controller_switched_callback(self, to_ctrl, arm_index, fut))
         
 
     def tf_callback(self, msg: TFMessage):
@@ -397,8 +409,10 @@ class HuskyRobotInterface:
         for name in ['position.x', 'position.y', 'position.z', 'orientation.x', 'orientation.y', 'orientation.z', 'orientation.w']:
             reorder.append(tcp_interface_value._interface_names.index(name))
         
+        correction_transform = pp.Pose(pp.Point(), pp.Euler(0, 0, np.deg2rad(-180 if self.dual_arm else -90)))
+        
         data = np.array(tcp_interface_value.values)[reorder]
-        self.arm_tcp_pose[index] = pp.Pose(data[0:3], pp.euler_from_quat(data[3:7]))
+        self.arm_tcp_pose[index] = pp.multiply(correction_transform, pp.Pose(data[0:3], pp.euler_from_quat(data[3:7])))
         
     def io_state_callback(self, index, msg: IOStates):
         in_states = msg.digital_in_states
@@ -455,6 +469,11 @@ class HuskyRobotInterface:
     def send_arm_cmd_cartesian(self, pose_arm_local, index=0):
         msg = PoseStamped()
         msg.header.frame_id = "base_link"
+        
+        if (not np.isclose(self.arm_tcp_pose[index][0], pose_arm_local[0], atol=0.05).all()) or (not np.isclose(self.arm_tcp_pose[index][1], pose_arm_local[1], atol=0.005).all()):
+            self.node.get_logger().warn(f'Arm {index} of husky {self.name} is not in correct start pose!')
+            self.node.get_logger().warn(f'{self.arm_tcp_pose[index]} vs {pose_arm_local}')
+            return
         
         point = pp.point_from_pose(pose_arm_local)
         quat = pp.quat_from_pose(pose_arm_local)
