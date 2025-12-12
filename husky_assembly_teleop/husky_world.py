@@ -1588,9 +1588,9 @@ def kissing_experiment(monitor):
         
     root2 = 1.414213562
     
-    for i in range(0, 1):        
+    for i in range(0, 5):        
         # sample
-        offset = [0.000, 0.000, 0.05, 0.00] # x y (0.005) a b (0.05) # 0.001 * i
+        offset = [0.005 + 0.001 * i, 0.000, 0.00, 0.00] # x y (0.005) a b (0.05) # 0.001 * i
         
         monitor.get_logger().info(f'### SAMPLED_{offset[0]:.4f}_{offset[1]:.4f}_{offset[2]:.4f}_{offset[3]:.4f}')
         
@@ -1630,6 +1630,33 @@ def draw_tcp_pose(monitor):
     print(f"Tool0 LOCAL {arm_base_from_tool0}")
     print(f"TCP Pose LOCAL {hi.arm_tcp_pose[0]}")
 
+def execute_linear_cartesian_move_left(robot, hi, start_time, cartesian_trajectory):
+    time_elapsed = time.time() - start_time
+    
+    if time_elapsed > cartesian_trajectory[2] + PROBE_END_WAIT_TIME:
+        return False
+    
+    world_from_arm_base = pp.get_link_pose(robot, pp.link_from_name(robot, 'left_ur_arm_base_link'))
+    
+    start_pose_world = cartesian_trajectory[0]
+    end_pose_world = cartesian_trajectory[1]
+    
+    offset = pp.multiply(end_pose_world,pp.invert(start_pose_world))
+    
+    linear_offset = pp.point_from_pose(offset)
+    quat_1 = pp.quat_from_pose(start_pose_world)
+    quat_2 = pp.quat_from_pose(end_pose_world)
+    
+    t = min(time_elapsed / cartesian_trajectory[2], 1.0)
+    
+    lerped = pp.Pose(np.array(pp.point_from_pose(start_pose_world)) + np.array(linear_offset) * t, pp.euler_from_quat(pp.quaternion_slerp(quat_1, quat_2, t)))
+    arm_base_from_tool0 = pp.multiply(pp.invert(world_from_arm_base), lerped)
+    
+    #pp.draw_pose(lerped)
+    hi.send_arm_cmd_cartesian(arm_base_from_tool0, 0)
+    
+    return True
+
 """
 Conducts a single kissing motion TODO dont follow local z on rotated starting pose, still follow neutral local z
 """
@@ -1660,7 +1687,7 @@ def kissing_probe_once(monitor, neutral_pose, start_pose_left, start_pose_right,
     # zero ft values
     hi.zero_ft_sensor(0)
     
-    # --- CARTESION INSERTION ---
+    # --- CARTESIAN INSERTION ---
     hi.switch_controller('scaled_joint_trajectory_controller', 'cartesian_compliance_controller', 0)
     while hi.active_controller[0] != 'cartesian_compliance_controller':
         yield
@@ -1686,33 +1713,13 @@ def kissing_probe_once(monitor, neutral_pose, start_pose_left, start_pose_right,
             # out.write(frame)
             # print(f'frame taken in {time.time()-pre_time}')
         
-        yield
-    else:
-        time_elapsed = time.time() - start_time
-        # cartesian_trajectory[2] = 5
-        world_from_arm_base = pp.get_link_pose(robot, pp.link_from_name(robot, 'left_ur_arm_base_link'))
-        while hi.io_states[0][16] and time_elapsed < cartesian_trajectory[2] + PROBE_END_WAIT_TIME:
-            start_pose_world = cartesian_trajectory[0]
-            end_pose_world = cartesian_trajectory[1]
-            
-            offset = pp.multiply(end_pose_world,pp.invert(start_pose_world))
-            
-            linear_offset = pp.point_from_pose(offset)
-            quat_1 = pp.quat_from_pose(start_pose_world)
-            quat_2 = pp.quat_from_pose(end_pose_world)
-            
-            t = min(time_elapsed / cartesian_trajectory[2], 1.0)
-            
-            lerped = pp.Pose(np.array(pp.point_from_pose(start_pose_world)) + np.array(linear_offset) * t, pp.euler_from_quat(pp.quaternion_slerp(quat_1, quat_2, t)))
-            arm_base_from_tool0 = pp.multiply(pp.invert(world_from_arm_base), lerped)
-            
-            print(t)
-            pp.draw_pose(lerped)
-            
-            hi.send_arm_cmd_cartesian(arm_base_from_tool0, 0)
-
             yield
-            time_elapsed = time.time() - start_time
+    else:
+        while hi.io_states[0][16] and execute_linear_cartesian_move_left(robot, hi, start_time, cartesian_trajectory):
+            wrench_profile.append(hi.arm_ft_sensor[0])
+            pose_left_trajectory.append(pp.get_link_pose(robot, pp.link_from_name(robot, 'left_ur_arm_tool0')))
+            pose_right_trajectory.append(pp.get_link_pose(robot, pp.link_from_name(robot, 'right_ur_arm_tool0')))
+            yield
             
     
     if not hi.io_states[0][16]:
@@ -1724,11 +1731,6 @@ def kissing_probe_once(monitor, neutral_pose, start_pose_left, start_pose_right,
     
     finish_time = time.time()
     while time.time() - finish_time < PROBE_END_WAIT_TIME:
-        yield
-        
-    # --- CARTESION INSERTION ---
-    hi.switch_controller('cartesian_compliance_controller', 'scaled_joint_trajectory_controller', 0)
-    while hi.active_controller[0] != 'scaled_joint_trajectory_controller':
         yield
         
     data = {
@@ -1753,15 +1755,25 @@ def kissing_probe_once(monitor, neutral_pose, start_pose_left, start_pose_right,
     monitor.get_logger().info('### RETREAT')
     
     # generate retreat motion
-    retreat_trajectory, _ = generate_insertion_motion(monitor, -Z_MOVE_TO_INSERT, 0.002/TIME_PER_ROTATION)
+    retreat_trajectory, cartesian_retreat = generate_insertion_motion(monitor, -Z_MOVE_TO_INSERT, 0.002/TIME_PER_ROTATION * 5)
     if retreat_trajectory is None:
         return
     
     # retreat and unscrew (custom firmware which turns backwards on False)
     hi.set_screw(True, 0)
     hi.set_screw(False, 0)
-    hi.send_arm_cmd(retreat_trajectory[0], retreat_trajectory[1], retreat_trajectory[2], index=0)
-    while hi.is_arm_executing[0]:
+    if False:
+        hi.send_arm_cmd(retreat_trajectory[0], retreat_trajectory[1], retreat_trajectory[2], index=0)
+        while hi.is_arm_executing[0]:
+            yield
+    else:
+        retreat_start_time = time.time()
+        while execute_linear_cartesian_move_left(robot, hi, retreat_start_time, cartesian_retreat):
+            yield
+        
+    # --- REVERT TO JOINT SPACE ---
+    hi.switch_controller('cartesian_compliance_controller', 'scaled_joint_trajectory_controller', 0)
+    while hi.active_controller[0] != 'scaled_joint_trajectory_controller':
         yield
     
 def move_left_linear_z(monitor, length, speed):

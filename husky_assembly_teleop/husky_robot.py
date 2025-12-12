@@ -470,7 +470,7 @@ class HuskyRobotInterface:
         msg = PoseStamped()
         msg.header.frame_id = "base_link"
         
-        if (not np.isclose(self.arm_tcp_pose[index][0], pose_arm_local[0], atol=0.05).all()) or (not np.isclose(self.arm_tcp_pose[index][1], pose_arm_local[1], atol=0.005).all()):
+        if (not np.isclose(self.arm_tcp_pose[index][0], pose_arm_local[0], atol=0.05).all()) or (not np.isclose(self.arm_tcp_pose[index][1], pose_arm_local[1], atol=0.05).all()):
             self.node.get_logger().warn(f'Arm {index} of husky {self.name} is not in correct start pose!')
             self.node.get_logger().warn(f'{self.arm_tcp_pose[index]} vs {pose_arm_local}')
             return
