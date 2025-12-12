@@ -53,7 +53,7 @@ def extract_data(records):
     return data
 
 
-def plot_offsets(data, out_path: Path | None = None):
+def plot_offsets_ax(data, out_path: Path | None = None):
     data_offset = [0.0, 0.0, 0.0, 0.0]
 
     data = data.assign(
@@ -66,6 +66,8 @@ def plot_offsets(data, out_path: Path | None = None):
     # Determine plot limits
     max_a = data["a"].abs().max() * 1.5
     max_x = data["x"].abs().max() * 1.5
+
+    max_x = 15
 
     data_stalled = data.query("stalled == True")
     data_non_stalled = data.query("stalled == False")
