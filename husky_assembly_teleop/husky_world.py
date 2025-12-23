@@ -79,33 +79,33 @@ def create_husky_with_end_effectors(monitor, name, mocap_id=None, pos=np.zeros(3
 def init(monitor):
     # * add robots
     # 1004 - Example of creating a dual-arm robot with victor grippers
-    create_husky_with_end_effectors(
-        monitor, 
-        name='/a200_0806', 
-        mocap_id=4591, 
-        pos=np.array((0,0,0)), 
-        connect_arm=not monitor.FAKE_HARDWARE, 
-        connect_gripper=False and not monitor.FAKE_HARDWARE, 
-        calibration=monitor.CALIBRATION,
-        dual_arm=True,
-        # ee_types=["victor_gripper", "victor_gripper"],  # Mixed end effectors
-        ee_types=["validation_tool_pair"],  # Specify end effectors for both arms
-        force_regenerate=False
-    )
+    # create_husky_with_end_effectors(
+    #     monitor, 
+    #     name='/a200_0806', 
+    #     mocap_id=4591, 
+    #     pos=np.array((0,0,0)), 
+    #     connect_arm=not monitor.FAKE_HARDWARE, 
+    #     connect_gripper=False and not monitor.FAKE_HARDWARE, 
+    #     calibration=monitor.CALIBRATION,
+    #     dual_arm=True,
+    #     # ee_types=["victor_gripper", "victor_gripper"],  # Mixed end effectors
+    #     ee_types=["validation_tool_pair"],  # Specify end effectors for both arms
+    #     force_regenerate=False
+    # )
     
     # Example of creating a single-arm robot with robotiq gripper (commented out)
-    """create_husky_with_end_effectors(
+    create_husky_with_end_effectors(
         monitor, 
         name='/a200_0804', 
-        mocap_id=4568, 
+        mocap_id=4615, 
         pos=np.array((0,0,0)), 
         connect_arm=not monitor.FAKE_HARDWARE, 
         connect_gripper=not monitor.FAKE_HARDWARE, 
         calibration=monitor.CALIBRATION,
         dual_arm=False,
-        ee_types=["robotiq_gripper"],  # Specify end effector for single arm
+        ee_types=["custom_gripper"],  # Specify end effector for single arm
         base_calibration_file=os.path.join(CALIB_DATA_DIR, 'calibrated_transformation_0804.json')
-    )"""
+    )
 
     # Example of creating a robot with calibration tips
     """create_husky_with_end_effectors(
@@ -145,12 +145,12 @@ def init(monitor):
     # TODO use one tracked box to indicate where to put the assembly
     if monitor.CALIBRATION:
         left_tool_name = 'calib_tool_left'
-        TrackedObject(monitor, left_tool_name, 4572, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
+        TrackedObject(monitor, left_tool_name, 4616, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
         monitor.assign_calibration_tool_to_robot(0, 0, left_tool_name)
 
-        right_tool_name = 'calib_tool_right'
-        TrackedObject(monitor, right_tool_name, 4573, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
-        monitor.assign_calibration_tool_to_robot(0, 1, right_tool_name)
+        # right_tool_name = 'calib_tool_right'
+        # TrackedObject(monitor, right_tool_name, 4573, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
+        # monitor.assign_calibration_tool_to_robot(0, 1, right_tool_name)
 
     if monitor.BAR_HOLDING_ACCURACY_TEST:
         bar_rig = TrackedObject(monitor, 'bar_rig', 4570, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
@@ -427,7 +427,7 @@ def sample_calib_motion(monitor, arm_index, target_joint_index, calib_joint_rang
 
     # Sample calibration conf:
     ATTEMPTS = 100
-    TRAJ_MAX_LENGTH = 130
+    TRAJ_MAX_LENGTH = 200
     steps = 20
     joint_resolutions = np.ones(6) * 0.05
 
@@ -466,11 +466,13 @@ def sample_calib_motion(monitor, arm_index, target_joint_index, calib_joint_rang
     # * For the target joint, set limits to current value ± calib_joint_range
     target_joint_pb_id = pp.joint_from_name(robot, joint_names[target_joint_index])
     targt_joint_limits = pp.get_joint_limits(robot, target_joint_pb_id)
-    custom_limits_from_joint_name[joint_names[target_joint_index]] = (targt_joint_limits[0] + calib_joint_range, targt_joint_limits[1] - calib_joint_range)
+    # custom_limits_from_joint_name[joint_names[target_joint_index]] = (targt_joint_limits[0] + calib_joint_range, targt_joint_limits[1] - calib_joint_range)
 
     # * Clamp the first joint to 0 if target joint == 1
+    # if target_joint_index == 0:
+    #     # clamp the first joint to value 0
+    #     custom_limits_from_joint_name[joint_names[0]] = (-np.pi,-np.pi)
     if target_joint_index == 1:
-        # clamp the first joint to value 0
         custom_limits_from_joint_name[joint_names[0]] = (0.0,0.0)
 
     custom_limits = get_custom_limits(robot, custom_limits_from_joint_name)
@@ -503,8 +505,12 @@ def sample_calib_motion(monitor, arm_index, target_joint_index, calib_joint_rang
         with pp.LockRenderer(False):
             for i in range(ATTEMPTS):
                 valid_calib_path = True
-                start_conf = sample_fn()
+                start_conf = np.array(sample_fn())
                 pp.set_joint_positions(robot, movable_joints, start_conf)
+
+                if target_joint_index == 0:
+                    start_conf[target_joint_index] = -np.pi
+
                 # pp.wait_if_gui()
 
                 print(f'Attempt #{i+1}/{ATTEMPTS}, start_conf: {start_conf} | current conf: {hi.arm_joint_pose[arm_index]}')
@@ -522,11 +528,14 @@ def sample_calib_motion(monitor, arm_index, target_joint_index, calib_joint_rang
                     calib_path = []
                     for j in range(steps):
                         joint_conf = np.array(start_conf) + (j+1)/steps * (np.array(goal_conf) - np.array(start_conf))
-                        if collision_fn(joint_conf, diagnosis=diagnose):
+                        print(f'step {j}: joint conf: {joint_conf}')
+                        if collision_fn(joint_conf, diagnosis=False):
                             valid_calib_path = False
                             monitor.get_logger().warn(f"Collision detected at calb conf #{j}/{steps}, resampling...")
                             break
                         calib_path.append(joint_conf)
+                    if not valid_calib_path:
+                        break
 
                     if valid_calib_path:
                         # - check if the transit path is too long, if so, resample
@@ -817,7 +826,7 @@ def execute_arm_conf(monitor, conf, index=0):
                                                                       None, monitor.trajectory_time, index=index)
 
 def execute_arm_trajectory_and_record_each_conf(monitor, transit_traj, calib_traj, time_between_confs=2, index=0):
-    settle_time = 1
+    settle_time = 6
     hi = monitor.huskies[monitor.selected_robot_id].interface
     # last_conf = hi.arm_joint_pose[index]
     # print(transit_traj)

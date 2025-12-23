@@ -51,13 +51,13 @@ VALIDATION_PROBLEM_NAME = '250929_New_Antenna_with_GH_RH_Packed'
 # VALIDATION_PROBLEM_NAME = '250902_kissing_experiment'
   
 class HuskyMonitor(Node):
-    USE_MOCAP = 0
+    USE_MOCAP = 1
     FAKE_HARDWARE = 0
 
     GRASP_PARTITION = 8
     BAR_GOAL_MODE = 0
 
-    CALIBRATION = 0
+    CALIBRATION = 1
 
     BAR_HOLDING_ACCURACY_TEST = 0
     DUAL_ARM_ACCURACY_TEST = 0
@@ -126,7 +126,7 @@ class HuskyMonitor(Node):
         self.goal_element = None 
 
         self.calib_tool_from_robot_arm_id = defaultdict(lambda: defaultdict(lambda: None))
-        self.calib_joint_range = np.pi/2
+        self.calib_joint_range = np.pi*2
         self.calib_target_axis = 0
 
         self.goal_bar_grasp = None
@@ -1136,7 +1136,7 @@ class HuskyMonitor(Node):
             self.buttons.append(Button('Plan arm to retract to home', self.plan_arm_to_retract_to_home))
 
         # self.buttons.append(Button('Plan S.Arm to conf target', lambda : world.plan_arm_to_goal(self)))
-        # self.buttons.append(Button('Exec S.Arm Traj', self.execute_arm_trajectory))
+        self.buttons.append(Button('Exec S.Arm Traj', self.execute_arm_trajectory))
         self.buttons.append(Button('Exec Both Arm Trajs', lambda: world.execute_arm_trajectory_both(self)))
 
         # Add dual arm configuration sampling button
@@ -1279,7 +1279,7 @@ class HuskyMonitor(Node):
             
         if self.CALIBRATION:
             self.dump_sep_sliders.append(Slider("----------Calibration", lambda : None))
-            self.calib_joint_range_slider = Slider("calib joint range", self.update_calib_joint_range, 0.0, np.pi, np.pi/2)
+            self.calib_joint_range_slider = Slider("calib joint range", self.update_calib_joint_range, 0.0, np.pi*2, np.pi*2)
             self.calib_target_axis_slider = Slider("calib target joint id", self.update_calib_target_axis, 0, 1, 0)
             self.buttons.append(Button('Sample calib path', self.sample_calib_traj))
 
