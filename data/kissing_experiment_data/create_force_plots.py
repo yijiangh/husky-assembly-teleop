@@ -101,8 +101,8 @@ def main():
     out_file_x = base_dir / "force_profiles_x_plot.png"
     plot_force_profiles(data_y0, "Force Profiles along X-axis", out_path=out_file_x)
     
-    out_file_y = base_dir / "force_profiles_y_plot.png"
-    plot_force_profiles(data_x0, "Force Profiles along Y-axis", out_path=out_file_y)
+    #out_file_y = base_dir / "force_profiles_y_plot.png"
+    #plot_force_profiles(data_x0, "Force Profiles along Y-axis", out_path=out_file_y)
 
 
 if __name__ == "__main__":

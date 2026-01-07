@@ -1558,6 +1558,7 @@ Grippers must be closed with installed joints.
 """
 Z_MOVE_TO_NEUTRAL = 0.020 # reduce insertion distance... given robot cell state are too far apart
 Z_MOVE_TO_INSERT = 0.015
+CARTESIAN_SPEEDUP = 5
 TIME_PER_ROTATION = 14
 PROBE_END_WAIT_TIME = 1
 DATA_FOLDER = '/home/jakobgenhart/husky_assistant/workspace_github/src/husky-assembly-teleop/data/kissing_experiment_data'
@@ -1590,7 +1591,7 @@ def kissing_experiment(monitor):
     
     for i in range(0, 5):        
         # sample
-        offset = [0.005 + 0.001 * i, 0.000, 0.00, 0.00] # x y (0.005) a b (0.05) # 0.001 * i
+        offset = [0.000, 0.000, -0.1 - 0.05 * i, 0.00] # x y (0.005) a b (0.05) # 0.001 * i
         
         monitor.get_logger().info(f'### SAMPLED_{offset[0]:.4f}_{offset[1]:.4f}_{offset[2]:.4f}_{offset[3]:.4f}')
         
@@ -1633,7 +1634,7 @@ def draw_tcp_pose(monitor):
 def execute_linear_cartesian_move_left(robot, hi, start_time, cartesian_trajectory):
     time_elapsed = time.time() - start_time
     
-    if time_elapsed > cartesian_trajectory[2] + PROBE_END_WAIT_TIME:
+    if time_elapsed > cartesian_trajectory[2] + cartesian_trajectory[3] + PROBE_END_WAIT_TIME:
         return False
     
     world_from_arm_base = pp.get_link_pose(robot, pp.link_from_name(robot, 'left_ur_arm_base_link'))
@@ -1673,14 +1674,8 @@ def kissing_probe_once(monitor, neutral_pose, start_pose_left, start_pose_right,
     pose_left_trajectory = []
     pose_right_trajectory = []
     
-    # video
-    # fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    # out = cv2.VideoWriter(file_location + '/' + name + '.mp4', fourcc, 20.0, (1920, 1080))
-    
-    # TODO move robot to offset location
-    
     # generate insertion trajectory
-    insertion_trajectory, cartesian_trajectory = generate_insertion_motion(monitor, Z_MOVE_TO_INSERT, 0.002/TIME_PER_ROTATION, start_pose_left)
+    insertion_trajectory, cartesian_trajectory = generate_insertion_motion(monitor, Z_MOVE_TO_INSERT, 0.002/TIME_PER_ROTATION, cartesian_speedup=CARTESIAN_SPEEDUP, neutral_start_pose=start_pose_left)
     if insertion_trajectory is None:
         return
     
@@ -1749,13 +1744,11 @@ def kissing_probe_once(monitor, neutral_pose, start_pose_left, start_pose_right,
     } 
     with open(file_location + '/' + name + '.json', 'w') as f:
         json.dump(data, f, indent=4)
-        
-    # out.release()
     
     monitor.get_logger().info('### RETREAT')
     
     # generate retreat motion
-    retreat_trajectory, cartesian_retreat = generate_insertion_motion(monitor, -Z_MOVE_TO_INSERT, 0.002/TIME_PER_ROTATION * 5)
+    retreat_trajectory, cartesian_retreat = generate_insertion_motion(monitor, -Z_MOVE_TO_INSERT, 0.002/TIME_PER_ROTATION*CARTESIAN_SPEEDUP)
     if retreat_trajectory is None:
         return
     
@@ -1791,7 +1784,7 @@ def move_left_linear_z(monitor, length, speed):
     trajectory, _ = generate_insertion_motion(monitor, length, speed)
     hi.send_arm_cmd(trajectory[0], trajectory[1], trajectory[2], index=0)
     
-def generate_insertion_motion(monitor, depth, speed, neutral_start_pose=None):
+def generate_insertion_motion(monitor, depth, speed, cartesian_speedup=1, neutral_start_pose=None):
     husky = monitor.huskies[monitor.selected_robot_id]
     hi: HuskyRobotInterface = husky.interface
     robot = husky.object.robot
@@ -1805,7 +1798,7 @@ def generate_insertion_motion(monitor, depth, speed, neutral_start_pose=None):
     
     time = max(1, abs(depth/speed))
     single_arm_trajectory = ([], None, time, None)
-    cartesian_trajector = [start_pose, pp.multiply(start_pose, pp.Pose(pp.Point(0, 0, depth))), time]
+    cartesian_trajectory = [start_pose, pp.multiply(start_pose, pp.Pose(pp.Point(0, 0, depth))), time/cartesian_speedup, time - time/cartesian_speedup]
     
     for i in range(0, 5):
         pose = pp.multiply(start_pose, pp.Pose(pp.Point(0, 0, i * depth/4.0)))
@@ -1817,7 +1810,7 @@ def generate_insertion_motion(monitor, depth, speed, neutral_start_pose=None):
         init_conf = arm_conf
         single_arm_trajectory[0].append(arm_conf)
         
-    return single_arm_trajectory, cartesian_trajector
+    return single_arm_trajectory, cartesian_trajectory
             
             
 def generate_reset_trajectory(monitor, speed, goal_pose, index=0):
