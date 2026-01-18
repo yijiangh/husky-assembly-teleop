@@ -1,28 +1,17 @@
-2025-06-17 15:43:59,480 - INFO - Working on file: calibration_20250617_1500_arm_0_j_1.json
-2025-06-17 15:43:59,701 - INFO - max distance between base_mocap_origins and mean: 0.0006896389060775266
-2025-06-17 15:43:59,701 - INFO - max distance between base_mocap_quats and mean: 0.0009208630497014885
-2025-06-17 15:43:59,707 - INFO - Working on file: calibration_20250617_1503_arm_0_j_1.json
-2025-06-17 15:43:59,911 - INFO - max distance between base_mocap_origins and mean: 0.00028021573083209807
-2025-06-17 15:43:59,911 - INFO - max distance between base_mocap_quats and mean: 0.000371732161039894
-2025-06-17 15:43:59,911 - INFO - Working on file: calibration_20250617_1505_arm_0_j_1.json
-2025-06-17 15:44:00,146 - INFO - max distance between base_mocap_origins and mean: 0.0005384694769467597
-2025-06-17 15:44:00,146 - INFO - max distance between base_mocap_quats and mean: 0.000706270374261539
-2025-06-17 15:44:00,152 - INFO - Working on file: calibration_20250617_1507_arm_0_j_1.json
-2025-06-17 15:44:00,363 - INFO - max distance between base_mocap_origins and mean: 0.0006115001478349739
-2025-06-17 15:44:00,363 - INFO - max distance between base_mocap_quats and mean: 0.000792330628039544
-2025-06-17 15:44:00,363 - INFO - Mean base mocap position: [-0.21938813  0.03195747  0.45983688]
-2025-06-17 15:44:00,363 - INFO - Max distance between base_mocap_pos and mean: 0.00072
-2025-06-17 15:44:00,363 - INFO - Min distance between base_mocap_pos and mean: 0.00005
-2025-06-17 15:44:00,363 - INFO - Average distance between base_mocap_pos and mean: 0.00023
-2025-06-17 15:44:00,546 - INFO - Max X-axis deviation: 0.00012
-2025-06-17 15:44:00,546 - INFO - Max Y-axis deviation: 0.00071
-2025-06-17 15:44:00,546 - INFO - Max Z-axis deviation: 0.00011
-2025-06-17 15:44:00,553 - INFO - Max angle deviation for x-axis: 0.07 degrees
-2025-06-17 15:44:00,553 - INFO - Max angle deviation for y-axis: 0.08 degrees
-2025-06-17 15:44:00,553 - INFO - Max angle deviation for z-axis: 0.11 degrees
-2025-06-17 15:44:00,664 - INFO - j1 fitted axis : [-0.99995817 -0.00636934 -0.00656359]
-2025-06-17 15:44:00,664 - INFO - max_pt_project_distance: [np.float64(0.00039252888755520815), np.float64(0.00026970259075030715), np.float64(0.00040442481097608627), np.float64(0.00025849906333526545)]
-2025-06-17 15:44:00,665 - INFO - angle diff between center normals and fitted line (deg): [np.float64(0.6201050472614867), np.float64(0.4314774094128353), np.float64(0.653998903822286), np.float64(0.5876839069317198)]
-2025-06-17 15:44:00,665 - INFO - angle diff between center normals and mean normal (deg): [np.float64(0.04722546658768187), np.float64(0.14305312736391665), np.float64(0.08134702198502594), np.float64(0.01450466309623081)]
-2025-06-17 15:44:00,666 - INFO - max distance between centers and mean center: 0.0018739173554141167
-2025-06-17 15:44:00,666 - INFO - max distance between centers and line_fit.point: 0.0018739173554141167
+2026-01-18 14:53:37,324 - INFO - ============================================================
+2026-01-18 14:53:37,324 - INFO - Processing data batch: j1
+2026-01-18 14:53:37,324 - INFO - ============================================================
+2026-01-18 14:53:37,324 - INFO - Processing: calibration_20250617_1500_arm_0_j_1.json
+2026-01-18 14:53:37,325 - INFO -   Circle fitting time: 0.347 ms
+2026-01-18 14:53:44,476 - INFO -   Circle fit quality - max point distance: 0.393 mm
+2026-01-18 14:53:44,810 - INFO - Processing: calibration_20250617_1503_arm_0_j_1.json
+2026-01-18 14:53:44,811 - INFO -   Circle fitting time: 0.221 ms
+2026-01-18 14:53:51,871 - INFO -   Circle fit quality - max point distance: 0.270 mm
+2026-01-18 14:53:52,195 - INFO - Processing: calibration_20250617_1505_arm_0_j_1.json
+2026-01-18 14:53:52,196 - INFO -   Circle fitting time: 0.265 ms
+2026-01-18 14:53:59,250 - INFO -   Circle fit quality - max point distance: 0.404 mm
+2026-01-18 14:53:59,574 - INFO - Processing: calibration_20250617_1507_arm_0_j_1.json
+2026-01-18 14:53:59,575 - INFO -   Circle fitting time: 0.247 ms
+2026-01-18 14:54:06,702 - INFO -   Circle fit quality - max point distance: 0.258 mm
+2026-01-18 14:54:07,043 - INFO - Results exported to: d:\0_Project\03-2025_husky_assembly\Code\husky-assembly-teleop\data\calibration_data\20250617\j1\j1_analysis.json
+2026-01-18 14:54:07,043 - INFO - Total takes processed: 4

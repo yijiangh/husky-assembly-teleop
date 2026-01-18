@@ -17,11 +17,16 @@ from skspatial.plotting import plot_3d
 import matplotlib.pyplot as plt
 import pybullet_planning as pp
 
-# Configuration
-HERE = os.path.dirname(os.path.abspath(__file__))
-date_folder = '20250617'
-URDF_FILE = os.path.join(HERE, '..', 'husky_urdf', 'mt_husky_dual_ur5_e_moveit_config', 'urdf', 
-                          'husky_dual_ur5_e_no_base_joint_All_Calibrated.urdf')
+from config_loader import load_config, get_robot_urdf, get_shoulder_pan_joint_name, HERE
+
+# Load configuration
+config = load_config()
+date_folder = config['date_folder']
+robot_name = config['robot_name']
+arm = config['arm']
+
+URDF_FILE = get_robot_urdf(robot_name)
+SHOULDER_PAN_JOINT_NAME = get_shoulder_pan_joint_name(robot_name, arm)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -47,7 +52,7 @@ def load_analysis_data(file_path):
         return json.load(file)
 
 
-def parse_base_offset_from_urdf(urdf_file_path, joint_name='left_ur_arm_shoulder_pan_joint'):
+def parse_base_offset_from_urdf(urdf_file_path, joint_name):
     """
     Parse the base offset from URDF file.
     
@@ -83,8 +88,10 @@ def analyze_base_mocap_variation(takes):
     """
     all_base_mocap_pos = []
     all_base_mocap_quats = []
+    take_boundaries = []  # Track where each take starts
     
     for take in takes:
+        take_boundaries.append(len(all_base_mocap_pos))  # Record start index of this take
         for entry in take['raw_data']:
             base_mocap_pose = entry.get("base_mocap_pose", [])
             if base_mocap_pose:
@@ -124,17 +131,23 @@ def analyze_base_mocap_variation(takes):
     z_deviations = [np.rad2deg(Vector(axis).angle_between(mean_z_axis)) for axis in z_axes]
     
     logger.info('Base mocap orientation statistics:')
-    logger.info(f'  Max angle deviation for x-axis: {max(x_deviations):.2f} degrees')
-    logger.info(f'  Max angle deviation for y-axis: {max(y_deviations):.2f} degrees')
-    logger.info(f'  Max angle deviation for z-axis: {max(z_deviations):.2f} degrees')
-    
+    max_x_deg = max(x_deviations)
+    max_y_deg = max(y_deviations)
+    max_z_deg = max(z_deviations)
+    x_dev_mm_1m = np.tan(np.deg2rad(max_x_deg)) * 1000
+    y_dev_mm_1m = np.tan(np.deg2rad(max_y_deg)) * 1000
+    z_dev_mm_1m = np.tan(np.deg2rad(max_z_deg)) * 1000
+    logger.info(f'  Max angle deviation for x-axis: {max_x_deg:.2f} degrees (equiv. to {x_dev_mm_1m:.1f} mm over 1 m)')
+    logger.info(f'  Max angle deviation for y-axis: {max_y_deg:.2f} degrees (equiv. to {y_dev_mm_1m:.1f} mm over 1 m)')
+    logger.info(f'  Max angle deviation for z-axis: {max_z_deg:.2f} degrees (equiv. to {z_dev_mm_1m:.1f} mm over 1 m)')
     return {
         'positions': all_base_mocap_pos,
         'quaternions': all_base_mocap_quats,
         'pos_mean': base_mocap_pos_mean,
         'pos_distances': base_pos_distances,
         'mean_axes': (mean_x_axis, mean_y_axis, mean_z_axis),
-        'axis_deviations': (x_deviations, y_deviations, z_deviations)
+        'axis_deviations': (x_deviations, y_deviations, z_deviations),
+        'take_boundaries': take_boundaries
     }
 
 
@@ -151,6 +164,13 @@ def visualize_base_mocap_variation(mocap_data, joint_name, output_dir):
     ax.plot(indices, y_deviations, 'g-', label='Y-axis')
     ax.plot(indices, z_deviations, 'b-', label='Z-axis')
     ax.plot(indices, mocap_data['pos_distances'] * 1000, 'k--', label='Total distance')
+    
+    # Add vertical separators for each data take
+    take_boundaries = mocap_data.get('take_boundaries', [])
+    for i, boundary in enumerate(take_boundaries[1:], start=1):  # Skip first boundary (index 0)
+        ax.axvline(x=boundary, color='gray', linestyle='--', alpha=0.7, linewidth=1)
+        ax.text(boundary, ax.get_ylim()[1] * 0.95, f'T{i}', fontsize=8, ha='center', va='top', color='gray')
+    
     ax.set_xlabel('Sample index')
     ax.set_ylabel('Distance from mean (mm)')
     ax.set_title(f'{joint_name} - Base Mocap Position Deviations by Axis')
@@ -164,6 +184,12 @@ def visualize_base_mocap_variation(mocap_data, joint_name, output_dir):
     ax.plot(indices, mocap_data['axis_deviations'][0], 'r-', label='X-axis')
     ax.plot(indices, mocap_data['axis_deviations'][1], 'g-', label='Y-axis')
     ax.plot(indices, mocap_data['axis_deviations'][2], 'b-', label='Z-axis')
+    
+    # Add vertical separators for each data take
+    for i, boundary in enumerate(take_boundaries[1:], start=1):  # Skip first boundary (index 0)
+        ax.axvline(x=boundary, color='gray', linestyle='--', alpha=0.7, linewidth=1)
+        ax.text(boundary, ax.get_ylim()[1] * 0.95, f'T{i}', fontsize=8, ha='center', va='top', color='gray')
+    
     ax.set_xlabel('Sample index')
     ax.set_ylabel('Angle deviation (degrees)')
     ax.set_title(f'{joint_name} - Base Mocap Orientation Deviations')
@@ -202,8 +228,9 @@ def analyze_circle_centers(centers, normals, joint_name, output_dir):
     N_avg = np.mean(normals, axis=0)
     N_avg = N_avg / np.linalg.norm(N_avg)  # Normalize
     
-    # Form plane using first center and average normal
-    plane = Plane(point=centers[0], normal=N_avg)
+    # Form plane using averaged center and average normal
+    center_avg = np.mean(centers, axis=0)
+    plane = Plane(point=center_avg, normal=N_avg)
     
     # Project all centers onto the plane
     projected_centers = [plane.project_point(Point(c)) for c in centers]
@@ -299,8 +326,9 @@ def fit_line_to_centers(centers, normals, joint_name):
     logger.info(f'  Angle differences from mean normal (deg): {[f"{a:.2f}" for a in angle_diffs]}')
     logger.info(f'  Max angle difference: {max(angle_diffs):.2f} degrees')
     
-    # Form plane using first center and average normal
-    plane = Plane(point=centers[0], normal=N_avg)
+    # Form plane using averaged center and average normal
+    center_avg = np.mean(centers, axis=0)
+    plane = Plane(point=center_avg, normal=N_avg)
     
     # Project all centers onto the plane
     projected_centers = [plane.project_point(Point(c)) for c in centers]
@@ -525,11 +553,11 @@ def visualize_results(j0_data, j1_data, j0_line, j1_line, base_frame_tf, output_
     # Plot j1 circle centers and fitted line
     j1_centers = np.array([take['center'] for take in j1_data['takes']])
     ax.scatter(j1_centers[:, 0] * 1000, j1_centers[:, 1] * 1000, j1_centers[:, 2] * 1000, 
-               c='g', s=50, alpha=0.6, label='j1 centers')
+               c='r', s=50, alpha=0.6, label='j1 centers')
     # Plot line in mm - need to convert line points
     line_points_j1 = np.array([j1_line.point + t * j1_line.direction for t in np.linspace(-0.3, 0.3, 100)])
     ax.plot(line_points_j1[:, 0] * 1000, line_points_j1[:, 1] * 1000, line_points_j1[:, 2] * 1000, 
-            'g-', linewidth=2, label='j1 fitted line')
+            'r-', linewidth=2, label='j1 fitted line')
     
     # Plot intersection line (c01) and p01 if available
     if intersection_info is not None:
@@ -563,11 +591,11 @@ def visualize_results(j0_data, j1_data, j0_line, j1_line, base_frame_tf, output_
         
         if plane0_info is not None:
             plot_plane(ax, plane0_info['point'], plane0_info['normal'], 
-                      size=0.5, color='cyan', alpha=0.3, label='Plane0 (p0, v1)')
+                      size=1.0, color='cyan', alpha=0.3, label='Plane0 (p0, v1)')
         
         if plane1_info is not None:
             plot_plane(ax, plane1_info['point'], plane1_info['normal'], 
-                      size=0.5, color='yellow', alpha=0.3, label='Plane1 (p1, v0×v1)')
+                      size=1.0, color='yellow', alpha=0.3, label='Plane1 (p1, v0×v1)')
     
     # Plot base frame
     origin = base_frame_tf[:3, 3] * 1000  # Convert to mm
@@ -607,7 +635,7 @@ def main():
     
     # Parse base offset from URDF
     logger.info(f'Parsing base offset from URDF: {URDF_FILE}')
-    BASE_OFFSET = parse_base_offset_from_urdf(URDF_FILE)
+    BASE_OFFSET = parse_base_offset_from_urdf(URDF_FILE, SHOULDER_PAN_JOINT_NAME)
     logger.info(f'Base offset: {BASE_OFFSET} m ({BASE_OFFSET * 1000:.4f} mm)')
     
     # Load data
