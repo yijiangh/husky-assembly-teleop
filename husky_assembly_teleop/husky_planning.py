@@ -19,7 +19,7 @@ from husky_assembly_teleop.utils import plan_transit_motion, plan_transfer_motio
 from husky_assembly_teleop import DATA_DIRECTORY
 
 IK_SOLVER = TracIKSolver(
-    os.path.join(DATA_DIRECTORY,'husky_urdf/mt_husky_moveit_config/urdf/husky_ur5_e_no_base_joint.urdf'),
+    os.path.join(DATA_DIRECTORY,'husky_urdf/mt_husky_moveit_config/urdf/husky_ur5_e_no_base_joint_Alice_Calibrated.urdf'),
     'ur_arm_base_link',
     'ur_arm_tool0'
 )

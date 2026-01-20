@@ -6,7 +6,7 @@ The main ROS2 node for the husky monitor. This node is responsible for:
 - Updating the simulation state
 - Handling user input
 """
-import sys
+import sys, re
 print(f"Running with Python: {sys.executable}")
 
 from collections import defaultdict
@@ -15,6 +15,7 @@ import time, copy
 import numpy as np
 
 from typing import List, Tuple
+from scipy.spatial.transform import Rotation as R
 
 import rclpy
 import rclpy.executors
@@ -29,8 +30,8 @@ from husky_assembly_teleop.husky_robot import UR5e_HOME_STATE
 from husky_assembly_teleop.common import (
     Button, Slider, SliderGroup, Husky, TrackedObject, HuskyObject, AssemblyObject, HUSKY_UR5e_JOINT_NAMES, lerp, load_gripper
 )
-
 from husky_assembly_teleop.optitrack.NatNetClient import NatNetClient
+from husky_assembly_teleop.utils import pose_from_frame, frame_from_pose, pose_from_transformation, transformation_from_pose
 
 DEFAULT_GREY = [0.2, 0.2, 0.2, 0.7]
 GOAL_BLUE = [0, 0.2, 0.5, 0.7]
@@ -45,16 +46,18 @@ CLIENT_IP = '192.168.0.7' # Set to your own IP
 MOCAP_IP = '192.168.0.117' # set to the mocap PC's IP, get this from Motive Settings>Streaming pane->Local interface
 
 FILENAME_SUFFIX = '_vary_pos_vary_yaw'
-VALIDATION_PROBLEM_NAME = '250826_cindy_calibration_validation'
+# VALIDATION_PROBLEM_NAME = '250905Orientation_test'
+VALIDATION_PROBLEM_NAME = '250929_New_Antenna_with_GH_RH_Packed'
+# VALIDATION_PROBLEM_NAME = '250902_kissing_experiment'
   
 class HuskyMonitor(Node):
-    USE_MOCAP = 0
+    USE_MOCAP = 1
     FAKE_HARDWARE = 0
 
     GRASP_PARTITION = 8
     BAR_GOAL_MODE = 0
 
-    CALIBRATION = 0
+    CALIBRATION = 1
 
     BAR_HOLDING_ACCURACY_TEST = 0
     DUAL_ARM_ACCURACY_TEST = 0
@@ -74,7 +77,7 @@ class HuskyMonitor(Node):
         self.tracked_objects = []
         self.name_from_mocap_id = {}
 
-        self.static_obstacles = []
+        self.static_obstacles = {}
         self.assembly_objects = []
         self.current_seq_index = 0
 
@@ -98,9 +101,15 @@ class HuskyMonitor(Node):
         
         # Board validation mode variables
         self.board_validation_state_slider = None
+        self.trajectory_selection_slider = None
         self.available_robot_cell_states = []
         self.selected_state_index = 0
         self.available_joint_trajectories = []  # Store available JointTrajectory files
+        self.selected_trajectory_index = 0
+        
+        # Cache for RobotCell to avoid reloading
+        self._robot_cell_cache = None
+        self._robot_cell_cache_path = None
         
         # goal and trajectory interface
         self.selected_arm_index = 0
@@ -117,7 +126,7 @@ class HuskyMonitor(Node):
         self.goal_element = None 
 
         self.calib_tool_from_robot_arm_id = defaultdict(lambda: defaultdict(lambda: None))
-        self.calib_joint_range = np.pi/2
+        self.calib_joint_range = np.pi*2
         self.calib_target_axis = 0
 
         self.goal_bar_grasp = None
@@ -125,7 +134,7 @@ class HuskyMonitor(Node):
         self.grasp_distance = 0.0 # fixed for now
         self.goal_element_axis = 0
 
-        self.trajectory_time = 20 if self.CALIBRATION else 5
+        self.trajectory_time = 20 if self.CALIBRATION else 60
 
         # list of conf, velocity, total time, attachment other than the ee
         self.planned_arm_trajectory = [(None, None, None, None), (None, None, None, None)]
@@ -169,8 +178,8 @@ class HuskyMonitor(Node):
     def add_assembly_objects(self, aobject: AssemblyObject):
         self.assembly_objects.append(aobject)
 
-    def add_static_obstacles(self, pb_body):
-        self.static_obstacles.append(pb_body)
+    def add_static_obstacles(self, pb_body, name):
+        self.static_obstacles[name] = pb_body
         
     def add_husky(self, husky: Husky):
         """Registers a husky to connect to ROS and be tracked by mocap"""
@@ -397,7 +406,7 @@ class HuskyMonitor(Node):
 
     def sample_calib_traj(self):
         attachments = [ee[1] for ee in self.huskies[self.selected_robot_id].object.ee_list]
-        obstacles = self.static_obstacles
+        obstacles = list(self.static_obstacles.values())
         packed_trajs = world.sample_calib_motion(self, int(self.selected_arm_index), int(self.calib_target_axis), self.calib_joint_range, 
                                                  attachments=attachments, obstacles=obstacles)
 
@@ -579,30 +588,37 @@ class HuskyMonitor(Node):
         
         print(f"Loading robot cell state: {selected_state_file}")
         
-        # Check if there's a corresponding JointTrajectory file with the same prefix
-        state_prefix = selected_state_file.replace('_RobotCellState.json', '')
-        corresponding_trajectory_file = f"{state_prefix}_JointTrajectory.json"
-        trajectory_filepath = os.path.join(
-            DATA_DIRECTORY,
-            'husky_assembly_design_study',
-            VALIDATION_PROBLEM_NAME,
-            'RobotCellStates',
-            corresponding_trajectory_file
-        )
+        # # Check if there's a corresponding JointTrajectory file with the same prefix
+        # state_prefix = selected_state_file.replace('_RobotCellState.json', '')
+        # corresponding_trajectory_file = f"{state_prefix}_JointTrajectory.json"
+        # trajectory_filepath = os.path.join(
+        #     DATA_DIRECTORY,
+        #     'husky_assembly_design_study',
+        #     VALIDATION_PROBLEM_NAME,
+        #     'RobotCellStates',
+        #     corresponding_trajectory_file
+        # )
         
-        if os.path.exists(trajectory_filepath):
-            print(f"Found corresponding joint trajectory: {corresponding_trajectory_file}")
-            # Update the available joint trajectories list to include this file if not already present
-            if corresponding_trajectory_file not in self.available_joint_trajectories:
-                self.available_joint_trajectories.append(corresponding_trajectory_file)
-                self.available_joint_trajectories.sort()
-        else:
-            print(f"No corresponding joint trajectory found for: {selected_state_file}")
+        # if os.path.exists(trajectory_filepath):
+        #     print(f"Found corresponding joint trajectory: {corresponding_trajectory_file}")
+        #     # Update the available joint trajectories list to include this file if not already present
+        #     if corresponding_trajectory_file not in self.available_joint_trajectories:
+        #         self.available_joint_trajectories.append(corresponding_trajectory_file)
+        #         self.available_joint_trajectories.sort()
+        # else:
+        #     print(f"No corresponding joint trajectory found for: {selected_state_file}")
         
         try:
             # Load the robot cell state
             from compas.data import json_load
             robot_cell_state = json_load(state_filepath)
+
+            # match = re.search(r'_A(\d+)-', selected_state_file)
+            # active_bar_name = f"b{match.group(1)}_0" if match else None
+            # self.get_logger().info(f"Active bar name: {active_bar_name}")
+            
+            # Load rigid body states as static obstacles
+            self.load_rigid_body_states_as_obstacles(robot_cell_state)
             
             # Get the robot configuration from the state
             if hasattr(robot_cell_state, 'robot_configuration'):
@@ -611,23 +627,16 @@ class HuskyMonitor(Node):
                 # Extract base pose and arm joint states
                 if hasattr(robot_config, 'values') and hasattr(robot_config, 'joint_names'):
                     # Find base and arm joint values
-                    base_joint_names = ['base_joint_x', 'base_joint_y', 'base_joint_yaw']
+                    # base_joint_names = ['base_joint_x', 'base_joint_y', 'base_joint_yaw']
                     from husky_assembly_teleop.utils import HUSKY_DUAL_UR5e_JOINT_NAMES
                     left_arm_names = HUSKY_DUAL_UR5e_JOINT_NAMES[0]
                     right_arm_names = HUSKY_DUAL_UR5e_JOINT_NAMES[1]
-
-                    # Extract base pose
-                    base_x = robot_config[base_joint_names[0]] if base_joint_names[0] in robot_config else 0.0
-                    base_y = robot_config[base_joint_names[1]] if base_joint_names[1] in robot_config else 0.0
-                    base_yaw = robot_config[base_joint_names[2]] if base_joint_names[2] in robot_config else 0.0
-                    
+                  
                     # Extract arm joint states
                     left_arm_joint_values = [robot_config[name] for name in left_arm_names]
                     right_arm_joint_values = [robot_config[name] for name in right_arm_names]
 
                     # Update goal robot configuration
-                    self.goal_base_pose = (np.array([base_x, base_y, 0.0]), 
-                                         pp.quat_from_euler(pp.Euler(yaw=base_yaw)))
                     self.goal_arm_pose[0] = np.array(left_arm_joint_values)
                     self.goal_arm_pose[1] = np.array(right_arm_joint_values)
                     
@@ -635,7 +644,6 @@ class HuskyMonitor(Node):
                     self.reset_ui(self.goal_arm_pose)
                     
                     print(f"Updated goal robot configuration from {selected_state_file}")
-                    print(f"Base pose: {self.goal_base_pose}")
                     print(f"Left arm joints: {self.goal_arm_pose[0]}")
                     print(f"Right arm joints: {self.goal_arm_pose[1]}")
 
@@ -644,9 +652,230 @@ class HuskyMonitor(Node):
                     print("Robot configuration does not have expected structure")
             else:
                 print("Robot cell state does not contain robot configuration")
-                
+
+            if hasattr(robot_cell_state, 'robot_base_frame'):
+                self.goal_base_pose = pose_from_frame(robot_cell_state.robot_base_frame)
+                print(f"Updated goal base pose from {selected_state_file}: {self.goal_base_pose}")
+ 
         except Exception as e:
             print(f"Error loading robot cell state: {e}")
+
+    def _load_robot_cell(self, validation_problem_name):
+        """
+        Load and cache the RobotCell.json file for the given validation problem.
+        
+        Parameters
+        ----------
+        validation_problem_name : str
+            The name of the validation problem directory.
+            
+        Returns
+        -------
+        RobotCell
+            The loaded robot cell.
+        """
+        robot_cell_path = os.path.join(
+            DATA_DIRECTORY,
+            'husky_assembly_design_study',
+            validation_problem_name,
+            'RobotCell.json'
+        )
+        
+        # Check if we already have this robot cell cached
+        if self._robot_cell_cache is not None and self._robot_cell_cache_path == robot_cell_path:
+            return self._robot_cell_cache
+            
+        if not os.path.exists(robot_cell_path):
+            print(f"RobotCell.json not found at: {robot_cell_path}")
+            return None
+            
+        try:
+            from compas.data import json_load
+            robot_cell = json_load(robot_cell_path)
+            
+            # Cache the robot cell
+            self._robot_cell_cache = robot_cell
+            self._robot_cell_cache_path = robot_cell_path
+            
+            print(f"Loaded and cached RobotCell from: {robot_cell_path}")
+            return robot_cell
+            
+        except Exception as e:
+            print(f"Error loading RobotCell: {e}")
+            return None
+
+    def load_rigid_body_states_as_obstacles(self, robot_cell_state):
+        """
+        Load rigid body states from a RobotCellState and create/update static obstacles.
+        
+        Parameters
+        ----------
+        robot_cell_state : RobotCellState
+            The robot cell state containing rigid body states to load as obstacles.
+        """
+        if not hasattr(robot_cell_state, 'rigid_body_states'):
+            print("No rigid body states found in robot cell state")
+            return
+            
+        # Load the RobotCell to get rigid body models
+        robot_cell = self._load_robot_cell(VALIDATION_PROBLEM_NAME)
+        if robot_cell is None:
+            print("Could not load RobotCell, falling back to simple box obstacles")
+            self._load_rigid_body_states_as_simple_obstacles(robot_cell_state)
+            return
+             
+        # Process each rigid body state
+        for rigid_body_name, rigid_body_state in robot_cell_state.rigid_body_states.items():
+            # if active_bar_name and rigid_body_name != active_bar_name:
+            #     continue
+
+            # Skip hidden rigid bodies
+            if rigid_body_state.is_hidden:
+                continue
+                
+            # Skip rigid bodies that are attached to tools or links (they move with the robot)
+            if rigid_body_state.attached_to_tool or rigid_body_state.attached_to_link:
+                continue
+                
+            # Get the frame from the rigid body state
+            if rigid_body_state.frame is None:
+                print(f"Warning: No frame data for rigid body {rigid_body_name}")
+                continue
+                
+            # Convert frame to pose (position and quaternion)
+            pose = pose_from_frame(rigid_body_state.frame)
+ 
+            # Check if obstacle already exists
+            if rigid_body_name in self.static_obstacles:
+                # Update existing obstacle pose
+                pp.set_pose(self.static_obstacles[rigid_body_name], pose)
+                print(f"Updated obstacle {rigid_body_name} pose")
+            else:
+                # Create new obstacle using real collision geometry from RobotCell
+                obstacle_body = self._create_rigid_body_obstacle(rigid_body_name, robot_cell, pose)
+                if obstacle_body is not None:
+                    # Create a simple wrapper to store the obstacle with name
+                    # obstacle = StaticObstacle(rigid_body_name, obstacle_body)
+                    self.add_static_obstacles(obstacle_body, rigid_body_name)
+                    print(f"Created new obstacle {rigid_body_name} with real collision geometry")
+                else:
+                    print(f"Failed to create obstacle {rigid_body_name}, falling back to simple box")
+                    # Fallback to simple box
+                    obstacle_body = pp.create_box(0.1, 0.1, 0.1, color=pp.GREY, mass=pp.STATIC_MASS)
+                    pp.set_pose(obstacle_body, pose)
+                   
+                    self.add_static_obstacles(obstacle_body, rigid_body_name)
+                    print(f"Created fallback box obstacle {rigid_body_name}")
+
+    def _create_rigid_body_obstacle(self, rigid_body_name, robot_cell, pose):
+        """
+        Create a PyBullet obstacle from a rigid body model using real collision geometry.
+        
+        Parameters
+        ----------
+        rigid_body_name : str
+            The name of the rigid body.
+        robot_cell : RobotCell
+            The robot cell containing rigid body models.
+        pose : tuple
+            The pose (position, quaternion) for the obstacle.
+            
+        Returns
+        -------
+        int or None
+            The PyBullet body ID, or None if creation failed.
+        """
+        if rigid_body_name not in robot_cell.rigid_body_models:
+            print(f"Rigid body model {rigid_body_name} not found in RobotCell")
+            return None
+            
+        rigid_body_model = robot_cell.rigid_body_models[rigid_body_name]
+        
+        try:
+            # Create temporary directory for mesh files (similar to PyBullet client)
+            import tempfile
+            temp_dir = tempfile.mkdtemp()
+            
+            # Process visual meshes
+            visual_path = None
+            if rigid_body_model.visual_meshes and len(rigid_body_model.visual_meshes) > 0:
+                from compas.datastructures import Mesh
+                visual_mesh = Mesh()
+                for m in rigid_body_model.visual_meshes_in_meters:
+                    visual_mesh.join(m, precision=12)
+                visual_path = os.path.join(temp_dir, f"{rigid_body_name}_visual.obj")
+                visual_mesh.to_obj(visual_path)
+            
+            # Process collision meshes
+            collision_path = None
+            if rigid_body_model.collision_meshes and len(rigid_body_model.collision_meshes) > 0:
+                from compas.datastructures import Mesh
+                collision_mesh = Mesh()
+                for m in rigid_body_model.collision_meshes_in_meters:
+                    collision_mesh.join(m, precision=12)
+                collision_path = os.path.join(temp_dir, f"{rigid_body_name}_collision.obj")
+                collision_mesh.to_obj(collision_path)
+            
+            # Create PyBullet body from mesh files
+            obstacle_body = pp.create_obj(visual_path or collision_path, mass=pp.STATIC_MASS)
+            
+            if obstacle_body is not None:
+                # Set the pose
+                pp.set_pose(obstacle_body, pose)
+                # Set color
+                pp.set_color(obstacle_body, pp.GREY)
+                
+            # Clean up temporary directory
+            import shutil
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            
+            return obstacle_body
+            
+        except Exception as e:
+            print(f"Error creating rigid body obstacle {rigid_body_name}: {e}")
+            return None
+
+    def _load_rigid_body_states_as_simple_obstacles(self, robot_cell_state):
+        """
+        Fallback method to create simple box obstacles when RobotCell is not available.
+        
+        Parameters
+        ----------
+        robot_cell_state : RobotCellState
+            The robot cell state containing rigid body states to load as obstacles.
+        """
+        # Process each rigid body state
+        for rigid_body_name, rigid_body_state in robot_cell_state.rigid_body_states.items():
+            # Skip hidden rigid bodies
+            if rigid_body_state.is_hidden:
+                continue
+                
+            # Skip rigid bodies that are attached to tools or links (they move with the robot)
+            if rigid_body_state.attached_to_tool or rigid_body_state.attached_to_link:
+                continue
+                
+            # Get the frame from the rigid body state
+            if rigid_body_state.frame is None:
+                print(f"Warning: No frame data for rigid body {rigid_body_name}")
+                continue
+                
+            # Convert frame to pose (position and quaternion)
+            pose = pose_from_frame(rigid_body_state.frame)
+           
+            # Check if obstacle already exists
+            if rigid_body_name in self.static_obstacles:
+                # Update existing obstacle pose
+                obstacle = self.static_obstacles[rigid_body_name]
+                pp.set_pose(obstacle, pose)
+                print(f"Updated obstacle {rigid_body_name} pose")
+            else:
+                # Create simple box obstacle as fallback
+                obstacle_body = pp.create_box(0.1, 0.1, 0.1, color=pp.GREY, mass=pp.STATIC_MASS)
+                pp.set_pose(obstacle_body, pose)
+                 
+                # obstacle = StaticObstacle(rigid_body_name, obstacle_body)
+                self.add_static_obstacles(obstacle_body, rigid_body_name)
+                print(f"Created fallback box obstacle {rigid_body_name}")
 
     def load_joint_trajectory(self):
         """
@@ -656,11 +885,11 @@ class HuskyMonitor(Node):
             print("No joint trajectory files available!")
             return
             
-        if self.selected_state_index >= len(self.available_joint_trajectories):
-            print(f"Invalid trajectory index: {self.selected_state_index}")
+        if self.selected_trajectory_index >= len(self.available_joint_trajectories):
+            print(f"Invalid trajectory index: {self.selected_trajectory_index}")
             return
             
-        selected_trajectory_file = self.available_joint_trajectories[self.selected_state_index]
+        selected_trajectory_file = self.available_joint_trajectories[self.selected_trajectory_index]
         trajectory_filepath = os.path.join(
             DATA_DIRECTORY,
             'husky_assembly_design_study',
@@ -739,6 +968,15 @@ class HuskyMonitor(Node):
         if 0 <= new_index < len(self.available_robot_cell_states):
             self.selected_state_index = new_index
             print(f"Selected state: {self.available_robot_cell_states[self.selected_state_index]}")
+
+    def update_trajectory_index(self, trajectory_index):
+        """
+        Update the selected joint trajectory index.
+        """
+        new_index = int(trajectory_index)
+        if 0 <= new_index < len(self.available_joint_trajectories):
+            self.selected_trajectory_index = new_index
+            print(f"Selected trajectory: {self.available_joint_trajectories[self.selected_trajectory_index]}")
 
     def _load_available_robot_cell_states(self):
         """
@@ -826,35 +1064,8 @@ class HuskyMonitor(Node):
         calibration = self.CALIBRATION
         
         # Determine end effector types from the actual robot
-        ee_types = []
-        if hasattr(first_husky.object, 'ee_list'):
-            # Extract end effector types from the actual robot
-            for ee, attachment in first_husky.object.ee_list:
-                # Try to determine the type based on the end effector properties
-                # This is a heuristic approach since we don't store the type directly
-                if hasattr(attachment, 'child') and attachment.child is not None:
-                    # Check if it's a validation tool by looking at the body properties
-                    # For now, we'll use the same logic as in world.init
-                    if calibration:
-                        ee_types.append("calib_tip")
-                    else:
-                        # Default to validation_tool_pair for dual arm, victor_gripper for single arm
-                        if dual_arm:
-                            ee_types.append("validation_tool_pair")
-                        else:
-                            ee_types.append("victor_gripper")
-                    break  # For single arm, we only need one type
-        
-        # If we couldn't determine the types, use defaults
-        if not ee_types:
-            if calibration:
-                ee_types = ["calib_tip"]
-            else:
-                if dual_arm:
-                    ee_types = ["validation_tool_pair"]
-                else:
-                    ee_types = ["victor_gripper"]
-        
+        ee_types = first_husky.object.ee_types
+
         # Load only the goal model that matches the actual robot configuration
         with pp.LockRenderer():
             with pp.HideOutput():
@@ -904,12 +1115,13 @@ class HuskyMonitor(Node):
         
         if not self.USE_MOCAP:
             # teleop base when no mocap
-            self.dump_sep_sliders.append(Slider("----------Base Control", lambda : None))
-            pose2d = pp.pose2d_from_pose((self.huskies[self.selected_robot_id].interface.position, self.huskies[self.selected_robot_id].interface.rotation), tolerance=0.1)
-            self.teleop_base_slider_group = SliderGroup(["teleop base {}".format(t) for t in ["x","y","yaw"]], self.update_base_conf, [-5.0, -5.0, -np.pi], [5.0,5.0,np.pi], pose2d)
+            # self.dump_sep_sliders.append(Slider("----------Base Control", lambda : None))
+            # pose2d = pp.pose2d_from_pose((self.huskies[self.selected_robot_id].interface.position, self.huskies[self.selected_robot_id].interface.rotation), tolerance=0.1)
+            # self.teleop_base_slider_group = SliderGroup(["teleop base {}".format(t) for t in ["x","y","yaw"]], self.update_base_conf, [-5.0, -5.0, -np.pi], [5.0,5.0,np.pi], pose2d)
             # self.state_sliders.append(p.addUserDebugParameter("x", -5.0, 5.0, pose2d[0]))
             # self.state_sliders.append(p.addUserDebugParameter("y", -5.0, 5.0, pose2d[1]))
             # self.state_sliders.append(p.addUserDebugParameter("yaw", -np.pi, np.pi, pose2d[2]))
+            pass
         else:
             pass
             # self.buttons.append(Button('Plan base', lambda: world.plan_to_goal(self)))
@@ -923,15 +1135,15 @@ class HuskyMonitor(Node):
             self.buttons.append(Button('Plan arm to assemble, reuse grasp', self.plan_arm_to_transfer_element_reuse_grasp))
             self.buttons.append(Button('Plan arm to retract to home', self.plan_arm_to_retract_to_home))
 
-        self.buttons.append(Button('Plan S.Arm to conf target', lambda : world.plan_arm_to_goal(self)))
+        # self.buttons.append(Button('Plan S.Arm to conf target', lambda : world.plan_arm_to_goal(self)))
         self.buttons.append(Button('Exec S.Arm Traj', self.execute_arm_trajectory))
         self.buttons.append(Button('Exec Both Arm Trajs', lambda: world.execute_arm_trajectory_both(self)))
 
         # Add dual arm configuration sampling button
-        self.buttons.append(Button('Sample Dual Arm Config', self.sample_dual_arm_configuration))
+        # self.buttons.append(Button('Sample Dual Arm Config', self.sample_dual_arm_configuration))
 
         # Add buttons for planning both arms to goal (sequential and composite)
-        self.buttons.append(Button('Plan Both Arms to Goal (sequential)', lambda: world.plan_both_arms_to_goal(self, use_composite=False)))
+        # self.buttons.append(Button('Plan Both Arms to Goal (sequential)', lambda: world.plan_both_arms_to_goal(self, use_composite=False)))
         self.buttons.append(Button('Plan Both Arms to Goal (composite)', lambda: world.plan_both_arms_to_goal(self, use_composite=True)))
 
         # Button to export planned trajectory to JSON
@@ -941,7 +1153,7 @@ class HuskyMonitor(Node):
         ))
 
         if self.BOARD_VALIDATION:
-            self.dump_sep_sliders.append(Slider("----------Board Validation", lambda : None))
+            self.dump_sep_sliders.append(Slider("----------State Loading", lambda : None))
             
             # Load available robot cell states if not already loaded
             if not self.available_robot_cell_states:
@@ -957,17 +1169,26 @@ class HuskyMonitor(Node):
                 )
                 
                 # Add button to load the selected state
-                self.buttons.append(Button('Load Board Validation State', self.load_board_validation_state))
+                self.buttons.append(Button('Load Robot Cell State', self.load_board_validation_state))
                 
-                # Add button to load joint trajectory if available
+                # Create slider for selecting joint trajectory
                 if self.available_joint_trajectories:
+                    max_traj_index = len(self.available_joint_trajectories) - 1
+                    self.trajectory_selection_slider = Slider(
+                        "Joint Trajectory", 
+                        self.update_trajectory_index, 
+                        0, max_traj_index, self.selected_trajectory_index
+                    )
+                    
+                    # Add button to load joint trajectory
                     self.buttons.append(Button('Load Joint Trajectory', self.load_joint_trajectory))
             else:
                 print("No robot cell state files found for board validation")
 
         if not self.CALIBRATION:
             # in calibration mode, we do not have task space targets so this is disabled
-            self.buttons.append(Button('Exec S.Arm Traj with servoing', self.execute_arm_trajectory_with_servoing))
+            pass
+            # self.buttons.append(Button('Exec S.Arm Traj with servoing', self.execute_arm_trajectory_with_servoing))
 
         # if not self.CALIBRATION:
         #     self.buttons.append(Button('Exec Free Motion', self.execute_free_trajectory))
@@ -975,10 +1196,20 @@ class HuskyMonitor(Node):
         # self.buttons.append(Button('Plan arm wave', lambda: world.plan_arm_wave(self)))
 
         if not self.FAKE_HARDWARE and not self.CALIBRATION:
+            self.dump_sep_sliders.append(Slider("----------Gripper", lambda : None))
             # self.gripper_slider = p.addUserDebugParameter("gripper", 0, 1.0, 0.1)
             # self.buttons.append(Button('Exec Gripper', lambda: world.set_gripper(self)))
-            self.buttons.append(Button('Open Gripper', lambda: world.open_gripper_full(self)))
-            self.buttons.append(Button('Close Gripper', lambda: world.close_gripper_for_bar(self)))
+            # self.buttons.append(Button('Open Gripper', lambda: world.open_gripper_full(self)))
+            # self.buttons.append(Button('Close Gripper', lambda: world.close_gripper_for_bar(self)))
+            
+            # New toggle buttons for gripper and screw control
+            self.buttons.append(Button('Toggle Left Gripper', lambda: self.huskies[self.selected_robot_id].interface.toggle_gripper(0)))
+            self.buttons.append(Button('Toggle Left Screw', lambda: self.huskies[self.selected_robot_id].interface.toggle_screw(0)))
+            
+            # Only show right arm buttons if the robot is configured for dual arm
+            if self.huskies[self.selected_robot_id].dual_arm:
+                self.buttons.append(Button('Toggle Right Gripper', lambda: self.huskies[self.selected_robot_id].interface.toggle_gripper(1)))
+                self.buttons.append(Button('Toggle Right Screw', lambda: self.huskies[self.selected_robot_id].interface.toggle_screw(1)))
 
         # self.buttons.append(Button('Compute ik', self.compute_ik_for_bar))
 
@@ -1028,26 +1259,27 @@ class HuskyMonitor(Node):
             self.buttons.append(Button('Save EE mocap data', lambda: world.save_dual_arm_E_mocap(self)))
             
         if not self.BAR_GOAL_MODE:
-            self.dump_sep_sliders.append(Slider("----------Joint Target (Left Arm)", lambda : None))
-            left_joint_names = self.huskies[self.selected_robot_id].object.get_arm_joint_names(index=0)
-            for i, j in enumerate(pp.joints_from_names(self.huskies[self.selected_robot_id].object.robot, left_joint_names)):
-                lower, upper = pp.get_joint_limits(self.huskies[self.selected_robot_id].object.robot, j)
-                if target_conf is None:
-                    self.joint_state_sliders.append(p.addUserDebugParameter(f'Left Joint {i}', lower, upper, self.goal_arm_pose[0][i]))
-                else:
-                    self.joint_state_sliders.append(p.addUserDebugParameter(f'Left Joint {i}', lower, upper, target_conf[0][i]))
-            self.dump_sep_sliders.append(Slider("----------Joint Target (Right Arm)", lambda : None))
-            right_joint_names = self.huskies[self.selected_robot_id].object.get_arm_joint_names(index=1)
-            for i, j in enumerate(pp.joints_from_names(self.huskies[self.selected_robot_id].object.robot, right_joint_names)):
-                lower, upper = pp.get_joint_limits(self.huskies[self.selected_robot_id].object.robot, j)
-                if target_conf is None:
-                    self.joint_state_sliders.append(p.addUserDebugParameter(f'Right Joint {i}', lower, upper, self.goal_arm_pose[1][i]))
-                else:
-                    self.joint_state_sliders.append(p.addUserDebugParameter(f'Right Joint {i}', lower, upper, target_conf[1][i]))
+            pass
+            # self.dump_sep_sliders.append(Slider("----------Joint Target (Left Arm)", lambda : None))
+            # left_joint_names = self.huskies[self.selected_robot_id].object.get_arm_joint_names(index=0)
+            # for i, j in enumerate(pp.joints_from_names(self.huskies[self.selected_robot_id].object.robot, left_joint_names)):
+            #     lower, upper = pp.get_joint_limits(self.huskies[self.selected_robot_id].object.robot, j)
+            #     if target_conf is None:
+            #         self.joint_state_sliders.append(p.addUserDebugParameter(f'Left Joint {i}', lower, upper, self.goal_arm_pose[0][i]))
+            #     else:
+            #         self.joint_state_sliders.append(p.addUserDebugParameter(f'Left Joint {i}', lower, upper, target_conf[0][i]))
+            # self.dump_sep_sliders.append(Slider("----------Joint Target (Right Arm)", lambda : None))
+            # right_joint_names = self.huskies[self.selected_robot_id].object.get_arm_joint_names(index=1)
+            # for i, j in enumerate(pp.joints_from_names(self.huskies[self.selected_robot_id].object.robot, right_joint_names)):
+            #     lower, upper = pp.get_joint_limits(self.huskies[self.selected_robot_id].object.robot, j)
+            #     if target_conf is None:
+            #         self.joint_state_sliders.append(p.addUserDebugParameter(f'Right Joint {i}', lower, upper, self.goal_arm_pose[1][i]))
+            #     else:
+            #         self.joint_state_sliders.append(p.addUserDebugParameter(f'Right Joint {i}', lower, upper, target_conf[1][i]))
             
         if self.CALIBRATION:
             self.dump_sep_sliders.append(Slider("----------Calibration", lambda : None))
-            self.calib_joint_range_slider = Slider("calib joint range", self.update_calib_joint_range, 0.0, np.pi, np.pi/2)
+            self.calib_joint_range_slider = Slider("calib joint range", self.update_calib_joint_range, 0.0, np.pi*2, np.pi*2)
             self.calib_target_axis_slider = Slider("calib target joint id", self.update_calib_target_axis, 0, 1, 0)
             self.buttons.append(Button('Sample calib path', self.sample_calib_traj))
 
@@ -1169,6 +1401,69 @@ class HuskyMonitor(Node):
      
     # --- --- --- --- --- UPDATE --- --- --- --- --- 
     def update(self):
+        # Handle keyboard events
+        keys = p.getKeyboardEvents()
+        
+        # Debug: Print all key events to identify key codes from different keyboards
+        # if keys:
+        #     print(f"\n=== Keyboard Event Debug ===")
+        #     print(f"Total keys in event: {len(keys)}")
+        #     for key_code, key_state in keys.items():
+        #         if key_state & p.KEY_WAS_TRIGGERED:
+        #             # Print the key code and the corresponding character (if printable)
+        #             try:
+        #                 char = chr(key_code) if key_code > 0 else "N/A"
+        #                 print(f"Key pressed - Code: {key_code}, Character: '{char}', State: {key_state}")
+        #             except ValueError:
+        #                 print(f"Key pressed - Code: {key_code} (non-printable), State: {key_state}")
+                    
+        #             # Print state breakdown to see if we can differentiate by state
+        #             print(f"  State flags: WAS_TRIGGERED={bool(key_state & p.KEY_WAS_TRIGGERED)}, "
+        #                   f"IS_DOWN={bool(key_state & p.KEY_IS_DOWN)}, "
+        #                   f"WAS_RELEASED={bool(key_state & p.KEY_WAS_RELEASED)}")
+        #             print(f"  Raw state value: {key_state}")
+            
+            # Show ALL keys in the event dictionary, even if not triggered
+            # all_codes = list(keys.keys())
+            # print(f"All key codes in this event: {all_codes}")
+            # print(f"===========================\n")
+        
+        # Check if "1" key was pressed (ASCII code 49 or -1 for some keyboards)
+        if (ord("1") in keys and keys[ord("1")] & p.KEY_WAS_TRIGGERED) or \
+            (-1 in keys and keys[-1] & p.KEY_WAS_TRIGGERED):
+            if len(self.huskies) > 0 and self.selected_robot_id < len(self.huskies):
+                self.huskies[self.selected_robot_id].interface.toggle_gripper(0)
+                self.huskies[self.selected_robot_id].interface.toggle_gripper(1)
+                print("Toggled both grippers via keyboard '1'")
+
+        if (ord("2") in keys and keys[ord("2")] & p.KEY_WAS_TRIGGERED):
+            # (-1 in keys and keys[-1] & p.KEY_WAS_TRIGGERED):
+            if len(self.huskies) > 0 and self.selected_robot_id < len(self.huskies):
+                self.huskies[self.selected_robot_id].interface.toggle_screw(0)
+                self.huskies[self.selected_robot_id].interface.toggle_screw(1)
+                print("Toggled both screws via keyboard '2'")
+        
+        # Key "0" to plan both arms to goal
+        if (ord("0") in keys and keys[ord("0")] & p.KEY_WAS_TRIGGERED):
+            print("Planning both arms to goal via keyboard '0'...")
+            world.plan_both_arms_to_goal(self, use_composite=True, debug=False)
+        
+        # Enter key (65309 or 13) to execute both arm trajectories
+        if ((65309 in keys and keys[65309] & p.KEY_WAS_TRIGGERED) or
+            (13 in keys and keys[13] & p.KEY_WAS_TRIGGERED)):
+            print("Executing both arm trajectories via keyboard 'Enter'...")
+            world.execute_arm_trajectory_both(self)
+        
+        # Space key (32) to load board validation state
+        if (32 in keys and keys[32] & p.KEY_WAS_TRIGGERED):
+            print("Loading board validation state via keyboard 'Space'...")
+            self.load_board_validation_state()
+        
+        # Key "9" to load joint trajectory
+        if (ord("9") in keys and keys[ord("9")] & p.KEY_WAS_TRIGGERED):
+            print("Loading joint trajectory via keyboard '9'...")
+            self.load_joint_trajectory()
+        
         for b in self.buttons:
             b.update()
  
@@ -1179,10 +1474,13 @@ class HuskyMonitor(Node):
         # update robot state
         for i, h in enumerate(self.huskies):
             hi = h.interface
-            # these position and rotation are updated by mocap in a differen thread
-            h.object.set_pose((hi.position, hi.rotation), hi.arm_joint_pose)
-            # set the goal pose of base since we are teleoperating the base
-            self.goal_base_pose = (hi.position, hi.rotation)
+            if self.USE_MOCAP:
+                # these position and rotation are updated by mocap in a differen thread
+                h.object.set_pose((hi.position, hi.rotation), hi.arm_joint_pose)
+                # set the goal pose of base since we are teleoperating the base
+                self.goal_base_pose = (hi.position, hi.rotation)
+            else:
+                h.object.set_pose(self.goal_base_pose, hi.arm_joint_pose)
 
         # pp.draw_pose(self.goal_model.get_link_pose_from_name("ur_arm_base_link"))
 
@@ -1199,9 +1497,13 @@ class HuskyMonitor(Node):
             
         if self.BOARD_VALIDATION and self.board_validation_state_slider:
             self.board_validation_state_slider.update()
+            
+        if self.BOARD_VALIDATION and hasattr(self, 'trajectory_selection_slider') and self.trajectory_selection_slider:
+            self.trajectory_selection_slider.update()
 
         if not self.USE_MOCAP:
-            self.teleop_base_slider_group.update()
+            pass
+            # self.teleop_base_slider_group.update()
         
         # update goal robot base state
         # state_slider_values = [p.readUserDebugParameter(ps) for ps in self.state_sliders]
@@ -1217,11 +1519,12 @@ class HuskyMonitor(Node):
             # update_bar_goal_pose
         else:
             # Update both arms' goal conf from sliders
-            n_joints = 6
-            left_slider_vals = [p.readUserDebugParameter(ps) for ps in self.joint_state_sliders[:n_joints]]
-            right_slider_vals = [p.readUserDebugParameter(ps) for ps in self.joint_state_sliders[n_joints:2*n_joints]]
-            self.goal_arm_pose[0] = np.array(left_slider_vals)
-            self.goal_arm_pose[1] = np.array(right_slider_vals)
+            pass
+            # n_joints = 6
+            # left_slider_vals = [p.readUserDebugParameter(ps) for ps in self.joint_state_sliders[:n_joints]]
+            # right_slider_vals = [p.readUserDebugParameter(ps) for ps in self.joint_state_sliders[n_joints:2*n_joints]]
+            # self.goal_arm_pose[0] = np.array(left_slider_vals)
+            # self.goal_arm_pose[1] = np.array(right_slider_vals)
 
         # update assembly goal position
         # self.assembly_goal_position_slider_group.update()

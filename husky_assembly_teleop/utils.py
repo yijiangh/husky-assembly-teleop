@@ -56,6 +56,22 @@ POS_STEP_SIZE = 0.01
 ORI_STEP_SIZE = np.pi/18
 RETRACTION_LENGTH = 0.1 
 
+from compas.geometry import Frame, Transformation
+def pose_from_frame(frame, scale=1.0):
+    return ([v*scale for v in frame.point], frame.quaternion.xyzw)
+
+def frame_from_pose(pose, scale=1.0):
+    point, (x, y, z, w) = pose
+    return Frame.from_quaternion([w, x, y, z], point=[v*scale for v in point])
+
+def pose_from_transformation(tf, scale=1.0):
+    frame = Frame.from_transformation(tf)
+    return pose_from_frame(frame, scale)
+
+def transformation_from_pose(pose, scale=1.0):
+    frame = frame_from_pose(pose, scale)
+    return Transformation.from_frame(frame)
+
 def get_disabled_collisions(robot, disabled_self_collision_link_names):
     """get robot's link-link tuples disabled from collision checking
 

@@ -175,7 +175,7 @@ def load_robot(dual_arm=False):
     else:
         # INSERT_YOUR_CODE
         print("WARNING: Loading uncalibrated URDF for the single arm Husky robot.")
-        robot_urdf = os.path.join(DATA_DIRECTORY,'husky_urdf/mt_husky_moveit_config/urdf/husky_ur5_e_no_base_joint.urdf')
+        robot_urdf = os.path.join(DATA_DIRECTORY,'husky_urdf/mt_husky_moveit_config/urdf/husky_ur5_e_no_base_joint_Alice_Calibrated.urdf')
 
     assert os.path.exists(robot_urdf)
     robot = pp.load_pybullet(robot_urdf, fixed_base=False, cylinder=False)
@@ -212,7 +212,8 @@ def create_end_effector(ee_type="victor_gripper", load_calib_tip=False, dual_arm
         return ee
     elif ee_type == "validation_tool_pair":
         # Hardcoded validation tool configuration
-        problem_name = '250826_cindy_calibration_validation'
+        from husky_assembly_teleop.husky_monitor import VALIDATION_PROBLEM_NAME
+        problem_name = VALIDATION_PROBLEM_NAME
         # Dynamically select any JSON file ending with _RobotCellState.json in the RobotCellStates directory
         robot_cell_states_dir = os.path.join(DESIGN_DATA_DIRECTORY, problem_name, 'RobotCellStates')
         state_files = [f for f in os.listdir(robot_cell_states_dir) if f.endswith('_RobotCellState.json')]
@@ -266,7 +267,8 @@ def create_end_effector(ee_type="victor_gripper", load_calib_tip=False, dual_arm
             ee = pp.load_pybullet(custom_gripper_path, fixed_base=False, cylinder=False)
         else:
             # Fallback to simple geometric shape
-            ee = pp.create_cylinder(radius=0.05, height=0.15, color=(0.8, 0.8, 0.8, 1))
+            # ee = pp.create_cylinder(radius=0.05, height=0.15, color=(0.8, 0.8, 0.8, 1))
+            ee = pp.create_box(0.12, 0.12, 0.01, color=(0.8, 0.8, 0.8, 1))
         return ee
     else:
         raise ValueError(f"Unknown end effector type: {ee_type}. Valid types: victor_gripper, robotiq_gripper, custom_gripper, validation_tool_pair, calib_tip")
@@ -450,7 +452,8 @@ class HuskyObject():
                     assert len(ee_list) == 2, f"Expected 2 end effectors for dual_arm, got {len(ee_list)}"
                 else:
                     assert len(ee_list) == 1, f"Expected 1 end effector for single arm, got {len(ee_list)}"
-                
+
+                self.ee_types = ee_types
                 self.ee_list = attach_end_effectors(robot, ee_list, dual_arm=dual_arm)
                 self.old_color = None
        

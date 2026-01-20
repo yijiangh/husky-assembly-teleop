@@ -79,33 +79,33 @@ def create_husky_with_end_effectors(monitor, name, mocap_id=None, pos=np.zeros(3
 def init(monitor):
     # * add robots
     # 1004 - Example of creating a dual-arm robot with victor grippers
-    create_husky_with_end_effectors(
-        monitor, 
-        name='/a200_0806', 
-        mocap_id=4591, 
-        pos=np.array((0,0,0)), 
-        connect_arm=not monitor.FAKE_HARDWARE, 
-        connect_gripper=False and not monitor.FAKE_HARDWARE, 
-        calibration=monitor.CALIBRATION,
-        dual_arm=True,
-        # ee_types=["custom_gripper", "custom_gripper"]  # Mixed end effectors
-        ee_types=["validation_tool_pair"],  # Specify end effectors for both arms
-        force_regenerate=False
-    )
+    # create_husky_with_end_effectors(
+    #     monitor, 
+    #     name='/a200_0806', 
+    #     mocap_id=4591, 
+    #     pos=np.array((0,0,0)), 
+    #     connect_arm=not monitor.FAKE_HARDWARE, 
+    #     connect_gripper=False and not monitor.FAKE_HARDWARE, 
+    #     calibration=monitor.CALIBRATION,
+    #     dual_arm=True,
+    #     # ee_types=["victor_gripper", "victor_gripper"],  # Mixed end effectors
+    #     ee_types=["validation_tool_pair"],  # Specify end effectors for both arms
+    #     force_regenerate=False
+    # )
     
     # Example of creating a single-arm robot with robotiq gripper (commented out)
-    """create_husky_with_end_effectors(
+    create_husky_with_end_effectors(
         monitor, 
         name='/a200_0804', 
-        mocap_id=4568, 
+        mocap_id=4615, 
         pos=np.array((0,0,0)), 
         connect_arm=not monitor.FAKE_HARDWARE, 
         connect_gripper=not monitor.FAKE_HARDWARE, 
         calibration=monitor.CALIBRATION,
         dual_arm=False,
-        ee_types=["robotiq_gripper"],  # Specify end effector for single arm
+        ee_types=["custom_gripper"],  # Specify end effector for single arm
         base_calibration_file=os.path.join(CALIB_DATA_DIR, 'calibrated_transformation_0804.json')
-    )"""
+    )
 
     # Example of creating a robot with calibration tips
     """create_husky_with_end_effectors(
@@ -128,7 +128,7 @@ def init(monitor):
     )"""
 
     # * add static obstacles
-    monitor.add_static_obstacles(pp.create_plane(color=(0.9, 0.9, 0.9, 1)))
+    monitor.add_static_obstacles(pp.create_plane(color=(0.9, 0.9, 0.9, 1)), 'base_plane')
     
     wall_right = pp.create_box(10, 0.4, 3)
     pp.set_color(wall_right, pp.GREY)
@@ -138,20 +138,19 @@ def init(monitor):
     pp.set_pose(wall_left, pp.Pose(pp.Point(0, -3.0, 0)))
     pp.set_color(wall_left, pp.GREY)
 
-    monitor.add_static_obstacles(pp.create_plane(color=(0.9, 0.9, 0.9, 1)))
-    monitor.add_static_obstacles(wall_left)
-    monitor.add_static_obstacles(wall_right)
+    monitor.add_static_obstacles(wall_left, 'wall_left')
+    monitor.add_static_obstacles(wall_right, 'wall_right')
 
     # * add tracked obstacles
     # TODO use one tracked box to indicate where to put the assembly
     if monitor.CALIBRATION:
         left_tool_name = 'calib_tool_left'
-        TrackedObject(monitor, left_tool_name, 4572, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
+        TrackedObject(monitor, left_tool_name, 4616, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
         monitor.assign_calibration_tool_to_robot(0, 0, left_tool_name)
 
-        right_tool_name = 'calib_tool_right'
-        TrackedObject(monitor, right_tool_name, 4573, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
-        monitor.assign_calibration_tool_to_robot(0, 1, right_tool_name)
+        # right_tool_name = 'calib_tool_right'
+        # TrackedObject(monitor, right_tool_name, 4573, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
+        # monitor.assign_calibration_tool_to_robot(0, 1, right_tool_name)
 
     if monitor.BAR_HOLDING_ACCURACY_TEST:
         bar_rig = TrackedObject(monitor, 'bar_rig', 4570, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
@@ -236,7 +235,7 @@ def next_dual_arm_bar_trajectory(monitor):
             bar_traj = planning.dual_arm_bar_arc(bar_pose, next_bar_pose, 10)
             for p in bar_traj:
                 pp.draw_pose(p)
-            dual_arm_trajectory = planning.plan_dual_arm_motion(monitor.huskies[0], bar_traj, monitor.static_obstacles)
+            dual_arm_trajectory = planning.plan_dual_arm_motion(monitor.huskies[0], bar_traj, list(monitor.static_obstacles.values()))
         if dual_arm_trajectory is not None:
             hi = monitor.huskies[monitor.selected_robot_id].interface
             if np.max(np.abs(hi.arm_joint_pose[0]-dual_arm_trajectory[0][0][0]) > 0.1) or np.max(np.abs(hi.arm_joint_pose[1]-dual_arm_trajectory[1][0][0]) > 0.1):
@@ -266,7 +265,7 @@ def plan_base_to_goal(monitor):
 #     monitor.set_arm_trajectory(planning.plan_arm_wave(monitor.huskies[monitor.selected_robot_id], monitor.trajectory_time))
 
 def plan_arm_to_goal(monitor):
-    obstacles = [monitor.assembly_objects[i].body for i in range(monitor.current_seq_index)] + monitor.static_obstacles
+    obstacles = [monitor.assembly_objects[i].body for i in range(monitor.current_seq_index)] + list(monitor.static_obstacles.values())
     monitor.set_arm_trajectory(
         planning.plan_arm_motion(
             monitor.huskies[monitor.selected_robot_id], 
@@ -282,7 +281,7 @@ def plan_arm_to_goal(monitor):
     monitor.set_to_show_traj_state()
 
 def plan_arm_to_transfer_element(monitor, grasp=None):
-    obstacles = [monitor.assembly_objects[i].body for i in range(monitor.current_seq_index)] + monitor.static_obstacles
+    obstacles = [monitor.assembly_objects[i].body for i in range(monitor.current_seq_index)] + list(monitor.static_obstacles.values())
     transfer_element = monitor.assembly_objects[monitor.current_seq_index]
     full_traj, free_traj, linear_traj = planning.plan_arm_to_transfer_element(
         monitor.huskies[monitor.selected_robot_id], 
@@ -296,14 +295,14 @@ def plan_arm_to_transfer_element(monitor, grasp=None):
     monitor.linear_arm_trajectory = linear_traj
 
 def plan_arm_to_retract_to_home(monitor):
-    obstacles = [monitor.assembly_objects[i].body for i in range(monitor.current_seq_index)] + monitor.static_obstacles
+    obstacles = [monitor.assembly_objects[i].body for i in range(monitor.current_seq_index)] + list(monitor.static_obstacles.values())
     transfer_element = monitor.assembly_objects[monitor.current_seq_index]
     monitor.set_arm_trajectory(
         planning.plan_arm_to_retract_to_home(monitor.huskies[monitor.selected_robot_id], transfer_element, obstacles, monitor.trajectory_time), 
         index=monitor.selected_arm_index)
 
 def compute_ik_for_bar(monitor, world_from_bar, theta_index, grasp_dist):
-    obstacles = monitor.static_obstacles
+    obstacles = list(monitor.static_obstacles.values())
     # [monitor.assembly_objects[i].body for i in range(monitor.current_seq_index)] + 
     monitor.goal_element.set_pose(world_from_bar)
 
@@ -347,7 +346,7 @@ def randomize_bar_location_for_ik_and_transfer(monitor, bar_goal_axis=None, targ
                 return True
 
     world_from_base_link = monitor.goal_model.get_link_pose_from_name("base_footprint")
-    obstacles = monitor.static_obstacles
+    obstacles = list(monitor.static_obstacles.values())
     if target_grasp_index is not None:
         candidate_grasps = [target_grasp_index]
     else:
@@ -428,7 +427,7 @@ def sample_calib_motion(monitor, arm_index, target_joint_index, calib_joint_rang
 
     # Sample calibration conf:
     ATTEMPTS = 100
-    TRAJ_MAX_LENGTH = 130
+    TRAJ_MAX_LENGTH = 200
     steps = 20
     joint_resolutions = np.ones(6) * 0.05
 
@@ -467,11 +466,13 @@ def sample_calib_motion(monitor, arm_index, target_joint_index, calib_joint_rang
     # * For the target joint, set limits to current value ± calib_joint_range
     target_joint_pb_id = pp.joint_from_name(robot, joint_names[target_joint_index])
     targt_joint_limits = pp.get_joint_limits(robot, target_joint_pb_id)
-    custom_limits_from_joint_name[joint_names[target_joint_index]] = (targt_joint_limits[0] + calib_joint_range, targt_joint_limits[1] - calib_joint_range)
+    # custom_limits_from_joint_name[joint_names[target_joint_index]] = (targt_joint_limits[0] + calib_joint_range, targt_joint_limits[1] - calib_joint_range)
 
     # * Clamp the first joint to 0 if target joint == 1
+    # if target_joint_index == 0:
+    #     # clamp the first joint to value 0
+    #     custom_limits_from_joint_name[joint_names[0]] = (-np.pi,-np.pi)
     if target_joint_index == 1:
-        # clamp the first joint to value 0
         custom_limits_from_joint_name[joint_names[0]] = (0.0,0.0)
 
     custom_limits = get_custom_limits(robot, custom_limits_from_joint_name)
@@ -504,8 +505,12 @@ def sample_calib_motion(monitor, arm_index, target_joint_index, calib_joint_rang
         with pp.LockRenderer(False):
             for i in range(ATTEMPTS):
                 valid_calib_path = True
-                start_conf = sample_fn()
+                start_conf = np.array(sample_fn())
                 pp.set_joint_positions(robot, movable_joints, start_conf)
+
+                if target_joint_index == 0:
+                    start_conf[target_joint_index] = -np.pi
+
                 # pp.wait_if_gui()
 
                 print(f'Attempt #{i+1}/{ATTEMPTS}, start_conf: {start_conf} | current conf: {hi.arm_joint_pose[arm_index]}')
@@ -523,11 +528,14 @@ def sample_calib_motion(monitor, arm_index, target_joint_index, calib_joint_rang
                     calib_path = []
                     for j in range(steps):
                         joint_conf = np.array(start_conf) + (j+1)/steps * (np.array(goal_conf) - np.array(start_conf))
-                        if collision_fn(joint_conf, diagnosis=diagnose):
+                        print(f'step {j}: joint conf: {joint_conf}')
+                        if collision_fn(joint_conf, diagnosis=False):
                             valid_calib_path = False
                             monitor.get_logger().warn(f"Collision detected at calb conf #{j}/{steps}, resampling...")
                             break
                         calib_path.append(joint_conf)
+                    if not valid_calib_path:
+                        break
 
                     if valid_calib_path:
                         # - check if the transit path is too long, if so, resample
@@ -818,7 +826,7 @@ def execute_arm_conf(monitor, conf, index=0):
                                                                       None, monitor.trajectory_time, index=index)
 
 def execute_arm_trajectory_and_record_each_conf(monitor, transit_traj, calib_traj, time_between_confs=2, index=0):
-    settle_time = 1
+    settle_time = 6
     hi = monitor.huskies[monitor.selected_robot_id].interface
     # last_conf = hi.arm_joint_pose[index]
     # print(transit_traj)
@@ -870,7 +878,7 @@ def execute_task_goal_arm_trajectory_with_servoing(monitor, trajectory, index=0,
     settle_time = 2
     data = [{} for _ in range(num_iters)]
 
-    obstacles = monitor.static_obstacles
+    obstacles = list(monitor.static_obstacles.values())
     
     hi = monitor.huskies[monitor.selected_robot_id].interface
     ho = monitor.huskies[monitor.selected_robot_id].object
@@ -1241,14 +1249,14 @@ def sample_dual_arm_configuration(monitor, tool0_to_tool0_transform, max_attempt
         left_extra_disabled_collisions = []
         right_extra_disabled_collisions = []
 
-    left_collision_fn = pp.get_collision_fn(robot, left_joints, obstacles=monitor.static_obstacles,
+    left_collision_fn = pp.get_collision_fn(robot, left_joints, obstacles=list(monitor.static_obstacles.values()),
                                               attachments=left_attachments, 
                                               self_collisions=True,
                                               disabled_collisions={}, 
                                               extra_disabled_collisions=left_extra_disabled_collisions,
                                               custom_limits={}, 
                                               max_distance=0)
-    right_collision_fn = pp.get_collision_fn(robot, right_joints, obstacles=monitor.static_obstacles,
+    right_collision_fn = pp.get_collision_fn(robot, right_joints, obstacles=list(monitor.static_obstacles.values()),
                                               attachments=right_attachments, 
                                               self_collisions=True,
                                               disabled_collisions={}, 
@@ -1327,7 +1335,7 @@ def sample_dual_arm_configuration(monitor, tool0_to_tool0_transform, max_attempt
         
             # Plan left arm transition
             left_trajectory = planning.plan_arm_motion(
-                husky, left_conf, monitor.static_obstacles, monitor.trajectory_time, arm_index=0
+                husky, left_conf, list(monitor.static_obstacles.values()), monitor.trajectory_time, arm_index=0
             )
             if left_trajectory[0] is None:
                 continue
@@ -1336,7 +1344,7 @@ def sample_dual_arm_configuration(monitor, tool0_to_tool0_transform, max_attempt
             pp.set_joint_positions(robot, left_joints, left_trajectory[0][-1])
             pp.set_joint_positions(robot, right_joints, current_right_conf)
             right_trajectory = planning.plan_arm_motion(
-                husky, right_conf, monitor.static_obstacles, monitor.trajectory_time, arm_index=1
+                husky, right_conf, list(monitor.static_obstacles.values()), monitor.trajectory_time, arm_index=1
             )
         else:
             # Plan in the composite space of both arms
@@ -1354,7 +1362,7 @@ def sample_dual_arm_configuration(monitor, tool0_to_tool0_transform, max_attempt
                 robot,
                 composite_goal,
                 attachments,
-                monitor.static_obstacles,
+                list(monitor.static_obstacles.values()),
                 debug=False,
                 disabled_collisions=None,
                 dual_arm_index="both",
@@ -1432,7 +1440,7 @@ def compute_tool0_to_tool0_transform_from_json(json_filepath):
     
     return tool0_1_from_tool0_2, tool0_2_from_bar
 
-def plan_both_arms_to_goal(monitor, use_composite=False):
+def plan_both_arms_to_goal(monitor, use_composite=False, debug=False):
     """
     Plan motions for both arms from current to goal joint configurations.
     If use_composite is False, plan left then right sequentially.
@@ -1475,7 +1483,7 @@ def plan_both_arms_to_goal(monitor, use_composite=False):
         # Sequential planning: left arm, then right arm
         pp.set_joint_positions(robot, left_joints, current_left_conf)
         left_trajectory = planning.plan_arm_motion(
-            husky, left_conf, monitor.static_obstacles, monitor.trajectory_time, arm_index=0, debug=False
+            husky, left_conf, list(monitor.static_obstacles.values()), monitor.trajectory_time, arm_index=0, debug=debug
         )
         if left_trajectory[0] is None:
             monitor.get_logger().warn('Left arm planning failed!')
@@ -1484,7 +1492,7 @@ def plan_both_arms_to_goal(monitor, use_composite=False):
         pp.set_joint_positions(robot, left_joints, left_trajectory[0][-1])
         pp.set_joint_positions(robot, right_joints, current_right_conf)
         right_trajectory = planning.plan_arm_motion(
-            husky, right_conf, monitor.static_obstacles, monitor.trajectory_time, arm_index=1, debug=False
+            husky, right_conf, list(monitor.static_obstacles.values()), monitor.trajectory_time, arm_index=1, debug=debug
         )
         if right_trajectory[0] is None:
             monitor.get_logger().warn('Right arm planning failed!')
@@ -1518,8 +1526,8 @@ def plan_both_arms_to_goal(monitor, use_composite=False):
             robot,
             composite_goal,
             attachments,
-            monitor.static_obstacles,
-            debug=False,
+            list(monitor.static_obstacles.values()),
+            debug=debug,
             disabled_collisions=None,
             dual_arm_index="both",
         )

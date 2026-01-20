@@ -12,6 +12,7 @@ from scipy.spatial.transform import Rotation as R
 # ROS
 from rclpy.node import Node
 from rclpy.action import ActionClient
+from rclpy.client import Client
 
 # base
 from std_msgs.msg._header import Header
@@ -34,6 +35,9 @@ from control_msgs.msg import JointTolerance
 from crl_husky_msgs.msg import MultiArmTrajectory
 # except ImportError:
 #     print("MultiArmTrajectory not found, using single arm interface only.")
+
+# SetIO service for gripper and screw control
+from ur_msgs.srv import SetIO
 
 from rclpy.qos import QoSProfile
 
@@ -60,6 +64,10 @@ class HuskyRobotInterface:
     is_arm_executing = [False]
     last_arm_movement = [0]
     
+    # Gripper and screw states for toggle functionality
+    gripper_states = [False]  # False = open, True = closed
+    screw_states = [False]    # False = not actuated, True = actuated
+    
     odom_offset = np.zeros(3)
     _odom_position = np.zeros(3)
     
@@ -72,6 +80,8 @@ class HuskyRobotInterface:
             self.arm_joint_pose.append(UR5e_HOME_STATE)
             self.is_arm_executing.append(False)
             self.last_arm_movement.append(0)
+            self.gripper_states.append(False)
+            self.screw_states.append(False)
         
         q = QoSProfile(depth=10)
         print(q)
@@ -161,6 +171,21 @@ class HuskyRobotInterface:
             for act_arm in self.act_arms:
                 act_arm.wait_for_server(timeout_sec=2.5)
                 self.node.get_logger().info(f'Arm Action Server {act_arm.server_is_ready()}')
+        
+        # SetIO Service Clients for gripper and screw control
+        self.setio_clients = []
+        if dual_arm:
+            self.setio_clients.append(self.node.create_client(SetIO, name + '/left_ur5e/io_and_status_controller/set_io'))
+            self.setio_clients.append(self.node.create_client(SetIO, name + '/right_ur5e/io_and_status_controller/set_io'))
+        else:
+            self.setio_clients.append(self.node.create_client(SetIO, name + '/ur5e/io_and_status_controller/set_io'))
+        
+        # Wait for SetIO services to be available
+        for i, client in enumerate(self.setio_clients):
+            if client.wait_for_service(timeout_sec=2.5):
+                self.node.get_logger().info(f'SetIO Service {i} is ready!')
+            else:
+                self.node.get_logger().warn(f'SetIO Service {i} not available!')
         
         # done --- --- --- --- ---
         self.node.get_logger().info(f'Husky "{name}" is ready!')
@@ -365,6 +390,54 @@ class HuskyRobotInterface:
             self.node.get_logger().error(
                 f"Done with result: {self.error_code_to_str(result.error_code)}"
             )
+
+    def toggle_gripper(self, index=0):
+        """
+        Toggle gripper state (open/close) for the specified arm.
+        Uses SetIO service with PIN_TOOL_DOUT1.
+        """
+        if index >= len(self.setio_clients):
+            self.node.get_logger().error(f'Invalid arm index: {index}')
+            return
+        
+        # Toggle the gripper state
+        self.gripper_states[index] = not self.gripper_states[index]
+        new_state = SetIO.Request.STATE_ON if self.gripper_states[index] else SetIO.Request.STATE_OFF
+        
+        # Create and send the request
+        req = SetIO.Request()
+        req.fun = SetIO.Request.FUN_SET_DIGITAL_OUT
+        req.pin = SetIO.Request.PIN_TOOL_DOUT1
+        req.state = float(new_state)
+        
+        future = self.setio_clients[index].call_async(req)
+        self.node.get_logger().info(f'Gripper {index} {"closed" if self.gripper_states[index] else "opened"}')
+        
+        return future
+    
+    def toggle_screw(self, index=0):
+        """
+        Toggle screw actuation state for the specified arm.
+        Uses SetIO service with PIN_TOOL_DOUT0.
+        """
+        if index >= len(self.setio_clients):
+            self.node.get_logger().error(f'Invalid arm index: {index}')
+            return
+        
+        # Toggle the screw state
+        self.screw_states[index] = not self.screw_states[index]
+        new_state = SetIO.Request.STATE_ON if self.screw_states[index] else SetIO.Request.STATE_OFF
+        
+        # Create and send the request
+        req = SetIO.Request()
+        req.fun = SetIO.Request.FUN_SET_DIGITAL_OUT
+        req.pin = SetIO.Request.PIN_TOOL_DOUT0
+        req.state = float(new_state)
+        
+        future = self.setio_clients[index].call_async(req)
+        self.node.get_logger().info(f'Screw {index} {"actuated" if self.screw_states[index] else "deactivated"}')
+        
+        return future
 
     @staticmethod
     def error_code_to_str(error_code):

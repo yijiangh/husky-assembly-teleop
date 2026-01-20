@@ -18,10 +18,10 @@ class IOClient(Node):
 
     def send_request(self):
         self.req.fun = SetIO.Request.FUN_SET_DIGITAL_OUT # Prefer using constants instead of writing the constant's value
-        # self.req.pin = SetIO.Request.PIN_TOOL_DOUT0
-        self.req.pin = SetIO.Request.PIN_TOOL_DOUT1
-        self.req.state = float(SetIO.Request.STATE_ON)
-        # self.req.state = float(SetIO.Request.STATE_OFF)
+        self.req.pin = SetIO.Request.PIN_TOOL_DOUT0
+        # self.req.pin = SetIO.Request.PIN_TOOL_DOUT1
+        # self.req.state = float(SetIO.Request.STATE_ON)
+        self.req.state = float(SetIO.Request.STATE_OFF)
 
         self.future = self.cli.call_async(self.req)
         self.get_logger().info('request sent...')
