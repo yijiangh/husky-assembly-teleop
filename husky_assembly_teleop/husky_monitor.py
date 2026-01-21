@@ -47,7 +47,7 @@ MOCAP_IP = '192.168.0.117' # set to the mocap PC's IP, get this from Motive Sett
 
 FILENAME_SUFFIX = '_vary_pos_vary_yaw'
 # VALIDATION_PROBLEM_NAME = '250905Orientation_test'
-VALIDATION_PROBLEM_NAME = '250929_New_Antenna_with_GH_RH_Packed'
+VALIDATION_PROBLEM_NAME = '260108_extrinsic_calib_trajs'
 # VALIDATION_PROBLEM_NAME = '250902_kissing_experiment'
   
 class HuskyMonitor(Node):
@@ -418,13 +418,13 @@ class HuskyMonitor(Node):
             self.set_to_show_traj_state()
 
     def execute_calib_traj(self):
-        if self.linear_arm_trajectory is None or self.free_arm_trajectory is None:
-            self.get_logger().warn('Transit and calib trajectories must be planned before executing!')
-        else:
+        # if self.linear_arm_trajectory is None or self.free_arm_trajectory is None:
+        #     self.get_logger().warn('Transit and calib trajectories must be planned before executing!')
+        # else:
             # conf = self.planned_arm_trajectory[self.selected_arm_index][0].pop(0)
             # world.execute_arm_conf(self, conf, index=self.selected_arm_index)
 
-            world.execute_arm_trajectory_and_record_each_conf(self, self.free_arm_trajectory, self.linear_arm_trajectory, index=self.selected_arm_index)
+        world.execute_arm_trajectory_and_record_each_conf(self, self.planned_arm_trajectory[self.selected_arm_index], index=self.selected_arm_index)
 
     def get_world_from_bar_goal_pose(self):
         world_from_base_link = self.goal_model.get_link_pose_from_name("base_footprint")
@@ -1135,7 +1135,7 @@ class HuskyMonitor(Node):
             self.buttons.append(Button('Plan arm to assemble, reuse grasp', self.plan_arm_to_transfer_element_reuse_grasp))
             self.buttons.append(Button('Plan arm to retract to home', self.plan_arm_to_retract_to_home))
 
-        # self.buttons.append(Button('Plan S.Arm to conf target', lambda : world.plan_arm_to_goal(self)))
+        self.buttons.append(Button('Plan S.Arm to conf target', lambda : world.plan_arm_to_goal(self)))
         self.buttons.append(Button('Exec S.Arm Traj', self.execute_arm_trajectory))
         self.buttons.append(Button('Exec Both Arm Trajs', lambda: world.execute_arm_trajectory_both(self)))
 
@@ -1279,19 +1279,18 @@ class HuskyMonitor(Node):
             
         if self.CALIBRATION:
             self.dump_sep_sliders.append(Slider("----------Calibration", lambda : None))
-            self.calib_joint_range_slider = Slider("calib joint range", self.update_calib_joint_range, 0.0, np.pi*2, np.pi*2)
-            self.calib_target_axis_slider = Slider("calib target joint id", self.update_calib_target_axis, 0, 1, 0)
-            self.buttons.append(Button('Sample calib path', self.sample_calib_traj))
-
-            self.buttons.append(Button('Execute transit to calib traj', self.execute_free_trajectory))
+            # self.calib_joint_range_slider = Slider("calib joint range", self.update_calib_joint_range, 0.0, np.pi*2, np.pi*2)
+            # self.calib_target_axis_slider = Slider("calib target joint id", self.update_calib_target_axis, 0, 1, 0)
+            # self.buttons.append(Button('Sample calib path', self.sample_calib_traj))
+            # self.buttons.append(Button('Execute transit to calib traj', self.execute_free_trajectory))
             self.buttons.append(Button('Execute calib traj', self.execute_calib_traj))
+            self.buttons.append(Button('Export calib data to json', self.record_calibration_data))
 
             # self.buttons.append(Button('Set joint 0 to zero', self.set_goal_joint_0_to_zero))
             # self.buttons.append(Button('Calib joint 1', lambda: world.calibrate_joint(self, 1, self.active_calib_tool_name)))
 
         self.dump_sep_sliders.append(Slider("----------DEBUG utils", lambda : None))
         self.buttons.append(Button('Record current calib conf', lambda: world.calibrate_button(self, self.active_calib_tool_name)))
-        self.buttons.append(Button('Export calib conf to json', self.record_calibration_data))
         self.buttons.append(Button('Remove all drawing', lambda : pp.remove_all_debug()))
         # Button to load RobotCellState from file and update arm goal configuration
         # self.buttons.append(Button(
@@ -1488,9 +1487,9 @@ class HuskyMonitor(Node):
         self.arm_slider.update()
         self.trajectory_time_slider.update()
 
-        if self.CALIBRATION:
-            self.calib_joint_range_slider.update()
-            self.calib_target_axis_slider.update()
+        # if self.CALIBRATION:
+        #     self.calib_joint_range_slider.update()
+        #     self.calib_target_axis_slider.update()
 
         if self.BAR_HOLDING_ACCURACY_TEST:
             self.goal_axis_slider.update()

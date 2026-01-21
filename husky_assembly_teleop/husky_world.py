@@ -79,33 +79,34 @@ def create_husky_with_end_effectors(monitor, name, mocap_id=None, pos=np.zeros(3
 def init(monitor):
     # * add robots
     # 1004 - Example of creating a dual-arm robot with victor grippers
-    # create_husky_with_end_effectors(
-    #     monitor, 
-    #     name='/a200_0806', 
-    #     mocap_id=4591, 
-    #     pos=np.array((0,0,0)), 
-    #     connect_arm=not monitor.FAKE_HARDWARE, 
-    #     connect_gripper=False and not monitor.FAKE_HARDWARE, 
-    #     calibration=monitor.CALIBRATION,
-    #     dual_arm=True,
-    #     # ee_types=["victor_gripper", "victor_gripper"],  # Mixed end effectors
-    #     ee_types=["validation_tool_pair"],  # Specify end effectors for both arms
-    #     force_regenerate=False
-    # )
-    
-    # Example of creating a single-arm robot with robotiq gripper (commented out)
     create_husky_with_end_effectors(
         monitor, 
-        name='/a200_0804', 
-        mocap_id=4615, 
+        name='/a200_0806', 
+        mocap_id=4617, 
         pos=np.array((0,0,0)), 
         connect_arm=not monitor.FAKE_HARDWARE, 
-        connect_gripper=not monitor.FAKE_HARDWARE, 
+        connect_gripper=False and not monitor.FAKE_HARDWARE, 
         calibration=monitor.CALIBRATION,
-        dual_arm=False,
-        ee_types=["custom_gripper"],  # Specify end effector for single arm
-        base_calibration_file=os.path.join(CALIB_DATA_DIR, 'calibrated_transformation_0804.json')
+        dual_arm=True,
+        # ee_types=["victor_gripper", "victor_gripper"],  # Mixed end effectors
+        # ee_types=["validation_tool_pair"],  # Specify end effectors for both arms
+        ee_types=["custom_gripper", "custom_gripper"],  # Specify end effector for single arm
+        force_regenerate=False
     )
+    
+    # Example of creating a single-arm robot with robotiq gripper (commented out)
+    # create_husky_with_end_effectors(
+    #     monitor, 
+    #     name='/a200_0804', 
+    #     mocap_id=4615, 
+    #     pos=np.array((0,0,0)), 
+    #     connect_arm=not monitor.FAKE_HARDWARE, 
+    #     connect_gripper=not monitor.FAKE_HARDWARE, 
+    #     calibration=monitor.CALIBRATION,
+    #     dual_arm=False,
+    #     ee_types=["custom_gripper"],  # Specify end effector for single arm
+    #     base_calibration_file=os.path.join(CALIB_DATA_DIR, 'calibrated_transformation_0804.json')
+    # )
 
     # Example of creating a robot with calibration tips
     """create_husky_with_end_effectors(
@@ -599,6 +600,7 @@ def calibrate_button(monitor, tool_mocap_name, index=0):
 
     if monitor.USE_MOCAP:
         # need to get the raw data from mocap
+        print(monitor._mocap_rigidbody_cache)
         if h.name in monitor._mocap_rigidbody_cache:
             base_mocap_pose = monitor._mocap_rigidbody_cache[h.name]
         if tool_mocap_name in monitor._mocap_rigidbody_cache:
@@ -825,7 +827,7 @@ def execute_arm_conf(monitor, conf, index=0):
     monitor.huskies[monitor.selected_robot_id].interface.send_arm_cmd([hi.arm_joint_pose[monitor.selected_arm_index], conf], 
                                                                       None, monitor.trajectory_time, index=index)
 
-def execute_arm_trajectory_and_record_each_conf(monitor, transit_traj, calib_traj, time_between_confs=2, index=0):
+def execute_arm_trajectory_and_record_each_conf(monitor, calib_traj, time_between_confs=2, index=0):
     settle_time = 6
     hi = monitor.huskies[monitor.selected_robot_id].interface
     # last_conf = hi.arm_joint_pose[index]

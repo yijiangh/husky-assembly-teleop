@@ -461,20 +461,30 @@ class HuskyObject():
         """Set pose of base and ur5e arm(s). arm_joint_states must be of shape [[joint_values]] or [[left_joints], [right_joints]]"""        
         pp.set_pose(self.robot, base_pose)
         
-        if len(arm_joint_states) == 1:
-            arm_joints = pp.joints_from_names(self.robot, self.get_arm_joint_names(index))
-            pp.set_joint_positions(self.robot, arm_joints, arm_joint_states[0])
+        if len(arm_joint_states) == 0:
+            raise ValueError(f'set_pose arm_joint_states is empty! {arm_joint_states}')
+        elif len(arm_joint_states) == 1:
+            # Single arm case - update arm at index 0
+            if len(arm_joint_states[0]) > 0:
+                arm_joints = pp.joints_from_names(self.robot, self.get_arm_joint_names(index=0))
+                pp.set_joint_positions(self.robot, arm_joints, arm_joint_states[0])
+            else:
+                raise ValueError(f'set_pose arm_joint_states[0] is empty! {arm_joint_states}')
         elif len(arm_joint_states) == 2:
-            arm_joints = pp.joints_from_names(self.robot, self.get_arm_joint_names(index=0))
-            pp.set_joint_positions(self.robot, arm_joints, arm_joint_states[0])
-            if self.dual_arm:
-                arm_joints = pp.joints_from_names(self.robot, self.get_arm_joint_names(index=1))
-                pp.set_joint_positions(self.robot, arm_joints, arm_joint_states[1])
+            # Dual arm case - update each arm independently if state is non-empty
+            if len(arm_joint_states[0]) > 0:
+                arm_joints = pp.joints_from_names(self.robot, self.get_arm_joint_names(index=0))
+                pp.set_joint_positions(self.robot, arm_joints, arm_joint_states[0])
+            
+            if len(arm_joint_states[1]) > 0:
+                if self.dual_arm:
+                    arm_joints = pp.joints_from_names(self.robot, self.get_arm_joint_names(index=1))
+                    pp.set_joint_positions(self.robot, arm_joints, arm_joint_states[1])
+                else:
+                    raise ValueError(f'Received second arm state but dual_arm is False! {arm_joint_states}')
         else:
-            # print('set_pose arm_joint_states has invalid shape!')
-            # return
-            raise ValueError(f'set_pose arm_joint_states has invalid shape! {arm_joint_states}')
-        
+            raise ValueError(f'set_pose arm_joint_states has invalid shape (>2 arms)! {arm_joint_states}')
+       
         # jg: why was this removed?
         for (ee, ee_attachment) in self.ee_list:
             ee_attachment.assign()
