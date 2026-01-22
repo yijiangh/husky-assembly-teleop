@@ -1591,7 +1591,7 @@ def kissing_experiment(monitor):
     
     for i in range(0, 5):        
         # sample
-        offset = [0.000, 0.000, -0.1 - 0.05 * i, 0.00] # x y (0.005) a b (0.05) # 0.001 * i
+        offset = [1/root2 * (0.004 + 0.001 * i), 1/root2 * (-0.004 - 0.001 * i), 0.00, 0.00] # x y (0.005) a b (0.05) # 0.001 * i
         
         monitor.get_logger().info(f'### SAMPLED_{offset[0]:.4f}_{offset[1]:.4f}_{offset[2]:.4f}_{offset[3]:.4f}')
         
@@ -1763,6 +1763,22 @@ def kissing_probe_once(monitor, neutral_pose, start_pose_left, start_pose_right,
         retreat_start_time = time.time()
         while execute_linear_cartesian_move_left(robot, hi, retreat_start_time, cartesian_retreat):
             yield
+    
+    current_left_tool_world_pose = pp.get_link_pose(robot, pp.link_from_name(monitor.goal_model.robot, 'left_ur_arm_tool0'))
+    while np.linalg.norm(np.array(cartesian_retreat[1][0]) - np.array(pp.point_from_pose(current_left_tool_world_pose))) > 0.01:
+        print("retreat did not work! retry!")
+        print(f'{np.array(cartesian_retreat[1][0])} vs {np.array(pp.point_from_pose(current_left_tool_world_pose))}')
+        
+        # retreat and unscrew (custom firmware which turns backwards on False)
+        hi.set_screw(True, 0)
+        hi.set_screw(False, 0)
+        
+        start_retry_time = time.time()
+        while time.time() - start_retry_time < 5:
+            yield
+            
+        current_left_tool_world_pose = pp.get_link_pose(robot, pp.link_from_name(monitor.goal_model.robot, 'left_ur_arm_tool0'))
+        
         
     # --- REVERT TO JOINT SPACE ---
     hi.switch_controller('cartesian_compliance_controller', 'scaled_joint_trajectory_controller', 0)
