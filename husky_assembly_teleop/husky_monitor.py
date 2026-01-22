@@ -48,7 +48,7 @@ MOCAP_IP = '192.168.0.117' # set to the mocap PC's IP, get this from Motive Sett
 FILENAME_SUFFIX = '_vary_pos_vary_yaw'
 # VALIDATION_PROBLEM_NAME = '250905Orientation_test'
 # VALIDATION_PROBLEM_NAME = '250929_New_Antenna_with_GH_RH_Packed'
-VALIDATION_PROBLEM_NAME = '250902_kissing_experiment'
+VALIDATION_PROBLEM_NAME = '260122_double_kissing_experiment'
   
 class HuskyMonitor(Node):
     USE_MOCAP = 0
@@ -1341,8 +1341,28 @@ class HuskyMonitor(Node):
         self.buttons.append(Button('Move Back 1cm', lambda: world.move_left_linear_z(self, -0.01, 0.001)))
         
         self.dump_sep_sliders.append(Slider("----------CONTROLLERS", lambda : None))
-        self.buttons.append(Button('Switch to Compliance', lambda: self.huskies[self.selected_robot_id].interface.switch_controller('scaled_joint_trajectory_controller', 'cartesian_compliance_controller', self.selected_arm_index)))
-        self.buttons.append(Button('Switch to Joint', lambda: self.huskies[self.selected_robot_id].interface.switch_controller('cartesian_compliance_controller', 'scaled_joint_trajectory_controller', self.selected_arm_index)))
+        
+        def switch_to_compliance_both():
+            if self.huskies[self.selected_robot_id].dual_arm:
+                self.huskies[self.selected_robot_id].interface.switch_controller('scaled_joint_trajectory_controller', 'cartesian_compliance_controller', 0)
+                self.huskies[self.selected_robot_id].interface.switch_controller('scaled_joint_trajectory_controller', 'cartesian_compliance_controller', 1)
+            else:
+                self.huskies[self.selected_robot_id].interface.switch_controller('scaled_joint_trajectory_controller', 'cartesian_compliance_controller', 0)
+        def switch_to_joint_both():
+            if self.huskies[self.selected_robot_id].dual_arm:
+                self.huskies[self.selected_robot_id].interface.switch_controller('cartesian_compliance_controller', 'scaled_joint_trajectory_controller', 0)
+                self.huskies[self.selected_robot_id].interface.switch_controller('cartesian_compliance_controller', 'scaled_joint_trajectory_controller', 1)
+            else:
+                self.huskies[self.selected_robot_id].interface.switch_controller('cartesian_compliance_controller', 'scaled_joint_trajectory_controller', 0)
+        def zero_force_sensor_both():
+            if self.huskies[self.selected_robot_id].dual_arm:
+                self.huskies[self.selected_robot_id].interface.zero_ft_sensor(0)
+                self.huskies[self.selected_robot_id].interface.zero_ft_sensor(1)
+            else:
+                self.huskies[self.selected_robot_id].interface.zero_ft_sensor(0)
+        self.buttons.append(Button('Switch to Compliance (BOTH)', switch_to_compliance_both))
+        self.buttons.append(Button('Switch to Joint (BOTH)', switch_to_joint_both))
+        self.buttons.append(Button('Zero Force Sensor (BOTH)', zero_force_sensor_both))
         self.buttons.append(Button('Draw TCP Pose', lambda: world.draw_tcp_pose(self)))
         
     # --- --- --- --- --- MOCAP --- --- --- --- --- 
