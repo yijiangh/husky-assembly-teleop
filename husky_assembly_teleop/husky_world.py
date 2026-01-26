@@ -831,7 +831,7 @@ def execute_arm_conf(monitor, conf, index=0):
                                                                       None, monitor.trajectory_time, index=index)
 
 def execute_arm_trajectory_and_record_each_conf(monitor, calib_traj, time_between_confs=2, index=0):
-    settle_time = 6-1.5
+    settle_time = 6
     hi = monitor.huskies[monitor.selected_robot_id].interface
     # last_conf = hi.arm_joint_pose[index]
     # print(transit_traj)
