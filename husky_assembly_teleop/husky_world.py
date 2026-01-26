@@ -655,7 +655,10 @@ def save_calibration(monitor, filename_suffix=""):
         monitor.get_logger().info(f"Created subfolder: {subfolder_path}")
 
     # Save the file in the date subfolder
-    filename = os.path.join(subfolder_path, f"calibration_{timestamp}_{filename_suffix}.json")
+    if filename_suffix:
+        filename = os.path.join(subfolder_path, f"calibration_{timestamp}_{filename_suffix}.json")
+    else:
+        filename = os.path.join(subfolder_path, f"calibration_{timestamp}.json")
 
     with open(filename, 'w') as f:
         json.dump({'raw_data' : monitor.calibration_data}, f, indent=4)
@@ -828,7 +831,7 @@ def execute_arm_conf(monitor, conf, index=0):
                                                                       None, monitor.trajectory_time, index=index)
 
 def execute_arm_trajectory_and_record_each_conf(monitor, calib_traj, time_between_confs=2, index=0):
-    settle_time = 6
+    settle_time = 6-1.5
     hi = monitor.huskies[monitor.selected_robot_id].interface
     # last_conf = hi.arm_joint_pose[index]
     # print(transit_traj)
@@ -856,8 +859,8 @@ def execute_arm_trajectory_and_record_each_conf(monitor, calib_traj, time_betwee
         hi.arm_joint_pose[monitor.selected_arm_index] = conf
         # last_conf = conf
 
-    save_calibration(monitor, filename_suffix=f'arm_{monitor.selected_arm_index}_j_{monitor.calib_target_axis}')
-    monitor.calibration_data = []
+    # save_calibration(monitor, filename_suffix=f'arm_{monitor.selected_arm_index}_j_{monitor.calib_target_axis}')
+    # monitor.calibration_data = []
 
 #################################
 

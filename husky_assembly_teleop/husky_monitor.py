@@ -95,6 +95,8 @@ class HuskyMonitor(Node):
         self.dump_sep_sliders = []
         self.calib_joint_range_slider = None
         self.calib_target_axis_slider = None
+        self.data_collection_mode_slider = None
+        self.data_collection_mode = True  # True = data collection mode, False = validation mode
 
         self.selected_robot_slider = None
         self.selected_robot_id = 0
@@ -226,8 +228,35 @@ class HuskyMonitor(Node):
     def append_calibration_data(self, data):
         self.calibration_data.append(data)
 
+    def _get_selected_trajectory_filename_suffix(self) -> str:
+        """
+        Return a filesystem-friendly suffix derived from the currently selected joint trajectory filename.
+        Example: "ext_calib_0806_J1_traj0_JointTrajectory.json" -> "ext_calib_0806_J1_traj0_JointTrajectory"
+        """
+        # Prefer a cached attribute if present (set when loading / selecting trajectories)
+        selected = getattr(self, "selected_trajectory_file", None)
+        if not selected and getattr(self, "available_joint_trajectories", None):
+            try:
+                selected = self.available_joint_trajectories[self.selected_trajectory_index]
+            except Exception:
+                selected = None
+
+        if not selected:
+            return ""
+
+        # Remove extension and sanitize to avoid problematic characters in filenames
+        base = os.path.splitext(os.path.basename(str(selected)))[0]
+        sanitized = re.sub(r"[^A-Za-z0-9_.-]+", "_", base).strip("_")
+        return sanitized
+
     def record_calibration_data(self):
-        world.save_calibration(self)
+        if self.data_collection_mode:
+            # In data collection mode, use the selected trajectory filename as suffix
+            filename_suffix = self._get_selected_trajectory_filename_suffix()
+        else:
+            # In validation mode, use "validation" as suffix
+            filename_suffix = "validation"
+        world.save_calibration(self, filename_suffix=filename_suffix)
         self.calibration_data = []
 
     def record_markerset_data(self):
@@ -280,6 +309,10 @@ class HuskyMonitor(Node):
 
     def update_calib_target_axis(self, value):
         self.calib_target_axis = int(np.floor(value))
+
+    def update_data_collection_mode(self, value):
+        """Update data collection mode: 0 = validation mode, 1 = data collection mode"""
+        self.data_collection_mode = bool(round(value))
 
     def update_goal_align_axis(self, value):
         self.goal_element_axis = value
@@ -425,6 +458,7 @@ class HuskyMonitor(Node):
             # world.execute_arm_conf(self, conf, index=self.selected_arm_index)
 
         world.execute_arm_trajectory_and_record_each_conf(self, self.planned_arm_trajectory[self.selected_arm_index], index=self.selected_arm_index)
+        self.record_calibration_data()
 
     def get_world_from_bar_goal_pose(self):
         world_from_base_link = self.goal_model.get_link_pose_from_name("base_footprint")
@@ -890,6 +924,8 @@ class HuskyMonitor(Node):
             return
             
         selected_trajectory_file = self.available_joint_trajectories[self.selected_trajectory_index]
+        # Cache for downstream logging / filenames (e.g., calibration record suffix)
+        self.selected_trajectory_file = selected_trajectory_file
         trajectory_filepath = os.path.join(
             DATA_DIRECTORY,
             'husky_assembly_design_study',
@@ -976,6 +1012,7 @@ class HuskyMonitor(Node):
         new_index = int(trajectory_index)
         if 0 <= new_index < len(self.available_joint_trajectories):
             self.selected_trajectory_index = new_index
+            self.selected_trajectory_file = self.available_joint_trajectories[self.selected_trajectory_index]
             print(f"Selected trajectory: {self.available_joint_trajectories[self.selected_trajectory_index]}")
 
     def _load_available_robot_cell_states(self):
@@ -1281,6 +1318,13 @@ class HuskyMonitor(Node):
             self.dump_sep_sliders.append(Slider("----------Calibration", lambda : None))
             # self.calib_joint_range_slider = Slider("calib joint range", self.update_calib_joint_range, 0.0, np.pi*2, np.pi*2)
             # self.calib_target_axis_slider = Slider("calib target joint id", self.update_calib_target_axis, 0, 1, 0)
+            # Mode slider: 0 = validation mode, 1 = data collection mode
+            self.data_collection_mode_slider = Slider(
+                "Mode (0:validation, 1:data_collection)", 
+                self.update_data_collection_mode, 
+                0.0, 1.0, 
+                1.0 if self.data_collection_mode else 0.0
+            )
             # self.buttons.append(Button('Sample calib path', self.sample_calib_traj))
             # self.buttons.append(Button('Execute transit to calib traj', self.execute_free_trajectory))
             self.buttons.append(Button('Execute calib traj', self.execute_calib_traj))
@@ -1490,6 +1534,9 @@ class HuskyMonitor(Node):
         # if self.CALIBRATION:
         #     self.calib_joint_range_slider.update()
         #     self.calib_target_axis_slider.update()
+        
+        if self.CALIBRATION and self.data_collection_mode_slider:
+            self.data_collection_mode_slider.update()
 
         if self.BAR_HOLDING_ACCURACY_TEST:
             self.goal_axis_slider.update()
