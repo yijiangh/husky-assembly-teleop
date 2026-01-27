@@ -1,0 +1,10 @@
+2026-01-27 16:25:20,187 - INFO - ============================================================
+2026-01-27 16:25:20,187 - INFO - Calibration Verification
+2026-01-27 16:25:20,187 - INFO - ============================================================
+2026-01-27 16:25:20,187 - INFO - Data batch: j0
+2026-01-27 16:25:20,187 - INFO - Robot: 0806
+2026-01-27 16:25:20,626 - INFO - Joint names: ['left_ur_arm_shoulder_pan_joint', 'left_ur_arm_shoulder_lift_joint', 'left_ur_arm_elbow_joint', 'left_ur_arm_wrist_1_joint', 'left_ur_arm_wrist_2_joint', 'left_ur_arm_wrist_3_joint']
+2026-01-27 16:25:20,626 - INFO - Tool0 link: left_ur_arm_tool0
+2026-01-27 16:25:20,626 - WARNING - Calibration file not found: /home/yijiangh/ros2_ws/src/husky-assembly-teleop/data/calibration_data/20260126/calibrated_transformation_0806.json
+2026-01-27 16:25:20,626 - WARNING - No calibration data found, using identity pose
+2026-01-27 16:25:20,626 - INFO - Processing: calibration_20260126_1123_ext_calib_0806_J0_traj4_JointTrajectory.json

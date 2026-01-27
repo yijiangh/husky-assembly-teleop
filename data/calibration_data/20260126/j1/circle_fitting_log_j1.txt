@@ -1,0 +1,17 @@
+2026-01-27 14:31:30,481 - INFO - ============================================================
+2026-01-27 14:31:30,482 - INFO - Processing data batch: j1
+2026-01-27 14:31:30,482 - INFO - ============================================================
+2026-01-27 14:31:30,482 - INFO - Processing: calibration_20260126_1651_ext_calib_0806_J1_traj3_JointTrajectory.json
+2026-01-27 14:31:30,483 - INFO -   Circle fitting time: 0.395 ms
+2026-01-27 14:31:46,949 - INFO -   Circle fit quality - max point distance: 0.485 mm
+2026-01-27 14:31:47,465 - INFO - Processing: calibration_20260126_1640_ext_calib_0806_J1_traj2_JointTrajectory.json
+2026-01-27 14:31:47,466 - INFO -   Circle fitting time: 0.264 ms
+2026-01-27 14:32:03,197 - INFO -   Circle fit quality - max point distance: 0.349 mm
+2026-01-27 14:32:03,707 - INFO - Processing: calibration_20260126_1627_ext_calib_0806_J1_traj0_JointTrajectory.json
+2026-01-27 14:32:03,707 - INFO -   Circle fitting time: 0.228 ms
+2026-01-27 14:32:20,903 - INFO -   Circle fit quality - max point distance: 0.264 mm
+2026-01-27 14:32:21,479 - INFO - Processing: calibration_20260126_1632_ext_calib_0806_J1_traj1_JointTrajectory.json
+2026-01-27 14:32:21,480 - INFO -   Circle fitting time: 0.234 ms
+2026-01-27 14:32:38,411 - INFO -   Circle fit quality - max point distance: 0.323 mm
+2026-01-27 14:32:38,911 - INFO - Results exported to: /home/yijiangh/ros2_ws/src/husky-assembly-teleop/data/calibration_data/20260126/j1/j1_analysis.json
+2026-01-27 14:32:38,911 - INFO - Total takes processed: 4
