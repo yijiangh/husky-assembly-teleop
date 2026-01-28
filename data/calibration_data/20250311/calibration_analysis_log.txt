@@ -1,0 +1,114 @@
+2026-01-27 16:33:53,441 - INFO - ================================================================================
+2026-01-27 16:33:53,441 - INFO - Starting calibration analysis
+2026-01-27 16:33:53,441 - INFO - ================================================================================
+2026-01-27 16:33:53,441 - INFO - Parsing base offset from URDF: /home/yijiangh/ros2_ws/src/husky-assembly-teleop/data/calibration_data/../husky_urdf/mt_husky_moveit_config/urdf/husky_ur5_e_no_base_joint_Alice_Calibrated.urdf
+2026-01-27 16:33:53,442 - INFO - Parsed base offset from URDF joint "ur_arm_shoulder_pan_joint": [0.0, 0.0, 0.16277742194953954] -> z=0.16277742194953954
+2026-01-27 16:33:53,442 - INFO - Base offset: 0.16277742194953954 m (162.7774 mm)
+2026-01-27 16:33:53,442 - INFO - Loading j0 data from: /home/yijiangh/ros2_ws/src/husky-assembly-teleop/data/calibration_data/20250311/j0/j0_analysis.json
+2026-01-27 16:33:53,444 - INFO - Loading j1 data from: /home/yijiangh/ros2_ws/src/husky-assembly-teleop/data/calibration_data/20250311/j1/j1_analysis.json
+2026-01-27 16:33:53,445 - INFO - j0 has 4 takes
+2026-01-27 16:33:53,445 - INFO - j1 has 4 takes
+2026-01-27 16:33:53,445 - INFO - 
+================================================================================
+2026-01-27 16:33:53,445 - INFO - Analyzing j0 base mocap variation
+2026-01-27 16:33:53,445 - INFO - ================================================================================
+2026-01-27 16:33:53,446 - INFO - Base mocap position statistics:
+2026-01-27 16:33:53,446 - INFO -   Mean position: [-537.8791516  -220.44579095   99.21482205] mm
+2026-01-27 16:33:53,447 - INFO -   Max distance from mean: 0.25 mm
+2026-01-27 16:33:53,447 - INFO -   Min distance from mean: 0.03 mm
+2026-01-27 16:33:53,447 - INFO -   Average distance from mean: 0.11 mm
+2026-01-27 16:33:53,821 - INFO - Base mocap orientation statistics:
+2026-01-27 16:33:53,821 - INFO -   Max angle deviation for x-axis: 0.05 degrees (equiv. to 0.9 mm over 1 m)
+2026-01-27 16:33:53,821 - INFO -   Max angle deviation for y-axis: 0.08 degrees (equiv. to 1.4 mm over 1 m)
+2026-01-27 16:33:53,821 - INFO -   Max angle deviation for z-axis: 0.08 degrees (equiv. to 1.4 mm over 1 m)
+2026-01-27 16:33:54,197 - INFO - 
+================================================================================
+2026-01-27 16:33:54,197 - INFO - Analyzing j1 base mocap variation
+2026-01-27 16:33:54,197 - INFO - ================================================================================
+2026-01-27 16:33:54,197 - INFO - Base mocap position statistics:
+2026-01-27 16:33:54,197 - INFO -   Mean position: [-537.89324633 -220.50355109   99.22812028] mm
+2026-01-27 16:33:54,198 - INFO -   Max distance from mean: 0.28 mm
+2026-01-27 16:33:54,198 - INFO -   Min distance from mean: 0.01 mm
+2026-01-27 16:33:54,198 - INFO -   Average distance from mean: 0.14 mm
+2026-01-27 16:33:54,546 - INFO - Base mocap orientation statistics:
+2026-01-27 16:33:54,547 - INFO -   Max angle deviation for x-axis: 0.02 degrees (equiv. to 0.4 mm over 1 m)
+2026-01-27 16:33:54,547 - INFO -   Max angle deviation for y-axis: 0.09 degrees (equiv. to 1.5 mm over 1 m)
+2026-01-27 16:33:54,547 - INFO -   Max angle deviation for z-axis: 0.09 degrees (equiv. to 1.6 mm over 1 m)
+2026-01-27 16:33:54,746 - INFO - 
+================================================================================
+2026-01-27 16:33:54,747 - INFO - Analyzing j0 circle centers
+2026-01-27 16:33:54,747 - INFO - ================================================================================
+2026-01-27 16:33:54,747 - INFO - j0 circle centers analysis:
+2026-01-27 16:33:54,747 - INFO -   Number of centers: 4
+2026-01-27 16:33:54,747 - INFO -   Min distance between centers: 159.17 mm
+2026-01-27 16:33:54,747 - INFO -   Max distance between centers: 580.68 mm
+2026-01-27 16:33:54,747 - INFO -   Average distance between centers: 328.32 mm
+2026-01-27 16:34:00,996 - INFO - 
+================================================================================
+2026-01-27 16:34:00,997 - INFO - Analyzing j1 circle centers
+2026-01-27 16:34:00,997 - INFO - ================================================================================
+2026-01-27 16:34:00,997 - INFO - j1 circle centers analysis:
+2026-01-27 16:34:00,997 - INFO -   Number of centers: 4
+2026-01-27 16:34:00,998 - INFO -   Min distance between centers: 21.74 mm
+2026-01-27 16:34:00,998 - INFO -   Max distance between centers: 160.74 mm
+2026-01-27 16:34:00,998 - INFO -   Average distance between centers: 83.99 mm
+2026-01-27 16:34:03,899 - INFO - 
+================================================================================
+2026-01-27 16:34:03,899 - INFO - Fitting line to j0 circle centers
+2026-01-27 16:34:03,899 - INFO - ================================================================================
+2026-01-27 16:34:03,899 - INFO - j0 line fitting:
+2026-01-27 16:34:03,899 - INFO -   Average circle normal: [ 0.00926224 -0.00526648  0.99994324]
+2026-01-27 16:34:03,906 - INFO -   Angle differences from mean normal (deg): ['0.03', '0.03', '0.05', '0.00']
+2026-01-27 16:34:03,906 - INFO -   Max angle difference: 0.05 degrees
+2026-01-27 16:34:03,940 - INFO -   Fitted line point: [395.88436598  -6.66218614 999.25114517] mm
+2026-01-27 16:34:03,940 - INFO -   Fitted line direction: [ 0.00926224 -0.00526648  0.99994324]
+2026-01-27 16:34:03,973 - INFO -   Max distance from centers to fitted line: 0.37 mm
+2026-01-27 16:34:03,973 - INFO -   Average distance from centers to fitted line: 0.19 mm
+2026-01-27 16:34:03,973 - INFO - 
+================================================================================
+2026-01-27 16:34:03,973 - INFO - Fitting line to j1 circle centers
+2026-01-27 16:34:03,973 - INFO - ================================================================================
+2026-01-27 16:34:03,974 - INFO - j1 line fitting:
+2026-01-27 16:34:03,974 - INFO -   Average circle normal: [-0.99994485  0.00384936  0.00977089]
+2026-01-27 16:34:03,983 - INFO -   Angle differences from mean normal (deg): ['0.03', '0.04', '0.02', '0.01']
+2026-01-27 16:34:03,983 - INFO -   Max angle difference: 0.04 degrees
+2026-01-27 16:34:04,032 - INFO -   Fitted line point: [523.84923018  -4.16464912 517.86749879] mm
+2026-01-27 16:34:04,033 - INFO -   Fitted line direction: [-0.99994485  0.00384936  0.00977089]
+2026-01-27 16:34:04,076 - INFO -   Max distance from centers to fitted line: 0.84 mm
+2026-01-27 16:34:04,077 - INFO -   Average distance from centers to fitted line: 0.43 mm
+2026-01-27 16:34:04,077 - INFO - 
+================================================================================
+2026-01-27 16:34:04,077 - INFO - Computing robot base frame
+2026-01-27 16:34:04,077 - INFO - ================================================================================
+2026-01-27 16:34:04,080 - INFO - Computing base frame:
+2026-01-27 16:34:04,085 - INFO -   j0 line point: [395.88436598  -6.66218614 999.25114517] mm
+2026-01-27 16:34:04,086 - INFO -   j0 line direction (z-axis): [ 0.00926224 -0.00526648  0.99994324]
+2026-01-27 16:34:04,090 - INFO -   j1 line point: [523.84923018  -4.16464912 517.86749879] mm
+2026-01-27 16:34:04,090 - INFO -   j1 line direction (y-axis): [-0.99994485  0.00384936  0.00977089]
+2026-01-27 16:34:04,117 - INFO -   Intersection direction: [ 0.00975055 -0.00526836  0.99993858]
+2026-01-27 16:34:04,120 - INFO -   Intersection point (closest to p1): [391.20480572  -3.65402506 519.16362416] mm
+2026-01-27 16:34:04,122 - INFO -   Intersection anchor: [386.10560683  -0.89885254  -3.76970764] mm
+2026-01-27 16:34:04,127 - INFO -   Base origin p_b (after offset): [389.69712253  -2.79676039 356.39544212] mm
+2026-01-27 16:34:04,127 - INFO -   Base frame axes:
+2026-01-27 16:34:04,127 - INFO -     x-axis: [-0.99994485  0.00384936  0.00977089]
+2026-01-27 16:34:04,127 - INFO -     y-axis: [-0.0039006  -0.99997859 -0.00523054]
+2026-01-27 16:34:04,128 - INFO -     z-axis: [ 0.00975055 -0.00526836  0.99993858]
+2026-01-27 16:34:04,128 - INFO - 
+================================================================================
+2026-01-27 16:34:04,128 - INFO - Final base frame transformation:
+2026-01-27 16:34:04,128 - INFO - ================================================================================
+2026-01-27 16:34:04,128 - INFO - Origin: [389.69712253  -2.79676039 356.39544212] mm
+2026-01-27 16:34:04,128 - INFO - Quaternion: [ 0.00488044 -0.00262477  0.99998275  0.00193752]
+2026-01-27 16:34:04,128 - INFO - 
+Transformation matrix:
+[[-0.99994485 -0.0039006   0.00975055  0.38969712]
+ [ 0.00384936 -0.99997859 -0.00526836 -0.00279676]
+ [ 0.00977089 -0.00523054  0.99993858  0.35639544]
+ [ 0.          0.          0.          1.        ]]
+2026-01-27 16:34:04,128 - INFO - 
+Visualizing results...
+2026-01-27 16:34:08,974 - INFO - 
+Results saved to: /home/yijiangh/ros2_ws/src/husky-assembly-teleop/data/calibration_data/20250311/base_frame_calibration.json
+2026-01-27 16:34:08,974 - INFO - ================================================================================
+2026-01-27 16:34:08,974 - INFO - Calibration analysis complete!
+2026-01-27 16:34:08,974 - INFO - ================================================================================

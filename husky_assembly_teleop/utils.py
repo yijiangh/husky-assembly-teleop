@@ -239,7 +239,7 @@ def plan_transit_motion(robot, end_conf, attachments, obstacles, debug=False, di
             start_conf = pp.get_joint_positions(robot, movable_joints)
             # print('start conf: ', start_conf)
 
-            if pp.check_initial_end(start_conf, end_conf, transit_collision_fn, diagnosis=debug):
+            if pp.check_initial_end(start_conf, end_conf, transit_collision_fn, diagnosis=True):
                 transit_path = pp.solve_motion_plan(start_conf, end_conf, 
                                             distance_fn, sample_fn, extend_fn,
                                             transit_collision_fn,
