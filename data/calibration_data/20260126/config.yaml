@@ -7,6 +7,9 @@ data_batches:
   - "j0"
   - "j1"
 
+# Validation data batch for 3_verify_calibration.py
+validation_data_batch: "validation"
+
 # Robot settings
 robot_name: "0806"  # Options: "0806" (dual arm), "0804" (single arm)
 arm: "left"         # Options: "left", "right" (only used for dual arm robot)
@@ -15,4 +18,4 @@ arm: "left"         # Options: "left", "right" (only used for dual arm robot)
 export: true
 
 # Visualization settings
-use_gui: false
+use_gui: True

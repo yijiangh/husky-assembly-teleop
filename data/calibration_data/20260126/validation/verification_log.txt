@@ -1,0 +1,29 @@
+2026-01-28 11:11:50,332 - INFO - ============================================================
+2026-01-28 11:11:50,333 - INFO - Calibration Verification
+2026-01-28 11:11:50,333 - INFO - ============================================================
+2026-01-28 11:11:50,333 - INFO - Validation data batch: validation
+2026-01-28 11:11:50,333 - INFO - Robot: 0806
+2026-01-28 11:11:50,792 - INFO - Joint names: ['left_ur_arm_shoulder_pan_joint', 'left_ur_arm_shoulder_lift_joint', 'left_ur_arm_elbow_joint', 'left_ur_arm_wrist_1_joint', 'left_ur_arm_wrist_2_joint', 'left_ur_arm_wrist_3_joint']
+2026-01-28 11:11:50,793 - INFO - Tool0 link: left_ur_arm_tool0
+2026-01-28 11:11:50,793 - WARNING - Calibration file not found: d:\0_Project\03-2025_husky_assembly\Code\husky-assembly-teleop\data\calibration_data\20260126\calibrated_transformation_0806.json
+2026-01-28 11:11:50,793 - WARNING - No calibration data found, using identity pose
+2026-01-28 11:11:50,793 - INFO - Processing: calibration_20260126_1713_validation.json
+2026-01-28 11:11:50,796 - INFO - Processed 13 samples
+2026-01-28 11:11:50,796 - INFO - ============================================================
+2026-01-28 11:11:50,796 - INFO - Position Analysis (tool0_from_flange_mocap offset)
+2026-01-28 11:11:50,796 - INFO - ============================================================
+2026-01-28 11:11:50,796 - INFO -   Mean position: [0.4192, -0.8150, 0.5816] m
+2026-01-28 11:11:50,796 - INFO -   Max distance from mean: 1.384 mm
+2026-01-28 11:11:50,796 - INFO -   Mean distance from mean: 0.700 mm
+2026-01-28 11:11:50,797 - INFO -   Std distance from mean: 0.403 mm
+2026-01-28 11:11:50,797 - INFO - ============================================================
+2026-01-28 11:11:50,797 - INFO - Orientation Analysis
+2026-01-28 11:11:50,797 - INFO - ============================================================
+2026-01-28 11:11:50,797 - INFO -   X-axis max angle from mean: 0.447 deg
+2026-01-28 11:11:50,798 - INFO -   Y-axis max angle from mean: 0.811 deg
+2026-01-28 11:11:50,798 - INFO -   Z-axis max angle from mean: 0.694 deg
+2026-01-28 11:11:51,405 - INFO - Verification plot saved to: d:\0_Project\03-2025_husky_assembly\Code\husky-assembly-teleop\data\calibration_data\20260126\validation\verification_validation.png
+2026-01-28 11:12:00,375 - INFO - Diversity plot saved to: d:\0_Project\03-2025_husky_assembly\Code\husky-assembly-teleop\data\calibration_data\20260126\validation\diversity_validation.png
+2026-01-28 11:12:31,447 - INFO - ============================================================
+2026-01-28 11:12:31,447 - INFO - Verification complete!
+2026-01-28 11:12:31,447 - INFO - ============================================================

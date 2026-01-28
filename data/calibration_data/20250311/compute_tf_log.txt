@@ -1,18 +1,14 @@
-2026-01-27 16:34:09,296 - INFO - ============================================================
-2026-01-27 16:34:09,296 - INFO - Computing calibrated transformation
-2026-01-27 16:34:09,296 - INFO - ============================================================
-2026-01-27 16:34:09,297 - INFO - Loaded calibration data from: /home/yijiangh/ros2_ws/src/husky-assembly-teleop/data/calibration_data/20250311/base_frame_calibration.json
-2026-01-27 16:34:09,297 - INFO -   Origin: [0.389697122529531, -0.002796760387950372, 0.35639544211661334]
-2026-01-27 16:34:09,297 - INFO -   Quaternion: [0.004880442925328525, -0.002624771303043934, 0.9999827538767603, 0.0019375224107982124]
-2026-01-27 16:34:09,297 - INFO - base_mocap_from_arm_base_link: (array([ 0.38969712, -0.00279676,  0.35639544]), array([ 0.00488044, -0.00262477,  0.99998275,  0.00193752]))
-2026-01-27 16:34:09,429 - INFO - Loading robot from: /home/yijiangh/ros2_ws/src/husky-assembly-teleop/data/calibration_data/../husky_urdf/mt_husky_moveit_config/urdf/husky_ur5_e_no_base_joint_Alice_Calibrated.urdf
-2026-01-27 16:34:09,709 - INFO - arm_base_link_from_base_footprint (from URDF): ((0.388700008392334, -1.8039647997625252e-08, -0.36399999260902405), (0.0, 0.0, 1.0, 2.3205103616419365e-08))
-2026-01-27 16:34:09,709 - INFO - base_mocap_from_base_footprint: ((-0.0025306642055511475, 0.0006171879358589649, -0.0037842392921447754), (0.002624771324917674, 0.004880442749708891, -0.0019375457195565104, 0.9999827742576599))
-2026-01-27 16:34:09,710 - INFO - URDF arm_base_link pose: ((0.3896971046924591, -0.00279676029458642, 0.3563954532146454), (0.004880442749708891, -0.0026247715577483177, 0.9999827742576599, 0.0019375226693227887))
-2026-01-27 16:34:09,710 - INFO - CALIB arm_base_link pose: (array([ 0.38969712, -0.00279676,  0.35639544]), array([ 0.00488044, -0.00262477,  0.99998275,  0.00193752]))
-2026-01-27 16:34:09,710 - INFO - Position difference (URDF - CALIB): -0.000, 0.000, 0.000 mm
-2026-01-27 16:34:09,710 - INFO - Position difference magnitude: 0.000 mm
-2026-01-27 16:34:18,915 - INFO - Calibrated transformation saved to: /home/yijiangh/ros2_ws/src/husky-assembly-teleop/data/calibration_data/20250311/calibrated_transformation_0804.json
-2026-01-27 16:34:18,915 - INFO - ============================================================
-2026-01-27 16:34:18,915 - INFO - Done!
-2026-01-27 16:34:18,915 - INFO - ============================================================
+2026-01-28 10:23:35,909 - INFO - ============================================================
+2026-01-28 10:23:35,909 - INFO - Computing calibrated transformation
+2026-01-28 10:23:35,909 - INFO - ============================================================
+2026-01-28 10:23:35,909 - INFO - Loaded calibration data from: d:\0_Project\03-2025_husky_assembly\Code\husky-assembly-teleop\data\calibration_data\20250311\base_frame_calibration.json
+2026-01-28 10:23:35,910 - INFO -   Origin: [0.389697122529531, -0.002796760387950372, 0.35639544211661334]
+2026-01-28 10:23:35,910 - INFO -   Quaternion: [0.004880442925328525, -0.002624771303043934, 0.9999827538767603, 0.0019375224107982124]
+2026-01-28 10:23:35,910 - INFO - base_mocap_from_arm_base_link: (array([ 0.38969712, -0.00279676,  0.35639544]), array([ 0.00488044, -0.00262477,  0.99998275,  0.00193752]))
+2026-01-28 10:23:36,264 - INFO - Loading robot from: d:\0_Project\03-2025_husky_assembly\Code\husky-assembly-teleop\data\calibration_data\..\husky_urdf\mt_husky_moveit_config\urdf\husky_ur5_e_no_base_joint_Alice_Calibrated.urdf
+2026-01-28 10:23:36,861 - INFO - arm_base_link_from_base_footprint (from URDF): ((0.388700008392334, -1.8039647997625252e-08, -0.36399999260902405), (0.0, 0.0, 1.0, 2.3205103616419365e-08))
+2026-01-28 10:23:36,862 - INFO - base_mocap_from_base_footprint: ((-0.0025306642055511475, 0.0006171879358589649, -0.0037842392921447754), (0.002624771324917674, 0.004880442749708891, -0.0019375457195565104, 0.9999827742576599))
+2026-01-28 10:23:36,862 - INFO - URDF arm_base_link pose: ((0.3896971046924591, -0.00279676029458642, 0.3563954532146454), (0.004880442749708891, -0.0026247715577483177, 0.9999827742576599, 0.0019375226693227887))
+2026-01-28 10:23:36,862 - INFO - CALIB arm_base_link pose: (array([ 0.38969712, -0.00279676,  0.35639544]), array([ 0.00488044, -0.00262477,  0.99998275,  0.00193752]))
+2026-01-28 10:23:36,862 - INFO - Position difference (URDF - CALIB): -0.000, 0.000, 0.000 mm
+2026-01-28 10:23:36,863 - INFO - Position difference magnitude: 0.000 mm

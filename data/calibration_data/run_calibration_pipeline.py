@@ -56,16 +56,27 @@ def main():
     print("CALIBRATION PIPELINE")
     print("=" * 70)
     
-    # Check if date_folder argument provided
-    if len(sys.argv) > 1:
-        date_folder = sys.argv[1]
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Run the calibration pipeline. Optionally specify a date folder."
+    )
+    parser.add_argument(
+        "date_folder",
+        nargs="?",
+        default=None,
+        help="Name of the date folder to use (optional; defaults to DEFAULT_DATE_FOLDER in config_loader.py)"
+    )
+    args = parser.parse_args()
+
+    date_folder = args.date_folder
+    if date_folder is not None:
         print(f"Using date folder: {date_folder}")
         # Update DEFAULT_DATE_FOLDER would require modifying config_loader
         # For now, just inform the user
         print("Note: Make sure config_loader.py DEFAULT_DATE_FOLDER matches this.")
-    
+
     print()
-    
     total_start = time.time()
     results = []
     
