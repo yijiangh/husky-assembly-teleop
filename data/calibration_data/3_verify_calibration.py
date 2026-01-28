@@ -13,16 +13,16 @@ constant across all configurations, representing the fixed offset between the tw
 
 import os
 import json
-import logging
 import numpy as np
 import matplotlib.pyplot as plt
 import pybullet_planning as pp
 import pybullet as p
 
 from config_loader import (
-    load_config, get_robot_urdf, get_joint_names, 
+    load_config, get_robot_urdf, get_joint_names,
     get_tool0_link_name, HERE
 )
+from logging_utils import setup_logger
 
 # Load configuration
 config = load_config()
@@ -30,21 +30,15 @@ DATE_FOLDER = config['date_folder']
 VALIDATION_DATA_BATCH = config.get('validation_data_batch', config['data_batches'][0])  # Use validation batch from config
 ROBOT_NAME = config['robot_name']
 ARM = config['arm']
-USE_GUI = False # config['use_gui']
+USE_GUI = config['use_gui']
 
 # File paths
 VALIDATION_DATA_FOLDER = os.path.join(HERE, DATE_FOLDER, VALIDATION_DATA_BATCH)
 CALIBRATION_FILE = os.path.join(HERE, DATE_FOLDER, f'calibrated_transformation_{ROBOT_NAME}.json')
 ROBOT_URDF = get_robot_urdf(ROBOT_NAME)
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger()
-
-file_handler = logging.FileHandler(os.path.join(VALIDATION_DATA_FOLDER, 'verification_log.txt'), mode='w')
-file_handler.setLevel(logging.INFO)
-file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-logger.addHandler(file_handler)
+# Configure logging with colored console output
+logger = setup_logger(log_file=os.path.join(VALIDATION_DATA_FOLDER, 'verification_log.txt'))
 
 
 def load_calibration(calibration_file):
@@ -85,6 +79,12 @@ def compute_tool0_flange_offset(robot, arm_joints, tool0_link_name, calibration_
             joint_conf = entry.get("joint_conf", [])
             
             if not flange_mocap_pose or not base_mocap_pose or not joint_conf:
+                logger.warning(
+                    f"Missing data in {file_name}: "
+                    f"flange_mocap_pose={bool(flange_mocap_pose)}, "
+                    f"base_mocap_pose={bool(base_mocap_pose)}, "
+                    f"joint_conf={bool(joint_conf)}"
+                )
                 continue
             
             # Set robot pose based on mocap and calibration
@@ -110,12 +110,15 @@ def compute_tool0_flange_offset(robot, arm_joints, tool0_link_name, calibration_
             
             # Visualization (if GUI enabled)
             if USE_GUI:
-                pp.draw_pose(world_from_tool0, length=0.1)
-                pp.add_text("tool0 (FK)", position=[p + 0.01 for p in world_from_tool0[0]])
-                pp.draw_pose(flange_mocap_pose, length=0.1)
-                pp.add_text("flange_mocap", position=[p + 0.01 for p in flange_mocap_pose[0]])
-                pp.wait_if_gui('Visualization')
-                pp.remove_all_debug()
+                pp.draw_pose(base_mocap_pose, length=0.1)
+                # pp.draw_pose(world_from_tool0, length=0.1)
+                # pp.draw_pose(flange_mocap_pose, length=0.1)
+                # pp.add_text("tool0 (FK)", position=[p + 0.01 for p in world_from_tool0[0]])
+                # pp.add_text("flange_mocap", position=[p + 0.01 for p in flange_mocap_pose[0]])
+                # pp.wait_if_gui('Visualization')
+                # pp.remove_all_debug()
+
+    pp.wait_if_gui('Visualization')
     
     return results
 
@@ -283,8 +286,8 @@ def analyze_results(results, data_folder, data_batch, date_folder, robot_name, a
     arrow_dy = np.sin(yaw_rad)
     # Plot points
     ax6.scatter(base_x_mm, base_y_mm, c='blue', alpha=0.5, s=20, zorder=2)
-    # Plot arrows indicating orientation
-    arrow_scale = max(np.ptp(base_x_mm), np.ptp(base_y_mm)) * 0.08  # Scale arrows relative to plot range
+    # Plot arrows indicating orientation (fixed scale based on plot range: 8000mm x 4000mm)
+    arrow_scale = 300  # Fixed arrow length in mm
     ax6.quiver(base_x_mm, base_y_mm, arrow_dx * arrow_scale, arrow_dy * arrow_scale,
                angles='xy', scale_units='xy', scale=1, color='red', alpha=0.6,
                width=0.003, headwidth=3, headlength=4, zorder=3)
@@ -294,7 +297,9 @@ def analyze_results(results, data_folder, data_batch, date_folder, robot_name, a
     y_range = np.ptp(base_y_mm)
     yaw_range = np.ptp(base_yaws)
     ax6.set_title(f'Base Position & Yaw Diversity\nX range: {x_range:.1f}mm, Y range: {y_range:.1f}mm, Yaw range: {yaw_range:.1f}°')
-    ax6.set_aspect('equal', adjustable='datalim')
+    ax6.set_xlim(-4000, 4000)
+    ax6.set_ylim(-2000, 2000)
+    ax6.set_aspect('equal')
     ax6.grid(True, alpha=0.3)
 
     plt.tight_layout(rect=[0, 0, 1, 0.92])

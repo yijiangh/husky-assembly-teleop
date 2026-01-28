@@ -4,8 +4,8 @@
 # https://leomariga.github.io/pyRANSAC-3D/
 
 import json
-import os
 import logging
+import os
 import time
 import numpy as np
 import matplotlib.pyplot as plt
@@ -14,6 +14,7 @@ from circle_fitting_3d import Circle3D
 from skspatial.objects import Point
 
 from config_loader import load_config, HERE
+from logging_utils import setup_logger
 
 # Load configuration
 config = load_config()
@@ -21,9 +22,8 @@ date_folder = config['date_folder']
 data_batches = config['data_batches']
 EXPORT = config['export']
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger()
+# Configure logging with colored output
+logger = setup_logger()
 
 
 def process_data_batch(data_batch, date_folder, export=True):

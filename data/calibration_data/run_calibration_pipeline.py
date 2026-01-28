@@ -22,7 +22,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SCRIPTS = [
     ('0_circle_fitting.py', 'Circle Fitting'),
     ('1_calibration_analysis.py', 'Calibration Analysis'),
-    ('2_visualize_transformation.py', 'Visualize Transformation'),
+    ('2_convert_and_visualize_transformation.py', 'Convert and Visualize Transformation'),
     ('3_verify_calibration.py', 'Verify Calibration'),
 ]
 

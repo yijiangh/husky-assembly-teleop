@@ -1,10 +1,14 @@
-2026-01-27 16:25:20,187 - INFO - ============================================================
-2026-01-27 16:25:20,187 - INFO - Calibration Verification
-2026-01-27 16:25:20,187 - INFO - ============================================================
-2026-01-27 16:25:20,187 - INFO - Data batch: j0
-2026-01-27 16:25:20,187 - INFO - Robot: 0806
-2026-01-27 16:25:20,626 - INFO - Joint names: ['left_ur_arm_shoulder_pan_joint', 'left_ur_arm_shoulder_lift_joint', 'left_ur_arm_elbow_joint', 'left_ur_arm_wrist_1_joint', 'left_ur_arm_wrist_2_joint', 'left_ur_arm_wrist_3_joint']
-2026-01-27 16:25:20,626 - INFO - Tool0 link: left_ur_arm_tool0
-2026-01-27 16:25:20,626 - WARNING - Calibration file not found: /home/yijiangh/ros2_ws/src/husky-assembly-teleop/data/calibration_data/20260126/calibrated_transformation_0806.json
-2026-01-27 16:25:20,626 - WARNING - No calibration data found, using identity pose
-2026-01-27 16:25:20,626 - INFO - Processing: calibration_20260126_1123_ext_calib_0806_J0_traj4_JointTrajectory.json
+2026-01-28 12:02:51,252 - [32mINFO[0m - [32m============================================================[0m
+2026-01-28 12:02:51,252 - [32mINFO[0m - [32mCalibration Verification[0m
+2026-01-28 12:02:51,252 - [32mINFO[0m - [32m============================================================[0m
+2026-01-28 12:02:51,252 - [32mINFO[0m - [32mValidation data batch: j0[0m
+2026-01-28 12:02:51,252 - [32mINFO[0m - [32mRobot: 0806[0m
+2026-01-28 12:02:51,993 - [32mINFO[0m - [32mJoint names: ['left_ur_arm_shoulder_pan_joint', 'left_ur_arm_shoulder_lift_joint', 'left_ur_arm_elbow_joint', 'left_ur_arm_wrist_1_joint', 'left_ur_arm_wrist_2_joint', 'left_ur_arm_wrist_3_joint'][0m
+2026-01-28 12:02:51,993 - [32mINFO[0m - [32mTool0 link: left_ur_arm_tool0[0m
+2026-01-28 12:02:51,993 - [32mINFO[0m - [32mLoaded calibration from: d:\0_Project\03-2025_husky_assembly\Code\husky-assembly-teleop\data\calibration_data\20260126\calibrated_transformation_0806.json[0m
+2026-01-28 12:02:51,993 - [32mINFO[0m - [32mProcessing: calibration_20260126_1034_ext_calib_0806_J0_traj1_JointTrajectory.json[0m
+2026-01-28 12:02:53,366 - [32mINFO[0m - [32mProcessing: calibration_20260126_1119_ext_calib_0806_J0_traj3_JointTrajectory.json[0m
+2026-01-28 12:02:57,502 - [32mINFO[0m - [32mProcessing: calibration_20260126_1123_ext_calib_0806_J0_traj4_JointTrajectory.json[0m
+2026-01-28 12:03:01,639 - [32mINFO[0m - [32mProcessing: calibration_20260126_1129_ext_calib_0806_J0_traj5_JointTrajectory.json[0m
+2026-01-28 12:03:05,772 - [32mINFO[0m - [32mProcessing: calibration_20260127_1411_ext_calib_0806_J0_traj0_JointTrajectory.json[0m
+2026-01-28 12:03:09,907 - [32mINFO[0m - [32mProcessing: calibration_20260127_1428_ext_calib_0806_J0_traj2_JointTrajectory.json[0m

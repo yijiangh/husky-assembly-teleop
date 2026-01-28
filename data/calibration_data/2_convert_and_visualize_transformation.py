@@ -10,31 +10,27 @@ This script:
 
 import os
 import json
-import logging
 import numpy as np
 import pybullet as p
 import pybullet_planning as pp
 
 from config_loader import load_config, get_robot_urdf, get_arm_base_link_name, HERE
+from logging_utils import setup_logger
 
 # Load configuration
 config = load_config()
 DATE_FOLDER = config['date_folder']
 ROBOT_NAME = config['robot_name']
 ARM = config['arm']
+USE_GUI = config.get('use_gui', True)
 
 # File paths
 CALIBRATION_FILE = os.path.join(HERE, DATE_FOLDER, 'base_frame_calibration.json')
 OUTPUT_FILE = os.path.join(HERE, DATE_FOLDER, f'calibrated_transformation_{ROBOT_NAME}.json')
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger()
-
-file_handler = logging.FileHandler(os.path.join(HERE, DATE_FOLDER, 'compute_tf_log.txt'), mode='w')
-file_handler.setLevel(logging.INFO)
-file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-logger.addHandler(file_handler)
+# Configure logging with colored output
+log_file = os.path.join(HERE, DATE_FOLDER, 'compute_tf_log.txt')
+logger = setup_logger(log_file=log_file)
 
 
 def load_calibration_data(calibration_file):
@@ -81,7 +77,7 @@ def main():
     logger.info('base_mocap_from_arm_base_link: %s', CALIB_base_mocap_from_arm_base_link)
     
     # Initialize PyBullet
-    pp.connect(use_gui=True, shadows=True, color=[0.9, 0.9, 1.0])
+    pp.connect(use_gui=USE_GUI, shadows=True, color=[0.9, 0.9, 1.0])
     p.configureDebugVisualizer(p.COV_ENABLE_GUI, 1, physicsClientId=pp.CLIENT)
     
     # Load robot
