@@ -15,6 +15,7 @@ This guide explains how to run the husky-assembly-teleop ROS2 node in a Docker c
 
 3. **X Server** (for GUI/pybullet visualization):
    - **Windows**: Install [VcXsrv](https://sourceforge.net/projects/vcxsrv/) or [Xming](https://sourceforge.net/projects/xming/)
+      - for VcXsrv, run `XLaunch` from the start menu and select "Multiple windows" → Next → Start no client → Disable access control → Finish
    - **Linux**: X11 is usually available by default
    - **Mac**: Install [XQuartz](https://www.xquartz.org/)
 

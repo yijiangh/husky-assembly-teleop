@@ -1,9 +1,9 @@
-2026-01-28 12:04:00,618 - [32mINFO[0m - [32m============================================================[0m
-2026-01-28 12:04:00,618 - [32mINFO[0m - [32mCalibration Verification[0m
-2026-01-28 12:04:00,618 - [32mINFO[0m - [32m============================================================[0m
-2026-01-28 12:04:00,618 - [32mINFO[0m - [32mValidation data batch: validation[0m
-2026-01-28 12:04:00,618 - [32mINFO[0m - [32mRobot: 0806[0m
-2026-01-28 12:04:01,355 - [32mINFO[0m - [32mJoint names: ['left_ur_arm_shoulder_pan_joint', 'left_ur_arm_shoulder_lift_joint', 'left_ur_arm_elbow_joint', 'left_ur_arm_wrist_1_joint', 'left_ur_arm_wrist_2_joint', 'left_ur_arm_wrist_3_joint'][0m
-2026-01-28 12:04:01,355 - [32mINFO[0m - [32mTool0 link: left_ur_arm_tool0[0m
-2026-01-28 12:04:01,355 - [32mINFO[0m - [32mLoaded calibration from: d:\0_Project\03-2025_husky_assembly\Code\husky-assembly-teleop\data\calibration_data\20260126\calibrated_transformation_0806.json[0m
-2026-01-28 12:04:01,357 - [32mINFO[0m - [32mProcessing: calibration_20260126_1713_validation.json[0m
+2026-01-29 12:45:32,505 - [32mINFO[0m - [32m============================================================[0m
+2026-01-29 12:45:32,505 - [32mINFO[0m - [32mCalibration Verification[0m
+2026-01-29 12:45:32,505 - [32mINFO[0m - [32m============================================================[0m
+2026-01-29 12:45:32,505 - [32mINFO[0m - [32mValidation data batch: validation[0m
+2026-01-29 12:45:32,505 - [32mINFO[0m - [32mRobot: 0806[0m
+2026-01-29 12:45:33,479 - [32mINFO[0m - [32mJoint names: ['left_ur_arm_shoulder_pan_joint', 'left_ur_arm_shoulder_lift_joint', 'left_ur_arm_elbow_joint', 'left_ur_arm_wrist_1_joint', 'left_ur_arm_wrist_2_joint', 'left_ur_arm_wrist_3_joint'][0m
+2026-01-29 12:45:33,480 - [32mINFO[0m - [32mTool0 link: left_ur_arm_tool0[0m
+2026-01-29 12:45:33,486 - [32mINFO[0m - [32mLoaded calibration from: d:\0_Project\03-2025_husky_assembly\Code\husky-assembly-teleop\data\calibration_data\20260126\calibrated_transformation_0806.json[0m
+2026-01-29 12:45:33,486 - [32mINFO[0m - [32mProcessing: calibration_20260126_1713_validation.json[0m

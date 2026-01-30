@@ -452,6 +452,8 @@ def compute_base_frame(j0_line, j1_line, base_offset=0.1625):
         # Assumes you return/interact with this info after computation,
         # e.g. use as part of function output, or store to self/var
         result_plane_plane_intersection_info = plane_plane_intersection_info
+
+    # ! note that this is still in the base mocap frame
     p_b = p01 - base_offset * v0
     
     logger.info(f'  Base origin p_b (after offset): {p_b * 1000} mm')
@@ -608,11 +610,25 @@ def visualize_results(j0_data, j1_data, j0_line, j1_line, base_frame_tf, output_
     
     ax.scatter([origin[0]], [origin[1]], [origin[2]], 
                c='k', s=100, marker='*', label='Base origin')
-    
+
+    # Draw a unit pose at the origin for reference (red=X, green=Y, blue=Z)
+    unit_origin = np.array([0, 0, 0])
+    unit_length = 0.10 * 1000  # 80mm for visual clarity
+
+    # Use lighter/transparent versions of the base axes colors to visually distinguish the reference unit axes
+    ax.quiver(unit_origin[0], unit_origin[1], unit_origin[2],
+              1, 0, 0,
+              length=unit_length, color=(1, 0.7, 0.7, 0.6), arrow_length_ratio=0.3, linewidth=2, label='Unit X (ref)')
+    ax.quiver(unit_origin[0], unit_origin[1], unit_origin[2],
+              0, 1, 0,
+              length=unit_length, color=(0.7, 1, 0.7, 0.6), arrow_length_ratio=0.3, linewidth=2, label='Unit Y (ref)')
+    ax.quiver(unit_origin[0], unit_origin[1], unit_origin[2],
+              0, 0, 1,
+              length=unit_length, color=(0.6, 0.8, 1.0, 0.6), arrow_length_ratio=0.3, linewidth=2, label='Unit Z (ref)')
     ax.set_xlabel('X (mm)')
     ax.set_ylabel('Y (mm)')
     ax.set_zlabel('Z (mm)')
-    ax.set_title('Calibration Analysis - Fitted Lines and Base Frame')
+    ax.set_title('Calibration Analysis - Fitted Lines and base_mocap_from_arm_base_link')
     ax.legend()
     plt.savefig(os.path.join(output_dir, 'calibration_analysis_result.png'), dpi=150)
     plt.show()  # Keep plot open for interaction
@@ -708,14 +724,7 @@ def main():
     # Save results
     output_file = os.path.join(output_dir, 'base_frame_calibration.json')
     result = {
-        'base_frame_transformation_matrix': base_frame_tf.tolist(),
-        'base_frame_origin': list(base_frame_pose[0]),
-        'base_frame_quaternion': list(base_frame_pose[1]),
-        'base_frame_axes': {
-            'x_axis': list(base_axes[0]),
-            'y_axis': list(base_axes[1]),
-            'z_axis': list(base_axes[2])
-        },
+        'base_mocap_from_arm_base_link': base_frame_tf.tolist(),
         'j0_line': {
             'point': list(j0_line.point),
             'direction': list(j0_line.direction)

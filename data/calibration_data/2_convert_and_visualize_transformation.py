@@ -39,11 +39,9 @@ def load_calibration_data(calibration_file):
         data = json.load(f)
     
     # Reconstruct transformation matrix
-    tf = np.array(data['base_frame_transformation_matrix'])
+    tf = np.array(data['base_mocap_from_arm_base_link'])
     
     logger.info('Loaded calibration data from: %s', calibration_file)
-    logger.info('  Origin: %s', data['base_frame_origin'])
-    logger.info('  Quaternion: %s', data['base_frame_quaternion'])
     
     return tf, data
 

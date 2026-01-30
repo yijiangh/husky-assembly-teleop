@@ -20,6 +20,7 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     cmake \
     git \
+    swig \
     # ROS2 build tools
     python3-colcon-common-extensions \
     python3-rosdep \
@@ -66,7 +67,8 @@ RUN /bin/bash -c "source /ros2_ws/venv/bin/activate && \
     'numpy<1.25.0' \
     'kdtree==0.16' \
     'matplotlib==3.10.3' \
-    pybullet"
+    pybullet \
+    roslibpy"
 
 # Build the ROS2 workspace
 WORKDIR /ros2_ws

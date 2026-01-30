@@ -9,5 +9,4 @@ echo NOTE: For GUI (pybullet), start VcXsrv with "Disable access control" first
 echo.
 
 set DISPLAY=host.docker.internal:0.0
-set LIBGL_ALWAYS_SOFTWARE=1
-docker compose run --rm husky-teleop-windows
+docker compose run --rm husky-teleop-dev

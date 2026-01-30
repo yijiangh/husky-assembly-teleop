@@ -18,4 +18,4 @@ arm: "left"         # Options: "left", "right" (only used for dual arm robot)
 export: true
 
 # Visualization settings
-use_gui: false
+use_gui: true

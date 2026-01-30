@@ -1,0 +1,4 @@
+- In bash, use `C:\Users\yijiangh\miniconda3\etc\profile.d\conda.sh` to activate conda.
+- If a Python script's name is `GH_xxxx.py`, this script is intended to be run as a Python3 Script in Grasshopper on Rhino 8. You should try to make the output data Rhino/Grasshopper friendly, and make use of the `compas_rhino.conversions` functions if applicable.
+- In all Python scripts, always raise an exception if the script fails, do not wrap it in a try-except block.
+- I use Better Comments plugin for VScode, use "*, !, ?" etc to highlight important parts of the comments.

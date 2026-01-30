@@ -20,6 +20,7 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     cmake \
     git \
+    swig \
     # ROS2 build tools
     python3-colcon-common-extensions \
     python3-rosdep \
@@ -54,7 +55,7 @@ if [ ! -f /ros2_ws/venv/bin/activate ]; then\n\
     source /ros2_ws/venv/bin/activate\n\
     python3 -m pip install --upgrade pip wheel\n\
     python3 -m pip install "setuptools==68.2.2" "packaging>=24.2"\n\
-    python3 -m pip install "numpy<1.25.0" "kdtree==0.16" "matplotlib==3.10.3" pybullet debugpy\n\
+    python3 -m pip install "numpy<1.25.0" "kdtree==0.16" "matplotlib==3.10.3" pybullet debugpy roslibpy\n\
 fi\n\
 ' > /ros2_ws/setup_venv.sh && chmod +x /ros2_ws/setup_venv.sh
 
@@ -70,7 +71,8 @@ RUN /bin/bash -c "source /ros2_ws/venv/bin/activate && \
     'kdtree==0.16' \
     'matplotlib==3.10.3' \
     pybullet \
-    debugpy"
+    debugpy \
+    roslibpy"
 
 # Create setup script that will be run on container start
 RUN echo '#!/bin/bash\n\
