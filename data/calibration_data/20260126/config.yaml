@@ -8,9 +8,9 @@ data_batches:
   - "j1"
 
 # Validation data batch for 3_verify_calibration.py
-# validation_data_batch: "j0"
+validation_data_batch: "j0"
 # validation_data_batch: "j1"
-validation_data_batch: "validation"
+# validation_data_batch: "validation"
 
 # Robot settings
 robot_name: "0806"  # Options: "0806" (dual arm), "0804" (single arm)

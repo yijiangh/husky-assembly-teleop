@@ -1,0 +1,31 @@
+2026-01-30 14:01:57,386 - [32mINFO[0m - [32m============================================================[0m
+2026-01-30 14:01:57,387 - [32mINFO[0m - [32mCalibration Verification[0m
+2026-01-30 14:01:57,387 - [32mINFO[0m - [32m============================================================[0m
+2026-01-30 14:01:57,387 - [32mINFO[0m - [32mValidation data batch: validation[0m
+2026-01-30 14:01:57,387 - [32mINFO[0m - [32mRobot: 0804[0m
+2026-01-30 14:01:57,770 - [32mINFO[0m - [32mJoint names: ['ur_arm_shoulder_pan_joint', 'ur_arm_shoulder_lift_joint', 'ur_arm_elbow_joint', 'ur_arm_wrist_1_joint', 'ur_arm_wrist_2_joint', 'ur_arm_wrist_3_joint'][0m
+2026-01-30 14:01:57,771 - [32mINFO[0m - [32mTool0 link: ur_arm_tool0[0m
+2026-01-30 14:01:57,771 - [32mINFO[0m - [32mLoaded calibration from: /home/yijiangh/ros2_ws/src/husky-assembly-teleop/data/calibration_data/20250311/calibrated_transformation_0804.json[0m
+2026-01-30 14:01:57,771 - [32mINFO[0m - [32mProcessing: calibration_20250311_1733_.json[0m
+2026-01-30 14:01:57,773 - [32mINFO[0m - [32mProcessing: calibration_20250311_1735_.json[0m
+2026-01-30 14:01:57,958 - [32mINFO[0m - [32mProcessing: calibration_20250311_1738_.json[0m
+2026-01-30 14:01:58,181 - [32mINFO[0m - [32mProcessing: calibration_20250311_1729_.json[0m
+2026-01-30 14:02:08,840 - [32mINFO[0m - [32mProcessed 18 samples[0m
+2026-01-30 14:02:10,566 - [32mINFO[0m - [32m============================================================[0m
+2026-01-30 14:02:10,566 - [32mINFO[0m - [32mPosition Analysis (tool0_from_flange_mocap offset)[0m
+2026-01-30 14:02:10,566 - [32mINFO[0m - [32m============================================================[0m
+2026-01-30 14:02:10,567 - [32mINFO[0m - [32m  Mean position: [0.0002, -0.0157, 0.0164] m[0m
+2026-01-30 14:02:10,567 - [32mINFO[0m - [32m  Max distance from mean: 2.233 mm[0m
+2026-01-30 14:02:10,567 - [32mINFO[0m - [32m  Mean distance from mean: 1.278 mm[0m
+2026-01-30 14:02:10,567 - [32mINFO[0m - [32m  Std distance from mean: 0.470 mm[0m
+2026-01-30 14:02:10,567 - [32mINFO[0m - [32m============================================================[0m
+2026-01-30 14:02:10,567 - [32mINFO[0m - [32mOrientation Analysis[0m
+2026-01-30 14:02:10,567 - [32mINFO[0m - [32m============================================================[0m
+2026-01-30 14:02:10,567 - [32mINFO[0m - [32m  X-axis max angle from mean: 0.699 deg[0m
+2026-01-30 14:02:10,568 - [32mINFO[0m - [32m  Y-axis max angle from mean: 0.425 deg[0m
+2026-01-30 14:02:10,568 - [32mINFO[0m - [32m  Z-axis max angle from mean: 0.767 deg[0m
+2026-01-30 14:02:11,259 - [32mINFO[0m - [32mVerification plot saved to: /home/yijiangh/ros2_ws/src/husky-assembly-teleop/data/calibration_data/20250311/validation/verification_validation.png[0m
+2026-01-30 14:02:19,335 - [32mINFO[0m - [32mDiversity plot saved to: /home/yijiangh/ros2_ws/src/husky-assembly-teleop/data/calibration_data/20250311/validation/diversity_validation.png[0m
+2026-01-30 14:02:23,347 - [32mINFO[0m - [32m============================================================[0m
+2026-01-30 14:02:23,347 - [32mINFO[0m - [32mVerification complete![0m
+2026-01-30 14:02:23,347 - [32mINFO[0m - [32m============================================================[0m

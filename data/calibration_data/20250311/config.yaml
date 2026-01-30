@@ -8,7 +8,8 @@ data_batches:
   - "j1"
 
 # Validation data batch for 3_verify_calibration.py
-validation_data_batch: "j0"  # Use j0 data for validation (no separate validation folder)
+# validation_data_batch: "j0"  # Use j0 data for validation (no separate validation folder)
+validation_data_batch: "validation"  # Use j0 data for validation (no separate validation folder)
 
 # Robot settings
 robot_name: "0804"  # Options: "0806" (dual arm), "0804" (single arm)

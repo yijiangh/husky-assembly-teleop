@@ -1350,8 +1350,12 @@ class HuskyMonitor(Node):
         # ))
   
     # --- --- --- --- --- MOCAP --- --- --- --- --- 
+    _ANSI_GREEN = '\033[92m'
+    _ANSI_RED = '\033[91m'
+    _ANSI_RESET = '\033[0m'
+
     def start_mocap(self):
-        print('Starting mocap!')
+        self.get_logger().info('Starting mocap!')
         self.mocap_client = NatNetClient()
         self.mocap_client.set_client_address(CLIENT_IP)
         self.mocap_client.set_server_address(MOCAP_IP)
@@ -1362,16 +1366,18 @@ class HuskyMonitor(Node):
         self.mocap_client.new_frame_listener = self.receive_mocap_frame
         if self.BAR_HOLDING_ACCURACY_TEST:
             self.mocap_client.labeled_marker_listener = self.receive_labeled_marker
-        
+
         if self.mocap_client.run():
             start_connect = time.time()
             while not self.mocap_client.connected():
                 time.sleep(0.25)
                 if time.time() - start_connect > 5:
                     break
-            print(f"mocap client connected: {self.mocap_client.connected()}")
+            connected = self.mocap_client.connected()
+            color = self._ANSI_GREEN if connected else self._ANSI_RED
+            self.get_logger().info(f"{color}mocap client connected: {connected}{self._ANSI_RESET}")
         else:
-            print('Failed to run mocap client!')
+            self.get_logger().info(f"{self._ANSI_RED}Failed to run mocap client!{self._ANSI_RESET}")
 
     def send_request_to_mocap(self):
         # self.mocap_client.send_request(self.mocap_client.command_socket, self.mocap_client.NAT_REQUEST_MODELDEF,    "",  (self.mocap_client.server_ip_address, self.mocap_client.command_port) )

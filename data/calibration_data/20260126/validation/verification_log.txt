@@ -1,9 +1,28 @@
-2026-01-29 12:45:32,505 - [32mINFO[0m - [32m============================================================[0m
-2026-01-29 12:45:32,505 - [32mINFO[0m - [32mCalibration Verification[0m
-2026-01-29 12:45:32,505 - [32mINFO[0m - [32m============================================================[0m
-2026-01-29 12:45:32,505 - [32mINFO[0m - [32mValidation data batch: validation[0m
-2026-01-29 12:45:32,505 - [32mINFO[0m - [32mRobot: 0806[0m
-2026-01-29 12:45:33,479 - [32mINFO[0m - [32mJoint names: ['left_ur_arm_shoulder_pan_joint', 'left_ur_arm_shoulder_lift_joint', 'left_ur_arm_elbow_joint', 'left_ur_arm_wrist_1_joint', 'left_ur_arm_wrist_2_joint', 'left_ur_arm_wrist_3_joint'][0m
-2026-01-29 12:45:33,480 - [32mINFO[0m - [32mTool0 link: left_ur_arm_tool0[0m
-2026-01-29 12:45:33,486 - [32mINFO[0m - [32mLoaded calibration from: d:\0_Project\03-2025_husky_assembly\Code\husky-assembly-teleop\data\calibration_data\20260126\calibrated_transformation_0806.json[0m
-2026-01-29 12:45:33,486 - [32mINFO[0m - [32mProcessing: calibration_20260126_1713_validation.json[0m
+2026-01-30 14:05:54,003 - [32mINFO[0m - [32m============================================================[0m
+2026-01-30 14:05:54,004 - [32mINFO[0m - [32mCalibration Verification[0m
+2026-01-30 14:05:54,004 - [32mINFO[0m - [32m============================================================[0m
+2026-01-30 14:05:54,004 - [32mINFO[0m - [32mValidation data batch: validation[0m
+2026-01-30 14:05:54,004 - [32mINFO[0m - [32mRobot: 0806[0m
+2026-01-30 14:05:54,371 - [32mINFO[0m - [32mJoint names: ['left_ur_arm_shoulder_pan_joint', 'left_ur_arm_shoulder_lift_joint', 'left_ur_arm_elbow_joint', 'left_ur_arm_wrist_1_joint', 'left_ur_arm_wrist_2_joint', 'left_ur_arm_wrist_3_joint'][0m
+2026-01-30 14:05:54,371 - [32mINFO[0m - [32mTool0 link: left_ur_arm_tool0[0m
+2026-01-30 14:05:54,371 - [32mINFO[0m - [32mLoaded calibration from: /home/yijiangh/ros2_ws/src/husky-assembly-teleop/data/calibration_data/20260126/calibrated_transformation_0806.json[0m
+2026-01-30 14:05:54,371 - [32mINFO[0m - [32mProcessing: calibration_20260126_1713_validation.json[0m
+2026-01-30 14:05:57,080 - [32mINFO[0m - [32mProcessed 13 samples[0m
+2026-01-30 14:05:59,658 - [32mINFO[0m - [32m============================================================[0m
+2026-01-30 14:05:59,658 - [32mINFO[0m - [32mPosition Analysis (tool0_from_flange_mocap offset)[0m
+2026-01-30 14:05:59,658 - [32mINFO[0m - [32m============================================================[0m
+2026-01-30 14:05:59,658 - [32mINFO[0m - [32m  Mean position: [-0.2526, -0.1398, 0.9433] m[0m
+2026-01-30 14:05:59,659 - [32mINFO[0m - [32m  Max distance from mean: 1.385 mm[0m
+2026-01-30 14:05:59,659 - [32mINFO[0m - [32m  Mean distance from mean: 0.691 mm[0m
+2026-01-30 14:05:59,659 - [32mINFO[0m - [32m  Std distance from mean: 0.416 mm[0m
+2026-01-30 14:05:59,659 - [32mINFO[0m - [32m============================================================[0m
+2026-01-30 14:05:59,659 - [32mINFO[0m - [32mOrientation Analysis[0m
+2026-01-30 14:05:59,659 - [32mINFO[0m - [32m============================================================[0m
+2026-01-30 14:05:59,659 - [32mINFO[0m - [32m  X-axis max angle from mean: 0.443 deg[0m
+2026-01-30 14:05:59,660 - [32mINFO[0m - [32m  Y-axis max angle from mean: 0.806 deg[0m
+2026-01-30 14:05:59,660 - [32mINFO[0m - [32m  Z-axis max angle from mean: 0.692 deg[0m
+2026-01-30 14:06:00,344 - [32mINFO[0m - [32mVerification plot saved to: /home/yijiangh/ros2_ws/src/husky-assembly-teleop/data/calibration_data/20260126/validation/verification_validation.png[0m
+2026-01-30 14:06:15,744 - [32mINFO[0m - [32mDiversity plot saved to: /home/yijiangh/ros2_ws/src/husky-assembly-teleop/data/calibration_data/20260126/validation/diversity_validation.png[0m
+2026-01-30 14:06:18,143 - [32mINFO[0m - [32m============================================================[0m
+2026-01-30 14:06:18,143 - [32mINFO[0m - [32mVerification complete![0m
+2026-01-30 14:06:18,143 - [32mINFO[0m - [32m============================================================[0m

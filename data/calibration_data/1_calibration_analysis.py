@@ -16,7 +16,7 @@ from skspatial.plotting import plot_3d
 import matplotlib.pyplot as plt
 import pybullet_planning as pp
 
-from config_loader import load_config, get_robot_urdf, get_shoulder_pan_joint_name, HERE
+from config_loader import load_config, get_robot_urdf, get_shoulder_pan_joint_name, get_arm_base_link_name, HERE
 from logging_utils import setup_logger
 
 # Load configuration
@@ -27,6 +27,7 @@ arm = config['arm']
 
 URDF_FILE = get_robot_urdf(robot_name)
 SHOULDER_PAN_JOINT_NAME = get_shoulder_pan_joint_name(robot_name, arm)
+ARM_BASE_LINK_NAME = get_arm_base_link_name(robot_name, arm)
 
 # Configure logging with colored output
 log_file = os.path.join(HERE, date_folder, 'calibration_analysis_log.txt')
@@ -47,17 +48,17 @@ def load_analysis_data(file_path):
 def parse_base_offset_from_urdf(urdf_file_path, joint_name):
     """
     Parse the base offset from URDF file.
-    
+
     Args:
         urdf_file_path: Path to the URDF file
         joint_name: Name of the joint to extract the offset from (default: left_ur_arm_shoulder_pan_joint)
-    
+
     Returns:
         float: The z-component of the origin xyz attribute (base offset in meters)
     """
     tree = ET.parse(urdf_file_path)
     root = tree.getroot()
-    
+
     # Find the joint with the specified name
     for joint in root.findall('.//joint'):
         if joint.get('name') == joint_name:
@@ -69,8 +70,128 @@ def parse_base_offset_from_urdf(urdf_file_path, joint_name):
                     z_value = xyz_values[2]  # z is the third component
                     logger.info(f'Parsed base offset from URDF joint "{joint_name}": {xyz_values} -> z={z_value}')
                     return z_value
-    
+
     raise ValueError(f'Could not find joint "{joint_name}" or origin xyz in URDF file: {urdf_file_path}')
+
+
+def parse_joint_axes_from_urdf(urdf_file_path, base_link_name, shoulder_pan_joint_name):
+    """
+    Parse joint axes and base link rotation from URDF.
+
+    This function extracts:
+    1. The rotation from base_link to base_link_inertia (rpy)
+    2. The shoulder_pan joint axis (j0)
+    3. The shoulder_lift joint axis (j1)
+
+    Args:
+        urdf_file_path: Path to the URDF file
+        base_link_name: Name of the arm base link (e.g., 'left_ur_arm_base_link_inertia')
+        shoulder_pan_joint_name: Name of the shoulder pan joint
+
+    Returns:
+        dict: Contains 'base_rotation_matrix', 'j0_axis', 'j1_axis', etc.
+    """
+    tree = ET.parse(urdf_file_path)
+    root = tree.getroot()
+
+    result = {}
+
+    # Find the base_link to base_link_inertia joint (fixed joint)
+    base_inertia_joint_name = base_link_name.replace('_inertia', '') + '-' + base_link_name
+    base_rotation_rpy = None
+
+    for joint in root.findall('.//joint'):
+        if joint.get('name') == base_inertia_joint_name:
+            origin = joint.find('origin')
+            if origin is not None and origin.get('rpy') is not None:
+                rpy_str = origin.get('rpy')
+                base_rotation_rpy = [float(x) for x in rpy_str.split()]
+                logger.info(f'Found base rotation for joint "{base_inertia_joint_name}": rpy={base_rotation_rpy}')
+                break
+
+    if base_rotation_rpy is None:
+        logger.warning(f'Could not find base rotation joint "{base_inertia_joint_name}", assuming no rotation')
+        base_rotation_rpy = [0, 0, 0]
+
+    # Verify yaw is a multiple of pi/2
+    r, p, y = base_rotation_rpy
+    yaw_normalized = y % (2 * np.pi)
+    yaw_mod_pi_half = abs(yaw_normalized % (np.pi / 2))
+    if yaw_mod_pi_half > 0.01 and yaw_mod_pi_half < (np.pi / 2 - 0.01):
+        logger.warning(f'WARNING: Base rotation yaw={y:.6f} rad ({np.rad2deg(y):.2f}°) is not a multiple of π/2!')
+        logger.warning(f'  This may cause incorrect axis mapping. Expected multiples of 90°.')
+
+    # Convert rpy to rotation matrix
+    # RPY rotation: Rz(yaw) * Ry(pitch) * Rx(roll)
+    Rx = np.array([[1, 0, 0],
+                   [0, np.cos(r), -np.sin(r)],
+                   [0, np.sin(r), np.cos(r)]])
+    Ry = np.array([[np.cos(p), 0, np.sin(p)],
+                   [0, 1, 0],
+                   [-np.sin(p), 0, np.cos(p)]])
+    Rz = np.array([[np.cos(y), -np.sin(y), 0],
+                   [np.sin(y), np.cos(y), 0],
+                   [0, 0, 1]])
+    base_rotation_matrix = Rz @ Ry @ Rx
+    result['base_rotation_matrix'] = base_rotation_matrix
+    result['base_rotation_rpy'] = base_rotation_rpy
+    result['base_rotation_yaw'] = y
+
+    # Find shoulder_pan joint (j0) and extract axis
+    j0_axis = None
+    shoulder_lift_joint_name = None
+
+    for joint in root.findall('.//joint'):
+        if joint.get('name') == shoulder_pan_joint_name:
+            axis = joint.find('axis')
+            if axis is not None and axis.get('xyz') is not None:
+                axis_str = axis.get('xyz')
+                j0_axis = np.array([float(x) for x in axis_str.split()])
+                logger.info(f'Found j0 (shoulder_pan) joint axis (in base_link frame): {j0_axis}')
+
+            # Find the child link to determine the shoulder_lift joint
+            child = joint.find('child')
+            if child is not None:
+                child_link_name = child.get('link')
+                # Shoulder lift joint should have this as parent
+                for j in root.findall('.//joint'):
+                    parent = j.find('parent')
+                    if parent is not None and parent.get('link') == child_link_name:
+                        if 'shoulder_lift' in j.get('name'):
+                            shoulder_lift_joint_name = j.get('name')
+                            break
+            break
+
+    if j0_axis is None:
+        raise ValueError(f'Could not find shoulder_pan joint "{shoulder_pan_joint_name}" or its axis in URDF')
+
+    result['j0_axis'] = j0_axis
+
+    # Find shoulder_lift joint (j1) and extract axis
+    j1_axis = None
+    if shoulder_lift_joint_name:
+        for joint in root.findall('.//joint'):
+            if joint.get('name') == shoulder_lift_joint_name:
+                axis = joint.find('axis')
+                if axis is not None and axis.get('xyz') is not None:
+                    axis_str = axis.get('xyz')
+                    j1_axis = np.array([float(x) for x in axis_str.split()])
+                    logger.info(f'Found j1 (shoulder_lift) joint axis (in base_link frame): {j1_axis}')
+                break
+
+    if j1_axis is None:
+        raise ValueError(f'Could not find shoulder_lift joint or its axis in URDF')
+
+    result['j1_axis'] = j1_axis
+
+    # Transform axes to the base_link_inertia frame using the base rotation
+    result['j0_axis_in_inertia_frame'] = base_rotation_matrix @ j0_axis
+    result['j1_axis_in_inertia_frame'] = base_rotation_matrix @ j1_axis
+
+    logger.info(f'j0 axis in inertia frame: {result["j0_axis_in_inertia_frame"]}')
+    logger.info(f'j1 axis in inertia frame: {result["j1_axis_in_inertia_frame"]}')
+
+    return result
 
 
 def analyze_base_mocap_variation(takes):
@@ -358,129 +479,167 @@ def compute_plane_plane_intersection(plane1_point, plane1_normal, plane2_point, 
     return intersection_line
 
 
-def compute_base_frame(j0_line, j1_line, base_offset=0.1625):
+def compute_base_frame(j0_line, j1_line, base_offset, joint_axes_info, robot_name):
     """
     Compute robot base frame from j0 and j1 fitted lines.
-    
+
+    Args:
+        j0_line: Fitted line for j0 (shoulder pan joint)
+        j1_line: Fitted line for j1 (shoulder lift joint)
+        base_offset: Offset from j0 joint to base origin
+        joint_axes_info: Dictionary containing parsed joint axes from URDF
+        robot_name: Name of the robot to determine axis mapping
+
     Steps:
-    1. j0 line gives z-axis (v0)
-    2. j1 line gives y-axis (v1)
-    3. Find intersection of planes (p0, v1) and (p1, v1) where plane is formed by point as origin and vector as z-axis
-    4. Find closest point on intersection curve to p1, call this p01
-    5. Move p01 in negative direction of normalized v0 by base_offset to get base origin p_b
-    6. Construct 4x4 transformation matrix with p_b as origin, v0 as z-axis, v1 as y-axis
-    
-    Note: The plane-plane intersection interpretation:
-    - Plane0: through p0, with z-axis = v1 (so normal = v1)
-    - Plane1: through p1, with z-axis = v1 (so normal = v1)
-    These are parallel planes. If they don't intersect, we find the closest point between
-    the j0 and j1 lines as an approximation.
+    1. j0 line direction (v0) corresponds to z-axis
+    2. j1 line direction (v1) corresponds to:
+       - Single arm: x-axis
+       - Dual arm (0806): -y-axis
+    3. Find intersection of planes to locate base origin
+    4. Apply offset along j0 axis
     """
     p0 = j0_line.point
     v0 = j0_line.direction
     v0 = v0 / np.linalg.norm(v0)  # Normalize
-    
+
     p1 = j1_line.point
     v1 = j1_line.direction
     v1 = v1 / np.linalg.norm(v1)  # Normalize
-    
+
+    # Get the expected joint axes from URDF
+    j0_axis_inertia = joint_axes_info['j0_axis_in_inertia_frame']
+    j1_axis_inertia = joint_axes_info['j1_axis_in_inertia_frame']
+
     logger.info('Computing base frame:')
     logger.info(f'  j0 line point: {p0 * 1000} mm')
-    logger.info(f'  j0 line direction (z-axis): {v0}')
+    logger.info(f'  j0 line direction: {v0}')
+    logger.info(f'  j0 expected axis (from URDF): {j0_axis_inertia}')
     logger.info(f'  j1 line point: {p1 * 1000} mm')
-    logger.info(f'  j1 line direction (y-axis): {v1}')
-    
-    # Form planes as described:
-    # Plane0: origin is p0, normal is v1
-    # Plane1: origin is p1, normal is the cross product of v0 and v1
+    logger.info(f'  j1 line direction: {v1}')
+    logger.info(f'  j1 expected axis (from URDF): {j1_axis_inertia}')
+
+    # Check if v0 aligns with j0_axis (should be z-axis typically [0, 0, 1])
+    v0_j0_alignment = abs(np.dot(v0, j0_axis_inertia))
+    logger.info(f'  v0 alignment with j0 axis: {v0_j0_alignment:.4f}')
+
+    # Check if v1 aligns with j1_axis (should be x-axis [1,0,0] or -y-axis [0,-1,0])
+    v1_j1_alignment = abs(np.dot(v1, j1_axis_inertia))
+    logger.info(f'  v1 alignment with j1 axis: {v1_j1_alignment:.4f}')
+
+    # Ensure v0 points in the same direction as j0_axis
+    if np.dot(v0, j0_axis_inertia) < 0:
+        v0 = -v0
+        logger.info('  Flipped v0 to match j0 axis direction')
+
+    # Ensure v1 points in the same direction as j1_axis
+    if np.dot(v1, j1_axis_inertia) < 0:
+        v1 = -v1
+        logger.info('  Flipped v1 to match j1 axis direction')
+
+    # Form planes for intersection:
+    # Plane0: through p0, normal is v1 (perpendicular to j1 axis)
+    # Plane1: through p1, normal is v0 × v1
     v0_cross_v1 = np.cross(v0, v1)
     v0_cross_v1_norm = np.linalg.norm(v0_cross_v1)
     if v0_cross_v1_norm < 1e-8:
         raise RuntimeError("v0 and v1 are parallel - cannot compute cross product for plane1 normal!")
     v0_cross_v1_normalized = v0_cross_v1 / v0_cross_v1_norm
-    
+
     plane0 = Plane(point=p0, normal=v1)
     plane1 = Plane(point=p1, normal=v0_cross_v1_normalized)
-    
-    # The plane definitions are now:
-    #   plane0: through p0, normal v1
-    #   plane1: through p1, normal (v0 × v1)
-    # They are not generally parallel, so their intersection is a line.
-    # The intersection line can be parameterized, and we want the point on that line
-    # that is closest to p1 (or any other determination step).
 
-    # Compute direction of intersection line
-    # Intersection direction is cross product of the two plane normals
+    # Compute intersection line
     intersection_direction = np.cross(v1, v0_cross_v1_normalized)
     norm_dir = np.linalg.norm(intersection_direction)
     if norm_dir < 1e-8:
-        # Planes should not be parallel here. Raise an error.
         raise RuntimeError("Planes appear parallel during base frame computation; check line directions!")
     else:
-        intersection_direction = intersection_direction / norm_dir  # normalize
+        intersection_direction = intersection_direction / norm_dir
 
-        # Use compute_plane_plane_intersection as the primary method (uses skspatial)
+        # Use compute_plane_plane_intersection
         intersection_result = compute_plane_plane_intersection(
             p0, v1, p1, v0_cross_v1_normalized
         )
-        
-        # Extract intersection line from result (skspatial Line object)
+
         pp_line_point = intersection_result.point
         pp_line_direction = intersection_result.direction
-        pp_line_direction = pp_line_direction / np.linalg.norm(pp_line_direction)  # Ensure normalized
-        
+        pp_line_direction = pp_line_direction / np.linalg.norm(pp_line_direction)
+
         # Project p1 onto intersection line to get p01
         line_vec = pp_line_direction
         p1_to_line = p1 - pp_line_point
         proj_len = np.dot(p1_to_line, line_vec)
         p01 = pp_line_point + proj_len * line_vec
-        
-        # For plotting in the final 3D plot, save the intersection line and p01
-        plane_plane_intersection_info = {}
-        plane_plane_intersection_info['anchor'] = pp_line_point
-        plane_plane_intersection_info['direction'] = pp_line_direction
-        plane_plane_intersection_info['p01'] = p01
-        # Store plane information for visualization
-        plane_plane_intersection_info['plane0'] = {'point': p0, 'normal': v1}
-        plane_plane_intersection_info['plane1'] = {'point': p1, 'normal': v0_cross_v1_normalized}
-        
+
+        # Store intersection info for visualization
+        plane_plane_intersection_info = {
+            'anchor': pp_line_point,
+            'direction': pp_line_direction,
+            'p01': p01,
+            'plane0': {'point': p0, 'normal': v1},
+            'plane1': {'point': p1, 'normal': v0_cross_v1_normalized}
+        }
+
         logger.info(f'  Intersection direction: {pp_line_direction}')
         logger.info(f'  Intersection point (closest to p1): {p01 * 1000} mm')
-        logger.info(f'  Intersection anchor: {pp_line_point * 1000} mm')    
+        logger.info(f'  Intersection anchor: {pp_line_point * 1000} mm')
 
-        # Attach intersection info to return or global state for plotting
-        # Assumes you return/interact with this info after computation,
-        # e.g. use as part of function output, or store to self/var
-        result_plane_plane_intersection_info = plane_plane_intersection_info
-
-    # ! note that this is still in the base mocap frame
+    # Move p01 along negative v0 direction by base_offset
     p_b = p01 - base_offset * v0
-    
+
     logger.info(f'  Base origin p_b (after offset): {p_b * 1000} mm')
-    
-    # Construct frame: z-axis = v0, y-axis = v1, x-axis = y × z
+
+    # Construct base frame axes using hardcoded rules
+    # v0 (j0 fitted line) always corresponds to z-axis
+    # v1 (j1 fitted line) corresponds to:
+    #   - Single arm: x-axis
+    #   - Dual arm (0806): -y-axis
+
     z_axis = v0
-    x_axis = v1
-    y_axis = np.cross(z_axis, x_axis)
-    y_axis = y_axis / np.linalg.norm(x_axis)
-    
-    # Recompute z-axis to ensure orthogonality
-    z_axis = np.cross(x_axis, y_axis)
-    z_axis = z_axis / np.linalg.norm(z_axis)
-    
+
+    # Determine robot type and apply appropriate axis mapping
+    is_dual_arm = (robot_name == '0806')
+
+    if is_dual_arm:
+        # Dual arm: v1 corresponds to -y-axis
+        logger.info('  Dual-arm robot detected: v1 → -Y axis')
+        y_axis = -v1
+        x_axis = np.cross(y_axis, z_axis)
+        x_axis = x_axis / np.linalg.norm(x_axis)
+        # Recompute z for orthogonality
+        z_axis = np.cross(x_axis, y_axis)
+        z_axis = z_axis / np.linalg.norm(z_axis)
+        logger.info('  Frame construction: Y=-v1, X=Y×Z, Z=(recomputed)')
+    else:
+        # Single arm: v1 corresponds to x-axis
+        logger.info('  Single-arm robot detected: v1 → X axis')
+        x_axis = v1
+        y_axis = np.cross(z_axis, x_axis)
+        y_axis = y_axis / np.linalg.norm(y_axis)
+        # Recompute z for orthogonality
+        z_axis = np.cross(x_axis, y_axis)
+        z_axis = z_axis / np.linalg.norm(z_axis)
+        logger.info('  Frame construction: X=v1, Y=Z×X, Z=(recomputed)')
+
     logger.info(f'  Base frame axes:')
     logger.info(f'    x-axis: {x_axis}')
     logger.info(f'    y-axis: {y_axis}')
     logger.info(f'    z-axis: {z_axis}')
-    
+
+    # Verify orthogonality
+    xy_dot = abs(np.dot(x_axis, y_axis))
+    xz_dot = abs(np.dot(x_axis, z_axis))
+    yz_dot = abs(np.dot(y_axis, z_axis))
+    logger.info(f'  Orthogonality check: |X·Y|={xy_dot:.6f}, |X·Z|={xz_dot:.6f}, |Y·Z|={yz_dot:.6f}')
+
     # Construct 4x4 transformation matrix
     transformation_matrix = np.eye(4)
     transformation_matrix[:3, 0] = x_axis
     transformation_matrix[:3, 1] = y_axis
     transformation_matrix[:3, 2] = z_axis
     transformation_matrix[:3, 3] = p_b
-    
-    return transformation_matrix, p_b, (x_axis, y_axis, z_axis), result_plane_plane_intersection_info
+
+    return transformation_matrix, p_b, (x_axis, y_axis, z_axis), plane_plane_intersection_info
 
 
 def plot_plane(ax, point, normal, size=0.3, color='cyan', alpha=0.3, label=None):
@@ -628,7 +787,7 @@ def visualize_results(j0_data, j1_data, j0_line, j1_line, base_frame_tf, output_
     ax.set_xlabel('X (mm)')
     ax.set_ylabel('Y (mm)')
     ax.set_zlabel('Z (mm)')
-    ax.set_title('Calibration Analysis - Fitted Lines and base_mocap_from_arm_base_link')
+    ax.set_title(f'Calibration Analysis - Fitted Lines and base_mocap_from_{ARM_BASE_LINK_NAME}')
     ax.legend()
     plt.savefig(os.path.join(output_dir, 'calibration_analysis_result.png'), dpi=150)
     plt.show()  # Keep plot open for interaction
@@ -640,69 +799,82 @@ def main():
     logger.info('=' * 80)
     logger.info('Starting calibration analysis')
     logger.info('=' * 80)
-    
+
     # Parse base offset from URDF
     logger.info(f'Parsing base offset from URDF: {URDF_FILE}')
     BASE_OFFSET = parse_base_offset_from_urdf(URDF_FILE, SHOULDER_PAN_JOINT_NAME)
     logger.info(f'Base offset: {BASE_OFFSET} m ({BASE_OFFSET * 1000:.4f} mm)')
-    
+
+    # Parse joint axes from URDF
+    logger.info('\n' + '=' * 80)
+    logger.info('Parsing joint axes from URDF')
+    logger.info('=' * 80)
+    joint_axes_info = parse_joint_axes_from_urdf(URDF_FILE, ARM_BASE_LINK_NAME, SHOULDER_PAN_JOINT_NAME)
+    logger.info(f'Base rotation (rpy): {joint_axes_info["base_rotation_rpy"]}')
+    logger.info(f'j0 axis (in base frame): {joint_axes_info["j0_axis"]}')
+    logger.info(f'j1 axis (in base frame): {joint_axes_info["j1_axis"]}')
+    logger.info(f'j0 axis (in inertia frame): {joint_axes_info["j0_axis_in_inertia_frame"]}')
+    logger.info(f'j1 axis (in inertia frame): {joint_axes_info["j1_axis_in_inertia_frame"]}')
+
     # Load data
-    logger.info(f'Loading j0 data from: {j0_data_file_path}')
+    logger.info(f'\nLoading j0 data from: {j0_data_file_path}')
     j0_data = load_analysis_data(j0_data_file_path)
-    
+
     logger.info(f'Loading j1 data from: {j1_data_file_path}')
     j1_data = load_analysis_data(j1_data_file_path)
-    
+
     logger.info(f'j0 has {len(j0_data["takes"])} takes')
     logger.info(f'j1 has {len(j1_data["takes"])} takes')
-    
+
     # Analyze base mocap variation for j0
     logger.info('\n' + '=' * 80)
     logger.info('Analyzing j0 base mocap variation')
     logger.info('=' * 80)
     j0_mocap_data = analyze_base_mocap_variation(j0_data['takes'])
     visualize_base_mocap_variation(j0_mocap_data, 'j0', output_dir)
-    
+
     # Analyze base mocap variation for j1
     logger.info('\n' + '=' * 80)
     logger.info('Analyzing j1 base mocap variation')
     logger.info('=' * 80)
     j1_mocap_data = analyze_base_mocap_variation(j1_data['takes'])
     visualize_base_mocap_variation(j1_mocap_data, 'j1', output_dir)
-    
+
     # Extract circle centers and normals
     j0_centers = [take['center'] for take in j0_data['takes']]
     j0_normals = [take['normal'] for take in j0_data['takes']]
     j1_centers = [take['center'] for take in j1_data['takes']]
     j1_normals = [take['normal'] for take in j1_data['takes']]
-    
+
     # Analyze circle centers
     logger.info('\n' + '=' * 80)
     logger.info('Analyzing j0 circle centers')
     logger.info('=' * 80)
     analyze_circle_centers(j0_centers, j0_normals, 'j0', output_dir)
-    
+
     logger.info('\n' + '=' * 80)
     logger.info('Analyzing j1 circle centers')
     logger.info('=' * 80)
     analyze_circle_centers(j1_centers, j1_normals, 'j1', output_dir)
-    
+
     # Fit lines to centers
     logger.info('\n' + '=' * 80)
     logger.info('Fitting line to j0 circle centers')
     logger.info('=' * 80)
     j0_line, j0_angle_diffs, j0_line_distances = fit_line_to_centers(j0_centers, j0_normals, 'j0')
-    
+
     logger.info('\n' + '=' * 80)
     logger.info('Fitting line to j1 circle centers')
     logger.info('=' * 80)
     j1_line, j1_angle_diffs, j1_line_distances = fit_line_to_centers(j1_centers, j1_normals, 'j1')
-    
+
     # Compute base frame
     logger.info('\n' + '=' * 80)
     logger.info('Computing robot base frame')
     logger.info('=' * 80)
-    base_frame_tf, base_origin, base_axes, intersection_info = compute_base_frame(j0_line, j1_line, BASE_OFFSET)
+    base_frame_tf, base_origin, base_axes, intersection_info = compute_base_frame(
+        j0_line, j1_line, BASE_OFFSET, joint_axes_info, robot_name
+    )
     
     # Convert to pose (position, quaternion)
     base_frame_pose = pp.pose_from_tform(base_frame_tf)
@@ -724,7 +896,7 @@ def main():
     # Save results
     output_file = os.path.join(output_dir, 'base_frame_calibration.json')
     result = {
-        'base_mocap_from_arm_base_link': base_frame_tf.tolist(),
+        f'base_mocap_from_{ARM_BASE_LINK_NAME}': base_frame_tf.tolist(),
         'j0_line': {
             'point': list(j0_line.point),
             'direction': list(j0_line.direction)

@@ -18,8 +18,8 @@ import yaml
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 # Default date folder - change this to switch between calibration datasets
-DEFAULT_DATE_FOLDER = '20250311'
-# DEFAULT_DATE_FOLDER = '20260126'
+# DEFAULT_DATE_FOLDER = '20250311'
+DEFAULT_DATE_FOLDER = '20260126'
 
 
 def load_config(date_folder=None):
@@ -114,8 +114,10 @@ def get_arm_base_link_name(robot_name, arm='left'):
     """Get the arm base link name for the specified robot."""
     if robot_name == '0806':
         return f"{arm}_ur_arm_base_link_inertia"
+        # return f"{arm}_ur_arm_base_link"
     else:
-        return "ur_arm_base_link"
+        return "ur_arm_base_link_inertia"
+        # return "ur_arm_base_link"
 
 
 def get_shoulder_pan_joint_name(robot_name, arm='left'):

@@ -279,16 +279,25 @@ from config_loader import load_config, HERE as CALIBRATION_DATA_DIR
 def load_tf_from_json(json_path):
     """Load a 4x4 transformation matrix from a calibration JSON file.
 
-    Supports both key names: 'base_mocap_from_arm_base_link' and
-    'base_frame_transformation_matrix'.
+    Supports multiple key name patterns:
+    - 'base_mocap_from_ur_arm_base_link_inertia' (dual arm)
+    - 'base_mocap_from_ur_arm_base_link' (single arm)
+    - 'base_mocap_from_arm_base_link' (legacy)
+    - 'base_frame_transformation_matrix' (legacy)
     """
     with open(json_path, 'r') as f:
         data = json.load(f)
 
-    if 'base_mocap_from_arm_base_link' in data:
-        matrix = data['base_mocap_from_arm_base_link']
-    else:
+    # Try to find a key that starts with 'base_mocap_from_'
+    matching_keys = [k for k in data.keys() if k.startswith('base_mocap_from_')]
+
+    if matching_keys:
+        # Use the first matching key (there should only be one)
+        matrix = data[matching_keys[0]]
+    elif 'base_frame_transformation_matrix' in data:
         matrix = data['base_frame_transformation_matrix']
+    else:
+        raise KeyError(f"Could not find calibration transformation key in {json_path}")
 
     return parse_format2(matrix)
 

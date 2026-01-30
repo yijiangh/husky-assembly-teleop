@@ -23,6 +23,7 @@ DATE_FOLDER = config['date_folder']
 ROBOT_NAME = config['robot_name']
 ARM = config['arm']
 USE_GUI = config.get('use_gui', True)
+ARM_BASE_LINK_NAME = get_arm_base_link_name(ROBOT_NAME, ARM)
 
 # File paths
 CALIBRATION_FILE = os.path.join(HERE, DATE_FOLDER, 'base_frame_calibration.json')
@@ -37,12 +38,13 @@ def load_calibration_data(calibration_file):
     """Load calibration data from JSON file."""
     with open(calibration_file, 'r') as f:
         data = json.load(f)
-    
-    # Reconstruct transformation matrix
-    tf = np.array(data['base_mocap_from_arm_base_link'])
-    
+
+    # Reconstruct transformation matrix using dynamic key name
+    key_name = f'base_mocap_from_{ARM_BASE_LINK_NAME}'
+    tf = np.array(data[key_name])
+
     logger.info('Loaded calibration data from: %s', calibration_file)
-    
+
     return tf, data
 
 
@@ -67,12 +69,12 @@ def main():
     logger.info('=' * 60)
     
     # * Load calibration data
-    # This transformation is: base_mocap_from_arm_base_link
+    # This transformation is: base_mocap_from_{ARM_BASE_LINK_NAME}
     # (arm base link pose expressed in the base mocap frame)
     base_mocap_from_arm_base_link_tf, calibration_data = load_calibration_data(CALIBRATION_FILE)
     CALIB_base_mocap_from_arm_base_link = pp.pose_from_tform(base_mocap_from_arm_base_link_tf)
-    
-    logger.info('base_mocap_from_arm_base_link: %s', CALIB_base_mocap_from_arm_base_link)
+
+    logger.info(f'base_mocap_from_{ARM_BASE_LINK_NAME}: %s', CALIB_base_mocap_from_arm_base_link)
     
     # Initialize PyBullet
     pp.connect(use_gui=USE_GUI, shadows=True, color=[0.9, 0.9, 1.0])
@@ -116,7 +118,7 @@ def main():
     
     # Draw arm_base_link in base_mocap frame
     pp.draw_pose(CALIB_base_mocap_from_arm_base_link, length=0.2)
-    pp.add_text("arm_base_link", position=[p + 0.02 for p in CALIB_base_mocap_from_arm_base_link[0]])
+    pp.add_text(ARM_BASE_LINK_NAME, position=[p + 0.02 for p in CALIB_base_mocap_from_arm_base_link[0]])
     
     # Draw base_footprint in base_mocap frame
     pp.draw_pose(base_mocap_from_base_footprint, length=0.2)
@@ -138,13 +140,11 @@ def main():
     
     # Draw URDF arm_base_link for comparison
     pp.draw_pose(URDF_base_mocap_from_arm_base_link, length=0.15)
-    pp.add_text("arm_base_link (URDF)", position=[p + 0.04 for p in URDF_base_mocap_from_arm_base_link[0]])
-    
-    pp.wait_if_gui('Calibration visualization')
-    
+    pp.add_text(f"{ARM_BASE_LINK_NAME} (URDF)", position=[p + 0.04 for p in URDF_base_mocap_from_arm_base_link[0]])
+     
     # Save calibrated transformation
     output_data = {
-        'base_mocap_from_arm_base_link': [list(v) for v in CALIB_base_mocap_from_arm_base_link],
+        f'base_mocap_from_{ARM_BASE_LINK_NAME}': [list(v) for v in CALIB_base_mocap_from_arm_base_link],
         'base_mocap_from_base_footprint': [list(v) for v in base_mocap_from_base_footprint],
     }
     
@@ -156,7 +156,7 @@ def main():
     logger.info('Done!')
     logger.info('=' * 60)
     
-    pp.wait_if_gui()
+    pp.wait_if_gui('Calibration visualization')
 
 
 if __name__ == '__main__':
