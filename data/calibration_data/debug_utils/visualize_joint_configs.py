@@ -14,6 +14,7 @@ import json
 import glob
 import numpy as np
 import matplotlib.pyplot as plt
+import pybullet_planning as pp
 
 # Add parent directory to path for config_loader
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
@@ -97,6 +98,72 @@ def plot_joint_configs(batch_name, takes, joint_names):
     return fig
 
 
+def plot_flange_mocap_positions(batch_name, takes):
+    """Create a figure with 3 subplots (X, Y, Z) showing flange mocap position in base frame across all takes."""
+    fig, axes = plt.subplots(3, 1, figsize=(14, 10), sharex=True)
+    fig.suptitle(f'{batch_name} — Flange Mocap Position in Base Frame ({len(takes)} takes)', fontsize=14)
+
+    axis_labels = ['X', 'Y', 'Z']
+    sample_offset = 0
+    take_boundaries = []
+
+    for take_idx, take in enumerate(takes):
+        positions = []
+        for entry in take['raw_data']:
+            flange_mocap_pose = entry.get("flange_mocap_pose", [])
+            base_mocap_pose = entry.get("base_mocap_pose", [])
+            if flange_mocap_pose and base_mocap_pose:
+                base_from_flange = pp.multiply(pp.invert(base_mocap_pose), flange_mocap_pose)
+                positions.append(base_from_flange[0])
+
+        if not positions:
+            continue
+
+        positions = np.array(positions)
+        n_samples = len(positions)
+        x = np.arange(sample_offset, sample_offset + n_samples)
+
+        color = COLORS[take_idx % len(COLORS)]
+        marker = MARKERS[take_idx % len(MARKERS)]
+        label = f"Take {take_idx + 1} ({n_samples} pts)"
+
+        for ax_idx in range(3):
+            axes[ax_idx].scatter(
+                x, positions[:, ax_idx] * 1000,  # convert to mm
+                c=[color], marker=marker, s=20, alpha=0.8,
+                label=label if ax_idx == 0 else None,
+                edgecolors='none',
+            )
+
+        take_boundaries.append(sample_offset + n_samples)
+        sample_offset += n_samples
+
+    for ax_idx in range(3):
+        ax = axes[ax_idx]
+        for boundary in take_boundaries[:-1]:
+            ax.axvline(x=boundary - 0.5, color='gray', linestyle='--', linewidth=1, alpha=0.7)
+        ax.set_ylabel(f'{axis_labels[ax_idx]} (mm)', fontsize=9)
+        ax.grid(True, alpha=0.3)
+
+    axes[-1].set_xlabel('Sample index')
+
+    # Shared legend
+    handles, labels = [], []
+    for take_idx, take in enumerate(takes):
+        n_samples = sum(1 for e in take['raw_data']
+                        if e.get("flange_mocap_pose") and e.get("base_mocap_pose"))
+        h = plt.Line2D([0], [0], marker=MARKERS[take_idx % len(MARKERS)],
+                        color='w', markerfacecolor=COLORS[take_idx % len(COLORS)],
+                        markersize=8, linestyle='None')
+        handles.append(h)
+        labels.append(f"Take {take_idx + 1} ({n_samples} pts)")
+    fig.legend(handles, labels, loc='upper right', fontsize=8, ncol=2,
+               bbox_to_anchor=(0.98, 0.98))
+
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    return fig
+
+
 def main():
     config = load_config()
     data_folder = get_data_folder(config['date_folder'])
@@ -117,6 +184,14 @@ def main():
         out_path = os.path.join(batch_folder, f'{batch_name}_joint_configs.png')
         fig.savefig(out_path, dpi=150, bbox_inches='tight')
         print(f"  Saved: {out_path}")
+
+        plt.show()
+
+        fig2 = plot_flange_mocap_positions(batch_name, takes)
+
+        out_path2 = os.path.join(batch_folder, f'{batch_name}_flange_mocap_positions.png')
+        fig2.savefig(out_path2, dpi=150, bbox_inches='tight')
+        print(f"  Saved: {out_path2}")
 
         plt.show()
 

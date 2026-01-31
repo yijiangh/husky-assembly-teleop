@@ -73,11 +73,16 @@ def compute_tool0_flange_offset(robot, arm_joints, tool0_link_name, calibration_
         with open(file_path, 'r') as f:
             data = json.load(f)
         
-        for entry in data['raw_data']:
+        raw_entries = data['raw_data']
+
+        # ! seems that the first data entry can be discarded.
+        raw_entries = raw_entries[1:]  # Discard first entry
+        for i, entry in enumerate(raw_entries):
             flange_mocap_pose = entry.get("flange_mocap_pose", [])
             base_mocap_pose = entry.get("base_mocap_pose", [])
+            # Use shifted joint_conf when misalignment is detected
             joint_conf = entry.get("joint_conf", [])
-            
+
             if not flange_mocap_pose or not base_mocap_pose or not joint_conf:
                 logger.warning(
                     f"Missing data in {file_name}: "
@@ -86,20 +91,22 @@ def compute_tool0_flange_offset(robot, arm_joints, tool0_link_name, calibration_
                     f"joint_conf={bool(joint_conf)}"
                 )
                 continue
-            
+
             # Set robot pose based on mocap and calibration
             world_from_footprint = pp.multiply(base_mocap_pose, base_mocap_from_base_footprint)
             pp.set_pose(robot, world_from_footprint)
             pp.set_joint_positions(robot, arm_joints, joint_conf)
-            
+
             # Get FK tool0 pose
             tool0_link = pp.link_from_name(robot, tool0_link_name)
             world_from_tool0 = pp.get_link_pose(robot, tool0_link)
-            
+
             # Compute offset: tool0_from_flange_mocap
             # This should be constant if calibration is correct
             tool0_from_flange_mocap = pp.multiply(pp.invert(world_from_tool0), flange_mocap_pose)
-            
+            offset_norm_mm = np.linalg.norm(tool0_from_flange_mocap[0]) * 1000
+            logger.info(f'  Sample {i}: tool0_from_flange_mocap offset: pos={tool0_from_flange_mocap[0][0]:.3f}, {tool0_from_flange_mocap[0][1]:.3f}, {tool0_from_flange_mocap[0][2]:.3f} m (norm={offset_norm_mm:.1f} mm)')
+
             results.append({
                 'tool0_from_flange_mocap': tool0_from_flange_mocap,
                 'joint_conf': joint_conf,
@@ -111,14 +118,15 @@ def compute_tool0_flange_offset(robot, arm_joints, tool0_link_name, calibration_
             # Visualization (if GUI enabled)
             if USE_GUI:
                 pp.draw_pose(base_mocap_pose, length=0.1)
-                # pp.draw_pose(world_from_tool0, length=0.1)
-                # pp.draw_pose(flange_mocap_pose, length=0.1)
+                pp.draw_pose(world_from_tool0, length=0.1)
+                pp.draw_pose(flange_mocap_pose, length=0.1)
                 # pp.add_text("tool0 (FK)", position=[p + 0.01 for p in world_from_tool0[0]])
                 # pp.add_text("flange_mocap", position=[p + 0.01 for p in flange_mocap_pose[0]])
-                # pp.wait_if_gui('Visualization')
-                # pp.remove_all_debug()
+                
+                pp.wait_if_gui('Visualization')
+                pp.remove_all_debug()
 
-    pp.wait_if_gui('Visualization')
+    # pp.wait_if_gui('Visualization')
     
     return results
 

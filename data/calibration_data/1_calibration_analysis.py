@@ -506,35 +506,35 @@ def compute_base_frame(j0_line, j1_line, base_offset, joint_axes_info, robot_nam
     v1 = j1_line.direction
     v1 = v1 / np.linalg.norm(v1)  # Normalize
 
-    # Get the expected joint axes from URDF
-    j0_axis_inertia = joint_axes_info['j0_axis_in_inertia_frame']
-    j1_axis_inertia = joint_axes_info['j1_axis_in_inertia_frame']
+    # # Get the expected joint axes from URDF
+    # j0_axis_inertia = joint_axes_info['j0_axis_in_inertia_frame']
+    # j1_axis_inertia = joint_axes_info['j1_axis_in_inertia_frame']
 
-    logger.info('Computing base frame:')
-    logger.info(f'  j0 line point: {p0 * 1000} mm')
-    logger.info(f'  j0 line direction: {v0}')
-    logger.info(f'  j0 expected axis (from URDF): {j0_axis_inertia}')
-    logger.info(f'  j1 line point: {p1 * 1000} mm')
-    logger.info(f'  j1 line direction: {v1}')
-    logger.info(f'  j1 expected axis (from URDF): {j1_axis_inertia}')
+    # logger.info('Computing base frame:')
+    # logger.info(f'  j0 line point: {p0 * 1000} mm')
+    # logger.info(f'  j0 line direction: {v0}')
+    # logger.info(f'  j0 expected axis (from URDF): {j0_axis_inertia}')
+    # logger.info(f'  j1 line point: {p1 * 1000} mm')
+    # logger.info(f'  j1 line direction: {v1}')
+    # logger.info(f'  j1 expected axis (from URDF): {j1_axis_inertia}')
 
-    # Check if v0 aligns with j0_axis (should be z-axis typically [0, 0, 1])
-    v0_j0_alignment = abs(np.dot(v0, j0_axis_inertia))
-    logger.info(f'  v0 alignment with j0 axis: {v0_j0_alignment:.4f}')
+    # # Check if v0 aligns with j0_axis (should be z-axis typically [0, 0, 1])
+    # v0_j0_alignment = abs(np.dot(v0, j0_axis_inertia))
+    # logger.info(f'  v0 alignment with j0 axis: {v0_j0_alignment:.4f}')
 
-    # Check if v1 aligns with j1_axis (should be x-axis [1,0,0] or -y-axis [0,-1,0])
-    v1_j1_alignment = abs(np.dot(v1, j1_axis_inertia))
-    logger.info(f'  v1 alignment with j1 axis: {v1_j1_alignment:.4f}')
+    # # Check if v1 aligns with j1_axis (should be x-axis [1,0,0] or -y-axis [0,-1,0])
+    # v1_j1_alignment = abs(np.dot(v1, j1_axis_inertia))
+    # logger.info(f'  v1 alignment with j1 axis: {v1_j1_alignment:.4f}')
 
-    # Ensure v0 points in the same direction as j0_axis
-    if np.dot(v0, j0_axis_inertia) < 0:
-        v0 = -v0
-        logger.info('  Flipped v0 to match j0 axis direction')
+    # # Ensure v0 points in the same direction as j0_axis
+    # if np.dot(v0, j0_axis_inertia) < 0:
+    #     v0 = -v0
+    #     logger.info('  Flipped v0 to match j0 axis direction')
 
-    # Ensure v1 points in the same direction as j1_axis
-    if np.dot(v1, j1_axis_inertia) < 0:
-        v1 = -v1
-        logger.info('  Flipped v1 to match j1 axis direction')
+    # # Ensure v1 points in the same direction as j1_axis
+    # if np.dot(v1, j1_axis_inertia) < 0:
+    #     v1 = -v1
+    #     logger.info('  Flipped v1 to match j1 axis direction')
 
     # Form planes for intersection:
     # Plane0: through p0, normal is v1 (perpendicular to j1 axis)
@@ -805,16 +805,16 @@ def main():
     BASE_OFFSET = parse_base_offset_from_urdf(URDF_FILE, SHOULDER_PAN_JOINT_NAME)
     logger.info(f'Base offset: {BASE_OFFSET} m ({BASE_OFFSET * 1000:.4f} mm)')
 
-    # Parse joint axes from URDF
-    logger.info('\n' + '=' * 80)
-    logger.info('Parsing joint axes from URDF')
-    logger.info('=' * 80)
-    joint_axes_info = parse_joint_axes_from_urdf(URDF_FILE, ARM_BASE_LINK_NAME, SHOULDER_PAN_JOINT_NAME)
-    logger.info(f'Base rotation (rpy): {joint_axes_info["base_rotation_rpy"]}')
-    logger.info(f'j0 axis (in base frame): {joint_axes_info["j0_axis"]}')
-    logger.info(f'j1 axis (in base frame): {joint_axes_info["j1_axis"]}')
-    logger.info(f'j0 axis (in inertia frame): {joint_axes_info["j0_axis_in_inertia_frame"]}')
-    logger.info(f'j1 axis (in inertia frame): {joint_axes_info["j1_axis_in_inertia_frame"]}')
+    # * Parse joint axes from URDF
+    # logger.info('\n' + '=' * 80)
+    # logger.info('Parsing joint axes from URDF')
+    # logger.info('=' * 80)
+    # joint_axes_info = parse_joint_axes_from_urdf(URDF_FILE, ARM_BASE_LINK_NAME, SHOULDER_PAN_JOINT_NAME)
+    # logger.info(f'Base rotation (rpy): {joint_axes_info["base_rotation_rpy"]}')
+    # logger.info(f'j0 axis (in base frame): {joint_axes_info["j0_axis"]}')
+    # logger.info(f'j1 axis (in base frame): {joint_axes_info["j1_axis"]}')
+    # logger.info(f'j0 axis (in inertia frame): {joint_axes_info["j0_axis_in_inertia_frame"]}')
+    # logger.info(f'j1 axis (in inertia frame): {joint_axes_info["j1_axis_in_inertia_frame"]}')
 
     # Load data
     logger.info(f'\nLoading j0 data from: {j0_data_file_path}')

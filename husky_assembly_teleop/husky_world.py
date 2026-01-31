@@ -675,8 +675,6 @@ def calibrate_button(monitor, tool_mocap_name, index=0):
             except:
                 pass  # Skip if link doesn't exist
 
-
-
     if flange_mocap_pose is None:
         if monitor.CALIBRATION:
             monitor.get_logger().warn(f'Mocap {tool_mocap_name} not found!')
@@ -902,11 +900,18 @@ def execute_arm_trajectory_and_record_each_conf(monitor, calib_traj, time_betwee
     # print(transit_traj)
     # execute_arm_trajectory(monitor, transit_traj, index=index)
 
+    total_num_confs = len(calib_traj[0])
+    calibrate_button(monitor, monitor.active_calib_tool_name)
+    monitor.get_logger().info(f'Saved calibration data {i}/{total_num_confs}.')
+
+    # ! there seems to be a delay in arm conf, resulting in a one-step lag between the conf and the mocap data
+    # TODO investigate
     for i, conf in enumerate(calib_traj[0]):
         monitor.get_logger().info(f'Executing arm conf {i+1}/{len(calib_traj[0])}...')
         # print('last conf:', last_conf, 'conf:', conf)
         hi.send_arm_cmd(
-            [hi.arm_joint_pose[monitor.selected_arm_index], conf], 
+            # [hi.arm_joint_pose[monitor.selected_arm_index], conf], 
+            [conf], 
             None, 
             time_between_confs,
             index=index
@@ -916,7 +921,7 @@ def execute_arm_trajectory_and_record_each_conf(monitor, calib_traj, time_betwee
         time.sleep(time_between_confs + settle_time)
 
         calibrate_button(monitor, monitor.active_calib_tool_name)
-        monitor.get_logger().info(f'Saved calibration data.')
+        monitor.get_logger().info(f'Saved calibration data {i}/{total_num_confs}.')
 
         # ! since the joint state is updated in the main thread and is blocked when running this function, 
         # we need to manually update the last conf here
