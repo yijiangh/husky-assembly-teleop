@@ -75,13 +75,17 @@ def compute_tool0_flange_offset(robot, arm_joints, tool0_link_name, calibration_
         
         raw_entries = data['raw_data']
 
-        # ! seems that the first data entry can be discarded.
-        raw_entries = raw_entries[1:]  # Discard first entry
-        for i, entry in enumerate(raw_entries):
-            flange_mocap_pose = entry.get("flange_mocap_pose", [])
-            base_mocap_pose = entry.get("base_mocap_pose", [])
-            # Use shifted joint_conf when misalignment is detected
-            joint_conf = entry.get("joint_conf", [])
+        # Shift mocap by -1 (wrapped): joint_conf[i] pairs with mocap[i-1]
+        # At i=0 this wraps to mocap[-1] (last entry)
+        for i in range(len(raw_entries)):
+            if i == 0:
+                continue  # Skip first entry due to wrap-around
+            joint_conf_entry = raw_entries[i]
+            mocap_entry = raw_entries[i - 1]
+
+            flange_mocap_pose = mocap_entry.get("flange_mocap_pose", [])
+            base_mocap_pose = mocap_entry.get("base_mocap_pose", [])
+            joint_conf = joint_conf_entry.get("joint_conf", [])
 
             if not flange_mocap_pose or not base_mocap_pose or not joint_conf:
                 logger.warning(
@@ -105,14 +109,18 @@ def compute_tool0_flange_offset(robot, arm_joints, tool0_link_name, calibration_
             # This should be constant if calibration is correct
             tool0_from_flange_mocap = pp.multiply(pp.invert(world_from_tool0), flange_mocap_pose)
             offset_norm_mm = np.linalg.norm(tool0_from_flange_mocap[0]) * 1000
-            logger.info(f'  Sample {i}: tool0_from_flange_mocap offset: pos={tool0_from_flange_mocap[0][0]:.3f}, {tool0_from_flange_mocap[0][1]:.3f}, {tool0_from_flange_mocap[0][2]:.3f} m (norm={offset_norm_mm:.1f} mm)')
+            world_dist_mm = np.linalg.norm(np.array(world_from_tool0[0]) - np.array(flange_mocap_pose[0])) * 1000
+            logger.info(f'  Sample {i}: tool0_from_flange_mocap pos={tool0_from_flange_mocap[0][0]:.3f}, {tool0_from_flange_mocap[0][1]:.3f}, {tool0_from_flange_mocap[0][2]:.3f} m (norm={offset_norm_mm:.1f} mm) | world dist={world_dist_mm:.1f} mm')
+            if abs(offset_norm_mm - world_dist_mm) > 0.1:
+                logger.warning(f'  Sample {i}: MISMATCH! tool0_from_flange norm={offset_norm_mm:.1f} mm != world dist={world_dist_mm:.1f} mm (diff={abs(offset_norm_mm - world_dist_mm):.3f} mm)')
 
             results.append({
                 'tool0_from_flange_mocap': tool0_from_flange_mocap,
                 'joint_conf': joint_conf,
                 'world_from_tool0': world_from_tool0,
                 'flange_mocap_pose': flange_mocap_pose,
-                'base_mocap_pose': base_mocap_pose
+                'base_mocap_pose': base_mocap_pose,
+                'file_name': file_name
             })
             
             # Visualization (if GUI enabled)
@@ -127,8 +135,108 @@ def compute_tool0_flange_offset(robot, arm_joints, tool0_link_name, calibration_
                 pp.remove_all_debug()
 
     # pp.wait_if_gui('Visualization')
-    
+
     return results
+
+
+def plot_tool0_vs_flange_3d(results, data_folder, data_batch):
+    """
+    Draw a 3D debug plot showing tool0 (FK) origins vs flange_mocap origins,
+    plus a 2D scatter of per-sample distances with dividing lines between circles.
+    """
+    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
+
+    fig = plt.figure(figsize=(20, 9))
+    ax3d = fig.add_subplot(121, projection='3d')
+    ax2d = fig.add_subplot(122)
+
+    tool0_positions = np.array([r['world_from_tool0'][0] for r in results])
+    flange_positions = np.array([r['flange_mocap_pose'][0] for r in results])
+    file_names = [r['file_name'] for r in results]
+
+    # Compute distances
+    distances_mm = np.linalg.norm(tool0_positions - flange_positions, axis=1) * 1000
+
+    # Normalize distances for colormap
+    dist_min, dist_max = distances_mm.min(), distances_mm.max()
+    if dist_max > dist_min:
+        norm_distances = (distances_mm - dist_min) / (dist_max - dist_min)
+    else:
+        norm_distances = np.zeros_like(distances_mm)
+
+    cmap = plt.cm.coolwarm
+
+    # ===== Left: 3D plot =====
+    for i in range(len(results)):
+        t0 = tool0_positions[i]
+        fl = flange_positions[i]
+        color = cmap(norm_distances[i])
+
+        ax3d.plot([t0[0], fl[0]], [t0[1], fl[1]], [t0[2], fl[2]],
+                  color=color, linewidth=1.5, alpha=0.7)
+        ax3d.scatter(*t0, color='blue', s=20, alpha=0.6)
+        ax3d.scatter(*fl, color='red', s=20, alpha=0.6)
+
+        mid = (t0 + fl) / 2
+        ax3d.text(mid[0], mid[1], mid[2], f'{distances_mm[i]:.1f}', fontsize=6, alpha=0.8)
+
+    sm = plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(vmin=dist_min, vmax=dist_max))
+    sm.set_array([])
+    fig.colorbar(sm, ax=ax3d, shrink=0.6, pad=0.1, label='Distance (mm)')
+
+    ax3d.scatter([], [], [], color='blue', s=40, label='tool0 (FK)')
+    ax3d.scatter([], [], [], color='red', s=40, label='flange_mocap')
+    ax3d.legend(loc='upper left')
+
+    # Set axis limits based on data extent with padding
+    all_pts = np.vstack([tool0_positions, flange_positions])
+    data_center = np.mean(all_pts, axis=0)
+    data_extent = np.max(np.abs(all_pts - data_center)) * 1.3  # 30% padding
+    ax3d.set_xlim(data_center[0] - data_extent, data_center[0] + data_extent)
+    ax3d.set_ylim(data_center[1] - data_extent, data_center[1] + data_extent)
+    ax3d.set_zlim(data_center[2] - data_extent, data_center[2] + data_extent)
+
+    ax3d.set_xlabel('X (m)')
+    ax3d.set_ylabel('Y (m)')
+    ax3d.set_zlabel('Z (m)')
+    ax3d.set_title(f'tool0 (FK) vs flange_mocap\nDistance range: {dist_min:.1f} - {dist_max:.1f} mm')
+
+    # ===== Right: 2D scatter of distances with circle dividers =====
+    sample_indices = np.arange(len(results))
+    scatter = ax2d.scatter(sample_indices, distances_mm, c=distances_mm, cmap=cmap,
+                           vmin=dist_min, vmax=dist_max, s=25, alpha=0.8)
+    fig.colorbar(scatter, ax=ax2d, label='Distance (mm)')
+
+    # Draw dashed lines between different calibration files (circles)
+    boundaries = []
+    for i in range(1, len(file_names)):
+        if file_names[i] != file_names[i - 1]:
+            boundaries.append(i - 0.5)
+            ax2d.axvline(x=i - 0.5, color='gray', linestyle='--', linewidth=1, alpha=0.7)
+
+    # Label each circle region at the top of the plot
+    y_top = dist_max * 1.05
+    region_starts = [0] + [int(b + 0.5) for b in boundaries]
+    region_ends = [int(b + 0.5) for b in boundaries] + [len(results)]
+    for start, end in zip(region_starts, region_ends):
+        region_name = file_names[start].replace('calibration_', '').replace('.json', '')
+        mid_x = (start + end - 1) / 2
+        ax2d.text(mid_x, y_top, region_name, ha='center', va='bottom', fontsize=7, alpha=0.7)
+
+    ax2d.set_xlabel('Sample Index')
+    ax2d.set_ylabel('Distance (mm)')
+    ax2d.set_title(f'Per-Sample Distance\nMean: {np.mean(distances_mm):.1f} mm | '
+                   f'Median: {np.median(distances_mm):.1f} mm')
+    ax2d.grid(True, alpha=0.3)
+
+    fig.suptitle(f'Debug: tool0 vs flange_mocap | {data_batch} | {len(results)} samples',
+                 fontsize=13, fontweight='bold')
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    output_path = os.path.join(data_folder, f'debug_tool0_vs_flange_{data_batch}.png')
+    plt.savefig(output_path, dpi=150)
+    logger.info('Debug 3D plot saved to: %s', output_path)
+    plt.show()
+    plt.close(fig)
 
 
 def analyze_results(results, data_folder, data_batch, date_folder, robot_name, arm):
@@ -141,7 +249,8 @@ def analyze_results(results, data_folder, data_batch, date_folder, robot_name, a
     # Position analysis
     positions = np.array(positions)
     pos_mean = np.mean(positions, axis=0)
-    pos_distances = np.linalg.norm(positions - pos_mean, axis=1) * 1000  # mm
+    pos_distances = np.linalg.norm(positions, axis=1) * 1000  # mm (distance to origin)
+    pos_distances = pos_distances - np.average(pos_distances)  # center around mean distance
     
     logger.info('=' * 60)
     logger.info('Position Analysis (tool0_from_flange_mocap offset)')
@@ -158,16 +267,7 @@ def analyze_results(results, data_folder, data_batch, date_folder, robot_name, a
     logger.info('Orientation Analysis')
     logger.info('=' * 60)
     
-    # Analyze each axis
-    for axis_idx, axis_name in enumerate(['X', 'Y', 'Z']):
-        axes = np.array([rm[:, axis_idx] for rm in rotation_matrices])
-        axis_mean = np.mean(axes, axis=0)
-        axis_mean = axis_mean / np.linalg.norm(axis_mean)
-        
-        angles = [np.rad2deg(np.arccos(np.clip(np.dot(a, axis_mean), -1, 1))) for a in axes]
-        logger.info('  %s-axis max angle from mean: %.3f deg', axis_name, np.max(angles))
-    
-    # Compute angular deviations per axis from mean
+    # Compute angular deviations from mean axis
     angular_deviations = {'X': [], 'Y': [], 'Z': []}
     axis_means = {}
     for axis_idx, axis_name in enumerate(['X', 'Y', 'Z']):
@@ -178,6 +278,97 @@ def analyze_results(results, data_folder, data_batch, date_folder, robot_name, a
         angular_deviations[axis_name] = np.array([
             np.rad2deg(np.arccos(np.clip(np.dot(a, axis_mean), -1, 1))) for a in axes_data
         ])
+        logger.info('  %s-axis max angle from mean: %.3f deg', axis_name, np.max(angular_deviations[axis_name]))
+
+    # ========== Debug: 3D orientation axes plot ==========
+    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
+
+    file_names = [r['file_name'] for r in results]
+    unique_files = list(dict.fromkeys(file_names))
+
+    fig_ori = plt.figure(figsize=(12, 10))
+    ax_ori = fig_ori.add_subplot(111, projection='3d')
+
+    axis_colors = ['r', 'g', 'b']  # X=red, Y=green, Z=blue
+    axis_labels = ['X', 'Y', 'Z']
+    unit_axes = np.eye(3)
+
+    # Draw thick unit axes
+    for axis_idx in range(3):
+        direction = unit_axes[axis_idx]
+        ax_ori.quiver(0, 0, 0, direction[0], direction[1], direction[2],
+                      color=axis_colors[axis_idx], linewidth=4, arrow_length_ratio=0.1,
+                      alpha=1.0, label=f'Unit {axis_labels[axis_idx]}')
+
+    # Draw each sample's axes as thin arrows, colored by file with alpha
+    file_color_map = {fname: plt.cm.tab10.colors[i % 10] for i, fname in enumerate(unique_files)}
+    legend_added = set()
+
+    OUTLIER_ANGLE_THRESHOLD = 170  # degrees
+    outlier_count = 0
+
+    for sample_idx, rm in enumerate(rotation_matrices):
+        fname = file_names[sample_idx]
+        file_color = file_color_map[fname]
+
+        for axis_idx in range(3):
+            col = rm[:, axis_idx]
+            angle = angular_deviations[axis_labels[axis_idx]][sample_idx]
+            is_outlier = angle >= OUTLIER_ANGLE_THRESHOLD
+
+            if is_outlier:
+                # Highlight outlier with thick line and full opacity
+                ax_ori.quiver(0, 0, 0, col[0], col[1], col[2],
+                              color='magenta', linewidth=3, alpha=0.9,
+                              arrow_length_ratio=0.08)
+                ax_ori.text(col[0] * 1.05, col[1] * 1.05, col[2] * 1.05,
+                            f'#{sample_idx} {axis_labels[axis_idx]} {angle:.0f}°',
+                            fontsize=6, color='magenta', fontweight='bold')
+                outlier_count += 1
+            else:
+                ax_ori.quiver(0, 0, 0, col[0], col[1], col[2],
+                              color=axis_colors[axis_idx], linewidth=0.5, alpha=0.15,
+                              arrow_length_ratio=0.05)
+
+        # Add file to legend via invisible scatter (once per file)
+        if fname not in legend_added:
+            file_label = fname.replace('calibration_', '').replace('.json', '')
+            ax_ori.scatter([], [], [], color=file_color, s=30, label=file_label)
+            legend_added.add(fname)
+
+    # Also scatter the tips of each axis column to see clustering
+    for axis_idx in range(3):
+        tips = np.array([rm[:, axis_idx] for rm in rotation_matrices])
+        for file_idx, fname in enumerate(unique_files):
+            mask = np.array([f == fname for f in file_names])
+            file_color = file_color_map[fname]
+            ax_ori.scatter(tips[mask, 0], tips[mask, 1], tips[mask, 2],
+                           color=axis_colors[axis_idx], s=8, alpha=0.3,
+                           edgecolors=file_color, linewidths=0.5)
+
+    ax_ori.set_xlim([-1.2, 1.2])
+    ax_ori.set_ylim([-1.2, 1.2])
+    ax_ori.set_zlim([-1.2, 1.2])
+    ax_ori.set_xlabel('X')
+    ax_ori.set_ylabel('Y')
+    ax_ori.set_zlabel('Z')
+    # Add outlier legend entry
+    if outlier_count > 0:
+        ax_ori.quiver([], [], [], [], [], [], color='magenta', linewidth=3, label=f'Outlier (>={OUTLIER_ANGLE_THRESHOLD}°)')
+
+    ax_ori.set_title(f'tool0_from_flange_mocap Rotation Axes\n'
+                     f'Thick = unit axes | Thin = data | Magenta = outliers (>={OUTLIER_ANGLE_THRESHOLD}°, n={outlier_count})\n'
+                     f'Angle range: X=[{np.min(angular_deviations["X"]):.1f}°,{np.max(angular_deviations["X"]):.1f}°] '
+                     f'Y=[{np.min(angular_deviations["Y"]):.1f}°,{np.max(angular_deviations["Y"]):.1f}°] '
+                     f'Z=[{np.min(angular_deviations["Z"]):.1f}°,{np.max(angular_deviations["Z"]):.1f}°]')
+    ax_ori.legend(fontsize=7, loc='upper left')
+
+    plt.tight_layout()
+    output_path_ori = os.path.join(data_folder, f'debug_orientation_{data_batch}.png')
+    plt.savefig(output_path_ori, dpi=150)
+    logger.info('Debug orientation plot saved to: %s', output_path_ori)
+    plt.show()
+    plt.close(fig_ori)
 
     # Extract joint configurations and base poses for diversity plots
     joint_confs = np.array([r['joint_conf'] for r in results])
@@ -206,8 +397,8 @@ def analyze_results(results, data_folder, data_batch, date_folder, robot_name, a
     ax1 = axes1[0, 0]
     ax1.scatter(sample_indices, pos_distances, alpha=0.7, s=20)
     ax1.set_xlabel('Sample Index')
-    ax1.set_ylabel('Position Offset from Mean (mm)')
-    ax1.set_title(f'Position Offset from Mean\nMean Offset: {np.mean(pos_distances):.3f} mm')
+    ax1.set_ylabel('Position Norm (mm)')
+    ax1.set_title(f'tool0_from_flange_mocap Position Norm\nMean: {np.mean(pos_distances):.3f} mm')
     ax1.grid(True, alpha=0.3)
 
     # Plot 2: Sample index vs angular deviation per axis from mean
@@ -244,12 +435,15 @@ def analyze_results(results, data_folder, data_batch, date_folder, robot_name, a
 
     # Plot 4: CDF for angular deviation per axis with 95% cutoff
     ax4 = axes1[1, 1]
-    for axis_name, color in zip(['X', 'Y', 'Z'], colors):
+    for axis_idx, (axis_name, color) in enumerate(zip(['X', 'Y', 'Z'], colors)):
         sorted_ang = np.sort(angular_deviations[axis_name])
         cdf_ang = np.arange(1, len(sorted_ang) + 1) / len(sorted_ang)
         ang_95 = np.percentile(angular_deviations[axis_name], 95)
         ax4.plot(sorted_ang, cdf_ang, color=color, linewidth=2, label=f'{axis_name}-axis (95%: {ang_95:.3f}°)')
         ax4.plot(ang_95, 0.95, 'o', color=color, markersize=6)
+        ax4.annotate(f'{ang_95:.2f}°', xy=(ang_95, 0.95), xytext=(10, -15 * (axis_idx + 1)),
+                     textcoords='offset points', fontsize=9, color=color,
+                     arrowprops=dict(arrowstyle='->', color=color, alpha=0.7))
     ax4.axhline(y=0.95, color='gray', linestyle='--', alpha=0.7, label='95% cutoff')
     ax4.set_xlabel('Angular Deviation (deg)')
     ax4.set_ylabel('CDF')
@@ -263,6 +457,49 @@ def analyze_results(results, data_folder, data_batch, date_folder, robot_name, a
     logger.info('Verification plot saved to: %s', output_path1)
     plt.show()
     plt.close(fig1)
+
+    # ========== Figure 1b: Debug 3D scatter of tool0_from_flange_mocap positions ==========
+    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
+
+    file_names = [r['file_name'] for r in results]
+    positions_mm = positions * 1000
+    pos_mean_mm = pos_mean * 1000
+
+    fig1b = plt.figure(figsize=(12, 9))
+    ax3d = fig1b.add_subplot(111, projection='3d')
+
+    # Color each point by its file (circle)
+    unique_files = list(dict.fromkeys(file_names))  # preserve order
+    file_colors = plt.cm.tab10.colors
+    for file_idx, fname in enumerate(unique_files):
+        mask = np.array([f == fname for f in file_names])
+        color = file_colors[file_idx % len(file_colors)]
+        label = fname.replace('calibration_', '').replace('.json', '')
+        pts = positions_mm[mask]
+        ax3d.scatter(pts[:, 0], pts[:, 1], pts[:, 2],
+                     c=[color], s=20, alpha=0.6, label=label)
+        # Draw lines from each point to the mean
+        for pt in pts:
+            ax3d.plot([pt[0], pos_mean_mm[0]], [pt[1], pos_mean_mm[1]], [pt[2], pos_mean_mm[2]],
+                      color=color, linewidth=0.5, alpha=0.3)
+
+    # Draw mean as a large marker
+    ax3d.scatter(*pos_mean_mm, color='black', s=200, marker='*', zorder=5, label='mean')
+
+    ax3d.set_xlabel('X (mm)')
+    ax3d.set_ylabel('Y (mm)')
+    ax3d.set_zlabel('Z (mm)')
+    ax3d.set_title(f'tool0_from_flange_mocap positions (in tool0 frame)\n'
+                   f'Mean: [{pos_mean_mm[0]:.1f}, {pos_mean_mm[1]:.1f}, {pos_mean_mm[2]:.1f}] mm | '
+                   f'Max dev: {np.max(pos_distances):.1f} mm | {len(results)} samples')
+    ax3d.legend(fontsize=8, loc='upper left')
+
+    plt.tight_layout()
+    output_path1b = os.path.join(data_folder, f'debug_offset_positions_{data_batch}.png')
+    plt.savefig(output_path1b, dpi=150)
+    logger.info('Debug offset positions plot saved to: %s', output_path1b)
+    plt.show()
+    plt.close(fig1b)
 
     # ========== Figure 2: Data Diversity (1x2) ==========
     fig2, axes2 = plt.subplots(1, 2, figsize=(14, 5))
@@ -363,7 +600,10 @@ def main():
     
     if USE_GUI:
         pp.wait_if_gui('Processing complete')
-    
+
+    # Debug 3D plot: tool0 vs flange_mocap
+    plot_tool0_vs_flange_3d(results, VALIDATION_DATA_FOLDER, VALIDATION_DATA_BATCH)
+
     # Analyze results
     analyze_results(results, VALIDATION_DATA_FOLDER, VALIDATION_DATA_BATCH, DATE_FOLDER, ROBOT_NAME, ARM)
     
