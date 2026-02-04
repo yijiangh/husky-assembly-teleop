@@ -1556,60 +1556,49 @@ Assumes robots and goal state are in neutral insertion pose relative to each oth
 Grippers must be closed with installed joints.
 
 """
-Z_MOVE_TO_NEUTRAL = 0.020 # reduce insertion distance... given robot cell state are too far apart
-Z_MOVE_TO_INSERT = 0.015
+Z_MOVE_TO_INSERT = 0.035
 CARTESIAN_SPEEDUP = 5
 TIME_PER_ROTATION = 14
 PROBE_END_WAIT_TIME = 1
+USE_CARTESIAN_CONTROLLER = True
 DATA_FOLDER = '/home/jakobgenhart/husky_assistant/workspace_github/src/husky-assembly-teleop/data/kissing_experiment_data'
 def kissing_experiment(monitor):
     hi: HuskyRobotInterface = monitor.huskies[monitor.selected_robot_id].interface
     robot = monitor.huskies[monitor.selected_robot_id].object.robot
-    
-    cam0 = None
-    # cam0 = cv2.VideoCapture(0)
-    # frame_height = 1080
-    # frame_width = 1920
-    # cam0.set(cv2.CAP_PROP_FRAME_HEIGHT, frame_height)
-    # cam0.set(cv2.CAP_PROP_FRAME_WIDTH, frame_width)
-    
+
     # store current neutral pose
     left_tool0_pose = pp.get_link_pose(monitor.goal_model.robot, pp.link_from_name(monitor.goal_model.robot, 'left_ur_arm_tool0'))
     right_tool0_pose = pp.get_link_pose(monitor.goal_model.robot, pp.link_from_name(monitor.goal_model.robot, 'right_ur_arm_tool0'))
     
-    neutral_pose = pp.multiply(left_tool0_pose, pp.Pose(pp.Point(0, 0, Z_MOVE_TO_NEUTRAL)))
-    
-    pp.draw_pose(neutral_pose)
+    neutral_bar_pose, _, _ = compute_bar_pose_from_EE_poses(left_tool0_pose, right_tool0_pose)
+    pp.draw_pose(neutral_bar_pose)
     
     monitor.get_logger().info('### MOVE TO NEUTRAL POSE')
-    reset = generate_reset_trajectory(monitor, 0.01, neutral_pose)
-    hi.send_arm_cmd(reset[0], reset[1], reset[2], index=0)
-    while hi.is_arm_executing[0]:
+    reset = generate_reset_trajectory_bar(monitor, 0.01, neutral_bar_pose)
+    hi.send_dual_arm_cmd(reset)
+    while hi.is_arm_executing[0] or hi.is_arm_executing[1]:
         yield
         
     root2 = 1.414213562
     
-    for i in range(0, 5):        
+    for i in range(0, 3):        
         # sample
-        offset = [1/root2 * (0.004 + 0.001 * i), 1/root2 * (-0.004 - 0.001 * i), 0.00, 0.00] # x y (0.005) a b (0.05) # 0.001 * i
+        offset = [0.000 + 0.005 * i, 0.000, 0.00, 0.00] # x y (0.005) a b (0.05) # 0.001 * i
         
         monitor.get_logger().info(f'### SAMPLED_{offset[0]:.4f}_{offset[1]:.4f}_{offset[2]:.4f}_{offset[3]:.4f}')
         
         # move to starting pose
-        starting_pose_left = pp.multiply(neutral_pose, pp.Pose(pp.Point(offset[0], offset[1], 0), pp.Euler(0, 0, 0)))
-        # rotate around screw hole 
-        t_screw_from_tool0 = pp.Pose(pp.Point(0.040, 0, 0.11275 - 0.0075), pp.Euler(0, 0, 0))
-        starting_pose_right = pp.multiply(right_tool0_pose, t_screw_from_tool0, pp.Pose(pp.Point(0, 0, 0), pp.Euler(offset[2], offset[3], 0)), pp.invert(t_screw_from_tool0))
+        starting_bar_pose = pp.multiply(neutral_bar_pose, pp.Pose(pp.Point(offset[0], offset[1], 0), pp.Euler(0, 0, 0)))
         
         monitor.get_logger().info('### MOVE TO STARTING POSE')
-        start_left = generate_reset_trajectory(monitor, 0.01, starting_pose_left)
-        start_right = generate_reset_trajectory(monitor, 0.01, starting_pose_right, index=1)
-        hi.send_arm_cmd(start_left[0], start_left[1], start_left[2], index=0)
-        hi.send_arm_cmd(start_right[0], start_right[1], start_right[2], index=1)
+        start_bar_movement = generate_reset_trajectory_bar(monitor, 0.01, starting_bar_pose)
+        #monitor.set_arm_trajectory(start_bar_movement[0], 0)
+        #monitor.set_arm_trajectory(start_bar_movement[1], 1)
+        hi.send_dual_arm_cmd(start_bar_movement)
         while hi.is_arm_executing[0] or hi.is_arm_executing[1]:
             yield
         
-        task = kissing_probe_once(monitor, neutral_pose, starting_pose_left, starting_pose_right, offset, DATA_FOLDER, f'offset_{offset[0]:.4f}_{offset[1]:.4f}_{offset[2]:.4f}_{offset[3]:.4f}', cam0)
+        task = kissing_probe_once(monitor, neutral_bar_pose, starting_bar_pose, offset, DATA_FOLDER, f'dual_offset_{offset[0]:.4f}_{offset[1]:.4f}_{offset[2]:.4f}_{offset[3]:.4f}')
         yield
         while True:
             try:
@@ -1617,8 +1606,6 @@ def kissing_experiment(monitor):
                 yield
             except StopIteration:
                 break
-            
-    # cam0.release()
 
 def draw_tcp_pose(monitor):
     hi: HuskyRobotInterface = monitor.huskies[monitor.selected_robot_id].interface
@@ -1630,14 +1617,31 @@ def draw_tcp_pose(monitor):
     
     print(f"Tool0 LOCAL {arm_base_from_tool0}")
     print(f"TCP Pose LOCAL {hi.arm_tcp_pose[0]}")
+    
+def compute_bar_pose_from_EE_poses(left, right):
+    inter = list(pp.interpolate_poses_by_num_steps(left, right, 2))
+    middle_pose = inter[1]
+    to_left = pp.multiply(pp.invert(middle_pose), left)
+    to_right = pp.multiply(pp.invert(middle_pose), right)
+    
+    pp.draw_pose(middle_pose)
+    print(f'MIDDLE POSE {middle_pose}')
+    
+    d_left = np.linalg.norm(np.array(pp.point_from_pose(to_left)))
+    d_right = np.linalg.norm(np.array(pp.point_from_pose(to_right)))
+    
+    print(f'LEFT DISTANCE {d_left}')
+    print(f'RIGHT DISTANCE {d_right}')
+    
+    return (middle_pose, to_left, to_right)
 
-def execute_linear_cartesian_move_left(robot, hi, start_time, cartesian_trajectory):
+def execute_linear_cartesian_move(robot, hi, start_time, cartesian_trajectory, index):
     time_elapsed = time.time() - start_time
     
     if time_elapsed > cartesian_trajectory[2] + cartesian_trajectory[3] + PROBE_END_WAIT_TIME:
         return False
     
-    world_from_arm_base = pp.get_link_pose(robot, pp.link_from_name(robot, 'left_ur_arm_base_link'))
+    world_from_arm_base = pp.get_link_pose(robot, pp.link_from_name(robot, 'left_ur_arm_base_link' if index == 0 else 'right_ur_arm_base_link'))
     
     start_pose_world = cartesian_trajectory[0]
     end_pose_world = cartesian_trajectory[1]
@@ -1654,50 +1658,57 @@ def execute_linear_cartesian_move_left(robot, hi, start_time, cartesian_trajecto
     arm_base_from_tool0 = pp.multiply(pp.invert(world_from_arm_base), lerped)
     
     #pp.draw_pose(lerped)
-    hi.send_arm_cmd_cartesian(arm_base_from_tool0, 0)
+    hi.send_arm_cmd_cartesian(arm_base_from_tool0, index)
     
     return True
 
 """
 Conducts a single kissing motion TODO dont follow local z on rotated starting pose, still follow neutral local z
 """
-def kissing_probe_once(monitor, neutral_pose, start_pose_left, start_pose_right, offset, file_location, name, cam0):
+def kissing_probe_once(monitor, neutral_bar_pose, starting_bar_pose, offset, file_location, name):
     hi: HuskyRobotInterface = monitor.huskies[monitor.selected_robot_id].interface
     robot = monitor.huskies[monitor.selected_robot_id].object.robot
     
     monitor.get_logger().info('### PROBE ONCE')
     
     # data collected
-    motor_stalled = False
-    trajectory_finished = False
-    wrench_profile = []
+    motor_stalled_left = False
+    motor_stalled_right = False
+    trajectory_finished_left = False
+    trajectory_finished_right = False
+    wrench_profile_left = []
+    wrench_profile_right = []
     pose_left_trajectory = []
     pose_right_trajectory = []
     
     # generate insertion trajectory
-    insertion_trajectory, cartesian_trajectory = generate_insertion_motion(monitor, Z_MOVE_TO_INSERT, 0.002/TIME_PER_ROTATION, cartesian_speedup=CARTESIAN_SPEEDUP, neutral_start_pose=start_pose_left)
-    if insertion_trajectory is None:
+    insertion_trajectories, insertion_trajectories_cartesian = generate_insertion_motion_bar(monitor, Z_MOVE_TO_INSERT, 0.002/TIME_PER_ROTATION, cartesian_speedup=CARTESIAN_SPEEDUP, neutral_start_pose=starting_bar_pose)
+    if insertion_trajectories is None and not USE_CARTESIAN_CONTROLLER or insertion_trajectories_cartesian is None and USE_CARTESIAN_CONTROLLER:
         return
     
     # zero ft values
     hi.zero_ft_sensor(0)
+    hi.zero_ft_sensor(1)
     
     # --- CARTESIAN INSERTION ---
-    hi.switch_controller('scaled_joint_trajectory_controller', 'cartesian_compliance_controller', 0)
-    while hi.active_controller[0] != 'cartesian_compliance_controller':
-        yield
+    if USE_CARTESIAN_CONTROLLER:
+        hi.switch_controller('scaled_joint_trajectory_controller', 'cartesian_compliance_controller', 0)
+        hi.switch_controller('scaled_joint_trajectory_controller', 'cartesian_compliance_controller', 1)
+        while hi.active_controller[0] != 'cartesian_compliance_controller' or hi.active_controller[1] != 'cartesian_compliance_controller':
+            yield
     
     # start screw motor and insert
     start_time = time.time()
     hi.set_screw(False, 0)
     hi.set_screw(True, 0)
+    hi.set_screw(False, 1)
+    hi.set_screw(True, 1)
     
-    if False:
-        hi.send_arm_cmd(insertion_trajectory[0], insertion_trajectory[1], insertion_trajectory[2], index=0)
-        
-        # wait for finished executig or stall or TODO too large force TODO detect robot protective stop
-        while hi.is_arm_executing[0] and hi.io_states[0][16]:
-            wrench_profile.append(hi.arm_ft_sensor[0])
+    if not USE_CARTESIAN_CONTROLLER:
+        hi.send_dual_arm_cmd(insertion_trajectories)
+        while hi.is_arm_executing[0] or hi.is_arm_executing[1] and hi.io_states[0][16] or hi.io_states[1][16]:
+            wrench_profile_left.append(hi.arm_ft_sensor[0])
+            wrench_profile_right.append(hi.arm_ft_sensor[1])
             pose_left_trajectory.append(pp.get_link_pose(robot, pp.link_from_name(robot, 'left_ur_arm_tool0')))
             pose_right_trajectory.append(pp.get_link_pose(robot, pp.link_from_name(robot, 'right_ur_arm_tool0')))
             
@@ -1710,80 +1721,105 @@ def kissing_probe_once(monitor, neutral_pose, start_pose_left, start_pose_right,
         
             yield
     else:
-        while hi.io_states[0][16] and execute_linear_cartesian_move_left(robot, hi, start_time, cartesian_trajectory):
-            wrench_profile.append(hi.arm_ft_sensor[0])
+        # while at least one is not stalled, and atleast one is still executing
+        def execute_both():
+            left = execute_linear_cartesian_move(robot, hi, start_time, insertion_trajectories_cartesian[0], 0)
+            right = execute_linear_cartesian_move(robot, hi, start_time, insertion_trajectories_cartesian[1], 1)
+            return left or right
+        while (hi.io_states[0][16] or hi.io_states[1][16]) and execute_both():
+            wrench_profile_left.append(hi.arm_ft_sensor[0])
+            wrench_profile_right.append(hi.arm_ft_sensor[1])
             pose_left_trajectory.append(pp.get_link_pose(robot, pp.link_from_name(robot, 'left_ur_arm_tool0')))
             pose_right_trajectory.append(pp.get_link_pose(robot, pp.link_from_name(robot, 'right_ur_arm_tool0')))
             yield
-            
     
     if not hi.io_states[0][16]:
-        motor_stalled = True
+        motor_stalled_left = True
+    if not hi.io_states[1][16]:
+        motor_stalled_right = True
     if not hi.is_arm_executing[0]:
-        trajectory_finished = True
+        trajectory_finished_left = True
+    if not hi.is_arm_executing[1]:
+        trajectory_finished_right = True
         
-    monitor.get_logger().info(f'### FINISHED PROBE (stalled={motor_stalled}, trajectory_finished={trajectory_finished})')
+    monitor.get_logger().info(f'### FINISHED PROBE (stalled_left={motor_stalled_left}, stalled_right={motor_stalled_right}, trajectory_finished_left={trajectory_finished_left}, trajectory_finished_right={trajectory_finished_right})')
     
     finish_time = time.time()
     while time.time() - finish_time < PROBE_END_WAIT_TIME:
         yield
-        
+    class NumpyEncoder(json.JSONEncoder):
+        def default(self, obj):
+            if isinstance(obj, np.ndarray):
+                return obj.tolist()
+            return super().default(obj)
+    
     data = {
         'name': name,
         'start_time': start_time,
         'finish_time': finish_time,
-        'neutral_pose': neutral_pose,
-        'starting_pose_left': start_pose_left,
-        'start_pose_right': start_pose_right,
+        'neutral_bar_pose': neutral_bar_pose,
+        'starting_bar_pose': starting_bar_pose,
         'offset': offset,
-        'motor_stalled': motor_stalled,
-        'trajectory_finished': trajectory_finished,
-        'wrench_profile': wrench_profile,
+        'motor_stalled_left': motor_stalled_left,
+        'motor_stalled_right': motor_stalled_right,
+        'trajectory_finished_left': trajectory_finished_left,
+        'trajectory_finished_right': trajectory_finished_right,
+        'wrench_profile_left': wrench_profile_left,
+        'wrench_profile_right': wrench_profile_right,
         'pose_left_trajectory': pose_left_trajectory,
         'pose_right_trajectory': pose_right_trajectory,
     } 
     with open(file_location + '/' + name + '.json', 'w') as f:
-        json.dump(data, f, indent=4)
+        json.dump(data, f, indent=4, cls=NumpyEncoder)
     
     monitor.get_logger().info('### RETREAT')
     
     # generate retreat motion
-    retreat_trajectory, cartesian_retreat = generate_insertion_motion(monitor, -Z_MOVE_TO_INSERT, 0.002/TIME_PER_ROTATION*CARTESIAN_SPEEDUP)
-    if retreat_trajectory is None:
+    retreat_trajectories, retreat_trajectories_cartesian = generate_insertion_motion_bar(monitor, -Z_MOVE_TO_INSERT, 0.002/TIME_PER_ROTATION*CARTESIAN_SPEEDUP)
+    if retreat_trajectories is None and not USE_CARTESIAN_CONTROLLER or retreat_trajectories_cartesian is None and USE_CARTESIAN_CONTROLLER:
         return
     
     # retreat and unscrew (custom firmware which turns backwards on False)
     hi.set_screw(True, 0)
     hi.set_screw(False, 0)
-    if False:
-        hi.send_arm_cmd(retreat_trajectory[0], retreat_trajectory[1], retreat_trajectory[2], index=0)
-        while hi.is_arm_executing[0]:
+    hi.set_screw(True, 1)
+    hi.set_screw(False, 1)
+    if not USE_CARTESIAN_CONTROLLER:
+        hi.send_dual_arm_cmd(retreat_trajectories)
+        while hi.is_arm_executing[0] or hi.is_arm_executing[1]:
             yield
     else:
         retreat_start_time = time.time()
-        while execute_linear_cartesian_move_left(robot, hi, retreat_start_time, cartesian_retreat):
+        while execute_linear_cartesian_move(robot, hi, retreat_start_time, retreat_trajectories_cartesian[0], 0) or execute_linear_cartesian_move(robot, hi, retreat_start_time, retreat_trajectories_cartesian[1], 1):
             yield
     
     current_left_tool_world_pose = pp.get_link_pose(robot, pp.link_from_name(monitor.goal_model.robot, 'left_ur_arm_tool0'))
-    while np.linalg.norm(np.array(cartesian_retreat[1][0]) - np.array(pp.point_from_pose(current_left_tool_world_pose))) > 0.01:
+    current_right_tool_world_pose = pp.get_link_pose(robot, pp.link_from_name(monitor.goal_model.robot, 'right_ur_arm_tool0'))
+    while (np.linalg.norm(np.array(retreat_trajectories_cartesian[0][1][0]) - np.array(pp.point_from_pose(current_left_tool_world_pose))) > 0.02) or (np.linalg.norm(np.array(retreat_trajectories_cartesian[1][1][0]) - np.array(pp.point_from_pose(current_right_tool_world_pose))) > 0.02):
         print("retreat did not work! retry!")
-        print(f'{np.array(cartesian_retreat[1][0])} vs {np.array(pp.point_from_pose(current_left_tool_world_pose))}')
+        print(f'LEFT: {np.array(retreat_trajectories_cartesian[0][1][0])} vs {np.array(pp.point_from_pose(current_left_tool_world_pose))}')
+        print(f'RIGHT: {np.array(retreat_trajectories_cartesian[1][1][0])} vs {np.array(pp.point_from_pose(current_right_tool_world_pose))}')
         
         # retreat and unscrew (custom firmware which turns backwards on False)
         hi.set_screw(True, 0)
         hi.set_screw(False, 0)
+        hi.set_screw(True, 1)
+        hi.set_screw(False, 1)
         
         start_retry_time = time.time()
         while time.time() - start_retry_time < 5:
             yield
             
         current_left_tool_world_pose = pp.get_link_pose(robot, pp.link_from_name(monitor.goal_model.robot, 'left_ur_arm_tool0'))
+        current_right_tool_world_pose = pp.get_link_pose(robot, pp.link_from_name(monitor.goal_model.robot, 'right_ur_arm_tool0'))
         
         
     # --- REVERT TO JOINT SPACE ---
-    hi.switch_controller('cartesian_compliance_controller', 'scaled_joint_trajectory_controller', 0)
-    while hi.active_controller[0] != 'scaled_joint_trajectory_controller':
-        yield
+    if USE_CARTESIAN_CONTROLLER:
+        hi.switch_controller('cartesian_compliance_controller', 'scaled_joint_trajectory_controller', 0)
+        hi.switch_controller('cartesian_compliance_controller', 'scaled_joint_trajectory_controller', 1)
+        while hi.active_controller[0] != 'scaled_joint_trajectory_controller' or hi.active_controller[1] != 'scaled_joint_trajectory_controller':
+            yield
     
 def move_left_linear_z(monitor, length, speed):
     husky = monitor.huskies[monitor.selected_robot_id]
@@ -1797,61 +1833,94 @@ def move_left_linear_z(monitor, length, speed):
         hi.set_screw(True, 0)
         hi.set_screw(False, 0)
         
-    trajectory, _ = generate_insertion_motion(monitor, length, speed)
+    trajectory, _ = generate_insertion_motion_bar(monitor, length, speed)
     hi.send_arm_cmd(trajectory[0], trajectory[1], trajectory[2], index=0)
     
-def generate_insertion_motion(monitor, depth, speed, cartesian_speedup=1, neutral_start_pose=None):
+def generate_insertion_motion_bar(monitor, depth, speed, cartesian_speedup=1, neutral_start_pose=None):
     husky = monitor.huskies[monitor.selected_robot_id]
     hi: HuskyRobotInterface = husky.interface
     robot = husky.object.robot
     
     obstacles = list(monitor.static_obstacles.values())
-    attachments = [husky.object.ee_list[0][1]]
-    start_pose = pp.get_link_pose(robot, pp.link_from_name(robot, 'left_ur_arm_tool0'))
+    attachments = [[husky.object.ee_list[0][1]], [husky.object.ee_list[1][1]]]
+    start_pose, to_left, to_right = compute_bar_pose_from_EE_poses(pp.get_link_pose(robot, pp.link_from_name(robot, 'left_ur_arm_tool0')), pp.get_link_pose(robot, pp.link_from_name(robot, 'right_ur_arm_tool0')))
     if neutral_start_pose is not None:
         start_pose = neutral_start_pose
-    init_conf = hi.arm_joint_pose[0]
+        
+    end_pose = pp.multiply(start_pose, pp.Pose(pp.Point(0, 0, depth)))
+        
+    left_gripper_start_pose = pp.multiply(start_pose, to_left)
+    right_gripper_start_pose = pp.multiply(start_pose, to_right)
+    
+    left_gripper_end_pose = pp.multiply(end_pose, to_left)
+    right_gripper_end_pose = pp.multiply(end_pose, to_right)
+    
+    init_conf_left = hi.arm_joint_pose[0]
+    init_conf_right = hi.arm_joint_pose[1]
     
     time = max(1, abs(depth/speed))
-    single_arm_trajectory = ([], None, time, None)
-    cartesian_trajectory = [start_pose, pp.multiply(start_pose, pp.Pose(pp.Point(0, 0, depth))), time/cartesian_speedup, time - time/cartesian_speedup]
+    arm_trajectories = [([], None, time, None), ([], None, time, None)]
+    cartesian_trajectories = [[left_gripper_start_pose, left_gripper_end_pose, time/cartesian_speedup, time - time/cartesian_speedup], [right_gripper_start_pose, right_gripper_end_pose, time/cartesian_speedup, time - time/cartesian_speedup]]
     
     for i in range(0, 5):
         pose = pp.multiply(start_pose, pp.Pose(pp.Point(0, 0, i * depth/4.0)))
-
-        arm_conf = get_arm_ik_for_grasp_bar(husky.object.robot, planning.IK_SOLVER_DUAL[0], pose, attachments, obstacles, hint_conf=init_conf)
-        if arm_conf is None:
-            monitor.get_logger().warn("IK failed!")
-            return None, None
-        init_conf = arm_conf
-        single_arm_trajectory[0].append(arm_conf)
         
-    return single_arm_trajectory, cartesian_trajectory
+        left_pose = pp.multiply(pose, to_left)
+        right_pose = pp.multiply(pose, to_right)
+
+        arm_conf_left = get_arm_ik_for_grasp_bar(husky.object.robot, planning.IK_SOLVER_DUAL[0], left_pose, attachments[0], obstacles, hint_conf=init_conf_left)
+        arm_conf_right = get_arm_ik_for_grasp_bar(husky.object.robot, planning.IK_SOLVER_DUAL[1], right_pose, attachments[1], obstacles, hint_conf=init_conf_right)
+        if arm_conf_left is None:
+            monitor.get_logger().warn("IK left failed!")
+            return None, cartesian_trajectories
+        if arm_conf_right is None:
+            monitor.get_logger().warn("IK right failed!")
+            return None, cartesian_trajectories
+        init_conf_left = arm_conf_left
+        init_conf_right = arm_conf_right
+        arm_trajectories[0][0].append(arm_conf_left)
+        arm_trajectories[1][0].append(arm_conf_right)
+        
+    return arm_trajectories, cartesian_trajectories
             
-            
-def generate_reset_trajectory(monitor, speed, goal_pose, index=0):
+          
+# TODO adapt to dual arm and bar  
+def generate_reset_trajectory_bar(monitor, speed, goal_pose):
     husky = monitor.huskies[monitor.selected_robot_id]
     hi: HuskyRobotInterface = husky.interface
     robot = husky.object.robot
     
     obstacles = list(monitor.static_obstacles.values())
-    attachments = [husky.object.ee_list[index][1]]
-    start_pose = pp.get_link_pose(robot, pp.link_from_name(robot, 'left_ur_arm_tool0' if index == 0 else 'right_ur_arm_tool0'))
-    init_conf = hi.arm_joint_pose[index]
+    attachments = [[husky.object.ee_list[0][1]], [husky.object.ee_list[1][1]]]
+    start_pose, to_left, to_right = compute_bar_pose_from_EE_poses(pp.get_link_pose(robot, pp.link_from_name(robot, 'left_ur_arm_tool0')), pp.get_link_pose(robot, pp.link_from_name(robot, 'right_ur_arm_tool0')))
+    
+    init_conf_left = hi.arm_joint_pose[0]
+    init_conf_right = hi.arm_joint_pose[1]
     
     # TODO compute distance to compute time
     offset = np.array(pp.point_from_pose(start_pose)) - np.array(pp.point_from_pose(goal_pose))
     distance = np.linalg.norm(offset)
     
-    single_arm_trajectory = ([init_conf], None, max(1, distance/speed), None)
-    arm_conf = get_arm_ik_for_grasp_bar(husky.object.robot, planning.IK_SOLVER_DUAL[index], goal_pose, attachments, obstacles, hint_conf=init_conf)
-    if arm_conf is None:
-        monitor.get_logger().warn("IK failed!")
-        return None
-    single_arm_trajectory[0].append(arm_conf)
+    time = max(1, abs(distance/speed))
+    arm_trajectories = [([], None, time, None), ([], None, time, None)]
     
-    if np.max(np.abs(init_conf - arm_conf)) > 10/360*2*np.pi:
-        monitor.get_logger().warn("too large deviation from start conf - failing IK")
-        return None
+    bar_trajectory = pp.interpolate_poses_by_num_steps(start_pose, goal_pose, 5)
     
-    return single_arm_trajectory
+    for pose in bar_trajectory:
+        left_pose = pp.multiply(pose, to_left)
+        right_pose = pp.multiply(pose, to_right)
+
+        arm_conf_left = get_arm_ik_for_grasp_bar(husky.object.robot, planning.IK_SOLVER_DUAL[0], left_pose, attachments[0], obstacles, hint_conf=init_conf_left)
+        arm_conf_right = get_arm_ik_for_grasp_bar(husky.object.robot, planning.IK_SOLVER_DUAL[1], right_pose, attachments[1], obstacles, hint_conf=init_conf_right)
+        if arm_conf_left is None:
+            monitor.get_logger().warn("IK left failed!")
+            return None
+        if arm_conf_right is None:
+            monitor.get_logger().warn("IK right failed!")
+            return None
+        init_conf_left = arm_conf_left
+        init_conf_right = arm_conf_right
+        arm_trajectories[0][0].append(arm_conf_left)
+        arm_trajectories[1][0].append(arm_conf_right)
+    
+    return arm_trajectories

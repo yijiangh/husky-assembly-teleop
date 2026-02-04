@@ -51,7 +51,7 @@ from rclpy.qos import QoSProfile
 UR5e_HOME_STATE = np.array([0, -np.pi/2, 0, -np.pi/2, 0, np.pi/2])
 ARM_JOINT_NAMES = ['shoulder_pan_joint', 'shoulder_lift_joint', 'elbow_joint', 'wrist_1_joint', 'wrist_2_joint', 'wrist_3_joint']
 
-USE_TRAJECTORY_TOPIC_INTERFACE = 0
+USE_TRAJECTORY_TOPIC_INTERFACE = 1
 ARM_NOT_EXECUTING_TIME = 1
 
 def quaterinion_2_angular_velocity(q1, q2, dt):
