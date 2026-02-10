@@ -11,8 +11,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 import pybullet_planning as pp
 from circle_fitting_3d import Circle3D
-from skspatial.objects import Point
-
 from config_loader import load_config, HERE
 from logging_utils import setup_logger
 
@@ -75,17 +73,21 @@ def process_data_batch(data_batch, date_folder, export=True):
         elapsed_time = time.perf_counter() - start_time
         logger.info('  Circle fitting time: %.3f ms', elapsed_time * 1000)
     
-        # Calculate projections onto circle and distances
-        distances = []
-        projected_points = []
-        for pt in points:
-            pt_skspatial = Point(pt)
-            point_on_plane = circle_3d._plane.project_point(pt_skspatial)
-            vector_to_projected_point = point_on_plane - circle_3d.center
-            vector_to_projected_point = vector_to_projected_point / np.linalg.norm(vector_to_projected_point)
-            projected_point = circle_3d.center + vector_to_projected_point * circle_3d.radius
-            projected_points.append(projected_point)
-            distances.append(np.linalg.norm(projected_point - pt))
+        # Calculate projections onto circle and distances (vectorized)
+        pts = np.array(points)
+        center = np.array(circle_3d.center)
+        normal = np.array(circle_3d.normal)
+        normal = normal / np.linalg.norm(normal)
+        # Project points onto the circle's plane
+        diff = pts - center
+        dist_to_plane = diff @ normal  # signed distances to plane
+        pts_on_plane = pts - np.outer(dist_to_plane, normal)
+        # Get unit vectors from center to projected points, then scale by radius
+        vecs = pts_on_plane - center
+        vecs_norm = np.linalg.norm(vecs, axis=1, keepdims=True)
+        vecs_unit = vecs / vecs_norm
+        projected_points = center + vecs_unit * circle_3d.radius
+        distances = np.linalg.norm(projected_points - pts, axis=1).tolist()
     
         logger.info('  Circle fit quality - max point distance: %.3f mm', max(distances) * 1000)
     

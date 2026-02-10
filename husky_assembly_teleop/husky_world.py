@@ -605,8 +605,12 @@ def calibrate_button(monitor, tool_mocap_name, index=0):
         print(monitor._mocap_rigidbody_cache)
         if h.name in monitor._mocap_rigidbody_cache:
             base_mocap_pose = monitor._mocap_rigidbody_cache[h.name]
+        else:
+            monitor.get_logger().warn(f"Base mocap pose for '{h.name}' not found in mocap cache!")
         if tool_mocap_name in monitor._mocap_rigidbody_cache:
             flange_mocap_pose = monitor._mocap_rigidbody_cache[tool_mocap_name]
+        else:
+            monitor.get_logger().warn(f"Flange mocap pose for '{tool_mocap_name}' not found in mocap cache!")
     else:
         pass
         # base_mocap_pose = ho.get_link_pose_from_name("base_footprint")
@@ -615,15 +619,15 @@ def calibrate_button(monitor, tool_mocap_name, index=0):
     tool0_fk_pose = ho.get_link_pose_from_name(tool0_link_name)
 
     # Visualization for debugging mocap poses
-    DEBUG_MOCAP_POSES = True  # Toggle this to enable/disable mocap pose visualization
+    DEBUG_MOCAP_POSES = False  # Toggle this to enable/disable mocap pose visualization
 
     if DEBUG_MOCAP_POSES:
         # Make all robot links transparent for easier visualization
-        robot = ho.robot
-        for link_id in range(pp.get_num_joints(robot)):
-            pp.set_color(robot, [1, 1, 1, 0.2], link=link_id)  # Use RGBA where A<1 for transparency
-        # Also set the base link transparent
-        pp.set_color(robot, [1, 1, 1, 0.2], link=-1)
+        # robot = ho.robot
+        # for link_id in range(pp.get_num_joints(robot)):
+        #     pp.set_color(robot, [1, 1, 1, 0.2], link=link_id)  # Use RGBA where A<1 for transparency
+        # # Also set the base link transparent
+        # pp.set_color(robot, [1, 1, 1, 0.2], link=-1)
 
         # Determine the arm_base_link name based on dual arm setup and index
         if monitor.huskies[monitor.selected_robot_id].dual_arm:
@@ -640,6 +644,7 @@ def calibrate_button(monitor, tool_mocap_name, index=0):
         # Get all poses for visualization
         base_footprint_pose = ho.get_link_pose_from_name("base_footprint")
         arm_base_link_pose = ho.get_link_pose_from_name(arm_base_link_name)
+        tool0_pose = ho.get_link_pose_from_name(tool0_link_name)
 
         # Draw the poses with annotations
         if base_mocap_pose is not None:
@@ -650,30 +655,33 @@ def calibrate_button(monitor, tool_mocap_name, index=0):
             pp.draw_pose(flange_mocap_pose, length=0.15)
             pp.add_text("flange_mocap (calib_tool)", position=flange_mocap_pose[0])
 
-        pp.draw_pose(base_footprint_pose, length=0.15)
-        pp.add_text("base_footprint_link", position=base_footprint_pose[0])
+        pp.draw_pose(tool0_pose, length=0.15)
+        pp.add_text(f"{tool0_link_name}", position=tool0_pose[0])
 
-        pp.draw_pose(arm_base_link_pose, length=0.15)
-        pp.add_text(f"{arm_base_link_name}", position=arm_base_link_pose[0])
+        # pp.draw_pose(base_footprint_pose, length=0.15)
+        # pp.add_text("base_footprint_link", position=base_footprint_pose[0])
 
-        # Visualize all link poses between arm_base_link_inertia and tool0
-        arm_link_names = [
-            f"{arm_prefix}ur_arm_shoulder_link",
-            f"{arm_prefix}ur_arm_upper_arm_link",
-            f"{arm_prefix}ur_arm_forearm_link",
-            f"{arm_prefix}ur_arm_wrist_1_link",
-            f"{arm_prefix}ur_arm_wrist_2_link",
-            f"{arm_prefix}ur_arm_wrist_3_link",
-            f"{arm_prefix}ur_arm_tool0"
-        ]
+        # pp.draw_pose(arm_base_link_pose, length=0.15)
+        # pp.add_text(f"{arm_base_link_name}", position=arm_base_link_pose[0])
 
-        for link_name in arm_link_names:
-            try:
-                link_pose = ho.get_link_pose_from_name(link_name)
-                pp.draw_pose(link_pose, length=0.1)
-                pp.add_text(link_name, position=[p + 0.015 for p in link_pose[0]])
-            except:
-                pass  # Skip if link doesn't exist
+        # # Visualize all link poses between arm_base_link_inertia and tool0
+        # arm_link_names = [
+        #     f"{arm_prefix}ur_arm_shoulder_link",
+        #     f"{arm_prefix}ur_arm_upper_arm_link",
+        #     f"{arm_prefix}ur_arm_forearm_link",
+        #     f"{arm_prefix}ur_arm_wrist_1_link",
+        #     f"{arm_prefix}ur_arm_wrist_2_link",
+        #     f"{arm_prefix}ur_arm_wrist_3_link",
+        #     f"{arm_prefix}ur_arm_tool0"
+        # ]
+
+        # for link_name in arm_link_names:
+        #     try:
+        #         link_pose = ho.get_link_pose_from_name(link_name)
+        #         pp.draw_pose(link_pose, length=0.1)
+        #         pp.add_text(link_name, position=[p + 0.015 for p in link_pose[0]])
+        #     except:
+        #         pass  # Skip if link doesn't exist
 
     if flange_mocap_pose is None:
         if monitor.CALIBRATION:
@@ -692,7 +700,20 @@ def calibrate_button(monitor, tool_mocap_name, index=0):
                  })
     else:
         tool_0_fk_from_mocap = pp.multiply(pp.invert(tool0_fk_pose), flange_mocap_pose)
-        pp.draw_pose(flange_mocap_pose)
+
+        # Draw the poses with annotations
+        if base_mocap_pose is not None:
+            pp.draw_pose(base_mocap_pose, length=0.15)
+            pp.add_text("base_mocap", position=base_mocap_pose[0])
+
+        if flange_mocap_pose is not None:
+            pp.draw_pose(flange_mocap_pose, length=0.15)
+            pp.add_text("flange_mocap (calib_tool)", position=flange_mocap_pose[0])
+
+        # tool0_pose = ho.get_link_pose_from_name(tool0_link_name)
+        # pp.draw_pose(tool0_pose, length=0.15)
+        # pp.add_text(f"{tool0_link_name}", position=tool0_pose[0])
+
         monitor.append_calibration_data({
                 'robot_id' : int(monitor.selected_robot_id),
                 'arm_index' : int(monitor.selected_arm_index),
@@ -894,24 +915,23 @@ def execute_arm_conf(monitor, conf, index=0):
                                                                       None, monitor.trajectory_time, index=index)
 
 def execute_arm_trajectory_and_record_each_conf(monitor, calib_traj, time_between_confs=2, index=0):
-    settle_time = 6
+    # settle_time = 4
+    settle_time = 3
+    time_between_confs = 1
     hi = monitor.huskies[monitor.selected_robot_id].interface
     # last_conf = hi.arm_joint_pose[index]
     # print(transit_traj)
     # execute_arm_trajectory(monitor, transit_traj, index=index)
 
     total_num_confs = len(calib_traj[0])
-    calibrate_button(monitor, monitor.active_calib_tool_name)
-    monitor.get_logger().info(f'Saved calibration data {i}/{total_num_confs}.')
 
     # ! there seems to be a delay in arm conf, resulting in a one-step lag between the conf and the mocap data
     # TODO investigate
     for i, conf in enumerate(calib_traj[0]):
         monitor.get_logger().info(f'Executing arm conf {i+1}/{len(calib_traj[0])}...')
-        # print('last conf:', last_conf, 'conf:', conf)
         hi.send_arm_cmd(
-            # [hi.arm_joint_pose[monitor.selected_arm_index], conf], 
-            [conf], 
+            [hi.arm_joint_pose[monitor.selected_arm_index], conf], 
+            # [conf], 
             None, 
             time_between_confs,
             index=index
@@ -920,14 +940,14 @@ def execute_arm_trajectory_and_record_each_conf(monitor, calib_traj, time_betwee
         # wait until it finishes
         time.sleep(time_between_confs + settle_time)
 
-        calibrate_button(monitor, monitor.active_calib_tool_name)
-        monitor.get_logger().info(f'Saved calibration data {i}/{total_num_confs}.')
-
         # ! since the joint state is updated in the main thread and is blocked when running this function, 
         # we need to manually update the last conf here
         # Todo: change to Jakob's task system to avoid blocking the main thread
+        # ! important to update it before the calibrate button, since it needs the latest conf
         hi.arm_joint_pose[monitor.selected_arm_index] = conf
-        # last_conf = conf
+
+        calibrate_button(monitor, monitor.active_calib_tool_name)
+        monitor.get_logger().info(f'Saved calibration data {i}/{total_num_confs}.')
 
     # save_calibration(monitor, filename_suffix=f'arm_{monitor.selected_arm_index}_j_{monitor.calib_target_axis}')
     # monitor.calibration_data = []

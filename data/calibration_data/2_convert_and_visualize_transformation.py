@@ -22,7 +22,7 @@ config = load_config()
 DATE_FOLDER = config['date_folder']
 ROBOT_NAME = config['robot_name']
 ARM = config['arm']
-USE_GUI = config.get('use_gui', True)
+USE_GUI =  True # config.get('use_gui', True)
 ARM_BASE_LINK_NAME = get_arm_base_link_name(ROBOT_NAME, ARM)
 
 # File paths

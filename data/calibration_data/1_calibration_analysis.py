@@ -479,7 +479,7 @@ def compute_plane_plane_intersection(plane1_point, plane1_normal, plane2_point, 
     return intersection_line
 
 
-def compute_base_frame(j0_line, j1_line, base_offset, joint_axes_info, robot_name):
+def compute_base_frame(j0_line, j1_line, base_offset, robot_name):
     """
     Compute robot base frame from j0 and j1 fitted lines.
 
@@ -487,7 +487,6 @@ def compute_base_frame(j0_line, j1_line, base_offset, joint_axes_info, robot_nam
         j0_line: Fitted line for j0 (shoulder pan joint)
         j1_line: Fitted line for j1 (shoulder lift joint)
         base_offset: Offset from j0 joint to base origin
-        joint_axes_info: Dictionary containing parsed joint axes from URDF
         robot_name: Name of the robot to determine axis mapping
 
     Steps:
@@ -873,7 +872,7 @@ def main():
     logger.info('Computing robot base frame')
     logger.info('=' * 80)
     base_frame_tf, base_origin, base_axes, intersection_info = compute_base_frame(
-        j0_line, j1_line, BASE_OFFSET, joint_axes_info, robot_name
+        j0_line, j1_line, BASE_OFFSET, robot_name
     )
     
     # Convert to pose (position, quaternion)

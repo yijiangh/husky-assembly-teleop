@@ -78,10 +78,11 @@ def compute_tool0_flange_offset(robot, arm_joints, tool0_link_name, calibration_
         # Shift mocap by -1 (wrapped): joint_conf[i] pairs with mocap[i-1]
         # At i=0 this wraps to mocap[-1] (last entry)
         for i in range(len(raw_entries)):
-            if i == 0:
-                continue  # Skip first entry due to wrap-around
+            # if i == 0:
+            #     continue  # Skip first entry due to wrap-around
             joint_conf_entry = raw_entries[i]
-            mocap_entry = raw_entries[i - 1]
+            mocap_entry = raw_entries[i]
+            # mocap_entry = raw_entries[i - 1]
 
             flange_mocap_pose = mocap_entry.get("flange_mocap_pose", [])
             base_mocap_pose = mocap_entry.get("base_mocap_pose", [])
