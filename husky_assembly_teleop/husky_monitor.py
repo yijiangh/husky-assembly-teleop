@@ -49,6 +49,9 @@ FILENAME_SUFFIX = '_vary_pos_vary_yaw'
 # VALIDATION_PROBLEM_NAME = '250905Orientation_test'
 VALIDATION_PROBLEM_NAME = '260108_extrinsic_calib_trajs'
 # VALIDATION_PROBLEM_NAME = '250902_kissing_experiment'
+
+CALIBRATION_DATE = '20260126'
+CALIBRATION_BATCHES = ['j0', 'j1', 'validation', 'punch_validation']
   
 class HuskyMonitor(Node):
     USE_MOCAP = 1
@@ -98,6 +101,8 @@ class HuskyMonitor(Node):
         self.calib_target_axis_slider = None
         self.data_collection_mode_slider = None
         self.data_collection_mode = True  # True = data collection mode, False = validation mode
+        self.calib_batch_slider = None
+        self.selected_calib_batch_index = 0
 
         self.selected_robot_slider = None
         self.selected_robot_id = 0
@@ -117,11 +122,6 @@ class HuskyMonitor(Node):
         # Punch tool calibration validation
         self.punch_tool_offset = np.array([0.0, 0.0, 0.15])  # default, overridden by config
         self.tool0_from_punch_tip = pp.Pose(point=self.punch_tool_offset)
-        self.world_from_ee_punch_ref = None  # recorded reference pose
-        self.punch_free_trajectory = None
-        self.punch_cartesian_trajectory = None
-        self.punch_free_traj_time = 10.0
-        self.punch_cartesian_traj_time = 5.0
         self.punch_validation_results = []
 
         # goal and trajectory interface
@@ -264,6 +264,13 @@ class HuskyMonitor(Node):
         sanitized = re.sub(r"[^A-Za-z0-9_.-]+", "_", base).strip("_")
         return sanitized
 
+    def update_calib_batch_index(self, value):
+        self.selected_calib_batch_index = int(np.clip(int(value), 0, len(CALIBRATION_BATCHES) - 1))
+
+    @property
+    def selected_calib_batch(self):
+        return CALIBRATION_BATCHES[self.selected_calib_batch_index]
+
     def record_calibration_data(self):
         if self.data_collection_mode:
             # In data collection mode, use the selected trajectory filename as suffix
@@ -271,7 +278,9 @@ class HuskyMonitor(Node):
         else:
             # In validation mode, use "validation" as suffix
             filename_suffix = "validation"
-        world.save_calibration(self, filename_suffix=filename_suffix)
+        world.save_calibration(self, filename_suffix=filename_suffix,
+                               date_folder=CALIBRATION_DATE,
+                               data_batch=self.selected_calib_batch)
         self.calibration_data = []
 
     def record_markerset_data(self):
@@ -335,7 +344,7 @@ class HuskyMonitor(Node):
         import yaml
         try:
             punch_config_path = os.path.join(
-                DATA_DIRECTORY, 'calibration_data', '20260126', 'config.yaml'
+                DATA_DIRECTORY, 'calibration_data', CALIBRATION_DATE, 'config.yaml'
             )
             with open(punch_config_path, 'r') as f:
                 config = yaml.safe_load(f)
@@ -346,31 +355,13 @@ class HuskyMonitor(Node):
         except Exception as e:
             self.get_logger().warn(f'Failed to load punch tool config: {e}')
 
-    def update_punch_free_traj_time(self, value):
-        self.punch_free_traj_time = value
-
-    def update_punch_cartesian_traj_time(self, value):
-        self.punch_cartesian_traj_time = value
-
     def record_punch_reference_pose(self):
-        """Record the current punch tip pose in world frame as the reference."""
-        world.record_punch_reference(self)
-
-    def load_punch_reference_pose(self):
-        """Load a previously saved punch reference pose from JSON."""
-        world.load_punch_reference(self)
-
-    def plan_punch_approach(self):
-        """Plan two-segment approach to the recorded punch reference pose."""
-        world.plan_punch_approach(self)
-
-    def execute_punch_approach(self):
-        """Execute both segments of the punch approach sequentially."""
-        world.execute_punch_approach(self)
+        """Record the current punch tip pose in world frame via FK."""
+        world.record_punch_reference(self, date_folder=CALIBRATION_DATE)
 
     def save_punch_validation_data(self):
         """Save all accumulated punch validation results to JSON."""
-        world.save_punch_validation_data(self)
+        world.save_punch_validation_data(self, date_folder=CALIBRATION_DATE)
 
     def update_goal_align_axis(self, value):
         self.goal_element_axis = value
@@ -1378,10 +1369,16 @@ class HuskyMonitor(Node):
             # self.calib_target_axis_slider = Slider("calib target joint id", self.update_calib_target_axis, 0, 1, 0)
             # Mode slider: 0 = validation mode, 1 = data collection mode
             self.data_collection_mode_slider = Slider(
-                "Mode (0:validation, 1:data_collection)", 
-                self.update_data_collection_mode, 
-                0.0, 1.0, 
+                "Mode (0:validation, 1:data_collection)",
+                self.update_data_collection_mode,
+                0.0, 1.0,
                 1.0 if self.data_collection_mode else 0.0
+            )
+            self.calib_batch_slider = Slider(
+                "Batch (0:j0,1:j1,2:valid,3:punch)",
+                self.update_calib_batch_index,
+                0, len(CALIBRATION_BATCHES) - 1,
+                self.selected_calib_batch_index
             )
             # self.buttons.append(Button('Sample calib path', self.sample_calib_traj))
             # self.buttons.append(Button('Execute transit to calib traj', self.execute_free_trajectory))
@@ -1390,6 +1387,11 @@ class HuskyMonitor(Node):
 
             # self.buttons.append(Button('Set joint 0 to zero', self.set_goal_joint_0_to_zero))
             # self.buttons.append(Button('Calib joint 1', lambda: world.calibrate_joint(self, 1, self.active_calib_tool_name)))
+
+        if self.PUNCH_CALIB_VALIDATION:
+            self.dump_sep_sliders.append(Slider("----------Punch Calib Validation", lambda : None))
+            self.buttons.append(Button('Record Punch Take', self.record_punch_reference_pose))
+            self.buttons.append(Button('Save Punch Validation Data', self.save_punch_validation_data))
 
         self.dump_sep_sliders.append(Slider("----------DEBUG utils", lambda : None))
         self.buttons.append(Button('Record current calib conf', lambda: world.calibrate_button(self, self.active_calib_tool_name)))
@@ -1601,6 +1603,8 @@ class HuskyMonitor(Node):
         
         if self.CALIBRATION and self.data_collection_mode_slider:
             self.data_collection_mode_slider.update()
+        if self.CALIBRATION and self.calib_batch_slider:
+            self.calib_batch_slider.update()
 
         if self.BAR_HOLDING_ACCURACY_TEST:
             self.goal_axis_slider.update()

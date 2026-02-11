@@ -736,21 +736,20 @@ def calibrate_button(monitor, tool_mocap_name, index=0):
                 'tool0_fk_from_mocap' : [list(v) for v in tool_0_fk_from_mocap],
              })
 
-def save_calibration(monitor, filename_suffix=""):
-    # print(monitor.calibration_data)
+def save_calibration(monitor, filename_suffix="", date_folder=None, data_batch=None):
     # save monitor.calibration_data to json, file name with time stamp
-    # save to data/calibration_data
+    # save to data/calibration_data/<date_folder>/<data_batch>/
     timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-    # Create a date subfolder (format: YYYYMMDD)
-    date_subfolder = datetime.now().strftime("%Y%m%d")
-    subfolder_path = os.path.join(CALIB_DATA_DIR, date_subfolder)
 
-    # Create the subfolder if it doesn't exist
-    if not os.path.exists(subfolder_path):
-        os.makedirs(subfolder_path)
-        monitor.get_logger().info(f"Created subfolder: {subfolder_path}")
+    if date_folder is None:
+        date_folder = datetime.now().strftime("%Y%m%d")
 
-    # Save the file in the date subfolder
+    subfolder_path = os.path.join(CALIB_DATA_DIR, date_folder)
+    if data_batch:
+        subfolder_path = os.path.join(subfolder_path, data_batch)
+
+    os.makedirs(subfolder_path, exist_ok=True)
+
     if filename_suffix:
         filename = os.path.join(subfolder_path, f"calibration_{timestamp}_{filename_suffix}.json")
     else:
@@ -765,12 +764,10 @@ def save_calibration(monitor, filename_suffix=""):
 # Punch tool calibration validation
 #################################
 
-PUNCH_CALIB_DIR = os.path.join(CALIB_DATA_DIR, "punch_validation")
-
-def record_punch_reference(monitor):
+def record_punch_reference(monitor, date_folder=None):
     """Record the current world_from_punch_tip pose using FK + punch offset.
 
-    Persists to a JSON file so it survives session restarts.
+    Appends the result to monitor.punch_validation_results for later analysis.
     """
     h = monitor.huskies[monitor.selected_robot_id]
     ho = h.object
@@ -790,15 +787,20 @@ def record_punch_reference(monitor):
     world_from_tool0 = ho.get_link_pose_from_name(tool0_link_name)
     world_from_punch_tip = pp.multiply(world_from_tool0, monitor.tool0_from_punch_tip)
 
-    monitor.world_from_ee_punch_ref = world_from_punch_tip
-
     # Visualize
+    take_num = len(monitor.punch_validation_results) + 1
     pp.draw_pose(world_from_punch_tip, length=0.05)
-    pp.add_text("PUNCH REF", position=world_from_punch_tip[0])
+    pp.add_text(f"TAKE {take_num}", position=world_from_punch_tip[0])
 
-    # Save to JSON
-    os.makedirs(PUNCH_CALIB_DIR, exist_ok=True)
-    ref_data = {
+    # Append to validation results
+    result = {
+        'timestamp': datetime.now().isoformat(),
+        'arm_index': int(arm_index),
+        'joint_conf': [float(v) for v in hi.arm_joint_pose[arm_index]],
+        'base_pose': {
+            'position': [float(v) for v in hi.position],
+            'quaternion': [float(v) for v in hi.rotation],
+        },
         'world_from_punch_tip': {
             'position': [float(v) for v in world_from_punch_tip[0]],
             'quaternion': [float(v) for v in world_from_punch_tip[1]],
@@ -807,206 +809,40 @@ def record_punch_reference(monitor):
             'position': [float(v) for v in monitor.tool0_from_punch_tip[0]],
             'quaternion': [float(v) for v in monitor.tool0_from_punch_tip[1]],
         },
-        'arm_index': int(arm_index),
-        'joint_conf': [float(v) for v in hi.arm_joint_pose[arm_index]],
-        'base_pose': {
-            'position': [float(v) for v in hi.position],
-            'quaternion': [float(v) for v in hi.rotation],
-        },
-        'timestamp': datetime.now().isoformat(),
     }
-
-    filename = os.path.join(PUNCH_CALIB_DIR, 'punch_reference_pose.json')
-    with open(filename, 'w') as f:
-        json.dump(ref_data, f, indent=4)
-
-    monitor.get_logger().info(f'Punch reference pose saved to {filename}')
-    monitor.get_logger().info(f'  position: {world_from_punch_tip[0]}')
-
-
-def load_punch_reference(monitor):
-    """Load a previously saved punch reference pose from JSON."""
-    filename = os.path.join(PUNCH_CALIB_DIR, 'punch_reference_pose.json')
-    if not os.path.exists(filename):
-        monitor.get_logger().warn(f'No punch reference file found at {filename}')
-        return
-
-    with open(filename, 'r') as f:
-        ref_data = json.load(f)
-
-    pos = ref_data['world_from_punch_tip']['position']
-    quat = ref_data['world_from_punch_tip']['quaternion']
-    monitor.world_from_ee_punch_ref = (tuple(pos), tuple(quat))
-
-    # Visualize
-    pp.draw_pose(monitor.world_from_ee_punch_ref, length=0.05)
-    pp.add_text("PUNCH REF (loaded)", position=pos)
-
-    monitor.get_logger().info(f'Loaded punch reference pose from {filename}')
-    monitor.get_logger().info(f'  position: {pos}')
-
-
-def plan_punch_approach(monitor):
-    """Plan two-segment approach to the recorded punch reference pose."""
-    if monitor.world_from_ee_punch_ref is None:
-        monitor.get_logger().warn('No punch reference pose recorded! Record or load one first.')
-        return
-
-    husky = monitor.huskies[monitor.selected_robot_id]
-    arm_index = monitor.selected_arm_index
-    obstacles = list(monitor.static_obstacles.values())
-
-    # Ensure sim state is up to date with latest mocap
-    ho = husky.object
-    hi = husky.interface
-    ho.set_pose((hi.position, hi.rotation), hi.arm_joint_pose)
-
-    result = planning.plan_punch_approach(
-        husky,
-        monitor.world_from_ee_punch_ref,
-        monitor.tool0_from_punch_tip,
-        obstacles,
-        arm_index=arm_index,
-        approach_height=0.03,
-    )
-
-    if result[0] is None:
-        monitor.get_logger().warn('Punch approach planning failed!')
-        return
-
-    free_path, cartesian_path = result
-    monitor.punch_free_trajectory = free_path
-    monitor.punch_cartesian_trajectory = cartesian_path
-
-    # Set combined trajectory for visualization via the existing preview system
-    combined_path = free_path + cartesian_path
-    combined_time = monitor.punch_free_traj_time + monitor.punch_cartesian_traj_time
-    monitor.set_arm_trajectory(
-        (combined_path, None, combined_time, None),
-        index=arm_index
-    )
-    monitor.set_to_show_traj_state()
+    monitor.punch_validation_results.append(result)
 
     monitor.get_logger().info(
-        f'Punch approach planned: {len(free_path)} free + {len(cartesian_path)} cartesian waypoints'
+        f'Punch validation take {take_num} recorded. '
+        f'position: {world_from_punch_tip[0]}'
     )
 
 
-def execute_punch_approach(monitor):
-    """Execute both segments of the punch approach sequentially.
-
-    Segment 1 (free motion) uses punch_free_traj_time.
-    Segment 2 (cartesian approach) uses punch_cartesian_traj_time.
-    """
-    if monitor.punch_free_trajectory is None or monitor.punch_cartesian_trajectory is None:
-        monitor.get_logger().warn('Punch approach not planned yet!')
-        return
-
-    arm_index = monitor.selected_arm_index
-    hi = monitor.huskies[monitor.selected_robot_id].interface
-    ho = monitor.huskies[monitor.selected_robot_id].object
-
-    if not monitor.FAKE_HARDWARE:
-        settle_time = 2
-
-        # Segment 1: free motion
-        monitor.get_logger().info('Executing punch approach segment 1 (free motion)...')
-        free_traj = (monitor.punch_free_trajectory, None, monitor.punch_free_traj_time, None)
-        execute_arm_trajectory(monitor, free_traj, index=arm_index)
-        time.sleep(monitor.punch_free_traj_time + settle_time)
-        hi.arm_joint_pose[arm_index] = monitor.punch_free_trajectory[-1]
-
-        # Segment 2: cartesian approach
-        monitor.get_logger().info('Executing punch approach segment 2 (cartesian)...')
-        cartesian_traj = (monitor.punch_cartesian_trajectory, None, monitor.punch_cartesian_traj_time, None)
-        execute_arm_trajectory(monitor, cartesian_traj, index=arm_index)
-        time.sleep(monitor.punch_cartesian_traj_time + settle_time)
-        hi.arm_joint_pose[arm_index] = monitor.punch_cartesian_trajectory[-1]
-    else:
-        # Fake hardware: animate in sim
-        for conf in monitor.punch_free_trajectory + monitor.punch_cartesian_trajectory:
-            hi.arm_joint_pose[arm_index] = conf
-            ho.set_pose((hi.position, hi.rotation), hi.arm_joint_pose)
-            pp.wait_for_duration(0.01)
-
-    # Record validation result
-    _record_punch_validation_result(monitor)
-    monitor.get_logger().info('Punch approach execution complete.')
-
-
-def _record_punch_validation_result(monitor):
-    """Record the position error after punch approach execution."""
-    h = monitor.huskies[monitor.selected_robot_id]
-    ho = h.object
-    hi = h.interface
-    arm_index = monitor.selected_arm_index
-
-    if h.dual_arm:
-        tool0_link_name = 'left_ur_arm_tool0' if arm_index == 0 else 'right_ur_arm_tool0'
-    else:
-        tool0_link_name = 'ur_arm_tool0'
-
-    # Ensure sim state is current
-    ho.set_pose((hi.position, hi.rotation), hi.arm_joint_pose)
-
-    # Get achieved punch tip pose via FK
-    world_from_tool0 = ho.get_link_pose_from_name(tool0_link_name)
-    world_from_punch_achieved = pp.multiply(world_from_tool0, monitor.tool0_from_punch_tip)
-
-    # Compute position error
-    ref = monitor.world_from_ee_punch_ref
-    pos_error = np.linalg.norm(np.array(world_from_punch_achieved[0]) - np.array(ref[0]))
-
-    pp.draw_pose(world_from_punch_achieved, length=0.03)
-
-    result = {
-        'timestamp': datetime.now().isoformat(),
-        'arm_index': int(arm_index),
-        'base_pose': {
-            'position': [float(v) for v in hi.position],
-            'quaternion': [float(v) for v in hi.rotation],
-        },
-        'joint_conf': [float(v) for v in hi.arm_joint_pose[arm_index]],
-        'achieved_punch_tip_pose': {
-            'position': [float(v) for v in world_from_punch_achieved[0]],
-            'quaternion': [float(v) for v in world_from_punch_achieved[1]],
-        },
-        'reference_punch_tip_pose': {
-            'position': [float(v) for v in ref[0]],
-            'quaternion': [float(v) for v in ref[1]],
-        },
-        'position_error_mm': float(pos_error * 1000),
-    }
-
-    monitor.punch_validation_results.append(result)
-    monitor.get_logger().info(f'Punch validation: position error = {pos_error*1000:.2f} mm')
-
-
-def save_punch_validation_data(monitor):
+def save_punch_validation_data(monitor, date_folder=None):
     """Save all accumulated punch validation results to JSON."""
     if not monitor.punch_validation_results:
         monitor.get_logger().warn('No punch validation results to save!')
         return
 
-    os.makedirs(PUNCH_CALIB_DIR, exist_ok=True)
+    if date_folder is None:
+        date_folder = datetime.now().strftime("%Y%m%d")
+
+    punch_dir = os.path.join(CALIB_DATA_DIR, date_folder, "punch_validation")
+    os.makedirs(punch_dir, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-    filename = os.path.join(PUNCH_CALIB_DIR, f'punch_validation_{timestamp}.json')
+    filename = os.path.join(punch_dir, f'punch_validation_{timestamp}.json')
 
     with open(filename, 'w') as f:
         json.dump({
-            'reference_pose': {
-                'position': [float(v) for v in monitor.world_from_ee_punch_ref[0]],
-                'quaternion': [float(v) for v in monitor.world_from_ee_punch_ref[1]],
-            },
             'tool0_from_punch_tip': {
                 'position': [float(v) for v in monitor.tool0_from_punch_tip[0]],
                 'quaternion': [float(v) for v in monitor.tool0_from_punch_tip[1]],
             },
-            'results': monitor.punch_validation_results,
+            'takes': monitor.punch_validation_results,
         }, f, indent=4)
 
     monitor.get_logger().info(
-        f'Punch validation data saved to {filename} ({len(monitor.punch_validation_results)} trials)'
+        f'Punch validation data saved to {filename} ({len(monitor.punch_validation_results)} takes)'
     )
     monitor.punch_validation_results = []
 
