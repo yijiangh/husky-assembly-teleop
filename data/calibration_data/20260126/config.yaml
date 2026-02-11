@@ -9,8 +9,8 @@ data_batches:
 
 # Validation data batch for 3_verify_calibration.py
 # validation_data_batch: "j0"
-# validation_data_batch: "j1"
-validation_data_batch: "validation"
+validation_data_batch: "j1"
+# validation_data_batch: "validation"
 
 # Robot settings
 robot_name: "0806"  # Options: "0806" (dual arm), "0804" (single arm)
@@ -21,3 +21,9 @@ export: true
 
 # Visualization settings
 use_gui: false
+
+# Punch tool calibration validation settings
+# Translation-only offset from tool0 flange to punch tip (meters)
+# Obtained via UR 4-point TCP calibration
+punch_tool:
+  offset_xyz: [0.0, 0.0, 0.15]  # placeholder - replace with real calibrated values

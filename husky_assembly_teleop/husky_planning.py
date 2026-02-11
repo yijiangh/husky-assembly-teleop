@@ -15,7 +15,7 @@ import pybullet_planning as pp
 
 from husky_assembly_teleop.common import Husky, lerp, quat_lerp
 from husky_assembly_teleop.base_planner import RRTStar, fill_yaw_angle
-from husky_assembly_teleop.utils import plan_transit_motion, plan_transfer_motion, plan_retract_to_home_motion, TOOL0_FROM_GRIPPER_TCP, get_arm_ik_for_grasp_bar
+from husky_assembly_teleop.utils import plan_transit_motion, plan_transfer_motion, plan_retract_to_home_motion, TOOL0_FROM_GRIPPER_TCP, get_arm_ik_for_grasp_bar, JOINT_JUMP_THRESHOLD
 from husky_assembly_teleop import DATA_DIRECTORY
 
 IK_SOLVER = TracIKSolver(
@@ -55,6 +55,136 @@ def compute_grasp(theta_index, grasp_partition=4, longitudinal_offset=0.0):
 
 def arm_ik(husky: Husky, world_from_tool0, attachments, obstacles, hint_conf=None):
     return get_arm_ik_for_grasp_bar(husky.object.robot, IK_SOLVER, world_from_tool0, attachments, obstacles, hint_conf=hint_conf)
+
+def punch_ik(husky, world_from_punch_tip, tool0_from_punch_tip, attachments, obstacles, arm_index=0, hint_conf=None):
+    """Solve IK for a punch tool target pose.
+
+    Computes world_from_tool0 from the punch tip pose and the tool offset,
+    then calls the standard IK solver for the selected arm.
+
+    Parameters
+    ----------
+    world_from_punch_tip : tuple
+        (position, quaternion) target pose for the punch tip in world frame.
+    tool0_from_punch_tip : tuple
+        (position, quaternion) transform from tool0 to punch tip.
+    arm_index : int
+        0 for left arm, 1 for right arm.
+    hint_conf : np.ndarray or None
+        Optional initial joint configuration for warm-starting.
+
+    Returns
+    -------
+    np.ndarray or None
+        Joint configuration, or None if IK fails.
+    """
+    world_from_tool0 = pp.multiply(world_from_punch_tip, pp.invert(tool0_from_punch_tip))
+    ik_solver = IK_SOLVER_DUAL[arm_index]
+    return get_arm_ik_for_grasp_bar(
+        husky.object.robot, ik_solver, world_from_tool0,
+        attachments, obstacles, hint_conf=hint_conf
+    )
+
+def plan_punch_approach(husky, world_from_punch_tip, tool0_from_punch_tip,
+                        obstacles, arm_index=0,
+                        approach_height=0.03, pos_step_size=0.005):
+    """Plan a two-segment approach motion to match the punch tip to a target pose.
+
+    Segment 1 (free motion): current config -> pre-match config
+    Segment 2 (cartesian approach): pre-match -> exact target
+
+    The cartesian segment is planned using backward iterative IK:
+    1. Solve IK at the final target to get target_conf
+    2. Compute pre-match pose (approach_height above target in world Z)
+    3. Interpolate poses from target to pre-match (backward)
+    4. Solve IK for each interpolated pose, warm-starting from target_conf backward
+    5. Reverse the resulting path to get pre-match -> target ordering
+    6. Plan free motion from current conf to the first conf of the cartesian path
+
+    Parameters
+    ----------
+    husky : Husky
+        The robot.
+    world_from_punch_tip : tuple
+        (position, quaternion) target pose for the punch tip in world frame.
+    tool0_from_punch_tip : tuple
+        (position, quaternion) transform from tool0 to punch tip.
+    obstacles : list
+        List of obstacle body IDs.
+    arm_index : int
+        0 for left, 1 for right.
+    approach_height : float
+        Height above target in world Z for the pre-match pose (meters).
+    pos_step_size : float
+        Step size for cartesian interpolation (meters).
+
+    Returns
+    -------
+    tuple
+        (free_path, cartesian_path) where each is a list of np.ndarray joint
+        configs, or (None, None) if planning fails.
+    """
+    robot = husky.object.robot
+    ik_solver = IK_SOLVER_DUAL[arm_index]
+    attachments = [husky.object.ee_list[arm_index][1]]
+
+    # Compute target and pre-match tool0 poses
+    world_from_tool0_target = pp.multiply(world_from_punch_tip, pp.invert(tool0_from_punch_tip))
+
+    pre_match_punch_pos = (
+        world_from_punch_tip[0][0],
+        world_from_punch_tip[0][1],
+        world_from_punch_tip[0][2] + approach_height,
+    )
+    pre_match_punch_tip = (pre_match_punch_pos, world_from_punch_tip[1])
+    world_from_tool0_prematch = pp.multiply(pre_match_punch_tip, pp.invert(tool0_from_punch_tip))
+
+    # --- Solve IK at the final target ---
+    target_conf = punch_ik(
+        husky, world_from_punch_tip, tool0_from_punch_tip,
+        attachments, obstacles, arm_index=arm_index
+    )
+    if target_conf is None:
+        print("Punch approach: IK failed at target pose")
+        return None, None
+
+    # --- Build cartesian path using backward IK ---
+    # Interpolate from target back to pre-match
+    world_from_arm_base = pp.get_link_pose(robot, pp.link_from_name(robot, ik_solver.base_link))
+    backward_poses = list(pp.interpolate_poses(
+        world_from_tool0_target, world_from_tool0_prematch,
+        pos_step_size=pos_step_size, ori_step_size=np.pi / 18
+    ))
+
+    backward_path = [target_conf]
+    for i, world_pose in enumerate(backward_poses[1:]):
+        arm_base_from_tool0 = pp.multiply(pp.invert(world_from_arm_base), world_pose)
+        conf = ik_solver.ik(pp.tform_from_pose(arm_base_from_tool0), qinit=backward_path[-1])
+        if conf is None:
+            print(f"Punch approach: backward IK failed at step {i+1}/{len(backward_poses)-1}")
+            return None, None
+        if np.max(np.abs(np.array(conf) - np.array(backward_path[-1]))) > JOINT_JUMP_THRESHOLD:
+            print(f"Punch approach: joint jump detected at step {i+1}")
+            return None, None
+        backward_path.append(conf)
+
+    # Reverse to get forward direction: pre-match -> target
+    cartesian_path = [np.array(q) for q in reversed(backward_path)]
+    pre_match_conf = cartesian_path[0]
+
+    # --- Plan free motion from current conf to pre-match conf ---
+    free_path_raw = plan_transit_motion(
+        robot, pre_match_conf, attachments, obstacles,
+        debug=False, disabled_collisions=None,
+        dual_arm_index=arm_index if husky.dual_arm else None
+    )
+
+    if free_path_raw is None:
+        print("Punch approach: free motion planning to pre-match failed")
+        return None, None
+
+    free_path = [np.array(q) for q in free_path_raw]
+    return free_path, cartesian_path
 
 def plan_arm_motion(husky: Husky, arm_goal_pose, obstacles, traj_time, grasped_element=None, grasp=None, arm_index=0, debug=False):
     attachments = [husky.object.ee_list[arm_index][1]]

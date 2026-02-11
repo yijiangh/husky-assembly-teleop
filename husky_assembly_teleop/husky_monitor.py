@@ -63,8 +63,9 @@ class HuskyMonitor(Node):
     DUAL_ARM_ACCURACY_TEST = 0
 
     ASSEMBLY_MODE = 0
-    
+
     BOARD_VALIDATION = 1
+    PUNCH_CALIB_VALIDATION = 1
 
     def __init__(self):
         super().__init__('husky_monitor')
@@ -112,7 +113,17 @@ class HuskyMonitor(Node):
         # Cache for RobotCell to avoid reloading
         self._robot_cell_cache = None
         self._robot_cell_cache_path = None
-        
+
+        # Punch tool calibration validation
+        self.punch_tool_offset = np.array([0.0, 0.0, 0.15])  # default, overridden by config
+        self.tool0_from_punch_tip = pp.Pose(point=self.punch_tool_offset)
+        self.world_from_ee_punch_ref = None  # recorded reference pose
+        self.punch_free_trajectory = None
+        self.punch_cartesian_trajectory = None
+        self.punch_free_traj_time = 10.0
+        self.punch_cartesian_traj_time = 5.0
+        self.punch_validation_results = []
+
         # goal and trajectory interface
         self.selected_arm_index = 0
         self.goal_base_pose = (np.zeros(3), np.array([0, 0, 0, 1]))
@@ -150,16 +161,20 @@ class HuskyMonitor(Node):
         self.start_pybullet()
         if self.USE_MOCAP:
             self.start_mocap()
-        
+
+        # Load punch tool config before world.init so cone dimensions match the offset
+        if self.PUNCH_CALIB_VALIDATION:
+            self._load_punch_tool_config()
+
         world.init(self)
-        
+
         # Load goal model after robots are created to ensure it matches the actual robot
         self.load_goal_model()
 
         # ! an inflated bar for goal
         goal_bar_body = pp.create_cylinder((0.025)/2, 1.0, mass=pp.STATIC_MASS)
         far_away_pose = pp.Pose(pp.Point(0,0,100))
-        self.goal_element = AssemblyObject(self, 'b_goal', goal_bar_body, far_away_pose, 
+        self.goal_element = AssemblyObject(self, 'b_goal', goal_bar_body, far_away_pose,
                                            pp.unit_pose())
         pp.set_color(self.goal_element.body, GOAL_BLUE)
 
@@ -313,6 +328,49 @@ class HuskyMonitor(Node):
     def update_data_collection_mode(self, value):
         """Update data collection mode: 0 = validation mode, 1 = data collection mode"""
         self.data_collection_mode = bool(round(value))
+
+    # --- Punch tool calibration validation ---
+    def _load_punch_tool_config(self):
+        """Load punch tool offset from config.yaml."""
+        import yaml
+        try:
+            punch_config_path = os.path.join(
+                DATA_DIRECTORY, 'calibration_data', '20260126', 'config.yaml'
+            )
+            with open(punch_config_path, 'r') as f:
+                config = yaml.safe_load(f)
+            if 'punch_tool' in config and 'offset_xyz' in config['punch_tool']:
+                self.punch_tool_offset = np.array(config['punch_tool']['offset_xyz'])
+                self.tool0_from_punch_tip = pp.Pose(point=self.punch_tool_offset)
+                self.get_logger().info(f'Loaded punch tool offset: {self.punch_tool_offset}')
+        except Exception as e:
+            self.get_logger().warn(f'Failed to load punch tool config: {e}')
+
+    def update_punch_free_traj_time(self, value):
+        self.punch_free_traj_time = value
+
+    def update_punch_cartesian_traj_time(self, value):
+        self.punch_cartesian_traj_time = value
+
+    def record_punch_reference_pose(self):
+        """Record the current punch tip pose in world frame as the reference."""
+        world.record_punch_reference(self)
+
+    def load_punch_reference_pose(self):
+        """Load a previously saved punch reference pose from JSON."""
+        world.load_punch_reference(self)
+
+    def plan_punch_approach(self):
+        """Plan two-segment approach to the recorded punch reference pose."""
+        world.plan_punch_approach(self)
+
+    def execute_punch_approach(self):
+        """Execute both segments of the punch approach sequentially."""
+        world.execute_punch_approach(self)
+
+    def save_punch_validation_data(self):
+        """Save all accumulated punch validation results to JSON."""
+        world.save_punch_validation_data(self)
 
     def update_goal_align_axis(self, value):
         self.goal_element_axis = value
