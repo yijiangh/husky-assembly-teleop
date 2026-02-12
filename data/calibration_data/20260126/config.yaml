@@ -26,4 +26,4 @@ use_gui: false
 # Translation-only offset from tool0 flange to punch tip (meters)
 # Obtained via UR 4-point TCP calibration
 punch_tool:
-  offset_xyz: [0.0, 0.0, 0.15]  # placeholder - replace with real calibrated values
+  offset_xyz: [0.0038, 0.0001, 0.11896]

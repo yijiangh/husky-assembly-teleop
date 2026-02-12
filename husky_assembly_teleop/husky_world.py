@@ -13,7 +13,7 @@ import rclpy
 import pybullet as p
 import pybullet_planning as pp
 
-from husky_assembly_teleop import DATA_DIRECTORY
+from husky_assembly_teleop import DATA_DIRECTORY, CALIBRATION_DATE
 from husky_assembly_teleop.common import Husky, TrackedObject, AssemblyObject
 import husky_assembly_teleop.husky_planning as planning
 import husky_assembly_teleop.husky_control as control
@@ -103,7 +103,7 @@ def init(monitor):
         # ee_types=["victor_gripper", "victor_gripper"],  # Mixed end effectors
         # ee_types=["validation_tool_pair"],  # Specify end effectors for both arms
         ee_types=ee_types,
-        # base_calibration_file=os.path.join(CALIB_DATA_DIR, '20260126', 'calibrated_transformation_0806.json'),
+        base_calibration_file=os.path.join(CALIB_DATA_DIR, CALIBRATION_DATE, 'calibrated_transformation_0806.json'),
         force_regenerate=False,
         punch_tool_offset=punch_offset,
     )

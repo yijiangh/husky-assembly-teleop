@@ -24,7 +24,7 @@ from rclpy.node import Node
 import pybullet as p
 import pybullet_planning as pp
 
-from husky_assembly_teleop import DATA_DIRECTORY
+from husky_assembly_teleop import DATA_DIRECTORY, CALIBRATION_BATCHES, VALIDATION_PROBLEM_NAME, CALIBRATION_DATE
 import husky_assembly_teleop.husky_world as world
 from husky_assembly_teleop.husky_robot import UR5e_HOME_STATE
 from husky_assembly_teleop.common import (
@@ -44,15 +44,7 @@ DEFAULT_BAR_POS = pp.Point(0.8, 0, 1.3)
 
 CLIENT_IP = '192.168.0.7' # Set to your own IP
 MOCAP_IP = '192.168.0.117' # set to the mocap PC's IP, get this from Motive Settings>Streaming pane->Local interface
-
-FILENAME_SUFFIX = '_vary_pos_vary_yaw'
-# VALIDATION_PROBLEM_NAME = '250905Orientation_test'
-VALIDATION_PROBLEM_NAME = '260108_extrinsic_calib_trajs'
-# VALIDATION_PROBLEM_NAME = '250902_kissing_experiment'
-
-CALIBRATION_DATE = '20260126'
-CALIBRATION_BATCHES = ['j0', 'j1', 'validation', 'punch_validation']
-  
+ 
 class HuskyMonitor(Node):
     USE_MOCAP = 1
     FAKE_HARDWARE = 0
@@ -284,7 +276,7 @@ class HuskyMonitor(Node):
         self.calibration_data = []
 
     def record_markerset_data(self):
-        world.save_markerset_data(self, filename_suffix=FILENAME_SUFFIX)
+        world.save_markerset_data(self)
         self.marker_set_data = []
         
     def reset_ui(self, target_conf=None):

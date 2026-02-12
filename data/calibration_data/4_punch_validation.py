@@ -28,11 +28,13 @@ from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 from config_loader import load_config, HERE
 
 
-def load_latest_validation_file(date_folder=None):
-    """Find and load the most recently created punch validation JSON.
+def find_validation_files(date_folder=None):
+    """Find all punch validation JSON files.
 
     If date_folder is given, look in HERE/date_folder/punch_validation/.
     Otherwise, scan all date folders for punch_validation_*.json files.
+
+    Returns a sorted list of file paths.
     """
     if date_folder:
         punch_dir = os.path.join(HERE, date_folder, "punch_validation")
@@ -41,7 +43,7 @@ def load_latest_validation_file(date_folder=None):
         if not files:
             print(f"No punch validation files found in {punch_dir}")
             sys.exit(1)
-        return files[-1]
+        return files
 
     # Scan all date folders
     pattern = os.path.join(HERE, "*", "punch_validation", "punch_validation_*.json")
@@ -49,7 +51,7 @@ def load_latest_validation_file(date_folder=None):
     if not files:
         print(f"No punch validation files found under {HERE}/*/punch_validation/")
         sys.exit(1)
-    return files[-1]
+    return files
 
 
 def load_validation_data(filepath):
@@ -374,26 +376,30 @@ def main():
     args = parser.parse_args()
 
     if args.file:
-        filepath = args.file
+        filepaths = [args.file]
     else:
         date_folder = args.date
         if date_folder is None:
             config = load_config()
             date_folder = config['date_folder']
-        filepath = load_latest_validation_file(date_folder=date_folder)
+        filepaths = find_validation_files(date_folder=date_folder)
 
-    print(f'Loading: {filepath}')
-    data = load_validation_data(filepath)
-    takes = data['takes']
+    # Load and merge takes from all files
+    takes = []
+    for fp in filepaths:
+        print(f'Loading: {fp}')
+        data = load_validation_data(fp)
+        takes.extend(data['takes'])
 
     if len(takes) < 2:
-        print(f'Only {len(takes)} take(s) found. Need at least 2 for meaningful analysis.')
+        print(f'Only {len(takes)} take(s) found across {len(filepaths)} file(s). '
+              f'Need at least 2 for meaningful analysis.')
         if len(takes) == 1:
             pos = takes[0]['world_from_punch_tip']['position']
             print(f'  Take 1 position: [{pos[0]:.6f}, {pos[1]:.6f}, {pos[2]:.6f}] m')
         return
 
-    print(f'Loaded {len(takes)} takes.')
+    print(f'Loaded {len(takes)} takes from {len(filepaths)} file(s).')
 
     pos_analysis = analyze_position_mismatch(takes)
     ori_analysis = analyze_orientation_mismatch(takes)
@@ -401,7 +407,7 @@ def main():
 
     print_summary(takes, pos_analysis, ori_analysis, base_analysis)
 
-    output_dir = os.path.dirname(filepath)
+    output_dir = os.path.dirname(filepaths[0])
     plot_results(takes, pos_analysis, ori_analysis, base_analysis, output_dir)
 
     print(f'\nAll plots saved to: {output_dir}')
