@@ -13,3 +13,6 @@
 [submodule "external/pybullet_planning"]
 	path = external/pybullet_planning
 	url = https://github.com/yijiangh/pybullet_planning.git
+[submodule "external/husky_assembly_tamp"]
+	path = external/husky_assembly_tamp
+	url = git@github.com:yijiangh/husky_assembly_tamp.git
