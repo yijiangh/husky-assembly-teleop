@@ -42,6 +42,6 @@ DATA_DIRECTORY = _get_data_directory()
 DESIGN_DATA_DIRECTORY = os.path.join(DATA_DIRECTORY, 'husky_assembly_design_study')
 RECORD_DIRECTORY = os.path.join(DATA_DIRECTORY, '..', 'recorded_data')
 
-CALIBRATION_DATE = '20260126'
+CALIBRATION_DATE = '20260219'
 CALIBRATION_BATCHES = ['j0', 'j1', 'validation', 'punch_validation']
 VALIDATION_PROBLEM_NAME = '260108_extrinsic_calib_trajs'

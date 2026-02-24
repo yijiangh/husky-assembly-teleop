@@ -60,7 +60,7 @@ class HuskyMonitor(Node):
     ASSEMBLY_MODE = 0
 
     BOARD_VALIDATION = 1
-    PUNCH_CALIB_VALIDATION = 1
+    PUNCH_CALIB_VALIDATION = 0
 
     def __init__(self):
         super().__init__('husky_monitor')
@@ -121,7 +121,7 @@ class HuskyMonitor(Node):
         self.goal_base_pose = (np.zeros(3), np.array([0, 0, 0, 1]))
         self.goal_gripper = 0.0
         self.goal_arm_pose = [np.zeros(6), np.zeros(6)]
-        self.show_goal_state = True
+        self.show_goal_state = True  
 
         self.goal_model = None
         self.goal_gripper_model = None
@@ -970,7 +970,7 @@ class HuskyMonitor(Node):
         trajectory_filepath = os.path.join(
             DATA_DIRECTORY,
             'husky_assembly_design_study',
-            VALIDATION_PROBLEM_NAME,
+            VALIDATION_PROBLEM_NAME, 
             'RobotCellStates',
             selected_trajectory_file
         )
