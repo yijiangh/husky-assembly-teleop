@@ -60,7 +60,7 @@ class HuskyMonitor(Node):
     ASSEMBLY_MODE = 0
 
     BOARD_VALIDATION = 1
-    PUNCH_CALIB_VALIDATION = 1
+    PUNCH_CALIB_VALIDATION = 0
 
     def __init__(self):
         super().__init__('husky_monitor')

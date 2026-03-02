@@ -103,7 +103,7 @@ def init(monitor):
         # ee_types=["victor_gripper", "victor_gripper"],  # Mixed end effectors
         # ee_types=["validation_tool_pair"],  # Specify end effectors for both arms
         ee_types=ee_types,
-        base_calibration_file=os.path.join(CALIB_DATA_DIR, CALIBRATION_DATE, 'calibrated_transformation_0806.json'),
+        # base_calibration_file=os.path.join(CALIB_DATA_DIR, CALIBRATION_DATE, 'calibrated_transformation_0806.json'),
         force_regenerate=False,
         punch_tool_offset=punch_offset,
     )
@@ -159,13 +159,13 @@ def init(monitor):
     # * add tracked obstacles
     # TODO use one tracked box to indicate where to put the assembly
     if monitor.CALIBRATION:
-        left_tool_name = 'calib_tool_left'
-        TrackedObject(monitor, left_tool_name, 4616, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
-        monitor.assign_calibration_tool_to_robot(0, 0, left_tool_name)
+        #left_tool_name = 'calib_tool_left'
+        #TrackedObject(monitor, left_tool_name, 4616, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
+        #monitor.assign_calibration_tool_to_robot(0, 0, left_tool_name)
 
-        # right_tool_name = 'calib_tool_right'
-        # TrackedObject(monitor, right_tool_name, 4573, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
-        # monitor.assign_calibration_tool_to_robot(0, 1, right_tool_name)
+        right_tool_name = 'calib_tool_right'
+        TrackedObject(monitor, right_tool_name, 4616, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
+        monitor.assign_calibration_tool_to_robot(0, 1, right_tool_name)
 
     if monitor.BAR_HOLDING_ACCURACY_TEST:
         bar_rig = TrackedObject(monitor, 'bar_rig', 4570, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
@@ -281,6 +281,9 @@ def plan_base_to_goal(monitor):
 
 def plan_arm_to_goal(monitor):
     obstacles = [monitor.assembly_objects[i].body for i in range(monitor.current_seq_index)] + list(monitor.static_obstacles.values())
+    
+    print(f"Planning from {monitor.huskies[monitor.selected_robot_id].interface.arm_joint_pose[monitor.selected_arm_index]} to {monitor.goal_arm_pose[monitor.selected_arm_index]} with obstacles {obstacles}")
+    
     monitor.set_arm_trajectory(
         planning.plan_arm_motion(
             monitor.huskies[monitor.selected_robot_id], 
@@ -1014,7 +1017,7 @@ def execute_arm_conf(monitor, conf, index=0):
 
 def execute_arm_trajectory_and_record_each_conf(monitor, calib_traj, time_between_confs=2, index=0):
     # settle_time = 4
-    settle_time = 3
+    settle_time = 6
     time_between_confs = 1
     hi = monitor.huskies[monitor.selected_robot_id].interface
     # last_conf = hi.arm_joint_pose[index]

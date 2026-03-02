@@ -479,7 +479,7 @@ def compute_plane_plane_intersection(plane1_point, plane1_normal, plane2_point, 
     return intersection_line
 
 
-def compute_base_frame(j0_line, j1_line, base_offset, robot_name):
+def compute_base_frame(j0_line, j1_line, base_offset, robot_name, arm):
     """
     Compute robot base frame from j0 and j1 fitted lines.
 
@@ -490,10 +490,14 @@ def compute_base_frame(j0_line, j1_line, base_offset, robot_name):
         robot_name: Name of the robot to determine axis mapping
 
     Steps:
-    1. j0 line direction (v0) corresponds to z-axis
+    1. j0 line direction (v0) corresponds to:
+       - Single arm: z-axis
+       - Dual arm left: z-axis
+       - Dual arm right: -z-axis
     2. j1 line direction (v1) corresponds to:
        - Single arm: x-axis
-       - Dual arm (0806): -y-axis
+       - Dual arm left: -y-axis
+       - Dual arm right: x-axis
     3. Find intersection of planes to locate base origin
     4. Apply offset along j0 axis
     """
@@ -583,35 +587,41 @@ def compute_base_frame(j0_line, j1_line, base_offset, robot_name):
         logger.info(f'  Intersection point (closest to p1): {p01 * 1000} mm')
         logger.info(f'  Intersection anchor: {pp_line_point * 1000} mm')
 
-    # Move p01 along negative v0 direction by base_offset
-    p_b = p01 - base_offset * v0
-
-    logger.info(f'  Base origin p_b (after offset): {p_b * 1000} mm')
-
-    # Construct base frame axes using hardcoded rules
-    # v0 (j0 fitted line) always corresponds to z-axis
-    # v1 (j1 fitted line) corresponds to:
-    #   - Single arm: x-axis
-    #   - Dual arm (0806): -y-axis
-
-    z_axis = v0
-
+    # Construct base frame axes using hardcoded rules per robot/arm type
     # Determine robot type and apply appropriate axis mapping
     is_dual_arm = (robot_name == '0806')
 
     if is_dual_arm:
-        # Dual arm: v1 corresponds to -y-axis
-        logger.info('  Dual-arm robot detected: v1 → -Y axis')
-        y_axis = -v1
-        x_axis = np.cross(y_axis, z_axis)
-        x_axis = x_axis / np.linalg.norm(x_axis)
-        # Recompute z for orthogonality
-        z_axis = np.cross(x_axis, y_axis)
-        z_axis = z_axis / np.linalg.norm(z_axis)
-        logger.info('  Frame construction: Y=-v1, X=Y×Z, Z=(recomputed)')
+        if arm == 'left':
+            # Left arm: v0 → +Z, v1 → -Y
+            logger.info('  Dual-arm left arm: v0 → +Z, v1 → -Y')
+            z_axis = v0
+            y_axis = -v1
+            x_axis = np.cross(y_axis, z_axis)
+            x_axis = x_axis / np.linalg.norm(x_axis)
+            # Recompute z for orthogonality
+            z_axis = np.cross(x_axis, y_axis)
+            z_axis = z_axis / np.linalg.norm(z_axis)
+            logger.info('  Frame construction: Z=v0, Y=-v1, X=Y×Z, Z=(recomputed)')
+        elif arm == 'right':
+            # Right arm: v0 → +Z, v1 → +Y
+            logger.info('  Dual-arm right arm: v0 → +Z, v1 → +Y')
+            z_axis = v0
+            y_axis = v1
+            x_axis = np.cross(y_axis, z_axis)
+            x_axis = x_axis / np.linalg.norm(x_axis)
+            # Recompute z for orthogonality
+            z_axis = np.cross(x_axis, y_axis)
+            z_axis = z_axis / np.linalg.norm(z_axis)
+            logger.info('  Frame construction: Z=v0, Y=v1, X=Y×Z, Z=(recomputed)')
+        else:
+            raise ValueError(f'Unknown arm "{arm}" for dual-arm robot. Expected "left" or "right".')
     else:
         # Single arm: v1 corresponds to x-axis
+        # J0 axis = z
+        # J1 axis  = x
         logger.info('  Single-arm robot detected: v1 → X axis')
+        z_axis = v0
         x_axis = v1
         y_axis = np.cross(z_axis, x_axis)
         y_axis = y_axis / np.linalg.norm(y_axis)
@@ -620,6 +630,10 @@ def compute_base_frame(j0_line, j1_line, base_offset, robot_name):
         z_axis = z_axis / np.linalg.norm(z_axis)
         logger.info('  Frame construction: X=v1, Y=Z×X, Z=(recomputed)')
 
+    # Move p01 along -z_axis by base_offset (offset from arm base origin to j0 along z)
+    p_b = p01 - base_offset * z_axis
+
+    logger.info(f'  Base origin p_b (after offset): {p_b * 1000} mm')
     logger.info(f'  Base frame axes:')
     logger.info(f'    x-axis: {x_axis}')
     logger.info(f'    y-axis: {y_axis}')
@@ -872,7 +886,7 @@ def main():
     logger.info('Computing robot base frame')
     logger.info('=' * 80)
     base_frame_tf, base_origin, base_axes, intersection_info = compute_base_frame(
-        j0_line, j1_line, BASE_OFFSET, robot_name
+        j0_line, j1_line, BASE_OFFSET, robot_name, arm
     )
     
     # Convert to pose (position, quaternion)
