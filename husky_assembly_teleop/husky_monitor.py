@@ -60,7 +60,7 @@ class HuskyMonitor(Node):
     ASSEMBLY_MODE = 0
 
     BOARD_VALIDATION = 1
-    PUNCH_CALIB_VALIDATION = 0
+    PUNCH_CALIB_VALIDATION = 1
 
     def __init__(self):
         super().__init__('husky_monitor')
@@ -111,13 +111,19 @@ class HuskyMonitor(Node):
         self._robot_cell_cache = None
         self._robot_cell_cache_path = None
 
+        # goal and trajectory interface
+        self.selected_arm_index = 0
+        
         # Punch tool calibration validation
-        self.punch_tool_offset = np.array([0.0, 0.0, 0.15])  # default, overridden by config
+        default_punch_tool_offset = np.array([0.0, 0.0, 0.15], dtype=float)
+        self.punch_tool_offsets = {
+            0: default_punch_tool_offset.copy(),
+            1: default_punch_tool_offset.copy(),
+        }
+        self.punch_tool_offset = self.punch_tool_offsets[self.selected_arm_index].copy()
         self.tool0_from_punch_tip = pp.Pose(point=self.punch_tool_offset)
         self.punch_validation_results = []
 
-        # goal and trajectory interface
-        self.selected_arm_index = 0
         self.goal_base_pose = (np.zeros(3), np.array([0, 0, 0, 1]))
         self.goal_gripper = 0.0
         self.goal_arm_pose = [np.zeros(6), np.zeros(6)]
@@ -305,6 +311,8 @@ class HuskyMonitor(Node):
         new_id = np.clip(int(robot_id), 0, len(self.huskies)-1)
         if new_id != self.selected_robot_id:
             self.selected_robot_id = new_id
+            self.selected_arm_index = min(self.selected_arm_index, self.get_active_arm_count() - 1)
+            self._set_active_punch_tool_offset(self.selected_arm_index)
             # update goal pose based on sensed base pose since we are teleoperating the base
             hi = self.huskies[self.selected_robot_id].interface
             self.goal_base_pose = (hi.position, hi.rotation)
@@ -312,9 +320,10 @@ class HuskyMonitor(Node):
             self.reset_ui()
             
     def update_selected_arm_id(self, arm_index):
-        new_index = np.clip(int(arm_index), 0, 1)
+        new_index = np.clip(int(arm_index), 0, self.get_active_arm_count() - 1)
         if new_index != self.selected_arm_index:
             self.selected_arm_index = new_index
+            self._set_active_punch_tool_offset(new_index)
             self.reset_ui(target_conf=self.goal_arm_pose) #[self.selected_arm_index])
 
     def update_trajectory_time(self, time):
@@ -330,6 +339,26 @@ class HuskyMonitor(Node):
         """Update data collection mode: 0 = validation mode, 1 = data collection mode"""
         self.data_collection_mode = bool(round(value))
 
+    @staticmethod
+    def _arm_name_from_index(arm_index):
+        return 'left' if int(arm_index) == 0 else 'right'
+
+    def get_punch_tool_offset(self, arm_index=None):
+        arm_index = self.selected_arm_index if arm_index is None else int(arm_index)
+        return np.array(self.punch_tool_offsets[arm_index], dtype=float)
+
+    def get_tool0_from_punch_tip(self, arm_index=None):
+        return pp.Pose(point=self.get_punch_tool_offset(arm_index))
+
+    def _set_active_punch_tool_offset(self, arm_index=None):
+        self.punch_tool_offset = self.get_punch_tool_offset(arm_index)
+        self.tool0_from_punch_tip = pp.Pose(point=self.punch_tool_offset)
+
+    def get_active_arm_count(self):
+        if self.huskies:
+            return 2 if self.huskies[self.selected_robot_id].dual_arm else 1
+        return 2
+
     # --- Punch tool calibration validation ---
     def _load_punch_tool_config(self):
         """Load punch tool offset from config.yaml."""
@@ -339,11 +368,34 @@ class HuskyMonitor(Node):
                 DATA_DIRECTORY, 'calibration_data', CALIBRATION_DATE, 'config.yaml'
             )
             with open(punch_config_path, 'r') as f:
-                config = yaml.safe_load(f)
-            if 'punch_tool' in config and 'offset_xyz' in config['punch_tool']:
-                self.punch_tool_offset = np.array(config['punch_tool']['offset_xyz'])
-                self.tool0_from_punch_tip = pp.Pose(point=self.punch_tool_offset)
-                self.get_logger().info(f'Loaded punch tool offset: {self.punch_tool_offset}')
+                config = yaml.safe_load(f) or {}
+
+            punch_config = config.get('punch_tool') or {}
+            updated_offsets = {
+                arm_index: np.array(offset, dtype=float)
+                for arm_index, offset in self.punch_tool_offsets.items()
+            }
+
+            legacy_offset = punch_config.get('offset_xyz')
+            if legacy_offset is not None:
+                legacy_offset = np.array(legacy_offset, dtype=float)
+                updated_offsets = {
+                    0: legacy_offset.copy(),
+                    1: legacy_offset.copy(),
+                }
+
+            for arm_index, arm_name in enumerate(('left', 'right')):
+                arm_config = punch_config.get(arm_name) or {}
+                if 'offset_xyz' in arm_config:
+                    updated_offsets[arm_index] = np.array(arm_config['offset_xyz'], dtype=float)
+
+            self.punch_tool_offsets = updated_offsets
+            self._set_active_punch_tool_offset(self.selected_arm_index)
+            self.get_logger().info(
+                'Loaded punch tool offsets: '
+                f"left={self.punch_tool_offsets[0].tolist()}, "
+                f"right={self.punch_tool_offsets[1].tolist()}"
+            )
         except Exception as e:
             self.get_logger().warn(f'Failed to load punch tool config: {e}')
 
@@ -1153,7 +1205,8 @@ class HuskyMonitor(Node):
                         calibration=calibration, 
                         dual_arm=True, 
                         ee_types=ee_types,  # Use all types for dual arm
-                        force_regenerate=False
+                        force_regenerate=False,
+                        punch_tool_offset=[self.get_punch_tool_offset(0), self.get_punch_tool_offset(1)]
                     )
                     self.goal_model_single = None  # Not needed for dual arm
                     self.goal_model_dual = self.goal_model
@@ -1163,7 +1216,8 @@ class HuskyMonitor(Node):
                         calibration=calibration, 
                         dual_arm=False, 
                         ee_types=ee_types[:1] if ee_types else None,  # Take first type for single arm
-                        force_regenerate=False
+                        force_regenerate=False,
+                        punch_tool_offset=self.get_punch_tool_offset(0)
                     )
                     self.goal_model_single = self.goal_model
                     self.goal_model_dual = None  # Not needed for single arm
@@ -1182,7 +1236,9 @@ class HuskyMonitor(Node):
         
     def build_ui(self, target_conf=None):
         self.selected_robot_slider = Slider("robot id", self.update_selected_robot_id, 0, len(self.huskies)+1, self.selected_robot_id)
-        self.arm_slider = Slider("arm id (0:L,1:R)", self.update_selected_arm_id, 0, 2, self.selected_arm_index)
+        arm_slider_label = "arm id (0 only)" if self.get_active_arm_count() == 1 else "arm id (0:L,1:R)"
+        arm_slider_max = 1 if self.get_active_arm_count() == 1 else 2
+        self.arm_slider = Slider(arm_slider_label, self.update_selected_arm_id, 0, arm_slider_max, self.selected_arm_index)
 
         self.trajectory_time_slider = Slider("traj time", self.update_trajectory_time, 1.0, 60.0, self.trajectory_time)
 

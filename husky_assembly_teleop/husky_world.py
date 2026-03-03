@@ -40,6 +40,16 @@ DUAL_ARM_ACC_DATA_DIR = os.path.join(DATA_DIR, "dual_arm_acc_data")
 CALIB_CONFIG_TEMPLATE = os.path.join(CALIB_DATA_DIR, "_data_template", "config.yaml")
 
 
+def arm_index_to_name(arm_index):
+    return "left" if int(arm_index) == 0 else "right"
+
+
+def get_runtime_arm_name(dual_arm, arm_index):
+    if not dual_arm:
+        return "single"
+    return arm_index_to_name(arm_index)
+
+
 def _ensure_calibration_conf(monitor, folder_path):
     """Create a folder-local config.yaml from the calibration template if needed."""
     conf_path = os.path.join(folder_path, "config.yaml")
@@ -51,7 +61,7 @@ def _ensure_calibration_conf(monitor, folder_path):
 
     husky = monitor.huskies[monitor.selected_robot_id]
     robot_name = husky.name.split("_")[-1].lstrip("/") if husky.name else str(monitor.selected_robot_id)
-    arm_name = "left" if int(monitor.selected_arm_index) == 0 else "right"
+    arm_name = arm_index_to_name(monitor.selected_arm_index)
 
     import re
 
@@ -140,27 +150,45 @@ def create_husky_with_end_effectors(monitor, name, mocap_id=None, pos=np.zeros(3
 
 def init(monitor):
     # * add robots
+    robot_namespace = '/a200_0806'
+    mocap_id = 4617
+    robot_name = robot_namespace.split('_')[-1]
+    dual_arm = (robot_name == '0806')
+
     # Determine ee_types based on active mode
     if monitor.PUNCH_CALIB_VALIDATION:
-        ee_types = ["punch_tool", "punch_tool"]
-        punch_offset = monitor.punch_tool_offset
+        ee_types = ["punch_tool", "punch_tool"] if dual_arm else ["punch_tool"]
+        punch_offset = (
+            [monitor.get_punch_tool_offset(0), monitor.get_punch_tool_offset(1)]
+            if dual_arm else monitor.get_punch_tool_offset(0)
+        )
     else:
-        ee_types = ["custom_gripper", "custom_gripper"]
+        ee_types = ["custom_gripper", "custom_gripper"] if dual_arm else ["custom_gripper"]
         punch_offset = None
+
+    base_calibration_file = os.path.join(
+        CALIB_DATA_DIR, CALIBRATION_DATE, f'calibrated_transformation_{robot_name}.json'
+    )
+    if not os.path.exists(base_calibration_file):
+        monitor.get_logger().warn(
+            f'Base calibration file not found for robot {robot_name}: {base_calibration_file}. '
+            'Continuing without base calibration.'
+        )
+        base_calibration_file = None
 
     create_husky_with_end_effectors(
         monitor,
-        name='/a200_0806',
-        mocap_id=4617,
+        name=robot_namespace,
+        mocap_id=mocap_id,
         pos=np.array((0,0,0)),
         connect_arm=not monitor.FAKE_HARDWARE,
         connect_gripper=False and not monitor.FAKE_HARDWARE,
         calibration=monitor.CALIBRATION,
-        dual_arm=True,
+        dual_arm=dual_arm,
         # ee_types=["victor_gripper", "victor_gripper"],  # Mixed end effectors
         # ee_types=["validation_tool_pair"],  # Specify end effectors for both arms
         ee_types=ee_types,
-        # base_calibration_file=os.path.join(CALIB_DATA_DIR, CALIBRATION_DATE, 'calibrated_transformation_0806.json'),
+        base_calibration_file=base_calibration_file,
         force_regenerate=False,
         punch_tool_offset=punch_offset,
     )
@@ -836,7 +864,9 @@ def record_punch_reference(monitor, date_folder=None):
     h = monitor.huskies[monitor.selected_robot_id]
     ho = h.object
     hi = h.interface
-    arm_index = monitor.selected_arm_index
+    arm_index = int(monitor.selected_arm_index)
+    arm_name = get_runtime_arm_name(h.dual_arm, arm_index)
+    tool0_from_punch_tip = monitor.get_tool0_from_punch_tip(arm_index)
 
     # Get tool0 link name based on arm
     if h.dual_arm:
@@ -849,17 +879,22 @@ def record_punch_reference(monitor, date_folder=None):
 
     # FK: world_from_tool0 * tool0_from_punch_tip
     world_from_tool0 = ho.get_link_pose_from_name(tool0_link_name)
-    world_from_punch_tip = pp.multiply(world_from_tool0, monitor.tool0_from_punch_tip)
+    world_from_punch_tip = pp.multiply(world_from_tool0, tool0_from_punch_tip)
 
     # Visualize
-    take_num = len(monitor.punch_validation_results) + 1
+    take_num = 1 + sum(
+        1 for take in monitor.punch_validation_results
+        if int(take.get('arm_index', -1)) == arm_index
+    )
     pp.draw_pose(world_from_punch_tip, length=0.05)
-    pp.add_text(f"TAKE {take_num}", position=world_from_punch_tip[0])
+    pp.add_text(f"{arm_name.upper()} TAKE {take_num}", position=world_from_punch_tip[0])
 
     # Append to validation results
     result = {
         'timestamp': datetime.now().isoformat(),
-        'arm_index': int(arm_index),
+        'arm_index': arm_index,
+        'arm_name': arm_name,
+        'tool0_link_name': tool0_link_name,
         'joint_conf': [float(v) for v in hi.arm_joint_pose[arm_index]],
         'base_pose': {
             'position': [float(v) for v in hi.position],
@@ -870,8 +905,8 @@ def record_punch_reference(monitor, date_folder=None):
             'quaternion': [float(v) for v in world_from_punch_tip[1]],
         },
         'tool0_from_punch_tip': {
-            'position': [float(v) for v in monitor.tool0_from_punch_tip[0]],
-            'quaternion': [float(v) for v in monitor.tool0_from_punch_tip[1]],
+            'position': [float(v) for v in tool0_from_punch_tip[0]],
+            'quaternion': [float(v) for v in tool0_from_punch_tip[1]],
         },
     }
     monitor.punch_validation_results.append(result)
@@ -894,20 +929,28 @@ def save_punch_validation_data(monitor, date_folder=None):
     punch_dir = os.path.join(CALIB_DATA_DIR, date_folder, "punch_validation")
     os.makedirs(punch_dir, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-    filename = os.path.join(punch_dir, f'punch_validation_{timestamp}.json')
+    grouped_results = {}
+    for take in monitor.punch_validation_results:
+        arm_index = int(take.get('arm_index', 0))
+        grouped_results.setdefault(arm_index, []).append(take)
 
-    with open(filename, 'w') as f:
-        json.dump({
-            'tool0_from_punch_tip': {
-                'position': [float(v) for v in monitor.tool0_from_punch_tip[0]],
-                'quaternion': [float(v) for v in monitor.tool0_from_punch_tip[1]],
-            },
-            'takes': monitor.punch_validation_results,
-        }, f, indent=4)
+    for arm_index, takes in sorted(grouped_results.items()):
+        arm_name = takes[0].get('arm_name', arm_index_to_name(arm_index))
+        filename = os.path.join(punch_dir, f'punch_validation_{arm_name}_{timestamp}.json')
 
-    monitor.get_logger().info(
-        f'Punch validation data saved to {filename} ({len(monitor.punch_validation_results)} takes)'
-    )
+        with open(filename, 'w') as f:
+            json.dump({
+                'arm_index': arm_index,
+                'arm_name': arm_name,
+                'tool0_link_name': takes[0].get('tool0_link_name'),
+                'tool0_from_punch_tip': takes[0]['tool0_from_punch_tip'],
+                'takes': takes,
+            }, f, indent=4)
+
+        monitor.get_logger().info(
+            f'Punch validation data saved to {filename} ({len(takes)} {arm_name} takes)'
+        )
+
     monitor.punch_validation_results = []
 
 

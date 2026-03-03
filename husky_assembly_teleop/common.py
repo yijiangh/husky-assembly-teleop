@@ -488,11 +488,26 @@ class HuskyObject():
                             ee_types = [ee_types[0], ee_types[0]]  # Use same type for both arms
 
                 ee_list = []
-                for ee_type in ee_types:
+                per_arm_punch_offsets = None
+                if dual_arm and isinstance(punch_tool_offset, (list, tuple)) and len(punch_tool_offset) == 2:
+                    candidate_offsets = list(punch_tool_offset)
+                    if all(hasattr(offset, '__len__') and len(offset) == 3 for offset in candidate_offsets):
+                        per_arm_punch_offsets = candidate_offsets
+
+                for ee_index, ee_type in enumerate(ee_types):
+                    ee_punch_tool_offset = punch_tool_offset
+                    if per_arm_punch_offsets is not None and ee_type == "punch_tool":
+                        ee_punch_tool_offset = per_arm_punch_offsets[ee_index]
+
                     if ee_type == "calib_tip":
                         ee = create_end_effector(load_calib_tip=True, dual_arm=dual_arm)
                     else:
-                        ee = create_end_effector(ee_type=ee_type, dual_arm=dual_arm, force_regenerate=force_regenerate, punch_tool_offset=punch_tool_offset)
+                        ee = create_end_effector(
+                            ee_type=ee_type,
+                            dual_arm=dual_arm,
+                            force_regenerate=force_regenerate,
+                            punch_tool_offset=ee_punch_tool_offset,
+                        )
                     
                     # Handle validation_tool_pair which returns a list
                     if isinstance(ee, list):

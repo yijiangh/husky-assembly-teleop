@@ -389,44 +389,58 @@ Punch validation verifies the calibration accuracy by measuring how consistently
 
 ### 6.1 Hardware Setup
 
-1. **Mount the punch tool** onto the robot's tool flange.
-2. **Calibrate the punch tool offset** using the **4-point TCP calibration** procedure on the UR teach pendant:
+1. Make sure **punch calibration validation is enabled** before launching the monitor. In the current code this is controlled by `PUNCH_CALIB_VALIDATION = 1` in `husky_assembly_teleop/husky_monitor.py`.
+2. Launch the monitor. When punch validation is enabled, the end effector visualization changes to **sharp cone-like punch tips**.
+   - On dual-arm setups, the monitor may show **two punch tips** even if only one physical punch tool is installed. This is expected.
+3. **Mount the punch tool** onto the robot's tool flange.
+4. **Calibrate the punch tool offset** using the UR **4-point TCP calibration** procedure on the teach pendant:
    - Go to **Installation > TCP** on the tablet.
-   - Follow the 4-point method to determine the X, Y, Z offset from the flange to the punch tip.
-   - Record the offset values.
-3. **Update the config**: Enter the calibrated offset in the `config.yaml` file:
+   - Follow the 4-point method to determine the **X, Y, Z** offset from `tool0` to the punch tip.
+   - Enter the values in **meters**.
+   - Click **Save** after entering the TCP values. Do not skip this step.
+   - In practice, you typically only need to repeat the 4-point TCP calibration when you remove the tool and mount a new one.
+5. **Update the config**: Enter the calibrated offset in the `config.yaml` file:
    ```yaml
    punch_tool:
      offset_xyz: [X, Y, Z]   # Values from 4-point calibration, in meters
    ```
-   The config file is located at `data/calibration_data/YYYYMMDD/config.yaml`.
+   The config file is located at `data/calibration_data/YYYYMMDD/config.yaml`. Save the file after editing it.
 
 <!-- SCREENSHOT: UR teach pendant showing 4-point TCP calibration procedure -->
 <!-- SCREENSHOT: Punch tool mounted on the robot flange -->
 
 ### 6.2 Set Up the Punch Target
 
-1. Place or use the **external punch target** (a fixed point in the workspace). **Do NOT move this target during the entire punch validation session.**
-2. Make sure the punch target is in a location reachable from multiple base positions.
+1. Place the **punch base / foundation / target tip fixture** in the workspace.
+2. Once you place it in the chosen slot or location, **do NOT move it during the entire punch validation session**.
+3. Make sure the punch target is reachable from multiple Husky base positions.
+4. After moving the robot base or jogging the arm, double-check that you did not accidentally bump the fixture.
+5. If visual alignment is hard because the background is cluttered, put a sheet of **A4 paper behind the target** to make the punch tip easier to see.
 
 <!-- SCREENSHOT: External punch target fixture in the workspace -->
 
 ### 6.3 Collect Punch Validation Data
 
-1. Set the **"Batch"** slider to `3` (punch).
+1. Set the **"Batch"** slider to `3` (punch). This ensures the data is saved to the `punch_validation/` folder.
+2. On the UR teach pendant, switch from **Remote Mode** to **Local Mode** so you can use **free-drive** for manual alignment.
+3. If it helps, switch to the **tool coordinate frame / tool perspective** while jogging so motion is relative to the tool axes.
 
 For each take:
 
 1. **Drive the Husky base** to a new position.
-2. **Manually jog the robot** (via teach pendant or free-drive) to align the punch tool tip with the external punch target. The punch tip should physically touch/match the target point.
+2. **Manually jog the robot** using local mode / free-drive until the physical punch tip matches the target tip.
+   - The alignment should be done physically, not just visually in PyBullet.
+   - Re-check that the fixture has not moved.
 3. In the monitor GUI, click **"Record Punch Take"** to record the current configuration.
+   - In older notes this may be described as "Record Current Calibration Configuration"; for the punch workflow, use the dedicated **"Record Punch Take"** button when available.
    - This records the joint configuration, base mocap pose, and computes the world-frame punch tip position via forward kinematics.
-4. Repeat from a **different base position**: drive the base somewhere else, re-align the punch, and record again.
+4. Optionally click **"Export calib data to json"** as a safety backup while collecting data.
+5. Repeat from a **different base position**: move the base, re-align the punch tip to the same fixed target, and record again.
 
 <!-- SCREENSHOT: Robot with punch tool aligned to external target -->
 <!-- SCREENSHOT: GUI showing "Record Punch Take" button -->
 
-Collect at least **8-10 takes** from diverse base positions.
+Aim for about **4-6 takes** from diverse base positions. Collect more if you want extra coverage.
 
 ### 6.4 Save Punch Validation Data
 
@@ -526,6 +540,12 @@ cd ~/ros2_ws/src/husky-assembly-teleop/data/calibration_data/
 python 4_punch_validation.py
 ```
 
+The script uses the active date folder from `config_loader.py` and reads
+`data/calibration_data/YYYYMMDD/punch_validation/`. If both arms have punch
+validation files in that folder, set `punch_validation.arm` in
+`data/calibration_data/YYYYMMDD/config.yaml` to `left` or `right`. This setting
+is separate from the main `arm` field used in the calibration pipeline.
+
 This script will:
 1. Find all `punch_validation_*.json` files in the date folder
 2. Analyze position consistency (how closely the punch tip maps to the same world point from different base positions)
@@ -534,9 +554,9 @@ This script will:
 5. Generate plots and print a summary
 
 The output includes:
-- `punch_validation_position.png` -- position error analysis
-- `punch_validation_3d.png` -- 3D visualization of punch tip positions
-- `punch_validation_diversity.png` -- base pose diversity analysis
+- `punch_validation_position_<arm>.png` -- position error analysis
+- `punch_validation_3d_<arm>.png` -- 3D visualization of punch tip positions
+- `punch_validation_diversity_<arm>.png` -- base pose diversity analysis
 - A text summary with mean/max position errors
 
 <!-- SCREENSHOT: Example punch validation position plot -->

@@ -22,8 +22,15 @@ export: true
 # Visualization settings
 use_gui: false
 
+# Punch validation analysis settings for 4_punch_validation.py
+punch_validation:
+  arm: left
+
 # Punch tool calibration validation settings
 # Translation-only offset from tool0 flange to punch tip (meters)
 # Obtained via UR 4-point TCP calibration
 punch_tool:
-  offset_xyz: [0.0038, 0.0001, 0.11896]
+  left:
+    offset_xyz: [0.0038, 0.0001, 0.11896]
+  right:
+    offset_xyz: [0.0038, 0.0001, 0.11896]
