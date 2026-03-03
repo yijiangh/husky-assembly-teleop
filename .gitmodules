@@ -1,15 +1,15 @@
 [submodule "data/husky_urdf"]
 	path = data/husky_urdf
-	url = https://github.com/yijiangh/husky_urdf.git
+	url = git@github.com:yijiangh/husky_urdf.git
 [submodule "external/tracikpy"]
 	path = external/tracikpy
-	url = https://github.com/mjd3/tracikpy.git
+	url = git@github.com:mjd3/tracikpy.git
 [submodule "external/compas_fab"]
 	path = external/compas_fab
-	url = https://github.com/compas-dev/compas_fab.git
+	url = git@github.com:compas-dev/compas_fab.git
 [submodule "data/husky_assembly_design_study"]
 	path = data/husky_assembly_design_study
-	url = https://github.com/yijiangh/husky_assembly_design_study.git
+	url = git@github.com:yijiangh/husky_assembly_design_study.git
 [submodule "external/pybullet_planning"]
 	path = external/pybullet_planning
-	url = https://github.com/yijiangh/pybullet_planning.git
+	url = git@github.com:yijiangh/pybullet_planning.git

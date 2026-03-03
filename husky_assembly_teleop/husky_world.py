@@ -37,6 +37,63 @@ DATA_DIR = DATA_DIRECTORY
 CALIB_DATA_DIR = os.path.join(DATA_DIR, "calibration_data")
 BAR_HOLDING_ACC_DATA_DIR = os.path.join(DATA_DIR, "bar_holding_acc_data")
 DUAL_ARM_ACC_DATA_DIR = os.path.join(DATA_DIR, "dual_arm_acc_data")
+CALIB_CONFIG_TEMPLATE = os.path.join(CALIB_DATA_DIR, "_data_template", "config.yaml")
+
+
+def _ensure_calibration_conf(monitor, folder_path):
+    """Create a folder-local config.yaml from the calibration template if needed."""
+    conf_path = os.path.join(folder_path, "config.yaml")
+    if os.path.exists(conf_path):
+        return
+
+    with open(CALIB_CONFIG_TEMPLATE, "r") as f:
+        config_text = f.read()
+
+    husky = monitor.huskies[monitor.selected_robot_id]
+    robot_name = husky.name.split("_")[-1].lstrip("/") if husky.name else str(monitor.selected_robot_id)
+    arm_name = "left" if int(monitor.selected_arm_index) == 0 else "right"
+
+    import re
+
+    config_text = re.sub(r'(^robot_name:\s*)".*?"', rf'\1"{robot_name}"', config_text, flags=re.MULTILINE)
+    config_text = re.sub(r'(^arm:\s*)".*?"', rf'\1"{arm_name}"', config_text, flags=re.MULTILINE)
+
+    with open(conf_path, "w") as f:
+        f.write(config_text)
+
+
+def _warn_available_calib_tools(monitor, missing_tool_name):
+    """Log configured calibration tools and suggest an arm switch when applicable."""
+    robot_id = int(monitor.selected_robot_id)
+    current_arm_index = int(monitor.selected_arm_index)
+    tool_map = monitor.calib_tool_from_robot_arm_id[robot_id]
+    mocap_cache = getattr(monitor, "_mocap_rigidbody_cache", {}) or {}
+
+    configured_tools = []
+    for arm_index in sorted(tool_map.keys()):
+        tool_name = tool_map[arm_index]
+        if tool_name:
+            in_cache = tool_name in mocap_cache
+            configured_tools.append(f"arm {arm_index}: '{tool_name}' (in mocap cache: {in_cache})")
+
+    if configured_tools:
+        monitor.get_logger().warn(
+            f"Configured calibration tools for robot {robot_id}: {', '.join(configured_tools)}"
+        )
+    else:
+        monitor.get_logger().warn(f"No calibration tool is configured for robot {robot_id}.")
+
+    for arm_index in sorted(tool_map.keys()):
+        tool_name = tool_map[arm_index]
+        if not tool_name or arm_index == current_arm_index:
+            continue
+        if tool_name in mocap_cache:
+            monitor.get_logger().warn(
+                f"Requested tool '{missing_tool_name}' is missing, but arm {arm_index} tool "
+                f"'{tool_name}' is present in the mocap cache. Consider changing "
+                f"selected_arm_index from {current_arm_index} to {arm_index}."
+            )
+            return
 
 def create_husky_with_end_effectors(monitor, name, mocap_id=None, pos=np.zeros(3), rot=np.array((0, 0, 0, 1)),
                                    connect_arm=True, connect_gripper=True, base_calibration_file=None,
@@ -103,7 +160,7 @@ def init(monitor):
         # ee_types=["victor_gripper", "victor_gripper"],  # Mixed end effectors
         # ee_types=["validation_tool_pair"],  # Specify end effectors for both arms
         ee_types=ee_types,
-        base_calibration_file=os.path.join(CALIB_DATA_DIR, CALIBRATION_DATE, 'calibrated_transformation_0806.json'),
+        # base_calibration_file=os.path.join(CALIB_DATA_DIR, CALIBRATION_DATE, 'calibrated_transformation_0806.json'),
         force_regenerate=False,
         punch_tool_offset=punch_offset,
     )
@@ -159,13 +216,13 @@ def init(monitor):
     # * add tracked obstacles
     # TODO use one tracked box to indicate where to put the assembly
     if monitor.CALIBRATION:
-        left_tool_name = 'calib_tool_left'
-        TrackedObject(monitor, left_tool_name, 4616, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
-        monitor.assign_calibration_tool_to_robot(0, 0, left_tool_name)
+        #left_tool_name = 'calib_tool_left'
+        #TrackedObject(monitor, left_tool_name, 4616, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
+        #monitor.assign_calibration_tool_to_robot(0, 0, left_tool_name)
 
-        # right_tool_name = 'calib_tool_right'
-        # TrackedObject(monitor, right_tool_name, 4573, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
-        # monitor.assign_calibration_tool_to_robot(0, 1, right_tool_name)
+        right_tool_name = 'calib_tool_right'
+        TrackedObject(monitor, right_tool_name, 4616, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
+        monitor.assign_calibration_tool_to_robot(0, 1, right_tool_name)
 
     if monitor.BAR_HOLDING_ACCURACY_TEST:
         bar_rig = TrackedObject(monitor, 'bar_rig', 4570, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
@@ -281,6 +338,9 @@ def plan_base_to_goal(monitor):
 
 def plan_arm_to_goal(monitor):
     obstacles = [monitor.assembly_objects[i].body for i in range(monitor.current_seq_index)] + list(monitor.static_obstacles.values())
+    
+    print(f"Planning from {monitor.huskies[monitor.selected_robot_id].interface.arm_joint_pose[monitor.selected_arm_index]} to {monitor.goal_arm_pose[monitor.selected_arm_index]} with obstacles {obstacles}")
+    
     monitor.set_arm_trajectory(
         planning.plan_arm_motion(
             monitor.huskies[monitor.selected_robot_id], 
@@ -698,6 +758,7 @@ def calibrate_button(monitor, tool_mocap_name, index=0):
     if flange_mocap_pose is None:
         if monitor.CALIBRATION:
             monitor.get_logger().warn(f'Mocap {tool_mocap_name} not found!')
+            _warn_available_calib_tools(monitor, tool_mocap_name)
             return
         else:
             pp.draw_pose(base_mocap_pose)
@@ -744,11 +805,14 @@ def save_calibration(monitor, filename_suffix="", date_folder=None, data_batch=N
     if date_folder is None:
         date_folder = datetime.now().strftime("%Y%m%d")
 
-    subfolder_path = os.path.join(CALIB_DATA_DIR, date_folder)
+    date_folder_path = os.path.join(CALIB_DATA_DIR, date_folder)
+    subfolder_path = date_folder_path
     if data_batch:
         subfolder_path = os.path.join(subfolder_path, data_batch)
 
     os.makedirs(subfolder_path, exist_ok=True)
+    os.makedirs(date_folder_path, exist_ok=True)
+    _ensure_calibration_conf(monitor, date_folder_path)
 
     if filename_suffix:
         filename = os.path.join(subfolder_path, f"calibration_{timestamp}_{filename_suffix}.json")
@@ -1014,7 +1078,7 @@ def execute_arm_conf(monitor, conf, index=0):
 
 def execute_arm_trajectory_and_record_each_conf(monitor, calib_traj, time_between_confs=2, index=0):
     # settle_time = 4
-    settle_time = 3
+    settle_time = 6
     time_between_confs = 1
     hi = monitor.huskies[monitor.selected_robot_id].interface
     # last_conf = hi.arm_joint_pose[index]
@@ -1735,4 +1799,3 @@ def plan_both_arms_to_goal(monitor, use_composite=False, debug=False):
     monitor.set_arm_trajectory(right_trajectory, index=1)
     monitor.set_to_show_traj_state()
     print("Successfully planned both arms to goal ({} mode)!".format('composite' if use_composite else 'sequential'))
-
