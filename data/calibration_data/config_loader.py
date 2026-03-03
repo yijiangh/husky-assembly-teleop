@@ -18,9 +18,9 @@ import yaml
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 # Default date folder - change this to switch between calibration datasets
-# DEFAULT_DATE_FOLDER = '20250311'
-DEFAULT_DATE_FOLDER = '20260126'
-# DEFAULT_DATE_FOLDER = '20260210'
+# DEFAULT_DATE_FOLDER = '20260126'
+DEFAULT_DATE_FOLDER = '20260303'
+# DEFAULT_DATE_FOLDER = '20260302'
 
 
 def load_config(date_folder=None):

@@ -41,8 +41,8 @@ CALIB_CONFIG_TEMPLATE = os.path.join(CALIB_DATA_DIR, "_data_template", "config.y
 
 
 def _ensure_calibration_conf(monitor, folder_path):
-    """Create a folder-local conf.yaml from the calibration template if needed."""
-    conf_path = os.path.join(folder_path, "conf.yaml")
+    """Create a folder-local config.yaml from the calibration template if needed."""
+    conf_path = os.path.join(folder_path, "config.yaml")
     if os.path.exists(conf_path):
         return
 

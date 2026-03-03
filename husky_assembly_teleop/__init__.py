@@ -13,7 +13,7 @@ def _get_data_directory():
     # Extract workspace path from installed directory
     # installed_data_dir = /home/yijiangh/ros2_ws/install/husky_assembly_teleop/share/husky_assembly_teleop/data
     # We want to extract: /home/yijiangh/ros2_ws/
-    
+     
     # Split the path and find the 'install' directory
     path_parts = installed_data_dir.split(os.sep)
     try:
@@ -42,6 +42,6 @@ DATA_DIRECTORY = _get_data_directory()
 DESIGN_DATA_DIRECTORY = os.path.join(DATA_DIRECTORY, 'husky_assembly_design_study')
 RECORD_DIRECTORY = os.path.join(DATA_DIRECTORY, '..', 'recorded_data')
 
-CALIBRATION_DATE = '20260126'
+CALIBRATION_DATE = '20260303'
 CALIBRATION_BATCHES = ['j0', 'j1', 'validation', 'punch_validation']
-VALIDATION_PROBLEM_NAME = '260108_extrinsic_calib_trajs'
+VALIDATION_PROBLEM_NAME = '260225_extrinsic_calib_trajs_Cindy_Right'
