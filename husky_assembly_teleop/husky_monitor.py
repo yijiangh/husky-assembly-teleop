@@ -42,7 +42,7 @@ EXISTING_ELEMENT_COLOR = pp.RED
 CURRENT_ELEMENT_COLOR = pp.BLUE
 DEFAULT_BAR_POS = pp.Point(0.8, 0, 1.3)
 
-CLIENT_IP = '192.168.0.7' # Set to your own IP
+CLIENT_IP = '192.168.0.90' # Set to your own IP
 MOCAP_IP = '192.168.0.117' # set to the mocap PC's IP, get this from Motive Settings>Streaming pane->Local interface
 
 FILENAME_SUFFIX = '_vary_pos_vary_yaw'
