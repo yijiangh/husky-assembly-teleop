@@ -1,0 +1,94 @@
+services:
+  # Production container (Linux only - uses host networking)
+  husky-teleop:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: husky-assembly-teleop:humble
+    container_name: husky_assembly_teleop
+
+    # Use host network for ROS2 DDS discovery and OptiTrack connection
+    # NOTE: This only works properly on Linux, not Windows/Mac Docker Desktop
+    network_mode: host
+
+    environment:
+      - DISPLAY=${DISPLAY:-:0}
+      - QT_X11_NO_MITSHM=1
+      - ROS_DOMAIN_ID=0
+
+    volumes:
+      - ./husky_assembly_teleop:/ros2_ws/src/husky_assembly_teleop/husky_assembly_teleop
+      - ./data:/ros2_ws/src/husky_assembly_teleop/data
+      # X11 socket for GUI (Linux only)
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - husky_bash_history:/root/.bash_history_dir
+
+    stdin_open: true
+    tty: true
+
+  # Development container (cross-platform compatible)
+  husky-teleop-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    image: husky-assembly-teleop:humble-dev
+    container_name: husky_assembly_teleop_dev
+
+    # Use bridge network for Windows/Mac compatibility
+    # For Linux with ROS2 DDS, override with: docker compose run --network host husky-teleop-dev
+    # network_mode: host  # Uncomment for Linux
+
+    environment:
+      - DISPLAY=${DISPLAY:-host.docker.internal:0}
+      - QT_X11_NO_MITSHM=1
+      - ROS_DOMAIN_ID=0
+
+    volumes:
+      - .:/ros2_ws/src/husky_assembly_teleop
+      - husky_bash_history:/root/.bash_history_dir
+      # Persistent venv to speed up rebuilds
+      - husky_venv:/ros2_ws/venv
+      # Persistent ROS2 build artifacts
+      - husky_ros2_build:/ros2_ws/build
+      - husky_ros2_install:/ros2_ws/install
+      - husky_ros2_log:/ros2_ws/log
+
+    stdin_open: true
+    tty: true
+
+    # Init process for proper signal handling
+    init: true
+
+  # Windows-specific development container
+  husky-teleop-windows:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    image: husky-assembly-teleop:humble-dev
+    container_name: husky_assembly_teleop_windows
+
+    environment:
+      - DISPLAY=host.docker.internal:0
+      - QT_X11_NO_MITSHM=1
+      - ROS_DOMAIN_ID=0
+      - LIBGL_ALWAYS_SOFTWARE=1
+      - MESA_GL_VERSION_OVERRIDE=3.3
+
+    volumes:
+      - .:/ros2_ws/src/husky_assembly_teleop
+      - husky_bash_history:/root/.bash_history_dir
+      - husky_venv:/ros2_ws/venv
+      - husky_ros2_build:/ros2_ws/build
+      - husky_ros2_install:/ros2_ws/install
+      - husky_ros2_log:/ros2_ws/log
+
+    stdin_open: true
+    tty: true
+    init: true
+
+volumes:
+  husky_bash_history:
+  husky_venv:
+  husky_ros2_build:
+  husky_ros2_install:
+  husky_ros2_log:

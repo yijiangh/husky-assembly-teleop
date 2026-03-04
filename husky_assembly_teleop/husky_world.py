@@ -11,9 +11,10 @@ import copy
 from husky_assembly_teleop.husky_robot import HuskyRobotInterface
 import rclpy
 
+import pybullet as p
 import pybullet_planning as pp
 
-from husky_assembly_teleop import DATA_DIRECTORY
+from husky_assembly_teleop import DATA_DIRECTORY, CALIBRATION_DATE
 from husky_assembly_teleop.common import Husky, TrackedObject, AssemblyObject
 import husky_assembly_teleop.husky_planning as planning
 import husky_assembly_teleop.husky_control as control
@@ -39,13 +40,81 @@ DATA_DIR = DATA_DIRECTORY
 CALIB_DATA_DIR = os.path.join(DATA_DIR, "calibration_data")
 BAR_HOLDING_ACC_DATA_DIR = os.path.join(DATA_DIR, "bar_holding_acc_data")
 DUAL_ARM_ACC_DATA_DIR = os.path.join(DATA_DIR, "dual_arm_acc_data")
+CALIB_CONFIG_TEMPLATE = os.path.join(CALIB_DATA_DIR, "_data_template", "config.yaml")
 
-def create_husky_with_end_effectors(monitor, name, mocap_id=None, pos=np.zeros(3), rot=np.array((0, 0, 0, 1)), 
-                                   connect_arm=True, connect_gripper=True, base_calibration_file=None, 
-                                   calibration=False, dual_arm=False, ee_types=None, force_regenerate=False):
+
+def arm_index_to_name(arm_index):
+    return "left" if int(arm_index) == 0 else "right"
+
+
+def get_runtime_arm_name(dual_arm, arm_index):
+    if not dual_arm:
+        return "single"
+    return arm_index_to_name(arm_index)
+
+
+def _ensure_calibration_conf(monitor, folder_path):
+    """Create a folder-local config.yaml from the calibration template if needed."""
+    conf_path = os.path.join(folder_path, "config.yaml")
+    if os.path.exists(conf_path):
+        return
+
+    with open(CALIB_CONFIG_TEMPLATE, "r") as f:
+        config_text = f.read()
+
+    husky = monitor.huskies[monitor.selected_robot_id]
+    robot_name = husky.name.split("_")[-1].lstrip("/") if husky.name else str(monitor.selected_robot_id)
+    arm_name = arm_index_to_name(monitor.selected_arm_index)
+
+    import re
+
+    config_text = re.sub(r'(^robot_name:\s*)".*?"', rf'\1"{robot_name}"', config_text, flags=re.MULTILINE)
+    config_text = re.sub(r'(^arm:\s*)".*?"', rf'\1"{arm_name}"', config_text, flags=re.MULTILINE)
+
+    with open(conf_path, "w") as f:
+        f.write(config_text)
+
+
+def _warn_available_calib_tools(monitor, missing_tool_name):
+    """Log configured calibration tools and suggest an arm switch when applicable."""
+    robot_id = int(monitor.selected_robot_id)
+    current_arm_index = int(monitor.selected_arm_index)
+    tool_map = monitor.calib_tool_from_robot_arm_id[robot_id]
+    mocap_cache = getattr(monitor, "_mocap_rigidbody_cache", {}) or {}
+
+    configured_tools = []
+    for arm_index in sorted(tool_map.keys()):
+        tool_name = tool_map[arm_index]
+        if tool_name:
+            in_cache = tool_name in mocap_cache
+            configured_tools.append(f"arm {arm_index}: '{tool_name}' (in mocap cache: {in_cache})")
+
+    if configured_tools:
+        monitor.get_logger().warn(
+            f"Configured calibration tools for robot {robot_id}: {', '.join(configured_tools)}"
+        )
+    else:
+        monitor.get_logger().warn(f"No calibration tool is configured for robot {robot_id}.")
+
+    for arm_index in sorted(tool_map.keys()):
+        tool_name = tool_map[arm_index]
+        if not tool_name or arm_index == current_arm_index:
+            continue
+        if tool_name in mocap_cache:
+            monitor.get_logger().warn(
+                f"Requested tool '{missing_tool_name}' is missing, but arm {arm_index} tool "
+                f"'{tool_name}' is present in the mocap cache. Consider changing "
+                f"selected_arm_index from {current_arm_index} to {arm_index}."
+            )
+            return
+
+def create_husky_with_end_effectors(monitor, name, mocap_id=None, pos=np.zeros(3), rot=np.array((0, 0, 0, 1)),
+                                   connect_arm=True, connect_gripper=True, base_calibration_file=None,
+                                   calibration=False, dual_arm=False, ee_types=None, force_regenerate=False,
+                                   punch_tool_offset=None):
     """
     Helper function to create a Husky robot with specified end effectors.
-    
+
     Args:
         monitor: The monitor instance
         name: Robot name
@@ -59,51 +128,73 @@ def create_husky_with_end_effectors(monitor, name, mocap_id=None, pos=np.zeros(3
         dual_arm: Whether this is a dual-arm robot
         ee_types: List of end effector types. Options:
                  - "victor_gripper": Victor gripper
-                 - "robotiq_gripper": Robotiq gripper  
+                 - "robotiq_gripper": Robotiq gripper
                  - "custom_gripper": Custom gripper (example)
+                 - "punch_tool": Punch tool for calibration validation
                  - "validation_tool_pair": Validation tool pair (PointTool and BoardTool)
                  - "calib_tip": Calibration tip
                  For dual-arm robots, provide a list of two types.
                  For single-arm robots, provide a list of one type.
                  If None, defaults to victor_gripper or calib_tip based on calibration flag.
         force_regenerate: Force regeneration of URDF cache (only used for validation_tool_pair)
+        punch_tool_offset: numpy array [x, y, z] offset from tool0 to punch tip (only used for punch_tool)
     """
     if ee_types is None:
         if calibration:
             ee_types = ["calib_tip"]
         else:
             ee_types = ["victor_gripper"]
-     
+
     return Husky(monitor, name=name, mocap_id=mocap_id, pos=pos, rot=rot,
                 connect_arm=connect_arm, connect_gripper=connect_gripper,
                 base_calibration_file=base_calibration_file, calibration=calibration,
-                dual_arm=dual_arm, ee_types=ee_types, force_regenerate=force_regenerate)
+                dual_arm=dual_arm, ee_types=ee_types, force_regenerate=force_regenerate,
+                punch_tool_offset=punch_tool_offset)
 
 def init(monitor):
     # * add robots
-    # 1004 - Example of creating a dual-arm robot with victor grippers
-    create_husky_with_end_effectors(
-        monitor, 
-        name='/a200_0806', 
-        mocap_id=4591, 
-        pos=np.array((0,0,0)), 
-        connect_arm=not monitor.FAKE_HARDWARE, 
-        connect_gripper=False and not monitor.FAKE_HARDWARE, 
-        calibration=monitor.CALIBRATION,
-        dual_arm=True,
-        ee_types=["victor_gripper", "victor_gripper"],
-        # ee_types=["validation_tool_pair"],  # Specify end effectors for both arms
-        force_regenerate=False
+    robot_namespace = '/a200_0806'
+    mocap_id = 4617
+    robot_name = robot_namespace.split('_')[-1]
+    dual_arm = (robot_name == '0806')
+
+    # Determine ee_types based on active mode
+    if monitor.PUNCH_CALIB_VALIDATION:
+        ee_types = ["punch_tool", "punch_tool"] if dual_arm else ["punch_tool"]
+        punch_offset = (
+            [monitor.get_punch_tool_offset(0), monitor.get_punch_tool_offset(1)]
+            if dual_arm else monitor.get_punch_tool_offset(0)
+        )
+    else:
+        ee_types = ["custom_gripper", "custom_gripper"] if dual_arm else ["custom_gripper"]
+        punch_offset = None
+
+    base_calibration_file = os.path.join(
+        CALIB_DATA_DIR, CALIBRATION_DATE, f'calibrated_transformation_{robot_name}.json'
     )
-    
-    """create_husky_with_end_effectors(
-        monitor, 
-        name='/a200_0805', 
-        mocap_id=1033, 
-        pos=np.array((1,0,0)), 
-        dual_arm=False,
-        ee_types=["victor_gripper"]  # Mixed end effectors
-    )"""
+    if not os.path.exists(base_calibration_file):
+        monitor.get_logger().warn(
+            f'Base calibration file not found for robot {robot_name}: {base_calibration_file}. '
+            'Continuing without base calibration.'
+        )
+        base_calibration_file = None
+
+    create_husky_with_end_effectors(
+        monitor,
+        name=robot_namespace,
+        mocap_id=mocap_id,
+        pos=np.array((0,0,0)),
+        connect_arm=not monitor.FAKE_HARDWARE,
+        connect_gripper=False and not monitor.FAKE_HARDWARE,
+        calibration=monitor.CALIBRATION,
+        dual_arm=dual_arm,
+        # ee_types=["victor_gripper", "victor_gripper"],  # Mixed end effectors
+        # ee_types=["validation_tool_pair"],  # Specify end effectors for both arms
+        ee_types=ee_types,
+        base_calibration_file=base_calibration_file,
+        force_regenerate=False,
+        punch_tool_offset=punch_offset,
+    )
     
     # Example of creating a single-arm robot with robotiq gripper (commented out)
     """create_husky_with_end_effectors(
@@ -156,12 +247,12 @@ def init(monitor):
     # * add tracked obstacles
     # TODO use one tracked box to indicate where to put the assembly
     if monitor.CALIBRATION:
-        left_tool_name = 'calib_tool_left'
-        TrackedObject(monitor, left_tool_name, 4572, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
-        monitor.assign_calibration_tool_to_robot(0, 0, left_tool_name)
+        #left_tool_name = 'calib_tool_left'
+        #TrackedObject(monitor, left_tool_name, 4616, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
+        #monitor.assign_calibration_tool_to_robot(0, 0, left_tool_name)
 
         right_tool_name = 'calib_tool_right'
-        TrackedObject(monitor, right_tool_name, 4573, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
+        TrackedObject(monitor, right_tool_name, 4616, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
         monitor.assign_calibration_tool_to_robot(0, 1, right_tool_name)
 
     if monitor.BAR_HOLDING_ACCURACY_TEST:
@@ -278,6 +369,9 @@ def plan_base_to_goal(monitor):
 
 def plan_arm_to_goal(monitor):
     obstacles = [monitor.assembly_objects[i].body for i in range(monitor.current_seq_index)] + list(monitor.static_obstacles.values())
+    
+    print(f"Planning from {monitor.huskies[monitor.selected_robot_id].interface.arm_joint_pose[monitor.selected_arm_index]} to {monitor.goal_arm_pose[monitor.selected_arm_index]} with obstacles {obstacles}")
+    
     monitor.set_arm_trajectory(
         planning.plan_arm_motion(
             monitor.huskies[monitor.selected_robot_id], 
@@ -439,7 +533,7 @@ def sample_calib_motion(monitor, arm_index, target_joint_index, calib_joint_rang
 
     # Sample calibration conf:
     ATTEMPTS = 100
-    TRAJ_MAX_LENGTH = 130
+    TRAJ_MAX_LENGTH = 200
     steps = 20
     joint_resolutions = np.ones(6) * 0.05
 
@@ -478,11 +572,13 @@ def sample_calib_motion(monitor, arm_index, target_joint_index, calib_joint_rang
     # * For the target joint, set limits to current value ± calib_joint_range
     target_joint_pb_id = pp.joint_from_name(robot, joint_names[target_joint_index])
     targt_joint_limits = pp.get_joint_limits(robot, target_joint_pb_id)
-    custom_limits_from_joint_name[joint_names[target_joint_index]] = (targt_joint_limits[0] + calib_joint_range, targt_joint_limits[1] - calib_joint_range)
+    # custom_limits_from_joint_name[joint_names[target_joint_index]] = (targt_joint_limits[0] + calib_joint_range, targt_joint_limits[1] - calib_joint_range)
 
     # * Clamp the first joint to 0 if target joint == 1
+    # if target_joint_index == 0:
+    #     # clamp the first joint to value 0
+    #     custom_limits_from_joint_name[joint_names[0]] = (-np.pi,-np.pi)
     if target_joint_index == 1:
-        # clamp the first joint to value 0
         custom_limits_from_joint_name[joint_names[0]] = (0.0,0.0)
 
     custom_limits = get_custom_limits(robot, custom_limits_from_joint_name)
@@ -515,8 +611,12 @@ def sample_calib_motion(monitor, arm_index, target_joint_index, calib_joint_rang
         with pp.LockRenderer(False):
             for i in range(ATTEMPTS):
                 valid_calib_path = True
-                start_conf = sample_fn()
+                start_conf = np.array(sample_fn())
                 pp.set_joint_positions(robot, movable_joints, start_conf)
+
+                if target_joint_index == 0:
+                    start_conf[target_joint_index] = -np.pi
+
                 # pp.wait_if_gui()
 
                 print(f'Attempt #{i+1}/{ATTEMPTS}, start_conf: {start_conf} | current conf: {hi.arm_joint_pose[arm_index]}')
@@ -534,11 +634,14 @@ def sample_calib_motion(monitor, arm_index, target_joint_index, calib_joint_rang
                     calib_path = []
                     for j in range(steps):
                         joint_conf = np.array(start_conf) + (j+1)/steps * (np.array(goal_conf) - np.array(start_conf))
-                        if collision_fn(joint_conf, diagnosis=diagnose):
+                        print(f'step {j}: joint conf: {joint_conf}')
+                        if collision_fn(joint_conf, diagnosis=False):
                             valid_calib_path = False
                             monitor.get_logger().warn(f"Collision detected at calb conf #{j}/{steps}, resampling...")
                             break
                         calib_path.append(joint_conf)
+                    if not valid_calib_path:
+                        break
 
                     if valid_calib_path:
                         # - check if the transit path is too long, if so, resample
@@ -602,10 +705,15 @@ def calibrate_button(monitor, tool_mocap_name, index=0):
 
     if monitor.USE_MOCAP:
         # need to get the raw data from mocap
+        print(monitor._mocap_rigidbody_cache)
         if h.name in monitor._mocap_rigidbody_cache:
             base_mocap_pose = monitor._mocap_rigidbody_cache[h.name]
+        else:
+            monitor.get_logger().warn(f"Base mocap pose for '{h.name}' not found in mocap cache!")
         if tool_mocap_name in monitor._mocap_rigidbody_cache:
             flange_mocap_pose = monitor._mocap_rigidbody_cache[tool_mocap_name]
+        else:
+            monitor.get_logger().warn(f"Flange mocap pose for '{tool_mocap_name}' not found in mocap cache!")
     else:
         pass
         # base_mocap_pose = ho.get_link_pose_from_name("base_footprint")
@@ -613,9 +721,75 @@ def calibrate_button(monitor, tool_mocap_name, index=0):
 
     tool0_fk_pose = ho.get_link_pose_from_name(tool0_link_name)
 
+    # Visualization for debugging mocap poses
+    DEBUG_MOCAP_POSES = False  # Toggle this to enable/disable mocap pose visualization
+
+    if DEBUG_MOCAP_POSES:
+        # Make all robot links transparent for easier visualization
+        # robot = ho.robot
+        # for link_id in range(pp.get_num_joints(robot)):
+        #     pp.set_color(robot, [1, 1, 1, 0.2], link=link_id)  # Use RGBA where A<1 for transparency
+        # # Also set the base link transparent
+        # pp.set_color(robot, [1, 1, 1, 0.2], link=-1)
+
+        # Determine the arm_base_link name based on dual arm setup and index
+        if monitor.huskies[monitor.selected_robot_id].dual_arm:
+            if index > 0:
+                arm_base_link_name = 'right_ur_arm_base_link_inertia'
+                arm_prefix = 'right_'
+            else:
+                arm_base_link_name = 'left_ur_arm_base_link_inertia'
+                arm_prefix = 'left_'
+        else:
+            arm_base_link_name = 'ur_arm_base_link_inertia'
+            arm_prefix = ''
+
+        # Get all poses for visualization
+        base_footprint_pose = ho.get_link_pose_from_name("base_footprint")
+        arm_base_link_pose = ho.get_link_pose_from_name(arm_base_link_name)
+        tool0_pose = ho.get_link_pose_from_name(tool0_link_name)
+
+        # Draw the poses with annotations
+        if base_mocap_pose is not None:
+            pp.draw_pose(base_mocap_pose, length=0.15)
+            pp.add_text("base_mocap", position=base_mocap_pose[0])
+
+        if flange_mocap_pose is not None:
+            pp.draw_pose(flange_mocap_pose, length=0.15)
+            pp.add_text("flange_mocap (calib_tool)", position=flange_mocap_pose[0])
+
+        pp.draw_pose(tool0_pose, length=0.15)
+        pp.add_text(f"{tool0_link_name}", position=tool0_pose[0])
+
+        # pp.draw_pose(base_footprint_pose, length=0.15)
+        # pp.add_text("base_footprint_link", position=base_footprint_pose[0])
+
+        # pp.draw_pose(arm_base_link_pose, length=0.15)
+        # pp.add_text(f"{arm_base_link_name}", position=arm_base_link_pose[0])
+
+        # # Visualize all link poses between arm_base_link_inertia and tool0
+        # arm_link_names = [
+        #     f"{arm_prefix}ur_arm_shoulder_link",
+        #     f"{arm_prefix}ur_arm_upper_arm_link",
+        #     f"{arm_prefix}ur_arm_forearm_link",
+        #     f"{arm_prefix}ur_arm_wrist_1_link",
+        #     f"{arm_prefix}ur_arm_wrist_2_link",
+        #     f"{arm_prefix}ur_arm_wrist_3_link",
+        #     f"{arm_prefix}ur_arm_tool0"
+        # ]
+
+        # for link_name in arm_link_names:
+        #     try:
+        #         link_pose = ho.get_link_pose_from_name(link_name)
+        #         pp.draw_pose(link_pose, length=0.1)
+        #         pp.add_text(link_name, position=[p + 0.015 for p in link_pose[0]])
+        #     except:
+        #         pass  # Skip if link doesn't exist
+
     if flange_mocap_pose is None:
         if monitor.CALIBRATION:
             monitor.get_logger().warn(f'Mocap {tool_mocap_name} not found!')
+            _warn_available_calib_tools(monitor, tool_mocap_name)
             return
         else:
             pp.draw_pose(base_mocap_pose)
@@ -630,7 +804,20 @@ def calibrate_button(monitor, tool_mocap_name, index=0):
                  })
     else:
         tool_0_fk_from_mocap = pp.multiply(pp.invert(tool0_fk_pose), flange_mocap_pose)
-        pp.draw_pose(flange_mocap_pose)
+
+        # Draw the poses with annotations
+        if base_mocap_pose is not None:
+            pp.draw_pose(base_mocap_pose, length=0.15)
+            pp.add_text("base_mocap", position=base_mocap_pose[0])
+
+        if flange_mocap_pose is not None:
+            pp.draw_pose(flange_mocap_pose, length=0.15)
+            pp.add_text("flange_mocap (calib_tool)", position=flange_mocap_pose[0])
+
+        # tool0_pose = ho.get_link_pose_from_name(tool0_link_name)
+        # pp.draw_pose(tool0_pose, length=0.15)
+        # pp.add_text(f"{tool0_link_name}", position=tool0_pose[0])
+
         monitor.append_calibration_data({
                 'robot_id' : int(monitor.selected_robot_id),
                 'arm_index' : int(monitor.selected_arm_index),
@@ -641,27 +828,134 @@ def calibrate_button(monitor, tool_mocap_name, index=0):
                 'tool0_fk_from_mocap' : [list(v) for v in tool_0_fk_from_mocap],
              })
 
-def save_calibration(monitor, filename_suffix=""):
-    # print(monitor.calibration_data)
+def save_calibration(monitor, filename_suffix="", date_folder=None, data_batch=None):
     # save monitor.calibration_data to json, file name with time stamp
-    # save to data/calibration_data
+    # save to data/calibration_data/<date_folder>/<data_batch>/
     timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-    # Create a date subfolder (format: YYYYMMDD)
-    date_subfolder = datetime.now().strftime("%Y%m%d")
-    subfolder_path = os.path.join(CALIB_DATA_DIR, date_subfolder)
 
-    # Create the subfolder if it doesn't exist
-    if not os.path.exists(subfolder_path):
-        os.makedirs(subfolder_path)
-        monitor.get_logger().info(f"Created subfolder: {subfolder_path}")
+    if date_folder is None:
+        date_folder = datetime.now().strftime("%Y%m%d")
 
-    # Save the file in the date subfolder
-    filename = os.path.join(subfolder_path, f"calibration_{timestamp}_{filename_suffix}.json")
+    date_folder_path = os.path.join(CALIB_DATA_DIR, date_folder)
+    subfolder_path = date_folder_path
+    if data_batch:
+        subfolder_path = os.path.join(subfolder_path, data_batch)
+
+    os.makedirs(subfolder_path, exist_ok=True)
+    os.makedirs(date_folder_path, exist_ok=True)
+    _ensure_calibration_conf(monitor, date_folder_path)
+
+    if filename_suffix:
+        filename = os.path.join(subfolder_path, f"calibration_{timestamp}_{filename_suffix}.json")
+    else:
+        filename = os.path.join(subfolder_path, f"calibration_{timestamp}.json")
 
     with open(filename, 'w') as f:
         json.dump({'raw_data' : monitor.calibration_data}, f, indent=4)
 
     monitor.get_logger().info(f"Calibration data saved to {filename}")
+
+#################################
+# Punch tool calibration validation
+#################################
+
+def record_punch_reference(monitor, date_folder=None):
+    """Record the current world_from_punch_tip pose using FK + punch offset.
+
+    Appends the result to monitor.punch_validation_results for later analysis.
+    """
+    h = monitor.huskies[monitor.selected_robot_id]
+    ho = h.object
+    hi = h.interface
+    arm_index = int(monitor.selected_arm_index)
+    arm_name = get_runtime_arm_name(h.dual_arm, arm_index)
+    tool0_from_punch_tip = monitor.get_tool0_from_punch_tip(arm_index)
+
+    # Get tool0 link name based on arm
+    if h.dual_arm:
+        tool0_link_name = 'left_ur_arm_tool0' if arm_index == 0 else 'right_ur_arm_tool0'
+    else:
+        tool0_link_name = 'ur_arm_tool0'
+
+    # Ensure sim state is up to date
+    ho.set_pose((hi.position, hi.rotation), hi.arm_joint_pose)
+
+    # FK: world_from_tool0 * tool0_from_punch_tip
+    world_from_tool0 = ho.get_link_pose_from_name(tool0_link_name)
+    world_from_punch_tip = pp.multiply(world_from_tool0, tool0_from_punch_tip)
+
+    # Visualize
+    take_num = 1 + sum(
+        1 for take in monitor.punch_validation_results
+        if int(take.get('arm_index', -1)) == arm_index
+    )
+    pp.draw_pose(world_from_punch_tip, length=0.05)
+    pp.add_text(f"{arm_name.upper()} TAKE {take_num}", position=world_from_punch_tip[0])
+
+    # Append to validation results
+    result = {
+        'timestamp': datetime.now().isoformat(),
+        'arm_index': arm_index,
+        'arm_name': arm_name,
+        'tool0_link_name': tool0_link_name,
+        'joint_conf': [float(v) for v in hi.arm_joint_pose[arm_index]],
+        'base_pose': {
+            'position': [float(v) for v in hi.position],
+            'quaternion': [float(v) for v in hi.rotation],
+        },
+        'world_from_punch_tip': {
+            'position': [float(v) for v in world_from_punch_tip[0]],
+            'quaternion': [float(v) for v in world_from_punch_tip[1]],
+        },
+        'tool0_from_punch_tip': {
+            'position': [float(v) for v in tool0_from_punch_tip[0]],
+            'quaternion': [float(v) for v in tool0_from_punch_tip[1]],
+        },
+    }
+    monitor.punch_validation_results.append(result)
+
+    monitor.get_logger().info(
+        f'Punch validation take {take_num} recorded. '
+        f'position: {world_from_punch_tip[0]}'
+    )
+
+
+def save_punch_validation_data(monitor, date_folder=None):
+    """Save all accumulated punch validation results to JSON."""
+    if not monitor.punch_validation_results:
+        monitor.get_logger().warn('No punch validation results to save!')
+        return
+
+    if date_folder is None:
+        date_folder = datetime.now().strftime("%Y%m%d")
+
+    punch_dir = os.path.join(CALIB_DATA_DIR, date_folder, "punch_validation")
+    os.makedirs(punch_dir, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+    grouped_results = {}
+    for take in monitor.punch_validation_results:
+        arm_index = int(take.get('arm_index', 0))
+        grouped_results.setdefault(arm_index, []).append(take)
+
+    for arm_index, takes in sorted(grouped_results.items()):
+        arm_name = takes[0].get('arm_name', arm_index_to_name(arm_index))
+        filename = os.path.join(punch_dir, f'punch_validation_{arm_name}_{timestamp}.json')
+
+        with open(filename, 'w') as f:
+            json.dump({
+                'arm_index': arm_index,
+                'arm_name': arm_name,
+                'tool0_link_name': takes[0].get('tool0_link_name'),
+                'tool0_from_punch_tip': takes[0]['tool0_from_punch_tip'],
+                'takes': takes,
+            }, f, indent=4)
+
+        monitor.get_logger().info(
+            f'Punch validation data saved to {filename} ({len(takes)} {arm_name} takes)'
+        )
+
+    monitor.punch_validation_results = []
+
 
 #################################
 
@@ -828,18 +1122,24 @@ def execute_arm_conf(monitor, conf, index=0):
     monitor.huskies[monitor.selected_robot_id].interface.send_arm_cmd([hi.arm_joint_pose[monitor.selected_arm_index], conf], 
                                                                       None, monitor.trajectory_time, index=index)
 
-def execute_arm_trajectory_and_record_each_conf(monitor, transit_traj, calib_traj, time_between_confs=2, index=0):
-    settle_time = 1
+def execute_arm_trajectory_and_record_each_conf(monitor, calib_traj, time_between_confs=2, index=0):
+    # settle_time = 4
+    settle_time = 6
+    time_between_confs = 1
     hi = monitor.huskies[monitor.selected_robot_id].interface
     # last_conf = hi.arm_joint_pose[index]
     # print(transit_traj)
     # execute_arm_trajectory(monitor, transit_traj, index=index)
 
+    total_num_confs = len(calib_traj[0])
+
+    # ! there seems to be a delay in arm conf, resulting in a one-step lag between the conf and the mocap data
+    # TODO investigate
     for i, conf in enumerate(calib_traj[0]):
         monitor.get_logger().info(f'Executing arm conf {i+1}/{len(calib_traj[0])}...')
-        # print('last conf:', last_conf, 'conf:', conf)
         hi.send_arm_cmd(
             [hi.arm_joint_pose[monitor.selected_arm_index], conf], 
+            # [conf], 
             None, 
             time_between_confs,
             index=index
@@ -848,17 +1148,17 @@ def execute_arm_trajectory_and_record_each_conf(monitor, transit_traj, calib_tra
         # wait until it finishes
         time.sleep(time_between_confs + settle_time)
 
-        calibrate_button(monitor, monitor.active_calib_tool_name)
-        monitor.get_logger().info(f'Saved calibration data.')
-
         # ! since the joint state is updated in the main thread and is blocked when running this function, 
         # we need to manually update the last conf here
         # Todo: change to Jakob's task system to avoid blocking the main thread
+        # ! important to update it before the calibrate button, since it needs the latest conf
         hi.arm_joint_pose[monitor.selected_arm_index] = conf
-        # last_conf = conf
 
-    save_calibration(monitor, filename_suffix=f'arm_{monitor.selected_arm_index}_j_{monitor.calib_target_axis}')
-    monitor.calibration_data = []
+        calibrate_button(monitor, monitor.active_calib_tool_name)
+        monitor.get_logger().info(f'Saved calibration data {i}/{total_num_confs}.')
+
+    # save_calibration(monitor, filename_suffix=f'arm_{monitor.selected_arm_index}_j_{monitor.calib_target_axis}')
+    # monitor.calibration_data = []
 
 #################################
 
@@ -1308,16 +1608,16 @@ def sample_dual_arm_configuration(monitor, tool0_to_tool0_transform, max_attempt
             else:
                 qinit = right_sample_fn()
             
-            # Get right arm base pose
-            right_arm_base_pose = pp.get_link_pose(robot, pp.link_from_name(robot, 'right_ur_arm_base_link'))
-            
-            # Compute IK
-            right_arm_base_from_tool0 = pp.multiply(pp.invert(right_arm_base_pose), right_tool0_pose)
-            
             # Use the IK solver from planning module
             from husky_assembly_teleop.husky_planning import IK_SOLVER_DUAL
             ik_solver = IK_SOLVER_DUAL[1]  # Right arm solver
-            
+
+            # Get right arm base pose
+            right_arm_base_pose = pp.get_link_pose(robot, pp.link_from_name(robot, ik_solver.base_link))
+
+            # Compute IK
+            right_arm_base_from_tool0 = pp.multiply(pp.invert(right_arm_base_pose), right_tool0_pose)
+
             conf = ik_solver.ik(pp.tform_from_pose(right_arm_base_from_tool0), qinit=qinit)
             
             if conf is not None:
@@ -1443,7 +1743,7 @@ def compute_tool0_to_tool0_transform_from_json(json_filepath):
     
     return tool0_1_from_tool0_2, tool0_2_from_bar
 
-def plan_both_arms_to_goal(monitor, use_composite=False):
+def plan_both_arms_to_goal(monitor, use_composite=False, debug=False):
     """
     Plan motions for both arms from current to goal joint configurations.
     If use_composite is False, plan left then right sequentially.
@@ -1486,7 +1786,7 @@ def plan_both_arms_to_goal(monitor, use_composite=False):
         # Sequential planning: left arm, then right arm
         pp.set_joint_positions(robot, left_joints, current_left_conf)
         left_trajectory = planning.plan_arm_motion(
-            husky, left_conf, list(monitor.static_obstacles.values()), monitor.trajectory_time, arm_index=0, debug=False
+            husky, left_conf, list(monitor.static_obstacles.values()), monitor.trajectory_time, arm_index=0, debug=debug
         )
         if left_trajectory[0] is None:
             monitor.get_logger().warn('Left arm planning failed!')
@@ -1495,7 +1795,7 @@ def plan_both_arms_to_goal(monitor, use_composite=False):
         pp.set_joint_positions(robot, left_joints, left_trajectory[0][-1])
         pp.set_joint_positions(robot, right_joints, current_right_conf)
         right_trajectory = planning.plan_arm_motion(
-            husky, right_conf, list(monitor.static_obstacles.values()), monitor.trajectory_time, arm_index=1, debug=False
+            husky, right_conf, list(monitor.static_obstacles.values()), monitor.trajectory_time, arm_index=1, debug=debug
         )
         if right_trajectory[0] is None:
             monitor.get_logger().warn('Right arm planning failed!')
@@ -1530,7 +1830,7 @@ def plan_both_arms_to_goal(monitor, use_composite=False):
             composite_goal,
             attachments,
             list(monitor.static_obstacles.values()),
-            debug=False,
+            debug=debug,
             disabled_collisions=None,
             dual_arm_index="both",
         )

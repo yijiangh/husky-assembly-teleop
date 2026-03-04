@@ -19,20 +19,20 @@ from husky_assembly_teleop.utils import plan_transit_motion, plan_transfer_motio
 from husky_assembly_teleop import DATA_DIRECTORY
 
 IK_SOLVER = TracIKSolver(
-    os.path.join(DATA_DIRECTORY,'husky_urdf/mt_husky_moveit_config/urdf/husky_ur5_e_no_base_joint.urdf'),
-    'ur_arm_base_link',
+    os.path.join(DATA_DIRECTORY,'husky_urdf/mt_husky_moveit_config/urdf/husky_ur5_e_no_base_joint_Alice_Calibrated.urdf'),
+    'ur_arm_base_link_inertia',
     'ur_arm_tool0'
 )
 
 IK_SOLVER_DUAL = [TracIKSolver(
                     os.path.join(DATA_DIRECTORY,'husky_urdf/mt_husky_dual_ur5_e_moveit_config/urdf/husky_dual_ur5_e_no_base_joint_All_Calibrated.urdf'),
-                    'left_ur_arm_base_link',
+                    'left_ur_arm_base_link_inertia',
                     'left_ur_arm_tool0',
                     solve_type='Speed'
-                ), 
+                ),
                 TracIKSolver(
                     os.path.join(DATA_DIRECTORY,'husky_urdf/mt_husky_dual_ur5_e_moveit_config/urdf/husky_dual_ur5_e_no_base_joint_All_Calibrated.urdf'),
-                    'right_ur_arm_base_link',
+                    'right_ur_arm_base_link_inertia',
                     'right_ur_arm_tool0',
                     solve_type='Speed'
                 )]

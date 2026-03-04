@@ -1,18 +1,17 @@
-2025-03-13 14:39:35,737 - INFO - Working on file: calibration_20250311_1403_.json
-2025-03-13 14:39:36,306 - INFO - max distance between base_mocap_origins and mean: 0.00017512673463989712
-2025-03-13 14:39:36,306 - INFO - max distance between base_mocap_quats and mean: 0.0004938031749321716
-2025-03-13 14:39:36,323 - INFO - Working on file: calibration_20250311_1407_.json
-2025-03-13 14:39:36,534 - INFO - max distance between base_mocap_origins and mean: 0.00017408722153688054
-2025-03-13 14:39:36,534 - INFO - max distance between base_mocap_quats and mean: 0.0003881296298535963
-2025-03-13 14:39:36,550 - INFO - Working on file: calibration_20250311_1411_.json
-2025-03-13 14:39:36,751 - INFO - max distance between base_mocap_origins and mean: 0.00025026782686873357
-2025-03-13 14:39:36,751 - INFO - max distance between base_mocap_quats and mean: 0.0007931329041013101
-2025-03-13 14:39:36,751 - INFO - Working on file: calibration_20250311_1415_.json
-2025-03-13 14:39:36,968 - INFO - max distance between base_mocap_origins and mean: 0.00020790969507749314
-2025-03-13 14:39:36,983 - INFO - max distance between base_mocap_quats and mean: 0.00047797456832706866
-2025-03-13 14:39:36,983 - INFO - j0 fitted axis : [ 0.00148145 -0.00361484 -0.99999237]
-2025-03-13 14:39:36,983 - INFO - max_pt_project_distance: [np.float64(0.0002530527660403782), np.float64(0.00031660547593133625), np.float64(0.00035105972089718556), np.float64(0.0002898852058260685)]
-2025-03-13 14:39:36,983 - INFO - angle diff between center normals and fitted line (deg): [np.float64(0.018600902447091873), np.float64(0.00962703977541359), np.float64(0.03867379731898304), np.float64(0.07800951763866225)]
-2025-03-13 14:39:36,983 - INFO - angle diff between center normals and mean normal (deg): [np.float64(0.028899641240029007), np.float64(0.0044010423270711115), np.float64(0.044608052605658706), np.float64(0.06887261257571178)]
-2025-03-13 14:39:36,990 - INFO - max distance between centers and mean center: 0.0005714595723853538
-2025-03-13 14:39:36,990 - INFO - max distance between centers and line_fit.point: 0.0005714595723853818
+2026-01-30 13:56:35,290 - [32mINFO[0m - [32m============================================================[0m
+2026-01-30 13:56:35,290 - [32mINFO[0m - [32mProcessing data batch: j0[0m
+2026-01-30 13:56:35,290 - [32mINFO[0m - [32m============================================================[0m
+2026-01-30 13:56:35,290 - [32mINFO[0m - [32mProcessing: calibration_20250311_1411_.json[0m
+2026-01-30 13:56:35,296 - [32mINFO[0m - [32m  Circle fitting time: 5.668 ms[0m
+2026-01-30 13:56:42,471 - [32mINFO[0m - [32m  Circle fit quality - max point distance: 0.351 mm[0m
+2026-01-30 13:56:42,801 - [32mINFO[0m - [32mProcessing: calibration_20250311_1403_.json[0m
+2026-01-30 13:56:42,802 - [32mINFO[0m - [32m  Circle fitting time: 0.307 ms[0m
+2026-01-30 13:57:02,035 - [32mINFO[0m - [32m  Circle fit quality - max point distance: 0.253 mm[0m
+2026-01-30 13:57:02,597 - [32mINFO[0m - [32mProcessing: calibration_20250311_1415_.json[0m
+2026-01-30 13:57:02,600 - [32mINFO[0m - [32m  Circle fitting time: 0.230 ms[0m
+2026-01-30 13:57:10,224 - [32mINFO[0m - [32m  Circle fit quality - max point distance: 0.290 mm[0m
+2026-01-30 13:57:10,575 - [32mINFO[0m - [32mProcessing: calibration_20250311_1407_.json[0m
+2026-01-30 13:57:10,576 - [32mINFO[0m - [32m  Circle fitting time: 0.254 ms[0m
+2026-01-30 13:57:18,175 - [32mINFO[0m - [32m  Circle fit quality - max point distance: 0.317 mm[0m
+2026-01-30 13:57:18,524 - [32mINFO[0m - [32mResults exported to: /home/yijiangh/ros2_ws/src/husky-assembly-teleop/data/calibration_data/20250311/j0/j0_analysis.json[0m
+2026-01-30 13:57:18,524 - [32mINFO[0m - [32mTotal takes processed: 4[0m

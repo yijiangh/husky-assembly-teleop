@@ -1,0 +1,36 @@
+# Calibration Pipeline Configuration
+# This file is shared across all calibration scripts (0-3)
+# Place this file inside the date folder (e.g., 20250617/config.yaml)
+
+# Data settings
+data_batches:
+  - "j0"
+  - "j1"
+
+# Validation data batch for 3_verify_calibration.py
+# validation_data_batch: "j0"  # Use j0 data for validation (no separate validation folder)
+validation_data_batch: "j1"  
+# validation_data_batch: "validation"  # Use j0 data for validation (no separate validation folder)
+
+# Robot settings
+robot_name: "0804"  # Options: "0806" (dual arm), "0804" (single arm)
+arm: "left"         # Options: "left", "right" (only used for dual arm robot)
+
+# Export settings
+export: true
+
+# Visualization settings
+use_gui: false
+
+# Punch validation analysis settings for 4_punch_validation.py
+punch_validation:
+  arm: null
+
+# Punch tool calibration validation settings
+# Translation-only offset from tool0 flange to punch tip (meters)
+# Obtained via UR 4-point TCP calibration
+punch_tool:
+  left:
+    offset_xyz: [0.0038, 0.0001, 0.11896]
+  right:
+    offset_xyz: [0.0038, 0.0001, 0.11896]

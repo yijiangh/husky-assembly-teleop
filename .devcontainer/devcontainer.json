@@ -1,0 +1,65 @@
+{
+    "name": "Husky Assembly Teleop (ROS2 Humble)",
+
+    // Build directly from Dockerfile.dev (avoids docker-compose Windows issues)
+    "build": {
+        "dockerfile": "../Dockerfile.dev",
+        "context": ".."
+    },
+
+    "workspaceFolder": "/ros2_ws/src/husky_assembly_teleop",
+    "workspaceMount": "source=${localWorkspaceFolder},target=/ros2_ws/src/husky_assembly_teleop,type=bind,consistency=cached",
+
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "ms-python.python",
+                "ms-python.debugpy",
+                "ms-vscode.cpptools",
+                "ms-iot.vscode-ros",
+                "redhat.vscode-xml",
+                "redhat.vscode-yaml",
+                "streetsidesoftware.code-spell-checker"
+            ],
+            "settings": {
+                "python.defaultInterpreterPath": "/ros2_ws/venv/bin/python",
+                "python.analysis.extraPaths": [
+                    "/ros2_ws/install/husky_assembly_teleop/lib/python3.10/site-packages",
+                    "/opt/ros/humble/lib/python3.10/site-packages"
+                ],
+                "terminal.integrated.defaultProfile.linux": "bash",
+                "terminal.integrated.profiles.linux": {
+                    "bash": {
+                        "path": "/bin/bash",
+                        "args": ["-l"]
+                    }
+                },
+                "ros.distro": "humble",
+                "editor.formatOnSave": true
+            }
+        }
+    },
+
+    "remoteUser": "root",
+
+    // Install external dependencies and build workspace on first create
+    "postCreateCommand": "/bin/bash -c 'source /ros2_ws/venv/bin/activate && pip install -e /ros2_ws/src/husky_assembly_teleop/external/compas_fab && pip install -e /ros2_ws/src/husky_assembly_teleop/external/pybullet_planning && pip install -e /ros2_ws/src/husky_assembly_teleop/external/tracikpy && cd /ros2_ws && python3 -m colcon build --symlink-install'",
+
+    // Environment variables
+    "containerEnv": {
+        "ROS_DOMAIN_ID": "0"
+    },
+
+    // Features to install (optional)
+    "features": {
+        "ghcr.io/devcontainers/features/common-utils:2": {
+            "installZsh": false,
+            "upgradePackages": false
+        }
+    },
+
+    // Run arguments for the container
+    "runArgs": [
+        "--init"
+    ]
+}

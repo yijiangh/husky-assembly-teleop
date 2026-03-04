@@ -24,7 +24,7 @@ from rclpy.node import Node
 import pybullet as p
 import pybullet_planning as pp
 
-from husky_assembly_teleop import DATA_DIRECTORY
+from husky_assembly_teleop import DATA_DIRECTORY, CALIBRATION_BATCHES, VALIDATION_PROBLEM_NAME, CALIBRATION_DATE
 import husky_assembly_teleop.husky_world as world
 from husky_assembly_teleop.husky_robot import UR5e_HOME_STATE
 from husky_assembly_teleop.common import (
@@ -51,20 +51,21 @@ FILENAME_SUFFIX = '_vary_pos_vary_yaw'
 VALIDATION_PROBLEM_NAME = '260122_double_kissing_experiment'
   
 class HuskyMonitor(Node):
-    USE_MOCAP = 0
+    USE_MOCAP = 1
     FAKE_HARDWARE = 0
 
     GRASP_PARTITION = 8
     BAR_GOAL_MODE = 0
 
-    CALIBRATION = 0
+    CALIBRATION = 1
 
     BAR_HOLDING_ACCURACY_TEST = 0
     DUAL_ARM_ACCURACY_TEST = 0
 
     ASSEMBLY_MODE = 0
-    
+
     BOARD_VALIDATION = 1
+    PUNCH_CALIB_VALIDATION = 1
 
     def __init__(self):
         super().__init__('husky_monitor')
@@ -95,6 +96,10 @@ class HuskyMonitor(Node):
         self.dump_sep_sliders = []
         self.calib_joint_range_slider = None
         self.calib_target_axis_slider = None
+        self.data_collection_mode_slider = None
+        self.data_collection_mode = True  # True = data collection mode, False = validation mode
+        self.calib_batch_slider = None
+        self.selected_calib_batch_index = 0
 
         self.selected_robot_slider = None
         self.selected_robot_id = 0
@@ -110,13 +115,24 @@ class HuskyMonitor(Node):
         # Cache for RobotCell to avoid reloading
         self._robot_cell_cache = None
         self._robot_cell_cache_path = None
-        
+
         # goal and trajectory interface
         self.selected_arm_index = 0
+        
+        # Punch tool calibration validation
+        default_punch_tool_offset = np.array([0.0, 0.0, 0.15], dtype=float)
+        self.punch_tool_offsets = {
+            0: default_punch_tool_offset.copy(),
+            1: default_punch_tool_offset.copy(),
+        }
+        self.punch_tool_offset = self.punch_tool_offsets[self.selected_arm_index].copy()
+        self.tool0_from_punch_tip = pp.Pose(point=self.punch_tool_offset)
+        self.punch_validation_results = []
+
         self.goal_base_pose = (np.zeros(3), np.array([0, 0, 0, 1]))
         self.goal_gripper = 0.0
         self.goal_arm_pose = [np.zeros(6), np.zeros(6)]
-        self.show_goal_state = True
+        self.show_goal_state = True  
 
         self.goal_model = None
         self.goal_gripper_model = None
@@ -126,7 +142,7 @@ class HuskyMonitor(Node):
         self.goal_element = None 
 
         self.calib_tool_from_robot_arm_id = defaultdict(lambda: defaultdict(lambda: None))
-        self.calib_joint_range = np.pi/2
+        self.calib_joint_range = np.pi*2
         self.calib_target_axis = 0
 
         self.goal_bar_grasp = None
@@ -148,16 +164,20 @@ class HuskyMonitor(Node):
         self.start_pybullet()
         if self.USE_MOCAP:
             self.start_mocap()
-        
+
+        # Load punch tool config before world.init so cone dimensions match the offset
+        if self.PUNCH_CALIB_VALIDATION:
+            self._load_punch_tool_config()
+
         world.init(self)
-        
+
         # Load goal model after robots are created to ensure it matches the actual robot
         self.load_goal_model()
 
         # ! an inflated bar for goal
         goal_bar_body = pp.create_cylinder((0.025)/2, 1.0, mass=pp.STATIC_MASS)
         far_away_pose = pp.Pose(pp.Point(0,0,100))
-        self.goal_element = AssemblyObject(self, 'b_goal', goal_bar_body, far_away_pose, 
+        self.goal_element = AssemblyObject(self, 'b_goal', goal_bar_body, far_away_pose,
                                            pp.unit_pose())
         pp.set_color(self.goal_element.body, GOAL_BLUE)
 
@@ -226,12 +246,48 @@ class HuskyMonitor(Node):
     def append_calibration_data(self, data):
         self.calibration_data.append(data)
 
+    def _get_selected_trajectory_filename_suffix(self) -> str:
+        """
+        Return a filesystem-friendly suffix derived from the currently selected joint trajectory filename.
+        Example: "ext_calib_0806_J1_traj0_JointTrajectory.json" -> "ext_calib_0806_J1_traj0_JointTrajectory"
+        """
+        # Prefer a cached attribute if present (set when loading / selecting trajectories)
+        selected = getattr(self, "selected_trajectory_file", None)
+        if not selected and getattr(self, "available_joint_trajectories", None):
+            try:
+                selected = self.available_joint_trajectories[self.selected_trajectory_index]
+            except Exception:
+                selected = None
+
+        if not selected:
+            return ""
+
+        # Remove extension and sanitize to avoid problematic characters in filenames
+        base = os.path.splitext(os.path.basename(str(selected)))[0]
+        sanitized = re.sub(r"[^A-Za-z0-9_.-]+", "_", base).strip("_")
+        return sanitized
+
+    def update_calib_batch_index(self, value):
+        self.selected_calib_batch_index = int(np.clip(int(value), 0, len(CALIBRATION_BATCHES) - 1))
+
+    @property
+    def selected_calib_batch(self):
+        return CALIBRATION_BATCHES[self.selected_calib_batch_index]
+
     def record_calibration_data(self):
-        world.save_calibration(self)
+        if self.data_collection_mode:
+            # In data collection mode, use the selected trajectory filename as suffix
+            filename_suffix = self._get_selected_trajectory_filename_suffix()
+        else:
+            # In validation mode, use "validation" as suffix
+            filename_suffix = "validation"
+        world.save_calibration(self, filename_suffix=filename_suffix,
+                               date_folder=CALIBRATION_DATE,
+                               data_batch=self.selected_calib_batch)
         self.calibration_data = []
 
     def record_markerset_data(self):
-        world.save_markerset_data(self, filename_suffix=FILENAME_SUFFIX)
+        world.save_markerset_data(self)
         self.marker_set_data = []
         
     def reset_ui(self, target_conf=None):
@@ -260,6 +316,8 @@ class HuskyMonitor(Node):
         new_id = np.clip(int(robot_id), 0, len(self.huskies)-1)
         if new_id != self.selected_robot_id:
             self.selected_robot_id = new_id
+            self.selected_arm_index = min(self.selected_arm_index, self.get_active_arm_count() - 1)
+            self._set_active_punch_tool_offset(self.selected_arm_index)
             # update goal pose based on sensed base pose since we are teleoperating the base
             hi = self.huskies[self.selected_robot_id].interface
             self.goal_base_pose = (hi.position, hi.rotation)
@@ -267,9 +325,10 @@ class HuskyMonitor(Node):
             self.reset_ui()
             
     def update_selected_arm_id(self, arm_index):
-        new_index = np.clip(int(arm_index), 0, 1)
+        new_index = np.clip(int(arm_index), 0, self.get_active_arm_count() - 1)
         if new_index != self.selected_arm_index:
             self.selected_arm_index = new_index
+            self._set_active_punch_tool_offset(new_index)
             self.reset_ui(target_conf=self.goal_arm_pose) #[self.selected_arm_index])
 
     def update_trajectory_time(self, time):
@@ -280,6 +339,78 @@ class HuskyMonitor(Node):
 
     def update_calib_target_axis(self, value):
         self.calib_target_axis = int(np.floor(value))
+
+    def update_data_collection_mode(self, value):
+        """Update data collection mode: 0 = validation mode, 1 = data collection mode"""
+        self.data_collection_mode = bool(round(value))
+
+    @staticmethod
+    def _arm_name_from_index(arm_index):
+        return 'left' if int(arm_index) == 0 else 'right'
+
+    def get_punch_tool_offset(self, arm_index=None):
+        arm_index = self.selected_arm_index if arm_index is None else int(arm_index)
+        return np.array(self.punch_tool_offsets[arm_index], dtype=float)
+
+    def get_tool0_from_punch_tip(self, arm_index=None):
+        return pp.Pose(point=self.get_punch_tool_offset(arm_index))
+
+    def _set_active_punch_tool_offset(self, arm_index=None):
+        self.punch_tool_offset = self.get_punch_tool_offset(arm_index)
+        self.tool0_from_punch_tip = pp.Pose(point=self.punch_tool_offset)
+
+    def get_active_arm_count(self):
+        if self.huskies:
+            return 2 if self.huskies[self.selected_robot_id].dual_arm else 1
+        return 2
+
+    # --- Punch tool calibration validation ---
+    def _load_punch_tool_config(self):
+        """Load punch tool offset from config.yaml."""
+        import yaml
+        try:
+            punch_config_path = os.path.join(
+                DATA_DIRECTORY, 'calibration_data', CALIBRATION_DATE, 'config.yaml'
+            )
+            with open(punch_config_path, 'r') as f:
+                config = yaml.safe_load(f) or {}
+
+            punch_config = config.get('punch_tool') or {}
+            updated_offsets = {
+                arm_index: np.array(offset, dtype=float)
+                for arm_index, offset in self.punch_tool_offsets.items()
+            }
+
+            legacy_offset = punch_config.get('offset_xyz')
+            if legacy_offset is not None:
+                legacy_offset = np.array(legacy_offset, dtype=float)
+                updated_offsets = {
+                    0: legacy_offset.copy(),
+                    1: legacy_offset.copy(),
+                }
+
+            for arm_index, arm_name in enumerate(('left', 'right')):
+                arm_config = punch_config.get(arm_name) or {}
+                if 'offset_xyz' in arm_config:
+                    updated_offsets[arm_index] = np.array(arm_config['offset_xyz'], dtype=float)
+
+            self.punch_tool_offsets = updated_offsets
+            self._set_active_punch_tool_offset(self.selected_arm_index)
+            self.get_logger().info(
+                'Loaded punch tool offsets: '
+                f"left={self.punch_tool_offsets[0].tolist()}, "
+                f"right={self.punch_tool_offsets[1].tolist()}"
+            )
+        except Exception as e:
+            self.get_logger().warn(f'Failed to load punch tool config: {e}')
+
+    def record_punch_reference_pose(self):
+        """Record the current punch tip pose in world frame via FK."""
+        world.record_punch_reference(self, date_folder=CALIBRATION_DATE)
+
+    def save_punch_validation_data(self):
+        """Save all accumulated punch validation results to JSON."""
+        world.save_punch_validation_data(self, date_folder=CALIBRATION_DATE)
 
     def update_goal_align_axis(self, value):
         self.goal_element_axis = value
@@ -418,13 +549,14 @@ class HuskyMonitor(Node):
             self.set_to_show_traj_state()
 
     def execute_calib_traj(self):
-        if self.linear_arm_trajectory is None or self.free_arm_trajectory is None:
-            self.get_logger().warn('Transit and calib trajectories must be planned before executing!')
-        else:
+        # if self.linear_arm_trajectory is None or self.free_arm_trajectory is None:
+        #     self.get_logger().warn('Transit and calib trajectories must be planned before executing!')
+        # else:
             # conf = self.planned_arm_trajectory[self.selected_arm_index][0].pop(0)
             # world.execute_arm_conf(self, conf, index=self.selected_arm_index)
 
-            world.execute_arm_trajectory_and_record_each_conf(self, self.free_arm_trajectory, self.linear_arm_trajectory, index=self.selected_arm_index)
+        world.execute_arm_trajectory_and_record_each_conf(self, self.planned_arm_trajectory[self.selected_arm_index], index=self.selected_arm_index)
+        self.record_calibration_data()
 
     def get_world_from_bar_goal_pose(self):
         world_from_base_link = self.goal_model.get_link_pose_from_name("base_footprint")
@@ -890,10 +1022,12 @@ class HuskyMonitor(Node):
             return
             
         selected_trajectory_file = self.available_joint_trajectories[self.selected_trajectory_index]
+        # Cache for downstream logging / filenames (e.g., calibration record suffix)
+        self.selected_trajectory_file = selected_trajectory_file
         trajectory_filepath = os.path.join(
             DATA_DIRECTORY,
             'husky_assembly_design_study',
-            VALIDATION_PROBLEM_NAME,
+            VALIDATION_PROBLEM_NAME, 
             'RobotCellStates',
             selected_trajectory_file
         )
@@ -976,6 +1110,7 @@ class HuskyMonitor(Node):
         new_index = int(trajectory_index)
         if 0 <= new_index < len(self.available_joint_trajectories):
             self.selected_trajectory_index = new_index
+            self.selected_trajectory_file = self.available_joint_trajectories[self.selected_trajectory_index]
             print(f"Selected trajectory: {self.available_joint_trajectories[self.selected_trajectory_index]}")
 
     def _load_available_robot_cell_states(self):
@@ -1064,37 +1199,8 @@ class HuskyMonitor(Node):
         calibration = self.CALIBRATION
         
         # Determine end effector types from the actual robot
-        ee_types = []
-        if hasattr(first_husky.object, 'ee_list'):
-            # Extract end effector types from the actual robot
-            for ee, attachment in first_husky.object.ee_list:
-                # Try to determine the type based on the end effector properties
-                # This is a heuristic approach since we don't store the type directly
-                if hasattr(attachment, 'child') and attachment.child is not None:
-                    # Check if it's a validation tool by looking at the body properties
-                    # For now, we'll use the same logic as in world.init
-                    if calibration:
-                        ee_types.append("calib_tip")
-                    else:
-                        # TODO make this a parameter that corresponds to the real robot setup
-                        # Default to validation_tool_pair for dual arm, victor_gripper for single arm
-                        if dual_arm:
-                            # ee_types.append("validation_tool_pair")
-                            ee_types.extend(["victor_gripper", "victor_gripper"])
-                        else:
-                            ee_types.append("victor_gripper")
-                    break  # For single arm, we only need one type
-        
-        # If we couldn't determine the types, use defaults
-        if not ee_types:
-            if calibration:
-                ee_types = ["calib_tip"]
-            else:
-                if dual_arm:
-                    ee_types = ["validation_tool_pair"]
-                else:
-                    ee_types = ["victor_gripper"]
-        
+        ee_types = first_husky.object.ee_types
+
         # Load only the goal model that matches the actual robot configuration
         with pp.LockRenderer():
             with pp.HideOutput():
@@ -1104,7 +1210,8 @@ class HuskyMonitor(Node):
                         calibration=calibration, 
                         dual_arm=True, 
                         ee_types=ee_types,  # Use all types for dual arm
-                        force_regenerate=False
+                        force_regenerate=False,
+                        punch_tool_offset=[self.get_punch_tool_offset(0), self.get_punch_tool_offset(1)]
                     )
                     self.goal_model_single = None  # Not needed for dual arm
                     self.goal_model_dual = self.goal_model
@@ -1114,7 +1221,8 @@ class HuskyMonitor(Node):
                         calibration=calibration, 
                         dual_arm=False, 
                         ee_types=ee_types[:1] if ee_types else None,  # Take first type for single arm
-                        force_regenerate=False
+                        force_regenerate=False,
+                        punch_tool_offset=self.get_punch_tool_offset(0)
                     )
                     self.goal_model_single = self.goal_model
                     self.goal_model_dual = None  # Not needed for single arm
@@ -1133,7 +1241,9 @@ class HuskyMonitor(Node):
         
     def build_ui(self, target_conf=None):
         self.selected_robot_slider = Slider("robot id", self.update_selected_robot_id, 0, len(self.huskies)+1, self.selected_robot_id)
-        self.arm_slider = Slider("arm id (0:L,1:R)", self.update_selected_arm_id, 0, 2, self.selected_arm_index)
+        arm_slider_label = "arm id (0 only)" if self.get_active_arm_count() == 1 else "arm id (0:L,1:R)"
+        arm_slider_max = 1 if self.get_active_arm_count() == 1 else 2
+        self.arm_slider = Slider(arm_slider_label, self.update_selected_arm_id, 0, arm_slider_max, self.selected_arm_index)
 
         self.trajectory_time_slider = Slider("traj time", self.update_trajectory_time, 1.0, 60.0, self.trajectory_time)
 
@@ -1172,7 +1282,7 @@ class HuskyMonitor(Node):
         # self.buttons.append(Button('Sample Dual Arm Config', self.sample_dual_arm_configuration))
 
         # Add buttons for planning both arms to goal (sequential and composite)
-        self.buttons.append(Button('Plan Both Arms to Goal (sequential)', lambda: world.plan_both_arms_to_goal(self, use_composite=False)))
+        # self.buttons.append(Button('Plan Both Arms to Goal (sequential)', lambda: world.plan_both_arms_to_goal(self, use_composite=False)))
         self.buttons.append(Button('Plan Both Arms to Goal (composite)', lambda: world.plan_both_arms_to_goal(self, use_composite=True)))
 
         # Button to export planned trajectory to JSON
@@ -1308,19 +1418,36 @@ class HuskyMonitor(Node):
             
         if self.CALIBRATION:
             self.dump_sep_sliders.append(Slider("----------Calibration", lambda : None))
-            self.calib_joint_range_slider = Slider("calib joint range", self.update_calib_joint_range, 0.0, np.pi, np.pi/2)
-            self.calib_target_axis_slider = Slider("calib target joint id", self.update_calib_target_axis, 0, 1, 0)
-            self.buttons.append(Button('Sample calib path', self.sample_calib_traj))
-
-            self.buttons.append(Button('Execute transit to calib traj', self.execute_free_trajectory))
+            # self.calib_joint_range_slider = Slider("calib joint range", self.update_calib_joint_range, 0.0, np.pi*2, np.pi*2)
+            # self.calib_target_axis_slider = Slider("calib target joint id", self.update_calib_target_axis, 0, 1, 0)
+            # Mode slider: 0 = validation mode, 1 = data collection mode
+            self.data_collection_mode_slider = Slider(
+                "Mode (0:validation, 1:data_collection)",
+                self.update_data_collection_mode,
+                0.0, 1.0,
+                1.0 if self.data_collection_mode else 0.0
+            )
+            self.calib_batch_slider = Slider(
+                "Batch (0:j0,1:j1,2:valid,3:punch)",
+                self.update_calib_batch_index,
+                0, len(CALIBRATION_BATCHES) - 1,
+                self.selected_calib_batch_index
+            )
+            # self.buttons.append(Button('Sample calib path', self.sample_calib_traj))
+            # self.buttons.append(Button('Execute transit to calib traj', self.execute_free_trajectory))
             self.buttons.append(Button('Execute calib traj', self.execute_calib_traj))
+            self.buttons.append(Button('Export calib data to json', self.record_calibration_data))
 
             # self.buttons.append(Button('Set joint 0 to zero', self.set_goal_joint_0_to_zero))
             # self.buttons.append(Button('Calib joint 1', lambda: world.calibrate_joint(self, 1, self.active_calib_tool_name)))
 
+        if self.PUNCH_CALIB_VALIDATION:
+            self.dump_sep_sliders.append(Slider("----------Punch Calib Validation", lambda : None))
+            self.buttons.append(Button('Record Punch Take', self.record_punch_reference_pose))
+            self.buttons.append(Button('Save Punch Validation Data', self.save_punch_validation_data))
+
         self.dump_sep_sliders.append(Slider("----------DEBUG utils", lambda : None))
         self.buttons.append(Button('Record current calib conf', lambda: world.calibrate_button(self, self.active_calib_tool_name)))
-        self.buttons.append(Button('Export calib conf to json', self.record_calibration_data))
         self.buttons.append(Button('Remove all drawing', lambda : pp.remove_all_debug()))
         # Button to load RobotCellState from file and update arm goal configuration
         # self.buttons.append(Button(
@@ -1366,8 +1493,12 @@ class HuskyMonitor(Node):
         self.buttons.append(Button('Draw TCP Pose', lambda: world.draw_tcp_pose(self)))
         
     # --- --- --- --- --- MOCAP --- --- --- --- --- 
+    _ANSI_GREEN = '\033[92m'
+    _ANSI_RED = '\033[91m'
+    _ANSI_RESET = '\033[0m'
+
     def start_mocap(self):
-        print('Starting mocap!')
+        self.get_logger().info('Starting mocap!')
         self.mocap_client = NatNetClient()
         self.mocap_client.set_client_address(CLIENT_IP)
         self.mocap_client.set_server_address(MOCAP_IP)
@@ -1378,16 +1509,18 @@ class HuskyMonitor(Node):
         self.mocap_client.new_frame_listener = self.receive_mocap_frame
         if self.BAR_HOLDING_ACCURACY_TEST:
             self.mocap_client.labeled_marker_listener = self.receive_labeled_marker
-        
+
         if self.mocap_client.run():
             start_connect = time.time()
             while not self.mocap_client.connected():
                 time.sleep(0.25)
                 if time.time() - start_connect > 5:
                     break
-            print(f"mocap client connected: {self.mocap_client.connected()}")
+            connected = self.mocap_client.connected()
+            color = self._ANSI_GREEN if connected else self._ANSI_RED
+            self.get_logger().info(f"{color}mocap client connected: {connected}{self._ANSI_RESET}")
         else:
-            print('Failed to run mocap client!')
+            self.get_logger().info(f"{self._ANSI_RED}Failed to run mocap client!{self._ANSI_RESET}")
 
     def send_request_to_mocap(self):
         # self.mocap_client.send_request(self.mocap_client.command_socket, self.mocap_client.NAT_REQUEST_MODELDEF,    "",  (self.mocap_client.server_ip_address, self.mocap_client.command_port) )
@@ -1460,6 +1593,69 @@ class HuskyMonitor(Node):
      
     # --- --- --- --- --- UPDATE --- --- --- --- --- 
     def update(self):
+        # Handle keyboard events
+        keys = p.getKeyboardEvents()
+        
+        # Debug: Print all key events to identify key codes from different keyboards
+        # if keys:
+        #     print(f"\n=== Keyboard Event Debug ===")
+        #     print(f"Total keys in event: {len(keys)}")
+        #     for key_code, key_state in keys.items():
+        #         if key_state & p.KEY_WAS_TRIGGERED:
+        #             # Print the key code and the corresponding character (if printable)
+        #             try:
+        #                 char = chr(key_code) if key_code > 0 else "N/A"
+        #                 print(f"Key pressed - Code: {key_code}, Character: '{char}', State: {key_state}")
+        #             except ValueError:
+        #                 print(f"Key pressed - Code: {key_code} (non-printable), State: {key_state}")
+                    
+        #             # Print state breakdown to see if we can differentiate by state
+        #             print(f"  State flags: WAS_TRIGGERED={bool(key_state & p.KEY_WAS_TRIGGERED)}, "
+        #                   f"IS_DOWN={bool(key_state & p.KEY_IS_DOWN)}, "
+        #                   f"WAS_RELEASED={bool(key_state & p.KEY_WAS_RELEASED)}")
+        #             print(f"  Raw state value: {key_state}")
+            
+            # Show ALL keys in the event dictionary, even if not triggered
+            # all_codes = list(keys.keys())
+            # print(f"All key codes in this event: {all_codes}")
+            # print(f"===========================\n")
+        
+        # Check if "1" key was pressed (ASCII code 49 or -1 for some keyboards)
+        if (ord("1") in keys and keys[ord("1")] & p.KEY_WAS_TRIGGERED) or \
+            (-1 in keys and keys[-1] & p.KEY_WAS_TRIGGERED):
+            if len(self.huskies) > 0 and self.selected_robot_id < len(self.huskies):
+                self.huskies[self.selected_robot_id].interface.toggle_gripper(0)
+                self.huskies[self.selected_robot_id].interface.toggle_gripper(1)
+                print("Toggled both grippers via keyboard '1'")
+
+        if (ord("2") in keys and keys[ord("2")] & p.KEY_WAS_TRIGGERED):
+            # (-1 in keys and keys[-1] & p.KEY_WAS_TRIGGERED):
+            if len(self.huskies) > 0 and self.selected_robot_id < len(self.huskies):
+                self.huskies[self.selected_robot_id].interface.toggle_screw(0)
+                self.huskies[self.selected_robot_id].interface.toggle_screw(1)
+                print("Toggled both screws via keyboard '2'")
+        
+        # Key "0" to plan both arms to goal
+        if (ord("0") in keys and keys[ord("0")] & p.KEY_WAS_TRIGGERED):
+            print("Planning both arms to goal via keyboard '0'...")
+            world.plan_both_arms_to_goal(self, use_composite=True, debug=False)
+        
+        # Enter key (65309 or 13) to execute both arm trajectories
+        if ((65309 in keys and keys[65309] & p.KEY_WAS_TRIGGERED) or
+            (13 in keys and keys[13] & p.KEY_WAS_TRIGGERED)):
+            print("Executing both arm trajectories via keyboard 'Enter'...")
+            world.execute_arm_trajectory_both(self)
+        
+        # Space key (32) to load board validation state
+        if (32 in keys and keys[32] & p.KEY_WAS_TRIGGERED):
+            print("Loading board validation state via keyboard 'Space'...")
+            self.load_board_validation_state()
+        
+        # Key "9" to load joint trajectory
+        if (ord("9") in keys and keys[ord("9")] & p.KEY_WAS_TRIGGERED):
+            print("Loading joint trajectory via keyboard '9'...")
+            self.load_joint_trajectory()
+        
         for b in self.buttons:
             b.update()
  
@@ -1484,9 +1680,14 @@ class HuskyMonitor(Node):
         self.arm_slider.update()
         self.trajectory_time_slider.update()
 
-        if self.CALIBRATION:
-            self.calib_joint_range_slider.update()
-            self.calib_target_axis_slider.update()
+        # if self.CALIBRATION:
+        #     self.calib_joint_range_slider.update()
+        #     self.calib_target_axis_slider.update()
+        
+        if self.CALIBRATION and self.data_collection_mode_slider:
+            self.data_collection_mode_slider.update()
+        if self.CALIBRATION and self.calib_batch_slider:
+            self.calib_batch_slider.update()
 
         if self.BAR_HOLDING_ACCURACY_TEST:
             self.goal_axis_slider.update()

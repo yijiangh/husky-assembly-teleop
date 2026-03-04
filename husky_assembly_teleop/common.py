@@ -175,23 +175,24 @@ def load_robot(dual_arm=False):
     else:
         # INSERT_YOUR_CODE
         print("WARNING: Loading uncalibrated URDF for the single arm Husky robot.")
-        robot_urdf = os.path.join(DATA_DIRECTORY,'husky_urdf/mt_husky_moveit_config/urdf/husky_ur5_e_no_base_joint.urdf')
+        robot_urdf = os.path.join(DATA_DIRECTORY,'husky_urdf/mt_husky_moveit_config/urdf/husky_ur5_e_no_base_joint_Alice_Calibrated.urdf')
 
     assert os.path.exists(robot_urdf)
     robot = pp.load_pybullet(robot_urdf, fixed_base=False, cylinder=False)
     
     return robot
 
-def create_end_effector(ee_type="victor_gripper", load_calib_tip=False, dual_arm=False, force_regenerate=False):
+def create_end_effector(ee_type="victor_gripper", load_calib_tip=False, dual_arm=False, force_regenerate=False, punch_tool_offset=None):
     """
     Create end effector based on type.
-    
+
     Args:
-        ee_type: Type of end effector ("victor_gripper", "robotiq_gripper", "custom_gripper", "validation_tool_pair", or "calib_tip")
+        ee_type: Type of end effector ("victor_gripper", "robotiq_gripper", "custom_gripper", "punch_tool", "validation_tool_pair", or "calib_tip")
         load_calib_tip: Whether to load calibration tip (overrides ee_type)
         dual_arm: Whether this is for a dual-arm robot (only used for validation_tool_pair)
         force_regenerate: Force regeneration of URDF cache (only used for validation_tool_pair)
-        
+        punch_tool_offset: numpy array [x, y, z] offset from tool0 to punch tip (only used for punch_tool)
+
     Returns:
         ee: PyBullet end effector body ID or list of IDs for validation tool pair
     """
@@ -212,7 +213,8 @@ def create_end_effector(ee_type="victor_gripper", load_calib_tip=False, dual_arm
         return ee
     elif ee_type == "validation_tool_pair":
         # Hardcoded validation tool configuration
-        problem_name = '250826_cindy_calibration_validation'
+        from husky_assembly_teleop.husky_monitor import VALIDATION_PROBLEM_NAME
+        problem_name = VALIDATION_PROBLEM_NAME
         # Dynamically select any JSON file ending with _RobotCellState.json in the RobotCellStates directory
         robot_cell_states_dir = os.path.join(DESIGN_DATA_DIRECTORY, problem_name, 'RobotCellStates')
         state_files = [f for f in os.listdir(robot_cell_states_dir) if f.endswith('_RobotCellState.json')]
@@ -257,6 +259,57 @@ def create_end_effector(ee_type="victor_gripper", load_calib_tip=False, dual_arm
         else:
             return tool_uids[0]  # Return only PointTool for single arm
 
+    elif ee_type == "punch_tool":
+        # Punch tool for calibration validation: cone with tip at punch offset, base at tool0
+        import math
+        if punch_tool_offset is not None:
+            cone_height = float(np.linalg.norm(punch_tool_offset))
+        else:
+            cone_height = 0.15  # fallback
+        cone_radius = 0.015  # 15mm base radius
+        num_segments = 12
+
+        vertices = []
+        indices = []
+        # Apex (tip) at punch tip position relative to tool0
+        if punch_tool_offset is not None:
+            vertices.append([float(punch_tool_offset[0]), float(punch_tool_offset[1]), float(punch_tool_offset[2])])
+        else:
+            vertices.append([0.0, 0.0, cone_height])
+        # Base circle vertices at z=0 (tool0 attachment point)
+        for i in range(num_segments):
+            angle = 2.0 * math.pi * i / num_segments
+            x = cone_radius * math.cos(angle)
+            y = cone_radius * math.sin(angle)
+            vertices.append([x, y, 0.0])
+        # Side faces from apex to base ring
+        for i in range(num_segments):
+            next_i = (i + 1) % num_segments
+            indices.extend([0, i + 1, next_i + 1])
+        # Base cap
+        base_center_idx = len(vertices)
+        vertices.append([0.0, 0.0, 0.0])
+        for i in range(num_segments):
+            next_i = (i + 1) % num_segments
+            indices.extend([base_center_idx, next_i + 1, i + 1])
+
+        col_shape = p.createCollisionShape(
+            p.GEOM_MESH, vertices=vertices, indices=indices,
+            physicsClientId=pp.CLIENT
+        )
+        vis_shape = p.createVisualShape(
+            p.GEOM_MESH, vertices=vertices, indices=indices,
+            rgbaColor=[0.8, 0.2, 0.2, 0.8],
+            physicsClientId=pp.CLIENT
+        )
+        ee = p.createMultiBody(
+            baseMass=0,
+            baseCollisionShapeIndex=col_shape,
+            baseVisualShapeIndex=vis_shape,
+            physicsClientId=pp.CLIENT
+        )
+        return ee
+
     elif ee_type == "custom_gripper":
         # Example of adding a new end effector type
         # You can load from URDF, OBJ, or create a simple geometric shape
@@ -266,10 +319,11 @@ def create_end_effector(ee_type="victor_gripper", load_calib_tip=False, dual_arm
             ee = pp.load_pybullet(custom_gripper_path, fixed_base=False, cylinder=False)
         else:
             # Fallback to simple geometric shape
-            ee = pp.create_cylinder(radius=0.05, height=0.15, color=(0.8, 0.8, 0.8, 1))
+            # ee = pp.create_cylinder(radius=0.05, height=0.15, color=(0.8, 0.8, 0.8, 1))
+            ee = pp.create_box(0.12, 0.12, 0.01, color=(0.8, 0.8, 0.8, 1))
         return ee
     else:
-        raise ValueError(f"Unknown end effector type: {ee_type}. Valid types: victor_gripper, robotiq_gripper, custom_gripper, validation_tool_pair, calib_tip")
+        raise ValueError(f"Unknown end effector type: {ee_type}. Valid types: victor_gripper, robotiq_gripper, custom_gripper, punch_tool, validation_tool_pair, calib_tip")
 
 def attach_end_effectors(robot, ee_list, dual_arm=False):
     """
@@ -379,18 +433,18 @@ class Husky():
     
     Note: validation_tool_pair loads a predefined pair of validation tools (PointTool and BoardTool)
     """
-    def __init__(self, monitor, name, mocap_id=None, pos=np.zeros(3), rot=np.array((0, 0, 0, 1)), 
-                 connect_arm=True, connect_gripper=True, base_calibration_file=None, calibration=False, dual_arm=False, ee_types=None, force_regenerate=False):
+    def __init__(self, monitor, name, mocap_id=None, pos=np.zeros(3), rot=np.array((0, 0, 0, 1)),
+                 connect_arm=True, connect_gripper=True, base_calibration_file=None, calibration=False, dual_arm=False, ee_types=None, force_regenerate=False, punch_tool_offset=None):
         self.name = name
         self.mocap_id = mocap_id
-        self.interface = HuskyRobotInterface(monitor, 
-                                             name, 
-                                             use_odom=(mocap_id is None), 
-                                             connect_arm=connect_arm, 
-                                             connect_gripper=connect_gripper, 
+        self.interface = HuskyRobotInterface(monitor,
+                                             name,
+                                             use_odom=(mocap_id is None),
+                                             connect_arm=connect_arm,
+                                             connect_gripper=connect_gripper,
                                              dual_arm=dual_arm
                                              )
-        self.object = HuskyObject(calibration=calibration, dual_arm=dual_arm, ee_types=ee_types, force_regenerate=force_regenerate)
+        self.object = HuskyObject(calibration=calibration, dual_arm=dual_arm, ee_types=ee_types, force_regenerate=force_regenerate, punch_tool_offset=punch_tool_offset)
         self.dual_arm = dual_arm
         
         self.interface.position = pos
@@ -413,32 +467,47 @@ class HuskyObject():
     End effectors are now created and attached during initialization based on the ee_types parameter.
     This makes it easier to specify different end effectors for different robots at the high level.
     """
-    def __init__(self, calibration=False, dual_arm=False, ee_types=None, force_regenerate=False):
+    def __init__(self, calibration=False, dual_arm=False, ee_types=None, force_regenerate=False, punch_tool_offset=None):
         with pp.LockRenderer(False):
             with pp.HideOutput():
                 robot = load_robot(dual_arm=dual_arm)
                 self.robot = robot
                 self.dual_arm = dual_arm
-                
+
                 # Handle end effectors
                 if ee_types is None:
                     if calibration:
                         ee_types = ["calib_tip"]
                     else:
                         ee_types = ["victor_gripper"]
-                
+
                 if dual_arm:
                     if len(ee_types) == 1:
                         # Special case for validation_tool_pair - it already returns both tools
                         if ee_types[0] != "validation_tool_pair":
                             ee_types = [ee_types[0], ee_types[0]]  # Use same type for both arms
-                
+
                 ee_list = []
-                for ee_type in ee_types:
+                per_arm_punch_offsets = None
+                if dual_arm and isinstance(punch_tool_offset, (list, tuple)) and len(punch_tool_offset) == 2:
+                    candidate_offsets = list(punch_tool_offset)
+                    if all(hasattr(offset, '__len__') and len(offset) == 3 for offset in candidate_offsets):
+                        per_arm_punch_offsets = candidate_offsets
+
+                for ee_index, ee_type in enumerate(ee_types):
+                    ee_punch_tool_offset = punch_tool_offset
+                    if per_arm_punch_offsets is not None and ee_type == "punch_tool":
+                        ee_punch_tool_offset = per_arm_punch_offsets[ee_index]
+
                     if ee_type == "calib_tip":
                         ee = create_end_effector(load_calib_tip=True, dual_arm=dual_arm)
                     else:
-                        ee = create_end_effector(ee_type=ee_type, dual_arm=dual_arm, force_regenerate=force_regenerate)
+                        ee = create_end_effector(
+                            ee_type=ee_type,
+                            dual_arm=dual_arm,
+                            force_regenerate=force_regenerate,
+                            punch_tool_offset=ee_punch_tool_offset,
+                        )
                     
                     # Handle validation_tool_pair which returns a list
                     if isinstance(ee, list):
@@ -450,7 +519,8 @@ class HuskyObject():
                     assert len(ee_list) == 2, f"Expected 2 end effectors for dual_arm, got {len(ee_list)}"
                 else:
                     assert len(ee_list) == 1, f"Expected 1 end effector for single arm, got {len(ee_list)}"
-                
+
+                self.ee_types = ee_types
                 self.ee_list = attach_end_effectors(robot, ee_list, dual_arm=dual_arm)
                 self.old_color = None
        
@@ -458,20 +528,30 @@ class HuskyObject():
         """Set pose of base and ur5e arm(s). arm_joint_states must be of shape [[joint_values]] or [[left_joints], [right_joints]]"""        
         pp.set_pose(self.robot, base_pose)
         
-        if len(arm_joint_states) == 1:
-            arm_joints = pp.joints_from_names(self.robot, self.get_arm_joint_names(index))
-            pp.set_joint_positions(self.robot, arm_joints, arm_joint_states[0])
+        if len(arm_joint_states) == 0:
+            raise ValueError(f'set_pose arm_joint_states is empty! {arm_joint_states}')
+        elif len(arm_joint_states) == 1:
+            # Single arm case - update arm at index 0
+            if len(arm_joint_states[0]) > 0:
+                arm_joints = pp.joints_from_names(self.robot, self.get_arm_joint_names(index=0))
+                pp.set_joint_positions(self.robot, arm_joints, arm_joint_states[0])
+            else:
+                raise ValueError(f'set_pose arm_joint_states[0] is empty! {arm_joint_states}')
         elif len(arm_joint_states) == 2:
-            arm_joints = pp.joints_from_names(self.robot, self.get_arm_joint_names(index=0))
-            pp.set_joint_positions(self.robot, arm_joints, arm_joint_states[0])
-            if self.dual_arm:
-                arm_joints = pp.joints_from_names(self.robot, self.get_arm_joint_names(index=1))
-                pp.set_joint_positions(self.robot, arm_joints, arm_joint_states[1])
+            # Dual arm case - update each arm independently if state is non-empty
+            if len(arm_joint_states[0]) > 0:
+                arm_joints = pp.joints_from_names(self.robot, self.get_arm_joint_names(index=0))
+                pp.set_joint_positions(self.robot, arm_joints, arm_joint_states[0])
+            
+            if len(arm_joint_states[1]) > 0:
+                if self.dual_arm:
+                    arm_joints = pp.joints_from_names(self.robot, self.get_arm_joint_names(index=1))
+                    pp.set_joint_positions(self.robot, arm_joints, arm_joint_states[1])
+                else:
+                    raise ValueError(f'Received second arm state but dual_arm is False! {arm_joint_states}')
         else:
-            # print('set_pose arm_joint_states has invalid shape!')
-            # return
-            raise ValueError(f'set_pose arm_joint_states has invalid shape! {arm_joint_states}')
-        
+            raise ValueError(f'set_pose arm_joint_states has invalid shape (>2 arms)! {arm_joint_states}')
+       
         # jg: why was this removed?
         for (ee, ee_attachment) in self.ee_list:
             ee_attachment.assign()

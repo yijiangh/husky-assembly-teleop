@@ -2,6 +2,7 @@ import sys, os, argparse
 import socket, json
 
 import numpy as np
+import pybullet as p
 import pybullet_planning as pp
 
 from husky_assembly_teleop import DATA_DIRECTORY
@@ -239,7 +240,7 @@ def plan_transit_motion(robot, end_conf, attachments, obstacles, debug=False, di
             start_conf = pp.get_joint_positions(robot, movable_joints)
             # print('start conf: ', start_conf)
 
-            if pp.check_initial_end(start_conf, end_conf, transit_collision_fn, diagnosis=debug):
+            if pp.check_initial_end(start_conf, end_conf, transit_collision_fn, diagnosis=True):
                 transit_path = pp.solve_motion_plan(start_conf, end_conf, 
                                             distance_fn, sample_fn, extend_fn,
                                             transit_collision_fn,
@@ -316,9 +317,9 @@ def plan_transfer_motion(robot, ik_solver, transfer_element, attachments, obstac
                 # world_from_gripper_tcp = pp.multiply(world_from_object, pp.invert(gripper_from_object))
                 world_from_tool0 = pp.multiply(world_from_object, pp.invert(tool0_from_object))
 
-                # the arm base link pose has been updated already by the main loop in monitor before the planning starts, 
+                # the arm base link pose has been updated already by the main loop in monitor before the planning starts,
                 # but will not change during planning, so we should wait until the robot settles down and then start planning
-                world_from_arm_base = pp.get_link_pose(robot, pp.link_from_name(robot, "ur_arm_base_link"))
+                world_from_arm_base = pp.get_link_pose(robot, pp.link_from_name(robot, ik_solver.base_link))
                 arm_base_from_tool0 = pp.multiply(pp.invert(world_from_arm_base), world_from_tool0)
 
                 # pp.draw_pose(world_from_tool0)
@@ -411,7 +412,7 @@ def plan_retract_to_home_motion(robot, ik_solver, bar_body, attachments, obstacl
                                                 max_distance=0)
 
     # ! assuming current robot pose is at grasp
-    arm_base_from_tool0 = pp.get_relative_pose(robot, tool_link, pp.link_from_name(robot, 'ur_arm_base_link'))
+    arm_base_from_tool0 = pp.get_relative_pose(robot, tool_link, pp.link_from_name(robot, ik_solver.base_link))
     current_conf = pp.get_joint_positions(robot, movable_joints)
 
     tool0_from_pregrasp = pp.Pose(point=[0,0,-RETRACTION_LENGTH])
@@ -484,5 +485,117 @@ def find_time_interval(t, t_list):
     for i in range(1, n):
         if t < t_list[i]:
             return t_list[i-1], i-1
-    
+
     return t_list[-1], n-1
+
+def draw_joint_axes(robot, dual_arm=False, selected_arm_index=0, axis_length=0.1, line_width=3.0):
+    """
+    Draw the rotational axis of each revolute joint for the selected arm.
+
+    Parameters
+    ----------
+    robot : int
+        PyBullet body ID of the robot
+    dual_arm : bool
+        Whether the robot has dual arms
+    selected_arm_index : int
+        Which arm to visualize (0 for left/single, 1 for right)
+    axis_length : float
+        Length of the axis line to draw (in meters)
+    line_width : float
+        Width of the debug line
+
+    Returns
+    -------
+    list of int
+        List of debug line IDs that were created
+    """
+    # Get the appropriate joint names based on robot configuration
+    if dual_arm:
+        joint_names = HUSKY_DUAL_UR5e_JOINT_NAMES[selected_arm_index]
+    else:
+        joint_names = UR5E_JOINT_NAMES
+
+    # Get joint indices
+    joint_indices = pp.joints_from_names(robot, joint_names)
+
+    # Store debug line IDs for potential cleanup
+    debug_line_ids = []
+
+    # Color scheme: RGB colors for different joints
+    colors = [
+        [1.0, 0.0, 0.0],  # Red - shoulder pan
+        [0.0, 1.0, 0.0],  # Green - shoulder lift
+        [0.0, 0.0, 1.0],  # Blue - elbow
+        [1.0, 1.0, 0.0],  # Yellow - wrist 1
+        [1.0, 0.0, 1.0],  # Magenta - wrist 2
+        [0.0, 1.0, 1.0],  # Cyan - wrist 3
+    ]
+
+    for i, (joint_name, joint_idx) in enumerate(zip(joint_names, joint_indices)):
+        # Get joint info from PyBullet
+        joint_info = p.getJointInfo(robot, joint_idx)
+        joint_type = joint_info[2]  # Joint type (0=revolute, 1=prismatic, 4=fixed)
+        joint_axis = joint_info[13]  # Joint axis in local frame
+        parent_frame_pos = joint_info[14]  # Position of joint frame in parent frame
+        parent_frame_orn = joint_info[15]  # Orientation of joint frame in parent frame
+        parent_index = joint_info[16]  # Parent link index
+
+        # Only process revolute joints
+        if joint_type != p.JOINT_REVOLUTE:
+            notify(f"Warning: Joint {joint_name} is not a revolute joint (type={joint_type})")
+            continue
+
+        # Get the parent link's world pose
+        if parent_index == -1:
+            # Joint is attached to base link
+            parent_world_pos, parent_world_orn = pp.get_pose(robot)
+        else:
+            parent_world_pos, parent_world_orn = pp.get_link_pose(robot, parent_index)
+
+        # Convert parent link's world orientation to rotation matrix
+        parent_rot_matrix = np.array(p.getMatrixFromQuaternion(parent_world_orn)).reshape(3, 3)
+
+        # Joint frame position in world coordinates
+        joint_frame_pos_world = np.array(parent_world_pos) + parent_rot_matrix @ np.array(parent_frame_pos)
+
+        # Joint frame orientation in world coordinates
+        joint_frame_orn_world = p.multiplyTransforms(
+            parent_world_pos, parent_world_orn,
+            parent_frame_pos, parent_frame_orn
+        )[1]
+
+        # Convert joint frame orientation to rotation matrix
+        joint_rot_matrix = np.array(p.getMatrixFromQuaternion(joint_frame_orn_world)).reshape(3, 3)
+
+        # Transform joint axis to world coordinates
+        joint_axis_world = joint_rot_matrix @ np.array(joint_axis)
+        joint_axis_world = joint_axis_world / np.linalg.norm(joint_axis_world)  # Normalize
+
+        # Calculate start and end points of the axis line
+        axis_start = joint_frame_pos_world - joint_axis_world * (axis_length / 2)
+        axis_end = joint_frame_pos_world + joint_axis_world * (axis_length / 2)
+
+        # Draw the axis line
+        line_id = p.addUserDebugLine(
+            lineFromXYZ=axis_start.tolist(),
+            lineToXYZ=axis_end.tolist(),
+            lineColorRGB=colors[i % len(colors)],
+            lineWidth=line_width,
+            physicsClientId=pp.CLIENT
+        )
+        debug_line_ids.append(line_id)
+
+        # Add text label at the joint
+        text_id = p.addUserDebugText(
+            text=joint_name.split('_')[-1],  # Just show the joint type (e.g., "shoulder_pan_joint" -> "joint")
+            textPosition=(joint_frame_pos_world + joint_axis_world * (axis_length / 2 + 0.02)).tolist(),
+            textColorRGB=colors[i % len(colors)],
+            textSize=1.2,
+            physicsClientId=pp.CLIENT
+        )
+        debug_line_ids.append(text_id)
+
+        notify(f"Drew axis for {joint_name} at position {joint_frame_pos_world} with axis {joint_axis_world}")
+
+    return debug_line_ids

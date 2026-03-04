@@ -1,0 +1,154 @@
+2026-02-10 11:41:53,122 - [32mINFO[0m - [32m============================================================[0m
+2026-02-10 11:41:53,122 - [32mINFO[0m - [32mCalibration Verification[0m
+2026-02-10 11:41:53,122 - [32mINFO[0m - [32m============================================================[0m
+2026-02-10 11:41:53,122 - [32mINFO[0m - [32mValidation data batch: j1[0m
+2026-02-10 11:41:53,122 - [32mINFO[0m - [32mRobot: 0806[0m
+2026-02-10 11:41:53,283 - [32mINFO[0m - [32mJoint names: ['left_ur_arm_shoulder_pan_joint', 'left_ur_arm_shoulder_lift_joint', 'left_ur_arm_elbow_joint', 'left_ur_arm_wrist_1_joint', 'left_ur_arm_wrist_2_joint', 'left_ur_arm_wrist_3_joint'][0m
+2026-02-10 11:41:53,283 - [32mINFO[0m - [32mTool0 link: left_ur_arm_tool0[0m
+2026-02-10 11:41:53,283 - [32mINFO[0m - [32mLoaded calibration from: /Users/huangyijiang/Code/husky-assembly-teleop/data/calibration_data/20260126/calibrated_transformation_0806.json[0m
+2026-02-10 11:41:53,283 - [32mINFO[0m - [32mProcessing: calibration_20260126_1651_ext_calib_0806_J1_traj3_JointTrajectory.json[0m
+2026-02-10 11:41:53,283 - [32mINFO[0m - [32m  Sample 1: tool0_from_flange_mocap pos=-0.012, 0.030, 0.015 m (norm=36.0 mm) | world dist=36.0 mm[0m
+2026-02-10 11:41:53,283 - [32mINFO[0m - [32m  Sample 2: tool0_from_flange_mocap pos=-0.012, 0.030, 0.015 m (norm=35.9 mm) | world dist=35.9 mm[0m
+2026-02-10 11:41:53,283 - [32mINFO[0m - [32m  Sample 3: tool0_from_flange_mocap pos=-0.011, 0.030, 0.015 m (norm=35.8 mm) | world dist=35.8 mm[0m
+2026-02-10 11:41:53,283 - [32mINFO[0m - [32m  Sample 4: tool0_from_flange_mocap pos=-0.011, 0.030, 0.015 m (norm=35.5 mm) | world dist=35.5 mm[0m
+2026-02-10 11:41:53,283 - [32mINFO[0m - [32m  Sample 5: tool0_from_flange_mocap pos=-0.011, 0.031, 0.014 m (norm=35.5 mm) | world dist=35.5 mm[0m
+2026-02-10 11:41:53,284 - [32mINFO[0m - [32m  Sample 6: tool0_from_flange_mocap pos=-0.011, 0.031, 0.014 m (norm=35.3 mm) | world dist=35.3 mm[0m
+2026-02-10 11:41:53,284 - [32mINFO[0m - [32m  Sample 7: tool0_from_flange_mocap pos=-0.011, 0.030, 0.014 m (norm=35.1 mm) | world dist=35.1 mm[0m
+2026-02-10 11:41:53,284 - [32mINFO[0m - [32m  Sample 8: tool0_from_flange_mocap pos=-0.011, 0.030, 0.014 m (norm=35.1 mm) | world dist=35.1 mm[0m
+2026-02-10 11:41:53,284 - [32mINFO[0m - [32m  Sample 9: tool0_from_flange_mocap pos=-0.011, 0.030, 0.014 m (norm=35.1 mm) | world dist=35.1 mm[0m
+2026-02-10 11:41:53,284 - [32mINFO[0m - [32m  Sample 10: tool0_from_flange_mocap pos=-0.011, 0.030, 0.014 m (norm=35.2 mm) | world dist=35.2 mm[0m
+2026-02-10 11:41:53,284 - [32mINFO[0m - [32m  Sample 11: tool0_from_flange_mocap pos=-0.011, 0.030, 0.014 m (norm=35.1 mm) | world dist=35.1 mm[0m
+2026-02-10 11:41:53,284 - [32mINFO[0m - [32m  Sample 12: tool0_from_flange_mocap pos=-0.011, 0.030, 0.014 m (norm=35.2 mm) | world dist=35.2 mm[0m
+2026-02-10 11:41:53,284 - [32mINFO[0m - [32m  Sample 13: tool0_from_flange_mocap pos=-0.012, 0.030, 0.014 m (norm=35.0 mm) | world dist=35.0 mm[0m
+2026-02-10 11:41:53,284 - [32mINFO[0m - [32m  Sample 14: tool0_from_flange_mocap pos=-0.012, 0.030, 0.014 m (norm=35.0 mm) | world dist=35.0 mm[0m
+2026-02-10 11:41:53,284 - [32mINFO[0m - [32m  Sample 15: tool0_from_flange_mocap pos=-0.012, 0.030, 0.014 m (norm=35.1 mm) | world dist=35.1 mm[0m
+2026-02-10 11:41:53,284 - [32mINFO[0m - [32m  Sample 16: tool0_from_flange_mocap pos=-0.012, 0.030, 0.014 m (norm=35.2 mm) | world dist=35.2 mm[0m
+2026-02-10 11:41:53,284 - [32mINFO[0m - [32m  Sample 17: tool0_from_flange_mocap pos=-0.012, 0.030, 0.014 m (norm=35.2 mm) | world dist=35.2 mm[0m
+2026-02-10 11:41:53,284 - [32mINFO[0m - [32m  Sample 18: tool0_from_flange_mocap pos=-0.013, 0.030, 0.014 m (norm=35.3 mm) | world dist=35.3 mm[0m
+2026-02-10 11:41:53,284 - [32mINFO[0m - [32m  Sample 19: tool0_from_flange_mocap pos=-0.013, 0.030, 0.014 m (norm=35.4 mm) | world dist=35.4 mm[0m
+2026-02-10 11:41:53,284 - [32mINFO[0m - [32m  Sample 20: tool0_from_flange_mocap pos=-0.013, 0.029, 0.014 m (norm=35.1 mm) | world dist=35.1 mm[0m
+2026-02-10 11:41:53,284 - [32mINFO[0m - [32m  Sample 21: tool0_from_flange_mocap pos=-0.013, 0.029, 0.014 m (norm=35.0 mm) | world dist=35.0 mm[0m
+2026-02-10 11:41:53,285 - [32mINFO[0m - [32m  Sample 22: tool0_from_flange_mocap pos=-0.013, 0.030, 0.014 m (norm=35.4 mm) | world dist=35.4 mm[0m
+2026-02-10 11:41:53,285 - [32mINFO[0m - [32m  Sample 23: tool0_from_flange_mocap pos=-0.013, 0.029, 0.014 m (norm=35.0 mm) | world dist=35.0 mm[0m
+2026-02-10 11:41:53,285 - [32mINFO[0m - [32m  Sample 24: tool0_from_flange_mocap pos=-0.014, 0.029, 0.014 m (norm=34.9 mm) | world dist=34.9 mm[0m
+2026-02-10 11:41:53,285 - [32mINFO[0m - [32m  Sample 25: tool0_from_flange_mocap pos=-0.014, 0.028, 0.014 m (norm=34.9 mm) | world dist=34.9 mm[0m
+2026-02-10 11:41:53,285 - [32mINFO[0m - [32m  Sample 26: tool0_from_flange_mocap pos=-0.015, 0.028, 0.015 m (norm=35.1 mm) | world dist=35.1 mm[0m
+2026-02-10 11:41:53,285 - [32mINFO[0m - [32m  Sample 27: tool0_from_flange_mocap pos=-0.015, 0.028, 0.015 m (norm=35.1 mm) | world dist=35.1 mm[0m
+2026-02-10 11:41:53,285 - [32mINFO[0m - [32m  Sample 28: tool0_from_flange_mocap pos=-0.015, 0.028, 0.015 m (norm=35.2 mm) | world dist=35.2 mm[0m
+2026-02-10 11:41:53,285 - [32mINFO[0m - [32m  Sample 29: tool0_from_flange_mocap pos=-0.016, 0.028, 0.015 m (norm=35.3 mm) | world dist=35.3 mm[0m
+2026-02-10 11:41:53,285 - [32mINFO[0m - [32m  Sample 30: tool0_from_flange_mocap pos=-0.016, 0.028, 0.015 m (norm=35.3 mm) | world dist=35.3 mm[0m
+2026-02-10 11:41:53,285 - [32mINFO[0m - [32mProcessing: calibration_20260126_1632_ext_calib_0806_J1_traj1_JointTrajectory.json[0m
+2026-02-10 11:41:53,286 - [32mINFO[0m - [32m  Sample 1: tool0_from_flange_mocap pos=-0.011, 0.028, 0.017 m (norm=34.7 mm) | world dist=34.7 mm[0m
+2026-02-10 11:41:53,286 - [32mINFO[0m - [32m  Sample 2: tool0_from_flange_mocap pos=-0.011, 0.029, 0.017 m (norm=35.0 mm) | world dist=35.0 mm[0m
+2026-02-10 11:41:53,286 - [32mINFO[0m - [32m  Sample 3: tool0_from_flange_mocap pos=-0.010, 0.029, 0.017 m (norm=34.9 mm) | world dist=34.9 mm[0m
+2026-02-10 11:41:53,286 - [32mINFO[0m - [32m  Sample 4: tool0_from_flange_mocap pos=-0.010, 0.029, 0.017 m (norm=34.9 mm) | world dist=34.9 mm[0m
+2026-02-10 11:41:53,286 - [32mINFO[0m - [32m  Sample 5: tool0_from_flange_mocap pos=-0.010, 0.029, 0.017 m (norm=35.1 mm) | world dist=35.1 mm[0m
+2026-02-10 11:41:53,286 - [32mINFO[0m - [32m  Sample 6: tool0_from_flange_mocap pos=-0.010, 0.029, 0.017 m (norm=35.1 mm) | world dist=35.1 mm[0m
+2026-02-10 11:41:53,286 - [32mINFO[0m - [32m  Sample 7: tool0_from_flange_mocap pos=-0.010, 0.029, 0.017 m (norm=35.3 mm) | world dist=35.3 mm[0m
+2026-02-10 11:41:53,286 - [32mINFO[0m - [32m  Sample 8: tool0_from_flange_mocap pos=-0.010, 0.029, 0.017 m (norm=35.2 mm) | world dist=35.2 mm[0m
+2026-02-10 11:41:53,286 - [32mINFO[0m - [32m  Sample 9: tool0_from_flange_mocap pos=-0.011, 0.029, 0.017 m (norm=35.5 mm) | world dist=35.5 mm[0m
+2026-02-10 11:41:53,286 - [32mINFO[0m - [32m  Sample 10: tool0_from_flange_mocap pos=-0.011, 0.029, 0.017 m (norm=35.5 mm) | world dist=35.5 mm[0m
+2026-02-10 11:41:53,286 - [32mINFO[0m - [32m  Sample 11: tool0_from_flange_mocap pos=-0.011, 0.029, 0.017 m (norm=35.3 mm) | world dist=35.3 mm[0m
+2026-02-10 11:41:53,286 - [32mINFO[0m - [32m  Sample 12: tool0_from_flange_mocap pos=-0.011, 0.029, 0.017 m (norm=35.4 mm) | world dist=35.4 mm[0m
+2026-02-10 11:41:53,286 - [32mINFO[0m - [32m  Sample 13: tool0_from_flange_mocap pos=-0.011, 0.029, 0.017 m (norm=35.4 mm) | world dist=35.4 mm[0m
+2026-02-10 11:41:53,287 - [32mINFO[0m - [32m  Sample 14: tool0_from_flange_mocap pos=-0.011, 0.029, 0.017 m (norm=35.5 mm) | world dist=35.5 mm[0m
+2026-02-10 11:41:53,287 - [32mINFO[0m - [32m  Sample 15: tool0_from_flange_mocap pos=-0.011, 0.029, 0.017 m (norm=35.6 mm) | world dist=35.6 mm[0m
+2026-02-10 11:41:53,287 - [32mINFO[0m - [32m  Sample 16: tool0_from_flange_mocap pos=-0.012, 0.029, 0.017 m (norm=35.7 mm) | world dist=35.7 mm[0m
+2026-02-10 11:41:53,287 - [32mINFO[0m - [32m  Sample 17: tool0_from_flange_mocap pos=-0.012, 0.029, 0.017 m (norm=35.8 mm) | world dist=35.8 mm[0m
+2026-02-10 11:41:53,287 - [32mINFO[0m - [32m  Sample 18: tool0_from_flange_mocap pos=-0.012, 0.029, 0.017 m (norm=35.8 mm) | world dist=35.8 mm[0m
+2026-02-10 11:41:53,287 - [32mINFO[0m - [32m  Sample 19: tool0_from_flange_mocap pos=-0.012, 0.029, 0.017 m (norm=35.8 mm) | world dist=35.8 mm[0m
+2026-02-10 11:41:53,287 - [32mINFO[0m - [32m  Sample 20: tool0_from_flange_mocap pos=-0.013, 0.029, 0.017 m (norm=36.2 mm) | world dist=36.2 mm[0m
+2026-02-10 11:41:53,287 - [32mINFO[0m - [32m  Sample 21: tool0_from_flange_mocap pos=-0.014, 0.029, 0.017 m (norm=36.5 mm) | world dist=36.5 mm[0m
+2026-02-10 11:41:53,287 - [32mINFO[0m - [32m  Sample 22: tool0_from_flange_mocap pos=-0.014, 0.029, 0.017 m (norm=36.3 mm) | world dist=36.3 mm[0m
+2026-02-10 11:41:53,287 - [32mINFO[0m - [32m  Sample 23: tool0_from_flange_mocap pos=-0.014, 0.029, 0.017 m (norm=36.4 mm) | world dist=36.4 mm[0m
+2026-02-10 11:41:53,287 - [32mINFO[0m - [32m  Sample 24: tool0_from_flange_mocap pos=-0.015, 0.029, 0.017 m (norm=36.7 mm) | world dist=36.7 mm[0m
+2026-02-10 11:41:53,287 - [32mINFO[0m - [32m  Sample 25: tool0_from_flange_mocap pos=-0.015, 0.029, 0.017 m (norm=36.8 mm) | world dist=36.8 mm[0m
+2026-02-10 11:41:53,287 - [32mINFO[0m - [32m  Sample 26: tool0_from_flange_mocap pos=-0.016, 0.029, 0.017 m (norm=36.7 mm) | world dist=36.7 mm[0m
+2026-02-10 11:41:53,287 - [32mINFO[0m - [32m  Sample 27: tool0_from_flange_mocap pos=-0.016, 0.029, 0.017 m (norm=36.9 mm) | world dist=36.9 mm[0m
+2026-02-10 11:41:53,288 - [32mINFO[0m - [32m  Sample 28: tool0_from_flange_mocap pos=-0.017, 0.029, 0.017 m (norm=37.0 mm) | world dist=37.0 mm[0m
+2026-02-10 11:41:53,288 - [32mINFO[0m - [32m  Sample 29: tool0_from_flange_mocap pos=-0.017, 0.028, 0.017 m (norm=37.0 mm) | world dist=37.0 mm[0m
+2026-02-10 11:41:53,288 - [32mINFO[0m - [32m  Sample 30: tool0_from_flange_mocap pos=-0.017, 0.028, 0.017 m (norm=37.0 mm) | world dist=37.0 mm[0m
+2026-02-10 11:41:53,288 - [32mINFO[0m - [32mProcessing: calibration_20260126_1627_ext_calib_0806_J1_traj0_JointTrajectory.json[0m
+2026-02-10 11:41:53,288 - [32mINFO[0m - [32m  Sample 1: tool0_from_flange_mocap pos=-0.012, 0.026, 0.015 m (norm=32.8 mm) | world dist=32.8 mm[0m
+2026-02-10 11:41:53,289 - [32mINFO[0m - [32m  Sample 2: tool0_from_flange_mocap pos=-0.012, 0.026, 0.015 m (norm=32.6 mm) | world dist=32.6 mm[0m
+2026-02-10 11:41:53,289 - [32mINFO[0m - [32m  Sample 3: tool0_from_flange_mocap pos=-0.012, 0.026, 0.015 m (norm=32.6 mm) | world dist=32.6 mm[0m
+2026-02-10 11:41:53,289 - [32mINFO[0m - [32m  Sample 4: tool0_from_flange_mocap pos=-0.012, 0.026, 0.015 m (norm=32.5 mm) | world dist=32.5 mm[0m
+2026-02-10 11:41:53,289 - [32mINFO[0m - [32m  Sample 5: tool0_from_flange_mocap pos=-0.012, 0.026, 0.015 m (norm=32.2 mm) | world dist=32.2 mm[0m
+2026-02-10 11:41:53,289 - [32mINFO[0m - [32m  Sample 6: tool0_from_flange_mocap pos=-0.012, 0.026, 0.015 m (norm=32.2 mm) | world dist=32.2 mm[0m
+2026-02-10 11:41:53,289 - [32mINFO[0m - [32m  Sample 7: tool0_from_flange_mocap pos=-0.012, 0.026, 0.015 m (norm=32.3 mm) | world dist=32.3 mm[0m
+2026-02-10 11:41:53,289 - [32mINFO[0m - [32m  Sample 8: tool0_from_flange_mocap pos=-0.012, 0.026, 0.016 m (norm=32.4 mm) | world dist=32.4 mm[0m
+2026-02-10 11:41:53,289 - [32mINFO[0m - [32m  Sample 9: tool0_from_flange_mocap pos=-0.012, 0.026, 0.015 m (norm=32.4 mm) | world dist=32.4 mm[0m
+2026-02-10 11:41:53,289 - [32mINFO[0m - [32m  Sample 10: tool0_from_flange_mocap pos=-0.012, 0.026, 0.015 m (norm=32.3 mm) | world dist=32.3 mm[0m
+2026-02-10 11:41:53,289 - [32mINFO[0m - [32m  Sample 11: tool0_from_flange_mocap pos=-0.012, 0.026, 0.015 m (norm=32.5 mm) | world dist=32.5 mm[0m
+2026-02-10 11:41:53,289 - [32mINFO[0m - [32m  Sample 12: tool0_from_flange_mocap pos=-0.012, 0.026, 0.015 m (norm=32.5 mm) | world dist=32.5 mm[0m
+2026-02-10 11:41:53,289 - [32mINFO[0m - [32m  Sample 13: tool0_from_flange_mocap pos=-0.012, 0.026, 0.015 m (norm=32.6 mm) | world dist=32.6 mm[0m
+2026-02-10 11:41:53,289 - [32mINFO[0m - [32m  Sample 14: tool0_from_flange_mocap pos=-0.012, 0.026, 0.015 m (norm=32.6 mm) | world dist=32.6 mm[0m
+2026-02-10 11:41:53,289 - [32mINFO[0m - [32m  Sample 15: tool0_from_flange_mocap pos=-0.012, 0.026, 0.016 m (norm=32.8 mm) | world dist=32.8 mm[0m
+2026-02-10 11:41:53,289 - [32mINFO[0m - [32m  Sample 16: tool0_from_flange_mocap pos=-0.012, 0.027, 0.015 m (norm=32.9 mm) | world dist=32.9 mm[0m
+2026-02-10 11:41:53,289 - [32mINFO[0m - [32m  Sample 17: tool0_from_flange_mocap pos=-0.012, 0.027, 0.015 m (norm=32.9 mm) | world dist=32.9 mm[0m
+2026-02-10 11:41:53,290 - [32mINFO[0m - [32m  Sample 18: tool0_from_flange_mocap pos=-0.011, 0.027, 0.015 m (norm=33.2 mm) | world dist=33.2 mm[0m
+2026-02-10 11:41:53,290 - [32mINFO[0m - [32m  Sample 19: tool0_from_flange_mocap pos=-0.011, 0.027, 0.015 m (norm=33.4 mm) | world dist=33.4 mm[0m
+2026-02-10 11:41:53,290 - [32mINFO[0m - [32m  Sample 20: tool0_from_flange_mocap pos=-0.011, 0.028, 0.015 m (norm=33.5 mm) | world dist=33.5 mm[0m
+2026-02-10 11:41:53,290 - [32mINFO[0m - [32m  Sample 21: tool0_from_flange_mocap pos=-0.011, 0.028, 0.015 m (norm=33.7 mm) | world dist=33.7 mm[0m
+2026-02-10 11:41:53,290 - [32mINFO[0m - [32m  Sample 22: tool0_from_flange_mocap pos=-0.011, 0.029, 0.015 m (norm=34.1 mm) | world dist=34.1 mm[0m
+2026-02-10 11:41:53,290 - [32mINFO[0m - [32m  Sample 23: tool0_from_flange_mocap pos=-0.010, 0.029, 0.015 m (norm=34.5 mm) | world dist=34.5 mm[0m
+2026-02-10 11:41:53,290 - [32mINFO[0m - [32m  Sample 24: tool0_from_flange_mocap pos=-0.010, 0.030, 0.016 m (norm=34.9 mm) | world dist=34.9 mm[0m
+2026-02-10 11:41:53,290 - [32mINFO[0m - [32m  Sample 25: tool0_from_flange_mocap pos=-0.010, 0.030, 0.016 m (norm=35.4 mm) | world dist=35.4 mm[0m
+2026-02-10 11:41:53,290 - [32mINFO[0m - [32m  Sample 26: tool0_from_flange_mocap pos=-0.010, 0.031, 0.016 m (norm=35.8 mm) | world dist=35.8 mm[0m
+2026-02-10 11:41:53,290 - [32mINFO[0m - [32m  Sample 27: tool0_from_flange_mocap pos=-0.009, 0.031, 0.016 m (norm=36.1 mm) | world dist=36.1 mm[0m
+2026-02-10 11:41:53,290 - [32mINFO[0m - [32m  Sample 28: tool0_from_flange_mocap pos=-0.009, 0.031, 0.016 m (norm=36.3 mm) | world dist=36.3 mm[0m
+2026-02-10 11:41:53,290 - [32mINFO[0m - [32m  Sample 29: tool0_from_flange_mocap pos=-0.009, 0.032, 0.016 m (norm=36.6 mm) | world dist=36.6 mm[0m
+2026-02-10 11:41:53,290 - [32mINFO[0m - [32m  Sample 30: tool0_from_flange_mocap pos=-0.009, 0.032, 0.016 m (norm=36.7 mm) | world dist=36.7 mm[0m
+2026-02-10 11:41:53,290 - [32mINFO[0m - [32mProcessing: calibration_20260126_1640_ext_calib_0806_J1_traj2_JointTrajectory.json[0m
+2026-02-10 11:41:53,291 - [32mINFO[0m - [32m  Sample 1: tool0_from_flange_mocap pos=-0.010, 0.029, 0.016 m (norm=34.9 mm) | world dist=34.9 mm[0m
+2026-02-10 11:41:53,291 - [32mINFO[0m - [32m  Sample 2: tool0_from_flange_mocap pos=-0.011, 0.029, 0.016 m (norm=35.1 mm) | world dist=35.1 mm[0m
+2026-02-10 11:41:53,291 - [32mINFO[0m - [32m  Sample 3: tool0_from_flange_mocap pos=-0.010, 0.029, 0.016 m (norm=35.2 mm) | world dist=35.2 mm[0m
+2026-02-10 11:41:53,291 - [32mINFO[0m - [32m  Sample 4: tool0_from_flange_mocap pos=-0.010, 0.030, 0.016 m (norm=35.3 mm) | world dist=35.3 mm[0m
+2026-02-10 11:41:53,291 - [32mINFO[0m - [32m  Sample 5: tool0_from_flange_mocap pos=-0.010, 0.030, 0.017 m (norm=35.4 mm) | world dist=35.4 mm[0m
+2026-02-10 11:41:53,291 - [32mINFO[0m - [32m  Sample 6: tool0_from_flange_mocap pos=-0.010, 0.030, 0.017 m (norm=35.5 mm) | world dist=35.5 mm[0m
+2026-02-10 11:41:53,291 - [32mINFO[0m - [32m  Sample 7: tool0_from_flange_mocap pos=-0.010, 0.030, 0.017 m (norm=35.4 mm) | world dist=35.4 mm[0m
+2026-02-10 11:41:53,291 - [32mINFO[0m - [32m  Sample 8: tool0_from_flange_mocap pos=-0.010, 0.029, 0.017 m (norm=35.3 mm) | world dist=35.3 mm[0m
+2026-02-10 11:41:53,291 - [32mINFO[0m - [32m  Sample 9: tool0_from_flange_mocap pos=-0.011, 0.029, 0.017 m (norm=35.4 mm) | world dist=35.4 mm[0m
+2026-02-10 11:41:53,291 - [32mINFO[0m - [32m  Sample 10: tool0_from_flange_mocap pos=-0.011, 0.029, 0.016 m (norm=35.2 mm) | world dist=35.2 mm[0m
+2026-02-10 11:41:53,291 - [32mINFO[0m - [32m  Sample 11: tool0_from_flange_mocap pos=-0.011, 0.029, 0.016 m (norm=35.1 mm) | world dist=35.1 mm[0m
+2026-02-10 11:41:53,292 - [32mINFO[0m - [32m  Sample 12: tool0_from_flange_mocap pos=-0.011, 0.029, 0.016 m (norm=35.1 mm) | world dist=35.1 mm[0m
+2026-02-10 11:41:53,292 - [32mINFO[0m - [32m  Sample 13: tool0_from_flange_mocap pos=-0.011, 0.029, 0.017 m (norm=35.0 mm) | world dist=35.0 mm[0m
+2026-02-10 11:41:53,292 - [32mINFO[0m - [32m  Sample 14: tool0_from_flange_mocap pos=-0.011, 0.029, 0.017 m (norm=35.0 mm) | world dist=35.0 mm[0m
+2026-02-10 11:41:53,292 - [32mINFO[0m - [32m  Sample 15: tool0_from_flange_mocap pos=-0.011, 0.029, 0.017 m (norm=35.0 mm) | world dist=35.0 mm[0m
+2026-02-10 11:41:53,292 - [32mINFO[0m - [32m  Sample 16: tool0_from_flange_mocap pos=-0.011, 0.029, 0.016 m (norm=35.0 mm) | world dist=35.0 mm[0m
+2026-02-10 11:41:53,292 - [32mINFO[0m - [32m  Sample 17: tool0_from_flange_mocap pos=-0.012, 0.029, 0.016 m (norm=35.0 mm) | world dist=35.0 mm[0m
+2026-02-10 11:41:53,292 - [32mINFO[0m - [32m  Sample 18: tool0_from_flange_mocap pos=-0.012, 0.028, 0.016 m (norm=34.8 mm) | world dist=34.8 mm[0m
+2026-02-10 11:41:53,292 - [32mINFO[0m - [32m  Sample 19: tool0_from_flange_mocap pos=-0.012, 0.028, 0.016 m (norm=34.7 mm) | world dist=34.7 mm[0m
+2026-02-10 11:41:53,292 - [32mINFO[0m - [32m  Sample 20: tool0_from_flange_mocap pos=-0.013, 0.028, 0.016 m (norm=34.6 mm) | world dist=34.6 mm[0m
+2026-02-10 11:41:53,292 - [32mINFO[0m - [32m  Sample 21: tool0_from_flange_mocap pos=-0.013, 0.028, 0.016 m (norm=34.7 mm) | world dist=34.7 mm[0m
+2026-02-10 11:41:53,292 - [32mINFO[0m - [32m  Sample 22: tool0_from_flange_mocap pos=-0.013, 0.027, 0.016 m (norm=34.3 mm) | world dist=34.3 mm[0m
+2026-02-10 11:41:53,292 - [32mINFO[0m - [32m  Sample 23: tool0_from_flange_mocap pos=-0.013, 0.027, 0.016 m (norm=34.1 mm) | world dist=34.1 mm[0m
+2026-02-10 11:41:53,292 - [32mINFO[0m - [32m  Sample 24: tool0_from_flange_mocap pos=-0.014, 0.027, 0.016 m (norm=34.6 mm) | world dist=34.6 mm[0m
+2026-02-10 11:41:53,292 - [32mINFO[0m - [32m  Sample 25: tool0_from_flange_mocap pos=-0.014, 0.026, 0.017 m (norm=34.4 mm) | world dist=34.4 mm[0m
+2026-02-10 11:41:53,292 - [32mINFO[0m - [32m  Sample 26: tool0_from_flange_mocap pos=-0.015, 0.026, 0.016 m (norm=34.1 mm) | world dist=34.1 mm[0m
+2026-02-10 11:41:53,292 - [32mINFO[0m - [32m  Sample 27: tool0_from_flange_mocap pos=-0.015, 0.026, 0.016 m (norm=34.0 mm) | world dist=34.0 mm[0m
+2026-02-10 11:41:53,293 - [32mINFO[0m - [32m  Sample 28: tool0_from_flange_mocap pos=-0.015, 0.026, 0.016 m (norm=34.0 mm) | world dist=34.0 mm[0m
+2026-02-10 11:41:53,293 - [32mINFO[0m - [32m  Sample 29: tool0_from_flange_mocap pos=-0.016, 0.025, 0.016 m (norm=33.9 mm) | world dist=33.9 mm[0m
+2026-02-10 11:41:53,293 - [32mINFO[0m - [32m  Sample 30: tool0_from_flange_mocap pos=-0.016, 0.025, 0.016 m (norm=33.8 mm) | world dist=33.8 mm[0m
+2026-02-10 11:41:53,293 - [32mINFO[0m - [32mProcessed 120 samples[0m
+2026-02-10 11:41:53,995 - [32mINFO[0m - [32mDebug 3D plot saved to: /Users/huangyijiang/Code/husky-assembly-teleop/data/calibration_data/20260126/j1/debug_tool0_vs_flange_j1.png[0m
+2026-02-10 11:42:18,597 - [32mINFO[0m - [32m============================================================[0m
+2026-02-10 11:42:18,597 - [32mINFO[0m - [32mPosition Analysis (tool0_from_flange_mocap offset)[0m
+2026-02-10 11:42:18,597 - [32mINFO[0m - [32m============================================================[0m
+2026-02-10 11:42:18,598 - [32mINFO[0m - [32m  Mean position: [-0.0121, 0.0286, 0.0157] m[0m
+2026-02-10 11:42:18,598 - [32mINFO[0m - [32m  Max distance from mean: 2.150 mm[0m
+2026-02-10 11:42:18,598 - [32mINFO[0m - [32m  Mean distance from mean: 0.000 mm[0m
+2026-02-10 11:42:18,598 - [32mINFO[0m - [32m  Std distance from mean: 1.193 mm[0m
+2026-02-10 11:42:18,598 - [32mINFO[0m - [32m============================================================[0m
+2026-02-10 11:42:18,598 - [32mINFO[0m - [32mOrientation Analysis[0m
+2026-02-10 11:42:18,598 - [32mINFO[0m - [32m============================================================[0m
+2026-02-10 11:42:18,598 - [32mINFO[0m - [32m  X-axis max angle from mean: 1.175 deg[0m
+2026-02-10 11:42:18,599 - [32mINFO[0m - [32m  Y-axis max angle from mean: 0.709 deg[0m
+2026-02-10 11:42:18,599 - [32mINFO[0m - [32m  Z-axis max angle from mean: 1.216 deg[0m
+2026-02-10 11:42:18,846 - [32mINFO[0m - [32mDebug orientation plot saved to: /Users/huangyijiang/Code/husky-assembly-teleop/data/calibration_data/20260126/j1/debug_orientation_j1.png[0m
+2026-02-10 11:42:21,031 - [32mINFO[0m - [32mVerification plot saved to: /Users/huangyijiang/Code/husky-assembly-teleop/data/calibration_data/20260126/j1/verification_j1.png[0m
+2026-02-10 11:42:28,637 - [32mINFO[0m - [32mDebug offset positions plot saved to: /Users/huangyijiang/Code/husky-assembly-teleop/data/calibration_data/20260126/j1/debug_offset_positions_j1.png[0m
+2026-02-10 11:42:29,634 - [32mINFO[0m - [32mDiversity plot saved to: /Users/huangyijiang/Code/husky-assembly-teleop/data/calibration_data/20260126/j1/diversity_j1.png[0m
+2026-02-10 11:42:56,537 - [32mINFO[0m - [32m============================================================[0m
+2026-02-10 11:42:56,537 - [32mINFO[0m - [32mVerification complete![0m
+2026-02-10 11:42:56,537 - [32mINFO[0m - [32m============================================================[0m

@@ -1,0 +1,28 @@
+2026-01-18 15:00:29,296 - INFO - ============================================================
+2026-01-18 15:00:29,296 - INFO - Calibration Verification
+2026-01-18 15:00:29,296 - INFO - ============================================================
+2026-01-18 15:00:29,296 - INFO - Data batch: j0
+2026-01-18 15:00:29,296 - INFO - Robot: 0806
+2026-01-18 15:00:29,864 - INFO - Joint names: ['left_ur_arm_shoulder_pan_joint', 'left_ur_arm_shoulder_lift_joint', 'left_ur_arm_elbow_joint', 'left_ur_arm_wrist_1_joint', 'left_ur_arm_wrist_2_joint', 'left_ur_arm_wrist_3_joint']
+2026-01-18 15:00:29,864 - INFO - Tool0 link: left_ur_arm_tool0
+2026-01-18 15:00:29,864 - INFO - Loaded calibration from: d:\0_Project\03-2025_husky_assembly\Code\husky-assembly-teleop\data\calibration_data\20250617\calibrated_transformation_0806.json
+2026-01-18 15:00:29,864 - INFO - Processing: calibration_20250617_1423_arm_0_j0.json
+2026-01-18 15:00:44,678 - INFO - Processing: calibration_20250617_1426_arm_0_j0.json
+2026-01-18 15:00:47,678 - INFO - Processing: calibration_20250617_1431_arm_0_j_0.json
+2026-01-18 15:00:50,679 - INFO - Processing: calibration_20250617_1433_arm_0_j_0.json
+2026-01-18 15:00:56,444 - INFO - Processing: calibration_20250617_1435_arm_0_j_0.json
+2026-01-18 15:01:01,194 - INFO - Processed 100 samples
+2026-01-18 15:01:01,411 - INFO - ============================================================
+2026-01-18 15:01:01,411 - INFO - Position Analysis (tool0_from_flange_mocap offset)
+2026-01-18 15:01:01,411 - INFO - ============================================================
+2026-01-18 15:01:01,412 - INFO -   Mean position: [-0.2266, -0.1270, 0.1524] m
+2026-01-18 15:01:01,412 - INFO -   Max distance from mean: 1060.694 mm
+2026-01-18 15:01:01,412 - INFO -   Mean distance from mean: 642.776 mm
+2026-01-18 15:01:01,412 - INFO -   Std distance from mean: 357.418 mm
+2026-01-18 15:01:01,412 - INFO - ============================================================
+2026-01-18 15:01:01,412 - INFO - Orientation Analysis
+2026-01-18 15:01:01,413 - INFO - ============================================================
+2026-01-18 15:01:01,414 - INFO -   X-axis max angle from mean: 110.319 deg
+2026-01-18 15:01:01,416 - INFO -   Y-axis max angle from mean: 135.677 deg
+2026-01-18 15:01:01,418 - INFO -   Z-axis max angle from mean: 58.225 deg
+2026-01-18 15:01:01,805 - INFO - Plot saved to: d:\0_Project\03-2025_husky_assembly\Code\husky-assembly-teleop\data\calibration_data\20250617\j0\verification_j0.png
