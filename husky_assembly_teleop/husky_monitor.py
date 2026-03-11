@@ -12,6 +12,7 @@ print(f"Running with Python: {sys.executable}")
 from collections import defaultdict
 import os
 import time, copy
+import threading
 import numpy as np
 
 from typing import List, Tuple
@@ -26,6 +27,7 @@ import pybullet_planning as pp
 
 from husky_assembly_teleop import DATA_DIRECTORY, CALIBRATION_BATCHES, VALIDATION_PROBLEM_NAME, CALIBRATION_DATE
 import husky_assembly_teleop.husky_world as world
+import husky_assembly_teleop.mocap_experiment as mocap_experiment
 from husky_assembly_teleop.husky_robot import UR5e_HOME_STATE
 from husky_assembly_teleop.common import (
     Button, Slider, SliderGroup, Husky, TrackedObject, HuskyObject, AssemblyObject, HUSKY_UR5e_JOINT_NAMES, lerp, load_gripper
@@ -72,6 +74,12 @@ class HuskyMonitor(Node):
         self.huskies = []
         self.tracked_objects = []
         self.name_from_mocap_id = {}
+        self._mocap_cache_lock = threading.Lock()
+        self._mocap_rigidbody_cache = {}
+        self._mocap_rigidbody_id_from_name = {}
+        self._mocap_labeled_marker_cache = defaultdict(dict)
+        self.mocap_experiment_recording = None
+        self.mocap_experiment_last_output_path = None
 
         self.static_obstacles = {}
         self.assembly_objects = []
@@ -406,6 +414,158 @@ class HuskyMonitor(Node):
     def save_punch_validation_data(self):
         """Save all accumulated punch validation results to JSON."""
         world.save_punch_validation_data(self, date_folder=CALIBRATION_DATE)
+
+    def record_raw_mocap_take(self):
+        if not self.USE_MOCAP:
+            self.get_logger().warn('MoCap experiment recording requires USE_MOCAP.')
+            return
+        if not hasattr(self, 'mocap_client') or not self.mocap_client.connected():
+            self.get_logger().warn('MoCap client is not connected.')
+            return
+        if self.mocap_experiment_recording is not None:
+            self.get_logger().warn('A MoCap experiment take is already recording.')
+            return
+
+        try:
+            config_path, config = mocap_experiment.load_experiment_config()
+        except Exception as exc:
+            self.get_logger().error(f'Failed to load MoCap experiment config: {exc}')
+            return
+
+        selected_husky = self.huskies[self.selected_robot_id]
+        output_paths = mocap_experiment.prepare_take_output(config)
+        self.mocap_experiment_recording = {
+            'config_path': config_path,
+            'config': config,
+            'output_paths': output_paths,
+            'target_rigid_body': selected_husky.name,
+            'selected_robot_id': int(self.selected_robot_id),
+            'wall_start_time': time.monotonic(),
+            'frames': [],
+            'rigid_body_ids': {},
+            'auto_reference_images': [],
+            'mocap_camera_inventory': self.get_mocap_camera_inventory(refresh=True),
+            'webcam_timelapse': None,
+        }
+
+        webcam_asset = mocap_experiment.capture_workspace_webcam_image(config, output_paths)
+        if webcam_asset is not None:
+            self.mocap_experiment_recording['auto_reference_images'].append(webcam_asset)
+            if webcam_asset.get('status') == 'captured':
+                self.get_logger().info(
+                    f"Captured workspace image to "
+                    f"{os.path.join(output_paths['session_dir'], webcam_asset['session_relative_path'])}"
+                )
+            else:
+                self.get_logger().warn(
+                    f"Workspace webcam capture failed: {webcam_asset.get('reason', 'unknown_error')}"
+                )
+
+        webcam_timelapse = mocap_experiment.start_workspace_webcam_timelapse(config, output_paths)
+        self.mocap_experiment_recording['webcam_timelapse'] = webcam_timelapse
+        if webcam_timelapse is not None and webcam_timelapse.get('status') == 'capture_failed':
+            self.get_logger().warn(
+                f"Workspace webcam timelapse failed to start: {webcam_timelapse.get('reason', 'unknown_error')}"
+            )
+
+        self.get_logger().info(
+            f"Started raw MoCap take for '{selected_husky.name}' "
+            f"({config['experiment']['duration_sec']:.1f}s) using {config_path}"
+        )
+
+    def test_webcam_capture(self):
+        try:
+            config_path, config = mocap_experiment.load_experiment_config()
+        except Exception as exc:
+            self.get_logger().error(f'Failed to load MoCap experiment config: {exc}')
+            return
+
+        test_config = copy.deepcopy(config)
+        timestamp = time.strftime('%Y%m%d_%H%M%S')
+        base_take_id = str(test_config.get('take', {}).get('take_id', '') or 'webcam_test')
+        test_config['take']['take_id'] = f'{base_take_id}_webcam_test_{timestamp}'
+        output_paths = mocap_experiment.prepare_take_output(test_config)
+        webcam_asset = mocap_experiment.capture_workspace_webcam_image(test_config, output_paths)
+
+        if webcam_asset is None:
+            self.get_logger().warn('Webcam test capture is disabled in the current config.')
+            return
+
+        if webcam_asset.get('status') == 'captured':
+            asset_path = os.path.join(output_paths['session_dir'], webcam_asset['session_relative_path'])
+            self.get_logger().info(f'Webcam test capture saved to {asset_path}')
+        else:
+            self.get_logger().warn(
+                f"Webcam test capture failed: {webcam_asset.get('reason', 'unknown_error')}"
+            )
+
+    def _record_raw_mocap_snapshot(self, timestamp, raw_snapshot, rigid_body_ids):
+        recording = self.mocap_experiment_recording
+        if recording is None:
+            return
+
+        elapsed_sec = time.monotonic() - recording['wall_start_time']
+        frame_payload = {
+            'timestamp': float(timestamp),
+            'elapsed_sec': float(elapsed_sec),
+            'rigid_bodies': {
+                name: {
+                    'position_m': [float(value) for value in pose[0]],
+                    'quaternion_xyzw': [float(value) for value in pose[1]],
+                }
+                for name, pose in sorted(raw_snapshot.items())
+            },
+        }
+        recording['frames'].append(frame_payload)
+        recording['rigid_body_ids'].update({name: int(rb_id) for name, rb_id in rigid_body_ids.items()})
+        recording['webcam_timelapse'] = mocap_experiment.step_workspace_webcam_timelapse(
+            recording.get('webcam_timelapse'),
+            elapsed_sec,
+            recording['output_paths'],
+        )
+
+        if elapsed_sec >= recording['config']['experiment']['duration_sec']:
+            self._finalize_raw_mocap_take(stop_reason='duration_elapsed')
+
+    def _finalize_raw_mocap_take(self, stop_reason):
+        recording = self.mocap_experiment_recording
+        if recording is None:
+            return
+
+        webcam_timelapse_result = mocap_experiment.finalize_workspace_webcam_timelapse(
+            recording.get('webcam_timelapse'),
+            recording['output_paths'],
+        )
+
+        payload = mocap_experiment.build_take_payload(
+            config=recording['config'],
+            config_path=recording['config_path'],
+            output_paths=recording['output_paths'],
+            target_rigid_body=recording['target_rigid_body'],
+            selected_robot_id=recording['selected_robot_id'],
+            frames=recording['frames'],
+            rigid_body_ids=recording['rigid_body_ids'],
+            stop_reason=stop_reason,
+            auto_reference_images=recording.get('auto_reference_images', []),
+            mocap_camera_inventory=recording.get('mocap_camera_inventory'),
+            webcam_timelapse=webcam_timelapse_result,
+        )
+        take_path = mocap_experiment.save_take_payload(
+            payload=payload,
+            take_path=recording['output_paths']['take_path'],
+            manifest_path=recording['output_paths']['manifest_path'],
+        )
+
+        self.mocap_experiment_last_output_path = take_path
+        self.mocap_experiment_recording = None
+        if webcam_timelapse_result is not None and webcam_timelapse_result.get('status') == 'created':
+            self.get_logger().info(
+                f"Saved webcam timelapse to "
+                f"{os.path.join(recording['output_paths']['session_dir'], webcam_timelapse_result['session_relative_path'])}"
+            )
+        self.get_logger().info(
+            f"Saved raw MoCap take with {payload['frame_count']} frames to {take_path}"
+        )
 
     def update_goal_align_axis(self, value):
         self.goal_element_axis = value
@@ -1319,6 +1479,11 @@ class HuskyMonitor(Node):
             else:
                 print("No robot cell state files found for board validation")
 
+        if self.USE_MOCAP:
+            self.dump_sep_sliders.append(Slider("----------MoCap Experiment", lambda : None))
+            self.buttons.append(Button('Test Webcam Capture', self.test_webcam_capture))
+            self.buttons.append(Button('Record Raw MoCap Take', self.record_raw_mocap_take))
+
         if not self.CALIBRATION:
             # in calibration mode, we do not have task space targets so this is disabled
             pass
@@ -1484,8 +1649,42 @@ class HuskyMonitor(Node):
             connected = self.mocap_client.connected()
             color = self._ANSI_GREEN if connected else self._ANSI_RED
             self.get_logger().info(f"{color}mocap client connected: {connected}{self._ANSI_RESET}")
+            if connected:
+                self.mocap_client.request_model_definitions()
         else:
             self.get_logger().info(f"{self._ANSI_RED}Failed to run mocap client!{self._ANSI_RESET}")
+
+    def get_mocap_camera_inventory(self, refresh=False, timeout_sec=0.5):
+        if not hasattr(self, 'mocap_client') or not self.mocap_client.connected():
+            return None
+
+        if refresh:
+            self.mocap_client.request_model_definitions()
+
+        deadline = time.time() + timeout_sec
+        data_descs = self.mocap_client.get_latest_data_descriptions()
+        while data_descs is None and time.time() < deadline:
+            time.sleep(0.05)
+            data_descs = self.mocap_client.get_latest_data_descriptions()
+
+        if data_descs is None:
+            return None
+
+        camera_list = []
+        for camera in getattr(data_descs, 'camera_list', []):
+            camera_list.append(
+                {
+                    'name': camera.name.decode('utf-8') if isinstance(camera.name, bytes) else str(camera.name),
+                    'position': [float(value) for value in camera.position],
+                    'orientation': [float(value) for value in camera.orientation],
+                }
+            )
+
+        return {
+            'snapshot_time': time.time(),
+            'camera_count': len(camera_list),
+            'cameras': camera_list,
+        }
 
     def send_request_to_mocap(self):
         # self.mocap_client.send_request(self.mocap_client.command_socket, self.mocap_client.NAT_REQUEST_MODELDEF,    "",  (self.mocap_client.server_ip_address, self.mocap_client.command_port) )
@@ -1493,43 +1692,44 @@ class HuskyMonitor(Node):
         world.request_marketset_button(self, 'bar_rig')
     
     # mocap updates are happening in a separate thread
-    _mocap_rigidbody_cache = {}
     def receive_rigid_body_frame(self, id, pos, rot):
-        if id not in self.name_from_mocap_id:
-            return
-        
         # y up to z up
         pos = np.array((pos[2], pos[0], pos[1]))
-        rot = np.array((rot[2], rot[0], rot[1], rot[3]))       
-        
-        name = self.name_from_mocap_id[id]
-        for h in self.huskies:
-            if h.name == name:
-                self._mocap_rigidbody_cache[name] = (pos, rot)
-                
-        for o in self.tracked_objects:
-            if o.name == name:
-                self._mocap_rigidbody_cache[name] = (pos, rot)
+        rot = np.array((rot[2], rot[0], rot[1], rot[3]))
+
+        name = self.name_from_mocap_id.get(id, f'rigid_body_{id}')
+        with self._mocap_cache_lock:
+            self._mocap_rigidbody_cache[name] = (pos, rot)
+            self._mocap_rigidbody_id_from_name[name] = int(id)
     
     def receive_mocap_frame(self, data):
         ts = data['timestamp']
+        with self._mocap_cache_lock:
+            raw_snapshot = {
+                name: (np.array(pose[0], dtype=float), np.array(pose[1], dtype=float))
+                for name, pose in self._mocap_rigidbody_cache.items()
+            }
+            rigid_body_ids = dict(self._mocap_rigidbody_id_from_name)
+
+        if self.mocap_experiment_recording is not None:
+            self._record_raw_mocap_snapshot(ts, raw_snapshot, rigid_body_ids)
+
         for h in self.huskies:
-            if h.name not in self._mocap_rigidbody_cache:
+            if h.name not in raw_snapshot:
                 continue
-            world_from_mocap = self._mocap_rigidbody_cache[h.name]
+            world_from_mocap = raw_snapshot[h.name]
             # apply calibrated base transformation here
             # we keep the raw mocap data in _mocap_rigidbody_cache
             calibrated_pose = pp.multiply(world_from_mocap, h.base_mocap_from_base_footprint)
             h.interface.mocap_callback(np.array(calibrated_pose[0]), np.array(calibrated_pose[1]), ts)
 
         for o in self.tracked_objects:
-            if o.name not in self._mocap_rigidbody_cache:
+            if o.name not in raw_snapshot:
                 continue
-            (pos, rot) = self._mocap_rigidbody_cache[o.name]
+            (pos, rot) = raw_snapshot[o.name]
             o.mocap_callback(pos, rot, ts)
         # self._mocap_rigidbody_cache.clear()
 
-    _mocap_labeled_marker_cache = defaultdict(dict)
     def receive_labeled_marker(self, labeled_marker_from_model_id):
         # print('Received labeled marker data:', labeled_marker_from_model_id)
         # name = self.name_from_mocap_id[id]
