@@ -16,6 +16,7 @@
 
 import socket
 import struct
+import inspect
 from threading import Thread
 import copy
 import time
@@ -116,6 +117,31 @@ class NatNetClient:
 
         self.stop_threads=False
         self.latest_data_descriptions = None
+
+    def __dispatch_rigid_body_listener(self, new_id, pos, rot, marker_error, tracking_valid):
+        if self.rigid_body_listener is None:
+            return
+
+        listener = self.rigid_body_listener
+        try:
+            signature = inspect.signature(listener)
+        except (TypeError, ValueError):
+            signature = None
+
+        if signature is None:
+            listener(new_id, pos, rot)
+            return
+
+        params = list(signature.parameters.values())
+        supports_extended_args = any(
+            param.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+            for param in params
+        ) or len(params) >= 5
+
+        if supports_extended_args:
+            listener(new_id, pos, rot, marker_error, tracking_valid)
+        else:
+            listener(new_id, pos, rot)
 
 
     # Client/server message ids
@@ -348,10 +374,6 @@ class NatNetClient:
 
         rigid_body = MoCapData.RigidBody(new_id, pos, rot)
 
-        # Send information to any listener.
-        if self.rigid_body_listener is not None:
-            self.rigid_body_listener( new_id, pos, rot )
-
         # NatNet ver 4 0 0 0 (major minor refers to this)
         # Server ver 3 0 3 1
 
@@ -412,6 +434,14 @@ class NatNetClient:
                 rigid_body.tracking_valid = True
             else:
                 rigid_body.tracking_valid = False
+
+        self.__dispatch_rigid_body_listener(
+            new_id,
+            pos,
+            rot,
+            rigid_body.error,
+            rigid_body.tracking_valid,
+        )
 
         return offset, rigid_body
 

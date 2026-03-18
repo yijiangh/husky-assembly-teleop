@@ -61,7 +61,15 @@ def _make_output_paths(tmp_path, config):
     }
 
 
-def _frame(timestamp, elapsed_sec, position, quaternion, rigid_body_name="/a200_0806"):
+def _frame(
+    timestamp,
+    elapsed_sec,
+    position,
+    quaternion,
+    rigid_body_name="/a200_0806",
+    marker_error=None,
+    tracking_valid=None,
+):
     return {
         "timestamp": float(timestamp),
         "elapsed_sec": float(elapsed_sec),
@@ -69,6 +77,8 @@ def _frame(timestamp, elapsed_sec, position, quaternion, rigid_body_name="/a200_
             rigid_body_name: {
                 "position_m": [float(value) for value in position],
                 "quaternion_xyzw": [float(value) for value in quaternion],
+                "marker_error": marker_error,
+                "tracking_valid": tracking_valid,
             }
         },
     }
@@ -117,3 +127,63 @@ def test_build_take_payload_accepts_moving_target_track(tmp_path):
     )
 
     assert payload["frame_count"] == 3
+
+
+def test_compute_take_metrics_includes_quality_metrics(tmp_path):
+    payload = {
+        "_source_path": str(tmp_path / "session" / "takes" / "take.json"),
+        "target_rigid_body": "/a200_0806",
+        "take_label": "quality_take",
+        "config": _make_config(),
+        "reference_images": [],
+        "frames": [
+            _frame(0.0, 0.0, [0.1, 0.2, 0.3], [0.0, 0.0, 0.0, 1.0], marker_error=0.001, tracking_valid=True),
+            _frame(0.1, 0.1, [0.1001, 0.2, 0.3], [0.0, 0.0, 0.001, 0.9999995], marker_error=0.002, tracking_valid=False),
+            _frame(0.2, 0.2, [0.1002, 0.2, 0.3], [0.0, 0.0, 0.002, 0.999998], marker_error=0.003, tracking_valid=True),
+        ],
+    }
+
+    metrics = mocap_experiment.compute_take_metrics(payload)
+
+    assert metrics["summary"]["marker_error"]["p95"] == pytest.approx(0.0029)
+    assert metrics["summary"]["tracking_invalid_flag"]["mean"] == pytest.approx(1.0 / 3.0)
+    assert metrics["quality_summary"]["tracking_invalid_frame_count"] == 1
+    assert metrics["quality_summary"]["tracking_invalid_rate_pct"] == pytest.approx(100.0 / 3.0)
+
+
+def test_run_analysis_outputs_quality_artifacts(tmp_path):
+    config = _make_config()
+    output_paths = _make_output_paths(tmp_path, config)
+    frames = [
+        _frame(0.0, 0.0, [0.1, 0.2, 0.3], [0.0, 0.0, 0.0, 1.0], marker_error=0.001, tracking_valid=True),
+        _frame(0.1, 0.1, [0.1001, 0.2, 0.3], [0.0, 0.0, 0.001, 0.9999995], marker_error=0.002, tracking_valid=False),
+        _frame(0.2, 0.2, [0.1002, 0.2, 0.3], [0.0, 0.0, 0.002, 0.999998], marker_error=0.003, tracking_valid=True),
+    ]
+    payload = mocap_experiment.build_take_payload(
+        config=config,
+        config_path=str(tmp_path / "config.yaml"),
+        output_paths=output_paths,
+        target_rigid_body="/a200_0806",
+        selected_robot_id=0,
+        frames=frames,
+        rigid_body_ids={"/a200_0806": 1},
+        stop_reason="duration_elapsed",
+    )
+    take_path = tmp_path / "session" / "takes" / "take.json"
+    take_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(take_path, "w") as f:
+        import json
+
+        json.dump(payload, f)
+
+    summary = mocap_experiment.run_analysis([str(take_path)], output_dir=str(tmp_path / "analysis"))
+
+    assert "marker_error_p95_profile" not in summary["plot_paths"] or summary["plot_paths"]["marker_error_p95_profile"]
+    assert summary["takes"][0]["tracking_invalid_frame_count"] == 1
+    assert summary["takes"][0]["quality_plot_path"]
+    assert (tmp_path / "analysis" / summary["takes"][0]["quality_plot_path"]).is_file()
+
+    report_path = mocap_experiment.write_markdown_report(summary, output_path=str(tmp_path / "analysis" / "report.md"))
+    report_text = report_path and open(report_path).read()
+    assert "Invalid tracking rate" in report_text
+    assert "Marker error p95" in report_text

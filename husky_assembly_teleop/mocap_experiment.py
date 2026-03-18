@@ -23,6 +23,8 @@ METRIC_SPECS = (
     ("angle_x_deg", "X-Axis Angular Drift", "Angle to first frame X axis (deg)"),
     ("angle_y_deg", "Y-Axis Angular Drift", "Angle to first frame Y axis (deg)"),
     ("angle_z_deg", "Z-Axis Angular Drift", "Angle to first frame Z axis (deg)"),
+    ("marker_error", "Marker Error", "OptiTrack marker error"),
+    ("tracking_invalid_flag", "Invalid Tracking Flag", "1 = invalid tracking, 0 = valid tracking"),
 )
 
 
@@ -813,6 +815,22 @@ def _metric_summary_with_angle_max(metric_values):
     return summary
 
 
+def _tracking_quality_summary(samples):
+    valid_count = sum(1 for sample in samples if sample.get("tracking_valid") is True)
+    invalid_count = sum(1 for sample in samples if sample.get("tracking_valid") is False)
+    unknown_count = sum(1 for sample in samples if sample.get("tracking_valid") is None)
+    known_count = valid_count + invalid_count
+    invalid_rate = (float(invalid_count) / float(known_count)) if known_count else None
+    return {
+        "tracking_valid_frame_count": int(valid_count),
+        "tracking_invalid_frame_count": int(invalid_count),
+        "tracking_unknown_frame_count": int(unknown_count),
+        "tracking_known_frame_count": int(known_count),
+        "tracking_invalid_rate": invalid_rate,
+        "tracking_invalid_rate_pct": (100.0 * invalid_rate) if invalid_rate is not None else None,
+    }
+
+
 def _get_nested_value(data, dotted_key, default=""):
     current = data
     for part in str(dotted_key).split("."):
@@ -835,12 +853,16 @@ def compute_take_metrics(take_payload):
         rigid_body = frame.get("rigid_bodies", {}).get(target_name)
         if rigid_body is None:
             continue
+        marker_error = rigid_body.get("marker_error")
+        tracking_valid = rigid_body.get("tracking_valid")
         samples.append(
             {
                 "timestamp": frame.get("timestamp"),
                 "elapsed_sec": frame.get("elapsed_sec"),
                 "position_m": np.asarray(rigid_body["position_m"], dtype=float),
                 "quaternion_xyzw": np.asarray(rigid_body["quaternion_xyzw"], dtype=float),
+                "marker_error": None if marker_error is None else float(marker_error),
+                "tracking_valid": None if tracking_valid is None else bool(tracking_valid),
             }
         )
 
@@ -855,6 +877,8 @@ def compute_take_metrics(take_payload):
     angle_x_deg = []
     angle_y_deg = []
     angle_z_deg = []
+    marker_error_values = []
+    tracking_invalid_flags = []
 
     per_frame_metrics = []
     for sample in samples:
@@ -873,6 +897,10 @@ def compute_take_metrics(take_payload):
         angle_x_deg.append(axis_angles[0])
         angle_y_deg.append(axis_angles[1])
         angle_z_deg.append(axis_angles[2])
+        if sample["marker_error"] is not None:
+            marker_error_values.append(float(sample["marker_error"]))
+        if sample["tracking_valid"] is not None:
+            tracking_invalid_flags.append(0.0 if sample["tracking_valid"] else 1.0)
 
         per_frame_metrics.append(
             {
@@ -882,6 +910,9 @@ def compute_take_metrics(take_payload):
                 "angle_x_deg": axis_angles[0],
                 "angle_y_deg": axis_angles[1],
                 "angle_z_deg": axis_angles[2],
+                "marker_error": sample["marker_error"],
+                "tracking_valid": sample["tracking_valid"],
+                "tracking_invalid_flag": None if sample["tracking_valid"] is None else (0.0 if sample["tracking_valid"] else 1.0),
             }
         )
 
@@ -908,7 +939,10 @@ def compute_take_metrics(take_payload):
         "angle_x_deg": angle_x_deg,
         "angle_y_deg": angle_y_deg,
         "angle_z_deg": angle_z_deg,
+        "marker_error": marker_error_values,
+        "tracking_invalid_flag": tracking_invalid_flags,
     }
+    quality_summary = _tracking_quality_summary(samples)
     return {
         "source_path": take_payload.get("_source_path"),
         "session_dir": os.path.dirname(os.path.dirname(take_payload.get("_source_path"))),
@@ -921,6 +955,7 @@ def compute_take_metrics(take_payload):
         "metrics": metric_values,
         "per_frame_metrics": per_frame_metrics,
         "summary": _metric_summary_with_angle_max(metric_values),
+        "quality_summary": quality_summary,
         "config": take_payload.get("config", {}),
         "mocap_camera_inventory": take_payload.get("mocap_camera_inventory"),
         "webcam_timelapse": take_payload.get("webcam_timelapse"),
@@ -1055,9 +1090,13 @@ def _write_profile_plot(path, matrices, axis_spec, note_lines=None):
     if count <= 2:
         rows, cols = 1, count
         figsize = (8.2 * count, 6.4)
-    else:
+    elif count <= 4:
         rows, cols = 2, 2
         figsize = (16.5, 12.0)
+    else:
+        cols = 3
+        rows = int(math.ceil(float(count) / float(cols)))
+        figsize = (7.2 * cols, 5.5 * rows)
     fig, axes = plt.subplots(rows, cols, figsize=figsize, sharex=False)
     axes = np.asarray(axes).reshape(-1)
 
@@ -1081,6 +1120,68 @@ def _write_profile_plot(path, matrices, axis_spec, note_lines=None):
     plt.close(fig)
 
 
+def _write_boxplot_or_placeholder(ax, values, display_labels, title, ylabel):
+    finite_exists = any(np.isfinite(np.asarray(value, dtype=float)).any() for value in values)
+    ax.set_title(title)
+    ax.set_ylabel(ylabel)
+    if not finite_exists:
+        ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes, color="#666666")
+        ax.set_xticks(range(1, len(display_labels) + 1))
+        ax.set_xticklabels(display_labels, rotation=18, fontsize=9)
+        return
+
+    plot_values = [value if len(value) > 0 else [np.nan] for value in values]
+    ax.boxplot(plot_values, labels=display_labels, patch_artist=True)
+    ax.tick_params(axis="x", rotation=18, labelsize=9)
+
+
+def _write_take_quality_plot(path, take_metrics):
+    import matplotlib.pyplot as plt
+
+    per_frame = take_metrics.get("per_frame_metrics", [])
+    if not per_frame:
+        return False
+
+    times = np.asarray([float(frame.get("elapsed_sec") or 0.0) for frame in per_frame], dtype=float)
+    marker_error = np.asarray(
+        [np.nan if frame.get("marker_error") is None else float(frame.get("marker_error")) for frame in per_frame],
+        dtype=float,
+    )
+    tracking_valid = np.asarray(
+        [
+            np.nan
+            if frame.get("tracking_valid") is None
+            else (1.0 if bool(frame.get("tracking_valid")) else 0.0)
+            for frame in per_frame
+        ],
+        dtype=float,
+    )
+
+    fig, axes = plt.subplots(2, 1, sharex=True, figsize=(12, 6.5))
+
+    axes[0].plot(times, marker_error, color="#1f77b4", linewidth=1.6)
+    axes[0].set_ylabel("Marker error")
+    axes[0].set_title(f"Tracking Quality: {take_metrics['take_label']}")
+    axes[0].grid(alpha=0.3)
+    if not np.isfinite(marker_error).any():
+        axes[0].text(0.5, 0.5, "No marker_error data", ha="center", va="center", transform=axes[0].transAxes, color="#666666")
+
+    axes[1].step(times, tracking_valid, where="post", color="#d62728", linewidth=1.8)
+    axes[1].set_ylabel("Tracking valid")
+    axes[1].set_xlabel("Elapsed time [s]")
+    axes[1].set_yticks([0.0, 1.0])
+    axes[1].set_yticklabels(["invalid", "valid"])
+    axes[1].set_ylim(-0.15, 1.15)
+    axes[1].grid(alpha=0.3)
+    if not np.isfinite(tracking_valid).any():
+        axes[1].text(0.5, 0.5, "No tracking_valid data", ha="center", va="center", transform=axes[1].transAxes, color="#666666")
+
+    fig.tight_layout()
+    fig.savefig(path, dpi=220, bbox_inches="tight")
+    plt.close(fig)
+    return True
+
+
 def _write_condition_summary_table(path, group_rows):
     import matplotlib.pyplot as plt
 
@@ -1092,6 +1193,8 @@ def _write_condition_summary_table(path, group_rows):
         ("distance_mm_p95", "Dist p95\n(mm)"),
         ("angle_max_deg_median", "Angle med\n(deg)"),
         ("angle_max_deg_p95", "Angle p95\n(deg)"),
+        ("marker_error_p95", "Marker err\np95"),
+        ("tracking_invalid_rate_pct", "Invalid\ntracking %"),
     )
     row_labels = [_flatten_group_label(row["group_label"]) for row in group_rows]
     values = np.asarray(
@@ -1178,6 +1281,8 @@ def _build_report_headline(metrics_by_take, group_rows):
     worst_distance = max(group_rows, key=lambda row: row.get("distance_mm_p95") or float("-inf")) if group_rows else None
     best_angle = min(group_rows, key=lambda row: row.get("angle_max_deg_p95") or float("inf")) if group_rows else None
     worst_angle = max(group_rows, key=lambda row: row.get("angle_max_deg_p95") or float("-inf")) if group_rows else None
+    best_marker_error = min(group_rows, key=lambda row: row.get("marker_error_p95") or float("inf")) if group_rows else None
+    worst_invalid_tracking = max(group_rows, key=lambda row: row.get("tracking_invalid_rate") or float("-inf")) if group_rows else None
     return {
         "session_names": session_names,
         "experiment_names": experiment_names,
@@ -1191,6 +1296,10 @@ def _build_report_headline(metrics_by_take, group_rows):
         "best_angle_value": best_angle.get("angle_max_deg_p95") if best_angle else None,
         "worst_angle_group": worst_angle["group_label"] if worst_angle else None,
         "worst_angle_value": worst_angle.get("angle_max_deg_p95") if worst_angle else None,
+        "best_marker_error_group": best_marker_error["group_label"] if best_marker_error else None,
+        "best_marker_error_value": best_marker_error.get("marker_error_p95") if best_marker_error else None,
+        "worst_invalid_tracking_group": worst_invalid_tracking["group_label"] if worst_invalid_tracking else None,
+        "worst_invalid_tracking_value": worst_invalid_tracking.get("tracking_invalid_rate_pct") if worst_invalid_tracking else None,
     }
 
 
@@ -1270,17 +1379,21 @@ def _generate_boxplots(grouped_metrics, output_dir):
     labels = list(grouped_metrics.keys())
     display_labels = [label.replace(" | ", "\n") for label in labels]
 
-    combined_fig, combined_axes = plt.subplots(2, 2, figsize=(max(12, len(labels) * 1.2), 9))
+    metric_count = len(METRIC_SPECS)
+    combined_cols = 2 if metric_count <= 4 else 3
+    combined_rows = int(math.ceil(float(metric_count) / float(combined_cols)))
+    combined_fig, combined_axes = plt.subplots(
+        combined_rows,
+        combined_cols,
+        figsize=(max(12, len(labels) * 1.2, combined_cols * 5.5), max(8, combined_rows * 4.2)),
+    )
     combined_axes = combined_axes.flatten()
 
     for plot_index, (metric_name, title, ylabel) in enumerate(METRIC_SPECS):
         values = [grouped_metrics[label][metric_name] for label in labels]
 
         fig, ax = plt.subplots(figsize=(max(10, len(labels) * 1.2), 5.5))
-        ax.boxplot(values, labels=display_labels, patch_artist=True)
-        ax.set_title(title)
-        ax.set_ylabel(ylabel)
-        ax.tick_params(axis="x", rotation=18, labelsize=9)
+        _write_boxplot_or_placeholder(ax, values, display_labels, title, ylabel)
         fig.tight_layout()
 
         plot_filename = f"{metric_name}_boxplot.png"
@@ -1290,10 +1403,10 @@ def _generate_boxplots(grouped_metrics, output_dir):
         plot_paths[metric_name] = plot_path
 
         combined_ax = combined_axes[plot_index]
-        combined_ax.boxplot(values, labels=display_labels, patch_artist=True)
-        combined_ax.set_title(title)
-        combined_ax.set_ylabel(ylabel)
-        combined_ax.tick_params(axis="x", rotation=20)
+        _write_boxplot_or_placeholder(combined_ax, values, display_labels, title, ylabel)
+
+    for axis in combined_axes[metric_count:]:
+        axis.axis("off")
 
     combined_fig.tight_layout()
     combined_path = os.path.join(output_dir, "combined_boxplots.png")
@@ -1327,6 +1440,12 @@ def _generate_plots(grouped_metrics, group_rows, metrics_by_take, output_dir):
         )
         angle_profile_matrix = _build_condition_matrix(
             metrics_by_take, axis_spec, {"metric_name": "angle_max_deg", "stat_name": "p95"}
+        )
+        marker_error_p95_matrix = _build_condition_matrix(
+            metrics_by_take, axis_spec, {"metric_name": "marker_error", "stat_name": "p95"}
+        )
+        tracking_invalid_rate_matrix = 100.0 * _build_condition_matrix(
+            metrics_by_take, axis_spec, {"metric_name": "tracking_invalid_flag", "stat_name": "mean"}
         )
 
         metric_profile_specs = (
@@ -1362,6 +1481,22 @@ def _generate_plots(grouped_metrics, group_rows, metrics_by_take, output_dir):
                     "ylabel": "Max-axis angular drift p95 (deg)",
                 },
             ),
+            (
+                "marker_error_p95_profile",
+                {
+                    "matrix": marker_error_p95_matrix,
+                    "title": "Marker Error p95",
+                    "ylabel": "Marker error p95",
+                },
+            ),
+            (
+                "tracking_invalid_rate_profile",
+                {
+                    "matrix": tracking_invalid_rate_matrix,
+                    "title": "Invalid Tracking Rate",
+                    "ylabel": "Invalid tracking frames (%)",
+                },
+            ),
         )
         for plot_name, spec in metric_profile_specs:
             plot_path = os.path.join(output_dir, f"{plot_name}.png")
@@ -1391,6 +1526,16 @@ def _generate_plots(grouped_metrics, group_rows, metrics_by_take, output_dir):
                     "matrix": angle_profile_matrix,
                     "title": "Orientation Drift p95",
                     "ylabel": "Max-axis angular drift p95 (deg)",
+                },
+                {
+                    "matrix": marker_error_p95_matrix,
+                    "title": "Marker Error p95",
+                    "ylabel": "Marker error p95",
+                },
+                {
+                    "matrix": tracking_invalid_rate_matrix,
+                    "title": "Invalid Tracking Rate",
+                    "ylabel": "Invalid tracking frames (%)",
                 },
             ),
             axis_spec,
@@ -1435,6 +1580,14 @@ def run_analysis(input_paths, output_dir=None, group_by=None):
     grouped_camera_inventory = {}
     grouped_webcam_timelapse = {}
     grouped_take_configs = {}
+    grouped_tracking_quality = defaultdict(
+        lambda: {
+            "tracking_valid_frame_count": 0,
+            "tracking_invalid_frame_count": 0,
+            "tracking_unknown_frame_count": 0,
+            "tracking_known_frame_count": 0,
+        }
+    )
 
     for take_metrics in metrics_by_take:
         if group_by:
@@ -1456,10 +1609,16 @@ def run_analysis(input_paths, output_dir=None, group_by=None):
             grouped_webcam_timelapse[group_label] = take_metrics.get("webcam_timelapse")
         for metric_name, metric_values in take_metrics["metrics"].items():
             grouped_metrics[group_label][metric_name].extend(metric_values)
+        take_quality_summary = take_metrics.get("quality_summary", {})
+        group_quality_summary = grouped_tracking_quality[group_label]
+        for key in group_quality_summary:
+            group_quality_summary[key] += int(take_quality_summary.get(key, 0) or 0)
 
     output_dir = output_dir or os.path.join(os.path.dirname(take_files[0]), "..", "analysis")
     output_dir = os.path.abspath(output_dir)
     os.makedirs(output_dir, exist_ok=True)
+    take_quality_dir = os.path.join(output_dir, "take_quality")
+    os.makedirs(take_quality_dir, exist_ok=True)
 
     group_rows = []
     for group_label in sorted(grouped_metrics.keys()):
@@ -1483,10 +1642,21 @@ def run_analysis(input_paths, output_dir=None, group_by=None):
         for metric_name, stats in metric_summary.items():
             for stat_name, stat_value in stats.items():
                 row[f"{metric_name}_{stat_name}"] = stat_value
+        group_quality_summary = grouped_tracking_quality[group_label]
+        row.update(group_quality_summary)
+        known_count = group_quality_summary["tracking_known_frame_count"]
+        invalid_count = group_quality_summary["tracking_invalid_frame_count"]
+        row["tracking_invalid_rate"] = (float(invalid_count) / float(known_count)) if known_count else None
+        row["tracking_invalid_rate_pct"] = (
+            100.0 * row["tracking_invalid_rate"] if row["tracking_invalid_rate"] is not None else None
+        )
         group_rows.append(row)
 
     take_rows = []
     for take_metrics in metrics_by_take:
+        take_quality_plot_filename = f"{sanitize_slug(take_metrics['take_label'])}__quality.png"
+        take_quality_plot_path = os.path.join(take_quality_dir, take_quality_plot_filename)
+        quality_plot_created = _write_take_quality_plot(take_quality_plot_path, take_metrics)
         row = {
             "take_label": take_metrics["take_label"],
             "group_label": take_metrics["group_label"],
@@ -1496,10 +1666,12 @@ def run_analysis(input_paths, output_dir=None, group_by=None):
             "reference_images": take_metrics.get("reference_images", []),
             "mocap_camera_inventory": take_metrics.get("mocap_camera_inventory"),
             "webcam_timelapse": take_metrics.get("webcam_timelapse"),
+            "quality_plot_path": os.path.relpath(take_quality_plot_path, output_dir) if quality_plot_created else None,
         }
         for metric_name, stats in take_metrics["summary"].items():
             for stat_name, stat_value in stats.items():
                 row[f"{metric_name}_{stat_name}"] = stat_value
+        row.update(take_metrics.get("quality_summary", {}))
         take_rows.append(row)
 
     plot_paths, axis_spec, analysis_notes = _generate_plots(grouped_metrics, group_rows, metrics_by_take, output_dir)
@@ -1590,6 +1762,14 @@ def write_markdown_report(summary, output_path=None):
         lines.append(
             f"- Worst orientation drift p95: `{headline['worst_angle_group']}` -> `{headline['worst_angle_value']:.3f} deg`"
         )
+    if headline.get("best_marker_error_group") is not None:
+        lines.append(
+            f"- Lowest marker error p95: `{headline['best_marker_error_group']}` -> `{headline['best_marker_error_value']:.6f}`"
+        )
+    if headline.get("worst_invalid_tracking_group") is not None:
+        lines.append(
+            f"- Highest invalid tracking rate: `{headline['worst_invalid_tracking_group']}` -> `{headline['worst_invalid_tracking_value']:.2f} %`"
+        )
     lines.append("")
     lines.append(f"- Generated at: `{summary['generated_at']}`")
     lines.append(f"- Grouped by: `{', '.join(summary['group_by'])}`")
@@ -1638,6 +1818,14 @@ def write_markdown_report(summary, output_path=None):
         lines.append("")
         lines.append(f"![Orientation drift p95 profile]({summary['plot_paths']['angle_max_p95_profile']})")
         lines.append("")
+        lines.append("### Marker Error p95")
+        lines.append("")
+        lines.append(f"![Marker error p95 profile]({summary['plot_paths']['marker_error_p95_profile']})")
+        lines.append("")
+        lines.append("### Invalid Tracking Rate")
+        lines.append("")
+        lines.append(f"![Invalid tracking rate profile]({summary['plot_paths']['tracking_invalid_rate_profile']})")
+        lines.append("")
         lines.append("## Condition Summary Table")
         lines.append("")
         lines.append(f"![Condition summary table]({summary['plot_paths']['condition_summary_table']})")
@@ -1646,15 +1834,15 @@ def write_markdown_report(summary, output_path=None):
     lines.append("## Group Summary")
     lines.append("")
     lines.append(
-        "| Group | Takes | Frames | Distance median (mm) | Distance p95 (mm) | Angle max median (deg) | Angle max p95 (deg) | X median (deg) | Y median (deg) | Z median (deg) |"
+        "| Group | Takes | Frames | Distance median (mm) | Distance p95 (mm) | Angle max median (deg) | Angle max p95 (deg) | Marker error p95 | Invalid tracking (%) | X median (deg) | Y median (deg) | Z median (deg) |"
     )
     lines.append(
-        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"
     )
     for group in summary["groups"]:
         safe_group_label = str(group["group_label"]).replace("|", "/")
         lines.append(
-            "| {group_label} | {take_count} | {frame_count} | {distance_mm_median:.3f} | {distance_mm_p95:.3f} | {angle_max_deg_median:.3f} | {angle_max_deg_p95:.3f} | {angle_x_deg_median:.3f} | {angle_y_deg_median:.3f} | {angle_z_deg_median:.3f} |".format(
+            "| {group_label} | {take_count} | {frame_count} | {distance_mm_median:.3f} | {distance_mm_p95:.3f} | {angle_max_deg_median:.3f} | {angle_max_deg_p95:.3f} | {marker_error_p95:.6f} | {tracking_invalid_rate_pct:.2f} | {angle_x_deg_median:.3f} | {angle_y_deg_median:.3f} | {angle_z_deg_median:.3f} |".format(
                 group_label=safe_group_label,
                 take_count=group["take_count"],
                 frame_count=group["frame_count"],
@@ -1662,6 +1850,8 @@ def write_markdown_report(summary, output_path=None):
                 distance_mm_p95=group["distance_mm_p95"] or 0.0,
                 angle_max_deg_median=group["angle_max_deg_median"] or 0.0,
                 angle_max_deg_p95=group["angle_max_deg_p95"] or 0.0,
+                marker_error_p95=group["marker_error_p95"] or 0.0,
+                tracking_invalid_rate_pct=group["tracking_invalid_rate_pct"] or 0.0,
                 angle_x_deg_median=group["angle_x_deg_median"] or 0.0,
                 angle_y_deg_median=group["angle_y_deg_median"] or 0.0,
                 angle_z_deg_median=group["angle_z_deg_median"] or 0.0,
@@ -1679,6 +1869,25 @@ def write_markdown_report(summary, output_path=None):
         lines.append(f"### {title}")
         lines.append("")
         lines.append(f"![{title}]({summary['plot_paths'][metric_name]})")
+        lines.append("")
+
+    lines.append("")
+    lines.append("## Take Quality Plots")
+    lines.append("")
+    for take in summary["takes"]:
+        lines.append(f"### {take['take_label']}")
+        lines.append("")
+        lines.append(
+            f"- Invalid tracking frames: `{take.get('tracking_invalid_frame_count', 0)}` / `{take.get('tracking_known_frame_count', 0)}`"
+        )
+        if take.get("tracking_invalid_rate_pct") is not None:
+            lines.append(f"- Invalid tracking rate: `{take['tracking_invalid_rate_pct']:.2f} %`")
+        if take.get("marker_error_p95") is not None:
+            lines.append(f"- Marker error p95: `{take['marker_error_p95']:.6f}`")
+        quality_plot_path = take.get("quality_plot_path")
+        if quality_plot_path:
+            lines.append("")
+            lines.append(f"![Tracking quality {take['take_label']}]({quality_plot_path})")
         lines.append("")
 
     lines.append("")

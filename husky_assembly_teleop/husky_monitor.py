@@ -76,7 +76,10 @@ class HuskyMonitor(Node):
         self.name_from_mocap_id = {}
         self._mocap_cache_lock = threading.Lock()
         self._mocap_rigidbody_cache = {}
+        self._mocap_rigidbody_quality_cache = {}
         self._mocap_rigidbody_id_from_name = {}
+        self._mocap_rigid_bodies_seen_in_frame = set()
+        self._mocap_invalid_rigid_body_names = set()
         self._mocap_labeled_marker_cache = defaultdict(dict)
         self.mocap_experiment_recording = None
         self.mocap_experiment_last_output_path = None
@@ -512,6 +515,10 @@ class HuskyMonitor(Node):
                 name: {
                     'position_m': [float(value) for value in pose[0]],
                     'quaternion_xyzw': [float(value) for value in pose[1]],
+                    'marker_error': None if pose[2] is None else float(pose[2]),
+                    'tracking_valid': None if pose[3] is None else bool(pose[3]),
+                    'present_in_frame': bool(pose[4]),
+                    'stale_from_cache': bool(pose[5]),
                 }
                 for name, pose in sorted(raw_snapshot.items())
             },
@@ -1490,7 +1497,7 @@ class HuskyMonitor(Node):
 
         if self.USE_MOCAP:
             self.dump_sep_sliders.append(Slider("----------MoCap Experiment", lambda : None))
-            self.buttons.append(Button('Test Webcam Capture', self.test_webcam_capture))
+            # self.buttons.append(Button('Test Webcam Capture', self.test_webcam_capture))
             self.buttons.append(Button('Record Raw MoCap Take', self.record_raw_mocap_take))
 
         if not self.CALIBRATION:
@@ -1701,24 +1708,72 @@ class HuskyMonitor(Node):
         world.request_marketset_button(self, 'bar_rig')
     
     # mocap updates are happening in a separate thread
-    def receive_rigid_body_frame(self, id, pos, rot):
+    def receive_rigid_body_frame(self, id, pos, rot, marker_error=None, tracking_valid=None):
         # y up to z up
         pos = np.array((pos[2], pos[0], pos[1]))
         rot = np.array((rot[2], rot[0], rot[1], rot[3]))
 
         name = self.name_from_mocap_id.get(id, f'rigid_body_{id}')
+        # print(f"Received mocap frame for {name}: pos={pos}, rot={rot}, marker_error={marker_error}, tracking_valid={tracking_valid}")
         with self._mocap_cache_lock:
             self._mocap_rigidbody_cache[name] = (pos, rot)
+            self._mocap_rigidbody_quality_cache[name] = {
+                'marker_error': None if marker_error is None else float(marker_error),
+                'tracking_valid': None if tracking_valid is None else bool(tracking_valid),
+            }
             self._mocap_rigidbody_id_from_name[name] = int(id)
+            self._mocap_rigid_bodies_seen_in_frame.add(name)
     
     def receive_mocap_frame(self, data):
         ts = data['timestamp']
         with self._mocap_cache_lock:
+            present_in_frame = set(self._mocap_rigid_bodies_seen_in_frame)
+            self._mocap_rigid_bodies_seen_in_frame.clear()
             raw_snapshot = {
-                name: (np.array(pose[0], dtype=float), np.array(pose[1], dtype=float))
+                name: (
+                    np.array(pose[0], dtype=float),
+                    np.array(pose[1], dtype=float),
+                    self._mocap_rigidbody_quality_cache.get(name, {}).get('marker_error'),
+                    self._mocap_rigidbody_quality_cache.get(name, {}).get('tracking_valid'),
+                    name in present_in_frame,
+                    name not in present_in_frame,
+                )
                 for name, pose in self._mocap_rigidbody_cache.items()
             }
             rigid_body_ids = dict(self._mocap_rigidbody_id_from_name)
+
+        tracked_names = {h.name for h in self.huskies}
+        tracked_names.update(o.name for o in self.tracked_objects)
+        if self.mocap_experiment_recording is not None:
+            tracked_names.add(self.mocap_experiment_recording['target_rigid_body'])
+
+        invalid_tracking = {
+            name
+            for name in tracked_names
+            if name in present_in_frame and name in raw_snapshot and raw_snapshot[name][3] is False
+        }
+        newly_invalid = sorted(invalid_tracking - self._mocap_invalid_rigid_body_names)
+        newly_recovered = sorted(
+            name
+            for name in tracked_names
+            if name in present_in_frame
+            and name in raw_snapshot
+            and raw_snapshot[name][3] is True
+            and name in self._mocap_invalid_rigid_body_names
+        )
+
+        for name in newly_invalid:
+            self.get_logger().warn(
+                f"MoCap rigid body '{name}' has invalid tracking in the live data stream; "
+                "the reported pose may be stale or unreliable."
+            )
+        for name in newly_recovered:
+            self.get_logger().info(
+                f"MoCap rigid body '{name}' tracking became valid again."
+            )
+
+        self._mocap_invalid_rigid_body_names.difference_update(newly_recovered)
+        self._mocap_invalid_rigid_body_names.update(invalid_tracking)
 
         if self.mocap_experiment_recording is not None:
             self._record_raw_mocap_snapshot(ts, raw_snapshot, rigid_body_ids)
@@ -1726,7 +1781,7 @@ class HuskyMonitor(Node):
         for h in self.huskies:
             if h.name not in raw_snapshot:
                 continue
-            world_from_mocap = raw_snapshot[h.name]
+            world_from_mocap = raw_snapshot[h.name][:2]
             # apply calibrated base transformation here
             # we keep the raw mocap data in _mocap_rigidbody_cache
             calibrated_pose = pp.multiply(world_from_mocap, h.base_mocap_from_base_footprint)
@@ -1735,7 +1790,7 @@ class HuskyMonitor(Node):
         for o in self.tracked_objects:
             if o.name not in raw_snapshot:
                 continue
-            (pos, rot) = raw_snapshot[o.name]
+            (pos, rot) = raw_snapshot[o.name][:2]
             o.mocap_callback(pos, rot, ts)
         # self._mocap_rigidbody_cache.clear()
 
