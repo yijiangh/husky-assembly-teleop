@@ -537,24 +537,33 @@ class HuskyMonitor(Node):
             recording['output_paths'],
         )
 
-        payload = mocap_experiment.build_take_payload(
-            config=recording['config'],
-            config_path=recording['config_path'],
-            output_paths=recording['output_paths'],
-            target_rigid_body=recording['target_rigid_body'],
-            selected_robot_id=recording['selected_robot_id'],
-            frames=recording['frames'],
-            rigid_body_ids=recording['rigid_body_ids'],
-            stop_reason=stop_reason,
-            auto_reference_images=recording.get('auto_reference_images', []),
-            mocap_camera_inventory=recording.get('mocap_camera_inventory'),
-            webcam_timelapse=webcam_timelapse_result,
-        )
-        take_path = mocap_experiment.save_take_payload(
-            payload=payload,
-            take_path=recording['output_paths']['take_path'],
-            manifest_path=recording['output_paths']['manifest_path'],
-        )
+        try:
+            payload = mocap_experiment.build_take_payload(
+                config=recording['config'],
+                config_path=recording['config_path'],
+                output_paths=recording['output_paths'],
+                target_rigid_body=recording['target_rigid_body'],
+                selected_robot_id=recording['selected_robot_id'],
+                frames=recording['frames'],
+                rigid_body_ids=recording['rigid_body_ids'],
+                stop_reason=stop_reason,
+                auto_reference_images=recording.get('auto_reference_images', []),
+                mocap_camera_inventory=recording.get('mocap_camera_inventory'),
+                webcam_timelapse=webcam_timelapse_result,
+            )
+            take_path = mocap_experiment.save_take_payload(
+                payload=payload,
+                take_path=recording['output_paths']['take_path'],
+                manifest_path=recording['output_paths']['manifest_path'],
+            )
+        except mocap_experiment.InvalidTakeDataError as exc:
+            self.mocap_experiment_last_output_path = None
+            self.mocap_experiment_recording = None
+            self.get_logger().error(
+                f"Rejected raw MoCap take '{recording['output_paths']['take_label']}': {exc} "
+                "Please verify live OptiTrack updates and re-record the take."
+            )
+            return
 
         self.mocap_experiment_last_output_path = take_path
         self.mocap_experiment_recording = None

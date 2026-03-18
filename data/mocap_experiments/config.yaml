@@ -1,18 +1,19 @@
 experiment:
   name: "mocap_cover_study"
-  session_name: "default_session"
-  operator: ""
-  duration_sec: 20.0
-  notes: ""
+  session_name: "20260317_cover_study_marker_adding"
+  operator: "Bob"
+  duration_sec: 35.0
+  notes: "cover passes over robot in 35 seconds, reduce recording cameras and take 4 sets data"
 
 take:
-  take_id: ""
-  workspace_position: "center"
-  marker_configuration: "markers_4"
-  camera_configuration: "all_cameras"
-  cover_configuration: "no_cover"
+  take_id: "ws_back_markers10_allcam_cover_take4"
+  workspace_position: "back"
+  marker_configuration: "markers_10"
+  camera_configuration: "Cam_21"
+  #"close cameras number:3, closed camera ID: 1, 3, 7"
+  cover_configuration: "cover"
   trial_index: 1
-  notes: ""
+  notes: "10 markers, all cameras"  
   reference_images:
     overview: ""
     workspace: ""
@@ -22,7 +23,7 @@ take:
     extra: []
 
 tags:
-  marker_count: 4
+  marker_count: 8
   added_marker_count: 0
   disabled_camera_count: 0
   deck_motion: "none"

@@ -3,6 +3,7 @@ import csv
 import json
 import math
 import os
+import re
 import shutil
 from collections import defaultdict
 from datetime import datetime
@@ -23,6 +24,10 @@ METRIC_SPECS = (
     ("angle_y_deg", "Y-Axis Angular Drift", "Angle to first frame Y axis (deg)"),
     ("angle_z_deg", "Z-Axis Angular Drift", "Angle to first frame Z axis (deg)"),
 )
+
+
+class InvalidTakeDataError(RuntimeError):
+    """Raised when a take contains clearly invalid frozen rigid-body tracking data."""
 
 
 def _default_config():
@@ -276,6 +281,32 @@ def get_take_association_key(config, output_paths):
     return sanitize_slug(take_id) if take_id else output_paths["take_stem"]
 
 
+def validate_target_rigid_body_motion(frames, target_rigid_body, take_label=None):
+    samples = []
+    for frame in frames:
+        rigid_body = frame.get("rigid_bodies", {}).get(target_rigid_body)
+        if rigid_body is None:
+            continue
+        position = tuple(float(value) for value in rigid_body.get("position_m", []))
+        quaternion = tuple(float(value) for value in rigid_body.get("quaternion_xyzw", []))
+        if len(position) != 3 or len(quaternion) != 4:
+            continue
+        samples.append((position, quaternion))
+
+    if len(samples) <= 1:
+        return
+
+    unique_positions = {position for position, _ in samples}
+    unique_quaternions = {quaternion for _, quaternion in samples}
+    if len(unique_positions) == 1 and len(unique_quaternions) == 1:
+        take_context = f" for take '{take_label}'" if take_label else ""
+        raise InvalidTakeDataError(
+            "Detected frozen MoCap data"
+            f"{take_context}: target rigid body '{target_rigid_body}'"
+            f" has one unique position and one unique quaternion across {len(samples)} frames."
+        )
+
+
 def capture_workspace_webcam_image(config, output_paths):
     webcam_config = config.get("capture", {}).get("workspace_webcam", {})
     if not webcam_config.get("enabled", True):
@@ -515,6 +546,7 @@ def build_take_payload(
     webcam_timelapse=None,
 ):
     recorded_at = output_paths["recorded_at"]
+    validate_target_rigid_body_motion(frames, target_rigid_body, output_paths.get("take_label"))
     available_rigid_bodies = sorted({name for frame in frames for name in frame["rigid_bodies"].keys()})
     copied_reference_images = _copy_reference_images(config, config_path, output_paths)
     auto_reference_images = list(auto_reference_images or [])
@@ -686,6 +718,101 @@ def _metric_stats(values):
     }
 
 
+def _label_to_numeric(value):
+    match = re.search(r"(-?\d+(?:\.\d+)?)", str(value))
+    if not match:
+        return None
+    try:
+        return float(match.group(1))
+    except ValueError:
+        return None
+
+
+def _humanize_condition_value(value):
+    text = str(value or "n/a")
+    if not text.strip():
+        return "n/a"
+    return text.replace("_", " ")
+
+
+def _format_condition_label(value):
+    return _humanize_condition_value(value).replace(" ", "\n")
+
+
+def _sort_condition_values(values, key_name):
+    values = [str(value) for value in values]
+    if key_name == "workspace_position":
+        preferred_order = {
+            "center": 0,
+            "right": 1,
+            "left": 2,
+            "front": 3,
+            "back": 4,
+        }
+        return sorted(values, key=lambda value: (preferred_order.get(str(value).lower(), 99), str(value).lower()))
+    return sorted(
+        values,
+        key=lambda value: (
+            _label_to_numeric(value) is None,
+            _label_to_numeric(value) if _label_to_numeric(value) is not None else str(value).lower(),
+        ),
+    )
+
+
+def _collect_condition_catalog(metrics_by_take):
+    catalog = defaultdict(set)
+    for take_metrics in metrics_by_take:
+        take = take_metrics.get("config", {}).get("take", {})
+        for key in ("workspace_position", "marker_configuration", "camera_configuration", "cover_configuration"):
+            catalog[key].add(str(take.get(key, "n/a")))
+    return {key: _sort_condition_values(values, key) for key, values in catalog.items()}
+
+
+def _select_matrix_axes(metrics_by_take):
+    catalog = _collect_condition_catalog(metrics_by_take)
+    varying_keys = [key for key, values in catalog.items() if len(values) > 1]
+    if not varying_keys:
+        return None
+
+    x_key = "workspace_position" if "workspace_position" in varying_keys else varying_keys[0]
+    for candidate in ("marker_configuration", "camera_configuration", "cover_configuration"):
+        if candidate != x_key and candidate in varying_keys:
+            y_key = candidate
+            break
+    else:
+        remaining = [key for key in varying_keys if key != x_key]
+        y_key = remaining[0] if remaining else None
+
+    if y_key is None:
+        return None
+
+    return {
+        "x_key": x_key,
+        "y_key": y_key,
+        "x_values": catalog.get(x_key, []),
+        "y_values": catalog.get(y_key, []),
+        "secondary_keys": [key for key in varying_keys if key not in {x_key, y_key}],
+        "catalog": catalog,
+    }
+
+
+def _metric_summary_with_angle_max(metric_values):
+    summary = {
+        metric_name: _metric_stats(metric_values.get(metric_name, []))
+        for metric_name, _, _ in METRIC_SPECS
+    }
+    angle_max_values = [
+        max(x_value, y_value, z_value)
+        for x_value, y_value, z_value in zip(
+            metric_values.get("angle_x_deg", []),
+            metric_values.get("angle_y_deg", []),
+            metric_values.get("angle_z_deg", []),
+        )
+    ]
+    summary["angle_max_deg"] = _metric_stats(angle_max_values)
+    return summary
+
+
 def _get_nested_value(data, dotted_key, default=""):
     current = data
     for part in str(dotted_key).split("."):
@@ -776,6 +903,12 @@ def compute_take_metrics(take_payload):
         if key not in known_image_paths:
             payload_reference_images.append(discovered)
 
+    metric_values = {
+        "distance_mm": distance_mm,
+        "angle_x_deg": angle_x_deg,
+        "angle_y_deg": angle_y_deg,
+        "angle_z_deg": angle_z_deg,
+    }
     return {
         "source_path": take_payload.get("_source_path"),
         "session_dir": os.path.dirname(os.path.dirname(take_payload.get("_source_path"))),
@@ -785,22 +918,9 @@ def compute_take_metrics(take_payload):
         "target_rigid_body": target_name,
         "frame_count": len(samples),
         "group_by": group_by,
-        "metrics": {
-            "distance_mm": distance_mm,
-            "angle_x_deg": angle_x_deg,
-            "angle_y_deg": angle_y_deg,
-            "angle_z_deg": angle_z_deg,
-        },
+        "metrics": metric_values,
         "per_frame_metrics": per_frame_metrics,
-        "summary": {
-            metric_name: _metric_stats(metric_values)
-            for metric_name, metric_values in (
-                ("distance_mm", distance_mm),
-                ("angle_x_deg", angle_x_deg),
-                ("angle_y_deg", angle_y_deg),
-                ("angle_z_deg", angle_z_deg),
-            )
-        },
+        "summary": _metric_summary_with_angle_max(metric_values),
         "config": take_payload.get("config", {}),
         "mocap_camera_inventory": take_payload.get("mocap_camera_inventory"),
         "webcam_timelapse": take_payload.get("webcam_timelapse"),
@@ -816,24 +936,351 @@ def _write_csv(path, rows, fieldnames):
             writer.writerow(row)
 
 
-def _generate_plots(grouped_metrics, output_dir):
+def _flatten_group_label(group_label):
+    return " | ".join(part.strip() for part in str(group_label).split("|"))
+
+
+def _build_condition_matrix(metrics_by_take, axis_spec, summary_metric):
+    cell_metrics = defaultdict(lambda: defaultdict(list))
+    for take_metrics in metrics_by_take:
+        take = take_metrics.get("config", {}).get("take", {})
+        x_value = str(take.get(axis_spec["x_key"], "n/a"))
+        y_value = str(take.get(axis_spec["y_key"], "n/a"))
+        for metric_name, values in take_metrics["metrics"].items():
+            cell_metrics[(y_value, x_value)][metric_name].extend(values)
+
+    matrix = np.full((len(axis_spec["y_values"]), len(axis_spec["x_values"])), np.nan, dtype=float)
+    for y_index, y_value in enumerate(axis_spec["y_values"]):
+        for x_index, x_value in enumerate(axis_spec["x_values"]):
+            stats = _metric_summary_with_angle_max(cell_metrics[(y_value, x_value)])
+            stat_group = stats.get(summary_metric["metric_name"], {})
+            metric_value = stat_group.get(summary_metric["stat_name"])
+            if metric_value is not None:
+                matrix[y_index, x_index] = float(metric_value)
+    return matrix
+
+
+def _write_heatmap_plot(path, matrix, axis_spec, title, colorbar_label, value_format, note_lines=None):
+    import matplotlib.pyplot as plt
+
+    note_lines = [line for line in (note_lines or []) if str(line).strip()]
+    fig_width = max(9.0, len(axis_spec["x_values"]) * 2.6)
+    fig_height = max(7.0, len(axis_spec["y_values"]) * 1.8 + (0.5 * len(note_lines)))
+    fig, ax = plt.subplots(figsize=(fig_width, fig_height))
+
+    masked_matrix = np.ma.masked_invalid(matrix)
+    cmap = plt.get_cmap("RdYlGn_r").copy()
+    cmap.set_bad(color="#f0f0f0")
+    image = ax.imshow(masked_matrix, aspect="auto", cmap=cmap)
+    colorbar = fig.colorbar(image, ax=ax, shrink=0.9, pad=0.03)
+    colorbar.set_label(colorbar_label)
+
+    ax.set_xticks(range(len(axis_spec["x_values"])))
+    ax.set_xticklabels([_humanize_condition_value(value) for value in axis_spec["x_values"]], fontsize=12)
+    ax.set_yticks(range(len(axis_spec["y_values"])))
+    ax.set_yticklabels([_humanize_condition_value(value) for value in axis_spec["y_values"]], fontsize=12)
+    ax.set_xlabel(_humanize_condition_value(axis_spec["x_key"]).title(), fontsize=13)
+    ax.set_ylabel(_humanize_condition_value(axis_spec["y_key"]).title(), fontsize=13)
+    ax.set_title(title, fontsize=15, pad=16)
+    ax.tick_params(axis="x", rotation=0)
+    ax.set_xticks(np.arange(-0.5, len(axis_spec["x_values"]), 1.0), minor=True)
+    ax.set_yticks(np.arange(-0.5, len(axis_spec["y_values"]), 1.0), minor=True)
+    ax.grid(which="minor", color="white", linewidth=2)
+    ax.tick_params(which="minor", bottom=False, left=False)
+
+    finite_values = matrix[np.isfinite(matrix)]
+    threshold = float(np.median(finite_values)) if finite_values.size else 0.0
+    for row_index in range(matrix.shape[0]):
+        for col_index in range(matrix.shape[1]):
+            value = matrix[row_index, col_index]
+            if not np.isfinite(value):
+                annotation = "n/a"
+                color = "#555555"
+            else:
+                annotation = format(value, value_format)
+                color = "white" if value >= threshold else "#1f1f1f"
+            ax.text(col_index, row_index, annotation, ha="center", va="center", fontsize=13, fontweight="bold", color=color)
+
+    if note_lines:
+        note_text = "\n".join(f"Note: {line}" for line in note_lines)
+        fig.text(0.02, 0.02, note_text, fontsize=10, color="#444444")
+
+    fig.tight_layout(rect=(0, 0.04 if note_lines else 0, 1, 1))
+    fig.savefig(path, dpi=220, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _axis_coordinates(values):
+    numeric_values = [_label_to_numeric(value) for value in values]
+    if all(value is not None for value in numeric_values):
+        return np.asarray(numeric_values, dtype=float), True
+    return np.arange(len(values), dtype=float), False
+
+
+def _write_metric_profile_plot(ax, matrix, axis_spec, title, ylabel):
+    import matplotlib.pyplot as plt
+
+    color_map = plt.get_cmap("tab10")
+    varying_positions, varying_is_numeric = _axis_coordinates(axis_spec["y_values"])
+
+    for workspace_index, workspace_label in enumerate(axis_spec["x_values"]):
+        ax.plot(
+            varying_positions,
+            matrix[:, workspace_index],
+            marker="o",
+            linewidth=2.6,
+            markersize=7.5,
+            label=_humanize_condition_value(workspace_label),
+            color=color_map(workspace_index % 10),
+        )
+
+    if varying_is_numeric:
+        ax.set_xticks(varying_positions)
+    else:
+        ax.set_xticks(np.arange(len(axis_spec["y_values"])))
+        ax.set_xticklabels([_humanize_condition_value(value) for value in axis_spec["y_values"]], fontsize=11)
+
+    ax.set_xlabel(_humanize_condition_value(axis_spec["y_key"]).title())
+    ax.set_ylabel(ylabel)
+    ax.set_title(title)
+    ax.grid(alpha=0.3)
+    ax.legend(fontsize=10, frameon=True, title=_humanize_condition_value(axis_spec["x_key"]).title())
+
+
+def _write_profile_plot(path, matrices, axis_spec, note_lines=None):
+    import matplotlib.pyplot as plt
+
+    note_lines = [line for line in (note_lines or []) if str(line).strip()]
+    count = len(matrices)
+    if count <= 2:
+        rows, cols = 1, count
+        figsize = (8.2 * count, 6.4)
+    else:
+        rows, cols = 2, 2
+        figsize = (16.5, 12.0)
+    fig, axes = plt.subplots(rows, cols, figsize=figsize, sharex=False)
+    axes = np.asarray(axes).reshape(-1)
+
+    for axis, matrix_spec in zip(axes, matrices):
+        _write_metric_profile_plot(
+            axis,
+            matrix_spec["matrix"],
+            axis_spec,
+            matrix_spec["title"],
+            matrix_spec["ylabel"],
+        )
+
+    for axis in axes[len(matrices):]:
+        axis.axis("off")
+
+    if note_lines:
+        fig.text(0.02, 0.02, "\n".join(f"Note: {line}" for line in note_lines), fontsize=10, color="#444444")
+
+    fig.tight_layout(rect=(0, 0.04 if note_lines else 0, 1, 1))
+    fig.savefig(path, dpi=220, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _write_condition_summary_table(path, group_rows):
+    import matplotlib.pyplot as plt
+
+    if not group_rows:
+        return
+
+    metric_specs = (
+        ("distance_mm_median", "Dist med\n(mm)"),
+        ("distance_mm_p95", "Dist p95\n(mm)"),
+        ("angle_max_deg_median", "Angle med\n(deg)"),
+        ("angle_max_deg_p95", "Angle p95\n(deg)"),
+    )
+    row_labels = [_flatten_group_label(row["group_label"]) for row in group_rows]
+    values = np.asarray(
+        [[float(row.get(metric_name) or 0.0) for metric_name, _ in metric_specs] for row in group_rows],
+        dtype=float,
+    )
+
+    fig_width = 10
+    fig_height = max(6.5, len(group_rows) * 0.5)
+    fig, ax = plt.subplots(figsize=(fig_width, fig_height))
+    cmap = plt.get_cmap("RdYlGn_r").copy()
+    normalized = np.zeros_like(values)
+    for column_index in range(values.shape[1]):
+        column = values[:, column_index]
+        col_min = float(np.min(column))
+        col_max = float(np.max(column))
+        if col_max - col_min < 1e-12:
+            normalized[:, column_index] = 0.5
+        else:
+            normalized[:, column_index] = (column - col_min) / (col_max - col_min)
+
+    image = ax.imshow(normalized, aspect="auto", cmap=cmap, vmin=0.0, vmax=1.0)
+    ax.set_xticks(range(len(metric_specs)))
+    ax.set_xticklabels([label for _, label in metric_specs], fontsize=11)
+    ax.set_yticks(range(len(row_labels)))
+    ax.set_yticklabels(row_labels, fontsize=10)
+    ax.set_title("Condition Summary Table", fontsize=15, pad=16)
+    ax.set_xlabel("Metric")
+    ax.set_ylabel("Condition")
+    ax.set_xticks(np.arange(-0.5, len(metric_specs), 1.0), minor=True)
+    ax.set_yticks(np.arange(-0.5, len(row_labels), 1.0), minor=True)
+    ax.grid(which="minor", color="white", linewidth=2)
+    ax.tick_params(which="minor", bottom=False, left=False)
+
+    for row_index in range(values.shape[0]):
+        for column_index in range(values.shape[1]):
+            value = values[row_index, column_index]
+            text_color = "white" if normalized[row_index, column_index] > 0.58 else "#1f1f1f"
+            ax.text(
+                column_index,
+                row_index,
+                f"{value:.3f}",
+                ha="center",
+                va="center",
+                fontsize=10,
+                fontweight="bold",
+                color=text_color,
+            )
+
+    colorbar = fig.colorbar(image, ax=ax, shrink=0.85, pad=0.03)
+    colorbar.set_label("Relative score in each metric column\n(green = better, red = worse)")
+    fig.tight_layout()
+    fig.savefig(path, dpi=220, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _focus_label_from_catalog(catalog):
+    camera_values = catalog.get("camera_configuration", [])
+    marker_values = catalog.get("marker_configuration", [])
+    workspace_values = catalog.get("workspace_position", [])
+    varying = []
+    if len(camera_values) > 1:
+        varying.append("camera count")
+    if len(marker_values) > 1:
+        varying.append("marker count")
+    if len(workspace_values) > 1:
+        varying.append("workspace position")
+    if not varying:
+        return "single-condition session"
+    return " / ".join(varying) + " sweep"
+
+
+def _build_report_headline(metrics_by_take, group_rows):
+    catalog = _collect_condition_catalog(metrics_by_take)
+    session_names = sorted({os.path.basename(take_metrics["session_dir"]) for take_metrics in metrics_by_take})
+    experiment_names = sorted(
+        {
+            str(take_metrics.get("config", {}).get("experiment", {}).get("name", "")).strip()
+            for take_metrics in metrics_by_take
+            if str(take_metrics.get("config", {}).get("experiment", {}).get("name", "")).strip()
+        }
+    )
+    best_distance = min(group_rows, key=lambda row: row.get("distance_mm_p95") or float("inf")) if group_rows else None
+    worst_distance = max(group_rows, key=lambda row: row.get("distance_mm_p95") or float("-inf")) if group_rows else None
+    best_angle = min(group_rows, key=lambda row: row.get("angle_max_deg_p95") or float("inf")) if group_rows else None
+    worst_angle = max(group_rows, key=lambda row: row.get("angle_max_deg_p95") or float("-inf")) if group_rows else None
+    return {
+        "session_names": session_names,
+        "experiment_names": experiment_names,
+        "catalog": catalog,
+        "focus_label": _focus_label_from_catalog(catalog),
+        "best_distance_group": best_distance["group_label"] if best_distance else None,
+        "best_distance_value": best_distance.get("distance_mm_p95") if best_distance else None,
+        "worst_distance_group": worst_distance["group_label"] if worst_distance else None,
+        "worst_distance_value": worst_distance.get("distance_mm_p95") if worst_distance else None,
+        "best_angle_group": best_angle["group_label"] if best_angle else None,
+        "best_angle_value": best_angle.get("angle_max_deg_p95") if best_angle else None,
+        "worst_angle_group": worst_angle["group_label"] if worst_angle else None,
+        "worst_angle_value": worst_angle.get("angle_max_deg_p95") if worst_angle else None,
+    }
+
+
+def _write_camera_marker_3d_plot(path, group_rows, metric_name, title, z_label):
+    import matplotlib.pyplot as plt
+    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
+
+    workspace_order = ["center", "right", "left", "back"]
+    workspace_groups = {}
+    for row in group_rows:
+        workspace = str(row.get("workspace_position", "") or "")
+        camera_count = row.get("camera_count")
+        marker_count = row.get("marker_count")
+        metric_value = row.get(metric_name)
+        if workspace and camera_count is not None and marker_count is not None and metric_value is not None:
+            workspace_groups.setdefault(workspace, []).append(
+                (float(camera_count), float(marker_count), float(metric_value))
+            )
+
+    summary_points = {}
+    for row in group_rows:
+        camera_count = row.get("camera_count")
+        marker_count = row.get("marker_count")
+        metric_value = row.get(metric_name)
+        if camera_count is None or marker_count is None or metric_value is None:
+            continue
+        summary_points.setdefault((float(camera_count), float(marker_count)), []).append(float(metric_value))
+    summary_points = [
+        (camera_count, marker_count, float(np.mean(values)))
+        for (camera_count, marker_count), values in sorted(summary_points.items())
+    ]
+
+    fig = plt.figure(figsize=(18, 11))
+    plot_specs = [(workspace, workspace_groups.get(workspace, [])) for workspace in workspace_order] + [
+        ("summary", summary_points)
+    ]
+
+    for subplot_index, (workspace_name, points) in enumerate(plot_specs, start=1):
+        ax = fig.add_subplot(2, 3, subplot_index, projection="3d")
+        ax.set_title("All positions mean" if workspace_name == "summary" else workspace_name.capitalize())
+        ax.set_xlabel("Camera count")
+        ax.set_ylabel("Marker count")
+        ax.set_zlabel(z_label)
+        if not points:
+            ax.text2D(0.28, 0.5, "No data", transform=ax.transAxes)
+            continue
+
+        xs = np.asarray([point[0] for point in points], dtype=float)
+        ys = np.asarray([point[1] for point in points], dtype=float)
+        zs = np.asarray([point[2] for point in points], dtype=float)
+        scatter = ax.scatter(xs, ys, zs, c=zs, cmap="viridis", s=80, edgecolors="black", linewidths=0.6)
+
+        unique_points = {(x, y) for x, y in zip(xs, ys)}
+        if len(unique_points) >= 3:
+            try:
+                ax.plot_trisurf(xs, ys, zs, cmap="viridis", alpha=0.45, linewidth=0.2)
+            except Exception:
+                pass
+
+        order = np.lexsort((ys, xs))
+        ax.plot(xs[order], ys[order], zs[order], color="#1f4e79", alpha=0.55)
+        ax.set_xticks(sorted(set(xs)))
+        ax.set_yticks(sorted(set(ys)))
+        ax.view_init(elev=26, azim=-130)
+        fig.colorbar(scatter, ax=ax, shrink=0.68, pad=0.05)
+
+    fig.suptitle(title, fontsize=16, y=0.98)
+    fig.tight_layout(rect=(0, 0, 1, 0.97))
+    fig.savefig(path, dpi=220, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _generate_boxplots(grouped_metrics, output_dir):
     import matplotlib.pyplot as plt
 
     plot_paths = {}
     labels = list(grouped_metrics.keys())
     display_labels = [label.replace(" | ", "\n") for label in labels]
 
-    combined_fig, combined_axes = plt.subplots(2, 2, figsize=(max(12, len(labels) * 1.8), 10))
+    combined_fig, combined_axes = plt.subplots(2, 2, figsize=(max(12, len(labels) * 1.2), 9))
     combined_axes = combined_axes.flatten()
 
     for plot_index, (metric_name, title, ylabel) in enumerate(METRIC_SPECS):
         values = [grouped_metrics[label][metric_name] for label in labels]
 
-        fig, ax = plt.subplots(figsize=(max(10, len(labels) * 1.6), 6))
+        fig, ax = plt.subplots(figsize=(max(10, len(labels) * 1.2), 5.5))
         ax.boxplot(values, labels=display_labels, patch_artist=True)
         ax.set_title(title)
         ax.set_ylabel(ylabel)
-        ax.tick_params(axis="x", rotation=20)
+        ax.tick_params(axis="x", rotation=18, labelsize=9)
         fig.tight_layout()
 
         plot_filename = f"{metric_name}_boxplot.png"
@@ -856,6 +1303,119 @@ def _generate_plots(grouped_metrics, output_dir):
     return plot_paths
 
 
+def _generate_plots(grouped_metrics, group_rows, metrics_by_take, output_dir):
+    plot_paths = _generate_boxplots(grouped_metrics, output_dir)
+
+    axis_spec = _select_matrix_axes(metrics_by_take)
+    matrix_plot_paths = {}
+    analysis_notes = []
+    if axis_spec:
+        if axis_spec["secondary_keys"]:
+            extra_keys = ", ".join(axis_spec["secondary_keys"])
+            analysis_notes.append(
+                f"Additional varying fields detected outside the matrix axes: {extra_keys}. Interpret matrix trends together with the group summary table."
+            )
+
+        distance_profile_matrix = _build_condition_matrix(
+            metrics_by_take, axis_spec, {"metric_name": "distance_mm", "stat_name": "median"}
+        )
+        distance_p95_matrix = _build_condition_matrix(
+            metrics_by_take, axis_spec, {"metric_name": "distance_mm", "stat_name": "p95"}
+        )
+        angle_median_matrix = _build_condition_matrix(
+            metrics_by_take, axis_spec, {"metric_name": "angle_max_deg", "stat_name": "median"}
+        )
+        angle_profile_matrix = _build_condition_matrix(
+            metrics_by_take, axis_spec, {"metric_name": "angle_max_deg", "stat_name": "p95"}
+        )
+
+        metric_profile_specs = (
+            (
+                "distance_median_profile",
+                {
+                    "matrix": distance_profile_matrix,
+                    "title": "Distance Drift Median",
+                    "ylabel": "Median distance drift (mm)",
+                },
+            ),
+            (
+                "distance_p95_profile",
+                {
+                    "matrix": distance_p95_matrix,
+                    "title": "Distance Drift p95",
+                    "ylabel": "Distance drift p95 (mm)",
+                },
+            ),
+            (
+                "angle_max_median_profile",
+                {
+                    "matrix": angle_median_matrix,
+                    "title": "Orientation Drift Median",
+                    "ylabel": "Median max-axis angular drift (deg)",
+                },
+            ),
+            (
+                "angle_max_p95_profile",
+                {
+                    "matrix": angle_profile_matrix,
+                    "title": "Orientation Drift p95",
+                    "ylabel": "Max-axis angular drift p95 (deg)",
+                },
+            ),
+        )
+        for plot_name, spec in metric_profile_specs:
+            plot_path = os.path.join(output_dir, f"{plot_name}.png")
+            _write_profile_plot(plot_path, (spec,), axis_spec, note_lines=analysis_notes)
+            matrix_plot_paths[plot_name] = plot_path
+
+        profile_path = os.path.join(output_dir, "condition_profiles.png")
+        _write_profile_plot(
+            profile_path,
+            (
+                {
+                    "matrix": distance_profile_matrix,
+                    "title": "Distance Drift Median",
+                    "ylabel": "Median distance drift (mm)",
+                },
+                {
+                    "matrix": distance_p95_matrix,
+                    "title": "Distance Drift p95",
+                    "ylabel": "Distance drift p95 (mm)",
+                },
+                {
+                    "matrix": angle_median_matrix,
+                    "title": "Orientation Drift Median",
+                    "ylabel": "Median max-axis angular drift (deg)",
+                },
+                {
+                    "matrix": angle_profile_matrix,
+                    "title": "Orientation Drift p95",
+                    "ylabel": "Max-axis angular drift p95 (deg)",
+                },
+            ),
+            axis_spec,
+            note_lines=analysis_notes,
+        )
+        matrix_plot_paths["condition_profiles"] = profile_path
+
+    summary_table_path = os.path.join(output_dir, "condition_summary_table.png")
+    _write_condition_summary_table(summary_table_path, group_rows)
+    matrix_plot_paths["condition_summary_table"] = summary_table_path
+
+    camera_marker_plot_path = os.path.join(output_dir, "camera_marker_distance_p95_3d.png")
+    _write_camera_marker_3d_plot(
+        camera_marker_plot_path,
+        group_rows,
+        "distance_mm_p95",
+        "Camera Count vs Marker Count vs Positional Drift (p95)",
+        "Distance drift p95 (mm)",
+    )
+    matrix_plot_paths["camera_marker_distance_p95_3d"] = camera_marker_plot_path
+
+    plot_paths.update(matrix_plot_paths)
+    return plot_paths, axis_spec, analysis_notes
+
+
 def run_analysis(input_paths, output_dir=None, group_by=None):
     take_files = discover_take_files(input_paths)
     if not take_files:
@@ -874,6 +1434,7 @@ def run_analysis(input_paths, output_dir=None, group_by=None):
     grouped_reference_source_path = {}
     grouped_camera_inventory = {}
     grouped_webcam_timelapse = {}
+    grouped_take_configs = {}
 
     for take_metrics in metrics_by_take:
         if group_by:
@@ -888,6 +1449,7 @@ def run_analysis(input_paths, output_dir=None, group_by=None):
         grouped_take_files[group_label].append(take_metrics["source_path"])
         grouped_reference_images.setdefault(group_label, take_metrics.get("reference_images", []))
         grouped_reference_source_path.setdefault(group_label, take_metrics["source_path"])
+        grouped_take_configs.setdefault(group_label, take_metrics.get("config", {}).get("take", {}))
         if group_label not in grouped_camera_inventory or grouped_camera_inventory[group_label] is None:
             grouped_camera_inventory[group_label] = take_metrics.get("mocap_camera_inventory")
         if group_label not in grouped_webcam_timelapse or grouped_webcam_timelapse[group_label] is None:
@@ -910,8 +1472,15 @@ def run_analysis(input_paths, output_dir=None, group_by=None):
             "mocap_camera_inventory": grouped_camera_inventory.get(group_label),
             "webcam_timelapse": grouped_webcam_timelapse.get(group_label),
         }
-        for metric_name, _, _ in METRIC_SPECS:
-            stats = _metric_stats(grouped_metrics[group_label][metric_name])
+        take_config = grouped_take_configs.get(group_label, {})
+        row["workspace_position"] = take_config.get("workspace_position")
+        row["marker_configuration"] = take_config.get("marker_configuration")
+        row["camera_configuration"] = take_config.get("camera_configuration")
+        row["cover_configuration"] = take_config.get("cover_configuration")
+        row["marker_count"] = _label_to_numeric(take_config.get("marker_configuration"))
+        row["camera_count"] = _label_to_numeric(take_config.get("camera_configuration"))
+        metric_summary = _metric_summary_with_angle_max(grouped_metrics[group_label])
+        for metric_name, stats in metric_summary.items():
             for stat_name, stat_value in stats.items():
                 row[f"{metric_name}_{stat_name}"] = stat_value
         group_rows.append(row)
@@ -933,7 +1502,7 @@ def run_analysis(input_paths, output_dir=None, group_by=None):
                 row[f"{metric_name}_{stat_name}"] = stat_value
         take_rows.append(row)
 
-    plot_paths = _generate_plots(grouped_metrics, output_dir)
+    plot_paths, axis_spec, analysis_notes = _generate_plots(grouped_metrics, group_rows, metrics_by_take, output_dir)
 
     summary = {
         "schema_version": SCHEMA_VERSION,
@@ -942,6 +1511,9 @@ def run_analysis(input_paths, output_dir=None, group_by=None):
         "input_paths": [os.path.abspath(path) for path in input_paths],
         "output_dir": output_dir,
         "plot_paths": {name: os.path.relpath(path, output_dir) for name, path in plot_paths.items()},
+        "matrix_axes": axis_spec,
+        "analysis_notes": analysis_notes,
+        "headline": _build_report_headline(metrics_by_take, group_rows),
         "groups": group_rows,
         "takes": take_rows,
     }
@@ -986,14 +1558,120 @@ def write_markdown_report(summary, output_path=None):
     output_path = output_path or os.path.join(output_dir, "report.md")
 
     lines = []
-    lines.append("# MoCap Experiment Report")
+    headline = summary.get("headline", {})
+    session_names = headline.get("session_names") or []
+    report_title = " / ".join(session_names) if session_names else "MoCap Experiment Report"
+    lines.append(f"# {report_title}")
+    lines.append("")
+    lines.append("## Headline Summary")
+    lines.append("")
+    if headline.get("experiment_names"):
+        lines.append(f"- Experiment: `{', '.join(headline['experiment_names'])}`")
+    if headline.get("focus_label"):
+        lines.append(f"- Session focus: `{headline['focus_label']}`")
+    catalog = headline.get("catalog") or {}
+    if catalog:
+        lines.append(f"- Workspace positions: `{', '.join(catalog.get('workspace_position', []))}`")
+        lines.append(f"- Marker configurations: `{', '.join(catalog.get('marker_configuration', []))}`")
+        lines.append(f"- Camera configurations: `{', '.join(catalog.get('camera_configuration', []))}`")
+    if headline.get("best_distance_group") is not None:
+        lines.append(
+            f"- Best positional drift p95: `{headline['best_distance_group']}` -> `{headline['best_distance_value']:.3f} mm`"
+        )
+    if headline.get("worst_distance_group") is not None:
+        lines.append(
+            f"- Worst positional drift p95: `{headline['worst_distance_group']}` -> `{headline['worst_distance_value']:.3f} mm`"
+        )
+    if headline.get("best_angle_group") is not None:
+        lines.append(
+            f"- Best orientation drift p95: `{headline['best_angle_group']}` -> `{headline['best_angle_value']:.3f} deg`"
+        )
+    if headline.get("worst_angle_group") is not None:
+        lines.append(
+            f"- Worst orientation drift p95: `{headline['worst_angle_group']}` -> `{headline['worst_angle_value']:.3f} deg`"
+        )
     lines.append("")
     lines.append(f"- Generated at: `{summary['generated_at']}`")
     lines.append(f"- Grouped by: `{', '.join(summary['group_by'])}`")
     lines.append(f"- Number of takes: `{len(summary['takes'])}`")
     lines.append(f"- Number of groups: `{len(summary['groups'])}`")
     lines.append("")
-    lines.append("## Plots")
+    lines.append("## 3D Camera-Marker View")
+    lines.append("")
+    lines.append(
+        "_X axis = camera count, Y axis = marker count, Z axis = positional drift p95. The figure includes one subplot per workspace plus one overall mean subplot._"
+    )
+    lines.append("")
+    lines.append(f"![Camera-marker positional drift 3D]({summary['plot_paths']['camera_marker_distance_p95_3d']})")
+    lines.append("")
+    if summary.get("matrix_axes"):
+        matrix_axes = summary["matrix_axes"]
+        lines.append("## Condition Profiles")
+        lines.append("")
+        lines.append(
+            f"- X axis: `{matrix_axes['x_key']}`"
+        )
+        lines.append(
+            f"- Y axis: `{matrix_axes['y_key']}`"
+        )
+        if summary.get("analysis_notes"):
+            for note in summary["analysis_notes"]:
+                lines.append(f"- {note}")
+        lines.append("")
+        lines.append("### Combined Overview")
+        lines.append("")
+        lines.append(f"![Condition profiles]({summary['plot_paths']['condition_profiles']})")
+        lines.append("")
+        lines.append("### Distance Drift Median")
+        lines.append("")
+        lines.append(f"![Distance drift median profile]({summary['plot_paths']['distance_median_profile']})")
+        lines.append("")
+        lines.append("### Distance Drift p95")
+        lines.append("")
+        lines.append(f"![Distance drift p95 profile]({summary['plot_paths']['distance_p95_profile']})")
+        lines.append("")
+        lines.append("### Orientation Drift Median")
+        lines.append("")
+        lines.append(f"![Orientation drift median profile]({summary['plot_paths']['angle_max_median_profile']})")
+        lines.append("")
+        lines.append("### Orientation Drift p95")
+        lines.append("")
+        lines.append(f"![Orientation drift p95 profile]({summary['plot_paths']['angle_max_p95_profile']})")
+        lines.append("")
+        lines.append("## Condition Summary Table")
+        lines.append("")
+        lines.append(f"![Condition summary table]({summary['plot_paths']['condition_summary_table']})")
+        lines.append("")
+
+    lines.append("## Group Summary")
+    lines.append("")
+    lines.append(
+        "| Group | Takes | Frames | Distance median (mm) | Distance p95 (mm) | Angle max median (deg) | Angle max p95 (deg) | X median (deg) | Y median (deg) | Z median (deg) |"
+    )
+    lines.append(
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"
+    )
+    for group in summary["groups"]:
+        safe_group_label = str(group["group_label"]).replace("|", "/")
+        lines.append(
+            "| {group_label} | {take_count} | {frame_count} | {distance_mm_median:.3f} | {distance_mm_p95:.3f} | {angle_max_deg_median:.3f} | {angle_max_deg_p95:.3f} | {angle_x_deg_median:.3f} | {angle_y_deg_median:.3f} | {angle_z_deg_median:.3f} |".format(
+                group_label=safe_group_label,
+                take_count=group["take_count"],
+                frame_count=group["frame_count"],
+                distance_mm_median=group["distance_mm_median"] or 0.0,
+                distance_mm_p95=group["distance_mm_p95"] or 0.0,
+                angle_max_deg_median=group["angle_max_deg_median"] or 0.0,
+                angle_max_deg_p95=group["angle_max_deg_p95"] or 0.0,
+                angle_x_deg_median=group["angle_x_deg_median"] or 0.0,
+                angle_y_deg_median=group["angle_y_deg_median"] or 0.0,
+                angle_z_deg_median=group["angle_z_deg_median"] or 0.0,
+            )
+        )
+
+    lines.append("")
+    lines.append("## Appendix: Detailed Boxplots")
+    lines.append("")
+    lines.append("_These per-frame boxplots are retained for debugging, but the heatmaps, line profiles, and summary table above should be the primary comparison figures for multi-condition sessions._")
     lines.append("")
     lines.append(f"![Combined boxplots]({summary['plot_paths']['combined']})")
     lines.append("")
@@ -1002,29 +1680,6 @@ def write_markdown_report(summary, output_path=None):
         lines.append("")
         lines.append(f"![{title}]({summary['plot_paths'][metric_name]})")
         lines.append("")
-
-    lines.append("## Group Summary")
-    lines.append("")
-    lines.append(
-        "| Group | Takes | Frames | Distance median (mm) | Distance p95 (mm) | X median (deg) | Y median (deg) | Z median (deg) |"
-    )
-    lines.append(
-        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"
-    )
-    for group in summary["groups"]:
-        safe_group_label = str(group["group_label"]).replace("|", "/")
-        lines.append(
-            "| {group_label} | {take_count} | {frame_count} | {distance_mm_median:.3f} | {distance_mm_p95:.3f} | {angle_x_deg_median:.3f} | {angle_y_deg_median:.3f} | {angle_z_deg_median:.3f} |".format(
-                group_label=safe_group_label,
-                take_count=group["take_count"],
-                frame_count=group["frame_count"],
-                distance_mm_median=group["distance_mm_median"] or 0.0,
-                distance_mm_p95=group["distance_mm_p95"] or 0.0,
-                angle_x_deg_median=group["angle_x_deg_median"] or 0.0,
-                angle_y_deg_median=group["angle_y_deg_median"] or 0.0,
-                angle_z_deg_median=group["angle_z_deg_median"] or 0.0,
-            )
-        )
 
     lines.append("")
     lines.append("## MoCap Camera Inventory")
