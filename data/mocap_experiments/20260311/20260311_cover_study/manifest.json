@@ -1,0 +1,226 @@
+{
+  "schema_version": 1,
+  "updated_at": "2026-03-11T16:42:13.156069",
+  "takes": [
+    {
+      "recorded_at": "2026-03-11T15:36:10.979044",
+      "take_path": "takes/20260311_153610_center_markers4_allcameras_nocover_take1--center--markers_4--all_cameras--no_cover--take1.json",
+      "take_label": "center_markers4_allcameras_nocover_take1 | center | markers_4 | all_cameras | no_cover | take1",
+      "target_rigid_body": "/a200_0806",
+      "duration_sec": 20.0,
+      "frame_count": 1201,
+      "mocap_camera_count": 21,
+      "webcam_timelapse_status": "created",
+      "take": {
+        "take_id": "center_markers4_allcameras_nocover_take1",
+        "workspace_position": "center",
+        "marker_configuration": "markers_4",
+        "camera_configuration": "all_cameras",
+        "cover_configuration": "no_cover",
+        "trial_index": 1,
+        "notes": "",
+        "reference_images": {
+          "overview": "",
+          "workspace": "",
+          "markers": "",
+          "camera": "",
+          "cover": "",
+          "extra": []
+        }
+      },
+      "tags": {
+        "marker_count": 4,
+        "added_marker_count": 0,
+        "disabled_camera_count": 0,
+        "deck_motion": "none",
+        "robot_stationary": true
+      },
+      "reference_images": [
+        {
+          "role": "workspace",
+          "status": "captured",
+          "session_relative_path": "photo_library/center_markers4_allcameras_nocover_take1__workspace.jpg",
+          "filename": "center_markers4_allcameras_nocover_take1__workspace.jpg",
+          "association_key": "center_markers4_allcameras_nocover_take1",
+          "device_index": 0
+        }
+      ]
+    },
+    {
+      "recorded_at": "2026-03-11T16:04:37.328992",
+      "take_path": "takes/20260311_160437_ws_center_markers4_allcameras_cover_take1--center--markers_4--all_cameras--cover--take1.json",
+      "take_label": "ws_center_markers4_allcameras_cover_take1 | center | markers_4 | all_cameras | cover | take1",
+      "target_rigid_body": "/a200_0806",
+      "duration_sec": 20.0,
+      "frame_count": 1201,
+      "mocap_camera_count": 21,
+      "webcam_timelapse_status": "created",
+      "take": {
+        "take_id": "ws_center_markers4_allcameras_cover_take1",
+        "workspace_position": "center",
+        "marker_configuration": "markers_4",
+        "camera_configuration": "all_cameras",
+        "cover_configuration": "cover",
+        "trial_index": 1,
+        "notes": "",
+        "reference_images": {
+          "overview": "",
+          "workspace": "",
+          "markers": "",
+          "camera": "",
+          "cover": "",
+          "extra": []
+        }
+      },
+      "tags": {
+        "marker_count": 4,
+        "added_marker_count": 0,
+        "disabled_camera_count": 0,
+        "deck_motion": "none",
+        "robot_stationary": true
+      },
+      "reference_images": [
+        {
+          "role": "workspace",
+          "status": "captured",
+          "session_relative_path": "photo_library/ws_center_markers4_allcameras_cover_take1__workspace.jpg",
+          "filename": "ws_center_markers4_allcameras_cover_take1__workspace.jpg",
+          "association_key": "ws_center_markers4_allcameras_cover_take1",
+          "device_index": 0
+        }
+      ]
+    },
+    {
+      "recorded_at": "2026-03-11T16:16:02.529010",
+      "take_path": "takes/20260311_161602_ws_right_markers4_allcameras_cover_take1--right--markers_4--all_cameras--cover--take1.json",
+      "take_label": "ws_right_markers4_allcameras_cover_take1 | right | markers_4 | all_cameras | cover | take1",
+      "target_rigid_body": "/a200_0806",
+      "duration_sec": 20.0,
+      "frame_count": 1201,
+      "mocap_camera_count": 21,
+      "webcam_timelapse_status": "created",
+      "take": {
+        "take_id": "ws_right_markers4_allcameras_cover_take1",
+        "workspace_position": "right",
+        "marker_configuration": "markers_4",
+        "camera_configuration": "all_cameras",
+        "cover_configuration": "cover",
+        "trial_index": 1,
+        "notes": "",
+        "reference_images": {
+          "overview": "",
+          "workspace": "",
+          "markers": "",
+          "camera": "",
+          "cover": "",
+          "extra": []
+        }
+      },
+      "tags": {
+        "marker_count": 4,
+        "added_marker_count": 0,
+        "disabled_camera_count": 0,
+        "deck_motion": "none",
+        "robot_stationary": true
+      },
+      "reference_images": [
+        {
+          "role": "workspace",
+          "status": "captured",
+          "session_relative_path": "photo_library/ws_right_markers4_allcameras_cover_take1__workspace.jpg",
+          "filename": "ws_right_markers4_allcameras_cover_take1__workspace.jpg",
+          "association_key": "ws_right_markers4_allcameras_cover_take1",
+          "device_index": 0
+        }
+      ]
+    },
+    {
+      "recorded_at": "2026-03-11T16:35:40.528980",
+      "take_path": "takes/20260311_163540_ws_left_markers4_allcameras_cover_take1--left--markers_4--all_cameras--cover--take1.json",
+      "take_label": "ws_left_markers4_allcameras_cover_take1 | left | markers_4 | all_cameras | cover | take1",
+      "target_rigid_body": "/a200_0806",
+      "duration_sec": 20.0,
+      "frame_count": 1201,
+      "mocap_camera_count": 21,
+      "webcam_timelapse_status": "created",
+      "take": {
+        "take_id": "ws_left_markers4_allcameras_cover_take1",
+        "workspace_position": "left",
+        "marker_configuration": "markers_4",
+        "camera_configuration": "all_cameras",
+        "cover_configuration": "cover",
+        "trial_index": 1,
+        "notes": "",
+        "reference_images": {
+          "overview": "",
+          "workspace": "",
+          "markers": "",
+          "camera": "",
+          "cover": "",
+          "extra": []
+        }
+      },
+      "tags": {
+        "marker_count": 4,
+        "added_marker_count": 0,
+        "disabled_camera_count": 0,
+        "deck_motion": "none",
+        "robot_stationary": true
+      },
+      "reference_images": [
+        {
+          "role": "workspace",
+          "status": "captured",
+          "session_relative_path": "photo_library/ws_left_markers4_allcameras_cover_take1__workspace.jpg",
+          "filename": "ws_left_markers4_allcameras_cover_take1__workspace.jpg",
+          "association_key": "ws_left_markers4_allcameras_cover_take1",
+          "device_index": 0
+        }
+      ]
+    },
+    {
+      "recorded_at": "2026-03-11T16:41:52.229346",
+      "take_path": "takes/20260311_164152_ws_back_markers4_allcameras_cover_take1--back--markers_4--all_cameras--cover--take1.json",
+      "take_label": "ws_back_markers4_allcameras_cover_take1 | back | markers_4 | all_cameras | cover | take1",
+      "target_rigid_body": "/a200_0806",
+      "duration_sec": 20.0,
+      "frame_count": 1201,
+      "mocap_camera_count": 21,
+      "webcam_timelapse_status": "created",
+      "take": {
+        "take_id": "ws_back_markers4_allcameras_cover_take1",
+        "workspace_position": "back",
+        "marker_configuration": "markers_4",
+        "camera_configuration": "all_cameras",
+        "cover_configuration": "cover",
+        "trial_index": 1,
+        "notes": "",
+        "reference_images": {
+          "overview": "",
+          "workspace": "",
+          "markers": "",
+          "camera": "",
+          "cover": "",
+          "extra": []
+        }
+      },
+      "tags": {
+        "marker_count": 4,
+        "added_marker_count": 0,
+        "disabled_camera_count": 0,
+        "deck_motion": "none",
+        "robot_stationary": true
+      },
+      "reference_images": [
+        {
+          "role": "workspace",
+          "status": "captured",
+          "session_relative_path": "photo_library/ws_back_markers4_allcameras_cover_take1__workspace.jpg",
+          "filename": "ws_back_markers4_allcameras_cover_take1__workspace.jpg",
+          "association_key": "ws_back_markers4_allcameras_cover_take1",
+          "device_index": 0
+        }
+      ]
+    }
+  ]
+}

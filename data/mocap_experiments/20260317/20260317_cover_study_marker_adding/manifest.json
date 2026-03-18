@@ -1,0 +1,534 @@
+{
+  "schema_version": 1,
+  "updated_at": "2026-03-17T14:40:16.642980",
+  "takes": [
+    {
+      "recorded_at": "2026-03-17T13:52:56.822339",
+      "take_path": "takes/20260317_135256_ws_center_markers6_allcam_cover_take4--center--markers_6--cam_12--cover--take1.json",
+      "take_label": "ws_center_markers6_allcam_cover_take4 | center | markers_6 | Cam_12 | cover | take1",
+      "target_rigid_body": "/a200_0806",
+      "duration_sec": 35.0,
+      "frame_count": 2102,
+      "mocap_camera_count": 21,
+      "webcam_timelapse_status": "created",
+      "take": {
+        "take_id": "ws_center_markers6_allcam_cover_take4",
+        "workspace_position": "center",
+        "marker_configuration": "markers_6",
+        "camera_configuration": "Cam_12",
+        "cover_configuration": "cover",
+        "trial_index": 1,
+        "notes": "6 markers, all cameras",
+        "reference_images": {
+          "overview": "",
+          "workspace": "",
+          "markers": "",
+          "camera": "",
+          "cover": "",
+          "extra": []
+        }
+      },
+      "tags": {
+        "marker_count": 6,
+        "added_marker_count": 0,
+        "disabled_camera_count": 0,
+        "deck_motion": "none",
+        "robot_stationary": true
+      },
+      "reference_images": [
+        {
+          "role": "workspace",
+          "status": "captured",
+          "session_relative_path": "photo_library/ws_center_markers6_allcam_cover_take4__workspace.jpg",
+          "filename": "ws_center_markers6_allcam_cover_take4__workspace.jpg",
+          "association_key": "ws_center_markers6_allcam_cover_take4",
+          "device_index": 0
+        }
+      ]
+    },
+    {
+      "recorded_at": "2026-03-17T13:55:26.622212",
+      "take_path": "takes/20260317_135526_ws_right_markers6_allcam_cover_take4--right--markers_6--cam_12--cover--take1.json",
+      "take_label": "ws_right_markers6_allcam_cover_take4 | right | markers_6 | Cam_12 | cover | take1",
+      "target_rigid_body": "/a200_0806",
+      "duration_sec": 35.0,
+      "frame_count": 2100,
+      "mocap_camera_count": 21,
+      "webcam_timelapse_status": "created",
+      "take": {
+        "take_id": "ws_right_markers6_allcam_cover_take4",
+        "workspace_position": "right",
+        "marker_configuration": "markers_6",
+        "camera_configuration": "Cam_12",
+        "cover_configuration": "cover",
+        "trial_index": 1,
+        "notes": "6 markers, all cameras",
+        "reference_images": {
+          "overview": "",
+          "workspace": "",
+          "markers": "",
+          "camera": "",
+          "cover": "",
+          "extra": []
+        }
+      },
+      "tags": {
+        "marker_count": 6,
+        "added_marker_count": 0,
+        "disabled_camera_count": 0,
+        "deck_motion": "none",
+        "robot_stationary": true
+      },
+      "reference_images": [
+        {
+          "role": "workspace",
+          "status": "captured",
+          "session_relative_path": "photo_library/ws_right_markers6_allcam_cover_take4__workspace.jpg",
+          "filename": "ws_right_markers6_allcam_cover_take4__workspace.jpg",
+          "association_key": "ws_right_markers6_allcam_cover_take4",
+          "device_index": 0
+        }
+      ]
+    },
+    {
+      "recorded_at": "2026-03-17T13:57:53.172355",
+      "take_path": "takes/20260317_135753_ws_left_markers6_allcam_cover_take4--left--markers_6--cam_12--cover--take1.json",
+      "take_label": "ws_left_markers6_allcam_cover_take4 | left | markers_6 | Cam_12 | cover | take1",
+      "target_rigid_body": "/a200_0806",
+      "duration_sec": 35.0,
+      "frame_count": 2102,
+      "mocap_camera_count": 21,
+      "webcam_timelapse_status": "created",
+      "take": {
+        "take_id": "ws_left_markers6_allcam_cover_take4",
+        "workspace_position": "left",
+        "marker_configuration": "markers_6",
+        "camera_configuration": "Cam_12",
+        "cover_configuration": "cover",
+        "trial_index": 1,
+        "notes": "6 markers, all cameras",
+        "reference_images": {
+          "overview": "",
+          "workspace": "",
+          "markers": "",
+          "camera": "",
+          "cover": "",
+          "extra": []
+        }
+      },
+      "tags": {
+        "marker_count": 6,
+        "added_marker_count": 0,
+        "disabled_camera_count": 0,
+        "deck_motion": "none",
+        "robot_stationary": true
+      },
+      "reference_images": [
+        {
+          "role": "workspace",
+          "status": "captured",
+          "session_relative_path": "photo_library/ws_left_markers6_allcam_cover_take4__workspace.jpg",
+          "filename": "ws_left_markers6_allcam_cover_take4__workspace.jpg",
+          "association_key": "ws_left_markers6_allcam_cover_take4",
+          "device_index": 0
+        }
+      ]
+    },
+    {
+      "recorded_at": "2026-03-17T14:02:26.372205",
+      "take_path": "takes/20260317_140226_ws_back_markers6_allcam_cover_take4--back--markers_6--cam_12--cover--take1.json",
+      "take_label": "ws_back_markers6_allcam_cover_take4 | back | markers_6 | Cam_12 | cover | take1",
+      "target_rigid_body": "/a200_0806",
+      "duration_sec": 35.0,
+      "frame_count": 2101,
+      "mocap_camera_count": 21,
+      "webcam_timelapse_status": "created",
+      "take": {
+        "take_id": "ws_back_markers6_allcam_cover_take4",
+        "workspace_position": "back",
+        "marker_configuration": "markers_6",
+        "camera_configuration": "Cam_12",
+        "cover_configuration": "cover",
+        "trial_index": 1,
+        "notes": "6 markers, all cameras",
+        "reference_images": {
+          "overview": "",
+          "workspace": "",
+          "markers": "",
+          "camera": "",
+          "cover": "",
+          "extra": []
+        }
+      },
+      "tags": {
+        "marker_count": 6,
+        "added_marker_count": 0,
+        "disabled_camera_count": 0,
+        "deck_motion": "none",
+        "robot_stationary": true
+      },
+      "reference_images": [
+        {
+          "role": "workspace",
+          "status": "captured",
+          "session_relative_path": "photo_library/ws_back_markers6_allcam_cover_take4__workspace.jpg",
+          "filename": "ws_back_markers6_allcam_cover_take4__workspace.jpg",
+          "association_key": "ws_back_markers6_allcam_cover_take4",
+          "device_index": 0
+        }
+      ]
+    },
+    {
+      "recorded_at": "2026-03-17T14:08:59.322217",
+      "take_path": "takes/20260317_140859_ws_center_markers8_allcam_cover_take4--center--markers_8--cam_21--cover--take1.json",
+      "take_label": "ws_center_markers8_allcam_cover_take4 | center | markers_8 | Cam_21 | cover | take1",
+      "target_rigid_body": "/a200_0806",
+      "duration_sec": 35.0,
+      "frame_count": 2101,
+      "mocap_camera_count": 21,
+      "webcam_timelapse_status": "created",
+      "take": {
+        "take_id": "ws_center_markers8_allcam_cover_take4",
+        "workspace_position": "center",
+        "marker_configuration": "markers_8",
+        "camera_configuration": "Cam_21",
+        "cover_configuration": "cover",
+        "trial_index": 1,
+        "notes": "8 markers, all cameras",
+        "reference_images": {
+          "overview": "",
+          "workspace": "",
+          "markers": "",
+          "camera": "",
+          "cover": "",
+          "extra": []
+        }
+      },
+      "tags": {
+        "marker_count": 8,
+        "added_marker_count": 0,
+        "disabled_camera_count": 0,
+        "deck_motion": "none",
+        "robot_stationary": true
+      },
+      "reference_images": [
+        {
+          "role": "workspace",
+          "status": "captured",
+          "session_relative_path": "photo_library/ws_center_markers8_allcam_cover_take4__workspace.jpg",
+          "filename": "ws_center_markers8_allcam_cover_take4__workspace.jpg",
+          "association_key": "ws_center_markers8_allcam_cover_take4",
+          "device_index": 0
+        }
+      ]
+    },
+    {
+      "recorded_at": "2026-03-17T14:11:45.722215",
+      "take_path": "takes/20260317_141145_ws_right_markers8_allcam_cover_take4--right--markers_8--cam_21--cover--take1.json",
+      "take_label": "ws_right_markers8_allcam_cover_take4 | right | markers_8 | Cam_21 | cover | take1",
+      "target_rigid_body": "/a200_0806",
+      "duration_sec": 35.0,
+      "frame_count": 2101,
+      "mocap_camera_count": 21,
+      "webcam_timelapse_status": "created",
+      "take": {
+        "take_id": "ws_right_markers8_allcam_cover_take4",
+        "workspace_position": "right",
+        "marker_configuration": "markers_8",
+        "camera_configuration": "Cam_21",
+        "cover_configuration": "cover",
+        "trial_index": 1,
+        "notes": "8 markers, all cameras",
+        "reference_images": {
+          "overview": "",
+          "workspace": "",
+          "markers": "",
+          "camera": "",
+          "cover": "",
+          "extra": []
+        }
+      },
+      "tags": {
+        "marker_count": 8,
+        "added_marker_count": 0,
+        "disabled_camera_count": 0,
+        "deck_motion": "none",
+        "robot_stationary": true
+      },
+      "reference_images": [
+        {
+          "role": "workspace",
+          "status": "captured",
+          "session_relative_path": "photo_library/ws_right_markers8_allcam_cover_take4__workspace.jpg",
+          "filename": "ws_right_markers8_allcam_cover_take4__workspace.jpg",
+          "association_key": "ws_right_markers8_allcam_cover_take4",
+          "device_index": 0
+        }
+      ]
+    },
+    {
+      "recorded_at": "2026-03-17T14:15:20.998588",
+      "take_path": "takes/20260317_141520_ws_left_markers8_allcam_cover_take4--left--markers_8--cam_21--cover--take1.json",
+      "take_label": "ws_left_markers8_allcam_cover_take4 | left | markers_8 | Cam_21 | cover | take1",
+      "target_rigid_body": "/a200_0806",
+      "duration_sec": 35.0,
+      "frame_count": 2101,
+      "mocap_camera_count": 21,
+      "webcam_timelapse_status": "created",
+      "take": {
+        "take_id": "ws_left_markers8_allcam_cover_take4",
+        "workspace_position": "left",
+        "marker_configuration": "markers_8",
+        "camera_configuration": "Cam_21",
+        "cover_configuration": "cover",
+        "trial_index": 1,
+        "notes": "8 markers, all cameras",
+        "reference_images": {
+          "overview": "",
+          "workspace": "",
+          "markers": "",
+          "camera": "",
+          "cover": "",
+          "extra": []
+        }
+      },
+      "tags": {
+        "marker_count": 8,
+        "added_marker_count": 0,
+        "disabled_camera_count": 0,
+        "deck_motion": "none",
+        "robot_stationary": true
+      },
+      "reference_images": [
+        {
+          "role": "workspace",
+          "status": "captured",
+          "session_relative_path": "photo_library/ws_left_markers8_allcam_cover_take4__workspace.jpg",
+          "filename": "ws_left_markers8_allcam_cover_take4__workspace.jpg",
+          "association_key": "ws_left_markers8_allcam_cover_take4",
+          "device_index": 0
+        }
+      ]
+    },
+    {
+      "recorded_at": "2026-03-17T14:17:55.298477",
+      "take_path": "takes/20260317_141755_ws_back_markers8_allcam_cover_take4--back--markers_8--cam_21--cover--take1.json",
+      "take_label": "ws_back_markers8_allcam_cover_take4 | back | markers_8 | Cam_21 | cover | take1",
+      "target_rigid_body": "/a200_0806",
+      "duration_sec": 35.0,
+      "frame_count": 2101,
+      "mocap_camera_count": 21,
+      "webcam_timelapse_status": "created",
+      "take": {
+        "take_id": "ws_back_markers8_allcam_cover_take4",
+        "workspace_position": "back",
+        "marker_configuration": "markers_8",
+        "camera_configuration": "Cam_21",
+        "cover_configuration": "cover",
+        "trial_index": 1,
+        "notes": "8 markers, all cameras",
+        "reference_images": {
+          "overview": "",
+          "workspace": "",
+          "markers": "",
+          "camera": "",
+          "cover": "",
+          "extra": []
+        }
+      },
+      "tags": {
+        "marker_count": 8,
+        "added_marker_count": 0,
+        "disabled_camera_count": 0,
+        "deck_motion": "none",
+        "robot_stationary": true
+      },
+      "reference_images": [
+        {
+          "role": "workspace",
+          "status": "captured",
+          "session_relative_path": "photo_library/ws_back_markers8_allcam_cover_take4__workspace.jpg",
+          "filename": "ws_back_markers8_allcam_cover_take4__workspace.jpg",
+          "association_key": "ws_back_markers8_allcam_cover_take4",
+          "device_index": 0
+        }
+      ]
+    },
+    {
+      "recorded_at": "2026-03-17T14:30:58.998495",
+      "take_path": "takes/20260317_143058_ws_center_markers10_allcam_cover_take4--center--markers_10--cam_21--cover--take1.json",
+      "take_label": "ws_center_markers10_allcam_cover_take4 | center | markers_10 | Cam_21 | cover | take1",
+      "target_rigid_body": "/a200_0806",
+      "duration_sec": 35.0,
+      "frame_count": 2101,
+      "mocap_camera_count": 21,
+      "webcam_timelapse_status": "created",
+      "take": {
+        "take_id": "ws_center_markers10_allcam_cover_take4",
+        "workspace_position": "center",
+        "marker_configuration": "markers_10",
+        "camera_configuration": "Cam_21",
+        "cover_configuration": "cover",
+        "trial_index": 1,
+        "notes": "10 markers, all cameras",
+        "reference_images": {
+          "overview": "",
+          "workspace": "",
+          "markers": "",
+          "camera": "",
+          "cover": "",
+          "extra": []
+        }
+      },
+      "tags": {
+        "marker_count": 8,
+        "added_marker_count": 0,
+        "disabled_camera_count": 0,
+        "deck_motion": "none",
+        "robot_stationary": true
+      },
+      "reference_images": [
+        {
+          "role": "workspace",
+          "status": "captured",
+          "session_relative_path": "photo_library/ws_center_markers10_allcam_cover_take4__workspace.jpg",
+          "filename": "ws_center_markers10_allcam_cover_take4__workspace.jpg",
+          "association_key": "ws_center_markers10_allcam_cover_take4",
+          "device_index": 0
+        }
+      ]
+    },
+    {
+      "recorded_at": "2026-03-17T14:34:56.518556",
+      "take_path": "takes/20260317_143456_ws_right_markers10_allcam_cover_take4--right--markers_10--cam_21--cover--take1.json",
+      "take_label": "ws_right_markers10_allcam_cover_take4 | right | markers_10 | Cam_21 | cover | take1",
+      "target_rigid_body": "/a200_0806",
+      "duration_sec": 35.0,
+      "frame_count": 2100,
+      "mocap_camera_count": 21,
+      "webcam_timelapse_status": "created",
+      "take": {
+        "take_id": "ws_right_markers10_allcam_cover_take4",
+        "workspace_position": "right",
+        "marker_configuration": "markers_10",
+        "camera_configuration": "Cam_21",
+        "cover_configuration": "cover",
+        "trial_index": 1,
+        "notes": "10 markers, all cameras",
+        "reference_images": {
+          "overview": "",
+          "workspace": "",
+          "markers": "",
+          "camera": "",
+          "cover": "",
+          "extra": []
+        }
+      },
+      "tags": {
+        "marker_count": 8,
+        "added_marker_count": 0,
+        "disabled_camera_count": 0,
+        "deck_motion": "none",
+        "robot_stationary": true
+      },
+      "reference_images": [
+        {
+          "role": "workspace",
+          "status": "captured",
+          "session_relative_path": "photo_library/ws_right_markers10_allcam_cover_take4__workspace.jpg",
+          "filename": "ws_right_markers10_allcam_cover_take4__workspace.jpg",
+          "association_key": "ws_right_markers10_allcam_cover_take4",
+          "device_index": 0
+        }
+      ]
+    },
+    {
+      "recorded_at": "2026-03-17T14:36:55.718422",
+      "take_path": "takes/20260317_143655_ws_left_markers10_allcam_cover_take4--left--markers_10--cam_21--cover--take1.json",
+      "take_label": "ws_left_markers10_allcam_cover_take4 | left | markers_10 | Cam_21 | cover | take1",
+      "target_rigid_body": "/a200_0806",
+      "duration_sec": 35.0,
+      "frame_count": 2101,
+      "mocap_camera_count": 21,
+      "webcam_timelapse_status": "created",
+      "take": {
+        "take_id": "ws_left_markers10_allcam_cover_take4",
+        "workspace_position": "left",
+        "marker_configuration": "markers_10",
+        "camera_configuration": "Cam_21",
+        "cover_configuration": "cover",
+        "trial_index": 1,
+        "notes": "10 markers, all cameras",
+        "reference_images": {
+          "overview": "",
+          "workspace": "",
+          "markers": "",
+          "camera": "",
+          "cover": "",
+          "extra": []
+        }
+      },
+      "tags": {
+        "marker_count": 8,
+        "added_marker_count": 0,
+        "disabled_camera_count": 0,
+        "deck_motion": "none",
+        "robot_stationary": true
+      },
+      "reference_images": [
+        {
+          "role": "workspace",
+          "status": "captured",
+          "session_relative_path": "photo_library/ws_left_markers10_allcam_cover_take4__workspace.jpg",
+          "filename": "ws_left_markers10_allcam_cover_take4__workspace.jpg",
+          "association_key": "ws_left_markers10_allcam_cover_take4",
+          "device_index": 0
+        }
+      ]
+    },
+    {
+      "recorded_at": "2026-03-17T14:39:40.118911",
+      "take_path": "takes/20260317_143940_ws_back_markers10_allcam_cover_take4--back--markers_10--cam_21--cover--take1.json",
+      "take_label": "ws_back_markers10_allcam_cover_take4 | back | markers_10 | Cam_21 | cover | take1",
+      "target_rigid_body": "/a200_0806",
+      "duration_sec": 35.0,
+      "frame_count": 2101,
+      "mocap_camera_count": 21,
+      "webcam_timelapse_status": "created",
+      "take": {
+        "take_id": "ws_back_markers10_allcam_cover_take4",
+        "workspace_position": "back",
+        "marker_configuration": "markers_10",
+        "camera_configuration": "Cam_21",
+        "cover_configuration": "cover",
+        "trial_index": 1,
+        "notes": "10 markers, all cameras",
+        "reference_images": {
+          "overview": "",
+          "workspace": "",
+          "markers": "",
+          "camera": "",
+          "cover": "",
+          "extra": []
+        }
+      },
+      "tags": {
+        "marker_count": 8,
+        "added_marker_count": 0,
+        "disabled_camera_count": 0,
+        "deck_motion": "none",
+        "robot_stationary": true
+      },
+      "reference_images": [
+        {
+          "role": "workspace",
+          "status": "captured",
+          "session_relative_path": "photo_library/ws_back_markers10_allcam_cover_take4__workspace.jpg",
+          "filename": "ws_back_markers10_allcam_cover_take4__workspace.jpg",
+          "association_key": "ws_back_markers10_allcam_cover_take4",
+          "device_index": 0
+        }
+      ]
+    }
+  ]
+}

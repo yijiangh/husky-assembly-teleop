@@ -1,0 +1,844 @@
+<!doctype html>
+<html>
+<head>
+<meta charset=utf-8>
+<title>report</title>
+<style>
+body { font-family: Arial, sans-serif; max-width: 1000px; margin: 32px auto; padding: 0 24px; line-height: 1.5; color: #111; }
+h1,h2,h3 { margin-top: 1.4em; }
+img { max-width: 100%; height: auto; display: block; margin: 16px 0; }
+pre { background: #f5f5f5; padding: 12px; overflow-x: auto; }
+code { background: #f5f5f5; padding: 1px 4px; }
+table { border-collapse: collapse; width: 100%; margin: 16px 0; font-size: 12px; }
+th, td { border: 1px solid #ccc; padding: 6px 8px; text-align: left; vertical-align: top; }
+video { max-width: 100%; height: auto; }
+a { color: #0645ad; }
+</style>
+</head>
+<body>
+<h1>MoCap Experiment Report</h1>
+<ul>
+<li>Generated at: <code>2026-03-16T16:27:22.236842</code></li>
+<li>Grouped by: <code>take.workspace_position, take.marker_configuration, take.camera_configuration, take.cover_configuration</code></li>
+<li>Number of takes: <code>16</code></li>
+<li>Number of groups: <code>16</code></li>
+</ul>
+<h2>Plots</h2>
+<p><img alt="Combined boxplots" src="combined_boxplots.png" /></p>
+<h3>Distance Drift</h3>
+<p><img alt="Distance Drift" src="distance_mm_boxplot.png" /></p>
+<h3>X-Axis Angular Drift</h3>
+<p><img alt="X-Axis Angular Drift" src="angle_x_deg_boxplot.png" /></p>
+<h3>Y-Axis Angular Drift</h3>
+<p><img alt="Y-Axis Angular Drift" src="angle_y_deg_boxplot.png" /></p>
+<h3>Z-Axis Angular Drift</h3>
+<p><img alt="Z-Axis Angular Drift" src="angle_z_deg_boxplot.png" /></p>
+<h2>Group Summary</h2>
+<table>
+<thead>
+<tr>
+<th>Group</th>
+<th align="right">Takes</th>
+<th align="right">Frames</th>
+<th align="right">Distance median (mm)</th>
+<th align="right">Distance p95 (mm)</th>
+<th align="right">X median (deg)</th>
+<th align="right">Y median (deg)</th>
+<th align="right">Z median (deg)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>back / markers_6 / Cam_12 / cover</td>
+<td align="right">1</td>
+<td align="right">2101</td>
+<td align="right">0.093</td>
+<td align="right">0.453</td>
+<td align="right">0.021</td>
+<td align="right">0.024</td>
+<td align="right">0.021</td>
+</tr>
+<tr>
+<td>back / markers_6 / Cam_15 / cover</td>
+<td align="right">1</td>
+<td align="right">2101</td>
+<td align="right">0.117</td>
+<td align="right">0.350</td>
+<td align="right">0.014</td>
+<td align="right">0.014</td>
+<td align="right">0.013</td>
+</tr>
+<tr>
+<td>back / markers_6 / Cam_18 / cover</td>
+<td align="right">1</td>
+<td align="right">2101</td>
+<td align="right">0.166</td>
+<td align="right">0.330</td>
+<td align="right">0.009</td>
+<td align="right">0.032</td>
+<td align="right">0.026</td>
+</tr>
+<tr>
+<td>back / markers_6 / Cam_21 / cover</td>
+<td align="right">1</td>
+<td align="right">2101</td>
+<td align="right">0.103</td>
+<td align="right">0.236</td>
+<td align="right">0.019</td>
+<td align="right">0.023</td>
+<td align="right">0.019</td>
+</tr>
+<tr>
+<td>center / markers_6 / Cam_12 / cover</td>
+<td align="right">1</td>
+<td align="right">2101</td>
+<td align="right">0.125</td>
+<td align="right">0.243</td>
+<td align="right">0.020</td>
+<td align="right">0.020</td>
+<td align="right">0.015</td>
+</tr>
+<tr>
+<td>center / markers_6 / Cam_15 / cover</td>
+<td align="right">1</td>
+<td align="right">2101</td>
+<td align="right">0.106</td>
+<td align="right">0.242</td>
+<td align="right">0.010</td>
+<td align="right">0.017</td>
+<td align="right">0.018</td>
+</tr>
+<tr>
+<td>center / markers_6 / Cam_18 / cover</td>
+<td align="right">1</td>
+<td align="right">2101</td>
+<td align="right">0.077</td>
+<td align="right">0.147</td>
+<td align="right">0.010</td>
+<td align="right">0.006</td>
+<td align="right">0.010</td>
+</tr>
+<tr>
+<td>center / markers_6 / Cam_21 / cover</td>
+<td align="right">1</td>
+<td align="right">2101</td>
+<td align="right">0.038</td>
+<td align="right">0.105</td>
+<td align="right">0.007</td>
+<td align="right">0.006</td>
+<td align="right">0.008</td>
+</tr>
+<tr>
+<td>left / markers_6 / Cam_12 / cover</td>
+<td align="right">1</td>
+<td align="right">2102</td>
+<td align="right">0.220</td>
+<td align="right">0.610</td>
+<td align="right">0.014</td>
+<td align="right">0.028</td>
+<td align="right">0.029</td>
+</tr>
+<tr>
+<td>left / markers_6 / Cam_15 / cover</td>
+<td align="right">1</td>
+<td align="right">2101</td>
+<td align="right">0.206</td>
+<td align="right">0.434</td>
+<td align="right">0.026</td>
+<td align="right">0.021</td>
+<td align="right">0.025</td>
+</tr>
+<tr>
+<td>left / markers_6 / Cam_18 / cover</td>
+<td align="right">1</td>
+<td align="right">2101</td>
+<td align="right">0.276</td>
+<td align="right">0.417</td>
+<td align="right">0.009</td>
+<td align="right">0.050</td>
+<td align="right">0.047</td>
+</tr>
+<tr>
+<td>left / markers_6 / Cam_21 / cover</td>
+<td align="right">1</td>
+<td align="right">2101</td>
+<td align="right">0.154</td>
+<td align="right">0.256</td>
+<td align="right">0.007</td>
+<td align="right">0.006</td>
+<td align="right">0.007</td>
+</tr>
+<tr>
+<td>right / markers_6 / Cam_12 / cover</td>
+<td align="right">1</td>
+<td align="right">2101</td>
+<td align="right">0.187</td>
+<td align="right">0.359</td>
+<td align="right">0.038</td>
+<td align="right">0.037</td>
+<td align="right">0.035</td>
+</tr>
+<tr>
+<td>right / markers_6 / Cam_15 / cover</td>
+<td align="right">1</td>
+<td align="right">2101</td>
+<td align="right">0.129</td>
+<td align="right">0.320</td>
+<td align="right">0.026</td>
+<td align="right">0.029</td>
+<td align="right">0.037</td>
+</tr>
+<tr>
+<td>right / markers_6 / Cam_18 / cover</td>
+<td align="right">1</td>
+<td align="right">2101</td>
+<td align="right">0.140</td>
+<td align="right">0.261</td>
+<td align="right">0.012</td>
+<td align="right">0.020</td>
+<td align="right">0.018</td>
+</tr>
+<tr>
+<td>right / markers_6 / Cam_21 / cover</td>
+<td align="right">1</td>
+<td align="right">2101</td>
+<td align="right">0.130</td>
+<td align="right">0.205</td>
+<td align="right">0.013</td>
+<td align="right">0.014</td>
+<td align="right">0.014</td>
+</tr>
+</tbody>
+</table>
+<h2>MoCap Camera Inventory</h2>
+<h3>back / markers_6 / Cam_12 / cover</h3>
+<ul>
+<li>Camera count: <code>21</code></li>
+<li><code>PrimeX 22 #72657</code></li>
+<li><code>PrimeX 22 #72653</code></li>
+<li><code>PrimeX 22 #72654</code></li>
+<li><code>PrimeX 22 #72652</code></li>
+<li><code>PrimeX 22 #72317</code></li>
+<li><code>PrimeX 22 #72655</code></li>
+<li><code>PrimeX 22 #72300</code></li>
+<li><code>PrimeX 22 #72708</code></li>
+<li><code>PrimeX 22 #72656</code></li>
+<li><code>PrimeX 22 #72318</code></li>
+<li><code>PrimeX 13 #66106</code></li>
+<li><code>Prime 13 #31323</code></li>
+<li><code>Prime 13 #31327</code></li>
+<li><code>PrimeX 13 #66078</code></li>
+<li><code>Prime 13 #31326</code></li>
+<li><code>Prime 13 #31325</code></li>
+<li><code>Prime 13 #31328</code></li>
+<li><code>PrimeX 13 #66077</code></li>
+<li><code>PrimeX 13 #66105</code></li>
+<li><code>Prime 13 #31324</code></li>
+<li><code>Prime 13 #31329</code></li>
+</ul>
+<h3>back / markers_6 / Cam_15 / cover</h3>
+<ul>
+<li>Camera count: <code>21</code></li>
+<li><code>PrimeX 22 #72657</code></li>
+<li><code>PrimeX 22 #72653</code></li>
+<li><code>PrimeX 22 #72654</code></li>
+<li><code>PrimeX 22 #72652</code></li>
+<li><code>PrimeX 22 #72317</code></li>
+<li><code>PrimeX 22 #72655</code></li>
+<li><code>PrimeX 22 #72300</code></li>
+<li><code>PrimeX 22 #72708</code></li>
+<li><code>PrimeX 22 #72656</code></li>
+<li><code>PrimeX 22 #72318</code></li>
+<li><code>PrimeX 13 #66106</code></li>
+<li><code>Prime 13 #31323</code></li>
+<li><code>Prime 13 #31327</code></li>
+<li><code>PrimeX 13 #66078</code></li>
+<li><code>Prime 13 #31326</code></li>
+<li><code>Prime 13 #31325</code></li>
+<li><code>Prime 13 #31328</code></li>
+<li><code>PrimeX 13 #66077</code></li>
+<li><code>PrimeX 13 #66105</code></li>
+<li><code>Prime 13 #31324</code></li>
+<li><code>Prime 13 #31329</code></li>
+</ul>
+<h3>back / markers_6 / Cam_18 / cover</h3>
+<ul>
+<li>Camera count: <code>21</code></li>
+<li><code>PrimeX 22 #72657</code></li>
+<li><code>PrimeX 22 #72653</code></li>
+<li><code>PrimeX 22 #72654</code></li>
+<li><code>PrimeX 22 #72652</code></li>
+<li><code>PrimeX 22 #72317</code></li>
+<li><code>PrimeX 22 #72655</code></li>
+<li><code>PrimeX 22 #72300</code></li>
+<li><code>PrimeX 22 #72708</code></li>
+<li><code>PrimeX 22 #72656</code></li>
+<li><code>PrimeX 22 #72318</code></li>
+<li><code>PrimeX 13 #66106</code></li>
+<li><code>Prime 13 #31323</code></li>
+<li><code>Prime 13 #31327</code></li>
+<li><code>PrimeX 13 #66078</code></li>
+<li><code>Prime 13 #31326</code></li>
+<li><code>Prime 13 #31325</code></li>
+<li><code>Prime 13 #31328</code></li>
+<li><code>PrimeX 13 #66077</code></li>
+<li><code>PrimeX 13 #66105</code></li>
+<li><code>Prime 13 #31324</code></li>
+<li><code>Prime 13 #31329</code></li>
+</ul>
+<h3>back / markers_6 / Cam_21 / cover</h3>
+<ul>
+<li>Camera count: <code>21</code></li>
+<li><code>PrimeX 22 #72657</code></li>
+<li><code>PrimeX 22 #72653</code></li>
+<li><code>PrimeX 22 #72654</code></li>
+<li><code>PrimeX 22 #72652</code></li>
+<li><code>PrimeX 22 #72317</code></li>
+<li><code>PrimeX 22 #72655</code></li>
+<li><code>PrimeX 22 #72300</code></li>
+<li><code>PrimeX 22 #72708</code></li>
+<li><code>PrimeX 22 #72656</code></li>
+<li><code>PrimeX 22 #72318</code></li>
+<li><code>PrimeX 13 #66106</code></li>
+<li><code>Prime 13 #31323</code></li>
+<li><code>Prime 13 #31327</code></li>
+<li><code>PrimeX 13 #66078</code></li>
+<li><code>Prime 13 #31326</code></li>
+<li><code>Prime 13 #31325</code></li>
+<li><code>Prime 13 #31328</code></li>
+<li><code>PrimeX 13 #66077</code></li>
+<li><code>PrimeX 13 #66105</code></li>
+<li><code>Prime 13 #31324</code></li>
+<li><code>Prime 13 #31329</code></li>
+</ul>
+<h3>center / markers_6 / Cam_12 / cover</h3>
+<ul>
+<li>Camera count: <code>21</code></li>
+<li><code>PrimeX 22 #72657</code></li>
+<li><code>PrimeX 22 #72653</code></li>
+<li><code>PrimeX 22 #72654</code></li>
+<li><code>PrimeX 22 #72652</code></li>
+<li><code>PrimeX 22 #72317</code></li>
+<li><code>PrimeX 22 #72655</code></li>
+<li><code>PrimeX 22 #72300</code></li>
+<li><code>PrimeX 22 #72708</code></li>
+<li><code>PrimeX 22 #72656</code></li>
+<li><code>PrimeX 22 #72318</code></li>
+<li><code>PrimeX 13 #66106</code></li>
+<li><code>Prime 13 #31323</code></li>
+<li><code>Prime 13 #31327</code></li>
+<li><code>PrimeX 13 #66078</code></li>
+<li><code>Prime 13 #31326</code></li>
+<li><code>Prime 13 #31325</code></li>
+<li><code>Prime 13 #31328</code></li>
+<li><code>PrimeX 13 #66077</code></li>
+<li><code>PrimeX 13 #66105</code></li>
+<li><code>Prime 13 #31324</code></li>
+<li><code>Prime 13 #31329</code></li>
+</ul>
+<h3>center / markers_6 / Cam_15 / cover</h3>
+<ul>
+<li>Camera count: <code>21</code></li>
+<li><code>PrimeX 22 #72657</code></li>
+<li><code>PrimeX 22 #72653</code></li>
+<li><code>PrimeX 22 #72654</code></li>
+<li><code>PrimeX 22 #72652</code></li>
+<li><code>PrimeX 22 #72317</code></li>
+<li><code>PrimeX 22 #72655</code></li>
+<li><code>PrimeX 22 #72300</code></li>
+<li><code>PrimeX 22 #72708</code></li>
+<li><code>PrimeX 22 #72656</code></li>
+<li><code>PrimeX 22 #72318</code></li>
+<li><code>PrimeX 13 #66106</code></li>
+<li><code>Prime 13 #31323</code></li>
+<li><code>Prime 13 #31327</code></li>
+<li><code>PrimeX 13 #66078</code></li>
+<li><code>Prime 13 #31326</code></li>
+<li><code>Prime 13 #31325</code></li>
+<li><code>Prime 13 #31328</code></li>
+<li><code>PrimeX 13 #66077</code></li>
+<li><code>PrimeX 13 #66105</code></li>
+<li><code>Prime 13 #31324</code></li>
+<li><code>Prime 13 #31329</code></li>
+</ul>
+<h3>center / markers_6 / Cam_18 / cover</h3>
+<ul>
+<li>Camera count: <code>21</code></li>
+<li><code>PrimeX 22 #72657</code></li>
+<li><code>PrimeX 22 #72653</code></li>
+<li><code>PrimeX 22 #72654</code></li>
+<li><code>PrimeX 22 #72652</code></li>
+<li><code>PrimeX 22 #72317</code></li>
+<li><code>PrimeX 22 #72655</code></li>
+<li><code>PrimeX 22 #72300</code></li>
+<li><code>PrimeX 22 #72708</code></li>
+<li><code>PrimeX 22 #72656</code></li>
+<li><code>PrimeX 22 #72318</code></li>
+<li><code>PrimeX 13 #66106</code></li>
+<li><code>Prime 13 #31323</code></li>
+<li><code>Prime 13 #31327</code></li>
+<li><code>PrimeX 13 #66078</code></li>
+<li><code>Prime 13 #31326</code></li>
+<li><code>Prime 13 #31325</code></li>
+<li><code>Prime 13 #31328</code></li>
+<li><code>PrimeX 13 #66077</code></li>
+<li><code>PrimeX 13 #66105</code></li>
+<li><code>Prime 13 #31324</code></li>
+<li><code>Prime 13 #31329</code></li>
+</ul>
+<h3>center / markers_6 / Cam_21 / cover</h3>
+<ul>
+<li>Camera count: <code>21</code></li>
+<li><code>PrimeX 22 #72657</code></li>
+<li><code>PrimeX 22 #72653</code></li>
+<li><code>PrimeX 22 #72654</code></li>
+<li><code>PrimeX 22 #72652</code></li>
+<li><code>PrimeX 22 #72317</code></li>
+<li><code>PrimeX 22 #72655</code></li>
+<li><code>PrimeX 22 #72300</code></li>
+<li><code>PrimeX 22 #72708</code></li>
+<li><code>PrimeX 22 #72656</code></li>
+<li><code>PrimeX 22 #72318</code></li>
+<li><code>PrimeX 13 #66106</code></li>
+<li><code>Prime 13 #31323</code></li>
+<li><code>Prime 13 #31327</code></li>
+<li><code>PrimeX 13 #66078</code></li>
+<li><code>Prime 13 #31326</code></li>
+<li><code>Prime 13 #31325</code></li>
+<li><code>Prime 13 #31328</code></li>
+<li><code>PrimeX 13 #66077</code></li>
+<li><code>PrimeX 13 #66105</code></li>
+<li><code>Prime 13 #31324</code></li>
+<li><code>Prime 13 #31329</code></li>
+</ul>
+<h3>left / markers_6 / Cam_12 / cover</h3>
+<ul>
+<li>Camera count: <code>21</code></li>
+<li><code>PrimeX 22 #72657</code></li>
+<li><code>PrimeX 22 #72653</code></li>
+<li><code>PrimeX 22 #72654</code></li>
+<li><code>PrimeX 22 #72652</code></li>
+<li><code>PrimeX 22 #72317</code></li>
+<li><code>PrimeX 22 #72655</code></li>
+<li><code>PrimeX 22 #72300</code></li>
+<li><code>PrimeX 22 #72708</code></li>
+<li><code>PrimeX 22 #72656</code></li>
+<li><code>PrimeX 22 #72318</code></li>
+<li><code>PrimeX 13 #66106</code></li>
+<li><code>Prime 13 #31323</code></li>
+<li><code>Prime 13 #31327</code></li>
+<li><code>PrimeX 13 #66078</code></li>
+<li><code>Prime 13 #31326</code></li>
+<li><code>Prime 13 #31325</code></li>
+<li><code>Prime 13 #31328</code></li>
+<li><code>PrimeX 13 #66077</code></li>
+<li><code>PrimeX 13 #66105</code></li>
+<li><code>Prime 13 #31324</code></li>
+<li><code>Prime 13 #31329</code></li>
+</ul>
+<h3>left / markers_6 / Cam_15 / cover</h3>
+<ul>
+<li>Camera count: <code>21</code></li>
+<li><code>PrimeX 22 #72657</code></li>
+<li><code>PrimeX 22 #72653</code></li>
+<li><code>PrimeX 22 #72654</code></li>
+<li><code>PrimeX 22 #72652</code></li>
+<li><code>PrimeX 22 #72317</code></li>
+<li><code>PrimeX 22 #72655</code></li>
+<li><code>PrimeX 22 #72300</code></li>
+<li><code>PrimeX 22 #72708</code></li>
+<li><code>PrimeX 22 #72656</code></li>
+<li><code>PrimeX 22 #72318</code></li>
+<li><code>PrimeX 13 #66106</code></li>
+<li><code>Prime 13 #31323</code></li>
+<li><code>Prime 13 #31327</code></li>
+<li><code>PrimeX 13 #66078</code></li>
+<li><code>Prime 13 #31326</code></li>
+<li><code>Prime 13 #31325</code></li>
+<li><code>Prime 13 #31328</code></li>
+<li><code>PrimeX 13 #66077</code></li>
+<li><code>PrimeX 13 #66105</code></li>
+<li><code>Prime 13 #31324</code></li>
+<li><code>Prime 13 #31329</code></li>
+</ul>
+<h3>left / markers_6 / Cam_18 / cover</h3>
+<ul>
+<li>Camera count: <code>21</code></li>
+<li><code>PrimeX 22 #72657</code></li>
+<li><code>PrimeX 22 #72653</code></li>
+<li><code>PrimeX 22 #72654</code></li>
+<li><code>PrimeX 22 #72652</code></li>
+<li><code>PrimeX 22 #72317</code></li>
+<li><code>PrimeX 22 #72655</code></li>
+<li><code>PrimeX 22 #72300</code></li>
+<li><code>PrimeX 22 #72708</code></li>
+<li><code>PrimeX 22 #72656</code></li>
+<li><code>PrimeX 22 #72318</code></li>
+<li><code>PrimeX 13 #66106</code></li>
+<li><code>Prime 13 #31323</code></li>
+<li><code>Prime 13 #31327</code></li>
+<li><code>PrimeX 13 #66078</code></li>
+<li><code>Prime 13 #31326</code></li>
+<li><code>Prime 13 #31325</code></li>
+<li><code>Prime 13 #31328</code></li>
+<li><code>PrimeX 13 #66077</code></li>
+<li><code>PrimeX 13 #66105</code></li>
+<li><code>Prime 13 #31324</code></li>
+<li><code>Prime 13 #31329</code></li>
+</ul>
+<h3>left / markers_6 / Cam_21 / cover</h3>
+<ul>
+<li>Camera count: <code>21</code></li>
+<li><code>PrimeX 22 #72657</code></li>
+<li><code>PrimeX 22 #72653</code></li>
+<li><code>PrimeX 22 #72654</code></li>
+<li><code>PrimeX 22 #72652</code></li>
+<li><code>PrimeX 22 #72317</code></li>
+<li><code>PrimeX 22 #72655</code></li>
+<li><code>PrimeX 22 #72300</code></li>
+<li><code>PrimeX 22 #72708</code></li>
+<li><code>PrimeX 22 #72656</code></li>
+<li><code>PrimeX 22 #72318</code></li>
+<li><code>PrimeX 13 #66106</code></li>
+<li><code>Prime 13 #31323</code></li>
+<li><code>Prime 13 #31327</code></li>
+<li><code>PrimeX 13 #66078</code></li>
+<li><code>Prime 13 #31326</code></li>
+<li><code>Prime 13 #31325</code></li>
+<li><code>Prime 13 #31328</code></li>
+<li><code>PrimeX 13 #66077</code></li>
+<li><code>PrimeX 13 #66105</code></li>
+<li><code>Prime 13 #31324</code></li>
+<li><code>Prime 13 #31329</code></li>
+</ul>
+<h3>right / markers_6 / Cam_12 / cover</h3>
+<ul>
+<li>Camera count: <code>21</code></li>
+<li><code>PrimeX 22 #72657</code></li>
+<li><code>PrimeX 22 #72653</code></li>
+<li><code>PrimeX 22 #72654</code></li>
+<li><code>PrimeX 22 #72652</code></li>
+<li><code>PrimeX 22 #72317</code></li>
+<li><code>PrimeX 22 #72655</code></li>
+<li><code>PrimeX 22 #72300</code></li>
+<li><code>PrimeX 22 #72708</code></li>
+<li><code>PrimeX 22 #72656</code></li>
+<li><code>PrimeX 22 #72318</code></li>
+<li><code>PrimeX 13 #66106</code></li>
+<li><code>Prime 13 #31323</code></li>
+<li><code>Prime 13 #31327</code></li>
+<li><code>PrimeX 13 #66078</code></li>
+<li><code>Prime 13 #31326</code></li>
+<li><code>Prime 13 #31325</code></li>
+<li><code>Prime 13 #31328</code></li>
+<li><code>PrimeX 13 #66077</code></li>
+<li><code>PrimeX 13 #66105</code></li>
+<li><code>Prime 13 #31324</code></li>
+<li><code>Prime 13 #31329</code></li>
+</ul>
+<h3>right / markers_6 / Cam_15 / cover</h3>
+<ul>
+<li>Camera count: <code>21</code></li>
+<li><code>PrimeX 22 #72657</code></li>
+<li><code>PrimeX 22 #72653</code></li>
+<li><code>PrimeX 22 #72654</code></li>
+<li><code>PrimeX 22 #72652</code></li>
+<li><code>PrimeX 22 #72317</code></li>
+<li><code>PrimeX 22 #72655</code></li>
+<li><code>PrimeX 22 #72300</code></li>
+<li><code>PrimeX 22 #72708</code></li>
+<li><code>PrimeX 22 #72656</code></li>
+<li><code>PrimeX 22 #72318</code></li>
+<li><code>PrimeX 13 #66106</code></li>
+<li><code>Prime 13 #31323</code></li>
+<li><code>Prime 13 #31327</code></li>
+<li><code>PrimeX 13 #66078</code></li>
+<li><code>Prime 13 #31326</code></li>
+<li><code>Prime 13 #31325</code></li>
+<li><code>Prime 13 #31328</code></li>
+<li><code>PrimeX 13 #66077</code></li>
+<li><code>PrimeX 13 #66105</code></li>
+<li><code>Prime 13 #31324</code></li>
+<li><code>Prime 13 #31329</code></li>
+</ul>
+<h3>right / markers_6 / Cam_18 / cover</h3>
+<ul>
+<li>Camera count: <code>21</code></li>
+<li><code>PrimeX 22 #72657</code></li>
+<li><code>PrimeX 22 #72653</code></li>
+<li><code>PrimeX 22 #72654</code></li>
+<li><code>PrimeX 22 #72652</code></li>
+<li><code>PrimeX 22 #72317</code></li>
+<li><code>PrimeX 22 #72655</code></li>
+<li><code>PrimeX 22 #72300</code></li>
+<li><code>PrimeX 22 #72708</code></li>
+<li><code>PrimeX 22 #72656</code></li>
+<li><code>PrimeX 22 #72318</code></li>
+<li><code>PrimeX 13 #66106</code></li>
+<li><code>Prime 13 #31323</code></li>
+<li><code>Prime 13 #31327</code></li>
+<li><code>PrimeX 13 #66078</code></li>
+<li><code>Prime 13 #31326</code></li>
+<li><code>Prime 13 #31325</code></li>
+<li><code>Prime 13 #31328</code></li>
+<li><code>PrimeX 13 #66077</code></li>
+<li><code>PrimeX 13 #66105</code></li>
+<li><code>Prime 13 #31324</code></li>
+<li><code>Prime 13 #31329</code></li>
+</ul>
+<h3>right / markers_6 / Cam_21 / cover</h3>
+<ul>
+<li>Camera count: <code>21</code></li>
+<li><code>PrimeX 22 #72657</code></li>
+<li><code>PrimeX 22 #72653</code></li>
+<li><code>PrimeX 22 #72654</code></li>
+<li><code>PrimeX 22 #72652</code></li>
+<li><code>PrimeX 22 #72317</code></li>
+<li><code>PrimeX 22 #72655</code></li>
+<li><code>PrimeX 22 #72300</code></li>
+<li><code>PrimeX 22 #72708</code></li>
+<li><code>PrimeX 22 #72656</code></li>
+<li><code>PrimeX 22 #72318</code></li>
+<li><code>PrimeX 13 #66106</code></li>
+<li><code>Prime 13 #31323</code></li>
+<li><code>Prime 13 #31327</code></li>
+<li><code>PrimeX 13 #66078</code></li>
+<li><code>Prime 13 #31326</code></li>
+<li><code>Prime 13 #31325</code></li>
+<li><code>Prime 13 #31328</code></li>
+<li><code>PrimeX 13 #66077</code></li>
+<li><code>PrimeX 13 #66105</code></li>
+<li><code>Prime 13 #31324</code></li>
+<li><code>Prime 13 #31329</code></li>
+</ul>
+<h2>Configuration References</h2>
+<h3>back / markers_6 / Cam_12 / cover</h3>
+<p><strong>Workspace</strong></p>
+<p><img alt="workspace" src="../photo_library/ws_back_markers6_cam12_cover_take4__workspace.jpg" /></p>
+<h3>back / markers_6 / Cam_15 / cover</h3>
+<p><strong>Workspace</strong></p>
+<p><img alt="workspace" src="../photo_library/ws_back_markers6_cam15_cover_take3__workspace.jpg" /></p>
+<h3>back / markers_6 / Cam_18 / cover</h3>
+<p><strong>Workspace</strong></p>
+<p><img alt="workspace" src="../photo_library/ws_back_markers6_cam18_cover_take2__workspace.jpg" /></p>
+<h3>back / markers_6 / Cam_21 / cover</h3>
+<p><strong>Workspace</strong></p>
+<p><img alt="workspace" src="../photo_library/ws_back_markers6_cam21_cover_take1__workspace.jpg" /></p>
+<h3>center / markers_6 / Cam_12 / cover</h3>
+<p><strong>Workspace</strong></p>
+<p><img alt="workspace" src="../photo_library/ws_center_markers6_cam12_cover_take4__workspace.jpg" /></p>
+<h3>center / markers_6 / Cam_15 / cover</h3>
+<p><strong>Workspace</strong></p>
+<p><img alt="workspace" src="../photo_library/ws_center_markers6_cam15_cover_take3__workspace.jpg" /></p>
+<h3>center / markers_6 / Cam_18 / cover</h3>
+<p><strong>Workspace</strong></p>
+<p><img alt="workspace" src="../photo_library/ws_center_markers6_cam18_cover_take2__workspace.jpg" /></p>
+<h3>center / markers_6 / Cam_21 / cover</h3>
+<p><strong>Workspace</strong></p>
+<p><img alt="workspace" src="../photo_library/ws_center_markers6_cam21_cover_take1__workspace.jpg" /></p>
+<h3>left / markers_6 / Cam_12 / cover</h3>
+<p><strong>Workspace</strong></p>
+<p><img alt="workspace" src="../photo_library/ws_left_markers6_cam12_cover_take4__workspace.jpg" /></p>
+<h3>left / markers_6 / Cam_15 / cover</h3>
+<p><strong>Workspace</strong></p>
+<p><img alt="workspace" src="../photo_library/ws_left_markers6_cam15_cover_take3__workspace.jpg" /></p>
+<h3>left / markers_6 / Cam_18 / cover</h3>
+<p><strong>Workspace</strong></p>
+<p><img alt="workspace" src="../photo_library/ws_left_markers6_cam18_cover_take2__workspace.jpg" /></p>
+<h3>left / markers_6 / Cam_21 / cover</h3>
+<p><strong>Workspace</strong></p>
+<p><img alt="workspace" src="../photo_library/ws_left_markers6_cam21_cover_take1__workspace.jpg" /></p>
+<h3>right / markers_6 / Cam_12 / cover</h3>
+<p><strong>Workspace</strong></p>
+<p><img alt="workspace" src="../photo_library/ws_right_markers6_cam12_cover_take4__workspace.jpg" /></p>
+<h3>right / markers_6 / Cam_15 / cover</h3>
+<p><strong>Workspace</strong></p>
+<p><img alt="workspace" src="../photo_library/ws_right_markers6_cam15_cover_take3__workspace.jpg" /></p>
+<h3>right / markers_6 / Cam_18 / cover</h3>
+<p><strong>Workspace</strong></p>
+<p><img alt="workspace" src="../photo_library/ws_right_markers6_cam18_cover_take2__workspace.jpg" /></p>
+<h3>right / markers_6 / Cam_21 / cover</h3>
+<p><strong>Workspace</strong></p>
+<p><img alt="workspace" src="../photo_library/ws_right_markers6_cam21_cover_take1__workspace.jpg" /></p>
+<h2>Webcam Timelapse</h2>
+<h3>ws_center_markers6_cam21_cover_take1 | center | markers_6 | Cam_21 | cover | take1</h3>
+<ul>
+<li>Status: <code>created</code></li>
+<li>Captured frames: <code>71</code></li>
+<li>Frame interval: <code>0.5</code> sec</li>
+<li>Video: <code>../reference_media/20260316_143701_ws_center_markers6_cam21_cover_take1--center--markers_6--cam_21--cover--take1/workspace_timelapse.mp4</code></li>
+</ul>
+<video controls preload="metadata" src="../reference_media/20260316_143701_ws_center_markers6_cam21_cover_take1--center--markers_6--cam_21--cover--take1/workspace_timelapse.mp4" style="max-width: 100%; height: auto;"></video>
+
+<h3>ws_right_markers6_cam21_cover_take1 | right | markers_6 | Cam_21 | cover | take1</h3>
+<ul>
+<li>Status: <code>created</code></li>
+<li>Captured frames: <code>71</code></li>
+<li>Frame interval: <code>0.5</code> sec</li>
+<li>Video: <code>../reference_media/20260316_144024_ws_right_markers6_cam21_cover_take1--right--markers_6--cam_21--cover--take1/workspace_timelapse.mp4</code></li>
+</ul>
+<video controls preload="metadata" src="../reference_media/20260316_144024_ws_right_markers6_cam21_cover_take1--right--markers_6--cam_21--cover--take1/workspace_timelapse.mp4" style="max-width: 100%; height: auto;"></video>
+
+<h3>ws_left_markers6_cam21_cover_take1 | left | markers_6 | Cam_21 | cover | take1</h3>
+<ul>
+<li>Status: <code>created</code></li>
+<li>Captured frames: <code>71</code></li>
+<li>Frame interval: <code>0.5</code> sec</li>
+<li>Video: <code>../reference_media/20260316_144437_ws_left_markers6_cam21_cover_take1--left--markers_6--cam_21--cover--take1/workspace_timelapse.mp4</code></li>
+</ul>
+<video controls preload="metadata" src="../reference_media/20260316_144437_ws_left_markers6_cam21_cover_take1--left--markers_6--cam_21--cover--take1/workspace_timelapse.mp4" style="max-width: 100%; height: auto;"></video>
+
+<h3>ws_back_markers6_cam21_cover_take1 | back | markers_6 | Cam_21 | cover | take1</h3>
+<ul>
+<li>Status: <code>created</code></li>
+<li>Captured frames: <code>71</code></li>
+<li>Frame interval: <code>0.5</code> sec</li>
+<li>Video: <code>../reference_media/20260316_144730_ws_back_markers6_cam21_cover_take1--back--markers_6--cam_21--cover--take1/workspace_timelapse.mp4</code></li>
+</ul>
+<video controls preload="metadata" src="../reference_media/20260316_144730_ws_back_markers6_cam21_cover_take1--back--markers_6--cam_21--cover--take1/workspace_timelapse.mp4" style="max-width: 100%; height: auto;"></video>
+
+<h3>ws_center_markers6_cam18_cover_take2 | center | markers_6 | Cam_18 | cover | take1</h3>
+<ul>
+<li>Status: <code>created</code></li>
+<li>Captured frames: <code>71</code></li>
+<li>Frame interval: <code>0.5</code> sec</li>
+<li>Video: <code>../reference_media/20260316_145643_ws_center_markers6_cam18_cover_take2--center--markers_6--cam_18--cover--take1/workspace_timelapse.mp4</code></li>
+</ul>
+<video controls preload="metadata" src="../reference_media/20260316_145643_ws_center_markers6_cam18_cover_take2--center--markers_6--cam_18--cover--take1/workspace_timelapse.mp4" style="max-width: 100%; height: auto;"></video>
+
+<h3>ws_right_markers6_cam18_cover_take2 | right | markers_6 | Cam_18 | cover | take1</h3>
+<ul>
+<li>Status: <code>created</code></li>
+<li>Captured frames: <code>71</code></li>
+<li>Frame interval: <code>0.5</code> sec</li>
+<li>Video: <code>../reference_media/20260316_145948_ws_right_markers6_cam18_cover_take2--right--markers_6--cam_18--cover--take1/workspace_timelapse.mp4</code></li>
+</ul>
+<video controls preload="metadata" src="../reference_media/20260316_145948_ws_right_markers6_cam18_cover_take2--right--markers_6--cam_18--cover--take1/workspace_timelapse.mp4" style="max-width: 100%; height: auto;"></video>
+
+<h3>ws_left_markers6_cam18_cover_take2 | left | markers_6 | Cam_18 | cover | take1</h3>
+<ul>
+<li>Status: <code>created</code></li>
+<li>Captured frames: <code>71</code></li>
+<li>Frame interval: <code>0.5</code> sec</li>
+<li>Video: <code>../reference_media/20260316_150149_ws_left_markers6_cam18_cover_take2--left--markers_6--cam_18--cover--take1/workspace_timelapse.mp4</code></li>
+</ul>
+<video controls preload="metadata" src="../reference_media/20260316_150149_ws_left_markers6_cam18_cover_take2--left--markers_6--cam_18--cover--take1/workspace_timelapse.mp4" style="max-width: 100%; height: auto;"></video>
+
+<h3>ws_back_markers6_cam18_cover_take2 | back | markers_6 | Cam_18 | cover | take1</h3>
+<ul>
+<li>Status: <code>created</code></li>
+<li>Captured frames: <code>71</code></li>
+<li>Frame interval: <code>0.5</code> sec</li>
+<li>Video: <code>../reference_media/20260316_150419_ws_back_markers6_cam18_cover_take2--back--markers_6--cam_18--cover--take1/workspace_timelapse.mp4</code></li>
+</ul>
+<video controls preload="metadata" src="../reference_media/20260316_150419_ws_back_markers6_cam18_cover_take2--back--markers_6--cam_18--cover--take1/workspace_timelapse.mp4" style="max-width: 100%; height: auto;"></video>
+
+<h3>ws_center_markers6_cam15_cover_take3 | center | markers_6 | Cam_15 | cover | take1</h3>
+<ul>
+<li>Status: <code>created</code></li>
+<li>Captured frames: <code>71</code></li>
+<li>Frame interval: <code>0.5</code> sec</li>
+<li>Video: <code>../reference_media/20260316_152056_ws_center_markers6_cam15_cover_take3--center--markers_6--cam_15--cover--take1/workspace_timelapse.mp4</code></li>
+</ul>
+<video controls preload="metadata" src="../reference_media/20260316_152056_ws_center_markers6_cam15_cover_take3--center--markers_6--cam_15--cover--take1/workspace_timelapse.mp4" style="max-width: 100%; height: auto;"></video>
+
+<h3>ws_right_markers6_cam15_cover_take3 | right | markers_6 | Cam_15 | cover | take1</h3>
+<ul>
+<li>Status: <code>created</code></li>
+<li>Captured frames: <code>71</code></li>
+<li>Frame interval: <code>0.5</code> sec</li>
+<li>Video: <code>../reference_media/20260316_152254_ws_right_markers6_cam15_cover_take3--right--markers_6--cam_15--cover--take1/workspace_timelapse.mp4</code></li>
+</ul>
+<video controls preload="metadata" src="../reference_media/20260316_152254_ws_right_markers6_cam15_cover_take3--right--markers_6--cam_15--cover--take1/workspace_timelapse.mp4" style="max-width: 100%; height: auto;"></video>
+
+<h3>ws_left_markers6_cam15_cover_take3 | left | markers_6 | Cam_15 | cover | take1</h3>
+<ul>
+<li>Status: <code>created</code></li>
+<li>Captured frames: <code>71</code></li>
+<li>Frame interval: <code>0.5</code> sec</li>
+<li>Video: <code>../reference_media/20260316_153447_ws_left_markers6_cam15_cover_take3--left--markers_6--cam_15--cover--take1/workspace_timelapse.mp4</code></li>
+</ul>
+<video controls preload="metadata" src="../reference_media/20260316_153447_ws_left_markers6_cam15_cover_take3--left--markers_6--cam_15--cover--take1/workspace_timelapse.mp4" style="max-width: 100%; height: auto;"></video>
+
+<h3>ws_back_markers6_cam15_cover_take3 | back | markers_6 | Cam_15 | cover | take1</h3>
+<ul>
+<li>Status: <code>created</code></li>
+<li>Captured frames: <code>71</code></li>
+<li>Frame interval: <code>0.5</code> sec</li>
+<li>Video: <code>../reference_media/20260316_153732_ws_back_markers6_cam15_cover_take3--back--markers_6--cam_15--cover--take1/workspace_timelapse.mp4</code></li>
+</ul>
+<video controls preload="metadata" src="../reference_media/20260316_153732_ws_back_markers6_cam15_cover_take3--back--markers_6--cam_15--cover--take1/workspace_timelapse.mp4" style="max-width: 100%; height: auto;"></video>
+
+<h3>ws_center_markers6_cam12_cover_take4 | center | markers_6 | Cam_12 | cover | take1</h3>
+<ul>
+<li>Status: <code>created</code></li>
+<li>Captured frames: <code>71</code></li>
+<li>Frame interval: <code>0.5</code> sec</li>
+<li>Video: <code>../reference_media/20260316_154617_ws_center_markers6_cam12_cover_take4--center--markers_6--cam_12--cover--take1/workspace_timelapse.mp4</code></li>
+</ul>
+<video controls preload="metadata" src="../reference_media/20260316_154617_ws_center_markers6_cam12_cover_take4--center--markers_6--cam_12--cover--take1/workspace_timelapse.mp4" style="max-width: 100%; height: auto;"></video>
+
+<h3>ws_right_markers6_cam12_cover_take4 | right | markers_6 | Cam_12 | cover | take1</h3>
+<ul>
+<li>Status: <code>created</code></li>
+<li>Captured frames: <code>71</code></li>
+<li>Frame interval: <code>0.5</code> sec</li>
+<li>Video: <code>../reference_media/20260316_154812_ws_right_markers6_cam12_cover_take4--right--markers_6--cam_12--cover--take1/workspace_timelapse.mp4</code></li>
+</ul>
+<video controls preload="metadata" src="../reference_media/20260316_154812_ws_right_markers6_cam12_cover_take4--right--markers_6--cam_12--cover--take1/workspace_timelapse.mp4" style="max-width: 100%; height: auto;"></video>
+
+<h3>ws_left_markers6_cam12_cover_take4 | left | markers_6 | Cam_12 | cover | take1</h3>
+<ul>
+<li>Status: <code>created</code></li>
+<li>Captured frames: <code>71</code></li>
+<li>Frame interval: <code>0.5</code> sec</li>
+<li>Video: <code>../reference_media/20260316_155028_ws_left_markers6_cam12_cover_take4--left--markers_6--cam_12--cover--take1/workspace_timelapse.mp4</code></li>
+</ul>
+<video controls preload="metadata" src="../reference_media/20260316_155028_ws_left_markers6_cam12_cover_take4--left--markers_6--cam_12--cover--take1/workspace_timelapse.mp4" style="max-width: 100%; height: auto;"></video>
+
+<h3>ws_back_markers6_cam12_cover_take4 | back | markers_6 | Cam_12 | cover | take1</h3>
+<ul>
+<li>Status: <code>created</code></li>
+<li>Captured frames: <code>71</code></li>
+<li>Frame interval: <code>0.5</code> sec</li>
+<li>Video: <code>../reference_media/20260316_155236_ws_back_markers6_cam12_cover_take4--back--markers_6--cam_12--cover--take1/workspace_timelapse.mp4</code></li>
+</ul>
+<video controls preload="metadata" src="../reference_media/20260316_155236_ws_back_markers6_cam12_cover_take4--back--markers_6--cam_12--cover--take1/workspace_timelapse.mp4" style="max-width: 100%; height: auto;"></video>
+
+<h2>Take Files</h2>
+<ul>
+<li><code>ws_center_markers6_cam21_cover_take1 | center | markers_6 | Cam_21 | cover | take1</code>: <code>/home/yijiangh/ros2_ws/src/husky-assembly-teleop/data/mocap_experiments/20260316/20260316_cover_study_camera_reduction/takes/20260316_143701_ws_center_markers6_cam21_cover_take1--center--markers_6--cam_21--cover--take1.json</code> (2101 frames)</li>
+<li><code>workspace</code>: <code>../photo_library/ws_center_markers6_cam21_cover_take1__workspace.jpg</code></li>
+<li><code>ws_right_markers6_cam21_cover_take1 | right | markers_6 | Cam_21 | cover | take1</code>: <code>/home/yijiangh/ros2_ws/src/husky-assembly-teleop/data/mocap_experiments/20260316/20260316_cover_study_camera_reduction/takes/20260316_144024_ws_right_markers6_cam21_cover_take1--right--markers_6--cam_21--cover--take1.json</code> (2101 frames)</li>
+<li><code>workspace</code>: <code>../photo_library/ws_right_markers6_cam21_cover_take1__workspace.jpg</code></li>
+<li><code>ws_left_markers6_cam21_cover_take1 | left | markers_6 | Cam_21 | cover | take1</code>: <code>/home/yijiangh/ros2_ws/src/husky-assembly-teleop/data/mocap_experiments/20260316/20260316_cover_study_camera_reduction/takes/20260316_144437_ws_left_markers6_cam21_cover_take1--left--markers_6--cam_21--cover--take1.json</code> (2101 frames)</li>
+<li><code>workspace</code>: <code>../photo_library/ws_left_markers6_cam21_cover_take1__workspace.jpg</code></li>
+<li><code>ws_back_markers6_cam21_cover_take1 | back | markers_6 | Cam_21 | cover | take1</code>: <code>/home/yijiangh/ros2_ws/src/husky-assembly-teleop/data/mocap_experiments/20260316/20260316_cover_study_camera_reduction/takes/20260316_144730_ws_back_markers6_cam21_cover_take1--back--markers_6--cam_21--cover--take1.json</code> (2101 frames)</li>
+<li><code>workspace</code>: <code>../photo_library/ws_back_markers6_cam21_cover_take1__workspace.jpg</code></li>
+<li><code>ws_center_markers6_cam18_cover_take2 | center | markers_6 | Cam_18 | cover | take1</code>: <code>/home/yijiangh/ros2_ws/src/husky-assembly-teleop/data/mocap_experiments/20260316/20260316_cover_study_camera_reduction/takes/20260316_145643_ws_center_markers6_cam18_cover_take2--center--markers_6--cam_18--cover--take1.json</code> (2101 frames)</li>
+<li><code>workspace</code>: <code>../photo_library/ws_center_markers6_cam18_cover_take2__workspace.jpg</code></li>
+<li><code>ws_right_markers6_cam18_cover_take2 | right | markers_6 | Cam_18 | cover | take1</code>: <code>/home/yijiangh/ros2_ws/src/husky-assembly-teleop/data/mocap_experiments/20260316/20260316_cover_study_camera_reduction/takes/20260316_145948_ws_right_markers6_cam18_cover_take2--right--markers_6--cam_18--cover--take1.json</code> (2101 frames)</li>
+<li><code>workspace</code>: <code>../photo_library/ws_right_markers6_cam18_cover_take2__workspace.jpg</code></li>
+<li><code>ws_left_markers6_cam18_cover_take2 | left | markers_6 | Cam_18 | cover | take1</code>: <code>/home/yijiangh/ros2_ws/src/husky-assembly-teleop/data/mocap_experiments/20260316/20260316_cover_study_camera_reduction/takes/20260316_150149_ws_left_markers6_cam18_cover_take2--left--markers_6--cam_18--cover--take1.json</code> (2101 frames)</li>
+<li><code>workspace</code>: <code>../photo_library/ws_left_markers6_cam18_cover_take2__workspace.jpg</code></li>
+<li><code>ws_back_markers6_cam18_cover_take2 | back | markers_6 | Cam_18 | cover | take1</code>: <code>/home/yijiangh/ros2_ws/src/husky-assembly-teleop/data/mocap_experiments/20260316/20260316_cover_study_camera_reduction/takes/20260316_150419_ws_back_markers6_cam18_cover_take2--back--markers_6--cam_18--cover--take1.json</code> (2101 frames)</li>
+<li><code>workspace</code>: <code>../photo_library/ws_back_markers6_cam18_cover_take2__workspace.jpg</code></li>
+<li><code>ws_center_markers6_cam15_cover_take3 | center | markers_6 | Cam_15 | cover | take1</code>: <code>/home/yijiangh/ros2_ws/src/husky-assembly-teleop/data/mocap_experiments/20260316/20260316_cover_study_camera_reduction/takes/20260316_152056_ws_center_markers6_cam15_cover_take3--center--markers_6--cam_15--cover--take1.json</code> (2101 frames)</li>
+<li><code>workspace</code>: <code>../photo_library/ws_center_markers6_cam15_cover_take3__workspace.jpg</code></li>
+<li><code>ws_right_markers6_cam15_cover_take3 | right | markers_6 | Cam_15 | cover | take1</code>: <code>/home/yijiangh/ros2_ws/src/husky-assembly-teleop/data/mocap_experiments/20260316/20260316_cover_study_camera_reduction/takes/20260316_152254_ws_right_markers6_cam15_cover_take3--right--markers_6--cam_15--cover--take1.json</code> (2101 frames)</li>
+<li><code>workspace</code>: <code>../photo_library/ws_right_markers6_cam15_cover_take3__workspace.jpg</code></li>
+<li><code>ws_left_markers6_cam15_cover_take3 | left | markers_6 | Cam_15 | cover | take1</code>: <code>/home/yijiangh/ros2_ws/src/husky-assembly-teleop/data/mocap_experiments/20260316/20260316_cover_study_camera_reduction/takes/20260316_153447_ws_left_markers6_cam15_cover_take3--left--markers_6--cam_15--cover--take1.json</code> (2101 frames)</li>
+<li><code>workspace</code>: <code>../photo_library/ws_left_markers6_cam15_cover_take3__workspace.jpg</code></li>
+<li><code>ws_back_markers6_cam15_cover_take3 | back | markers_6 | Cam_15 | cover | take1</code>: <code>/home/yijiangh/ros2_ws/src/husky-assembly-teleop/data/mocap_experiments/20260316/20260316_cover_study_camera_reduction/takes/20260316_153732_ws_back_markers6_cam15_cover_take3--back--markers_6--cam_15--cover--take1.json</code> (2101 frames)</li>
+<li><code>workspace</code>: <code>../photo_library/ws_back_markers6_cam15_cover_take3__workspace.jpg</code></li>
+<li><code>ws_center_markers6_cam12_cover_take4 | center | markers_6 | Cam_12 | cover | take1</code>: <code>/home/yijiangh/ros2_ws/src/husky-assembly-teleop/data/mocap_experiments/20260316/20260316_cover_study_camera_reduction/takes/20260316_154617_ws_center_markers6_cam12_cover_take4--center--markers_6--cam_12--cover--take1.json</code> (2101 frames)</li>
+<li><code>workspace</code>: <code>../photo_library/ws_center_markers6_cam12_cover_take4__workspace.jpg</code></li>
+<li><code>ws_right_markers6_cam12_cover_take4 | right | markers_6 | Cam_12 | cover | take1</code>: <code>/home/yijiangh/ros2_ws/src/husky-assembly-teleop/data/mocap_experiments/20260316/20260316_cover_study_camera_reduction/takes/20260316_154812_ws_right_markers6_cam12_cover_take4--right--markers_6--cam_12--cover--take1.json</code> (2101 frames)</li>
+<li><code>workspace</code>: <code>../photo_library/ws_right_markers6_cam12_cover_take4__workspace.jpg</code></li>
+<li><code>ws_left_markers6_cam12_cover_take4 | left | markers_6 | Cam_12 | cover | take1</code>: <code>/home/yijiangh/ros2_ws/src/husky-assembly-teleop/data/mocap_experiments/20260316/20260316_cover_study_camera_reduction/takes/20260316_155028_ws_left_markers6_cam12_cover_take4--left--markers_6--cam_12--cover--take1.json</code> (2102 frames)</li>
+<li><code>workspace</code>: <code>../photo_library/ws_left_markers6_cam12_cover_take4__workspace.jpg</code></li>
+<li><code>ws_back_markers6_cam12_cover_take4 | back | markers_6 | Cam_12 | cover | take1</code>: <code>/home/yijiangh/ros2_ws/src/husky-assembly-teleop/data/mocap_experiments/20260316/20260316_cover_study_camera_reduction/takes/20260316_155236_ws_back_markers6_cam12_cover_take4--back--markers_6--cam_12--cover--take1.json</code> (2101 frames)</li>
+<li><code>workspace</code>: <code>../photo_library/ws_back_markers6_cam12_cover_take4__workspace.jpg</code></li>
+</ul>
+</body>
+</html>

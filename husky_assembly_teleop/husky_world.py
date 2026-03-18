@@ -151,7 +151,8 @@ def create_husky_with_end_effectors(monitor, name, mocap_id=None, pos=np.zeros(3
 def init(monitor):
     # * add robots
     robot_namespace = '/a200_0806'
-    mocap_id = 4617
+    # mocap_id = 4621
+    mocap_id = 4622
     robot_name = robot_namespace.split('_')[-1]
     dual_arm = (robot_name == '0806')
 
