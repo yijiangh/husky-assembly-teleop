@@ -1,5 +1,9 @@
 import os
-from ament_index_python import get_package_share_directory
+
+try:
+    from ament_index_python import get_package_share_directory
+except Exception:
+    get_package_share_directory = None
 
 def _get_data_directory():
     """
@@ -7,6 +11,13 @@ def _get_data_directory():
     If running from source (development), use the source data directory.
     Otherwise, use the installed package data directory.
     """
+    # Non-ROS fallback (e.g. Rhino CPython / standalone)
+    if get_package_share_directory is None:
+        local_data_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'data'))
+        if os.path.exists(local_data_dir):
+            return local_data_dir
+        return os.path.join(os.getcwd(), 'data')
+
     # Get the installed package data directory
     installed_data_dir = os.path.join(get_package_share_directory('husky_assembly_teleop'), 'data')
     
