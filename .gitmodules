@@ -12,4 +12,7 @@
 	url = git@github.com:yijiangh/husky_assembly_design_study.git
 [submodule "external/pybullet_planning"]
 	path = external/pybullet_planning
-	url = git@github.com:yijiangh/pybullet_planning.git
+	url = https://github.com/yijiangh/pybullet_planning.git
+[submodule "external/husky_assembly_tamp"]
+	path = external/husky_assembly_tamp
+	url = git@github.com:yijiangh/husky_assembly_tamp.git
