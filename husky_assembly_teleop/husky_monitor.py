@@ -64,6 +64,8 @@ class HuskyMonitor(Node):
     BOARD_VALIDATION = 1
     PUNCH_CALIB_VALIDATION = 1
 
+    DUAL_ARM_KISSING = 0  # set 1 to enable kissing experiment + compliance controller buttons
+
     def __init__(self):
         super().__init__('husky_monitor')
         self.tick_timer = self.create_timer(0.05, self.update)
@@ -1445,6 +1447,37 @@ class HuskyMonitor(Node):
             'Export Trajectory (JSON)',
             lambda: self.export_planned_trajectory_to_json()
         ))
+
+        if self.DUAL_ARM_KISSING:
+            self.dump_sep_sliders.append(Slider("----------KISSING EXPERIMENT", lambda: None))
+            self.buttons.append(Button('Conduct Kissing Experiment',
+                lambda: self.tasks.append(world.kissing_experiment(self))))
+            self.buttons.append(Button('Move Forward 1cm',
+                lambda: world.move_left_linear_z(self, 0.01, 0.001)))
+            self.buttons.append(Button('Move Back 1cm',
+                lambda: world.move_left_linear_z(self, -0.01, 0.001)))
+
+            self.dump_sep_sliders.append(Slider("----------CONTROLLERS", lambda: None))
+            def _switch_to_compliance_both():
+                h = self.huskies[self.selected_robot_id]
+                for i in range(2 if h.dual_arm else 1):
+                    h.interface.switch_controller(
+                        'scaled_joint_trajectory_controller',
+                        'cartesian_compliance_controller', i)
+            def _switch_to_joint_both():
+                h = self.huskies[self.selected_robot_id]
+                for i in range(2 if h.dual_arm else 1):
+                    h.interface.switch_controller(
+                        'cartesian_compliance_controller',
+                        'scaled_joint_trajectory_controller', i)
+            def _zero_force_sensor_both():
+                h = self.huskies[self.selected_robot_id]
+                for i in range(2 if h.dual_arm else 1):
+                    h.interface.zero_ft_sensor(i)
+            self.buttons.append(Button('Switch to Compliance (BOTH)', _switch_to_compliance_both))
+            self.buttons.append(Button('Switch to Joint (BOTH)', _switch_to_joint_both))   # = "ensure joint controller"
+            self.buttons.append(Button('Zero Force Sensor (BOTH)', _zero_force_sensor_both))
+            self.buttons.append(Button('Draw TCP Pose', lambda: world.draw_tcp_pose(self)))
 
         if self.BOARD_VALIDATION:
             self.dump_sep_sliders.append(Slider("----------State Loading", lambda : None))
