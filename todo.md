@@ -1,11 +1,16 @@
 # Tasks before FoC
-1. [] double kissing on new tools (integrate into our monitor) - this will force me to 
-	1. [WIP] integrate the new rs485 control into a ros node
+1. [ToReview] double kissing on new tools (integrate into our monitor) - this will force me to 
+	1. [ToReview] integrate the new rs485 control into a ros node
 	2. an online LM replanner
+
 2. [ToReview] integrate the dual-arm constrianed planner into monitor, use your new tool model, and see tracking performance of a tracking controller.
 
 3. [] a bar goal reaching test to check the accuracy of mocap2urdf calibration (with our mocap rigs on a bar)
+    - test dual-arm transport, making it faster, since no need to get the bar off
+    - should be fast to do on site.
+
 4. [] allow users to switch between controlling the dual=arm and the single=arm. and also use the single-arm's compliant controller.
+    - should be fast to do on site. but needs to decide how to distnguish which robot a cell_state belongs to
 
 # dual-arm constrained planner
 
