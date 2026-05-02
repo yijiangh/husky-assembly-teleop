@@ -82,6 +82,14 @@ class HuskyMonitor(Node):
         self.mocap_experiment_last_output_path = None
 
         self.static_obstacles = {}
+        self.active_bar_body = None
+        self.active_bar_aabb_dims = None
+        self.active_bar_name = None
+        self.constrained_planner_stage = 3
+        self.staging_free_trajectory = [None, None]   # left, right (per-arm tuples)
+        self.constrained_trajectory = [None, None]
+        self.constrained_display_mode = 0  # 0=FREE_STAGE, 1=CONSTRAINED
+        self.grasp_targets_override = None  # optional grasp JSON override; None = derive from goal cell state
         self.assembly_objects = []
         self.current_seq_index = 0
 
@@ -852,6 +860,21 @@ class HuskyMonitor(Node):
         else:
             print("Failed to sample valid dual-arm configuration.")
     
+    def update_constrained_planner_stage(self, val):
+        self.constrained_planner_stage = int(round(float(val)))
+
+    def update_constrained_display_mode(self, val):
+        self.constrained_display_mode = int(round(float(val)))
+        self._refresh_constrained_displayed_trajectory()
+
+    def _refresh_constrained_displayed_trajectory(self):
+        src = self.constrained_trajectory if self.constrained_display_mode == 1 \
+              else self.staging_free_trajectory
+        if src[0] is not None and src[1] is not None:
+            self.set_arm_trajectory(src[0], index=0)
+            self.set_arm_trajectory(src[1], index=1)
+            self.set_to_show_traj_state()
+
     def load_board_validation_state(self):
         """
         Load a robot cell state for board validation and update the goal robot configuration.
@@ -1019,16 +1042,37 @@ class HuskyMonitor(Node):
             # Skip hidden rigid bodies
             if rigid_body_state.is_hidden:
                 continue
-                
+
+            # Detect the active bar (rigid body grasped by a tool). Spawn it in the
+            # scene at its frame from the cell state - pose is overridden later in
+            # the constrained planner. Only the FIRST such body is tracked.
+            if rigid_body_state.attached_to_tool is not None:
+                if self.active_bar_body is not None and self.active_bar_name == rigid_body_name:
+                    # already spawned; just update pose if frame is provided
+                    if rigid_body_state.frame is not None:
+                        pp.set_pose(self.active_bar_body, pose_from_frame(rigid_body_state.frame))
+                elif rigid_body_state.frame is not None:
+                    bar_pose = pose_from_frame(rigid_body_state.frame)
+                    bar_body = self._create_rigid_body_obstacle(rigid_body_name, robot_cell, bar_pose)
+                    if bar_body is not None:
+                        self.active_bar_body = bar_body
+                        self.active_bar_name = rigid_body_name
+                        aabb = pp.get_aabb(bar_body)
+                        self.active_bar_aabb_dims = pp.get_aabb_extent(aabb)
+                        print(f"Spawned active bar {rigid_body_name!r} (body={bar_body}); aabb_dims={self.active_bar_aabb_dims}")
+                    else:
+                        print(f"Failed to spawn active bar {rigid_body_name!r} via mesh; constrained planner will not work for this state")
+                continue  # don't fall through to obstacle path
+
             # Skip rigid bodies that are attached to tools or links (they move with the robot)
             if rigid_body_state.attached_to_tool or rigid_body_state.attached_to_link:
                 continue
-                
+
             # Get the frame from the rigid body state
             if rigid_body_state.frame is None:
                 print(f"Warning: No frame data for rigid body {rigid_body_name}")
                 continue
-                
+
             # Convert frame to pose (position and quaternion)
             pose = pose_from_frame(rigid_body_state.frame)
  
@@ -1464,7 +1508,23 @@ class HuskyMonitor(Node):
                 
                 # Add button to load the selected state
                 self.buttons.append(Button('Load Robot Cell State', self.load_board_validation_state))
-                
+
+                # Constrained dual-arm planner controls
+                self.dump_sep_sliders.append(Slider(
+                    "Constrained Stage",
+                    self.update_constrained_planner_stage,
+                    1, 3, 3,
+                ))
+                self.buttons.append(Button(
+                    'Plan & Stage Constrained',
+                    lambda: world.plan_and_stage_constrained(self),
+                ))
+                self.dump_sep_sliders.append(Slider(
+                    "Display Traj (0=Free,1=Constrained)",
+                    self.update_constrained_display_mode,
+                    0, 1, 0,
+                ))
+
                 # Create slider for selecting joint trajectory
                 if self.available_joint_trajectories:
                     max_traj_index = len(self.available_joint_trajectories) - 1

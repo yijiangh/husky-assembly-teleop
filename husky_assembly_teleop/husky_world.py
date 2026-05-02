@@ -1816,23 +1816,28 @@ def plan_both_arms_to_goal(monitor, use_composite=False, debug=False):
         left_trajectory = (padded_left_path, None, total_time, None)
         right_trajectory = (padded_right_path, None, total_time, None)
     else:
-        # Composite planning: plan in the joint space of both arms
+        # Composite planning: plan in the joint space of both arms via shared API.
         pp.set_joint_positions(robot, left_joints, current_left_conf)
         pp.set_joint_positions(robot, right_joints, current_right_conf)
-        composite_goal = np.concatenate([left_conf, right_conf])
-        from husky_assembly_teleop.husky_planning import plan_transit_motion
         composite_start = np.concatenate([current_left_conf, current_right_conf])
-        composite_path = plan_transit_motion(
-            robot,
-            composite_goal,
-            attachments,
-            list(monitor.static_obstacles.values()),
-            debug=debug,
-            disabled_collisions=None,
-            dual_arm_index="both",
-        )
+        composite_goal = np.concatenate([left_conf, right_conf])
+        arm_joints_all = list(left_joints) + list(right_joints)
+        tool_link_L = pp.link_from_name(robot, 'left_ur_arm_tool0')
+        tool_link_R = pp.link_from_name(robot, 'right_ur_arm_tool0')
+        scene = {
+            "robot": robot,
+            "arm_joints": arm_joints_all,
+            "joint_names": list(left_joint_names) + list(right_joint_names),
+            "tool_link_left": tool_link_L,
+            "tool_link_right": tool_link_R,
+            "obstacles": list(monitor.static_obstacles.values()),
+            "attachments": attachments,  # already len 2 per existing code
+            "disabled_collisions": None,
+        }
+        from husky_assembly_tamp.motion_planner.api import plan_free_dual_arm
+        composite_path, info = plan_free_dual_arm(scene, composite_start, composite_goal, debug=debug)
         if composite_path is None:
-            monitor.get_logger().warn('Composite planning failed!')
+            monitor.get_logger().warn(f"Composite planning failed: {info.get('failure_reason', 'unknown')}")
             return
         left_trajectory = (np.array([q[:len(left_joints)] for q in composite_path]), None, monitor.trajectory_time, None)
         right_trajectory = (np.array([q[len(left_joints):] for q in composite_path]), None, monitor.trajectory_time, None)
@@ -1842,3 +1847,149 @@ def plan_both_arms_to_goal(monitor, use_composite=False, debug=False):
     monitor.set_arm_trajectory(right_trajectory, index=1)
     monitor.set_to_show_traj_state()
     print("Successfully planned both arms to goal ({} mode)!".format('composite' if use_composite else 'sequential'))
+
+
+def plan_and_stage_constrained(monitor, debug=False):
+    """Run the constrained dual-arm planner + a free staging plan.
+
+    Workflow:
+      1. Derive grasp transforms from the loaded goal RobotCellState
+         (FK at goal_conf + bar pose at goal).
+      2. Derive a "home" world_from_bar_start and a constraint-satisfying
+         start_conf via dual-arm endpoint IK.
+      3. Run the constrained planner from start_conf to goal_conf.
+      4. Run the free planner from current robot conf to start_conf
+         (bar excluded from obstacles since it's not yet held).
+      5. Store both trajectories on the monitor and display the free
+         staging trajectory by default.
+
+    User then executes the staging trajectory, manually places the bar in
+    the end-effectors, flips the Display slider to 1, and executes the
+    constrained trajectory.
+    """
+    husky = monitor.huskies[monitor.selected_robot_id]
+    robot = husky.object.robot
+
+    left_joint_names = HUSKY_DUAL_UR5e_JOINT_NAMES[0]
+    right_joint_names = HUSKY_DUAL_UR5e_JOINT_NAMES[1]
+    left_joints = pp.joints_from_names(robot, left_joint_names)
+    right_joints = pp.joints_from_names(robot, right_joint_names)
+    arm_joints_all = list(left_joints) + list(right_joints)
+    tool_link_L = pp.link_from_name(robot, 'left_ur_arm_tool0')
+    tool_link_R = pp.link_from_name(robot, 'right_ur_arm_tool0')
+
+    if monitor.active_bar_body is None:
+        monitor.get_logger().warn(
+            "No active bar in scene. Load a goal RobotCellState whose attached_to_tool rigid body has been spawned."
+        )
+        return
+
+    current_left = pp.get_joint_positions(robot, left_joints)
+    current_right = pp.get_joint_positions(robot, right_joints)
+    current_conf = np.concatenate([current_left, current_right])
+    goal_conf = np.concatenate([monitor.goal_arm_pose[0], monitor.goal_arm_pose[1]])
+
+    world_from_bar_goal = pp.get_pose(monitor.active_bar_body)
+
+    from husky_assembly_tamp.motion_planner.api import (
+        derive_grasps_from_state, derive_constrained_start,
+        plan_constrained_dual_arm, plan_free_dual_arm,
+    )
+    from husky_assembly_tamp.motion_planner.stage1.minimal_rrt import get_bar_feature_points
+
+    # 1. Grasps
+    if monitor.grasp_targets_override is not None:
+        grasp_bar_from_left, grasp_bar_from_right = monitor.grasp_targets_override
+    else:
+        grasp_bar_from_left, grasp_bar_from_right = derive_grasps_from_state(
+            robot, arm_joints_all, tool_link_L, tool_link_R,
+            goal_conf, world_from_bar_goal,
+        )
+
+    # 2. Derived start
+    # Use goal_conf as the IK seed (mirrors run_stage_trial's pattern of using
+    # the cell-state joint values as seed for endpoint IK). Seeding with
+    # current_conf can return a self-colliding IK solution because the IK
+    # solver does not check collision.
+    world_from_bar_start, start_conf = derive_constrained_start(
+        robot, arm_joints_all, tool_link_L, tool_link_R,
+        grasp_bar_from_left, grasp_bar_from_right,
+        world_from_bar_goal, seed_conf=goal_conf,
+    )
+    if start_conf is None:
+        monitor.get_logger().warn("Endpoint IK failed at derived start bar pose")
+        return
+
+    # 3. Constrained plan
+    feature_points = get_bar_feature_points(monitor.active_bar_aabb_dims) \
+                     if monitor.active_bar_aabb_dims is not None else get_bar_feature_points()
+    attachments_pair = [husky.object.ee_list[0][1], husky.object.ee_list[1][1]]
+    # The active bar is the manipulated body (attached to the robot via the grasp
+    # transforms). It must NOT appear in the obstacles list, or the constrained
+    # planner's joint_collision_fn will check the attached bar against itself.
+    obstacles_for_constrained = [
+        b for b in monitor.static_obstacles.values() if b != monitor.active_bar_body
+    ]
+    scene_with_bar = {
+        "robot": robot,
+        "arm_joints": arm_joints_all,
+        "joint_names": list(left_joint_names) + list(right_joint_names),
+        "tool_link_left": tool_link_L,
+        "tool_link_right": tool_link_R,
+        "obstacles": obstacles_for_constrained,
+        "attachments": attachments_pair,  # not used by constrained planner but harmless
+        "disabled_collisions": None,
+    }
+    pp.set_pose(monitor.active_bar_body, world_from_bar_start)
+    constrained_path, c_info = plan_constrained_dual_arm(
+        scene_with_bar, start_conf, goal_conf,
+        bar_body=monitor.active_bar_body,
+        grasp_bar_from_left=grasp_bar_from_left,
+        grasp_bar_from_right=grasp_bar_from_right,
+        feature_points=feature_points,
+        world_from_bar_start=world_from_bar_start,
+        world_from_bar_goal=world_from_bar_goal,
+        stage=monitor.constrained_planner_stage,
+    )
+    if constrained_path is None:
+        if monitor.constrained_planner_stage == 1 and c_info.get("pose_only_success"):
+            monitor.get_logger().warn(
+                "Stage 1 constrained plan succeeded but produces no joint path - skipping trajectory display."
+            )
+        else:
+            monitor.get_logger().warn(f"Constrained planning failed: {c_info.get('failure_reason', 'unknown')}")
+        return
+
+    # 4. Free staging plan: bar NOT held, NOT in obstacles
+    obstacles_no_bar = [b for b in monitor.static_obstacles.values() if b != monitor.active_bar_body]
+    scene_free = dict(scene_with_bar)
+    scene_free["obstacles"] = obstacles_no_bar
+    free_path, f_info = plan_free_dual_arm(scene_free, current_conf, start_conf)
+    if free_path is None:
+        monitor.get_logger().warn(
+            f"Free staging plan failed: {f_info.get('failure_reason', 'unknown')}; constrained plan kept."
+        )
+        # still store constrained traj for inspection
+        n = len(left_joints)
+        monitor.constrained_trajectory = [
+            (np.array([q[:n] for q in constrained_path]), None, monitor.trajectory_time, None),
+            (np.array([q[n:] for q in constrained_path]), None, monitor.trajectory_time, None),
+        ]
+        return
+
+    # 5. Store and display
+    n = len(left_joints)
+    monitor.staging_free_trajectory = [
+        (np.array([q[:n] for q in free_path]), None, monitor.trajectory_time, None),
+        (np.array([q[n:] for q in free_path]), None, monitor.trajectory_time, None),
+    ]
+    monitor.constrained_trajectory = [
+        (np.array([q[:n] for q in constrained_path]), None, monitor.trajectory_time, None),
+        (np.array([q[n:] for q in constrained_path]), None, monitor.trajectory_time, None),
+    ]
+    monitor.constrained_display_mode = 0
+    monitor._refresh_constrained_displayed_trajectory()
+    print("Constrained plan ready. Sequence:")
+    print("  1) Click 'Exec Both Arm Trajs' to play the FREE staging plan (robot moves to derived start_conf, bar untouched).")
+    print("  2) Manually place the bar in both end-effectors.")
+    print("  3) Set 'Display Traj' slider to 1, then click 'Exec Both Arm Trajs' to play the CONSTRAINED plan.")
