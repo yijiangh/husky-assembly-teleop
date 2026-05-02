@@ -39,6 +39,9 @@ from crl_husky_msgs.msg import MultiArmTrajectory
 # SetIO service for gripper and screw control
 from ur_msgs.srv import SetIO
 
+# Scaffolding tool RS485 driver client (replaces SetIO-based gripper/screw)
+from husky_assembly_teleop.scaffolding_tool_client import ScaffoldingToolClient
+
 from rclpy.qos import QoSProfile
 
 UR5e_HOME_STATE = np.array([0, -np.pi/2, 0, -np.pi/2, 0, np.pi/2])
@@ -186,7 +189,16 @@ class HuskyRobotInterface:
                 self.node.get_logger().info(f'SetIO Service {i} is ready!')
             else:
                 self.node.get_logger().warn(f'SetIO Service {i} not available!')
-        
+
+        # Scaffolding tool RS485 clients (replaces SetIO-based gripper/screw control).
+        # Indexing matches setio_clients: 0 = left/single, 1 = right.
+        self.tool_clients = []
+        if dual_arm:
+            self.tool_clients.append(ScaffoldingToolClient(node, name, 'left_tool'))
+            self.tool_clients.append(ScaffoldingToolClient(node, name, 'right_tool'))
+        else:
+            self.tool_clients.append(ScaffoldingToolClient(node, name, 'tool'))
+
         # done --- --- --- --- ---
         self.node.get_logger().info(f'Husky "{name}" is ready!')
 
@@ -391,53 +403,51 @@ class HuskyRobotInterface:
                 f"Done with result: {self.error_code_to_str(result.error_code)}"
             )
 
+    # DEPRECATED: SetIO-based gripper/screw control. Replaced by RS485 tool driver
+    # (see self.tool_clients and tighten_tool/loosen_tool/stop_tool below).
+    # Kept as no-ops (with a one-time warning) so any leftover callers don't crash.
+    _deprecation_warned = {'toggle_gripper': False, 'toggle_screw': False}
+
+    def _warn_deprecated_once(self, name):
+        if not HuskyRobotInterface._deprecation_warned.get(name):
+            self.node.get_logger().warn(
+                f'{name}() is deprecated; use tighten_tool/loosen_tool/stop_tool instead')
+            HuskyRobotInterface._deprecation_warned[name] = True
+
     def toggle_gripper(self, index=0):
-        """
-        Toggle gripper state (open/close) for the specified arm.
-        Uses SetIO service with PIN_TOOL_DOUT1.
-        """
-        if index >= len(self.setio_clients):
-            self.node.get_logger().error(f'Invalid arm index: {index}')
-            return
-        
-        # Toggle the gripper state
-        self.gripper_states[index] = not self.gripper_states[index]
-        new_state = SetIO.Request.STATE_ON if self.gripper_states[index] else SetIO.Request.STATE_OFF
-        
-        # Create and send the request
-        req = SetIO.Request()
-        req.fun = SetIO.Request.FUN_SET_DIGITAL_OUT
-        req.pin = SetIO.Request.PIN_TOOL_DOUT1
-        req.state = float(new_state)
-        
-        future = self.setio_clients[index].call_async(req)
-        self.node.get_logger().info(f'Gripper {index} {"closed" if self.gripper_states[index] else "opened"}')
-        
-        return future
-    
+        self._warn_deprecated_once('toggle_gripper')
+
     def toggle_screw(self, index=0):
-        """
-        Toggle screw actuation state for the specified arm.
-        Uses SetIO service with PIN_TOOL_DOUT0.
-        """
-        if index >= len(self.setio_clients):
+        self._warn_deprecated_once('toggle_screw')
+
+    # ---------- new RS485 scaffolding tool wrappers --------------------------
+    def tighten_tool(self, index=0, motor='M1'):
+        if index >= len(self.tool_clients):
             self.node.get_logger().error(f'Invalid arm index: {index}')
-            return
-        
-        # Toggle the screw state
-        self.screw_states[index] = not self.screw_states[index]
-        new_state = SetIO.Request.STATE_ON if self.screw_states[index] else SetIO.Request.STATE_OFF
-        
-        # Create and send the request
-        req = SetIO.Request()
-        req.fun = SetIO.Request.FUN_SET_DIGITAL_OUT
-        req.pin = SetIO.Request.PIN_TOOL_DOUT0
-        req.state = float(new_state)
-        
-        future = self.setio_clients[index].call_async(req)
-        self.node.get_logger().info(f'Screw {index} {"actuated" if self.screw_states[index] else "deactivated"}')
-        
-        return future
+            return None
+        return self.tool_clients[index].tighten(motor)
+
+    def loosen_tool(self, index=0, motor='M1'):
+        if index >= len(self.tool_clients):
+            self.node.get_logger().error(f'Invalid arm index: {index}')
+            return None
+        return self.tool_clients[index].loosen(motor)
+
+    def stop_tool(self, index=0):
+        """Stop both motors on the given arm's tool."""
+        if index >= len(self.tool_clients):
+            self.node.get_logger().error(f'Invalid arm index: {index}')
+            return None
+        return self.tool_clients[index].stop()
+
+    def stop_all_tools(self):
+        """Panic-stop: stop motors on every connected tool."""
+        return [c.stop() for c in self.tool_clients]
+
+    def tool_status(self, index=0):
+        if index >= len(self.tool_clients):
+            return None
+        return self.tool_clients[index].status
 
     @staticmethod
     def error_code_to_str(error_code):
