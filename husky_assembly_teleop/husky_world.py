@@ -1849,7 +1849,9 @@ def plan_both_arms_to_goal(monitor, use_composite=False, debug=False):
     print("Successfully planned both arms to goal ({} mode)!".format('composite' if use_composite else 'sequential'))
 
 
-def plan_and_stage_constrained(monitor, debug=False):
+def plan_and_stage_constrained(monitor, debug=False,
+                                max_time=None, max_attempts=None,
+                                max_iterations=None, contact_probe_distance=0.005):
     """Run the constrained dual-arm planner + a free staging plan.
 
     Workflow:
@@ -1924,12 +1926,60 @@ def plan_and_stage_constrained(monitor, debug=False):
     feature_points = get_bar_feature_points(monitor.active_bar_aabb_dims) \
                      if monitor.active_bar_aabb_dims is not None else get_bar_feature_points()
     attachments_pair = [husky.object.ee_list[0][1], husky.object.ee_list[1][1]]
-    # The active bar is the manipulated body (attached to the robot via the grasp
-    # transforms). It must NOT appear in the obstacles list, or the constrained
-    # planner's joint_collision_fn will check the attached bar against itself.
-    obstacles_for_constrained = [
-        b for b in monitor.static_obstacles.values() if b != monitor.active_bar_body
-    ]
+
+    # Build the constrained planner's obstacle list. This is delicate because
+    # the live cell state loads the *whole assembly* (predecessors + successors
+    # + structural elements) as static obstacles. The bar's home->goal flight
+    # path runs through space that's now densely occupied by future-built bars
+    # — bodies that wouldn't actually be there at install time.
+    #
+    # Filtering rules (in order of importance):
+    # 1. Exclude active_bar_body (it's the manipulated body, attached via grasp).
+    # 2. Exclude design-study bar bodies named 'b<N>_0' and 'b<N>_joint_*'. These
+    #    are the assembly elements; the offline prototype's tests run with
+    #    built_bars=[] (scene has *only* the active bar + structural), and that
+    #    convention is what produces the prototype's documented behavior on
+    #    these antenna targets. Without this filter the live flow is solving a
+    #    much harder problem than the prototype was designed/tuned for.
+    # 3. Also auto-exclude any body within 5mm of the bar at goal pose
+    #    ("expected contacts at install"); kept as a safety net for when rule
+    #    2 doesn't apply (e.g., non-design-study state files).
+    import pybullet as _pb
+    import re as _re
+    name_from_body = {body: name for name, body in monitor.static_obstacles.items()}
+    bar_name_re = _re.compile(r"^b\d+(_0|_joint_\d+)$")  # matches b11_0, b3_joint_2, etc.
+
+    expected_neighbor_contacts = set()
+    with pp.WorldSaver():
+        pp.set_joint_positions(robot, arm_joints_all, goal_conf)
+        pp.set_pose(monitor.active_bar_body, world_from_bar_goal)
+        _pb.performCollisionDetection()
+        for body in monitor.static_obstacles.values():
+            if body == monitor.active_bar_body:
+                continue
+            pts = _pb.getClosestPoints(monitor.active_bar_body, body, distance=contact_probe_distance)
+            if pts:
+                expected_neighbor_contacts.add(body)
+                name = name_from_body.get(body, str(body))
+                depths = [round(pt[8], 4) for pt in pts]
+                print(f"  expected contact at goal (excluded): {name} (penetration/gap: {depths})")
+
+    obstacles_for_constrained = []
+    excluded_assembly = []
+    for name, body in monitor.static_obstacles.items():
+        if body == monitor.active_bar_body:
+            continue
+        if body in expected_neighbor_contacts:
+            continue
+        if bar_name_re.match(name):
+            excluded_assembly.append(name)
+            continue
+        obstacles_for_constrained.append(body)
+    if excluded_assembly:
+        print(f"  excluded {len(excluded_assembly)} design-study assembly bodies from constrained obstacles: "
+              f"{', '.join(excluded_assembly[:6])}{'...' if len(excluded_assembly) > 6 else ''}")
+    print(f"  constrained planner sees {len(obstacles_for_constrained)} static obstacles "
+          f"(structural / non-design-study only)")
     scene_with_bar = {
         "robot": robot,
         "arm_joints": arm_joints_all,
@@ -1941,8 +1991,7 @@ def plan_and_stage_constrained(monitor, debug=False):
         "disabled_collisions": None,
     }
     pp.set_pose(monitor.active_bar_body, world_from_bar_start)
-    constrained_path, c_info = plan_constrained_dual_arm(
-        scene_with_bar, start_conf, goal_conf,
+    plan_kwargs = dict(
         bar_body=monitor.active_bar_body,
         grasp_bar_from_left=grasp_bar_from_left,
         grasp_bar_from_right=grasp_bar_from_right,
@@ -1950,6 +1999,15 @@ def plan_and_stage_constrained(monitor, debug=False):
         world_from_bar_start=world_from_bar_start,
         world_from_bar_goal=world_from_bar_goal,
         stage=monitor.constrained_planner_stage,
+    )
+    if max_time is not None:
+        plan_kwargs["max_time"] = max_time
+    if max_attempts is not None:
+        plan_kwargs["max_attempts"] = max_attempts
+    if max_iterations is not None:
+        plan_kwargs["max_iterations"] = max_iterations
+    constrained_path, c_info = plan_constrained_dual_arm(
+        scene_with_bar, start_conf, goal_conf, **plan_kwargs
     )
     if constrained_path is None:
         if monitor.constrained_planner_stage == 1 and c_info.get("pose_only_success"):

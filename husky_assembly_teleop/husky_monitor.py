@@ -54,7 +54,7 @@ class HuskyMonitor(Node):
     GRASP_PARTITION = 8
     BAR_GOAL_MODE = 0
 
-    CALIBRATION = 1
+    CALIBRATION = 0
 
     BAR_HOLDING_ACCURACY_TEST = 0
     DUAL_ARM_ACCURACY_TEST = 0
@@ -926,10 +926,33 @@ class HuskyMonitor(Node):
             # match = re.search(r'_A(\d+)-', selected_state_file)
             # active_bar_name = f"b{match.group(1)}_0" if match else None
             # self.get_logger().info(f"Active bar name: {active_bar_name}")
-            
-            # Load rigid body states as static obstacles
+
+            # Reset prior active-bar selection so re-loading a different
+            # state doesn't carry stale tracking from the previous load.
+            self.active_bar_body = None
+            self.active_bar_name = None
+            self.active_bar_aabb_dims = None
+
+            # Load rigid body states as static obstacles. This may set
+            # self.active_bar_body via Convention 1 (attached_to_tool) for
+            # cell states that tag the held bar.
             self.load_rigid_body_states_as_obstacles(robot_cell_state)
-            
+
+            # Identify the held bar for the constrained planner. The
+            # antenna-style datasets do not tag rigid bodies with
+            # attached_to_tool, so fall back to the filename->bar-index
+            # convention used by the offline prototype (e.g., D1 -> b11_0
+            # via DESIGN_STUDY_BAR_NAME_TO_INDEX).
+            self._identify_active_bar(robot_cell_state, selected_state_file)
+
+            # If a GraspTargets JSON exists alongside the cell state, load it
+            # and use its authored grasp transforms. FK-deriving the grasp
+            # from goal_conf systematically differs from the JSON values by
+            # ~50mm (a flange/tool-tip calibration offset), and using the FK
+            # values causes the constrained planner to fail on most antenna
+            # targets. The JSON values are authoritative.
+            self._load_grasp_targets_if_available(state_filepath)
+
             # Get the robot configuration from the state
             if hasattr(robot_cell_state, 'robot_configuration'):
                 robot_config = robot_cell_state.robot_configuration
@@ -969,6 +992,110 @@ class HuskyMonitor(Node):
  
         except Exception as e:
             print(f"Error loading robot cell state: {e}")
+
+    def _identify_active_bar(self, robot_cell_state, state_filename):
+        """Identify the held bar for the constrained planner.
+
+        Checks two conventions in order:
+          1. RobotCellState.rigid_body_states[name].attached_to_tool != None
+             (preferred convention; cleanly tagged in the cell state).
+          2. Filename prefix matches DESIGN_STUDY_BAR_NAME_TO_INDEX (e.g.,
+             "D1_RobotCellState.json" -> target "D1" -> index 11 -> "b11_0").
+             Used by the antenna-style design-study datasets where no body
+             is tagged attached_to_tool.
+
+        On success: sets self.active_bar_body/_name/_aabb_dims pointing at
+        the body that load_rigid_body_states_as_obstacles already spawned
+        (the body stays in static_obstacles; the constrained planner
+        filters it out at use time).
+        On failure: sets self.active_bar_body to None and prints a hint.
+        """
+        # Convention 1: attached_to_tool tag (handled by
+        # load_rigid_body_states_as_obstacles already setting
+        # self.active_bar_body). If it set one, trust it and return.
+        if self.active_bar_body is not None and self.active_bar_name is not None:
+            print(f"Active bar from attached_to_tool: {self.active_bar_name!r} (body={self.active_bar_body})")
+            return
+
+        # Convention 2: filename prefix -> bar-index lookup.
+        try:
+            from husky_assembly_tamp.motion_planner.stage1.minimal_rrt import (
+                DESIGN_STUDY_BAR_NAME_TO_INDEX,
+            )
+        except ImportError:
+            print("Cannot import DESIGN_STUDY_BAR_NAME_TO_INDEX; constrained planner will not have an active bar.")
+            return
+
+        base = os.path.basename(state_filename)
+        target = base.replace("_RobotCellState.json", "")
+        if target not in DESIGN_STUDY_BAR_NAME_TO_INDEX:
+            print(f"Cell state target {target!r} not in DESIGN_STUDY_BAR_NAME_TO_INDEX; constrained planner will not have an active bar.")
+            self.active_bar_body = None
+            self.active_bar_name = None
+            self.active_bar_aabb_dims = None
+            return
+
+        bar_name = f"b{DESIGN_STUDY_BAR_NAME_TO_INDEX[target]}_0"
+        if bar_name not in self.static_obstacles:
+            print(f"Active bar {bar_name!r} (target={target!r}) not found in static_obstacles after loading state. Has the cell state been loaded with the right RobotCell.json?")
+            self.active_bar_body = None
+            self.active_bar_name = None
+            self.active_bar_aabb_dims = None
+            return
+
+        bar_body = self.static_obstacles[bar_name]
+        self.active_bar_body = bar_body
+        self.active_bar_name = bar_name
+        self.active_bar_aabb_dims = pp.get_aabb_extent(pp.get_aabb(bar_body))
+        print(
+            f"Active bar identified by filename: target={target!r} -> "
+            f"{bar_name!r} (body={bar_body}); aabb_dims={self.active_bar_aabb_dims}"
+        )
+
+    def _load_grasp_targets_if_available(self, state_filepath):
+        """Load GraspTargets JSON alongside a cell state, if present.
+
+        Convention: `<target>_GraspTargets.json` lives in the same directory
+        as `<target>_RobotCellState.json`. The JSON encodes authored
+        (world_from_bar, world_from_tool0) pairs for left and right arms.
+
+        On success: populates self.grasp_targets_override = (grasp_bar_from_left,
+        grasp_bar_from_right) and repositions self.active_bar_body to the
+        JSON's authored goal bar pose. This bypasses FK-derivation in
+        plan_and_stage_constrained, which is necessary because FK at goal_conf
+        has a ~50mm calibration offset against the authored values.
+        """
+        # Reset prior override
+        self.grasp_targets_override = None
+        if not state_filepath.endswith("_RobotCellState.json"):
+            return
+        grasp_path = state_filepath.replace("_RobotCellState.json", "_GraspTargets.json")
+        if not os.path.exists(grasp_path):
+            print(f"No GraspTargets JSON at {os.path.basename(grasp_path)}; will FK-derive grasps (may be inaccurate)")
+            return
+        try:
+            from husky_assembly_tamp.motion_planner.stage1.minimal_rrt import (
+                load_grasp_targets, get_goal_pose_from_grasp_targets,
+            )
+            grasp_targets = load_grasp_targets(grasp_path)
+        except Exception as e:
+            print(f"Failed to load grasp targets from {os.path.basename(grasp_path)}: {e}")
+            return
+        if len(grasp_targets) < 2:
+            print(f"Expected >=2 grasp targets in {os.path.basename(grasp_path)}; got {len(grasp_targets)}")
+            return
+        world_from_bar_l, world_from_tool0_left = grasp_targets[0]
+        world_from_bar_r, world_from_tool0_right = grasp_targets[1]
+        grasp_bar_from_left = pp.multiply(pp.invert(world_from_bar_l), world_from_tool0_left)
+        grasp_bar_from_right = pp.multiply(pp.invert(world_from_bar_r), world_from_tool0_right)
+        self.grasp_targets_override = (grasp_bar_from_left, grasp_bar_from_right)
+        # Reposition the active bar body to the JSON's goal pose so
+        # plan_and_stage_constrained's `pp.get_pose(active_bar_body)` reads
+        # an authored value rather than the cell state's frame.
+        if self.active_bar_body is not None:
+            json_world_from_bar_goal = get_goal_pose_from_grasp_targets(grasp_targets)
+            pp.set_pose(self.active_bar_body, json_world_from_bar_goal)
+        print(f"Loaded grasp targets from {os.path.basename(grasp_path)}; active bar repositioned to JSON goal.")
 
     def _load_robot_cell(self, validation_problem_name):
         """

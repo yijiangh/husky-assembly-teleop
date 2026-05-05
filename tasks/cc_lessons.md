@@ -67,6 +67,51 @@ correction or non-obvious finding so we can reuse them in future sessions.
   Pass the gripper attachments from `husky.object.ee_list[i][1]` for both
   arms (those are always present, regardless of whether a bar is held).
 
+### FK at goal_conf disagrees with GraspTargets JSON by ~50mm
+
+In the antenna design-study datasets, FK at the cell state's goal_conf
+produces a `world_from_tool0_left` that's ~50mm off from the value
+authored in the corresponding `<target>_GraspTargets.json` (consistent
+across D1/G1/V1/H1 — same magnitude, ~0° rotation difference). The
+GraspTargets JSON values are authoritative.
+
+**Why it matters:** if the wrapper FK-derives `grasp_bar_from_left` from
+`(goal_conf, world_from_bar_goal)`, the resulting grasp transform is
+50mm off, which propagates through `derive_home_start_poses_from_grasps`
+to a wrong `world_from_bar_start`. The endpoint IK either fails or
+returns a config that's in a hard-to-reach region — RRT can't find a
+path. Symptom: `task_space_failure` even though the prototype solves
+the same target in <1s.
+
+**How to apply:** when a cell state has a sibling `_GraspTargets.json`,
+use its authored grasps (`monitor.grasp_targets_override`). The live
+monitor's `load_board_validation_state` does this automatically via
+`_load_grasp_targets_if_available`. Falls back to FK-derivation when no
+JSON exists.
+
+### Live cell state contains the WHOLE assembly, prototype tests don't
+
+The prototype's `setup_planning_scene` creates only the active bar +
+robot in scene (`built_bars=[]` by default). The live `load_rigid_body_states_as_obstacles`
+loads ALL `rigid_body_states` from the cell state — that's 60+ bodies for
+the antenna case (every bar at its final install pose, plus joint
+connectors plus structural elements).
+
+Without filtering, the constrained planner has to navigate through a
+densely cluttered scene containing future-built bars. The prototype's
+parameters aren't tuned for this and the RRT times out.
+
+**How to apply:** in `husky_world.plan_and_stage_constrained`, the
+constrained planner's obstacle list filters out:
+1. The active bar (it's the manipulated body).
+2. Bodies named `b\d+(_0|_joint_\d+)` — design-study assembly elements.
+3. Bodies within 5mm of the bar at goal pose (the install neighbors).
+
+What remains: only structural/foundation elements. Trade-off: the bar
+is allowed to pass through other assembly bars mid-trajectory. For
+follow-up work, replace this with a sequence-based filter (only include
+bars at indices < active_bar_index — true predecessors).
+
 ### Submodule `disabled_collisions` mismatch (known limitation)
 
 - `get_joint_collision_fn` reads a hard-coded SRDF path inside the
