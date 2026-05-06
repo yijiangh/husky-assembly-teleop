@@ -50,6 +50,8 @@ MOCAP_IP = '192.168.0.117' # set to the mocap PC's IP, get this from Motive Sett
 class HuskyMonitor(Node):
     USE_MOCAP = 0
     FAKE_HARDWARE = 1
+    USE_DPG_UI = 0   # 0 = legacy PyBullet debug GUI; 1 = Dear PyGui control panel
+    UI_FONT_SIZE = 16  # DPG control-panel font size in px
 
     GRASP_PARTITION = 8
     BAR_GOAL_MODE = 0
@@ -179,6 +181,15 @@ class HuskyMonitor(Node):
         # Load punch tool config before world.init so cone dimensions match the offset
         if self.PUNCH_CALIB_VALIDATION:
             self._load_punch_tool_config()
+
+        # Initialize the UI backend BEFORE world.init / build_ui creates any widgets.
+        from .ui_backend import make_backend
+        from . import common as _common
+        _common._global_backend = make_backend(
+            use_dpg=bool(self.USE_DPG_UI),
+            window_title="Husky Monitor",
+            font_size=int(self.UI_FONT_SIZE),
+        )
 
         world.init(self)
 
@@ -1636,21 +1647,23 @@ class HuskyMonitor(Node):
                 # Add button to load the selected state
                 self.buttons.append(Button('Load Robot Cell State', self.load_board_validation_state))
 
-                # Constrained dual-arm planner controls
-                self.dump_sep_sliders.append(Slider(
+                # Constrained dual-arm planner controls.
+                # Stored as named attributes so update() polls them — items
+                # appended to self.dump_sep_sliders are not polled.
+                self.constrained_stage_slider = Slider(
                     "Constrained Stage",
                     self.update_constrained_planner_stage,
                     1, 3, 3,
-                ))
+                )
                 self.buttons.append(Button(
                     'Plan & Stage Constrained',
                     lambda: world.plan_and_stage_constrained(self),
                 ))
-                self.dump_sep_sliders.append(Slider(
+                self.constrained_display_slider = Slider(
                     "Display Traj (0=Free,1=Constrained)",
                     self.update_constrained_display_mode,
                     0, 1, 0,
-                ))
+                )
 
                 # Create slider for selecting joint trajectory
                 if self.available_joint_trajectories:
@@ -1945,6 +1958,13 @@ class HuskyMonitor(Node):
      
     # --- --- --- --- --- UPDATE --- --- --- --- --- 
     def update(self):
+        from . import common as _common
+        if _common._global_backend is not None:
+            if not _common._global_backend.step():
+                # User closed the UI window - request a clean shutdown.
+                rclpy.shutdown()
+                return
+
         # Handle keyboard events
         keys = p.getKeyboardEvents()
         
@@ -2046,9 +2066,14 @@ class HuskyMonitor(Node):
             
         if self.BOARD_VALIDATION and self.board_validation_state_slider:
             self.board_validation_state_slider.update()
-            
+
         if self.BOARD_VALIDATION and hasattr(self, 'trajectory_selection_slider') and self.trajectory_selection_slider:
             self.trajectory_selection_slider.update()
+
+        if self.BOARD_VALIDATION and hasattr(self, 'constrained_stage_slider'):
+            self.constrained_stage_slider.update()
+        if self.BOARD_VALIDATION and hasattr(self, 'constrained_display_slider'):
+            self.constrained_display_slider.update()
 
         if not self.USE_MOCAP:
             pass
@@ -2151,7 +2176,17 @@ class HuskyMonitor(Node):
             json.dump(traj_list, f, indent=2)
         print(f'Trajectory exported to {out_path}')
 
-# --- --- --- --- --- MAIN --- --- --- --- --- 
+    def destroy_node(self):
+        from . import common as _common
+        if _common._global_backend is not None:
+            try:
+                _common._global_backend.shutdown()
+            except Exception as e:
+                self.get_logger().warn(f"UI backend shutdown error: {e}")
+            _common._global_backend = None
+        super().destroy_node()
+
+# --- --- --- --- --- MAIN --- --- --- --- ---
 def main(args=None):
     rclpy.init(args=args)
 

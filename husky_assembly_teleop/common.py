@@ -19,6 +19,20 @@ from husky_assembly_teleop.utils import UR5E_JOINT_NAMES
 # Design data directory for validation point tools
 DESIGN_DATA_DIRECTORY = os.path.join(DATA_DIRECTORY, 'husky_assembly_design_study')
 
+# --- --- UI BACKEND HOOK --- ---
+# set by HuskyMonitor.__init__ before any widget is created.
+_global_backend = None  # type: Optional['ui_backend.UIBackend']
+
+
+def _backend():
+    """Lazy accessor; raises if used before the monitor sets it up."""
+    if _global_backend is None:
+        raise RuntimeError(
+            "_global_backend is None - Button/Slider used before "
+            "HuskyMonitor.__init__ initialized the UI backend."
+        )
+    return _global_backend
+
 # --- --- PYBULLET OBJECTS --- ---
 
 HUSKY_UR5e_JOINT_NAMES = ["ur_arm_shoulder_pan_joint", 
@@ -578,40 +592,139 @@ class HuskyObject():
 
 class Button:
     def __init__(self, name, action):
-        self.dbg_param = p.addUserDebugParameter(name, 1.0, 0.0, 0.0)
-        self.prev_value = p.readUserDebugParameter(self.dbg_param)
+        self.name = name
         self.action = action
-        
+        self._handle = _backend().add_button(name, action)
+
     def update(self):
-        new_value = p.readUserDebugParameter(self.dbg_param)
-        if new_value != self.prev_value:
-            self.prev_value = new_value
-            self.action()
+        # In DPG mode this is a no-op (callback already fired). In PyBullet
+        # legacy mode, this polls the debug param and dispatches on toggle.
+        _backend().poll(self._handle, "button", self.action)
 
 class Slider:
-    def __init__(self, name, action, min_val=0.0, max_val=1.0, current_val=0.0):
-        self.dbg_param = p.addUserDebugParameter(name, min_val, max_val, current_val)
-        self.prev_value = p.readUserDebugParameter(self.dbg_param)
+    def __init__(self, name, action, min_val=0.0, max_val=1.0, current_val=0.0, *,
+                 integer=False):
+        self.name = name
         self.action = action
-        
+        self.integer = integer
+        be = _backend()
+        if integer:
+            self._handle = be.add_slider_int(name, int(round(min_val)),
+                                             int(round(max_val)),
+                                             int(round(current_val)), action)
+            self._kind = "slider_int"
+        else:
+            self._handle = be.add_slider_float(name, min_val, max_val, current_val, action)
+            self._kind = "slider_float"
+
     def update(self):
-        new_value = p.readUserDebugParameter(self.dbg_param)
-        if new_value != self.prev_value:
-            self.prev_value = new_value
-            self.action(new_value)
+        _backend().poll(self._handle, self._kind, self.action)
 
 class SliderGroup:
     def __init__(self, names, action, min_vals, max_vals, current_vals):
-        self.dbg_params = [p.addUserDebugParameter(name, min_val, max_val, current_val) for name, min_val, max_val, current_val in zip(names, min_vals, max_vals, current_vals)]
-        self.prev_values = [p.readUserDebugParameter(dbgp) for dbgp in self.dbg_params]
+        self.names = names
         self.action = action
-        
+        be = _backend()
+        # add_slider_group returns a list; we keep the first handle for poll dispatch
+        # (both backends route the whole group through one composite poll).
+        handles = be.add_slider_group(names, min_vals, max_vals, current_vals, action)
+        self._handle = handles[0] if handles else None
+
     def update(self):
-        new_values = [p.readUserDebugParameter(param) for param in self.dbg_params]
-        # use numpy to determin if any value has changed
-        if not np.allclose(new_values, self.prev_values):
-            self.prev_values = new_values
-            self.action(new_values)
+        if self._handle is None:
+            return
+        _backend().poll(self._handle, "slider_group", self.action)
+
+
+class Toggle:
+    """Boolean checkbox (DPG-only - degrades to a 0..1 slider in legacy mode)."""
+    def __init__(self, name, action, current=False):
+        self.name = name
+        self.action = action
+        self._handle = _backend().add_checkbox(name, bool(current), action)
+
+    def update(self):
+        _backend().poll(self._handle, "checkbox", self.action)
+
+
+class Dropdown:
+    """Select-one combo box. action receives the selected index (int)."""
+    def __init__(self, name, action, options, current=0):
+        self.name = name
+        self.action = action
+        self.options = list(options)
+        self._handle = _backend().add_combo(name, self.options, int(current), action)
+
+    def update(self):
+        _backend().poll(self._handle, "combo", self.action)
+
+
+class TextInput:
+    """Free-form text or numeric entry. action(str) for text, action(float) if numeric=True."""
+    def __init__(self, name, action, default="", *, numeric=False):
+        self.name = name
+        self.action = action
+        self._handle = _backend().add_text_input(name, default, action, numeric=numeric)
+
+    def update(self):
+        _backend().poll(self._handle, "text_input", self.action)
+
+
+class FilePicker:
+    """Click-to-pick file/folder. action(absolute_path: str). Optional base_dir / ext_filter."""
+    def __init__(self, name, action, *, base_dir=None, ext_filter=None):
+        self.name = name
+        self.action = action
+        self._handle = _backend().add_file_dialog(
+            name, action, base_dir=base_dir, ext_filter=ext_filter)
+
+    def update(self):
+        _backend().poll(self._handle, "file_dialog", self.action)
+
+
+class LivePlot:
+    """Streaming line plot. source() is polled each backend step()."""
+    def __init__(self, name, source, history=200):
+        self.name = name
+        self.source = source
+        self._handle = _backend().add_live_plot(name, source, history=history)
+
+    def update(self):
+        # plot is ticked inside backend.step(); nothing to do here
+        pass
+
+
+class Group:
+    """Context manager that groups widgets into a (collapsible) section.
+
+    Usage:
+        with Group("State Loading"):
+            Button(...)
+            Slider(...)
+    """
+    def __init__(self, label, *, collapsible=True):
+        self.label = label
+        self.collapsible = collapsible
+
+    def __enter__(self):
+        _backend().begin_group(self.label, collapsible=self.collapsible)
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        _backend().end_group()
+        return False  # don't suppress exceptions
+
+
+class Separator:
+    """Decorative section divider (replaces the legacy 'dump_sep_sliders' pattern).
+
+    Use this instead of `Slider("----------XYZ", lambda: None, 0, 0, 0)`.
+    """
+    def __init__(self, label):
+        self._handle = _backend().add_separator(label)
+
+    def update(self):
+        _backend().poll(self._handle, "separator", lambda *_: None)
 
 # --- --- QUATERNION AND MATH FUNCTIONS --- ---
 

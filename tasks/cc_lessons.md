@@ -142,3 +142,103 @@ bars at indices < active_bar_index — true predecessors).
   pip install -e src/husky-assembly-teleop/external/pybullet_planning \
               -e src/husky-assembly-teleop/external/compas_fab --no-deps
   ```
+
+## Dear PyGui control panel (`HuskyMonitor.USE_DPG_UI`) — 2026-05
+
+### What it is
+
+A feature-flagged replacement for PyBullet's `addUserDebugParameter`
+debug GUI. When `HuskyMonitor.USE_DPG_UI=1` (default) the monitor
+opens a Dear PyGui window beside PyBullet's 3D viewport with real
+buttons, sliders, checkboxes, dropdowns, file dialogs, text inputs,
+and live plots. When `0`, the legacy PyBullet sliders return.
+
+### Where the dispatch lives
+
+- `husky_assembly_teleop/ui_backend.py` — `UIBackend`, `PyBulletBackend`,
+  `DearPyGuiBackend`, and `make_backend(use_dpg, ...)` factory.
+- `husky_assembly_teleop/common.py` — extended `Button`/`Slider`/
+  `SliderGroup` plus new shims: `Toggle`, `Dropdown`, `TextInput`,
+  `FilePicker`, `LivePlot`, `Group`, `Separator`. All dispatch through
+  `common._global_backend`, which the monitor sets in `__init__`.
+- `husky_monitor.py` — `USE_DPG_UI` class flag near `FAKE_HARDWARE`;
+  `make_backend` called between `start_pybullet` and `world.init`;
+  `step()` called at the top of `update()`; cleanup in `destroy_node()`.
+
+### How to add a new widget
+
+```python
+# Inside HuskyMonitor.build_ui (or wherever you assemble UI):
+from husky_assembly_teleop.common import (
+    Button, Slider, Toggle, Dropdown, TextInput, FilePicker, Group,
+)
+
+with Group("State Loading", collapsible=True):
+    Button("Load Robot Cell State", self.load_board_validation_state)
+    Slider("State Index", self.update_idx, 0, max_idx, 0, integer=True)
+    Toggle("Auto-load on launch", self._set_autoload, current=False)
+    Dropdown("Active Bar", self._on_bar_pick, options=names, current=0)
+    FilePicker("Pick state file", self._on_state_file,
+               base_dir=DATA_DIRECTORY, ext_filter=".json")
+```
+
+`Group` is a context manager that produces a collapsible section in
+DPG and a separator slider in legacy mode. Existing decorative
+`Slider("----------XYZ", lambda: None, 0,0,0)` calls keep working —
+no migration required.
+
+### Known limitations
+
+- **Long-running planners freeze the DPG window** (same as today with
+  PyBullet). When a button calls `plan_pose_rrt` synchronously for
+  5–30s, the monitor's `update()` loop blocks and the DPG render
+  stalls. Future work: run blocking ops in a worker thread.
+
+- **Closing the DPG window triggers full monitor shutdown**: any
+  pending ROS work is lost. Don't close the window casually.
+
+- **PyBulletBackend degrades** new widget types: `Toggle` and
+  `Dropdown` become 0..1 / 0..N-1 sliders with rounding (warned once
+  at startup); `TextInput`, `FilePicker`, `LivePlot` raise
+  `NotImplementedError`. If you genuinely need these in legacy mode
+  you must keep `USE_DPG_UI=1`.
+
+- **Slider integer dispatch** is opt-in via `Slider("name", action,
+  ..., integer=True)`. Existing call sites are float by default; when
+  you find a slider that's actually an index, prefer flipping it to
+  `integer=True` for a cleaner DPG widget.
+
+### Verify after changes
+
+```
+cd /home/yijiangh/Code/ros2_ws
+source venv/bin/activate
+pip install "dearpygui>=1.10"
+python3 -m colcon build --symlink-install --packages-select husky_assembly_teleop
+source install/setup.bash
+ros2 run husky_assembly_teleop husky_monitor
+```
+
+Two windows pop up: the PyBullet 3D viewport and the Dear PyGui
+control panel. All existing buttons/sliders work; new shims unlock
+the rest.
+
+## DPG font sizing (HiDPI / readability) — 2026-05
+
+- DPG's default font is the bundled ProggyClean ~13px bitmap — looks
+  tiny next to native apps. Fix: load a system TTF in a
+  `dpg.font_registry()` and `dpg.bind_font(...)` BEFORE
+  `dpg.setup_dearpygui()`. See `DearPyGuiBackend._bind_default_font`
+  in `husky_assembly_teleop/ui_backend.py`.
+- Tunable via `HuskyMonitor.UI_FONT_SIZE` (px). Default 18.
+- Fallback when no TTF is present: `dpg.set_global_font_scale(...)`.
+  Works but scales the bitmap font (blocky).
+- **PyBullet's `ExampleBrowser` font is hardcoded in C++** — there is
+  no Python API to scale it. Workarounds: hide the side panels with
+  `p.configureDebugVisualizer(p.COV_ENABLE_GUI, 0)` (loses the
+  `addUserDebugParameter` sliders too), shrink the viewport window so
+  the font is relatively larger, or rely on OS-level display scaling.
+  With `USE_DPG_UI=1` the only PyBullet-side widget left is the lone
+  "Traj viz time" slider in `start_pybullet`; porting it to a DPG
+  `Slider` would let us turn the panel off entirely.
+
