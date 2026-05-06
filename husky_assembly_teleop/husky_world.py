@@ -1053,7 +1053,7 @@ def record_dual_arm_E_mocap(monitor):
         }
     )
 
-def save_dual_arm_E_mocap(monitor, filename_suffix=""):
+def save_dual_arm_E_mocap(monitor, filename_suffix="", metadata=None):
     timestamp = datetime.now().strftime("%Y%m%d_%H%M")
     # Create a date subfolder (format: YYYYMMDD)
     date_subfolder = datetime.now().strftime("%Y%m%d")
@@ -1066,19 +1066,36 @@ def save_dual_arm_E_mocap(monitor, filename_suffix=""):
 
     # Save the file in the date subfolder
     filename = os.path.join(subfolder_path, f"dual_arm_acc_{timestamp}_{filename_suffix}.json")
+    payload = {'raw_data': monitor.dual_arm_EE_mocap_data}
+    if metadata:
+        payload['metadata'] = metadata
     with open(filename, 'w') as f:
-        json.dump({'raw_data' : monitor.dual_arm_EE_mocap_data}, f, indent=4)
+        json.dump(payload, f, indent=4)
 
     monitor.get_logger().info(f"Dual arm acc data saved to {filename}")
 
+def _capture_reference_relative_EE(monitor):
+    # Reference relative TF (right_from_left) from current mocap snapshot.
+    # Constraint should hold here at start_conf; deviations during execution
+    # are tracker error.
+    cache = monitor._mocap_rigidbody_cache
+    if 'left_EE' not in cache or 'right_EE' not in cache:
+        return None
+    L = cache['left_EE']
+    Rp = cache['right_EE']
+    rel = pp.multiply(pp.invert(Rp), L)
+    return [list(rel[0]), list(rel[1])]
+
 def execute_and_log_mocap(monitor):
-    global bar_pose, next_bar_pose
-    bar_pose = next_bar_pose
+    ref = _capture_reference_relative_EE(monitor)
+    if ref is None:
+        monitor.get_logger().warn('left_EE / right_EE not in mocap cache; aborting record.')
+        return
     execute_arm_trajectory_both(monitor)
     while monitor.huskies[monitor.selected_robot_id].interface.is_arm_executing[0] or monitor.huskies[monitor.selected_robot_id].interface.is_arm_executing[1]:
         record_dual_arm_E_mocap(monitor)
         yield
-    save_dual_arm_E_mocap(monitor)
+    save_dual_arm_E_mocap(monitor, metadata={'reference_right_from_left': ref})
 
 #################################
  

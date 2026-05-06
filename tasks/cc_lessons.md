@@ -223,6 +223,51 @@ Two windows pop up: the PyBullet 3D viewport and the Dear PyGui
 control panel. All existing buttons/sliders work; new shims unlock
 the rest.
 
+## Dual-arm tracking-validation recording — 2026-05
+
+### Stale globals from old workflow
+
+`execute_and_log_mocap` (`husky_world.py:1074`) used to start with
+`global bar_pose, next_bar_pose; bar_pose = next_bar_pose` — leftover
+from the old random-bar-arc workflow (`husky_world.py:295–336`). The
+constrained planner stores trajectories on `monitor.planned_arm_trajectory`
+directly, so those globals are not used. Removed.
+
+**How to apply:** when migrating a workflow, grep for module-level
+mutable state (`global X` declarations) referenced from the old entry
+point — they're often dead by the time you swap entry points but linger
+silently. Pattern: read the `global` declarations of the calling
+function and verify each name is still meaningful in the new flow.
+
+### JSON log format extension is additive
+
+`save_dual_arm_E_mocap` now optionally takes `metadata=...` and writes a
+`metadata` key alongside `raw_data`. The analysis script (`data/dual_arm_acc_data/0_dual_arm_acc_data_processing.py`)
+reads `metadata.reference_right_from_left` if present, otherwise
+gracefully skips the absolute-deviation pass — old JSONs from `20250509`–`20250612`
+keep loading.
+
+**How to apply:** when extending logged-data formats, prefer adding a
+new top-level key over restructuring existing ones. Have the consumer
+fall back gracefully when the new key is absent.
+
+### Two complementary metrics for constraint validation
+
+The recording loop captures `right_from_left = inv(right_EE) * left_EE`
+each tick. Two metrics distinguish failure modes:
+
+1. **Jitter (variance around per-recording mean)** — controller-side
+   noise / per-axis tracking ripple. Independent of an "expected" value.
+2. **Absolute deviation vs reference** — saved at start_conf before
+   execution, when the constraint is known to hold. Drift over
+   trajectory = tracker bias or planner-side constraint violation at
+   intermediate knots.
+
+Wraparound caveat: jitter rotation uses Euler-minus-mean, which blows up
+near +/-180° (visible in `20250612_1730` and `_1746`). Abs-dev rotation
+uses `ref^-1 * sample` so stays well-defined. Future work: switch jitter
+to axis-angle / log-map.
+
 ## DPG font sizing (HiDPI / readability) — 2026-05
 
 - DPG's default font is the bundled ProggyClean ~13px bitmap — looks
