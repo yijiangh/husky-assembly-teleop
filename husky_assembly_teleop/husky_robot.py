@@ -118,18 +118,18 @@ class HuskyRobotInterface:
         if dual_arm:
             self.sub_arms.append(self.node.create_subscription(
                 JointState,
-                name + '/left_ur5e/joint_states',
+                name + '/left_ur5e/rate_limiter/joint_states',
                 lambda msg: self.arm_callback(0, msg),
                 10))
             self.sub_arms.append(self.node.create_subscription(
                 JointState,
-                name + '/right_ur5e/joint_states',
+                name + '/right_ur5e/rate_limiter/joint_states',
                 lambda msg: self.arm_callback(1, msg),
                 10))
         else:
             self.sub_arms.append(self.node.create_subscription(
                 JointState,
-                name + '/ur5e/joint_states',
+                name + '/ur5e/rate_limiter/joint_states',
                 lambda msg: self.arm_callback(0, msg),
                 10))
 

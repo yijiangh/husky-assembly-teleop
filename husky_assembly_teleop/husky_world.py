@@ -194,9 +194,9 @@ def init(monitor):
         connect_gripper=False and not monitor.FAKE_HARDWARE,
         calibration=monitor.CALIBRATION,
         dual_arm=dual_arm,
-        # ee_types=["victor_gripper", "victor_gripper"],  # Mixed end effectors
+        ee_types=["victor_gripper", "victor_gripper"],  # Mixed end effectors
         # ee_types=["validation_tool_pair"],  # Specify end effectors for both arms
-        ee_types=ee_types,
+        # ee_types=ee_types,
         base_calibration_file=base_calibration_file,
         force_regenerate=False,
         punch_tool_offset=punch_offset,

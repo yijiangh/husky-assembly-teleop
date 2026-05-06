@@ -55,4 +55,4 @@ RECORD_DIRECTORY = os.path.join(DATA_DIRECTORY, '..', 'recorded_data')
 
 CALIBRATION_DATE = '20260303'
 CALIBRATION_BATCHES = ['j0', 'j1', 'validation', 'punch_validation']
-VALIDATION_PROBLEM_NAME = '260225_extrinsic_calib_trajs_Cindy_Right'
+VALIDATION_PROBLEM_NAME = '260122_double_kissing_experiment'
