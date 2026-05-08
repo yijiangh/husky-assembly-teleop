@@ -46,7 +46,12 @@ DEFAULT_BAR_POS = pp.Point(0.8, 0, 1.3)
 
 CLIENT_IP = '192.168.0.133' # Set to your own IP
 MOCAP_IP = '192.168.0.117' # set to the mocap PC's IP, get this from Motive Settings>Streaming pane->Local interface
- 
+
+FILENAME_SUFFIX = '_vary_pos_vary_yaw'
+# VALIDATION_PROBLEM_NAME = '250905Orientation_test'
+# VALIDATION_PROBLEM_NAME = '250929_New_Antenna_with_GH_RH_Packed'
+VALIDATION_PROBLEM_NAME = '260122_double_kissing_experiment'
+  
 class HuskyMonitor(Node):
     USE_MOCAP = 1
     FAKE_HARDWARE = 0
@@ -65,6 +70,8 @@ class HuskyMonitor(Node):
 
     BOARD_VALIDATION = 1
     PUNCH_CALIB_VALIDATION = 0
+
+    DUAL_ARM_KISSING = 1 # set 1 to enable kissing experiment + compliance controller buttons
 
     def __init__(self):
         super().__init__('husky_monitor')
@@ -1609,6 +1616,37 @@ class HuskyMonitor(Node):
             lambda: self.export_planned_trajectory_to_json()
         ))
 
+        if self.DUAL_ARM_KISSING:
+            self.dump_sep_sliders.append(Slider("----------KISSING EXPERIMENT", lambda: None))
+            self.buttons.append(Button('Conduct Kissing Experiment',
+                lambda: self.tasks.append(world.kissing_experiment(self))))
+            self.buttons.append(Button('Move Forward 1cm',
+                lambda: world.move_left_linear_z(self, 0.01, 0.001)))
+            self.buttons.append(Button('Move Back 1cm',
+                lambda: world.move_left_linear_z(self, -0.01, 0.001)))
+
+            self.dump_sep_sliders.append(Slider("----------CONTROLLERS", lambda: None))
+            def _switch_to_compliance_both():
+                h = self.huskies[self.selected_robot_id]
+                for i in range(2 if h.dual_arm else 1):
+                    h.interface.switch_controller(
+                        'scaled_joint_trajectory_controller',
+                        'cartesian_compliance_controller', i)
+            def _switch_to_joint_both():
+                h = self.huskies[self.selected_robot_id]
+                for i in range(2 if h.dual_arm else 1):
+                    h.interface.switch_controller(
+                        'cartesian_compliance_controller',
+                        'scaled_joint_trajectory_controller', i)
+            def _zero_force_sensor_both():
+                h = self.huskies[self.selected_robot_id]
+                for i in range(2 if h.dual_arm else 1):
+                    h.interface.zero_ft_sensor(i)
+            self.buttons.append(Button('Switch to Compliance (BOTH)', _switch_to_compliance_both))
+            self.buttons.append(Button('Switch to Joint (BOTH)', _switch_to_joint_both))   # = "ensure joint controller"
+            self.buttons.append(Button('Zero Force Sensor (BOTH)', _zero_force_sensor_both))
+            self.buttons.append(Button('Draw TCP Pose', lambda: world.draw_tcp_pose(self)))
+
         if self.BOARD_VALIDATION:
             self.dump_sep_sliders.append(Slider("----------State Loading", lambda : None))
             
@@ -1676,20 +1714,31 @@ class HuskyMonitor(Node):
         # self.buttons.append(Button('Plan arm wave', lambda: world.plan_arm_wave(self)))
 
         if not self.FAKE_HARDWARE and not self.CALIBRATION:
-            self.dump_sep_sliders.append(Slider("----------Gripper", lambda : None))
-            # self.gripper_slider = p.addUserDebugParameter("gripper", 0, 1.0, 0.1)
-            # self.buttons.append(Button('Exec Gripper', lambda: world.set_gripper(self)))
-            # self.buttons.append(Button('Open Gripper', lambda: world.open_gripper_full(self)))
-            # self.buttons.append(Button('Close Gripper', lambda: world.close_gripper_for_bar(self)))
-            
-            # New toggle buttons for gripper and screw control
-            self.buttons.append(Button('Toggle Left Gripper', lambda: self.huskies[self.selected_robot_id].interface.toggle_gripper(0)))
-            self.buttons.append(Button('Toggle Left Screw', lambda: self.huskies[self.selected_robot_id].interface.toggle_screw(0)))
-            
-            # Only show right arm buttons if the robot is configured for dual arm
+            iface = lambda: self.huskies[self.selected_robot_id].interface
+            arms = [(0, 'L', 'Left')]
             if self.huskies[self.selected_robot_id].dual_arm:
-                self.buttons.append(Button('Toggle Right Gripper', lambda: self.huskies[self.selected_robot_id].interface.toggle_gripper(1)))
-                self.buttons.append(Button('Toggle Right Screw', lambda: self.huskies[self.selected_robot_id].interface.toggle_screw(1)))
+                arms.append((1, 'R', 'Right'))
+
+            for idx, short, long in arms:
+                self.dump_sep_sliders.append(
+                    Slider(f"----------Scaffolding Tool ({long})", lambda : None))
+                for m in ('M1', 'M2'):
+                    self.buttons.append(Button(
+                        f'{short} {m} Tighten', lambda i=idx, m=m: iface().tighten_tool(i, m)))
+                    self.buttons.append(Button(
+                        f'{short} {m} Loosen', lambda i=idx, m=m: iface().loosen_tool(i, m)))
+                self.buttons.append(Button(
+                    f'{short} STOP', lambda i=idx: iface().stop_tool(i)))
+                self.buttons.append(Button(
+                    f'{short} Ping', lambda i=idx: iface().tool_clients[i].ping()))
+                self.buttons.append(Button(
+                    f'{short} Reset Cfg', lambda i=idx: iface().tool_clients[i].reset_config()))
+
+            # Global panic stop spans both arms
+            self.buttons.append(Button('STOP ALL TOOLS', lambda: iface().stop_all_tools()))
+
+            # Live status overlay (one debug-text per arm, refreshed each tick)
+            self._tool_status_text_ids = [None] * len(arms)
 
         # self.buttons.append(Button('Compute ik', self.compute_ik_for_bar))
 
@@ -1802,7 +1851,37 @@ class HuskyMonitor(Node):
         #         )
         #     )
         # ))
-  
+        
+        self.dump_sep_sliders.append(Slider("----------KISSING EXPERIMENT", lambda : None))
+        self.buttons.append(Button('Conduct Kissing Experiment', lambda: self.tasks.append(world.kissing_experiment(self))))
+        self.buttons.append(Button('Move Forward 1cm', lambda: world.move_left_linear_z(self, 0.01, 0.001)))
+        self.buttons.append(Button('Move Back 1cm', lambda: world.move_left_linear_z(self, -0.01, 0.001)))
+        
+        self.dump_sep_sliders.append(Slider("----------CONTROLLERS", lambda : None))
+        
+        def switch_to_compliance_both():
+            if self.huskies[self.selected_robot_id].dual_arm:
+                self.huskies[self.selected_robot_id].interface.switch_controller('scaled_joint_trajectory_controller', 'cartesian_compliance_controller', 0)
+                self.huskies[self.selected_robot_id].interface.switch_controller('scaled_joint_trajectory_controller', 'cartesian_compliance_controller', 1)
+            else:
+                self.huskies[self.selected_robot_id].interface.switch_controller('scaled_joint_trajectory_controller', 'cartesian_compliance_controller', 0)
+        def switch_to_joint_both():
+            if self.huskies[self.selected_robot_id].dual_arm:
+                self.huskies[self.selected_robot_id].interface.switch_controller('cartesian_compliance_controller', 'scaled_joint_trajectory_controller', 0)
+                self.huskies[self.selected_robot_id].interface.switch_controller('cartesian_compliance_controller', 'scaled_joint_trajectory_controller', 1)
+            else:
+                self.huskies[self.selected_robot_id].interface.switch_controller('cartesian_compliance_controller', 'scaled_joint_trajectory_controller', 0)
+        def zero_force_sensor_both():
+            if self.huskies[self.selected_robot_id].dual_arm:
+                self.huskies[self.selected_robot_id].interface.zero_ft_sensor(0)
+                self.huskies[self.selected_robot_id].interface.zero_ft_sensor(1)
+            else:
+                self.huskies[self.selected_robot_id].interface.zero_ft_sensor(0)
+        self.buttons.append(Button('Switch to Compliance (BOTH)', switch_to_compliance_both))
+        self.buttons.append(Button('Switch to Joint (BOTH)', switch_to_joint_both))
+        self.buttons.append(Button('Zero Force Sensor (BOTH)', zero_force_sensor_both))
+        self.buttons.append(Button('Draw TCP Pose', lambda: world.draw_tcp_pose(self)))
+        
     # --- --- --- --- --- MOCAP --- --- --- --- --- 
     _ANSI_GREEN = '\033[92m'
     _ANSI_RED = '\033[91m'
@@ -1973,20 +2052,32 @@ class HuskyMonitor(Node):
             # print(f"All key codes in this event: {all_codes}")
             # print(f"===========================\n")
         
-        # Check if "1" key was pressed (ASCII code 49 or -1 for some keyboards)
-        if (ord("1") in keys and keys[ord("1")] & p.KEY_WAS_TRIGGERED) or \
-            (-1 in keys and keys[-1] & p.KEY_WAS_TRIGGERED):
-            if len(self.huskies) > 0 and self.selected_robot_id < len(self.huskies):
-                self.huskies[self.selected_robot_id].interface.toggle_gripper(0)
-                self.huskies[self.selected_robot_id].interface.toggle_gripper(1)
-                print("Toggled both grippers via keyboard '1'")
+        # Scaffolding tool keyboard bindings (replace the old SetIO toggles).
+        # 1 = tighten M1 both arms, 2 = tighten M2 both arms,
+        # ! = loosen M1 both, @ = loosen M2 both, s = panic-stop ALL tools.
+        if len(self.huskies) > 0 and self.selected_robot_id < len(self.huskies):
+            iface = self.huskies[self.selected_robot_id].interface
+            n_arms = 2 if self.huskies[self.selected_robot_id].dual_arm else 1
 
-        if (ord("2") in keys and keys[ord("2")] & p.KEY_WAS_TRIGGERED):
-            # (-1 in keys and keys[-1] & p.KEY_WAS_TRIGGERED):
-            if len(self.huskies) > 0 and self.selected_robot_id < len(self.huskies):
-                self.huskies[self.selected_robot_id].interface.toggle_screw(0)
-                self.huskies[self.selected_robot_id].interface.toggle_screw(1)
-                print("Toggled both screws via keyboard '2'")
+            def _both(method_name, *args):
+                for i in range(n_arms):
+                    getattr(iface, method_name)(i, *args)
+
+            if (ord("1") in keys and keys[ord("1")] & p.KEY_WAS_TRIGGERED) or \
+                    (-1 in keys and keys[-1] & p.KEY_WAS_TRIGGERED):
+                _both('tighten_tool', 'M1'); print("Tighten M1 (both arms) via '1'")
+
+            if ord("!") in keys and keys[ord("!")] & p.KEY_WAS_TRIGGERED:
+                _both('loosen_tool', 'M1'); print("Loosen M1 (both arms) via '!'")
+
+            if ord("2") in keys and keys[ord("2")] & p.KEY_WAS_TRIGGERED:
+                _both('tighten_tool', 'M2'); print("Tighten M2 (both arms) via '2'")
+
+            if ord("@") in keys and keys[ord("@")] & p.KEY_WAS_TRIGGERED:
+                _both('loosen_tool', 'M2'); print("Loosen M2 (both arms) via '@'")
+
+            if ord("s") in keys and keys[ord("s")] & p.KEY_WAS_TRIGGERED:
+                iface.stop_all_tools(); print("PANIC STOP all tools via 's'")
         
         # Key "0" to plan both arms to goal
         if (ord("0") in keys and keys[ord("0")] & p.KEY_WAS_TRIGGERED):
@@ -2011,7 +2102,22 @@ class HuskyMonitor(Node):
         
         for b in self.buttons:
             b.update()
- 
+
+        # Refresh scaffolding-tool live status overlay (one debug-text per arm)
+        if hasattr(self, '_tool_status_text_ids') and len(self.huskies) > 0:
+            iface = self.huskies[self.selected_robot_id].interface
+            for i, _ in enumerate(self._tool_status_text_ids):
+                if i >= len(iface.tool_clients):
+                    continue
+                txt = iface.tool_clients[i].status_summary()
+                old_id = self._tool_status_text_ids[i]
+                kw = dict(textPosition=[0, 0, 1.6 - 0.06 * i],
+                          textColorRGB=[0.1, 0.8, 0.1],
+                          textSize=1.1)
+                if old_id is not None:
+                    kw['replaceItemUniqueId'] = old_id
+                self._tool_status_text_ids[i] = p.addUserDebugText(txt, **kw)
+
         # update tracked objects
         for i, o in enumerate(self.tracked_objects):
             o.set_pose((o.pos, o.rot))
