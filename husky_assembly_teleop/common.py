@@ -12,12 +12,9 @@ import pybullet_planning as pp
 from compas.data import json_load
 from compas_fab.backends import PyBulletClient, PyBulletPlanner
 
-from husky_assembly_teleop import DATA_DIRECTORY
+from husky_assembly_teleop import DATA_DIRECTORY, DESIGN_DATA_DIRECTORY
 from husky_assembly_teleop.husky_robot import HuskyRobotInterface
 from husky_assembly_teleop.utils import UR5E_JOINT_NAMES
-
-# Design data directory for validation point tools
-DESIGN_DATA_DIRECTORY = os.path.join(DATA_DIRECTORY, 'husky_assembly_design_study')
 
 # --- --- UI BACKEND HOOK --- ---
 # set by HuskyMonitor.__init__ before any widget is created.
@@ -229,11 +226,11 @@ def create_end_effector(ee_type="victor_gripper", load_calib_tip=False, dual_arm
         # Hardcoded validation tool configuration
         from husky_assembly_teleop.husky_monitor import VALIDATION_PROBLEM_NAME
         problem_name = VALIDATION_PROBLEM_NAME
-        # Dynamically select any JSON file ending with _RobotCellState.json in the RobotCellStates directory
+        # Dynamically select any JSON file in the RobotCellStates directory
         robot_cell_states_dir = os.path.join(DESIGN_DATA_DIRECTORY, problem_name, 'RobotCellStates')
-        state_files = [f for f in os.listdir(robot_cell_states_dir) if f.endswith('_RobotCellState.json')]
+        state_files = [f for f in os.listdir(robot_cell_states_dir) if f.endswith('.json')]
         if not state_files:
-            raise FileNotFoundError(f"No _RobotCellState.json files found in {robot_cell_states_dir}")
+            raise FileNotFoundError(f"No .json files found in {robot_cell_states_dir}")
 
         state_file = state_files[0]  # Choose the first one found (could randomize or sort if needed)
         tool_urdf_cache_dir = os.path.join(DESIGN_DATA_DIRECTORY, problem_name, "tool_urdf_cache")

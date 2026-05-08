@@ -50,9 +50,9 @@ def _get_data_directory():
         return installed_data_dir
 
 DATA_DIRECTORY = _get_data_directory()
-DESIGN_DATA_DIRECTORY = os.path.join(DATA_DIRECTORY, 'husky_assembly_design_study')
+DESIGN_DATA_DIRECTORY = '/home/yijiangh/gdrive/0_projects/2025-03 Husky Assembly/data_design_study'
 RECORD_DIRECTORY = os.path.join(DATA_DIRECTORY, '..', 'recorded_data')
 
 CALIBRATION_DATE = '20260303'
 CALIBRATION_BATCHES = ['j0', 'j1', 'validation', 'punch_validation']
-VALIDATION_PROBLEM_NAME = '250929_New_Antenna_with_GH_RH_Packed'
+VALIDATION_PROBLEM_NAME = '2026-05-08_dual-arm_transfer_test'

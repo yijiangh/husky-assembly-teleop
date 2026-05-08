@@ -25,7 +25,7 @@ from rclpy.node import Node
 import pybullet as p
 import pybullet_planning as pp
 
-from husky_assembly_teleop import DATA_DIRECTORY, CALIBRATION_BATCHES, VALIDATION_PROBLEM_NAME, CALIBRATION_DATE
+from husky_assembly_teleop import DATA_DIRECTORY, DESIGN_DATA_DIRECTORY, CALIBRATION_BATCHES, VALIDATION_PROBLEM_NAME, CALIBRATION_DATE
 import husky_assembly_teleop.husky_world as world
 import husky_assembly_teleop.mocap_experiment as mocap_experiment
 from husky_assembly_teleop.husky_robot import UR5e_HOME_STATE
@@ -44,12 +44,12 @@ EXISTING_ELEMENT_COLOR = pp.RED
 CURRENT_ELEMENT_COLOR = pp.BLUE
 DEFAULT_BAR_POS = pp.Point(0.8, 0, 1.3)
 
-CLIENT_IP = '192.168.0.7' # Set to your own IP
+CLIENT_IP = '192.168.0.133' # Set to your own IP
 MOCAP_IP = '192.168.0.117' # set to the mocap PC's IP, get this from Motive Settings>Streaming pane->Local interface
  
 class HuskyMonitor(Node):
-    USE_MOCAP = 0
-    FAKE_HARDWARE = 1
+    USE_MOCAP = 1
+    FAKE_HARDWARE = 0
     USE_DPG_UI = 0   # 0 = legacy PyBullet debug GUI; 1 = Dear PyGui control panel
     UI_FONT_SIZE = 16  # DPG control-panel font size in px
 
@@ -59,12 +59,12 @@ class HuskyMonitor(Node):
     CALIBRATION = 0
 
     BAR_HOLDING_ACCURACY_TEST = 0
-    DUAL_ARM_ACCURACY_TEST = 0
+    DUAL_ARM_ACCURACY_TEST = 1
 
     ASSEMBLY_MODE = 0
 
     BOARD_VALIDATION = 1
-    PUNCH_CALIB_VALIDATION = 1
+    PUNCH_CALIB_VALIDATION = 0
 
     def __init__(self):
         super().__init__('husky_monitor')
@@ -824,8 +824,7 @@ class HuskyMonitor(Node):
         """
         # Compute tool0_to_tool0 transform from the JSON file
         json_filepath = os.path.join(
-            DATA_DIRECTORY,
-            'husky_assembly_design_study',
+            DESIGN_DATA_DIRECTORY,
             '250714_robot_centric_IK_grasp_test',
             'RobotCellStates',
             'robotx_box_A0-IK_test_GraspTargets.json'
@@ -900,8 +899,7 @@ class HuskyMonitor(Node):
             
         selected_state_file = self.available_robot_cell_states[self.selected_state_index]
         state_filepath = os.path.join(
-            DATA_DIRECTORY,
-            'husky_assembly_design_study',
+            DESIGN_DATA_DIRECTORY,
             VALIDATION_PROBLEM_NAME,
             'RobotCellStates',
             selected_state_file
@@ -913,10 +911,9 @@ class HuskyMonitor(Node):
         # state_prefix = selected_state_file.replace('_RobotCellState.json', '')
         # corresponding_trajectory_file = f"{state_prefix}_JointTrajectory.json"
         # trajectory_filepath = os.path.join(
-        #     DATA_DIRECTORY,
-        #     'husky_assembly_design_study',
+        #     DESIGN_DATA_DIRECTORY,
         #     VALIDATION_PROBLEM_NAME,
-        #     'RobotCellStates',
+        #     'Trajectories',
         #     corresponding_trajectory_file
         # )
         
@@ -1123,8 +1120,7 @@ class HuskyMonitor(Node):
             The loaded robot cell.
         """
         robot_cell_path = os.path.join(
-            DATA_DIRECTORY,
-            'husky_assembly_design_study',
+            DESIGN_DATA_DIRECTORY,
             validation_problem_name,
             'RobotCell.json'
         )
@@ -1362,10 +1358,9 @@ class HuskyMonitor(Node):
         # Cache for downstream logging / filenames (e.g., calibration record suffix)
         self.selected_trajectory_file = selected_trajectory_file
         trajectory_filepath = os.path.join(
-            DATA_DIRECTORY,
-            'husky_assembly_design_study',
-            VALIDATION_PROBLEM_NAME, 
-            'RobotCellStates',
+            DESIGN_DATA_DIRECTORY,
+            VALIDATION_PROBLEM_NAME,
+            'Trajectories',
             selected_trajectory_file
         )
         
@@ -1455,59 +1450,45 @@ class HuskyMonitor(Node):
         Load available robot cell state files from the hardcoded directory.
         """
         state_dir = os.path.join(
-            DATA_DIRECTORY,
-            'husky_assembly_design_study',
+            DESIGN_DATA_DIRECTORY,
             VALIDATION_PROBLEM_NAME,
             'RobotCellStates'
         )
-        
+
         if not os.path.exists(state_dir):
             print(f"Robot cell states directory does not exist: {state_dir}")
             return []
         
-        # Find all JSON files ending with _RobotCellState.json
-        state_files = []
-        for filename in os.listdir(state_dir):
-            if filename.endswith('_RobotCellState.json'):
-                state_files.append(filename)
-        
-        # Sort files for consistent ordering
+        state_files = [f for f in os.listdir(state_dir) if f.endswith('.json')]
         state_files.sort()
-        
+
         print(f"Found {len(state_files)} robot cell state files:")
         for i, filename in enumerate(state_files):
             print(f"  {i}: {filename}")
-        
+
         return state_files
-    
+
     def _load_available_joint_trajectories(self):
         """
         Load available JointTrajectory files from the hardcoded directory.
         """
-        state_dir = os.path.join(
-            DATA_DIRECTORY,
-            'husky_assembly_design_study',
+        trajectory_dir = os.path.join(
+            DESIGN_DATA_DIRECTORY,
             VALIDATION_PROBLEM_NAME,
-            'RobotCellStates'
+            'Trajectories'
         )
-        
-        if not os.path.exists(state_dir):
-            print(f"Robot cell states directory does not exist: {state_dir}")
+
+        if not os.path.exists(trajectory_dir):
+            print(f"Trajectories directory does not exist: {trajectory_dir}")
             return []
-        
-        # Find all JSON files ending with _JointTrajectory.json
-        trajectory_files = []
-        for filename in os.listdir(state_dir):
-            if filename.endswith('_JointTrajectory.json'):
-                trajectory_files.append(filename)
-        
-        # Sort files for consistent ordering
+
+        trajectory_files = [f for f in os.listdir(trajectory_dir) if f.endswith('.json')]
         trajectory_files.sort()
-        
+
         print(f"Found {len(trajectory_files)} joint trajectory files:")
         for i, filename in enumerate(trajectory_files):
             print(f"  {i}: {filename}")
-        
+
         return trajectory_files
     
     # --- --- --- --- --- SETUP PYBULLET --- --- --- --- ---

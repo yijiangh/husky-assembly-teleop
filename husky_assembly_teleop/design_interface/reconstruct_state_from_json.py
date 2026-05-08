@@ -5,9 +5,11 @@ import pybullet_planning as pp
 from compas import json_load
 from conversions import pose_from_frame, frame_from_pose
 
-HERE = os.path.dirname(__file__)
+from husky_assembly_teleop import DESIGN_DATA_DIRECTORY
 
-design_study_path = os.path.join(HERE, "..", "..", "data", "husky_assembly_design_study")
+design_study_path = DESIGN_DATA_DIRECTORY
+# TODO: '250707_RobotX_box_demo' is not present under the gdrive design-study root yet.
+# Update design_case to a problem available under DESIGN_DATA_DIRECTORY before running.
 design_case = "250707_RobotX_box_demo"
 robot_cell_json_path = os.path.join(
     design_study_path,

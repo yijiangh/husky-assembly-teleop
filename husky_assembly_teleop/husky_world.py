@@ -258,9 +258,9 @@ def init(monitor):
         bar_rig.model_base_pose = pp.Pose(euler=pp.Euler(roll=np.pi/2))
         
     if monitor.DUAL_ARM_ACCURACY_TEST:
-        left_EE = TrackedObject(monitor, 'left_EE', 4572, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
+        left_EE = TrackedObject(monitor, 'left_EE', 4627, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
         left_EE.body = pp.create_box(0.1, 0.1, 0.1)
-        right_EE = TrackedObject(monitor, 'right_EE', 4573, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
+        right_EE = TrackedObject(monitor, 'right_EE', 4628, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
         right_EE.body = pp.create_box(0.1, 0.1, 0.1)
 
     #boxes.append(TrackedObject(monitor, 'box1', 4457, np.zeros(3), np.array((0, 0, 0, 1)), 0.2, 'cube.obj'))
