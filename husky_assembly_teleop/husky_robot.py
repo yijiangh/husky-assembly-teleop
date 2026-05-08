@@ -34,13 +34,16 @@ from action_msgs.msg import GoalStatus
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from control_msgs.action import FollowJointTrajectory
 from control_msgs.msg import JointTolerance
-from geometry_msgs.msg import PoseStamped, WrenchStamped
 from ur_msgs.msg._io_states import IOStates
 from std_srvs.srv._trigger import Trigger
-# try:
+from geometry_msgs.msg import PoseStamped, Point, Quaternion, WrenchStamped
 from crl_husky_msgs.msg import MultiArmTrajectory
-# except ImportError:
-#     print("MultiArmTrajectory not found, using single arm interface only.")
+from ur_msgs.srv._set_force_mode import SetForceMode
+from ur_msgs.msg._io_states import IOStates
+from std_srvs.srv._trigger import Trigger
+
+# Controller Manager
+from controller_manager_msgs.srv._switch_controller import SwitchController
 
 # SetIO service for gripper and screw control
 from ur_msgs.srv import SetIO
@@ -56,7 +59,7 @@ from rclpy.qos import QoSProfile
 UR5e_HOME_STATE = np.array([0, -np.pi/2, 0, -np.pi/2, 0, np.pi/2])
 ARM_JOINT_NAMES = ['shoulder_pan_joint', 'shoulder_lift_joint', 'elbow_joint', 'wrist_1_joint', 'wrist_2_joint', 'wrist_3_joint']
 
-USE_TRAJECTORY_TOPIC_INTERFACE = 0
+USE_TRAJECTORY_TOPIC_INTERFACE = 1
 ARM_NOT_EXECUTING_TIME = 1
 
 def quaterinion_2_angular_velocity(q1, q2, dt):
@@ -73,13 +76,13 @@ class HuskyRobotInterface:
     angular_velocity = np.zeros(3)
     
     arm_joint_pose = [UR5e_HOME_STATE]
-    arm_tcp_pose = [pp.Pose()]  # NOTE: c81e373 reports the value reported by UR5e doesn't correspond to world or local; baked-in v1 mounting orientation correction applied in dynamic_arm_callback.
+    arm_tcp_pose = [pp.Pose()] # TODO: This value reported bz UR5e does not correspond to world position nor to local position (relative to base link). Its something weird in between, probably accounting for mounting orientation set in ur5e.
     arm_ft_sensor = [[0, 0, 0, 0, 0, 0]]
     is_arm_executing = [False]
     last_arm_movement = [0]
-    io_states = [[False for x in range(0, 18)]]
+    io_states = [[False for x in range(0,18)]]
     active_controller = [""]
-
+    
     # Gripper and screw states for toggle functionality
     gripper_states = [False]  # False = open, True = closed
     screw_states = [False]    # False = not actuated, True = actuated
@@ -98,7 +101,7 @@ class HuskyRobotInterface:
             self.arm_ft_sensor.append([0, 0, 0, 0, 0, 0])
             self.is_arm_executing.append(False)
             self.last_arm_movement.append(0)
-            self.io_states.append([False for x in range(0, 18)])
+            self.io_states.append([False for x in range(0,18)])
             self.active_controller.append("")
             self.gripper_states.append(False)
             self.screw_states.append(False)
@@ -132,7 +135,7 @@ class HuskyRobotInterface:
                 name + '/ur5e/rate_limiter/joint_states',
                 lambda msg: self.arm_callback(0, msg),
                 10))
-
+            
         self.sub_dynamic_arm = []
         if dual_arm:
             self.sub_dynamic_arm.append(self.node.create_subscription(
@@ -151,7 +154,7 @@ class HuskyRobotInterface:
                 name + '/ur5e/rate_limiter/dynamic_joint_states',
                 lambda msg: self.dynamic_arm_callback(0, msg),
                 10))
-
+            
         self.sub_io_states = []
         if dual_arm:
             self.sub_io_states.append(self.node.create_subscription(
@@ -170,7 +173,7 @@ class HuskyRobotInterface:
                 name + '/ur5e/rate_limiter/io_and_status_controller/io_states',
                 lambda msg: self.io_state_callback(0, msg),
                 10))
-
+            
         self.sub_ft_sensor = []
         if dual_arm:
             self.sub_ft_sensor.append(self.node.create_subscription(
@@ -190,6 +193,7 @@ class HuskyRobotInterface:
                 lambda msg: self.ft_sensor_callback(0, msg),
                 10))
 
+        
         # Publishers --- --- --- --- ---
         self.pub_cmd_vel = self.node.create_publisher(Twist, name + '/cmd_vel', 10)
         self.pub_cmd_arm = []
@@ -199,21 +203,57 @@ class HuskyRobotInterface:
             self.pub_cmd_multi_arm = self.node.create_publisher(MultiArmTrajectory, name + '/multi_arm_joint_trajectory', 10)
         else:
             self.pub_cmd_arm.append(self.node.create_publisher(JointTrajectory, name + '/ur5e/scaled_joint_trajectory_controller/joint_trajectory', 10))
-
+        
         self.pub_cmd_arm_cartesian = []
         if dual_arm:
             self.pub_cmd_arm_cartesian.append(self.node.create_publisher(PoseStamped, name + '/left_ur5e/target_frame', 10))
             self.pub_cmd_arm_cartesian.append(self.node.create_publisher(PoseStamped, name + '/right_ur5e/target_frame', 10))
         else:
             self.pub_cmd_arm_cartesian.append(self.node.create_publisher(PoseStamped, name + '/ur5e/target_frame', 10))
-
+            
         self.pub_cmd_arm_cartesian_force = []
         if dual_arm:
             self.pub_cmd_arm_cartesian_force.append(self.node.create_publisher(WrenchStamped, name + '/left_ur5e/target_wrench', 10))
             self.pub_cmd_arm_cartesian_force.append(self.node.create_publisher(WrenchStamped, name + '/right_ur5e/target_wrench', 10))
         else:
             self.pub_cmd_arm_cartesian_force.append(self.node.create_publisher(WrenchStamped, name + '/ur5e/target_wrench', 10))
+        
+        # Service Clients
+        
+        self.force_services = []
+        if dual_arm:
+            self.force_services.append(node.create_client(SetForceMode, name + '/left_ur5e/force_mode_controller/start_force_mode'))
+            self.force_services.append(node.create_client(SetForceMode, name + '/right_ur5e/force_mode_controller/start_force_mode'))
+        else:
+            self.force_services.append(node.create_client(SetForceMode, name + '/ur5e/force_mode_controller/start_force_mode'))
+        
+        for fs in self.force_services:
+            fs.wait_for_service(timeout_sec=2.5)
+            self.node.get_logger().info(f'Force Service Client {fs.service_is_ready()}')
+            
+        self.zero_ft_sensor_client = []
+        if dual_arm:
+            self.zero_ft_sensor_client.append(node.create_client(Trigger, name + '/left_ur5e/io_and_status_controller/zero_ftsensor'))
+            self.zero_ft_sensor_client.append(node.create_client(Trigger, name + '/right_ur5e/io_and_status_controller/zero_ftsensor'))
+        else:
+            self.zero_ft_sensor_client.append(node.create_client(Trigger, name + '/ur5e/io_and_status_controller/zero_ftsensor')) 
+        
+        for fs in self.zero_ft_sensor_client:
+            fs.wait_for_service(timeout_sec=2.5)
+            self.node.get_logger().info(f'Zero FT Sensor Service Client {fs.service_is_ready()}')
+            
+        self.controller_change_service_client = []
+        if dual_arm:
+            self.controller_change_service_client.append(node.create_client(SwitchController, name + '/left_ur5e/controller_manager/switch_controller'))
+            self.controller_change_service_client.append(node.create_client(SwitchController, name + '/right_ur5e/controller_manager/switch_controller'))
+        else:
+            self.controller_change_service_client.append(node.create_client(SwitchController, name + '/ur5e/controller_manager/switch_controller')) 
+        
+        for fs in self.controller_change_service_client:
+            fs.wait_for_service(timeout_sec=2.5)
+            self.node.get_logger().info(f'Switch Controller Service Client {fs.service_is_ready()}')
 
+        
         # Action Clients
         # TODO support dual arm
         self.act_grippers = []
@@ -314,6 +354,28 @@ class HuskyRobotInterface:
         # done --- --- --- --- ---
         self.node.get_logger().info(f'Husky "{name}" is ready!')
 
+    def switch_controller(self, from_ctrl, to_ctrl, arm_index=0):
+        msg = SwitchController.Request()
+        
+        msg.start_asap = True
+        msg.deactivate_controllers = [from_ctrl]
+        msg.activate_controllers = [to_ctrl]
+        msg.strictness = SwitchController.Request.STRICT
+        
+        print(f"switching from {from_ctrl} to {to_ctrl} on arm {arm_index}")
+        fut = self.controller_change_service_client[arm_index].call_async(msg)
+        
+        def controller_switched_callback(self, new_controller, arm_index, fut):
+            msg = fut.result()
+            if msg.ok:
+                self.active_controller[arm_index] = new_controller
+                print(f"Controller switched to {new_controller}")
+            else:
+                print("Failed to switch controller!")
+                
+        fut.add_done_callback(lambda fut: controller_switched_callback(self, to_ctrl, arm_index, fut))
+        
+
     def tf_callback(self, msg: TFMessage):
         for transform in msg.transforms:
             header: Header = transform.header
@@ -323,6 +385,12 @@ class HuskyRobotInterface:
                 self.position = self._odom_position - self.odom_offset
                 self.rotation = np.array((ts.rotation.x, ts.rotation.y, ts.rotation.z, ts.rotation.w))
                 #self.node.get_logger().info(f'Position {np.around(self.position, decimals=2)}')
+    
+    def send_base_twist_cmd(self, x_dot, theta_dot):
+        msg = Twist()
+        msg.linear.x = x_dot
+        msg.angular.z = theta_dot
+        self.pub_cmd_vel.publish(msg)
     
     _last_mocap_data = 0
     _velocity_samples = []
@@ -365,74 +433,89 @@ class HuskyRobotInterface:
             reorder.append(msg.name.index(name))
         old_pose = self.arm_joint_pose[index]
         self.arm_joint_pose[index] = np.array(arm_pos)[reorder]
-        if not np.isclose(old_pose, self.arm_joint_pose[index], atol=1e-2).all():
-            if not self.is_arm_executing[index]:
-                print(f"{index} STARTED MOVING")
-            self.is_arm_executing[index] = True
-            self.last_arm_movement[index] = time.time()
-        elif time.time() - self.last_arm_movement[index] > ARM_NOT_EXECUTING_TIME:
-            if self.is_arm_executing[index]:
-                print(f"{index} FINISHED MOVING")
-            self.is_arm_executing[index] = False
-
+        if USE_TRAJECTORY_TOPIC_INTERFACE == 1:
+            if not np.isclose(old_pose, self.arm_joint_pose[index], atol=1e-2).all():
+                if not self.is_arm_executing[index]:
+                    print(f"{index} STARTED MOVING")
+                self.is_arm_executing[index] = True
+                self.last_arm_movement[index] = time.time()
+            elif time.time() - self.last_arm_movement[index] > ARM_NOT_EXECUTING_TIME:
+                if self.is_arm_executing[index]:
+                    print(f"{index} FINISHED MOVING")
+                self.is_arm_executing[index] = False
+    
     def dynamic_arm_callback(self, index, msg: DynamicJointState):
         tcp_interface_value: InterfaceValue = msg.interface_values[msg.joint_names.index("tcp_pose")]
         reorder = []
         for name in ['position.x', 'position.y', 'position.z', 'orientation.x', 'orientation.y', 'orientation.z', 'orientation.w']:
             reorder.append(tcp_interface_value._interface_names.index(name))
-
+        
         correction_transform = pp.Pose(pp.Point(), pp.Euler(0, 0, np.deg2rad(-180 if self.dual_arm else -90)))
-
+        
         data = np.array(tcp_interface_value.values)[reorder]
         self.arm_tcp_pose[index] = pp.multiply(correction_transform, pp.Pose(data[0:3], pp.euler_from_quat(data[3:7])))
-
+        
     def io_state_callback(self, index, msg: IOStates):
         in_states = msg.digital_in_states
         for i in range(0, 18):
             pin = in_states[i].pin
             state = in_states[i].state
             self.io_states[index][pin] = state
-
+            
     def ft_sensor_callback(self, index, msg: WrenchStamped):
         self.arm_ft_sensor[index] = [
                 msg.wrench.force.x, msg.wrench.force.y, msg.wrench.force.z,
                 msg.wrench.torque.x, msg.wrench.torque.y, msg.wrench.torque.z
             ]
 
-    def switch_controller(self, from_ctrl, to_ctrl, arm_index=0):
-        msg = SwitchController.Request()
-
-        msg.start_asap = True
-        msg.deactivate_controllers = [from_ctrl]
-        msg.activate_controllers = [to_ctrl]
-        msg.strictness = SwitchController.Request.STRICT
-
-        print(f"switching from {from_ctrl} to {to_ctrl} on arm {arm_index}")
-        fut = self.controller_change_service_client[arm_index].call_async(msg)
-
-        def controller_switched_callback(self, new_controller, arm_index, fut):
-            msg = fut.result()
-            if msg.ok:
-                self.active_controller[arm_index] = new_controller
-                print(f"Controller switched to {new_controller}")
-            else:
-                print("Failed to switch controller!")
-
-        fut.add_done_callback(lambda fut: controller_switched_callback(self, to_ctrl, arm_index, fut))
-
     def zero_ft_sensor(self, index=0):
         msg = Trigger.Request()
         self.zero_ft_sensor_client[index].call_async(msg)
-
+        
+    def send_force_mode_command(self, force, index=0):
+        msg = SetForceMode.Request()
+        msg.task_frame.header.frame_id = 'tool0'
+        msg.task_frame.pose.position.x = 0.0
+        msg.task_frame.pose.position.y = 0.0
+        msg.task_frame.pose.position.z = 0.0
+        
+        msg.task_frame.pose.orientation.x = 0.0
+        msg.task_frame.pose.orientation.y = 0.0
+        msg.task_frame.pose.orientation.z = 0.0
+        msg.task_frame.pose.orientation.w = 1.0
+        
+        msg.selection_vector_x = False
+        msg.selection_vector_y = True
+        msg.selection_vector_z = False
+        
+        msg.selection_vector_rx = False
+        msg.selection_vector_ry = False
+        msg.selection_vector_rz = False
+        
+        msg.speed_limits.linear.x = 0.1
+        msg.speed_limits.linear.y = 0.1
+        msg.speed_limits.linear.z = 0.1
+        
+        msg.speed_limits.angular.x = 0.1
+        msg.speed_limits.angular.y = 0.1
+        msg.speed_limits.angular.z = 0.1
+        
+        msg.type = 2
+        
+        msg.wrench.force.x = force[0]
+        msg.wrench.force.y = force[1]
+        msg.wrench.force.z = force[2]
+        self.force_services[index].call_async(msg)
+        
     def send_arm_cmd_cartesian(self, pose_arm_local, index=0):
         msg = PoseStamped()
         msg.header.frame_id = "base_link"
-
+        
         if (not np.isclose(self.arm_tcp_pose[index][0], pose_arm_local[0], atol=0.05).all()) or (not np.isclose(self.arm_tcp_pose[index][1], pose_arm_local[1], atol=0.05).all()):
             self.node.get_logger().warn(f'Arm {index} of husky {self.name} is not in correct start pose!')
             self.node.get_logger().warn(f'{self.arm_tcp_pose[index]} vs {pose_arm_local}')
             return
-
+        
         point = pp.point_from_pose(pose_arm_local)
         quat = pp.quat_from_pose(pose_arm_local)
         msg.pose.position.x = point[0]
@@ -443,22 +526,16 @@ class HuskyRobotInterface:
         msg.pose.orientation.z = quat[2]
         msg.pose.orientation.w = quat[3]
         self.pub_cmd_arm_cartesian[index].publish(msg)
-
+        
     def send_arm_cmd_cartesian_force(self, force_arm_local, index=0):
         msg = WrenchStamped()
         msg.header.frame_id = "base_link"
-
+        
         msg.wrench.force.x = force_arm_local[0]
         msg.wrench.force.y = force_arm_local[1]
         msg.wrench.force.z = force_arm_local[2]
-
+        
         self.pub_cmd_arm_cartesian_force[index].publish(msg)
-
-    def send_base_twist_cmd(self, x_dot, theta_dot):
-        msg = Twist()
-        msg.linear.x = x_dot
-        msg.angular.z = theta_dot
-        self.pub_cmd_vel.publish(msg)
         
     def send_gripper_cmd(self, pos, effort, index=0):
         goal = GripperCommand.Goal()
@@ -630,10 +707,10 @@ class HuskyRobotInterface:
         self.node.get_logger().info(f'Screw {index} {"actuated" if self.screw_states[index] else "deactivated"}')
 
         return future
-
-    def toggle_screw(self, index=0):
+    
+    def set_screw(self, state, index=0):
         """
-        Toggle screw actuation state for the specified arm.
+        Set screw actuation state for the specified arm.
         Uses SetIO service with PIN_TOOL_DOUT0.
         """
         return self.set_screw(not self.screw_states[index], index)
@@ -642,8 +719,28 @@ class HuskyRobotInterface:
     def tighten_tool(self, index=0, motor='M1'):
         if index >= len(self.tool_clients):
             self.node.get_logger().error(f'Invalid arm index: {index}')
-            return None
-        return self.tool_clients[index].tighten(motor)
+            return
+        
+        self.screw_states[index] = state
+        new_state = SetIO.Request.STATE_ON if self.screw_states[index] else SetIO.Request.STATE_OFF
+        
+        # Create and send the request
+        req = SetIO.Request()
+        req.fun = SetIO.Request.FUN_SET_DIGITAL_OUT
+        req.pin = SetIO.Request.PIN_TOOL_DOUT0
+        req.state = float(new_state)
+        
+        future = self.setio_clients[index].call_async(req)
+        self.node.get_logger().info(f'Screw {index} {"actuated" if self.screw_states[index] else "deactivated"}')
+        
+        return future
+    
+    def toggle_screw(self, index=0):
+        """
+        Toggle screw actuation state for the specified arm.
+        Uses SetIO service with PIN_TOOL_DOUT0.
+        """
+        return self.set_screw(not self.screw_states[index], index)
 
     def loosen_tool(self, index=0, motor='M1'):
         if index >= len(self.tool_clients):
