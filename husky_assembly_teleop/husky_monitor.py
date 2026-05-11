@@ -44,7 +44,7 @@ EXISTING_ELEMENT_COLOR = pp.RED
 CURRENT_ELEMENT_COLOR = pp.BLUE
 DEFAULT_BAR_POS = pp.Point(0.8, 0, 1.3)
 
-CLIENT_IP = '192.168.0.90' # Set to your own IP
+CLIENT_IP = '192.168.0.20' # Set to your own IP
 MOCAP_IP = '192.168.0.117' # set to the mocap PC's IP, get this from Motive Settings>Streaming pane->Local interface
 
 FILENAME_SUFFIX = '_vary_pos_vary_yaw'
@@ -57,17 +57,17 @@ class HuskyMonitor(Node):
     FAKE_HARDWARE = 0
 
     GRASP_PARTITION = 8
-    BAR_GOAL_MODE = 0
+    BAR_GOAL_MODE = 1
 
-    CALIBRATION = 1
+    CALIBRATION = 0
 
     BAR_HOLDING_ACCURACY_TEST = 0
     DUAL_ARM_ACCURACY_TEST = 0
 
     ASSEMBLY_MODE = 0
 
-    BOARD_VALIDATION = 1
-    PUNCH_CALIB_VALIDATION = 1
+    BOARD_VALIDATION = 0
+    PUNCH_CALIB_VALIDATION = 0
 
     def __init__(self):
         super().__init__('husky_monitor')

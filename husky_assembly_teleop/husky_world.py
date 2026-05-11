@@ -166,7 +166,7 @@ def init(monitor):
             if dual_arm else monitor.get_punch_tool_offset(0)
         )
     else:
-        ee_types = ["custom_gripper", "custom_gripper"] if dual_arm else ["custom_gripper"]
+        ee_types = ["victor_gripper_v3_r", "victor_gripper_v3_l"] if dual_arm else ["victor_gripper_v3_l"]
         punch_offset = None
 
     base_calibration_file = os.path.join(

@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<robot name="scaffolding_tool_v3_right">
+  <link name="base_link"/>
+
+  <link name="scaffolding_tool_v3_right_link">
+    <visual>
+      <geometry>
+        <mesh filename="package://scaffolding_tool_v3/AssemblyRight_Pineapple_m.obj"/>
+        <!-- <mesh filename="package://grasp_screw_tool_description/meshes/visual/grasp_screw_tool_visual.stl"/> -->
+      </geometry>
+      <material name="grey">
+        <color rgba="0.5 0.5 0.5 1"/>
+      </material>
+    </visual>
+    <collision>
+      <geometry>
+       <mesh filename="package://scaffolding_tool_v3/AssemblyRight_Pineapple_m.obj"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="base_to_tool" type="fixed">
+    <parent link="base_link"/>
+    <child link="scaffolding_tool_v3_right_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+</robot>

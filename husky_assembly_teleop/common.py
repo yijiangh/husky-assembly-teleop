@@ -205,6 +205,14 @@ def create_end_effector(ee_type="victor_gripper", load_calib_tip=False, dual_arm
         gripper_urdf_path = os.path.join(DATA_DIRECTORY, 'grasp_screw_tool_description/urdf/grasp_screw_tool_unactuated.urdf')
         ee = pp.load_pybullet(gripper_urdf_path, fixed_base=False, cylinder=False)
         return ee
+    elif ee_type == "victor_gripper_v3_l":
+        gripper_urdf_path = os.path.join(DATA_DIRECTORY, 'scaffolding_tool_v3/scaffolding_tool_v3_left.urdf')
+        ee = pp.load_pybullet(gripper_urdf_path, fixed_base=False, cylinder=False)
+        return ee
+    elif ee_type == "victor_gripper_v3_r":
+        gripper_urdf_path = os.path.join(DATA_DIRECTORY, 'scaffolding_tool_v3/scaffolding_tool_v3_right.urdf')
+        ee = pp.load_pybullet(gripper_urdf_path, fixed_base=False, cylinder=False)
+        return ee
     elif ee_type == "robotiq_gripper":
         gripper_obj = os.path.join(DATA_DIRECTORY,'husky_urdf/robotiq_85/meshes/static/robotiq_85_close_20mm.obj')
         assert os.path.exists(gripper_obj)
