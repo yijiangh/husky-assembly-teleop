@@ -48,7 +48,7 @@ MOCAP_IP = '192.168.0.117' # set to the mocap PC's IP, get this from Motive Sett
 FILENAME_SUFFIX = '_vary_pos_vary_yaw'
 # VALIDATION_PROBLEM_NAME = '250905Orientation_test'
 # VALIDATION_PROBLEM_NAME = '250929_New_Antenna_with_GH_RH_Packed'
-VALIDATION_PROBLEM_NAME = '260122_double_kissing_experiment'
+VALIDATION_PROBLEM_NAME = '250902_kissing_experiment'
   
 class HuskyMonitor(Node):
     USE_MOCAP = 1
@@ -1349,6 +1349,30 @@ class HuskyMonitor(Node):
             if self.huskies[self.selected_robot_id].dual_arm:
                 self.buttons.append(Button('Toggle Right Gripper', lambda: self.huskies[self.selected_robot_id].interface.toggle_gripper(1)))
                 self.buttons.append(Button('Toggle Right Screw', lambda: self.huskies[self.selected_robot_id].interface.toggle_screw(1)))
+
+            self.dump_sep_sliders.append(Slider("----------Scaffolding V3", lambda : None))
+
+            def send_scaffolding_cmd_both_motors(direction, arm_index):
+                interface = self.huskies[self.selected_robot_id].interface
+                interface.send_scaffolding_cmd(direction, 1, arm_index)
+                interface.send_scaffolding_cmd(direction, 2, arm_index)
+
+            def send_scaffolding_cmd_motor(direction, motor, arm_index):
+                interface = self.huskies[self.selected_robot_id].interface
+                interface.send_scaffolding_cmd(direction, motor, arm_index)
+
+            self.buttons.append(Button('Scaffold L Stop (M1+M2)', lambda: send_scaffolding_cmd_both_motors(0, 0)))
+            self.buttons.append(Button('Scaffold L Tighten M1', lambda: send_scaffolding_cmd_motor(1, 1, 0)))
+            self.buttons.append(Button('Scaffold L Loosen M1', lambda: send_scaffolding_cmd_motor(-1, 1, 0)))
+            self.buttons.append(Button('Scaffold L Tighten M2', lambda: send_scaffolding_cmd_motor(1, 2, 0)))
+            self.buttons.append(Button('Scaffold L Loosen M2', lambda: send_scaffolding_cmd_motor(-1, 2, 0)))
+
+            if self.huskies[self.selected_robot_id].dual_arm:
+                self.buttons.append(Button('Scaffold R Stop (M1+M2)', lambda: send_scaffolding_cmd_both_motors(0, 1)))
+                self.buttons.append(Button('Scaffold R Tighten M1', lambda: send_scaffolding_cmd_motor(1, 1, 1)))
+                self.buttons.append(Button('Scaffold R Loosen M1', lambda: send_scaffolding_cmd_motor(-1, 1, 1)))
+                self.buttons.append(Button('Scaffold R Tighten M2', lambda: send_scaffolding_cmd_motor(1, 2, 1)))
+                self.buttons.append(Button('Scaffold R Loosen M2', lambda: send_scaffolding_cmd_motor(-1, 2, 1)))
 
         # self.buttons.append(Button('Compute ik', self.compute_ik_for_bar))
 
