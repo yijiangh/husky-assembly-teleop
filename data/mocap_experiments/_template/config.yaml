@@ -1,0 +1,46 @@
+experiment:
+  name: "mocap_cover_study"
+  session_name: "default_session"
+  operator: ""
+  duration_sec: 20.0
+  notes: ""
+
+take:
+  take_id: ""
+  workspace_position: "center"
+  marker_configuration: "markers_4"
+  camera_configuration: "all_cameras"
+  cover_configuration: "no_cover"
+  trial_index: 1
+  notes: ""
+  reference_images:
+    overview: ""
+    workspace: ""
+    markers: ""
+    camera: ""
+    cover: ""
+    extra: []
+
+tags:
+  marker_count: 4
+  added_marker_count: 0
+  disabled_camera_count: 0
+  deck_motion: "none"
+  robot_stationary: true
+
+capture:
+  workspace_webcam:
+    enabled: true
+    device_index: 0
+    warmup_frames: 8
+    role: "workspace"
+    timelapse_enabled: true
+    timelapse_interval_sec: 0.5
+    timelapse_video_fps: 2.0
+
+report:
+  group_by:
+    - "take.workspace_position"
+    - "take.marker_configuration"
+    - "take.camera_configuration"
+    - "take.cover_configuration"

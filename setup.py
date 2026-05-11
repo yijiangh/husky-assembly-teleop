@@ -38,6 +38,8 @@ setup(
             'optitrack_python_sample = husky_assembly_teleop.optitrack.PythonSample:main',
             'test_mocap = husky_assembly_teleop.optitrack.test_mocap:main',
             'test_setio = husky_assembly_teleop.test_setio:main',
+            'mocap_experiment_analyze = husky_assembly_teleop.mocap_experiment:main_analyze',
+            'mocap_experiment_report = husky_assembly_teleop.mocap_experiment:main_report',
         ],
     },
 )

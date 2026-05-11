@@ -33,4 +33,4 @@ punch_tool:
   left:
     offset_xyz: [0.0038, 0.0001, 0.11896]
   right:
-    offset_xyz: [0.0038, 0.0001, 0.11896]
+    offset_xyz: [0.00353, -0.00027, 0.11832]

@@ -89,6 +89,7 @@ class NatNetClient:
         self.rigid_body_marker_set_listener = None
         self.labeled_marker_listener = None
         self.new_frame_listener  = None
+        self.data_descriptions_listener = None
 
         # Set Application Name
         self.__application_name = "Not Set"
@@ -114,6 +115,7 @@ class NatNetClient:
         self.data_socket = None
 
         self.stop_threads=False
+        self.latest_data_descriptions = None
 
 
     # Client/server message ids
@@ -1322,6 +1324,9 @@ class NatNetClient:
             trace( "Packet Size : %d"% packet_size )
             offset_tmp, data_descs = self.__unpack_data_descriptions( data[offset:], packet_size, major, minor)
             offset += offset_tmp
+            self.latest_data_descriptions = data_descs
+            if self.data_descriptions_listener is not None:
+                self.data_descriptions_listener(data_descs)
             trace("Data Descriptions:\n")
             # get a string version of the data for output
             data_descs_str=data_descs.get_as_string()
@@ -1411,6 +1416,19 @@ class NatNetClient:
     def send_keep_alive(self,in_socket, server_ip_address, server_port):
         return self.send_request(in_socket, self.NAT_KEEPALIVE, "", (server_ip_address, server_port))
 
+    def request_model_definitions(self):
+        if self.command_socket is None:
+            return -1
+        return self.send_request(
+            self.command_socket,
+            self.NAT_REQUEST_MODELDEF,
+            "",
+            (self.server_ip_address, self.command_port),
+        )
+
+    def get_latest_data_descriptions(self):
+        return self.latest_data_descriptions
+
     def get_command_port(self):
         return self.command_port
 
@@ -1473,4 +1491,3 @@ class NatNetClient:
         # attempt to join the threads back.
         self.command_thread.join()
         self.data_thread.join()
-
