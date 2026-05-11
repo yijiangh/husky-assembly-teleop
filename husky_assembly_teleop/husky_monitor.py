@@ -35,6 +35,13 @@ from husky_assembly_teleop.common import (
 from husky_assembly_teleop.optitrack.NatNetClient import NatNetClient
 from husky_assembly_teleop.utils import pose_from_frame, frame_from_pose, pose_from_transformation, transformation_from_pose
 
+# BarAction (gdrive design-study) loading
+from husky_assembly_teleop.bar_action_io import (
+    parse_bar_action, list_bar_actions, find_movement, movement_type,
+)
+from husky_assembly_teleop.cfab_session import CfabSession
+from compas_fab.backends import CollisionCheckError
+
 DEFAULT_GREY = [0.2, 0.2, 0.2, 0.7]
 GOAL_BLUE = [0, 0.2, 0.5, 0.7]
 TRAJECTORY_GREEN = [0, 0.5, 0.2, 0.7]
@@ -48,13 +55,18 @@ CLIENT_IP = '192.168.0.133' # Set to your own IP
 MOCAP_IP = '192.168.0.117' # set to the mocap PC's IP, get this from Motive Settings>Streaming pane->Local interface
 
 FILENAME_SUFFIX = '_vary_pos_vary_yaw'
-# VALIDATION_PROBLEM_NAME = '250905Orientation_test'
-# VALIDATION_PROBLEM_NAME = '250929_New_Antenna_with_GH_RH_Packed'
-VALIDATION_PROBLEM_NAME = '260122_double_kissing_experiment'
-  
+
 class HuskyMonitor(Node):
-    USE_MOCAP = 1
-    FAKE_HARDWARE = 0
+    USE_MOCAP = 0
+    FAKE_HARDWARE = 1
+
+    # When USE_MOCAP=1, by default the husky base in PyBullet tracks mocap.
+    # Set USE_CELL_STATE_BASE_POSE=1 to override that and pin the base to
+    # whatever was loaded from the goal RobotCellState's robot_base_frame
+    # (or set via sliders). Useful for testing planning with mocap on for
+    # end-effector tracking but the husky physically far from the assembly
+    # scaffolding (e.g., at the lab desk during dual-arm accuracy tests).
+    USE_CELL_STATE_BASE_POSE = 1
     USE_DPG_UI = 0   # 0 = legacy PyBullet debug GUI; 1 = Dear PyGui control panel
     UI_FONT_SIZE = 16  # DPG control-panel font size in px
 
@@ -71,7 +83,7 @@ class HuskyMonitor(Node):
     BOARD_VALIDATION = 1
     PUNCH_CALIB_VALIDATION = 0
 
-    DUAL_ARM_KISSING = 1 # set 1 to enable kissing experiment + compliance controller buttons
+    DUAL_ARM_KISSING = 0 # set 1 to enable kissing experiment + compliance controller buttons
 
     def __init__(self):
         super().__init__('husky_monitor')
@@ -90,15 +102,29 @@ class HuskyMonitor(Node):
         self.mocap_experiment_recording = None
         self.mocap_experiment_last_output_path = None
 
+        # Legacy pp-side scene state (used by free trajectory / calibration
+        # code paths). The BarAction flow does NOT populate this; collision
+        # checking for planning goes through monitor.cfab.planner.
         self.static_obstacles = {}
-        self.active_bar_body = None
-        self.active_bar_aabb_dims = None
+        self.active_bar_body = None       # legacy pp body; None on BarAction path
+        self.active_bar_aabb_dims = None  # cached from rs RigidBody mesh on BarAction path
         self.active_bar_name = None
+        self.active_extra_bodies = []     # legacy
+        self.bar_from_extra = []          # legacy
+
+        # BarAction / cfab planning state.
+        self.cfab = None                       # CfabSession (lazy per problem)
+        self.current_action = None             # rs_data_structure BarAssemblyAction
+        self.current_movement = None           # selected Movement
+        self.current_movement_index = None     # int
+        self.movement_type = None              # "constrained" | "linear" | "free"
+        self.movement_start_state = None       # compas_fab RobotCellState
+        self.target_ee_frames = None           # {"left": Frame, "right": Frame} | None
+        self.grasp_link_from_bar = None        # compas.geometry.Frame
         self.constrained_planner_stage = 3
         self.staging_free_trajectory = [None, None]   # left, right (per-arm tuples)
         self.constrained_trajectory = [None, None]
         self.constrained_display_mode = 0  # 0=FREE_STAGE, 1=CONSTRAINED
-        self.grasp_targets_override = None  # optional grasp JSON override; None = derive from goal cell state
         self.assembly_objects = []
         self.current_seq_index = 0
 
@@ -132,9 +158,6 @@ class HuskyMonitor(Node):
         self.available_joint_trajectories = []  # Store available JointTrajectory files
         self.selected_trajectory_index = 0
         
-        # Cache for RobotCell to avoid reloading
-        self._robot_cell_cache = None
-        self._robot_cell_cache_path = None
 
         # goal and trajectory interface
         self.selected_arm_index = 0
@@ -347,9 +370,10 @@ class HuskyMonitor(Node):
             self.selected_robot_id = new_id
             self.selected_arm_index = min(self.selected_arm_index, self.get_active_arm_count() - 1)
             self._set_active_punch_tool_offset(self.selected_arm_index)
-            # update goal pose based on sensed base pose since we are teleoperating the base
-            hi = self.huskies[self.selected_robot_id].interface
-            self.goal_base_pose = (hi.position, hi.rotation)
+            if not self.USE_CELL_STATE_BASE_POSE:
+                # update goal pose based on sensed base pose since we are teleoperating the base
+                hi = self.huskies[self.selected_robot_id].interface
+                self.goal_base_pose = (hi.position, hi.rotation)
             self.update_goal_model_and_color()
             self.reset_ui()
             
@@ -892,462 +916,182 @@ class HuskyMonitor(Node):
             self.set_arm_trajectory(src[1], index=1)
             self.set_to_show_traj_state()
 
-    def load_board_validation_state(self):
+    # --- --- --- --- --- BARACTION LOADING --- --- --- --- ---
+
+    def load_bar_action(self, action_path=None, movement=0, *, update_goal_state=True):
+        """Load one movement of a BarAssemblyAction via the cfab planner.
+
+        Replaces the legacy ``load_board_validation_state`` flow. Scene
+        materialization (rigid bodies, attached tool bodies, ACM) goes
+        through ``self.cfab.planner.set_robot_cell_state(...)`` — no
+        per-body pp spawning, no manual ACM translation.
+
+        Parameters
+        ----------
+        action_path : str | None
+            Absolute path or bare filename (resolved under
+            ``DESIGN_DATA_DIRECTORY/<problem>/BarActions/``). If None, uses
+            the slider-selected entry of ``available_robot_cell_states``.
+        movement : int | str
+            Integer index OR movement_id substring (e.g. ``"M1"``).
+        update_goal_state : bool
+            If True, refresh the UI's goal display after loading.
+
+        Returns
+        -------
+        bool
+            True on success, False otherwise.
         """
-        Load a robot cell state for board validation and update the goal robot configuration.
-        """
-        if not self.available_robot_cell_states:
-            print("No robot cell states available!")
-            return
-            
-        if self.selected_state_index >= len(self.available_robot_cell_states):
-            print(f"Invalid state index: {self.selected_state_index}")
-            return
-            
-        selected_state_file = self.available_robot_cell_states[self.selected_state_index]
-        state_filepath = os.path.join(
-            DESIGN_DATA_DIRECTORY,
-            VALIDATION_PROBLEM_NAME,
-            'RobotCellStates',
-            selected_state_file
-        )
-        
-        print(f"Loading robot cell state: {selected_state_file}")
-        
-        # # Check if there's a corresponding JointTrajectory file with the same prefix
-        # state_prefix = selected_state_file.replace('_RobotCellState.json', '')
-        # corresponding_trajectory_file = f"{state_prefix}_JointTrajectory.json"
-        # trajectory_filepath = os.path.join(
-        #     DESIGN_DATA_DIRECTORY,
-        #     VALIDATION_PROBLEM_NAME,
-        #     'Trajectories',
-        #     corresponding_trajectory_file
-        # )
-        
-        # if os.path.exists(trajectory_filepath):
-        #     print(f"Found corresponding joint trajectory: {corresponding_trajectory_file}")
-        #     # Update the available joint trajectories list to include this file if not already present
-        #     if corresponding_trajectory_file not in self.available_joint_trajectories:
-        #         self.available_joint_trajectories.append(corresponding_trajectory_file)
-        #         self.available_joint_trajectories.sort()
-        # else:
-        #     print(f"No corresponding joint trajectory found for: {selected_state_file}")
-        
-        try:
-            # Load the robot cell state
-            from compas.data import json_load
-            robot_cell_state = json_load(state_filepath)
-
-            # match = re.search(r'_A(\d+)-', selected_state_file)
-            # active_bar_name = f"b{match.group(1)}_0" if match else None
-            # self.get_logger().info(f"Active bar name: {active_bar_name}")
-
-            # Reset prior active-bar selection so re-loading a different
-            # state doesn't carry stale tracking from the previous load.
-            self.active_bar_body = None
-            self.active_bar_name = None
-            self.active_bar_aabb_dims = None
-
-            # Load rigid body states as static obstacles. This may set
-            # self.active_bar_body via Convention 1 (attached_to_tool) for
-            # cell states that tag the held bar.
-            self.load_rigid_body_states_as_obstacles(robot_cell_state)
-
-            # Identify the held bar for the constrained planner. The
-            # antenna-style datasets do not tag rigid bodies with
-            # attached_to_tool, so fall back to the filename->bar-index
-            # convention used by the offline prototype (e.g., D1 -> b11_0
-            # via DESIGN_STUDY_BAR_NAME_TO_INDEX).
-            self._identify_active_bar(robot_cell_state, selected_state_file)
-
-            # If a GraspTargets JSON exists alongside the cell state, load it
-            # and use its authored grasp transforms. FK-deriving the grasp
-            # from goal_conf systematically differs from the JSON values by
-            # ~50mm (a flange/tool-tip calibration offset), and using the FK
-            # values causes the constrained planner to fail on most antenna
-            # targets. The JSON values are authoritative.
-            self._load_grasp_targets_if_available(state_filepath)
-
-            # Get the robot configuration from the state
-            if hasattr(robot_cell_state, 'robot_configuration'):
-                robot_config = robot_cell_state.robot_configuration
-                
-                # Extract base pose and arm joint states
-                if hasattr(robot_config, 'values') and hasattr(robot_config, 'joint_names'):
-                    # Find base and arm joint values
-                    # base_joint_names = ['base_joint_x', 'base_joint_y', 'base_joint_yaw']
-                    from husky_assembly_teleop.utils import HUSKY_DUAL_UR5e_JOINT_NAMES
-                    left_arm_names = HUSKY_DUAL_UR5e_JOINT_NAMES[0]
-                    right_arm_names = HUSKY_DUAL_UR5e_JOINT_NAMES[1]
-                  
-                    # Extract arm joint states
-                    left_arm_joint_values = [robot_config[name] for name in left_arm_names]
-                    right_arm_joint_values = [robot_config[name] for name in right_arm_names]
-
-                    # Update goal robot configuration
-                    self.goal_arm_pose[0] = np.array(left_arm_joint_values)
-                    self.goal_arm_pose[1] = np.array(right_arm_joint_values)
-                    
-                    # Update the UI to reflect the new configuration
-                    self.reset_ui(self.goal_arm_pose)
-                    
-                    print(f"Updated goal robot configuration from {selected_state_file}")
-                    print(f"Left arm joints: {self.goal_arm_pose[0]}")
-                    print(f"Right arm joints: {self.goal_arm_pose[1]}")
-
-                    self.set_to_show_goal_state()
-                else:
-                    print("Robot configuration does not have expected structure")
-            else:
-                print("Robot cell state does not contain robot configuration")
-
-            if hasattr(robot_cell_state, 'robot_base_frame'):
-                self.goal_base_pose = pose_from_frame(robot_cell_state.robot_base_frame)
-                print(f"Updated goal base pose from {selected_state_file}: {self.goal_base_pose}")
- 
-        except Exception as e:
-            print(f"Error loading robot cell state: {e}")
-
-    def _identify_active_bar(self, robot_cell_state, state_filename):
-        """Identify the held bar for the constrained planner.
-
-        Checks two conventions in order:
-          1. RobotCellState.rigid_body_states[name].attached_to_tool != None
-             (preferred convention; cleanly tagged in the cell state).
-          2. Filename prefix matches DESIGN_STUDY_BAR_NAME_TO_INDEX (e.g.,
-             "D1_RobotCellState.json" -> target "D1" -> index 11 -> "b11_0").
-             Used by the antenna-style design-study datasets where no body
-             is tagged attached_to_tool.
-
-        On success: sets self.active_bar_body/_name/_aabb_dims pointing at
-        the body that load_rigid_body_states_as_obstacles already spawned
-        (the body stays in static_obstacles; the constrained planner
-        filters it out at use time).
-        On failure: sets self.active_bar_body to None and prints a hint.
-        """
-        # Convention 1: attached_to_tool tag (handled by
-        # load_rigid_body_states_as_obstacles already setting
-        # self.active_bar_body). If it set one, trust it and return.
-        if self.active_bar_body is not None and self.active_bar_name is not None:
-            print(f"Active bar from attached_to_tool: {self.active_bar_name!r} (body={self.active_bar_body})")
-            return
-
-        # Convention 2: filename prefix -> bar-index lookup.
-        try:
-            from husky_assembly_tamp.motion_planner.stage1.minimal_rrt import (
-                DESIGN_STUDY_BAR_NAME_TO_INDEX,
+        # 1) Resolve action path.
+        if action_path is None:
+            if not self.available_robot_cell_states:
+                print("No BarAction files available!")
+                return False
+            if self.selected_state_index >= len(self.available_robot_cell_states):
+                print(f"Invalid BarAction index: {self.selected_state_index}")
+                return False
+            action_path = self.available_robot_cell_states[self.selected_state_index]
+        if not os.path.isabs(action_path):
+            action_path = os.path.join(
+                DESIGN_DATA_DIRECTORY, VALIDATION_PROBLEM_NAME,
+                'BarActions', action_path,
             )
-        except ImportError:
-            print("Cannot import DESIGN_STUDY_BAR_NAME_TO_INDEX; constrained planner will not have an active bar.")
-            return
 
-        base = os.path.basename(state_filename)
-        target = base.replace("_RobotCellState.json", "")
-        if target not in DESIGN_STUDY_BAR_NAME_TO_INDEX:
-            print(f"Cell state target {target!r} not in DESIGN_STUDY_BAR_NAME_TO_INDEX; constrained planner will not have an active bar.")
-            self.active_bar_body = None
-            self.active_bar_name = None
-            self.active_bar_aabb_dims = None
-            return
+        print(f"Loading BarAction: {action_path}")
 
-        bar_name = f"b{DESIGN_STUDY_BAR_NAME_TO_INDEX[target]}_0"
-        if bar_name not in self.static_obstacles:
-            print(f"Active bar {bar_name!r} (target={target!r}) not found in static_obstacles after loading state. Has the cell state been loaded with the right RobotCell.json?")
-            self.active_bar_body = None
-            self.active_bar_name = None
-            self.active_bar_aabb_dims = None
-            return
+        # 2) Parse + resolve movement.
+        try:
+            action = parse_bar_action(action_path)
+            idx, mv = find_movement(action, movement)
+        except Exception as e:
+            print(f"Error parsing BarAction: {e}")
+            return False
 
-        bar_body = self.static_obstacles[bar_name]
-        self.active_bar_body = bar_body
-        self.active_bar_name = bar_name
-        self.active_bar_aabb_dims = pp.get_aabb_extent(pp.get_aabb(bar_body))
+        # 3) Ensure a cfab session for this problem.
+        if self.cfab is None or self.cfab.problem_name != VALIDATION_PROBLEM_NAME:
+            if self.cfab is not None:
+                self.cfab.close()
+            try:
+                self.cfab = CfabSession(VALIDATION_PROBLEM_NAME)
+            except Exception as e:
+                print(f"Error initializing CfabSession for {VALIDATION_PROBLEM_NAME}: {e}")
+                self.cfab = None
+                return False
+
+        if mv.start_state is None:
+            print(f"Movement {mv.movement_id!r} has no start_state; skipping.")
+            return False
+
+        # 4) Reset monitor BarAction tracking fields.
+        self.current_action = action
+        self.current_movement = mv
+        self.current_movement_index = idx
+        self.movement_type = movement_type(mv)
+        self.movement_start_state = mv.start_state
+        self.target_ee_frames = mv.target_ee_frames or None
+        self.active_bar_name = f"bar_{action.active_bar_id}"
+
+        # Read grasp (= attachment_frame of the active bar in the gripper
+        # link's frame). Same info already lives in start_state; we cache
+        # for downstream planner consumers.
+        rb_states = getattr(mv.start_state, 'rigid_body_states', {}) or {}
+        bar_rb = rb_states.get(self.active_bar_name)
+        if bar_rb is not None and bar_rb.attachment_frame is not None:
+            self.grasp_link_from_bar = bar_rb.attachment_frame
+        else:
+            self.grasp_link_from_bar = None
+
+        # 5) Push state into the cfab planner. This materializes all rigid
+        # body poses, attaches tool bodies to their parent links, and sets
+        # up the ACM internally.
+        try:
+            self.cfab.planner.set_robot_cell_state(mv.start_state)
+        except Exception as e:
+            print(f"Error setting cfab robot cell state: {e}")
+            return False
+
+        # 6) Sanity-check the start state for collisions (non-fatal).
+        try:
+            self.cfab.planner.check_collision(
+                mv.start_state,
+                {"_skip_set_robot_cell_state": True,
+                 "full_report": False, "verbose": False},
+            )
+            print(f"Start state of {mv.movement_id} is collision-free.")
+        except CollisionCheckError as e:
+            n_pairs = len(getattr(e, 'collision_pairs', None) or [])
+            first = (e.message.splitlines()[0] if e.message else "(no message)")
+            print(f"WARN: start state of {mv.movement_id} has "
+                  f"{n_pairs} collision pair(s); continuing. First: {first}")
+
+        # 7) Extract goal_arm_pose / goal_base_pose from start_state's
+        # robot_configuration (for visualization + downstream IK seed).
+        if hasattr(mv.start_state, 'robot_configuration') and \
+                mv.start_state.robot_configuration is not None:
+            robot_config = mv.start_state.robot_configuration
+            if hasattr(robot_config, 'joint_values') and hasattr(robot_config, 'joint_names'):
+                from husky_assembly_teleop.utils import HUSKY_DUAL_UR5e_JOINT_NAMES
+                left_arm_names = HUSKY_DUAL_UR5e_JOINT_NAMES[0]
+                right_arm_names = HUSKY_DUAL_UR5e_JOINT_NAMES[1]
+                try:
+                    self.goal_arm_pose[0] = np.array(
+                        [robot_config[n] for n in left_arm_names])
+                    self.goal_arm_pose[1] = np.array(
+                        [robot_config[n] for n in right_arm_names])
+                    if update_goal_state:
+                        self.reset_ui(self.goal_arm_pose)
+                except (KeyError, AttributeError) as e:
+                    print(f"WARN: could not extract arm joint values: {e}")
+        if hasattr(mv.start_state, 'robot_base_frame') and \
+                mv.start_state.robot_base_frame is not None:
+            self.goal_base_pose = pose_from_frame(mv.start_state.robot_base_frame)
+
+        if update_goal_state:
+            self.set_to_show_goal_state()
+
         print(
-            f"Active bar identified by filename: target={target!r} -> "
-            f"{bar_name!r} (body={bar_body}); aabb_dims={self.active_bar_aabb_dims}"
+            f"Loaded BarAction {action.action_id} "
+            f"movement[{idx}]={mv.movement_id} ({self.movement_type}) "
+            f"active_bar={action.active_bar_id} "
+            f"rigid_bodies={len(self.cfab.client.rigid_bodies_puids)}"
         )
+        return True
 
-    def _load_grasp_targets_if_available(self, state_filepath):
-        """Load GraspTargets JSON alongside a cell state, if present.
+    def get_active_bar_aabb_dims(self):
+        """AABB extents (m) of the active bar mesh from the RobotCell model.
 
-        Convention: `<target>_GraspTargets.json` lives in the same directory
-        as `<target>_RobotCellState.json`. The JSON encodes authored
-        (world_from_bar, world_from_tool0) pairs for left and right arms.
-
-        On success: populates self.grasp_targets_override = (grasp_bar_from_left,
-        grasp_bar_from_right) and repositions self.active_bar_body to the
-        JSON's authored goal bar pose. This bypasses FK-derivation in
-        plan_and_stage_constrained, which is necessary because FK at goal_conf
-        has a ~50mm calibration offset against the authored values.
+        Used by the constrained planner to seed RRT feature points. Cached
+        on first call.
         """
-        # Reset prior override
-        self.grasp_targets_override = None
-        if not state_filepath.endswith("_RobotCellState.json"):
-            return
-        grasp_path = state_filepath.replace("_RobotCellState.json", "_GraspTargets.json")
-        if not os.path.exists(grasp_path):
-            print(f"No GraspTargets JSON at {os.path.basename(grasp_path)}; will FK-derive grasps (may be inaccurate)")
-            return
+        if self.active_bar_aabb_dims is not None:
+            return self.active_bar_aabb_dims
+        if self.cfab is None or self.active_bar_name is None:
+            return None
+        rb_model = self.cfab.robot_cell.rigid_body_models.get(self.active_bar_name)
+        if rb_model is None:
+            return None
+        # Walk visual meshes (in meters) and compute the per-axis extents.
         try:
-            from husky_assembly_tamp.motion_planner.stage1.minimal_rrt import (
-                load_grasp_targets, get_goal_pose_from_grasp_targets,
+            meshes = getattr(rb_model, 'visual_meshes_in_meters', None) or []
+            if not meshes:
+                meshes = getattr(rb_model, 'collision_meshes_in_meters', None) or []
+            if not meshes:
+                return None
+            xs, ys, zs = [], [], []
+            for m in meshes:
+                for v in m.vertices():
+                    pt = m.vertex_coordinates(v)
+                    xs.append(pt[0]); ys.append(pt[1]); zs.append(pt[2])
+            if not xs:
+                return None
+            self.active_bar_aabb_dims = (
+                max(xs) - min(xs), max(ys) - min(ys), max(zs) - min(zs),
             )
-            grasp_targets = load_grasp_targets(grasp_path)
+            return self.active_bar_aabb_dims
         except Exception as e:
-            print(f"Failed to load grasp targets from {os.path.basename(grasp_path)}: {e}")
-            return
-        if len(grasp_targets) < 2:
-            print(f"Expected >=2 grasp targets in {os.path.basename(grasp_path)}; got {len(grasp_targets)}")
-            return
-        world_from_bar_l, world_from_tool0_left = grasp_targets[0]
-        world_from_bar_r, world_from_tool0_right = grasp_targets[1]
-        grasp_bar_from_left = pp.multiply(pp.invert(world_from_bar_l), world_from_tool0_left)
-        grasp_bar_from_right = pp.multiply(pp.invert(world_from_bar_r), world_from_tool0_right)
-        self.grasp_targets_override = (grasp_bar_from_left, grasp_bar_from_right)
-        # Reposition the active bar body to the JSON's goal pose so
-        # plan_and_stage_constrained's `pp.get_pose(active_bar_body)` reads
-        # an authored value rather than the cell state's frame.
-        if self.active_bar_body is not None:
-            json_world_from_bar_goal = get_goal_pose_from_grasp_targets(grasp_targets)
-            pp.set_pose(self.active_bar_body, json_world_from_bar_goal)
-        print(f"Loaded grasp targets from {os.path.basename(grasp_path)}; active bar repositioned to JSON goal.")
-
-    def _load_robot_cell(self, validation_problem_name):
-        """
-        Load and cache the RobotCell.json file for the given validation problem.
-        
-        Parameters
-        ----------
-        validation_problem_name : str
-            The name of the validation problem directory.
-            
-        Returns
-        -------
-        RobotCell
-            The loaded robot cell.
-        """
-        robot_cell_path = os.path.join(
-            DESIGN_DATA_DIRECTORY,
-            validation_problem_name,
-            'RobotCell.json'
-        )
-        
-        # Check if we already have this robot cell cached
-        if self._robot_cell_cache is not None and self._robot_cell_cache_path == robot_cell_path:
-            return self._robot_cell_cache
-            
-        if not os.path.exists(robot_cell_path):
-            print(f"RobotCell.json not found at: {robot_cell_path}")
-            return None
-            
-        try:
-            from compas.data import json_load
-            robot_cell = json_load(robot_cell_path)
-            
-            # Cache the robot cell
-            self._robot_cell_cache = robot_cell
-            self._robot_cell_cache_path = robot_cell_path
-            
-            print(f"Loaded and cached RobotCell from: {robot_cell_path}")
-            return robot_cell
-            
-        except Exception as e:
-            print(f"Error loading RobotCell: {e}")
+            print(f"WARN: failed to compute active bar AABB: {e}")
             return None
 
-    def load_rigid_body_states_as_obstacles(self, robot_cell_state):
-        """
-        Load rigid body states from a RobotCellState and create/update static obstacles.
-        
-        Parameters
-        ----------
-        robot_cell_state : RobotCellState
-            The robot cell state containing rigid body states to load as obstacles.
-        """
-        if not hasattr(robot_cell_state, 'rigid_body_states'):
-            print("No rigid body states found in robot cell state")
-            return
-            
-        # Load the RobotCell to get rigid body models
-        robot_cell = self._load_robot_cell(VALIDATION_PROBLEM_NAME)
-        if robot_cell is None:
-            print("Could not load RobotCell, falling back to simple box obstacles")
-            self._load_rigid_body_states_as_simple_obstacles(robot_cell_state)
-            return
-             
-        # Process each rigid body state
-        for rigid_body_name, rigid_body_state in robot_cell_state.rigid_body_states.items():
-            # if active_bar_name and rigid_body_name != active_bar_name:
-            #     continue
-
-            # Skip hidden rigid bodies
-            if rigid_body_state.is_hidden:
-                continue
-
-            # Detect the active bar (rigid body grasped by a tool). Spawn it in the
-            # scene at its frame from the cell state - pose is overridden later in
-            # the constrained planner. Only the FIRST such body is tracked.
-            if rigid_body_state.attached_to_tool is not None:
-                if self.active_bar_body is not None and self.active_bar_name == rigid_body_name:
-                    # already spawned; just update pose if frame is provided
-                    if rigid_body_state.frame is not None:
-                        pp.set_pose(self.active_bar_body, pose_from_frame(rigid_body_state.frame))
-                elif rigid_body_state.frame is not None:
-                    bar_pose = pose_from_frame(rigid_body_state.frame)
-                    bar_body = self._create_rigid_body_obstacle(rigid_body_name, robot_cell, bar_pose)
-                    if bar_body is not None:
-                        self.active_bar_body = bar_body
-                        self.active_bar_name = rigid_body_name
-                        aabb = pp.get_aabb(bar_body)
-                        self.active_bar_aabb_dims = pp.get_aabb_extent(aabb)
-                        print(f"Spawned active bar {rigid_body_name!r} (body={bar_body}); aabb_dims={self.active_bar_aabb_dims}")
-                    else:
-                        print(f"Failed to spawn active bar {rigid_body_name!r} via mesh; constrained planner will not work for this state")
-                continue  # don't fall through to obstacle path
-
-            # Skip rigid bodies that are attached to tools or links (they move with the robot)
-            if rigid_body_state.attached_to_tool or rigid_body_state.attached_to_link:
-                continue
-
-            # Get the frame from the rigid body state
-            if rigid_body_state.frame is None:
-                print(f"Warning: No frame data for rigid body {rigid_body_name}")
-                continue
-
-            # Convert frame to pose (position and quaternion)
-            pose = pose_from_frame(rigid_body_state.frame)
- 
-            # Check if obstacle already exists
-            if rigid_body_name in self.static_obstacles:
-                # Update existing obstacle pose
-                pp.set_pose(self.static_obstacles[rigid_body_name], pose)
-                print(f"Updated obstacle {rigid_body_name} pose")
-            else:
-                # Create new obstacle using real collision geometry from RobotCell
-                obstacle_body = self._create_rigid_body_obstacle(rigid_body_name, robot_cell, pose)
-                if obstacle_body is not None:
-                    # Create a simple wrapper to store the obstacle with name
-                    # obstacle = StaticObstacle(rigid_body_name, obstacle_body)
-                    self.add_static_obstacles(obstacle_body, rigid_body_name)
-                    print(f"Created new obstacle {rigid_body_name} with real collision geometry")
-                else:
-                    print(f"Failed to create obstacle {rigid_body_name}, falling back to simple box")
-                    # Fallback to simple box
-                    obstacle_body = pp.create_box(0.1, 0.1, 0.1, color=pp.GREY, mass=pp.STATIC_MASS)
-                    pp.set_pose(obstacle_body, pose)
-                   
-                    self.add_static_obstacles(obstacle_body, rigid_body_name)
-                    print(f"Created fallback box obstacle {rigid_body_name}")
-
-    def _create_rigid_body_obstacle(self, rigid_body_name, robot_cell, pose):
-        """
-        Create a PyBullet obstacle from a rigid body model using real collision geometry.
-        
-        Parameters
-        ----------
-        rigid_body_name : str
-            The name of the rigid body.
-        robot_cell : RobotCell
-            The robot cell containing rigid body models.
-        pose : tuple
-            The pose (position, quaternion) for the obstacle.
-            
-        Returns
-        -------
-        int or None
-            The PyBullet body ID, or None if creation failed.
-        """
-        if rigid_body_name not in robot_cell.rigid_body_models:
-            print(f"Rigid body model {rigid_body_name} not found in RobotCell")
-            return None
-            
-        rigid_body_model = robot_cell.rigid_body_models[rigid_body_name]
-        
-        try:
-            # Create temporary directory for mesh files (similar to PyBullet client)
-            import tempfile
-            temp_dir = tempfile.mkdtemp()
-            
-            # Process visual meshes
-            visual_path = None
-            if rigid_body_model.visual_meshes and len(rigid_body_model.visual_meshes) > 0:
-                from compas.datastructures import Mesh
-                visual_mesh = Mesh()
-                for m in rigid_body_model.visual_meshes_in_meters:
-                    visual_mesh.join(m, precision=12)
-                visual_path = os.path.join(temp_dir, f"{rigid_body_name}_visual.obj")
-                visual_mesh.to_obj(visual_path)
-            
-            # Process collision meshes
-            collision_path = None
-            if rigid_body_model.collision_meshes and len(rigid_body_model.collision_meshes) > 0:
-                from compas.datastructures import Mesh
-                collision_mesh = Mesh()
-                for m in rigid_body_model.collision_meshes_in_meters:
-                    collision_mesh.join(m, precision=12)
-                collision_path = os.path.join(temp_dir, f"{rigid_body_name}_collision.obj")
-                collision_mesh.to_obj(collision_path)
-            
-            # Create PyBullet body from mesh files
-            obstacle_body = pp.create_obj(visual_path or collision_path, mass=pp.STATIC_MASS)
-            
-            if obstacle_body is not None:
-                # Set the pose
-                pp.set_pose(obstacle_body, pose)
-                # Set color
-                pp.set_color(obstacle_body, pp.GREY)
-                
-            # Clean up temporary directory
-            import shutil
-            shutil.rmtree(temp_dir, ignore_errors=True)
-            
-            return obstacle_body
-            
-        except Exception as e:
-            print(f"Error creating rigid body obstacle {rigid_body_name}: {e}")
-            return None
-
-    def _load_rigid_body_states_as_simple_obstacles(self, robot_cell_state):
-        """
-        Fallback method to create simple box obstacles when RobotCell is not available.
-        
-        Parameters
-        ----------
-        robot_cell_state : RobotCellState
-            The robot cell state containing rigid body states to load as obstacles.
-        """
-        # Process each rigid body state
-        for rigid_body_name, rigid_body_state in robot_cell_state.rigid_body_states.items():
-            # Skip hidden rigid bodies
-            if rigid_body_state.is_hidden:
-                continue
-                
-            # Skip rigid bodies that are attached to tools or links (they move with the robot)
-            if rigid_body_state.attached_to_tool or rigid_body_state.attached_to_link:
-                continue
-                
-            # Get the frame from the rigid body state
-            if rigid_body_state.frame is None:
-                print(f"Warning: No frame data for rigid body {rigid_body_name}")
-                continue
-                
-            # Convert frame to pose (position and quaternion)
-            pose = pose_from_frame(rigid_body_state.frame)
-           
-            # Check if obstacle already exists
-            if rigid_body_name in self.static_obstacles:
-                # Update existing obstacle pose
-                obstacle = self.static_obstacles[rigid_body_name]
-                pp.set_pose(obstacle, pose)
-                print(f"Updated obstacle {rigid_body_name} pose")
-            else:
-                # Create simple box obstacle as fallback
-                obstacle_body = pp.create_box(0.1, 0.1, 0.1, color=pp.GREY, mass=pp.STATIC_MASS)
-                pp.set_pose(obstacle_body, pose)
-                 
-                # obstacle = StaticObstacle(rigid_body_name, obstacle_body)
-                self.add_static_obstacles(obstacle_body, rigid_body_name)
-                print(f"Created fallback box obstacle {rigid_body_name}")
 
     def load_joint_trajectory(self):
         """
@@ -1453,27 +1197,22 @@ class HuskyMonitor(Node):
             print(f"Selected trajectory: {self.available_joint_trajectories[self.selected_trajectory_index]}")
 
     def _load_available_robot_cell_states(self):
+        """Return sorted *.json BarAction filenames under <problem>/BarActions/.
+
+        Attribute is kept under the legacy name for back-compat with
+        UI/widgets and existing callers; contents are now BarAction files.
         """
-        Load available robot cell state files from the hardcoded directory.
-        """
-        state_dir = os.path.join(
-            DESIGN_DATA_DIRECTORY,
-            VALIDATION_PROBLEM_NAME,
-            'RobotCellStates'
+        action_dir = os.path.join(
+            DESIGN_DATA_DIRECTORY, VALIDATION_PROBLEM_NAME, 'BarActions',
         )
-
-        if not os.path.exists(state_dir):
-            print(f"Robot cell states directory does not exist: {state_dir}")
+        files = list_bar_actions(action_dir)
+        if not files:
+            print(f"No BarAction *.json files under: {action_dir}")
             return []
-        
-        state_files = [f for f in os.listdir(state_dir) if f.endswith('.json')]
-        state_files.sort()
-
-        print(f"Found {len(state_files)} robot cell state files:")
-        for i, filename in enumerate(state_files):
-            print(f"  {i}: {filename}")
-
-        return state_files
+        print(f"Found {len(files)} BarAction files:")
+        for i, fname in enumerate(files):
+            print(f"  {i}: {fname}")
+        return files
 
     def _load_available_joint_trajectories(self):
         """
@@ -1648,23 +1387,23 @@ class HuskyMonitor(Node):
             self.buttons.append(Button('Draw TCP Pose', lambda: world.draw_tcp_pose(self)))
 
         if self.BOARD_VALIDATION:
-            self.dump_sep_sliders.append(Slider("----------State Loading", lambda : None))
-            
-            # Load available robot cell states if not already loaded
+            self.dump_sep_sliders.append(Slider("----------BarAction Loading", lambda : None))
+
+            # Load available BarAction files if not already loaded
             if not self.available_robot_cell_states:
                 self.available_robot_cell_states = self._load_available_robot_cell_states()
-            
-            # Create slider for selecting robot cell state
+
+            # Create slider for selecting BarAction
             if self.available_robot_cell_states:
                 max_index = len(self.available_robot_cell_states) - 1
                 self.board_validation_state_slider = Slider(
-                    "Robot Cell State", 
-                    self.update_board_validation_state_index, 
+                    "Bar Action",
+                    self.update_board_validation_state_index,
                     0, max_index, self.selected_state_index
                 )
-                
-                # Add button to load the selected state
-                self.buttons.append(Button('Load Robot Cell State', self.load_board_validation_state))
+
+                # Add button to load the selected BarAction (default movement = M1)
+                self.buttons.append(Button('Load BarAction (M1)', self.load_bar_action))
 
                 # Constrained dual-arm planner controls.
                 # Stored as named attributes so update() polls them — items
@@ -2090,10 +1829,10 @@ class HuskyMonitor(Node):
             print("Executing both arm trajectories via keyboard 'Enter'...")
             world.execute_arm_trajectory_both(self)
         
-        # Space key (32) to load board validation state
+        # Space key (32) to load the selected BarAction (movement = M1 default)
         if (32 in keys and keys[32] & p.KEY_WAS_TRIGGERED):
-            print("Loading board validation state via keyboard 'Space'...")
-            self.load_board_validation_state()
+            print("Loading BarAction via keyboard 'Space'...")
+            self.load_bar_action()
         
         # Key "9" to load joint trajectory
         if (ord("9") in keys and keys[ord("9")] & p.KEY_WAS_TRIGGERED):
@@ -2125,12 +1864,14 @@ class HuskyMonitor(Node):
         # update robot state
         for i, h in enumerate(self.huskies):
             hi = h.interface
-            if self.USE_MOCAP:
-                # these position and rotation are updated by mocap in a differen thread
+            if self.USE_MOCAP and not self.USE_CELL_STATE_BASE_POSE:
+                # mocap drives the husky base pose
                 h.object.set_pose((hi.position, hi.rotation), hi.arm_joint_pose)
                 # set the goal pose of base since we are teleoperating the base
                 self.goal_base_pose = (hi.position, hi.rotation)
             else:
+                # base is whatever the cell state set (or sliders set);
+                # mocap only drives EE tracking in this branch
                 h.object.set_pose(self.goal_base_pose, hi.arm_joint_pose)
 
         # pp.draw_pose(self.goal_model.get_link_pose_from_name("ur_arm_base_link"))

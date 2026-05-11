@@ -1,39 +1,42 @@
-"""Headless integration test that drives the *real* HuskyMonitor methods.
+"""Headless integration test for the BarAction (cfab) planning path.
 
-Unlike `headless_constrained_monitor.py` (which uses a SimpleNamespace mock),
-this script bypasses HuskyMonitor.__init__ via `object.__new__`, populates the
-attributes the methods read, then invokes the actual methods that the GUI
-buttons would invoke:
+Uses ONLY the cfab PyBullet client (compas_fab `PyBulletPlanner`) — no
+parallel `pybullet_planning` world. Drives real ``HuskyMonitor`` methods
+without ROS / mocap:
 
-  1. monitor.load_board_validation_state()    <- "Load Robot Cell State" button
-  2. husky_world.plan_and_stage_constrained() <- "Plan & Stage Constrained" button
+  1. ``monitor.load_bar_action(action_path, movement)``  <- "Load BarAction" button
+  2. ``husky_world.plan_and_stage_constrained(monitor)`` <- emulates the
+     "Plan & Stage Constrained" button; runs the staging + constrained
+     dual-arm planners against the loaded movement.
 
-This catches integration regressions in the loading flow (e.g., the
-active-bar identification that the antenna dataset broke) without needing
-ROS, GUI, or manual button clicks.
+With ``--gui``, the cfab client opens its own PyBullet window (showing
+the full RobotCell scene: husky + rigid bodies including tools and
+bars) and two debug sliders (staging + constrained) let you scrub the
+two resulting trajectories.
 
-Usage (with ros2_ws venv active):
-  python src/husky-assembly-teleop/scripts/headless_live_monitor_test.py [--target D1] [--stage 3]
+Usage (with ros2_ws venv active + install/setup.bash sourced):
+  python src/husky-assembly-teleop/scripts/headless_live_monitor_test.py \\
+      --bar-action B6.json --movement M1 [--gui]
+
+  # save successful plan + replay later:
+  ... --save-plan /tmp/B6_M1.json
+  ... --replay  /tmp/B6_M1.json --gui
 """
+
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from types import SimpleNamespace
-from typing import Optional
 
 import numpy as np
-import pybullet_planning as pp
 
 
-URDF = (
-    "/home/yijiangh/Code/ros2_ws/src/husky-assembly-teleop/data/husky_urdf/"
-    "mt_husky_dual_ur5_e_moveit_config/urdf/"
-    "husky_dual_ur5_e_no_base_joint_All_Calibrated.urdf"
-)
-
-ANTENNA_PROBLEM = "250929_New_Antenna_with_GH_RH_Packed"
+DEFAULT_PROBLEM = "2026-05-08_dual-arm_transfer_test"
+DEFAULT_BAR_ACTION = "B6.json"
+DEFAULT_MOVEMENT = "M1"
 
 
 class StubLogger:
@@ -42,292 +45,528 @@ class StubLogger:
     def error(self, msg): print(f"[ERROR] {msg}")
 
 
-def _patch_validation_problem(antenna_problem: str) -> None:
-    """Monkey-patch VALIDATION_PROBLEM_NAME inside husky_monitor's module
-    scope so methods that close over it see the antenna dataset."""
+def _patch_validation_problem(problem: str) -> None:
     from husky_assembly_teleop import husky_monitor as hm
-    hm.VALIDATION_PROBLEM_NAME = antenna_problem
+    hm.VALIDATION_PROBLEM_NAME = problem
 
 
-def _build_husky(robot_body):
-    """Construct a husky-shaped object with .object.robot and .object.ee_list."""
-    from husky_assembly_tamp.motion_planner.stage1.minimal_rrt import (
-        TOOL_LINK_LEFT, TOOL_LINK_RIGHT,
-    )
-    tool0_L = pp.link_from_name(robot_body, TOOL_LINK_LEFT)
-    tool0_R = pp.link_from_name(robot_body, TOOL_LINK_RIGHT)
-    pose_L = pp.get_link_pose(robot_body, tool0_L)
-    pose_R = pp.get_link_pose(robot_body, tool0_R)
-    gL = pp.create_box(0.05, 0.05, 0.05, color=(0.2, 0.2, 0.8, 1.0), mass=pp.STATIC_MASS)
-    gR = pp.create_box(0.05, 0.05, 0.05, color=(0.8, 0.2, 0.2, 1.0), mass=pp.STATIC_MASS)
-    pp.set_pose(gL, pose_L)
-    pp.set_pose(gR, pose_R)
-    aL = pp.create_attachment(robot_body, tool0_L, gL)
-    aR = pp.create_attachment(robot_body, tool0_R, gR)
-    husky_object = SimpleNamespace(
-        robot=robot_body,
-        ee_list=[(gL, aL), (gR, aR)],
-        dual_arm=True,
-    )
-    return SimpleNamespace(object=husky_object, interface=SimpleNamespace())
-
-
-def _bypass_init_monitor(robot_body, stage: int = 3):
-    """Construct a HuskyMonitor without running its real __init__.
-
-    We use object.__new__ to skip ROS Node init, mocap, world.init, etc.,
-    then populate exactly the attributes the methods we'll call read.
-    """
+def _bypass_init_monitor():
+    """Construct a HuskyMonitor without running __init__ (no ROS / mocap / pp)."""
     from husky_assembly_teleop.husky_monitor import HuskyMonitor
 
     monitor = object.__new__(HuskyMonitor)
 
-    # State the loading flow reads
-    monitor.huskies = [_build_husky(robot_body)]
+    # NOTE: no pp client, no pp robot, no static_obstacles dict. cfab owns
+    # the full scene. `huskies` is an empty list — load_bar_action and the
+    # planner entry don't read from it (we patch it post-load in main()).
+    monitor.huskies = []
     monitor.selected_robot_id = 0
     monitor.static_obstacles = {}
+
+    # Legacy active-bar tracking (unused on BarAction path).
     monitor.active_bar_body = None
     monitor.active_bar_aabb_dims = None
     monitor.active_bar_name = None
-    monitor.constrained_planner_stage = stage
+    monitor.active_extra_bodies = []
+    monitor.bar_from_extra = []
+
+    # BarAction / cfab state (populated by load_bar_action).
+    monitor.cfab = None
+    monitor.current_action = None
+    monitor.current_movement = None
+    monitor.current_movement_index = None
+    monitor.movement_type = None
+    monitor.movement_start_state = None
+    monitor.target_ee_frames = None
+    monitor.grasp_link_from_bar = None
+    monitor.movement_goal_state = None
+
+    monitor.constrained_planner_stage = 3
     monitor.staging_free_trajectory = [None, None]
     monitor.constrained_trajectory = [None, None]
     monitor.constrained_display_mode = 0
-    monitor.grasp_targets_override = None
 
-    # Cache for _load_robot_cell
-    monitor._robot_cell_cache = None
-    monitor._robot_cell_cache_path = None
-
-    # Cell-state slider state
+    # State-slider state (BarAction filenames in this list).
     monitor.available_robot_cell_states = []
     monitor.selected_state_index = 0
     monitor.available_joint_trajectories = []
     monitor.selected_trajectory_index = 0
 
-    # Goal interface state
+    # Goal interface state.
     monitor.goal_arm_pose = [np.zeros(6), np.zeros(6)]
     monitor.goal_base_pose = (np.zeros(3), np.array([0.0, 0.0, 0.0, 1.0]))
     monitor.show_goal_state = False
     monitor.trajectory_time = 20.0
     monitor.selected_arm_index = 0
 
-    # Methods that get called as side-effects — stub them out
-    captured = {"set_arm_trajectory": [], "show_traj_state_calls": 0,
-                "show_goal_state_calls": 0, "reset_ui_calls": 0}
+    # Method stubs.
+    captured = {"reset_ui_calls": 0, "show_goal_state_calls": 0,
+                "set_arm_trajectory": []}
 
     def _set_arm_trajectory(traj, index=0):
         captured["set_arm_trajectory"].append((index, traj))
+
     def _set_to_show_traj_state():
-        captured["show_traj_state_calls"] += 1
+        pass
+
     def _set_to_show_goal_state():
         captured["show_goal_state_calls"] += 1
+
     def _reset_ui(target_conf=None):
         captured["reset_ui_calls"] += 1
-    def _refresh_constrained_displayed_trajectory():
-        src = (monitor.constrained_trajectory if monitor.constrained_display_mode == 1
-               else monitor.staging_free_trajectory)
-        if src[0] is not None and src[1] is not None:
-            monitor.set_arm_trajectory(src[0], index=0)
-            monitor.set_arm_trajectory(src[1], index=1)
-            monitor.set_to_show_traj_state()
 
     monitor.set_arm_trajectory = _set_arm_trajectory
     monitor.set_to_show_traj_state = _set_to_show_traj_state
     monitor.set_to_show_goal_state = _set_to_show_goal_state
     monitor.reset_ui = _reset_ui
-    monitor._refresh_constrained_displayed_trajectory = _refresh_constrained_displayed_trajectory
 
-    # ROS Node.get_logger() stub
     _logger = StubLogger()
     monitor.get_logger = lambda: _logger
-
-    # Capture handle for assertions
     monitor._captured = captured
     return monitor
 
 
-def _diagnose_endpoint_collisions(monitor, robot, arm_joints, start_conf,
-                                  goal_conf, world_from_bar_start,
-                                  world_from_bar_goal):
-    """Print all bodies in close-contact with the active bar at start and goal poses.
+def _sample_feasible_staging_seed(monitor, base_conf, *,
+                                  max_attempts: int = 200, perturb: float = 0.6,
+                                  seed: int = 0):
+    """Sample a collision-free 12-DOF config near `base_conf` for the staging
+    plan's START. Only relevant in the headless test — the live monitor
+    starts from a real (always-feasible) robot pose.
 
-    Useful when plan_pose_rrt reports 'start_in_collision' or 'goal_in_collision'
-    to identify exactly which obstacle is the offender. Probes within 5cm so we
-    see near-misses too.
+    UR5e HOME = [0, -π/2, 0, -π/2, 0, π/2] sits ~2mm inside the
+    shoulder/base self-collision margin on the dual-arm husky URDF, which
+    makes `plan_free_dual_arm` reject it as "initial conf in collision".
+
+    Uses `pp.get_collision_fn` with `self_collisions=1, max_distance=0` to
+    match exactly what `plan_transit_motion` (the staging planner) checks
+    internally — so a seed that passes here will pass there too.
     """
-    import pybullet as pb
-    name_from_body = {body: name for name, body in monitor.static_obstacles.items()}
-    name_from_body[robot] = "ROBOT"
-    name_from_body[monitor.active_bar_body] = monitor.active_bar_name
+    import pybullet_planning as pp
+    from husky_assembly_teleop.utils import HUSKY_DUAL_UR5e_JOINT_NAMES
 
-    for label, conf, bar_pose in [
-        ("START", start_conf, world_from_bar_start),
-        ("GOAL", goal_conf, world_from_bar_goal),
-    ]:
-        with pp.WorldSaver():
-            pp.set_joint_positions(robot, arm_joints, conf)
-            pp.set_pose(monitor.active_bar_body, bar_pose)
-            pb.performCollisionDetection()
-            print(f"  [{label}] bar+robot contacts within 5cm:")
-            shown = 0
-            for body in pp.get_bodies():
-                if body == monitor.active_bar_body:
-                    continue
-                # bar vs body
-                pts = pb.getClosestPoints(monitor.active_bar_body, body, distance=0.05)
-                if pts:
-                    name = name_from_body.get(body, f"<body {body}>")
-                    depths = sorted([round(pt[8], 4) for pt in pts])[:3]
-                    flag = " *INSIDE*" if depths[0] < 0 else ""
-                    print(f"    bar  vs {name:24s}: gap/penetration {depths}{flag}")
-                    shown += 1
-                # robot vs body (skip bar — already covered)
-                if body == robot:
-                    continue
-                rpts = pb.getClosestPoints(robot, body, distance=0.05)
-                if rpts:
-                    rdepths = sorted([round(pt[8], 4) for pt in rpts])[:3]
-                    rflag = " *INSIDE*" if rdepths[0] < 0 else ""
-                    if rdepths[0] < 0.001:  # only show actual penetration / tight contact
-                        name = name_from_body.get(body, f"<body {body}>")
-                        print(f"    robot vs {name:24s}: gap/penetration {rdepths}{rflag}")
-                        shown += 1
-            if shown == 0:
-                print("    (none)")
+    all_names = list(HUSKY_DUAL_UR5e_JOINT_NAMES[0]) + list(HUSKY_DUAL_UR5e_JOINT_NAMES[1])
+    robot = monitor.cfab.client.robot_puid
+    all_joints = pp.joints_from_names(robot, all_names)
+    collision_fn = pp.get_collision_fn(
+        robot, all_joints,
+        obstacles=[],          # staging excludes the bar; static obstacles are world objs
+        attachments=[],        # staging plan doesn't carry the bar
+        self_collisions=1,
+        max_distance=0,
+    )
+
+    base_conf = np.asarray(base_conf, dtype=float)
+    rng = np.random.default_rng(seed)
+
+    with pp.WorldSaver():
+        for attempt in range(max_attempts):
+            q = base_conf if attempt == 0 else (
+                base_conf + rng.uniform(-perturb, perturb, size=12))
+            if not collision_fn(tuple(q.tolist())):
+                if attempt > 0:
+                    print(f"[seed] feasible staging seed sampled at attempt "
+                          f"{attempt+1}/{max_attempts} (|Δ|={float(np.linalg.norm(q - base_conf)):.3f} rad).")
+                return q
+    print(f"[seed] WARN: no collision-free staging seed in {max_attempts} "
+          f"attempts; falling back to base conf.")
+    return base_conf
 
 
-def main(target: str = "D1", stage: int = 3, max_time: float = 10.0,
-         max_attempts: int = 5, diagnose: bool = False,
-         antenna_problem: str = ANTENNA_PROBLEM) -> int:
-    print(f"=== headless_live_monitor_test: target={target}, stage={stage} ===")
+def _save_plan(monitor, path: str) -> None:
+    """Dump the planned trajectories + metadata to JSON for offline replay."""
+    from husky_assembly_teleop.utils import HUSKY_DUAL_UR5e_JOINT_NAMES
 
-    _patch_validation_problem(antenna_problem)
+    def _arm_path_from_traj(traj):
+        if traj is None or traj[0] is None or traj[1] is None:
+            return None
+        return {
+            "left":  np.asarray(traj[0][0], dtype=float).tolist(),
+            "right": np.asarray(traj[1][0], dtype=float).tolist(),
+        }
 
-    pp.connect(use_gui=False)
+    payload = {
+        "schema": "husky_bar_action_plan/v1",
+        "bar_action": getattr(monitor.current_action, "action_id", None),
+        "movement_id": monitor.current_movement.movement_id,
+        "movement_index": monitor.current_movement_index,
+        "joint_names": {
+            "left":  list(HUSKY_DUAL_UR5e_JOINT_NAMES[0]),
+            "right": list(HUSKY_DUAL_UR5e_JOINT_NAMES[1]),
+        },
+        "staging_trajectory": _arm_path_from_traj(
+            getattr(monitor, "staging_free_trajectory", None)),
+        "constrained_trajectory": _arm_path_from_traj(
+            getattr(monitor, "constrained_trajectory", None)),
+    }
+    os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(payload, f, indent=2)
+    print(f"[save] plan written to {path}")
+
+
+def _load_plan(monitor, path: str) -> bool:
+    """Populate `monitor.constrained_trajectory` and `staging_free_trajectory`
+    from a saved plan JSON. Returns True iff a constrained trajectory was
+    loaded (the staging trajectory is optional).
+    """
+    with open(path) as f:
+        payload = json.load(f)
+    if payload.get("schema") != "husky_bar_action_plan/v1":
+        print(f"[load] WARN: unknown schema {payload.get('schema')!r}")
+
+    def _traj_from_dict(d):
+        if not d:
+            return [None, None]
+        return [
+            (np.asarray(d["left"],  dtype=float), None, monitor.trajectory_time, None),
+            (np.asarray(d["right"], dtype=float), None, monitor.trajectory_time, None),
+        ]
+
+    monitor.staging_free_trajectory = _traj_from_dict(payload.get("staging_trajectory"))
+    monitor.constrained_trajectory  = _traj_from_dict(payload.get("constrained_trajectory"))
+    has_c = monitor.constrained_trajectory[0] is not None
+    has_s = monitor.staging_free_trajectory[0] is not None
+    print(f"[load] plan loaded: movement_id={payload.get('movement_id')!r}, "
+          f"staging={'yes' if has_s else 'no'}, "
+          f"constrained={'yes' if has_c else 'no'}")
+    return has_c
+
+
+def _run_traj_slider(monitor):
+    """Add two PyBullet sliders to scrub the staging + constrained trajectories."""
+    import time
+    import pybullet
+    from husky_assembly_teleop.utils import HUSKY_DUAL_UR5e_JOINT_NAMES
+
+    left_names = HUSKY_DUAL_UR5e_JOINT_NAMES[0]
+    right_names = HUSKY_DUAL_UR5e_JOINT_NAMES[1]
+    client_id = monitor.cfab.client.client_id
+
+    def _build_waypoint_states(traj):
+        if traj is None or traj[0] is None or traj[1] is None:
+            return []
+        left_path = traj[0][0]
+        right_path = traj[1][0]
+        n = len(left_path)
+        if n < 1 or n != len(right_path):
+            return []
+        states = []
+        for i in range(n):
+            wp = monitor.movement_start_state.copy()
+            for j, name in enumerate(left_names):
+                wp.robot_configuration[name] = float(left_path[i][j])
+            for j, name in enumerate(right_names):
+                wp.robot_configuration[name] = float(right_path[i][j])
+            states.append(wp)
+        return states
+
+    staging_states = _build_waypoint_states(getattr(monitor, "staging_free_trajectory", None))
+    constrained_states = _build_waypoint_states(getattr(monitor, "constrained_trajectory", None))
+
+    ns = len(staging_states)
+    nc = len(constrained_states)
+    if ns == 0 and nc == 0:
+        print("[gui] no trajectories to scrub.")
+        return
+
+    staging_slider = None
+    constrained_slider = None
+    if ns > 0:
+        staging_slider = pybullet.addUserDebugParameter(
+            f"Staging t (0..{ns-1})", 0.0, float(max(ns - 1, 0)), 0.0,
+            physicsClientId=client_id,
+        )
+    if nc > 0:
+        constrained_slider = pybullet.addUserDebugParameter(
+            f"Constrained t (0..{nc-1})", 0.0, float(max(nc - 1, 0)), 0.0,
+            physicsClientId=client_id,
+        )
+    print(f"\n[gui] '{monitor.current_movement.movement_id}' plan loaded: "
+          f"staging={ns} wp, constrained={nc} wp. Drag the sliders on the "
+          f"PyBullet panel to scrub. Ctrl+C in this terminal to exit.")
+
     try:
-        robot_body = pp.load_pybullet(URDF, fixed_base=True)
-        monitor = _bypass_init_monitor(robot_body, stage=stage)
+        last_staging = -1
+        last_constrained = -1
+        while True:
+            if staging_slider is not None:
+                t = pybullet.readUserDebugParameter(staging_slider, physicsClientId=client_id)
+                idx = max(0, min(ns - 1, int(round(t))))
+                if idx != last_staging:
+                    monitor.cfab.planner.set_robot_cell_state(staging_states[idx])
+                    last_staging = idx
+            if constrained_slider is not None:
+                t = pybullet.readUserDebugParameter(constrained_slider, physicsClientId=client_id)
+                idx = max(0, min(nc - 1, int(round(t))))
+                if idx != last_constrained:
+                    monitor.cfab.planner.set_robot_cell_state(constrained_states[idx])
+                    last_constrained = idx
+            time.sleep(0.03)
+    except KeyboardInterrupt:
+        print("\n[gui] exiting trajectory scrubber.")
 
-        # Step 1: simulate "available state slider" populating + select target.
-        # _load_available_robot_cell_states is a real instance method.
+
+def main(bar_action: str = DEFAULT_BAR_ACTION,
+         movement: str = DEFAULT_MOVEMENT,
+         problem: str = DEFAULT_PROBLEM,
+         use_gui: bool = False,
+         verbose: bool = False,
+         max_time: float = None,
+         max_attempts: int = None,
+         save_plan: str = None,
+         replay: str = None) -> int:
+    print(f"=== headless_live_monitor_test: problem={problem!r} "
+          f"bar_action={bar_action!r} movement={movement!r} ===")
+
+    _patch_validation_problem(problem)
+
+    rc = 0
+    monitor = None
+    try:
+        monitor = _bypass_init_monitor()
+
+        # Pre-create the cfab session in GUI mode if --gui was requested,
+        # BEFORE calling load_bar_action (which would otherwise create a
+        # direct-mode session). enable_debug_gui=True turns on
+        # pybullet's COV_ENABLE_GUI so the sidebar/parameter panel (for
+        # the 'Path t' slider) renders.
+        if use_gui:
+            from husky_assembly_teleop.cfab_session import CfabSession
+            print("[gui] opening cfab PyBullet window (BarAction scene)...")
+            monitor.cfab = CfabSession(
+                problem, connection_type="gui", enable_debug_gui=True,
+            )
+
+        # Step 1: populate available BarActions (simulate slider) + select.
         monitor.available_robot_cell_states = monitor._load_available_robot_cell_states()
         if not monitor.available_robot_cell_states:
-            print("FAIL: no robot cell state files available")
+            print("FAIL: no BarAction files available")
             return 1
-        target_filename = f"{target}_RobotCellState.json"
-        if target_filename not in monitor.available_robot_cell_states:
-            print(f"FAIL: {target_filename} not in available states; have {monitor.available_robot_cell_states[:5]}...")
+        if bar_action not in monitor.available_robot_cell_states:
+            print(f"FAIL: {bar_action!r} not in available BarActions; have "
+                  f"{monitor.available_robot_cell_states[:8]}"
+                  f"{'...' if len(monitor.available_robot_cell_states) > 8 else ''}")
             return 1
-        monitor.selected_state_index = monitor.available_robot_cell_states.index(target_filename)
-        print(f"selected state index {monitor.selected_state_index}: {target_filename}")
+        monitor.selected_state_index = monitor.available_robot_cell_states.index(bar_action)
+        print(f"selected BarAction {monitor.selected_state_index}: {bar_action}; "
+              f"movement={movement}")
 
-        # Step 2: simulate clicking 'Load Robot Cell State' button — call the real method.
-        print("\n--- simulating 'Load Robot Cell State' click ---")
-        monitor.load_board_validation_state()
+        # Step 2: load the BarAction movement.
+        print("\n--- simulating 'Load BarAction' click ---")
+        ok = monitor.load_bar_action(movement=movement)
+        if not ok:
+            print("FAIL: load_bar_action returned False")
+            return 1
 
-        # Note: `load_board_validation_state` now auto-loads the
-        # GraspTargets JSON alongside the cell state and applies the
-        # override (see HuskyMonitor._load_grasp_targets_if_available).
-        # No additional setup needed in the harness.
+        # NOTE: no pp husky to re-pose; the cfab client already has the
+        # robot at start_state.robot_configuration + robot_base_frame
+        # (via planner.set_robot_cell_state inside load_bar_action).
+
+        # Bridge cfab → pp: reuse cfab's already-loaded husky + rigid bodies
+        # as pp body ids so plan_and_stage_constrained can drive the same
+        # PyBullet world via pp.* utilities.
+        import pybullet_planning as pp_module
+        pp_module.CLIENT = monitor.cfab.client.client_id
+        # Register cfab's PyBullet connection with pp's CLIENTS registry
+        # (pp normally populates it via pp.connect; cfab created the client
+        # directly so we inject the entry — None = no GUI lock, True = GUI).
+        pp_module.CLIENTS[monitor.cfab.client.client_id] = (
+            True if use_gui else None
+        )
+
+        robot_puid = monitor.cfab.client.robot_puid
+        left_tool_link = pp_module.link_from_name(robot_puid, 'left_ur_arm_tool0')
+        right_tool_link = pp_module.link_from_name(robot_puid, 'right_ur_arm_tool0')
+        identity_grasp = ((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0))
+
+        # Create two tiny invisible "ghost" sphere bodies as EE attachment
+        # children. plan_transit_motion (the staging planner) builds
+        # extra_disabled_collisions from (wrist_3_link, attachment.child) and
+        # routes attachments through pp.get_collision_fn — so the child MUST
+        # be a distinct body, not the husky itself. The live monitor uses
+        # the real gripper proxy meshes; here we substitute a far-away 1mm
+        # sphere. They're excluded from static_obstacles below.
+        import pybullet as _pb
+        _cid = monitor.cfab.client.client_id
+        def _make_ee_ghost():
+            col = _pb.createCollisionShape(_pb.GEOM_SPHERE, radius=0.001,
+                                           physicsClientId=_cid)
+            return _pb.createMultiBody(baseMass=0, baseCollisionShapeIndex=col,
+                                       basePosition=[0.0, 0.0, -100.0],
+                                       physicsClientId=_cid)
+        ghost_L = _make_ee_ghost()
+        ghost_R = _make_ee_ghost()
+        husky_stub = SimpleNamespace(object=SimpleNamespace(
+            robot=robot_puid,
+            ee_list=[
+                (ghost_L, pp_module.Attachment(robot_puid, left_tool_link,
+                                               identity_grasp, ghost_L)),
+                (ghost_R, pp_module.Attachment(robot_puid, right_tool_link,
+                                               identity_grasp, ghost_R)),
+            ],
+        ))
+        _ghost_set = {ghost_L, ghost_R}
+        monitor.huskies = [husky_stub]
+        monitor.selected_robot_id = 0
+
+        puids = monitor.cfab.client.rigid_bodies_puids
+        monitor.active_bar_body = (puids.get(monitor.active_bar_name) or [None])[0]
+        monitor.static_obstacles = {
+            n: ids[0] for n, ids in puids.items()
+            if ids and n != monitor.active_bar_name and ids[0] not in _ghost_set
+        }
+        monitor.active_extra_bodies = []
+        monitor.bar_from_extra = []
+        monitor.active_bar_aabb_dims = monitor.get_active_bar_aabb_dims()
+        # Staging-plan seed: real UR5e HOME, perturbed until collision-free
+        # (HOME itself sits ~2mm inside a self-collision margin on the
+        # dual-arm husky URDF). Headless-only — the live monitor's
+        # current_conf is always a feasible physical robot pose.
+        from husky_assembly_teleop.husky_robot import UR5e_HOME_STATE
+        home_dual = np.concatenate([UR5e_HOME_STATE, UR5e_HOME_STATE])
+        monitor.bar_action_staging_seed_conf = _sample_feasible_staging_seed(
+            monitor, home_dual)
 
         # Step 2 assertions
         ok = True
-        if monitor.active_bar_body is None:
-            print(f"FAIL: active_bar_body is None after load (expected non-None for target={target!r})")
+        print(f"\n--- post-load assertions ---")
+        if monitor.cfab is None:
+            print("FAIL: monitor.cfab not initialized")
             ok = False
         else:
-            print(f"PASS: active_bar_body set: name={monitor.active_bar_name!r} body={monitor.active_bar_body}")
-        if not np.any(monitor.goal_arm_pose[0]):
-            print("FAIL: goal_arm_pose[0] is all zeros (left arm not loaded)")
+            n_bodies = len(monitor.cfab.client.rigid_bodies_puids)
+            print(f"PASS: cfab session connected; rigid_bodies={n_bodies}")
+        if monitor.movement_type is None:
+            print("FAIL: movement_type not set")
             ok = False
         else:
-            print(f"PASS: goal_arm_pose loaded: L={np.round(monitor.goal_arm_pose[0], 3)}")
-            print(f"                              R={np.round(monitor.goal_arm_pose[1], 3)}")
-        if monitor._captured["reset_ui_calls"] == 0:
-            print("FAIL: reset_ui was not called during load")
+            print(f"PASS: movement_type={monitor.movement_type}")
+        if monitor.active_bar_name is None:
+            print("FAIL: active_bar_name not set")
             ok = False
         else:
-            print(f"PASS: reset_ui called {monitor._captured['reset_ui_calls']}x")
+            print(f"PASS: active_bar_name={monitor.active_bar_name!r}")
+        if monitor.target_ee_frames is None:
+            if monitor.movement_type == "free":
+                print("INFO: target_ee_frames None (free movement, expected)")
+            else:
+                print("WARN: target_ee_frames is None (unexpected for "
+                      f"{monitor.movement_type})")
+        else:
+            lp = monitor.target_ee_frames["left"].point
+            rp = monitor.target_ee_frames["right"].point
+            print(f"PASS: target_ee_frames "
+                  f"L=({lp[0]:.3f},{lp[1]:.3f},{lp[2]:.3f}) "
+                  f"R=({rp[0]:.3f},{rp[1]:.3f},{rp[2]:.3f})")
+        aabb = monitor.get_active_bar_aabb_dims()
+        if aabb is not None:
+            print(f"PASS: active_bar_aabb_dims (from mesh) = "
+                  f"({aabb[0]:.3f}, {aabb[1]:.3f}, {aabb[2]:.3f}) m")
+        else:
+            print("WARN: active_bar_aabb_dims could not be computed from mesh")
+
         if not ok:
             return 1
 
-        # Step 3: simulate clicking 'Plan & Stage Constrained' button.
-        print("\n--- simulating 'Plan & Stage Constrained' click ---")
-        from husky_assembly_teleop import husky_world
+        # Step 3: BarAction-driven planning entry (constrained dual-arm).
+        if replay:
+            print(f"\n--- replay mode: loading plan from {replay} ---")
+            plan_ok = _load_plan(monitor, replay)
+        else:
+            print("\n--- simulating 'Plan & Stage Constrained' click ---")
+            from husky_assembly_teleop import husky_world
+            plan_kwargs = {}
+            if max_time is not None:
+                plan_kwargs["max_time"] = max_time
+            if max_attempts is not None:
+                plan_kwargs["max_attempts"] = max_attempts
+            husky_world.plan_and_stage_constrained(monitor, **plan_kwargs)
+            plan_ok = bool(monitor.constrained_trajectory
+                           and monitor.constrained_trajectory[0] is not None
+                           and monitor.constrained_trajectory[1] is not None)
 
-        if diagnose:
-            # Pre-flight: show what the planner sees at start_conf (derived) and goal_conf.
-            from husky_assembly_tamp.motion_planner.api import (
-                derive_grasps_from_state, derive_constrained_start,
-            )
-            from husky_assembly_tamp.motion_planner.stage1.minimal_rrt import (
-                HUSKY_DUAL_ARM_JOINT_NAMES,
-            )
-            arm_joints = pp.joints_from_names(robot_body, HUSKY_DUAL_ARM_JOINT_NAMES)
-            tool_link_L = pp.link_from_name(robot_body, "left_ur_arm_tool0")
-            tool_link_R = pp.link_from_name(robot_body, "right_ur_arm_tool0")
-            wfb_goal = pp.get_pose(monitor.active_bar_body)
-            gL, gR = derive_grasps_from_state(
-                robot_body, arm_joints, tool_link_L, tool_link_R,
-                np.concatenate([monitor.goal_arm_pose[0], monitor.goal_arm_pose[1]]), wfb_goal,
-            )
-            wfb_start, start_c = derive_constrained_start(
-                robot_body, arm_joints, tool_link_L, tool_link_R, gL, gR,
-                wfb_goal,
-                seed_conf=np.concatenate([monitor.goal_arm_pose[0], monitor.goal_arm_pose[1]]),
-            )
-            if start_c is not None:
-                print("\n--- collision diagnostics (pre-plan) ---")
-                _diagnose_endpoint_collisions(
-                    monitor, robot_body, arm_joints,
-                    start_c, np.concatenate([monitor.goal_arm_pose[0], monitor.goal_arm_pose[1]]),
-                    wfb_start, wfb_goal,
-                )
-                print()
+        traj_c = monitor.constrained_trajectory
+        traj_s = monitor.staging_free_trajectory
 
-        husky_world.plan_and_stage_constrained(
-            monitor,
-            max_time=max_time,
-            max_attempts=max_attempts,
-        )
+        print("\n=== Result ===")
+        if plan_ok:
+            nc = len(traj_c[0][0])
+            ns = (len(traj_s[0][0])
+                  if traj_s and traj_s[0] is not None and traj_s[1] is not None else 0)
+            print(f"PASS: plan for {monitor.current_movement.movement_id}: "
+                  f"staging={ns} wp, constrained={nc} wp.")
+            rc = 0
+            if save_plan and not replay:
+                _save_plan(monitor, save_plan)
+        else:
+            print("FAIL: see error logs above (no constrained trajectory).")
+            rc = 1
 
-        # Step 3 assertions
-        ok_constrained = (monitor.constrained_trajectory[0] is not None and
-                          monitor.constrained_trajectory[1] is not None)
-        ok_staging = (monitor.staging_free_trajectory[0] is not None and
-                      monitor.staging_free_trajectory[1] is not None)
+        if use_gui:
+            # Interactive scrubbing on the cfab GUI window. Two PyBullet
+            # sliders (staging + constrained) interpolate the planned
+            # trajectories and re-pose the robot via
+            # planner.set_robot_cell_state (which also moves the attached
+            # bar / tools rigidly with the link).
+            if plan_ok and monitor.cfab is not None:
+                _run_traj_slider(monitor)
+            else:
+                try:
+                    input("\n[gui] press Enter to close the PyBullet window...")
+                except (EOFError, KeyboardInterrupt):
+                    pass
 
-        print()
-        print("=== Result ===")
-        print(f"constrained_trajectory: {'OK' if ok_constrained else 'MISSING'}")
-        if ok_constrained:
-            print(f"  waypoints (per arm): {len(monitor.constrained_trajectory[0][0])}")
-        print(f"staging_free_trajectory: {'OK' if ok_staging else 'MISSING'}")
-        if ok_staging:
-            print(f"  waypoints (per arm): {len(monitor.staging_free_trajectory[0][0])}")
-        print(f"set_arm_trajectory calls: {len(monitor._captured['set_arm_trajectory'])}")
-        print(f"set_to_show_traj_state calls: {monitor._captured['show_traj_state_calls']}")
-
-        return 0 if ok_constrained else 1
+        return rc
     finally:
-        pp.disconnect()
+        # Clean up cfab session if we got that far. (No pp connection to
+        # disconnect.)
+        try:
+            if monitor is not None and getattr(monitor, 'cfab', None) is not None:
+                monitor.cfab.close()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--target", type=str, default="D1",
-                        help="Antenna case-study target (e.g. D1, G1, V1, H1).")
-    parser.add_argument("--stage", type=int, default=3, choices=[1, 2, 3])
-    parser.add_argument("--max-time", type=float, default=30.0,
-                        help="Per-attempt RRT budget in seconds.")
-    parser.add_argument("--max-attempts", type=int, default=5,
-                        help="Number of independent RRT restarts.")
-    parser.add_argument("--diagnose", action="store_true",
-                        help="Print detailed collision diagnostics at derived start_conf and goal_conf before planning.")
-    parser.add_argument("--problem", type=str, default=ANTENNA_PROBLEM,
-                        help="VALIDATION_PROBLEM_NAME directory under data/husky_assembly_design_study/")
+    parser.add_argument("--bar-action", type=str, default=DEFAULT_BAR_ACTION,
+                        help=f"BarAction *.json filename under "
+                             f"<DESIGN_DATA_DIRECTORY>/<problem>/BarActions/. "
+                             f"Default: {DEFAULT_BAR_ACTION!r}.")
+    parser.add_argument("--movement", type=str, default=DEFAULT_MOVEMENT,
+                        help=f"Movement id substring (e.g. 'M1') or integer "
+                             f"index. Default: {DEFAULT_MOVEMENT!r}.")
+    parser.add_argument("--problem", type=str, default=DEFAULT_PROBLEM,
+                        help=f"VALIDATION_PROBLEM_NAME directory. "
+                             f"Default: {DEFAULT_PROBLEM!r}.")
+    parser.add_argument("--gui", action="store_true",
+                        help="Open the pp-side PyBullet GUI.")
+    parser.add_argument("--verbose", action="store_true",
+                        help="Verbose collision check output.")
+    parser.add_argument("--max-time", type=float, default=None,
+                        help="Per-attempt time budget (s) for the constrained "
+                             "planner. Default: planner default (30).")
+    parser.add_argument("--max-attempts", type=int, default=None,
+                        help="Constrained planner outer attempts. Default: "
+                             "planner default (5). Bump (e.g. 15) to ride out "
+                             "RRT randomness for hard scenes.")
+    parser.add_argument("--save-plan", type=str, default=None,
+                        help="On planner success, save the staging + "
+                             "constrained trajectories as a JSON for later "
+                             "replay with --replay.")
+    parser.add_argument("--replay", type=str, default=None,
+                        help="Replay a previously saved plan JSON instead of "
+                             "running the planner. Still loads the BarAction "
+                             "to reconstruct the scene.")
+    # Legacy flags accepted (ignored) so old command lines don't fail.
+    parser.add_argument("--state", type=str, default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--stage", type=int, default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--diagnose", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
-    sys.exit(main(target=args.target, stage=args.stage, max_time=args.max_time,
-                  max_attempts=args.max_attempts, diagnose=args.diagnose,
-                  antenna_problem=args.problem))
+    if args.state is not None:
+        print(f"NOTE: --state {args.state!r} is legacy; use --bar-action instead "
+              f"(ignored).")
+    sys.exit(main(bar_action=args.bar_action, movement=args.movement,
+                  problem=args.problem, use_gui=args.gui, verbose=args.verbose,
+                  max_time=args.max_time, max_attempts=args.max_attempts,
+                  save_plan=args.save_plan, replay=args.replay))

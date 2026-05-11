@@ -27,14 +27,12 @@ correction or non-obvious finding so we can reuse them in future sessions.
 
 ### Grasp transforms
 
-- Prefer FK at `goal_conf` + bar pose at goal (via
-  `derive_grasps_from_state`). For the **start** of the planner, do NOT
+- FK at `goal_conf` + bar pose at goal (via `derive_grasps_from_state`)
+  is the single source of truth. For the **start** of the planner, do NOT
   re-FK at `seed_conf` — instead reconstruct the goal-state tool0 pose
   directly: `world_from_tool0_goal = world_from_bar_goal *
-  grasp_bar_from_tool0`. (Reviewer A flagged this; the offline
-  `derive_home_start_poses_from_grasps` math requires goal-state pairs.)
-- Optional fallback for grasp loading: `monitor.grasp_targets_override`
-  set to `(grasp_bar_from_left, grasp_bar_from_right)` directly.
+  grasp_bar_from_tool0`. (The offline `derive_home_start_poses_from_grasps`
+  math requires goal-state pairs.)
 
 ### Always wrap planner calls in `pp.WorldSaver`
 
@@ -67,27 +65,50 @@ correction or non-obvious finding so we can reuse them in future sessions.
   Pass the gripper attachments from `husky.object.ee_list[i][1]` for both
   arms (those are always present, regardless of whether a bar is held).
 
-### FK at goal_conf disagrees with GraspTargets JSON by ~50mm
+### Grasps come from FK at goal_conf (RobotCellState is the single source of truth)
 
-In the antenna design-study datasets, FK at the cell state's goal_conf
-produces a `world_from_tool0_left` that's ~50mm off from the value
-authored in the corresponding `<target>_GraspTargets.json` (consistent
-across D1/G1/V1/H1 — same magnitude, ~0° rotation difference). The
-GraspTargets JSON values are authoritative.
+Going forward, no `_GraspTargets.json` files. The cell state alone
+defines the grasp: FK both tool0s at `goal_conf` and combine with the
+active bar's pose. `husky_world.plan_and_stage_constrained` always
+calls `derive_grasps_from_state` — no JSON override path.
 
-**Why it matters:** if the wrapper FK-derives `grasp_bar_from_left` from
-`(goal_conf, world_from_bar_goal)`, the resulting grasp transform is
-50mm off, which propagates through `derive_home_start_poses_from_grasps`
-to a wrong `world_from_bar_start`. The endpoint IK either fails or
-returns a config that's in a hard-to-reach region — RRT can't find a
-path. Symptom: `task_space_failure` even though the prototype solves
-the same target in <1s.
+A historical note: the antenna datasets had a ~50mm offset between FK
+and authored grasps. We previously worked around this with a
+`_load_grasp_targets_if_available` helper + `grasp_targets_override`.
+Both are removed. New datasets are authored such that FK matches.
 
-**How to apply:** when a cell state has a sibling `_GraspTargets.json`,
-use its authored grasps (`monitor.grasp_targets_override`). The live
-monitor's `load_board_validation_state` does this automatically via
-`_load_grasp_targets_if_available`. Falls back to FK-derivation when no
-JSON exists.
+If you hit the symptom (`Endpoint IK failed`, `task_space_failure`),
+verify the cell-state self-consistency check in
+`scripts/headless_live_monitor_test.py --diagnose`:
+
+```
+[diagnose] cell-state self-consistency: |bar_via_L - wfb_goal| = 0.00 mm,
+                                          |bar_via_R - wfb_goal| = 0.00 mm
+```
+
+If those errors are non-zero, the cell state's joint values disagree
+with its bar pose — fix the data, not the code.
+
+### Husky base ≠ world origin → must compose `world_from_mobile_base`
+
+`derive_home_start_poses_from_grasps` operates in the **mobile-base
+frame** (its anchor `MOBILE_BASE_FROM_TOOL0_LEFT_HOME` is in mb coords).
+When the cell state's `robot_base_frame` is non-trivial (e.g., the
+gdrive transfer-test dataset has the husky at `(0.778, 1.569, 0,
+yaw=180°)`), the api wrapper must:
+
+1. Convert `world_from_bar_goal` and the goal-state tool0 poses into
+   mobile-base frame before calling `derive_home_start_poses_from_grasps`.
+2. Lift the returned `mobile_base_from_bar_start` back to world frame
+   via `world_from_mobile_base * mobile_base_from_bar_start`.
+
+`api.derive_constrained_start` accepts an optional
+`world_from_mobile_base` keyword (default identity for backward compat).
+`husky_world.plan_and_stage_constrained` reads the husky's current
+PyBullet pose (`pp.get_pose(robot)`) and passes it through. The
+headless harness must do the same — apply
+`pp.set_pose(robot_body, monitor.goal_base_pose)` after `Load Robot
+Cell State` and before planning.
 
 ### Live cell state contains the WHOLE assembly, prototype tests don't
 
@@ -368,3 +389,413 @@ Plan file: `tasks/2026-05_dual_arm_kissing_port_plan.md`. Summary lessons.
    `source /opt/ros/humble/setup.bash` — catches ROS msg API mismatches.
    Skip on dev boxes missing rig-only ROS deps; do on the rig before the
    live experiment.
+
+## Gdrive dataset convention (2026-05+)
+
+- Path: `/home/yijiangh/gdrive/0_projects/2025-03 Husky Assembly/data_design_study/`
+  (`DESIGN_DATA_DIRECTORY` in `husky_assembly_teleop/__init__.py`). The
+  `data/husky_assembly_design_study` git submodule is being deprecated.
+
+- Filename pattern: `<bar_tag>_<phase>.json` (e.g., `B3_approach.json`,
+  `B3_assembly.json`). Not `*_RobotCellState.json`.
+  `_load_available_robot_cell_states` accepts any `*.json` excluding
+  `_GraspTargets.json`, `_JointTrajectory.json`, and `RobotCell.json`.
+
+- Rigid body roles encoded in name:
+  - `active_bar_*` — the manipulated bar (the constrained planner uses it).
+  - `active_*` (siblings, e.g. `active_joint_J2-3_male`) — bodies that
+    travel rigidly with the active bar during install. Captured into
+    `monitor.active_extra_bodies` with their bar-relative offsets at
+    load time; excluded from the constrained obstacle list; visually
+    repositioned to follow the bar at start pose.
+  - `env_*` (e.g. `env_bar_B1`, `env_joint_J1-2_male`) — already-built
+    environment obstacles. Stay in the obstacle list (no special handling).
+  - `Assembly[Left|Right]ArmToolBody` — gripper bodies attached via
+    `attached_to_link` to `[left|right]_ur_arm_tool0`. These get loaded
+    as static obstacles by the existing path; collision checks should
+    be tolerant since they always move with the robot (filtered by
+    PyBullet's self-collision rules via SRDF).
+
+- Active-bar identification (`HuskyMonitor._identify_active_bar`) tries
+  in order: Convention 1 (`attached_to_tool`) -> Convention 3 (gdrive
+  `active_bar_*` regex) -> Convention 2 (legacy filename ->
+  `DESIGN_STUDY_BAR_NAME_TO_INDEX`). Resets `active_bar_body` and
+  `active_extra_bodies` on every load.
+
+- Grasps come from FK at goal_conf — no GraspTargets JSON. The new
+  datasets are authored such that FK matches the bar pose
+  (verifiable via `headless_live_monitor_test.py --diagnose`'s
+  cell-state self-consistency check).
+
+### `USE_CELL_STATE_BASE_POSE` flag (mocap on, base from cell state)
+
+Default `1`. When `USE_MOCAP=1`, the live monitor normally tracks the
+husky base pose from mocap each tick. For dual-arm accuracy tests you
+often want mocap on (for end-effector marker tracking) while the husky
+is physically far from the scaffolding, so the assembly-frame base
+pose from the loaded `RobotCellState.robot_base_frame` should be used
+instead of the mocap-derived one. Set `USE_CELL_STATE_BASE_POSE=1`
+for that. Set `0` when actually teleoperating the base in mocap.
+
+Flag-gated sites in `husky_monitor.py`:
+- `update()` tick loop (line ~2131): skip mocap-base-pose overwrite of
+  `goal_base_pose` and pose the husky from `goal_base_pose` instead.
+- `update_selected_robot_id` callback (line ~342): skip the
+  mocap-derived re-init of `goal_base_pose`.
+
+Trajectory execution (`execute_arm_trajectory*`) keeps using
+`hi.position/rotation` directly because those paths are real-rig
+motion control, not assembly-frame planning visualization.
+
+## Sampling DOFs: lock the kinematically-impossible ones first — 2026-05
+
+Pattern from the home-bar-pose sweep
+(`auto_compute_home_bar_pose` in `external/.../stage1/minimal_rrt.py`).
+
+### Probe before sweep when one DOF value is geometrically infeasible
+
+The original `flip_yaw ∈ {0, π}` x `bar_axis_theta ∈ 360 samples` =
+720 candidates. But only ONE `flip_yaw` value is kinematically
+reachable — the other points the bar to the wrong side of the left
+arm, leaving zero IK solutions for the right arm. Half the candidates
+were guaranteed to fail IK regardless of collisions.
+
+**How to apply:** when sweeping multiple DOFs, identify any DOF where
+some values are *kinematically* infeasible (no IK at all), independent
+of collision and the other DOFs. Lock those via a one-shot probe
+before iterating:
+
+```python
+def _probe_flip_yaw(scene, common_start, spec, rng):
+    for fy in (0.0, np.pi):
+        bar_pose = ...  # representative bar pose at theta=0
+        conf = solve_endpoint_dual_arm_ik(..., max_attempts=1, collision_fn=None)
+        if conf is not None:
+            return fy
+    raise NoValidatedHomeError(...)
+```
+
+The probe ignores collisions on purpose — it's only checking
+geometric reachability. Lock the result, pass as `forced_flip_yaw`
+to the inner sweep.
+
+### Start coarse, refine if needed
+
+The 360-sample bar-axis resolution (1° step) was vastly more than
+needed. Locking down to 12 samples (30° step) is plenty for the
+home-bar problem and makes the outer EE-position sweep tractable.
+
+**How to apply:** when sampling resolution feels arbitrary, default
+coarse (e.g., 30° for orientation, 0.1m for translation). Refining
+later is cheap; over-sampling early bloats every outer loop.
+
+## Auto-home pose: silent fallback to in-collision pose — 2026-05
+
+`auto_compute_home_bar_pose` had a silent `logger.warning` +
+fallback path: when none of the top-N geometric candidates passed
+IK validation, it returned the top-1 unvalidated geometric candidate
+anyway. Caller (`validate_auto_home_start_context`) accepted it
+without re-checking, so the planner started from an in-collision
+configuration.
+
+**How to apply:** when a search function has both "validated" and
+"unvalidated" return paths, surface the distinction in the return
+value (e.g., `ik_validated=True/False` flag) and let the caller
+decide whether to accept the fallback. For the diagnose path, treat
+unvalidated as a hard failure (`failure_reason="start_no_valid_home_pose"`).
+"Best effort with a warning" is a footgun when downstream code
+assumes the result is valid.
+
+## RNG drift between validator and final IK call — 2026-05
+
+In `run_endpoint_ik_diagnosis`, a single `rng = np.random.default_rng(...)`
+was passed to BOTH the IK validator (which iterated many candidates
+during home-pose search) AND the final `evaluate_endpoint_ik` call.
+`solve_endpoint_dual_arm_ik` mutates the rng on attempt-1+ random
+restarts, so by the time the final call ran, the rng state differed
+from when the validator approved the chosen candidate. If attempt 0
+also failed in the final call, it would draw *different* random
+seeds than the validator did, finding a *different* (possibly
+in-collision) IK solution for the same bar pose.
+
+**How to apply:** when a validator already produced a verified
+result, **cache the conf and reuse it** instead of re-solving.
+Don't share a stateful rng between a multi-call validator phase and
+a single-call finalization phase if the IK is non-deterministic
+beyond attempt 0. Also: make the IK collision-aware via an optional
+`collision_fn` kwarg, so any retry path filters out colliding confs
+internally.
+
+## Bar-anchored start strategy: anchor the GRASP MIDPOINT, not the bar-frame origin — 2026-05
+
+When switching from EE-anchored to bar-anchored start sweep
+(`derive_start_pose_from_home_bar`), naively setting
+`mobile_base_from_bar = (HOME_POSITION, quat)` puts the **bar-frame
+origin** at the home position. For datasets where the bar's local
+frame origin sits at one grasp end (e.g. the gdrive
+`B3_approach`-style scenes where `bar_from_tool0_left.pos ≈ (0, 0, 0)`
+and `bar_from_tool0_right.pos ≈ (0, 0, 1.0)`), this leaves one arm at
+the home position and the other ~1 m away — outside reach.
+
+**Fix:** before the outer-sweep loop, compute
+`grasp_midpoint_in_bar = 0.5 * (bar_from_tool0_left.pos +
+bar_from_tool0_right.pos)`, rotate it by the home-bar quaternion into
+mobile-base frame, and **subtract** from the home position. The bar-
+frame origin used to compose `candidate_bar` becomes
+`HOME_POSITION - midpoint_in_mb`, so the geometric midpoint of the two
+grasps (not the bar origin) lands at `HOME_POSITION`.
+
+**How to apply:** any time you anchor a multi-grasp object by its
+"home pose," check whether the object's local-frame origin coincides
+with the geometric center of the grasp points. If not, shift by the
+midpoint offset so the *grasps* (the things that actually need to be
+reachable) end up balanced at the target.
+
+## Prefer compas_fab's PyBulletPlanner.check_collision over translating to pp — 2026-05
+
+When integrating with the husky-assembly-teleop planner stack, prefer
+`compas_fab.backends.PyBulletPlanner.check_collision(state, options)`
+over translating RobotCellState into `pp.get_collision_fn` +
+hand-built `extra_disabled_collisions` tuples. The compas_fab path
+owns rigid-body spawning, tool attachment, and ACM (`touch_bodies` /
+`touch_links` on `RigidBodyState` / `ToolState`) natively.
+
+**Why:** the hand-rolled translation duplicates state-tracking
+(monitor's `static_obstacles` + `pp.Attachment` list) AND introduces
+translation errors when the JSON encoder/decoder changes (e.g., the
+new ACM fields, new attached_to_link semantics).
+
+**How to apply:** stand up a long-lived `PyBulletClient` +
+`PyBulletPlanner` per problem (see `husky_assembly_teleop/cfab_session.py`).
+Load `RobotCell.json` once and call `planner.set_robot_cell(robot_cell)`.
+Per movement: `planner.set_robot_cell_state(mv.start_state)` materializes
+the whole scene (poses + attachments + ACM). Inside any RRT
+collision_fn, wrap `planner.check_collision(state_with_q, options)`
+and catch `CollisionCheckError` for a binary result.
+
+**Trade-off accepted:** per-sample state-copy + check_collision is
+slower than pp's `get_collision_fn`, but ACM correctness + zero
+translation gap is worth it. Optimize later via
+`options["_skip_set_robot_cell_state"]=True` + `client.set_joint_positions`
+if profiling shows the inner loop is dominated.
+
+## Dual-arm IK from `target_ee_frames` needs `max_results >= 20` — 2026-05
+
+When using `planner.inverse_kinematics(FrameTarget, state, group, options)`
+for the husky dual-arm BarAction goal, the right-arm IK regularly snaps
+to a self-collision configuration (e.g., `right_ur_arm_forearm_link` vs
+`AssemblyRightArmToolBody`) at the default `max_results=1`. Bumping to
+`max_results=20` exhausts the offending IK seeds and finds a valid one
+within ~ms.
+
+**Why:** the BarAction's ACM whitelists `wrist_*_link` touch for the
+tool body but NOT the forearm. A wraparound IK solution can fold the
+forearm into the gripper. `max_results>1` causes the IK solver to
+re-seed and find a non-folded branch.
+
+**How to apply:** set `ik_options["max_results"] = 20` (or higher) when
+calling `planner.inverse_kinematics` for dual-arm BarAction goals.
+Cheaper than adding ACM whitelist entries by hand.
+
+## Legacy dtype alias for `core.bar_action/*` — 2026-05
+
+JSON files written before `bar_action.py` was extracted to
+`rs_data_structure` carry `dtype: "core.bar_action/<Class>"`. The
+compat shim in `rs_data_structure/__init__.py` registers
+`sys.modules["core.bar_action"]` as an alias, so `compas.data.json_load`
+resolves the old dtype to the new class. **But the shim only fires
+when `rs_data_structure` is imported.**
+
+**How to apply:** any module that calls `compas.data.json_load` on a
+BarAction file MUST first `import rs_data_structure` (or import a
+sub-symbol from it). `husky_assembly_teleop.bar_action_io` and
+`husky_assembly_teleop.cfab_session` already do this. New consumers
+should follow the same pattern.
+
+## compas_fab FK returns WCF, IK accepts target_frame in RCF — 2026-05
+
+`PyBulletPlanner.forward_kinematics(state, TargetMode.ROBOT, group)`
+returns the tool0 frame in **world coords (WCF)** — it pre-multiplies
+by `robot_base_frame` (see
+`compas_fab/backends/pybullet/backend_features/pybullet_forward_kinematics.py:100-102`).
+
+`PyBulletPlanner.inverse_kinematics(FrameTarget, state, group, options)`
+with `TargetMode.ROBOT` consumes `target_frame` in **robot-base coords
+(RCF)** — `target_frames_to_pcf` returns the input unchanged for ROBOT
+mode and feeds it straight to pybullet's IK (whose world IS the robot
+base). See `pybullet_inverse_kinematics.py:302-304`.
+
+**Net:** a naive FK→IK round-trip fails when the robot base is not at
+the world origin. The pybullet world doesn't know about
+`robot_base_frame` for IK purposes.
+
+**How to apply:** when feeding an FK output (or any WCF-derived frame)
+into IK, convert it to RCF first:
+```python
+wcf_from_rcf = Transformation.from_frame(state.robot_base_frame)
+rcf_from_wcf = wcf_from_rcf.inverse()
+rcf_target = rcf_from_wcf * Transformation.from_frame(wcf_frame)
+ik_target = FrameTarget(Frame.from_transformation(rcf_target), ...)
+```
+Conversely, `target_ee_frames` stored in `BarAction.json` are in RCF
+already; feed them to IK directly without transformation.
+
+## M1's "ConstrainedMovement" is actually free-space dual-arm reach — 2026-05
+
+Despite the class name `RoboticDualArmConstrainedMovement`, the M1
+start state has only the **LEFT** arm gripping the bar
+(`notes.bar_arm_side='left'`); the RIGHT arm is at HOME, ~1.2 m from
+the bar. The rigid dual-arm constraint applies to M2/M3 where both
+arms grip rigidly. M1 is best planned as a **free-space** dual-arm
+motion: left carries the bar attached, right arm reaches independently
+to `target_ee_frames[right]`.
+
+**Why:** the class name is forward-looking metadata about the
+constraint the consumer should apply during M2/M3 execution. For M1
+itself, applying the rigid constraint produces a Cartesian
+interpolation of the bar between unrelated start/goal poses (right
+arm not on bar at start) and leads to mid-path IK failures.
+
+**How to apply:** plan M1 as a 12-DOF free joint-space motion. The
+attached bar (`bar_<active_bar_id>` with `attached_to_link=left_tool0`)
+follows the left arm automatically through compas_fab's
+`set_robot_cell_state` — collision checks against the existing
+structure (`bar_B1`, `bar_B2`, ...) catch when the swept-volume
+intersects already-built bars.
+
+## PyBullet IK randomness defeats numpy.random.seed — 2026-05
+
+`pybullet.calculateInverseKinematics` uses its own C-level RNG for the
+random-restart fallback (when the start-state seed lands in collision
+or fails to converge). `np.random.seed(...)` does NOT make this
+deterministic. So two consecutive `planner.inverse_kinematics(...)`
+calls with the same inputs can return different IK branches; some
+branches are kinematically much further from start than others, which
+makes downstream BiRRT either fast or hopeless.
+
+**How to apply:** wrap IK + RRT in an outer retry loop. On each
+attempt, re-solve goal IK (gets a fresh branch) and re-run BiRRT
+against the new goal. Cap with `max_outer_attempts` (5 is plenty for
+M1 of B6.json — typical convergence is 1-2 attempts; 3-second per
+attempt budget).
+
+## BiRRT collision_fn pybullet_planning quirk — diagnosis kwarg — 2026-05
+
+`pybullet_planning.motion_planners.birrt` may call the
+`collision_fn(q, diagnosis=...)` keyword through its inner
+`check_direct` step. A naive `def collision_fn(q): ...` crashes with
+`unexpected keyword argument 'diagnosis'`.
+
+**How to apply:** always accept and discard extra kwargs:
+```python
+def collision_fn(q, **_kw):
+    ...
+```
+This is harmless and forwards-compatible with future pp updates.
+
+## Use existing pp-based `plan_and_stage_constrained`, not a cfab-native re-implementation — 2026-05
+
+When wiring the BarAction (cfab `RobotCellState`) path to a real planner,
+the temptation is to write a cfab-native planner that consumes the cell
+state directly. **Don't.** The dedicated SE(3) bar-pose RRT lives in
+`external/husky_assembly_tamp/.../motion_planner/api.py::plan_constrained_dual_arm`
+and is already wired to the "Plan & Stage Constrained" button via
+`husky_world.plan_and_stage_constrained`. It enforces the rigid-grasp
+closed-chain constraint by construction.
+
+The right adapter is **inside `plan_and_stage_constrained`**, not a
+parallel planner: when `monitor.current_movement is not None`, derive
+`world_from_bar_start/goal` + `grasp_bar_from_left/right` from the
+RobotCellState's rigid-body attachments + `target_ee_frames` (skip
+`derive_constrained_start`); leave the obstacle filter + planner
+calls + trajectory storage untouched.
+
+**Why:** A free 12-DOF BiRRT cannot enforce a fixed-relative-EE constraint
+even with ACM whitelisting — the whitelist hides the constraint violation
+from collision checking; both arms drift independently. Compas_fab's
+`RigidBodyState.attached_to_link` is a scalar (no multi-parent
+attachment), so the kinematic loop MUST be enforced at planning time,
+not via attachment.
+
+**How to apply:** when the BarAction movement has `notes.bar_arm_side`
+set (M1 `RoboticDualArmConstrainedMovement` and M2 `RoboticLinearMovement`
+with rigid co-grasp), route to `plan_and_stage_constrained`'s bar-action
+branch. For headless emulation, bridge cfab → pp by
+`pp.CLIENT = monitor.cfab.client.client_id`, then resolve body ids from
+`cfab.client.robot_puid` and `cfab.client.rigid_bodies_puids[name][0]`.
+
+## Headless test: bridge cfab → pp via shared client (don't load a second world) — 2026-05
+
+`monitor.cfab.client` IS a real PyBullet client. To call pp-based
+helpers (e.g. `plan_and_stage_constrained`) without spinning up a second
+PyBullet connection: set `pp.CLIENT = monitor.cfab.client.client_id`
+and resolve husky/bar/obstacle body ids from
+`cfab.client.robot_puid` and `cfab.client.rigid_bodies_puids` (which
+stores `dict[str, list[int]]` — always take `[0]`).
+
+For the `plan_free_dual_arm` staging plan that requires `len==2`
+attachments, stub `husky.object.ee_list` with two identity
+`pp.Attachment(robot, tool_link, identity_pose, robot)` — pp.Attachment
+needs SOMETHING to bind to, but for staging (bar not held) the value is
+not load-bearing.
+
+**Why:** the live monitor instantiates a `Husky` (which loads a fresh
+URDF in pp's `CLIENT`) AND a `CfabSession` (which loads its own URDF
+in its own client). The headless test uses cfab only — bridging avoids
+loading a duplicate husky.
+
+## Register external PyBullet clients with `pp.CLIENTS` — 2026-05
+
+`pp.LockRenderer` (and other internals) reads from a module-global
+`pybullet_planning.CLIENTS` dict, populated by `pp.connect`. If the
+client was created OUTSIDE pp (e.g., by `compas_fab.PyBulletClient`),
+`pp.CLIENTS` doesn't know about it and any pp call going through
+`LockRenderer` (including `plan_transit_motion`) crashes with
+`KeyError: <client_id>` at the line `self.state = CLIENTS[self.client]`.
+
+**How to apply:** after setting `pp.CLIENT = <external_client_id>`,
+also register the entry:
+```python
+import pybullet_planning as pp
+pp.CLIENTS[external_client_id] = True if has_gui else None
+```
+(`True` = GUI client; `None` = direct/headless.)
+
+## `pp.Attachment(robot, link, _, robot)` ≠ no-op — use a distinct ghost body — 2026-05
+
+For `plan_free_dual_arm` / `plan_transit_motion`, `scene["attachments"]`
+must be a list of 2 `pp.Attachment`. The naïve stub
+`pp.Attachment(robot, tool_link, identity_pose, robot)` (attaching the
+husky to itself) does NOT degenerate to "no extra collision pairs":
+`pp.get_collision_fn` checks `attached_child vs robot_self_links`, and
+with `child == robot` this collapses to "robot vs robot" and rejects
+every config — including HOME — as in self-collision. Symptom:
+`plan_transit_motion` prints "initial configuration is in collision /
+initial and end conf not valid / transit path not found" even though
+the seed is clearly feasible.
+
+**How to apply:** create two tiny invisible PyBullet sphere bodies as
+ghost EE proxies in the cfab/pp client, and bind `pp.Attachment(robot,
+tool_link, identity_pose, ghost)`. Also exclude those ghost body ids
+from `monitor.static_obstacles` so they're not treated as obstacles.
+
+## Headless: sample feasible staging seed near UR5e HOME (HOME itself self-collides ~2mm) — 2026-05
+
+Dual-arm husky URDF's UR5e HOME = `[0, -π/2, 0, -π/2, 0, π/2]` sits ~2mm
+inside the `shoulder_link` ↔ `base_link_inertia` self-collision margin.
+`plan_free_dual_arm` rejects it for staging. Headless tests must
+perturb the seed until `pp.get_collision_fn(robot, joints,
+self_collisions=1, max_distance=0)` passes (use the SAME params
+`plan_transit_motion` uses internally to ensure agreement). The live
+monitor never hits this — it starts from the real physical robot pose.
+
+## Save successful plans to JSON for offline replay — 2026-05
+
+The constrained dual-arm planner is stochastic (BiRRT) and can fail or
+take many attempts. When it succeeds, save the trajectories to JSON
+(`schema: husky_bar_action_plan/v1`, fields: `bar_action`,
+`movement_id`, `joint_names.{left,right}`, `staging_trajectory`,
+`constrained_trajectory`). The replay flow loads the BarAction
+normally (rebuilds the cfab scene) then loads the JSON to skip
+planning and goes straight to GUI visualization. Headless test exposes
+`--save-plan PATH` and `--replay PATH` for this.

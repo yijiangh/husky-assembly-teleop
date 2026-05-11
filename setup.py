@@ -25,7 +25,14 @@ setup(
         #('share/' + package_name + '/data',  glob(os.path.join('data', '**', '*.*'), recursive=True)),
         #('share/' + package_name + '/data',  [f for f in copy_dir('data', '')]),
     ], #copy_dir('share/' + package_name + '/data', 'data'),
-    install_requires=['setuptools'],
+    install_requires=[
+        'setuptools',
+        # Shared BarAssemblyAction / Movement schema; pinned to a git SHA so
+        # the interchange format is reproducible across the three consumer
+        # repos (husky-assembly-teleop, husky_assembly_tamp,
+        # bar_joint_rhino_design_workflow).
+        'rs_data_structure @ git+https://github.com/yijiangh/rs_data_structure.git@ce01ca0606ebf4a3a07505919cf96b7c29009b2e',
+    ],
     zip_safe=True,
     maintainer='Jakob Genhart',
     maintainer_email='jakob.genhart@inf.ethz.ch',

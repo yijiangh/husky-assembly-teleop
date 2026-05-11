@@ -50,7 +50,7 @@ def _get_data_directory():
         return installed_data_dir
 
 DATA_DIRECTORY = _get_data_directory()
-DESIGN_DATA_DIRECTORY = '/home/yijiangh/gdrive/0_projects/2025-03 Husky Assembly/data_design_study'
+DESIGN_DATA_DIRECTORY = '/home/yijiangh/Insync/yijiang94817@gmail.com/Google Drive - Shared with me/2025-03 Husky Assembly/data_design_study'
 RECORD_DIRECTORY = os.path.join(DATA_DIRECTORY, '..', 'recorded_data')
 
 CALIBRATION_DATE = '20260303'

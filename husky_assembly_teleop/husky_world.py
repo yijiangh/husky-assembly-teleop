@@ -18,7 +18,7 @@ from husky_assembly_teleop import DATA_DIRECTORY, CALIBRATION_DATE
 from husky_assembly_teleop.common import Husky, TrackedObject, AssemblyObject
 import husky_assembly_teleop.husky_planning as planning
 import husky_assembly_teleop.husky_control as control
-from husky_assembly_teleop.utils import HUSKY_DUAL_UR5e_JOINT_NAMES, UR5E_JOINT_NAMES, get_arm_ik_for_grasp_bar, get_custom_limits, notify, plan_transit_motion
+from husky_assembly_teleop.utils import HUSKY_DUAL_UR5e_JOINT_NAMES, UR5E_JOINT_NAMES, get_arm_ik_for_grasp_bar, get_custom_limits, notify, plan_transit_motion, pose_from_frame
 from husky_assembly_teleop.scaffolding import parse_mt_geometric, create_collision_bodies, create_couplers, flatten_list
 import json
 from datetime import datetime
@@ -241,16 +241,15 @@ def init(monitor):
     # * add static obstacles
     monitor.add_static_obstacles(pp.create_plane(color=(0.9, 0.9, 0.9, 1)), 'base_plane')
     
-    wall_right = pp.create_box(10, 0.4, 3)
-    pp.set_color(wall_right, pp.GREY)
-    pp.set_pose(wall_right, pp.Pose(pp.Point(0, 2.6, 0)))
+    # wall_right = pp.create_box(10, 0.4, 3)
+    # pp.set_color(wall_right, pp.GREY)
+    # pp.set_pose(wall_right, pp.Pose(pp.Point(0, 2.6, 0)))
 
-    wall_left = pp.create_box(10, 0.4, 3)
-    pp.set_pose(wall_left, pp.Pose(pp.Point(0, -3.0, 0)))
-    pp.set_color(wall_left, pp.GREY)
-
-    monitor.add_static_obstacles(wall_left, 'wall_left')
-    monitor.add_static_obstacles(wall_right, 'wall_right')
+    # wall_left = pp.create_box(10, 0.4, 3)
+    # pp.set_pose(wall_left, pp.Pose(pp.Point(0, -3.0, 0)))
+    # pp.set_color(wall_left, pp.GREY)
+    # monitor.add_static_obstacles(wall_left, 'wall_left')
+    # monitor.add_static_obstacles(wall_right, 'wall_right')
 
     # * add tracked obstacles
     # TODO use one tracked box to indicate where to put the assembly
@@ -1877,6 +1876,86 @@ def plan_both_arms_to_goal(monitor, use_composite=False, debug=False):
     print("Successfully planned both arms to goal ({} mode)!".format('composite' if use_composite else 'sequential'))
 
 
+def _first_puid_or_none(client, name):
+    ids = client.rigid_bodies_puids.get(name)
+    return ids[0] if ids else None
+
+
+def _solve_bar_action_goal_ik(monitor, start_state,
+                              ik_max_results: int = 20,
+                              max_outer_attempts: int = 5,
+                              random_seed: int = 0,
+                              verbose: bool = False):
+    """Solve goal IK for a BarAction movement from `target_ee_frames`.
+
+    Returns a 12-vector (left_conf || right_conf) on success, or None on
+    failure. Wraps the goal-IK retry block that previously lived inside
+    `plan_bar_action_movement` (now deleted).
+    """
+    from compas_fab.backends import CollisionCheckError, InverseKinematicsError
+    from compas_fab.robots import FrameTarget, TargetMode
+
+    if monitor.target_ee_frames is None:
+        return None
+
+    np.random.seed(random_seed)
+
+    planner = monitor.cfab.planner
+    left_group = "base_left_arm_manipulator"
+    right_group = "base_right_arm_manipulator"
+
+    target_L = FrameTarget(
+        monitor.target_ee_frames["left"], target_mode=TargetMode.ROBOT,
+        tolerance_position=0.001, tolerance_orientation=0.01,
+    )
+    target_R = FrameTarget(
+        monitor.target_ee_frames["right"], target_mode=TargetMode.ROBOT,
+        tolerance_position=0.001, tolerance_orientation=0.01,
+    )
+    ik_options = {
+        "max_results": ik_max_results,
+        "return_full_configuration": True,
+        "check_collision": True,
+    }
+
+    def _solve_once():
+        try:
+            conf_L = planner.inverse_kinematics(target_L, start_state, left_group, ik_options)
+        except (InverseKinematicsError, CollisionCheckError) as e:
+            return None, f"LEFT FAIL: {getattr(e, 'message', e)}"
+        st = start_state.copy()
+        st.robot_configuration = conf_L
+        try:
+            conf_LR = planner.inverse_kinematics(target_R, st, right_group, ik_options)
+        except (InverseKinematicsError, CollisionCheckError) as e:
+            return None, f"RIGHT FAIL: {getattr(e, 'message', e)}"
+        gs = start_state.copy()
+        gs.robot_configuration = conf_LR
+        try:
+            planner.check_collision(gs, {"verbose": verbose})
+        except CollisionCheckError as e:
+            return None, f"GOAL COLLISION: {(e.message or '').splitlines()[0] if e.message else ''}"
+        return gs, None
+
+    goal_state = None
+    for attempt in range(1, max_outer_attempts + 1):
+        gs, err = _solve_once()
+        if gs is not None:
+            goal_state = gs
+            print(f"[goal IK] attempt {attempt}/{max_outer_attempts}: OK")
+            break
+        print(f"[goal IK] attempt {attempt}/{max_outer_attempts}: {err}")
+    if goal_state is None:
+        print("[goal IK] all attempts failed.")
+        return None
+
+    monitor.movement_goal_state = goal_state
+    conf_LR = goal_state.robot_configuration
+    left_names = HUSKY_DUAL_UR5e_JOINT_NAMES[0]
+    right_names = HUSKY_DUAL_UR5e_JOINT_NAMES[1]
+    return np.array([conf_LR[n] for n in list(left_names) + list(right_names)])
+
+
 def plan_and_stage_constrained(monitor, debug=False,
                                 max_time=None, max_attempts=None,
                                 max_iterations=None, contact_probe_distance=0.005):
@@ -1908,11 +1987,79 @@ def plan_and_stage_constrained(monitor, debug=False,
     tool_link_L = pp.link_from_name(robot, 'left_ur_arm_tool0')
     tool_link_R = pp.link_from_name(robot, 'right_ur_arm_tool0')
 
-    if monitor.active_bar_body is None:
-        monitor.get_logger().warn(
-            "No active bar in scene. Load a goal RobotCellState whose attached_to_tool rigid body has been spawned."
-        )
-        return
+    from husky_assembly_tamp.motion_planner.api import (
+        derive_grasps_from_state, derive_constrained_start,
+        plan_constrained_dual_arm, plan_free_dual_arm,
+    )
+    from husky_assembly_tamp.motion_planner.stage1.minimal_rrt import get_bar_feature_points
+
+    mv = getattr(monitor, "current_movement", None)
+    movement_type_ = getattr(monitor, "movement_type", None)
+    bar_action_mode = mv is not None and movement_type_ in ("constrained", "linear")
+
+    if bar_action_mode:
+        # BarAction-driven entry: act as a "goal adapter" — convert the
+        # BarAction's target_ee_frames + start_state bar attachment into the
+        # same pp-side state the button path expects, then fall through to
+        # the shared else-branch logic (derive_grasps_from_state +
+        # derive_constrained_start).
+        start_state = monitor.movement_start_state
+        if monitor.active_bar_name is None:
+            monitor.get_logger().warn("BarAction mode: active_bar_name not set; aborting.")
+            return
+
+        # Lazy-resolve pp-side body ids from cfab if the caller didn't pre-bind.
+        client = monitor.cfab.client
+        if monitor.active_bar_body is None:
+            monitor.active_bar_body = _first_puid_or_none(client, monitor.active_bar_name)
+        if not monitor.static_obstacles:
+            monitor.static_obstacles = {
+                n: ids[0] for n, ids in client.rigid_bodies_puids.items()
+                if ids and n != monitor.active_bar_name
+            }
+        if monitor.active_bar_aabb_dims is None:
+            monitor.active_bar_aabb_dims = monitor.get_active_bar_aabb_dims()
+
+        if monitor.active_bar_body is None:
+            monitor.get_logger().warn(
+                f"BarAction mode: could not resolve pp body id for active_bar_name={monitor.active_bar_name!r}"
+            )
+            return
+
+        # 1) Goal config via dual-arm IK on target_ee_frames.
+        goal_conf = _solve_bar_action_goal_ik(monitor, start_state)
+        if goal_conf is None:
+            monitor.get_logger().warn("BarAction goal IK failed.")
+            return
+
+        # 2) world_from_bar_goal via FK at goal_conf.
+        bar_rb = start_state.rigid_body_states[monitor.active_bar_name]
+        bar_attach_pose = pose_from_frame(bar_rb.attachment_frame)
+        tool_link_bar = pp.link_from_name(robot, bar_rb.attached_to_link)
+        with pp.WorldSaver():
+            pp.set_joint_positions(robot, arm_joints_all, goal_conf)
+            world_from_tool_bar_goal = pp.get_link_pose(robot, tool_link_bar)
+        world_from_bar_goal = pp.multiply(world_from_tool_bar_goal, bar_attach_pose)
+
+        # 3) Publish goal onto monitor's pp-side state so the shared
+        # else-branch logic below consumes it.
+        monitor.goal_arm_pose[0] = goal_conf[:6]
+        monitor.goal_arm_pose[1] = goal_conf[6:]
+        pp.set_pose(monitor.active_bar_body, world_from_bar_goal)
+
+        # 4) Seed the robot at staging-seed-conf so the shared `current_conf`
+        # read picks up the right pose (set_robot_cell_state put the robot at
+        # the BarAction.start_state, which for M1 is all zeros — a placeholder,
+        # not a feasible HOME).
+        seed_conf = getattr(monitor, "bar_action_staging_seed_conf", None)
+        if seed_conf is not None:
+            pp.set_joint_positions(robot, arm_joints_all, np.asarray(seed_conf, dtype=float))
+    else:
+        if monitor.active_bar_body is None:
+            monitor.get_logger().warn(
+                "No active bar in scene. Load a goal RobotCellState whose attached_to_tool rigid body has been spawned."
+            )
+            return
 
     current_left = pp.get_joint_positions(robot, left_joints)
     current_right = pp.get_joint_positions(robot, right_joints)
@@ -1921,45 +2068,22 @@ def plan_and_stage_constrained(monitor, debug=False,
 
     world_from_bar_goal = pp.get_pose(monitor.active_bar_body)
 
-    from husky_assembly_tamp.motion_planner.api import (
-        derive_grasps_from_state, derive_constrained_start,
-        plan_constrained_dual_arm, plan_free_dual_arm,
-    )
-    from husky_assembly_tamp.motion_planner.stage1.minimal_rrt import get_bar_feature_points
-
-    # 1. Grasps
-    if monitor.grasp_targets_override is not None:
-        grasp_bar_from_left, grasp_bar_from_right = monitor.grasp_targets_override
-    else:
-        grasp_bar_from_left, grasp_bar_from_right = derive_grasps_from_state(
-            robot, arm_joints_all, tool_link_L, tool_link_R,
-            goal_conf, world_from_bar_goal,
-        )
-
-    # 2. Derived start
-    # Use goal_conf as the IK seed (mirrors run_stage_trial's pattern of using
-    # the cell-state joint values as seed for endpoint IK). Seeding with
-    # current_conf can return a self-colliding IK solution because the IK
-    # solver does not check collision.
-    world_from_bar_start, start_conf = derive_constrained_start(
+    # 1. Grasps — RobotCellState is the single source of truth: FK both
+    # tool0s at goal_conf vs. the active bar's loaded pose.
+    grasp_bar_from_left, grasp_bar_from_right = derive_grasps_from_state(
         robot, arm_joints_all, tool_link_L, tool_link_R,
-        grasp_bar_from_left, grasp_bar_from_right,
-        world_from_bar_goal, seed_conf=goal_conf,
+        goal_conf, world_from_bar_goal,
     )
-    if start_conf is None:
-        monitor.get_logger().warn("Endpoint IK failed at derived start bar pose")
-        return
 
-    # 3. Constrained plan
-    feature_points = get_bar_feature_points(monitor.active_bar_aabb_dims) \
-                     if monitor.active_bar_aabb_dims is not None else get_bar_feature_points()
-    attachments_pair = [husky.object.ee_list[0][1], husky.object.ee_list[1][1]]
-
-    # Build the constrained planner's obstacle list. This is delicate because
-    # the live cell state loads the *whole assembly* (predecessors + successors
-    # + structural elements) as static obstacles. The bar's home->goal flight
-    # path runs through space that's now densely occupied by future-built bars
-    # — bodies that wouldn't actually be there at install time.
+    # 2. Build the constrained planner's obstacle list FIRST — the new
+    # `derive_constrained_start` validator runs collision checks against this
+    # filtered list, so it must be available before the IK derivation.
+    #
+    # This is delicate because the live cell state loads the *whole assembly*
+    # (predecessors + successors + structural elements) as static obstacles.
+    # The bar's home->goal flight path runs through space that's now densely
+    # occupied by future-built bars — bodies that wouldn't actually be there
+    # at install time.
     #
     # Filtering rules (in order of importance):
     # 1. Exclude active_bar_body (it's the manipulated body, attached via grasp).
@@ -1994,10 +2118,14 @@ def plan_and_stage_constrained(monitor, debug=False,
 
     obstacles_for_constrained = []
     excluded_assembly = []
+    extras_set = set(getattr(monitor, "active_extra_bodies", []) or [])
     for name, body in monitor.static_obstacles.items():
         if body == monitor.active_bar_body:
             continue
         if body in expected_neighbor_contacts:
+            continue
+        if body in extras_set:
+            # gdrive convention: active_joint_* etc. travel with the bar
             continue
         if bar_name_re.match(name):
             excluded_assembly.append(name)
@@ -2006,8 +2134,39 @@ def plan_and_stage_constrained(monitor, debug=False,
     if excluded_assembly:
         print(f"  excluded {len(excluded_assembly)} design-study assembly bodies from constrained obstacles: "
               f"{', '.join(excluded_assembly[:6])}{'...' if len(excluded_assembly) > 6 else ''}")
+    if extras_set:
+        print(f"  excluded {len(extras_set)} active-bar extras (travel rigidly with the bar)")
     print(f"  constrained planner sees {len(obstacles_for_constrained)} static obstacles "
           f"(structural / non-design-study only)")
+
+    # 3. Derived start (fixed-bar strategy w/ collision-aware IK).
+    # Use goal_conf as the IK seed (mirrors run_stage_trial's pattern of using
+    # the cell-state joint values as seed for endpoint IK). Seeding with
+    # current_conf can return a self-colliding IK solution because the IK
+    # solver does not check collision.
+    # The husky's URDF was loaded fixed_base; its current PyBullet pose is
+    # the husky's pose in the assembly world frame. Pass it through so the
+    # mobile-base-frame bar home anchor is composed correctly when the husky
+    # is not at world origin.
+    world_from_mobile_base = pp.get_pose(robot)
+    world_from_bar_start, start_conf = derive_constrained_start(
+        robot, arm_joints_all, tool_link_L, tool_link_R,
+        grasp_bar_from_left, grasp_bar_from_right,
+        world_from_bar_goal, seed_conf=goal_conf,
+        bar_body=monitor.active_bar_body,
+        obstacles=obstacles_for_constrained,
+        world_from_mobile_base=world_from_mobile_base,
+        random_seed=getattr(monitor, "random_seed", None),
+    )
+    if start_conf is None:
+        monitor.get_logger().warn("Endpoint IK failed at derived start bar pose")
+        return
+
+    # 4. Constrained plan
+    feature_points = get_bar_feature_points(monitor.active_bar_aabb_dims) \
+                     if monitor.active_bar_aabb_dims is not None else get_bar_feature_points()
+    attachments_pair = [husky.object.ee_list[0][1], husky.object.ee_list[1][1]]
+
     scene_with_bar = {
         "robot": robot,
         "arm_joints": arm_joints_all,
@@ -2019,6 +2178,14 @@ def plan_and_stage_constrained(monitor, debug=False,
         "disabled_collisions": None,
     }
     pp.set_pose(monitor.active_bar_body, world_from_bar_start)
+    # Travel any active-bar extras with the bar so the visual scene is
+    # consistent at start. They're excluded from the planner's collision
+    # list, so this only matters for visualization.
+    for extra_body, bar_from_extra in zip(
+        getattr(monitor, "active_extra_bodies", []) or [],
+        getattr(monitor, "bar_from_extra", []) or [],
+    ):
+        pp.set_pose(extra_body, pp.multiply(world_from_bar_start, bar_from_extra))
     plan_kwargs = dict(
         bar_body=monitor.active_bar_body,
         grasp_bar_from_left=grasp_bar_from_left,
@@ -2073,6 +2240,7 @@ def plan_and_stage_constrained(monitor, debug=False,
         (np.array([q[:n] for q in constrained_path]), None, monitor.trajectory_time, None),
         (np.array([q[n:] for q in constrained_path]), None, monitor.trajectory_time, None),
     ]
+    monitor.constrained_pose_path = c_info.get("path_poses")
     monitor.constrained_display_mode = 0
     monitor._refresh_constrained_displayed_trajectory()
     print("Constrained plan ready. Sequence:")

@@ -211,47 +211,47 @@ class HuskyRobotInterface:
         else:
             self.pub_cmd_arm_cartesian.append(self.node.create_publisher(PoseStamped, name + '/ur5e/target_frame', 10))
             
-        self.pub_cmd_arm_cartesian_force = []
-        if dual_arm:
-            self.pub_cmd_arm_cartesian_force.append(self.node.create_publisher(WrenchStamped, name + '/left_ur5e/target_wrench', 10))
-            self.pub_cmd_arm_cartesian_force.append(self.node.create_publisher(WrenchStamped, name + '/right_ur5e/target_wrench', 10))
-        else:
-            self.pub_cmd_arm_cartesian_force.append(self.node.create_publisher(WrenchStamped, name + '/ur5e/target_wrench', 10))
+        # self.pub_cmd_arm_cartesian_force = []
+        # if dual_arm:
+        #     self.pub_cmd_arm_cartesian_force.append(self.node.create_publisher(WrenchStamped, name + '/left_ur5e/target_wrench', 10))
+        #     self.pub_cmd_arm_cartesian_force.append(self.node.create_publisher(WrenchStamped, name + '/right_ur5e/target_wrench', 10))
+        # else:
+        #     self.pub_cmd_arm_cartesian_force.append(self.node.create_publisher(WrenchStamped, name + '/ur5e/target_wrench', 10))
         
         # Service Clients
         
-        self.force_services = []
-        if dual_arm:
-            self.force_services.append(node.create_client(SetForceMode, name + '/left_ur5e/force_mode_controller/start_force_mode'))
-            self.force_services.append(node.create_client(SetForceMode, name + '/right_ur5e/force_mode_controller/start_force_mode'))
-        else:
-            self.force_services.append(node.create_client(SetForceMode, name + '/ur5e/force_mode_controller/start_force_mode'))
+        # self.force_services = []
+        # if dual_arm:
+        #     self.force_services.append(node.create_client(SetForceMode, name + '/left_ur5e/force_mode_controller/start_force_mode'))
+        #     self.force_services.append(node.create_client(SetForceMode, name + '/right_ur5e/force_mode_controller/start_force_mode'))
+        # else:
+        #     self.force_services.append(node.create_client(SetForceMode, name + '/ur5e/force_mode_controller/start_force_mode'))
         
-        for fs in self.force_services:
-            fs.wait_for_service(timeout_sec=2.5)
-            self.node.get_logger().info(f'Force Service Client {fs.service_is_ready()}')
+        # for fs in self.force_services:
+        #     fs.wait_for_service(timeout_sec=2.5)
+        #     self.node.get_logger().info(f'Force Service Client {fs.service_is_ready()}')
             
-        self.zero_ft_sensor_client = []
-        if dual_arm:
-            self.zero_ft_sensor_client.append(node.create_client(Trigger, name + '/left_ur5e/io_and_status_controller/zero_ftsensor'))
-            self.zero_ft_sensor_client.append(node.create_client(Trigger, name + '/right_ur5e/io_and_status_controller/zero_ftsensor'))
-        else:
-            self.zero_ft_sensor_client.append(node.create_client(Trigger, name + '/ur5e/io_and_status_controller/zero_ftsensor')) 
+        # self.zero_ft_sensor_client = []
+        # if dual_arm:
+        #     self.zero_ft_sensor_client.append(node.create_client(Trigger, name + '/left_ur5e/io_and_status_controller/zero_ftsensor'))
+        #     self.zero_ft_sensor_client.append(node.create_client(Trigger, name + '/right_ur5e/io_and_status_controller/zero_ftsensor'))
+        # else:
+        #     self.zero_ft_sensor_client.append(node.create_client(Trigger, name + '/ur5e/io_and_status_controller/zero_ftsensor')) 
         
-        for fs in self.zero_ft_sensor_client:
-            fs.wait_for_service(timeout_sec=2.5)
-            self.node.get_logger().info(f'Zero FT Sensor Service Client {fs.service_is_ready()}')
+        # for fs in self.zero_ft_sensor_client:
+        #     fs.wait_for_service(timeout_sec=2.5)
+        #     self.node.get_logger().info(f'Zero FT Sensor Service Client {fs.service_is_ready()}')
             
-        self.controller_change_service_client = []
-        if dual_arm:
-            self.controller_change_service_client.append(node.create_client(SwitchController, name + '/left_ur5e/controller_manager/switch_controller'))
-            self.controller_change_service_client.append(node.create_client(SwitchController, name + '/right_ur5e/controller_manager/switch_controller'))
-        else:
-            self.controller_change_service_client.append(node.create_client(SwitchController, name + '/ur5e/controller_manager/switch_controller')) 
+        # self.controller_change_service_client = []
+        # if dual_arm:
+        #     self.controller_change_service_client.append(node.create_client(SwitchController, name + '/left_ur5e/controller_manager/switch_controller'))
+        #     self.controller_change_service_client.append(node.create_client(SwitchController, name + '/right_ur5e/controller_manager/switch_controller'))
+        # else:
+        #     self.controller_change_service_client.append(node.create_client(SwitchController, name + '/ur5e/controller_manager/switch_controller')) 
         
-        for fs in self.controller_change_service_client:
-            fs.wait_for_service(timeout_sec=2.5)
-            self.node.get_logger().info(f'Switch Controller Service Client {fs.service_is_ready()}')
+        # for fs in self.controller_change_service_client:
+        #     fs.wait_for_service(timeout_sec=2.5)
+        #     self.node.get_logger().info(f'Switch Controller Service Client {fs.service_is_ready()}')
 
         
         # Action Clients
@@ -318,38 +318,38 @@ class HuskyRobotInterface:
             else:
                 self.node.get_logger().warn(f'SetIO Service {i} not available!')
 
-        # Zero FT Sensor service clients
-        self.zero_ft_sensor_client = []
-        if dual_arm:
-            self.zero_ft_sensor_client.append(self.node.create_client(Trigger, name + '/left_ur5e/io_and_status_controller/zero_ftsensor'))
-            self.zero_ft_sensor_client.append(self.node.create_client(Trigger, name + '/right_ur5e/io_and_status_controller/zero_ftsensor'))
-        else:
-            self.zero_ft_sensor_client.append(self.node.create_client(Trigger, name + '/ur5e/io_and_status_controller/zero_ftsensor'))
+        # # Zero FT Sensor service clients
+        # self.zero_ft_sensor_client = []
+        # if dual_arm:
+        #     self.zero_ft_sensor_client.append(self.node.create_client(Trigger, name + '/left_ur5e/io_and_status_controller/zero_ftsensor'))
+        #     self.zero_ft_sensor_client.append(self.node.create_client(Trigger, name + '/right_ur5e/io_and_status_controller/zero_ftsensor'))
+        # else:
+        #     self.zero_ft_sensor_client.append(self.node.create_client(Trigger, name + '/ur5e/io_and_status_controller/zero_ftsensor'))
 
-        for fs in self.zero_ft_sensor_client:
-            fs.wait_for_service(timeout_sec=2.5)
-            self.node.get_logger().info(f'Zero FT Sensor Service Client {fs.service_is_ready()}')
+        # for fs in self.zero_ft_sensor_client:
+        #     fs.wait_for_service(timeout_sec=2.5)
+        #     self.node.get_logger().info(f'Zero FT Sensor Service Client {fs.service_is_ready()}')
 
-        # Switch Controller service clients
-        self.controller_change_service_client = []
-        if dual_arm:
-            self.controller_change_service_client.append(self.node.create_client(SwitchController, name + '/left_ur5e/controller_manager/switch_controller'))
-            self.controller_change_service_client.append(self.node.create_client(SwitchController, name + '/right_ur5e/controller_manager/switch_controller'))
-        else:
-            self.controller_change_service_client.append(self.node.create_client(SwitchController, name + '/ur5e/controller_manager/switch_controller'))
+        # # Switch Controller service clients
+        # self.controller_change_service_client = []
+        # if dual_arm:
+        #     self.controller_change_service_client.append(self.node.create_client(SwitchController, name + '/left_ur5e/controller_manager/switch_controller'))
+        #     self.controller_change_service_client.append(self.node.create_client(SwitchController, name + '/right_ur5e/controller_manager/switch_controller'))
+        # else:
+        #     self.controller_change_service_client.append(self.node.create_client(SwitchController, name + '/ur5e/controller_manager/switch_controller'))
 
-        for fs in self.controller_change_service_client:
-            fs.wait_for_service(timeout_sec=2.5)
-            self.node.get_logger().info(f'Switch Controller Service Client {fs.service_is_ready()}')
+        # for fs in self.controller_change_service_client:
+        #     fs.wait_for_service(timeout_sec=2.5)
+        #     self.node.get_logger().info(f'Switch Controller Service Client {fs.service_is_ready()}')
 
         # Scaffolding tool RS485 clients (replaces SetIO-based gripper/screw control).
         # Indexing matches setio_clients: 0 = left/single, 1 = right.
         self.tool_clients = []
-        if dual_arm:
-            self.tool_clients.append(ScaffoldingToolClient(node, name, 'left_tool'))
-            self.tool_clients.append(ScaffoldingToolClient(node, name, 'right_tool'))
-        else:
-            self.tool_clients.append(ScaffoldingToolClient(node, name, 'tool'))
+        # if dual_arm:
+        #     self.tool_clients.append(ScaffoldingToolClient(node, name, 'left_tool'))
+        #     self.tool_clients.append(ScaffoldingToolClient(node, name, 'right_tool'))
+        # else:
+        #     self.tool_clients.append(ScaffoldingToolClient(node, name, 'tool'))
 
         # done --- --- --- --- ---
         self.node.get_logger().info(f'Husky "{name}" is ready!')

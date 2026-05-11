@@ -6,11 +6,8 @@ import os
 import numpy as np
 import pybullet as p
 import json
-import shutil
 
 import pybullet_planning as pp
-from compas.data import json_load
-from compas_fab.backends import PyBulletClient, PyBulletPlanner
 
 from husky_assembly_teleop import DATA_DIRECTORY, DESIGN_DATA_DIRECTORY
 from husky_assembly_teleop.husky_robot import HuskyRobotInterface
@@ -53,121 +50,12 @@ HUSKY_DUAL_UR5e_JOINT_NAMES = [["left_ur_arm_shoulder_pan_joint",
                       "right_ur_arm_wrist_3_joint" ]]
 
 # --- --- END EFFECTOR MANAGEMENT --- ---
-
-def _copy_urdf_with_meshes(src_urdf_path, dst_urdf_path):
-    """
-    Copy URDF file and all referenced mesh files to destination directory.
-    Updates mesh paths in the URDF to be relative to the new location.
-    
-    Args:
-        src_urdf_path: Source URDF file path
-        dst_urdf_path: Destination URDF file path
-    """
-    import xml.etree.ElementTree as ET
-    
-    # Create destination directory if needed
-    dst_dir = os.path.dirname(dst_urdf_path)
-    os.makedirs(dst_dir, exist_ok=True)
-    
-    # Parse URDF to find and update mesh files
-    tree = ET.parse(src_urdf_path)
-    root = tree.getroot()
-    
-    # Find all mesh elements and update their paths
-    src_dir = os.path.dirname(src_urdf_path)
-    for mesh in root.findall(".//mesh"):
-        filename = mesh.get("filename")
-        if filename:
-            # Handle absolute paths
-            if os.path.isabs(filename):
-                src_mesh_path = filename
-            else:
-                src_mesh_path = os.path.join(src_dir, filename)
-            
-            # Only copy if source exists and is not already in destination
-            if os.path.exists(src_mesh_path):
-                # Get just the filename for the destination
-                mesh_basename = os.path.basename(src_mesh_path)
-                dst_mesh_path = os.path.join(dst_dir, mesh_basename)
-                
-                # Only copy if source and destination are different
-                if os.path.abspath(src_mesh_path) != os.path.abspath(dst_mesh_path):
-                    shutil.copy2(src_mesh_path, dst_mesh_path)
-                
-                # Update the mesh path in the URDF to be relative
-                mesh.set("filename", mesh_basename)
-    
-    # Write the updated URDF with relative mesh paths
-    tree.write(dst_urdf_path, encoding='utf-8', xml_declaration=True)
-
-def generate_and_cache_tool_urdfs(problem_name='250806_RobotX_box_redo', state_file='robotx_box_A5-S4_end_RobotCellState.json', tool_urdf_cache_dir=None, force_regenerate=False):
-    """
-    Generate and cache tool URDFs from RobotCell for faster loading.
-    
-    Args:
-        problem_name: Name of the problem directory
-        state_file: Name of the robot cell state file
-        tool_urdf_cache_dir: Directory to cache tool URDFs (if None, uses default based on problem_name)
-        force_regenerate: Force regeneration even if cache exists
-        
-    Returns:
-        dict: Mapping of tool names to URDF file paths
-    """
-    # Make cache directory parametric to the problem_name if not provided
-    if tool_urdf_cache_dir is None:
-        tool_urdf_cache_dir = os.path.join(DESIGN_DATA_DIRECTORY, problem_name, "tool_urdf_cache")
-    os.makedirs(tool_urdf_cache_dir, exist_ok=True)
-    
-    # Check if we already have cached URDFs
-    cache_info_file = os.path.join(tool_urdf_cache_dir, f"{problem_name}_{state_file}_cache_info.json")
-    
-    if os.path.exists(cache_info_file) and not force_regenerate:
-        with open(cache_info_file, 'r') as f:
-            cache_info = json.load(f)
-        # Verify all cached files exist
-        all_exist = all(os.path.exists(path) for path in cache_info.values())
-        if all_exist:
-            print(f"Using cached tool URDFs from {tool_urdf_cache_dir}")
-            return cache_info
-    
-    print(f"Generating tool URDFs and caching to {tool_urdf_cache_dir}")
-    
-    # Load robot cell and state
-    robot_cell = json_load(os.path.join(DESIGN_DATA_DIRECTORY, problem_name, 'RobotCell.json'))
-    robot_cell_state = json_load(os.path.join(DESIGN_DATA_DIRECTORY, problem_name, 'RobotCellStates', state_file))
-    
-    tool_urdf_paths = {}
-    
-    # Create a temporary PyBullet client just for URDF generation
-    with PyBulletClient(connection_type="direct", verbose=True) as client:
-        # Get the attached tools
-        left_group = "base_left_arm_manipulator"
-        right_group = "base_right_arm_manipulator"
-        
-        left_tool = robot_cell.get_attached_tool(robot_cell_state, left_group)
-        right_tool = robot_cell.get_attached_tool(robot_cell_state, right_group)
-        
-        # Convert tools to URDF using the client's robot_model_to_urdf method
-        if left_tool:
-            left_urdf_path = client.robot_model_to_urdf(left_tool)
-            # Copy to our cache directory with all mesh files
-            cached_left_path = os.path.join(tool_urdf_cache_dir, f"{left_tool.name}.urdf")
-            _copy_urdf_with_meshes(left_urdf_path, cached_left_path)
-            tool_urdf_paths[left_tool.name] = cached_left_path
-            
-        if right_tool and right_tool != left_tool:  # Don't duplicate if same tool
-            right_urdf_path = client.robot_model_to_urdf(right_tool)
-            # Copy to our cache directory with all mesh files
-            cached_right_path = os.path.join(tool_urdf_cache_dir, f"{right_tool.name}.urdf")
-            _copy_urdf_with_meshes(right_urdf_path, cached_right_path)
-            tool_urdf_paths[right_tool.name] = cached_right_path
-    
-    # Save cache info
-    with open(cache_info_file, 'w') as f:
-        json.dump(tool_urdf_paths, f, indent=2)
-    
-    print(f"Cached {len(tool_urdf_paths)} tool URDFs to {tool_urdf_cache_dir}")
-    return tool_urdf_paths
+#
+# Tool / robot URDF spawning for COLLISION / PLANNING is now handled by
+# `cfab_session.CfabSession` via `planner.set_robot_cell(robot_cell)`. This
+# module retains a separate pp-based husky scene for visualization only;
+# the pp scene uses simple gripper geometry instead of the per-problem
+# tool URDFs.
 
 def load_robot(dual_arm=False):
     """
@@ -195,23 +83,31 @@ def load_robot(dual_arm=False):
 
 def create_end_effector(ee_type="victor_gripper", load_calib_tip=False, dual_arm=False, force_regenerate=False, punch_tool_offset=None):
     """
-    Create end effector based on type.
+    Create end effector for the pp visualization scene only.
+
+    For COLLISION / PLANNING, tool geometry is now spawned by the cfab
+    PyBullet client via `RobotCell.tool_models` / `RigidBodyState
+    .attached_to_link`. This pp-side helper produces a lightweight
+    visualization-only proxy.
 
     Args:
-        ee_type: Type of end effector ("victor_gripper", "robotiq_gripper", "custom_gripper", "punch_tool", "validation_tool_pair", or "calib_tip")
+        ee_type: One of "victor_gripper" | "robotiq_gripper" |
+            "custom_gripper" | "punch_tool" | "calib_tip".
         load_calib_tip: Whether to load calibration tip (overrides ee_type)
-        dual_arm: Whether this is for a dual-arm robot (only used for validation_tool_pair)
-        force_regenerate: Force regeneration of URDF cache (only used for validation_tool_pair)
-        punch_tool_offset: numpy array [x, y, z] offset from tool0 to punch tip (only used for punch_tool)
+        dual_arm: Whether this is for a dual-arm robot (unused; kept for
+            backwards compat with callers).
+        force_regenerate: Unused (kept for backwards compat).
+        punch_tool_offset: numpy array [x, y, z] offset from tool0 to
+            punch tip (only used for punch_tool).
 
     Returns:
-        ee: PyBullet end effector body ID or list of IDs for validation tool pair
+        ee: PyBullet end effector body ID.
     """
     if load_calib_tip:
         ee = pp.create_box(0.12, 0.12, 0.12)
         pp.set_color(ee, pp.apply_alpha(pp.GREY, 0.3))
         return ee
-    
+
     if ee_type == "victor_gripper":
         gripper_urdf_path = os.path.join(DATA_DIRECTORY, 'grasp_screw_tool_description/urdf/grasp_screw_tool_unactuated.urdf')
         ee = pp.load_pybullet(gripper_urdf_path, fixed_base=False, cylinder=False)
@@ -222,54 +118,6 @@ def create_end_effector(ee_type="victor_gripper", load_calib_tip=False, dual_arm
         gripper_scale = 1
         ee = pp.create_obj(gripper_obj, scale=gripper_scale)
         return ee
-    elif ee_type == "validation_tool_pair":
-        # Hardcoded validation tool configuration
-        from husky_assembly_teleop.husky_monitor import VALIDATION_PROBLEM_NAME
-        problem_name = VALIDATION_PROBLEM_NAME
-        # Dynamically select any JSON file in the RobotCellStates directory
-        robot_cell_states_dir = os.path.join(DESIGN_DATA_DIRECTORY, problem_name, 'RobotCellStates')
-        state_files = [f for f in os.listdir(robot_cell_states_dir) if f.endswith('.json')]
-        if not state_files:
-            raise FileNotFoundError(f"No .json files found in {robot_cell_states_dir}")
-
-        state_file = state_files[0]  # Choose the first one found (could randomize or sort if needed)
-        tool_urdf_cache_dir = os.path.join(DESIGN_DATA_DIRECTORY, problem_name, "tool_urdf_cache")
-        os.makedirs(tool_urdf_cache_dir, exist_ok=True)
-
-        tool_urdf_paths = generate_and_cache_tool_urdfs(problem_name, state_file, tool_urdf_cache_dir, force_regenerate=force_regenerate)
-        
-        # Load robot cell and state to get tool assignments
-        robot_cell = json_load(os.path.join(DESIGN_DATA_DIRECTORY, problem_name, 'RobotCell.json'))
-        robot_cell_state = json_load(os.path.join(DESIGN_DATA_DIRECTORY, problem_name, 'RobotCellStates', state_file))
-        
-        # Get the attached tools for left and right arms
-        left_group = "base_left_arm_manipulator"
-        right_group = "base_right_arm_manipulator"
-        
-        left_tool = robot_cell.get_attached_tool(robot_cell_state, left_group)
-        right_tool = robot_cell.get_attached_tool(robot_cell_state, right_group)
-        
-        # Load tools from cached URDFs - validation tools always come in pairs
-        tool_uids = []
-        
-        if left_tool and left_tool.name in tool_urdf_paths:
-            left_tool_uid = pp.load_pybullet(tool_urdf_paths[left_tool.name], fixed_base=False, cylinder=False)
-            tool_uids.append(left_tool_uid)
-        
-        if right_tool and right_tool.name in tool_urdf_paths:
-            right_tool_uid = pp.load_pybullet(tool_urdf_paths[right_tool.name], fixed_base=False, cylinder=False)
-            tool_uids.append(right_tool_uid)
-        
-        # For validation tools, we expect both tools to be loaded
-        if len(tool_uids) != 2:
-            raise ValueError(f"Expected 2 validation tools (PointTool and BoardTool), but got {len(tool_uids)}")
-        
-        # Return the pair of tools for dual arm, or just the first one for single arm
-        if dual_arm:
-            return tool_uids  # Return both tools for dual arm
-        else:
-            return tool_uids[0]  # Return only PointTool for single arm
-
     elif ee_type == "punch_tool":
         # Punch tool for calibration validation: cone with tip at punch offset, base at tool0
         import math
@@ -334,7 +182,7 @@ def create_end_effector(ee_type="victor_gripper", load_calib_tip=False, dual_arm
             ee = pp.create_box(0.12, 0.12, 0.01, color=(0.8, 0.8, 0.8, 1))
         return ee
     else:
-        raise ValueError(f"Unknown end effector type: {ee_type}. Valid types: victor_gripper, robotiq_gripper, custom_gripper, punch_tool, validation_tool_pair, calib_tip")
+        raise ValueError(f"Unknown end effector type: {ee_type}. Valid types: victor_gripper, robotiq_gripper, custom_gripper, punch_tool, calib_tip")
 
 def attach_end_effectors(robot, ee_list, dual_arm=False):
     """
@@ -437,12 +285,12 @@ class Husky():
     """
     A husky interface with corresponding husky object.
     
-    End effectors can now be specified at creation time using the ee_types parameter:
-    - For single-arm robots: ee_types=["victor_gripper"] or ee_types=["robotiq_gripper"] or ee_types=["custom_gripper"] or ee_types=["validation_tool_pair"]
-    - For dual-arm robots: ee_types=["victor_gripper", "victor_gripper"] or ee_types=["validation_tool_pair"]
+    End effectors are visualization proxies for the pp scene only; the
+    planner side uses the cfab client + RobotCell tool_models.
+
+    - For single-arm robots: ee_types=["victor_gripper"|"robotiq_gripper"|"custom_gripper"]
+    - For dual-arm robots: ee_types=["victor_gripper", "victor_gripper"] (etc.)
     - For calibration: set calibration=True (automatically uses calib_tip)
-    
-    Note: validation_tool_pair loads a predefined pair of validation tools (PointTool and BoardTool)
     """
     def __init__(self, monitor, name, mocap_id=None, pos=np.zeros(3), rot=np.array((0, 0, 0, 1)),
                  connect_arm=True, connect_gripper=True, base_calibration_file=None, calibration=False, dual_arm=False, ee_types=None, force_regenerate=False, punch_tool_offset=None):
@@ -494,9 +342,7 @@ class HuskyObject():
 
                 if dual_arm:
                     if len(ee_types) == 1:
-                        # Special case for validation_tool_pair - it already returns both tools
-                        if ee_types[0] != "validation_tool_pair":
-                            ee_types = [ee_types[0], ee_types[0]]  # Use same type for both arms
+                        ee_types = [ee_types[0], ee_types[0]]  # Use same type for both arms
 
                 ee_list = []
                 per_arm_punch_offsets = None
@@ -519,12 +365,7 @@ class HuskyObject():
                             force_regenerate=force_regenerate,
                             punch_tool_offset=ee_punch_tool_offset,
                         )
-                    
-                    # Handle validation_tool_pair which returns a list
-                    if isinstance(ee, list):
-                        ee_list.extend(ee)
-                    else:
-                        ee_list.append(ee)
+                    ee_list.append(ee)
 
                 if dual_arm:
                     assert len(ee_list) == 2, f"Expected 2 end effectors for dual_arm, got {len(ee_list)}"
