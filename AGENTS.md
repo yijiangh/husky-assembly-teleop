@@ -6,6 +6,7 @@
 
 Core principles:
 - Simplicity first: make every change as simple as possible. Impact minimal code. Whenever possible, try to reuse existing functions without reinventing the wheels.
+- Always write comments in code. Remember code is for both human and agents to read.
 
 Use the following python env to run:
 

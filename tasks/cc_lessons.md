@@ -819,3 +819,60 @@ Trajectory" selection slider as `Slider(name, cb, 0, len(files)-1, ...)`
 but the cleaner fix is at the call site: don't show a selection slider
 for a 0- or 1-element list (0 ⇒ nothing, 1 ⇒ just the action button).
 Counts are fixed at launch so static handling in `build_ui` is fine.
+
+## Use the workspace venv for ROS-adjacent scripts — 2026-05
+
+When running repo scripts that import `husky_assembly_teleop`, do not use
+plain `/usr/bin/python3`; it may lack `pybullet` and the local ROS package
+index. Follow `AGENTS.md`: run from `/home/yijiangh/Code/ros2_ws`, activate
+`venv`, and source `install/setup.bash` when the script imports the ROS
+package. If running a source-file script directly, also set `PYTHONPATH` to
+include `src/husky-assembly-teleop` and the local `external/*` source paths
+unless the package has been installed into the venv.
+
+## Lock PyBullet rendering around expensive planners — 2026-05
+
+When a planner expands many states in a GUI PyBullet client, wrap the planner
+body in `with pp.LockRenderer():`. Put the lock after any temporary
+`pp.CLIENT` switch so it locks the client doing the planning, not the monitor's
+other GUI client. This is especially important for constrained planning where
+rendering every intermediate scene update can dominate runtime.
+
+## Manual staging ignores the active bar and needs real planner budgets — 2026-05
+
+For the manual staging move before constrained execution, the active bar is not
+mounted or held yet. Free staging planners must exclude `active_bar_body` and
+active-bar extras from obstacles even if those bodies are loaded for
+visualization/constrained planning. Also, if `plan_transit_motion()` prints
+only `transit path not found` and not `initial and end conf not valid`, the
+start and goal configs passed endpoint collision checks; the failure is search
+budget/connectivity, not direct goal collision. Make sure wrapper parameters
+like `max_time` and `max_iterations` actually pass through to the underlying
+BiRRT instead of being silently ignored.
+
+## Do not alias planner target state for trajectory preview — 2026-05
+
+`goal_arm_pose` is planner input, not just a visualization buffer. In
+`HuskyMonitor.update()`, never do `goal_arm_pose = self.goal_arm_pose` before
+writing preview waypoints into it; that aliases the list and silently changes
+the actual planning target. Use copied arrays for preview display. This matters
+when constrained planning sets the manual staging target to constrained-start:
+displaying the constrained trajectory can otherwise overwrite the target with a
+trajectory waypoint or endpoint.
+
+## Manual staging obstacle set must match constrained-start validation — 2026-05
+
+If the constrained-start IK was validated while excluding design-study assembly
+bar bodies (`b<N>_0`, `b<N>_joint_*`), the manual free staging planner must use
+the same obstacle filtering. Otherwise the endpoint check can report
+`Warning: end configuration is in collision` against a future/loaded assembly
+body even though the constrained-start target is valid for the intended staging
+phase. Excluding only `active_bar_body` is not enough in BarAction scenes.
+
+## Quick-test composite staging can ignore environment obstacles — 2026-05
+
+When the goal is just to validate the constrained-start handoff quickly, the
+composite manual staging planner may use `obstacles=[]` while keeping the two
+tool attachments. This checks robot self-collision and robot-tool collision but
+ignores assembly/environment bodies. Make this explicit in logs so it is not
+mistaken for a production collision policy.

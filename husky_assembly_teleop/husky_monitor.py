@@ -57,8 +57,8 @@ MOCAP_IP = '192.168.0.117' # set to the mocap PC's IP, get this from Motive Sett
 FILENAME_SUFFIX = '_vary_pos_vary_yaw'
 
 class HuskyMonitor(Node):
-    USE_MOCAP = 0
-    FAKE_HARDWARE = 1
+    USE_MOCAP = 1
+    FAKE_HARDWARE = 0
 
     # When USE_MOCAP=1, by default the husky base in PyBullet tracks mocap.
     # Set USE_CELL_STATE_BASE_POSE=1 to override that and pin the base to
@@ -125,6 +125,8 @@ class HuskyMonitor(Node):
         self.staging_free_trajectory = [None, None]   # left, right (per-arm tuples)
         self.constrained_trajectory = [None, None]
         self.constrained_display_mode = 0  # 0=FREE_STAGE, 1=CONSTRAINED
+        self.constrained_start_conf = None  # 12-DOF target for manual staging
+        self.constrained_goal_conf = None   # 12-DOF constrained-plan endpoint
         # cfab→pp bridge state for the BarAction planning path.
         self._bar_action_husky = None          # SimpleNamespace husky stub (cfab robot)
         self._bar_action_ghost_bodies = set()  # tiny invisible EE proxy pybullet bodies
@@ -922,6 +924,64 @@ class HuskyMonitor(Node):
             self.set_arm_trajectory(src[1], index=1)
             self.set_to_show_traj_state()
 
+    def _goal_matches_constrained_start(self):
+        """True when the current goal is the staged start of the constrained path."""
+        start_conf = getattr(self, "constrained_start_conf", None)
+        if start_conf is None:
+            return False
+        goal_conf = np.concatenate([
+            np.asarray(self.goal_arm_pose[0], dtype=float),
+            np.asarray(self.goal_arm_pose[1], dtype=float),
+        ])
+        return np.allclose(goal_conf, np.asarray(start_conf, dtype=float), atol=1e-4)
+
+    def _capture_manual_staging_plan(self, arm_index=None):
+        """Cache manual free plans in display slot 0 when they target constrained start."""
+        if not self._goal_matches_constrained_start():
+            return
+
+        if arm_index is None:
+            if self.planned_arm_trajectory[0][0] is None or self.planned_arm_trajectory[1][0] is None:
+                return
+            self.staging_free_trajectory = [
+                copy.deepcopy(self.planned_arm_trajectory[0]),
+                copy.deepcopy(self.planned_arm_trajectory[1]),
+            ]
+            self.constrained_display_mode = 0
+            print("Cached manual both-arm staging plan as Display Traj = 0.")
+            return
+
+        arm_index = int(arm_index)
+        if self.planned_arm_trajectory[arm_index][0] is None:
+            return
+        self.staging_free_trajectory[arm_index] = copy.deepcopy(
+            self.planned_arm_trajectory[arm_index]
+        )
+        self.constrained_display_mode = 0
+        print(f"Cached manual arm {arm_index} staging plan as Display Traj = 0.")
+
+    def _set_goal_to_constrained_start(self):
+        """Restore manual staging target to the constrained trajectory start."""
+        start_conf = getattr(self, "constrained_start_conf", None)
+        if start_conf is None:
+            return
+        start_conf = np.asarray(start_conf, dtype=float)
+        self.goal_arm_pose[0] = start_conf[:6].copy()
+        self.goal_arm_pose[1] = start_conf[6:].copy()
+        self.update_traj_goal_configuration()
+
+    def plan_single_arm_to_goal_action(self):
+        """Plan selected arm, then cache it as manual staging if applicable."""
+        self._set_goal_to_constrained_start()
+        world.plan_arm_to_goal(self)
+        self._capture_manual_staging_plan(self.selected_arm_index)
+
+    def plan_both_arms_to_goal_action(self, use_composite=True, debug=False):
+        """Plan both arms, then cache it as manual staging if applicable."""
+        self._set_goal_to_constrained_start()
+        world.plan_both_arms_to_goal(self, use_composite=use_composite, debug=debug)
+        self._capture_manual_staging_plan()
+
     # --- --- --- --- --- BARACTION LOADING --- --- --- --- ---
 
     def load_bar_action(self, action_path=None, movement=0, *, update_goal_state=True):
@@ -978,8 +1038,13 @@ class HuskyMonitor(Node):
             if self.cfab is not None:
                 self.cfab.close()
             try:
+                existing_client_id = pp.CLIENT if pp.is_connected() else None
                 self.cfab = CfabSession(VALIDATION_PROBLEM_NAME,
-                                        connection_type="gui", enable_debug_gui=True)
+                                        connection_type="gui",
+                                        enable_debug_gui=True,
+                                        existing_client_id=existing_client_id)
+                if existing_client_id is not None:
+                    pp.CLIENTS.setdefault(existing_client_id, True)
             except Exception as e:
                 print(f"Error initializing CfabSession for {VALIDATION_PROBLEM_NAME}: {e}")
                 self.cfab = None
@@ -1183,8 +1248,7 @@ class HuskyMonitor(Node):
             _pp.CLIENT = _saved
 
     def plan_and_stage_constrained_bar_action(self):
-        """Run plan_and_stage_constrained; on success (BarAction mode) build
-        two scrub sliders on the cfab GUI window."""
+        """Run constrained planning; on success build cfab scrub sliders."""
         world.plan_and_stage_constrained(self)
         traj_c = self.constrained_trajectory
         if not (traj_c and traj_c[0] is not None and traj_c[1] is not None):
@@ -1565,7 +1629,7 @@ class HuskyMonitor(Node):
             self.buttons.append(Button('Plan arm to assemble, reuse grasp', self.plan_arm_to_transfer_element_reuse_grasp))
             self.buttons.append(Button('Plan arm to retract to home', self.plan_arm_to_retract_to_home))
 
-        self.buttons.append(Button('Plan S.Arm to conf target', lambda : world.plan_arm_to_goal(self)))
+        self.buttons.append(Button('Plan S.Arm to conf target', self.plan_single_arm_to_goal_action))
         self.buttons.append(Button('Exec S.Arm Traj', self.execute_arm_trajectory))
         self.buttons.append(Button('Exec Both Arm Trajs', lambda: world.execute_arm_trajectory_both(self)))
 
@@ -1574,7 +1638,7 @@ class HuskyMonitor(Node):
 
         # Add buttons for planning both arms to goal (sequential and composite)
         # self.buttons.append(Button('Plan Both Arms to Goal (sequential)', lambda: world.plan_both_arms_to_goal(self, use_composite=False)))
-        self.buttons.append(Button('Plan Both Arms to Goal (composite)', lambda: world.plan_both_arms_to_goal(self, use_composite=True)))
+        self.buttons.append(Button('Plan Both Arms to Goal (composite)', self.plan_both_arms_to_goal_action))
 
         # Button to export planned trajectory to JSON
         self.buttons.append(Button(
@@ -2057,7 +2121,7 @@ class HuskyMonitor(Node):
         # Key "0" to plan both arms to goal
         if (ord("0") in keys and keys[ord("0")] & p.KEY_WAS_TRIGGERED):
             print("Planning both arms to goal via keyboard '0'...")
-            world.plan_both_arms_to_goal(self, use_composite=True, debug=False)
+            self.plan_both_arms_to_goal_action(use_composite=True, debug=False)
         
         # Enter key (65309 or 13) to execute both arm trajectories
         if ((65309 in keys and keys[65309] & p.KEY_WAS_TRIGGERED) or
@@ -2173,7 +2237,12 @@ class HuskyMonitor(Node):
             
         preview_time = p.readUserDebugParameter(self.time_slider)
         goal_base_pose = self.goal_base_pose
-        goal_arm_pose = self.goal_arm_pose
+        # Preview must not mutate self.goal_arm_pose; planners consume that
+        # field as the actual target configuration.
+        goal_arm_pose = [
+            np.array(self.goal_arm_pose[0], dtype=float).copy(),
+            np.array(self.goal_arm_pose[1], dtype=float).copy(),
+        ]
         if not self.show_goal_state:
             # if self.planned_base_trajectory[0] is not None:
             #     N = len(self.planned_base_trajectory[0])

@@ -180,7 +180,10 @@ def get_arm_ik_for_grasp_bar(robot, ik_solver, world_from_tool0, attachments, ob
                 return None
     return conf
 
-def plan_transit_motion(robot, end_conf, attachments, obstacles, debug=False, disabled_collisions=None, dual_arm_index=None):
+def plan_transit_motion(robot, end_conf, attachments, obstacles, debug=False,
+                        disabled_collisions=None, dual_arm_index=None,
+                        joint_resolution=0.05, max_time=10,
+                        max_iterations=20):
     # Adapted to support dual-arm (composite) planning
     joint_names = UR5E_JOINT_NAMES
     arm_prefix = ""
@@ -214,7 +217,7 @@ def plan_transit_motion(robot, end_conf, attachments, obstacles, debug=False, di
         all_attachments = attachments if isinstance(attachments, list) else [attachments]
     
     custom_limits = get_custom_limits(robot, {})
-    resolutions = np.ones(len(joint_names)) * 0.05
+    resolutions = np.ones(len(joint_names)) * float(joint_resolution)
     disabled_collisions = disabled_collisions or {}
 
     movable_joints = pp.joints_from_names(robot, joint_names)
@@ -245,8 +248,8 @@ def plan_transit_motion(robot, end_conf, attachments, obstacles, debug=False, di
                                             distance_fn, sample_fn, extend_fn,
                                             transit_collision_fn,
                                             algorithm='birrt', 
-                                            max_time=10, 
-                                            max_iterations=20, 
+                                            max_time=max_time,
+                                            max_iterations=max_iterations,
                                             smooth=20, diagnosis=debug,
                                             coarse_waypoints=False,
                                             ) 

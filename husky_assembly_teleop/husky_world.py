@@ -50,6 +50,14 @@ TIME_PER_ROTATION = 14
 PROBE_END_WAIT_TIME = 1
 USE_CARTESIAN_CONTROLLER = True
 
+# BarAction planner hyperparameters. Constrained resolution controls SE(3)
+# RRT interpolation; free joint resolution controls joint-space extension.
+# CONSTRAINED_POSITION_RES = 0.1
+# CONSTRAINED_ROTATION_RES = 0.1
+CONSTRAINED_POSITION_RES = 0.01
+CONSTRAINED_ROTATION_RES = 0.025
+FREE_JOINT_RESOLUTION = 0.05
+
 
 def arm_index_to_name(arm_index):
     return "left" if int(arm_index) == 0 else "right"
@@ -375,7 +383,7 @@ def plan_base_to_goal(monitor):
 #     monitor.set_arm_trajectory(planning.plan_arm_wave(monitor.huskies[monitor.selected_robot_id], monitor.trajectory_time))
 
 def plan_arm_to_goal(monitor):
-    obstacles = [monitor.assembly_objects[i].body for i in range(monitor.current_seq_index)] + list(monitor.static_obstacles.values())
+    obstacles = [monitor.assembly_objects[i].body for i in range(monitor.current_seq_index)] + _get_manual_staging_obstacles(monitor)
     
     print(f"Planning from {monitor.huskies[monitor.selected_robot_id].interface.arm_joint_pose[monitor.selected_arm_index]} to {monitor.goal_arm_pose[monitor.selected_arm_index]} with obstacles {obstacles}")
     
@@ -1802,6 +1810,7 @@ def plan_both_arms_to_goal(monitor, use_composite=False, debug=False):
     print(f"target left_conf: {left_conf}")
     print(f"target right_conf: {right_conf}")
     attachments = [ee[1] for ee in husky.object.ee_list]
+    obstacles = _get_manual_staging_obstacles(monitor)
 
     left_trajectory = None
     right_trajectory = None
@@ -1810,7 +1819,7 @@ def plan_both_arms_to_goal(monitor, use_composite=False, debug=False):
         # Sequential planning: left arm, then right arm
         pp.set_joint_positions(robot, left_joints, current_left_conf)
         left_trajectory = planning.plan_arm_motion(
-            husky, left_conf, list(monitor.static_obstacles.values()), monitor.trajectory_time, arm_index=0, debug=debug
+            husky, left_conf, obstacles, monitor.trajectory_time, arm_index=0, debug=debug
         )
         if left_trajectory[0] is None:
             monitor.get_logger().warn('Left arm planning failed!')
@@ -1819,7 +1828,7 @@ def plan_both_arms_to_goal(monitor, use_composite=False, debug=False):
         pp.set_joint_positions(robot, left_joints, left_trajectory[0][-1])
         pp.set_joint_positions(robot, right_joints, current_right_conf)
         right_trajectory = planning.plan_arm_motion(
-            husky, right_conf, list(monitor.static_obstacles.values()), monitor.trajectory_time, arm_index=1, debug=debug
+            husky, right_conf, obstacles, monitor.trajectory_time, arm_index=1, debug=debug
         )
         if right_trajectory[0] is None:
             monitor.get_logger().warn('Right arm planning failed!')
@@ -1851,20 +1860,32 @@ def plan_both_arms_to_goal(monitor, use_composite=False, debug=False):
         arm_joints_all = list(left_joints) + list(right_joints)
         tool_link_L = pp.link_from_name(robot, 'left_ur_arm_tool0')
         tool_link_R = pp.link_from_name(robot, 'right_ur_arm_tool0')
+        # Quick-test staging mode: ignore environment/assembly obstacles.
+        # Keep attachments so robot-vs-tool collision is still checked.
+        composite_obstacles = []
+        print("Composite manual staging ignores all environment obstacles for quick test.")
         scene = {
             "robot": robot,
             "arm_joints": arm_joints_all,
             "joint_names": list(left_joint_names) + list(right_joint_names),
             "tool_link_left": tool_link_L,
             "tool_link_right": tool_link_R,
-            "obstacles": list(monitor.static_obstacles.values()),
+            "obstacles": composite_obstacles,
             "attachments": attachments,  # already len 2 per existing code
             "disabled_collisions": None,
         }
         from husky_assembly_tamp.motion_planner.api import plan_free_dual_arm
-        composite_path, info = plan_free_dual_arm(scene, composite_start, composite_goal, debug=debug)
+        composite_path, info = plan_free_dual_arm(
+            scene, composite_start, composite_goal,
+            max_time=60.0, max_iterations=200,
+            joint_resolution=FREE_JOINT_RESOLUTION,
+            debug=debug,
+        )
         if composite_path is None:
-            monitor.get_logger().warn(f"Composite planning failed: {info.get('failure_reason', 'unknown')}")
+            monitor.get_logger().warn(
+                f"Composite planning failed: {info.get('failure_reason', 'unknown')}; "
+                f"endpoints were valid if no 'initial and end conf not valid' line appeared."
+            )
             return
         left_trajectory = (np.array([q[:len(left_joints)] for q in composite_path]), None, monitor.trajectory_time, None)
         right_trajectory = (np.array([q[len(left_joints):] for q in composite_path]), None, monitor.trajectory_time, None)
@@ -1874,6 +1895,43 @@ def plan_both_arms_to_goal(monitor, use_composite=False, debug=False):
     monitor.set_arm_trajectory(right_trajectory, index=1)
     monitor.set_to_show_traj_state()
     print("Successfully planned both arms to goal ({} mode)!".format('composite' if use_composite else 'sequential'))
+
+
+def _get_manual_staging_obstacles(monitor):
+    """Obstacles for free staging; mirror constrained-start validation."""
+    import re as _re
+
+    bar_name_re = _re.compile(r"^b\d+(_0|_joint_\d+)$")
+    excluded = set()
+    active_bar_body = getattr(monitor, "active_bar_body", None)
+    if active_bar_body is not None:
+        excluded.add(active_bar_body)
+    excluded.update(getattr(monitor, "active_extra_bodies", []) or [])
+
+    obstacles = []
+    excluded_names = []
+    excluded_assembly = []
+    for name, body in (getattr(monitor, "static_obstacles", {}) or {}).items():
+        if body in excluded:
+            excluded_names.append(name)
+            continue
+        if bar_name_re.match(str(name)):
+            # The constrained-start IK ignores future design-study bars; the
+            # manual free staging target must be checked against the same set.
+            excluded_assembly.append(name)
+            continue
+        obstacles.append(body)
+
+    active_name = getattr(monitor, "active_bar_name", None)
+    if active_bar_body is not None and active_bar_body not in obstacles:
+        print(f"Manual staging ignores active bar {active_name} body={active_bar_body}.")
+    if excluded_names:
+        print(f"Manual staging excluded held bodies: {', '.join(excluded_names)}")
+    if excluded_assembly:
+        print(f"Manual staging excluded {len(excluded_assembly)} design-study assembly bodies: "
+              f"{', '.join(excluded_assembly[:6])}{'...' if len(excluded_assembly) > 6 else ''}")
+    print(f"Manual staging planner sees {len(obstacles)} obstacle bodies.")
+    return obstacles
 
 
 def _first_puid_or_none(client, name):
@@ -1957,9 +2015,12 @@ def _solve_bar_action_goal_ik(monitor, start_state,
 
 
 def plan_and_stage_constrained(monitor, debug=False,
-                                max_time=None, max_attempts=None,
-                                max_iterations=None, contact_probe_distance=0.005):
-    """Run the constrained dual-arm planner + a free staging plan.
+                                max_time=60.0, max_attempts=15,
+                                max_iterations=None, contact_probe_distance=0.005,
+                                random_seed=None, use_draw=False,
+                                position_res=None, rotation_res=None,
+                                free_joint_resolution=None):
+    """Run the constrained dual-arm planner and expose its start as a goal.
 
     Workflow:
       1. Derive grasp transforms from the loaded goal RobotCellState
@@ -1967,14 +2028,12 @@ def plan_and_stage_constrained(monitor, debug=False,
       2. Derive a "home" world_from_bar_start and a constraint-satisfying
          start_conf via dual-arm endpoint IK.
       3. Run the constrained planner from start_conf to goal_conf.
-      4. Run the free planner from current robot conf to start_conf
-         (bar excluded from obstacles since it's not yet held).
-      5. Store both trajectories on the monitor and display the free
-         staging trajectory by default.
+      4. Store only the constrained trajectory and set start_conf as the
+         monitor goal so the user can manually plan the free staging motion.
 
-    User then executes the staging trajectory, manually places the bar in
-    the end-effectors, flips the Display slider to 1, and executes the
-    constrained trajectory.
+    User then plans to the exposed start goal with the existing free-motion
+    buttons, manually places the bar in the end-effectors, flips the Display
+    slider to 1, and executes the constrained trajectory.
     """
     mv = getattr(monitor, "current_movement", None)
     movement_type_ = getattr(monitor, "movement_type", None)
@@ -1992,22 +2051,31 @@ def plan_and_stage_constrained(monitor, debug=False,
         pp.CLIENT = monitor.cfab.client.client_id
         pp.CLIENTS.setdefault(pp.CLIENT, True)
         try:
-            return _plan_and_stage_body(
-                monitor, husky, husky.object.robot, debug, max_time,
-                max_attempts, max_iterations, contact_probe_distance,
-            )
+            # Pause cfab PyBullet rendering while the constrained planner
+            # expands/searches; GUI drawing dominates runtime otherwise.
+            with pp.LockRenderer():
+                return _plan_and_stage_body(
+                    monitor, husky, husky.object.robot, debug, max_time,
+                    max_attempts, max_iterations, contact_probe_distance, random_seed,
+                    use_draw, position_res, rotation_res, free_joint_resolution,
+                )
         finally:
             pp.CLIENT = _saved_pp_client
     else:
         husky = monitor.huskies[monitor.selected_robot_id]
-        return _plan_and_stage_body(
-            monitor, husky, husky.object.robot, debug, max_time,
-            max_attempts, max_iterations, contact_probe_distance,
-        )
+        # Pause monitor PyBullet rendering while the constrained planner runs.
+        with pp.LockRenderer():
+            return _plan_and_stage_body(
+                monitor, husky, husky.object.robot, debug, max_time,
+                max_attempts, max_iterations, contact_probe_distance, random_seed,
+                use_draw, position_res, rotation_res, free_joint_resolution,
+            )
 
 
 def _plan_and_stage_body(monitor, husky, robot, debug, max_time, max_attempts,
-                          max_iterations, contact_probe_distance):
+                          max_iterations, contact_probe_distance, random_seed=0,
+                          use_draw=False, position_res=None, rotation_res=None,
+                          free_joint_resolution=None):
     left_joint_names = HUSKY_DUAL_UR5e_JOINT_NAMES[0]
     right_joint_names = HUSKY_DUAL_UR5e_JOINT_NAMES[1]
     left_joints = pp.joints_from_names(robot, left_joint_names)
@@ -2018,7 +2086,7 @@ def _plan_and_stage_body(monitor, husky, robot, debug, max_time, max_attempts,
 
     from husky_assembly_tamp.motion_planner.api import (
         derive_grasps_from_state, derive_constrained_start,
-        plan_constrained_dual_arm, plan_free_dual_arm,
+        plan_constrained_dual_arm,
     )
     from husky_assembly_tamp.motion_planner.stage1.minimal_rrt import get_bar_feature_points
 
@@ -2090,9 +2158,6 @@ def _plan_and_stage_body(monitor, husky, robot, debug, max_time, max_attempts,
             )
             return
 
-    current_left = pp.get_joint_positions(robot, left_joints)
-    current_right = pp.get_joint_positions(robot, right_joints)
-    current_conf = np.concatenate([current_left, current_right])
     goal_conf = np.concatenate([monitor.goal_arm_pose[0], monitor.goal_arm_pose[1]])
 
     world_from_bar_goal = pp.get_pose(monitor.active_bar_body)
@@ -2230,8 +2295,47 @@ def _plan_and_stage_body(monitor, husky, robot, debug, max_time, max_attempts,
         plan_kwargs["max_attempts"] = max_attempts
     if max_iterations is not None:
         plan_kwargs["max_iterations"] = max_iterations
+    if random_seed is not None:
+        # Optional: pin the RRT's RNG for a reproducible run. Default is
+        # None (fresh entropy per call) — the RRT is flaky for hard scenes,
+        # so a fresh seed + the generous max_attempts above usually finds a
+        # path faster than any single fixed seed would.
+        plan_kwargs["random_seed"] = random_seed
+    if use_draw:
+        # plan_pose_rrt's extend_toward draws each new SE(3) tree edge via
+        # pp.add_line on pp.CLIENT (= the cfab GUI window here). Useful for
+        # eyeballing where the bar-pose RRT gets stuck — best with
+        # max_attempts=1 + a fixed --random-seed so it's one clean tree.
+        plan_kwargs["use_draw"] = True
+    # Finer constrained steps keep per-step IK closer to the bar target, but
+    # increase planner work. Free joint resolution controls staging BiRRT steps.
+    eff_position_res = CONSTRAINED_POSITION_RES if position_res is None else float(position_res)
+    eff_rotation_res = CONSTRAINED_ROTATION_RES if rotation_res is None else float(rotation_res)
+    eff_free_joint_resolution = (
+        FREE_JOINT_RESOLUTION if free_joint_resolution is None
+        else float(free_joint_resolution)
+    )
+    plan_kwargs["position_res"] = eff_position_res
+    plan_kwargs["rotation_res"] = eff_rotation_res
     constrained_path, c_info = plan_constrained_dual_arm(
         scene_with_bar, start_conf, goal_conf, **plan_kwargs
+    )
+    # Stash the constrained-plan context so downstream consumers (e.g. the
+    # headless test's path-validation) can rebuild the scene + grasps without
+    # re-deriving them. Set regardless of staging success/failure.
+    monitor._bar_action_plan_ctx = dict(
+        stage=monitor.constrained_planner_stage,
+        grasp_bar_from_left=grasp_bar_from_left,
+        grasp_bar_from_right=grasp_bar_from_right,
+        obstacles_for_constrained=list(obstacles_for_constrained),
+        start_conf=np.asarray(start_conf, dtype=float).copy(),
+        goal_conf=np.asarray(goal_conf, dtype=float).copy(),
+        world_from_bar_start=world_from_bar_start,
+        world_from_bar_goal=world_from_bar_goal,
+        position_res=eff_position_res,
+        rotation_res=eff_rotation_res,
+        free_joint_resolution=eff_free_joint_resolution,
+        path_poses=c_info.get("path_poses"),
     )
     if constrained_path is None:
         if monitor.constrained_planner_stage == 1 and c_info.get("pose_only_success"):
@@ -2242,40 +2346,28 @@ def _plan_and_stage_body(monitor, husky, robot, debug, max_time, max_attempts,
             monitor.get_logger().warn(f"Constrained planning failed: {c_info.get('failure_reason', 'unknown')}")
         return
 
-    # 4. Free staging plan: bar NOT held, NOT in obstacles
-    obstacles_no_bar = [b for b in monitor.static_obstacles.values() if b != monitor.active_bar_body]
-    scene_free = dict(scene_with_bar)
-    scene_free["obstacles"] = obstacles_no_bar
-    free_path, f_info = plan_free_dual_arm(scene_free, current_conf, start_conf)
-    if free_path is None:
-        monitor.get_logger().warn(
-            f"Free staging plan failed: {f_info.get('failure_reason', 'unknown')}; constrained plan kept."
-        )
-        # still store constrained traj for inspection
-        n = len(left_joints)
-        monitor.constrained_trajectory = [
-            (np.array([q[:n] for q in constrained_path]), None, monitor.trajectory_time, None),
-            (np.array([q[n:] for q in constrained_path]), None, monitor.trajectory_time, None),
-        ]
-        return
-
-    # 5. Store and display
+    # 5. Store only the constrained path. The free staging path is now planned
+    # manually by the monitor buttons after start_conf becomes the goal target.
     n = len(left_joints)
-    monitor.staging_free_trajectory = [
-        (np.array([q[:n] for q in free_path]), None, monitor.trajectory_time, None),
-        (np.array([q[n:] for q in free_path]), None, monitor.trajectory_time, None),
-    ]
+    start_conf = np.asarray(start_conf, dtype=float)
+    monitor.constrained_start_conf = start_conf.copy()
+    monitor.constrained_goal_conf = np.asarray(goal_conf, dtype=float).copy()
+    monitor.staging_free_trajectory = [None, None]
     monitor.constrained_trajectory = [
         (np.array([q[:n] for q in constrained_path]), None, monitor.trajectory_time, None),
         (np.array([q[n:] for q in constrained_path]), None, monitor.trajectory_time, None),
     ]
     monitor.constrained_pose_path = c_info.get("path_poses")
-    monitor.constrained_display_mode = 0
+    monitor.goal_arm_pose[0] = start_conf[:n].copy()
+    monitor.goal_arm_pose[1] = start_conf[n:].copy()
+    monitor.update_traj_goal_configuration()
+    monitor.constrained_display_mode = 1
     monitor._refresh_constrained_displayed_trajectory()
     print("Constrained plan ready. Sequence:")
-    print("  1) Click 'Exec Both Arm Trajs' to play the FREE staging plan (robot moves to derived start_conf, bar untouched).")
-    print("  2) Manually place the bar in both end-effectors.")
-    print("  3) Set 'Display Traj' slider to 1, then click 'Exec Both Arm Trajs' to play the CONSTRAINED plan.")
+    print("  1) Plan to the exposed constrained-start goal with 'Plan Both Arms to Goal' or 'Plan S.Arm to conf target'.")
+    print("  2) Execute that free staging plan with Display Traj = 0.")
+    print("  3) Manually place the bar in both end-effectors.")
+    print("  4) Set Display Traj = 1, then execute the CONSTRAINED plan.")
 
 
 ############################## KISSING EXPERIMENT ###########################################
