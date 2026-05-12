@@ -16,6 +16,16 @@ import pybullet as p
 logger = logging.getLogger(__name__)
 
 
+def _nonzero_range(vmin: float, vmax: float) -> Tuple[float, float]:
+    """pybullet's ``addUserDebugParameter`` segfaults (GUI thread div-by-zero)
+    when ``rangeMin == rangeMax``. Widen a degenerate range slightly so a
+    1-element selection slider is just pinned instead of crashing."""
+    vmin, vmax = float(vmin), float(vmax)
+    if vmax <= vmin:
+        vmax = vmin + 1e-6
+    return vmin, vmax
+
+
 class UIBackend:
     """Abstract UI backend; do NOT instantiate. See PyBulletBackend / DearPyGuiBackend."""
 
@@ -103,6 +113,7 @@ class PyBulletBackend(UIBackend):
         return h
 
     def add_slider_float(self, label, vmin, vmax, default, on_change):
+        vmin, vmax = _nonzero_range(vmin, vmax)
         dbg = p.addUserDebugParameter(label, vmin, vmax, default)
         prev = p.readUserDebugParameter(dbg)
         h = self._new_handle()
@@ -110,7 +121,8 @@ class PyBulletBackend(UIBackend):
         return h
 
     def add_slider_int(self, label, vmin, vmax, default, on_change):
-        dbg = p.addUserDebugParameter(label, float(vmin), float(vmax), float(default))
+        vmin, vmax = _nonzero_range(vmin, vmax)
+        dbg = p.addUserDebugParameter(label, vmin, vmax, float(default))
         prev = p.readUserDebugParameter(dbg)
         h = self._new_handle()
         wrapped = lambda v, _cb=on_change: _cb(int(round(v)))
@@ -118,8 +130,9 @@ class PyBulletBackend(UIBackend):
         return h
 
     def add_slider_group(self, labels, vmins, vmaxs, defaults, on_change):
-        dbgs = [p.addUserDebugParameter(lbl, vmn, vmx, dv)
-                for lbl, vmn, vmx, dv in zip(labels, vmins, vmaxs, defaults)]
+        ranges = [_nonzero_range(vmn, vmx) for vmn, vmx in zip(vmins, vmaxs)]
+        dbgs = [p.addUserDebugParameter(lbl, lo, hi, dv)
+                for lbl, (lo, hi), dv in zip(labels, ranges, defaults)]
         prevs = [p.readUserDebugParameter(d) for d in dbgs]
         h = self._new_handle()
         self._handles[h] = {"kind": "slider_group", "dbgs": dbgs, "prev": prevs, "cb": on_change}
@@ -139,8 +152,8 @@ class PyBulletBackend(UIBackend):
     def add_combo(self, label, options, default_idx, on_change):
         self._warn_once("combo",
                         "combo in legacy mode degraded to int slider; consider USE_DPG_UI=1")
-        n = max(len(options) - 1, 0)
-        dbg = p.addUserDebugParameter(label, 0.0, float(n), float(default_idx))
+        lo, hi = _nonzero_range(0.0, max(len(options) - 1, 0))
+        dbg = p.addUserDebugParameter(label, lo, hi, float(default_idx))
         prev = p.readUserDebugParameter(dbg)
         h = self._new_handle()
         wrapped = lambda v, _cb=on_change: _cb(int(round(v)))

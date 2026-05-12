@@ -799,3 +799,23 @@ take many attempts. When it succeeds, save the trajectories to JSON
 normally (rebuilds the cfab scene) then loads the JSON to skip
 planning and goes straight to GUI visualization. Headless test exposes
 `--save-plan PATH` and `--replay PATH` for this.
+
+## pybullet `addUserDebugParameter` segfaults when rangeMin == rangeMax — 2026-05
+
+A zero-width slider range crashes pybullet's GUI render thread
+(div-by-zero in the slider widget). Symptom: hard segfault at startup
+in `build_ui` (or wherever the slider is created), no Python traceback
+even with `PYTHONFAULTHANDLER=1` (crash is in the C GUI thread). Easy
+to misdiagnose because Python stdout is block-buffered → the last
+*visible* line is whatever happened a few prints before the actual
+crash site.
+
+Trigger in this repo: `build_ui` made a "Bar Action" / "Joint
+Trajectory" selection slider as `Slider(name, cb, 0, len(files)-1, ...)`
+— with exactly 1 file `len-1 == 0` ⇒ `0..0` ⇒ segfault.
+
+**How to apply:** never create a debug-param slider with `min == max`.
+`ui_backend._nonzero_range()` widens degenerate ranges as a backstop,
+but the cleaner fix is at the call site: don't show a selection slider
+for a 0- or 1-element list (0 ⇒ nothing, 1 ⇒ just the action button).
+Counts are fixed at launch so static handling in `build_ui` is fine.

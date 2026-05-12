@@ -1976,9 +1976,38 @@ def plan_and_stage_constrained(monitor, debug=False,
     the end-effectors, flips the Display slider to 1, and executes the
     constrained trajectory.
     """
-    husky = monitor.huskies[monitor.selected_robot_id]
-    robot = husky.object.robot
+    mv = getattr(monitor, "current_movement", None)
+    movement_type_ = getattr(monitor, "movement_type", None)
+    bar_action_mode = mv is not None and movement_type_ in ("constrained", "linear")
 
+    if bar_action_mode:
+        husky = getattr(monitor, "_bar_action_husky", None)
+        if husky is None:
+            monitor.get_logger().warn(
+                "BarAction mode: monitor._bar_action_husky not set — was "
+                "load_bar_action's cfab→pp bridge run?"
+            )
+            return
+        _saved_pp_client = pp.CLIENT
+        pp.CLIENT = monitor.cfab.client.client_id
+        pp.CLIENTS.setdefault(pp.CLIENT, True)
+        try:
+            return _plan_and_stage_body(
+                monitor, husky, husky.object.robot, debug, max_time,
+                max_attempts, max_iterations, contact_probe_distance,
+            )
+        finally:
+            pp.CLIENT = _saved_pp_client
+    else:
+        husky = monitor.huskies[monitor.selected_robot_id]
+        return _plan_and_stage_body(
+            monitor, husky, husky.object.robot, debug, max_time,
+            max_attempts, max_iterations, contact_probe_distance,
+        )
+
+
+def _plan_and_stage_body(monitor, husky, robot, debug, max_time, max_attempts,
+                          max_iterations, contact_probe_distance):
     left_joint_names = HUSKY_DUAL_UR5e_JOINT_NAMES[0]
     right_joint_names = HUSKY_DUAL_UR5e_JOINT_NAMES[1]
     left_joints = pp.joints_from_names(robot, left_joint_names)

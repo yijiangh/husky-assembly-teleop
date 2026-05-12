@@ -125,6 +125,12 @@ class HuskyMonitor(Node):
         self.staging_free_trajectory = [None, None]   # left, right (per-arm tuples)
         self.constrained_trajectory = [None, None]
         self.constrained_display_mode = 0  # 0=FREE_STAGE, 1=CONSTRAINED
+        # cfab→pp bridge state for the BarAction planning path.
+        self._bar_action_husky = None          # SimpleNamespace husky stub (cfab robot)
+        self._bar_action_ghost_bodies = set()  # tiny invisible EE proxy pybullet bodies
+        self._bar_action_cfab_id = None        # cfab client_id the ghosts belong to
+        self.bar_action_staging_seed_conf = None  # feasible 12-DOF staging START seed
+        self._bar_action_scrub = None          # scrub-slider state dict (Task C)
         self.assembly_objects = []
         self.current_seq_index = 0
 
@@ -972,7 +978,8 @@ class HuskyMonitor(Node):
             if self.cfab is not None:
                 self.cfab.close()
             try:
-                self.cfab = CfabSession(VALIDATION_PROBLEM_NAME)
+                self.cfab = CfabSession(VALIDATION_PROBLEM_NAME,
+                                        connection_type="gui", enable_debug_gui=True)
             except Exception as e:
                 print(f"Error initializing CfabSession for {VALIDATION_PROBLEM_NAME}: {e}")
                 self.cfab = None
@@ -1008,6 +1015,14 @@ class HuskyMonitor(Node):
             self.cfab.planner.set_robot_cell_state(mv.start_state)
         except Exception as e:
             print(f"Error setting cfab robot cell state: {e}")
+            return False
+
+        # Bridge the loaded cfab scene into the pp-side state that
+        # plan_and_stage_constrained consumes.
+        try:
+            self._bridge_cfab_to_pp_for_bar_action()
+        except Exception as e:
+            print(f"Error bridging cfab scene to pp for BarAction: {e}")
             return False
 
         # 6) Sanity-check the start state for collisions (non-fatal).
@@ -1056,6 +1071,218 @@ class HuskyMonitor(Node):
             f"rigid_bodies={len(self.cfab.client.rigid_bodies_puids)}"
         )
         return True
+
+    def _bridge_cfab_to_pp_for_bar_action(self):
+        """Wire the loaded cfab scene into the pp-side state that
+        plan_and_stage_constrained consumes. Headless-equivalent of the
+        bridge block in scripts/headless_live_monitor_test.py.
+
+        Does NOT permanently change pp.CLIENT (the monitor's update() loop
+        needs the monitor's own pp client). plan_and_stage_constrained does
+        a temporary swap when it runs.
+        """
+        import pybullet as _pb
+        import pybullet_planning as _pp
+        from husky_assembly_teleop.husky_robot import UR5e_HOME_STATE
+        from types import SimpleNamespace
+
+        client = self.cfab.client
+        robot_puid = client.robot_puid
+        cid = client.client_id
+
+        # 1) Ghost EE proxy bodies (tiny invisible spheres) — recreate per
+        #    cfab session. pp routes EE attachments through get_collision_fn,
+        #    so the child must be a distinct body (robot-vs-robot collapses).
+        if getattr(self, "_bar_action_cfab_id", None) != cid:
+            col = _pb.createCollisionShape(_pb.GEOM_SPHERE, radius=0.001, physicsClientId=cid)
+            ghost_L = _pb.createMultiBody(baseMass=0, baseCollisionShapeIndex=col,
+                                          basePosition=[0.0, 0.0, -100.0], physicsClientId=cid)
+            col2 = _pb.createCollisionShape(_pb.GEOM_SPHERE, radius=0.001, physicsClientId=cid)
+            ghost_R = _pb.createMultiBody(baseMass=0, baseCollisionShapeIndex=col2,
+                                          basePosition=[0.0, 0.0, -100.0], physicsClientId=cid)
+            self._bar_action_ghost_bodies = {ghost_L, ghost_R}
+            self._bar_action_cfab_id = cid
+            # Need pp.CLIENT == cid for link_from_name / Attachment below.
+            _saved = _pp.CLIENT
+            _pp.CLIENT = cid
+            _pp.CLIENTS.setdefault(cid, True)
+            try:
+                left_tool_link = _pp.link_from_name(robot_puid, 'left_ur_arm_tool0')
+                right_tool_link = _pp.link_from_name(robot_puid, 'right_ur_arm_tool0')
+                identity_grasp = ((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0))
+                self._bar_action_husky = SimpleNamespace(object=SimpleNamespace(
+                    robot=robot_puid,
+                    ee_list=[
+                        (ghost_L, _pp.Attachment(robot_puid, left_tool_link, identity_grasp, ghost_L)),
+                        (ghost_R, _pp.Attachment(robot_puid, right_tool_link, identity_grasp, ghost_R)),
+                    ],
+                ))
+            finally:
+                _pp.CLIENT = _saved
+
+        # 2) Active bar + static obstacles (exclude the ghosts).
+        ghosts = getattr(self, "_bar_action_ghost_bodies", set())
+        puids = client.rigid_bodies_puids
+        self.active_bar_body = (puids.get(self.active_bar_name) or [None])[0]
+        self.static_obstacles = {
+            n: ids[0] for n, ids in puids.items()
+            if ids and n != self.active_bar_name and ids[0] not in ghosts
+        }
+        self.active_extra_bodies = []
+        self.bar_from_extra = []
+        self.active_bar_aabb_dims = self.get_active_bar_aabb_dims()
+
+        # 3) Feasible staging seed near UR5e HOME (HOME self-collides ~2mm).
+        home_dual = np.concatenate([UR5e_HOME_STATE, UR5e_HOME_STATE])
+        self.bar_action_staging_seed_conf = self._sample_feasible_staging_seed(home_dual)
+
+    def _sample_feasible_staging_seed(self, base_conf, *, max_attempts=200,
+                                      perturb=0.6, seed=0):
+        """Sample a collision-free 12-DOF config near `base_conf` for the
+        staging plan's START. UR5e HOME sits ~2mm inside the dual-arm husky's
+        self-collision margin, which makes plan_free_dual_arm reject it.
+
+        Uses pp.get_collision_fn with self_collisions=1, max_distance=0 to
+        match what plan_transit_motion checks internally.
+        """
+        import pybullet_planning as _pp
+        from husky_assembly_teleop.utils import HUSKY_DUAL_UR5e_JOINT_NAMES
+
+        all_names = list(HUSKY_DUAL_UR5e_JOINT_NAMES[0]) + list(HUSKY_DUAL_UR5e_JOINT_NAMES[1])
+        cid = self.cfab.client.client_id
+        robot = self.cfab.client.robot_puid
+
+        _saved = _pp.CLIENT
+        _pp.CLIENT = cid
+        _pp.CLIENTS.setdefault(cid, True)
+        try:
+            all_joints = _pp.joints_from_names(robot, all_names)
+            collision_fn = _pp.get_collision_fn(
+                robot, all_joints,
+                obstacles=[],
+                attachments=[],
+                self_collisions=1,
+                max_distance=0,
+            )
+            base_conf = np.asarray(base_conf, dtype=float)
+            rng = np.random.default_rng(seed)
+            with _pp.WorldSaver():
+                for attempt in range(max_attempts):
+                    q = base_conf if attempt == 0 else (
+                        base_conf + rng.uniform(-perturb, perturb, size=12))
+                    if not collision_fn(tuple(q.tolist())):
+                        if attempt > 0:
+                            print(f"[seed] feasible staging seed sampled at attempt "
+                                  f"{attempt+1}/{max_attempts} "
+                                  f"(|Δ|={float(np.linalg.norm(q - base_conf)):.3f} rad).")
+                        return q
+            print(f"[seed] WARN: no collision-free staging seed in {max_attempts} "
+                  f"attempts; falling back to base conf.")
+            return base_conf
+        finally:
+            _pp.CLIENT = _saved
+
+    def plan_and_stage_constrained_bar_action(self):
+        """Run plan_and_stage_constrained; on success (BarAction mode) build
+        two scrub sliders on the cfab GUI window."""
+        world.plan_and_stage_constrained(self)
+        traj_c = self.constrained_trajectory
+        if not (traj_c and traj_c[0] is not None and traj_c[1] is not None):
+            self.get_logger().warn("Plan & Stage: no constrained trajectory produced.")
+            return
+        if self.cfab is None or self.current_movement is None:
+            return  # not a BarAction run; nothing cfab-side to scrub
+        self._build_bar_action_scrub_sliders()
+
+    def _build_bar_action_scrub_sliders(self):
+        """Build (on the cfab GUI window) up to two debug-parameter sliders to
+        scrub the staging + constrained trajectories, and precompute the
+        per-waypoint RobotCellStates. Stashes everything in
+        self._bar_action_scrub (serviced each tick by update())."""
+        import pybullet as _pb
+        from husky_assembly_teleop.utils import HUSKY_DUAL_UR5e_JOINT_NAMES
+
+        left_names = HUSKY_DUAL_UR5e_JOINT_NAMES[0]
+        right_names = HUSKY_DUAL_UR5e_JOINT_NAMES[1]
+        client_id = self.cfab.client.client_id
+
+        def _build_waypoint_states(traj):
+            if traj is None or traj[0] is None or traj[1] is None:
+                return []
+            left_path = traj[0][0]
+            right_path = traj[1][0]
+            n = len(left_path)
+            if n < 1 or n != len(right_path):
+                return []
+            states = []
+            for i in range(n):
+                wp = self.movement_start_state.copy()
+                for j, name in enumerate(left_names):
+                    wp.robot_configuration[name] = float(left_path[i][j])
+                for j, name in enumerate(right_names):
+                    wp.robot_configuration[name] = float(right_path[i][j])
+                states.append(wp)
+            return states
+
+        staging_states = _build_waypoint_states(getattr(self, "staging_free_trajectory", None))
+        constrained_states = _build_waypoint_states(getattr(self, "constrained_trajectory", None))
+
+        ns = len(staging_states)
+        nc = len(constrained_states)
+        if ns == 0 and nc == 0:
+            self._bar_action_scrub = None
+            return
+
+        staging_slider = None
+        constrained_slider = None
+        if ns > 0:
+            staging_slider = _pb.addUserDebugParameter(
+                f"Staging t (0..{ns-1})", 0.0, float(max(ns - 1, 0)), 0.0,
+                physicsClientId=client_id,
+            )
+        if nc > 0:
+            constrained_slider = _pb.addUserDebugParameter(
+                f"Constrained t (0..{nc-1})", 0.0, float(max(nc - 1, 0)), 0.0,
+                physicsClientId=client_id,
+            )
+        self._bar_action_scrub = {
+            "client_id": client_id,
+            "staging_slider": staging_slider,
+            "constrained_slider": constrained_slider,
+            "staging_states": staging_states,
+            "constrained_states": constrained_states,
+            "last_staging": -1,
+            "last_constrained": -1,
+        }
+        print(f"[scrub] '{self.current_movement.movement_id}' plan loaded: "
+              f"staging={ns} wp, constrained={nc} wp. Drag the sliders on the "
+              f"cfab PyBullet panel to scrub.")
+
+    def _service_bar_action_scrub_sliders(self):
+        """Poll the BarAction scrub sliders (once per tick) and re-pose the
+        cfab scene when an index changed. No-op when no scrub state."""
+        s = self._bar_action_scrub
+        if s is None or self.cfab is None:
+            return
+        if self.cfab.client.client_id != s["client_id"]:
+            self._bar_action_scrub = None
+            return
+        import pybullet as _pb
+        cid = s["client_id"]
+        if s["staging_slider"] is not None:
+            t = _pb.readUserDebugParameter(s["staging_slider"], physicsClientId=cid)
+            n = len(s["staging_states"])
+            idx = max(0, min(n - 1, int(round(t))))
+            if idx != s["last_staging"]:
+                self.cfab.planner.set_robot_cell_state(s["staging_states"][idx])
+                s["last_staging"] = idx
+        if s["constrained_slider"] is not None:
+            t = _pb.readUserDebugParameter(s["constrained_slider"], physicsClientId=cid)
+            n = len(s["constrained_states"])
+            idx = max(0, min(n - 1, int(round(t))))
+            if idx != s["last_constrained"]:
+                self.cfab.planner.set_robot_cell_state(s["constrained_states"][idx])
+                s["last_constrained"] = idx
 
     def get_active_bar_aabb_dims(self):
         """AABB extents (m) of the active bar mesh from the RobotCell model.
@@ -1388,19 +1615,28 @@ class HuskyMonitor(Node):
 
         if self.BOARD_VALIDATION:
             self.dump_sep_sliders.append(Slider("----------BarAction Loading", lambda : None))
+            # Reset on rebuild; selection sliders are (re)created below only
+            # when there are >= 2 entries. A 1-entry slider has
+            # rangeMin == rangeMax which segfaults pybullet's GUI thread.
+            self.board_validation_state_slider = None
+            self.trajectory_selection_slider = None
 
             # Load available BarAction files if not already loaded
             if not self.available_robot_cell_states:
                 self.available_robot_cell_states = self._load_available_robot_cell_states()
 
-            # Create slider for selecting BarAction
-            if self.available_robot_cell_states:
-                max_index = len(self.available_robot_cell_states) - 1
-                self.board_validation_state_slider = Slider(
-                    "Bar Action",
-                    self.update_board_validation_state_index,
-                    0, max_index, self.selected_state_index
-                )
+            n_actions = len(self.available_robot_cell_states)
+            if n_actions == 0:
+                print("No robot cell state files found for board validation")
+            else:
+                if n_actions > 1:
+                    self.board_validation_state_slider = Slider(
+                        "Bar Action",
+                        self.update_board_validation_state_index,
+                        0, n_actions - 1, self.selected_state_index
+                    )
+                else:
+                    self.selected_state_index = 0  # only one; nothing to pick
 
                 # Add button to load the selected BarAction (default movement = M1)
                 self.buttons.append(Button('Load BarAction (M1)', self.load_bar_action))
@@ -1415,7 +1651,7 @@ class HuskyMonitor(Node):
                 )
                 self.buttons.append(Button(
                     'Plan & Stage Constrained',
-                    lambda: world.plan_and_stage_constrained(self),
+                    self.plan_and_stage_constrained_bar_action,
                 ))
                 self.constrained_display_slider = Slider(
                     "Display Traj (0=Free,1=Constrained)",
@@ -1423,19 +1659,19 @@ class HuskyMonitor(Node):
                     0, 1, 0,
                 )
 
-                # Create slider for selecting joint trajectory
-                if self.available_joint_trajectories:
-                    max_traj_index = len(self.available_joint_trajectories) - 1
+                # Joint trajectory: slider only when there's a choice; button
+                # only when at least one file exists.
+                n_traj = len(self.available_joint_trajectories)
+                if n_traj > 1:
                     self.trajectory_selection_slider = Slider(
-                        "Joint Trajectory", 
-                        self.update_trajectory_index, 
-                        0, max_traj_index, self.selected_trajectory_index
+                        "Joint Trajectory",
+                        self.update_trajectory_index,
+                        0, n_traj - 1, self.selected_trajectory_index
                     )
-                    
-                    # Add button to load joint trajectory
+                elif n_traj == 1:
+                    self.selected_trajectory_index = 0
+                if n_traj >= 1:
                     self.buttons.append(Button('Load Joint Trajectory', self.load_joint_trajectory))
-            else:
-                print("No robot cell state files found for board validation")
 
         if self.USE_MOCAP:
             self.dump_sep_sliders.append(Slider("----------MoCap Experiment", lambda : None))
@@ -1879,6 +2115,10 @@ class HuskyMonitor(Node):
         self.selected_robot_slider.update()
         self.arm_slider.update()
         self.trajectory_time_slider.update()
+
+        # BarAction trajectory scrub sliders on the cfab GUI window (no-op
+        # until 'Plan & Stage Constrained' has run on a BarAction).
+        self._service_bar_action_scrub_sliders()
 
         # if self.CALIBRATION:
         #     self.calib_joint_range_slider.update()

@@ -407,6 +407,7 @@ def main(bar_action: str = DEFAULT_BAR_ACTION,
         ))
         _ghost_set = {ghost_L, ghost_R}
         monitor.huskies = [husky_stub]
+        # monitor._bar_action_husky = husky_stub
         monitor.selected_robot_id = 0
 
         puids = monitor.cfab.client.rigid_bodies_puids
@@ -475,12 +476,23 @@ def main(bar_action: str = DEFAULT_BAR_ACTION,
         else:
             print("\n--- simulating 'Plan & Stage Constrained' click ---")
             from husky_assembly_teleop import husky_world
+            import pybullet_planning as pp_module
             plan_kwargs = {}
             if max_time is not None:
                 plan_kwargs["max_time"] = max_time
             if max_attempts is not None:
                 plan_kwargs["max_attempts"] = max_attempts
-            husky_world.plan_and_stage_constrained(monitor, **plan_kwargs)
+            # Disable rendering while planning — the RRT/IK loops sample
+            # thousands of configs; rendering each one dominates the time
+            # budget in --gui mode. set_renderer() has its own has_gui()
+            # guard, so this is a no-op without a GUI window. (Don't use
+            # pp.LockRenderer here — its restore() asserts CLIENTS[client]
+            # is not None, which fails for an externally-created client.)
+            pp_module.set_renderer(False)
+            try:
+                husky_world.plan_and_stage_constrained(monitor, **plan_kwargs)
+            finally:
+                pp_module.set_renderer(True)
             plan_ok = bool(monitor.constrained_trajectory
                            and monitor.constrained_trajectory[0] is not None
                            and monitor.constrained_trajectory[1] is not None)
