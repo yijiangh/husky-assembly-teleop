@@ -143,7 +143,8 @@ def create_husky_with_end_effectors(monitor, name, mocap_id=None, pos=np.zeros(3
         calibration: Whether this is for calibration (uses calib_tip)
         dual_arm: Whether this is a dual-arm robot
         ee_types: List of end effector types. Options:
-                 - "victor_gripper": Victor gripper
+                 - "assembly_tool_v3_left": Assembly tool v3 (left variant mesh)
+                 - "assembly_tool_v3_right": Assembly tool v3 (right variant mesh)
                  - "robotiq_gripper": Robotiq gripper
                  - "custom_gripper": Custom gripper (example)
                  - "punch_tool": Punch tool for calibration validation
@@ -151,15 +152,17 @@ def create_husky_with_end_effectors(monitor, name, mocap_id=None, pos=np.zeros(3
                  - "calib_tip": Calibration tip
                  For dual-arm robots, provide a list of two types.
                  For single-arm robots, provide a list of one type.
-                 If None, defaults to victor_gripper or calib_tip based on calibration flag.
+                 If None, defaults to assembly_tool_v3_left/right or calib_tip based on calibration flag.
         force_regenerate: Force regeneration of URDF cache (only used for validation_tool_pair)
         punch_tool_offset: numpy array [x, y, z] offset from tool0 to punch tip (only used for punch_tool)
     """
     if ee_types is None:
         if calibration:
             ee_types = ["calib_tip"]
+        elif dual_arm:
+            ee_types = ["assembly_tool_v3_left", "assembly_tool_v3_right"]
         else:
-            ee_types = ["victor_gripper"]
+            ee_types = ["assembly_tool_v3_left"]
 
     return Husky(monitor, name=name, mocap_id=mocap_id, pos=pos, rot=rot,
                 connect_arm=connect_arm, connect_gripper=connect_gripper,
@@ -182,7 +185,10 @@ def init(monitor):
             if dual_arm else monitor.get_punch_tool_offset(0)
         )
     else:
-        ee_types = ["custom_gripper", "custom_gripper"] if dual_arm else ["custom_gripper"]
+        ee_types = (
+            ["assembly_tool_v3_left", "assembly_tool_v3_right"] if dual_arm
+            else ["assembly_tool_v3_left"]
+        )
         punch_offset = None
 
     base_calibration_file = os.path.join(
@@ -204,9 +210,9 @@ def init(monitor):
         connect_gripper=False and not monitor.FAKE_HARDWARE,
         calibration=monitor.CALIBRATION,
         dual_arm=dual_arm,
-        ee_types=["victor_gripper", "victor_gripper"],  # Mixed end effectors
         # ee_types=["validation_tool_pair"],  # Specify end effectors for both arms
-        # ee_types=ee_types,
+        # ee_types=["custom_gripper", "custom_gripper"],
+        ee_types=ee_types,
         base_calibration_file=base_calibration_file,
         force_regenerate=False,
         punch_tool_offset=punch_offset,
@@ -243,7 +249,7 @@ def init(monitor):
         mocap_id=4592, 
         pos=np.array((1,0,0)), 
         dual_arm=True,
-        ee_types=["custom_gripper", "victor_gripper"]  # Mixed end effectors
+        ee_types=["custom_gripper", "assembly_tool_v3_right"]  # Mixed end effectors
     )"""
 
     # * add static obstacles
@@ -276,38 +282,17 @@ def init(monitor):
         bar_rig.model_base_pose = pp.Pose(euler=pp.Euler(roll=np.pi/2))
         
     if monitor.DUAL_ARM_ACCURACY_TEST:
-        left_EE = TrackedObject(monitor, 'left_EE', 4627, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
+        # left_EE = TrackedObject(monitor, 'left_EE', 4627, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
+        left_EE = TrackedObject(monitor, 'left_EE', 1011, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
         left_EE.body = pp.create_box(0.1, 0.1, 0.1)
-        right_EE = TrackedObject(monitor, 'right_EE', 4628, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
+        # right_EE = TrackedObject(monitor, 'right_EE', 4628, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
+        right_EE = TrackedObject(monitor, 'right_EE', 1012, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
         right_EE.body = pp.create_box(0.1, 0.1, 0.1)
 
     #boxes.append(TrackedObject(monitor, 'box1', 4457, np.zeros(3), np.array((0, 0, 0, 1)), 0.2, 'cube.obj'))
     #boxes.append(TrackedObject(monitor, 'box2', 4484, np.zeros(3), np.array((0, 0, 0, 1)), 0.2, 'cube.obj'))
     #boxes.append(TrackedObject(monitor, 'box3', 1031, np.zeros(3), np.array((0, 0, 0, 1)), 0.2, 'cube.obj'))
 
-    # * add assembly objects
-    if monitor.ASSEMBLY_MODE:
-        line_pt_pairs, contact_id_pairs, bar_radius = parse_mt_geometric(MT_FILE_NAME)
-        line_pts_flattened = flatten_list(np.array(line_pt_pairs))
-        radius_per_edge = [bar_radius] * int(len(line_pts_flattened)/2)
-
-        # TODO: set in rhino
-        line_pts_flattened += np.array([-1.5, -0.5, 0.11])
-
-        element_bodies = create_collision_bodies(line_pts_flattened, radius_per_edge, viewer=True)
-        # TODO make coupler appear with the substructure
-        half_coupler_from_contact_pair = create_couplers(line_pts_flattened, contact_id_pairs)
-
-        far_away_pose = pp.Pose(pp.Point(0,0,100))
-        goal_poses = {}
-        for i, e in enumerate(element_bodies):
-            goal_poses[i] = pp.get_pose(e)
-
-        # TODO use parsed sequence here
-        assembly_objects.append([
-            AssemblyObject(monitor, 'b{}'.format(i), body, far_away_pose, goal_poses[i]) for i, body in enumerate(element_bodies)
-        ])
-    
 pre_position_trajectory = False
 dual_arm_trajectory = None
 bar_pose =  pp.Pose([0.5, 0, 0.5], [0, np.pi/2, 0])
@@ -400,146 +385,6 @@ def plan_arm_to_goal(monitor):
         index=monitor.selected_arm_index
         )
     monitor.set_to_show_traj_state()
-
-def plan_arm_to_transfer_element(monitor, grasp=None):
-    obstacles = [monitor.assembly_objects[i].body for i in range(monitor.current_seq_index)] + list(monitor.static_obstacles.values())
-    transfer_element = monitor.assembly_objects[monitor.current_seq_index]
-    full_traj, free_traj, linear_traj = planning.plan_arm_to_transfer_element(
-        monitor.huskies[monitor.selected_robot_id], 
-        transfer_element, 
-        obstacles, 
-        monitor.trajectory_time, 
-        grasp=grasp
-        )
-    monitor.set_arm_trajectory(full_traj, index=monitor.selected_arm_index)
-    monitor.free_arm_trajectory = free_traj
-    monitor.linear_arm_trajectory = linear_traj
-
-def plan_arm_to_retract_to_home(monitor):
-    obstacles = [monitor.assembly_objects[i].body for i in range(monitor.current_seq_index)] + list(monitor.static_obstacles.values())
-    transfer_element = monitor.assembly_objects[monitor.current_seq_index]
-    monitor.set_arm_trajectory(
-        planning.plan_arm_to_retract_to_home(monitor.huskies[monitor.selected_robot_id], transfer_element, obstacles, monitor.trajectory_time), 
-        index=monitor.selected_arm_index)
-
-def compute_ik_for_bar(monitor, world_from_bar, theta_index, grasp_dist):
-    obstacles = list(monitor.static_obstacles.values())
-    # [monitor.assembly_objects[i].body for i in range(monitor.current_seq_index)] + 
-    monitor.goal_element.set_pose(world_from_bar)
-
-    # gripper_from_object
-    grasp = planning.compute_grasp(theta_index, monitor.GRASP_PARTITION, grasp_dist)
-    world_from_tool0 = pp.multiply(world_from_bar, pp.invert(grasp))
-
-    # pp.draw_pose(world_from_bar)
-    # pp.draw_pose(world_from_tool0)
-
-    husky = monitor.huskies[monitor.selected_robot_id]
-    robot = husky.object.robot
-    attachments = [husky.object.ee_list[monitor.selected_arm_index][1], pp.Attachment(robot, pp.link_from_name(robot, 'ur_arm_tool0'), grasp, monitor.goal_element.body)]
-
-    arm_conf = planning.arm_ik(monitor.huskies[monitor.selected_robot_id], world_from_tool0, attachments, obstacles)
-    if arm_conf is None:
-        monitor.get_logger().warn("IK failed!")
-        return None, None
-    
-    return arm_conf, grasp
-
-def randomize_bar_location_for_ik_and_transfer(monitor, bar_goal_axis=None, target_grasp_index=None):
-    LOC_ATTEMPTS = 10
-    MP_ATTEMPTS = 3
-    TRAJ_MAX_LENGTH = 100
-
-    BOUNDING_BOX_RANGE = [[0.2, 1.0], [-1.0,1.0], [0.3, 1.4]]
-    AXIS_OPTIONS = [
-        pp.quat_from_euler(np.array([0, np.pi/2, 0])), # global x axis
-        pp.quat_from_euler(np.array([np.pi/2, 0, 0])), # global y axis
-        pp.quat_from_euler(np.array([0, 0, 0])), # global z axis
-    ]
-    # default longitudinal axis of the bar is aligned with the z axis
-
-    # disabled_collisions = disabled_collisions or {}
-    robot = monitor.huskies[monitor.selected_robot_id].object.robot
-    def check_body_robot_collision(target_body, target_link=pp.BASE_LINK):
-        _, robot_links = pp.expand_links(robot)
-        for rlink in robot_links:
-            if pp.pairwise_link_collision(robot, rlink, target_body, target_link):
-                return True
-
-    world_from_base_link = monitor.goal_model.get_link_pose_from_name("base_footprint")
-    obstacles = list(monitor.static_obstacles.values())
-    if target_grasp_index is not None:
-        candidate_grasps = [target_grasp_index]
-    else:
-        candidate_grasps = list(range(monitor.GRASP_PARTITION))
-
-    # [monitor.assembly_objects[i].body for i in range(monitor.current_seq_index)] + 
-    for i in range(LOC_ATTEMPTS):
-        monitor.get_logger().info(f"Randomizing bar location {i+1}/{LOC_ATTEMPTS}...")
-
-        # * randomize the bar location in the footprint frame of the robot, only keep its world orientation
-        rand_pos = np.array([
-            np.random.uniform(BOUNDING_BOX_RANGE[0][0], BOUNDING_BOX_RANGE[0][1]),
-            np.random.uniform(BOUNDING_BOX_RANGE[1][0], BOUNDING_BOX_RANGE[1][1]),
-            np.random.uniform(BOUNDING_BOX_RANGE[2][0], BOUNDING_BOX_RANGE[2][1])
-        ])
-        # rand_pos = pp.Point(0.8, 0, 1.3)
-
-        # Randomize the bar quaternion to align with one of the global x, y, z axes
-        if bar_goal_axis is None:
-            bar_goal_quat = AXIS_OPTIONS[np.random.randint(0, len(AXIS_OPTIONS))]
-        else:
-            assert bar_goal_axis in range(len(AXIS_OPTIONS)), f"Invalid bar goal axis: {bar_goal_axis}"
-            bar_goal_quat = AXIS_OPTIONS[bar_goal_axis]
-
-        # Keep the world orientation from bar_goal_quat
-        world_from_bar = pp.multiply(world_from_base_link, (rand_pos, bar_goal_quat))[0], bar_goal_quat
-        # pp.draw_pose(world_from_bar)
-
-        # check if bar is in collision with teh robot body, if so reject immediately
-        # with pp.WorldSaver():
-        pp.set_pose(monitor.goal_element.body, world_from_bar)
-        if check_body_robot_collision(monitor.goal_element.body):
-            monitor.get_logger().warn("Bar in collision with robot body, reject immediately!")
-            continue
-
-        # * enumerate grasp parameters
-        for theta_index in candidate_grasps:
-            monitor.get_logger().info(f"Grasping bar with id {theta_index+1}/{monitor.GRASP_PARTITION}...")
-
-            grasp_dist = 0.0
-
-            # Compute IK for this configuration
-            arm_conf, grasp = compute_ik_for_bar(monitor, world_from_bar, theta_index, grasp_dist)
-
-            if arm_conf is not None:
-                # plan transit path
-                for _ in range(MP_ATTEMPTS):
-                    # * plan arm motion
-                    traj = planning.plan_arm_motion(monitor.huskies[monitor.selected_robot_id], arm_conf, obstacles, monitor.trajectory_time,
-                                                    grasped_element=monitor.goal_element, grasp=grasp)
-                    if traj[0] is not None:
-                        if len(traj[0]) < TRAJ_MAX_LENGTH:
-                            traj[3].goal_pose = world_from_bar
-                            traj[3].grasp = grasp
-                            monitor.get_logger().info(f"Arm motion planning succeeded with {len(traj[0])} points!")
-                            return traj, rand_pos, bar_goal_quat, theta_index, grasp_dist
-                        else:
-                            monitor.get_logger().warn(f"Arm motion planning trajectory too long {len(traj[0])}!")
-                    else:
-                        monitor.get_logger().warn("Arm motion planning failed!")
-                else:
-                    monitor.get_logger().warn(f"Motion planning failed after {MP_ATTEMPTS} attempts!")
-
-    return None, None, None, None, None
-
-def update_goal_gripper_model_pose(monitor, world_from_bar, theta_index, grasp_dist):
-    tool0_from_object = planning.compute_grasp(theta_index, monitor.GRASP_PARTITION, grasp_dist)
-    world_from_tool0 = pp.multiply(world_from_bar, pp.invert(tool0_from_object), pp.Pose(euler=pp.Euler(yaw=-np.pi/2)))
-    # pp.draw_pose(world_from_tool0)
-    # print("world_from_tool0", world_from_tool0)
-    pp.set_pose(monitor.goal_gripper_model, world_from_tool0)
-    # print('finished updating goal gripper model pose')
 
 #################################
 
@@ -1517,217 +1362,6 @@ def load_robotcellstate_and_update_goal(monitor, filepath):
     except KeyError as e:
         monitor.get_logger().warn(f"Joint name {e} not found in loaded RobotCellState.")
 
-def sample_dual_arm_configuration(monitor, tool0_to_tool0_transform, max_attempts=50, ik_attempts=10, attachments=None):
-    """
-    Sample a dual-arm configuration with the following steps:
-    1. Sample a left arm configuration, reject if collision with static obstacles
-    2. Get left arm tool0 pose in world coordinates
-    3. Apply tool0_to_tool0 transform to get right arm tool0 pose
-    4. Compute IK for right arm, reject if collision with left arm or static obstacles
-    5. Plan transition paths for both arms, reject if path too long or no plan found
-    6. If any step fails, restart from sampling left arm configuration
-    
-    Parameters:
-    -----------
-    monitor : HuskyMonitor
-        The monitor instance containing robot and world state
-    tool0_to_tool0_transform : pp.Pose
-        Transformation from left arm tool0 to right arm tool0
-    max_attempts : int
-        Maximum number of attempts to find a valid configuration
-    ik_attempts : int
-        Maximum number of IK attempts for right arm with random initial guesses
-    max_path_length : float
-        Maximum allowed path length for transition trajectories
-        
-    Returns:
-    --------
-    tuple or None
-        (left_arm_trajectory, right_arm_trajectory) if successful, None if failed
-    """
-    MAX_TRAJECTORY_POINTS = 180
-    PLAN_SEPARATE_TRAJECTORIES = True
-
-    husky = monitor.huskies[monitor.selected_robot_id]
-    robot = husky.object.robot
-    
-    # Get joint names for both arms
-    left_joint_names = HUSKY_DUAL_UR5e_JOINT_NAMES[0]
-    right_joint_names = HUSKY_DUAL_UR5e_JOINT_NAMES[1]
-    
-    # Get joint indices
-    left_joints = pp.joints_from_names(robot, left_joint_names)
-    right_joints = pp.joints_from_names(robot, right_joint_names)
-    
-    # Get joint limits
-    left_limits = [pp.get_joint_limits(robot, j) for j in left_joints]
-    right_limits = [pp.get_joint_limits(robot, j) for j in right_joints]
-    
-    # Create sample functions
-    left_sample_fn = pp.get_sample_fn(robot, left_joints)
-    right_sample_fn = pp.get_sample_fn(robot, right_joints)
-    
-    # Create collision functions for both arms
-    left_attachments = [attachments[0]] if attachments is not None else []
-    right_attachments = [attachments[1], attachments[2]] if attachments is not None else []
-
-    if attachments is not None:
-        left_extra_disabled_collisions = [
-        ((robot, pp.link_from_name(robot, 'left_ur_arm_wrist_3_link')), 
-         (attachments[0].child, pp.BASE_LINK)), 
-        ]
-        right_extra_disabled_collisions = [
-        ((robot, pp.link_from_name(robot, 'right_ur_arm_wrist_3_link')), 
-         (attachments[1].child, pp.BASE_LINK)), 
-        ]
-    else:
-        left_extra_disabled_collisions = []
-        right_extra_disabled_collisions = []
-
-    left_collision_fn = pp.get_collision_fn(robot, left_joints, obstacles=list(monitor.static_obstacles.values()),
-                                              attachments=left_attachments, 
-                                              self_collisions=True,
-                                              disabled_collisions={}, 
-                                              extra_disabled_collisions=left_extra_disabled_collisions,
-                                              custom_limits={}, 
-                                              max_distance=0)
-    right_collision_fn = pp.get_collision_fn(robot, right_joints, obstacles=list(monitor.static_obstacles.values()),
-                                              attachments=right_attachments, 
-                                              self_collisions=True,
-                                              disabled_collisions={}, 
-                                              extra_disabled_collisions=right_extra_disabled_collisions,
-                                              custom_limits={}, 
-                                              max_distance=0)
-
-    diagnose = False
-    # save the current joint configuration here to use as starting conf for transit planning
-    # start_left_conf = list(pp.get_joint_positions(robot, left_joints))
-    # start_right_conf = list(pp.get_joint_positions(robot, right_joints))
-    current_left_conf = np.copy(husky.interface.arm_joint_pose[0])
-    current_right_conf = np.copy(husky.interface.arm_joint_pose[1])
-    
-    for attempt in range(max_attempts):
-        if attempt % 10 == 0:
-            print(f"Attempt {attempt}/{max_attempts}")
-            
-        # Step 1: Sample left arm configuration
-        left_conf = left_sample_fn()
-        
-        # Check collision for left arm
-        if left_collision_fn(left_conf, diagnosis=diagnose):
-            continue
-            
-        # Step 2: Get left arm tool0 pose in world coordinates
-        # Set left arm to sampled configuration
-        pp.set_joint_positions(robot, left_joints, left_conf)
-        
-        # Get left arm tool0 pose
-        left_tool0_pose = pp.get_link_pose(robot, pp.link_from_name(robot, 'left_ur_arm_tool0'))
-        # pp.draw_pose(left_tool0_pose, length=0.2)
-        # pp.wait_if_gui('left tool0 pose')
-        
-        # Step 3: Apply transform to get right arm tool0 pose
-        right_tool0_pose = pp.multiply(left_tool0_pose, tool0_to_tool0_transform)
-        # pp.draw_pose(right_tool0_pose, length=0.2)
-        # pp.wait_if_gui('right tool0 pose')
-        
-        # Step 4: Compute IK for right arm
-        right_conf = None
-        for ik_attempt in range(ik_attempts):
-            # Use random initial guess for IK
-            if ik_attempt == 0:
-                qinit = pp.get_joint_positions(robot, right_joints)
-            else:
-                qinit = right_sample_fn()
-            
-            # Use the IK solver from planning module
-            from husky_assembly_teleop.husky_planning import IK_SOLVER_DUAL
-            ik_solver = IK_SOLVER_DUAL[1]  # Right arm solver
-
-            # Get right arm base pose
-            right_arm_base_pose = pp.get_link_pose(robot, pp.link_from_name(robot, ik_solver.base_link))
-
-            # Compute IK
-            right_arm_base_from_tool0 = pp.multiply(pp.invert(right_arm_base_pose), right_tool0_pose)
-
-            conf = ik_solver.ik(pp.tform_from_pose(right_arm_base_from_tool0), qinit=qinit)
-            
-            if conf is not None:
-                # Check collision for right arm with static obstacles
-                if not right_collision_fn(conf, diagnosis=diagnose):
-                    right_conf = conf
-                    print(f"Found valid right arm configuration on IK attempt {ik_attempt + 1}")
-                    # pp.wait_if_gui('right arm conf')
-
-                    break
-        
-        if right_conf is None:
-            continue
-            
-        if PLAN_SEPARATE_TRAJECTORIES:
-            # Step 5: Plan transition paths for both arms
-            pp.set_joint_positions(robot, left_joints, current_left_conf)
-        
-            # Plan left arm transition
-            left_trajectory = planning.plan_arm_motion(
-                husky, left_conf, list(monitor.static_obstacles.values()), monitor.trajectory_time, arm_index=0
-            )
-            if left_trajectory[0] is None:
-                continue
-        
-            # Plan right arm transition
-            pp.set_joint_positions(robot, left_joints, left_trajectory[0][-1])
-            pp.set_joint_positions(robot, right_joints, current_right_conf)
-            right_trajectory = planning.plan_arm_motion(
-                husky, right_conf, list(monitor.static_obstacles.values()), monitor.trajectory_time, arm_index=1
-            )
-        else:
-            # Plan in the composite space of both arms
-            # Set both arms to their current configurations
-            pp.set_joint_positions(robot, left_joints, current_left_conf)
-            pp.set_joint_positions(robot, right_joints, current_right_conf)
-
-            # Concatenate the left and right arm goal configurations
-            composite_goal = np.concatenate([left_conf, right_conf])
-
-            # Plan a path in the composite space
-            from husky_assembly_teleop.husky_planning import plan_transit_motion
-            composite_start = np.concatenate([current_left_conf, current_right_conf])
-            composite_path = plan_transit_motion(
-                robot,
-                composite_goal,
-                attachments,
-                list(monitor.static_obstacles.values()),
-                debug=False,
-                disabled_collisions=None,
-                dual_arm_index="both",
-                # collision_fn=composite_collision_fn
-            )
-
-            if composite_path is None:
-                continue
-
-            # Split the composite path into left and right arm trajectories
-            left_trajectory = (np.array([q[:len(left_joints)] for q in composite_path]), None, monitor.trajectory_time, None)
-            right_trajectory = (np.array([q[len(left_joints):] for q in composite_path]), None, monitor.trajectory_time, None)
-        
-        if right_trajectory[0] is None:
-            continue
-            
-        # Check path length
-        # Use the number of trajectory points as the path length
-        left_path_length = len(left_trajectory[0])
-        right_path_length = len(right_trajectory[0])
-        if left_path_length > MAX_TRAJECTORY_POINTS or right_path_length > MAX_TRAJECTORY_POINTS:
-            continue
-            
-        # Success! Return the trajectories
-        return left_trajectory, right_trajectory
-    
-    # If we get here, no valid configuration was found
-    print(f"Failed to find valid dual-arm configuration after {max_attempts} attempts")
-    return None
-
 def compute_tool0_to_tool0_transform_from_json(json_filepath):
     """
     Parse the JSON file containing GraspTarget objects and compute the tool0_to_tool0 transformation.
@@ -1877,7 +1511,7 @@ def plan_both_arms_to_goal(monitor, use_composite=False, debug=False):
         from husky_assembly_tamp.motion_planner.api import plan_free_dual_arm
         composite_path, info = plan_free_dual_arm(
             scene, composite_start, composite_goal,
-            max_time=60.0, max_iterations=200,
+            max_time=120.0, max_iterations=1000,
             joint_resolution=FREE_JOINT_RESOLUTION,
             debug=debug,
         )
@@ -2085,10 +1719,13 @@ def _plan_and_stage_body(monitor, husky, robot, debug, max_time, max_attempts,
     tool_link_R = pp.link_from_name(robot, 'right_ur_arm_tool0')
 
     from husky_assembly_tamp.motion_planner.api import (
-        derive_grasps_from_state, derive_constrained_start,
+        derive_grasps_from_state,
         plan_constrained_dual_arm,
     )
-    from husky_assembly_tamp.motion_planner.stage1.minimal_rrt import get_bar_feature_points
+    from husky_assembly_tamp.motion_planner.stage1.minimal_rrt import (
+        derive_constrained_start,
+        get_bar_feature_points,
+    )
 
     mv = getattr(monitor, "current_movement", None)
     movement_type_ = getattr(monitor, "movement_type", None)

@@ -81,7 +81,7 @@ def load_robot(dual_arm=False):
     
     return robot
 
-def create_end_effector(ee_type="victor_gripper", load_calib_tip=False, dual_arm=False, force_regenerate=False, punch_tool_offset=None):
+def create_end_effector(ee_type="assembly_tool_v3_left", load_calib_tip=False, dual_arm=False, force_regenerate=False, punch_tool_offset=None):
     """
     Create end effector for the pp visualization scene only.
 
@@ -91,8 +91,8 @@ def create_end_effector(ee_type="victor_gripper", load_calib_tip=False, dual_arm
     visualization-only proxy.
 
     Args:
-        ee_type: One of "victor_gripper" | "robotiq_gripper" |
-            "custom_gripper" | "punch_tool" | "calib_tip".
+        ee_type: One of "assembly_tool_v3_left" | "assembly_tool_v3_right" |
+            "robotiq_gripper" | "custom_gripper" | "punch_tool" | "calib_tip".
         load_calib_tip: Whether to load calibration tip (overrides ee_type)
         dual_arm: Whether this is for a dual-arm robot (unused; kept for
             backwards compat with callers).
@@ -107,10 +107,12 @@ def create_end_effector(ee_type="victor_gripper", load_calib_tip=False, dual_arm
         ee = pp.create_box(0.12, 0.12, 0.12)
         pp.set_color(ee, pp.apply_alpha(pp.GREY, 0.3))
         return ee
-
-    if ee_type == "victor_gripper":
-        gripper_urdf_path = os.path.join(DATA_DIRECTORY, 'grasp_screw_tool_description/urdf/grasp_screw_tool_unactuated.urdf')
-        ee = pp.load_pybullet(gripper_urdf_path, fixed_base=False, cylinder=False)
+    if ee_type in ("assembly_tool_v3_left", "assembly_tool_v3_right"):
+        side = ee_type.rsplit('_', 1)[-1]  # 'left' or 'right'
+        tool_obj = os.path.join(DATA_DIRECTORY, f'assembly_tool_v3_{side}_mm.obj')
+        assert os.path.exists(tool_obj)
+        tool_scale = 0.001
+        ee = pp.create_obj(tool_obj, scale=tool_scale)
         return ee
     elif ee_type == "robotiq_gripper":
         gripper_obj = os.path.join(DATA_DIRECTORY,'husky_urdf/robotiq_85/meshes/static/robotiq_85_close_20mm.obj')
@@ -182,7 +184,7 @@ def create_end_effector(ee_type="victor_gripper", load_calib_tip=False, dual_arm
             ee = pp.create_box(0.12, 0.12, 0.01, color=(0.8, 0.8, 0.8, 1))
         return ee
     else:
-        raise ValueError(f"Unknown end effector type: {ee_type}. Valid types: victor_gripper, robotiq_gripper, custom_gripper, punch_tool, calib_tip")
+        raise ValueError(f"Unknown end effector type: {ee_type}. Valid types: assembly_tool_v3_left, assembly_tool_v3_right, robotiq_gripper, custom_gripper, punch_tool, calib_tip")
 
 def attach_end_effectors(robot, ee_list, dual_arm=False):
     """
@@ -288,8 +290,8 @@ class Husky():
     End effectors are visualization proxies for the pp scene only; the
     planner side uses the cfab client + RobotCell tool_models.
 
-    - For single-arm robots: ee_types=["victor_gripper"|"robotiq_gripper"|"custom_gripper"]
-    - For dual-arm robots: ee_types=["victor_gripper", "victor_gripper"] (etc.)
+    - For single-arm robots: ee_types=["assembly_tool_v3_left"|"assembly_tool_v3_right"|"robotiq_gripper"|"custom_gripper"]
+    - For dual-arm robots: ee_types=["assembly_tool_v3_left", "assembly_tool_v3_right"] (etc.)
     - For calibration: set calibration=True (automatically uses calib_tip)
     """
     def __init__(self, monitor, name, mocap_id=None, pos=np.zeros(3), rot=np.array((0, 0, 0, 1)),
@@ -337,8 +339,10 @@ class HuskyObject():
                 if ee_types is None:
                     if calibration:
                         ee_types = ["calib_tip"]
+                    elif dual_arm:
+                        ee_types = ["assembly_tool_v3_left", "assembly_tool_v3_right"]
                     else:
-                        ee_types = ["victor_gripper"]
+                        ee_types = ["assembly_tool_v3_left"]
 
                 if dual_arm:
                     if len(ee_types) == 1:
