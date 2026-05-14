@@ -34,9 +34,10 @@ from types import SimpleNamespace
 import numpy as np
 
 
-DEFAULT_PROBLEM = "2026-05-08_dual-arm_transfer_test"
+DEFAULT_PROBLEM = "2026-05-14_foc_demo_reduced"
 DEFAULT_BAR_ACTION = "B6.json"
 DEFAULT_MOVEMENT = "M1"
+HEADLESS_DISABLE_ENVIRONMENT_COLLISIONS = True
 
 
 class StubLogger:
@@ -47,7 +48,7 @@ class StubLogger:
 
 def _patch_validation_problem(problem: str) -> None:
     from husky_assembly_teleop import husky_monitor as hm
-    hm.VALIDATION_PROBLEM_NAME = problem
+    hm.DESIGN_PROBLEM_NAME = problem
 
 
 def _bypass_init_monitor():
@@ -95,6 +96,7 @@ def _bypass_init_monitor():
     # Goal interface state.
     monitor.goal_arm_pose = [np.zeros(6), np.zeros(6)]
     monitor.goal_base_pose = (np.zeros(3), np.array([0.0, 0.0, 0.0, 1.0]))
+    monitor.goal_model = SimpleNamespace(set_pose=lambda base_pose, arm_pose: None)
     monitor.show_goal_state = False
     monitor.trajectory_time = 20.0
     monitor.selected_arm_index = 0
@@ -246,7 +248,7 @@ def _load_compas_trajectory(monitor, path: str) -> bool:
     import pybullet_planning as pp
     from compas_fab.robots import JointTrajectory
     from husky_assembly_teleop.utils import HUSKY_DUAL_UR5e_JOINT_NAMES, pose_from_frame
-    from husky_assembly_tamp.motion_planner.stage1.minimal_rrt import (
+    from husky_assembly_tamp.motion_planner.dual_arm_task_space_rrt.run import (
         HUSKY_DUAL_ARM_JOINT_NAMES,
     )
 
@@ -450,11 +452,14 @@ def _print_collision_setup(monitor):
     """
     import pybullet_planning as pp
     from husky_assembly_teleop.utils import HUSKY_DUAL_UR5e_JOINT_NAMES
-    from husky_assembly_tamp.motion_planner.stage1.path_validation import (
+    from husky_assembly_tamp.motion_planner.dual_arm_task_space_rrt.path_validation import (
         get_disabled_collisions_from_link_names,
     )
-    from husky_assembly_tamp.motion_planner.stage1.minimal_rrt import (
-        HUSKY_DUAL_URDF_PATH, HUSKY_DUAL_SRDF_PATH, STAGE3_GRASP_MASK_LINKS,
+    from husky_assembly_tamp.motion_planner.dual_arm_task_space_rrt.run import (
+        HUSKY_DUAL_URDF_PATH, HUSKY_DUAL_SRDF_PATH,
+    )
+    from husky_assembly_tamp.motion_planner.dual_arm_task_space_rrt.core import (
+        STAGE3_GRASP_MASK_LINKS,
     )
     from compas_fab.robots import RobotSemantics
     from compas_robots import RobotModel
@@ -542,19 +547,22 @@ def _run_path_validation(monitor):
     motion is intentionally NOT validated — there the bar isn't held so the
     EE relative transform is meaningless). Reuses
     husky_assembly_tamp.path_validation.validate_stage_trajectory (the same
-    call run_stage_trial makes in minimal_rrt.py). Writes the 6-panel
+    call run_stage_trial makes in dual_arm_task_space_rrt/run.py). Writes the 6-panel
     drift/collision plot + a tiny markdown report next to it.
 
     Returns the validation dict, or None if there's nothing to validate.
     """
     import pybullet_planning as pp
     from husky_assembly_teleop.utils import HUSKY_DUAL_UR5e_JOINT_NAMES
-    from husky_assembly_tamp.motion_planner.stage1.path_validation import (
+    from husky_assembly_tamp.motion_planner.dual_arm_task_space_rrt.path_validation import (
         validate_stage_trajectory,
     )
-    from husky_assembly_tamp.motion_planner.stage1.minimal_rrt import (
-        HUSKY_DUAL_URDF_PATH, HUSKY_DUAL_SRDF_PATH, STAGE3_GRASP_MASK_LINKS,
-        DEFAULT_USE_ANGLE_NORMALIZATION, log_validation_summary,
+    from husky_assembly_tamp.motion_planner.dual_arm_task_space_rrt.run import (
+        HUSKY_DUAL_URDF_PATH, HUSKY_DUAL_SRDF_PATH,
+        log_validation_summary,
+    )
+    from husky_assembly_tamp.motion_planner.dual_arm_task_space_rrt.core import (
+        STAGE3_GRASP_MASK_LINKS, DEFAULT_USE_ANGLE_NORMALIZATION,
     )
 
     ctx = getattr(monitor, "_bar_action_plan_ctx", None)
@@ -607,11 +615,9 @@ def _run_path_validation(monitor):
         target_label=monitor.active_bar_name,
         position_res=ctx.get("position_res"),
         rotation_res=ctx.get("rotation_res"),
-        # The constrained RRT runs with DEFAULT_USE_ANGLE_NORMALIZATION=True,
-        # so its joint path may contain benign ±2π continuous-joint wraps. The
-        # validator must use the same setting or it lerps *through* the wrap
-        # when densifying and reports huge bogus EE drift + collisions (this is
-        # exactly what run_stage_trial passes — minimal_rrt.py:2155).
+        # The constrained RRT uses angle normalization internally for IK, but
+        # command-space validation must reject raw ±2π joint wraps because the
+        # UR controller can interpret them as real high-speed moves.
         use_angle_normalization=DEFAULT_USE_ANGLE_NORMALIZATION,
         reports_dir=reports_dir,
     )
@@ -707,7 +713,7 @@ def main(bar_action: str = DEFAULT_BAR_ACTION,
             )
 
         # Step 1: populate available BarActions (simulate slider) + select.
-        monitor.available_robot_cell_states = monitor._load_available_robot_cell_states()
+        monitor.available_robot_cell_states = monitor._load_available_bar_actions()
         if not monitor.available_robot_cell_states:
             print("FAIL: no BarAction files available")
             return 1
@@ -785,6 +791,11 @@ def main(bar_action: str = DEFAULT_BAR_ACTION,
             n: ids[0] for n, ids in puids.items()
             if ids and n != monitor.active_bar_name and ids[0] not in _ghost_set
         }
+        if HEADLESS_DISABLE_ENVIRONMENT_COLLISIONS:
+            n_env = len(monitor.static_obstacles)
+            monitor.static_obstacles = {}
+            print(f"[collision] headless env collisions disabled: skipped {n_env} static bodies; "
+                  "robot self-collision and attached tool/bar-vs-robot checks remain.")
         monitor.active_extra_bodies = []
         monitor.bar_from_extra = []
         monitor.active_bar_aabb_dims = monitor.get_active_bar_aabb_dims()
@@ -975,7 +986,7 @@ if __name__ == "__main__":
                         help=f"Movement id substring (e.g. 'M1') or integer "
                              f"index. Default: {DEFAULT_MOVEMENT!r}.")
     parser.add_argument("--problem", type=str, default=DEFAULT_PROBLEM,
-                        help=f"VALIDATION_PROBLEM_NAME directory. "
+                        help=f"DESIGN_PROBLEM_NAME directory. "
                              f"Default: {DEFAULT_PROBLEM!r}.")
     parser.add_argument("--gui", action="store_true",
                         help="Open the pp-side PyBullet GUI.")
@@ -1036,7 +1047,7 @@ if __name__ == "__main__":
                              "robot self-collision link pairs, body-pair checks) "
                              "for BOTH the constrained and free-staging plans.")
     parser.add_argument("--stage", type=int, default=None, choices=(1, 2, 3),
-                        help="Constrained-RRT stage (minimal_rrt.plan_pose_rrt): "
+                        help="Constrained-RRT stage (dual_arm_task_space_rrt.core.plan_pose_rrt): "
                              "1=pose-only RRT (no IK, no collision); "
                              "2=pose RRT + IK in extend, NO robot collision; "
                              "3=pose RRT + IK + robot collision (full). "

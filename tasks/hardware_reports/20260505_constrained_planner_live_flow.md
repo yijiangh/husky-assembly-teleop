@@ -39,7 +39,7 @@ Internally:
 1. Bypass HuskyMonitor.__init__ via `object.__new__`.
 2. Populate required attrs (huskies, static_obstacles, etc.).
 3. Patch `husky_monitor.VALIDATION_PROBLEM_NAME = "250929_New_Antenna_with_GH_RH_Packed"`.
-4. Call `monitor._load_available_robot_cell_states()`.
+4. Call `monitor._load_available_bar_actions()`.
 5. Set `selected_state_index` to the target's index.
 6. Call `monitor.load_board_validation_state()`  ← simulates button click.
 7. Call `husky_world.plan_and_stage_constrained(monitor)` ← simulates button click.

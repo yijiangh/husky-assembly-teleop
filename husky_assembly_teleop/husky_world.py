@@ -1722,7 +1722,7 @@ def _plan_and_stage_body(monitor, husky, robot, debug, max_time, max_attempts,
         derive_grasps_from_state,
         plan_constrained_dual_arm,
     )
-    from husky_assembly_tamp.motion_planner.stage1.minimal_rrt import (
+    from husky_assembly_tamp.motion_planner.dual_arm_task_space_rrt.core import (
         derive_constrained_start,
         get_bar_feature_points,
     )

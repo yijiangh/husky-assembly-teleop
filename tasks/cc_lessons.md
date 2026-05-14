@@ -3,6 +3,28 @@
 Patterns and lessons from working in this repo. Append entries here after any
 correction or non-obvious finding so we can reuse them in future sessions.
 
+## Diff modified files against session-start git status before reverting — 2026-05-14
+
+When a subagent returns, `git status` shows the cumulative working-tree
+state — pre-existing user WIP + agent's edits — not the agent's diff alone.
+During the `stage1/` → `dual_arm_task_space_rrt/` refactor I assumed
+`VALIDATION_PROBLEM_NAME` → `DESIGN_PROBLEM_NAME` changes in
+`husky_assembly_teleop/__init__.py` + `husky_monitor.py` were implementer
+scope creep and `git checkout --` reverted them. They were actually
+user WIP from before the session, and reverting destroyed in-progress work.
+
+Discipline:
+
+- Capture the session-start `gitStatus` block (Claude Code includes it in
+  the bootstrap context). Before reverting any "unexpected" working-tree
+  edit, check whether the file was already listed there — if yes, the
+  agent's edit may just be propagating a rename or fix the user started.
+- For implementer subagents, still declare the file list in the prompt
+  ("do not touch files outside this list"), so the agent doesn't *add*
+  out-of-scope changes on top of WIP.
+- If genuinely uncertain, surface the question to the user instead of
+  reverting — the cost of asking is lower than the cost of nuking WIP.
+
 ## Constrained dual-arm planner integration (live monitor) — 2026-05
 
 ### Active bar identification
@@ -24,6 +46,17 @@ correction or non-obvious finding so we can reuse them in future sessions.
 - Two trajectories are produced and stored separately on the monitor
   (`staging_free_trajectory`, `constrained_trajectory`); a slider toggles
   which one is displayed/executed via the existing `Exec Both Arm Trajs`.
+- Offline/minimal RRT must follow the same goal-first contract: solve
+  `goal_conf`, rederive FK-consistent grasps at `world_from_bar_goal`, then
+  call `derive_constrained_start` for both `world_from_bar_start` and
+  `start_conf`. Do not compute start_conf by directly IK-solving the
+  setup-time geometric start pose.
+- For BarAction M1, the direct goal configuration is in the next movement's
+  `start_state` cell state (e.g. M2 starts at M1's approach goal). Prefer that
+  FK-consistent cell-state configuration over PyBullet IK branch search.
+  Accept it with cfab-scale tolerance (about 1 mm / 0.01 rad), not the stricter
+  internal IK residual tolerance, because authored cell-state FK can differ by
+  a few tenths of a millimeter.
 
 ### Grasp transforms
 
@@ -44,7 +77,7 @@ correction or non-obvious finding so we can reuse them in future sessions.
 
 ### Never call `setup_planning_scene` from the live monitor
 
-- `setup_planning_scene` in `external/.../stage1/minimal_rrt.py` connects
+- `setup_planning_scene` in `external/.../dual_arm_task_space_rrt/run.py` connects
   its own PyBullet client and reloads URDFs. The new
   `husky_assembly_tamp.motion_planner.api` functions take live body ids
   directly so they reuse the monitor's existing scene.
@@ -110,6 +143,16 @@ headless harness must do the same — apply
 `pp.set_pose(robot_body, monitor.goal_base_pose)` after `Load Robot
 Cell State` and before planning.
 
+Implementation location: `derive_constrained_start` lives in
+`dual_arm_task_space_rrt/core.py` with the other RRT/IK helpers.
+`api.py` may re-export a compatibility wrapper, but new direct imports should
+come from `husky_assembly_tamp.motion_planner.dual_arm_task_space_rrt.core`.
+
+BarAction target EE frames are in the cell/world frame. When using them in the
+minimal planner, convert them by `mobile_base_from_world` from the relevant
+goal cell state's `robot_base_frame`; do not treat them as already in
+mobile-base coordinates.
+
 ### Live cell state contains the WHOLE assembly, prototype tests don't
 
 The prototype's `setup_planning_scene` creates only the active bar +
@@ -141,6 +184,35 @@ bars at indices < active_bar_index — true predecessors).
   `scene["disabled_collisions"]` is currently informational. Future work:
   extend `get_joint_collision_fn` to accept an explicit
   `disabled_collisions` argument.
+
+### Raw joint wraps are hardware-unsafe
+
+- Do not call `+pi/-pi` crossings "physically fine" for this stack. Even if
+  the circular angle distance is small, the exported/executed trajectory sends
+  raw joint positions to the UR controller. A segment like `179 deg -> -179 deg`
+  can be interpreted as a near-`2*pi` move and has caused hardware e-stop /
+  speed-limit faults.
+- Planner and validation continuity must reject raw wraps or unwrap each IK
+  result relative to the previous commanded waypoint before export/execution.
+  Circular-distance PASS is not enough for hardware safety.
+
+### Headless monitor must stub live-only UI models
+
+- `scripts/headless_live_monitor_test.py` bypasses `HuskyMonitor.__init__`,
+  so any live-only fields used by planner success paths must be explicitly
+  stubbed. Example: `husky_world._plan_and_stage_body` calls
+  `monitor.update_traj_goal_configuration()`, which expects
+  `monitor.goal_model.set_pose(...)`. Headless tests should provide a no-op
+  `goal_model` instead of changing live monitor code.
+
+### Headless constrained tests can intentionally ignore env collisions
+
+- For quick constrained-planner debugging in
+  `scripts/headless_live_monitor_test.py`, environment/static-body collisions
+  may be disabled by clearing `monitor.static_obstacles` after the cfab->pp
+  bridge. This keeps robot self-collision and attached tool/bar-vs-robot
+  collision checks active through `get_joint_collision_fn(...,
+  obstacle_bodies=[])`, while avoiding failures caused by assembly/env bodies.
 
 ### GUI freeze (known limitation)
 
@@ -398,7 +470,7 @@ Plan file: `tasks/2026-05_dual_arm_kissing_port_plan.md`. Summary lessons.
 
 - Filename pattern: `<bar_tag>_<phase>.json` (e.g., `B3_approach.json`,
   `B3_assembly.json`). Not `*_RobotCellState.json`.
-  `_load_available_robot_cell_states` accepts any `*.json` excluding
+  `_load_available_bar_actions` accepts any `*.json` excluding
   `_GraspTargets.json`, `_JointTrajectory.json`, and `RobotCell.json`.
 
 - Rigid body roles encoded in name:
@@ -450,7 +522,7 @@ motion control, not assembly-frame planning visualization.
 ## Sampling DOFs: lock the kinematically-impossible ones first — 2026-05
 
 Pattern from the home-bar-pose sweep
-(`auto_compute_home_bar_pose` in `external/.../stage1/minimal_rrt.py`).
+(`auto_compute_home_bar_pose` in `external/.../dual_arm_task_space_rrt/core.py`).
 
 ### Probe before sweep when one DOF value is geometrically infeasible
 

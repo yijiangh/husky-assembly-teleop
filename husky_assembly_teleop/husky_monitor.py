@@ -23,7 +23,7 @@ from rclpy.node import Node
 import pybullet as p
 import pybullet_planning as pp
 
-from husky_assembly_teleop import DATA_DIRECTORY, DESIGN_DATA_DIRECTORY, CALIBRATION_BATCHES, VALIDATION_PROBLEM_NAME, CALIBRATION_DATE
+from husky_assembly_teleop import DATA_DIRECTORY, DESIGN_DATA_DIRECTORY, CALIBRATION_BATCHES, DESIGN_PROBLEM_NAME, CALIBRATION_DATE
 import husky_assembly_teleop.husky_world as world
 import husky_assembly_teleop.mocap_experiment as mocap_experiment
 from husky_assembly_teleop.husky_robot import UR5e_HOME_STATE
@@ -81,10 +81,15 @@ class HuskyMonitor(Node):
     def __init__(self):
         super().__init__('husky_monitor')
         self.tick_timer = self.create_timer(0.05, self.update)
-        
+
         # simple async tasks to be executed every tick
         self.tasks = []
-        
+
+        # Marks this instance as the live ROS-driven monitor (vs. a headless
+        # test harness that bypasses __init__). Headless flows skip
+        # _hide_cfab_robot since there's no overlapping pp-side husky.
+        self._is_live_monitor = True
+
         self.huskies = []
         self.tracked_objects = []
         self.name_from_mocap_id = {}
@@ -854,7 +859,7 @@ class HuskyMonitor(Node):
             action_path = self.available_robot_cell_states[self.selected_state_index]
         if not os.path.isabs(action_path):
             action_path = os.path.join(
-                DESIGN_DATA_DIRECTORY, VALIDATION_PROBLEM_NAME,
+                DESIGN_DATA_DIRECTORY, DESIGN_PROBLEM_NAME,
                 'BarActions', action_path,
             )
 
@@ -869,20 +874,23 @@ class HuskyMonitor(Node):
             return False
 
         # 3) Ensure a cfab session for this problem.
-        if self.cfab is None or self.cfab.problem_name != VALIDATION_PROBLEM_NAME:
+        if self.cfab is None or self.cfab.problem_name != DESIGN_PROBLEM_NAME:
 
             if self.cfab is not None:
                 self.cfab.close()
             try:
                 existing_client_id = pp.CLIENT if pp.is_connected() else None
-                self.cfab = CfabSession(VALIDATION_PROBLEM_NAME,
-                                        connection_type="gui",
-                                        enable_debug_gui=True,
-                                        existing_client_id=existing_client_id)
+                # LockRenderer: set_robot_cell loads dozens of URDF links;
+                # rendering each one mid-load slows GUI mode significantly.
+                with pp.LockRenderer():
+                    self.cfab = CfabSession(DESIGN_PROBLEM_NAME,
+                                            connection_type="gui",
+                                            enable_debug_gui=True,
+                                            existing_client_id=existing_client_id)
                 if existing_client_id is not None:
                     pp.CLIENTS.setdefault(existing_client_id, True)
             except Exception as e:
-                print(f"Error initializing CfabSession for {VALIDATION_PROBLEM_NAME}: {e}")
+                print(f"Error initializing CfabSession for {DESIGN_PROBLEM_NAME}: {e}")
                 self.cfab = None
                 return False
 
@@ -890,7 +898,9 @@ class HuskyMonitor(Node):
         # the shared GUI client, overlapping the real robot from world.init.
         # Hide them so the live scene reads cleanly. Collision/FK on the cfab
         # side still use these bodies. Idempotent on subsequent calls.
-        self._hide_cfab_robot()
+        # Skipped in headless tests where no pp-side husky overlaps.
+        if getattr(self, '_is_live_monitor', False):
+            self._hide_cfab_robot()
 
         if mv.start_state is None:
             print(f"Movement {mv.movement_id!r} has no start_state; skipping.")
@@ -919,7 +929,8 @@ class HuskyMonitor(Node):
         # body poses, attaches tool bodies to their parent links, and sets
         # up the ACM internally.
         try:
-            self.cfab.planner.set_robot_cell_state(mv.start_state)
+            with pp.LockRenderer():
+                self.cfab.planner.set_robot_cell_state(mv.start_state)
         except Exception as e:
             print(f"Error setting cfab robot cell state: {e}")
             return False
@@ -1200,14 +1211,16 @@ class HuskyMonitor(Node):
             n = len(s["staging_states"])
             idx = max(0, min(n - 1, int(round(t))))
             if idx != s["last_staging"]:
-                self.cfab.planner.set_robot_cell_state(s["staging_states"][idx])
+                with pp.LockRenderer():
+                    self.cfab.planner.set_robot_cell_state(s["staging_states"][idx])
                 s["last_staging"] = idx
         if s["constrained_slider"] is not None:
             t = _pb.readUserDebugParameter(s["constrained_slider"], physicsClientId=cid)
             n = len(s["constrained_states"])
             idx = max(0, min(n - 1, int(round(t))))
             if idx != s["last_constrained"]:
-                self.cfab.planner.set_robot_cell_state(s["constrained_states"][idx])
+                with pp.LockRenderer():
+                    self.cfab.planner.set_robot_cell_state(s["constrained_states"][idx])
                 s["last_constrained"] = idx
 
     def get_active_bar_aabb_dims(self):
@@ -1263,7 +1276,7 @@ class HuskyMonitor(Node):
         self.selected_trajectory_file = selected_trajectory_file
         trajectory_filepath = os.path.join(
             DESIGN_DATA_DIRECTORY,
-            VALIDATION_PROBLEM_NAME,
+            DESIGN_PROBLEM_NAME,
             'Trajectories',
             selected_trajectory_file
         )
@@ -1358,7 +1371,7 @@ class HuskyMonitor(Node):
         UI/widgets and existing callers; contents are now BarAction files.
         """
         action_dir = os.path.join(
-            DESIGN_DATA_DIRECTORY, VALIDATION_PROBLEM_NAME, 'BarActions',
+            DESIGN_DATA_DIRECTORY, DESIGN_PROBLEM_NAME, 'BarActions',
         )
         files = list_bar_actions(action_dir)
         if not files:
@@ -1375,7 +1388,7 @@ class HuskyMonitor(Node):
         """
         trajectory_dir = os.path.join(
             DESIGN_DATA_DIRECTORY,
-            VALIDATION_PROBLEM_NAME,
+            DESIGN_PROBLEM_NAME,
             'Trajectories'
         )
 
@@ -1971,7 +1984,7 @@ class HuskyMonitor(Node):
         world.update(self)
 
     def _trajectories_dir(self):
-        d = os.path.join(DESIGN_DATA_DIRECTORY, VALIDATION_PROBLEM_NAME, 'Trajectories')
+        d = os.path.join(DESIGN_DATA_DIRECTORY, DESIGN_PROBLEM_NAME, 'Trajectories')
         os.makedirs(d, exist_ok=True)
         return d
 

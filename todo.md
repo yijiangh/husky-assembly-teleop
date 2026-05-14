@@ -14,8 +14,15 @@
 
 # dual-arm constrained planner
 
-Questions:"
-- what does the max_attempt do in the plan constrained
+Questions:
+- How are the cfab session and pp synchronize collision geometry to be checked.
+
+ToDo:
+- plan the vertical element transfer
+
+- try with Cindy old calibration and do a bar reaching in workspace test
+
+- calibrate Alice and Cindy
 
 # switch to single arm compliant controller
 One thing i am not so sure about is that we decided that we always maintain assembly-robot centric in robot cell state, but if we are saving a state for the holding robot, we need to tell monitor that it should load robot state from the support robot saved as tool in the cell state.

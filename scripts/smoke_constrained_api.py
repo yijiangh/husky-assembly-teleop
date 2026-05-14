@@ -26,13 +26,15 @@ URDF = (
 def main() -> int:
     from husky_assembly_tamp.motion_planner.api import (
         derive_grasps_from_state,
-        derive_constrained_start,
         plan_constrained_dual_arm,
     )
-    from husky_assembly_tamp.motion_planner.stage1.minimal_rrt import (
+    from husky_assembly_tamp.motion_planner.dual_arm_task_space_rrt.run import (
         HUSKY_DUAL_ARM_JOINT_NAMES,
+    )
+    from husky_assembly_tamp.motion_planner.dual_arm_task_space_rrt.core import (
         TOOL_LINK_LEFT,
         TOOL_LINK_RIGHT,
+        derive_constrained_start,
         get_bar_feature_points,
     )
 

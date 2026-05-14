@@ -35,7 +35,7 @@ class StubLogger:
 def _patch_problem(problem):
     from husky_assembly_teleop import husky_monitor as hm
 
-    hm.VALIDATION_PROBLEM_NAME = problem
+    hm.DESIGN_PROBLEM_NAME = problem
 
 
 def _make_monitor(problem, use_gui):
@@ -304,7 +304,7 @@ def main():
     monitor = None
     try:
         monitor = _make_monitor(args.problem, args.gui)
-        monitor.available_robot_cell_states = monitor._load_available_robot_cell_states()
+        monitor.available_robot_cell_states = monitor._load_available_bar_actions()
         if args.bar_action not in monitor.available_robot_cell_states:
             raise RuntimeError(
                 f"{args.bar_action!r} not available. Found: {monitor.available_robot_cell_states}"
