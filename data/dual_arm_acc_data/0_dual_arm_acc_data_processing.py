@@ -17,7 +17,7 @@ import numpy as np
 import pybullet_planning as pp
 
 # Override to re-process an older batch:
-DATA_BATCH = '20260512'
+DATA_BATCH = '20260514'
 # DATA_BATCH = None
 EXPORT = 1
 
