@@ -52,12 +52,12 @@ CURRENT_ELEMENT_COLOR = pp.BLUE
 DEFAULT_BAR_POS = pp.Point(0.8, 0, 1.3)
 
 CLIENT_IP = '192.168.0.133' # Set to your own IP
-MOCAP_IP = '192.168.0.117' # set to the mocap PC's IP, get this from Motive Settings>Streaming pane->Local interface
+MOCAP_IP = '192.168.0.21' # set to the mocap PC's IP, get this from Motive Settings>Streaming pane->Local interface
 
 FILENAME_SUFFIX = '_vary_pos_vary_yaw'
 
 class HuskyMonitor(Node):
-    USE_MOCAP = 1
+    USE_MOCAP = 0
     FAKE_HARDWARE = 0
 
     # When USE_MOCAP=1, by default the husky base in PyBullet tracks mocap.
@@ -201,7 +201,7 @@ class HuskyMonitor(Node):
         self.grasp_distance = 0.0 # fixed for now
         self.goal_element_axis = 0
 
-        self.trajectory_time = 20 if self.CALIBRATION else 60
+        self.trajectory_time = 20 if self.CALIBRATION else 240
 
         # list of conf, velocity, total time, attachment other than the ee
         self.planned_arm_trajectory = [(None, None, None, None), (None, None, None, None)]
@@ -1254,6 +1254,11 @@ class HuskyMonitor(Node):
         if not (traj_c and traj_c[0] is not None and traj_c[1] is not None):
             self.get_logger().warn("Plan & Stage: no constrained trajectory produced.")
             return
+        ctx = getattr(self, "_bar_action_plan_ctx", None) or {}
+        n_pts = len(traj_c[0][0])
+        print(f"[Plan & Stage] constrained trajectory: {n_pts} waypoints "
+              f"(position_res={ctx.get('position_res')} m, "
+              f"rotation_res={ctx.get('rotation_res')} rad)")
         if self.cfab is None or self.current_movement is None:
             return  # not a BarAction run; nothing cfab-side to scrub
         self._build_bar_action_scrub_sliders()
@@ -1457,9 +1462,11 @@ class HuskyMonitor(Node):
                     # Show trajectory state
                     self.set_to_show_traj_state()
                     
-                    print(f"Successfully loaded joint trajectory from {selected_trajectory_file}")
-                    print(f"Left arm trajectory: {len(left_arm_trajectory)} points")
-                    print(f"Right arm trajectory: {len(right_arm_trajectory)} points")
+                    print(f"[Load Joint Traj] dual-arm trajectory: "
+                          f"{len(left_arm_trajectory)} waypoints "
+                          f"(left={len(left_arm_trajectory)}, "
+                          f"right={len(right_arm_trajectory)}) "
+                          f"from {selected_trajectory_file}")
                 else:
                     print("Joint trajectory does not have expected joint_names structure")
             else:
@@ -1600,7 +1607,7 @@ class HuskyMonitor(Node):
         arm_slider_max = 1 if self.get_active_arm_count() == 1 else 2
         self.arm_slider = Slider(arm_slider_label, self.update_selected_arm_id, 0, arm_slider_max, self.selected_arm_index)
 
-        self.trajectory_time_slider = Slider("traj time", self.update_trajectory_time, 1.0, 60.0, self.trajectory_time)
+        self.trajectory_time_slider = Slider("traj time", self.update_trajectory_time, 1.0, self.trajectory_time, self.trajectory_time)
 
         self.time_slider = p.addUserDebugParameter("Traj viz time", 0.0, 1.0, 1.0)
         
@@ -1716,6 +1723,14 @@ class HuskyMonitor(Node):
                 self.buttons.append(Button(
                     'Plan & Stage Constrained',
                     self.plan_and_stage_constrained_bar_action,
+                ))
+                self.buttons.append(Button(
+                    'Export Dual-Traj',
+                    self.export_constrained_dual_arm_trajectory,
+                ))
+                self.buttons.append(Button(
+                    'Load Dual-Traj',
+                    self.parse_constrained_dual_arm_trajectory,
                 ))
                 self.constrained_display_slider = Slider(
                     "Display Traj (0=Free,1=Constrained)",
@@ -2287,6 +2302,155 @@ class HuskyMonitor(Node):
                 self.tasks.remove(t)
                 
         world.update(self)
+
+    def _trajectories_dir(self):
+        d = os.path.join(DESIGN_DATA_DIRECTORY, VALIDATION_PROBLEM_NAME, 'Trajectories')
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def export_constrained_dual_arm_trajectory(self, filename=None):
+        """Export self.constrained_trajectory (left+right) as a single 12-DOF
+        compas_fab JointTrajectory JSON, written to <problem>/Trajectories/."""
+        from compas_fab.robots import JointTrajectory, JointTrajectoryPoint
+        from compas_fab.robots.time_ import Duration
+        from compas_robots import Configuration
+        from compas_robots.model import Joint
+        from husky_assembly_teleop.utils import HUSKY_DUAL_UR5e_JOINT_NAMES
+
+        traj = self.constrained_trajectory
+        if not (traj and traj[0] is not None and traj[1] is not None):
+            print("No constrained dual-arm trajectory to export. Run 'Plan & Stage Constrained' first.")
+            return None
+        left_path, _, left_time, _ = traj[0]
+        right_path, _, right_time, _ = traj[1]
+        n = len(left_path)
+        if n == 0 or n != len(right_path):
+            print(f"Constrained trajectory length mismatch: left={n}, right={len(right_path)}.")
+            return None
+
+        joint_names = list(HUSKY_DUAL_UR5e_JOINT_NAMES[0]) + list(HUSKY_DUAL_UR5e_JOINT_NAMES[1])
+        joint_types = [Joint.REVOLUTE] * len(joint_names)
+        total_time = float(left_time if left_time is not None else (right_time or 0.0))
+        points = []
+        for i in range(n):
+            joint_values = [float(v) for v in left_path[i]] + [float(v) for v in right_path[i]]
+            t = (total_time * i / (n - 1)) if n > 1 else 0.0
+            secs = int(t)
+            nsecs = int((t - secs) * 1e9)
+            points.append(JointTrajectoryPoint(
+                joint_values=joint_values,
+                joint_types=joint_types,
+                joint_names=joint_names,
+                time_from_start=Duration(secs, nsecs),
+            ))
+        start_configuration = Configuration(
+            joint_values=list(points[0].joint_values),
+            joint_types=joint_types,
+            joint_names=joint_names,
+        ) if points else None
+        jt = JointTrajectory(
+            trajectory_points=points,
+            joint_names=joint_names,
+            start_configuration=start_configuration,
+            fraction=1.0,
+        )
+
+        if filename is None:
+            mv = self.current_movement
+            act = self.current_action
+            if mv is not None and act is not None:
+                stem = f"{act.action_id}_{mv.movement_id}_constrained_dual_arm_JointTrajectory"
+            else:
+                stem = f"constrained_dual_arm_JointTrajectory_{int(time.time())}"
+            filename = stem + '.json'
+        out_path = os.path.join(self._trajectories_dir(), filename)
+        jt.to_json(out_path, pretty=True)
+        print(f"Exported constrained dual-arm trajectory ({n} waypoints) to {out_path}")
+        # Refresh available list so the parse-side slider can pick it up.
+        self.available_joint_trajectories = self._load_available_joint_trajectories()
+        return out_path
+
+    def parse_constrained_dual_arm_trajectory(self, filename=None):
+        """Load a 12-DOF compas_fab JointTrajectory JSON from <problem>/Trajectories/
+        and populate self.constrained_trajectory + per-arm display trajectories."""
+        from compas_fab.robots import JointTrajectory
+        from husky_assembly_teleop.utils import HUSKY_DUAL_UR5e_JOINT_NAMES
+
+        if filename is None:
+            if not self.available_joint_trajectories:
+                self.available_joint_trajectories = self._load_available_joint_trajectories()
+            if not self.available_joint_trajectories:
+                print("No JointTrajectory files in Trajectories/ to parse.")
+                return False
+            idx = self.selected_trajectory_index
+            if not (0 <= idx < len(self.available_joint_trajectories)):
+                print(f"Invalid trajectory index: {idx}")
+                return False
+            filename = self.available_joint_trajectories[idx]
+        path = filename if os.path.isabs(filename) else os.path.join(self._trajectories_dir(), filename)
+        if not os.path.isfile(path):
+            print(f"Trajectory file not found: {path}")
+            return False
+
+        try:
+            jt = JointTrajectory.from_json(path)
+        except Exception as e:
+            print(f"Failed to load JointTrajectory from {path}: {e}")
+            return False
+
+        left_names = HUSKY_DUAL_UR5e_JOINT_NAMES[0]
+        right_names = HUSKY_DUAL_UR5e_JOINT_NAMES[1]
+        # Resolve per-point joint name list (fall back to trajectory-level names).
+        traj_names = list(jt.joint_names) if jt.joint_names else []
+        try:
+            left_idx = [traj_names.index(n) for n in left_names]
+            right_idx = [traj_names.index(n) for n in right_names]
+        except ValueError as e:
+            print(f"Trajectory missing required dual-arm joints: {e}")
+            return False
+
+        left_path, right_path, times = [], [], []
+        for pt in jt.points:
+            names = pt.joint_names if pt.joint_names else traj_names
+            if names == traj_names:
+                li, ri = left_idx, right_idx
+            else:
+                try:
+                    li = [list(names).index(n) for n in left_names]
+                    ri = [list(names).index(n) for n in right_names]
+                except ValueError as e:
+                    print(f"Trajectory point missing required joints: {e}")
+                    return False
+            jv = pt.joint_values
+            left_path.append(np.array([jv[i] for i in li], dtype=float))
+            right_path.append(np.array([jv[i] for i in ri], dtype=float))
+            times.append(pt.time_from_start.seconds)
+
+        total_time = float(times[-1]) if times and times[-1] > 0 else float(self.trajectory_time)
+        left_arr = np.array(left_path)
+        right_arr = np.array(right_path)
+        self.constrained_trajectory = [
+            (left_arr, None, total_time, None),
+            (right_arr, None, total_time, None),
+        ]
+        self.constrained_start_conf = np.concatenate([left_arr[0], right_arr[0]])
+        self.constrained_goal_conf = np.concatenate([left_arr[-1], right_arr[-1]])
+        self.set_arm_trajectory(self.constrained_trajectory[0], index=0)
+        self.set_arm_trajectory(self.constrained_trajectory[1], index=1)
+        self.constrained_display_mode = 1
+        try:
+            self._refresh_constrained_displayed_trajectory()
+        except Exception:
+            pass
+        try:
+            self.set_to_show_traj_state()
+        except Exception:
+            pass
+        if self.cfab is not None and self.movement_start_state is not None:
+            self._build_bar_action_scrub_sliders()
+        print(f"[Parse Constrained Traj] dual-arm trajectory: "
+              f"{len(left_path)} waypoints from {path}")
+        return True
 
     def export_planned_trajectory_to_json(self, filename='planned_trajectory.json', arm_index=None):
         """

@@ -232,6 +232,141 @@ def _load_plan(monitor, path: str) -> bool:
     return has_c
 
 
+def _load_compas_trajectory(monitor, path: str) -> bool:
+    """Load a compas `JointTrajectory` JSON (as written by the husky monitor's
+    'Export Constrained Dual-Arm Traj' button) into
+    `monitor.constrained_trajectory` and reconstruct enough
+    `_bar_action_plan_ctx` for `_run_path_validation` to run.
+
+    Requires the BarAction scene to be set up first (load_bar_action +
+    cfab→pp bridge), so monitor.cfab, monitor._bar_action_husky,
+    monitor.active_bar_body and monitor.movement_start_state are populated.
+    Returns True iff a constrained trajectory was loaded.
+    """
+    import pybullet_planning as pp
+    from compas_fab.robots import JointTrajectory
+    from husky_assembly_teleop.utils import HUSKY_DUAL_UR5e_JOINT_NAMES, pose_from_frame
+    from husky_assembly_tamp.motion_planner.stage1.minimal_rrt import (
+        HUSKY_DUAL_ARM_JOINT_NAMES,
+    )
+
+    try:
+        jt = JointTrajectory.from_json(path)
+    except Exception as e:
+        print(f"[trajectory] FAIL: could not load {path}: {e}")
+        return False
+    traj_names = list(jt.joint_names) if jt.joint_names else None
+    if not traj_names or len(traj_names) < 12:
+        print(f"[trajectory] FAIL: insufficient joint_names in {path} ({traj_names!r})")
+        return False
+    try:
+        order = [traj_names.index(n) for n in HUSKY_DUAL_ARM_JOINT_NAMES]
+    except ValueError as e:
+        print(f"[trajectory] FAIL: missing required joint: {e}")
+        return False
+    left_idx, right_idx = order[:6], order[6:]
+
+    left_path, right_path = [], []
+    for pt in jt.points:
+        names = list(pt.joint_names) if pt.joint_names else traj_names
+        if names == traj_names:
+            li, ri = left_idx, right_idx
+        else:
+            local = [names.index(n) for n in HUSKY_DUAL_ARM_JOINT_NAMES]
+            li, ri = local[:6], local[6:]
+        jv = pt.joint_values
+        left_path.append(np.array([jv[i] for i in li], dtype=float))
+        right_path.append(np.array([jv[i] for i in ri], dtype=float))
+    n = len(left_path)
+    if n == 0:
+        print(f"[trajectory] FAIL: empty trajectory in {path}")
+        return False
+    left_arr = np.asarray(left_path)
+    right_arr = np.asarray(right_path)
+    monitor.constrained_trajectory = [
+        (left_arr,  None, monitor.trajectory_time, None),
+        (right_arr, None, monitor.trajectory_time, None),
+    ]
+    monitor.staging_free_trajectory = [None, None]
+
+    # Reconstruct _bar_action_plan_ctx for _run_path_validation.
+    ss = monitor.movement_start_state
+    if ss is None:
+        print("[trajectory] FAIL: monitor.movement_start_state unset; "
+              "load_bar_action must run first.")
+        return False
+    rb = (ss.rigid_body_states or {}).get(monitor.active_bar_name)
+    if rb is None or rb.attachment_frame is None:
+        print(f"[trajectory] FAIL: active bar {monitor.active_bar_name!r} has no "
+              f"attachment_frame in start_state.")
+        return False
+    left_tool0_from_bar = pose_from_frame(rb.attachment_frame)
+    grasp_bar_from_left = pp.invert(left_tool0_from_bar)
+
+    husky = getattr(monitor, "_bar_action_husky", None)
+    if husky is None:
+        print("[trajectory] FAIL: monitor._bar_action_husky unset; "
+              "cfab→pp bridge must run first.")
+        return False
+    robot = husky.object.robot
+    arm_joints = (
+        list(pp.joints_from_names(robot, HUSKY_DUAL_UR5e_JOINT_NAMES[0]))
+        + list(pp.joints_from_names(robot, HUSKY_DUAL_UR5e_JOINT_NAMES[1]))
+    )
+    tool_link_L = pp.link_from_name(robot, 'left_ur_arm_tool0')
+    tool_link_R = pp.link_from_name(robot, 'right_ur_arm_tool0')
+
+    # FK at every waypoint to derive the bar-pose path. Same convention as
+    # the constrained planner (bar pose = world_from_left * tool0_from_bar).
+    pose_path = []
+    with pp.WorldSaver():
+        for i in range(n):
+            pp.set_joint_positions(
+                robot, arm_joints,
+                np.concatenate([left_arr[i], right_arr[i]]),
+            )
+            wt0L = pp.get_link_pose(robot, tool_link_L)
+            pose_path.append(pp.multiply(wt0L, left_tool0_from_bar))
+        # FK the goal once more to derive grasp_bar_from_right.
+        pp.set_joint_positions(
+            robot, arm_joints, np.concatenate([left_arr[-1], right_arr[-1]]),
+        )
+        wt0R_goal = pp.get_link_pose(robot, tool_link_R)
+    grasp_bar_from_right = pp.multiply(pp.invert(pose_path[-1]), wt0R_goal)
+
+    # Match the constrained planner's obstacle filter as closely as we can
+    # without re-running its name-pattern logic: every loaded rigid body
+    # except the active bar and the EE ghost spheres.
+    ghost_set = set()
+    for slot in (husky.object.ee_list or []):
+        gp = slot[0] if slot[0] is not None else (
+            slot[1].child if slot[1] is not None else None)
+        if gp is not None:
+            ghost_set.add(gp)
+    all_rb_puids = sorted({
+        ids[0] for ids in (monitor.cfab.client.rigid_bodies_puids or {}).values()
+        if ids
+    })
+    obstacles = [b for b in all_rb_puids
+                 if b != monitor.active_bar_body and b not in ghost_set]
+
+    monitor._bar_action_plan_ctx = {
+        "stage": getattr(monitor, "constrained_planner_stage", 3),
+        "grasp_bar_from_left": grasp_bar_from_left,
+        "grasp_bar_from_right": grasp_bar_from_right,
+        "obstacles_for_constrained": obstacles,
+        "path_poses": pose_path,
+        "position_res": None,
+        "rotation_res": None,
+    }
+    monitor.constrained_pose_path = pose_path
+    monitor.constrained_start_conf = np.concatenate([left_arr[0], right_arr[0]])
+    monitor.constrained_goal_conf = np.concatenate([left_arr[-1], right_arr[-1]])
+
+    print(f"[trajectory] loaded compas JointTrajectory: {n} waypoints from {path}")
+    return True
+
+
 def _run_traj_slider(monitor):
     """Add two PyBullet sliders to scrub the staging + constrained trajectories."""
     import time
@@ -530,6 +665,7 @@ def main(bar_action: str = DEFAULT_BAR_ACTION,
          max_attempts: int = None,
          save_plan: str = None,
          replay: str = None,
+         trajectory: str = None,
          random_seed: int = None,
          draw_rrt: bool = False,
          validate: bool = False,
@@ -702,8 +838,24 @@ def main(bar_action: str = DEFAULT_BAR_ACTION,
         if not ok:
             return 1
 
-        # Step 3: BarAction-driven planning entry (constrained dual-arm).
-        if replay:
+        # Step 3: BarAction-driven planning entry (constrained dual-arm) —
+        # OR skip planning entirely if --replay / --trajectory was passed.
+        if trajectory:
+            traj_path = trajectory
+            if not os.path.isabs(traj_path):
+                from husky_assembly_teleop import DESIGN_DATA_DIRECTORY
+                traj_path = os.path.join(
+                    DESIGN_DATA_DIRECTORY, problem, "Trajectories", traj_path,
+                )
+            print(f"\n--- trajectory mode: loading compas JointTrajectory "
+                  f"from {traj_path} ---")
+            plan_ok = _load_compas_trajectory(monitor, traj_path)
+            # Auto-enable validation in trajectory mode unless caller already
+            # opted in.
+            if plan_ok and not validate:
+                print("[trajectory] --validate auto-enabled in trajectory mode.")
+                validate = True
+        elif replay:
             print(f"\n--- replay mode: loading plan from {replay} ---")
             plan_ok = _load_plan(monitor, replay)
         else:
@@ -759,7 +911,7 @@ def main(bar_action: str = DEFAULT_BAR_ACTION,
             print(f"PASS: plan for {monitor.current_movement.movement_id}: "
                   f"staging={ns} wp, constrained={nc} wp.")
             rc = 0
-            if save_plan and not replay:
+            if save_plan and not replay and not trajectory:
                 _save_plan(monitor, save_plan)
         else:
             print("FAIL: see error logs above (no constrained trajectory).")
@@ -767,7 +919,7 @@ def main(bar_action: str = DEFAULT_BAR_ACTION,
 
         # Optional: dump the collision-check setup (which body/link pairs each
         # planner checks) for the constrained + free-staging plans.
-        if show_collision_setup and not replay:
+        if show_collision_setup and not replay and not trajectory:
             try:
                 _print_collision_setup(monitor)
             except Exception as e:
@@ -777,7 +929,7 @@ def main(bar_action: str = DEFAULT_BAR_ACTION,
         # collisions) + write the plot & report. Reuses
         # path_validation.validate_stage_trajectory. (Skipped on --replay,
         # which has no plan context.)
-        if validate and plan_ok and not replay:
+        if validate and plan_ok and not replay:  # trajectory-mode is allowed (ctx is reconstructed)
             try:
                 import pybullet_planning as _pp
                 _pp.set_renderer(False)
@@ -844,6 +996,15 @@ if __name__ == "__main__":
                         help="Replay a previously saved plan JSON instead of "
                              "running the planner. Still loads the BarAction "
                              "to reconstruct the scene.")
+    parser.add_argument("--trajectory", type=str, default=None,
+                        help="Skip planning and load a compas JointTrajectory "
+                             "JSON (as written by the husky monitor's 'Export "
+                             "Constrained Dual-Arm Traj' button). Absolute path "
+                             "or bare filename (resolved under "
+                             "<problem>/Trajectories/). Reconstructs the BarAction "
+                             "scene, populates monitor.constrained_trajectory + "
+                             "_bar_action_plan_ctx, auto-enables --validate, and "
+                             "(with --gui) opens the trajectory scrubber.")
     parser.add_argument("--random-seed", type=int, default=None,
                         help="Pin the constrained RRT's RNG for a reproducible "
                              "run. Default: fresh entropy each run.")
@@ -891,6 +1052,7 @@ if __name__ == "__main__":
                   problem=args.problem, use_gui=args.gui, verbose=args.verbose,
                   max_time=args.max_time, max_attempts=args.max_attempts,
                   save_plan=args.save_plan, replay=args.replay,
+                  trajectory=args.trajectory,
                   random_seed=args.random_seed, draw_rrt=args.draw_rrt,
                   validate=args.validate,
                   position_res=args.position_res, rotation_res=args.rotation_res,
