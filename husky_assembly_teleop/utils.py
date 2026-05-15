@@ -18,6 +18,31 @@ yup_tform[:3,1] = [0, 0, 1]
 yup_tform[:3,2] = [1, 0, 0]
 zup_from_yup = pp.pose_from_tform(yup_tform)
 
+
+# Mocap (y-up) -> z-up axis convention helpers.
+# 'rhino' (preferred): keep mocap_x as new_x, so new = (mocap_x, -mocap_z, mocap_y).
+#                      Same convention as the Rhino model.
+# 'rotated' (legacy):  new = (mocap_z, mocap_x, mocap_y). Used to be hardcoded in monitor.
+# Quat (xyzw) axis components transform the same way as a 3-vector.
+MOCAP_AXIS_CONVENTIONS = ('rhino', 'rotated')
+
+
+def mocap_pos_y_up_to_z_up(pos, convention='rhino'):
+    if convention == 'rhino':
+        return [pos[0], -pos[2], pos[1]]
+    if convention == 'rotated':
+        return [pos[2], pos[0], pos[1]]
+    raise ValueError(f"unknown mocap axis convention {convention!r}")
+
+
+def mocap_quat_y_up_to_z_up(quat, convention='rhino'):
+    qx, qy, qz, qw = quat
+    if convention == 'rhino':
+        return [qx, -qz, qy, qw]
+    if convention == 'rotated':
+        return [qz, qx, qy, qw]
+    raise ValueError(f"unknown mocap axis convention {convention!r}")
+
 # <link name="bar_tcp"/>
 # <joint name="tool0-bar_tcp_fixed_joint" type="fixed">
 #   <origin rpy="0 0 3.141592653589793" xyz="0 0 0.152"/>
@@ -183,10 +208,22 @@ def get_arm_ik_for_grasp_bar(robot, ik_solver, world_from_tool0, attachments, ob
 def plan_transit_motion(robot, end_conf, attachments, obstacles, debug=False,
                         disabled_collisions=None, dual_arm_index=None,
                         joint_resolution=0.05, max_time=10,
-                        max_iterations=20):
-    # Adapted to support dual-arm (composite) planning
+                        max_iterations=20, ee_types=None):
+    # Adapted to support dual-arm (composite) planning.
+    #
+    # ee_types: optional list of strings, one per attachment (parallels
+    # ``attachments``). When an entry is ``"assembly_tool_v3_left"`` or
+    # ``"assembly_tool_v3_right"``, the corresponding arm's wrist_2_link AND
+    # wrist_1_link are added to the disabled-collisions list for that EE —
+    # the tool body extends past wrist_3 into the wrist_2 / wrist_1 swept
+    # volumes on the husky URDF, so without these disables the planner
+    # rejects otherwise-valid poses.
     joint_names = UR5E_JOINT_NAMES
     arm_prefix = ""
+
+    def _is_assembly_tool_v3(ee_type):
+        return isinstance(ee_type, str) and ee_type.startswith("assembly_tool_v3")
+
     # Dual-arm mode: plan in the composite joint space of both arms
     if dual_arm_index == "both":
         joint_names = HUSKY_DUAL_UR5e_JOINT_NAMES[0] + HUSKY_DUAL_UR5e_JOINT_NAMES[1]
@@ -201,6 +238,18 @@ def plan_transit_motion(robot, end_conf, attachments, obstacles, debug=False,
             ((robot, pp.link_from_name(robot, 'right_ur_arm_wrist_3_link')),
              (attachments[1].child, pp.BASE_LINK)),
         ]
+        # Extra wrist_2 + wrist_1 disable when an assembly_tool_v3_* is mounted.
+        if ee_types and len(ee_types) >= 2:
+            for side_prefix, ee_type, attach in (
+                ("left_", ee_types[0], attachments[0]),
+                ("right_", ee_types[1], attachments[1]),
+            ):
+                if _is_assembly_tool_v3(ee_type):
+                    for wrist_link in ('ur_arm_wrist_2_link', 'ur_arm_wrist_1_link'):
+                        extra_disabled_collisions.append(
+                            ((robot, pp.link_from_name(robot, side_prefix + wrist_link)),
+                             (attach.child, pp.BASE_LINK))
+                        )
         # Combine both attachments for collision checking
         all_attachments = attachments
     else:
@@ -214,6 +263,13 @@ def plan_transit_motion(robot, end_conf, attachments, obstacles, debug=False,
             ((robot, pp.link_from_name(robot, arm_prefix + 'ur_arm_wrist_3_link')),
              (attachments[0].child, pp.BASE_LINK)),
         ]
+        # Extra wrist_2 + wrist_1 disable when an assembly_tool_v3_* is mounted on this arm.
+        if ee_types and len(ee_types) >= 1 and _is_assembly_tool_v3(ee_types[0]):
+            for wrist_link in ('ur_arm_wrist_2_link', 'ur_arm_wrist_1_link'):
+                extra_disabled_collisions.append(
+                    ((robot, pp.link_from_name(robot, arm_prefix + wrist_link)),
+                     (attachments[0].child, pp.BASE_LINK))
+                )
         all_attachments = attachments if isinstance(attachments, list) else [attachments]
     
     custom_limits = get_custom_limits(robot, {})

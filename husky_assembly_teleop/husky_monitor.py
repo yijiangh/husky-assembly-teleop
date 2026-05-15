@@ -26,12 +26,18 @@ import pybullet_planning as pp
 from husky_assembly_teleop import DATA_DIRECTORY, DESIGN_DATA_DIRECTORY, CALIBRATION_BATCHES, DESIGN_PROBLEM_NAME, CALIBRATION_DATE
 import husky_assembly_teleop.husky_world as world
 import husky_assembly_teleop.mocap_experiment as mocap_experiment
+from husky_assembly_teleop.mocap_experiment import (
+    fit_bar_from_markerset, bar_deviation_from_goal,
+)
 from husky_assembly_teleop.husky_robot import UR5e_HOME_STATE
 from husky_assembly_teleop.common import (
     Button, Slider, SliderGroup, Husky, TrackedObject, HuskyObject, AssemblyObject, HUSKY_UR5e_JOINT_NAMES, lerp, load_gripper
 )
 from husky_assembly_teleop.optitrack.NatNetClient import NatNetClient
-from husky_assembly_teleop.utils import pose_from_frame, frame_from_pose, pose_from_transformation, transformation_from_pose
+from husky_assembly_teleop.utils import (
+    pose_from_frame, frame_from_pose, pose_from_transformation, transformation_from_pose,
+    mocap_pos_y_up_to_z_up, mocap_quat_y_up_to_z_up,
+)
 
 # BarAction (gdrive design-study) loading
 from husky_assembly_teleop.bar_action_io import (
@@ -54,7 +60,7 @@ MOCAP_IP = '192.168.0.117' # set to the mocap PC's IP, get this from Motive Sett
 
 class HuskyMonitor(Node):
     USE_MOCAP = 0
-    FAKE_HARDWARE = 1
+    FAKE_HARDWARE = 0
 
     # When USE_MOCAP=1, by default the husky base in PyBullet tracks mocap.
     # Set USE_CELL_STATE_BASE_POSE=1 to override that and pin the base to
@@ -62,18 +68,21 @@ class HuskyMonitor(Node):
     # (or set via sliders). Useful for testing planning with mocap on for
     # end-effector tracking but the husky physically far from the assembly
     # scaffolding (e.g., at the lab desk during dual-arm accuracy tests).
-    USE_CELL_STATE_BASE_POSE = 1
+    USE_CELL_STATE_BASE_POSE = 0
     USE_DPG_UI = 0   # 0 = legacy PyBullet debug GUI; 1 = Dear PyGui control panel
     UI_FONT_SIZE = 16  # DPG control-panel font size in px
 
-    GRASP_PARTITION = 8
-
     CALIBRATION = 0
 
-    BAR_HOLDING_ACCURACY_TEST = 0
-    DUAL_ARM_ACCURACY_TEST = 1
+    BAR_HOLDING_ACCURACY_TEST = 1
+    DUAL_ARM_ACCURACY_TEST = 0
 
-    BOARD_VALIDATION = 1
+    # Mocap (y-up) -> z-up axis convention. See utils.mocap_pos_y_up_to_z_up.
+    # 'rhino'   : rhino_x = mocap_x, rhino_y = -mocap_z, rhino_z = mocap_y (preferred).
+    # 'rotated' : legacy convention previously hardcoded in receive_*_frame.
+    MOCAP_AXIS_CONVENTION = "rhino"
+
+    BOARD_VALIDATION = 0
     PUNCH_CALIB_VALIDATION = 0
 
     DUAL_ARM_KISSING = 0 # set 1 to enable kissing experiment + compliance controller buttons
@@ -137,6 +146,9 @@ class HuskyMonitor(Node):
         self.calibration_data = []
         self.marker_set_data = []
         self.dual_arm_EE_mocap_data = []
+        self._bar_holding_fit_line_uids = []
+        self.goal_base_pose_frozen = False
+        self._current_action_path = None
         
         # UI
         self.buttons = []
@@ -195,7 +207,6 @@ class HuskyMonitor(Node):
         self.calib_target_axis = 0
 
         self.goal_bar_grasp = None
-        self.grasp_theta_index = 0
         self.grasp_distance = 0.0 # fixed for now
         self.goal_element_axis = 0
 
@@ -654,7 +665,9 @@ class HuskyMonitor(Node):
         self._reset_planned_arm_trajectory()
 
     def update_traj_goal_configuration(self):
-        self.goal_model.set_pose(self.goal_base_pose, self.goal_arm_pose)
+        # goal_arm_pose is always length 2 (per __init__); slice for single-arm goal_model.
+        arm_pose = self.goal_arm_pose if self.goal_model.dual_arm else self.goal_arm_pose[:1]
+        self.goal_model.set_pose(self.goal_base_pose, arm_pose)
 
     def execute_linear_trajectory(self):
         # only execute part of the traj returned by transfer planning
@@ -748,7 +761,29 @@ class HuskyMonitor(Node):
         world_pos = pp.multiply(world_from_base_link, pp.Pose(point=self.base_from_goal_bar_pos))[0]
         world_quat = pp.Pose(euler=pp.Euler(*self.world_from_goal_bar_euler))[1]
         return world_pos, world_quat
-    
+
+    def get_bar_action_goal_bar_pose(self):
+        """world_from_bar from M2 cell state: target_ee_frames[side] ∘ attachment_frame.
+
+        Returns ``(pos, quat)`` or ``None`` if no BarAction is loaded.
+        """
+        if self.movement_start_state is None or self.target_ee_frames is None:
+            return None
+        if not self.active_bar_name:
+            return None
+        rb_states = getattr(self.movement_start_state, 'rigid_body_states', {}) or {}
+        bar_rb = rb_states.get(self.active_bar_name)
+        if bar_rb is None or bar_rb.attachment_frame is None:
+            return None
+        attached_link = getattr(bar_rb, 'attached_to_link', '') or ''
+        side = 'left' if 'left' in attached_link else 'right'
+        target = self.target_ee_frames.get(side)
+        if target is None:
+            return None
+        world_from_tool = pose_from_frame(target)
+        tool_from_bar = pose_from_frame(bar_rb.attachment_frame)
+        return pp.multiply(world_from_tool, tool_from_bar)
+
     def update_constrained_planner_stage(self, val):
         self.constrained_planner_stage = int(round(float(val)))
 
@@ -862,6 +897,14 @@ class HuskyMonitor(Node):
                 DESIGN_DATA_DIRECTORY, DESIGN_PROBLEM_NAME,
                 'BarActions', action_path,
             )
+        self._current_action_path = action_path
+
+        for uid in getattr(self, '_bar_holding_fit_line_uids', []) or []:
+            try:
+                pp.remove_debug(uid)
+            except Exception:
+                pass
+        self._bar_holding_fit_line_uids = []
 
         print(f"Loading BarAction: {action_path}")
 
@@ -880,13 +923,10 @@ class HuskyMonitor(Node):
                 self.cfab.close()
             try:
                 existing_client_id = pp.CLIENT if pp.is_connected() else None
-                # LockRenderer: set_robot_cell loads dozens of URDF links;
-                # rendering each one mid-load slows GUI mode significantly.
-                with pp.LockRenderer():
-                    self.cfab = CfabSession(DESIGN_PROBLEM_NAME,
-                                            connection_type="gui",
-                                            enable_debug_gui=True,
-                                            existing_client_id=existing_client_id)
+                self.cfab = CfabSession(DESIGN_PROBLEM_NAME,
+                                        connection_type="gui",
+                                        enable_debug_gui=True,
+                                        existing_client_id=existing_client_id)
                 if existing_client_id is not None:
                     pp.CLIENTS.setdefault(existing_client_id, True)
             except Exception as e:
@@ -929,8 +969,7 @@ class HuskyMonitor(Node):
         # body poses, attaches tool bodies to their parent links, and sets
         # up the ACM internally.
         try:
-            with pp.LockRenderer():
-                self.cfab.planner.set_robot_cell_state(mv.start_state)
+            self.cfab.planner.set_robot_cell_state(mv.start_state)
         except Exception as e:
             print(f"Error setting cfab robot cell state: {e}")
             return False
@@ -978,6 +1017,8 @@ class HuskyMonitor(Node):
         if hasattr(mv.start_state, 'robot_base_frame') and \
                 mv.start_state.robot_base_frame is not None:
             self.goal_base_pose = pose_from_frame(mv.start_state.robot_base_frame)
+            if self.BAR_HOLDING_ACCURACY_TEST:
+                self.goal_base_pose_frozen = True
 
         if update_goal_state:
             self.set_to_show_goal_state()
@@ -1116,8 +1157,26 @@ class HuskyMonitor(Node):
             _pp.CLIENT = _saved
 
     def plan_and_stage_constrained_bar_action(self):
-        """Run constrained planning; on success build cfab scrub sliders."""
-        world.plan_and_stage_constrained(self)
+        """Run constrained planning; on success build cfab scrub sliders.
+
+        Defaults below were tuned against the hard B226 floor-level case (see
+        tasks/2026-05-15_dual_arm_rrt_b226_birrt.md). Single-tree RRT with one
+        fixed home cannot find a plan there; BiRRT + multi-start (re-derive
+        the home bar pose on failure) reliably does.
+
+        WARNING: ``ignore_env_obstacles=True`` is a temporary stopgap that
+        skips ALL environment/static obstacles in the constrained planner
+        (only robot self-collision + attached-bar-vs-robot remain). Set to
+        ``False`` before planning paths for real-hardware execution.
+        """
+        world.plan_and_stage_constrained(
+            self,
+            max_time=60.0,
+            max_attempts=2,
+            bidirectional=True,
+            start_retries=6,
+            ignore_env_obstacles=True,  # TODO: turn back on (False) before real-hardware runs
+        )
         traj_c = self.constrained_trajectory
         if not (traj_c and traj_c[0] is not None and traj_c[1] is not None):
             self.get_logger().warn("Plan & Stage: no constrained trajectory produced.")
@@ -1130,6 +1189,39 @@ class HuskyMonitor(Node):
         if self.cfab is None or self.current_movement is None:
             return  # not a BarAction run; nothing cfab-side to scrub
         self._build_bar_action_scrub_sliders()
+
+    def replan_free_from_live_base(self):
+        """Replan free dual-arm from current mocap base; hide bar during exec."""
+        world.plan_free_dual_arm_from_live_base(self)
+        self._hide_goal_bar()
+
+    def replan_constrained_from_live_base(self):
+        """Replan constrained dual-arm from current mocap base."""
+        world.plan_constrained_from_live_base(self)
+        self._show_goal_bar()
+
+    def _hide_goal_bar(self):
+        if getattr(self, 'goal_gripper_model', None) is not None:
+            pp.set_color(self.goal_gripper_model, TRANSPARENT)
+
+    def _show_goal_bar(self):
+        if getattr(self, 'goal_gripper_model', None) is not None:
+            pp.set_color(self.goal_gripper_model, GOAL_BLUE)
+
+    def record_bar_holding_marker_take(self):
+        """Record one labeled-marker take + run inline fit + log deviation."""
+        world.request_marketset_button(self, 'bar_rig')
+
+    def save_bar_holding_marker_data(self):
+        """Save accumulated marker takes to the gdrive experiment dir; clear viz."""
+        world.save_markerset_data(self, use_experiment_dir=True)
+        self.marker_set_data = []
+        for uid in self._bar_holding_fit_line_uids:
+            try:
+                pp.remove_debug(uid)
+            except Exception:
+                pass
+        self._bar_holding_fit_line_uids = []
 
     def _build_bar_action_scrub_sliders(self):
         """Build (on the cfab GUI window) up to two debug-parameter sliders to
@@ -1211,16 +1303,14 @@ class HuskyMonitor(Node):
             n = len(s["staging_states"])
             idx = max(0, min(n - 1, int(round(t))))
             if idx != s["last_staging"]:
-                with pp.LockRenderer():
-                    self.cfab.planner.set_robot_cell_state(s["staging_states"][idx])
+                self.cfab.planner.set_robot_cell_state(s["staging_states"][idx])
                 s["last_staging"] = idx
         if s["constrained_slider"] is not None:
             t = _pb.readUserDebugParameter(s["constrained_slider"], physicsClientId=cid)
             n = len(s["constrained_states"])
             idx = max(0, min(n - 1, int(round(t))))
             if idx != s["last_constrained"]:
-                with pp.LockRenderer():
-                    self.cfab.planner.set_robot_cell_state(s["constrained_states"][idx])
+                self.cfab.planner.set_robot_cell_state(s["constrained_states"][idx])
                 s["last_constrained"] = idx
 
     def get_active_bar_aabb_dims(self):
@@ -1629,9 +1719,19 @@ class HuskyMonitor(Node):
         # Scaffolding tool control removed - outdated, will be remade later.
 
         if self.BAR_HOLDING_ACCURACY_TEST:
-            self.dump_sep_sliders.append(Slider("----------Bar Holding Acc Test", lambda : None))
-            self.buttons.append(Button('Record markerset data', self.send_request_to_mocap))
-            self.buttons.append(Button('Save markerset data', self.record_markerset_data))
+            self.dump_sep_sliders.append(Slider("----------Bar Holding Acc Test", lambda: None))
+            self.bar_holding_movement_slider = Slider(
+                "BarAction Movement (M index)",
+                lambda v: setattr(self, '_bar_holding_movement_idx', int(round(float(v)))),
+                0, 5, 2,
+            )
+            self.buttons.append(Button('Load BarAction (selected M)',
+                lambda: self.load_bar_action(movement=getattr(self, '_bar_holding_movement_idx', 2))))
+            self.buttons.append(Button('Replan Free (live base)', self.replan_free_from_live_base))
+            self.buttons.append(Button('Replan Constrained (live base)', self.replan_constrained_from_live_base))
+            self.buttons.append(Button('Exec Both Arm Trajs', lambda: world.execute_arm_trajectory_both(self)))
+            self.buttons.append(Button('Record markerset take', self.record_bar_holding_marker_take))
+            self.buttons.append(Button('Save markerset data', self.save_bar_holding_marker_data))
 
         if self.DUAL_ARM_ACCURACY_TEST:
             self.dump_sep_sliders.append(Slider("----------Dual Arm Acc Test", lambda : None))
@@ -1788,9 +1888,8 @@ class HuskyMonitor(Node):
     
     # mocap updates are happening in a separate thread
     def receive_rigid_body_frame(self, id, pos, rot):
-        # y up to z up
-        pos = np.array((pos[2], pos[0], pos[1]))
-        rot = np.array((rot[2], rot[0], rot[1], rot[3]))
+        pos = np.array(mocap_pos_y_up_to_z_up(pos, self.MOCAP_AXIS_CONVENTION))
+        rot = np.array(mocap_quat_y_up_to_z_up(rot, self.MOCAP_AXIS_CONVENTION))
 
         name = self.name_from_mocap_id.get(id, f'rigid_body_{id}')
         with self._mocap_cache_lock:
@@ -1842,8 +1941,7 @@ class HuskyMonitor(Node):
                 self._mocap_labeled_marker_cache[name] = {}
 
             for marker_id, marker_data in marker_datas.items():
-                # y up to z up
-                pos = [marker_data['pos'][2], marker_data['pos'][0], marker_data['pos'][1]]
+                pos = mocap_pos_y_up_to_z_up(marker_data['pos'], self.MOCAP_AXIS_CONVENTION)
                 self._mocap_labeled_marker_cache[name][marker_id] = {
                     'pos': pos,
                     'size': marker_data['size'],
@@ -1878,7 +1976,8 @@ class HuskyMonitor(Node):
                 # mocap drives the husky base pose
                 h.object.set_pose((hi.position, hi.rotation), hi.arm_joint_pose)
                 # set the goal pose of base since we are teleoperating the base
-                self.goal_base_pose = (hi.position, hi.rotation)
+                if not self.goal_base_pose_frozen:
+                    self.goal_base_pose = (hi.position, hi.rotation)
             else:
                 # base is whatever the cell state set (or sliders set);
                 # mocap only drives EE tracking in this branch
@@ -1972,7 +2071,9 @@ class HuskyMonitor(Node):
                     obj.set_pose(object_pose)
  
         # always update goal robot based on current slider values
-        self.goal_model.set_pose(goal_base_pose, goal_arm_pose)
+        # goal_arm_pose is always length 2 (per __init__); slice for single-arm goal_model.
+        arm_pose = goal_arm_pose if self.goal_model.dual_arm else goal_arm_pose[:1]
+        self.goal_model.set_pose(goal_base_pose, arm_pose)
                         
         # run tasks
         for t in self.tasks:
