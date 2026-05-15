@@ -11,6 +11,14 @@ import numpy as np
 
 from husky_assembly_teleop import DATA_DIRECTORY
 
+# Bar holding accuracy: marker rig geometry. Pairs are auto-matched by
+# cross-bar distance (≈82 mm). End pairs are identified after line fit
+# by sorting pair midpoints along the fitted axis.
+BAR_END_OFFSET_M = 0.026
+PAIR_NOMINAL_DIST_M = 0.082
+PAIR_DIST_TOL_M = 0.003
+MARKER_ERROR_TOL_M = 0.002
+
 EXPERIMENT_DATA_DIR = os.path.join(DATA_DIRECTORY, "mocap_experiments")
 CONFIG_TEMPLATE_PATH = os.path.join(EXPERIMENT_DATA_DIR, "_template", "config.yaml")
 DEFAULT_CONFIG_PATH = os.path.join(EXPERIMENT_DATA_DIR, "config.yaml")
@@ -1147,3 +1155,134 @@ def main_report():
     summary = run_analysis(args.inputs, output_dir=args.output_dir, group_by=args.group_by)
     report_path = write_markdown_report(summary, output_path=args.report_path)
     print(f"Report written to {report_path}")
+
+
+def auto_pair_markers(labeled_marker_dict,
+                      nominal_dist=PAIR_NOMINAL_DIST_M,
+                      tol=PAIR_DIST_TOL_M):
+    """Greedy-match markers into cross-bar pairs (~`nominal_dist` apart).
+
+    Returns ``list[(id_a, id_b)]``. Raises if any marker can't be paired.
+    """
+    import numpy as np
+
+    ids = list(labeled_marker_dict.keys())
+    positions = {i: np.asarray(labeled_marker_dict[i]['pos'], dtype=float) for i in ids}
+
+    candidates = []
+    for idx, a in enumerate(ids):
+        for b in ids[idx + 1:]:
+            d = float(np.linalg.norm(positions[a] - positions[b]))
+            if abs(d - nominal_dist) <= tol:
+                candidates.append((abs(d - nominal_dist), a, b))
+
+    candidates.sort()
+    used = set()
+    pairs = []
+    for _, a, b in candidates:
+        if a in used or b in used:
+            continue
+        pairs.append((a, b))
+        used.add(a)
+        used.add(b)
+
+    unpaired = [i for i in ids if i not in used]
+    if unpaired:
+        raise ValueError(
+            f"Failed to pair markers {unpaired} within {nominal_dist*1000:.0f}±{tol*1000:.0f} mm"
+        )
+    return pairs
+
+
+def fit_bar_from_markerset(labeled_marker_dict, pairs=None):
+    """Fit bar axis + OCF from labeled mocap markers.
+
+    Input ``labeled_marker_dict`` shape: ``{marker_id_str: {'pos': [x,y,z], ...}}``
+    (matches the ``bar_rig`` field of saved takes).
+
+    If ``pairs`` is None, auto-matches via ``auto_pair_markers``. End pairs
+    are identified after the line fit by sorting pair midpoints along the
+    fitted axis (extreme = end).
+    """
+    import numpy as np
+    from skspatial.objects import Line
+
+    if pairs is None:
+        pairs = auto_pair_markers(labeled_marker_dict)
+
+    pair_centers = []
+    for m1, m2 in pairs:
+        p1 = np.asarray(labeled_marker_dict[m1]['pos'], dtype=float)
+        p2 = np.asarray(labeled_marker_dict[m2]['pos'], dtype=float)
+        pair_centers.append(0.5 * (p1 + p2))
+
+    if len(pair_centers) < 2:
+        raise ValueError(f"Need >=2 pairs for line fit; got {len(pair_centers)}")
+
+    centers_arr = np.asarray(pair_centers)
+    line = Line.best_fit(centers_arr)
+    direction = np.asarray(line.direction, dtype=float)
+    direction = direction / np.linalg.norm(direction)
+    line_point = np.asarray(line.point, dtype=float)
+
+    # End pairs = the two pair centers with the extreme projection onto the axis.
+    centroid = centers_arr.mean(axis=0)
+    projections = np.array([np.dot(c - centroid, direction) for c in pair_centers])
+    order = np.argsort(projections)
+    end_indices = {int(order[0]), int(order[-1])}
+    pair_is_end = [i in end_indices for i in range(len(pair_centers))]
+
+    # Push end-pair centers outward along axis by BAR_END_OFFSET_M.
+    bar_end_points = []
+    for i in (int(order[0]), int(order[-1])):
+        sign = 1.0 if projections[i] >= 0 else -1.0
+        bar_end_points.append(pair_centers[i] + sign * BAR_END_OFFSET_M * direction)
+
+    ocf_position = 0.5 * (bar_end_points[0] + bar_end_points[1])
+    bar_length_observed = float(np.linalg.norm(bar_end_points[0] - bar_end_points[1]))
+
+    residuals = []
+    for c in pair_centers:
+        v = c - line_point
+        perp = v - np.dot(v, direction) * direction
+        residuals.append(float(np.linalg.norm(perp)))
+
+    return {
+        'pairs': [list(p) for p in pairs],
+        'pair_centers': [c.tolist() for c in pair_centers],
+        'pair_is_end': pair_is_end,
+        'fitted_line': {'point': line_point.tolist(), 'direction': direction.tolist()},
+        'bar_end_points': [bp.tolist() for bp in bar_end_points],
+        'ocf_position': ocf_position.tolist(),
+        'bar_length_observed': bar_length_observed,
+        'center_to_line_dists_m': residuals,
+        'center_to_line_dist_max_m': float(max(residuals)),
+        'center_to_line_dist_rms_m': float(np.sqrt(np.mean(np.square(residuals)))),
+    }
+
+
+def bar_deviation_from_goal(fit, goal_bar_pose):
+    """Deviation of observed bar (from `fit_bar_from_markerset`) vs goal.
+
+    ``goal_bar_pose`` = ``(position[3], quaternion_xyzw[4])``.
+    Returns dict ``{pos_dev_m, angle_rad, lateral_dev_m}``.
+    """
+    import numpy as np
+    import pybullet_planning as pp
+
+    goal_pos = np.asarray(goal_bar_pose[0], dtype=float)
+    goal_R = np.asarray(pp.matrix_from_quat(goal_bar_pose[1]), dtype=float)
+    goal_z = goal_R[:, 2] / np.linalg.norm(goal_R[:, 2])
+
+    fit_dir = np.asarray(fit['fitted_line']['direction'], dtype=float)
+    fit_point = np.asarray(fit['fitted_line']['point'], dtype=float)
+    ocf = np.asarray(fit['ocf_position'], dtype=float)
+
+    angle_rad = float(np.arccos(np.clip(abs(np.dot(goal_z, fit_dir)), 0.0, 1.0)))
+    pos_dev_m = float(np.linalg.norm(ocf - goal_pos))
+
+    v = goal_pos - fit_point
+    perp = v - np.dot(v, fit_dir) * fit_dir
+    lateral_dev_m = float(np.linalg.norm(perp))
+
+    return {'pos_dev_m': pos_dev_m, 'angle_rad': angle_rad, 'lateral_dev_m': lateral_dev_m}

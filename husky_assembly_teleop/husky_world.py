@@ -8,16 +8,17 @@ import asyncio
 from matplotlib.pyplot import bar
 import numpy as np
 import copy
+from husky_assembly_teleop.husky_robot import HuskyRobotInterface
 import rclpy
 
 import pybullet as p
 import pybullet_planning as pp
 
-from husky_assembly_teleop import DATA_DIRECTORY, CALIBRATION_DATE
+from husky_assembly_teleop import DATA_DIRECTORY, CALIBRATION_DATE, EXPERIMENT_DATA_DIRECTORY
 from husky_assembly_teleop.common import Husky, TrackedObject, AssemblyObject
 import husky_assembly_teleop.husky_planning as planning
 import husky_assembly_teleop.husky_control as control
-from husky_assembly_teleop.utils import HUSKY_DUAL_UR5e_JOINT_NAMES, UR5E_JOINT_NAMES, get_custom_limits, notify, plan_transit_motion
+from husky_assembly_teleop.utils import HUSKY_DUAL_UR5e_JOINT_NAMES, UR5E_JOINT_NAMES, get_arm_ik_for_grasp_bar, get_custom_limits, notify, plan_transit_motion, pose_from_frame
 from husky_assembly_teleop.scaffolding import parse_mt_geometric, create_collision_bodies, create_couplers, flatten_list
 import json
 from datetime import datetime
@@ -26,6 +27,8 @@ from compas_fab.robots import RobotCellState
 
 import matplotlib.pyplot as plt
 import compas
+
+import cv2
 
 MT_FILE_NAME = "one_tet_MT_contact.json"
 # huskies = []
@@ -36,8 +39,25 @@ DATA_DIR = DATA_DIRECTORY
 
 CALIB_DATA_DIR = os.path.join(DATA_DIR, "calibration_data")
 BAR_HOLDING_ACC_DATA_DIR = os.path.join(DATA_DIR, "bar_holding_acc_data")
+BAR_HOLDING_ACC_EXPERIMENT_DIR = os.path.join(EXPERIMENT_DATA_DIRECTORY, "bar_holding_acc_data")
 DUAL_ARM_ACC_DATA_DIR = os.path.join(DATA_DIR, "dual_arm_acc_data")
 CALIB_CONFIG_TEMPLATE = os.path.join(CALIB_DATA_DIR, "_data_template", "config.yaml")
+
+# Kissing experiment constants (ported from c81e373)
+KISSING_DATA_DIR = os.path.join(DATA_DIR, "kissing_experiment_data")
+Z_MOVE_TO_INSERT = 0.035
+CARTESIAN_SPEEDUP = 5
+TIME_PER_ROTATION = 14
+PROBE_END_WAIT_TIME = 1
+USE_CARTESIAN_CONTROLLER = True
+
+# BarAction planner hyperparameters. Constrained resolution controls SE(3)
+# RRT interpolation; free joint resolution controls joint-space extension.
+# CONSTRAINED_POSITION_RES = 0.1
+# CONSTRAINED_ROTATION_RES = 0.1
+CONSTRAINED_POSITION_RES = 0.005
+CONSTRAINED_ROTATION_RES = 0.017
+FREE_JOINT_RESOLUTION = 0.05
 
 
 def arm_index_to_name(arm_index):
@@ -124,7 +144,8 @@ def create_husky_with_end_effectors(monitor, name, mocap_id=None, pos=np.zeros(3
         calibration: Whether this is for calibration (uses calib_tip)
         dual_arm: Whether this is a dual-arm robot
         ee_types: List of end effector types. Options:
-                 - "victor_gripper": Victor gripper
+                 - "assembly_tool_v3_left": Assembly tool v3 (left variant mesh)
+                 - "assembly_tool_v3_right": Assembly tool v3 (right variant mesh)
                  - "robotiq_gripper": Robotiq gripper
                  - "custom_gripper": Custom gripper (example)
                  - "punch_tool": Punch tool for calibration validation
@@ -132,15 +153,17 @@ def create_husky_with_end_effectors(monitor, name, mocap_id=None, pos=np.zeros(3
                  - "calib_tip": Calibration tip
                  For dual-arm robots, provide a list of two types.
                  For single-arm robots, provide a list of one type.
-                 If None, defaults to victor_gripper or calib_tip based on calibration flag.
+                 If None, defaults to assembly_tool_v3_left/right or calib_tip based on calibration flag.
         force_regenerate: Force regeneration of URDF cache (only used for validation_tool_pair)
         punch_tool_offset: numpy array [x, y, z] offset from tool0 to punch tip (only used for punch_tool)
     """
     if ee_types is None:
         if calibration:
             ee_types = ["calib_tip"]
+        elif dual_arm:
+            ee_types = ["assembly_tool_v3_left", "assembly_tool_v3_right"]
         else:
-            ee_types = ["victor_gripper"]
+            ee_types = ["assembly_tool_v3_left"]
 
     return Husky(monitor, name=name, mocap_id=mocap_id, pos=pos, rot=rot,
                 connect_arm=connect_arm, connect_gripper=connect_gripper,
@@ -149,9 +172,41 @@ def create_husky_with_end_effectors(monitor, name, mocap_id=None, pos=np.zeros(3
                 punch_tool_offset=punch_tool_offset)
 
 def init(monitor):
-    # * add robots
-    robot_namespace = '/a200_0806'
-    mocap_id = 4617
+    # Per-robot config keyed by ROS_DOMAIN_ID so 0804 (ROS_DOMAIN_ID=84),
+    # 0805 (ROS_DOMAIN_ID=85), and 0806 (ROS_DOMAIN_ID=86) can run in parallel
+    # terminals without editing this file. Only fields that genuinely differ
+    # live here; everything else (dual_arm, base_calibration_file,
+    # punch_tool overrides) derives below.
+    ROBOT_CONFIGS = {
+        '84': dict(
+            robot_namespace='/a200_0804',
+            mocap_id=4568,
+            connect_gripper=True,
+            ee_types_default=['robotiq_gripper'],
+        ),
+        '85': dict(
+            robot_namespace='/a200_0805',
+            mocap_id=1033,  # from commented 0805 example below; adjust if wrong
+            connect_gripper=True,
+            ee_types_default=['robotiq_gripper'],
+        ),
+        '86': dict(
+            robot_namespace='/a200_0806',
+            mocap_id=4617,
+            connect_gripper=False,
+            ee_types_default=['assembly_tool_v3_left', 'assembly_tool_v3_right'],
+        ),
+    }
+    domain_id = os.environ.get('ROS_DOMAIN_ID', '86')
+    cfg = ROBOT_CONFIGS.get(domain_id)
+    if cfg is None:
+        monitor.get_logger().warn(
+            f"ROS_DOMAIN_ID={domain_id!r} not in ROBOT_CONFIGS; defaulting to 0806."
+        )
+        cfg = ROBOT_CONFIGS['86']
+
+    robot_namespace = cfg['robot_namespace']
+    mocap_id = cfg['mocap_id']
     robot_name = robot_namespace.split('_')[-1]
     dual_arm = (robot_name == '0806')
 
@@ -163,18 +218,38 @@ def init(monitor):
             if dual_arm else monitor.get_punch_tool_offset(0)
         )
     else:
-        ee_types = ["custom_gripper", "custom_gripper"] if dual_arm else ["custom_gripper"]
+        ee_types = cfg['ee_types_default']
         punch_offset = None
 
+    # When MOCAP_AXIS_CONVENTION='rhino', prefer a `_rhino`-tagged calibration
+    # file (generated by data/calibration_data/convert_to_rhino.py). The values
+    # are identical to the legacy file (calibration is convention-invariant);
+    # the tag just makes the active convention explicit. Falls back to the
+    # untagged file if the tagged one is missing.
+    convention = getattr(monitor, 'MOCAP_AXIS_CONVENTION', 'rotated')
+    suffix = '_rhino' if convention == 'rhino' else ''
     base_calibration_file = os.path.join(
-        CALIB_DATA_DIR, CALIBRATION_DATE, f'calibrated_transformation_{robot_name}.json'
+        CALIB_DATA_DIR, CALIBRATION_DATE,
+        f'calibrated_transformation_{robot_name}{suffix}.json',
     )
     if not os.path.exists(base_calibration_file):
-        monitor.get_logger().warn(
-            f'Base calibration file not found for robot {robot_name}: {base_calibration_file}. '
-            'Continuing without base calibration.'
+        fallback = os.path.join(
+            CALIB_DATA_DIR, CALIBRATION_DATE,
+            f'calibrated_transformation_{robot_name}.json',
         )
-        base_calibration_file = None
+        if suffix and os.path.exists(fallback):
+            monitor.get_logger().warn(
+                f'Rhino-tagged calibration not found ({base_calibration_file}); '
+                f'falling back to {fallback}. Run data/calibration_data/convert_to_rhino.py '
+                'to silence this warning.'
+            )
+            base_calibration_file = fallback
+        else:
+            monitor.get_logger().warn(
+                f'Base calibration file not found for robot {robot_name}: {base_calibration_file}. '
+                'Continuing without base calibration.'
+            )
+            base_calibration_file = None
 
     create_husky_with_end_effectors(
         monitor,
@@ -182,11 +257,11 @@ def init(monitor):
         mocap_id=mocap_id,
         pos=np.array((0,0,0)),
         connect_arm=not monitor.FAKE_HARDWARE,
-        connect_gripper=False and not monitor.FAKE_HARDWARE,
+        connect_gripper=cfg['connect_gripper'] and not monitor.FAKE_HARDWARE,
         calibration=monitor.CALIBRATION,
         dual_arm=dual_arm,
-        # ee_types=["victor_gripper", "victor_gripper"],  # Mixed end effectors
         # ee_types=["validation_tool_pair"],  # Specify end effectors for both arms
+        # ee_types=["custom_gripper", "custom_gripper"],
         ee_types=ee_types,
         base_calibration_file=base_calibration_file,
         force_regenerate=False,
@@ -194,18 +269,18 @@ def init(monitor):
     )
     
     # Example of creating a single-arm robot with robotiq gripper (commented out)
-    # create_husky_with_end_effectors(
-    #     monitor, 
-    #     name='/a200_0804', 
-    #     mocap_id=4615, 
-    #     pos=np.array((0,0,0)), 
-    #     connect_arm=not monitor.FAKE_HARDWARE, 
-    #     connect_gripper=not monitor.FAKE_HARDWARE, 
-    #     calibration=monitor.CALIBRATION,
-    #     dual_arm=False,
-    #     ee_types=["custom_gripper"],  # Specify end effector for single arm
-    #     base_calibration_file=os.path.join(CALIB_DATA_DIR, 'calibrated_transformation_0804.json')
-    # )
+    """create_husky_with_end_effectors(
+        monitor, 
+        name='/a200_0804', 
+        mocap_id=4568, 
+        pos=np.array((0,0,0)), 
+        connect_arm=not monitor.FAKE_HARDWARE, 
+        connect_gripper=not monitor.FAKE_HARDWARE, 
+        calibration=monitor.CALIBRATION,
+        dual_arm=False,
+        ee_types=["robotiq_gripper"],  # Specify end effector for single arm
+        base_calibration_file=os.path.join(CALIB_DATA_DIR, 'calibrated_transformation_0804.json')
+    )"""
 
     # Example of creating a robot with calibration tips
     """create_husky_with_end_effectors(
@@ -224,22 +299,21 @@ def init(monitor):
         mocap_id=4592, 
         pos=np.array((1,0,0)), 
         dual_arm=True,
-        ee_types=["custom_gripper", "victor_gripper"]  # Mixed end effectors
+        ee_types=["custom_gripper", "assembly_tool_v3_right"]  # Mixed end effectors
     )"""
 
     # * add static obstacles
     monitor.add_static_obstacles(pp.create_plane(color=(0.9, 0.9, 0.9, 1)), 'base_plane')
     
-    wall_right = pp.create_box(10, 0.4, 3)
-    pp.set_color(wall_right, pp.GREY)
-    pp.set_pose(wall_right, pp.Pose(pp.Point(0, 2.6, 0)))
+    # wall_right = pp.create_box(10, 0.4, 3)
+    # pp.set_color(wall_right, pp.GREY)
+    # pp.set_pose(wall_right, pp.Pose(pp.Point(0, 2.6, 0)))
 
-    wall_left = pp.create_box(10, 0.4, 3)
-    pp.set_pose(wall_left, pp.Pose(pp.Point(0, -3.0, 0)))
-    pp.set_color(wall_left, pp.GREY)
-
-    monitor.add_static_obstacles(wall_left, 'wall_left')
-    monitor.add_static_obstacles(wall_right, 'wall_right')
+    # wall_left = pp.create_box(10, 0.4, 3)
+    # pp.set_pose(wall_left, pp.Pose(pp.Point(0, -3.0, 0)))
+    # pp.set_color(wall_left, pp.GREY)
+    # monitor.add_static_obstacles(wall_left, 'wall_left')
+    # monitor.add_static_obstacles(wall_right, 'wall_right')
 
     # * add tracked obstacles
     # TODO use one tracked box to indicate where to put the assembly
@@ -253,43 +327,22 @@ def init(monitor):
         monitor.assign_calibration_tool_to_robot(0, 1, right_tool_name)
 
     if monitor.BAR_HOLDING_ACCURACY_TEST:
-        bar_rig = TrackedObject(monitor, 'bar_rig', 4570, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
+        bar_rig = TrackedObject(monitor, 'bar_rig', 4629, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
         bar_rig.body = pp.create_cylinder(radius=0.01, height=1, color=(1, 0, 0, 0.2))
         bar_rig.model_base_pose = pp.Pose(euler=pp.Euler(roll=np.pi/2))
         
     if monitor.DUAL_ARM_ACCURACY_TEST:
-        left_EE = TrackedObject(monitor, 'left_EE', 4572, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
+        # left_EE = TrackedObject(monitor, 'left_EE', 4627, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
+        left_EE = TrackedObject(monitor, 'left_EE', 1011, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
         left_EE.body = pp.create_box(0.1, 0.1, 0.1)
-        right_EE = TrackedObject(monitor, 'right_EE', 4573, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
+        # right_EE = TrackedObject(monitor, 'right_EE', 4628, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
+        right_EE = TrackedObject(monitor, 'right_EE', 1012, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
         right_EE.body = pp.create_box(0.1, 0.1, 0.1)
 
     #boxes.append(TrackedObject(monitor, 'box1', 4457, np.zeros(3), np.array((0, 0, 0, 1)), 0.2, 'cube.obj'))
     #boxes.append(TrackedObject(monitor, 'box2', 4484, np.zeros(3), np.array((0, 0, 0, 1)), 0.2, 'cube.obj'))
     #boxes.append(TrackedObject(monitor, 'box3', 1031, np.zeros(3), np.array((0, 0, 0, 1)), 0.2, 'cube.obj'))
 
-    # * add assembly objects
-    if monitor.ASSEMBLY_MODE:
-        line_pt_pairs, contact_id_pairs, bar_radius = parse_mt_geometric(MT_FILE_NAME)
-        line_pts_flattened = flatten_list(np.array(line_pt_pairs))
-        radius_per_edge = [bar_radius] * int(len(line_pts_flattened)/2)
-
-        # TODO: set in rhino
-        line_pts_flattened += np.array([-1.5, -0.5, 0.11])
-
-        element_bodies = create_collision_bodies(line_pts_flattened, radius_per_edge, viewer=True)
-        # TODO make coupler appear with the substructure
-        half_coupler_from_contact_pair = create_couplers(line_pts_flattened, contact_id_pairs)
-
-        far_away_pose = pp.Pose(pp.Point(0,0,100))
-        goal_poses = {}
-        for i, e in enumerate(element_bodies):
-            goal_poses[i] = pp.get_pose(e)
-
-        # TODO use parsed sequence here
-        assembly_objects.append([
-            AssemblyObject(monitor, 'b{}'.format(i), body, far_away_pose, goal_poses[i]) for i, body in enumerate(element_bodies)
-        ])
-    
 pre_position_trajectory = False
 dual_arm_trajectory = None
 bar_pose =  pp.Pose([0.5, 0, 0.5], [0, np.pi/2, 0])
@@ -365,7 +418,7 @@ def plan_base_to_goal(monitor):
 #     monitor.set_arm_trajectory(planning.plan_arm_wave(monitor.huskies[monitor.selected_robot_id], monitor.trajectory_time))
 
 def plan_arm_to_goal(monitor):
-    obstacles = [monitor.assembly_objects[i].body for i in range(monitor.current_seq_index)] + list(monitor.static_obstacles.values())
+    obstacles = [monitor.assembly_objects[i].body for i in range(monitor.current_seq_index)] + _get_manual_staging_obstacles(monitor)
     
     print(f"Planning from {monitor.huskies[monitor.selected_robot_id].interface.arm_joint_pose[monitor.selected_arm_index]} to {monitor.goal_arm_pose[monitor.selected_arm_index]} with obstacles {obstacles}")
     
@@ -382,146 +435,6 @@ def plan_arm_to_goal(monitor):
         index=monitor.selected_arm_index
         )
     monitor.set_to_show_traj_state()
-
-def plan_arm_to_transfer_element(monitor, grasp=None):
-    obstacles = [monitor.assembly_objects[i].body for i in range(monitor.current_seq_index)] + list(monitor.static_obstacles.values())
-    transfer_element = monitor.assembly_objects[monitor.current_seq_index]
-    full_traj, free_traj, linear_traj = planning.plan_arm_to_transfer_element(
-        monitor.huskies[monitor.selected_robot_id], 
-        transfer_element, 
-        obstacles, 
-        monitor.trajectory_time, 
-        grasp=grasp
-        )
-    monitor.set_arm_trajectory(full_traj, index=monitor.selected_arm_index)
-    monitor.free_arm_trajectory = free_traj
-    monitor.linear_arm_trajectory = linear_traj
-
-def plan_arm_to_retract_to_home(monitor):
-    obstacles = [monitor.assembly_objects[i].body for i in range(monitor.current_seq_index)] + list(monitor.static_obstacles.values())
-    transfer_element = monitor.assembly_objects[monitor.current_seq_index]
-    monitor.set_arm_trajectory(
-        planning.plan_arm_to_retract_to_home(monitor.huskies[monitor.selected_robot_id], transfer_element, obstacles, monitor.trajectory_time), 
-        index=monitor.selected_arm_index)
-
-def compute_ik_for_bar(monitor, world_from_bar, theta_index, grasp_dist):
-    obstacles = list(monitor.static_obstacles.values())
-    # [monitor.assembly_objects[i].body for i in range(monitor.current_seq_index)] + 
-    monitor.goal_element.set_pose(world_from_bar)
-
-    # gripper_from_object
-    grasp = planning.compute_grasp(theta_index, monitor.GRASP_PARTITION, grasp_dist)
-    world_from_tool0 = pp.multiply(world_from_bar, pp.invert(grasp))
-
-    # pp.draw_pose(world_from_bar)
-    # pp.draw_pose(world_from_tool0)
-
-    husky = monitor.huskies[monitor.selected_robot_id]
-    robot = husky.object.robot
-    attachments = [husky.object.ee_list[monitor.selected_arm_index][1], pp.Attachment(robot, pp.link_from_name(robot, 'ur_arm_tool0'), grasp, monitor.goal_element.body)]
-
-    arm_conf = planning.arm_ik(monitor.huskies[monitor.selected_robot_id], world_from_tool0, attachments, obstacles)
-    if arm_conf is None:
-        monitor.get_logger().warn("IK failed!")
-        return None, None
-    
-    return arm_conf, grasp
-
-def randomize_bar_location_for_ik_and_transfer(monitor, bar_goal_axis=None, target_grasp_index=None):
-    LOC_ATTEMPTS = 10
-    MP_ATTEMPTS = 3
-    TRAJ_MAX_LENGTH = 100
-
-    BOUNDING_BOX_RANGE = [[0.2, 1.0], [-1.0,1.0], [0.3, 1.4]]
-    AXIS_OPTIONS = [
-        pp.quat_from_euler(np.array([0, np.pi/2, 0])), # global x axis
-        pp.quat_from_euler(np.array([np.pi/2, 0, 0])), # global y axis
-        pp.quat_from_euler(np.array([0, 0, 0])), # global z axis
-    ]
-    # default longitudinal axis of the bar is aligned with the z axis
-
-    # disabled_collisions = disabled_collisions or {}
-    robot = monitor.huskies[monitor.selected_robot_id].object.robot
-    def check_body_robot_collision(target_body, target_link=pp.BASE_LINK):
-        _, robot_links = pp.expand_links(robot)
-        for rlink in robot_links:
-            if pp.pairwise_link_collision(robot, rlink, target_body, target_link):
-                return True
-
-    world_from_base_link = monitor.goal_model.get_link_pose_from_name("base_footprint")
-    obstacles = list(monitor.static_obstacles.values())
-    if target_grasp_index is not None:
-        candidate_grasps = [target_grasp_index]
-    else:
-        candidate_grasps = list(range(monitor.GRASP_PARTITION))
-
-    # [monitor.assembly_objects[i].body for i in range(monitor.current_seq_index)] + 
-    for i in range(LOC_ATTEMPTS):
-        monitor.get_logger().info(f"Randomizing bar location {i+1}/{LOC_ATTEMPTS}...")
-
-        # * randomize the bar location in the footprint frame of the robot, only keep its world orientation
-        rand_pos = np.array([
-            np.random.uniform(BOUNDING_BOX_RANGE[0][0], BOUNDING_BOX_RANGE[0][1]),
-            np.random.uniform(BOUNDING_BOX_RANGE[1][0], BOUNDING_BOX_RANGE[1][1]),
-            np.random.uniform(BOUNDING_BOX_RANGE[2][0], BOUNDING_BOX_RANGE[2][1])
-        ])
-        # rand_pos = pp.Point(0.8, 0, 1.3)
-
-        # Randomize the bar quaternion to align with one of the global x, y, z axes
-        if bar_goal_axis is None:
-            bar_goal_quat = AXIS_OPTIONS[np.random.randint(0, len(AXIS_OPTIONS))]
-        else:
-            assert bar_goal_axis in range(len(AXIS_OPTIONS)), f"Invalid bar goal axis: {bar_goal_axis}"
-            bar_goal_quat = AXIS_OPTIONS[bar_goal_axis]
-
-        # Keep the world orientation from bar_goal_quat
-        world_from_bar = pp.multiply(world_from_base_link, (rand_pos, bar_goal_quat))[0], bar_goal_quat
-        # pp.draw_pose(world_from_bar)
-
-        # check if bar is in collision with teh robot body, if so reject immediately
-        # with pp.WorldSaver():
-        pp.set_pose(monitor.goal_element.body, world_from_bar)
-        if check_body_robot_collision(monitor.goal_element.body):
-            monitor.get_logger().warn("Bar in collision with robot body, reject immediately!")
-            continue
-
-        # * enumerate grasp parameters
-        for theta_index in candidate_grasps:
-            monitor.get_logger().info(f"Grasping bar with id {theta_index+1}/{monitor.GRASP_PARTITION}...")
-
-            grasp_dist = 0.0
-
-            # Compute IK for this configuration
-            arm_conf, grasp = compute_ik_for_bar(monitor, world_from_bar, theta_index, grasp_dist)
-
-            if arm_conf is not None:
-                # plan transit path
-                for _ in range(MP_ATTEMPTS):
-                    # * plan arm motion
-                    traj = planning.plan_arm_motion(monitor.huskies[monitor.selected_robot_id], arm_conf, obstacles, monitor.trajectory_time,
-                                                    grasped_element=monitor.goal_element, grasp=grasp)
-                    if traj[0] is not None:
-                        if len(traj[0]) < TRAJ_MAX_LENGTH:
-                            traj[3].goal_pose = world_from_bar
-                            traj[3].grasp = grasp
-                            monitor.get_logger().info(f"Arm motion planning succeeded with {len(traj[0])} points!")
-                            return traj, rand_pos, bar_goal_quat, theta_index, grasp_dist
-                        else:
-                            monitor.get_logger().warn(f"Arm motion planning trajectory too long {len(traj[0])}!")
-                    else:
-                        monitor.get_logger().warn("Arm motion planning failed!")
-                else:
-                    monitor.get_logger().warn(f"Motion planning failed after {MP_ATTEMPTS} attempts!")
-
-    return None, None, None, None, None
-
-def update_goal_gripper_model_pose(monitor, world_from_bar, theta_index, grasp_dist):
-    tool0_from_object = planning.compute_grasp(theta_index, monitor.GRASP_PARTITION, grasp_dist)
-    world_from_tool0 = pp.multiply(world_from_bar, pp.invert(tool0_from_object), pp.Pose(euler=pp.Euler(yaw=-np.pi/2)))
-    # pp.draw_pose(world_from_tool0)
-    # print("world_from_tool0", world_from_tool0)
-    pp.set_pose(monitor.goal_gripper_model, world_from_tool0)
-    # print('finished updating goal gripper model pose')
 
 #################################
 
@@ -982,25 +895,78 @@ def request_marketset_button(monitor, rb_mocap_name):
         for marker_name, marker_data in labeled_marker_data.items():
             pp.draw_point(marker_data['pos'])
 
-        bar_pose = monitor.get_world_from_bar_goal_pose()
-        monitor.marker_set_data.append(
-            {'joint_conf' : list(hi.arm_joint_pose[monitor.selected_arm_index]), 
-             'base_mocap_pose' : [list(v) for v in base_mocap_pose],
-             'footprint_base_link_pose' : base_link_pose,
-             'world_from_bar_pose' : bar_pose,
-             'bar_euler_angles' : list(pp.euler_from_quat(bar_pose[1])),
-            # needs to make sure the marker set data is not pointing to the same object, so later new data will override the previously saved ones
-             rb_mocap_name : copy.deepcopy(labeled_marker_data),
-             'theta_index' : copy.copy(monitor.grasp_theta_index),
-             'theta_partition': copy.copy(monitor.GRASP_PARTITION),
-             })
+        bar_pose = None
+        if hasattr(monitor, 'get_bar_action_goal_bar_pose'):
+            bar_pose = monitor.get_bar_action_goal_bar_pose()
+        if bar_pose is None:
+            try:
+                bar_pose = monitor.get_world_from_bar_goal_pose()
+            except Exception:
+                bar_pose = None
 
-def save_markerset_data(monitor, filename_suffix=""):
+        take = {
+            'joint_conf' : list(hi.arm_joint_pose[monitor.selected_arm_index]),
+            'base_mocap_pose' : [list(v) for v in base_mocap_pose],
+            'footprint_base_link_pose' : base_link_pose,
+            rb_mocap_name : copy.deepcopy(labeled_marker_data),
+        }
+        if bar_pose is not None:
+            take['world_from_bar_pose'] = bar_pose
+            take['bar_euler_angles'] = list(pp.euler_from_quat(bar_pose[1]))
+        monitor.marker_set_data.append(take)
+
+        try:
+            from husky_assembly_teleop.mocap_experiment import (
+                fit_bar_from_markerset, bar_deviation_from_goal,
+            )
+            fit = fit_bar_from_markerset(labeled_marker_data)
+            enrichment = {
+                'fitted_line': fit['fitted_line'],
+                'ocf_position': fit['ocf_position'],
+                'bar_end_points': fit['bar_end_points'],
+                'bar_length_observed': fit['bar_length_observed'],
+                'center_to_line_dist_max_m': fit['center_to_line_dist_max_m'],
+                'center_to_line_dist_rms_m': fit['center_to_line_dist_rms_m'],
+            }
+            if bar_pose is not None:
+                dev = bar_deviation_from_goal(fit, bar_pose)
+                enrichment.update({
+                    'pos_dev_m': dev['pos_dev_m'],
+                    'angle_dev_rad': dev['angle_rad'],
+                    'lateral_dev_m': dev['lateral_dev_m'],
+                })
+            monitor.marker_set_data[-1].update(enrichment)
+
+            if not hasattr(monitor, '_bar_holding_fit_line_uids'):
+                monitor._bar_holding_fit_line_uids = []
+            uid = pp.add_line(fit['bar_end_points'][0], fit['bar_end_points'][1], color=[0, 0, 1])
+            monitor._bar_holding_fit_line_uids.append(uid)
+
+            ocf = fit['ocf_position']
+            if bar_pose is not None:
+                monitor.get_logger().info(
+                    f"[bar take] ocf=({ocf[0]:.3f},{ocf[1]:.3f},{ocf[2]:.3f}) m | "
+                    f"pos_dev={dev['pos_dev_m']*1000:.2f} mm | "
+                    f"angle_dev={np.degrees(dev['angle_rad']):.2f} deg | "
+                    f"center_to_line_dist_max={fit['center_to_line_dist_max_m']*1000:.2f} mm | "
+                    f"bar_len={fit['bar_length_observed']:.4f} m"
+                )
+            else:
+                monitor.get_logger().info(
+                    f"[bar take] ocf=({ocf[0]:.3f},{ocf[1]:.3f},{ocf[2]:.3f}) m | "
+                    f"center_to_line_dist_max={fit['center_to_line_dist_max_m']*1000:.2f} mm | "
+                    f"bar_len={fit['bar_length_observed']:.4f} m | no goal pose"
+                )
+        except Exception as e:
+            monitor.get_logger().warn(f"bar take fit/dev failed: {e}")
+
+def save_markerset_data(monitor, filename_suffix="", use_experiment_dir=False):
     print(monitor.calibration_data)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M")
     # Create a date subfolder (format: YYYYMMDD)
     date_subfolder = datetime.now().strftime("%Y%m%d")
-    subfolder_path = os.path.join(BAR_HOLDING_ACC_DATA_DIR, date_subfolder+f'{filename_suffix}')
+    root_dir = BAR_HOLDING_ACC_EXPERIMENT_DIR if use_experiment_dir else BAR_HOLDING_ACC_DATA_DIR
+    subfolder_path = os.path.join(root_dir, date_subfolder + f'{filename_suffix}')
 
     # Create the subfolder if it doesn't exist
     if not os.path.exists(subfolder_path):
@@ -1010,7 +976,14 @@ def save_markerset_data(monitor, filename_suffix=""):
     # Save the file in the date subfolder
     filename = os.path.join(subfolder_path, f"bar_holding_acc_{timestamp}.json")
     with open(filename, 'w') as f:
-        json.dump({'raw_data' : monitor.marker_set_data}, f, indent=4)
+        payload = {
+            'mocap_axis_convention': getattr(monitor, 'MOCAP_AXIS_CONVENTION', 'rotated'),
+            'bar_action_path': getattr(monitor, '_current_action_path', None),
+            'movement_id': getattr(monitor.current_movement, 'movement_id', None) if monitor.current_movement else None,
+            'movement_index': monitor.current_movement_index,
+            'raw_data': monitor.marker_set_data,
+        }
+        json.dump(payload, f, indent=4)
 
     monitor.get_logger().info(f"Bar holding acc data saved to {filename}")
 
@@ -1053,7 +1026,7 @@ def record_dual_arm_E_mocap(monitor):
         }
     )
 
-def save_dual_arm_E_mocap(monitor, filename_suffix=""):
+def save_dual_arm_E_mocap(monitor, filename_suffix="", metadata=None):
     timestamp = datetime.now().strftime("%Y%m%d_%H%M")
     # Create a date subfolder (format: YYYYMMDD)
     date_subfolder = datetime.now().strftime("%Y%m%d")
@@ -1066,19 +1039,36 @@ def save_dual_arm_E_mocap(monitor, filename_suffix=""):
 
     # Save the file in the date subfolder
     filename = os.path.join(subfolder_path, f"dual_arm_acc_{timestamp}_{filename_suffix}.json")
+    payload = {'raw_data': monitor.dual_arm_EE_mocap_data}
+    if metadata:
+        payload['metadata'] = metadata
     with open(filename, 'w') as f:
-        json.dump({'raw_data' : monitor.dual_arm_EE_mocap_data}, f, indent=4)
+        json.dump(payload, f, indent=4)
 
     monitor.get_logger().info(f"Dual arm acc data saved to {filename}")
 
+def _capture_reference_relative_EE(monitor):
+    # Reference relative TF (right_from_left) from current mocap snapshot.
+    # Constraint should hold here at start_conf; deviations during execution
+    # are tracker error.
+    cache = monitor._mocap_rigidbody_cache
+    if 'left_EE' not in cache or 'right_EE' not in cache:
+        return None
+    L = cache['left_EE']
+    Rp = cache['right_EE']
+    rel = pp.multiply(pp.invert(Rp), L)
+    return [list(rel[0]), list(rel[1])]
+
 def execute_and_log_mocap(monitor):
-    global bar_pose, next_bar_pose
-    bar_pose = next_bar_pose
+    ref = _capture_reference_relative_EE(monitor)
+    if ref is None:
+        monitor.get_logger().warn('left_EE / right_EE not in mocap cache; aborting record.')
+        return
     execute_arm_trajectory_both(monitor)
     while monitor.huskies[monitor.selected_robot_id].interface.is_arm_executing[0] or monitor.huskies[monitor.selected_robot_id].interface.is_arm_executing[1]:
         record_dual_arm_E_mocap(monitor)
         yield
-    save_dual_arm_E_mocap(monitor)
+    save_dual_arm_E_mocap(monitor, metadata={'reference_right_from_left': ref})
 
 #################################
  
@@ -1482,217 +1472,6 @@ def load_robotcellstate_and_update_goal(monitor, filepath):
     except KeyError as e:
         monitor.get_logger().warn(f"Joint name {e} not found in loaded RobotCellState.")
 
-def sample_dual_arm_configuration(monitor, tool0_to_tool0_transform, max_attempts=50, ik_attempts=10, attachments=None):
-    """
-    Sample a dual-arm configuration with the following steps:
-    1. Sample a left arm configuration, reject if collision with static obstacles
-    2. Get left arm tool0 pose in world coordinates
-    3. Apply tool0_to_tool0 transform to get right arm tool0 pose
-    4. Compute IK for right arm, reject if collision with left arm or static obstacles
-    5. Plan transition paths for both arms, reject if path too long or no plan found
-    6. If any step fails, restart from sampling left arm configuration
-    
-    Parameters:
-    -----------
-    monitor : HuskyMonitor
-        The monitor instance containing robot and world state
-    tool0_to_tool0_transform : pp.Pose
-        Transformation from left arm tool0 to right arm tool0
-    max_attempts : int
-        Maximum number of attempts to find a valid configuration
-    ik_attempts : int
-        Maximum number of IK attempts for right arm with random initial guesses
-    max_path_length : float
-        Maximum allowed path length for transition trajectories
-        
-    Returns:
-    --------
-    tuple or None
-        (left_arm_trajectory, right_arm_trajectory) if successful, None if failed
-    """
-    MAX_TRAJECTORY_POINTS = 180
-    PLAN_SEPARATE_TRAJECTORIES = True
-
-    husky = monitor.huskies[monitor.selected_robot_id]
-    robot = husky.object.robot
-    
-    # Get joint names for both arms
-    left_joint_names = HUSKY_DUAL_UR5e_JOINT_NAMES[0]
-    right_joint_names = HUSKY_DUAL_UR5e_JOINT_NAMES[1]
-    
-    # Get joint indices
-    left_joints = pp.joints_from_names(robot, left_joint_names)
-    right_joints = pp.joints_from_names(robot, right_joint_names)
-    
-    # Get joint limits
-    left_limits = [pp.get_joint_limits(robot, j) for j in left_joints]
-    right_limits = [pp.get_joint_limits(robot, j) for j in right_joints]
-    
-    # Create sample functions
-    left_sample_fn = pp.get_sample_fn(robot, left_joints)
-    right_sample_fn = pp.get_sample_fn(robot, right_joints)
-    
-    # Create collision functions for both arms
-    left_attachments = [attachments[0]] if attachments is not None else []
-    right_attachments = [attachments[1], attachments[2]] if attachments is not None else []
-
-    if attachments is not None:
-        left_extra_disabled_collisions = [
-        ((robot, pp.link_from_name(robot, 'left_ur_arm_wrist_3_link')), 
-         (attachments[0].child, pp.BASE_LINK)), 
-        ]
-        right_extra_disabled_collisions = [
-        ((robot, pp.link_from_name(robot, 'right_ur_arm_wrist_3_link')), 
-         (attachments[1].child, pp.BASE_LINK)), 
-        ]
-    else:
-        left_extra_disabled_collisions = []
-        right_extra_disabled_collisions = []
-
-    left_collision_fn = pp.get_collision_fn(robot, left_joints, obstacles=list(monitor.static_obstacles.values()),
-                                              attachments=left_attachments, 
-                                              self_collisions=True,
-                                              disabled_collisions={}, 
-                                              extra_disabled_collisions=left_extra_disabled_collisions,
-                                              custom_limits={}, 
-                                              max_distance=0)
-    right_collision_fn = pp.get_collision_fn(robot, right_joints, obstacles=list(monitor.static_obstacles.values()),
-                                              attachments=right_attachments, 
-                                              self_collisions=True,
-                                              disabled_collisions={}, 
-                                              extra_disabled_collisions=right_extra_disabled_collisions,
-                                              custom_limits={}, 
-                                              max_distance=0)
-
-    diagnose = False
-    # save the current joint configuration here to use as starting conf for transit planning
-    # start_left_conf = list(pp.get_joint_positions(robot, left_joints))
-    # start_right_conf = list(pp.get_joint_positions(robot, right_joints))
-    current_left_conf = np.copy(husky.interface.arm_joint_pose[0])
-    current_right_conf = np.copy(husky.interface.arm_joint_pose[1])
-    
-    for attempt in range(max_attempts):
-        if attempt % 10 == 0:
-            print(f"Attempt {attempt}/{max_attempts}")
-            
-        # Step 1: Sample left arm configuration
-        left_conf = left_sample_fn()
-        
-        # Check collision for left arm
-        if left_collision_fn(left_conf, diagnosis=diagnose):
-            continue
-            
-        # Step 2: Get left arm tool0 pose in world coordinates
-        # Set left arm to sampled configuration
-        pp.set_joint_positions(robot, left_joints, left_conf)
-        
-        # Get left arm tool0 pose
-        left_tool0_pose = pp.get_link_pose(robot, pp.link_from_name(robot, 'left_ur_arm_tool0'))
-        # pp.draw_pose(left_tool0_pose, length=0.2)
-        # pp.wait_if_gui('left tool0 pose')
-        
-        # Step 3: Apply transform to get right arm tool0 pose
-        right_tool0_pose = pp.multiply(left_tool0_pose, tool0_to_tool0_transform)
-        # pp.draw_pose(right_tool0_pose, length=0.2)
-        # pp.wait_if_gui('right tool0 pose')
-        
-        # Step 4: Compute IK for right arm
-        right_conf = None
-        for ik_attempt in range(ik_attempts):
-            # Use random initial guess for IK
-            if ik_attempt == 0:
-                qinit = pp.get_joint_positions(robot, right_joints)
-            else:
-                qinit = right_sample_fn()
-            
-            # Use the IK solver from planning module
-            from husky_assembly_teleop.husky_planning import IK_SOLVER_DUAL
-            ik_solver = IK_SOLVER_DUAL[1]  # Right arm solver
-
-            # Get right arm base pose
-            right_arm_base_pose = pp.get_link_pose(robot, pp.link_from_name(robot, ik_solver.base_link))
-
-            # Compute IK
-            right_arm_base_from_tool0 = pp.multiply(pp.invert(right_arm_base_pose), right_tool0_pose)
-
-            conf = ik_solver.ik(pp.tform_from_pose(right_arm_base_from_tool0), qinit=qinit)
-            
-            if conf is not None:
-                # Check collision for right arm with static obstacles
-                if not right_collision_fn(conf, diagnosis=diagnose):
-                    right_conf = conf
-                    print(f"Found valid right arm configuration on IK attempt {ik_attempt + 1}")
-                    # pp.wait_if_gui('right arm conf')
-
-                    break
-        
-        if right_conf is None:
-            continue
-            
-        if PLAN_SEPARATE_TRAJECTORIES:
-            # Step 5: Plan transition paths for both arms
-            pp.set_joint_positions(robot, left_joints, current_left_conf)
-        
-            # Plan left arm transition
-            left_trajectory = planning.plan_arm_motion(
-                husky, left_conf, list(monitor.static_obstacles.values()), monitor.trajectory_time, arm_index=0
-            )
-            if left_trajectory[0] is None:
-                continue
-        
-            # Plan right arm transition
-            pp.set_joint_positions(robot, left_joints, left_trajectory[0][-1])
-            pp.set_joint_positions(robot, right_joints, current_right_conf)
-            right_trajectory = planning.plan_arm_motion(
-                husky, right_conf, list(monitor.static_obstacles.values()), monitor.trajectory_time, arm_index=1
-            )
-        else:
-            # Plan in the composite space of both arms
-            # Set both arms to their current configurations
-            pp.set_joint_positions(robot, left_joints, current_left_conf)
-            pp.set_joint_positions(robot, right_joints, current_right_conf)
-
-            # Concatenate the left and right arm goal configurations
-            composite_goal = np.concatenate([left_conf, right_conf])
-
-            # Plan a path in the composite space
-            from husky_assembly_teleop.husky_planning import plan_transit_motion
-            composite_start = np.concatenate([current_left_conf, current_right_conf])
-            composite_path = plan_transit_motion(
-                robot,
-                composite_goal,
-                attachments,
-                list(monitor.static_obstacles.values()),
-                debug=False,
-                disabled_collisions=None,
-                dual_arm_index="both",
-                # collision_fn=composite_collision_fn
-            )
-
-            if composite_path is None:
-                continue
-
-            # Split the composite path into left and right arm trajectories
-            left_trajectory = (np.array([q[:len(left_joints)] for q in composite_path]), None, monitor.trajectory_time, None)
-            right_trajectory = (np.array([q[len(left_joints):] for q in composite_path]), None, monitor.trajectory_time, None)
-        
-        if right_trajectory[0] is None:
-            continue
-            
-        # Check path length
-        # Use the number of trajectory points as the path length
-        left_path_length = len(left_trajectory[0])
-        right_path_length = len(right_trajectory[0])
-        if left_path_length > MAX_TRAJECTORY_POINTS or right_path_length > MAX_TRAJECTORY_POINTS:
-            continue
-            
-        # Success! Return the trajectories
-        return left_trajectory, right_trajectory
-    
-    # If we get here, no valid configuration was found
-    print(f"Failed to find valid dual-arm configuration after {max_attempts} attempts")
-    return None
-
 def compute_tool0_to_tool0_transform_from_json(json_filepath):
     """
     Parse the JSON file containing GraspTarget objects and compute the tool0_to_tool0 transformation.
@@ -1775,6 +1554,7 @@ def plan_both_arms_to_goal(monitor, use_composite=False, debug=False):
     print(f"target left_conf: {left_conf}")
     print(f"target right_conf: {right_conf}")
     attachments = [ee[1] for ee in husky.object.ee_list]
+    obstacles = _get_manual_staging_obstacles(monitor)
 
     left_trajectory = None
     right_trajectory = None
@@ -1783,7 +1563,7 @@ def plan_both_arms_to_goal(monitor, use_composite=False, debug=False):
         # Sequential planning: left arm, then right arm
         pp.set_joint_positions(robot, left_joints, current_left_conf)
         left_trajectory = planning.plan_arm_motion(
-            husky, left_conf, list(monitor.static_obstacles.values()), monitor.trajectory_time, arm_index=0, debug=debug
+            husky, left_conf, obstacles, monitor.trajectory_time, arm_index=0, debug=debug
         )
         if left_trajectory[0] is None:
             monitor.get_logger().warn('Left arm planning failed!')
@@ -1792,7 +1572,7 @@ def plan_both_arms_to_goal(monitor, use_composite=False, debug=False):
         pp.set_joint_positions(robot, left_joints, left_trajectory[0][-1])
         pp.set_joint_positions(robot, right_joints, current_right_conf)
         right_trajectory = planning.plan_arm_motion(
-            husky, right_conf, list(monitor.static_obstacles.values()), monitor.trajectory_time, arm_index=1, debug=debug
+            husky, right_conf, obstacles, monitor.trajectory_time, arm_index=1, debug=debug
         )
         if right_trajectory[0] is None:
             monitor.get_logger().warn('Right arm planning failed!')
@@ -1816,23 +1596,44 @@ def plan_both_arms_to_goal(monitor, use_composite=False, debug=False):
         left_trajectory = (padded_left_path, None, total_time, None)
         right_trajectory = (padded_right_path, None, total_time, None)
     else:
-        # Composite planning: plan in the joint space of both arms
+        # Composite planning: plan in the joint space of both arms via shared API.
         pp.set_joint_positions(robot, left_joints, current_left_conf)
         pp.set_joint_positions(robot, right_joints, current_right_conf)
-        composite_goal = np.concatenate([left_conf, right_conf])
-        from husky_assembly_teleop.husky_planning import plan_transit_motion
         composite_start = np.concatenate([current_left_conf, current_right_conf])
-        composite_path = plan_transit_motion(
-            robot,
-            composite_goal,
-            attachments,
-            list(monitor.static_obstacles.values()),
+        composite_goal = np.concatenate([left_conf, right_conf])
+        arm_joints_all = list(left_joints) + list(right_joints)
+        tool_link_L = pp.link_from_name(robot, 'left_ur_arm_tool0')
+        tool_link_R = pp.link_from_name(robot, 'right_ur_arm_tool0')
+        # Quick-test staging mode: ignore environment/assembly obstacles.
+        # Keep attachments so robot-vs-tool collision is still checked.
+        composite_obstacles = []
+        print("Composite manual staging ignores all environment obstacles for quick test.")
+        scene = {
+            "robot": robot,
+            "arm_joints": arm_joints_all,
+            "joint_names": list(left_joint_names) + list(right_joint_names),
+            "tool_link_left": tool_link_L,
+            "tool_link_right": tool_link_R,
+            "obstacles": composite_obstacles,
+            "attachments": attachments,  # already len 2 per existing code
+            "disabled_collisions": None,
+            # Mounted EE type per arm. plan_transit_motion uses this to add
+            # a wrist_2_link <-> tool disable when an assembly_tool_v3_* is
+            # on, since that tool extends past wrist_3 on the husky URDF.
+            "ee_types": list(getattr(husky.object, "ee_types", []) or []),
+        }
+        from husky_assembly_tamp.motion_planner.api import plan_free_dual_arm
+        composite_path, info = plan_free_dual_arm(
+            scene, composite_start, composite_goal,
+            max_time=120.0, max_iterations=1000,
+            joint_resolution=FREE_JOINT_RESOLUTION,
             debug=debug,
-            disabled_collisions=None,
-            dual_arm_index="both",
         )
         if composite_path is None:
-            monitor.get_logger().warn('Composite planning failed!')
+            monitor.get_logger().warn(
+                f"Composite planning failed: {info.get('failure_reason', 'unknown')}; "
+                f"endpoints were valid if no 'initial and end conf not valid' line appeared."
+            )
             return
         left_trajectory = (np.array([q[:len(left_joints)] for q in composite_path]), None, monitor.trajectory_time, None)
         right_trajectory = (np.array([q[len(left_joints):] for q in composite_path]), None, monitor.trajectory_time, None)
@@ -1842,3 +1643,1040 @@ def plan_both_arms_to_goal(monitor, use_composite=False, debug=False):
     monitor.set_arm_trajectory(right_trajectory, index=1)
     monitor.set_to_show_traj_state()
     print("Successfully planned both arms to goal ({} mode)!".format('composite' if use_composite else 'sequential'))
+
+
+def plan_free_dual_arm_from_live_base(monitor):
+    """Replan free dual-arm motion using the live mocap base + M2 EE targets.
+
+    Reuses `_solve_bar_action_goal_ik` for IK and `plan_both_arms_to_goal`
+    for the composite path planning. Overwrites monitor.movement_start_state
+    in place so downstream code (cfab planner state, target_ee_frames) stays
+    consistent.
+    """
+    from husky_assembly_teleop.utils import frame_from_pose
+    if monitor.movement_start_state is None:
+        monitor.get_logger().warn("No M2 movement loaded; load a BarAction first.")
+        return
+    if monitor.cfab is None or monitor.cfab.planner is None:
+        monitor.get_logger().warn("cfab planner not initialized.")
+        return
+
+    live_state = monitor.movement_start_state.copy()
+    hi = monitor.huskies[monitor.selected_robot_id].interface
+    live_base_pose = (hi.position, hi.rotation)
+    live_state.robot_base_frame = frame_from_pose(live_base_pose)
+    monitor.movement_start_state = live_state
+    monitor.cfab.planner.set_robot_cell_state(live_state)
+
+    conf12 = _solve_bar_action_goal_ik(monitor, live_state)
+    if conf12 is None:
+        monitor.get_logger().warn("IK from live base failed.")
+        return
+
+    monitor.goal_arm_pose[0] = np.asarray(conf12[:6])
+    monitor.goal_arm_pose[1] = np.asarray(conf12[6:])
+    plan_both_arms_to_goal(monitor, use_composite=True)
+
+
+def _get_manual_staging_obstacles(monitor):
+    """Obstacles for free staging; mirror constrained-start validation."""
+    import re as _re
+
+    bar_name_re = _re.compile(r"^b\d+(_0|_joint_\d+)$")
+    excluded = set()
+    active_bar_body = getattr(monitor, "active_bar_body", None)
+    if active_bar_body is not None:
+        excluded.add(active_bar_body)
+    excluded.update(getattr(monitor, "active_extra_bodies", []) or [])
+
+    obstacles = []
+    excluded_names = []
+    excluded_assembly = []
+    for name, body in (getattr(monitor, "static_obstacles", {}) or {}).items():
+        if body in excluded:
+            excluded_names.append(name)
+            continue
+        if bar_name_re.match(str(name)):
+            # The constrained-start IK ignores future design-study bars; the
+            # manual free staging target must be checked against the same set.
+            excluded_assembly.append(name)
+            continue
+        obstacles.append(body)
+
+    active_name = getattr(monitor, "active_bar_name", None)
+    if active_bar_body is not None and active_bar_body not in obstacles:
+        print(f"Manual staging ignores active bar {active_name} body={active_bar_body}.")
+    if excluded_names:
+        print(f"Manual staging excluded held bodies: {', '.join(excluded_names)}")
+    if excluded_assembly:
+        print(f"Manual staging excluded {len(excluded_assembly)} design-study assembly bodies: "
+              f"{', '.join(excluded_assembly[:6])}{'...' if len(excluded_assembly) > 6 else ''}")
+    print(f"Manual staging planner sees {len(obstacles)} obstacle bodies.")
+    return obstacles
+
+
+def _first_puid_or_none(client, name):
+    ids = client.rigid_bodies_puids.get(name)
+    return ids[0] if ids else None
+
+
+def _solve_bar_action_goal_ik(monitor, start_state,
+                              ik_max_results: int = 20,
+                              max_outer_attempts: int = 5,
+                              random_seed: int = 0,
+                              verbose: bool = False):
+    """Solve goal IK for a BarAction movement from `target_ee_frames`.
+
+    Returns a 12-vector (left_conf || right_conf) on success, or None on
+    failure. Wraps the goal-IK retry block that previously lived inside
+    `plan_bar_action_movement` (now deleted).
+    """
+    from compas_fab.backends import CollisionCheckError, InverseKinematicsError
+    from compas_fab.robots import FrameTarget, TargetMode
+
+    if monitor.target_ee_frames is None:
+        return None
+
+    np.random.seed(random_seed)
+
+    planner = monitor.cfab.planner
+    left_group = "base_left_arm_manipulator"
+    right_group = "base_right_arm_manipulator"
+
+    target_L = FrameTarget(
+        monitor.target_ee_frames["left"], target_mode=TargetMode.ROBOT,
+        tolerance_position=0.001, tolerance_orientation=0.01,
+    )
+    target_R = FrameTarget(
+        monitor.target_ee_frames["right"], target_mode=TargetMode.ROBOT,
+        tolerance_position=0.001, tolerance_orientation=0.01,
+    )
+    ik_options = {
+        "max_results": ik_max_results,
+        "return_full_configuration": True,
+        "check_collision": True,
+    }
+
+    def _solve_once():
+        try:
+            conf_L = planner.inverse_kinematics(target_L, start_state, left_group, ik_options)
+        except (InverseKinematicsError, CollisionCheckError) as e:
+            return None, f"LEFT FAIL: {getattr(e, 'message', e)}"
+        st = start_state.copy()
+        st.robot_configuration = conf_L
+        try:
+            conf_LR = planner.inverse_kinematics(target_R, st, right_group, ik_options)
+        except (InverseKinematicsError, CollisionCheckError) as e:
+            return None, f"RIGHT FAIL: {getattr(e, 'message', e)}"
+        gs = start_state.copy()
+        gs.robot_configuration = conf_LR
+        try:
+            planner.check_collision(gs, {"verbose": verbose})
+        except CollisionCheckError as e:
+            return None, f"GOAL COLLISION: {(e.message or '').splitlines()[0] if e.message else ''}"
+        return gs, None
+
+    goal_state = None
+    for attempt in range(1, max_outer_attempts + 1):
+        gs, err = _solve_once()
+        if gs is not None:
+            goal_state = gs
+            print(f"[goal IK] attempt {attempt}/{max_outer_attempts}: OK")
+            break
+        print(f"[goal IK] attempt {attempt}/{max_outer_attempts}: {err}")
+    if goal_state is None:
+        print("[goal IK] all attempts failed.")
+        return None
+
+    monitor.movement_goal_state = goal_state
+    conf_LR = goal_state.robot_configuration
+    left_names = HUSKY_DUAL_UR5e_JOINT_NAMES[0]
+    right_names = HUSKY_DUAL_UR5e_JOINT_NAMES[1]
+    return np.array([conf_LR[n] for n in list(left_names) + list(right_names)])
+
+
+def plan_constrained_from_live_base(monitor):
+    """Constrained replan from live mocap base. Overwrites
+    monitor.movement_start_state in place (plan_and_stage_constrained reads
+    it directly at L1774)."""
+    from husky_assembly_teleop.utils import frame_from_pose
+    if monitor.movement_start_state is None:
+        monitor.get_logger().warn("No M2 movement loaded; load a BarAction first.")
+        return
+    if monitor.cfab is None or monitor.cfab.planner is None:
+        monitor.get_logger().warn("cfab planner not initialized.")
+        return
+
+    live_state = monitor.movement_start_state.copy()
+    hi = monitor.huskies[monitor.selected_robot_id].interface
+    live_base_pose = (hi.position, hi.rotation)
+    live_state.robot_base_frame = frame_from_pose(live_base_pose)
+    monitor.movement_start_state = live_state
+    monitor.cfab.planner.set_robot_cell_state(live_state)
+
+    monitor.plan_and_stage_constrained_bar_action()
+
+
+def plan_and_stage_constrained(monitor, debug=False,
+                                max_time=60.0, max_attempts=2,
+                                max_iterations=None, contact_probe_distance=0.005,
+                                random_seed=None, use_draw=False,
+                                position_res=None, rotation_res=None,
+                                free_joint_resolution=None,
+                                bidirectional=True, start_retries=6,
+                                ignore_env_obstacles=False):
+    """Run the constrained dual-arm planner and expose its start as a goal.
+
+    Workflow:
+      1. Derive grasp transforms from the loaded goal RobotCellState
+         (FK at goal_conf + bar pose at goal).
+      2. Derive a "home" world_from_bar_start and a constraint-satisfying
+         start_conf via dual-arm endpoint IK.
+      3. Run the constrained planner from start_conf to goal_conf.
+      4. Store only the constrained trajectory and set start_conf as the
+         monitor goal so the user can manually plan the free staging motion.
+
+    User then plans to the exposed start goal with the existing free-motion
+    buttons, manually places the bar in the end-effectors, flips the Display
+    slider to 1, and executes the constrained trajectory.
+    """
+    mv = getattr(monitor, "current_movement", None)
+    movement_type_ = getattr(monitor, "movement_type", None)
+    bar_action_mode = mv is not None and movement_type_ in ("constrained", "linear")
+
+    if bar_action_mode:
+        husky = getattr(monitor, "_bar_action_husky", None)
+        if husky is None:
+            monitor.get_logger().warn(
+                "BarAction mode: monitor._bar_action_husky not set — was "
+                "load_bar_action's cfab→pp bridge run?"
+            )
+            return
+        _saved_pp_client = pp.CLIENT
+        pp.CLIENT = monitor.cfab.client.client_id
+        pp.CLIENTS.setdefault(pp.CLIENT, True)
+        try:
+            # Pause cfab PyBullet rendering while the constrained planner
+            # expands/searches; GUI drawing dominates runtime otherwise.
+            with pp.LockRenderer():
+                return _plan_and_stage_body(
+                    monitor, husky, husky.object.robot, debug, max_time,
+                    max_attempts, max_iterations, contact_probe_distance, random_seed,
+                    use_draw, position_res, rotation_res, free_joint_resolution,
+                    bidirectional=bidirectional, start_retries=start_retries,
+                    ignore_env_obstacles=ignore_env_obstacles,
+                )
+        finally:
+            pp.CLIENT = _saved_pp_client
+    else:
+        husky = monitor.huskies[monitor.selected_robot_id]
+        # Pause monitor PyBullet rendering while the constrained planner runs.
+        with pp.LockRenderer():
+            return _plan_and_stage_body(
+                monitor, husky, husky.object.robot, debug, max_time,
+                max_attempts, max_iterations, contact_probe_distance, random_seed,
+                use_draw, position_res, rotation_res, free_joint_resolution,
+                bidirectional=bidirectional, start_retries=start_retries,
+            )
+
+
+def _plan_and_stage_body(monitor, husky, robot, debug, max_time, max_attempts,
+                          max_iterations, contact_probe_distance, random_seed=0,
+                          use_draw=False, position_res=None, rotation_res=None,
+                          free_joint_resolution=None,
+                          bidirectional=True, start_retries=6,
+                          ignore_env_obstacles=False):
+    left_joint_names = HUSKY_DUAL_UR5e_JOINT_NAMES[0]
+    right_joint_names = HUSKY_DUAL_UR5e_JOINT_NAMES[1]
+    left_joints = pp.joints_from_names(robot, left_joint_names)
+    right_joints = pp.joints_from_names(robot, right_joint_names)
+    arm_joints_all = list(left_joints) + list(right_joints)
+    tool_link_L = pp.link_from_name(robot, 'left_ur_arm_tool0')
+    tool_link_R = pp.link_from_name(robot, 'right_ur_arm_tool0')
+
+    from husky_assembly_tamp.motion_planner.api import (
+        derive_grasps_from_state,
+        plan_constrained_dual_arm,
+    )
+    from husky_assembly_tamp.motion_planner.dual_arm_task_space_rrt.core import (
+        derive_constrained_start,
+        get_bar_feature_points,
+    )
+
+    # Bidirectional RRT-Connect (plan_pose_birrt) is enabled by default. The
+    # constrained planner imports plan_pose_rrt from
+    # dual_arm_task_space_rrt.core at module load, so we swap the binding here
+    # (both in core and api) so plan_constrained_dual_arm picks up BiRRT.
+    # Restored at the end of this body.
+    _bidir_patches = []
+    if bidirectional:
+        from husky_assembly_tamp.motion_planner.dual_arm_task_space_rrt import (
+            core as _core_mod,
+        )
+        _plan_pose_birrt = getattr(_core_mod, "plan_pose_birrt", None)
+        if _plan_pose_birrt is not None:
+            from husky_assembly_tamp.motion_planner import api as _api_mod
+            for _mod in (_core_mod, _api_mod):
+                if getattr(_mod, "plan_pose_rrt", None) is not None:
+                    _bidir_patches.append((_mod, "plan_pose_rrt", _mod.plan_pose_rrt))
+                    _mod.plan_pose_rrt = _plan_pose_birrt
+        else:
+            monitor.get_logger().warn(
+                "bidirectional requested but plan_pose_birrt not available; "
+                "falling back to single-tree plan_pose_rrt."
+            )
+
+    mv = getattr(monitor, "current_movement", None)
+    movement_type_ = getattr(monitor, "movement_type", None)
+    bar_action_mode = mv is not None and movement_type_ in ("constrained", "linear")
+
+    if bar_action_mode:
+        # BarAction-driven entry: act as a "goal adapter" — convert the
+        # BarAction's target_ee_frames + start_state bar attachment into the
+        # same pp-side state the button path expects, then fall through to
+        # the shared else-branch logic (derive_grasps_from_state +
+        # derive_constrained_start).
+        start_state = monitor.movement_start_state
+        if monitor.active_bar_name is None:
+            monitor.get_logger().warn("BarAction mode: active_bar_name not set; aborting.")
+            return
+
+        # Lazy-resolve pp-side body ids from cfab if the caller didn't pre-bind.
+        client = monitor.cfab.client
+        if monitor.active_bar_body is None:
+            monitor.active_bar_body = _first_puid_or_none(client, monitor.active_bar_name)
+        if not monitor.static_obstacles:
+            monitor.static_obstacles = {
+                n: ids[0] for n, ids in client.rigid_bodies_puids.items()
+                if ids and n != monitor.active_bar_name
+            }
+        if monitor.active_bar_aabb_dims is None:
+            monitor.active_bar_aabb_dims = monitor.get_active_bar_aabb_dims()
+
+        if monitor.active_bar_body is None:
+            monitor.get_logger().warn(
+                f"BarAction mode: could not resolve pp body id for active_bar_name={monitor.active_bar_name!r}"
+            )
+            return
+
+        # 1) Goal config via dual-arm IK on target_ee_frames.
+        goal_conf = _solve_bar_action_goal_ik(monitor, start_state)
+        if goal_conf is None:
+            monitor.get_logger().warn("BarAction goal IK failed.")
+            return
+
+        # 2) world_from_bar_goal via FK at goal_conf.
+        bar_rb = start_state.rigid_body_states[monitor.active_bar_name]
+        bar_attach_pose = pose_from_frame(bar_rb.attachment_frame)
+        tool_link_bar = pp.link_from_name(robot, bar_rb.attached_to_link)
+        with pp.WorldSaver():
+            pp.set_joint_positions(robot, arm_joints_all, goal_conf)
+            world_from_tool_bar_goal = pp.get_link_pose(robot, tool_link_bar)
+        world_from_bar_goal = pp.multiply(world_from_tool_bar_goal, bar_attach_pose)
+
+        # 3) Publish goal onto monitor's pp-side state so the shared
+        # else-branch logic below consumes it.
+        monitor.goal_arm_pose[0] = goal_conf[:6]
+        monitor.goal_arm_pose[1] = goal_conf[6:]
+        pp.set_pose(monitor.active_bar_body, world_from_bar_goal)
+
+        # 4) Seed the robot at staging-seed-conf so the shared `current_conf`
+        # read picks up the right pose (set_robot_cell_state put the robot at
+        # the BarAction.start_state, which for M1 is all zeros — a placeholder,
+        # not a feasible HOME).
+        seed_conf = getattr(monitor, "bar_action_staging_seed_conf", None)
+        if seed_conf is not None:
+            pp.set_joint_positions(robot, arm_joints_all, np.asarray(seed_conf, dtype=float))
+    else:
+        if monitor.active_bar_body is None:
+            monitor.get_logger().warn(
+                "No active bar in scene. Load a goal RobotCellState whose attached_to_tool rigid body has been spawned."
+            )
+            return
+
+    goal_conf = np.concatenate([monitor.goal_arm_pose[0], monitor.goal_arm_pose[1]])
+
+    world_from_bar_goal = pp.get_pose(monitor.active_bar_body)
+
+    # 1. Grasps — RobotCellState is the single source of truth: FK both
+    # tool0s at goal_conf vs. the active bar's loaded pose.
+    grasp_bar_from_left, grasp_bar_from_right = derive_grasps_from_state(
+        robot, arm_joints_all, tool_link_L, tool_link_R,
+        goal_conf, world_from_bar_goal,
+    )
+
+    # 2. Build the constrained planner's obstacle list FIRST — the new
+    # `derive_constrained_start` validator runs collision checks against this
+    # filtered list, so it must be available before the IK derivation.
+    #
+    # This is delicate because the live cell state loads the *whole assembly*
+    # (predecessors + successors + structural elements) as static obstacles.
+    # The bar's home->goal flight path runs through space that's now densely
+    # occupied by future-built bars — bodies that wouldn't actually be there
+    # at install time.
+    #
+    # Filtering rules (in order of importance):
+    # 1. Exclude active_bar_body (it's the manipulated body, attached via grasp).
+    # 2. Exclude design-study bar bodies named 'b<N>_0' and 'b<N>_joint_*'. These
+    #    are the assembly elements; the offline prototype's tests run with
+    #    built_bars=[] (scene has *only* the active bar + structural), and that
+    #    convention is what produces the prototype's documented behavior on
+    #    these antenna targets. Without this filter the live flow is solving a
+    #    much harder problem than the prototype was designed/tuned for.
+    # 3. Also auto-exclude any body within 5mm of the bar at goal pose
+    #    ("expected contacts at install"); kept as a safety net for when rule
+    #    2 doesn't apply (e.g., non-design-study state files).
+    import pybullet as _pb
+    import re as _re
+    name_from_body = {body: name for name, body in monitor.static_obstacles.items()}
+    bar_name_re = _re.compile(r"^b\d+(_0|_joint_\d+)$")  # matches b11_0, b3_joint_2, etc.
+
+    expected_neighbor_contacts = set()
+    with pp.WorldSaver():
+        pp.set_joint_positions(robot, arm_joints_all, goal_conf)
+        pp.set_pose(monitor.active_bar_body, world_from_bar_goal)
+        _pb.performCollisionDetection()
+        for body in monitor.static_obstacles.values():
+            if body == monitor.active_bar_body:
+                continue
+            pts = _pb.getClosestPoints(monitor.active_bar_body, body, distance=contact_probe_distance)
+            if pts:
+                expected_neighbor_contacts.add(body)
+                name = name_from_body.get(body, str(body))
+                depths = [round(pt[8], 4) for pt in pts]
+                print(f"  expected contact at goal (excluded): {name} (penetration/gap: {depths})")
+
+    obstacles_for_constrained = []
+    excluded_assembly = []
+    extras_set = set(getattr(monitor, "active_extra_bodies", []) or [])
+    for name, body in monitor.static_obstacles.items():
+        if body == monitor.active_bar_body:
+            continue
+        if body in expected_neighbor_contacts:
+            continue
+        if body in extras_set:
+            # gdrive convention: active_joint_* etc. travel with the bar
+            continue
+        if bar_name_re.match(name):
+            excluded_assembly.append(name)
+            continue
+        obstacles_for_constrained.append(body)
+    if excluded_assembly:
+        print(f"  excluded {len(excluded_assembly)} design-study assembly bodies from constrained obstacles: "
+              f"{', '.join(excluded_assembly[:6])}{'...' if len(excluded_assembly) > 6 else ''}")
+    if extras_set:
+        print(f"  excluded {len(extras_set)} active-bar extras (travel rigidly with the bar)")
+    print(f"  constrained planner sees {len(obstacles_for_constrained)} static obstacles "
+          f"(structural / non-design-study only)")
+
+    if ignore_env_obstacles:
+        # TEMPORARY: skip ALL environment / static obstacles from the constrained
+        # planner. Only robot self-collision and bar-vs-robot (via attachment)
+        # remain. Use only as a stopgap while debugging the planner; re-enable
+        # environment collisions for any plan executed on real hardware.
+        n_ignored = len(obstacles_for_constrained)
+        obstacles_for_constrained = []
+        warn_msg = (
+            "!!! ignore_env_obstacles=True: skipping "
+            f"{n_ignored} environment/static obstacles from the constrained "
+            "planner. Only robot self-collision + attached-bar-vs-robot checks "
+            "remain. TURN THIS BACK OFF before planning paths for real-hardware "
+            "execution. (see husky_world.plan_and_stage_constrained / "
+            "husky_monitor.plan_and_stage_constrained_bar_action / "
+            "scripts/headless_live_monitor_test.py to disable.)"
+        )
+        monitor.get_logger().warn(warn_msg)
+        print("\n" + "=" * 78)
+        print(warn_msg)
+        print("=" * 78 + "\n")
+
+    # 3. Derived start (fixed-bar strategy w/ collision-aware IK).
+    # Use goal_conf as the IK seed (mirrors run_stage_trial's pattern of using
+    # the cell-state joint values as seed for endpoint IK). Seeding with
+    # current_conf can return a self-colliding IK solution because the IK
+    # solver does not check collision.
+    # The husky's URDF was loaded fixed_base; its current PyBullet pose is
+    # the husky's pose in the assembly world frame. Pass it through so the
+    # mobile-base-frame bar home anchor is composed correctly when the husky
+    # is not at world origin.
+    world_from_mobile_base = pp.get_pose(robot)
+
+    def _derive_start_for_attempt(attempt_idx):
+        # attempt_idx==0 keeps the original deterministic behavior so easy
+        # cases plan identically. Later attempts shuffle the bar-position
+        # grid with a different seed AND widen the sweep box (in z) so a
+        # floor-level goal (e.g. B226) can be reached.
+        base_seed = getattr(monitor, "random_seed", None)
+        if attempt_idx == 0:
+            return derive_constrained_start(
+                robot, arm_joints_all, tool_link_L, tool_link_R,
+                grasp_bar_from_left, grasp_bar_from_right,
+                world_from_bar_goal, seed_conf=goal_conf,
+                bar_body=monitor.active_bar_body,
+                obstacles=obstacles_for_constrained,
+                world_from_mobile_base=world_from_mobile_base,
+                random_seed=base_seed,
+            )
+        derive_seed = (0 if base_seed is None else int(base_seed)) + 9973 * attempt_idx
+        return derive_constrained_start(
+            robot, arm_joints_all, tool_link_L, tool_link_R,
+            grasp_bar_from_left, grasp_bar_from_right,
+            world_from_bar_goal, seed_conf=goal_conf,
+            bar_body=monitor.active_bar_body,
+            obstacles=obstacles_for_constrained,
+            world_from_mobile_base=world_from_mobile_base,
+            random_seed=derive_seed,
+            shuffle_deltas=True,
+            bar_sweep_box=((-0.4, 0.4), (-0.4, 0.4), (-0.5, 0.3)),
+        )
+
+    world_from_bar_start, start_conf = _derive_start_for_attempt(0)
+    if start_conf is None:
+        monitor.get_logger().warn("Endpoint IK failed at derived start bar pose")
+        if _bidir_patches:
+            for _mod, _name, _orig in _bidir_patches:
+                setattr(_mod, _name, _orig)
+        return
+
+    # 4. Constrained plan
+    feature_points = get_bar_feature_points(monitor.active_bar_aabb_dims) \
+                     if monitor.active_bar_aabb_dims is not None else get_bar_feature_points()
+    attachments_pair = [husky.object.ee_list[0][1], husky.object.ee_list[1][1]]
+
+    scene_with_bar = {
+        "robot": robot,
+        "arm_joints": arm_joints_all,
+        "joint_names": list(left_joint_names) + list(right_joint_names),
+        "tool_link_left": tool_link_L,
+        "tool_link_right": tool_link_R,
+        "obstacles": obstacles_for_constrained,
+        "attachments": attachments_pair,  # not used by constrained planner but harmless
+        "disabled_collisions": None,
+    }
+    pp.set_pose(monitor.active_bar_body, world_from_bar_start)
+    # Travel any active-bar extras with the bar so the visual scene is
+    # consistent at start. They're excluded from the planner's collision
+    # list, so this only matters for visualization.
+    for extra_body, bar_from_extra in zip(
+        getattr(monitor, "active_extra_bodies", []) or [],
+        getattr(monitor, "bar_from_extra", []) or [],
+    ):
+        pp.set_pose(extra_body, pp.multiply(world_from_bar_start, bar_from_extra))
+    plan_kwargs = dict(
+        bar_body=monitor.active_bar_body,
+        grasp_bar_from_left=grasp_bar_from_left,
+        grasp_bar_from_right=grasp_bar_from_right,
+        feature_points=feature_points,
+        world_from_bar_start=world_from_bar_start,
+        world_from_bar_goal=world_from_bar_goal,
+        stage=monitor.constrained_planner_stage,
+    )
+    if max_time is not None:
+        plan_kwargs["max_time"] = max_time
+    if max_attempts is not None:
+        plan_kwargs["max_attempts"] = max_attempts
+    if max_iterations is not None:
+        plan_kwargs["max_iterations"] = max_iterations
+    if random_seed is not None:
+        # Optional: pin the RRT's RNG for a reproducible run. Default is
+        # None (fresh entropy per call) — the RRT is flaky for hard scenes,
+        # so a fresh seed + the generous max_attempts above usually finds a
+        # path faster than any single fixed seed would.
+        plan_kwargs["random_seed"] = random_seed
+    if use_draw:
+        # plan_pose_rrt's extend_toward draws each new SE(3) tree edge via
+        # pp.add_line on pp.CLIENT (= the cfab GUI window here). Useful for
+        # eyeballing where the bar-pose RRT gets stuck — best with
+        # max_attempts=1 + a fixed --random-seed so it's one clean tree.
+        plan_kwargs["use_draw"] = True
+    # Finer constrained steps keep per-step IK closer to the bar target, but
+    # increase planner work. Free joint resolution controls staging BiRRT steps.
+    eff_position_res = CONSTRAINED_POSITION_RES if position_res is None else float(position_res)
+    eff_rotation_res = CONSTRAINED_ROTATION_RES if rotation_res is None else float(rotation_res)
+    eff_free_joint_resolution = (
+        FREE_JOINT_RESOLUTION if free_joint_resolution is None
+        else float(free_joint_resolution)
+    )
+    plan_kwargs["position_res"] = eff_position_res
+    plan_kwargs["rotation_res"] = eff_rotation_res
+
+    # Start-retry loop: if planning fails from the first derived start, derive
+    # a different start (shuffled, widened sweep) and re-plan. start_retries
+    # is the maximum number of starts tried (start_retries=1 = legacy
+    # behavior). attempt 0 already ran via _derive_start_for_attempt(0) above.
+    try:
+        constrained_path, c_info = plan_constrained_dual_arm(
+            scene_with_bar, start_conf, goal_conf, **plan_kwargs
+        )
+        if constrained_path is None and start_retries > 1:
+            for retry_idx in range(1, start_retries):
+                monitor.get_logger().info(
+                    f"constrained plan failed from start #{retry_idx - 1}; "
+                    f"re-deriving start (retry {retry_idx}/{start_retries - 1})."
+                )
+                new_start_pose, new_start_conf = _derive_start_for_attempt(retry_idx)
+                if new_start_conf is None or new_start_pose is None:
+                    monitor.get_logger().warn(
+                        f"start retry {retry_idx}: no valid derived start; skipping."
+                    )
+                    continue
+                world_from_bar_start = new_start_pose
+                start_conf = np.asarray(new_start_conf, dtype=float)
+                pp.set_pose(monitor.active_bar_body, world_from_bar_start)
+                for extra_body, bar_from_extra in zip(
+                    getattr(monitor, "active_extra_bodies", []) or [],
+                    getattr(monitor, "bar_from_extra", []) or [],
+                ):
+                    pp.set_pose(extra_body, pp.multiply(world_from_bar_start, bar_from_extra))
+                plan_kwargs["world_from_bar_start"] = world_from_bar_start
+                constrained_path, c_info = plan_constrained_dual_arm(
+                    scene_with_bar, start_conf, goal_conf, **plan_kwargs
+                )
+                if constrained_path is not None:
+                    monitor.get_logger().info(
+                        f"constrained plan succeeded on start retry {retry_idx}."
+                    )
+                    break
+    finally:
+        # Restore the original plan_pose_rrt bindings so other code paths
+        # (e.g. CLI run.py without --bidirectional) see the unswapped symbol.
+        if _bidir_patches:
+            for _mod, _name, _orig in _bidir_patches:
+                setattr(_mod, _name, _orig)
+    # Stash the constrained-plan context so downstream consumers (e.g. the
+    # headless test's path-validation) can rebuild the scene + grasps without
+    # re-deriving them. Set regardless of staging success/failure.
+    monitor._bar_action_plan_ctx = dict(
+        stage=monitor.constrained_planner_stage,
+        grasp_bar_from_left=grasp_bar_from_left,
+        grasp_bar_from_right=grasp_bar_from_right,
+        obstacles_for_constrained=list(obstacles_for_constrained),
+        start_conf=np.asarray(start_conf, dtype=float).copy(),
+        goal_conf=np.asarray(goal_conf, dtype=float).copy(),
+        world_from_bar_start=world_from_bar_start,
+        world_from_bar_goal=world_from_bar_goal,
+        position_res=eff_position_res,
+        rotation_res=eff_rotation_res,
+        free_joint_resolution=eff_free_joint_resolution,
+        path_poses=c_info.get("path_poses"),
+    )
+    if constrained_path is None:
+        if monitor.constrained_planner_stage == 1 and c_info.get("pose_only_success"):
+            monitor.get_logger().warn(
+                "Stage 1 constrained plan succeeded but produces no joint path - skipping trajectory display."
+            )
+        else:
+            monitor.get_logger().warn(f"Constrained planning failed: {c_info.get('failure_reason', 'unknown')}")
+        return
+
+    # 5. Store only the constrained path. The free staging path is now planned
+    # manually by the monitor buttons after start_conf becomes the goal target.
+    n = len(left_joints)
+    start_conf = np.asarray(start_conf, dtype=float)
+    monitor.constrained_start_conf = start_conf.copy()
+    monitor.constrained_goal_conf = np.asarray(goal_conf, dtype=float).copy()
+    monitor.staging_free_trajectory = [None, None]
+    monitor.constrained_trajectory = [
+        (np.array([q[:n] for q in constrained_path]), None, monitor.trajectory_time, None),
+        (np.array([q[n:] for q in constrained_path]), None, monitor.trajectory_time, None),
+    ]
+    monitor.constrained_pose_path = c_info.get("path_poses")
+    monitor.goal_arm_pose[0] = start_conf[:n].copy()
+    monitor.goal_arm_pose[1] = start_conf[n:].copy()
+    monitor.update_traj_goal_configuration()
+    monitor.constrained_display_mode = 1
+    monitor._refresh_constrained_displayed_trajectory()
+    print("Constrained plan ready. Sequence:")
+    print("  1) Plan to the exposed constrained-start goal with 'Plan Both Arms to Goal' or 'Plan S.Arm to conf target'.")
+    print("  2) Execute that free staging plan with Display Traj = 0.")
+    print("  3) Manually place the bar in both end-effectors.")
+    print("  4) Set Display Traj = 1, then execute the CONSTRAINED plan.")
+
+
+############################## KISSING EXPERIMENT ###########################################
+
+""" 
+Conducts the kissing experiment
+
+Assumes robots and goal state are in neutral insertion pose relative to each other.
+Grippers must be closed with installed joints.
+
+"""
+Z_MOVE_TO_INSERT = 0.035
+CARTESIAN_SPEEDUP = 5
+TIME_PER_ROTATION = 14
+PROBE_END_WAIT_TIME = 1
+USE_CARTESIAN_CONTROLLER = True
+DATA_FOLDER = '/home/jakobgenhart/husky_assistant/workspace_github/src/husky-assembly-teleop/data/kissing_experiment_data'
+def kissing_experiment(monitor):
+    hi: HuskyRobotInterface = monitor.huskies[monitor.selected_robot_id].interface
+    robot = monitor.huskies[monitor.selected_robot_id].object.robot
+
+    # store current neutral pose
+    left_tool0_pose = pp.get_link_pose(monitor.goal_model.robot, pp.link_from_name(monitor.goal_model.robot, 'left_ur_arm_tool0'))
+    right_tool0_pose = pp.get_link_pose(monitor.goal_model.robot, pp.link_from_name(monitor.goal_model.robot, 'right_ur_arm_tool0'))
+    
+    neutral_bar_pose, _, _ = compute_bar_pose_from_EE_poses(left_tool0_pose, right_tool0_pose)
+    pp.draw_pose(neutral_bar_pose)
+    
+    monitor.get_logger().info('### MOVE TO NEUTRAL POSE')
+    reset = generate_reset_trajectory_bar(monitor, 0.01, neutral_bar_pose)
+    hi.send_dual_arm_cmd(reset)
+    while hi.is_arm_executing[0] or hi.is_arm_executing[1]:
+        yield
+        
+    root2 = 1.414213562
+    
+    for i in range(0, 3):        
+        # sample
+        offset = [0.000 + 0.005 * i, 0.000, 0.00, 0.00] # x y (0.005) a b (0.05) # 0.001 * i
+        
+        monitor.get_logger().info(f'### SAMPLED_{offset[0]:.4f}_{offset[1]:.4f}_{offset[2]:.4f}_{offset[3]:.4f}')
+        
+        # move to starting pose
+        starting_bar_pose = pp.multiply(neutral_bar_pose, pp.Pose(pp.Point(offset[0], offset[1], 0), pp.Euler(0, 0, 0)))
+        
+        monitor.get_logger().info('### MOVE TO STARTING POSE')
+        start_bar_movement = generate_reset_trajectory_bar(monitor, 0.01, starting_bar_pose)
+        #monitor.set_arm_trajectory(start_bar_movement[0], 0)
+        #monitor.set_arm_trajectory(start_bar_movement[1], 1)
+        hi.send_dual_arm_cmd(start_bar_movement)
+        while hi.is_arm_executing[0] or hi.is_arm_executing[1]:
+            yield
+        
+        task = kissing_probe_once(monitor, neutral_bar_pose, starting_bar_pose, offset, DATA_FOLDER, f'dual_offset_{offset[0]:.4f}_{offset[1]:.4f}_{offset[2]:.4f}_{offset[3]:.4f}')
+        yield
+        while True:
+            try:
+                next(task)
+                yield
+            except StopIteration:
+                break
+
+def draw_tcp_pose(monitor):
+    hi: HuskyRobotInterface = monitor.huskies[monitor.selected_robot_id].interface
+    robot = monitor.huskies[monitor.selected_robot_id].object.robot
+    world_from_arm_base = pp.get_link_pose(robot, pp.link_from_name(robot, 'left_ur_arm_base_link'))
+    world_from_tool0 = pp.get_link_pose(robot, pp.link_from_name(robot, 'left_ur_arm_tool0'))
+    arm_base_from_tool0 = pp.multiply(pp.invert(world_from_arm_base), world_from_tool0)
+    pp.draw_pose(pp.multiply(world_from_arm_base, hi.arm_tcp_pose[0]))
+    
+    print(f"Tool0 LOCAL {arm_base_from_tool0}")
+    print(f"TCP Pose LOCAL {hi.arm_tcp_pose[0]}")
+    
+def compute_bar_pose_from_EE_poses(left, right):
+    inter = list(pp.interpolate_poses_by_num_steps(left, right, 2))
+    middle_pose = inter[1]
+    to_left = pp.multiply(pp.invert(middle_pose), left)
+    to_right = pp.multiply(pp.invert(middle_pose), right)
+    
+    pp.draw_pose(middle_pose)
+    print(f'MIDDLE POSE {middle_pose}')
+    
+    d_left = np.linalg.norm(np.array(pp.point_from_pose(to_left)))
+    d_right = np.linalg.norm(np.array(pp.point_from_pose(to_right)))
+    
+    print(f'LEFT DISTANCE {d_left}')
+    print(f'RIGHT DISTANCE {d_right}')
+    
+    return (middle_pose, to_left, to_right)
+
+def execute_linear_cartesian_move(robot, hi, start_time, cartesian_trajectory, index):
+    time_elapsed = time.time() - start_time
+    
+    if time_elapsed > cartesian_trajectory[2] + cartesian_trajectory[3] + PROBE_END_WAIT_TIME:
+        return False
+    
+    world_from_arm_base = pp.get_link_pose(robot, pp.link_from_name(robot, 'left_ur_arm_base_link' if index == 0 else 'right_ur_arm_base_link'))
+    
+    start_pose_world = cartesian_trajectory[0]
+    end_pose_world = cartesian_trajectory[1]
+    
+    offset = pp.multiply(end_pose_world,pp.invert(start_pose_world))
+    
+    linear_offset = pp.point_from_pose(offset)
+    quat_1 = pp.quat_from_pose(start_pose_world)
+    quat_2 = pp.quat_from_pose(end_pose_world)
+    
+    t = min(time_elapsed / cartesian_trajectory[2], 1.0)
+    
+    lerped = pp.Pose(np.array(pp.point_from_pose(start_pose_world)) + np.array(linear_offset) * t, pp.euler_from_quat(pp.quaternion_slerp(quat_1, quat_2, t)))
+    arm_base_from_tool0 = pp.multiply(pp.invert(world_from_arm_base), lerped)
+    
+    #pp.draw_pose(lerped)
+    hi.send_arm_cmd_cartesian(arm_base_from_tool0, index)
+    
+    return True
+
+"""
+Conducts a single kissing motion TODO dont follow local z on rotated starting pose, still follow neutral local z
+"""
+def kissing_probe_once(monitor, neutral_bar_pose, starting_bar_pose, offset, file_location, name):
+    hi: HuskyRobotInterface = monitor.huskies[monitor.selected_robot_id].interface
+    robot = monitor.huskies[monitor.selected_robot_id].object.robot
+    
+    monitor.get_logger().info('### PROBE ONCE')
+    
+    # data collected
+    motor_stalled_left = False
+    motor_stalled_right = False
+    trajectory_finished_left = False
+    trajectory_finished_right = False
+    wrench_profile_left = []
+    wrench_profile_right = []
+    pose_left_trajectory = []
+    pose_right_trajectory = []
+    
+    # generate insertion trajectory
+    insertion_trajectories, insertion_trajectories_cartesian = generate_insertion_motion_bar(monitor, Z_MOVE_TO_INSERT, 0.002/TIME_PER_ROTATION, cartesian_speedup=CARTESIAN_SPEEDUP, neutral_start_pose=starting_bar_pose)
+    if insertion_trajectories is None and not USE_CARTESIAN_CONTROLLER or insertion_trajectories_cartesian is None and USE_CARTESIAN_CONTROLLER:
+        return
+    
+    # zero ft values
+    hi.zero_ft_sensor(0)
+    hi.zero_ft_sensor(1)
+    
+    # --- CARTESIAN INSERTION ---
+    if USE_CARTESIAN_CONTROLLER:
+        hi.switch_controller('scaled_joint_trajectory_controller', 'cartesian_compliance_controller', 0)
+        hi.switch_controller('scaled_joint_trajectory_controller', 'cartesian_compliance_controller', 1)
+        while hi.active_controller[0] != 'cartesian_compliance_controller' or hi.active_controller[1] != 'cartesian_compliance_controller':
+            yield
+    
+    # start screw motor and insert
+    start_time = time.time()
+    # DISABLED 2026-05-15: hi.set_screw API is outdated and may damage the tool
+    # hardware. Re-enable only after the screw-motor firmware/API is updated
+    # and verified against the current tool revision.
+    # hi.set_screw(False, 0)
+    # hi.set_screw(True, 0)
+    # hi.set_screw(False, 1)
+    # hi.set_screw(True, 1)
+    
+    if not USE_CARTESIAN_CONTROLLER:
+        hi.send_dual_arm_cmd(insertion_trajectories)
+        while hi.is_arm_executing[0] or hi.is_arm_executing[1] and hi.io_states[0][16] or hi.io_states[1][16]:
+            wrench_profile_left.append(hi.arm_ft_sensor[0])
+            wrench_profile_right.append(hi.arm_ft_sensor[1])
+            pose_left_trajectory.append(pp.get_link_pose(robot, pp.link_from_name(robot, 'left_ur_arm_tool0')))
+            pose_right_trajectory.append(pp.get_link_pose(robot, pp.link_from_name(robot, 'right_ur_arm_tool0')))
+            
+            # take picture and save to vido
+            ##### TODO this is way too slow (5fps instad of targeted 20), will be even slower with two cams... this slows everything down!
+            # pre_time = time.time()
+            # ret, frame = cam0.read()
+            # out.write(frame)
+            # print(f'frame taken in {time.time()-pre_time}')
+        
+            yield
+    else:
+        # while at least one is not stalled, and atleast one is still executing
+        def execute_both():
+            left = execute_linear_cartesian_move(robot, hi, start_time, insertion_trajectories_cartesian[0], 0)
+            right = execute_linear_cartesian_move(robot, hi, start_time, insertion_trajectories_cartesian[1], 1)
+            return left or right
+        while (hi.io_states[0][16] or hi.io_states[1][16]) and execute_both():
+            wrench_profile_left.append(hi.arm_ft_sensor[0])
+            wrench_profile_right.append(hi.arm_ft_sensor[1])
+            pose_left_trajectory.append(pp.get_link_pose(robot, pp.link_from_name(robot, 'left_ur_arm_tool0')))
+            pose_right_trajectory.append(pp.get_link_pose(robot, pp.link_from_name(robot, 'right_ur_arm_tool0')))
+            yield
+    
+    if not hi.io_states[0][16]:
+        motor_stalled_left = True
+    if not hi.io_states[1][16]:
+        motor_stalled_right = True
+    if not hi.is_arm_executing[0]:
+        trajectory_finished_left = True
+    if not hi.is_arm_executing[1]:
+        trajectory_finished_right = True
+        
+    monitor.get_logger().info(f'### FINISHED PROBE (stalled_left={motor_stalled_left}, stalled_right={motor_stalled_right}, trajectory_finished_left={trajectory_finished_left}, trajectory_finished_right={trajectory_finished_right})')
+    
+    finish_time = time.time()
+    while time.time() - finish_time < PROBE_END_WAIT_TIME:
+        yield
+    class NumpyEncoder(json.JSONEncoder):
+        def default(self, obj):
+            if isinstance(obj, np.ndarray):
+                return obj.tolist()
+            return super().default(obj)
+    
+    data = {
+        'name': name,
+        'start_time': start_time,
+        'finish_time': finish_time,
+        'neutral_bar_pose': neutral_bar_pose,
+        'starting_bar_pose': starting_bar_pose,
+        'offset': offset,
+        'motor_stalled_left': motor_stalled_left,
+        'motor_stalled_right': motor_stalled_right,
+        'trajectory_finished_left': trajectory_finished_left,
+        'trajectory_finished_right': trajectory_finished_right,
+        'wrench_profile_left': wrench_profile_left,
+        'wrench_profile_right': wrench_profile_right,
+        'pose_left_trajectory': pose_left_trajectory,
+        'pose_right_trajectory': pose_right_trajectory,
+    } 
+    with open(file_location + '/' + name + '.json', 'w') as f:
+        json.dump(data, f, indent=4, cls=NumpyEncoder)
+    
+    monitor.get_logger().info('### RETREAT')
+    
+    # generate retreat motion
+    retreat_trajectories, retreat_trajectories_cartesian = generate_insertion_motion_bar(monitor, -Z_MOVE_TO_INSERT, 0.002/TIME_PER_ROTATION*CARTESIAN_SPEEDUP)
+    if retreat_trajectories is None and not USE_CARTESIAN_CONTROLLER or retreat_trajectories_cartesian is None and USE_CARTESIAN_CONTROLLER:
+        return
+    
+    # retreat and unscrew (custom firmware which turns backwards on False)
+    # DISABLED 2026-05-15: hi.set_screw API is outdated and may damage the tool
+    # hardware. Re-enable only after the screw-motor firmware/API is updated.
+    # hi.set_screw(True, 0)
+    # hi.set_screw(False, 0)
+    # hi.set_screw(True, 1)
+    # hi.set_screw(False, 1)
+    if not USE_CARTESIAN_CONTROLLER:
+        hi.send_dual_arm_cmd(retreat_trajectories)
+        while hi.is_arm_executing[0] or hi.is_arm_executing[1]:
+            yield
+    else:
+        retreat_start_time = time.time()
+        while execute_linear_cartesian_move(robot, hi, retreat_start_time, retreat_trajectories_cartesian[0], 0) or execute_linear_cartesian_move(robot, hi, retreat_start_time, retreat_trajectories_cartesian[1], 1):
+            yield
+    
+    current_left_tool_world_pose = pp.get_link_pose(robot, pp.link_from_name(monitor.goal_model.robot, 'left_ur_arm_tool0'))
+    current_right_tool_world_pose = pp.get_link_pose(robot, pp.link_from_name(monitor.goal_model.robot, 'right_ur_arm_tool0'))
+    while (np.linalg.norm(np.array(retreat_trajectories_cartesian[0][1][0]) - np.array(pp.point_from_pose(current_left_tool_world_pose))) > 0.02) or (np.linalg.norm(np.array(retreat_trajectories_cartesian[1][1][0]) - np.array(pp.point_from_pose(current_right_tool_world_pose))) > 0.02):
+        print("retreat did not work! retry!")
+        print(f'LEFT: {np.array(retreat_trajectories_cartesian[0][1][0])} vs {np.array(pp.point_from_pose(current_left_tool_world_pose))}')
+        print(f'RIGHT: {np.array(retreat_trajectories_cartesian[1][1][0])} vs {np.array(pp.point_from_pose(current_right_tool_world_pose))}')
+        
+        # retreat and unscrew (custom firmware which turns backwards on False)
+        # DISABLED 2026-05-15: hi.set_screw API is outdated and may damage the
+        # tool hardware. Re-enable only after the screw-motor firmware/API is
+        # updated.
+        # hi.set_screw(True, 0)
+        # hi.set_screw(False, 0)
+        # hi.set_screw(True, 1)
+        # hi.set_screw(False, 1)
+
+        start_retry_time = time.time()
+        while time.time() - start_retry_time < 5:
+            yield
+            
+        current_left_tool_world_pose = pp.get_link_pose(robot, pp.link_from_name(monitor.goal_model.robot, 'left_ur_arm_tool0'))
+        current_right_tool_world_pose = pp.get_link_pose(robot, pp.link_from_name(monitor.goal_model.robot, 'right_ur_arm_tool0'))
+        
+        
+    # --- REVERT TO JOINT SPACE ---
+    if USE_CARTESIAN_CONTROLLER:
+        hi.switch_controller('cartesian_compliance_controller', 'scaled_joint_trajectory_controller', 0)
+        hi.switch_controller('cartesian_compliance_controller', 'scaled_joint_trajectory_controller', 1)
+        while hi.active_controller[0] != 'scaled_joint_trajectory_controller' or hi.active_controller[1] != 'scaled_joint_trajectory_controller':
+            yield
+    
+def move_left_linear_z(monitor, length, speed):
+    husky = monitor.huskies[monitor.selected_robot_id]
+    hi: HuskyRobotInterface = husky.interface
+    robot = husky.object.robot
+    
+    # DISABLED 2026-05-15: hi.set_screw API is outdated and may damage the tool
+    # hardware. Re-enable only after the screw-motor firmware/API is updated.
+    # if length > 0:
+    #     hi.set_screw(False, 0)
+    #     hi.set_screw(True, 0)
+    # else:
+    #     hi.set_screw(True, 0)
+    #     hi.set_screw(False, 0)
+
+    trajectory, _ = generate_insertion_motion_bar(monitor, length, speed)
+    hi.send_arm_cmd(trajectory[0], trajectory[1], trajectory[2], index=0)
+    
+def generate_insertion_motion_bar(monitor, depth, speed, cartesian_speedup=1, neutral_start_pose=None):
+    husky = monitor.huskies[monitor.selected_robot_id]
+    hi: HuskyRobotInterface = husky.interface
+    robot = husky.object.robot
+    
+    obstacles = list(monitor.static_obstacles.values())
+    attachments = [[husky.object.ee_list[0][1]], [husky.object.ee_list[1][1]]]
+    start_pose, to_left, to_right = compute_bar_pose_from_EE_poses(pp.get_link_pose(robot, pp.link_from_name(robot, 'left_ur_arm_tool0')), pp.get_link_pose(robot, pp.link_from_name(robot, 'right_ur_arm_tool0')))
+    if neutral_start_pose is not None:
+        start_pose = neutral_start_pose
+        
+    end_pose = pp.multiply(start_pose, pp.Pose(pp.Point(0, 0, depth)))
+        
+    left_gripper_start_pose = pp.multiply(start_pose, to_left)
+    right_gripper_start_pose = pp.multiply(start_pose, to_right)
+    
+    left_gripper_end_pose = pp.multiply(end_pose, to_left)
+    right_gripper_end_pose = pp.multiply(end_pose, to_right)
+    
+    init_conf_left = hi.arm_joint_pose[0]
+    init_conf_right = hi.arm_joint_pose[1]
+    
+    time = max(1, abs(depth/speed))
+    arm_trajectories = [([], None, time, None), ([], None, time, None)]
+    cartesian_trajectories = [[left_gripper_start_pose, left_gripper_end_pose, time/cartesian_speedup, time - time/cartesian_speedup], [right_gripper_start_pose, right_gripper_end_pose, time/cartesian_speedup, time - time/cartesian_speedup]]
+    
+    for i in range(0, 5):
+        pose = pp.multiply(start_pose, pp.Pose(pp.Point(0, 0, i * depth/4.0)))
+        
+        left_pose = pp.multiply(pose, to_left)
+        right_pose = pp.multiply(pose, to_right)
+
+        arm_conf_left = get_arm_ik_for_grasp_bar(husky.object.robot, planning.IK_SOLVER_DUAL[0], left_pose, attachments[0], obstacles, hint_conf=init_conf_left)
+        arm_conf_right = get_arm_ik_for_grasp_bar(husky.object.robot, planning.IK_SOLVER_DUAL[1], right_pose, attachments[1], obstacles, hint_conf=init_conf_right)
+        if arm_conf_left is None:
+            monitor.get_logger().warn("IK left failed!")
+            return None, cartesian_trajectories
+        if arm_conf_right is None:
+            monitor.get_logger().warn("IK right failed!")
+            return None, cartesian_trajectories
+        init_conf_left = arm_conf_left
+        init_conf_right = arm_conf_right
+        arm_trajectories[0][0].append(arm_conf_left)
+        arm_trajectories[1][0].append(arm_conf_right)
+        
+    return arm_trajectories, cartesian_trajectories
+            
+          
+# TODO adapt to dual arm and bar  
+def generate_reset_trajectory_bar(monitor, speed, goal_pose):
+    husky = monitor.huskies[monitor.selected_robot_id]
+    hi: HuskyRobotInterface = husky.interface
+    robot = husky.object.robot
+    
+    obstacles = list(monitor.static_obstacles.values())
+    attachments = [[husky.object.ee_list[0][1]], [husky.object.ee_list[1][1]]]
+    start_pose, to_left, to_right = compute_bar_pose_from_EE_poses(pp.get_link_pose(robot, pp.link_from_name(robot, 'left_ur_arm_tool0')), pp.get_link_pose(robot, pp.link_from_name(robot, 'right_ur_arm_tool0')))
+    
+    init_conf_left = hi.arm_joint_pose[0]
+    init_conf_right = hi.arm_joint_pose[1]
+    
+    # TODO compute distance to compute time
+    offset = np.array(pp.point_from_pose(start_pose)) - np.array(pp.point_from_pose(goal_pose))
+    distance = np.linalg.norm(offset)
+    
+    time = max(1, abs(distance/speed))
+    arm_trajectories = [([], None, time, None), ([], None, time, None)]
+    
+    bar_trajectory = pp.interpolate_poses_by_num_steps(start_pose, goal_pose, 5)
+    
+    for pose in bar_trajectory:
+        left_pose = pp.multiply(pose, to_left)
+        right_pose = pp.multiply(pose, to_right)
+
+        arm_conf_left = get_arm_ik_for_grasp_bar(husky.object.robot, planning.IK_SOLVER_DUAL[0], left_pose, attachments[0], obstacles, hint_conf=init_conf_left)
+        arm_conf_right = get_arm_ik_for_grasp_bar(husky.object.robot, planning.IK_SOLVER_DUAL[1], right_pose, attachments[1], obstacles, hint_conf=init_conf_right)
+        if arm_conf_left is None:
+            monitor.get_logger().warn("IK left failed!")
+            return None
+        if arm_conf_right is None:
+            monitor.get_logger().warn("IK right failed!")
+            return None
+        init_conf_left = arm_conf_left
+        init_conf_right = arm_conf_right
+        arm_trajectories[0][0].append(arm_conf_left)
+        arm_trajectories[1][0].append(arm_conf_right)
+    
+    return arm_trajectories

@@ -1,0 +1,31 @@
+{
+    "base_mocap_from_right_ur_arm_base_link_inertia": [
+        [
+            0.005591260501580192,
+            0.15735510959163357,
+            0.027080916158497295
+        ],
+        [
+            -0.2736126964388186,
+            -0.2671188238943601,
+            -0.6683253724104435,
+            0.6380633376563921
+        ]
+    ],
+    "base_mocap_from_base_footprint": [
+        [
+            0.12646695971488953,
+            -8.842349052429199e-05,
+            -0.46184709668159485
+        ],
+        [
+            -0.004727842751890421,
+            0.0018592752749100327,
+            0.99982088804245,
+            0.018230432644486427
+        ]
+    ],
+    "mocap_axis_convention": "rhino",
+    "_source_calibration_file": "calibrated_transformation_0806.json",
+    "_conversion_note": "Identity copy: base_mocap_from_* poses are invariant under rotated\u2194rhino y-up->z-up convention switch."
+}

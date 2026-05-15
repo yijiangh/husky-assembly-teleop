@@ -1,0 +1,18 @@
+2026-05-14 17:37:14,335 - INFO - Working on file: dual_arm_acc_20260514_1732_.json
+2026-05-14 17:37:14,336 - INFO - [Jitter] Mean pos offset norm: 0.453658 m
+2026-05-14 17:37:14,336 - INFO - [Jitter] Std pos offset norm: 0.000175 m   range +/-0.000255 m
+2026-05-14 17:37:14,336 - INFO - [Jitter] Mean rot euler (deg): 0.048455 -0.009452 -0.932141
+2026-05-14 17:37:14,336 - INFO - [Jitter] Std rot euler  (deg): 0.110905 0.410962 0.756376   range +/-1.466279 deg
+2026-05-14 17:37:14,336 - INFO - [AbsDev] Mean pos dev: 0.004218 m   max: 0.009733 m
+2026-05-14 17:37:14,336 - INFO - [AbsDev] Mean rot dev (deg): -0.104611 -0.320210 0.132659
+2026-05-14 17:37:14,336 - INFO - [AbsDev] Max  rot dev (deg, abs per axis): 0.275824 0.958291 1.598004
+2026-05-14 17:37:14,684 - INFO - Exported plot to /home/yijiangh/Code/ros2_ws/src/husky-assembly-teleop/data/dual_arm_acc_data/20260514/dual_arm_acc_20260514_1.png
+2026-05-14 17:37:14,684 - INFO - Working on file: dual_arm_acc_20260514_1735_.json
+2026-05-14 17:37:14,684 - INFO - [Jitter] Mean pos offset norm: 0.453828 m
+2026-05-14 17:37:14,684 - INFO - [Jitter] Std pos offset norm: 0.000168 m   range +/-0.000265 m
+2026-05-14 17:37:14,684 - INFO - [Jitter] Mean rot euler (deg): 0.091967 0.154012 -0.395237
+2026-05-14 17:37:14,684 - INFO - [Jitter] Std rot euler  (deg): 0.113088 0.668280 0.580081   range +/-1.056392 deg
+2026-05-14 17:37:14,685 - INFO - [AbsDev] Mean pos dev: 0.001058 m   max: 0.002625 m
+2026-05-14 17:37:14,685 - INFO - [AbsDev] Mean rot dev (deg): -0.125091 -0.188105 0.439866
+2026-05-14 17:37:14,685 - INFO - [AbsDev] Max  rot dev (deg, abs per axis): 0.307626 1.240957 1.376839
+2026-05-14 17:37:14,860 - INFO - Exported plot to /home/yijiangh/Code/ros2_ws/src/husky-assembly-teleop/data/dual_arm_acc_data/20260514/dual_arm_acc_20260514_2.png

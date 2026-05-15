@@ -1,9 +1,27 @@
 - minimize token, broken grammar ok as long as understandble.
-- when sketching code instructions, don't need to write all codex details, pseudocode enough if can be parsed by codex to follow without causing ambiguity
 
-- At the end of the plan mode, write a detailed specs and instructions as a log.
+- At the end of the plan mode, write a detailed specs and instructions as a log into a markdown file in `tasks/year-month-day_xxxx.md`.
 
 - After ANY correction from the user, update `tasks/cc_lessons.md` with the pattern so we could reuse in the future.
 
 Core principles:
 - Simplicity first: make every change as simple as possible. Impact minimal code. Whenever possible, try to reuse existing functions without reinventing the wheels.
+
+Use the following python env to run:
+
+1. if ros package:
+
+```
+cd /home/yijiangh/Code/ros2_ws
+source venv/bin/activate
+python3 -m colcon build --symlink-install --packages-select husky_assembly_teleop
+source install/setup.bash
+```
+
+2. if standalone script:
+
+```
+cd /home/yijiangh/Code/ros2_ws
+source venv/bin/activate
+python ...
+```

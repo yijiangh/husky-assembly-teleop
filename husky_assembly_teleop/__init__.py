@@ -50,9 +50,10 @@ def _get_data_directory():
         return installed_data_dir
 
 DATA_DIRECTORY = _get_data_directory()
-DESIGN_DATA_DIRECTORY = os.path.join(DATA_DIRECTORY, 'husky_assembly_design_study')
+DESIGN_DATA_DIRECTORY = '/home/yijiangh/Insync/yijiang94817@gmail.com/Google Drive - Shared with me/2025-03 Husky Assembly/data_design_study'
+EXPERIMENT_DATA_DIRECTORY = '/home/yijiangh/Insync/yijiang94817@gmail.com/Google Drive - Shared with me/2025-03 Husky Assembly/data_experiment'
 RECORD_DIRECTORY = os.path.join(DATA_DIRECTORY, '..', 'recorded_data')
 
 CALIBRATION_DATE = '20260303'
 CALIBRATION_BATCHES = ['j0', 'j1', 'validation', 'punch_validation']
-VALIDATION_PROBLEM_NAME = '260225_extrinsic_calib_trajs_Cindy_Right'
+DESIGN_PROBLEM_NAME = '2026-05-14_foc_demo_reduced'
