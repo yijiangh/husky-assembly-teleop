@@ -948,3 +948,102 @@ composite manual staging planner may use `obstacles=[]` while keeping the two
 tool attachments. This checks robot self-collision and robot-tool collision but
 ignores assembly/environment bodies. Make this explicit in logs so it is not
 mistaken for a production collision policy.
+
+## Don't wrap cfab calls in pp.LockRenderer — 2026-05
+
+`pp.LockRenderer.__init__` does `self.state = CLIENTS[CLIENT]` — it KeyErrors
+when the active pybullet client wasn't opened through `pp.connect`. cfab's
+`PyBulletClient` (compas_fab) opens its pybullet connection directly, so
+`pp.is_connected()` is True (pybullet sees a real client at id 0) but
+`pp.CLIENTS` stays empty → LockRenderer raises `KeyError: 0`. A
+`pp.CLIENT in pp.CLIENTS` guard would work but adds noise for no benefit (both
+live and headless monitor flows go through cfab). Conclusion: don't wrap
+`CfabSession(...)` or `planner.set_robot_cell_state(...)` in
+`pp.LockRenderer`. Keep `pp.LockRenderer` for code paths that operate on
+pp-registered clients only.
+
+## Pose-space RRT: when single-tree barely grows, switch to BiRRT — 2026-05-15
+
+Symptom: `extend_toward` stop_reason histogram dominated by `collision` +
+`ik_failure` with `reached < 1%`. With a single-tree RRT, the tree barely
+grows beyond the root because the home start sits in a tight feasibility
+region. Restarting the same start (legacy `max_attempts=5`) doesn't help.
+
+Why: the local IK-propagated extension from the home cannot connect to a
+distant constrained goal (e.g. B226: 80 cm vertical drop while carrying a
+2 m bar). Picking a different home doesn't help on its own either.
+
+Fix recipe used in `dual_arm_task_space_rrt`:
+
+1. **Bidirectional RRT-Connect** (`core.plan_pose_birrt`) — two trees, one
+   at start, one at goal. Same SE(3) sampling + dual-arm IK propagation.
+   Trees meet in the middle where each can grow into its own free region.
+2. **Stitch IK with fallback** — at the seam, re-solve IK along the
+   goal-side path seeded from the start-side seam conf so both halves stay
+   on a single IK branch. If that fails on collision/continuity, fall
+   back to rebuilding the start-side from the goal-side branch. Without
+   this, BiRRT connects but ~all seams fail the joint-continuity check
+   from branch flips at the same pose.
+3. **Multi-start with widened sweep** (`run.run_stage_trial.start_retries`)
+   — on planning failure, re-derive `derive_constrained_start` with a
+   different `random_seed` AND a widened `bar_sweep_box`
+   (`((-0.4, 0.4), (-0.4, 0.4), (-0.5, 0.3))` vs default `±0.3`). Shuffle
+   the delta grid via `shuffle_deltas=True` so different seeds produce
+   different starts.
+
+Tuning knobs that did **not** help on their own:
+- Higher `goal_bias` (0.1 → 0.3): goal samples couldn't be reached anyway.
+- Higher `max_time`/`max_attempts`: same single-start tree just kept failing.
+- Reverse-direction planning (single tree rooted at goal): same problem in
+  reverse — goal-side tree also barely grew because IK was constrained.
+
+Defaults preserved: `start_retries=1` + no `--bidirectional` = legacy
+behavior unchanged (easy cases like B235 plan in identical time).
+
+## Smoothing collision-check ≠ validation collision-check — 2026-05-15
+
+In Stage-3, the smoother only checks `joint_collision_fn` (built via
+`pp.get_collision_fn(... attachments=[bar] ...)`), but trajectory
+validation also runs `bar_robot_collision_fn` (built via
+`pp.get_floating_body_collision_fn(bar_body, obstacles=[robot])`). The two
+mask collisions slightly differently, so the smoother can accept shortcut
+poses that validation later flags (e.g. ~119 `bar_robot` hits on a
+smoothed B226 path that the un-smoothed path passes cleanly). Workaround:
+`--no-smoothing` for hard cases; long-term fix would unify the planner
+collision-check with the validation collision-check.
+
+## Cheap headless exploration driver for planner tuning — 2026-05-15
+
+For parameter sweeps on hard motion-planning cases, the official CLI
+(`run.py main`) writes md/json/mp4/plot on every invocation — pollutes
+`reports/` during iteration. Pattern that worked:
+
+- Write a small `temp/explore.py` that imports `build_*_scene_spec` and
+  `run_stage_trial` directly, calls them with the user's tunables, and
+  prints success/failure + the `extend_stop_reasons` histogram.
+- Monkey-patch `path_validation.save_validation_plot` to no-op and route
+  `validation_reports_dir` to a `tempfile.mkdtemp` that's deleted on exit
+  so no png/md/json/mp4 leaks to disk during iteration.
+- Once a configuration works, re-run via the official CLI (after wiring
+  the new tunables through `argparse`) to produce the deliverable
+  artifacts.
+
+## Capture *every* per-call-site arg in a config-table refactor — 2026-05-15
+
+When proposing to fold per-robot (or per-X) hardcoded values into a config
+dict, enumerate *every* arg at the call site that differs between variants,
+not just the headline ones. The commented-out alternate-variant blocks in
+the same file are the authoritative reference for the diff surface.
+
+Today I planned a `ROBOT_CONFIGS` table for `husky_world.init` and initially
+only captured `robot_namespace` + `mocap_id`. The user pointed out
+`create_husky_with_end_effectors` also varies on `ee_types` and
+`connect_gripper` between 0804 and 0806 — visible in the commented-out 0804
+example at `husky_world.py:223-234`. Lesson: before writing the plan, diff
+the active block against every commented-out sibling block and list all
+diverging args explicitly in the plan's diff table.
+
+How to apply: when refactoring hardcoded-per-variant call sites, grep for
+the function call (e.g. `create_husky_with_end_effectors(`) across the file
+including commented-out blocks, and tabulate every arg's value per variant
+before deciding which fields belong in the config table.

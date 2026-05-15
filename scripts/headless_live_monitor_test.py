@@ -667,8 +667,8 @@ def main(bar_action: str = DEFAULT_BAR_ACTION,
          problem: str = DEFAULT_PROBLEM,
          use_gui: bool = False,
          verbose: bool = False,
-         max_time: float = None,
-         max_attempts: int = None,
+         max_time: float = 60.0,
+         max_attempts: int = 2,
          save_plan: str = None,
          replay: str = None,
          trajectory: str = None,
@@ -679,7 +679,9 @@ def main(bar_action: str = DEFAULT_BAR_ACTION,
          rotation_res: float = None,
          free_joint_resolution: float = None,
          show_collision_setup: bool = False,
-         stage: int = None) -> int:
+         stage: int = None,
+         bidirectional: bool = True,
+         start_retries: int = 6) -> int:
     print(f"=== headless_live_monitor_test: problem={problem!r} "
           f"bar_action={bar_action!r} movement={movement!r} ===")
 
@@ -886,6 +888,12 @@ def main(bar_action: str = DEFAULT_BAR_ACTION,
                 plan_kwargs["rotation_res"] = rotation_res
             if free_joint_resolution is not None:
                 plan_kwargs["free_joint_resolution"] = free_joint_resolution
+            plan_kwargs["bidirectional"] = bidirectional
+            plan_kwargs["start_retries"] = start_retries
+            # TODO: turn this back off once the planner reliably handles
+            # environment collisions. For now the constrained planner only
+            # checks robot self-collision + attached-bar-vs-robot.
+            plan_kwargs["ignore_env_obstacles"] = True
             if draw_rrt:
                 if not use_gui:
                     print("[draw-rrt] WARN: --draw-rrt needs --gui; ignoring.")
@@ -992,13 +1000,24 @@ if __name__ == "__main__":
                         help="Open the pp-side PyBullet GUI.")
     parser.add_argument("--verbose", action="store_true",
                         help="Verbose collision check output.")
-    parser.add_argument("--max-time", type=float, default=None,
+    parser.add_argument("--max-time", type=float, default=60.0,
                         help="Per-attempt time budget (s) for the constrained "
-                             "planner. Default: planner default (30).")
-    parser.add_argument("--max-attempts", type=int, default=None,
-                        help="Constrained planner outer attempts. Default: "
-                             "planner default (5). Bump (e.g. 15) to ride out "
-                             "RRT randomness for hard scenes.")
+                             "planner. Default: 60.")
+    parser.add_argument("--max-attempts", type=int, default=2,
+                        help="Constrained planner outer RRT attempts (per "
+                             "derived start). Default: 2. Combined with "
+                             "--start-retries, the total compute budget is "
+                             "max_time * max_attempts * start_retries.")
+    parser.add_argument("--bidirectional",
+                        action=argparse.BooleanOptionalAction, default=True,
+                        help="Use bidirectional RRT-Connect (plan_pose_birrt) "
+                             "instead of single-tree plan_pose_rrt. Default: on. "
+                             "Use --no-bidirectional to disable.")
+    parser.add_argument("--start-retries", type=int, default=6,
+                        help="On planning failure, re-derive the start bar "
+                             "pose this many times with a shuffled, widened "
+                             "sweep box. Default: 6. Set to 1 for legacy "
+                             "single-start behavior.")
     parser.add_argument("--save-plan", type=str, default=None,
                         help="On planner success, save the staging + "
                              "constrained trajectories as a JSON for later "
@@ -1069,4 +1088,6 @@ if __name__ == "__main__":
                   position_res=args.position_res, rotation_res=args.rotation_res,
                   free_joint_resolution=args.free_joint_resolution,
                   show_collision_setup=args.show_collision_setup,
-                  stage=args.stage))
+                  stage=args.stage,
+                  bidirectional=args.bidirectional,
+                  start_retries=args.start_retries))

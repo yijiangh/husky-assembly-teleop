@@ -62,6 +62,12 @@ def plan_arm_motion(husky: Husky, arm_goal_pose, obstacles, traj_time, grasped_e
         robot = husky.object.robot
         attachments.append(pp.Attachment(robot, pp.link_from_name(robot, 'ur_arm_tool0'), grasp, grasped_element.body))
 
+    # Forward the mounted EE's type for the selected arm so plan_transit_motion
+    # can add the wrist_2_link disable when an assembly_tool_v3_* tool is on.
+    husky_ee_types = getattr(husky.object, "ee_types", None) or []
+    selected_ee_type = husky_ee_types[arm_index] if arm_index < len(husky_ee_types) else None
+    ee_types_for_plan = [selected_ee_type] if selected_ee_type is not None else None
+
     trajectory = plan_transit_motion(
                 husky.object.robot,
                 arm_goal_pose,
@@ -69,7 +75,8 @@ def plan_arm_motion(husky: Husky, arm_goal_pose, obstacles, traj_time, grasped_e
                 obstacles,
                 debug=debug,
                 disabled_collisions=False,
-                dual_arm_index=None if not husky.dual_arm else arm_index
+                dual_arm_index=None if not husky.dual_arm else arm_index,
+                ee_types=ee_types_for_plan,
             )
 
     if trajectory is None:

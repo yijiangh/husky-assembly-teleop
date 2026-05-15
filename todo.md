@@ -16,11 +16,33 @@
 
 Questions:
 - How are the cfab session and pp synchronize collision geometry to be checked.
+    - _bridge_cfab_to_pp_for_bar_action
+    - how did the collision bodies from one session get copied into the other?
 
 ToDo:
-- plan the vertical element transfer
+
+- check if two parallel pp session can connect to mocap at the same time for Cindy and Alice
+    - this will decide whether need to use Jakob's new mocap ros pkg or not
 
 - try with Cindy old calibration and do a bar reaching in workspace test
+
+- use the double kissing rig to do all movement tests:
+    - do Rhino design of joints on the dk jig
+    - joint installation on three bars
+    - code two LMs, comliant controller integration, rs485 tool intergation
+        - be careful anout the tool disconnection with the right hand on 15-05
+    - switching of movements can be just using a slider (existing)
+    - hotfix pb acm during the day
+
+    - M0: FM to load bar
+    - M1: CDFM to approach
+    - M2: CDLM to assembly target
+    - M3: LM retreat
+    - M4: FM to a fixed home pose (do we need? if so, need a scene-conditioned sampler)
+
+    At night (05-16)
+    - need to proof check the ACM in BarAction export, so we can just load them into the planner
+    - do proper collision body and acm sync between cfab and pb
 
 - calibrate Alice and Cindy
 
