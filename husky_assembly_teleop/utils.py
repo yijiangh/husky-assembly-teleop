@@ -59,18 +59,27 @@ UR5E_JOINT_NAMES = [
                       "ur_arm_wrist_2_joint", 
                       "ur_arm_wrist_3_joint" ]
 
-HUSKY_DUAL_UR5e_JOINT_NAMES = [["left_ur_arm_shoulder_pan_joint", 
+HUSKY_DUAL_UR5e_JOINT_NAMES = [["left_ur_arm_shoulder_pan_joint",
                       "left_ur_arm_shoulder_lift_joint",
-                      "left_ur_arm_elbow_joint", 
-                      "left_ur_arm_wrist_1_joint", 
-                      "left_ur_arm_wrist_2_joint", 
+                      "left_ur_arm_elbow_joint",
+                      "left_ur_arm_wrist_1_joint",
+                      "left_ur_arm_wrist_2_joint",
                       "left_ur_arm_wrist_3_joint" ],
-                                ["right_ur_arm_shoulder_pan_joint", 
+                                ["right_ur_arm_shoulder_pan_joint",
                       "right_ur_arm_shoulder_lift_joint",
-                      "right_ur_arm_elbow_joint", 
-                      "right_ur_arm_wrist_1_joint", 
-                      "right_ur_arm_wrist_2_joint", 
+                      "right_ur_arm_elbow_joint",
+                      "right_ur_arm_wrist_1_joint",
+                      "right_ur_arm_wrist_2_joint",
                       "right_ur_arm_wrist_3_joint" ]]
+
+# Fixed dual-arm "home" configuration used by Plan M4 (return-to-home after
+# bar placement). Order matches HUSKY_DUAL_UR5e_JOINT_NAMES[0] + [1].
+HUSKY_DUAL_ARM_HOME_CONF_12 = np.array([
+    -1.381079037103113, -0.08674286382411818, -2.8050931738052864,
+    -1.7444565873683324, 0.23963370629882144, 1.4217452086745808,
+     1.3946926052686688, -3.0267499888085663,  2.8043950421044888,
+    -1.727003294848389, -0.40561451816348215, -1.2402309664671707,
+])
 
 WHEEL_JOINT_NAMES = [
                       "front_right_wheel", 
@@ -89,6 +98,56 @@ def pose_from_frame(frame, scale=1.0):
 def frame_from_pose(pose, scale=1.0):
     point, (x, y, z, w) = pose
     return Frame.from_quaternion([w, x, y, z], point=[v*scale for v in point])
+
+
+def vec12_from_conf(conf):
+    """Extract a 12-vec (left||right arm joint values) from a compas
+    Configuration. Joint order matches HUSKY_DUAL_UR5e_JOINT_NAMES[0] + [1].
+    """
+    names = list(HUSKY_DUAL_UR5e_JOINT_NAMES[0]) + list(HUSKY_DUAL_UR5e_JOINT_NAMES[1])
+    return np.asarray([float(conf[n]) for n in names], dtype=float)
+
+
+def conf_from_12vec(vec12):
+    """Build a compas Configuration from a 12-vec (left||right arm joints)."""
+    from compas_robots import Configuration
+    names = list(HUSKY_DUAL_UR5e_JOINT_NAMES[0]) + list(HUSKY_DUAL_UR5e_JOINT_NAMES[1])
+    vals = [float(v) for v in vec12]
+    if len(vals) != 12:
+        raise ValueError(f"vec12 must be length 12, got {len(vals)}")
+    return Configuration.from_revolute_values(vals, joint_names=names)
+
+
+def joint_trajectory_from_path(path_12):
+    """Wrap a list / array of 12-vecs into a compas_fab JointTrajectory.
+
+    The trajectory uses HUSKY_DUAL_UR5e_JOINT_NAMES (12 names, left then
+    right). One JointTrajectoryPoint per waypoint.
+    """
+    from compas_fab.robots import JointTrajectory, JointTrajectoryPoint
+    from compas_robots.model import Joint
+    names = list(HUSKY_DUAL_UR5e_JOINT_NAMES[0]) + list(HUSKY_DUAL_UR5e_JOINT_NAMES[1])
+    types = [Joint.REVOLUTE] * len(names)
+    points = []
+    for i, q in enumerate(path_12):
+        q = list(map(float, q))
+        if len(q) != 12:
+            raise ValueError(f"path_12[{i}] must be length 12, got {len(q)}")
+        points.append(JointTrajectoryPoint(joint_values=q, joint_types=types, joint_names=names))
+    return JointTrajectory(trajectory_points=points, joint_names=names)
+
+
+def path_12_from_joint_trajectory(jt):
+    """Inverse of joint_trajectory_from_path: extract a list of 12-vec
+    numpy arrays from a JointTrajectory whose joint_names are
+    HUSKY_DUAL_UR5e_JOINT_NAMES[0]+[1] (order preserved).
+    """
+    names = list(HUSKY_DUAL_UR5e_JOINT_NAMES[0]) + list(HUSKY_DUAL_UR5e_JOINT_NAMES[1])
+    return [
+        np.asarray([float(p.joint_values[p.joint_names.index(n)]) for n in names],
+                   dtype=float)
+        for p in jt.points
+    ]
 
 def pose_from_transformation(tf, scale=1.0):
     frame = Frame.from_transformation(tf)

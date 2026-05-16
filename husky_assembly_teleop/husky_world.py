@@ -30,8 +30,6 @@ import compas
 
 import cv2
 
-MT_FILE_NAME = "one_tet_MT_contact.json"
-# huskies = []
 assembly_objects = []
 
 # Use the centralized DATA_DIRECTORY from the package
@@ -180,7 +178,7 @@ def init(monitor):
     ROBOT_CONFIGS = {
         '84': dict(
             robot_namespace='/a200_0804',
-            mocap_id=4568,
+            mocap_id=4630,
             connect_gripper=True,
             ee_types_default=['robotiq_gripper'],
         ),
@@ -1645,6 +1643,33 @@ def plan_both_arms_to_goal(monitor, use_composite=False, debug=False):
     print("Successfully planned both arms to goal ({} mode)!".format('composite' if use_composite else 'sequential'))
 
 
+_TOOL_V3_WRIST_TOUCH_LINKS = (
+    'left_ur_arm_wrist_1_link',
+    'left_ur_arm_wrist_2_link',
+    'right_ur_arm_wrist_1_link',
+    'right_ur_arm_wrist_2_link',
+)
+
+
+def _augment_tool_touch_links_for_v3(state, husky):
+    """If an assembly_tool_v3_* is mounted, allow wrist_1/2 ↔ tool contact.
+
+    The tool body extends past wrist_3 into the wrist_2 / wrist_1 swept
+    volumes on the husky URDF; without these touch-link entries the
+    cfab CC.2 (robot link ↔ tool) check rejects otherwise-valid IK
+    solutions. Mirrors the pp-side disable in utils.plan_transit_motion.
+    """
+    ee_types = list(getattr(husky.object, "ee_types", []) or [])
+    if not any(isinstance(t, str) and t.startswith("assembly_tool_v3") for t in ee_types):
+        return
+    for tool_state in state.tool_states.values():
+        existing = list(getattr(tool_state, 'touch_links', []) or [])
+        for wl in _TOOL_V3_WRIST_TOUCH_LINKS:
+            if wl not in existing:
+                existing.append(wl)
+        tool_state.touch_links = existing
+
+
 def plan_free_dual_arm_from_live_base(monitor):
     """Replan free dual-arm motion using the live mocap base + M2 EE targets.
 
@@ -1661,14 +1686,18 @@ def plan_free_dual_arm_from_live_base(monitor):
         monitor.get_logger().warn("cfab planner not initialized.")
         return
 
+    husky = monitor.huskies[monitor.selected_robot_id]
+    hi = husky.interface
     live_state = monitor.movement_start_state.copy()
-    hi = monitor.huskies[monitor.selected_robot_id].interface
     live_base_pose = (hi.position, hi.rotation)
     live_state.robot_base_frame = frame_from_pose(live_base_pose)
+    _augment_tool_touch_links_for_v3(live_state, husky)
     monitor.movement_start_state = live_state
     monitor.cfab.planner.set_robot_cell_state(live_state)
 
-    conf12 = _solve_bar_action_goal_ik(monitor, live_state)
+    conf12 = _solve_bar_action_goal_ik(
+        monitor, live_state, verbose=True, skip_env_collisions=True
+    )
     if conf12 is None:
         monitor.get_logger().warn("IK from live base failed.")
         return
@@ -1722,14 +1751,25 @@ def _first_puid_or_none(client, name):
 
 def _solve_bar_action_goal_ik(monitor, start_state,
                               ik_max_results: int = 20,
+                              ik_max_descend_iterations: int = 200,
                               max_outer_attempts: int = 5,
                               random_seed: int = 0,
-                              verbose: bool = False):
+                              verbose: bool = False,
+                              skip_env_collisions: bool = False):
     """Solve goal IK for a BarAction movement from `target_ee_frames`.
 
     Returns a 12-vector (left_conf || right_conf) on success, or None on
-    failure. Wraps the goal-IK retry block that previously lived inside
-    `plan_bar_action_movement` (now deleted).
+    failure. Mirrors `core.robot_cell.solve_dual_arm_ik` in
+    bar_joint_rhino_design_workflow: left then right, merging configs,
+    using the cfab planner + state-defined ACM (held bar + tool touch-
+    links). On failure, runs a `check_collision=False` retry so we can
+    tell "unreachable" from "ACM/collision rejection".
+
+    skip_env_collisions: when True, the compas_fab check_collision CC.3
+    (link↔rigid-body), CC.4 (attached-rigid-body↔rigid-body), and CC.5
+    (tool↔rigid-body) steps are bypassed during IK. Only CC.1 (robot
+    self-collision) and CC.2 (robot↔tool) remain. Use when the env scene
+    is irrelevant to the local replan.
     """
     from compas_fab.backends import CollisionCheckError, InverseKinematicsError
     from compas_fab.robots import FrameTarget, TargetMode
@@ -1743,6 +1783,14 @@ def _solve_bar_action_goal_ik(monitor, start_state,
     left_group = "base_left_arm_manipulator"
     right_group = "base_right_arm_manipulator"
 
+    # Push state defensively so the planner's ACM/attachments match what
+    # we're about to feed into IK (held bar -> gripper touch-links etc).
+    try:
+        planner.set_robot_cell_state(start_state)
+    except Exception as e:
+        print(f"[goal IK] set_robot_cell_state failed: {e}")
+        return None
+
     target_L = FrameTarget(
         monitor.target_ee_frames["left"], target_mode=TargetMode.ROBOT,
         tolerance_position=0.001, tolerance_orientation=0.01,
@@ -1751,41 +1799,79 @@ def _solve_bar_action_goal_ik(monitor, start_state,
         monitor.target_ee_frames["right"], target_mode=TargetMode.ROBOT,
         tolerance_position=0.001, tolerance_orientation=0.01,
     )
-    ik_options = {
-        "max_results": ik_max_results,
-        "return_full_configuration": True,
-        "check_collision": True,
-    }
 
-    def _solve_once():
+    def _ik_options(check_collision):
+        opts = {
+            "max_results": ik_max_results,
+            "max_descend_iterations": ik_max_descend_iterations,
+            "return_full_configuration": True,
+            "check_collision": check_collision,
+            "verbose": verbose,
+        }
+        if skip_env_collisions:
+            # Skip env-related collision checks; keep robot self + robot↔tool.
+            opts["_skip_cc3"] = True
+            opts["_skip_cc4"] = True
+            opts["_skip_cc5"] = True
+        return opts
+
+    def _solve_pair(check_collision: bool):
+        opts = _ik_options(check_collision)
         try:
-            conf_L = planner.inverse_kinematics(target_L, start_state, left_group, ik_options)
+            conf_L = planner.inverse_kinematics(target_L, start_state, left_group, opts)
         except (InverseKinematicsError, CollisionCheckError) as e:
             return None, f"LEFT FAIL: {getattr(e, 'message', e)}"
         st = start_state.copy()
         st.robot_configuration = conf_L
         try:
-            conf_LR = planner.inverse_kinematics(target_R, st, right_group, ik_options)
+            conf_LR = planner.inverse_kinematics(target_R, st, right_group, opts)
         except (InverseKinematicsError, CollisionCheckError) as e:
             return None, f"RIGHT FAIL: {getattr(e, 'message', e)}"
         gs = start_state.copy()
         gs.robot_configuration = conf_LR
-        try:
-            planner.check_collision(gs, {"verbose": verbose})
-        except CollisionCheckError as e:
-            return None, f"GOAL COLLISION: {(e.message or '').splitlines()[0] if e.message else ''}"
+        if check_collision:
+            cc_opts = {"verbose": verbose}
+            if skip_env_collisions:
+                cc_opts["_skip_cc3"] = True
+                cc_opts["_skip_cc4"] = True
+                cc_opts["_skip_cc5"] = True
+            try:
+                planner.check_collision(gs, cc_opts)
+            except CollisionCheckError as e:
+                return None, f"GOAL COLLISION: {(e.message or '').splitlines()[0] if e.message else ''}"
         return gs, None
 
     goal_state = None
+    last_err = None
     for attempt in range(1, max_outer_attempts + 1):
-        gs, err = _solve_once()
+        gs, err = _solve_pair(check_collision=True)
         if gs is not None:
             goal_state = gs
             print(f"[goal IK] attempt {attempt}/{max_outer_attempts}: OK")
             break
+        last_err = err
         print(f"[goal IK] attempt {attempt}/{max_outer_attempts}: {err}")
+
     if goal_state is None:
-        print("[goal IK] all attempts failed.")
+        # Diagnostic: try without collision check. If THIS succeeds, the
+        # target is reachable and the failure was ACM/collision rejection
+        # — usually a missing touch-link on the held bar or a stale ACM.
+        gs_nc, err_nc = _solve_pair(check_collision=False)
+        if gs_nc is not None:
+            print(
+                "[goal IK] DIAGNOSTIC: IK is reachable WITHOUT collision check "
+                "but rejected WITH collision check. Last with-CC error: "
+                f"{last_err}. Likely missing touch-link on the held bar or "
+                "stale ACM. Inspect monitor.cfab.planner state, the bar's "
+                "rigid_body_states[...].touch_links, and the start_state "
+                "passed to IK."
+            )
+        else:
+            print(
+                f"[goal IK] DIAGNOSTIC: IK ALSO fails without collision check "
+                f"({err_nc}); the EE targets are unreachable from the current "
+                "base. Move the base closer to the goal-ghost base pose."
+            )
         return None
 
     monitor.movement_goal_state = goal_state
@@ -1960,7 +2046,9 @@ def _plan_and_stage_body(monitor, husky, robot, debug, max_time, max_attempts,
             return
 
         # 1) Goal config via dual-arm IK on target_ee_frames.
-        goal_conf = _solve_bar_action_goal_ik(monitor, start_state)
+        goal_conf = _solve_bar_action_goal_ik(
+            monitor, start_state, skip_env_collisions=ignore_env_obstacles
+        )
         if goal_conf is None:
             monitor.get_logger().warn("BarAction goal IK failed.")
             return

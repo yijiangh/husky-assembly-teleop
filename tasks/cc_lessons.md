@@ -1047,3 +1047,58 @@ How to apply: when refactoring hardcoded-per-variant call sites, grep for
 the function call (e.g. `create_husky_with_end_effectors(`) across the file
 including commented-out blocks, and tabulate every arg's value per variant
 before deciding which fields belong in the config table.
+
+## compas_fab JointTrajectory + JointTrajectoryPoint API gotchas — 2026-05-16
+
+When building a `JointTrajectory` programmatically (e.g. wrapping a planned
+12-vec path):
+
+- `JointTrajectoryPoint(joint_values=q, joint_names=names)` raises
+  `ValueError: N joint_values must have N joint_types, but 0 given.` —
+  `joint_types` is REQUIRED, not optional in practice. For UR5e (revolute)
+  pass `[Joint.REVOLUTE] * len(names)`.
+- The `Joint` enum lives at `compas_robots.model.Joint`, **not**
+  `compas_robots.Joint`. The top-level package does not re-export it.
+- `JointTrajectory.__init__` kwarg for the points list is
+  `trajectory_points=...`, **not** `points=...`. The `.points` attribute
+  exists for reading after construction (set inside `__init__` from
+  `trajectory_points`).
+
+Spec template that "looks right" but fails on all three counts:
+```python
+JointTrajectoryPoint(joint_values=q, joint_names=names)        # missing joint_types
+JointTrajectory(joint_names=names, points=points)              # wrong kwarg
+from compas_robots import Joint                                # wrong path
+```
+
+Working template:
+```python
+from compas_robots.model import Joint
+from compas_fab.robots import JointTrajectory, JointTrajectoryPoint
+types = [Joint.REVOLUTE] * len(names)
+pt = JointTrajectoryPoint(joint_values=q, joint_types=types, joint_names=names)
+jt = JointTrajectory(trajectory_points=[pt, ...], joint_names=names)
+```
+
+
+## Sliders need explicit `.update()` polling in `HuskyMonitor.update()` — 2026-05-17
+
+`common.Slider.update()` does the per-tick poll that detects user drags and
+dispatches the registered callback. The monitor's `update()` does NOT
+auto-iterate sliders — it only iterates `self.buttons`. Each slider needs
+an explicit `.update()` call in the tick loop (see existing pattern with
+`constrained_stage_slider.update()`, `calib_batch_slider.update()`, etc.).
+
+Symptom of missing poll: slider visually moves but its callback never
+fires, so the bound attribute stays at its construction default. Looks
+like "button always loads index 0 no matter what the slider shows".
+
+Working pattern (in `HuskyMonitor.update()`):
+```python
+if self.BAR_HOLDING_ACCURACY_TEST:
+    if hasattr(self, 'bar_movement_slider') and self.bar_movement_slider:
+        self.bar_movement_slider.update()
+```
+
+Add this for every new Slider; just storing the handle on `self` isn't
+enough.
