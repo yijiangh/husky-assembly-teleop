@@ -109,8 +109,17 @@ def create_end_effector(ee_type="assembly_tool_v3_left", load_calib_tip=False, d
         return ee
     if ee_type in ("assembly_tool_v3_left", "assembly_tool_v3_right"):
         side = ee_type.rsplit('_', 1)[-1]  # 'left' or 'right'
-        tool_obj = os.path.join(DATA_DIRECTORY, f'assembly_tool_v3_{side}_mm.obj')
-        assert os.path.exists(tool_obj)
+        # Prefer the cell-derived mesh (export via
+        # scripts/export_tool_mesh_from_cell.py) so the pp visualization
+        # matches the cfab planner's collision mesh. Fall back to the
+        # static legacy OBJ when the exported file is missing.
+        from_cell_obj = os.path.join(
+            DATA_DIRECTORY, f'assembly_tool_v3_{side}_mm_from_cell.obj'
+        )
+        legacy_obj = os.path.join(DATA_DIRECTORY, f'assembly_tool_v3_{side}_mm.obj')
+        tool_obj = from_cell_obj if os.path.exists(from_cell_obj) else legacy_obj
+        assert os.path.exists(tool_obj), \
+            f"missing tool OBJ: tried {from_cell_obj} and {legacy_obj}"
         tool_scale = 0.001
         ee = pp.create_obj(tool_obj, scale=tool_scale)
         return ee
