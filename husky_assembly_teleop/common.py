@@ -307,6 +307,8 @@ class Husky():
                                              )
         self.object = HuskyObject(calibration=calibration, dual_arm=dual_arm, ee_types=ee_types, force_regenerate=force_regenerate, punch_tool_offset=punch_tool_offset)
         self.dual_arm = dual_arm
+        self.connect_gripper = connect_gripper
+        self.ee_types = list(ee_types or [])
         
         self.interface.position = pos
         self.interface.rotation = rot

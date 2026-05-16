@@ -60,7 +60,7 @@ MOCAP_IP = '192.168.0.117' # set to the mocap PC's IP, get this from Motive Sett
 
 class HuskyMonitor(Node):
     USE_MOCAP = 0
-    FAKE_HARDWARE = 0
+    FAKE_HARDWARE = 1
 
     # When USE_MOCAP=1, by default the husky base in PyBullet tracks mocap.
     # Set USE_CELL_STATE_BASE_POSE=1 to override that and pin the base to
@@ -172,7 +172,7 @@ class HuskyMonitor(Node):
         self.board_validation_state_slider = None
         self.trajectory_selection_slider = None
         self.available_robot_cell_states = []
-        self.selected_state_index = 0
+        self.selected_state_index = 1
         self.available_joint_trajectories = []  # Store available JointTrajectory files
         self.selected_trajectory_index = 0
         
@@ -192,6 +192,7 @@ class HuskyMonitor(Node):
 
         self.goal_base_pose = (np.zeros(3), np.array([0, 0, 0, 1]))
         self.goal_gripper = 0.0
+        self.gripper_slider = None
         self.goal_arm_pose = [np.zeros(6), np.zeros(6)]
         self.show_goal_state = True  
 
@@ -845,6 +846,71 @@ class HuskyMonitor(Node):
         self.goal_arm_pose[1] = start_conf[6:].copy()
         self.update_traj_goal_configuration()
 
+    def sample_random_goal_conf(self, max_attempts=200):
+        """Sample a collision-free random arm conf for the active husky and
+        stage it as ``goal_arm_pose``. Auto-adapts to single/dual arm via
+        ``HuskyObject.get_arm_joint_names`` + ``husky.dual_arm``."""
+        husky = self.huskies[self.selected_robot_id]
+        ho = husky.object
+        robot = ho.robot
+        if husky.dual_arm:
+            arm_specs = [('left_', 0), ('right_', 1)]
+            joint_names = list(ho.get_arm_joint_names(0)) + list(ho.get_arm_joint_names(1))
+            attachments = [ho.ee_list[0][1], ho.ee_list[1][1]]
+        else:
+            arm_specs = [('', 0)]
+            joint_names = list(ho.get_arm_joint_names(0))
+            attachments = [ho.ee_list[0][1]]
+
+        # ACM: wrist links vs mounted tool body. Mirrors plan_transit_motion's
+        # extra_disabled_collisions logic (utils.py:233-272). Without these,
+        # the tool body collides with its own mount link / nearby wrist links.
+        ee_types = getattr(ho, "ee_types", None) or []
+        extra_disabled_collisions = []
+        for arm_prefix, idx in arm_specs:
+            attach = attachments[idx]
+            ee_type = ee_types[idx] if idx < len(ee_types) else None
+            wrist_links = ['ur_arm_wrist_3_link']  # mount link
+            if isinstance(ee_type, str):
+                if ee_type.startswith('assembly_tool_v3'):
+                    wrist_links += ['ur_arm_wrist_2_link', 'ur_arm_wrist_1_link']
+                elif ee_type == 'robotiq_gripper':
+                    wrist_links += ['ur_arm_wrist_1_link']
+            for wl in wrist_links:
+                extra_disabled_collisions.append(
+                    ((robot, pp.link_from_name(robot, arm_prefix + wl)),
+                     (attach.child, pp.BASE_LINK))
+                )
+
+        joints = pp.joints_from_names(robot, joint_names)
+        obstacles = list(self.static_obstacles.values())
+        sample_fn = pp.get_sample_fn(robot, joints)
+        collision_fn = pp.get_collision_fn(
+            robot, joints,
+            obstacles=obstacles,
+            attachments=attachments,
+            self_collisions=1,
+            extra_disabled_collisions=extra_disabled_collisions,
+            max_distance=0,
+        )
+        with pp.WorldSaver():
+            for attempt in range(max_attempts):
+                q = sample_fn()
+                if not collision_fn(q):
+                    if husky.dual_arm:
+                        self.goal_arm_pose[0] = np.array(q[:6])
+                        self.goal_arm_pose[1] = np.array(q[6:])
+                    else:
+                        self.goal_arm_pose[0] = np.array(q)
+                    self.update_traj_goal_configuration()
+                    self.get_logger().info(
+                        f"Sampled collision-free goal conf in {attempt+1} attempts."
+                    )
+                    return
+        self.get_logger().warn(
+            f"No collision-free goal conf in {max_attempts} attempts."
+        )
+
     def plan_single_arm_to_goal_action(self):
         """Plan selected arm, then cache it as manual staging if applicable."""
         self._set_goal_to_constrained_start()
@@ -1019,6 +1085,30 @@ class HuskyMonitor(Node):
             self.goal_base_pose = pose_from_frame(mv.start_state.robot_base_frame)
             if self.BAR_HOLDING_ACCURACY_TEST:
                 self.goal_base_pose_frozen = True
+
+        # 7b) For BAR_HOLDING_ACCURACY_TEST, override goal_arm_pose with the IK
+        # solution on target_ee_frames so the goal ghost reflects the target
+        # EE pose (not the movement's start config, which can be identical
+        # across adjacent movements: M2.start == M1.end etc).
+        if self.BAR_HOLDING_ACCURACY_TEST and self.target_ee_frames is not None:
+            from husky_assembly_teleop.husky_world import _solve_bar_action_goal_ik
+            conf12 = _solve_bar_action_goal_ik(
+                self, mv.start_state, skip_env_collisions=True, verbose=False,
+            )
+            if conf12 is not None:
+                self.goal_arm_pose[0] = np.asarray(conf12[:6])
+                self.goal_arm_pose[1] = np.asarray(conf12[6:])
+                if update_goal_state:
+                    self.reset_ui(self.goal_arm_pose)
+                print(
+                    f"BAR_HOLDING_ACCURACY_TEST: goal_arm_pose overridden from "
+                    f"IK on target_ee_frames (movement {mv.movement_id})."
+                )
+            else:
+                print(
+                    f"WARN: IK on target_ee_frames failed for {mv.movement_id}; "
+                    f"goal ghost falls back to start_state config."
+                )
 
         if update_goal_state:
             self.set_to_show_goal_state()
@@ -1588,6 +1678,7 @@ class HuskyMonitor(Node):
             # self.buttons.append(Button('Plan base', lambda: world.plan_to_goal(self)))
             # self.buttons.append(Button('Exec Base', lambda: world.move_to_goal(self)))
                
+        self.buttons.append(Button('Sample Random Goal Conf', self.sample_random_goal_conf))
         self.buttons.append(Button('Plan S.Arm to conf target', self.plan_single_arm_to_goal_action))
         self.buttons.append(Button('Exec S.Arm Traj', self.execute_arm_trajectory))
         self.buttons.append(Button('Exec Both Arm Trajs', lambda: world.execute_arm_trajectory_both(self)))
@@ -1596,11 +1687,107 @@ class HuskyMonitor(Node):
         # self.buttons.append(Button('Plan Both Arms to Goal (sequential)', lambda: world.plan_both_arms_to_goal(self, use_composite=False)))
         self.buttons.append(Button('Plan Both Arms to Goal (composite)', self.plan_both_arms_to_goal_action))
 
+        # BarAction loading — flag-independent, available for both single-arm and dual-arm.
+        # Reset on rebuild; slider is (re)created below only when >= 2 entries
+        # (a 1-entry slider has rangeMin == rangeMax which segfaults pybullet's GUI thread).
+        self.board_validation_state_slider = None
+        if not self.available_robot_cell_states:
+            self.available_robot_cell_states = self._load_available_bar_actions()
+        n_actions = len(self.available_robot_cell_states)
+        if n_actions == 0:
+            print("No robot cell state files found")
+        else:
+            self.dump_sep_sliders.append(Slider("----------BarAction Loading", lambda : None))
+            if n_actions > 1:
+                self.board_validation_state_slider = Slider(
+                    "Bar Action",
+                    self.update_board_validation_state_index,
+                    0, n_actions - 1, self.selected_state_index
+                )
+            else:
+                self.selected_state_index = 0  # only one; nothing to pick
+            self.buttons.append(Button('Load BarAction', self.load_bar_action))
+
+        # Constrained dual-arm planner controls — only when the active robot is dual-arm.
+        # Stored as named attributes so update() polls them — items
+        # appended to self.dump_sep_sliders are not polled.
+        if self.huskies[self.selected_robot_id].dual_arm:
+            self.constrained_stage_slider = Slider(
+                "Constrained Stage",
+                self.update_constrained_planner_stage,
+                1, 3, 3,
+            )
+            self.buttons.append(Button(
+                'Plan & Stage Constrained',
+                self.plan_and_stage_constrained_bar_action,
+            ))
+            self.buttons.append(Button(
+                'Export Dual-Traj',
+                self.export_constrained_dual_arm_trajectory,
+            ))
+            self.buttons.append(Button(
+                'Load Dual-Traj',
+                self.parse_constrained_dual_arm_trajectory,
+            ))
+            self.constrained_display_slider = Slider(
+                "Display Traj (0=Free,1=Constrained)",
+                self.update_constrained_display_mode,
+                0, 1, 0,
+            )
+        else:
+            # Clear stale handles from a prior dual-arm build (reset_ui removes
+            # the underlying pybullet params but leaves Python attrs behind).
+            for _attr in ('constrained_stage_slider', 'constrained_display_slider'):
+                if hasattr(self, _attr):
+                    delattr(self, _attr)
+
         # Button to export planned trajectory to JSON
         self.buttons.append(Button(
             'Export Trajectory (JSON)',
             lambda: self.export_planned_trajectory_to_json()
         ))
+
+        # Gripper controls — only when the active robot connected its gripper.
+        self.gripper_slider = None
+        if self.huskies[self.selected_robot_id].connect_gripper:
+            self.dump_sep_sliders.append(Slider("----------Gripper", lambda: None))
+            self.gripper_slider = Slider(
+                "gripper pos (0=open, 0.85=closed)",
+                lambda v: setattr(self, 'goal_gripper', float(v)),
+                0.0, 0.85, self.goal_gripper,
+            )
+            self.buttons.append(Button('Open Gripper Full', lambda: world.open_gripper_full(self)))
+            self.buttons.append(Button('Close Gripper for Bar', lambda: world.close_gripper_for_bar(self)))
+            self.buttons.append(Button('Set Gripper (slider)', lambda: world.set_gripper(self)))
+
+        # Scaffolding V3 controls — only when active robot has assembly_tool_v3_*.
+        active_husky = self.huskies[self.selected_robot_id]
+        has_scaffold_left = any('assembly_tool_v3_left' in (t or '') for t in active_husky.ee_types)
+        has_scaffold_right = any('assembly_tool_v3_right' in (t or '') for t in active_husky.ee_types)
+        if has_scaffold_left or has_scaffold_right:
+            self.dump_sep_sliders.append(Slider("----------Scaffolding V3", lambda: None))
+
+            def send_scaffolding_cmd_both_motors(direction, arm_index):
+                interface = self.huskies[self.selected_robot_id].interface
+                interface.send_scaffolding_cmd(direction, 1, arm_index)
+                interface.send_scaffolding_cmd(direction, 2, arm_index)
+
+            def send_scaffolding_cmd_motor(direction, motor, arm_index):
+                self.huskies[self.selected_robot_id].interface.send_scaffolding_cmd(direction, motor, arm_index)
+
+            if has_scaffold_left:
+                self.buttons.append(Button('Scaffold L Stop (M1+M2)', lambda: send_scaffolding_cmd_both_motors(0, 0)))
+                self.buttons.append(Button('Scaffold L Tighten M1', lambda: send_scaffolding_cmd_motor(1, 1, 0)))
+                self.buttons.append(Button('Scaffold L Loosen M1', lambda: send_scaffolding_cmd_motor(-1, 1, 0)))
+                self.buttons.append(Button('Scaffold L Tighten M2', lambda: send_scaffolding_cmd_motor(1, 2, 0)))
+                self.buttons.append(Button('Scaffold L Loosen M2', lambda: send_scaffolding_cmd_motor(-1, 2, 0)))
+
+            if has_scaffold_right and active_husky.dual_arm:
+                self.buttons.append(Button('Scaffold R Stop (M1+M2)', lambda: send_scaffolding_cmd_both_motors(0, 1)))
+                self.buttons.append(Button('Scaffold R Tighten M1', lambda: send_scaffolding_cmd_motor(1, 1, 1)))
+                self.buttons.append(Button('Scaffold R Loosen M1', lambda: send_scaffolding_cmd_motor(-1, 1, 1)))
+                self.buttons.append(Button('Scaffold R Tighten M2', lambda: send_scaffolding_cmd_motor(1, 2, 1)))
+                self.buttons.append(Button('Scaffold R Loosen M2', lambda: send_scaffolding_cmd_motor(-1, 2, 1)))
 
         if self.DUAL_ARM_KISSING:
             self.dump_sep_sliders.append(Slider("----------KISSING EXPERIMENT", lambda: None))
@@ -1634,72 +1821,27 @@ class HuskyMonitor(Node):
             self.buttons.append(Button('Draw TCP Pose', lambda: world.draw_tcp_pose(self)))
 
         if self.BOARD_VALIDATION:
-            self.dump_sep_sliders.append(Slider("----------BarAction Loading", lambda : None))
             # Reset on rebuild; selection sliders are (re)created below only
             # when there are >= 2 entries. A 1-entry slider has
             # rangeMin == rangeMax which segfaults pybullet's GUI thread.
-            self.board_validation_state_slider = None
             self.trajectory_selection_slider = None
 
-            # Load available BarAction files if not already loaded
-            if not self.available_robot_cell_states:
-                self.available_robot_cell_states = self._load_available_bar_actions()
-
-            n_actions = len(self.available_robot_cell_states)
-            if n_actions == 0:
-                print("No robot cell state files found for board validation")
-            else:
-                if n_actions > 1:
-                    self.board_validation_state_slider = Slider(
-                        "Bar Action",
-                        self.update_board_validation_state_index,
-                        0, n_actions - 1, self.selected_state_index
-                    )
-                else:
-                    self.selected_state_index = 0  # only one; nothing to pick
-
-                # Add button to load the selected BarAction (default movement = M1)
-                self.buttons.append(Button('Load BarAction (M1)', self.load_bar_action))
-
-                # Constrained dual-arm planner controls.
-                # Stored as named attributes so update() polls them — items
-                # appended to self.dump_sep_sliders are not polled.
-                self.constrained_stage_slider = Slider(
-                    "Constrained Stage",
-                    self.update_constrained_planner_stage,
-                    1, 3, 3,
-                )
-                self.buttons.append(Button(
-                    'Plan & Stage Constrained',
-                    self.plan_and_stage_constrained_bar_action,
-                ))
-                self.buttons.append(Button(
-                    'Export Dual-Traj',
-                    self.export_constrained_dual_arm_trajectory,
-                ))
-                self.buttons.append(Button(
-                    'Load Dual-Traj',
-                    self.parse_constrained_dual_arm_trajectory,
-                ))
-                self.constrained_display_slider = Slider(
-                    "Display Traj (0=Free,1=Constrained)",
-                    self.update_constrained_display_mode,
-                    0, 1, 0,
-                )
-
-                # Joint trajectory: slider only when there's a choice; button
-                # only when at least one file exists.
-                n_traj = len(self.available_joint_trajectories)
+            # Joint trajectory: slider only when there's a choice; button
+            # only when at least one file exists. Lazy-load once.
+            if not self.available_joint_trajectories:
+                self.available_joint_trajectories = self._load_available_joint_trajectories()
+            n_traj = len(self.available_joint_trajectories)
+            if n_traj > 0:
+                self.dump_sep_sliders.append(Slider("----------Joint Trajectory Loading", lambda : None))
                 if n_traj > 1:
                     self.trajectory_selection_slider = Slider(
                         "Joint Trajectory",
                         self.update_trajectory_index,
                         0, n_traj - 1, self.selected_trajectory_index
                     )
-                elif n_traj == 1:
+                else:
                     self.selected_trajectory_index = 0
-                if n_traj >= 1:
-                    self.buttons.append(Button('Load Joint Trajectory', self.load_joint_trajectory))
+                self.buttons.append(Button('Load Joint Trajectory', self.load_joint_trajectory))
 
         if self.USE_MOCAP:
             self.dump_sep_sliders.append(Slider("----------MoCap Experiment", lambda : None))
@@ -1988,6 +2130,8 @@ class HuskyMonitor(Node):
         self.selected_robot_slider.update()
         self.arm_slider.update()
         self.trajectory_time_slider.update()
+        if self.gripper_slider is not None:
+            self.gripper_slider.update()
 
         # BarAction trajectory scrub sliders on the cfab GUI window (no-op
         # until 'Plan & Stage Constrained' has run on a BarAction).
@@ -2002,15 +2146,15 @@ class HuskyMonitor(Node):
         if self.CALIBRATION and self.calib_batch_slider:
             self.calib_batch_slider.update()
 
-        if self.BOARD_VALIDATION and self.board_validation_state_slider:
+        if self.board_validation_state_slider:
             self.board_validation_state_slider.update()
 
         if self.BOARD_VALIDATION and hasattr(self, 'trajectory_selection_slider') and self.trajectory_selection_slider:
             self.trajectory_selection_slider.update()
 
-        if self.BOARD_VALIDATION and hasattr(self, 'constrained_stage_slider'):
+        if hasattr(self, 'constrained_stage_slider'):
             self.constrained_stage_slider.update()
-        if self.BOARD_VALIDATION and hasattr(self, 'constrained_display_slider'):
+        if hasattr(self, 'constrained_display_slider'):
             self.constrained_display_slider.update()
 
         if not self.USE_MOCAP:

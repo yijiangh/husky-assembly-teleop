@@ -19,13 +19,13 @@
             -0.46184709668159485
         ],
         [
-            -0.004727842751890421,
-            0.0018592752749100327,
-            0.99982088804245,
-            0.018230432644486427
+            -0.004657795825226752,
+            -0.002028383515264018,
+            0.6940892673598913,
+            0.7198709924536533
         ]
     ],
     "mocap_axis_convention": "rhino",
     "_source_calibration_file": "calibrated_transformation_0806.json",
-    "_conversion_note": "Identity copy: base_mocap_from_* poses are invariant under rotated\u2194rhino y-up->z-up convention switch."
+    "_conversion_note": "Empirical fix for rotated->rhino: base_mocap_from_base_footprint quat is right-multiplied by q_z(-90\u00b0). Position unchanged. Other top-level poses (e.g. base_mocap_from_<arm>_arm_base_link_inertia) are passed through unchanged \u2014 they are reference-only and not loaded at runtime."
 }

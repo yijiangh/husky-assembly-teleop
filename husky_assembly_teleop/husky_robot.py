@@ -37,7 +37,7 @@ from control_msgs.msg import JointTolerance
 from ur_msgs.msg._io_states import IOStates
 from std_srvs.srv._trigger import Trigger
 from geometry_msgs.msg import PoseStamped, Point, Quaternion, WrenchStamped
-from crl_husky_msgs.msg import MultiArmTrajectory
+from crl_husky_msgs.msg import MultiArmTrajectory, ScaffoldingToolCmd, ScaffoldingToolStatus
 from ur_msgs.srv._set_force_mode import SetForceMode
 from ur_msgs.msg._io_states import IOStates
 from std_srvs.srv._trigger import Trigger
@@ -86,15 +86,19 @@ class HuskyRobotInterface:
     # Gripper and screw states for toggle functionality
     gripper_states = [False]  # False = open, True = closed
     screw_states = [False]    # False = not actuated, True = actuated
-    
+
+    scaffolding_status = [None]
+
     odom_offset = np.zeros(3)
     _odom_position = np.zeros(3)
-    
+
     def __init__(self, node: Node, name='/a200_0804', use_odom=True, connect_arm=True, connect_gripper=True, dual_arm=False):
         self.node = node
         self.name = name
         self.dual_arm = dual_arm
-        
+
+        self.scaffolding_status = [None]
+
         if dual_arm:
             self.arm_joint_pose.append(UR5e_HOME_STATE)
             self.arm_tcp_pose.append(pp.Pose())
@@ -105,6 +109,7 @@ class HuskyRobotInterface:
             self.active_controller.append("")
             self.gripper_states.append(False)
             self.screw_states.append(False)
+            self.scaffolding_status.append(None)
         
         q = QoSProfile(depth=10)
         print(q)
@@ -193,7 +198,35 @@ class HuskyRobotInterface:
                 lambda msg: self.ft_sensor_callback(0, msg),
                 10))
 
-        
+        self.sub_scaffolding_status = []
+        if dual_arm:
+            self.sub_scaffolding_status.append(self.node.create_subscription(
+                ScaffoldingToolStatus,
+                name + '/left_gripper/tool_status',
+                lambda msg: self.scaffolding_status_callback(0, msg),
+                10))
+            self.sub_scaffolding_status.append(self.node.create_subscription(
+                ScaffoldingToolStatus,
+                name + '/right_gripper/tool_status',
+                lambda msg: self.scaffolding_status_callback(1, msg),
+                10))
+        else:
+            self.sub_scaffolding_status.append(self.node.create_subscription(
+                ScaffoldingToolStatus,
+                name + '/gripper/tool_status',
+                lambda msg: self.scaffolding_status_callback(0, msg),
+                10))
+
+        self.pub_scaffolding_cmd = []
+        if dual_arm:
+            self.pub_scaffolding_cmd.append(
+                self.node.create_publisher(ScaffoldingToolCmd, name + '/left_gripper/tool_cmd', 10))
+            self.pub_scaffolding_cmd.append(
+                self.node.create_publisher(ScaffoldingToolCmd, name + '/right_gripper/tool_cmd', 10))
+        else:
+            self.pub_scaffolding_cmd.append(
+                self.node.create_publisher(ScaffoldingToolCmd, name + '/gripper/tool_cmd', 10))
+
         # Publishers --- --- --- --- ---
         self.pub_cmd_vel = self.node.create_publisher(Twist, name + '/cmd_vel', 10)
         self.pub_cmd_arm = []
@@ -468,6 +501,12 @@ class HuskyRobotInterface:
                 msg.wrench.torque.x, msg.wrench.torque.y, msg.wrench.torque.z
             ]
 
+    def scaffolding_status_callback(self, index, msg: ScaffoldingToolStatus):
+        if index >= len(self.scaffolding_status):
+            self.node.get_logger().error(f'Invalid arm index for scaffolding status: {index}')
+            return
+        self.scaffolding_status[index] = msg
+
     def zero_ft_sensor(self, index=0):
         msg = Trigger.Request()
         self.zero_ft_sensor_client[index].call_async(msg)
@@ -670,6 +709,18 @@ class HuskyRobotInterface:
             self.node.get_logger().error(
                 f"Done with result: {self.error_code_to_str(result.error_code)}"
             )
+
+    def send_scaffolding_cmd(self, direction, motor, index=0):
+        if index >= len(self.pub_scaffolding_cmd):
+            self.node.get_logger().error(f'Invalid arm index for scaffolding cmd: {index}')
+            return
+        if motor not in (1, 2):
+            self.node.get_logger().error(f'Invalid scaffolding motor: {motor}')
+            return
+        msg = ScaffoldingToolCmd()
+        msg.direction = int(direction)
+        msg.motor = int(motor)
+        self.pub_scaffolding_cmd[index].publish(msg)
 
     # DEPRECATED: SetIO-based gripper/screw control. Replaced by RS485 tool driver
     # (see self.tool_clients and tighten_tool/loosen_tool/stop_tool below).
