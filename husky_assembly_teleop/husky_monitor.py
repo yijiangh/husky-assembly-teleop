@@ -1129,17 +1129,17 @@ class HuskyMonitor(Node):
         return True
 
     def _hide_cfab_robot(self):
-        """Hide the cfab-side robot URDF (and its tools) in the shared GUI.
+        """Tint the cfab-side robot URDF (red, alpha=0.5) so its pose updates
+        from `set_robot_cell_state` are visible during cfab CC debugging.
 
-        Set alpha=0 on every link so the duplicate husky/tool meshes loaded
-        by ``planner.set_robot_cell`` stop overlapping the real robot. Pose
-        and collision queries are unaffected — only visuals change.
+        Tools stay transparent to avoid duplicating the real robot's tool
+        meshes; only the cfab husky body links are tinted.
         """
         if self.cfab is None or self.cfab.client is None:
             return
         client = self.cfab.client
         if client.robot_puid is not None:
-            pp.set_color(client.robot_puid, TRANSPARENT)
+            pp.set_color(client.robot_puid, [1.0, 0.0, 0.0, 0.5])
         for tool_puid in (client.tools_puids or {}).values():
             pp.set_color(tool_puid, TRANSPARENT)
 
@@ -1317,6 +1317,144 @@ class HuskyMonitor(Node):
                 return m
         return None
 
+    def _print_cfab_collision_check_setup(self, state, header='cfab CC setup'):
+        """Pretty-print the Allowed-Collision-Matrix (ACM) that cfab's
+        `check_collision` would apply at the given RobotCellState.
+
+        The cfab checker runs 5 categories (see
+        compas_fab/backends/pybullet/.../pybullet_check_collision.py):
+
+          CC.1  robot link ↔ robot link
+                SKIP if {a,b} in client.unordered_disabled_collisions (SRDF).
+          CC.2  robot link ↔ tool
+                SKIP if link_name in tool_state.touch_links, or tool hidden.
+          CC.3  robot link ↔ rigid body
+                SKIP if link_name in rb_state.touch_links, or rb hidden.
+          CC.4  attached rigid body ↔ other rigid body
+                SKIP if neither body is attached, hidden, or in the other's
+                touch_bodies.
+          CC.5  tool ↔ rigid body
+                SKIP if rb attached to that tool, tool hidden, rb hidden,
+                or tool in rb_state.touch_bodies.
+
+        This dump tells you, at a glance, why a given pair WOULD be
+        checked or skipped — useful when you see an obvious tool↔link
+        overlap getting flagged: the tool's touch_links is missing that
+        link.
+        """
+        if self.cfab is None or getattr(self.cfab, 'client', None) is None:
+            print(f"[{header}] cfab session not initialized; skipping.")
+            return
+        client = self.cfab.client
+        rc = client.robot_cell
+        robot_name = getattr(getattr(rc, 'robot_model', None), 'name', None) or '?'
+        n_links = len(client.robot_link_puids or {})
+        tools_puids = client.tools_puids or {}
+        bodies_puids = client.rigid_bodies_puids or {}
+        tool_states = (state.tool_states or {}) if state is not None else {}
+        rb_states = (state.rigid_body_states or {}) if state is not None else {}
+
+        print(f"\n=== {header} ===")
+        print(f"robot: '{robot_name}'  ({n_links} links)")
+        print(f"tools loaded: {len(tools_puids)} | rigid bodies loaded: {len(bodies_puids)}")
+
+        # CC.1
+        disabled = getattr(client, 'unordered_disabled_collisions', None) or set()
+        total_pairs = n_links * (n_links - 1) // 2 if n_links else 0
+        print(f"\n[CC.1]  robot link ↔ robot link")
+        print(f"  pairs:        {total_pairs}")
+        print(f"  SRDF-skipped: {len(disabled)}")
+        sample = list(disabled)[:6]
+        for s in sample:
+            a, b = sorted(s)
+            print(f"    SKIP  {a}  <->  {b}")
+        if len(disabled) > 6:
+            print(f"    … +{len(disabled) - 6} more SRDF-disabled pair(s)")
+
+        # CC.2
+        print(f"\n[CC.2]  robot link ↔ tool")
+        if not tools_puids:
+            print(f"  (no tools loaded)")
+        for tool_name in sorted(tools_puids):
+            ts = tool_states.get(tool_name)
+            if ts is None:
+                print(f"  tool '{tool_name}': NO tool_state — every (link, tool) pair is checked")
+                continue
+            hidden = bool(getattr(ts, 'is_hidden', False))
+            touch = sorted(getattr(ts, 'touch_links', None) or [])
+            flag = " [HIDDEN — all CC.2 SKIP]" if hidden else ""
+            print(f"  tool '{tool_name}'{flag}")
+            print(f"    touch_links ({len(touch)}): {touch if touch else '∅'}")
+            if not hidden:
+                missing = sorted(set(client.robot_link_puids or {}) - set(touch))
+                # Show only the closest robot-arm links to flag missing ACM
+                # for tool-mounted geometry; full list is long.
+                arm_link_keywords = (
+                    'tool0', 'flange', 'wrist_3', 'wrist_2', 'wrist_1',
+                    'forearm', 'upper_arm', 'shoulder', 'elbow',
+                )
+                missing_arm = [l for l in missing
+                               if any(k in l for k in arm_link_keywords)]
+                if missing_arm:
+                    print(f"    arm-links NOT in touch_links (CC.2 will CHECK these against '{tool_name}'):")
+                    for l in missing_arm:
+                        print(f"      CHECK  {l}  <->  {tool_name}")
+
+        # CC.3 / CC.4 / CC.5: per rigid body.
+        print(f"\n[CC.3 / CC.4 / CC.5]  rigid bodies (state-attached / touch info)")
+        if not rb_states:
+            print(f"  (no rigid_body_states in state)")
+        arm_link_keywords = (
+            'tool0', 'flange', 'wrist_3', 'wrist_2', 'wrist_1',
+            'forearm', 'upper_arm', 'shoulder', 'elbow',
+        )
+        all_links = list(client.robot_link_puids or {})
+        for body_name in sorted(rb_states):
+            rb = rb_states[body_name]
+            hidden = bool(getattr(rb, 'is_hidden', False))
+            att_link = getattr(rb, 'attached_to_link', None)
+            att_tool = getattr(rb, 'attached_to_tool', None)
+            touch_links = sorted(getattr(rb, 'touch_links', None) or [])
+            touch_bodies = sorted(getattr(rb, 'touch_bodies', None) or [])
+            flags = []
+            if hidden:
+                flags.append('HIDDEN')
+            if att_link:
+                flags.append(f"attached_to_link={att_link!r}")
+            if att_tool:
+                flags.append(f"attached_to_tool={att_tool!r}")
+            tag = ('  [' + ', '.join(flags) + ']') if flags else ''
+            print(f"  body '{body_name}'{tag}")
+            print(f"    CC.3 touch_links  ({len(touch_links)}): "
+                  f"{touch_links if touch_links else '∅'}")
+            print(f"    CC.4/5 touch_bodies ({len(touch_bodies)}): "
+                  f"{touch_bodies if touch_bodies else '∅'}")
+            # For attached rigid bodies, surface the arm-side links that
+            # are NOT in touch_links — those are the ones CC.3 will FLAG
+            # the moment the body's mesh overlaps them by a hair. This is
+            # almost always how a missing ACM entry shows up (e.g.
+            # tool-mesh overlaps forearm/elbow on a folded-wrist pose).
+            if att_link and not hidden:
+                # Pick the "side" of the robot the body is mounted on
+                # (left_/right_) so we only surface the relevant arm.
+                side = None
+                if att_link.startswith('left_'):
+                    side = 'left_'
+                elif att_link.startswith('right_'):
+                    side = 'right_'
+                missing_arm = [
+                    l for l in all_links
+                    if (side is None or l.startswith(side))
+                    and any(k in l for k in arm_link_keywords)
+                    and l not in touch_links
+                ]
+                if missing_arm:
+                    print(f"    arm-links NOT in touch_links "
+                          f"(CC.3 will CHECK these against '{body_name}'):")
+                    for l in missing_arm:
+                        print(f"      CHECK  {l}  <->  {body_name}")
+        print(f"=== end {header} ===\n")
+
     def _make_synthetic_m0(self, m1_start_state):
         """Build a RoboticFreeMovement representing live->M1.start staging.
 
@@ -1326,6 +1464,20 @@ class HuskyMonitor(Node):
         """
         from rs_data_structure.bar_action import RoboticFreeMovement
         state = m1_start_state.copy()
+        # Diagnostic: one-shot dump of cfab's ACM at M1.start_state. Fires
+        # only on the first M0 synthesis per cfab session so a per-movement
+        # reload doesn't spam.
+        if not getattr(self, '_cfab_acm_printed_for_cid', None) == getattr(
+                getattr(self.cfab, 'client', None), 'client_id', None):
+            try:
+                self._print_cfab_collision_check_setup(
+                    m1_start_state,
+                    header="cfab CC setup @ M1.start_state",
+                )
+            except Exception as e:
+                print(f"[cfab CC setup] ERROR: {e}")
+            self._cfab_acm_printed_for_cid = getattr(
+                getattr(self.cfab, 'client', None), 'client_id', None)
         hi = self.huskies[self.selected_robot_id].interface
         state.robot_base_frame = frame_from_pose((hi.position, hi.rotation))
         left = hi.arm_joint_pose[0]
@@ -2235,7 +2387,9 @@ class HuskyMonitor(Node):
         if scene is None:
             return None
         cfab_cf = self._build_cfab_free_collision_fn(mv.start_state)
-        path, info = plan_free_dual_arm(scene, start_conf, goal_conf, max_time=30.0,
+        path, info = plan_free_dual_arm(scene, start_conf, goal_conf, 
+                                        max_time=120.0,
+                                        max_iterations=50,
                                         cfab_collision_fn=cfab_cf)
         if path is None:
             print(f"[M0] plan_free_dual_arm failed: {info.get('failure_reason')}")
@@ -3140,18 +3294,18 @@ class HuskyMonitor(Node):
                 self.huskies[self.selected_robot_id].interface.send_scaffolding_cmd(direction, motor, arm_index)
 
             if has_scaffold_left:
-                self.buttons.append(Button('Scaffold L Stop (M1+M2)', lambda: send_scaffolding_cmd_both_motors(0, 0)))
-                self.buttons.append(Button('Scaffold L Tighten M1', lambda: send_scaffolding_cmd_motor(1, 1, 0)))
-                self.buttons.append(Button('Scaffold L Loosen M1', lambda: send_scaffolding_cmd_motor(-1, 1, 0)))
-                self.buttons.append(Button('Scaffold L Tighten M2', lambda: send_scaffolding_cmd_motor(1, 2, 0)))
-                self.buttons.append(Button('Scaffold L Loosen M2', lambda: send_scaffolding_cmd_motor(-1, 2, 0)))
+                self.buttons.append(Button('L Stop All', lambda: send_scaffolding_cmd_both_motors(0, 0)))
+                self.buttons.append(Button('L Tighten Gripper', lambda: send_scaffolding_cmd_motor(1, 1, 0)))
+                self.buttons.append(Button('L Loosen Gripper', lambda: send_scaffolding_cmd_motor(-1, 1, 0)))
+                self.buttons.append(Button('L Tighten Joint', lambda: send_scaffolding_cmd_motor(1, 2, 0)))
+                self.buttons.append(Button('L Loosen Joint', lambda: send_scaffolding_cmd_motor(-1, 2, 0)))
 
             if has_scaffold_right and active_husky.dual_arm:
-                self.buttons.append(Button('Scaffold R Stop (M1+M2)', lambda: send_scaffolding_cmd_both_motors(0, 1)))
-                self.buttons.append(Button('Scaffold R Tighten M1', lambda: send_scaffolding_cmd_motor(1, 1, 1)))
-                self.buttons.append(Button('Scaffold R Loosen M1', lambda: send_scaffolding_cmd_motor(-1, 1, 1)))
-                self.buttons.append(Button('Scaffold R Tighten M2', lambda: send_scaffolding_cmd_motor(1, 2, 1)))
-                self.buttons.append(Button('Scaffold R Loosen M2', lambda: send_scaffolding_cmd_motor(-1, 2, 1)))
+                self.buttons.append(Button('R Stop All', lambda: send_scaffolding_cmd_both_motors(0, 1)))
+                self.buttons.append(Button('R Tighten Gripper', lambda: send_scaffolding_cmd_motor(1, 1, 1)))
+                self.buttons.append(Button('R Loosen Gripper', lambda: send_scaffolding_cmd_motor(-1, 1, 1)))
+                self.buttons.append(Button('R Tighten Joint', lambda: send_scaffolding_cmd_motor(1, 2, 1)))
+                self.buttons.append(Button('R Loosen Joint', lambda: send_scaffolding_cmd_motor(-1, 2, 1)))
 
         if self.DUAL_ARM_KISSING:
             self.dump_sep_sliders.append(Slider("----------KISSING EXPERIMENT", lambda: None))
@@ -3162,6 +3316,7 @@ class HuskyMonitor(Node):
             self.buttons.append(Button('Move Back 1cm',
                 lambda: world.move_left_linear_z(self, -0.01, 0.001)))
 
+        if self.CONNECT_COMPLIANT_CONTROLLER:
             self.dump_sep_sliders.append(Slider("----------CONTROLLERS", lambda: None))
             def _switch_to_compliance_both():
                 h = self.huskies[self.selected_robot_id]
@@ -3247,11 +3402,17 @@ class HuskyMonitor(Node):
                 integer=True,
             )
             self.buttons.append(Button('Load Movement', self.load_selected_movement))
+            self.buttons.append(Button(
+                'Move Arms to Movement Start',
+                lambda: world.move_arms_to_movement_start(self)))
             self.buttons.append(Button('Plan Movement', self.plan_selected_movement))
             self.buttons.append(Button('Load Movement Trajectory', self.load_selected_movement_trajectory))
             self.buttons.append(Button('Delete All Saved Trajs', self.delete_saved_movement_trajectories_for_current_bar_action))
             self.buttons.append(Button('IK Live Base (debug)', self.ik_live_base_for_selected_movement))
             self.buttons.append(Button('Exec Both Arm Trajs', lambda: world.execute_arm_trajectory_both(self)))
+            self.buttons.append(Button(
+                'Exec Compliant (M2/M3 only)',
+                lambda: self.tasks.append(world.execute_planned_trajectory_compliant(self))))
             self.buttons.append(Button('Record markerset take', self.record_bar_holding_marker_take))
             self.buttons.append(Button('Save markerset data', self.save_bar_holding_marker_data))
 

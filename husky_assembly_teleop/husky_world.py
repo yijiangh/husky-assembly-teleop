@@ -47,7 +47,6 @@ Z_MOVE_TO_INSERT = 0.035
 CARTESIAN_SPEEDUP = 5
 TIME_PER_ROTATION = 14
 PROBE_END_WAIT_TIME = 1
-USE_CARTESIAN_CONTROLLER = True
 
 # BarAction planner hyperparameters. Constrained resolution controls SE(3)
 # RRT interpolation; free joint resolution controls joint-space extension.
@@ -2491,7 +2490,6 @@ Z_MOVE_TO_INSERT = 0.035
 CARTESIAN_SPEEDUP = 5
 TIME_PER_ROTATION = 14
 PROBE_END_WAIT_TIME = 1
-USE_CARTESIAN_CONTROLLER = True
 DATA_FOLDER = '/home/jakobgenhart/husky_assistant/workspace_github/src/husky-assembly-teleop/data/kissing_experiment_data'
 def kissing_experiment(monitor):
     hi: HuskyRobotInterface = monitor.huskies[monitor.selected_robot_id].interface
@@ -2593,100 +2591,131 @@ def execute_linear_cartesian_move(robot, hi, start_time, cartesian_trajectory, i
     
     return True
 
+def switch_dual_arm_controller(monitor, from_ctrl, to_ctrl):
+    """Switch both arms from `from_ctrl` to `to_ctrl`; yield until ack."""
+    hi: HuskyRobotInterface = monitor.huskies[monitor.selected_robot_id].interface
+    hi.switch_controller(from_ctrl, to_ctrl, 0)
+    hi.switch_controller(from_ctrl, to_ctrl, 1)
+    while hi.active_controller[0] != to_ctrl or hi.active_controller[1] != to_ctrl:
+        yield
+
+
+def execute_cartesian_linear_dual(monitor, cartesian_trajectories,
+                                  on_tick=None, should_continue=None):
+    """Drive both arms along a per-arm linear cartesian segment.
+
+    cartesian_trajectories = [[L_start_pose, L_end_pose, t_move, t_wait],
+                              [R_start_pose, R_end_pose, t_move, t_wait]]
+    on_tick(hi, robot): optional per-tick callback (log wrench/pose, etc).
+    should_continue(): optional bool; if returns False, loop exits early.
+                       Default: True (run until time budget exhausts).
+    """
+    hi: HuskyRobotInterface = monitor.huskies[monitor.selected_robot_id].interface
+    robot = monitor.huskies[monitor.selected_robot_id].object.robot
+    start_time = time.time()
+
+    def _step():
+        l = execute_linear_cartesian_move(robot, hi, start_time,
+                                          cartesian_trajectories[0], 0)
+        r = execute_linear_cartesian_move(robot, hi, start_time,
+                                          cartesian_trajectories[1], 1)
+        return l or r
+
+    cont = should_continue if should_continue is not None else (lambda: True)
+    while cont() and _step():
+        if on_tick is not None:
+            on_tick(hi, robot)
+        yield
+
+
+def _scaffolding_m2_stalled(hi, index):
+    """v3 stall read: ScaffoldingToolStatus.state_m2 == 'STALLED'. None until first msg."""
+    s = hi.scaffolding_status[index]
+    return s is not None and s.state_m2 == 'STALLED'
+
+
 """
 Conducts a single kissing motion TODO dont follow local z on rotated starting pose, still follow neutral local z
 """
 def kissing_probe_once(monitor, neutral_bar_pose, starting_bar_pose, offset, file_location, name):
     hi: HuskyRobotInterface = monitor.huskies[monitor.selected_robot_id].interface
     robot = monitor.huskies[monitor.selected_robot_id].object.robot
-    
+
     monitor.get_logger().info('### PROBE ONCE')
-    
-    # data collected
-    motor_stalled_left = False
-    motor_stalled_right = False
-    trajectory_finished_left = False
-    trajectory_finished_right = False
+
     wrench_profile_left = []
     wrench_profile_right = []
     pose_left_trajectory = []
     pose_right_trajectory = []
-    
-    # generate insertion trajectory
-    insertion_trajectories, insertion_trajectories_cartesian = generate_insertion_motion_bar(monitor, Z_MOVE_TO_INSERT, 0.002/TIME_PER_ROTATION, cartesian_speedup=CARTESIAN_SPEEDUP, neutral_start_pose=starting_bar_pose)
-    if insertion_trajectories is None and not USE_CARTESIAN_CONTROLLER or insertion_trajectories_cartesian is None and USE_CARTESIAN_CONTROLLER:
+
+    _, insertion_trajectories_cartesian = generate_insertion_motion_bar(
+        monitor, Z_MOVE_TO_INSERT, 0.002 / TIME_PER_ROTATION,
+        cartesian_speedup=CARTESIAN_SPEEDUP,
+        neutral_start_pose=starting_bar_pose,
+    )
+    if insertion_trajectories_cartesian is None:
         return
-    
-    # zero ft values
+
     hi.zero_ft_sensor(0)
     hi.zero_ft_sensor(1)
-    
-    # --- CARTESIAN INSERTION ---
-    if USE_CARTESIAN_CONTROLLER:
-        hi.switch_controller('scaled_joint_trajectory_controller', 'cartesian_compliance_controller', 0)
-        hi.switch_controller('scaled_joint_trajectory_controller', 'cartesian_compliance_controller', 1)
-        while hi.active_controller[0] != 'cartesian_compliance_controller' or hi.active_controller[1] != 'cartesian_compliance_controller':
-            yield
-    
-    # start screw motor and insert
+
+    yield from switch_dual_arm_controller(
+        monitor,
+        'scaled_joint_trajectory_controller',
+        'cartesian_compliance_controller',
+    )
+
+    # v3 screw motor: clear residual then TIGHTEN M2 on both arms.
+    hi.send_scaffolding_cmd(0, 2, 0)
+    hi.send_scaffolding_cmd(0, 2, 1)
+    hi.send_scaffolding_cmd(1, 2, 0)
+    hi.send_scaffolding_cmd(1, 2, 1)
+
     start_time = time.time()
-    # DISABLED 2026-05-15: hi.set_screw API is outdated and may damage the tool
-    # hardware. Re-enable only after the screw-motor firmware/API is updated
-    # and verified against the current tool revision.
-    # hi.set_screw(False, 0)
-    # hi.set_screw(True, 0)
-    # hi.set_screw(False, 1)
-    # hi.set_screw(True, 1)
-    
-    if not USE_CARTESIAN_CONTROLLER:
-        hi.send_dual_arm_cmd(insertion_trajectories)
-        while hi.is_arm_executing[0] or hi.is_arm_executing[1] and hi.io_states[0][16] or hi.io_states[1][16]:
-            wrench_profile_left.append(hi.arm_ft_sensor[0])
-            wrench_profile_right.append(hi.arm_ft_sensor[1])
-            pose_left_trajectory.append(pp.get_link_pose(robot, pp.link_from_name(robot, 'left_ur_arm_tool0')))
-            pose_right_trajectory.append(pp.get_link_pose(robot, pp.link_from_name(robot, 'right_ur_arm_tool0')))
-            
-            # take picture and save to vido
-            ##### TODO this is way too slow (5fps instad of targeted 20), will be even slower with two cams... this slows everything down!
-            # pre_time = time.time()
-            # ret, frame = cam0.read()
-            # out.write(frame)
-            # print(f'frame taken in {time.time()-pre_time}')
-        
-            yield
-    else:
-        # while at least one is not stalled, and atleast one is still executing
-        def execute_both():
-            left = execute_linear_cartesian_move(robot, hi, start_time, insertion_trajectories_cartesian[0], 0)
-            right = execute_linear_cartesian_move(robot, hi, start_time, insertion_trajectories_cartesian[1], 1)
-            return left or right
-        while (hi.io_states[0][16] or hi.io_states[1][16]) and execute_both():
-            wrench_profile_left.append(hi.arm_ft_sensor[0])
-            wrench_profile_right.append(hi.arm_ft_sensor[1])
-            pose_left_trajectory.append(pp.get_link_pose(robot, pp.link_from_name(robot, 'left_ur_arm_tool0')))
-            pose_right_trajectory.append(pp.get_link_pose(robot, pp.link_from_name(robot, 'right_ur_arm_tool0')))
-            yield
-    
-    if not hi.io_states[0][16]:
-        motor_stalled_left = True
-    if not hi.io_states[1][16]:
-        motor_stalled_right = True
-    if not hi.is_arm_executing[0]:
-        trajectory_finished_left = True
-    if not hi.is_arm_executing[1]:
-        trajectory_finished_right = True
-        
-    monitor.get_logger().info(f'### FINISHED PROBE (stalled_left={motor_stalled_left}, stalled_right={motor_stalled_right}, trajectory_finished_left={trajectory_finished_left}, trajectory_finished_right={trajectory_finished_right})')
-    
+
+    def _log_tick(hi_, robot_):
+        wrench_profile_left.append(hi_.arm_ft_sensor[0])
+        wrench_profile_right.append(hi_.arm_ft_sensor[1])
+        pose_left_trajectory.append(
+            pp.get_link_pose(robot_, pp.link_from_name(robot_, 'left_ur_arm_tool0')))
+        pose_right_trajectory.append(
+            pp.get_link_pose(robot_, pp.link_from_name(robot_, 'right_ur_arm_tool0')))
+
+    yield from execute_cartesian_linear_dual(
+        monitor, insertion_trajectories_cartesian,
+        on_tick=_log_tick,
+        should_continue=lambda: not (
+            _scaffolding_m2_stalled(hi, 0) and _scaffolding_m2_stalled(hi, 1)),
+    )
+
+    # STOP M2 once insertion completes (by stall or by time budget).
+    hi.send_scaffolding_cmd(0, 2, 0)
+    hi.send_scaffolding_cmd(0, 2, 1)
+
+    motor_stalled_left = _scaffolding_m2_stalled(hi, 0)
+    motor_stalled_right = _scaffolding_m2_stalled(hi, 1)
+    # is_arm_executing isn't driven by the cartesian compliance controller; the
+    # JSON fields stay for log-format stability but are not meaningful here.
+    trajectory_finished_left = not hi.is_arm_executing[0]
+    trajectory_finished_right = not hi.is_arm_executing[1]
+
+    monitor.get_logger().info(
+        f'### FINISHED PROBE (stalled_left={motor_stalled_left}, '
+        f'stalled_right={motor_stalled_right}, '
+        f'trajectory_finished_left={trajectory_finished_left}, '
+        f'trajectory_finished_right={trajectory_finished_right})'
+    )
+
     finish_time = time.time()
     while time.time() - finish_time < PROBE_END_WAIT_TIME:
         yield
+
     class NumpyEncoder(json.JSONEncoder):
         def default(self, obj):
             if isinstance(obj, np.ndarray):
                 return obj.tolist()
             return super().default(obj)
-    
+
     data = {
         'name': name,
         'start_time': start_time,
@@ -2702,64 +2731,241 @@ def kissing_probe_once(monitor, neutral_bar_pose, starting_bar_pose, offset, fil
         'wrench_profile_right': wrench_profile_right,
         'pose_left_trajectory': pose_left_trajectory,
         'pose_right_trajectory': pose_right_trajectory,
-    } 
+    }
     with open(file_location + '/' + name + '.json', 'w') as f:
         json.dump(data, f, indent=4, cls=NumpyEncoder)
-    
+
     monitor.get_logger().info('### RETREAT')
-    
-    # generate retreat motion
-    retreat_trajectories, retreat_trajectories_cartesian = generate_insertion_motion_bar(monitor, -Z_MOVE_TO_INSERT, 0.002/TIME_PER_ROTATION*CARTESIAN_SPEEDUP)
-    if retreat_trajectories is None and not USE_CARTESIAN_CONTROLLER or retreat_trajectories_cartesian is None and USE_CARTESIAN_CONTROLLER:
+
+    _, retreat_trajectories_cartesian = generate_insertion_motion_bar(
+        monitor, -Z_MOVE_TO_INSERT, 0.002 / TIME_PER_ROTATION * CARTESIAN_SPEEDUP)
+    if retreat_trajectories_cartesian is None:
+        hi.send_scaffolding_cmd(0, 2, 0)
+        hi.send_scaffolding_cmd(0, 2, 1)
+        yield from switch_dual_arm_controller(
+            monitor,
+            'cartesian_compliance_controller',
+            'scaled_joint_trajectory_controller',
+        )
         return
-    
-    # retreat and unscrew (custom firmware which turns backwards on False)
-    # DISABLED 2026-05-15: hi.set_screw API is outdated and may damage the tool
-    # hardware. Re-enable only after the screw-motor firmware/API is updated.
-    # hi.set_screw(True, 0)
-    # hi.set_screw(False, 0)
-    # hi.set_screw(True, 1)
-    # hi.set_screw(False, 1)
-    if not USE_CARTESIAN_CONTROLLER:
-        hi.send_dual_arm_cmd(retreat_trajectories)
-        while hi.is_arm_executing[0] or hi.is_arm_executing[1]:
-            yield
-    else:
-        retreat_start_time = time.time()
-        while execute_linear_cartesian_move(robot, hi, retreat_start_time, retreat_trajectories_cartesian[0], 0) or execute_linear_cartesian_move(robot, hi, retreat_start_time, retreat_trajectories_cartesian[1], 1):
-            yield
-    
-    current_left_tool_world_pose = pp.get_link_pose(robot, pp.link_from_name(monitor.goal_model.robot, 'left_ur_arm_tool0'))
-    current_right_tool_world_pose = pp.get_link_pose(robot, pp.link_from_name(monitor.goal_model.robot, 'right_ur_arm_tool0'))
-    while (np.linalg.norm(np.array(retreat_trajectories_cartesian[0][1][0]) - np.array(pp.point_from_pose(current_left_tool_world_pose))) > 0.02) or (np.linalg.norm(np.array(retreat_trajectories_cartesian[1][1][0]) - np.array(pp.point_from_pose(current_right_tool_world_pose))) > 0.02):
+
+    # LOOSEN M2 during retreat.
+    hi.send_scaffolding_cmd(-1, 2, 0)
+    hi.send_scaffolding_cmd(-1, 2, 1)
+
+    yield from execute_cartesian_linear_dual(
+        monitor, retreat_trajectories_cartesian)
+
+    # STOP M2 after retreat.
+    hi.send_scaffolding_cmd(0, 2, 0)
+    hi.send_scaffolding_cmd(0, 2, 1)
+
+    current_left_tool_world_pose = pp.get_link_pose(
+        robot, pp.link_from_name(robot, 'left_ur_arm_tool0'))
+    current_right_tool_world_pose = pp.get_link_pose(
+        robot, pp.link_from_name(robot, 'right_ur_arm_tool0'))
+    while (np.linalg.norm(np.array(retreat_trajectories_cartesian[0][1][0]) - np.array(pp.point_from_pose(current_left_tool_world_pose))) > 0.02) or \
+          (np.linalg.norm(np.array(retreat_trajectories_cartesian[1][1][0]) - np.array(pp.point_from_pose(current_right_tool_world_pose))) > 0.02):
         print("retreat did not work! retry!")
         print(f'LEFT: {np.array(retreat_trajectories_cartesian[0][1][0])} vs {np.array(pp.point_from_pose(current_left_tool_world_pose))}')
         print(f'RIGHT: {np.array(retreat_trajectories_cartesian[1][1][0])} vs {np.array(pp.point_from_pose(current_right_tool_world_pose))}')
-        
-        # retreat and unscrew (custom firmware which turns backwards on False)
-        # DISABLED 2026-05-15: hi.set_screw API is outdated and may damage the
-        # tool hardware. Re-enable only after the screw-motor firmware/API is
-        # updated.
-        # hi.set_screw(True, 0)
-        # hi.set_screw(False, 0)
-        # hi.set_screw(True, 1)
-        # hi.set_screw(False, 1)
 
         start_retry_time = time.time()
         while time.time() - start_retry_time < 5:
             yield
-            
-        current_left_tool_world_pose = pp.get_link_pose(robot, pp.link_from_name(monitor.goal_model.robot, 'left_ur_arm_tool0'))
-        current_right_tool_world_pose = pp.get_link_pose(robot, pp.link_from_name(monitor.goal_model.robot, 'right_ur_arm_tool0'))
-        
-        
-    # --- REVERT TO JOINT SPACE ---
-    if USE_CARTESIAN_CONTROLLER:
-        hi.switch_controller('cartesian_compliance_controller', 'scaled_joint_trajectory_controller', 0)
-        hi.switch_controller('cartesian_compliance_controller', 'scaled_joint_trajectory_controller', 1)
-        while hi.active_controller[0] != 'scaled_joint_trajectory_controller' or hi.active_controller[1] != 'scaled_joint_trajectory_controller':
-            yield
-    
+
+        current_left_tool_world_pose = pp.get_link_pose(
+            robot, pp.link_from_name(robot, 'left_ur_arm_tool0'))
+        current_right_tool_world_pose = pp.get_link_pose(
+            robot, pp.link_from_name(robot, 'right_ur_arm_tool0'))
+
+    yield from switch_dual_arm_controller(
+        monitor,
+        'cartesian_compliance_controller',
+        'scaled_joint_trajectory_controller',
+    )
+
+
+def execute_planned_trajectory_compliant(monitor):
+    """Execute the loaded planned trajectory's endpoints as a single linear
+    cartesian segment per arm under `cartesian_compliance_controller`. Only
+    M2 / M3 movements are accepted (linear in TCP space).
+
+    Safety contract: the live arms must already be at the planned start conf;
+    otherwise `send_arm_cmd_cartesian` rejects targets (>5 cm from current TCP)
+    and the motion will not run.
+    """
+    if monitor.current_movement is None:
+        monitor.get_logger().warn(
+            "No movement loaded; click 'Load Movement' first.")
+        return
+    role = monitor._match_movement_role(monitor.current_movement)
+    if role not in ('M2', 'M3'):
+        monitor.get_logger().warn(
+            f"Compliant exec only supports M2/M3; current is {role!r}")
+        return
+    if monitor.planned_arm_trajectory[0][0] is None or \
+       monitor.planned_arm_trajectory[1][0] is None:
+        monitor.get_logger().warn(
+            "planned_arm_trajectory missing; plan or load a trajectory first.")
+        return
+
+    hi: HuskyRobotInterface = monitor.huskies[monitor.selected_robot_id].interface
+    ghost_robot = monitor.goal_model.robot
+    left_joints = pp.joints_from_names(ghost_robot, HUSKY_DUAL_UR5e_JOINT_NAMES[0])
+    right_joints = pp.joints_from_names(ghost_robot, HUSKY_DUAL_UR5e_JOINT_NAMES[1])
+    saved_left = pp.get_joint_positions(ghost_robot, left_joints)
+    saved_right = pp.get_joint_positions(ghost_robot, right_joints)
+    left_tool0 = pp.link_from_name(ghost_robot, 'left_ur_arm_tool0')
+    right_tool0 = pp.link_from_name(ghost_robot, 'right_ur_arm_tool0')
+
+    left_path = monitor.planned_arm_trajectory[0][0]
+    right_path = monitor.planned_arm_trajectory[1][0]
+
+    try:
+        pp.set_joint_positions(ghost_robot, left_joints, left_path[0])
+        pp.set_joint_positions(ghost_robot, right_joints, right_path[0])
+        L_start = pp.get_link_pose(ghost_robot, left_tool0)
+        R_start = pp.get_link_pose(ghost_robot, right_tool0)
+
+        pp.set_joint_positions(ghost_robot, left_joints, left_path[-1])
+        pp.set_joint_positions(ghost_robot, right_joints, right_path[-1])
+        L_end = pp.get_link_pose(ghost_robot, left_tool0)
+        R_end = pp.get_link_pose(ghost_robot, right_tool0)
+    finally:
+        pp.set_joint_positions(ghost_robot, left_joints, saved_left)
+        pp.set_joint_positions(ghost_robot, right_joints, saved_right)
+
+    t_total = float(monitor.trajectory_time) or 5.0
+
+    # M2 holds the end pose under compliance while the Joint (M2) motor
+    # tightens against the scaffold; the loop must NOT terminate on
+    # motion-time budget alone. Inflate t_wait so execute_linear_cartesian_move
+    # keeps publishing the end pose, and exit only when both M2 motors report
+    # STALLED. Large t_wait is a hard ceiling fallback if firmware never
+    # reports stall.
+    HOLD_FOR_STALL_TIMEOUT_S = 300.0
+    if role == 'M2':
+        t_wait = HOLD_FOR_STALL_TIMEOUT_S
+        should_continue = lambda: not (
+            _scaffolding_m2_stalled(hi, 0) and _scaffolding_m2_stalled(hi, 1))
+    else:
+        t_wait = 0.0
+        should_continue = None
+
+    cartesian_trajectories = [
+        [L_start, L_end, t_total, t_wait],
+        [R_start, R_end, t_total, t_wait],
+    ]
+
+    def _stop_all_both_arms():
+        # mirror of 'L/R Stop All' buttons: STOP M1 and M2 on both arms.
+        print('[scaffolding] L Stop All: M1 + M2 (arm 0)')
+        hi.send_scaffolding_cmd(0, 1, 0)
+        hi.send_scaffolding_cmd(0, 2, 0)
+        print('[scaffolding] R Stop All: M1 + M2 (arm 1)')
+        hi.send_scaffolding_cmd(0, 1, 1)
+        hi.send_scaffolding_cmd(0, 2, 1)
+
+    hi.zero_ft_sensor(0)
+    hi.zero_ft_sensor(1)
+
+    # Pre-exec scaffolding tool commands (mirror BAR_HOLDING_ACCURACY_TEST buttons):
+    #   M2 -> Stop All + TIGHTEN Joint (M2) on both arms (bar tightened against scaffold).
+    #   M3 -> Stop All + LOOSEN Gripper (M1) on both arms (release bar before retreat).
+    _stop_all_both_arms()
+    if role == 'M2':
+        print('[scaffolding] M2: TIGHTEN Joint (M2) on L arm (arm 0)')
+        hi.send_scaffolding_cmd(1, 2, 0)
+        print('[scaffolding] M2: TIGHTEN Joint (M2) on R arm (arm 1)')
+        hi.send_scaffolding_cmd(1, 2, 1)
+    elif role == 'M3':
+        print('[scaffolding] M3: LOOSEN Gripper (M1) on L arm (arm 0)')
+        hi.send_scaffolding_cmd(-1, 1, 0)
+        print('[scaffolding] M3: LOOSEN Gripper (M1) on R arm (arm 1)')
+        hi.send_scaffolding_cmd(-1, 1, 1)
+
+    try:
+        yield from switch_dual_arm_controller(
+            monitor,
+            'scaled_joint_trajectory_controller',
+            'cartesian_compliance_controller',
+        )
+        yield from execute_cartesian_linear_dual(
+            monitor, cartesian_trajectories, should_continue=should_continue)
+    finally:
+        # Always stop motors first, then restore the joint controller.
+        _stop_all_both_arms()
+        yield from switch_dual_arm_controller(
+            monitor,
+            'cartesian_compliance_controller',
+            'scaled_joint_trajectory_controller',
+        )
+
+    monitor.get_logger().info(
+        f"Compliant exec done for {monitor.current_movement.movement_id} "
+        f"(role {role})")
+
+
+MOVE_TO_MOVEMENT_START_MAX_DELTA_RAD = np.pi / 3.0
+
+
+def move_arms_to_movement_start(monitor):
+    """Send a 2-waypoint joint trajectory (current -> target) on both arms,
+    taking the live arms to `current_movement.start_state.robot_configuration`.
+
+    Safety guard: refuses if either arm's per-joint max |delta| exceeds
+    pi/3 rad. Protects against large unintended sweeps when the live arms
+    are far from the planned start.
+    """
+    if monitor.current_movement is None:
+        monitor.get_logger().warn(
+            "No movement loaded; click 'Load Movement' first.")
+        return
+    mv = monitor.current_movement
+    if mv.start_state is None or mv.start_state.robot_configuration is None:
+        monitor.get_logger().warn(
+            f"Movement {mv.movement_id!r} has no start_state.robot_configuration.")
+        return
+    rc = mv.start_state.robot_configuration
+    try:
+        target_left = np.array(
+            [rc[n] for n in HUSKY_DUAL_UR5e_JOINT_NAMES[0]], dtype=float)
+        target_right = np.array(
+            [rc[n] for n in HUSKY_DUAL_UR5e_JOINT_NAMES[1]], dtype=float)
+    except KeyError as e:
+        monitor.get_logger().warn(
+            f"start_state missing joint key {e}; cannot build target conf.")
+        return
+
+    hi: HuskyRobotInterface = monitor.huskies[monitor.selected_robot_id].interface
+    current_left = np.asarray(hi.arm_joint_pose[0], dtype=float)
+    current_right = np.asarray(hi.arm_joint_pose[1], dtype=float)
+
+    delta_left = float(np.max(np.abs(target_left - current_left)))
+    delta_right = float(np.max(np.abs(target_right - current_right)))
+    limit = MOVE_TO_MOVEMENT_START_MAX_DELTA_RAD
+    if delta_left > limit or delta_right > limit:
+        monitor.get_logger().warn(
+            f"Refusing move to {mv.movement_id!r} start: max |delta_q| "
+            f"L={delta_left:.3f} R={delta_right:.3f} rad exceeds pi/3 "
+            f"({limit:.3f} rad)."
+        )
+        return
+
+    t_total = float(monitor.trajectory_time) or 5.0
+    multi_arm_trajectory = [
+        ([current_left, target_left], None, t_total, None),
+        ([current_right, target_right], None, t_total, None),
+    ]
+    monitor.get_logger().info(
+        f"Moving arms to {mv.movement_id!r} start "
+        f"(max |delta_q| L={delta_left:.3f} R={delta_right:.3f} rad, "
+        f"t={t_total:.1f}s)"
+    )
+    hi.send_dual_arm_cmd(multi_arm_trajectory)
+
+
 def move_left_linear_z(monitor, length, speed):
     husky = monitor.huskies[monitor.selected_robot_id]
     hi: HuskyRobotInterface = husky.interface
