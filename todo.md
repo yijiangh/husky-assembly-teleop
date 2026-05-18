@@ -14,25 +14,25 @@
 
 # dual-arm constrained planner
 
-Questions:
-- How are the cfab session and pp synchronize collision geometry to be checked.
-    - _bridge_cfab_to_pp_for_bar_action
-    - how did the collision bodies from one session get copied into the other?
-
 ToDo:
+1. Reduced Vertical Bar Install to Air
+ - try with Cindy old calibration and do a bar reaching in workspace test
+ have a strange 140 mm offset. needs debug.
 
-- check if two parallel pp session can connect to mocap at the same time for Cindy and Alice
-    - this will decide whether need to use Jakob's new mocap ros pkg or not
+2. Two hand install on Robot Jig (Tomorrow)
 
-- try with Cindy old calibration and do a bar reaching in workspace test
+A text box to enter global offset to apply on the mocap robot base pose
 
-- use the double kissing rig to do all movement tests:
-    - do Rhino design of joints on the dk jig
-    - joint installation on three bars
-    - code two LMs, comliant controller integration, rs485 tool intergation
-        - be careful anout the tool disconnection with the right hand on 15-05
-    - switching of movements can be just using a slider (existing)
-    - hotfix pb acm during the day
+3. Measure In existing Structure Workflow (Tomorrow)
+- Assembly Robot test
+- Support robot
+
+use the double kissing rig to do all movement tests:
+    - [x] do Rhino design of joints on the dk jig
+    - [x] joint installation on three bars
+    - [x] code two LMs, comliant controller integration, rs485 tool intergation
+    - [x] switching of movements can be just using a slider (existing)
+    - [] hotfix pb acm during the day
 
     - M0: FM to load bar
     - M1: CDFM to approach
@@ -44,7 +44,12 @@ ToDo:
     - need to proof check the ACM in BarAction export, so we can just load them into the planner
     - do proper collision body and acm sync between cfab and pb
 
-- calibrate Alice and Cindy
+4. calibrate Alice and Cindy
+
+Questions:
+- How are the cfab session and pp synchronize collision geometry to be checked.
+    - _bridge_cfab_to_pp_for_bar_action
+    - how did the collision bodies from one session get copied into the other?
 
 # switch to single arm compliant controller
 One thing i am not so sure about is that we decided that we always maintain assembly-robot centric in robot cell state, but if we are saving a state for the holding robot, we need to tell monitor that it should load robot state from the support robot saved as tool in the cell state.
@@ -57,3 +62,17 @@ this info needs to be saved by a json that contains a cell state
     - ur_msgs
 
 - get rid of tracik if not used
+
+# Tool
+
+for right arm scaffolding tool, a problem:
+```
+[scaffolding_tool_driver-26] [ERROR] [1778509072.881889439] [a200_0806.right_gripper.scaffolding_tool_driver]: Unexpected response to command 'PING':
+[scaffolding_tool_driver-26] [ERROR] [1778509073.883459743] [a200_0806.right_gripper.scaffolding_tool_driver]: Unexpected response to command 'VERSION':
+[scaffolding_tool_driver-26] [INFO] [1778509073.883941630] [a200_0806.right_gripper.scaffolding_tool_driver]:
+[scaffolding_tool_driver-26] =======================================================================
+[scaffolding_tool_driver-26]
+[scaffolding_tool_driver-26]   Failed to connect to scaffolding tool
+[scaffolding_tool_driver-26]
+[scaffolding_tool_driver-26] =======================================================================
+```

@@ -56,4 +56,5 @@ RECORD_DIRECTORY = os.path.join(DATA_DIRECTORY, '..', 'recorded_data')
 
 CALIBRATION_DATE = '20260303'
 CALIBRATION_BATCHES = ['j0', 'j1', 'validation', 'punch_validation']
-DESIGN_PROBLEM_NAME = '2026-05-14_foc_demo_reduced'
+# DESIGN_PROBLEM_NAME = '2026-05-14_foc_demo_reduced'
+DESIGN_PROBLEM_NAME = '2026-05-16_double_kissing_jig_demo'

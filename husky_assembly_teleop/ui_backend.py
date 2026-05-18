@@ -217,16 +217,35 @@ class PyBulletBackend(UIBackend):
         pass
 
 
+_DEFAULT_FONT_PATHS = (
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+    "/System/Library/Fonts/Helvetica.ttc",
+    "C:/Windows/Fonts/segoeui.ttf",
+)
+
+
+def bind_default_font(dpg, font_size: int) -> None:
+    """Bind a TTF font at `font_size` to the current DPG context, falling
+    back to scaling the built-in bitmap font. Safe to call once per DPG
+    context (i.e. once per create_context())."""
+    for path in _DEFAULT_FONT_PATHS:
+        if not os.path.exists(path):
+            continue
+        try:
+            with dpg.font_registry():
+                f = dpg.add_font(path, font_size)
+            dpg.bind_font(f)
+            return
+        except Exception as e:
+            logger.debug(f"font load failed {path}: {e}")
+    dpg.set_global_font_scale(max(1.0, font_size / 13.0))
+
+
 class DearPyGuiBackend(UIBackend):
     """Real DPG-based backend with full widget support."""
 
-    # First existing path wins; covers Linux/macOS/Windows defaults.
-    _DEFAULT_FONT_PATHS = (
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-        "/System/Library/Fonts/Helvetica.ttc",
-        "C:/Windows/Fonts/segoeui.ttf",
-    )
+    _DEFAULT_FONT_PATHS = _DEFAULT_FONT_PATHS  # back-compat alias
 
     def __init__(self, window_title: str = "Husky Monitor",
                  width: int = 600, height: int = 1000,
@@ -258,20 +277,7 @@ class DearPyGuiBackend(UIBackend):
         return h
 
     def _bind_default_font(self, font_size: int) -> None:
-        dpg = self.dpg
-        for path in self._DEFAULT_FONT_PATHS:
-            if not os.path.exists(path):
-                continue
-            try:
-                with dpg.font_registry():
-                    f = dpg.add_font(path, font_size)
-                dpg.bind_font(f)
-                return
-            except Exception as e:
-                logger.debug(f"font load failed {path}: {e}")
-        # No TTF available — scale the built-in bitmap font instead. Looks
-        # blocky but stays readable.
-        dpg.set_global_font_scale(max(1.0, font_size / 13.0))
+        bind_default_font(self.dpg, font_size)
 
     @property
     def _current_parent(self):

@@ -304,7 +304,8 @@ class Husky():
     - For calibration: set calibration=True (automatically uses calib_tip)
     """
     def __init__(self, monitor, name, mocap_id=None, pos=np.zeros(3), rot=np.array((0, 0, 0, 1)),
-                 connect_arm=True, connect_gripper=True, base_calibration_file=None, calibration=False, dual_arm=False, ee_types=None, force_regenerate=False, punch_tool_offset=None):
+                 connect_arm=True, connect_gripper=True, base_calibration_file=None, calibration=False, dual_arm=False, ee_types=None, force_regenerate=False, punch_tool_offset=None,
+                 connect_compliant_controller=False):
         self.name = name
         self.mocap_id = mocap_id
         self.interface = HuskyRobotInterface(monitor,
@@ -312,7 +313,8 @@ class Husky():
                                              use_odom=(mocap_id is None),
                                              connect_arm=connect_arm,
                                              connect_gripper=connect_gripper,
-                                             dual_arm=dual_arm
+                                             dual_arm=dual_arm,
+                                             connect_compliant_controller=connect_compliant_controller,
                                              )
         self.object = HuskyObject(calibration=calibration, dual_arm=dual_arm, ee_types=ee_types, force_regenerate=force_regenerate, punch_tool_offset=punch_tool_offset)
         self.dual_arm = dual_arm
@@ -329,7 +331,11 @@ class Husky():
                 data = json.load(file)
             pose = data['base_mocap_from_base_footprint']
             self.base_mocap_from_base_footprint = (pose[0], pose[1])
-        
+
+        # World-frame XYZ offset added on top of calibrated mocap base position.
+        # Edited live via the DPG offset side-window in HuskyMonitor.
+        self.mocap_base_offset_xyz = np.zeros(3)
+
         monitor.add_husky(self)
 
 class HuskyObject():

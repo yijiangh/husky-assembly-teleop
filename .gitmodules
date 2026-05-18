@@ -16,3 +16,6 @@
 [submodule "external/husky_assembly_tamp"]
 	path = external/husky_assembly_tamp
 	url = git@github.com:yijiangh/husky_assembly_tamp.git
+[submodule "external/rs_data_structure"]
+	path = external/rs_data_structure
+	url = https://github.com/yijiangh/rs_data_structure

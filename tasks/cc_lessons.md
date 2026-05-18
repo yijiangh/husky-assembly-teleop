@@ -3,6 +3,67 @@
 Patterns and lessons from working in this repo. Append entries here after any
 correction or non-obvious finding so we can reuse them in future sessions.
 
+## Cartesian M2/M3 planning is forward-only; no final-conf pinning — 2026-05-18
+
+Correction pattern: for BarAction M2/M3 cartesian IK planning, the
+propagated `start_state.robot_configuration` from the previous movement is
+the hard constraint. The planner should skip IK at waypoint 0 and emit that
+exact start config. Do not pass a `final_conf` into
+`_run_dual_arm_cartesian_ik_loop`, `plan_constrained_dual_arm_linear`, or
+`plan_dual_arm_linear_independent`; these planners always run forward from
+start target frames to end target frames.
+
+Endpoint consistency is an orchestration concern: if movement N's planned
+final config differs from movement N+1's saved start config, drop/replan
+movement N+1 (and any dependent downstream saved trajectories), rather than
+forcing movement N to end at the old downstream start.
+
+Also add a per-waypoint joint-step check inside the cartesian IK loop using
+the same `joint_continuity_threshold_rad` semantics as the constrained RRT.
+Reject IK branches whose max raw joint delta from the previous waypoint
+exceeds the threshold; this catches branch flips during M2/M3 planning.
+
+## cfab CC has stricter physics than pp.get_collision_fn — 2026-05-18
+
+When swapping pp.get_collision_fn for cfab `PyBulletCheckCollision`, expect
+collisions that pp was missing. The pp side leaves rigid bodies (including
+tool meshes registered as cfab `rigid_bodies`, e.g. `AssemblyLeftArmToolBody`)
+at their last-set pose; cfab CC repositions them with the robot via
+`set_robot_cell_state` on every query. So cfab catches genuine tool-vs-arm
+overlaps that pp silently allowed.
+
+To get planning parity without losing correctness, mirror the existing
+`_augment_tool_touch_links_for_v3` pattern for the `rigid_body_states` form:
+add a side-matched `wrist_1/wrist_2/wrist_3/forearm` allow-list to each
+`Assembly{Left,Right}ArmToolBody.touch_links`. See
+`_augment_assembly_arm_tool_body_touch_links` in `husky_world.py`.
+
+## PyBullet IK drifts non-target joints in dual-arm groups — 2026-05-18
+
+`pybullet.calculateInverseKinematics` is a numerical solver — it can perturb
+joints **not** in the kinematic chain to the target link, especially when
+seed values are far from zero (e.g. wrist_1=4.32 rad from an M1 trajectory
+endpoint). cfab's `_check_configuration_match_group` is strict (TOL.is_close
+~ 1e-6) and raises `PlanningGroupNotSupported` when the LEFT IK shifts a
+RIGHT joint by > tolerance.
+
+Fix pattern in `_run_dual_arm_cartesian_ik_loop`:
+1. Wrap arm-joint seed values into `[-pi, pi]` (same physical pose, much
+   smaller drift surface for PyBullet).
+2. Catch `PlanningGroupNotSupported` — re-wrap state and retry.
+3. After each IK call, explicitly **write back** the non-target arm's joint
+   values from `state` into the returned configuration. Prevents drift from
+   leaking into the next iteration's seed.
+
+## Worktree's submodule `.git` is independent — 2026-05-18
+
+`EnterWorktree` + `git submodule update --init` inside the worktree puts the
+submodule's gitdir at `.git/worktrees/<wt-name>/modules/...` — NOT shared with
+the user's main checkout's `.git/modules/`. Committing on a new branch in the
+submodule worktree is safe; it does not affect the user's submodule view.
+Bump the parent worktree's submodule pointer (`git add external/<sub>`) and
+commit the parent so the new submodule SHA is referenced.
+
 ## Diff modified files against session-start git status before reverting — 2026-05-14
 
 When a subagent returns, `git status` shows the cumulative working-tree
@@ -1121,3 +1182,102 @@ When reusing an offline validation helper from the live monitor, separate
 keep `save_plot=True`, but monitor hooks should pass `save_plot=False` and
 `show_plot=True` when the user wants a popup without writing PNG files into
 the validation reports directory.
+
+
+## Free planner needs an ACM for robot-mounted bodies — 2026-05-18
+
+`plan_transit_motion` / `plan_free_dual_arm` feeds `scene["obstacles"]` into
+`pp.get_collision_fn(robot, ..., max_distance=0)` with NO allowed-collision
+matrix for robot-mounted bodies. cfab loads wrist tools
+(`AssemblyLeftArmToolBody` / `AssemblyRightArmToolBody`) and the held bar
+as rigid bodies in the world; their collision meshes intentionally overlap
+the wrist links by 1–5 cm. So any initial-conf check trips on
+`wrist_2/wrist_3 ↔ mounted_tool`.
+
+**Why M1 (constrained) gets away without this filter:** its
+`expected_neighbor_contacts` probe (5 mm getClosestPoints(bar, body) at
+goal) absorbs the overlap — the tool body is < 5 mm from the bar at goal,
+so it gets excluded as an "expected contact". The free planner has no such
+probe and must exclude mounted bodies explicitly.
+
+**Pattern** (`husky_monitor._build_pp_scene_for_free`):
+
+```python
+mounted_names = {
+    name for name, rbs in (self.movement_start_state.rigid_body_states or {}).items()
+    if getattr(rbs, 'attached_to_link', None) is not None
+}
+obstacles = [body for name, body in self.static_obstacles.items()
+             if name not in mounted_names]
+```
+
+Any rigid body with `attached_to_link != None` travels rigidly with a robot
+link, so it doesn't belong in `scene["obstacles"]`. This generalises the
+bridge's existing one-off `active_bar_name` exclusion to every mounted
+body. If you need bar-vs-tool checked specifically, prefer
+`disabled_collisions` for the offending `(wrist_link, tool_body)` pairs
+instead of the wholesale filter — but for free transit motion the
+exclusion is fine.
+
+**Diagnostic** when free planner reports `initial configuration is in
+collision`: `scripts/headless_live_monitor_test.py::
+_diagnose_free_plan_collision` names every body that penetrates the robot
+at start_conf. The names from `monitor.cfab.client.rigid_bodies_puids`
+decode opaque `body10`-style pybullet warnings to the cfab cell-state
+name. Wire it on M0/M4 failures by default; it pays off the first time a
+new cell-state file introduces a new mounted-body name pattern.
+
+## When user asks for a "textbox", they mean text input — not slider — 2026-05-18
+
+The PyBullet debug GUI (`addUserDebugParameter`) is *fundamentally* a
+slider; it has no native text widget. The package's `Slider` class is
+also used decoratively as section labels (e.g. `Slider("----------BarAction Loading", lambda : None)`).
+A user who asks for "a textbox to type numbers in" does **not** want any
+slider, including decorative label-sliders.
+
+**Verify backend support before proposing widgets**: `PyBulletBackend.add_text_input`
+raises `NotImplementedError` (`ui_backend.py:163-165`); only
+`DearPyGuiBackend.add_text_input` (`ui_backend.py:346`) is real. The
+existing `TextInput` class (`common.py:517`) routes through
+`_common._global_backend`, so it works only when the *primary* backend is
+DPG (controlled by `HuskyMonitor.USE_DPG_UI`, default 0).
+
+**Mixed-backend pattern** when keeping PyBullet primary but needing one
+text widget: spawn a *standalone* DPG context owned by the monitor, fully
+independent of `_common._global_backend`. Init it in `build_ui`
+(`isinstance(_common._global_backend, DearPyGuiBackend)` check first to
+avoid double `create_context()` if user later flips to DPG), pump
+`dpg.render_dearpygui_frame()` each `update()`, and call
+`dpg.destroy_context()` in `destroy_node`. See
+`HuskyMonitor._init_mocap_offset_window` / `_pump_mocap_offset_window` /
+`_shutdown_mocap_offset_window` for the canonical implementation.
+
+Lesson: **never** introduce a slider when the user said "textbox"; always
+grep the backend factory for `NotImplementedError` before assuming a
+widget exists.
+
+## Apply per-husky live corrections at the mocap callback boundary — 2026-05-18
+
+When a "live correction" (e.g. XYZ base offset typed at runtime) must
+affect every downstream consumer — visualization, goal_base_pose sync,
+planning, IK self-tests, husky_robot.py velocity — apply it **once**
+inside `receive_mocap_frame` just before
+`h.interface.mocap_callback(pos, rot, ts)`, not at each consumer.
+
+```python
+calibrated_pose = pp.multiply(world_from_mocap, h.base_mocap_from_base_footprint)
+pos_with_offset = np.array(calibrated_pose[0]) + h.mocap_base_offset_xyz
+h.interface.mocap_callback(pos_with_offset, np.array(calibrated_pose[1]), ts)
+```
+
+Storing the offset on the `Husky` object (next to the existing
+`base_mocap_from_base_footprint` calibration field) means no per-consumer
+plumbing. Writes from the UI thread (`h.mocap_base_offset_xyz = np.array(...)`)
+are a pointer rebind, atomic in CPython, so no lock is needed for the
+read on the NatNet thread.
+
+## Pause when verification reveals scope outside the change — 2026-05-18
+
+(Already in [feedback_planning_failure_pause.md]) Validates that when a
+build/test step fails for reasons unrelated to the change, surface and
+discuss rather than silently patching adjacent code.

@@ -2045,13 +2045,36 @@ def _plan_and_stage_body(monitor, husky, robot, debug, max_time, max_attempts,
             )
             return
 
-        # 1) Goal config via dual-arm IK on target_ee_frames.
-        goal_conf = _solve_bar_action_goal_ik(
-            monitor, start_state, skip_env_collisions=ignore_env_obstacles
-        )
-        if goal_conf is None:
-            monitor.get_logger().warn("BarAction goal IK failed.")
-            return
+        # 1) Goal config: prefer authored next-movement start_state.robot_configuration
+        # over re-IKing target_ee_frames. cc_lessons.md:54-59 — authored cell-state
+        # conf is FK-consistent with target_ee_frames (within cfab tolerance ~1 mm/
+        # 0.01 rad), and using it directly avoids the ±2π wraps that PyBullet IK
+        # branch search can legitimately return. Falls back to IK when the next
+        # movement has no authored robot_configuration.
+        from husky_assembly_teleop.utils import vec12_from_conf as _vec12_from_conf
+        authored_goal = None
+        idx = getattr(monitor, "current_movement_index", None)
+        loaded = getattr(monitor, "_loaded_movements", None) or []
+        if idx is not None and idx + 1 < len(loaded):
+            next_mv = loaded[idx + 1]
+            if (next_mv.start_state is not None
+                    and getattr(next_mv.start_state, 'robot_configuration', None) is not None):
+                try:
+                    authored_goal = np.asarray(_vec12_from_conf(next_mv.start_state.robot_configuration), dtype=float)
+                except Exception:
+                    authored_goal = None
+        if authored_goal is not None:
+            print(f"[plan_and_stage_constrained] using authored "
+                  f"{loaded[idx + 1].movement_id!r}.start_state.robot_configuration "
+                  f"as goal_conf (skipping target_ee_frames IK to avoid ±2π wrap).")
+            goal_conf = authored_goal
+        else:
+            goal_conf = _solve_bar_action_goal_ik(
+                monitor, start_state, skip_env_collisions=ignore_env_obstacles
+            )
+            if goal_conf is None:
+                monitor.get_logger().warn("BarAction goal IK failed.")
+                return
 
         # 2) world_from_bar_goal via FK at goal_conf.
         bar_rb = start_state.rigid_body_states[monitor.active_bar_name]
@@ -2361,8 +2384,13 @@ def _plan_and_stage_body(monitor, husky, robot, debug, max_time, max_attempts,
     # manually by the monitor buttons after start_conf becomes the goal target.
     n = len(left_joints)
     start_conf = np.asarray(start_conf, dtype=float)
+    planned_goal_conf = np.asarray(constrained_path[-1], dtype=float)
     monitor.constrained_start_conf = start_conf.copy()
-    monitor.constrained_goal_conf = np.asarray(goal_conf, dtype=float).copy()
+    monitor.constrained_goal_conf = planned_goal_conf.copy()
+    if getattr(monitor, "_bar_action_plan_ctx", None) is not None:
+        # goal_conf is only a planner seed/warm start. After a path exists,
+        # downstream state must use the actual final waypoint from the plan.
+        monitor._bar_action_plan_ctx["goal_conf"] = planned_goal_conf.copy()
     monitor.staging_free_trajectory = [None, None]
     monitor.constrained_trajectory = [
         (np.array([q[:n] for q in constrained_path]), None, monitor.trajectory_time, None),

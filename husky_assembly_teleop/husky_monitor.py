@@ -62,7 +62,7 @@ MOCAP_IP = '192.168.0.117' # set to the mocap PC's IP, get this from Motive Sett
 
 class HuskyMonitor(Node):
     USE_MOCAP = 0
-    FAKE_HARDWARE = 1
+    FAKE_HARDWARE = 0
 
     # When USE_MOCAP=1, by default the husky base in PyBullet tracks mocap.
     # Set USE_CELL_STATE_BASE_POSE=1 to override that and pin the base to
@@ -72,7 +72,7 @@ class HuskyMonitor(Node):
     # scaffolding (e.g., at the lab desk during dual-arm accuracy tests).
     USE_CELL_STATE_BASE_POSE = 0
     USE_DPG_UI = 0   # 0 = legacy PyBullet debug GUI; 1 = Dear PyGui control panel
-    UI_FONT_SIZE = 16  # DPG control-panel font size in px
+    UI_FONT_SIZE = 20  # DPG control-panel font size in px
 
     CALIBRATION = 0
 
@@ -87,7 +87,7 @@ class HuskyMonitor(Node):
     BOARD_VALIDATION = 0
     PUNCH_CALIB_VALIDATION = 0
 
-    DUAL_ARM_KISSING = 1 # set 1 to enable kissing experiment + compliance controller buttons
+    DUAL_ARM_KISSING = 0 # set 1 to enable kissing experiment + compliance controller buttons
 
     # When 1, HuskyRobotInterface creates the compliant-controller ROS interfaces
     # (target_wrench publishers, start_force_mode / zero_ftsensor / switch_controller
@@ -186,7 +186,6 @@ class HuskyMonitor(Node):
         self.calib_batch_slider = None
         self.selected_calib_batch_index = 0
 
-        self.selected_robot_slider = None
         self.selected_robot_id = 0
         
         # Board validation mode variables
@@ -403,19 +402,6 @@ class HuskyMonitor(Node):
         self.show_goal_state = True
         self.toggle_show_goal_state()
 
-    def update_selected_robot_id(self, robot_id):
-        new_id = np.clip(int(robot_id), 0, len(self.huskies)-1)
-        if new_id != self.selected_robot_id:
-            self.selected_robot_id = new_id
-            self.selected_arm_index = min(self.selected_arm_index, self.get_active_arm_count() - 1)
-            self._set_active_punch_tool_offset(self.selected_arm_index)
-            if not self.USE_CELL_STATE_BASE_POSE:
-                # update goal pose based on sensed base pose since we are teleoperating the base
-                hi = self.huskies[self.selected_robot_id].interface
-                self.goal_base_pose = (hi.position, hi.rotation)
-            self.update_goal_model_and_color()
-            self.reset_ui()
-            
     def update_selected_arm_id(self, arm_index):
         new_index = np.clip(int(arm_index), 0, self.get_active_arm_count() - 1)
         if new_index != self.selected_arm_index:
@@ -1406,6 +1392,12 @@ class HuskyMonitor(Node):
         # movement count (was 0..8 before; now 0..len(movements)-1).
         self.reset_ui(self.goal_arm_pose)
 
+        # Auto-load any <mv>_trajectory.json that already exists under
+        # Trajectories/, run consistency checks (start_conf agreement,
+        # forward-chain handoff, M0 live-conf), drop any inconsistent
+        # trajectories, and print the roster.
+        self._auto_load_all_trajectories()
+
     def load_selected_movement(self):
         """Load the selected movement's start state into cfab + goal ghost."""
         if not self._loaded_movements:
@@ -1561,6 +1553,8 @@ class HuskyMonitor(Node):
         jt = dispatch(mv)
         if jt is None:
             self.get_logger().warn(f"Plan for {mv.movement_id!r} ({role}) FAILED.")
+            if role == 'M1':
+                self._clear_m1_start_conf_without_trajectory()
             return
 
         self._accept_trajectory(mv, jt, source='Plan', role=role, save_to_disk=True)
@@ -1575,23 +1569,78 @@ class HuskyMonitor(Node):
         mv.trajectory = jt
         path = path_12_from_joint_trajectory(jt)
         if path:
-            start_conf = conf_from_12vec(path[0])
-            mv.start_state.robot_configuration = start_conf
+            chain_role = role if role is not None else self._match_movement_role(mv)
+            start_vec = np.asarray(path[0], dtype=float)
+            if chain_role in ('M2', 'M3') and mv.start_state is not None:
+                existing = mv.start_state.robot_configuration
+                if existing is None:
+                    self.get_logger().warn(
+                        f"{source} {mv.movement_id!r} has no propagated start_conf; "
+                        "rejecting trajectory."
+                    )
+                    mv.trajectory = None
+                    return
+                diff = float(np.abs(start_vec - vec12_from_conf(existing)).max())
+                if diff > 1e-3:
+                    self.get_logger().warn(
+                        f"{source} start of {mv.movement_id!r} differs from "
+                        f"propagated start_conf by max {diff:.4f} rad/m; "
+                        "rejecting trajectory."
+                    )
+                    mv.trajectory = None
+                    return
+            else:
+                # M1 owns its generated start_conf; M0/M4 keep the legacy
+                # behavior of mirroring trajectory start into start_state.
+                mv.start_state.robot_configuration = conf_from_12vec(start_vec)
 
-            if self.current_movement_index + 1 < len(self._loaded_movements):
+            # Step (3) forward-chain propagation — role-based:
+            #   M1/M2/M3: strict chain owners; ALWAYS overwrite next.start
+            #     with traj[-1] (warn first if there's an existing value).
+            #   M0/M4:    NOT part of the chain. M0 stages live -> M1.start
+            #     (M1 owns its own start_conf via its plan), M4 is the
+            #     sequence terminator. Neither writes the next list-index
+            #     movement's start_state.robot_configuration.
+            if chain_role in ('M0', 'M4'):
+                pass
+            elif self.current_movement_index + 1 < len(self._loaded_movements):
                 next_mv = self._loaded_movements[self.current_movement_index + 1]
                 if next_mv.start_state is not None:
                     existing = next_mv.start_state.robot_configuration
                     new_end = conf_from_12vec(path[-1])
+                    existing_vec = None
                     if existing is not None:
-                        diff = np.abs(path[-1] - vec12_from_conf(existing)).max()
+                        existing_vec = vec12_from_conf(existing)
+                    elif self._trajectory_has_waypoints(next_mv):
+                        # If next.start_state has not been populated yet, its
+                        # loaded trajectory still owns the effective start.
+                        existing_vec = path_12_from_joint_trajectory(next_mv.trajectory)[0]
+                    if existing_vec is None:
+                        next_mv.start_state.robot_configuration = new_end
+                        print(
+                            f"[{source}] propagated {mv.movement_id!r}.traj[-1] "
+                            f"-> {next_mv.movement_id!r}."
+                            f"start_state.robot_configuration (was None)."
+                        )
+                    else:
+                        diff = np.abs(path[-1] - existing_vec).max()
                         if diff > 1e-3:
                             self.get_logger().warn(
                                 f"{source} end of {mv.movement_id!r} differs from "
                                 f"existing {next_mv.movement_id!r}.start by "
-                                f"max {diff:.4f} rad/m; overwriting."
+                                f"max {diff:.4f} rad/m; overwriting "
+                                f"(M1/M2/M3 chain rule)."
                             )
-                    next_mv.start_state.robot_configuration = new_end
+                            if chain_role == 'M1':
+                                self._drop_m2_m3_after_m1_chain_break(
+                                    f"{source} M1 endpoint changed by max {diff:.4f} rad/m"
+                                )
+                            elif chain_role == 'M2' and self._match_movement_role(next_mv) == 'M3':
+                                self._drop_movement_trajectory(
+                                    next_mv,
+                                    f"{source} M2 endpoint changed by max {diff:.4f} rad/m"
+                                )
+                        next_mv.start_state.robot_configuration = new_end
 
             # Backward continuity check: previous movement's last traj point
             # should match this movement's first traj point.
@@ -1629,22 +1678,14 @@ class HuskyMonitor(Node):
         if save_to_disk:
             try:
                 from compas.data import json_dump
-                traj_dir = os.path.join(DESIGN_DATA_DIRECTORY, DESIGN_PROBLEM_NAME, 'Trajectories')
-                os.makedirs(traj_dir, exist_ok=True)
-                out_path = os.path.join(traj_dir, f'{mv.movement_id}_trajectory.json')
+                out_path = self._trajectory_file_for(mv)
+                os.makedirs(os.path.dirname(out_path), exist_ok=True)
                 json_dump(jt, out_path)
                 print(f"[{tag}] saved trajectory to {out_path}")
             except Exception as e:
                 self.get_logger().warn(f"failed to save trajectory: {e}")
 
-        print(f"[{tag}] movement roster:")
-        for i, m in enumerate(self._loaded_movements):
-            has_conf = (m.start_state is not None
-                        and getattr(m.start_state, 'robot_configuration', None) is not None)
-            has_traj = getattr(m, 'trajectory', None) is not None
-            print(f"  [{i}] {m.movement_id!r}")
-            print(f"     - start state: has robot_conf = {self._color_bool(has_conf)}")
-            print(f"     - has trajectory = {self._color_bool(has_traj)}")
+        self._print_movement_roster(tag=tag)
 
     def load_selected_movement_trajectory(self):
         """Load the planned trajectory JSON for the currently selected movement.
@@ -1657,10 +1698,7 @@ class HuskyMonitor(Node):
             self.get_logger().warn("No movement loaded; click 'Load Movement' first.")
             return
         mv = self.current_movement
-        traj_path = os.path.join(
-            DESIGN_DATA_DIRECTORY, DESIGN_PROBLEM_NAME, 'Trajectories',
-            f'{mv.movement_id}_trajectory.json',
-        )
+        traj_path = self._trajectory_file_for(mv)
         if not os.path.exists(traj_path):
             self.get_logger().warn(
                 f"No trajectory file for {mv.movement_id!r} at {traj_path}"
@@ -1683,6 +1721,402 @@ class HuskyMonitor(Node):
             role=self._match_movement_role(mv),
             save_to_disk=False,
         )
+
+    def _trajectory_file_for(self, mv):
+        """Disk path for a movement's saved trajectory JSON.
+
+        Synthetic / role-only movement ids (e.g. `__M0_synthetic_staging`)
+        get the active BarAction's action_id prepended so the same M0
+        from different BarAction runs doesn't share one file and silently
+        clobber each other (and so auto-load reload picks up the right
+        M0 for the current BarAction).
+        """
+        action_id = getattr(self._loaded_action, 'action_id', None) if self._loaded_action else None
+        return self._trajectory_path_for_movement_id(mv.movement_id, action_id)
+
+    def _trajectory_path_for_movement_id(self, movement_id, action_id=None):
+        """Build the saved trajectory path for one movement id."""
+        # Keep M0 and every real movement scoped to the BarAction action_id.
+        name = movement_id
+        if action_id and not name.startswith(f'{action_id}_'):
+            name = f'{action_id}_{name}'
+        return os.path.join(
+            DESIGN_DATA_DIRECTORY, DESIGN_PROBLEM_NAME, 'Trajectories',
+            f'{name}_trajectory.json',
+        )
+
+    def _selected_bar_action_path(self):
+        """Return the BarAction path selected by the BarAction file slider."""
+        files = self.available_robot_cell_states
+        if not files:
+            self.available_robot_cell_states = self._load_available_bar_actions()
+            files = self.available_robot_cell_states
+        if not files:
+            return None
+
+        # The Bar Holding flow uses _selected_action_file_idx.
+        idx = max(0, min(int(self._selected_action_file_idx), len(files) - 1))
+        fname = files[idx]
+        if os.path.isabs(fname):
+            return fname
+        return os.path.join(
+            DESIGN_DATA_DIRECTORY, DESIGN_PROBLEM_NAME, 'BarActions', fname,
+        )
+
+    def delete_saved_movement_trajectories_for_current_bar_action(self):
+        """Delete all saved per-movement trajectory JSONs for selected BarAction."""
+        action_path = self._selected_bar_action_path()
+        if action_path is None:
+            self.get_logger().warn("No BarAction files available to delete trajectories for.")
+            return
+
+        loaded_path = getattr(self, '_current_action_path', None)
+        is_loaded_action = (
+            loaded_path is not None
+            and os.path.abspath(loaded_path) == os.path.abspath(action_path)
+            and self._loaded_action is not None
+        )
+
+        try:
+            action = self._loaded_action if is_loaded_action else parse_bar_action(action_path)
+        except Exception as e:
+            self.get_logger().warn(f"Failed to parse BarAction for trajectory delete: {e}")
+            return
+
+        action_id = getattr(action, 'action_id', None)
+        movements = self._loaded_movements if is_loaded_action else list(action.movements)
+        movement_ids = [getattr(mv, 'movement_id', None) for mv in movements]
+        if not is_loaded_action and movement_ids:
+            # The synthetic M0 save file is created by load_bar_action_file().
+            movement_ids.insert(0, '__M0_synthetic_staging')
+
+        deleted = []
+        missing = 0
+        errors = []
+        seen_paths = set()
+        for movement_id in movement_ids:
+            if not movement_id:
+                continue
+            traj_path = self._trajectory_path_for_movement_id(movement_id, action_id)
+            if traj_path in seen_paths:
+                continue
+            seen_paths.add(traj_path)
+            if not os.path.exists(traj_path):
+                missing += 1
+                continue
+            try:
+                os.remove(traj_path)
+                deleted.append(traj_path)
+            except OSError as e:
+                errors.append((traj_path, e))
+
+        if is_loaded_action:
+            # Keep UI state honest after disk files are removed.
+            for mv in self._loaded_movements:
+                mv.trajectory = None
+            self._clear_m1_start_conf_without_trajectory()
+            self._reset_planned_arm_trajectory()
+            self.set_to_show_goal_state()
+
+        print(f"[delete-traj] BarAction {action_id!r}: deleted {len(deleted)} "
+              f"saved trajectory file(s), missing {missing}.")
+        for traj_path in deleted:
+            print(f"  deleted: {traj_path}")
+        for traj_path, err in errors:
+            self.get_logger().warn(f"Failed to delete {traj_path}: {err}")
+        if is_loaded_action:
+            self._print_movement_roster(tag='delete-traj')
+
+    def _print_movement_roster(self, tag='roster'):
+        """Print which loaded movements have a start_conf and a trajectory."""
+        print(f"[{tag}] movement roster:")
+        for i, m in enumerate(self._loaded_movements):
+            has_conf = (m.start_state is not None
+                        and getattr(m.start_state, 'robot_configuration', None) is not None)
+            has_traj = getattr(m, 'trajectory', None) is not None
+            print(f"  [{i}] {m.movement_id!r}")
+            print(f"     - start state: has robot_conf = {self._color_bool(has_conf)}")
+            print(f"     - has trajectory = {self._color_bool(has_traj)}")
+
+    def _trajectory_has_waypoints(self, mv):
+        """Return True only when a movement has a non-empty 12-DOF trajectory."""
+        jt = getattr(mv, 'trajectory', None)
+        if jt is None:
+            return False
+        try:
+            return bool(path_12_from_joint_trajectory(jt))
+        except Exception:
+            # If parsing fails, treat any raw points as a trajectory so stale
+            # files still get invalidated instead of being silently kept.
+            return bool(getattr(jt, 'points', None))
+
+    def _drop_movement_trajectory(self, mv, reason, *, delete_file=True):
+        """Clear a movement trajectory in memory and remove its saved JSON."""
+        had_traj = getattr(mv, 'trajectory', None) is not None
+        mv.trajectory = None
+        if self._match_movement_role(mv) == 'M1':
+            # M1 start_conf is generated by M1 planning; without M1 traj it is
+            # stale by definition and must not survive as an authored start.
+            if mv.start_state is not None:
+                mv.start_state.robot_configuration = None
+
+        deleted = False
+        if delete_file:
+            traj_path = self._trajectory_file_for(mv)
+            if os.path.exists(traj_path):
+                try:
+                    os.remove(traj_path)
+                    deleted = True
+                except OSError as e:
+                    self.get_logger().warn(f"Failed to delete stale trajectory {traj_path}: {e}")
+        if had_traj or deleted:
+            print(f"[drop-traj] {mv.movement_id!r}: {reason}")
+            if deleted:
+                print(f"  deleted: {self._trajectory_file_for(mv)}")
+
+    def _drop_m2_m3_after_m1_chain_break(self, reason):
+        """Drop stale downstream linear trajectories after M1 endpoint changes."""
+        dropped = 0
+        for m in self._loaded_movements:
+            if self._match_movement_role(m) in ('M2', 'M3') and self._trajectory_has_waypoints(m):
+                self._drop_movement_trajectory(m, reason)
+                dropped += 1
+        return dropped
+
+    def _clear_m1_start_conf_without_trajectory(self):
+        """Keep invariant: M1 has start_conf only when it has a trajectory."""
+        for m in self._loaded_movements:
+            if self._match_movement_role(m) != 'M1':
+                continue
+            if m.start_state is None or self._trajectory_has_waypoints(m):
+                continue
+            if getattr(m.start_state, 'robot_configuration', None) is not None:
+                m.start_state.robot_configuration = None
+                print(f"[M1] cleared start_state.robot_configuration because M1 has no trajectory.")
+
+    def _auto_load_all_trajectories(self, tol_rad: float = 1e-3):
+        """After 'Load BarAction': try to load <mv>_trajectory.json for every
+        loaded movement, then run consistency checks. On any mismatch, warn
+        and drop that movement's trajectory.
+
+        Per-movement checks (in load order, so check (b) can consult a
+        predecessor's just-loaded or just-dropped trajectory):
+          (a) traj[0] vs mv.start_state.robot_configuration
+          (b) mv.start_state.robot_configuration vs prev movement's traj[-1]
+          (c) For M0 only: live robot arm conf vs M0.start_state's
+              robot_configuration. Saved M0 filename now carries the active
+              BarAction prefix (see _trajectory_file_for) so a stale file
+              from a different run can't sneak in across BarActions.
+        """
+        from compas.data import json_load
+
+        traj_dir = os.path.join(
+            DESIGN_DATA_DIRECTORY, DESIGN_PROBLEM_NAME, 'Trajectories',
+        )
+        if not os.path.isdir(traj_dir):
+            print(f"[auto-load-traj] no Trajectories/ at {traj_dir}; nothing to load.")
+            self._clear_m1_start_conf_without_trajectory()
+            return
+
+        # Pass 1: try to load each movement's trajectory from disk.
+        n_loaded = 0
+        for mv in self._loaded_movements:
+            traj_path = self._trajectory_file_for(mv)
+            if not os.path.exists(traj_path):
+                continue
+            try:
+                jt = json_load(traj_path)
+            except Exception as e:
+                self.get_logger().warn(
+                    f"[auto-load-traj] {mv.movement_id!r}: failed to load: {e}"
+                )
+                continue
+            mv.trajectory = jt
+            n_loaded += 1
+        if n_loaded == 0:
+            print(f"[auto-load-traj] no <mv>_trajectory.json files found under {traj_dir}.")
+            self._clear_m1_start_conf_without_trajectory()
+            self._print_movement_roster(tag='auto-load-traj')
+            return
+
+        # Pass 2: per-movement consistency. IN ORDER so each iteration's
+        # check (2) can consult the predecessor's actually-kept trajectory,
+        # and the post-check forward propagation can fill the next
+        # movement's start_state.robot_configuration when it's None
+        # (mirrors what _accept_trajectory does at plan time, lost across
+        # BarAction reload since the BarAction file holds the authored
+        # start_state, not the planned chain).
+        n_dropped = 0
+        for i, mv in enumerate(self._loaded_movements):
+            traj = getattr(mv, 'trajectory', None)
+            if traj is None:
+                continue
+            role = self._match_movement_role(mv)
+            path12 = path_12_from_joint_trajectory(traj)
+            if not path12:
+                print(f"[auto-load-traj] {mv.movement_id!r}: trajectory has no waypoints; dropping.")
+                mv.trajectory = None
+                n_dropped += 1
+                continue
+
+            if role == 'M2':
+                prev = self._loaded_movements[i - 1] if i > 0 else None
+                if prev is None or self._match_movement_role(prev) != 'M1' or prev.trajectory is None:
+                    msg = (f"[auto-load-traj] {mv.movement_id!r}: missing kept M1 trajectory; "
+                           "dropping M2/M3 saved trajectories.")
+                    print(msg)
+                    n_dropped += self._drop_m2_m3_after_m1_chain_break(msg)
+                    continue
+            elif role == 'M3':
+                prev = self._loaded_movements[i - 1] if i > 0 else None
+                if prev is None or self._match_movement_role(prev) != 'M2' or prev.trajectory is None:
+                    msg = (f"[auto-load-traj] {mv.movement_id!r}: missing kept M2 trajectory; "
+                           "dropping loaded trajectory.")
+                    print(msg)
+                    self._drop_movement_trajectory(mv, msg)
+                    n_dropped += 1
+                    continue
+
+            sc = mv.start_state.robot_configuration if mv.start_state is not None else None
+            sc_vec = vec12_from_conf(sc) if sc is not None else None
+            traj_first = np.asarray(path12[0], dtype=float)
+            traj_last = np.asarray(path12[-1], dtype=float)
+
+            dropped = False
+
+            # (1) start_state.robot_configuration vs traj[0] — role-based:
+            #   M1 owns its generated start_conf, so traj[0] is allowed to
+            #     repopulate M1.start_state across reload.
+            #   M2/M3 must obey the start_conf propagated from M1/M2. If
+            #     their saved traj[0] does not match that hard start, the
+            #     saved trajectory is stale and must be replanned.
+            #   M0/M4 are NOT chain owners; their authored start_conf
+            #     IS authoritative (M0.start_state is a live snapshot,
+            #     M4 is the chain terminator). Run the strict compare
+            #     and drop on mismatch.
+            if role == 'M1' and mv.start_state is not None:
+                if sc_vec is not None:
+                    diff_owner = float(np.abs(traj_first - sc_vec).max())
+                    if diff_owner > tol_rad:
+                        print(
+                            f"[auto-load-traj] {mv.movement_id!r}: "
+                            f"overwriting start_state.robot_configuration with "
+                            f"traj[0] (was authored, max-joint Δ "
+                            f"{diff_owner:.4f} rad) per M1 generated-start rule."
+                        )
+                mv.start_state.robot_configuration = conf_from_12vec(traj_first)
+                sc_vec = traj_first.copy()
+            elif sc_vec is not None:
+                diff = float(np.abs(traj_first - sc_vec).max())
+                if diff > tol_rad:
+                    msg = (f"[auto-load-traj] {mv.movement_id!r}: "
+                           f"start_state.robot_configuration disagrees with "
+                           f"traj[0] by max {diff:.4f} rad; dropping loaded trajectory.")
+                    self.get_logger().warn(msg)
+                    print(msg)
+                    if role == 'M2':
+                        # M2 start comes from M1.traj[-1]; if stale, M3's
+                        # start inherited from old M2 is stale too.
+                        n_dropped += self._drop_m2_m3_after_m1_chain_break(msg)
+                    else:
+                        self._drop_movement_trajectory(mv, msg, delete_file=(role in ('M2', 'M3')))
+                        n_dropped += 1
+                    dropped = True
+            elif role in ('M2', 'M3'):
+                msg = (f"[auto-load-traj] {mv.movement_id!r}: missing propagated "
+                       "start_state.robot_configuration; dropping loaded trajectory.")
+                self.get_logger().warn(msg)
+                print(msg)
+                if role == 'M2':
+                    n_dropped += self._drop_m2_m3_after_m1_chain_break(msg)
+                else:
+                    self._drop_movement_trajectory(mv, msg)
+                    n_dropped += 1
+                dropped = True
+
+            # (2) mv.start_state.robot_configuration vs prev movement's traj[-1]
+            if not dropped and i > 0 and sc_vec is not None:
+                prev = self._loaded_movements[i - 1]
+                prev_traj = getattr(prev, 'trajectory', None)
+                if prev_traj is not None:
+                    prev_path = path_12_from_joint_trajectory(prev_traj)
+                    if prev_path:
+                        diff = float(np.abs(sc_vec - np.asarray(prev_path[-1])).max())
+                        if diff > tol_rad:
+                            msg = (f"[auto-load-traj] {mv.movement_id!r}: "
+                                   f"start_state.robot_configuration disagrees "
+                                   f"with prev {prev.movement_id!r}.traj[-1] by max "
+                                   f"{diff:.4f} rad; dropping loaded trajectory.")
+                            self.get_logger().warn(msg)
+                            print(msg)
+                            if role == 'M2' and self._match_movement_role(prev) == 'M1':
+                                # M3's start depends on M2's end, so an M1->M2
+                                # chain break invalidates both linear files.
+                                n_dropped += self._drop_m2_m3_after_m1_chain_break(msg)
+                            else:
+                                self._drop_movement_trajectory(mv, msg, delete_file=(role in ('M2', 'M3')))
+                                n_dropped += 1
+                            dropped = True
+
+            # (3) M0 only: live robot arm conf vs M0.start_state.robot_configuration
+            if not dropped and role == 'M0':
+                live12 = self._read_live_arm_conf_12()
+                if live12 is None:
+                    print(f"[auto-load-traj] M0 live-conf check skipped "
+                          f"(no live robot interface available).")
+                elif sc_vec is None:
+                    print(f"[auto-load-traj] M0 live-conf check skipped "
+                          f"(M0.start_state has no robot_configuration).")
+                else:
+                    diff = float(np.abs(live12 - sc_vec).max())
+                    if diff > tol_rad:
+                        msg = (f"[auto-load-traj] M0: live robot conf disagrees "
+                               f"with M0.start_state.robot_configuration by max "
+                               f"{diff:.4f} rad; dropping M0 trajectory (the "
+                               f"live robot has moved since this M0 was planned).")
+                        self.get_logger().warn(msg)
+                        print(msg)
+                        mv.trajectory = None
+                        n_dropped += 1
+                        dropped = True
+
+            if dropped:
+                continue
+
+            # Forward-propagate path[-1] to next mv's start_state.robot_configuration.
+            # Role-based, matching plan-time _accept_trajectory step 3:
+            #   M1/M2/M3: chain owners — overwrite next.start unconditionally.
+            #   M0/M4:    NOT chain owners — never write to next.start.
+            if role not in ('M0', 'M4') and i + 1 < len(self._loaded_movements):
+                next_mv = self._loaded_movements[i + 1]
+                if next_mv.start_state is not None:
+                    next_mv.start_state.robot_configuration = conf_from_12vec(traj_last)
+                    print(f"[auto-load-traj] propagated {mv.movement_id!r}.traj[-1] "
+                          f"-> {next_mv.movement_id!r}.start_state.robot_configuration "
+                          f"(M1/M2/M3 chain rule).")
+
+        print(f"[auto-load-traj] kept {n_loaded - n_dropped}/{n_loaded} loaded "
+              f"trajectories after consistency checks "
+              f"(dropped {n_dropped}).")
+        self._clear_m1_start_conf_without_trajectory()
+        self._print_movement_roster(tag='auto-load-traj')
+
+    def _read_live_arm_conf_12(self):
+        """Return the live robot's 12-DOF arm conf as np.ndarray, or None
+        if no husky interface is wired (headless without stub, etc.)."""
+        if not self.huskies:
+            return None
+        try:
+            hi = self.huskies[self.selected_robot_id].interface
+            left = np.asarray(hi.arm_joint_pose[0], dtype=float)
+            right = (np.asarray(hi.arm_joint_pose[1], dtype=float)
+                     if len(hi.arm_joint_pose) > 1
+                     else np.asarray(hi.arm_joint_pose[0], dtype=float))
+            if left.shape != (6,) or right.shape != (6,):
+                return None
+            return np.concatenate([left, right])
+        except (AttributeError, IndexError, TypeError):
+            return None
 
     def _color_bool(self, value):
         """Return a terminal-colored bool string for planning status prints."""
@@ -1809,7 +2243,7 @@ class HuskyMonitor(Node):
     def _plan_M1_dispatch(self, mv):
         """Constrained dual-arm planning via plan_and_stage_constrained."""
         self.constrained_trajectory = [None, None]
-        world.plan_and_stage_constrained(self, ignore_env_obstacles=True)
+        world.plan_and_stage_constrained(self, ignore_env_obstacles=False)
         traj = self.constrained_trajectory
         if not (traj and traj[0] is not None and traj[1] is not None):
             return None
@@ -1869,6 +2303,7 @@ class HuskyMonitor(Node):
         jt = plan_constrained_dual_arm_linear(
             planner, robot_cell, start_state, start_conf,
             goal_world_from_bar, bar_from_left_tool0, bar_from_right_tool0,
+            skip_env_collisions=False,
         )
         if jt is not None:
             self._check_inter_ee_invariance(jt, start_state)
@@ -1938,6 +2373,7 @@ class HuskyMonitor(Node):
         return plan_dual_arm_linear_independent(
             self.cfab.planner, self.cfab.robot_cell, start_state,
             start_conf, left_frame, right_frame,
+            skip_env_collisions=False,
         )
 
     def _plan_M4_dispatch(self, mv):
@@ -1974,13 +2410,38 @@ class HuskyMonitor(Node):
         ee_attachments = [ee[1] for ee in husky.object.ee_list][:2]
         if len(ee_attachments) != 2:
             ee_attachments = (ee_attachments * 2)[:2]
+        # ACM for the free planner: drop every robot-mounted body (tools,
+        # held bar, attached joint parts) from scene["obstacles"]. Removing
+        # a body from `obstacles` skips:
+        #   1. robot link <-> that mounted body  -- the real fix; wrist mesh
+        #      and tool mesh overlap by 1-5 cm by design.
+        #   2. EE-ghost <-> that mounted body    -- harmless; ghosts sit at
+        #      z=-100, far from anything.
+        #   3. (indirect) mounted body <-> mounted body  -- left/right tool
+        #      collision is no longer checked; the wrist_L <-> wrist_R robot
+        #      self-collision check is the proxy that catches tool clashes.
+        # Robot self-collision and robot <-> non-mounted env bodies remain
+        # fully checked. The constrained planner sidesteps this issue via
+        # its expected-neighbor-contact probe (5 mm getClosestPoints(bar,
+        # body) at goal) which absorbs the overlap; free planner has no
+        # such probe.
+        mounted_names: set[str] = set()
+        ss = getattr(self, 'movement_start_state', None)
+        if ss is not None:
+            for name, rbs in (getattr(ss, 'rigid_body_states', None) or {}).items():
+                if getattr(rbs, 'attached_to_link', None) is not None:
+                    mounted_names.add(name)
+        obstacles = [
+            body for name, body in (getattr(self, 'static_obstacles', None) or {}).items()
+            if name not in mounted_names
+        ]
         scene = {
             "robot": robot,
             "arm_joints": arm_joints_all,
             "joint_names": list(HUSKY_DUAL_UR5e_JOINT_NAMES[0]) + list(HUSKY_DUAL_UR5e_JOINT_NAMES[1]),
             "tool_link_left": tool_link_L,
             "tool_link_right": tool_link_R,
-            "obstacles": [],
+            "obstacles": obstacles,
             "attachments": ee_attachments,
             "disabled_collisions": None,
             "ee_types": list(getattr(husky.object, "ee_types", []) or []),
@@ -2443,9 +2904,86 @@ class HuskyMonitor(Node):
         # we don't need to switch between single and dual arm models
         # Just update the color based on the current state
         self.goal_model.set_color(GOAL_BLUE if self.show_goal_state else TRAJECTORY_GREEN)
-        
+
+    # --- mocap base XYZ offset side-window (standalone DPG) ---
+    def _init_mocap_offset_window(self):
+        """Spawn standalone DPG window with x/y/z text inputs + Apply/Reset.
+        Independent of _common._global_backend so PyBullet primary UI is unaffected.
+        """
+        from . import common as _common
+        from .ui_backend import DearPyGuiBackend, bind_default_font
+        self._offset_dpg = None
+        self._mocap_offset_pending = [0.0, 0.0, 0.0]
+
+        # Avoid a 2nd DPG create_context() when primary backend is already DPG.
+        if isinstance(_common._global_backend, DearPyGuiBackend):
+            print("[mocap offset] primary backend is DPG; skipping private offset window.")
+            return
+        try:
+            import dearpygui.dearpygui as dpg
+        except ImportError:
+            print("[mocap offset] dearpygui not installed; offset textboxes disabled. "
+                  "`pip install dearpygui` to enable.")
+            return
+
+        self._offset_dpg = dpg
+        dpg.create_context()
+        dpg.create_viewport(title="Husky Base Mocap Offset", width=340, height=220)
+        bind_default_font(dpg, int(self.UI_FONT_SIZE))
+        dpg.setup_dearpygui()
+        with dpg.window(tag="offset_window", label="Base XYZ Offset (world, m)",
+                        width=340, height=220, no_close=True):
+            dpg.add_input_float(tag="offset_x", label="x [m]", default_value=0.0,
+                                step=0.0, format="%.4f",
+                                callback=lambda s, a, u: self._set_pending_offset(0, a))
+            dpg.add_input_float(tag="offset_y", label="y [m]", default_value=0.0,
+                                step=0.0, format="%.4f",
+                                callback=lambda s, a, u: self._set_pending_offset(1, a))
+            dpg.add_input_float(tag="offset_z", label="z [m]", default_value=0.0,
+                                step=0.0, format="%.4f",
+                                callback=lambda s, a, u: self._set_pending_offset(2, a))
+            dpg.add_separator()
+            dpg.add_button(label="Apply", callback=lambda *a: self._apply_base_offset())
+            dpg.add_button(label="Reset to Zero", callback=lambda *a: self._reset_base_offset())
+        dpg.set_primary_window("offset_window", True)
+        dpg.show_viewport()
+
+    def _set_pending_offset(self, i, v):
+        try:
+            self._mocap_offset_pending[i] = float(v)
+        except (TypeError, ValueError):
+            pass
+
+    def _apply_base_offset(self):
+        h = self.huskies[self.selected_robot_id]
+        h.mocap_base_offset_xyz = np.array(self._mocap_offset_pending, dtype=float)
+        print(f"[mocap offset] applied: {h.mocap_base_offset_xyz.tolist()}")
+
+    def _reset_base_offset(self):
+        h = self.huskies[self.selected_robot_id]
+        h.mocap_base_offset_xyz = np.zeros(3)
+        self._mocap_offset_pending = [0.0, 0.0, 0.0]
+        if self._offset_dpg is not None:
+            dpg = self._offset_dpg
+            for tag in ("offset_x", "offset_y", "offset_z"):
+                if dpg.does_item_exist(tag):
+                    dpg.set_value(tag, 0.0)
+        print("[mocap offset] reset to zero")
+
+    def _pump_mocap_offset_window(self):
+        dpg = getattr(self, '_offset_dpg', None)
+        if dpg is None:
+            return
+        if dpg.is_dearpygui_running():
+            dpg.render_dearpygui_frame()
+
+    def _shutdown_mocap_offset_window(self):
+        dpg = getattr(self, '_offset_dpg', None)
+        if dpg is not None:
+            dpg.destroy_context()
+            self._offset_dpg = None
+
     def build_ui(self, target_conf=None):
-        self.selected_robot_slider = Slider("robot id", self.update_selected_robot_id, 0, len(self.huskies)+1, self.selected_robot_id)
         arm_slider_label = "arm id (0 only)" if self.get_active_arm_count() == 1 else "arm id (0:L,1:R)"
         arm_slider_max = 1 if self.get_active_arm_count() == 1 else 2
         self.arm_slider = Slider(arm_slider_label, self.update_selected_arm_id, 0, arm_slider_max, self.selected_arm_index)
@@ -2678,6 +3216,7 @@ class HuskyMonitor(Node):
             self.buttons.append(Button('Load Movement', self.load_selected_movement))
             self.buttons.append(Button('Plan Movement', self.plan_selected_movement))
             self.buttons.append(Button('Load Movement Trajectory', self.load_selected_movement_trajectory))
+            self.buttons.append(Button('Delete All Saved Trajs', self.delete_saved_movement_trajectories_for_current_bar_action))
             self.buttons.append(Button('IK Live Base (debug)', self.ik_live_base_for_selected_movement))
             self.buttons.append(Button('Exec Both Arm Trajs', lambda: world.execute_arm_trajectory_both(self)))
             self.buttons.append(Button('Record markerset take', self.record_bar_holding_marker_take))
@@ -2736,8 +3275,11 @@ class HuskyMonitor(Node):
         #         )
         #     )
         # ))
-        
-    # --- --- --- --- --- MOCAP --- --- --- --- --- 
+
+        if self.USE_MOCAP:
+            self._init_mocap_offset_window()
+
+    # --- --- --- --- --- MOCAP --- --- --- --- ---
     _ANSI_GREEN = '\033[92m'
     _ANSI_RED = '\033[91m'
     _ANSI_RESET = '\033[0m'
@@ -2835,7 +3377,9 @@ class HuskyMonitor(Node):
             # apply calibrated base transformation here
             # we keep the raw mocap data in _mocap_rigidbody_cache
             calibrated_pose = pp.multiply(world_from_mocap, h.base_mocap_from_base_footprint)
-            h.interface.mocap_callback(np.array(calibrated_pose[0]), np.array(calibrated_pose[1]), ts)
+            # World-frame XYZ offset; rebind from UI thread is atomic in CPython.
+            pos_with_offset = np.array(calibrated_pose[0]) + h.mocap_base_offset_xyz
+            h.interface.mocap_callback(pos_with_offset, np.array(calibrated_pose[1]), ts)
 
         for o in self.tracked_objects:
             if o.name not in raw_snapshot:
@@ -2878,6 +3422,8 @@ class HuskyMonitor(Node):
                 rclpy.shutdown()
                 return
 
+        self._pump_mocap_offset_window()
+
         # Keyboard shortcuts removed - outdated, will be remade later.
 
         for b in self.buttons:
@@ -2905,7 +3451,6 @@ class HuskyMonitor(Node):
 
         # pp.draw_pose(self.goal_model.get_link_pose_from_name("ur_arm_base_link"))
 
-        self.selected_robot_slider.update()
         self.arm_slider.update()
         self.trajectory_time_slider.update()
         if self.gripper_slider is not None:
@@ -3213,6 +3758,10 @@ class HuskyMonitor(Node):
             except Exception as e:
                 self.get_logger().warn(f"UI backend shutdown error: {e}")
             _common._global_backend = None
+        try:
+            self._shutdown_mocap_offset_window()
+        except Exception as e:
+            self.get_logger().warn(f"mocap offset window shutdown error: {e}")
         super().destroy_node()
 
 # --- --- --- --- --- MAIN --- --- --- --- ---

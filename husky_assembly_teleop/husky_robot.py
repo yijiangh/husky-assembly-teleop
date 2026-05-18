@@ -92,10 +92,11 @@ class HuskyRobotInterface:
     odom_offset = np.zeros(3)
     _odom_position = np.zeros(3)
 
-    def __init__(self, node: Node, name='/a200_0804', use_odom=True, connect_arm=True, connect_gripper=True, dual_arm=False):
+    def __init__(self, node: Node, name='/a200_0804', use_odom=True, connect_arm=True, connect_gripper=True, dual_arm=False, connect_compliant_controller=False):
         self.node = node
         self.name = name
         self.dual_arm = dual_arm
+        self.connect_compliant_controller = connect_compliant_controller
 
         self.scaffolding_status = [None]
 
@@ -244,47 +245,48 @@ class HuskyRobotInterface:
         else:
             self.pub_cmd_arm_cartesian.append(self.node.create_publisher(PoseStamped, name + '/ur5e/target_frame', 10))
             
-        # self.pub_cmd_arm_cartesian_force = []
-        # if dual_arm:
-        #     self.pub_cmd_arm_cartesian_force.append(self.node.create_publisher(WrenchStamped, name + '/left_ur5e/target_wrench', 10))
-        #     self.pub_cmd_arm_cartesian_force.append(self.node.create_publisher(WrenchStamped, name + '/right_ur5e/target_wrench', 10))
-        # else:
-        #     self.pub_cmd_arm_cartesian_force.append(self.node.create_publisher(WrenchStamped, name + '/ur5e/target_wrench', 10))
-        
-        # Service Clients
-        
-        # self.force_services = []
-        # if dual_arm:
-        #     self.force_services.append(node.create_client(SetForceMode, name + '/left_ur5e/force_mode_controller/start_force_mode'))
-        #     self.force_services.append(node.create_client(SetForceMode, name + '/right_ur5e/force_mode_controller/start_force_mode'))
-        # else:
-        #     self.force_services.append(node.create_client(SetForceMode, name + '/ur5e/force_mode_controller/start_force_mode'))
-        
-        # for fs in self.force_services:
-        #     fs.wait_for_service(timeout_sec=2.5)
-        #     self.node.get_logger().info(f'Force Service Client {fs.service_is_ready()}')
-            
-        # self.zero_ft_sensor_client = []
-        # if dual_arm:
-        #     self.zero_ft_sensor_client.append(node.create_client(Trigger, name + '/left_ur5e/io_and_status_controller/zero_ftsensor'))
-        #     self.zero_ft_sensor_client.append(node.create_client(Trigger, name + '/right_ur5e/io_and_status_controller/zero_ftsensor'))
-        # else:
-        #     self.zero_ft_sensor_client.append(node.create_client(Trigger, name + '/ur5e/io_and_status_controller/zero_ftsensor')) 
-        
-        # for fs in self.zero_ft_sensor_client:
-        #     fs.wait_for_service(timeout_sec=2.5)
-        #     self.node.get_logger().info(f'Zero FT Sensor Service Client {fs.service_is_ready()}')
-            
-        # self.controller_change_service_client = []
-        # if dual_arm:
-        #     self.controller_change_service_client.append(node.create_client(SwitchController, name + '/left_ur5e/controller_manager/switch_controller'))
-        #     self.controller_change_service_client.append(node.create_client(SwitchController, name + '/right_ur5e/controller_manager/switch_controller'))
-        # else:
-        #     self.controller_change_service_client.append(node.create_client(SwitchController, name + '/ur5e/controller_manager/switch_controller')) 
-        
-        # for fs in self.controller_change_service_client:
-        #     fs.wait_for_service(timeout_sec=2.5)
-        #     self.node.get_logger().info(f'Switch Controller Service Client {fs.service_is_ready()}')
+        if connect_compliant_controller:
+            self.pub_cmd_arm_cartesian_force = []
+            if dual_arm:
+                self.pub_cmd_arm_cartesian_force.append(self.node.create_publisher(WrenchStamped, name + '/left_ur5e/target_wrench', 10))
+                self.pub_cmd_arm_cartesian_force.append(self.node.create_publisher(WrenchStamped, name + '/right_ur5e/target_wrench', 10))
+            else:
+                self.pub_cmd_arm_cartesian_force.append(self.node.create_publisher(WrenchStamped, name + '/ur5e/target_wrench', 10))
+
+            # Service Clients
+
+            self.force_services = []
+            if dual_arm:
+                self.force_services.append(node.create_client(SetForceMode, name + '/left_ur5e/force_mode_controller/start_force_mode'))
+                self.force_services.append(node.create_client(SetForceMode, name + '/right_ur5e/force_mode_controller/start_force_mode'))
+            else:
+                self.force_services.append(node.create_client(SetForceMode, name + '/ur5e/force_mode_controller/start_force_mode'))
+
+            for fs in self.force_services:
+                fs.wait_for_service(timeout_sec=2.5)
+                self.node.get_logger().info(f'Force Service Client {fs.service_is_ready()}')
+
+            self.zero_ft_sensor_client = []
+            if dual_arm:
+                self.zero_ft_sensor_client.append(node.create_client(Trigger, name + '/left_ur5e/io_and_status_controller/zero_ftsensor'))
+                self.zero_ft_sensor_client.append(node.create_client(Trigger, name + '/right_ur5e/io_and_status_controller/zero_ftsensor'))
+            else:
+                self.zero_ft_sensor_client.append(node.create_client(Trigger, name + '/ur5e/io_and_status_controller/zero_ftsensor'))
+
+            for fs in self.zero_ft_sensor_client:
+                fs.wait_for_service(timeout_sec=2.5)
+                self.node.get_logger().info(f'Zero FT Sensor Service Client {fs.service_is_ready()}')
+
+            self.controller_change_service_client = []
+            if dual_arm:
+                self.controller_change_service_client.append(node.create_client(SwitchController, name + '/left_ur5e/controller_manager/switch_controller'))
+                self.controller_change_service_client.append(node.create_client(SwitchController, name + '/right_ur5e/controller_manager/switch_controller'))
+            else:
+                self.controller_change_service_client.append(node.create_client(SwitchController, name + '/ur5e/controller_manager/switch_controller'))
+
+            for fs in self.controller_change_service_client:
+                fs.wait_for_service(timeout_sec=2.5)
+                self.node.get_logger().info(f'Switch Controller Service Client {fs.service_is_ready()}')
 
         
         # Action Clients
