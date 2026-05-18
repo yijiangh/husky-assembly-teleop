@@ -1651,6 +1651,43 @@ _TOOL_V3_WRIST_TOUCH_LINKS = (
 )
 
 
+_ASSEMBLY_ARM_TOOL_BODIES = (
+    ("AssemblyLeftArmToolBody", "left_"),
+    ("AssemblyRightArmToolBody", "right_"),
+)
+
+
+_ASSEMBLY_ARM_TOOL_BODY_TOUCH_LINKS_SUFFIXES = (
+    "ur_arm_wrist_1_link",
+    "ur_arm_wrist_2_link",
+    "ur_arm_wrist_3_link",
+    "ur_arm_forearm_link",
+)
+
+
+def _augment_assembly_arm_tool_body_touch_links(state):
+    """Allow each Assembly*ArmToolBody rigid body to touch the side's wrist
+    + forearm links.
+
+    These bodies are mounted at tool0 (registered as cfab rigid_body, not
+    ToolState) and their meshes extend back into the wrist swept volume by
+    design; cfab CC.3 (robot link <-> rigid_body) would flag them as
+    collisions without these touch_links. Symmetric to
+    _augment_tool_touch_links_for_v3 but operates on rigid_body_states.
+    """
+    rb_states = getattr(state, "rigid_body_states", None) or {}
+    for body_name, prefix in _ASSEMBLY_ARM_TOOL_BODIES:
+        rbs = rb_states.get(body_name)
+        if rbs is None:
+            continue
+        existing = list(getattr(rbs, "touch_links", []) or [])
+        for suf in _ASSEMBLY_ARM_TOOL_BODY_TOUCH_LINKS_SUFFIXES:
+            ln = prefix + suf
+            if ln not in existing:
+                existing.append(ln)
+        rbs.touch_links = existing
+
+
 def _augment_tool_touch_links_for_v3(state, husky):
     """If an assembly_tool_v3_* is mounted, allow wrist_2 ↔ tool contact.
 
@@ -2310,6 +2347,38 @@ def _plan_and_stage_body(monitor, husky, robot, debug, max_time, max_attempts,
     )
     plan_kwargs["position_res"] = eff_position_res
     plan_kwargs["rotation_res"] = eff_rotation_res
+
+    # Opt-in: route the joint-space collision check through cfab's
+    # PyBulletCheckCollision (5-step CC with SRDF + per-state touch_links).
+    # Active only when monitor.use_cfab_collision_for_constrained=True AND
+    # we are doing Stage 3 (the only stage with joint-space collision).
+    use_cfab_cc = (
+        bool(getattr(monitor, "use_cfab_collision_for_constrained", False))
+        and monitor.constrained_planner_stage == 3
+        and getattr(monitor, "cfab", None) is not None
+        and getattr(monitor.cfab, "planner", None) is not None
+        and monitor.movement_start_state is not None
+    )
+    if use_cfab_cc:
+        from copy import deepcopy
+        from husky_assembly_tamp.motion_planner.dual_arm_task_space_rrt.core import (
+            STAGE3_GRASP_MASK_LINKS,
+        )
+        cfab_template = deepcopy(monitor.movement_start_state)
+        bar_rb_state = cfab_template.rigid_body_states.get(monitor.active_bar_name)
+        if bar_rb_state is not None:
+            existing = list(getattr(bar_rb_state, "touch_links", []) or [])
+            for ln in STAGE3_GRASP_MASK_LINKS:
+                if ln not in existing:
+                    existing.append(ln)
+            bar_rb_state.touch_links = existing
+        _augment_tool_touch_links_for_v3(cfab_template, husky)
+        _augment_assembly_arm_tool_body_touch_links(cfab_template)
+        plan_kwargs["cfab_session"] = monitor.cfab
+        plan_kwargs["cfab_template_state"] = cfab_template
+        monitor.get_logger().info(
+            "constrained CC backend: cfab (PyBulletCheckCollision)"
+        )
 
     # Start-retry loop: if planning fails from the first derived start, derive
     # a different start (shuffled, widened sweep) and re-plan. start_retries

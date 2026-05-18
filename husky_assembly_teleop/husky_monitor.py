@@ -2234,7 +2234,9 @@ class HuskyMonitor(Node):
         scene = self._build_pp_scene_for_free()
         if scene is None:
             return None
-        path, info = plan_free_dual_arm(scene, start_conf, goal_conf, max_time=30.0)
+        cfab_cf = self._build_cfab_free_collision_fn(mv.start_state)
+        path, info = plan_free_dual_arm(scene, start_conf, goal_conf, max_time=30.0,
+                                        cfab_collision_fn=cfab_cf)
         if path is None:
             print(f"[M0] plan_free_dual_arm failed: {info.get('failure_reason')}")
             return None
@@ -2387,11 +2389,42 @@ class HuskyMonitor(Node):
         scene = self._build_pp_scene_for_free()
         if scene is None:
             return None
-        path, info = plan_free_dual_arm(scene, start_conf, goal_conf, max_time=30.0)
+        cfab_cf = self._build_cfab_free_collision_fn(mv.start_state)
+        path, info = plan_free_dual_arm(scene, start_conf, goal_conf, max_time=30.0,
+                                        cfab_collision_fn=cfab_cf)
         if path is None:
             print(f"[M4] plan_free_dual_arm failed: {info.get('failure_reason')}")
             return None
         return joint_trajectory_from_path(path)
+
+    def _build_cfab_free_collision_fn(self, mv_start_state):
+        """Return a cfab-backed (conf12) -> bool collision predicate for the
+        free dual-arm planner, or None if cfab CC is disabled.
+
+        Free planner currently runs with composite_obstacles=[] in some paths
+        and with env obstacles in others. cfab CC honors the state's tools +
+        rigid_body attachments + SRDF disables + per-state touch_links — more
+        correct than pp's get_collision_fn which leaves tool bodies stationary.
+        Default OFF (legacy pp behavior); toggle via
+        monitor.use_cfab_collision_for_free = True.
+        """
+        if not getattr(self, "use_cfab_collision_for_free", False):
+            return None
+        if self.cfab is None or getattr(self.cfab, "planner", None) is None:
+            return None
+        if mv_start_state is None:
+            return None
+        from copy import deepcopy
+        from husky_assembly_teleop.cfab_collision_adapter import make_cfab_collision_fn
+        from husky_assembly_teleop.husky_world import (
+            _augment_tool_touch_links_for_v3,
+            _augment_assembly_arm_tool_body_touch_links,
+        )
+        template = deepcopy(mv_start_state)
+        _augment_tool_touch_links_for_v3(template, self.huskies[self.selected_robot_id])
+        _augment_assembly_arm_tool_body_touch_links(template)
+        print("[cfab-cc] free planner: using cfab PyBulletCheckCollision")
+        return make_cfab_collision_fn(self.cfab, template)
 
     def _build_pp_scene_for_free(self):
         """Build SceneContext dict for plan_free_dual_arm using cfab pp-side robot."""

@@ -431,6 +431,15 @@ def main(bar_action: str = DEFAULT_BAR_ACTION,
         pp.CLIENT = monitor.cfab.client.client_id
         pp.CLIENTS[monitor.cfab.client.client_id] = True if use_gui else None
 
+        # Opt-in: env-var flips the cfab collision backend for the constrained
+        # Stage-3 RRT. Default OFF (legacy pp.get_collision_fn).
+        if os.environ.get("HUSKY_CFAB_CC_CONSTRAINED", "0") in ("1", "true", "TRUE"):
+            monitor.use_cfab_collision_for_constrained = True
+            print("[cfab-cc] constrained Stage-3 will use cfab PyBulletCheckCollision")
+        if os.environ.get("HUSKY_CFAB_CC_FREE", "0") in ("1", "true", "TRUE"):
+            monitor.use_cfab_collision_for_free = True
+            print("[cfab-cc] free composite planner will use cfab PyBulletCheckCollision")
+
         # Populate the BarAction file slider (UI does this on focus).
         monitor.available_robot_cell_states = monitor._load_available_bar_actions()
         if not monitor.available_robot_cell_states:

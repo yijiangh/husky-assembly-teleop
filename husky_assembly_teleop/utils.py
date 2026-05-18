@@ -267,7 +267,10 @@ def get_arm_ik_for_grasp_bar(robot, ik_solver, world_from_tool0, attachments, ob
 def plan_transit_motion(robot, end_conf, attachments, obstacles, debug=False,
                         disabled_collisions=None, dual_arm_index=None,
                         joint_resolution=0.05, max_time=10,
-                        max_iterations=20, ee_types=None):
+                        max_iterations=20, ee_types=None,
+                        cfab_collision_fn=None):
+    # cfab_collision_fn (optional): when provided, REPLACES pp's collision
+    # predicate. Signature: (conf, **kwargs) -> bool (True == colliding).
     # Adapted to support dual-arm (composite) planning.
     #
     # ee_types: optional list of strings, one per attachment (parallels
@@ -345,11 +348,19 @@ def plan_transit_motion(robot, end_conf, attachments, obstacles, debug=False,
 
     # TODO make this only check collision above 0.001 m collision depth for scaffolding tool collision with wrist_1
     transit_collision_fn = pp.get_collision_fn(robot, movable_joints, obstacles=obstacles,
-                                                attachments=all_attachments, 
+                                                attachments=all_attachments,
                                                 self_collisions=1,
                                                 disabled_collisions=disabled_collisions, extra_disabled_collisions=extra_disabled_collisions,
-                                                custom_limits=custom_limits, 
+                                                custom_limits=custom_limits,
                                                 max_distance=0.000)
+
+    if cfab_collision_fn is not None:
+        # Override pp's collision predicate with cfab's PyBulletCheckCollision.
+        # pp.check_initial_end passes `diagnosis` as a positional arg; the
+        # extend/sample paths pass it as a kwarg. Accept both.
+        def _adapted_collision_fn(q, *_args, **_kw):
+            return bool(cfab_collision_fn(np.asarray(q, dtype=float)))
+        transit_collision_fn = _adapted_collision_fn
 
     transit_path = None
     with pp.WorldSaver():
