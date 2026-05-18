@@ -1102,3 +1102,22 @@ if self.BAR_HOLDING_ACCURACY_TEST:
 
 Add this for every new Slider; just storing the handle on `self` isn't
 enough.
+
+
+## Do not overfit validation hooks to one known failing movement — 2026-05-18
+
+When a user names a concrete movement as an example (e.g.
+`B226_M1_CDFM_home_to_approach`), verify whether the requested behavior is
+example-specific or applies to a class of movements. For monitor planning
+hooks, prefer matching the stable semantic marker (`"CDFM"` in
+`movement_id`) over hardcoding one full movement id, so the diagnostic runs
+whenever the same workflow produces a trajectory.
+
+
+## Monitor-triggered validation should not create report artifacts — 2026-05-18
+
+When reusing an offline validation helper from the live monitor, separate
+"show diagnostics now" from "save report artifact". The CLI/headless flow can
+keep `save_plot=True`, but monitor hooks should pass `save_plot=False` and
+`show_plot=True` when the user wants a popup without writing PNG files into
+the validation reports directory.

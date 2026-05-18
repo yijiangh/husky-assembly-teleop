@@ -272,11 +272,10 @@ def plan_transit_motion(robot, end_conf, attachments, obstacles, debug=False,
     #
     # ee_types: optional list of strings, one per attachment (parallels
     # ``attachments``). When an entry is ``"assembly_tool_v3_left"`` or
-    # ``"assembly_tool_v3_right"``, the corresponding arm's wrist_2_link AND
-    # wrist_1_link are added to the disabled-collisions list for that EE —
-    # the tool body extends past wrist_3 into the wrist_2 / wrist_1 swept
-    # volumes on the husky URDF, so without these disables the planner
-    # rejects otherwise-valid poses.
+    # ``"assembly_tool_v3_right"``, the corresponding arm's wrist_2_link is
+    # added to the disabled-collisions list for that EE — the tool body
+    # extends past wrist_3 into the wrist_2 swept volume on the husky URDF,
+    # so without this disable the planner rejects otherwise-valid poses.
     joint_names = UR5E_JOINT_NAMES
     arm_prefix = ""
 
@@ -297,7 +296,7 @@ def plan_transit_motion(robot, end_conf, attachments, obstacles, debug=False,
             ((robot, pp.link_from_name(robot, 'right_ur_arm_wrist_3_link')),
              (attachments[1].child, pp.BASE_LINK)),
         ]
-        # Extra wrist_2 + wrist_1 disable when an assembly_tool_v3_* is mounted.
+        # Extra wrist_2 disable when an assembly_tool_v3_* is mounted.
         if ee_types and len(ee_types) >= 2:
             for side_prefix, ee_type, attach in (
                 ("left_", ee_types[0], attachments[0]),
@@ -322,9 +321,9 @@ def plan_transit_motion(robot, end_conf, attachments, obstacles, debug=False,
             ((robot, pp.link_from_name(robot, arm_prefix + 'ur_arm_wrist_3_link')),
              (attachments[0].child, pp.BASE_LINK)),
         ]
-        # Extra wrist_2 + wrist_1 disable when an assembly_tool_v3_* is mounted on this arm.
+        # Extra wrist_2 disable when an assembly_tool_v3_* is mounted on this arm.
         if ee_types and len(ee_types) >= 1 and _is_assembly_tool_v3(ee_types[0]):
-            for wrist_link in ('ur_arm_wrist_2_link', 'ur_arm_wrist_1_link'):
+            for wrist_link in ('ur_arm_wrist_2_link',):
                 extra_disabled_collisions.append(
                     ((robot, pp.link_from_name(robot, arm_prefix + wrist_link)),
                      (attachments[0].child, pp.BASE_LINK))
@@ -344,12 +343,13 @@ def plan_transit_motion(robot, end_conf, attachments, obstacles, debug=False,
     all_links = list(range(pp.get_num_links(robot)))
     non_moving_links = [link for link in all_links if link not in moving_links]
 
+    # TODO make this only check collision above 0.001 m collision depth for scaffolding tool collision with wrist_1
     transit_collision_fn = pp.get_collision_fn(robot, movable_joints, obstacles=obstacles,
                                                 attachments=all_attachments, 
                                                 self_collisions=1,
                                                 disabled_collisions=disabled_collisions, extra_disabled_collisions=extra_disabled_collisions,
                                                 custom_limits=custom_limits, 
-                                                max_distance=0)
+                                                max_distance=0.000)
 
     transit_path = None
     with pp.WorldSaver():

@@ -126,7 +126,7 @@ def _warn_available_calib_tools(monitor, missing_tool_name):
 def create_husky_with_end_effectors(monitor, name, mocap_id=None, pos=np.zeros(3), rot=np.array((0, 0, 0, 1)),
                                    connect_arm=True, connect_gripper=True, base_calibration_file=None,
                                    calibration=False, dual_arm=False, ee_types=None, force_regenerate=False,
-                                   punch_tool_offset=None):
+                                   punch_tool_offset=None, connect_compliant_controller=False):
     """
     Helper function to create a Husky robot with specified end effectors.
 
@@ -167,7 +167,8 @@ def create_husky_with_end_effectors(monitor, name, mocap_id=None, pos=np.zeros(3
                 connect_arm=connect_arm, connect_gripper=connect_gripper,
                 base_calibration_file=base_calibration_file, calibration=calibration,
                 dual_arm=dual_arm, ee_types=ee_types, force_regenerate=force_regenerate,
-                punch_tool_offset=punch_tool_offset)
+                punch_tool_offset=punch_tool_offset,
+                connect_compliant_controller=connect_compliant_controller)
 
 def init(monitor):
     # Per-robot config keyed by ROS_DOMAIN_ID so 0804 (ROS_DOMAIN_ID=84),
@@ -256,6 +257,7 @@ def init(monitor):
         pos=np.array((0,0,0)),
         connect_arm=not monitor.FAKE_HARDWARE,
         connect_gripper=cfg['connect_gripper'] and not monitor.FAKE_HARDWARE,
+        connect_compliant_controller=bool(getattr(monitor, 'CONNECT_COMPLIANT_CONTROLLER', 0)) and not monitor.FAKE_HARDWARE,
         calibration=monitor.CALIBRATION,
         dual_arm=dual_arm,
         # ee_types=["validation_tool_pair"],  # Specify end effectors for both arms
@@ -1644,19 +1646,17 @@ def plan_both_arms_to_goal(monitor, use_composite=False, debug=False):
 
 
 _TOOL_V3_WRIST_TOUCH_LINKS = (
-    'left_ur_arm_wrist_1_link',
     'left_ur_arm_wrist_2_link',
-    'right_ur_arm_wrist_1_link',
     'right_ur_arm_wrist_2_link',
 )
 
 
 def _augment_tool_touch_links_for_v3(state, husky):
-    """If an assembly_tool_v3_* is mounted, allow wrist_1/2 ↔ tool contact.
+    """If an assembly_tool_v3_* is mounted, allow wrist_2 ↔ tool contact.
 
-    The tool body extends past wrist_3 into the wrist_2 / wrist_1 swept
-    volumes on the husky URDF; without these touch-link entries the
-    cfab CC.2 (robot link ↔ tool) check rejects otherwise-valid IK
+    The tool body extends past wrist_3 into the wrist_2 swept volume on the
+    husky URDF; without this touch-link entry the cfab CC.2 (robot link ↔
+    tool) check rejects otherwise-valid IK
     solutions. Mirrors the pp-side disable in utils.plan_transit_motion.
     """
     ee_types = list(getattr(husky.object, "ee_types", []) or [])
