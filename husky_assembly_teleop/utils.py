@@ -26,6 +26,13 @@ zup_from_yup = pp.pose_from_tform(yup_tform)
 # Quat (xyzw) axis components transform the same way as a 3-vector.
 MOCAP_AXIS_CONVENTIONS = ('rhino', 'rotated')
 
+# Mocap labeled-marker set name for the bar-rig (4-marker cross attached to a
+# held bar). Used as: (1) TrackedObject name registered with the mocap client,
+# (2) cache key into monitor._mocap_labeled_marker_cache, (3) per-take dict key
+# in saved JSON files under data/bar_holding_acc_data/. Keep in sync if you
+# ever rename the Motive asset.
+MOCAP_SET_RIG_RB_NAME = 'bar_rig'
+
 
 def mocap_pos_y_up_to_z_up(pos, convention='rhino'):
     if convention == 'rhino':

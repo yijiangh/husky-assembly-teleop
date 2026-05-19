@@ -18,7 +18,7 @@ from husky_assembly_teleop import DATA_DIRECTORY, CALIBRATION_DATE, EXPERIMENT_D
 from husky_assembly_teleop.common import Husky, TrackedObject, AssemblyObject
 import husky_assembly_teleop.husky_planning as planning
 import husky_assembly_teleop.husky_control as control
-from husky_assembly_teleop.utils import HUSKY_DUAL_UR5e_JOINT_NAMES, UR5E_JOINT_NAMES, get_arm_ik_for_grasp_bar, get_custom_limits, notify, plan_transit_motion, pose_from_frame
+from husky_assembly_teleop.utils import HUSKY_DUAL_UR5e_JOINT_NAMES, UR5E_JOINT_NAMES, MOCAP_SET_RIG_RB_NAME, get_arm_ik_for_grasp_bar, get_custom_limits, notify, plan_transit_motion, pose_from_frame
 from husky_assembly_teleop.scaffolding import parse_mt_geometric, create_collision_bodies, create_couplers, flatten_list
 import json
 from datetime import datetime
@@ -215,6 +215,9 @@ def init(monitor):
             [monitor.get_punch_tool_offset(0), monitor.get_punch_tool_offset(1)]
             if dual_arm else monitor.get_punch_tool_offset(0)
         )
+    elif monitor.CALIBRATION:
+        ee_types = ["custom_gripper", "custom_gripper"] if dual_arm else ["custom_gripper"]
+        punch_offset = None
     else:
         ee_types = cfg['ee_types_default']
         punch_offset = None
@@ -325,12 +328,12 @@ def init(monitor):
         TrackedObject(monitor, right_tool_name, 4616, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
         monitor.assign_calibration_tool_to_robot(0, 1, right_tool_name)
 
-    if monitor.BAR_HOLDING_ACCURACY_TEST:
-        bar_rig = TrackedObject(monitor, 'bar_rig', 4629, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
+    if monitor.BAR_ACTION_MOCAP_ACCURACY_TEST:
+        bar_rig = TrackedObject(monitor, MOCAP_SET_RIG_RB_NAME, 4629, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
         bar_rig.body = pp.create_cylinder(radius=0.01, height=1, color=(1, 0, 0, 0.2))
         bar_rig.model_base_pose = pp.Pose(euler=pp.Euler(roll=np.pi/2))
         
-    if monitor.DUAL_ARM_ACCURACY_TEST:
+    if monitor.DUAL_ARM_EE_CONSTR_ACCURACY_MOCAP_TEST:
         # left_EE = TrackedObject(monitor, 'left_EE', 4627, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
         left_EE = TrackedObject(monitor, 'left_EE', 1011, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
         left_EE.body = pp.create_box(0.1, 0.1, 0.1)

@@ -1,6 +1,6 @@
 """Headless full-sequence test for the BarAction (cfab) planning path.
 
-Mirrors the BAR_HOLDING_ACCURACY_TEST UI button sequence in HuskyMonitor:
+Mirrors the BAR_ACTION_LIVE_REPLAN_EXE UI button sequence in HuskyMonitor:
 
   1. ``load_bar_action_file()``                <- 'Load BarAction'
   2. for idx in [1, 2, 3, 4, 0]:               <- one click per movement
@@ -85,7 +85,7 @@ def _bypass_init_monitor():
     monitor.constrained_trajectory = [None, None]
     monitor.constrained_display_mode = 0
 
-    monitor.available_robot_cell_states = []
+    monitor.available_bar_actions = []
     monitor.selected_state_index = 0
     monitor.available_joint_trajectories = []
     monitor.selected_trajectory_index = 0
@@ -112,7 +112,7 @@ def _bypass_init_monitor():
     monitor._ee_target_pose_uids = []
     monitor.planned_arm_trajectory = None
 
-    monitor.BAR_HOLDING_ACCURACY_TEST = True
+    monitor.BAR_ACTION_LIVE_REPLAN_EXE = True
     monitor.FAKE_HARDWARE = False
     monitor._is_live_monitor = False
     monitor.goal_base_pose_frozen = False
@@ -136,21 +136,30 @@ def _attach_stub_husky_interface(monitor, m1_start_state):
 
     _make_synthetic_m0 (husky_monitor.py:1334-1356) reads .position,
     .rotation and .arm_joint_pose off huskies[0].interface to snapshot
-    "live" robot state. Headless has no ROS / mocap, so we synthesize an
-    interface that exactly matches M1.start_state -- making the synthetic
-    M0 a no-op pair-up to M1.start. If you want non-trivial M0 planning
-    in headless, mutate the returned interface before load_bar_action_file.
+    "live" robot state. Headless has no ROS / mocap, so we synthesize one.
+
+    Base frame: take from M1.start_state.robot_base_frame (the BarAction
+    is authored in M1's base frame; headless puts the robot there).
+
+    Arm joints: use UR5e HOME, NOT M1.start_state.robot_configuration.
+    The authored M1 arm conf in BarAction files is typically a placeholder
+    (all zeros for B6), not a feasible robot pose. With zeros as "live",
+    M0's plan_free_dual_arm needs to sweep the right shoulder ~265° from
+    zero to M1's derived start_conf, and the straight-line interp runs
+    through dense robot self-collision (base, bulkhead, wheels, arm-vs-
+    arm). BiRRT can't find a detour in 30s. The live monitor doesn't see
+    this because the real `huskies[0].interface` reports the actual robot
+    pose (near HOME). UR5e HOME is the closest analogue in headless.
     """
     from husky_assembly_teleop.utils import HUSKY_DUAL_UR5e_JOINT_NAMES, pose_from_frame
+    from husky_assembly_teleop.husky_robot import UR5e_HOME_STATE
 
     pos, rot = pose_from_frame(m1_start_state.robot_base_frame)
-    rc = m1_start_state.robot_configuration
-    left = np.array([rc[n] for n in HUSKY_DUAL_UR5e_JOINT_NAMES[0]], dtype=float)
-    right = np.array([rc[n] for n in HUSKY_DUAL_UR5e_JOINT_NAMES[1]], dtype=float)
+    home = np.asarray(UR5e_HOME_STATE, dtype=float)
     iface = SimpleNamespace(
         position=np.asarray(pos, dtype=float),
         rotation=np.asarray(rot, dtype=float),
-        arm_joint_pose=[left, right],
+        arm_joint_pose=[home.copy(), home.copy()],
     )
     monitor.huskies = [SimpleNamespace(interface=iface, object=None)]
     monitor.selected_robot_id = 0
@@ -285,6 +294,485 @@ def _diagnose_free_plan_collision(monitor, mv) -> None:
     print("=== end diagnosis ===\n")
 
 
+def _diagnose_m0_transit_failure(monitor, mv) -> None:
+    """When M0's plan_free_dual_arm fails with 'transit path not found' but
+    initial-conf and goal-conf checks both passed, the BiRRT has feasible
+    endpoints it can't connect. This usually means one of:
+      - some interpolated waypoint between A (M0.start) and D (M1.start
+        after the chain rule) hits an obstacle the BiRRT has to detour
+        around within max_time.
+      - one or more joints need to traverse > π (e.g. a 2π wrap) and the
+        sampler can't find a feasible region quickly.
+      - time budget too tight (RNG-dependent miss).
+
+    This helper characterises start → goal in joint space, verifies both
+    endpoints are collision-free against the *actual* filtered obstacle
+    list `_build_pp_scene_for_free` would produce, and runs a 21-sample
+    linear-interpolation sweep to identify any per-step obstacle hits
+    along the straight-line path. If no hits, the failure is most likely
+    time-budget / RNG; if hits, it points at which bodies are blocking.
+    """
+    import math
+    import pybullet as pb
+    import pybullet_planning as pp
+    from husky_assembly_teleop.utils import (
+        HUSKY_DUAL_UR5e_JOINT_NAMES, vec12_from_conf,
+    )
+
+    if len(monitor._loaded_movements) < 2:
+        print("[M0 diagnose] no M1 in loaded movements; skipping.")
+        return
+    m1 = monitor._loaded_movements[1]
+    if (m1.start_state is None or m1.start_state.robot_configuration is None
+            or mv.start_state is None or mv.start_state.robot_configuration is None):
+        print("[M0 diagnose] missing start_state.robot_configuration; skipping.")
+        return
+
+    start = np.asarray(vec12_from_conf(mv.start_state.robot_configuration), dtype=float)
+    goal = np.asarray(vec12_from_conf(m1.start_state.robot_configuration), dtype=float)
+    delta = goal - start
+
+    cid = monitor.cfab.client.client_id
+    husky = getattr(monitor, "_bar_action_husky", None)
+    if husky is None:
+        print("[M0 diagnose] monitor._bar_action_husky unset; skipping.")
+        return
+    robot = husky.object.robot
+    left_names = list(HUSKY_DUAL_UR5e_JOINT_NAMES[0])
+    right_names = list(HUSKY_DUAL_UR5e_JOINT_NAMES[1])
+    joint_names_12 = left_names + right_names
+    arm_joints = pp.joints_from_names(robot, joint_names_12)
+
+    name_from_body: dict[int, str] = {}
+    for n, ids in (monitor.cfab.client.rigid_bodies_puids or {}).items():
+        for i in ids:
+            name_from_body[i] = n
+    ghosts = getattr(monitor, "_bar_action_ghost_bodies", set()) or set()
+    for k, g in enumerate(ghosts):
+        name_from_body[g] = f"ghost_ee_{k}"
+    if monitor.active_bar_body is not None and monitor.active_bar_name:
+        name_from_body[monitor.active_bar_body] = f"{monitor.active_bar_name} (active_bar)"
+
+    # Mirror _build_pp_scene_for_free's mounted-body filter so we check
+    # exactly the obstacle set the failing planner saw.
+    mounted_names: set[str] = set()
+    for name, rbs in (getattr(mv.start_state, 'rigid_body_states', None) or {}).items():
+        if getattr(rbs, 'attached_to_link', None) is not None:
+            mounted_names.add(name)
+    obstacle_bodies = [
+        body for name, body in (monitor.static_obstacles or {}).items()
+        if name not in mounted_names
+    ]
+
+    print("\n=== M0 transit-failure diagnosis ===")
+    print(f"per-joint Δ (D - A, rad)  |  start (A) -> goal (D):")
+    max_idx = int(np.argmax(np.abs(delta)))
+    for j, jn in enumerate(joint_names_12):
+        d = float(delta[j])
+        ad = abs(d)
+        wrap_note = ""
+        if abs(ad - 2.0 * math.pi) < 0.2:
+            wrap_note = "  ~±2π wrap candidate"
+        elif ad > math.pi:
+            wrap_note = "  > π — sampler may struggle"
+        marker = "  <-- max" if j == max_idx else ""
+        print(f"  [{j:2d}] {jn}: {start[j]:+.4f} -> {goal[j]:+.4f}, "
+              f"Δ = {d:+.4f} rad ({math.degrees(d):+.1f}°){wrap_note}{marker}")
+    print(f"max joint Δ: {float(np.abs(delta).max()):.4f} rad "
+          f"({math.degrees(float(np.abs(delta).max())):.1f}°)")
+    print(f"L2 joint distance: {float(np.linalg.norm(delta)):.4f} rad")
+    print(f"scene[\"obstacles\"] count: {len(obstacle_bodies)} "
+          f"(mounted bodies excluded by ACM: {sorted(mounted_names)})")
+
+    saved_client = pp.CLIENT
+    pp.CLIENT = cid
+    pp.CLIENTS.setdefault(cid, True)
+    try:
+        with pp.WorldSaver():
+            monitor.cfab.planner.set_robot_cell_state(mv.start_state)
+            self_pairs = pp.get_self_link_pairs(
+                robot, arm_joints, disabled_collisions=set(),
+            )
+
+            def _check_at(q):
+                pp.set_joint_positions(robot, arm_joints, q)
+                pb.performCollisionDetection(physicsClientId=cid)
+                hits = []
+                for a, b in self_pairs:
+                    pts = pb.getClosestPoints(
+                        robot, robot, distance=0.0,
+                        linkIndexA=a, linkIndexB=b, physicsClientId=cid,
+                    )
+                    if pts:
+                        depths = sorted(round(p[8], 4) for p in pts)
+                        hits.append(
+                            f"SELF: {pp.get_link_name(robot, a)} <-> "
+                            f"{pp.get_link_name(robot, b)} d={depths}"
+                        )
+                for body in obstacle_bodies:
+                    pts = pb.getClosestPoints(
+                        robot, body, distance=0.0, physicsClientId=cid,
+                    )
+                    if not pts:
+                        continue
+                    depths = sorted(round(p[8], 4) for p in pts)
+                    links_hit = sorted({p[3] for p in pts})
+                    link_names = [pp.get_link_name(robot, l) for l in links_hit]
+                    nm = name_from_body.get(body, f"#{body}")
+                    hits.append(f"ENV:  {nm} via {link_names} d={depths}")
+                return hits
+
+            print(f"\nendpoint feasibility under the planner's collision_fn:")
+            for label, q in (("A (M0.start)", start), ("D (M1.start)", goal)):
+                hits = _check_at(q)
+                print(f"  {label}: {'OK' if not hits else f'{len(hits)} hit(s)'}")
+                for h in hits:
+                    print(f"    {h}")
+
+            n_samples = 21
+            interp_hits: list[tuple[float, list[str]]] = []
+            for s in range(n_samples):
+                t = s / (n_samples - 1)
+                q = start * (1.0 - t) + goal * t
+                hits = _check_at(q)
+                if hits:
+                    interp_hits.append((t, hits))
+
+            print(f"\nlinear-interpolation collision sweep "
+                  f"(21 samples, t in [0,1]):")
+            if not interp_hits:
+                print("  (no collisions along the straight-line interpolation)")
+                print("  -> BiRRT failure is most likely RNG / time-budget-bound;")
+                print("     try increasing max_time on plan_free_dual_arm "
+                      "(default 30s in _plan_M0_dispatch) or pinning the seed.")
+            else:
+                # Aggregate blockers by name across all colliding t-values.
+                blocker_counts: dict[str, int] = {}
+                for t, hits in interp_hits:
+                    seen = set()
+                    for h in hits:
+                        # First token after 'ENV:'/'SELF:' is the body/link pair.
+                        prefix, _, rest = h.partition(": ")
+                        key = f"{prefix}: {rest.split(' d=')[0]}"
+                        if key not in seen:
+                            blocker_counts[key] = blocker_counts.get(key, 0) + 1
+                            seen.add(key)
+                print(f"  {len(interp_hits)}/{n_samples} interp points have "
+                      f"collisions. Per-blocker count:")
+                for key, count in sorted(blocker_counts.items(), key=lambda x: -x[1]):
+                    print(f"    {count:2d}/{n_samples}  {key}")
+                print(f"  Per-t hits:")
+                for t, hits in interp_hits:
+                    print(f"    t={t:.3f}:")
+                    for h in hits:
+                        print(f"      {h}")
+                print(f"  -> BiRRT must detour around the listed blocker(s).")
+    finally:
+        pp.CLIENT = saved_client
+
+    # Probe 1: re-run plan_free_dual_arm with a much larger time budget to
+    # see if the default 30s budget was the only limiter.
+    # Probe 2: also try planning to a *canonical-form* goal where every
+    # joint is unwrapped to within ±π of start (short-way around). This
+    # tells us whether the obstruction is the 2π wrap on right shoulder
+    # specifically.
+    try:
+        import math
+        from husky_assembly_tamp.motion_planner.api import plan_free_dual_arm
+        import pybullet_planning as pp
+
+        scene = monitor._build_pp_scene_for_free()
+        if scene is not None:
+            saved_client2 = pp.CLIENT
+            pp.CLIENT = cid
+            pp.CLIENTS.setdefault(cid, True)
+            try:
+                # Probe 1: same goal, large time budget.
+                print("[probe-1] re-running plan_free_dual_arm with max_time=120s "
+                      "(default in _plan_M0_dispatch is 30s)...")
+                path1, info1 = plan_free_dual_arm(
+                    scene, start.tolist(), goal.tolist(), max_time=120.0,
+                )
+                if path1 is not None:
+                    print(f"  -> SUCCESS with 120s: {len(path1)} waypoints. "
+                          f"30s budget was the only limiter.")
+                else:
+                    print(f"  -> still failed at 120s "
+                          f"(failure_reason={info1.get('failure_reason')!r}). "
+                          f"More time alone won't help; the wrap is the issue.")
+
+                # Probe 2: unwrap goal to within ±π of start (short-way).
+                two_pi = 2.0 * math.pi
+                canonical_goal = goal - np.round((goal - start) / two_pi) * two_pi
+                max_canon_delta = float(np.abs(canonical_goal - start).max())
+                print(f"[probe-2] re-running plan_free_dual_arm to a CANONICAL "
+                      f"(±π-of-start) goal (max joint Δ {max_canon_delta:.4f} rad)...")
+                path2, info2 = plan_free_dual_arm(
+                    scene, start.tolist(), canonical_goal.tolist(), max_time=30.0,
+                )
+                if path2 is not None:
+                    print(f"  -> SUCCESS to canonical goal: {len(path2)} waypoints. "
+                          f"Confirms the wrap is what's blocking; M0 can plan "
+                          f"the short-way, would need a final wrap-up step to "
+                          f"land on the saved M1.start.robot_configuration.")
+                else:
+                    print(f"  -> canonical goal also failed "
+                          f"(failure_reason={info2.get('failure_reason')!r}). "
+                          f"The path is hard for reasons beyond the wrap.")
+            finally:
+                pp.CLIENT = saved_client2
+    except Exception as e:
+        print(f"[probe] ERROR: {e}")
+
+    print("=== end M0 transit-failure diagnosis ===\n")
+
+
+_TREE_DRAW_ROLES = ('M0', 'M1', 'M4')
+
+
+def _install_tree_drawing(monitor):
+    """Enable BiRRT / SE(3) tree visualization for M0/M4 (free) and M1
+    (constrained). Returns a callable that reverts the patches.
+
+    M0/M4 free BiRRT
+      pybullet_planning's rrt_connect already supports an optional
+      ``draw_fn`` kwarg (rrt_connect.py:69-81) — we monkey-patch the
+      module-level ``rrt_connect`` symbol to inject an FK-based draw_fn
+      that adds a polyline between parent/child confs on both tool0
+      links. ``birrt(...)`` references ``rrt_connect`` via the module
+      namespace, so this propagates through ``solve_motion_plan ->
+      birrt -> random_restarts(rrt_connect, ...)``.
+
+    M1 constrained
+      ``plan_pose_rrt`` already draws its SE(3) tree when
+      ``use_draw=True``. The wiring exists (husky_world.py:2336-2341)
+      but the live caller (``plan_and_stage_constrained``) wraps the
+      planner in ``with pp.LockRenderer():``, silencing the draws. We
+      patch ``HuskyMonitor._plan_M1_dispatch`` to (a) pass
+      ``use_draw=True`` and (b) swap ``pp.LockRenderer`` to a no-op
+      context manager for the duration of the call only.
+    """
+    import contextlib
+    import importlib
+    import pybullet
+    import pybullet_planning as pp
+    # Use importlib to get the SUBMODULE: pybullet_planning.motion_planners
+    # re-exports the rrt_connect function, so `from … import rrt_connect`
+    # returns the function rather than the module we want to monkey-patch.
+    _rrt_mod = importlib.import_module(
+        'pybullet_planning.motion_planners.rrt_connect',
+    )
+    _task_rrt_core = importlib.import_module(
+        'husky_assembly_tamp.motion_planner.dual_arm_task_space_rrt.core',
+    )
+    from husky_assembly_teleop.utils import HUSKY_DUAL_UR5e_JOINT_NAMES
+
+    husky = getattr(monitor, "_bar_action_husky", None)
+    if husky is None or getattr(husky, "object", None) is None:
+        # _bar_action_husky is set when load_selected_movement bridges
+        # the cfab scene to pp; safe to call this helper after the first
+        # load. If absent, fall back to first registered husky.
+        if monitor.huskies:
+            husky = monitor.huskies[0]
+        else:
+            print("[draw-tree] no husky available; tree drawing disabled.")
+            return lambda: None
+    robot = husky.object.robot
+    cid = monitor.cfab.client.client_id
+
+    # Clear any existing debug overlays so the tree drawing starts on a
+    # clean canvas (preview-arrow uids etc. would otherwise mingle).
+    try:
+        pp.remove_all_debug()
+        print("[draw-tree] pp.remove_all_debug() cleared prior overlays.")
+    except Exception as e:
+        print(f"[draw-tree] remove_all_debug warn: {e}")
+
+    left_joints = list(pp.joints_from_names(robot, HUSKY_DUAL_UR5e_JOINT_NAMES[0]))
+    right_joints = list(pp.joints_from_names(robot, HUSKY_DUAL_UR5e_JOINT_NAMES[1]))
+    arm_joints = left_joints + right_joints
+    left_tool = pp.link_from_name(robot, 'left_ur_arm_tool0')
+    right_tool = pp.link_from_name(robot, 'right_ur_arm_tool0')
+
+    # --- Bar-midpoint offset for M1 drawing (local frame) ---
+    # Walk the active bar's visual mesh vertices once; centroid =
+    # ((min+max)/2 per axis) in the bar's local frame. Multiplying the bar
+    # pose by (centroid, identity_quat) yields the bar's geometric
+    # midpoint in world frame at any tree node. Falls back to (0,0,0) if
+    # the mesh data isn't reachable.
+    def _compute_bar_midpoint_offset_local():
+        try:
+            name = getattr(monitor, 'active_bar_name', None)
+            if not name:
+                return (0.0, 0.0, 0.0)
+            rb_model = monitor.cfab.robot_cell.rigid_body_models.get(name)
+            if rb_model is None:
+                return (0.0, 0.0, 0.0)
+            meshes = (getattr(rb_model, 'visual_meshes_in_meters', None)
+                      or getattr(rb_model, 'collision_meshes_in_meters', None)
+                      or [])
+            if not meshes:
+                return (0.0, 0.0, 0.0)
+            mn = [float('inf')] * 3
+            mx = [float('-inf')] * 3
+            for m in meshes:
+                for v in m.vertices():
+                    pt = m.vertex_coordinates(v)
+                    for i in range(3):
+                        if pt[i] < mn[i]: mn[i] = pt[i]
+                        if pt[i] > mx[i]: mx[i] = pt[i]
+            return ((mn[0] + mx[0]) / 2,
+                    (mn[1] + mx[1]) / 2,
+                    (mn[2] + mx[2]) / 2)
+        except Exception as e:
+            print(f"[draw-tree] bar midpoint offset compute warn: {e}")
+            return (0.0, 0.0, 0.0)
+
+    bar_mid_offset_local = _compute_bar_midpoint_offset_local()
+    print(f"[draw-tree] M1 bar midpoint offset (local frame): "
+          f"{tuple(round(c, 4) for c in bar_mid_offset_local)}")
+
+    def _bar_midpoint_world(pose):
+        # pose is (pos_xyz, quat_xyzw); pp.multiply(pose, (offset, identity))
+        # composes orientation onto the offset before adding pos.
+        midpoint_pose = pp.multiply(pose, (bar_mid_offset_local, (0.0, 0.0, 0.0, 1.0)))
+        return midpoint_pose[0]
+
+    def _fk_xyz(conf):
+        pp.set_joint_positions(robot, arm_joints, conf)
+        return (pp.get_link_pose(robot, left_tool)[0],
+                pp.get_link_pose(robot, right_tool)[0])
+
+    drawn_edges: set = set()
+
+    def _draw_fn(config, segment, *args):
+        # rrt_connect calls draw_fn(target, []) on each sample plus
+        # node.draw(draw_fn) on each tree node (config, [child, parent]).
+        if not segment:
+            return
+        try:
+            child_conf, parent_conf = segment
+        except (TypeError, ValueError):
+            return
+        key = (tuple(round(float(v), 5) for v in parent_conf),
+               tuple(round(float(v), 5) for v in child_conf))
+        if key in drawn_edges:
+            return
+        drawn_edges.add(key)
+        try:
+            lc, rc = _fk_xyz(child_conf)
+            lp, rp = _fk_xyz(parent_conf)
+            pp.add_line(lp, lc, color=(0.2, 0.6, 1.0), width=1.5)
+            pp.add_line(rp, rc, color=(1.0, 0.5, 0.2), width=1.5)
+        except Exception:
+            pass
+
+    # --- patch rrt_connect to inject draw_fn ---
+    # Only inject draw_fn when planning M0/M4 (free dual-arm BiRRT).
+    # M1 also internally drives joint-space BiRRT (free staging inside
+    # plan_pose_birrt); for M1 we want the bar-midpoint SE(3) tree only,
+    # not the left/right tool0 FK trees, so we gate by current role.
+    _BIRRT_DRAW_ROLES = {'M0', 'M4'}
+    _orig_rrt_connect = _rrt_mod.rrt_connect
+
+    def _rrt_connect_with_draw(q1, q2, distance_fn, sample_fn, extend_fn,
+                                collision_fn, **kwargs):
+        cur_mv = getattr(monitor, 'current_movement', None)
+        role = monitor._match_movement_role(cur_mv) if cur_mv is not None else None
+        if role in _BIRRT_DRAW_ROLES:
+            kwargs.setdefault('draw_fn', _draw_fn)
+        return _orig_rrt_connect(q1, q2, distance_fn, sample_fn, extend_fn,
+                                  collision_fn, **kwargs)
+    _rrt_mod.rrt_connect = _rrt_connect_with_draw
+    print("[draw-tree] M0/M4 free BiRRT: rrt_connect patched to draw tree "
+          "(left=blue, right=orange). Disabled for M1 (bar-midpoint only).")
+
+    # --- patch extend_toward to draw M1 SE(3) edges at the bar's midpoint ---
+    # Original draws pp.add_line(current.config[0], node.config[0]) which is
+    # the bar's frame-origin trajectory. We want the bar's geometric centroid
+    # trajectory instead. Strategy: wrap extend_toward, suppress its internal
+    # draw (force use_draw=False), then walk newly appended nodes and emit
+    # midpoint edges.
+    _orig_extend_toward = _task_rrt_core.extend_toward
+
+    def _extend_toward_midpoint(nodes, source, target_pose, *args, **kwargs):
+        n_before = len(nodes)
+        # Preserve the caller's draw_color for our redraw; force internal off.
+        caller_use_draw = kwargs.get('use_draw', None)
+        if caller_use_draw is None and len(args) >= 4:
+            # use_draw is positional index 4 (after collision_fn,
+            # joint_collision_fn, draw_color, use_draw...). The current
+            # call site passes by keyword so this branch is defensive.
+            caller_use_draw = args[3]
+        draw_color = kwargs.get('draw_color', None)
+        if draw_color is None and len(args) >= 3:
+            draw_color = args[2]
+        if draw_color is None:
+            draw_color = (0.2, 0.6, 1.0, 1.0)
+        kwargs['use_draw'] = False
+        result = _orig_extend_toward(nodes, source, target_pose, *args, **kwargs)
+        if caller_use_draw:
+            for i in range(n_before, len(nodes)):
+                node = nodes[i]
+                parent = node.parent
+                if parent is None:
+                    continue
+                try:
+                    p1 = _bar_midpoint_world(parent.config)
+                    p2 = _bar_midpoint_world(node.config)
+                    pp.add_line(p1, p2, width=1.5, color=draw_color)
+                except Exception:
+                    pass
+        return result
+
+    _task_rrt_core.extend_toward = _extend_toward_midpoint
+    print("[draw-tree] M1 constrained: extend_toward patched to draw SE(3) "
+          "tree at bar midpoint (color from planner's per-tree palette).")
+
+    # --- patch _plan_M1_dispatch: bypass LockRenderer + use_draw=True ---
+    from husky_assembly_teleop import husky_world as _world_mod
+    _orig_m1_dispatch = monitor._plan_M1_dispatch.__func__
+    _orig_lock_renderer = pp.LockRenderer
+
+    class _NoLock:
+        def __init__(self, *a, **kw): pass
+        def __enter__(self): return self
+        def __exit__(self, *exc): return False
+
+    def _patched_m1(self_, mv):
+        # Make sure the side-window can render the tree while planning.
+        monitor.constrained_trajectory = [None, None]
+        _world_mod.plan_and_stage_constrained.__globals__['pp'].LockRenderer = _NoLock
+        try:
+            _world_mod.plan_and_stage_constrained(
+                self_, use_draw=True, ignore_env_obstacles=False,
+            )
+        finally:
+            _world_mod.plan_and_stage_constrained.__globals__['pp'].LockRenderer = _orig_lock_renderer
+        traj = self_.constrained_trajectory
+        if not (traj and traj[0] is not None and traj[1] is not None):
+            return None
+        from husky_assembly_teleop.utils import joint_trajectory_from_path
+        left_path = traj[0][0]
+        right_path = traj[1][0]
+        T = min(len(left_path), len(right_path))
+        path12 = [np.concatenate([left_path[i], right_path[i]]) for i in range(T)]
+        return joint_trajectory_from_path(path12)
+
+    # Bind the patched dispatch onto the instance.
+    monitor._plan_M1_dispatch = _patched_m1.__get__(monitor, type(monitor))
+    print("[draw-tree] M1 constrained: _plan_M1_dispatch patched (use_draw=True, "
+          "LockRenderer bypassed in plan_and_stage_constrained).")
+
+    def _revert():
+        _rrt_mod.rrt_connect = _orig_rrt_connect
+        _task_rrt_core.extend_toward = _orig_extend_toward
+        monitor._plan_M1_dispatch = _orig_m1_dispatch.__get__(monitor, type(monitor))
+        print("[draw-tree] patches reverted.")
+
+    return _revert
+
+
 def _replay_saved_trajectories(monitor, sequence) -> int:
     """Load <mv>_trajectory.json files from disk for each movement in
     `sequence` (in load order), then open an interactive PyBullet slider
@@ -396,12 +884,14 @@ def main(bar_action: str = DEFAULT_BAR_ACTION,
          use_gui: bool = False,
          only_movement: str | None = None,
          no_save: bool = False,
-         replay: bool = False) -> int:
+         replay: bool = False,
+         draw_tree: bool = False) -> int:
     global _PATCHED_PROBLEM
     _PATCHED_PROBLEM = problem
     mode = 'REPLAY' if replay else 'PLAN'
     print(f"=== headless full-sequence test ({mode}): problem={problem!r} "
-          f"bar_action={bar_action!r} only_movement={only_movement!r} ===")
+          f"bar_action={bar_action!r} only_movement={only_movement!r} "
+          f"draw_tree={draw_tree} ===")
 
     _patch_design_problem(problem)
 
@@ -409,6 +899,11 @@ def main(bar_action: str = DEFAULT_BAR_ACTION,
     # debug-parameter panel).
     if replay and not use_gui:
         print("[replay] --replay forces --gui on; opening the cfab window.")
+        use_gui = True
+
+    # Tree drawing only makes sense with the GUI open.
+    if draw_tree and not use_gui:
+        print("[draw-tree] --draw-tree forces --gui on (rendering required).")
         use_gui = True
 
     monitor = _bypass_init_monitor()
@@ -441,16 +936,16 @@ def main(bar_action: str = DEFAULT_BAR_ACTION,
             print("[cfab-cc] free composite planner will use cfab PyBulletCheckCollision")
 
         # Populate the BarAction file slider (UI does this on focus).
-        monitor.available_robot_cell_states = monitor._load_available_bar_actions()
-        if not monitor.available_robot_cell_states:
+        monitor.available_bar_actions = monitor._load_available_bar_actions()
+        if not monitor.available_bar_actions:
             print("FAIL: no BarAction files available")
             return 1
-        if bar_action not in monitor.available_robot_cell_states:
+        if bar_action not in monitor.available_bar_actions:
             print(f"FAIL: {bar_action!r} not in available BarActions; have "
-                  f"{monitor.available_robot_cell_states[:8]}"
-                  f"{'...' if len(monitor.available_robot_cell_states) > 8 else ''}")
+                  f"{monitor.available_bar_actions[:8]}"
+                  f"{'...' if len(monitor.available_bar_actions) > 8 else ''}")
             return 1
-        monitor._selected_action_file_idx = monitor.available_robot_cell_states.index(bar_action)
+        monitor._selected_action_file_idx = monitor.available_bar_actions.index(bar_action)
 
         # Probe-parse to set up the stub husky interface BEFORE
         # load_bar_action_file calls _make_synthetic_m0 (which reads
@@ -521,6 +1016,14 @@ def main(bar_action: str = DEFAULT_BAR_ACTION,
         sequence_ids = [monitor._loaded_movements[i].movement_id for i in sequence]
         print(f"\n=== planning sequence ({len(sequence)}): {sequence_ids} ===")
 
+        revert_tree_drawing = None
+        sequence_roles = {monitor._match_movement_role(monitor._loaded_movements[i])
+                          for i in sequence}
+        draw_tree_active = draw_tree and bool(sequence_roles & set(_TREE_DRAW_ROLES))
+        if draw_tree and not draw_tree_active:
+            print(f"[draw-tree] sequence has no role in {_TREE_DRAW_ROLES}; "
+                  f"skipping patch install.")
+
         for step, idx in enumerate(sequence, start=1):
             mv = monitor._loaded_movements[idx]
             role = monitor._match_movement_role(mv)
@@ -532,6 +1035,11 @@ def main(bar_action: str = DEFAULT_BAR_ACTION,
             if monitor.current_movement is None:
                 print(f"FAIL: load_selected_movement did not set current_movement.")
                 return 1
+
+            # _bar_action_husky is set by load_selected_movement's
+            # cfab->pp bridge; install tree-draw patches on first load.
+            if draw_tree_active and revert_tree_drawing is None:
+                revert_tree_drawing = _install_tree_drawing(monitor)
 
             print(f"--- simulating 'Plan Movement' click ({role}) ---")
             monitor.plan_selected_movement()
@@ -547,17 +1055,42 @@ def main(bar_action: str = DEFAULT_BAR_ACTION,
                         _diagnose_free_plan_collision(monitor, mv)
                     except Exception as e:
                         print(f"[diagnose] ERROR: {e}")
+                    # When start_conf was feasible but BiRRT couldn't
+                    # connect to goal, dig into per-joint Δ and linear-
+                    # interpolation collisions to identify what's blocking.
+                    if role == 'M0':
+                        try:
+                            _diagnose_m0_transit_failure(monitor, mv)
+                        except Exception as e:
+                            print(f"[diagnose] M0 transit ERROR: {e}")
                 _print_roster(monitor, "roster at failure")
                 return 1
 
         _print_roster(monitor, "FINAL roster")
         print(f"\n=== SEQUENCE COMPLETE: planned {len(sequence)} movement(s). ===")
 
-        if use_gui:
+        if revert_tree_drawing is not None:
             try:
-                input("\n[gui] press Enter to close the PyBullet window...")
-            except (EOFError, KeyboardInterrupt):
-                pass
+                revert_tree_drawing()
+            except Exception as e:
+                print(f"[draw-tree] revert ERROR: {e}")
+
+        if use_gui:
+            # Drop into the replay scrubber so the user can step through
+            # the trajectory they just planned. Replay reads
+            # <mv>_trajectory.json from disk, so --no-save defeats this;
+            # fall back to a hold-window prompt in that case.
+            if no_save:
+                print("\n[gui] --no-save set; trajectories were not written, "
+                      "skipping auto-replay.")
+                try:
+                    input("[gui] press Enter to close the PyBullet window...")
+                except (EOFError, KeyboardInterrupt):
+                    pass
+            else:
+                print(f"\n=== entering REPLAY mode for the planned "
+                      f"trajectory ===")
+                return _replay_saved_trajectories(monitor, sequence)
 
         return 0
     finally:
@@ -593,9 +1126,15 @@ if __name__ == "__main__":
                              "<mv>_trajectory.json files and open an "
                              "interactive scrubber in the cfab GUI window "
                              "to visually inspect them. Forces --gui on.")
+    parser.add_argument("--draw-tree", action="store_true",
+                        help="Draw planning trees in the cfab GUI for M0 / "
+                             "M1 / M4 plans (free BiRRT + constrained "
+                             "SE(3) RRT). Forces --gui on. Left arm edges "
+                             "are blue, right arm edges are orange.")
     args = parser.parse_args()
     sys.exit(main(
         bar_action=args.bar_action, problem=args.problem,
         use_gui=args.gui, only_movement=args.only_movement,
         no_save=args.no_save, replay=args.replay,
+        draw_tree=args.draw_tree,
     ))

@@ -1286,3 +1286,55 @@ def bar_deviation_from_goal(fit, goal_bar_pose):
     lateral_dev_m = float(np.linalg.norm(perp))
 
     return {'pos_dev_m': pos_dev_m, 'angle_rad': angle_rad, 'lateral_dev_m': lateral_dev_m}
+
+
+def make_axis_corrector(saved_convention):
+    """Return a callable mapping a saved-marker xyz into the rhino world frame.
+
+    Identity for 'rhino'; 90-deg-about-z swap for the older 'rotated' takes.
+    Live monitor takes are already in 'rhino' z-up, so the live path does not
+    need this — only the offline JSON loader does.
+    """
+    if saved_convention == 'rhino':
+        return lambda p: list(p)
+    if saved_convention == 'rotated':
+        return lambda p: [p[1], -p[0], p[2]]
+    raise ValueError(f"unknown mocap_axis_convention {saved_convention!r}")
+
+
+def convert_markerset_axes(labeled_marker_dict, correct):
+    """Return a new {marker_id: info} dict with each info['pos'] mapped
+    through ``correct``. Other keys are shallow-copied.
+    """
+    out = {}
+    for mid, info in labeled_marker_dict.items():
+        new_info = dict(info)
+        new_info['pos'] = correct(info['pos'])
+        out[mid] = new_info
+    return out
+
+
+def draw_marker_take_in_pp(labeled_marker_dict, fit=None, *,
+                           marker_color=(1, 0, 0), marker_size=0.01,
+                           line_color=(0, 0, 1), line_width=3):
+    """Draw raw markers + the fitted bar line into the active pybullet GUI.
+
+    Returns ``list[int]`` of debug uids so the caller can remove them later
+    via ``pp.remove_debug``. ``fit`` may be None (markers only).
+    """
+    import pybullet_planning as pp
+
+    uids = []
+    for info in labeled_marker_dict.values():
+        ls = pp.draw_point(info['pos'], size=marker_size, color=list(marker_color))
+        if isinstance(ls, (list, tuple)):
+            uids.extend(ls)
+        elif ls is not None:
+            uids.append(ls)
+    if fit is not None:
+        tips = fit.get('bar_end_points')
+        if tips and len(tips) == 2:
+            uids.append(pp.add_line(
+                tips[0], tips[1], color=list(line_color), width=line_width,
+            ))
+    return uids

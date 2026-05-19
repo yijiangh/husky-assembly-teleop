@@ -16,8 +16,8 @@ from types import SimpleNamespace
 import numpy as np
 
 
-DEFAULT_PROBLEM = "2026-05-08_dual-arm_transfer_test"
-DEFAULT_BAR_ACTION = "B6.json"
+DEFAULT_PROBLEM = "2026-05-19_reoriented2"
+DEFAULT_BAR_ACTION = "B122.json"
 DEFAULT_MOVEMENT = "M1"
 
 
@@ -73,7 +73,7 @@ def _make_monitor(problem, use_gui):
     monitor.constrained_trajectory = [None, None]
     monitor.constrained_display_mode = 0
 
-    monitor.available_robot_cell_states = []
+    monitor.available_bar_actions = []
     monitor.selected_state_index = 0
     monitor.available_joint_trajectories = []
     monitor.selected_trajectory_index = 0
@@ -304,12 +304,12 @@ def main():
     monitor = None
     try:
         monitor = _make_monitor(args.problem, args.gui)
-        monitor.available_robot_cell_states = monitor._load_available_bar_actions()
-        if args.bar_action not in monitor.available_robot_cell_states:
+        monitor.available_bar_actions = monitor._load_available_bar_actions()
+        if args.bar_action not in monitor.available_bar_actions:
             raise RuntimeError(
-                f"{args.bar_action!r} not available. Found: {monitor.available_robot_cell_states}"
+                f"{args.bar_action!r} not available. Found: {monitor.available_bar_actions}"
             )
-        monitor.selected_state_index = monitor.available_robot_cell_states.index(args.bar_action)
+        monitor.selected_state_index = monitor.available_bar_actions.index(args.bar_action)
         ok = monitor.load_bar_action(movement=args.movement, update_goal_state=False)
         if not ok:
             return 1

@@ -295,7 +295,6 @@ class HuskyRobotInterface:
             for fs in self.controller_change_service_client:
                 fs.wait_for_service(timeout_sec=2.5)
                 self.node.get_logger().info(f'Switch Controller Service Client {fs.service_is_ready()}')
-
         
         # Action Clients
         # TODO support dual arm
@@ -360,30 +359,6 @@ class HuskyRobotInterface:
                 self.node.get_logger().info(f'SetIO Service {i} is ready!')
             else:
                 self.node.get_logger().warn(f'SetIO Service {i} not available!')
-
-        # # Zero FT Sensor service clients
-        # self.zero_ft_sensor_client = []
-        # if dual_arm:
-        #     self.zero_ft_sensor_client.append(self.node.create_client(Trigger, name + '/left_ur5e/io_and_status_controller/zero_ftsensor'))
-        #     self.zero_ft_sensor_client.append(self.node.create_client(Trigger, name + '/right_ur5e/io_and_status_controller/zero_ftsensor'))
-        # else:
-        #     self.zero_ft_sensor_client.append(self.node.create_client(Trigger, name + '/ur5e/io_and_status_controller/zero_ftsensor'))
-
-        # for fs in self.zero_ft_sensor_client:
-        #     fs.wait_for_service(timeout_sec=2.5)
-        #     self.node.get_logger().info(f'Zero FT Sensor Service Client {fs.service_is_ready()}')
-
-        # # Switch Controller service clients
-        # self.controller_change_service_client = []
-        # if dual_arm:
-        #     self.controller_change_service_client.append(self.node.create_client(SwitchController, name + '/left_ur5e/controller_manager/switch_controller'))
-        #     self.controller_change_service_client.append(self.node.create_client(SwitchController, name + '/right_ur5e/controller_manager/switch_controller'))
-        # else:
-        #     self.controller_change_service_client.append(self.node.create_client(SwitchController, name + '/ur5e/controller_manager/switch_controller'))
-
-        # for fs in self.controller_change_service_client:
-        #     fs.wait_for_service(timeout_sec=2.5)
-        #     self.node.get_logger().info(f'Switch Controller Service Client {fs.service_is_ready()}')
 
         # Scaffolding tool RS485 clients (replaces SetIO-based gripper/screw control).
         # Indexing matches setio_clients: 0 = left/single, 1 = right.
