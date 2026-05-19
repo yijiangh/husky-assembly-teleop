@@ -2,8 +2,6 @@
 
 - At the end of the plan mode, write a detailed specs and instructions as a log into a markdown file in `tasks/year-month-day_xxxx.md`.
 
-- After ANY correction from the user, update `tasks/cc_lessons.md` with the pattern so we could reuse in the future.
-
 Core principles:
 - Simplicity first: make every change as simple as possible. Impact minimal code. Whenever possible, try to reuse existing functions without reinventing the wheels.
 - Always write comments in code. Remember code is for both human and agents to read.
