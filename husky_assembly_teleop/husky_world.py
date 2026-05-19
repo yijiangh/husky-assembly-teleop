@@ -2591,11 +2591,11 @@ def execute_linear_cartesian_move(robot, hi, start_time, cartesian_trajectory, i
     
     return True
 
-def switch_dual_arm_controller(monitor, from_ctrl, to_ctrl):
+def switch_dual_arm_controller(monitor, to_ctrl):
     """Switch both arms from `from_ctrl` to `to_ctrl`; yield until ack."""
     hi: HuskyRobotInterface = monitor.huskies[monitor.selected_robot_id].interface
-    hi.switch_controller(from_ctrl, to_ctrl, 0)
-    hi.switch_controller(from_ctrl, to_ctrl, 1)
+    hi.switch_controller(hi.active_controller[0], to_ctrl, 0)
+    hi.switch_controller(hi.active_controller[1], to_ctrl, 1)
     while hi.active_controller[0] != to_ctrl or hi.active_controller[1] != to_ctrl:
         yield
 
@@ -2661,7 +2661,6 @@ def kissing_probe_once(monitor, neutral_bar_pose, starting_bar_pose, offset, fil
 
     yield from switch_dual_arm_controller(
         monitor,
-        'scaled_joint_trajectory_controller',
         'cartesian_compliance_controller',
     )
 
@@ -2744,7 +2743,6 @@ def kissing_probe_once(monitor, neutral_bar_pose, starting_bar_pose, offset, fil
         hi.send_scaffolding_cmd(0, 2, 1)
         yield from switch_dual_arm_controller(
             monitor,
-            'cartesian_compliance_controller',
             'scaled_joint_trajectory_controller',
         )
         return
@@ -2781,7 +2779,6 @@ def kissing_probe_once(monitor, neutral_bar_pose, starting_bar_pose, offset, fil
 
     yield from switch_dual_arm_controller(
         monitor,
-        'cartesian_compliance_controller',
         'scaled_joint_trajectory_controller',
     )
 
@@ -2847,11 +2844,11 @@ def execute_planned_trajectory_compliant(monitor):
     HOLD_FOR_STALL_TIMEOUT_S = 300.0
     if role == 'M2':
         t_wait = HOLD_FOR_STALL_TIMEOUT_S
-        should_continue = lambda: not (
+        should_continue_fn = lambda: not (
             _scaffolding_m2_stalled(hi, 0) and _scaffolding_m2_stalled(hi, 1))
     else:
         t_wait = 0.0
-        should_continue = None
+        should_continue_fn = None
 
     cartesian_trajectories = [
         [L_start, L_end, t_total, t_wait],
@@ -2867,38 +2864,39 @@ def execute_planned_trajectory_compliant(monitor):
         hi.send_scaffolding_cmd(0, 1, 1)
         hi.send_scaffolding_cmd(0, 2, 1)
 
-    hi.zero_ft_sensor(0)
-    hi.zero_ft_sensor(1)
+    # ! important: DO NOT zero when the robot is holding the bar
+    # the only good time to zero is when the robot is holding nothing but the tool
 
-    # Pre-exec scaffolding tool commands (mirror BAR_HOLDING_ACCURACY_TEST buttons):
+    # Pre-exec scaffolding tool commands:
     #   M2 -> Stop All + TIGHTEN Joint (M2) on both arms (bar tightened against scaffold).
     #   M3 -> Stop All + LOOSEN Gripper (M1) on both arms (release bar before retreat).
     _stop_all_both_arms()
     if role == 'M2':
-        print('[scaffolding] M2: TIGHTEN Joint (M2) on L arm (arm 0)')
+        print('[scaffolding] M2: TIGHTEN Joint on L arm (arm 0)')
         hi.send_scaffolding_cmd(1, 2, 0)
-        print('[scaffolding] M2: TIGHTEN Joint (M2) on R arm (arm 1)')
+        print('[scaffolding] M2: TIGHTEN Joint on R arm (arm 1)')
         hi.send_scaffolding_cmd(1, 2, 1)
     elif role == 'M3':
-        print('[scaffolding] M3: LOOSEN Gripper (M1) on L arm (arm 0)')
+        print('[scaffolding] M3: LOOSEN Gripper on L arm (arm 0)')
         hi.send_scaffolding_cmd(-1, 1, 0)
-        print('[scaffolding] M3: LOOSEN Gripper (M1) on R arm (arm 1)')
+        print('[scaffolding] M3: LOOSEN Gripper on R arm (arm 1)')
         hi.send_scaffolding_cmd(-1, 1, 1)
 
     try:
+        # wait until the switch is completely (yield will go back to top level monitor to get updated state)
         yield from switch_dual_arm_controller(
             monitor,
-            'scaled_joint_trajectory_controller',
             'cartesian_compliance_controller',
         )
+
         yield from execute_cartesian_linear_dual(
-            monitor, cartesian_trajectories, should_continue=should_continue)
+            monitor, cartesian_trajectories, should_continue=should_continue_fn)
     finally:
         # Always stop motors first, then restore the joint controller.
         _stop_all_both_arms()
+
         yield from switch_dual_arm_controller(
             monitor,
-            'cartesian_compliance_controller',
             'scaled_joint_trajectory_controller',
         )
 

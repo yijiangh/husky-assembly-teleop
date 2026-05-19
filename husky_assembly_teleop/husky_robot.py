@@ -44,6 +44,7 @@ from std_srvs.srv._trigger import Trigger
 
 # Controller Manager
 from controller_manager_msgs.srv._switch_controller import SwitchController
+from controller_manager_msgs.srv import ListControllers
 
 # SetIO service for gripper and screw control
 from ur_msgs.srv import SetIO
@@ -67,6 +68,13 @@ def quaterinion_2_angular_velocity(q1, q2, dt):
         q1[3]*q2[0] - q1[0]*q2[3] - q1[1]*q2[2] + q1[2]*q2[1],
         q1[3]*q2[1] + q1[0]*q2[2] - q1[1]*q2[3] - q1[2]*q2[0],
         q1[3]*q2[2] - q1[0]*q2[1] + q1[1]*q2[0] - q1[2]*q2[3]])
+
+_KNOWN_MOTION_CONTROLLERS = (
+    'scaled_joint_trajectory_controller',
+    'cartesian_compliance_controller',
+    # 'forward_position_controller',
+)
+
 
 class HuskyRobotInterface:
     position = np.zeros(3)
@@ -386,8 +394,72 @@ class HuskyRobotInterface:
         # else:
         #     self.tool_clients.append(ScaffoldingToolClient(node, name, 'tool'))
 
+        # Seed active_controller[] from controller_manager (always, regardless
+        # of connect_compliant_controller). Without this, the [""] default
+        # makes the first switch_controller(from_ctrl="") request get rejected
+        # by controller_manager because the actually-running controller isn't
+        # named in deactivate_controllers.
+        self.list_controllers_client = []
+        if dual_arm:
+            self.list_controllers_client.append(self.node.create_client(
+                ListControllers, name + '/left_ur5e/controller_manager/list_controllers'))
+            self.list_controllers_client.append(self.node.create_client(
+                ListControllers, name + '/right_ur5e/controller_manager/list_controllers'))
+        else:
+            self.list_controllers_client.append(self.node.create_client(
+                ListControllers, name + '/ur5e/controller_manager/list_controllers'))
+        self._seed_active_controllers()
+
         # done --- --- --- --- ---
         self.node.get_logger().info(f'Husky "{name}" is ready!')
+
+    def _seed_active_controllers(self):
+        """Async-seed ``self.active_controller[i]`` from controller_manager.
+
+        Can't use ``client.call()`` here: rclpy's sync call needs an executor
+        already spinning the node so the future's done-callback can fire — but
+        ``rclpy.spin(husky_monitor)`` runs AFTER this init returns, so
+        ``call()`` would block forever (wait_for_service still works because
+        service discovery uses the middleware's own threads). Instead
+        fire-and-forget ``call_async`` and let the monitor's executor finish
+        the seed via the done-callback a few ticks after spin starts. Brief
+        window where ``active_controller[i] == ""`` but it closes well before
+        the operator can click a switch button.
+        """
+        for i, client in enumerate(self.list_controllers_client):
+            if not client.wait_for_service(timeout_sec=2.5):
+                self.node.get_logger().warn(
+                    f'arm {i}: list_controllers service unavailable; active_controller stays ""')
+                continue
+            fut = client.call_async(ListControllers.Request())
+            fut.add_done_callback(
+                lambda f, idx=i: self._on_list_controllers_response(idx, f))
+
+    def _on_list_controllers_response(self, i, fut):
+        try:
+            resp = fut.result()
+        except Exception as e:
+            self.node.get_logger().warn(
+                f'arm {i}: list_controllers failed: {e}; active_controller stays ""')
+            return
+        if resp is None:
+            self.node.get_logger().warn(
+                f'arm {i}: list_controllers returned None; active_controller stays ""')
+            return
+        active = next(
+            (c.name for c in resp.controller
+             if c.state == 'active' and c.name in _KNOWN_MOTION_CONTROLLERS),
+            None,
+        )
+        if active is None:
+            self.node.get_logger().warn(
+                f'arm {i}: no known motion controller active '
+                f'(saw {[(c.name, c.state) for c in resp.controller]}); '
+                f'active_controller stays ""')
+            return
+        self.active_controller[i] = active
+        self.node.get_logger().info(
+            f'arm {i}: active_controller seeded to {active!r} from controller_manager')
 
     def switch_controller(self, from_ctrl, to_ctrl, arm_index=0):
         msg = SwitchController.Request()

@@ -231,7 +231,7 @@ class HuskyMonitor(Node):
         self.grasp_distance = 0.0 # fixed for now
         self.goal_element_axis = 0
 
-        self.trajectory_time_max = 20 if self.CALIBRATION else 120
+        self.trajectory_time_max = 20 if self.CALIBRATION else 30
         self.trajectory_time = self.trajectory_time_max
 
         # list of conf, velocity, total time, attachment other than the ee
