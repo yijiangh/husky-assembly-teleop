@@ -27,7 +27,7 @@ ARM_BASE_LINK_NAME = get_arm_base_link_name(ROBOT_NAME, ARM)
 
 # File paths
 CALIBRATION_FILE = os.path.join(HERE, DATE_FOLDER, 'base_frame_calibration.json')
-OUTPUT_FILE = os.path.join(HERE, DATE_FOLDER, f'calibrated_transformation_{ROBOT_NAME}.json')
+OUTPUT_FILE = os.path.join(HERE, DATE_FOLDER, f'calibrated_transformation_{ROBOT_NAME}_rhino.json')
 
 # Configure logging with colored output
 log_file = os.path.join(HERE, DATE_FOLDER, 'compute_tf_log.txt')

@@ -24,6 +24,9 @@ from husky_assembly_teleop.bar_action_io import parse_bar_action, find_movement
 from husky_assembly_teleop.mocap_experiment import (
     fit_bar_from_markerset,
     bar_deviation_from_goal,
+    make_axis_corrector,
+    convert_markerset_axes,
+    draw_marker_take_in_pp,
 )
 
 
@@ -55,21 +58,10 @@ def goal_bar_pose_from_movement(mv, bar_name):
     return None, None
 
 
-def _make_corrector(saved_convention):
-    if saved_convention == 'rhino':
-        return lambda p: list(p)
-    if saved_convention == 'rotated':
-        return lambda p: [p[1], -p[0], p[2]]
-    raise ValueError(f"unknown mocap_axis_convention {saved_convention!r}")
-
-
-def _convert_markerset(labeled_marker_dict, correct):
-    out = {}
-    for mid, info in labeled_marker_dict.items():
-        new_info = dict(info)
-        new_info['pos'] = correct(info['pos'])
-        out[mid] = new_info
-    return out
+# Axis-correction helpers moved to husky_assembly_teleop.mocap_experiment so the
+# live monitor's record+viz button can share the same drawing path.
+_make_corrector = make_axis_corrector
+_convert_markerset = convert_markerset_axes
 
 
 def _equal_axes_3d(ax, points, pad=0.05):
@@ -240,6 +232,18 @@ def process_file(file_path, override_bar_action=None, override_movement=None):
         start_dev_m = float(np.linalg.norm(
             np.asarray(fitted_start, dtype=float) - np.asarray(goal_bar_pose[0], dtype=float)
         ))
+        d_ocf_vs_goal_mm = (
+            np.asarray(ocf, dtype=float) - np.asarray(goal_bar_pose[0], dtype=float)
+        ) * 1000.0  # signed mm; NOTE: goal_pos = lower-tip per rhino-export bug
+        # Midpoint-vs-midpoint diff (un-absolute, per-axis, mm).
+        # goal_mid = goal lower-tip + 0.5 * observed_bar_len * goal_z
+        # (rhino-export OCF-origin bug means goal_bar_pose[0] is the lower tip,
+        # so we reconstruct the midpoint along the goal's bar axis.)
+        bar_len = float(np.linalg.norm(np.asarray(tips[0]) - np.asarray(tips[1])))
+        goal_R = np.asarray(pp.matrix_from_quat(goal_bar_pose[1]), dtype=float)
+        goal_z = goal_R[:, 2] / np.linalg.norm(goal_R[:, 2])
+        goal_mid = np.asarray(goal_bar_pose[0], dtype=float) + 0.5 * bar_len * goal_z
+        d_mid_vs_goalmid_mm = (np.asarray(ocf, dtype=float) - goal_mid) * 1000.0
         print(
             f"  take {i}: "
             f"start_dev={start_dev_m*1000:.2f} mm | "
@@ -248,7 +252,9 @@ def process_file(file_path, override_bar_action=None, override_movement=None):
             f"center_to_line_dist_max={fit['center_to_line_dist_max_m']*1000:.2f} mm | "
             f"fitted_start=({fitted_start[0]:.4f}, {fitted_start[1]:.4f}, {fitted_start[2]:.4f}) | "
             f"ocf=({ocf[0]:.4f}, {ocf[1]:.4f}, {ocf[2]:.4f}) | "
-            f"pos_dev(ocf↔goal)={dev['pos_dev_m']*1000:.2f} mm"
+            f"pos_dev(ocf↔goal)={dev['pos_dev_m']*1000:.2f} mm | "
+            f"d_ocf_vs_goal=({d_ocf_vs_goal_mm[0]:+.2f}, {d_ocf_vs_goal_mm[1]:+.2f}, {d_ocf_vs_goal_mm[2]:+.2f}) mm | "
+            f"d_mid_vs_goalmid=({d_mid_vs_goalmid_mm[0]:+.2f}, {d_mid_vs_goalmid_mm[1]:+.2f}, {d_mid_vs_goalmid_mm[2]:+.2f}) mm"
         )
         rows.append({
             'source_file': os.path.basename(file_path),
@@ -320,13 +326,7 @@ def open_pp_viewer_for_goal(bar_action_path, movement_key, takes=None):
         session.planner.set_robot_cell_state(mv.start_state)
         pp.draw_pose(goal_bar_pose, length=0.3)
         for take in (takes or []):
-            fit = take['fit']
-            markers = take.get('markers') or {}
-            for info in markers.values():
-                pp.draw_point(info['pos'], size=0.01, color=[1, 0, 0])
-            tips = fit.get('bar_end_points')
-            if tips and len(tips) == 2:
-                pp.add_line(tips[0], tips[1], color=[0, 0, 1], width=3)
+            draw_marker_take_in_pp(take.get('markers') or {}, take['fit'])
         pp.wait_if_gui(f"goal bar pose for {bar_name} @ {mv.movement_id} — close to continue")
     finally:
         session.close()

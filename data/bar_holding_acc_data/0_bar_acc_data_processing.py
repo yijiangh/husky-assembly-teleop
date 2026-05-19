@@ -136,6 +136,7 @@ def process_batch(data_folder, export=True, viewer=False):
         saved_convention = data.get('mocap_axis_convention', 'rotated')
         correct = _make_corrector(saved_convention)
         print(f"\n=== {file_name} (mocap_axis_convention={saved_convention}) ===")
+        ref_ocf = None  # take-0 OCF in this file; baseline for diff print
         for i, entry in enumerate(data['raw_data']):
             marker_pts_saved = entry.get('bar_rig', {})
             marker_pts_rhino = _convert_markerset(marker_pts_saved, correct)
@@ -148,9 +149,14 @@ def process_batch(data_folder, export=True, viewer=False):
             ocf = fit['ocf_position']
             axis = fit['fitted_line']['direction']
             angle_to_z_deg = np.degrees(_angle_to_world_z_rad(axis))
+            ocf_arr = np.asarray(ocf, dtype=float)
+            if ref_ocf is None:
+                ref_ocf = ocf_arr
+            d = (ocf_arr - ref_ocf) * 1000.0  # signed mm vs take 0
             print(
                 f"  take {i}: "
                 f"ocf=({ocf[0]:.4f}, {ocf[1]:.4f}, {ocf[2]:.4f}) m | "
+                f"d_ocf_from_take0=({d[0]:+.2f}, {d[1]:+.2f}, {d[2]:+.2f}) mm | "
                 f"axis=({axis[0]:+.4f}, {axis[1]:+.4f}, {axis[2]:+.4f}) | "
                 f"angle_to_Z={angle_to_z_deg:.3f}° | "
                 f"bar_len={fit['bar_length_observed']:.4f} m | "

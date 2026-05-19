@@ -34,7 +34,7 @@ USE_GUI = config['use_gui']
 
 # File paths
 VALIDATION_DATA_FOLDER = os.path.join(HERE, DATE_FOLDER, VALIDATION_DATA_BATCH)
-CALIBRATION_FILE = os.path.join(HERE, DATE_FOLDER, f'calibrated_transformation_{ROBOT_NAME}.json')
+CALIBRATION_FILE = os.path.join(HERE, DATE_FOLDER, f'calibrated_transformation_{ROBOT_NAME}_rhino.json')
 ROBOT_URDF = get_robot_urdf(ROBOT_NAME)
 
 # Configure logging with colored console output
