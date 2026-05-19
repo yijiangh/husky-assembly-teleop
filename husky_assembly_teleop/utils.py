@@ -363,8 +363,13 @@ def plan_transit_motion(robot, end_conf, attachments, obstacles, debug=False,
         transit_collision_fn = _adapted_collision_fn
 
     transit_path = None
+    # TEMP: keep the renderer unlocked during dual-arm composite planning so
+    # cfab-side robot pose updates (from set_robot_cell_state inside the
+    # collision adapter) are visible in the GUI. Single-arm path still locks
+    # to avoid per-step flicker. Revert once cfab CC debugging is done.
+    _lock_for_renderer = (dual_arm_index != "both") and (not debug)
     with pp.WorldSaver():
-        with pp.LockRenderer(not debug):
+        with pp.LockRenderer(_lock_for_renderer):
             # * plan transit motion from current conf to pregrasp conf
             start_conf = pp.get_joint_positions(robot, movable_joints)
             # print('start conf: ', start_conf)
