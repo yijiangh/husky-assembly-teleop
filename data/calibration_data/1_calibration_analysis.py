@@ -492,12 +492,12 @@ def compute_base_frame(j0_line, j1_line, base_offset, robot_name, arm):
     Steps:
     1. j0 line direction (v0) corresponds to:
        - Single arm: z-axis
-       - Dual arm left: z-axis
-       - Dual arm right: -z-axis
+       - Dual arm left/right: z-axis
     2. j1 line direction (v1) corresponds to:
        - Single arm: x-axis
-       - Dual arm left: -y-axis
-       - Dual arm right: x-axis
+       - Dual arm left/right: +y-axis
+         (was "Dual arm left: -y-axis" before the 2026-06-09 tilt fix; left now
+          uses the same +y mapping as right — see the left branch below.)
     3. Find intersection of planes to locate base origin
     4. Apply offset along j0 axis
     """
@@ -593,16 +593,32 @@ def compute_base_frame(j0_line, j1_line, base_offset, robot_name, arm):
 
     if is_dual_arm:
         if arm == 'left':
-            # Left arm: v0 → +Z, v1 → -Y
-            logger.info('  Dual-arm left arm: v0 → +Z, v1 → -Y')
+            # ----------------------------------------------------------------
+            # FIX (2026-06-09): left-arm base came out tilted 90° (robot lying
+            # on the floor in PyBullet). Root cause: y_axis = -v1 below.
+            #
+            # Previous version:
+            #     # Left arm: v0 → +Z, v1 → -Y
+            #     logger.info('  Dual-arm left arm: v0 → +Z, v1 → -Y')
+            #     ...
+            #     y_axis = -v1            # <-- OLD: tilted base_footprint 90°
+            #     x_axis = np.cross(y_axis, z_axis)
+            #     ...
+            #     logger.info('  Frame construction: Z=v0, Y=-v1, X=Y×Z, Z=(recomputed)')
+            #
+            # New: use y_axis = +v1, i.e. the SAME recipe as the right arm.
+            # (NOTE: ±v1 still depends on the fitted-line sign; the robust
+            #  auto-sign disambiguation is a planned follow-up.)
+            # ----------------------------------------------------------------
+            logger.info('  Dual-arm left arm: v0 → +Z, v1 → +Y')
             z_axis = v0
-            y_axis = -v1
+            y_axis = v1                  # NEW (was: y_axis = -v1)
             x_axis = np.cross(y_axis, z_axis)
             x_axis = x_axis / np.linalg.norm(x_axis)
             # Recompute z for orthogonality
             z_axis = np.cross(x_axis, y_axis)
             z_axis = z_axis / np.linalg.norm(z_axis)
-            logger.info('  Frame construction: Z=v0, Y=-v1, X=Y×Z, Z=(recomputed)')
+            logger.info('  Frame construction: Z=v0, Y=v1, X=Y×Z, Z=(recomputed)')
         elif arm == 'right':
             # Right arm: v0 → +Z, v1 → +Y
             logger.info('  Dual-arm right arm: v0 → +Z, v1 → +Y')
