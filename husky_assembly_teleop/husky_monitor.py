@@ -57,7 +57,7 @@ EXISTING_ELEMENT_COLOR = pp.RED
 CURRENT_ELEMENT_COLOR = pp.BLUE
 DEFAULT_BAR_POS = pp.Point(0.8, 0, 1.3)
 
-CLIENT_IP = '192.168.0.21' # Set to your own IP
+CLIENT_IP = '192.168.0.25' # Set to your own IP
 MOCAP_IP = '192.168.0.117' # set to the mocap PC's IP, get this from Motive Settings>Streaming pane->Local interface
 
 # Folder under DATA_DIRECTORY/husky_assembly_design_study/<...>/RobotCellStates/
@@ -78,7 +78,7 @@ class HuskyMonitor(Node):
     USE_DPG_UI = 0   # 0 = legacy PyBullet debug GUI; 1 = Dear PyGui control panel
     UI_FONT_SIZE = 20  # DPG control-panel font size in px
 
-    CALIBRATION = 0
+    CALIBRATION = 1
 
     BAR_ACTION_LIVE_REPLAN_EXE = 1
     BAR_ACTION_MOCAP_ACCURACY_TEST = 1
@@ -97,7 +97,7 @@ class HuskyMonitor(Node):
     # (target_wrench publishers, start_force_mode / zero_ftsensor / switch_controller
     # service clients). Off by default so we don't block startup waiting on
     # services that aren't running on most rigs.
-    CONNECT_COMPLIANT_CONTROLLER = 1
+    CONNECT_COMPLIANT_CONTROLLER = 0
 
     # Default ON: route every free-planner collision check through cfab's
     # PyBulletCheckCollision (CC.1..CC.5, including attached_rb<->world_rb)

@@ -170,27 +170,30 @@ def create_husky_with_end_effectors(monitor, name, mocap_id=None, pos=np.zeros(3
                 connect_compliant_controller=connect_compliant_controller)
 
 def init(monitor):
-    # Per-robot config keyed by ROS_DOMAIN_ID so 0804 (ROS_DOMAIN_ID=84),
-    # 0805 (ROS_DOMAIN_ID=85), and 0806 (ROS_DOMAIN_ID=86) can run in parallel
+    # Per-robot config keyed by ROS_DOMAIN_ID so Alice 0804 (ROS_DOMAIN_ID=84),
+    # Belle 0805 (ROS_DOMAIN_ID=85), and Cindy 0806 (ROS_DOMAIN_ID=86) can run in parallel
     # terminals without editing this file. Only fields that genuinely differ
     # live here; everything else (dual_arm, base_calibration_file,
     # punch_tool overrides) derives below.
     ROBOT_CONFIGS = {
         '84': dict(
             robot_namespace='/a200_0804',
-            mocap_id=4630,
+            # mocap_id=4630,
+            mocap_id=1010,
             connect_gripper=True,
             ee_types_default=['robotiq_gripper'],
         ),
         '85': dict(
             robot_namespace='/a200_0805',
-            mocap_id=1033,  # from commented 0805 example below; adjust if wrong
+            # mocap_id=1033,
+            mocap_id=1012,  # from commented 0805 example below; adjust if wrong
             connect_gripper=True,
             ee_types_default=['robotiq_gripper'],
         ),
         '86': dict(
             robot_namespace='/a200_0806',
-            mocap_id=4617,
+            # mocap_id=4617,
+            mocap_id=1011,
             connect_gripper=False,
             ee_types_default=['assembly_tool_v3_left', 'assembly_tool_v3_right'],
         ),
@@ -325,7 +328,8 @@ def init(monitor):
         #monitor.assign_calibration_tool_to_robot(0, 0, left_tool_name)
 
         right_tool_name = 'calib_tool_right'
-        TrackedObject(monitor, right_tool_name, 4616, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
+        # TrackedObject(monitor, right_tool_name, 4616, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
+        TrackedObject(monitor, right_tool_name, 1011, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
         monitor.assign_calibration_tool_to_robot(0, 1, right_tool_name)
 
     if monitor.BAR_ACTION_MOCAP_ACCURACY_TEST:
