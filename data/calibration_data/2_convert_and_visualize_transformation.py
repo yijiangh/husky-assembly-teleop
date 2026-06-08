@@ -22,7 +22,9 @@ config = load_config()
 DATE_FOLDER = config['date_folder']
 ROBOT_NAME = config['robot_name']
 ARM = config['arm']
-USE_GUI =  True # config.get('use_gui', True)
+# USE_GUI =  True   # made pp.wait_if_gui() block on input() -> EOFError when the pipeline runs
+# this script non-interactively with use_gui: false.
+USE_GUI = config['use_gui']
 ARM_BASE_LINK_NAME = get_arm_base_link_name(ROBOT_NAME, ARM)
 
 # File paths
