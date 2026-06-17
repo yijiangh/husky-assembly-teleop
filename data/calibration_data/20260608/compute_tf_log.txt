@@ -1,0 +1,16 @@
+2026-06-10 10:14:00,592 - [32mINFO[0m - [32m============================================================[0m
+2026-06-10 10:14:00,592 - [32mINFO[0m - [32mComputing calibrated transformation[0m
+2026-06-10 10:14:00,592 - [32mINFO[0m - [32m============================================================[0m
+2026-06-10 10:14:00,592 - [32mINFO[0m - [32mLoaded calibration data from: /home/su/ros2_ws/src/husky-assembly-teleop/data/calibration_data/20260608/base_frame_calibration.json[0m
+2026-06-10 10:14:00,592 - [32mINFO[0m - [32mbase_mocap_from_left_ur_arm_base_link_inertia: (array([ 0.13988889, -0.01018794,  0.02529082]), array([ 0.00634513,  0.37768125, -0.02007203,  0.92569635]))[0m
+2026-06-10 10:14:00,714 - [32mINFO[0m - [32mLoading robot from: /home/su/ros2_ws/src/husky-assembly-teleop/data/calibration_data/../husky_urdf/mt_husky_dual_ur5_e_moveit_config/urdf/husky_dual_ur5_e_no_base_joint_All_Calibrated.urdf[0m
+2026-06-10 10:14:00,865 - [32mINFO[0m - [32marm_base_link_from_base_footprint (from URDF): ((0.24118000268936157, 0.12250000238418579, -0.45177051424980164), (0.27059805393218994, -0.27059805393218994, -0.6532814502716064, 0.6532815098762512))[0m
+2026-06-10 10:14:00,865 - [32mINFO[0m - [32mbase_mocap_from_base_footprint: ((0.0014292895793914795, 0.11655357480049133, -0.4666809141635895), (0.0024732020683586597, -0.0050457315519452095, -0.7217696905136108, 0.6921104788780212))[0m
+2026-06-10 10:14:00,865 - [32mINFO[0m - [32mURDF arm_base_link pose: ((0.13988888263702393, -0.010187963023781776, 0.025290779769420624), (0.006345138419419527, 0.37768125534057617, -0.020071933045983315, 0.9256963729858398))[0m
+2026-06-10 10:14:00,865 - [32mINFO[0m - [32mCALIB arm_base_link pose: (array([ 0.13988889, -0.01018794,  0.02529082]), array([ 0.00634513,  0.37768125, -0.02007203,  0.92569635]))[0m
+2026-06-10 10:14:00,866 - [32mINFO[0m - [32mPosition difference (URDF - CALIB): -0.000, -0.000, -0.000 mm[0m
+2026-06-10 10:14:00,866 - [32mINFO[0m - [32mPosition difference magnitude: 0.000 mm[0m
+2026-06-10 10:14:00,866 - [32mINFO[0m - [32mCalibrated transformation saved to: /home/su/ros2_ws/src/husky-assembly-teleop/data/calibration_data/20260608/calibrated_transformation_0806_rhino.json[0m
+2026-06-10 10:14:00,866 - [32mINFO[0m - [32m============================================================[0m
+2026-06-10 10:14:00,866 - [32mINFO[0m - [32mDone![0m
+2026-06-10 10:14:00,866 - [32mINFO[0m - [32m============================================================[0m

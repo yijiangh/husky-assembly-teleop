@@ -1,0 +1,11 @@
+2026-06-10 10:13:35,087 - [32mINFO[0m - [32m============================================================[0m
+2026-06-10 10:13:35,087 - [32mINFO[0m - [32mProcessing data batch: j0[0m
+2026-06-10 10:13:35,087 - [32mINFO[0m - [32m============================================================[0m
+2026-06-10 10:13:35,087 - [32mINFO[0m - [32mProcessing: calibration_20260609_1528_ext_calib_0806_J0_traj3_JointTrajectory.json[0m
+2026-06-10 10:13:35,088 - [32mINFO[0m - [32m  Circle fitting time: 0.395 ms[0m
+2026-06-10 10:13:35,631 - [32mINFO[0m - [32m  Circle fit quality - max point distance: 4.582 mm[0m
+2026-06-10 10:13:35,899 - [32mINFO[0m - [32mProcessing: calibration_20260609_1555_ext_calib_0806_J0_traj2_JointTrajectory.json[0m
+2026-06-10 10:13:35,899 - [32mINFO[0m - [32m  Circle fitting time: 0.122 ms[0m
+2026-06-10 10:13:36,448 - [32mINFO[0m - [32m  Circle fit quality - max point distance: 8.938 mm[0m
+2026-06-10 10:13:36,721 - [32mINFO[0m - [32mProcessing: calibration_20260609_1538_ext_calib_0806_J0_traj5_JointTrajectory.json[0m
+2026-06-10 10:13:36,722 - [32mINFO[0m - [32m  Circle fitting time: 0.120 ms[0m
