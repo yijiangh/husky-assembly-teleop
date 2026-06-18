@@ -186,7 +186,7 @@ def init(monitor):
         '85': dict(
             robot_namespace='/a200_0805',
             # mocap_id=1033,
-            mocap_id=1012,  # from commented 0805 example below; adjust if wrong
+            mocap_id=1014,  # from commented 0805 example below; adjust if wrong
             connect_gripper=True,
             ee_types_default=['robotiq_gripper'],
         ),
@@ -323,14 +323,14 @@ def init(monitor):
     # * add tracked obstacles
     # TODO use one tracked box to indicate where to put the assembly
     if monitor.CALIBRATION:
-        #left_tool_name = 'calib_tool_left'
-        #TrackedObject(monitor, left_tool_name, 4616, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
-        #monitor.assign_calibration_tool_to_robot(0, 0, left_tool_name)
+        left_tool_name = 'calib_tool_left'
+        TrackedObject(monitor, left_tool_name, 1013, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
+        monitor.assign_calibration_tool_to_robot(0, 0, left_tool_name)
 
-        right_tool_name = 'calib_tool_right'
+        # right_tool_name = 'calib_tool_right'
         # TrackedObject(monitor, right_tool_name, 4616, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
-        TrackedObject(monitor, right_tool_name, 1011, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
-        monitor.assign_calibration_tool_to_robot(0, 1, right_tool_name)
+        # TrackedObject(monitor, right_tool_name, 1011, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
+        # monitor.assign_calibration_tool_to_robot(0, 1, right_tool_name)
 
     if monitor.BAR_ACTION_MOCAP_ACCURACY_TEST:
         bar_rig = TrackedObject(monitor, MOCAP_SET_RIG_RB_NAME, 4629, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
