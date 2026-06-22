@@ -31,7 +31,7 @@ from husky_assembly_teleop.mocap_experiment import (
 )
 from husky_assembly_teleop.husky_robot import UR5e_HOME_STATE
 from husky_assembly_teleop.common import (
-    Button, Slider, SliderGroup, Husky, TrackedObject, HuskyObject, AssemblyObject, HUSKY_UR5e_JOINT_NAMES, lerp, load_gripper
+    Button, Slider, SliderGroup, Separator, Husky, TrackedObject, HuskyObject, AssemblyObject, HUSKY_UR5e_JOINT_NAMES, lerp, load_gripper
 )
 from husky_assembly_teleop.optitrack.NatNetClient import NatNetClient
 from husky_assembly_teleop.utils import (
@@ -57,16 +57,23 @@ EXISTING_ELEMENT_COLOR = pp.RED
 CURRENT_ELEMENT_COLOR = pp.BLUE
 DEFAULT_BAR_POS = pp.Point(0.8, 0, 1.3)
 
-CLIENT_IP = '192.168.0.21' # Set to your own IP
+CLIENT_IP = '192.168.0.25' # Set to your own IP
 MOCAP_IP = '192.168.0.117' # set to the mocap PC's IP, get this from Motive Settings>Streaming pane->Local interface
+
+# Where the 'collect cameras data' button drops its JSON+CSV (gdrive folder also
+# holding import_mocap_cameras_rhino.py).
+MOCAP_CAMERA_EXPORT_DIR = (
+    "/home/su/Insync/yijiang94817@gmail.com/Google Drive - Shared with me/"
+    "2025-03 Husky Assembly/data_experiment/visualise_mocap_camera"
+)
 
 # Folder under DATA_DIRECTORY/husky_assembly_design_study/<...>/RobotCellStates/
 # from which CALIBRATION-mode state + trajectory loaders pull files.
 CALIBRATION_STATE_SET = '260108_extrinsic_calib_trajs'
 
 class HuskyMonitor(Node):
-    USE_MOCAP = 0
-    FAKE_HARDWARE = 1
+    USE_MOCAP = 1
+    FAKE_HARDWARE = 0
 
     # When USE_MOCAP=1, by default the husky base in PyBullet tracks mocap.
     # Set USE_CELL_STATE_BASE_POSE=1 to override that and pin the base to
@@ -75,13 +82,13 @@ class HuskyMonitor(Node):
     # end-effector tracking but the husky physically far from the assembly
     # scaffolding (e.g., at the lab desk during dual-arm accuracy tests).
     USE_CELL_STATE_BASE_POSE = 0
-    USE_DPG_UI = 0   # 0 = legacy PyBullet debug GUI; 1 = Dear PyGui control panel
+    USE_DPG_UI = 1   # 0 = legacy PyBullet debug GUI; 1 = Dear PyGui control panel
     UI_FONT_SIZE = 20  # DPG control-panel font size in px
 
-    CALIBRATION = 0
+    CALIBRATION = 1
 
-    BAR_ACTION_LIVE_REPLAN_EXE = 1
-    BAR_ACTION_MOCAP_ACCURACY_TEST = 1
+    BAR_ACTION_LIVE_REPLAN_EXE = 0
+    BAR_ACTION_MOCAP_ACCURACY_TEST = 0
     DUAL_ARM_EE_CONSTR_ACCURACY_MOCAP_TEST = 0
 
     # Mocap (y-up) -> z-up axis convention. See utils.mocap_pos_y_up_to_z_up.
@@ -97,7 +104,7 @@ class HuskyMonitor(Node):
     # (target_wrench publishers, start_force_mode / zero_ftsensor / switch_controller
     # service clients). Off by default so we don't block startup waiting on
     # services that aren't running on most rigs.
-    CONNECT_COMPLIANT_CONTROLLER = 1
+    CONNECT_COMPLIANT_CONTROLLER = 0
 
     # Default ON: route every free-planner collision check through cfab's
     # PyBulletCheckCollision (CC.1..CC.5, including attached_rb<->world_rb)
@@ -252,7 +259,7 @@ class HuskyMonitor(Node):
         self.grasp_distance = 0.0 # fixed for now
         self.goal_element_axis = 0
 
-        self.trajectory_time_max = 20 if self.CALIBRATION else 30
+        self.trajectory_time_max = 90 # 20 if self.CALIBRATION else 30
         self.trajectory_time = self.trajectory_time_max
 
         # list of conf, velocity, total time, attachment other than the ee
@@ -515,6 +522,37 @@ class HuskyMonitor(Node):
     def save_punch_validation_data(self):
         """Save all accumulated punch validation results to JSON."""
         world.save_punch_validation_data(self, date_folder=CALIBRATION_DATE)
+
+    def collect_mocap_camera_data(self):
+        """Snapshot mocap camera poses (mocap-origin frame), convert to the Rhino
+        z-up frame, and save JSON+CSV into the gdrive visualise_mocap_camera folder."""
+        import json, csv
+        from datetime import datetime
+        inventory = self.get_mocap_camera_inventory(refresh=True)
+        if not inventory or not inventory.get('cameras'):
+            self.get_logger().warn('No mocap cameras found (is mocap connected?)')
+            return
+        conv = self.MOCAP_AXIS_CONVENTION  # 'rhino' by default
+        cameras = [{
+            'name': c['name'],
+            'position': mocap_pos_y_up_to_z_up(c['position'], conv),
+            'orientation': mocap_quat_y_up_to_z_up(c['orientation'], conv),
+        } for c in inventory['cameras']]
+        os.makedirs(MOCAP_CAMERA_EXPORT_DIR, exist_ok=True)
+        stem = 'mocap_cameras_' + datetime.now().strftime('%Y%m%d_%H%M%S')
+        json_path = os.path.join(MOCAP_CAMERA_EXPORT_DIR, stem + '.json')
+        csv_path = os.path.join(MOCAP_CAMERA_EXPORT_DIR, stem + '.csv')
+        with open(json_path, 'w') as f:
+            json.dump({'frame': 'mocap_origin', 'axis_convention': conv,
+                       'position_units': 'meters', 'orientation': 'quaternion_xyzw',
+                       'camera_count': len(cameras), 'cameras': cameras}, f, indent=2)
+        with open(csv_path, 'w', newline='') as f:
+            w = csv.writer(f)
+            w.writerow(['name', 'x', 'y', 'z', 'qx', 'qy', 'qz', 'qw'])
+            for c in cameras:
+                w.writerow([c['name'], *c['position'], *c['orientation']])
+        self.get_logger().info(
+            f'Saved {len(cameras)} mocap cameras to {json_path}')
 
     def record_raw_mocap_take(self):
         if not self.USE_MOCAP:
@@ -3800,7 +3838,10 @@ class HuskyMonitor(Node):
             # self.buttons.append(Button('Sample calib path', self.sample_calib_traj))
             # self.buttons.append(Button('Execute transit to calib traj', self.execute_free_trajectory))
             self.buttons.append(Button('Execute calib traj', self.execute_calib_traj))
+            self.buttons.append(Button('Record current calib conf',
+                                       lambda: world.calibrate_button(self, self.active_calib_tool_name)))
             self.buttons.append(Button('Export calib data to json', self.record_calibration_data))
+            self.buttons.append(Button('collect cameras data', self.collect_mocap_camera_data))
 
 
         if self.PUNCH_CALIB_VALIDATION:
@@ -3854,7 +3895,6 @@ class HuskyMonitor(Node):
 
 
         self.dump_sep_sliders.append(Slider("----------DEBUG utils", lambda : None))
-        # self.buttons.append(Button('Record current calib conf', lambda: world.calibrate_button(self, self.active_calib_tool_name)))
         self.buttons.append(Button('Sample Random Goal Conf', self.sample_random_goal_conf))
         self.buttons.append(Button('Remove all drawing', lambda : pp.remove_all_debug()))
         # Button to load RobotCellState from file and update arm goal configuration
