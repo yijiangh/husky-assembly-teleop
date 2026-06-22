@@ -105,6 +105,11 @@ def extract_base_poses(data: dict, source: str) -> List[BasePose]:
     if not takes:
         raise ValueError(f'No takes found in {source}')
 
+    # Sort by capture timestamp so take numbering is a stable, append-only property
+    # of the data (a later capture gets the next number; earlier takes keep theirs)
+    # rather than depending on raw JSON array order.
+    takes = sorted(takes, key=lambda t: str(t.get('timestamp', '')))
+
     poses = []
     for i, take in enumerate(takes):
         if 'base_pose' not in take:

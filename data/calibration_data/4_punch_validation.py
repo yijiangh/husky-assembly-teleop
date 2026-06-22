@@ -222,6 +222,8 @@ def plot_results(takes, pos_analysis, ori_analysis, base_analysis, output_dir, a
     )
 
     ax = axes1[0, 0]
+    # Take numbers 1..N; order is timestamp-stable (see analyze_take_group), so a
+    # given take keeps its number even when new takes are added later.
     take_indices = np.arange(1, n_takes + 1)
     colors = plt.cm.coolwarm(dist_mm / max(dist_mm.max(), 1e-6))
     ax.bar(take_indices, dist_mm, color=colors, edgecolor='black', linewidth=0.5)
@@ -463,6 +465,11 @@ def print_summary(takes, pos_analysis, ori_analysis, base_analysis, arm_label=No
 
 def analyze_take_group(takes, output_dir, arm_label=None):
     """Run the full analysis for a single arm group."""
+    # Sort by capture timestamp so each take's number is a STABLE property of its
+    # data: numbering is append-only (a newly captured, later take gets the next
+    # index; existing takes keep their number) instead of depending on file order.
+    takes = sorted(takes, key=lambda t: t.get('timestamp', ''))
+
     if len(takes) < 2:
         print(f'Only {len(takes)} take(s) found for {arm_label or "selected"} group. Need at least 2.')
         if len(takes) == 1:
