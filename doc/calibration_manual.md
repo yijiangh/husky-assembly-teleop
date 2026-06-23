@@ -22,16 +22,16 @@ This manual walks you through the complete extrinsic calibration procedure for t
 
 ## 1. OptiTrack Motion Capture Setup
 
-### 1.1 Power On & Start Motif
+### 1.1 Power On & Start Motive
 
 1. Turn on the PoE (Power over Ethernet) switch that powers the OptiTrack cameras. Wait for all camera indicator LEDs to turn on.
 2. On the OptiTrack PC, boot into **Ubuntu**.
-3. Launch the **Motif** software.
+3. Launch the **Motive** software.
 
-> For detailed instructions on starting up the OptiTrack system and using Motif, refer to the [OptiTrack Motif Documentation](https://docs.optitrack.com/motive).
+> For detailed instructions on starting up the OptiTrack system and using Motive, refer to the [OptiTrack Motive Documentation](https://docs.optitrack.com/motive).
 
 <!-- SCREENSHOT: OptiTrack cameras powered on with LEDs visible -->
-<!-- SCREENSHOT: Motif software main screen after startup -->
+<!-- SCREENSHOT: Motive software main screen after startup -->
 
 ### 1.2 Calibrate the Camera System
 
@@ -39,24 +39,24 @@ If the cameras have been moved or it has been more than a week since the last ca
 
 > Follow the official [OptiTrack Calibration Guide](https://docs.optitrack.com/motive/calibration) for the wanding and ground plane procedure.
 
-<!-- SCREENSHOT: Motif calibration wanding screen -->
-<!-- SCREENSHOT: Motif calibration result showing quality metrics -->
+<!-- SCREENSHOT: Motive calibration wanding screen -->
+<!-- SCREENSHOT: Motive calibration result showing quality metrics -->
 
 ### 1.3 Create / Verify Rigid Bodies
 
 If you need to create a new rigid body (e.g., for the robot base or flange tracker):
 
-1. In Motif, select the markers that form the rigid body.
+1. In Motive, select the markers that form the rigid body.
 2. Right-click and choose **Create Rigid Body**.
-3. Note the **Rigid Body ID** assigned by Motif -- you will need this for the PyBullet configuration.
-4. In the code, the rigid body IDs are configured in two places in [`husky_world.py`](husky_assembly_teleop/husky_world.py):
-   - **Robot base tracker**: the `mocap_id` parameter in the `create_husky_with_end_effectors` call (e.g., `mocap_id=4617` at [line 97](husky_assembly_teleop/husky_world.py#L97)).
-   - **Flange/tool tracker**: the second argument to `TrackedObject` (e.g., `4616` at [line 163](husky_assembly_teleop/husky_world.py#L163)).
+3. Note the **Rigid Body ID** assigned by Motive -- you will need this for the PyBullet configuration.
+4. In the code, the rigid body IDs are configured in two places in [`husky_world.py`](../husky_assembly_teleop/husky_world.py):
+   - **Robot base tracker**: the `mocap_id` in `ROBOT_CONFIGS`, keyed by ROS domain — Alice `1031` / Belle `1021` / Cindy `1011` at [L182/L189/L196](../husky_assembly_teleop/husky_world.py#L182).
+   - **Flange/calib-tool tracker**: the ID argument to `TrackedObject` (e.g., `1013` left / `1012` right) at [L327](../husky_assembly_teleop/husky_world.py#L327).
 
-   Make sure the IDs you see in Motif match the IDs in these two locations.
+   Make sure the IDs you see in Motive match the IDs in these two locations (and the Motive ID column in §2.4).
 
-<!-- SCREENSHOT: Motif rigid body creation dialog -->
-<!-- SCREENSHOT: Motif rigid body properties showing the ID number -->
+<!-- SCREENSHOT: Motive rigid body creation dialog -->
+<!-- SCREENSHOT: Motive rigid body properties showing the ID number -->
 
 ### 1.4 Network Connection (MoCap to Workstation)
 
@@ -66,14 +66,17 @@ The workstation must be on the same network as the OptiTrack PC to receive strea
 
 | Device | IP Address |
 |--------|-----------|
-| Workstation (your PC) | `192.168.0.7` |
+| Workstation (your PC) | your own IP (e.g. `192.168.0.25`) |
 | OptiTrack PC | `192.168.0.117` |
 
-These are configured in the code at [`husky_monitor.py:45-46`](husky_assembly_teleop/husky_monitor.py#L45-L46):
+These are configured in the code at [`husky_monitor.py:60-61`](../husky_assembly_teleop/husky_monitor.py#L60-L61):
 ```python
-CLIENT_IP = '192.168.0.7'   # Your workstation IP
-MOCAP_IP = '192.168.0.117'  # OptiTrack PC IP
+CLIENT_IP = '192.168.0.25'
+MOCAP_IP = '192.168.0.117'
 ```
+
+> **Tip**: find your workstation IP with `ip -c address` in a terminal, then set
+> `CLIENT_IP` to it.
 
 **To verify the network connection:**
 
@@ -82,15 +85,15 @@ MOCAP_IP = '192.168.0.117'  # OptiTrack PC IP
    ```bash
    ping 192.168.0.117
    ```
-3. In Motif, go to **Settings > Streaming** and make sure:
-   - Streaming is **enabled**
-   - The **Local Interface** matches the OptiTrack PC IP (`192.168.0.117`)
-   - **NatNet** streaming is active
+3. In Motive (3.0.3), go to **Edit > Settings > Streaming** and make sure:
+   - **NatNet** streaming is **enabled**
+   - **Local Interface** = `192.168.0.117` (if it does not appear in the list, **disconnect from the internet** and re-open the list)
+   - **Transmission Type** = **Unicast**
 
-<!-- SCREENSHOT: Motif streaming settings panel showing enabled streaming and correct IP -->
+<!-- SCREENSHOT: Motive streaming settings panel showing enabled streaming and correct IP -->
 <!-- SCREENSHOT: Terminal showing successful ping to 192.168.0.117 -->
 
-> **Tip**: If the mocap connection fails in the monitor, you will see a red log message. Check the Motif streaming settings and verify both IPs are correct.
+> **Tip**: If the mocap connection fails in the monitor, you will see a red log message. Check the Motive streaming settings and verify both IPs are correct.
 
 ---
 
@@ -126,6 +129,10 @@ This section covers starting up the Husky robot and the UR5e arm ROS2 drivers. M
    ssh administrator@192.168.0.115
    # Password: 12345678
 
+   # For Belle (single-arm, serial 0805):
+   ssh administrator@192.168.0.114
+   # Password: clearpath
+
    # For Alice (single-arm, serial 0804):
    ssh administrator@192.168.0.113
    # Password: clearpath
@@ -134,16 +141,24 @@ This section covers starting up the Husky robot and the UR5e arm ROS2 drivers. M
 2. Launch the appropriate ROS2 driver:
    ```bash
    # For Cindy (dual arm):
-   ros2 launch crl-husky crl_dual_ur5e.launch.py namespace:='/a200_0806'
+   ros2 launch crl_husky crl_dual_ur5e.launch.py namespace:='/a200_0806'
+
+   # For Belle (single arm):
+   ros2 launch crl_husky crl_single_ur5e.launch.py namespace:='/a200_0805'
 
    # For Alice (single arm):
-   ros2 launch crl-husky crl_single_ur5e.launch.py namespace:='/a200_0804'
-
-   # For Alice with gripper:
-   ros2 launch crl-husky crl_single_ur5e_gripper.launch.py namespace:='/a200_0804'
+   ros2 launch crl_husky crl_single_ur5e.launch.py namespace:='/a200_0804'
+   
+   # Gripper (`gripper:=` arg, must pass at least `none`):
+   gripper:=robotiq_2F_85
+   gripper:=none
+   gripper:=scaffolding_v1
+   gripper:=scaffolding_v3
    ```
 
-   > Add `use_fake_hardware:=true` to use a simulated UR5e instead of the real robot (for testing).
+   > To use a **virtual robot** (no real arm, for testing), do NOT change the launch
+   > command. Instead set `FAKE_HARDWARE=1` on the workstation in
+   > [`husky_monitor.py:75`](../husky_assembly_teleop/husky_monitor.py#L75).
 
 ### 2.4 Verify ROS2 Connection
 
@@ -161,10 +176,16 @@ Verify the connection:
 ros2 topic list
 
 # Check if joint states are streaming (should see data at ~500Hz)
-ros2 topic echo /a200_0806/ur5e/joint_states
+   # single arm:
+   os2 topic echo /a200_0806/ur5e/joint_states
+   # dual arm:
+   ros2 topic echo /a200_0806/left_ur5e/joint_states
 
 # Check the frequency
-ros2 topic hz /a200_0806/ur5e/joint_states
+   # single arm:
+   ros2 topic hz /a200_0806/ur5e/joint_states
+   # dual arm:
+   ros2 topic hz /a200_0806/left_ur5e/joint_states
 
 # Visualize the full node graph
 rqt
@@ -175,11 +196,16 @@ rqt
 
 **Husky Reference Table:**
 
-| Name | Serial | IP | ROS Domain |
-|------|--------|-----|-----------|
-| Alice | 0804 | 192.168.0.113 | 84 |
-| Belle | 0805 | 192.168.0.114 | 85 |
-| Cindy | 0806 | 192.168.0.115 | 86 |
+| Name | Serial | IP | ROS Domain | Motive ID |
+|------|--------|-----|-----------|-----------|
+| Alice | 0804 | 192.168.0.113 | 84 | 1031 |
+| Belle | 0805 | 192.168.0.114 | 85 | 1021 |
+| Cindy | 0806 | 192.168.0.115 | 86 | 1011 (right: 1012 / left: 1013) |
+
+> The Motive ID is the rigid-body **Streaming ID** set in Motive (see §1.3). These
+> must match the `mocap_id` values in [`husky_world.py`](../husky_assembly_teleop/husky_world.py#L182)
+> (base trackers, L182/L189/L196) and the calib-tool `TrackedObject` IDs at
+> [L327](../husky_assembly_teleop/husky_world.py#L327) (`1013` left / `1012` right).
 
 > **Warning**: The E-Stop on the Husky does NOT stop the UR5e! Always use the **remote E-Stop** when operating the robot arms.
 
@@ -221,6 +247,16 @@ If the ROS2 connection is working correctly, the **grey robot model** in PyBulle
 ## 4. Calibration Data Collection
 
 This is the main calibration data collection procedure. You will collect data for **J0** (shoulder pan joint rotation) and **J1** (shoulder lift joint rotation) batches.
+
+### 4.0 Pre-Calibration Checklist
+
+Before collecting data, verify these settings in the code match your setup:
+
+| What | Where | Note |
+|------|-------|------|
+| `CALIBRATION_DATE` | [`__init__.py:57`](../husky_assembly_teleop/__init__.py#L57) & [`config_loader.py:21`](../data/calibration_data/config_loader.py#L21) | both must point to today's date folder |
+| `mocap_id` (Streaming IDs) | [`husky_world.py:182`](../husky_assembly_teleop/husky_world.py#L182) (base) & [L327](../husky_assembly_teleop/husky_world.py#L327) (calib tool) | match Motive **properties > (select rigid body) > Streaming ID** |
+| `class HuskyMonitor` flags (`CALIBRATION=1`, etc.) | [`husky_monitor.py:73`](../husky_assembly_teleop/husky_monitor.py#L73) | calibration mode enabled |
 
 ### 4.1 Understanding the GUI Controls
 
@@ -508,6 +544,9 @@ DEFAULT_DATE_FOLDER = 'YYYYMMDD'   # Change to your date folder
 ### 7.3 Run the Pipeline
 
 ```bash
+cd ~/ros2_ws
+source venv/bin/activate
+source install/setup.bash
 cd ~/ros2_ws/src/husky-assembly-teleop/data/calibration_data/
 python run_calibration_pipeline.py
 ```
@@ -581,7 +620,7 @@ The output includes:
 
 ### MoCap not connecting
 - Verify network connectivity: `ping 192.168.0.117`
-- Check Motif streaming settings (Section 1.4)
+- Check Motive streaming settings (Section 1.4)
 - Verify `CLIENT_IP` and `MOCAP_IP` in `husky_monitor.py` match your setup
 
 ### E-stop triggers during trajectory
