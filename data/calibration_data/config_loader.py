@@ -18,11 +18,7 @@ import yaml
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 # Default date folder - change this to switch between calibration datasets
-# LEARNING NOTE (June change): bumped to the 2026-06-22 capture. load_config()
-# below falls back to this when no date_folder argument is passed, so this single
-# constant decides which dataset every "run with defaults" uses. (The old
-# alternative-date lines were deleted; git history keeps them if needed.)
-DEFAULT_DATE_FOLDER = '20260622'
+DEFAULT_DATE_FOLDER = '20260625'
 
 
 

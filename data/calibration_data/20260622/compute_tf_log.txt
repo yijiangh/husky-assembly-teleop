@@ -1,16 +1,16 @@
-2026-06-22 18:04:20,935 - [32mINFO[0m - [32m============================================================[0m
-2026-06-22 18:04:20,935 - [32mINFO[0m - [32mComputing calibrated transformation[0m
-2026-06-22 18:04:20,936 - [32mINFO[0m - [32m============================================================[0m
-2026-06-22 18:04:20,936 - [32mINFO[0m - [32mLoaded calibration data from: /home/su/ros2_ws/src/husky-assembly-teleop/data/calibration_data/20260622/base_frame_calibration.json[0m
-2026-06-22 18:04:20,936 - [32mINFO[0m - [32mbase_mocap_from_left_ur_arm_base_link_inertia: (array([-0.05664761,  0.12984377,  0.02670898]), array([-0.31874295,  0.20929306,  0.77429546,  0.50504049]))[0m
-2026-06-22 18:04:20,944 - [32mINFO[0m - [32mLoading robot from: /home/su/ros2_ws/src/husky-assembly-teleop/data/calibration_data/../husky_urdf/mt_husky_dual_ur5_e_moveit_config/urdf/husky_dual_ur5_e_no_base_joint_All_Calibrated.urdf[0m
-2026-06-22 18:04:21,118 - [32mINFO[0m - [32marm_base_link_from_base_footprint (from URDF): ((0.24118000268936157, 0.12250000238418579, -0.45177051424980164), (0.27059805393218994, -0.27059805393218994, -0.6532814502716064, 0.6532815098762512))[0m
-2026-06-22 18:04:21,118 - [32mINFO[0m - [32mbase_mocap_from_base_footprint: ((-0.11044977605342865, -0.05485802888870239, -0.46345552802085876), (0.001229683868587017, 0.0013583386316895485, 0.20551635324954987, 0.9786520004272461))[0m
-2026-06-22 18:04:21,118 - [32mINFO[0m - [32mURDF arm_base_link pose: ((-0.05664762854576111, 0.12984375655651093, 0.02670898847281933), (-0.31874293088912964, 0.20929305255413055, 0.7742956280708313, 0.5050403475761414))[0m
-2026-06-22 18:04:21,118 - [32mINFO[0m - [32mCALIB arm_base_link pose: (array([-0.05664761,  0.12984377,  0.02670898]), array([-0.31874295,  0.20929306,  0.77429546,  0.50504049]))[0m
-2026-06-22 18:04:21,118 - [32mINFO[0m - [32mPosition difference (URDF - CALIB): -0.000, -0.000, 0.000 mm[0m
-2026-06-22 18:04:21,119 - [32mINFO[0m - [32mPosition difference magnitude: 0.000 mm[0m
-2026-06-22 18:04:21,119 - [32mINFO[0m - [32mCalibrated transformation saved to: /home/su/ros2_ws/src/husky-assembly-teleop/data/calibration_data/20260622/calibrated_transformation_0806_rhino.json[0m
-2026-06-22 18:04:21,119 - [32mINFO[0m - [32m============================================================[0m
-2026-06-22 18:04:21,119 - [32mINFO[0m - [32mDone![0m
-2026-06-22 18:04:21,119 - [32mINFO[0m - [32m============================================================[0m
+2026-06-26 14:00:40,468 - [32mINFO[0m - [32m============================================================[0m
+2026-06-26 14:00:40,469 - [32mINFO[0m - [32mComputing calibrated transformation[0m
+2026-06-26 14:00:40,469 - [32mINFO[0m - [32m============================================================[0m
+2026-06-26 14:00:40,469 - [32mINFO[0m - [32mLoaded calibration data from: /home/su/ros2_ws/src/husky-assembly-teleop/data/calibration_data/20260622/base_frame_calibration.json[0m
+2026-06-26 14:00:40,469 - [32mINFO[0m - [32mbase_mocap_from_left_ur_arm_base_link_inertia: (array([-0.05664761,  0.12984377,  0.02670898]), array([-0.31874295,  0.20929306,  0.77429546,  0.50504049]))[0m
+2026-06-26 14:00:40,475 - [32mINFO[0m - [32mLoading robot from: /home/su/ros2_ws/src/husky-assembly-teleop/data/calibration_data/../husky_urdf/mt_husky_dual_ur5_e_moveit_config/urdf/husky_dual_ur5_e_no_base_joint_All_Calibrated.urdf[0m
+2026-06-26 14:00:40,637 - [32mINFO[0m - [32marm_base_link_from_base_footprint (from URDF): ((0.24118000268936157, 0.12250000238418579, -0.45177051424980164), (0.27059805393218994, -0.27059805393218994, -0.6532814502716064, 0.6532815098762512))[0m
+2026-06-26 14:00:40,637 - [32mINFO[0m - [32mbase_mocap_from_base_footprint: ((-0.11044977605342865, -0.05485802888870239, -0.46345552802085876), (0.001229683868587017, 0.0013583386316895485, 0.20551635324954987, 0.9786520004272461))[0m
+2026-06-26 14:00:40,637 - [32mINFO[0m - [32mURDF arm_base_link pose: ((-0.05664762854576111, 0.12984375655651093, 0.02670898847281933), (-0.31874293088912964, 0.20929305255413055, 0.7742956280708313, 0.5050403475761414))[0m
+2026-06-26 14:00:40,637 - [32mINFO[0m - [32mCALIB arm_base_link pose: (array([-0.05664761,  0.12984377,  0.02670898]), array([-0.31874295,  0.20929306,  0.77429546,  0.50504049]))[0m
+2026-06-26 14:00:40,638 - [32mINFO[0m - [32mPosition difference (URDF - CALIB): -0.000, -0.000, 0.000 mm[0m
+2026-06-26 14:00:40,638 - [32mINFO[0m - [32mPosition difference magnitude: 0.000 mm[0m
+2026-06-26 14:00:40,638 - [32mINFO[0m - [32mCalibrated transformation saved to: /home/su/ros2_ws/src/husky-assembly-teleop/data/calibration_data/20260622/calibrated_transformation_0806_rhino.json[0m
+2026-06-26 14:00:40,638 - [32mINFO[0m - [32m============================================================[0m
+2026-06-26 14:00:40,638 - [32mINFO[0m - [32mDone![0m
+2026-06-26 14:00:40,638 - [32mINFO[0m - [32m============================================================[0m

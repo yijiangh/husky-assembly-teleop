@@ -29,16 +29,7 @@ def traj_label(file_name, fallback_idx=0):
     """Build a 'J<x>_T<y>' label from a calibration filename.
 
     e.g. "..._0806_J0_traj3_JointTrajectory.json" -> "J0_T3".
-
-    Learning notes:
-    - The parentheses in r'J(\d+)_traj(\d+)' are CAPTURE GROUPS: each (\d+)
-      remembers the digits it matched so we can reuse them.
-    - m.group(1) is the first group (the J number, e.g. "0"),
-      m.group(2) is the second group (the traj number, e.g. "3").
-      (m.group(0) would be the whole match "J0_traj3" — we don't want that here
-      because we're renaming "traj" to "T".)
-    - We then rebuild the string in our own format: f'J{...}_T{...}'.
-    - `fallback_idx` is used when the filename has no such token (m is None).
+    `fallback_idx` is used when the filename has no such token (m is None).
     """
     m = re.search(r'J(\d+)_traj(\d+)', file_name)
     return f'J{m.group(1)}_T{m.group(2)}' if m else f'T{fallback_idx}'
