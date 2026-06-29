@@ -80,6 +80,11 @@ class UIBackend:
              on_change: Optional[Callable[..., None]] = None) -> None:
         raise NotImplementedError
 
+    def clear(self) -> None:
+        """Remove all widgets created so far so the UI can be rebuilt without
+        duplicates (used by HuskyMonitor.reset_ui)."""
+        raise NotImplementedError
+
     def step(self) -> bool:
         raise NotImplementedError
 
@@ -173,7 +178,10 @@ class PyBulletBackend(UIBackend):
             "live_plot widget not supported by PyBulletBackend; set USE_DPG_UI=1")
 
     def add_separator(self, label):
-        dbg = p.addUserDebugParameter(label, 0.0, 1.0, 0.0)
+        # PyBullet draws no divider line, so wrap the label in dashes to mark it
+        # as a section header (e.g. "---CONTROLLERS---"). DPG keeps the plain label
+        # because it draws an actual separator line above the text.
+        dbg = p.addUserDebugParameter(f"---{label}---", 0.0, 1.0, 0.0)
         h = self._new_handle()
         self._handles[h] = {"kind": "separator", "dbg": dbg}
         return h
@@ -209,6 +217,10 @@ class PyBulletBackend(UIBackend):
                 cb()
             else:
                 cb(new_val)
+
+    def clear(self) -> None:
+        p.removeAllUserParameters()
+        self._handles.clear()
 
     def step(self) -> bool:
         return True
@@ -255,7 +267,10 @@ class DearPyGuiBackend(UIBackend):
 
         dpg.create_context()
         dpg.create_viewport(title=window_title, width=width, height=height)
+        # Global default font (size = font_size = UI_FONT_SIZE = 16) for all widgets.
         self._bind_default_font(font_size)
+        # Separators render larger (20); font built here, bound per-item in add_separator.
+        self._build_sep_font()
         dpg.setup_dearpygui()
 
         with dpg.window(tag="root", label=window_title,
@@ -279,6 +294,23 @@ class DearPyGuiBackend(UIBackend):
     def _bind_default_font(self, font_size: int) -> None:
         bind_default_font(self.dpg, font_size)
 
+    def _build_sep_font(self) -> None:
+        """Build a larger font (20 pt) for separator headers; bound per-item in
+        add_separator via dpg.bind_item_font. self._font_sep is None if no TTF
+        is available (then separators just use the default 16 pt)."""
+        dpg = self.dpg
+        self._font_sep = None  # default: no special font (separators stay 16 pt)
+        # first font file that exists on this machine, or None if none do
+        path = next((p for p in _DEFAULT_FONT_PATHS if os.path.exists(p)), None)
+        if not path:
+            return
+        try:
+            # DPG requires fonts to be created inside a font_registry context
+            with dpg.font_registry():
+                self._font_sep = dpg.add_font(path, 20)  # separator header size
+        except Exception as e:
+            logger.debug(f"separator font load failed {path}: {e}")
+
     @property
     def _current_parent(self):
         return self._parent_stack[-1]
@@ -293,18 +325,30 @@ class DearPyGuiBackend(UIBackend):
 
     def add_slider_float(self, label, vmin, vmax, default, on_change):
         dpg = self.dpg
-        tag = dpg.add_slider_float(label=label, min_value=vmin, max_value=vmax,
+        # Label ABOVE the slider: DPG draws the slider's own label inline on the
+        # right, so emit the name as a text line first and give the slider an
+        # empty label + full width (width=-1).
+        # tag = dpg.add_slider_float(label=label, min_value=vmin, max_value=vmax,
+        #                            default_value=default, parent=self._current_parent,
+        #                            callback=lambda s, app_data, u: on_change(app_data))
+        dpg.add_text(label, parent=self._current_parent)
+        tag = dpg.add_slider_float(label="", min_value=vmin, max_value=vmax,
                                    default_value=default, parent=self._current_parent,
-                                   callback=lambda s, app_data, u: on_change(app_data))
+                                   width=-1, callback=lambda s, app_data, u: on_change(app_data))
         h = self._new_handle()
         self._handles[h] = {"kind": "slider_float", "tag": tag}
         return h
 
     def add_slider_int(self, label, vmin, vmax, default, on_change):
         dpg = self.dpg
-        tag = dpg.add_slider_int(label=label, min_value=int(vmin), max_value=int(vmax),
+        # Label ABOVE the slider (see add_slider_float).
+        # tag = dpg.add_slider_int(label=label, min_value=int(vmin), max_value=int(vmax),
+        #                          default_value=int(default), parent=self._current_parent,
+        #                          callback=lambda s, app_data, u: on_change(int(app_data)))
+        dpg.add_text(label, parent=self._current_parent)
+        tag = dpg.add_slider_int(label="", min_value=int(vmin), max_value=int(vmax),
                                  default_value=int(default), parent=self._current_parent,
-                                 callback=lambda s, app_data, u: on_change(int(app_data)))
+                                 width=-1, callback=lambda s, app_data, u: on_change(int(app_data)))
         h = self._new_handle()
         self._handles[h] = {"kind": "slider_int", "tag": tag}
         return h
@@ -320,9 +364,14 @@ class DearPyGuiBackend(UIBackend):
             on_change(vals)
 
         for lbl, vmn, vmx, dv in zip(labels, vmins, vmaxs, defaults):
-            t = dpg.add_slider_float(label=lbl, min_value=vmn, max_value=vmx,
+            # Label ABOVE each sub-slider (see add_slider_float).
+            # t = dpg.add_slider_float(label=lbl, min_value=vmn, max_value=vmx,
+            #                          default_value=dv, parent=self._current_parent,
+            #                          callback=_fan_out)
+            dpg.add_text(lbl, parent=self._current_parent)
+            t = dpg.add_slider_float(label="", min_value=vmn, max_value=vmx,
                                      default_value=dv, parent=self._current_parent,
-                                     callback=_fan_out)
+                                     width=-1, callback=_fan_out)
             tags.append(t)
         h = self._new_handle()
         self._handles[h] = {"kind": "slider_group", "tags": tags}
@@ -414,6 +463,9 @@ class DearPyGuiBackend(UIBackend):
         dpg.add_separator(parent=self._current_parent)
         text_tag = dpg.add_text(label, parent=self._current_parent,
                                 color=(180, 180, 220, 255))
+        # Make the header text larger (20 pt) than the 16 pt default widgets.
+        if self._font_sep:
+            dpg.bind_item_font(text_tag, self._font_sep)
         h = self._new_handle()
         self._handles[h] = {"kind": "separator", "tag": text_tag}
         return h
@@ -436,6 +488,15 @@ class DearPyGuiBackend(UIBackend):
     def poll(self, handle, kind, on_change=None):
         # DPG fires callbacks directly; nothing to poll.
         return
+
+    def clear(self) -> None:
+        # Delete only the root window's child widgets so a rebuild doesn't stack a
+        # second copy. The "root" window itself, font registries, and the separator
+        # font survive (they're not children of the window).
+        self.dpg.delete_item("root", children_only=True)
+        self._parent_stack = ["root"]
+        self._handles.clear()
+        self._live_plots.clear()
 
     def step(self) -> bool:
         dpg = self.dpg
