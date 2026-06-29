@@ -69,7 +69,11 @@ MOCAP_CAMERA_EXPORT_DIR = (
 
 # Folder under DATA_DIRECTORY/husky_assembly_design_study/<...>/RobotCellStates/
 # from which CALIBRATION-mode state + trajectory loaders pull files.
-CALIBRATION_STATE_SET = '260108_extrinsic_calib_trajs'
+# Keyed by selected_arm_index (0=left, 1=right); see _calibration_state_dir().
+CALIBRATION_STATE_SETS = {
+    0: '260108_extrinsic_calib_trajs',              # left arm & single arm
+    1: '260225_extrinsic_calib_trajs_Cindy_Right',  # right arm for Cindy
+}
 
 class HuskyMonitor(Node):
     USE_MOCAP = 1
@@ -440,6 +444,13 @@ class HuskyMonitor(Node):
         if new_index != self.selected_arm_index:
             self.selected_arm_index = new_index
             self._set_active_punch_tool_offset(new_index)
+            if self.CALIBRATION:
+                # Calib reference set is per-arm (_calibration_state_dir); reload
+                # so the rebuilt sliders show the new arm's files.
+                self.available_calibration_states = self._load_available_calibration_states()
+                self.available_calibration_trajectories = self._load_available_calibration_trajectories()
+                self.selected_calibration_state_index = 0
+                self.selected_calibration_trajectory_index = 0
             self.reset_ui(target_conf=self.goal_arm_pose) #[self.selected_arm_index])
 
     def update_trajectory_time(self, time):
@@ -3340,9 +3351,11 @@ class HuskyMonitor(Node):
 
     # --- CALIBRATION state/trajectory loaders (CALIBRATION_STATE_SET) ---
     def _calibration_state_dir(self):
+        state_set = CALIBRATION_STATE_SETS.get(
+            self.selected_arm_index, CALIBRATION_STATE_SETS[0])
         return os.path.join(
             DATA_DIRECTORY, 'husky_assembly_design_study',
-            CALIBRATION_STATE_SET, 'RobotCellStates',
+            state_set, 'RobotCellStates',
         )
 
     def _load_available_calibration_states(self):
@@ -3448,6 +3461,17 @@ class HuskyMonitor(Node):
             right_names = HUSKY_DUAL_UR5e_JOINT_NAMES[1]
             left_idx = [joint_names.index(n) for n in left_names if n in joint_names]
             right_idx = [joint_names.index(n) for n in right_names if n in joint_names]
+            # TODO(arm-aware load): these calib reference files are SINGLE-arm
+            # (a right-arm file has only right_ur_arm_* joints, so right_idx=6 /
+            # left_idx=0, and vice-versa). The block below still fills BOTH arm
+            # slots, so the absent arm gets a list of empty arrays -> this warning
+            # fires and the wrong (absent) ghost arm shows in the Traj viz preview.
+            # Fix: build a trajectory only for the arm with all 6 joints and set
+            # the other arm to None (preview/execute guard on `... [0] is not None`):
+            #   left_traj  = _extract(left_idx)  if len(left_idx)  == 6 else None
+            #   right_traj = _extract(right_idx) if len(right_idx) == 6 else None
+            #   if left_traj is None and right_traj is None: return  # bad file
+            # (paired with the per-arm CALIBRATION_STATE_SETS dir switch.)
             if len(left_idx) != 6 or len(right_idx) != 6:
                 print(f"WARN: expected 6 joints per arm, got left={len(left_idx)} right={len(right_idx)}")
             left_traj, right_traj = [], []

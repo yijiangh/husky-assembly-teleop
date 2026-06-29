@@ -496,7 +496,8 @@ def compute_plane_plane_intersection(plane1_point, plane1_normal, plane2_point, 
     return intersection_line
 
 
-def compute_base_frame(j0_line, j1_line, base_offset, robot_name, arm):
+def compute_base_frame(j0_line, j1_line, base_offset, robot_name, arm,
+                       nominal_j0=None, nominal_j1=None):
     """
     Compute robot base frame from j0 and j1 fitted lines.
 
@@ -505,6 +506,10 @@ def compute_base_frame(j0_line, j1_line, base_offset, robot_name, arm):
         j1_line: Fitted line for j1 (shoulder lift joint)
         base_offset: Offset from j0 joint to base origin
         robot_name: Name of the robot to determine axis mapping
+        nominal_j0, nominal_j1: URDF-nominal j0/j1 axis directions expressed in
+            the base_footprint frame (~= base_mocap, husky upright). Used to
+            disambiguate the arbitrary sign of the fitted lines v0/v1. If None,
+            falls back to "j0 points up" (v0[2] > 0).
 
     Steps:
     1. j0 line direction (v0) corresponds to:
@@ -525,6 +530,34 @@ def compute_base_frame(j0_line, j1_line, base_offset, robot_name, arm):
     p1 = j1_line.point
     v1 = j1_line.direction
     v1 = v1 / np.linalg.norm(v1)  # Normalize
+
+    # ------------------------------------------------------------------
+    # Robust fitted-line SIGN disambiguation (2026-06-26).
+    # A fitted line has no inherent direction, so v0/v1 come back with an
+    # arbitrary sign. The per-arm hardcoded branches below (now commented out)
+    # used to bake a particular sign in.
+    # Fix: flip v0/v1 to agree with the URDF-nominal joint axes expressed in
+    # base_footprint (~= base_mocap, since the husky is upright). A hemisphere
+    # (dot-product sign) test is robust to the residual moderate base yaw.
+    # This supersedes the commented inertia-frame attempt just below, which
+    # compared v0/v1 (base_mocap frame) against inertia-frame axes -> mismatch.
+
+    #   nominal_j0 / nominal_j1: URDF j0/j1 axes in base_footprint frame.
+    #   Fallback (no nominal given): j0 axis points up in base_mocap -> v0[2]>0.
+
+    if nominal_j0 is not None:
+        if np.dot(v0, nominal_j0) < 0:
+            v0 = -v0
+            logger.info('  Sign fix: flipped v0 to match nominal j0 axis')
+    elif v0[2] < 0:
+        v0 = -v0
+        logger.info('  Sign fix: flipped v0 to point +Z (up) in base_mocap')
+
+    if nominal_j1 is not None:
+        if np.dot(v1, nominal_j1) < 0:
+            v1 = -v1
+            logger.info('  Sign fix: flipped v1 to match nominal j1 axis')
+    # ------------------------------------------------------------------
 
     # # Get the expected joint axes from URDF
     # j0_axis_inertia = joint_axes_info['j0_axis_in_inertia_frame']
@@ -604,51 +637,48 @@ def compute_base_frame(j0_line, j1_line, base_offset, robot_name, arm):
         logger.info(f'  Intersection point (closest to p1): {p01 * 1000} mm')
         logger.info(f'  Intersection anchor: {pp_line_point * 1000} mm')
 
-    # Construct base frame axes using hardcoded rules per robot/arm type
-    # Determine robot type and apply appropriate axis mapping
+    # Construct base frame axes.
     is_dual_arm = (robot_name == '0806')
 
     if is_dual_arm:
-        if arm == 'left':
-            # ----------------------------------------------------------------
-            # FIX (2026-06-09): left-arm base came out tilted 90° (robot lying
-            # on the floor in PyBullet). Root cause: y_axis = -v1 below.
-            #
-            # Previous version:
-            #     # Left arm: v0 → +Z, v1 → -Y
-            #     logger.info('  Dual-arm left arm: v0 → +Z, v1 → -Y')
-            #     ...
-            #     y_axis = -v1            # <-- OLD: tilted base_footprint 90°
-            #     x_axis = np.cross(y_axis, z_axis)
-            #     ...
-            #     logger.info('  Frame construction: Z=v0, Y=-v1, X=Y×Z, Z=(recomputed)')
-            #
-            # New: use y_axis = +v1, i.e. the SAME recipe as the right arm.
-            # (NOTE: ±v1 still depends on the fitted-line sign; the robust
-            #  auto-sign disambiguation is a planned follow-up.)
-            # ----------------------------------------------------------------
-            logger.info('  Dual-arm left arm: v0 → +Z, v1 → +Y')
-            z_axis = v0
-            y_axis = v1                  # NEW (was: y_axis = -v1)
-            x_axis = np.cross(y_axis, z_axis)
-            x_axis = x_axis / np.linalg.norm(x_axis)
-            # Recompute z for orthogonality
-            z_axis = np.cross(x_axis, y_axis)
-            z_axis = z_axis / np.linalg.norm(z_axis)
-            logger.info('  Frame construction: Z=v0, Y=v1, X=Y×Z, Z=(recomputed)')
-        elif arm == 'right':
-            # Right arm: v0 → +Z, v1 → +Y
-            logger.info('  Dual-arm right arm: v0 → +Z, v1 → +Y')
-            z_axis = v0
-            y_axis = v1
-            x_axis = np.cross(y_axis, z_axis)
-            x_axis = x_axis / np.linalg.norm(x_axis)
-            # Recompute z for orthogonality
-            z_axis = np.cross(x_axis, y_axis)
-            z_axis = z_axis / np.linalg.norm(z_axis)
-            logger.info('  Frame construction: Z=v0, Y=v1, X=Y×Z, Z=(recomputed)')
-        else:
-            raise ValueError(f'Unknown arm "{arm}" for dual-arm robot. Expected "left" or "right".')
+        # ACTIVE (2026-06-26): arm-independent. The v0/v1 sign disambiguation
+        # above makes the old per-arm branches identical, so they collapse to
+        # this single block. To revert, comment this block and uncomment the
+        # archived block below.
+        logger.info('  Dual-arm (%s): v0 → +Z, v1 → +Y', arm)
+        z_axis = v0
+        y_axis = v1
+        x_axis = np.cross(y_axis, z_axis)
+        x_axis = x_axis / np.linalg.norm(x_axis)
+        # Recompute z for orthogonality
+        z_axis = np.cross(x_axis, y_axis)
+        z_axis = z_axis / np.linalg.norm(z_axis)
+        logger.info('  Frame construction: Z=v0, Y=v1, X=Y×Z, Z=(recomputed)')
+
+        # ----------------------------------------------------------------
+        # 2026-06-09 (per-arm; left flipped to +v1 by that day's tilt fix.
+        #             before 2026-06-09 left used y_axis = -v1)
+        # if arm == 'left':
+        #     logger.info('  Dual-arm left arm: v0 → +Z, v1 → +Y')
+        #     z_axis = v0
+        #     y_axis = v1
+        #     x_axis = np.cross(y_axis, z_axis)
+        #     x_axis = x_axis / np.linalg.norm(x_axis)
+        #     z_axis = np.cross(x_axis, y_axis)
+        #     z_axis = z_axis / np.linalg.norm(z_axis)
+        #     logger.info('  Frame construction: Z=v0, Y=v1, X=Y×Z, Z=(recomputed)')
+        # elif arm == 'right':
+        #     logger.info('  Dual-arm right arm: v0 → +Z, v1 → +Y')
+        #     z_axis = v0
+        #     y_axis = v1
+        #     x_axis = np.cross(y_axis, z_axis)
+        #     x_axis = x_axis / np.linalg.norm(x_axis)
+        #     z_axis = np.cross(x_axis, y_axis)
+        #     z_axis = z_axis / np.linalg.norm(z_axis)
+        #     logger.info('  Frame construction: Z=v0, Y=v1, X=Y×Z, Z=(recomputed)')
+        # else:
+        #     raise ValueError(f'Unknown arm "{arm}" for dual-arm robot. Expected "left" or "right".')
+        # ----------------------------------------------------------------
     else:
         # Single arm: v1 corresponds to x-axis
         # J0 axis = z
@@ -851,16 +881,47 @@ def main():
     BASE_OFFSET = parse_base_offset_from_urdf(URDF_FILE, SHOULDER_PAN_JOINT_NAME)
     logger.info(f'Base offset: {BASE_OFFSET} m ({BASE_OFFSET * 1000:.4f} mm)')
 
-    # * Parse joint axes from URDF
-    # logger.info('\n' + '=' * 80)
-    # logger.info('Parsing joint axes from URDF')
-    # logger.info('=' * 80)
-    # joint_axes_info = parse_joint_axes_from_urdf(URDF_FILE, ARM_BASE_LINK_NAME, SHOULDER_PAN_JOINT_NAME)
-    # logger.info(f'Base rotation (rpy): {joint_axes_info["base_rotation_rpy"]}')
-    # logger.info(f'j0 axis (in base frame): {joint_axes_info["j0_axis"]}')
-    # logger.info(f'j1 axis (in base frame): {joint_axes_info["j1_axis"]}')
-    # logger.info(f'j0 axis (in inertia frame): {joint_axes_info["j0_axis_in_inertia_frame"]}')
-    # logger.info(f'j1 axis (in inertia frame): {joint_axes_info["j1_axis_in_inertia_frame"]}')
+    # * Parse joint axes from URDF (used to disambiguate fitted-line signs)
+    logger.info('\n' + '=' * 80)
+    logger.info('Parsing joint axes from URDF')
+    logger.info('=' * 80)
+    joint_axes_info = parse_joint_axes_from_urdf(URDF_FILE, ARM_BASE_LINK_NAME, SHOULDER_PAN_JOINT_NAME)
+    logger.info(f'Base rotation (rpy): {joint_axes_info["base_rotation_rpy"]}')
+    logger.info(f'j0 axis (in base frame): {joint_axes_info["j0_axis"]}')
+    logger.info(f'j1 axis (in base frame): {joint_axes_info["j1_axis"]}')
+    logger.info(f'j0 axis (in inertia frame): {joint_axes_info["j0_axis_in_inertia_frame"]}')
+    logger.info(f'j1 axis (in inertia frame): {joint_axes_info["j1_axis_in_inertia_frame"]}')
+
+    # Express the nominal j0/j1 axes in the base_footprint frame (~= base_mocap,
+    # husky upright) so compute_base_frame can flip v0/v1 to the right sign.
+    # NOTE: parse_joint_axes_from_urdf only reads each joint's LOCAL axis (both
+    # come out [0,0,1]) and ignores the shoulder_pan->shoulder_lift chain
+    # rotation, so it cannot give the true j1 direction. Use PyBullet FK at the
+    # zero config instead: the joint axis rotated by its child-link frame gives
+    # the true mounted direction (the dual-UR5e arms sit on an angled bracket,
+    # so j0 is NOT vertical -- the URDF nominal captures that).
+    nominal_j0 = nominal_j1 = None
+    pp.connect(use_gui=False)
+    try:
+        with pp.HideOutput():
+            _robot = pp.load_pybullet(URDF_FILE, fixed_base=True, cylinder=False)
+        _bf_R = pp.matrix_from_quat(pp.get_link_pose(_robot, pp.link_from_name(_robot, 'base_footprint'))[1])
+        lift_joint_name = SHOULDER_PAN_JOINT_NAME.replace('shoulder_pan', 'shoulder_lift')
+
+        def _joint_axis_in_base_footprint(joint_name):
+            jid = pp.joint_from_name(_robot, joint_name)
+            axis_local = np.array(pp.get_joint_info(_robot, jid).jointAxis)
+            # In PyBullet the child link index equals the joint index.
+            link_R = pp.matrix_from_quat(pp.get_link_pose(_robot, jid)[1])
+            axis_world = link_R @ axis_local
+            return _bf_R.T @ axis_world  # express in base_footprint frame
+
+        nominal_j0 = _joint_axis_in_base_footprint(SHOULDER_PAN_JOINT_NAME)
+        nominal_j1 = _joint_axis_in_base_footprint(lift_joint_name)
+        logger.info(f'Nominal j0 axis in base_footprint: {nominal_j0}')
+        logger.info(f'Nominal j1 axis in base_footprint: {nominal_j1}')
+    finally:
+        pp.disconnect()
 
     # Load data
     logger.info(f'\nLoading j0 data from: {j0_data_file_path}')
@@ -919,7 +980,8 @@ def main():
     logger.info('Computing robot base frame')
     logger.info('=' * 80)
     base_frame_tf, base_origin, base_axes, intersection_info = compute_base_frame(
-        j0_line, j1_line, BASE_OFFSET, robot_name, arm
+        j0_line, j1_line, BASE_OFFSET, robot_name, arm,
+        nominal_j0=nominal_j0, nominal_j1=nominal_j1
     )
     
     # Convert to pose (position, quaternion)
