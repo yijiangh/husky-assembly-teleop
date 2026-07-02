@@ -54,6 +54,120 @@ locate and orient the base; then check the result against held-out data.
 
 ---
 
+## A. Background: URDF, frames & how the base frame is calibrated (read after §0)
+
+Section 0 is the vocabulary. This section is the *concepts*: the robot model (**URDF**), how we
+talk about **frames/transforms**, what the three "base" frames are, and **why & how** we collect
+and validate the data. The two most important ideas are **URDF** and **frames/transforms** — the
+rest builds on them.
+
+### A.1 URDF (Unified Robot Description Format) — the robot model on paper
+
+- **What it is**: an XML file describing the robot as a tree of **links** joined by **joints**.
+  - A **link** = one rigid part (base, shoulder, forearm, …). Each carries **mesh** geometry (the
+    3D shape) for drawing/collision.
+  - A **joint** connects a *parent* link to a *child* link and stores: an **origin** (a fixed
+    offset transform: where the child sits on the parent), an **axis** (which way it rotates), and
+    a **type** (`revolute` = rotates, `fixed` = welded).
+  - Reading the URDF top-to-bottom = walking base → shoulder → … → `tool0`. That walk **is** what
+    forward-kinematics does: start at the base, apply each joint's origin then its current angle,
+    arrive at the tool. So the URDF is the fixed skeleton; the joint angles are the only variable.
+- **Why calibration needs the URDF** (two distinct uses):
+  1. *Nominal geometry* — the code reads the joint axes and the joint-0→base offset straight from
+     the XML to sign-correct and place the fitted base frame
+     (`parse_base_offset_from_urdf` / `parse_joint_axes_from_urdf`, `1_calibration_analysis.py:60,89`).
+  2. *Fixed transforms via FK* — after loading the model, `pp.get_relative_pose(...)` hands back the
+     rigid `arm_base_link_from_base_footprint` with no measurement needed
+     (`2_convert_and_visualize_transformation.py:98`).
+- **Calibrated vs non-calibrated URDF**: files live under `data/husky_urdf/.../urdf/`. A
+  `..._Calibrated.urdf` (e.g. `..._Alice_Calibrated.urdf`, `..._Belle_Calibrated.urdf`, dual-arm
+  `..._All_Calibrated.urdf`) has the *measured* base offset baked in; `..._no_base_joint.urdf` is the
+  raw/nominal one. Which file loads is decided per robot in one place —
+  `config_loader.get_robot_urdf()` (`config_loader.py:60`) — then loaded with `pp.load_pybullet(urdf)`.
+- **CWD (current working directory)** — a URDF names its mesh files by **relative path**, so PyBullet
+  can only find them if the script runs from the right directory. That's why
+  `run_calibration_pipeline.py:44` launches each step with `cwd=HERE`, and why running a step by hand
+  you first `cd data/calibration_data`. PyBullet even prints `cwd: ...` on load — a quick sanity check
+  when meshes go missing.
+- **UD** — shorthand for "URDF dir": the folder of `.urdf` files plus a little `name → filename` dict
+  used to pick which variant to load (`Alice_Calibrated`, `non_calibrated`, `Belle_Calibrated`, …).
+  In this repo that choice is centralised in `get_robot_urdf()` rather than a loose dict.
+
+### A.2 Frames & transformations — the `A_from_B` bookkeeping
+
+- **Frame** = a local coordinate system: an origin + its own X/Y/Z axes. Every pose is only
+  meaningful *in some frame*.
+- **Transform `A_from_B`** = "the pose of frame B, written in frame A" (equivalently: the recipe that
+  takes a point given in B and re-expresses it in A). The naming is chosen so composition reads like
+  cancelling fractions:
+  - `A_from_C = pp.multiply(A_from_B, B_from_C)` — the inner `B`s cancel, order matters.
+  - `pp.invert(A_from_B) = B_from_A` — go the other way.
+  - Worked example (`0_circle_fitting.py:77`):
+    `base_from_flange = pp.multiply(pp.invert(base_mocap), flange_mocap)` = "undo the base pose, then
+    apply the flange pose" → the tool expressed in the base's own frame.
+- **The frame chain** (kept consistent with `data/calibration_data/frames_tip.md`):
+
+  | Frame | What defines it | Linked to parent by |
+  |---|---|---|
+  | `mocap world` (Z-up, Motive origin) | OptiTrack/Motive origin, relabelled Y-up→Z-up | — (top of the chain) |
+  | `base_mocap` | mocap **rigid body** on the Husky base | streamed live (`base_mocap_pose`) |
+  | `arm_base_link[_inertia]` | UR arm mount point in the URDF | `base_mocap_from_arm_base_link` (**calibrated**) |
+  | `base_footprint` | robot's own base reference link | `arm_base_link_from_base_footprint` (**fixed, from URDF**) |
+  | `tool0` | UR flange, end of the kinematic chain | FK from joint angles |
+  | `flange_mocap` (side branch) | mocap rigid body on the calibration tool | streamed live (`flange_mocap_pose`) |
+
+- **Why two "world-ish" frames**: circle fitting is done in **`base_mocap`** (subtracting the base's
+  motion turns the sweep into a clean circle); the Rhino/Grasshopper viewers re-express everything
+  back into **`mocap world`** so all overlays share the Motive origin.
+- **y-up → z-up**: Motive streams **Y-up**; capture relabels to **Z-up**
+  (`utils.mocap_*_y_up_to_z_up`, default `'rhino'`). Using the wrong convention silently rotates
+  everything — see §0.
+
+### A.3 The three "base" frames, and where each comes from
+
+- **mocap base frame = `base_mocap`** — *measured*, not computed: streamed straight from Motive
+  (rigid body on the Husky base). It is the reference the circle fit subtracts out.
+- **robot base frame = `base_footprint` / `arm_base_link`** — *computed by the pipeline*: J0/J1 sweeps
+  → one circle per sweep (step 0) → a line through each joint's circle centres = that joint's axis →
+  sign-fix against the URDF → J0 axis→Z, J1 axis→Y, X = Y×Z, then slide to the origin by the URDF
+  offset (`1_calibration_analysis.py:499-718`). This yields `base_mocap_from_arm_base_link`, composed
+  with the fixed URDF `arm_base_link_from_base_footprint` → **`base_mocap_from_base_footprint`**. That
+  composed transform **is the calibration**: the constant offset between the mocap base rigid body and
+  the robot's own base.
+- **mocap footprint = `world_from_footprint`** — the robot base placed back into the mocap world:
+  `pp.multiply(base_mocap_pose, base_mocap_from_base_footprint)`. This is what validation uses to
+  stand the robot up in the world before FK-ing the tool.
+
+### A.4 Data collection, data validation, punch validation — *why & how*
+
+- **Data collection** (`husky_world.py::calibrate_button`, `~601-742`).
+  - *Why*: to solve the fixed offset between the mocap base rigid body and the robot's own base, we
+    need the tool at many poses that **both** sensors see — the robot knows its joint angles, mocap
+    measures where the tool actually is.
+  - *How*: spin **one joint at a time** (J0 = shoulder-pan, then J1 = shoulder-lift). At each waypoint
+    record `joint_conf`, `base_mocap_pose`, `flange_mocap_pose`. Because only one joint moves, the tool
+    sweeps a **circle** whose axis = that joint's real axis. This turns a hard unknown-pose fit into
+    two clean circle fits.
+- **Data validation / verify** (`3_verify_calibration.py`, `~65-154`).
+  - *Why*: prove the calibration works on poses it was **not** fitted on (held-out samples), so we
+    know it generalises rather than just memorising the sweep.
+  - *How*: place the robot with the calibration
+    (`world_from_footprint = pp.multiply(base_mocap_pose, base_mocap_from_base_footprint)`), FK `tool0`,
+    then measure the leftover `tool0 → flange_mocap` offset. If the calibration is perfect that offset
+    is the **same constant** for every sample. The score is the **spread** of that offset
+    (consistency), not an absolute distance — goal: 95% position < 5 mm, angle < 0.3°. (The old
+    right-arm sign bug showed as a ~500 mm spread; ~1 mm after the fix.)
+- **Punch validation** (`4_punch_validation.py`).
+  - *Why*: an independent **physical** check. Touch one fixed real-world point with a pointed "punch"
+    tool from several **different base poses**; if calibration + FK are right, the computed tip lands
+    in the **same world position** every time.
+  - *How*: per touch, record `joint_conf` + base pose, FK the punch tip, and report how far each touch
+    drifts from the mean (mean/std/max/95th-percentile, in mm). `punch_validation.arm` in `config.yaml`
+    picks which arm to analyse; the script aborts if the tool0→tip offset changed between takes (that
+    would invalidate the comparison).
+
+---
+
 ## 1. data/calibration_data/0_circle_fitting.py — fit circles to joint sweeps
 
 - **Purpose**: for each joint sweep (j0 = shoulder-pan, j1 = shoulder-lift), read the recorded tool

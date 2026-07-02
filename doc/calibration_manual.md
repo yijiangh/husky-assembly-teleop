@@ -8,7 +8,7 @@ This manual walks you through the complete extrinsic calibration procedure for t
 
 ## Table of Contents
 
-0. [Robot Reference Table](#0-robot-reference-table)
+0. [Before Starting](#0-before-starting)
 1. [OptiTrack Motion Capture Setup](#1-optitrack-motion-capture-setup)
 2. [Robot Startup & ROS2 Nodes](#2-robot-startup--ros2-nodes)
 3. [Launching the Monitor (Workstation Side)](#3-launching-the-monitor-workstation-side)
@@ -21,7 +21,20 @@ This manual walks you through the complete extrinsic calibration procedure for t
 
 ---
 
-## 0. Robot Reference Table
+## 0. Before Starting
+
+### 0.1 New Workstation Setup (one-time)
+
+If you are running on a **new workstation (PC)** for the first time, update these
+absolute paths in the code. Currently it hard-code the gdrive (Insync) mount
+location, which differ per machine.
+
+| What | Where | Note |
+|------|-------|------|
+| `DESIGN_DATA_DIRECTORY`, `EXPERIMENT_DATA_DIRECTORY` | [`__init__.py:53-54`](../husky_assembly_teleop/__init__.py#L53) | gdrive (Insync) mount paths. |
+| `MOCAP_CAMERA_EXPORT_DIR` | [`husky_monitor.py:64-67`](../husky_assembly_teleop/husky_monitor.py#L64) | where the `collect cameras data` button drops JSON+CSV. |
+
+### 0.2 Robot Reference Table
 
 Quick reference for all Husky robots. Later sections link here for IPs, ROS domain,
 serials, and Motive Streaming IDs.
@@ -32,8 +45,11 @@ serials, and Motive Streaming IDs.
 | Belle | 0805 | 192.168.0.114 | 85 | 1021 | — |
 | Cindy | 0806 | 192.168.0.115 | 86 | 1011 | right 1012 / left 1013 |
 
-- **ROS Domain** selects the robot at launch via `ROS_DOMAIN_ID` (see [§2.4](#24-verify-ros2-connection)); this drives namespace, base `mocap_id`, gripper and EE.
-- **Motive ID** = the rigid-body **Streaming ID** set in Motive (see [§1.3](#13-create--verify-rigid-bodies)). These must match the `mocap_id` base-tracker values in [`husky_world.py`](../husky_assembly_teleop/husky_world.py#L178) (`ROBOT_CONFIGS`, L182/L189/L196) and the calib-tool `TrackedObject` IDs at [L327/L331](../husky_assembly_teleop/husky_world.py#L327) (`1013` left / `1012` right).
+1. **ROS Domain** selects the robot at launch via `ROS_DOMAIN_ID` (see [§2.4](#24-verify-ros2-connection))
+   - this drives namespace, base `mocap_id`, gripper and EE.
+2. **Motive ID** = the rigid-body **Streaming ID** set in Motive (see [§1.3](#13-create--verify-rigid-bodies)).
+   - These must match the `mocap_id` base-tracker values in `husky_world.py` `ROBOT_CONFIGS` [L182/L189/L196](../husky_assembly_teleop/husky_world.py#L178)
+   - and the calib-tool `husky_world.py` `TrackedObject` IDs at [L327/L331](../husky_assembly_teleop/husky_world.py#L327) (`1013` left / `1012` right).
 
 ---
 
@@ -70,7 +86,7 @@ If you need to create a new rigid body (e.g., for the robot base or flange track
    - **Robot base tracker**: the `mocap_id` in `ROBOT_CONFIGS`, keyed by ROS domain — Alice `1031` / Belle `1021` / Cindy `1011` at [L182/L189/L196](../husky_assembly_teleop/husky_world.py#L182).
    - **Flange/calib-tool tracker**: the ID argument to `TrackedObject` (e.g., `1013` left / `1012` right) at [L327/L331](../husky_assembly_teleop/husky_world.py#L327).
 
-   Make sure the IDs you see in Motive match the IDs in these two locations (and the Motive ID column in the [Robot Reference Table](#0-robot-reference-table)).
+   Make sure the IDs you see in Motive match the IDs in these two locations (and the Motive ID column in the [Robot Reference Table (§0.2)](#02-robot-reference-table)).
 
 <!-- SCREENSHOT: Motive rigid body creation dialog -->
 <!-- SCREENSHOT: Motive rigid body properties showing the ID number -->
@@ -123,6 +139,7 @@ This section covers starting up the Husky robot and the UR5e arm ROS2 drivers. M
 1. Press the **power button** on the Husky.
 2. Turn on the **remote e-stop** and press **"Go"**.
    > Do NOT start multiple huskies at the same time -- sometimes both huskies connect to one e-stop if started in parallel.
+
    > **Tip**: If the remote e-stop is not reacting, press and hold longer until the signal lights go off, restart it, then press **"Go"** again.
 3. Wait until the **communication light** on the Husky turns **green** (or yellow if e-stop is still active).
 4. (Optional) Connect the **PS controller** by pressing the PlayStation logo button. Wait for the backlight to stop blinking and stay on permanently. You can then move the Husky by pressing **L1 or L2 + left joystick**.
@@ -212,7 +229,7 @@ rqt
 <!-- SCREENSHOT: Terminal showing ros2 topic list output with ur5e topics visible -->
 <!-- SCREENSHOT: rqt node graph showing connected nodes -->
 
-> See the [Robot Reference Table (§0)](#0-robot-reference-table) for each robot's serial, IP, ROS domain, and Motive Streaming IDs.
+> See the [Robot Reference Table (§0.2)](#02-robot-reference-table) for each robot's serial, IP, ROS domain, and Motive Streaming IDs.
 
 > **Warning**: The E-Stop on the Husky does NOT stop the UR5e! Always use the **remote E-Stop** when operating the robot arms.
 
@@ -244,9 +261,9 @@ If the ROS2 connection is working correctly, the **grey robot model** in PyBulle
 <!-- SCREENSHOT: Side-by-side of real robot and PyBullet model in matching configuration -->
 
 **If the robot model does NOT match the real robot**, check:
-1. Is the ROS2 driver running on the Husky side? ([Section 2.3](#23-start-the-ur5e-ros2-driver-on-the-husky))
-2. Is the robot powered on and in **External Control** mode? ([Section 2.2](#22-power-on-the-ur5e-arm))
-3. Are the ROS2 domain ID and middleware set correctly? ([Section 2.4](#24-verify-ros2-connection))
+1. Is the ROS2 driver running on the Husky side? ([§2.3](#23-start-the-ur5e-ros2-driver-on-the-husky))
+2. Is the robot powered on and in **External Control** mode? ([§ .2](#22-power-on-the-ur5e-arm))
+3. Are the ROS2 domain ID and middleware set correctly? ([§2.4](#24-verify-ros2-connection))
 4. Try running `rqt` to verify topics are visible.
 
 ---
@@ -257,13 +274,27 @@ This is the main calibration data collection procedure. You will collect data fo
 
 ### 4.0 Pre-Calibration Checklist
 
-Before collecting data, verify these settings in the code match your setup:
+Before collecting data, verify these settings in the code match your setup.
+
+**Values, IDs & IPs** — set to match your robot / network / session:
 
 | What | Where | Note |
 |------|-------|------|
-| `CALIBRATION_DATE` | [`__init__.py:57`](../husky_assembly_teleop/__init__.py#L57) & [`config_loader.py:21`](../data/calibration_data/config_loader.py#L21) | both must point to today's date folder |
-| `mocap_id` (Streaming IDs) | [`husky_world.py:182`](../husky_assembly_teleop/husky_world.py#L182) (base) & [L327](../husky_assembly_teleop/husky_world.py#L327) (calib tool) | match Motive **properties > (select rigid body) > Streaming ID** |
-| `class HuskyMonitor` flags (`CALIBRATION=1`, etc.) | [`husky_monitor.py:91`](../husky_assembly_teleop/husky_monitor.py#L91) | calibration mode enabled |
+| base `mocap_id` (Streaming IDs) | [`husky_world.py:182/189/196`](../husky_assembly_teleop/husky_world.py#L182) | per ROS domain (see [§0.2](#02-robot-reference-table)) ; match Motive **properties > Streaming ID** (see [§0.2](#02-robot-reference-table)) |
+| calib-tool IDs `1013` L / `1012` R | [`husky_world.py:327/331`](../husky_assembly_teleop/husky_world.py#L327) | match Motive (see [§0.2](#02-robot-reference-table)) . **Which arm is calibrated = which `calib_tool_*` block is enabled** — comment out the unused arm for a single-arm run |
+| `CALIBRATION_DATE` + `DEFAULT_DATE_FOLDER` | [`__init__.py:57`](../husky_assembly_teleop/__init__.py#L57) & [`config_loader.py:21`](../data/calibration_data/config_loader.py#L21) | both must point to today's date folder (must exist with a `config.yaml`) |
+| `CALIBRATION_STATE_SETS` (per arm idx) | [`husky_monitor.py:72-75`](../husky_assembly_teleop/husky_monitor.py#L72) | verify the calib traj-state folder for your arm exists |
+
+
+**Mode flags** — class `HuskyMonitor` switches, each set to `0` or `1`:
+
+| Flag | Where | Set to | Note |
+|------|-------|--------|------|
+| `USE_MOCAP` | [`husky_monitor.py:78`](../husky_assembly_teleop/husky_monitor.py#L78) | `1` | `0` = simulated; `1` = stream real mocap|
+| `FAKE_HARDWARE` | [`husky_monitor.py:79`](../husky_assembly_teleop/husky_monitor.py#L79) | `0` | `0` = real robot; `1` = virtual robot. Keep consistent with `USE_MOCAP` by hand |
+| `USE_CELL_STATE_BASE_POSE` | [`husky_monitor.py:87`](../husky_assembly_teleop/husky_monitor.py#L87) | `0` | `0` = base tracks mocap (normal); `1` = pin base to loaded cell state |
+| `CALIBRATION` | [`husky_monitor.py:91`](../husky_assembly_teleop/husky_monitor.py#L91) | `1` | `1` = calibration mode enabled |
+| `PUNCH_CALIB_VALIDATION` | [`husky_monitor.py:102`](../husky_assembly_teleop/husky_monitor.py#L102) | `0` | `1` only for a punch-validation session (switches EE to punch tips) |
 
 ### 4.1 Understanding the GUI Controls
 
