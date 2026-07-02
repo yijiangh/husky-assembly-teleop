@@ -680,18 +680,32 @@ def compute_base_frame(j0_line, j1_line, base_offset, robot_name, arm,
         #     raise ValueError(f'Unknown arm "{arm}" for dual-arm robot. Expected "left" or "right".')
         # ----------------------------------------------------------------
     else:
-        # Single arm: v1 corresponds to x-axis
-        # J0 axis = z
-        # J1 axis  = x
-        logger.info('  Single-arm robot detected: v1 → X axis')
+        # ACTIVE (2026-07-02): lift axis (v1) -> base Y, like dual-arm. The old
+        # v1->X assignment yawed the base frame 90° (20260623 Alice validation
+        # ~1m error). Single-arm URDF nominal_j1 is -Y (opposite the dual-arm
+        # +Y mount), and the sign fix above pins v1 to that nominal, so use -v1
+        # to get the physically-correct +Y. To revert, uncomment archived block.
+        logger.info('  Single-arm robot detected: v0 → +Z, -v1 → +Y')
         z_axis = v0
-        x_axis = v1
-        y_axis = np.cross(z_axis, x_axis)
-        y_axis = y_axis / np.linalg.norm(y_axis)
+        y_axis = -v1
+        x_axis = np.cross(y_axis, z_axis)
+        x_axis = x_axis / np.linalg.norm(x_axis)
         # Recompute z for orthogonality
         z_axis = np.cross(x_axis, y_axis)
         z_axis = z_axis / np.linalg.norm(z_axis)
-        logger.info('  Frame construction: X=v1, Y=Z×X, Z=(recomputed)')
+        logger.info('  Frame construction: Z=v0, Y=-v1, X=Y×Z, Z=(recomputed)')
+
+        # ----------------------------------------------------------------
+        # pre-2026-07-02: v1 → X axis (J0 axis = z, J1 axis = x). 90° yaw bug.
+        # logger.info('  Single-arm robot detected: v1 → X axis')
+        # z_axis = v0
+        # x_axis = v1
+        # y_axis = np.cross(z_axis, x_axis)
+        # y_axis = y_axis / np.linalg.norm(y_axis)
+        # z_axis = np.cross(x_axis, y_axis)
+        # z_axis = z_axis / np.linalg.norm(z_axis)
+        # logger.info('  Frame construction: X=v1, Y=Z×X, Z=(recomputed)')
+        # ----------------------------------------------------------------
 
     # Move p01 along -z_axis by base_offset (offset from arm base origin to j0 along z)
     p_b = p01 - base_offset * z_axis

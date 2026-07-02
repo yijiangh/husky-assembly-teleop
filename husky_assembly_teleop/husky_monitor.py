@@ -70,7 +70,7 @@ MOCAP_CAMERA_EXPORT_DIR = (
 # from which CALIBRATION-mode state + trajectory loaders pull files.
 # Keyed by selected_arm_index (0=left, 1=right); see _calibration_state_dir().
 CALIBRATION_STATE_SETS = {
-    0: '260108_extrinsic_calib_trajs',              # left arm & single arm
+    0: '260630_calib_trajs_Alice',              # left arm & single arm
     1: '260225_extrinsic_calib_trajs_Cindy_Right',  # right arm for Cindy
 }
 
@@ -3437,18 +3437,39 @@ class HuskyMonitor(Node):
             if hasattr(state, 'robot_configuration') and state.robot_configuration is not None:
                 cfg = state.robot_configuration
                 if hasattr(cfg, 'joint_names') and hasattr(cfg, 'joint_values'):
-                    left_names = HUSKY_DUAL_UR5e_JOINT_NAMES[0]
-                    right_names = HUSKY_DUAL_UR5e_JOINT_NAMES[1]
-                    try:
-                        self.goal_arm_pose[0] = np.array([cfg[n] for n in left_names])
-                        self.goal_arm_pose[1] = np.array([cfg[n] for n in right_names])
+                    # Auto-detect flavour like load_calibration_trajectory:
+                    # single-arm cfg uses un-prefixed ur_arm_* (-> slot 0),
+                    # dual-arm cfg uses left_/right_ prefixed names.
+                    cfg_names = list(cfg.joint_names)
+
+                    def _get(names):
+                        return (np.array([cfg[n] for n in names])
+                                if all(n in cfg_names for n in names) else None)
+
+                    single = _get(HUSKY_UR5e_JOINT_NAMES)
+                    left = _get(HUSKY_DUAL_UR5e_JOINT_NAMES[0])
+                    right = _get(HUSKY_DUAL_UR5e_JOINT_NAMES[1])
+
+                    if left is not None or right is not None:
+                        if left is not None:
+                            self.goal_arm_pose[0] = left
+                        if right is not None:
+                            self.goal_arm_pose[1] = right
+                    elif single is not None:
+                        self.goal_arm_pose[0] = single  # single-arm robot -> slot 0
+                    else:
+                        print(f"WARN: could not extract arm joint values; got "
+                              f"left={0 if left is None else 6} "
+                              f"right={0 if right is None else 6} "
+                              f"single={0 if single is None else 6}")
+                        single = left = right = None
+
+                    if single is not None or left is not None or right is not None:
                         self.reset_ui(self.goal_arm_pose)
                         print(f"goal_arm_pose updated from {selected}")
                         print(f"  left:  {self.goal_arm_pose[0]}")
                         print(f"  right: {self.goal_arm_pose[1]}")
                         self.set_to_show_goal_state()
-                    except (KeyError, AttributeError) as e:
-                        print(f"WARN: could not extract arm joint values: {e}")
                 else:
                     print("Robot configuration missing joint_names/joint_values")
             else:
@@ -3484,34 +3505,46 @@ class HuskyMonitor(Node):
                 print("JointTrajectory points missing joint_names")
                 return
             joint_names = points[0]['joint_names']
-            left_names = HUSKY_DUAL_UR5e_JOINT_NAMES[0]
-            right_names = HUSKY_DUAL_UR5e_JOINT_NAMES[1]
-            left_idx = [joint_names.index(n) for n in left_names if n in joint_names]
-            right_idx = [joint_names.index(n) for n in right_names if n in joint_names]
-            # TODO(arm-aware load): these calib reference files are SINGLE-arm
-            # (a right-arm file has only right_ur_arm_* joints, so right_idx=6 /
-            # left_idx=0, and vice-versa). The block below still fills BOTH arm
-            # slots, so the absent arm gets a list of empty arrays -> this warning
-            # fires and the wrong (absent) ghost arm shows in the Traj viz preview.
-            # Fix: build a trajectory only for the arm with all 6 joints and set
-            # the other arm to None (preview/execute guard on `... [0] is not None`):
-            #   left_traj  = _extract(left_idx)  if len(left_idx)  == 6 else None
-            #   right_traj = _extract(right_idx) if len(right_idx) == 6 else None
-            #   if left_traj is None and right_traj is None: return  # bad file
-            # (paired with the per-arm CALIBRATION_STATE_SETS dir switch.)
-            if len(left_idx) != 6 or len(right_idx) != 6:
-                print(f"WARN: expected 6 joints per arm, got left={len(left_idx)} right={len(right_idx)}")
-            left_traj, right_traj = [], []
-            for pt in points:
-                jv = pt.get('joint_values')
-                if jv is None:
-                    continue
-                left_traj.append(np.array([jv[i] for i in left_idx]))
-                right_traj.append(np.array([jv[i] for i in right_idx]))
-            self.set_arm_trajectory((left_traj, None, self.trajectory_time, None), index=0)
-            self.set_arm_trajectory((right_traj, None, self.trajectory_time, None), index=1)
+
+            def _extract(idx):
+                traj = []
+                for pt in points:
+                    jv = pt.get('joint_values')
+                    if jv is None:
+                        continue
+                    traj.append(np.array([jv[i] for i in idx]))
+                return traj
+
+            def _match(names):
+                # return trajectory if all 6 named joints present, else None
+                idx = [joint_names.index(n) for n in names if n in joint_names]
+                return (_extract(idx), len(idx))
+
+            # Auto-detect flavour: single-arm files use un-prefixed ur_arm_*
+            # names (-> slot 0); dual-arm files use left_/right_ prefixed names.
+            single_traj, single_n = _match(HUSKY_UR5e_JOINT_NAMES)
+            left_traj, left_n = _match(HUSKY_DUAL_UR5e_JOINT_NAMES[0])
+            right_traj, right_n = _match(HUSKY_DUAL_UR5e_JOINT_NAMES[1])
+
+            NONE = (None, None, None, None)
+            if left_n == 6 or right_n == 6:
+                # left and/or right arm; absent arm -> NONE (no ghost arm)
+                lt = (left_traj, None, self.trajectory_time, None) if left_n == 6 else NONE
+                rt = (right_traj, None, self.trajectory_time, None) if right_n == 6 else NONE
+                self.set_arm_trajectory(lt, index=0)
+                self.set_arm_trajectory(rt, index=1)
+                n_wp = len(left_traj) if left_n == 6 else len(right_traj)
+            elif single_n == 6:
+                # single-arm file -> slot 0 only
+                self.set_arm_trajectory((single_traj, None, self.trajectory_time, None), index=0)
+                self.set_arm_trajectory(NONE, index=1)
+                n_wp = len(single_traj)
+            else:
+                print(f"WARN: no complete arm (6 joints); got "
+                      f"left={left_n} right={right_n} single={single_n}; aborting load")
+                return
             self.set_to_show_traj_state()
-            print(f"[Load Calib Traj] {len(left_traj)} waypoints from {selected}")
+            print(f"[Load Calib Traj] {n_wp} waypoints from {selected}")
         except Exception as e:
             print(f"Error loading calib JointTrajectory: {e}")
 
