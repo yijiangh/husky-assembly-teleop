@@ -27,13 +27,15 @@ use_gui: false
 # This is independent from the main `arm` above, which selects the arm used to
 # generate calibration data and compute the calibrated transformation.
 punch_validation:
-  arm: null
+  arm: left
 
 # Punch tool calibration validation settings
 # Translation-only offset from tool0 flange to punch tip (meters)
 # Obtained via UR 4-point TCP calibration
+# Left: mm -> m, [-0.32, -3.56, 117.71] -> [-0.00032, -0.00356, 0.11771]
+# Right: mm -> m, [-0.32, -3.56, 117.71] -> [-0.00032, -0.00356, 0.11771]
 punch_tool:
   left:
-    offset_xyz: [0.0038, 0.0001, 0.11896]
+    offset_xyz: [-0.00032, -0.00356, 0.11771]
   right:
-    offset_xyz: [0.0038, 0.0001, 0.11896]
+    offset_xyz: [-0.00032, -0.00356, 0.11771]

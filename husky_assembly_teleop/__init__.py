@@ -54,7 +54,7 @@ DESIGN_DATA_DIRECTORY = '/home/su/Insync/yijiang94817@gmail.com/Google Drive - S
 EXPERIMENT_DATA_DIRECTORY = '/home/su/Insync/yijiang94817@gmail.com/Google Drive - Shared with me/2025-03 Husky Assembly/data_experiment'
 RECORD_DIRECTORY = os.path.join(DATA_DIRECTORY, '..', 'recorded_data')
 
-CALIBRATION_DATE = '20260625'
+CALIBRATION_DATE = '20260623'
 CALIBRATION_BATCHES = ['j0', 'j1', 'validation', 'punch_validation']
 
 DESIGN_PROBLEM_NAME = '2026-05-16_double_kissing_jig_demo'

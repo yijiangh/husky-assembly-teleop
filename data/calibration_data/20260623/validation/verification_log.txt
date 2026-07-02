@@ -1,0 +1,54 @@
+2026-07-02 12:10:43,289 - [32mINFO[0m - [32m============================================================[0m
+2026-07-02 12:10:43,290 - [32mINFO[0m - [32mCalibration Verification[0m
+2026-07-02 12:10:43,290 - [32mINFO[0m - [32m============================================================[0m
+2026-07-02 12:10:43,290 - [32mINFO[0m - [32mValidation data batch: validation[0m
+2026-07-02 12:10:43,290 - [32mINFO[0m - [32mRobot: 0804[0m
+2026-07-02 12:10:43,429 - [32mINFO[0m - [32mJoint names: ['ur_arm_shoulder_pan_joint', 'ur_arm_shoulder_lift_joint', 'ur_arm_elbow_joint', 'ur_arm_wrist_1_joint', 'ur_arm_wrist_2_joint', 'ur_arm_wrist_3_joint'][0m
+2026-07-02 12:10:43,429 - [32mINFO[0m - [32mTool0 link: ur_arm_tool0[0m
+2026-07-02 12:10:43,429 - [32mINFO[0m - [32mLoaded calibration from: /home/su/ros2_ws/src/husky-assembly-teleop/data/calibration_data/20260623/calibrated_transformation_0804_rhino.json[0m
+2026-07-02 12:10:43,429 - [32mINFO[0m - [32mProcessing: calibration_20260701_1750_validation.json[0m
+2026-07-02 12:10:43,429 - [32mINFO[0m - [32m  Sample 0: tool0_from_flange_mocap pos=0.015, 0.001, 0.016 m (norm=22.3 mm) | world dist=22.3 mm[0m
+2026-07-02 12:10:43,429 - [32mINFO[0m - [32m  Sample 1: tool0_from_flange_mocap pos=0.015, -0.001, 0.016 m (norm=22.0 mm) | world dist=22.0 mm[0m
+2026-07-02 12:10:43,429 - [32mINFO[0m - [32m  Sample 2: tool0_from_flange_mocap pos=0.015, -0.001, 0.014 m (norm=20.9 mm) | world dist=20.9 mm[0m
+2026-07-02 12:10:43,429 - [32mINFO[0m - [32mProcessing: calibration_20260702_0942_validation.json[0m
+2026-07-02 12:10:43,429 - [32mINFO[0m - [32m  Sample 0: tool0_from_flange_mocap pos=0.018, -0.002, 0.016 m (norm=23.8 mm) | world dist=23.8 mm[0m
+2026-07-02 12:10:43,430 - [32mINFO[0m - [32m  Sample 1: tool0_from_flange_mocap pos=0.016, -0.002, 0.015 m (norm=22.0 mm) | world dist=22.0 mm[0m
+2026-07-02 12:10:43,430 - [32mINFO[0m - [32mProcessing: calibration_20260702_1014_validation.json[0m
+2026-07-02 12:10:43,430 - [32mINFO[0m - [32m  Sample 0: tool0_from_flange_mocap pos=0.017, -0.000, 0.015 m (norm=22.5 mm) | world dist=22.5 mm[0m
+2026-07-02 12:10:43,430 - [32mINFO[0m - [32m  Sample 1: tool0_from_flange_mocap pos=0.015, -0.000, 0.016 m (norm=22.1 mm) | world dist=22.1 mm[0m
+2026-07-02 12:10:43,430 - [32mINFO[0m - [32mProcessing: calibration_20260701_1812_validation.json[0m
+2026-07-02 12:10:43,430 - [32mINFO[0m - [32m  Sample 0: tool0_from_flange_mocap pos=0.016, -0.001, 0.016 m (norm=22.3 mm) | world dist=22.3 mm[0m
+2026-07-02 12:10:43,430 - [32mINFO[0m - [32m  Sample 1: tool0_from_flange_mocap pos=0.016, -0.001, 0.016 m (norm=22.8 mm) | world dist=22.8 mm[0m
+2026-07-02 12:10:43,430 - [32mINFO[0m - [32m  Sample 2: tool0_from_flange_mocap pos=0.016, -0.001, 0.016 m (norm=22.5 mm) | world dist=22.5 mm[0m
+2026-07-02 12:10:43,430 - [32mINFO[0m - [32mProcessing: calibration_20260701_1806_validation.json[0m
+2026-07-02 12:10:43,430 - [32mINFO[0m - [32m  Sample 0: tool0_from_flange_mocap pos=0.015, -0.000, 0.016 m (norm=22.0 mm) | world dist=22.0 mm[0m
+2026-07-02 12:10:43,430 - [32mINFO[0m - [32m  Sample 1: tool0_from_flange_mocap pos=0.017, -0.001, 0.015 m (norm=22.9 mm) | world dist=22.9 mm[0m
+2026-07-02 12:10:43,430 - [32mINFO[0m - [32m  Sample 2: tool0_from_flange_mocap pos=0.017, -0.001, 0.015 m (norm=22.6 mm) | world dist=22.6 mm[0m
+2026-07-02 12:10:43,430 - [32mINFO[0m - [32mProcessing: calibration_20260702_0951_validation.json[0m
+2026-07-02 12:10:43,431 - [32mINFO[0m - [32m  Sample 0: tool0_from_flange_mocap pos=0.013, -0.001, 0.014 m (norm=19.1 mm) | world dist=19.1 mm[0m
+2026-07-02 12:10:43,431 - [32mINFO[0m - [32m  Sample 1: tool0_from_flange_mocap pos=0.016, -0.002, 0.016 m (norm=22.5 mm) | world dist=22.5 mm[0m
+2026-07-02 12:10:43,431 - [32mINFO[0m - [32mProcessing: calibration_20260702_1000_validation.json[0m
+2026-07-02 12:10:43,431 - [32mINFO[0m - [32m  Sample 0: tool0_from_flange_mocap pos=0.017, -0.001, 0.014 m (norm=22.0 mm) | world dist=22.0 mm[0m
+2026-07-02 12:10:43,431 - [32mINFO[0m - [32m  Sample 1: tool0_from_flange_mocap pos=0.016, -0.002, 0.016 m (norm=22.9 mm) | world dist=22.9 mm[0m
+2026-07-02 12:10:43,431 - [32mINFO[0m - [32mProcessed 17 samples[0m
+2026-07-02 12:10:43,842 - [32mINFO[0m - [32mDebug 3D plot saved to: /home/su/ros2_ws/src/husky-assembly-teleop/data/calibration_data/20260623/validation/debug_tool0_vs_flange_validation.png[0m
+2026-07-02 12:10:46,335 - [32mINFO[0m - [32m============================================================[0m
+2026-07-02 12:10:46,336 - [32mINFO[0m - [32mPosition Analysis (tool0_from_flange_mocap offset)[0m
+2026-07-02 12:10:46,336 - [32mINFO[0m - [32m============================================================[0m
+2026-07-02 12:10:46,336 - [32mINFO[0m - [32m  Mean position: [0.0159, -0.0010, 0.0154] m[0m
+2026-07-02 12:10:46,336 - [32mINFO[0m - [32m  Max distance from mean: 1.584 mm[0m
+2026-07-02 12:10:46,336 - [32mINFO[0m - [32m  Mean distance from mean: 0.000 mm[0m
+2026-07-02 12:10:46,336 - [32mINFO[0m - [32m  Std distance from mean: 0.961 mm[0m
+2026-07-02 12:10:46,336 - [32mINFO[0m - [32m============================================================[0m
+2026-07-02 12:10:46,336 - [32mINFO[0m - [32mOrientation Analysis[0m
+2026-07-02 12:10:46,336 - [32mINFO[0m - [32m============================================================[0m
+2026-07-02 12:10:46,336 - [32mINFO[0m - [32m  X-axis max angle from mean: 0.468 deg[0m
+2026-07-02 12:10:46,336 - [32mINFO[0m - [32m  Y-axis max angle from mean: 0.313 deg[0m
+2026-07-02 12:10:46,336 - [32mINFO[0m - [32m  Z-axis max angle from mean: 0.469 deg[0m
+2026-07-02 12:10:46,536 - [32mINFO[0m - [32mDebug orientation plot saved to: /home/su/ros2_ws/src/husky-assembly-teleop/data/calibration_data/20260623/validation/debug_orientation_validation.png[0m
+2026-07-02 12:10:47,864 - [32mINFO[0m - [32mVerification plot saved to: /home/su/ros2_ws/src/husky-assembly-teleop/data/calibration_data/20260623/validation/verification_validation.png[0m
+2026-07-02 12:10:49,470 - [32mINFO[0m - [32mDebug offset positions plot saved to: /home/su/ros2_ws/src/husky-assembly-teleop/data/calibration_data/20260623/validation/debug_offset_positions_validation.png[0m
+2026-07-02 12:10:51,192 - [32mINFO[0m - [32mDiversity plot saved to: /home/su/ros2_ws/src/husky-assembly-teleop/data/calibration_data/20260623/validation/diversity_validation.png[0m
+2026-07-02 12:10:52,652 - [32mINFO[0m - [32m============================================================[0m
+2026-07-02 12:10:52,652 - [32mINFO[0m - [32mVerification complete![0m
+2026-07-02 12:10:52,652 - [32mINFO[0m - [32m============================================================[0m

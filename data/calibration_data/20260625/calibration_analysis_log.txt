@@ -1,131 +1,131 @@
-2026-06-26 15:24:38,714 - [32mINFO[0m - [32m================================================================================[0m
-2026-06-26 15:24:38,714 - [32mINFO[0m - [32mStarting calibration analysis[0m
-2026-06-26 15:24:38,714 - [32mINFO[0m - [32m================================================================================[0m
-2026-06-26 15:24:38,714 - [32mINFO[0m - [32mParsing base offset from URDF: /home/su/ros2_ws/src/husky-assembly-teleop/data/calibration_data/../husky_urdf/mt_husky_dual_ur5_e_moveit_config/urdf/husky_dual_ur5_e_no_base_joint_All_Calibrated.urdf[0m
-2026-06-26 15:24:38,715 - [32mINFO[0m - [32mParsed base offset from URDF joint "right_ur_arm_shoulder_pan_joint": [0.0, 0.0, 0.1627782525221701] -> z=0.1627782525221701[0m
-2026-06-26 15:24:38,715 - [32mINFO[0m - [32mBase offset: 0.1627782525221701 m (162.7783 mm)[0m
-2026-06-26 15:24:38,715 - [32mINFO[0m - [32m
+2026-07-02 11:15:30,840 - [32mINFO[0m - [32m================================================================================[0m
+2026-07-02 11:15:30,840 - [32mINFO[0m - [32mStarting calibration analysis[0m
+2026-07-02 11:15:30,840 - [32mINFO[0m - [32m================================================================================[0m
+2026-07-02 11:15:30,840 - [32mINFO[0m - [32mParsing base offset from URDF: /home/su/ros2_ws/src/husky-assembly-teleop/data/calibration_data/../husky_urdf/mt_husky_dual_ur5_e_moveit_config/urdf/husky_dual_ur5_e_no_base_joint_All_Calibrated.urdf[0m
+2026-07-02 11:15:30,841 - [32mINFO[0m - [32mParsed base offset from URDF joint "right_ur_arm_shoulder_pan_joint": [0.0, 0.0, 0.1627782525221701] -> z=0.1627782525221701[0m
+2026-07-02 11:15:30,841 - [32mINFO[0m - [32mBase offset: 0.1627782525221701 m (162.7783 mm)[0m
+2026-07-02 11:15:30,841 - [32mINFO[0m - [32m
 ================================================================================[0m
-2026-06-26 15:24:38,715 - [32mINFO[0m - [32mParsing joint axes from URDF[0m
-2026-06-26 15:24:38,715 - [32mINFO[0m - [32m================================================================================[0m
-2026-06-26 15:24:38,715 - [33mWARNING[0m - [33mCould not find base rotation joint "right_ur_arm_base_link-right_ur_arm_base_link_inertia", assuming no rotation[0m
-2026-06-26 15:24:38,716 - [32mINFO[0m - [32mFound j0 (shoulder_pan) joint axis (in base_link frame): [0. 0. 1.][0m
-2026-06-26 15:24:38,716 - [32mINFO[0m - [32mFound j1 (shoulder_lift) joint axis (in base_link frame): [0. 0. 1.][0m
-2026-06-26 15:24:38,716 - [32mINFO[0m - [32mj0 axis in inertia frame: [0. 0. 1.][0m
-2026-06-26 15:24:38,716 - [32mINFO[0m - [32mj1 axis in inertia frame: [0. 0. 1.][0m
-2026-06-26 15:24:38,716 - [32mINFO[0m - [32mBase rotation (rpy): [0, 0, 0][0m
-2026-06-26 15:24:38,716 - [32mINFO[0m - [32mj0 axis (in base frame): [0. 0. 1.][0m
-2026-06-26 15:24:38,716 - [32mINFO[0m - [32mj1 axis (in base frame): [0. 0. 1.][0m
-2026-06-26 15:24:38,716 - [32mINFO[0m - [32mj0 axis (in inertia frame): [0. 0. 1.][0m
-2026-06-26 15:24:38,716 - [32mINFO[0m - [32mj1 axis (in inertia frame): [0. 0. 1.][0m
-2026-06-26 15:24:38,881 - [32mINFO[0m - [32mNominal j0 axis in base_footprint: [-0.00583488 -0.70413234  0.71004479][0m
-2026-06-26 15:24:38,881 - [32mINFO[0m - [32mNominal j1 axis in base_footprint: [-0.00352381 -0.71003795 -0.70415459][0m
-2026-06-26 15:24:38,886 - [32mINFO[0m - [32m
+2026-07-02 11:15:30,841 - [32mINFO[0m - [32mParsing joint axes from URDF[0m
+2026-07-02 11:15:30,841 - [32mINFO[0m - [32m================================================================================[0m
+2026-07-02 11:15:30,841 - [33mWARNING[0m - [33mCould not find base rotation joint "right_ur_arm_base_link-right_ur_arm_base_link_inertia", assuming no rotation[0m
+2026-07-02 11:15:30,841 - [32mINFO[0m - [32mFound j0 (shoulder_pan) joint axis (in base_link frame): [0. 0. 1.][0m
+2026-07-02 11:15:30,842 - [32mINFO[0m - [32mFound j1 (shoulder_lift) joint axis (in base_link frame): [0. 0. 1.][0m
+2026-07-02 11:15:30,842 - [32mINFO[0m - [32mj0 axis in inertia frame: [0. 0. 1.][0m
+2026-07-02 11:15:30,842 - [32mINFO[0m - [32mj1 axis in inertia frame: [0. 0. 1.][0m
+2026-07-02 11:15:30,842 - [32mINFO[0m - [32mBase rotation (rpy): [0, 0, 0][0m
+2026-07-02 11:15:30,842 - [32mINFO[0m - [32mj0 axis (in base frame): [0. 0. 1.][0m
+2026-07-02 11:15:30,842 - [32mINFO[0m - [32mj1 axis (in base frame): [0. 0. 1.][0m
+2026-07-02 11:15:30,842 - [32mINFO[0m - [32mj0 axis (in inertia frame): [0. 0. 1.][0m
+2026-07-02 11:15:30,842 - [32mINFO[0m - [32mj1 axis (in inertia frame): [0. 0. 1.][0m
+2026-07-02 11:15:31,005 - [32mINFO[0m - [32mNominal j0 axis in base_footprint: [-0.00583488 -0.70413234  0.71004479][0m
+2026-07-02 11:15:31,006 - [32mINFO[0m - [32mNominal j1 axis in base_footprint: [-0.00352381 -0.71003795 -0.70415459][0m
+2026-07-02 11:15:31,011 - [32mINFO[0m - [32m
 Loading j0 data from: /home/su/ros2_ws/src/husky-assembly-teleop/data/calibration_data/20260625/j0/j0_analysis.json[0m
-2026-06-26 15:24:38,888 - [32mINFO[0m - [32mLoading j1 data from: /home/su/ros2_ws/src/husky-assembly-teleop/data/calibration_data/20260625/j1/j1_analysis.json[0m
-2026-06-26 15:24:38,889 - [32mINFO[0m - [32mj0 has 6 takes[0m
-2026-06-26 15:24:38,889 - [32mINFO[0m - [32mj1 has 6 takes[0m
-2026-06-26 15:24:38,889 - [32mINFO[0m - [32m
+2026-07-02 11:15:31,013 - [32mINFO[0m - [32mLoading j1 data from: /home/su/ros2_ws/src/husky-assembly-teleop/data/calibration_data/20260625/j1/j1_analysis.json[0m
+2026-07-02 11:15:31,014 - [32mINFO[0m - [32mj0 has 6 takes[0m
+2026-07-02 11:15:31,014 - [32mINFO[0m - [32mj1 has 6 takes[0m
+2026-07-02 11:15:31,014 - [32mINFO[0m - [32m
 ================================================================================[0m
-2026-06-26 15:24:38,889 - [32mINFO[0m - [32mAnalyzing j0 base mocap variation[0m
-2026-06-26 15:24:38,889 - [32mINFO[0m - [32m================================================================================[0m
-2026-06-26 15:24:38,890 - [32mINFO[0m - [32mBase mocap position statistics:[0m
-2026-06-26 15:24:38,890 - [32mINFO[0m - [32m  Mean position: [ 348.93684618 -747.42388918  458.39372646] mm[0m
-2026-06-26 15:24:38,890 - [32mINFO[0m - [32m  Max distance from mean: 1.39 mm[0m
-2026-06-26 15:24:38,890 - [32mINFO[0m - [32m  Min distance from mean: 0.22 mm[0m
-2026-06-26 15:24:38,890 - [32mINFO[0m - [32m  Average distance from mean: 0.79 mm[0m
-2026-06-26 15:24:39,301 - [32mINFO[0m - [32mBase mocap orientation statistics:[0m
-2026-06-26 15:24:39,301 - [32mINFO[0m - [32m  Max angle deviation for x-axis: 0.20 degrees (equiv. to 3.5 mm over 1 m)[0m
-2026-06-26 15:24:39,301 - [32mINFO[0m - [32m  Max angle deviation for y-axis: 0.11 degrees (equiv. to 1.9 mm over 1 m)[0m
-2026-06-26 15:24:39,301 - [32mINFO[0m - [32m  Max angle deviation for z-axis: 0.20 degrees (equiv. to 3.4 mm over 1 m)[0m
-2026-06-26 15:24:39,486 - [32mINFO[0m - [32m
+2026-07-02 11:15:31,014 - [32mINFO[0m - [32mAnalyzing j0 base mocap variation[0m
+2026-07-02 11:15:31,014 - [32mINFO[0m - [32m================================================================================[0m
+2026-07-02 11:15:31,014 - [32mINFO[0m - [32mBase mocap position statistics:[0m
+2026-07-02 11:15:31,014 - [32mINFO[0m - [32m  Mean position: [ 348.93684618 -747.42388918  458.39372646] mm[0m
+2026-07-02 11:15:31,014 - [32mINFO[0m - [32m  Max distance from mean: 1.39 mm[0m
+2026-07-02 11:15:31,015 - [32mINFO[0m - [32m  Min distance from mean: 0.22 mm[0m
+2026-07-02 11:15:31,015 - [32mINFO[0m - [32m  Average distance from mean: 0.79 mm[0m
+2026-07-02 11:15:31,417 - [32mINFO[0m - [32mBase mocap orientation statistics:[0m
+2026-07-02 11:15:31,417 - [32mINFO[0m - [32m  Max angle deviation for x-axis: 0.20 degrees (equiv. to 3.5 mm over 1 m)[0m
+2026-07-02 11:15:31,417 - [32mINFO[0m - [32m  Max angle deviation for y-axis: 0.11 degrees (equiv. to 1.9 mm over 1 m)[0m
+2026-07-02 11:15:31,417 - [32mINFO[0m - [32m  Max angle deviation for z-axis: 0.20 degrees (equiv. to 3.4 mm over 1 m)[0m
+2026-07-02 11:15:31,599 - [32mINFO[0m - [32m
 ================================================================================[0m
-2026-06-26 15:24:39,486 - [32mINFO[0m - [32mAnalyzing j1 base mocap variation[0m
-2026-06-26 15:24:39,486 - [32mINFO[0m - [32m================================================================================[0m
-2026-06-26 15:24:39,486 - [32mINFO[0m - [32mBase mocap position statistics:[0m
-2026-06-26 15:24:39,486 - [32mINFO[0m - [32m  Mean position: [ 349.18629338 -747.62496512  458.24641903] mm[0m
-2026-06-26 15:24:39,486 - [32mINFO[0m - [32m  Max distance from mean: 1.13 mm[0m
-2026-06-26 15:24:39,486 - [32mINFO[0m - [32m  Min distance from mean: 0.03 mm[0m
-2026-06-26 15:24:39,486 - [32mINFO[0m - [32m  Average distance from mean: 0.48 mm[0m
-2026-06-26 15:24:39,907 - [32mINFO[0m - [32mBase mocap orientation statistics:[0m
-2026-06-26 15:24:39,907 - [32mINFO[0m - [32m  Max angle deviation for x-axis: 0.10 degrees (equiv. to 1.7 mm over 1 m)[0m
-2026-06-26 15:24:39,907 - [32mINFO[0m - [32m  Max angle deviation for y-axis: 0.16 degrees (equiv. to 2.8 mm over 1 m)[0m
-2026-06-26 15:24:39,907 - [32mINFO[0m - [32m  Max angle deviation for z-axis: 0.18 degrees (equiv. to 3.2 mm over 1 m)[0m
-2026-06-26 15:24:39,995 - [32mINFO[0m - [32m
+2026-07-02 11:15:31,599 - [32mINFO[0m - [32mAnalyzing j1 base mocap variation[0m
+2026-07-02 11:15:31,599 - [32mINFO[0m - [32m================================================================================[0m
+2026-07-02 11:15:31,599 - [32mINFO[0m - [32mBase mocap position statistics:[0m
+2026-07-02 11:15:31,599 - [32mINFO[0m - [32m  Mean position: [ 349.18629338 -747.62496512  458.24641903] mm[0m
+2026-07-02 11:15:31,599 - [32mINFO[0m - [32m  Max distance from mean: 1.13 mm[0m
+2026-07-02 11:15:31,599 - [32mINFO[0m - [32m  Min distance from mean: 0.03 mm[0m
+2026-07-02 11:15:31,599 - [32mINFO[0m - [32m  Average distance from mean: 0.48 mm[0m
+2026-07-02 11:15:32,002 - [32mINFO[0m - [32mBase mocap orientation statistics:[0m
+2026-07-02 11:15:32,002 - [32mINFO[0m - [32m  Max angle deviation for x-axis: 0.10 degrees (equiv. to 1.7 mm over 1 m)[0m
+2026-07-02 11:15:32,002 - [32mINFO[0m - [32m  Max angle deviation for y-axis: 0.16 degrees (equiv. to 2.8 mm over 1 m)[0m
+2026-07-02 11:15:32,002 - [32mINFO[0m - [32m  Max angle deviation for z-axis: 0.18 degrees (equiv. to 3.2 mm over 1 m)[0m
+2026-07-02 11:15:32,088 - [32mINFO[0m - [32m
 ================================================================================[0m
-2026-06-26 15:24:39,995 - [32mINFO[0m - [32mAnalyzing j0 circle centers[0m
-2026-06-26 15:24:39,995 - [32mINFO[0m - [32m================================================================================[0m
-2026-06-26 15:24:39,995 - [32mINFO[0m - [32mj0 circle centers analysis:[0m
-2026-06-26 15:24:39,995 - [32mINFO[0m - [32m  Number of centers: 6[0m
-2026-06-26 15:24:39,995 - [32mINFO[0m - [32m  Min distance between centers: 56.21 mm[0m
-2026-06-26 15:24:39,995 - [32mINFO[0m - [32m  Max distance between centers: 411.37 mm[0m
-2026-06-26 15:24:39,995 - [32mINFO[0m - [32m  Average distance between centers: 192.20 mm[0m
-2026-06-26 15:24:44,001 - [32mINFO[0m - [32m
+2026-07-02 11:15:32,088 - [32mINFO[0m - [32mAnalyzing j0 circle centers[0m
+2026-07-02 11:15:32,088 - [32mINFO[0m - [32m================================================================================[0m
+2026-07-02 11:15:32,088 - [32mINFO[0m - [32mj0 circle centers analysis:[0m
+2026-07-02 11:15:32,088 - [32mINFO[0m - [32m  Number of centers: 6[0m
+2026-07-02 11:15:32,088 - [32mINFO[0m - [32m  Min distance between centers: 56.21 mm[0m
+2026-07-02 11:15:32,088 - [32mINFO[0m - [32m  Max distance between centers: 411.37 mm[0m
+2026-07-02 11:15:32,088 - [32mINFO[0m - [32m  Average distance between centers: 192.20 mm[0m
+2026-07-02 11:15:36,497 - [32mINFO[0m - [32m
 ================================================================================[0m
-2026-06-26 15:24:44,001 - [32mINFO[0m - [32mAnalyzing j1 circle centers[0m
-2026-06-26 15:24:44,001 - [32mINFO[0m - [32m================================================================================[0m
-2026-06-26 15:24:44,001 - [32mINFO[0m - [32mj1 circle centers analysis:[0m
-2026-06-26 15:24:44,001 - [32mINFO[0m - [32m  Number of centers: 6[0m
-2026-06-26 15:24:44,001 - [32mINFO[0m - [32m  Min distance between centers: 3.66 mm[0m
-2026-06-26 15:24:44,001 - [32mINFO[0m - [32m  Max distance between centers: 162.33 mm[0m
-2026-06-26 15:24:44,001 - [32mINFO[0m - [32m  Average distance between centers: 74.69 mm[0m
-2026-06-26 15:24:44,001 - [33mWARNING[0m - [33m  WARNING: Some circle centers are very close (< 10mm). Line fitting may be unreliable.[0m
-2026-06-26 15:24:45,191 - [32mINFO[0m - [32m
+2026-07-02 11:15:36,497 - [32mINFO[0m - [32mAnalyzing j1 circle centers[0m
+2026-07-02 11:15:36,498 - [32mINFO[0m - [32m================================================================================[0m
+2026-07-02 11:15:36,498 - [32mINFO[0m - [32mj1 circle centers analysis:[0m
+2026-07-02 11:15:36,498 - [32mINFO[0m - [32m  Number of centers: 6[0m
+2026-07-02 11:15:36,498 - [32mINFO[0m - [32m  Min distance between centers: 3.66 mm[0m
+2026-07-02 11:15:36,498 - [32mINFO[0m - [32m  Max distance between centers: 162.33 mm[0m
+2026-07-02 11:15:36,498 - [32mINFO[0m - [32m  Average distance between centers: 74.69 mm[0m
+2026-07-02 11:15:36,498 - [33mWARNING[0m - [33m  WARNING: Some circle centers are very close (< 10mm). Line fitting may be unreliable.[0m
+2026-07-02 11:16:07,041 - [32mINFO[0m - [32m
 ================================================================================[0m
-2026-06-26 15:24:45,191 - [32mINFO[0m - [32mFitting line to j0 circle centers[0m
-2026-06-26 15:24:45,191 - [32mINFO[0m - [32m================================================================================[0m
-2026-06-26 15:24:45,191 - [32mINFO[0m - [32mj0 line fitting:[0m
-2026-06-26 15:24:45,191 - [32mINFO[0m - [32m  Average circle normal: [ 0.28210574 -0.65046664  0.70520175][0m
-2026-06-26 15:24:45,196 - [32mINFO[0m - [32m  Angle differences from mean normal (deg): ['0.01', '0.02', '0.02', '0.05', '0.03', '0.02'][0m
-2026-06-26 15:24:45,196 - [32mINFO[0m - [32m  Max angle difference: 0.05 degrees[0m
-2026-06-26 15:24:45,218 - [32mINFO[0m - [32m  Fitted line point: [ 283.52525667 -650.68752973  575.77773103] mm[0m
-2026-06-26 15:24:45,218 - [32mINFO[0m - [32m  Fitted line direction: [ 0.28210574 -0.65046664  0.70520175][0m
-2026-06-26 15:24:45,244 - [32mINFO[0m - [32m  Max distance from centers to fitted line: 0.64 mm[0m
-2026-06-26 15:24:45,244 - [32mINFO[0m - [32m  Average distance from centers to fitted line: 0.36 mm[0m
-2026-06-26 15:24:45,244 - [32mINFO[0m - [32m
+2026-07-02 11:16:07,041 - [32mINFO[0m - [32mFitting line to j0 circle centers[0m
+2026-07-02 11:16:07,041 - [32mINFO[0m - [32m================================================================================[0m
+2026-07-02 11:16:07,041 - [32mINFO[0m - [32mj0 line fitting:[0m
+2026-07-02 11:16:07,042 - [32mINFO[0m - [32m  Average circle normal: [ 0.28210574 -0.65046664  0.70520175][0m
+2026-07-02 11:16:07,046 - [32mINFO[0m - [32m  Angle differences from mean normal (deg): ['0.01', '0.02', '0.02', '0.05', '0.03', '0.02'][0m
+2026-07-02 11:16:07,046 - [32mINFO[0m - [32m  Max angle difference: 0.05 degrees[0m
+2026-07-02 11:16:07,066 - [32mINFO[0m - [32m  Fitted line point: [ 283.52525667 -650.68752973  575.77773103] mm[0m
+2026-07-02 11:16:07,066 - [32mINFO[0m - [32m  Fitted line direction: [ 0.28210574 -0.65046664  0.70520175][0m
+2026-07-02 11:16:07,090 - [32mINFO[0m - [32m  Max distance from centers to fitted line: 0.64 mm[0m
+2026-07-02 11:16:07,090 - [32mINFO[0m - [32m  Average distance from centers to fitted line: 0.36 mm[0m
+2026-07-02 11:16:07,090 - [32mINFO[0m - [32m
 ================================================================================[0m
-2026-06-26 15:24:45,244 - [32mINFO[0m - [32mFitting line to j1 circle centers[0m
-2026-06-26 15:24:45,244 - [32mINFO[0m - [32m================================================================================[0m
-2026-06-26 15:24:45,244 - [32mINFO[0m - [32mj1 line fitting:[0m
-2026-06-26 15:24:45,244 - [32mINFO[0m - [32m  Average circle normal: [ 9.17478183e-01  3.97785760e-01 -5.21396506e-04][0m
-2026-06-26 15:24:45,249 - [32mINFO[0m - [32m  Angle differences from mean normal (deg): ['0.02', '0.01', '0.02', '0.00', '0.01', '0.01'][0m
-2026-06-26 15:24:45,249 - [32mINFO[0m - [32m  Max angle difference: 0.02 degrees[0m
-2026-06-26 15:24:45,271 - [32mINFO[0m - [32m  Fitted line point: [ 283.61945333 -174.03088529  141.1849909 ] mm[0m
-2026-06-26 15:24:45,272 - [32mINFO[0m - [32m  Fitted line direction: [ 9.17478183e-01  3.97785760e-01 -5.21396506e-04][0m
-2026-06-26 15:24:45,296 - [32mINFO[0m - [32m  Max distance from centers to fitted line: 0.24 mm[0m
-2026-06-26 15:24:45,296 - [32mINFO[0m - [32m  Average distance from centers to fitted line: 0.16 mm[0m
-2026-06-26 15:24:45,296 - [32mINFO[0m - [32m
+2026-07-02 11:16:07,090 - [32mINFO[0m - [32mFitting line to j1 circle centers[0m
+2026-07-02 11:16:07,090 - [32mINFO[0m - [32m================================================================================[0m
+2026-07-02 11:16:07,090 - [32mINFO[0m - [32mj1 line fitting:[0m
+2026-07-02 11:16:07,091 - [32mINFO[0m - [32m  Average circle normal: [ 9.17478183e-01  3.97785760e-01 -5.21396506e-04][0m
+2026-07-02 11:16:07,095 - [32mINFO[0m - [32m  Angle differences from mean normal (deg): ['0.02', '0.01', '0.02', '0.00', '0.01', '0.01'][0m
+2026-07-02 11:16:07,095 - [32mINFO[0m - [32m  Max angle difference: 0.02 degrees[0m
+2026-07-02 11:16:07,115 - [32mINFO[0m - [32m  Fitted line point: [ 283.61945333 -174.03088529  141.1849909 ] mm[0m
+2026-07-02 11:16:07,115 - [32mINFO[0m - [32m  Fitted line direction: [ 9.17478183e-01  3.97785760e-01 -5.21396506e-04][0m
+2026-07-02 11:16:07,138 - [32mINFO[0m - [32m  Max distance from centers to fitted line: 0.24 mm[0m
+2026-07-02 11:16:07,139 - [32mINFO[0m - [32m  Average distance from centers to fitted line: 0.16 mm[0m
+2026-07-02 11:16:07,139 - [32mINFO[0m - [32m
 ================================================================================[0m
-2026-06-26 15:24:45,296 - [32mINFO[0m - [32mComputing robot base frame[0m
-2026-06-26 15:24:45,297 - [32mINFO[0m - [32m================================================================================[0m
-2026-06-26 15:24:45,300 - [32mINFO[0m - [32m  Sign fix: flipped v1 to match nominal j1 axis[0m
-2026-06-26 15:24:45,312 - [32mINFO[0m - [32m  Intersection direction: [ 0.28237016 -0.65035203  0.70520163][0m
-2026-06-26 15:24:45,312 - [32mINFO[0m - [32m  Intersection point (closest to p1): [ 109.3717727  -249.57845399  141.28401465] mm[0m
-2026-06-26 15:24:45,336 - [32mINFO[0m - [32m  Intersection anchor: [ 26.68506504 -59.13528825 -65.22080905] mm[0m
-2026-06-26 15:24:45,336 - [32mINFO[0m - [32m  Dual-arm (right): v0 → +Z, v1 → +Y[0m
-2026-06-26 15:24:45,336 - [32mINFO[0m - [32m  Frame construction: Z=v0, Y=v1, X=Y×Z, Z=(recomputed)[0m
-2026-06-26 15:24:45,338 - [32mINFO[0m - [32m  Base origin p_b (after offset): [  63.40805098 -143.71528782   26.49252617] mm[0m
-2026-06-26 15:24:45,338 - [32mINFO[0m - [32m  Base frame axes:[0m
-2026-06-26 15:24:45,338 - [32mINFO[0m - [32m    x-axis: [-0.28018007  0.64715433  0.70900662][0m
-2026-06-26 15:24:45,338 - [32mINFO[0m - [32m    y-axis: [-9.17478183e-01 -3.97785760e-01  5.21396506e-04][0m
-2026-06-26 15:24:45,338 - [32mINFO[0m - [32m    z-axis: [ 0.28237016 -0.65035203  0.70520163][0m
-2026-06-26 15:24:45,338 - [32mINFO[0m - [32m  Orthogonality check: |X·Y|=0.000000, |X·Z|=0.000000, |Y·Z|=0.000000[0m
-2026-06-26 15:24:45,338 - [32mINFO[0m - [32m
+2026-07-02 11:16:07,139 - [32mINFO[0m - [32mComputing robot base frame[0m
+2026-07-02 11:16:07,139 - [32mINFO[0m - [32m================================================================================[0m
+2026-07-02 11:16:07,141 - [32mINFO[0m - [32m  Sign fix: flipped v1 to match nominal j1 axis[0m
+2026-07-02 11:16:07,173 - [32mINFO[0m - [32m  Intersection direction: [ 0.28237016 -0.65035203  0.70520163][0m
+2026-07-02 11:16:07,174 - [32mINFO[0m - [32m  Intersection point (closest to p1): [ 109.3717727  -249.57845399  141.28401465] mm[0m
+2026-07-02 11:16:07,174 - [32mINFO[0m - [32m  Intersection anchor: [ 26.68506504 -59.13528825 -65.22080905] mm[0m
+2026-07-02 11:16:07,174 - [32mINFO[0m - [32m  Dual-arm (right): v0 → +Z, v1 → +Y[0m
+2026-07-02 11:16:07,175 - [32mINFO[0m - [32m  Frame construction: Z=v0, Y=v1, X=Y×Z, Z=(recomputed)[0m
+2026-07-02 11:16:07,176 - [32mINFO[0m - [32m  Base origin p_b (after offset): [  63.40805098 -143.71528782   26.49252617] mm[0m
+2026-07-02 11:16:07,176 - [32mINFO[0m - [32m  Base frame axes:[0m
+2026-07-02 11:16:07,176 - [32mINFO[0m - [32m    x-axis: [-0.28018007  0.64715433  0.70900662][0m
+2026-07-02 11:16:07,176 - [32mINFO[0m - [32m    y-axis: [-9.17478183e-01 -3.97785760e-01  5.21396506e-04][0m
+2026-07-02 11:16:07,176 - [32mINFO[0m - [32m    z-axis: [ 0.28237016 -0.65035203  0.70520163][0m
+2026-07-02 11:16:07,176 - [32mINFO[0m - [32m  Orthogonality check: |X·Y|=0.000000, |X·Z|=0.000000, |Y·Z|=0.000000[0m
+2026-07-02 11:16:07,176 - [32mINFO[0m - [32m
 ================================================================================[0m
-2026-06-26 15:24:45,338 - [32mINFO[0m - [32mFinal base frame transformation:[0m
-2026-06-26 15:24:45,338 - [32mINFO[0m - [32m================================================================================[0m
-2026-06-26 15:24:45,338 - [32mINFO[0m - [32mOrigin: [  63.40805098 -143.71528782   26.49252617] mm[0m
-2026-06-26 15:24:45,338 - [32mINFO[0m - [32mQuaternion: [ 0.32109347 -0.21047131  0.77187555  0.50676321][0m
-2026-06-26 15:24:45,338 - [32mINFO[0m - [32m
+2026-07-02 11:16:07,176 - [32mINFO[0m - [32mFinal base frame transformation:[0m
+2026-07-02 11:16:07,176 - [32mINFO[0m - [32m================================================================================[0m
+2026-07-02 11:16:07,176 - [32mINFO[0m - [32mOrigin: [  63.40805098 -143.71528782   26.49252617] mm[0m
+2026-07-02 11:16:07,176 - [32mINFO[0m - [32mQuaternion: [ 0.32109347 -0.21047131  0.77187555  0.50676321][0m
+2026-07-02 11:16:07,176 - [32mINFO[0m - [32m
 Transformation matrix:
 [[-2.80180074e-01 -9.17478183e-01  2.82370163e-01  6.34080510e-02]
  [ 6.47154334e-01 -3.97785760e-01 -6.50352025e-01 -1.43715288e-01]
  [ 7.09006625e-01  5.21396506e-04  7.05201627e-01  2.64925262e-02]
  [ 0.00000000e+00  0.00000000e+00  0.00000000e+00  1.00000000e+00]][0m
-2026-06-26 15:24:45,338 - [32mINFO[0m - [32m
+2026-07-02 11:16:07,176 - [32mINFO[0m - [32m
 Visualizing results...[0m
-2026-06-26 15:24:47,132 - [32mINFO[0m - [32m
+2026-07-02 11:16:09,285 - [32mINFO[0m - [32m
 Results saved to: /home/su/ros2_ws/src/husky-assembly-teleop/data/calibration_data/20260625/base_frame_calibration.json[0m
-2026-06-26 15:24:47,132 - [32mINFO[0m - [32m================================================================================[0m
-2026-06-26 15:24:47,132 - [32mINFO[0m - [32mCalibration analysis complete![0m
-2026-06-26 15:24:47,132 - [32mINFO[0m - [32m================================================================================[0m
+2026-07-02 11:16:09,285 - [32mINFO[0m - [32m================================================================================[0m
+2026-07-02 11:16:09,285 - [32mINFO[0m - [32mCalibration analysis complete![0m
+2026-07-02 11:16:09,285 - [32mINFO[0m - [32m================================================================================[0m

@@ -18,7 +18,7 @@ import yaml
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 # Default date folder - change this to switch between calibration datasets
-DEFAULT_DATE_FOLDER = '20260625'
+DEFAULT_DATE_FOLDER = '20260623'
 
 
 

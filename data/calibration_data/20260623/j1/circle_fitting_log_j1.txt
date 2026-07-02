@@ -1,0 +1,23 @@
+2026-07-02 11:13:37,996 - [32mINFO[0m - [32m============================================================[0m
+2026-07-02 11:13:37,996 - [32mINFO[0m - [32mProcessing data batch: j1[0m
+2026-07-02 11:13:37,996 - [32mINFO[0m - [32m============================================================[0m
+2026-07-02 11:13:37,996 - [32mINFO[0m - [32mProcessing: calibration_20260701_1733_ext_calib_0804_J1_traj5_JointTrajectory.json[0m
+2026-07-02 11:13:37,996 - [32mINFO[0m - [32m  Circle fitting time: 0.319 ms[0m
+2026-07-02 11:13:38,572 - [32mINFO[0m - [32m  Circle fit quality - max point distance: 0.275 mm[0m
+2026-07-02 11:13:38,847 - [32mINFO[0m - [32mProcessing: calibration_20260701_1659_ext_calib_0804_J1_traj0_JointTrajectory.json[0m
+2026-07-02 11:13:38,847 - [32mINFO[0m - [32m  Circle fitting time: 0.117 ms[0m
+2026-07-02 11:13:39,382 - [32mINFO[0m - [32m  Circle fit quality - max point distance: 0.366 mm[0m
+2026-07-02 11:13:39,651 - [32mINFO[0m - [32mProcessing: calibration_20260701_1727_ext_calib_0804_J1_traj4_JointTrajectory.json[0m
+2026-07-02 11:13:39,652 - [32mINFO[0m - [32m  Circle fitting time: 0.123 ms[0m
+2026-07-02 11:13:40,186 - [32mINFO[0m - [32m  Circle fit quality - max point distance: 0.516 mm[0m
+2026-07-02 11:13:40,460 - [32mINFO[0m - [32mProcessing: calibration_20260701_1721_ext_calib_0804_J1_traj3_JointTrajectory.json[0m
+2026-07-02 11:13:40,460 - [32mINFO[0m - [32m  Circle fitting time: 0.124 ms[0m
+2026-07-02 11:13:41,000 - [32mINFO[0m - [32m  Circle fit quality - max point distance: 0.398 mm[0m
+2026-07-02 11:13:41,270 - [32mINFO[0m - [32mProcessing: calibration_20260701_1705_ext_calib_0804_J1_traj1_JointTrajectory.json[0m
+2026-07-02 11:13:41,270 - [32mINFO[0m - [32m  Circle fitting time: 0.123 ms[0m
+2026-07-02 11:13:41,802 - [32mINFO[0m - [32m  Circle fit quality - max point distance: 0.558 mm[0m
+2026-07-02 11:13:42,083 - [32mINFO[0m - [32mProcessing: calibration_20260701_1710_ext_calib_0804_J1_traj2_JointTrajectory.json[0m
+2026-07-02 11:13:42,083 - [32mINFO[0m - [32m  Circle fitting time: 0.128 ms[0m
+2026-07-02 11:13:42,617 - [32mINFO[0m - [32m  Circle fit quality - max point distance: 0.563 mm[0m
+2026-07-02 11:13:42,900 - [32mINFO[0m - [32mResults exported to: /home/su/ros2_ws/src/husky-assembly-teleop/data/calibration_data/20260623/j1/j1_analysis.json[0m
+2026-07-02 11:13:42,900 - [32mINFO[0m - [32mTotal takes processed: 6[0m
