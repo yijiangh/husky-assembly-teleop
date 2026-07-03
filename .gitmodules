@@ -7,9 +7,6 @@
 [submodule "external/compas_fab"]
 	path = external/compas_fab
 	url = git@github.com:compas-dev/compas_fab.git
-[submodule "data/husky_assembly_design_study"]
-	path = data/husky_assembly_design_study
-	url = git@github.com:yijiangh/husky_assembly_design_study.git
 [submodule "external/pybullet_planning"]
 	path = external/pybullet_planning
 	url = https://github.com/yijiangh/pybullet_planning.git
@@ -19,6 +16,3 @@
 [submodule "external/rs_data_structure"]
 	path = external/rs_data_structure
 	url = https://github.com/yijiangh/rs_data_structure
-[submodule "external/husky_assembly_design_study"]
-	path = external/husky_assembly_design_study
-	url = https://github.com/yijiangh/husky_assembly_design_study.git

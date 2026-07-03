@@ -66,9 +66,10 @@ MOCAP_CAMERA_EXPORT_DIR = (
     "2025-03 Husky Assembly/data_experiment/visualise_mocap_camera"
 )
 
-# Folder under DATA_DIRECTORY/husky_assembly_design_study/<...>/RobotCellStates/
+# Folder under DESIGN_DATA_DIRECTORY (gdrive)/<...>/RobotCellStates/
 # from which CALIBRATION-mode state + trajectory loaders pull files.
 # Keyed by selected_arm_index (0=left, 1=right); see _calibration_state_dir().
+# Full design-study archive lives on GitHub: yijiangh/husky_assembly_design_study.
 CALIBRATION_STATE_SETS = {
     0: '260630_calib_trajs_Alice',              # left arm & single arm
     1: '260225_extrinsic_calib_trajs_Cindy_Right',  # right arm for Cindy
@@ -218,7 +219,7 @@ class HuskyMonitor(Node):
         self.selected_trajectory_index = 0
 
         # CALIBRATION-mode state/trajectory loaders (RobotCellState +
-        # JointTrajectory files under DATA_DIRECTORY/husky_assembly_design_study/
+        # JointTrajectory files under DESIGN_DATA_DIRECTORY (gdrive)/
         # <CALIBRATION_STATE_SET>/RobotCellStates/).
         self.calibration_state_slider = None
         self.calibration_trajectory_slider = None
@@ -3381,8 +3382,7 @@ class HuskyMonitor(Node):
         state_set = CALIBRATION_STATE_SETS.get(
             self.selected_arm_index, CALIBRATION_STATE_SETS[0])
         return os.path.join(
-            DATA_DIRECTORY, 'husky_assembly_design_study',
-            state_set, 'RobotCellStates',
+            DESIGN_DATA_DIRECTORY, state_set, 'RobotCellStates',
         )
 
     def _load_available_calibration_states(self):
