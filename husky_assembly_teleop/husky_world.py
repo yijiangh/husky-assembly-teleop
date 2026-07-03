@@ -20,6 +20,7 @@ import husky_assembly_teleop.husky_planning as planning
 import husky_assembly_teleop.husky_control as control
 from husky_assembly_teleop.utils import HUSKY_DUAL_UR5e_JOINT_NAMES, UR5E_JOINT_NAMES, MOCAP_SET_RIG_RB_NAME, get_arm_ik_for_grasp_bar, get_custom_limits, notify, plan_transit_motion, pose_from_frame
 from husky_assembly_teleop.scaffolding import parse_mt_geometric, create_collision_bodies, create_couplers, flatten_list
+from husky_assembly_teleop.cfab_session import CfabSession, build_default_robot_cell
 import json
 from datetime import datetime
 
@@ -341,6 +342,37 @@ def init(monitor):
         left_EE.body = pp.create_box(0.1, 0.1, 0.1)
         right_EE = TrackedObject(monitor, 'right_EE', 1012, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
         right_EE.body = pp.create_box(0.1, 0.1, 0.1)
+
+    # * default cfab session from startup (no BarAction needed): build a
+    # RobotCell programmatically for whichever rig this is, so free /
+    # single-arm planning can run through cfab immediately. Loading a
+    # BarAction later swaps in the per-problem cell as before.
+    try:
+        cell, default_state = build_default_robot_cell(
+            ee_types, dual_arm=dual_arm, robot_name=robot_name,
+            punch_tool_offsets=punch_offset)
+        existing_client_id = pp.CLIENT if pp.is_connected() else None
+        with pp.LockRenderer():
+            monitor.cfab = CfabSession(None, robot_cell=cell,
+                                       connection_type="gui",
+                                       enable_debug_gui=True,
+                                       existing_client_id=existing_client_id)
+        if existing_client_id is not None:
+            pp.CLIENTS.setdefault(existing_client_id, True)
+        monitor.cfab_default_state = default_state
+        # Apply the default state so the attached tools ride on tool0 (the
+        # cell spawns them at the origin until a state positions them).
+        monitor.cfab.planner.set_robot_cell_state(default_state)
+        if getattr(monitor, '_is_live_monitor', False):
+            monitor._hide_cfab_robot()
+        print(f"[cfab] default RobotCell ready at startup "
+              f"(dual_arm={dual_arm}, tools={list(cell.tool_models)}).")
+    except Exception as e:
+        monitor.cfab = None
+        monitor.cfab_default_state = None
+        monitor.get_logger().warn(
+            f"default cfab session unavailable ({e}); cfab planning starts "
+            "when a BarAction is loaded.")
 
     #boxes.append(TrackedObject(monitor, 'box1', 4457, np.zeros(3), np.array((0, 0, 0, 1)), 0.2, 'cube.obj'))
     #boxes.append(TrackedObject(monitor, 'box2', 4484, np.zeros(3), np.array((0, 0, 0, 1)), 0.2, 'cube.obj'))
@@ -1599,152 +1631,45 @@ def plan_both_arms_to_goal(monitor, use_composite=False, debug=False):
         left_trajectory = (padded_left_path, None, total_time, None)
         right_trajectory = (padded_right_path, None, total_time, None)
     else:
-        # Composite planning: plan in the joint space of both arms via shared API.
-        pp.set_joint_positions(robot, left_joints, current_left_conf)
-        pp.set_joint_positions(robot, right_joints, current_right_conf)
-        composite_start = np.concatenate([current_left_conf, current_right_conf])
+        # Composite planning: plan in the joint space of both arms through
+        # the cfab planner. The start state is the loaded movement's state
+        # (if any) or the startup default cell state, with the live robot
+        # pose injected — obstacles + ACM come from that state.
+        if monitor.cfab is None:
+            monitor.get_logger().warn(
+                "Composite planning needs the cfab session (created at "
+                "startup); it is not available.")
+            return
+        template = getattr(monitor, 'movement_start_state', None) \
+            or getattr(monitor, 'cfab_default_state', None)
+        if template is None:
+            monitor.get_logger().warn(
+                "Composite planning: no movement start_state or default cell "
+                "state available.")
+            return
+        state = template.copy()
+        monitor._inject_live_conf_into_state(state)
         composite_goal = np.concatenate([left_conf, right_conf])
-        arm_joints_all = list(left_joints) + list(right_joints)
-        tool_link_L = pp.link_from_name(robot, 'left_ur_arm_tool0')
-        tool_link_R = pp.link_from_name(robot, 'right_ur_arm_tool0')
-        # Quick-test staging mode: ignore environment/assembly obstacles.
-        # Keep attachments so robot-vs-tool collision is still checked.
-        composite_obstacles = []
-        print("Composite manual staging ignores all environment obstacles for quick test.")
-        scene = {
-            "robot": robot,
-            "arm_joints": arm_joints_all,
-            "joint_names": list(left_joint_names) + list(right_joint_names),
-            "tool_link_left": tool_link_L,
-            "tool_link_right": tool_link_R,
-            "obstacles": composite_obstacles,
-            "attachments": attachments,  # already len 2 per existing code
-            "disabled_collisions": None,
-            # Mounted EE type per arm. plan_transit_motion uses this to add
-            # a wrist_2_link <-> tool disable when an assembly_tool_v3_* is
-            # on, since that tool extends past wrist_3 on the husky URDF.
-            "ee_types": list(getattr(husky.object, "ee_types", []) or []),
-        }
         from husky_assembly_tamp.motion_planner.api import plan_free_dual_arm
         composite_path, info = plan_free_dual_arm(
-            scene, composite_start, composite_goal,
+            monitor.cfab.planner, state, composite_goal,
             max_time=120.0, max_iterations=1000,
             joint_resolution=FREE_JOINT_RESOLUTION,
             debug=debug,
         )
         if composite_path is None:
             monitor.get_logger().warn(
-                f"Composite planning failed: {info.get('failure_reason', 'unknown')}; "
-                f"endpoints were valid if no 'initial and end conf not valid' line appeared."
+                f"Composite planning failed: {info.get('failure_reason', 'unknown')}."
             )
             return
-        left_trajectory = (np.array([q[:len(left_joints)] for q in composite_path]), None, monitor.trajectory_time, None)
-        right_trajectory = (np.array([q[len(left_joints):] for q in composite_path]), None, monitor.trajectory_time, None)
+        left_trajectory = (np.array([q[:6] for q in composite_path]), None, monitor.trajectory_time, None)
+        right_trajectory = (np.array([q[6:] for q in composite_path]), None, monitor.trajectory_time, None)
 
     # Set the trajectories for both arms
     monitor.set_arm_trajectory(left_trajectory, index=0)
     monitor.set_arm_trajectory(right_trajectory, index=1)
     monitor.set_to_show_traj_state()
     print("Successfully planned both arms to goal ({} mode)!".format('composite' if use_composite else 'sequential'))
-
-
-_TOOL_V3_WRIST_TOUCH_LINKS = (
-    'left_ur_arm_wrist_2_link',
-    'right_ur_arm_wrist_2_link',
-)
-
-
-_ASSEMBLY_ARM_TOOL_BODIES = (
-    ("AssemblyLeftArmToolBody", "left_"),
-    ("AssemblyRightArmToolBody", "right_"),
-)
-
-
-_ASSEMBLY_ARM_TOOL_BODY_TOUCH_LINKS_SUFFIXES = (
-    "ur_arm_wrist_1_link",
-    "ur_arm_wrist_2_link",
-    "ur_arm_wrist_3_link",
-    "ur_arm_forearm_link",
-)
-
-
-def _augment_assembly_arm_tool_body_touch_links(state):
-    """Allow each Assembly*ArmToolBody rigid body to touch the side's wrist
-    + forearm links.
-
-    These bodies are mounted at tool0 (registered as cfab rigid_body, not
-    ToolState) and their meshes extend back into the wrist swept volume by
-    design; cfab CC.3 (robot link <-> rigid_body) would flag them as
-    collisions without these touch_links. Symmetric to
-    _augment_tool_touch_links_for_v3 but operates on rigid_body_states.
-    """
-    rb_states = getattr(state, "rigid_body_states", None) or {}
-    for body_name, prefix in _ASSEMBLY_ARM_TOOL_BODIES:
-        rbs = rb_states.get(body_name)
-        if rbs is None:
-            continue
-        existing = list(getattr(rbs, "touch_links", []) or [])
-        for suf in _ASSEMBLY_ARM_TOOL_BODY_TOUCH_LINKS_SUFFIXES:
-            ln = prefix + suf
-            if ln not in existing:
-                existing.append(ln)
-        rbs.touch_links = existing
-
-
-def _augment_tool_touch_links_for_v3(state, husky):
-    """If an assembly_tool_v3_* is mounted, allow wrist_2 ↔ tool contact.
-
-    The tool body extends past wrist_3 into the wrist_2 swept volume on the
-    husky URDF; without this touch-link entry the cfab CC.2 (robot link ↔
-    tool) check rejects otherwise-valid IK
-    solutions. Mirrors the pp-side disable in utils.plan_transit_motion.
-    """
-    ee_types = list(getattr(husky.object, "ee_types", []) or [])
-    if not any(isinstance(t, str) and t.startswith("assembly_tool_v3") for t in ee_types):
-        return
-    for tool_state in state.tool_states.values():
-        existing = list(getattr(tool_state, 'touch_links', []) or [])
-        for wl in _TOOL_V3_WRIST_TOUCH_LINKS:
-            if wl not in existing:
-                existing.append(wl)
-        tool_state.touch_links = existing
-
-
-def plan_free_dual_arm_from_live_base(monitor):
-    """Replan free dual-arm motion using the live mocap base + M2 EE targets.
-
-    Reuses `_solve_bar_action_goal_ik` for IK and `plan_both_arms_to_goal`
-    for the composite path planning. Overwrites monitor.movement_start_state
-    in place so downstream code (cfab planner state, target_ee_frames) stays
-    consistent.
-    """
-    from husky_assembly_teleop.utils import frame_from_pose
-    if monitor.movement_start_state is None:
-        monitor.get_logger().warn("No M2 movement loaded; load a BarAction first.")
-        return
-    if monitor.cfab is None or monitor.cfab.planner is None:
-        monitor.get_logger().warn("cfab planner not initialized.")
-        return
-
-    husky = monitor.huskies[monitor.selected_robot_id]
-    hi = husky.interface
-    live_state = monitor.movement_start_state.copy()
-    live_base_pose = (hi.position, hi.rotation)
-    live_state.robot_base_frame = frame_from_pose(live_base_pose)
-    _augment_tool_touch_links_for_v3(live_state, husky)
-    monitor.movement_start_state = live_state
-    monitor.cfab.planner.set_robot_cell_state(live_state)
-
-    conf12 = _solve_bar_action_goal_ik(
-        monitor, live_state, verbose=True, skip_env_collisions=True
-    )
-    if conf12 is None:
-        monitor.get_logger().warn("IK from live base failed.")
-        return
-
-    monitor.goal_arm_pose[0] = np.asarray(conf12[:6])
-    monitor.goal_arm_pose[1] = np.asarray(conf12[6:])
-    plan_both_arms_to_goal(monitor, use_composite=True)
 
 
 def _get_manual_staging_obstacles(monitor):
@@ -1812,7 +1737,14 @@ def _solve_bar_action_goal_ik(monitor, start_state,
     is irrelevant to the local replan.
     """
     from compas_fab.backends import CollisionCheckError, InverseKinematicsError
+    from compas_fab.backends.pybullet.exceptions import PlanningGroupNotSupported
     from compas_fab.robots import FrameTarget, TargetMode
+
+    # pybullet's whole-body IK can converge by recruiting a joint outside the
+    # requested arm group (typically the other arm); compas_fab rejects that
+    # with PlanningGroupNotSupported. Treat it as a soft IK failure (the arm
+    # can't reach the target from this seed) instead of a hard crash.
+    _IK_FAIL = (InverseKinematicsError, CollisionCheckError, PlanningGroupNotSupported)
 
     if monitor.target_ee_frames is None:
         return None
@@ -1859,13 +1791,13 @@ def _solve_bar_action_goal_ik(monitor, start_state,
         opts = _ik_options(check_collision)
         try:
             conf_L = planner.inverse_kinematics(target_L, start_state, left_group, opts)
-        except (InverseKinematicsError, CollisionCheckError) as e:
+        except _IK_FAIL as e:
             return None, f"LEFT FAIL: {getattr(e, 'message', e)}"
         st = start_state.copy()
         st.robot_configuration = conf_L
         try:
             conf_LR = planner.inverse_kinematics(target_R, st, right_group, opts)
-        except (InverseKinematicsError, CollisionCheckError) as e:
+        except _IK_FAIL as e:
             return None, f"RIGHT FAIL: {getattr(e, 'message', e)}"
         gs = start_state.copy()
         gs.robot_configuration = conf_LR
@@ -1921,580 +1853,6 @@ def _solve_bar_action_goal_ik(monitor, start_state,
     return np.array([conf_LR[n] for n in list(left_names) + list(right_names)])
 
 
-def plan_constrained_from_live_base(monitor):
-    """Constrained replan from live mocap base. Overwrites
-    monitor.movement_start_state in place (plan_and_stage_constrained reads
-    it directly at L1774)."""
-    from husky_assembly_teleop.utils import frame_from_pose
-    if monitor.movement_start_state is None:
-        monitor.get_logger().warn("No M2 movement loaded; load a BarAction first.")
-        return
-    if monitor.cfab is None or monitor.cfab.planner is None:
-        monitor.get_logger().warn("cfab planner not initialized.")
-        return
-
-    live_state = monitor.movement_start_state.copy()
-    hi = monitor.huskies[monitor.selected_robot_id].interface
-    live_base_pose = (hi.position, hi.rotation)
-    live_state.robot_base_frame = frame_from_pose(live_base_pose)
-    monitor.movement_start_state = live_state
-    monitor.cfab.planner.set_robot_cell_state(live_state)
-
-    monitor.plan_and_stage_constrained_bar_action()
-
-
-def plan_and_stage_constrained(monitor, debug=False,
-                                max_time=60.0, max_attempts=2,
-                                max_iterations=None, contact_probe_distance=0.005,
-                                random_seed=None, use_draw=False,
-                                position_res=None, rotation_res=None,
-                                free_joint_resolution=None,
-                                bidirectional=True, start_retries=6,
-                                ignore_env_obstacles=False):
-    """Run the constrained dual-arm planner and expose its start as a goal.
-
-    Workflow:
-      1. Derive grasp transforms from the loaded goal RobotCellState
-         (FK at goal_conf + bar pose at goal).
-      2. Derive a "home" world_from_bar_start and a constraint-satisfying
-         start_conf via dual-arm endpoint IK.
-      3. Run the constrained planner from start_conf to goal_conf.
-      4. Store only the constrained trajectory and set start_conf as the
-         monitor goal so the user can manually plan the free staging motion.
-
-    User then plans to the exposed start goal with the existing free-motion
-    buttons, manually places the bar in the end-effectors, flips the Display
-    slider to 1, and executes the constrained trajectory.
-    """
-    mv = getattr(monitor, "current_movement", None)
-    movement_type_ = getattr(monitor, "movement_type", None)
-    bar_action_mode = mv is not None and movement_type_ in ("constrained", "linear")
-
-    if bar_action_mode:
-        husky = getattr(monitor, "_bar_action_husky", None)
-        if husky is None:
-            monitor.get_logger().warn(
-                "BarAction mode: monitor._bar_action_husky not set — was "
-                "load_bar_action's cfab→pp bridge run?"
-            )
-            return
-        _saved_pp_client = pp.CLIENT
-        pp.CLIENT = monitor.cfab.client.client_id
-        pp.CLIENTS.setdefault(pp.CLIENT, True)
-        try:
-            # Pause cfab PyBullet rendering while the constrained planner
-            # expands/searches; GUI drawing dominates runtime otherwise.
-            with pp.LockRenderer():
-                return _plan_and_stage_body(
-                    monitor, husky, husky.object.robot, debug, max_time,
-                    max_attempts, max_iterations, contact_probe_distance, random_seed,
-                    use_draw, position_res, rotation_res, free_joint_resolution,
-                    bidirectional=bidirectional, start_retries=start_retries,
-                    ignore_env_obstacles=ignore_env_obstacles,
-                )
-        finally:
-            pp.CLIENT = _saved_pp_client
-    else:
-        husky = monitor.huskies[monitor.selected_robot_id]
-        # Pause monitor PyBullet rendering while the constrained planner runs.
-        with pp.LockRenderer():
-            return _plan_and_stage_body(
-                monitor, husky, husky.object.robot, debug, max_time,
-                max_attempts, max_iterations, contact_probe_distance, random_seed,
-                use_draw, position_res, rotation_res, free_joint_resolution,
-                bidirectional=bidirectional, start_retries=start_retries,
-            )
-
-
-def _plan_and_stage_body(monitor, husky, robot, debug, max_time, max_attempts,
-                          max_iterations, contact_probe_distance, random_seed=0,
-                          use_draw=False, position_res=None, rotation_res=None,
-                          free_joint_resolution=None,
-                          bidirectional=True, start_retries=6,
-                          ignore_env_obstacles=False):
-    left_joint_names = HUSKY_DUAL_UR5e_JOINT_NAMES[0]
-    right_joint_names = HUSKY_DUAL_UR5e_JOINT_NAMES[1]
-    left_joints = pp.joints_from_names(robot, left_joint_names)
-    right_joints = pp.joints_from_names(robot, right_joint_names)
-    arm_joints_all = list(left_joints) + list(right_joints)
-    tool_link_L = pp.link_from_name(robot, 'left_ur_arm_tool0')
-    tool_link_R = pp.link_from_name(robot, 'right_ur_arm_tool0')
-
-    from husky_assembly_tamp.motion_planner.api import (
-        derive_grasps_from_state,
-        plan_constrained_dual_arm,
-    )
-    from husky_assembly_tamp.motion_planner.dual_arm_task_space_rrt.core import (
-        derive_constrained_start,
-        get_bar_feature_points,
-    )
-
-    # Bidirectional RRT-Connect (plan_pose_birrt) is enabled by default. The
-    # constrained planner imports plan_pose_rrt from
-    # dual_arm_task_space_rrt.core at module load, so we swap the binding here
-    # (both in core and api) so plan_constrained_dual_arm picks up BiRRT.
-    # Restored at the end of this body.
-    _bidir_patches = []
-    if bidirectional:
-        from husky_assembly_tamp.motion_planner.dual_arm_task_space_rrt import (
-            core as _core_mod,
-        )
-        _plan_pose_birrt = getattr(_core_mod, "plan_pose_birrt", None)
-        if _plan_pose_birrt is not None:
-            from husky_assembly_tamp.motion_planner import api as _api_mod
-            for _mod in (_core_mod, _api_mod):
-                if getattr(_mod, "plan_pose_rrt", None) is not None:
-                    _bidir_patches.append((_mod, "plan_pose_rrt", _mod.plan_pose_rrt))
-                    _mod.plan_pose_rrt = _plan_pose_birrt
-        else:
-            monitor.get_logger().warn(
-                "bidirectional requested but plan_pose_birrt not available; "
-                "falling back to single-tree plan_pose_rrt."
-            )
-
-    mv = getattr(monitor, "current_movement", None)
-    movement_type_ = getattr(monitor, "movement_type", None)
-    bar_action_mode = mv is not None and movement_type_ in ("constrained", "linear")
-
-    if bar_action_mode:
-        # BarAction-driven entry: act as a "goal adapter" — convert the
-        # BarAction's target_ee_frames + start_state bar attachment into the
-        # same pp-side state the button path expects, then fall through to
-        # the shared else-branch logic (derive_grasps_from_state +
-        # derive_constrained_start).
-        start_state = monitor.movement_start_state
-        if monitor.active_bar_name is None:
-            monitor.get_logger().warn("BarAction mode: active_bar_name not set; aborting.")
-            return
-
-        # Lazy-resolve pp-side body ids from cfab if the caller didn't pre-bind.
-        client = monitor.cfab.client
-        if monitor.active_bar_body is None:
-            monitor.active_bar_body = _first_puid_or_none(client, monitor.active_bar_name)
-        if not monitor.static_obstacles:
-            monitor.static_obstacles = {
-                n: ids[0] for n, ids in client.rigid_bodies_puids.items()
-                if ids and n != monitor.active_bar_name
-            }
-        if monitor.active_bar_aabb_dims is None:
-            monitor.active_bar_aabb_dims = monitor.get_active_bar_aabb_dims()
-
-        if monitor.active_bar_body is None:
-            monitor.get_logger().warn(
-                f"BarAction mode: could not resolve pp body id for active_bar_name={monitor.active_bar_name!r}"
-            )
-            return
-
-        # 1) Goal config: prefer authored next-movement start_state.robot_configuration
-        # over re-IKing target_ee_frames. cc_lessons.md:54-59 — authored cell-state
-        # conf is FK-consistent with target_ee_frames (within cfab tolerance ~1 mm/
-        # 0.01 rad), and using it directly avoids the ±2π wraps that PyBullet IK
-        # branch search can legitimately return. Falls back to IK when the next
-        # movement has no authored robot_configuration.
-        from husky_assembly_teleop.utils import vec12_from_conf as _vec12_from_conf
-        authored_goal = None
-        idx = getattr(monitor, "current_movement_index", None)
-        loaded = getattr(monitor, "_loaded_movements", None) or []
-        if idx is not None and idx + 1 < len(loaded):
-            next_mv = loaded[idx + 1]
-            if (next_mv.start_state is not None
-                    and getattr(next_mv.start_state, 'robot_configuration', None) is not None):
-                try:
-                    authored_goal = np.asarray(_vec12_from_conf(next_mv.start_state.robot_configuration), dtype=float)
-                except Exception:
-                    authored_goal = None
-        if authored_goal is not None:
-            print(f"[plan_and_stage_constrained] using authored "
-                  f"{loaded[idx + 1].movement_id!r}.start_state.robot_configuration "
-                  f"as goal_conf (skipping target_ee_frames IK to avoid ±2π wrap).")
-            goal_conf = authored_goal
-        else:
-            goal_conf = _solve_bar_action_goal_ik(
-                monitor, start_state, skip_env_collisions=ignore_env_obstacles
-            )
-            if goal_conf is None:
-                monitor.get_logger().warn("BarAction goal IK failed.")
-                return
-
-        # 2) world_from_bar_goal via FK at goal_conf.
-        bar_rb = start_state.rigid_body_states[monitor.active_bar_name]
-        bar_attach_pose = pose_from_frame(bar_rb.attachment_frame)
-        tool_link_bar = pp.link_from_name(robot, bar_rb.attached_to_link)
-        with pp.WorldSaver():
-            pp.set_joint_positions(robot, arm_joints_all, goal_conf)
-            world_from_tool_bar_goal = pp.get_link_pose(robot, tool_link_bar)
-        world_from_bar_goal = pp.multiply(world_from_tool_bar_goal, bar_attach_pose)
-
-        # 3) Publish goal onto monitor's pp-side state so the shared
-        # else-branch logic below consumes it.
-        monitor.goal_arm_pose[0] = goal_conf[:6]
-        monitor.goal_arm_pose[1] = goal_conf[6:]
-        pp.set_pose(monitor.active_bar_body, world_from_bar_goal)
-
-        # 4) Seed the robot at staging-seed-conf so the shared `current_conf`
-        # read picks up the right pose (set_robot_cell_state put the robot at
-        # the BarAction.start_state, which for M1 is all zeros — a placeholder,
-        # not a feasible HOME).
-        seed_conf = getattr(monitor, "bar_action_staging_seed_conf", None)
-        if seed_conf is not None:
-            pp.set_joint_positions(robot, arm_joints_all, np.asarray(seed_conf, dtype=float))
-    else:
-        if monitor.active_bar_body is None:
-            monitor.get_logger().warn(
-                "No active bar in scene. Load a goal RobotCellState whose attached_to_tool rigid body has been spawned."
-            )
-            return
-
-    goal_conf = np.concatenate([monitor.goal_arm_pose[0], monitor.goal_arm_pose[1]])
-
-    world_from_bar_goal = pp.get_pose(monitor.active_bar_body)
-
-    # 1. Grasps — RobotCellState is the single source of truth: FK both
-    # tool0s at goal_conf vs. the active bar's loaded pose.
-    grasp_bar_from_left, grasp_bar_from_right = derive_grasps_from_state(
-        robot, arm_joints_all, tool_link_L, tool_link_R,
-        goal_conf, world_from_bar_goal,
-    )
-
-    # 2. Build the constrained planner's obstacle list FIRST — the new
-    # `derive_constrained_start` validator runs collision checks against this
-    # filtered list, so it must be available before the IK derivation.
-    #
-    # This is delicate because the live cell state loads the *whole assembly*
-    # (predecessors + successors + structural elements) as static obstacles.
-    # The bar's home->goal flight path runs through space that's now densely
-    # occupied by future-built bars — bodies that wouldn't actually be there
-    # at install time.
-    #
-    # Filtering rules (in order of importance):
-    # 1. Exclude active_bar_body (it's the manipulated body, attached via grasp).
-    # 2. Exclude design-study bar bodies named 'b<N>_0' and 'b<N>_joint_*'. These
-    #    are the assembly elements; the offline prototype's tests run with
-    #    built_bars=[] (scene has *only* the active bar + structural), and that
-    #    convention is what produces the prototype's documented behavior on
-    #    these antenna targets. Without this filter the live flow is solving a
-    #    much harder problem than the prototype was designed/tuned for.
-    # 3. Also auto-exclude any body within 5mm of the bar at goal pose
-    #    ("expected contacts at install"); kept as a safety net for when rule
-    #    2 doesn't apply (e.g., non-design-study state files).
-    import pybullet as _pb
-    import re as _re
-    name_from_body = {body: name for name, body in monitor.static_obstacles.items()}
-    bar_name_re = _re.compile(r"^b\d+(_0|_joint_\d+)$")  # matches b11_0, b3_joint_2, etc.
-
-    expected_neighbor_contacts = set()
-    with pp.WorldSaver():
-        pp.set_joint_positions(robot, arm_joints_all, goal_conf)
-        pp.set_pose(monitor.active_bar_body, world_from_bar_goal)
-        _pb.performCollisionDetection()
-        for body in monitor.static_obstacles.values():
-            if body == monitor.active_bar_body:
-                continue
-            pts = _pb.getClosestPoints(monitor.active_bar_body, body, distance=contact_probe_distance)
-            if pts:
-                expected_neighbor_contacts.add(body)
-                name = name_from_body.get(body, str(body))
-                depths = [round(pt[8], 4) for pt in pts]
-                print(f"  expected contact at goal (excluded): {name} (penetration/gap: {depths})")
-
-    obstacles_for_constrained = []
-    excluded_assembly = []
-    extras_set = set(getattr(monitor, "active_extra_bodies", []) or [])
-    for name, body in monitor.static_obstacles.items():
-        if body == monitor.active_bar_body:
-            continue
-        if body in expected_neighbor_contacts:
-            continue
-        if body in extras_set:
-            # gdrive convention: active_joint_* etc. travel with the bar
-            continue
-        if bar_name_re.match(name):
-            excluded_assembly.append(name)
-            continue
-        obstacles_for_constrained.append(body)
-    if excluded_assembly:
-        print(f"  excluded {len(excluded_assembly)} design-study assembly bodies from constrained obstacles: "
-              f"{', '.join(excluded_assembly[:6])}{'...' if len(excluded_assembly) > 6 else ''}")
-    if extras_set:
-        print(f"  excluded {len(extras_set)} active-bar extras (travel rigidly with the bar)")
-    print(f"  constrained planner sees {len(obstacles_for_constrained)} static obstacles "
-          f"(structural / non-design-study only)")
-
-    if ignore_env_obstacles:
-        # TEMPORARY: skip ALL environment / static obstacles from the constrained
-        # planner. Only robot self-collision and bar-vs-robot (via attachment)
-        # remain. Use only as a stopgap while debugging the planner; re-enable
-        # environment collisions for any plan executed on real hardware.
-        n_ignored = len(obstacles_for_constrained)
-        obstacles_for_constrained = []
-        warn_msg = (
-            "!!! ignore_env_obstacles=True: skipping "
-            f"{n_ignored} environment/static obstacles from the constrained "
-            "planner. Only robot self-collision + attached-bar-vs-robot checks "
-            "remain. TURN THIS BACK OFF before planning paths for real-hardware "
-            "execution. (see husky_world.plan_and_stage_constrained / "
-            "husky_monitor.plan_and_stage_constrained_bar_action / "
-            "scripts/headless_live_monitor_test.py to disable.)"
-        )
-        monitor.get_logger().warn(warn_msg)
-        print("\n" + "=" * 78)
-        print(warn_msg)
-        print("=" * 78 + "\n")
-
-    # 3. Derived start (fixed-bar strategy w/ collision-aware IK).
-    # Use goal_conf as the IK seed (mirrors run_stage_trial's pattern of using
-    # the cell-state joint values as seed for endpoint IK). Seeding with
-    # current_conf can return a self-colliding IK solution because the IK
-    # solver does not check collision.
-    # The husky's URDF was loaded fixed_base; its current PyBullet pose is
-    # the husky's pose in the assembly world frame. Pass it through so the
-    # mobile-base-frame bar home anchor is composed correctly when the husky
-    # is not at world origin.
-    world_from_mobile_base = pp.get_pose(robot)
-
-    def _derive_start_for_attempt(attempt_idx):
-        # attempt_idx==0 keeps the original deterministic behavior so easy
-        # cases plan identically. Later attempts shuffle the bar-position
-        # grid with a different seed AND widen the sweep box (in z) so a
-        # floor-level goal (e.g. B226) can be reached.
-        base_seed = getattr(monitor, "random_seed", None)
-        if attempt_idx == 0:
-            return derive_constrained_start(
-                robot, arm_joints_all, tool_link_L, tool_link_R,
-                grasp_bar_from_left, grasp_bar_from_right,
-                world_from_bar_goal, seed_conf=goal_conf,
-                bar_body=monitor.active_bar_body,
-                obstacles=obstacles_for_constrained,
-                world_from_mobile_base=world_from_mobile_base,
-                random_seed=base_seed,
-            )
-        derive_seed = (0 if base_seed is None else int(base_seed)) + 9973 * attempt_idx
-        return derive_constrained_start(
-            robot, arm_joints_all, tool_link_L, tool_link_R,
-            grasp_bar_from_left, grasp_bar_from_right,
-            world_from_bar_goal, seed_conf=goal_conf,
-            bar_body=monitor.active_bar_body,
-            obstacles=obstacles_for_constrained,
-            world_from_mobile_base=world_from_mobile_base,
-            random_seed=derive_seed,
-            shuffle_deltas=True,
-            bar_sweep_box=((-0.4, 0.4), (-0.4, 0.4), (-0.5, 0.3)),
-        )
-
-    world_from_bar_start, start_conf = _derive_start_for_attempt(0)
-    if start_conf is None:
-        monitor.get_logger().warn("Endpoint IK failed at derived start bar pose")
-        if _bidir_patches:
-            for _mod, _name, _orig in _bidir_patches:
-                setattr(_mod, _name, _orig)
-        return
-
-    # 4. Constrained plan
-    feature_points = get_bar_feature_points(monitor.active_bar_aabb_dims) \
-                     if monitor.active_bar_aabb_dims is not None else get_bar_feature_points()
-    attachments_pair = [husky.object.ee_list[0][1], husky.object.ee_list[1][1]]
-
-    scene_with_bar = {
-        "robot": robot,
-        "arm_joints": arm_joints_all,
-        "joint_names": list(left_joint_names) + list(right_joint_names),
-        "tool_link_left": tool_link_L,
-        "tool_link_right": tool_link_R,
-        "obstacles": obstacles_for_constrained,
-        "attachments": attachments_pair,  # not used by constrained planner but harmless
-        "disabled_collisions": None,
-    }
-    pp.set_pose(monitor.active_bar_body, world_from_bar_start)
-    # Travel any active-bar extras with the bar so the visual scene is
-    # consistent at start. They're excluded from the planner's collision
-    # list, so this only matters for visualization.
-    for extra_body, bar_from_extra in zip(
-        getattr(monitor, "active_extra_bodies", []) or [],
-        getattr(monitor, "bar_from_extra", []) or [],
-    ):
-        pp.set_pose(extra_body, pp.multiply(world_from_bar_start, bar_from_extra))
-    plan_kwargs = dict(
-        bar_body=monitor.active_bar_body,
-        grasp_bar_from_left=grasp_bar_from_left,
-        grasp_bar_from_right=grasp_bar_from_right,
-        feature_points=feature_points,
-        world_from_bar_start=world_from_bar_start,
-        world_from_bar_goal=world_from_bar_goal,
-        stage=monitor.constrained_planner_stage,
-    )
-    if max_time is not None:
-        plan_kwargs["max_time"] = max_time
-    if max_attempts is not None:
-        plan_kwargs["max_attempts"] = max_attempts
-    if max_iterations is not None:
-        plan_kwargs["max_iterations"] = max_iterations
-    if random_seed is not None:
-        # Optional: pin the RRT's RNG for a reproducible run. Default is
-        # None (fresh entropy per call) — the RRT is flaky for hard scenes,
-        # so a fresh seed + the generous max_attempts above usually finds a
-        # path faster than any single fixed seed would.
-        plan_kwargs["random_seed"] = random_seed
-    if use_draw:
-        # plan_pose_rrt's extend_toward draws each new SE(3) tree edge via
-        # pp.add_line on pp.CLIENT (= the cfab GUI window here). Useful for
-        # eyeballing where the bar-pose RRT gets stuck — best with
-        # max_attempts=1 + a fixed --random-seed so it's one clean tree.
-        plan_kwargs["use_draw"] = True
-    # Finer constrained steps keep per-step IK closer to the bar target, but
-    # increase planner work. Free joint resolution controls staging BiRRT steps.
-    eff_position_res = CONSTRAINED_POSITION_RES if position_res is None else float(position_res)
-    eff_rotation_res = CONSTRAINED_ROTATION_RES if rotation_res is None else float(rotation_res)
-    eff_free_joint_resolution = (
-        FREE_JOINT_RESOLUTION if free_joint_resolution is None
-        else float(free_joint_resolution)
-    )
-    plan_kwargs["position_res"] = eff_position_res
-    plan_kwargs["rotation_res"] = eff_rotation_res
-
-    # Opt-in: route the joint-space collision check through cfab's
-    # PyBulletCheckCollision (5-step CC with SRDF + per-state touch_links).
-    # Active only when monitor.use_cfab_collision_for_constrained=True AND
-    # we are doing Stage 3 (the only stage with joint-space collision).
-    use_cfab_cc = (
-        bool(getattr(monitor, "use_cfab_collision_for_constrained", False))
-        and monitor.constrained_planner_stage == 3
-        and getattr(monitor, "cfab", None) is not None
-        and getattr(monitor.cfab, "planner", None) is not None
-        and monitor.movement_start_state is not None
-    )
-    if use_cfab_cc:
-        from copy import deepcopy
-        from husky_assembly_tamp.motion_planner.dual_arm_task_space_rrt.core import (
-            STAGE3_GRASP_MASK_LINKS,
-        )
-        cfab_template = deepcopy(monitor.movement_start_state)
-        bar_rb_state = cfab_template.rigid_body_states.get(monitor.active_bar_name)
-        if bar_rb_state is not None:
-            existing = list(getattr(bar_rb_state, "touch_links", []) or [])
-            for ln in STAGE3_GRASP_MASK_LINKS:
-                if ln not in existing:
-                    existing.append(ln)
-            bar_rb_state.touch_links = existing
-        _augment_tool_touch_links_for_v3(cfab_template, husky)
-        _augment_assembly_arm_tool_body_touch_links(cfab_template)
-        plan_kwargs["cfab_session"] = monitor.cfab
-        plan_kwargs["cfab_template_state"] = cfab_template
-        monitor.get_logger().info(
-            "constrained CC backend: cfab (PyBulletCheckCollision)"
-        )
-
-    # Start-retry loop: if planning fails from the first derived start, derive
-    # a different start (shuffled, widened sweep) and re-plan. start_retries
-    # is the maximum number of starts tried (start_retries=1 = legacy
-    # behavior). attempt 0 already ran via _derive_start_for_attempt(0) above.
-    try:
-        constrained_path, c_info = plan_constrained_dual_arm(
-            scene_with_bar, start_conf, goal_conf, **plan_kwargs
-        )
-        if constrained_path is None and start_retries > 1:
-            for retry_idx in range(1, start_retries):
-                monitor.get_logger().info(
-                    f"constrained plan failed from start #{retry_idx - 1}; "
-                    f"re-deriving start (retry {retry_idx}/{start_retries - 1})."
-                )
-                new_start_pose, new_start_conf = _derive_start_for_attempt(retry_idx)
-                if new_start_conf is None or new_start_pose is None:
-                    monitor.get_logger().warn(
-                        f"start retry {retry_idx}: no valid derived start; skipping."
-                    )
-                    continue
-                world_from_bar_start = new_start_pose
-                start_conf = np.asarray(new_start_conf, dtype=float)
-                pp.set_pose(monitor.active_bar_body, world_from_bar_start)
-                for extra_body, bar_from_extra in zip(
-                    getattr(monitor, "active_extra_bodies", []) or [],
-                    getattr(monitor, "bar_from_extra", []) or [],
-                ):
-                    pp.set_pose(extra_body, pp.multiply(world_from_bar_start, bar_from_extra))
-                plan_kwargs["world_from_bar_start"] = world_from_bar_start
-                constrained_path, c_info = plan_constrained_dual_arm(
-                    scene_with_bar, start_conf, goal_conf, **plan_kwargs
-                )
-                if constrained_path is not None:
-                    monitor.get_logger().info(
-                        f"constrained plan succeeded on start retry {retry_idx}."
-                    )
-                    break
-    finally:
-        # Restore the original plan_pose_rrt bindings so other code paths
-        # (e.g. CLI run.py without --bidirectional) see the unswapped symbol.
-        if _bidir_patches:
-            for _mod, _name, _orig in _bidir_patches:
-                setattr(_mod, _name, _orig)
-    # Stash the constrained-plan context so downstream consumers (e.g. the
-    # headless test's path-validation) can rebuild the scene + grasps without
-    # re-deriving them. Set regardless of staging success/failure.
-    monitor._bar_action_plan_ctx = dict(
-        stage=monitor.constrained_planner_stage,
-        grasp_bar_from_left=grasp_bar_from_left,
-        grasp_bar_from_right=grasp_bar_from_right,
-        obstacles_for_constrained=list(obstacles_for_constrained),
-        start_conf=np.asarray(start_conf, dtype=float).copy(),
-        goal_conf=np.asarray(goal_conf, dtype=float).copy(),
-        world_from_bar_start=world_from_bar_start,
-        world_from_bar_goal=world_from_bar_goal,
-        position_res=eff_position_res,
-        rotation_res=eff_rotation_res,
-        free_joint_resolution=eff_free_joint_resolution,
-        path_poses=c_info.get("path_poses"),
-    )
-    if constrained_path is None:
-        if monitor.constrained_planner_stage == 1 and c_info.get("pose_only_success"):
-            monitor.get_logger().warn(
-                "Stage 1 constrained plan succeeded but produces no joint path - skipping trajectory display."
-            )
-        else:
-            monitor.get_logger().warn(f"Constrained planning failed: {c_info.get('failure_reason', 'unknown')}")
-        return
-
-    # 5. Store only the constrained path. The free staging path is now planned
-    # manually by the monitor buttons after start_conf becomes the goal target.
-    n = len(left_joints)
-    start_conf = np.asarray(start_conf, dtype=float)
-    planned_goal_conf = np.asarray(constrained_path[-1], dtype=float)
-    monitor.constrained_start_conf = start_conf.copy()
-    monitor.constrained_goal_conf = planned_goal_conf.copy()
-    if getattr(monitor, "_bar_action_plan_ctx", None) is not None:
-        # goal_conf is only a planner seed/warm start. After a path exists,
-        # downstream state must use the actual final waypoint from the plan.
-        monitor._bar_action_plan_ctx["goal_conf"] = planned_goal_conf.copy()
-    monitor.staging_free_trajectory = [None, None]
-    monitor.constrained_trajectory = [
-        (np.array([q[:n] for q in constrained_path]), None, monitor.trajectory_time, None),
-        (np.array([q[n:] for q in constrained_path]), None, monitor.trajectory_time, None),
-    ]
-    monitor.constrained_pose_path = c_info.get("path_poses")
-    monitor.goal_arm_pose[0] = start_conf[:n].copy()
-    monitor.goal_arm_pose[1] = start_conf[n:].copy()
-    monitor.update_traj_goal_configuration()
-    monitor.constrained_display_mode = 1
-    monitor._refresh_constrained_displayed_trajectory()
-    print("Constrained plan ready. Sequence:")
-    print("  1) Plan to the exposed constrained-start goal with 'Plan Both Arms to Goal' or 'Plan S.Arm to conf target'.")
-    print("  2) Execute that free staging plan with Display Traj = 0.")
-    print("  3) Manually place the bar in both end-effectors.")
-    print("  4) Set Display Traj = 1, then execute the CONSTRAINED plan.")
-
-
-############################## KISSING EXPERIMENT ###########################################
-
-""" 
-Conducts the kissing experiment
-
-Assumes robots and goal state are in neutral insertion pose relative to each other.
-Grippers must be closed with installed joints.
-
-"""
-Z_MOVE_TO_INSERT = 0.035
-CARTESIAN_SPEEDUP = 5
-TIME_PER_ROTATION = 14
-PROBE_END_WAIT_TIME = 1
-DATA_FOLDER = '/home/jakobgenhart/husky_assistant/workspace_github/src/husky-assembly-teleop/data/kissing_experiment_data'
 def kissing_experiment(monitor):
     hi: HuskyRobotInterface = monitor.huskies[monitor.selected_robot_id].interface
     robot = monitor.huskies[monitor.selected_robot_id].object.robot

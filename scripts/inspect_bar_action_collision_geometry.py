@@ -57,7 +57,6 @@ def _make_monitor(problem, use_gui):
     monitor._bar_action_husky = None
     monitor._bar_action_ghost_bodies = set()
     monitor._bar_action_cfab_id = None
-    monitor.bar_action_staging_seed_conf = None
     monitor._bar_action_scrub = None
 
     monitor.current_action = None

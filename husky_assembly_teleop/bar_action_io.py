@@ -7,7 +7,8 @@ The data classes live in `rs_data_structure.bar_action`. compas's
 - `parse_bar_action(path)`  → BarAssemblyAction
 - `list_bar_actions(dir)`   → sorted list of *.json filenames
 - `find_movement(action, key)` → (index, movement)
-- `movement_type(mv)`       → "constrained" | "linear" | "free"
+- `movement_type(mv)`       → "constrained-free" | "constrained-linear"
+                              | "linear" | "free"
 """
 
 from __future__ import annotations
@@ -17,14 +18,16 @@ from typing import Union
 
 from compas.data import json_load
 
-# Importing rs_data_structure also registers the "core.bar_action" legacy
-# dtype alias so old JSONs still load.
+# Importing the movement classes registers their compas dtypes so json_load
+# can rebuild them. Concrete class = coordination x motion type:
+# Independent vs EndEffectorConstrained (bar held by both arms), Free vs Linear.
 from rs_data_structure.bar_action import (
     BarAssemblyAction,
     Movement,
-    RoboticDualArmConstrainedMovement,
-    RoboticLinearMovement,
-    RoboticFreeMovement,
+    IndependentDualArmFreeMovement,
+    EndEffectorConstrainedDualArmFreeMovement,
+    EndEffectorConstrainedDualArmLinearMovement,
+    IndependentDualArmLinearMovement,
 )
 
 
@@ -84,11 +87,18 @@ def find_movement(action: BarAssemblyAction, key: Union[int, str]) -> tuple[int,
 
 
 def movement_type(mv: Movement) -> str:
-    """Classify a movement by its concrete class type."""
-    if isinstance(mv, RoboticDualArmConstrainedMovement):
-        return "constrained"
-    if isinstance(mv, RoboticLinearMovement):
-        return "linear"
-    if isinstance(mv, RoboticFreeMovement):
-        return "free"
+    """Classify a movement by its concrete class type.
+
+    "constrained-*" means both arms rigidly hold one bar (fixed relative
+    tool0_left -> tool0_right transform); "free"/"linear" without the prefix
+    means the arms move independently (bar not held, e.g. M0/M3/M4).
+    """
+    if isinstance(mv, EndEffectorConstrainedDualArmFreeMovement):
+        return "constrained-free"       # M1: home -> approach, bar gripped
+    if isinstance(mv, EndEffectorConstrainedDualArmLinearMovement):
+        return "constrained-linear"     # M2: approach -> mated, bar gripped
+    if isinstance(mv, IndependentDualArmLinearMovement):
+        return "linear"                 # M3: per-arm linear retreat
+    if isinstance(mv, IndependentDualArmFreeMovement):
+        return "free"                   # M0/M4: staging / return home
     return "unknown"

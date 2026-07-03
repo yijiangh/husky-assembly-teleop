@@ -14,10 +14,9 @@ and (b) propagates the end configuration into the next movement's
 ``start_state.robot_configuration``. Hence the planning order M1 -> M2 -> M3
 -> M4 -> M0: each Mk's plan seeds M(k+1)'s start.
 
-Env-collision behavior matches the live monitor: each dispatcher now plans
-WITH environment obstacles enabled (see husky_monitor.py _plan_M{1,2,3}_dispatch
-and _build_pp_scene_for_free). The headless script does NOT inject any global
-'ignore env obstacles' escape hatch.
+Env-collision behavior matches the live monitor: each dispatcher plans WITH
+environment obstacles enabled (obstacles + ACM come from the movement's
+start_state; the BarAction JSONs author touch_links/touch_bodies natively).
 
 Usage (ros2_ws venv active + install/setup.bash sourced):
   python src/husky-assembly-teleop/scripts/headless_live_monitor_test.py \\
@@ -132,10 +131,10 @@ def _bypass_init_monitor():
 
 
 def _attach_stub_husky_interface(monitor, m1_start_state):
-    """Provide huskies[0].interface for _make_synthetic_m0.
+    """Provide huskies[0].interface for _inject_live_conf_into_state.
 
-    _make_synthetic_m0 (husky_monitor.py:1334-1356) reads .position,
-    .rotation and .arm_joint_pose off huskies[0].interface to snapshot
+    _inject_live_conf_into_state reads .position, .rotation and
+    .arm_joint_pose off huskies[0].interface to snapshot the
     "live" robot state. Headless has no ROS / mocap, so we synthesize one.
 
     Base frame: take from M1.start_state.robot_base_frame (the BarAction
@@ -306,8 +305,8 @@ def _diagnose_m0_transit_failure(monitor, mv) -> None:
       - time budget too tight (RNG-dependent miss).
 
     This helper characterises start → goal in joint space, verifies both
-    endpoints are collision-free against the *actual* filtered obstacle
-    list `_build_pp_scene_for_free` would produce, and runs a 21-sample
+    endpoints are collision-free against the mounted-body-filtered
+    obstacle list, and runs a 21-sample
     linear-interpolation sweep to identify any per-step obstacle hits
     along the straight-line path. If no hits, the failure is most likely
     time-budget / RNG; if hits, it points at which bodies are blocking.
@@ -353,8 +352,8 @@ def _diagnose_m0_transit_failure(monitor, mv) -> None:
     if monitor.active_bar_body is not None and monitor.active_bar_name:
         name_from_body[monitor.active_bar_body] = f"{monitor.active_bar_name} (active_bar)"
 
-    # Mirror _build_pp_scene_for_free's mounted-body filter so we check
-    # exactly the obstacle set the failing planner saw.
+    # Filter out robot-mounted bodies (tools, held bar) so we check the
+    # environment obstacle set only.
     mounted_names: set[str] = set()
     for name, rbs in (getattr(mv.start_state, 'rigid_body_states', None) or {}).items():
         if getattr(rbs, 'attached_to_link', None) is not None:
@@ -481,46 +480,43 @@ def _diagnose_m0_transit_failure(monitor, mv) -> None:
         from husky_assembly_tamp.motion_planner.api import plan_free_dual_arm
         import pybullet_planning as pp
 
-        scene = monitor._build_pp_scene_for_free()
-        if scene is not None:
-            saved_client2 = pp.CLIENT
-            pp.CLIENT = cid
-            pp.CLIENTS.setdefault(cid, True)
-            try:
-                # Probe 1: same goal, large time budget.
-                print("[probe-1] re-running plan_free_dual_arm with max_time=120s "
-                      "(default in _plan_M0_dispatch is 30s)...")
-                path1, info1 = plan_free_dual_arm(
-                    scene, start.tolist(), goal.tolist(), max_time=120.0,
-                )
-                if path1 is not None:
-                    print(f"  -> SUCCESS with 120s: {len(path1)} waypoints. "
-                          f"30s budget was the only limiter.")
-                else:
-                    print(f"  -> still failed at 120s "
-                          f"(failure_reason={info1.get('failure_reason')!r}). "
-                          f"More time alone won't help; the wrap is the issue.")
+        saved_client2 = pp.CLIENT
+        pp.CLIENT = cid
+        pp.CLIENTS.setdefault(cid, True)
+        try:
+            # Probe 1: same goal, large time budget.
+            print("[probe-1] re-running plan_free_dual_arm with max_time=120s...")
+            path1, info1 = plan_free_dual_arm(
+                monitor.cfab.planner, mv.start_state, goal.tolist(), max_time=120.0,
+            )
+            if path1 is not None:
+                print(f"  -> SUCCESS with 120s: {len(path1)} waypoints. "
+                      f"The smaller budget was the only limiter.")
+            else:
+                print(f"  -> still failed at 120s "
+                      f"(failure_reason={info1.get('failure_reason')!r}). "
+                      f"More time alone won't help; the wrap is the issue.")
 
-                # Probe 2: unwrap goal to within ±π of start (short-way).
-                two_pi = 2.0 * math.pi
-                canonical_goal = goal - np.round((goal - start) / two_pi) * two_pi
-                max_canon_delta = float(np.abs(canonical_goal - start).max())
-                print(f"[probe-2] re-running plan_free_dual_arm to a CANONICAL "
-                      f"(±π-of-start) goal (max joint Δ {max_canon_delta:.4f} rad)...")
-                path2, info2 = plan_free_dual_arm(
-                    scene, start.tolist(), canonical_goal.tolist(), max_time=30.0,
-                )
-                if path2 is not None:
-                    print(f"  -> SUCCESS to canonical goal: {len(path2)} waypoints. "
-                          f"Confirms the wrap is what's blocking; M0 can plan "
-                          f"the short-way, would need a final wrap-up step to "
-                          f"land on the saved M1.start.robot_configuration.")
-                else:
-                    print(f"  -> canonical goal also failed "
-                          f"(failure_reason={info2.get('failure_reason')!r}). "
-                          f"The path is hard for reasons beyond the wrap.")
-            finally:
-                pp.CLIENT = saved_client2
+            # Probe 2: unwrap goal to within ±π of start (short-way).
+            two_pi = 2.0 * math.pi
+            canonical_goal = goal - np.round((goal - start) / two_pi) * two_pi
+            max_canon_delta = float(np.abs(canonical_goal - start).max())
+            print(f"[probe-2] re-running plan_free_dual_arm to a CANONICAL "
+                  f"(±π-of-start) goal (max joint Δ {max_canon_delta:.4f} rad)...")
+            path2, info2 = plan_free_dual_arm(
+                monitor.cfab.planner, mv.start_state, canonical_goal.tolist(), max_time=30.0,
+            )
+            if path2 is not None:
+                print(f"  -> SUCCESS to canonical goal: {len(path2)} waypoints. "
+                      f"Confirms the wrap is what's blocking; M0 can plan "
+                      f"the short-way, would need a final wrap-up step to "
+                      f"land on the saved M1.start.robot_configuration.")
+            else:
+                print(f"  -> canonical goal also failed "
+                      f"(failure_reason={info2.get('failure_reason')!r}). "
+                      f"The path is hard for reasons beyond the wrap.")
+        finally:
+            pp.CLIENT = saved_client2
     except Exception as e:
         print(f"[probe] ERROR: {e}")
 
@@ -545,12 +541,8 @@ def _install_tree_drawing(monitor):
 
     M1 constrained
       ``plan_pose_rrt`` already draws its SE(3) tree when
-      ``use_draw=True``. The wiring exists (husky_world.py:2336-2341)
-      but the live caller (``plan_and_stage_constrained``) wraps the
-      planner in ``with pp.LockRenderer():``, silencing the draws. We
-      patch ``HuskyMonitor._plan_M1_dispatch`` to (a) pass
-      ``use_draw=True`` and (b) swap ``pp.LockRenderer`` to a no-op
-      context manager for the duration of the call only.
+      ``use_draw=True``. We patch ``HuskyMonitor._plan_M1_dispatch``
+      to pass ``use_draw=True`` into ``plan_constrained_dual_arm``.
     """
     import contextlib
     import importlib
@@ -729,40 +721,36 @@ def _install_tree_drawing(monitor):
     print("[draw-tree] M1 constrained: extend_toward patched to draw SE(3) "
           "tree at bar midpoint (color from planner's per-tree palette).")
 
-    # --- patch _plan_M1_dispatch: bypass LockRenderer + use_draw=True ---
-    from husky_assembly_teleop import husky_world as _world_mod
+    # --- patch _plan_M1_dispatch: same state-based call, use_draw=True ---
     _orig_m1_dispatch = monitor._plan_M1_dispatch.__func__
-    _orig_lock_renderer = pp.LockRenderer
-
-    class _NoLock:
-        def __init__(self, *a, **kw): pass
-        def __enter__(self): return self
-        def __exit__(self, *exc): return False
 
     def _patched_m1(self_, mv):
-        # Make sure the side-window can render the tree while planning.
-        monitor.constrained_trajectory = [None, None]
-        _world_mod.plan_and_stage_constrained.__globals__['pp'].LockRenderer = _NoLock
-        try:
-            _world_mod.plan_and_stage_constrained(
-                self_, use_draw=True, ignore_env_obstacles=False,
-            )
-        finally:
-            _world_mod.plan_and_stage_constrained.__globals__['pp'].LockRenderer = _orig_lock_renderer
-        traj = self_.constrained_trajectory
-        if not (traj and traj[0] is not None and traj[1] is not None):
-            return None
+        from husky_assembly_tamp.motion_planner.api import plan_constrained_dual_arm
         from husky_assembly_teleop.utils import joint_trajectory_from_path
-        left_path = traj[0][0]
-        right_path = traj[1][0]
-        T = min(len(left_path), len(right_path))
-        path12 = [np.concatenate([left_path[i], right_path[i]]) for i in range(T)]
-        return joint_trajectory_from_path(path12)
+        from husky_assembly_teleop.husky_monitor import M1_POSITION_RES, M1_ROTATION_RES
+        path, info = plan_constrained_dual_arm(
+            self_.cfab.planner, mv.start_state,
+            active_bar_id=self_.active_bar_name,
+            goal_ee_frames=mv.target_ee_frames,
+            stage=self_.constrained_planner_stage,
+            position_res=M1_POSITION_RES,
+            rotation_res=M1_ROTATION_RES,
+            max_time=60.0,
+            derive_start=True,
+            use_draw=True,
+        )
+        if path is None:
+            print(f"[M1] plan_constrained_dual_arm failed: {info.get('failure_reason')}")
+            return None
+        self_.constrained_trajectory = [
+            (np.asarray([q[:6] for q in path]), None, self_.trajectory_time, None),
+            (np.asarray([q[6:] for q in path]), None, self_.trajectory_time, None),
+        ]
+        return joint_trajectory_from_path(path)
 
     # Bind the patched dispatch onto the instance.
     monitor._plan_M1_dispatch = _patched_m1.__get__(monitor, type(monitor))
-    print("[draw-tree] M1 constrained: _plan_M1_dispatch patched (use_draw=True, "
-          "LockRenderer bypassed in plan_and_stage_constrained).")
+    print("[draw-tree] M1 constrained: _plan_M1_dispatch patched (use_draw=True).")
 
     def _revert():
         _rrt_mod.rrt_connect = _orig_rrt_connect
@@ -926,15 +914,6 @@ def main(bar_action: str = DEFAULT_BAR_ACTION,
         pp.CLIENT = monitor.cfab.client.client_id
         pp.CLIENTS[monitor.cfab.client.client_id] = True if use_gui else None
 
-        # Opt-in: env-var flips the cfab collision backend for the constrained
-        # Stage-3 RRT. Default OFF (legacy pp.get_collision_fn).
-        if os.environ.get("HUSKY_CFAB_CC_CONSTRAINED", "0") in ("1", "true", "TRUE"):
-            monitor.use_cfab_collision_for_constrained = True
-            print("[cfab-cc] constrained Stage-3 will use cfab PyBulletCheckCollision")
-        if os.environ.get("HUSKY_CFAB_CC_FREE", "0") in ("1", "true", "TRUE"):
-            monitor.use_cfab_collision_for_free = True
-            print("[cfab-cc] free composite planner will use cfab PyBulletCheckCollision")
-
         # Populate the BarAction file slider (UI does this on focus).
         monitor.available_bar_actions = monitor._load_available_bar_actions()
         if not monitor.available_bar_actions:
@@ -948,8 +927,8 @@ def main(bar_action: str = DEFAULT_BAR_ACTION,
         monitor._selected_action_file_idx = monitor.available_bar_actions.index(bar_action)
 
         # Probe-parse to set up the stub husky interface BEFORE
-        # load_bar_action_file calls _make_synthetic_m0 (which reads
-        # huskies[0].interface).
+        # load_bar_action_file calls _inject_live_conf_into_state on the
+        # native M0 (which reads huskies[0].interface).
         from husky_assembly_teleop.bar_action_io import parse_bar_action
         from husky_assembly_teleop import DESIGN_DATA_DIRECTORY
         action_path = os.path.join(
