@@ -266,6 +266,15 @@ class DearPyGuiBackend(UIBackend):
         self.dpg = dpg
 
         dpg.create_context()
+        with dpg.theme() as global_theme:
+            with dpg.theme_component(dpg.mvAll):          # applies to every widget type
+                # hover colors (RGBA 0-255)
+                dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered,  (90, 130, 200, 100))
+                dpg.add_theme_color(dpg.mvThemeCol_HeaderHovered,  (90, 130, 200, 100))  # selectable / tree / combo items
+                dpg.add_theme_color(dpg.mvThemeCol_FrameBgHovered, (70, 90, 130, 100))   # slider / input / checkbox bg
+                dpg.add_theme_color(dpg.mvThemeCol_TabHovered,     (90, 130, 200, 100))
+        dpg.bind_theme(global_theme)
+
         dpg.create_viewport(title=window_title, width=width, height=height)
         # Global default font (size = font_size = UI_FONT_SIZE = 16) for all widgets.
         self._bind_default_font(font_size)
@@ -282,6 +291,7 @@ class DearPyGuiBackend(UIBackend):
         self._next_handle = 1
         self._handles: Dict[int, Dict[str, Any]] = {}
         self._live_plots: List[Dict[str, Any]] = []
+        self._live_multi: List[Dict[str, Any]] = []
         self._frame_idx = 0
 
         dpg.show_viewport()
@@ -458,6 +468,44 @@ class DearPyGuiBackend(UIBackend):
         self._handles[h] = {"kind": "live_plot", "tag": series_tag}
         return h
 
+    def add_live_multi_plot(self, label, source, series_labels, history=200,
+                            header_source=None):
+        """Scrolling time plot with N line series + a numeric text readout.
+
+        source() -> list[float] of length N (polled each step()).
+        series_labels: legend label per series (len N).
+        header_source: optional () -> str, prepended as the readout's first line.
+        Readout shows each value in both radians and degrees.
+        """
+        dpg = self.dpg
+        n = len(series_labels)
+        series_tags = []
+        with dpg.plot(label=label, height=180, width=-1, parent=self._current_parent):
+            dpg.add_plot_legend()
+            x_axis = dpg.add_plot_axis(dpg.mvXAxis, label="t")
+            y_axis = dpg.add_plot_axis(dpg.mvYAxis, label=f"{label} [rad]")
+            for lbl in series_labels:
+                series_tags.append(
+                    dpg.add_line_series([], [], label=lbl, parent=y_axis))
+        text_tag = dpg.add_text("", parent=self._current_parent,
+                                color=(180, 220, 180, 255))
+        h = self._new_handle()
+        self._live_multi.append({
+            "handle": h,
+            "source": source,
+            "header_source": header_source,
+            "series_tags": series_tags,
+            "labels": list(series_labels),
+            "text_tag": text_tag,
+            "x_axis": x_axis,
+            "y_axis": y_axis,
+            "history": history,
+            "x": deque(maxlen=history),
+            "ys": [deque(maxlen=history) for _ in range(n)],
+        })
+        self._handles[h] = {"kind": "live_multi", "tag": text_tag}
+        return h
+
     def add_separator(self, label):
         dpg = self.dpg
         dpg.add_separator(parent=self._current_parent)
@@ -497,6 +545,7 @@ class DearPyGuiBackend(UIBackend):
         self._parent_stack = ["root"]
         self._handles.clear()
         self._live_plots.clear()
+        self._live_multi.clear()
 
     def step(self) -> bool:
         dpg = self.dpg
