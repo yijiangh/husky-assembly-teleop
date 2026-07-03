@@ -6,6 +6,7 @@
 import json
 import logging
 import os
+import re
 import time
 import numpy as np
 import matplotlib.pyplot as plt
@@ -22,6 +23,16 @@ EXPORT = config['export']
 
 # Configure logging with colored output
 logger = setup_logger()
+
+
+def traj_label(file_name, fallback_idx=0):
+    """Build a 'J<x>_T<y>' label from a calibration filename.
+
+    e.g. "..._0806_J0_traj3_JointTrajectory.json" -> "J0_T3".
+    `fallback_idx` is used when the filename has no such token (m is None).
+    """
+    m = re.search(r'J(\d+)_traj(\d+)', file_name)
+    return f'J{m.group(1)}_T{m.group(2)}' if m else f'T{fallback_idx}'
 
 
 def process_data_batch(data_batch, date_folder, export=True):
@@ -138,9 +149,13 @@ def process_data_batch(data_batch, date_folder, export=True):
         normal = viz_data['normal']
         radius = viz_data['radius']
         
+        # Label from the real trajectory id in the filename (e.g. "J0_traj3"),
+        # not the loop counter — files are read unsorted, so idx != traj number.
+        label = traj_label(viz_data['file_name'], idx)
+
         # Plot data points
         ax.scatter(points_arr[:, 0] * 1000, points_arr[:, 1] * 1000, points_arr[:, 2] * 1000,
-                   c=[color], s=30, alpha=0.7, label=f'Take {idx+1} points')
+                   c=[color], s=30, alpha=0.7, label=f'{label} points')
         
         # Plot projected points on circle
         ax.scatter(projected_arr[:, 0] * 1000, projected_arr[:, 1] * 1000, projected_arr[:, 2] * 1000,
@@ -169,7 +184,7 @@ def process_data_batch(data_batch, date_folder, export=True):
         
         circle_points = center + radius * (np.outer(np.cos(theta), v1) + np.outer(np.sin(theta), v2))
         ax.plot(circle_points[:, 0] * 1000, circle_points[:, 1] * 1000, circle_points[:, 2] * 1000,
-                color=color, linewidth=2, label=f'Take {idx+1} circle (r={radius * 1000:.1f} mm)')
+                color=color, linewidth=2, label=f'{label} circle (r={radius * 1000:.1f} mm)')
         
         # Plot circle center
         ax.scatter([center[0] * 1000], [center[1] * 1000], [center[2] * 1000],
@@ -197,8 +212,10 @@ def process_data_batch(data_batch, date_folder, export=True):
         sample_indices = np.arange(sample_offset, sample_offset + n_samples)
         
         marker = markers[idx % len(markers)]
+        # Same filename-derived label as the 3D plot above.
+        label = traj_label(viz_data['file_name'], idx)
         ax.scatter(sample_indices, distances_mm, c=[color], s=40, marker=marker,
-                   label=f'Take {idx+1} (max: {viz_data["max_dist"] * 1000:.2f} mm)', alpha=0.8)
+                   label=f'{label} (max: {viz_data["max_dist"] * 1000:.2f} mm)', alpha=0.8)
         
         # Add vertical separator line between takes
         if idx > 0:

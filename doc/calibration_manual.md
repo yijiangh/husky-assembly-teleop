@@ -8,6 +8,7 @@ This manual walks you through the complete extrinsic calibration procedure for t
 
 ## Table of Contents
 
+0. [Before Starting](#0-before-starting)
 1. [OptiTrack Motion Capture Setup](#1-optitrack-motion-capture-setup)
 2. [Robot Startup & ROS2 Nodes](#2-robot-startup--ros2-nodes)
 3. [Launching the Monitor (Workstation Side)](#3-launching-the-monitor-workstation-side)
@@ -20,18 +21,50 @@ This manual walks you through the complete extrinsic calibration procedure for t
 
 ---
 
+## 0. Before Starting
+
+### 0.1 New Workstation Setup (one-time)
+
+If you are running on a **new workstation (PC)** for the first time, update these
+absolute paths in the code. Currently it hard-code the gdrive (Insync) mount
+location, which differ per machine.
+
+| What | Where | Note |
+|------|-------|------|
+| `DESIGN_DATA_DIRECTORY`, `EXPERIMENT_DATA_DIRECTORY` | [`__init__.py:53-54`](../husky_assembly_teleop/__init__.py#L53) | gdrive (Insync) mount paths. |
+| `MOCAP_CAMERA_EXPORT_DIR` | [`husky_monitor.py:64-67`](../husky_assembly_teleop/husky_monitor.py#L64) | where the `collect cameras data` button drops JSON+CSV. |
+
+### 0.2 Robot Reference Table
+
+Quick reference for all Husky robots. Later sections link here for IPs, ROS domain,
+serials, and Motive Streaming IDs.
+
+| Name | Serial | IP | ROS Domain | Motive ID (base) | Calib-tool ID |
+|------|--------|-----|-----------|------------------|---------------|
+| Alice | 0804 | 192.168.0.113 | 84 | 1031 | — |
+| Belle | 0805 | 192.168.0.114 | 85 | 1021 | — |
+| Cindy | 0806 | 192.168.0.115 | 86 | 1011 | right 1012 / left 1013 |
+
+1. **ROS Domain** selects the robot at launch via `ROS_DOMAIN_ID` (see [§2.4](#24-verify-ros2-connection))
+   - this drives namespace, base `mocap_id`, gripper and EE.
+2. **Motive ID** = the rigid-body **Streaming ID** set in Motive (see [§1.3](#13-create--verify-rigid-bodies)).
+   - These must match the `mocap_id` base-tracker values in `husky_world.py` `ROBOT_CONFIGS` [L182/L189/L196](../husky_assembly_teleop/husky_world.py#L178)
+   - and the calib-tool `husky_world.py` `TrackedObject` IDs at [L327/L331](../husky_assembly_teleop/husky_world.py#L327) (`1013` left / `1012` right).
+
+---
+
 ## 1. OptiTrack Motion Capture Setup
 
-### 1.1 Power On & Start Motif
+### 1.1 Power On & Start Motive
 
 1. Turn on the PoE (Power over Ethernet) switch that powers the OptiTrack cameras. Wait for all camera indicator LEDs to turn on.
 2. On the OptiTrack PC, boot into **Ubuntu**.
-3. Launch the **Motif** software.
+3. Launch the **Motive** software.
 
-> For detailed instructions on starting up the OptiTrack system and using Motif, refer to the [OptiTrack Motif Documentation](https://docs.optitrack.com/motive).
+> For detailed instructions on starting up the OptiTrack system and using Motive, refer to the [OptiTrack Motive Documentation](https://docs.optitrack.com/motive).
 
 <!-- SCREENSHOT: OptiTrack cameras powered on with LEDs visible -->
-<!-- SCREENSHOT: Motif software main screen after startup -->
+<!-- SCREENSHOT: Motive software main screen after startup -->
 
 ### 1.2 Calibrate the Camera System
 
@@ -39,24 +72,24 @@ If the cameras have been moved or it has been more than a week since the last ca
 
 > Follow the official [OptiTrack Calibration Guide](https://docs.optitrack.com/motive/calibration) for the wanding and ground plane procedure.
 
-<!-- SCREENSHOT: Motif calibration wanding screen -->
-<!-- SCREENSHOT: Motif calibration result showing quality metrics -->
+<!-- SCREENSHOT: Motive calibration wanding screen -->
+<!-- SCREENSHOT: Motive calibration result showing quality metrics -->
 
 ### 1.3 Create / Verify Rigid Bodies
 
 If you need to create a new rigid body (e.g., for the robot base or flange tracker):
 
-1. In Motif, select the markers that form the rigid body.
+1. In Motive, select the markers that form the rigid body.
 2. Right-click and choose **Create Rigid Body**.
-3. Note the **Rigid Body ID** assigned by Motif -- you will need this for the PyBullet configuration.
-4. In the code, the rigid body IDs are configured in two places in [`husky_world.py`](husky_assembly_teleop/husky_world.py):
-   - **Robot base tracker**: the `mocap_id` parameter in the `create_husky_with_end_effectors` call (e.g., `mocap_id=4617` at [line 97](husky_assembly_teleop/husky_world.py#L97)).
-   - **Flange/tool tracker**: the second argument to `TrackedObject` (e.g., `4616` at [line 163](husky_assembly_teleop/husky_world.py#L163)).
+3. Note the **Rigid Body ID** assigned by Motive -- you will need this for the PyBullet configuration.
+4. In the code, the rigid body IDs are configured in two places in [`husky_world.py`](../husky_assembly_teleop/husky_world.py):
+   - **Robot base tracker**: the `mocap_id` in `ROBOT_CONFIGS`, keyed by ROS domain — Alice `1031` / Belle `1021` / Cindy `1011` at [L182/L189/L196](../husky_assembly_teleop/husky_world.py#L182).
+   - **Flange/calib-tool tracker**: the ID argument to `TrackedObject` (e.g., `1013` left / `1012` right) at [L327/L331](../husky_assembly_teleop/husky_world.py#L327).
 
-   Make sure the IDs you see in Motif match the IDs in these two locations.
+   Make sure the IDs you see in Motive match the IDs in these two locations (and the Motive ID column in the [Robot Reference Table (§0.2)](#02-robot-reference-table)).
 
-<!-- SCREENSHOT: Motif rigid body creation dialog -->
-<!-- SCREENSHOT: Motif rigid body properties showing the ID number -->
+<!-- SCREENSHOT: Motive rigid body creation dialog -->
+<!-- SCREENSHOT: Motive rigid body properties showing the ID number -->
 
 ### 1.4 Network Connection (MoCap to Workstation)
 
@@ -66,14 +99,17 @@ The workstation must be on the same network as the OptiTrack PC to receive strea
 
 | Device | IP Address |
 |--------|-----------|
-| Workstation (your PC) | `192.168.0.7` |
+| Workstation (your PC) | your own IP (e.g. `192.168.0.25`) |
 | OptiTrack PC | `192.168.0.117` |
 
-These are configured in the code at [`husky_monitor.py:45-46`](husky_assembly_teleop/husky_monitor.py#L45-L46):
+These are configured in the code at [`husky_monitor.py:60-61`](../husky_assembly_teleop/husky_monitor.py#L60-L61):
 ```python
-CLIENT_IP = '192.168.0.7'   # Your workstation IP
-MOCAP_IP = '192.168.0.117'  # OptiTrack PC IP
+CLIENT_IP = '192.168.0.25'
+MOCAP_IP = '192.168.0.117'
 ```
+
+> **Tip**: find your workstation IP with `ip -c address` in a terminal, then set
+> `CLIENT_IP` to it.
 
 **To verify the network connection:**
 
@@ -82,15 +118,15 @@ MOCAP_IP = '192.168.0.117'  # OptiTrack PC IP
    ```bash
    ping 192.168.0.117
    ```
-3. In Motif, go to **Settings > Streaming** and make sure:
-   - Streaming is **enabled**
-   - The **Local Interface** matches the OptiTrack PC IP (`192.168.0.117`)
-   - **NatNet** streaming is active
+3. In Motive (3.0.3), go to **Edit > Settings > Streaming** and make sure:
+   - **NatNet** streaming is **enabled**
+   - **Local Interface** = `192.168.0.117` (if it does not appear in the list, **disconnect from the internet** and re-open the list)
+   - **Transmission Type** = **Unicast**
 
-<!-- SCREENSHOT: Motif streaming settings panel showing enabled streaming and correct IP -->
+<!-- SCREENSHOT: Motive streaming settings panel showing enabled streaming and correct IP -->
 <!-- SCREENSHOT: Terminal showing successful ping to 192.168.0.117 -->
 
-> **Tip**: If the mocap connection fails in the monitor, you will see a red log message. Check the Motif streaming settings and verify both IPs are correct.
+> **Tip**: If the mocap connection fails in the monitor, you will see a red log message. Check the Motive streaming settings and verify both IPs are correct.
 
 ---
 
@@ -103,6 +139,8 @@ This section covers starting up the Husky robot and the UR5e arm ROS2 drivers. M
 1. Press the **power button** on the Husky.
 2. Turn on the **remote e-stop** and press **"Go"**.
    > Do NOT start multiple huskies at the same time -- sometimes both huskies connect to one e-stop if started in parallel.
+
+   > **Tip**: If the remote e-stop is not reacting, press and hold longer until the signal lights go off, restart it, then press **"Go"** again.
 3. Wait until the **communication light** on the Husky turns **green** (or yellow if e-stop is still active).
 4. (Optional) Connect the **PS controller** by pressing the PlayStation logo button. Wait for the backlight to stop blinking and stay on permanently. You can then move the Husky by pressing **L1 or L2 + left joystick**.
 
@@ -126,6 +164,10 @@ This section covers starting up the Husky robot and the UR5e arm ROS2 drivers. M
    ssh administrator@192.168.0.115
    # Password: 12345678
 
+   # For Belle (single-arm, serial 0805):
+   ssh administrator@192.168.0.114
+   # Password: clearpath
+
    # For Alice (single-arm, serial 0804):
    ssh administrator@192.168.0.113
    # Password: clearpath
@@ -134,16 +176,24 @@ This section covers starting up the Husky robot and the UR5e arm ROS2 drivers. M
 2. Launch the appropriate ROS2 driver:
    ```bash
    # For Cindy (dual arm):
-   ros2 launch crl-husky crl_dual_ur5e.launch.py namespace:='/a200_0806'
+   ros2 launch crl_husky crl_dual_ur5e.launch.py namespace:='/a200_0806' gripper:=none
+
+   # For Belle (single arm):
+   ros2 launch crl_husky crl_single_ur5e.launch.py namespace:='/a200_0805' gripper:=none
 
    # For Alice (single arm):
-   ros2 launch crl-husky crl_single_ur5e.launch.py namespace:='/a200_0804'
-
-   # For Alice with gripper:
-   ros2 launch crl-husky crl_single_ur5e_gripper.launch.py namespace:='/a200_0804'
+   ros2 launch crl_husky crl_single_ur5e.launch.py namespace:='/a200_0804' gripper:=none
+   
+   # Gripper (`gripper:=` arg, must pass at least `none`):
+   gripper:=robotiq_2F_85
+   gripper:=none
+   gripper:=scaffolding_v1
+   gripper:=scaffolding_v3
    ```
 
-   > Add `use_fake_hardware:=true` to use a simulated UR5e instead of the real robot (for testing).
+   > To use a **virtual robot** (no real arm, for testing), do NOT change the launch
+   > command. Instead set `FAKE_HARDWARE=1` on the workstation in
+   > [`husky_monitor.py:79`](../husky_assembly_teleop/husky_monitor.py#L79).
 
 ### 2.4 Verify ROS2 Connection
 
@@ -161,10 +211,16 @@ Verify the connection:
 ros2 topic list
 
 # Check if joint states are streaming (should see data at ~500Hz)
-ros2 topic echo /a200_0806/ur5e/joint_states
+   # single arm:
+   ros2 topic echo /a200_0804/ur5e/joint_states
+   # dual arm:
+   ros2 topic echo /a200_0806/left_ur5e/joint_states
 
 # Check the frequency
-ros2 topic hz /a200_0806/ur5e/joint_states
+   # single arm:
+   ros2 topic hz /a200_0804/ur5e/joint_states
+   # dual arm:
+   ros2 topic hz /a200_0806/left_ur5e/joint_states
 
 # Visualize the full node graph
 rqt
@@ -173,13 +229,7 @@ rqt
 <!-- SCREENSHOT: Terminal showing ros2 topic list output with ur5e topics visible -->
 <!-- SCREENSHOT: rqt node graph showing connected nodes -->
 
-**Husky Reference Table:**
-
-| Name | Serial | IP | ROS Domain |
-|------|--------|-----|-----------|
-| Alice | 0804 | 192.168.0.113 | 84 |
-| Belle | 0805 | 192.168.0.114 | 85 |
-| Cindy | 0806 | 192.168.0.115 | 86 |
+> See the [Robot Reference Table (§0.2)](#02-robot-reference-table) for each robot's serial, IP, ROS domain, and Motive Streaming IDs.
 
 > **Warning**: The E-Stop on the Husky does NOT stop the UR5e! Always use the **remote E-Stop** when operating the robot arms.
 
@@ -211,9 +261,9 @@ If the ROS2 connection is working correctly, the **grey robot model** in PyBulle
 <!-- SCREENSHOT: Side-by-side of real robot and PyBullet model in matching configuration -->
 
 **If the robot model does NOT match the real robot**, check:
-1. Is the ROS2 driver running on the Husky side? (Section 2.3)
-2. Is the robot powered on and in **External Control** mode? (Section 2.2)
-3. Are the ROS2 domain ID and middleware set correctly? (Section 2.4)
+1. Is the ROS2 driver running on the Husky side? ([§2.3](#23-start-the-ur5e-ros2-driver-on-the-husky))
+2. Is the robot powered on and in **External Control** mode? ([§ .2](#22-power-on-the-ur5e-arm))
+3. Are the ROS2 domain ID and middleware set correctly? ([§2.4](#24-verify-ros2-connection))
 4. Try running `rqt` to verify topics are visible.
 
 ---
@@ -222,34 +272,65 @@ If the ROS2 connection is working correctly, the **grey robot model** in PyBulle
 
 This is the main calibration data collection procedure. You will collect data for **J0** (shoulder pan joint rotation) and **J1** (shoulder lift joint rotation) batches.
 
+### 4.0 Pre-Calibration Checklist
+
+Before collecting data, verify these settings in the code match your setup.
+
+**Values, IDs & IPs** — set to match your robot / network / session:
+
+| What | Where | Note |
+|------|-------|------|
+| base `mocap_id` (Streaming IDs) | [`husky_world.py:182/189/196`](../husky_assembly_teleop/husky_world.py#L182) | per ROS domain (see [§0.2](#02-robot-reference-table)) ; match Motive **properties > Streaming ID** (see [§0.2](#02-robot-reference-table)) |
+| calib-tool IDs `1013` L / `1012` R | [`husky_world.py:327/331`](../husky_assembly_teleop/husky_world.py#L327) | match Motive (see [§0.2](#02-robot-reference-table)) . **Which arm is calibrated = which `calib_tool_*` block is enabled** — comment out the unused arm for a single-arm run |
+| `CALIBRATION_DATE` + `DEFAULT_DATE_FOLDER` | [`__init__.py:57`](../husky_assembly_teleop/__init__.py#L57) & [`config_loader.py:21`](../data/calibration_data/config_loader.py#L21) | both must point to today's date folder (must exist with a `config.yaml`) |
+| `CALIBRATION_STATE_SETS` (per arm idx) | [`husky_monitor.py:72-75`](../husky_assembly_teleop/husky_monitor.py#L72) | verify the calib traj-state folder for your arm exists |
+
+
+**Mode flags** — class `HuskyMonitor` switches, each set to `0` or `1`:
+
+| Flag | Where | Set to | Note |
+|------|-------|--------|------|
+| `USE_MOCAP` | [`husky_monitor.py:78`](../husky_assembly_teleop/husky_monitor.py#L78) | `1` | `0` = simulated; `1` = stream real mocap|
+| `FAKE_HARDWARE` | [`husky_monitor.py:79`](../husky_assembly_teleop/husky_monitor.py#L79) | `0` | `0` = real robot; `1` = virtual robot. Keep consistent with `USE_MOCAP` by hand |
+| `USE_CELL_STATE_BASE_POSE` | [`husky_monitor.py:87`](../husky_assembly_teleop/husky_monitor.py#L87) | `0` | `0` = base tracks mocap (normal); `1` = pin base to loaded cell state |
+| `CALIBRATION` | [`husky_monitor.py:91`](../husky_assembly_teleop/husky_monitor.py#L91) | `1` | `1` = calibration mode enabled |
+| `PUNCH_CALIB_VALIDATION` | [`husky_monitor.py:102`](../husky_assembly_teleop/husky_monitor.py#L102) | `0` | `1` only for a punch-validation session (switches EE to punch tips) |
+
 ### 4.1 Understanding the GUI Controls
 
-The monitor GUI has several sliders and buttons relevant to calibration:
+The monitor GUI has several sliders and buttons. The **When shown** column marks which
+controls only appear in a specific mode (Calibration = `CALIBRATION=1`, Punch =
+`PUNCH_CALIB_VALIDATION=1`). Many other controls (dual-arm constrained planner, gripper,
+scaffolding, bar-action, debug) appear in other modes but are not used during calibration.
 
 **Sliders:**
 
-| Slider | Description |
-|--------|-------------|
-| `robot id` | Select which robot to control (if multiple) |
-| `arm id (0:L,1:R)` | Select left or right arm (for dual-arm robot) |
-| `traj time` | Duration of the trajectory in seconds (range: 1-60s) |
-| `Traj viz time` | Scrub through a planned trajectory to preview it (0.0 to 1.0) |
-| `Mode (0:validation, 1:data_collection)` | Toggle between validation and data collection mode |
-| `Batch (0:j0,1:j1,2:valid,3:punch)` | Select which calibration batch you are collecting |
-| `Robot Cell State` | Select which pre-defined cell state to load |
-| `Joint Trajectory` | Select which pre-defined joint trajectory to load |
+| Slider | When shown | Description |
+|--------|-----------|-------------|
+| `arm id (0:L,1:R)` | always (`arm id (0 only)` if single-arm) | Select left (0) or right (1) arm |
+| `traj time` | always | Duration of the planned trajectory in seconds (1 to `trajectory_time_max`, default 90) |
+| `Traj viz time` | always | Scrub through a planned trajectory to preview it (0.0 to 1.0) |
+| `Mode (0:validation, 1:data_collection)` | Calibration | Toggle between validation and data collection mode |
+| `Batch (0:j0,1:j1,2:valid,3:punch)` | Calibration | Select which calibration batch subfolder data saves into |
+| `Calib RobotCellState (idx)` | Calibration (only if ≥2 cell states found) | Select which pre-defined cell state to load |
+| `Calib JointTrajectory (idx)` | Calibration (only if ≥2 trajectories found) | Select which pre-defined calibration trajectory to load |
 
 **Buttons:**
 
-| Button | Description |
-|--------|-------------|
-| `Load Robot Cell State` | Load the selected cell state as the arm goal configuration |
-| `Load Joint Trajectory` | Load the selected joint trajectory for execution |
-| `Plan S.Arm to conf target` | Plan a motion from the current configuration to the goal |
-| `Exec S.Arm Traj` | Execute the planned single-arm trajectory on the real robot |
-| `Execute calib traj` | Execute the loaded calibration trajectory with move-stop-record |
-| `Export calib data to json` | Save collected calibration data to a JSON file |
-| `Toggle Goal/Trajectory` | Switch the ghost model between showing goal (blue) or trajectory (green) |
+| Button | When shown | Description |
+|--------|-----------|-------------|
+| `Toggle Goal/Trajectory` | always | Switch the ghost model between goal (blue) and trajectory (green) |
+| `Reset Goal State` | always | Reset the goal/ghost back to the current configuration |
+| `Plan S.Arm to conf target` | always | Plan a motion from the current configuration to the goal |
+| `Exec S.Arm Traj` | always | Execute the planned single-arm trajectory on the real robot |
+| `Load Calib RobotCellState` | Calibration | Load the selected cell state as the arm goal configuration |
+| `Load Calib JointTrajectory` | Calibration | Load the selected calibration trajectory for execution |
+| `Execute calib traj` | Calibration | Execute the loaded calibration trajectory with move-stop-record |
+| `Record current calib conf` | Calibration | Record one configuration (joint conf + mocap poses); used for validation batch |
+| `Export calib data to json` | Calibration | Save collected calibration data to a JSON file |
+| `collect cameras data` | Calibration | **(new)** Export the current mocap camera inventory (poses) to JSON+CSV in `MOCAP_CAMERA_EXPORT_DIR` |
+| `Record Punch Take` | Punch | Record one punch take (joint conf, base mocap pose, FK world-frame punch-tip position) |
+| `Save Punch Validation Data` | Punch | Save all recorded punch takes to a JSON file |
 
 <!-- SCREENSHOT: PyBullet GUI showing the sliders and buttons panel on the right side -->
 
@@ -274,8 +355,8 @@ For each calibration batch (J0 and J1), you will:
 
 #### Step 2: Load a Robot Cell State
 
-1. Use the **"Robot Cell State"** slider to select the desired cell state. These are pre-defined starting configurations for the calibration trajectories.
-2. Click **"Load Robot Cell State"**.
+1. Use the **"Calib RobotCellState (idx)"** slider to select the desired cell state. These are pre-defined starting configurations for the calibration trajectories.
+2. Click **"Load Calib RobotCellState"**.
    - The goal configuration will be shown as a **blue ghost model** in PyBullet.
 
 <!-- SCREENSHOT: PyBullet showing blue ghost model at the target cell state -->
@@ -300,8 +381,8 @@ For each calibration batch (J0 and J1), you will:
 
 #### Step 5: Load and Execute the Calibration Trajectory
 
-1. Use the **"Joint Trajectory"** slider to select the appropriate calibration trajectory file for the current cell state.
-2. Click **"Load Joint Trajectory"** to load it.
+1. Use the **"Calib JointTrajectory (idx)"** slider to select the appropriate calibration trajectory file for the current cell state.
+2. Click **"Load Calib JointTrajectory"** to load it.
 3. Click **"Execute calib traj"** to start the calibration trajectory.
    - This will automatically perform **move-stop-record** for each waypoint in the trajectory.
    - At the end, it will **automatically save** the recorded data to a JSON file.
@@ -472,23 +553,30 @@ After collecting all J0 and J1 data (and optionally validation data), run the ca
    nano YYYYMMDD/config.yaml
    ```
 
-   Key settings to verify:
+   Key settings to verify (full `config.yaml` field reference):
    ```yaml
-   # Which data batches to process
+   # Which data batches to process (scripts 0-1)
    data_batches:
      - "j0"
      - "j1"
 
-   # Which batch to use for verification
-   validation_data_batch: "j1"   # or "validation" if you collected separate validation data
+   # Which batch 3_verify_calibration.py uses to verify
+   validation_data_batch: "validation"   # "j0" / "j1" / "validation"
 
    # Robot settings - make sure these match your robot
-   robot_name: "0806"   # "0806" for Cindy (dual-arm), "0804" for Alice (single-arm)
-   arm: "left"          # "left" or "right" (for dual-arm only)
+   robot_name: "0806"   # "0806" Cindy (dual-arm), "0804" Alice (single-arm)
+   arm: "right"         # "left" or "right" (dual-arm only)
 
-   # Punch tool offset (if doing punch validation)
+   # Punch tool TCP offset tool0->tip (meters), per arm, from UR 4-point calibration
    punch_tool:
-     offset_xyz: [0.0038, 0.0001, 0.11896]   # From 4-point calibration
+     left:
+       offset_xyz: [0.0038, 0.0001, 0.11896]
+     right:
+       offset_xyz: [0.0038, 0.0001, 0.11896]
+
+   # Arm to analyze in 4_punch_validation.py — independent of `arm` above (see §8)
+   punch_validation:
+     arm: null            # "left" / "right" / null
    ```
 
 ### 7.2 Set the Date Folder in config_loader.py
@@ -508,6 +596,9 @@ DEFAULT_DATE_FOLDER = 'YYYYMMDD'   # Change to your date folder
 ### 7.3 Run the Pipeline
 
 ```bash
+cd ~/ros2_ws
+source venv/bin/activate
+source install/setup.bash
 cd ~/ros2_ws/src/husky-assembly-teleop/data/calibration_data/
 python run_calibration_pipeline.py
 ```
@@ -581,7 +672,7 @@ The output includes:
 
 ### MoCap not connecting
 - Verify network connectivity: `ping 192.168.0.117`
-- Check Motif streaming settings (Section 1.4)
+- Check Motive streaming settings (Section 1.4)
 - Verify `CLIENT_IP` and `MOCAP_IP` in `husky_monitor.py` match your setup
 
 ### E-stop triggers during trajectory

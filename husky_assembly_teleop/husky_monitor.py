@@ -31,7 +31,7 @@ from husky_assembly_teleop.mocap_experiment import (
 )
 from husky_assembly_teleop.husky_robot import UR5e_HOME_STATE
 from husky_assembly_teleop.common import (
-    Button, Slider, SliderGroup, Husky, TrackedObject, HuskyObject, AssemblyObject, HUSKY_UR5e_JOINT_NAMES, lerp, load_gripper
+    Button, Slider, SliderGroup, Separator, Husky, TrackedObject, HuskyObject, AssemblyObject, HUSKY_UR5e_JOINT_NAMES, lerp, load_gripper
 )
 from husky_assembly_teleop.optitrack.NatNetClient import NatNetClient
 from husky_assembly_teleop.utils import (
@@ -59,14 +59,24 @@ DEFAULT_BAR_POS = pp.Point(0.8, 0, 1.3)
 
 CLIENT_IP = '192.168.0.25' # Set to your own IP
 MOCAP_IP = '192.168.0.117' # set to the mocap PC's IP, get this from Motive Settings>Streaming pane->Local interface
+# Where the 'collect cameras data' button drops its JSON+CSV (gdrive folder also
+# holding import_mocap_cameras_rhino.py).
+MOCAP_CAMERA_EXPORT_DIR = (
+    "/home/su/Insync/yijiang94817@gmail.com/Google Drive - Shared with me/"
+    "2025-03 Husky Assembly/data_experiment/visualise_mocap_camera"
+)
 
 # Folder under DATA_DIRECTORY/husky_assembly_design_study/<...>/RobotCellStates/
 # from which CALIBRATION-mode state + trajectory loaders pull files.
-CALIBRATION_STATE_SET = '260108_extrinsic_calib_trajs'
+# Keyed by selected_arm_index (0=left, 1=right); see _calibration_state_dir().
+CALIBRATION_STATE_SETS = {
+    0: '260630_calib_trajs_Alice',              # left arm & single arm
+    1: '260225_extrinsic_calib_trajs_Cindy_Right',  # right arm for Cindy
+}
 
 class HuskyMonitor(Node):
-    USE_MOCAP = 0
-    FAKE_HARDWARE = 1
+    USE_MOCAP = 1
+    FAKE_HARDWARE = 0
 
     # When USE_MOCAP=1, by default the husky base in PyBullet tracks mocap.
     # Set USE_CELL_STATE_BASE_POSE=1 to override that and pin the base to
@@ -75,13 +85,13 @@ class HuskyMonitor(Node):
     # end-effector tracking but the husky physically far from the assembly
     # scaffolding (e.g., at the lab desk during dual-arm accuracy tests).
     USE_CELL_STATE_BASE_POSE = 0
-    USE_DPG_UI = 0   # 0 = legacy PyBullet debug GUI; 1 = Dear PyGui control panel
-    UI_FONT_SIZE = 20  # DPG control-panel font size in px
+    USE_DPG_UI = 1   # 0 = legacy PyBullet debug GUI; 1 = Dear PyGui control panel
+    UI_FONT_SIZE = 16  # base size for all DPG widgets (separators override to 20 in the backend)
 
     CALIBRATION = 1
 
-    BAR_ACTION_LIVE_REPLAN_EXE = 1
-    BAR_ACTION_MOCAP_ACCURACY_TEST = 1
+    BAR_ACTION_LIVE_REPLAN_EXE = 0
+    BAR_ACTION_MOCAP_ACCURACY_TEST = 0
     DUAL_ARM_EE_CONSTR_ACCURACY_MOCAP_TEST = 0
 
     # Mocap (y-up) -> z-up axis convention. See utils.mocap_pos_y_up_to_z_up.
@@ -89,7 +99,7 @@ class HuskyMonitor(Node):
     # 'rotated' : legacy convention previously hardcoded in receive_*_frame.
     MOCAP_AXIS_CONVENTION = "rhino"
 
-    PUNCH_CALIB_VALIDATION = 0
+    PUNCH_CALIB_VALIDATION = 1
 
     DUAL_ARM_KISSING_REP_EXPERIMENT = 0 # set 1 to enable kissing experiment + compliance controller buttons
 
@@ -252,8 +262,9 @@ class HuskyMonitor(Node):
         self.grasp_distance = 0.0 # fixed for now
         self.goal_element_axis = 0
 
-        self.trajectory_time_max = 20 if self.CALIBRATION else 30
+        self.trajectory_time_max = 90 # 20 if self.CALIBRATION else 30
         self.trajectory_time = self.trajectory_time_max
+        self.traj_viz_time = 1.0  # trajectory preview scrub position (0..1)
 
         # list of conf, velocity, total time, attachment other than the ee
         self.planned_arm_trajectory = [(None, None, None, None), (None, None, None, None)]
@@ -409,7 +420,12 @@ class HuskyMonitor(Node):
     def reset_ui(self, target_conf=None):
         # reset all sliders to default value by recreating them...
         # pybullet seems to lack a setUserDebugParameter() method :(
-        p.removeAllUserParameters()
+        # p.removeAllUserParameters()
+        # Clear the ACTIVE backend's widgets (PyBullet params OR DPG widgets) so the
+        # rebuild below doesn't stack a duplicate panel in DPG mode.
+        from . import common as _common
+        if _common._global_backend is not None:
+            _common._global_backend.clear()
         self.buttons.clear()
         self.assembly_position_sliders.clear()
         self.joint_state_sliders.clear()
@@ -433,10 +449,21 @@ class HuskyMonitor(Node):
         if new_index != self.selected_arm_index:
             self.selected_arm_index = new_index
             self._set_active_punch_tool_offset(new_index)
+            if self.CALIBRATION:
+                # Calib reference set is per-arm (_calibration_state_dir); reload
+                # so the rebuilt sliders show the new arm's files.
+                self.available_calibration_states = self._load_available_calibration_states()
+                self.available_calibration_trajectories = self._load_available_calibration_trajectories()
+                self.selected_calibration_state_index = 0
+                self.selected_calibration_trajectory_index = 0
             self.reset_ui(target_conf=self.goal_arm_pose) #[self.selected_arm_index])
 
     def update_trajectory_time(self, time):
         self.trajectory_time = time
+
+    def update_traj_viz_time(self, value):
+        # Scrub position (0..1) for the trajectory preview; read in update().
+        self.traj_viz_time = float(value)
 
     def update_calib_joint_range(self, value):
         self.calib_joint_range = value
@@ -515,6 +542,55 @@ class HuskyMonitor(Node):
     def save_punch_validation_data(self):
         """Save all accumulated punch validation results to JSON."""
         world.save_punch_validation_data(self, date_folder=CALIBRATION_DATE)
+
+    def collect_mocap_camera_data(self):
+        """Snapshot mocap camera poses (mocap-origin frame), convert to the Rhino
+        z-up frame, and save JSON+CSV into the gdrive visualise_mocap_camera folder."""
+        import json, csv
+        from datetime import datetime
+
+        inventory = self.get_mocap_camera_inventory(refresh=True)
+        if not inventory or not inventory.get('cameras'):
+            self.get_logger().warn('No mocap cameras found (is mocap connected?)')
+            return
+        conv = self.MOCAP_AXIS_CONVENTION  # 'rhino' by default
+
+        # List comprehension: build a new list by looping `for c in ...` and
+        # producing one {dict} per camera. Equivalent to a for-loop that appends,
+        # but shorter. Each camera's y-up mocap pose is converted to z-up here.
+        cameras = [{
+            'name': c['name'],
+            'position': mocap_pos_y_up_to_z_up(c['position'], conv),
+            'orientation': mocap_quat_y_up_to_z_up(c['orientation'], conv),
+        } for c in inventory['cameras']]
+
+        # exist_ok=True => don't error if the folder already exists (avoids a
+        # try/except). strftime formats 'now' into a sortable timestamp string;
+        # `stem` is the shared filename (no extension) for the .json and .csv.
+        os.makedirs(MOCAP_CAMERA_EXPORT_DIR, exist_ok=True)
+        stem = 'mocap_cameras_' + datetime.now().strftime('%Y%m%d_%H%M%S')
+        json_path = os.path.join(MOCAP_CAMERA_EXPORT_DIR, stem + '.json')
+        csv_path = os.path.join(MOCAP_CAMERA_EXPORT_DIR, stem + '.csv')
+
+        # `with open(...) as f` is a context manager: it auto-closes the file even
+        # if an error happens inside the block. json.dump writes a dict as JSON;
+        # indent=2 pretty-prints it. The dict also stores metadata (frame, units)
+        # so the file is self-describing.
+        with open(json_path, 'w') as f:
+            json.dump({'frame': 'mocap_origin', 'axis_convention': conv,
+                       'position_units': 'meters', 'orientation': 'quaternion_xyzw',
+                       'camera_count': len(cameras), 'cameras': cameras}, f, indent=2)
+
+        # newline='' is the csv module's required idiom to stop blank rows on
+        # Windows. The `*` is "unpacking": *c['position'] spreads the [x,y,z] list
+        # into separate cells, so one row = name + 3 position + 4 quaternion cols.
+        with open(csv_path, 'w', newline='') as f:
+            w = csv.writer(f)
+            w.writerow(['name', 'x', 'y', 'z', 'qx', 'qy', 'qz', 'qw'])
+            for c in cameras:
+                w.writerow([c['name'], *c['position'], *c['orientation']])
+        self.get_logger().info(
+            f'Saved {len(cameras)} mocap cameras to {json_path}')
 
     def record_raw_mocap_take(self):
         if not self.USE_MOCAP:
@@ -3302,9 +3378,11 @@ class HuskyMonitor(Node):
 
     # --- CALIBRATION state/trajectory loaders (CALIBRATION_STATE_SET) ---
     def _calibration_state_dir(self):
+        state_set = CALIBRATION_STATE_SETS.get(
+            self.selected_arm_index, CALIBRATION_STATE_SETS[0])
         return os.path.join(
             DATA_DIRECTORY, 'husky_assembly_design_study',
-            CALIBRATION_STATE_SET, 'RobotCellStates',
+            state_set, 'RobotCellStates',
         )
 
     def _load_available_calibration_states(self):
@@ -3359,18 +3437,39 @@ class HuskyMonitor(Node):
             if hasattr(state, 'robot_configuration') and state.robot_configuration is not None:
                 cfg = state.robot_configuration
                 if hasattr(cfg, 'joint_names') and hasattr(cfg, 'joint_values'):
-                    left_names = HUSKY_DUAL_UR5e_JOINT_NAMES[0]
-                    right_names = HUSKY_DUAL_UR5e_JOINT_NAMES[1]
-                    try:
-                        self.goal_arm_pose[0] = np.array([cfg[n] for n in left_names])
-                        self.goal_arm_pose[1] = np.array([cfg[n] for n in right_names])
+                    # Auto-detect flavour like load_calibration_trajectory:
+                    # single-arm cfg uses un-prefixed ur_arm_* (-> slot 0),
+                    # dual-arm cfg uses left_/right_ prefixed names.
+                    cfg_names = list(cfg.joint_names)
+
+                    def _get(names):
+                        return (np.array([cfg[n] for n in names])
+                                if all(n in cfg_names for n in names) else None)
+
+                    single = _get(HUSKY_UR5e_JOINT_NAMES)
+                    left = _get(HUSKY_DUAL_UR5e_JOINT_NAMES[0])
+                    right = _get(HUSKY_DUAL_UR5e_JOINT_NAMES[1])
+
+                    if left is not None or right is not None:
+                        if left is not None:
+                            self.goal_arm_pose[0] = left
+                        if right is not None:
+                            self.goal_arm_pose[1] = right
+                    elif single is not None:
+                        self.goal_arm_pose[0] = single  # single-arm robot -> slot 0
+                    else:
+                        print(f"WARN: could not extract arm joint values; got "
+                              f"left={0 if left is None else 6} "
+                              f"right={0 if right is None else 6} "
+                              f"single={0 if single is None else 6}")
+                        single = left = right = None
+
+                    if single is not None or left is not None or right is not None:
                         self.reset_ui(self.goal_arm_pose)
                         print(f"goal_arm_pose updated from {selected}")
                         print(f"  left:  {self.goal_arm_pose[0]}")
                         print(f"  right: {self.goal_arm_pose[1]}")
                         self.set_to_show_goal_state()
-                    except (KeyError, AttributeError) as e:
-                        print(f"WARN: could not extract arm joint values: {e}")
                 else:
                     print("Robot configuration missing joint_names/joint_values")
             else:
@@ -3406,23 +3505,46 @@ class HuskyMonitor(Node):
                 print("JointTrajectory points missing joint_names")
                 return
             joint_names = points[0]['joint_names']
-            left_names = HUSKY_DUAL_UR5e_JOINT_NAMES[0]
-            right_names = HUSKY_DUAL_UR5e_JOINT_NAMES[1]
-            left_idx = [joint_names.index(n) for n in left_names if n in joint_names]
-            right_idx = [joint_names.index(n) for n in right_names if n in joint_names]
-            if len(left_idx) != 6 or len(right_idx) != 6:
-                print(f"WARN: expected 6 joints per arm, got left={len(left_idx)} right={len(right_idx)}")
-            left_traj, right_traj = [], []
-            for pt in points:
-                jv = pt.get('joint_values')
-                if jv is None:
-                    continue
-                left_traj.append(np.array([jv[i] for i in left_idx]))
-                right_traj.append(np.array([jv[i] for i in right_idx]))
-            self.set_arm_trajectory((left_traj, None, self.trajectory_time, None), index=0)
-            self.set_arm_trajectory((right_traj, None, self.trajectory_time, None), index=1)
+
+            def _extract(idx):
+                traj = []
+                for pt in points:
+                    jv = pt.get('joint_values')
+                    if jv is None:
+                        continue
+                    traj.append(np.array([jv[i] for i in idx]))
+                return traj
+
+            def _match(names):
+                # return trajectory if all 6 named joints present, else None
+                idx = [joint_names.index(n) for n in names if n in joint_names]
+                return (_extract(idx), len(idx))
+
+            # Auto-detect flavour: single-arm files use un-prefixed ur_arm_*
+            # names (-> slot 0); dual-arm files use left_/right_ prefixed names.
+            single_traj, single_n = _match(HUSKY_UR5e_JOINT_NAMES)
+            left_traj, left_n = _match(HUSKY_DUAL_UR5e_JOINT_NAMES[0])
+            right_traj, right_n = _match(HUSKY_DUAL_UR5e_JOINT_NAMES[1])
+
+            NONE = (None, None, None, None)
+            if left_n == 6 or right_n == 6:
+                # left and/or right arm; absent arm -> NONE (no ghost arm)
+                lt = (left_traj, None, self.trajectory_time, None) if left_n == 6 else NONE
+                rt = (right_traj, None, self.trajectory_time, None) if right_n == 6 else NONE
+                self.set_arm_trajectory(lt, index=0)
+                self.set_arm_trajectory(rt, index=1)
+                n_wp = len(left_traj) if left_n == 6 else len(right_traj)
+            elif single_n == 6:
+                # single-arm file -> slot 0 only
+                self.set_arm_trajectory((single_traj, None, self.trajectory_time, None), index=0)
+                self.set_arm_trajectory(NONE, index=1)
+                n_wp = len(single_traj)
+            else:
+                print(f"WARN: no complete arm (6 joints); got "
+                      f"left={left_n} right={right_n} single={single_n}; aborting load")
+                return
             self.set_to_show_traj_state()
-            print(f"[Load Calib Traj] {len(left_traj)} waypoints from {selected}")
+            print(f"[Load Calib Traj] {n_wp} waypoints from {selected}")
         except Exception as e:
             print(f"Error loading calib JointTrajectory: {e}")
 
@@ -3579,13 +3701,18 @@ class HuskyMonitor(Node):
 
     def build_ui(self, target_conf=None):
         arm_slider_label = "arm id (0 only)" if self.get_active_arm_count() == 1 else "arm id (0:L,1:R)"
-        arm_slider_max = 1 if self.get_active_arm_count() == 1 else 2
-        self.arm_slider = Slider(arm_slider_label, self.update_selected_arm_id, 0, arm_slider_max, self.selected_arm_index)
+        arm_slider_max = 1   # integer 0/1; single-arm extra clips to 0 in update_selected_arm_id
+        self.arm_slider = Slider(arm_slider_label, self.update_selected_arm_id,
+                                 0, arm_slider_max, self.selected_arm_index, integer=True)
 
         self.trajectory_time_slider = Slider("traj time", self.update_trajectory_time, 1.0, self.trajectory_time_max, self.trajectory_time)
 
-        self.time_slider = p.addUserDebugParameter("Traj viz time", 0.0, 1.0, 1.0)
-        
+        # self.time_slider = p.addUserDebugParameter("Traj viz time", 0.0, 1.0, 1.0)
+        # Shim Slider: a PyBullet debug param in PyBullet mode, a DPG widget in DPG
+        # mode (so it lives in whichever GUI is active). Its callback updates
+        # self.traj_viz_time, which the preview reads in update().
+        self.traj_viz_time_slider = Slider("Traj viz time", self.update_traj_viz_time, 0.0, 1.0, 1.0)
+
         self.buttons.append(Button('Toggle Goal/Trajectory', self.toggle_show_goal_state))
         self.buttons.append(Button('Reset Goal State', self.reset_ui))
                       
@@ -3639,7 +3766,8 @@ class HuskyMonitor(Node):
                     delattr(self, _attr)
 
         if self.CONNECT_COMPLIANT_CONTROLLER:
-            self.dump_sep_sliders.append(Slider("----------CONTROLLERS", lambda: None))
+            # self.dump_sep_sliders.append(Slider("----------CONTROLLERS", lambda: None))
+            self.dump_sep_sliders.append(Separator("CONTROLLERS"))
             def _switch_to_compliance_both():
                 h = self.huskies[self.selected_robot_id]
                 for i in range(2 if h.dual_arm else 1):
@@ -3679,7 +3807,8 @@ class HuskyMonitor(Node):
         # Scaffolding tool control removed - outdated, will be remade later.
 
         if self.BAR_ACTION_LIVE_REPLAN_EXE:
-            self.dump_sep_sliders.append(Slider("----------BarAction live replan & exe", lambda: None))
+            # self.dump_sep_sliders.append(Slider("----------BarAction live replan & exe", lambda: None))
+            self.dump_sep_sliders.append(Separator("BarAction live replan & exe"))
             if not self.available_bar_actions and hasattr(self, '_load_available_bar_actions'):
                 self.available_bar_actions = self._load_available_bar_actions()
             n_files = len(self.available_bar_actions)
@@ -3711,13 +3840,15 @@ class HuskyMonitor(Node):
             self.buttons.append(Button('Plan Movement', self.plan_selected_movement))
             # self.buttons.append(Button('Load Movement Trajectory', self.load_selected_movement_trajectory))
 
-            self.dump_sep_sliders.append(Slider("---------- live movement debug", lambda: None))
+            # self.dump_sep_sliders.append(Slider("---------- live movement debug", lambda: None))
+            self.dump_sep_sliders.append(Separator("live movement debug"))
 
             self.buttons.append(Button('Delete All Saved Trajs', self.delete_saved_movement_trajectories_for_current_bar_action))
             self.buttons.append(Button('Plan Free → Mv Start (cfab CC)', self.plan_free_to_movement_start_with_cfab_cc))
             self.buttons.append(Button('IK Live Base (debug)', self.ik_live_base_for_selected_movement))
 
-            self.dump_sep_sliders.append(Slider("---------- movement exe", lambda: None))
+            # self.dump_sep_sliders.append(Slider("---------- movement exe", lambda: None))
+            self.dump_sep_sliders.append(Separator("movement exe"))
 
             self.buttons.append(Button(
                 'Exec Compliant (M2/M3 only)',
@@ -3733,7 +3864,8 @@ class HuskyMonitor(Node):
             self.buttons.append(Button('Save markerset data', self.save_bar_holding_marker_data))
 
         if self.DUAL_ARM_EE_CONSTR_ACCURACY_MOCAP_TEST:
-            self.dump_sep_sliders.append(Slider("----------Dual Arm Acc Test", lambda : None))
+            # self.dump_sep_sliders.append(Slider("----------Dual Arm Acc Test", lambda : None))
+            self.dump_sep_sliders.append(Separator("Dual Arm Acc Test"))
             self.buttons.append(Button('Compute Trajectory', lambda: world.next_dual_arm_bar_trajectory(self)))
             self.buttons.append(Button('Exec Arms', lambda: world.execute_arm_trajectory_both(self)))
             self.buttons.append(Button('Exec Arms and Record', lambda: self.tasks.append(world.execute_and_log_mocap(self))))
@@ -3741,7 +3873,8 @@ class HuskyMonitor(Node):
             self.buttons.append(Button('Save EE mocap data', lambda: world.save_dual_arm_E_mocap(self)))
 
         if self.DUAL_ARM_KISSING_REP_EXPERIMENT:
-            self.dump_sep_sliders.append(Slider("----------KISSING EXPERIMENT", lambda: None))
+            # self.dump_sep_sliders.append(Slider("----------KISSING EXPERIMENT", lambda: None))
+            self.dump_sep_sliders.append(Separator("KISSING EXPERIMENT"))
             self.buttons.append(Button('Conduct Kissing Experiment',
                 lambda: self.tasks.append(world.kissing_experiment(self))))
             self.buttons.append(Button('Move Forward 1cm',
@@ -3750,24 +3883,41 @@ class HuskyMonitor(Node):
                 lambda: world.move_left_linear_z(self, -0.01, 0.001)))
             
         if self.CALIBRATION:
-            self.dump_sep_sliders.append(Slider("----------Calibration", lambda : None))
+            # self.dump_sep_sliders.append(Slider("----------Calibration", lambda : None))
+            self.dump_sep_sliders.append(Separator("Calibration"))
             # self.calib_joint_range_slider = Slider("calib joint range", self.update_calib_joint_range, 0.0, np.pi*2, np.pi*2)
             # self.calib_target_axis_slider = Slider("calib target joint id", self.update_calib_target_axis, 0, 1, 0)
             # Mode slider: 0 = validation mode, 1 = data collection mode
+            # self.data_collection_mode_slider = Slider(
+            #     "Mode (0:validation, 1:data_collection)",
+            #     self.update_data_collection_mode,
+            #     0.0, 1.0,
+            #     1.0 if self.data_collection_mode else 0.0
+            # )
+            # integer=True -> snaps to whole values, like the Calib idx sliders below.
             self.data_collection_mode_slider = Slider(
                 "Mode (0:validation, 1:data_collection)",
                 self.update_data_collection_mode,
-                0.0, 1.0,
-                1.0 if self.data_collection_mode else 0.0
+                0, 1,
+                1 if self.data_collection_mode else 0,
+                integer=True,
             )
+            # self.calib_batch_slider = Slider(
+            #     "Batch (0:j0,1:j1,2:valid,3:punch)",
+            #     self.update_calib_batch_index,
+            #     0, len(CALIBRATION_BATCHES) - 1,
+            #     self.selected_calib_batch_index
+            # )
             self.calib_batch_slider = Slider(
                 "Batch (0:j0,1:j1,2:valid,3:punch)",
                 self.update_calib_batch_index,
                 0, len(CALIBRATION_BATCHES) - 1,
-                self.selected_calib_batch_index
+                self.selected_calib_batch_index,
+                integer=True,
             )
             # --- Calibration state/trajectory loaders (CALIBRATION_STATE_SET) ---
-            self.dump_sep_sliders.append(Slider("----------State Loading", lambda: None))
+            # self.dump_sep_sliders.append(Slider("----------State Loading", lambda: None))
+            self.dump_sep_sliders.append(Separator("State Loading"))
             self.calibration_state_slider = None
             if self.available_calibration_states and len(self.available_calibration_states) > 1:
                 max_idx = len(self.available_calibration_states) - 1
@@ -3800,11 +3950,15 @@ class HuskyMonitor(Node):
             # self.buttons.append(Button('Sample calib path', self.sample_calib_traj))
             # self.buttons.append(Button('Execute transit to calib traj', self.execute_free_trajectory))
             self.buttons.append(Button('Execute calib traj', self.execute_calib_traj))
+            self.buttons.append(Button('Record current calib conf',
+                                       lambda: world.calibrate_button(self, self.active_calib_tool_name)))
             self.buttons.append(Button('Export calib data to json', self.record_calibration_data))
+            self.buttons.append(Button('collect cameras data', self.collect_mocap_camera_data))
 
 
         if self.PUNCH_CALIB_VALIDATION:
-            self.dump_sep_sliders.append(Slider("----------Punch Calib Validation", lambda : None))
+            # self.dump_sep_sliders.append(Slider("----------Punch Calib Validation", lambda : None))
+            self.dump_sep_sliders.append(Separator("Punch Calib Validation"))
             self.buttons.append(Button('Record Punch Take', self.record_punch_reference_pose))
             self.buttons.append(Button('Save Punch Validation Data', self.save_punch_validation_data))
 
@@ -3812,7 +3966,8 @@ class HuskyMonitor(Node):
             # Gripper controls — only when the active robot connected its gripper.
             self.gripper_slider = None
             if self.huskies[self.selected_robot_id].connect_gripper:
-                self.dump_sep_sliders.append(Slider("----------Gripper", lambda: None))
+                # self.dump_sep_sliders.append(Slider("----------Gripper", lambda: None))
+                self.dump_sep_sliders.append(Separator("Gripper"))
                 self.gripper_slider = Slider(
                     "gripper pos (0=open, 0.85=closed)",
                     lambda v: setattr(self, 'goal_gripper', float(v)),
@@ -3827,7 +3982,8 @@ class HuskyMonitor(Node):
             has_scaffold_left = any('assembly_tool_v3_left' in (t or '') for t in active_husky.ee_types)
             has_scaffold_right = any('assembly_tool_v3_right' in (t or '') for t in active_husky.ee_types)
             if has_scaffold_left or has_scaffold_right:
-                self.dump_sep_sliders.append(Slider("----------Scaffolding V3", lambda: None))
+                # self.dump_sep_sliders.append(Slider("----------Scaffolding V3", lambda: None))
+                self.dump_sep_sliders.append(Separator("Scaffolding V3"))
 
                 def send_scaffolding_cmd_both_motors(direction, arm_index):
                     interface = self.huskies[self.selected_robot_id].interface
@@ -3853,8 +4009,8 @@ class HuskyMonitor(Node):
 
 
 
-        self.dump_sep_sliders.append(Slider("----------DEBUG utils", lambda : None))
-        # self.buttons.append(Button('Record current calib conf', lambda: world.calibrate_button(self, self.active_calib_tool_name)))
+        # self.dump_sep_sliders.append(Slider("----------DEBUG utils", lambda : None))
+        self.dump_sep_sliders.append(Separator("DEBUG utils"))
         self.buttons.append(Button('Sample Random Goal Conf', self.sample_random_goal_conf))
         self.buttons.append(Button('Remove all drawing', lambda : pp.remove_all_debug()))
         # Button to load RobotCellState from file and update arm goal configuration
@@ -4047,6 +4203,7 @@ class HuskyMonitor(Node):
 
         self.arm_slider.update()
         self.trajectory_time_slider.update()
+        self.traj_viz_time_slider.update()  # PyBullet mode: poll fires update_traj_viz_time
         if self.gripper_slider is not None:
             self.gripper_slider.update()
 
@@ -4097,7 +4254,8 @@ class HuskyMonitor(Node):
         # update assembly goal position
         # self.assembly_goal_position_slider_group.update()
             
-        preview_time = p.readUserDebugParameter(self.time_slider)
+        # preview_time = p.readUserDebugParameter(self.time_slider)
+        preview_time = self.traj_viz_time  # updated by update_traj_viz_time (both UI modes)
         goal_base_pose = self.goal_base_pose
         # Preview must not mutate self.goal_arm_pose; planners consume that
         # field as the actual target configuration.

@@ -12,6 +12,7 @@ constant across all configurations, representing the fixed offset between the tw
 """
 
 import os
+import re
 import json
 import numpy as np
 import matplotlib.pyplot as plt
@@ -39,6 +40,19 @@ ROBOT_URDF = get_robot_urdf(ROBOT_NAME)
 
 # Configure logging with colored console output
 logger = setup_logger(log_file=os.path.join(VALIDATION_DATA_FOLDER, 'verification_log.txt'))
+
+
+def traj_label(file_name):
+    """Extract 'J<n>_traj<m>' from a calibration filename for plot labels.
+
+    e.g. "calibration_..._J0_traj3_JointTrajectory.json" -> "J0_T3".
+    The (\d+) capture groups grab the J and traj numbers so we can rebuild the
+    label as "J<x>_T<y>". Falls back to the old stripped-filename style if absent.
+    """
+    m = re.search(r'J(\d+)_traj(\d+)', file_name)
+    if m:
+        return f'J{m.group(1)}_T{m.group(2)}'
+    return file_name.replace('calibration_', '').replace('.json', '')
 
 
 def load_calibration(calibration_file):
@@ -220,7 +234,7 @@ def plot_tool0_vs_flange_3d(results, data_folder, data_batch):
     region_starts = [0] + [int(b + 0.5) for b in boundaries]
     region_ends = [int(b + 0.5) for b in boundaries] + [len(results)]
     for start, end in zip(region_starts, region_ends):
-        region_name = file_names[start].replace('calibration_', '').replace('.json', '')
+        region_name = traj_label(file_names[start])
         mid_x = (start + end - 1) / 2
         ax2d.text(mid_x, y_top, region_name, ha='center', va='bottom', fontsize=7, alpha=0.7)
 
@@ -333,7 +347,7 @@ def analyze_results(results, data_folder, data_batch, date_folder, robot_name, a
 
         # Add file to legend via invisible scatter (once per file)
         if fname not in legend_added:
-            file_label = fname.replace('calibration_', '').replace('.json', '')
+            file_label = traj_label(fname)
             ax_ori.scatter([], [], [], color=file_color, s=30, label=file_label)
             legend_added.add(fname)
 
@@ -475,7 +489,7 @@ def analyze_results(results, data_folder, data_batch, date_folder, robot_name, a
     for file_idx, fname in enumerate(unique_files):
         mask = np.array([f == fname for f in file_names])
         color = file_colors[file_idx % len(file_colors)]
-        label = fname.replace('calibration_', '').replace('.json', '')
+        label = traj_label(fname)
         pts = positions_mm[mask]
         ax3d.scatter(pts[:, 0], pts[:, 1], pts[:, 2],
                      c=[color], s=20, alpha=0.6, label=label)
