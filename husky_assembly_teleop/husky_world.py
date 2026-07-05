@@ -18,7 +18,7 @@ from husky_assembly_teleop import DATA_DIRECTORY, CALIBRATION_DATE, EXPERIMENT_D
 from husky_assembly_teleop.common import Husky, TrackedObject, AssemblyObject
 import husky_assembly_teleop.husky_planning as planning
 import husky_assembly_teleop.husky_control as control
-from husky_assembly_teleop.utils import HUSKY_DUAL_UR5e_JOINT_NAMES, UR5E_JOINT_NAMES, MOCAP_SET_RIG_RB_NAME, get_arm_ik_for_grasp_bar, get_custom_limits, notify, plan_transit_motion, pose_from_frame
+from husky_assembly_teleop.utils import HUSKY_DUAL_UR5e_JOINT_NAMES, UR5E_JOINT_NAMES, MOCAP_SET_RIG_RB_NAME, conf_from_12vec, get_arm_ik_for_grasp_bar, get_custom_limits, notify, plan_transit_motion, pose_from_frame
 from husky_assembly_teleop.scaffolding import parse_mt_geometric, create_collision_bodies, create_couplers, flatten_list
 from husky_assembly_teleop.cfab_session import CfabSession, build_default_robot_cell
 import json
@@ -1562,39 +1562,42 @@ def plan_both_arms_to_goal(monitor, use_composite=False, debug=False):
     Sets the resulting trajectories in the monitor.
     """
     husky = monitor.huskies[monitor.selected_robot_id]
-    robot = husky.object.robot
-    
-    left_joint_names = HUSKY_DUAL_UR5e_JOINT_NAMES[0]
-    right_joint_names = HUSKY_DUAL_UR5e_JOINT_NAMES[1]
-    left_joints = pp.joints_from_names(robot, left_joint_names)
-    right_joints = pp.joints_from_names(robot, right_joint_names)
-    
-    current_left_conf = pp.get_joint_positions(robot, left_joints)
-    current_right_conf = pp.get_joint_positions(robot, right_joints)
     left_conf = np.array(monitor.goal_arm_pose[0])
     right_conf = np.array(monitor.goal_arm_pose[1])
-    # Print current joint configuration for both arms
-    print("Current left arm joint configuration:", current_left_conf)
-    print("Current right arm joint configuration:", current_right_conf)
-
-    # Print joint limits for all arm joints
-    all_joint_names = left_joint_names + right_joint_names
-    all_joints = pp.joints_from_names(robot, all_joint_names)
-    lower_limits = [pp.get_joint_info(robot, j).jointLowerLimit for j in all_joints]
-    upper_limits = [pp.get_joint_info(robot, j).jointUpperLimit for j in all_joints]
-    print("All arm joint names:", all_joint_names)
-    print("All arm joint lower limits:", lower_limits)
-    print("All arm joint upper limits:", upper_limits)
-
     print(f"target left_conf: {left_conf}")
     print(f"target right_conf: {right_conf}")
-    attachments = [ee[1] for ee in husky.object.ee_list]
-    obstacles = _get_manual_staging_obstacles(monitor)
 
     left_trajectory = None
     right_trajectory = None
 
     if not use_composite:
+        # Sequential planning uses the legacy pp-side planner, which needs
+        # husky.object.robot (real Husky wrapper). The composite branch runs
+        # entirely through cfab and doesn't need it, so we lazy-open the pp
+        # handles only here.
+        robot = husky.object.robot
+        left_joint_names = HUSKY_DUAL_UR5e_JOINT_NAMES[0]
+        right_joint_names = HUSKY_DUAL_UR5e_JOINT_NAMES[1]
+        left_joints = pp.joints_from_names(robot, left_joint_names)
+        right_joints = pp.joints_from_names(robot, right_joint_names)
+
+        current_left_conf = pp.get_joint_positions(robot, left_joints)
+        current_right_conf = pp.get_joint_positions(robot, right_joints)
+        print("Current left arm joint configuration:", current_left_conf)
+        print("Current right arm joint configuration:", current_right_conf)
+
+        # Print joint limits for all arm joints
+        all_joint_names = left_joint_names + right_joint_names
+        all_joints = pp.joints_from_names(robot, all_joint_names)
+        lower_limits = [pp.get_joint_info(robot, j).jointLowerLimit for j in all_joints]
+        upper_limits = [pp.get_joint_info(robot, j).jointUpperLimit for j in all_joints]
+        print("All arm joint names:", all_joint_names)
+        print("All arm joint lower limits:", lower_limits)
+        print("All arm joint upper limits:", upper_limits)
+
+        attachments = [ee[1] for ee in husky.object.ee_list]
+        obstacles = _get_manual_staging_obstacles(monitor)
+
         # Sequential planning: left arm, then right arm
         pp.set_joint_positions(robot, left_joints, current_left_conf)
         left_trajectory = planning.plan_arm_motion(
@@ -1649,14 +1652,77 @@ def plan_both_arms_to_goal(monitor, use_composite=False, debug=False):
             return
         state = template.copy()
         monitor._inject_live_conf_into_state(state)
-        composite_goal = np.concatenate([left_conf, right_conf])
-        from husky_assembly_tamp.motion_planner.api import plan_free_dual_arm
-        composite_path, info = plan_free_dual_arm(
-            monitor.cfab.planner, state, composite_goal,
-            max_time=120.0, max_iterations=1000,
-            joint_resolution=FREE_JOINT_RESOLUTION,
-            debug=debug,
+
+        # * Unwrap the goal joint values to be within +/- pi of the start
+        # conf. Trac_IK can return goal joints that are 2*pi-offset from the
+        # nearest branch (e.g. right_shoulder ~ -4.12 rad when +2.16 rad
+        # yields the same tool0 pose). BiRRT then has to traverse > pi in
+        # that joint, which the 12-DOF free sampler almost never solves in
+        # the time budget. The M0 transit-failure probe in
+        # scripts/headless_live_monitor_test.py showed this decisively:
+        # planning to the raw goal failed at 120s; planning to the
+        # canonical (+/- pi of start) goal succeeded quickly. UR5e joints
+        # have limits well past 2*pi so an unwrap is always in-range.
+        left_joint_names = HUSKY_DUAL_UR5e_JOINT_NAMES[0]
+        right_joint_names = HUSKY_DUAL_UR5e_JOINT_NAMES[1]
+        start_left = np.asarray(
+            [float(state.robot_configuration[n]) for n in left_joint_names],
+            dtype=float,
         )
+        start_right = np.asarray(
+            [float(state.robot_configuration[n]) for n in right_joint_names],
+            dtype=float,
+        )
+        start_12 = np.concatenate([start_left, start_right])
+        raw_goal_12 = np.concatenate([left_conf, right_conf])
+        two_pi = 2.0 * np.pi
+        unwrapped_goal_12 = raw_goal_12 - np.round((raw_goal_12 - start_12) / two_pi) * two_pi
+        max_wrap_delta = float(np.max(np.abs(raw_goal_12 - unwrapped_goal_12)))
+        if max_wrap_delta > 1e-6:
+            wrapped_joints = np.where(np.abs(raw_goal_12 - unwrapped_goal_12) > 1e-6)[0]
+            print(
+                f"[composite plan] unwrapped goal to +/- pi of start "
+                f"(max wrap correction {max_wrap_delta:.4f} rad on "
+                f"{len(wrapped_joints)} joint(s) at indices {wrapped_joints.tolist()})."
+            )
+
+        # * Pass a compas Configuration as the goal so `_conf12_from_target` in
+        # the tamp API takes its dict-style path — raw numpy arrays raise
+        # IndexError under string joint-name indexing there.
+        composite_goal = conf_from_12vec(unwrapped_goal_12)
+        # * Log the joint-delta magnitudes so we can tell whether the
+        # sampler was fighting large deltas vs a genuinely blocked path.
+        max_j_delta = float(np.max(np.abs(unwrapped_goal_12 - start_12)))
+        l2_delta = float(np.linalg.norm(unwrapped_goal_12 - start_12))
+        print(f"[composite plan] joint deltas: max={max_j_delta:.3f} rad, "
+              f"L2={l2_delta:.3f} rad.")
+        # * Try a fine resolution first; if that fails, fall back to a
+        # coarse resolution (2x). BiRRT with a fine resolution rejects
+        # motions with narrow-passage collisions; a coarser resolution is
+        # more forgiving and lets the sampler cover more ground per second,
+        # at the cost of possibly skipping over small obstacles. When both
+        # start and goal are collision-free (they are here -- IK + fallback
+        # validated the goal), the coarse pass is a reasonable escape.
+        from husky_assembly_tamp.motion_planner.api import plan_free_dual_arm
+        composite_path = None
+        for jr, mt, tag in [
+            (FREE_JOINT_RESOLUTION, 120.0, 'fine'),
+            (FREE_JOINT_RESOLUTION * 2.0, 300.0, 'coarse'),
+        ]:
+            print(f"[composite plan] {tag} pass: joint_resolution={jr:.3f} rad, "
+                  f"max_time={mt:.0f}s.")
+            composite_path, info = plan_free_dual_arm(
+                monitor.cfab.planner, state, composite_goal,
+                max_time=mt, max_iterations=2000,
+                joint_resolution=jr,
+                debug=debug,
+            )
+            if composite_path is not None:
+                print(f"[composite plan] {tag} pass SUCCEEDED "
+                      f"({len(composite_path)} waypoints).")
+                break
+            print(f"[composite plan] {tag} pass failed: "
+                  f"{info.get('failure_reason', 'unknown')}.")
         if composite_path is None:
             monitor.get_logger().warn(
                 f"Composite planning failed: {info.get('failure_reason', 'unknown')}."
@@ -1720,7 +1786,8 @@ def _solve_bar_action_goal_ik(monitor, start_state,
                               max_outer_attempts: int = 5,
                               random_seed: int = 0,
                               verbose: bool = False,
-                              skip_env_collisions: bool = False):
+                              skip_env_collisions: bool = False,
+                              alt_seed_conf12=None):
     """Solve goal IK for a BarAction movement from `target_ee_frames`.
 
     Returns a 12-vector (left_conf || right_conf) on success, or None on
@@ -1787,19 +1854,30 @@ def _solve_bar_action_goal_ik(monitor, start_state,
             opts["_skip_cc5"] = True
         return opts
 
-    def _solve_pair(check_collision: bool):
-        opts = _ik_options(check_collision)
+    def _solve_pair(check_collision: bool, seed_state=None):
+        # * Solve each arm's IK with check_collision=False even when the
+        # outer request wants collision-checked results. Reason: the LEFT
+        # IK's per-call collision check is run against a state where the
+        # RIGHT arm is still at its seed (usually HOME) but the bar --
+        # attached to the LEFT tool0 -- has already moved to the LEFT
+        # target. That intermediate state can put the bar into the
+        # still-at-seed right arm, so the LEFT IK is rejected even though
+        # the FINAL merged state (both arms at their targets, bar held
+        # consistently between them) is collision-free. We defer the
+        # collision check to the merged state below.
+        per_ik_opts = _ik_options(False)
+        seed = seed_state if seed_state is not None else start_state
         try:
-            conf_L = planner.inverse_kinematics(target_L, start_state, left_group, opts)
+            conf_L = planner.inverse_kinematics(target_L, seed, left_group, per_ik_opts)
         except _IK_FAIL as e:
             return None, f"LEFT FAIL: {getattr(e, 'message', e)}"
-        st = start_state.copy()
+        st = seed.copy()
         st.robot_configuration = conf_L
         try:
-            conf_LR = planner.inverse_kinematics(target_R, st, right_group, opts)
+            conf_LR = planner.inverse_kinematics(target_R, st, right_group, per_ik_opts)
         except _IK_FAIL as e:
             return None, f"RIGHT FAIL: {getattr(e, 'message', e)}"
-        gs = start_state.copy()
+        gs = seed.copy()
         gs.robot_configuration = conf_LR
         if check_collision:
             cc_opts = {"verbose": verbose}
@@ -1813,10 +1891,57 @@ def _solve_bar_action_goal_ik(monitor, start_state,
                 return None, f"GOAL COLLISION: {(e.message or '').splitlines()[0] if e.message else ''}"
         return gs, None
 
+    # * Build a list of seed configurations to try across outer attempts.
+    # Trac_ik's descent is deterministic in the neighbourhood of its seed,
+    # so retrying with only different numpy state does not escape a
+    # colliding local minimum. This list gives trac_ik a shot at each of:
+    # the caller-supplied seed (usually the "live" pose, often HOME with
+    # extended arms), the known-good dual-arm home, an optional user-
+    # supplied `alt_seed_conf12` (typically the movement's own
+    # start_conf -- a bar-holding pose that FK-produces the target frames
+    # by construction), and small random perturbations of the caller seed.
+    from husky_assembly_teleop.utils import (
+        HUSKY_DUAL_UR5e_JOINT_NAMES as _JN,
+        HUSKY_DUAL_ARM_HOME_CONF_12 as _HOME12,
+    )
+    _all_names = list(_JN[0]) + list(_JN[1])
+
+    def _seed_with_conf12(base_state, conf12):
+        s = base_state.copy()
+        for n, v in zip(_all_names, conf12):
+            s.robot_configuration[n] = float(v)
+        return s
+
+    np.random.seed(random_seed)
+    caller_seed_12 = np.array(
+        [float(start_state.robot_configuration[n]) for n in _all_names], dtype=float
+    )
+    seed_states = [start_state]                                  # 1. caller-supplied
+    seed_states.append(_seed_with_conf12(start_state, _HOME12))  # 2. known-good home
+    # Small random perturbations. When alt_seed_conf12 is provided we
+    # perturb around IT (a bar-holding pose whose FK produces the target
+    # frames by construction) so trac_ik stays in the neighbourhood of a
+    # valid IK branch. Perturbing around the caller seed instead was
+    # letting trac_ik jump to wildly-wrapped IK branches that unwrap
+    # couldn't fully correct, leaving huge composite-plan deltas.
+    perturb_center = (
+        np.asarray(alt_seed_conf12, dtype=float)
+        if alt_seed_conf12 is not None
+        else caller_seed_12
+    )
+    if alt_seed_conf12 is not None:
+        seed_states.append(                                     # 3. movement start
+            _seed_with_conf12(start_state, np.asarray(alt_seed_conf12, dtype=float))
+        )
+    while len(seed_states) < max_outer_attempts:
+        perturb = np.random.normal(0.0, 0.05, size=12)
+        seed_states.append(_seed_with_conf12(start_state, perturb_center + perturb))
+
     goal_state = None
     last_err = None
     for attempt in range(1, max_outer_attempts + 1):
-        gs, err = _solve_pair(check_collision=True)
+        gs, err = _solve_pair(check_collision=True,
+                              seed_state=seed_states[attempt - 1])
         if gs is not None:
             goal_state = gs
             print(f"[goal IK] attempt {attempt}/{max_outer_attempts}: OK")
@@ -1844,6 +1969,39 @@ def _solve_bar_action_goal_ik(monitor, start_state,
                 f"({err_nc}); the EE targets are unreachable from the current "
                 "base. Move the base closer to the goal-ghost base pose."
             )
+        # * Fallback: when the caller provided an alt seed (typically the
+        # movement's own start_conf, whose FK produces the target frames by
+        # construction), accept it as the goal state. This trades a small
+        # tool0 world-frame error (equal to the base offset applied on top
+        # of the authored base) for a usable goal_conf so Button 2's
+        # composite free plan can still plan a motion to a known bar-holding
+        # pose. Only kicks in when trac_ik + collision-check couldn't find
+        # a non-colliding branch on their own.
+        if alt_seed_conf12 is not None:
+            fallback_state = _seed_with_conf12(
+                start_state, np.asarray(alt_seed_conf12, dtype=float),
+            )
+            try:
+                cc_opts = {"verbose": verbose}
+                if skip_env_collisions:
+                    cc_opts["_skip_cc3"] = True
+                    cc_opts["_skip_cc4"] = True
+                    cc_opts["_skip_cc5"] = True
+                planner.check_collision(fallback_state, cc_opts)
+            except CollisionCheckError as e:
+                print(
+                    f"[goal IK] fallback (alt_seed_conf12 verbatim) also "
+                    f"collides: {(e.message or '').splitlines()[0] if e.message else ''}. "
+                    f"Giving up."
+                )
+                return None
+            print(
+                "[goal IK] FALLBACK: accepting alt_seed_conf12 verbatim as "
+                "goal (tool0 world-frame error ~ base_offset). Composite free "
+                "plan will land the arms on this bar-holding pose."
+            )
+            monitor.movement_goal_state = fallback_state
+            return np.asarray(alt_seed_conf12, dtype=float)
         return None
 
     monitor.movement_goal_state = goal_state

@@ -73,7 +73,6 @@ def _bypass_init_monitor():
     monitor.current_action = None
     monitor.current_movement = None
     monitor.current_movement_index = None
-    monitor.movement_type = None
     monitor.movement_start_state = None
     monitor.target_ee_frames = None
     monitor.grasp_link_from_bar = None
@@ -109,7 +108,10 @@ def _bypass_init_monitor():
     monitor._traj_ghost_bodies = []
     monitor._traj_ghost_orig_colors = {}
     monitor._ee_target_pose_uids = []
-    monitor.planned_arm_trajectory = None
+    # 2-slot list so set_arm_trajectory can index into it (real monitor
+    # inits this the same way).
+    monitor.planned_arm_trajectory = [(None, None, None, None),
+                                      (None, None, None, None)]
 
     monitor.BAR_ACTION_LIVE_REPLAN_EXE = True
     monitor.FAKE_HARDWARE = False
@@ -119,7 +121,13 @@ def _bypass_init_monitor():
     def _noop(*a, **kw):
         return None
 
-    monitor.set_arm_trajectory = lambda traj, index=0: None
+    # Mirror the real set_arm_trajectory: write into planned_arm_trajectory[index]
+    # so headless assertions (e.g. --button replan-m2) can see whether a plan
+    # actually populated the per-arm slot.
+    def _set_arm_trajectory(traj, index=0):
+        monitor.planned_arm_trajectory[index] = traj
+
+    monitor.set_arm_trajectory = _set_arm_trajectory
     monitor.set_to_show_traj_state = _noop
     monitor.set_to_show_goal_state = _noop
     monitor.reset_ui = lambda *a, **kw: None
@@ -762,9 +770,14 @@ def _install_tree_drawing(monitor):
 
 
 def _replay_saved_trajectories(monitor, sequence) -> int:
-    """Load <mv>_trajectory.json files from disk for each movement in
-    `sequence` (in load order), then open an interactive PyBullet slider
-    that scrubs the concatenated waypoint stream across all movements.
+    """Iterate each movement in `sequence`, pull its in-memory trajectory into
+    the viz, then open an interactive PyBullet slider that scrubs the
+    concatenated waypoint stream across all movements.
+
+    Trajectories now live only on `mv.trajectory` (set by planning during
+    this run, or by loading a `<action>.live-solved.json` sidecar via
+    `load_bar_action_file`). Any movement without an in-memory trajectory is
+    skipped.
 
     set_robot_cell_state per waypoint moves the robot AND repositions any
     attached rigid bodies (e.g. the bar held to left tool0) rigidly with
@@ -789,17 +802,13 @@ def _replay_saved_trajectories(monitor, sequence) -> int:
         for idx in sequence:
             mv = monitor._loaded_movements[idx]
             role = monitor._match_movement_role(mv)
-            print(f"\n--- loading trajectory: {role} idx={idx} "
+            print(f"\n--- staging trajectory: {role} idx={idx} "
                   f"id={mv.movement_id!r} ---")
             monitor._selected_movement_idx = idx
             monitor.load_selected_movement()
-            # Saved filenames are now bar-action-keyed for ALL roles
-            # (monitor._trajectory_file_for prepends the active action_id
-            # for synthetic ids like M0), so cross-BarAction stale-file
-            # contamination is no longer a concern.
-            traj_path = monitor._trajectory_file_for(mv)
-            if not os.path.exists(traj_path):
-                print(f"  skipped: no file at {traj_path}")
+            if getattr(mv, 'trajectory', None) is None:
+                print(f"  skipped: no in-memory trajectory (plan first, or "
+                      "load a `.live-solved.json` sidecar via --bar-action).")
                 continue
             monitor.load_selected_movement_trajectory()
             if getattr(mv, 'trajectory', None) is not None:
@@ -867,19 +876,150 @@ def _design_data_dir():
     return DESIGN_DATA_DIRECTORY
 
 
+def _run_button_mode(monitor, sequence, role_to_idx, button: str,
+                     bar_action: str) -> int:
+    """Drive one of the new consolidated BarAction buttons end-to-end.
+
+    button choices:
+      * ``chain``      -- call ``plan_movement_chain_live()`` and assert the
+                          `<action>.live-solved.json` sidecar was written and
+                          round-trips via ``parse_bar_action`` with at least
+                          one movement carrying a fresh trajectory.
+      * ``replan-m2``  -- plan M1 first (so M2's ``start_state.robot_configuration``
+                          gets propagated), load M2, then call
+                          ``replan_free_to_movement_start_live()`` and verify
+                          ``monitor.planned_arm_trajectory`` was populated.
+      * ``replan-m3``  -- plan M1 + M2 first (so M3's start is populated),
+                          load M3, then call
+                          ``replan_free_to_movement_start_live()`` and verify
+                          ``monitor.planned_arm_trajectory``.
+    """
+    if button == 'chain':
+        print(f"\n=== [button=chain] running plan_movement_chain_live() ===")
+        monitor.plan_movement_chain_live()
+
+        # Assert sidecar written + round-trips.
+        stem, ext = os.path.splitext(monitor._current_action_path)
+        sidecar_path = f"{stem}.live-solved{ext}"
+        if not os.path.isfile(sidecar_path):
+            print(f"FAIL: expected sidecar {sidecar_path!r} not found.")
+            return 1
+        from husky_assembly_teleop.bar_action_io import parse_bar_action
+        try:
+            reloaded = parse_bar_action(sidecar_path)
+        except Exception as e:
+            print(f"FAIL: sidecar {sidecar_path!r} did not round-trip: {e}")
+            return 1
+        with_traj = [
+            mv.movement_id for mv in reloaded.movements
+            if getattr(mv, 'trajectory', None) is not None
+        ]
+        if not with_traj:
+            print(f"FAIL: sidecar round-trip has zero trajectories.")
+            return 1
+        print(f"[button=chain] OK: sidecar has {len(with_traj)} movement "
+              f"trajectories: {with_traj}")
+        _print_roster(monitor, "FINAL roster (button=chain)")
+        return 0
+
+    if button in ('replan-m2', 'replan-m3'):
+        target_role = 'M2' if button == 'replan-m2' else 'M3'
+        # Prerequisites: plan M1 (and M2 for the m3 case) so the target
+        # movement's start_state.robot_configuration is populated by
+        # forward-chain propagation.
+        prereq_roles = ['M1'] if target_role == 'M2' else ['M1', 'M2']
+        missing = [r for r in prereq_roles + [target_role] if r not in role_to_idx]
+        if missing:
+            print(f"FAIL: BarAction lacks required roles {missing}.")
+            return 1
+
+        for r in prereq_roles:
+            idx = role_to_idx[r]
+            mv = monitor._loaded_movements[idx]
+            print(f"\n=== [button={button}] pre-plan {r} idx={idx} "
+                  f"id={mv.movement_id!r} ===")
+            monitor._selected_movement_idx = idx
+            monitor.load_selected_movement()
+            monitor.plan_selected_movement()
+            if getattr(monitor.current_movement, 'trajectory', None) is None:
+                print(f"FAIL: prerequisite {r} planning failed; cannot "
+                      f"exercise replan on {target_role}.")
+                return 1
+
+        # Now load the target movement and exercise Button 2. Reset
+        # planned_arm_trajectory to a sentinel first so we can tell whether
+        # Button 2 actually wrote a fresh plan (M1's plan already populated
+        # planned_arm_trajectory; a failed IK inside Button 2 would leave
+        # that old data behind and mislead the assertion).
+        idx = role_to_idx[target_role]
+        mv = monitor._loaded_movements[idx]
+        print(f"\n=== [button={button}] running "
+              f"replan_free_to_movement_start_live() on {target_role} "
+              f"idx={idx} id={mv.movement_id!r} ===")
+        monitor._selected_movement_idx = idx
+        monitor.load_selected_movement()
+
+        # Note: `replan_free_to_movement_start_live` internally applies the
+        # MOCK live pose when HuskyMonitor.MOCK_LIVE_POSE_FOR_REPLAN is on
+        # (see husky_monitor.py:_apply_mock_live_pose_for_replan). Toggle
+        # that class flag to disable the mock.
+        monitor.planned_arm_trajectory = [(None, None, None, None),
+                                          (None, None, None, None)]
+        monitor.replan_free_to_movement_start_live()
+
+        pat = monitor.planned_arm_trajectory
+        if (pat is None
+                or pat[0] is None or pat[0][0] is None
+                or pat[1] is None or pat[1][0] is None):
+            print(f"FAIL [button={button}]: planned_arm_trajectory not "
+                  f"populated after replan_free_to_movement_start_live "
+                  f"(the live-base IK or composite free plan step failed).")
+            _print_roster(monitor, f"FINAL roster (button={button})")
+            return 1
+        n_left = len(pat[0][0])
+        n_right = len(pat[1][0])
+        print(f"[button={button}] OK: planned_arm_trajectory left={n_left} wp, "
+              f"right={n_right} wp.")
+        _print_roster(monitor, f"FINAL roster (button={button})")
+        return 0
+
+    print(f"FAIL: unknown button mode {button!r}.")
+    return 1
+
+
+def _smoke_check_conf12_from_target() -> None:
+    """Fail fast if the tamp helper still crashes on a Configuration goal.
+
+    Regression guard for the Configuration-adoption refactor (Change 1 of
+    the plan): `_conf12_from_target` used to reject numpy 12-vec goals with
+    `IndexError`; the tamp helper's documented contract is that a compas
+    Configuration works, and every monitor/world call site now passes one.
+    """
+    import numpy as _np
+    from husky_assembly_teleop.utils import conf_from_12vec, HUSKY_DUAL_UR5e_JOINT_NAMES
+    from husky_assembly_tamp.motion_planner.api import _conf12_from_target
+    names = list(HUSKY_DUAL_UR5e_JOINT_NAMES[0]) + list(HUSKY_DUAL_UR5e_JOINT_NAMES[1])
+    v = _conf12_from_target(conf_from_12vec(_np.zeros(12)), names)
+    assert v.shape == (12,), f"smoke check produced shape {v.shape}, expected (12,)"
+    print(f"[smoke] _conf12_from_target(Configuration) -> shape {v.shape} OK")
+
+
 def main(bar_action: str = DEFAULT_BAR_ACTION,
          problem: str = DEFAULT_PROBLEM,
          use_gui: bool = False,
          only_movement: str | None = None,
          no_save: bool = False,
          replay: bool = False,
-         draw_tree: bool = False) -> int:
+         draw_tree: bool = False,
+         button: str | None = None) -> int:
     global _PATCHED_PROBLEM
     _PATCHED_PROBLEM = problem
-    mode = 'REPLAY' if replay else 'PLAN'
+    mode = 'REPLAY' if replay else ('BUTTON' if button else 'PLAN')
     print(f"=== headless full-sequence test ({mode}): problem={problem!r} "
           f"bar_action={bar_action!r} only_movement={only_movement!r} "
-          f"draw_tree={draw_tree} ===")
+          f"draw_tree={draw_tree} button={button!r} ===")
+
+    _smoke_check_conf12_from_target()
 
     _patch_design_problem(problem)
 
@@ -980,17 +1120,21 @@ def main(bar_action: str = DEFAULT_BAR_ACTION,
         if replay:
             return _replay_saved_trajectories(monitor, sequence)
 
-        # Optional: suppress trajectory JSON writes (the live UI button
-        # saves; headless mirrors that by default but --no-save flips it
-        # for iteration speed).
+        # --- BUTTON MODE: drive Button 1 (chain) or Button 2 (replan-m2/m3)
+        # end-to-end, then exit. Verifies the new consolidated UI methods
+        # without user interaction.
+        if button:
+            return _run_button_mode(monitor, sequence, role_to_idx, button,
+                                    bar_action)
+
+        # `--no-save` used to suppress the per-movement JSON write inside
+        # `_accept_trajectory`; per-movement JSONs no longer exist (all
+        # persistence now goes through the `<action>.live-solved.json`
+        # sidecar written by `plan_movement_chain_live`). Kept for CLI
+        # backward-compat -- warn and ignore.
         if no_save:
-            orig_accept = monitor._accept_trajectory
-
-            def _accept_nosave(mv, jt, **kw):
-                kw['save_to_disk'] = False
-                return orig_accept(mv, jt, **kw)
-
-            monitor._accept_trajectory = _accept_nosave
+            print("[--no-save] deprecated; per-mv JSON persistence removed "
+                  "(sidecar-only). Ignoring the flag.")
 
         sequence_ids = [monitor._loaded_movements[i].movement_id for i in sequence]
         print(f"\n=== planning sequence ({len(sequence)}): {sequence_ids} ===")
@@ -1056,20 +1200,10 @@ def main(bar_action: str = DEFAULT_BAR_ACTION,
 
         if use_gui:
             # Drop into the replay scrubber so the user can step through
-            # the trajectory they just planned. Replay reads
-            # <mv>_trajectory.json from disk, so --no-save defeats this;
-            # fall back to a hold-window prompt in that case.
-            if no_save:
-                print("\n[gui] --no-save set; trajectories were not written, "
-                      "skipping auto-replay.")
-                try:
-                    input("[gui] press Enter to close the PyBullet window...")
-                except (EOFError, KeyboardInterrupt):
-                    pass
-            else:
-                print(f"\n=== entering REPLAY mode for the planned "
-                      f"trajectory ===")
-                return _replay_saved_trajectories(monitor, sequence)
+            # the trajectory they just planned. Replay reads the trajectories
+            # that are now in memory on each mv (no per-mv JSON on disk).
+            print(f"\n=== entering REPLAY mode for the planned trajectory ===")
+            return _replay_saved_trajectories(monitor, sequence)
 
         return 0
     finally:
@@ -1097,23 +1231,31 @@ if __name__ == "__main__":
                         help="Plan a single role only (no sequence). Useful "
                              "for triage after a failure.")
     parser.add_argument("--no-save", action="store_true",
-                        help="Skip writing <mv>_trajectory.json under "
-                             "<problem>/Trajectories/ (default: save, "
-                             "matching the live UI button).")
+                        help="Deprecated no-op (per-movement JSON persistence "
+                             "was replaced by the `<action>.live-solved.json` "
+                             "sidecar written by Plan Chain (Live)).")
     parser.add_argument("--replay", action="store_true",
-                        help="Skip planning. Load previously saved "
-                             "<mv>_trajectory.json files and open an "
-                             "interactive scrubber in the cfab GUI window "
-                             "to visually inspect them. Forces --gui on.")
+                        help="Skip planning. Uses in-memory trajectories "
+                             "populated by loading a `.live-solved.json` "
+                             "sidecar via --bar-action. Opens an interactive "
+                             "scrubber in the cfab GUI window. Forces --gui on.")
     parser.add_argument("--draw-tree", action="store_true",
                         help="Draw planning trees in the cfab GUI for M0 / "
                              "M1 / M4 plans (free BiRRT + constrained "
                              "SE(3) RRT). Forces --gui on. Left arm edges "
                              "are blue, right arm edges are orange.")
+    parser.add_argument("--button", type=str, default=None,
+                        choices=('chain', 'replan-m2', 'replan-m3'),
+                        help="Exercise one of the new consolidated BarAction "
+                             "buttons instead of the standard M1->M2->M3->M0->M4 "
+                             "loop. 'chain' calls plan_movement_chain_live() and "
+                             "asserts the sidecar. 'replan-m2' / 'replan-m3' "
+                             "plan the M1 (+M2 for m3) prerequisites, then "
+                             "call replan_free_to_movement_start_live().")
     args = parser.parse_args()
     sys.exit(main(
         bar_action=args.bar_action, problem=args.problem,
         use_gui=args.gui, only_movement=args.only_movement,
         no_save=args.no_save, replay=args.replay,
-        draw_tree=args.draw_tree,
+        draw_tree=args.draw_tree, button=args.button,
     ))

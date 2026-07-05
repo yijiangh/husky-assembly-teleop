@@ -77,7 +77,6 @@ def _bypass_init_monitor():
     monitor.current_action = None
     monitor.current_movement = None
     monitor.current_movement_index = None
-    monitor.movement_type = None
     monitor.movement_start_state = None
     monitor.target_ee_frames = None
     monitor.grasp_link_from_bar = None

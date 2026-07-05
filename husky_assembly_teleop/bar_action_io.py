@@ -7,8 +7,9 @@ The data classes live in `rs_data_structure.bar_action`. compas's
 - `parse_bar_action(path)`  → BarAssemblyAction
 - `list_bar_actions(dir)`   → sorted list of *.json filenames
 - `find_movement(action, key)` → (index, movement)
-- `movement_type(mv)`       → "constrained-free" | "constrained-linear"
-                              | "linear" | "free"
+
+To classify a movement, use `isinstance(mv, ...)` against the concrete
+Movement subclasses directly instead of a string label.
 """
 
 from __future__ import annotations
@@ -84,21 +85,3 @@ def find_movement(action: BarAssemblyAction, key: Union[int, str]) -> tuple[int,
 
     available = [mv.movement_id for mv in action.movements]
     raise KeyError(f"No movement matches {key!r}. Available: {available}")
-
-
-def movement_type(mv: Movement) -> str:
-    """Classify a movement by its concrete class type.
-
-    "constrained-*" means both arms rigidly hold one bar (fixed relative
-    tool0_left -> tool0_right transform); "free"/"linear" without the prefix
-    means the arms move independently (bar not held, e.g. M0/M3/M4).
-    """
-    if isinstance(mv, EndEffectorConstrainedDualArmFreeMovement):
-        return "constrained-free"       # M1: home -> approach, bar gripped
-    if isinstance(mv, EndEffectorConstrainedDualArmLinearMovement):
-        return "constrained-linear"     # M2: approach -> mated, bar gripped
-    if isinstance(mv, IndependentDualArmLinearMovement):
-        return "linear"                 # M3: per-arm linear retreat
-    if isinstance(mv, IndependentDualArmFreeMovement):
-        return "free"                   # M0/M4: staging / return home
-    return "unknown"
