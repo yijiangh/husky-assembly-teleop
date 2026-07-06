@@ -50,14 +50,14 @@ def _get_data_directory():
         return installed_data_dir
 
 DATA_DIRECTORY = _get_data_directory()
-# DESIGN_DATA_DIRECTORY = '/home/su/Insync/yijiang94817@gmail.com/Google Drive - Shared with me/2025-03 Husky Assembly/data_design_study'
-# EXPERIMENT_DATA_DIRECTORY = '/home/su/Insync/yijiang94817@gmail.com/Google Drive - Shared with me/2025-03 Husky Assembly/data_experiment'
-DESIGN_DATA_DIRECTORY = '/home/yijiangh/Insync/yijiang94817@gmail.com/Google Drive - Shared with me/2025-03 Husky Assembly/data_design_study'
-EXPERIMENT_DATA_DIRECTORY = '/home/yijiangh/Insync/yijiang94817@gmail.com/Google Drive - Shared with me/2025-03 Husky Assembly/data_experiment'
+DESIGN_DATA_DIRECTORY = '/home/su/Insync/yijiang94817@gmail.com/Google Drive - Shared with me/2025-03 Husky Assembly/data_design_study'
+EXPERIMENT_DATA_DIRECTORY = '/home/su/Insync/yijiang94817@gmail.com/Google Drive - Shared with me/2025-03 Husky Assembly/data_experiment'
+# DESIGN_DATA_DIRECTORY = '/home/yijiangh/Insync/yijiang94817@gmail.com/Google Drive - Shared with me/2025-03 Husky Assembly/data_design_study'
+# EXPERIMENT_DATA_DIRECTORY = '/home/yijiangh/Insync/yijiang94817@gmail.com/Google Drive - Shared with me/2025-03 Husky Assembly/data_experiment'
 RECORD_DIRECTORY = os.path.join(DATA_DIRECTORY, '..', 'recorded_data')
 
 CALIBRATION_DATE = '20260622'
 CALIBRATION_BATCHES = ['j0', 'j1', 'validation', 'punch_validation']
 
-DESIGN_PROBLEM_NAME = '2026-05-16_double_kissing_jig_demo'
-# DESIGN_PROBLEM_NAME = '2026-05-19_reoriented2'
+# DESIGN_PROBLEM_NAME = '2026-05-16_double_kissing_jig_demo'
+DESIGN_PROBLEM_NAME = '260703_demo_phase1_test'

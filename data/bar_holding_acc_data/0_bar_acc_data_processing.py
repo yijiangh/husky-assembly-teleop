@@ -135,7 +135,27 @@ def process_batch(data_folder, export=True, viewer=False):
 
         saved_convention = data.get('mocap_axis_convention', 'rotated')
         correct = _make_corrector(saved_convention)
+
+        # Metadata the monitor stamps per save: which movement the bar was
+        # held at, and the bar's authored dimensions. `nominal_bar_len` (the
+        # longest AABB extent) is the design bar length we compare the fitted
+        # `bar_length_observed` against below.
+        movement_id = data.get('movement_id')
+        bar_action_path = data.get('bar_action_path')
+        bar_dims = data.get('bar_dimensions')
+        bar_start_position = data.get('bar_start_position')
+        bar_start_quaternion = data.get('bar_start_quaternion')
+        nominal_bar_len = max(bar_dims) if bar_dims else None
+
         print(f"\n=== {file_name} (mocap_axis_convention={saved_convention}) ===")
+        print(f"  movement_id={movement_id} | "
+              f"bar_action={os.path.basename(bar_action_path) if bar_action_path else None} | "
+              f"bar_dims={[round(v, 4) for v in bar_dims] if bar_dims else None} | "
+              f"nominal_bar_len={round(nominal_bar_len, 4) if nominal_bar_len else None} m")
+        if not data.get('raw_data'):
+            print("  WARN: 0 takes recorded in this file — click "
+                  "'Record + Fit + Viz (shared)' (once per pose) BEFORE "
+                  "'Save markerset data'. Nothing to fit/plot for this file.")
         ref_ocf = None  # take-0 OCF in this file; baseline for diff print
         for i, entry in enumerate(data['raw_data']):
             marker_pts_saved = entry.get('bar_rig', {})
@@ -153,6 +173,11 @@ def process_batch(data_folder, export=True, viewer=False):
             if ref_ocf is None:
                 ref_ocf = ocf_arr
             d = (ocf_arr - ref_ocf) * 1000.0  # signed mm vs take 0
+            # Observed-vs-design bar length (mm), only when dims were stamped.
+            len_err_str = ""
+            if nominal_bar_len is not None:
+                len_err_mm = (fit['bar_length_observed'] - nominal_bar_len) * 1000.0
+                len_err_str = f"bar_len_err_vs_nominal={len_err_mm:+.2f} mm | "
             print(
                 f"  take {i}: "
                 f"ocf=({ocf[0]:.4f}, {ocf[1]:.4f}, {ocf[2]:.4f}) m | "
@@ -160,13 +185,25 @@ def process_batch(data_folder, export=True, viewer=False):
                 f"axis=({axis[0]:+.4f}, {axis[1]:+.4f}, {axis[2]:+.4f}) | "
                 f"angle_to_Z={angle_to_z_deg:.3f}° | "
                 f"bar_len={fit['bar_length_observed']:.4f} m | "
+                f"{len_err_str}"
                 f"center_to_line_dist_max={fit['center_to_line_dist_max_m']*1000:.2f} mm | "
                 f"center_to_line_dist_rms={fit['center_to_line_dist_rms_m']*1000:.2f} mm"
             )
 
+            bar_len_err = (
+                fit['bar_length_observed'] - nominal_bar_len
+                if nominal_bar_len is not None else None
+            )
             compiled.append({
                 'source_file': file_name,
                 'take_index': i,
+                'movement_id': movement_id,
+                'bar_action_path': bar_action_path,
+                'bar_dimensions': bar_dims,
+                'nominal_bar_length_m': nominal_bar_len,
+                'bar_length_error_m': bar_len_err,
+                'bar_start_position': bar_start_position,
+                'bar_start_quaternion': bar_start_quaternion,
                 'joint_conf': entry.get('joint_conf'),
                 'footprint_base_link_pose': entry.get('footprint_base_link_pose'),
                 'pairs': fit['pairs'],
@@ -202,7 +239,9 @@ def process_batch(data_folder, export=True, viewer=False):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('batch', help='batch folder name under EXPERIMENT_DATA_DIRECTORY/bar_holding_acc_data/')
+    parser.add_argument('batch', nargs='?', default='20260706',
+                        help='batch folder name under EXPERIMENT_DATA_DIRECTORY/bar_holding_acc_data/ '
+                             '(default: 20260706)')
     parser.add_argument('--no-export', action='store_true')
     parser.add_argument('--viewer', action='store_true')
     args = parser.parse_args()

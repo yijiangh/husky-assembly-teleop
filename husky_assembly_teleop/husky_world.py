@@ -3,6 +3,7 @@ This module contains the world definition and high level actions or sequences of
 """
 
 import os, time
+import contextlib
 import asyncio.runners
 import asyncio
 from matplotlib.pyplot import bar
@@ -333,7 +334,7 @@ def init(monitor):
         monitor.assign_calibration_tool_to_robot(0, 1, right_tool_name)
 
     if monitor.BAR_ACTION_MOCAP_ACCURACY_TEST:
-        bar_rig = TrackedObject(monitor, MOCAP_SET_RIG_RB_NAME, 4629, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
+        bar_rig = TrackedObject(monitor, MOCAP_SET_RIG_RB_NAME, 1033, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
         bar_rig.body = pp.create_cylinder(radius=0.01, height=1, color=(1, 0, 0, 0.2))
         bar_rig.model_base_pose = pp.Pose(euler=pp.Euler(roll=np.pi/2))
         
@@ -1008,14 +1009,51 @@ def save_markerset_data(monitor, filename_suffix="", use_experiment_dir=False):
         os.makedirs(subfolder_path)
         monitor.get_logger().info(f"Created subfolder: {subfolder_path}")
 
+    # Resolve the chosen movement's short string role ('M1', 'M2', ...). We
+    # key downstream processing (the 0_/1_ scripts) on this string id now, not
+    # the integer list index, so movement_index is intentionally dropped.
+    mv = monitor.current_movement
+    movement_id = None
+    if mv is not None:
+        movement_id = monitor._match_movement_role(mv) or getattr(mv, 'movement_id', None)
+
+    # Bar world pose + AABB dimensions in the movement's start state, stamped
+    # here so the offline scripts don't have to re-parse the BarAction file
+    # (older on-disk BarActions may no longer import cleanly).
+    bar_pose = None
+    try:
+        bar_pose = monitor.get_movement_start_bar_pose()
+    except Exception as e:
+        monitor.get_logger().warn(f"could not compute start-state bar pose: {e}")
+    bar_dims = None
+    try:
+        dims = monitor.get_active_bar_aabb_dims()
+        if dims is not None:
+            bar_dims = [float(v) for v in dims]
+    except Exception:
+        bar_dims = None
+
+    # Warn loudly if nothing was loaded: the fields below would be null and the
+    # take couldn't be matched to a movement later.
+    if not getattr(monitor, '_current_action_path', None) or mv is None:
+        monitor.get_logger().warn(
+            "Save markerset: no BarAction / movement is loaded, so "
+            "bar_action_path / movement_id / bar pose will be null. Click "
+            "'Load BarAction' then 'Load Movement' before recording so the "
+            "take can be matched to a movement later."
+        )
+
     # Save the file in the date subfolder
     filename = os.path.join(subfolder_path, f"bar_holding_acc_{timestamp}.json")
     with open(filename, 'w') as f:
         payload = {
             'mocap_axis_convention': getattr(monitor, 'MOCAP_AXIS_CONVENTION', 'rotated'),
             'bar_action_path': getattr(monitor, '_current_action_path', None),
-            'movement_id': getattr(monitor.current_movement, 'movement_id', None) if monitor.current_movement else None,
-            'movement_index': monitor.current_movement_index,
+            'movement_id': movement_id,
+            'bar_name': getattr(monitor, 'active_bar_name', None),
+            'bar_start_position': bar_pose[0] if bar_pose is not None else None,
+            'bar_start_quaternion': bar_pose[1] if bar_pose is not None else None,
+            'bar_dimensions': bar_dims,
             'raw_data': monitor.marker_set_data,
         }
         json.dump(payload, f, indent=4)
@@ -1554,12 +1592,62 @@ def compute_tool0_to_tool0_transform_from_json(json_filepath):
     
     return tool0_1_from_tool0_2, tool0_2_from_bar
 
-def plan_both_arms_to_goal(monitor, use_composite=False, debug=False):
+@contextlib.contextmanager
+def _free_planner_skip_env_collisions(enable):
+    """Temporarily relax ``plan_free_dual_arm``'s internal collision predicate
+    to check ONLY robot self-collision (CC.1). Skips robot<->tool (CC.2) and
+    all environment checks: link<->rigid-body (CC.3), attached-rb<->rigid-body
+    (CC.4), tool<->rigid-body (CC.5).
+
+    ``plan_free_dual_arm`` builds its collision fn via the module-level
+    ``_build_cfab_collision_fn`` (which hardcodes full-CC options), so we
+    swap that symbol for the duration of the call and restore it after.
+    A no-op when ``enable`` is False.
+
+    Args:
+        enable (bool): When True, patch in the self-collision-only fn.
+    """
+    from husky_assembly_tamp.motion_planner import api as _api
+    if not enable:
+        yield
+        return
+    _orig = _api._build_cfab_collision_fn
+
+    def _patched(planner, template_state, joint_names_12):
+        cc_opts = {"verbose": False, "_skip_cc2": True, "_skip_cc3": True,
+                   "_skip_cc4": True, "_skip_cc5": True}
+
+        def _fn(conf_12, *_a, **_k):
+            s = _api._state_with_conf12(template_state, conf_12, joint_names_12)
+            try:
+                planner.check_collision(s, options=cc_opts)
+            except _api.CollisionCheckError:
+                return True
+            return False
+
+        return _fn
+
+    _api._build_cfab_collision_fn = _patched
+    try:
+        yield
+    finally:
+        _api._build_cfab_collision_fn = _orig
+
+
+def plan_both_arms_to_goal(monitor, use_composite=False, debug=False,
+                           skip_env_collisions=False):
     """
     Plan motions for both arms from current to goal joint configurations.
     If use_composite is False, plan left then right sequentially.
     If True, plan in the composite joint space.
     Sets the resulting trajectories in the monitor.
+
+    Args:
+        skip_env_collisions (bool): Composite branch only. When True, the
+            free-motion planner checks ONLY robot self-collision (CC.1),
+            skipping robot<->tool (CC.2) and all environment checks
+            (CC.3/4/5). Temporary escape hatch for the live M2/M3 replan
+            button.
     """
     husky = monitor.huskies[monitor.selected_robot_id]
     left_conf = np.array(monitor.goal_arm_pose[0])
@@ -1696,6 +1784,8 @@ def plan_both_arms_to_goal(monitor, use_composite=False, debug=False):
         l2_delta = float(np.linalg.norm(unwrapped_goal_12 - start_12))
         print(f"[composite plan] joint deltas: max={max_j_delta:.3f} rad, "
               f"L2={l2_delta:.3f} rad.")
+        
+        # TODO I want the opposite, try corase first, and if succeeds move on to the final res, but don't jhust return on the coarse  - that's a quick proxy for feasibility
         # * Try a fine resolution first; if that fails, fall back to a
         # coarse resolution (2x). BiRRT with a fine resolution rejects
         # motions with narrow-passage collisions; a coarser resolution is
@@ -1704,25 +1794,32 @@ def plan_both_arms_to_goal(monitor, use_composite=False, debug=False):
         # start and goal are collision-free (they are here -- IK + fallback
         # validated the goal), the coarse pass is a reasonable escape.
         from husky_assembly_tamp.motion_planner.api import plan_free_dual_arm
+        if skip_env_collisions:
+            print("[composite plan] collision checks RELAXED to robot "
+                  "self-collision only (skipping robot<->tool + environment).")
         composite_path = None
-        for jr, mt, tag in [
-            (FREE_JOINT_RESOLUTION, 120.0, 'fine'),
-            (FREE_JOINT_RESOLUTION * 2.0, 300.0, 'coarse'),
-        ]:
-            print(f"[composite plan] {tag} pass: joint_resolution={jr:.3f} rad, "
-                  f"max_time={mt:.0f}s.")
-            composite_path, info = plan_free_dual_arm(
-                monitor.cfab.planner, state, composite_goal,
-                max_time=mt, max_iterations=2000,
-                joint_resolution=jr,
-                debug=debug,
-            )
-            if composite_path is not None:
-                print(f"[composite plan] {tag} pass SUCCEEDED "
-                      f"({len(composite_path)} waypoints).")
-                break
-            print(f"[composite plan] {tag} pass failed: "
-                  f"{info.get('failure_reason', 'unknown')}.")
+        # Pause GUI rendering during the BiRRT sampling (no-op when headless);
+        # each sample pushes a cfab cell state onto the shared GUI client,
+        # which otherwise redraws the robot on every step.
+        with pp.LockRenderer(), _free_planner_skip_env_collisions(skip_env_collisions):
+            for jr, mt, tag in [
+                (FREE_JOINT_RESOLUTION, 120.0, 'fine'),
+                (FREE_JOINT_RESOLUTION * 2.0, 300.0, 'coarse'),
+            ]:
+                print(f"[composite plan] {tag} pass: joint_resolution={jr:.3f} rad, "
+                      f"max_time={mt:.0f}s.")
+                composite_path, info = plan_free_dual_arm(
+                    monitor.cfab.planner, state, composite_goal,
+                    max_time=mt, max_iterations=2000,
+                    joint_resolution=jr,
+                    debug=debug,
+                )
+                if composite_path is not None:
+                    print(f"[composite plan] {tag} pass SUCCEEDED "
+                          f"({len(composite_path)} waypoints).")
+                    break
+                print(f"[composite plan] {tag} pass failed: "
+                      f"{info.get('failure_reason', 'unknown')}.")
         if composite_path is None:
             monitor.get_logger().warn(
                 f"Composite planning failed: {info.get('failure_reason', 'unknown')}."

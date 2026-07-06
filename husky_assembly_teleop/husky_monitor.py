@@ -113,8 +113,8 @@ CALIBRATION_STATE_SETS = {
 }
 
 class HuskyMonitor(Node):
-    USE_MOCAP = 0
-    FAKE_HARDWARE = 1
+    USE_MOCAP = 1
+    FAKE_HARDWARE = 0
 
     # * Set 0 to skip connecting the UR SetIO service clients (gripper/screw IO).
     # Saves the 2.5 s startup wait + "SetIO Service i not available!" warning
@@ -172,9 +172,17 @@ class HuskyMonitor(Node):
     # code path sees the mock values. Toggle back to 0 once the live
     # mocap/robot pipeline is available.
     # =========================================================================
-    MOCK_LIVE_POSE_FOR_REPLAN = 1
+    MOCK_LIVE_POSE_FOR_REPLAN = 0
     MOCK_LIVE_ARM_CONF = 'perturb'
     MOCK_LIVE_ARM_PERTURB_STD_RAD = 0.02
+
+    # Temporary: when 1, the live M2/M3 replan button
+    # (`replan_free_to_movement_start_live`) relaxes the composite free-motion
+    # plan's collision checking to robot self-collision (CC.1) ONLY -- also
+    # skipping robot<->tool (CC.2) and environment checks (CC.3/4/5). Set back
+    # to 0 to plan against tools + the full environment before running paths
+    # on real hardware.
+    REPLAN_SKIP_ENV_COLLISIONS_IN_MOTION_PLAN = 0
     MOCK_LIVE_ARM_PERTURB_MAX_TRIES = 10
     MOCK_LIVE_BASE_XY_OFFSET_M = (-0.3, 0.2)
 
@@ -962,6 +970,63 @@ class HuskyMonitor(Node):
         tool_from_bar = pose_from_frame(bar_rb.attachment_frame)
         return pp.multiply(world_from_tool, tool_from_bar)
 
+    def get_movement_start_bar_pose(self):
+        """world_from_bar of the active bar in the current movement's start state.
+
+        The mocap "bar holding accuracy" experiment drives the robot to a
+        movement's start_state and measures the actual held-bar pose, so the
+        reference we compare against is the bar's world pose *at that start
+        state*. Two cases are handled:
+
+        - Bar held by a gripper link: the start_state only stores the grasp
+          (``attachment_frame``), so we forward-kinematics the holding link at
+          the start configuration and compose the grasp onto it.
+        - Bar resting in the world (installed / pre-pickup): the start_state
+          stores the world ``frame`` directly, so we return that.
+
+        Returns:
+            tuple | None: ``(pos, quat_xyzw)`` of plain floats, or ``None``
+            when the bar / movement / cfab session isn't available.
+        """
+        state = getattr(self, 'movement_start_state', None)
+        bar_name = getattr(self, 'active_bar_name', None)
+        if state is None or not bar_name or self.cfab is None:
+            return None
+        rb_states = getattr(state, 'rigid_body_states', {}) or {}
+        bar_rb = rb_states.get(bar_name)
+        if bar_rb is None:
+            return None
+
+        # Free-standing bar: its world frame is authored on the rigid body.
+        if getattr(bar_rb, 'frame', None) is not None:
+            pos, quat = pose_from_frame(bar_rb.frame)
+            return ([float(v) for v in pos], [float(v) for v in quat])
+
+        # Held bar: only the grasp frame is stored. Recover the world pose by
+        # FK-ing the holding link at the start configuration, then composing
+        # the grasp. The FK reads the cfab pybullet client, so pin pp.CLIENT to
+        # it for the query and restore afterwards (the monitor's update loop
+        # keeps pp.CLIENT on its own world) -- same swap the planners use.
+        attach = getattr(bar_rb, 'attachment_frame', None)
+        link = getattr(bar_rb, 'attached_to_link', None)
+        if attach is None or not link:
+            return None
+        saved_client = pp.CLIENT
+        pp.CLIENT = self.cfab.client.client_id
+        pp.CLIENTS.setdefault(pp.CLIENT, True)
+        try:
+            world_from_link = _fk_link_frame(self.cfab.planner, state, link)
+        except Exception as e:
+            self.get_logger().warn(f"start-state bar pose FK failed: {e}")
+            return None
+        finally:
+            pp.CLIENT = saved_client
+        world_from_link_pose = (list(world_from_link.point),
+                                list(world_from_link.quaternion.xyzw))
+        tool_from_bar = pose_from_frame(attach)
+        pos, quat = pp.multiply(world_from_link_pose, tool_from_bar)
+        return ([float(v) for v in pos], [float(v) for v in quat])
+
     def update_constrained_display_mode(self, val):
         self.constrained_display_mode = int(round(float(val)))
         self._refresh_constrained_displayed_trajectory()
@@ -1125,10 +1190,12 @@ class HuskyMonitor(Node):
             np.asarray(self.goal_arm_pose[self.selected_arm_index], dtype=float),
             arm_index=arm_idx,
         )
-        path, info = plan_free_motion(
-            self.cfab.planner, state, goal6, group=group,
-            max_time=30.0, max_iterations=100,
-        )
+        # Pause GUI rendering during the search (no-op when headless).
+        with pp.LockRenderer():
+            path, info = plan_free_motion(
+                self.cfab.planner, state, goal6, group=group,
+                max_time=30.0, max_iterations=100,
+            )
         if path is None:
             self.get_logger().warn(
                 f"[single-arm cfab] planning failed: {info.get('failure_reason')}; "
@@ -1174,10 +1241,12 @@ class HuskyMonitor(Node):
         state = mv.start_state.copy()
         self._inject_live_conf_into_state(state)
 
-        path, info = plan_free_dual_arm(
-            self.cfab.planner, state, goal_conf,
-            max_time=120.0, max_iterations=1000,
-        )
+        # Pause GUI rendering during the search (no-op when headless).
+        with pp.LockRenderer():
+            path, info = plan_free_dual_arm(
+                self.cfab.planner, state, goal_conf,
+                max_time=120.0, max_iterations=1000,
+            )
         if path is None:
             self.get_logger().warn(
                 f"plan_free→mv-start failed: {info.get('failure_reason', 'unknown')}"
@@ -2248,26 +2317,35 @@ class HuskyMonitor(Node):
         # -------------------------------------------------------------------
 
         try:
-            # Step 1: live-base IK sets goal_arm_pose to the IK-solved 12-vec.
-            if not self.ik_live_base_for_selected_movement():
-                return
+            # Pause GUI rendering across the whole IK + free-plan search
+            # (no-op when headless). The IK descent and the BiRRT sampling
+            # both push cfab cell states onto the shared GUI client, which
+            # otherwise redraws the (red) cfab robot on every sample.
+            with pp.LockRenderer():
+                # Step 1: live-base IK sets goal_arm_pose to the IK-solved 12-vec.
+                if not self.ik_live_base_for_selected_movement():
+                    return
 
-            # Step 2: overwrite mv.start_state.robot_base_frame with the live
-            # husky base so the composite free plan uses the live-base state as
-            # template. plan_both_arms_to_goal reads movement_start_state.
-            if not self._apply_live_base_to_movement(self.current_movement):
-                return
+                # Step 2: overwrite mv.start_state.robot_base_frame with the live
+                # husky base so the composite free plan uses the live-base state as
+                # template. plan_both_arms_to_goal reads movement_start_state.
+                if not self._apply_live_base_to_movement(self.current_movement):
+                    return
 
-            # Step 3: composite free plan from live conf -> goal_arm_pose. After
-            # Configuration adoption in husky_world (Change 1), this now works
-            # even though the goal is built via np.concatenate internally.
-            world.plan_both_arms_to_goal(self, use_composite=True)
+                # Step 3: composite free plan from live conf -> goal_arm_pose. After
+                # Configuration adoption in husky_world (Change 1), this now works
+                # even though the goal is built via np.concatenate internally.
+                # Env collisions are (temporarily) skipped in this motion plan when
+                # REPLAN_SKIP_ENV_COLLISIONS_IN_MOTION_PLAN is set.
+                world.plan_both_arms_to_goal(
+                    self, use_composite=True,
+                    skip_env_collisions=bool(self.REPLAN_SKIP_ENV_COLLISIONS_IN_MOTION_PLAN))
 
-            # Step 4: verify the planned path's ENDPOINT actually lands the
-            # tool0s on the authored targets. FK at (live base + last
-            # waypoint arm conf) should equal the target EE frames derived
-            # from the movement's authored start_state at Step 1's FK.
-            self._verify_replan_endpoint_matches_target()
+                # Step 4: verify the planned path's ENDPOINT actually lands the
+                # tool0s on the authored targets. FK at (live base + last
+                # waypoint arm conf) should equal the target EE frames derived
+                # from the movement's authored start_state at Step 1's FK.
+                self._verify_replan_endpoint_matches_target()
         finally:
             if revert_mock is not None:
                 revert_mock()
@@ -2874,10 +2952,12 @@ class HuskyMonitor(Node):
             self.cfab.planner.set_robot_cell_state(mv.start_state)
         except Exception as e:
             print(f"[M0] WARN: cfab set_robot_cell_state after live-conf resync failed: {e}")
-        path, info = plan_free_dual_arm(
-            self.cfab.planner, mv.start_state, mv.target_configuration,
-            max_time=120.0, max_iterations=50,
-        )
+        # Pause GUI rendering during the search (no-op when headless).
+        with pp.LockRenderer():
+            path, info = plan_free_dual_arm(
+                self.cfab.planner, mv.start_state, mv.target_configuration,
+                max_time=120.0, max_iterations=50,
+            )
         if path is None:
             print(f"[M0] plan_free_dual_arm failed: {info.get('failure_reason')}")
             return None
@@ -2924,18 +3004,20 @@ class HuskyMonitor(Node):
                 )
                 print(f"[M1] retry {retry_idx + 1}/{start_retries} with re-seeded "
                       f"derived start.")
-            path, info = plan_constrained_dual_arm(
-                self.cfab.planner, mv.start_state,
-                active_bar_id=self.active_bar_name,
-                goal_conf=goal_conf,
-                goal_ee_frames=mv.target_ee_frames if goal_conf is None else None,
-                stage=M1_PLANNER_STAGE,
-                position_res=M1_POSITION_RES,
-                rotation_res=M1_ROTATION_RES,
-                max_time=120.0,
-                derive_start=True,
-                **extra,
-            )
+            # Pause GUI rendering during the search (no-op when headless).
+            with pp.LockRenderer():
+                path, info = plan_constrained_dual_arm(
+                    self.cfab.planner, mv.start_state,
+                    active_bar_id=self.active_bar_name,
+                    goal_conf=goal_conf,
+                    goal_ee_frames=mv.target_ee_frames if goal_conf is None else None,
+                    stage=M1_PLANNER_STAGE,
+                    position_res=M1_POSITION_RES,
+                    rotation_res=M1_ROTATION_RES,
+                    max_time=120.0,
+                    derive_start=True,
+                    **extra,
+                )
             if path is not None:
                 break
             print(f"[M1] plan_constrained_dual_arm failed: {info.get('failure_reason')}")
@@ -2961,13 +3043,15 @@ class HuskyMonitor(Node):
         if goal_ee is None and goal_conf is None:
             self.get_logger().warn("M2: missing target_configuration / target_ee_frames.")
             return None
-        jt = plan_constrained_dual_arm_linear(
-            self.cfab.planner, mv.start_state,
-            active_bar_id=self.active_bar_name,
-            goal_conf=goal_conf,
-            goal_ee_frames=goal_ee,
-            skip_env_collisions=False,
-        )
+        # Pause GUI rendering during the IK loop (no-op when headless).
+        with pp.LockRenderer():
+            jt = plan_constrained_dual_arm_linear(
+                self.cfab.planner, mv.start_state,
+                active_bar_id=self.active_bar_name,
+                goal_conf=goal_conf,
+                goal_ee_frames=goal_ee,
+                skip_env_collisions=False,
+            )
         if jt is not None:
             self._check_inter_ee_invariance(jt, mv.start_state)
         return jt
@@ -3025,12 +3109,14 @@ class HuskyMonitor(Node):
         if goal_ee is None and goal_conf is None:
             self.get_logger().warn("M3: missing target_configuration / target_ee_frames.")
             return None
-        return plan_dual_arm_linear_independent(
-            self.cfab.planner, mv.start_state,
-            goal_conf=goal_conf,
-            goal_ee_frames=goal_ee,
-            skip_env_collisions=False,
-        )
+        # Pause GUI rendering during the IK loop (no-op when headless).
+        with pp.LockRenderer():
+            return plan_dual_arm_linear_independent(
+                self.cfab.planner, mv.start_state,
+                goal_conf=goal_conf,
+                goal_ee_frames=goal_ee,
+                skip_env_collisions=False,
+            )
 
     def _plan_M4_dispatch(self, mv):
         """Free dual-arm from M3 end -> fixed home conf.
@@ -3045,9 +3131,11 @@ class HuskyMonitor(Node):
         # helper's dict-indexed extraction works (raw numpy 12-vecs raise
         # IndexError on string joint-name indexing).
         goal_conf = conf_from_12vec(HUSKY_DUAL_ARM_HOME_CONF_12)
-        path, info = plan_free_dual_arm(
-            self.cfab.planner, mv.start_state, goal_conf, max_time=30.0,
-        )
+        # Pause GUI rendering during the search (no-op when headless).
+        with pp.LockRenderer():
+            path, info = plan_free_dual_arm(
+                self.cfab.planner, mv.start_state, goal_conf, max_time=30.0,
+            )
         if path is None:
             print(f"[M4] plan_free_dual_arm failed: {info.get('failure_reason')}")
             return None
@@ -3879,7 +3967,7 @@ class HuskyMonitor(Node):
             # TODO I think these two should be renamed a bit better, one keep the old arm conf (but new base) and plan a motion from current conf to go there
             # TODO the other recompute a new ik based on the movement start conf's FK EE targets and then plan a motion from current conf to go there
             # self.buttons.append(Button('Plan Free → Mv Start (offline target)', self.plan_free_to_movement_start_with_cfab_cc))
-            self.buttons.append(Button('IK → Mv Start (live base, M2/M3)', self.ik_live_base_for_selected_movement))
+            self.buttons.append(Button('Replan IK & Transit → Mv Start (live, M2/M3)', self.ik_live_base_for_selected_movement))
             # * Button 2: live-base IK + composite free plan to the selected
             # M2/M3's start EE targets, in one click. Uses cfab CC.
             self.buttons.append(Button(

@@ -168,6 +168,67 @@ def _plot_compare(ax, fit, goal_bar_pose, take_label, dev, marker_pts=None):
     _equal_axes_3d(ax, np.vstack(pts_for_bounds))
 
 
+def _resolve_bar_action_path(path):
+    """Re-root a bar_action_path stamped on another machine onto this one.
+
+    Older takes stamped an absolute path under a different home directory
+    (e.g. ``/home/yijiangh/Insync/.../2025-03 Husky Assembly/...``) since the
+    data now lives on google drive. Anything under the shared
+    '2025-03 Husky Assembly' gdrive folder is re-based onto the copy this
+    machine mounts (derived from ``DESIGN_DATA_DIRECTORY``). Returns the
+    original path when no fix is needed or possible.
+    """
+    if not path or os.path.exists(path):
+        return path
+    marker = '2025-03 Husky Assembly'
+    if marker in path and marker in DESIGN_DATA_DIRECTORY:
+        tail = path.split(marker, 1)[1].lstrip('/\\')
+        current_root = DESIGN_DATA_DIRECTORY.split(marker, 1)[0] + marker
+        candidate = os.path.join(current_root, tail)
+        if os.path.exists(candidate):
+            return candidate
+    return path
+
+
+def _find_bar_action_in_folder(stamped_path):
+    """Pick a BarAction *.json by scanning the folder the take points at.
+
+    The stamped ``bar_action_path`` is brittle: it can carry another machine's
+    home dir, or name a file that has since been renamed / re-exported. We keep
+    only the folder (the problem's ``BarActions/`` dir), resolve it onto this
+    machine, and scan it for authored BarAction files. The file the take named
+    is preferred when it's still there; otherwise the first one is used. A
+    warning is printed when the folder holds several, so an ambiguous pick is
+    visible (use ``--bar-action`` to choose explicitly).
+
+    Backups (``*.bak``) and the solver's sidecars (``*.solved.json`` /
+    ``*.live-solved.json``) are ignored so they don't count as alternatives.
+
+    Returns the chosen absolute path, or ``None`` when the folder can't be
+    resolved or holds no BarAction json.
+    """
+    if not stamped_path:
+        return None
+    folder = _resolve_bar_action_path(os.path.dirname(stamped_path))
+    if not os.path.isdir(folder):
+        return None
+    candidates = sorted(
+        f for f in os.listdir(folder)
+        if f.endswith('.json')
+        and not f.endswith('.bak')
+        and not f.endswith('.solved.json')
+        and not f.endswith('.live-solved.json')
+    )
+    if not candidates:
+        return None
+    stamped_name = os.path.basename(stamped_path)
+    chosen = stamped_name if stamped_name in candidates else candidates[0]
+    if len(candidates) > 1:
+        print(f"  WARN: {len(candidates)} BarAction files in {folder} "
+              f"({candidates}); using {chosen!r}. Pass --bar-action to choose.")
+    return os.path.join(folder, chosen)
+
+
 def process_file(file_path, override_bar_action=None, override_movement=None):
     with open(file_path, 'r') as f:
         data = json.load(f)
@@ -175,32 +236,65 @@ def process_file(file_path, override_bar_action=None, override_movement=None):
     saved_convention = data.get('mocap_axis_convention', 'rotated')
     correct = _make_corrector(saved_convention)
 
-    bar_action_path = override_bar_action or data.get('bar_action_path')
+    basename = os.path.basename(file_path)
     movement_id = override_movement or data.get('movement_id')
-    movement_index = data.get('movement_index')
+    # Kept in the exported rows for provenance regardless of which reference
+    # source (stamped pose vs re-parsed BarAction) we end up using.
+    row_bar_action_path = data.get('bar_action_path')
 
-    if not bar_action_path:
-        print(f"  SKIP {os.path.basename(file_path)}: no bar_action_path in JSON")
-        return []
-    if not os.path.isabs(bar_action_path):
-        print(f"  SKIP {os.path.basename(file_path)}: bar_action_path not absolute: {bar_action_path}")
-        return []
-    if not os.path.exists(bar_action_path):
-        print(f"  SKIP {os.path.basename(file_path)}: bar_action_path not found: {bar_action_path}")
-        return []
+    # * Preferred reference: the monitor now stamps the bar's start-state world
+    # pose directly, so we can compare without re-parsing (and re-resolving)
+    # the BarAction file. Only used when the caller didn't override on the CLI.
+    exported_pos = data.get('bar_start_position')
+    exported_quat = data.get('bar_start_quaternion')
+    exported_dims = data.get('bar_dimensions')
+    use_exported = (
+        override_bar_action is None and override_movement is None
+        and exported_pos is not None and exported_quat is not None
+    )
 
-    action = parse_bar_action(bar_action_path)
-    key = movement_id if movement_id else (movement_index if movement_index is not None else 2)
-    idx, mv = find_movement(action, key)
-    bar_name = f"bar_{action.active_bar_id}"
+    if use_exported:
+        goal_bar_pose = (list(exported_pos), list(exported_quat))
+        side = 'exported-start-state'
+        print(f"\n=== {basename} (mocap_axis_convention={saved_convention}) ===")
+        print(f"  using stamped bar start pose | movement_id={movement_id} | "
+              f"bar_dims={[round(v, 4) for v in exported_dims] if exported_dims else None}")
+    else:
+        # Fallback: re-parse the BarAction and derive the goal bar pose. An
+        # explicit --bar-action wins; otherwise scan the stamped path's folder
+        # for the authored BarAction (robust to a renamed/wrong-home filename).
+        if override_bar_action:
+            bar_action_path = _resolve_bar_action_path(override_bar_action)
+        else:
+            bar_action_path = _find_bar_action_in_folder(data.get('bar_action_path'))
+        if not bar_action_path:
+            print(f"  SKIP {basename}: no BarAction found "
+                  f"(stamped={data.get('bar_action_path')}) and no stamped bar pose")
+            return [], []
+        if not os.path.exists(bar_action_path):
+            print(f"  SKIP {basename}: BarAction not found: {bar_action_path}")
+            return [], []
+        try:
+            action = parse_bar_action(bar_action_path)
+        except Exception as e:
+            print(f"  SKIP {basename}: could not parse BarAction "
+                  f"{os.path.basename(bar_action_path)} ({e})")
+            return [], []
+        key = movement_id if movement_id else (
+            data.get('movement_index') if data.get('movement_index') is not None else 2)
+        idx, mv = find_movement(action, key)
+        bar_name = f"bar_{action.active_bar_id}"
+        row_bar_action_path = bar_action_path
+        movement_id = mv.movement_id
 
-    goal_bar_pose, side = goal_bar_pose_from_movement(mv, bar_name)
-    if goal_bar_pose is None:
-        print(f"  SKIP {os.path.basename(file_path)}: bar {bar_name!r} not attached in mv[{idx}]={mv.movement_id} start_state")
-        return [], []
+        goal_bar_pose, side = goal_bar_pose_from_movement(mv, bar_name)
+        if goal_bar_pose is None:
+            print(f"  SKIP {basename}: bar {bar_name!r} not attached in mv[{idx}]={mv.movement_id} start_state")
+            return [], []
 
-    print(f"\n=== {os.path.basename(file_path)} (mocap_axis_convention={saved_convention}) ===")
-    print(f"  action={os.path.basename(bar_action_path)} | mv[{idx}]={mv.movement_id} | bar={bar_name} | held_by={side}")
+        print(f"\n=== {basename} (mocap_axis_convention={saved_convention}) ===")
+        print(f"  action={os.path.basename(bar_action_path)} | mv[{idx}]={mv.movement_id} | bar={bar_name} | held_by={side}")
+
     print(f"  goal_bar_pos={[round(v,4) for v in goal_bar_pose[0]]} | goal_bar_quat={[round(v,4) for v in goal_bar_pose[1]]}")
     # TEMPORARY: rhino RobotCell export writes the bar's LOWER end (smallest
     # world z) as the OCF origin instead of the midpoint. Comparing OCF to
@@ -212,6 +306,12 @@ def process_file(file_path, override_bar_action=None, override_movement=None):
         "OCF-origin bug). Comparing against fitted bar's lower tip; pos_dev is "
         "kept as OCF-vs-goal for reference but is NOT the true center error."
     )
+
+    if not data.get('raw_data'):
+        print(f"  WARN: 0 takes recorded in {basename} (raw_data is empty) — "
+              f"click 'Record + Fit + Viz (shared)' BEFORE 'Save markerset data'. "
+              f"Nothing to compare.")
+        return [], []
 
     rows = []
     fits_for_plot = []
@@ -257,10 +357,10 @@ def process_file(file_path, override_bar_action=None, override_movement=None):
             f"d_mid_vs_goalmid=({d_mid_vs_goalmid_mm[0]:+.2f}, {d_mid_vs_goalmid_mm[1]:+.2f}, {d_mid_vs_goalmid_mm[2]:+.2f}) mm"
         )
         rows.append({
-            'source_file': os.path.basename(file_path),
+            'source_file': basename,
             'take_index': i,
-            'bar_action_path': bar_action_path,
-            'movement_id': mv.movement_id,
+            'bar_action_path': row_bar_action_path,
+            'movement_id': movement_id,
             'goal_bar_position': list(goal_bar_pose[0]),
             'goal_bar_quaternion': list(goal_bar_pose[1]),
             'ocf_position': fit['ocf_position'],
@@ -352,7 +452,9 @@ def aggregate(rows):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('batch', help='batch folder name under EXPERIMENT_DATA_DIRECTORY/bar_holding_acc_data/')
+    parser.add_argument('batch', nargs='?', default='20260706',
+                        help='batch folder name under EXPERIMENT_DATA_DIRECTORY/bar_holding_acc_data/ '
+                             '(default: 20260706)')
     parser.add_argument('--bar-action', default=None, help='override stamped bar_action_path (absolute)')
     parser.add_argument('--movement', default=None, help='override movement_id (e.g. M2)')
     parser.add_argument('--export', action='store_true', help='dump compared_<batch>.json')
@@ -385,7 +487,8 @@ def main():
         # Derive bar_action_path + movement key from the first file (or CLI overrides).
         with open(files[0], 'r') as f:
             first = json.load(f)
-        ba_path = args.bar_action or first.get('bar_action_path')
+        ba_path = (_resolve_bar_action_path(args.bar_action) if args.bar_action
+                   else _find_bar_action_in_folder(first.get('bar_action_path')))
         mv_key = args.movement or first.get('movement_id') or first.get('movement_index') or 2
         if not ba_path or not os.path.exists(ba_path):
             print(f"[pp-viewer] no usable bar_action_path (got {ba_path!r}); skipping")
