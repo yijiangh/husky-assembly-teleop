@@ -37,7 +37,7 @@ from husky_assembly_teleop.mocap_experiment import (
 )
 from husky_assembly_teleop.husky_robot import UR5e_HOME_STATE
 from husky_assembly_teleop.common import (
-    Button, Slider, SliderGroup, Separator, Husky, TrackedObject, HuskyObject, AssemblyObject, HUSKY_UR5e_JOINT_NAMES, lerp, load_gripper
+    Button, Slider, SliderGroup, Separator, LiveMultiPlot, Husky, TrackedObject, HuskyObject, AssemblyObject, HUSKY_UR5e_JOINT_NAMES, lerp, load_gripper
 )
 from husky_assembly_teleop.optitrack.NatNetClient import NatNetClient
 from husky_assembly_teleop.utils import (
@@ -113,8 +113,8 @@ CALIBRATION_STATE_SETS = {
 }
 
 class HuskyMonitor(Node):
-    USE_MOCAP = 1
-    FAKE_HARDWARE = 0
+    USE_MOCAP = 0
+    FAKE_HARDWARE = 1
 
     # * Set 0 to skip connecting the UR SetIO service clients (gripper/screw IO).
     # Saves the 2.5 s startup wait + "SetIO Service i not available!" warning
@@ -137,10 +137,10 @@ class HuskyMonitor(Node):
     USE_DPG_UI = 1   # 0 = legacy PyBullet debug GUI; 1 = Dear PyGui control panel
     UI_FONT_SIZE = 26  # base size for all DPG widgets (separators override to 20 in the backend)
 
-    CALIBRATION = 0
+    CALIBRATION = 1
 
-    BAR_ACTION_LIVE_REPLAN_EXE = 1
-    BAR_ACTION_MOCAP_ACCURACY_TEST = 1
+    BAR_ACTION_LIVE_REPLAN_EXE = 0
+    BAR_ACTION_MOCAP_ACCURACY_TEST = 0
     DUAL_ARM_EE_CONSTR_ACCURACY_MOCAP_TEST = 0
 
     # =========================================================================
@@ -575,6 +575,50 @@ class HuskyMonitor(Node):
             return 2 if self.huskies[self.selected_robot_id].dual_arm else 1
         return 2
 
+    # --- Joint live-stream plot (radians/degrees readout + scrolling record) ---
+    def _joint_stream_source(self):
+        """Flat list of the active robot's live joint angles, in radians.
+
+        Returns 6 values for a single-arm robot, or 12 (left arm then right
+        arm) for a dual-arm robot, matching _joint_stream_labels(). Per-arm
+        order follows arm_joint_pose: pan, lift, elbow, wrist_1, wrist_2, wrist_3.
+
+        Returns:
+            list[float]: The live joint angles of the active robot in radians.
+        """
+        hi = self.huskies[self.selected_robot_id].interface
+        values = []
+        for arm in range(self.get_active_arm_count()):
+            values.extend(float(q) for q in hi.arm_joint_pose[arm])
+        return values
+
+    def _joint_stream_labels(self):
+        """Legend/readout labels lining up with _joint_stream_source().
+
+        Short joint names, prefixed 'L '/'R ' per arm on a dual-arm robot.
+
+        Returns:
+            list[str]: One label per joint (6 single-arm, 12 dual-arm).
+        """
+        short = ['pan', 'lift', 'elbow', 'w1', 'w2', 'w3']
+        if self.get_active_arm_count() == 2:
+            return [f'{side} {name}' for side in ('L', 'R') for name in short]
+        return list(short)
+
+    def toggle_joint_live_stream(self):
+        """Show or hide the live joint-angle stream (text readout + plot).
+
+        The plot records continuously once built (in build_ui); this button only
+        flips the section's visibility. Live plots need the Dear PyGui backend,
+        so in PyBullet mode (USE_DPG_UI=0) this warns and does nothing.
+        """
+        if self.joint_stream_plot is None:
+            self.get_logger().warn(
+                "Joint live stream needs the Dear PyGui UI (set USE_DPG_UI=1).")
+            return
+        self._joint_stream_visible = not getattr(self, '_joint_stream_visible', False)
+        self.joint_stream_plot.set_visible(self._joint_stream_visible)
+
     # --- Punch tool calibration validation ---
     def _load_punch_tool_config(self):
         """Load punch tool offset from config.yaml."""
@@ -889,6 +933,10 @@ class HuskyMonitor(Node):
                     obj = trajectory[3]
                     gripper_tcp_from_object = obj.grasp
 
+                # Spread the waypoints over the requested trajectory time so fake
+                # execution takes as long as the real robot would (mirrors the
+                # real-hardware dt = traj_time / (n - 1) in husky_robot.py).
+                step_dt = self.trajectory_time / max(len(trajectory[0]) - 1, 1)
                 for conf in trajectory[0]:
                     hi.arm_joint_pose[self.selected_arm_index] = conf
                     ho.set_pose((hi.position, hi.rotation), hi.arm_joint_pose)
@@ -898,9 +946,9 @@ class HuskyMonitor(Node):
                         world_from_tcp = ho.get_link_pose_from_name("ur_arm_tool0")
                         object_pose = pp.multiply(world_from_tcp, gripper_tcp_from_object)
                         obj.set_pose(object_pose)
-                    
+
                     hi.is_arm_executing = True
-                    pp.wait_for_duration(0.01)
+                    pp.wait_for_duration(step_dt)
 
                 hi.is_arm_executing = False
 
@@ -3935,6 +3983,25 @@ class HuskyMonitor(Node):
         # mode (so it lives in whichever GUI is active). Its callback updates
         # self.traj_viz_time, which the preview reads in update().
         self.traj_viz_time_slider = Slider("Traj viz time", self.update_traj_viz_time, 0.0, 1.0, 1.0)
+
+        # Live joint-angle stream: the button toggles a SEPARATE floating window
+        # showing every joint of the active robot as color-chipped text (radians
+        # + degrees) plus a continually-recording scrolling plot. The window is
+        # hidden until toggled and only records while shown. Dear PyGui only.
+        self.buttons.append(Button("Toggle Joint Live Stream", self.toggle_joint_live_stream))
+        if self.USE_DPG_UI:
+            # Restore the last shown/hidden choice across UI rebuilds (reset_ui).
+            visible = getattr(self, '_joint_stream_visible', False)
+            _common._global_backend.add_window(
+                "Joint Live Stream", tag="joint_stream_window",
+                width=560, height=620, show=visible)
+            self.joint_stream_plot = LiveMultiPlot(
+                "joints", self._joint_stream_source, self._joint_stream_labels(),
+                header_source=lambda: self.huskies[self.selected_robot_id].name,
+                parent="joint_stream_window", group_size=6)
+            self.joint_stream_plot.set_visible(visible)
+        else:
+            self.joint_stream_plot = None
 
         self.buttons.append(Button('Toggle Goal/Trajectory', self.toggle_show_goal_state))
         self.buttons.append(Button('Reset Goal State', self.reset_ui))
