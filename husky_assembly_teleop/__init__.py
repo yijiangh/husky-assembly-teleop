@@ -60,4 +60,4 @@ CALIBRATION_DATE = '20260622'
 CALIBRATION_BATCHES = ['j0', 'j1', 'validation', 'punch_validation']
 
 # DESIGN_PROBLEM_NAME = '2026-05-16_double_kissing_jig_demo'
-DESIGN_PROBLEM_NAME = '260703_demo_phase1_test'
+DESIGN_PROBLEM_NAME = '260703_demo_phase1_pinkL_start_bottom'

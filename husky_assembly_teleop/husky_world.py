@@ -181,21 +181,21 @@ def init(monitor):
         '84': dict(
             robot_namespace='/a200_0804',
             # Alice 0804 (ROS_DOMAIN_ID=84),
-            mocap_id=1031,
+            mocap_id=1840,
             connect_gripper=True,
             ee_types_default=['robotiq_gripper'],
         ),
         '85': dict(
             robot_namespace='/a200_0805',
             # Belle 0805 (ROS_DOMAIN_ID=85),
-            mocap_id=1021,
+            mocap_id=1850,
             connect_gripper=True,
             ee_types_default=['robotiq_gripper'],
         ),
         '86': dict(
             robot_namespace='/a200_0806',
             # Cindy 0806 (ROS_DOMAIN_ID=86),
-            mocap_id=1011,
+            mocap_id=1860,
             connect_gripper=False,
             ee_types_default=['assembly_tool_v3_left', 'assembly_tool_v3_right'],
         ),
@@ -326,22 +326,22 @@ def init(monitor):
     # TODO use one tracked box to indicate where to put the assembly
     if monitor.CALIBRATION:
         left_tool_name = 'calib_tool_left'
-        TrackedObject(monitor, left_tool_name, 1013, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
+        TrackedObject(monitor, left_tool_name, 1862, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
         monitor.assign_calibration_tool_to_robot(0, 0, left_tool_name)
 
         right_tool_name = 'calib_tool_right'
-        TrackedObject(monitor, right_tool_name, 1012, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
+        TrackedObject(monitor, right_tool_name, 1861, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
         monitor.assign_calibration_tool_to_robot(0, 1, right_tool_name)
 
     if monitor.BAR_ACTION_MOCAP_ACCURACY_TEST:
-        bar_rig = TrackedObject(monitor, MOCAP_SET_RIG_RB_NAME, 1033, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
+        bar_rig = TrackedObject(monitor, MOCAP_SET_RIG_RB_NAME, 1002, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
         bar_rig.body = pp.create_cylinder(radius=0.01, height=1, color=(1, 0, 0, 0.2))
         bar_rig.model_base_pose = pp.Pose(euler=pp.Euler(roll=np.pi/2))
         
     if monitor.DUAL_ARM_EE_CONSTR_ACCURACY_MOCAP_TEST:
-        left_EE = TrackedObject(monitor, 'left_EE', 1013, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
+        left_EE = TrackedObject(monitor, 'left_EE', 1862, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
         left_EE.body = pp.create_box(0.1, 0.1, 0.1)
-        right_EE = TrackedObject(monitor, 'right_EE', 1012, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
+        right_EE = TrackedObject(monitor, 'right_EE', 1861, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
         right_EE.body = pp.create_box(0.1, 0.1, 0.1)
 
     # * default cfab session from startup (no BarAction needed): build a
@@ -1474,7 +1474,12 @@ def execute_arm_trajectory_both(monitor):
         
         # Execute both trajectories simultaneously
         max_points = max(len(left_trajectory[0]), len(right_trajectory[0]))
-        
+
+        # Spread the waypoints over the requested trajectory time so fake
+        # execution takes as long as the real robot would (mirrors the
+        # real-hardware dt = traj_time / (n - 1) in husky_robot.py).
+        step_dt = monitor.trajectory_time / max(max_points - 1, 1)
+
         for i in range(max_points):
             # Update left arm configuration
             if i < len(left_trajectory[0]):
@@ -1501,8 +1506,8 @@ def execute_arm_trajectory_both(monitor):
             # Set execution flags
             hi.is_arm_executing[0] = True
             hi.is_arm_executing[1] = True
-            
-            pp.wait_for_duration(0.01)
+
+            pp.wait_for_duration(step_dt)
         
         # Clear execution flags
         hi.is_arm_executing[0] = False
