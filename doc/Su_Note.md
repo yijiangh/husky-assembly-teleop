@@ -373,7 +373,7 @@ rest builds on them.
 - **Load the base calibration file** (`~lines 228–256`): prefers the `_rhino`-tagged calibration file
   (see file 9) and falls back to the untagged one if missing — so the live robot is placed using the
   calibration we computed.
-- **`TrackedObject(...)`** (`~lines 326–340`): registers a mocap **rigid body** (e.g. id 1013 = left
+- **`TrackedObject(...)`** (`~lines 326–340`): registers a mocap **rigid body** (e.g. id 1862 = left
   calibration tool) so its live pose streams into the sim each frame. Arguments are name, mocap id,
   a position/orientation offset (here zero = identity), and a draw size. `assign_calibration_tool_to_robot(0, 0, name)`
   attaches it to robot 0, arm 0 (left).

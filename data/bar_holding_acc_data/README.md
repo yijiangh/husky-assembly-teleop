@@ -115,6 +115,10 @@ python src/husky-assembly-teleop/data/bar_holding_acc_data/0_bar_acc_data_proces
 python .../0_bar_acc_data_processing.py 20260517               # a specific batch
 python .../0_bar_acc_data_processing.py 20260517 --no-export   # don't write compiled JSON
 python .../0_bar_acc_data_processing.py 20260517 --viewer      # 3D matplotlib per take
+
+python src/husky-assembly-teleop/data/bar_holding_acc_data/0_bar_acc_data_processing.py 20260708
+
+python src/husky-assembly-teleop/data/bar_holding_acc_data/1_compare_to_cell_state.py 20260708
 ```
 
 Writes `compiled_bar_holding_acc.json` in the batch folder (unless `--no-export`).
@@ -147,6 +151,10 @@ python .../1_compare_to_cell_state.py 20260517 --export        # write compared_
 python .../1_compare_to_cell_state.py 20260517 --viewer        # 3D goal-vs-fitted plots
 python .../1_compare_to_cell_state.py 20260517 --pp-viewer     # pybullet: cell state + goal bar + takes
 python .../1_compare_to_cell_state.py 20260517 --movement M2 --bar-action /abs/path/B6.json   # overrides
+
+python src/husky-assembly-teleop/data/bar_holding_acc_data/0_bar_acc_data_processing.py 20260708
+
+python src/husky-assembly-teleop/data/bar_holding_acc_data/1_compare_to_cell_state.py 20260708
 ```
 
 **Reference pose:** if the take has `bar_start_position/quaternion`, that stamped
