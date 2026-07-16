@@ -76,7 +76,7 @@ def _equal_axes_3d(ax, points, pad=0.05):
     ax.set_zlim(centers[2] - half, centers[2] + half)
 
 
-def _plot_compare(ax, fit, goal_bar_pose, take_label, dev, marker_pts=None):
+def _plot_compare(ax, fit, goal_bar_pose, take_label, dev, marker_pts=None, bar_name=None):
     """Goal bar (green dashed) + fitted bar (red) with start/end deltas.
 
     TEMPORARY (rhino-export OCF-origin bug): goal_pos is the bar's LOWER
@@ -156,10 +156,13 @@ def _plot_compare(ax, fit, goal_bar_pose, take_label, dev, marker_pts=None):
     ax.set_xlabel('X (rhino)')
     ax.set_ylabel('Y (rhino)')
     ax.set_zlabel('Z (rhino, up)')
+    short = take_label.replace('bar_holding_acc_', '')
+    bid = (bar_name or '?').replace('bar_', '')
     ax.set_title(
-        f"{take_label}\n"
-        f"angle(fit, goal) = {angle_deg:.3f}°  |  "
-        f"Δstart = {start_dev_mm:.2f} mm  |  lateral = {lateral_mm:.2f} mm"
+        f"{short}\n"
+        f"bar = {bid} | Δstart = {start_dev_mm:.2f} mm\n"
+        f"ang(fit,goal) = {angle_deg:.2f}° | lateral = {lateral_mm:.2f} mm",
+        fontsize=8,
     )
     ax.legend(loc='upper left', fontsize=7)
     pts_for_bounds = [fit_a, fit_b, ocf, goal_a, goal_b]
@@ -275,7 +278,7 @@ def process_file(file_path, override_bar_action=None, override_movement=None):
             'angle_dev_rad': dev['angle_rad'],
             'lateral_dev_m': dev['lateral_dev_m'],
         })
-        fits_for_plot.append((f"{os.path.basename(file_path)}#{i}", fit, goal_bar_pose, dev, marker_pts))
+        fits_for_plot.append((f"{os.path.basename(file_path)}#{i}", fit, goal_bar_pose, dev, marker_pts, bar_action_path, bar_name))
 
     return rows, fits_for_plot
 
@@ -360,7 +363,19 @@ def main():
     parser.add_argument('--pp-viewer', action='store_true',
                         help='open a cfab pybullet GUI, load the BarAction + start_state, '
                              'and draw_pose the goal bar OCF for visual sanity check')
+    parser.add_argument('--problem', default=None,
+                        help='override the layout problem folder: an absolute path '
+                             'or a folder name under DESIGN_DATA_DIRECTORY')
+    parser.add_argument('--env-3dm', dest='env_3dm', default=None,
+                        help='Rhino .3dm whose "Environment Obstacles" layer is drawn '
+                             'as the layout environment')
     args = parser.parse_args()
+
+    problem_override = None
+    if args.problem:
+        problem_override = (args.problem if os.path.isdir(args.problem)
+                            else os.path.join(DESIGN_DATA_DIRECTORY, args.problem))
+    env_3dm = args.env_3dm
 
     data_folder = os.path.join(EXPERIMENT_DATA_DIRECTORY, 'bar_holding_acc_data', args.batch)
     if not os.path.isdir(data_folder):
@@ -392,7 +407,7 @@ def main():
         else:
             takes = [
                 {'label': label, 'fit': fit, 'markers': marker_pts}
-                for (label, fit, _goal, _dev, marker_pts) in all_fits
+                for (label, fit, _goal, _dev, marker_pts, _bap, _bn) in all_fits
             ]
             open_pp_viewer_for_goal(ba_path, mv_key, takes=takes)
 
@@ -403,13 +418,36 @@ def main():
         print(f"\nexported to {out_path}")
 
     if args.viewer and all_fits:
+        from husky_assembly_teleop.mocap_experiment import (
+            build_layout, draw_layout_3d, problem_dir_from_bar_action_path,
+        )
         n = len(all_fits)
-        ncols = min(n, 3)
-        nrows = (n + ncols - 1) // ncols
+        total = n + 1  # + one 3D layout panel
+        ncols = min(total, 3)
+        nrows = (total + ncols - 1) // ncols
         fig = plt.figure(figsize=(6 * ncols, 5 * nrows))
-        for idx, (label, fit, goal_pose, dev, marker_pts) in enumerate(all_fits, start=1):
+        for idx, (label, fit, goal_pose, dev, marker_pts, _bap, bn) in enumerate(all_fits, start=1):
             ax = fig.add_subplot(nrows, ncols, idx, projection='3d')
-            _plot_compare(ax, fit, goal_pose, label, dev, marker_pts=marker_pts)
+            _plot_compare(ax, fit, goal_pose, label, dev, marker_pts=marker_pts, bar_name=bn)
+        # Layout panel (3D): where the tested bar(s) sit in the whole model.
+        active_names = {bn for (*_r, bn) in all_fits if bn}
+        _l0, fit0, goal0, _d0, _m0, bap0, bn0 = all_fits[0]
+        problem_dir = problem_override or problem_dir_from_bar_action_path(bap0)
+        # Tested-bar endpoints from the goal pose (lower tip + bar_len along goal_z),
+        # used only when the problem has no populated cell-state (degraded).
+        goal_pos = np.asarray(goal0[0], dtype=float)
+        goal_z = np.asarray(pp.matrix_from_quat(goal0[1]), dtype=float)[:, 2]
+        goal_z = goal_z / np.linalg.norm(goal_z)
+        tips0 = np.asarray(fit0['bar_end_points'], dtype=float)
+        bar_len0 = float(np.linalg.norm(tips0[0] - tips0[1]))
+        tested_ep = (goal_pos, goal_pos + bar_len0 * goal_z)
+        layout = build_layout(problem_dir, active_names,
+                              tested_bar_endpoints=tested_ep, env_3dm=env_3dm)
+        if layout['source'] == 'degraded':
+            print("  [layout] no solved cell-state in problem folder — "
+                  "showing tested bar + origin only")
+        ax3d = fig.add_subplot(nrows, ncols, total, projection='3d')
+        draw_layout_3d(ax3d, layout)
         plt.tight_layout()
         plt.show()
 

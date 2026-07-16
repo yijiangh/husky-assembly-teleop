@@ -29,8 +29,13 @@ import argparse
 import numpy as np
 import matplotlib.pyplot as plt
 
-from husky_assembly_teleop import EXPERIMENT_DATA_DIRECTORY
-from husky_assembly_teleop.mocap_experiment import fit_bar_from_markerset
+from husky_assembly_teleop import EXPERIMENT_DATA_DIRECTORY, DESIGN_DATA_DIRECTORY
+from husky_assembly_teleop.mocap_experiment import (
+    fit_bar_from_markerset,
+    build_layout,
+    draw_layout_2d,
+    problem_dir_from_bar_action_path,
+)
 
 
 def _make_corrector(saved_convention):
@@ -68,7 +73,7 @@ def _equal_axes_3d(ax, points, pad=0.05):
     ax.set_zlim(centers[2] - half, centers[2] + half)
 
 
-def _plot_take(ax, fit, take_label):
+def _plot_take(ax, fit, take_label, bar_name=None):
     pair_centers = np.asarray(fit['pair_centers'])
     tips = np.asarray(fit['bar_end_points'])
     ocf = np.asarray(fit['ocf_position'])
@@ -102,11 +107,14 @@ def _plot_take(ax, fit, take_label):
     ax.set_xlabel('X (rhino)')
     ax.set_ylabel('Y (rhino)')
     ax.set_zlabel('Z (rhino, up)')
+    short = take_label.replace('bar_holding_acc_', '')
+    bid = (bar_name or '?').replace('bar_', '')
     ax.set_title(
-        f"{take_label}\n"
-        f"angle(fit-axis, world-Z) = {angle_to_z_deg:.3f}°  |  "
-        f"bar_len = {bar_len:.4f} m  |  "
-        f"center_to_line_dist_max = {fit['center_to_line_dist_max_m']*1000:.2f} mm"
+        f"{short}\n"
+        f"bar = {bid} | bar_len = {bar_len:.4f} m\n"
+        f"ang(fit,Z) = {angle_to_z_deg:.2f}° | "
+        f"ctr→line max = {fit['center_to_line_dist_max_m']*1000:.2f} mm",
+        fontsize=8,
     )
     ax.legend(loc='upper left', fontsize=8)
     _equal_axes_3d(ax,
@@ -114,7 +122,7 @@ def _plot_take(ax, fit, take_label):
                               z_a, z_b, fit_a, fit_b]))
 
 
-def process_batch(data_folder, export=True, viewer=False):
+def process_batch(data_folder, export=True, viewer=False, problem_override=None, env_3dm=None):
     if not os.path.isdir(data_folder):
         sys.exit(f"data folder not found: {data_folder}")
 
@@ -135,6 +143,9 @@ def process_batch(data_folder, export=True, viewer=False):
 
         saved_convention = data.get('mocap_axis_convention', 'rotated')
         correct = _make_corrector(saved_convention)
+        # Provenance for the layout diagram: which problem + which bar is tested.
+        bar_action_path = data.get('bar_action_path')
+        bar_name = data.get('bar_name')
         print(f"\n=== {file_name} (mocap_axis_convention={saved_convention}) ===")
         ref_ocf = None  # take-0 OCF in this file; baseline for diff print
         for i, entry in enumerate(data['raw_data']):
@@ -180,7 +191,7 @@ def process_batch(data_folder, export=True, viewer=False):
                 'center_to_line_dist_max_m': fit['center_to_line_dist_max_m'],
                 'center_to_line_dist_rms_m': fit['center_to_line_dist_rms_m'],
             })
-            fits_for_plot.append((f"{file_name}#{i}", fit))
+            fits_for_plot.append((f"{file_name}#{i}", fit, bar_action_path, bar_name))
 
     if export:
         out_path = os.path.join(data_folder, 'compiled_bar_holding_acc.json')
@@ -190,12 +201,25 @@ def process_batch(data_folder, export=True, viewer=False):
 
     if viewer and fits_for_plot:
         n = len(fits_for_plot)
-        ncols = min(n, 3)
-        nrows = (n + ncols - 1) // ncols
+        total = n + 1  # + one 2D layout panel
+        ncols = min(total, 3)
+        nrows = (total + ncols - 1) // ncols
         fig = plt.figure(figsize=(6 * ncols, 5 * nrows))
-        for idx, (label, fit) in enumerate(fits_for_plot, start=1):
+        for idx, (label, fit, _bap, bn) in enumerate(fits_for_plot, start=1):
             ax = fig.add_subplot(nrows, ncols, idx, projection='3d')
-            _plot_take(ax, fit, label)
+            _plot_take(ax, fit, label, bar_name=bn)
+        # Layout panel (2D): where the tested bar(s) sit in the whole model.
+        active_names = {bn for (_l, _f, _b, bn) in fits_for_plot if bn}
+        bap0, fit0 = fits_for_plot[0][2], fits_for_plot[0][1]
+        problem_dir = problem_override or problem_dir_from_bar_action_path(bap0)
+        tips0 = np.asarray(fit0['bar_end_points'], dtype=float)
+        layout = build_layout(problem_dir, active_names,
+                              tested_bar_endpoints=(tips0[0], tips0[1]), env_3dm=env_3dm)
+        if layout['source'] == 'degraded':
+            print("  [layout] no solved cell-state in problem folder — "
+                  "showing tested bar + origin only")
+        ax2d = fig.add_subplot(nrows, ncols, total)  # plain 2D axis
+        draw_layout_2d(ax2d, layout)
         plt.tight_layout()
         plt.show()
 
@@ -205,7 +229,19 @@ if __name__ == '__main__':
     parser.add_argument('batch', help='batch folder name under EXPERIMENT_DATA_DIRECTORY/bar_holding_acc_data/')
     parser.add_argument('--no-export', action='store_true')
     parser.add_argument('--viewer', action='store_true')
+    parser.add_argument('--problem', default=None,
+                        help='override the layout problem folder: an absolute path '
+                             'or a folder name under DESIGN_DATA_DIRECTORY')
+    parser.add_argument('--env-3dm', dest='env_3dm', default=None,
+                        help='Rhino .3dm whose "Environment Obstacles" layer is drawn '
+                             'as the layout environment')
     args = parser.parse_args()
 
+    problem_override = None
+    if args.problem:
+        problem_override = (args.problem if os.path.isdir(args.problem)
+                            else os.path.join(DESIGN_DATA_DIRECTORY, args.problem))
+
     data_folder = os.path.join(EXPERIMENT_DATA_DIRECTORY, 'bar_holding_acc_data', args.batch)
-    process_batch(data_folder, export=not args.no_export, viewer=args.viewer)
+    process_batch(data_folder, export=not args.no_export, viewer=args.viewer,
+                  problem_override=problem_override, env_3dm=args.env_3dm)

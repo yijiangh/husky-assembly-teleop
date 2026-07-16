@@ -1338,3 +1338,436 @@ def draw_marker_take_in_pp(labeled_marker_dict, fit=None, *,
                 tips[0], tips[1], color=list(line_color), width=line_width,
             ))
     return uids
+
+
+# ---------------------------------------------------------------------------
+# Assembly layout diagram
+# ---------------------------------------------------------------------------
+# A small schematic panel for the bar-accuracy --viewer plots showing WHERE the
+# tested bar sits inside the whole assembly + environment:
+#   origin (yellow) | all bars grey, tested bar red | environment/floor blue.
+# All geometry is read from files already on disk for the take's design problem
+# (no new export file):
+#   RobotCell.json                       -> per-bar mesh length (local coords)
+#   BarActions/*.solved_keyframe.json    -> all bar world frames (a populated state)
+#   WalkableGround.json                  -> floor / environment polygon (optional)
+# When no populated cell-state exists (e.g. phase1 folders that ship only the
+# tested bar with empty states), build_layout DEGRADES to origin + the tested
+# bar the caller supplies, so the panel still renders.
+
+# One notation (CSS named colors), mapped to the requested layout spec.
+LAYOUT_COLOR_ORIGIN = 'yellow'      # fixed world origin (0,0,0)
+LAYOUT_COLOR_MODEL = 'gray'         # whole model (all bars)
+LAYOUT_COLOR_ACTIVE = 'red'         # tested bar (also matches the fitted-bar red)
+LAYOUT_COLOR_ENV = 'steelblue'      # environment / furniture / floor (darker blue)
+LAYOUT_COLOR_ROBOT = 'darkorange'   # robot base (moves per movement)
+
+_robot_cell_bar_len_cache = {}
+
+
+def _reroot_gdrive_path(path):
+    """Re-root a path stamped under another machine's home onto this machine's
+    DESIGN_DATA_DIRECTORY (anything under the shared '2025-03 Husky Assembly'
+    gdrive folder). Returns the original path when no fix is needed/possible."""
+    if not path or os.path.exists(path):
+        return path
+    from husky_assembly_teleop import DESIGN_DATA_DIRECTORY
+    marker = '2025-03 Husky Assembly'
+    if marker in path and marker in DESIGN_DATA_DIRECTORY:
+        tail = path.split(marker, 1)[1].lstrip('/\\')
+        root = DESIGN_DATA_DIRECTORY.split(marker, 1)[0] + marker
+        cand = os.path.join(root, tail)
+        if os.path.exists(cand):
+            return cand
+    return path
+
+
+def problem_dir_from_bar_action_path(bar_action_path):
+    """``<...>/<problem>/BarActions/x.json`` -> ``<...>/<problem>``.
+
+    The design-study "problem folder" is one assembly scenario's directory
+    (holds RobotCell.json, BarActions/, WalkableGround.json, Trajectories/).
+    Re-roots a path stamped on another machine. Returns None if the resolved
+    problem folder doesn't exist.
+    """
+    if not bar_action_path:
+        return None
+    p = _reroot_gdrive_path(bar_action_path)
+    problem_dir = os.path.dirname(os.path.dirname(p))  # strip x.json + BarActions
+    return problem_dir if os.path.isdir(problem_dir) else None
+
+
+def _bar_lengths_from_robot_cell(problem_dir):
+    """``{bar_name: length_m}`` from RobotCell.json mesh AABBs (cached per path).
+
+    RobotCell.json is large (~146 MB); parsed at most once per path. Bar meshes
+    are in local coords; the longest AABB extent is the bar length. Values that
+    look like millimetres (extent > 50) are scaled to metres.
+    """
+    rc_path = os.path.join(problem_dir, 'RobotCell.json')
+    if rc_path in _robot_cell_bar_len_cache:
+        return _robot_cell_bar_len_cache[rc_path]
+    lengths = {}
+    if os.path.exists(rc_path):
+        with open(rc_path, 'r') as f:
+            rc = json.load(f)
+        rbm = (rc.get('data') or {}).get('rigid_body_models', {})
+        for name, body in rbm.items():
+            if not name.startswith('bar_'):
+                continue
+            data = body.get('data', body)
+            meshes = data.get('visual_meshes') or data.get('collision_meshes') or []
+            ext = 0.0
+            for m in meshes:
+                md = m.get('data', m)
+                vtx = md.get('vertex') or {}
+                if not vtx:
+                    continue
+                pts = np.array([[v.get('x', 0.0), v.get('y', 0.0), v.get('z', 0.0)]
+                                for v in vtx.values()], dtype=float)
+                ext = max(ext, float((pts.max(0) - pts.min(0)).max()))
+            if ext > 50.0:      # stored in millimetres
+                ext *= 0.001
+            if ext > 0:
+                lengths[name] = ext
+    _robot_cell_bar_len_cache[rc_path] = lengths
+    return lengths
+
+
+def _unwrap(o):
+    """Peel one compas ``{dtype, data, guid}`` serialization wrapper if present
+    (returns ``o['data']`` when wrapped, else ``o`` unchanged) so we can walk
+    raw BarAction JSON down to the plain ``point/xaxis/yaxis`` numbers."""
+    return o.get('data', o) if isinstance(o, dict) else o
+
+
+def _find_populated_cell_state(problem_dir):
+    """Bar world frames from a BarAction JSON, read straight from the raw dict.
+
+    Deliberately does NOT use ``parse_bar_action`` (compas deserialization), so
+    the whole-model layer is robust to an in-progress rs_data_structure refactor.
+    Returns ``{'origin': [x,y,z]|None, 'bar_frames': {name: {point,xaxis,yaxis}}}``
+    or None. Prefers ``*.solved_keyframe.json``, then ``*.solved.json``, then any
+    BarAction json; raw phase1 files have empty states -> None.
+    """
+    ba_dir = os.path.join(problem_dir, 'BarActions')
+    if not os.path.isdir(ba_dir):
+        return None
+
+    def rank(f):
+        if f.endswith('.solved_keyframe.json'):
+            return 0
+        if f.endswith('.solved.json'):
+            return 1
+        if f.endswith('.json') and not f.endswith('.bak'):
+            return 2
+        return 9
+
+    for f in sorted(os.listdir(ba_dir), key=rank):
+        if rank(f) == 9:
+            continue
+        try:
+            with open(os.path.join(ba_dir, f), 'r') as fh:
+                doc = json.load(fh)
+        except Exception:
+            continue
+        for mv in _unwrap(doc).get('movements', []) or []:
+            state = _unwrap(_unwrap(mv).get('start_state') or {})
+            rbs = state.get('rigid_body_states') or {}
+            bar_frames = {}
+            for name, body in rbs.items():
+                if not str(name).startswith('bar_'):
+                    continue
+                frame = _unwrap(_unwrap(body).get('frame') or {})
+                if 'point' in frame and 'xaxis' in frame and 'yaxis' in frame:
+                    bar_frames[name] = frame
+            if bar_frames:
+                base = _unwrap(state.get('robot_base_frame') or {})
+                origin = base.get('point') if 'point' in base else None
+                return {'origin': origin, 'bar_frames': bar_frames}
+    return None
+
+
+def _walkable_ground_polygons(problem_dir):
+    """Floor polygons (list of ``[[x,y], ...]`` in metres) from
+    WalkableGround.json, or ``[]`` if absent. Coords that look like millimetres
+    (max |coord| > 50) are scaled to metres."""
+    path = os.path.join(problem_dir, 'WalkableGround.json')
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path, 'r') as f:
+            d = json.load(f)
+    except Exception:
+        return []
+    polys = []
+    for ground in (d.get('grounds') or {}).values():
+        md = ground.get('data', ground)
+        vtx = md.get('vertex') or {}
+        if not vtx:
+            continue
+        arr = np.array([[v.get('x', 0.0), v.get('y', 0.0)] for v in vtx.values()], dtype=float)
+        scale = 0.001 if np.abs(arr).max() > 50 else 1.0
+        faces = md.get('face') or {}
+        if faces:
+            for fverts in faces.values():
+                polys.append([[vtx[str(i)].get('x', 0.0) * scale,
+                               vtx[str(i)].get('y', 0.0) * scale] for i in fverts])
+        else:
+            polys.append((arr * scale).tolist())
+    return polys
+
+
+_env_3dm_cache = {}
+
+
+def read_env_obstacles_3dm(path, layer_name='Environment Obstacles'):
+    """Obstacle meshes from a Rhino ``.3dm`` layer as metre-scaled dicts:
+    ``[{'verts': [[x,y,z],...], 'faces': [[i,j,k(,l)],...]}, ...]``.
+
+    Returns ``[]`` (with a printed note) if rhino3dm is missing, the file can't
+    be read, or the layer is absent. Cached per (path, layer). Rhino model units
+    here are millimetres → converted to metres.
+    """
+    key = (os.path.abspath(path), layer_name.lower())
+    if key in _env_3dm_cache:
+        return _env_3dm_cache[key]
+    obstacles = []
+    try:
+        import rhino3dm as r3
+    except Exception:
+        print("  [layout] rhino3dm not installed; .3dm environment skipped")
+        _env_3dm_cache[key] = obstacles
+        return obstacles
+    model = None
+    for _ in range(3):               # Insync may touch the file mid-read
+        model = r3.File3dm.Read(path)
+        if model is not None:
+            break
+    if model is None:
+        print(f"  [layout] could not read .3dm: {path}")
+        _env_3dm_cache[key] = obstacles
+        return obstacles
+    scale = 0.001  # mm -> m
+    layer_idx = {l.Index for l in model.Layers if l.Name.lower() == layer_name.lower()}
+    if not layer_idx:
+        print(f"  [layout] layer {layer_name!r} not found in {os.path.basename(path)}")
+        _env_3dm_cache[key] = obstacles
+        return obstacles
+    for o in model.Objects:
+        if o.Attributes.LayerIndex not in layer_idx:
+            continue
+        g = o.Geometry
+        if type(g).__name__ != 'Mesh':
+            continue
+        verts = [[g.Vertices[i].X * scale, g.Vertices[i].Y * scale,
+                  g.Vertices[i].Z * scale] for i in range(len(g.Vertices))]
+        faces = []
+        for i in range(len(g.Faces)):
+            f = tuple(g.Faces[i])                       # (a,b,c,d); tri if c==d
+            faces.append([f[0], f[1], f[2]] if f[2] == f[3]
+                         else [f[0], f[1], f[2], f[3]])
+        obstacles.append({'verts': verts, 'faces': faces})
+    _env_3dm_cache[key] = obstacles
+    return obstacles
+
+
+def build_layout(problem_dir, active_bar_names, tested_bar_endpoints=None, env_3dm=None):
+    """Build a schematic-layout dict for the take's design problem.
+
+    ``active_bar_names`` is a single bar name or an iterable of names — each is
+    drawn red + id-labelled. ``env_3dm`` optionally points at a Rhino .3dm whose
+    'Environment Obstacles' layer meshes become the blue obstacle layer.
+
+    Returns ``{'origin', 'robot_base', 'bars', 'environment', 'obstacles',
+    'source'}``. ``tested_bar_endpoints`` (``(p0, p1)`` in world metres) draws the
+    tested bar when the problem has no populated cell-state or the active bar
+    isn't in it.
+    """
+    active = {active_bar_names} if isinstance(active_bar_names, str) else set(active_bar_names or [])
+    layout = {'origin': [0.0, 0.0, 0.0], 'robot_base': None, 'bars': [],
+              'environment': [], 'obstacles': [], 'source': 'degraded'}
+    state = _find_populated_cell_state(problem_dir) if problem_dir else None
+    if state and state.get('bar_frames'):
+        lengths = _bar_lengths_from_robot_cell(problem_dir)
+        # 'origin' stays the fixed world origin (0,0,0); the robot base is a
+        # separate (moving) marker.
+        if state.get('origin'):
+            layout['robot_base'] = [float(c) for c in state['origin']]
+        for name in sorted(state['bar_frames']):
+            frame = state['bar_frames'][name]
+            length = lengths.get(name)
+            if not length:
+                continue
+            p0 = np.asarray(frame['point'], dtype=float)
+            # Bar long axis = z of its frame = xaxis x yaxis (z isn't stored).
+            z = np.cross(np.asarray(frame['xaxis'], dtype=float),
+                         np.asarray(frame['yaxis'], dtype=float))
+            z = z / (np.linalg.norm(z) or 1.0)
+            p1 = p0 + length * z
+            layout['bars'].append({'name': name, 'p0': p0.tolist(), 'p1': p1.tolist(),
+                                   'is_active': name in active})
+        if layout['bars']:
+            layout['source'] = 'cell_state'
+    if problem_dir:
+        layout['environment'] = _walkable_ground_polygons(problem_dir)
+    if env_3dm:
+        layout['obstacles'] = read_env_obstacles_3dm(env_3dm)
+    # Ensure a tested bar is drawn even when it's not in the cell-state.
+    if tested_bar_endpoints is not None and not any(b['is_active'] for b in layout['bars']):
+        p0, p1 = tested_bar_endpoints
+        layout['bars'].append({'name': next(iter(active), None) or 'tested',
+                               'p0': [float(c) for c in p0], 'p1': [float(c) for c in p1],
+                               'is_active': True})
+    return layout
+
+
+def _short_bar_id(name):
+    """'bar_B12' -> 'B12'."""
+    return str(name).replace('bar_', '') if name else '?'
+
+
+def _layout_model_bounds(layout):
+    """(mins, maxs) over bars + origin + robot base (obstacles excluded so the
+    projection choice stays driven by the model)."""
+    pts = [layout.get('origin', [0.0, 0.0, 0.0])]
+    if layout.get('robot_base'):
+        pts.append(layout['robot_base'])
+    for b in layout.get('bars', []):
+        pts.append(b['p0'])
+        pts.append(b['p1'])
+    arr = np.asarray(pts, dtype=float)
+    return arr.min(axis=0), arr.max(axis=0)
+
+
+def _pick_2d_axes(layout):
+    """(i, j, name_i, name_j): indices of the model's two largest-extent world
+    axes, so a planar assembly is shown edge-on instead of collapsed to a line."""
+    mins, maxs = _layout_model_bounds(layout)
+    order = list(np.argsort(maxs - mins))   # ascending extent
+    i, j = sorted(order[-2:])
+    names = ['X', 'Y', 'Z']
+    return i, j, names[i], names[j]
+
+
+def draw_layout_2d(ax, layout, title='assembly layout'):
+    """2D schematic, auto-projected onto the model's two largest-extent axes
+    (so a planar assembly isn't collapsed to a line)."""
+    from matplotlib.patches import Rectangle
+    i, j, ni, nj = _pick_2d_axes(layout)
+    seen = set()
+    allpts = []
+
+    def add_label(key):
+        lbl = None if key in seen else key
+        seen.add(key)
+        return lbl
+
+    # Environment obstacles (.3dm): each drawn as its bounding rectangle in the
+    # chosen plane.
+    # NOTE: this bbox footprint is correct ONLY while every env element is an
+    # AXIS-ALIGNED box (the current data). A rotated / irregular obstacle would
+    # need its true projected outline (e.g. a convex hull), not a bbox.
+    for obs in layout.get('obstacles', []):
+        p = np.asarray(obs['verts'], dtype=float)[:, [i, j]]
+        mn, mx = p.min(0), p.max(0)
+        ax.add_patch(Rectangle((mn[0], mn[1]), mx[0] - mn[0], mx[1] - mn[1],
+                               facecolor=LAYOUT_COLOR_ENV, edgecolor=LAYOUT_COLOR_ENV,
+                               alpha=0.25, lw=1, label=add_label('environment')))
+        allpts += [mn.tolist(), mx.tolist()]
+    for b in layout.get('bars', []):
+        a, c = [b['p0'][i], b['p0'][j]], [b['p1'][i], b['p1'][j]]
+        active = b.get('is_active')
+        ax.plot([a[0], c[0]], [a[1], c[1]],
+                color=LAYOUT_COLOR_ACTIVE if active else LAYOUT_COLOR_MODEL,
+                lw=2.5 if active else 1.5, zorder=3 if active else 2,
+                label=add_label('tested bar' if active else 'model bar'))
+        allpts += [a, c]
+        if active:
+            mid = (np.asarray(a) + np.asarray(c)) / 2
+            ax.text(mid[0], mid[1], f" {_short_bar_id(b['name'])}",
+                    color=LAYOUT_COLOR_ACTIVE, fontsize=8, fontweight='bold', zorder=5)
+    o = layout.get('origin', [0.0, 0.0, 0.0])
+    ax.scatter([o[i]], [o[j]], c=LAYOUT_COLOR_ORIGIN, s=60, marker='o',
+               edgecolor='k', zorder=6, label='origin (0,0,0)')
+    ax.text(o[i], o[j], '  origin', fontsize=7, zorder=6)
+    allpts.append([o[i], o[j]])
+    rb = layout.get('robot_base')
+    if rb:
+        ax.scatter([rb[i]], [rb[j]], c=LAYOUT_COLOR_ROBOT, s=70, marker='s',
+                   edgecolor='k', zorder=6, label='robot base')
+        ax.text(rb[i], rb[j], '  robot base', fontsize=7, zorder=6)
+        allpts.append([rb[i], rb[j]])
+    ax.set_aspect('equal', adjustable='box')
+    arr = np.asarray(allpts, dtype=float)
+    mn, mx = arr.min(0), arr.max(0)
+    pad = max((mx - mn).max(), 0.3) * 0.05
+    ax.set_xlim(mn[0] - pad, mx[0] + pad)
+    ax.set_ylim(mn[1] - pad, mx[1] + pad)
+    ax.set_xlabel(f'{ni} (m)')
+    ax.set_ylabel(f'{nj} (m)')
+    ax.set_title(title, fontsize=9)
+    ax.legend(loc='upper left', fontsize=7)
+    ax.grid(True, ls=':', alpha=0.4)
+
+
+def draw_layout_3d(ax, layout, title='assembly layout'):
+    """3D schematic on an ``add_subplot(..., projection='3d')`` axis."""
+    from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+    seen = set()
+    for b in layout.get('bars', []):
+        p0, p1, active = b['p0'], b['p1'], b.get('is_active')
+        lbl = 'tested bar' if active else 'model bar'
+        ax.plot([p0[0], p1[0]], [p0[1], p1[1]], [p0[2], p1[2]],
+                color=LAYOUT_COLOR_ACTIVE if active else LAYOUT_COLOR_MODEL,
+                lw=3 if active else 1.5, label=None if lbl in seen else lbl)
+        seen.add(lbl)
+        if active:
+            mid = (np.asarray(p0) + np.asarray(p1)) / 2
+            ax.text(mid[0], mid[1], mid[2], f" {_short_bar_id(b['name'])}",
+                    color=LAYOUT_COLOR_ACTIVE, fontsize=8, fontweight='bold')
+    # Environment obstacle meshes (.3dm), blue. Faces are drawn as-is (no
+    # axis-aligned assumption here — full mesh geometry).
+    obs_polys = []
+    for obs in layout.get('obstacles', []):
+        V = obs['verts']
+        for f in obs['faces']:
+            obs_polys.append([tuple(V[k]) for k in f])
+    if obs_polys:
+        pc = Poly3DCollection(obs_polys, facecolor=LAYOUT_COLOR_ENV, alpha=0.18,
+                              edgecolor=LAYOUT_COLOR_ENV, linewidths=0.3)
+        pc.set_label('environment')
+        ax.add_collection3d(pc)
+    # walkable-ground floor
+    floor = [[(x, y, 0.0) for x, y in poly]
+             for poly in layout.get('environment', []) if len(poly) >= 3]
+    if floor:
+        ax.add_collection3d(Poly3DCollection(floor, facecolor=LAYOUT_COLOR_ENV,
+                                             alpha=0.08, edgecolor=LAYOUT_COLOR_ENV))
+    o = layout.get('origin', [0.0, 0.0, 0.0])
+    ax.scatter([o[0]], [o[1]], [o[2]], c=LAYOUT_COLOR_ORIGIN, s=60, marker='o',
+               edgecolor='k', label='origin (0,0,0)')
+    ax.text(o[0], o[1], o[2], '  origin', fontsize=7)
+    rb = layout.get('robot_base')
+    if rb:
+        ax.scatter([rb[0]], [rb[1]], [rb[2]], c=LAYOUT_COLOR_ROBOT, s=70, marker='s',
+                   edgecolor='k', label='robot base')
+        ax.text(rb[0], rb[1], rb[2], '  robot base', fontsize=7)
+    ax.set_xlabel('X (m)')
+    ax.set_ylabel('Y (m)')
+    ax.set_zlabel('Z (m)')
+    ax.set_title(title, fontsize=9)
+    ax.legend(loc='upper left', fontsize=7)
+    # bounds include obstacles so the environment stays in frame
+    mins, maxs = _layout_model_bounds(layout)
+    pts = [mins.tolist(), maxs.tolist()]
+    for obs in layout.get('obstacles', []):
+        V = np.asarray(obs['verts'], dtype=float)
+        pts += [V.min(0).tolist(), V.max(0).tolist()]
+    arr = np.asarray(pts, dtype=float)
+    center = (arr.min(0) + arr.max(0)) / 2
+    span = max((arr.max(0) - arr.min(0)).max(), 0.3) * 1.05
+    half = span / 2
+    ax.set_xlim(center[0] - half, center[0] + half)
+    ax.set_ylim(center[1] - half, center[1] + half)
+    ax.set_zlim(center[2] - half, center[2] + half)

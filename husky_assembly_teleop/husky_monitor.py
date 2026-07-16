@@ -77,8 +77,7 @@ CALIBRATION_STATE_SETS = {
 class HuskyMonitor(Node):
     USE_MOCAP = 1
     FAKE_HARDWARE = 0
-
-    # When USE_MOCAP=1, by default the husky base in PyBullet tracks mocap.
+  
     # Set USE_CELL_STATE_BASE_POSE=1 to override that and pin the base to
     # whatever was loaded from the goal RobotCellState's robot_base_frame
     # (or set via sliders). Useful for testing planning with mocap on for
@@ -88,10 +87,10 @@ class HuskyMonitor(Node):
     USE_DPG_UI = 1   # 0 = legacy PyBullet debug GUI; 1 = Dear PyGui control panel
     UI_FONT_SIZE = 16  # base size for all DPG widgets (separators override to 20 in the backend)
 
-    CALIBRATION = 1
+    CALIBRATION = 0
 
-    BAR_ACTION_LIVE_REPLAN_EXE = 0
-    BAR_ACTION_MOCAP_ACCURACY_TEST = 0
+    BAR_ACTION_LIVE_REPLAN_EXE = 1
+    BAR_ACTION_MOCAP_ACCURACY_TEST = 1
     DUAL_ARM_EE_CONSTR_ACCURACY_MOCAP_TEST = 0
 
     # Mocap (y-up) -> z-up axis convention. See utils.mocap_pos_y_up_to_z_up.
@@ -99,7 +98,7 @@ class HuskyMonitor(Node):
     # 'rotated' : legacy convention previously hardcoded in receive_*_frame.
     MOCAP_AXIS_CONVENTION = "rhino"
 
-    PUNCH_CALIB_VALIDATION = 1
+    PUNCH_CALIB_VALIDATION = 0
 
     DUAL_ARM_KISSING_REP_EXPERIMENT = 0 # set 1 to enable kissing experiment + compliance controller buttons
 

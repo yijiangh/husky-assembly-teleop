@@ -1,6 +1,7 @@
 """Thin convenience helpers for BarAction.json files.
 
-The data classes live in `rs_data_structure.bar_action`. compas's
+The data classes live in `rs_data_structure.bar_action` (Independent/
+EndEffectorConstrained x Free/Linear movement classes). compas's
 `json_load` reconstructs them faithfully (including nested
 `RobotCellState`, `Frame`, `Configuration`, etc.). This module exposes:
 
@@ -22,9 +23,10 @@ from compas.data import json_load
 from rs_data_structure.bar_action import (
     BarAssemblyAction,
     Movement,
-    RoboticDualArmConstrainedMovement,
-    RoboticLinearMovement,
-    RoboticFreeMovement,
+    IndependentDualArmFreeMovement,
+    EndEffectorConstrainedDualArmFreeMovement,
+    EndEffectorConstrainedDualArmLinearMovement,
+    IndependentDualArmLinearMovement,
 )
 
 
@@ -84,11 +86,20 @@ def find_movement(action: BarAssemblyAction, key: Union[int, str]) -> tuple[int,
 
 
 def movement_type(mv: Movement) -> str:
-    """Classify a movement by its concrete class type."""
-    if isinstance(mv, RoboticDualArmConstrainedMovement):
+    """Classify a movement by its concrete class type.
+
+    Downstream only distinguishes "free" (bar_action_mode off) from
+    "constrained"/"linear" (bar held → constrained planner). Mapping:
+      M0/M4 IndependentDualArmFreeMovement            -> "free"
+      M1    EndEffectorConstrainedDualArmFreeMovement  -> "constrained"
+      M2    EndEffectorConstrainedDualArmLinearMovement -> "linear"
+      M3    IndependentDualArmLinearMovement            -> "linear"
+    """
+    if isinstance(mv, EndEffectorConstrainedDualArmFreeMovement):
         return "constrained"
-    if isinstance(mv, RoboticLinearMovement):
+    if isinstance(mv, (EndEffectorConstrainedDualArmLinearMovement,
+                       IndependentDualArmLinearMovement)):
         return "linear"
-    if isinstance(mv, RoboticFreeMovement):
+    if isinstance(mv, IndependentDualArmFreeMovement):
         return "free"
     return "unknown"
