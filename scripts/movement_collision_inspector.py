@@ -77,7 +77,6 @@ def _bypass_init_monitor():
     monitor.current_action = None
     monitor.current_movement = None
     monitor.current_movement_index = None
-    monitor.movement_type = None
     monitor.movement_start_state = None
     monitor.target_ee_frames = None
     monitor.grasp_link_from_bar = None
@@ -129,7 +128,7 @@ def _bypass_init_monitor():
 
 
 def _attach_stub_husky_interface(monitor, m1_start_state):
-    """Set huskies[0].interface so _make_synthetic_m0 works in headless.
+    """Set huskies[0].interface so _inject_live_conf_into_state works in headless.
     Same logic as headless_live_monitor_test.py: base from M1, arm at HOME.
     """
     from husky_assembly_teleop.utils import HUSKY_DUAL_UR5e_JOINT_NAMES, pose_from_frame  # noqa: F401
@@ -303,7 +302,8 @@ def main(bar_action: str, problem: str, movement_role: str,
             return 1
         monitor._selected_action_file_idx = monitor.available_bar_actions.index(bar_action)
 
-        # Probe-parse to install the stub interface BEFORE _make_synthetic_m0 runs.
+        # Probe-parse to install the stub interface BEFORE the native M0's
+        # live-conf injection runs.
         from husky_assembly_teleop.bar_action_io import parse_bar_action
         from husky_assembly_teleop import DESIGN_DATA_DIRECTORY
         action_path = os.path.join(

@@ -125,6 +125,28 @@ def conf_from_12vec(vec12):
     return Configuration.from_revolute_values(vals, joint_names=names)
 
 
+def conf_from_6vec(vec6, arm_index: int = 0):
+    """Build a compas Configuration for a single arm from a 6-vec.
+
+    Args:
+        vec6: length-6 sequence of joint values in the arm's joint order.
+        arm_index: 0 = left arm, 1 = right arm (matches
+            HUSKY_DUAL_UR5e_JOINT_NAMES layout). For single-arm robots use 0.
+
+    Returns:
+        A compas_robots.Configuration whose joint names match the selected
+        arm's 6 UR joint names, in the canonical dual-arm order.
+    """
+    from compas_robots import Configuration
+    if arm_index not in (0, 1):
+        raise ValueError(f"arm_index must be 0 or 1, got {arm_index}")
+    names = list(HUSKY_DUAL_UR5e_JOINT_NAMES[arm_index])
+    vals = [float(v) for v in vec6]
+    if len(vals) != 6:
+        raise ValueError(f"vec6 must be length 6, got {len(vals)}")
+    return Configuration.from_revolute_values(vals, joint_names=names)
+
+
 def joint_trajectory_from_path(path_12):
     """Wrap a list / array of 12-vecs into a compas_fab JointTrajectory.
 

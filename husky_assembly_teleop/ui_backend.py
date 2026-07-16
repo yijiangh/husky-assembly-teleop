@@ -15,6 +15,40 @@ import pybullet as p
 
 logger = logging.getLogger(__name__)
 
+# Distinct line colors (RGB 0-255) for multi-series live plots. Reused for both
+# the plot lines and the matching color chips in the readout table. tab20-style
+# so up to 12 joints (dual-arm) stay visually separable. Deliberately no red:
+# red is reserved for the out-of-range alert on the readout text.
+_MULTI_PLOT_PALETTE = [
+    (31, 119, 180),    # blue
+    (255, 127, 14),    # orange
+    (44, 160, 44),     # green
+    (148, 103, 189),   # purple
+    (140, 86, 75),     # brown
+    (227, 119, 194),   # pink
+    (127, 127, 127),   # gray
+    (188, 189, 34),    # olive
+    (23, 190, 207),    # cyan
+    (255, 187, 120),   # light orange
+    (152, 223, 138),   # light green
+    (174, 199, 232),   # light blue
+]
+
+_RAD_TO_DEG = 180.0 / np.pi
+
+# Readout text colors and the joint-limit past which a joint reads as alarming.
+_READOUT_TEXT_COLOR = (210, 210, 210, 255)   # normal joint readout text
+_READOUT_ALERT_COLOR = (255, 60, 60, 255)    # bold red when out of range
+_JOINT_LIMIT_DEG = 345.0                      # |deg| beyond this -> alert
+
+# Bold TTFs (first that exists wins) used to embolden out-of-range readout text.
+_BOLD_FONT_PATHS = (
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+    "/System/Library/Fonts/Helvetica.ttc",
+    "C:/Windows/Fonts/segoeuib.ttf",
+)
+
 
 def _nonzero_range(vmin: float, vmax: float) -> Tuple[float, float]:
     """pybullet's ``addUserDebugParameter`` segfaults (GUI thread div-by-zero)
@@ -65,6 +99,23 @@ class UIBackend:
 
     def add_live_plot(self, label: str, source: Callable[[], float],
                       history: int = 200) -> int:
+        raise NotImplementedError
+
+    def add_live_multi_plot(self, label: str, source: Callable[[], List[float]],
+                            series_labels: Sequence[str], history: int = 200,
+                            header_source: Optional[Callable[[], str]] = None, *,
+                            parent: Optional[Any] = None,
+                            group_size: Optional[int] = None,
+                            palette: Optional[Sequence[Any]] = None) -> int:
+        raise NotImplementedError
+
+    def add_window(self, label: str, *, tag: str, width: int = 600,
+                   height: int = 800, show: bool = True) -> str:
+        """Create a floating top-level window (not the primary panel)."""
+        raise NotImplementedError
+
+    def set_visible(self, handle: int, visible: bool) -> None:
+        """Show or hide a previously-added widget/section by its handle."""
         raise NotImplementedError
 
     def add_separator(self, label: str) -> int:
@@ -177,6 +228,20 @@ class PyBulletBackend(UIBackend):
         raise NotImplementedError(
             "live_plot widget not supported by PyBulletBackend; set USE_DPG_UI=1")
 
+    def add_live_multi_plot(self, label, source, series_labels, history=200,
+                            header_source=None, *, parent=None, group_size=None,
+                            palette=None):
+        raise NotImplementedError(
+            "live_multi_plot widget not supported by PyBulletBackend; set USE_DPG_UI=1")
+
+    def add_window(self, label, *, tag, width=600, height=800, show=True):
+        raise NotImplementedError(
+            "separate windows not supported by PyBulletBackend; set USE_DPG_UI=1")
+
+    def set_visible(self, handle, visible):
+        # PyBullet debug params can't be individually shown/hidden; nothing to do.
+        return
+
     def add_separator(self, label):
         # PyBullet draws no divider line, so wrap the label in dashes to mark it
         # as a section header (e.g. "---CONTROLLERS---"). DPG keeps the plain label
@@ -237,10 +302,14 @@ _DEFAULT_FONT_PATHS = (
 )
 
 
-def bind_default_font(dpg, font_size: int) -> None:
+def bind_default_font(dpg, font_size: int):
     """Bind a TTF font at `font_size` to the current DPG context, falling
     back to scaling the built-in bitmap font. Safe to call once per DPG
-    context (i.e. once per create_context())."""
+    context (i.e. once per create_context()).
+
+    Returns:
+        The bound font handle, or None if no TTF was available (bitmap fallback).
+    """
     for path in _DEFAULT_FONT_PATHS:
         if not os.path.exists(path):
             continue
@@ -248,10 +317,11 @@ def bind_default_font(dpg, font_size: int) -> None:
             with dpg.font_registry():
                 f = dpg.add_font(path, font_size)
             dpg.bind_font(f)
-            return
+            return f
         except Exception as e:
             logger.debug(f"font load failed {path}: {e}")
     dpg.set_global_font_scale(max(1.0, font_size / 13.0))
+    return None
 
 
 class DearPyGuiBackend(UIBackend):
@@ -277,9 +347,12 @@ class DearPyGuiBackend(UIBackend):
 
         dpg.create_viewport(title=window_title, width=width, height=height)
         # Global default font (size = font_size = UI_FONT_SIZE = 16) for all widgets.
-        self._bind_default_font(font_size)
+        # Keep the handle so we can rebind it to un-bold a readout row.
+        self._font_default = self._bind_default_font(font_size)
         # Separators render larger (20); font built here, bound per-item in add_separator.
         self._build_sep_font()
+        # Bold font (same size) for emphasising out-of-range joint readouts.
+        self._build_bold_font(font_size)
         dpg.setup_dearpygui()
 
         with dpg.window(tag="root", label=window_title,
@@ -301,8 +374,23 @@ class DearPyGuiBackend(UIBackend):
         self._next_handle += 1
         return h
 
-    def _bind_default_font(self, font_size: int) -> None:
-        bind_default_font(self.dpg, font_size)
+    def _bind_default_font(self, font_size: int):
+        return bind_default_font(self.dpg, font_size)
+
+    def _build_bold_font(self, font_size: int) -> None:
+        """Build a bold font at the readout size, bound per-item in step() when a
+        joint goes out of range. self._font_bold is None if no bold TTF is found
+        (then out-of-range readouts still turn red, just not bold)."""
+        dpg = self.dpg
+        self._font_bold = None
+        path = next((p for p in _BOLD_FONT_PATHS if os.path.exists(p)), None)
+        if not path:
+            return
+        try:
+            with dpg.font_registry():
+                self._font_bold = dpg.add_font(path, font_size)
+        except Exception as e:
+            logger.debug(f"bold font load failed {path}: {e}")
 
     def _build_sep_font(self) -> None:
         """Build a larger font (20 pt) for separator headers; bound per-item in
@@ -468,43 +556,155 @@ class DearPyGuiBackend(UIBackend):
         self._handles[h] = {"kind": "live_plot", "tag": series_tag}
         return h
 
-    def add_live_multi_plot(self, label, source, series_labels, history=200,
-                            header_source=None):
-        """Scrolling time plot with N line series + a numeric text readout.
+    def add_window(self, label, *, tag, width=600, height=800, show=True):
+        """Create (or refresh) a floating top-level window, not the primary panel.
 
-        source() -> list[float] of length N (polled each step()).
-        series_labels: legend label per series (len N).
-        header_source: optional () -> str, prepended as the readout's first line.
-        Readout shows each value in both radians and degrees.
+        build_ui() re-runs on every reset_ui(); because this is a top-level
+        window (so it can float/move independently) it is NOT a child of the
+        primary "root" panel and therefore survives clear() (which only wipes
+        root's children). On a rebuild we would otherwise hit DPG's duplicate-tag
+        error, so if the window already exists we delete only its children (the
+        stale plot/table) and keep the frame -- this preserves wherever the user
+        dragged or resized it. We deliberately do NOT set_primary_window on it.
+
+        Args:
+            label (str): Window title bar text.
+            tag (str): Stable id used to find/refresh the window on rebuilds.
+            width (int): Initial window width in pixels.
+            height (int): Initial window height in pixels.
+            show (bool): Whether the window starts visible.
+
+        Returns:
+            str: The window tag (usable as a parent for other add_* calls).
+        """
+        dpg = self.dpg
+        if dpg.does_item_exist(tag):
+            dpg.delete_item(tag, children_only=True)
+            dpg.configure_item(tag, show=show)
+        else:
+            dpg.add_window(tag=tag, label=label, width=width, height=height,
+                           show=show)
+        return tag
+
+    def add_live_multi_plot(self, label, source, series_labels, history=200,
+                            header_source=None, *, parent=None, group_size=None,
+                            palette=None):
+        """Scrolling multi-series plot + a color-coded rad/deg readout table.
+
+        The plot has a radians y-axis on the left and a passive degrees ruler on
+        the right (kept in sync in step()). Its legend sits below the plot so it
+        never covers data. Below the plot a table shows one [color chip | text]
+        pair per series; series are split into `group_size` column-pairs (e.g.
+        left vs right arm). Each series' line color is fixed via a theme so the
+        chip can match it.
+
+        Args:
+            label (str): Plot title.
+            source (callable): source() -> list[float] of length N, polled each step().
+            series_labels (list): One legend/readout label per series (len N).
+            history (int): Samples kept in the rolling window (oscilloscope width).
+            header_source (callable): Optional () -> str shown above the table (robot name).
+            parent: Container tag (e.g. a window from add_window) to hold the
+                plot + table; defaults to the current parent. set_visible() toggles it.
+            group_size (int): Series per column-group (e.g. 6 joints/arm); a
+                dual-arm 12-series plot becomes two L | R pairs. Defaults to all-in-one.
+            palette (list): RGB tuples per series; defaults to _MULTI_PLOT_PALETTE.
+
+        Returns:
+            int: Handle for set_visible().
         """
         dpg = self.dpg
         n = len(series_labels)
+        group_size = group_size or n
+        n_groups = max(1, n // group_size)
+        palette = palette or _MULTI_PLOT_PALETTE
+        colors = [tuple(palette[i % len(palette)]) for i in range(n)]
+        container = parent if parent is not None else self._current_parent
+
         series_tags = []
-        with dpg.plot(label=label, height=180, width=-1, parent=self._current_parent):
-            dpg.add_plot_legend()
-            x_axis = dpg.add_plot_axis(dpg.mvXAxis, label="t")
-            y_axis = dpg.add_plot_axis(dpg.mvYAxis, label=f"{label} [rad]")
-            for lbl in series_labels:
-                series_tags.append(
-                    dpg.add_line_series([], [], label=lbl, parent=y_axis))
-        text_tag = dpg.add_text("", parent=self._current_parent,
-                                color=(180, 220, 180, 255))
+        with dpg.plot(label=label, height=320, width=-1, parent=container):
+            # Legend below/outside the axes so it never blocks the plotted lines.
+            dpg.add_plot_legend(location=dpg.mvPlot_Location_South,
+                                outside=True, horizontal=True)
+            # x is a fixed [0, history] sample index (oscilloscope), so it never
+            # needs refitting as the trace scrolls.
+            x_axis = dpg.add_plot_axis(dpg.mvXAxis, label="samples",
+                                       no_tick_labels=True)
+            y_axis = dpg.add_plot_axis(dpg.mvYAxis, label="joint [rad]")
+            # Right-side degrees ruler: no series attached; step() sets its limits
+            # to the rad axis limits x (180/pi) so it always reads correctly.
+            y_axis_deg = dpg.add_plot_axis(dpg.mvYAxis2, label="joint [deg]",
+                                           opposite=True)
+            for i, lbl in enumerate(series_labels):
+                tag = dpg.add_line_series([], [], label=lbl, parent=y_axis)
+                # Pin each line's color so the readout chip can reuse the same
+                # RGB (DPG cannot report auto-assigned colormap colors).
+                with dpg.theme() as line_theme:
+                    with dpg.theme_component(dpg.mvLineSeries):
+                        dpg.add_theme_color(dpg.mvPlotCol_Line, (*colors[i], 255),
+                                            category=dpg.mvThemeCat_Plots)
+                dpg.bind_item_theme(tag, line_theme)
+                series_tags.append(tag)
+
+        # Readout: robot name, a divider, then a table with one column per arm
+        # group. Each cell is a [chip, text] horizontal pair so the chip sits
+        # right next to its own value. Dual arm shares joint r of L and R on a row.
+        header_tag = dpg.add_text("", parent=container, color=(200, 200, 160, 255))
+        dpg.add_separator(parent=container)
+        readout_tags = [None] * n
+        table_tag = dpg.add_table(parent=container, header_row=False,
+                                  resizable=False, borders_innerV=False,
+                                  borders_outerV=False, borders_innerH=False)
+        for _g in range(n_groups):
+            dpg.add_table_column(parent=table_tag)   # one column per arm group
+        for r in range(group_size):
+            with dpg.table_row(parent=table_tag):
+                for g in range(n_groups):
+                    idx = g * group_size + r
+                    # Chip and text side by side so they read as one unit.
+                    with dpg.group(horizontal=True):
+                        dpg.add_color_button(default_value=(*colors[idx], 255),
+                                             width=16, height=16, no_alpha=True,
+                                             no_drag_drop=True, no_tooltip=True)
+                        readout_tags[idx] = dpg.add_text(
+                            "", color=_READOUT_TEXT_COLOR)
         h = self._new_handle()
-        self._live_multi.append({
+        md = {
             "handle": h,
             "source": source,
             "header_source": header_source,
+            "header_tag": header_tag,
             "series_tags": series_tags,
             "labels": list(series_labels),
-            "text_tag": text_tag,
+            "readout_tags": readout_tags,
+            "readout_alert": [None] * n,  # last out-of-range state per series
             "x_axis": x_axis,
             "y_axis": y_axis,
+            "y_axis_deg": y_axis_deg,
             "history": history,
-            "x": deque(maxlen=history),
             "ys": [deque(maxlen=history) for _ in range(n)],
-        })
-        self._handles[h] = {"kind": "live_multi", "tag": text_tag}
+            "visible": True,   # updated by set_visible(); gates recording in step()
+            "fitted": False,   # one-time initial fit flag (item 2)
+        }
+        self._live_multi.append(md)
+        self._handles[h] = {"kind": "live_multi", "container_tag": container,
+                            "multi": md}
         return h
+
+    def set_visible(self, handle, visible):
+        """Show or hide a widget/section by handle.
+
+        For a live multi-plot this toggles its container (the separate window)
+        and flips the record gate so a hidden plot costs nothing (item 5).
+        """
+        info = self._handles.get(handle)
+        if not info:
+            return
+        if "multi" in info:
+            info["multi"]["visible"] = bool(visible)
+        tag = info.get("container_tag", info.get("tag"))
+        if tag is not None and self.dpg.does_item_exist(tag):
+            self.dpg.configure_item(tag, show=bool(visible))
 
     def add_separator(self, label):
         dpg = self.dpg
@@ -567,6 +767,70 @@ class DearPyGuiBackend(UIBackend):
             if self._frame_idx % 20 == 0:
                 dpg.fit_axis_data(plot["y_axis"])
                 dpg.fit_axis_data(plot["x_axis"])
+        # Multi-series live plots: one scrolling line per value plus a
+        # color-chipped table readout showing radians and degrees.
+        for plot in self._live_multi:
+            # Only record/draw while the section is visible so a hidden window
+            # costs nothing (item 5).
+            if not plot.get("visible", True):
+                continue
+            try:
+                vals = plot["source"]()
+            except Exception as e:  # source may not be ready yet
+                logger.debug(f"live multi-plot source error: {e}")
+                continue
+            # A value/series count mismatch (e.g. mid arm/robot switch) would
+            # desync the per-series buffers, so skip until the counts agree.
+            if len(vals) != len(plot["series_tags"]):
+                continue
+            if plot["header_tag"] is not None and plot["header_source"] is not None:
+                try:
+                    dpg.set_value(plot["header_tag"], str(plot["header_source"]()))
+                except Exception as e:
+                    logger.debug(f"live multi-plot header error: {e}")
+            for i in range(len(plot["series_tags"])):
+                plot["ys"][i].append(float(vals[i]))
+            # Oscilloscope x: a fixed [0, history] index window that never needs
+            # refitting as the trace scrolls (item 2).
+            xs = list(range(len(plot["ys"][0])))
+            for i, series_tag in enumerate(plot["series_tags"]):
+                y = plot["ys"][i]
+                dpg.set_value(series_tag, [xs, list(y)])
+                v = y[-1]
+                deg = np.degrees(v)
+                readout_tag = plot["readout_tags"][i]
+                dpg.set_value(
+                    readout_tag,
+                    f"{plot['labels'][i]}: {v:+.3f} rad /{deg:+7.1f} deg")
+                # A joint past +/-345 deg turns its readout text bold + red
+                # (name, radians and degrees all). Only restyle on a state change
+                # to avoid rebinding fonts every frame.
+                alert = deg < -_JOINT_LIMIT_DEG or deg > _JOINT_LIMIT_DEG
+                if alert != plot["readout_alert"][i]:
+                    plot["readout_alert"][i] = alert
+                    dpg.configure_item(
+                        readout_tag,
+                        color=_READOUT_ALERT_COLOR if alert else _READOUT_TEXT_COLOR)
+                    # Bold only if both a bold and a default font are available
+                    # (so we can reliably revert); otherwise the red alone signals.
+                    if self._font_bold is not None and self._font_default is not None:
+                        dpg.bind_item_font(
+                            readout_tag,
+                            self._font_bold if alert else self._font_default)
+            # Fit once when data first appears, then never again so the user's
+            # manual zoom/pan sticks (item 2).
+            if not plot["fitted"] and len(plot["ys"][0]) >= 2:
+                dpg.fit_axis_data(plot["y_axis"])
+                dpg.set_axis_limits(plot["x_axis"], 0, plot["history"])
+                plot["fitted"] = True
+            # Mirror the radians axis onto the right-side degrees ruler (item 3),
+            # tracking whatever range the user has zoomed to.
+            try:
+                lo, hi = dpg.get_axis_limits(plot["y_axis"])
+                dpg.set_axis_limits(plot["y_axis_deg"], lo * _RAD_TO_DEG,
+                                    hi * _RAD_TO_DEG)
+            except Exception as e:
+                logger.debug(f"deg axis sync error: {e}")
         dpg.render_dearpygui_frame()
         return True
 

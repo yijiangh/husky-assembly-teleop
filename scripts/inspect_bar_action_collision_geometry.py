@@ -57,13 +57,11 @@ def _make_monitor(problem, use_gui):
     monitor._bar_action_husky = None
     monitor._bar_action_ghost_bodies = set()
     monitor._bar_action_cfab_id = None
-    monitor.bar_action_staging_seed_conf = None
     monitor._bar_action_scrub = None
 
     monitor.current_action = None
     monitor.current_movement = None
     monitor.current_movement_index = None
-    monitor.movement_type = None
     monitor.movement_start_state = None
     monitor.target_ee_frames = None
     monitor.grasp_link_from_bar = None

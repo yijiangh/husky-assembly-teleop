@@ -11,6 +11,11 @@ from collections import defaultdict
 import os
 import time, copy
 import threading
+import json
+import csv
+import yaml
+from datetime import datetime
+from types import SimpleNamespace
 import numpy as np
 
 from typing import List, Tuple
@@ -25,33 +30,65 @@ import pybullet_planning as pp
 
 from husky_assembly_teleop import DATA_DIRECTORY, DESIGN_DATA_DIRECTORY, CALIBRATION_BATCHES, DESIGN_PROBLEM_NAME, CALIBRATION_DATE
 import husky_assembly_teleop.husky_world as world
+from husky_assembly_teleop.husky_world import _solve_bar_action_goal_ik
 import husky_assembly_teleop.mocap_experiment as mocap_experiment
 from husky_assembly_teleop.mocap_experiment import (
-    fit_bar_from_markerset, bar_deviation_from_goal,
+    fit_bar_from_markerset, bar_deviation_from_goal, draw_marker_take_in_pp,
 )
 from husky_assembly_teleop.husky_robot import UR5e_HOME_STATE
 from husky_assembly_teleop.common import (
-    Button, Slider, SliderGroup, Separator, Husky, TrackedObject, HuskyObject, AssemblyObject, HUSKY_UR5e_JOINT_NAMES, lerp, load_gripper
+    Button, Slider, SliderGroup, Separator, LiveMultiPlot, Husky, TrackedObject, HuskyObject, AssemblyObject, HUSKY_UR5e_JOINT_NAMES, lerp, load_gripper
 )
 from husky_assembly_teleop.optitrack.NatNetClient import NatNetClient
 from husky_assembly_teleop.utils import (
     pose_from_frame, frame_from_pose, pose_from_transformation, transformation_from_pose,
     mocap_pos_y_up_to_z_up, mocap_quat_y_up_to_z_up,
-    vec12_from_conf, conf_from_12vec, joint_trajectory_from_path, path_12_from_joint_trajectory,
+    vec12_from_conf, conf_from_12vec, conf_from_6vec,
+    joint_trajectory_from_path, path_12_from_joint_trajectory,
     HUSKY_DUAL_ARM_HOME_CONF_12, HUSKY_DUAL_UR5e_JOINT_NAMES, MOCAP_SET_RIG_RB_NAME,
 )
 
 # BarAction (gdrive design-study) loading
 from husky_assembly_teleop.bar_action_io import (
-    parse_bar_action, list_bar_actions, find_movement, movement_type,
+    parse_bar_action, list_bar_actions, find_movement,
 )
-from husky_assembly_teleop.cfab_session import CfabSession
+from husky_assembly_teleop.cfab_session import (
+    CfabSession, build_default_robot_cell, plan_free_motion,
+    arm_joint_names_for_group, SINGLE_ARM_GROUP,
+    HUSKY_DUAL_URDF_PATH, HUSKY_DUAL_SRDF_PATH,
+)
+from husky_assembly_teleop import common as _common
+from husky_assembly_teleop.ui_backend import make_backend, DearPyGuiBackend, bind_default_font
+
+from compas.data import json_load, json_dump
+from compas.geometry import Frame, Transformation
 from compas_fab.backends import CollisionCheckError
+from compas_fab.robots import JointTrajectory, JointTrajectoryPoint
+from compas_fab.robots.time_ import Duration
+from compas_robots import Configuration
+from compas_robots.model import Joint
+
+# TAMP motion-planner API. Safe to import at module top: no import-time
+# side effects and no circular dependency back into this package.
+from husky_assembly_tamp.motion_planner.api import (
+    plan_free_dual_arm, plan_constrained_dual_arm, plan_constrained_dual_arm_linear,
+    plan_dual_arm_linear_independent, _fk_link_frame, _collect_obstacle_puids,
+)
 
 DEFAULT_GREY = [0.2, 0.2, 0.2, 0.7]
 GOAL_BLUE = [0, 0.2, 0.5, 0.7]
 TRAJECTORY_GREEN = [0, 0.5, 0.2, 0.7]
 TRANSPARENT = [0, 0.0, 0.0, 0.0]
+
+# M1 constrained-planner resolutions. Single source for both the plan call
+# and the CDFM sparse validation that re-checks the planned path.
+M1_POSITION_RES = 0.01   # meters
+M1_ROTATION_RES = 0.025  # radians
+# Which planning stage the M1 constrained planner runs. Stage 3 is the
+# grasped-bar transport stage (see STAGE3_GRASP_MASK_LINKS). This used to be
+# adjustable via a "Constrained Stage" GUI slider, but in practice only stage 3
+# was ever used, so it is now a fixed constant.
+M1_PLANNER_STAGE = 3
 
 EXISTING_ELEMENT_COLOR = pp.RED
 CURRENT_ELEMENT_COLOR = pp.BLUE
@@ -66,18 +103,31 @@ MOCAP_CAMERA_EXPORT_DIR = (
     "2025-03 Husky Assembly/data_experiment/visualise_mocap_camera"
 )
 
-# Folder under DATA_DIRECTORY/husky_assembly_design_study/<...>/RobotCellStates/
+# Folder under DESIGN_DATA_DIRECTORY (gdrive)/<...>/RobotCellStates/
 # from which CALIBRATION-mode state + trajectory loaders pull files.
 # Keyed by selected_arm_index (0=left, 1=right); see _calibration_state_dir().
+# Full design-study archive lives on GitHub: yijiangh/husky_assembly_design_study.
 CALIBRATION_STATE_SETS = {
     0: '260630_calib_trajs_Alice',              # left arm & single arm
     1: '260225_extrinsic_calib_trajs_Cindy_Right',  # right arm for Cindy
 }
 
 class HuskyMonitor(Node):
-    USE_MOCAP = 1
-    FAKE_HARDWARE = 0
-  
+    USE_MOCAP = 0
+    FAKE_HARDWARE = 1
+
+    # * Set 0 to skip connecting the UR SetIO service clients (gripper/screw IO).
+    # Saves the 2.5 s startup wait + "SetIO Service i not available!" warning
+    # when io_and_status_controller isn't running. set_screw() then just logs
+    # an "Invalid arm index" error instead of calling the service.
+    CONNECT_IO_SERVICES = 0
+    # * Set 0 to skip querying controller_manager/list_controllers on startup.
+    # Saves the 2.5 s per-arm wait + "list_controllers service unavailable"
+    # warning; active_controller stays "" (first switch_controller request may
+    # then be rejected by controller_manager, see _seed_active_controllers).
+    LIST_CONTROLLER_SERVICES = 0
+
+    # When USE_MOCAP=1, by default the husky base in PyBullet tracks mocap.
     # Set USE_CELL_STATE_BASE_POSE=1 to override that and pin the base to
     # whatever was loaded from the goal RobotCellState's robot_base_frame
     # (or set via sliders). Useful for testing planning with mocap on for
@@ -85,13 +135,56 @@ class HuskyMonitor(Node):
     # scaffolding (e.g., at the lab desk during dual-arm accuracy tests).
     USE_CELL_STATE_BASE_POSE = 0
     USE_DPG_UI = 1   # 0 = legacy PyBullet debug GUI; 1 = Dear PyGui control panel
-    UI_FONT_SIZE = 16  # base size for all DPG widgets (separators override to 20 in the backend)
+    UI_FONT_SIZE = 26  # base size for all DPG widgets (separators override to 20 in the backend)
 
     CALIBRATION = 0
 
-    BAR_ACTION_LIVE_REPLAN_EXE = 1
-    BAR_ACTION_MOCAP_ACCURACY_TEST = 1
+    BAR_ACTION_LIVE_REPLAN_EXE = 1      # show Load BarAction / Load Movement / replan buttons
+    BAR_ACTION_MOCAP_ACCURACY_TEST = 1  # show Record + Fit + Viz / Save markerset data
     DUAL_ARM_EE_CONSTR_ACCURACY_MOCAP_TEST = 0
+
+    # =========================================================================
+    # MOCK LIVE POSE FOR REPLAN (temporary; remove when real mocap + robot
+    # are available and Button 2 has been validated end-to-end on hardware).
+    # =========================================================================
+    # When set to 1, `replan_free_to_movement_start_live` temporarily patches
+    # `huskies[0].interface` for the duration of the Button 2 call so the
+    # method sees a synthetic "live" pose.
+    #
+    # `MOCK_LIVE_ARM_CONF` picks the arm-conf source:
+    #   'perturb': current_movement.start_state.robot_configuration + small
+    #              random joint noise (default; represents the realistic
+    #              operator scenario -- robot slightly off from the
+    #              movement start, needing a short IK re-projection and
+    #              short free-motion plan. Composite BiRRT can solve this).
+    #   'home'  : HUSKY_DUAL_ARM_HOME_CONF_12 (the M4 dispatcher's home
+    #              target -- represents the "robot parked between
+    #              BarActions" case. Stress test: IK converges via the
+    #              fallback branch, but the 12-DOF free plan from home
+    #              extended arms to bar-holding grip is a genuinely hard
+    #              corridor problem the sampler often can't solve.)
+    #
+    # `MOCK_LIVE_BASE_XY_OFFSET_M` is added (metres) to
+    # current_movement.start_state.robot_base_frame's XY position to stand
+    # in for real-world mocap drift.
+    #
+    # The interface is restored right after Button 2 returns so no other
+    # code path sees the mock values. Toggle back to 0 once the live
+    # mocap/robot pipeline is available.
+    # =========================================================================
+    MOCK_LIVE_POSE_FOR_REPLAN = 0
+    MOCK_LIVE_ARM_CONF = 'perturb'
+    MOCK_LIVE_ARM_PERTURB_STD_RAD = 0.02
+
+    # Temporary: when 1, the live M2/M3 replan button
+    # (`replan_free_to_movement_start_live`) relaxes the composite free-motion
+    # plan's collision checking to robot self-collision (CC.1) ONLY -- also
+    # skipping robot<->tool (CC.2) and environment checks (CC.3/4/5). Set back
+    # to 0 to plan against tools + the full environment before running paths
+    # on real hardware.
+    REPLAN_SKIP_ENV_COLLISIONS_IN_MOTION_PLAN = 0
+    MOCK_LIVE_ARM_PERTURB_MAX_TRIES = 10
+    MOCK_LIVE_BASE_XY_OFFSET_M = (-0.3, 0.2)
 
     # Mocap (y-up) -> z-up axis convention. See utils.mocap_pos_y_up_to_z_up.
     # 'rhino'   : rhino_x = mocap_x, rhino_y = -mocap_z, rhino_z = mocap_y (preferred).
@@ -107,13 +200,6 @@ class HuskyMonitor(Node):
     # service clients). Off by default so we don't block startup waiting on
     # services that aren't running on most rigs.
     CONNECT_COMPLIANT_CONTROLLER = 0
-
-    # Default ON: route every free-planner collision check through cfab's
-    # PyBulletCheckCollision (CC.1..CC.5, including attached_rb<->world_rb)
-    # instead of pp.get_collision_fn, which leaves tool bodies stationary
-    # and misses tool<->world overlaps (the cause of the M0 "passes plan,
-    # fails inspector" mismatch).
-    use_cfab_collision_for_free = True
 
     def __init__(self):
         super().__init__('husky_monitor')
@@ -148,15 +234,14 @@ class HuskyMonitor(Node):
         self.bar_from_extra = []          # legacy
 
         # BarAction / cfab planning state.
-        self.cfab = None                       # CfabSession (lazy per problem)
+        self.cfab = None                       # CfabSession (default cell at startup; per-problem on BarAction load)
+        self.cfab_default_state = None         # default RobotCellState from build_default_robot_cell
         self.current_action = None             # rs_data_structure BarAssemblyAction
         self.current_movement = None           # selected Movement
         self.current_movement_index = None     # int
-        self.movement_type = None              # "constrained" | "linear" | "free"
         self.movement_start_state = None       # compas_fab RobotCellState
         self.target_ee_frames = None           # {"left": Frame, "right": Frame} | None
         self.grasp_link_from_bar = None        # compas.geometry.Frame
-        self.constrained_planner_stage = 3
         self.staging_free_trajectory = [None, None]   # left, right (per-arm tuples)
         self.constrained_trajectory = [None, None]
         self.constrained_display_mode = 0  # 0=FREE_STAGE, 1=CONSTRAINED
@@ -166,8 +251,7 @@ class HuskyMonitor(Node):
         self._bar_action_husky = None          # SimpleNamespace husky stub (cfab robot)
         self._bar_action_ghost_bodies = set()  # tiny invisible EE proxy pybullet bodies
         self._bar_action_cfab_id = None        # cfab client_id the ghosts belong to
-        self.bar_action_staging_seed_conf = None  # feasible 12-DOF staging START seed
-        self._bar_action_scrub = None          # scrub-slider state dict (Task C)
+        self._trajectory_waypoint_sliders = None          # cached waypoint-slider state (see _build_trajectory_waypoint_sliders)
         self.assembly_objects = []
         self.current_seq_index = 0
 
@@ -180,7 +264,7 @@ class HuskyMonitor(Node):
 
         # Per-movement BarAction loader (replaces single-movement load_bar_action).
         self._loaded_action = None              # BarAssemblyAction | None
-        self._loaded_movements = []             # list[Movement]; index 0 = synthetic M0
+        self._loaded_movements = []             # list[Movement]; M0..M4 straight from the JSON
         self._selected_action_file_idx = 0
         self._selected_movement_idx = 0
         self._ee_target_pose_uids = []          # pp.add_line uids for drawn EE targets
@@ -217,7 +301,7 @@ class HuskyMonitor(Node):
         self.selected_trajectory_index = 0
 
         # CALIBRATION-mode state/trajectory loaders (RobotCellState +
-        # JointTrajectory files under DATA_DIRECTORY/husky_assembly_design_study/
+        # JointTrajectory files under DESIGN_DATA_DIRECTORY (gdrive)/
         # <CALIBRATION_STATE_SET>/RobotCellStates/).
         self.calibration_state_slider = None
         self.calibration_trajectory_slider = None
@@ -283,8 +367,6 @@ class HuskyMonitor(Node):
             self._load_punch_tool_config()
 
         # Initialize the UI backend BEFORE world.init / build_ui creates any widgets.
-        from .ui_backend import make_backend
-        from . import common as _common
         _common._global_backend = make_backend(
             use_dpg=bool(self.USE_DPG_UI),
             window_title="Husky Monitor",
@@ -422,7 +504,6 @@ class HuskyMonitor(Node):
         # p.removeAllUserParameters()
         # Clear the ACTIVE backend's widgets (PyBullet params OR DPG widgets) so the
         # rebuild below doesn't stack a duplicate panel in DPG mode.
-        from . import common as _common
         if _common._global_backend is not None:
             _common._global_backend.clear()
         self.buttons.clear()
@@ -494,10 +575,53 @@ class HuskyMonitor(Node):
             return 2 if self.huskies[self.selected_robot_id].dual_arm else 1
         return 2
 
+    # --- Joint live-stream plot (radians/degrees readout + scrolling record) ---
+    def _joint_stream_source(self):
+        """Flat list of the active robot's live joint angles, in radians.
+
+        Returns 6 values for a single-arm robot, or 12 (left arm then right
+        arm) for a dual-arm robot, matching _joint_stream_labels(). Per-arm
+        order follows arm_joint_pose: pan, lift, elbow, wrist_1, wrist_2, wrist_3.
+
+        Returns:
+            list[float]: The live joint angles of the active robot in radians.
+        """
+        hi = self.huskies[self.selected_robot_id].interface
+        values = []
+        for arm in range(self.get_active_arm_count()):
+            values.extend(float(q) for q in hi.arm_joint_pose[arm])
+        return values
+
+    def _joint_stream_labels(self):
+        """Legend/readout labels lining up with _joint_stream_source().
+
+        Short joint names, prefixed 'L '/'R ' per arm on a dual-arm robot.
+
+        Returns:
+            list[str]: One label per joint (6 single-arm, 12 dual-arm).
+        """
+        short = ['pan', 'lift', 'elbow', 'w1', 'w2', 'w3']
+        if self.get_active_arm_count() == 2:
+            return [f'{side} {name}' for side in ('L', 'R') for name in short]
+        return list(short)
+
+    def toggle_joint_live_stream(self):
+        """Show or hide the live joint-angle stream (text readout + plot).
+
+        The plot records continuously once built (in build_ui); this button only
+        flips the section's visibility. Live plots need the Dear PyGui backend,
+        so in PyBullet mode (USE_DPG_UI=0) this warns and does nothing.
+        """
+        if self.joint_stream_plot is None:
+            self.get_logger().warn(
+                "Joint live stream needs the Dear PyGui UI (set USE_DPG_UI=1).")
+            return
+        self._joint_stream_visible = not getattr(self, '_joint_stream_visible', False)
+        self.joint_stream_plot.set_visible(self._joint_stream_visible)
+
     # --- Punch tool calibration validation ---
     def _load_punch_tool_config(self):
         """Load punch tool offset from config.yaml."""
-        import yaml
         try:
             punch_config_path = os.path.join(
                 DATA_DIRECTORY, 'calibration_data', CALIBRATION_DATE, 'config.yaml'
@@ -545,9 +669,6 @@ class HuskyMonitor(Node):
     def collect_mocap_camera_data(self):
         """Snapshot mocap camera poses (mocap-origin frame), convert to the Rhino
         z-up frame, and save JSON+CSV into the gdrive visualise_mocap_camera folder."""
-        import json, csv
-        from datetime import datetime
-
         inventory = self.get_mocap_camera_inventory(refresh=True)
         if not inventory or not inventory.get('cameras'):
             self.get_logger().warn('No mocap cameras found (is mocap connected?)')
@@ -812,6 +933,10 @@ class HuskyMonitor(Node):
                     obj = trajectory[3]
                     gripper_tcp_from_object = obj.grasp
 
+                # Spread the waypoints over the requested trajectory time so fake
+                # execution takes as long as the real robot would (mirrors the
+                # real-hardware dt = traj_time / (n - 1) in husky_robot.py).
+                step_dt = self.trajectory_time / max(len(trajectory[0]) - 1, 1)
                 for conf in trajectory[0]:
                     hi.arm_joint_pose[self.selected_arm_index] = conf
                     ho.set_pose((hi.position, hi.rotation), hi.arm_joint_pose)
@@ -821,9 +946,9 @@ class HuskyMonitor(Node):
                         world_from_tcp = ho.get_link_pose_from_name("ur_arm_tool0")
                         object_pose = pp.multiply(world_from_tcp, gripper_tcp_from_object)
                         obj.set_pose(object_pose)
-                    
+
                     hi.is_arm_executing = True
-                    pp.wait_for_duration(0.01)
+                    pp.wait_for_duration(step_dt)
 
                 hi.is_arm_executing = False
 
@@ -893,8 +1018,62 @@ class HuskyMonitor(Node):
         tool_from_bar = pose_from_frame(bar_rb.attachment_frame)
         return pp.multiply(world_from_tool, tool_from_bar)
 
-    def update_constrained_planner_stage(self, val):
-        self.constrained_planner_stage = int(round(float(val)))
+    def get_movement_start_bar_pose(self):
+        """world_from_bar of the active bar in the current movement's start state.
+
+        The mocap "bar holding accuracy" experiment drives the robot to a
+        movement's start_state and measures the actual held-bar pose, so the
+        reference we compare against is the bar's world pose *at that start
+        state*. Two cases are handled:
+
+        - Bar held by a gripper link: the start_state only stores the grasp
+          (``attachment_frame``), so we forward-kinematics the holding link at
+          the start configuration and compose the grasp onto it.
+        - Bar resting in the world (installed / pre-pickup): the start_state
+          stores the world ``frame`` directly, so we return that.
+
+        Returns:
+            tuple | None: ``(pos, quat_xyzw)`` of plain floats, or ``None``
+            when the bar / movement / cfab session isn't available.
+        """
+        state = getattr(self, 'movement_start_state', None)
+        bar_name = getattr(self, 'active_bar_name', None)
+        if state is None or not bar_name or self.cfab is None:
+            return None
+        rb_states = getattr(state, 'rigid_body_states', {}) or {}
+        bar_rb = rb_states.get(bar_name)
+        if bar_rb is None:
+            return None
+
+        # Free-standing bar: its world frame is authored on the rigid body.
+        if getattr(bar_rb, 'frame', None) is not None:
+            pos, quat = pose_from_frame(bar_rb.frame)
+            return ([float(v) for v in pos], [float(v) for v in quat])
+
+        # Held bar: only the grasp frame is stored. Recover the world pose by
+        # FK-ing the holding link at the start configuration, then composing
+        # the grasp. The FK reads the cfab pybullet client, so pin pp.CLIENT to
+        # it for the query and restore afterwards (the monitor's update loop
+        # keeps pp.CLIENT on its own world) -- same swap the planners use.
+        attach = getattr(bar_rb, 'attachment_frame', None)
+        link = getattr(bar_rb, 'attached_to_link', None)
+        if attach is None or not link:
+            return None
+        saved_client = pp.CLIENT
+        pp.CLIENT = self.cfab.client.client_id
+        pp.CLIENTS.setdefault(pp.CLIENT, True)
+        try:
+            world_from_link = _fk_link_frame(self.cfab.planner, state, link)
+        except Exception as e:
+            self.get_logger().warn(f"start-state bar pose FK failed: {e}")
+            return None
+        finally:
+            pp.CLIENT = saved_client
+        world_from_link_pose = (list(world_from_link.point),
+                                list(world_from_link.quaternion.xyzw))
+        tool_from_bar = pose_from_frame(attach)
+        pos, quat = pp.multiply(world_from_link_pose, tool_from_bar)
+        return ([float(v) for v in pos], [float(v) for v in quat])
 
     def update_constrained_display_mode(self, val):
         self.constrained_display_mode = int(round(float(val)))
@@ -1020,10 +1199,62 @@ class HuskyMonitor(Node):
         )
 
     def plan_single_arm_to_goal_action(self):
-        """Plan selected arm, then cache it as manual staging if applicable."""
+        """Plan selected arm, then cache it as manual staging if applicable.
+
+        Prefers the cfab-backed single-group planner (obstacles + ACM from
+        the cell state); falls back to the legacy pp planner when no cfab
+        session exists.
+        """
         self._set_goal_to_constrained_start()
-        world.plan_arm_to_goal(self)
+        if not self._plan_single_arm_with_cfab():
+            world.plan_arm_to_goal(self)
         self._capture_manual_staging_plan(self.selected_arm_index)
+
+    def _plan_single_arm_with_cfab(self):
+        """cfab-backed single-arm free plan to goal_arm_pose[selected].
+
+        Returns True when a trajectory was planned and stored; False when
+        the cfab route is unavailable (caller falls back to pp planning).
+        """
+        if self.cfab is None or getattr(self.cfab, 'planner', None) is None:
+            return False
+        template = getattr(self, 'movement_start_state', None) \
+            or getattr(self, 'cfab_default_state', None)
+        if template is None:
+            return False
+        name_sets = self._arm_joint_name_sets()
+        arm_idx = min(self.selected_arm_index, len(name_sets) - 1)
+        groups = self.cfab.robot_cell.robot_semantics.groups
+        if 'base_left_arm_manipulator' in groups:
+            group = ('base_left_arm_manipulator', 'base_right_arm_manipulator')[arm_idx]
+        else:
+            group = SINGLE_ARM_GROUP
+        state = template.copy()
+        self._inject_live_conf_into_state(state)
+        # * Pass a compas Configuration as the goal so cfab_session.plan_free_motion
+        # takes its dict-style path — keeps the tamp-API contract uniform.
+        # For single-arm husky (index 0), we always use the arm-index-0 joint names.
+        goal6 = conf_from_6vec(
+            np.asarray(self.goal_arm_pose[self.selected_arm_index], dtype=float),
+            arm_index=arm_idx,
+        )
+        # Pause GUI rendering during the search (no-op when headless).
+        with pp.LockRenderer():
+            path, info = plan_free_motion(
+                self.cfab.planner, state, goal6, group=group,
+                max_time=30.0, max_iterations=100,
+            )
+        if path is None:
+            self.get_logger().warn(
+                f"[single-arm cfab] planning failed: {info.get('failure_reason')}; "
+                "falling back to pp planner.")
+            return False
+        self.set_arm_trajectory(
+            (np.asarray(path), None, self.trajectory_time, None),
+            index=self.selected_arm_index)
+        self.set_to_show_traj_state()
+        print(f"[single-arm cfab] OK: group={group}, {len(path)} waypoints.")
+        return True
 
     def plan_both_arms_to_goal_action(self, use_composite=True, debug=False):
         """Plan both arms, then cache it as manual staging if applicable."""
@@ -1032,13 +1263,11 @@ class HuskyMonitor(Node):
         self._capture_manual_staging_plan()
 
     def plan_free_to_movement_start_with_cfab_cc(self):
-        """Free dual-arm plan from CURRENT arm conf -> start_conf of the
-        currently selected movement, using cfab's PyBulletCheckCollision.
+        """Free dual-arm plan from LIVE robot conf -> start_conf of the
+        currently selected movement, with cfab collision checking.
 
         Analogous to plan_both_arms_to_goal_action (composite) but the goal
-        is taken from mv.start_state.robot_configuration and collision
-        checking is forced through cfab CC regardless of the
-        use_cfab_collision_for_free toggle.
+        is taken from mv.start_state.robot_configuration.
         """
         if self.current_movement is None:
             self.get_logger().warn("Load a movement first.")
@@ -1049,41 +1278,31 @@ class HuskyMonitor(Node):
                 f"Movement {mv.movement_id!r} has no start_state.robot_configuration."
             )
             return
+        # Goal = the movement's authored/planned start conf (read BEFORE the
+        # live injection below overwrites it in the state copy). Pass the
+        # compas Configuration directly so the tamp API's dict-indexed
+        # extraction succeeds without falling back to sequence coercion.
+        goal_conf = mv.start_state.robot_configuration
         # Plan against the LIVE husky base, not the BarAction-authored one.
         if not self._apply_live_base_to_movement(mv):
             return
-        husky = self.huskies[self.selected_robot_id]
-        robot = husky.object.robot
-        left_joints = pp.joints_from_names(robot, HUSKY_DUAL_UR5e_JOINT_NAMES[0])
-        right_joints = pp.joints_from_names(robot, HUSKY_DUAL_UR5e_JOINT_NAMES[1])
-        current_left = np.asarray(pp.get_joint_positions(robot, left_joints), dtype=float)
-        current_right = np.asarray(pp.get_joint_positions(robot, right_joints), dtype=float)
-        start_conf = np.concatenate([current_left, current_right])
-        goal_conf = vec12_from_conf(mv.start_state.robot_configuration)
+        state = mv.start_state.copy()
+        self._inject_live_conf_into_state(state)
 
-        scene = self._build_pp_scene_for_free()
-        if scene is None:
-            return
-        cfab_cf = self._build_cfab_free_collision_fn(mv.start_state, force=True)
-        if cfab_cf is None:
-            self.get_logger().warn("cfab CC unavailable (planner not initialized?); aborting.")
-            return
-
-        from husky_assembly_tamp.motion_planner.api import plan_free_dual_arm
-        path, info = plan_free_dual_arm(
-            scene, start_conf, goal_conf,
-            max_time=120.0, max_iterations=1000,
-            cfab_collision_fn=cfab_cf,
-        )
+        # Pause GUI rendering during the search (no-op when headless).
+        with pp.LockRenderer():
+            path, info = plan_free_dual_arm(
+                self.cfab.planner, state, goal_conf,
+                max_time=120.0, max_iterations=1000,
+            )
         if path is None:
             self.get_logger().warn(
                 f"plan_free→mv-start failed: {info.get('failure_reason', 'unknown')}"
             )
             return
 
-        nL = len(left_joints)
-        left_path = np.array([q[:nL] for q in path])
-        right_path = np.array([q[nL:] for q in path])
+        left_path = np.array([q[:6] for q in path])
+        right_path = np.array([q[6:] for q in path])
         t = self.trajectory_time
         self.set_arm_trajectory((left_path, None, t, None), index=0)
         self.set_arm_trajectory((right_path, None, t, None), index=1)
@@ -1184,7 +1403,6 @@ class HuskyMonitor(Node):
         self.current_action = action
         self.current_movement = mv
         self.current_movement_index = idx
-        self.movement_type = movement_type(mv)
         self.movement_start_state = mv.start_state
         self.target_ee_frames = mv.target_ee_frames or None
         self.active_bar_name = f"bar_{action.active_bar_id}"
@@ -1208,8 +1426,8 @@ class HuskyMonitor(Node):
             print(f"Error setting cfab robot cell state: {e}")
             return False
 
-        # Bridge the loaded cfab scene into the pp-side state that
-        # plan_and_stage_constrained consumes.
+        # Bridge the loaded cfab scene into the pp-side state that the
+        # CDFM validation / waypoint sliders / inspector consume.
         try:
             self._bridge_cfab_to_pp_for_bar_action()
         except Exception as e:
@@ -1236,7 +1454,6 @@ class HuskyMonitor(Node):
                 mv.start_state.robot_configuration is not None:
             robot_config = mv.start_state.robot_configuration
             if hasattr(robot_config, 'joint_values') and hasattr(robot_config, 'joint_names'):
-                from husky_assembly_teleop.utils import HUSKY_DUAL_UR5e_JOINT_NAMES
                 left_arm_names = HUSKY_DUAL_UR5e_JOINT_NAMES[0]
                 right_arm_names = HUSKY_DUAL_UR5e_JOINT_NAMES[1]
                 try:
@@ -1259,7 +1476,6 @@ class HuskyMonitor(Node):
         # EE pose (not the movement's start config, which can be identical
         # across adjacent movements: M2.start == M1.end etc).
         if self.BAR_ACTION_LIVE_REPLAN_EXE and self.target_ee_frames is not None:
-            from husky_assembly_teleop.husky_world import _solve_bar_action_goal_ik
             conf12 = _solve_bar_action_goal_ik(
                 self, mv.start_state, skip_env_collisions=True, verbose=False,
             )
@@ -1283,18 +1499,20 @@ class HuskyMonitor(Node):
 
         print(
             f"Loaded BarAction {action.action_id} "
-            f"movement[{idx}]={mv.movement_id} ({self.movement_type}) "
+            f"movement[{idx}]={mv.movement_id} ({type(mv).__name__}) "
             f"active_bar={action.active_bar_id} "
             f"rigid_bodies={len(self.cfab.client.rigid_bodies_puids)}"
         )
         return True
 
     def _hide_cfab_robot(self):
-        """Tint the cfab-side robot URDF (red, alpha=0.5) so its pose updates
-        from `set_robot_cell_state` are visible during cfab CC debugging.
+        """Tint the cfab-side robot URDF + tools (red, alpha=0.5) so their
+        pose updates from `set_robot_cell_state` are visible during cfab CC
+        debugging.
 
-        Tools stay transparent to avoid duplicating the real robot's tool
-        meshes; only the cfab husky body links are tinted.
+        Tools are tinted the same translucent red as the body so you can
+        confirm each mounted tool (assembly tool, gripper, punch cone) is
+        actually attached to tool0 in the planning scene.
         """
         if self.cfab is None or self.cfab.client is None:
             return
@@ -1302,22 +1520,19 @@ class HuskyMonitor(Node):
         if client.robot_puid is not None:
             pp.set_color(client.robot_puid, [1.0, 0.0, 0.0, 0.5])
         for tool_puid in (client.tools_puids or {}).values():
-            pp.set_color(tool_puid, TRANSPARENT)
+            pp.set_color(tool_puid, [1.0, 0.0, 0.0, 0.5])
 
     def _bridge_cfab_to_pp_for_bar_action(self):
-        """Wire the loaded cfab scene into the pp-side state that
-        plan_and_stage_constrained consumes. Headless-equivalent of the
-        bridge block in scripts/headless_live_monitor_test.py.
+        # TODO this looks a bit suspicious with the manually created sphere proxy etc. need to double check if still correct
+        """Wire the loaded cfab scene into the pp-side state that the CDFM
+        validation, waypoint sliders, and collision inspector consume.
+        Headless-equivalent of the bridge block in
+        scripts/headless_live_monitor_test.py.
 
         Does NOT permanently change pp.CLIENT (the monitor's update() loop
-        needs the monitor's own pp client). plan_and_stage_constrained does
-        a temporary swap when it runs.
+        needs the monitor's own pp client); consumers do a temporary swap
+        when they run.
         """
-        import pybullet as _pb
-        import pybullet_planning as _pp
-        from husky_assembly_teleop.husky_robot import UR5e_HOME_STATE
-        from types import SimpleNamespace
-
         client = self.cfab.client
         robot_puid = client.robot_puid
         cid = client.client_id
@@ -1326,31 +1541,31 @@ class HuskyMonitor(Node):
         #    cfab session. pp routes EE attachments through get_collision_fn,
         #    so the child must be a distinct body (robot-vs-robot collapses).
         if getattr(self, "_bar_action_cfab_id", None) != cid:
-            col = _pb.createCollisionShape(_pb.GEOM_SPHERE, radius=0.001, physicsClientId=cid)
-            ghost_L = _pb.createMultiBody(baseMass=0, baseCollisionShapeIndex=col,
+            col = p.createCollisionShape(p.GEOM_SPHERE, radius=0.001, physicsClientId=cid)
+            ghost_L = p.createMultiBody(baseMass=0, baseCollisionShapeIndex=col,
                                           basePosition=[0.0, 0.0, -100.0], physicsClientId=cid)
-            col2 = _pb.createCollisionShape(_pb.GEOM_SPHERE, radius=0.001, physicsClientId=cid)
-            ghost_R = _pb.createMultiBody(baseMass=0, baseCollisionShapeIndex=col2,
+            col2 = p.createCollisionShape(p.GEOM_SPHERE, radius=0.001, physicsClientId=cid)
+            ghost_R = p.createMultiBody(baseMass=0, baseCollisionShapeIndex=col2,
                                           basePosition=[0.0, 0.0, -100.0], physicsClientId=cid)
             self._bar_action_ghost_bodies = {ghost_L, ghost_R}
             self._bar_action_cfab_id = cid
             # Need pp.CLIENT == cid for link_from_name / Attachment below.
-            _saved = _pp.CLIENT
-            _pp.CLIENT = cid
-            _pp.CLIENTS.setdefault(cid, True)
+            _saved = pp.CLIENT
+            pp.CLIENT = cid
+            pp.CLIENTS.setdefault(cid, True)
             try:
-                left_tool_link = _pp.link_from_name(robot_puid, 'left_ur_arm_tool0')
-                right_tool_link = _pp.link_from_name(robot_puid, 'right_ur_arm_tool0')
+                left_tool_link = pp.link_from_name(robot_puid, 'left_ur_arm_tool0')
+                right_tool_link = pp.link_from_name(robot_puid, 'right_ur_arm_tool0')
                 identity_grasp = ((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0))
                 self._bar_action_husky = SimpleNamespace(object=SimpleNamespace(
                     robot=robot_puid,
                     ee_list=[
-                        (ghost_L, _pp.Attachment(robot_puid, left_tool_link, identity_grasp, ghost_L)),
-                        (ghost_R, _pp.Attachment(robot_puid, right_tool_link, identity_grasp, ghost_R)),
+                        (ghost_L, pp.Attachment(robot_puid, left_tool_link, identity_grasp, ghost_L)),
+                        (ghost_R, pp.Attachment(robot_puid, right_tool_link, identity_grasp, ghost_R)),
                     ],
                 ))
             finally:
-                _pp.CLIENT = _saved
+                pp.CLIENT = _saved
 
         # 2) Active bar + static obstacles (exclude the ghosts).
         ghosts = getattr(self, "_bar_action_ghost_bodies", set())
@@ -1363,97 +1578,6 @@ class HuskyMonitor(Node):
         self.active_extra_bodies = []
         self.bar_from_extra = []
         self.active_bar_aabb_dims = self.get_active_bar_aabb_dims()
-
-        # 3) Feasible staging seed near UR5e HOME (HOME self-collides ~2mm).
-        home_dual = np.concatenate([UR5e_HOME_STATE, UR5e_HOME_STATE])
-        self.bar_action_staging_seed_conf = self._sample_feasible_staging_seed(home_dual)
-
-    def _sample_feasible_staging_seed(self, base_conf, *, max_attempts=200,
-                                      perturb=0.6, seed=0):
-        """Sample a collision-free 12-DOF config near `base_conf` for the
-        staging plan's START. UR5e HOME sits ~2mm inside the dual-arm husky's
-        self-collision margin, which makes plan_free_dual_arm reject it.
-
-        Uses pp.get_collision_fn with self_collisions=1, max_distance=0 to
-        match what plan_transit_motion checks internally.
-        """
-        import pybullet_planning as _pp
-        from husky_assembly_teleop.utils import HUSKY_DUAL_UR5e_JOINT_NAMES
-
-        all_names = list(HUSKY_DUAL_UR5e_JOINT_NAMES[0]) + list(HUSKY_DUAL_UR5e_JOINT_NAMES[1])
-        cid = self.cfab.client.client_id
-        robot = self.cfab.client.robot_puid
-
-        _saved = _pp.CLIENT
-        _pp.CLIENT = cid
-        _pp.CLIENTS.setdefault(cid, True)
-        try:
-            all_joints = _pp.joints_from_names(robot, all_names)
-            collision_fn = _pp.get_collision_fn(
-                robot, all_joints,
-                obstacles=[],
-                attachments=[],
-                self_collisions=1,
-                max_distance=0,
-            )
-            base_conf = np.asarray(base_conf, dtype=float)
-            rng = np.random.default_rng(seed)
-            with _pp.WorldSaver():
-                for attempt in range(max_attempts):
-                    q = base_conf if attempt == 0 else (
-                        base_conf + rng.uniform(-perturb, perturb, size=12))
-                    if not collision_fn(tuple(q.tolist())):
-                        if attempt > 0:
-                            print(f"[seed] feasible staging seed sampled at attempt "
-                                  f"{attempt+1}/{max_attempts} "
-                                  f"(|Δ|={float(np.linalg.norm(q - base_conf)):.3f} rad).")
-                        return q
-            print(f"[seed] WARN: no collision-free staging seed in {max_attempts} "
-                  f"attempts; falling back to base conf.")
-            return base_conf
-        finally:
-            _pp.CLIENT = _saved
-
-    def plan_and_stage_constrained_bar_action(self):
-        """Run constrained planning; on success build cfab scrub sliders.
-
-        Always plans from the LIVE husky base (mocap) rather than the
-        BarAction-authored base — applied via
-        ``_apply_live_base_to_movement`` when a movement is loaded.
-
-        Defaults below were tuned against the hard B226 floor-level case (see
-        tasks/2026-05-15_dual_arm_rrt_b226_birrt.md). Single-tree RRT with one
-        fixed home cannot find a plan there; BiRRT + multi-start (re-derive
-        the home bar pose on failure) reliably does.
-
-        WARNING: ``ignore_env_obstacles=True`` is a temporary stopgap that
-        skips ALL environment/static obstacles in the constrained planner
-        (only robot self-collision + attached-bar-vs-robot remain). Set to
-        ``False`` before planning paths for real-hardware execution.
-        """
-        if self.current_movement is not None:
-            if not self._apply_live_base_to_movement(self.current_movement):
-                return
-        world.plan_and_stage_constrained(
-            self,
-            max_time=60.0,
-            max_attempts=2,
-            bidirectional=True,
-            start_retries=6,
-            ignore_env_obstacles=True,  # TODO: turn back on (False) before real-hardware runs
-        )
-        traj_c = self.constrained_trajectory
-        if not (traj_c and traj_c[0] is not None and traj_c[1] is not None):
-            self.get_logger().warn("Plan & Stage: no constrained trajectory produced.")
-            return
-        ctx = getattr(self, "_bar_action_plan_ctx", None) or {}
-        n_pts = len(traj_c[0][0])
-        print(f"[Plan & Stage] constrained trajectory: {n_pts} waypoints "
-              f"(position_res={ctx.get('position_res')} m, "
-              f"rotation_res={ctx.get('rotation_res')} rad)")
-        if self.cfab is None or self.current_movement is None:
-            return  # not a BarAction run; nothing cfab-side to scrub
-        self._build_bar_action_scrub_sliders()
 
     def _apply_live_base_to_movement(self, mv):
         """Overwrite ``mv.start_state.robot_base_frame`` with the live husky
@@ -1477,11 +1601,8 @@ class HuskyMonitor(Node):
         if self.cfab is None or self.cfab.planner is None:
             self.get_logger().warn("apply live base: cfab planner not initialized.")
             return False
-        from husky_assembly_teleop.husky_world import _augment_tool_touch_links_for_v3
-        husky = self.huskies[self.selected_robot_id]
-        hi = husky.interface
+        hi = self.huskies[self.selected_robot_id].interface
         mv.start_state.robot_base_frame = frame_from_pose((hi.position, hi.rotation))
-        _augment_tool_touch_links_for_v3(mv.start_state, husky)
         try:
             self.cfab.planner.set_robot_cell_state(mv.start_state)
         except Exception as e:
@@ -1490,13 +1611,27 @@ class HuskyMonitor(Node):
         return True
 
     def replan_free_from_live_base(self):
-        """Replan free dual-arm from current mocap base; hide bar during exec."""
-        world.plan_free_dual_arm_from_live_base(self)
+        """Replan the loaded movement from the live base+conf; hide goal bar.
+
+        "Live replan" is just the normal per-role dispatch with the live
+        robot pose written into the movement's start_state first.
+        """
+        mv = self.current_movement
+        if mv is None or mv.start_state is None:
+            self.get_logger().warn("Load a movement first.")
+            return
+        self._inject_live_conf_into_state(mv.start_state)
+        self.plan_selected_movement()
         self._hide_goal_bar()
 
     def replan_constrained_from_live_base(self):
-        """Replan constrained dual-arm from current mocap base."""
-        world.plan_constrained_from_live_base(self)
+        """Replan constrained (M1) from the live base+conf."""
+        mv = self.current_movement
+        if mv is None or mv.start_state is None:
+            self.get_logger().warn("Load a movement first.")
+            return
+        self._inject_live_conf_into_state(mv.start_state)
+        self.plan_selected_movement()
         self._show_goal_bar()
 
     def _hide_goal_bar(self):
@@ -1510,14 +1645,14 @@ class HuskyMonitor(Node):
     # --- --- --- --- --- PER-MOVEMENT BARACTION FLOW --- --- --- --- ---
 
     def _match_movement_role(self, mv):
-        """Return 'M0' | 'M1' | 'M2' | 'M3' | 'M4' | None based on movement_id."""
+        """Return 'M0' | 'M1' | 'M2' | 'M3' | 'M4' | None based on movement_id.
+
+        Movement ids follow the producer convention `<bar>_M<n>_<desc>`,
+        e.g. 'B6_M0_free_to_M1_start'.
+        """
         mid = getattr(mv, 'movement_id', '') or ''
-        if mid == '__M0_synthetic_staging':
-            return 'M0'
-        for m in ('M1', 'M2', 'M3', 'M4'):
-            if f'_{m}_' in mid:
-                return m
-        return None
+        match = re.search(r'_M([0-9])_', mid)
+        return f'M{match.group(1)}' if match else None
 
     def _print_cfab_collision_check_setup(self, state, header='cfab CC setup'):
         """Pretty-print the Allowed-Collision-Matrix (ACM) that cfab's
@@ -1657,36 +1792,59 @@ class HuskyMonitor(Node):
                         print(f"      CHECK  {l}  <->  {body_name}")
         print(f"=== end {header} ===\n")
 
-    def _make_synthetic_m0(self, m1_start_state):
-        """Build a RoboticFreeMovement representing live->M1.start staging.
+    def _arm_joint_name_sets(self):
+        """Return the per-arm UR joint-name lists of the loaded cfab cell.
 
-        start_state = deep copy of M1.start_state with robot_base_frame +
-        robot_configuration overwritten to reflect the LIVE husky pose at
-        the moment this is called.
+        Dual rig: [left 6 names, right 6 names]. Single rig: [6 names].
+        Derived from the cell's SRDF groups so the same code serves Alice /
+        Belle (single-arm) and Cindy (dual-arm).
         """
-        from rs_data_structure.bar_action import RoboticFreeMovement
-        if m1_start_state is None or m1_start_state.robot_configuration is None:
-            # M1.start_state hasn't been authored / planned yet (either the
-            # whole state is None, or robot_configuration is None and we
-            # have no dict to write live joint values into). Return a
-            # placeholder M0; _backfill_m0_start_state_from_m1 populates
-            # it once M1 plan produces a robot_configuration.
-            return RoboticFreeMovement(
-                movement_id='__M0_synthetic_staging',
-                tag='synthetic',
-                start_state=None,
-                target_ee_frames={},
-            )
-        state = m1_start_state.copy()
-        # Diagnostic: one-shot dump of cfab's ACM at M1.start_state. Fires
-        # only on the first M0 synthesis per cfab session so a per-movement
-        # reload doesn't spam.
+        cell = self.cfab.robot_cell
+        groups = cell.robot_semantics.groups
+        if 'base_left_arm_manipulator' in groups:
+            return [arm_joint_names_for_group(cell, 'base_left_arm_manipulator'),
+                    arm_joint_names_for_group(cell, 'base_right_arm_manipulator')]
+        return [arm_joint_names_for_group(cell, SINGLE_ARM_GROUP)]
+
+    def _fill_missing_start_conf(self, state):
+        """Fill a None robot_configuration with the dual-arm home pose.
+
+        Authored BarAction states before chain planning can carry no
+        robot_configuration; planners still need a seed dict for IK.
+        No-op when the state already has one.
+
+        Args:
+            state: RobotCellState modified in place (None is ignored).
+        """
+        if state is None or state.robot_configuration is not None:
+            return
+        state.robot_configuration = self.cfab.robot_cell.zero_full_configuration()
+        for i, names in enumerate(self._arm_joint_name_sets()):
+            for n, v in zip(names, HUSKY_DUAL_ARM_HOME_CONF_12[i * 6:(i + 1) * 6]):
+                state.robot_configuration[n] = float(v)
+        print("[fill] start_state.robot_configuration was None; seeded with "
+              "dual-arm home.")
+
+    def _inject_live_conf_into_state(self, state):
+        """Overwrite a state's base frame + arm joints with the LIVE robot pose.
+
+        Used wherever a movement's start must reflect where the robot
+        actually is right now: the native M0 (whose authored
+        robot_configuration is null), the free-to-movement-start planner,
+        and the live-replan buttons.
+
+        Args:
+            state: RobotCellState modified in place. If its
+                robot_configuration is None, a zero full configuration is
+                created first so the live values have a place to land.
+        """
+        # Diagnostic: one-shot dump of cfab's ACM at this state. Fires only
+        # once per cfab session so per-movement reloads don't spam.
         if not getattr(self, '_cfab_acm_printed_for_cid', None) == getattr(
                 getattr(self.cfab, 'client', None), 'client_id', None):
             try:
                 self._print_cfab_collision_check_setup(
-                    m1_start_state,
-                    header="cfab CC setup @ M1.start_state",
+                    state, header="cfab CC setup @ live-injected state",
                 )
             except Exception as e:
                 print(f"[cfab CC setup] ERROR: {e}")
@@ -1694,21 +1852,21 @@ class HuskyMonitor(Node):
                 getattr(self.cfab, 'client', None), 'client_id', None)
         hi = self.huskies[self.selected_robot_id].interface
         state.robot_base_frame = frame_from_pose((hi.position, hi.rotation))
-        left = hi.arm_joint_pose[0]
-        right = hi.arm_joint_pose[1] if len(hi.arm_joint_pose) > 1 else hi.arm_joint_pose[0]
-        for n, v in zip(HUSKY_DUAL_UR5e_JOINT_NAMES[0], left):
-            state.robot_configuration[n] = float(v)
-        for n, v in zip(HUSKY_DUAL_UR5e_JOINT_NAMES[1], right):
-            state.robot_configuration[n] = float(v)
-        return RoboticFreeMovement(
-            movement_id='__M0_synthetic_staging',
-            tag='synthetic',
-            start_state=state,
-            target_ee_frames={},
-        )
+        if state.robot_configuration is None:
+            state.robot_configuration = self.cfab.robot_cell.zero_full_configuration()
+        for i, names in enumerate(self._arm_joint_name_sets()):
+            values = hi.arm_joint_pose[i] if len(hi.arm_joint_pose) > i else hi.arm_joint_pose[0]
+            for n, v in zip(names, values):
+                state.robot_configuration[n] = float(v)
 
     def load_bar_action_file(self):
-        """Parse the selected BarAction JSON; prepend synthetic M0; log roster."""
+        """Parse the selected BarAction JSON; log the movement roster.
+
+        The JSON natively carries all movements M0..M4. M0's authored
+        robot_configuration is null (its start is wherever the robot lives
+        right now), so its start_state gets the live pose injected here and
+        again on every 'Load Movement'.
+        """
         files = self.available_bar_actions
         if not files:
             if hasattr(self, '_load_available_bar_actions'):
@@ -1727,24 +1885,17 @@ class HuskyMonitor(Node):
 
         if not self._loaded_action.movements:
             self.get_logger().warn("BarAction has no movements.")
-            self._loaded_movements = []
-        else:
-            m1_state = self._loaded_action.movements[0].start_state
-            # Always prepend the synthetic M0. If M1.start_state is None,
-            # M0 starts as a placeholder; _backfill_m0_start_state_from_m1
-            # fills it in once M1 has been planned.
-            self._loaded_movements = [self._make_synthetic_m0(m1_state)] + list(self._loaded_action.movements)
-            if m1_state is None:
-                self.get_logger().warn(
-                    "M1.start_state is None; M0 created as placeholder. "
-                    "It will be filled in after M1 is planned."
-                )
+        self._loaded_movements = list(self._loaded_action.movements)
 
         self.get_logger().info(f"Loading BarAction from file {action_path}")
 
-        # Init cfab session + load the robot cell now so 'Load Movement' is
-        # just a state push afterwards.
-        if self.cfab is None:
+        # Init the per-problem cfab session + robot cell now so 'Load
+        # Movement' is just a state push afterwards. The startup default
+        # session (problem_name None, no design bars) is replaced here.
+        if self.cfab is None or self.cfab.problem_name != DESIGN_PROBLEM_NAME:
+            if self.cfab is not None:
+                self.cfab.close()
+                self.cfab = None
             try:
                 existing_client_id = pp.CLIENT if pp.is_connected() else None
                 with pp.LockRenderer():
@@ -1760,8 +1911,15 @@ class HuskyMonitor(Node):
             if getattr(self, '_is_live_monitor', False):
                 self._hide_cfab_robot()
 
+        # Native M0 ships with robot_configuration null: fill it (and the
+        # base frame) from the live robot so downstream consistency checks
+        # and planning see real values.
+        for mv in self._loaded_movements:
+            if self._match_movement_role(mv) == 'M0' and mv.start_state is not None:
+                self._inject_live_conf_into_state(mv.start_state)
+
         print(f"[BarAction] loaded {os.path.basename(action_path)} "
-              f"with {len(self._loaded_movements)} movements (incl. synthetic M0):")
+              f"with {len(self._loaded_movements)} movements:")
         for i, mv in enumerate(self._loaded_movements):
             print(f"  [{i}] {mv.movement_id!r} role={self._match_movement_role(mv)}")
         # Refresh UI so the Movement slider's range now matches the loaded
@@ -1769,11 +1927,10 @@ class HuskyMonitor(Node):
 
         self.reset_ui(self.goal_arm_pose)
 
-        # Auto-load any <mv>_trajectory.json that already exists under
-        # Trajectories/, run consistency checks (start_conf agreement,
-        # forward-chain handoff, M0 live-conf), drop any inconsistent
-        # trajectories, and print the roster.
-        self._auto_load_all_trajectories()
+        # Trajectories now live on mv objects in memory (loaded natively via
+        # compas json_load when a `.live-solved.json` sidecar is opened via
+        # this same Load BarAction button). Print the initial roster.
+        self._print_movement_roster(tag='LoadBarAction')
 
     def load_selected_movement(self):
         """Load the selected movement's start state into cfab + goal ghost."""
@@ -1783,10 +1940,10 @@ class HuskyMonitor(Node):
         idx = max(0, min(self._selected_movement_idx, len(self._loaded_movements) - 1))
         mv = self._loaded_movements[idx]
 
-        # If M0, re-snapshot live conf/base into its start_state.
-        if self._match_movement_role(mv) == 'M0' and len(self._loaded_movements) > 1:
-            mv = self._make_synthetic_m0(self._loaded_movements[1].start_state)
-            self._loaded_movements[0] = mv
+        # If M0, re-snapshot live conf/base into its start_state so a robot
+        # that moved since 'Load BarAction' still plans from where it is.
+        if self._match_movement_role(mv) == 'M0' and mv.start_state is not None:
+            self._inject_live_conf_into_state(mv.start_state)
 
         if mv.start_state is None:
             self.get_logger().warn(f"Movement {mv.movement_id!r} has no start_state.")
@@ -1799,7 +1956,6 @@ class HuskyMonitor(Node):
         self.current_action = self._loaded_action
         self.current_movement = mv
         self.current_movement_index = idx
-        self.movement_type = movement_type(mv) if mv.movement_id != '__M0_synthetic_staging' else 'free'
         self.movement_start_state = mv.start_state
         self.target_ee_frames = mv.target_ee_frames or None
         bar_id = getattr(self._loaded_action, 'active_bar_id', None) if self._loaded_action else None
@@ -1922,13 +2078,15 @@ class HuskyMonitor(Node):
         self.reset_ui(self.goal_arm_pose)
         self.set_to_show_goal_state()
 
-        print(f"[Movement] loaded [{idx}] {mv.movement_id!r} type={self.movement_type} "
+        print(f"[Movement] loaded [{idx}] {mv.movement_id!r} type={type(mv).__name__} "
               f"role={self._match_movement_role(mv)} "
               f"has_targets={bool(mv.target_ee_frames)} traj={mv.trajectory is not None}")
 
-        # Auto-load saved trajectory (if present) so viz/exec is wired up
-        # without a second click on 'Load Movement Trajectory'.
-        if os.path.exists(self._trajectory_file_for(mv)):
+        # If mv already carries a trajectory in memory (loaded from a
+        # `.live-solved.json` sidecar), auto-wire it into the viz so the
+        # traj-viz time slider is immediately previewable without another
+        # click on 'Load Movement Trajectory'.
+        if getattr(mv, 'trajectory', None) is not None:
             self.load_selected_movement_trajectory()
 
     def plan_selected_movement(self):
@@ -1951,6 +2109,11 @@ class HuskyMonitor(Node):
         if not self._apply_live_base_to_movement(mv):
             return
 
+        # Authored states may carry no robot_configuration (M1 before its
+        # chain is planned): give the planner's IK a home seed to work from
+        # (same as fill_missing_config in headless_bar_action_planner).
+        self._fill_missing_start_conf(mv.start_state)
+
         dispatch = {
             'M0': self._plan_M0_dispatch,
             'M1': self._plan_M1_dispatch,
@@ -1965,14 +2128,511 @@ class HuskyMonitor(Node):
                 self._clear_m1_start_conf_without_trajectory()
             return
 
-        self._accept_trajectory(mv, jt, source='Plan', role=role, save_to_disk=True)
+        self._accept_trajectory(mv, jt, source='Plan', role=role)
 
-    def _accept_trajectory(self, mv, jt, *, source='Plan', role=None, save_to_disk=False):
+    # --- --- --- Chain planning (Button 1) --- --- ---
+
+    # Canonical BarAction plan order:
+    #   M1 (owns its derived start via `derive_start=True`)
+    #   -> M2 (start comes from M1.traj[-1])
+    #   -> M3 (start comes from M2.traj[-1])
+    #   -> M0 (goal = M1.start_state.robot_configuration, backfilled after M1)
+    #   -> M4 (start comes from M3.traj[-1], goal is fixed home)
+    _CHAIN_ROLE_ORDER = ('M1', 'M2', 'M3', 'M0', 'M4')
+
+    def plan_movement_chain_live(self):
+        # TODO this should be moved to husky_planning.py
+        """Plan the M1 -> M2 -> M3 -> M0 -> M4 chain against the live base.
+
+        For each role in ``_CHAIN_ROLE_ORDER`` that is present in the loaded
+        BarAction: set the movement slider to that index, call
+        ``load_selected_movement()`` so the cfab scene / goal viz sync, then
+        call ``plan_selected_movement()``. ``plan_selected_movement`` already
+        applies the live base via ``_apply_live_base_to_movement``, warm-starts
+        IK from any stored start conf, dispatches to the role-specific
+        planner, and routes through ``_accept_trajectory`` (state propagation
+        to the next movement in the list order).
+
+        Stop-on-first-failure: if ``mv.trajectory`` is None after
+        ``plan_selected_movement`` returns, break out of the loop. Previously
+        planned movements' trajectories stay on their mv objects AND get
+        written to the sidecar. Any exception inside ``plan_selected_movement``
+        bubbles up unhandled (no defensive try/except).
+
+        Sidecar export: on loop exit (full success or early break), if at
+        least one movement has a trajectory, serialize the mutated
+        ``self._loaded_action`` (whose ``movements`` share object identity with
+        ``self._loaded_movements``) via ``compas.data.json_dump`` to
+        ``<original>.live-solved.json`` in the same directory.
+        """
+        if not self._loaded_movements:
+            self.get_logger().warn(
+                "No movements loaded; click 'Load BarAction' first."
+            )
+            return
+        if not self._current_action_path:
+            self.get_logger().warn(
+                "No BarAction file path known (was it loaded via 'Load BarAction'?)."
+            )
+            return
+
+        # Build the ordered index list from _CHAIN_ROLE_ORDER; skip missing roles.
+        role_to_idx = {}
+        for i, mv in enumerate(self._loaded_movements):
+            r = self._match_movement_role(mv)
+            if r and r not in role_to_idx:
+                role_to_idx[r] = i
+        sequence = [role_to_idx[r] for r in self._CHAIN_ROLE_ORDER if r in role_to_idx]
+        if not sequence:
+            self.get_logger().warn(
+                "[Plan Chain] no movements matched any of "
+                f"{self._CHAIN_ROLE_ORDER}; nothing to plan."
+            )
+            return
+
+        # Wipe any pre-existing in-memory trajectories on the roles we're
+        # about to plan so _accept_trajectory's rejection-on-mismatch does
+        # not warn about a stale value we intentionally overwrite. Roles
+        # NOT in the sequence (rare) keep their trajectories untouched.
+        for i in sequence:
+            self._loaded_movements[i].trajectory = None
+
+        planned_ids = []
+        stopped_at_role = None
+        for step, idx in enumerate(sequence, start=1):
+            mv = self._loaded_movements[idx]
+            role = self._match_movement_role(mv)
+            print(f"\n=== [Plan Chain {step}/{len(sequence)}] {role} idx={idx} "
+                  f"id={mv.movement_id!r} ===")
+
+            # Simulate the UI: slider -> Load Movement -> Plan Movement.
+            self._selected_movement_idx = idx
+            self.load_selected_movement()
+            self.plan_selected_movement()
+
+            planned_traj = getattr(self.current_movement, 'trajectory', None)
+            if planned_traj is None:
+                stopped_at_role = role
+                self.get_logger().warn(
+                    f"[Plan Chain] {role} ({mv.movement_id!r}) FAILED; "
+                    "stopping chain. Previously planned movements are kept."
+                )
+                break
+            planned_ids.append(mv.movement_id)
+
+        # Export sidecar iff at least one mv now carries a trajectory.
+        # _loaded_movements shares object identity with _loaded_action.movements
+        # (see load_bar_action_file), so mutations already show up in the action.
+        any_traj = any(getattr(mv, 'trajectory', None) is not None
+                       for mv in self._loaded_movements)
+        if any_traj:
+            from compas.data import json_dump
+            stem, ext = os.path.splitext(self._current_action_path)
+            out_path = f"{stem}.live-solved{ext}"
+            try:
+                json_dump(self._loaded_action, out_path)
+                print(f"[Plan Chain] sidecar written -> {out_path}")
+            except Exception as e:
+                self.get_logger().warn(
+                    f"[Plan Chain] failed to write sidecar {out_path}: {e}"
+                )
+        else:
+            print("[Plan Chain] no trajectories to export; skipping sidecar.")
+
+        if stopped_at_role is None:
+            print(f"[Plan Chain] SUCCESS: planned "
+                  f"{len(planned_ids)}/{len(sequence)} movements.")
+        else:
+            print(f"[Plan Chain] STOPPED at {stopped_at_role}: planned "
+                  f"{len(planned_ids)}/{len(sequence)} movements before failure.")
+        self._print_movement_roster(tag='Plan Chain')
+
+    # --- --- --- Reset (per-movement + all) --- --- ---
+
+    def reset_selected_movement_to_clean(self):
+        """Revert the currently loaded movement to its authored 'clean' state.
+
+        Re-reads the pristine BarAction JSON from
+        ``self._current_action_path`` and overwrites
+        ``self._loaded_movements[current_movement_index]`` and
+        ``self._loaded_action.movements[current_movement_index]`` with the
+        clean-file version (fresh ``start_state``, no propagated
+        ``robot_configuration`` from a downstream chain break, and
+        ``trajectory=None``). Other movements are untouched: their propagated
+        start_confs may now be stale, and a subsequent 'Plan Chain (Live)'
+        will re-populate them.
+        """
+        if self.current_movement is None:
+            self.get_logger().warn(
+                "No movement loaded; click 'Load Movement' first."
+            )
+            return
+        if not self._current_action_path or not os.path.isfile(self._current_action_path):
+            self.get_logger().warn(
+                "No BarAction file path known; cannot reset."
+            )
+            return
+        idx = self.current_movement_index
+        if idx is None or self._loaded_action is None:
+            self.get_logger().warn(
+                "Loaded-action state missing; cannot reset."
+            )
+            return
+        try:
+            clean = parse_bar_action(self._current_action_path)
+        except Exception as e:
+            self.get_logger().warn(f"Failed to parse clean BarAction: {e}")
+            return
+        if idx >= len(clean.movements):
+            self.get_logger().warn(
+                f"Clean file has {len(clean.movements)} movements; index "
+                f"{idx} out of range."
+            )
+            return
+        clean_mv = clean.movements[idx]
+        # Replace by index in BOTH lists so identity stays consistent for
+        # any subsequent sidecar export.
+        self._loaded_movements[idx] = clean_mv
+        self._loaded_action.movements[idx] = clean_mv
+        self.current_movement = clean_mv
+        print(f"[Reset Mv] reverted [{idx}] {clean_mv.movement_id!r} to clean.")
+        # Re-run the standard Load Movement path so movement_start_state,
+        # target_ee_frames, and the cfab scene sync to the fresh object.
+        self.load_selected_movement()
+
+    def reset_all_movements_to_clean(self):
+        """Reload the pristine BarAction from disk (matches
+        `headless_bar_action_planner --load clean`).
+
+        Discards every in-memory trajectory and every propagated
+        ``start_state.robot_configuration`` value on the currently loaded
+        BarAction. Behaviourally equivalent to clicking 'Load BarAction'
+        again on the Rhino-authored clean file; the separate wording makes
+        the destructive intent explicit.
+
+        Refuses if the currently loaded action is itself a
+        ``.live-solved.json`` sidecar (that's not the clean file).
+        """
+        if not self._current_action_path:
+            self.get_logger().warn(
+                "No BarAction file path known; cannot reset."
+            )
+            return
+        if self._current_action_path.endswith('.live-solved.json'):
+            self.get_logger().warn(
+                "Currently loaded action is a `.live-solved.json` sidecar, "
+                "not the clean file. Load the clean BarAction JSON first."
+            )
+            return
+        print(f"[Reset All] reloading clean BarAction from "
+              f"{self._current_action_path}")
+        self.load_bar_action_file()
+
+    # --- --- --- Replan free -> movement start (Button 2) --- --- ---
+
+    def replan_free_to_movement_start_live(self):
+        """Fresh live-base IK to the movement's start EE targets, then a
+        composite free plan from the live conf to that IK-solved conf.
+
+        Only supports M2 / M3 (their ``start_state`` carries an authored
+        ``robot_configuration`` whose FK gives the target start EE frames).
+        Combines ``ik_live_base_for_selected_movement`` (which sets
+        ``goal_arm_pose`` to the IK-solved conf) with
+        ``world.plan_both_arms_to_goal(use_composite=True)`` (composite free
+        plan against cfab collision checking).
+        """
+        if self.current_movement is None:
+            self.get_logger().warn(
+                "No movement loaded; click 'Load Movement' first."
+            )
+            return
+        role = self._match_movement_role(self.current_movement)
+        if role not in ('M2', 'M3'):
+            self.get_logger().warn(
+                f"Replan Free -> Mv Start only supports M2 / M3; current "
+                f"is {role!r}."
+            )
+            return
+
+        # ---- MOCK LIVE POSE (temporary; see MOCK_LIVE_POSE_FOR_REPLAN
+        # class flag) --------------------------------------------------------
+        # Toggle at the class flag; when off, this block is a no-op.
+        revert_mock = None
+        if self.MOCK_LIVE_POSE_FOR_REPLAN:
+            revert_mock = self._apply_mock_live_pose_for_replan(
+                self.current_movement,
+            )
+        # -------------------------------------------------------------------
+
+        try:
+            # Pause GUI rendering across the whole IK + free-plan search
+            # (no-op when headless). The IK descent and the BiRRT sampling
+            # both push cfab cell states onto the shared GUI client, which
+            # otherwise redraws the (red) cfab robot on every sample.
+            with pp.LockRenderer():
+                # Step 1: live-base IK sets goal_arm_pose to the IK-solved 12-vec.
+                if not self.ik_live_base_for_selected_movement():
+                    return
+
+                # Step 2: overwrite mv.start_state.robot_base_frame with the live
+                # husky base so the composite free plan uses the live-base state as
+                # template. plan_both_arms_to_goal reads movement_start_state.
+                if not self._apply_live_base_to_movement(self.current_movement):
+                    return
+
+                # Step 3: composite free plan from live conf -> goal_arm_pose. After
+                # Configuration adoption in husky_world (Change 1), this now works
+                # even though the goal is built via np.concatenate internally.
+                # Env collisions are (temporarily) skipped in this motion plan when
+                # REPLAN_SKIP_ENV_COLLISIONS_IN_MOTION_PLAN is set.
+                world.plan_both_arms_to_goal(
+                    self, use_composite=True,
+                    skip_env_collisions=bool(self.REPLAN_SKIP_ENV_COLLISIONS_IN_MOTION_PLAN))
+
+                # Step 4: verify the planned path's ENDPOINT actually lands the
+                # tool0s on the authored targets. FK at (live base + last
+                # waypoint arm conf) should equal the target EE frames derived
+                # from the movement's authored start_state at Step 1's FK.
+                self._verify_replan_endpoint_matches_target()
+        finally:
+            if revert_mock is not None:
+                revert_mock()
+
+    def _verify_replan_endpoint_matches_target(self,
+                                                pos_tol_m: float = 0.005,
+                                                ang_tol_deg: float = 1.0) -> None:
+        """After a successful Button 2 composite plan, compare the last
+        waypoint's tool0 world-frame poses (FK at live base + planned end
+        arm conf) against the authored target EE frames the IK solved for.
+
+        This surfaces two situations:
+          * Composite plan landed on the IK-solved goal exactly -> tiny
+            residual, both arms hit the authored target frames.
+          * IK fell back to `alt_seed_conf12` verbatim (no arm-side
+            compensation for the base offset) -> residual roughly equal to
+            the base offset (~14 mm for the (-0.3, 0.2) mock -> ~360 mm).
+            Emits a warning so the operator knows the tool0 targets are
+            NOT met and any downstream linear motion needs re-planning.
+
+        Args:
+            pos_tol_m: position tolerance in metres. Default 5 mm.
+            ang_tol_deg: orientation tolerance in degrees. Default 1 deg.
+        """
+        target = getattr(self, '_last_ik_target_ee_frames', None)
+        if not target or 'left' not in target or 'right' not in target:
+            return
+        pat = getattr(self, 'planned_arm_trajectory', None)
+        if (pat is None
+                or pat[0] is None or pat[0][0] is None
+                or pat[1] is None or pat[1][0] is None):
+            return
+        left_last = np.asarray(pat[0][0][-1], dtype=float)
+        right_last = np.asarray(pat[1][0][-1], dtype=float)
+        if left_last.shape != (6,) or right_last.shape != (6,):
+            return
+        mv = self.current_movement
+        # mv.start_state.robot_base_frame was set to the live base by
+        # `_apply_live_base_to_movement` earlier in this flow, so a copy
+        # inherits the live base for FK.
+        verify_state = mv.start_state.copy()
+        left_names = HUSKY_DUAL_UR5e_JOINT_NAMES[0]
+        right_names = HUSKY_DUAL_UR5e_JOINT_NAMES[1]
+        for name, val in zip(left_names, left_last):
+            verify_state.robot_configuration[name] = float(val)
+        for name, val in zip(right_names, right_last):
+            verify_state.robot_configuration[name] = float(val)
+        try:
+            fk_left = _fk_link_frame(
+                self.cfab.planner, verify_state, "left_ur_arm_tool0")
+            fk_right = _fk_link_frame(
+                self.cfab.planner, verify_state, "right_ur_arm_tool0")
+        except Exception as e:
+            self.get_logger().warn(f"[Replan verify] FK on planned end failed: {e}")
+            return
+
+        def _residual(fk_frame, tg_frame):
+            d_pos = float(np.linalg.norm(
+                np.asarray(fk_frame.point) - np.asarray(tg_frame.point)
+            ))
+            q_fk = np.asarray(fk_frame.quaternion.xyzw, dtype=float)
+            q_tg = np.asarray(tg_frame.quaternion.xyzw, dtype=float)
+            d_ang = 2.0 * float(np.arccos(
+                np.clip(abs(float(np.dot(q_fk, q_tg))), 0.0, 1.0)
+            ))
+            return d_pos, d_ang
+
+        d_pos_L, d_ang_L = _residual(fk_left, target['left'])
+        d_pos_R, d_ang_R = _residual(fk_right, target['right'])
+        print(
+            f"[Replan verify] planned-end tool0 (live base FK) vs "
+            f"authored target EE frames: "
+            f"L pos={d_pos_L*1000:.2f} mm ang={np.degrees(d_ang_L):.3f} deg | "
+            f"R pos={d_pos_R*1000:.2f} mm ang={np.degrees(d_ang_R):.3f} deg"
+        )
+        ang_tol_rad = np.radians(ang_tol_deg)
+        max_pos = max(d_pos_L, d_pos_R)
+        max_ang = max(d_ang_L, d_ang_R)
+        if max_pos > pos_tol_m or max_ang > ang_tol_rad:
+            self.get_logger().warn(
+                f"[Replan verify] tool0 endpoint MISMATCH: max pos="
+                f"{max_pos*1000:.2f} mm (tol {pos_tol_m*1000:.1f} mm), "
+                f"max ang={np.degrees(max_ang):.3f} deg "
+                f"(tol {ang_tol_deg:.1f} deg). "
+                f"The composite plan likely landed on the IK fallback "
+                f"(alt_seed_conf12 verbatim), which does NOT compensate "
+                f"the arm conf for the base offset -- world-frame tool0 "
+                f"error scales with the base offset. Any downstream linear "
+                f"motion that assumes the authored EE targets should be "
+                f"re-planned."
+            )
+
+    # ---- MOCK LIVE POSE (temporary; see MOCK_LIVE_POSE_FOR_REPLAN class
+    # flag). Delete this method and the flag once real mocap + robot are
+    # available. --------------------------------------------------------------
+    def _apply_mock_live_pose_for_replan(self, target_mv):
+        """MOCK: patch the live husky interface to simulate mocap + robot.
+
+        Overrides ``huskies[0].interface.{position, rotation, arm_joint_pose}``
+        so that ``ik_live_base_for_selected_movement`` and the following
+        composite free plan see a synthetic "live" pose. See the class-flag
+        block for the picker knobs ``MOCK_LIVE_ARM_CONF`` /
+        ``MOCK_LIVE_ARM_PERTURB_STD_RAD`` / ``MOCK_LIVE_BASE_XY_OFFSET_M``.
+
+        Returns a callable that restores the original interface values.
+        """
+        hi = self.huskies[self.selected_robot_id].interface
+
+        # Cache the AUTHORED base frame the first time we see this movement,
+        # so repeated Button 2 presses don't compound the offset (each press
+        # ends with `_apply_live_base_to_movement` writing hi.position ->
+        # mv.start_state.robot_base_frame, which would otherwise become the
+        # next mock's base source).
+        if not hasattr(self, '_mock_authored_bases'):
+            self._mock_authored_bases = {}
+        mv_key = id(target_mv)
+        if mv_key not in self._mock_authored_bases:
+            base_frame = target_mv.start_state.robot_base_frame
+            self._mock_authored_bases[mv_key] = (
+                base_frame.copy() if hasattr(base_frame, 'copy') else base_frame
+            )
+        cached_base = self._mock_authored_bases[mv_key]
+
+        pos, rot = pose_from_frame(cached_base)
+        dx, dy = self.MOCK_LIVE_BASE_XY_OFFSET_M
+        mock_pos = np.asarray(pos, dtype=float) + np.array([float(dx), float(dy), 0.0])
+        mock_rot = np.asarray(rot, dtype=float)
+
+        arm_source = getattr(self, 'MOCK_LIVE_ARM_CONF', 'perturb')
+        if arm_source == 'home':
+            arm_12 = np.asarray(HUSKY_DUAL_ARM_HOME_CONF_12, dtype=float)
+            source_tag = "HUSKY_DUAL_ARM_HOME_CONF_12 (extended arms)"
+        elif arm_source == 'perturb':
+            start_conf = target_mv.start_state.robot_configuration
+            if start_conf is None:
+                # No propagated start yet -- fall back to home.
+                arm_12 = np.asarray(HUSKY_DUAL_ARM_HOME_CONF_12, dtype=float)
+                source_tag = "HUSKY_DUAL_ARM_HOME_CONF_12 (fallback: no start_conf)"
+            else:
+                names = list(HUSKY_DUAL_UR5e_JOINT_NAMES[0]) \
+                        + list(HUSKY_DUAL_UR5e_JOINT_NAMES[1])
+                base_12 = np.array(
+                    [float(start_conf[n]) for n in names], dtype=float,
+                )
+                std = float(self.MOCK_LIVE_ARM_PERTURB_STD_RAD)
+                max_tries = int(self.MOCK_LIVE_ARM_PERTURB_MAX_TRIES)
+
+                # Deterministic-ish noise seeded on target_mv id so repeated
+                # runs perturb the same way (aids debugging). Retry up to
+                # max_tries if the perturbed conf is in self-collision --
+                # small std should almost never collide, but the retry
+                # keeps the mock reliable across noise draws.
+                rng = np.random.default_rng(
+                    abs(hash(target_mv.movement_id)) & 0xFFFFFFFF,
+                )
+                arm_12 = base_12
+                colliding_tries = 0
+                try_state = target_mv.start_state.copy()
+                try_state.robot_base_frame = frame_from_pose((mock_pos, mock_rot))
+                for attempt in range(max_tries):
+                    candidate = base_12 + rng.normal(0.0, std, size=12)
+                    for n, v in zip(names, candidate):
+                        try_state.robot_configuration[n] = float(v)
+                    try:
+                        self.cfab.planner.check_collision(try_state, {"verbose": False})
+                        arm_12 = candidate
+                        break
+                    except Exception:
+                        colliding_tries += 1
+                        continue
+                else:
+                    # No non-colliding perturbation found; use base_12 itself
+                    # (the movement's own start_conf, known collision-free
+                    # by construction) for the mock.
+                    arm_12 = base_12
+
+                source_tag = (
+                    f"{target_mv.movement_id!r}.start_conf + Gaussian noise "
+                    f"(std={std:.3f} rad; skipped {colliding_tries} "
+                    f"colliding draw(s))"
+                )
+        else:
+            raise ValueError(
+                f"Unknown MOCK_LIVE_ARM_CONF: {arm_source!r}; expected "
+                f"'perturb' or 'home'."
+            )
+
+        hi.arm_joint_pose = [arm_12[:6].copy(), arm_12[6:].copy()]
+        hi.position = mock_pos
+        hi.rotation = mock_rot
+
+        print(
+            f"[MOCK live pose] arm_conf <- {source_tag}; "
+            f"base_pos <- {target_mv.movement_id!r}.start.base + "
+            f"({dx:.3f}, {dy:.3f}, 0.0) = {mock_pos.tolist()}."
+        )
+        print(
+            "[MOCK live pose] NOT reverting hi after Button 2 -- the mock "
+            "values persist so the ghost display / goal viz keeps reflecting "
+            "the mocked live pose. Cached authored base is used for the "
+            "next mock draw so the offset does not compound."
+        )
+
+        # No-op revert: caller may still invoke it, but state is left as
+        # mocked. The cached authored base above ensures repeated presses
+        # remain stable.
+        def _revert():
+            return None
+
+        return _revert
+    # -------------------------------------------------------------------------
+
+    # --- --- --- Auto-dispatch execute --- --- ---
+
+    def exec_selected_movement_traj(self):
+        """Execute the currently loaded movement's trajectory. Auto-dispatch:
+        M2/M3 -> cartesian_compliance_controller via
+          ``world.execute_planned_trajectory_compliant`` (a generator queued
+          on ``self.tasks`` so the monitor tick pumps it).
+        else  -> joint-tracking via ``world.execute_arm_trajectory_both``.
+        """
+        if self.current_movement is None:
+            self.get_logger().warn(
+                "No movement loaded; click 'Load Movement' first."
+            )
+            return
+        role = self._match_movement_role(self.current_movement)
+        if role in ('M2', 'M3'):
+            self.tasks.append(world.execute_planned_trajectory_compliant(self))
+        else:
+            world.execute_arm_trajectory_both(self)
+
+    def _accept_trajectory(self, mv, jt, *, source='Plan', role=None):
         """Common post-step after a trajectory is either planned or loaded.
 
         Assigns mv.trajectory, propagates first/last conf to start states,
-        wires the visualizer, optionally saves to disk, runs CDFM validation,
-        and prints the movement roster.
+        wires the visualizer, runs CDFM validation, and prints the movement
+        roster. Persistence lives on the ``<action>.live-solved.json`` sidecar
+        that ``plan_movement_chain_live`` writes -- no per-movement JSONs.
         """
         mv.trajectory = jt
         path = path_12_from_joint_trajectory(jt)
@@ -2083,183 +2743,65 @@ class HuskyMonitor(Node):
         print(f"[{tag}] {mv.movement_id!r}: {len(path)} waypoints stored.")
         self._validate_cdfm_planned_path(mv, path)
 
-        if save_to_disk:
-            try:
-                from compas.data import json_dump
-                out_path = self._trajectory_file_for(mv)
-                os.makedirs(os.path.dirname(out_path), exist_ok=True)
-                json_dump(jt, out_path)
-                print(f"[{tag}] saved trajectory to {out_path}")
-            except Exception as e:
-                self.get_logger().warn(f"failed to save trajectory: {e}")
-
-        # If M1 just acquired a start_state via planning, backfill the
-        # synthetic M0 placeholder so subsequent M0 plans / loads work
+        # M0's goal is wherever M1 starts. Once M1's trajectory is accepted
+        # (its start_state now carries a planned robot_configuration), copy
+        # that configuration into M0.target_configuration so M0 can plan
         # without re-loading the BarAction.
         if role == 'M1' or self._match_movement_role(mv) == 'M1':
-            self._backfill_m0_start_state_from_m1()
+            self._backfill_m0_target_from_m1()
 
         self._print_movement_roster(tag=tag)
 
-    def _backfill_m0_start_state_from_m1(self):
-        """Re-synthesize the synthetic M0 from M1.start_state when M0 was
-        loaded as a placeholder (start_state=None) because M1 didn't have
-        a start_state yet. No-op if M0 already has start_state, or if
-        M1.start_state is still None.
+    def _backfill_m0_target_from_m1(self):
+        """Set M0.target_configuration = M1.start_state.robot_configuration.
+
+        The authored M0 has no target of its own (the producer can't know
+        the planned M1 start). No-op when there's no M0/M1 pair or M1's
+        start configuration is still missing.
         """
-        if not self._loaded_movements or len(self._loaded_movements) < 2:
+        movements = self._loaded_movements or []
+        m0 = next((m for m in movements if self._match_movement_role(m) == 'M0'), None)
+        m1 = next((m for m in movements if self._match_movement_role(m) == 'M1'), None)
+        if m0 is None or m1 is None:
             return
-        m0 = self._loaded_movements[0]
-        if self._match_movement_role(m0) != 'M0':
-            return
-        if m0.start_state is not None:
-            return
-        m1 = self._loaded_movements[1]
         if m1.start_state is None or m1.start_state.robot_configuration is None:
             return
-        self._loaded_movements[0] = self._make_synthetic_m0(m1.start_state)
-        print(f"[backfill] M0.start_state populated from "
-              f"{m1.movement_id!r}.start_state (live conf + base snapshot).")
+        m0.target_configuration = m1.start_state.robot_configuration
+        print(f"[backfill] M0.target_configuration <- "
+              f"{m1.movement_id!r}.start_state.robot_configuration.")
 
     def load_selected_movement_trajectory(self):
-        """Load the planned trajectory JSON for the currently selected movement.
+        """Push the currently loaded movement's in-memory trajectory into the viz.
 
-        Reads from ``<DESIGN_DATA_DIRECTORY>/<problem>/Trajectories/<movement_id>_trajectory.json``
-        (the path plan_selected_movement writes on save). Runs the same
-        post-acceptance steps as plan_selected_movement minus the save.
+        Reads ``mv.trajectory`` (populated when the BarAction JSON was
+        loaded -- either the clean file with authored trajectories, or a
+        ``<action>.live-solved.json`` sidecar written by
+        ``plan_movement_chain_live``). Wires ``planned_arm_trajectory`` so the
+        traj-viz time slider previews it, then routes through
+        ``_accept_trajectory`` so forward-chain propagation + backward
+        continuity checks match what fresh planning would do.
+
+        No separate per-movement JSON is read: trajectories live on the mv
+        object, and persistence is the sidecar path only.
         """
         if self.current_movement is None:
             self.get_logger().warn("No movement loaded; click 'Load Movement' first.")
             return
         mv = self.current_movement
-        traj_path = self._trajectory_file_for(mv)
-        if not os.path.exists(traj_path):
+        jt = getattr(mv, 'trajectory', None)
+        if jt is None:
             self.get_logger().warn(
-                f"No trajectory file for {mv.movement_id!r} at {traj_path}"
+                f"{mv.movement_id!r} has no trajectory in memory. Re-load a "
+                ".live-solved.json sidecar via 'Load BarAction', or run "
+                "'Plan Chain (Live)'."
             )
             return
-        try:
-            from compas.data import json_load
-            jt = json_load(traj_path)
-        except Exception as e:
-            self.get_logger().warn(f"Failed to load {traj_path}: {e}")
-            return
-        if mv.trajectory is not None:
-            self.get_logger().warn(
-                f"Overwriting existing in-memory trajectory for {mv.movement_id!r}"
-            )
-        print(f"[LoadTraj] loaded {traj_path}")
+        print(f"[LoadTraj] using in-memory trajectory for {mv.movement_id!r}")
         self._accept_trajectory(
             mv, jt,
             source='LoadTraj',
             role=self._match_movement_role(mv),
-            save_to_disk=False,
         )
-
-    def _trajectory_file_for(self, mv):
-        """Disk path for a movement's saved trajectory JSON.
-
-        Synthetic / role-only movement ids (e.g. `__M0_synthetic_staging`)
-        get the active BarAction's action_id prepended so the same M0
-        from different BarAction runs doesn't share one file and silently
-        clobber each other (and so auto-load reload picks up the right
-        M0 for the current BarAction).
-        """
-        action_id = getattr(self._loaded_action, 'action_id', None) if self._loaded_action else None
-        return self._trajectory_path_for_movement_id(mv.movement_id, action_id)
-
-    def _trajectory_path_for_movement_id(self, movement_id, action_id=None):
-        """Build the saved trajectory path for one movement id."""
-        # Keep M0 and every real movement scoped to the BarAction action_id.
-        name = movement_id
-        if action_id and not name.startswith(f'{action_id}_'):
-            name = f'{action_id}_{name}'
-        return os.path.join(
-            DESIGN_DATA_DIRECTORY, DESIGN_PROBLEM_NAME, 'Trajectories',
-            f'{name}_trajectory.json',
-        )
-
-    def _selected_bar_action_path(self):
-        """Return the BarAction path selected by the BarAction file slider."""
-        files = self.available_bar_actions
-        if not files:
-            self.available_bar_actions = self._load_available_bar_actions()
-            files = self.available_bar_actions
-        if not files:
-            return None
-
-        # The Bar Holding flow uses _selected_action_file_idx.
-        idx = max(0, min(int(self._selected_action_file_idx), len(files) - 1))
-        fname = files[idx]
-        if os.path.isabs(fname):
-            return fname
-        return os.path.join(
-            DESIGN_DATA_DIRECTORY, DESIGN_PROBLEM_NAME, 'BarActions', fname,
-        )
-
-    def delete_saved_movement_trajectories_for_current_bar_action(self):
-        """Delete all saved per-movement trajectory JSONs for selected BarAction."""
-        action_path = self._selected_bar_action_path()
-        if action_path is None:
-            self.get_logger().warn("No BarAction files available to delete trajectories for.")
-            return
-
-        loaded_path = getattr(self, '_current_action_path', None)
-        is_loaded_action = (
-            loaded_path is not None
-            and os.path.abspath(loaded_path) == os.path.abspath(action_path)
-            and self._loaded_action is not None
-        )
-
-        try:
-            action = self._loaded_action if is_loaded_action else parse_bar_action(action_path)
-        except Exception as e:
-            self.get_logger().warn(f"Failed to parse BarAction for trajectory delete: {e}")
-            return
-
-        action_id = getattr(action, 'action_id', None)
-        movements = self._loaded_movements if is_loaded_action else list(action.movements)
-        movement_ids = [getattr(mv, 'movement_id', None) for mv in movements]
-        if not is_loaded_action and movement_ids:
-            # The synthetic M0 save file is created by load_bar_action_file().
-            movement_ids.insert(0, '__M0_synthetic_staging')
-
-        deleted = []
-        missing = 0
-        errors = []
-        seen_paths = set()
-        for movement_id in movement_ids:
-            if not movement_id:
-                continue
-            traj_path = self._trajectory_path_for_movement_id(movement_id, action_id)
-            if traj_path in seen_paths:
-                continue
-            seen_paths.add(traj_path)
-            if not os.path.exists(traj_path):
-                missing += 1
-                continue
-            try:
-                os.remove(traj_path)
-                deleted.append(traj_path)
-            except OSError as e:
-                errors.append((traj_path, e))
-
-        if is_loaded_action:
-            # Keep UI state honest after disk files are removed.
-            for mv in self._loaded_movements:
-                mv.trajectory = None
-            self._clear_m1_start_conf_without_trajectory()
-            self._reset_planned_arm_trajectory()
-            self.set_to_show_goal_state()
-
-        print(f"[delete-traj] BarAction {action_id!r}: deleted {len(deleted)} "
-              f"saved trajectory file(s), missing {missing}.")
-        for traj_path in deleted:
-            print(f"  deleted: {traj_path}")
-        for traj_path, err in errors:
-            self.get_logger().warn(f"Failed to delete {traj_path}: {err}")
-        if is_loaded_action:
-            self._print_movement_roster(tag='delete-traj')
 
     def _print_movement_roster(self, tag='roster'):
         """Print which loaded movements have a start_conf and a trajectory."""
@@ -2284,8 +2826,13 @@ class HuskyMonitor(Node):
             # files still get invalidated instead of being silently kept.
             return bool(getattr(jt, 'points', None))
 
-    def _drop_movement_trajectory(self, mv, reason, *, delete_file=True):
-        """Clear a movement trajectory in memory and remove its saved JSON."""
+    def _drop_movement_trajectory(self, mv, reason):
+        """Clear a movement trajectory in memory.
+
+        With per-movement JSON persistence removed (trajectories now live only
+        on the sidecar ``<action>.live-solved.json``), this is memory-only:
+        any downstream write goes through the next Plan Chain export.
+        """
         had_traj = getattr(mv, 'trajectory', None) is not None
         mv.trajectory = None
         if self._match_movement_role(mv) == 'M1':
@@ -2293,20 +2840,8 @@ class HuskyMonitor(Node):
             # stale by definition and must not survive as an authored start.
             if mv.start_state is not None:
                 mv.start_state.robot_configuration = None
-
-        deleted = False
-        if delete_file:
-            traj_path = self._trajectory_file_for(mv)
-            if os.path.exists(traj_path):
-                try:
-                    os.remove(traj_path)
-                    deleted = True
-                except OSError as e:
-                    self.get_logger().warn(f"Failed to delete stale trajectory {traj_path}: {e}")
-        if had_traj or deleted:
+        if had_traj:
             print(f"[drop-traj] {mv.movement_id!r}: {reason}")
-            if deleted:
-                print(f"  deleted: {self._trajectory_file_for(mv)}")
 
     def _drop_m2_m3_after_m1_chain_break(self, reason):
         """Drop stale downstream linear trajectories after M1 endpoint changes."""
@@ -2328,230 +2863,6 @@ class HuskyMonitor(Node):
                 m.start_state.robot_configuration = None
                 print(f"[M1] cleared start_state.robot_configuration because M1 has no trajectory.")
 
-    def _auto_load_all_trajectories(self, tol_rad: float = 1e-3):
-        """After 'Load BarAction': try to load <mv>_trajectory.json for every
-        loaded movement, then run consistency checks. On any mismatch, warn
-        and drop that movement's trajectory.
-
-        Per-movement checks (in load order, so check (b) can consult a
-        predecessor's just-loaded or just-dropped trajectory):
-          (a) traj[0] vs mv.start_state.robot_configuration
-          (b) mv.start_state.robot_configuration vs prev movement's traj[-1]
-          (c) For M0 only: live robot arm conf vs M0.start_state's
-              robot_configuration. Saved M0 filename now carries the active
-              BarAction prefix (see _trajectory_file_for) so a stale file
-              from a different run can't sneak in across BarActions.
-        """
-        from compas.data import json_load
-
-        traj_dir = os.path.join(
-            DESIGN_DATA_DIRECTORY, DESIGN_PROBLEM_NAME, 'Trajectories',
-        )
-        if not os.path.isdir(traj_dir):
-            print(f"[auto-load-traj] no Trajectories/ at {traj_dir}; nothing to load.")
-            self._clear_m1_start_conf_without_trajectory()
-            return
-
-        # Pass 1: try to load each movement's trajectory from disk.
-        n_loaded = 0
-        for mv in self._loaded_movements:
-            traj_path = self._trajectory_file_for(mv)
-            if not os.path.exists(traj_path):
-                continue
-            try:
-                jt = json_load(traj_path)
-            except Exception as e:
-                self.get_logger().warn(
-                    f"[auto-load-traj] {mv.movement_id!r}: failed to load: {e}"
-                )
-                continue
-            mv.trajectory = jt
-            n_loaded += 1
-        if n_loaded == 0:
-            print(f"[auto-load-traj] no <mv>_trajectory.json files found under {traj_dir}.")
-            self._clear_m1_start_conf_without_trajectory()
-            self._print_movement_roster(tag='auto-load-traj')
-            return
-
-        # Pass 2: per-movement consistency. IN ORDER so each iteration's
-        # check (2) can consult the predecessor's actually-kept trajectory,
-        # and the post-check forward propagation can fill the next
-        # movement's start_state.robot_configuration when it's None
-        # (mirrors what _accept_trajectory does at plan time, lost across
-        # BarAction reload since the BarAction file holds the authored
-        # start_state, not the planned chain).
-        n_dropped = 0
-        for i, mv in enumerate(self._loaded_movements):
-            traj = getattr(mv, 'trajectory', None)
-            if traj is None:
-                continue
-            role = self._match_movement_role(mv)
-            path12 = path_12_from_joint_trajectory(traj)
-            if not path12:
-                print(f"[auto-load-traj] {mv.movement_id!r}: trajectory has no waypoints; dropping.")
-                mv.trajectory = None
-                n_dropped += 1
-                continue
-
-            if role == 'M2':
-                prev = self._loaded_movements[i - 1] if i > 0 else None
-                if prev is None or self._match_movement_role(prev) != 'M1' or prev.trajectory is None:
-                    msg = (f"[auto-load-traj] {mv.movement_id!r}: missing kept M1 trajectory; "
-                           "dropping M2/M3 saved trajectories.")
-                    print(msg)
-                    n_dropped += self._drop_m2_m3_after_m1_chain_break(msg)
-                    continue
-            elif role == 'M3':
-                prev = self._loaded_movements[i - 1] if i > 0 else None
-                if prev is None or self._match_movement_role(prev) != 'M2' or prev.trajectory is None:
-                    msg = (f"[auto-load-traj] {mv.movement_id!r}: missing kept M2 trajectory; "
-                           "dropping loaded trajectory.")
-                    print(msg)
-                    self._drop_movement_trajectory(mv, msg)
-                    n_dropped += 1
-                    continue
-
-            sc = mv.start_state.robot_configuration if mv.start_state is not None else None
-            sc_vec = vec12_from_conf(sc) if sc is not None else None
-            traj_first = np.asarray(path12[0], dtype=float)
-            traj_last = np.asarray(path12[-1], dtype=float)
-
-            dropped = False
-
-            # (1) start_state.robot_configuration vs traj[0] — role-based:
-            #   M1 owns its generated start_conf, so traj[0] is allowed to
-            #     repopulate M1.start_state across reload.
-            #   M2/M3 must obey the start_conf propagated from M1/M2. If
-            #     their saved traj[0] does not match that hard start, the
-            #     saved trajectory is stale and must be replanned.
-            #   M0/M4 are NOT chain owners; their authored start_conf
-            #     IS authoritative (M0.start_state is a live snapshot,
-            #     M4 is the chain terminator). Run the strict compare
-            #     and drop on mismatch.
-            if role == 'M1' and mv.start_state is not None:
-                if sc_vec is not None:
-                    diff_owner = float(np.abs(traj_first - sc_vec).max())
-                    if diff_owner > tol_rad:
-                        print(
-                            f"[auto-load-traj] {mv.movement_id!r}: "
-                            f"overwriting start_state.robot_configuration with "
-                            f"traj[0] (was authored, max-joint Δ "
-                            f"{diff_owner:.4f} rad) per M1 generated-start rule."
-                        )
-                mv.start_state.robot_configuration = conf_from_12vec(traj_first)
-                sc_vec = traj_first.copy()
-            elif sc_vec is not None:
-                diff = float(np.abs(traj_first - sc_vec).max())
-                if diff > tol_rad:
-                    msg = (f"[auto-load-traj] {mv.movement_id!r}: "
-                           f"start_state.robot_configuration disagrees with "
-                           f"traj[0] by max {diff:.4f} rad; dropping loaded trajectory.")
-                    self.get_logger().warn(msg)
-                    print(msg)
-                    if role == 'M2':
-                        # M2 start comes from M1.traj[-1]; if stale, M3's
-                        # start inherited from old M2 is stale too.
-                        n_dropped += self._drop_m2_m3_after_m1_chain_break(msg)
-                    else:
-                        self._drop_movement_trajectory(mv, msg, delete_file=(role in ('M2', 'M3')))
-                        n_dropped += 1
-                    dropped = True
-            elif role in ('M2', 'M3'):
-                msg = (f"[auto-load-traj] {mv.movement_id!r}: missing propagated "
-                       "start_state.robot_configuration; dropping loaded trajectory.")
-                self.get_logger().warn(msg)
-                print(msg)
-                if role == 'M2':
-                    n_dropped += self._drop_m2_m3_after_m1_chain_break(msg)
-                else:
-                    self._drop_movement_trajectory(mv, msg)
-                    n_dropped += 1
-                dropped = True
-
-            # (2) mv.start_state.robot_configuration vs prev movement's traj[-1]
-            if not dropped and i > 0 and sc_vec is not None:
-                prev = self._loaded_movements[i - 1]
-                prev_traj = getattr(prev, 'trajectory', None)
-                if prev_traj is not None:
-                    prev_path = path_12_from_joint_trajectory(prev_traj)
-                    if prev_path:
-                        diff = float(np.abs(sc_vec - np.asarray(prev_path[-1])).max())
-                        if diff > tol_rad:
-                            msg = (f"[auto-load-traj] {mv.movement_id!r}: "
-                                   f"start_state.robot_configuration disagrees "
-                                   f"with prev {prev.movement_id!r}.traj[-1] by max "
-                                   f"{diff:.4f} rad; dropping loaded trajectory.")
-                            self.get_logger().warn(msg)
-                            print(msg)
-                            if role == 'M2' and self._match_movement_role(prev) == 'M1':
-                                # M3's start depends on M2's end, so an M1->M2
-                                # chain break invalidates both linear files.
-                                n_dropped += self._drop_m2_m3_after_m1_chain_break(msg)
-                            else:
-                                self._drop_movement_trajectory(mv, msg, delete_file=(role in ('M2', 'M3')))
-                                n_dropped += 1
-                            dropped = True
-
-            # (3) M0 only: live robot arm conf vs M0.start_state.robot_configuration
-            if not dropped and role == 'M0':
-                live12 = self._read_live_arm_conf_12()
-                if live12 is None:
-                    print(f"[auto-load-traj] M0 live-conf check skipped "
-                          f"(no live robot interface available).")
-                elif sc_vec is None:
-                    print(f"[auto-load-traj] M0 live-conf check skipped "
-                          f"(M0.start_state has no robot_configuration).")
-                else:
-                    diff = float(np.abs(live12 - sc_vec).max())
-                    if diff > tol_rad:
-                        msg = (f"[auto-load-traj] M0: live robot conf disagrees "
-                               f"with M0.start_state.robot_configuration by max "
-                               f"{diff:.4f} rad; dropping M0 trajectory (the "
-                               f"live robot has moved since this M0 was planned).")
-                        self.get_logger().warn(msg)
-                        print(msg)
-                        mv.trajectory = None
-                        n_dropped += 1
-                        dropped = True
-
-            if dropped:
-                continue
-
-            # Forward-propagate path[-1] to next mv's start_state.robot_configuration.
-            # Role-based, matching plan-time _accept_trajectory step 3:
-            #   M1/M2/M3: chain owners — overwrite next.start unconditionally.
-            #   M0/M4:    NOT chain owners — never write to next.start.
-            if role not in ('M0', 'M4') and i + 1 < len(self._loaded_movements):
-                next_mv = self._loaded_movements[i + 1]
-                if next_mv.start_state is not None:
-                    next_mv.start_state.robot_configuration = conf_from_12vec(traj_last)
-                    print(f"[auto-load-traj] propagated {mv.movement_id!r}.traj[-1] "
-                          f"-> {next_mv.movement_id!r}.start_state.robot_configuration "
-                          f"(M1/M2/M3 chain rule).")
-
-        print(f"[auto-load-traj] kept {n_loaded - n_dropped}/{n_loaded} loaded "
-              f"trajectories after consistency checks "
-              f"(dropped {n_dropped}).")
-        self._clear_m1_start_conf_without_trajectory()
-        self._print_movement_roster(tag='auto-load-traj')
-
-    def _read_live_arm_conf_12(self):
-        """Return the live robot's 12-DOF arm conf as np.ndarray, or None
-        if no husky interface is wired (headless without stub, etc.)."""
-        if not self.huskies:
-            return None
-        try:
-            hi = self.huskies[self.selected_robot_id].interface
-            left = np.asarray(hi.arm_joint_pose[0], dtype=float)
-            right = (np.asarray(hi.arm_joint_pose[1], dtype=float)
-                     if len(hi.arm_joint_pose) > 1
-                     else np.asarray(hi.arm_joint_pose[0], dtype=float))
-            if left.shape != (6,) or right.shape != (6,):
-                return None
-            return np.concatenate([left, right])
-        except (AttributeError, IndexError, TypeError):
-            return None
-
     def _color_bool(self, value):
         """Return a terminal-colored bool string for planning status prints."""
         if bool(value):
@@ -2567,27 +2878,24 @@ class HuskyMonitor(Node):
             self.get_logger().warn("[CDFM validation] skipped: empty planned path.")
             return
 
-        ctx = getattr(self, "_bar_action_plan_ctx", None) or {}
-        pose_path = ctx.get("path_poses")
-        if pose_path is None or len(pose_path) != len(path12):
-            pose_len = None if pose_path is None else len(pose_path)
-            self.get_logger().warn(
-                f"[CDFM validation] skipped for {movement_id!r}: pose path length {pose_len} "
-                f"does not match joint path length {len(path12)}."
-            )
-            return
-
         husky = getattr(self, "_bar_action_husky", None)
         if self.cfab is None or husky is None:
             self.get_logger().warn(f"[CDFM validation] skipped for {movement_id!r}: cfab pp robot is unavailable.")
             return
+        state = getattr(mv, 'start_state', None)
+        bar_rb = (state.rigid_body_states.get(self.active_bar_name)
+                  if state is not None and self.active_bar_name else None)
+        if bar_rb is None or bar_rb.attached_to_link is None or bar_rb.attachment_frame is None:
+            self.get_logger().warn(
+                f"[CDFM validation] skipped for {movement_id!r}: bar not "
+                f"attached in start_state.")
+            return
 
+        # ! Keep these two imports deferred (function-level). Importing these
+        # ! modules creates/truncates log files as an import-time side effect,
+        # ! which we must not trigger just by loading husky_monitor.
         from husky_assembly_tamp.motion_planner.dual_arm_task_space_rrt.core import STAGE3_GRASP_MASK_LINKS
         from husky_assembly_tamp.motion_planner.dual_arm_task_space_rrt.path_validation import validate_stage_trajectory
-        from husky_assembly_tamp.motion_planner.dual_arm_task_space_rrt.run import (
-            HUSKY_DUAL_SRDF_PATH,
-            HUSKY_DUAL_URDF_PATH,
-        )
 
         saved_client = pp.CLIENT
         pp.CLIENT = self.cfab.client.client_id
@@ -2596,20 +2904,40 @@ class HuskyMonitor(Node):
             robot = husky.object.robot
             joint_names = list(HUSKY_DUAL_UR5e_JOINT_NAMES[0]) + list(HUSKY_DUAL_UR5e_JOINT_NAMES[1])
             arm_joints = pp.joints_from_names(robot, joint_names)
+            tool_link_left = pp.link_from_name(robot, "left_ur_arm_tool0")
+            attach_link = pp.link_from_name(robot, bar_rb.attached_to_link)
+            attach_pose = pose_from_frame(bar_rb.attachment_frame)
+
+            # Everything the sparse validator used to read from the (now
+            # removed) plan ctx is re-derived here from the movement's own
+            # start_state: bar world pose per waypoint via FK on the pp-side
+            # robot, grasp at the first waypoint, obstacles from the cell.
+            with pp.WorldSaver():
+                pose_path = []
+                for q in path12:
+                    pp.set_joint_positions(robot, arm_joints, np.asarray(q, dtype=float))
+                    pose_path.append(pp.multiply(
+                        pp.get_link_pose(robot, attach_link), attach_pose))
+                pp.set_joint_positions(robot, arm_joints, np.asarray(path12[0], dtype=float))
+                grasp_bar_from_left = pp.multiply(
+                    pp.invert(pose_path[0]), pp.get_link_pose(robot, tool_link_left))
+            obstacles = _collect_obstacle_puids(
+                self.cfab.planner, exclude={self.active_bar_name})
+
             scene = {
                 "robot": robot,
                 "arm_joints": arm_joints,
-                "tool_link_left": pp.link_from_name(robot, "left_ur_arm_tool0"),
+                "tool_link_left": tool_link_left,
                 "tool_link_right": pp.link_from_name(robot, "right_ur_arm_tool0"),
                 # Keep the scene shaped like run.py even though sparse mode
                 # only consumes robot/joints/tool links.
                 "bar_body": self.active_bar_body,
-                "grasp_bar_from_left": ctx.get("grasp_bar_from_left"),
-                "collision_obstacles": list(ctx.get("obstacles_for_constrained") or []),
+                "grasp_bar_from_left": grasp_bar_from_left,
+                "collision_obstacles": obstacles,
                 "bar_label": self.active_bar_name,
             }
             validation = validate_stage_trajectory(
-                stage=int(ctx.get("stage", self.constrained_planner_stage)),
+                stage=M1_PLANNER_STAGE,
                 scene=scene,
                 path=pose_path,
                 joint_path=[np.asarray(q, dtype=float) for q in path12],
@@ -2620,14 +2948,15 @@ class HuskyMonitor(Node):
                 srdf_path=HUSKY_DUAL_SRDF_PATH,
                 grasp_mask_links=STAGE3_GRASP_MASK_LINKS,
                 target_label=self.active_bar_name,
-                position_res=ctx.get("position_res"),
-                rotation_res=ctx.get("rotation_res"),
+                position_res=M1_POSITION_RES,
+                rotation_res=M1_ROTATION_RES,
                 dense_joint_validation_step_rad=0.0,
                 skip_dense_collision_checks=True,
-                # Monitor validation is visual-only: show the plot, do not
-                # write a PNG report into the TAMP validation reports folder.
+                # Monitor validation is visual-only: show the plot in the
+                # live GUI monitor, never write a PNG report. Headless runs
+                # skip the plot (no display; Qt would abort the process).
                 save_plot=False,
-                show_plot=True,
+                show_plot=bool(getattr(self, '_is_live_monitor', False)),
             )
         except Exception as exc:
             self.get_logger().warn(f"[CDFM validation] failed for {movement_id!r}: {exc}")
@@ -2655,124 +2984,124 @@ class HuskyMonitor(Node):
             self.get_logger().warn(f"[CDFM validation] sparse validation FAILED for {movement_id!r}.")
 
     def _plan_M0_dispatch(self, mv):
-        """Free dual-arm from live conf -> M1.start conf."""
-        from husky_assembly_tamp.motion_planner.api import plan_free_dual_arm
-        if len(self._loaded_movements) < 2:
+        """Free dual-arm from live conf -> M0.target (= M1's planned start)."""
+        if mv.target_configuration is None:
+            # M1's start conf becomes M0's goal once M1 is planned/loaded.
+            self._backfill_m0_target_from_m1()
+        if mv.target_configuration is None:
+            self.get_logger().warn(
+                "M0 has no target_configuration; plan M1 first (its start "
+                "conf is backfilled as M0's goal).")
             return None
-        m1 = self._loaded_movements[1]
-        if m1.start_state is None or m1.start_state.robot_configuration is None:
-            self.get_logger().warn("M1.start_state has no robot_configuration; cannot plan M0.")
-            return None
-        goal_conf = vec12_from_conf(m1.start_state.robot_configuration)
-
-        # M0 start_conf must reflect the LIVE robot at plan time. The arm
-        # conf is snapshotted by _make_synthetic_m0 on Load Movement, but if
-        # the user moved the robot between Load and Plan, mv.start_state's
-        # robot_configuration is stale. Resync to live before reading
-        # start_conf (the base was already resynced by
-        # _apply_live_base_to_movement in plan_selected_movement).
-        hi = self.huskies[self.selected_robot_id].interface
-        left_live = np.asarray(hi.arm_joint_pose[0], dtype=float)
-        right_live = (np.asarray(hi.arm_joint_pose[1], dtype=float)
-                      if len(hi.arm_joint_pose) > 1 else left_live.copy())
-        live_conf = np.concatenate([left_live, right_live])
-        authored_conf = vec12_from_conf(mv.start_state.robot_configuration)
-        diff = float(np.abs(live_conf - authored_conf).max())
-        if diff > 1e-4:
-            print(f"[M0] start_conf drift {diff:.4f} rad from live; "
-                  f"resyncing mv.start_state.robot_configuration to current "
-                  f"robot conf.")
-            for n, v in zip(HUSKY_DUAL_UR5e_JOINT_NAMES[0], left_live):
-                mv.start_state.robot_configuration[n] = float(v)
-            for n, v in zip(HUSKY_DUAL_UR5e_JOINT_NAMES[1], right_live):
-                mv.start_state.robot_configuration[n] = float(v)
-            try:
-                self.cfab.planner.set_robot_cell_state(mv.start_state)
-            except Exception as e:
-                print(f"[M0] WARN: cfab set_robot_cell_state after live-conf "
-                      f"resync failed: {e}")
-
-        start_conf = vec12_from_conf(mv.start_state.robot_configuration)
-        scene = self._build_pp_scene_for_free()
-        if scene is None:
-            return None
-        cfab_cf = self._build_cfab_free_collision_fn(mv.start_state)
-        path, info = plan_free_dual_arm(scene, start_conf, goal_conf, 
-                                        max_time=120.0,
-                                        max_iterations=50,
-                                        cfab_collision_fn=cfab_cf)
+        # M0's start must be the LIVE robot at plan time — the user may have
+        # moved it since Load Movement.
+        self._inject_live_conf_into_state(mv.start_state)
+        try:
+            self.cfab.planner.set_robot_cell_state(mv.start_state)
+        except Exception as e:
+            print(f"[M0] WARN: cfab set_robot_cell_state after live-conf resync failed: {e}")
+        # Pause GUI rendering during the search (no-op when headless).
+        with pp.LockRenderer():
+            path, info = plan_free_dual_arm(
+                self.cfab.planner, mv.start_state, mv.target_configuration,
+                max_time=120.0, max_iterations=50,
+            )
         if path is None:
             print(f"[M0] plan_free_dual_arm failed: {info.get('failure_reason')}")
             return None
         return joint_trajectory_from_path(path)
 
     def _plan_M1_dispatch(self, mv):
-        """Constrained dual-arm planning via plan_and_stage_constrained."""
-        self.constrained_trajectory = [None, None]
-        world.plan_and_stage_constrained(self, ignore_env_obstacles=False)
-        traj = self.constrained_trajectory
-        if not (traj and traj[0] is not None and traj[1] is not None):
+        """Constrained dual-arm (bar held): state-based task-space RRT.
+
+        Grasps, bar pose, obstacles, and collision setup are all derived by
+        the planner from mv.start_state; ``derive_start=True`` asks it to
+        compute a feasible grasp-consistent start conf (the authored start
+        is a placeholder).
+        """
+        if not self.active_bar_name:
+            self.get_logger().warn("M1: active_bar_name not set.")
             return None
-        left_path = traj[0][0]
-        right_path = traj[1][0]
-        T = min(len(left_path), len(right_path))
-        path12 = [np.concatenate([left_path[i], right_path[i]]) for i in range(T)]
-        return joint_trajectory_from_path(path12)
+        if not mv.target_ee_frames:
+            self.get_logger().warn("M1: missing target_ee_frames.")
+            return None
+        # Prefer the authored M2 start conf as M1's goal: it skips the
+        # planner's own goal IK (which can pick a ±2π-wrapped branch) and
+        # pins the goal bar pose to the authored conf's FK. Note the joint
+        # path's END still follows the derived start's IK branch (upstream
+        # pose-RRT behavior), so M2 can still land on a hard seed — replan
+        # M1 when M2's linear IK cannot reach its first waypoint.
+        goal_conf = None
+        m2 = next((m for m in (self._loaded_movements or [])
+                   if self._match_movement_role(m) == 'M2'), None)
+        if (m2 is not None and m2.start_state is not None
+                and m2.start_state.robot_configuration is not None):
+            goal_conf = m2.start_state.robot_configuration
+            print("[M1] goal_conf <- authored M2 start conf (wrap-safe branch).")
+        # Multi-start: when a run fails, retry with a re-seeded derived
+        # start and a widened bar sweep box (hard scenes like B226 need a
+        # different home bar pose to find a corridor).
+        start_retries = 3
+        path = info = None
+        for retry_idx in range(start_retries):
+            extra = {}
+            if retry_idx > 0:
+                extra = dict(
+                    start_random_seed=9973 * retry_idx,
+                    start_bar_sweep_box=((-0.4, 0.4), (-0.4, 0.4), (-0.5, 0.3)),
+                )
+                print(f"[M1] retry {retry_idx + 1}/{start_retries} with re-seeded "
+                      f"derived start.")
+            # Pause GUI rendering during the search (no-op when headless).
+            with pp.LockRenderer():
+                path, info = plan_constrained_dual_arm(
+                    self.cfab.planner, mv.start_state,
+                    active_bar_id=self.active_bar_name,
+                    goal_conf=goal_conf,
+                    goal_ee_frames=mv.target_ee_frames if goal_conf is None else None,
+                    stage=M1_PLANNER_STAGE,
+                    position_res=M1_POSITION_RES,
+                    rotation_res=M1_ROTATION_RES,
+                    max_time=120.0,
+                    derive_start=True,
+                    **extra,
+                )
+            if path is not None:
+                break
+            print(f"[M1] plan_constrained_dual_arm failed: {info.get('failure_reason')}")
+        if path is None:
+            return None
+        # Feed the per-arm display + waypoint-slider consumers (Display slider
+        # mode 1, cfab waypoint sliders) from the planned path.
+        self.constrained_trajectory = [
+            (np.asarray([q[:6] for q in path]), None, self.trajectory_time, None),
+            (np.asarray([q[6:] for q in path]), None, self.trajectory_time, None),
+        ]
+        return joint_trajectory_from_path(path)
 
     def _plan_M2_dispatch(self, mv):
-        """Constrained linear (bar-held)."""
-        from husky_assembly_tamp.motion_planner.api import (
-            plan_constrained_dual_arm_linear, _fk_link_frame,
-        )
-        from compas.geometry import Transformation, Frame
-        if mv.start_state.robot_configuration is None or not mv.target_ee_frames:
-            self.get_logger().warn("M2: missing start conf or target_ee_frames.")
+        """Constrained linear (bar-held): planner derives grasps + bar goal
+        pose internally from mv.start_state + the target EE frames."""
+        if mv.start_state.robot_configuration is None:
+            self.get_logger().warn("M2: missing start conf.")
             return None
-        start_conf = vec12_from_conf(mv.start_state.robot_configuration)
-
-        bar_rb = mv.start_state.rigid_body_states.get(self.active_bar_name) if self.active_bar_name else None
-        if bar_rb is None or bar_rb.attachment_frame is None:
-            self.get_logger().warn("M2: bar not attached in start_state.")
+        # The API wants exactly one goal kind; prefer the authored EE frames.
+        goal_ee = mv.target_ee_frames or None
+        goal_conf = mv.target_configuration if goal_ee is None else None
+        if goal_ee is None and goal_conf is None:
+            self.get_logger().warn("M2: missing target_configuration / target_ee_frames.")
             return None
-        attached_to_link = bar_rb.attached_to_link
-        attach_T = Transformation.from_frame(bar_rb.attachment_frame)
-
-        planner = self.cfab.planner
-        robot_cell = self.cfab.robot_cell
-        start_state = mv.start_state.copy()
-        from husky_assembly_teleop.husky_world import _augment_tool_touch_links_for_v3
-        _augment_tool_touch_links_for_v3(start_state, self.huskies[self.selected_robot_id])
-        start_left = _fk_link_frame(planner, start_state, "left_ur_arm_tool0")
-        start_right = _fk_link_frame(planner, start_state, "right_ur_arm_tool0")
-
-        if 'left' in attached_to_link:
-            start_world_from_attached_link = start_left
-        else:
-            start_world_from_attached_link = start_right
-        start_world_from_bar = Transformation.from_frame(start_world_from_attached_link) * attach_T
-
-        start_world_from_left_T = Transformation.from_frame(start_left)
-        start_world_from_right_T = Transformation.from_frame(start_right)
-        bar_from_left_tool0 = start_world_from_bar.inverted() * start_world_from_left_T
-        bar_from_right_tool0 = start_world_from_bar.inverted() * start_world_from_right_T
-
-        side = 'left' if 'left' in attached_to_link else 'right'
-        target_arm_frame = mv.target_ee_frames.get(side)
-        if target_arm_frame is None:
-            self.get_logger().warn(f"M2: target_ee_frames missing key {side!r}.")
-            return None
-        target_arm_T = Transformation.from_frame(target_arm_frame)
-        bar_from_arm = bar_from_left_tool0 if side == 'left' else bar_from_right_tool0
-        goal_world_from_bar_T = target_arm_T * bar_from_arm.inverted()
-        goal_world_from_bar = Frame.from_transformation(goal_world_from_bar_T)
-
-        jt = plan_constrained_dual_arm_linear(
-            planner, robot_cell, start_state, start_conf,
-            goal_world_from_bar, bar_from_left_tool0, bar_from_right_tool0,
-            skip_env_collisions=False,
-        )
+        # Pause GUI rendering during the IK loop (no-op when headless).
+        with pp.LockRenderer():
+            jt = plan_constrained_dual_arm_linear(
+                self.cfab.planner, mv.start_state,
+                active_bar_id=self.active_bar_name,
+                goal_conf=goal_conf,
+                goal_ee_frames=goal_ee,
+                skip_env_collisions=False,
+            )
         if jt is not None:
-            self._check_inter_ee_invariance(jt, start_state)
+            self._check_inter_ee_invariance(jt, mv.start_state)
         return jt
 
     def _check_inter_ee_invariance(self, jt, template_state):
@@ -2780,9 +3109,6 @@ class HuskyMonitor(Node):
         relative pose is constant over the path. Logs max/mean translation
         + rotation drift relative to the first waypoint.
         """
-        from husky_assembly_tamp.motion_planner.api import _fk_link_frame
-        from compas.geometry import Frame, Transformation
-
         planner = self.cfab.planner
         path = path_12_from_joint_trajectory(jt)
         if len(path) < 2:
@@ -2822,152 +3148,78 @@ class HuskyMonitor(Node):
         )
 
     def _plan_M3_dispatch(self, mv):
-        """Linear retreat with independent EE interpolation."""
-        from husky_assembly_tamp.motion_planner.api import plan_dual_arm_linear_independent
-        if mv.start_state.robot_configuration is None or not mv.target_ee_frames:
-            self.get_logger().warn("M3: missing start conf or target_ee_frames.")
+        """Linear retreat with independent per-arm EE interpolation."""
+        if mv.start_state.robot_configuration is None:
+            self.get_logger().warn("M3: missing start conf.")
             return None
-        start_conf = vec12_from_conf(mv.start_state.robot_configuration)
-        left_frame = mv.target_ee_frames.get('left')
-        right_frame = mv.target_ee_frames.get('right')
-        if left_frame is None or right_frame is None:
-            self.get_logger().warn("M3: target_ee_frames must have both 'left' and 'right'.")
+        goal_ee = mv.target_ee_frames or None
+        goal_conf = mv.target_configuration if goal_ee is None else None
+        if goal_ee is None and goal_conf is None:
+            self.get_logger().warn("M3: missing target_configuration / target_ee_frames.")
             return None
-        start_state = mv.start_state.copy()
-        from husky_assembly_teleop.husky_world import _augment_tool_touch_links_for_v3
-        _augment_tool_touch_links_for_v3(start_state, self.huskies[self.selected_robot_id])
-        return plan_dual_arm_linear_independent(
-            self.cfab.planner, self.cfab.robot_cell, start_state,
-            start_conf, left_frame, right_frame,
-            skip_env_collisions=False,
-        )
+        # Pause GUI rendering during the IK loop (no-op when headless).
+        with pp.LockRenderer():
+            return plan_dual_arm_linear_independent(
+                self.cfab.planner, mv.start_state,
+                goal_conf=goal_conf,
+                goal_ee_frames=goal_ee,
+                skip_env_collisions=False,
+            )
 
     def _plan_M4_dispatch(self, mv):
-        """Free dual-arm from M3 end -> fixed home conf."""
-        from husky_assembly_tamp.motion_planner.api import plan_free_dual_arm
+        """Free dual-arm from M3 end -> fixed home conf.
+
+        The action's authored M4 target is a placeholder; the known-good
+        dual-arm home is used instead (matches headless_bar_action_planner).
+        """
         if mv.start_state.robot_configuration is None:
             self.get_logger().warn("M4: missing start_state.robot_configuration.")
             return None
-        start_conf = vec12_from_conf(mv.start_state.robot_configuration)
-        goal_conf = HUSKY_DUAL_ARM_HOME_CONF_12.copy()
-        scene = self._build_pp_scene_for_free()
-        if scene is None:
-            return None
-        cfab_cf = self._build_cfab_free_collision_fn(mv.start_state)
-        path, info = plan_free_dual_arm(scene, start_conf, goal_conf, max_time=30.0,
-                                        cfab_collision_fn=cfab_cf)
+        # * Wrap the fixed home 12-vec in a compas Configuration so the tamp
+        # helper's dict-indexed extraction works (raw numpy 12-vecs raise
+        # IndexError on string joint-name indexing).
+        goal_conf = conf_from_12vec(HUSKY_DUAL_ARM_HOME_CONF_12)
+        # Pause GUI rendering during the search (no-op when headless).
+        with pp.LockRenderer():
+            path, info = plan_free_dual_arm(
+                self.cfab.planner, mv.start_state, goal_conf, max_time=30.0,
+            )
         if path is None:
             print(f"[M4] plan_free_dual_arm failed: {info.get('failure_reason')}")
             return None
         return joint_trajectory_from_path(path)
 
-    def _build_cfab_free_collision_fn(self, mv_start_state, *, force=False):
-        """Return a cfab-backed (conf12) -> bool collision predicate for the
-        free dual-arm planner, or None if cfab CC is disabled.
-
-        Free planner currently runs with composite_obstacles=[] in some paths
-        and with env obstacles in others. cfab CC honors the state's tools +
-        rigid_body attachments + SRDF disables + per-state touch_links — more
-        correct than pp's get_collision_fn which leaves tool bodies stationary.
-        Default ON via class attr ``use_cfab_collision_for_free = True``; set
-        it False on an instance to fall back to pp's collision fn. Pass
-        force=True to bypass the toggle gate (cfab/planner availability is
-        still required).
-        """
-        if not force and not getattr(self, "use_cfab_collision_for_free", False):
-            return None
-        if self.cfab is None or getattr(self.cfab, "planner", None) is None:
-            return None
-        if mv_start_state is None:
-            return None
-        from copy import deepcopy
-        from husky_assembly_teleop.cfab_collision_adapter import make_cfab_collision_fn
-        from husky_assembly_teleop.husky_world import (
-            _augment_tool_touch_links_for_v3,
-            _augment_assembly_arm_tool_body_touch_links,
-        )
-        template = deepcopy(mv_start_state)
-        _augment_tool_touch_links_for_v3(template, self.huskies[self.selected_robot_id])
-        _augment_assembly_arm_tool_body_touch_links(template)
-        print("[cfab-cc] free planner: using cfab PyBulletCheckCollision")
-        return make_cfab_collision_fn(self.cfab, template)
-
-    def _build_pp_scene_for_free(self):
-        """Build SceneContext dict for plan_free_dual_arm using cfab pp-side robot."""
-        husky = getattr(self, '_bar_action_husky', None)
-        if husky is None or self.cfab is None:
-            husky = self.huskies[self.selected_robot_id] if self.huskies else None
-        if husky is None:
-            self.get_logger().warn("No husky available for free-plan scene.")
-            return None
-        robot = husky.object.robot
-        left_joints = pp.joints_from_names(robot, HUSKY_DUAL_UR5e_JOINT_NAMES[0])
-        right_joints = pp.joints_from_names(robot, HUSKY_DUAL_UR5e_JOINT_NAMES[1])
-        arm_joints_all = list(left_joints) + list(right_joints)
-        tool_link_L = pp.link_from_name(robot, 'left_ur_arm_tool0')
-        tool_link_R = pp.link_from_name(robot, 'right_ur_arm_tool0')
-        ee_attachments = [ee[1] for ee in husky.object.ee_list][:2]
-        if len(ee_attachments) != 2:
-            ee_attachments = (ee_attachments * 2)[:2]
-        # ACM for the free planner: drop every robot-mounted body (tools,
-        # held bar, attached joint parts) from scene["obstacles"]. Removing
-        # a body from `obstacles` skips:
-        #   1. robot link <-> that mounted body  -- the real fix; wrist mesh
-        #      and tool mesh overlap by 1-5 cm by design.
-        #   2. EE-ghost <-> that mounted body    -- harmless; ghosts sit at
-        #      z=-100, far from anything.
-        #   3. (indirect) mounted body <-> mounted body  -- left/right tool
-        #      collision is no longer checked; the wrist_L <-> wrist_R robot
-        #      self-collision check is the proxy that catches tool clashes.
-        # Robot self-collision and robot <-> non-mounted env bodies remain
-        # fully checked. The constrained planner sidesteps this issue via
-        # its expected-neighbor-contact probe (5 mm getClosestPoints(bar,
-        # body) at goal) which absorbs the overlap; free planner has no
-        # such probe.
-        mounted_names: set[str] = set()
-        ss = getattr(self, 'movement_start_state', None)
-        if ss is not None:
-            for name, rbs in (getattr(ss, 'rigid_body_states', None) or {}).items():
-                if getattr(rbs, 'attached_to_link', None) is not None:
-                    mounted_names.add(name)
-        obstacles = [
-            body for name, body in (getattr(self, 'static_obstacles', None) or {}).items()
-            if name not in mounted_names
-        ]
-        scene = {
-            "robot": robot,
-            "arm_joints": arm_joints_all,
-            "joint_names": list(HUSKY_DUAL_UR5e_JOINT_NAMES[0]) + list(HUSKY_DUAL_UR5e_JOINT_NAMES[1]),
-            "tool_link_left": tool_link_L,
-            "tool_link_right": tool_link_R,
-            "obstacles": obstacles,
-            "attachments": ee_attachments,
-            "disabled_collisions": None,
-            "ee_types": list(getattr(husky.object, "ee_types", []) or []),
-        }
-        return scene
-
     def ik_live_base_for_selected_movement(self):
-        """Debug IK at LIVE base for the current movement's START EE frames.
+        """IK at the LIVE base for the current movement's START EE frames.
+
+        Intended for M2/M3 (their start_state carries an authored
+        robot_configuration, so the start EE frames come from FK). Solves
+        dual-arm IK to those world-frame EE poses but for the LIVE base,
+        warm-started from the LIVE robot arm conf, with full cfab collision
+        checking against the movement's start_state ACM. On success it sets
+        goal_arm_pose; the user then clicks 'Plan Both Arms to Goal
+        (composite)' to plan a free transit there. Does NOT write mv.trajectory.
 
         Start EE frames are derived (in order of preference):
           1. FK from mv.start_state.robot_configuration + robot_base_frame
              (stored base, NOT live).
           2. Previous movement's target_ee_frames.
 
-        Does NOT write to mv.trajectory. After success, the user can click
-        'Plan Both Arms to Goal (composite)' to drive the real robot.
+        Returns:
+            bool: True on success (goal_arm_pose updated), False on any
+            precondition miss or IK failure. Existing UI callers ignore the
+            return value; the new ``replan_free_to_movement_start_live``
+            uses it to bail cleanly.
         """
         if self.current_movement is None:
             self.get_logger().warn("Load a movement first.")
-            return
+            return False
         mv = self.current_movement
 
         # 1) Derive start EE frames.
         start_ee_frames = None
         if mv.start_state is not None and mv.start_state.robot_configuration is not None:
             try:
-                from husky_assembly_tamp.motion_planner.api import _fk_link_frame
                 self.cfab.planner.set_robot_cell_state(mv.start_state)
                 left_frame = _fk_link_frame(self.cfab.planner, mv.start_state, "left_ur_arm_tool0")
                 right_frame = _fk_link_frame(self.cfab.planner, mv.start_state, "right_ur_arm_tool0")
@@ -2980,33 +3232,55 @@ class HuskyMonitor(Node):
             if prev.target_ee_frames:
                 start_ee_frames = prev.target_ee_frames
                 print(f"[IK Live Base] start EE frames from prev mv {prev.movement_id!r} target_ee_frames.")
+        # Cache the derived target EE frames on self so
+        # `replan_free_to_movement_start_live`'s endpoint verification can
+        # compare the composite plan's final tool0 poses back against the
+        # authored targets that drove this IK call.
+        self._last_ik_target_ee_frames = start_ee_frames
         if not start_ee_frames or 'left' not in start_ee_frames or 'right' not in start_ee_frames:
             self.get_logger().warn(
                 "Cannot derive start EE frames (no FK seed in start_state, "
                 "no prev-movement target_ee_frames)."
             )
-            return
+            return False
 
-        # 2) IK at live base using the derived start EE frames.
+        # 2) IK at live base using the derived start EE frames. Inject the
+        # live base + live arm conf so IK is warm-started from where the
+        # robot actually is now (not the movement's authored start conf).
+        # Trac_ik may return joint values that are 2*pi-offset from the
+        # nearest branch when the seed is far from the target; the
+        # composite free plan step downstream unwraps the goal to
+        # +/- pi of the start conf so the BiRRT can still connect.
         live_state = mv.start_state.copy()
         hi = self.huskies[self.selected_robot_id].interface
-        live_state.robot_base_frame = frame_from_pose((hi.position, hi.rotation))
+        self._inject_live_conf_into_state(live_state)
         self.cfab.planner.set_robot_cell_state(live_state)
         # Override target_ee_frames so _solve_bar_action_goal_ik uses the
         # start-state derived frames (it reads monitor.target_ee_frames).
+        # Also pass mv.start_state.robot_configuration as an alternate IK
+        # seed: it's a bar-holding pose whose FK produces the very target
+        # frames, so trac_ik seeded there converges to that (or a nearby)
+        # collision-free branch, escaping the self-colliding branches
+        # trac_ik lands on when seeded from the extended-arm HOME conf.
+        alt_seed = None
+        if mv.start_state.robot_configuration is not None:
+            try:
+                alt_seed = vec12_from_conf(mv.start_state.robot_configuration)
+            except Exception:
+                alt_seed = None
         saved_targets = self.target_ee_frames
         self.target_ee_frames = start_ee_frames
         try:
-            from husky_assembly_teleop.husky_world import _solve_bar_action_goal_ik
             conf12 = _solve_bar_action_goal_ik(
-                self, live_state, skip_env_collisions=True, verbose=False,
+                self, live_state, skip_env_collisions=False, verbose=False,
+                alt_seed_conf12=alt_seed,
             )
         finally:
             self.target_ee_frames = saved_targets
 
         if conf12 is None:
             self.get_logger().warn("IK at live base FAILED.")
-            return
+            return False
         self.goal_arm_pose[0] = np.asarray(conf12[:6])
         self.goal_arm_pose[1] = np.asarray(conf12[6:])
         # Ghost must render live_base + IK conf together; otherwise the
@@ -3023,7 +3297,6 @@ class HuskyMonitor(Node):
         # successful IK as an apparent failure.
         gs = getattr(self, 'movement_goal_state', None)
         try:
-            from husky_assembly_tamp.motion_planner.api import _fk_link_frame
             fk_left = _fk_link_frame(self.cfab.planner, gs, "left_ur_arm_tool0")
             fk_right = _fk_link_frame(self.cfab.planner, gs, "right_ur_arm_tool0")
             def _residual(fk_frame, tg_frame):
@@ -3050,6 +3323,7 @@ class HuskyMonitor(Node):
         self.set_to_show_goal_state()
         print("[IK Live Base] OK - goal_arm_pose updated (start-EE targets); "
               "click composite plan to drive.")
+        return True
 
     def record_bar_holding_marker_take(self):
         """Record one labeled-marker take + run inline fit + log deviation."""
@@ -3075,9 +3349,6 @@ class HuskyMonitor(Node):
         # Minimal take payload; matches the field offline analysis reads.
         self.marker_set_data.append({rb_mocap_name: labeled})
 
-        from husky_assembly_teleop.mocap_experiment import (
-            fit_bar_from_markerset, draw_marker_take_in_pp,
-        )
         try:
             fit = fit_bar_from_markerset(labeled)
         except Exception as e:
@@ -3103,14 +3374,20 @@ class HuskyMonitor(Node):
                 pass
         self._bar_holding_fit_line_uids = []
 
-    def _build_bar_action_scrub_sliders(self):
-        """Build (on the cfab GUI window) up to two debug-parameter sliders to
-        scrub the staging + constrained trajectories, and precompute the
-        per-waypoint RobotCellStates. Stashes everything in
-        self._bar_action_scrub (serviced each tick by update())."""
-        import pybullet as _pb
-        from husky_assembly_teleop.utils import HUSKY_DUAL_UR5e_JOINT_NAMES
+    def _build_trajectory_waypoint_sliders(self):
+        """Add up to two "step through waypoints" sliders on the cfab PyBullet
+        window so you can inspect a planned trajectory pose by pose.
 
+        Each planned trajectory is a list of waypoints (robot configurations).
+        This builds one slider per available trajectory - one for the staging
+        (free) path and one for the constrained path. Dragging a slider moves
+        the on-screen robot to the corresponding waypoint, so you can visually
+        walk through the plan and check for problems before executing it.
+
+        To make that instant while dragging, the full RobotCellState for every
+        waypoint is precomputed here and cached in
+        self._trajectory_waypoint_sliders. The cache is read every frame by
+        _service_trajectory_waypoint_sliders (called from update())."""
         left_names = HUSKY_DUAL_UR5e_JOINT_NAMES[0]
         right_names = HUSKY_DUAL_UR5e_JOINT_NAMES[1]
         client_id = self.cfab.client.client_id
@@ -3139,22 +3416,22 @@ class HuskyMonitor(Node):
         ns = len(staging_states)
         nc = len(constrained_states)
         if ns == 0 and nc == 0:
-            self._bar_action_scrub = None
+            self._trajectory_waypoint_sliders = None
             return
 
         staging_slider = None
         constrained_slider = None
         if ns > 0:
-            staging_slider = _pb.addUserDebugParameter(
+            staging_slider = p.addUserDebugParameter(
                 f"Staging t (0..{ns-1})", 0.0, float(max(ns - 1, 0)), 0.0,
                 physicsClientId=client_id,
             )
         if nc > 0:
-            constrained_slider = _pb.addUserDebugParameter(
+            constrained_slider = p.addUserDebugParameter(
                 f"Constrained t (0..{nc-1})", 0.0, float(max(nc - 1, 0)), 0.0,
                 physicsClientId=client_id,
             )
-        self._bar_action_scrub = {
+        self._trajectory_waypoint_sliders = {
             "client_id": client_id,
             "staging_slider": staging_slider,
             "constrained_slider": constrained_slider,
@@ -3163,30 +3440,30 @@ class HuskyMonitor(Node):
             "last_staging": -1,
             "last_constrained": -1,
         }
-        print(f"[scrub] '{self.current_movement.movement_id}' plan loaded: "
+        print(f"[waypoint sliders] '{self.current_movement.movement_id}' plan loaded: "
               f"staging={ns} wp, constrained={nc} wp. Drag the sliders on the "
-              f"cfab PyBullet panel to scrub.")
+              f"cfab PyBullet panel to step through the waypoints.")
 
-    def _service_bar_action_scrub_sliders(self):
-        """Poll the BarAction scrub sliders (once per tick) and re-pose the
-        cfab scene when an index changed. No-op when no scrub state."""
-        s = self._bar_action_scrub
+    def _service_trajectory_waypoint_sliders(self):
+        """Read the waypoint sliders once per frame and, when a slider has been
+        dragged to a new waypoint index, re-pose the cfab scene to that
+        waypoint. Does nothing when no waypoint sliders are active."""
+        s = self._trajectory_waypoint_sliders
         if s is None or self.cfab is None:
             return
         if self.cfab.client.client_id != s["client_id"]:
-            self._bar_action_scrub = None
+            self._trajectory_waypoint_sliders = None
             return
-        import pybullet as _pb
         cid = s["client_id"]
         if s["staging_slider"] is not None:
-            t = _pb.readUserDebugParameter(s["staging_slider"], physicsClientId=cid)
+            t = p.readUserDebugParameter(s["staging_slider"], physicsClientId=cid)
             n = len(s["staging_states"])
             idx = max(0, min(n - 1, int(round(t))))
             if idx != s["last_staging"]:
                 self.cfab.planner.set_robot_cell_state(s["staging_states"][idx])
                 s["last_staging"] = idx
         if s["constrained_slider"] is not None:
-            t = _pb.readUserDebugParameter(s["constrained_slider"], physicsClientId=cid)
+            t = p.readUserDebugParameter(s["constrained_slider"], physicsClientId=cid)
             n = len(s["constrained_states"])
             idx = max(0, min(n - 1, int(round(t))))
             if idx != s["last_constrained"]:
@@ -3255,7 +3532,6 @@ class HuskyMonitor(Node):
         
         try:
             # Load the joint trajectory using standard json
-            import json
             with open(trajectory_filepath, 'r') as f:
                 joint_trajectory_data = json.load(f)
             
@@ -3268,7 +3544,6 @@ class HuskyMonitor(Node):
                     joint_names = points[0]['joint_names']
                     
                     # Find indices for left and right arm joints
-                    from husky_assembly_teleop.utils import HUSKY_DUAL_UR5e_JOINT_NAMES
                     left_arm_names = HUSKY_DUAL_UR5e_JOINT_NAMES[0]
                     right_arm_names = HUSKY_DUAL_UR5e_JOINT_NAMES[1]
                     
@@ -3380,8 +3655,7 @@ class HuskyMonitor(Node):
         state_set = CALIBRATION_STATE_SETS.get(
             self.selected_arm_index, CALIBRATION_STATE_SETS[0])
         return os.path.join(
-            DATA_DIRECTORY, 'husky_assembly_design_study',
-            state_set, 'RobotCellStates',
+            DESIGN_DATA_DIRECTORY, state_set, 'RobotCellStates',
         )
 
     def _load_available_calibration_states(self):
@@ -3431,7 +3705,6 @@ class HuskyMonitor(Node):
         filepath = os.path.join(self._calibration_state_dir(), selected)
         print(f"Loading calib RobotCellState: {selected}")
         try:
-            from compas.data import json_load
             state = json_load(filepath)
             if hasattr(state, 'robot_configuration') and state.robot_configuration is not None:
                 cfg = state.robot_configuration
@@ -3493,7 +3766,6 @@ class HuskyMonitor(Node):
         filepath = os.path.join(self._calibration_state_dir(), selected)
         print(f"Loading calib JointTrajectory: {selected}")
         try:
-            import json
             with open(filepath, 'r') as f:
                 jt = json.load(f)
             if 'data' not in jt or 'points' not in jt['data']:
@@ -3625,8 +3897,6 @@ class HuskyMonitor(Node):
         """
         if getattr(self, '_offset_dpg', None) is not None:
             return
-        from . import common as _common
-        from .ui_backend import DearPyGuiBackend, bind_default_font
         self._offset_dpg = None
         self._mocap_offset_pending = [0.0, 0.0, 0.0]
 
@@ -3635,6 +3905,8 @@ class HuskyMonitor(Node):
             print("[mocap offset] primary backend is DPG; skipping private offset window.")
             return
         try:
+            # Lazy/optional import: dearpygui is only needed for this offset
+            # window and may not be installed, so keep it function-level.
             import dearpygui.dearpygui as dpg
         except ImportError:
             print("[mocap offset] dearpygui not installed; offset textboxes disabled. "
@@ -3712,6 +3984,25 @@ class HuskyMonitor(Node):
         # self.traj_viz_time, which the preview reads in update().
         self.traj_viz_time_slider = Slider("Traj viz time", self.update_traj_viz_time, 0.0, 1.0, 1.0)
 
+        # Live joint-angle stream: the button toggles a SEPARATE floating window
+        # showing every joint of the active robot as color-chipped text (radians
+        # + degrees) plus a continually-recording scrolling plot. The window is
+        # hidden until toggled and only records while shown. Dear PyGui only.
+        self.buttons.append(Button("Toggle Joint Live Stream", self.toggle_joint_live_stream))
+        if self.USE_DPG_UI:
+            # Restore the last shown/hidden choice across UI rebuilds (reset_ui).
+            visible = getattr(self, '_joint_stream_visible', False)
+            _common._global_backend.add_window(
+                "Joint Live Stream", tag="joint_stream_window",
+                width=560, height=620, show=visible)
+            self.joint_stream_plot = LiveMultiPlot(
+                "joints", self._joint_stream_source, self._joint_stream_labels(),
+                header_source=lambda: self.huskies[self.selected_robot_id].name,
+                parent="joint_stream_window", group_size=6)
+            self.joint_stream_plot.set_visible(visible)
+        else:
+            self.joint_stream_plot = None
+
         self.buttons.append(Button('Toggle Goal/Trajectory', self.toggle_show_goal_state))
         self.buttons.append(Button('Reset Goal State', self.reset_ui))
                       
@@ -3727,23 +4018,29 @@ class HuskyMonitor(Node):
         # Stored as named attributes so update() polls them — items
         # appended to self.dump_sep_sliders are not polled.
         if self.huskies[self.selected_robot_id].dual_arm:
-            self.constrained_stage_slider = Slider(
-                "Constrained Stage",
-                self.update_constrained_planner_stage,
-                1, 3, 3,
-            )
+            # TODO these two buttons seems to have very similar functions, and also unclear whether
+            # Replan Current Movement Live should stick to its stored conf target or recompute IK from target ee, probably need to be movement depednent
+            # then this could just merge with the debug buttons below
+
+            # self.buttons.append(Button(
+            #     'Replan Free (live base)',
+            #     self.replan_free_from_live_base,
+            # ))
+            # self.buttons.append(Button(
+            #     'Replan Constrained (live base)',
+            #     self.replan_constrained_from_live_base,
+            # ))
+
+            # TODO I think these two should be renamed a bit better, one keep the old arm conf (but new base) and plan a motion from current conf to go there
+            # TODO the other recompute a new ik based on the movement start conf's FK EE targets and then plan a motion from current conf to go there
+            # self.buttons.append(Button('Plan Free → Mv Start (offline target)', self.plan_free_to_movement_start_with_cfab_cc))
+            self.buttons.append(Button('Replan IK & Transit → Mv Start (live, M2/M3)', self.ik_live_base_for_selected_movement))
+            # * Button 2: live-base IK + composite free plan to the selected
+            # M2/M3's start EE targets, in one click. Uses cfab CC.
             self.buttons.append(Button(
-                'Plan & Stage Constrained',
-                self.plan_and_stage_constrained_bar_action,
-            ))
-            self.buttons.append(Button(
-                'Replan Free (live base)',
-                self.replan_free_from_live_base,
-            ))
-            self.buttons.append(Button(
-                'Replan Constrained (live base)',
-                self.replan_constrained_from_live_base,
-            ))
+                'Replan IK & Transit → Mv Start (live, M2/M3)',
+                self.replan_free_to_movement_start_live))
+
             self.buttons.append(Button(
                 'Export Dual-Traj',
                 self.export_constrained_dual_arm_trajectory,
@@ -3760,9 +4057,8 @@ class HuskyMonitor(Node):
         else:
             # Clear stale handles from a prior dual-arm build (reset_ui removes
             # the underlying pybullet params but leaves Python attrs behind).
-            for _attr in ('constrained_stage_slider', 'constrained_display_slider'):
-                if hasattr(self, _attr):
-                    delattr(self, _attr)
+            if hasattr(self, 'constrained_display_slider'):
+                delattr(self, 'constrained_display_slider')
 
         if self.CONNECT_COMPLIANT_CONTROLLER:
             # self.dump_sep_sliders.append(Slider("----------CONTROLLERS", lambda: None))
@@ -3837,14 +4133,24 @@ class HuskyMonitor(Node):
                 )
             self.buttons.append(Button('Load Movement', self.load_selected_movement))
             self.buttons.append(Button('Plan Movement', self.plan_selected_movement))
-            # self.buttons.append(Button('Load Movement Trajectory', self.load_selected_movement_trajectory))
+            self.buttons.append(Button('Load Movement Trajectory', self.load_selected_movement_trajectory))
+            # * Button 1: plan the M1->M2->M3->M0->M4 chain in one click,
+            # export the mutated action as `<name>.live-solved.json` sidecar.
+            self.buttons.append(Button('Plan Chain (Live)', self.plan_movement_chain_live))
+            # * Reset the currently loaded movement to its authored ("clean")
+            # state; downstream propagated start_confs may become stale, and
+            # the next chain plan will re-populate them.
+            self.buttons.append(Button(
+                'Reset Selected Mv to Clean',
+                self.reset_selected_movement_to_clean))
+            # * Reset every movement of the currently loaded BarAction back
+            # to the clean file (matches --load clean in headless_bar_action_planner).
+            self.buttons.append(Button(
+                'Reset All Mvs to Clean',
+                self.reset_all_movements_to_clean))
 
             # self.dump_sep_sliders.append(Slider("---------- live movement debug", lambda: None))
             self.dump_sep_sliders.append(Separator("live movement debug"))
-
-            self.buttons.append(Button('Delete All Saved Trajs', self.delete_saved_movement_trajectories_for_current_bar_action))
-            self.buttons.append(Button('Plan Free → Mv Start (cfab CC)', self.plan_free_to_movement_start_with_cfab_cc))
-            self.buttons.append(Button('IK Live Base (debug)', self.ik_live_base_for_selected_movement))
 
             # self.dump_sep_sliders.append(Slider("---------- movement exe", lambda: None))
             self.dump_sep_sliders.append(Separator("movement exe"))
@@ -3852,9 +4158,13 @@ class HuskyMonitor(Node):
             self.buttons.append(Button(
                 'Exec Compliant (M2/M3 only)',
                 lambda: self.tasks.append(world.execute_planned_trajectory_compliant(self))))
+            # * Auto-dispatch: M2/M3 -> compliant controller, else joint tracking.
+            self.buttons.append(Button(
+                'Exec Selected Mv Traj (auto)',
+                self.exec_selected_movement_traj))
 
             self.buttons.append(Button(
-                'Move Arms to Movement Start',
+                'Move Arms to Movement Start (offline target)',
                 lambda: world.move_arms_to_movement_start(self)))
 
         if self.BAR_ACTION_MOCAP_ACCURACY_TEST:
@@ -4164,7 +4474,6 @@ class HuskyMonitor(Node):
      
     # --- --- --- --- --- UPDATE --- --- --- --- --- 
     def update(self):
-        from . import common as _common
         if _common._global_backend is not None:
             if not _common._global_backend.step():
                 # User closed the UI window - request a clean shutdown.
@@ -4206,9 +4515,9 @@ class HuskyMonitor(Node):
         if self.gripper_slider is not None:
             self.gripper_slider.update()
 
-        # BarAction trajectory scrub sliders on the cfab GUI window (no-op
-        # until 'Plan & Stage Constrained' has run on a BarAction).
-        self._service_bar_action_scrub_sliders()
+        # "Step through waypoints" sliders on the cfab GUI window (no-op until a
+        # trajectory has been loaded, e.g. via 'Load Dual-Traj').
+        self._service_trajectory_waypoint_sliders()
 
         # if self.CALIBRATION:
         #     self.calib_joint_range_slider.update()
@@ -4226,8 +4535,6 @@ class HuskyMonitor(Node):
         if self.board_validation_state_slider:
             self.board_validation_state_slider.update()
 
-        if hasattr(self, 'constrained_stage_slider'):
-            self.constrained_stage_slider.update()
         if hasattr(self, 'constrained_display_slider'):
             self.constrained_display_slider.update()
 
@@ -4336,15 +4643,9 @@ class HuskyMonitor(Node):
     def export_constrained_dual_arm_trajectory(self, filename=None):
         """Export self.constrained_trajectory (left+right) as a single 12-DOF
         compas_fab JointTrajectory JSON, written to <problem>/Trajectories/."""
-        from compas_fab.robots import JointTrajectory, JointTrajectoryPoint
-        from compas_fab.robots.time_ import Duration
-        from compas_robots import Configuration
-        from compas_robots.model import Joint
-        from husky_assembly_teleop.utils import HUSKY_DUAL_UR5e_JOINT_NAMES
-
         traj = self.constrained_trajectory
         if not (traj and traj[0] is not None and traj[1] is not None):
-            print("No constrained dual-arm trajectory to export. Run 'Plan & Stage Constrained' first.")
+            print("No constrained dual-arm trajectory to export. Plan an M1 movement first.")
             return None
         left_path, _, left_time, _ = traj[0]
         right_path, _, right_time, _ = traj[1]
@@ -4398,9 +4699,6 @@ class HuskyMonitor(Node):
     def parse_constrained_dual_arm_trajectory(self, filename=None):
         """Load a 12-DOF compas_fab JointTrajectory JSON from <problem>/Trajectories/
         and populate self.constrained_trajectory + per-arm display trajectories."""
-        from compas_fab.robots import JointTrajectory
-        from husky_assembly_teleop.utils import HUSKY_DUAL_UR5e_JOINT_NAMES
-
         if filename is None:
             if not self.available_joint_trajectories:
                 self.available_joint_trajectories = self._load_available_joint_trajectories()
@@ -4472,7 +4770,7 @@ class HuskyMonitor(Node):
         except Exception:
             pass
         if self.cfab is not None and self.movement_start_state is not None:
-            self._build_bar_action_scrub_sliders()
+            self._build_trajectory_waypoint_sliders()
         print(f"[Parse Constrained Traj] dual-arm trajectory: "
               f"{len(left_path)} waypoints from {path}")
         return True
@@ -4482,7 +4780,6 @@ class HuskyMonitor(Node):
         Export the planned arm trajectory to a JSON file as a list of joint configurations.
         Save to the DATA_DIRECTORY/robotx_box subfolder.
         """
-        import json
         if arm_index is None:
             arm_index = self.selected_arm_index
         traj = self.planned_arm_trajectory[arm_index][0]
@@ -4503,7 +4800,6 @@ class HuskyMonitor(Node):
         print(f'Trajectory exported to {out_path}')
 
     def destroy_node(self):
-        from . import common as _common
         if _common._global_backend is not None:
             try:
                 _common._global_backend.shutdown()

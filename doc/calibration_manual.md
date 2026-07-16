@@ -32,7 +32,7 @@ location, which differ per machine.
 | What | Where | Note |
 |------|-------|------|
 | `DESIGN_DATA_DIRECTORY`, `EXPERIMENT_DATA_DIRECTORY` | [`__init__.py:53-54`](../husky_assembly_teleop/__init__.py#L53) | gdrive (Insync) mount paths. |
-| `MOCAP_CAMERA_EXPORT_DIR` | [`husky_monitor.py:64-67`](../husky_assembly_teleop/husky_monitor.py#L64) | where the `collect cameras data` button drops JSON+CSV. |
+| `MOCAP_CAMERA_EXPORT_DIR` | [`husky_monitor.py:64-67`](../husky_assembly_teleop/husky_monitor.py#L64) | where the `collect cameras data` button drops JSON+CSV. -> **TO BE UPDATED**|
 
 ### 0.2 Robot Reference Table
 
@@ -48,8 +48,8 @@ serials, and Motive Streaming IDs.
 1. **ROS Domain** selects the robot at launch via `ROS_DOMAIN_ID` (see [§2.4](#24-verify-ros2-connection))
    - this drives namespace, base `mocap_id`, gripper and EE.
 2. **Motive ID** = the rigid-body **Streaming ID** set in Motive (see [§1.3](#13-create--verify-rigid-bodies)).
-   - These must match the `mocap_id` base-tracker values in `husky_world.py` `ROBOT_CONFIGS` [L182/L189/L196](../husky_assembly_teleop/husky_world.py#L178)
-   - and the calib-tool `husky_world.py` `TrackedObject` IDs at [L327/L331](../husky_assembly_teleop/husky_world.py#L327) (`1862` left / `1861` right).
+   - These must match the `mocap_id` base-tracker values in `husky_world.py` `ROBOT_CONFIGS` [L184/L191/L198](../husky_assembly_teleop/husky_world.py#L184)
+   - and the calib-tool `husky_world.py` `TrackedObject` IDs at [L329/L333](../husky_assembly_teleop/husky_world.py#L329) (`1862` left / `1861` right).
 
 ---
 
@@ -83,8 +83,8 @@ If you need to create a new rigid body (e.g., for the robot base or flange track
 2. Right-click and choose **Create Rigid Body**.
 3. Note the **Rigid Body ID** assigned by Motive -- you will need this for the PyBullet configuration.
 4. In the code, the rigid body IDs are configured in two places in [`husky_world.py`](../husky_assembly_teleop/husky_world.py):
-   - **Robot base tracker**: the `mocap_id` in `ROBOT_CONFIGS`, keyed by ROS domain — Alice `1840` / Belle `1850` / Cindy `1860` at [L182/L189/L196](../husky_assembly_teleop/husky_world.py#L182).
-   - **Flange/calib-tool tracker**: the ID argument to `TrackedObject` (e.g., `1862` left / `1861` right) at [L327/L331](../husky_assembly_teleop/husky_world.py#L327).
+   - **Robot base tracker**: the `mocap_id` in `ROBOT_CONFIGS`, keyed by ROS domain — Alice `1840` / Belle `1850` / Cindy `1860` at [L184/L191/L198](../husky_assembly_teleop/husky_world.py#L184).
+   - **Flange/calib-tool tracker**: the ID argument to `TrackedObject` (e.g., `1862` left / `1861` right) at [L329/L333](../husky_assembly_teleop/husky_world.py#L329).
 
    Make sure the IDs you see in Motive match the IDs in these two locations (and the Motive ID column in the [Robot Reference Table (§0.2)](#02-robot-reference-table)).
 
@@ -280,21 +280,21 @@ Before collecting data, verify these settings in the code match your setup.
 
 | What | Where | Note |
 |------|-------|------|
-| base `mocap_id` (Streaming IDs) | [`husky_world.py:182/189/196`](../husky_assembly_teleop/husky_world.py#L182) | per ROS domain (see [§0.2](#02-robot-reference-table)) ; match Motive **properties > Streaming ID** (see [§0.2](#02-robot-reference-table)) |
-| calib-tool IDs `1862` L / `1861` R | [`husky_world.py:327/331`](../husky_assembly_teleop/husky_world.py#L327) | match Motive (see [§0.2](#02-robot-reference-table)) . **Which arm is calibrated = which `calib_tool_*` block is enabled** — comment out the unused arm for a single-arm run |
+| base `mocap_id` (Streaming IDs) | [`husky_world.py:184/191/198`](../husky_assembly_teleop/husky_world.py#L184) | per ROS domain (see [§0.2](#02-robot-reference-table)) ; match Motive **properties > Streaming ID** (see [§0.2](#02-robot-reference-table)) |
+| calib-tool IDs `1862` L / `1861` R | [`husky_world.py:329/333`](../husky_assembly_teleop/husky_world.py#L329) | match Motive (see [§0.2](#02-robot-reference-table)) . **Which arm is calibrated = which `calib_tool_*` block is enabled** — comment out the unused arm for a single-arm run |
 | `CALIBRATION_DATE` + `DEFAULT_DATE_FOLDER` | [`__init__.py:57`](../husky_assembly_teleop/__init__.py#L57) & [`config_loader.py:21`](../data/calibration_data/config_loader.py#L21) | both must point to today's date folder (must exist with a `config.yaml`) |
-| `CALIBRATION_STATE_SETS` (per arm idx) | [`husky_monitor.py:72-75`](../husky_assembly_teleop/husky_monitor.py#L72) | verify the calib traj-state folder for your arm exists |
+| `CALIBRATION_STATE_SETS` (per arm idx) | [`husky_monitor.py:111-113`](../husky_assembly_teleop/husky_monitor.py#L72) | verify the calib traj-state folder for your arm exists |
 
 
 **Mode flags** — class `HuskyMonitor` switches, each set to `0` or `1`:
 
 | Flag | Where | Set to | Note |
 |------|-------|--------|------|
-| `USE_MOCAP` | [`husky_monitor.py:78`](../husky_assembly_teleop/husky_monitor.py#L78) | `1` | `0` = simulated; `1` = stream real mocap|
-| `FAKE_HARDWARE` | [`husky_monitor.py:79`](../husky_assembly_teleop/husky_monitor.py#L79) | `0` | `0` = real robot; `1` = virtual robot. Keep consistent with `USE_MOCAP` by hand |
-| `USE_CELL_STATE_BASE_POSE` | [`husky_monitor.py:87`](../husky_assembly_teleop/husky_monitor.py#L87) | `0` | `0` = base tracks mocap (normal); `1` = pin base to loaded cell state |
-| `CALIBRATION` | [`husky_monitor.py:91`](../husky_assembly_teleop/husky_monitor.py#L91) | `1` | `1` = calibration mode enabled |
-| `PUNCH_CALIB_VALIDATION` | [`husky_monitor.py:102`](../husky_assembly_teleop/husky_monitor.py#L102) | `0` | `1` only for a punch-validation session (switches EE to punch tips) |
+| `USE_MOCAP` | [`husky_monitor.py:116`](../husky_assembly_teleop/husky_monitor.py#L116) | `1` | `0` = simulated; `1` = stream real mocap|
+| `FAKE_HARDWARE` | [`husky_monitor.py:117`](../husky_assembly_teleop/husky_monitor.py#L117) | `0` | `0` = real robot; `1` = virtual robot. Keep consistent with `USE_MOCAP` by hand |
+| `USE_CELL_STATE_BASE_POSE` | [`husky_monitor.py:136`](../husky_assembly_teleop/husky_monitor.py#L136) | `0` | `0` = base tracks mocap (normal); `1` = pin base to loaded cell state |
+| `CALIBRATION` | [`husky_monitor.py:140`](../husky_assembly_teleop/husky_monitor.py#L140) | `1` | `1` = calibration mode enabled |
+| `PUNCH_CALIB_VALIDATION` | [`husky_monitor.py:194`](../husky_assembly_teleop/husky_monitor.py#L194) | `0` | `1` only for a punch-validation session (switches EE to punch tips) |
 
 ### 4.1 Understanding the GUI Controls
 

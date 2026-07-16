@@ -57,6 +57,51 @@ def arm_ik(husky: Husky, world_from_tool0, attachments, obstacles, hint_conf=Non
     return get_arm_ik_for_grasp_bar(husky.object.robot, IK_SOLVER, world_from_tool0, attachments, obstacles, hint_conf=hint_conf)
 
 def plan_arm_motion(husky: Husky, arm_goal_pose, obstacles, traj_time, grasped_element=None, grasp=None, arm_index=0, debug=False):
+    """Plan a single-arm free motion to a 6-DOF joint-space goal.
+
+    Args:
+        husky (Husky): The husky wrapper (holds pp robot + EE list).
+        arm_goal_pose: Goal joint values. Accepts either a length-6 numpy
+            array / sequence, OR a compas_robots Configuration (the
+            configuration is unpacked using the arm's canonical UR joint
+            names). The Configuration form keeps this callable uniform with
+            the tamp-API convention (see plan_free_dual_arm / plan_free_motion).
+        obstacles: pp body ids to avoid.
+        traj_time (float): Desired execution time for the trajectory tuple.
+        grasped_element: Optional held object (Element) for attachment.
+        grasp: Optional gripper-relative grasp pose for the held object.
+        arm_index (int): 0 = left / single arm, 1 = right arm.
+        debug (bool): Verbose pp diagnostics.
+
+    Returns:
+        Tuple (path, velocities, time, grasped_element) in
+        planned_arm_trajectory form. (None, None, None, None) on failure.
+    """
+    # Accept a compas Configuration for arm_goal_pose (see docstring). The
+    # internal plan_transit_motion path expects a plain length-6 sequence in
+    # the arm's canonical order, so unpack the Configuration here.
+    try:
+        # Duck-type check: Configuration exposes `.joint_dict` (dict-like);
+        # numpy arrays / lists do not. Falling back on TypeError keeps this
+        # backwards-compatible with all existing callers.
+        _joint_dict = arm_goal_pose.joint_dict  # type: ignore[attr-defined]
+    except AttributeError:
+        _joint_dict = None
+    if _joint_dict is not None:
+        from husky_assembly_teleop.utils import HUSKY_DUAL_UR5e_JOINT_NAMES, UR5E_JOINT_NAMES
+        # Try dual-arm-side names first (per arm_index); on KeyError, fall
+        # back to the single-arm joint-name list. This handles both dual-arm
+        # Alice/Belle and single-arm husky configurations.
+        try:
+            names = list(HUSKY_DUAL_UR5e_JOINT_NAMES[arm_index])
+            arm_goal_pose = np.asarray(
+                [float(_joint_dict[n]) for n in names], dtype=float,
+            )
+        except KeyError:
+            arm_goal_pose = np.asarray(
+                [float(_joint_dict[n]) for n in UR5E_JOINT_NAMES], dtype=float,
+            )
+
     attachments = [husky.object.ee_list[arm_index][1]]
     if grasped_element is not None and grasp is not None:
         robot = husky.object.robot

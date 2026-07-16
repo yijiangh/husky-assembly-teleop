@@ -14,10 +14,9 @@ and (b) propagates the end configuration into the next movement's
 ``start_state.robot_configuration``. Hence the planning order M1 -> M2 -> M3
 -> M4 -> M0: each Mk's plan seeds M(k+1)'s start.
 
-Env-collision behavior matches the live monitor: each dispatcher now plans
-WITH environment obstacles enabled (see husky_monitor.py _plan_M{1,2,3}_dispatch
-and _build_pp_scene_for_free). The headless script does NOT inject any global
-'ignore env obstacles' escape hatch.
+Env-collision behavior matches the live monitor: each dispatcher plans WITH
+environment obstacles enabled (obstacles + ACM come from the movement's
+start_state; the BarAction JSONs author touch_links/touch_bodies natively).
 
 Usage (ros2_ws venv active + install/setup.bash sourced):
   python src/husky-assembly-teleop/scripts/headless_live_monitor_test.py \\
@@ -74,7 +73,6 @@ def _bypass_init_monitor():
     monitor.current_action = None
     monitor.current_movement = None
     monitor.current_movement_index = None
-    monitor.movement_type = None
     monitor.movement_start_state = None
     monitor.target_ee_frames = None
     monitor.grasp_link_from_bar = None
@@ -110,7 +108,10 @@ def _bypass_init_monitor():
     monitor._traj_ghost_bodies = []
     monitor._traj_ghost_orig_colors = {}
     monitor._ee_target_pose_uids = []
-    monitor.planned_arm_trajectory = None
+    # 2-slot list so set_arm_trajectory can index into it (real monitor
+    # inits this the same way).
+    monitor.planned_arm_trajectory = [(None, None, None, None),
+                                      (None, None, None, None)]
 
     monitor.BAR_ACTION_LIVE_REPLAN_EXE = True
     monitor.FAKE_HARDWARE = False
@@ -120,7 +121,13 @@ def _bypass_init_monitor():
     def _noop(*a, **kw):
         return None
 
-    monitor.set_arm_trajectory = lambda traj, index=0: None
+    # Mirror the real set_arm_trajectory: write into planned_arm_trajectory[index]
+    # so headless assertions (e.g. --button replan-m2) can see whether a plan
+    # actually populated the per-arm slot.
+    def _set_arm_trajectory(traj, index=0):
+        monitor.planned_arm_trajectory[index] = traj
+
+    monitor.set_arm_trajectory = _set_arm_trajectory
     monitor.set_to_show_traj_state = _noop
     monitor.set_to_show_goal_state = _noop
     monitor.reset_ui = lambda *a, **kw: None
@@ -132,10 +139,10 @@ def _bypass_init_monitor():
 
 
 def _attach_stub_husky_interface(monitor, m1_start_state):
-    """Provide huskies[0].interface for _make_synthetic_m0.
+    """Provide huskies[0].interface for _inject_live_conf_into_state.
 
-    _make_synthetic_m0 (husky_monitor.py:1334-1356) reads .position,
-    .rotation and .arm_joint_pose off huskies[0].interface to snapshot
+    _inject_live_conf_into_state reads .position, .rotation and
+    .arm_joint_pose off huskies[0].interface to snapshot the
     "live" robot state. Headless has no ROS / mocap, so we synthesize one.
 
     Base frame: take from M1.start_state.robot_base_frame (the BarAction
@@ -306,8 +313,8 @@ def _diagnose_m0_transit_failure(monitor, mv) -> None:
       - time budget too tight (RNG-dependent miss).
 
     This helper characterises start → goal in joint space, verifies both
-    endpoints are collision-free against the *actual* filtered obstacle
-    list `_build_pp_scene_for_free` would produce, and runs a 21-sample
+    endpoints are collision-free against the mounted-body-filtered
+    obstacle list, and runs a 21-sample
     linear-interpolation sweep to identify any per-step obstacle hits
     along the straight-line path. If no hits, the failure is most likely
     time-budget / RNG; if hits, it points at which bodies are blocking.
@@ -353,8 +360,8 @@ def _diagnose_m0_transit_failure(monitor, mv) -> None:
     if monitor.active_bar_body is not None and monitor.active_bar_name:
         name_from_body[monitor.active_bar_body] = f"{monitor.active_bar_name} (active_bar)"
 
-    # Mirror _build_pp_scene_for_free's mounted-body filter so we check
-    # exactly the obstacle set the failing planner saw.
+    # Filter out robot-mounted bodies (tools, held bar) so we check the
+    # environment obstacle set only.
     mounted_names: set[str] = set()
     for name, rbs in (getattr(mv.start_state, 'rigid_body_states', None) or {}).items():
         if getattr(rbs, 'attached_to_link', None) is not None:
@@ -481,46 +488,43 @@ def _diagnose_m0_transit_failure(monitor, mv) -> None:
         from husky_assembly_tamp.motion_planner.api import plan_free_dual_arm
         import pybullet_planning as pp
 
-        scene = monitor._build_pp_scene_for_free()
-        if scene is not None:
-            saved_client2 = pp.CLIENT
-            pp.CLIENT = cid
-            pp.CLIENTS.setdefault(cid, True)
-            try:
-                # Probe 1: same goal, large time budget.
-                print("[probe-1] re-running plan_free_dual_arm with max_time=120s "
-                      "(default in _plan_M0_dispatch is 30s)...")
-                path1, info1 = plan_free_dual_arm(
-                    scene, start.tolist(), goal.tolist(), max_time=120.0,
-                )
-                if path1 is not None:
-                    print(f"  -> SUCCESS with 120s: {len(path1)} waypoints. "
-                          f"30s budget was the only limiter.")
-                else:
-                    print(f"  -> still failed at 120s "
-                          f"(failure_reason={info1.get('failure_reason')!r}). "
-                          f"More time alone won't help; the wrap is the issue.")
+        saved_client2 = pp.CLIENT
+        pp.CLIENT = cid
+        pp.CLIENTS.setdefault(cid, True)
+        try:
+            # Probe 1: same goal, large time budget.
+            print("[probe-1] re-running plan_free_dual_arm with max_time=120s...")
+            path1, info1 = plan_free_dual_arm(
+                monitor.cfab.planner, mv.start_state, goal.tolist(), max_time=120.0,
+            )
+            if path1 is not None:
+                print(f"  -> SUCCESS with 120s: {len(path1)} waypoints. "
+                      f"The smaller budget was the only limiter.")
+            else:
+                print(f"  -> still failed at 120s "
+                      f"(failure_reason={info1.get('failure_reason')!r}). "
+                      f"More time alone won't help; the wrap is the issue.")
 
-                # Probe 2: unwrap goal to within ±π of start (short-way).
-                two_pi = 2.0 * math.pi
-                canonical_goal = goal - np.round((goal - start) / two_pi) * two_pi
-                max_canon_delta = float(np.abs(canonical_goal - start).max())
-                print(f"[probe-2] re-running plan_free_dual_arm to a CANONICAL "
-                      f"(±π-of-start) goal (max joint Δ {max_canon_delta:.4f} rad)...")
-                path2, info2 = plan_free_dual_arm(
-                    scene, start.tolist(), canonical_goal.tolist(), max_time=30.0,
-                )
-                if path2 is not None:
-                    print(f"  -> SUCCESS to canonical goal: {len(path2)} waypoints. "
-                          f"Confirms the wrap is what's blocking; M0 can plan "
-                          f"the short-way, would need a final wrap-up step to "
-                          f"land on the saved M1.start.robot_configuration.")
-                else:
-                    print(f"  -> canonical goal also failed "
-                          f"(failure_reason={info2.get('failure_reason')!r}). "
-                          f"The path is hard for reasons beyond the wrap.")
-            finally:
-                pp.CLIENT = saved_client2
+            # Probe 2: unwrap goal to within ±π of start (short-way).
+            two_pi = 2.0 * math.pi
+            canonical_goal = goal - np.round((goal - start) / two_pi) * two_pi
+            max_canon_delta = float(np.abs(canonical_goal - start).max())
+            print(f"[probe-2] re-running plan_free_dual_arm to a CANONICAL "
+                  f"(±π-of-start) goal (max joint Δ {max_canon_delta:.4f} rad)...")
+            path2, info2 = plan_free_dual_arm(
+                monitor.cfab.planner, mv.start_state, canonical_goal.tolist(), max_time=30.0,
+            )
+            if path2 is not None:
+                print(f"  -> SUCCESS to canonical goal: {len(path2)} waypoints. "
+                      f"Confirms the wrap is what's blocking; M0 can plan "
+                      f"the short-way, would need a final wrap-up step to "
+                      f"land on the saved M1.start.robot_configuration.")
+            else:
+                print(f"  -> canonical goal also failed "
+                      f"(failure_reason={info2.get('failure_reason')!r}). "
+                      f"The path is hard for reasons beyond the wrap.")
+        finally:
+            pp.CLIENT = saved_client2
     except Exception as e:
         print(f"[probe] ERROR: {e}")
 
@@ -545,12 +549,8 @@ def _install_tree_drawing(monitor):
 
     M1 constrained
       ``plan_pose_rrt`` already draws its SE(3) tree when
-      ``use_draw=True``. The wiring exists (husky_world.py:2336-2341)
-      but the live caller (``plan_and_stage_constrained``) wraps the
-      planner in ``with pp.LockRenderer():``, silencing the draws. We
-      patch ``HuskyMonitor._plan_M1_dispatch`` to (a) pass
-      ``use_draw=True`` and (b) swap ``pp.LockRenderer`` to a no-op
-      context manager for the duration of the call only.
+      ``use_draw=True``. We patch ``HuskyMonitor._plan_M1_dispatch``
+      to pass ``use_draw=True`` into ``plan_constrained_dual_arm``.
     """
     import contextlib
     import importlib
@@ -729,40 +729,36 @@ def _install_tree_drawing(monitor):
     print("[draw-tree] M1 constrained: extend_toward patched to draw SE(3) "
           "tree at bar midpoint (color from planner's per-tree palette).")
 
-    # --- patch _plan_M1_dispatch: bypass LockRenderer + use_draw=True ---
-    from husky_assembly_teleop import husky_world as _world_mod
+    # --- patch _plan_M1_dispatch: same state-based call, use_draw=True ---
     _orig_m1_dispatch = monitor._plan_M1_dispatch.__func__
-    _orig_lock_renderer = pp.LockRenderer
-
-    class _NoLock:
-        def __init__(self, *a, **kw): pass
-        def __enter__(self): return self
-        def __exit__(self, *exc): return False
 
     def _patched_m1(self_, mv):
-        # Make sure the side-window can render the tree while planning.
-        monitor.constrained_trajectory = [None, None]
-        _world_mod.plan_and_stage_constrained.__globals__['pp'].LockRenderer = _NoLock
-        try:
-            _world_mod.plan_and_stage_constrained(
-                self_, use_draw=True, ignore_env_obstacles=False,
-            )
-        finally:
-            _world_mod.plan_and_stage_constrained.__globals__['pp'].LockRenderer = _orig_lock_renderer
-        traj = self_.constrained_trajectory
-        if not (traj and traj[0] is not None and traj[1] is not None):
-            return None
+        from husky_assembly_tamp.motion_planner.api import plan_constrained_dual_arm
         from husky_assembly_teleop.utils import joint_trajectory_from_path
-        left_path = traj[0][0]
-        right_path = traj[1][0]
-        T = min(len(left_path), len(right_path))
-        path12 = [np.concatenate([left_path[i], right_path[i]]) for i in range(T)]
-        return joint_trajectory_from_path(path12)
+        from husky_assembly_teleop.husky_monitor import M1_POSITION_RES, M1_ROTATION_RES
+        path, info = plan_constrained_dual_arm(
+            self_.cfab.planner, mv.start_state,
+            active_bar_id=self_.active_bar_name,
+            goal_ee_frames=mv.target_ee_frames,
+            stage=self_.constrained_planner_stage,
+            position_res=M1_POSITION_RES,
+            rotation_res=M1_ROTATION_RES,
+            max_time=60.0,
+            derive_start=True,
+            use_draw=True,
+        )
+        if path is None:
+            print(f"[M1] plan_constrained_dual_arm failed: {info.get('failure_reason')}")
+            return None
+        self_.constrained_trajectory = [
+            (np.asarray([q[:6] for q in path]), None, self_.trajectory_time, None),
+            (np.asarray([q[6:] for q in path]), None, self_.trajectory_time, None),
+        ]
+        return joint_trajectory_from_path(path)
 
     # Bind the patched dispatch onto the instance.
     monitor._plan_M1_dispatch = _patched_m1.__get__(monitor, type(monitor))
-    print("[draw-tree] M1 constrained: _plan_M1_dispatch patched (use_draw=True, "
-          "LockRenderer bypassed in plan_and_stage_constrained).")
+    print("[draw-tree] M1 constrained: _plan_M1_dispatch patched (use_draw=True).")
 
     def _revert():
         _rrt_mod.rrt_connect = _orig_rrt_connect
@@ -774,9 +770,14 @@ def _install_tree_drawing(monitor):
 
 
 def _replay_saved_trajectories(monitor, sequence) -> int:
-    """Load <mv>_trajectory.json files from disk for each movement in
-    `sequence` (in load order), then open an interactive PyBullet slider
-    that scrubs the concatenated waypoint stream across all movements.
+    """Iterate each movement in `sequence`, pull its in-memory trajectory into
+    the viz, then open an interactive PyBullet slider that scrubs the
+    concatenated waypoint stream across all movements.
+
+    Trajectories now live only on `mv.trajectory` (set by planning during
+    this run, or by loading a `<action>.live-solved.json` sidecar via
+    `load_bar_action_file`). Any movement without an in-memory trajectory is
+    skipped.
 
     set_robot_cell_state per waypoint moves the robot AND repositions any
     attached rigid bodies (e.g. the bar held to left tool0) rigidly with
@@ -801,17 +802,13 @@ def _replay_saved_trajectories(monitor, sequence) -> int:
         for idx in sequence:
             mv = monitor._loaded_movements[idx]
             role = monitor._match_movement_role(mv)
-            print(f"\n--- loading trajectory: {role} idx={idx} "
+            print(f"\n--- staging trajectory: {role} idx={idx} "
                   f"id={mv.movement_id!r} ---")
             monitor._selected_movement_idx = idx
             monitor.load_selected_movement()
-            # Saved filenames are now bar-action-keyed for ALL roles
-            # (monitor._trajectory_file_for prepends the active action_id
-            # for synthetic ids like M0), so cross-BarAction stale-file
-            # contamination is no longer a concern.
-            traj_path = monitor._trajectory_file_for(mv)
-            if not os.path.exists(traj_path):
-                print(f"  skipped: no file at {traj_path}")
+            if getattr(mv, 'trajectory', None) is None:
+                print(f"  skipped: no in-memory trajectory (plan first, or "
+                      "load a `.live-solved.json` sidecar via --bar-action).")
                 continue
             monitor.load_selected_movement_trajectory()
             if getattr(mv, 'trajectory', None) is not None:
@@ -879,19 +876,150 @@ def _design_data_dir():
     return DESIGN_DATA_DIRECTORY
 
 
+def _run_button_mode(monitor, sequence, role_to_idx, button: str,
+                     bar_action: str) -> int:
+    """Drive one of the new consolidated BarAction buttons end-to-end.
+
+    button choices:
+      * ``chain``      -- call ``plan_movement_chain_live()`` and assert the
+                          `<action>.live-solved.json` sidecar was written and
+                          round-trips via ``parse_bar_action`` with at least
+                          one movement carrying a fresh trajectory.
+      * ``replan-m2``  -- plan M1 first (so M2's ``start_state.robot_configuration``
+                          gets propagated), load M2, then call
+                          ``replan_free_to_movement_start_live()`` and verify
+                          ``monitor.planned_arm_trajectory`` was populated.
+      * ``replan-m3``  -- plan M1 + M2 first (so M3's start is populated),
+                          load M3, then call
+                          ``replan_free_to_movement_start_live()`` and verify
+                          ``monitor.planned_arm_trajectory``.
+    """
+    if button == 'chain':
+        print(f"\n=== [button=chain] running plan_movement_chain_live() ===")
+        monitor.plan_movement_chain_live()
+
+        # Assert sidecar written + round-trips.
+        stem, ext = os.path.splitext(monitor._current_action_path)
+        sidecar_path = f"{stem}.live-solved{ext}"
+        if not os.path.isfile(sidecar_path):
+            print(f"FAIL: expected sidecar {sidecar_path!r} not found.")
+            return 1
+        from husky_assembly_teleop.bar_action_io import parse_bar_action
+        try:
+            reloaded = parse_bar_action(sidecar_path)
+        except Exception as e:
+            print(f"FAIL: sidecar {sidecar_path!r} did not round-trip: {e}")
+            return 1
+        with_traj = [
+            mv.movement_id for mv in reloaded.movements
+            if getattr(mv, 'trajectory', None) is not None
+        ]
+        if not with_traj:
+            print(f"FAIL: sidecar round-trip has zero trajectories.")
+            return 1
+        print(f"[button=chain] OK: sidecar has {len(with_traj)} movement "
+              f"trajectories: {with_traj}")
+        _print_roster(monitor, "FINAL roster (button=chain)")
+        return 0
+
+    if button in ('replan-m2', 'replan-m3'):
+        target_role = 'M2' if button == 'replan-m2' else 'M3'
+        # Prerequisites: plan M1 (and M2 for the m3 case) so the target
+        # movement's start_state.robot_configuration is populated by
+        # forward-chain propagation.
+        prereq_roles = ['M1'] if target_role == 'M2' else ['M1', 'M2']
+        missing = [r for r in prereq_roles + [target_role] if r not in role_to_idx]
+        if missing:
+            print(f"FAIL: BarAction lacks required roles {missing}.")
+            return 1
+
+        for r in prereq_roles:
+            idx = role_to_idx[r]
+            mv = monitor._loaded_movements[idx]
+            print(f"\n=== [button={button}] pre-plan {r} idx={idx} "
+                  f"id={mv.movement_id!r} ===")
+            monitor._selected_movement_idx = idx
+            monitor.load_selected_movement()
+            monitor.plan_selected_movement()
+            if getattr(monitor.current_movement, 'trajectory', None) is None:
+                print(f"FAIL: prerequisite {r} planning failed; cannot "
+                      f"exercise replan on {target_role}.")
+                return 1
+
+        # Now load the target movement and exercise Button 2. Reset
+        # planned_arm_trajectory to a sentinel first so we can tell whether
+        # Button 2 actually wrote a fresh plan (M1's plan already populated
+        # planned_arm_trajectory; a failed IK inside Button 2 would leave
+        # that old data behind and mislead the assertion).
+        idx = role_to_idx[target_role]
+        mv = monitor._loaded_movements[idx]
+        print(f"\n=== [button={button}] running "
+              f"replan_free_to_movement_start_live() on {target_role} "
+              f"idx={idx} id={mv.movement_id!r} ===")
+        monitor._selected_movement_idx = idx
+        monitor.load_selected_movement()
+
+        # Note: `replan_free_to_movement_start_live` internally applies the
+        # MOCK live pose when HuskyMonitor.MOCK_LIVE_POSE_FOR_REPLAN is on
+        # (see husky_monitor.py:_apply_mock_live_pose_for_replan). Toggle
+        # that class flag to disable the mock.
+        monitor.planned_arm_trajectory = [(None, None, None, None),
+                                          (None, None, None, None)]
+        monitor.replan_free_to_movement_start_live()
+
+        pat = monitor.planned_arm_trajectory
+        if (pat is None
+                or pat[0] is None or pat[0][0] is None
+                or pat[1] is None or pat[1][0] is None):
+            print(f"FAIL [button={button}]: planned_arm_trajectory not "
+                  f"populated after replan_free_to_movement_start_live "
+                  f"(the live-base IK or composite free plan step failed).")
+            _print_roster(monitor, f"FINAL roster (button={button})")
+            return 1
+        n_left = len(pat[0][0])
+        n_right = len(pat[1][0])
+        print(f"[button={button}] OK: planned_arm_trajectory left={n_left} wp, "
+              f"right={n_right} wp.")
+        _print_roster(monitor, f"FINAL roster (button={button})")
+        return 0
+
+    print(f"FAIL: unknown button mode {button!r}.")
+    return 1
+
+
+def _smoke_check_conf12_from_target() -> None:
+    """Fail fast if the tamp helper still crashes on a Configuration goal.
+
+    Regression guard for the Configuration-adoption refactor (Change 1 of
+    the plan): `_conf12_from_target` used to reject numpy 12-vec goals with
+    `IndexError`; the tamp helper's documented contract is that a compas
+    Configuration works, and every monitor/world call site now passes one.
+    """
+    import numpy as _np
+    from husky_assembly_teleop.utils import conf_from_12vec, HUSKY_DUAL_UR5e_JOINT_NAMES
+    from husky_assembly_tamp.motion_planner.api import _conf12_from_target
+    names = list(HUSKY_DUAL_UR5e_JOINT_NAMES[0]) + list(HUSKY_DUAL_UR5e_JOINT_NAMES[1])
+    v = _conf12_from_target(conf_from_12vec(_np.zeros(12)), names)
+    assert v.shape == (12,), f"smoke check produced shape {v.shape}, expected (12,)"
+    print(f"[smoke] _conf12_from_target(Configuration) -> shape {v.shape} OK")
+
+
 def main(bar_action: str = DEFAULT_BAR_ACTION,
          problem: str = DEFAULT_PROBLEM,
          use_gui: bool = False,
          only_movement: str | None = None,
          no_save: bool = False,
          replay: bool = False,
-         draw_tree: bool = False) -> int:
+         draw_tree: bool = False,
+         button: str | None = None) -> int:
     global _PATCHED_PROBLEM
     _PATCHED_PROBLEM = problem
-    mode = 'REPLAY' if replay else 'PLAN'
+    mode = 'REPLAY' if replay else ('BUTTON' if button else 'PLAN')
     print(f"=== headless full-sequence test ({mode}): problem={problem!r} "
           f"bar_action={bar_action!r} only_movement={only_movement!r} "
-          f"draw_tree={draw_tree} ===")
+          f"draw_tree={draw_tree} button={button!r} ===")
+
+    _smoke_check_conf12_from_target()
 
     _patch_design_problem(problem)
 
@@ -926,15 +1054,6 @@ def main(bar_action: str = DEFAULT_BAR_ACTION,
         pp.CLIENT = monitor.cfab.client.client_id
         pp.CLIENTS[monitor.cfab.client.client_id] = True if use_gui else None
 
-        # Opt-in: env-var flips the cfab collision backend for the constrained
-        # Stage-3 RRT. Default OFF (legacy pp.get_collision_fn).
-        if os.environ.get("HUSKY_CFAB_CC_CONSTRAINED", "0") in ("1", "true", "TRUE"):
-            monitor.use_cfab_collision_for_constrained = True
-            print("[cfab-cc] constrained Stage-3 will use cfab PyBulletCheckCollision")
-        if os.environ.get("HUSKY_CFAB_CC_FREE", "0") in ("1", "true", "TRUE"):
-            monitor.use_cfab_collision_for_free = True
-            print("[cfab-cc] free composite planner will use cfab PyBulletCheckCollision")
-
         # Populate the BarAction file slider (UI does this on focus).
         monitor.available_bar_actions = monitor._load_available_bar_actions()
         if not monitor.available_bar_actions:
@@ -948,8 +1067,8 @@ def main(bar_action: str = DEFAULT_BAR_ACTION,
         monitor._selected_action_file_idx = monitor.available_bar_actions.index(bar_action)
 
         # Probe-parse to set up the stub husky interface BEFORE
-        # load_bar_action_file calls _make_synthetic_m0 (which reads
-        # huskies[0].interface).
+        # load_bar_action_file calls _inject_live_conf_into_state on the
+        # native M0 (which reads huskies[0].interface).
         from husky_assembly_teleop.bar_action_io import parse_bar_action
         from husky_assembly_teleop import DESIGN_DATA_DIRECTORY
         action_path = os.path.join(
@@ -1001,17 +1120,21 @@ def main(bar_action: str = DEFAULT_BAR_ACTION,
         if replay:
             return _replay_saved_trajectories(monitor, sequence)
 
-        # Optional: suppress trajectory JSON writes (the live UI button
-        # saves; headless mirrors that by default but --no-save flips it
-        # for iteration speed).
+        # --- BUTTON MODE: drive Button 1 (chain) or Button 2 (replan-m2/m3)
+        # end-to-end, then exit. Verifies the new consolidated UI methods
+        # without user interaction.
+        if button:
+            return _run_button_mode(monitor, sequence, role_to_idx, button,
+                                    bar_action)
+
+        # `--no-save` used to suppress the per-movement JSON write inside
+        # `_accept_trajectory`; per-movement JSONs no longer exist (all
+        # persistence now goes through the `<action>.live-solved.json`
+        # sidecar written by `plan_movement_chain_live`). Kept for CLI
+        # backward-compat -- warn and ignore.
         if no_save:
-            orig_accept = monitor._accept_trajectory
-
-            def _accept_nosave(mv, jt, **kw):
-                kw['save_to_disk'] = False
-                return orig_accept(mv, jt, **kw)
-
-            monitor._accept_trajectory = _accept_nosave
+            print("[--no-save] deprecated; per-mv JSON persistence removed "
+                  "(sidecar-only). Ignoring the flag.")
 
         sequence_ids = [monitor._loaded_movements[i].movement_id for i in sequence]
         print(f"\n=== planning sequence ({len(sequence)}): {sequence_ids} ===")
@@ -1077,20 +1200,10 @@ def main(bar_action: str = DEFAULT_BAR_ACTION,
 
         if use_gui:
             # Drop into the replay scrubber so the user can step through
-            # the trajectory they just planned. Replay reads
-            # <mv>_trajectory.json from disk, so --no-save defeats this;
-            # fall back to a hold-window prompt in that case.
-            if no_save:
-                print("\n[gui] --no-save set; trajectories were not written, "
-                      "skipping auto-replay.")
-                try:
-                    input("[gui] press Enter to close the PyBullet window...")
-                except (EOFError, KeyboardInterrupt):
-                    pass
-            else:
-                print(f"\n=== entering REPLAY mode for the planned "
-                      f"trajectory ===")
-                return _replay_saved_trajectories(monitor, sequence)
+            # the trajectory they just planned. Replay reads the trajectories
+            # that are now in memory on each mv (no per-mv JSON on disk).
+            print(f"\n=== entering REPLAY mode for the planned trajectory ===")
+            return _replay_saved_trajectories(monitor, sequence)
 
         return 0
     finally:
@@ -1118,23 +1231,31 @@ if __name__ == "__main__":
                         help="Plan a single role only (no sequence). Useful "
                              "for triage after a failure.")
     parser.add_argument("--no-save", action="store_true",
-                        help="Skip writing <mv>_trajectory.json under "
-                             "<problem>/Trajectories/ (default: save, "
-                             "matching the live UI button).")
+                        help="Deprecated no-op (per-movement JSON persistence "
+                             "was replaced by the `<action>.live-solved.json` "
+                             "sidecar written by Plan Chain (Live)).")
     parser.add_argument("--replay", action="store_true",
-                        help="Skip planning. Load previously saved "
-                             "<mv>_trajectory.json files and open an "
-                             "interactive scrubber in the cfab GUI window "
-                             "to visually inspect them. Forces --gui on.")
+                        help="Skip planning. Uses in-memory trajectories "
+                             "populated by loading a `.live-solved.json` "
+                             "sidecar via --bar-action. Opens an interactive "
+                             "scrubber in the cfab GUI window. Forces --gui on.")
     parser.add_argument("--draw-tree", action="store_true",
                         help="Draw planning trees in the cfab GUI for M0 / "
                              "M1 / M4 plans (free BiRRT + constrained "
                              "SE(3) RRT). Forces --gui on. Left arm edges "
                              "are blue, right arm edges are orange.")
+    parser.add_argument("--button", type=str, default=None,
+                        choices=('chain', 'replan-m2', 'replan-m3'),
+                        help="Exercise one of the new consolidated BarAction "
+                             "buttons instead of the standard M1->M2->M3->M0->M4 "
+                             "loop. 'chain' calls plan_movement_chain_live() and "
+                             "asserts the sidecar. 'replan-m2' / 'replan-m3' "
+                             "plan the M1 (+M2 for m3) prerequisites, then "
+                             "call replan_free_to_movement_start_live().")
     args = parser.parse_args()
     sys.exit(main(
         bar_action=args.bar_action, problem=args.problem,
         use_gui=args.gui, only_movement=args.only_movement,
         no_save=args.no_save, replay=args.replay,
-        draw_tree=args.draw_tree,
+        draw_tree=args.draw_tree, button=args.button,
     ))

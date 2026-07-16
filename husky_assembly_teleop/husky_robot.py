@@ -345,20 +345,24 @@ class HuskyRobotInterface:
                 act_arm.wait_for_server(timeout_sec=2.5)
                 self.node.get_logger().info(f'Arm Action Server {act_arm.server_is_ready()}')
         
-        # SetIO Service Clients for gripper and screw control
+        # SetIO Service Clients for gripper and screw control.
+        # * Gated by monitor.CONNECT_IO_SERVICES: leave the list empty when the
+        # UR io_and_status_controller isn't running, skipping the 2.5 s wait
+        # and warning below. Callers like set_screw() guard on len(setio_clients).
         self.setio_clients = []
-        if dual_arm:
-            self.setio_clients.append(self.node.create_client(SetIO, name + '/left_ur5e/io_and_status_controller/set_io'))
-            self.setio_clients.append(self.node.create_client(SetIO, name + '/right_ur5e/io_and_status_controller/set_io'))
-        else:
-            self.setio_clients.append(self.node.create_client(SetIO, name + '/ur5e/io_and_status_controller/set_io'))
-        
-        # Wait for SetIO services to be available
-        for i, client in enumerate(self.setio_clients):
-            if client.wait_for_service(timeout_sec=2.5):
-                self.node.get_logger().info(f'SetIO Service {i} is ready!')
+        if getattr(self.node, 'CONNECT_IO_SERVICES', 1):
+            if dual_arm:
+                self.setio_clients.append(self.node.create_client(SetIO, name + '/left_ur5e/io_and_status_controller/set_io'))
+                self.setio_clients.append(self.node.create_client(SetIO, name + '/right_ur5e/io_and_status_controller/set_io'))
             else:
-                self.node.get_logger().warn(f'SetIO Service {i} not available!')
+                self.setio_clients.append(self.node.create_client(SetIO, name + '/ur5e/io_and_status_controller/set_io'))
+
+            # Wait for SetIO services to be available
+            for i, client in enumerate(self.setio_clients):
+                if client.wait_for_service(timeout_sec=2.5):
+                    self.node.get_logger().info(f'SetIO Service {i} is ready!')
+                else:
+                    self.node.get_logger().warn(f'SetIO Service {i} not available!')
 
         # Scaffolding tool RS485 clients (replaces SetIO-based gripper/screw control).
         # Indexing matches setio_clients: 0 = left/single, 1 = right.
@@ -369,21 +373,25 @@ class HuskyRobotInterface:
         # else:
         #     self.tool_clients.append(ScaffoldingToolClient(node, name, 'tool'))
 
-        # Seed active_controller[] from controller_manager (always, regardless
-        # of connect_compliant_controller). Without this, the [""] default
+        # Seed active_controller[] from controller_manager (regardless of
+        # connect_compliant_controller). Without this, the [""] default
         # makes the first switch_controller(from_ctrl="") request get rejected
         # by controller_manager because the actually-running controller isn't
         # named in deactivate_controllers.
+        # * Gated by monitor.LIST_CONTROLLER_SERVICES: set 0 to skip the 2.5 s
+        # per-arm wait + warning when controller_manager isn't running
+        # (active_controller then stays "", see caveat above).
         self.list_controllers_client = []
-        if dual_arm:
-            self.list_controllers_client.append(self.node.create_client(
-                ListControllers, name + '/left_ur5e/controller_manager/list_controllers'))
-            self.list_controllers_client.append(self.node.create_client(
-                ListControllers, name + '/right_ur5e/controller_manager/list_controllers'))
-        else:
-            self.list_controllers_client.append(self.node.create_client(
-                ListControllers, name + '/ur5e/controller_manager/list_controllers'))
-        self._seed_active_controllers()
+        if getattr(self.node, 'LIST_CONTROLLER_SERVICES', 1):
+            if dual_arm:
+                self.list_controllers_client.append(self.node.create_client(
+                    ListControllers, name + '/left_ur5e/controller_manager/list_controllers'))
+                self.list_controllers_client.append(self.node.create_client(
+                    ListControllers, name + '/right_ur5e/controller_manager/list_controllers'))
+            else:
+                self.list_controllers_client.append(self.node.create_client(
+                    ListControllers, name + '/ur5e/controller_manager/list_controllers'))
+            self._seed_active_controllers()
 
         # done --- --- --- --- ---
         self.node.get_logger().info(f'Husky "{name}" is ready!')

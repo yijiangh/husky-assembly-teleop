@@ -553,6 +553,42 @@ class LivePlot:
         pass
 
 
+class LiveMultiPlot:
+    """Streaming multi-series line plot with a radians/degrees text readout.
+
+    DPG-only (raises in PyBullet mode). Like LivePlot, it is ticked inside
+    backend.step(); the whole section can be shown or hidden via set_visible().
+
+    Args:
+        name (str): Plot title / y-axis label.
+        source (callable): source() -> list[float], one value per series,
+            polled every backend step().
+        series_labels (list): Legend label per series (same length/order as source()).
+        history (int): Number of samples kept in the scrolling window.
+        header_source (callable): Optional () -> str, shown above the readout (robot name).
+        parent: Optional container tag (e.g. a separate window) to hold the plot + table.
+        group_size (int): Optional series-per-column-group (e.g. 6 joints/arm) so a
+            dual-arm 12-series plot lays out as two L | R column-pairs.
+        palette (list): Optional RGB tuples per series (defaults to the backend palette).
+    """
+    def __init__(self, name, source, series_labels, history=200, header_source=None,
+                 *, parent=None, group_size=None, palette=None):
+        self.name = name
+        self.source = source
+        self._handle = _backend().add_live_multi_plot(
+            name, source, series_labels, history=history,
+            header_source=header_source, parent=parent, group_size=group_size,
+            palette=palette)
+
+    def set_visible(self, visible: bool):
+        """Show or hide the whole plot + readout section (the separate window)."""
+        _backend().set_visible(self._handle, bool(visible))
+
+    def update(self):
+        # plot is ticked inside backend.step(); nothing to do here
+        pass
+
+
 class Group:
     """Context manager that groups widgets into a (collapsible) section.
 
