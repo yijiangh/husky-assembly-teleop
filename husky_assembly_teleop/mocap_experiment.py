@@ -9,7 +9,7 @@ from datetime import datetime
 
 import numpy as np
 
-from husky_assembly_teleop import DATA_DIRECTORY
+from husky_assembly_teleop import DATA_DIRECTORY, DESIGN_DATA_DIRECTORY
 
 # Bar holding accuracy: marker rig geometry. Pairs are auto-matched by
 # cross-bar distance (≈82 mm). End pairs are identified after line fit
@@ -18,6 +18,12 @@ BAR_END_OFFSET_M = 0.026
 PAIR_NOMINAL_DIST_M = 0.082
 PAIR_DIST_TOL_M = 0.003
 MARKER_ERROR_TOL_M = 0.002
+
+# Default Rhino .3dm whose 'Environment Obstacles' layer is drawn as the layout
+# environment (phase1 demo). Lives next to data_design_study under the shared
+# '2025-03 Husky Assembly' root, so derive it from DESIGN_DATA_DIRECTORY.
+DEFAULT_ENV_3DM = os.path.join(
+    os.path.dirname(DESIGN_DATA_DIRECTORY), 'assembly - demo', '260715_phase1_test_v2.3dm')
 
 EXPERIMENT_DATA_DIR = os.path.join(DATA_DIRECTORY, "mocap_experiments")
 CONFIG_TEMPLATE_PATH = os.path.join(EXPERIMENT_DATA_DIR, "_template", "config.yaml")
@@ -1288,6 +1294,45 @@ def bar_deviation_from_goal(fit, goal_bar_pose):
     return {'pos_dev_m': pos_dev_m, 'angle_rad': angle_rad, 'lateral_dev_m': lateral_dev_m}
 
 
+def pair_fit_to_goal(fit, goal_bar_pose):
+    """Pair the fitted bar's tips to the goal bar — ONE robust computation shared
+    by the per-take 3D plot and the offline rows, so the same take reports the
+    same numbers everywhere.
+
+    The fitted 'start' tip is the one **nearest to ``goal_pos``** (orientation-
+    proof — unlike a lowest-world-z rule, which flips to the far tip on a
+    near-horizontal bar and yields a ~bar-length error). ``goal_start`` is
+    ``goal_pos`` (the bar's lower tip, per the rhino-export OCF-origin
+    convention); ``goal_end`` is ``goal_pos + bar_len * goal_z``.
+
+    Returns ``{fit_start, fit_end, goal_start, goal_end, start_dev_m, end_dev_m}``
+    (points are numpy arrays, metres).
+    """
+    import numpy as np
+    import pybullet_planning as pp
+
+    goal_pos = np.asarray(goal_bar_pose[0], dtype=float)
+    goal_R = np.asarray(pp.matrix_from_quat(goal_bar_pose[1]), dtype=float)
+    goal_z = goal_R[:, 2] / np.linalg.norm(goal_R[:, 2])
+
+    tips = [np.asarray(t, dtype=float) for t in fit['bar_end_points']]
+    bar_len = float(np.linalg.norm(tips[0] - tips[1]))
+    # fitted start = tip nearest the goal start (robust to bar orientation)
+    if np.linalg.norm(tips[0] - goal_pos) <= np.linalg.norm(tips[1] - goal_pos):
+        fit_start, fit_end = tips[0], tips[1]
+    else:
+        fit_start, fit_end = tips[1], tips[0]
+
+    goal_start = goal_pos
+    goal_end = goal_pos + bar_len * goal_z
+    return {
+        'fit_start': fit_start, 'fit_end': fit_end,
+        'goal_start': goal_start, 'goal_end': goal_end,
+        'start_dev_m': float(np.linalg.norm(fit_start - goal_start)),
+        'end_dev_m': float(np.linalg.norm(fit_end - goal_end)),
+    }
+
+
 def make_axis_corrector(saved_convention):
     """Return a callable mapping a saved-marker xyz into the rhino world frame.
 
@@ -1488,6 +1533,29 @@ def _find_populated_cell_state(problem_dir):
     return None
 
 
+def robot_base_from_bar_action(bar_action_path):
+    """robot_base_frame.point for the TESTED bar's own BarAction (raw JSON).
+
+    The mobile base is parked per bar (constant across that bar's M0..M4, but
+    different between bars), so the layout must read the base from the tested
+    bar's file — not the arbitrary first file `_find_populated_cell_state`
+    happens to pick. Returns ``[x, y, z]`` or None.
+    """
+    if not bar_action_path or not os.path.exists(bar_action_path):
+        return None
+    try:
+        with open(bar_action_path, 'r') as fh:
+            doc = json.load(fh)
+    except Exception:
+        return None
+    for mv in _unwrap(doc).get('movements', []) or []:
+        base = _unwrap(_unwrap(_unwrap(mv).get('start_state') or {}).get('robot_base_frame') or {})
+        pt = base.get('point')
+        if pt:
+            return [float(c) for c in pt]
+    return None
+
+
 def _walkable_ground_polygons(problem_dir):
     """Floor polygons (list of ``[[x,y], ...]`` in metres) from
     WalkableGround.json, or ``[]`` if absent. Coords that look like millimetres
@@ -1572,7 +1640,8 @@ def read_env_obstacles_3dm(path, layer_name='Environment Obstacles'):
     return obstacles
 
 
-def build_layout(problem_dir, active_bar_names, tested_bar_endpoints=None, env_3dm=None):
+def build_layout(problem_dir, active_bar_names, tested_bar_endpoints=None, env_3dm=None,
+                 tested_bar_action_path=None):
     """Build a schematic-layout dict for the take's design problem.
 
     ``active_bar_names`` is a single bar name or an iterable of names — each is
@@ -1582,7 +1651,9 @@ def build_layout(problem_dir, active_bar_names, tested_bar_endpoints=None, env_3
     Returns ``{'origin', 'robot_base', 'bars', 'environment', 'obstacles',
     'source'}``. ``tested_bar_endpoints`` (``(p0, p1)`` in world metres) draws the
     tested bar when the problem has no populated cell-state or the active bar
-    isn't in it.
+    isn't in it. ``tested_bar_action_path`` overrides the robot base with the
+    tested bar's own parked base (the arbitrary cell-state pick is wrong when the
+    tested bar isn't the first file).
     """
     active = {active_bar_names} if isinstance(active_bar_names, str) else set(active_bar_names or [])
     layout = {'origin': [0.0, 0.0, 0.0], 'robot_base': None, 'bars': [],
@@ -1609,6 +1680,11 @@ def build_layout(problem_dir, active_bar_names, tested_bar_endpoints=None, env_3
                                    'is_active': name in active})
         if layout['bars']:
             layout['source'] = 'cell_state'
+    # Prefer the TESTED bar's own parked base over the arbitrary cell-state pick.
+    if tested_bar_action_path:
+        rb = robot_base_from_bar_action(tested_bar_action_path)
+        if rb is not None:
+            layout['robot_base'] = rb
     if problem_dir:
         layout['environment'] = _walkable_ground_polygons(problem_dir)
     if env_3dm:
@@ -1771,3 +1847,225 @@ def draw_layout_3d(ax, layout, title='assembly layout'):
     ax.set_xlim(center[0] - half, center[0] + half)
     ax.set_ylim(center[1] - half, center[1] + half)
     ax.set_zlim(center[2] - half, center[2] + half)
+
+
+def enable_scroll_zoom(fig, scale=1.3):
+    """Mouse-wheel zoom on every subplot of `fig` (2D and 3D axes alike).
+
+    Scroll up = zoom in, down = zoom out, on whichever subplot the cursor is
+    over. 2D zooms about the cursor; 3D shrinks/expands all three limits about
+    their centre. Complements matplotlib's toolbar (which can't zoom 3D).
+    """
+    def _on_scroll(event):
+        ax = event.inaxes
+        if ax is None:
+            return
+        factor = (1.0 / scale) if event.button == 'up' else scale
+        if hasattr(ax, 'get_zlim'):  # 3D axes
+            for _get, _set in ((ax.get_xlim3d, ax.set_xlim3d),
+                               (ax.get_ylim3d, ax.set_ylim3d),
+                               (ax.get_zlim3d, ax.set_zlim3d)):
+                lo, hi = _get()
+                c = (lo + hi) / 2.0
+                r = (hi - lo) / 2.0 * factor
+                _set(c - r, c + r)
+        else:  # 2D axes — zoom about the cursor
+            xlo, xhi = ax.get_xlim()
+            ylo, yhi = ax.get_ylim()
+            xd = event.xdata if event.xdata is not None else (xlo + xhi) / 2.0
+            yd = event.ydata if event.ydata is not None else (ylo + yhi) / 2.0
+            ax.set_xlim(xd - (xd - xlo) * factor, xd + (xhi - xd) * factor)
+            ax.set_ylim(yd - (yd - ylo) * factor, yd + (yhi - yd) * factor)
+        fig.canvas.draw_idle()
+    fig.canvas.mpl_connect('scroll_event', _on_scroll)
+
+
+def show_scrollable(fig, window_size=(1350, 950)):
+    """Show `fig` in a vertically-scrollable window so a tall stack of subplots
+    stays full-size — drag the right scrollbar to see more rows; mouse-wheel over
+    a subplot still zooms it (see `enable_scroll_zoom`); the toolbar pans/saves.
+
+    Qt backends only (the session default). Falls back to a normal ``plt.show()``
+    on any other backend or if the embed fails. Other open pyplot figures (e.g. a
+    separate validation panel) are shown in their own normal windows.
+    """
+    import matplotlib
+    import matplotlib.pyplot as plt
+    if 'qt' not in matplotlib.get_backend().lower():
+        plt.show()
+        return
+    try:
+        from matplotlib.backends.qt_compat import QtWidgets
+        from matplotlib.backends.backend_qtagg import NavigationToolbar2QT
+        app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+        canvas = fig.canvas
+        title = 'bar-holding layouts'
+        try:                                   # detach from the default pyplot window
+            title = fig.canvas.manager.get_window_title()
+            fig.canvas.manager.window.hide()
+        except Exception:
+            pass
+        win = QtWidgets.QMainWindow()
+        win.setWindowTitle(title)
+        central = QtWidgets.QWidget()
+        vbox = QtWidgets.QVBoxLayout(central)
+        vbox.setContentsMargins(0, 0, 0, 0)
+        scroll = QtWidgets.QScrollArea()
+        scroll.setWidgetResizable(False)       # keep canvas at its tall fixed size
+        w_px, h_px = fig.get_size_inches() * fig.dpi
+        canvas.setMinimumSize(int(w_px), int(h_px))
+        scroll.setWidget(canvas)
+        vbox.addWidget(NavigationToolbar2QT(canvas, win))
+        vbox.addWidget(scroll)
+        win.setCentralWidget(central)
+        win.resize(*window_size)
+        win.show()
+        for num in plt.get_fignums():          # show other figures (validation panel)
+            f = plt.figure(num)
+            if f is fig:
+                continue
+            try:
+                f.canvas.manager.window.show()
+            except Exception:
+                pass
+        (app.exec if hasattr(app, 'exec') else app.exec_)()
+    except Exception as e:
+        print(f'[viewer] scrollable window unavailable ({e}); using a normal window')
+        plt.show()
+
+
+# ---------------------------------------------------------------------------
+# Mocap marker validation / camera-error plot
+# ---------------------------------------------------------------------------
+# Helps attribute a bar's pose error to the MOCAP CAMERAS vs the ROBOT movement.
+# Per take (all values already computed elsewhere — this only draws them):
+#   * per-marker `error` = Motive reconstruction residual (mm)  -> camera error
+#   * marker count (8 expected; occluded markers drop out)      -> visibility
+#   * center_to_line_dist_max/rms                               -> fit geometry
+#   * start/lateral/angle deviation vs goal (from `rows`)       -> robot error
+# Reading: low marker error + 8/8 markers + small fit residual -> deviation is
+# real ROBOT error; high marker error / missing markers -> CAMERA error.
+
+
+def _take_is_camera_suspect(t, gate_mm):
+    """True if a take's mocap is untrustworthy: a marker missing, or any
+    per-marker error over the gate (or no error data at all)."""
+    errs = t.get('errors_mm') or []
+    if t.get('count', 0) < t.get('expected', 8):
+        return True
+    return max(errs) > gate_mm if errs else True
+
+
+def plot_marker_validation(per_take, error_gate_mm=None):
+    """Build a marker-validation / camera-error figure and return it.
+
+    ``per_take``: list of dicts, one per take, with keys ``label``, ``errors_mm``
+    (per-marker residuals), ``count``, ``expected`` (=8), ``fit_max_mm``, and
+    (optional) ``start_dev_mm``, ``lateral_dev_mm``, ``angle_dev_deg`` — these
+    deviation values come straight from the caller's existing per-take ``rows``
+    (nothing is recomputed here). When present, a second panel plots them for
+    attribution.
+    """
+    import matplotlib.pyplot as plt
+    from matplotlib.lines import Line2D
+
+    if error_gate_mm is None:
+        error_gate_mm = MARKER_ERROR_TOL_M * 1000.0
+    n = len(per_take)
+    x = np.arange(n)
+    suspects = [_take_is_camera_suspect(t, error_gate_mm) for t in per_take]
+    has_dev = any('start_dev_mm' in t for t in per_take)
+
+    nrows = 2 if has_dev else 1
+    fig, axes = plt.subplots(nrows, 1, figsize=(max(7.0, n * 1.2), 4.2 * nrows),
+                             sharex=True, squeeze=False)
+    axA = axes[0][0]
+
+    # Panel A — per-marker camera error (strip) + mean tick + fit residual + count
+    for i, t in enumerate(per_take):
+        errs = np.asarray(t.get('errors_mm') or [], dtype=float)
+        col = LAYOUT_COLOR_ACTIVE if suspects[i] else 'tab:green'
+        if errs.size:
+            offs = np.linspace(-0.18, 0.18, errs.size) if errs.size > 1 else np.array([0.0])
+            axA.scatter(i + offs, errs, s=22, color=col, zorder=3)
+            axA.scatter([i], [errs.mean()], marker='_', s=380, color='k', zorder=4)
+        top = float(errs.max()) if errs.size else 0.0
+        if t.get('fit_max_mm') is not None:
+            axA.scatter([i], [t['fit_max_mm']], marker='D', facecolors='none',
+                        edgecolors='tab:blue', s=42, zorder=3)
+            top = max(top, t['fit_max_mm'])
+        good = int((errs <= error_gate_mm).sum()) if errs.size else 0
+        bad = int((errs > error_gate_mm).sum()) if errs.size else 0
+        received = t.get('count', errs.size)
+        axA.annotate(f"{good}/{bad}/{received}", (i, top),
+                     textcoords='offset points', xytext=(0, 7), ha='center',
+                     fontsize=7, fontweight=('bold' if suspects[i] else 'normal'),
+                     color=(LAYOUT_COLOR_ACTIVE if suspects[i] else 'k'))
+    axA.axhline(error_gate_mm, color='dimgray', ls='--', lw=1)
+    axA.set_ylabel('marker error (mm)')
+    all_top = [error_gate_mm]
+    for t in per_take:
+        all_top += (t.get('errors_mm') or [])
+        if t.get('fit_max_mm') is not None:
+            all_top.append(t['fit_max_mm'])
+    axA.set_ylim(0, max(all_top) * 1.25)   # headroom for the good/bad/received labels
+    axA.set_title('mocap camera error & visibility   '
+                  '(tag = good / bad / received markers)', fontsize=9)
+    axA.legend(handles=[
+        Line2D([], [], marker='o', ls='', color='tab:green', label='marker residual (ok)'),
+        Line2D([], [], marker='o', ls='', color=LAYOUT_COLOR_ACTIVE, label='camera-suspect'),
+        Line2D([], [], marker='_', ls='', color='k', label='per-take mean'),
+        Line2D([], [], marker='D', ls='', mfc='none', mec='tab:blue', label='fit residual (max)'),
+        Line2D([], [], ls='--', color='dimgray', label=f'{error_gate_mm:.0f} mm gate'),
+    ], loc='upper right', fontsize=7, ncol=2)
+    axA.grid(True, ls=':', alpha=0.4)
+
+    bottom_ax = axA
+    # Panel B — robot pose deviation (existing rows values, drawn for attribution)
+    if has_dev:
+        axB = axes[1][0]
+        # Pull one metric out of every per-take dict into a float array, using
+        # NaN where a take lacks it (NaN = "missing"; the bars/lines skip those).
+        def col(key):
+            return np.array([t.get(key, np.nan) for t in per_take], dtype=float)
+        start = col('start_dev_mm')
+        lat = col('lateral_dev_mm')
+        ang = col('angle_dev_deg')
+        w = 0.36
+        bstart = axB.bar(x - w / 2, start, width=w, color='tab:purple', label='start_dev (mm)')
+        blat = axB.bar(x + w / 2, lat, width=w, color='tab:cyan', label='lateral_dev (mm)')
+        # annotate values so a small bar stays readable next to a huge one
+        axB.bar_label(bstart, labels=[f'{v:.0f}' if np.isfinite(v) else '' for v in start],
+                      fontsize=6, padding=1)
+        axB.bar_label(blat, labels=[f'{v:.1f}' if np.isfinite(v) else '' for v in lat],
+                      fontsize=6, padding=1)
+        axB.set_ylabel('deviation (mm)')
+        axtw = axB.twinx()
+        axtw.plot(x, ang, 'o-', color='tab:orange', label='angle_dev (deg)')
+        axtw.set_ylabel('angle_dev (deg)', color='tab:orange')
+        axtw.tick_params(axis='y', labelcolor='tab:orange')
+        axB.set_title('robot pose deviation  (red take = camera-suspect)', fontsize=9)
+        h1, l1 = axB.get_legend_handles_labels()
+        h2, l2 = axtw.get_legend_handles_labels()
+        axB.legend(h1 + h2, l1 + l2, loc='upper right', fontsize=7)
+        axB.grid(True, ls=':', alpha=0.4)
+        bottom_ax = axB
+
+    # Take names on every panel (not just the bottom one), suspects in red.
+    labels = [t.get('label', '') for t in per_take]
+    for ax_ in (axes[r][0] for r in range(nrows)):
+        ax_.set_xticks(x)
+        ax_.set_xticklabels(labels, rotation=30, ha='right', fontsize=7)
+        ax_.tick_params(labelbottom=True)
+        for tick, s in zip(ax_.get_xticklabels(), suspects):
+            if s:
+                tick.set_color(LAYOUT_COLOR_ACTIVE)
+
+    fig.suptitle('mocap validation — is the pose error from the CAMERA or the ROBOT?',
+                 fontsize=10)
+    fig.text(0.5, 0.01,
+             'all markers good + small fit residual → deviation is ROBOT error\n'
+             'markers over gate (bad) or missing (received < 8) → CAMERA error (deviation unreliable)',
+             ha='center', va='bottom', fontsize=7.5, color='0.3')
+    fig.tight_layout(rect=[0, 0.06, 1, 0.95])
+    return fig

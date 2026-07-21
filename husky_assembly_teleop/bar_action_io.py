@@ -15,6 +15,7 @@ Movement subclasses directly instead of a string label.
 from __future__ import annotations
 
 import os
+import re
 from typing import Union
 
 from compas.data import json_load
@@ -42,11 +43,21 @@ def parse_bar_action(path: str) -> BarAssemblyAction:
     return obj
 
 
+def _natural_key(s: str) -> list:
+    """Sort key that orders embedded numbers numerically (B9 < B12 < B81),
+    not lexicographically (B12 < B81 < B9)."""
+    return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", s)]
+
+
 def list_bar_actions(action_dir: str) -> list[str]:
-    """Return sorted *.json filenames in the BarActions directory."""
+    """Return *.json filenames in the BarActions directory, natural-sorted
+    by bar number (B1, B2, ... B9, B12, ... B81)."""
     if not os.path.isdir(action_dir):
         return []
-    return sorted(f for f in os.listdir(action_dir) if f.endswith(".json"))
+    return sorted(
+        (f for f in os.listdir(action_dir) if f.endswith(".json")),
+        key=_natural_key,
+    )
 
 
 def find_movement(action: BarAssemblyAction, key: Union[int, str]) -> tuple[int, Movement]:

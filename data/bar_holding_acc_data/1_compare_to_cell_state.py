@@ -18,15 +18,20 @@ import numpy as np
 import matplotlib.pyplot as plt
 import pybullet_planning as pp
 
-from husky_assembly_teleop import DESIGN_DATA_DIRECTORY, DESIGN_PROBLEM_NAME, EXPERIMENT_DATA_DIRECTORY
+from husky_assembly_teleop import (
+    DESIGN_DATA_DIRECTORY, DESIGN_PROBLEM_NAME, EXPERIMENT_DATA_DIRECTORY, DEFAULT_ENV_3DM,
+)
 from husky_assembly_teleop.utils import pose_from_frame
 from husky_assembly_teleop.bar_action_io import parse_bar_action, find_movement
 from husky_assembly_teleop.mocap_experiment import (
     fit_bar_from_markerset,
     bar_deviation_from_goal,
+    pair_fit_to_goal,
     make_axis_corrector,
     convert_markerset_axes,
     draw_marker_take_in_pp,
+    enable_scroll_zoom,
+    show_scrollable,
 )
 
 
@@ -88,33 +93,16 @@ def _plot_compare(ax, fit, goal_bar_pose, take_label, dev, marker_pts=None, bar_
     dict for the take, plotted as small grey dots so we can sanity-check the
     fit against the raw mocap.
     """
-    goal_pos = np.asarray(goal_bar_pose[0], dtype=float)
-    goal_R = np.asarray(pp.matrix_from_quat(goal_bar_pose[1]), dtype=float)
-    goal_z = goal_R[:, 2] / np.linalg.norm(goal_R[:, 2])
-
-    fit_dir = np.asarray(fit['fitted_line']['direction'], dtype=float)
-    fit_dir = fit_dir / np.linalg.norm(fit_dir)
-    # Align fit_dir with goal_z so end-points pair up consistently.
-    if np.dot(fit_dir, goal_z) < 0:
-        fit_dir = -fit_dir
-
     ocf = np.asarray(fit['ocf_position'], dtype=float)
-    tips = np.asarray(fit['bar_end_points'], dtype=float)
-    bar_len = float(np.linalg.norm(tips[0] - tips[1]))
-    # Order fitted tips: a = -dir (lower / start), b = +dir (upper / end).
-    if np.dot(tips[0] - ocf, fit_dir) > np.dot(tips[1] - ocf, fit_dir):
-        tips = tips[::-1]
-    fit_a, fit_b = tips[0], tips[1]
-
-    # Bug-compat: goal_pos = goal_a (bar's lower tip / start). Extend the
-    # full bar length in +goal_z to reach the other end.
-    goal_a = goal_pos
-    goal_b = goal_pos + bar_len * goal_z
+    # ONE shared, robust tip-pairing (identical to process_file / the mocap panel).
+    pairing = pair_fit_to_goal(fit, goal_bar_pose)
+    fit_a, fit_b = pairing['fit_start'], pairing['fit_end']
+    goal_a, goal_b = pairing['goal_start'], pairing['goal_end']
 
     angle_deg = float(np.degrees(dev['angle_rad']))
     lateral_mm = dev['lateral_dev_m'] * 1000
-    start_dev_mm = float(np.linalg.norm(fit_a - goal_a)) * 1000
-    end_dev_mm = float(np.linalg.norm(fit_b - goal_b)) * 1000
+    start_dev_mm = pairing['start_dev_m'] * 1000
+    end_dev_mm = pairing['end_dev_m'] * 1000
 
     raw_pts = None
     if marker_pts:
@@ -244,6 +232,11 @@ def process_file(file_path, override_bar_action=None, override_movement=None):
     # Kept in the exported rows for provenance regardless of which reference
     # source (stamped pose vs re-parsed BarAction) we end up using.
     row_bar_action_path = data.get('bar_action_path')
+    # Always-bound for the line-381 fits_for_plot tuple; the else branch below
+    # may override them with re-parsed values. The use_exported branch never
+    # enters else, so without these it raises UnboundLocalError.
+    bar_action_path = row_bar_action_path
+    bar_name = data.get('bar_name')
 
     # * Preferred reference: the monitor now stamps the bar's start-state world
     # pose directly, so we can compare without re-parsing (and re-resolving)
@@ -328,13 +321,12 @@ def process_file(file_path, override_bar_action=None, override_movement=None):
             continue
         dev = bar_deviation_from_goal(fit, goal_bar_pose)
         ocf = fit['ocf_position']
-        # TEMPORARY: bug-compat — pick the fitted tip with the lower world z
-        # as the "observed start" and compare it to goal_pos.
         tips = fit['bar_end_points']
-        fitted_start = tips[0] if tips[0][2] <= tips[1][2] else tips[1]
-        start_dev_m = float(np.linalg.norm(
-            np.asarray(fitted_start, dtype=float) - np.asarray(goal_bar_pose[0], dtype=float)
-        ))
+        # Robust, single-source tip pairing (same helper used by _plot_compare and
+        # the mocap-validation panel, so start_dev is identical everywhere).
+        pairing = pair_fit_to_goal(fit, goal_bar_pose)
+        fitted_start = pairing['fit_start']
+        start_dev_m = pairing['start_dev_m']
         d_ocf_vs_goal_mm = (
             np.asarray(ocf, dtype=float) - np.asarray(goal_bar_pose[0], dtype=float)
         ) * 1000.0  # signed mm; NOTE: goal_pos = lower-tip per rhino-export bug
@@ -477,7 +469,13 @@ def main():
     if args.problem:
         problem_override = (args.problem if os.path.isdir(args.problem)
                             else os.path.join(DESIGN_DATA_DIRECTORY, args.problem))
-    env_3dm = args.env_3dm
+    # Fall back to the default phase1 .3dm so the environment draws without the
+    # flag; --env-3dm still overrides. Print a status line so it's never silently blank.
+    env_3dm = args.env_3dm or (DEFAULT_ENV_3DM if os.path.exists(DEFAULT_ENV_3DM) else None)
+    if env_3dm:
+        print(f"[layout] environment from {os.path.basename(env_3dm)}")
+    else:
+        print("[layout] no environment .3dm found; pass --env-3dm <file.3dm> to draw obstacles")
 
     data_folder = os.path.join(EXPERIMENT_DATA_DIRECTORY, 'bar_holding_acc_data', args.batch)
     if not os.path.isdir(data_folder):
@@ -524,35 +522,61 @@ def main():
         from husky_assembly_teleop.mocap_experiment import (
             build_layout, draw_layout_3d, problem_dir_from_bar_action_path,
         )
+        # Per-take goal-vs-fitted compare panels (two per row, tall + scrollable).
+        # The layout diagram is a SEPARATE figure (below) so it doesn't crowd
+        # these plots and can be zoomed on its own.
         n = len(all_fits)
-        total = n + 1  # + one 3D layout panel
-        ncols = min(total, 3)
-        nrows = (total + ncols - 1) // ncols
-        fig = plt.figure(figsize=(6 * ncols, 5 * nrows))
-        for idx, (label, fit, goal_pose, dev, marker_pts, _bap, bn) in enumerate(all_fits, start=1):
+        ncols = 2
+        nrows = (n + ncols - 1) // ncols
+        fig = plt.figure(figsize=(7.0 * ncols, 5.5 * nrows))
+        for idx, (label, fit, goal_pose, dev, marker_pts, bap, bn) in enumerate(all_fits, start=1):
             ax = fig.add_subplot(nrows, ncols, idx, projection='3d')
             _plot_compare(ax, fit, goal_pose, label, dev, marker_pts=marker_pts, bar_name=bn)
-        # Layout panel (3D): where the tested bar(s) sit in the whole model.
+        fig.subplots_adjust(left=0.03, right=0.99, top=0.97, bottom=0.03, hspace=0.25, wspace=0.1)
+        enable_scroll_zoom(fig)   # mouse-wheel zoom on every subplot
+
+        # Layout diagram — its OWN figure: whole model + all tested bars (red) +
+        # environment. Uses the first take's parked base for the robot marker.
         active_names = {bn for (*_r, bn) in all_fits if bn}
-        _l0, fit0, goal0, _d0, _m0, bap0, bn0 = all_fits[0]
+        _l0, fit0, goal0, _d0, _m0, bap0, _bn0 = all_fits[0]
         problem_dir = problem_override or problem_dir_from_bar_action_path(bap0)
-        # Tested-bar endpoints from the goal pose (lower tip + bar_len along goal_z),
-        # used only when the problem has no populated cell-state (degraded).
-        goal_pos = np.asarray(goal0[0], dtype=float)
-        goal_z = np.asarray(pp.matrix_from_quat(goal0[1]), dtype=float)[:, 2]
-        goal_z = goal_z / np.linalg.norm(goal_z)
+        goal_pos0 = np.asarray(goal0[0], dtype=float)
+        goal_z0 = np.asarray(pp.matrix_from_quat(goal0[1]), dtype=float)[:, 2]
+        goal_z0 = goal_z0 / np.linalg.norm(goal_z0)
         tips0 = np.asarray(fit0['bar_end_points'], dtype=float)
         bar_len0 = float(np.linalg.norm(tips0[0] - tips0[1]))
-        tested_ep = (goal_pos, goal_pos + bar_len0 * goal_z)
         layout = build_layout(problem_dir, active_names,
-                              tested_bar_endpoints=tested_ep, env_3dm=env_3dm)
+                              tested_bar_endpoints=(goal_pos0, goal_pos0 + bar_len0 * goal_z0),
+                              env_3dm=env_3dm, tested_bar_action_path=bap0)
         if layout['source'] == 'degraded':
             print("  [layout] no solved cell-state in problem folder — "
                   "showing tested bar + origin only")
-        ax3d = fig.add_subplot(nrows, ncols, total, projection='3d')
-        draw_layout_3d(ax3d, layout)
-        plt.tight_layout()
-        plt.show()
+        layfig = plt.figure(figsize=(9, 8))
+        draw_layout_3d(layfig.add_subplot(111, projection='3d'), layout)
+        enable_scroll_zoom(layfig)
+
+        # Mocap validation / camera-error figure: attribute error to camera vs
+        # robot. Deviations reuse the already-computed per-take `rows` values
+        # (all_rows is aligned 1:1 with all_fits); marker error/count come from
+        # each take's raw bar_rig markers.
+        from husky_assembly_teleop.mocap_experiment import plot_marker_validation
+        per_take = []
+        for row, (label, _fit, _goal, _dev, marker_pts, _bap, _bn) in zip(all_rows, all_fits):
+            errs_mm = [m['error'] * 1000.0 for m in marker_pts.values()
+                       if isinstance(m.get('error'), (int, float))]
+            per_take.append({
+                'label': label.replace('bar_holding_acc_', ''),
+                'errors_mm': errs_mm,
+                'count': len(marker_pts),
+                'expected': 8,
+                'fit_max_mm': row['center_to_line_dist_max_m'] * 1000.0,
+                'start_dev_mm': row['start_dev_m'] * 1000.0,
+                'lateral_dev_mm': row['lateral_dev_m'] * 1000.0,
+                'angle_dev_deg': np.rad2deg(row['angle_dev_rad']),
+            })
+        if per_take:
+            enable_scroll_zoom(plot_marker_validation(per_take))
+        show_scrollable(fig)   # tall + scrollable window (validation panel shown too)
 
 
 if __name__ == '__main__':

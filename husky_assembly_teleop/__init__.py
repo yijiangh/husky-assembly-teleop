@@ -54,8 +54,15 @@ DESIGN_DATA_DIRECTORY = '/home/su/Insync/2025-03 Husky Assembly/data_design_stud
 EXPERIMENT_DATA_DIRECTORY = '/home/su/Insync/2025-03 Husky Assembly/data_experiment'
 RECORD_DIRECTORY = os.path.join(DATA_DIRECTORY, '..', 'recorded_data')
 
-CALIBRATION_DATE = '20260623'
+CALIBRATION_DATE = '20260622'
 CALIBRATION_BATCHES = ['j0', 'j1', 'validation', 'punch_validation']
 
 DESIGN_PROBLEM_NAME = '260716_phase1_test'
 # DESIGN_PROBLEM_NAME = '2026-05-19_reoriented2'
+
+# Rhino .3dm whose "Environment Obstacles" layer is drawn as the layout-diagram
+# environment (0_/1_ --viewer). Change the filename here to switch environments,
+# or override per-run with --env-3dm <path>.
+DEFAULT_ENV_3DM = os.path.join(
+    os.path.dirname(DESIGN_DATA_DIRECTORY), 'assembly - demo',
+    '260715_phase1_test_v2.3dm')

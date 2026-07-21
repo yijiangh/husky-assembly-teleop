@@ -29,12 +29,14 @@ import argparse
 import numpy as np
 import matplotlib.pyplot as plt
 
-from husky_assembly_teleop import EXPERIMENT_DATA_DIRECTORY, DESIGN_DATA_DIRECTORY
+from husky_assembly_teleop import EXPERIMENT_DATA_DIRECTORY, DESIGN_DATA_DIRECTORY, DEFAULT_ENV_3DM
 from husky_assembly_teleop.mocap_experiment import (
     fit_bar_from_markerset,
     build_layout,
     draw_layout_2d,
     problem_dir_from_bar_action_path,
+    enable_scroll_zoom,
+    show_scrollable,
 )
 
 
@@ -236,28 +238,35 @@ def process_batch(data_folder, export=True, viewer=False, problem_override=None,
         print(f"\nexported {len(compiled)} takes to {out_path}")
 
     if viewer and fits_for_plot:
+        # Per-take data plots (two per row, tall + scrollable). The layout diagram
+        # is a SEPARATE figure (below) so it doesn't crowd these plots and can be
+        # zoomed on its own.
         n = len(fits_for_plot)
-        total = n + 1  # + one 2D layout panel
-        ncols = min(total, 3)
-        nrows = (total + ncols - 1) // ncols
-        fig = plt.figure(figsize=(6 * ncols, 5 * nrows))
-        for idx, (label, fit, _bap, bn) in enumerate(fits_for_plot, start=1):
+        ncols = 2
+        nrows = (n + ncols - 1) // ncols
+        fig = plt.figure(figsize=(7.0 * ncols, 5.5 * nrows))
+        for idx, (label, fit, bap, bn) in enumerate(fits_for_plot, start=1):
             ax = fig.add_subplot(nrows, ncols, idx, projection='3d')
             _plot_take(ax, fit, label, bar_name=bn)
-        # Layout panel (2D): where the tested bar(s) sit in the whole model.
+        fig.subplots_adjust(left=0.03, right=0.99, top=0.97, bottom=0.03, hspace=0.25, wspace=0.1)
+        enable_scroll_zoom(fig)   # mouse-wheel zoom on every subplot
+
+        # Layout diagram — its OWN figure (2D top view): whole model + all tested
+        # bars (red) + environment. Uses the first take's parked base.
         active_names = {bn for (_l, _f, _b, bn) in fits_for_plot if bn}
-        bap0, fit0 = fits_for_plot[0][2], fits_for_plot[0][1]
+        _l0, fit0, bap0, _bn0 = fits_for_plot[0]
         problem_dir = problem_override or problem_dir_from_bar_action_path(bap0)
         tips0 = np.asarray(fit0['bar_end_points'], dtype=float)
         layout = build_layout(problem_dir, active_names,
-                              tested_bar_endpoints=(tips0[0], tips0[1]), env_3dm=env_3dm)
+                              tested_bar_endpoints=(tips0[0], tips0[1]), env_3dm=env_3dm,
+                              tested_bar_action_path=bap0)
         if layout['source'] == 'degraded':
             print("  [layout] no solved cell-state in problem folder — "
                   "showing tested bar + origin only")
-        ax2d = fig.add_subplot(nrows, ncols, total)  # plain 2D axis
-        draw_layout_2d(ax2d, layout)
-        plt.tight_layout()
-        plt.show()
+        layfig = plt.figure(figsize=(9, 8))
+        draw_layout_2d(layfig.add_subplot(111), layout)
+        enable_scroll_zoom(layfig)
+        show_scrollable(fig)      # tall + scrollable window (layout shown too)
 
 
 if __name__ == '__main__':
@@ -280,6 +289,14 @@ if __name__ == '__main__':
         problem_override = (args.problem if os.path.isdir(args.problem)
                             else os.path.join(DESIGN_DATA_DIRECTORY, args.problem))
 
+    # Fall back to the default phase1 .3dm so the environment draws without the
+    # flag; --env-3dm still overrides. Print a status line so it's never silently blank.
+    env_3dm = args.env_3dm or (DEFAULT_ENV_3DM if os.path.exists(DEFAULT_ENV_3DM) else None)
+    if env_3dm:
+        print(f"[layout] environment from {os.path.basename(env_3dm)}")
+    else:
+        print("[layout] no environment .3dm found; pass --env-3dm <file.3dm> to draw obstacles")
+
     data_folder = os.path.join(EXPERIMENT_DATA_DIRECTORY, 'bar_holding_acc_data', args.batch)
     process_batch(data_folder, export=not args.no_export, viewer=args.viewer,
-                  problem_override=problem_override, env_3dm=args.env_3dm)
+                  problem_override=problem_override, env_3dm=env_3dm)

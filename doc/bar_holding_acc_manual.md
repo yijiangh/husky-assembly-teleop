@@ -74,8 +74,11 @@ step 12 is the actual `Record + Fit + Viz (shared)` → `Save markerset data`.
    already installed/held at a known pose), then **Load Movement**.
 5. Use the joystick to drive the real (colored) mobile base so it roughly aligns
    with the red ghost robot shown in the PyBullet monitor.
-6. Click **Replan IK & Transit → Mv Start (live, M2/M3)** to replan the arms
-   from the live base to the movement start.
+6. Replan the arms from the live base to the movement start, in order:
+   1. First click **1) IK Live Base → Set Mv Start Goal (no traj)** — solves
+      live-base IK and sets the goal pose (no trajectory yet).
+   2. Then click **2) IK + Plan Transit → Mv Start (live, M2/M3)** — plans the
+      transit trajectory to that goal (enables the traj viz slider).
 7. If a path is found, scrub the **trajectory viz slider** to preview it and
    confirm it's collision-free (it should be, but check).
 8. Click **Exec Both Arm Trajs** to move both arms to the movement start.
@@ -193,10 +196,13 @@ fixed.
 
 ## Layout diagram (assembly context panel)
 
-`--viewer` adds one extra panel showing **where the tested bar sits in the whole
-assembly**: **origin** yellow, all bars **grey**, tested bar **red**,
-environment/floor **blue** (steelblue). `0_` draws a **2D top view**; `1_` draws a
-**3D** view.
+`--viewer` draws **each bar-action in its own cell** (two per row), and overlays a
+small **layout inset at that cell's top-right** showing **where this bar sits in
+the whole assembly**: **origin** yellow, all bars **grey**, tested bar **red**,
+environment **blue** (steelblue), and the **robot base** orange **parked for this
+bar's action** (it differs per bar). `0_`'s inset is a **2D top view**; `1_`'s is a
+**3D** view. With many bars the figure is tall and opens in a **scrollable window**
+— drag the right scrollbar to see more rows (see Viewer controls below).
 
 ### Where each element's data comes from
 
@@ -204,16 +210,25 @@ environment/floor **blue** (steelblue). `0_` draws a **2D top view**; `1_` draws
 |---|---|
 | **current tested bar** (red) | The take JSON's `bar_name` field (e.g. `bar_B2`) picks *which* bar; its geometry is the same as any whole-model bar below. For a batch, the set of all takes' `bar_name`s. Fallback if that bar isn't in the cell-state: the goal/fitted endpoints from the take. |
 | **whole bars** (grey) | Poses from `<problem>/BarActions/*.solved_keyframe.json` → each bar's `frame` (point + x/y axes), read as **raw JSON**. Lengths from `<problem>/RobotCell.json` → bar mesh AABB. `<problem>` is resolved from the take's `bar_action_path` (or the `--problem` override). |
-| **environment** (blue) | Meshes on layer **`Environment Obstacles`** in the Rhino `.3dm` at `…/2025-03 Husky Assembly/assembly - demo/260715_phase1_test_v2.3dm` (mm → m), via `--env-3dm <path>`. Optional `WalkableGround.json` floor when present. |
-| **robot base** (orange) | `robot_base_frame.point` from the same solved cell-state (mobile-base position at that movement — it moves). |
+| **environment** (blue) | Meshes on layer **`Environment Obstacles`** in a Rhino `.3dm`. Auto-loaded from **`DEFAULT_ENV_3DM`** (see below) — no flag needed; override per-run with `--env-3dm <path>`. Optional `WalkableGround.json` floor when present (drawn only in `1_`'s 3D view). |
+| **robot base** (orange) | `robot_base_frame.point` from the **tested bar's own** BarAction (`bar_action_path`). The base is parked per bar — constant across that bar's M0..M4 but different between bars — so it's read from the tested file, not an arbitrary one. |
 | **world origin** (yellow) | Fixed `(0,0,0)` — the Rhino world origin; not read from any file. |
 
 Two notes on alignment:
 - Bars + robot base come from a **problem folder** (RobotCell / solved-keyframe);
   the environment comes from the **`.3dm`**. Different files, but both in
   Rhino-world coordinates, so they overlay (roughly — see the placement TODO).
-- The `.3dm` lives outside any problem folder, so it's pointed at with the
-  `--env-3dm <path>` flag.
+- The `.3dm` lives outside any problem folder, so its path is a config value
+  (`DEFAULT_ENV_3DM`) with a per-run `--env-3dm` override.
+
+### Setting the environment `.3dm`
+
+The environment auto-loads from **`DEFAULT_ENV_3DM`** in
+[`husky_assembly_teleop/__init__.py`](../husky_assembly_teleop/__init__.py) (next to
+`DESIGN_PROBLEM_NAME`) — so `--viewer` shows it with no extra flag. To use a
+different file for one run, pass `--env-3dm "<abs path to .3dm>"` (the argument is
+a real path, not a placeholder). To change it permanently, edit `DEFAULT_ENV_3DM`.
+Reading the `.3dm` needs `rhino3dm` (`pip install rhino3dm`).
 
 Read notes: bar world poses come from `*.solved_keyframe.json` as **raw JSON**
 (not `parse_bar_action`, so it survives an in-progress `rs_data_structure`
@@ -224,19 +239,22 @@ If no populated cell-state is found, it **degrades** to origin + the tested bar
 only and prints a `[layout] no solved cell-state ...` note (never crashes).
 Validated on `260715_phase1_test_batch_solve` (81 bars, full model).
 
-**Flags** (both scripts): the per-take plot titles are compact 3-line
-(`file`, `bar / bar_len`, `angle / ctr→line`), and all tested bars in a batch are
-highlighted. Two overrides drive the layout panel:
+**Viewer controls:** drag the **right scrollbar** to scroll through the bar-actions
+(two per row); **mouse-wheel** over any subplot zooms it in/out (2D + 3D panels and
+the marker-validation figure); **drag** to rotate the 3D panels; the toolbar
+pans/saves. The scrollable window needs a Qt backend (the session default) — on
+other backends it falls back to a single non-scrollable window. The per-take plot
+titles are compact 3-line (`file`, `bar / bar_len`, `angle / ctr→line`).
+
+**Flags** (both scripts) — two overrides drive the layout panel:
 
 ```bash
 # force the layout model to any problem folder (abs path or name under DESIGN_DATA_DIRECTORY)
 0_bar_acc_data_processing.py 20260708 --viewer --problem 260715_phase1_test_batch_solve
-# draw the environment from a Rhino .3dm ('Environment Obstacles' layer)
+# use a DIFFERENT environment .3dm than DEFAULT_ENV_3DM (else it auto-loads)
 0_bar_acc_data_processing.py 20260708 --viewer \
   --env-3dm "…/assembly - demo/260715_phase1_test_v2.3dm"
 ```
-
-Reading the `.3dm` needs `rhino3dm` (`pip install rhino3dm`).
 
 > **⚠️ TODO (important): Rhino environment placement accuracy.** The environment +
 > bars are placed **roughly** in Rhino (by hand, from approximate mocap-camera
