@@ -19,6 +19,16 @@ These ideas come up everywhere below.
   - In code a pose is usually the tuple `(position, quaternion)`.
 - **Forward kinematics (FK)**: given the robot's joint angles, compute where each part (link) and the
   tool tip end up in space. PyBullet does this for us.
+- **Inverse kinematics (IK)** — the *reverse* of FK. FK asks "joints → where's the tool?"; IK asks
+  "I want the tool *right here* — what joint angles put it there?" It is harder than FK: a target can
+  have **several** solutions (elbow-up vs elbow-down), or **none** (out of reach), so an IK solver has
+  to *search* and can fail. You need IK whenever you know a **desired tool/end-effector pose** but must
+  command **joint angles**. In this repo IK powers the live-replan buttons: after you joystick the
+  mobile base near a bar, IK re-solves each arm's joints so the tool reaches that movement's start pose
+  *from the base's current spot* — button **"1) IK Live Base → Set Mv Start Goal"** solves IK only
+  (sets the goal), **"2) IK + Plan Transit"** solves IK *and* plans a collision-free path to it.
+  "Dual-arm **constrained** IK" adds a rule that the two arms keep a fixed *relative* pose (because
+  they carry one bar together), so the solver moves both arms as one linked system.
 - **Frame / transform**: a "frame" is a local coordinate system (e.g. the robot base, the tool, the
   mocap world). A "transform" `A_from_B` tells you where frame B sits, expressed in frame A. To move a
   point/pose from one frame to another you multiply transforms.
@@ -41,6 +51,33 @@ These ideas come up everywhere below.
 - `pp.matrix_from_quat(q)` — turn a quaternion into a 3×3 rotation matrix (whose columns are the X, Y, Z axis directions).
 - `pp.draw_pose(pose)` / `pp.add_text(...)` — draw little RGB axis arrows / labels in the 3D viewer for debugging.
 - `pp.connect(use_gui=False)` / `pp.disconnect()` — open/close the physics world (GUI on = 3D window; off = headless/no window).
+
+### numpy (`np`) basics you will see
+
+**numpy** is Python's array-maths library. An **array** (`np.array([...])`) is like a list but
+**fixed-type and fast**, and maths applies to **every element at once** — no `for` loop.
+
+- `np.array([...], dtype=float)` — build an array and force every element to a float. The common idiom
+  `np.array([f(x) for x in items], dtype=float)` builds a plain list *comprehension* first, then
+  converts it to an array (e.g. pulling one number out of each dict in a list — the `col('start_dev_mm')`
+  helper in `plot_marker_validation`).
+- **Element-wise maths ("broadcasting")**: `arr * 1000` scales *every* element (metres→mm all at once);
+  `x - w/2` subtracts `w/2` from each; two same-length arrays add/subtract element by element. This is
+  why the code rarely loops over numbers.
+- `np.nan` — "not a number", a float stand-in for **missing/invalid** data. Any maths with NaN gives
+  NaN, and matplotlib **skips** NaN points — so it's a safe "leave this one blank". `np.isfinite(v)`
+  is the test for "a real number" (True for normal values, False for NaN/inf).
+- **Vector maths**: `np.linalg.norm(v)` = length of a vector `sqrt(x²+y²+z²)` — used everywhere for
+  distances/errors; `np.cross(a, b)` = a vector perpendicular to both (used to get a bar's long axis and
+  `X = Y×Z`); `np.dot(a, b)` = how aligned two vectors are (used for the sign-fix and to order bar tips).
+- **Whole-array summaries**: `np.mean/std/max(arr)` reduce an array to one number (the calibration
+  scores); `np.argsort(arr)` returns the *indices* that would sort it (picks the two widest axes for the
+  2D layout view).
+- **Angles**: `np.degrees` / `np.radians` convert; `np.arccos(np.clip(d, -1, 1))` turns a dot product
+  into an angle — the `clip` keeps floating-point rounding from pushing the input just past ±1, which
+  would make `arccos` return NaN.
+- `np.asarray(x)` — like `np.array` but **doesn't copy** if `x` is already an array (a cheap "make sure
+  this is an array"); `arr[:, 0]` takes column 0 of a 2D array (e.g. all the X coordinates of points).
 
 ### The calibration pipeline at a glance
 
@@ -392,6 +429,42 @@ rest builds on them.
   camera poses, converts them to z-up, and saves JSON+CSV to the Drive folder (`MOCAP_CAMERA_EXPORT_DIR`).
 - **`CALIBRATION_STATE_SETS`** (`~lines 72–79`): maps arm index (0=left, 1=right) to the folder of saved
   robot states/trajectories used in calibration mode, so each arm pulls its own files.
+
+---
+
+## 19. Bar-holding accuracy plots — a matplotlib primer
+
+`data/bar_holding_acc_data/0_bar_acc_data_processing.py` and `1_compare_to_cell_state.py` draw the
+`--viewer` plots (helpers live in `husky_assembly_teleop/mocap_experiment.py`). If you have never used
+**matplotlib** before, here is just enough to read and tweak them.
+
+- **Figure, Axes, subplots**: a **Figure** is the whole window/page; an **Axes** is one plot inside it.
+  `plt.figure()` makes the Figure; `fig.add_subplot(nrows, ncols, i)` carves it into an `nrows × ncols`
+  grid and returns the *i*-th cell as an Axes. Our viewer uses `ncols=2` so **two bar-actions sit per
+  row**, and `nrows` grows with the number of bars (27 bars → 14 rows).
+- **3D Axes**: `add_subplot(..., projection='3d')` makes an Axes you can plot `(x, y, z)` in and **drag
+  to rotate**. `ax.scatter(...)` draws dots, `ax.plot(...)` draws lines, `ax.set_xlim/ylim/zlim` set the
+  visible range. The per-bar data plots are built by `_plot_take` (`0_`) and `_plot_compare` (`1_`).
+- **Insets** (`ax.inset_axes([x0, y0, w, h])`): a *small* Axes drawn **inside** a big one, positioned in
+  **axes-fraction** coordinates (0–1). So `[0.60, 0.60, 0.40, 0.40]` = a box filling the top-right 40%.
+  We put each bar's small **layout overview** there. `projection='3d'` makes the inset 3D too (`1_`);
+  `0_` uses a 2D inset. To resize/move the inset, edit those four numbers.
+- **The layout diagram** (`build_layout` + `draw_layout_2d` / `draw_layout_3d`): `build_layout(...)`
+  reads the design files and returns a dict — `origin` (yellow, world 0,0,0), `robot_base` (orange),
+  `bars` (grey, the tested one **red**), `environment` (blue obstacles). The draw helpers render that
+  dict onto an Axes. The robot base is read from the **tested bar's own** BarAction so it *follows each
+  bar* (`robot_base_from_bar_action`); "pose"/"frame" are explained in §0/§A.
+- **Environment `.3dm`**: the blue obstacles come from a Rhino file, auto-loaded from `DEFAULT_ENV_3DM`
+  (set in `__init__.py`, right below `DESIGN_PROBLEM_NAME`) or overridden per-run with `--env-3dm`.
+- **Zoom** (`enable_scroll_zoom`): connects a mouse-wheel handler so scrolling over any subplot **zooms**
+  it — it simply shrinks/grows that Axes' limits. Works on 2D and 3D subplots.
+- **Scrollable window** (`show_scrollable`): matplotlib normally **scales a big figure to fit the
+  window**, so 27 stacked plots become unreadably tiny. This helper instead embeds the figure in a
+  **scroll area** so each plot keeps full size and you **drag the right scrollbar** to see more rows.
+  It needs a **Qt** backend (ours); on any other backend it quietly falls back to a normal window.
+- **Backend** = the engine that actually opens the window. Ours is **Qt** (`qtagg`). Setting the env var
+  `MPLBACKEND=Agg` means "no window — draw to an image file instead" (`fig.savefig(...)`), which is how
+  these plots get checked on a machine with no screen.
 
 ---
 
