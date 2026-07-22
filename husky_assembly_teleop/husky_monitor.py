@@ -113,19 +113,19 @@ CALIBRATION_STATE_SETS = {
 }
 
 class HuskyMonitor(Node):
-    USE_MOCAP = 0
+    USE_MOCAP = 1
     FAKE_HARDWARE = 1
 
     # * Set 0 to skip connecting the UR SetIO service clients (gripper/screw IO).
     # Saves the 2.5 s startup wait + "SetIO Service i not available!" warning
     # when io_and_status_controller isn't running. set_screw() then just logs
     # an "Invalid arm index" error instead of calling the service.
-    CONNECT_IO_SERVICES = 0
+    CONNECT_IO_SERVICES = 1
     # * Set 0 to skip querying controller_manager/list_controllers on startup.
     # Saves the 2.5 s per-arm wait + "list_controllers service unavailable"
     # warning; active_controller stays "" (first switch_controller request may
     # then be rejected by controller_manager, see _seed_active_controllers).
-    LIST_CONTROLLER_SERVICES = 0
+    LIST_CONTROLLER_SERVICES = 1
 
     # When USE_MOCAP=1, by default the husky base in PyBullet tracks mocap.
     # Set USE_CELL_STATE_BASE_POSE=1 to override that and pin the base to
@@ -4031,14 +4031,20 @@ class HuskyMonitor(Node):
             #     self.replan_constrained_from_live_base,
             # ))
 
-            # TODO I think these two should be renamed a bit better, one keep the old arm conf (but new base) and plan a motion from current conf to go there
+            # TODO I think these two should be renamed a bit better
+            # TODO one keep the old arm conf (but new base) and plan a motion from current conf to go there
             # TODO the other recompute a new ik based on the movement start conf's FK EE targets and then plan a motion from current conf to go there
             # self.buttons.append(Button('Plan Free → Mv Start (offline target)', self.plan_free_to_movement_start_with_cfab_cc))
-            self.buttons.append(Button('Replan IK & Transit → Mv Start (live, M2/M3)', self.ik_live_base_for_selected_movement))
-            # * Button 2: live-base IK + composite free plan to the selected
-            # M2/M3's start EE targets, in one click. Uses cfab CC.
+            # * Button 1: live-base IK only — sets the goal arm pose to the
+            # selected M2/M3 start EE targets (no trajectory). "Loads" the pose.
             self.buttons.append(Button(
-                'Replan IK & Transit → Mv Start (live, M2/M3)',
+                '1) IK Live Base → Set Mv Start Goal',
+                self.ik_live_base_for_selected_movement))
+            # * Button 2: live-base IK + composite free plan to the selected
+            # M2/M3's start EE targets, in one click (produces the transit
+            # trajectory → enables the traj viz slider). Uses cfab CC.
+            self.buttons.append(Button(
+                '2) IK Replan & Transit → Mv Start (live, M2/M3)',
                 self.replan_free_to_movement_start_live))
 
             self.buttons.append(Button(
