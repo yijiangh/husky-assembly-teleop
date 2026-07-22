@@ -479,6 +479,16 @@ class Slider:
     def update(self):
         _backend().poll(self._handle, self._kind, self.action)
 
+    @property
+    def value(self):
+        """Current slider value read live from the backend widget (or None).
+
+        Use this instead of the callback-updated attribute when a stale value
+        would be a bug: a slider rebuilt by reset_ui can miss the next drag's
+        on-change callback, but its widget still holds the real position.
+        """
+        return _backend().get_value(self._handle)
+
 class SliderGroup:
     def __init__(self, names, action, min_vals, max_vals, current_vals):
         self.names = names
@@ -586,6 +596,47 @@ class LiveMultiPlot:
 
     def update(self):
         # plot is ticked inside backend.step(); nothing to do here
+        pass
+
+
+class HistoryPlot:
+    """Push-based multi-series plot for per-iteration data (e.g. servoing error).
+
+    DPG-only (like LiveMultiPlot). Unlike LiveMultiPlot, which is polled every
+    backend step(), the caller feeds one sample per event via push(); reset()
+    blanks it for a new run and set_visible() shows/hides the containing window.
+    Rendering happens inside backend.step().
+
+    Args:
+        name (str): Plot title.
+        series_labels (list): One legend/readout label per series.
+        y_label (str): Y-axis label including unit (e.g. "tool0 pos err [mm]").
+        parent: Container tag (a window from add_window) to hold the plot + table.
+        group_size (int): Series per readout column-group (e.g. 3 axes/arm).
+        palette (list): Optional RGB tuples per series.
+        history (int): Max samples kept (a servoing run is only a handful).
+    """
+    def __init__(self, name, series_labels, y_label, *, parent=None,
+                 group_size=None, palette=None, history=64):
+        self.name = name
+        self._handle = _backend().add_history_plot(
+            name, series_labels, y_label, parent=parent, group_size=group_size,
+            palette=palette, history=history)
+
+    def push(self, values, x=None):
+        """Append one sample (one value per series, same order as labels)."""
+        _backend().history_push(self._handle, values, x=x)
+
+    def reset(self):
+        """Clear the plot's buffers so a new run starts from a blank plot."""
+        _backend().history_reset(self._handle)
+
+    def set_visible(self, visible: bool):
+        """Show or hide the containing window."""
+        _backend().set_visible(self._handle, bool(visible))
+
+    def update(self):
+        # plot is push-driven; nothing to do on the periodic tick
         pass
 
 

@@ -40,6 +40,14 @@ DATA_DIR = DATA_DIRECTORY
 CALIB_DATA_DIR = os.path.join(DATA_DIR, "calibration_data")
 BAR_HOLDING_ACC_DATA_DIR = os.path.join(DATA_DIR, "bar_holding_acc_data")
 BAR_HOLDING_ACC_EXPERIMENT_DIR = os.path.join(EXPERIMENT_DATA_DIRECTORY, "bar_holding_acc_data")
+
+# Servoing tracker line colors (RGB 0-255), shared by the DPG live tracker
+# (husky_monitor build_ui) and the static plot. Per family the order is
+# x, y, z, |d| (the euclidean-norm curve), shaded light -> dark so |d| reads as
+# the bold summary line. Left arm = reds, right arm = greens, mobile base = blues.
+SERVO_LEFT_ARM_RGB = [(240, 130, 120), (225, 70, 55), (150, 20, 20), (90, 0, 0)]     # x, y, z, |d|
+SERVO_RIGHT_ARM_RGB = [(150, 220, 140), (70, 180, 80), (20, 130, 40), (0, 70, 20)]   # x, y, z, |d|
+SERVO_BASE_RGB = [(150, 190, 230), (70, 130, 200), (30, 80, 160), (10, 40, 100)]     # x, y, z, |d|
 DUAL_ARM_ACC_DATA_DIR = os.path.join(DATA_DIR, "dual_arm_acc_data")
 CALIB_CONFIG_TEMPLATE = os.path.join(CALIB_DATA_DIR, "_data_template", "config.yaml")
 
@@ -1229,191 +1237,375 @@ def execute_arm_trajectory(monitor, trajectory, index=0):
     # trajectory confs, velocity, total time
     monitor.huskies[monitor.selected_robot_id].interface.send_arm_cmd(trajectory[0], trajectory[1], monitor.trajectory_time, index=index)
 
-def execute_task_goal_arm_trajectory_with_servoing(monitor, trajectory, index=0, log_data=False):
-    if trajectory is None:
-        monitor.get_logger().warn('Arm trajectory must be planed before executing!')
-        return
-    if trajectory[3] is None:
-        monitor.get_logger().warn('Arm trajectory must be have a grasped element attached to specify task space goal!')
-        return
+def _per_axis_axis_angles_deg(quat_a, quat_b):
+    """Angle between the x/y/z axes of two orientations, per axis, in degrees.
 
-    num_iters = 4
-    settle_time = 2
-    data = [{} for _ in range(num_iters)]
+    Each orientation is an xyzw quaternion. We compare the corresponding columns
+    (the world x/y/z axes) of the two rotation matrices, which is the same
+    per-axis metric the previous servoing loop reported.
 
-    obstacles = list(monitor.static_obstacles.values())
-    
+    Args:
+        quat_a (Sequence[float]): First orientation as an xyzw quaternion.
+        quat_b (Sequence[float]): Second orientation as an xyzw quaternion.
+
+    Returns:
+        list[float]: [x_angle, y_angle, z_angle] in degrees.
+    """
+    rot_a = pp.matrix_from_quat(quat_a)
+    rot_b = pp.matrix_from_quat(quat_b)
+    angles = []
+    for axis in range(3):
+        va = rot_a[:3, axis] / np.linalg.norm(rot_a[:3, axis])
+        vb = rot_b[:3, axis] / np.linalg.norm(rot_b[:3, axis])
+        dot = min(1.0, max(-1.0, float(np.dot(va, vb))))
+        angles.append(float(np.degrees(np.arccos(dot))))
+    return angles
+
+
+def measure_servo_tool0_error(monitor, target_ee_frames):
+    """Tool0 pose error of each arm at the live robot state vs the authored target.
+
+    Forward kinematics is taken at the live mocap base composed with the live
+    (last-executed) arm configuration -- exactly the quantity visual servoing
+    drives to zero. Uses the same set_pose -> get_link_pose_from_name idiom used
+    elsewhere in this module.
+
+    Args:
+        monitor: The HuskyMonitor node.
+        target_ee_frames (dict): {"left": Frame, "right": Frame}, the authored
+            world-frame tool0 targets as compas Frames.
+
+    Returns:
+        dict: Per side ("left"/"right") a dict with:
+            "pos_err_mm" (list[float]): [dx, dy, dz] position error in millimetres.
+            "pos_norm_mm" (float): position error magnitude in millimetres.
+            "rot_err_deg" (list[float]): per-axis orientation error in degrees.
+    """
+    h = monitor.huskies[monitor.selected_robot_id]
+    ho = h.object
+    hi = h.interface
+    # Sync the sim to the live mocap base + live arm joints, then read tool0 FK.
+    ho.set_pose((hi.position, hi.rotation), hi.arm_joint_pose)
+    link_from_side = {"left": "left_ur_arm_tool0", "right": "right_ur_arm_tool0"}
+    out = {}
+    for side, link_name in link_from_side.items():
+        observed = ho.get_link_pose_from_name(link_name)
+        target = pose_from_frame(target_ee_frames[side])
+        pos_err_mm = (np.array(observed[0]) - np.array(target[0])) * 1e3
+        rot_err_deg = _per_axis_axis_angles_deg(observed[1], target[1])
+        out[side] = {
+            "pos_err_mm": pos_err_mm.tolist(),
+            "pos_norm_mm": float(np.linalg.norm(pos_err_mm)),
+            "rot_err_deg": rot_err_deg,
+        }
+    return out
+
+
+def measure_base_pose_diff(monitor, start_base_pose):
+    """Live mocap base pose difference vs the servoing run's start base pose.
+
+    Args:
+        monitor: The HuskyMonitor node.
+        start_base_pose (tuple): (position, quaternion_xyzw) captured at the start
+            of the current servoing run.
+
+    Returns:
+        dict: {
+            "pos_diff_mm" (list[float]): [dx, dy, dz] base translation drift in mm.
+            "pos_norm_mm" (float): euclidean translation drift magnitude in mm.
+            "rot_diff_deg" (list[float]): per-axis base orientation drift in degrees.
+        }.
+    """
     hi = monitor.huskies[monitor.selected_robot_id].interface
-    ho = monitor.huskies[monitor.selected_robot_id].object
+    pos_diff_mm = (np.array(hi.position) - np.array(start_base_pose[0])) * 1e3
+    rot_diff_deg = _per_axis_axis_angles_deg(hi.rotation, start_base_pose[1])
+    return {
+        "pos_diff_mm": pos_diff_mm.tolist(),
+        "pos_norm_mm": float(np.linalg.norm(pos_diff_mm)),
+        "rot_diff_deg": rot_diff_deg,
+    }
 
-    # get ideal tool0 pose, not related to mocap obs
-    # TODO this should be generalized to any world_from_tool0 and attachment
-    transfer_element = trajectory[3]
-    world_from_tool0 = pp.multiply(transfer_element.goal_pose, pp.invert(transfer_element.grasp))
-    attachments = [ho.ee_list[monitor.selected_arm_index][1], pp.Attachment(ho.robot, pp.link_from_name(ho.robot, 'ur_arm_tool0'), transfer_element.grasp, transfer_element.body)]
 
-    # ! IMPORTANT
-    # TODO ** This needs to take selected_arm_index into account, otherwise it will always use the first arm
+def servo_to_movement_start_live(monitor, max_iters=8, pos_tol_mm=1.0,
+                                 later_iter_traj_time=3.0, settle_seconds=2.0,
+                                 confirm_first_iter=True, log_data=True):
+    """Iterative visual-servoing loop to the current M2/M3 movement start pose.
 
-    for iter_i in range(num_iters):
-        monitor.get_logger().info(f'Servoing arm trajectory {iter_i+1}/{num_iters}...')
+    One iteration mirrors the manual three clicks: (1) live-base IK from the latest
+    mocap pose (``ik_live_base_for_selected_movement``), (2) IK Replan & Transit to
+    that goal (``replan_free_to_movement_start_live``), (3) Exec Both Arms; then wait
+    for the arms to settle and measure the residual tool0 error at the live base +
+    last conf. Because the arm
+    motion shifts the base (its centre of gravity changes), each pass re-solves for
+    the freshly-sensed base and the residual shrinks; we stop once both arms are
+    within ``pos_tol_mm`` or after ``max_iters`` passes.
 
-        data[iter_i]['before_exe_footprint_pose'] = copy.copy(hi.position), copy.copy(hi.rotation)
+    Trajectory duration differs by iteration: the FIRST transit is a large move
+    from wherever the arms are now, so it runs over ``monitor.trajectory_time``
+    (the slider-set value); every later iteration is a tiny near-target correction
+    and runs over the short ``later_iter_traj_time``.
 
-        # execute the trajectory
-        if iter_i != 0:
-            traj_time = 2
-        else:
-            traj_time = trajectory[2] 
+    This is a generator run as a monitor task (``monitor.tasks``); it yields between
+    steps so the 20 Hz tick keeps flowing mocap while the arms move. Progress is
+    logged per iteration and saved as a static plot + JSON at the end.
 
-        monitor.huskies[monitor.selected_robot_id].interface.send_arm_cmd(trajectory[0], trajectory[1], traj_time, index=index)
+    Args:
+        monitor: The HuskyMonitor node.
+        max_iters (int): Hard cap on servoing iterations.
+        pos_tol_mm (float): Stop once both arms' tool0 position error is below this.
+        later_iter_traj_time (float): Trajectory duration (seconds) for iterations
+            after the first. The first iteration uses ``monitor.trajectory_time``.
+        settle_seconds (float): Extra time to wait after each trajectory finishes so
+            the centre-of-gravity-shifted base settles in the mocap stream before we
+            measure. Added on top of the trajectory's own duration.
+        confirm_first_iter (bool): If True, pause after planning the first (long)
+            move so the operator can preview it via the traj viz slider and click
+            'Confirm Servo Exec' before it runs. Later iterations always run
+            unattended. If False, the whole loop runs without any prompt.
+        log_data (bool): Save a JSON + PNG record of the run when done.
 
-        # wait until it finishes
-        # TODO hopefully the extra 2 seconds will be enough for the mocap estimation to roll in? To be checked
-        # TODO: ideally this should let the ros node spin until the execution is done, while blocking the thread here
-        # time.sleep(monitor.trajectory_time + 2)
+    Yields:
+        None: cooperative yields so the monitor tick keeps running.
+    """
+    h = monitor.huskies[monitor.selected_robot_id]
+    hi = h.interface
 
-        # Spin ROS node for 1 second to allow updated data to flow
-        spin_time = traj_time + settle_time
-        time.sleep(spin_time)
+    # ! Preconditions: this flow is dual-arm (M2/M3 bar-holding) on real hardware.
+    if not h.dual_arm:
+        monitor.get_logger().warn('Servoing loop needs a dual-arm robot.')
+        return
+    if monitor.FAKE_HARDWARE:
+        monitor.get_logger().warn('Servoing loop needs real hardware (not FAKE_HARDWARE).')
+        return
+    mv = monitor.current_movement
+    if mv is None or mv.start_state is None:
+        monitor.get_logger().warn('Load an M2/M3 movement first.')
+        return
+    role = monitor._match_movement_role(mv)
+    if role not in ('M2', 'M3'):
+        monitor.get_logger().warn(f'Servoing loop only supports M2/M3; current is {role!r}.')
+        return
 
-        # ! for some reasons, the spin_once will make the main node stop working after this function is finished
-        # monitor.get_logger().info(f'Spinning ROS node for {spin_time} second to process incoming data...')
-        # start_time = time.time()
-        # while time.time() - start_time < spin_time:
-        #     rclpy.spin_once(monitor, timeout_sec=0.1)
-        #     print('hi position: {}, hi rotation: {}, arm conf: {}'.format(hi.position, hi.rotation, hi.arm_joint_pose))
-        # monitor.get_logger().info('Finished spinning ROS node')
+    # ! Keep the reference target constant across iterations. Button 2 mutates
+    # mv.start_state.robot_base_frame to the live base (via
+    # _apply_live_base_to_movement), and the target tool0 frames are re-derived by
+    # FK at mv.start_state -- so we must restore the authored base before each
+    # iteration, otherwise the target would drift with the base every pass.
+    authored_base = copy.deepcopy(mv.start_state.robot_base_frame)
 
-        # the footprint pose is updated bc the mocap works asynchronously
-        data[iter_i]['after_exe_footprint_pose'] = copy.copy(hi.position), copy.copy(hi.rotation)
+    # Reference base pose for the base-difference metrics (this run's start pose).
+    start_base_pose = (copy.copy(hi.position), copy.copy(hi.rotation))
 
-        # compute the difference between the before and after exe footprint pose
-        diff_pos_vec = np.array(hi.position) - np.array(data[iter_i]['before_exe_footprint_pose'][0])
-        diff_quat_vec = np.array(hi.rotation) - np.array(data[iter_i]['before_exe_footprint_pose'][1])
-        # Convert position difference from meters to millimeters
-        diff_pos_vec_mm = diff_pos_vec * 1000
-        monitor.get_logger().info(f'Footprint pose diff: {diff_pos_vec_mm} mm, quat diff: {diff_quat_vec}')
-        # raise warning if the diff is strictly zero
-        if np.all(diff_pos_vec < 1e-9) and np.all(diff_quat_vec < 1e-9):
-            monitor.get_logger().warn(f'Footprint pose diff is zero!')
+    # Blank + show the live DPG tracker window for this run.
+    monitor.reset_servoing_tracker()
 
-        # ! until we make the ros main thread spin properly, we need to manually update the robot base pose in sim accroding to the mocap
-        # ! we assume that the robot arm conf is exactly the last traj point
-        hi.arm_joint_pose[monitor.selected_arm_index] = trajectory[0][-1]
-        ho.set_pose((hi.position, hi.rotation), hi.arm_joint_pose)
+    # Clear any stale abort request so a leftover click can't cancel this run.
+    # The 'Cancel Servo Loop' button sets this True; we poll it at each yield.
+    monitor._servo_abort = False
 
-        # compute current world_from_tool0
-        observed_world_from_tool0 = ho.get_link_pose_from_name("ur_arm_tool0")
-        # Compute position distance between observed and ideal tool0 poses
-        pos_distance = np.linalg.norm(np.array(observed_world_from_tool0[0]) - np.array(world_from_tool0[0]))
-        monitor.get_logger().info(f'tool0 pos difference: {pos_distance*1e3:.1f} mm')
+    def _aborted():
+        return getattr(monitor, '_servo_abort', False)
 
-        # Extract rotation matrices from quaternions
-        observed_rotation = pp.matrix_from_quat(observed_world_from_tool0[1])
-        ideal_rotation = pp.matrix_from_quat(world_from_tool0[1])
-        
-        # Extract individual axes from rotation matrices
-        observed_axes = [observed_rotation[:3, i] for i in range(3)]  # x, y, z axes
-        ideal_axes = [ideal_rotation[:3, i] for i in range(3)]  # x, y, z axes
-        
-        # Compute angle differences between corresponding axes
-        axis_angles = []
-        axis_names = ['x', 'y', 'z']
-        for j in range(3):
-            # Ensure normalized vectors
-            v1 = observed_axes[j] / np.linalg.norm(observed_axes[j])
-            v2 = ideal_axes[j] / np.linalg.norm(ideal_axes[j])
-            # Compute angle between vectors (in degrees)
-            dot_product = min(1.0, max(-1.0, np.dot(v1, v2)))
-            angle = np.arccos(dot_product) * 180 / np.pi
-            axis_angles.append(angle)
-            monitor.get_logger().info(f'tool0 {axis_names[j]}-axis angle difference: {angle:.4f}°')
+    data = []
+    target = None
 
-        data[iter_i]['observed_world_from_tool0'] = observed_world_from_tool0
-        data[iter_i]['ideal_world_from_tool0'] = world_from_tool0
-        data[iter_i]['world_from_tool0_pos_distance'] = pos_distance
-        data[iter_i]['world_from_tool0_axis_angles'] = axis_angles
+    def _record(iter_i):
+        """Measure the residuals, log them, push to the live tracker, store them."""
+        err = measure_servo_tool0_error(monitor, target)
+        base = measure_base_pose_diff(monitor, start_base_pose)
+        data.append({'iter': iter_i, 'tool0': err, 'base': base})
+        monitor.push_servoing_tracker(iter_i, err, base)
+        monitor.get_logger().info(
+            f"[servo {iter_i}] tool0 pos L={err['left']['pos_norm_mm']:.2f} "
+            f"R={err['right']['pos_norm_mm']:.2f} mm")
+        return err
 
-        pp.draw_pose(observed_world_from_tool0, length=0.2)  # Visualize observed pose
-        pp.draw_pose(world_from_tool0, length=0.3, width=2)  # Visualize ideal pose
-        # pp.camera_focus_on_point(world_from_tool0[0])
+    for it in range(1, max_iters + 1):
+        if _aborted():
+            break
+        monitor.get_logger().info(f'### SERVOING iteration {it}/{max_iters}')
+        # Clear any stale plan first so a failed replan (which returns without
+        # updating the trajectory) is detected below instead of re-executing the
+        # previous iteration's path.
+        monitor.planned_arm_trajectory[0] = (None, None, None, None)
+        monitor.planned_arm_trajectory[1] = (None, None, None, None)
+        # Restore the authored base so both the IK below and the replan derive the
+        # fixed authored target (Button 2's live-base step mutates it each pass).
+        mv.start_state.robot_base_frame = copy.deepcopy(authored_base)
+        # Step 1: recompute IK from the LATEST mocap pose (Button 1:
+        # ik_live_base_for_selected_movement) so the arm goal is re-solved for
+        # wherever the base has settled this pass. Then Step 2 plans the transit.
+        if not monitor.ik_live_base_for_selected_movement():
+            monitor.get_logger().warn('Servoing: live-base IK failed; stopping.')
+            break
+        # Step 2: replan the transit to that goal (Button 2: IK Replan & Transit).
+        monitor.replan_free_to_movement_start_live()
 
-        # plan again for the same task goal, the ik will use the current arm conf as initial guess, and should succeed in the first iter
-        arm_conf = planning.arm_ik(monitor.huskies[monitor.selected_robot_id], world_from_tool0, attachments, obstacles) #, hint_conf=trajectory[0][-1])
+        # Bail if IK / plan produced no usable trajectory.
+        pat = monitor.planned_arm_trajectory
+        if (pat[0] is None or pat[0][0] is None
+                or pat[1] is None or pat[1][0] is None):
+            monitor.get_logger().warn('Servoing: replan produced no trajectory; stopping.')
+            break
 
-        if arm_conf is None:
-            monitor.get_logger().warn("IK failed!")
-            return
+        # Capture the constant target once (the frames the IK just solved to) and
+        # record the pre-execution baseline as iteration 0.
+        if target is None:
+            target = copy.deepcopy(monitor._last_ik_target_ee_frames)
+            if not target or 'left' not in target or 'right' not in target:
+                monitor.get_logger().warn('Servoing: no target EE frames; stopping.')
+                break
+            _record(0)
 
-        trajectory = planning.plan_arm_motion(
-            monitor.huskies[monitor.selected_robot_id], 
-            arm_conf, 
-            obstacles, 
-            traj_time,
-            grasped_element=monitor.goal_element, 
-            grasp=monitor.goal_bar_grasp
-            )
-    
-    # Plot position distance and axis angles across iterations
-    if log_data:
-        import matplotlib.pyplot as plt
-        
-        # Extract data for plotting
-        iterations = list(range(1, num_iters + 1))
-        pos_distances = [d['world_from_tool0_pos_distance']*1e3 for d in data]
-        x_angles = [d['world_from_tool0_axis_angles'][0] for d in data]
-        y_angles = [d['world_from_tool0_axis_angles'][1] for d in data]
-        z_angles = [d['world_from_tool0_axis_angles'][2] for d in data]
-        
-        # Create figure with two subplots
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
-        
-        # Plot position distance
-        ax1.plot(iterations, pos_distances, 'o-', color='blue')
-        ax1.set_xlabel('Iteration')
-        ax1.set_ylabel('Position Distance (mm)')
-        ax1.set_title('Tool0 Position Error Across Iterations')
-        ax1.grid(True)
-        
-        # Plot axis angles
-        ax2.plot(iterations, x_angles, 'o-', color='red', label='X-axis')
-        ax2.plot(iterations, y_angles, 'o-', color='green', label='Y-axis')
-        ax2.plot(iterations, z_angles, 'o-', color='blue', label='Z-axis')
-        ax2.set_xlabel('Iteration')
-        ax2.set_ylabel('Angular Difference (degrees)')
-        ax2.set_title('Tool0 Orientation Error Across Iterations')
-        ax2.legend()
-        ax2.grid(True)
-        
-        plt.tight_layout()
+        # The first transit is a big move from wherever the arms are now: pause
+        # (while still yielding, so the traj viz slider keeps previewing the
+        # planned path) until the operator clicks 'Confirm Servo Exec'. Later
+        # iterations are short near-target corrections and run unattended.
+        if it == 1 and confirm_first_iter:
+            monitor._servo_exec_confirmed = False
+            monitor.get_logger().info(
+                "[servo] First move planned. Preview it with the traj viz slider, "
+                "then click 'Confirm Servo Exec' to execute (later iterations "
+                "run automatically).")
+            while not getattr(monitor, '_servo_exec_confirmed', False) and not _aborted():
+                yield
 
-        # Create a date-specific servoing subfolder
-        servoing_subfolder_name = f"{datetime.now().strftime('%Y%m%d')}-servoing"
-        servoing_subfolder_path = os.path.join(BAR_HOLDING_ACC_DATA_DIR, servoing_subfolder_name)
+        # Abort requested during the confirm pause (or otherwise): stop before
+        # sending the first move to the robot.
+        if _aborted():
+            break
 
-        # Create the subfolder if it doesn't exist
-        if not os.path.exists(servoing_subfolder_path):
-            os.makedirs(servoing_subfolder_path)
-            monitor.get_logger().info(f"Created servoing subfolder: {servoing_subfolder_path}")
+        # First transit is a big move (use the slider time); later iterations are
+        # tiny near-target corrections (use the short later_iter_traj_time).
+        traj_time = monitor.trajectory_time if it == 1 else later_iter_traj_time
 
-        # Update the plot and data file paths to use the new subfolder
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-        plot_filename = os.path.join(servoing_subfolder_path, f"servoing_performance_{timestamp}.png")
-        data_filename = os.path.join(servoing_subfolder_path, f"servoing_data_{timestamp}.json")
-        
-        # Save the plot
-        plt.savefig(plot_filename)
-        monitor.get_logger().info(f"Performance plot saved to {plot_filename}")
- 
-        # Also save the data
-        with open(data_filename, 'w') as f:
-            json.dump({'servoing_data': data}, f, default=lambda x: str(x) if isinstance(x, np.ndarray) else x, indent=4)
-        monitor.get_logger().info(f"Servoing data saved to {data_filename}")
+        # Execute both arms, then wait out the whole motion + a settle margin.
+        # ! We wait by TIME, not by hi.is_arm_executing: that flag clears after
+        # only ARM_NOT_EXECUTING_TIME (1 s) of no joint change, so a controller
+        # that is slow to start a motion trips it and the next iteration would
+        # fire while the arm is still moving. The trajectory was sent over
+        # traj_time, so waiting that long (+ settle) is reliable.
+        execute_arm_trajectory_both(monitor, traj_time)
+        tick_dt = 0.05  # matches the 20 Hz monitor tick that pumps this task
+        wait_ticks = int(np.ceil((traj_time + settle_seconds) / tick_dt))
+        for _ in range(wait_ticks):
+            # Abort stops the loop, but the trajectory already sent to the robot
+            # keeps running to completion (there is no in-flight cancel here).
+            if _aborted():
+                break
+            yield
+        if _aborted():
+            break
 
-        plt.show()
+        err = _record(it)
+        if max(err['left']['pos_norm_mm'], err['right']['pos_norm_mm']) < pos_tol_mm:
+            monitor.get_logger().info(
+                f'### SERVOING converged at iter {it} (< {pos_tol_mm} mm)')
+            break
 
-     
+    if _aborted():
+        monitor.get_logger().info('### SERVOING cancelled by user.')
+
+    # Leave the movement's authored base restored (clean) for downstream users.
+    mv.start_state.robot_base_frame = authored_base
+
+    # Save only when at least one move ran (baseline + >=1 executed iteration).
+    # A run cancelled during the confirm pause has just the baseline point and
+    # isn't worth a record.
+    if log_data and len(data) > 1:
+        _save_servoing_data(monitor, data)
+
+
+def _save_servoing_data(monitor, data):
+    """Save a servoing run's per-iteration residuals as JSON + a summary PNG.
+
+    Writes into a dated ``<YYYYMMDD>-servoing`` subfolder of the Google Drive
+    experiment data dir (BAR_HOLDING_ACC_EXPERIMENT_DIR), alongside the marker
+    takes for this experiment.
+
+    Args:
+        monitor: The HuskyMonitor node (for logging only).
+        data (list[dict]): One entry per recorded iteration, each with keys
+            'iter', 'tool0' (per-side pos/rot error) and 'base' (base drift).
+    """
+    subfolder = os.path.join(BAR_HOLDING_ACC_EXPERIMENT_DIR,
+                             f"{datetime.now().strftime('%Y%m%d')}-servoing")
+    os.makedirs(subfolder, exist_ok=True)
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+
+    data_filename = os.path.join(subfolder, f'servoing_data_{timestamp}.json')
+    with open(data_filename, 'w') as f:
+        json.dump({'servoing_data': data}, f, indent=2)
+    monitor.get_logger().info(f'Servoing data saved to {data_filename}')
+
+    # ! Build the figure with the pure Agg backend (Figure + FigureCanvasAgg),
+    # NOT pyplot. pyplot picks an interactive backend (Qt/Tk) whose figure manager
+    # runs its own GUI loop; creating one from inside the live monitor's DearPyGui
+    # + PyBullet event loop crashes the app. The object-oriented Figure API only
+    # renders to a PNG and never touches any GUI, so it is safe here.
+    from matplotlib.figure import Figure
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+
+    iters = [d['iter'] for d in data]
+    axis_names = ('x', 'y', 'z')
+    # Left arm = red shades, right arm = green shades (per axis), matching the
+    # DPG live tracker. Convert the shared 0-255 tuples to matplotlib 0-1.
+    side_rgb = {'left': SERVO_LEFT_ARM_RGB, 'right': SERVO_RIGHT_ARM_RGB}
+    def _arm_color(side, a):
+        return tuple(v / 255.0 for v in side_rgb[side][a])
+    def _base_color(a):
+        return tuple(v / 255.0 for v in SERVO_BASE_RGB[a])
+
+    fig = Figure(figsize=(13, 9))
+    FigureCanvasAgg(fig)
+    axes = fig.subplots(2, 2)
+
+    # Tool0 position error, per axis + euclidean norm, both arms (mm).
+    for side in ('left', 'right'):
+        for a, ax_name in enumerate(axis_names):
+            axes[0, 0].plot(iters, [d['tool0'][side]['pos_err_mm'][a] for d in data],
+                            'o-', color=_arm_color(side, a),
+                            label=f'{side.capitalize()} {ax_name}')
+        axes[0, 0].plot(iters, [d['tool0'][side]['pos_norm_mm'] for d in data],
+                        'o-', linewidth=2.2, color=_arm_color(side, 3),
+                        label=f'{side.capitalize()} |d|')
+    axes[0, 0].set_title('Tool0 position error (per axis + |d|)')
+    axes[0, 0].set_xlabel('iteration'); axes[0, 0].set_ylabel('mm')
+    axes[0, 0].legend(fontsize=7, ncol=2); axes[0, 0].grid(True)
+
+    # Tool0 orientation error, per axis, both arms (deg).
+    for side in ('left', 'right'):
+        for a, ax_name in enumerate(axis_names):
+            axes[0, 1].plot(iters, [d['tool0'][side]['rot_err_deg'][a] for d in data],
+                            'o-', color=_arm_color(side, a),
+                            label=f'{side.capitalize()} {ax_name}')
+    axes[0, 1].set_title('Tool0 orientation error (per axis)')
+    axes[0, 1].set_xlabel('iteration'); axes[0, 1].set_ylabel('deg')
+    axes[0, 1].legend(fontsize=7, ncol=2); axes[0, 1].grid(True)
+
+    # Mobile-base position drift vs run start, per axis + euclidean norm (mm).
+    for a, ax_name in enumerate(axis_names):
+        axes[1, 0].plot(iters, [d['base']['pos_diff_mm'][a] for d in data],
+                        'o-', color=_base_color(a), label=ax_name)
+    axes[1, 0].plot(iters, [d['base']['pos_norm_mm'] for d in data],
+                    'o-', linewidth=2.2, color=_base_color(3), label='|d|')
+    axes[1, 0].set_title('Base position drift vs run start (per axis + |d|)')
+    axes[1, 0].set_xlabel('iteration'); axes[1, 0].set_ylabel('mm')
+    axes[1, 0].legend(fontsize=8); axes[1, 0].grid(True)
+
+    # Mobile-base orientation drift vs run start, per axis (deg).
+    for a, ax_name in enumerate(axis_names):
+        axes[1, 1].plot(iters, [d['base']['rot_diff_deg'][a] for d in data],
+                        'o-', color=_base_color(a), label=ax_name)
+    axes[1, 1].set_title('Base orientation drift vs run start (per axis)')
+    axes[1, 1].set_xlabel('iteration'); axes[1, 1].set_ylabel('deg')
+    axes[1, 1].legend(fontsize=8); axes[1, 1].grid(True)
+
+    fig.tight_layout()
+    plot_filename = os.path.join(subfolder, f'servoing_performance_{timestamp}.png')
+    fig.savefig(plot_filename)
+    monitor.get_logger().info(f'Servoing performance plot saved to {plot_filename}')
+
 def move_base_to_goal(monitor):
     if monitor.planned_base_trajectory[0] is None:
         monitor.get_logger().warn('Base trajectory must be planed before executing!')
@@ -1433,26 +1625,36 @@ def set_gripper(monitor):
     
 ####################################
 
-def execute_arm_trajectory_both(monitor):
+def execute_arm_trajectory_both(monitor, traj_time=None):
+    """Execute both arms' planned trajectories over ``traj_time`` seconds.
+
+    Args:
+        monitor: The HuskyMonitor node.
+        traj_time (float): Duration to run the trajectory over. Defaults to
+            ``monitor.trajectory_time`` when None (the slider-set value); the
+            servoing loop passes a short time for its near-target iterations.
+    """
     if monitor.planned_arm_trajectory[0][0] is None:
         monitor.get_logger().warn('Arm trajectory must be planed before executing! [LEFT]')
         return
     if monitor.planned_arm_trajectory[1][0] is None:
         monitor.get_logger().warn('Arm trajectory must be planed before executing! [RIGHT]')
         return
-    
+
+    traj_time = monitor.trajectory_time if traj_time is None else traj_time
+
     if not monitor.FAKE_HARDWARE:
-        # Update the trajectory time in both planned_arm_trajectory tuples to match monitor.trajectory_time
+        # Stamp the requested duration onto both planned_arm_trajectory tuples.
         monitor.planned_arm_trajectory[0] = (
             monitor.planned_arm_trajectory[0][0],
             monitor.planned_arm_trajectory[0][1],
-            monitor.trajectory_time,
+            traj_time,
             monitor.planned_arm_trajectory[0][3]
         )
         monitor.planned_arm_trajectory[1] = (
             monitor.planned_arm_trajectory[1][0],
             monitor.planned_arm_trajectory[1][1],
-            monitor.trajectory_time,
+            traj_time,
             monitor.planned_arm_trajectory[1][3]
         )
         monitor.huskies[monitor.selected_robot_id].interface.send_dual_arm_cmd(monitor.planned_arm_trajectory)
@@ -1478,7 +1680,7 @@ def execute_arm_trajectory_both(monitor):
         # Spread the waypoints over the requested trajectory time so fake
         # execution takes as long as the real robot would (mirrors the
         # real-hardware dt = traj_time / (n - 1) in husky_robot.py).
-        step_dt = monitor.trajectory_time / max(max_points - 1, 1)
+        step_dt = traj_time / max(max_points - 1, 1)
 
         for i in range(max_points):
             # Update left arm configuration

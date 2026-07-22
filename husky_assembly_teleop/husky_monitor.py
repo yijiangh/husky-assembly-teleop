@@ -37,7 +37,7 @@ from husky_assembly_teleop.mocap_experiment import (
 )
 from husky_assembly_teleop.husky_robot import UR5e_HOME_STATE
 from husky_assembly_teleop.common import (
-    Button, Slider, SliderGroup, Separator, LiveMultiPlot, Husky, TrackedObject, HuskyObject, AssemblyObject, HUSKY_UR5e_JOINT_NAMES, lerp, load_gripper
+    Button, Slider, SliderGroup, Separator, LiveMultiPlot, HistoryPlot, Husky, TrackedObject, HuskyObject, AssemblyObject, HUSKY_UR5e_JOINT_NAMES, lerp, load_gripper
 )
 from husky_assembly_teleop.optitrack.NatNetClient import NatNetClient
 from husky_assembly_teleop.utils import (
@@ -114,7 +114,7 @@ CALIBRATION_STATE_SETS = {
 
 class HuskyMonitor(Node):
     USE_MOCAP = 1
-    FAKE_HARDWARE = 1
+    FAKE_HARDWARE = 0
 
     # * Set 0 to skip connecting the UR SetIO service clients (gripper/screw IO).
     # Saves the 2.5 s startup wait + "SetIO Service i not available!" warning
@@ -135,13 +135,19 @@ class HuskyMonitor(Node):
     # scaffolding (e.g., at the lab desk during dual-arm accuracy tests).
     USE_CELL_STATE_BASE_POSE = 0
     USE_DPG_UI = 1   # 0 = legacy PyBullet debug GUI; 1 = Dear PyGui control panel
-    UI_FONT_SIZE = 26  # base size for all DPG widgets (separators override to 20 in the backend)
+    UI_FONT_SIZE = 20  # base size for all DPG widgets (separators override to 20 in the backend)
 
     CALIBRATION = 0
 
     BAR_ACTION_LIVE_REPLAN_EXE = 1      # show Load BarAction / Load Movement / replan buttons
     BAR_ACTION_MOCAP_ACCURACY_TEST = 1  # show Record + Fit + Viz / Save markerset data
     DUAL_ARM_EE_CONSTR_ACCURACY_MOCAP_TEST = 0
+
+    # Set to 1 to dump cfab's collision-check setup (its ACM / allowed-collision
+    # matrix at the current state) once per cfab session. Handy when diagnosing
+    # why a movement plans into collision, but noisy otherwise, so keep it off by
+    # default. See _inject_live_conf_into_state.
+    DEBUG_CFAB_CC_SETUP = 0
 
     # =========================================================================
     # MOCK LIVE POSE FOR REPLAN (temporary; remove when real mocap + robot
@@ -619,6 +625,87 @@ class HuskyMonitor(Node):
         self._joint_stream_visible = not getattr(self, '_joint_stream_visible', False)
         self.joint_stream_plot.set_visible(self._joint_stream_visible)
 
+    # --- Visual-servoing live tracker (per-iteration tool0 error + base drift) ---
+    def _servoing_plots(self):
+        """The four servoing tracker plots, or None if the DPG UI is off."""
+        pos = getattr(self, 'servoing_pos_plot', None)
+        if pos is None:
+            return None
+        return (pos, self.servoing_rot_plot,
+                self.servoing_base_pos_plot, self.servoing_base_rot_plot)
+
+    def reset_servoing_tracker(self):
+        """Start a fresh run: clear the persisted history and blank/show the plots."""
+        # History persists on the monitor (not just in the plots) because the
+        # servoing loop calls ik_live_base... which calls reset_ui() -> build_ui(),
+        # rebuilding the plots as empty every iteration. build_ui repopulates the
+        # rebuilt plots from this list, so points accumulate across iterations.
+        self._servoing_history = []
+        plots = self._servoing_plots()
+        if plots is None:
+            return
+        for plot in plots:
+            plot.reset()
+            plot.set_visible(True)
+        self._servoing_tracker_visible = True
+
+    def push_servoing_tracker(self, iter_i, tool0_err, base_diff):
+        """Record one per-iteration sample: persist it AND draw it on the plots.
+
+        Args:
+            iter_i (int): Servoing iteration index (used as the plot x value).
+            tool0_err (dict): Output of ``world.measure_servo_tool0_error`` -- per
+                side 'pos_err_mm' (3 values) and 'rot_err_deg' (3 values).
+            base_diff (dict): Output of ``world.measure_base_pose_diff`` --
+                'pos_diff_mm' (3 values) and 'rot_diff_deg' (3 values).
+        """
+        hist = getattr(self, '_servoing_history', None)
+        if hist is None:
+            hist = self._servoing_history = []
+        hist.append((iter_i, tool0_err, base_diff))
+        self._draw_servoing_sample(iter_i, tool0_err, base_diff)
+
+    def _draw_servoing_sample(self, iter_i, tool0_err, base_diff):
+        """Push one sample onto the four plots at x=iter_i (no history append).
+
+        Also used by build_ui to repopulate freshly-rebuilt plots from history.
+        """
+        if self._servoing_plots() is None:
+            return
+        # Position pushes end each arm's / the base's block with the |d| norm,
+        # matching the group_size=4 (x, y, z, |d|) layout of these plots.
+        self.servoing_pos_plot.push(
+            list(tool0_err['left']['pos_err_mm']) + [tool0_err['left']['pos_norm_mm']]
+            + list(tool0_err['right']['pos_err_mm']) + [tool0_err['right']['pos_norm_mm']],
+            x=iter_i)
+        self.servoing_rot_plot.push(
+            list(tool0_err['left']['rot_err_deg']) + list(tool0_err['right']['rot_err_deg']),
+            x=iter_i)
+        self.servoing_base_pos_plot.push(
+            list(base_diff['pos_diff_mm']) + [base_diff['pos_norm_mm']], x=iter_i)
+        self.servoing_base_rot_plot.push(list(base_diff['rot_diff_deg']), x=iter_i)
+
+    def _repopulate_servoing_tracker(self):
+        """Redraw all persisted samples onto the (freshly-built) plots."""
+        for iter_i, tool0_err, base_diff in getattr(self, '_servoing_history', []):
+            self._draw_servoing_sample(iter_i, tool0_err, base_diff)
+
+    def toggle_servoing_tracker(self):
+        """Show or hide the visual-servoing live tracker window.
+
+        Live plots need the Dear PyGui backend, so in PyBullet mode (USE_DPG_UI=0)
+        this warns and does nothing.
+        """
+        plots = self._servoing_plots()
+        if plots is None:
+            self.get_logger().warn(
+                "Servoing tracker needs the Dear PyGui UI (set USE_DPG_UI=1).")
+            return
+        self._servoing_tracker_visible = not getattr(
+            self, '_servoing_tracker_visible', False)
+        for plot in plots:
+            plot.set_visible(self._servoing_tracker_visible)
+
     # --- Punch tool calibration validation ---
     def _load_punch_tool_config(self):
         """Load punch tool offset from config.yaml."""
@@ -952,16 +1039,10 @@ class HuskyMonitor(Node):
 
                 hi.is_arm_executing = False
 
-    def execute_arm_trajectory_with_servoing(self, trajectory=None):
-        if trajectory is None:
-            trajectory = self.planned_arm_trajectory[self.selected_arm_index]
-
-        if self.FAKE_HARDWARE:
-            self.logger.warn('Fake hardware does not support servoing!')
-        else:
-            # TODO make compatiable with dual arm
-            world.execute_task_goal_arm_trajectory_with_servoing(self, trajectory, 
-                                                                 log_data=0)
+    # NOTE: the old single-arm `execute_arm_trajectory_with_servoing` shim was
+    # removed. The bar-holding visual servoing is now the dual-arm generator
+    # `world.servo_to_movement_start_live`, wired to the 'Servo to Mv Start
+    # (live loop)' button in the bar-holding accuracy section.
 
     def set_goal_joint_0_to_zero(self):
         self.goal_arm_pose[self.selected_arm_index][0] = 0.0
@@ -1838,9 +1919,11 @@ class HuskyMonitor(Node):
                 robot_configuration is None, a zero full configuration is
                 created first so the live values have a place to land.
         """
-        # Diagnostic: one-shot dump of cfab's ACM at this state. Fires only
-        # once per cfab session so per-movement reloads don't spam.
-        if not getattr(self, '_cfab_acm_printed_for_cid', None) == getattr(
+        # Diagnostic: one-shot dump of cfab's ACM at this state. Gated behind the
+        # DEBUG_CFAB_CC_SETUP flag, and even then fires only once per cfab session
+        # so per-movement reloads don't spam.
+        if self.DEBUG_CFAB_CC_SETUP and not getattr(
+                self, '_cfab_acm_printed_for_cid', None) == getattr(
                 getattr(self.cfab, 'client', None), 'client_id', None):
             try:
                 self._print_cfab_collision_check_setup(
@@ -1875,6 +1958,16 @@ class HuskyMonitor(Node):
         if not files:
             self.get_logger().warn("No BarAction files available.")
             return
+        # Read the slider's live position rather than trusting the cached
+        # _selected_action_file_idx. reset_ui() rebuilds this slider at the end
+        # of the previous Load (inside that button's own callback), and a
+        # freshly-rebuilt widget's on-change callback can miss the next drag,
+        # leaving the cached index stale -> the same file would reload.
+        sld = getattr(self, 'bar_action_file_slider', None)
+        if sld is not None:
+            v = sld.value
+            if v is not None:
+                self._selected_action_file_idx = int(round(float(v)))
         idx = max(0, min(self._selected_action_file_idx, len(files) - 1))
         fname = files[idx]
         action_path = fname if os.path.isabs(fname) else os.path.join(
@@ -1937,6 +2030,14 @@ class HuskyMonitor(Node):
         if not self._loaded_movements:
             self.get_logger().warn("No BarAction loaded; click 'Load BarAction' first.")
             return
+        # Same reason as load_bar_action_file: read the slider's live position so
+        # a rebuilt slider that missed its drag callback doesn't reload the same
+        # movement.
+        sld = getattr(self, 'bar_movement_slider', None)
+        if sld is not None:
+            v = sld.value
+            if v is not None:
+                self._selected_movement_idx = int(round(float(v)))
         idx = max(0, min(self._selected_movement_idx, len(self._loaded_movements) - 1))
         mv = self._loaded_movements[idx]
 
@@ -2393,6 +2494,117 @@ class HuskyMonitor(Node):
                 # tool0s on the authored targets. FK at (live base + last
                 # waypoint arm conf) should equal the target EE frames derived
                 # from the movement's authored start_state at Step 1's FK.
+                self._verify_replan_endpoint_matches_target()
+        finally:
+            if revert_mock is not None:
+                revert_mock()
+
+    def replan_transfer_to_movement_start_live(self):
+        """Fresh live-base IK to the movement's start EE targets, then a
+        CONSTRAINED dual-arm ("transfer") plan from the live conf to that
+        IK-solved conf, keeping the mounted bar's rigid grasp intact.
+
+        Bar-held sibling of ``replan_free_to_movement_start_live`` (Button
+        2). Once the bar is manually mounted in the grippers it stays
+        mounted for the whole servoing session, so every move between
+        targets must keep both tool0s rigidly locked to the bar. The tamp
+        constrained planner (the same one M1 uses) enforces exactly that:
+        with ``derive_start=False`` it trusts the live start conf, reads
+        the bar's live pose from the state (the bar is ATTACHED in the
+        M2/M3 start_state, so it follows the injected live arm conf),
+        derives the rigid grasps by FK, and plans a bar-constrained path
+        to the bar pose implied by the IK-solved goal conf.
+
+        Only supports M2 / M3 (same reason as Button 2), and requires the
+        bar to be attached in the movement's start_state — that attachment
+        is what makes the planner treat the bar as held.
+        """
+        if self.current_movement is None:
+            self.get_logger().warn(
+                "No movement loaded; click 'Load Movement' first."
+            )
+            return
+        mv = self.current_movement
+        role = self._match_movement_role(mv)
+        if role not in ('M2', 'M3'):
+            self.get_logger().warn(
+                f"Replan Transfer -> Mv Start only supports M2 / M3; current "
+                f"is {role!r}."
+            )
+            return
+        # ! The bar must be attached in the start_state: the constrained
+        # planner derives the rigid grasp from it, and set_robot_cell_state
+        # makes the bar follow the live arm conf.
+        bar_rb = (mv.start_state.rigid_body_states.get(self.active_bar_name)
+                  if mv.start_state is not None and self.active_bar_name else None)
+        if bar_rb is None or bar_rb.attached_to_link is None:
+            self.get_logger().warn(
+                f"Replan Transfer: bar {self.active_bar_name!r} is not "
+                f"attached in the movement's start_state; use the free "
+                f"Transit button (2) instead."
+            )
+            return
+
+        # ---- MOCK LIVE POSE (same temporary hook as Button 2; see
+        # MOCK_LIVE_POSE_FOR_REPLAN class flag) ------------------------------
+        revert_mock = None
+        if self.MOCK_LIVE_POSE_FOR_REPLAN:
+            revert_mock = self._apply_mock_live_pose_for_replan(mv)
+        # --------------------------------------------------------------------
+
+        try:
+            # Pause GUI rendering across the whole IK + constrained search
+            # (no-op when headless) — same reasoning as Button 2.
+            with pp.LockRenderer():
+                # Step 1: live-base IK sets goal_arm_pose to the IK-solved 12-vec.
+                if not self.ik_live_base_for_selected_movement():
+                    return
+
+                # Step 2: live base into mv.start_state so the transfer plan
+                # uses the live-base state as its template.
+                if not self._apply_live_base_to_movement(mv):
+                    return
+
+                # Step 3: constrained transfer plan, live conf -> IK goal conf.
+                # Passing goal_conf (not goal_ee_frames) pins the goal bar
+                # pose to FK at the IK-solved conf, skipping the planner's
+                # own goal IK.
+                state = mv.start_state.copy()
+                self._inject_live_conf_into_state(state)
+                goal_conf = conf_from_12vec(np.concatenate(
+                    [self.goal_arm_pose[0], self.goal_arm_pose[1]]))
+                path, info = plan_constrained_dual_arm(
+                    self.cfab.planner, state,
+                    active_bar_id=self.active_bar_name,
+                    goal_conf=goal_conf,
+                    stage=M1_PLANNER_STAGE,
+                    position_res=M1_POSITION_RES,
+                    rotation_res=M1_ROTATION_RES,
+                    max_time=120.0,
+                )
+                if path is None:
+                    self.get_logger().warn(
+                        f"[transfer plan] constrained plan failed: "
+                        f"{info.get('failure_reason', 'unknown')}."
+                    )
+                    return
+                print(f"[transfer plan] OK ({len(path)} waypoints, bar-held).")
+
+                # Fill the same trajectory slots Button 2 fills, so 'Exec
+                # Both Arm Trajs' and the servoing loop pick the path up
+                # unchanged.
+                t = self.trajectory_time
+                self.set_arm_trajectory(
+                    (np.array([q[:6] for q in path]), None, t, None), index=0)
+                self.set_arm_trajectory(
+                    (np.array([q[6:] for q in path]), None, t, None), index=1)
+                self.set_to_show_traj_state()
+
+                # Step 4: FK the planned endpoint against the authored
+                # targets. NOTE the constrained planner's endpoint may sit on
+                # a different joint branch than the IK goal conf (it tracks
+                # poses, not joints) — the tool0 POSE residual is what this
+                # check verifies, and that is what servoing cares about.
                 self._verify_replan_endpoint_matches_target()
         finally:
             if revert_mock is not None:
@@ -3823,8 +4035,16 @@ class HuskyMonitor(Node):
     def start_pybullet(self):
         # start pybullet simulator
         pp.connect(use_gui=True, shadows=True, color=[0.9, 0.9, 1.0])
-        # turn on the GUI panels
-        p.configureDebugVisualizer(p.COV_ENABLE_GUI, 1, physicsClientId=pp.CLIENT)
+        # * PyBullet's debug GUI panel (the on-screen parameter sliders) is only
+        # * used by the legacy PyBulletBackend control panel. When the Dear PyGui
+        # * UI is enabled, all the controls live in the separate DPG window, so we
+        # * leave the debug panel off to keep the 3D view clean. We still keep the
+        # * 3D window itself (use_gui=True above) so the robots stay visible.
+        p.configureDebugVisualizer(
+            p.COV_ENABLE_GUI,
+            0 if self.USE_DPG_UI else 1,
+            physicsClientId=pp.CLIENT,
+        )
         
         # draw world frame
         pp.draw_pose(pp.unit_pose(), 0.1)
@@ -4003,6 +4223,53 @@ class HuskyMonitor(Node):
         else:
             self.joint_stream_plot = None
 
+        # Visual-servoing live tracker: four per-iteration plots (tool0 position
+        # error [mm], tool0 orientation error [deg], mobile-base position drift
+        # [mm], mobile-base orientation drift [deg]). Fed one point per servoing
+        # iteration by world.servo_to_movement_start_live via push_servoing_tracker.
+        # Dear PyGui only, and only for the bar-holding accuracy experiment.
+        if self.USE_DPG_UI and self.BAR_ACTION_MOCAP_ACCURACY_TEST:
+            visible = getattr(self, '_servoing_tracker_visible', False)
+            _common._global_backend.add_window(
+                "Servoing Live Tracker", tag="servoing_tracker_window",
+                width=620, height=900, show=visible)
+            # Position plots carry an extra |d| euclidean-norm curve (group_size=4);
+            # rotation plots are per-axis only (group_size=3). Left arm = reds,
+            # right arm = greens, base = blues (see world.SERVO_*_RGB); within each
+            # family the 4th shade is the |d| line.
+            arm_labels_xyz = [f'{side} {ax}' for side in ('Left', 'Right')
+                              for ax in ('x', 'y', 'z')]
+            arm_labels_xyzd = [f'{side} {ax}' for side in ('Left', 'Right')
+                               for ax in ('x', 'y', 'z', '|d|')]
+            arm_pal_xyz = world.SERVO_LEFT_ARM_RGB[:3] + world.SERVO_RIGHT_ARM_RGB[:3]
+            arm_pal_xyzd = world.SERVO_LEFT_ARM_RGB + world.SERVO_RIGHT_ARM_RGB
+            self.servoing_pos_plot = HistoryPlot(
+                "tool0 pos err", arm_labels_xyzd, "tool0 pos err [mm]",
+                parent="servoing_tracker_window", group_size=4, palette=arm_pal_xyzd)
+            self.servoing_rot_plot = HistoryPlot(
+                "tool0 rot err", arm_labels_xyz, "tool0 rot err [deg]",
+                parent="servoing_tracker_window", group_size=3, palette=arm_pal_xyz)
+            self.servoing_base_pos_plot = HistoryPlot(
+                "base pos diff", ['x', 'y', 'z', '|d|'], "base pos diff [mm]",
+                parent="servoing_tracker_window", group_size=4,
+                palette=world.SERVO_BASE_RGB)
+            self.servoing_base_rot_plot = HistoryPlot(
+                "base rot diff", ['x', 'y', 'z'], "base rot diff [deg]",
+                parent="servoing_tracker_window", palette=world.SERVO_BASE_RGB[:3])
+            for plot in (self.servoing_pos_plot, self.servoing_rot_plot,
+                         self.servoing_base_pos_plot, self.servoing_base_rot_plot):
+                plot.set_visible(visible)
+            # These plots were just rebuilt empty (build_ui runs on every
+            # reset_ui, which the servoing loop triggers). Re-draw the points
+            # collected so far so the live tracker accumulates instead of
+            # blanking every iteration.
+            self._repopulate_servoing_tracker()
+        else:
+            self.servoing_pos_plot = None
+            self.servoing_rot_plot = None
+            self.servoing_base_pos_plot = None
+            self.servoing_base_rot_plot = None
+
         self.buttons.append(Button('Toggle Goal/Trajectory', self.toggle_show_goal_state))
         self.buttons.append(Button('Reset Goal State', self.reset_ui))
                       
@@ -4046,6 +4313,20 @@ class HuskyMonitor(Node):
             self.buttons.append(Button(
                 '2) IK Replan & Transit → Mv Start (live, M2/M3)',
                 self.replan_free_to_movement_start_live))
+            # Visual-servoing loop: repeat live-base IK + transit + exec until the
+            # tool0 residual converges; logs each iteration and saves a static
+            # matplotlib plot + JSON at the end. It pauses after planning the first
+            # (long) move; preview it with the traj viz slider, then click
+            # 'Confirm Servo Exec' to run it (later iterations run unattended).
+            self.buttons.append(Button('Servo to Mv Start (live loop)',
+                lambda: self.tasks.append(world.servo_to_movement_start_live(self))))
+            self.buttons.append(Button('Confirm Servo Exec',
+                lambda: setattr(self, '_servo_exec_confirmed', True)))
+            # Stop the loop at the next yield (confirm pause / between iterations).
+            # A trajectory already sent to the robot still finishes; this only
+            # prevents further iterations.
+            self.buttons.append(Button('Cancel Servo Loop',
+                lambda: setattr(self, '_servo_abort', True)))
 
             self.buttons.append(Button(
                 'Export Dual-Traj',
@@ -4095,10 +4376,6 @@ class HuskyMonitor(Node):
         #     self.buttons.append(Button('Test Webcam Capture', self.test_webcam_capture))
         #     self.buttons.append(Button('Record Raw MoCap Take', self.record_raw_mocap_take))
 
-        # if not self.CALIBRATION:
-        #     # in calibration mode, we do not have task space targets so this is disabled
-        #     pass
-        #     # self.buttons.append(Button('Exec S.Arm Traj with servoing', self.execute_arm_trajectory_with_servoing))
 
         # if not self.CALIBRATION:
         #     self.buttons.append(Button('Exec Free Motion', self.execute_free_trajectory))
@@ -4177,6 +4454,7 @@ class HuskyMonitor(Node):
             self.buttons.append(Button('Record markerset take', self.record_bar_holding_marker_take))
             self.buttons.append(Button('Record + Fit + Viz (shared)', self.record_bar_take_with_shared_viz))
             self.buttons.append(Button('Save markerset data', self.save_bar_holding_marker_data))
+            self.buttons.append(Button('Toggle Servoing Tracker', self.toggle_servoing_tracker))
 
         if self.DUAL_ARM_EE_CONSTR_ACCURACY_MOCAP_TEST:
             # self.dump_sep_sliders.append(Slider("----------Dual Arm Acc Test", lambda : None))

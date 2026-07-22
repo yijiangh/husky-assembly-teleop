@@ -131,6 +131,15 @@ class UIBackend:
              on_change: Optional[Callable[..., None]] = None) -> None:
         raise NotImplementedError
 
+    def get_value(self, handle: int):
+        """Return a widget's current value by handle, or None if unavailable.
+
+        Lets callers read where a slider actually sits rather than relying on
+        its on-change callback having fired (callbacks on widgets rebuilt by
+        reset_ui can be missed).
+        """
+        return None
+
     def clear(self) -> None:
         """Remove all widgets created so far so the UI can be rebuilt without
         duplicates (used by HuskyMonitor.reset_ui)."""
@@ -283,6 +292,12 @@ class PyBulletBackend(UIBackend):
             else:
                 cb(new_val)
 
+    def get_value(self, handle):
+        rec = self._handles.get(handle)
+        if rec is None or "dbg" not in rec:
+            return None
+        return p.readUserDebugParameter(rec["dbg"])
+
     def clear(self) -> None:
         p.removeAllUserParameters()
         self._handles.clear()
@@ -365,6 +380,11 @@ class DearPyGuiBackend(UIBackend):
         self._handles: Dict[int, Dict[str, Any]] = {}
         self._live_plots: List[Dict[str, Any]] = []
         self._live_multi: List[Dict[str, Any]] = []
+        # Push-based per-iteration plots (add_history_plot). The caller appends
+        # samples via history_push(); rendering (set_value + axis fit) happens in
+        # step(), the same render-pass path the live plots use, so the axes fit
+        # correctly and new points show up.
+        self._history_plots: List[Dict[str, Any]] = []
         self._frame_idx = 0
 
         dpg.show_viewport()
@@ -691,6 +711,146 @@ class DearPyGuiBackend(UIBackend):
                             "multi": md}
         return h
 
+    def add_history_plot(self, label, series_labels, y_label, *, parent=None,
+                         group_size=None, palette=None, history=64):
+        """Push-based multi-series plot for per-event data + a value readout table.
+
+        Unlike add_live_multi_plot (polled every step() with a rad/deg readout),
+        this plot is fed one sample per explicit history_push() call, its x-axis
+        is the event/iteration index, and it carries no unit assumption -- pass a
+        plain y_label (e.g. "pos err [mm]" or "rot err [deg]"). Used by the
+        visual-servoing tracker, where one point lands after each iteration.
+
+        Rendering happens in step() (not in history_push): history_push only
+        appends to the buffers, and step() -- inside DPG's render pass -- pushes
+        the buffers to the series and fits the axes. Fitting from history_push
+        (which runs in the monitor's task-pump phase, outside the render pass)
+        does not take effect, which left points off-screen. Each series also gets
+        a circle marker so single points are visible.
+
+        Args:
+            label (str): Plot title.
+            series_labels (list): One legend/readout label per series (len N).
+            y_label (str): Y-axis label including unit (e.g. "tool0 pos err [mm]").
+            parent: Container tag (e.g. a window from add_window); defaults to the
+                current parent. set_visible() toggles it.
+            group_size (int): Series per readout column-group (e.g. 3 axes/arm);
+                a 6-series plot lays out as two L | R column-pairs. Defaults to all-in-one.
+            palette (list): RGB tuples per series; defaults to _MULTI_PLOT_PALETTE.
+            history (int): Max samples kept (a servoing run is only a handful).
+
+        Returns:
+            int: Handle for set_visible() / history_push() / history_reset().
+        """
+        dpg = self.dpg
+        n = len(series_labels)
+        group_size = group_size or n
+        n_groups = max(1, n // group_size)
+        palette = palette or _MULTI_PLOT_PALETTE
+        colors = [tuple(palette[i % len(palette)]) for i in range(n)]
+        container = parent if parent is not None else self._current_parent
+
+        series_tags = []
+        with dpg.plot(label=label, height=260, width=-1, parent=container):
+            dpg.add_plot_legend(location=dpg.mvPlot_Location_South,
+                                outside=True, horizontal=True)
+            # x = iteration index; both axes are fit in step() as points arrive.
+            x_axis = dpg.add_plot_axis(dpg.mvXAxis, label="iteration")
+            y_axis = dpg.add_plot_axis(dpg.mvYAxis, label=y_label)
+            for i, lbl in enumerate(series_labels):
+                tag = dpg.add_line_series([], [], label=lbl, parent=y_axis)
+                # Pin each line's color AND draw a circle marker at every sample,
+                # so a lone point (or a two-point line) is clearly visible.
+                with dpg.theme() as line_theme:
+                    with dpg.theme_component(dpg.mvLineSeries):
+                        dpg.add_theme_color(dpg.mvPlotCol_Line, (*colors[i], 255),
+                                            category=dpg.mvThemeCat_Plots)
+                        dpg.add_theme_style(dpg.mvPlotStyleVar_Marker,
+                                            dpg.mvPlotMarker_Circle,
+                                            category=dpg.mvThemeCat_Plots)
+                        dpg.add_theme_style(dpg.mvPlotStyleVar_MarkerSize, 4,
+                                            category=dpg.mvThemeCat_Plots)
+                dpg.bind_item_theme(tag, line_theme)
+                series_tags.append(tag)
+
+        # Readout: a title line, a divider, then one [chip | value] cell per
+        # series, grouped into columns exactly like add_live_multi_plot.
+        header_tag = dpg.add_text("", parent=container, color=(200, 200, 160, 255))
+        dpg.add_separator(parent=container)
+        readout_tags = [None] * n
+        table_tag = dpg.add_table(parent=container, header_row=False,
+                                  resizable=False, borders_innerV=False,
+                                  borders_outerV=False, borders_innerH=False)
+        for _g in range(n_groups):
+            dpg.add_table_column(parent=table_tag)
+        for r in range(group_size):
+            with dpg.table_row(parent=table_tag):
+                for g in range(n_groups):
+                    idx = g * group_size + r
+                    with dpg.group(horizontal=True):
+                        dpg.add_color_button(default_value=(*colors[idx], 255),
+                                             width=16, height=16, no_alpha=True,
+                                             no_drag_drop=True, no_tooltip=True)
+                        readout_tags[idx] = dpg.add_text(
+                            "", color=_READOUT_TEXT_COLOR)
+        h = self._new_handle()
+        md = {
+            "handle": h,
+            "name": label,
+            "series_tags": series_tags,
+            "labels": list(series_labels),
+            "readout_tags": readout_tags,
+            "header_tag": header_tag,
+            "x_axis": x_axis,
+            "y_axis": y_axis,
+            "history": history,
+            "xs": deque(maxlen=history),
+            "ys": [deque(maxlen=history) for _ in range(n)],
+            "next_x": 0,
+            "visible": True,   # gates rendering in step(); flipped by set_visible()
+            "dirty": True,     # redraw pending (set by history_push / _reset)
+        }
+        self._history_plots.append(md)
+        self._handles[h] = {"kind": "history_plot", "container_tag": container,
+                            "history": md}
+        return h
+
+    def history_push(self, handle, values, x=None):
+        """Append one sample (one value per series) to the buffers; step() draws it.
+
+        A length mismatch is ignored so a mid-run reconfigure can't desync buffers.
+
+        Args:
+            handle (int): Handle from add_history_plot().
+            values (Sequence[float]): One value per series, same order as labels.
+            x (float): Optional explicit x; defaults to an auto-incrementing index.
+        """
+        info = self._handles.get(handle)
+        if not info or "history" not in info:
+            return
+        md = info["history"]
+        if len(values) != len(md["series_tags"]):
+            return
+        if x is None:
+            x = md["next_x"]
+        md["next_x"] = x + 1
+        md["xs"].append(float(x))
+        for i in range(len(md["series_tags"])):
+            md["ys"][i].append(float(values[i]))
+        md["dirty"] = True
+
+    def history_reset(self, handle):
+        """Clear a history plot's buffers so a new run starts from a blank plot."""
+        info = self._handles.get(handle)
+        if not info or "history" not in info:
+            return
+        md = info["history"]
+        md["xs"].clear()
+        md["next_x"] = 0
+        for ys in md["ys"]:
+            ys.clear()
+        md["dirty"] = True
+
     def set_visible(self, handle, visible):
         """Show or hide a widget/section by handle.
 
@@ -702,6 +862,11 @@ class DearPyGuiBackend(UIBackend):
             return
         if "multi" in info:
             info["multi"]["visible"] = bool(visible)
+        if "history" in info:
+            # Re-showing forces a redraw so buffered points appear immediately.
+            info["history"]["visible"] = bool(visible)
+            if visible:
+                info["history"]["dirty"] = True
         tag = info.get("container_tag", info.get("tag"))
         if tag is not None and self.dpg.does_item_exist(tag):
             self.dpg.configure_item(tag, show=bool(visible))
@@ -737,6 +902,18 @@ class DearPyGuiBackend(UIBackend):
         # DPG fires callbacks directly; nothing to poll.
         return
 
+    def get_value(self, handle):
+        rec = self._handles.get(handle)
+        if rec is None:
+            return None
+        tag = rec.get("tag")
+        if tag is None or not self.dpg.does_item_exist(tag):
+            return None
+        try:
+            return self.dpg.get_value(tag)
+        except Exception:
+            return None
+
     def clear(self) -> None:
         # Delete only the root window's child widgets so a rebuild doesn't stack a
         # second copy. The "root" window itself, font registries, and the separator
@@ -746,6 +923,7 @@ class DearPyGuiBackend(UIBackend):
         self._handles.clear()
         self._live_plots.clear()
         self._live_multi.clear()
+        self._history_plots.clear()
 
     def step(self) -> bool:
         dpg = self.dpg
@@ -831,6 +1009,32 @@ class DearPyGuiBackend(UIBackend):
                                     hi * _RAD_TO_DEG)
             except Exception as e:
                 logger.debug(f"deg axis sync error: {e}")
+        # Push-based per-iteration plots: redraw from the buffers only when a new
+        # sample has been pushed (dirty). Fitting here -- inside the render pass --
+        # is what makes the points actually appear (fitting from history_push,
+        # which runs in the task-pump phase, does not take).
+        for plot in self._history_plots:
+            if not plot.get("visible", True) or not plot.get("dirty", False):
+                continue
+            xs = list(plot["xs"])
+            n_pts = len(xs)
+            for i, series_tag in enumerate(plot["series_tags"]):
+                ys = list(plot["ys"][i])
+                dpg.set_value(series_tag, [xs, ys])
+                if ys:
+                    dpg.set_value(plot["readout_tags"][i],
+                                  f"{plot['labels'][i]}: {ys[-1]:+.3f}")
+            if plot["header_tag"] is not None:
+                dpg.set_value(plot["header_tag"],
+                              f"{plot['name']}  (n={n_pts})")
+            if n_pts >= 1:
+                dpg.fit_axis_data(plot["x_axis"])
+                dpg.fit_axis_data(plot["y_axis"])
+                # A single point fits to a zero-width range (invisible); widen it.
+                if n_pts == 1:
+                    x0 = xs[0]
+                    dpg.set_axis_limits(plot["x_axis"], x0 - 1.0, x0 + 1.0)
+            plot["dirty"] = False
         dpg.render_dearpygui_frame()
         return True
 

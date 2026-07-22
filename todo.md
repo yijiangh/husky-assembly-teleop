@@ -74,3 +74,5 @@ this info needs to be saved by a json that contains a cell state
     - ur_msgs
 
 - get rid of tracik if not used
+
+Something is very off when reloading a new bar aciton, the old collision scene of the last bar action is not cleared up
