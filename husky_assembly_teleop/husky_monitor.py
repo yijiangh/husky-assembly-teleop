@@ -4313,6 +4313,12 @@ class HuskyMonitor(Node):
             self.buttons.append(Button(
                 '2) IK Replan & Transit → Mv Start (live, M2/M3)',
                 self.replan_free_to_movement_start_live))
+            # * Button 2b: same live-base IK, but the plan keeps the mounted
+            # bar's rigid grasp (constrained "transfer" planner). Use this
+            # once the bar is physically mounted in the grippers.
+            self.buttons.append(Button(
+                '2b) IK Replan & Transfer → Mv Start (bar held)',
+                self.replan_transfer_to_movement_start_live))
             # Visual-servoing loop: repeat live-base IK + transit + exec until the
             # tool0 residual converges; logs each iteration and saves a static
             # matplotlib plot + JSON at the end. It pauses after planning the first
@@ -4320,6 +4326,12 @@ class HuskyMonitor(Node):
             # 'Confirm Servo Exec' to run it (later iterations run unattended).
             self.buttons.append(Button('Servo to Mv Start (live loop)',
                 lambda: self.tasks.append(world.servo_to_movement_start_live(self))))
+            # Same servoing loop, but every iteration plans a bar-held
+            # constrained transfer (Button 2b) instead of a free transit —
+            # for when the bar stays mounted throughout the session.
+            self.buttons.append(Button('Servo to Mv Start (transfer loop)',
+                lambda: self.tasks.append(world.servo_to_movement_start_live(
+                    self, use_transfer=True))))
             self.buttons.append(Button('Confirm Servo Exec',
                 lambda: setattr(self, '_servo_exec_confirmed', True)))
             # Stop the loop at the next yield (confirm pause / between iterations).

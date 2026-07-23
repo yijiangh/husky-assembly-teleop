@@ -1326,9 +1326,10 @@ def measure_base_pose_diff(monitor, start_base_pose):
     }
 
 
-def servo_to_movement_start_live(monitor, max_iters=8, pos_tol_mm=1.0,
+def servo_to_movement_start_live(monitor, max_iters=8, pos_tol_mm=0.2,
                                  later_iter_traj_time=3.0, settle_seconds=2.0,
-                                 confirm_first_iter=True, log_data=True):
+                                 confirm_first_iter=True, use_transfer=False,
+                                 log_data=True):
     """Iterative visual-servoing loop to the current M2/M3 movement start pose.
 
     One iteration mirrors the manual three clicks: (1) live-base IK from the latest
@@ -1339,6 +1340,11 @@ def servo_to_movement_start_live(monitor, max_iters=8, pos_tol_mm=1.0,
     motion shifts the base (its centre of gravity changes), each pass re-solves for
     the freshly-sensed base and the residual shrinks; we stop once both arms are
     within ``pos_tol_mm`` or after ``max_iters`` passes.
+
+    With ``use_transfer=True``, step (2) plans a bar-held constrained TRANSFER
+    instead (``replan_transfer_to_movement_start_live``, Button 2b): once the bar
+    is manually mounted in the grippers it stays mounted across all iterations,
+    so every correction move must keep both tool0s rigidly locked to the bar.
 
     Trajectory duration differs by iteration: the FIRST transit is a large move
     from wherever the arms are now, so it runs over ``monitor.trajectory_time``
@@ -1362,6 +1368,9 @@ def servo_to_movement_start_live(monitor, max_iters=8, pos_tol_mm=1.0,
             move so the operator can preview it via the traj viz slider and click
             'Confirm Servo Exec' before it runs. Later iterations always run
             unattended. If False, the whole loop runs without any prompt.
+        use_transfer (bool): If True, every iteration plans with the constrained
+            dual-arm transfer planner (bar mounted in the grippers); if False,
+            with the free composite transit planner (no bar).
         log_data (bool): Save a JSON + PNG record of the run when done.
 
     Yields:
@@ -1438,8 +1447,12 @@ def servo_to_movement_start_live(monitor, max_iters=8, pos_tol_mm=1.0,
         if not monitor.ik_live_base_for_selected_movement():
             monitor.get_logger().warn('Servoing: live-base IK failed; stopping.')
             break
-        # Step 2: replan the transit to that goal (Button 2: IK Replan & Transit).
-        monitor.replan_free_to_movement_start_live()
+        # Step 2: replan the move to that goal — a bar-held constrained transfer
+        # (Button 2b) when the bar is mounted, else a free transit (Button 2).
+        if use_transfer:
+            monitor.replan_transfer_to_movement_start_live()
+        else:
+            monitor.replan_free_to_movement_start_live()
 
         # Bail if IK / plan produced no usable trajectory.
         pat = monitor.planned_arm_trajectory
@@ -1513,10 +1526,11 @@ def servo_to_movement_start_live(monitor, max_iters=8, pos_tol_mm=1.0,
     # A run cancelled during the confirm pause has just the baseline point and
     # isn't worth a record.
     if log_data and len(data) > 1:
-        _save_servoing_data(monitor, data)
+        _save_servoing_data(monitor, data,
+                            planner_mode='transfer' if use_transfer else 'free')
 
 
-def _save_servoing_data(monitor, data):
+def _save_servoing_data(monitor, data, planner_mode='free'):
     """Save a servoing run's per-iteration residuals as JSON + a summary PNG.
 
     Writes into a dated ``<YYYYMMDD>-servoing`` subfolder of the Google Drive
@@ -1527,6 +1541,9 @@ def _save_servoing_data(monitor, data):
         monitor: The HuskyMonitor node (for logging only).
         data (list[dict]): One entry per recorded iteration, each with keys
             'iter', 'tool0' (per-side pos/rot error) and 'base' (base drift).
+        planner_mode (str): 'free' (transit, no bar) or 'transfer' (bar-held
+            constrained) — recorded in the JSON so offline analysis can tell
+            the two run kinds apart.
     """
     subfolder = os.path.join(BAR_HOLDING_ACC_EXPERIMENT_DIR,
                              f"{datetime.now().strftime('%Y%m%d')}-servoing")
@@ -1535,7 +1552,7 @@ def _save_servoing_data(monitor, data):
 
     data_filename = os.path.join(subfolder, f'servoing_data_{timestamp}.json')
     with open(data_filename, 'w') as f:
-        json.dump({'servoing_data': data}, f, indent=2)
+        json.dump({'planner_mode': planner_mode, 'servoing_data': data}, f, indent=2)
     monitor.get_logger().info(f'Servoing data saved to {data_filename}')
 
     # ! Build the figure with the pure Agg backend (Figure + FigureCanvasAgg),
