@@ -1449,8 +1449,11 @@ def servo_to_movement_start_live(monitor, max_iters=8, pos_tol_mm=0.2,
             break
         # Step 2: replan the move to that goal — a bar-held constrained transfer
         # (Button 2b) when the bar is mounted, else a free transit (Button 2).
+        # The transfer safeguard plot is only worth showing on the first (large)
+        # move; later iterations are tiny near-target corrections, so suppress
+        # the validation plot there (it == 1 only).
         if use_transfer:
-            monitor.replan_transfer_to_movement_start_live()
+            monitor.replan_transfer_to_movement_start_live(show_validation=(it == 1))
         else:
             monitor.replan_free_to_movement_start_live()
 
@@ -1487,6 +1490,12 @@ def servo_to_movement_start_live(monitor, max_iters=8, pos_tol_mm=0.2,
         # sending the first move to the robot.
         if _aborted():
             break
+
+        # Execution is starting now (the first move was confirmed above): expand
+        # the live tracker, which was kept collapsed during the preview. Later
+        # iterations stay visible across UI rebuilds via _servoing_tracker_visible.
+        if it == 1:
+            monitor.show_servoing_tracker()
 
         # First transit is a big move (use the slider time); later iterations are
         # tiny near-target corrections (use the short later_iter_traj_time).

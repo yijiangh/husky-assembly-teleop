@@ -90,6 +90,24 @@ M1_ROTATION_RES = 0.025  # radians
 # was ever used, so it is now a fixed constant.
 M1_PLANNER_STAGE = 3
 
+# Pre-execution safeguard thresholds for a bar-held ("transfer") path. They
+# mirror path_validation.validate_stage_trajectory's defaults so the live DPG
+# safeguard flags the same problems the offline validator would:
+#   - joint continuity: a per-step joint jump above this hints at a 2*pi wrap
+#     or a discontinuous replan (the arm would snap).
+#   - EE drift: how far the left->right relative tool0 pose is allowed to move
+#     from the first waypoint before the bar grasp is no longer "rigid".
+TRANSFER_JOINT_STEP_THRESHOLD_DEG = 1.0
+TRANSFER_EE_TRANS_THRESHOLD_MM = 0.5
+TRANSFER_EE_ROT_THRESHOLD_DEG = float(np.degrees(1e-2))  # ~0.573 deg
+
+# Rigid-body name prefixes for the BUILT ASSEMBLY (from RobotCell.json): bars
+# are 'bar_<id>' and their connectors are 'joint_<id>_male/female'. Environment
+# collision obstacles are 'obstacle_env<n>' and are deliberately NOT listed
+# here -- the mocap-accuracy hide only drops the built bars/joints, and must
+# keep the environment obstacles both visible and collision-checked.
+BUILT_ASSEMBLY_RB_PREFIXES = ('bar_', 'joint_')
+
 EXISTING_ELEMENT_COLOR = pp.RED
 CURRENT_ELEMENT_COLOR = pp.BLUE
 DEFAULT_BAR_POS = pp.Point(0.8, 0, 1.3)
@@ -635,19 +653,35 @@ class HuskyMonitor(Node):
                 self.servoing_base_pos_plot, self.servoing_base_rot_plot)
 
     def reset_servoing_tracker(self):
-        """Start a fresh run: clear the persisted history and blank/show the plots."""
+        """Start a fresh run: clear the persisted history and blank the plots.
+
+        The tracker window is kept HIDDEN here (and hidden on every rebuild while
+        `_servoing_tracker_visible` is False) so it does not pop up during the
+        first move's trajectory preview. `show_servoing_tracker()` expands it once
+        the operator confirms and execution begins.
+        """
         # History persists on the monitor (not just in the plots) because the
         # servoing loop calls ik_live_base... which calls reset_ui() -> build_ui(),
         # rebuilding the plots as empty every iteration. build_ui repopulates the
         # rebuilt plots from this list, so points accumulate across iterations.
         self._servoing_history = []
+        self._servoing_tracker_visible = False
         plots = self._servoing_plots()
         if plots is None:
             return
         for plot in plots:
             plot.reset()
-            plot.set_visible(True)
+            plot.set_visible(False)
+
+    def show_servoing_tracker(self):
+        """Expand/show the live tracker window (called when execution begins, so
+        it stays collapsed during the trajectory preview/confirm pause)."""
+        plots = self._servoing_plots()
+        if plots is None:
+            return
         self._servoing_tracker_visible = True
+        for plot in plots:
+            plot.set_visible(True)
 
     def push_servoing_tracker(self, iter_i, tool0_err, base_diff):
         """Record one per-iteration sample: persist it AND draw it on the plots.
@@ -689,6 +723,120 @@ class HuskyMonitor(Node):
         """Redraw all persisted samples onto the (freshly-built) plots."""
         for iter_i, tool0_err, base_diff in getattr(self, '_servoing_history', []):
             self._draw_servoing_sample(iter_i, tool0_err, base_diff)
+
+    # --- --- Transfer (bar-held) pre-execution safeguard --- ---
+
+    def _transfer_validation_plots(self):
+        """The two transfer-validation plots, or None if the DPG UI is off."""
+        step = getattr(self, 'transfer_joint_step_plot', None)
+        if step is None:
+            return None
+        return (step, self.transfer_ee_drift_plot)
+
+    def show_transfer_validation(self, path12, template_state, *, label=''):
+        """Draw the bar-held path safeguard curves and log a PASS/FAIL verdict.
+
+        Two things a bar-held ("transfer") path must satisfy before we let it
+        run on hardware, plotted per waypoint in the "Transfer Validation"
+        DPG window so the operator can eyeball them before confirming:
+
+          1. Joint continuity -- the largest single-joint jump between two
+             consecutive waypoints. A spike above
+             ``TRANSFER_JOINT_STEP_THRESHOLD_DEG`` means a 2*pi wrap or a
+             discontinuous replan (the arm would snap on execution).
+          2. Bar-hold rigidity -- how far the left->right relative tool0 pose
+             has drifted from the first waypoint (translation + rotation).
+             Growth here means the grasp is not being held rigid.
+
+        The curves are persisted on ``self._transfer_validation_data`` so they
+        survive the ``reset_ui`` -> ``build_ui`` rebuild that the servoing
+        loop's IK step triggers (same reason as the servoing tracker history).
+
+        Args:
+            path12 (Sequence): Planned waypoints, each a 12-vec.
+            template_state (RobotCellState): Base + non-arm joints for FK.
+            label (str): Short tag for the log line (e.g. movement id).
+
+        Returns:
+            dict: ``{'joint_ok': bool, 'ee_ok': bool,
+            'max_joint_step_deg': float, 'max_ee_trans_mm': float,
+            'max_ee_rot_deg': float}``. ``joint_ok`` / ``ee_ok`` are None when
+            the path is too short to evaluate.
+        """
+        path12 = [np.asarray(q, dtype=float) for q in (path12 or [])]
+        verdict = {'joint_ok': None, 'ee_ok': None, 'max_joint_step_deg': 0.0,
+                   'max_ee_trans_mm': 0.0, 'max_ee_rot_deg': 0.0}
+        if len(path12) < 2:
+            self.get_logger().warn(
+                f"[transfer validation] {label!r}: path too short to validate.")
+            return verdict
+
+        # Curve 1: max per-joint change between consecutive waypoints (deg).
+        # One value per step -> N-1 values; index 0 is the 0th->1st step.
+        step_deltas_deg = [
+            float(np.degrees(np.max(np.abs(path12[i + 1] - path12[i]))))
+            for i in range(len(path12) - 1)
+        ]
+        # Curve 2: bar-hold EE drift vs the first waypoint (mm + deg).
+        pos_devs_m, ang_devs_rad = self._bar_hold_ee_drift(path12, template_state)
+        ee_trans_mm = [v * 1000.0 for v in pos_devs_m]
+        ee_rot_deg = [float(np.degrees(v)) for v in ang_devs_rad]
+
+        verdict['max_joint_step_deg'] = max(step_deltas_deg)
+        verdict['max_ee_trans_mm'] = max(ee_trans_mm)
+        verdict['max_ee_rot_deg'] = max(ee_rot_deg)
+        verdict['joint_ok'] = (
+            verdict['max_joint_step_deg'] <= TRANSFER_JOINT_STEP_THRESHOLD_DEG)
+        verdict['ee_ok'] = (
+            verdict['max_ee_trans_mm'] <= TRANSFER_EE_TRANS_THRESHOLD_MM
+            and verdict['max_ee_rot_deg'] <= TRANSFER_EE_ROT_THRESHOLD_DEG)
+
+        # Persist for the reset_ui rebuild, then draw.
+        self._transfer_validation_data = {
+            'label': label,
+            'step_deltas_deg': step_deltas_deg,
+            'ee_trans_mm': ee_trans_mm,
+            'ee_rot_deg': ee_rot_deg,
+        }
+        self._draw_transfer_validation()
+
+        joint_tag = 'OK' if verdict['joint_ok'] else 'FAIL'
+        ee_tag = 'OK' if verdict['ee_ok'] else 'FAIL'
+        msg = (f"[transfer validation] {label!r}: joint continuity {joint_tag} "
+               f"(max step {verdict['max_joint_step_deg']:.2f} deg / "
+               f"thresh {TRANSFER_JOINT_STEP_THRESHOLD_DEG:.1f}); bar-hold {ee_tag} "
+               f"(max drift {verdict['max_ee_trans_mm']:.2f} mm, "
+               f"{verdict['max_ee_rot_deg']:.3f} deg)")
+        if verdict['joint_ok'] and verdict['ee_ok']:
+            self.get_logger().info(msg)
+        else:
+            self.get_logger().warn(msg)
+        return verdict
+
+    def _draw_transfer_validation(self):
+        """Push the persisted transfer-validation curves onto the plots.
+
+        Also used by build_ui to repopulate the freshly-rebuilt plots after a
+        reset_ui. Each threshold is drawn as a flat reference line so an
+        over-threshold sample is visible against it.
+        """
+        plots = self._transfer_validation_plots()
+        data = getattr(self, '_transfer_validation_data', None)
+        if plots is None or not data:
+            return
+        step_plot, ee_plot = plots
+        step_plot.reset()
+        ee_plot.reset()
+        # Joint-step plot: max step delta + the flat continuity threshold.
+        for i, d in enumerate(data['step_deltas_deg']):
+            step_plot.push([d, TRANSFER_JOINT_STEP_THRESHOLD_DEG], x=i)
+        # EE-drift plot: translation (mm) + rotation (deg) + their thresholds.
+        for i in range(len(data['ee_trans_mm'])):
+            ee_plot.push([data['ee_trans_mm'][i], data['ee_rot_deg'][i],
+                          TRANSFER_EE_TRANS_THRESHOLD_MM,
+                          TRANSFER_EE_ROT_THRESHOLD_DEG], x=i)
+        for plot in plots:
+            plot.set_visible(True)
 
     def toggle_servoing_tracker(self):
         """Show or hide the visual-servoing live tracker window.
@@ -2016,14 +2164,112 @@ class HuskyMonitor(Node):
         for i, mv in enumerate(self._loaded_movements):
             print(f"  [{i}] {mv.movement_id!r} role={self._match_movement_role(mv)}")
         # Refresh UI so the Movement slider's range now matches the loaded
-        # movement count (was 0..8 before; now 0..len(movements)-1).
-
+        # movement count (was 0..8 before; now 0..len(movements)-1). In the live
+        # GUI monitor a freshly selected action starts at its first movement
+        # (M0), so reset the index before the rebuild so the slider comes back
+        # at 0. Headless scripts (_is_live_monitor=False) load their own target
+        # movement explicitly, so leave their selection alone.
+        live = getattr(self, '_is_live_monitor', False)
+        if live:
+            self._selected_movement_idx = 0
         self.reset_ui(self.goal_arm_pose)
 
         # Trajectories now live on mv objects in memory (loaded natively via
         # compas json_load when a `.live-solved.json` sidecar is opened via
         # this same Load BarAction button). Print the initial roster.
         self._print_movement_roster(tag='LoadBarAction')
+
+        # Push the first movement's state into the cfab / PyBullet scene so the
+        # visualizer reflects the NEWLY selected action right away. The cfab
+        # session (and its spawned RobotCell) is created only on the FIRST Load
+        # BarAction; every later action reuses that session, so nothing else
+        # repositions the bodies -- without this the 3D view would keep showing
+        # the previously loaded action until 'Load Movement' is clicked. Only
+        # in the live monitor; the scripts drive their own movement loads.
+        if live:
+            self.load_selected_movement()
+
+    def _hide_built_assembly_for_mocap(self, state):
+        """Flag the already-built (static) assembly bars/joints ``is_hidden`` so
+        the cfab planner and IK ignore collisions with them.
+
+        Only the built assembly's own bars/joints (``BUILT_ASSEMBLY_RB_PREFIXES``)
+        are hidden. Everything else stays collision-checked and visible:
+          - environment collision obstacles (``obstacle_env*``) -- the walls /
+            fixed geometry the robot must still avoid;
+          - the grasped bar (``active_bar_name``, attached to a tool) and the
+            joints installed on it (attached to the tool0 links);
+          - robot self-collision (CC.1) and robot<->tool (CC.2).
+        ``is_hidden`` only skips the collision + repositioning steps.
+
+        Used only in the bar-holding accuracy experiment, where the built
+        structure's real-world placement is approximate and must not block the
+        live replans. Mutates ``state.rigid_body_states`` in place; re-applied on
+        every Load Movement (a re-parse / Reset-to-Clean clears it). No-op if the
+        state has no rigid bodies.
+
+        Args:
+            state: The RobotCellState whose rigid_body_states to edit in place.
+        """
+        rb_states = getattr(state, 'rigid_body_states', None) or {}
+        active = getattr(self, 'active_bar_name', None)
+        hidden = []
+        for name, rb in rb_states.items():
+            if name == active:
+                continue  # never hide the grasped bar itself
+            if rb.attached_to_tool or rb.attached_to_link:
+                continue  # grasped bar's joints / any held body: keep checked
+            if not name.startswith(BUILT_ASSEMBLY_RB_PREFIXES):
+                continue  # environment obstacles etc.: keep shown + checked
+            rb.is_hidden = True
+            hidden.append(name)
+        if hidden:
+            self.get_logger().info(
+                f"[mocap-acc] ignoring collisions with {len(hidden)} built "
+                f"assembly bodies during planning/IK.")
+        # Mirror the flags into the PyBullet view so the hidden bodies also
+        # DISAPPEAR from the screen -- otherwise the built assembly still shows,
+        # which reads as "still in play" even though planning/IK ignore it.
+        self._sync_pp_visibility_to_hidden(state)
+
+    def _sync_pp_visibility_to_hidden(self, state):
+        """Draw each ``is_hidden`` rigid body transparent in the PyBullet scene.
+
+        ``is_hidden`` only tells the cfab planner / IK to skip collisions with a
+        body; the body itself stays drawn. This makes the picture match the
+        model: any body flagged hidden is blanked (fully transparent) in
+        PyBullet. Its pre-hide colour is cached in ``_traj_ghost_orig_colors``
+        -- the same cache ``load_selected_movement`` restores from at the top of
+        the next load -- so the body reappears (with its original colour) once
+        it is no longer hidden. Only the hide direction is applied here; the
+        restore is that reload-time pass.
+
+        Args:
+            state: The RobotCellState whose ``rigid_body_states`` drive
+                visibility. Its bodies are matched to PyBullet ids via
+                ``self.cfab.client.rigid_bodies_puids``.
+        """
+        if self.cfab is None or getattr(self.cfab, 'client', None) is None:
+            return
+        puids_by_name = self.cfab.client.rigid_bodies_puids or {}
+        rb_states = getattr(state, 'rigid_body_states', None) or {}
+        for name, rb in rb_states.items():
+            if not bool(getattr(rb, 'is_hidden', False)):
+                continue
+            for body in puids_by_name.get(name, []) or []:
+                # Cache the current colour once so the reload-time restore is
+                # lossless (skip if already cached this load).
+                if body not in self._traj_ghost_orig_colors:
+                    try:
+                        vis = p.getVisualShapeData(body)
+                        self._traj_ghost_orig_colors[body] = (
+                            list(vis[0][7]) if vis else [0.7, 0.7, 0.7, 1.0])
+                    except Exception:
+                        self._traj_ghost_orig_colors[body] = [0.7, 0.7, 0.7, 1.0]
+                try:
+                    pp.set_color(body, TRANSPARENT)
+                except Exception:
+                    pass
 
     def load_selected_movement(self):
         """Load the selected movement's start state into cfab + goal ghost."""
@@ -2086,6 +2332,14 @@ class HuskyMonitor(Node):
         rb_states = getattr(mv.start_state, 'rigid_body_states', {}) or {}
         bar_rb = rb_states.get(self.active_bar_name) if self.active_bar_name else None
         self.grasp_link_from_bar = bar_rb.attachment_frame if (bar_rb and bar_rb.attachment_frame) else None
+
+        # Bar-holding accuracy experiment only: ignore collisions with the
+        # already-built assembly (static bars/joints) for all subsequent
+        # planning/IK, keeping self, tools, and the grasped bar + its joints
+        # checked. Done after the state push above so the built bodies are
+        # already spawned/positioned in the scene before they're flagged hidden.
+        if self.BAR_ACTION_MOCAP_ACCURACY_TEST:
+            self._hide_built_assembly_for_mocap(mv.start_state)
 
         # M0/M4 are pre-pickup / post-place free transits: visually the bar
         # (and any attached joint pieces) should NOT ride the robot during
@@ -2499,7 +2753,63 @@ class HuskyMonitor(Node):
             if revert_mock is not None:
                 revert_mock()
 
-    def replan_transfer_to_movement_start_live(self):
+    def _ensure_bar_attached_for_mocap(self, mv):
+        """Force the active bar to be 'held' in ``mv.start_state`` for the
+        bar-accuracy test.
+
+        Protocol: the bar is physically mounted once and never dismounted, so a
+        movement whose authored start_state has the bar released/installed (e.g.
+        M3 retreat, where the bar rests in the world) must still be planned as a
+        bar-held transfer. If the active bar's rigid body is not attached, copy
+        the grasp (``attached_to_link`` + ``attachment_frame``) from a sibling
+        movement of the same BarAction where it IS attached (prefer M2, the
+        install approach whose grasp the operator physically mounts) and clear
+        its static world ``frame`` so it follows the arm. Mutates
+        ``mv.start_state`` in place (persists, mirroring the real mount).
+
+        Args:
+            mv: The Movement whose start_state to edit.
+
+        Returns:
+            bool: True if the active bar is (now) attached, else False.
+        """
+        if not self.active_bar_name or mv is None or mv.start_state is None:
+            return False
+        rb_states = getattr(mv.start_state, 'rigid_body_states', None) or {}
+        bar_rb = rb_states.get(self.active_bar_name)
+        if bar_rb is None:
+            return False
+        if bar_rb.attached_to_link:
+            return True  # already held
+
+        # Find a sibling movement whose active-bar rigid body is held; prefer M2.
+        donor = None
+        for mv2 in getattr(self, '_loaded_movements', []):
+            if mv2 is mv or getattr(mv2, 'start_state', None) is None:
+                continue
+            rb2 = (getattr(mv2.start_state, 'rigid_body_states', None) or {}).get(
+                self.active_bar_name)
+            if rb2 is not None and rb2.attached_to_link and rb2.attachment_frame is not None:
+                donor = rb2
+                if self._match_movement_role(mv2) == 'M2':
+                    break
+        if donor is None:
+            self.get_logger().warn(
+                f"[mocap-acc] cannot inject bar attachment for "
+                f"{self.active_bar_name!r}: no sibling movement has it held.")
+            return False
+
+        bar_rb.attached_to_link = donor.attached_to_link
+        bar_rb.attachment_frame = donor.attachment_frame
+        bar_rb.frame = None  # held bar has no static world frame (FK from the link)
+        self.grasp_link_from_bar = donor.attachment_frame
+        self.get_logger().info(
+            f"[mocap-acc] injected bar attachment for {self.active_bar_name!r}: "
+            f"held by {donor.attached_to_link!r} (grasp copied from a sibling "
+            f"movement).")
+        return True
+
+    def replan_transfer_to_movement_start_live(self, show_validation=True):
         """Fresh live-base IK to the movement's start EE targets, then a
         CONSTRAINED dual-arm ("transfer") plan from the live conf to that
         IK-solved conf, keeping the mounted bar's rigid grasp intact.
@@ -2518,6 +2828,14 @@ class HuskyMonitor(Node):
         Only supports M2 / M3 (same reason as Button 2), and requires the
         bar to be attached in the movement's start_state — that attachment
         is what makes the planner treat the bar as held.
+
+        Args:
+            show_validation (bool): When True (button default), draw the
+                pre-execution safeguard curves (joint continuity + bar-hold
+                EE drift) in the "Transfer Validation" DPG window and log a
+                PASS/FAIL verdict. The transfer servoing loop passes False on
+                its small later-iteration corrections so only the first (large)
+                move is gated.
         """
         if self.current_movement is None:
             self.get_logger().warn(
@@ -2537,6 +2855,14 @@ class HuskyMonitor(Node):
         # makes the bar follow the live arm conf.
         bar_rb = (mv.start_state.rigid_body_states.get(self.active_bar_name)
                   if mv.start_state is not None and self.active_bar_name else None)
+        # Bar-accuracy test: the bar is mounted for the whole session and never
+        # dismounted, so inject the 'held' attachment into movements whose
+        # authored start_state has it released/installed (e.g. M3 retreat)
+        # instead of refusing to plan.
+        if (self.BAR_ACTION_MOCAP_ACCURACY_TEST and bar_rb is not None
+                and bar_rb.attached_to_link is None):
+            self._ensure_bar_attached_for_mocap(mv)
+            bar_rb = mv.start_state.rigid_body_states.get(self.active_bar_name)
         if bar_rb is None or bar_rb.attached_to_link is None:
             self.get_logger().warn(
                 f"Replan Transfer: bar {self.active_bar_name!r} is not "
@@ -2606,6 +2932,15 @@ class HuskyMonitor(Node):
                 # poses, not joints) — the tool0 POSE residual is what this
                 # check verifies, and that is what servoing cares about.
                 self._verify_replan_endpoint_matches_target()
+
+                # Step 5: pre-execution safeguard. Plot the planned path's
+                # joint continuity + bar-hold EE drift so the operator can
+                # confirm before running it (the servoing loop suppresses this
+                # on its small later-iteration corrections). `state` is the
+                # live-base template used for the plan, so its FK matches.
+                if show_validation:
+                    self.show_transfer_validation(
+                        path, state, label=mv.movement_id)
         finally:
             if revert_mock is not None:
                 revert_mock()
@@ -3164,17 +3499,23 @@ class HuskyMonitor(Node):
                 rotation_res=M1_ROTATION_RES,
                 dense_joint_validation_step_rad=0.0,
                 skip_dense_collision_checks=True,
-                # Monitor validation is visual-only: show the plot in the
-                # live GUI monitor, never write a PNG report. Headless runs
-                # skip the plot (no display; Qt would abort the process).
+                # Keep the authoritative pass/fail logging, but never pop the
+                # matplotlib window: the native "Transfer Validation" DPG plots
+                # (drawn below) replace it. The pyplot-interactive popup spins
+                # its own GUI loop and can crash the live DPG + PyBullet monitor.
                 save_plot=False,
-                show_plot=bool(getattr(self, '_is_live_monitor', False)),
+                show_plot=False,
             )
         except Exception as exc:
             self.get_logger().warn(f"[CDFM validation] failed for {movement_id!r}: {exc}")
             return
         finally:
             pp.CLIENT = saved_client
+
+        # Native DPG safeguard curves (same joint continuity + bar-hold EE drift
+        # signals as the sparse validation above), so any constrained plan gets
+        # the pre-execution review, not just the transfer buttons.
+        self.show_transfer_validation(path12, state, label=movement_id)
 
         wrap_count = int(validation.get("raw_wrap_segment_count") or 0)
         rel_ok = validation.get("relative_transform_ok")
@@ -3316,22 +3657,33 @@ class HuskyMonitor(Node):
             self._check_inter_ee_invariance(jt, mv.start_state)
         return jt
 
-    def _check_inter_ee_invariance(self, jt, template_state):
-        """For an M2 (bar-held) trajectory, verify the left_from_right
-        relative pose is constant over the path. Logs max/mean translation
-        + rotation drift relative to the first waypoint.
+    def _bar_hold_ee_drift(self, path12, template_state):
+        """Per-waypoint drift of the left_from_right relative EE pose.
+
+        For a bar held rigidly by both grippers the left-tool0->right-tool0
+        relative transform must stay constant along the whole path. This
+        FKs both tool0s at every waypoint (on a copy of ``template_state``)
+        and measures how far each waypoint's relative transform has drifted
+        from the FIRST waypoint's.
+
+        Args:
+            path12 (Sequence): Waypoints, each a 12-vec (left 6 + right 6
+                joint values).
+            template_state (RobotCellState): State providing the base frame
+                + non-arm joints for FK; copied, not mutated.
+
+        Returns:
+            tuple[list[float], list[float]]: ``(pos_dev_m, ang_dev_rad)``,
+            one entry per waypoint (both start at 0.0 for waypoint 0).
         """
         planner = self.cfab.planner
-        path = path_12_from_joint_trajectory(jt)
-        if len(path) < 2:
-            return
         left_names = list(HUSKY_DUAL_UR5e_JOINT_NAMES[0])
         right_names = list(HUSKY_DUAL_UR5e_JOINT_NAMES[1])
         names_12 = left_names + right_names
 
         state = template_state.copy()
         relatives = []
-        for q12 in path:
+        for q12 in path12:
             for n, v in zip(names_12, q12):
                 state.robot_configuration[n] = float(v)
             lf = _fk_link_frame(planner, state, "left_ur_arm_tool0")
@@ -3340,8 +3692,7 @@ class HuskyMonitor(Node):
             T_r = Transformation.from_frame(rf)
             relatives.append(T_l.inverted() * T_r)
 
-        ref = relatives[0]
-        ref_inv = ref.inverted()
+        ref_inv = relatives[0].inverted()
         pos_devs = []
         ang_devs = []
         for rel in relatives:
@@ -3351,6 +3702,17 @@ class HuskyMonitor(Node):
             qw = abs(float(Frame.from_transformation(delta).quaternion.w))
             qw = min(max(qw, 0.0), 1.0)
             ang_devs.append(2.0 * float(np.arccos(qw)))
+        return pos_devs, ang_devs
+
+    def _check_inter_ee_invariance(self, jt, template_state):
+        """For an M2 (bar-held) trajectory, verify the left_from_right
+        relative pose is constant over the path. Logs max/mean translation
+        + rotation drift relative to the first waypoint.
+        """
+        path = path_12_from_joint_trajectory(jt)
+        if len(path) < 2:
+            return
+        pos_devs, ang_devs = self._bar_hold_ee_drift(path, template_state)
         pos_max = max(pos_devs); pos_mean = float(np.mean(pos_devs))
         ang_max = max(ang_devs); ang_mean = float(np.mean(ang_devs))
         print(
@@ -4264,11 +4626,38 @@ class HuskyMonitor(Node):
             # collected so far so the live tracker accumulates instead of
             # blanking every iteration.
             self._repopulate_servoing_tracker()
+
+            # Bar-held ("transfer") pre-execution safeguard plots. Populated by
+            # show_transfer_validation() after a constrained/transfer plan;
+            # hidden until then. Series carry a trailing flat threshold line so
+            # an over-threshold sample is obvious against it.
+            transfer_visible = getattr(self, '_transfer_validation_data', None) is not None
+            _common._global_backend.add_window(
+                "Transfer Validation", tag="transfer_validation_window",
+                width=620, height=520, show=transfer_visible)
+            # max joint step [deg] + flat continuity threshold.
+            self.transfer_joint_step_plot = HistoryPlot(
+                "joint step", ['max joint step', 'threshold'],
+                "max joint step [deg]", parent="transfer_validation_window",
+                palette=[(220, 70, 70), (140, 140, 140)], history=4096)
+            # bar-hold EE drift: translation [mm] + rotation [deg] + thresholds.
+            self.transfer_ee_drift_plot = HistoryPlot(
+                "bar-hold EE drift",
+                ['trans [mm]', 'rot [deg]', 'trans thresh', 'rot thresh'],
+                "EE drift", parent="transfer_validation_window",
+                palette=[(70, 130, 220), (70, 200, 130),
+                         (140, 140, 140), (170, 170, 170)], history=4096)
+            for plot in (self.transfer_joint_step_plot, self.transfer_ee_drift_plot):
+                plot.set_visible(transfer_visible)
+            # Redraw the last validation onto the freshly-rebuilt plots.
+            self._draw_transfer_validation()
         else:
             self.servoing_pos_plot = None
             self.servoing_rot_plot = None
             self.servoing_base_pos_plot = None
             self.servoing_base_rot_plot = None
+            self.transfer_joint_step_plot = None
+            self.transfer_ee_drift_plot = None
 
         self.buttons.append(Button('Toggle Goal/Trajectory', self.toggle_show_goal_state))
         self.buttons.append(Button('Reset Goal State', self.reset_ui))
@@ -4324,12 +4713,12 @@ class HuskyMonitor(Node):
             # matplotlib plot + JSON at the end. It pauses after planning the first
             # (long) move; preview it with the traj viz slider, then click
             # 'Confirm Servo Exec' to run it (later iterations run unattended).
-            self.buttons.append(Button('Servo to Mv Start (live loop)',
+            self.buttons.append(Button('3) Servo to Mv Start (live loop)',
                 lambda: self.tasks.append(world.servo_to_movement_start_live(self))))
             # Same servoing loop, but every iteration plans a bar-held
             # constrained transfer (Button 2b) instead of a free transit —
             # for when the bar stays mounted throughout the session.
-            self.buttons.append(Button('Servo to Mv Start (transfer loop)',
+            self.buttons.append(Button('3b) Servo to Mv Start (transfer loop)',
                 lambda: self.tasks.append(world.servo_to_movement_start_live(
                     self, use_transfer=True))))
             self.buttons.append(Button('Confirm Servo Exec',
