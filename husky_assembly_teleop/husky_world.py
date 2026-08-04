@@ -1429,6 +1429,7 @@ def servo_to_movement_start_live(monitor, max_iters=8, pos_tol_mm=0.2,
             f"R={err['right']['pos_norm_mm']:.2f} mm")
         return err
 
+    # * the visual servoing iterations
     for it in range(1, max_iters + 1):
         if _aborted():
             break
@@ -1491,6 +1492,37 @@ def servo_to_movement_start_live(monitor, max_iters=8, pos_tol_mm=0.2,
         if _aborted():
             break
 
+        # * Safeguard: any iteration's plan with >10 waypoints or >5° max joint
+        # * delta requires operator confirmation (prevents unexpected large moves).
+        # * This catches servo iterations where stale state might cause wrong plans.
+        pat = monitor.planned_arm_trajectory
+        if (pat[0] is not None and pat[0][0] is not None
+                and pat[1] is not None and pat[1][0] is not None):
+            n_waypoints = len(pat[0][0])
+            # Max joint delta between start (first waypoint) and end (last waypoint)
+            start_left = np.asarray(pat[0][0][0], dtype=float)
+            end_left = np.asarray(pat[0][0][-1], dtype=float)
+            start_right = np.asarray(pat[1][0][0], dtype=float)
+            end_right = np.asarray(pat[1][0][-1], dtype=float)
+            max_delta_left = float(np.max(np.abs(end_left - start_left)))
+            max_delta_right = float(np.max(np.abs(end_right - start_right)))
+            max_delta_rad = max(max_delta_left, max_delta_right)
+            max_delta_deg = float(np.rad2deg(max_delta_rad))
+
+            needs_confirm = (n_waypoints > 10 or max_delta_deg > 5.0)
+            if needs_confirm and (it > 1 or not confirm_first_iter):
+                # Iteration > 1 OR first iter without confirm: safeguard pause
+                monitor._servo_exec_confirmed = False
+                monitor.get_logger().warn(
+                    f'[servo] SAFEGUARD: large/long motion detected iter {it}: '
+                    f'{n_waypoints} waypoints, max joint delta {max_delta_deg:.1f}°. '
+                    f'Preview with slider, then click "Confirm Servo Exec" to proceed.'
+                )
+                while not getattr(monitor, '_servo_exec_confirmed', False) and not _aborted():
+                    yield
+                if _aborted():
+                    break
+
         # Execution is starting now (the first move was confirmed above): expand
         # the live tracker, which was kept collapsed during the preview. Later
         # iterations stay visible across UI rebuilds via _servoing_tracker_visible.
@@ -1518,6 +1550,44 @@ def servo_to_movement_start_live(monitor, max_iters=8, pos_tol_mm=0.2,
             yield
         if _aborted():
             break
+
+        # * Read the actual robot config from the live Husky interface, then
+        # * safeguard-check it against the executed trajectory's final point.
+        yield  # let monitor tick to ensure fresh joint state
+        try:
+            hi = monitor.huskies[monitor.selected_robot_id].interface
+            # Update start_state from live arm pose (same pattern as _apply_live_base_to_movement)
+            for i, names in enumerate(monitor._arm_joint_name_sets()):
+                values = hi.arm_joint_pose[i] if len(hi.arm_joint_pose) > i else hi.arm_joint_pose[0]
+                for n, v in zip(names, values):
+                    mv.start_state.robot_configuration[n] = float(v)
+
+            # Safeguard: check numerical consistency with the executed trajectory
+            pat = monitor.planned_arm_trajectory
+            if (pat[0] and pat[0][0] and len(pat[0][0]) > 0
+                    and pat[1] and pat[1][0] and len(pat[1][0]) > 0):
+                final_left = np.asarray(pat[0][0][-1], dtype=float)
+                final_right = np.asarray(pat[1][0][-1], dtype=float)
+                live_left = np.asarray(hi.arm_joint_pose[0], dtype=float)
+                live_right = np.asarray(hi.arm_joint_pose[1] if len(hi.arm_joint_pose) > 1 else hi.arm_joint_pose[0], dtype=float)
+
+                left_error = float(np.max(np.abs(final_left - live_left)))
+                right_error = float(np.max(np.abs(final_right - live_right)))
+                tol_rad = 0.05  # ~3 degrees; warning if larger
+
+                if left_error > tol_rad or right_error > tol_rad:
+                    monitor.get_logger().warn(
+                        f'[servo] WARNING: execution mismatch iter {it}: '
+                        f'left {np.rad2deg(left_error):.1f}°, right {np.rad2deg(right_error):.1f}° '
+                        f'(traj vs live interface)'
+                    )
+                else:
+                    monitor.get_logger().info(
+                        f'[servo] Synced to live pose; consistency check OK '
+                        f'(L {np.rad2deg(left_error):.1f}°, R {np.rad2deg(right_error):.1f}°)'
+                    )
+        except Exception as e:
+            monitor.get_logger().warn(f'[servo] Failed to sync live config: {e}')
 
         err = _record(it)
         if max(err['left']['pos_norm_mm'], err['right']['pos_norm_mm']) < pos_tol_mm:

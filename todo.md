@@ -46,9 +46,41 @@ this info needs to be saved by a json that contains a cell state
 
 - [] add two more options for the start bar pose sampler for M1, veritcle, and piggyback, horizontal in additional to the current up/down and rotation sampling
 
+9 horizontal (B30)
+10 vertical (B33)
+13 skewed (B36)
+
 a few bugs appear:
-- the joint resolution too corase, bar was slightly bended
-- aftter the first vs iter, the planners somehow uses the starting state as the goal state and did a rapid go back motion without my consent. Need to safe guard for any motion with more than 10 way points or max joint delta > 5 deg.
-- load bar action first put the bars all out and then make thme disppear. Then load movement will do this again. Can just do it once at bar action leve at bar action level
+- [x] the joint resolution too corase, bar was slightly bended
+- [x] aftter the first vs iter, the planners somehow uses the starting state as the goal state and 
+    - [x] did a rapid go back motion without my consent. Need to safe guard for any motion with more than 10 way points or max joint delta > 5 deg.
+- in the vs, the joints that is installed on the grasped bar get hidden too
+
+- load bar action first put the bars all out and then make thme disppear. Then load movement will do this again. Can just do it once at bar action leve at bar action level, and it should lock the render to acc
+
+
+Still some problems with the second vs iteration:
+[INFO] [1785839465.393885698] [husky_monitor]: ### SERVOING iteration 2/8
+[IK Live Base] start EE frames from FK at start_state.
+[goal IK] attempt 1/5: GOAL COLLISION: CC.1 between robot link 'dual_arm_bulkhead_link' and robot link 'left_ur_arm_upper_arm_link' - COLLISION
+[goal IK] attempt 2/5: GOAL COLLISION: CC.1 between robot link 'base_link' and robot link 'left_ur_arm_upper_arm_link' - COLLISION
+[goal IK] attempt 3/5: GOAL COLLISION: CC.1 between robot link 'dual_arm_bulkhead_link' and robot link 'left_ur_arm_upper_arm_link' - COLLISION
+[goal IK] attempt 4/5: GOAL COLLISION: CC.1 between robot link 'dual_arm_bulkhead_link' and robot link 'left_ur_arm_upper_arm_link' - COLLISION
+[goal IK] attempt 5/5: GOAL COLLISION: CC.1 between robot link 'dual_arm_bulkhead_link' and robot link 'left_ur_arm_upper_arm_link' - COLLISION
+[goal IK] DIAGNOSTIC: IK is reachable WITHOUT collision check but rejected WITH collision check. Last with-CC error: GOAL COLLISION: CC.1 between robot link 'dual_arm_bulkhead_link' and robot link 'left_ur_arm_upper_arm_link' - COLLISION. Likely missing touch-link on the held bar or stale ACM. Inspect monitor.cfab.planner state, the bar's rigid_body_states[...].touch_links, and the start_state passed to IK.
+
+Figure out what this vague msg means:
+```
+[goal IK] FALLBACK: accepting alt_seed_conf12 verbatim as goal (tool0 world-frame error ~ base_offset). Composite free plan will land the arms on this bar-holding pose.
+```
+
+```
+ang=0.011 deg | R pos=49.55 mm ang=3.370 deg
+[WARN] [1785837365.402086928] [husky_monitor]: [Replan verify] tool0 endpoint MISMATCH: max pos=49.55 mm (tol 5.0 mm), max ang=3.370 deg (tol 1.0 deg). The composite plan likely landed on the IK fallback (alt_seed_conf12 verbatim), which does NOT compensate the arm conf for the base offset -- world-frame tool0 error scales with the base offset. Any downstream linear motion that assumes the authored EE targets should be re-planned.
+[WARN] [1785837379.479490164] [husky_monitor]: [transfer validation] 'B36_M3_LM_retreat': joint continuity FAIL (max step 8.42 deg / thresh 1.0); bar-hold OK (max drift 0.00 mm, 0.000 deg)
+```
 
 need to also read what the ssik backend is doing with the alt conf12 thing
+
+- mocap offset box should be integrated in dpg
+[mocap offset] primary backend is DPG; skipping private offset window.

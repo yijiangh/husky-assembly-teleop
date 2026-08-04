@@ -80,10 +80,12 @@ GOAL_BLUE = [0, 0.2, 0.5, 0.7]
 TRAJECTORY_GREEN = [0, 0.5, 0.2, 0.7]
 TRANSPARENT = [0, 0.0, 0.0, 0.0]
 
-# M1 constrained-planner resolutions. Single source for both the plan call
-# and the CDFM sparse validation that re-checks the planned path.
-M1_POSITION_RES = 0.01   # meters
-M1_ROTATION_RES = 0.025  # radians
+# Constrained dual-arm free/transfer motion (CDFM) planner resolutions.
+# Used by: M1 initial plan, Button 2b (IK Replan & Transfer → Mv Start),
+# Button 3 (Servo live loop for M1), Button 3b (Servo transfer loop).
+# Single source for both the plan call and CDFM sparse validation.
+CDFM_POSITION_RES = 0.002   # meters
+CDFM_ROTATION_RES = 0.0125  # radians
 # Which planning stage the M1 constrained planner runs. Stage 3 is the
 # grasped-bar transport stage (see STAGE3_GRASP_MASK_LINKS). This used to be
 # adjustable via a "Constrained Stage" GUI slider, but in practice only stage 3
@@ -297,7 +299,21 @@ class HuskyMonitor(Node):
         # TRAJECTORY_GREEN and re-pose them via goal_model FK each tick so
         # they ride along the trajectory preview.
         self._traj_ghost_bodies = []            # list[{'body','link','attach'}]
-        self._traj_ghost_orig_colors = {}       # body puid -> RGBA (for restore)
+        # Original RGBA of the built-assembly bodies HIDDEN by
+        # _sync_pp_visibility_to_hidden (restored at the top of the next load).
+        self._traj_ghost_orig_colors = {}       # body puid -> RGBA
+        # Original RGBA of the PREVIEW bodies (bar/joints/tools) recoloured by
+        # _refresh_preview_attached_bodies. Kept separate from the hidden-body
+        # cache so re-syncing the preview at trajectory time never un-hides the
+        # built assembly.
+        self._preview_body_orig_colors = {}     # body puid -> RGBA
+        # Motion type of the trajectory currently staged for preview, set at
+        # each planner call site: 'free' (bar not mounted) or 'bar_held' (bar +
+        # its installed joints ride with the robot). Drives whether the preview
+        # mounts the bar/joints, independent of the authored start_state (the
+        # replan buttons override the authored role -- see
+        # _refresh_preview_attached_bodies).
+        self.planned_trajectory_motion_type = 'free'
 
         # UI
         self.buttons = []
@@ -1304,18 +1320,6 @@ class HuskyMonitor(Node):
         pos, quat = pp.multiply(world_from_link_pose, tool_from_bar)
         return ([float(v) for v in pos], [float(v) for v in quat])
 
-    def update_constrained_display_mode(self, val):
-        self.constrained_display_mode = int(round(float(val)))
-        self._refresh_constrained_displayed_trajectory()
-
-    def _refresh_constrained_displayed_trajectory(self):
-        src = self.constrained_trajectory if self.constrained_display_mode == 1 \
-              else self.staging_free_trajectory
-        if src[0] is not None and src[1] is not None:
-            self.set_arm_trajectory(src[0], index=0)
-            self.set_arm_trajectory(src[1], index=1)
-            self.set_to_show_traj_state()
-
     def _goal_matches_constrained_start(self):
         """True when the current goal is the staged start of the constrained path."""
         start_conf = getattr(self, "constrained_start_conf", None)
@@ -2271,6 +2275,101 @@ class HuskyMonitor(Node):
                 except Exception:
                     pass
 
+    def _authored_motion_type(self, mv):
+        """The motion type implied by a movement's authored role.
+
+        M1 (bar loading -> approach) and M2 (mate) carry the bar; M0/M3/M4 do
+        not (pre-pickup transit, post-install retreat, free home). Used for the
+        goal-state / first-trajectory preview at Load Movement; the replan
+        buttons override it with the type of the plan they actually ran.
+
+        Args:
+            mv: The Movement to classify.
+
+        Returns:
+            str: ``'bar_held'`` or ``'free'``.
+        """
+        return 'bar_held' if self._match_movement_role(mv) in ('M1', 'M2') else 'free'
+
+    def _refresh_preview_attached_bodies(self, motion_type, held_state):
+        """Recolor the cfab bar/joint/tool bodies so the green preview robot
+        carries exactly what the staged trajectory holds.
+
+        The preview reuses the cfab-spawned rigid bodies (no separate copies):
+        the ones that should ride are colored ``TRAJECTORY_GREEN`` and re-posed
+        each tick from the goal-model FK (see ``update``); a bar/joint that must
+        NOT ride is blanked (``TRANSPARENT``). This is driven by ``motion_type``
+        -- NOT the authored ``held_state`` alone -- so a FREE transit to a
+        bar-held movement's start shows no bar, and a BAR_HELD transfer to a
+        movement whose authored start has the bar released still shows it (the
+        transfer path force-attaches the bar + joints into ``held_state`` first).
+
+        Tool bodies (the grippers, when present as rigid bodies) always ride,
+        both free and bar_held, since they are the actual TCP geometry.
+
+        Args:
+            motion_type (str): ``'free'`` or ``'bar_held'``.
+            held_state (RobotCellState): State whose ``rigid_body_states``
+                supply the attachments (bar + joints + tools) and their grasps.
+        """
+        self.planned_trajectory_motion_type = motion_type
+        # Restore the previously-previewed bodies to their original colors, then
+        # forget them (leaves the hidden built-assembly cache untouched).
+        for body, c in list(self._preview_body_orig_colors.items()):
+            try:
+                pp.set_color(body, c)
+            except Exception:
+                pass
+        self._preview_body_orig_colors = {}
+        self._traj_ghost_bodies = []
+        if held_state is None or self.cfab is None or getattr(self.cfab, 'client', None) is None:
+            return
+
+        # In a free motion the bar/joints are NOT mounted, so blank them; only
+        # tool bodies keep riding.
+        hide_bar_joints = (motion_type == 'free')
+        _TOOL_BODY_NAMES = {'AssemblyLeftArmToolBody', 'AssemblyRightArmToolBody'}
+        rb_states = getattr(held_state, 'rigid_body_states', {}) or {}
+        for name, rbs in rb_states.items():
+            if getattr(rbs, 'attached_to_link', None) is None:
+                continue
+            if getattr(rbs, 'attachment_frame', None) is None:
+                continue
+            ids = (self.cfab.client.rigid_bodies_puids or {}).get(name) or []
+            if not ids:
+                continue
+            body = ids[0]
+            # Cache the current color once so the next refresh / load restores it.
+            if body not in self._preview_body_orig_colors:
+                try:
+                    vis = p.getVisualShapeData(body)
+                    self._preview_body_orig_colors[body] = (
+                        list(vis[0][7]) if vis else [0.7, 0.7, 0.7, 1.0])
+                except Exception:
+                    self._preview_body_orig_colors[body] = [0.7, 0.7, 0.7, 1.0]
+
+            if hide_bar_joints and name not in _TOOL_BODY_NAMES:
+                try:
+                    pp.set_color(body, TRANSPARENT)
+                except Exception:
+                    pass
+                continue
+
+            try:
+                pp.set_color(body, TRAJECTORY_GREEN)
+            except Exception:
+                pass
+            self._traj_ghost_bodies.append({
+                'body': body,
+                'link': rbs.attached_to_link,
+                'attach': pose_from_frame(rbs.attachment_frame),
+            })
+        if self._traj_ghost_bodies:
+            print(f"[preview] {motion_type}: bar/joints ride "
+                  f"{[g['link'] for g in self._traj_ghost_bodies]}")
+        elif hide_bar_joints:
+            print(f"[preview] {motion_type}: bar/joints hidden (not mounted).")
+
     def load_selected_movement(self):
         """Load the selected movement's start state into cfab + goal ghost."""
         if not self._loaded_movements:
@@ -2308,14 +2407,14 @@ class HuskyMonitor(Node):
         bar_id = getattr(self._loaded_action, 'active_bar_id', None) if self._loaded_action else None
         self.active_bar_name = f"bar_{bar_id}" if bar_id else None
 
-        # Restore previously-ghosted bodies' original colors before pushing
-        # the new state (which may re-spawn or change which bodies are attached).
+        # Restore built-assembly bodies hidden on the previous load before
+        # pushing the new state (the preview bodies are restored by the helper
+        # below, from their own cache).
         for body, c in list(self._traj_ghost_orig_colors.items()):
             try:
                 pp.set_color(body, c)
             except Exception:
                 pass
-        self._traj_ghost_bodies = []
         self._traj_ghost_orig_colors = {}
 
         try:
@@ -2341,56 +2440,13 @@ class HuskyMonitor(Node):
         if self.BAR_ACTION_MOCAP_ACCURACY_TEST:
             self._hide_built_assembly_for_mocap(mv.start_state)
 
-        # M0/M4 are pre-pickup / post-place free transits: visually the bar
-        # (and any attached joint pieces) should NOT ride the robot during
-        # goal-conf / trajectory preview. Tool bodies stay attached so the
-        # ghost still shows the actual TCP geometry.
-        movement_role = self._match_movement_role(mv)
-        hide_non_tool_attachments = movement_role in ('M0', 'M4')
-        _TOOL_BODY_NAMES = {'AssemblyLeftArmToolBody', 'AssemblyRightArmToolBody'}
-
-        # Collect attached-body ghosts (bar + any joint pieces). Color the
-        # cfab-spawned body green; cache original RGBA so we can restore it
-        # on next load.
-        for name, rbs in rb_states.items():
-            if getattr(rbs, 'attached_to_link', None) is None:
-                continue
-            if getattr(rbs, 'attachment_frame', None) is None:
-                continue
-            ids = (self.cfab.client.rigid_bodies_puids or {}).get(name) or []
-            if not ids:
-                continue
-            body = ids[0]
-            try:
-                vis = p.getVisualShapeData(body)
-                self._traj_ghost_orig_colors[body] = list(vis[0][7]) if vis else [0.7, 0.7, 0.7, 1.0]
-            except Exception:
-                self._traj_ghost_orig_colors[body] = [0.7, 0.7, 0.7, 1.0]
-
-            if hide_non_tool_attachments and name not in _TOOL_BODY_NAMES:
-                # Don't drag it with the robot in preview; hide the
-                # cfab-spawned body (cached above for restore on next load).
-                try:
-                    pp.set_color(body, TRANSPARENT)
-                except Exception:
-                    pass
-                continue
-
-            try:
-                pp.set_color(body, TRAJECTORY_GREEN)
-            except Exception:
-                pass
-            self._traj_ghost_bodies.append({
-                'body': body,
-                'link': rbs.attached_to_link,
-                'attach': pose_from_frame(rbs.attachment_frame),
-            })
-        if self._traj_ghost_bodies:
-            print(f"[Movement] attached-body ghosts: "
-                  f"{[g['link'] for g in self._traj_ghost_bodies]}")
-        if hide_non_tool_attachments:
-            print(f"[Movement] {movement_role}: hid non-tool attachments "
-                  f"(bar/joint) for preview")
+        # Set up the preview bar/joints for the movement's AUTHORED type (goal
+        # state + first trajectory). M1/M2 hold the bar; M0/M3/M4 don't. Each
+        # planner call site re-runs this with the real motion type afterwards,
+        # so e.g. a free transit to a bar-held movement's start still shows no
+        # bar.
+        self._refresh_preview_attached_bodies(
+            self._authored_motion_type(mv), mv.start_state)
 
         if mv.start_state.robot_configuration is not None:
             rc = mv.start_state.robot_configuration
@@ -2749,6 +2805,11 @@ class HuskyMonitor(Node):
                 # waypoint arm conf) should equal the target EE frames derived
                 # from the movement's authored start_state at Step 1's FK.
                 self._verify_replan_endpoint_matches_target()
+
+                # This is the FREE transit (bar not mounted yet), so the
+                # preview must NOT show the bar even though the target
+                # movement's authored start_state may hold it.
+                self._refresh_preview_attached_bodies('free', self.current_movement.start_state)
         finally:
             if revert_mock is not None:
                 revert_mock()
@@ -2761,11 +2822,15 @@ class HuskyMonitor(Node):
         movement whose authored start_state has the bar released/installed (e.g.
         M3 retreat, where the bar rests in the world) must still be planned as a
         bar-held transfer. If the active bar's rigid body is not attached, copy
-        the grasp (``attached_to_link`` + ``attachment_frame``) from a sibling
-        movement of the same BarAction where it IS attached (prefer M2, the
-        install approach whose grasp the operator physically mounts) and clear
-        its static world ``frame`` so it follows the arm. Mutates
-        ``mv.start_state`` in place (persists, mirroring the real mount).
+        the full mounted config -- the bar AND the joints installed on it (the
+        other bodies held in the donor) -- grasp (``attached_to_link`` +
+        ``attachment_frame``) and all, from a sibling movement of the same
+        BarAction where the bar IS attached (prefer M2, the install approach
+        whose grasp the operator physically mounts), clearing each copied body's
+        static world ``frame`` so it follows the arm. Copying the joints too
+        keeps the planner's collision state and the preview both showing the
+        real mounted geometry. Mutates ``mv.start_state`` in place (persists,
+        mirroring the real mount).
 
         Args:
             mv: The Movement whose start_state to edit.
@@ -2782,32 +2847,42 @@ class HuskyMonitor(Node):
         if bar_rb.attached_to_link:
             return True  # already held
 
-        # Find a sibling movement whose active-bar rigid body is held; prefer M2.
-        donor = None
+        # Find a sibling MOVEMENT whose active-bar rigid body is held; prefer M2.
+        donor_mv = None
         for mv2 in getattr(self, '_loaded_movements', []):
             if mv2 is mv or getattr(mv2, 'start_state', None) is None:
                 continue
             rb2 = (getattr(mv2.start_state, 'rigid_body_states', None) or {}).get(
                 self.active_bar_name)
             if rb2 is not None and rb2.attached_to_link and rb2.attachment_frame is not None:
-                donor = rb2
+                donor_mv = mv2
                 if self._match_movement_role(mv2) == 'M2':
                     break
-        if donor is None:
+        if donor_mv is None:
             self.get_logger().warn(
                 f"[mocap-acc] cannot inject bar attachment for "
                 f"{self.active_bar_name!r}: no sibling movement has it held.")
             return False
 
-        bar_rb.attached_to_link = donor.attached_to_link
-        bar_rb.attachment_frame = donor.attachment_frame
-        bar_rb.frame = None  # held bar has no static world frame (FK from the link)
-        self.grasp_link_from_bar = donor.attachment_frame
+        # Copy every held body from the donor (bar + its installed joints) into
+        # this movement's start_state, so the mounted geometry matches exactly.
+        donor_rbs = getattr(donor_mv.start_state, 'rigid_body_states', None) or {}
+        injected = []
+        for name, drb in donor_rbs.items():
+            if not (drb.attached_to_link and drb.attachment_frame is not None):
+                continue
+            target_rb = rb_states.get(name)
+            if target_rb is None or target_rb.attached_to_link:
+                continue  # missing here, or already held
+            target_rb.attached_to_link = drb.attached_to_link
+            target_rb.attachment_frame = drb.attachment_frame
+            target_rb.frame = None  # held body has no static world frame (FK from the link)
+            injected.append(name)
+        self.grasp_link_from_bar = bar_rb.attachment_frame
         self.get_logger().info(
-            f"[mocap-acc] injected bar attachment for {self.active_bar_name!r}: "
-            f"held by {donor.attached_to_link!r} (grasp copied from a sibling "
-            f"movement).")
-        return True
+            f"[mocap-acc] injected held attachment for {len(injected)} body(ies) "
+            f"from {donor_mv.movement_id!r}: {injected}.")
+        return bool(bar_rb.attached_to_link)
 
     def replan_transfer_to_movement_start_live(self, show_validation=True):
         """Fresh live-base IK to the movement's start EE targets, then a
@@ -2904,8 +2979,8 @@ class HuskyMonitor(Node):
                     active_bar_id=self.active_bar_name,
                     goal_conf=goal_conf,
                     stage=M1_PLANNER_STAGE,
-                    position_res=M1_POSITION_RES,
-                    rotation_res=M1_ROTATION_RES,
+                    position_res=CDFM_POSITION_RES,
+                    rotation_res=CDFM_ROTATION_RES,
                     max_time=120.0,
                 )
                 if path is None:
@@ -2924,6 +2999,10 @@ class HuskyMonitor(Node):
                     (np.array([q[:6] for q in path]), None, t, None), index=0)
                 self.set_arm_trajectory(
                     (np.array([q[6:] for q in path]), None, t, None), index=1)
+                # This is a BAR_HELD transfer: mount the bar + its installed
+                # joints on the preview from the planned (force-attached) state,
+                # even for a movement whose authored start_state released it.
+                self._refresh_preview_attached_bodies('bar_held', state)
                 self.set_to_show_traj_state()
 
                 # Step 4: FK the planned endpoint against the authored
@@ -3285,6 +3364,11 @@ class HuskyMonitor(Node):
             (np.asarray([q[:6] for q in path]), None, self.trajectory_time, None),
             (np.asarray([q[6:] for q in path]), None, self.trajectory_time, None),
         ]
+        # Mount the bar/joints on the preview per this movement's authored type
+        # (M1/M2 hold it; M0/M3/M4 don't). Fresh planning and 'Load Movement
+        # Trajectory' both land here.
+        self._refresh_preview_attached_bodies(
+            self._authored_motion_type(mv), mv.start_state)
         self.set_to_show_traj_state()
         tag = f"{source}{' ' + role if role else ''}"
         print(f"[{tag}] {mv.movement_id!r}: {len(path)} waypoints stored.")
@@ -3495,8 +3579,8 @@ class HuskyMonitor(Node):
                 srdf_path=HUSKY_DUAL_SRDF_PATH,
                 grasp_mask_links=STAGE3_GRASP_MASK_LINKS,
                 target_label=self.active_bar_name,
-                position_res=M1_POSITION_RES,
-                rotation_res=M1_ROTATION_RES,
+                position_res=CDFM_POSITION_RES,
+                rotation_res=CDFM_ROTATION_RES,
                 dense_joint_validation_step_rad=0.0,
                 skip_dense_collision_checks=True,
                 # Keep the authoritative pass/fail logging, but never pop the
@@ -3613,8 +3697,8 @@ class HuskyMonitor(Node):
                     goal_conf=goal_conf,
                     goal_ee_frames=mv.target_ee_frames if goal_conf is None else None,
                     stage=M1_PLANNER_STAGE,
-                    position_res=M1_POSITION_RES,
-                    rotation_res=M1_ROTATION_RES,
+                    position_res=CDFM_POSITION_RES,
+                    rotation_res=CDFM_ROTATION_RES,
                     max_time=120.0,
                     derive_start=True,
                     **extra,
@@ -4737,16 +4821,6 @@ class HuskyMonitor(Node):
                 'Load Dual-Traj',
                 self.parse_constrained_dual_arm_trajectory,
             ))
-            self.constrained_display_slider = Slider(
-                "Display Traj (0=Free,1=Constrained)",
-                self.update_constrained_display_mode,
-                0, 1, 0,
-            )
-        else:
-            # Clear stale handles from a prior dual-arm build (reset_ui removes
-            # the underlying pybullet params but leaves Python attrs behind).
-            if hasattr(self, 'constrained_display_slider'):
-                delattr(self, 'constrained_display_slider')
 
         if self.CONNECT_COMPLIANT_CONTROLLER:
             # self.dump_sep_sliders.append(Slider("----------CONTROLLERS", lambda: None))
@@ -5220,9 +5294,6 @@ class HuskyMonitor(Node):
         if self.board_validation_state_slider:
             self.board_validation_state_slider.update()
 
-        if hasattr(self, 'constrained_display_slider'):
-            self.constrained_display_slider.update()
-
         if self.BAR_ACTION_LIVE_REPLAN_EXE:
             if hasattr(self, 'bar_action_file_slider') and self.bar_action_file_slider:
                 self.bar_action_file_slider.update()
@@ -5445,11 +5516,6 @@ class HuskyMonitor(Node):
         self.constrained_goal_conf = np.concatenate([left_arr[-1], right_arr[-1]])
         self.set_arm_trajectory(self.constrained_trajectory[0], index=0)
         self.set_arm_trajectory(self.constrained_trajectory[1], index=1)
-        self.constrained_display_mode = 1
-        try:
-            self._refresh_constrained_displayed_trajectory()
-        except Exception:
-            pass
         try:
             self.set_to_show_traj_state()
         except Exception:
