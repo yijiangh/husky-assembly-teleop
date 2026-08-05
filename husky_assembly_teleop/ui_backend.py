@@ -89,7 +89,7 @@ class UIBackend:
 
     def add_text_input(self, label: str, default: str,
                        on_change: Callable[[Any], None], *,
-                       numeric: bool = False) -> int:
+                       numeric: bool = False, fmt: str = "%.4f") -> int:
         raise NotImplementedError
 
     def add_file_dialog(self, label: str, on_select: Callable[[str], None], *,
@@ -139,6 +139,13 @@ class UIBackend:
         reset_ui can be missed).
         """
         return None
+
+    def set_value(self, handle: int, value: Any) -> None:
+        """Write a value into an already-created widget (e.g. blank an entry box).
+
+        Does nothing on backends whose widgets cannot be written to.
+        """
+        return
 
     def clear(self) -> None:
         """Remove all widgets created so far so the UI can be rebuilt without
@@ -225,7 +232,7 @@ class PyBulletBackend(UIBackend):
         self._handles[h] = {"kind": "combo", "dbg": dbg, "prev": prev, "cb": wrapped}
         return h
 
-    def add_text_input(self, label, default, on_change, *, numeric=False):
+    def add_text_input(self, label, default, on_change, *, numeric=False, fmt="%.4f"):
         raise NotImplementedError(
             "text_input widget not supported by PyBulletBackend; set USE_DPG_UI=1")
 
@@ -297,6 +304,11 @@ class PyBulletBackend(UIBackend):
         if rec is None or "dbg" not in rec:
             return None
         return p.readUserDebugParameter(rec["dbg"])
+
+    def set_value(self, handle, value):
+        # PyBullet has no setUserDebugParameter(), so a debug slider can only be
+        # rewritten by destroying and re-adding it (that is what reset_ui does).
+        return
 
     def clear(self) -> None:
         p.removeAllUserParameters()
@@ -516,12 +528,14 @@ class DearPyGuiBackend(UIBackend):
         self._handles[h] = {"kind": "combo", "tag": tag}
         return h
 
-    def add_text_input(self, label, default, on_change, *, numeric=False):
+    def add_text_input(self, label, default, on_change, *, numeric=False, fmt="%.4f"):
         dpg = self.dpg
         if numeric:
+            # step=0 hides the -/+ buttons: these boxes are typed into, and the
+            # default 0.1 step is far too coarse for e.g. a metre offset.
             tag = dpg.add_input_float(
                 label=label, default_value=float(default or 0),
-                parent=self._current_parent,
+                parent=self._current_parent, step=0.0, format=fmt,
                 callback=lambda s, a, u: on_change(a))
         else:
             tag = dpg.add_input_text(
@@ -913,6 +927,16 @@ class DearPyGuiBackend(UIBackend):
             return self.dpg.get_value(tag)
         except Exception:
             return None
+
+    def set_value(self, handle, value):
+        """Write a value into an existing widget, e.g. to blank an entry box."""
+        rec = self._handles.get(handle)
+        if rec is None:
+            return
+        tag = rec.get("tag")
+        if tag is None or not self.dpg.does_item_exist(tag):
+            return
+        self.dpg.set_value(tag, value)
 
     def clear(self) -> None:
         # Delete only the root window's child widgets so a rebuild doesn't stack a

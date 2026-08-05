@@ -16,6 +16,7 @@ Usage:
 
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 from typing import Optional, Tuple
@@ -27,7 +28,7 @@ from compas.data import json_load
 from compas.datastructures import Mesh
 from compas.geometry import Frame
 from compas_fab.backends import PyBulletClient, PyBulletPlanner
-from compas_fab.robots import RobotCell, RobotCellState, RobotSemantics
+from compas_fab.robots import RigidBody, RobotCell, RobotCellState, RobotSemantics
 from compas_robots import RobotModel, ToolModel
 from compas_robots.resources import LocalPackageMeshLoader
 
@@ -65,6 +66,129 @@ ROBOTIQ_MESH_PATH = os.path.join(
 
 # Planning group of the single-arm SRDFs (mt_husky_moveit_config).
 SINGLE_ARM_GROUP = 'base_arm_manipulator'
+
+# --- Ground / walkable-ground collision geometry ---------------------------
+# Cell rigid-body name for the floor. The `obstacle_` prefix (matching the
+# Rhino-exported `obstacle_env*` bodies) deliberately keeps it OUT of
+# husky_monitor.BUILT_ASSEMBLY_RB_PREFIXES, so the mocap-accuracy hide never
+# blanks the ground: it must stay collision-checked in every BarAction.
+GROUND_RIGID_BODY_NAME = 'obstacle_ground'
+# The floor sits at z=0 (faithful to reality) and is extruded DOWNWARD by this
+# much. A flat, zero-thickness polygon would collapse into a zero-volume convex
+# hull in PyBullet (compas_fab adds rigid bodies with concavity=False), which is
+# useless for collision -- hence the slab.
+GROUND_SLAB_THICKNESS = 0.05  # meters
+# Half-extent of the fallback floor used when a problem ships no
+# WalkableGround.json. Large enough to cover any cell workspace, so the arms and
+# tools can never reach the real-world floor.
+GROUND_FALLBACK_HALF_SIZE = 20.0  # meters (=> 40 x 40 m slab)
+# Coordinates above this magnitude are treated as millimetres and scaled to
+# metres. Same heuristic as mocap_experiment._walkable_ground_polygons.
+_GROUND_MM_THRESHOLD = 50.0
+
+
+def _slab_mesh_from_polygon(points_xy, thickness=GROUND_SLAB_THICKNESS):
+    """Extrude a closed 2D polygon downward into a solid slab mesh.
+
+    The top face lies at z=0 (the real floor height) and the bottom face at
+    ``-thickness``, so the slab only ever occupies space BELOW the floor.
+
+    Args:
+        points_xy (Sequence): Polygon corners as ``(x, y)`` pairs in metres,
+            in order and without repeating the first point.
+        thickness (float): Slab depth in metres.
+
+    Returns:
+        Mesh: Closed mesh (top face, bottom face, and one quad per side), or
+        None if fewer than 3 corners were given.
+    """
+    pts = [(float(x), float(y)) for x, y in points_xy]
+    n = len(pts)
+    if n < 3:
+        return None
+    # Vertices 0..n-1 are the top ring (z=0), n..2n-1 the bottom ring.
+    vertices = [[x, y, 0.0] for x, y in pts]
+    vertices += [[x, y, -float(thickness)] for x, y in pts]
+    # Top face as given; bottom face reversed so both wind outward.
+    faces = [list(range(n)), list(range(2 * n - 1, n - 1, -1))]
+    # Side quads stitching the two rings.
+    for i in range(n):
+        j = (i + 1) % n
+        faces.append([i, j, j + n, i + n])
+    return Mesh.from_vertices_and_faces(vertices, faces)
+
+
+def _walkable_ground_slabs(problem_name):
+    """Slab meshes (metres) for every patch in a problem's WalkableGround.json.
+
+    Args:
+        problem_name (str): Design-study problem folder name.
+
+    Returns:
+        list: One slab Mesh per ground face, empty when the file is missing or
+        carries no usable polygon.
+    """
+    path = os.path.join(DESIGN_DATA_DIRECTORY, problem_name, 'WalkableGround.json')
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path, 'r') as f:
+            raw = json.load(f)
+    except Exception as exc:
+        print(f"[ground] WARN: could not read {path}: {exc}")
+        return []
+    data = raw.get('data', raw)
+    slabs = []
+    for ground in (data.get('grounds') or {}).values():
+        md = ground.get('data', ground)
+        vertex = md.get('vertex') or {}
+        if not vertex:
+            continue
+        # Rhino exports these in millimetres; scale only when they look like it.
+        coords = np.array(
+            [[v.get('x', 0.0), v.get('y', 0.0)] for v in vertex.values()], dtype=float)
+        scale = 0.001 if np.abs(coords).max() > _GROUND_MM_THRESHOLD else 1.0
+        for face_vertices in (md.get('face') or {}).values():
+            ring = [(vertex[str(i)].get('x', 0.0) * scale,
+                     vertex[str(i)].get('y', 0.0) * scale) for i in face_vertices]
+            slab = _slab_mesh_from_polygon(ring)
+            if slab is not None:
+                slabs.append(slab)
+    return slabs
+
+
+def build_ground_rigid_body(problem_name):
+    """Floor collision geometry for a design-study problem.
+
+    Prefers the problem's exported ``WalkableGround.json`` patches. When that
+    file is absent the robot would otherwise be free to drive its arms and tools
+    straight through the real-world floor, so a large fallback slab is
+    synthesized instead (with a warning).
+
+    Every patch becomes its own mesh inside ONE RigidBody: compas_fab's
+    ``_add_rigid_body`` turns each mesh into a separate PyBullet body (so
+    disjoint patches are not merged into a single convex hull), while the cell
+    still sees a single rigid-body name -- which means only one RigidBodyState
+    has to be injected per movement.
+
+    Args:
+        problem_name (str): Design-study problem folder name.
+
+    Returns:
+        RigidBody: The floor, already in metres (``native_scale=1.0``).
+    """
+    slabs = _walkable_ground_slabs(problem_name)
+    if slabs:
+        print(f"[ground] {len(slabs)} walkable-ground patch(es) loaded as "
+              f"{GROUND_RIGID_BODY_NAME!r} collision geometry.")
+    else:
+        half = GROUND_FALLBACK_HALF_SIZE
+        print(f"[ground] WARN: no usable WalkableGround.json for problem "
+              f"{problem_name!r}; falling back to a {2 * half:.0f} x {2 * half:.0f} m "
+              f"ground slab so the arms/tools cannot reach the real floor.")
+        slabs = [_slab_mesh_from_polygon(
+            [(-half, -half), (half, -half), (half, half), (-half, half)])]
+    return RigidBody(visual_meshes=slabs, collision_meshes=slabs, native_scale=1.0)
 
 
 class CfabSession:
@@ -117,6 +241,18 @@ class CfabSession:
                     DESIGN_DATA_DIRECTORY, problem_name, "RobotCell.json"
                 )
                 robot_cell = json_load(robot_cell_path)
+                # The Rhino-exported cell has no floor, so the planners would
+                # happily route the arms through it. Add the walkable ground
+                # (or a fallback slab) as a static obstacle. Only for the
+                # design-study cell -- a caller-supplied robot_cell (the
+                # startup default rig) carries no design geometry and is left
+                # alone. Every state pushed to this planner must then carry a
+                # matching RigidBodyState (compas_fab asserts the cell and the
+                # state hold exactly the same rigid-body ids); the monitor's
+                # `_inject_ground_rigid_body_state` does that, and also grants
+                # the wheels-only allowed collision.
+                robot_cell.rigid_body_models[GROUND_RIGID_BODY_NAME] = (
+                    build_ground_rigid_body(problem_name))
             self.planner.set_robot_cell(robot_cell)
             self.robot_cell = robot_cell
         except Exception:

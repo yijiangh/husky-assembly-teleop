@@ -212,8 +212,10 @@ def _check_target_ee_frames(monitor, mv) -> None:
 
     # _solve_bar_action_goal_ik returns a 12-DOF np.array (left||right) on
     # success and side-effects monitor.movement_goal_state with the full
-    # RobotCellState (husky_world.py:1913-1917). We use the array for the
-    # printout and the state for cfab GUI viz + the verbose collision check.
+    # RobotCellState (see husky_world._solve_bar_action_goal_ik). We use the
+    # array for the printout and the state for cfab GUI viz + the verbose
+    # collision check. On failure it returns None and leaves
+    # movement_goal_state untouched.
 
     # Stage 1: full collision check.
     print(f"\n=== [ik stage 1] full collision check ===")

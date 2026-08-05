@@ -22,6 +22,7 @@ import husky_assembly_teleop.husky_control as control
 from husky_assembly_teleop.utils import HUSKY_DUAL_UR5e_JOINT_NAMES, UR5E_JOINT_NAMES, MOCAP_SET_RIG_RB_NAME, conf_from_12vec, get_arm_ik_for_grasp_bar, get_custom_limits, notify, plan_transit_motion, pose_from_frame
 from husky_assembly_teleop.scaffolding import parse_mt_geometric, create_collision_bodies, create_couplers, flatten_list
 from husky_assembly_teleop.cfab_session import CfabSession, build_default_robot_cell
+from husky_assembly_teleop.cc_diagnosis import visualize_goal_ik_collision
 import json
 from datetime import datetime
 
@@ -1458,10 +1459,13 @@ def servo_to_movement_start_live(monitor, max_iters=8, pos_tol_mm=0.2,
         else:
             monitor.replan_free_to_movement_start_live()
 
-        # Bail if IK / plan produced no usable trajectory.
+        # Bail if IK / plan produced no usable trajectory. A path is missing when
+        # it is None OR empty. Use `is None` + `len(...)` (never bool(array)) so a
+        # numpy path never trips the "truth value of an array is ambiguous" error.
         pat = monitor.planned_arm_trajectory
-        if (pat[0] is None or pat[0][0] is None
-                or pat[1] is None or pat[1][0] is None):
+        left_path, right_path = pat[0][0], pat[1][0]
+        if (left_path is None or len(left_path) == 0
+                or right_path is None or len(right_path) == 0):
             monitor.get_logger().warn('Servoing: replan produced no trajectory; stopping.')
             break
 
@@ -1496,14 +1500,21 @@ def servo_to_movement_start_live(monitor, max_iters=8, pos_tol_mm=0.2,
         # * delta requires operator confirmation (prevents unexpected large moves).
         # * This catches servo iterations where stale state might cause wrong plans.
         pat = monitor.planned_arm_trajectory
-        if (pat[0] is not None and pat[0][0] is not None
-                and pat[1] is not None and pat[1][0] is not None):
-            n_waypoints = len(pat[0][0])
+        # A path exists when it is not None AND non-empty. Use `is not None` +
+        # `len(...)` (never bool(array)/.any()/.all()): `is not None` is an
+        # identity check that always returns a plain bool, and `len()` works on
+        # both python lists and numpy arrays -- so neither trips the "truth value
+        # of an array is ambiguous" error. The len guard also prevents an
+        # IndexError on the pat[0][0][0] / [-1] accesses below.
+        left_path, right_path = pat[0][0], pat[1][0]
+        if (left_path is not None and len(left_path) > 0
+                and right_path is not None and len(right_path) > 0):
+            n_waypoints = len(left_path)
             # Max joint delta between start (first waypoint) and end (last waypoint)
-            start_left = np.asarray(pat[0][0][0], dtype=float)
-            end_left = np.asarray(pat[0][0][-1], dtype=float)
-            start_right = np.asarray(pat[1][0][0], dtype=float)
-            end_right = np.asarray(pat[1][0][-1], dtype=float)
+            start_left = np.asarray(left_path[0], dtype=float)
+            end_left = np.asarray(left_path[-1], dtype=float)
+            start_right = np.asarray(right_path[0], dtype=float)
+            end_right = np.asarray(right_path[-1], dtype=float)
             max_delta_left = float(np.max(np.abs(end_left - start_left)))
             max_delta_right = float(np.max(np.abs(end_right - start_right)))
             max_delta_rad = max(max_delta_left, max_delta_right)
@@ -1562,30 +1573,33 @@ def servo_to_movement_start_live(monitor, max_iters=8, pos_tol_mm=0.2,
                 for n, v in zip(names, values):
                     mv.start_state.robot_configuration[n] = float(v)
 
-            # Safeguard: check numerical consistency with the executed trajectory
+            # Safeguard: check numerical consistency with the executed trajectory.
+            # No "does a path exist?" guard here -- we only reach this point after
+            # the plan passed the checks above and was sent to the robot, so both
+            # arm paths are known to be present and non-empty. (The old guard did
+            # `if pat[0][0] ...`, which called bool() on a numpy path and raised
+            # "truth value of an array with more than one element is ambiguous".)
             pat = monitor.planned_arm_trajectory
-            if (pat[0] and pat[0][0] and len(pat[0][0]) > 0
-                    and pat[1] and pat[1][0] and len(pat[1][0]) > 0):
-                final_left = np.asarray(pat[0][0][-1], dtype=float)
-                final_right = np.asarray(pat[1][0][-1], dtype=float)
-                live_left = np.asarray(hi.arm_joint_pose[0], dtype=float)
-                live_right = np.asarray(hi.arm_joint_pose[1] if len(hi.arm_joint_pose) > 1 else hi.arm_joint_pose[0], dtype=float)
+            final_left = np.asarray(pat[0][0][-1], dtype=float)
+            final_right = np.asarray(pat[1][0][-1], dtype=float)
+            live_left = np.asarray(hi.arm_joint_pose[0], dtype=float)
+            live_right = np.asarray(hi.arm_joint_pose[1] if len(hi.arm_joint_pose) > 1 else hi.arm_joint_pose[0], dtype=float)
 
-                left_error = float(np.max(np.abs(final_left - live_left)))
-                right_error = float(np.max(np.abs(final_right - live_right)))
-                tol_rad = 0.05  # ~3 degrees; warning if larger
+            left_error = float(np.max(np.abs(final_left - live_left)))
+            right_error = float(np.max(np.abs(final_right - live_right)))
+            tol_rad = 0.05  # ~3 degrees; warning if larger
 
-                if left_error > tol_rad or right_error > tol_rad:
-                    monitor.get_logger().warn(
-                        f'[servo] WARNING: execution mismatch iter {it}: '
-                        f'left {np.rad2deg(left_error):.1f}°, right {np.rad2deg(right_error):.1f}° '
-                        f'(traj vs live interface)'
-                    )
-                else:
-                    monitor.get_logger().info(
-                        f'[servo] Synced to live pose; consistency check OK '
-                        f'(L {np.rad2deg(left_error):.1f}°, R {np.rad2deg(right_error):.1f}°)'
-                    )
+            if left_error > tol_rad or right_error > tol_rad:
+                monitor.get_logger().warn(
+                    f'[servo] WARNING: execution mismatch iter {it}: '
+                    f'left {np.rad2deg(left_error):.1f}°, right {np.rad2deg(right_error):.1f}° '
+                    f'(traj vs live interface)'
+                )
+            else:
+                monitor.get_logger().info(
+                    f'[servo] Synced to live pose; consistency check OK '
+                    f'(L {np.rad2deg(left_error):.1f}°, R {np.rad2deg(right_error):.1f}°)'
+                )
         except Exception as e:
             monitor.get_logger().warn(f'[servo] Failed to sync live config: {e}')
 
@@ -2094,8 +2108,9 @@ def plan_both_arms_to_goal(monitor, use_composite=False, debug=False,
         # motions with narrow-passage collisions; a coarser resolution is
         # more forgiving and lets the sampler cover more ground per second,
         # at the cost of possibly skipping over small obstacles. When both
-        # start and goal are collision-free (they are here -- IK + fallback
-        # validated the goal), the coarse pass is a reasonable escape.
+        # start and goal are collision-free (they are here -- the goal IK only
+        # returns a conf whose merged state passed the collision check), the
+        # coarse pass is a reasonable escape.
         from husky_assembly_tamp.motion_planner.api import plan_free_dual_arm
         if skip_env_collisions:
             print("[composite plan] collision checks RELAXED to robot "
@@ -2197,11 +2212,27 @@ def _solve_bar_action_goal_ik(monitor, start_state,
     links). On failure, runs a `check_collision=False` retry so we can
     tell "unreachable" from "ACM/collision rejection".
 
-    skip_env_collisions: when True, the compas_fab check_collision CC.3
-    (link↔rigid-body), CC.4 (attached-rigid-body↔rigid-body), and CC.5
-    (tool↔rigid-body) steps are bypassed during IK. Only CC.1 (robot
-    self-collision) and CC.2 (robot↔tool) remain. Use when the env scene
-    is irrelevant to the local replan.
+    Args:
+        monitor: The HuskyMonitor holding the cfab session, target_ee_frames,
+            and -- on success only -- movement_goal_state.
+        start_state: RobotCellState used as the primary IK seed and as the
+            template every candidate goal state is copied from.
+        alt_seed_conf12: Optional 12-vector (left||right) used ONLY as an extra
+            IK seed and as the centre of the random seed perturbations --
+            typically the movement's own start_conf, a bar-holding pose whose FK
+            produces the target frames by construction. It is never accepted as
+            a goal in its own right: it is authored against the movement's own
+            base, so at a different live base its tool0s miss the targets by
+            the base offset. When trac_ik plus the collision check cannot find
+            a valid branch, this returns None.
+        skip_env_collisions: When True, the compas_fab check_collision CC.3
+            (link↔rigid-body), CC.4 (attached-rigid-body↔rigid-body), and CC.5
+            (tool↔rigid-body) steps are bypassed during IK. Only CC.1 (robot
+            self-collision) and CC.2 (robot↔tool) remain. Use when the env scene
+            is irrelevant to the local replan.
+
+    Returns:
+        np.ndarray | None: The 12-vector goal conf, or None on failure.
     """
     from compas_fab.backends import CollisionCheckError, InverseKinematicsError
     from compas_fab.backends.pybullet.exceptions import PlanningGroupNotSupported
@@ -2255,6 +2286,11 @@ def _solve_bar_action_goal_ik(monitor, start_state,
         return opts
 
     def _solve_pair(check_collision: bool, seed_state=None):
+        # Returns (goal_state, error_message, colliding_state). The third slot
+        # carries the merged state that the collision check REJECTED, so the
+        # diagnostic viz below has real geometry to show; it is None when the
+        # pair failed at the IK stage or succeeded outright.
+        #
         # * Solve each arm's IK with check_collision=False even when the
         # outer request wants collision-checked results. Reason: the LEFT
         # IK's per-call collision check is run against a state where the
@@ -2270,13 +2306,13 @@ def _solve_bar_action_goal_ik(monitor, start_state,
         try:
             conf_L = planner.inverse_kinematics(target_L, seed, left_group, per_ik_opts)
         except _IK_FAIL as e:
-            return None, f"LEFT FAIL: {getattr(e, 'message', e)}"
+            return None, f"LEFT FAIL: {getattr(e, 'message', e)}", None
         st = seed.copy()
         st.robot_configuration = conf_L
         try:
             conf_LR = planner.inverse_kinematics(target_R, st, right_group, per_ik_opts)
         except _IK_FAIL as e:
-            return None, f"RIGHT FAIL: {getattr(e, 'message', e)}"
+            return None, f"RIGHT FAIL: {getattr(e, 'message', e)}", None
         gs = seed.copy()
         gs.robot_configuration = conf_LR
         if check_collision:
@@ -2288,8 +2324,10 @@ def _solve_bar_action_goal_ik(monitor, start_state,
             try:
                 planner.check_collision(gs, cc_opts)
             except CollisionCheckError as e:
-                return None, f"GOAL COLLISION: {(e.message or '').splitlines()[0] if e.message else ''}"
-        return gs, None
+                return (None,
+                        f"GOAL COLLISION: {(e.message or '').splitlines()[0] if e.message else ''}",
+                        gs)
+        return gs, None, None
 
     # * Build a list of seed configurations to try across outer attempts.
     # Trac_ik's descent is deterministic in the neighbourhood of its seed,
@@ -2339,13 +2377,17 @@ def _solve_bar_action_goal_ik(monitor, start_state,
 
     goal_state = None
     last_err = None
+    # First candidate the collision check rejected, kept for the diagnostic viz.
+    first_colliding_state = None
     for attempt in range(1, max_outer_attempts + 1):
-        gs, err = _solve_pair(check_collision=True,
-                              seed_state=seed_states[attempt - 1])
+        gs, err, colliding = _solve_pair(check_collision=True,
+                                         seed_state=seed_states[attempt - 1])
         if gs is not None:
             goal_state = gs
             print(f"[goal IK] attempt {attempt}/{max_outer_attempts}: OK")
             break
+        if colliding is not None and first_colliding_state is None:
+            first_colliding_state = colliding
         last_err = err
         print(f"[goal IK] attempt {attempt}/{max_outer_attempts}: {err}")
 
@@ -2353,7 +2395,7 @@ def _solve_bar_action_goal_ik(monitor, start_state,
         # Diagnostic: try without collision check. If THIS succeeds, the
         # target is reachable and the failure was ACM/collision rejection
         # — usually a missing touch-link on the held bar or a stale ACM.
-        gs_nc, err_nc = _solve_pair(check_collision=False)
+        gs_nc, err_nc, _ = _solve_pair(check_collision=False)
         if gs_nc is not None:
             print(
                 "[goal IK] DIAGNOSTIC: IK is reachable WITHOUT collision check "
@@ -2369,39 +2411,21 @@ def _solve_bar_action_goal_ik(monitor, start_state,
                 f"({err_nc}); the EE targets are unreachable from the current "
                 "base. Move the base closer to the goal-ghost base pose."
             )
-        # * Fallback: when the caller provided an alt seed (typically the
-        # movement's own start_conf, whose FK produces the target frames by
-        # construction), accept it as the goal state. This trades a small
-        # tool0 world-frame error (equal to the base offset applied on top
-        # of the authored base) for a usable goal_conf so Button 2's
-        # composite free plan can still plan a motion to a known bar-holding
-        # pose. Only kicks in when trac_ik + collision-check couldn't find
-        # a non-colliding branch on their own.
-        if alt_seed_conf12 is not None:
-            fallback_state = _seed_with_conf12(
-                start_state, np.asarray(alt_seed_conf12, dtype=float),
+        # * Diagnostic viz: always report WHERE the best candidate goal state
+        # collides -- printed, and drawn in the shared PyBullet window when a GUI
+        # is attached. Each run clears the previous drawing first, so this cannot
+        # pile up; 'Remove all drawing' wipes it by hand. The state we show is the
+        # first candidate that reached the collision check (the seed list is
+        # ordered most- to least-preferred, so that one is closest to what the
+        # operator asked for); when every attempt failed at the IK stage instead,
+        # fall back to the un-collision-checked solution, which is then the only
+        # geometry there is to look at.
+        state_to_show = (first_colliding_state if first_colliding_state is not None
+                         else gs_nc)
+        if state_to_show is not None:
+            visualize_goal_ik_collision(
+                monitor, state_to_show, skip_env_collisions=skip_env_collisions,
             )
-            try:
-                cc_opts = {"verbose": verbose}
-                if skip_env_collisions:
-                    cc_opts["_skip_cc3"] = True
-                    cc_opts["_skip_cc4"] = True
-                    cc_opts["_skip_cc5"] = True
-                planner.check_collision(fallback_state, cc_opts)
-            except CollisionCheckError as e:
-                print(
-                    f"[goal IK] fallback (alt_seed_conf12 verbatim) also "
-                    f"collides: {(e.message or '').splitlines()[0] if e.message else ''}. "
-                    f"Giving up."
-                )
-                return None
-            print(
-                "[goal IK] FALLBACK: accepting alt_seed_conf12 verbatim as "
-                "goal (tool0 world-frame error ~ base_offset). Composite free "
-                "plan will land the arms on this bar-holding pose."
-            )
-            monitor.movement_goal_state = fallback_state
-            return np.asarray(alt_seed_conf12, dtype=float)
         return None
 
     monitor.movement_goal_state = goal_state

@@ -529,14 +529,23 @@ class Dropdown:
 
 
 class TextInput:
-    """Free-form text or numeric entry. action(str) for text, action(float) if numeric=True."""
-    def __init__(self, name, action, default="", *, numeric=False):
+    """Free-form text or numeric entry. action(str) for text, action(float) if numeric=True.
+
+    `fmt` is the printf-style display format of a numeric box; the default keeps
+    4 decimals so sub-millimetre entries in metres survive being typed in.
+    """
+    def __init__(self, name, action, default="", *, numeric=False, fmt="%.4f"):
         self.name = name
         self.action = action
-        self._handle = _backend().add_text_input(name, default, action, numeric=numeric)
+        self._handle = _backend().add_text_input(name, default, action,
+                                                 numeric=numeric, fmt=fmt)
 
     def update(self):
         _backend().poll(self._handle, "text_input", self.action)
+
+    def set_value(self, value):
+        """Overwrite what the box displays (the action callback does NOT fire)."""
+        _backend().set_value(self._handle, value)
 
 
 class FilePicker:

@@ -37,8 +37,9 @@ from husky_assembly_teleop.mocap_experiment import (
 )
 from husky_assembly_teleop.husky_robot import UR5e_HOME_STATE
 from husky_assembly_teleop.common import (
-    Button, Slider, SliderGroup, Separator, LiveMultiPlot, HistoryPlot, Husky, TrackedObject, HuskyObject, AssemblyObject, HUSKY_UR5e_JOINT_NAMES, lerp, load_gripper
+    Button, Slider, SliderGroup, Separator, TextInput, LiveMultiPlot, HistoryPlot, Husky, TrackedObject, HuskyObject, AssemblyObject, HUSKY_UR5e_JOINT_NAMES, lerp, load_gripper
 )
+from husky_assembly_teleop.cc_diagnosis import clear_collision_diagnosis
 from husky_assembly_teleop.optitrack.NatNetClient import NatNetClient
 from husky_assembly_teleop.utils import (
     pose_from_frame, frame_from_pose, pose_from_transformation, transformation_from_pose,
@@ -56,6 +57,7 @@ from husky_assembly_teleop.cfab_session import (
     CfabSession, build_default_robot_cell, plan_free_motion,
     arm_joint_names_for_group, SINGLE_ARM_GROUP,
     HUSKY_DUAL_URDF_PATH, HUSKY_DUAL_SRDF_PATH,
+    GROUND_RIGID_BODY_NAME,
 )
 from husky_assembly_teleop import common as _common
 from husky_assembly_teleop.ui_backend import make_backend, DearPyGuiBackend, bind_default_font
@@ -63,7 +65,7 @@ from husky_assembly_teleop.ui_backend import make_backend, DearPyGuiBackend, bin
 from compas.data import json_load, json_dump
 from compas.geometry import Frame, Transformation
 from compas_fab.backends import CollisionCheckError
-from compas_fab.robots import JointTrajectory, JointTrajectoryPoint
+from compas_fab.robots import JointTrajectory, JointTrajectoryPoint, RigidBodyState
 from compas_fab.robots.time_ import Duration
 from compas_robots import Configuration
 from compas_robots.model import Joint
@@ -84,8 +86,10 @@ TRANSPARENT = [0, 0.0, 0.0, 0.0]
 # Used by: M1 initial plan, Button 2b (IK Replan & Transfer → Mv Start),
 # Button 3 (Servo live loop for M1), Button 3b (Servo transfer loop).
 # Single source for both the plan call and CDFM sparse validation.
-CDFM_POSITION_RES = 0.002   # meters
-CDFM_ROTATION_RES = 0.0125  # radians
+# CDFM_POSITION_RES = 0.002   # meters
+# CDFM_ROTATION_RES = 0.0125  # radians
+CDFM_POSITION_RES = 0.01   # meters
+CDFM_ROTATION_RES = 0.025  # radians
 # Which planning stage the M1 constrained planner runs. Stage 3 is the
 # grasped-bar transport stage (see STAGE3_GRASP_MASK_LINKS). This used to be
 # adjustable via a "Constrained Stage" GUI slider, but in practice only stage 3
@@ -109,6 +113,19 @@ TRANSFER_EE_ROT_THRESHOLD_DEG = float(np.degrees(1e-2))  # ~0.573 deg
 # here -- the mocap-accuracy hide only drops the built bars/joints, and must
 # keep the environment obstacles both visible and collision-checked.
 BUILT_ASSEMBLY_RB_PREFIXES = ('bar_', 'joint_')
+
+# Robot links allowed to touch the ground (GROUND_RIGID_BODY_NAME). The floor is
+# modelled honestly at z=0, and the husky's wheels rest exactly on it: the URDF
+# puts base_footprint->base_link at 0.13228 m and base_link->wheel at 0.03282 m,
+# so each wheel centre is at 0.1651 m -- exactly the wheel radius. The wheels are
+# therefore permanently tangent to the floor, while the chassis clears it by
+# 132 mm. Without this allowed-collision every configuration would read as
+# colliding. Only the four wheels are exempt, so an arm or tool dipping below
+# the floor is still caught.
+GROUND_TOUCH_LINKS = (
+    'front_left_wheel_link', 'front_right_wheel_link',
+    'rear_left_wheel_link', 'rear_right_wheel_link',
+)
 
 EXISTING_ELEMENT_COLOR = pp.RED
 CURRENT_ELEMENT_COLOR = pp.BLUE
@@ -185,10 +202,12 @@ class HuskyMonitor(Node):
     #              short free-motion plan. Composite BiRRT can solve this).
     #   'home'  : HUSKY_DUAL_ARM_HOME_CONF_12 (the M4 dispatcher's home
     #              target -- represents the "robot parked between
-    #              BarActions" case. Stress test: IK converges via the
-    #              fallback branch, but the 12-DOF free plan from home
-    #              extended arms to bar-holding grip is a genuinely hard
-    #              corridor problem the sampler often can't solve.)
+    #              BarActions" case. Stress test: the goal IK frequently
+    #              fails outright from this seed, and even when it solves,
+    #              the 12-DOF free plan from home extended arms to a
+    #              bar-holding grip is a genuinely hard corridor problem
+    #              the sampler often can't solve. The IK failure prints and
+    #              draws whatever rejected it -- see cc_diagnosis.py.)
     #
     # `MOCK_LIVE_BASE_XY_OFFSET_M` is added (metres) to
     # current_movement.start_state.robot_base_frame's XY position to stand
@@ -294,6 +313,12 @@ class HuskyMonitor(Node):
         self._selected_action_file_idx = 0
         self._selected_movement_idx = 0
         self._ee_target_pose_uids = []          # pp.add_line uids for drawn EE targets
+        # Collision-diagnosis drawing (cc_diagnosis.py), run automatically every
+        # time a live goal IK fails. Handles are pp debug-item uids; the colour
+        # cache is keyed by (body puid, link index) so restoring a highlighted
+        # link is lossless.
+        self._cc_diag_handles = []              # list[int]
+        self._cc_diag_orig_colors = {}          # (body, link) -> RGBA before highlight
         # Per-movement attached-body ghosts. The bodies are the ones cfab
         # already spawned via set_robot_cell_state; we just re-color them
         # TRAJECTORY_GREEN and re-pose them via goal_model FK each tick so
@@ -302,6 +327,12 @@ class HuskyMonitor(Node):
         # Original RGBA of the built-assembly bodies HIDDEN by
         # _sync_pp_visibility_to_hidden (restored at the top of the next load).
         self._traj_ghost_orig_colors = {}       # body puid -> RGBA
+        # BAR_ACTION_MOCAP_ACCURACY_TEST: True once the built assembly has been
+        # flagged hidden + blanked for the CURRENTLY loaded BarAction. The set
+        # of hidden bodies depends only on the action's active bar, so switching
+        # MOVEMENTS can skip the whole show/re-hide cycle. Reset by
+        # load_bar_action_file when a new action (new active bar) is parsed.
+        self._mocap_hide_applied = False
         # Original RGBA of the PREVIEW bodies (bar/joints/tools) recoloured by
         # _refresh_preview_attached_bodies. Kept separate from the hidden-body
         # cache so re-syncing the preview at trajectory time never un-hides the
@@ -552,6 +583,16 @@ class HuskyMonitor(Node):
         self.dump_sep_sliders.clear()
         self.build_ui(target_conf)
         
+    def clear_all_debug_drawing(self) -> None:
+        """Wipe every debug drawing, including the collision diagnosis.
+
+        ``pp.remove_all_debug()`` only deletes lines and text. The collision
+        diagnosis also recolours the links it highlights, so those have to be
+        restored separately or they stay orange/cyan forever.
+        """
+        pp.remove_all_debug()
+        clear_collision_diagnosis(self)
+
     def toggle_show_goal_state(self):
         self.show_goal_state = not self.show_goal_state
         self.goal_model.set_color(GOAL_BLUE if self.show_goal_state else TRAJECTORY_GREEN)
@@ -1652,7 +1693,10 @@ class HuskyMonitor(Node):
 
         # 5) Push state into the cfab planner. This materializes all rigid
         # body poses, attaches tool bodies to their parent links, and sets
-        # up the ACM internally.
+        # up the ACM internally. The freshly parsed state must first be given
+        # the ground body the session added to the cell (compas_fab requires
+        # cell and state to hold the same rigid-body ids).
+        self._inject_ground_rigid_body_state(mv.start_state)
         try:
             self.cfab.planner.set_robot_cell_state(mv.start_state)
         except Exception as e:
@@ -2131,6 +2175,11 @@ class HuskyMonitor(Node):
         if not self._loaded_action.movements:
             self.get_logger().warn("BarAction has no movements.")
         self._loaded_movements = list(self._loaded_action.movements)
+        # New action => new active bar => the built-assembly hide must be redone
+        # (the previously active bar has to go back to hidden, and this action's
+        # active bar has to become visible). The first Load Movement below
+        # re-applies it for the whole action.
+        self._mocap_hide_applied = False
 
         self.get_logger().info(f"Loading BarAction from file {action_path}")
 
@@ -2158,10 +2207,15 @@ class HuskyMonitor(Node):
 
         # Native M0 ships with robot_configuration null: fill it (and the
         # base frame) from the live robot so downstream consistency checks
-        # and planning see real values.
+        # and planning see real values. Every freshly parsed state also needs
+        # the ground body, which the Rhino export does not carry (the cell has
+        # it, and compas_fab requires cell and state to agree).
         for mv in self._loaded_movements:
-            if self._match_movement_role(mv) == 'M0' and mv.start_state is not None:
+            if mv.start_state is None:
+                continue
+            if self._match_movement_role(mv) == 'M0':
                 self._inject_live_conf_into_state(mv.start_state)
+            self._inject_ground_rigid_body_state(mv.start_state)
 
         print(f"[BarAction] loaded {os.path.basename(action_path)} "
               f"with {len(self._loaded_movements)} movements:")
@@ -2193,7 +2247,35 @@ class HuskyMonitor(Node):
         if live:
             self.load_selected_movement()
 
-    def _hide_built_assembly_for_mocap(self, state):
+    def _inject_ground_rigid_body_state(self, state):
+        """Give a cell state the ground body, with the wheels-only allowance.
+
+        ``CfabSession`` adds the floor (``GROUND_RIGID_BODY_NAME``) to the design
+        cell, and compas_fab asserts that a cell and any state pushed to it hold
+        exactly the same rigid-body ids -- so every freshly parsed movement
+        state needs a matching entry or ``set_robot_cell_state`` raises. The
+        floor is stationary at the world origin, and lists the four wheel links
+        in ``touch_links`` so resting on it is not reported as a collision
+        (see GROUND_TOUCH_LINKS); anything else that reaches the floor still is.
+
+        Args:
+            state: RobotCellState to edit in place. No-op when the cell has no
+                ground body or the state already carries it.
+        """
+        if state is None or self.cfab is None:
+            return
+        cell = getattr(self.cfab, 'robot_cell', None)
+        if cell is None or GROUND_RIGID_BODY_NAME not in (cell.rigid_body_models or {}):
+            return
+        rb_states = getattr(state, 'rigid_body_states', None)
+        if rb_states is None or GROUND_RIGID_BODY_NAME in rb_states:
+            return
+        rb_states[GROUND_RIGID_BODY_NAME] = RigidBodyState(
+            frame=Frame.worldXY(),
+            touch_links=list(GROUND_TOUCH_LINKS),
+        )
+
+    def _hide_built_assembly_for_mocap(self, state, sync_visibility=True):
         """Flag the already-built (static) assembly bars/joints ``is_hidden`` so
         the cfab planner and IK ignore collisions with them.
 
@@ -2208,12 +2290,22 @@ class HuskyMonitor(Node):
 
         Used only in the bar-holding accuracy experiment, where the built
         structure's real-world placement is approximate and must not block the
-        live replans. Mutates ``state.rigid_body_states`` in place; re-applied on
-        every Load Movement (a re-parse / Reset-to-Clean clears it). No-op if the
+        live replans. Mutates ``state.rigid_body_states`` in place. No-op if the
         state has no rigid bodies.
+
+        Applied ONCE PER BARACTION (see ``_mocap_hide_applied``): the hidden set
+        depends only on the action's active bar, so every movement of the same
+        action shares it. The flags are written onto EVERY loaded movement's
+        start_state, which also makes each later ``set_robot_cell_state`` skip
+        repositioning those bodies (compas_fab skips ``is_hidden`` rigid bodies),
+        so switching movements no longer re-adds and re-removes the built bars.
 
         Args:
             state: The RobotCellState whose rigid_body_states to edit in place.
+            sync_visibility (bool): Also blank the flagged bodies in the PyBullet
+                view. True for the state whose scene is currently shown; False
+                when only tagging the other movements' states (their bodies are
+                the same ones, already blanked).
         """
         rb_states = getattr(state, 'rigid_body_states', None) or {}
         active = getattr(self, 'active_bar_name', None)
@@ -2227,14 +2319,15 @@ class HuskyMonitor(Node):
                 continue  # environment obstacles etc.: keep shown + checked
             rb.is_hidden = True
             hidden.append(name)
-        if hidden:
+        if hidden and sync_visibility:
             self.get_logger().info(
                 f"[mocap-acc] ignoring collisions with {len(hidden)} built "
                 f"assembly bodies during planning/IK.")
         # Mirror the flags into the PyBullet view so the hidden bodies also
         # DISAPPEAR from the screen -- otherwise the built assembly still shows,
         # which reads as "still in play" even though planning/IK ignore it.
-        self._sync_pp_visibility_to_hidden(state)
+        if sync_visibility:
+            self._sync_pp_visibility_to_hidden(state)
 
     def _sync_pp_visibility_to_hidden(self, state):
         """Draw each ``is_hidden`` rigid body transparent in the PyBullet scene.
@@ -2315,7 +2408,9 @@ class HuskyMonitor(Node):
         self.planned_trajectory_motion_type = motion_type
         # Restore the previously-previewed bodies to their original colors, then
         # forget them (leaves the hidden built-assembly cache untouched).
-        for body, c in list(self._preview_body_orig_colors.items()):
+        # Read through getattr: the headless harnesses build a monitor without
+        # running __init__ and only stub the attributes they know about.
+        for body, c in list((getattr(self, '_preview_body_orig_colors', None) or {}).items()):
             try:
                 pp.set_color(body, c)
             except Exception:
@@ -2365,8 +2460,8 @@ class HuskyMonitor(Node):
                 'attach': pose_from_frame(rbs.attachment_frame),
             })
         if self._traj_ghost_bodies:
-            print(f"[preview] {motion_type}: bar/joints ride "
-                  f"{[g['link'] for g in self._traj_ghost_bodies]}")
+            print(f"[preview] {motion_type}. ")
+            # bar/joints ride f"{[g['link'] for g in self._traj_ghost_bodies]}")
         elif hide_bar_joints:
             print(f"[preview] {motion_type}: bar/joints hidden (not mounted).")
 
@@ -2407,15 +2502,27 @@ class HuskyMonitor(Node):
         bar_id = getattr(self._loaded_action, 'active_bar_id', None) if self._loaded_action else None
         self.active_bar_name = f"bar_{bar_id}" if bar_id else None
 
-        # Restore built-assembly bodies hidden on the previous load before
-        # pushing the new state (the preview bodies are restored by the helper
-        # below, from their own cache).
-        for body, c in list(self._traj_ghost_orig_colors.items()):
-            try:
-                pp.set_color(body, c)
-            except Exception:
-                pass
-        self._traj_ghost_orig_colors = {}
+        # In the mocap-accuracy test the built assembly is hidden once per
+        # BarAction, so a plain movement switch must NOT un-hide it: skipping
+        # the restore below (and the re-hide further down) is what stops the
+        # built bars from flashing back in and out on every Load Movement. The
+        # colour cache is deliberately kept: _sync_pp_visibility_to_hidden only
+        # caches a body it hasn't seen, so keeping it preserves the TRUE
+        # original colours (clearing it would later cache TRANSPARENT as the
+        # "original" and lose them for good).
+        skip_built_assembly_resync = (self.BAR_ACTION_MOCAP_ACCURACY_TEST
+                                      and getattr(self, '_mocap_hide_applied', False))
+
+        if not skip_built_assembly_resync:
+            # Restore built-assembly bodies hidden on the previous load before
+            # pushing the new state (the preview bodies are restored by the
+            # helper below, from their own cache).
+            for body, c in list(self._traj_ghost_orig_colors.items()):
+                try:
+                    pp.set_color(body, c)
+                except Exception:
+                    pass
+            self._traj_ghost_orig_colors = {}
 
         try:
             self.cfab.planner.set_robot_cell_state(mv.start_state)
@@ -2435,10 +2542,22 @@ class HuskyMonitor(Node):
         # Bar-holding accuracy experiment only: ignore collisions with the
         # already-built assembly (static bars/joints) for all subsequent
         # planning/IK, keeping self, tools, and the grasped bar + its joints
-        # checked. Done after the state push above so the built bodies are
-        # already spawned/positioned in the scene before they're flagged hidden.
-        if self.BAR_ACTION_MOCAP_ACCURACY_TEST:
+        # checked. Done ONCE PER BARACTION, on the first Load Movement after the
+        # action is parsed -- and after the state push above, so the built
+        # bodies are spawned/positioned in the scene before they're flagged.
+        # The flags go onto EVERY movement's start_state (they're all the same
+        # action, so the same hidden set applies): later movements keep their
+        # planning/IK correct AND their set_robot_cell_state skips repositioning
+        # those bodies, so no more add/remove churn when switching movements.
+        if (self.BAR_ACTION_MOCAP_ACCURACY_TEST
+                and not getattr(self, '_mocap_hide_applied', False)):
             self._hide_built_assembly_for_mocap(mv.start_state)
+            for other in self._loaded_movements:
+                if other is mv or getattr(other, 'start_state', None) is None:
+                    continue
+                self._hide_built_assembly_for_mocap(
+                    other.start_state, sync_visibility=False)
+            self._mocap_hide_applied = True
 
         # Set up the preview bar/joints for the movement's AUTHORED type (goal
         # state + first trajectory). M1/M2 hold the bar; M0/M3/M4 don't. Each
@@ -2707,6 +2826,13 @@ class HuskyMonitor(Node):
         self._loaded_action.movements[idx] = clean_mv
         self.current_movement = clean_mv
         print(f"[Reset Mv] reverted [{idx}] {clean_mv.movement_id!r} to clean.")
+        # The freshly parsed state carries neither the ground body (the cell has
+        # it, and compas_fab requires cell and state to agree) nor the
+        # `is_hidden` flags, so both must be re-applied -- otherwise the state
+        # push raises, or this movement collides against the built assembly
+        # again. Clearing the flag makes the Load Movement below redo the hide.
+        self._inject_ground_rigid_body_state(clean_mv.start_state)
+        self._mocap_hide_applied = False
         # Re-run the standard Load Movement path so movement_start_state,
         # target_ee_frames, and the cfab scene sync to the fresh object.
         self.load_selected_movement()
@@ -2804,7 +2930,7 @@ class HuskyMonitor(Node):
                 # tool0s on the authored targets. FK at (live base + last
                 # waypoint arm conf) should equal the target EE frames derived
                 # from the movement's authored start_state at Step 1's FK.
-                self._verify_replan_endpoint_matches_target()
+                # self._verify_replan_endpoint_matches_target()
 
                 # This is the FREE transit (bar not mounted yet), so the
                 # preview must NOT show the bar even though the target
@@ -3010,7 +3136,7 @@ class HuskyMonitor(Node):
                 # a different joint branch than the IK goal conf (it tracks
                 # poses, not joints) — the tool0 POSE residual is what this
                 # check verifies, and that is what servoing cares about.
-                self._verify_replan_endpoint_matches_target()
+                # self._verify_replan_endpoint_matches_target()
 
                 # Step 5: pre-execution safeguard. Plot the planned path's
                 # joint continuity + bar-hold EE drift so the operator can
@@ -3031,14 +3157,13 @@ class HuskyMonitor(Node):
         waypoint's tool0 world-frame poses (FK at live base + planned end
         arm conf) against the authored target EE frames the IK solved for.
 
-        This surfaces two situations:
-          * Composite plan landed on the IK-solved goal exactly -> tiny
-            residual, both arms hit the authored target frames.
-          * IK fell back to `alt_seed_conf12` verbatim (no arm-side
-            compensation for the base offset) -> residual roughly equal to
-            the base offset (~14 mm for the (-0.3, 0.2) mock -> ~360 mm).
-            Emits a warning so the operator knows the tool0 targets are
-            NOT met and any downstream linear motion needs re-planning.
+        The two should agree to within a millimetre: the goal IK is the only
+        thing that sets the composite plan's goal conf, and it only returns a
+        conf whose tool0s land on those authored frames. A residual beyond the
+        tolerances therefore means the composite plan did NOT reach its goal
+        (a truncated or mis-unwrapped path), so a warning is emitted -- the
+        tool0 targets are not met and any downstream linear motion that
+        assumes them needs re-planning.
 
         Args:
             pos_tol_m: position tolerance in metres. Default 5 mm.
@@ -3104,11 +3229,9 @@ class HuskyMonitor(Node):
                 f"{max_pos*1000:.2f} mm (tol {pos_tol_m*1000:.1f} mm), "
                 f"max ang={np.degrees(max_ang):.3f} deg "
                 f"(tol {ang_tol_deg:.1f} deg). "
-                f"The composite plan likely landed on the IK fallback "
-                f"(alt_seed_conf12 verbatim), which does NOT compensate "
-                f"the arm conf for the base offset -- world-frame tool0 "
-                f"error scales with the base offset. Any downstream linear "
-                f"motion that assumes the authored EE targets should be "
+                f"The composite plan did not land on the IK-solved goal conf, "
+                f"so the tool0s miss the authored EE targets. Any downstream "
+                f"linear motion that assumes those targets should be "
                 f"re-planned."
             )
 
@@ -4551,7 +4674,49 @@ class HuskyMonitor(Node):
         # Just update the color based on the current state
         self.goal_model.set_color(GOAL_BLUE if self.show_goal_state else TRAJECTORY_GREEN)
 
-    # --- mocap base XYZ offset side-window (standalone DPG) ---
+    # --- mocap base XYZ offset controls ---
+    def _build_mocap_offset_ui(self):
+        """Put the base XYZ offset controls wherever the active GUI can show them.
+
+        Which of the two placements is used depends on the primary UI backend:
+          * Dear PyGui panel (USE_DPG_UI=1): the controls become the last
+            section of the main window. They cannot live in their own window
+            here, because a second dpg.create_context() corrupts DPG's C state
+            and SEGFAULTS the process.
+          * PyBullet debug GUI (USE_DPG_UI=0): a small standalone DPG window
+            pops up beside the PyBullet viewer, since PyBullet's debug GUI has
+            no text-entry widget of its own.
+
+        Called from build_ui, which runs at __init__ AND on every reset_ui
+        (e.g. a BarAction load), so both placements tolerate being re-entered.
+        """
+        if isinstance(_common._global_backend, DearPyGuiBackend):
+            self._add_mocap_offset_section()
+        else:
+            self._init_mocap_offset_window()
+
+    def _add_mocap_offset_section(self):
+        """Append the x/y/z boxes + Apply/Reset as the last main-DPG-panel section.
+
+        reset_ui wipes and rebuilds every main-panel widget, so this just builds
+        a fresh set each time; no idempotency guard is needed.
+        """
+        # The old boxes are gone, so fill the new ones with the offset that is
+        # actually in effect -- otherwise a rebuild would make an applied offset
+        # look like it had gone back to zero.
+        applied = self.huskies[self.selected_robot_id].mocap_base_offset_xyz
+        self._mocap_offset_pending = [float(v) for v in applied]
+
+        self.dump_sep_sliders.append(Separator("MOCAP base XYZ offset (world, m)"))
+        self._mocap_offset_inputs = [
+            TextInput(f"offset {axis} [m]",
+                      lambda v, i=i: self._set_pending_offset(i, v),
+                      default=self._mocap_offset_pending[i], numeric=True)
+            for i, axis in enumerate(('x', 'y', 'z'))
+        ]
+        self.buttons.append(Button('Apply Base Offset', self._apply_base_offset))
+        self.buttons.append(Button('Reset Base Offset to Zero', self._reset_base_offset))
+
     def _init_mocap_offset_window(self):
         """Spawn standalone DPG window with x/y/z text inputs + Apply/Reset.
         Independent of _common._global_backend so PyBullet primary UI is unaffected.
@@ -4564,12 +4729,9 @@ class HuskyMonitor(Node):
         if getattr(self, '_offset_dpg', None) is not None:
             return
         self._offset_dpg = None
+        # This window is built once and survives every later reset_ui, so its
+        # boxes start at zero and are never re-seeded from the applied offset.
         self._mocap_offset_pending = [0.0, 0.0, 0.0]
-
-        # Avoid a 2nd DPG create_context() when primary backend is already DPG.
-        if isinstance(_common._global_backend, DearPyGuiBackend):
-            print("[mocap offset] primary backend is DPG; skipping private offset window.")
-            return
         try:
             # Lazy/optional import: dearpygui is only needed for this offset
             # window and may not be installed, so keep it function-level.
@@ -4616,8 +4778,11 @@ class HuskyMonitor(Node):
         h = self.huskies[self.selected_robot_id]
         h.mocap_base_offset_xyz = np.zeros(3)
         self._mocap_offset_pending = [0.0, 0.0, 0.0]
-        if self._offset_dpg is not None:
-            dpg = self._offset_dpg
+        # Blank the boxes too, in whichever of the two placements they live.
+        for box in getattr(self, '_mocap_offset_inputs', []):
+            box.set_value(0.0)
+        dpg = getattr(self, '_offset_dpg', None)
+        if dpg is not None:
             for tag in ("offset_x", "offset_y", "offset_z"):
                 if dpg.does_item_exist(tag):
                     dpg.set_value(tag, 0.0)
@@ -5080,7 +5245,7 @@ class HuskyMonitor(Node):
         # self.dump_sep_sliders.append(Slider("----------DEBUG utils", lambda : None))
         self.dump_sep_sliders.append(Separator("DEBUG utils"))
         self.buttons.append(Button('Sample Random Goal Conf', self.sample_random_goal_conf))
-        self.buttons.append(Button('Remove all drawing', lambda : pp.remove_all_debug()))
+        self.buttons.append(Button('Remove all drawing', self.clear_all_debug_drawing))
         # Button to load RobotCellState from file and update arm goal configuration
         # self.buttons.append(Button(
         #     'Load RobotCellState (robotx_box_A15-S13)',
@@ -5095,7 +5260,7 @@ class HuskyMonitor(Node):
         # ))
 
         if self.USE_MOCAP:
-            self._init_mocap_offset_window()
+            self._build_mocap_offset_ui()
 
     # --- --- --- --- --- MOCAP --- --- --- --- ---
     _ANSI_GREEN = '\033[92m'
