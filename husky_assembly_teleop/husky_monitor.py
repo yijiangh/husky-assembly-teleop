@@ -3131,12 +3131,17 @@ class HuskyMonitor(Node):
                 self._refresh_preview_attached_bodies('bar_held', state)
                 self.set_to_show_traj_state()
 
-                # Step 4: FK the planned endpoint against the authored
-                # targets. NOTE the constrained planner's endpoint may sit on
-                # a different joint branch than the IK goal conf (it tracks
-                # poses, not joints) — the tool0 POSE residual is what this
-                # check verifies, and that is what servoing cares about.
-                # self._verify_replan_endpoint_matches_target()
+                # Step 4: check the planned endpoint against BOTH the IK goal
+                # conf and the authored targets, per arm. NOTE the constrained
+                # planner's endpoint may sit on a different joint branch than
+                # the IK goal conf (it tracks poses, not joints) — the tool0
+                # POSE residual is what matters, and that is what servoing
+                # cares about. This also reports whether the physically held
+                # bar grasp matches the authored one, which is what decides
+                # how much right-arm error the servo loop can ever remove.
+                self._verify_transfer_endpoint(
+                    path, state,
+                    np.concatenate([self.goal_arm_pose[0], self.goal_arm_pose[1]]))
 
                 # Step 5: pre-execution safeguard. Plot the planned path's
                 # joint continuity + bar-hold EE drift so the operator can
@@ -3911,6 +3916,165 @@ class HuskyMonitor(Node):
             ang_devs.append(2.0 * float(np.arccos(qw)))
         return pos_devs, ang_devs
 
+    def _frame_pose_residual(self, frame_a, frame_b):
+        """Position + orientation difference between two compas Frames.
+
+        Args:
+            frame_a (Frame): First frame.
+            frame_b (Frame): Second frame.
+
+        Returns:
+            tuple[float, float]: ``(position difference in metres, orientation
+            difference in radians)``. The orientation difference uses the
+            absolute quaternion dot product, so a sign-flipped quaternion (the
+            same rotation) correctly reads as zero.
+        """
+        d_pos = float(np.linalg.norm(
+            np.asarray(frame_a.point) - np.asarray(frame_b.point)
+        ))
+        q_a = np.asarray(frame_a.quaternion.xyzw, dtype=float)
+        q_b = np.asarray(frame_b.quaternion.xyzw, dtype=float)
+        d_ang = 2.0 * float(np.arccos(
+            np.clip(abs(float(np.dot(q_a, q_b))), 0.0, 1.0)
+        ))
+        return d_pos, d_ang
+
+    def _verify_transfer_endpoint(self, path12, template_state, goal_conf12):
+        """Check, per arm, whether a constrained (CDFM) transfer path really
+        ends where the live-base IK asked it to.
+
+        ! Why this matters: `plan_constrained_dual_arm` does NOT aim at the
+        ! goal *conf*. When it is given a goal_conf (our case) it FKs only the
+        ! LEFT tool0 of that conf and turns it into a BAR pose
+        ! (`world_from_bar_goal = FK_left(goal_conf) * inv(grasp_bar_from_left)`,
+        ! api.py). Every waypoint's RIGHT tool0 is then placed by the rigid
+        ! grasp captured at the path's START (`grasp_bar_from_right`), i.e. by
+        ! where the arms physically are right now -- not by the goal conf's
+        ! right arm. So the LEFT arm lands on target by construction while the
+        ! RIGHT arm inherits any mismatch between the authored left->right
+        ! relative tool0 transform and the physically held one. Check D below
+        ! measures exactly that mismatch, and it predicts the right arm's
+        ! residual in the servoing tracker.
+
+        Prints four comparisons (nothing is mutated):
+          A. joint delta   -- path end vs goal conf, per arm.
+          B. tool0 pose    -- FK(path end) vs FK(goal conf), per arm. Differs
+             from A when the planner lands on another joint branch that has
+             the same pose.
+          C. tool0 pose    -- FK(path end) vs the authored target EE frames.
+             This is what the servoing tracker plots.
+          D. bar grasp     -- authored left->right relative tool0 transform vs
+             the one actually held at the path's start.
+
+        Args:
+            path12 (Sequence): Planned waypoints, each a 12-vec (left 6 joint
+                values then right 6).
+            template_state (RobotCellState): State supplying the base frame +
+                non-arm joints for FK. Copied, never mutated.
+            goal_conf12 (Sequence[float]): The 12-vec the live-base IK solved,
+                which was handed to the planner as its goal.
+        """
+        if not len(path12):
+            return
+        planner = self.cfab.planner
+        left_names = list(HUSKY_DUAL_UR5e_JOINT_NAMES[0])
+        right_names = list(HUSKY_DUAL_UR5e_JOINT_NAMES[1])
+        names_12 = left_names + right_names
+
+        def _state_at(conf12):
+            """Copy the template and write one 12-vec arm conf into it."""
+            state = template_state.copy()
+            for name, value in zip(names_12, conf12):
+                state.robot_configuration[name] = float(value)
+            return state
+
+        def _tool0(state, side):
+            """World-frame tool0 Frame of one arm at the given state."""
+            return _fk_link_frame(planner, state, f"{side}_ur_arm_tool0")
+
+        end12 = np.asarray(path12[-1], dtype=float)
+        goal12 = np.asarray(goal_conf12, dtype=float)
+        end_state = _state_at(end12)
+        goal_state = _state_at(goal12)
+
+        # A. Joint-space agreement, per arm.
+        d_joint_L = float(np.max(np.abs(end12[:6] - goal12[:6])))
+        d_joint_R = float(np.max(np.abs(end12[6:] - goal12[6:])))
+        print(
+            f"[transfer verify A] path end vs IK goal conf (max joint delta): "
+            f"L={np.degrees(d_joint_L):.3f} deg | R={np.degrees(d_joint_R):.3f} deg"
+        )
+
+        # E. How far the path actually travels. The pre-execution safeguard only
+        # compares the FIRST and LAST waypoints, so a path that swings far out
+        # and comes back reads as a tiny move (e.g. "33 waypoints, max joint
+        # delta 0.2 deg"). This reports the real excursion instead.
+        path_arr = np.asarray(path12, dtype=float)
+        excursion_L = float(np.max(np.abs(path_arr[:, :6] - path_arr[0, :6])))
+        excursion_R = float(np.max(np.abs(path_arr[:, 6:] - path_arr[0, 6:])))
+        print(
+            f"[transfer verify E] max joint excursion from the path's start over "
+            f"all {len(path_arr)} waypoints: L={np.degrees(excursion_L):.2f} deg | "
+            f"R={np.degrees(excursion_R):.2f} deg"
+        )
+
+        # B. Pose agreement with the goal conf, per arm. A large value here with
+        # a small A means the planner tracked a different bar pose; a small
+        # value here with a large A is just a different (equivalent) branch.
+        try:
+            for side, label in (("left", "L"), ("right", "R")):
+                d_pos, d_ang = self._frame_pose_residual(
+                    _tool0(end_state, side), _tool0(goal_state, side))
+                print(
+                    f"[transfer verify B] {label} path-end tool0 vs goal-conf "
+                    f"tool0: pos={d_pos * 1000:.2f} mm ang={np.degrees(d_ang):.3f} deg"
+                )
+        except Exception as e:
+            self.get_logger().warn(f"[transfer verify] FK comparison failed: {e}")
+            return
+
+        # C. Pose agreement with the AUTHORED targets -- the quantity the
+        # servoing tracker plots, so these two should match each other.
+        targets = getattr(self, '_last_ik_target_ee_frames', None)
+        if not targets or 'left' not in targets or 'right' not in targets:
+            return
+        for side, label in (("left", "L"), ("right", "R")):
+            d_pos, d_ang = self._frame_pose_residual(
+                _tool0(end_state, side), targets[side])
+            print(
+                f"[transfer verify C] {label} path-end tool0 vs AUTHORED target: "
+                f"pos={d_pos * 1000:.2f} mm ang={np.degrees(d_ang):.3f} deg"
+            )
+
+        # D. The over-constraint check. With one bar rigidly held by both
+        # grippers the left->right relative tool0 transform is fixed by the
+        # physical grasp, so the two authored targets can only BOTH be reached
+        # if they imply that same relative transform. Whatever is left over
+        # here is a residual the transfer servo loop can never null out.
+        start_state = _state_at(np.asarray(path12[0], dtype=float))
+        authored_rel = (Transformation.from_frame(targets['left']).inverted()
+                        * Transformation.from_frame(targets['right']))
+        held_rel = (Transformation.from_frame(_tool0(start_state, 'left')).inverted()
+                    * Transformation.from_frame(_tool0(start_state, 'right')))
+        delta = Frame.from_transformation(authored_rel.inverted() * held_rel)
+        d_pos = float(np.linalg.norm(list(delta.point)))
+        d_ang = 2.0 * float(np.arccos(min(max(abs(float(delta.quaternion.w)), 0.0), 1.0)))
+        print(
+            f"[transfer verify D] authored left->right relative tool0 vs the "
+            f"one physically held: pos={d_pos * 1000:.2f} mm "
+            f"ang={np.degrees(d_ang):.3f} deg"
+        )
+        if d_pos > 0.002:
+            self.get_logger().warn(
+                f"[transfer verify] The mounted bar's grasp does not match the "
+                f"authored one by {d_pos * 1000:.1f} mm. Both arms hold ONE "
+                f"rigid bar, so both authored tool0 targets cannot be reached "
+                f"at once: the planner puts the LEFT arm on target and the "
+                f"RIGHT arm absorbs the whole mismatch. Expect ~this much "
+                f"steady-state right-arm error in the servoing tracker, and no "
+                f"amount of extra iterations will remove it."
+            )
+
     def _check_inter_ee_invariance(self, jt, template_state):
         """For an M2 (bar-held) trajectory, verify the left_from_right
         relative pose is constant over the path. Logs max/mean translation
@@ -3973,57 +4137,67 @@ class HuskyMonitor(Node):
     def ik_live_base_for_selected_movement(self):
         """IK at the LIVE base for the current movement's START EE frames.
 
-        Intended for M2/M3 (their start_state carries an authored
-        robot_configuration, so the start EE frames come from FK). Solves
-        dual-arm IK to those world-frame EE poses but for the LIVE base,
-        warm-started from the LIVE robot arm conf, with full cfab collision
-        checking against the movement's start_state ACM. On success it sets
-        goal_arm_pose; the user then clicks 'Plan Both Arms to Goal
-        (composite)' to plan a free transit there. Does NOT write mv.trajectory.
+        Intended for M2/M3. Solves dual-arm IK to the authored world-frame start
+        EE poses but for the LIVE base, warm-started from the LIVE robot arm
+        conf, with full cfab collision checking against the movement's
+        start_state ACM. On success it sets goal_arm_pose; the user then clicks
+        'Plan Both Arms to Goal (composite)' to plan a free transit there. Does
+        NOT write mv.trajectory.
 
-        Start EE frames are derived (in order of preference):
-          1. FK from mv.start_state.robot_configuration + robot_base_frame
-             (stored base, NOT live).
-          2. Previous movement's target_ee_frames.
+        The start EE frames come from ONE source: the previous movement's
+        authored ``target_ee_frames`` (a movement starts where the previous one
+        ended). They are never derived by FK from
+        ``start_state.robot_configuration`` -- that configuration is overwritten
+        with the live arm pose by the servoing loop, so an FK-derived target
+        would drift with the robot instead of staying at the authored pose. If
+        the authored frames are missing this warns and does nothing.
 
         Returns:
             bool: True on success (goal_arm_pose updated), False on any
-            precondition miss or IK failure. Existing UI callers ignore the
-            return value; the new ``replan_free_to_movement_start_live``
-            uses it to bail cleanly.
+            precondition miss (including missing authored start EE frames) or IK
+            failure. Existing UI callers ignore the return value; the new
+            ``replan_free_to_movement_start_live`` uses it to bail cleanly.
         """
         if self.current_movement is None:
             self.get_logger().warn("Load a movement first.")
             return False
         mv = self.current_movement
 
-        # 1) Derive start EE frames.
+        # 1) Fetch the AUTHORED start EE frames.
+        # ! The authored `target_ee_frames` data is the single source of truth for
+        # ! EE targets -- never derive them by FK. A movement's START EE pose is
+        # ! the PREVIOUS movement's authored target (M2 starts where M1 ended, M3
+        # ! where M2 ended), so that is what we read here.
+        # ! Why FK is wrong: the visual-servoing loop overwrites
+        # ! mv.start_state.robot_configuration with the LIVE arm pose after every
+        # ! executed iteration (see husky_world.servo_to_movement_start_live). FK
+        # ! from that configuration therefore returns wherever the robot currently
+        # ! is, so the "target" drifts along with the robot each pass and the loop
+        # ! can never converge on the pose the designer actually authored.
         start_ee_frames = None
-        if mv.start_state is not None and mv.start_state.robot_configuration is not None:
-            try:
-                self.cfab.planner.set_robot_cell_state(mv.start_state)
-                left_frame = _fk_link_frame(self.cfab.planner, mv.start_state, "left_ur_arm_tool0")
-                right_frame = _fk_link_frame(self.cfab.planner, mv.start_state, "right_ur_arm_tool0")
-                start_ee_frames = {"left": left_frame, "right": right_frame}
-                print("[IK Live Base] start EE frames from FK at start_state.")
-            except Exception as e:
-                self.get_logger().warn(f"FK from start_state failed: {e}")
-        if start_ee_frames is None and self.current_movement_index > 0:
+        prev = None
+        if self.current_movement_index > 0:
             prev = self._loaded_movements[self.current_movement_index - 1]
-            if prev.target_ee_frames:
-                start_ee_frames = prev.target_ee_frames
-                print(f"[IK Live Base] start EE frames from prev mv {prev.movement_id!r} target_ee_frames.")
-        # Cache the derived target EE frames on self so
+            start_ee_frames = prev.target_ee_frames or None
+        # Cache the authored target EE frames on self so
         # `replan_free_to_movement_start_live`'s endpoint verification can
         # compare the composite plan's final tool0 poses back against the
         # authored targets that drove this IK call.
         self._last_ik_target_ee_frames = start_ee_frames
         if not start_ee_frames or 'left' not in start_ee_frames or 'right' not in start_ee_frames:
+            # No authored data to aim at -- warn and do nothing rather than
+            # silently falling back to an FK-derived (drifting) target.
+            where = (f"previous movement {prev.movement_id!r} has no left/right "
+                     f"target_ee_frames" if prev is not None else
+                     "this is the first movement, so there is no previous "
+                     "movement to take authored target_ee_frames from")
             self.get_logger().warn(
-                "Cannot derive start EE frames (no FK seed in start_state, "
-                "no prev-movement target_ee_frames)."
+                f"No authored start EE frames for {mv.movement_id!r}: {where}. "
+                "Doing nothing (EE targets are never derived from FK)."
             )
             return False
+        print(f"[IK Live Base] start EE frames from prev mv {prev.movement_id!r} "
+              f"authored target_ee_frames.")
 
         # 2) IK at live base using the derived start EE frames. Inject the
         # live base + live arm conf so IK is warm-started from where the

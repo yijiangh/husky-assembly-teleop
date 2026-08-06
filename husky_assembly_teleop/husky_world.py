@@ -1302,6 +1302,50 @@ def measure_servo_tool0_error(monitor, target_ee_frames):
     return out
 
 
+def measure_arm_tracking_tool0_error(monitor, planned_final_confs):
+    """Tool0 gap between where the arms ARE and the last waypoint they were sent.
+
+    ! Both poses are evaluated at the SAME live mocap base, so the result is
+    ! purely the arms' joint-tracking error expressed at the tool flange -- it
+    ! does not change when the mobile base drifts. That is what separates the two
+    ! ways a servo iteration can miss its target:
+    !   - large here                -> the arms never reached the commanded
+    !                                  configuration (execution problem);
+    !   - small here, but a large
+    !     tool0-vs-target error     -> the arms tracked fine and the base moved
+    !                                  between planning and measuring.
+    The joint-space consistency check next to this one cannot make that call: its
+    0.05 rad tolerance is roughly 50 mm of tool0 error at a UR5e's reach, which is
+    the same order as the residual being chased here.
+
+    Args:
+        monitor: The HuskyMonitor node.
+        planned_final_confs (Sequence): ``[left 6-vec, right 6-vec]`` -- the last
+            waypoint of each arm's executed trajectory.
+
+    Returns:
+        dict: Per side ("left"/"right") the tool0 position gap in millimetres.
+    """
+    h = monitor.huskies[monitor.selected_robot_id]
+    ho = h.object
+    hi = h.interface
+    base = (hi.position, hi.rotation)
+    link_from_side = {"left": "left_ur_arm_tool0", "right": "right_ur_arm_tool0"}
+
+    ho.set_pose(base, hi.arm_joint_pose)
+    live = {s: ho.get_link_pose_from_name(ln) for s, ln in link_from_side.items()}
+    ho.set_pose(base, list(planned_final_confs))
+    planned = {s: ho.get_link_pose_from_name(ln) for s, ln in link_from_side.items()}
+    # Put the sim back on the live pose so nothing downstream sees the probe pose.
+    ho.set_pose(base, hi.arm_joint_pose)
+
+    return {
+        s: float(np.linalg.norm(
+            (np.array(live[s][0]) - np.array(planned[s][0])) * 1e3))
+        for s in link_from_side
+    }
+
+
 def measure_base_pose_diff(monitor, start_base_pose):
     """Live mocap base pose difference vs the servoing run's start base pose.
 
@@ -1600,6 +1644,19 @@ def servo_to_movement_start_live(monitor, max_iters=8, pos_tol_mm=0.2,
                     f'[servo] Synced to live pose; consistency check OK '
                     f'(L {np.rad2deg(left_error):.1f}°, R {np.rad2deg(right_error):.1f}°)'
                 )
+
+            # * The same check expressed at the TOOL FLANGE, in millimetres, at
+            # * the live base. Read this next to the '[servo N] tool0 pos' line
+            # * that follows: a small gap here with a large tool0-vs-target
+            # * error means the arms tracked their command and the world moved
+            # * under them (base / mocap), while a large gap here means the
+            # * arms simply did not arrive.
+            track = measure_arm_tracking_tool0_error(
+                monitor, [final_left, final_right])
+            monitor.get_logger().info(
+                f"[servo {it}] arms vs last commanded waypoint: "
+                f"L={track['left']:.2f} R={track['right']:.2f} mm"
+            )
         except Exception as e:
             monitor.get_logger().warn(f'[servo] Failed to sync live config: {e}')
 
