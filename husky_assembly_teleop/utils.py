@@ -167,15 +167,45 @@ def joint_trajectory_from_path(path_12):
 
 
 def path_12_from_joint_trajectory(jt):
-    """Inverse of joint_trajectory_from_path: extract a list of 12-vec
-    numpy arrays from a JointTrajectory whose joint_names are
-    HUSKY_DUAL_UR5e_JOINT_NAMES[0]+[1] (order preserved).
+    """Extract a list of 12-vec numpy arrays from a movement's trajectory.
+
+    Mostly the inverse of joint_trajectory_from_path, but it accepts BOTH
+    shapes that a ``Movement.trajectory`` field is written in, because the
+    two producers disagree:
+
+      * a compas_fab ``JointTrajectory`` (what the live monitor stores, and
+        what its ``<action>.live-solved.json`` sidecar round-trips), whose
+        joint_names are HUSKY_DUAL_UR5e_JOINT_NAMES[0]+[1]; and
+      * a plain list of 12-element lists (what the offline
+        ``headless_bar_action_planner.py`` writes into
+        ``<bar>.solved_motion.json``, via its ``_path_from_jt``), already in
+        that same left-then-right joint order.
+
+    Args:
+        jt: A JointTrajectory, a sequence of 12-element sequences, or None.
+
+    Returns:
+        list[numpy.ndarray]: One 12-vec per waypoint. Empty when jt is None.
     """
+    if jt is None:
+        return []
+    points = getattr(jt, 'points', None)
+    if points is None:
+        # Raw list of 12-vecs: already in the canonical order, just check the
+        # width so a malformed file fails here rather than deep in a planner.
+        path = []
+        for i, q in enumerate(jt):
+            q = np.asarray(q, dtype=float)
+            if q.shape != (12,):
+                raise ValueError(
+                    f"trajectory waypoint [{i}] must be length 12, got {q.shape}")
+            path.append(q)
+        return path
     names = list(HUSKY_DUAL_UR5e_JOINT_NAMES[0]) + list(HUSKY_DUAL_UR5e_JOINT_NAMES[1])
     return [
         np.asarray([float(p.joint_values[p.joint_names.index(n)]) for n in names],
                    dtype=float)
-        for p in jt.points
+        for p in points
     ]
 
 def pose_from_transformation(tf, scale=1.0):

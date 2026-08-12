@@ -97,7 +97,11 @@ def _bypass_init_monitor():
         get_link_pose_from_name=lambda name: ((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0)),
     )
     monitor.show_goal_state = False
+    # Both are set by the real __init__; load_selected_movement clamps the
+    # per-role default trajectory time against the max.
     monitor.trajectory_time = 20.0
+    monitor.trajectory_time_max = 90.0
+    monitor.trajectory_time_slider = None
     monitor.selected_arm_index = 0
 
     monitor._selected_action_file_idx = 0

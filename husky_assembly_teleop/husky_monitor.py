@@ -35,7 +35,7 @@ import husky_assembly_teleop.mocap_experiment as mocap_experiment
 from husky_assembly_teleop.mocap_experiment import (
     fit_bar_from_markerset, bar_deviation_from_goal, draw_marker_take_in_pp,
 )
-from husky_assembly_teleop.husky_robot import UR5e_HOME_STATE
+from husky_assembly_teleop.husky_robot import GRIPPER_MOTOR, JOINT_MOTOR, UR5e_HOME_STATE
 from husky_assembly_teleop.common import (
     Button, Slider, SliderGroup, Separator, TextInput, LiveMultiPlot, HistoryPlot, Husky, TrackedObject, HuskyObject, AssemblyObject, HUSKY_UR5e_JOINT_NAMES, lerp, load_gripper
 )
@@ -90,6 +90,23 @@ TRANSPARENT = [0, 0.0, 0.0, 0.0]
 # CDFM_ROTATION_RES = 0.0125  # radians
 CDFM_POSITION_RES = 0.01   # meters
 CDFM_ROTATION_RES = 0.025  # radians
+
+# --- Free movements (M0 / M4), planned live by plan_free_dual_arm ---
+#
+# ! plan_free_dual_arm does NO swept collision checking: it only tests the
+# ! discrete configurations its extend function produces, so anything thinner
+# ! than one step can be passed straight through. At a shoulder joint with a
+# ! ~0.9 m lever, the upstream 0.05 rad default is ~45 mm of tool travel between
+# ! checks -- wider than an assembly bar, which is how a planned M0 ends up
+# ! visibly sweeping through the built structure while every waypoint is clear.
+# ! Its post-plan shortcutting makes this worse: it replaces wiggly sequences
+# ! with long straight segments and re-checks them at this same resolution.
+#
+# So: plan at a step small enough to hit a bar (slower to plan), and then verify
+# the returned path at a finer step still (_validate_free_planned_path), which is
+# what actually gates acceptance.
+FM_JOINT_RESOLUTION = 0.01        # rad, planning / collision-check step
+FM_VALIDATION_STEP_RAD = 0.005    # rad, post-plan re-check step (2x finer)
 # Which planning stage the M1 constrained planner runs. Stage 3 is the
 # grasped-bar transport stage (see STAGE3_GRASP_MASK_LINKS). This used to be
 # adjustable via a "Constrained Stage" GUI slider, but in practice only stage 3
@@ -106,6 +123,37 @@ M1_PLANNER_STAGE = 3
 TRANSFER_JOINT_STEP_THRESHOLD_DEG = 1.0
 TRANSFER_EE_TRANS_THRESHOLD_MM = 0.5
 TRANSFER_EE_ROT_THRESHOLD_DEG = float(np.degrees(1e-2))  # ~0.573 deg
+
+# Default execution duration per movement role, in seconds. 'Load Movement'
+# writes the matching entry into self.trajectory_time so the "traj time" slider
+# comes back at a sane value for the movement about to run, instead of whatever
+# the previous one left behind.
+#
+# The split is by what the path IS, not by how many waypoints it has:
+#   M0 / M1 / M4  long articulated paths (a free transit, the ~270-waypoint
+#                 constrained bar-loading sweep, the free return home) -- give
+#                 them room so the arms move at a watchable speed.
+#   M2 / M3       the ~15 mm linear mate and retreat. Only ~5 waypoints, and M2
+#                 keeps holding under compliance after the nominal duration
+#                 anyway (until the joint motor stalls), so a long budget here
+#                 buys nothing and just makes the approach crawl.
+# The operator can always override on the slider before pressing execute; that
+# value is re-read at execution time.
+MOVEMENT_TRAJECTORY_TIME_S = {
+    'M0': 60.0,
+    'M1': 60.0,
+    'M2': 10.0,
+    'M3': 10.0,
+    'M4': 60.0,
+}
+
+# Legend for the "planned joint values" preview plot. A BarAction trajectory
+# waypoint is always a 12-vec (left arm's 6 joints, then the right arm's), in
+# the shoulder -> wrist order of HUSKY_DUAL_UR5e_JOINT_NAMES.
+PLANNED_JOINT_PLOT_LABELS = [
+    f'{side} {name}' for side in ('L', 'R')
+    for name in ('pan', 'lift', 'elbow', 'w1', 'w2', 'w3')
+]
 
 # Rigid-body name prefixes for the BUILT ASSEMBLY (from RobotCell.json): bars
 # are 'bar_<id>' and their connectors are 'joint_<id>_male/female'. Environment
@@ -150,7 +198,11 @@ CALIBRATION_STATE_SETS = {
 }
 
 class HuskyMonitor(Node):
-    USE_MOCAP = 1
+    # * Set 0 for the robot-centric experiment: replay a pre-planned BarAction
+    # without any external tracking. The husky base is then assumed to be
+    # exactly where the plan says it is (each movement's
+    # start_state.robot_base_frame), see _live_base_pose().
+    USE_MOCAP = 0
     FAKE_HARDWARE = 0
 
     # * Set 0 to skip connecting the UR SetIO service clients (gripper/screw IO).
@@ -177,7 +229,12 @@ class HuskyMonitor(Node):
     CALIBRATION = 0
 
     BAR_ACTION_LIVE_REPLAN_EXE = 1      # show Load BarAction / Load Movement / replan buttons
-    BAR_ACTION_MOCAP_ACCURACY_TEST = 1  # show Record + Fit + Viz / Save markerset data
+    # Set 1 for the mocap bar-holding accuracy experiment: adds the markerset
+    # record/save buttons + the servoing tracker, hides the already-built
+    # assembly (so its bars are ignored by collision checks), and force-attaches
+    # the active bar for the transfer replan. Keep 0 for the robot-centric
+    # replay demo, where the built assembly should stay visible and collision-checked.
+    BAR_ACTION_MOCAP_ACCURACY_TEST = 0  # show Record + Fit + Viz / Save markerset data
     DUAL_ARM_EE_CONSTR_ACCURACY_MOCAP_TEST = 0
 
     # Set to 1 to dump cfab's collision-check setup (its ACM / allowed-collision
@@ -242,9 +299,14 @@ class HuskyMonitor(Node):
 
     # When 1, HuskyRobotInterface creates the compliant-controller ROS interfaces
     # (target_wrench publishers, start_force_mode / zero_ftsensor / switch_controller
-    # service clients). Off by default so we don't block startup waiting on
-    # services that aren't running on most rigs.
-    CONNECT_COMPLIANT_CONTROLLER = 0
+    # service clients). Costs a few seconds of startup waiting on those services.
+    # ! REQUIRED by the BarAction execution workflow, not optional: the
+    # ! switch_controller client lives behind this flag, so with it off the M2/M3
+    # ! compliant execution raises AttributeError inside the monitor tick, and
+    # ! the end-of-M0 FT zeroing has no service to call.
+    # (The FT *subscription* is created unconditionally, so the live force plot
+    # works either way -- only the zeroing and the controller switch need this.)
+    CONNECT_COMPLIANT_CONTROLLER = 1
 
     def __init__(self):
         super().__init__('husky_monitor')
@@ -781,6 +843,49 @@ class HuskyMonitor(Node):
         for iter_i, tool0_err, base_diff in getattr(self, '_servoing_history', []):
             self._draw_servoing_sample(iter_i, tool0_err, base_diff)
 
+    # --- --- Movement preview: planned joint values --- ---
+
+    def show_planned_joint_values(self, path12, *, label=''):
+        """Plot the selected movement's planned joint values, per waypoint.
+
+        One series per joint (left arm then right arm), x = waypoint index.
+        This is what the arms are ABOUT to do, so the operator can spot a
+        wrapped joint or a near-limit excursion before pressing execute --
+        as opposed to the "Joint Live Stream" window, which reports what the
+        real robot is doing right now.
+
+        The curve is persisted on ``self._preview_joint_data`` so it survives
+        the ``reset_ui`` -> ``build_ui`` rebuild that every Load Movement
+        triggers (same reason as the transfer-validation curves).
+
+        Args:
+            path12 (Sequence): Planned waypoints, each a 12-vec of joint
+                values in radians (left 6 then right 6).
+            label (str): Short tag for the log line (e.g. movement id).
+        """
+        rows_deg = [list(np.degrees(np.asarray(q, dtype=float)))
+                    for q in (path12 or [])]
+        if not rows_deg:
+            self.get_logger().warn(
+                f"[movement preview] {label!r}: empty planned path, nothing to plot.")
+            return
+        self._preview_joint_data = {'label': label, 'rows_deg': rows_deg}
+        self._draw_preview_joint_values()
+        flat = np.asarray(rows_deg, dtype=float)
+        print(f"[movement preview] {label!r}: {len(rows_deg)} waypoints, "
+              f"joint range [{flat.min():.1f}, {flat.max():.1f}] deg.")
+
+    def _draw_preview_joint_values(self):
+        """Push the persisted planned-joint curve onto the (rebuilt) plot."""
+        plot = getattr(self, 'preview_joint_plot', None)
+        data = getattr(self, '_preview_joint_data', None)
+        if plot is None or not data:
+            return
+        plot.reset()
+        for i, row in enumerate(data['rows_deg']):
+            plot.push(row, x=i)
+        plot.set_visible(True)
+
     # --- --- Transfer (bar-held) pre-execution safeguard --- ---
 
     def _transfer_validation_plots(self):
@@ -794,7 +899,7 @@ class HuskyMonitor(Node):
         """Draw the bar-held path safeguard curves and log a PASS/FAIL verdict.
 
         Two things a bar-held ("transfer") path must satisfy before we let it
-        run on hardware, plotted per waypoint in the "Transfer Validation"
+        run on hardware, plotted per waypoint in the "Movement Preview"
         DPG window so the operator can eyeball them before confirming:
 
           1. Joint continuity -- the largest single-joint jump between two
@@ -892,6 +997,88 @@ class HuskyMonitor(Node):
             ee_plot.push([data['ee_trans_mm'][i], data['ee_rot_deg'][i],
                           TRANSFER_EE_TRANS_THRESHOLD_MM,
                           TRANSFER_EE_ROT_THRESHOLD_DEG], x=i)
+        for plot in plots:
+            plot.set_visible(True)
+
+    # --- --- Compliant execution: live tool0 wrench --- ---
+
+    def _compliant_wrench_plots(self):
+        """The force + torque plots, or None if the DPG UI is off."""
+        force = getattr(self, 'compliant_force_plot', None)
+        if force is None:
+            return None
+        return (force, self.compliant_torque_plot)
+
+    def reset_compliant_wrench(self, label=''):
+        """Start recording a fresh wrench profile and show the plots.
+
+        Called at the top of a compliant M2/M3 execution. Each run replaces the
+        previous profile rather than appending to it, so the window always shows
+        the movement that is running (or the last one that ran).
+
+        Args:
+            label (str): Short tag for the run (e.g. movement id), kept with the
+                samples so a redraw after a UI rebuild still knows what it shows.
+        """
+        self._compliant_wrench_data = {'label': label, 'samples': []}
+        plots = self._compliant_wrench_plots()
+        if plots is None:
+            return
+        for plot in plots:
+            plot.reset()
+            plot.set_visible(True)
+
+    def push_compliant_wrench(self, elapsed_s, left_wrench, right_wrench):
+        """Record one force/torque sample: persist it AND draw it live.
+
+        Fed once per monitor tick (~20 Hz) by the compliant executor's on_tick.
+
+        ! These are RAW sensor readings -- the compliant path deliberately never
+        ! zeroes the FT sensors (zeroing while the bar is held would subtract the
+        ! bar's weight and mask exactly the contact we want to watch), so the
+        ! curves carry the tool + bar load as a standing offset. Read them for
+        ! CHANGE -- the step when the bar seats, the ramp as the screw bites --
+        ! not as absolute contact force.
+
+        Args:
+            elapsed_s (float): Seconds since this execution started (plot x).
+            left_wrench (Sequence[float]): Left arm [fx, fy, fz, tx, ty, tz].
+            right_wrench (Sequence[float]): Right arm, same layout.
+        """
+        data = getattr(self, '_compliant_wrench_data', None)
+        if data is None:
+            data = self._compliant_wrench_data = {'label': '', 'samples': []}
+        sample = (float(elapsed_s),
+                  [float(v) for v in left_wrench],
+                  [float(v) for v in right_wrench])
+        data['samples'].append(sample)
+        self._draw_compliant_wrench_sample(*sample)
+
+    def _draw_compliant_wrench_sample(self, elapsed_s, left_wrench, right_wrench):
+        """Push one sample onto the two plots (no history append).
+
+        Force and torque get separate plots because they carry different units
+        (N vs Nm) and would otherwise share a y axis that suits neither.
+        """
+        if self._compliant_wrench_plots() is None:
+            return
+        # Each wrench is [fx, fy, fz, tx, ty, tz]: first three to the force
+        # plot, last three to the torque plot, left arm then right arm.
+        self.compliant_force_plot.push(
+            list(left_wrench[:3]) + list(right_wrench[:3]), x=elapsed_s)
+        self.compliant_torque_plot.push(
+            list(left_wrench[3:6]) + list(right_wrench[3:6]), x=elapsed_s)
+
+    def _repopulate_compliant_wrench(self):
+        """Redraw the persisted wrench profile onto the (freshly-built) plots."""
+        plots = self._compliant_wrench_plots()
+        data = getattr(self, '_compliant_wrench_data', None)
+        if plots is None or not data or not data['samples']:
+            return
+        for plot in plots:
+            plot.reset()
+        for sample in data['samples']:
+            self._draw_compliant_wrench_sample(*sample)
         for plot in plots:
             plot.set_visible(True)
 
@@ -2102,6 +2289,42 @@ class HuskyMonitor(Node):
         print("[fill] start_state.robot_configuration was None; seeded with "
               "dual-arm home.")
 
+    def _base_pose_is_tracked(self):
+        """True when an external tracker measures where the husky base is.
+
+        The only such source is mocap, and only when it is actually driving
+        the base (USE_CELL_STATE_BASE_POSE pins the base to the loaded cell
+        state instead, so mocap then only serves end-effector tracking).
+
+        Returns:
+            bool: True if the base pose is measured, False if it is assumed.
+        """
+        return bool(self.USE_MOCAP) and not self.USE_CELL_STATE_BASE_POSE
+
+    def _live_base_pose(self):
+        """Base pose to pair with live or planned arm configurations.
+
+        With mocap tracking the base, this is where the real husky is. Without
+        it -- the robot-centric replay of a pre-planned BarAction -- nothing
+        measures the base, so we take the pose the plan was authored at:
+        ``self.goal_base_pose``, which ``load_selected_movement`` sets from the
+        movement's ``start_state.robot_base_frame``.
+
+        ! Do NOT read ``hi.position`` / ``hi.rotation`` directly for this. On
+        ! the real robot those are filled from the wheel-odometry TF, whose
+        ! origin is wherever the husky booted -- unrelated to the plan's world
+        ! frame. Using them would draw the trajectory preview in the wrong
+        ! place, and would make the compliant M2/M3 targets miss by the same
+        ! offset (silently rejected by send_arm_cmd_cartesian's 5 cm guard).
+
+        Returns:
+            tuple: ``(position, quaternion)`` base pose in the world frame.
+        """
+        if self._base_pose_is_tracked():
+            hi = self.huskies[self.selected_robot_id].interface
+            return (hi.position, hi.rotation)
+        return self.goal_base_pose
+
     def _inject_live_conf_into_state(self, state):
         """Overwrite a state's base frame + arm joints with the LIVE robot pose.
 
@@ -2109,6 +2332,11 @@ class HuskyMonitor(Node):
         actually is right now: the native M0 (whose authored
         robot_configuration is null), the free-to-movement-start planner,
         and the live-replan buttons.
+
+        The arm joints always come from the live robot (they are measured by
+        the joint encoders either way). The base frame is only overwritten
+        when something actually tracks it -- see _live_base_pose; otherwise
+        the state keeps the base frame the plan was authored at.
 
         Args:
             state: RobotCellState modified in place. If its
@@ -2130,7 +2358,8 @@ class HuskyMonitor(Node):
             self._cfab_acm_printed_for_cid = getattr(
                 getattr(self.cfab, 'client', None), 'client_id', None)
         hi = self.huskies[self.selected_robot_id].interface
-        state.robot_base_frame = frame_from_pose((hi.position, hi.rotation))
+        if self._base_pose_is_tracked():
+            state.robot_base_frame = frame_from_pose((hi.position, hi.rotation))
         if state.robot_configuration is None:
             state.robot_configuration = self.cfab.robot_cell.zero_full_configuration()
         for i, names in enumerate(self._arm_joint_name_sets()):
@@ -2501,6 +2730,21 @@ class HuskyMonitor(Node):
         self.target_ee_frames = mv.target_ee_frames or None
         bar_id = getattr(self._loaded_action, 'active_bar_id', None) if self._loaded_action else None
         self.active_bar_name = f"bar_{bar_id}" if bar_id else None
+
+        # Point the "traj time" slider at this role's default duration. Set it
+        # BEFORE the reset_ui() below, which rebuilds the slider with
+        # self.trajectory_time as its current value -- and before the
+        # auto-load of the trajectory at the end of this method, since
+        # _accept_trajectory stamps this duration onto planned_arm_trajectory.
+        role = self._match_movement_role(mv)
+        default_traj_time = MOVEMENT_TRAJECTORY_TIME_S.get(role)
+        if default_traj_time is not None:
+            # Keep it inside the slider's own range, or the rebuilt widget would
+            # clamp and silently disagree with self.trajectory_time.
+            self.trajectory_time = float(
+                min(max(default_traj_time, 1.0), self.trajectory_time_max))
+            print(f"[Movement] traj time -> {self.trajectory_time:.0f}s "
+                  f"(default for {role})")
 
         # In the mocap-accuracy test the built assembly is hidden once per
         # BarAction, so a plain movement switch must NOT un-hide it: skipping
@@ -3033,7 +3277,7 @@ class HuskyMonitor(Node):
         Args:
             show_validation (bool): When True (button default), draw the
                 pre-execution safeguard curves (joint continuity + bar-hold
-                EE drift) in the "Transfer Validation" DPG window and log a
+                EE drift) in the "Movement Preview" DPG window and log a
                 PASS/FAIL verdict. The transfer servoing loop passes False on
                 its small later-iteration corrections so only the first (large)
                 move is gated.
@@ -3362,21 +3606,92 @@ class HuskyMonitor(Node):
 
     # --- --- --- Auto-dispatch execute --- --- ---
 
+    # Both execution paths silently refuse to move when the live arms are not
+    # already at the trajectory's first waypoint: the joint path is rejected by
+    # HuskyRobotInterface.to_trajectory_msg (0.1 rad), and the compliant path by
+    # send_arm_cmd_cartesian's 5 cm target guard. Check it up front so the
+    # operator gets one clear message instead of a silent no-op.
+    EXEC_START_CONF_TOLERANCE_RAD = 0.1
+
+    def _arms_at_trajectory_start(self):
+        """Per-arm max |live joint - planned first waypoint|, in radians.
+
+        Returns:
+            list[float] | None: One value per arm, or None when there is no
+            planned trajectory to compare against.
+        """
+        hi = self.huskies[self.selected_robot_id].interface
+        deviations = []
+        for i in range(min(2, len(hi.arm_joint_pose))):
+            planned = self.planned_arm_trajectory[i][0]
+            if planned is None or len(planned) == 0:
+                return None
+            live = np.asarray(hi.arm_joint_pose[i], dtype=float)
+            deviations.append(
+                float(np.max(np.abs(live - np.asarray(planned[0], dtype=float)))))
+        return deviations
+
     def exec_selected_movement_traj(self):
         """Execute the currently loaded movement's trajectory. Auto-dispatch:
         M2/M3 -> cartesian_compliance_controller via
           ``world.execute_planned_trajectory_compliant`` (a generator queued
           on ``self.tasks`` so the monitor tick pumps it).
+        M0    -> joint-tracking, then a force/torque re-zero once the arms
+          settle, via ``world.execute_trajectory_and_zero_ft`` (also a queued
+          generator). M0 is the last movement with empty tools, so it is the
+          only safe place to tare -- see that function.
         else  -> joint-tracking via ``world.execute_arm_trajectory_both``.
+
+        Refuses when the live arms are not already parked at the trajectory's
+        first waypoint -- press 'Move Arms to Movement Start' first.
         """
         if self.current_movement is None:
             self.get_logger().warn(
                 "No movement loaded; click 'Load Movement' first."
             )
             return
+        if self.planned_arm_trajectory[0][0] is None or \
+           self.planned_arm_trajectory[1][0] is None:
+            self.get_logger().warn(
+                "No planned trajectory for this movement; click 'Load Movement "
+                "Trajectory' (or 'Plan Movement' for M0) first."
+            )
+            return
+
+        # Re-read the traj time slider's LIVE position rather than trusting the
+        # cached self.trajectory_time. 'Load Movement' rebuilds this widget (via
+        # reset_ui) seeded with the role default, and a freshly-rebuilt widget
+        # can miss its next drag callback -- so an operator who slowed the move
+        # down before pressing execute would otherwise be ignored, and the arms
+        # would run at the default speed. Same hazard as the BarAction sliders.
+        sld = getattr(self, 'trajectory_time_slider', None)
+        if sld is not None:
+            v = sld.value
+            if v is not None and float(v) != self.trajectory_time:
+                self.trajectory_time = float(v)
+                print(f"[Exec] traj time from slider: {self.trajectory_time:.0f}s")
+
+        deviations = self._arms_at_trajectory_start()
+        if deviations and not self.FAKE_HARDWARE:
+            if max(deviations) > self.EXEC_START_CONF_TOLERANCE_RAD:
+                per_arm = ' / '.join(f'{side}={d:.3f}' for side, d
+                                     in zip(('L', 'R'), deviations))
+                self.get_logger().warn(
+                    f"Arms are not at the start of "
+                    f"{self.current_movement.movement_id!r}: max joint offset "
+                    f"{per_arm} rad "
+                    f"(tolerance {self.EXEC_START_CONF_TOLERANCE_RAD:.2f}). "
+                    f"Press 'Move Arms to Movement Start (offline target)' "
+                    f"first -- executing now would be silently rejected by the "
+                    f"controller."
+                )
+                return
+
         role = self._match_movement_role(self.current_movement)
         if role in ('M2', 'M3'):
             self.tasks.append(world.execute_planned_trajectory_compliant(self))
+        elif role == 'M0':
+            self.tasks.append(world.execute_trajectory_and_zero_ft(self))
         else:
             world.execute_arm_trajectory_both(self)
 
@@ -3500,6 +3815,15 @@ class HuskyMonitor(Node):
         self.set_to_show_traj_state()
         tag = f"{source}{' ' + role if role else ''}"
         print(f"[{tag}] {mv.movement_id!r}: {len(path)} waypoints stored.")
+
+        # "Movement Preview" plots, so the operator can review the path before
+        # pressing execute. Joint evolution for every movement; the bar-hold
+        # safeguard only for the movements that actually carry the bar (M1/M2),
+        # since its EE-drift curve is meaningless when nothing is held. M1's
+        # CDFM path additionally gets the sparse stage validator below.
+        self.show_planned_joint_values(path, label=mv.movement_id)
+        if self._authored_motion_type(mv) == 'bar_held':
+            self.show_transfer_validation(path, mv.start_state, label=mv.movement_id)
         self._validate_cdfm_planned_path(mv, path)
 
         # M0's goal is wherever M1 starts. Once M1's trajectory is accepted
@@ -3628,6 +3952,164 @@ class HuskyMonitor(Node):
             return "\033[32mTrue\033[0m"
         return "\033[31mFalse\033[0m"
 
+    def _validate_free_planned_path(self, mv, path12):
+        """Re-check a free (M0/M4) path densely BETWEEN its waypoints.
+
+        ``plan_free_dual_arm`` only tests the configurations its extend function
+        lands on, and does no swept checking -- so a path whose every waypoint is
+        collision-free can still sweep an arm straight through a bar on the way.
+        This walks each segment at ``FM_VALIDATION_STEP_RAD`` and asks the cfab
+        planner (the same authority the planner itself used, so the ACM and the
+        wheels-on-ground allowance are respected) about every intermediate
+        sample.
+
+        On a hit it also runs a raw pybullet pass over the spawned rigid bodies
+        purely to NAME what was struck, so the report is "segment 47->48 hits
+        bar_B21" rather than an opaque failure.
+
+        Args:
+            mv: The movement whose path this is (for log lines).
+            path12 (Sequence): Planned waypoints, each a 12-vec.
+
+        Returns:
+            dict: ``{'ok': bool, 'samples': int, 'bad_segments': list, 'bodies':
+            list}``. ``ok`` is True when nothing was hit. ``bad_segments`` holds
+            ``(segment_index, sorted_body_names)`` tuples.
+        """
+        verdict = {'ok': True, 'samples': 0, 'bad_segments': [], 'bodies': []}
+        path12 = [np.asarray(q, dtype=float) for q in (path12 or [])]
+        if len(path12) < 2 or self.cfab is None:
+            return verdict
+
+        planner = self.cfab.planner
+        names_12 = list(HUSKY_DUAL_UR5e_JOINT_NAMES[0]) + list(HUSKY_DUAL_UR5e_JOINT_NAMES[1])
+        template = mv.start_state
+        # Raw-pybullet naming needs the cfab client's bodies; the ground is
+        # excluded because the wheels rest on it by construction (the ACM allows
+        # it, so compas_fab is right to stay quiet about it).
+        rb_puids = getattr(self.cfab.client, 'rigid_bodies_puids', {}) or {}
+        body_names = {ids[0]: n for n, ids in rb_puids.items()
+                      if ids and n != GROUND_RIGID_BODY_NAME}
+        robot_puid = self.cfab.client.robot_puid
+
+        def _state_at(conf):
+            s = template.copy()
+            for n, v in zip(names_12, conf):
+                s.robot_configuration[n] = float(v)
+            return s
+
+        def _names_hit():
+            """Bodies the robot penetrates in the CURRENT scene (already posed)."""
+            hit = set()
+            for puid, name in body_names.items():
+                try:
+                    if p.getClosestPoints(robot_puid, puid, distance=0.0,
+                                          physicsClientId=self.cfab.client.client_id):
+                        hit.add(name)
+                except Exception:
+                    pass
+            return hit
+
+        saved_client = pp.CLIENT
+        pp.CLIENT = self.cfab.client.client_id
+        pp.CLIENTS.setdefault(pp.CLIENT, True)
+        all_bodies = set()
+        try:
+            for i in range(len(path12) - 1):
+                a, b = path12[i], path12[i + 1]
+                n_steps = max(1, int(np.ceil(
+                    float(np.abs(b - a).max()) / FM_VALIDATION_STEP_RAD)))
+                seg_bodies = set()
+                seg_bad = False
+                # Endpoints are already known-good from planning; only the
+                # interior of each segment is new information here.
+                for k in range(1, n_steps):
+                    q = a + (b - a) * (k / n_steps)
+                    verdict['samples'] += 1
+                    state = _state_at(q)
+                    try:
+                        planner.check_collision(state, options={"verbose": False})
+                        continue
+                    except CollisionCheckError:
+                        pass
+                    seg_bad = True
+                    # Colliding: re-apply so the scene matches this sample, then
+                    # name the bodies. A hit that names nothing is still a hit --
+                    # it just means the pair was robot-self or robot-vs-tool,
+                    # neither of which is a rigid body we can point at.
+                    try:
+                        planner.set_robot_cell_state(state)
+                        seg_bodies |= _names_hit()
+                    except Exception:
+                        pass
+                if seg_bad and not seg_bodies:
+                    seg_bodies.add('self/tool (no rigid body named)')
+                if seg_bad:
+                    verdict['bad_segments'].append((i, sorted(seg_bodies)))
+                    all_bodies |= seg_bodies
+        except Exception as exc:
+            self.get_logger().warn(
+                f"[free validation] {mv.movement_id!r}: check failed ({exc}); "
+                f"path NOT verified.")
+            return verdict
+        finally:
+            pp.CLIENT = saved_client
+
+        verdict['bodies'] = sorted(all_bodies)
+        verdict['ok'] = not verdict['bad_segments']
+        if verdict['ok']:
+            self.get_logger().info(
+                f"[free validation] {mv.movement_id!r}: clear -- "
+                f"{verdict['samples']} interpolated samples at "
+                f"{FM_VALIDATION_STEP_RAD} rad over {len(path12) - 1} segments.")
+        else:
+            self.get_logger().error(
+                f"[free validation] {mv.movement_id!r}: SWEPT COLLISION on "
+                f"{len(verdict['bad_segments'])}/{len(path12) - 1} segments; "
+                f"bodies hit: {verdict['bodies']}")
+            for seg, bodies in verdict['bad_segments'][:10]:
+                a, b = path12[seg], path12[seg + 1]
+                print(f"   segment {seg}->{seg + 1} "
+                      f"(max joint step {np.degrees(np.abs(b - a).max()):.2f} deg) "
+                      f"hits {bodies}")
+            if len(verdict['bad_segments']) > 10:
+                print(f"   ... and {len(verdict['bad_segments']) - 10} more segments")
+        return verdict
+
+    def _plan_free_and_validate(self, mv, role, goal_conf, **plan_kwargs):
+        """Plan a free (M0/M4) movement, then gate it on the dense re-check.
+
+        Returns the JointTrajectory only if the path survives
+        ``_validate_free_planned_path``; a path that sweeps through the built
+        assembly is REJECTED rather than handed on with a warning, because the
+        preview looks perfectly fine in that case (every waypoint is clear) and
+        the operator has no other cue before pressing execute.
+
+        Args:
+            mv: The movement being planned.
+            role (str): ``'M0'`` or ``'M4'``, for the log lines.
+            goal_conf: Goal configuration passed to ``plan_free_dual_arm``.
+            **plan_kwargs: Extra arguments for ``plan_free_dual_arm``.
+
+        Returns:
+            JointTrajectory | None: None when planning or validation failed.
+        """
+        with pp.LockRenderer():
+            path, info = plan_free_dual_arm(
+                self.cfab.planner, mv.start_state, goal_conf,
+                joint_resolution=FM_JOINT_RESOLUTION, **plan_kwargs)
+        if path is None:
+            print(f"[{role}] plan_free_dual_arm failed: {info.get('failure_reason')}")
+            return None
+        print(f"[{role}] planned {len(path)} waypoints at "
+              f"{FM_JOINT_RESOLUTION} rad; verifying swept path...")
+        if not self._validate_free_planned_path(mv, path)['ok']:
+            self.get_logger().error(
+                f"[{role}] plan REJECTED: it sweeps through the scene between "
+                f"waypoints. Re-run 'Plan Movement' for a different RRT sample.")
+            return None
+        return joint_trajectory_from_path(path)
+
     def _validate_cdfm_planned_path(self, mv, path12):
         """Run sparse path_validation checks for any planned CDFM path."""
         movement_id = getattr(mv, 'movement_id', '') or ''
@@ -3712,8 +4194,8 @@ class HuskyMonitor(Node):
                 dense_joint_validation_step_rad=0.0,
                 skip_dense_collision_checks=True,
                 # Keep the authoritative pass/fail logging, but never pop the
-                # matplotlib window: the native "Transfer Validation" DPG plots
-                # (drawn below) replace it. The pyplot-interactive popup spins
+                # matplotlib window: the native "Movement Preview" DPG plots
+                # (drawn by _accept_trajectory) replace it. The pyplot-interactive popup spins
                 # its own GUI loop and can crash the live DPG + PyBullet monitor.
                 save_plot=False,
                 show_plot=False,
@@ -3724,10 +4206,9 @@ class HuskyMonitor(Node):
         finally:
             pp.CLIENT = saved_client
 
-        # Native DPG safeguard curves (same joint continuity + bar-hold EE drift
-        # signals as the sparse validation above), so any constrained plan gets
-        # the pre-execution review, not just the transfer buttons.
-        self.show_transfer_validation(path12, state, label=movement_id)
+        # (The native DPG safeguard curves for this path are drawn by the
+        # caller, _accept_trajectory, which does it for every bar-held movement
+        # rather than only the CDFM ones this validator handles.)
 
         wrap_count = int(validation.get("raw_wrap_segment_count") or 0)
         rel_ok = validation.get("relative_transform_ok")
@@ -3765,16 +4246,10 @@ class HuskyMonitor(Node):
             self.cfab.planner.set_robot_cell_state(mv.start_state)
         except Exception as e:
             print(f"[M0] WARN: cfab set_robot_cell_state after live-conf resync failed: {e}")
-        # Pause GUI rendering during the search (no-op when headless).
-        with pp.LockRenderer():
-            path, info = plan_free_dual_arm(
-                self.cfab.planner, mv.start_state, mv.target_configuration,
-                max_time=120.0, max_iterations=50,
-            )
-        if path is None:
-            print(f"[M0] plan_free_dual_arm failed: {info.get('failure_reason')}")
-            return None
-        return joint_trajectory_from_path(path)
+        return self._plan_free_and_validate(
+            mv, 'M0', mv.target_configuration,
+            max_time=120.0, max_iterations=50,
+        )
 
     def _plan_M1_dispatch(self, mv):
         """Constrained dual-arm (bar held): state-based task-space RRT.
@@ -4124,15 +4599,7 @@ class HuskyMonitor(Node):
         # helper's dict-indexed extraction works (raw numpy 12-vecs raise
         # IndexError on string joint-name indexing).
         goal_conf = conf_from_12vec(HUSKY_DUAL_ARM_HOME_CONF_12)
-        # Pause GUI rendering during the search (no-op when headless).
-        with pp.LockRenderer():
-            path, info = plan_free_dual_arm(
-                self.cfab.planner, mv.start_state, goal_conf, max_time=30.0,
-            )
-        if path is None:
-            print(f"[M4] plan_free_dual_arm failed: {info.get('failure_reason')}")
-            return None
-        return joint_trajectory_from_path(path)
+        return self._plan_free_and_validate(mv, 'M4', goal_conf, max_time=30.0)
 
     def ik_live_base_for_selected_movement(self):
         """IK at the LIVE base for the current movement's START EE frames.
@@ -5049,54 +5516,116 @@ class HuskyMonitor(Node):
             # collected so far so the live tracker accumulates instead of
             # blanking every iteration.
             self._repopulate_servoing_tracker()
-
-            # Bar-held ("transfer") pre-execution safeguard plots. Populated by
-            # show_transfer_validation() after a constrained/transfer plan;
-            # hidden until then. Series carry a trailing flat threshold line so
-            # an over-threshold sample is obvious against it.
-            transfer_visible = getattr(self, '_transfer_validation_data', None) is not None
-            _common._global_backend.add_window(
-                "Transfer Validation", tag="transfer_validation_window",
-                width=620, height=520, show=transfer_visible)
-            # max joint step [deg] + flat continuity threshold.
-            self.transfer_joint_step_plot = HistoryPlot(
-                "joint step", ['max joint step', 'threshold'],
-                "max joint step [deg]", parent="transfer_validation_window",
-                palette=[(220, 70, 70), (140, 140, 140)], history=4096)
-            # bar-hold EE drift: translation [mm] + rotation [deg] + thresholds.
-            self.transfer_ee_drift_plot = HistoryPlot(
-                "bar-hold EE drift",
-                ['trans [mm]', 'rot [deg]', 'trans thresh', 'rot thresh'],
-                "EE drift", parent="transfer_validation_window",
-                palette=[(70, 130, 220), (70, 200, 130),
-                         (140, 140, 140), (170, 170, 170)], history=4096)
-            for plot in (self.transfer_joint_step_plot, self.transfer_ee_drift_plot):
-                plot.set_visible(transfer_visible)
-            # Redraw the last validation onto the freshly-rebuilt plots.
-            self._draw_transfer_validation()
         else:
             self.servoing_pos_plot = None
             self.servoing_rot_plot = None
             self.servoing_base_pos_plot = None
             self.servoing_base_rot_plot = None
+
+        # "Movement Preview": everything the operator should look at BEFORE
+        # pressing execute on the selected movement. Filled by _accept_trajectory
+        # (so both a freshly planned and a loaded-from-file trajectory land
+        # here), hidden until the first trajectory arrives.
+        #   1. planned joint values along the path -- every movement
+        #   2. max joint step between waypoints -- bar-held movements (M1/M2)
+        #   3. bar-hold EE drift                 -- bar-held movements (M1/M2)
+        # Plots 2 and 3 carry a trailing flat threshold line so an
+        # over-threshold sample is obvious against it.
+        # ! Deliberately NOT gated on BAR_ACTION_MOCAP_ACCURACY_TEST: the
+        # ! robot-centric replay demo turns that flag off but still needs these.
+        if self.USE_DPG_UI and self.BAR_ACTION_LIVE_REPLAN_EXE:
+            preview_visible = (getattr(self, '_preview_joint_data', None) is not None
+                               or getattr(self, '_transfer_validation_data', None) is not None)
+            _common._global_backend.add_window(
+                "Movement Preview", tag="movement_preview_window",
+                width=620, height=780, show=preview_visible)
+            # Planned joint values per waypoint. Distinct from the "Joint Live
+            # Stream" window, which shows what the real robot is doing now.
+            # Labelled for 12 joints explicitly (not via _joint_stream_labels,
+            # which follows the ACTIVE arm count): a BarAction waypoint is
+            # always a 12-vec, left arm then right arm.
+            self.preview_joint_plot = HistoryPlot(
+                "planned joint values", PLANNED_JOINT_PLOT_LABELS,
+                "joint value [deg]", parent="movement_preview_window",
+                group_size=6, history=4096)
+            # max joint step [deg] + flat continuity threshold.
+            self.transfer_joint_step_plot = HistoryPlot(
+                "joint step", ['max joint step', 'threshold'],
+                "max joint step [deg]", parent="movement_preview_window",
+                palette=[(220, 70, 70), (140, 140, 140)], history=4096)
+            # bar-hold EE drift: translation [mm] + rotation [deg] + thresholds.
+            self.transfer_ee_drift_plot = HistoryPlot(
+                "bar-hold EE drift",
+                ['trans [mm]', 'rot [deg]', 'trans thresh', 'rot thresh'],
+                "EE drift", parent="movement_preview_window",
+                palette=[(70, 130, 220), (70, 200, 130),
+                         (140, 140, 140), (170, 170, 170)], history=4096)
+            for plot in (self.preview_joint_plot, self.transfer_joint_step_plot,
+                         self.transfer_ee_drift_plot):
+                plot.set_visible(preview_visible)
+            # These plots were just rebuilt empty (build_ui runs on every
+            # reset_ui, which Load Movement triggers). Redraw the persisted
+            # curves so the window survives the rebuild.
+            self._draw_preview_joint_values()
+            self._draw_transfer_validation()
+
+            # "Compliant Exec Force": the live tool0 wrench DURING an M2/M3
+            # compliant execution, one sample per monitor tick, x = seconds since
+            # the move started. This is the signal that tells the operator what
+            # the arms are actually feeling while the bar seats and the joint
+            # motor bites -- the M2 hold can run up to 300 s waiting on stall,
+            # and without this the only feedback is the stall flag flipping.
+            # Separate window from Movement Preview on purpose: that one is the
+            # BEFORE-you-press-execute review, this one is the DURING.
+            wrench_visible = bool(
+                (getattr(self, '_compliant_wrench_data', None) or {}).get('samples'))
+            _common._global_backend.add_window(
+                "Compliant Exec Force", tag="compliant_wrench_window",
+                width=620, height=560, show=wrench_visible)
+            # Left arm = reds, right arm = greens (same families as the servoing
+            # tracker). Force and torque are split: N and Nm can't share a y axis.
+            wrench_labels = [f'{side} {ax}' for side in ('L', 'R')
+                             for ax in ('x', 'y', 'z')]
+            wrench_palette = (world.SERVO_LEFT_ARM_RGB[:3]
+                              + world.SERVO_RIGHT_ARM_RGB[:3])
+            # history: the 300 s M2 stall ceiling at the ~20 Hz tick rate is
+            # ~6000 samples, so size the ring buffer above that to keep a whole
+            # worst-case hold on screen.
+            self.compliant_force_plot = HistoryPlot(
+                "tool0 force", wrench_labels, "force [N]",
+                parent="compliant_wrench_window", group_size=3,
+                palette=wrench_palette, history=8192)
+            self.compliant_torque_plot = HistoryPlot(
+                "tool0 torque", wrench_labels, "torque [Nm]",
+                parent="compliant_wrench_window", group_size=3,
+                palette=wrench_palette, history=8192)
+            for plot in (self.compliant_force_plot, self.compliant_torque_plot):
+                plot.set_visible(wrench_visible)
+            self._repopulate_compliant_wrench()
+        else:
+            self.preview_joint_plot = None
             self.transfer_joint_step_plot = None
             self.transfer_ee_drift_plot = None
+            self.compliant_force_plot = None
+            self.compliant_torque_plot = None
 
-        self.buttons.append(Button('Toggle Goal/Trajectory', self.toggle_show_goal_state))
-        self.buttons.append(Button('Reset Goal State', self.reset_ui))
+        # self.buttons.append(Button('Toggle Goal/Trajectory', self.toggle_show_goal_state))
+        # self.buttons.append(Button('Reset Goal State', self.reset_ui))
                       
-        self.buttons.append(Button('Plan S.Arm to conf target', self.plan_single_arm_to_goal_action))
-        self.buttons.append(Button('Exec S.Arm Traj', self.execute_arm_trajectory))
+        # self.buttons.append(Button('Plan S.Arm to conf target', self.plan_single_arm_to_goal_action))
+        # self.buttons.append(Button('Exec S.Arm Traj', self.execute_arm_trajectory))
 
-        # Add buttons for planning both arms to goal (sequential and composite)
-        # self.buttons.append(Button('Plan Both Arms to Goal (sequential)', lambda: world.plan_both_arms_to_goal(self, use_composite=False)))
-        self.buttons.append(Button('Plan Both Arms to Goal (composite)', self.plan_both_arms_to_goal_action))
-        self.buttons.append(Button('Exec Both Arm Trajs', lambda: world.execute_arm_trajectory_both(self)))
+        # # Add buttons for planning both arms to goal (sequential and composite)
+        # # self.buttons.append(Button('Plan Both Arms to Goal (sequential)', lambda: world.plan_both_arms_to_goal(self, use_composite=False)))
+        # self.buttons.append(Button('Plan Both Arms to Goal (composite)', self.plan_both_arms_to_goal_action))
+        # self.buttons.append(Button('Exec Both Arm Trajs', lambda: world.execute_arm_trajectory_both(self)))
 
-        # Constrained dual-arm planner controls — only when the active robot is dual-arm.
-        # Stored as named attributes so update() polls them — items
-        # appended to self.dump_sep_sliders are not polled.
-        if self.huskies[self.selected_robot_id].dual_arm:
+        # Constrained dual-arm planner + visual-servoing controls — only shown for
+        # a dual-arm robot AND when the mocap-accuracy test is enabled, since these
+        # buttons (live-base IK, servo loop, dual-traj export/load) only drive that
+        # test's workflow.
+        if (self.huskies[self.selected_robot_id].dual_arm
+                and self.BAR_ACTION_MOCAP_ACCURACY_TEST):
             # TODO these two buttons seems to have very similar functions, and also unclear whether
             # Replan Current Movement Live should stick to its stored conf target or recompute IK from target ee, probably need to be movement depednent
             # then this could just merge with the debug buttons below
@@ -5246,16 +5775,14 @@ class HuskyMonitor(Node):
                 'Reset All Mvs to Clean',
                 self.reset_all_movements_to_clean))
 
-            # self.dump_sep_sliders.append(Slider("---------- live movement debug", lambda: None))
-            self.dump_sep_sliders.append(Separator("live movement debug"))
+            # # self.dump_sep_sliders.append(Slider("---------- live movement debug", lambda: None))
+            # self.dump_sep_sliders.append(Separator("live movement debug"))
 
             # self.dump_sep_sliders.append(Slider("---------- movement exe", lambda: None))
             self.dump_sep_sliders.append(Separator("movement exe"))
 
-            self.buttons.append(Button(
-                'Exec Compliant (M2/M3 only)',
-                lambda: self.tasks.append(world.execute_planned_trajectory_compliant(self))))
-            # * Auto-dispatch: M2/M3 -> compliant controller, else joint tracking.
+            # * The single execute-movement button. Auto-dispatch by role:
+            # M2/M3 -> cartesian_compliance_controller, else joint tracking.
             self.buttons.append(Button(
                 'Exec Selected Mv Traj (auto)',
                 self.exec_selected_movement_traj))
@@ -5394,25 +5921,25 @@ class HuskyMonitor(Node):
 
                 def send_scaffolding_cmd_both_motors(direction, arm_index):
                     interface = self.huskies[self.selected_robot_id].interface
-                    interface.send_scaffolding_cmd(direction, 1, arm_index)
-                    interface.send_scaffolding_cmd(direction, 2, arm_index)
+                    interface.send_scaffolding_cmd(direction, GRIPPER_MOTOR, arm_index)
+                    interface.send_scaffolding_cmd(direction, JOINT_MOTOR, arm_index)
 
                 def send_scaffolding_cmd_motor(direction, motor, arm_index):
                     self.huskies[self.selected_robot_id].interface.send_scaffolding_cmd(direction, motor, arm_index)
 
                 if has_scaffold_left:
                     self.buttons.append(Button('- L Stop All', lambda: send_scaffolding_cmd_both_motors(0, 0)))
-                    self.buttons.append(Button('- L Tighten Gripper', lambda: send_scaffolding_cmd_motor(1, 1, 0)))
-                    self.buttons.append(Button('- L Loosen Gripper', lambda: send_scaffolding_cmd_motor(-1, 1, 0)))
-                    self.buttons.append(Button('- L Tighten Joint', lambda: send_scaffolding_cmd_motor(1, 2, 0)))
-                    self.buttons.append(Button('- L Loosen Joint', lambda: send_scaffolding_cmd_motor(-1, 2, 0)))
+                    self.buttons.append(Button('- L Tighten Gripper', lambda: send_scaffolding_cmd_motor(1, GRIPPER_MOTOR, 0)))
+                    self.buttons.append(Button('- L Loosen Gripper', lambda: send_scaffolding_cmd_motor(-1, GRIPPER_MOTOR, 0)))
+                    self.buttons.append(Button('- L Tighten Joint', lambda: send_scaffolding_cmd_motor(1, JOINT_MOTOR, 0)))
+                    self.buttons.append(Button('- L Loosen Joint', lambda: send_scaffolding_cmd_motor(-1, JOINT_MOTOR, 0)))
 
                 if has_scaffold_right and active_husky.dual_arm:
                     self.buttons.append(Button('- R Stop All', lambda: send_scaffolding_cmd_both_motors(0, 1)))
-                    self.buttons.append(Button('- R Tighten Gripper', lambda: send_scaffolding_cmd_motor(1, 1, 1)))
-                    self.buttons.append(Button('- R Loosen Gripper', lambda: send_scaffolding_cmd_motor(-1, 1, 1)))
-                    self.buttons.append(Button('- R Tighten Joint', lambda: send_scaffolding_cmd_motor(1, 2, 1)))
-                    self.buttons.append(Button('- R Loosen Joint', lambda: send_scaffolding_cmd_motor(-1, 2, 1)))
+                    self.buttons.append(Button('- R Tighten Gripper', lambda: send_scaffolding_cmd_motor(1, GRIPPER_MOTOR, 1)))
+                    self.buttons.append(Button('- R Loosen Gripper', lambda: send_scaffolding_cmd_motor(-1, GRIPPER_MOTOR, 1)))
+                    self.buttons.append(Button('- R Tighten Joint', lambda: send_scaffolding_cmd_motor(1, JOINT_MOTOR, 1)))
+                    self.buttons.append(Button('- R Loosen Joint', lambda: send_scaffolding_cmd_motor(-1, JOINT_MOTOR, 1)))
 
 
 
@@ -5594,15 +6121,18 @@ class HuskyMonitor(Node):
         # update robot state
         for i, h in enumerate(self.huskies):
             hi = h.interface
-            if self.USE_MOCAP and not self.USE_CELL_STATE_BASE_POSE:
+            if self._base_pose_is_tracked():
                 # mocap drives the husky base pose
                 h.object.set_pose((hi.position, hi.rotation), hi.arm_joint_pose)
                 # set the goal pose of base since we are teleoperating the base
                 if not self.goal_base_pose_frozen:
                     self.goal_base_pose = (hi.position, hi.rotation)
             else:
-                # base is whatever the cell state set (or sliders set);
-                # mocap only drives EE tracking in this branch
+                # Base is whatever the cell state set (or the sliders set). This
+                # is also the robot-centric replay case (USE_MOCAP=0): nothing
+                # measures the base, so the plan's authored base pose IS the
+                # base pose. Keep this in step with _live_base_pose(), which the
+                # trajectory preview below uses for the same reason.
                 h.object.set_pose(self.goal_base_pose, hi.arm_joint_pose)
 
         # pp.draw_pose(self.goal_model.get_link_pose_from_name("ur_arm_base_link"))
@@ -5665,15 +6195,16 @@ class HuskyMonitor(Node):
             np.array(self.goal_arm_pose[1], dtype=float).copy(),
         ]
         if not self.show_goal_state:
-            # Trajectory preview rides on the LIVE robot's base pose (not the
-            # frozen goal_base_pose / cell-state base) so the planned arm
-            # motion is shown as it would actually look at the real-robot
-            # location. The arm conf below is read from the planned
-            # trajectory; pairing it with the live base matches what gets
-            # executed.
+            # Trajectory preview rides on the base pose the arms will actually
+            # be executed from: the mocap-tracked pose when mocap drives the
+            # base, otherwise the plan's authored base (see _live_base_pose).
+            # The arm conf below comes from the planned trajectory; pairing it
+            # with that same base is what makes the preview match execution --
+            # and it is what keeps the goal ghost and the live pp husky in the
+            # same frame, which the compliant M2/M3 exec relies on (it FKs its
+            # cartesian targets off the ghost and its arm-base off the live one).
             if self.huskies:
-                _hi = self.huskies[self.selected_robot_id].interface
-                goal_base_pose = (_hi.position, _hi.rotation)
+                goal_base_pose = self._live_base_pose()
             # if self.planned_base_trajectory[0] is not None:
             #     N = len(self.planned_base_trajectory[0])
             #     print('N:', N)

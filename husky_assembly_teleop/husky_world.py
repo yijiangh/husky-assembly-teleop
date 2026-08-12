@@ -9,7 +9,7 @@ import asyncio
 from matplotlib.pyplot import bar
 import numpy as np
 import copy
-from husky_assembly_teleop.husky_robot import HuskyRobotInterface
+from husky_assembly_teleop.husky_robot import GRIPPER_MOTOR, JOINT_MOTOR, HuskyRobotInterface
 import rclpy
 
 import pybullet as p
@@ -2592,13 +2592,67 @@ def execute_linear_cartesian_move(robot, hi, start_time, cartesian_trajectory, i
     
     return True
 
-def switch_dual_arm_controller(monitor, to_ctrl):
-    """Switch both arms from `from_ctrl` to `to_ctrl`; yield until ack."""
+# How long to wait for BOTH arms to acknowledge a controller switch. A healthy
+# switch acks well inside a second; this is only a ceiling so a dead or
+# unresponsive controller_manager cannot wedge the task queue forever.
+CONTROLLER_SWITCH_TIMEOUT_S = 5.0
+
+
+def switch_dual_arm_controller(monitor, to_ctrl, timeout_s=CONTROLLER_SWITCH_TIMEOUT_S):
+    """Switch both arms to ``to_ctrl``; yield until both acknowledge.
+
+    ! This reports failure, it does NOT fall back. Every caller must check the
+    ! result and abort: continuing after a failed switch would drive the arms
+    ! through the WRONG controller -- e.g. publishing cartesian compliance
+    ! targets while the joint trajectory controller still holds the arms, or
+    ! (worse) leaving the compliance controller live afterwards. There is no
+    ! safe "carry on anyway" here, which is why nothing in this function
+    ! silently proceeds.
+
+    Gives up on any of three signals:
+      1. the request could not even be sent (no service client);
+      2. controller_manager explicitly rejected it (reported per arm via
+         ``hi.controller_switch_error``, so a known failure aborts at once
+         rather than sitting out the timeout);
+      3. ``timeout_s`` elapsed with no acknowledgement -- the dead-service case,
+         which used to spin here forever and block every other queued task.
+
+    Args:
+        monitor (HuskyMonitor): Provides the husky interface.
+        to_ctrl (str): Controller to activate on both arms.
+        timeout_s (float): Ceiling on the wait, in seconds.
+
+    Yields:
+        None: One yield per monitor tick while waiting.
+
+    Returns:
+        bool: True when both arms report ``to_ctrl`` active; False on any of the
+        failure signals above, each of which is logged as an error first.
+    """
     hi: HuskyRobotInterface = monitor.huskies[monitor.selected_robot_id].interface
-    hi.switch_controller(hi.active_controller[0], to_ctrl, 0)
-    hi.switch_controller(hi.active_controller[1], to_ctrl, 1)
+    sent = [hi.switch_controller(hi.active_controller[i], to_ctrl, i) for i in (0, 1)]
+    if not all(sent):
+        monitor.get_logger().error(
+            f'Controller switch to {to_ctrl!r} could not be requested; aborting.')
+        return False
+
+    deadline = time.time() + float(timeout_s)
     while hi.active_controller[0] != to_ctrl or hi.active_controller[1] != to_ctrl:
+        errors = [hi.controller_switch_error[i] for i in (0, 1)]
+        if any(errors):
+            monitor.get_logger().error(
+                f'Controller switch to {to_ctrl!r} FAILED '
+                f'(left: {errors[0]}, right: {errors[1]}); aborting.')
+            return False
+        if time.time() > deadline:
+            monitor.get_logger().error(
+                f'Controller switch to {to_ctrl!r} timed out after {timeout_s:.1f}s '
+                f'(active now: left={hi.active_controller[0]!r}, '
+                f'right={hi.active_controller[1]!r}). Is controller_manager '
+                f'running? Aborting.')
+            return False
         yield
+    return True
 
 
 def execute_cartesian_linear_dual(monitor, cartesian_trajectories,
@@ -2629,8 +2683,24 @@ def execute_cartesian_linear_dual(monitor, cartesian_trajectories,
         yield
 
 
-def _scaffolding_m2_stalled(hi, index):
-    """v3 stall read: ScaffoldingToolStatus.state_m2 == 'STALLED'. None until first msg."""
+def _scaffolding_joint_motor_stalled(hi, index):
+    """v3 stall read for the scaffolding tool's JOINT motor (the screw).
+
+    The tool has two motors, and the firmware still names them M1/M2 -- which
+    reads confusingly next to the movement roles M0..M4, so everything on the
+    Python side calls them by what they do instead:
+
+        gripper motor = M1 (msg field ``state_m1``, ``motor=1``) -- holds the bar
+        joint motor   = M2 (msg field ``state_m2``, ``motor=2``) -- drives the screw
+
+    Args:
+        hi (HuskyRobotInterface): Interface carrying ``scaffolding_status``.
+        index (int): Arm index (0 = left, 1 = right).
+
+    Returns:
+        bool: True once the joint motor reports STALLED. False until the first
+        status message arrives, so callers fall back on their time budget.
+    """
     s = hi.scaffolding_status[index]
     return s is not None and s.state_m2 == 'STALLED'
 
@@ -2660,16 +2730,22 @@ def kissing_probe_once(monitor, neutral_bar_pose, starting_bar_pose, offset, fil
     hi.zero_ft_sensor(0)
     hi.zero_ft_sensor(1)
 
-    yield from switch_dual_arm_controller(
-        monitor,
-        'cartesian_compliance_controller',
-    )
+    # ! No fallback: without the compliance controller the cartesian targets
+    # ! below go nowhere, so abort before touching the screw motor rather than
+    # ! driving it against a probe that will never move.
+    if not (yield from switch_dual_arm_controller(
+            monitor, 'cartesian_compliance_controller')):
+        monitor.get_logger().error(
+            f'Aborting kissing probe {name!r}: the arms are NOT under the '
+            f'compliance controller.')
+        return
 
-    # v3 screw motor: clear residual then TIGHTEN M2 on both arms.
-    hi.send_scaffolding_cmd(0, 2, 0)
-    hi.send_scaffolding_cmd(0, 2, 1)
-    hi.send_scaffolding_cmd(1, 2, 0)
-    hi.send_scaffolding_cmd(1, 2, 1)
+    # v3 screw motor: clear any residual command, then TIGHTEN the joint
+    # motor on both arms.
+    hi.send_scaffolding_cmd(0, JOINT_MOTOR, 0)
+    hi.send_scaffolding_cmd(0, JOINT_MOTOR, 1)
+    hi.send_scaffolding_cmd(1, JOINT_MOTOR, 0)
+    hi.send_scaffolding_cmd(1, JOINT_MOTOR, 1)
 
     start_time = time.time()
 
@@ -2685,15 +2761,15 @@ def kissing_probe_once(monitor, neutral_bar_pose, starting_bar_pose, offset, fil
         monitor, insertion_trajectories_cartesian,
         on_tick=_log_tick,
         should_continue=lambda: not (
-            _scaffolding_m2_stalled(hi, 0) and _scaffolding_m2_stalled(hi, 1)),
+            _scaffolding_joint_motor_stalled(hi, 0) and _scaffolding_joint_motor_stalled(hi, 1)),
     )
 
-    # STOP M2 once insertion completes (by stall or by time budget).
-    hi.send_scaffolding_cmd(0, 2, 0)
-    hi.send_scaffolding_cmd(0, 2, 1)
+    # STOP the joint motor once insertion completes (by stall or by time budget).
+    hi.send_scaffolding_cmd(0, JOINT_MOTOR, 0)
+    hi.send_scaffolding_cmd(0, JOINT_MOTOR, 1)
 
-    motor_stalled_left = _scaffolding_m2_stalled(hi, 0)
-    motor_stalled_right = _scaffolding_m2_stalled(hi, 1)
+    motor_stalled_left = _scaffolding_joint_motor_stalled(hi, 0)
+    motor_stalled_right = _scaffolding_joint_motor_stalled(hi, 1)
     # is_arm_executing isn't driven by the cartesian compliance controller; the
     # JSON fields stay for log-format stability but are not meaningful here.
     trajectory_finished_left = not hi.is_arm_executing[0]
@@ -2740,24 +2816,26 @@ def kissing_probe_once(monitor, neutral_bar_pose, starting_bar_pose, offset, fil
     _, retreat_trajectories_cartesian = generate_insertion_motion_bar(
         monitor, -Z_MOVE_TO_INSERT, 0.002 / TIME_PER_ROTATION * CARTESIAN_SPEEDUP)
     if retreat_trajectories_cartesian is None:
-        hi.send_scaffolding_cmd(0, 2, 0)
-        hi.send_scaffolding_cmd(0, 2, 1)
-        yield from switch_dual_arm_controller(
-            monitor,
-            'scaled_joint_trajectory_controller',
-        )
+        hi.send_scaffolding_cmd(0, JOINT_MOTOR, 0)
+        hi.send_scaffolding_cmd(0, JOINT_MOTOR, 1)
+        if not (yield from switch_dual_arm_controller(
+                monitor, 'scaled_joint_trajectory_controller')):
+            monitor.get_logger().error(
+                'ARMS LEFT UNDER cartesian_compliance_controller after the '
+                'kissing probe bailed out. Restore the joint controller before '
+                'commanding any joint trajectory.')
         return
 
-    # LOOSEN M2 during retreat.
-    hi.send_scaffolding_cmd(-1, 2, 0)
-    hi.send_scaffolding_cmd(-1, 2, 1)
+    # LOOSEN the joint motor during retreat.
+    hi.send_scaffolding_cmd(-1, JOINT_MOTOR, 0)
+    hi.send_scaffolding_cmd(-1, JOINT_MOTOR, 1)
 
     yield from execute_cartesian_linear_dual(
         monitor, retreat_trajectories_cartesian)
 
-    # STOP M2 after retreat.
-    hi.send_scaffolding_cmd(0, 2, 0)
-    hi.send_scaffolding_cmd(0, 2, 1)
+    # STOP the joint motor after retreat.
+    hi.send_scaffolding_cmd(0, JOINT_MOTOR, 0)
+    hi.send_scaffolding_cmd(0, JOINT_MOTOR, 1)
 
     current_left_tool_world_pose = pp.get_link_pose(
         robot, pp.link_from_name(robot, 'left_ur_arm_tool0'))
@@ -2778,10 +2856,12 @@ def kissing_probe_once(monitor, neutral_bar_pose, starting_bar_pose, offset, fil
         current_right_tool_world_pose = pp.get_link_pose(
             robot, pp.link_from_name(robot, 'right_ur_arm_tool0'))
 
-    yield from switch_dual_arm_controller(
-        monitor,
-        'scaled_joint_trajectory_controller',
-    )
+    if not (yield from switch_dual_arm_controller(
+            monitor, 'scaled_joint_trajectory_controller')):
+        monitor.get_logger().error(
+            'ARMS LEFT UNDER cartesian_compliance_controller at the end of the '
+            'kissing probe. Restore the joint controller before commanding any '
+            'joint trajectory.')
 
 
 def execute_planned_trajectory_compliant(monitor):
@@ -2836,17 +2916,17 @@ def execute_planned_trajectory_compliant(monitor):
 
     t_total = float(monitor.trajectory_time) or 5.0
 
-    # M2 holds the end pose under compliance while the Joint (M2) motor
-    # tightens against the scaffold; the loop must NOT terminate on
+    # The M2 movement holds the end pose under compliance while the JOINT motor
+    # tightens the screw against the scaffold; the loop must NOT terminate on
     # motion-time budget alone. Inflate t_wait so execute_linear_cartesian_move
-    # keeps publishing the end pose, and exit only when both M2 motors report
-    # STALLED. Large t_wait is a hard ceiling fallback if firmware never
+    # keeps publishing the end pose, and exit only when both arms' joint motors
+    # report STALLED. Large t_wait is a hard ceiling fallback if firmware never
     # reports stall.
-    HOLD_FOR_STALL_TIMEOUT_S = 300.0
+    HOLD_FOR_STALL_TIMEOUT_S = 30.0
     if role == 'M2':
         t_wait = HOLD_FOR_STALL_TIMEOUT_S
         should_continue_fn = lambda: not (
-            _scaffolding_m2_stalled(hi, 0) and _scaffolding_m2_stalled(hi, 1))
+            _scaffolding_joint_motor_stalled(hi, 0) and _scaffolding_joint_motor_stalled(hi, 1))
     else:
         t_wait = 0.0
         should_continue_fn = None
@@ -2857,53 +2937,168 @@ def execute_planned_trajectory_compliant(monitor):
     ]
 
     def _stop_all_both_arms():
-        # mirror of 'L/R Stop All' buttons: STOP M1 and M2 on both arms.
-        print('[scaffolding] L Stop All: M1 + M2 (arm 0)')
-        hi.send_scaffolding_cmd(0, 1, 0)
-        hi.send_scaffolding_cmd(0, 2, 0)
-        print('[scaffolding] R Stop All: M1 + M2 (arm 1)')
-        hi.send_scaffolding_cmd(0, 1, 1)
-        hi.send_scaffolding_cmd(0, 2, 1)
+        # mirror of the 'L/R Stop All' buttons: STOP both tool motors on both arms.
+        print('[scaffolding] L Stop All: gripper + joint motor (arm 0)')
+        hi.send_scaffolding_cmd(0, GRIPPER_MOTOR, 0)
+        hi.send_scaffolding_cmd(0, JOINT_MOTOR, 0)
+        print('[scaffolding] R Stop All: gripper + joint motor (arm 1)')
+        hi.send_scaffolding_cmd(0, GRIPPER_MOTOR, 1)
+        hi.send_scaffolding_cmd(0, JOINT_MOTOR, 1)
 
     # ! important: DO NOT zero when the robot is holding the bar
     # the only good time to zero is when the robot is holding nothing but the tool
+    # ! Consequence for the force plot below: the curves carry the tool + bar
+    # ! weight as a standing offset, so read them for CHANGE (the step when the
+    # ! bar seats, the ramp as the screw bites), not as absolute contact force.
 
-    # Pre-exec scaffolding tool commands:
-    #   M2 -> Stop All + TIGHTEN Joint (M2) on both arms (bar tightened against scaffold).
-    #   M3 -> Stop All + LOOSEN Gripper (M1) on both arms (release bar before retreat).
+    # Live tool0 wrench, one sample per monitor tick, streamed to the
+    # "Compliant Exec Force" DPG window. This is the operator's only continuous
+    # feedback during the move -- especially for M2, which can hold at the
+    # assembled pose for up to HOLD_FOR_STALL_TIMEOUT_S waiting on the stall flag.
+    wrench_profile_left = []
+    wrench_profile_right = []
+    monitor.reset_compliant_wrench(label=monitor.current_movement.movement_id)
+    exec_start_time = time.time()
+
+    def _record_wrench(hi_, robot_):
+        left = list(hi_.arm_ft_sensor[0])
+        right = list(hi_.arm_ft_sensor[1])
+        wrench_profile_left.append(left)
+        wrench_profile_right.append(right)
+        monitor.push_compliant_wrench(time.time() - exec_start_time, left, right)
+
+    # Pre-exec scaffolding tool commands, per movement role:
+    #   M2 (mate)    -> Stop All + TIGHTEN the joint motor on both arms
+    #                   (screws the bar down against the scaffold).
+    #   M3 (retreat) -> Stop All + LOOSEN the gripper motor on both arms
+    #                   (releases the bar before backing away).
     _stop_all_both_arms()
     if role == 'M2':
-        print('[scaffolding] M2: TIGHTEN Joint on L arm (arm 0)')
-        hi.send_scaffolding_cmd(1, 2, 0)
-        print('[scaffolding] M2: TIGHTEN Joint on R arm (arm 1)')
-        hi.send_scaffolding_cmd(1, 2, 1)
+        print('[scaffolding] M2: TIGHTEN joint motor on L arm (arm 0)')
+        hi.send_scaffolding_cmd(1, JOINT_MOTOR, 0)
+        print('[scaffolding] M2: TIGHTEN joint motor on R arm (arm 1)')
+        hi.send_scaffolding_cmd(1, JOINT_MOTOR, 1)
     elif role == 'M3':
-        print('[scaffolding] M3: LOOSEN Gripper on L arm (arm 0)')
-        hi.send_scaffolding_cmd(-1, 1, 0)
-        print('[scaffolding] M3: LOOSEN Gripper on R arm (arm 1)')
-        hi.send_scaffolding_cmd(-1, 1, 1)
+        print('[scaffolding] M3: LOOSEN gripper motor on L arm (arm 0)')
+        hi.send_scaffolding_cmd(-1, GRIPPER_MOTOR, 0)
+        print('[scaffolding] M3: LOOSEN gripper motor on R arm (arm 1)')
+        hi.send_scaffolding_cmd(-1, GRIPPER_MOTOR, 1)
 
+    switched_to_compliance = False
     try:
         # wait until the switch is completely (yield will go back to top level monitor to get updated state)
-        yield from switch_dual_arm_controller(
+        switched_to_compliance = yield from switch_dual_arm_controller(
             monitor,
             'cartesian_compliance_controller',
         )
+        # ! No fallback: the cartesian targets below are only meaningful under
+        # ! the compliance controller. If the switch failed we skip the motion
+        # ! entirely rather than publishing target frames nothing is listening
+        # ! to -- which would look like a silent no-op on the real robot.
+        if not switched_to_compliance:
+            monitor.get_logger().error(
+                f'Aborting compliant exec of '
+                f'{monitor.current_movement.movement_id} (role {role}): the arms '
+                f'are NOT under the compliance controller, so no motion was '
+                f'commanded. Fix the controller switch and re-run this movement.')
+            return
 
         yield from execute_cartesian_linear_dual(
-            monitor, cartesian_trajectories, should_continue=should_continue_fn)
+            monitor, cartesian_trajectories, on_tick=_record_wrench,
+            should_continue=should_continue_fn)
     finally:
         # Always stop motors first, then restore the joint controller.
         _stop_all_both_arms()
 
-        yield from switch_dual_arm_controller(
-            monitor,
-            'scaled_joint_trajectory_controller',
-        )
+        # Only worth restoring if we actually left the joint controller. If this
+        # one fails there is nothing left to abort -- the move is over -- but the
+        # arms are stranded under compliance, so say so loudly: the next joint
+        # trajectory (any M0/M1/M4, or 'Move Arms to Movement Start') would be
+        # published to a controller that is not running.
+        if switched_to_compliance:
+            restored = yield from switch_dual_arm_controller(
+                monitor,
+                'scaled_joint_trajectory_controller',
+            )
+            if not restored:
+                monitor.get_logger().error(
+                    'ARMS LEFT UNDER cartesian_compliance_controller -- the '
+                    'switch back to scaled_joint_trajectory_controller failed. '
+                    'Do NOT run another movement until the controller is '
+                    'restored (see the Switch to Joint (BOTH) button).')
+
+    # Roll the recorded wrench up into the completion line so the terminal
+    # reports the peak load even when the operator was not watching the plot.
+    # Peak |force| per arm over the whole move; see the zeroing caveat above --
+    # this includes the standing tool + bar weight.
+    def _peak_force(profile):
+        if not profile:
+            return float('nan')
+        return max(float(np.linalg.norm(w[:3])) for w in profile)
 
     monitor.get_logger().info(
         f"Compliant exec done for {monitor.current_movement.movement_id} "
-        f"(role {role})")
+        f"(role {role}); {len(wrench_profile_left)} wrench samples, "
+        f"peak |F| L={_peak_force(wrench_profile_left):.1f} N / "
+        f"R={_peak_force(wrench_profile_right):.1f} N")
+
+
+# Seconds to let the arms come to rest after a trajectory before taring the FT
+# sensors. The zero must be taken standing still, or whatever the controller is
+# still settling out gets baked into the offset.
+FT_ZERO_SETTLE_SECONDS = 2.0
+
+
+def execute_trajectory_and_zero_ft(monitor):
+    """Run the loaded joint trajectory, then re-zero both arms' FT sensors.
+
+    Used for M0, and only M0. M0 ends parked at the bar-loading position with
+    the tools still EMPTY -- the operator mounts the bar right afterwards, and
+    M1 carries it from there. That makes the end of M0 the one moment in the
+    whole action when taring the sensors is correct:
+
+      - before it, the arms have been moving and any earlier zero has drifted;
+      - after it, every reading includes the bar's weight, so zeroing would
+        subtract exactly the load the compliant M2/M3 execution must measure
+        (the same reason execute_planned_trajectory_compliant refuses to zero).
+
+    So the tare lands on a settled, unloaded tool, and the force plot during M2
+    then reads contact rather than payload.
+
+    Args:
+        monitor (HuskyMonitor): Provides the planned trajectory, the husky
+            interface and the trajectory time.
+
+    Yields:
+        None: One yield per monitor tick while waiting out the motion. Pumped
+        by ``monitor.update``'s task loop.
+    """
+    traj_time = float(monitor.trajectory_time) or 5.0
+    execute_arm_trajectory_both(monitor, traj_time)
+
+    # ! Wait by TIME, not by hi.is_arm_executing -- same reason as the servoing
+    # loop: that flag clears after only ARM_NOT_EXECUTING_TIME (1 s) of no joint
+    # change, so a controller slow to start trips it while the arm is still
+    # moving and we would tare mid-motion.
+    tick_dt = 0.05  # matches the 20 Hz monitor tick that pumps this task
+    for _ in range(int(np.ceil((traj_time + FT_ZERO_SETTLE_SECONDS) / tick_dt))):
+        yield
+
+    if monitor.FAKE_HARDWARE:
+        monitor.get_logger().info(
+            'M0 done; skipping FT zero (FAKE_HARDWARE, no sensor to tare).')
+        return
+
+    hi: HuskyRobotInterface = monitor.huskies[monitor.selected_robot_id].interface
+    zeroed = [hi.zero_ft_sensor(i) for i in range(monitor.get_active_arm_count())]
+    if all(zeroed):
+        monitor.get_logger().info(
+            'M0 done; FT sensors zeroed on the unloaded tools. Mount the bar '
+            'now, then load and execute M1.')
+    else:
+        monitor.get_logger().warn(
+            'M0 done, but the FT zero did not go out on every arm -- the '
+            'compliant M2/M3 force readings will carry a stale offset.')
 
 
 MOVE_TO_MOVEMENT_START_MAX_DELTA_RAD = np.pi / 3.0

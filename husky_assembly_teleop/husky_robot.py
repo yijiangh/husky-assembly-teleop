@@ -75,6 +75,13 @@ _KNOWN_MOTION_CONTROLLERS = (
     # 'forward_position_controller',
 )
 
+# The scaffolding tool's two motors, as the ``motor`` field of ScaffoldingToolCmd
+# wants them. The firmware and the message call these M1 and M2, which is easy to
+# misread as the movement roles M0..M4 of a BarAction -- so name them by function
+# everywhere on the Python side and use these constants instead of bare 1 / 2.
+GRIPPER_MOTOR = 1  # tool M1: opens/closes the gripper that holds the bar
+JOINT_MOTOR = 2    # tool M2: drives the screw that tightens the bar to the joint
+
 
 class HuskyRobotInterface:
     position = np.zeros(3)
@@ -90,7 +97,12 @@ class HuskyRobotInterface:
     last_arm_movement = [0]
     io_states = [[False for x in range(0,18)]]
     active_controller = [""]
-    
+    # Why the request in flight for this arm failed, or None. Cleared when a new
+    # switch_controller request goes out, set by its done-callback on a rejected
+    # or errored switch. Lets a waiter fail fast on a KNOWN failure instead of
+    # sitting out its whole timeout -- see world.switch_dual_arm_controller.
+    controller_switch_error = [None]
+
     # Gripper and screw states for toggle functionality
     gripper_states = [False]  # False = open, True = closed
     screw_states = [False]    # False = not actuated, True = actuated
@@ -116,6 +128,7 @@ class HuskyRobotInterface:
             self.last_arm_movement.append(0)
             self.io_states.append([False for x in range(0,18)])
             self.active_controller.append("")
+            self.controller_switch_error.append(None)
             self.gripper_states.append(False)
             self.screw_states.append(False)
             self.scaffolding_status.append(None)
@@ -445,26 +458,65 @@ class HuskyRobotInterface:
             f'arm {i}: active_controller seeded to {active!r} from controller_manager')
 
     def switch_controller(self, from_ctrl, to_ctrl, arm_index=0):
+        """Request a controller switch on one arm. Asynchronous.
+
+        On acknowledgement ``active_controller[arm_index]`` becomes ``to_ctrl``;
+        on rejection ``controller_switch_error[arm_index]`` carries the reason.
+        Waiters poll those two -- see ``world.switch_dual_arm_controller``.
+
+        Args:
+            from_ctrl (str): Controller to deactivate.
+            to_ctrl (str): Controller to activate.
+            arm_index (int): Arm index (0 = left, 1 = right).
+
+        Returns:
+            bool: True if the request was sent. False (with the reason recorded
+            in ``controller_switch_error``) when the service client does not
+            exist -- it is only created under ``connect_compliant_controller``.
+        """
+        clients = getattr(self, 'controller_change_service_client', None)
+        if not clients or arm_index >= len(clients):
+            reason = ('no switch_controller service client '
+                      '(set HuskyMonitor.CONNECT_COMPLIANT_CONTROLLER = 1)')
+            self.controller_switch_error[arm_index] = reason
+            self.node.get_logger().error(
+                f'arm {arm_index}: cannot switch controller: {reason}')
+            return False
+
         msg = SwitchController.Request()
-        
+
         msg.start_asap = True
         msg.deactivate_controllers = [from_ctrl]
         msg.activate_controllers = [to_ctrl]
         msg.strictness = SwitchController.Request.STRICT
-        
+
         print(f"switching from {from_ctrl} to {to_ctrl} on arm {arm_index}")
-        fut = self.controller_change_service_client[arm_index].call_async(msg)
-        
+        # Clear any previous verdict so a waiter cannot read a stale failure
+        # from an earlier attempt as if it belonged to this request.
+        self.controller_switch_error[arm_index] = None
+        fut = clients[arm_index].call_async(msg)
+
         def controller_switched_callback(self, new_controller, arm_index, fut):
-            msg = fut.result()
-            if msg.ok:
+            try:
+                msg = fut.result()
+            except Exception as e:
+                self.controller_switch_error[arm_index] = f'service call raised: {e}'
+                self.node.get_logger().error(
+                    f'arm {arm_index}: switch to {new_controller} raised: {e}')
+                return
+            if msg is not None and msg.ok:
                 self.active_controller[arm_index] = new_controller
                 print(f"Controller switched to {new_controller}")
             else:
-                print("Failed to switch controller!")
-                
+                self.controller_switch_error[arm_index] = (
+                    f'controller_manager rejected the switch to {new_controller}')
+                self.node.get_logger().error(
+                    f'arm {arm_index}: FAILED to switch to {new_controller} '
+                    f'(controller_manager returned ok=False)')
+
         fut.add_done_callback(lambda fut: controller_switched_callback(self, to_ctrl, arm_index, fut))
-        
+        return True
+
 
     def tf_callback(self, msg: TFMessage):
         for transform in msg.transforms:
@@ -565,8 +617,29 @@ class HuskyRobotInterface:
         self.scaffolding_status[index] = msg
 
     def zero_ft_sensor(self, index=0):
-        msg = Trigger.Request()
-        self.zero_ft_sensor_client[index].call_async(msg)
+        """Re-zero one arm's force/torque sensor (tares the current reading).
+
+        ! Only correct when that arm holds nothing but its own tool. Zeroing
+        ! while a bar is gripped tares away the bar's weight, which is exactly
+        ! the load the compliant execution needs to measure.
+
+        Args:
+            index (int): Arm index (0 = left, 1 = right).
+
+        Returns:
+            bool: True if the request went out. False (with a warning) when the
+            service client does not exist -- it is only created under
+            ``connect_compliant_controller``, so callers degrade to a no-op
+            instead of an AttributeError inside the monitor tick.
+        """
+        clients = getattr(self, 'zero_ft_sensor_client', None)
+        if not clients or index >= len(clients):
+            self.node.get_logger().warn(
+                f'Cannot zero FT sensor on arm {index}: no zero_ftsensor service '
+                'client (set HuskyMonitor.CONNECT_COMPLIANT_CONTROLLER = 1).')
+            return False
+        clients[index].call_async(Trigger.Request())
+        return True
         
     def send_force_mode_command(self, force, index=0):
         msg = SetForceMode.Request()
@@ -768,10 +841,22 @@ class HuskyRobotInterface:
             )
 
     def send_scaffolding_cmd(self, direction, motor, index=0):
+        """Drive one of the scaffolding tool's two motors on one arm.
+
+        Args:
+            direction (int): -1 loosen, 0 stop, 1 tighten.
+            motor (int): Which motor -- pass ``GRIPPER_MOTOR`` (holds the bar) or
+                ``JOINT_MOTOR`` (drives the screw). The message field still
+                calls these M1 and M2; see the constants for why we don't.
+            index (int): Arm index (0 = left, 1 = right).
+
+        Returns:
+            None. Logs an error and does nothing on a bad arm index or motor id.
+        """
         if index >= len(self.pub_scaffolding_cmd):
             self.node.get_logger().error(f'Invalid arm index for scaffolding cmd: {index}')
             return
-        if motor not in (1, 2):
+        if motor not in (GRIPPER_MOTOR, JOINT_MOTOR):
             self.node.get_logger().error(f'Invalid scaffolding motor: {motor}')
             return
         msg = ScaffoldingToolCmd()
