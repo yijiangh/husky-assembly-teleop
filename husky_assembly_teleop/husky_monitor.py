@@ -107,11 +107,22 @@ CDFM_ROTATION_RES = 0.025  # radians
 # what actually gates acceptance.
 FM_JOINT_RESOLUTION = 0.01        # rad, planning / collision-check step
 FM_VALIDATION_STEP_RAD = 0.005    # rad, post-plan re-check step (2x finer)
+
+# Below this the live arms count as already standing at a preplanned path's
+# first waypoint, so there is nothing to bridge. Well under the 0.1 rad the
+# controller itself demands (HuskyRobotInterface.to_trajectory_msg).
+FM_PATCH_TOLERANCE_RAD = 0.005
 # Which planning stage the M1 constrained planner runs. Stage 3 is the
 # grasped-bar transport stage (see STAGE3_GRASP_MASK_LINKS). This used to be
 # adjustable via a "Constrained Stage" GUI slider, but in practice only stage 3
 # was ever used, so it is now a fixed constant.
 M1_PLANNER_STAGE = 3
+
+# M1 derived-start "home bar" carry anchor choices, indexed by the GUI slider
+# (0 = sample all anchors hierarchically). Labels must match the keys of
+# core.HOME_BAR_ANCHORS in husky_assembly_tamp (kept as a local tuple so the
+# monitor does not import that deep module just for names).
+M1_HOME_ANCHOR_CHOICES = ('all', 'horizontal', 'vertical', 'back')
 
 # Pre-execution safeguard thresholds for a bar-held ("transfer") path. They
 # mirror path_validation.validate_stage_trajectory's defaults so the live DPG
@@ -374,6 +385,8 @@ class HuskyMonitor(Node):
         self._loaded_movements = []             # list[Movement]; M0..M4 straight from the JSON
         self._selected_action_file_idx = 0
         self._selected_movement_idx = 0
+        # M1 home carry anchor index into M1_HOME_ANCHOR_CHOICES (0 = all).
+        self._m1_home_anchor_idx = 0
         self._ee_target_pose_uids = []          # pp.add_line uids for drawn EE targets
         # Collision-diagnosis drawing (cc_diagnosis.py), run automatically every
         # time a live goal IK fails. Handles are pp debug-item uids; the colour
@@ -4239,17 +4252,132 @@ class HuskyMonitor(Node):
                 "M0 has no target_configuration; plan M1 first (its start "
                 "conf is backfilled as M0's goal).")
             return None
-        # M0's start must be the LIVE robot at plan time — the user may have
-        # moved it since Load Movement.
-        self._inject_live_conf_into_state(mv.start_state)
-        try:
-            self.cfab.planner.set_robot_cell_state(mv.start_state)
-        except Exception as e:
-            print(f"[M0] WARN: cfab set_robot_cell_state after live-conf resync failed: {e}")
+        self._resync_start_state_to_live(mv, 'M0')
         return self._plan_free_and_validate(
             mv, 'M0', mv.target_configuration,
             max_time=120.0, max_iterations=50,
         )
+
+    def _live_arm_conf_12(self):
+        """The live robot's twelve arm joint values (left 6 then right 6).
+
+        Returns:
+            numpy.ndarray: 12-vec of joint values in radians.
+        """
+        hi = self.huskies[self.selected_robot_id].interface
+        return np.concatenate([
+            np.asarray(hi.arm_joint_pose[i], dtype=float) for i in (0, 1)])
+
+    def _patch_preplanned_to_live(self, mv, role):
+        """Stage 1 of the free-movement live replan: bridge, don't rebuild.
+
+        A movement that follows the compliant M3 starts a little away from its
+        preplanned first waypoint, because compliance settles wherever contact
+        allows. That drift is usually small -- a degree or two -- and throwing
+        away a good preplanned path over it is wasteful.
+
+        So: interpolate a straight joint-space line from the live conf to the
+        preplanned path's first waypoint, spaced at ``FM_JOINT_RESOLUTION``, and
+        collision-check it (densely, at ``FM_VALIDATION_STEP_RAD``, via the same
+        validator the full planner is gated on). If it is clear, that line is
+        prepended to the preplanned path as a "patch" and the whole thing is
+        returned as one trajectory -- so the joint-value preview plot and the
+        traj-viz scrub show the patch and the original path as a single motion.
+
+        A straight line is only safe over a SHORT distance in free space, which
+        is exactly the case this handles. It is deliberately not a planner: when
+        the line is blocked this returns None and the caller falls back to a
+        full replan (stage 2).
+
+        Args:
+            mv: The movement carrying the preplanned ``trajectory``.
+            role (str): ``'M4'`` etc., for the log lines.
+
+        Returns:
+            JointTrajectory | None: The patched trajectory, the untouched
+            preplanned one when no patch is needed, or None when there is no
+            preplanned path or the bridge is blocked (caller must replan).
+        """
+        preplanned = path_12_from_joint_trajectory(getattr(mv, 'trajectory', None))
+        if not preplanned:
+            print(f"[{role}] no preplanned trajectory to patch; full replan.")
+            return None
+
+        live = self._live_arm_conf_12()
+        start = np.asarray(preplanned[0], dtype=float)
+        gap = float(np.abs(live - start).max())
+        if gap <= FM_PATCH_TOLERANCE_RAD:
+            self.get_logger().info(
+                f"[{role}] arms are already at the preplanned start "
+                f"(max {np.degrees(gap):.3f} deg); keeping it unchanged.")
+            return mv.trajectory
+
+        # Waypoints at the planning resolution; the last interpolation step IS
+        # preplanned[0], so it is left to the preplanned path to supply.
+        n_steps = max(1, int(np.ceil(gap / FM_JOINT_RESOLUTION)))
+        patch = [live + (start - live) * (k / n_steps) for k in range(n_steps)]
+
+        print(f"[{role}] stage 1: bridging {np.degrees(gap):.2f} deg from the live "
+              f"arms to the preplanned start with {len(patch)} waypoint(s) at "
+              f"{FM_JOINT_RESOLUTION} rad; collision-checking...")
+        # Validate the straight segment itself -- densely, and it names whatever
+        # blocks it. The preplanned tail is NOT re-checked here: keeping it as
+        # planned is the whole point of this stage.
+        verdict = self._validate_free_planned_path(mv, [live, start])
+        if not verdict['ok']:
+            self.get_logger().warn(
+                f"[{role}] stage 1 FAILED: the straight line to the preplanned "
+                f"start is blocked by {verdict['bodies']}. Falling back to a "
+                f"full replan.")
+            return None
+
+        patched = patch + [np.asarray(q, dtype=float) for q in preplanned]
+        self.get_logger().info(
+            f"[{role}] stage 1 OK: patched trajectory is {len(patched)} waypoints "
+            f"({len(patch)} patch + {len(preplanned)} preplanned). The patch is "
+            f"waypoints 0..{len(patch) - 1} of the preview.")
+        return joint_trajectory_from_path(patched)
+
+    def _resync_start_state_to_live(self, mv, role):
+        """Point a free movement's start_state at where the arms ACTUALLY are.
+
+        Both free movements are re-planned against the live robot, for the same
+        reason but from different causes:
+
+          M0  the operator may have jogged the arms since 'Load Movement'.
+          M4  M3 ran under the COMPLIANCE controller, which settles wherever the
+              contact lets it -- so the real end conf is never exactly M3's
+              planned end. That planned end is what the chain propagated into
+              M4.start_state, so planning M4 from it produces a path whose first
+              waypoint the robot is not at. Executing that makes the arms snap
+              to the first point at trajectory speed.
+
+        Without this, pressing 'Plan Movement' again does NOT help: the planner
+        keeps starting from the stale propagated conf, so the gap survives every
+        replan.
+
+        Args:
+            mv: The movement whose ``start_state`` is resynced in place.
+            role (str): ``'M0'`` or ``'M4'``, for the log lines.
+
+        Returns:
+            None.
+        """
+        before = None
+        if mv.start_state is not None and mv.start_state.robot_configuration is not None:
+            before = vec12_from_conf(mv.start_state.robot_configuration)
+        self._inject_live_conf_into_state(mv.start_state)
+        if before is not None:
+            after = vec12_from_conf(mv.start_state.robot_configuration)
+            drift = float(np.abs(np.asarray(after) - np.asarray(before)).max())
+            print(f"[{role}] start_state resynced to the live arms "
+                  f"(max joint drift from the propagated conf: "
+                  f"{np.degrees(drift):.2f} deg).")
+        try:
+            self.cfab.planner.set_robot_cell_state(mv.start_state)
+        except Exception as e:
+            print(f"[{role}] WARN: cfab set_robot_cell_state after live-conf "
+                  f"resync failed: {e}")
 
     def _plan_M1_dispatch(self, mv):
         """Constrained dual-arm (bar held): state-based task-space RRT.
@@ -4278,9 +4406,25 @@ class HuskyMonitor(Node):
                 and m2.start_state.robot_configuration is not None):
             goal_conf = m2.start_state.robot_configuration
             print("[M1] goal_conf <- authored M2 start conf (wrap-safe branch).")
+        # Home carry anchor selection from the GUI slider. Read the widget's
+        # live position rather than trusting the cached index: a slider rebuilt
+        # by reset_ui can miss the next drag's on-change callback (same hazard
+        # as bar_action_file_slider in load_bar_action_file).
+        sld = getattr(self, 'm1_home_anchor_slider', None)
+        if sld is not None:
+            v = sld.value
+            if v is not None:
+                self._m1_home_anchor_idx = int(round(float(v)))
+        anchor_idx = max(0, min(int(self._m1_home_anchor_idx),
+                                len(M1_HOME_ANCHOR_CHOICES) - 1))
+        # Index 0 = 'all' = None for the planner (sample every anchor).
+        home_anchor = None if anchor_idx == 0 else M1_HOME_ANCHOR_CHOICES[anchor_idx]
+        if home_anchor is not None:
+            print(f"[M1] home anchor override: {home_anchor}")
         # Multi-start: when a run fails, retry with a re-seeded derived
         # start and a widened bar sweep box (hard scenes like B226 need a
-        # different home bar pose to find a corridor).
+        # different home bar pose to find a corridor). The anchor selection
+        # stays fixed across retries (it composes with the widened box).
         start_retries = 3
         path = info = None
         for retry_idx in range(start_retries):
@@ -4304,6 +4448,7 @@ class HuskyMonitor(Node):
                     rotation_res=CDFM_ROTATION_RES,
                     max_time=120.0,
                     derive_start=True,
+                    start_home_anchor=home_anchor,
                     **extra,
                 )
             if path is not None:
@@ -4587,18 +4732,35 @@ class HuskyMonitor(Node):
             )
 
     def _plan_M4_dispatch(self, mv):
-        """Free dual-arm from M3 end -> fixed home conf.
+        """Free dual-arm to the fixed home conf, starting from the LIVE arms.
 
         The action's authored M4 target is a placeholder; the known-good
         dual-arm home is used instead (matches headless_bar_action_planner).
+
+        M4 always follows the compliant M3, which settles wherever contact
+        allows -- so the conf M3 propagated into M4's start_state is never quite
+        where the arms are. Two stages handle that, cheapest first:
+
+          1. PATCH. Bridge the (usually small) drift with a collision-checked
+             straight line and keep the preplanned path behind it. Preserves a
+             known-good trajectory and costs no search.
+          2. REPLAN. Only if that line is blocked: resync to live and plan the
+             whole movement again, gated on the dense swept check.
+
+        Returns:
+            JointTrajectory | None: None when both stages fail.
         """
-        if mv.start_state.robot_configuration is None:
-            self.get_logger().warn("M4: missing start_state.robot_configuration.")
-            return None
+        patched = self._patch_preplanned_to_live(mv, 'M4')
+        if patched is not None:
+            return patched
+
         # * Wrap the fixed home 12-vec in a compas Configuration so the tamp
         # helper's dict-indexed extraction works (raw numpy 12-vecs raise
         # IndexError on string joint-name indexing).
         goal_conf = conf_from_12vec(HUSKY_DUAL_ARM_HOME_CONF_12)
+        # No robot_configuration check first: the resync fills it from the live
+        # arms, so an absent or stale propagated conf is not a blocker.
+        self._resync_start_state_to_live(mv, 'M4')
         return self._plan_free_and_validate(mv, 'M4', goal_conf, max_time=30.0)
 
     def ik_live_base_for_selected_movement(self):
@@ -5758,6 +5920,16 @@ class HuskyMonitor(Node):
                     integer=True,
                 )
             self.buttons.append(Button('Load Movement', self.load_selected_movement))
+            # M1 derived-start carry anchor selector (see M1_HOME_ANCHOR_CHOICES).
+            # Fixed 0..3 range -> always >=2 entries, so the 1-entry segfault
+            # guard the sliders above need does not apply here.
+            self.m1_home_anchor_slider = Slider(
+                "M1 home anchor (0:all,1:horiz,2:vert,3:back)",
+                lambda v: setattr(self, '_m1_home_anchor_idx', int(round(float(v)))),
+                0, len(M1_HOME_ANCHOR_CHOICES) - 1,
+                int(self._m1_home_anchor_idx),
+                integer=True,
+            )
             self.buttons.append(Button('Plan Movement', self.plan_selected_movement))
             self.buttons.append(Button('Load Movement Trajectory', self.load_selected_movement_trajectory))
             # * Button 1: plan the M1->M2->M3->M0->M4 chain in one click,
@@ -6168,6 +6340,8 @@ class HuskyMonitor(Node):
                 self.bar_action_file_slider.update()
             if hasattr(self, 'bar_movement_slider') and self.bar_movement_slider:
                 self.bar_movement_slider.update()
+            if hasattr(self, 'm1_home_anchor_slider') and self.m1_home_anchor_slider:
+                self.m1_home_anchor_slider.update()
 
         if not self.USE_MOCAP:
             pass

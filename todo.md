@@ -69,3 +69,7 @@ a few bugs appear:
 
 Some more minor features in
 https://docs.google.com/document/d/1-8V-2IJrsMKVTEdbqOqySHhi9E8WaYV66_rYWLbLgUI/edit?tab=t.0
+
+# new canonical bar anchor pose for M1 start conf sampling
+
+- review api.py: _ssik_pair_goal_branch_with_home
