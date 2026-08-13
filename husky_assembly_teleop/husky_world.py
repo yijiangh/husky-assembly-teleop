@@ -1527,13 +1527,11 @@ def servo_to_movement_start_live(monitor, max_iters=8, pos_tol_mm=0.2,
         # planned path) until the operator clicks 'Confirm Servo Exec'. Later
         # iterations are short near-target corrections and run unattended.
         if it == 1 and confirm_first_iter:
-            monitor._servo_exec_confirmed = False
-            monitor.get_logger().info(
+            yield from wait_for_operator_confirm(
+                monitor,
                 "[servo] First move planned. Preview it with the traj viz slider, "
-                "then click 'Confirm Servo Exec' to execute (later iterations "
+                "then click 'Confirm Exec' to execute (later iterations "
                 "run automatically).")
-            while not getattr(monitor, '_servo_exec_confirmed', False) and not _aborted():
-                yield
 
         # Abort requested during the confirm pause (or otherwise): stop before
         # sending the first move to the robot.
@@ -1567,14 +1565,13 @@ def servo_to_movement_start_live(monitor, max_iters=8, pos_tol_mm=0.2,
             needs_confirm = (n_waypoints > 10 or max_delta_deg > 5.0)
             if needs_confirm and (it > 1 or not confirm_first_iter):
                 # Iteration > 1 OR first iter without confirm: safeguard pause
-                monitor._servo_exec_confirmed = False
-                monitor.get_logger().warn(
+                yield from wait_for_operator_confirm(
+                    monitor,
                     f'[servo] SAFEGUARD: large/long motion detected iter {it}: '
                     f'{n_waypoints} waypoints, max joint delta {max_delta_deg:.1f}°. '
-                    f'Preview with slider, then click "Confirm Servo Exec" to proceed.'
+                    f'Preview with the slider, then click "Confirm Exec" to proceed.',
+                    warn=True,
                 )
-                while not getattr(monitor, '_servo_exec_confirmed', False) and not _aborted():
-                    yield
                 if _aborted():
                     break
 
@@ -2630,6 +2627,13 @@ def switch_dual_arm_controller(monitor, to_ctrl, timeout_s=CONTROLLER_SWITCH_TIM
         failure signals above, each of which is logged as an error first.
     """
     hi: HuskyRobotInterface = monitor.huskies[monitor.selected_robot_id].interface
+    # Already there: say so without touching controller_manager. A switch whose
+    # deactivate and activate name the SAME controller is rejected under STRICT,
+    # so asking anyway would turn "nothing to do" into a spurious failure.
+    # Callers rely on this to cheaply ensure a controller (e.g. the joint
+    # controller before M2's rigid chunk) without knowing what is active.
+    if hi.active_controller[0] == to_ctrl and hi.active_controller[1] == to_ctrl:
+        return True
     sent = [hi.switch_controller(hi.active_controller[i], to_ctrl, i) for i in (0, 1)]
     if not all(sent):
         monitor.get_logger().error(
@@ -2864,10 +2868,407 @@ def kissing_probe_once(monitor, neutral_bar_pose, starting_bar_pose, offset, fil
             'joint trajectory.')
 
 
+# A rigid approach shorter than this is not worth switching controllers for.
+MIN_RIGID_CHUNK_MM = 0.5
+
+
+def _tool0_points_along_path(monitor, path12):
+    """FK both tool0 origins at every waypoint, on the ghost robot.
+
+    Uses ``monitor.goal_model.robot`` -- the same robot the compliant executor
+    FKs its endpoint poses on -- and restores its joint positions afterwards so
+    the preview is not disturbed.
+
+    Args:
+        monitor: The HuskyMonitor node.
+        path12 (Sequence): Waypoints, each a 12-vec (left 6 then right 6).
+
+    Returns:
+        tuple[list, list]: ``(left_points, right_points)``, each a list of
+        3-element numpy arrays in world coordinates.
+    """
+    ghost = monitor.goal_model.robot
+    left_joints = pp.joints_from_names(ghost, HUSKY_DUAL_UR5e_JOINT_NAMES[0])
+    right_joints = pp.joints_from_names(ghost, HUSKY_DUAL_UR5e_JOINT_NAMES[1])
+    left_tool0 = pp.link_from_name(ghost, 'left_ur_arm_tool0')
+    right_tool0 = pp.link_from_name(ghost, 'right_ur_arm_tool0')
+    saved_left = pp.get_joint_positions(ghost, left_joints)
+    saved_right = pp.get_joint_positions(ghost, right_joints)
+    lefts, rights = [], []
+    try:
+        for q in path12:
+            q = np.asarray(q, dtype=float)
+            pp.set_joint_positions(ghost, left_joints, q[:6])
+            pp.set_joint_positions(ghost, right_joints, q[6:])
+            lefts.append(np.array(pp.point_from_pose(pp.get_link_pose(ghost, left_tool0))))
+            rights.append(np.array(pp.point_from_pose(pp.get_link_pose(ghost, right_tool0))))
+    finally:
+        pp.set_joint_positions(ghost, left_joints, saved_left)
+        pp.set_joint_positions(ghost, right_joints, saved_right)
+    return lefts, rights
+
+
+def split_path_by_distance_to_goal(monitor, path12, split_mm, from_start=False):
+    """Cut a linear path where the tool is ``split_mm`` short of its final pose.
+
+    M2 is executed in two chunks -- rigid position control for the approach, then
+    compliance for the last stretch (see execute_planned_trajectory_compliant).
+    This finds the handover point, measured as straight-line tool0 distance from
+    the FINAL waypoint (so the operator's slider reads "how far from seated do I
+    give the screw control", independent of how long the movement is).
+
+    Distance is taken as the MAX over the two arms. They travel together on a
+    bar-held linear move, but nothing here depends on that.
+
+    ! Makes no assumption about even waypoint spacing or a straight path -- the
+    ! per-waypoint distances are measured by FK and the split is interpolated
+    ! between whichever two waypoints bracket it.
+
+    Args:
+        monitor: The HuskyMonitor node.
+        path12 (Sequence): Planned waypoints, each a 12-vec.
+        split_mm (float): Where to cut, in millimetres. Measured from the GOAL
+            by default (M2: "the last N mm are compliant"); from the START when
+            ``from_start`` is set (M3: "the first N mm are compliant").
+        from_start (bool): Interpret ``split_mm`` from the start of the path.
+
+    Returns:
+        tuple: ``(leading_path12, trailing_path12, at_goal_mm, total_mm)``.
+        The two paths share the interpolated handover configuration so they join
+        without a gap. ``leading_path12`` is ``None`` when the cut leaves no
+        meaningful leading chunk -- the caller then runs a single mode the whole
+        way. ``at_goal_mm`` is the achieved distance-to-goal at the handover.
+    """
+    path12 = [np.asarray(q, dtype=float) for q in (path12 or [])]
+    if len(path12) < 2:
+        return None, 0.0, 0.0
+
+    lefts, rights = _tool0_points_along_path(monitor, path12)
+    # Distance from each waypoint to the FINAL one, per arm, worst case.
+    dists_mm = [
+        max(float(np.linalg.norm(lefts[-1] - lefts[i])),
+            float(np.linalg.norm(rights[-1] - rights[i]))) * 1000.0
+        for i in range(len(path12))
+    ]
+    total_mm = dists_mm[0]
+
+    # `split_mm` is quoted by the caller either as a distance from the goal (M2:
+    # "the last 10 mm are compliant") or from the start (M3: "the first 10 mm
+    # are compliant"). Convert the latter so everything below works in one
+    # convention -- distance-to-goal at the handover.
+    at_goal_mm = (total_mm - split_mm) if from_start else split_mm
+
+    # Leave the leading chunk out entirely unless it is worth running. The
+    # margin also absorbs FK round-off: a slider set to exactly the movement's
+    # travel would otherwise produce a degenerate sub-micron leading chunk
+    # instead of the single-mode behaviour the operator asked for.
+    if at_goal_mm >= total_mm - MIN_RIGID_CHUNK_MM:
+        print(f"[split] requested {split_mm:.1f} mm leaves no meaningful leading "
+              f"chunk within the movement's {total_mm:.1f} mm travel; "
+              f"running one mode the whole way.")
+        return None, None, total_mm, total_mm
+    if at_goal_mm <= 0.0:
+        return list(path12), None, 0.0, total_mm
+
+    # First waypoint (from the start) that is already CLOSER than at_goal_mm;
+    # the handover lies between it and the one before.
+    idx = next((i for i, d in enumerate(dists_mm) if d <= at_goal_mm), len(path12) - 1)
+    if idx == 0:
+        return None, None, total_mm, total_mm
+    d_before, d_after = dists_mm[idx - 1], dists_mm[idx]
+    span = d_before - d_after
+    # Fraction along [idx-1, idx] where the distance-to-goal equals at_goal_mm.
+    frac = 0.0 if span <= 1e-9 else (d_before - at_goal_mm) / span
+    frac = min(max(frac, 0.0), 1.0)
+    split_conf = path12[idx - 1] + (path12[idx] - path12[idx - 1]) * frac
+
+    leading = [q.copy() for q in path12[:idx]] + [split_conf]
+    # The trailing chunk restarts AT the handover so the two join without a gap.
+    trailing = [split_conf.copy()] + [q.copy() for q in path12[idx:]]
+    # Report what we actually achieved, not what was asked for.
+    split_l, split_r = _tool0_points_along_path(monitor, [split_conf])
+    actual_mm = max(float(np.linalg.norm(lefts[-1] - split_l[0])),
+                    float(np.linalg.norm(rights[-1] - split_r[0]))) * 1000.0
+    return leading, trailing, actual_mm, total_mm
+
+
+# Default handover distance for M2, in millimetres from the assembled pose.
+# The monitor owns the live value (slider); this is the fallback.
+M2_COMPLIANT_SPLIT_MM_DEFAULT = 10.0
+
+
+def _live_tool0_poses(monitor):
+    """Both tool0 world poses at the LIVE arm configuration.
+
+    FK on the ghost robot at ``hi.arm_joint_pose``, restoring its joints
+    afterwards. Used at the rigid->compliant handover so the compliant segment
+    starts where the arm actually is.
+
+    Returns:
+        tuple: ``(left_pose, right_pose)`` as pybullet (point, quat) pairs.
+    """
+    hi: HuskyRobotInterface = monitor.huskies[monitor.selected_robot_id].interface
+    ghost = monitor.goal_model.robot
+    left_joints = pp.joints_from_names(ghost, HUSKY_DUAL_UR5e_JOINT_NAMES[0])
+    right_joints = pp.joints_from_names(ghost, HUSKY_DUAL_UR5e_JOINT_NAMES[1])
+    saved_left = pp.get_joint_positions(ghost, left_joints)
+    saved_right = pp.get_joint_positions(ghost, right_joints)
+    try:
+        pp.set_joint_positions(ghost, left_joints, np.asarray(hi.arm_joint_pose[0], dtype=float))
+        pp.set_joint_positions(ghost, right_joints, np.asarray(hi.arm_joint_pose[1], dtype=float))
+        return (pp.get_link_pose(ghost, pp.link_from_name(ghost, 'left_ur_arm_tool0')),
+                pp.get_link_pose(ghost, pp.link_from_name(ghost, 'right_ur_arm_tool0')))
+    finally:
+        pp.set_joint_positions(ghost, left_joints, saved_left)
+        pp.set_joint_positions(ghost, right_joints, saved_right)
+
+
+def _execute_rigid_chunk(monitor, rigid_path12, t_rigid, on_tick=None,
+                         stall_exits=True, label='M2'):
+    """Run M2's approach under the joint controller, ending early on stall.
+
+    Sends ``rigid_path12`` as one dual-arm joint trajectory and waits it out.
+
+    ! Waits by TIME, not by ``hi.is_arm_executing``: that flag clears after only
+    ! ARM_NOT_EXECUTING_TIME (1 s) of no joint change, so a controller slow to
+    ! start trips it and we would hand over to compliance mid-approach.
+
+    If BOTH joint motors report STALLED the wait returns immediately: the thread
+    bit earlier than the nominal split, and the caller's switch to compliance
+    then deactivates the joint controller, abandoning the rest of the
+    trajectory. That controller switch IS the cut-short mechanism -- the topic
+    trajectory interface has no cancel.
+
+    Args:
+        monitor: The HuskyMonitor node.
+        rigid_path12 (Sequence): Waypoints for the chunk, each a 12-vec.
+        t_rigid (float): Duration for the chunk, seconds.
+        on_tick (callable): Optional ``fn(hi, robot)`` called every tick, so the
+            wrench recording spans this chunk too.
+        stall_exits (bool): End early when both joint motors report STALLED.
+            True for M2's approach (the thread bit early). M3 must pass False:
+            its joint motor is not driving, so a STALLED flag left over from the
+            preceding M2 would abort the retreat on its very first tick.
+        label (str): Role tag for the log lines.
+
+    Yields:
+        None: One yield per monitor tick.
+
+    Returns:
+        bool: True if the chunk ran (or was legitimately skipped); False if the
+        joint controller could not be secured, in which case nothing was sent.
+    """
+    hi: HuskyRobotInterface = monitor.huskies[monitor.selected_robot_id].interface
+    robot = monitor.huskies[monitor.selected_robot_id].object.robot
+
+    if len(rigid_path12) < 2:
+        # to_trajectory_msg divides by (len - 1); a single waypoint means the
+        # arms are already at the handover, so there is simply nothing to run.
+        print(f'[{label}] rigid chunk is a single waypoint; nothing to run.')
+        return True
+
+    # The arms are normally already under the joint controller (M1 was a joint
+    # move, and every compliant exec restores it), so this is usually a no-op --
+    # switch_dual_arm_controller returns True without touching controller_manager.
+    if not (yield from switch_dual_arm_controller(
+            monitor, 'scaled_joint_trajectory_controller')):
+        monitor.get_logger().error(
+            f'[{label}] cannot run the rigid chunk: the arms are NOT under '
+            'scaled_joint_trajectory_controller. Aborting before any motion.')
+        return False
+
+    chunk = [
+        (np.asarray([q[:6] for q in rigid_path12], dtype=float), None, t_rigid, None),
+        (np.asarray([q[6:] for q in rigid_path12], dtype=float), None, t_rigid, None),
+    ]
+    print(f'[{label}] rigid chunk: {len(rigid_path12)} waypoints over {t_rigid:.1f}s')
+    hi.send_dual_arm_cmd(chunk)
+
+    tick_dt = 0.05  # matches the 20 Hz monitor tick that pumps this task
+    deadline = time.time() + t_rigid + tick_dt
+    while time.time() < deadline:
+        if on_tick is not None:
+            on_tick(hi, robot)
+        if stall_exits and (_scaffolding_joint_motor_stalled(hi, 0)
+                            and _scaffolding_joint_motor_stalled(hi, 1)):
+            monitor.get_logger().info(
+                '[M2] both joint motors STALLED during the rigid approach -- the '
+                'thread bit early; handing over to compliance now.')
+            return True
+        yield
+    return True
+
+
+# How long a non-M2 linear move (i.e. M3) keeps republishing its END pose after
+# the nominal motion time, so both arms can actually converge under compliance.
+#
+# ! Without this the loop stopped PROBE_END_WAIT_TIME (1 s) after the nominal
+# ! time and the finally immediately restored the joint controller, which HOLDS
+# ! wherever it activates -- so whichever arm was still lagging got frozen short.
+# ! That is how M3 ended with one arm visibly less retracted than the other:
+# ! nothing here ever checked arrival, it only ran a clock.
+# ! Currently 0: hardware showed the end-of-compliant-chunk drift is gravity SAG
+# ! (the tools move sideways OFF the retreat line -- travelled 6.3 mm yet 9.1 mm
+# ! from the goal), not a failure to converge along it. Holding the end pose
+# ! longer does not fix that, so the settle buys nothing; the drift is handled
+# ! by replanning the following chunk from where the arms actually are. Raise
+# ! this again if a move ever needs time to settle ALONG its own path.
+LINEAR_SETTLE_SECONDS = 0.0
+
+# Both arms within this of their commanded end pose counts as arrived, which
+# ends the settle early instead of always burning the full window.
+LINEAR_ARRIVAL_TOL_M = 0.002
+
+
+def wait_for_operator_confirm(monitor, prompt, warn=False):
+    """Hold here, yielding, until the operator confirms or cancels.
+
+    Yielding rather than blocking is what keeps the monitor tick alive, so the
+    traj-viz scrub and the DPG plots stay interactive while the operator
+    inspects whatever is about to run. Clears any stale confirmation first so a
+    leftover click cannot wave through the next pause.
+
+    Buttons: 'Confirm Exec' sets ``_servo_exec_confirmed``; 'Cancel Exec' sets
+    ``_servo_abort``.
+
+    Args:
+        monitor: The HuskyMonitor node.
+        prompt (str): What the operator should look at before confirming.
+        warn (bool): Log at warn level (a safeguard pause) rather than info.
+
+    Yields:
+        None: One yield per monitor tick while waiting.
+
+    Returns:
+        bool: True if confirmed, False if cancelled.
+    """
+    monitor._servo_exec_confirmed = False
+    (monitor.get_logger().warn if warn else monitor.get_logger().info)(prompt)
+    while not getattr(monitor, '_servo_exec_confirmed', False):
+        if getattr(monitor, '_servo_abort', False):
+            monitor.get_logger().warn('Cancelled by operator; nothing sent.')
+            return False
+        yield
+    return True
+
+
+def _tool0_poses_at_conf(monitor, conf12):
+    """Both tool0 world poses with the ghost robot at ``conf12``.
+
+    Args:
+        monitor: The HuskyMonitor node.
+        conf12 (Sequence[float]): 12-vec, left arm then right.
+
+    Returns:
+        tuple: ``(left_pose, right_pose)`` as pybullet (point, quat) pairs.
+    """
+    ghost = monitor.goal_model.robot
+    left_joints = pp.joints_from_names(ghost, HUSKY_DUAL_UR5e_JOINT_NAMES[0])
+    right_joints = pp.joints_from_names(ghost, HUSKY_DUAL_UR5e_JOINT_NAMES[1])
+    saved_left = pp.get_joint_positions(ghost, left_joints)
+    saved_right = pp.get_joint_positions(ghost, right_joints)
+    try:
+        q = np.asarray(conf12, dtype=float)
+        pp.set_joint_positions(ghost, left_joints, q[:6])
+        pp.set_joint_positions(ghost, right_joints, q[6:])
+        return (pp.get_link_pose(ghost, pp.link_from_name(ghost, 'left_ur_arm_tool0')),
+                pp.get_link_pose(ghost, pp.link_from_name(ghost, 'right_ur_arm_tool0')))
+    finally:
+        pp.set_joint_positions(ghost, left_joints, saved_left)
+        pp.set_joint_positions(ghost, right_joints, saved_right)
+
+
+def _tool0_pose_errors(monitor, cartesian_trajectories):
+    """Per-arm progress along the commanded linear segment, right now.
+
+    Args:
+        monitor: The HuskyMonitor node.
+        cartesian_trajectories: The ``[[start, end, t_move, t_wait], ...]`` pair
+            handed to ``execute_cartesian_linear_dual``.
+
+    Returns:
+        list[dict]: One entry per arm with ``travel_mm`` (the commanded
+        distance), ``achieved_mm`` (how far it actually got from the start) and
+        ``remaining_mm`` (distance still to the commanded end pose).
+    """
+    now_poses = _live_tool0_poses(monitor)
+    out = []
+    for now, traj in zip(now_poses, cartesian_trajectories):
+        start = np.asarray(pp.point_from_pose(traj[0]), dtype=float)
+        end = np.asarray(pp.point_from_pose(traj[1]), dtype=float)
+        here = np.asarray(pp.point_from_pose(now), dtype=float)
+        out.append({
+            'travel_mm': float(np.linalg.norm(end - start)) * 1000.0,
+            'achieved_mm': float(np.linalg.norm(here - start)) * 1000.0,
+            'remaining_mm': float(np.linalg.norm(end - here)) * 1000.0,
+        })
+    return out
+
+
+def _both_arms_arrived(monitor, cartesian_trajectories, tol_m=LINEAR_ARRIVAL_TOL_M):
+    """True when BOTH tool0s are within ``tol_m`` of their commanded end pose."""
+    try:
+        return all(e['remaining_mm'] <= tol_m * 1000.0
+                   for e in _tool0_pose_errors(monitor, cartesian_trajectories))
+    except Exception:
+        # Never let an FK hiccup end the motion early -- keep driving.
+        return False
+
+
+def _hold_until_joint_motors_stall(monitor, timeout_s, on_tick=None):
+    """Tick in place until both joint motors stall, or the ceiling expires.
+
+    Used by M2's rigid-only mode: after the joint trajectory finishes, the
+    controller holds its last waypoint on its own, so all this has to do is keep
+    the task alive (and the wrench recording running) while the screw tightens.
+
+    Args:
+        monitor: The HuskyMonitor node.
+        timeout_s (float): Hard ceiling, for firmware that never reports stall.
+        on_tick (callable): Optional ``fn(hi, robot)`` called every tick.
+
+    Yields:
+        None: One yield per monitor tick.
+    """
+    hi: HuskyRobotInterface = monitor.huskies[monitor.selected_robot_id].interface
+    robot = monitor.huskies[monitor.selected_robot_id].object.robot
+    deadline = time.time() + float(timeout_s)
+    while time.time() < deadline:
+        if on_tick is not None:
+            on_tick(hi, robot)
+        if (_scaffolding_joint_motor_stalled(hi, 0)
+                and _scaffolding_joint_motor_stalled(hi, 1)):
+            monitor.get_logger().info(
+                '[M2] both joint motors STALLED; rigid-only hold complete.')
+            return
+        yield
+    monitor.get_logger().warn(
+        f'[M2] rigid-only hold hit its {timeout_s:.0f}s ceiling without both '
+        f'joint motors reporting STALLED.')
+
+
 def execute_planned_trajectory_compliant(monitor):
-    """Execute the loaded planned trajectory's endpoints as a single linear
-    cartesian segment per arm under `cartesian_compliance_controller`. Only
-    M2 / M3 movements are accepted (linear in TCP space).
+    """Execute the loaded M2/M3 movement as linear cartesian motion.
+
+    M3 (retreat) runs entirely under ``cartesian_compliance_controller``, as one
+    linear segment between the planned path's endpoints.
+
+    M2 (mate) is SPLIT in two, because running it wholly compliant does not
+    work: the instant compliance takes over, the arms sag under gravity and pull
+    the bar off the target far enough that the screw cannot catch its first
+    thread. So:
+
+      1. RIGID chunk -- the approach, under ``scaled_joint_trajectory_controller``,
+         following the planned joint waypoints. Position control holds the bar
+         exactly on the planned line, and the joint motor (already tightening) can
+         catch its first thread against a bar that is where it should be.
+      2. COMPLIANT chunk -- the last ``monitor.m2_compliant_split_mm`` millimetres,
+         where the screw needs the arms free to pull the bar in.
+
+    The handover point is the operator's slider, measured as tool0 distance from
+    the final assembled pose. It moves to compliance early if both joint motors
+    stall during the rigid chunk (the thread bit sooner than expected) -- driving
+    position control against an engaged screw is exactly what this split avoids.
 
     Safety contract: the live arms must already be at the planned start conf;
     otherwise `send_arm_cmd_cartesian` rejects targets (>5 cm from current TCP)
@@ -2916,6 +3317,81 @@ def execute_planned_trajectory_compliant(monitor):
 
     t_total = float(monitor.trajectory_time) or 5.0
 
+    # M2 only: work out where to hand over from rigid tracking to compliance.
+    # rigid_path is None for M3, and for an M2 whose split distance covers the
+    # whole movement -- both of which then run exactly as they always did.
+    rigid_path, split_mm, total_mm = None, 0.0, 0.0
+    t_rigid = 0.0
+    # Rigid-only mode (operator toggle): run ALL of M2 under the joint
+    # controller and never engage compliance, holding the final pose while the
+    # screw tightens. The comparison baseline for the split, and the fallback if
+    # compliance misbehaves. M3 ignores this -- it is compliant by nature.
+    rigid_only = bool(role == 'M2'
+                      and getattr(monitor, 'm2_exec_rigid_only', False))
+    if rigid_only:
+        rigid_path = [np.concatenate([np.asarray(l, dtype=float),
+                                      np.asarray(r, dtype=float)])
+                      for l, r in zip(left_path, right_path)]
+        t_rigid = t_total
+        monitor.get_logger().info(
+            f"[M2] RIGID-ONLY mode: the whole movement runs under "
+            f"scaled_joint_trajectory_controller ({len(rigid_path)} waypoints, "
+            f"{t_rigid:.1f}s), then holds position until both joint motors "
+            f"stall. Compliance is never engaged.")
+    elif role == 'M2':
+        requested_mm = float(getattr(monitor, 'm2_compliant_split_mm',
+                                     M2_COMPLIANT_SPLIT_MM_DEFAULT))
+        path12 = [np.concatenate([np.asarray(l, dtype=float),
+                                  np.asarray(r, dtype=float)])
+                  for l, r in zip(left_path, right_path)]
+        rigid_path, _m2_tail, split_mm, total_mm = split_path_by_distance_to_goal(
+            monitor, path12, requested_mm)
+        if rigid_path is not None:
+            rigid_mm = total_mm - split_mm
+            # Same tool speed in both chunks: share the budget by distance.
+            t_rigid = t_total * (rigid_mm / total_mm) if total_mm > 0 else 0.0
+            t_total = max(t_total - t_rigid, 0.5)
+            monitor.get_logger().info(
+                f"[M2] split at {split_mm:.1f} mm from the assembled pose: "
+                f"{rigid_mm:.1f} mm RIGID ({len(rigid_path)} waypoints, "
+                f"{t_rigid:.1f}s) then {split_mm:.1f} mm COMPLIANT ({t_total:.1f}s).")
+            if split_mm <= 0.0:
+                monitor.get_logger().warn(
+                    "[M2] split distance is 0: the whole move runs rigid and the "
+                    "screw never gets compliant control. Raise the slider unless "
+                    "this is deliberate.")
+
+    # M3 is the SAME split MIRRORED. The compliant zone is the stretch nearest
+    # the ASSEMBLED pose in both movements -- for M2 that is the end of the
+    # motion, for M3 (the retreat) it is the beginning. So M3 runs compliant
+    # first, while the bar is still engaged and the tool needs to be free to
+    # break out, then hands to rigid position control for the clear run back.
+    # Same slider, same number of millimetres.
+    m3_rigid_tail = None
+    t_m3_rigid = 0.0
+    if role == 'M3':
+        requested_mm = float(getattr(monitor, 'm2_compliant_split_mm',
+                                     M2_COMPLIANT_SPLIT_MM_DEFAULT))
+        path12 = [np.concatenate([np.asarray(l, dtype=float),
+                                  np.asarray(r, dtype=float)])
+                  for l, r in zip(left_path, right_path)]
+        compliant_path, trailing, at_goal_mm, total_mm = split_path_by_distance_to_goal(
+            monitor, path12, requested_mm, from_start=True)
+        if compliant_path is not None and trailing is not None:
+            compliant_mm = total_mm - at_goal_mm
+            # The compliant chunk now ends at the handover, not at the retreated
+            # pose, so re-aim the cartesian segment there.
+            L_end, R_end = _tool0_poses_at_conf(monitor, compliant_path[-1])
+            t_compliant = t_total * (compliant_mm / total_mm) if total_mm > 0 else t_total
+            t_m3_rigid = max(t_total - t_compliant, 0.5)
+            t_total = max(t_compliant, 0.5)
+            m3_rigid_tail = trailing
+            monitor.get_logger().info(
+                f"[M3] split at {compliant_mm:.1f} mm from the assembled pose: "
+                f"{compliant_mm:.1f} mm COMPLIANT ({t_total:.1f}s) then "
+                f"{at_goal_mm:.1f} mm RIGID ({len(trailing)} waypoints, "
+                f"{t_m3_rigid:.1f}s).")
+
     # The M2 movement holds the end pose under compliance while the JOINT motor
     # tightens the screw against the scaffold; the loop must NOT terminate on
     # motion-time budget alone. Inflate t_wait so execute_linear_cartesian_move
@@ -2928,8 +3404,24 @@ def execute_planned_trajectory_compliant(monitor):
         should_continue_fn = lambda: not (
             _scaffolding_joint_motor_stalled(hi, 0) and _scaffolding_joint_motor_stalled(hi, 1))
     else:
-        t_wait = 0.0
-        should_continue_fn = None
+        # M3: keep republishing the end pose for a settle window so a lagging
+        # arm can catch up, and end it as soon as BOTH arms have arrived rather
+        # than always burning the whole window. Mirrors M2's structure, with
+        # "arrived" in place of "stalled" as the exit condition.
+        t_wait = LINEAR_SETTLE_SECONDS
+        # ! Anchor the nominal-motion deadline on the FIRST tick, not here: the
+        # ! controller switch runs in between and can take a second or more, so
+        # ! a deadline set now would open the settle gate mid-motion.
+        _motion = {}
+
+        def should_continue_fn():
+            if 'deadline' not in _motion:
+                _motion['deadline'] = time.time() + t_total
+                return True
+            if time.time() < _motion['deadline']:
+                return True    # still driving the nominal segment
+            # Settling: stop as soon as both arms are on their end pose.
+            return not _both_arms_arrived(monitor, cartesian_trajectories)
 
     cartesian_trajectories = [
         [L_start, L_end, t_total, t_wait],
@@ -2986,6 +3478,29 @@ def execute_planned_trajectory_compliant(monitor):
 
     switched_to_compliance = False
     try:
+        # --- Chunk 1: the rigid approach (M2 only) ---
+        if rigid_path is not None:
+            ran = yield from _execute_rigid_chunk(
+                monitor, rigid_path, t_rigid, on_tick=_record_wrench)
+            if not ran:
+                return
+            if rigid_only:
+                # No chunk 2. The joint controller holds the final waypoint, so
+                # just keep ticking (recording wrench) until the screw stalls or
+                # the ceiling expires; the finally below stops the motors.
+                yield from _hold_until_joint_motors_stall(
+                    monitor, HOLD_FOR_STALL_TIMEOUT_S, on_tick=_record_wrench)
+                return
+            # The arms are now at (or, on an early stall, short of) the split
+            # conf. Re-derive the compliant chunk's start from where they
+            # ACTUALLY are rather than from the planned split -- correct for
+            # both the early-stall cut-short and ordinary tracking error, and it
+            # keeps execute_linear_cartesian_move's lerp starting at the arm.
+            L_start, R_start = _live_tool0_poses(monitor)
+            cartesian_trajectories[0][0] = L_start
+            cartesian_trajectories[1][0] = R_start
+
+        # --- Chunk 2: the compliant phase (all of M3; M2's final split_mm) ---
         # wait until the switch is completely (yield will go back to top level monitor to get updated state)
         switched_to_compliance = yield from switch_dual_arm_controller(
             monitor,
@@ -3006,6 +3521,90 @@ def execute_planned_trajectory_compliant(monitor):
         yield from execute_cartesian_linear_dual(
             monitor, cartesian_trajectories, on_tick=_record_wrench,
             should_continue=should_continue_fn)
+
+        # Measure where compliance actually left each arm, BEFORE the finally
+        # restores the joint controller (which freezes whatever it finds). The
+        # motion is open-loop -- nothing else checks arrival -- so without this
+        # a short-retracted arm is only visible by eye in the viewer.
+        try:
+            errs = _tool0_pose_errors(monitor, cartesian_trajectories)
+            for side, e in zip(('L', 'R'), errs):
+                pct = (100.0 * e['achieved_mm'] / e['travel_mm']
+                       if e['travel_mm'] > 1e-9 else 100.0)
+                print(f"[{role}] {side} tool0: travelled {e['achieved_mm']:.1f} / "
+                      f"{e['travel_mm']:.1f} mm ({pct:.0f}%), "
+                      f"{e['remaining_mm']:.1f} mm short of the commanded end.")
+            worst = max(e['remaining_mm'] for e in errs)
+            spread = abs(errs[0]['achieved_mm'] - errs[1]['achieved_mm'])
+            if worst > LINEAR_ARRIVAL_TOL_M * 1000.0:
+                monitor.get_logger().warn(
+                    f"[{role}] arms did NOT reach the commanded end pose: worst "
+                    f"{worst:.1f} mm short, L/R differ by {spread:.1f} mm. The "
+                    f"joint controller is about to freeze them there.")
+        except Exception as exc:
+            print(f"[{role}] could not measure the final tool0 error: {exc}")
+
+        # --- Chunk 2 for M3: the rigid run back, once clear of the joint ---
+        if m3_rigid_tail is not None:
+            # Back under position control BEFORE replanning and previewing, so
+            # what the operator inspects is planned for, and will run under, the
+            # controller that is actually active.
+            if not (yield from switch_dual_arm_controller(
+                    monitor, 'scaled_joint_trajectory_controller')):
+                monitor.get_logger().error(
+                    '[M3] cannot start the retreat: the arms are NOT under '
+                    'scaled_joint_trajectory_controller. Nothing was commanded.')
+                return
+            switched_to_compliance = False   # the finally has nothing to restore
+
+            # Replan a straight line from where compliance ACTUALLY left the
+            # tools to the movement's authored goal frames.
+            tail = monitor.replan_linear_to_target_from_live(
+                monitor.current_movement, 'M3')
+            if tail is not None:
+                print(f'[M3] replanned retreat: {len(tail)} waypoints from the '
+                      f'live pose to the authored target frames.')
+            else:
+                # ! Falling back to the preplanned tail means the FIRST step is a
+                # ! jump from the drifted pose onto the planned line -- the fast
+                # ! motion this replan exists to remove. Say so plainly; the
+                # ! confirm pause below is what stops it happening unnoticed.
+                live12 = np.concatenate([
+                    np.asarray(hi.arm_joint_pose[0], dtype=float),
+                    np.asarray(hi.arm_joint_pose[1], dtype=float)])
+                tail = [live12] + [np.asarray(q, dtype=float) for q in m3_rigid_tail[1:]]
+                jump_deg = float(np.degrees(np.abs(
+                    np.asarray(tail[1]) - live12).max())) if len(tail) > 1 else 0.0
+                monitor.get_logger().error(
+                    f'[M3] replan failed -- FALLING BACK to the preplanned tail. '
+                    f'Its first step jumps {jump_deg:.1f} deg from where the arms '
+                    f'are now, which is the fast snap the replan was meant to '
+                    f'avoid. Inspect the preview carefully before confirming.')
+
+            # Show exactly what will run: the traj-viz scrub and the joint plot.
+            # ! Deliberately NOT via _accept_trajectory -- that does chain
+            # ! propagation and would overwrite mv.trajectory with this
+            # ! transient, execution-time replan.
+            monitor.set_arm_trajectory(
+                (np.asarray([q[:6] for q in tail], dtype=float), None, t_m3_rigid, None), 0)
+            monitor.set_arm_trajectory(
+                (np.asarray([q[6:] for q in tail], dtype=float), None, t_m3_rigid, None), 1)
+            monitor.show_planned_joint_values(
+                tail, label=f'{monitor.current_movement.movement_id} (retreat)')
+            monitor.set_to_show_traj_state()
+
+            if not (yield from wait_for_operator_confirm(
+                    monitor,
+                    f'[M3] retreat ready: {len(tail)} waypoints over '
+                    f'{t_m3_rigid:.1f}s. Scrub "Traj viz time" and check the '
+                    f'joint plot, then click "Confirm Exec" to run it.')):
+                return
+
+            # ! stall_exits=False: M3's joint motor is not driving, so a STALLED
+            # ! flag left over from the preceding M2 would abort this on tick 1.
+            yield from _execute_rigid_chunk(
+                monitor, tail, t_m3_rigid, on_tick=_record_wrench,
+                stall_exits=False, label='M3')
     finally:
         # Always stop motors first, then restore the joint controller.
         _stop_all_both_arms()

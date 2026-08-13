@@ -11,6 +11,7 @@ from collections import defaultdict
 import os
 import time, copy
 import threading
+import traceback
 import json
 import csv
 import yaml
@@ -150,12 +151,34 @@ TRANSFER_EE_ROT_THRESHOLD_DEG = float(np.degrees(1e-2))  # ~0.573 deg
 #                 buys nothing and just makes the approach crawl.
 # The operator can always override on the slider before pressing execute; that
 # value is re-read at execution time.
+# M2 (mate) is executed in two chunks: a RIGID approach under the joint
+# controller, then the last stretch under compliance. This is the handover
+# point, measured as tool0 distance from the assembled pose.
+#
+# Running M2 wholly compliant does not work: the moment compliance engages the
+# arms sag under gravity and pull the bar off target far enough that the screw
+# cannot catch its first thread. Position control holds the bar on the planned
+# line while the screw catches; compliance then lets the screw pull the bar in.
+#
+# 0 = fully rigid (the screw never gets compliant control -- warned about at
+# execution). At or above the movement's own travel = fully compliant, which is
+# the old behaviour. Clamped at runtime to whatever the loaded M2 travels.
+M2_COMPLIANT_SPLIT_MM = 5.0
+M2_COMPLIANT_SPLIT_MM_MAX = 30.0
+
+# Cartesian path density for M3's replanned retreat -- how finely the straight
+# line from the arms' ACTUAL tool0 poses to the movement's authored goal frames
+# is sampled before each waypoint is IK'd. Same units and defaults as the
+# offline linear planners (headless_bar_action_planner's DEFAULT_MAX_STEP_*).
+M3_REPLAN_MAX_STEP_DISTANCE = 0.001   # m
+M3_REPLAN_MAX_STEP_ANGLE = 0.05       # rad
+
 MOVEMENT_TRAJECTORY_TIME_S = {
-    'M0': 60.0,
-    'M1': 60.0,
-    'M2': 10.0,
-    'M3': 10.0,
-    'M4': 60.0,
+    'M0': 30.0,
+    'M1': 10.0,
+    'M2': 5.0,
+    'M3': 5.0,
+    'M4': 10.0,
 }
 
 # Legend for the "planned joint values" preview plot. A BarAction trajectory
@@ -233,7 +256,7 @@ class HuskyMonitor(Node):
     # (or set via sliders). Useful for testing planning with mocap on for
     # end-effector tracking but the husky physically far from the assembly
     # scaffolding (e.g., at the lab desk during dual-arm accuracy tests).
-    USE_CELL_STATE_BASE_POSE = 0
+    USE_CELL_STATE_BASE_POSE = 1
     USE_DPG_UI = 1   # 0 = legacy PyBullet debug GUI; 1 = Dear PyGui control panel
     UI_FONT_SIZE = 20  # base size for all DPG widgets (separators override to 20 in the backend)
 
@@ -493,6 +516,20 @@ class HuskyMonitor(Node):
 
         self.trajectory_time_max = 90 # 20 if self.CALIBRATION else 30
         self.trajectory_time = self.trajectory_time_max
+        # Where M2 hands over from rigid tracking to compliance, as tool0
+        # distance from the assembled pose. See MOVEMENT_TRAJECTORY_TIME_S's
+        # neighbourhood for the other execution knobs, and
+        # world.execute_planned_trajectory_compliant for what it does.
+        self.m2_compliant_split_mm = M2_COMPLIANT_SPLIT_MM
+        # Operator toggles, both surfaced as 0/1 sliders in the movement-exe
+        # section so their state is visible rather than only logged.
+        #   m2_exec_rigid_only: run ALL of M2 under the joint controller and
+        #     never engage compliance -- the baseline the split is compared to.
+        #   fm_swept_validation_enabled: gate M0/M4 plans on the dense
+        #     between-waypoint collision re-check. On by default; turning it off
+        #     accepts plans unverified (each skip is warned about).
+        self.m2_exec_rigid_only = False
+        self.fm_swept_validation_enabled = True
         self.traj_viz_time = 1.0  # trajectory preview scrub position (0..1)
 
         # list of conf, velocity, total time, attachment other than the ee
@@ -992,8 +1029,9 @@ class HuskyMonitor(Node):
         """Push the persisted transfer-validation curves onto the plots.
 
         Also used by build_ui to repopulate the freshly-rebuilt plots after a
-        reset_ui. Each threshold is drawn as a flat reference line so an
-        over-threshold sample is visible against it.
+        reset_ui. The thresholds are printed under each plot (see the ``footer``
+        text set in build_ui) instead of being drawn as flat reference lines,
+        which used to stretch the y axis and squash the measured curves.
         """
         plots = self._transfer_validation_plots()
         data = getattr(self, '_transfer_validation_data', None)
@@ -1002,14 +1040,12 @@ class HuskyMonitor(Node):
         step_plot, ee_plot = plots
         step_plot.reset()
         ee_plot.reset()
-        # Joint-step plot: max step delta + the flat continuity threshold.
+        # Joint-step plot: max step delta between consecutive waypoints.
         for i, d in enumerate(data['step_deltas_deg']):
-            step_plot.push([d, TRANSFER_JOINT_STEP_THRESHOLD_DEG], x=i)
-        # EE-drift plot: translation (mm) + rotation (deg) + their thresholds.
+            step_plot.push([d], x=i)
+        # EE-drift plot: translation (mm) + rotation (deg).
         for i in range(len(data['ee_trans_mm'])):
-            ee_plot.push([data['ee_trans_mm'][i], data['ee_rot_deg'][i],
-                          TRANSFER_EE_TRANS_THRESHOLD_MM,
-                          TRANSFER_EE_ROT_THRESHOLD_DEG], x=i)
+            ee_plot.push([data['ee_trans_mm'][i], data['ee_rot_deg'][i]], x=i)
         for plot in plots:
             plot.set_visible(True)
 
@@ -2057,17 +2093,31 @@ class HuskyMonitor(Node):
         self.active_bar_aabb_dims = self.get_active_bar_aabb_dims()
 
     def _apply_live_base_to_movement(self, mv):
-        """Overwrite ``mv.start_state.robot_base_frame`` with the live husky
-        base pose and push the updated state to cfab.
+        """Point ``mv.start_state`` at the live husky base and push it to cfab.
 
         Mutates ``mv.start_state`` in place so every downstream reader sees
         the live base — both ``monitor.movement_start_state`` (same object,
         per ``load_selected_movement``) and the per-role dispatchers in
         ``plan_selected_movement`` which read ``mv.start_state`` directly.
 
+        ! Only overwrites the base frame when something actually TRACKS the base
+        ! (see _base_pose_is_tracked). Without mocap, ``hi.position`` is the
+        ! wheel-odometry pose -- and with no odometry publishing at all it is
+        ! still its ``np.zeros(3)`` default. Writing that in unconditionally put
+        ! the planning robot at the WORLD ORIGIN: compas_fab's
+        ! set_robot_cell_state applies robot_base_frame unconditionally
+        ! (``client._set_base_frame(...)`` -> ``resetBasePositionAndOrientation``),
+        ! so the whole cfab robot teleported off the cell. Every collision check
+        ! then ran from the origin, which is how a "validated" M0 plan could
+        ! still drive through the structure.
+        !
+        ! This fires on EVERY 'Plan Movement' (plan_selected_movement calls it
+        ! before dispatching), which is why the symptom appeared on planning but
+        ! never on plain 'Load Movement'.
+
         Returns True on success; False (with a warn) on any precondition
-        miss. The authored base from the BarAction file is overwritten in
-        memory; to restore it, re-load the BarAction.
+        miss. When the base IS tracked the authored base from the BarAction file
+        is overwritten in memory; to restore it, re-load the BarAction.
         """
         if mv is None or mv.start_state is None:
             self.get_logger().warn("apply live base: mv has no start_state.")
@@ -2079,7 +2129,17 @@ class HuskyMonitor(Node):
             self.get_logger().warn("apply live base: cfab planner not initialized.")
             return False
         hi = self.huskies[self.selected_robot_id].interface
-        mv.start_state.robot_base_frame = frame_from_pose((hi.position, hi.rotation))
+        if self._base_pose_is_tracked():
+            before = mv.start_state.robot_base_frame
+            mv.start_state.robot_base_frame = frame_from_pose((hi.position, hi.rotation))
+            if before is not None:
+                moved = float(np.linalg.norm(
+                    np.asarray(list(mv.start_state.robot_base_frame.point), dtype=float)
+                    - np.asarray(list(before.point), dtype=float)))
+                if moved > 1e-3:
+                    print(f"[apply live base] {mv.movement_id!r}: base moved "
+                          f"{moved:.3f} m from the authored frame to the tracked "
+                          f"live pose.")
         try:
             self.cfab.planner.set_robot_cell_state(mv.start_state)
         except Exception as e:
@@ -2786,6 +2846,7 @@ class HuskyMonitor(Node):
         except Exception as e:
             print(f"Error setting cfab robot cell state: {e}")
             return
+        self._check_cfab_base_matches(mv, 'LoadMovement')
         try:
             self._bridge_cfab_to_pp_for_bar_action()
         except Exception as e:
@@ -2886,6 +2947,17 @@ class HuskyMonitor(Node):
         if role is None:
             self.get_logger().warn(f"Unknown movement role for {mv.movement_id!r}; skipping.")
             return
+
+        # Re-read the swept-check slider's LIVE position: a rebuilt widget can
+        # miss its next drag callback, and this one decides whether the M0/M4
+        # plan is verified at all. Same hazard as the other exec sliders.
+        sld = getattr(self, 'fm_swept_validation_slider', None)
+        if sld is not None:
+            v = sld.value
+            if v is not None and bool(round(float(v))) != self.fm_swept_validation_enabled:
+                self.fm_swept_validation_enabled = bool(round(float(v)))
+                print(f"[Plan] swept collision check: "
+                      f"{'ON' if self.fm_swept_validation_enabled else 'OFF'}")
         if mv.trajectory is not None:
             self.get_logger().warn(
                 f"Overwriting existing trajectory for {mv.movement_id!r}"
@@ -2913,6 +2985,18 @@ class HuskyMonitor(Node):
             self.get_logger().warn(f"Plan for {mv.movement_id!r} ({role}) FAILED.")
             if role == 'M1':
                 self._clear_m1_start_conf_without_trajectory()
+            # ! Clear the preview. Without this, planned_arm_trajectory still
+            # ! holds the PREVIOUS movement's path, so the traj-viz scrub and the
+            # ! joint plot keep animating that one -- which reads as "the plan I
+            # ! just asked for is bad" (e.g. the previous movement's bar-held
+            # ! path sweeping past the structure) when in fact no plan was
+            # ! produced at all. Showing nothing is the honest state.
+            self._reset_planned_arm_trajectory()
+            self._preview_joint_data = None
+            self._draw_preview_joint_values()
+            self.get_logger().warn(
+                f"Trajectory preview CLEARED -- it was still showing the "
+                f"previously loaded movement, not {mv.movement_id!r}.")
             return
 
         self._accept_trajectory(mv, jt, source='Plan', role=role)
@@ -3684,6 +3768,27 @@ class HuskyMonitor(Node):
                 self.trajectory_time = float(v)
                 print(f"[Exec] traj time from slider: {self.trajectory_time:.0f}s")
 
+        # Same live re-read for M2's rigid->compliant handover distance: it
+        # decides where position control stops holding the bar on target, so a
+        # missed drag callback would silently run the operator's last-but-one
+        # setting.
+        sld = getattr(self, 'm2_split_slider', None)
+        if sld is not None:
+            v = sld.value
+            if v is not None and float(v) != self.m2_compliant_split_mm:
+                self.m2_compliant_split_mm = float(v)
+                print(f"[Exec] M2 split from slider: "
+                      f"{self.m2_compliant_split_mm:.1f} mm to goal")
+
+        # Rigid-only is a whole different execution mode, so read it live too.
+        sld = getattr(self, 'm2_rigid_only_slider', None)
+        if sld is not None:
+            v = sld.value
+            if v is not None and bool(round(float(v))) != self.m2_exec_rigid_only:
+                self.m2_exec_rigid_only = bool(round(float(v)))
+                print(f"[Exec] M2 mode from slider: "
+                      f"{'RIGID ONLY' if self.m2_exec_rigid_only else 'rigid+compliant split'}")
+
         deviations = self._arms_at_trajectory_start()
         if deviations and not self.FAKE_HARDWARE:
             if max(deviations) > self.EXEC_START_CONF_TOLERANCE_RAD:
@@ -3834,6 +3939,10 @@ class HuskyMonitor(Node):
         # safeguard only for the movements that actually carry the bar (M1/M2),
         # since its EE-drift curve is meaningless when nothing is held. M1's
         # CDFM path additionally gets the sparse stage validator below.
+        # The joint-evolution plot is cheap (no FK) and is the preview itself, so
+        # it always runs. The bar-hold + CDFM checks below re-derive poses along
+        # the whole path; they are fast enough now to always run on every accepted
+        # trajectory.
         self.show_planned_joint_values(path, label=mv.movement_id)
         if self._authored_motion_type(mv) == 'bar_held':
             self.show_transfer_validation(path, mv.start_state, label=mv.movement_id)
@@ -3965,6 +4074,73 @@ class HuskyMonitor(Node):
             return "\033[32mTrue\033[0m"
         return "\033[31mFalse\033[0m"
 
+    def export_m0_plan_to_bar_action_file(self):
+        """Write the live-planned M0 trajectory back into the BarAction JSON.
+
+        M0 is the one movement the offline planner leaves unsolved -- its
+        trajectory depends on wherever the robot happens to be, so it ships as
+        ``null`` and is planned live. That means every session re-plans it.
+        This saves the one you just planned so the next session can simply load
+        it, like M1..M4.
+
+        Writes the WHOLE action (``self._loaded_action``, which shares object
+        identity with ``self._loaded_movements``), so any other trajectory
+        currently in memory -- a replanned M4, say -- is preserved alongside.
+        Trajectories serialize as compas_fab ``JointTrajectory``, matching what
+        ``headless_bar_action_planner`` now writes.
+
+        ! Never overwrites a CLEAN Rhino export. If the loaded file is one
+        ! (``B45.json`` -- a basename with no dotted tag), the action is written
+        ! to ``<stem>.live-solved.json`` instead, preserving the invariant that
+        ! the clean file is only ever produced by the exporter.
+
+        Returns:
+            str | None: The path written, or None if nothing was written.
+        """
+        if not self._loaded_action or not self._current_action_path:
+            self.get_logger().warn(
+                "No BarAction loaded; click 'Load BarAction' first.")
+            return None
+        m0 = next((m for m in (self._loaded_movements or [])
+                   if self._match_movement_role(m) == 'M0'), None)
+        if m0 is None:
+            self.get_logger().warn("This BarAction has no M0 movement to export.")
+            return None
+        path12 = path_12_from_joint_trajectory(getattr(m0, 'trajectory', None))
+        if not path12:
+            self.get_logger().warn(
+                f"{m0.movement_id!r} has no planned trajectory to export. "
+                f"Click 'Plan Movement' with M0 selected first.")
+            return None
+
+        out_path = self._current_action_path
+        basename = os.path.basename(out_path)
+        if basename.count('.') <= 1:
+            # A clean export (no dotted tag): divert rather than clobber it.
+            stem, ext = os.path.splitext(out_path)
+            out_path = f"{stem}.live-solved{ext}"
+            self.get_logger().warn(
+                f"{basename} is a CLEAN export and will not be overwritten; "
+                f"writing to {os.path.basename(out_path)} instead.")
+
+        try:
+            json_dump(self._loaded_action, out_path)
+        except Exception as e:
+            self.get_logger().error(f"Failed to write {out_path}: {e}")
+            return None
+
+        solved = [m.movement_id for m in self._loaded_movements
+                  if getattr(m, 'trajectory', None) is not None]
+        self.get_logger().info(
+            f"Exported M0 ({len(path12)} waypoints) -> {out_path}. "
+            f"The file now carries trajectories for: {solved}.")
+        # A diverted write creates a new file; refresh the slider list so it can
+        # be selected without restarting.
+        if out_path != self._current_action_path:
+            self.available_bar_actions = self._load_available_bar_actions()
+            self.reset_ui(self.goal_arm_pose)
+        return out_path
+
     def _validate_free_planned_path(self, mv, path12):
         """Re-check a free (M0/M4) path densely BETWEEN its waypoints.
 
@@ -3984,12 +4160,30 @@ class HuskyMonitor(Node):
             mv: The movement whose path this is (for log lines).
             path12 (Sequence): Planned waypoints, each a 12-vec.
 
+        Skipped entirely when ``self.fm_swept_validation_enabled`` is False (the
+        "swept collision check" slider). It then reports OK so the callers' gates
+        pass -- but says so loudly, because a silently-skipped safety check is
+        worse than no check at all.
+
+        Args:
+            mv: The movement whose path this is (for log lines).
+            path12 (Sequence): Planned waypoints, each a 12-vec.
+
         Returns:
             dict: ``{'ok': bool, 'samples': int, 'bad_segments': list, 'bodies':
-            list}``. ``ok`` is True when nothing was hit. ``bad_segments`` holds
-            ``(segment_index, sorted_body_names)`` tuples.
+            list, 'skipped': bool}``. ``ok`` is True when nothing was hit.
+            ``bad_segments`` holds ``(segment_index, sorted_body_names)`` tuples.
         """
-        verdict = {'ok': True, 'samples': 0, 'bad_segments': [], 'bodies': []}
+        verdict = {'ok': True, 'samples': 0, 'bad_segments': [], 'bodies': [],
+                   'skipped': False}
+        if not getattr(self, 'fm_swept_validation_enabled', True):
+            verdict['skipped'] = True
+            self.get_logger().warn(
+                f"[free validation] {getattr(mv, 'movement_id', '?')!r}: SWEPT "
+                f"COLLISION CHECK DISABLED -- the path is accepted unverified. "
+                f"Its waypoints are collision-free but the motion BETWEEN them "
+                f"is not checked, so it may sweep through the structure.")
+            return verdict
         path12 = [np.asarray(q, dtype=float) for q in (path12 or [])]
         if len(path12) < 2 or self.cfab is None:
             return verdict
@@ -4061,9 +4255,18 @@ class HuskyMonitor(Node):
                     verdict['bad_segments'].append((i, sorted(seg_bodies)))
                     all_bodies |= seg_bodies
         except Exception as exc:
-            self.get_logger().warn(
-                f"[free validation] {mv.movement_id!r}: check failed ({exc}); "
-                f"path NOT verified.")
+            # ! FAIL CLOSED. This used to return the freshly-initialised verdict,
+            # ! whose 'ok' is True -- so any exception in here silently turned
+            # ! "could not verify" into "verified fine" and the caller accepted
+            # ! an unchecked path. An unverifiable path must be treated exactly
+            # ! like a failed one; the operator can still force it through with
+            # ! the swept-check toggle if they know better.
+            self.get_logger().error(
+                f"[free validation] {mv.movement_id!r}: check RAISED ({exc!r}); "
+                f"treating the path as unsafe. Full traceback:")
+            traceback.print_exc()
+            verdict['ok'] = False
+            verdict['error'] = repr(exc)
             return verdict
         finally:
             pp.CLIENT = saved_client
@@ -4258,6 +4461,172 @@ class HuskyMonitor(Node):
             max_time=120.0, max_iterations=50,
         )
 
+    # How far the cfab planning robot may sit from the base frame it was told to
+    # stand at before we call it a mismatch. Pure bookkeeping error, so tight.
+    CFAB_BASE_MISMATCH_TOL_M = 1e-3
+
+    def _check_cfab_base_matches(self, mv, tag):
+        """Warn if the cfab planning robot is not where the state says it is.
+
+        Everything the planner decides -- reachability, and above all which
+        configurations are collision-free -- is computed with the cfab robot at
+        the pose ``set_robot_cell_state`` put it. If that pose has drifted from
+        the movement's authored ``robot_base_frame``, the plan is checked against
+        the structure as seen from the WRONG place: it can look clean to the
+        planner and drive straight through a bar in reality.
+
+        This is a symptom check, not a fix. It exists because that failure is
+        otherwise invisible until you notice the translucent red planning robot
+        standing somewhere the real husky is not.
+
+        Args:
+            mv: The movement whose ``start_state`` was just pushed.
+            tag (str): Short label for the log line (call site).
+
+        Returns:
+            bool: True when they agree (or nothing could be compared).
+        """
+        state = getattr(mv, 'start_state', None)
+        if self.cfab is None or state is None or state.robot_base_frame is None:
+            return True
+        robot_puid = getattr(self.cfab.client, 'robot_puid', None)
+        if robot_puid is None:
+            return True
+        try:
+            authored = np.asarray(pose_from_frame(state.robot_base_frame)[0], dtype=float)
+            actual = np.asarray(p.getBasePositionAndOrientation(
+                robot_puid, physicsClientId=self.cfab.client.client_id)[0], dtype=float)
+        except Exception as e:
+            print(f"[{tag}] could not read the cfab robot base: {e}")
+            return True
+        err = float(np.linalg.norm(authored - actual))
+
+        # Three robots share this scene and are easy to confuse by eye: the
+        # translucent RED cfab planning robot, the solid live husky, and the
+        # green goal ghost. Report all three against the authored base so one
+        # line says WHICH is displaced rather than leaving it to the screenshot.
+        others = {}
+        try:
+            if self.huskies:
+                ho = self.huskies[self.selected_robot_id].object
+                others['live husky'] = np.asarray(
+                    p.getBasePositionAndOrientation(ho.robot)[0], dtype=float)
+        except Exception:
+            pass
+        try:
+            others['goal ghost'] = np.asarray(
+                p.getBasePositionAndOrientation(self.goal_model.robot)[0], dtype=float)
+        except Exception:
+            pass
+        others_txt = '; '.join(
+            f"{k} {np.round(v, 3)} (err {np.linalg.norm(v - authored):.3f} m)"
+            for k, v in others.items())
+
+        if err <= self.CFAB_BASE_MISMATCH_TOL_M:
+            # cfab is right. If a robot still looks out of place on screen it is
+            # one of the others, so say where they are -- silently returning
+            # True here is what makes that case impossible to diagnose.
+            bad_others = {k: v for k, v in others.items()
+                          if np.linalg.norm(v - authored) > self.CFAB_BASE_MISMATCH_TOL_M}
+            if bad_others:
+                self.get_logger().warn(
+                    f"[{tag}] cfab planning robot is correctly placed at "
+                    f"{np.round(authored, 3)}, but: {others_txt}")
+            return True
+        self.get_logger().error(
+            f"[{tag}] cfab PLANNING ROBOT IS MISPLACED by {err:.3f} m: the "
+            f"movement's base frame is {np.round(authored, 3)} but the robot "
+            f"stands at {np.round(actual, 3)}. Collision checks are being run "
+            f"from the wrong place, so any plan made now is unsafe. "
+            f"Other robots: {others_txt or 'n/a'}")
+        return False
+
+    def replan_linear_to_target_from_live(self, mv, role):
+        """Replan a straight cartesian run from the arms' ACTUAL pose to the goal.
+
+        Used for M3's second chunk. Compliance leaves the tools sideways off the
+        planned line (gravity sag), so replaying the preplanned joint tail means
+        snapping from wherever they are to a waypoint several millimetres away,
+        at trajectory speed, along a path nothing checked from the real pose.
+        Instead: take the live configuration, forward-kinematic the tool0 poses
+        from it, and plan a fresh straight line to the movement's AUTHORED
+        ``target_ee_frames``.
+
+        The heavy lifting is ``plan_dual_arm_linear_independent``, which already
+        does exactly this: FK of the given start state, cartesian interpolation
+        at ``max_step_distance`` / ``max_step_angle``, then per waypoint ssik
+        analytical branches seeded from the previous waypoint and sorted
+        nearest-first, each candidate gated on joint-step continuity (the joint
+        flip check) and on ``planner.check_collision`` with the cfab ACM.
+
+        ! ``skip_env_collisions=True`` matches the offline planner's own M2/M3
+        ! settings: self and tool collisions are checked, robot-vs-rigid-body
+        ! ones are not. Residual tool-bar contact right after the gripper
+        ! releases would otherwise fail the very first waypoints.
+
+        Args:
+            mv: The movement being executed; supplies ``start_state`` (for the
+                cell/ACM and the base frame) and ``target_ee_frames``.
+            role (str): ``'M3'`` etc., for the log lines.
+
+        Returns:
+            list[numpy.ndarray] | None: The replanned 12-vec path, whose first
+            waypoint IS the live configuration, or None when the movement lacks
+            target frames or the planner could not produce a valid path.
+        """
+        if self.cfab is None or mv is None or mv.start_state is None:
+            self.get_logger().warn(f"[{role}] replan: no cfab session or start_state.")
+            return None
+        targets = getattr(mv, 'target_ee_frames', None) or None
+        if not targets or 'left' not in targets or 'right' not in targets:
+            self.get_logger().warn(
+                f"[{role}] replan: {mv.movement_id!r} has no left/right "
+                f"target_ee_frames to aim at.")
+            return None
+
+        # Start state = the movement's cell state with the LIVE arm joints.
+        # ! The base frame is only replaced when something actually tracks it.
+        # ! Writing hi.position in unconditionally is what once teleported the
+        # ! planning robot to the world origin (see _apply_live_base_to_movement).
+        hi = self.huskies[self.selected_robot_id].interface
+        live_state = mv.start_state.copy()
+        if live_state.robot_configuration is None:
+            live_state.robot_configuration = self.cfab.robot_cell.zero_full_configuration()
+        for names, values in zip(self._arm_joint_name_sets(), hi.arm_joint_pose):
+            for n, v in zip(names, values):
+                live_state.robot_configuration[n] = float(v)
+        if self._base_pose_is_tracked():
+            live_state.robot_base_frame = frame_from_pose((hi.position, hi.rotation))
+
+        print(f"[{role}] replanning a linear cartesian retreat from the live pose "
+              f"at {M3_REPLAN_MAX_STEP_DISTANCE * 1000:.1f} mm / "
+              f"{np.degrees(M3_REPLAN_MAX_STEP_ANGLE):.1f} deg steps...")
+        try:
+            jt = plan_dual_arm_linear_independent(
+                self.cfab.planner, live_state,
+                goal_ee_frames=targets,
+                max_step_distance=M3_REPLAN_MAX_STEP_DISTANCE,
+                max_step_angle=M3_REPLAN_MAX_STEP_ANGLE,
+                skip_env_collisions=True,
+            )
+        except Exception as exc:
+            self.get_logger().error(f"[{role}] replan RAISED: {exc!r}")
+            traceback.print_exc()
+            return None
+        if jt is None:
+            # The planner already logged which waypoint failed and why
+            # (unreachable / discontinuous / colliding).
+            self.get_logger().error(
+                f"[{role}] replan FAILED: no collision-free, continuous cartesian "
+                f"path from the live pose to the authored target frames.")
+            return None
+
+        path = path_12_from_joint_trajectory(jt)
+        if not path:
+            self.get_logger().error(f"[{role}] replan returned an empty path.")
+            return None
+        return path
+
     def _live_arm_conf_12(self):
         """The live robot's twelve arm joint values (left 6 then right 6).
 
@@ -4317,25 +4686,42 @@ class HuskyMonitor(Node):
         n_steps = max(1, int(np.ceil(gap / FM_JOINT_RESOLUTION)))
         patch = [live + (start - live) * (k / n_steps) for k in range(n_steps)]
 
+        patched = patch + [np.asarray(q, dtype=float) for q in preplanned]
+
         print(f"[{role}] stage 1: bridging {np.degrees(gap):.2f} deg from the live "
               f"arms to the preplanned start with {len(patch)} waypoint(s) at "
-              f"{FM_JOINT_RESOLUTION} rad; collision-checking...")
-        # Validate the straight segment itself -- densely, and it names whatever
-        # blocks it. The preplanned tail is NOT re-checked here: keeping it as
-        # planned is the whole point of this stage.
-        verdict = self._validate_free_planned_path(mv, [live, start])
+              f"{FM_JOINT_RESOLUTION} rad; sweep-checking the full "
+              f"{len(patched)}-waypoint patched path...")
+        # ! Validate the WHOLE patched path, bridge + preplanned tail -- not just
+        # ! the bridge. This runs only on a live replan ('Plan Movement'); plain
+        # ! 'Load Movement' never reaches here, so replaying a preplanned path
+        # ! stays instant. The tail deserves the check despite being "known
+        # ! good": it was planned offline at a coarse joint resolution with no
+        # ! swept checking, which is exactly the case that slips an arm through
+        # ! a bar between waypoints.
+        verdict = self._validate_free_planned_path(mv, patched)
         if not verdict['ok']:
+            # Say WHERE it failed: a blocked bridge means the arms drifted
+            # somewhere awkward, a blocked tail means the stored path itself is
+            # unsafe from here. Either way stage 2 replans, but the distinction
+            # tells the operator whether the stored plan is the problem.
+            n_patch = len(patch)
+            in_bridge = [s for s, _ in verdict['bad_segments'] if s < n_patch]
+            in_tail = [s for s, _ in verdict['bad_segments'] if s >= n_patch]
+            where = []
+            if in_bridge:
+                where.append(f"{len(in_bridge)} segment(s) in the bridge")
+            if in_tail:
+                where.append(f"{len(in_tail)} segment(s) in the PREPLANNED tail")
             self.get_logger().warn(
-                f"[{role}] stage 1 FAILED: the straight line to the preplanned "
-                f"start is blocked by {verdict['bodies']}. Falling back to a "
-                f"full replan.")
+                f"[{role}] stage 1 FAILED: {' and '.join(where)} hit "
+                f"{verdict['bodies']}. Falling back to a full replan.")
             return None
 
-        patched = patch + [np.asarray(q, dtype=float) for q in preplanned]
         self.get_logger().info(
             f"[{role}] stage 1 OK: patched trajectory is {len(patched)} waypoints "
-            f"({len(patch)} patch + {len(preplanned)} preplanned). The patch is "
-            f"waypoints 0..{len(patch) - 1} of the preview.")
+            f"({len(patch)} patch + {len(preplanned)} preplanned), sweep-verified "
+            f"end to end. The patch is waypoints 0..{len(patch) - 1} of the preview.")
         return joint_trajectory_from_path(patched)
 
     def _resync_start_state_to_live(self, mv, role):
@@ -4378,6 +4764,9 @@ class HuskyMonitor(Node):
         except Exception as e:
             print(f"[{role}] WARN: cfab set_robot_cell_state after live-conf "
                   f"resync failed: {e}")
+        # The check that matters most: everything planned below is collision-
+        # checked with the robot wherever this leaves it.
+        self._check_cfab_base_matches(mv, f'{role} pre-plan')
 
     def _plan_M1_dispatch(self, mv):
         """Constrained dual-arm (bar held): state-based task-space RRT.
@@ -4509,29 +4898,56 @@ class HuskyMonitor(Node):
             one entry per waypoint (both start at 0.0 for waypoint 0).
         """
         planner = self.cfab.planner
-        left_names = list(HUSKY_DUAL_UR5e_JOINT_NAMES[0])
-        right_names = list(HUSKY_DUAL_UR5e_JOINT_NAMES[1])
-        names_12 = left_names + right_names
+        names_12 = (list(HUSKY_DUAL_UR5e_JOINT_NAMES[0])
+                    + list(HUSKY_DUAL_UR5e_JOINT_NAMES[1]))
 
-        state = template_state.copy()
+        # ! Push the cell state ONCE, then move only the arm joints per waypoint.
+        # ! tool0 FK depends solely on the base frame and the arm joints, so the
+        # ! per-waypoint set_robot_cell_state this used to do was re-placing the
+        # ! robot AND all ~112 rigid bodies 2x per waypoint for no gain -- ~10 s
+        # ! on a 457-waypoint M1, and it is what made the monitor visibly trace
+        # ! the trajectory when a preplanned movement was loaded. Now ~0.04 s.
+        #
+        # Staying in pybullet pose space also drops the compas
+        # Frame<->Transformation round-trip the old version went through, which
+        # shifts the reported drift by ~1.6 um / 2e-5 deg (321x and 26000x
+        # inside the thresholds this feeds). If anything it is the more faithful
+        # number -- fewer conversions -- but do not be surprised that historical
+        # logs differ in the 4th decimal.
+        planner.set_robot_cell_state(template_state.copy())
+
+        saved_client = pp.CLIENT
+        pp.CLIENT = self.cfab.client.client_id
+        pp.CLIENTS.setdefault(pp.CLIENT, True)
         relatives = []
-        for q12 in path12:
-            for n, v in zip(names_12, q12):
-                state.robot_configuration[n] = float(v)
-            lf = _fk_link_frame(planner, state, "left_ur_arm_tool0")
-            rf = _fk_link_frame(planner, state, "right_ur_arm_tool0")
-            T_l = Transformation.from_frame(lf)
-            T_r = Transformation.from_frame(rf)
-            relatives.append(T_l.inverted() * T_r)
+        try:
+            robot = self.cfab.client.robot_puid
+            arm_joints = pp.joints_from_names(robot, names_12)
+            left_link = pp.link_from_name(robot, "left_ur_arm_tool0")
+            right_link = pp.link_from_name(robot, "right_ur_arm_tool0")
+            restore = pp.get_joint_positions(robot, arm_joints)
+            try:
+                for q12 in path12:
+                    pp.set_joint_positions(robot, arm_joints,
+                                           np.asarray(q12, dtype=float))
+                    # left_from_right: the transform the grasp must hold rigid.
+                    relatives.append(pp.multiply(
+                        pp.invert(pp.get_link_pose(robot, left_link)),
+                        pp.get_link_pose(robot, right_link)))
+            finally:
+                pp.set_joint_positions(robot, arm_joints, restore)
+        finally:
+            pp.CLIENT = saved_client
 
-        ref_inv = relatives[0].inverted()
+        ref_inv = pp.invert(relatives[0])
         pos_devs = []
         ang_devs = []
         for rel in relatives:
-            delta = ref_inv * rel
-            tv = list(Frame.from_transformation(delta).point)
-            pos_devs.append(float(np.linalg.norm(tv)))
-            qw = abs(float(Frame.from_transformation(delta).quaternion.w))
+            delta = pp.multiply(ref_inv, rel)
+            pos_devs.append(float(np.linalg.norm(pp.point_from_pose(delta))))
+            # pybullet quaternions are xyzw; the scalar part is the rotation
+            # magnitude, so angle = 2*acos(|w|).
+            qw = abs(float(pp.quat_from_pose(delta)[3]))
             qw = min(max(qw, 0.0), 1.0)
             ang_devs.append(2.0 * float(np.arccos(qw)))
         return pos_devs, ang_devs
@@ -5419,7 +5835,7 @@ class HuskyMonitor(Node):
         )
         
         # draw world frame
-        pp.draw_pose(pp.unit_pose(), 0.1)
+        pp.draw_pose(pp.unit_pose(), 1)
         
     def load_goal_model(self):
         """
@@ -5691,8 +6107,10 @@ class HuskyMonitor(Node):
         #   1. planned joint values along the path -- every movement
         #   2. max joint step between waypoints -- bar-held movements (M1/M2)
         #   3. bar-hold EE drift                 -- bar-held movements (M1/M2)
-        # Plots 2 and 3 carry a trailing flat threshold line so an
-        # over-threshold sample is obvious against it.
+        # Plots 2 and 3 print their pass/fail thresholds as a text line under
+        # the readout. They used to draw them as flat curves, but a threshold
+        # sits orders of magnitude above the typical drift and flattened the
+        # very data the operator is checking.
         # ! Deliberately NOT gated on BAR_ACTION_MOCAP_ACCURACY_TEST: the
         # ! robot-centric replay demo turns that flag off but still needs these.
         if self.USE_DPG_UI and self.BAR_ACTION_LIVE_REPLAN_EXE:
@@ -5710,18 +6128,21 @@ class HuskyMonitor(Node):
                 "planned joint values", PLANNED_JOINT_PLOT_LABELS,
                 "joint value [deg]", parent="movement_preview_window",
                 group_size=6, history=4096)
-            # max joint step [deg] + flat continuity threshold.
+            # max joint step [deg]; the continuity threshold is printed, not drawn.
             self.transfer_joint_step_plot = HistoryPlot(
-                "joint step", ['max joint step', 'threshold'],
+                "joint step", ['max joint step'],
                 "max joint step [deg]", parent="movement_preview_window",
-                palette=[(220, 70, 70), (140, 140, 140)], history=4096)
-            # bar-hold EE drift: translation [mm] + rotation [deg] + thresholds.
+                palette=[(220, 70, 70)], history=4096,
+                footer=f"threshold: {TRANSFER_JOINT_STEP_THRESHOLD_DEG:.3f} deg")
+            # bar-hold EE drift: translation [mm] + rotation [deg]. Drift here is
+            # normally a few thousandths of a mm, so show 5 decimals.
             self.transfer_ee_drift_plot = HistoryPlot(
-                "bar-hold EE drift",
-                ['trans [mm]', 'rot [deg]', 'trans thresh', 'rot thresh'],
+                "bar-hold EE drift", ['trans [mm]', 'rot [deg]'],
                 "EE drift", parent="movement_preview_window",
-                palette=[(70, 130, 220), (70, 200, 130),
-                         (140, 140, 140), (170, 170, 170)], history=4096)
+                palette=[(70, 130, 220), (70, 200, 130)], history=4096,
+                decimals=5,
+                footer=(f"thresholds: trans {TRANSFER_EE_TRANS_THRESHOLD_MM:.5f} mm"
+                        f" / rot {TRANSFER_EE_ROT_THRESHOLD_DEG:.5f} deg"))
             for plot in (self.preview_joint_plot, self.transfer_joint_step_plot,
                          self.transfer_ee_drift_plot):
                 plot.set_visible(preview_visible)
@@ -5835,13 +6256,6 @@ class HuskyMonitor(Node):
             self.buttons.append(Button('3b) Servo to Mv Start (transfer loop)',
                 lambda: self.tasks.append(world.servo_to_movement_start_live(
                     self, use_transfer=True))))
-            self.buttons.append(Button('Confirm Servo Exec',
-                lambda: setattr(self, '_servo_exec_confirmed', True)))
-            # Stop the loop at the next yield (confirm pause / between iterations).
-            # A trajectory already sent to the robot still finishes; this only
-            # prevents further iterations.
-            self.buttons.append(Button('Cancel Servo Loop',
-                lambda: setattr(self, '_servo_abort', True)))
 
             self.buttons.append(Button(
                 'Export Dual-Traj',
@@ -5935,6 +6349,12 @@ class HuskyMonitor(Node):
             # * Button 1: plan the M1->M2->M3->M0->M4 chain in one click,
             # export the mutated action as `<name>.live-solved.json` sidecar.
             self.buttons.append(Button('Plan Chain (Live)', self.plan_movement_chain_live))
+            # * Persist the live-planned M0 so the next session can load it
+            # instead of re-planning. Writes the whole action back to the file
+            # that is loaded (never to a clean Rhino export -- see the method).
+            self.buttons.append(Button(
+                'Save M0 Plan to BarAction file',
+                self.export_m0_plan_to_bar_action_file))
             # * Reset the currently loaded movement to its authored ("clean")
             # state; downstream propagated start_confs may become stale, and
             # the next chain plan will re-populate them.
@@ -5958,6 +6378,43 @@ class HuskyMonitor(Node):
             self.buttons.append(Button(
                 'Exec Selected Mv Traj (auto)',
                 self.exec_selected_movement_traj))
+
+            # ! Shared confirm/cancel pair (world.wait_for_operator_confirm).
+            # ! These MUST live here, next to the execute button, not in the
+            # ! mocap-accuracy block: M3 pauses for confirmation mid-execution,
+            # ! and with BAR_ACTION_MOCAP_ACCURACY_TEST=0 that block is not
+            # ! built -- the pause would have had no way to be answered.
+            # Also used by the servoing loop's own confirm pauses.
+            self.buttons.append(Button('Confirm Exec',
+                lambda: setattr(self, '_servo_exec_confirmed', True)))
+            # Stop at the next yield (a confirm pause / between servo iterations).
+            # A trajectory already sent to the robot still finishes; this only
+            # prevents anything further being sent.
+            self.buttons.append(Button('Cancel Exec',
+                lambda: setattr(self, '_servo_abort', True)))
+
+            # M2 hands over from the rigid joint controller to compliance this
+            # far short of the assembled pose. Read live at execution time.
+            self.m2_split_slider = Slider(
+                "M2 rigid->compliant split (mm to goal)",
+                lambda v: setattr(self, 'm2_compliant_split_mm', float(v)),
+                0.0, M2_COMPLIANT_SPLIT_MM_MAX, float(self.m2_compliant_split_mm),
+            )
+            # 1 = run all of M2 rigid, never engaging compliance (the split
+            # slider above is then ignored).
+            self.m2_rigid_only_slider = Slider(
+                "M2 exec (0:rigid+compliant split, 1:rigid only)",
+                lambda v: setattr(self, 'm2_exec_rigid_only', bool(round(float(v)))),
+                0, 1, int(bool(self.m2_exec_rigid_only)), integer=True,
+            )
+            # 0 disables the dense swept collision re-check that gates M0/M4
+            # plans. Faster planning, unverified paths.
+            self.fm_swept_validation_slider = Slider(
+                "M0/M4 swept collision check (0:off, 1:on)",
+                lambda v: setattr(self, 'fm_swept_validation_enabled',
+                                  bool(round(float(v)))),
+                0, 1, int(bool(self.fm_swept_validation_enabled)), integer=True,
+            )
 
             self.buttons.append(Button(
                 'Move Arms to Movement Start (offline target)',
@@ -6342,6 +6799,12 @@ class HuskyMonitor(Node):
                 self.bar_movement_slider.update()
             if hasattr(self, 'm1_home_anchor_slider') and self.m1_home_anchor_slider:
                 self.m1_home_anchor_slider.update()
+            if hasattr(self, 'm2_split_slider') and self.m2_split_slider:
+                self.m2_split_slider.update()
+            if hasattr(self, 'm2_rigid_only_slider') and self.m2_rigid_only_slider:
+                self.m2_rigid_only_slider.update()
+            if hasattr(self, 'fm_swept_validation_slider') and self.fm_swept_validation_slider:
+                self.fm_swept_validation_slider.update()
 
         if not self.USE_MOCAP:
             pass

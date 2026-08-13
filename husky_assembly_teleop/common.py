@@ -624,13 +624,17 @@ class HistoryPlot:
         group_size (int): Series per readout column-group (e.g. 3 axes/arm).
         palette (list): Optional RGB tuples per series.
         history (int): Max samples kept (a servoing run is only a handful).
+        decimals (int): Digits after the decimal point in the value readout.
+        footer (str): Optional fixed text line under the readout, for constants
+            (e.g. thresholds) that would distort the y axis if drawn as curves.
     """
     def __init__(self, name, series_labels, y_label, *, parent=None,
-                 group_size=None, palette=None, history=64):
+                 group_size=None, palette=None, history=64, decimals=3,
+                 footer=''):
         self.name = name
         self._handle = _backend().add_history_plot(
             name, series_labels, y_label, parent=parent, group_size=group_size,
-            palette=palette, history=history)
+            palette=palette, history=history, decimals=decimals, footer=footer)
 
     def push(self, values, x=None):
         """Append one sample (one value per series, same order as labels)."""

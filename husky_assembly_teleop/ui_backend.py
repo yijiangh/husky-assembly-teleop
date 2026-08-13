@@ -726,7 +726,8 @@ class DearPyGuiBackend(UIBackend):
         return h
 
     def add_history_plot(self, label, series_labels, y_label, *, parent=None,
-                         group_size=None, palette=None, history=64):
+                         group_size=None, palette=None, history=64,
+                         decimals=3, footer=''):
         """Push-based multi-series plot for per-event data + a value readout table.
 
         Unlike add_live_multi_plot (polled every step() with a rad/deg readout),
@@ -752,6 +753,12 @@ class DearPyGuiBackend(UIBackend):
                 a 6-series plot lays out as two L | R column-pairs. Defaults to all-in-one.
             palette (list): RGB tuples per series; defaults to _MULTI_PLOT_PALETTE.
             history (int): Max samples kept (a servoing run is only a handful).
+            decimals (int): Digits after the decimal point in the readout values.
+                Raise it for plots whose interesting values are tiny.
+            footer (str): Optional fixed text line printed under the readout.
+                Use it for constants the operator wants to compare against (e.g.
+                pass/fail thresholds): drawing those as flat curves instead would
+                stretch the y axis and flatten the data being watched.
 
         Returns:
             int: Handle for set_visible() / history_push() / history_reset().
@@ -807,6 +814,9 @@ class DearPyGuiBackend(UIBackend):
                                              no_drag_drop=True, no_tooltip=True)
                         readout_tags[idx] = dpg.add_text(
                             "", color=_READOUT_TEXT_COLOR)
+        # Fixed reference values (thresholds etc.), printed rather than plotted.
+        if footer:
+            dpg.add_text(footer, parent=container, color=(150, 150, 150, 255))
         h = self._new_handle()
         md = {
             "handle": h,
@@ -815,6 +825,7 @@ class DearPyGuiBackend(UIBackend):
             "labels": list(series_labels),
             "readout_tags": readout_tags,
             "header_tag": header_tag,
+            "decimals": int(decimals),
             "x_axis": x_axis,
             "y_axis": y_axis,
             "history": history,
@@ -1042,12 +1053,13 @@ class DearPyGuiBackend(UIBackend):
                 continue
             xs = list(plot["xs"])
             n_pts = len(xs)
+            digits = plot.get("decimals", 3)
             for i, series_tag in enumerate(plot["series_tags"]):
                 ys = list(plot["ys"][i])
                 dpg.set_value(series_tag, [xs, ys])
                 if ys:
                     dpg.set_value(plot["readout_tags"][i],
-                                  f"{plot['labels'][i]}: {ys[-1]:+.3f}")
+                                  f"{plot['labels'][i]}: {ys[-1]:+.{digits}f}")
             if plot["header_tag"] is not None:
                 dpg.set_value(plot["header_tag"],
                               f"{plot['name']}  (n={n_pts})")
