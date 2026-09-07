@@ -110,8 +110,14 @@ class UIBackend:
         raise NotImplementedError
 
     def add_window(self, label: str, *, tag: str, width: int = 600,
-                   height: int = 800, show: bool = True) -> str:
-        """Create a floating top-level window (not the primary panel)."""
+                   height: int = 800, show: bool = True,
+                   pos: Optional[Sequence[int]] = None) -> str:
+        """Create a floating top-level window (not the primary panel).
+
+        ``pos`` is an optional (x, y) pixel position inside the viewport, so a
+        caller laying out several windows can keep them from spawning stacked
+        on top of each other. None keeps DPG's default placement.
+        """
         raise NotImplementedError
 
     def set_visible(self, handle: int, visible: bool) -> None:
@@ -250,7 +256,8 @@ class PyBulletBackend(UIBackend):
         raise NotImplementedError(
             "live_multi_plot widget not supported by PyBulletBackend; set USE_DPG_UI=1")
 
-    def add_window(self, label, *, tag, width=600, height=800, show=True):
+    def add_window(self, label, *, tag, width=600, height=800, show=True,
+                   pos=None):
         raise NotImplementedError(
             "separate windows not supported by PyBulletBackend; set USE_DPG_UI=1")
 
@@ -590,7 +597,8 @@ class DearPyGuiBackend(UIBackend):
         self._handles[h] = {"kind": "live_plot", "tag": series_tag}
         return h
 
-    def add_window(self, label, *, tag, width=600, height=800, show=True):
+    def add_window(self, label, *, tag, width=600, height=800, show=True,
+                   pos=None):
         """Create (or refresh) a floating top-level window, not the primary panel.
 
         build_ui() re-runs on every reset_ui(); because this is a top-level
@@ -607,6 +615,9 @@ class DearPyGuiBackend(UIBackend):
             width (int): Initial window width in pixels.
             height (int): Initial window height in pixels.
             show (bool): Whether the window starts visible.
+            pos (Optional[Sequence[int]]): Initial (x, y) pixel position in the
+                viewport, applied only when the window is first created --
+                a rebuild keeps wherever the user dragged it.
 
         Returns:
             str: The window tag (usable as a parent for other add_* calls).
@@ -616,8 +627,9 @@ class DearPyGuiBackend(UIBackend):
             dpg.delete_item(tag, children_only=True)
             dpg.configure_item(tag, show=show)
         else:
+            kwargs = {} if pos is None else {"pos": list(pos)}
             dpg.add_window(tag=tag, label=label, width=width, height=height,
-                           show=show)
+                           show=show, **kwargs)
         return tag
 
     def add_live_multi_plot(self, label, source, series_labels, history=200,
@@ -727,7 +739,7 @@ class DearPyGuiBackend(UIBackend):
 
     def add_history_plot(self, label, series_labels, y_label, *, parent=None,
                          group_size=None, palette=None, history=64,
-                         decimals=3, footer=''):
+                         decimals=3, footer='', link_group=None):
         """Push-based multi-series plot for per-event data + a value readout table.
 
         Unlike add_live_multi_plot (polled every step() with a rad/deg readout),
@@ -756,6 +768,11 @@ class DearPyGuiBackend(UIBackend):
             decimals (int): Digits after the decimal point in the readout values.
                 Raise it for plots whose interesting values are tiny.
             footer (str): Optional fixed text line printed under the readout.
+            link_group (str): Optional name shared by several history plots whose
+                axes must show the SAME range (e.g. a left-arm and a right-arm
+                force plot that should be visually comparable). Linked plots get
+                their limits computed from the union of all members' data every
+                update, so manual zoom/pan does not stick on them.
                 Use it for constants the operator wants to compare against (e.g.
                 pass/fail thresholds): drawing those as flat curves instead would
                 stretch the y axis and flatten the data being watched.
@@ -834,6 +851,7 @@ class DearPyGuiBackend(UIBackend):
             "next_x": 0,
             "visible": True,   # gates rendering in step(); flipped by set_visible()
             "dirty": True,     # redraw pending (set by history_push / _reset)
+            "link_group": link_group,  # shared-axis-scale group name, or None
         }
         self._history_plots.append(md)
         self._handles[h] = {"kind": "history_plot", "container_tag": container,
@@ -1048,6 +1066,7 @@ class DearPyGuiBackend(UIBackend):
         # sample has been pushed (dirty). Fitting here -- inside the render pass --
         # is what makes the points actually appear (fitting from history_push,
         # which runs in the task-pump phase, does not take).
+        updated_link_groups = set()
         for plot in self._history_plots:
             if not plot.get("visible", True) or not plot.get("dirty", False):
                 continue
@@ -1063,14 +1082,44 @@ class DearPyGuiBackend(UIBackend):
             if plot["header_tag"] is not None:
                 dpg.set_value(plot["header_tag"],
                               f"{plot['name']}  (n={n_pts})")
-            if n_pts >= 1:
-                dpg.fit_axis_data(plot["x_axis"])
-                dpg.fit_axis_data(plot["y_axis"])
-                # A single point fits to a zero-width range (invisible); widen it.
+            if plot.get("link_group"):
+                # Axes of linked plots are set together below, from the union
+                # of the whole group's data.
+                updated_link_groups.add(plot["link_group"])
+            elif n_pts >= 1:
+                # A single point fits to a zero-width range (invisible), so the
+                # first sample gets explicit +/-1 limits instead. Explicit
+                # limits LOCK the axis in DPG (fit_axis_data is then ignored),
+                # so once a second sample exists we must release the lock with
+                # set_axis_limits_auto before fitting, or the plot stays frozen
+                # on that first window forever.
                 if n_pts == 1:
                     x0 = xs[0]
                     dpg.set_axis_limits(plot["x_axis"], x0 - 1.0, x0 + 1.0)
+                else:
+                    dpg.set_axis_limits_auto(plot["x_axis"])
+                    dpg.fit_axis_data(plot["x_axis"])
+                dpg.fit_axis_data(plot["y_axis"])
             plot["dirty"] = False
+        # Linked-axis groups: every member shows the same x and y range, taken
+        # from the union of all members' buffered data, so e.g. left- and
+        # right-arm force plots stay directly comparable. Explicit limits are
+        # re-set on every update, which also means manual zoom does not stick.
+        for group in updated_link_groups:
+            members = [pl for pl in self._history_plots
+                       if pl.get("link_group") == group and len(pl["xs"])]
+            if not members:
+                continue
+            x_lo = min(pl["xs"][0] for pl in members)
+            x_hi = max(pl["xs"][-1] for pl in members)
+            y_lo = min(min(s) for pl in members for s in pl["ys"] if len(s))
+            y_hi = max(max(s) for pl in members for s in pl["ys"] if len(s))
+            if x_hi - x_lo < 2.0:   # widen a near-empty span so points show
+                x_hi = x_lo + 2.0
+            pad = 0.05 * (y_hi - y_lo) or 1.0
+            for pl in members:
+                dpg.set_axis_limits(pl["x_axis"], x_lo, x_hi)
+                dpg.set_axis_limits(pl["y_axis"], y_lo - pad, y_hi + pad)
         dpg.render_dearpygui_frame()
         return True
 

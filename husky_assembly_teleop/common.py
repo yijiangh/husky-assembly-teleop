@@ -547,6 +547,16 @@ class TextInput:
         """Overwrite what the box displays (the action callback does NOT fire)."""
         _backend().set_value(self._handle, value)
 
+    @property
+    def value(self):
+        """Current box content read live from the backend widget (or None).
+
+        The on-change callback only fires when the user presses Enter, so read
+        this at the moment the text is needed (e.g. on a button click) instead
+        of relying on a callback-updated attribute. Mirrors Slider.value.
+        """
+        return _backend().get_value(self._handle)
+
 
 class FilePicker:
     """Click-to-pick file/folder. action(absolute_path: str). Optional base_dir / ext_filter."""
@@ -627,14 +637,18 @@ class HistoryPlot:
         decimals (int): Digits after the decimal point in the value readout.
         footer (str): Optional fixed text line under the readout, for constants
             (e.g. thresholds) that would distort the y axis if drawn as curves.
+        link_group (str): Optional group name; all history plots sharing it show
+            the same axis ranges (union of the group's data), so e.g. per-arm
+            force plots stay visually comparable.
     """
     def __init__(self, name, series_labels, y_label, *, parent=None,
                  group_size=None, palette=None, history=64, decimals=3,
-                 footer=''):
+                 footer='', link_group=None):
         self.name = name
         self._handle = _backend().add_history_plot(
             name, series_labels, y_label, parent=parent, group_size=group_size,
-            palette=palette, history=history, decimals=decimals, footer=footer)
+            palette=palette, history=history, decimals=decimals, footer=footer,
+            link_group=link_group)
 
     def push(self, values, x=None):
         """Append one sample (one value per series, same order as labels)."""
@@ -684,6 +698,14 @@ class Separator:
 
     def update(self):
         _backend().poll(self._handle, "separator", lambda *_: None)
+
+    def set_text(self, text):
+        """Replace the divider's label, e.g. to use it as a live status line.
+
+        Works because the DPG separator handle wraps a text item, which
+        set_value can rewrite in place.
+        """
+        _backend().set_value(self._handle, text)
 
 # --- --- QUATERNION AND MATH FUNCTIONS --- ---
 
