@@ -9,3 +9,4 @@ kdtree==0.16
 matplotlib==3.10.3
 dearpygui>=1.10  # control panel (HuskyMonitor.USE_DPG_UI=1); falls back to legacy PyBullet UI if absent
 opencv-python
+ur_rtde  # open_loop_engine --execute: speedJ path tracking over RTDE

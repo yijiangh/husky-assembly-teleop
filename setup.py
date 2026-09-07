@@ -43,6 +43,7 @@ setup(
         'console_scripts': [
             'husky_monitor = husky_assembly_teleop.husky_monitor:main',
             'grasp_calib_monitor = husky_assembly_teleop.grasp_calib_monitor:main',
+            'open_loop_engine = husky_assembly_teleop.open_loop_engine:main',
             'optitrack_python_sample = husky_assembly_teleop.optitrack.PythonSample:main',
             'test_mocap = husky_assembly_teleop.optitrack.test_mocap:main',
             'test_setio = husky_assembly_teleop.test_setio:main',
