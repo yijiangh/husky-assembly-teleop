@@ -88,18 +88,27 @@ class OpenLoopTraj:
     swap_arms: bool
     grasp_wait: float
 
-    def sample(self, arm_index: int, t: float) -> tuple:
+    def sample(self, arm_index: int, t: float, t_end: float = None,
+               brake_time: float = 0.0) -> tuple:
         """Reference position and velocity of one arm at an arbitrary time.
 
         Clamped at both ends like Valentin's TkSpline: before the start it
-        returns the first pose, past the end the last pose, both with zero
-        velocity. The engine relies on this for its start pre-roll (t < 0
-        holds the start pose) and its end settle (t > duration holds the
-        final pose).
+        returns the first pose, and after the cutoff it holds a resting pose.
+        The engine relies on this for its start pre-roll (t < 0 holds the
+        start pose) and its end settle.
+
+        A cutoff earlier than the end of the file is generally reached
+        MID-MOTION, where the reference still carries speed. Braking there by
+        jumping straight to "hold this pose, zero velocity" would make the
+        controller fight the arm's momentum and overshoot, so the reference
+        itself decelerates: over `brake_time` the velocity decays linearly to
+        zero while the position integrates that decay, and only then holds.
 
         Args:
             arm_index (int): 0 = left, 1 = right.
             t (float): Seconds from trajectory start.
+            t_end (float): Cutoff time [s]; defaults to the end of the file.
+            brake_time (float): Deceleration ramp after the cutoff [s].
 
         Returns:
             tuple: (q6, qd6) numpy arrays, position [rad] and velocity [rad/s].
@@ -107,9 +116,33 @@ class OpenLoopTraj:
         cols = slice(6 * arm_index, 6 * arm_index + 6)
         if t <= 0.0:
             return self.q12[0, cols].copy(), np.zeros(6)
-        if t >= self.duration:
-            return self.q12[-1, cols].copy(), np.zeros(6)
-        return self.splines[arm_index](t), self.vel_splines[arm_index](t)
+        end = self.duration if t_end is None else min(max(t_end, 0.0),
+                                                      self.duration)
+        if t < end:
+            return self.splines[arm_index](t), self.vel_splines[arm_index](t)
+        # At and past the cutoff: brake along the reference, then hold.
+        q_end = self.splines[arm_index](end)
+        qd_end = self.vel_splines[arm_index](end)
+        past = t - end
+        if brake_time > 0.0 and past < brake_time:
+            u = past / brake_time
+            return q_end + qd_end * brake_time * (u - 0.5 * u * u), \
+                qd_end * (1.0 - u)
+        return q_end + 0.5 * qd_end * brake_time, np.zeros(6)
+
+    def speed_at(self, t: float) -> float:
+        """Largest reference joint speed over both arms at one time.
+
+        Used to warn when a chosen cutoff sample lands mid-motion rather than
+        at one of the trajectory's natural still moments.
+
+        Args:
+            t (float): Seconds from trajectory start.
+
+        Returns:
+            float: max |qd_ref| across all 12 joints [rad/s].
+        """
+        return float(max(np.abs(self.sample(i, t)[1]).max() for i in range(2)))
 
     def check_velocity_limit(self, vmax: float, oversample: int = 4) -> float:
         """Largest joint speed the reference splines ever ask for.
@@ -165,6 +198,60 @@ class OpenLoopTraj:
         lines += [f'  t={ev.time:7.2f}s  {ev.kind:5s} {ARM_SIDES[ev.arm_index]}'
                   f' ({ev.robot})' for ev in self.events]
         return '\n'.join(lines)
+
+
+def _build_splines(times: np.ndarray, q12: np.ndarray,
+                   qd12: np.ndarray) -> tuple:
+    """Per-arm Hermite splines (and their derivatives) over sampled arrays.
+
+    Position AND velocity are interpolation constraints, so the splines
+    reproduce the given samples exactly at every knot.
+
+    Args:
+        times (np.ndarray): (n,) strictly increasing sample times [s].
+        q12 (np.ndarray): (n, 12) positions [rad].
+        qd12 (np.ndarray): (n, 12) velocities [rad/s].
+
+    Returns:
+        tuple: (splines, vel_splines), each a list of two scipy splines.
+    """
+    splines = [CubicHermiteSpline(times, q12[:, 6 * i:6 * i + 6],
+                                  qd12[:, 6 * i:6 * i + 6], axis=0)
+               for i in range(2)]
+    return splines, [sp.derivative() for sp in splines]
+
+
+def traj_from_arrays(times, q12, qd12, *, label: str = '<generated>',
+                     swap_arms: bool = False) -> OpenLoopTraj:
+    """Wrap already-sampled arrays as an OpenLoopTraj with no gripper events.
+
+    Used for motions the engine generates itself (the planned approach), so
+    they can run through exactly the same tracker, preview and logging as a
+    trajectory loaded from a file.
+
+    Args:
+        times (np.ndarray): (n,) sample times starting at 0 [s].
+        q12 (np.ndarray): (n, 12) positions in left+right order [rad].
+        qd12 (np.ndarray): (n, 12) velocities [rad/s].
+        label (str): Name reported in summaries and logs.
+        swap_arms (bool): Recorded for provenance only; the arrays are
+            expected to already be in physical left/right order.
+
+    Returns:
+        OpenLoopTraj: The generated trajectory.
+    """
+    times = np.asarray(times, dtype=float)
+    q12 = np.asarray(q12, dtype=float)
+    qd12 = np.asarray(qd12, dtype=float)
+    splines, vel_splines = _build_splines(times, q12, qd12)
+    return OpenLoopTraj(
+        dt=float(times[1] - times[0]) if len(times) > 1 else 0.0,
+        duration=float(times[-1]), n_samples=len(times), times=times,
+        q12=q12, qd12=qd12,
+        servo_flags=np.zeros(len(times), dtype=bool),
+        grip_closed=np.zeros((len(times), 2), dtype=bool),
+        events=[], splines=splines, vel_splines=vel_splines,
+        source_path=label, swap_arms=swap_arms, grasp_wait=0.0)
 
 
 def load_open_loop_traj(path: str, swap_arms: bool = False) -> OpenLoopTraj:
@@ -245,10 +332,7 @@ def load_open_loop_traj(path: str, swap_arms: bool = False) -> OpenLoopTraj:
     # * One Hermite spline per arm: q and qd are both interpolation
     # * constraints, so the authored trajectory is reproduced exactly at every
     # * sample -- no re-fitting drift like a plain cubic spline would have.
-    splines = [CubicHermiteSpline(times, q12[:, 6 * i:6 * i + 6],
-                                  qd12[:, 6 * i:6 * i + 6], axis=0)
-               for i in range(2)]
-    vel_splines = [sp.derivative() for sp in splines]
+    splines, vel_splines = _build_splines(times, q12, qd12)
 
     return OpenLoopTraj(
         dt=dt, duration=float(times[-1]), n_samples=len(samples), times=times,

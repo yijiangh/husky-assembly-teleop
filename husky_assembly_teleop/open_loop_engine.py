@@ -59,6 +59,10 @@ from husky_assembly_teleop.common import (Button, HistoryPlot, LiveMultiPlot,
                                           Separator, Slider, load_robot,
                                           HUSKY_DUAL_UR5e_JOINT_NAMES)
 from husky_assembly_teleop.husky_robot import HuskyRobotInterface
+from husky_assembly_teleop.open_loop_approach import (TABLE_TOP_Z,
+                                                      approach_traj_from_path,
+                                                      build_obstacles,
+                                                      plan_approach)
 from husky_assembly_teleop.open_loop_traj import (ARM_SIDES, OpenLoopTraj,
                                                   load_open_loop_traj)
 from husky_assembly_teleop.ui_backend import make_backend
@@ -112,6 +116,13 @@ MAX_MOVE_TO_START_DELTA = 1.5   # rad
 # ! Thread startup jitter therefore never desynchronizes the arms.
 START_PREROLL_S = 0.5
 END_SETTLE_S = 1.0          # keep holding the final pose this long past the end
+# ! A cutoff before the end of the file usually lands MID-MOTION. The
+# ! reference decelerates over this long instead of jumping to a standstill,
+# ! so the arm brakes along its own path rather than overshooting it.
+BRAKE_TIME_S = 0.4
+# States in which the robot is connected but standing still, so a button that
+# starts something new is allowed to act.
+IDLE_STATES = ('connected', 'ready', 'done', 'aborted')
 
 
 class OpenLoopEngine(Node):
@@ -171,6 +182,11 @@ class OpenLoopEngine(Node):
         # Displayed knuckle angle per arm; both grippers assumed open at start.
         self.grip_viz_angle = [GRIPPER_OPEN, GRIPPER_OPEN]
 
+        # * Static collision geometry: the floor and the placeholder work
+        # * table. These are the very bodies the approach planner checks
+        # * against, so what is on screen is what is avoided.
+        self.obstacles = build_obstacles(args.table_top_z, not args.no_table)
+
         # ! The backend must exist before any widget is created.
         _common._global_backend = make_backend(
             use_dpg=True,
@@ -188,9 +204,10 @@ class OpenLoopEngine(Node):
         self._slider_written = 0.0   # last value THIS code wrote to the slider
 
         # --- execute state ---
-        # state machine: disconnected -> connected -> ready -> (moving ->
-        # ready) -> tracking -> done | aborted. Buttons ignore presses in the
-        # wrong state and say why in the log.
+        # state machine: disconnected -> connected -> ready -> tracking ->
+        # done | aborted, with 'moving' and 'previewing' as transient busy
+        # states. Buttons ignore presses in the wrong state and say why in the
+        # log.
         self.state = 'disconnected'
         self.rtde_c = [None, None]
         self.rtde_r = [None, None]
@@ -207,6 +224,23 @@ class OpenLoopEngine(Node):
         self.fired_events = []
         self._log_saved = True            # nothing to save until a run starts
         self.last_run_folder = None
+        # * Cutoff: run only the first N samples (1-based, as the readouts
+        # * count). Set from the slider at START; the events past it never fire.
+        self.end_idx = min(args.end_sample or self.traj.n_samples,
+                           self.traj.n_samples)
+        self.t_end = float(self.traj.times[self.end_idx - 1])
+        self.run_events = list(self.traj.events)
+        # * Approach motion: planned on demand, then executed by the very same
+        # * tracker threads, so it inherits their safety net and logging.
+        # * active_traj is what the trackers follow -- the file's trajectory
+        # * normally, the planned approach while that is running.
+        self.active_traj = self.traj
+        self.run_label = 'trajectory'
+        self.approach_traj = None
+        self.preview_t = 0.0
+        # Written by the planning worker, rendered by the UI thread, so no
+        # widget is ever touched from a background thread.
+        self.approach_msg = 'approach: not planned'
 
         self.build_ui()
         self.tick_timer = self.create_timer(TICK_PERIOD_S, self.update)
@@ -245,7 +279,27 @@ class OpenLoopEngine(Node):
                 f'gripper={"OFF (log only)" if self.args.no_gripper else "ROS"}'))
             self.widgets.append(Button('Connect RTDE', self.on_connect))
             self.widgets.append(Button('Check start pose', self.on_check_start_pose))
-            self.widgets.append(Button('Move to start (slow)', self.on_move_to_start))
+            self.widgets.append(Button('Plan approach to start',
+                                       self.on_plan_approach))
+            self.widgets.append(Button('Preview approach',
+                                       self.on_preview_approach))
+            self.widgets.append(Button('Execute approach',
+                                       self.on_execute_approach))
+            self.approach_sep = Separator(self.approach_msg)
+            self.widgets.append(self.approach_sep)
+            # Kept as an escape hatch: a straight joint-space move with NO
+            # collision checking, for when the planner cannot find a way out.
+            self.widgets.append(Button('Move to start (BLIND moveJ)',
+                                       self.on_move_to_start))
+            # * How much of the trajectory to run. Read live at START -- a
+            # * slider's on-change callback can be missed, but the widget
+            # * always holds the real position (same idiom as Slider.value).
+            self.end_slider = Slider('run until sample', lambda *_: None,
+                                     1, self.traj.n_samples, self.end_idx,
+                                     integer=True)
+            self.widgets.append(self.end_slider)
+            self.cutoff_sep = Separator('')
+            self.widgets.append(self.cutoff_sep)
             self.widgets.append(Button('START TRACKING', self.on_start))
             self.widgets.append(Button('STOP', self.on_stop))
             self.delta_sep = Separator('start pose: not checked')
@@ -386,7 +440,7 @@ class OpenLoopEngine(Node):
         connections are still up and the tracker threads have ended, so the
         operator can re-arm and run again without restarting the program.
         """
-        if self.state not in ('connected', 'ready', 'done', 'aborted'):
+        if self.state not in IDLE_STATES:
             self.get_logger().warn(f'Check ignored in state {self.state}')
             return
         self.start_deltas = []
@@ -407,8 +461,12 @@ class OpenLoopEngine(Node):
             f'tol {self.args.start_tol})')
 
     def on_move_to_start(self):
-        """Slow sequential moveJ of both arms to the first trajectory sample."""
-        if self.state not in ('connected', 'ready', 'done', 'aborted'):
+        """Slow sequential moveJ of both arms to the first trajectory sample.
+
+        ! No collision checking whatsoever -- a straight line in joint space.
+        ! Prefer 'Plan approach to start'; this stays only as an escape hatch.
+        """
+        if self.state not in IDLE_STATES:
             self.get_logger().warn(f'Move-to-start ignored in state {self.state}')
             return
         if self.start_deltas is None:
@@ -443,11 +501,36 @@ class OpenLoopEngine(Node):
         threading.Thread(target=worker, daemon=True).start()
 
     def on_start(self):
-        """Arm and launch the two tracker threads on one shared clock."""
+        """Run the loaded trajectory up to the slider's cutoff sample."""
         if self.state != 'ready':
             self.get_logger().warn(
                 f'START ignored in state {self.state} (need a passed Check)')
             return
+        # Freeze the cutoff for this run: reference, break condition and the
+        # gripper event list all follow from it.
+        self.end_idx = self._read_end_idx()
+        t_end = float(self.traj.times[self.end_idx - 1])
+        events = [ev for ev in self.traj.events if ev.time <= t_end]
+        self.get_logger().info(
+            f'tracking started: samples 1..{self.end_idx} of '
+            f'{self.traj.n_samples}, {t_end:.1f}s to go, {len(events)} '
+            f'gripper events (reference speed at the cutoff '
+            f'{self.traj.speed_at(t_end):.3f} rad/s)')
+        self._launch_trackers(self.traj, t_end, events, 'trajectory')
+
+    def _launch_trackers(self, traj, t_end: float, events: list, label: str):
+        """Start one tracker thread per arm, both on one shared clock.
+
+        Args:
+            traj (OpenLoopTraj): Reference the threads follow.
+            t_end (float): Cutoff time [s].
+            events (list): Gripper events to fire during this run.
+            label (str): 'trajectory' or 'approach'; names the log folder.
+        """
+        self.active_traj = traj
+        self.t_end = t_end
+        self.run_events = events
+        self.run_label = label
         self.exec_log = [{k: [] for k in ('t', 'q_ref', 'q_actual', 'qd_cmd')}
                          for _ in range(2)]
         self.thread_done = [False, False]
@@ -465,8 +548,80 @@ class OpenLoopEngine(Node):
         self.state = 'tracking'
         for th in self.threads:
             th.start()
+
+    # --- --- EXECUTE MODE: APPROACH MOTION --- ---
+
+    def _live_q12(self) -> np.ndarray:
+        """Both arms' live joint configuration as one 12-vector."""
+        return np.concatenate([np.asarray(self.rtde_r[i].getActualQ())
+                               for i in range(2)])
+
+    def on_plan_approach(self):
+        """Plan a collision-checked path from the live pose to sample 0."""
+        if self.state not in IDLE_STATES:
+            self.get_logger().warn(f'Plan ignored in state {self.state}')
+            return
+        start_q12 = self._live_q12()
+        goal_q12 = self.traj.q12[0]
+        # ! Runs inline, like the monitor's planning buttons: the search and
+        # ! the 3D view share one PyBullet world, so nothing else may touch it
+        # ! meanwhile. The window freezes for the search (bounded by the two
+        # ! passes' time budgets) while the arms stand still.
+        self.get_logger().info('planning the approach, the window will not '
+                               'respond until it finishes ...')
+        try:
+            attachments = [grip[1] for grip in self.viz_grippers]
+            path, info = plan_approach(
+                self.viz_robot, attachments, self.obstacles,
+                start_q12, goal_q12, log=self.get_logger().info)
+        except Exception as e:
+            path, info = None, {'failure_reason': f'error {e}'}
+            self.get_logger().error(f'approach planning error: {e}')
+        if path is None:
+            self.approach_traj = None
+            self.approach_msg = f'approach: FAILED ({info.get("failure_reason")})'
+            return
+        self.approach_traj = approach_traj_from_path(
+            path, max_joint_vel=self.args.approach_vel)
+        self.approach_msg = (f'approach: {len(path)} waypoints, '
+                             f'{self.approach_traj.duration:.1f}s at '
+                             f'{self.args.approach_vel} rad/s -- preview it')
+        self.get_logger().info(self.approach_msg)
+
+    def on_preview_approach(self):
+        """Play the planned approach in the 3D view without moving anything."""
+        if self.approach_traj is None:
+            self.get_logger().warn('no approach planned yet')
+            return
+        if self.state not in IDLE_STATES:
+            self.get_logger().warn(f'Preview ignored in state {self.state}')
+            return
+        self.preview_t = 0.0
+        self._preview_wall = time.monotonic()
+        self.state = 'previewing'
+
+    def on_execute_approach(self):
+        """Run the planned approach through the normal tracker threads."""
+        if self.approach_traj is None:
+            self.get_logger().warn('no approach planned yet')
+            return
+        if self.state not in IDLE_STATES:
+            self.get_logger().warn(f'Execute ignored in state {self.state}')
+            return
+        # ! The plan is only valid from the pose it was planned at. If the
+        # ! arms moved since (a jog, an earlier run), the first tracked
+        # ! reference would yank them back along an unchecked line.
+        drift = np.abs(self._live_q12() - self.approach_traj.q12[0]).max()
+        if drift > self.args.start_tol:
+            self.get_logger().error(
+                f'arms moved {drift:.3f} rad since the approach was planned '
+                f'(tolerance {self.args.start_tol}) -- plan it again')
+            return
         self.get_logger().info(
-            f'tracking started, {self.traj.duration:.1f}s to go')
+            f'executing approach: {self.approach_traj.duration:.1f}s, '
+            f'peak {np.abs(self.approach_traj.qd12).max():.3f} rad/s')
+        self._launch_trackers(self.approach_traj,
+                              self.approach_traj.duration, [], 'approach')
 
     def on_stop(self):
         """Operator STOP: halt both arms, save what was recorded."""
@@ -480,6 +635,34 @@ class OpenLoopEngine(Node):
                 '(or use the pendant e-stop)')
         else:
             self.get_logger().warn(f'STOP ignored in state {self.state}')
+
+    def _read_end_idx(self) -> int:
+        """Cutoff sample number read live from the slider, clamped in range.
+
+        Returns:
+            int: 1-based sample index to stop at (falls back to the stored
+            value if the widget cannot be read).
+        """
+        value = self.end_slider.value
+        if value is None:
+            return self.end_idx
+        return int(min(max(int(round(float(value))), 1), self.traj.n_samples))
+
+    def _refresh_cutoff_text(self):
+        """Describe the slider's cutoff: time, events kept, and speed there.
+
+        The speed matters: stopping where the reference is still moving means
+        braking mid-motion, so the operator is warned to pick one of the
+        trajectory's still moments instead.
+        """
+        idx = self._read_end_idx()
+        t_end = float(self.traj.times[idx - 1])
+        speed = self.traj.speed_at(t_end)
+        n_events = sum(1 for ev in self.traj.events if ev.time <= t_end)
+        note = '' if speed <= 0.05 else f'  ! still moving {speed:.2f} rad/s'
+        self.cutoff_sep.set_text(
+            f'-> sample {idx}/{self.traj.n_samples}  t={t_end:.2f}s  '
+            f'{n_events} gripper events{note}')
 
     # --- --- EXECUTE MODE: TRACKING --- ---
 
@@ -503,7 +686,8 @@ class OpenLoopEngine(Node):
             while not self.stop_evt.is_set():
                 t_cycle = rtde_c.initPeriod()
                 t = time.monotonic() - self.exec_t0
-                q_ref, qd_ref = self.traj.sample(arm_i, t)
+                q_ref, qd_ref = self.active_traj.sample(
+                    arm_i, t, t_end=self.t_end, brake_time=BRAKE_TIME_S)
                 q_act = np.asarray(rtde_r.getActualQ())
                 err = q_ref - q_act
                 if np.abs(err).max() > self.args.err_abort:
@@ -522,8 +706,8 @@ class OpenLoopEngine(Node):
                 log['q_ref'].append(q_ref)
                 log['q_actual'].append(q_act)
                 log['qd_cmd'].append(qd_cmd)
-                if t > self.traj.duration + END_SETTLE_S:
-                    break   # final pose held long enough -- clean finish
+                if t > self.t_end + BRAKE_TIME_S + END_SETTLE_S:
+                    break   # braked and held long enough -- clean finish
                 rtde_c.waitPeriod(t_cycle)
         except Exception as e:
             self.thread_error[arm_i] = str(e)
@@ -550,28 +734,43 @@ class OpenLoopEngine(Node):
             self._plot_q12 = np.concatenate(self.live_q)
 
         status = f'state: {self.state}'
-        if self.state == 'tracking':
+        if self.state == 'previewing':
+            # Play the planned approach in the 3D view only; nothing moves.
+            now = time.monotonic()
+            self.preview_t += now - self._preview_wall
+            self._preview_wall = now
+            traj = self.approach_traj
+            self._plot_q12 = traj.q12[traj.state_at(self.preview_t)]
+            status = (f'PREVIEW approach t={self.preview_t:4.1f}/'
+                      f'{traj.duration:.1f}s (nothing is moving)')
+            if self.preview_t >= traj.duration:
+                self.state = 'connected'
+        elif self.state == 'tracking':
             t = time.monotonic() - self.exec_t0
             # Fire every gripper event whose time has come (<= 50 ms late,
             # ample against the 0.5 s hold the planner builds around closes).
-            while (self.next_event_idx < len(self.traj.events)
-                   and self.traj.events[self.next_event_idx].time <= t):
-                self._fire_gripper_event(self.traj.events[self.next_event_idx], t)
+            while (self.next_event_idx < len(self.run_events)
+                   and self.run_events[self.next_event_idx].time <= t):
+                self._fire_gripper_event(self.run_events[self.next_event_idx], t)
                 self.next_event_idx += 1
             for i in range(2):
                 self.err_plots[i].push([float(v) for v in self.live_err[i]],
                                        x=max(t, 0.0))
-            nxt = (self.traj.events[self.next_event_idx]
-                   if self.next_event_idx < len(self.traj.events) else None)
-            status = (f'TRACKING t={t:7.1f}/{self.traj.duration:.1f}s'
+            nxt = (self.run_events[self.next_event_idx]
+                   if self.next_event_idx < len(self.run_events) else None)
+            status = (f'TRACKING {self.run_label} t={t:7.1f}/{self.t_end:.1f}s'
                       + (f' | next: {nxt.kind} {ARM_SIDES[nxt.arm_index]} '
                          f'@{nxt.time:.1f}s' if nxt else ' | no more events'))
             if all(self.thread_done):
                 self._finish()
                 status = f'state: {self.state}'
+        else:
+            # Idle: keep the cutoff readout following the slider.
+            self._refresh_cutoff_text()
         if self.last_run_folder:
             status += f' | saved -> {self.last_run_folder}'
         self.status_sep.set_text(status)
+        self.approach_sep.set_text(self.approach_msg)
 
     def _fire_gripper_event(self, ev, t_now: float):
         """Send (or just log) one gripper command scheduled by the trajectory.
@@ -602,7 +801,7 @@ class OpenLoopEngine(Node):
         self.event_sep.set_text(
             f'gripper: {ev.kind} {ARM_SIDES[ev.arm_index]} @{ev.time:.2f}s '
             f'({record["status"]}, {len(self.fired_events)}'
-            f'/{len(self.traj.events)})')
+            f'/{len(self.run_events)})')
         self.get_logger().info(f'gripper event: {record}')
 
     # --- --- EXECUTE MODE: FINISH / ABORT / SAVE --- ---
@@ -615,9 +814,13 @@ class OpenLoopEngine(Node):
         if errors:
             self.state = 'aborted'
             self._save_run_log('aborted: ' + '; '.join(errors))
-        else:
-            self.state = 'done'
-            self._save_run_log('done')
+            return
+        self.state = 'done'
+        self._save_run_log('done')
+        if self.run_label == 'approach':
+            # The arms should now be sitting on the trajectory's first sample;
+            # confirm it right away so START becomes available (or not).
+            self.on_check_start_pose()
 
     def _stop_tracking(self, reason: str):
         """Stop a live run from outside the tracker threads (STOP/close/^C).
@@ -660,7 +863,7 @@ class OpenLoopEngine(Node):
         stem = os.path.splitext(os.path.basename(self.traj.source_path))[0]
         folder = os.path.join(
             os.path.dirname(self.traj.source_path),
-            f'{stem}-run-{datetime.now():%Y%m%d-%H%M%S}')
+            f'{stem}-{self.run_label}-{datetime.now():%Y%m%d-%H%M%S}')
         os.makedirs(folder, exist_ok=True)
 
         arrays = {}
@@ -671,9 +874,13 @@ class OpenLoopEngine(Node):
 
         info = {
             'outcome': outcome,
+            'what_ran': self.run_label,
             'traj_json': self.traj.source_path,
             'args': vars(self.args),
             'started_preroll_s': START_PREROLL_S,
+            'end_sample': self.end_idx,
+            'end_time_s': self.t_end,
+            'n_samples_in_file': self.traj.n_samples,
             'start_deltas': [d.tolist() for d in (self.start_deltas or [])],
             'events_fired': self.fired_events,
             'thread_errors': self.thread_error,
@@ -728,8 +935,9 @@ class OpenLoopEngine(Node):
                 ax.legend(loc='upper right', fontsize=7, ncol=3)
                 if row == 2:
                     ax.set_xlabel('trajectory time [s]')
-        fig.suptitle(f'{os.path.basename(self.traj.source_path)}  '
-                     f'({datetime.now():%Y-%m-%d %H:%M})', fontsize=13)
+        fig.suptitle(f'{os.path.basename(self.traj.source_path)} '
+                     f'[{self.run_label}]  ({datetime.now():%Y-%m-%d %H:%M})',
+                     fontsize=13)
         fig.savefig(os.path.join(folder, 'plots.png'), dpi=110,
                     bbox_inches='tight')
 
@@ -783,6 +991,17 @@ def main(args=None):
                      help='per-joint tracking error that aborts the run [rad]')
     cli.add_argument('--no-gripper', action='store_true',
                      help='log gripper events instead of sending them')
+    cli.add_argument('--approach-vel', type=float, default=0.25,
+                     help='peak joint speed of the planned approach [rad/s]')
+    cli.add_argument('--no-table', action='store_true',
+                     help='drop the placeholder work table from the '
+                          'planning scene')
+    cli.add_argument('--table-top-z', type=float, default=TABLE_TOP_Z,
+                     help='height of the placeholder table top [m] '
+                          '(default: half the arm base height)')
+    cli.add_argument('--end-sample', type=int, default=0,
+                     help='initial value of the "run until sample" slider '
+                          '(1-based; 0 = the whole trajectory)')
     parsed = cli.parse_args(remove_ros_args(sys.argv if args is None else args)[1:])
 
     if parsed.execute and RTDEControlInterface is None:
