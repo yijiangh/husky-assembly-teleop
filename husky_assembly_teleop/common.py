@@ -515,6 +515,15 @@ class Toggle:
     def update(self):
         _backend().poll(self._handle, "checkbox", self.action)
 
+    @property
+    def value(self):
+        """Current checkbox state read live from the backend widget (or None).
+
+        Same reasoning as `Slider.value`: reading the widget cannot go stale,
+        while a state kept by the on-change callback can be missed.
+        """
+        return _backend().get_value(self._handle)
+
 
 class Dropdown:
     """Select-one combo box. action receives the selected index (int)."""

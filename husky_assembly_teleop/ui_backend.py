@@ -127,6 +127,19 @@ class UIBackend:
     def add_separator(self, label: str) -> int:
         raise NotImplementedError
 
+    def add_key_handler(self, key: str, on_press: Callable[[], None]) -> None:
+        """Call `on_press` once every time the named key is pressed.
+
+        Optional: a backend without keyboard support simply logs and does
+        nothing, so a caller can always offer the shortcut alongside a button.
+
+        Args:
+            key (str): Key name, e.g. "space".
+            on_press (Callable): Called once per press, on the UI thread.
+        """
+        logger.warning(f"keyboard shortcut '{key}' needs the DearPyGui "
+                       f"backend -- use the button instead")
+
     def begin_group(self, label: str, *, collapsible: bool = True) -> None:
         raise NotImplementedError
 
@@ -459,6 +472,42 @@ class DearPyGuiBackend(UIBackend):
         h = self._new_handle()
         self._handles[h] = {"kind": "button", "tag": tag}
         return h
+
+    def add_key_handler(self, key, on_press):
+        """Call `on_press` once every time the named key is pressed.
+
+        The callback runs inside `render_dearpygui_frame()`, i.e. on whichever
+        thread calls `step()` -- the same thread every button callback runs on,
+        so no locking is needed.
+
+        ! DPG repeats the press callback while the key is HELD DOWN (imgui's
+        ! key repeat, after ~0.28 s). For a toggle that would flip back and
+        ! forth on its own, so a press only counts once the key has been
+        ! released again: the press sets `held`, the release clears it.
+
+        Args:
+            key (str): Key name; only "space" is mapped so far.
+            on_press (Callable): Called once per press, on the UI thread.
+        """
+        dpg = self.dpg
+        codes = {"space": dpg.mvKey_Spacebar}
+        if key not in codes:
+            logger.warning(f"unmapped key name '{key}' -- shortcut not bound")
+            return
+        state = {"held": False}
+
+        def _pressed(*_a):
+            if state["held"]:
+                return
+            state["held"] = True
+            on_press()
+
+        def _released(*_a):
+            state["held"] = False
+
+        with dpg.handler_registry():
+            dpg.add_key_press_handler(key=codes[key], callback=_pressed)
+            dpg.add_key_release_handler(key=codes[key], callback=_released)
 
     def add_slider_float(self, label, vmin, vmax, default, on_change):
         dpg = self.dpg

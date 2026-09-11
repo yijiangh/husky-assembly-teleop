@@ -706,11 +706,39 @@ class HuskyRobotInterface:
         
         self.pub_cmd_arm_cartesian_force[index].publish(msg)
         
-    def send_gripper_cmd(self, pos, effort, index=0):
+    def send_gripper_cmd(self, pos, effort, index=0, on_result=None):
+        """Command one gripper through its GripperCommand action.
+
+        Args:
+            pos (float): Target knuckle angle [rad] (0 = open, ~0.8 = closed).
+            effort (float): The goal's max_effort. ! The humble
+                GripperActionController never forwards this to the Robotiq
+                hardware -- the grip force comes from the driver's own
+                setting (see doc/rtde_network_setup.md).
+            index (int): 0 = left, 1 = right.
+            on_result (callable): Optional `fn(status, result)` called once
+                the action has finished: `status` is an action_msgs
+                GoalStatus code (None if the goal was rejected) and `result`
+                the GripperCommand.Result -- position, effort, `stalled`,
+                `reached_goal`. On a close, `stalled` means the fingers met
+                something and `reached_goal` means they met NOTHING, so this
+                is the grasp check. None keeps the old fire-and-forget.
+        """
         goal = GripperCommand.Goal()
         goal.command.position = pos
         goal.command.max_effort = effort
-        self.act_grippers[index].send_goal_async(goal)
+        future = self.act_grippers[index].send_goal_async(goal)
+        if on_result is None:
+            return
+
+        def accepted(goal_future):
+            handle = goal_future.result()
+            if handle is None or not handle.accepted:
+                on_result(None, None)
+                return
+            handle.get_result_async().add_done_callback(
+                lambda rf: on_result(rf.result().status, rf.result().result))
+        future.add_done_callback(accepted)
         
     def send_dual_arm_cmd(self, multi_arm_trajectory):
         # raise NotImplementedError("Multi-arm trajectory control is not implemented in this interface.")

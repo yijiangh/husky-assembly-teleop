@@ -33,10 +33,16 @@ punch_validation:
 # Punch tool calibration validation settings
 # Translation-only offset from tool0 flange to punch tip (meters)
 # Obtained via UR 4-point TCP calibration
-# Left: mm -> m, [-0.15, -3.75, 118.72] -> [-0.00015, -0.00375, 0.11872]
+#
+# LEFT, 2026-09-09: punch re-mounted on the left arm and calibrated again.
+#   mm -> m, [-3.25, 0.48, 118.32] -> [-0.00325, 0.00048, 0.11832]
+#   Superseded 2026-06-22 value: [-0.00015, -0.00375, 0.11872]. The tip moved ~3.6 mm
+#   sideways and 0.4 mm shorter, which is a re-mount, not drift -- so the old value must
+#   NOT be used with the current tool.
 # Right: mm -> m, [0.17, 3.63, 118.84] -> [0.00017, 0.00363, 0.11884]
+#   Still the 2026-06-22 calibration; the punch is not on that arm now.
 punch_tool:
   left:
-    offset_xyz: [-0.00015, -0.00375, 0.11872]
+    offset_xyz: [-0.00325, 0.00048, 0.11832]
   right:
     offset_xyz: [0.00017, 0.00363, 0.11884]

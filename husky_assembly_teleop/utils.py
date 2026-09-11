@@ -50,13 +50,28 @@ def mocap_quat_y_up_to_z_up(quat, convention='rhino'):
         return [qz, qx, qy, qw]
     raise ValueError(f"unknown mocap axis convention {convention!r}")
 
+# ! How far the gripper's own base sits off the UR flange: the thickness of the
+# ! Robotiq COUPLING, which is not optional -- it carries the electrical
+# ! contacts, so the gripper never touches the flange.
+# ! The number comes from the 2F-85 instruction manual. Its TCP table (6.2.3)
+# ! gives 171.0 mm flange-to-closed-fingertips WITH the coupling, and fig. 6-2
+# ! gives 162.8 mm for the gripper alone, so the legacy AGC-CPL-062-002 adds
+# ! 8.2 mm; fig. 6-6 agrees (13.9 mm plate, less its 3.0 mm and 2.9 mm pilot
+# ! pockets). These arms carry the current GRP-CPL-062, which Robotiq documents
+# ! as 3 mm thicker => 11.2 mm. Caliper check: raised flange face to the
+# ! gripper's 75 mm body face reads ~13.9 mm (~10.9 with the legacy coupling).
+# ! The planner uses the same value in husky_calibrated.g; keep them together.
+ROBOTIQ_COUPLING_M = 0.0112
+
 # <link name="bar_tcp"/>
 # <joint name="tool0-bar_tcp_fixed_joint" type="fixed">
 #   <origin rpy="0 0 3.141592653589793" xyz="0 0 0.152"/>
 #   <parent link="robotiq_85_mount"/>
 #   <child link="bar_tcp"/>
 # </joint>
-TOOL0_FROM_GRIPPER_TCP = pp.Pose(point=(0, 0, 0.152 + 0.012), euler=pp.Euler(yaw=np.pi))
+# 0.152 is the gripper's own base-to-TCP length, above the coupling.
+TOOL0_FROM_GRIPPER_TCP = pp.Pose(point=(0, 0, 0.152 + ROBOTIQ_COUPLING_M),
+                                 euler=pp.Euler(yaw=np.pi))
 
 UR5E_JOINT_NAMES = [
                       "ur_arm_shoulder_pan_joint", 

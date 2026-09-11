@@ -5,3 +5,20 @@ build
 .DS_Store
 temp
 reports
+# Claude Code working plans written by /plan (move a plan worth keeping to doc/)
+.claude/plans/
+
+.claude/settings.json
+
+.claude/skills/implement/SKILL.md
+
+.claude/skills/plan/SKILL.md
+
+# Test fixtures that regenerate themselves, and the run logs the engine drops
+# next to whatever trajectory it just ran. Only the hand-written stool_* fixtures
+# in scripts/test_data are worth keeping.
+scripts/test_data/flow_traj.json
+scripts/test_data/flow_plan.json
+scripts/test_data/pick_traj.json
+scripts/test_data/pick_plan.json
+scripts/test_data/*-trajectory-*/
