@@ -35,6 +35,11 @@ husky model mirroring the live joint states while free-driving.
 Run (after colcon build):
     ros2 run husky_assembly_teleop grasp_calib_monitor
     ros2 run husky_assembly_teleop grasp_calib_monitor --check   # hardware preflight
+    ros2 run husky_assembly_teleop grasp_calib_monitor --replot [FOLDER ...]
+
+--replot needs no robot: it re-renders plots.png for saved takes (by default
+every take under the output root that has none), and repairs a take whose
+columns came out ragged. See doc/grasp_force_calibration_manual.md.
 """
 
 import json
@@ -398,6 +403,20 @@ class GraspCalibRecorder(Node):
 
     def _save(self):
         """Write the finished take to its own timestamped Insync subfolder."""
+        # ! Stop sampling BEFORE touching the buffers, and write a private copy
+        # ! of them. Saving used to hand json.dump the live buffers while the
+        # ! 20 Hz tick was still appending to them, so the file came out torn:
+        # ! `t` was serialized before the next sample landed and the arm columns
+        # ! after it, leaving every arm column one sample longer than `t` (and,
+        # ! in one take, one arm's columns disagreeing with each other). Every
+        # ! reader then had to deal with columns of different lengths, and
+        # ! plots.png simply failed -- that is why some takes have no figure.
+        self.state = 'idle'        # plots keep their curves until the next Start
+        samples, culled = align_samples(self.samples)
+        if culled:
+            self.get_logger().warn(
+                f'dropped {culled} trailing value(s) that arrived mid-save, so '
+                f'every column is the same length')
         folder = os.path.join(
             OUTPUT_ROOT,
             f'{self._recorded_at:%Y%m%d-%H%M}-{self.experiment_name}')
@@ -408,7 +427,7 @@ class GraspCalibRecorder(Node):
             'recorded_at': self._recorded_at.isoformat(timespec='seconds'),
             'robot': ROBOT_NAME,
             'sample_period_s': TICK_PERIOD_S,
-            'n_samples': len(self.samples['t']),
+            'n_samples': len(samples['t']),
             # Everything a future reader needs to interpret the numbers.
             'frames': {
                 'wrench': 'UR ft_sensor_wrench in the tool0 frame; RAW values, '
@@ -419,7 +438,7 @@ class GraspCalibRecorder(Node):
                 'euler': 'static xyz (URDF RPY convention), degrees',
                 'position_unit': 'm',
             },
-            'samples': self.samples,
+            'samples': samples,
         }
         out_path = os.path.join(folder, 'record.json')
         with open(out_path, 'w') as f:
@@ -427,82 +446,15 @@ class GraspCalibRecorder(Node):
         # Static matplotlib snapshot of the take next to the JSON. A plotting
         # problem must never lose data, so it only warns on failure.
         try:
-            self._save_plots_png(folder)
+            render_take_plots(
+                samples,
+                f'{self.experiment_name}  ({self._recorded_at:%Y-%m-%d %H:%M})',
+                os.path.join(folder, 'plots.png'))
         except Exception as e:
             self.get_logger().warn(f'plots.png generation failed: {e}')
         self.last_saved_path = out_path
-        self.state = 'idle'   # plots keep their curves until the next Start
         self.get_logger().info(
             f'Saved {payload["n_samples"]} samples -> {out_path}')
-
-    def _save_plots_png(self, folder: str):
-        """Render the recorded take as one static matplotlib image (plots.png).
-
-        Mirrors the live DPG plots, but over the WHOLE take (the on-screen
-        wrench plots only show a scrolling window): force and torque as
-        left | right subplot pairs with a shared y scale per row, EE position
-        and orientation of both arms, and the right-arm joint angles.
-
-        Args:
-            folder (str): The take's output folder (where record.json lives).
-        """
-        t = self.samples['t']
-        if not t:
-            return
-        # Same color families as the DPG plots: left arm reds, right greens.
-        mpl_colors = {side: [tuple(c / 255.0 for c in rgb) for rgb in arm_rgb]
-                      for side, arm_rgb in (('left', LEFT_RGB), ('right', RIGHT_RGB))}
-        wrench = {side: np.asarray(self.samples[side]['wrench_raw'])
-                  for side in ARM_SIDES}
-
-        fig = Figure(figsize=(14, 16))
-        grid = fig.add_gridspec(4, 2, hspace=0.4, wspace=0.25)
-
-        # Rows 0-1: force / torque, one column per arm, shared y scale per row.
-        for row, (cols, unit, title) in enumerate(
-                ((slice(0, 3), 'force [N]', 'tool0 force (raw)'),
-                 (slice(3, 6), 'torque [Nm]', 'tool0 torque (raw)'))):
-            ax_left = fig.add_subplot(grid[row, 0])
-            ax_right = fig.add_subplot(grid[row, 1], sharey=ax_left)
-            for ax, side in ((ax_left, 'left'), (ax_right, 'right')):
-                for k, label in enumerate(AXIS_LABELS):
-                    ax.plot(t, wrench[side][:, cols][:, k],
-                            color=mpl_colors[side][k], label=label)
-                ax.set_title(f'{side} {title}')
-                ax.set_ylabel(unit)
-                ax.grid(alpha=0.3)
-                ax.legend(loc='upper right', fontsize=8)
-
-        # Row 2: EE position [mm] and orientation [deg], both arms together.
-        for col, (key, scale, unit, title) in enumerate(
-                (('ee_pos', 1000.0, 'position [mm]', 'tool0 position'),
-                 ('ee_euler_deg', 1.0, 'euler xyz [deg]', 'tool0 orientation'))):
-            ax = fig.add_subplot(grid[2, col])
-            for side, prefix in (('left', 'L'), ('right', 'R')):
-                data = np.asarray(self.samples[side][key]) * scale
-                for k, label in enumerate(AXIS_LABELS):
-                    ax.plot(t, data[:, k], color=mpl_colors[side][k],
-                            label=f'{prefix} {label}')
-            ax.set_title(title)
-            ax.set_ylabel(unit)
-            ax.grid(alpha=0.3)
-            ax.legend(loc='upper right', fontsize=8, ncol=2)
-
-        # Row 3: right-arm joint angles across the take, spanning both columns.
-        ax = fig.add_subplot(grid[3, :])
-        q_right = np.asarray(self.samples['right']['q'])
-        for k, label in enumerate(JOINT_LABELS):
-            ax.plot(t, q_right[:, k], label=label)
-        ax.set_title('right arm joints')
-        ax.set_ylabel('angle [rad]')
-        ax.set_xlabel('time since recording start [s]')
-        ax.grid(alpha=0.3)
-        ax.legend(loc='upper right', fontsize=8, ncol=3)
-
-        fig.suptitle(f'{self.experiment_name}  ({self._recorded_at:%Y-%m-%d %H:%M})',
-                     fontsize=14)
-        fig.savefig(os.path.join(folder, 'plots.png'), dpi=110,
-                    bbox_inches='tight')
 
     def destroy_node(self):
         if _common._global_backend is not None:
@@ -512,6 +464,137 @@ class GraspCalibRecorder(Node):
                 self.get_logger().warn(f'UI backend shutdown error: {e}')
             _common._global_backend = None
         super().destroy_node()
+
+
+def align_samples(samples):
+    """Cut every column back to the shortest one, so the take is rectangular.
+
+    A take is stored column by column (`t`, and per arm `wrench_raw`, `q`, ...),
+    one value per column per 20 Hz tick. A save that ran while the tick was
+    still appending left some columns one value longer than the others, which no
+    reader (matplotlib included) can use. Dropping those trailing values costs
+    at most the last 50 ms of a take and makes it readable again.
+
+    Args:
+        samples (dict): A take's `samples` block. Not modified.
+
+    Returns:
+        tuple[dict, int]: A copy with every column the same length, and how many
+        values were dropped in total.
+    """
+    columns = [samples['t']] + [col for side in ARM_SIDES
+                                for col in samples.get(side, {}).values()]
+    columns = [c for c in columns if c is not None]
+    n = min((len(c) for c in columns), default=0)
+    culled = sum(len(c) - n for c in columns)
+    aligned = {'t': list(samples['t'][:n])}
+    for side in ARM_SIDES:
+        aligned[side] = {k: list(v[:n]) for k, v in samples.get(side, {}).items()}
+    return aligned, culled
+
+
+def render_take_plots(samples, title: str, out_path: str, wrench_frame: str = 'tool0'):
+    """Render one take as a static matplotlib image, saved next to its data.
+
+    Mirrors the live DPG plots, but over the WHOLE take (the on-screen wrench
+    plots only show a scrolling window): force and torque as left | right
+    subplot pairs with a shared y scale per row, EE position and orientation of
+    both arms, and the right-arm joint angles.
+
+    A panel whose column is missing or empty is left out, so a capture that
+    holds a wrench and nothing else (the 2026-09-09 hand pull test, which came
+    from RTDE rather than from this recorder) still produces a figure.
+
+    Args:
+        samples (dict): The take's `samples` block: `t`, plus a `left` and a
+            `right` dict of equal-length columns (see align_samples).
+        title (str): Figure title, normally "<experiment>  (<date> <time>)".
+        out_path (str): Where to write the PNG.
+        wrench_frame (str): Frame the wrench is expressed in, for the panel
+            titles. This recorder logs tool0; the RTDE pull test logged base.
+    """
+    t = samples['t']
+    if not t:
+        return
+
+    def column(side, key):
+        """The named column of one arm as an (n, k) array, or None if absent."""
+        values = samples.get(side, {}).get(key)
+        return np.asarray(values, dtype=float) if values else None
+
+    # Same color families as the DPG plots: left arm reds, right greens.
+    mpl_colors = {side: [tuple(c / 255.0 for c in rgb) for rgb in arm_rgb]
+                  for side, arm_rgb in (('left', LEFT_RGB), ('right', RIGHT_RGB))}
+
+    fig = Figure(figsize=(14, 16))
+    grid = fig.add_gridspec(4, 2, hspace=0.4, wspace=0.25)
+    drawn_axes = []              # (grid row, axis) for every panel that got data
+
+    # Rows 0-1: force / torque, one column per arm, shared y scale per row.
+    for row, (cols, unit, panel) in enumerate(
+            ((slice(0, 3), 'force [N]', f'{wrench_frame} force (raw)'),
+             (slice(3, 6), 'torque [Nm]', f'{wrench_frame} torque (raw)'))):
+        axes, ax_first = [], None
+        for col, side in enumerate(ARM_SIDES):
+            wrench = column(side, 'wrench_raw')
+            if wrench is None:
+                continue
+            ax = fig.add_subplot(grid[row, col], sharey=ax_first)
+            ax_first = ax_first or ax
+            for k, label in enumerate(AXIS_LABELS):
+                ax.plot(t, wrench[:, cols][:, k],
+                        color=mpl_colors[side][k], label=label)
+            ax.set_title(f'{side} {panel}')
+            ax.set_ylabel(unit)
+            axes.append(ax)
+        for ax in axes:
+            ax.grid(alpha=0.3)
+            ax.legend(loc='upper right', fontsize=8)
+            drawn_axes.append((row, ax))
+
+    # Row 2: EE position [mm] and orientation [deg], both arms together.
+    for col, (key, scale, unit, panel) in enumerate(
+            (('ee_pos', 1000.0, 'position [mm]', 'tool0 position'),
+             ('ee_euler_deg', 1.0, 'euler xyz [deg]', 'tool0 orientation'))):
+        drawn = False
+        ax = fig.add_subplot(grid[2, col])
+        for side, prefix in (('left', 'L'), ('right', 'R')):
+            data = column(side, key)
+            if data is None:
+                continue
+            for k, label in enumerate(AXIS_LABELS):
+                ax.plot(t, data[:, k] * scale, color=mpl_colors[side][k],
+                        label=f'{prefix} {label}')
+            drawn = True
+        if not drawn:
+            fig.delaxes(ax)
+            continue
+        ax.set_title(panel)
+        ax.set_ylabel(unit)
+        ax.grid(alpha=0.3)
+        ax.legend(loc='upper right', fontsize=8, ncol=2)
+        drawn_axes.append((2, ax))
+
+    # Row 3: right-arm joint angles across the take, spanning both columns.
+    q_right = column('right', 'q')
+    if q_right is not None:
+        ax = fig.add_subplot(grid[3, :])
+        for k, label in enumerate(JOINT_LABELS):
+            ax.plot(t, q_right[:, k], label=label)
+        ax.set_title('right arm joints')
+        ax.set_ylabel('angle [rad]')
+        ax.grid(alpha=0.3)
+        ax.legend(loc='upper right', fontsize=8, ncol=3)
+        drawn_axes.append((3, ax))
+
+    # Label the time axis on the lowest row that actually has panels: that row
+    # differs between a full take and a wrench-only capture.
+    last_row = max((row for row, _ax in drawn_axes), default=None)
+    for row, ax in drawn_axes:
+        if row == last_row:
+            ax.set_xlabel('time since recording start [s]')
+    fig.suptitle(title, fontsize=14)
+    fig.savefig(out_path, dpi=110, bbox_inches='tight')
 
 
 # --- --- HARDWARE PREFLIGHT (--check) --- ---
@@ -589,11 +672,106 @@ def run_check(duration_s: float = 3.0) -> int:
     return 0 if ok else 1
 
 
+# --- --- REPLOT (--replot) --- ---
+
+def _rtde_capture_samples(folder: str):
+    """Read a hand-made RTDE wrench capture (an .npz beside record.json).
+
+    The 2026-09-09 pull test was captured with a throwaway RTDE script rather
+    than with this recorder: one arm, a base-frame wrench, no joints. Presented
+    as a `samples` block it goes through the same plotting code as a real take.
+
+    Args:
+        folder (str): A take folder holding exactly one .npz with `t` + `wrench`.
+
+    Returns:
+        dict | None: A `samples` block with only the left arm's wrench filled
+        in, or None when the folder holds no such capture.
+    """
+    files = [f for f in sorted(os.listdir(folder)) if f.endswith('.npz')]
+    if not files:
+        return None
+    data = np.load(os.path.join(folder, files[0]))
+    if 't' not in data or 'wrench' not in data:
+        return None
+    n = min(len(data['t']), len(data['wrench']))
+    return {'t': data['t'][:n].tolist(),
+            'left': {'wrench_raw': data['wrench'][:n].tolist()},
+            'right': {}}
+
+
+def replot(folders) -> int:
+    """Repair and re-plot saved takes: align the columns, then write plots.png.
+
+    Rewrites record.json only when values actually had to be dropped, and always
+    (re)writes the figure. Existing figures are left alone, so this is safe to
+    point at the whole output root.
+
+    Args:
+        folders (list[str]): Take folders. Empty means every folder under
+            OUTPUT_ROOT that has no plots.png yet.
+
+    Returns:
+        int: 0 if every folder produced a figure, 1 otherwise.
+    """
+    if not folders:
+        folders = [os.path.join(OUTPUT_ROOT, name)
+                   for name in sorted(os.listdir(OUTPUT_ROOT))
+                   if os.path.isdir(os.path.join(OUTPUT_ROOT, name))
+                   and not os.path.exists(os.path.join(OUTPUT_ROOT, name, 'plots.png'))]
+        print(f'[replot] {len(folders)} take(s) under {OUTPUT_ROOT} have no plots.png')
+    ok = True
+    for folder in folders:
+        record_path = os.path.join(folder, 'record.json')
+        name = os.path.basename(os.path.normpath(folder))
+        try:
+            with open(record_path) as f:
+                record = json.load(f)
+            samples = record.get('samples')
+            wrench_frame = 'tool0'
+            if samples:
+                samples, culled = align_samples(samples)
+                if culled:
+                    # Minimal repair: the trailing values that arrived mid-save
+                    # go, nothing else about the file changes.
+                    record['samples'] = samples
+                    record['n_samples'] = len(samples['t'])
+                    with open(record_path, 'w') as f:
+                        json.dump(record, f, indent=2)
+                    print(f'[replot] {name}: dropped {culled} trailing value(s), '
+                          f'{record["n_samples"]} samples kept')
+                # Same title as a freshly saved take: name, then date and time.
+                stamp = record.get('recorded_at', '')
+                try:
+                    stamp = f'{datetime.fromisoformat(stamp):%Y-%m-%d %H:%M}'
+                except ValueError:
+                    pass
+                title = f'{record.get("experiment", name)}  ({stamp})'
+            else:
+                # Not one of this recorder's takes; try a raw RTDE capture.
+                samples = _rtde_capture_samples(folder)
+                if samples is None:
+                    print(f'[replot] {name}: no samples and no .npz capture, SKIPPED')
+                    continue
+                title = f'{name}  (RTDE capture, see record.json)'
+                wrench_frame = 'base'
+            render_take_plots(samples, title, os.path.join(folder, 'plots.png'),
+                              wrench_frame=wrench_frame)
+            print(f'[replot] {name}: plots.png written ({len(samples["t"])} samples)')
+        except Exception as e:
+            ok = False
+            print(f'[replot] {name}: FAILED -- {type(e).__name__}: {e}')
+    return 0 if ok else 1
+
+
 # --- --- MAIN --- ---
 
 def main(args=None):
     if '--check' in sys.argv[1:]:
         sys.exit(run_check())
+    if '--replot' in sys.argv[1:]:
+        rest = sys.argv[sys.argv.index('--replot') + 1:]
+        sys.exit(replot([a for a in rest if not a.startswith('--')]))
     rclpy.init(args=args)
     node = GraspCalibRecorder()
     rclpy.spin(node)
