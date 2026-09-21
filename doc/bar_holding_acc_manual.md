@@ -55,45 +55,275 @@ lack them — see **Old data** below.
 
 ---
 
-## Recording a take (live monitor)
+## Running a session (live monitor)
 
-Do this **before** processing, on the real robot with the live monitor. Steps
-1–11 drive the robot to a movement's start state and mount the instrumented bar;
-step 12 is the actual `Record + Fit + Viz (shared)` → `Save markerset data`.
+This is the **mount-once** protocol: the instrumented bar is mounted in the
+grippers once at the start of the session and **never dismounted**. For every
+bar-action you drive the mobile base to that action's parked pose, let the
+visual-servoing loop bring the held bar onto the action's assembled pose with
+the **constrained (bar-held) transfer planner**, record marker takes, and move
+on to the next bar. Bars already "built" earlier in the sequence are *not*
+physically there — they only serve as different reaching locations — so their
+collisions are ignored automatically (see the `[mocap-acc]` log line in Step B).
 
 > The bar/movement metadata (`bar_action_path`, `movement_id`, `bar_start_*`,
 > `bar_dimensions`) is stamped from the **currently loaded movement**, so you
-> must Load BarAction *and* Load Movement (steps 3–4) before recording —
-> otherwise those fields save as `null` and the take can't be matched later.
+> must Load BarAction *and* Load Movement before recording — otherwise those
+> fields save as `null` and the take can't be matched later.
 
-1. Set `DESIGN_PROBLEM_NAME` to the right problem in
-   `husky_assembly_teleop/__init__.py` (line ~63).
-2. Launch `husky_monitor`.
-3. Click **Load BarAction**.
-4. Set the **Movement (idx; 0=M0_synth)** slider to **3** (M3 = retreat, bar
-   already installed/held at a known pose), then **Load Movement**.
-5. Use the joystick to drive the real (colored) mobile base so it roughly aligns
-   with the red ghost robot shown in the PyBullet monitor.
-6. Replan the arms from the live base to the movement start, in order:
-   1. First click **1) IK Live Base → Set Mv Start Goal (no traj)** — solves
-      live-base IK and sets the goal pose (no trajectory yet).
-   2. Then click **2) IK + Plan Transit → Mv Start (live, M2/M3)** — plans the
-      transit trajectory to that goal (enables the traj viz slider).
-7. If a path is found, scrub the **trajectory viz slider** to preview it and
-   confirm it's collision-free (it should be, but check).
-8. Click **Exec Both Arm Trajs** to move both arms to the movement start.
-9. Prepare the bar joints per the BarAction, and mount **four pairs** of mocap
-   rig markers on the bar. The **outer two pairs must align with the bar's ends**;
-   the inner two pairs' exact positions don't matter (the fit auto-pairs markers
-   by cross-bar distance and uses the end pairs for length/axis).
-10. Define the bar rigid body in Motive (the `phase1_test` rig, streaming id
-    `1002`), read its **streaming id**, and set it in
-    `husky_assembly_teleop/husky_world.py` (the `bar_rig` `TrackedObject`,
-    line ~335 — replace the `1002` streaming id).
-11. Manually mount the bar (with rig) onto the robot's tools.
-12. Click **Record + Fit + Viz (shared)** (once per take), then **Save markerset
-    data**. The save lands under
-    `EXPERIMENT_DATA_DIRECTORY/bar_holding_acc_data/<YYYYMMDD>/`.
+---
+
+### Pre-flight checklist (per session)
+
+**1. Monitor flags** — class attributes on `HuskyMonitor`
+([`husky_monitor.py`](../husky_assembly_teleop/husky_monitor.py)). The first
+three move together; the file carries the same note next to
+`BAR_ACTION_MOCAP_ACCURACY_TEST`.
+
+| Flag | Line | Mocap accuracy test | Robot-centric demo |
+|------|------|---------------------|--------------------|
+| `USE_MOCAP` | ~239 | **1** | 0 |
+| `USE_CELL_STATE_BASE_POSE` | ~259 | **0** | 1 |
+| `BAR_ACTION_MOCAP_ACCURACY_TEST` | ~275 | **1** | 0 |
+| `FAKE_HARDWARE` | ~240 | 0 | 0 |
+| `BAR_ACTION_LIVE_REPLAN_EXE` | ~269 | 1 | 1 |
+| `CONNECT_COMPLIANT_CONTROLLER` | ~337 | 1 | 1 |
+| `USE_DPG_UI` | ~260 | 1 | 1 |
+| `MOCK_LIVE_POSE_FOR_REPLAN` | ~224 | 0 | 0 |
+| `REPLAN_SKIP_ENV_COLLISIONS_IN_MOTION_PLAN` | ~234 | 0 | 0 |
+| `CALIBRATION`, `PUNCH_CALIB_VALIDATION`, `DUAL_ARM_*` | — | 0 | 0 |
+
+With `USE_MOCAP=0` no mocap client starts; with `USE_CELL_STATE_BASE_POSE=1`
+the live base is never written into the movement state
+(`_base_pose_is_tracked()`), so every replan would silently plan from the
+authored base. With `BAR_ACTION_MOCAP_ACCURACY_TEST=0` the Record / Servo
+buttons are not built at all.
+
+**2. Design problem** — `DESIGN_PROBLEM_NAME = '260716_phase1_test'` in
+[`__init__.py`](../husky_assembly_teleop/__init__.py) (~line 60). It holds 27
+bar-actions `B3 … B81`; all use the same **1.4 m** bar and the *same* grasp
+frame, so one physical bar + rig serves the whole session. The `BarActions/`
+folder also contains `B33.solved_motion.json` / `B33.solved_keyframe.json`,
+which are **not** actions — the monitor prints the indexed file list at
+startup, read it and skip those two indices.
+
+**3. Calibration date** — `CALIBRATION_DATE`
+([`__init__.py:75`](../husky_assembly_teleop/__init__.py#L75)), with the offline
+scripts' `CALIBRATION_ANALYSIS_DATE` right below it. The date folders
+under `data/calibration_data/` are **per robot and per arm**, not a timeline:
+
+| Folder | Robot / arm | Output file |
+|--------|-------------|-------------|
+| `20260622` | Cindy 0806, **left** arm | `calibrated_transformation_0806_rhino.json` |
+| `20260623` | Alice 0804, single arm | `calibrated_transformation_0804_rhino.json` |
+| `20260625` | Cindy 0806, **right** arm | `calibrated_transformation_0806_rhino.json` |
+
+Use **`20260622`** for this experiment. The monitor consumes only
+`base_mocap_from_base_footprint` from the chosen file (the arm mount offsets
+come from the URDF, not from here), and 0622/0625 are two independent estimates
+of that one transform which differ by ≈(1.0, 2.9, 0.6) mm and ≈0.2°. The bar's
+world pose is defined through the **left** tool0 in every BarAction
+(`attached_to_link = left_ur_arm_tool0`), so the left-arm calibration keeps that
+chain exact; all previous takes (20260716 … 20260806) used 0622 too. Expect that
+≈3 mm / 0.2° as the floor of the **right** arm's residual — it is the left/right
+calibration discrepancy, not a servoing failure. `20260623` is Alice's
+single-arm calibration and does not apply to Cindy at all.
+
+**4. Motive**
+
+- Rigid bodies with the right **Streaming IDs**: husky base `a200_0806` = **1860**
+  (`ROBOT_CONFIGS` in [`husky_world.py`](../husky_assembly_teleop/husky_world.py)),
+  bar rig = **1002** (the `bar_rig` `TrackedObject`, ~line 346; the name comes
+  from `MOCAP_SET_RIG_RB_NAME`). If Motive shows a different id for the bar rig,
+  change it in Motive rather than in the code.
+- In **Edit > Settings > Streaming**: NatNet enabled, and **both labeled and
+  unlabeled markers ON** — the fit reads the labeled-marker stream, not the
+  rigid body (see [`check_mocap_data.md`](../data/bar_holding_acc_data/check_mocap_data.md)).
+- `CLIENT_IP` / `MOCAP_IP` at the top of `husky_monitor.py` (~216-217) must match
+  this workstation and the Motive PC.
+
+**5. Robot**
+
+- On the husky: `ros2 launch crl_husky crl_dual_ur5e.launch.py namespace:='/a200_0806' gripper:=none`
+- Pendant in **Remote** mode, with the **correct tool TCP loaded**. A constant
+  tool-Z offset in the "not in correct start pose!" message is a *pendant tool
+  setting*, not a code frame bug — check the pendant first.
+- In every workstation terminal (these are **not** in `~/.bashrc`):
+  ```bash
+  export ROS_DOMAIN_ID=86
+  export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+  ```
+
+**6. Launch**
+
+```bash
+cd /home/su/ros2_ws
+source venv/bin/activate
+python3 -m colcon build --symlink-install --packages-select husky_assembly_teleop
+source install/setup.bash
+ros2 run husky_assembly_teleop husky_monitor
+```
+
+Confirm on startup: the green `mocap client connected: True` line, the indexed
+`Found N BarAction files:` list, and the real (coloured) husky moving in
+PyBullet when you nudge the base.
+
+---
+
+### Step A — mount the bar (first action only)
+
+The mount pose is **M1's start**, the bar-loading configuration; M1's planner
+derives it, and M0 is the free motion that takes the arms there. In this
+protocol M1 itself is **never executed** (Step B transfers from the bar-loading
+pose straight to each bar's assembled pose), so only M1's *start* is needed —
+the RRT search for M1's path can be skipped.
+
+1. Set **BarAction file (idx)** to your first action (e.g. `B3.json`) and
+   click **Load BarAction**.
+2. **Movement (idx; 0=M0_synth)** → **1** → **Load Movement** →
+   **M1: Derive Start/Goal only (no RRT)**. This runs just the start-derivation
+   stage of the M1 planner against the live base (goal = the authored M2 start
+   conf; up to 120 s) and prints an endpoint report: both confs, collision-free
+   / grasp-consistent flags, whether ssik swapped the goal branch, and whether
+   a collision-free corridor was found. Look at both endpoints before going on:
+   - **Traj viz time** slider: `0` = START (bar-loading pose), `1` = GOAL
+     (approach) on the green preview robot, bar riding in the grippers (or the
+     whole corridor when one was found);
+   - **Constrained t** slider on the PyBullet panel: the red cfab robot steps
+     the same waypoints with the full cell state.
+   The **M1 home anchor** slider picks the carry orientation (`0 = all`;
+   1 horizontal, 2 vertical, 3 back-over-robot) — change it and derive again
+   if the start looks awkward. If it fails with `goal_in_collision`, the
+   colliding pair of the goal conf is drawn: the base is usually parked too far
+   from the authored pose for M2's start conf to clear the environment.
+3. **M1: Adopt derived start -> M0 goal** — writes the derived start into M1
+   and makes it M0's goal.
+   Then **Movement (idx; 0=M0_synth)** → **0** → **Load Movement** →
+   **Plan Movement**: M0 is the free dual-arm motion from wherever the arms are
+   now to that start.
+
+   > *Alternative*: **Plan Movement** on M1 runs derivation **and** the RRT
+   > (120 s × up to 3 re-seeded retries, several minutes) and ends in the same
+   > state as Adopt, plus an M1 trajectory you will not use here.
+4. Scrub **Traj viz time** to preview the M0 path, set **traj time** to ≥ 20 s,
+   then **Exec Selected Mv Traj (auto)** (M0 runs joint tracking and re-zeros
+   the force sensors at the end — the only safe place to tare).
+5. With the arms parked at the bar-loading pose: fit **four pairs** of mocap
+   markers on the bar. The **outer two pairs must sit at the bar's ends**; the
+   inner two pairs' exact positions don't matter (the fit pairs markers by
+   cross-bar distance and uses the end pairs for length and axis).
+6. Mount the bar (with rig) into both tools. Fit the two male joints if you want
+   the physical geometry to match — the marker fit ignores them, and the
+   collision model already carries them either way.
+7. Sanity check: the red rig cylinder in PyBullet follows the real bar, and one
+   **Record + Fit + Viz (shared)** click reports `bar_len ≈ 1.400 m` with a small
+   `max_resid`. Then click **Discard unsaved takes**. This take was made at the
+   bar-loading pose, which is *not* a measurement pose — there is no valid
+   reference for it (M0's bar frame is a placeholder; M1 has no predecessor
+   targets) — and every recorded take stays in memory until the next Save, so
+   without the discard it would land in the first bar's file in Step B and be
+   scored against that bar's assembled pose. **Never press `Save markerset
+   data` in Step A.**
+
+> **If M1 will not plan** (a known gap on some actions), fall back to the older
+> protocol for the mount only: **Movement (idx; 0=M0_synth)** → **3** →
+> **Load Movement** → drive
+> the base to the ghost → **3) Servo to Mv Start (live loop)** (the *free*
+> planner, no bar mounted) → mount the bar at the assembled pose. Later bars do
+> not need M1 at all.
+
+---
+
+### Step B — per-bar loop (bar stays mounted)
+
+Repeat for each bar-action. Nothing here dismounts the bar.
+
+1. **BarAction file (idx)** → next action → **Load BarAction**, then
+   **Movement (idx; 0=M0_synth)** → **3** (M3 = the assembled pose, the same
+   reference the 20260717 takes used) → **Load Movement**.
+   Expect the log line
+   `[mocap-acc] ignoring collisions with N built assembly bodies during planning/IK.`
+   and the already-built bars to disappear from the view — that is the
+   "previous bars are only reaching locations" rule being applied. The ghost
+   robot now stands at this action's parked base pose.
+2. **Drive the mobile base** (joystick, or
+   `ros2 run teleop_twist_keyboard teleop_twist_keyboard --ros-args -r /cmd_vel:=/a200_0806/joy_teleop/cmd_vel`)
+   until the mocap-tracked husky roughly overlaps the ghost. A few centimetres
+   and a couple of degrees are fine — the servo loop absorbs the rest.
+3. **Set `traj time` to 20–30 s.** Load Movement resets it to M3's 5 s default,
+   which is far too fast for the first transfer of a bar. (The loop re-reads the
+   slider when you confirm, so you can also drag it during the pause in step 4.)
+4. **3b) Servo to Mv Start (transfer loop)** — every iteration plans a *bar-held
+   constrained transfer*, so both tool0s stay rigidly locked to the mounted bar.
+   - Iteration 1 = live-base IK + constrained plan (up to 120 s; the GUI is
+     deliberately frozen during the search), then a **confirm pause**: the log
+     prints the waypoint count, the max joint delta and the duration. Scrub
+     **Traj viz time**, check the **Movement Preview** window (max joint step,
+     bar-hold EE drift), then click **Confirm Exec**.
+   - Later iterations run unattended; a safeguard pause appears for any plan
+     over 10 waypoints or 5°. **Cancel Exec** stops before the next send (a
+     trajectory already sent still finishes).
+   - Watch progress with **Toggle Servoing Tracker**. The loop stops when both
+     arms are under 0.2 mm or after 8 iterations, and auto-saves
+     `servoing_data_<ts>.json` + `servoing_performance_<ts>.png` under
+     `<YYYYMMDD>-servoing/`. A typical good run: iteration 1 leaves a few mm,
+     by iteration 3–5 both arms sit at 0.2–0.5 mm.
+5. **Record + Fit + Viz (shared)** once per take — take at least 3, watching
+   `max_resid` (a few mm or less) and `bar_len` (≈ 1.400 m). A bad fit can be
+   thrown out with **Discard unsaved takes** (it drops *all* takes recorded
+   since the last Save, so re-record the good ones). Then **Save markerset
+   data** once for this bar — one file, one reference pose, all its takes. The log prints the saved path; the
+   stamped reference pose must not be null — an `ERROR ... NULL reference pose`
+   line means the take was saved without one (keep it, the offline script can
+   re-derive it from the BarAction).
+6. Go back to 1 for the next bar. Do **not** press:
+   - **Exec Selected Mv Traj (auto)** while M3 is loaded — for M2/M3 it
+     dispatches to the *cartesian compliance controller*, which is the assembly
+     execution path, not this measurement path;
+   - **Move Arms to Movement Start (offline target)** — it drives to the
+     authored configuration, which belongs to the authored base, not the live one.
+
+---
+
+### Step C — wrap up
+
+1. Unmount the bar and rig.
+2. Optionally send the arms home: **Movement (idx; 0=M0_synth)** → **4** →
+   **Load Movement** →
+   **Plan Movement** → **Exec Selected Mv Traj (auto)**.
+3. Everything is already on the Drive under
+   `EXPERIMENT_DATA_DIRECTORY/bar_holding_acc_data/<YYYYMMDD>/`. Process it with
+   `0_bar_acc_data_processing.py` then `1_compare_to_cell_state.py` (below),
+   passing today's date folder as the batch.
+
+---
+
+### Troubleshooting
+
+- **`IK at live base FAILED`** — the collision diagnosis draws and highlights
+  whatever rejected the solution. Usually the base is parked too far off or at
+  the wrong yaw: re-park closer to the ghost and retry. Environment obstacles
+  are still collision-checked (only the *built bars* are ignored), and their
+  Rhino placement is approximate, so a marginal park can read as a collision.
+- **`[transfer plan] constrained plan failed`** — click **3b** again (the
+  planner is randomized), or improve the base alignment first. The very first
+  transfer of a session (bar-loading pose → assembled pose) is the longest path
+  and the most likely to need a retry.
+- **A slider seems to be ignored** — any UI rebuild (`Load Movement`, live-base
+  IK) recreates the widgets, and a freshly rebuilt slider can miss its next drag
+  callback. Drag it again and read the printed value; `traj time`, the M2 split,
+  the swept-check and the BarAction/Movement sliders are all re-read live at the
+  moment they matter.
+- **The UI drops to ~1 fps** — a known intermittent DearPyGui vsync stall, not a
+  planner problem. Restart the monitor before concluding anything from timings.
+- **Base drifts ~1 mm between iterations** — expected: the arms' centre of
+  gravity moves the husky on its suspension. That is exactly what the loop
+  re-solves for, and why the residual converges rather than jumping.
+- **Right arm plateaus around 3 mm / 0.2°** — that is the left/right calibration
+  discrepancy described in the pre-flight checklist, not something servoing can
+  remove.
+- **`mocap client connected: False`** — check `CLIENT_IP` / `MOCAP_IP`, the
+  Motive streaming pane, and that both machines are on the same network.
 
 ---
 

@@ -6,19 +6,34 @@ all calibration scripts (0_circle_fitting.py through 3_verify_calibration.py).
 
 Usage:
     from config_loader import load_config, HERE
-    
+
     config = load_config('20250617')  # Pass the date folder name
     # or
     config = load_config()  # Uses DEFAULT_DATE_FOLDER
 """
 
 import os
+import sys
+
 import yaml
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
-# Default date folder - change this to switch between calibration datasets
-DEFAULT_DATE_FOLDER = '20260623'
+# * The date folder is NOT chosen here anymore. Both calibration dates live in
+# * husky_assembly_teleop/__init__.py so the live app and these offline scripts
+# * can no longer drift apart. These scripts are launched directly
+# * (e.g. "python 4_punch_validation.py"), which puts only this folder on the
+# * import path, so add the repository root before importing the package.
+_REPO_ROOT = os.path.abspath(os.path.join(HERE, '..', '..'))
+if _REPO_ROOT not in sys.path:
+    sys.path.append(_REPO_ROOT)
+
+from husky_assembly_teleop import CALIBRATION_ANALYSIS_DATE
+
+# Date folder every script reads/writes when no folder is passed explicitly.
+# ! To switch datasets, edit CALIBRATION_ANALYSIS_DATE (and usually
+# ! CALIBRATION_DATE next to it) in husky_assembly_teleop/__init__.py.
+DEFAULT_DATE_FOLDER = CALIBRATION_ANALYSIS_DATE
 
 
 
@@ -35,7 +50,11 @@ def load_config(date_folder=None):
     """
     if date_folder is None:
         date_folder = DEFAULT_DATE_FOLDER
-    
+
+    # Print the active folder so it is always obvious WHICH dataset a script
+    # just analysed (the usual source of "why is this the old data?").
+    print(f"[config_loader] Using calibration date folder: {date_folder}")
+
     config_file = os.path.join(HERE, date_folder, 'config.yaml')
     
     if not os.path.exists(config_file):

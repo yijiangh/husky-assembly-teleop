@@ -306,13 +306,18 @@ rest builds on them.
 - **Purpose**: convenience runner that calls scripts 0,1,2,3 one after another and stops if any fails
   (`subprocess.run`, `~lines 30–51`). It does **not** run step 4 (punch).
 - **Choosing the dataset**: it does *not* switch datasets itself — set
-  `config_loader.DEFAULT_DATE_FOLDER` first (it only prints a reminder, `~lines 72–77`).
+  `CALIBRATION_ANALYSIS_DATE` in `husky_assembly_teleop/__init__.py` first. Each step below is a
+  separate process that reads that constant, so passing a *different* date on the command line is
+  refused with an error instead of silently running on the wrong data (`~lines 74–84`).
 - **Summary** (`~lines 102–121`): prints which steps passed and how long each took.
 
 ## 8. data/calibration_data/config_loader.py — one place for settings & robot names
 
-- **`DEFAULT_DATE_FOLDER`** (`~line 21`): the single constant that picks which dated folder all scripts
-  read/write when no folder is passed. Change it to switch datasets without editing every script.
+- **`DEFAULT_DATE_FOLDER`** (`~line 33`): the constant that picks which dated folder all scripts
+  read/write when no folder is passed. It is **not** edited here — it re-exports
+  `CALIBRATION_ANALYSIS_DATE` from `husky_assembly_teleop/__init__.py`, so the live app and these
+  offline scripts cannot drift onto different folders. The `sys.path` line above it (`~line 26`) adds
+  the repo root so the import also works when a script is run directly, without ROS sourced.
 - **`load_config()`** (`~line 29`): reads `config.yaml` inside the chosen date folder (robot, arm,
   which batches, etc.) so paths/robot types aren't hard-coded.
 - **Robot-name helpers** (`~lines 87–133`): `get_joint_names`, `get_tool0_link_name`,
@@ -396,9 +401,14 @@ rest builds on them.
 - **Hard-coded Google-Drive paths** (`~lines 53–55`): `DESIGN_DATA_DIRECTORY` etc. point at the
   Insync-mounted Drive and start with `/home/su` — **edit these when moving to another PC** (the mount
   path is machine-specific).
-- **`CALIBRATION_DATE`** (`~line 56`): the dated dataset the **live app** uses. Every part of the app
-  imports this one name, so bumping it repoints everything at a new capture. (This is separate from
-  `config_loader.DEFAULT_DATE_FOLDER`, which only the offline calibration scripts use.)
+- **`CALIBRATION_DATE`** (`~line 75`): the dated dataset the **live app** uses — it loads the
+  calibrated transform and punch TCP offsets from it, and the Record/Save buttons write new data into
+  it. Every part of the app imports this one name, so bumping it repoints everything at a new capture
+  (after a restart — it is read once at launch).
+- **`CALIBRATION_ANALYSIS_DATE`** (`~line 80`): the dated dataset the **offline scripts** in
+  `data/calibration_data/` use; `config_loader.DEFAULT_DATE_FOLDER` re-exports it. It sits directly
+  below `CALIBRATION_DATE` so both dates are chosen in one place — usually the same folder; set them
+  apart only to re-analyse an old capture while recording a new one.
 
 ## 17. husky_assembly_teleop/husky_world.py — build the sim world (calibration parts)
 

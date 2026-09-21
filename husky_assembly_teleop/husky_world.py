@@ -1033,7 +1033,13 @@ def save_markerset_data(monitor, filename_suffix="", use_experiment_dir=False):
     try:
         bar_pose = monitor.get_movement_start_bar_pose()
     except Exception as e:
-        monitor.get_logger().warn(f"could not compute start-state bar pose: {e}")
+        # ! Loud, not a warning: the take is still written (the offline
+        # ! 1_compare_to_cell_state.py re-derives the goal from the BarAction
+        # ! when the stamp is null), but without this pose the take cannot be
+        # ! scored from its own file, so the operator must see it go by.
+        monitor.get_logger().error(
+            f"could not compute start-state bar pose, saving take with a NULL "
+            f"reference pose: {e}")
     bar_dims = None
     try:
         dims = monitor.get_active_bar_aabb_dims()
@@ -1371,6 +1377,67 @@ def measure_base_pose_diff(monitor, start_base_pose):
     }
 
 
+def _live_trajectory_time(monitor):
+    """Duration (s) to run the next servoing move over, read live from the slider.
+
+    ``reset_ui`` rebuilds the "traj time" slider on every live-base IK call, and
+    a freshly rebuilt widget can miss its next drag callback -- so
+    ``monitor.trajectory_time`` may still hold the movement role's default
+    (5 s for M3, set by 'Load Movement') while the slider on screen shows what
+    the operator actually dialled in. Reading the widget itself is what lets a
+    drag made DURING the confirm pause take effect on the first move, which
+    matters because that first transfer can be a 600 mm swing. Same live re-read
+    as ``HuskyMonitor.exec_selected_movement_traj``.
+
+    Args:
+        monitor: The HuskyMonitor node.
+
+    Returns:
+        float: The slider's current value in seconds, also written back to
+        ``monitor.trajectory_time``; falls back to ``monitor.trajectory_time``
+        when the slider does not exist (headless harnesses).
+    """
+    sld = getattr(monitor, 'trajectory_time_slider', None)
+    if sld is not None:
+        v = sld.value
+        if v is not None and float(v) != monitor.trajectory_time:
+            monitor.trajectory_time = float(v)
+            print(f"[servo] traj time from slider: {monitor.trajectory_time:.0f}s")
+    return float(monitor.trajectory_time)
+
+
+def _path_motion_summary(planned_arm_trajectory):
+    """How long and how large a planned dual-arm move is.
+
+    Args:
+        planned_arm_trajectory: The monitor's ``planned_arm_trajectory`` pair;
+            each entry is a ``(path, ..., ..., ...)`` tuple whose path is the
+            list of 6-joint waypoints for that arm (``None`` when unplanned).
+
+    Returns:
+        tuple[int, float]: ``(n_waypoints, max_joint_delta_deg)`` from the first
+        to the last waypoint across both arms, or ``(0, 0.0)`` when either arm
+        has no path.
+    """
+    # A path exists when it is not None AND non-empty. Use `is not None` +
+    # `len(...)` (never bool(array)/.any()/.all()): `is not None` is an
+    # identity check that always returns a plain bool, and `len()` works on
+    # both python lists and numpy arrays -- so neither trips the "truth value
+    # of an array is ambiguous" error. The len guard also prevents an
+    # IndexError on the [0] / [-1] accesses below.
+    left_path, right_path = planned_arm_trajectory[0][0], planned_arm_trajectory[1][0]
+    if (left_path is None or len(left_path) == 0
+            or right_path is None or len(right_path) == 0):
+        return 0, 0.0
+    # Max joint delta between start (first waypoint) and end (last waypoint)
+    max_delta_rad = max(
+        float(np.max(np.abs(np.asarray(path[-1], dtype=float)
+                            - np.asarray(path[0], dtype=float))))
+        for path in (left_path, right_path)
+    )
+    return len(left_path), float(np.rad2deg(max_delta_rad))
+
+
 def servo_to_movement_start_live(monitor, max_iters=8, pos_tol_mm=0.2,
                                  later_iter_traj_time=3.0, settle_seconds=2.0,
                                  confirm_first_iter=True, use_transfer=False,
@@ -1392,9 +1459,12 @@ def servo_to_movement_start_live(monitor, max_iters=8, pos_tol_mm=0.2,
     so every correction move must keep both tool0s rigidly locked to the bar.
 
     Trajectory duration differs by iteration: the FIRST transit is a large move
-    from wherever the arms are now, so it runs over ``monitor.trajectory_time``
-    (the slider-set value); every later iteration is a tiny near-target correction
-    and runs over the short ``later_iter_traj_time``.
+    from wherever the arms are now, so it runs over the "traj time" slider's
+    LIVE value (read via ``_live_trajectory_time`` right before the move, so a
+    drag made during the confirm pause still counts -- 'Load Movement' resets
+    that slider to the role default of 5 s, which is far too fast for the first
+    transfer); every later iteration is a tiny near-target correction and runs
+    over the short ``later_iter_traj_time``.
 
     This is a generator run as a monitor task (``monitor.tasks``); it yields between
     steps so the 20 Hz tick keeps flowing mocap while the arms move. Progress is
@@ -1527,11 +1597,16 @@ def servo_to_movement_start_live(monitor, max_iters=8, pos_tol_mm=0.2,
         # planned path) until the operator clicks 'Confirm Servo Exec'. Later
         # iterations are short near-target corrections and run unattended.
         if it == 1 and confirm_first_iter:
+            n_waypoints, max_delta_deg = _path_motion_summary(
+                monitor.planned_arm_trajectory)
             yield from wait_for_operator_confirm(
                 monitor,
-                "[servo] First move planned. Preview it with the traj viz slider, "
-                "then click 'Confirm Exec' to execute (later iterations "
-                "run automatically).")
+                f"[servo] First move planned: {n_waypoints} waypoints, max joint "
+                f"delta {max_delta_deg:.1f} deg, over "
+                f"{_live_trajectory_time(monitor):.0f} s. Preview it with the "
+                f"traj viz slider; drag 'traj time' now if that is too fast (it "
+                f"is re-read when you confirm), then click 'Confirm Exec' to "
+                f"execute (later iterations run automatically).")
 
         # Abort requested during the confirm pause (or otherwise): stop before
         # sending the first move to the robot.
@@ -1541,27 +1616,9 @@ def servo_to_movement_start_live(monitor, max_iters=8, pos_tol_mm=0.2,
         # * Safeguard: any iteration's plan with >10 waypoints or >5° max joint
         # * delta requires operator confirmation (prevents unexpected large moves).
         # * This catches servo iterations where stale state might cause wrong plans.
-        pat = monitor.planned_arm_trajectory
-        # A path exists when it is not None AND non-empty. Use `is not None` +
-        # `len(...)` (never bool(array)/.any()/.all()): `is not None` is an
-        # identity check that always returns a plain bool, and `len()` works on
-        # both python lists and numpy arrays -- so neither trips the "truth value
-        # of an array is ambiguous" error. The len guard also prevents an
-        # IndexError on the pat[0][0][0] / [-1] accesses below.
-        left_path, right_path = pat[0][0], pat[1][0]
-        if (left_path is not None and len(left_path) > 0
-                and right_path is not None and len(right_path) > 0):
-            n_waypoints = len(left_path)
-            # Max joint delta between start (first waypoint) and end (last waypoint)
-            start_left = np.asarray(left_path[0], dtype=float)
-            end_left = np.asarray(left_path[-1], dtype=float)
-            start_right = np.asarray(right_path[0], dtype=float)
-            end_right = np.asarray(right_path[-1], dtype=float)
-            max_delta_left = float(np.max(np.abs(end_left - start_left)))
-            max_delta_right = float(np.max(np.abs(end_right - start_right)))
-            max_delta_rad = max(max_delta_left, max_delta_right)
-            max_delta_deg = float(np.rad2deg(max_delta_rad))
-
+        n_waypoints, max_delta_deg = _path_motion_summary(
+            monitor.planned_arm_trajectory)
+        if n_waypoints:
             needs_confirm = (n_waypoints > 10 or max_delta_deg > 5.0)
             if needs_confirm and (it > 1 or not confirm_first_iter):
                 # Iteration > 1 OR first iter without confirm: safeguard pause
@@ -1581,9 +1638,11 @@ def servo_to_movement_start_live(monitor, max_iters=8, pos_tol_mm=0.2,
         if it == 1:
             monitor.show_servoing_tracker()
 
-        # First transit is a big move (use the slider time); later iterations are
-        # tiny near-target corrections (use the short later_iter_traj_time).
-        traj_time = monitor.trajectory_time if it == 1 else later_iter_traj_time
+        # First transit is a big move (use the slider time, re-read here so a
+        # drag made during the confirm pause counts); later iterations are tiny
+        # near-target corrections (use the short later_iter_traj_time).
+        traj_time = (_live_trajectory_time(monitor) if it == 1
+                     else later_iter_traj_time)
 
         # Execute both arms, then wait out the whole motion + a settle margin.
         # ! We wait by TIME, not by hi.is_arm_executing: that flag clears after

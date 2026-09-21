@@ -40,7 +40,10 @@ from husky_assembly_teleop.husky_robot import GRIPPER_MOTOR, JOINT_MOTOR, UR5e_H
 from husky_assembly_teleop.common import (
     Button, Slider, SliderGroup, Separator, TextInput, LiveMultiPlot, HistoryPlot, Husky, TrackedObject, HuskyObject, AssemblyObject, HUSKY_UR5e_JOINT_NAMES, lerp, load_gripper
 )
-from husky_assembly_teleop.cc_diagnosis import clear_collision_diagnosis
+from husky_assembly_teleop.cc_diagnosis import (
+    clear_collision_diagnosis, visualize_goal_ik_collision,
+    collect_collision_contacts, print_collision_contacts, draw_collision_contacts,
+)
 from husky_assembly_teleop.optitrack.NatNetClient import NatNetClient
 from husky_assembly_teleop.utils import (
     pose_from_frame, frame_from_pose, pose_from_transformation, transformation_from_pose,
@@ -76,6 +79,9 @@ from compas_robots.model import Joint
 from husky_assembly_tamp.motion_planner.api import (
     plan_free_dual_arm, plan_constrained_dual_arm, plan_constrained_dual_arm_linear,
     plan_dual_arm_linear_independent, _fk_link_frame, _collect_obstacle_puids,
+    # M1 start-derivation stage on its own (see derive_m1_endpoints_live).
+    _derive_constrained_start_for_plan, _build_cfab_collision_fn, _bar_body_id,
+    _state_with_conf12, TOOL_LINK_LEFT, TOOL_LINK_RIGHT,
 )
 
 DEFAULT_GREY = [0.2, 0.2, 0.2, 0.7]
@@ -214,7 +220,9 @@ CURRENT_ELEMENT_COLOR = pp.BLUE
 DEFAULT_BAR_POS = pp.Point(0.8, 0, 1.3)
 
 CLIENT_IP = '192.168.0.25' # Set to your own IP
-MOCAP_IP = '192.168.0.117' # set to the mocap PC's IP, get this from Motive Settings>Streaming pane->Local interface
+# ! Both are DHCP leases and do move. If mocap logs "connected: False", see
+# ! doc/calibration_manual.md section 1.4 before touching anything else.
+MOCAP_IP = '192.168.0.28' # set to the mocap PC's IP, get this from Motive Settings>Streaming pane->Local interface
 # Where the 'collect cameras data' button drops its JSON+CSV (gdrive folder also
 # holding import_mocap_cameras_rhino.py).
 MOCAP_CAMERA_EXPORT_DIR = (
@@ -236,19 +244,31 @@ class HuskyMonitor(Node):
     # without any external tracking. The husky base is then assumed to be
     # exactly where the plan says it is (each movement's
     # start_state.robot_base_frame), see _live_base_pose().
-    USE_MOCAP = 0
+    USE_MOCAP = 1
     FAKE_HARDWARE = 0
 
     # * Set 0 to skip connecting the UR SetIO service clients (gripper/screw IO).
     # Saves the 2.5 s startup wait + "SetIO Service i not available!" warning
     # when io_and_status_controller isn't running. set_screw() then just logs
     # an "Invalid arm index" error instead of calling the service.
-    CONNECT_IO_SERVICES = 1
+    CONNECT_IO_SERVICES = 0
     # * Set 0 to skip querying controller_manager/list_controllers on startup.
     # Saves the 2.5 s per-arm wait + "list_controllers service unavailable"
     # warning; active_controller stays "" (first switch_controller request may
     # then be rejected by controller_manager, see _seed_active_controllers).
-    LIST_CONTROLLER_SERVICES = 1
+    LIST_CONTROLLER_SERVICES = 0
+    # * Set 0 to skip creating the compliant-controller ROS interfaces
+    # (target_wrench publishers + start_force_mode / zero_ftsensor /
+    # switch_controller service clients). Saves 2.5 s per client (5 waits on a
+    # dual arm) + the "... Service Client False" lines when the UR driver's
+    # force_mode / io_and_status / controller_manager services aren't running.
+    # With it off: switch_controller() and zero_ft_sensor() log and return
+    # False, so a compliant M2/M3 execution aborts with a clear error instead
+    # of moving, the end-of-M0 FT zero just warns, and the CONTROLLERS buttons
+    # are not built. The FT *subscription* is created unconditionally, so the
+    # live force plot works either way.
+    # ! Set 1 for any session that executes M2/M3 (cartesian compliance).
+    CONNECT_COMPLIANT_CONTROLLER = 0
 
     # When USE_MOCAP=1, by default the husky base in PyBullet tracks mocap.
     # Set USE_CELL_STATE_BASE_POSE=1 to override that and pin the base to
@@ -256,19 +276,23 @@ class HuskyMonitor(Node):
     # (or set via sliders). Useful for testing planning with mocap on for
     # end-effector tracking but the husky physically far from the assembly
     # scaffolding (e.g., at the lab desk during dual-arm accuracy tests).
-    USE_CELL_STATE_BASE_POSE = 1
+    USE_CELL_STATE_BASE_POSE = 0
     USE_DPG_UI = 1   # 0 = legacy PyBullet debug GUI; 1 = Dear PyGui control panel
     UI_FONT_SIZE = 20  # base size for all DPG widgets (separators override to 20 in the backend)
 
     CALIBRATION = 0
 
-    BAR_ACTION_LIVE_REPLAN_EXE = 1      # show Load BarAction / Load Movement / replan buttons
+    BAR_ACTION_LIVE_REPLAN_EXE = 1    # show Load BarAction / Load Movement / replan buttons
     # Set 1 for the mocap bar-holding accuracy experiment: adds the markerset
     # record/save buttons + the servoing tracker, hides the already-built
     # assembly (so its bars are ignored by collision checks), and force-attaches
     # the active bar for the transfer replan. Keep 0 for the robot-centric
     # replay demo, where the built assembly should stay visible and collision-checked.
-    BAR_ACTION_MOCAP_ACCURACY_TEST = 0  # show Record + Fit + Viz / Save markerset data
+    # ! These three flags move together, so flip all of them when switching mode:
+    # !   mocap accuracy test  : USE_MOCAP=1, BAR_ACTION_LIVE_REPLAN_EXE = 1, USE_CELL_STATE_BASE_POSE=0, BAR_ACTION_MOCAP_ACCURACY_TEST=1
+    # !   robot-centric demo   : USE_MOCAP=0, BAR_ACTION_LIVE_REPLAN_EXE = 1, USE_CELL_STATE_BASE_POSE=1, BAR_ACTION_MOCAP_ACCURACY_TEST=0
+    # (see doc/bar_holding_acc_manual.md, "Pre-flight checklist")
+    BAR_ACTION_MOCAP_ACCURACY_TEST = 1  # show Record + Fit + Viz / Save markerset data
     DUAL_ARM_EE_CONSTR_ACCURACY_MOCAP_TEST = 0
 
     # Set to 1 to dump cfab's collision-check setup (its ACM / allowed-collision
@@ -331,17 +355,6 @@ class HuskyMonitor(Node):
 
     DUAL_ARM_KISSING_REP_EXPERIMENT = 0 # set 1 to enable kissing experiment + compliance controller buttons
 
-    # When 1, HuskyRobotInterface creates the compliant-controller ROS interfaces
-    # (target_wrench publishers, start_force_mode / zero_ftsensor / switch_controller
-    # service clients). Costs a few seconds of startup waiting on those services.
-    # ! REQUIRED by the BarAction execution workflow, not optional: the
-    # ! switch_controller client lives behind this flag, so with it off the M2/M3
-    # ! compliant execution raises AttributeError inside the monitor tick, and
-    # ! the end-of-M0 FT zeroing has no service to call.
-    # (The FT *subscription* is created unconditionally, so the live force plot
-    # works either way -- only the zeroing and the controller switch need this.)
-    CONNECT_COMPLIANT_CONTROLLER = 1
-
     def __init__(self):
         super().__init__('husky_monitor')
         self.tick_timer = self.create_timer(0.05, self.update)
@@ -388,6 +401,9 @@ class HuskyMonitor(Node):
         self.constrained_display_mode = 0  # 0=FREE_STAGE, 1=CONSTRAINED
         self.constrained_start_conf = None  # 12-DOF target for manual staging
         self.constrained_goal_conf = None   # 12-DOF constrained-plan endpoint
+        # Result of the last 'M1: Derive Start/Goal only' click (see
+        # derive_m1_endpoints_live); consumed by adopt_m1_derived_start.
+        self._m1_derived = None
         # cfab→pp bridge state for the BarAction planning path.
         self._bar_action_husky = None          # SimpleNamespace husky stub (cfab robot)
         self._bar_action_ghost_bodies = set()  # tiny invisible EE proxy pybullet bodies
@@ -1548,15 +1564,40 @@ class HuskyMonitor(Node):
         reference we compare against is the bar's world pose *at that start
         state*. Two cases are handled:
 
-        - Bar held by a gripper link: the start_state only stores the grasp
-          (``attachment_frame``), so we forward-kinematics the holding link at
-          the start configuration and compose the grasp onto it.
         - Bar resting in the world (installed / pre-pickup): the start_state
           stores the world ``frame`` directly, so we return that.
+        - Bar held by a gripper link: the start_state only stores the grasp
+          (``attachment_frame``), so the holding tool0's world pose comes from
+          the PREVIOUS movement's authored ``target_ee_frames`` (a movement
+          starts where the previous one ended) and the grasp is composed onto
+          it.
+
+        ! The held case is never derived by FK from
+        ! ``start_state.robot_configuration``. The visual-servoing loop
+        ! overwrites that configuration with the LIVE arm pose after every
+        ! executed iteration (``husky_world.servo_to_movement_start_live``) and
+        ! then restores the AUTHORED base frame, so FK there would return the
+        ! live arm pose rendered at the authored base -- the reference would
+        ! carry the operator's base-parking error and the measured deviation
+        ! would be wrong by exactly that amount. Same rule as the live-base IK
+        ! in ``ik_live_base_for_selected_movement``: authored EE targets are the
+        ! single source of truth.
+
+        This matters for the never-unmount protocol: ``Replan Transfer`` force-
+        attaches the bar into movements whose authored start_state had it
+        installed (see ``_ensure_bar_attached_for_mocap``), which clears the
+        static ``frame`` and so routes those movements through the held case.
 
         Returns:
             tuple | None: ``(pos, quat_xyzw)`` of plain floats, or ``None``
             when the bar / movement / cfab session isn't available.
+
+        Raises:
+            RuntimeError: When the bar is held but no authored
+                ``target_ee_frames`` for the holding arm exist on the previous
+                movement. Deliberately fatal rather than falling back to FK: a
+                silently wrong reference pose would be stamped into the saved
+                take and corrupt the offline accuracy numbers.
         """
         state = getattr(self, 'movement_start_state', None)
         bar_name = getattr(self, 'active_bar_name', None)
@@ -1572,29 +1613,33 @@ class HuskyMonitor(Node):
             pos, quat = pose_from_frame(bar_rb.frame)
             return ([float(v) for v in pos], [float(v) for v in quat])
 
-        # Held bar: only the grasp frame is stored. Recover the world pose by
-        # FK-ing the holding link at the start configuration, then composing
-        # the grasp. The FK reads the cfab pybullet client, so pin pp.CLIENT to
-        # it for the query and restore afterwards (the monitor's update loop
-        # keeps pp.CLIENT on its own world) -- same swap the planners use.
+        # Held bar: only the grasp frame is stored, so the holding tool0's world
+        # pose is taken from the authored targets of the movement BEFORE this
+        # one -- a movement starts where the previous one ended, so M3's start
+        # EE poses are M2's authored targets. See the docstring for why FK at
+        # start_state.robot_configuration is not used here.
         attach = getattr(bar_rb, 'attachment_frame', None)
         link = getattr(bar_rb, 'attached_to_link', None)
         if attach is None or not link:
             return None
-        saved_client = pp.CLIENT
-        pp.CLIENT = self.cfab.client.client_id
-        pp.CLIENTS.setdefault(pp.CLIENT, True)
-        try:
-            world_from_link = _fk_link_frame(self.cfab.planner, state, link)
-        except Exception as e:
-            self.get_logger().warn(f"start-state bar pose FK failed: {e}")
-            return None
-        finally:
-            pp.CLIENT = saved_client
-        world_from_link_pose = (list(world_from_link.point),
-                                list(world_from_link.quaternion.xyzw))
+        side = 'left' if 'left' in link else 'right'
+        idx = self.current_movement_index
+        prev = (self._loaded_movements[idx - 1]
+                if idx is not None and idx > 0 else None)
+        target_ee = (getattr(prev, 'target_ee_frames', None) or {}) if prev else {}
+        if side not in target_ee:
+            where = (f"previous movement {prev.movement_id!r} has no "
+                     f"target_ee_frames[{side!r}]" if prev is not None else
+                     "this is the first movement, so there is no previous "
+                     "movement to take authored target_ee_frames from")
+            raise RuntimeError(
+                f"Cannot stamp the reference pose of held bar {bar_name!r}: "
+                f"{where}. EE targets are never derived from FK, so there is no "
+                f"safe fallback -- load a movement whose predecessor carries "
+                f"authored target EE frames.")
+        world_from_tool = pose_from_frame(target_ee[side])
         tool_from_bar = pose_from_frame(attach)
-        pos, quat = pp.multiply(world_from_link_pose, tool_from_bar)
+        pos, quat = pp.multiply(world_from_tool, tool_from_bar)
         return ([float(v) for v in pos], [float(v) for v in quat])
 
     def _goal_matches_constrained_start(self):
@@ -3296,8 +3341,9 @@ class HuskyMonitor(Node):
         whose grasp the operator physically mounts), clearing each copied body's
         static world ``frame`` so it follows the arm. Copying the joints too
         keeps the planner's collision state and the preview both showing the
-        real mounted geometry. Mutates ``mv.start_state`` in place (persists,
-        mirroring the real mount).
+        real mounted geometry, and each copied body's ``is_hidden`` is cleared so
+        the newly held geometry is collision-checked and posed again. Mutates
+        ``mv.start_state`` in place (persists, mirroring the real mount).
 
         Args:
             mv: The Movement whose start_state to edit.
@@ -3344,6 +3390,11 @@ class HuskyMonitor(Node):
             target_rb.attached_to_link = drb.attached_to_link
             target_rb.attachment_frame = drb.attachment_frame
             target_rb.frame = None  # held body has no static world frame (FK from the link)
+            # The once-per-action built-assembly hide may have flagged this body
+            # while it was still resting in the world. Now that it rides with the
+            # arm it must be collision-checked and repositioned again --
+            # compas_fab skips both steps for a hidden body.
+            target_rb.is_hidden = False
             injected.append(name)
         self.grasp_link_from_bar = bar_rb.attachment_frame
         self.get_logger().info(
@@ -4315,7 +4366,12 @@ class HuskyMonitor(Node):
                 self.cfab.planner, mv.start_state, goal_conf,
                 joint_resolution=FM_JOINT_RESOLUTION, **plan_kwargs)
         if path is None:
-            print(f"[{role}] plan_free_dual_arm failed: {info.get('failure_reason')}")
+            reason = info.get('failure_reason')
+            print(f"[{role}] plan_free_dual_arm failed: {reason}")
+            if reason == 'start_or_goal_in_collision':
+                # The planner only says "start or goal"; name the pairs and
+                # draw them, and check joint limits while we are at it.
+                self._diagnose_free_plan_endpoints(mv, goal_conf, role)
             return None
         print(f"[{role}] planned {len(path)} waypoints at "
               f"{FM_JOINT_RESOLUTION} rad; verifying swept path...")
@@ -4325,6 +4381,96 @@ class HuskyMonitor(Node):
                 f"waypoints. Re-run 'Plan Movement' for a different RRT sample.")
             return None
         return joint_trajectory_from_path(path)
+
+    def _diagnose_free_plan_endpoints(self, mv, goal_conf, role):
+        """Explain a free plan's ``start_or_goal_in_collision`` failure.
+
+        ``plan_free_dual_arm`` rejects the request when either endpoint fails
+        the cfab collision check, but pybullet_planning only prints
+        "initial/end configuration is in collision" -- no pairs, no depths.
+        This re-checks BOTH endpoints with the same collision setup (ACM,
+        attached tools/bar) through cc_diagnosis: every colliding pair is
+        printed deepest-first with its witness points, and the first colliding
+        endpoint's pairs are drawn in the PyBullet window (the drawing is
+        cleared on the next diagnosis, or by hand).
+
+        Joint limits are reported separately: cfab's collision check ignores
+        them, so a limit violation is never the cause of "in collision", but a
+        goal outside the URDF limits cannot be reached by the BiRRT (its
+        sampler stays inside them) and the two failures look alike from the
+        planner's one-line verdict. A value that is a 2*pi wrap of an in-range
+        one is flagged as such (the usual way an IK-derived conf ends up out
+        of range).
+
+        A diagnostic must never turn a soft planning failure into a crash, so
+        the body is guarded and any error is reported and swallowed.
+
+        Args:
+            mv: The movement whose ``start_state`` (already resynced to the
+                live arms + live base) is the plan's start.
+            goal_conf: The plan's goal, a compas Configuration or a 12-vec.
+            role (str): ``'M0'`` / ``'M4'`` for the log lines.
+        """
+        planner = self.cfab.planner if self.cfab is not None else None
+        if planner is None or mv is None or mv.start_state is None:
+            return
+        names_12 = list(HUSKY_DUAL_UR5e_JOINT_NAMES[0]) + list(HUSKY_DUAL_UR5e_JOINT_NAMES[1])
+        try:
+            goal12 = (np.asarray(goal_conf, dtype=float)
+                      if isinstance(goal_conf, (list, tuple, np.ndarray))
+                      else vec12_from_conf(goal_conf))
+            endpoints = [
+                ('START (live arms at the live base)', mv.start_state),
+                ('GOAL', _state_with_conf12(mv.start_state, goal12, names_12)),
+            ]
+
+            # --- Collisions: who against who, per endpoint.
+            clear_collision_diagnosis(self)
+            first_hit = None  # (label, records, state) of the first colliding endpoint
+            for label, state in endpoints:
+                records = collect_collision_contacts(planner, state)
+                print_collision_contacts(
+                    records, header=f"[{role} diag] {label}:")
+                if records and first_hit is None:
+                    first_hit = (label, records, state)
+            if first_hit is not None and pp.has_gui():
+                label, records, state = first_hit
+                # collect() left the scene at the LAST endpoint checked; put the
+                # colliding one back so the drawing lines up with the bodies.
+                planner.set_robot_cell_state(state)
+                draw_collision_contacts(self, records)
+                print(f"[{role} diag] drawn: the {label} pairs (deepest first).")
+
+            # --- Joint limits vs the URDF, per endpoint (pp reads limits from
+            # the cfab robot, so point pp.CLIENT at that client for the query).
+            saved_client = pp.CLIENT
+            pp.CLIENT = planner.client.client_id
+            pp.CLIENTS.setdefault(pp.CLIENT, True)
+            try:
+                robot = planner.client.robot_puid
+                joints = pp.joints_from_names(robot, names_12)
+                for label, state in endpoints:
+                    vec = vec12_from_conf(state.robot_configuration)
+                    bad = []
+                    for name, j, v in zip(names_12, joints, vec):
+                        if not pp.violates_limit(robot, j, v):
+                            continue
+                        lo, hi = pp.get_joint_limits(robot, j)
+                        wrapped = any(lo <= v + k * 2 * np.pi <= hi for k in (-1, 1))
+                        bad.append(f"{name}={v:+.3f} rad (limits [{lo:+.3f}, {hi:+.3f}])"
+                                   + (" -- a 2*pi wrap of an in-range value" if wrapped else ""))
+                    if bad:
+                        print(f"[{role} diag] {label}: {len(bad)} joint(s) OUTSIDE URDF limits:")
+                        for line in bad:
+                            print(f"    {line}")
+                    else:
+                        print(f"[{role} diag] {label}: all 12 joints within URDF limits.")
+            finally:
+                pp.CLIENT = saved_client
+            # Leave the scene at the plan's start, as the planner found it.
+            planner.set_robot_cell_state(mv.start_state)
+        except Exception as e:
+            print(f"[{role} diag] ERROR while diagnosing the endpoints: {e}")
 
     def _validate_cdfm_planned_path(self, mv, path12):
         """Run sparse path_validation checks for any planned CDFM path."""
@@ -4768,6 +4914,276 @@ class HuskyMonitor(Node):
         # checked with the robot wherever this leaves it.
         self._check_cfab_base_matches(mv, f'{role} pre-plan')
 
+    def _m1_goal_conf(self):
+        """M1's goal configuration: the authored M2 start conf, if any.
+
+        Prefer the authored M2 start conf as M1's goal: it skips the planner's
+        own goal IK (which can pick a +/-2pi-wrapped branch) and pins the goal
+        bar pose to the authored conf's FK. Note the joint path's END still
+        follows the derived start's IK branch (upstream pose-RRT behavior), so
+        M2 can still land on a hard seed -- replan M1 when M2's linear IK
+        cannot reach its first waypoint.
+
+        Returns:
+            Configuration | None: M2's ``start_state.robot_configuration``, or
+            None when there is no M2 / it carries no configuration (the caller
+            then falls back to M1's authored ``target_ee_frames``).
+        """
+        m2 = next((m for m in (self._loaded_movements or [])
+                   if self._match_movement_role(m) == 'M2'), None)
+        if (m2 is not None and m2.start_state is not None
+                and m2.start_state.robot_configuration is not None):
+            print("[M1] goal_conf <- authored M2 start conf (wrap-safe branch).")
+            return m2.start_state.robot_configuration
+        return None
+
+    def _m1_home_anchor(self):
+        """The home carry anchor picked on the GUI slider, or None for 'all'.
+
+        Reads the widget's live position rather than trusting the cached
+        index: a slider rebuilt by reset_ui can miss the next drag's on-change
+        callback (same hazard as bar_action_file_slider in
+        load_bar_action_file).
+
+        Returns:
+            str | None: an ``M1_HOME_ANCHOR_CHOICES`` label, or None when the
+            slider sits on index 0 ('all' = let the planner sample every
+            anchor).
+        """
+        sld = getattr(self, 'm1_home_anchor_slider', None)
+        if sld is not None:
+            v = sld.value
+            if v is not None:
+                self._m1_home_anchor_idx = int(round(float(v)))
+        anchor_idx = max(0, min(int(self._m1_home_anchor_idx),
+                                len(M1_HOME_ANCHOR_CHOICES) - 1))
+        home_anchor = None if anchor_idx == 0 else M1_HOME_ANCHOR_CHOICES[anchor_idx]
+        if home_anchor is not None:
+            print(f"[M1] home anchor override: {home_anchor}")
+        return home_anchor
+
+    def derive_m1_endpoints_live(self):
+        """Run ONLY M1's start derivation against the live base -- no RRT --
+        and put both endpoints on screen.
+
+        ``plan_constrained_dual_arm(derive_start=True)`` is two stages: first
+        ``_derive_constrained_start_for_plan`` solves the GOAL (the authored M2
+        start conf, or IK on the authored target frames) and derives a
+        bar-loading START by tracking the held bar backward from that goal to a
+        home pose; only then does the SE(3) RRT search a path between them.
+        When M1 "struggles", the interesting question is which of the two
+        stages fails, and what the two endpoint configurations look like. This
+        button runs stage one alone, prints the same feasibility report the
+        headless ``--probe-endpoints`` mode does, and shows the result:
+
+        * the green preview robot (with the bar riding in its grippers)
+          follows the ``Traj viz time`` slider between START (t=0) and GOAL
+          (t=1) -- or along the whole corridor when the derivation found a
+          collision-free one (that corridor IS a valid M1 path);
+        * the red cfab robot gets a ``Constrained t`` slider on the PyBullet
+          panel stepping through the same waypoints, re-posing the full cell
+          state.
+
+        On ``goal_in_collision`` the colliding pair of the authored goal conf is
+        drawn (cc_diagnosis), since a goal that collides at the LIVE base but
+        not at the authored one is the usual reason an "easy" M1 fails after
+        the base was parked by hand.
+
+        The derived start is kept in ``self._m1_derived``; nothing is written
+        into the movement until 'M1: Adopt derived start' is clicked.
+
+        ! For the mount-once mocap protocol only the START matters (M1 is
+        ! never executed -- the transfer loop leaves from the bar-loading pose
+        ! directly), so this + Adopt replaces 'Plan Movement' on M1 entirely.
+        """
+        mv = self.current_movement
+        if mv is None or mv.start_state is None:
+            self.get_logger().warn("Load M1 first (Movement slider 1 -> Load Movement).")
+            return
+        if self._match_movement_role(mv) != 'M1':
+            self.get_logger().warn(
+                f"Derive Start/Goal is M1-only; current is "
+                f"{self._match_movement_role(mv)!r}.")
+            return
+        if not self.active_bar_name:
+            self.get_logger().warn("M1: active_bar_name not set.")
+            return
+        # Same preamble as plan_selected_movement, so this sees exactly what
+        # the planner would: live base pushed into the state, IK seed present.
+        if not self._apply_live_base_to_movement(mv):
+            return
+        self._fill_missing_start_conf(mv.start_state)
+        goal_conf = self._m1_goal_conf()
+        if goal_conf is None and not mv.target_ee_frames:
+            self.get_logger().warn("M1: no authored M2 start conf and no target_ee_frames.")
+            return
+        home_anchor = self._m1_home_anchor()
+        self._m1_derived = None
+        clear_collision_diagnosis(self)
+
+        planner = self.cfab.planner
+        state = mv.start_state
+        robot_puid = planner.client.robot_puid
+        names_12 = list(HUSKY_DUAL_UR5e_JOINT_NAMES[0]) + list(HUSKY_DUAL_UR5e_JOINT_NAMES[1])
+        arm_joints = pp.joints_from_names(robot_puid, names_12)
+        tool_l = pp.link_from_name(robot_puid, TOOL_LINK_LEFT)
+        tool_r = pp.link_from_name(robot_puid, TOOL_LINK_RIGHT)
+        # Kept local like the STAGE3 import in _plan_free_and_validate: core
+        # pulls in the whole RRT stack, which the monitor otherwise never
+        # imports at module level.
+        from husky_assembly_tamp.motion_planner.dual_arm_task_space_rrt.core import validate_dual_arm_bar_pose
+
+        print(f"[M1 derive] goal <- {'authored M2 start conf' if goal_conf is not None else 'IK on target_ee_frames'}, "
+              f"anchor {home_anchor or 'all'}, up to 120 s ...")
+        # Pause GUI rendering across the derivation (no-op when headless).
+        with pp.LockRenderer():
+            planner.set_robot_cell_state(state)
+            bar_body = _bar_body_id(planner, self.active_bar_name)
+            obstacles = _collect_obstacle_puids(planner, exclude={self.active_bar_name})
+            (start_conf, bar_start, bar_goal, goal_arr,
+             grasp_l, grasp_r, info) = _derive_constrained_start_for_plan(
+                planner, state,
+                active_bar_id=self.active_bar_name,
+                bar_body=bar_body,
+                obstacles=obstacles,
+                robot_puid=robot_puid,
+                arm_joints=arm_joints,
+                tool_link_left=tool_l,
+                tool_link_right=tool_r,
+                joint_names_12=names_12,
+                goal_conf=goal_conf,
+                goal_ee_frames=mv.target_ee_frames if goal_conf is None else None,
+                # Same first-attempt settings as _plan_M1_dispatch.
+                random_seed=None,
+                max_ik_attempts=20,
+                bar_sweep_box=None,
+                position_res=CDFM_POSITION_RES,
+                rotation_res=CDFM_ROTATION_RES,
+                home_anchor=home_anchor,
+            )
+            planner.set_robot_cell_state(state)
+
+        if start_conf is None:
+            reason = info.get('failure_reason', 'unknown')
+            self.get_logger().warn(f"[M1 derive] FAILED: {reason}. See the [ssik] lines above "
+                                   f"for the tracked-sweep counters.")
+            if reason == 'goal_in_collision' and goal_conf is not None:
+                # Show WHY: the authored goal conf, FK'd at the live base, hits
+                # something. (ssik may have re-picked a branch before the check;
+                # the authored conf is the closest thing we can draw.)
+                diag_state = state.copy()
+                for n, v in zip(names_12, vec12_from_conf(goal_conf)):
+                    diag_state.robot_configuration[n] = float(v)
+                print("[M1 derive] drawing the authored goal conf's collision at the live base:")
+                visualize_goal_ik_collision(self, diag_state)
+            return
+
+        # --- Independent feasibility report (mirrors the headless probe).
+        with pp.LockRenderer():
+            collide = _build_cfab_collision_fn(planner, state, names_12)
+            goal_hit = collide(goal_arr)
+            planner.set_robot_cell_state(state)
+            start_hit = collide(start_conf)
+            planner.set_robot_cell_state(state)
+
+            def _grasp_ok(conf, bar_pose):
+                return validate_dual_arm_bar_pose(
+                    robot=robot_puid, arm_joints=arm_joints,
+                    tool_link_left=tool_l, tool_link_right=tool_r,
+                    full_conf=conf, bar_pose=bar_pose,
+                    grasp_bar_from_left=grasp_l, grasp_bar_from_right=grasp_r,
+                    pos_tolerance=1e-3, ori_tolerance=1e-2)
+            goal_ok = _grasp_ok(goal_arr, bar_goal)
+            start_ok = _grasp_ok(start_conf, bar_start)
+            planner.set_robot_cell_state(state)
+
+        def _fmt(vec):
+            return "[" + ", ".join(f"{float(v):+.3f}" for v in vec) + "]"
+        d_endpoints = float(np.abs(np.asarray(start_conf) - np.asarray(goal_arr)).max())
+        corridor = info.get('corridor')
+        print("\n=================== M1 ENDPOINTS (live base, no RRT) ===================")
+        print(f"  GOAL  conf : {_fmt(goal_arr)}")
+        print(f"        bar pos (xyz): {np.round(bar_goal[0], 4)}")
+        print(f"        collision-free : {self._color_bool(not goal_hit)}    "
+              f"grasp-consistent : {self._color_bool(goal_ok)}")
+        if goal_conf is not None:
+            # ssik may re-pick the goal on a branch compatible with the home
+            # anchor; say so, because M1's end then no longer equals M2's start.
+            d_goal = float(np.abs(goal_arr - vec12_from_conf(goal_conf)).max())
+            print(f"        max |goal - authored M2 start| : {d_goal:.4f} rad"
+                  + ("  <-- BRANCH SWAPPED by ssik pairing" if d_goal > 1e-3 else ""))
+        print(f"  START conf : {_fmt(start_conf)}")
+        print(f"        bar pos (xyz): {np.round(bar_start[0], 4)}")
+        print(f"        collision-free : {self._color_bool(not start_hit)}    "
+              f"grasp-consistent : {self._color_bool(start_ok)}")
+        print(f"  max |start - goal| joint delta: {d_endpoints:.4f} rad")
+        print(f"  corridor collision-free (valid M1 path already): "
+              f"{self._color_bool(corridor is not None)}")
+        print("=========================================================================\n")
+
+        self._m1_derived = {
+            'start_conf': np.asarray(start_conf, dtype=float),
+            'goal_conf': np.asarray(goal_arr, dtype=float),
+            'corridor': corridor,
+        }
+
+        # --- Show it. The path scrubbed by the preview is the corridor when
+        # there is one (home -> goal = M1's direction), else just the two
+        # endpoints: update() shows exact waypoints without interpolating, so
+        # 'Traj viz time' reads START below t=1 and GOAL at t=1.
+        if corridor is not None:
+            _poses, confs = corridor
+            path = [np.asarray(q, dtype=float) for q in reversed(confs)]
+        else:
+            path = [np.asarray(start_conf, dtype=float), np.asarray(goal_arr, dtype=float)]
+        t = self.trajectory_time
+        self.constrained_trajectory = [
+            (np.asarray([q[:6] for q in path]), None, t, None),
+            (np.asarray([q[6:] for q in path]), None, t, None),
+        ]
+        self.staging_free_trajectory = [None, None]
+        self.set_arm_trajectory(self.constrained_trajectory[0], index=0)
+        self.set_arm_trajectory(self.constrained_trajectory[1], index=1)
+        # Bar + joints ride on the green preview robot from M1's authored grasp.
+        self._refresh_preview_attached_bodies('bar_held', state)
+        self.set_to_show_traj_state()
+        # Red cfab robot: 'Constrained t' slider on the PyBullet panel.
+        self._build_trajectory_waypoint_sliders()
+        print("[M1 derive] preview: 'Traj viz time' 0 = START (bar-loading), 1 = GOAL "
+              "(approach); cfab 'Constrained t' slider steps the same waypoints. "
+              "Click 'M1: Adopt derived start' to make it M1's start / M0's goal.")
+
+    def adopt_m1_derived_start(self):
+        """Make the last derived START M1's start conf and M0's goal.
+
+        Writes ``self._m1_derived['start_conf']`` into M1's
+        ``start_state.robot_configuration`` and backfills M0's
+        ``target_configuration`` from it, exactly what a successful M1 plan
+        would have left behind -- minus the trajectory. Step A of the
+        mount-once protocol then continues as usual: load M0, Plan Movement,
+        execute, mount the bar.
+
+        ! This leaves M1 with a start conf but no trajectory on purpose. The
+        ! "start only with a trajectory" invariant
+        ! (_clear_m1_start_conf_without_trajectory) is enforced only when an
+        ! M1 plan FAILS, so the adopted start survives normal use; a later
+        ! successful 'Plan Movement' on M1 simply overwrites it.
+        """
+        derived = getattr(self, '_m1_derived', None)
+        if not derived:
+            self.get_logger().warn("Nothing to adopt: click 'M1: Derive Start/Goal only' first.")
+            return
+        m1 = next((m for m in (self._loaded_movements or [])
+                   if self._match_movement_role(m) == 'M1'), None)
+        if m1 is None or m1.start_state is None:
+            self.get_logger().warn("No M1 movement with a start_state is loaded.")
+            return
+        m1.start_state.robot_configuration = conf_from_12vec(derived['start_conf'])
+        print(f"[M1 adopt] {m1.movement_id!r}.start_state.robot_configuration <- derived start "
+              f"(no M1 trajectory; intended for the mount-once protocol).")
+        self._backfill_m0_target_from_m1()
+        print("[M1 adopt] next: Movement slider 0 -> Load Movement -> Plan Movement -> Exec.")
+
     def _plan_M1_dispatch(self, mv):
         """Constrained dual-arm (bar held): state-based task-space RRT.
 
@@ -4782,34 +5198,8 @@ class HuskyMonitor(Node):
         if not mv.target_ee_frames:
             self.get_logger().warn("M1: missing target_ee_frames.")
             return None
-        # Prefer the authored M2 start conf as M1's goal: it skips the
-        # planner's own goal IK (which can pick a ±2π-wrapped branch) and
-        # pins the goal bar pose to the authored conf's FK. Note the joint
-        # path's END still follows the derived start's IK branch (upstream
-        # pose-RRT behavior), so M2 can still land on a hard seed — replan
-        # M1 when M2's linear IK cannot reach its first waypoint.
-        goal_conf = None
-        m2 = next((m for m in (self._loaded_movements or [])
-                   if self._match_movement_role(m) == 'M2'), None)
-        if (m2 is not None and m2.start_state is not None
-                and m2.start_state.robot_configuration is not None):
-            goal_conf = m2.start_state.robot_configuration
-            print("[M1] goal_conf <- authored M2 start conf (wrap-safe branch).")
-        # Home carry anchor selection from the GUI slider. Read the widget's
-        # live position rather than trusting the cached index: a slider rebuilt
-        # by reset_ui can miss the next drag's on-change callback (same hazard
-        # as bar_action_file_slider in load_bar_action_file).
-        sld = getattr(self, 'm1_home_anchor_slider', None)
-        if sld is not None:
-            v = sld.value
-            if v is not None:
-                self._m1_home_anchor_idx = int(round(float(v)))
-        anchor_idx = max(0, min(int(self._m1_home_anchor_idx),
-                                len(M1_HOME_ANCHOR_CHOICES) - 1))
-        # Index 0 = 'all' = None for the planner (sample every anchor).
-        home_anchor = None if anchor_idx == 0 else M1_HOME_ANCHOR_CHOICES[anchor_idx]
-        if home_anchor is not None:
-            print(f"[M1] home anchor override: {home_anchor}")
+        goal_conf = self._m1_goal_conf()
+        home_anchor = self._m1_home_anchor()
         # Multi-start: when a run fails, retry with a re-seeded derived
         # start and a widened bar sweep box (hard scenes like B226 need a
         # different home bar pose to find a corridor). The anchor selection
@@ -5366,6 +5756,22 @@ class HuskyMonitor(Node):
     def save_bar_holding_marker_data(self):
         """Save accumulated marker takes to the gdrive experiment dir; clear viz."""
         world.save_markerset_data(self, use_experiment_dir=True)
+        self.discard_bar_holding_marker_takes()
+
+    def discard_bar_holding_marker_takes(self):
+        """Drop every recorded-but-unsaved marker take and its fit drawing.
+
+        Every 'Record + Fit + Viz' click is kept in memory until the next
+        'Save markerset data', which writes ALL of them into one file stamped
+        with ONE reference pose (the loaded movement's start bar pose). A take
+        recorded somewhere else -- the fit sanity check right after mounting
+        the bar at the bar-loading pose, or a take with a bad marker fit --
+        must therefore be thrown away before the real takes of a bar are
+        saved, or it lands in that bar's file and is scored against a
+        reference it never aimed at. This is that throw-away; Save calls it
+        too once the file is written.
+        """
+        n = len(self.marker_set_data)
         self.marker_set_data = []
         for uid in self._bar_holding_fit_line_uids:
             try:
@@ -5373,6 +5779,8 @@ class HuskyMonitor(Node):
             except Exception:
                 pass
         self._bar_holding_fit_line_uids = []
+        if n:
+            self.get_logger().info(f"[bar take] discarded {n} unsaved take(s).")
 
     def _build_trajectory_waypoint_sliders(self):
         """Add up to two "step through waypoints" sliders on the cfab PyBullet
@@ -6345,6 +6753,12 @@ class HuskyMonitor(Node):
                 integer=True,
             )
             self.buttons.append(Button('Plan Movement', self.plan_selected_movement))
+            # * M1 in two clicks without the RRT: derive + show the start/goal
+            # confs, then adopt the start as M1's start / M0's goal.
+            self.buttons.append(Button('M1: Derive Start/Goal only (no RRT)',
+                                       self.derive_m1_endpoints_live))
+            self.buttons.append(Button('M1: Adopt derived start -> M0 goal',
+                                       self.adopt_m1_derived_start))
             self.buttons.append(Button('Load Movement Trajectory', self.load_selected_movement_trajectory))
             # * Button 1: plan the M1->M2->M3->M0->M4 chain in one click,
             # export the mutated action as `<name>.live-solved.json` sidecar.
@@ -6424,6 +6838,9 @@ class HuskyMonitor(Node):
             self.buttons.append(Button('Record markerset take', self.record_bar_holding_marker_take))
             self.buttons.append(Button('Record + Fit + Viz (shared)', self.record_bar_take_with_shared_viz))
             self.buttons.append(Button('Save markerset data', self.save_bar_holding_marker_data))
+            # Drops unsaved takes (e.g. the post-mount fit check) so they never
+            # ride into the next bar's saved file.
+            self.buttons.append(Button('Discard unsaved takes', self.discard_bar_holding_marker_takes))
             self.buttons.append(Button('Toggle Servoing Tracker', self.toggle_servoing_tracker))
 
         if self.DUAL_ARM_EE_CONSTR_ACCURACY_MOCAP_TEST:

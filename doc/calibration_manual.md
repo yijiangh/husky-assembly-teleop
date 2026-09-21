@@ -100,31 +100,56 @@ The workstation must be on the same network as the OptiTrack PC to receive strea
 | Device | IP Address |
 |--------|-----------|
 | Workstation (your PC) | your own IP (e.g. `192.168.0.25`) |
-| OptiTrack PC | `192.168.0.117` |
+| OptiTrack PC (`DESKTOP-T1HDH98`) | `192.168.0.28` |
 
-These are configured in the code at [`husky_monitor.py:60-61`](../husky_assembly_teleop/husky_monitor.py#L60-L61):
+These are configured in the code at [`husky_monitor.py:216-219`](../husky_assembly_teleop/husky_monitor.py#L216-L219):
 ```python
 CLIENT_IP = '192.168.0.25'
-MOCAP_IP = '192.168.0.117'
+MOCAP_IP = '192.168.0.28'
 ```
 
 > **Tip**: find your workstation IP with `ip -c address` in a terminal, then set
 > `CLIENT_IP` to it.
+
+> **Both of these are DHCP leases from the Fritz!Box, not fixed addresses.** They
+> move when a machine is re-connected or re-cabled. The OptiTrack PC was on
+> `192.168.0.117` until Sept 2026, when its lease changed to `192.168.0.28`.
+> Treat a mismatch here as the first suspect whenever mocap will not connect --
+> see *MoCap not connecting* in Section 9.
+
+**Two NICs on the OptiTrack PC.** That machine has two Ethernet adapters, and
+telling them apart matters:
+
+| Adapter | Address | Purpose |
+|---------|---------|---------|
+| Camera NIC | `169.254.x.x` (link-local, no gateway) | The OptiTrack cameras, on their own isolated switch |
+| LAN NIC | `192.168.0.x` (has the `fritz.box` DNS suffix) | The lab network -- this is the one NatNet streams from |
+
+A `169.254.x.x` address with no default gateway is **normal and correct** for the
+camera NIC -- that is how the cameras are addressed, not a fault. Never
+re-address it to fix a streaming problem; you will drop the cameras.
 
 **To verify the network connection:**
 
 1. Make sure your workstation is connected to the Husky switch (either via Ethernet cable or the lab network).
 2. Verify you can ping the OptiTrack PC:
    ```bash
-   ping 192.168.0.117
+   ping 192.168.0.28
    ```
 3. In Motive (3.0.3), go to **Edit > Settings > Streaming** and make sure:
    - **NatNet** streaming is **enabled**
-   - **Local Interface** = `192.168.0.117` (if it does not appear in the list, **disconnect from the internet** and re-open the list)
-   - **Transmission Type** = **Unicast**
+   - **Local Interface** = `192.168.0.28` -- the **LAN** address, *not* the
+     `169.254.x.x` camera one and not loopback
+   - **Transmission Type** = **Unicast** (the client calls
+     `set_use_multicast(False)`, so Multicast here will not connect)
 
 <!-- SCREENSHOT: Motive streaming settings panel showing enabled streaming and correct IP -->
-<!-- SCREENSHOT: Terminal showing successful ping to 192.168.0.117 -->
+<!-- SCREENSHOT: Terminal showing successful ping to 192.168.0.28 -->
+
+> **Tip**: Motive builds the **Local Interface** list once, at application
+> startup. If you enable or re-cable an adapter while Motive is running, the new
+> address will not appear until you fully close Motive (confirm no `Motive.exe`
+> remains in Task Manager) and re-open it.
 
 > **Tip**: If the mocap connection fails in the monitor, you will see a red log message. Check the Motive streaming settings and verify both IPs are correct.
 
@@ -282,7 +307,7 @@ Before collecting data, verify these settings in the code match your setup.
 |------|-------|------|
 | base `mocap_id` (Streaming IDs) | [`husky_world.py:184/191/198`](../husky_assembly_teleop/husky_world.py#L184) | per ROS domain (see [§0.2](#02-robot-reference-table)) ; match Motive **properties > Streaming ID** (see [§0.2](#02-robot-reference-table)) |
 | calib-tool IDs `1862` L / `1861` R | [`husky_world.py:329/333`](../husky_assembly_teleop/husky_world.py#L329) | match Motive (see [§0.2](#02-robot-reference-table)) . **Which arm is calibrated = which `calib_tool_*` block is enabled** — comment out the unused arm for a single-arm run |
-| `CALIBRATION_DATE` + `DEFAULT_DATE_FOLDER` | [`__init__.py:57`](../husky_assembly_teleop/__init__.py#L57) & [`config_loader.py:21`](../data/calibration_data/config_loader.py#L21) | both must point to today's date folder (must exist with a `config.yaml`) |
+| `CALIBRATION_DATE` + `CALIBRATION_ANALYSIS_DATE` | [`__init__.py:75`](../husky_assembly_teleop/__init__.py#L75) and [`:80`](../husky_assembly_teleop/__init__.py#L80) | both sit next to each other in **one file**; set both to today's date folder (must exist with a `config.yaml`). Nothing to edit in `config_loader.py` — its `DEFAULT_DATE_FOLDER` just re-exports `CALIBRATION_ANALYSIS_DATE` |
 | `CALIBRATION_STATE_SETS` (per arm idx) | [`husky_monitor.py:111-113`](../husky_assembly_teleop/husky_monitor.py#L72) | verify the calib traj-state folder for your arm exists |
 
 
@@ -579,19 +604,34 @@ After collecting all J0 and J1 data (and optionally validation data), run the ca
      arm: null            # "left" / "right" / null
    ```
 
-### 7.2 Set the Date Folder in config_loader.py
+### 7.2 Set the Date Folder
 
-Edit `config_loader.py` to point to your date folder:
+Both calibration dates live in **one file** — [`husky_assembly_teleop/__init__.py`](../husky_assembly_teleop/__init__.py#L75):
 
 ```bash
-nano data/calibration_data/config_loader.py
+nano ~/ros2_ws/src/husky-assembly-teleop/husky_assembly_teleop/__init__.py
 ```
-
-Change the `DEFAULT_DATE_FOLDER` to your date:
 
 ```python
-DEFAULT_DATE_FOLDER = 'YYYYMMDD'   # Change to your date folder
+CALIBRATION_DATE = 'YYYYMMDD'            # live app: records into / loads from
+CALIBRATION_ANALYSIS_DATE = 'YYYYMMDD'   # offline scripts 0_ ... 4_: analyse
 ```
+
+Normally set **both** to the same folder. Keep them different only when you
+deliberately want the live app recording into a new folder while you re-analyse
+an older capture.
+
+There is nothing to edit in `config_loader.py` — its `DEFAULT_DATE_FOLDER` is a
+re-export of `CALIBRATION_ANALYSIS_DATE`. Every script prints the folder it is
+working on when it starts:
+
+```
+[config_loader] Using calibration date folder: YYYYMMDD
+```
+
+> Changing `CALIBRATION_DATE` only takes effect on the **next launch** of the
+> monitor — restart the app after editing, or it keeps writing into the folder
+> it read at startup.
 
 ### 7.3 Run the Pipeline
 
@@ -631,7 +671,9 @@ cd ~/ros2_ws/src/husky-assembly-teleop/data/calibration_data/
 python 4_punch_validation.py
 ```
 
-The script uses the active date folder from `config_loader.py` and reads
+The script uses the active date folder from `CALIBRATION_ANALYSIS_DATE`
+([`__init__.py:80`](../husky_assembly_teleop/__init__.py#L80)) — it prints it on
+the first line — and reads
 `data/calibration_data/YYYYMMDD/punch_validation/`. If both arms have punch
 validation files in that folder, set `punch_validation.arm` in
 `data/calibration_data/YYYYMMDD/config.yaml` to `left` or `right`. This setting
@@ -671,9 +713,72 @@ The output includes:
 - Verify joint states are streaming: `ros2 topic hz /a200_0806/ur5e/joint_states`
 
 ### MoCap not connecting
-- Verify network connectivity: `ping 192.168.0.117`
-- Check Motive streaming settings (Section 1.4)
-- Verify `CLIENT_IP` and `MOCAP_IP` in `husky_monitor.py` match your setup
+
+Symptom: the monitor logs `mocap client connected: False` in red, and the husky
+in the PyBullet view sits at the world origin instead of where it really is.
+The arms still follow the real robot, because they come from `/joint_states`;
+only the **base** pose is driven by mocap, so a stale base with live arms is the
+signature of this problem rather than a separate bug.
+
+Work through these in order -- each step tells you whether to stop or continue:
+
+1. **Can you reach the OptiTrack PC at all?**
+   ```bash
+   ping 192.168.0.28
+   ```
+   If this replies, skip to step 4. If not, continue.
+
+2. **Has its DHCP lease moved?** The address is not fixed (Section 1.4). Ask the
+   router what it knows, then sweep the subnet for what is actually alive:
+   ```bash
+   getent hosts DESKTOP-T1HDH98          # what the Fritz!Box has on record
+   for i in $(seq 1 254); do (ping -c1 -W1 192.168.0.$i >/dev/null 2>&1 \
+       && echo "alive: 192.168.0.$i") & done; wait
+   for i in $(seq 1 254); do n=$(getent hosts 192.168.0.$i | awk '{print $2}'); \
+       [ -n "$n" ] && echo "192.168.0.$i -> $n"; done
+   ```
+   The router keeps **stale** records for addresses a machine no longer holds,
+   so a name that resolves but does not ping is an old lease, not a live host.
+   Trust the ping sweep over the name lookup. If the PC turns up on a different
+   address, update `MOCAP_IP` and you are done.
+
+3. **Is it on our network segment at all?** This check does not depend on IPv4
+   being configured correctly, so it separates "wrong address" from "not
+   connected":
+   ```bash
+   ping6 -c 4 -I eno1 ff02::1        # every IPv6 host on this segment answers
+   ```
+   Match the replies against `ip neigh show` to identify them by MAC. If the
+   OptiTrack PC is absent here, no IP setting will help -- its LAN adapter is
+   either **disabled in Windows** or genuinely unplugged. On that machine run
+   `ipconfig /all` (plain `ipconfig` hides adapters) or `getmac /v`, and check
+   `ncpa.cpl` for a greyed-out adapter to enable. Note that a *disabled* adapter
+   does not appear in `ipconfig` output at all, while an unplugged one still
+   shows as `Media disconnected`.
+
+4. **Did Motive pick up the interface?** Motive enumerates adapters only at
+   startup, so an adapter enabled after launch will not be in the **Local
+   Interface** list. Fully close and re-open Motive, then select the
+   `192.168.0.x` address (Section 1.4).
+
+5. **Check the remaining settings:** streaming **enabled**, **Unicast** (not
+   Multicast), and `CLIENT_IP` / `MOCAP_IP` in `husky_monitor.py` matching your
+   workstation and the OptiTrack PC respectively.
+
+> **Multicast does not help here.** It only changes how NatNet addresses its
+> packets; it cannot create a network path that does not exist. It is also
+> harder to route than unicast and can be dropped by IGMP snooping on the
+> managed switch. Leave Motive on **Unicast**.
+
+**To keep working without mocap**, switch the monitor to robot-centric mode --
+the base then comes from each movement's authored `start_state.robot_base_frame`
+instead of being measured. Flip all three flags together in
+[`husky_monitor.py`](../husky_assembly_teleop/husky_monitor.py#L241):
+```python
+USE_MOCAP = 0
+USE_CELL_STATE_BASE_POSE = 1
+BAR_ACTION_MOCAP_ACCURACY_TEST = 0
+```
 
 ### E-stop triggers during trajectory
 - Release the e-stop and press "Go" on the remote
@@ -698,5 +803,5 @@ The output includes:
 ### Pipeline fails at a specific step
 - Check the terminal output for error messages
 - Make sure the `config.yaml` has the correct settings
-- Make sure the `DEFAULT_DATE_FOLDER` in `config_loader.py` matches your data folder
+- Make sure `CALIBRATION_ANALYSIS_DATE` in [`husky_assembly_teleop/__init__.py`](../husky_assembly_teleop/__init__.py#L80) matches your data folder — every script prints `[config_loader] Using calibration date folder: ...` at startup, so check that line first
 - Verify that the data files exist in the expected subfolders (j0/, j1/)

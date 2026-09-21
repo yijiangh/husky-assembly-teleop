@@ -11,16 +11,18 @@ def _get_data_directory():
     If running from source (development), use the source data directory.
     Otherwise, use the installed package data directory.
     """
-    # Non-ROS fallback (e.g. Rhino CPython / standalone)
-    if get_package_share_directory is None:
+    # Ask ROS where the package was installed. This fails in two cases, and both
+    # fall back to the data folder sitting next to this source file:
+    #   1. no ROS at all (Rhino CPython / a plain "python some_script.py" run)
+    #   2. ROS is there but the package has not been built into an install space
+    try:
+        installed_data_dir = os.path.join(get_package_share_directory('husky_assembly_teleop'), 'data')
+    except Exception:
         local_data_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'data'))
         if os.path.exists(local_data_dir):
             return local_data_dir
         return os.path.join(os.getcwd(), 'data')
 
-    # Get the installed package data directory
-    installed_data_dir = os.path.join(get_package_share_directory('husky_assembly_teleop'), 'data')
-    
     # Extract workspace path from installed directory
     # installed_data_dir = /home/yijiangh/ros2_ws/install/husky_assembly_teleop/share/husky_assembly_teleop/data
     # We want to extract: /home/yijiangh/ros2_ws/
@@ -54,11 +56,33 @@ DESIGN_DATA_DIRECTORY = '/home/su/Insync/2025-03 Husky Assembly/data_design_stud
 EXPERIMENT_DATA_DIRECTORY = '/home/su/Insync/2025-03 Husky Assembly/data_experiment'
 RECORD_DIRECTORY = os.path.join(DATA_DIRECTORY, '..', 'recorded_data')
 
-CALIBRATION_DATE = '20260622'
+# ============================================================================
+# * CALIBRATION DATASET -- the ONE file that chooses the dated folders
+# ============================================================================
+# Both dates below live here so you always see them together and cannot update
+# one while forgetting the other. They are normally the SAME folder: you record
+# data into it, then analyse it. Set them apart only when you deliberately want
+# the live app writing into a new folder while you re-analyse an older capture.
+#
+# ! Each folder must already exist under data/calibration_data/ and must hold a
+# ! config.yaml -- copy one from an older date folder when starting a session.
+
+# Used by the LIVE APP (the running monitor):
+#   * husky_world reads <date>/calibrated_transformation_<robot>.json
+#   * husky_monitor reads the punch-tool TCP offsets from <date>/config.yaml
+#   * the Record/Save buttons WRITE new j0 / j1 / validation / punch_validation
+#     data into <date>/
+CALIBRATION_DATE = '20260916'
+
+# Used by the OFFLINE SCRIPTS in data/calibration_data/ (0_ ... 4_ and the
+# export/visualise helpers). config_loader.py re-exports this as its
+# DEFAULT_DATE_FOLDER, which is the folder every load_config() call reads.
+CALIBRATION_ANALYSIS_DATE = '20260916'
+
 CALIBRATION_BATCHES = ['j0', 'j1', 'validation', 'punch_validation']
 
-DESIGN_PROBLEM_NAME = '260811_RobArch_demo'
-# DESIGN_PROBLEM_NAME = '260716_phase1_test'
+# DESIGN_PROBLEM_NAME = '260811_RobArch_demo'
+DESIGN_PROBLEM_NAME = '260716_phase1_test'
 # DESIGN_PROBLEM_NAME = '2026-05-19_reoriented2'
 
 # Rhino .3dm whose "Environment Obstacles" layer is drawn as the layout-diagram

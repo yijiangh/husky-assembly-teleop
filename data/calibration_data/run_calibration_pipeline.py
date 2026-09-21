@@ -16,6 +16,8 @@ import sys
 import subprocess
 import time
 
+from config_loader import DEFAULT_DATE_FOLDER
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 # Scripts to run in order
@@ -65,16 +67,23 @@ def main():
         "date_folder",
         nargs="?",
         default=None,
-        help="Name of the date folder to use (optional; defaults to DEFAULT_DATE_FOLDER in config_loader.py)"
+        help="Date folder to check against (optional). The folder actually used is "
+             "CALIBRATION_ANALYSIS_DATE in husky_assembly_teleop/__init__.py"
     )
     args = parser.parse_args()
 
+    # ! This argument does NOT switch datasets: each step below is a separate
+    # ! process that reads the date from husky_assembly_teleop/__init__.py.
+    # ! So treat a mismatch as an error instead of running on the wrong data.
     date_folder = args.date_folder
-    if date_folder is not None:
-        print(f"Using date folder: {date_folder}")
-        # Update DEFAULT_DATE_FOLDER would require modifying config_loader
-        # For now, just inform the user
-        print("Note: Make sure config_loader.py DEFAULT_DATE_FOLDER matches this.")
+    if date_folder is not None and date_folder != DEFAULT_DATE_FOLDER:
+        print(f"ERROR: you asked for date folder '{date_folder}', but the pipeline is "
+              f"configured for '{DEFAULT_DATE_FOLDER}'.")
+        print("Edit CALIBRATION_ANALYSIS_DATE in husky_assembly_teleop/__init__.py "
+              "and run again.")
+        return 1
+
+    print(f"Using date folder: {DEFAULT_DATE_FOLDER}")
 
     print()
     total_start = time.time()
