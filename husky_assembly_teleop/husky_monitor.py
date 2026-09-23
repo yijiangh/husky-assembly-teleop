@@ -44,6 +44,8 @@ from husky_assembly_teleop.cc_diagnosis import (
     clear_collision_diagnosis, visualize_goal_ik_collision,
     collect_collision_contacts, print_collision_contacts, draw_collision_contacts,
 )
+from husky_assembly_teleop.m1_derive_report import print_m1_derivation_summary
+from husky_assembly_teleop.dashboard.run_writer import write_m1_run
 from husky_assembly_teleop.optitrack.NatNetClient import NatNetClient
 from husky_assembly_teleop.utils import (
     pose_from_frame, frame_from_pose, pose_from_transformation, transformation_from_pose,
@@ -5224,8 +5226,8 @@ class HuskyMonitor(Node):
 
         if start_conf is None:
             reason = info.get('failure_reason', 'unknown')
-            self.get_logger().warn(f"[M1 derive] FAILED: {reason}. See the [ssik] lines above "
-                                   f"for the tracked-sweep counters.")
+            self.get_logger().warn(f"[M1 derive] FAILED: {reason}.")
+            self._save_m1_derive_report(info, home_anchor, state)
             if reason == 'goal_in_collision' and goal_conf is not None:
                 # Show WHY: the authored goal conf, FK'd at the live base, hits
                 # something. (ssik may have re-picked a branch before the check;
@@ -5285,6 +5287,7 @@ class HuskyMonitor(Node):
             'goal_conf': np.asarray(goal_arr, dtype=float),
             'corridor': corridor,
         }
+        self._save_m1_derive_report(info, home_anchor, state)
 
         # --- Show it. The path scrubbed by the preview is the corridor when
         # there is one (home -> goal = M1's direction), else just the two
@@ -5311,6 +5314,44 @@ class HuskyMonitor(Node):
         print("[M1 derive] preview: 'Traj viz time' 0 = START (bar-loading), 1 = GOAL "
               "(approach); cfab 'Constrained t' slider steps the same waypoints. "
               "Click 'M1: Adopt derived start' to make it M1's start / M0's goal.")
+
+    def _save_m1_derive_report(self, info, home_anchor, state):
+        """Print the sweep summary and record the run for the dashboard.
+
+        Every derivation result carries one entry per home candidate the sweep
+        tried plus a timing profile. The terminal gets the short table; the run
+        file gets everything, including which link hit which body, so the
+        dashboard (``scripts/m1_dashboard_server.py``) can show the attempt in
+        3D. A failed derivation is recorded too -- that is exactly the case
+        worth looking at.
+
+        A report must never turn a derivation into a crash, so the write is
+        guarded; the cell state is restored either way, because the collision
+        annotation moves the simulated robot around.
+
+        Args:
+            info: The ``info`` dict from ``_derive_constrained_start_for_plan``.
+            home_anchor (str | None): The anchor selection used.
+            state: The movement start state the derivation ran on.
+        """
+        print_m1_derivation_summary(info)
+        bar_action = os.path.splitext(os.path.basename(
+            self._current_action_path or ''))[0] or (self.active_bar_name or 'unknown')
+        try:
+            with pp.LockRenderer():
+                write_m1_run(
+                    self.cfab.planner, state, info,
+                    problem=self.cfab.problem_name or DESIGN_PROBLEM_NAME,
+                    bar_action=bar_action, active_bar=self.active_bar_name,
+                    movement_id=getattr(self.current_movement, 'movement_id', None),
+                    home_anchor=home_anchor, source='monitor')
+        except Exception as e:
+            print(f"[M1 derive] could not record the run for the dashboard: {e}")
+        finally:
+            try:
+                self.cfab.planner.set_robot_cell_state(state)
+            except Exception:
+                pass
 
     def adopt_m1_derived_start(self):
         """Make the last derived START M1's start conf and M0's goal.

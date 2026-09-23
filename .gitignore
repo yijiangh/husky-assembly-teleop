@@ -12,3 +12,9 @@ reports
 .claude/settings.json
 
 # .claude/skills/*
+
+# M1 dashboard: run files + baked scenes are produced locally, per session
+recorded_data/
+
+# M1 dashboard javascript: downloaded by scripts/fetch_dashboard_vendor.sh
+husky_assembly_teleop/dashboard/static/vendor/

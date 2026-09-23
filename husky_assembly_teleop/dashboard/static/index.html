@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>M1 start derivation</title>
+<link rel="stylesheet" href="style.css">
+<script src="vendor/plotly.min.js"></script>
+<script type="importmap">
+{"imports": {
+  "three": "./vendor/three-r185/build/three.module.min.js",
+  "three/addons/": "./vendor/three-r185/examples/jsm/"
+}}
+</script>
+</head>
+<body>
+<header>
+  <h1>M1 start derivation</h1>
+  <label class="auto"><input type="checkbox" id="auto-open" checked> open new runs automatically</label>
+  <span id="status">connecting&hellip;</span>
+</header>
+
+<main>
+  <aside id="runs">
+    <h2>Runs</h2>
+    <ul id="run-list"><li class="empty">No runs yet. Produce one with
+      <code>scripts/derive_m1_headless.py</code> or the monitor's
+      <em>M1: Derive Start/Goal only</em> button.</li></ul>
+  </aside>
+
+  <section id="detail">
+    <div id="summary" class="card"><p class="empty">Pick a run on the left.</p></div>
+
+    <div class="card">
+      <h2>What was tried, and what happened</h2>
+      <div id="variant-table"></div>
+    </div>
+
+    <div class="card">
+      <h2>Where the home poses were
+        <select id="colour-by">
+          <option value="outcome">colour by outcome</option>
+          <option value="seconds">colour by time spent</option>
+          <option value="reached">colour by how far the walk got</option>
+        </select>
+        <select id="stick-mode">
+          <option value="short">short bar direction</option>
+          <option value="span">bar drawn at grasp span</option>
+          <option value="off">no bar direction</option>
+        </select>
+        <select id="robot-pose">
+          <option value="goal">robot at the goal pose</option>
+          <option value="start">robot at the pick-up pose</option>
+          <option value="off">no robot</option>
+        </select>
+      </h2>
+      <p class="hint">Each dot is one home bar pose the sweep tried, in the robot's
+        own frame (x forward, y left, z up); the stick through it is the bar's own
+        direction. The white diamond and thick white stick are the goal bar, drawn
+        at the true distance between the two grippers. The grey robot is the husky
+        itself, drawn at whichever configuration the third dropdown picks &mdash;
+        the goal pose the sweep walked back from, or the bar pick-up pose it
+        settled on. Click a dot to inspect that attempt in 3D.</p>
+      <div id="chart-positions" class="chart"></div>
+    </div>
+
+    <div class="card">
+      <h2>How the time was spent</h2>
+      <p class="hint">Every attempt on the clock, one lane per carry. Dashed lines mark
+        where a carry used up its time share. Click a dot to inspect that attempt.</p>
+      <div id="chart-timeline" class="chart"></div>
+    </div>
+  </section>
+
+  <section id="viewer-panel" class="hidden">
+    <div class="viewer-head">
+      <strong id="viewer-title">&nbsp;</strong>
+      <button id="viewer-reset">Reset view</button>
+      <label><input type="checkbox" id="show-hidden"> show the built bars the planner ignored</label>
+      <button id="viewer-close">Close</button>
+    </div>
+    <div id="viewer-host"></div>
+    <div class="viewer-foot">
+      <input type="range" id="frame-slider" min="0" max="0" value="0">
+      <span id="frame-label">&nbsp;</span>
+    </div>
+    <p id="viewer-caption"></p>
+  </section>
+</main>
+
+<div id="toast" class="hidden"></div>
+<script type="module" src="app.js"></script>
+</body>
+</html>

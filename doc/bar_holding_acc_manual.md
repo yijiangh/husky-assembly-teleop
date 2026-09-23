@@ -234,6 +234,47 @@ the RRT search for M1's path can be skipped.
 
 ---
 
+#### Diagnosing a slow or failing M1 derivation
+
+The derivation tries a thousand home bar poses and normally uses its whole
+120 s budget. Every run — from the button above **or** from the headless
+script — is recorded for a small web dashboard that shows which home poses were
+tried, why each one failed (no IK solution / the IK jumped to another branch /
+which link hit which body), where the time went, and the scene in 3D.
+
+Start it once per session, in its own terminal:
+
+```bash
+cd /home/su/ros2_ws
+source venv/bin/activate && source install/setup.bash
+bash src/husky-assembly-teleop/scripts/fetch_dashboard_vendor.sh   # first time only
+python src/husky-assembly-teleop/scripts/m1_dashboard_server.py    # http://127.0.0.1:8765
+```
+
+Open the page and leave it open: each new derivation appears by itself (it can
+open automatically, or wait for you to click **Open**). Click any dot in the
+charts to inspect that attempt in the 3D viewer — drag to orbit, scrub the
+slider to walk the bar from the goal pose to where the attempt died, and the
+colliding link and body are highlighted.
+
+**How to read what it shows — including what each outcome means and how to tell
+a reach problem from a branch problem — is in
+[`m1_derive_dashboard.md`](m1_derive_dashboard.md).**
+
+To reproduce a derivation at the desk, with no robot and no mocap:
+
+```bash
+python src/husky-assembly-teleop/scripts/derive_m1_headless.py --bar B3
+python src/husky-assembly-teleop/scripts/derive_m1_headless.py --bar B3 --anchor back
+```
+
+Run files land in `recorded_data/m1_derive_runs/` and the baked 3D scene in
+`recorded_data/m1_dashboard_scenes/<problem>/` (exported once per design
+problem, a few seconds). Both are local and git-ignored — copy a run to the
+Drive by hand if it is worth keeping.
+
+---
+
 ### Step B — per-bar loop (bar stays mounted)
 
 Repeat for each bar-action. Nothing here dismounts the bar.
