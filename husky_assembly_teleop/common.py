@@ -516,6 +516,31 @@ class Toggle:
         _backend().poll(self._handle, "checkbox", self.action)
 
 
+class StatusText:
+    """Read-only one-line readout (DPG only; legacy mode omits the widget).
+
+    Spells out what a neighbouring numeric widget currently means -- an index
+    slider showing the file name it would open, say. Display-only, so there is
+    no callback and nothing to poll: whoever owns it calls `set_text` when the
+    value it mirrors changes.
+    """
+    def __init__(self, name, default=""):
+        self.name = name
+        self._handle = _backend().add_status_text(name, default)
+        self._shown = str(default)
+
+    def set_text(self, text):
+        """Update the line, skipping the backend when the text is unchanged.
+
+        Args:
+            text (str): What to display. Cheap to call every UI tick.
+        """
+        text = str(text)
+        if text != self._shown:
+            self._shown = text
+            _backend().set_value(self._handle, text)
+
+
 class Dropdown:
     """Select-one combo box. action receives the selected index (int)."""
     def __init__(self, name, action, options, current=0):

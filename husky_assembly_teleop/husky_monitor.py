@@ -38,7 +38,7 @@ from husky_assembly_teleop.mocap_experiment import (
 )
 from husky_assembly_teleop.husky_robot import GRIPPER_MOTOR, JOINT_MOTOR, UR5e_HOME_STATE
 from husky_assembly_teleop.common import (
-    Button, Slider, SliderGroup, Separator, TextInput, LiveMultiPlot, HistoryPlot, Husky, TrackedObject, HuskyObject, AssemblyObject, HUSKY_UR5e_JOINT_NAMES, lerp, load_gripper
+    Button, Slider, SliderGroup, StatusText, Separator, TextInput, LiveMultiPlot, HistoryPlot, Husky, TrackedObject, HuskyObject, AssemblyObject, HUSKY_UR5e_JOINT_NAMES, lerp, load_gripper
 )
 from husky_assembly_teleop.cc_diagnosis import (
     clear_collision_diagnosis, visualize_goal_ik_collision,
@@ -722,8 +722,36 @@ class HuskyMonitor(Node):
         clear_collision_diagnosis(self)
 
     def toggle_show_goal_state(self):
+        """Flip the ghost robot between the goal conf and the planned trajectory.
+
+        Two things the ghost can show, and this picks which:
+
+        - GOAL view (blue): the ghost sits at ``self.goal_arm_pose``, the
+          configuration the planners are actually aiming at.
+        - TRAJECTORY view (green): the ghost is driven by
+          ``self.planned_arm_trajectory``, scrubbed by the 'Traj viz time'
+          slider, and rides the live base pose so the preview matches what
+          execution will do (see update()).
+
+        ? The colour IS the mode indicator -- blue is the goal, green is the
+        ? trajectory -- which is why the two views never share one.
+        """
         self.show_goal_state = not self.show_goal_state
-        self.goal_model.set_color(GOAL_BLUE if self.show_goal_state else TRAJECTORY_GREEN)
+        # The button can be clicked before any goal model has been loaded; the
+        # flag still flips so the view is right once one appears.
+        if self.goal_model is not None:
+            self.goal_model.set_color(GOAL_BLUE if self.show_goal_state else TRAJECTORY_GREEN)
+        if self.show_goal_state:
+            print("[view] GOAL conf (blue ghost).")
+        else:
+            # Trajectory view with nothing planned leaves the ghost parked on
+            # the goal conf but coloured green, which reads as a stuck preview.
+            has_traj = any(t[0] is not None for t in self.planned_arm_trajectory)
+            print("[view] planned TRAJECTORY (green ghost); scrub it with "
+                  "'Traj viz time'." if has_traj else
+                  "[view] planned TRAJECTORY (green ghost) -- but NOTHING is "
+                  "planned yet, so the ghost stays on the goal conf. Plan a "
+                  "movement first.")
 
     def set_to_show_goal_state(self):
         self.show_goal_state = False
@@ -2501,17 +2529,12 @@ class HuskyMonitor(Node):
         if not files:
             self.get_logger().warn("No BarAction files available.")
             return
-        # Read the slider's live position rather than trusting the cached
-        # _selected_action_file_idx. reset_ui() rebuilds this slider at the end
-        # of the previous Load (inside that button's own callback), and a
-        # freshly-rebuilt widget's on-change callback can miss the next drag,
-        # leaving the cached index stale -> the same file would reload.
-        sld = getattr(self, 'bar_action_file_slider', None)
-        if sld is not None:
-            v = sld.value
-            if v is not None:
-                self._selected_action_file_idx = int(round(float(v)))
-        idx = max(0, min(self._selected_action_file_idx, len(files) - 1))
+        # Resolve through the shared helper so this opens exactly the file
+        # the '-> file' readout names (see _slider_index for why the widget's
+        # live position beats the cached index).
+        idx = self._slider_index(getattr(self, 'bar_action_file_slider', None),
+                                 self._selected_action_file_idx, len(files))
+        self._selected_action_file_idx = idx
         fname = files[idx]
         action_path = fname if os.path.isabs(fname) else os.path.join(
             DESIGN_DATA_DIRECTORY, DESIGN_PROBLEM_NAME, 'BarActions', fname,
@@ -2812,20 +2835,85 @@ class HuskyMonitor(Node):
         elif hide_bar_joints:
             print(f"[preview] {motion_type}: bar/joints hidden (not mounted).")
 
+    def _slider_index(self, slider, cached_idx: int, n_items: int) -> int:
+        """Resolve an index slider to a valid position in a list of `n_items`.
+
+        The same two steps `load_bar_action_file` and `load_selected_movement`
+        take: prefer the widget's live position over the cached index (a
+        slider rebuilt by reset_ui can miss the next drag's callback), then
+        clamp into range.
+
+        Args:
+            slider (Slider | None): The widget, or None when it was skipped
+                (a 1-entry slider would segfault pybullet, so it is not made).
+            cached_idx (int): The index its on-change callback last stored.
+            n_items (int): Length of the list being indexed.
+
+        Returns:
+            int: A valid index, or -1 when the list is empty.
+        """
+        if n_items <= 0:
+            return -1
+        idx = cached_idx
+        if slider is not None:
+            v = slider.value
+            if v is not None:
+                idx = int(round(float(v)))
+        return max(0, min(idx, n_items - 1))
+
+    def _refresh_goal_view_readout(self):
+        """Keep the '-> view' line in step with `show_goal_state`.
+
+        Mirrors the flag rather than updating the line at each call site:
+        `set_to_show_goal_state` / `set_to_show_traj_state` flip it from all
+        over the codebase (a finished plan switches to the trajectory view by
+        itself), so the button is far from the only thing that changes it.
+        """
+        text = getattr(self, 'goal_view_text', None)
+        if text is not None:
+            text.set_text("GOAL conf (blue)" if self.show_goal_state
+                          else "planned TRAJECTORY (green)")
+
+    def _refresh_bar_action_readouts(self):
+        """Point the two readout lines at whatever the sliders now show.
+
+        Called every UI tick. Reads the live widget positions rather than the
+        cached indices, so the text always names the file / movement that
+        'Load BarAction' and 'Load Movement' would actually act on -- a label
+        that lagged a drag would be worse than no label at all.
+        """
+        text = getattr(self, 'bar_action_file_text', None)
+        if text is not None:
+            files = self.available_bar_actions or []
+            idx = self._slider_index(getattr(self, 'bar_action_file_slider', None),
+                                     self._selected_action_file_idx, len(files))
+            text.set_text("(no BarAction files)" if idx < 0 else
+                          f"[{idx}] {os.path.basename(files[idx])}")
+
+        text = getattr(self, 'bar_movement_text', None)
+        if text is not None:
+            movements = self._loaded_movements or []
+            idx = self._slider_index(getattr(self, 'bar_movement_slider', None),
+                                     self._selected_movement_idx, len(movements))
+            if idx < 0:
+                text.set_text("(load a BarAction first)")
+            else:
+                mv = movements[idx]
+                # Role is what you actually steer by; the id alone is long.
+                role = self._match_movement_role(mv) or '??'
+                text.set_text(f"[{idx}] {role}  {mv.movement_id}")
+
     def load_selected_movement(self):
         """Load the selected movement's start state into cfab + goal ghost."""
         if not self._loaded_movements:
             self.get_logger().warn("No BarAction loaded; click 'Load BarAction' first.")
             return
-        # Same reason as load_bar_action_file: read the slider's live position so
-        # a rebuilt slider that missed its drag callback doesn't reload the same
-        # movement.
-        sld = getattr(self, 'bar_movement_slider', None)
-        if sld is not None:
-            v = sld.value
-            if v is not None:
-                self._selected_movement_idx = int(round(float(v)))
-        idx = max(0, min(self._selected_movement_idx, len(self._loaded_movements) - 1))
+        # Same shared resolution as load_bar_action_file, so this loads
+        # exactly the movement the '-> movement' readout names.
+        idx = self._slider_index(getattr(self, 'bar_movement_slider', None),
+                                 self._selected_movement_idx,
+                                 len(self._loaded_movements))
+        self._selected_movement_idx = idx
         mv = self._loaded_movements[idx]
 
         # If M0, re-snapshot live conf/base into its start_state so a robot
@@ -6442,6 +6530,13 @@ class HuskyMonitor(Node):
         # self.traj_viz_time, which the preview reads in update().
         self.traj_viz_time_slider = Slider("Traj viz time", self.update_traj_viz_time, 0.0, 1.0, 1.0)
 
+        # * Switch the ghost between the goal conf (blue) and the planned
+        # * trajectory (green, scrubbed by the slider above). Lives here
+        # * because 'Traj viz time' only does anything in the trajectory view.
+        self.buttons.append(Button('Toggle Goal / Trajectory view',
+                                   self.toggle_show_goal_state))
+        self.goal_view_text = StatusText("  -> view", "")
+
         # Live joint-angle stream: the button toggles a SEPARATE floating window
         # showing every joint of the active robot as color-chipped text (radians
         # + degrees) plus a continually-recording scrolling plot. The window is
@@ -6600,7 +6695,6 @@ class HuskyMonitor(Node):
             self.compliant_force_plot = None
             self.compliant_torque_plot = None
 
-        # self.buttons.append(Button('Toggle Goal/Trajectory', self.toggle_show_goal_state))
         # self.buttons.append(Button('Reset Goal State', self.reset_ui))
                       
         # self.buttons.append(Button('Plan S.Arm to conf target', self.plan_single_arm_to_goal_action))
@@ -6729,6 +6823,11 @@ class HuskyMonitor(Node):
                     int(self._selected_action_file_idx),
                     integer=True,
                 )
+            # Spells out which file that index actually is, so you can see what
+            # 'Load BarAction' will open before clicking it. Created even when
+            # the slider was skipped (1 file), since naming that one file is
+            # exactly as useful. Kept current by _refresh_bar_action_readouts.
+            self.bar_action_file_text = StatusText("  -> file", "(none)")
             self.buttons.append(Button('Load BarAction', self.load_bar_action_file))
             n_movs = len(self._loaded_movements)
             # Same 1-entry segfault guard as bar_action_file_slider.
@@ -6741,6 +6840,8 @@ class HuskyMonitor(Node):
                     int(self._selected_movement_idx),
                     integer=True,
                 )
+            # Same idea for the movement index: show the movement_id it picks.
+            self.bar_movement_text = StatusText("  -> movement", "(none)")
             self.buttons.append(Button('Load Movement', self.load_selected_movement))
             # M1 derived-start carry anchor selector (see M1_HOME_ANCHOR_CHOICES).
             # Fixed 0..3 range -> always >=2 entries, so the 1-entry segfault
@@ -7157,6 +7258,10 @@ class HuskyMonitor(Node):
 
         for b in self.buttons:
             b.update()
+        # Display-only, so it is refreshed here rather than polled. Outside the
+        # BAR_ACTION_LIVE_REPLAN_EXE block below: the goal/trajectory view
+        # exists whether or not that workflow is switched on.
+        self._refresh_goal_view_readout()
 
         # Scaffolding-tool live status overlay removed - outdated, will be remade later.
 
@@ -7216,6 +7321,8 @@ class HuskyMonitor(Node):
                 self.bar_movement_slider.update()
             if hasattr(self, 'm1_home_anchor_slider') and self.m1_home_anchor_slider:
                 self.m1_home_anchor_slider.update()
+            # Display-only, so it is refreshed here rather than polled.
+            self._refresh_bar_action_readouts()
             if hasattr(self, 'm2_split_slider') and self.m2_split_slider:
                 self.m2_split_slider.update()
             if hasattr(self, 'm2_rigid_only_slider') and self.m2_rigid_only_slider:
