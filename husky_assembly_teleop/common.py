@@ -515,6 +515,23 @@ class Toggle:
     def update(self):
         _backend().poll(self._handle, "checkbox", self.action)
 
+    @property
+    def value(self):
+        """Whether the box is ticked right now, read live from the widget.
+
+        Same reasoning as `Slider.value`: a checkbox rebuilt by reset_ui can
+        miss the next click's on-change callback, but the widget itself always
+        knows whether it is ticked.
+
+        Returns:
+            bool | None: The tick state, or None when the backend cannot
+            report it (the widget is gone, or the legacy shim has no handle).
+        """
+        raw = _backend().get_value(self._handle)
+        # The DPG backend hands back a real bool; the pybullet shim hands back
+        # the 0..1 debug-slider float, so round it before believing it.
+        return None if raw is None else bool(round(float(raw)))
+
 
 class StatusText:
     """Read-only one-line readout (DPG only; legacy mode omits the widget).

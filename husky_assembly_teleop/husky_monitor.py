@@ -38,7 +38,7 @@ from husky_assembly_teleop.mocap_experiment import (
 )
 from husky_assembly_teleop.husky_robot import GRIPPER_MOTOR, JOINT_MOTOR, UR5e_HOME_STATE
 from husky_assembly_teleop.common import (
-    Button, Slider, SliderGroup, StatusText, Separator, TextInput, LiveMultiPlot, HistoryPlot, Husky, TrackedObject, HuskyObject, AssemblyObject, HUSKY_UR5e_JOINT_NAMES, lerp, load_gripper
+    Button, Slider, SliderGroup, Toggle, StatusText, Separator, TextInput, LiveMultiPlot, HistoryPlot, Husky, TrackedObject, HuskyObject, AssemblyObject, HUSKY_UR5e_JOINT_NAMES, lerp, load_gripper
 )
 from husky_assembly_teleop.cc_diagnosis import (
     clear_collision_diagnosis, visualize_goal_ik_collision,
@@ -404,6 +404,9 @@ class HuskyMonitor(Node):
         # Result of the last 'M1: Derive Start/Goal only' click (see
         # derive_m1_endpoints_live); consumed by adopt_m1_derived_start.
         self._m1_derived = None
+        # Ticked by the 'Adopt also saves ...' checkbox: whether adopting the
+        # derived start also writes the confs to the BarAction file on disk.
+        self._m1_adopt_writes_file = False
         # cfab→pp bridge state for the BarAction planning path.
         self._bar_action_husky = None          # SimpleNamespace husky stub (cfab robot)
         self._bar_action_ghost_bodies = set()  # tiny invisible EE proxy pybullet bodies
@@ -4213,6 +4216,82 @@ class HuskyMonitor(Node):
             return "\033[32mTrue\033[0m"
         return "\033[31mFalse\033[0m"
 
+    def _bar_action_write_path(self) -> str:
+        """Decide which file the loaded BarAction may be written back to.
+
+        ! A CLEAN Rhino export -- a basename carrying no dotted tag, such as
+        ! `B45.json` -- is never overwritten. That write is diverted to
+        ! `<stem>.live-solved.json`, preserving the invariant that the clean
+        ! file is only ever produced by the offline exporter. A file that is
+        ! already tagged (a previous `.live-solved.json`, say) is written in
+        ! place, so repeated saves do not pile up `.live-solved.live-solved`.
+
+        Returns:
+            str: Absolute path to write the action to.
+        """
+        path = self._current_action_path
+        basename = os.path.basename(path)
+        if basename.count('.') > 1:
+            return path
+        stem, ext = os.path.splitext(path)
+        diverted = f"{stem}.live-solved{ext}"
+        self.get_logger().warn(
+            f"{basename} is a CLEAN export and will not be overwritten; "
+            f"writing to {os.path.basename(diverted)} instead.")
+        return diverted
+
+    def _save_m1_m0_confs_to_bar_action_file(self):
+        """Persist the just-adopted M0/M1 configurations into the BarAction JSON.
+
+        Writes the whole action, so the three configurations the mount-once
+        protocol derives outlive the session:
+
+        - `M1.start_state.robot_configuration` -- the derived start
+        - `M0.target_configuration`            -- the same conf, M0's goal
+        - `M1.target_configuration`            -- the derived goal
+
+        Reloading that file next session lets you go straight to
+        'Load Movement' -> 'Plan Movement' on M0, with no second run of
+        'M1: Derive Start/Goal only'.
+
+        ! Valid only while the base has NOT moved. All three confs were
+        ! derived against the live base pose, so after driving the Husky
+        ! somewhere else they describe a goal that no longer lines up with the
+        ! bar -- derive again instead of reloading them.
+
+        ? Writing `M1.target_configuration` is a record for whoever reads the
+        ? file; the planner still takes M1's goal from the authored M2 start
+        ? conf (see _m1_goal_conf), so it does not change how M1 plans.
+
+        No trajectory is written: adopting deliberately leaves M1 without one
+        (see adopt_m1_derived_start).
+
+        Returns:
+            str | None: The path written, or None when nothing was written.
+        """
+        if not self._loaded_action or not self._current_action_path:
+            self.get_logger().warn(
+                "No BarAction loaded; click 'Load BarAction' first.")
+            return None
+
+        out_path = self._bar_action_write_path()
+        try:
+            json_dump(self._loaded_action, out_path)
+        except Exception as e:
+            self.get_logger().error(f"Failed to write {out_path}: {e}")
+            return None
+
+        self.get_logger().info(
+            f"Saved the adopted M0/M1 configurations -> {out_path}. As long as "
+            f"the base stays put, reload this file next session and plan M0 "
+            f"directly.")
+        # A diverted write creates a file that was not in the list; refresh it
+        # so the new file can be selected without restarting.
+        if out_path != self._current_action_path:
+            self.available_bar_actions = self._load_available_bar_actions()
+            self.reset_ui(self.goal_arm_pose)
+        return out_path
+
     def export_m0_plan_to_bar_action_file(self):
         """Write the live-planned M0 trajectory back into the BarAction JSON.
 
@@ -4252,15 +4331,7 @@ class HuskyMonitor(Node):
                 f"Click 'Plan Movement' with M0 selected first.")
             return None
 
-        out_path = self._current_action_path
-        basename = os.path.basename(out_path)
-        if basename.count('.') <= 1:
-            # A clean export (no dotted tag): divert rather than clobber it.
-            stem, ext = os.path.splitext(out_path)
-            out_path = f"{stem}.live-solved{ext}"
-            self.get_logger().warn(
-                f"{basename} is a CLEAN export and will not be overwritten; "
-                f"writing to {os.path.basename(out_path)} instead.")
+        out_path = self._bar_action_write_path()
 
         try:
             json_dump(self._loaded_action, out_path)
@@ -5247,9 +5318,16 @@ class HuskyMonitor(Node):
         Writes ``self._m1_derived['start_conf']`` into M1's
         ``start_state.robot_configuration`` and backfills M0's
         ``target_configuration`` from it, exactly what a successful M1 plan
-        would have left behind -- minus the trajectory. Step A of the
-        mount-once protocol then continues as usual: load M0, Plan Movement,
-        execute, mount the bar.
+        would have left behind -- minus the trajectory. The derived goal is
+        recorded on M1's ``target_configuration`` at the same time. Step A of
+        the mount-once protocol then continues as usual: load M0, Plan
+        Movement, execute, mount the bar.
+
+        With 'Adopt also saves M0/M1 confs to file' ticked, those three confs
+        are additionally written to the BarAction JSON
+        (``_save_m1_m0_confs_to_bar_action_file``), so a session that exits
+        can reload the file and plan M0 straight away -- as long as the base
+        has not moved since. Unticked, they stay in memory only.
 
         ! This leaves M1 with a start conf but no trajectory on purpose. The
         ! "start only with a trajectory" invariant
@@ -5269,16 +5347,170 @@ class HuskyMonitor(Node):
         m1.start_state.robot_configuration = conf_from_12vec(derived['start_conf'])
         print(f"[M1 adopt] {m1.movement_id!r}.start_state.robot_configuration <- derived start "
               f"(no M1 trajectory; intended for the mount-once protocol).")
+        # Keep the goal that was derived in the same breath as the start, so
+        # the pair is readable in the file rather than only in the log.
+        goal_conf = derived.get('goal_conf')
+        if goal_conf is not None:
+            m1.target_configuration = conf_from_12vec(goal_conf)
+            print(f"[M1 adopt] {m1.movement_id!r}.target_configuration <- derived goal.")
         self._backfill_m0_target_from_m1()
+
+        # * Optionally make the adopted confs outlive the session. Read the
+        # * checkbox live and re-sync the flag first: a checkbox rebuilt by
+        # * reset_ui can miss the next click's callback, exactly like the
+        # * sliders around it.
+        toggle = getattr(self, 'm1_adopt_save_toggle', None)
+        if toggle is not None and toggle.value is not None:
+            self._m1_adopt_writes_file = bool(toggle.value)
+        if self._m1_adopt_writes_file:
+            self._save_m1_m0_confs_to_bar_action_file()
+        else:
+            print("[M1 adopt] confs kept in memory only; tick 'Adopt also saves "
+                  "M0/M1 confs to file' to write them to the BarAction JSON.")
+
         print("[M1 adopt] next: Movement slider 0 -> Load Movement -> Plan Movement -> Exec.")
+
+    # How far the tool0_L -> tool0_R transform may differ between M1's start
+    # and its goal before the two configurations count as holding the bar
+    # differently. Deliberately tight: a genuinely reused start (written by
+    # Adopt, or read back from the BarAction JSON) matches to float precision,
+    # so anything past round-off really is a different grasp.
+    M1_GRASP_POS_TOL_M = 1e-3           # 1 mm
+    M1_GRASP_ORI_TOL_RAD = 1e-2         # 0.57 deg of true relative rotation
+
+    def _m1_relative_flange_pose(self, conf12, robot_puid, arm_joints, tool_l, tool_r):
+        """The tool0_left -> tool0_right transform at a 12-DOF configuration.
+
+        Holding one bar rigidly in both grippers fixes this transform -- it is
+        the same at every waypoint of an EndEffectorConstrained movement. That
+        makes it the cheapest way to ask whether two configurations hold the
+        same bar the same way, needing neither a bar pose nor a grasp.
+
+        ! Moves the pybullet robot, so callers restore the cell state after.
+
+        Args:
+            conf12: 12-DOF configuration, left arm's 6 then right arm's 6.
+            robot_puid (int): PyBullet body id of the planning robot.
+            arm_joints: The 12 arm joint indices, in conf12's order.
+            tool_l (int): Left tool0 link index.
+            tool_r (int): Right tool0 link index.
+
+        Returns:
+            tuple: PyBullet pose (point, quat) of right tool0 in left tool0.
+        """
+        pp.set_joint_positions(robot_puid, arm_joints, np.asarray(conf12, dtype=float))
+        world_from_l = pp.get_link_pose(robot_puid, tool_l)
+        world_from_r = pp.get_link_pose(robot_puid, tool_r)
+        return pp.multiply(pp.invert(world_from_l), world_from_r)
+
+    def _m1_reusable_start_conf(self, mv, goal_conf):
+        """Decide whether M1's stored start configuration can be used as-is.
+
+        'M1: Adopt derived start' and a reloaded BarAction both leave a real
+        start configuration on ``mv.start_state``. Deriving another one costs
+        a fresh sampling sweep and -- worse -- can land on a DIFFERENT start
+        than the robot is already parked at, which strands M0: it drove the
+        arms to the stored start, so a new one means re-planning and
+        re-executing M0. When the stored start already holds the bar the way
+        the goal does, it is used directly and the sweep is skipped.
+
+        The gate is the rigid-bar constraint itself: tool0_L -> tool0_R must
+        match at start and goal. That also rejects the dual-arm home pose
+        ``_fill_missing_start_conf`` seeds into an authored M1 (whose start
+        conf ships as null) -- holding no bar, its flange transform cannot
+        match the goal's.
+
+        ? Only the start/goal PAIR is checked here. Whether the stored start
+        ? is still collision-free at the live base is left to the planner,
+        ? which reports it as a normal failure reason.
+
+        Args:
+            mv: The M1 movement, whose ``start_state`` carries the candidate.
+            goal_conf: M1's goal configuration, or None when the goal is
+                authored as ``target_ee_frames`` instead.
+
+        Returns:
+            np.ndarray | None: The 12-vec that will be planned from, or None
+            to fall back to deriving a start.
+        """
+        state = getattr(mv, 'start_state', None)
+        if state is None or state.robot_configuration is None:
+            return None
+        start12 = np.asarray(vec12_from_conf(state.robot_configuration), dtype=float)
+
+        planner = self.cfab.planner
+        robot_puid = planner.client.robot_puid
+        names_12 = list(HUSKY_DUAL_UR5e_JOINT_NAMES[0]) + list(HUSKY_DUAL_UR5e_JOINT_NAMES[1])
+        arm_joints = pp.joints_from_names(robot_puid, names_12)
+        tool_l = pp.link_from_name(robot_puid, TOOL_LINK_LEFT)
+        tool_r = pp.link_from_name(robot_puid, TOOL_LINK_RIGHT)
+
+        with pp.LockRenderer():
+            rel_start = self._m1_relative_flange_pose(
+                start12, robot_puid, arm_joints, tool_l, tool_r)
+            if goal_conf is not None:
+                rel_goal = self._m1_relative_flange_pose(
+                    np.asarray(vec12_from_conf(goal_conf), dtype=float),
+                    robot_puid, arm_joints, tool_l, tool_r)
+            else:
+                # No goal conf: the authored target frames give the same
+                # transform directly, with no IK needed.
+                frames = mv.target_ee_frames or {}
+                if frames.get('left') is None or frames.get('right') is None:
+                    planner.set_robot_cell_state(state)
+                    return None
+                rel_goal = pp.multiply(pp.invert(pose_from_frame(frames['left'])),
+                                       pose_from_frame(frames['right']))
+            # Undo the FK probes above; they moved the planning robot.
+            planner.set_robot_cell_state(state)
+
+        pos_err = float(np.linalg.norm(
+            np.asarray(rel_start[0], dtype=float) - np.asarray(rel_goal[0], dtype=float)))
+        # ! pp.quat_angle_between is acos(q0 . q1), which is HALF the angle
+        # ! the two orientations actually differ by. Double it so the number
+        # ! compared (and printed) is the real twist of the bar.
+        ori_err = 2.0 * float(pp.quat_angle_between(rel_start[1], rel_goal[1]))
+        if (pos_err <= self.M1_GRASP_POS_TOL_M
+                and ori_err <= self.M1_GRASP_ORI_TOL_RAD):
+            print(f"[M1] reusing the STORED start conf: it holds the bar like "
+                  f"the goal (flange transform differs by {pos_err * 1e3:.2f} mm / "
+                  f"{np.degrees(ori_err):.3f} deg). Skipping the derivation sweep.")
+            return start12
+
+        # Not a match. Say which of the two cases this is -- an authored M1
+        # that was merely seeded, or a real start that disagrees with the goal.
+        home12 = np.asarray(HUSKY_DUAL_ARM_HOME_CONF_12, dtype=float)
+        if np.allclose(start12, home12, atol=1e-6):
+            print("[M1] no stored start (authored M1 ships a null start conf, "
+                  "seeded with dual-arm home); deriving one.")
+        else:
+            self.get_logger().warn(
+                f"[M1] the stored start conf does NOT hold the bar like the "
+                f"goal: flange transform differs by {pos_err * 1e3:.1f} mm / "
+                f"{np.degrees(ori_err):.2f} deg (tolerance "
+                f"{self.M1_GRASP_POS_TOL_M * 1e3:.1f} mm / "
+                f"{np.degrees(self.M1_GRASP_ORI_TOL_RAD):.2f} deg). Ignoring it "
+                f"and deriving a start instead -- the two would need the bar to "
+                f"slip in the grippers.")
+        return None
 
     def _plan_M1_dispatch(self, mv):
         """Constrained dual-arm (bar held): state-based task-space RRT.
 
         Grasps, bar pose, obstacles, and collision setup are all derived by
-        the planner from mv.start_state; ``derive_start=True`` asks it to
-        compute a feasible grasp-consistent start conf (the authored start
-        is a placeholder).
+        the planner from mv.start_state. The start configuration comes from
+        one of two routes:
+
+        - ``derive_start=False`` when ``mv.start_state`` already carries a
+          start that holds the bar like the goal does (Adopt put it there, or
+          it was reloaded from a saved file). No sampling, and the start stays
+          the one M0 already drove the arms to.
+        - ``derive_start=True`` otherwise, asking the planner to sample a
+          feasible grasp-consistent start -- the authored M1 ships a null
+          start conf, so a fresh action always takes this route. Retried up
+          to 3 times with a re-seeded sweep.
+
+        See _m1_reusable_start_conf for the gate between them.
         """
         if not self.active_bar_name:
             self.get_logger().warn("M1: active_bar_name not set.")
@@ -5288,41 +5520,68 @@ class HuskyMonitor(Node):
             return None
         goal_conf = self._m1_goal_conf()
         home_anchor = self._m1_home_anchor()
-        # Multi-start: when a run fails, retry with a re-seeded derived
-        # start and a widened bar sweep box (hard scenes like B226 need a
-        # different home bar pose to find a corridor). The anchor selection
-        # stays fixed across retries (it composes with the widened box).
-        start_retries = 3
+        common = dict(
+            active_bar_id=self.active_bar_name,
+            goal_conf=goal_conf,
+            goal_ee_frames=mv.target_ee_frames if goal_conf is None else None,
+            stage=M1_PLANNER_STAGE,
+            position_res=CDFM_POSITION_RES,
+            rotation_res=CDFM_ROTATION_RES,
+            max_time=120.0,
+        )
         path = info = None
-        for retry_idx in range(start_retries):
-            extra = {}
-            if retry_idx > 0:
-                extra = dict(
-                    start_random_seed=9973 * retry_idx,
-                    start_bar_sweep_box=((-0.4, 0.4), (-0.4, 0.4), (-0.5, 0.3)),
-                )
-                print(f"[M1] retry {retry_idx + 1}/{start_retries} with re-seeded "
-                      f"derived start.")
+
+        # * A start already on the movement (Adopt, or a reloaded file) is
+        # * planned from directly: derive_start=False makes the planner read
+        # * start_state.robot_configuration instead of sampling a new one.
+        reuse_start = self._m1_reusable_start_conf(mv, goal_conf)
+        if reuse_start is not None:
             # Pause GUI rendering during the search (no-op when headless).
             with pp.LockRenderer():
                 path, info = plan_constrained_dual_arm(
                     self.cfab.planner, mv.start_state,
-                    active_bar_id=self.active_bar_name,
-                    goal_conf=goal_conf,
-                    goal_ee_frames=mv.target_ee_frames if goal_conf is None else None,
-                    stage=M1_PLANNER_STAGE,
-                    position_res=CDFM_POSITION_RES,
-                    rotation_res=CDFM_ROTATION_RES,
-                    max_time=120.0,
-                    derive_start=True,
-                    start_home_anchor=home_anchor,
-                    **extra,
+                    derive_start=False, **common,
                 )
-            if path is not None:
-                break
-            print(f"[M1] plan_constrained_dual_arm failed: {info.get('failure_reason')}")
-        if path is None:
-            return None
+            if path is None:
+                # ! Deliberately NOT falling back to deriving. A derived start
+                # ! is a DIFFERENT conf from the one the robot was driven to by
+                # ! M0, so silently searching for one here would stand the arms
+                # ! somewhere they are not -- the exact surprise reusing the
+                # ! stored start exists to avoid.
+                self.get_logger().warn(
+                    f"[M1] planning from the stored start failed: "
+                    f"{info.get('failure_reason')}. The stored start is left "
+                    f"untouched. To search for a new one, run 'M1: Derive "
+                    f"Start/Goal only' and Adopt it -- M0 then has to be "
+                    f"re-planned and re-executed to reach it.")
+                return None
+        else:
+            # Multi-start: when a run fails, retry with a re-seeded derived
+            # start and a widened bar sweep box (hard scenes like B226 need a
+            # different home bar pose to find a corridor). The anchor selection
+            # stays fixed across retries (it composes with the widened box).
+            start_retries = 3
+            for retry_idx in range(start_retries):
+                extra = {}
+                if retry_idx > 0:
+                    extra = dict(
+                        start_random_seed=9973 * retry_idx,
+                        start_bar_sweep_box=((-0.4, 0.4), (-0.4, 0.4), (-0.5, 0.3)),
+                    )
+                    print(f"[M1] retry {retry_idx + 1}/{start_retries} with re-seeded "
+                          f"derived start.")
+                with pp.LockRenderer():
+                    path, info = plan_constrained_dual_arm(
+                        self.cfab.planner, mv.start_state,
+                        derive_start=True,
+                        start_home_anchor=home_anchor,
+                        **common, **extra,
+                    )
+                if path is not None:
+                    break
+                print(f"[M1] plan_constrained_dual_arm failed: {info.get('failure_reason')}")
+            if path is None:
+                return None
         # Feed the per-arm display + waypoint-slider consumers (Display slider
         # mode 1, cfab waypoint sliders) from the planned path.
         self.constrained_trajectory = [
@@ -6860,6 +7119,16 @@ class HuskyMonitor(Node):
                                        self.derive_m1_endpoints_live))
             self.buttons.append(Button('M1: Adopt derived start -> M0 goal',
                                        self.adopt_m1_derived_start))
+            # * Ticked: adopting ALSO writes M0's and M1's configurations into
+            # * the BarAction file, so a session that exits can reload and plan
+            # * M0 without deriving M1 again. Only meaningful while the base
+            # * has not moved -- see _save_m1_m0_confs_to_bar_action_file.
+            # Seeded from the flag so a reset_ui rebuild keeps the tick.
+            self.m1_adopt_save_toggle = Toggle(
+                "Adopt also saves M0/M1 confs to file",
+                lambda v: setattr(self, '_m1_adopt_writes_file', bool(v)),
+                bool(self._m1_adopt_writes_file),
+            )
             self.buttons.append(Button('Load Movement Trajectory', self.load_selected_movement_trajectory))
             # * Button 1: plan the M1->M2->M3->M0->M4 chain in one click,
             # export the mutated action as `<name>.live-solved.json` sidecar.
@@ -7321,6 +7590,8 @@ class HuskyMonitor(Node):
                 self.bar_movement_slider.update()
             if hasattr(self, 'm1_home_anchor_slider') and self.m1_home_anchor_slider:
                 self.m1_home_anchor_slider.update()
+            if hasattr(self, 'm1_adopt_save_toggle') and self.m1_adopt_save_toggle:
+                self.m1_adopt_save_toggle.update()
             # Display-only, so it is refreshed here rather than polled.
             self._refresh_bar_action_readouts()
             if hasattr(self, 'm2_split_slider') and self.m2_split_slider:
