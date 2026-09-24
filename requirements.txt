@@ -7,5 +7,5 @@ numpy<1.25.0
 setuptools<=70.0.0
 kdtree==0.16
 matplotlib==3.10.3
-dearpygui>=1.10  # control panel (HuskyMonitor.USE_DPG_UI=1); falls back to legacy PyBullet UI if absent
+dearpygui>=2.3.1,<3  # control panel (HuskyMonitor.USE_DPG_UI=1); falls back to legacy PyBullet UI if absent
 opencv-python
