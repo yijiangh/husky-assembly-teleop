@@ -34,15 +34,12 @@ Run with:  -p plugins:="['example_sequence']"
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import viser
 
 from ...concurrency import Cancelled, Job, Task, WaitTimeout, wait_seconds, wait_until
 from ...context import PluginContext
 from ...plugin import HuskyPlugin, register
 from ...ui_style import BUSY, FAIL, NONE, OK, SECTION_CTRL, block, chip, section
-
-if TYPE_CHECKING:
-    import viser
 
 CYCLES = 3
 TIMER_SECONDS = 3.0
@@ -84,7 +81,7 @@ class ExampleSequencePlugin(HuskyPlugin):
             ctx: This plugin's context.
         """
         with ctx.view.ui() as gui:
-            self._status: "viser.GuiHtmlHandle" = gui.add_html("")
+            self._status: viser.GuiHtmlHandle = gui.add_html("")
             self._progress = gui.add_progress_bar(0.0, color="blue")
             gui.add_html(section("sequence", SECTION_CTRL))
             buttons = gui.add_button_group("Seq", ["Start", "Next", "Cancel"])

@@ -32,8 +32,11 @@ STALE_AFTER = 1.0
 
 def chip(text: str, color: str, title: str = "") -> str:
     """A small coloured label. `title` shows on hover, for detail that would not fit."""
-    return (f'<span title="{title}" style="background:{color};color:#fff;border-radius:4px;'
-            f'padding:0 5px;margin-right:4px;font-size:11px;font-weight:600">{text}</span>')
+    # ! inline-block + nowrap: a row of chips wraps between chips, never inside
+    #   one. The bottom margin keeps wrapped rows from touching.
+    return (f'<span title="{title}" style="display:inline-block;white-space:nowrap;'
+            f'background:{color};color:#fff;border-radius:4px;padding:0 5px;'
+            f'margin:0 4px 2px 0;font-size:11px;font-weight:600">{text}</span>')
 
 
 def section(label: str, color: str, detail: str = "") -> str:

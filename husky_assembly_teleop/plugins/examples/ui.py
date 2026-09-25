@@ -23,14 +23,11 @@ Run with:  -p plugins:="['example_ui']"
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import viser
 
 from ...context import PluginContext
 from ...plugin import HuskyPlugin, register
 from ...ui_style import NONE, OK, SECTION_CTRL, block, chip, section, values
-
-if TYPE_CHECKING:
-    import viser
 
 
 @register
@@ -51,7 +48,7 @@ class ExampleUiPlugin(HuskyPlugin):
             ctx: This plugin's context.
         """
         with ctx.view.ui() as gui:
-            self._status: "viser.GuiHtmlHandle" = gui.add_html("")
+            self._status: viser.GuiHtmlHandle = gui.add_html("")
 
             gui.add_html(section("counter", SECTION_CTRL))
             # * A button group is a row of small buttons. One callback serves

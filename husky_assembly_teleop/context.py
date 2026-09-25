@@ -1,9 +1,9 @@
 """
 The plugin contract: what a plugin is handed, and what it is allowed to touch.
 
-! No runtime imports beyond concurrency.
+! No runtime imports of our own modules beyond concurrency.
   `plugin` imports this module, so importing it back would be a cycle; the rest
-  are under TYPE_CHECKING for consistency with it. Never import `monitor`,
+  are under TYPE_CHECKING for the same reason. Never import `monitor`,
   `visualization` or `robot_scene` here either -- they import this module.
   Plugins depend on an interface, the monitor provides it, neither reaches
   around the other.
@@ -20,15 +20,16 @@ go: doc/refactor_rationale.md.
 from __future__ import annotations
 
 import queue
+import traceback
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Awaitable, Callable, Protocol
 
+import viser
+
 from .concurrency import Job, Task
 
 if TYPE_CHECKING:
-    import viser
-
     from .config import MonitorConfig
     from .plugin import HuskyPlugin
     from .robot_scene import RobotScene
@@ -62,16 +63,16 @@ class PluginView(Protocol):
         ...
 
     @property
-    def scene(self) -> "viser.SceneApi":
+    def scene(self) -> viser.SceneApi:
         """viser.SceneApi: Scene api. Paths must start with scene_root."""
         ...
 
     @property
-    def gui(self) -> "viser.GuiApi":
+    def gui(self) -> viser.GuiApi:
         """viser.GuiApi: GUI api. Prefer `ui()`, which also parents to the folder."""
         ...
 
-    def ui(self) -> AbstractContextManager["viser.GuiApi"]:
+    def ui(self) -> AbstractContextManager[viser.GuiApi]:
         """Context manager placing new widgets in this plugin's folder."""
         ...
 
@@ -271,7 +272,7 @@ class PluginContext:
             >>> grip.on_click(ctx.defer_value("grip", lambda label: self.grip(label)))
         """
 
-        async def _callback(event: "viser.GuiEvent") -> None:
+        async def _callback(event: viser.GuiEvent) -> None:
             value = event.target.value
             self.submit(label, lambda: run(value))
 
@@ -311,10 +312,16 @@ class PluginContext:
           job gets no say. An intent that invalidates a running job -- loading a
           new action while the old one executes -- must cancel it explicitly.
 
+        ! Every intent present at the start of the drain gets to run, even if an
+          earlier one raised: one bad click must not hold up the rest queued
+          alongside it. Each failure is logged where it happens; if any of them
+          raised, this also raises once at the end so the monitor still counts
+          it against the plugin.
+
         Raises:
-            RuntimeError: If an intent raised. The drain stops there; intents
-                still queued run on the next tick.
+            RuntimeError: If one or more intents raised.
         """
+        failed = False
         for _ in range(self._intents.qsize()):
             try:
                 intent = self._intents.get_nowait()
@@ -322,21 +329,34 @@ class PluginContext:
                 break
             try:
                 intent.run()
-            except Exception as failure:
-                raise RuntimeError(f"intent {intent.label!r} failed") from failure
+            except Exception:
+                failed = True
+                self.log_error(f"intent {intent.label!r} failed:\n{traceback.format_exc()}")
+        if failed:
+            raise RuntimeError("one or more intents failed")
 
     def _pump_jobs(self) -> None:
         """Advance each running job one step and drop the ones that finished.
 
+        ! Every job gets its turn, even if an earlier one raised: unlike one
+          try/except around the whole loop, a job that fails does not cost the
+          rest of them their step this tick. Each failure is logged where it
+          happens; if any of them raised, this also raises once at the end so
+          the monitor still counts it against the plugin.
+
         Raises:
-            RuntimeError: If a job raised. Jobs after it wait for the next tick;
-                finished jobs are dropped either way.
+            RuntimeError: If one or more jobs raised.
         """
-        try:
-            for job in self._jobs:
+        failed = False
+        for job in self._jobs:
+            try:
                 job.step()
-        finally:
-            self._jobs = [job for job in self._jobs if not job.done]
+            except RuntimeError:
+                failed = True
+                self.log_error(f"job {job.label!r} failed:\n{traceback.format_exc()}")
+        self._jobs = [job for job in self._jobs if not job.done]
+        if failed:
+            raise RuntimeError("one or more jobs failed")
 
     def _cancel_all_jobs(self) -> None:
         """Ask every running job to stop. Used when the plugin is torn down."""

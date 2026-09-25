@@ -27,16 +27,12 @@ Run with:  -p plugins:="['example_robot_state']" -p robots:="['0806']"
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 import numpy as np
+import viser
 
 from ...context import PluginContext
 from ...plugin import HuskyPlugin, register
 from ...ui_style import NONE, OK, SECTION_SENSOR, block, chip, freshness_chip, numbers, section, values
-
-if TYPE_CHECKING:
-    import viser
 
 
 @register
@@ -47,7 +43,7 @@ class ExampleRobotStatePlugin(HuskyPlugin):
 
     def __init__(self):
         """No widgets yet; setup builds one per robot."""
-        self._rows: dict[str, "viser.GuiHtmlHandle"] = {}
+        self._rows: dict[str, viser.GuiHtmlHandle] = {}
         #: Each arm's controller as seen last tick, keyed by (serial, arm name).
         self._last_controller: dict[tuple[str, str], str] = {}
 

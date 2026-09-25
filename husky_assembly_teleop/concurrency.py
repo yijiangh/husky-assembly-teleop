@@ -133,13 +133,12 @@ class Job:
         self._cancel_requested = True
 
     def step(self) -> None:
-        """Advance the job by one step. Called by the monitor, once per tick.
+        """Advance the job by one step. Called by PluginContext, once per tick.
 
         Raises:
             RuntimeError: If the task raised. The job is marked done first, so it
-                is dropped rather than retried. Reporting is left to the
-                monitor's `_guard`, the one place that decides what a plugin
-                failure costs; the wrapper keeps the label in the message.
+                is dropped rather than retried. Logged by the caller, which
+                keeps the label in the message; this only marks the job done.
         """
         if self.done:
             return

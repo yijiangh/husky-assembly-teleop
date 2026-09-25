@@ -29,18 +29,14 @@ Run with:  -p plugins:="['example_pybullet']" -p robots:="['0806']"
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 import numpy as np
 import pybullet_planning as pp
+import viser
 
 from ...context import PluginContext
 from ...plugin import HuskyPlugin, register
 from ...ui_style import FAIL, NONE, OK, SECTION_CTRL, block, chip, numbers, section, values
 from ...visualization import quaternion_to_wxyz
-
-if TYPE_CHECKING:
-    import viser
 
 BOX_SIZE = (0.3, 0.3, 0.3)       # m
 BOX_START = (1.5, 0.0, 0.15)     # m, standing on the floor
@@ -64,7 +60,7 @@ class ExamplePybulletPlugin(HuskyPlugin):
         self._tool_links: dict[tuple[str, str], tuple[int, int]] = {}
         #: Each arm's tool0 pose from forward kinematics, same keys.
         self._tool_poses: dict[tuple[str, str], tuple] = {}
-        self._tool_frames: dict[tuple[str, str], "viser.FrameHandle"] = {}
+        self._tool_frames: dict[tuple[str, str], viser.FrameHandle] = {}
 
     def setup(self, ctx: PluginContext) -> None:
         """Add the box to PyBullet and to the 3D view, and build the buttons.
@@ -93,7 +89,7 @@ class ExamplePybulletPlugin(HuskyPlugin):
                 f"{root}/{serial}/{arm_name}_tool0", axes_length=0.1, axes_radius=0.005)
 
         with ctx.view.ui() as gui:
-            self._status: "viser.GuiHtmlHandle" = gui.add_html("")
+            self._status: viser.GuiHtmlHandle = gui.add_html("")
             gui.add_html(section("box", SECTION_CTRL))
             move = gui.add_button_group("Move", list(MOVES))
             move.on_click(ctx.defer_value("move box", lambda clicked: self._move_box(MOVES[clicked])))

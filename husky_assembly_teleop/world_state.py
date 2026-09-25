@@ -56,6 +56,12 @@ class WorldState:
     Attributes:
         robots: Connected robots, keyed by serial. Each owns its own RobotState.
         tracked_objects: Mocap-observed non-robot bodies, keyed by name.
+
+            ! Unwired. Read already, by `health`; nothing constructs a
+              TrackedObject or writes into it yet -- that lands with the
+              cell/bar_action port, which is what will track racked bars this
+              way. Wire up a writer once that plugin needs one; do not let this
+              sit read-only-and-empty past that.
     """
 
     robots: dict[str, HuskyRobotInterface] = field(default_factory=dict)

@@ -34,11 +34,11 @@ Layout: one folder per robot, one tab per part (base, each arm). In each tab:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Callable
+from typing import Callable
 
 import numpy as np
+import viser
 from scipy.spatial.transform import Rotation
-from viser import Icon
 
 from ..concurrency import Job, Task, wait_until
 from ..context import PluginContext
@@ -50,9 +50,6 @@ from ..robot_interface.base import PLATFORM_VELOCITY_CONTROLLER
 from ..robot_interface.controller_manager import ControllerManagerInterface
 from ..ui_style import (STALE_AFTER, BUSY, FAIL, NONE, OK, SECTION_CTRL, SECTION_SENSOR, SECTION_TOOL, block, chip,
                         freshness_chip, note, numbers, section, values)
-
-if TYPE_CHECKING:
-    import viser
 
 #: Limits of the base twist sliders. Kept low: this is a test panel, not a joystick.
 MAX_LINEAR_SPEED = 0.3   # m/s
@@ -93,7 +90,7 @@ class _ControllerPanel:
     """
 
     controllers: ControllerManagerInterface
-    inputs: dict[str, "viser.GuiFolderHandle"] = field(default_factory=dict)
+    inputs: dict[str, viser.GuiFolderHandle] = field(default_factory=dict)
 
 
 @dataclass
@@ -103,10 +100,10 @@ class _BaseWidgets:
     serial: str
     base: BaseInterface
     panel: _ControllerPanel
-    status: "viser.GuiHtmlHandle"
-    linear: "viser.GuiSliderHandle"
-    angular: "viser.GuiSliderHandle"
-    drive: "viser.GuiCheckboxHandle"
+    status: viser.GuiHtmlHandle
+    linear: viser.GuiSliderHandle
+    angular: viser.GuiSliderHandle
+    drive: viser.GuiCheckboxHandle
 
 
 @dataclass
@@ -116,8 +113,8 @@ class _ArmWidgets:
     serial: str
     arm: ArmInterface
     panel: _ControllerPanel
-    status: "viser.GuiHtmlHandle"
-    tool_status: "viser.GuiHtmlHandle | None"
+    status: viser.GuiHtmlHandle
+    tool_status: viser.GuiHtmlHandle | None
 
 
 @register
@@ -152,13 +149,13 @@ class RobotControlPlugin(HuskyPlugin):
                 # "a200-0806" -> "0806": the digits are what people say.
                 with gui.add_folder(serial.split("-")[-1]):
                     tabs = gui.add_tab_group()
-                    with tabs.add_tab("Base", icon=Icon.CAR):
+                    with tabs.add_tab("Base", icon=viser.Icon.CAR):
                         self._bases.append(self._build_base(ctx, gui, serial, robot.base))
                     for arm_name, arm in robot.arms.items():
-                        with tabs.add_tab(ARM_LABELS.get(arm_name, arm_name), icon=Icon.ROBOT):
+                        with tabs.add_tab(ARM_LABELS.get(arm_name, arm_name), icon=viser.Icon.ROBOT):
                             self._arms.append(self._build_arm(ctx, gui, serial, arm))
 
-    def _build_base(self, ctx: PluginContext, gui: "viser.GuiApi", serial: str,
+    def _build_base(self, ctx: PluginContext, gui: viser.GuiApi, serial: str,
                     base: BaseInterface) -> _BaseWidgets:
         """Build the widgets of one base.
 
@@ -172,7 +169,7 @@ class RobotControlPlugin(HuskyPlugin):
             _BaseWidgets: The handles.
         """
         status = gui.add_html("")
-        handles: dict[str, "viser.GuiInputHandle"] = {}
+        handles: dict[str, viser.GuiInputHandle] = {}
 
         def velocity_inputs() -> None:
             """Inputs for platform_velocity_controller: a twist, streamed while Drive is on."""
@@ -182,7 +179,7 @@ class RobotControlPlugin(HuskyPlugin):
                                                 step=0.01, initial_value=0.0)
             handles["drive"] = gui.add_checkbox("Drive", initial_value=False,
                                                 hint="While on, the twist is sent every tick.")
-            stop = gui.add_button("Stop", color="red", icon=Icon.HAND_STOP)
+            stop = gui.add_button("Stop", color="red", icon=viser.Icon.HAND_STOP)
             # Stopping only switches Drive off; update then sends the final zero twist.
             stop.on_click(ctx.defer(f"stop base {serial}", lambda: setattr(handles["drive"], "value", False)))
 
@@ -191,7 +188,7 @@ class RobotControlPlugin(HuskyPlugin):
         return _BaseWidgets(serial=serial, base=base, panel=panel, status=status,
                             linear=handles["linear"], angular=handles["angular"], drive=handles["drive"])
 
-    def _build_arm(self, ctx: PluginContext, gui: "viser.GuiApi", serial: str,
+    def _build_arm(self, ctx: PluginContext, gui: viser.GuiApi, serial: str,
                    arm: ArmInterface) -> _ArmWidgets:
         """Build the widgets of one arm and its end effector.
 
@@ -344,7 +341,7 @@ class RobotControlPlugin(HuskyPlugin):
 
 # --- --- --- --- --- SHARED BUILDING BLOCKS --- --- --- --- ---
 
-def _build_controller_panel(ctx: PluginContext, gui: "viser.GuiApi",
+def _build_controller_panel(ctx: PluginContext, gui: viser.GuiApi,
                             controllers: ControllerManagerInterface,
                             input_builders: dict[str, Callable[[], None]]) -> _ControllerPanel:
     """Build the CTRL section: one button per controller, and a folder of inputs for each.

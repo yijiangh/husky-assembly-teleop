@@ -15,12 +15,15 @@ Responsibilities, and nothing beyond them:
 
 from __future__ import annotations
 
+import sys
 import time
 import traceback
+from argparse import ArgumentParser
 from dataclasses import dataclass
 
 import rclpy
 from rclpy.node import Node
+from rclpy.utilities import remove_ros_args
 
 from .config import MonitorConfig, config_from_ros_parameters
 from .context import PluginContext
@@ -73,11 +76,16 @@ class HuskyMonitor(Node):
       start of its own step, so an intent runs as single-threaded code.
     """
 
-    def __init__(self):
-        """Bring up state, scene, UI and plugins, then start the tick."""
+    def __init__(self, use_default_plugins: bool = True):
+        """Bring up state, scene, UI and plugins, then start the tick.
+
+        Args:
+            use_default_plugins: Whether config.DEFAULT_PLUGINS are loaded as
+                well as the requested ones.
+        """
         super().__init__("husky_monitor")
 
-        self._config = config_from_ros_parameters(self)
+        self._config = config_from_ros_parameters(self, use_default_plugins)
         self._world = WorldState()
         self._loaded: dict[str, _LoadedPlugin] = {}
 
@@ -214,11 +222,11 @@ class HuskyMonitor(Node):
     def _step_plugin(self, loaded: _LoadedPlugin) -> None:
         """Give one plugin its turn: its intents, its update, then its jobs.
 
-        ! One try/except for the whole step, on purpose.
-          The three parts are not independently recoverable -- if draining
-          intents raised, running update would act on half-applied state -- so
-          there is nothing to gain from catching them separately, and a single
-          handler means a single error counter.
+        ! Each part is caught on its own. Draining intents, update and pumping
+          jobs each get their own try/except, so a failure in one still lets the
+          others run this tick instead of losing all three to whichever raised
+          first. That can log more than one failure for the same plugin in the
+          same tick; `_plugin_failed` still counts it as one.
 
         ! Inside `scene.active()`, like every plugin hook, so plugin code can
           call `pp` without bracketing it. Per plugin rather than once per tick,
@@ -226,15 +234,21 @@ class HuskyMonitor(Node):
           cannot affect the next one.
         """
         started = time.perf_counter()
-        try:
-            with self._scene.active():
-                # Intents first, so work handed in from the UI is applied before
-                # the update that reacts to it runs.
+        with self._scene.active():
+            # Intents first, so work handed in from the UI is applied before
+            # the update that reacts to it runs.
+            try:
                 loaded.ctx._drain_intents()
+            except Exception:
+                self._plugin_failed(loaded, "intents")
+            try:
                 loaded.plugin.update(loaded.ctx)
+            except Exception:
+                self._plugin_failed(loaded, "update")
+            try:
                 loaded.ctx._pump_jobs()
-        except Exception:
-            self._plugin_failed(loaded, "step")
+            except Exception:
+                self._plugin_failed(loaded, "jobs")
 
         self._warn_if_slow(loaded, time.perf_counter() - started)
 
@@ -258,22 +272,23 @@ class HuskyMonitor(Node):
     # --- --- --- --- --- ERRORS --- --- --- --- ---
 
     def _plugin_failed(self, loaded: _LoadedPlugin, hook: str) -> None:
-        """Record that a plugin raised, and disable it if it keeps doing so.
+        """Log that a plugin raised in `hook`, and disable it if it keeps doing so.
 
         Without containment here, one plugin raising aborts the tick and every
         plugin after it silently stops running, with no symptom beyond "the
         panel froze".
 
-        `errors` counts consecutive *ticks* with a failure, not failures. The
-        tick stamp is what makes that work: a second failure in the same tick --
-        step and then draw -- does not count twice, and a clean tick in between
-        starts the count over without anyone having to sweep the plugin list to
-        reset it.
+        ! Logs every call, even several for the same plugin in the same tick --
+          intents, update and jobs are caught separately now, so that can
+          happen. `errors` still only counts once per tick: it counts
+          consecutive *ticks* with a failure, not failures, and the tick stamp
+          is what makes a second failure in the same tick not count twice.
 
         Args:
             loaded: The plugin whose work raised.
             hook: Which part was running, for the log message.
         """
+        self.log_error(f"plugin {loaded.name!r} failed in {hook}:\n{traceback.format_exc()}")
         if loaded.last_error_tick == self._tick_index:
             return  # already counted this tick
         # Consecutive only if it also failed in the tick immediately before.
@@ -281,10 +296,9 @@ class HuskyMonitor(Node):
         loaded.errors = loaded.errors + 1 if consecutive else 1
         loaded.last_error_tick = self._tick_index
 
-        self.log_error(f"plugin {loaded.name!r} failed in {hook} "
-                       f"({loaded.errors}/{self._config.max_plugin_errors}):\n{traceback.format_exc()}")
         if loaded.errors >= self._config.max_plugin_errors:
-            self.log_error(f"disabling plugin {loaded.name!r} after repeated failures")
+            self.log_error(f"disabling plugin {loaded.name!r} after "
+                           f"{loaded.errors}/{self._config.max_plugin_errors} failures")
             self._disable(loaded)
 
     def _disable(self, loaded: _LoadedPlugin) -> None:
@@ -373,13 +387,27 @@ class HuskyMonitor(Node):
 
 # --- --- --- --- --- MAIN --- --- --- --- ---
 def main(args: list[str] | None = None) -> None:
-    """Run the monitor until interrupted, reading sys.argv when `args` is None."""
+    """Run the monitor until interrupted, reading sys.argv when `args` is None.
+
+    Own flags go before --ros-args:
+
+        ros2 run husky_assembly_teleop husky_monitor --no-default --ros-args ...
+
+    Launch files set the `no_default` parameter instead; see config.py.
+    """
+    # * Our own flags are whatever is left once the ROS arguments are removed.
+    parser = ArgumentParser(prog="husky_monitor")
+    parser.add_argument("--no-default", action="store_true",
+                        help="load only the plugins in -p plugins:=[...], not config.DEFAULT_PLUGINS "
+                             "(same as -p no_default:=true)")
+    options = parser.parse_args(remove_ros_args(sys.argv if args is None else args)[1:])
+
     rclpy.init(args=args)
     monitor = None
     try:
         # Inside the try: a constructor that fails after starting viser or
         # PyBullet still has to reach the cleanup below.
-        monitor = HuskyMonitor()
+        monitor = HuskyMonitor(use_default_plugins=not options.no_default)
         rclpy.spin(monitor)
     except KeyboardInterrupt:
         pass

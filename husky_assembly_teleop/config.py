@@ -27,6 +27,11 @@ from rclpy.node import Node
 #: There is no v2: it never ran on a robot.
 EndEffectorKind = Literal["robotiq", "scaffolding_v1", "scaffolding_v3"]
 
+#: Plugins every run loads, before the ones asked for with `-p plugins:=[...]`.
+#: Start the monitor with --no-default, or -p no_default:=true (for launch
+#: files), to load only the ones asked for.
+DEFAULT_PLUGINS: tuple[str, ...] = ("health",)
+
 
 @dataclass(frozen=True)
 class ArmConfig:
@@ -131,8 +136,10 @@ class MonitorConfig:
         tick_period: Seconds between ticks. 0.05 (20 Hz) matches the old monitor.
         viser_port: Port the viser web UI listens on.
         enabled_plugins: Plugins to load, listed explicitly so a new file under
-            plugins/ cannot enable itself everywhere it is installed. Empty runs
-            the core with no plugins, which is a useful thing to ask for.
+            plugins/ cannot enable itself everywhere it is installed:
+            DEFAULT_PLUGINS followed by the requested ones. Empty (with
+            --no-default) runs the core with no plugins, which is a useful
+            thing to ask for.
         max_plugin_errors: Consecutive ticks a plugin may raise in before it is
             torn down instead of filling the log forever.
         slow_step_warn_ratio: Warn when one plugin's step eats more than this
@@ -282,7 +289,7 @@ def robot_config_from_serial(token: str, data_directory: Path,
 
 
 # --- --- --- --- --- READING ONE RUN OFF THE COMMAND LINE --- --- --- --- ---
-def config_from_ros_parameters(node: Node) -> MonitorConfig:
+def config_from_ros_parameters(node: Node, use_default_plugins: bool = True) -> MonitorConfig:
     """Build the frozen run configuration from `node`'s ROS2 parameters.
 
     Keeping configuration in ROS parameters means a run can be described by a
@@ -293,10 +300,19 @@ def config_from_ros_parameters(node: Node) -> MonitorConfig:
         ros2 run husky_assembly_teleop husky_monitor --ros-args \\
             -p robots:="['0804','0806']" \\
             -p plugins:="['cell']"
+
+    `-p no_default:=true` loads only the requested plugins, without
+    DEFAULT_PLUGINS. Same as the --no-default flag; either one is enough.
+
+    Args:
+        node: The monitor node, whose parameters are read.
+        use_default_plugins: Whether DEFAULT_PLUGINS are loaded as well as the
+            requested ones. False when started with --no-default.
     """
     node.declare_parameter("robots", [""])
     node.declare_parameter("plugins", [""])
     node.declare_parameter("data_directory", "")
+    node.declare_parameter("no_default", False)
 
     def string_list(name: str) -> tuple[str, ...]:
         """Read a string-array parameter, dropping the empty-string default."""
@@ -307,11 +323,27 @@ def config_from_ros_parameters(node: Node) -> MonitorConfig:
     data_directory = (Path(data_text).expanduser() if data_text
                       else Path(__file__).resolve().parent.parent / "data")
 
+    no_default = node.get_parameter("no_default").get_parameter_value().bool_value
     return MonitorConfig(
         robots=_robots_in_a_row(string_list("robots"), data_directory),
         data_directory=data_directory,
-        enabled_plugins=string_list("plugins"),
+        enabled_plugins=_enabled_plugins(string_list("plugins"), use_default_plugins and not no_default),
     )
+
+
+def _enabled_plugins(requested: tuple[str, ...], use_default_plugins: bool) -> tuple[str, ...]:
+    """The defaults followed by the requested plugins, each name once.
+
+    Args:
+        requested: Plugin names from the `plugins` parameter.
+        use_default_plugins: Whether to put DEFAULT_PLUGINS in front.
+
+    Returns:
+        tuple[str, ...]: Names in load order, duplicates dropped.
+    """
+    defaults = DEFAULT_PLUGINS if use_default_plugins else ()
+    # dict keeps the first occurrence of each name, in order.
+    return tuple(dict.fromkeys(defaults + requested))
 
 
 def _robots_in_a_row(serials: tuple[str, ...], data_directory: Path) -> tuple[RobotConfig, ...]:

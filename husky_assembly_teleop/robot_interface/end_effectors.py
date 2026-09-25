@@ -150,6 +150,10 @@ class RobotiqGripper(EndEffector):
         if self.state.commanded_position is not None:
             self.move(self.state.commanded_position)
 
+    def server_is_ready(self) -> bool:
+        """Whether the gripper's action server is discovered and reachable."""
+        return self._action.server_is_ready()
+
     def move(self, position: float, effort: float = DEFAULT_EFFORT) -> None:
         """Move to `position`.
 
@@ -157,7 +161,7 @@ class RobotiqGripper(EndEffector):
             position: Knuckle angle in radians, OPEN_POSITION to CLOSED_POSITION.
             effort: Force limit passed to the driver.
         """
-        if not self._action.server_is_ready():
+        if not self.server_is_ready():
             self._node.get_logger().warning(f"{self.namespace}: gripper action server is not available")
             return
         goal = GripperCommand.Goal()

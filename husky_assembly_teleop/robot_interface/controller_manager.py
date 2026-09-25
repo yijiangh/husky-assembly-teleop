@@ -122,8 +122,9 @@ class ControllerManagerInterface:
 
         Returns:
             bool: True if the request went out (or nothing needed doing). False
-                if `controller` is not switchable here or the service is not up;
-                `state.switch_error` then says which.
+                if `controller` is not switchable here, the service is not up, or
+                a previous switch has not answered yet; `state.switch_error` then
+                says which.
         """
         if controller not in self.switchable:
             self.state.switch_error = (f"{controller!r} is not one of {self.switchable} "
@@ -134,6 +135,15 @@ class ControllerManagerInterface:
             return True
         if not self._switch_client.service_is_ready():
             self.state.switch_error = f"{self.namespace}: switch_controller is not available"
+            self._node.get_logger().error(self.state.switch_error)
+            return False
+        if self.state.switch_in_flight is not None:
+            # ! Refused, not queued. `deactivate_controllers` below is computed
+            #   from the last list_controllers poll, which a switch still in
+            #   flight has not yet updated -- a second request now would race it
+            #   with a stale view of which controller is really active.
+            self.state.switch_error = (f"{self.namespace}: still switching to "
+                                       f"{self.state.switch_in_flight!r}, ignoring {controller!r}")
             self._node.get_logger().error(self.state.switch_error)
             return False
 

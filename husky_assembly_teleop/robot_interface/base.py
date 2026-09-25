@@ -27,6 +27,10 @@ class BaseState:
         orientation: Orientation in world frame, quaternion (x, y, z, w).
         tracked: Whether the pose is a live mocap fix. False means stale or never
             set, and callers must not read the pose as a measurement.
+        tracking_valid: Whether NatNet itself tracked the body in the last
+            sample. False usually means too many markers are hidden.
+        marker_error: Mean marker error of the last sample, metres, as NatNet
+            reports it. None before the first sample.
         controllers: The base controller manager's state.
         last_update_time: ROS time of the last mocap message, valid or not, seconds.
         last_fix_time: ROS time of the last *valid* pose, seconds. 0 means the
@@ -40,6 +44,8 @@ class BaseState:
     position: np.ndarray = field(default_factory=lambda: np.zeros(3))
     orientation: np.ndarray = field(default_factory=lambda: np.array([0.0, 0.0, 0.0, 1.0]))
     tracked: bool = False
+    tracking_valid: bool = False
+    marker_error: float | None = None
     controllers: ControllerManagerState = field(default_factory=ControllerManagerState)
     last_update_time: float = 0.0
     last_fix_time: float = 0.0
@@ -113,6 +119,9 @@ class BaseInterface:
         """
         now = self._node.get_clock().now().nanoseconds * 1e-9
         self.state.tracked = bool(message.pose_valid)
+        # * Kept for the health panel, so it can say *why* a pose is not valid.
+        self.state.tracking_valid = bool(message.tracking_valid)
+        self.state.marker_error = float(message.marker_error)
         if self.state.tracked:
             p, q = message.pose.position, message.pose.orientation
             self.state.position = np.array([p.x, p.y, p.z])
