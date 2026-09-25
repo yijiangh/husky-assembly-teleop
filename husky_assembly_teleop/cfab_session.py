@@ -87,16 +87,20 @@ GROUND_FALLBACK_HALF_SIZE = 20.0  # meters (=> 40 x 40 m slab)
 _GROUND_MM_THRESHOLD = 50.0
 
 
-def _slab_mesh_from_polygon(points_xy, thickness=GROUND_SLAB_THICKNESS):
+def _slab_mesh_from_polygon(points_xy, thickness=GROUND_SLAB_THICKNESS, top_z=0.0):
     """Extrude a closed 2D polygon downward into a solid slab mesh.
 
-    The top face lies at z=0 (the real floor height) and the bottom face at
-    ``-thickness``, so the slab only ever occupies space BELOW the floor.
+    The top face lies at ``top_z`` (the floor height) and the bottom face
+    ``thickness`` below it, so the slab only ever occupies space BELOW the floor.
 
     Args:
         points_xy (Sequence): Polygon corners as ``(x, y)`` pairs in metres,
             in order and without repeating the first point.
         thickness (float): Slab depth in metres.
+        top_z (float): Height of the floor surface in metres. The design
+            exports put their ground a little below zero (260921: -15.55 mm);
+            a floor left at z=0 would then report the feet of a ground bar,
+            authored to stand on the real ground, as buried in the floor.
 
     Returns:
         Mesh: Closed mesh (top face, bottom face, and one quad per side), or
@@ -106,9 +110,9 @@ def _slab_mesh_from_polygon(points_xy, thickness=GROUND_SLAB_THICKNESS):
     n = len(pts)
     if n < 3:
         return None
-    # Vertices 0..n-1 are the top ring (z=0), n..2n-1 the bottom ring.
-    vertices = [[x, y, 0.0] for x, y in pts]
-    vertices += [[x, y, -float(thickness)] for x, y in pts]
+    # Vertices 0..n-1 are the top ring (z=top_z), n..2n-1 the bottom ring.
+    vertices = [[x, y, float(top_z)] for x, y in pts]
+    vertices += [[x, y, float(top_z) - float(thickness)] for x, y in pts]
     # Top face as given; bottom face reversed so both wind outward.
     faces = [list(range(n)), list(range(2 * n - 1, n - 1, -1))]
     # Side quads stitching the two rings.
@@ -151,7 +155,10 @@ def _walkable_ground_slabs(problem_name):
         for face_vertices in (md.get('face') or {}).values():
             ring = [(vertex[str(i)].get('x', 0.0) * scale,
                      vertex[str(i)].get('y', 0.0) * scale) for i in face_vertices]
-            slab = _slab_mesh_from_polygon(ring)
+            # The patch is flat: its mean height is the floor surface.
+            top_z = float(np.mean([vertex[str(i)].get('z', 0.0) * scale
+                                   for i in face_vertices]))
+            slab = _slab_mesh_from_polygon(ring, top_z=top_z)
             if slab is not None:
                 slabs.append(slab)
     return slabs

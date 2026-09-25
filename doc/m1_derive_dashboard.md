@@ -34,6 +34,15 @@ the RRT is skipped). A merely-usable start is remembered and the search
 continues, until each anchor has spent its 40 s share. So on a scene with no
 clear corridor, every run costs the whole budget by construction.
 
+**Which goal it walks back from.** When M1's goal is M2's authored start
+configuration, that configuration is now **kept** as long as a short test walk
+(collisions ignored, at most 8 s, usually well under 1 s) shows the arm can
+reach *some* home pose from it continuously. Only when it cannot is the goal
+moved onto another IK branch — the "re-pairing" that exists for genuinely
+stuck goals. The summary says which happened. This matters because a moved
+goal is no longer where M2 starts, and on B3 the move alone was what made
+every home pose fail (see §5).
+
 ---
 
 ## 2. Running it
@@ -50,8 +59,45 @@ python src/husky-assembly-teleop/scripts/m1_dashboard_server.py    # http://127.
 Runs arrive from either producer, and the open page is notified within a second:
 
 - the monitor's **M1: Derive Start/Goal only (no RRT)** button, during a session;
+- the monitor's **Plan Movement** on M1 — every attempt is recorded, including
+  the RRT search that follows the sweep (one run per retry, labelled
+  *attempt N*);
 - `scripts/derive_m1_headless.py --bar B3 [--anchor back]`, at the desk with no
-  robot and no mocap.
+  robot and no mocap; add `--plan` to run the whole planner (derive + RRT) the
+  way Plan Movement does, and `--no-hide-built` to keep the already-built bars
+  as obstacles.
+
+### A whole design problem in one go
+
+```bash
+python src/husky-assembly-teleop/scripts/derive_m1_headless.py \
+    --problem 260921_motion_sample --bar all --plan --no-hide-built
+```
+
+`--bar all` walks every bar that has a transfer action file, in bar order, and
+one bar's failure does not stop the rest. At the end it prints a table (bar,
+file, base, result, time, run file) and saves it as
+`recorded_data/m1_derive_runs/batch_<timestamp>_<problem>.md`; every bar's run
+is on the dashboard as usual.
+
+Two things happen on the way that the single-bar form also does:
+
+- **Both export schemas load.** The legacy `B6.json` (M0..M4 in one file) and
+  the split `B6__J.json` (jointing: load, mount, grasp, transfer, tighten,
+  insert) + `B6__R.json` (release: untighten, ungrasp, retreat, home). The
+  transfer is `M1` in the old ids and `J_M3` in the new ones;
+  `bar_action_io.movement_role` translates, and the monitor uses the same
+  helper.
+- **Bars without a base get one.** An export whose robot base sits at the
+  world origin is not placed yet. The script then runs the code's own
+  heuristic (`place_base`): stand 0.7 m behind the bar's ground projection,
+  facing the insertion axis, and sample the walkable ground in growing rings
+  until the transfer -> insert -> retreat IK chain solves. The base and the
+  keyframe configurations are stamped onto the action and saved as
+  `B6__J.solved_keyframe.json` + `B6__R.solved_keyframe.json` next to the
+  export; the next run picks those sidecars up instead of searching again
+  (delete them to force a new search). The batch table's *base* column says
+  `authored` or `heuristic (x, y) m`.
 
 Files land in `recorded_data/m1_derive_runs/` (~4 MB each) and the baked 3D
 scene in `recorded_data/m1_dashboard_scenes/<problem>/` (exported once per
@@ -66,10 +112,38 @@ Drive by hand if it is worth keeping.
 
 Six or seven sentences at the top. The ones that matter most:
 
-> The goal has the bar 73 cm ahead, 77 cm right, 87 cm up of the robot base.
+> The goal has the middle of the bar 73 cm ahead, 77 cm right, 87 cm up of the
+> robot base.
 
 Everything on this page is in the **robot's own frame** — x forward, y left,
 z up, from the base. Not world coordinates, not "delta from the anchor".
+
+> The base everything is measured from was measured live by the mocap while the
+> derivation ran.
+
+Every position in a run is relative to the mobile base, so a run that stood the
+robot in the wrong place is wrong *everywhere*. The line names which base it
+was, and the note under the scatter repeats it with the coordinates:
+
+- **measured live by the mocap** — the monitor's derive button with mocap
+  tracking the base (`_apply_live_base_to_movement` wrote the live reading into
+  M1's start state before the sweep ran);
+- **read from the BarAction file's own M1 start state** — no mocap, so the
+  authored base stands in;
+- **chosen by the headless base-placement search** — the export left the robot
+  at the world origin and `derive_m1_headless.py` placed it, saving the answer
+  as the `.solved_keyframe` sidecar.
+
+> bar_B46 is 200 cm long, and every bar pose in this run is the pose of the
+> bar's own frame, whose origin sits right at one end of it — not in the middle.
+
+**A bar's stored pose is the pose of its own frame, and that frame sits at the
+end the assembly joint is on.** On B46 the grippers hold the bar 17 cm and
+81 cm from that origin, and the bar runs 2 m the other way. So the page does
+not plot the stored position: it moves every bar onto **the middle of the bar**
+(the bar extent's centre, or the grips' midpoint on a run file written before
+the extent was recorded), and the sentences quote that same point. A dot means
+what it looks like — the bar's middle, with the bar drawn through it.
 
 > The goal configuration was moved onto a different IK branch before the sweep,
 > by up to 203 deg on one joint (worst-arm branch distance 46 deg) — so M1 no
@@ -113,15 +187,32 @@ diagnostic number on the page. See §5.
 
 ### The 3D scatter — "Where the home poses were"
 
-Every dot is one home bar pose tried, plotted in the robot frame — the dot is
-the **middle of the bar**, and the **stick through it is the bar's own
-direction**. The white diamond and the thick white stick are the goal bar,
-always drawn at the true distance between the two grippers (0.96 m on B3), so
-you have a real-scale orientation reference to compare against.
+Every dot is one home bar pose tried, plotted in the robot frame, at **the
+middle of the bar**; the stick through it is the bar itself. The white diamond
+and the thick white stick are the goal bar, drawn the same way, so you have a
+real-scale reference to compare against.
 
-The second dropdown sets the stick length: *short* (a fixed 30 cm, readable when
-the dots are dense), *grasp span* (true scale — the sticks then show how the
-bars would really lie, at the cost of overlap), or *off*.
+The second dropdown sets how much of the bar is drawn. Everything is measured
+along the bar's own direction from its stored origin (one end), so the drawn
+piece always lands where the planner really had it:
+
+- *at its full length* (the default) — the whole bar, from the recorded
+  `active_bar_extent_local` (2 m on B46). The dot is its exact centre;
+- *only the piece between the grippers* — what the two tool0s actually hold
+  (0.96 m on B3, 0.64 m on B46). It lands exactly on the grippers of the robot
+  overlay, which is the quickest reachability check there is. On a bar gripped
+  off-centre the dot is not on this segment — the dot is still the bar's middle;
+- *direction only* — a 30 cm marker centred on the dot, readable when the dots
+  are dense. This one is a **direction hint, not the bar**;
+- *off*.
+
+A run file written before this readout has no bar extent: the grips' midpoint
+then stands in for the bar's middle, and *at its full length* falls back to the
+grip span.
+
+**The RRT card is the exception.** Its trees and path are bar positions the
+search logged without orientation, so they cannot be moved onto the bar's
+middle; that chart plots bar origins, and its legend says so.
 
 The third dropdown draws **the husky itself** into the same plot, as a
 see-through grey shape, at one of two configurations:
@@ -160,6 +251,31 @@ Each attempt on the clock, one lane per carry anchor. The green line marks when
 a usable start was found; the dashed amber lines mark where a carry's 40 s share
 ran out. A long stretch of grey after the green line is the corridor hunt that
 found nothing.
+
+### The RRT search card
+
+Shown only for runs that went on to search (Plan Movement, or `--plan`). It
+answers the question the derive stage cannot: **given this start and this
+goal, did a path exist?**
+
+The text says how the search ended — the trees met, the time budget ran out,
+the iteration cap was hit, or an endpoint itself collides — with the time,
+iteration count, and how big each tree grew. When the trees never met it also
+gives their **closest approach in centimetres**: a few cm means they were about
+to connect and more time might do it; tens of cm means they were growing in
+different places and time will not help.
+
+The second line is the more telling one: **why the tree extensions stopped**,
+as percentages — *jumped joint branch*, *hit something*, *found no IK
+solution*. A search dominated by branch jumps is failing for the same reason
+the sweep did (§5, item 1); one dominated by collisions is boxed in; one
+dominated by IK misses is reaching out of the workspace.
+
+The plot shows where the bar went during the search, in the robot frame: the
+tree grown from the pick-up pose in red, the tree grown from the goal in blue,
+the pick-up pose as a green diamond, the goal as a white one, and the path as
+a thick green line when there is one. Two clouds that stall with a gap between
+them, each hugging its own end, are the picture of a branch-sheet problem.
 
 ### The 3D viewer
 
@@ -230,6 +346,15 @@ Work down this list; the first line that matches usually explains the run.
 5. **Did a carry anchor get cut off before it got anywhere?**
    Re-run that carry alone with `--anchor <name>` to give it the full 120 s.
 
+6. **The sweep found a start but the RRT failed.**
+   A start that was found without a clear corridor certifies two endpoints,
+   nothing more — the corridor test is a free-win detector, not a feasibility
+   gate. Open the RRT card: if the extensions mostly *jumped joint branch* and
+   the trees stalled far apart, the endpoints are on branches that do not
+   connect; check the goal line in the summary. If they mostly *hit
+   something*, look at the closest approach and the plot for what boxed them
+   in.
+
 ---
 
 ## 6. Things you can change
@@ -245,7 +370,9 @@ in IK** (collision checks were 2.4 s).
 - **Screen more coarsely.** The screening step is 1 cm / 1.4°
   (`screen_step_m`, `screen_step_rad` in the run's `budget`); a winning corridor
   is re-walked finely anyway, so coarser screening costs accuracy nowhere.
-- **Fix the goal branch** rather than the sweep, when branch flips dominate.
+- **The goal branch is now protected.** M2's authored configuration is only
+  moved when a test walk shows it cannot reach any home pose (§1). On B3 this
+  is the difference between 120 s with no corridor and 36 s with one.
 
 ---
 
@@ -257,13 +384,16 @@ in IK** (collision checks were 2.4 s).
 | run files | `recorded_data/m1_derive_runs/<timestamp>_<problem>_<bar>_<anchor>.json` |
 | baked scenes | `recorded_data/m1_dashboard_scenes/<problem>/scene.glb` |
 | run schema + wording | `husky_assembly_teleop/dashboard/run_schema.py` |
-| headless producer | `scripts/derive_m1_headless.py` |
+| headless producer | `scripts/derive_m1_headless.py` (`--plan` for derive + RRT, `--bar all` for a whole problem) |
+| action loading, roles | `husky_assembly_teleop/bar_action_io.py` (`parse_bar_action`, `movement_role`, `sibling_action_path`) |
+| base heuristic | `husky_assembly_tamp/keyframe/walkable_ground.py` (`derive_seed_base`, `solve_chain_with_base_search`), called from the script's `place_base` |
 | tests | `test/test_m1_dashboard.py` |
 
 The per-candidate trace comes from `derive_constrained_start_tracked` in the
-**`husky_assembly_tamp` submodule** (`motion_planner/dual_arm_task_space_rrt/core.py`);
-the run-level context from `_derive_constrained_start_for_plan` in
-`motion_planner/api.py`. Both are submodule edits — commit them there, or a
+**`husky_assembly_tamp` submodule** (`motion_planner/dual_arm_task_space_rrt/core.py`),
+the RRT's trees and outcome from `plan_pose_birrt` in the same file, and the
+run-level context plus the goal-branch probe from `_derive_constrained_start_for_plan`
+in `motion_planner/api.py`. All are submodule edits — commit them there, or a
 `git submodule update` will wipe them.
 
 A run file is self-contained apart from the scene: it stores configurations,

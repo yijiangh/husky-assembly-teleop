@@ -18,3 +18,7 @@ recorded_data/
 
 # M1 dashboard javascript: downloaded by scripts/fetch_dashboard_vendor.sh
 husky_assembly_teleop/dashboard/static/vendor/
+
+# Calibration datasets (dated folders) live on the gdrive:
+# EXPERIMENT_DATA_DIRECTORY/calibration_data. Only the scripts stay here.
+data/calibration_data/[0-9]*/

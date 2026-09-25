@@ -35,7 +35,7 @@ th { color: var(--muted); font-weight: 500; }
 tr.cut td { color: #f0b429; }
 #viewer-panel { position: fixed; inset: 45px 0 0 auto; width: 62vw; background: var(--panel);
   border-left: 1px solid var(--line); display: flex; flex-direction: column; z-index: 20; }
-#viewer-panel.hidden, #toast.hidden { display: none; }
+#viewer-panel.hidden, #toast.hidden, .card.hidden { display: none; }
 .viewer-head, .viewer-foot { display: flex; align-items: center; gap: 12px;
   padding: 8px 12px; border-bottom: 1px solid var(--line); font-size: 13px; }
 .viewer-foot { border-bottom: none; border-top: 1px solid var(--line); }

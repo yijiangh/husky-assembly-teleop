@@ -213,8 +213,11 @@ export function createViewer(host) {
   function resetView() {
     if (!root) return;
     const box = new THREE.Box3();
+    // Fit the robot and the bars it is asked to reach. Tools are left out on
+    // purpose: the design cells park the other robots' stand-in bodies (also
+    // tools) tens of metres away, which would shrink the robot to a dot.
     nodeByName.forEach((object, name) => {
-      if (name.startsWith('robot__') || name.startsWith('tool__')) box.expandByObject(object);
+      if (name.startsWith('robot__')) box.expandByObject(object);
     });
     ghostGroup.children.forEach((ghost) => box.expandByObject(ghost));
     if (box.isEmpty()) return;

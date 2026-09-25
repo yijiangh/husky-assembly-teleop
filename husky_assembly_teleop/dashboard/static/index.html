@@ -44,9 +44,10 @@
           <option value="reached">colour by how far the walk got</option>
         </select>
         <select id="stick-mode">
-          <option value="short">short bar direction</option>
-          <option value="span">bar drawn at grasp span</option>
-          <option value="off">no bar direction</option>
+          <option value="whole">bar drawn at its full length</option>
+          <option value="grips">only the piece between the grippers</option>
+          <option value="direction">direction only (30 cm)</option>
+          <option value="off">no bar</option>
         </select>
         <select id="robot-pose">
           <option value="goal">robot at the goal pose</option>
@@ -55,12 +56,16 @@
         </select>
       </h2>
       <p class="hint">Each dot is one home bar pose the sweep tried, in the robot's
-        own frame (x forward, y left, z up); the stick through it is the bar's own
-        direction. The white diamond and thick white stick are the goal bar, drawn
-        at the true distance between the two grippers. The grey robot is the husky
-        itself, drawn at whichever configuration the third dropdown picks &mdash;
-        the goal pose the sweep walked back from, or the bar pick-up pose it
-        settled on. Click a dot to inspect that attempt in 3D.</p>
+        own frame (x forward, y left, z up). A dot sits at the <em>middle of the
+        bar</em>, and the stick through it is the bar itself &mdash; the whole bar by
+        default, or just the piece the two grippers hold. (The pose the planner
+        stores is the bar's own frame, whose origin is at one end of the bar; the
+        page moves it onto the middle so a dot means what it looks like.) The white
+        diamond and thick white stick are the goal bar, drawn the same way. The grey
+        robot is the husky itself, drawn at whichever configuration the third
+        dropdown picks &mdash; the goal pose the sweep walked back from, or the bar
+        pick-up pose it settled on. Click a dot to inspect that attempt in 3D.</p>
+      <p class="hint" id="frame-note"></p>
       <div id="chart-positions" class="chart"></div>
     </div>
 
@@ -69,6 +74,19 @@
       <p class="hint">Every attempt on the clock, one lane per carry. Dashed lines mark
         where a carry used up its time share. Click a dot to inspect that attempt.</p>
       <div id="chart-timeline" class="chart"></div>
+    </div>
+
+    <div class="card hidden" id="rrt-card">
+      <h2>The RRT search</h2>
+      <p id="rrt-text"></p>
+      <p class="hint">Where the bar went while the planner searched, in the robot frame:
+        the tree grown from the pick-up pose (red) and the tree grown from the goal
+        (blue). Green star = the pick-up pose, white diamond = the goal; a thick green
+        line is the path, when one was found. If the two clouds never touch, look at
+        where they stalled and what stopped their growth. Unlike the scatter above,
+        every point here is the bar's own origin (its end): the search logs positions
+        only, so there is no orientation to shift them onto the bar's middle with.</p>
+      <div id="chart-rrt" class="chart"></div>
     </div>
   </section>
 

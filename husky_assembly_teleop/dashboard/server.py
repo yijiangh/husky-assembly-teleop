@@ -25,7 +25,8 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from husky_assembly_teleop.dashboard.kinematics import SceneKinematics
 from husky_assembly_teleop.dashboard.run_schema import (
-    describe_candidate, describe_run, runs_dir_default, scenes_dir_default,
+    describe_base, describe_candidate, describe_rrt, describe_run, runs_dir_default,
+    scenes_dir_default,
 )
 
 def _static_dir():
@@ -110,6 +111,9 @@ class RunStore:
                 'problem': run.get('problem'), 'bar_action': run.get('bar_action'),
                 'anchor_selection': run.get('anchor_selection'),
                 'source': run.get('source'),
+                'kind': run.get('kind'),
+                'attempt': run.get('attempt'),
+                'rrt_outcome': (run.get('rrt') or {}).get('outcome'),
                 'result_kind': result.get('kind'),
                 't_found_s': result.get('t_found_s'),
                 't_total_s': (run.get('profile') or {}).get('t_total'),
@@ -131,10 +135,13 @@ class RunStore:
             run_id (str): the run's id.
 
         Returns:
-            dict: the run, with ``summary`` and per-candidate ``text``.
+            dict: the run, with ``summary``, the base readout and the
+            per-candidate ``text``.
         """
         run = self.load(run_id)
         run['summary'] = describe_run(run)
+        run['base_text'] = describe_base(run)
+        run['rrt_text'] = describe_rrt(run)
         for cand in run.get('candidates') or []:
             cand['text'] = describe_candidate(run, cand)
         return run

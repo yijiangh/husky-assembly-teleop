@@ -16,6 +16,7 @@ from datetime import datetime
 
 import numpy as np
 import pybullet_planning as pp
+from compas.geometry import Frame, Transformation
 
 from husky_assembly_teleop.cc_diagnosis import (
     collect_collision_contacts, _deepest_point, _penetration_depth, _PT_POS_A,
@@ -23,13 +24,134 @@ from husky_assembly_teleop.cc_diagnosis import (
 from husky_assembly_teleop.dashboard.run_schema import (
     RUN_KIND, SCHEMA, run_id, runs_dir_default, validate_run,
 )
-from husky_assembly_teleop.dashboard.scene_export import ensure_scene_glb
+from husky_assembly_teleop.dashboard.scene_export import _triangles, ensure_scene_glb
 from husky_assembly_teleop.utils import pose_from_frame
 
 # How many colliding candidates to explain in detail. Each check re-runs the
 # full cfab collision report (~50 ms), and the dashboard only needs enough
 # examples to show the pattern.
 MAX_COLLISION_CHECKS = 40
+# RRT trees can hold thousands of nodes; this many per tree is plenty to see
+# the shape of the search and where the two trees stalled.
+MAX_TREE_POINTS = 1500
+
+
+def _points_in_mb(world_from_mb, points):
+    """World-frame points as mobile-base-frame points, rounded for the file.
+
+    Args:
+        world_from_mb: the base pose, pybullet ``(pos, quat)``.
+        points (Sequence[Sequence[float]]): xyz points in the world frame.
+
+    Returns:
+        list[list[float]]: the same points in the robot's own frame.
+    """
+    mb_from_world = pp.invert(world_from_mb)
+    return [[round(float(v), 4) for v in
+             pp.multiply(mb_from_world, (list(point), (0.0, 0.0, 0.0, 1.0)))[0]]
+            for point in points]
+
+
+def _subsample(points, limit):
+    """At most ``limit`` evenly spaced entries of ``points`` (all, if fewer)."""
+    if len(points) <= limit:
+        return list(points)
+    step = len(points) / float(limit)
+    return [points[int(i * step)] for i in range(limit)]
+
+
+def _rrt_block(info, world_from_mb, plan_path):
+    """The RRT search as the run file records it, or None when no search ran.
+
+    Everything comes from what ``plan_constrained_dual_arm`` already returns:
+    the BiRRT's own profile (outcome, timing, both trees, why extensions
+    stopped) plus the path when there is one. Tree nodes and the path are
+    stored in the mobile-base frame so the page can plot them straight onto
+    the same axes as the home poses.
+
+    Args:
+        info (dict): what ``plan_constrained_dual_arm`` returned.
+        world_from_mb: the base pose, pybullet ``(pos, quat)``.
+        plan_path: the joint path the planner returned, or None.
+
+    Returns:
+        dict | None: the ``rrt`` block.
+    """
+    planner_name = info.get('planner')
+    if not planner_name:
+        return None
+    profile = info.get('profile') or {}
+    start = profile.get('tree_start') or {}
+    goal = profile.get('tree_goal') or {}
+    start_pts = _points_in_mb(world_from_mb, _subsample(start.get('points') or [], MAX_TREE_POINTS))
+    goal_pts = _points_in_mb(world_from_mb, _subsample(goal.get('points') or [], MAX_TREE_POINTS))
+    gap_cm = None
+    if start_pts and goal_pts:
+        a = np.asarray(start_pts, dtype=float)
+        b = np.asarray(goal_pts, dtype=float)
+        gap_cm = round(float(np.min(np.linalg.norm(a[:, None, :] - b[None, :, :], axis=2))) * 100.0, 1)
+    path_pts = [pose[0] for pose in (info.get('path_poses') or [])]
+    bar_start = info.get('world_from_bar_start')
+    if planner_name == 'tracked_corridor':
+        outcome = 'corridor'
+    else:
+        outcome = profile.get('outcome') or ('connected' if plan_path is not None else 'failed')
+    return {
+        'planner': planner_name,
+        'path_found': plan_path is not None,
+        'n_waypoints': len(plan_path) if plan_path is not None else 0,
+        'outcome': outcome,
+        'failure_reason': info.get('failure_reason'),
+        'time_s': profile.get('elapsed_s'),
+        'max_time_s': info.get('max_time'),
+        'iterations': profile.get('iterations'),
+        'attempts': profile.get('attempts'),
+        'n_nodes_start': len(start.get('points') or []),
+        'n_nodes_goal': len(goal.get('points') or []),
+        'stop_reasons': profile.get('extend_stop_reasons') or {},
+        'closest_gap_cm': gap_cm,
+        'trees': {'start': start_pts, 'goal': goal_pts},
+        'path_mb': _points_in_mb(world_from_mb, path_pts),
+        'start_bar_pos_mb': (_points_in_mb(world_from_mb, [bar_start[0]])[0]
+                             if bar_start else None),
+        'smooth': info.get('smooth_profile') or None,
+    }
+
+
+def _bar_extent_local(robot_cell, body_name):
+    """How far the bar reaches from its own frame origin, in its own frame.
+
+    ! A bar's frame origin sits at ONE END of it -- the end the assembly joint
+    ! is on -- not in the middle, and these bars are up to two metres long. A
+    ! viewer that draws a bar centred on its stored pose therefore draws it up
+    ! to a metre from where the planner really had it. Recording the extent
+    ! lets the dashboard draw the bar from its origin along its own direction,
+    ! which is where it actually is.
+
+    Args:
+        robot_cell (RobotCell): the cell holding the rigid body.
+        body_name (str): the bar's rigid-body name, e.g. ``'bar_B46'``.
+
+    Returns:
+        dict | None: ``{'min': [x, y, z], 'max': [x, y, z]}`` in the bar's own
+        frame, or None when the cell has no meshes for that body.
+    """
+    body = (robot_cell.rigid_body_models or {}).get(body_name)
+    if body is None:
+        return None
+    meshes = body.collision_meshes or body.visual_meshes or []
+    native = float(getattr(body, 'native_scale', 1.0) or 1.0)
+    lows, highs = [], []
+    for mesh in meshes:
+        positions, _ = _triangles(mesh, [native, native, native])
+        if positions is None:
+            continue
+        lows.append(positions.min(axis=0))
+        highs.append(positions.max(axis=0))
+    if not lows:
+        return None
+    return {'min': [round(float(v), 4) for v in np.min(lows, axis=0)],
+            'max': [round(float(v), 4) for v in np.max(highs, axis=0)]}
 
 
 def _pose(pose):
@@ -129,6 +251,50 @@ def _tool_root_node(robot_cell, tool_name):
     return f'tool__{tool_name}__{base.name}'
 
 
+def _static_tool_links(robot_cell, tool_name, tool_state):
+    """Static entries for every geometry link of a tool nobody carries.
+
+    The design cells park the other robots' stand-in bodies as tools with no
+    planning group: they stay at their state's frame, posed at their state's
+    own joint values. compas forward kinematics gives each link's frame inside
+    the tool, and the tool frame places them in the world.
+
+    Args:
+        robot_cell (RobotCell): the cell holding the tool model.
+        tool_name (str): the tool's name in the cell.
+        tool_state (ToolState): its state (frame, configuration, is_hidden).
+
+    Returns:
+        list[dict]: static-body entries ``{node, world, hidden}``, one per link
+        that has geometry (bare frames have no scene node).
+    """
+    if tool_state.frame is None:
+        return []
+    tool_model = robot_cell.tool_models[tool_name]
+    configuration = tool_model.zero_configuration()
+    stored = tool_state.configuration
+    if stored is not None:
+        for name, value in zip(stored.joint_names, stored.joint_values):
+            if name in configuration.joint_names:
+                configuration[name] = float(value)
+    world_from_tool = Transformation.from_frame(tool_state.frame)
+    tool_from_link = {}
+    for joint, frame in zip(tool_model.iter_joints(),
+                            tool_model.transformed_frames(configuration)):
+        tool_from_link[joint.child_link.name] = Transformation.from_frame(frame)
+    entries = []
+    for link in tool_model.iter_links():
+        if not (link.visual or link.collision):
+            continue
+        world = world_from_tool * tool_from_link.get(link.name, Transformation())
+        entries.append({
+            'node': f'tool__{tool_name}__{link.name}',
+            'world': _pose(pose_from_frame(Frame.from_transformation(world))),
+            'hidden': bool(tool_state.is_hidden),
+        })
+    return entries
+
+
 def _scene_poses(planner, state):
     """Split the cell's bodies into 'rides with the robot' and 'stays put'.
 
@@ -178,7 +344,12 @@ def _scene_poses(planner, state):
     for tool_name, tool_state in (state.tool_states or {}).items():
         group = getattr(tool_state, 'attached_to_group', None)
         tool_puid = (client.tools_puids or {}).get(tool_name)
-        if not group or tool_puid is None or tool_state.is_hidden:
+        if not group:
+            # A tool nobody carries (the support robots' stand-in bodies in the
+            # design cells) stays wherever its state puts it, link by link.
+            static_bodies.extend(_static_tool_links(robot_cell, tool_name, tool_state))
+            continue
+        if tool_puid is None or tool_state.is_hidden:
             continue
         parent_link = robot_cell.get_link_names(group)[-1]
         link_puid = (client.robot_link_puids or {}).get(parent_link)
@@ -197,7 +368,8 @@ def _scene_poses(planner, state):
 
 def build_run_record(planner, state, info, *, problem, bar_action, active_bar,
                      movement_id=None, home_anchor=None, source='monitor',
-                     scene_ref=None, when=None):
+                     scene_ref=None, when=None, plan_path=None, attempt=None,
+                     base_source='unknown'):
     """Assemble the dashboard's run record from a derivation result.
 
     Args:
@@ -212,6 +384,12 @@ def build_run_record(planner, state, info, *, problem, bar_action, active_bar,
         source (str): ``'monitor'`` or ``'headless'``.
         scene_ref (str | None): relative path of the exported scene.
         when (datetime | None): run timestamp (now by default).
+        plan_path: the joint path a full M1 plan returned (None when only the
+            start was derived, or the plan failed).
+        attempt (int | None): which retry of a plan this was, when retried.
+        base_source (str): where ``state``'s base pose came from -- one of
+            ``run_schema.BASE_SOURCE_PLAIN``. Every position in the run file is
+            relative to that base, so the dashboard says which one it was.
 
     Returns:
         dict: the run record, ready for ``validate_run`` / ``write_run``.
@@ -278,16 +456,21 @@ def build_run_record(planner, state, info, *, problem, bar_action, active_bar,
     if winner is None:
         winner = next((c['i'] for c in candidates
                        if c['outcome'] in ('blocked', 'fine_reverify_failed')), None)
-    found = info.get('derived_start_conf') is not None
-    if found:
+    start_conf = info.get('derived_start_conf') or info.get('start_conf')
+    found = start_conf is not None
+    if found and not tracked:
+        kind = 'reused_start'      # planned from a stored start, no sweep
+    elif found:
         kind = ('corridor' if any(c['outcome'] == 'corridor' for c in candidates)
                 else 'partial' if tracked.get('partial') else 'start_only')
     else:
         kind = 'failed'
+    rrt = _rrt_block(info, world_from_mb, plan_path)
 
     run = {
         'schema': SCHEMA,
-        'kind': RUN_KIND,
+        'kind': 'm1_plan' if rrt else RUN_KIND,
+        'attempt': attempt,
         'id': run_id(problem, bar_action, home_anchor, when),
         'created': when.isoformat(timespec='seconds'),
         'source': source,
@@ -302,7 +485,7 @@ def build_run_record(planner, state, info, *, problem, bar_action, active_bar,
             'failure_reason': info.get('failure_reason'),
             'winner_candidate': winner,
             't_found_s': (candidates[winner]['t_at_s'] if winner is not None else None),
-            'start_conf': info.get('derived_start_conf'),
+            'start_conf': start_conf,
             'winner_variant': tracked.get('variant'),
             'goal_collisions': None,
         },
@@ -310,6 +493,9 @@ def build_run_record(planner, state, info, *, problem, bar_action, active_bar,
         'context': {
             'joint_names_12': context_in.get('joint_names_12') or [],
             'world_from_mobile_base': _pose(world_from_mb),
+            'base_source': base_source,
+            'active_bar_extent_local': _bar_extent_local(
+                planner.client.robot_cell, active_bar),
             'goal': {
                 'conf': context_in.get('goal_conf') or [],
                 'conf_authored': context_in.get('goal_conf_authored') or [],
@@ -319,6 +505,7 @@ def build_run_record(planner, state, info, *, problem, bar_action, active_bar,
                 'rebranched': rebranch_deg > 0.06,   # ~0.001 rad, i.e. a real change
                 'rebranch_max_deg': round(rebranch_deg, 2),
                 'pairing_cross_distance_deg': context_in.get('pairing_cross_distance_deg'),
+                'branch_probe': context_in.get('goal_branch_probe'),
             },
             'grasps': {
                 'bar_from_left_tool0': _pose(context_in.get('grasp_bar_from_left')
@@ -347,6 +534,7 @@ def build_run_record(planner, state, info, *, problem, bar_action, active_bar,
         },
         'profile': profile,
         'candidates': candidates,
+        'rrt': rrt,
     }
     return run
 
@@ -439,7 +627,8 @@ def write_run(run, runs_dir=None):
 
 def write_m1_run(planner, state, info, *, problem, bar_action, active_bar,
                  movement_id=None, home_anchor=None, source='monitor',
-                 runs_dir=None, scenes_dir=None):
+                 runs_dir=None, scenes_dir=None, plan_path=None, attempt=None,
+                 base_source='unknown'):
     """Export the scene (once), build, annotate and write one run file.
 
     This is the single call the producers make after a derivation.
@@ -456,6 +645,11 @@ def write_m1_run(planner, state, info, *, problem, bar_action, active_bar,
         source (str): ``'monitor'`` or ``'headless'``.
         runs_dir (str | None): where to write (default: the watched folder).
         scenes_dir (str | None): scene cache root.
+        plan_path: the joint path a full M1 plan returned, when this records
+            a plan rather than a derive-only run.
+        attempt (int | None): which retry of a plan this was.
+        base_source (str): where ``state``'s base pose came from (see
+            ``build_run_record``).
 
     Returns:
         str: the written run path.
@@ -463,7 +657,8 @@ def write_m1_run(planner, state, info, *, problem, bar_action, active_bar,
     scene_ref = ensure_scene_glb(planner.client.robot_cell, problem, scenes_dir=scenes_dir)
     run = build_run_record(planner, state, info, problem=problem, bar_action=bar_action,
                            active_bar=active_bar, movement_id=movement_id,
-                           home_anchor=home_anchor, source=source, scene_ref=scene_ref)
+                           home_anchor=home_anchor, source=source, scene_ref=scene_ref,
+                           plan_path=plan_path, attempt=attempt, base_source=base_source)
     annotate_collisions(planner, state, run)
     path = write_run(run, runs_dir=runs_dir)
     print(f'[dashboard] run written: {path}')

@@ -29,7 +29,7 @@ from rclpy.node import Node
 import pybullet as p
 import pybullet_planning as pp
 
-from husky_assembly_teleop import DATA_DIRECTORY, DESIGN_DATA_DIRECTORY, CALIBRATION_BATCHES, DESIGN_PROBLEM_NAME, CALIBRATION_DATE
+from husky_assembly_teleop import DATA_DIRECTORY, DESIGN_DATA_DIRECTORY, EXPERIMENT_DATA_DIRECTORY, CALIBRATION_DATA_DIRECTORY, CALIBRATION_BATCHES, DESIGN_PROBLEM_NAME, CALIBRATION_DATE
 import husky_assembly_teleop.husky_world as world
 from husky_assembly_teleop.husky_world import _solve_bar_action_goal_ik
 import husky_assembly_teleop.mocap_experiment as mocap_experiment
@@ -57,7 +57,7 @@ from husky_assembly_teleop.utils import (
 
 # BarAction (gdrive design-study) loading
 from husky_assembly_teleop.bar_action_io import (
-    parse_bar_action, list_bar_actions, find_movement,
+    parse_bar_action, list_bar_actions, find_movement, movement_role,
 )
 from husky_assembly_teleop.cfab_session import (
     CfabSession, build_default_robot_cell, plan_free_motion,
@@ -114,8 +114,10 @@ CDFM_ROTATION_RES = 0.025  # radians
 # So: plan at a step small enough to hit a bar (slower to plan), and then verify
 # the returned path at a finer step still (_validate_free_planned_path), which is
 # what actually gates acceptance.
-FM_JOINT_RESOLUTION = 0.01        # rad, planning / collision-check step
-FM_VALIDATION_STEP_RAD = 0.005    # rad, post-plan re-check step (2x finer)
+FM_JOINT_RESOLUTION = 0.1        # rad, planning / collision-check step
+FM_VALIDATION_STEP_RAD = 0.01    # rad, post-plan re-check step (2x finer)
+# FM_JOINT_RESOLUTION = 0.01        # rad, planning / collision-check step
+# FM_VALIDATION_STEP_RAD = 0.005    # rad, post-plan re-check step (2x finer)
 
 # Below this the live arms count as already standing at a preplanned path's
 # first waypoint, so there is nothing to bridge. Well under the 0.1 rad the
@@ -227,10 +229,7 @@ CLIENT_IP = '192.168.0.25' # Set to your own IP
 MOCAP_IP = '192.168.0.28' # set to the mocap PC's IP, get this from Motive Settings>Streaming pane->Local interface
 # Where the 'collect cameras data' button drops its JSON+CSV (gdrive folder also
 # holding import_mocap_cameras_rhino.py).
-MOCAP_CAMERA_EXPORT_DIR = (
-    "/home/su/Insync/yijiang94817@gmail.com/Google Drive - Shared with me/"
-    "2025-03 Husky Assembly/data_experiment/visualise_mocap_camera"
-)
+MOCAP_CAMERA_EXPORT_DIR = os.path.join(EXPERIMENT_DATA_DIRECTORY, 'visualise_mocap_camera')
 
 # Folder under DESIGN_DATA_DIRECTORY (gdrive)/<...>/RobotCellStates/
 # from which CALIBRATION-mode state + trajectory loaders pull files.
@@ -1201,7 +1200,7 @@ class HuskyMonitor(Node):
         """Load punch tool offset from config.yaml."""
         try:
             punch_config_path = os.path.join(
-                DATA_DIRECTORY, 'calibration_data', CALIBRATION_DATE, 'config.yaml'
+                CALIBRATION_DATA_DIRECTORY, CALIBRATION_DATE, 'config.yaml'
             )
             with open(punch_config_path, 'r') as f:
                 config = yaml.safe_load(f) or {}
@@ -2260,14 +2259,14 @@ class HuskyMonitor(Node):
     # --- --- --- --- --- PER-MOVEMENT BARACTION FLOW --- --- --- --- ---
 
     def _match_movement_role(self, mv):
-        """Return 'M0' | 'M1' | 'M2' | 'M3' | 'M4' | None based on movement_id.
+        """Return 'M0' | 'M1' | 'M2' | 'M3' | 'M4' | None for a movement.
 
-        Movement ids follow the producer convention `<bar>_M<n>_<desc>`,
-        e.g. 'B6_M0_free_to_M1_start'.
+        Both export schemas are understood (legacy ``B6_M1_...`` ids and the
+        split jointing/release ``B6_J_M3_...`` / ``B6_R_M2_...`` ids); see
+        ``bar_action_io.movement_role``. Manual and screw-tool movements have
+        no classic role and return None.
         """
-        mid = getattr(mv, 'movement_id', '') or ''
-        match = re.search(r'_M([0-9])_', mid)
-        return f'M{match.group(1)}' if match else None
+        return movement_role(mv)
 
     def _print_cfab_collision_check_setup(self, state, header='cfab CC setup'):
         """Pretty-print the Allowed-Collision-Matrix (ACM) that cfab's
@@ -4762,6 +4761,20 @@ class HuskyMonitor(Node):
                 "M0 has no target_configuration; plan M1 first (its start "
                 "conf is backfilled as M0's goal).")
             return None
+        # ! The Rhino export leaves the active bar in M0's start_state at its
+        # ! ASSEMBLED pose (loose, not hidden), yet during M0 that bar is not
+        # ! built -- it is still waiting to be mounted in the grippers. M0's goal
+        # ! is M1's start, which M1's derivation checks with the bar held in the
+        # ! grippers, so it never sees that spot as blocked. Leaving the bar there
+        # ! makes a derived M1 start that reaches through the bar's future place
+        # ! fail M0 as "end configuration is in collision". So the planner is told
+        # ! to ignore it (the flag is set before the state push below).
+        bar_rb = (mv.start_state.rigid_body_states.get(self.active_bar_name)
+                  if mv.start_state is not None and self.active_bar_name else None)
+        if bar_rb is not None and not bar_rb.attached_to_link and not bar_rb.is_hidden:
+            bar_rb.is_hidden = True
+            print(f"[M0] ignoring the not-yet-built active bar "
+                  f"{self.active_bar_name!r} at its assembled pose.")
         self._resync_start_state_to_live(mv, 'M0')
         return self._plan_free_and_validate(
             mv, 'M0', mv.target_configuration,
@@ -5315,7 +5328,7 @@ class HuskyMonitor(Node):
               "(approach); cfab 'Constrained t' slider steps the same waypoints. "
               "Click 'M1: Adopt derived start' to make it M1's start / M0's goal.")
 
-    def _save_m1_derive_report(self, info, home_anchor, state):
+    def _save_m1_derive_report(self, info, home_anchor, state, plan_path=None, attempt=None):
         """Print the sweep summary and record the run for the dashboard.
 
         Every derivation result carries one entry per home candidate the sweep
@@ -5329,14 +5342,28 @@ class HuskyMonitor(Node):
         guarded; the cell state is restored either way, because the collision
         annotation moves the simulated robot around.
 
+        Also records a full M1 plan (derive + RRT): pass the planner's ``info``
+        and the path it returned, and the run carries the search's trees and
+        outcome for the dashboard's "RRT search" card.
+
         Args:
-            info: The ``info`` dict from ``_derive_constrained_start_for_plan``.
+            info: The ``info`` dict from ``_derive_constrained_start_for_plan``
+                or from ``plan_constrained_dual_arm``.
             home_anchor (str | None): The anchor selection used.
             state: The movement start state the derivation ran on.
+            plan_path: The joint path a full plan returned (None for derive-only
+                runs and failed plans).
+            attempt (int | None): Which retry of a plan this was.
         """
         print_m1_derivation_summary(info)
         bar_action = os.path.splitext(os.path.basename(
             self._current_action_path or ''))[0] or (self.active_bar_name or 'unknown')
+        # Every pose in the run file is measured from this state's base, so the
+        # dashboard is told which base that is: the live mocap reading when
+        # something tracks it (_apply_live_base_to_movement wrote it in), else
+        # the base the BarAction file authored for M1.
+        base_source = ('mocap_live' if self._base_pose_is_tracked()
+                       else 'bar_action_file')
         try:
             with pp.LockRenderer():
                 write_m1_run(
@@ -5344,7 +5371,8 @@ class HuskyMonitor(Node):
                     problem=self.cfab.problem_name or DESIGN_PROBLEM_NAME,
                     bar_action=bar_action, active_bar=self.active_bar_name,
                     movement_id=getattr(self.current_movement, 'movement_id', None),
-                    home_anchor=home_anchor, source='monitor')
+                    home_anchor=home_anchor, source='monitor',
+                    plan_path=plan_path, attempt=attempt, base_source=base_source)
         except Exception as e:
             print(f"[M1 derive] could not record the run for the dashboard: {e}")
         finally:
@@ -5583,6 +5611,8 @@ class HuskyMonitor(Node):
                     self.cfab.planner, mv.start_state,
                     derive_start=False, **common,
                 )
+            # Every plan attempt is recorded for the dashboard, found or not.
+            self._save_m1_derive_report(info, home_anchor, mv.start_state, plan_path=path)
             if path is None:
                 # ! Deliberately NOT falling back to deriving. A derived start
                 # ! is a DIFFERENT conf from the one the robot was driven to by
@@ -5618,6 +5648,8 @@ class HuskyMonitor(Node):
                         start_home_anchor=home_anchor,
                         **common, **extra,
                     )
+                self._save_m1_derive_report(info, home_anchor, mv.start_state,
+                                            plan_path=path, attempt=retry_idx + 1)
                 if path is not None:
                     break
                 print(f"[M1] plan_constrained_dual_arm failed: {info.get('failure_reason')}")

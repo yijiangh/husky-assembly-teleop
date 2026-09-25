@@ -54,6 +54,10 @@ def _get_data_directory():
 DATA_DIRECTORY = _get_data_directory()
 DESIGN_DATA_DIRECTORY = '/home/su/Insync/2025-03 Husky Assembly/data_design_study'
 EXPERIMENT_DATA_DIRECTORY = '/home/su/Insync/2025-03 Husky Assembly/data_experiment'
+# * Calibration DATASETS (the dated <date>/ folders) live on the gdrive, not in
+# * the repo. The analysis scripts, the config template (_data_template/) and
+# * debug_utils/ stay in the repo under data/calibration_data/.
+CALIBRATION_DATA_DIRECTORY = os.path.join(EXPERIMENT_DATA_DIRECTORY, 'calibration_data')
 RECORD_DIRECTORY = os.path.join(DATA_DIRECTORY, '..', 'recorded_data')
 
 # ============================================================================
@@ -64,8 +68,9 @@ RECORD_DIRECTORY = os.path.join(DATA_DIRECTORY, '..', 'recorded_data')
 # data into it, then analyse it. Set them apart only when you deliberately want
 # the live app writing into a new folder while you re-analyse an older capture.
 #
-# ! Each folder must already exist under data/calibration_data/ and must hold a
-# ! config.yaml -- copy one from an older date folder when starting a session.
+# ! Each folder must already exist under CALIBRATION_DATA_DIRECTORY (gdrive) and
+# ! must hold a config.yaml -- copy one from an older date folder (or the repo's
+# ! data/calibration_data/_data_template/) when starting a session.
 
 # Used by the LIVE APP (the running monitor):
 #   * husky_world reads <date>/calibrated_transformation_<robot>.json

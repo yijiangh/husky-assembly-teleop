@@ -11,6 +11,7 @@ numbers into the sentences the dashboard shows, because the raw fields
 ! named links -- never fractions or internal field names.
 """
 import os
+from math import atan2, degrees
 
 
 SCHEMA = 'm1-derive-run/1'
@@ -34,6 +35,30 @@ OUTCOME_PLAIN = {
     'arrival_collision': 'reached home, but collides there',
     'track_break': 'never reached home',
     'fine_reverify_failed': 'clear at coarse steps, not at fine steps',
+}
+
+# How an RRT search ended, in words.
+RRT_OUTCOME_PLAIN = {
+    'connected': 'the two trees met',
+    'corridor': 'not needed -- the straight walk from the start was already clear',
+    'max_time': 'the time budget ran out before the trees met',
+    'max_iterations': 'the iteration cap was reached before the trees met',
+    'start_in_collision': 'the start configuration itself collides',
+    'goal_in_collision': 'the goal configuration itself collides',
+    'failed': 'no path was found',
+}
+
+# Where a run's mobile-base pose came from. EVERY position in a run file is
+# relative to that base, so a run that stood the robot in the wrong place is
+# wrong everywhere -- which is why the dashboard says this out loud.
+BASE_SOURCE_PLAIN = {
+    'mocap_live': 'measured live by the mocap while the derivation ran',
+    'bar_action_file': "read from the BarAction file's own M1 start state, "
+                       'because nothing was tracking the base',
+    'base_placement_heuristic': 'chosen by the headless base-placement search '
+                                '(saved as the .solved_keyframe sidecar), because the '
+                                'export itself left the robot at the world origin',
+    'unknown': 'not recorded (this run file predates the base readout)',
 }
 
 # The three carry modes, in words.
@@ -228,8 +253,10 @@ def describe_candidate(run, cand):
     names = (run.get('context') or {}).get('joint_names_12') or []
     step_cm = ((run.get('context') or {}).get('budget') or {}).get('screen_step_m', 0.01) * 100.0
     travel = float(cand.get('travel_cm') or 0.0)
-    head = (f'{variant_plain(cand.get("variant"))}, bar at '
-            f'{_where_plain(cand.get("home_pos_mb") or [0, 0, 0])} of the base; '
+    middle = bar_middle(run, cand.get('home_pos_mb') or [0, 0, 0],
+                        cand.get('home_quat_mb') or [0, 0, 0, 1])
+    head = (f'{variant_plain(cand.get("variant"))}, {middle_plain(run)} at '
+            f'{_where_plain(middle)} of the base; '
             f'{travel:.0f} cm of bar travel from the goal')
     outcome = cand.get('outcome')
 
@@ -262,6 +289,149 @@ def describe_candidate(run, cand):
             f'when re-walked at fine steps.')
 
 
+def _yaw_deg(quat_xyzw):
+    """The heading of a quaternion about the world vertical, in degrees."""
+    x, y, z, w = (float(v) for v in quat_xyzw)
+    return degrees(atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z)))
+
+
+def base_source_plain(run):
+    """Where this run's mobile-base pose came from, in words."""
+    source = (run.get('context') or {}).get('base_source') or 'unknown'
+    return BASE_SOURCE_PLAIN.get(source, source)
+
+
+def grasp_span_along_bar(run):
+    """How far along the bar's own axis the two grippers hold it.
+
+    The grasps are stored as tool0 poses in the BAR's frame, so their third
+    coordinate is the distance from the bar's origin along the bar.
+
+    Args:
+        run (dict): the run record.
+
+    Returns:
+        tuple[float, float]: ``(near, far)`` in metres from the bar's origin.
+    """
+    grasps = (run.get('context') or {}).get('grasps') or {}
+    along = [float(((grasps.get(key) or {}).get('pos') or [0.0, 0.0, 0.0])[2])
+             for key in ('bar_from_left_tool0', 'bar_from_right_tool0')]
+    return min(along), max(along)
+
+
+def bar_axis(quat_xyzw):
+    """The bar's own direction -- its local Z -- in the frame the pose is given in."""
+    x, y, z, w = (float(v) for v in quat_xyzw)
+    return (2.0 * (x * z + y * w), 2.0 * (y * z - x * w), 1.0 - 2.0 * (x * x + y * y))
+
+
+def bar_mid_along(run):
+    """How far along the bar, from its own origin, the middle of the bar sits.
+
+    From the recorded bar extent when there is one; otherwise the midpoint of
+    the two grips, which is the best a run file written before the extent was
+    recorded can offer.
+
+    Args:
+        run (dict): the run record.
+
+    Returns:
+        float: the distance in metres along the bar's own axis.
+    """
+    extent = (run.get('context') or {}).get('active_bar_extent_local')
+    if extent:
+        return (float(extent['min'][2]) + float(extent['max'][2])) / 2.0
+    near, far = grasp_span_along_bar(run)
+    return (near + far) / 2.0
+
+
+def middle_plain(run):
+    """What the plotted point is, in words: the bar's middle, or the grips'.
+
+    A run file written before the bar extent was recorded cannot know where the
+    bar's middle is, so the grips' midpoint stands in -- and the sentences say
+    so rather than claiming the bar's middle.
+    """
+    if (run.get('context') or {}).get('active_bar_extent_local'):
+        return 'the middle of the bar'
+    return 'the midpoint of the two grips'
+
+
+def bar_middle(run, pos, quat_xyzw):
+    """The middle of the bar, for a bar pose stored in the run.
+
+    ! Every bar pose in a run file is the pose of the bar's own FRAME, and that
+    ! frame's origin is at one end of the bar. The middle is what a reader
+    ! pictures when they look at a bar position, so it is what the page plots
+    ! and what these sentences quote.
+
+    Args:
+        run (dict): the run record.
+        pos (Sequence[float]): the stored bar position (its frame's origin).
+        quat_xyzw (Sequence[float]): the stored bar orientation.
+
+    Returns:
+        list[float]: the middle of the bar, in the same frame as ``pos``.
+    """
+    axis = bar_axis(quat_xyzw)
+    along = bar_mid_along(run)
+    return [float(pos[i]) + axis[i] * along for i in range(3)]
+
+
+def describe_base(run):
+    """Which base pose every position in the run is measured from.
+
+    Args:
+        run (dict): the run record.
+
+    Returns:
+        list[str]: two lines -- what the frame is, and where that base stood.
+    """
+    context = run.get('context') or {}
+    pose = context.get('world_from_mobile_base') or {}
+    pos = pose.get('pos') or [0.0, 0.0, 0.0]
+    quat = pose.get('quat_xyzw') or [0.0, 0.0, 0.0, 1.0]
+    return [
+        "Every position here is in the robot's own base frame -- base_footprint, "
+        'on the ground between the wheels: x forward, y left, z up.',
+        f'That base stood at x {float(pos[0]):.3f}, y {float(pos[1]):.3f}, '
+        f'z {float(pos[2]):.3f} m in the cell, facing {_yaw_deg(quat):.0f} deg, and its '
+        f'pose was {base_source_plain(run)}.',
+    ]
+
+
+def describe_bar_shape(run):
+    """Where the bar's own origin sits on the bar, and where it is held.
+
+    Every bar pose in the file is the pose of the bar's own frame, whose origin
+    is at the END the assembly joint is on -- so a reader who takes a plotted
+    dot for the middle of the bar misreads the whole picture by up to a metre.
+
+    Args:
+        run (dict): the run record.
+
+    Returns:
+        list[str]: zero or one line (one only when the bar extent was recorded).
+    """
+    extent = (run.get('context') or {}).get('active_bar_extent_local')
+    if not extent:
+        near, far = grasp_span_along_bar(run)
+        return ['This run file predates the bar-extent readout, so every dot below sits '
+                f'at the midpoint of the two grips ({100.0 * near:.0f} cm and '
+                f'{100.0 * far:.0f} cm along the bar from its own origin) rather than at '
+                'the middle of the bar itself, and the stick is the gripped piece only.']
+    low, high = float(extent['min'][2]), float(extent['max'][2])
+    near, far = grasp_span_along_bar(run)
+    from_end_cm = abs(low) * 100.0
+    where = ('right at one end of it' if from_end_cm < 1.0
+             else f'{from_end_cm:.0f} cm in from one end')
+    return [f'{run.get("active_bar")} is {100.0 * (high - low):.0f} cm long, and every bar '
+            f'pose in this run is the pose of the bar\'s own frame, whose origin sits '
+            f'{where} -- not in the middle. The grippers hold it {100.0 * near:.0f} cm and '
+            f'{100.0 * far:.0f} cm from that origin, so every dot below is moved onto the '
+            f'MIDDLE of the bar and the stick through it is the bar itself.']
+
+
 def describe_run(run):
     """Headline sentences for one run.
 
@@ -281,10 +451,15 @@ def describe_run(run):
 
     lines.append(f'Bar {run.get("active_bar")} of {run.get("problem")}, '
                  f'{"all three carry anchors" if run.get("anchor_selection") in (None, "all") else variant_plain(run.get("anchor_selection"))}.')
-    lines.append(f'The goal has the bar {_where_plain(goal.get("bar_pos_mb") or [0, 0, 0])} '
+    lines.append(f'Every position below is relative to the robot\'s mobile base, '
+                 f'whose pose was {base_source_plain(run)}.')
+    lines.append(f'The goal has {middle_plain(run)} '
+                 f'{_where_plain(bar_middle(run, goal.get("bar_pos_mb") or [0, 0, 0], goal.get("bar_quat_mb") or [0, 0, 0, 1]))} '
                  f'of the robot base; the sweep walks the bar backwards from there '
                  f'to every home pose it tries.')
+    lines.extend(describe_bar_shape(run))
 
+    lines.extend(describe_goal_probe(run))
     rebranch = float(goal.get('rebranch_max_deg') or 0.0)
     if goal.get('rebranched'):
         cross = goal.get('pairing_cross_distance_deg')
@@ -322,7 +497,76 @@ def describe_run(run):
         lines.append(f'The "{ANCHOR_PLAIN.get(anchor, anchor)}" carry used up its '
                      f'{float(budget.get("per_anchor_s") or 0.0):.0f} s share at '
                      f'{where}{n_at}, so it stopped trying more positions for it.')
+    lines.extend(describe_rrt(run))
     return lines
+
+
+def describe_goal_probe(run):
+    """One sentence on whether M2's own goal configuration was kept.
+
+    Args:
+        run (dict): the run record.
+
+    Returns:
+        list[str]: zero or one line.
+    """
+    probe = ((run.get('context') or {}).get('goal') or {}).get('branch_probe')
+    if not probe:
+        return []
+    if probe.get('authored_reaches_home'):
+        return [f'M2\'s own goal configuration was kept: a test walk from it reached the '
+                f'"{variant_plain(probe.get("variant") or "")}" home continuously '
+                f'in {float(probe.get("t_s") or 0.0):.1f} s.']
+    return [f'M2\'s own goal configuration could not walk to any home pose in '
+            f'{float(probe.get("t_s") or 0.0):.0f} s ({probe.get("candidates_walked", 0)} '
+            f'tried), so the goal was moved to another IK branch before the sweep.']
+
+
+def describe_rrt(run):
+    """Sentences on the RRT search, when the run includes one.
+
+    Args:
+        run (dict): the run record.
+
+    Returns:
+        list[str]: zero, one or two lines.
+    """
+    rrt = run.get('rrt')
+    if not rrt:
+        return []
+    outcome = rrt.get('outcome') or 'failed'
+    head = RRT_OUTCOME_PLAIN.get(outcome, outcome)
+    if outcome == 'corridor':
+        return [f'RRT search: {head}; the plan has {rrt.get("n_waypoints", 0)} waypoints.']
+    t = float(rrt.get('time_s') or 0.0)
+    line = (f'RRT search: {head} after {t:.0f} s and {rrt.get("iterations") or 0} iterations '
+            f'({rrt.get("attempts") or 0} attempt(s)); the start tree grew to '
+            f'{rrt.get("n_nodes_start") or 0} nodes and the goal tree to '
+            f'{rrt.get("n_nodes_goal") or 0}')
+    gap = rrt.get('closest_gap_cm')
+    if gap is not None and not rrt.get('path_found'):
+        line += f'; at their closest the two trees were {gap:.0f} cm apart'
+    line += '.'
+    out = [line]
+    reasons = rrt.get('stop_reasons') or {}
+    total = sum(int(v) for v in reasons.values()) or 0
+    if total:
+        # Group the extend/connect/stitch variants of each cause together.
+        buckets = {}
+        for key, count in reasons.items():
+            cause = ('collision' if 'collision' in key else 'ik' if 'ik' in key
+                     else 'continuity' if 'continuity' in key or 'endpoint' in key
+                     else 'reached' if 'reached' in key else key)
+            buckets[cause] = buckets.get(cause, 0) + int(count)
+        words = {'collision': 'hit something', 'ik': 'found no IK solution',
+                 'continuity': 'jumped joint branch', 'reached': 'reached their target'}
+        # Buckets that round to nothing (a couple of connects out of a
+        # thousand extensions) only add noise to the line.
+        parts = [f'{100.0 * n / total:.0f} % {words.get(cause, cause)}'
+                 for cause, n in sorted(buckets.items(), key=lambda kv: -kv[1])
+                 if 100.0 * n / total >= 0.5]
+        out.append('Tree extensions: ' + ', '.join(parts) + '.')
+    return out
 
 
 def run_id(problem, bar_action, anchor_selection, when):

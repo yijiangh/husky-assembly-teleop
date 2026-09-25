@@ -108,9 +108,11 @@ which are **not** actions — the monitor prints the indexed file list at
 startup, read it and skip those two indices.
 
 **3. Calibration date** — `CALIBRATION_DATE`
-([`__init__.py:75`](../husky_assembly_teleop/__init__.py#L75)), with the offline
+([`__init__.py:80`](../husky_assembly_teleop/__init__.py#L80)), with the offline
 scripts' `CALIBRATION_ANALYSIS_DATE` right below it. The date folders
-under `data/calibration_data/` are **per robot and per arm**, not a timeline:
+on the gdrive under `data_experiment/calibration_data/` (`CALIBRATION_DATA_DIRECTORY`,
+see [`calibration_manual.md` §4.3](calibration_manual.md#43-data-folder-structure)) are
+**per robot and per arm**, not a timeline:
 
 | Folder | Robot / arm | Output file |
 |--------|-------------|-------------|

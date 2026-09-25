@@ -15,9 +15,11 @@ from husky_assembly_teleop.dashboard.kinematics import (
     SceneKinematics, _matrix_from_pose,
 )
 from husky_assembly_teleop.dashboard.run_schema import (
-    SCHEMA, describe_candidate, describe_run, runs_dir_default,
-    scenes_dir_default, validate_run, variant_plain,
+    SCHEMA, bar_mid_along, bar_middle, describe_base, describe_bar_shape,
+    describe_candidate, describe_rrt, describe_run, grasp_span_along_bar,
+    runs_dir_default, scenes_dir_default, validate_run, variant_plain,
 )
+from husky_assembly_teleop.dashboard.run_writer import _bar_extent_local, _rrt_block
 
 
 def _pose(pos=(0, 0, 0), quat=(0, 0, 0, 1)):
@@ -39,12 +41,18 @@ def _synthetic_run():
             'joint_names_12': [f'left_ur_arm_j{i}_joint' for i in range(6)]
                               + [f'right_ur_arm_j{i}_joint' for i in range(6)],
             'world_from_mobile_base': _pose(),
+            'base_source': 'mocap_live',
+            # A 1.4 m bar whose own origin is at one end, held 22 cm and 118 cm
+            # along it -- the shape every real cell exports.
+            'active_bar_extent_local': {'min': [-0.01, -0.01, 0.0],
+                                        'max': [0.01, 0.01, 1.4]},
             'goal': {'conf': [0.0] * 12, 'conf_authored': [0.0] * 12,
                      'bar_pose_world': _pose((1.0, 0.0, 0.9)),
                      'bar_pos_mb': [1.0, 0.0, 0.9], 'bar_quat_mb': [0, 0, 0, 1],
                      'rebranched': True, 'rebranch_max_deg': 38.2,
                      'pairing_cross_distance_deg': 45.9},
-            'grasps': {'bar_from_left_tool0': _pose(), 'bar_from_right_tool0': _pose(),
+            'grasps': {'bar_from_left_tool0': _pose((0.08, 0.0, 1.18)),
+                       'bar_from_right_tool0': _pose((0.08, 0.0, 0.22)),
                        'attach_link': 'left_ur_arm_tool0', 'tool0_from_bar': _pose()},
             'variants_mb': [['back/canonical', [0, 0, 1], [0, 0, 0, 1]]],
             'budget': {'max_time_s': 120.0, 'per_anchor_s': 40.0, 'n_variants': 39,
@@ -127,6 +135,87 @@ def test_wording_is_physical():
     assert '40 s share' in summary
     assert variant_plain('back/roll+30') == \
         'bar fore-aft over the robot, rolled +30 deg about its own axis'
+
+
+def test_the_base_readout_names_where_the_base_came_from():
+    """Every position is measured from the base, so the page must say which one."""
+    run = _synthetic_run()
+
+    lines = ' '.join(describe_base(run))
+    assert 'base_footprint' in lines
+    assert 'measured live by the mocap' in lines
+    assert 'x 0.000, y 0.000, z 0.000' in lines
+    assert 'measured live by the mocap' in ' '.join(describe_run(run))
+
+    run['context']['base_source'] = 'bar_action_file'
+    assert 'BarAction file' in ' '.join(describe_base(run))
+    del run['context']['base_source']
+    assert 'not recorded' in ' '.join(describe_base(run))
+
+
+def test_a_bar_pose_is_the_pose_of_its_end_not_its_middle():
+    """The wording (and the numbers behind the plot) place the bar off its origin.
+
+    A bar's frame origin sits at the end the assembly joint is on. Drawing the
+    bar centred on that origin -- which the page used to do -- put it half its
+    grip span away from where the planner had it.
+    """
+    run = _synthetic_run()
+
+    near, far = grasp_span_along_bar(run)
+    assert (near, far) == (0.22, 1.18)
+
+    sentence = ' '.join(describe_bar_shape(run))
+    assert '140 cm long' in sentence
+    assert 'right at one end of it -- not in the middle' in sentence
+    assert 'hold it 22 cm and 118 cm' in sentence
+
+    # The 1.4 m bar's middle is 70 cm along its own axis; the candidate at
+    # [0.1, -0.2, 1.2] points straight up, so its middle is 70 cm higher.
+    assert bar_mid_along(run) == pytest.approx(0.7)
+    cand = run['candidates'][1]
+    assert bar_middle(run, cand['home_pos_mb'], cand['home_quat_mb']) == \
+        pytest.approx([0.1, -0.2, 1.9])
+    assert 'the middle of the bar at 10 cm ahead, 20 cm right, 190 cm up' in \
+        describe_candidate(run, cand)
+
+    # Without the extent the grips' own midpoint stands in -- and says so, rather
+    # than claiming to be the middle of a bar whose length the file never recorded.
+    del run['context']['active_bar_extent_local']
+    assert bar_mid_along(run) == pytest.approx(0.7)
+    assert 'midpoint of the two grips' in ' '.join(describe_bar_shape(run))
+    assert 'the midpoint of the two grips at 10 cm ahead' in describe_candidate(run, cand)
+
+
+def test_bar_extent_is_read_off_the_cell_geometry():
+    """The producer measures the bar in its own frame, native scale included."""
+    from compas.datastructures import Mesh
+
+    class _Body:
+        """The two attributes ``_bar_extent_local`` reads off a cfab rigid body."""
+
+        def __init__(self, meshes, native_scale):
+            self.collision_meshes = meshes
+            self.visual_meshes = []
+            self.native_scale = native_scale
+
+    class _Cell:
+        """Just enough of a RobotCell to look a bar up by name."""
+
+        def __init__(self, bodies):
+            self.rigid_body_models = bodies
+
+    # A bar modelled in millimetres: 2 m long, from its own origin.
+    box = Mesh.from_vertices_and_faces(
+        [[-10, -10, 0], [10, -10, 0], [10, 10, 0], [-10, 10, 0],
+         [-10, -10, 2000], [10, -10, 2000], [10, 10, 2000], [-10, 10, 2000]],
+        [[0, 1, 2, 3], [4, 5, 6, 7]])
+    cell = _Cell({'bar_B3': _Body([box], 0.001)})
+
+    extent = _bar_extent_local(cell, 'bar_B3')
+    assert extent['min'] == [-0.01, -0.01, 0.0]
+    assert extent['max'] == [0.01, 0.01, 2.0]
+    assert _bar_extent_local(cell, 'bar_nowhere') is None
 
 
 def test_glb_is_valid_and_matches_its_sidecar():
@@ -216,3 +305,33 @@ def test_frames_payload_is_consistent():
         assert len(frame['matrices']) == len(payload['nodes'])
         assert all(len(matrix) == 16 for matrix in frame['matrices'])
     assert payload['caption']
+
+
+def test_rrt_block_from_a_failed_search():
+    """A BiRRT profile becomes an rrt block the page can plot and describe."""
+    info = {
+        'planner': 'birrt', 'max_time': 120.0, 'failure_reason': 'max_time',
+        'world_from_bar_start': ((1.0, 0.0, 1.2), (0, 0, 0, 1)),
+        'path_poses': None,
+        'profile': {
+            'outcome': 'max_time', 'elapsed_s': 120.4, 'iterations': 5400, 'attempts': 3,
+            'tree_start': {'points': [[1.0, 0.0, 1.2], [1.1, 0.0, 1.2]], 'edges': [[0, 1]]},
+            'tree_goal': {'points': [[1.7, -0.8, 0.9]], 'edges': []},
+            'extend_stop_reasons': {'continuity': 40, 'collision': 20, 'connect_ik_failure': 5},
+        },
+    }
+    identity = ((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0))
+    rrt = _rrt_block(info, identity, plan_path=None)
+    assert rrt['outcome'] == 'max_time' and rrt['path_found'] is False
+    assert rrt['n_nodes_start'] == 2 and rrt['n_nodes_goal'] == 1
+    assert abs(rrt['closest_gap_cm'] - 100.0 * ((0.6 ** 2 + 0.8 ** 2 + 0.3 ** 2) ** 0.5)) < 0.2
+    assert rrt['start_bar_pos_mb'] == [1.0, 0.0, 1.2]
+
+    run = _synthetic_run()
+    run['rrt'] = rrt
+    run['kind'] = 'm1_plan'
+    validate_run(run)                         # the block is optional but must not break validation
+    text = ' '.join(describe_rrt(run))
+    assert 'time budget ran out' in text
+    assert '104 cm apart' in text
+    assert 'jumped joint branch' in text and 'hit something' in text

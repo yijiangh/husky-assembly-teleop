@@ -15,7 +15,7 @@ import rclpy
 import pybullet as p
 import pybullet_planning as pp
 
-from husky_assembly_teleop import DATA_DIRECTORY, CALIBRATION_DATE, EXPERIMENT_DATA_DIRECTORY
+from husky_assembly_teleop import DATA_DIRECTORY, CALIBRATION_DATE, EXPERIMENT_DATA_DIRECTORY, CALIBRATION_DATA_DIRECTORY
 from husky_assembly_teleop.common import Husky, TrackedObject, AssemblyObject
 import husky_assembly_teleop.husky_planning as planning
 import husky_assembly_teleop.husky_control as control
@@ -38,7 +38,8 @@ assembly_objects = []
 # Use the centralized DATA_DIRECTORY from the package
 DATA_DIR = DATA_DIRECTORY
 
-CALIB_DATA_DIR = os.path.join(DATA_DIR, "calibration_data")
+# Dated calibration datasets live on the gdrive (see CALIBRATION_DATA_DIRECTORY).
+CALIB_DATA_DIR = CALIBRATION_DATA_DIRECTORY
 BAR_HOLDING_ACC_DATA_DIR = os.path.join(DATA_DIR, "bar_holding_acc_data")
 BAR_HOLDING_ACC_EXPERIMENT_DIR = os.path.join(EXPERIMENT_DATA_DIRECTORY, "bar_holding_acc_data")
 
@@ -50,7 +51,8 @@ SERVO_LEFT_ARM_RGB = [(240, 130, 120), (225, 70, 55), (150, 20, 20), (90, 0, 0)]
 SERVO_RIGHT_ARM_RGB = [(150, 220, 140), (70, 180, 80), (20, 130, 40), (0, 70, 20)]   # x, y, z, |d|
 SERVO_BASE_RGB = [(150, 190, 230), (70, 130, 200), (30, 80, 160), (10, 40, 100)]     # x, y, z, |d|
 DUAL_ARM_ACC_DATA_DIR = os.path.join(DATA_DIR, "dual_arm_acc_data")
-CALIB_CONFIG_TEMPLATE = os.path.join(CALIB_DATA_DIR, "_data_template", "config.yaml")
+# The config.yaml template stays in the repo, next to the analysis scripts.
+CALIB_CONFIG_TEMPLATE = os.path.join(DATA_DIR, "calibration_data", "_data_template", "config.yaml")
 
 # Kissing experiment constants (ported from c81e373)
 KISSING_DATA_DIR = os.path.join(DATA_DIR, "kissing_experiment_data")
@@ -785,7 +787,7 @@ def calibrate_button(monitor, tool_mocap_name, index=0):
 
 def save_calibration(monitor, filename_suffix="", date_folder=None, data_batch=None):
     # save monitor.calibration_data to json, file name with time stamp
-    # save to data/calibration_data/<date_folder>/<data_batch>/
+    # save to CALIB_DATA_DIR (gdrive)/<date_folder>/<data_batch>/
     timestamp = datetime.now().strftime("%Y%m%d_%H%M")
 
     if date_folder is None:

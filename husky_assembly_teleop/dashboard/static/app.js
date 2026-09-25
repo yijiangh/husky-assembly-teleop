@@ -40,40 +40,75 @@ async function getViewer() {
   return viewer;
 }
 
-// A dot says where the bar's middle was; a short stick along the bar says
-// which way it pointed. The bar's long axis is its LOCAL Z, so the stick
-// direction is the third column of the orientation's rotation matrix.
+// A dot says where the MIDDLE of the bar was; the stick through it is the bar
+// itself. The bar's long axis is its LOCAL Z, so the stick direction is the
+// third column of the orientation's rotation matrix.
 function barAxis(quat) {
   const [x, y, z, w] = quat;
   return [2 * (x * z + y * w), 2 * (y * z - x * w), 1 - 2 * (x * x + y * y)];
 }
 
-// Half-lengths to draw a bar stick at, in metres. "span" is the true distance
-// between the two tool0 grasps, read from the run.
-function stickHalfLength(mode) {
-  if (mode === 'off') return 0;
-  if (mode === 'span') return graspSpan() / 2;
-  return 0.15;
+// ! A stored bar pose is the pose of the bar's own FRAME, whose origin is at one
+// ! END of the bar -- and these bars are up to two metres long. Drawing the bar
+// ! centred on that origin put it up to a metre from where the planner really
+// ! had it (on B3 the grips are 22 and 118 cm along, so a centred stick missed
+// ! by 70 cm, which is what made the goal bar look like it hung beside the
+// ! robot, through the floor). So: every span here is measured ALONG the bar
+// ! from its own origin, and the dot is moved onto the middle of the bar.
+function barSpan(mode) {
+  if (mode === 'off') return null;
+  if (mode === 'direction') {                       // a direction hint, not the bar
+    const mid = barMidAlong();
+    return [mid - 0.15, mid + 0.15];
+  }
+  const extent = currentRun.context.active_bar_extent_local;
+  if (mode === 'grips' || !extent) return graspSpan();
+  return [extent.min[2], extent.max[2]];
 }
 
+// How far along the bar, from its own origin, the middle of the bar sits. Run
+// files written before the bar extent was recorded only know where the grips
+// are, so their midpoint stands in.
+function barMidAlong() {
+  const extent = currentRun.context.active_bar_extent_local;
+  if (extent) return (extent.min[2] + extent.max[2]) / 2;
+  const [near, far] = graspSpan();
+  return (near + far) / 2;
+}
+
+// The point plotted for one bar pose: the middle of the bar.
+function barMiddle(pos, quat) {
+  const axis = barAxis(quat);
+  const along = barMidAlong();
+  return pos.map((v, i) => v + axis[i] * along);
+}
+
+// Where along its own axis the two grippers hold the bar, in metres from the
+// bar's origin: the grasps are tool0 poses in the BAR's frame, so their third
+// coordinate is exactly that distance.
 function graspSpan() {
   const grasps = currentRun.context.grasps;
-  const a = grasps.bar_from_left_tool0.pos;
-  const b = grasps.bar_from_right_tool0.pos;
-  return Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+  const a = grasps.bar_from_left_tool0.pos[2];
+  const b = grasps.bar_from_right_tool0.pos[2];
+  return [Math.min(a, b), Math.max(a, b)];
+}
+
+// The two ends of the drawn bar for one pose, in the robot's own frame.
+function barEnds(pos, quat, span) {
+  const axis = barAxis(quat);
+  return span.map((along) => pos.map((v, i) => v + axis[i] * along));
 }
 
 // One lines trace holding many separate segments: plotly breaks the line
 // wherever a NaN appears, so the whole group costs one trace instead of one
 // per candidate.
-function stickTrace(cands, colour, half, name) {
+function stickTrace(cands, colour, span, name) {
   const x = [], y = [], z = [];
   cands.forEach((cand) => {
-    const p = cand.home_pos_mb;
-    const a = barAxis(cand.home_quat_mb);
-    x.push(p[0] - a[0] * half, p[0] + a[0] * half, NaN);
-    y.push(p[1] - a[1] * half, p[1] + a[1] * half, NaN);
-    z.push(p[2] - a[2] * half, p[2] + a[2] * half, NaN);
+    const [from, to] = barEnds(cand.home_pos_mb, cand.home_quat_mb, span);
+    x.push(from[0], to[0], NaN);
+    y.push(from[1], to[1], NaN);
+    z.push(from[2], to[2], NaN);
   });
   return {
     type: 'scatter3d', mode: 'lines', x, y, z,
@@ -141,9 +176,15 @@ async function refreshRuns(selectId) {
     const when = (run.created || '').replace('T', ' ').slice(5, 16);
     const found = run.result_kind === 'failed'
       ? 'no start found'
-      : `${run.result_kind.replace('_', ' ')} after ${fmt(run.t_found_s, 0)} s`;
-    item.innerHTML = `<div><strong>${run.bar_action}</strong> &middot; ${run.anchor_selection}</div>
-      <div class="when">${when} &middot; ${found} &middot; ${fmt(run.t_total_s, 0)} s total</div>`;
+      : run.result_kind === 'reused_start'
+        ? 'planned from the stored start'
+        : `${run.result_kind.replace('_', ' ')} after ${fmt(run.t_found_s, 0)} s`;
+    // A full plan run says how its search ended; a derive-only run has no search.
+    const search = run.rrt_outcome
+      ? ` &middot; RRT: ${String(run.rrt_outcome).replace(/_/g, ' ')}` : '';
+    const attempt = run.attempt ? ` (attempt ${run.attempt})` : '';
+    item.innerHTML = `<div><strong>${run.bar_action}</strong> &middot; ${run.anchor_selection}${attempt}</div>
+      <div class="when">${when} &middot; ${found} &middot; ${fmt(run.t_total_s, 0)} s total${search}</div>`;
     item.onclick = () => openRun(run.id);
     item.dataset.id = run.id;
     list.appendChild(item);
@@ -159,12 +200,59 @@ async function openRun(id) {
   renderVariantTable();
   renderPositions();
   renderTimeline();
+  renderRrt();
+}
+
+// ----------------------------------------------------- the RRT search
+async function renderRrt() {
+  const card = $('rrt-card');
+  const rrt = currentRun.rrt;
+  if (!rrt) {
+    card.classList.add('hidden');
+    return;
+  }
+  card.classList.remove('hidden');
+  $('rrt-text').innerHTML = (currentRun.rrt_text || []).map((line) => `<p>${line}</p>`).join('');
+
+  const traces = [];
+  const cloud = (points, name, colour) => ({
+    type: 'scatter3d', mode: 'markers', name,
+    x: points.map((p) => p[0]), y: points.map((p) => p[1]), z: points.map((p) => p[2]),
+    marker: { size: 2.5, color: colour, opacity: 0.7 }, hoverinfo: 'skip',
+  });
+  if (rrt.trees.start.length) traces.push(cloud(rrt.trees.start, `tree from the pick-up pose (${rrt.n_nodes_start} nodes)`, '#ec5a4f'));
+  if (rrt.trees.goal.length) traces.push(cloud(rrt.trees.goal, `tree from the goal (${rrt.n_nodes_goal} nodes)`, '#4f9df7'));
+  if (rrt.path_mb && rrt.path_mb.length) {
+    traces.push({
+      type: 'scatter3d', mode: 'lines', name: `path (${rrt.n_waypoints} waypoints)`,
+      x: rrt.path_mb.map((p) => p[0]), y: rrt.path_mb.map((p) => p[1]), z: rrt.path_mb.map((p) => p[2]),
+      line: { color: '#37c871', width: 6 }, hoverinfo: 'skip',
+    });
+  }
+  if (rrt.start_bar_pos_mb) {
+    const s = rrt.start_bar_pos_mb;
+    traces.push({ type: 'scatter3d', mode: 'markers', name: "pick-up pose (bar's origin)",
+      x: [s[0]], y: [s[1]], z: [s[2]],
+      marker: { size: 9, color: '#37c871', symbol: 'diamond' }, hoverinfo: 'skip' });
+  }
+  const goal = currentRun.context.goal.bar_pos_mb;
+  traces.push({ type: 'scatter3d', mode: 'markers', name: "goal (bar's origin)",
+    x: [goal[0]], y: [goal[1]], z: [goal[2]],
+    marker: { size: 10, color: '#ffffff', symbol: 'diamond' }, hoverinfo: 'skip' });
+  // The robot at the goal for scale; cached, and never allowed to blank the chart.
+  const robot = await robotTrace('goal');
+  if (robot) traces.push(robot);
+  Plotly.react($('chart-rrt'), traces, layout3d(), { displaylogo: false });
 }
 
 // ---------------------------------------------------------------- summary
 function renderSummary() {
   $('summary').innerHTML = '<h2>Summary</h2>'
     + (currentRun.summary || []).map((line) => `<p>${line}</p>`).join('');
+  // Which base the whole chart is measured from belongs next to the chart, not
+  // only in the summary: it is the first thing to check when the bar looks
+  // misplaced relative to the robot.
+  $('frame-note').textContent = (currentRun.base_text || []).join(' ');
 }
 
 // --------------------------------------------------------- per-variant table
@@ -222,36 +310,38 @@ async function renderPositions() {
     }));
   }
 
-  // Bar direction sticks, coloured like their dots.
-  const half = stickHalfLength($('stick-mode').value);
-  if (half > 0) {
+  // The bars themselves, coloured like their dots.
+  const span = barSpan($('stick-mode').value);
+  if (span) {
     if (mode === 'outcome') {
       ORDER.forEach((outcome) => {
         const picked = cands.filter((cand) => cand.outcome === outcome);
         if (picked.length) {
-          traces.push(stickTrace(picked, OUTCOME[outcome].colour, half, outcome));
+          traces.push(stickTrace(picked, OUTCOME[outcome].colour, span, outcome));
         }
       });
     } else {
-      traces.push(stickTrace(cands, '#7f8794', half, 'bar direction'));
+      traces.push(stickTrace(cands, '#7f8794', span, 'the bar'));
     }
   }
 
   const goal = currentRun.context.goal.bar_pos_mb;
+  const goalMiddle = barMiddle(goal, currentRun.context.goal.bar_quat_mb);
   traces.push({
-    type: 'scatter3d', mode: 'markers', name: 'goal bar',
-    x: [goal[0]], y: [goal[1]], z: [goal[2]],
+    type: 'scatter3d', mode: 'markers', name: 'middle of the goal bar',
+    x: [goalMiddle[0]], y: [goalMiddle[1]], z: [goalMiddle[2]],
     marker: { size: 10, color: '#ffffff', symbol: 'diamond' },
     hovertemplate: 'the bar where M1 must end<extra></extra>',
   });
-  // The goal bar always at true grasp span, as the orientation reference.
-  const goalAxis = barAxis(currentRun.context.goal.bar_quat_mb);
-  const goalHalf = graspSpan() / 2;
+  // The goal bar drawn the same way as the candidates, so the two are directly
+  // comparable; it falls back to the grip span when the sticks are switched off.
+  const goalSpan = span || graspSpan();
+  const goalEnds = barEnds(goal, currentRun.context.goal.bar_quat_mb, goalSpan);
   traces.push({
-    type: 'scatter3d', mode: 'lines', name: 'goal bar direction',
-    x: [goal[0] - goalAxis[0] * goalHalf, goal[0] + goalAxis[0] * goalHalf],
-    y: [goal[1] - goalAxis[1] * goalHalf, goal[1] + goalAxis[1] * goalHalf],
-    z: [goal[2] - goalAxis[2] * goalHalf, goal[2] + goalAxis[2] * goalHalf],
+    type: 'scatter3d', mode: 'lines', name: 'the goal bar',
+    x: [goalEnds[0][0], goalEnds[1][0]],
+    y: [goalEnds[0][1], goalEnds[1][1]],
+    z: [goalEnds[0][2], goalEnds[1][2]],
     line: { color: '#ffffff', width: 6 }, hoverinfo: 'skip',
   });
 
@@ -272,11 +362,12 @@ async function renderPositions() {
 }
 
 function scatterTrace(cands, name, marker) {
+  const middles = cands.map((cand) => barMiddle(cand.home_pos_mb, cand.home_quat_mb));
   return {
     type: 'scatter3d', mode: 'markers', name,
-    x: cands.map((cand) => cand.home_pos_mb[0]),
-    y: cands.map((cand) => cand.home_pos_mb[1]),
-    z: cands.map((cand) => cand.home_pos_mb[2]),
+    x: middles.map((point) => point[0]),
+    y: middles.map((point) => point[1]),
+    z: middles.map((point) => point[2]),
     customdata: cands.map((cand) => cand.i),
     text: cands.map((cand) => cand.text),
     hovertemplate: '%{text}<extra></extra>',
