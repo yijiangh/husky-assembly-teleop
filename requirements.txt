@@ -1,6 +1,6 @@
 # We need a special version of pybullet_planning:
 # pip install pybullet_planning git+https://github.com/yijiangh/pybullet_planning.git@yh/disable_ghalton
-pybullet_planning==0.6.0
+#pybullet_planning==0.6.0
 compas_fab==1.1.0 # use wip_process branch
 roslibpy<2.0.0 # compas_fab 1.1.0 uses roslibpy.actionlib which was removed in roslibpy 2.0.0
 numpy<1.25.0
@@ -9,3 +9,5 @@ kdtree==0.16
 matplotlib==3.10.3
 dearpygui>=2.3.1,<3  # control panel (HuskyMonitor.USE_DPG_UI=1); falls back to legacy PyBullet UI if absent
 opencv-python
+viser==1.1.1  # web UI; pinned because its scene/gui API moves between releases
+yourdfpy==0.0.60  # URDF parsing for viser.extras.ViserUrdf (robot meshes in the browser)

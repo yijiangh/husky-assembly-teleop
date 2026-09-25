@@ -41,12 +41,14 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'husky_monitor = husky_assembly_teleop.husky_monitor:main',
+            'husky_monitor = husky_assembly_teleop.monitor:main',
             'optitrack_python_sample = husky_assembly_teleop.optitrack.PythonSample:main',
             'test_mocap = husky_assembly_teleop.optitrack.test_mocap:main',
-            'test_setio = husky_assembly_teleop.test_setio:main',
-            'mocap_experiment_analyze = husky_assembly_teleop.mocap_experiment:main_analyze',
-            'mocap_experiment_report = husky_assembly_teleop.mocap_experiment:main_report',
+            # ! Dead until ported: these point at modules that now live under
+            # old/. Repoint them at their replacements, or drop them.
+            # 'test_setio = husky_assembly_teleop.test_setio:main',
+            # 'mocap_experiment_analyze = husky_assembly_teleop.mocap_experiment:main_analyze',
+            # 'mocap_experiment_report = husky_assembly_teleop.mocap_experiment:main_report',
         ],
     },
 )
