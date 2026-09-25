@@ -66,6 +66,30 @@ How to read a run: `doc/m1_derive_dashboard.md`. Session workflow:
   bars whose goal roll is 180° from the canonical home. For the mocap session
   the start is now chosen by hand (next entry).
 
+## 2026-09-25 — human-in-the-loop M1 start (mocap bar-reaching session)
+
+- **Where:** `husky_assembly_teleop/m1_manual_start.py` (`manual_m1_start`),
+  monitor sliders *slide along bar* / *roll about bar* / *shift perp. 1, 2* +
+  button **M1: Confirm manual start pose (IK check)** (`confirm_m1_manual_start`;
+  the derive button shares `_m1_live_context` / `_show_m1_endpoints`),
+  `scripts/derive_m1_headless.py --manual-start ANCHOR,SLIDE,ROLL[,P1,P2]`.
+- **Why:** the automatic derivation is base-pose sensitive on this bar (entry
+  above) and the session could not wait. The operator now picks the carry
+  anchor (existing slider) and adjusts the bar pose; Confirm solves the
+  collision-checked dual-arm IK for it with the goal's grasps on the branch
+  nearest the goal (`solve_endpoint_dual_arm_ik` twice: reachability, then with
+  the cfab collision function) and adopts the start (M1 start, M0 goal).
+  'Plan Movement' on M1 then runs the BiRRT from that stored start
+  (`derive_start=False`, unchanged); Step B's transfer loop never used the
+  derivation and is unchanged.
+- **Planner change:** none — the sweep and the BiRRT are untouched; the manual
+  path only replaces *how the start configuration is chosen*.
+- **Verification (headless, 260716 B3, authored and live mocap base alike):**
+  horizontal roll 0 → collision (that is the canonical carry, 180° from the
+  goal's roll; 2.8 s because every branch pair is collision-checked);
+  horizontal roll 180 → start found in 0.2 s; vertical → no IK; back → start
+  found in 0.2 s; anchor `all` → back in 2.9 s. Robot session: pending.
+
 ## 2026-09-24 — floor slab at the exported ground height
 
 - **Where:** `husky_assembly_teleop/cfab_session.py` `_slab_mesh_from_polygon`

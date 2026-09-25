@@ -50,6 +50,7 @@ from husky_assembly_teleop.husky_monitor import (
     HUSKY_DUAL_UR5e_JOINT_NAMES, M1_PLANNER_STAGE, HuskyMonitor,
 )
 from husky_assembly_teleop.m1_derive_report import print_m1_derivation_summary
+from husky_assembly_teleop.m1_manual_start import manual_m1_start
 from husky_assembly_teleop.utils import conf_from_12vec
 from husky_assembly_tamp.keyframe.dual_arm_ik import resolve_arm_groups
 from husky_assembly_tamp.keyframe.ik_keyframe import mm4_to_frame
@@ -340,6 +341,29 @@ def plan_bar(session, stub, args, bar: str, problem_dir: str) -> dict:
                 runs_dir=args.runs_dir, scenes_dir=args.scenes_dir)
 
     started = time.perf_counter()
+    if args.manual_start:
+        # * The human-in-the-loop start: no sweep, one collision-checked IK for
+        # * the chosen bar pose (what the monitor's Confirm button does).
+        parts = [p.strip() for p in args.manual_start.split(',')]
+        anchor = parts[0]
+        numbers = [float(v) for v in parts[1:]] + [0.0] * 4
+        slide_m, roll_deg, perp1_m, perp2_m = numbers[:4]
+        result = manual_m1_start(
+            planner, state, bar_name, goal_conf, NAMES_12, robot_puid, arm_joints,
+            pp.link_from_name(robot_puid, TOOL_LINK_LEFT), pp.link_from_name(robot_puid, TOOL_LINK_RIGHT),
+            anchor=anchor, slide_m=slide_m, roll_deg=roll_deg, perp1_m=perp1_m, perp2_m=perp2_m)
+        elapsed = time.perf_counter() - started
+        pos = result.get('bar_mid_mb')
+        where = (f"bar centre at {100 * pos[0]:+.0f} cm forward, {100 * pos[1]:+.0f} cm left, "
+                 f"{100 * pos[2]:+.0f} cm up (anchor {result['anchor']}, perp axes {result['perp_axes']})"
+                 if pos is not None else 'no bar pose')
+        verdict = ('start found' + (' (re-seeded branch)' if result['reseeded'] else '')
+                   if result['start_conf'] is not None else f"no start: {result['reason']}")
+        print(f'[manual] {bar}: {verdict}; {where}; {elapsed:.2f} s')
+        row['result'] = f'{verdict}; {where}'
+        row['time'] = f'{elapsed:.2f} s'
+        return row
+
     if args.plan:
         # * The whole transfer planner, exactly as the monitor's Plan Movement
         # * runs it on a fresh action: derive the start, then search for the path.
@@ -423,6 +447,10 @@ def main():
                         help='keep the already-built bars as obstacles')
     parser.add_argument('--export-scene-only', action='store_true',
                         help='bake the problem scene for the dashboard and exit')
+    parser.add_argument('--manual-start', default=None, metavar='ANCHOR,SLIDE_M,ROLL_DEG[,PERP1_M,PERP2_M]',
+                        help="skip the sweep: IK-check the operator's bar pose, e.g. "
+                             "'horizontal,0,0' or 'all,0.1,-30,0,0.05' (what the monitor's "
+                             "'M1: Confirm manual start pose' button does)")
     parser.add_argument('--plan', action='store_true',
                         help='run the full transfer plan (derive + RRT), as Plan Movement '
                              'does, instead of the derive stage alone')

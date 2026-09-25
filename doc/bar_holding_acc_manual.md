@@ -174,39 +174,57 @@ PyBullet when you nudge the base.
 
 ### Step A — mount the bar (first action only)
 
-The mount pose is **M1's start**, the bar-loading configuration; M1's planner
-derives it, and M0 is the free motion that takes the arms there. In this
-protocol M1 itself is **never executed** (Step B transfers from the bar-loading
-pose straight to each bar's assembled pose), so only M1's *start* is needed —
-the RRT search for M1's path can be skipped.
+The mount pose is **M1's start**, the bar-loading configuration; M0 is the free
+motion that takes the arms there. In this protocol M1 itself is **never
+executed** (Step B transfers from the bar-loading pose straight to each bar's
+assembled pose), so only M1's *start* is needed. **You choose it by hand** —
+the automatic derivation (a 120 s sweep) is kept as a fallback, see the note.
 
 1. Set **BarAction file (idx)** to your first action (e.g. `B3.json`) and
    click **Load BarAction**.
-2. **Movement (idx; 0=M0_synth)** → **1** → **Load Movement** →
-   **M1: Derive Start/Goal only (no RRT)**. This runs just the start-derivation
-   stage of the M1 planner against the live base (goal = the authored M2 start
-   conf; up to 120 s) and prints an endpoint report: both confs, collision-free
-   / grasp-consistent flags, whether ssik swapped the goal branch, and whether
-   a collision-free corridor was found. Look at both endpoints before going on:
-   - **Traj viz time** slider: `0` = START (bar-loading pose), `1` = GOAL
-     (approach) on the green preview robot, bar riding in the grippers (or the
-     whole corridor when one was found);
-   - **Constrained t** slider on the PyBullet panel: the red cfab robot steps
-     the same waypoints with the full cell state.
-   The **M1 home anchor** slider picks the carry orientation (`0 = all`;
-   1 horizontal, 2 vertical, 3 back-over-robot) — change it and derive again
-   if the start looks awkward. If it fails with `goal_in_collision`, the
-   colliding pair of the goal conf is drawn: the base is usually parked too far
-   from the authored pose for M2's start conf to clear the environment.
-3. **M1: Adopt derived start -> M0 goal** — writes the derived start into M1
-   and makes it M0's goal.
-   Then **Movement (idx; 0=M0_synth)** → **0** → **Load Movement** →
+2. **Movement (idx; 0=M0_synth)** → **1** → **Load Movement**. Then pick the
+   bar-loading pose on the sliders and confirm it:
+   - **M1 home anchor** — the carry: `1` horizontal (bar across the front),
+     `2` vertical (bar upright in front), `3` back (bar fore-aft over the
+     robot); `0` tries them in that order and keeps the first that works.
+   - **M1 manual start: slide along bar (m)** — along the bar's own axis
+     (`+` toward the left gripper's end).
+   - **M1 manual start: roll about bar (deg)** — turns the bar about its own
+     axis (the tools swing with it). This is the knob for the "bar rolled 180°
+     between start and goal" look: try `0` and `180`.
+   - **shift perp. 1 / perp. 2 (m)** — moves the bar along the two robot-base
+     axes that are perpendicular to it (the log names them on every confirm):
+
+     | anchor | bar along | perp. 1 | perp. 2 |
+     |---|---|---|---|
+     | horizontal | base y (left) | forward (x) | up (z) |
+     | vertical | base z (up) | forward (x) | left (y) |
+     | back | base x (forward) | left (y) | up (z) |
+
+   - **M1: Confirm manual start pose (IK check)** — solves the dual-arm IK
+     that holds the bar there with the same grasps as at the goal (branch
+     nearest the goal), checks it against the full cell, and prints the bar
+     pose in the robot frame plus the verdict. On success it shows both
+     endpoints (**Traj viz time** `0` = START, `1` = GOAL on the green preview
+     robot, bar in the grippers; **Constrained t** on the PyBullet panel steps
+     the red cfab robot) and **adopts the start at once** — M1's start and
+     M0's goal are written (and the `.live-solved.json` sidecar too when the
+     *Adopt also saves* toggle is ticked). Each confirm takes well under a
+     second: adjust and confirm again until the pose looks right for mounting.
+   - If it fails: *no arm configuration holds the bar there* = out of reach
+     (slide / shift the bar closer, or another anchor); *the arms collide* =
+     the colliding pair is drawn (usually the bar or a forearm against the
+     base) — roll, slide or shift the bar, or change the anchor.
+3. **Movement (idx; 0=M0_synth)** → **0** → **Load Movement** →
    **Plan Movement**: M0 is the free dual-arm motion from wherever the arms are
    now to that start.
 
-   > *Alternative*: **Plan Movement** on M1 runs derivation **and** the RRT
-   > (120 s × up to 3 re-seeded retries, several minutes) and ends in the same
-   > state as Adopt, plus an M1 trajectory you will not use here.
+   > *Alternatives*: **M1: Derive Start/Goal only (no RRT)** runs the
+   > automatic start derivation (up to 120 s, may use the whole budget and is
+   > sensitive to the base pose — see `m1_planner_changelog.md`), then
+   > **M1: Adopt derived start -> M0 goal**. **Plan Movement** on M1 runs the
+   > BiRRT from whichever start is stored (several minutes) and ends in the
+   > same state, plus an M1 trajectory you will not use here.
 4. Scrub **Traj viz time** to preview the M0 path, set **traj time** to ≥ 20 s,
    then **Exec Selected Mv Traj (auto)** (M0 runs joint tracking and re-zeros
    the force sensors at the end — the only safe place to tare).
@@ -227,12 +245,16 @@ the RRT search for M1's path can be skipped.
    scored against that bar's assembled pose. **Never press `Save markerset
    data` in Step A.**
 
-> **If M1 will not plan** (a known gap on some actions), fall back to the older
+> **If no start can be confirmed or M0 will not plan**, fall back to the older
 > protocol for the mount only: **Movement (idx; 0=M0_synth)** → **3** →
 > **Load Movement** → drive
 > the base to the ghost → **3) Servo to Mv Start (live loop)** (the *free*
 > planner, no bar mounted) → mount the bar at the assembled pose. Later bars do
 > not need M1 at all.
+
+Step B below is unchanged by the manual start: the transfer loop always plans
+from the live arm configuration (the bar already in the grippers) and never
+calls the start derivation.
 
 ---
 
@@ -348,6 +370,11 @@ Repeat for each bar-action. Nothing here dismounts the bar.
   the wrong yaw: re-park closer to the ghost and retry. Environment obstacles
   are still collision-checked (only the *built bars* are ignored), and their
   Rhino placement is approximate, so a marginal park can read as a collision.
+- **`[M1 manual] the arms collide holding the bar there`** — the drawn pair says
+  what blocks (forearm / bar against the base or a tool): roll the bar 180°,
+  slide it along its axis, or shift it forward/up with the perpendicular
+  sliders; `vertical` hangs the bar in front of the base with its lower end
+  near the floor, `back` carries it over the robot.
 - **`[transfer plan] constrained plan failed`** — click **3b** again (the
   planner is randomized), or improve the base alignment first. The very first
   transfer of a session (bar-loading pose → assembled pose) is the longest path
