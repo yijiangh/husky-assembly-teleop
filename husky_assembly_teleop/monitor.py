@@ -6,7 +6,7 @@ Responsibilities, and nothing beyond them:
   - program lifecycle: bring the pieces up, run, tear them down again
   - own the world state, the PyBullet scene and the viser server
   - hold the robot interfaces, and keep the PyBullet robots in step with them
-  - drive each plugin: drain its queue, resume its loop, step its jobs
+  - drive each plugin: drain its queue, call its update, step its jobs
   - run the tick in a fixed order, and be the place that order is written down
 
 ! No feature code here. Every experiment, panel and diagnostic is a plugin with
@@ -22,7 +22,6 @@ from dataclasses import dataclass
 import rclpy
 from rclpy.node import Node
 
-from .concurrency import Task
 from .config import MonitorConfig, config_from_ros_parameters
 from .context import PluginContext
 from .plugin import HuskyPlugin, load_plugins
@@ -31,6 +30,7 @@ from .robot_scene import RobotScene
 from .visualization import Visualization
 from .world_state import WorldState
 
+
 @dataclass
 class _LoadedPlugin:
     """One plugin and everything the monitor tracks about it.
@@ -38,9 +38,6 @@ class _LoadedPlugin:
     Attributes:
         plugin: The plugin instance.
         ctx: Its context: UI slice, intent queue and jobs.
-        runner: Its run loop. Set once, at setup, and never replaced: a run loop
-            is expected to last the whole program, so there is no state in which
-            a loaded plugin has no runner.
         errors: Consecutive ticks in which it raised.
         last_error_tick: Index of the tick it last raised in.
         last_slow_warning: ROS time of the last slow-step complaint.
@@ -48,7 +45,6 @@ class _LoadedPlugin:
 
     plugin: HuskyPlugin
     ctx: PluginContext
-    runner: Task
     errors: int = 0
     last_error_tick: int = -1
     last_slow_warning: float = 0.0
@@ -125,11 +121,7 @@ class HuskyMonitor(Node):
                 scene=self._scene,
                 dependencies=plugin.requires,
             )
-            # The run loop is created here, before setup, so that `runner` is
-            # never None. Creating a generator does not execute any of its body,
-            # so nothing runs until the first tick resumes it.
-            self._loaded[plugin.name] = _LoadedPlugin(
-                plugin=plugin, ctx=ctx, runner=plugin.run(ctx))
+            self._loaded[plugin.name] = _LoadedPlugin(plugin=plugin, ctx=ctx)
 
         # Every record exists before any setup runs, so a plugin whose setup
         # fails can cascade its disable onto the plugins that require it.
@@ -137,7 +129,8 @@ class HuskyMonitor(Node):
             if self._loaded.get(loaded.name) is not loaded:
                 continue  # already gone: a dependency of this one failed to set up
             try:
-                loaded.plugin.setup(loaded.ctx)
+                with self._scene.active():
+                    loaded.plugin.setup(loaded.ctx)
             except Exception:
                 # Never start a plugin that could not set itself up, and do not
                 # bother counting towards the error budget: one strike is enough
@@ -213,37 +206,33 @@ class HuskyMonitor(Node):
                 if self._loaded.get(loaded.name) is not loaded:
                     continue  # disabled during step 2; its UI is already gone
                 try:
-                    loaded.plugin.draw(loaded.ctx)
+                    with self._scene.active():
+                        loaded.plugin.draw(loaded.ctx)
                 except Exception:
                     self._plugin_failed(loaded, "draw")
 
     def _step_plugin(self, loaded: _LoadedPlugin) -> None:
-        """Give one plugin its turn: its intents, its loop, then its jobs.
+        """Give one plugin its turn: its intents, its update, then its jobs.
 
         ! One try/except for the whole step, on purpose.
           The three parts are not independently recoverable -- if draining
-          intents raised, resuming the loop would run against half-applied state
-          -- so there is nothing to gain from catching them separately, and a
-          single handler means a single error counter.
+          intents raised, running update would act on half-applied state -- so
+          there is nothing to gain from catching them separately, and a single
+          handler means a single error counter.
 
-        ! A run loop that ends is a bug, not a state to support.
-          A plugin is expected to run for the whole program. `run` should loop
-          forever and wait by yielding; a sequential plugin that finishes its
-          sweep goes back to waiting for the next trigger rather than returning.
-          So StopIteration is reported like any other failure, which also means
-          a plugin whose loop keeps ending is eventually disabled instead of
-          sitting there loaded and never advancing.
+        ! Inside `scene.active()`, like every plugin hook, so plugin code can
+          call `pp` without bracketing it. Per plugin rather than once per tick,
+          so a plugin that points pp elsewhere and forgets to point it back
+          cannot affect the next one.
         """
         started = time.perf_counter()
         try:
-            # Intents first, so work handed in from the UI is applied before the
-            # loop that reacts to it runs.
-            loaded.ctx._drain_intents()
-            next(loaded.runner)
-            loaded.ctx._pump_jobs()
-        except StopIteration:
-            self._plugin_failed(loaded, "run", "its run loop returned; a run loop must "
-                                               "keep going for the lifetime of the program")
+            with self._scene.active():
+                # Intents first, so work handed in from the UI is applied before
+                # the update that reacts to it runs.
+                loaded.ctx._drain_intents()
+                loaded.plugin.update(loaded.ctx)
+                loaded.ctx._pump_jobs()
         except Exception:
             self._plugin_failed(loaded, "step")
 
@@ -268,7 +257,7 @@ class HuskyMonitor(Node):
 
     # --- --- --- --- --- ERRORS --- --- --- --- ---
 
-    def _plugin_failed(self, loaded: _LoadedPlugin, hook: str, reason: str = "") -> None:
+    def _plugin_failed(self, loaded: _LoadedPlugin, hook: str) -> None:
         """Record that a plugin raised, and disable it if it keeps doing so.
 
         Without containment here, one plugin raising aborts the tick and every
@@ -284,8 +273,6 @@ class HuskyMonitor(Node):
         Args:
             loaded: The plugin whose work raised.
             hook: Which part was running, for the log message.
-            reason: Explanation to log instead of the traceback, for failures
-                where the traceback says nothing useful.
         """
         if loaded.last_error_tick == self._tick_index:
             return  # already counted this tick
@@ -294,9 +281,8 @@ class HuskyMonitor(Node):
         loaded.errors = loaded.errors + 1 if consecutive else 1
         loaded.last_error_tick = self._tick_index
 
-        detail = reason or traceback.format_exc()
         self.log_error(f"plugin {loaded.name!r} failed in {hook} "
-                       f"({loaded.errors}/{self._config.max_plugin_errors}):\n{detail}")
+                       f"({loaded.errors}/{self._config.max_plugin_errors}):\n{traceback.format_exc()}")
         if loaded.errors >= self._config.max_plugin_errors:
             self.log_error(f"disabling plugin {loaded.name!r} after repeated failures")
             self._disable(loaded)
@@ -333,26 +319,29 @@ class HuskyMonitor(Node):
             return
 
         loaded.ctx._cancel_all_jobs()
-        # Cancelled jobs get a few more steps, so cleanup that has to wait --
-        # releasing a gripper, re-enabling a controller -- runs before the
-        # plugin's UI disappears from under it.
-        for _ in range(self._config.max_cleanup_steps):
-            if not loaded.ctx._jobs:
-                break
-            try:
-                loaded.ctx._pump_jobs()
-            except Exception:
-                self.log_error(f"plugin {loaded.name!r} raised while cancelling its "
-                               f"jobs:\n{traceback.format_exc()}")
-        if loaded.ctx._jobs:
-            self.log_error(f"plugin {loaded.name!r} left {len(loaded.ctx._jobs)} job(s) "
-                           f"unfinished after cancellation; dropping them")
+        # Inside `scene.active()` like every other plugin hook: job cleanup and
+        # teardown are where PyBullet bodies get removed.
+        with self._scene.active():
+            # Cancelled jobs get a few more steps, so cleanup that has to wait --
+            # releasing a gripper, re-enabling a controller -- runs before the
+            # plugin's UI disappears from under it.
+            for _ in range(self._config.max_cleanup_steps):
+                if not loaded.ctx._jobs:
+                    break
+                try:
+                    loaded.ctx._pump_jobs()
+                except Exception:
+                    self.log_error(f"plugin {loaded.name!r} raised while cancelling its "
+                                   f"jobs:\n{traceback.format_exc()}")
+            if loaded.ctx._jobs:
+                self.log_error(f"plugin {loaded.name!r} left {len(loaded.ctx._jobs)} job(s) "
+                               f"unfinished after cancellation; dropping them")
 
-        try:
-            loaded.plugin.teardown(loaded.ctx)
-        except Exception:
-            self.log_error(f"plugin {loaded.name!r} failed in teardown:\n"
-                           f"{traceback.format_exc()}")
+            try:
+                loaded.plugin.teardown(loaded.ctx)
+            except Exception:
+                self.log_error(f"plugin {loaded.name!r} failed in teardown:\n"
+                               f"{traceback.format_exc()}")
         loaded.ctx.view.clear()
 
     # --- --- --- --- --- SHUTDOWN --- --- --- --- ---
@@ -398,7 +387,9 @@ def main(args: list[str] | None = None) -> None:
         if monitor is not None:
             monitor.shutdown()
             monitor.destroy_node()
-        rclpy.shutdown()
+        # try_shutdown, not shutdown: on Ctrl-C rclpy's own signal handler has
+        # already shut the context down, and a second shutdown raises.
+        rclpy.try_shutdown()
 
 
 if __name__ == "__main__":

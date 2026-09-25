@@ -11,13 +11,13 @@ Tooling for writing plugin code that waits without blocking.
   The payoff is that the logic stays in the order it happens:
 
       def _execute(self, ctx):
-          robot = ctx.world.robots["a200-0806"]
-          robot.switch_controller("ur_arm", "scaled_joint_trajectory_controller")
-          yield from wait_until(ctx, lambda: robot.state.active_controllers.get("ur_arm")
+          arm = ctx.world.robots["a200-0806"].arms["left_ur_arm"]
+          arm.controllers.switch("scaled_joint_trajectory_controller")
+          yield from wait_until(ctx, lambda: arm.state.controllers.active
                                              == "scaled_joint_trajectory_controller",
                                 timeout_s=5.0, description="controller switch")
-          robot.send_joint_trajectory("ur_arm", self.trajectory, duration=8.0)
-          yield from wait_until(ctx, lambda: not robot.state.is_executing["ur_arm"],
+          arm.send_joint_trajectory(self.trajectory, duration=8.0)
+          yield from wait_until(ctx, lambda: not arm.state.is_executing,
                                 timeout_s=30.0, description="trajectory execution")
           self.log_result()
 """

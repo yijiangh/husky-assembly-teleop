@@ -14,30 +14,31 @@ import pkgutil
 import traceback
 from typing import Callable, Iterable
 
-from .concurrency import Task
 from .context import PluginContext
 
 
 class HuskyPlugin:
     """One self-contained feature: its own state, its own UI, its own scene nodes.
 
-    Two ways to write one, whichever fits:
+    Override only the hooks you need:
 
-      - **Reactive**: override `update`, called once per tick. For anything that
-        mirrors state -- a live plot, a readout, a diagnostic overlay.
-      - **Sequential**: override `run` as a generator that yields whenever it is
-        willing to be interrupted. For anything with a shape -- a calibration
-        sweep, a plan-then-execute cycle. The logic stays in the order it
-        happens instead of being smeared across state flags.
+      - `setup`     build widgets and scene nodes, once.
+      - `update`    anything that has to happen every tick: stream a command,
+                    track a value, check for collisions.
+      - `draw`      copy state into the widgets and scene nodes, every tick.
+      - `teardown`  release what the monitor cannot: hardware, open files,
+                    PyBullet bodies you added.
 
-    Either kind can call `ctx.spawn` for a discrete, cancellable operation
-    alongside its main loop. Every hook below receives this plugin's
-    PluginContext as `ctx`.
+    Anything that takes longer than one tick -- a trajectory, a calibration
+    sweep, a plan-then-execute cycle -- is a job: a generator started with
+    `ctx.spawn`, usually from a button, and stopped with `job.cancel()`. It
+    waits by yielding, so its logic reads in the order it happens. See
+    examples/sequence.py.
 
     ! Every hook runs on the ROS thread, so all of them may touch world state,
       the scene and ROS with no locking. The one thing they may not do is block:
-      a slow step stalls the tick and every ROS callback behind it. Wait by
-      yielding, with the helpers in concurrency.py.
+      a slow step stalls the tick and every ROS callback behind it. Wait inside
+      a job, with the helpers in concurrency.py.
 
     ! A hook that raises counts against the plugin. After
       `config.max_plugin_errors` consecutive ticks with a failure it is torn
@@ -65,48 +66,16 @@ class HuskyPlugin:
 
         A plugin whose setup raises is disabled immediately rather than started
         against half-built state, so it is fine to let a missing file or an
-        unreachable service propagate from here.
+        unreachable service propagate from here. `teardown` still runs, so it
+        must cope with a setup that stopped partway.
         """
-
-    def run(self, ctx: PluginContext) -> Task:
-        """The plugin's main loop, resumed one step per tick.
-
-        This default calls `update` once per tick forever, which is what a
-        reactive plugin wants. Override to write sequential logic instead, and
-        yield often enough that no step takes more than a few milliseconds.
-
-        ! The loop must never end. A plugin runs for the lifetime of the
-          program, so an override loops forever and waits by yielding. A
-          sequential plugin that finishes its sweep goes back to waiting for the
-          next trigger rather than returning:
-
-              def run(self, ctx):
-                  while True:
-                      yield from wait_until(ctx, lambda: self.triggered)
-                      self.triggered = False
-                      yield from self._sweep(ctx)
-
-          Returning is reported as a failure and counts against
-          `max_plugin_errors`, the same as raising -- which it has to be, since
-          Python closes a generator that raised, and a loop that silently stopped
-          would leave the plugin loaded, still drawing, and never advancing
-          again. That is the "panel froze and the log does not say why" failure.
-
-          So guard inside the loop if a step may fail and the sequence should
-          carry on; let it propagate if the plugin should be taken down.
-
-        Yields:
-            None: Once per tick.
-        """
-        while True:
-            self.update(ctx)
-            yield
 
     def update(self, ctx: PluginContext) -> None:
-        """Advance this plugin's state by one tick. Called by the default `run`.
+        """Advance this plugin's state by one tick.
 
-        The scene already reflects this tick's measurements by the time this
-        runs, so kinematics and collision queries answer against current reality.
+        Runs after this plugin's queued intents and before its jobs. The scene
+        already reflects this tick's measurements by the time this runs, so
+        kinematics and collision queries answer against current reality.
         """
 
     def draw(self, ctx: PluginContext) -> None:
@@ -122,7 +91,8 @@ class HuskyPlugin:
 
         Called on shutdown, and when a plugin is disabled after repeated errors.
         Jobs are cancelled and scene nodes and widgets removed for you; this is
-        for open files, recordings and hardware left in an odd state.
+        for PyBullet bodies the plugin added, open files, recordings and
+        hardware left in an odd state.
         """
 
 

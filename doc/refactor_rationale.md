@@ -118,9 +118,9 @@ PyBullet. A plugin that waits by looping until the arm stops moving freezes the
 entire node, including the subscriptions that would have told it the arm
 stopped. The old code hit this constantly.
 
-**What the rewrite does about it.** `concurrency.py`: plugin code is written as
-a generator and yields whenever it is willing to be interrupted; the monitor
-advances it one step per tick. Between two yields a plugin has the thread to
+**What the rewrite does about it.** `concurrency.py`: anything longer than a
+tick is a job, written as a generator that yields whenever it is willing to be
+interrupted; the monitor advances it one step per tick. Between two yields a plugin has the thread to
 itself and needs no locks.
 
 ## Rebuilding the UI on every state change
@@ -154,7 +154,9 @@ against actual call sites.
 The one thing that *is* wrapped is client selection: `RobotScene.active()`. `pp`
 reads a module global to decide which client to talk to, and the old code did
 `saved = pp.CLIENT; pp.CLIENT = ...` at scattered call sites, corrupting the
-global whenever something returned early.
+global whenever something returned early. The monitor runs every plugin hook
+inside it, so plugin code never selects the client itself -- forgetting to
+would have been silent, and wrong as soon as a second client exists.
 
 ## Naming
 

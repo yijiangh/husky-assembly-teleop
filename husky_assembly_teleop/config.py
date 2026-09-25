@@ -13,17 +13,61 @@ import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
+from crl_husky.config_resolver import get_primary_mocap_id_for_robot_serial
 from rclpy.node import Node
+
+
+#: End effectors the monitor knows how to drive. Each is one class in
+#: robot_interface/end_effectors.py.
+#:   robotiq         Robotiq 2F-85 through the GripperCommand action.
+#:   scaffolding_v1  Scaffolding tool switched through UR tool digital outputs (SetIO).
+#:   scaffolding_v3  Scaffolding tool with its RS485 driver (tool_cmd / tool_status).
+#: There is no v2: it never ran on a robot.
+EndEffectorKind = Literal["robotiq", "scaffolding_v1", "scaffolding_v3"]
+
+
+@dataclass(frozen=True)
+class ArmConfig:
+    """One UR arm on a robot, and what is mounted on it.
+
+    Attributes:
+        name: The arm's joint-name prefix in the URDF, without the trailing
+            underscore, e.g. "ur_arm" or "left_ur_arm". Also the key the arm is
+            looked up by everywhere, so one string names it in the URDF, in
+            RobotState and in plugin code.
+        ros_namespace: The arm's namespace under the robot's, e.g. "ur5e" or
+            "left_ur5e". Its controller manager and all its topics live there.
+        tcp_yaw_correction: Rotation about Z applied to the TCP pose the UR
+            driver reports, radians. The driver reports it in a frame that
+            accounts for how the arm is mounted; this undoes that. Measured, not
+            derived: -pi/2 on the single-arm rigs, -pi on the dual-arm one.
+        end_effector: What is mounted on the flange, or None for a bare arm.
+        end_effector_namespace: Namespace of the end effector's driver under the
+            robot's, e.g. "gripper" or "left_gripper". Unused when
+            `end_effector` is None.
+    """
+
+    name: str
+    ros_namespace: str
+    tcp_yaw_correction: float = 0.0
+    end_effector: EndEffectorKind | None = None
+    end_effector_namespace: str = ""
 
 
 @dataclass(frozen=True)
 class RobotConfig:
     """Everything needed to talk to, and draw, one physical robot.
 
-    ! The kinematic configuration comes from the URDF and only from the URDF.
-      No `dual_arm` / `ee_types` / `connect_gripper` flags: mount a different
-      tool, ship a different URDF.
+    ! Two sources, split by purpose. The URDF says what the robot *is*:
+      kinematics, meshes, joint names. The config says which *drivers* to talk
+      to: which arms have a ROS stack and which end effector is mounted on each.
+      The URDF cannot answer the second -- the dual-arm URDF has no tool links at
+      all -- so it is not asked to.
+
+      What *can* change while running, such as which controller an arm is
+      using, is not configuration. It is tracked in RobotState.
 
     Attributes:
         serial: Clearpath serial such as "a200-0806". Identifies the robot in
@@ -36,13 +80,19 @@ class RobotConfig:
             several robots do not all sit on top of each other at the origin.
         default_yaw: Which way it faces at that pose, radians about Z. Ground
             robots only ever rotate about Z, so one angle is the whole story.
+        arms: The arms on this robot, in the order the multi-arm trajectory
+            message expects them (the first is its `trajectory1`).
+        mocap_id: Rigid-body id of the base in the mocap system, or None if the
+            robot is not tracked. `primary_mocap_id` from crl_husky's
+            config/robots/<digits>/mocap_config.json. The base pose comes only from mocap, so an
+            untracked robot never has a measured pose.
         calibration_file: Joint-origin overlay applied on top of the URDF, or
             None to use it as shipped. Nothing reads it yet.
 
             ! Unresolved, and worth settling before this is wired up.
               The URDFs the monitor currently loads already have calibration
               baked into their filenames (Alice_Calibrated, All_Calibrated --
-              see `_CALIBRATED_URDF_BY_SERIAL` below), which is the arrangement this
+              see `_ROBOTS_BY_SERIAL` below), which is the arrangement this
               overlay was meant to replace. Both cannot survive: either the
               overlay happens and those collapse to one URDF per robot type, or
               this field comes out. An overlay is a delta on one joint's origin
@@ -54,6 +104,8 @@ class RobotConfig:
     serial: str
     ros_namespace: str
     urdf_file: Path
+    arms: tuple[ArmConfig, ...] = ()
+    mocap_id: int | None = None
     default_position: tuple[float, float, float] = (0.0, 0.0, 0.0)
     default_yaw: float = 0.0
     calibration_file: Path | None = None
@@ -139,23 +191,38 @@ def row_layout_position(index: int, count: int,
     return (0.0, (index - (count - 1) / 2.0) * spacing, 0.0)
 
 
-# --- --- --- --- --- WHICH URDF EACH ROBOT RUNS --- --- --- --- ---
+# --- --- --- --- --- WHAT EACH ROBOT IS --- --- --- --- ---
 # TODO temporary. Which URDF a robot uses should come from the robot, not from a
 #      table here -- crl_husky is the natural home, but it ships no robot URDF
 #      today (only a gripper xacro) and its config_resolver exposes only mocap
 #      calibration, so there is nothing to look one up in yet. Until that exists,
 #      this reproduces the mapping the old code had, whose sources were
 #      old/cfab_session.py:44-56 (the calibrated per-robot files) and
-#      old/husky_world.py:189-223 (the domain-id table that decided dual-arm).
+#      old/husky_world.py:189-223 (the domain-id table: dual-arm, tools).
 #
-# ! These are the *calibrated* files, and which one a robot gets is not
+# ! These are the *calibrated* URDFs, and which one a robot gets is not
 #   cosmetic: the arm kinematics differ per machine. Alice and Belle are the
 #   single-arm rigs, Cindy is dual-arm.
 _URDF_ROOT = "husky_urdf"
-_CALIBRATED_URDF_BY_SERIAL = {
-    "0804": f"{_URDF_ROOT}/mt_husky_moveit_config/urdf/husky_ur5_e_no_base_joint_Alice_Calibrated.urdf",
-    "0805": f"{_URDF_ROOT}/mt_husky_moveit_config/urdf/husky_ur5_e_no_base_joint_Belle_Calibrated.urdf",
-    "0806": f"{_URDF_ROOT}/mt_husky_dual_ur5_e_moveit_config/urdf/husky_dual_ur5_e_no_base_joint_All_Calibrated.urdf",
+_SINGLE_ARM_URDF = _URDF_ROOT + "/mt_husky_moveit_config/urdf/husky_ur5_e_no_base_joint_{}_Calibrated.urdf"
+_DUAL_ARM_URDF = (_URDF_ROOT + "/mt_husky_dual_ur5_e_moveit_config/urdf/"
+                  "husky_dual_ur5_e_no_base_joint_All_Calibrated.urdf")
+
+_SINGLE_ARM_WITH_ROBOTIQ = (
+    ArmConfig(name="ur_arm", ros_namespace="ur5e", tcp_yaw_correction=-math.pi / 2,
+              end_effector="robotiq", end_effector_namespace="gripper"),
+)
+_DUAL_ARM_WITH_SCAFFOLDING_V3 = (
+    ArmConfig(name="left_ur_arm", ros_namespace="left_ur5e", tcp_yaw_correction=-math.pi,
+              end_effector="scaffolding_v3", end_effector_namespace="left_gripper"),
+    ArmConfig(name="right_ur_arm", ros_namespace="right_ur5e", tcp_yaw_correction=-math.pi,
+              end_effector="scaffolding_v3", end_effector_namespace="right_gripper"),
+)
+
+_ROBOTS_BY_SERIAL = {
+    "0804": dict(urdf=_SINGLE_ARM_URDF.format("Alice"), arms=_SINGLE_ARM_WITH_ROBOTIQ),
+    "0805": dict(urdf=_SINGLE_ARM_URDF.format("Belle"), arms=_SINGLE_ARM_WITH_ROBOTIQ),
+    "0806": dict(urdf=_DUAL_ARM_URDF, arms=_DUAL_ARM_WITH_SCAFFOLDING_V3),
 }
 
 
@@ -166,8 +233,9 @@ def robot_config_from_serial(token: str, data_directory: Path,
 
     Accepts "0806", "a200-0806", "a200_0806" or "/a200_0806" and derives the
     canonical serial and ROS namespace from the four digits, matching the layout
-    of crl_husky's config/robots/<digits>/robot.yaml. The URDF is the calibrated
-    file for that robot -- see the note on `_CALIBRATED_URDF_BY_SERIAL`.
+    of crl_husky's config/robots/<digits>/robot.yaml. URDF, arms and end
+    effectors come from `_ROBOTS_BY_SERIAL`, the mocap id from crl_husky's
+    config_resolver.
 
     Args:
         token: The serial as typed on the command line.
@@ -177,13 +245,14 @@ def robot_config_from_serial(token: str, data_directory: Path,
         default_yaw: Which way it faces there, radians about Z.
 
     Returns:
-        RobotConfig: Identity and URDF for that robot.
+        RobotConfig: Identity, URDF, arms and mocap id for that robot.
 
     Raises:
         ValueError: If no four-digit serial can be read out of `token`, or that
-            serial has no known URDF.
+            serial is not in `_ROBOTS_BY_SERIAL`.
         FileNotFoundError: If the URDF it maps to is not on disk, which usually
-            means `data_directory` is wrong.
+            means `data_directory` is wrong, or crl_husky has no
+            mocap_config.json for the robot.
     """
     digits = re.search(r"(\d{4})\s*$", token.strip().strip("/"))
     if digits is None:
@@ -191,12 +260,12 @@ def robot_config_from_serial(token: str, data_directory: Path,
                          f"expected something like '0806' or 'a200-0806'")
     number = digits.group(1)
 
-    relative = _CALIBRATED_URDF_BY_SERIAL.get(number)
-    if relative is None:
-        known = ", ".join(sorted(_CALIBRATED_URDF_BY_SERIAL))
-        raise ValueError(f"no URDF known for robot {number!r}; known robots are {known}")
+    spec = _ROBOTS_BY_SERIAL.get(number)
+    if spec is None:
+        known = ", ".join(sorted(_ROBOTS_BY_SERIAL))
+        raise ValueError(f"no configuration known for robot {number!r}; known robots are {known}")
 
-    urdf_file = data_directory / relative
+    urdf_file = data_directory / spec["urdf"]
     if not urdf_file.is_file():
         raise FileNotFoundError(f"URDF for robot {number!r} not found at {urdf_file}; "
                                 f"check the data_directory parameter")
@@ -205,6 +274,8 @@ def robot_config_from_serial(token: str, data_directory: Path,
         serial=f"a200-{number}",
         ros_namespace=f"a200_{number}",
         urdf_file=urdf_file,
+        arms=spec["arms"],
+        mocap_id=get_primary_mocap_id_for_robot_serial(number),
         default_position=default_position,
         default_yaw=default_yaw,
     )

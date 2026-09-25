@@ -78,7 +78,7 @@ class CellPlugin(HuskyPlugin):
         #   this plugin's queue, so the work happens on the ROS thread where
         #   touching PyBullet is safe.
         self._step_slider.on_update(
-            ctx.defer("select step", lambda: self.select_step(ctx, self._step_slider.value))
+            ctx.defer_value("select step", lambda index: self.select_step(ctx, index))
         )
 
         # TODO a file dialog for picking the BarAction file, wired the same way.

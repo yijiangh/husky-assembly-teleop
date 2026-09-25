@@ -22,7 +22,7 @@ from __future__ import annotations
 import queue
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Callable, Protocol
+from typing import TYPE_CHECKING, Awaitable, Callable, Protocol
 
 from .concurrency import Job, Task
 
@@ -148,14 +148,17 @@ class PluginContext:
         self.view = view
 
         #: The shared PyBullet scene: the live robots, posed from measurements
-        #: every tick, and nothing else.
+        #: every tick, plus whatever plugins add to it.
         #:
         #: ! Raw access, on purpose. `scene.client_id` and `scene.robots[serial]`
-        #:   are real PyBullet ids; call `p` and `pp` with them directly, and
-        #:   bracket pp free functions with `with ctx.scene.active():`.
+        #:   are real PyBullet ids; call `p` and `pp` with them directly. The
+        #:   monitor runs every plugin hook inside `scene.active()`, so pp free
+        #:   functions already talk to this client.
         #:
-        #: ! Whatever a plugin loads, it removes in its own teardown. Nothing
-        #:   tracks it. That is the trade for having no wrapper.
+        #: ! Shared means shared. A body one plugin adds is an obstacle in every
+        #:   other plugin's collision checks, so add only what belongs in the
+        #:   world. Whatever a plugin loads, it removes in its own teardown.
+        #:   Nothing tracks it. That is the trade for having no wrapper.
         self.scene = scene
 
         self._services = services
@@ -219,7 +222,7 @@ class PluginContext:
         """Queue `run` onto this plugin's queue, to happen on the ROS thread.
 
         Safe from any thread. Drained at the start of this plugin's next step,
-        before its run loop is resumed. `label` names the work in the error
+        before its update runs. `label` names the work in the error
         message if it raises.
 
         ! The only safe way to act on a viser callback. Those fire on a
@@ -228,21 +231,49 @@ class PluginContext:
         """
         self._intents.put(Intent(label=label, run=run))
 
-    def defer(self, label: str, run: Callable[[], None]) -> Callable[..., None]:
+    def defer(self, label: str, run: Callable[[], None]) -> Callable[..., Awaitable[None]]:
         """Wrap `run` as a viser callback that is safe to register.
 
+        For plain buttons, and for any widget whose new value `run` does not need.
+        For a button group, a slider or a dropdown, use `defer_value`.
+
         Returns:
-            Callable[..., None]: A callback that accepts and ignores whatever
-                event argument viser passes it, and submits `run`.
+            Callable[..., Awaitable[None]]: A callback that ignores viser's event
+                argument and submits `run`.
 
         Example:
             >>> with view.ui() as gui:
             ...     button = gui.add_button("Plan movement")
             >>> button.on_click(ctx.defer("plan movement", self.start_planning))
         """
+        return self.defer_value(label, lambda _value: run())
 
-        def _callback(*_event: object) -> None:
-            self.submit(label, run)
+    def defer_value(self, label: str, run: Callable[[object], None]) -> Callable[..., Awaitable[None]]:
+        """Wrap `run` as a viser callback that is handed the widget's new value.
+
+        The value is read the moment viser reports the change -- which button of
+        a group was clicked, where a slider was dragged to -- and passed to `run`.
+
+        ! Why not read `widget.value` inside `run`. By the time the intent
+          runs, the widget may have changed again: two different buttons of a
+          group clicked within one tick would both act as the second.
+
+        ? Why the callback is `async`. viser runs async callbacks on its event
+          loop, straight after storing the new value and in the order the
+          changes arrived; plain callbacks go to a thread pool and may read the
+          value later. Either way, `run` itself happens on the ROS thread.
+
+        Returns:
+            Callable[..., Awaitable[None]]: A callback that submits `run(value)`.
+
+        Example:
+            >>> grip = gui.add_button_group("Grip", ["Open", "Close"])
+            >>> grip.on_click(ctx.defer_value("grip", lambda label: self.grip(label)))
+        """
+
+        async def _callback(event: "viser.GuiEvent") -> None:
+            value = event.target.value
+            self.submit(label, lambda: run(value))
 
         return _callback
 

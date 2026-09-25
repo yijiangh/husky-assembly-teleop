@@ -41,6 +41,9 @@ from .world_state import WorldState
 #: a little light and the shape stays readable.
 MATTE_ROUGHNESS = 0.9
 
+#: Shown in the browser tab and at the top of the control panel.
+PAGE_TITLE = "Husky Monitor"
+
 #: Fallback colour for a mesh that carries no colour of its own.
 _DEFAULT_MESH_COLOR = (0.8, 0.8, 0.8, 1.0)
 
@@ -177,7 +180,14 @@ class Visualization:
         Args:
             port: Port the web UI listens on.
         """
-        self._server = viser.ViserServer(port=port, verbose=False)
+        self._server = viser.ViserServer(port=port, label=PAGE_TITLE, verbose=False)
+        # * The widest panel viser offers. The status rows are fixed-width
+        #   monospace numbers, which wrap and become unreadable at the default.
+        self._server.gui.configure_theme(control_width="large")
+        # ? viser has no setting for the browser tab title; its page says
+        #   "Viser". But the browser moves a <title> found anywhere on the page
+        #   into the page head, so an otherwise invisible markdown widget sets it.
+        self._server.gui.add_markdown(f"<title>{PAGE_TITLE}</title>")
 
         # Persistent per-robot handles, keyed by serial. Built once in
         # load_robot, mutated in draw, never rebuilt per tick.
@@ -252,9 +262,9 @@ class Visualization:
             drawn = self._robots.get(serial)
             if drawn is None:
                 continue
-            if state.base_tracked:
-                drawn.base.position = tuple(state.base_position)
-                drawn.base.wxyz = quaternion_to_wxyz(state.base_orientation)
+            if state.base.tracked:
+                drawn.base.position = tuple(state.base.position)
+                drawn.base.wxyz = quaternion_to_wxyz(state.base.orientation)
             # A joint we have no measurement for holds its last drawn value, for
             # the same reason: absent is not zero.
             drawn.configuration = np.array(

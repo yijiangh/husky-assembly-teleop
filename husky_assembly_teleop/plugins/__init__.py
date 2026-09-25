@@ -9,8 +9,10 @@ flag. Name it in `enabled_plugins` to run it.
   that draws does so into its own PluginView.
 
 ! PyBullet is handed over raw, and plugins clean up after themselves.
-  `ctx.scene.client_id` and `ctx.scene.robots` are real ids. Whatever a plugin
-  loads, it removes in its own teardown -- nothing tracks it.
+  `ctx.scene.client_id` and `ctx.scene.robots` are real ids, and `pp` already
+  talks to that client inside every plugin hook. Whatever a plugin loads,
+  every other plugin sees, and it removes in its own teardown -- nothing
+  tracks it.
 
 The plugins this is being ported to, and the old flag each replaces:
 doc/plugin_roadmap.md.

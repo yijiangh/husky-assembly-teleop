@@ -1,8 +1,10 @@
 """
-PyBullet, holding the live robots and nothing else.
+PyBullet, holding the live robots, shared with every plugin.
 
 Connects to PyBullet, loads each real robot's URDF once, and poses them from
-measurements every tick. That is the whole job.
+measurements every tick. That is the whole job of the core. Plugins may add
+bodies of their own, and every plugin sees them: an added body is an obstacle
+in everyone's collision checks.
 
 ! No abstraction over PyBullet here.
   No scene partitions, no collision-filter type, no body-id hiding, no
@@ -18,7 +20,6 @@ measurements every tick. That is the whole job.
 from __future__ import annotations
 
 from contextlib import contextmanager
-from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Iterator, Mapping
 
 import pybullet_planning as pp
@@ -88,10 +89,10 @@ class RobotScene:
         Yields:
             None: Inside the block, pp free functions act on this client.
 
-        Example:
-            >>> with ctx.scene.active():
-            ...     body = ctx.scene.robots["a200-0806"]
-            ...     pose = pp.get_link_pose(body, pp.link_from_name(body, "ur_arm_tool0"))
+        ! Plugins do not need to call this. The monitor runs every plugin hook
+          inside it, so pp free functions in plugin code already act on this
+          client. A plugin that talks to a second client of its own brackets
+          *that* one.
         """
         previous = pp.CLIENT
         pp.CLIENT = self.client_id
@@ -156,8 +157,8 @@ class RobotScene:
                 state = states.get(serial)
                 if state is None:
                     continue
-                if state.base_tracked:
-                    pp.set_pose(body, (state.base_position, state.base_orientation))
+                if state.base.tracked:
+                    pp.set_pose(body, (state.base.position, state.base.orientation))
                 self._apply_joints(serial, body, state)
 
     def _apply_joints(self, serial: str, body: int, state: "RobotState") -> None:

@@ -79,20 +79,6 @@ class WorldState:
             raise ValueError(f"robot {serial} is already registered")
         self.robots[serial] = robot
 
-    def robot_state(self, serial: str) -> RobotState:
-        """Look up one robot's measured state.
-
-        Args:
-            serial: Robot serial, e.g. "a200-0806".
-
-        Returns:
-            RobotState: The live state object. Treat it as read-only.
-
-        Raises:
-            KeyError: If no such robot is registered.
-        """
-        return self.robots[serial].state
-
     def robot_states(self) -> dict[str, RobotState]:
         """Every robot's measured state, keyed by serial.
 
