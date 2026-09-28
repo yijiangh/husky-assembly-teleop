@@ -432,8 +432,9 @@ def main():
     """Derive or plan the transfer for the requested bars and write their run files."""
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('--bar', nargs='+', default=['B3'],
-                        help="bar name(s), e.g. B3 B6, or 'all' for every bar of the problem")
+    parser.add_argument('--bar', nargs='+', default=None,
+                        help="bar name(s), e.g. B3 B6, or 'all' for every bar of the problem "
+                             "(default: the problem's first bar)")
     parser.add_argument('--anchor', default=None,
                         choices=[None, 'horizontal', 'vertical', 'back'],
                         help='restrict to one carry anchor (default: all three)')
@@ -465,7 +466,12 @@ def main():
         ensure_scene_glb(session.robot_cell, args.problem, scenes_dir=args.scenes_dir)
         return
 
-    bars = all_bars(problem_dir) if args.bar == ['all'] else args.bar
+    if args.bar is None:
+        bars = all_bars(problem_dir)[:1]
+    elif args.bar == ['all']:
+        bars = all_bars(problem_dir)
+    else:
+        bars = args.bar
     stub = types.SimpleNamespace(cfab=session, active_bar_name=None, get_logger=lambda: _Log())
     rows = []
     batch_started = time.perf_counter()

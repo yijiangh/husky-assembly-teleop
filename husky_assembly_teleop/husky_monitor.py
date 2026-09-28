@@ -93,6 +93,8 @@ TRAJECTORY_GREEN = [0, 0.5, 0.2, 0.7]
 TRANSPARENT = [0, 0.0, 0.0, 0.0]
 # See-through bar that follows the manual M1 start sliders in PyBullet.
 MANUAL_BAR_ORANGE = [1.0, 0.55, 0.0, 0.6]
+# See-through bar at the loaded action's assembled pose (M3 start), the target to drive to.
+ASSEMBLED_BAR_PINK = [1.0, 0.3, 0.7, 0.5]
 
 # Constrained dual-arm free/transfer motion (CDFM) planner resolutions.
 # Used by: M1 initial plan, Button 2b (IK Replan & Transfer → Mv Start),
@@ -2632,6 +2634,10 @@ class HuskyMonitor(Node):
         # in the live monitor; the scripts drive their own movement loads.
         if live:
             self.load_selected_movement()
+            # * Mount-once mocap test: mark where this bar ends up, so the base
+            # * can be parked by eye before the transfer loop.
+            if self.BAR_ACTION_MOCAP_ACCURACY_TEST:
+                self._show_assembled_bar_ghost()
 
     def _inject_ground_rigid_body_state(self, state):
         """Give a cell state the ground body, with the wheels-only allowance.
@@ -5274,19 +5280,95 @@ class HuskyMonitor(Node):
         state = mv.start_state
         self._fill_missing_start_conf(state)
         robot_puid, names_12, arm_joints, tool_l, tool_r = self._m1_pybullet_handles()
-        with pp.LockRenderer():
-            geom = goal_geometry(self.cfab.planner, state, self.active_bar_name, goal_conf,
-                                 names_12, robot_puid, arm_joints, tool_l, tool_r)
-            self.cfab.planner.set_robot_cell_state(state)
+        # One-off and cheap (two FK probes), so no LockRenderer: that helper
+        # only works on clients opened through pybullet_planning.
+        geom = goal_geometry(self.cfab.planner, state, self.active_bar_name, goal_conf,
+                             names_12, robot_puid, arm_joints, tool_l, tool_r)
+        self.cfab.planner.set_robot_cell_state(state)
         self._m1_manual_geom_cache = (key, geom)
         return geom
 
-    def _m1_manual_ghost(self):
-        """The see-through copy of the held bar that the manual sliders move.
+    def _bar_extent_local(self):
+        """Centre, length and radius of the active bar, from the real body's box.
 
-        Created once per bar (a visual-only clone of the cfab bar body, so no
-        planner ever sees it as an obstacle); a cylinder of the bar's size when
-        the clone fails.
+        Returns:
+            tuple | None: ``(centre_local, length, radius)`` -- the centre in
+            the bar's own frame (the frame origin sits at a tip on some
+            exports), the length along the bar and the radius, metres; None
+            without a bar body.
+        """
+        puids = (self.cfab.client.rigid_bodies_puids or {}).get(self.active_bar_name) or []
+        if not puids:
+            return None
+        # ! The box must be measured with the bar at the identity pose: a
+        # ! world-axis-aligned box around a tilted bar is both too short along
+        # ! the bar and off-centre. Put the body back where it was afterwards.
+        body = puids[0]
+        pose = pp.get_pose(body)
+        pp.set_pose(body, ((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0)))
+        try:
+            lower, upper = pp.get_aabb(body)
+        finally:
+            pp.set_pose(body, pose)
+        lower, upper = np.asarray(lower, dtype=float), np.asarray(upper, dtype=float)
+        extents = sorted(float(v) for v in (upper - lower))
+        length, radius = extents[-1], max(0.015, 0.5 * extents[0])
+        centre_local = 0.5 * (lower + upper)
+        return centre_local, float(length), float(radius)
+
+    def _build_bar_ghost(self, colour, stub_grasps=None):
+        """A see-through stand-in for the held bar, built from primitives.
+
+        A cylinder of the bar's length along its long axis (the bar frame's
+        z), plus -- when ``stub_grasps`` is given -- a short stub at each
+        grasp point pointing where that arm's tool sits, so the roll is
+        visible. Visual only: no collision shapes, not registered with the cfab
+        cell, so no planner ever sees it. Primitives rather than a mesh clone:
+        the clone of the cfab bar mesh rendered nothing in the GUI.
+
+        Args:
+            colour: RGBA for every primitive.
+            stub_grasps: bar-from-tool0 poses of the two grasps (pybullet
+                ``(pos, quat)``), or None for the bare bar.
+
+        Returns:
+            tuple: ``(body_id, centre_local, length, n_shapes)``, or
+            ``(None, None, 0.0, 0)`` without a bar body.
+        """
+        extent = self._bar_extent_local()
+        if extent is None:
+            return None, None, 0.0, 0
+        centre_local, length, radius = extent
+        client = self.cfab.client.client_id
+        shapes = [dict(shapeType=p.GEOM_CYLINDER, radius=radius, length=length,
+                       position=tuple(centre_local.tolist()), orientation=(0.0, 0.0, 0.0, 1.0))]
+        # Tool stubs: from each grasp point back along the tool's z (the flange
+        # side), so the operator sees which way the tools point.
+        stub = 0.15
+        for grasp in (stub_grasps or []):
+            g_pos = np.asarray(grasp[0], dtype=float)
+            tool_z = np.asarray(pp.matrix_from_quat(grasp[1]), dtype=float)[:, 2]
+            shapes.append(dict(shapeType=p.GEOM_BOX, halfExtents=(0.02, 0.02, 0.5 * stub),
+                               position=tuple((g_pos - 0.5 * stub * tool_z).tolist()),
+                               orientation=tuple(grasp[1])))
+        visual = p.createVisualShapeArray(
+            shapeTypes=[sh['shapeType'] for sh in shapes],
+            radii=[sh.get('radius', 0.0) for sh in shapes],
+            lengths=[sh.get('length', 0.0) for sh in shapes],
+            halfExtents=[sh.get('halfExtents', (0.0, 0.0, 0.0)) for sh in shapes],
+            visualFramePositions=[sh['position'] for sh in shapes],
+            visualFrameOrientations=[sh['orientation'] for sh in shapes],
+            rgbaColors=[colour] * len(shapes),
+            physicsClientId=client)
+        body = p.createMultiBody(baseMass=0.0, baseCollisionShapeIndex=-1,
+                                 baseVisualShapeIndex=visual, physicsClientId=client)
+        return body, centre_local, float(length), len(shapes)
+
+    def _m1_manual_ghost(self, geom):
+        """The orange stand-in for the held bar that the manual sliders move (once per bar).
+
+        Args:
+            geom (dict): from ``m1_manual_start.goal_geometry`` (grasps).
 
         Returns:
             int | None: the PyBullet body id, or None without a bar.
@@ -5298,27 +5380,192 @@ class HuskyMonitor(Node):
         if cache is not None:
             pp.remove_body(cache[1])
             self._m1_manual_ghost_cache = None
-        puids = (self.cfab.client.rigid_bodies_puids or {}).get(name) or []
-        if not puids:
+        ghost, centre_local, length, n_shapes = self._build_bar_ghost(
+            MANUAL_BAR_ORANGE, stub_grasps=(geom['grasp_bar_from_left'], geom['grasp_bar_from_right']))
+        if ghost is None:
             return None
-        ghost = None
-        try:
-            ghost = pp.clone_body(puids[0], collision=False, visual=True)
-        except Exception as exc:
-            print(f"[M1 manual] could not clone the bar for the preview ({exc}); "
-                  "using a cylinder of its size.")
-            lower, upper = pp.get_aabb(puids[0])
-            extents = sorted(float(hi - lo) for lo, hi in zip(lower, upper))
-            ghost = pp.create_cylinder(0.5 * extents[0], extents[-1], color=MANUAL_BAR_ORANGE)
-        pp.set_color(ghost, MANUAL_BAR_ORANGE)
         self._m1_manual_ghost_cache = (name, ghost)
+        self._m1_manual_ghost_shapes = n_shapes
+        # For the debug-line drawing of the same bar (always rendered).
+        self._m1_manual_ghost_dims = (centre_local, length)
         return ghost
+
+    def _assembled_bar_pose(self):
+        """World pose of the active bar at its assembled position (M3's start = M2's goal).
+
+        Read from the authored release state (M3's start, where the bar rests
+        in the structure); when that state does not carry a static bar frame,
+        from M2's authored target tool0 frame composed with the grasp.
+
+        Returns:
+            tuple | None: pybullet ``(pos, quat_xyzw)``, or None when the action
+            has neither.
+        """
+        movements = self._loaded_movements or []
+        m3 = next((m for m in movements if self._match_movement_role(m) == 'M3'), None)
+        if m3 is not None and m3.start_state is not None:
+            rb = (m3.start_state.rigid_body_states or {}).get(self.active_bar_name)
+            if rb is not None and not rb.attached_to_link and rb.frame is not None:
+                return pose_from_frame(rb.frame)
+        m2 = next((m for m in movements if self._match_movement_role(m) == 'M2'), None)
+        if m2 is not None and m2.start_state is not None and m2.target_ee_frames:
+            rb = (m2.start_state.rigid_body_states or {}).get(self.active_bar_name)
+            if rb is not None and rb.attached_to_link and rb.attachment_frame is not None:
+                side = 'left' if 'left' in rb.attached_to_link else 'right'
+                frame = m2.target_ee_frames.get(side)
+                if frame is not None:
+                    return pp.multiply(pose_from_frame(frame), pose_from_frame(rb.attachment_frame))
+        return None
+
+    def _show_assembled_bar_ghost(self):
+        """Pink line along the loaded action's bar at its assembled pose, kept until the next Load BarAction.
+
+        The guide for parking the base in the mount-once mocap test: the bar in
+        the grippers has to end up on it after the transfer loop. Drawn as a
+        debug line (bodies created at run time do not show in this viewer),
+        and re-issued once a second by ``update`` so a debug wipe elsewhere
+        (``clear_all_debug_drawing``) does not lose it.
+        """
+        self._assembled_bar_line = None
+        if self.cfab is None or not self.active_bar_name:
+            return
+        pose = self._assembled_bar_pose()
+        extent = self._bar_extent_local()
+        if pose is None or extent is None:
+            self.get_logger().warn(f"[BarAction] no assembled pose for {self.active_bar_name!r}; no pink bar.")
+            return
+        centre_local, length, _radius = extent
+        # The bar's long axis is its own z (only the sign varies per export --
+        # irrelevant for a line).
+        half = 0.5 * length * np.array([0.0, 0.0, 1.0])
+        self._assembled_bar_line = {
+            'bar': self.active_bar_name,
+            'a': tuple(pp.tform_point(pose, tuple((centre_local - half).tolist()))),
+            'b': tuple(pp.tform_point(pose, tuple((centre_local + half).tolist()))),
+            'centre': tuple(pp.tform_point(pose, tuple(centre_local.tolist()))),
+            'ids': {},
+            'stamp': 0.0,
+        }
+        self._redraw_assembled_bar_line(force=True)
+        print(f"[BarAction] pink line = {self.active_bar_name} at its assembled pose "
+              f"(M3 start), centre {np.round(self._assembled_bar_line['centre'], 3).tolist()}; "
+              "it stays until the next Load BarAction.")
+
+    def _redraw_assembled_bar_line(self, force=False):
+        """(Re)issue the pink assembled-bar line; at most once a second unless forced."""
+        line = getattr(self, '_assembled_bar_line', None)
+        if line is None or self.cfab is None:
+            return
+        now = time.time()
+        if not force and now - line['stamp'] < 1.0:
+            return
+        line['stamp'] = now
+        client = self.cfab.client.client_id
+        ids = line['ids']
+        try:
+            ids['axis'] = p.addUserDebugLine(
+                line['a'], line['b'], lineColorRGB=ASSEMBLED_BAR_PINK[:3], lineWidth=8.0,
+                lifeTime=0, replaceItemUniqueId=ids.get('axis', -1), physicsClientId=client)
+            ids['text'] = p.addUserDebugText(
+                f"{line['bar']} assembled (M3 start)",
+                (np.asarray(line['centre']) + np.array([0.0, 0.0, 0.12])).tolist(),
+                textColorRGB=ASSEMBLED_BAR_PINK[:3], textSize=1.4, lifeTime=0,
+                replaceItemUniqueId=ids.get('text', -1), physicsClientId=client)
+        except Exception as exc:  # drawing must never break the UI loop
+            if not getattr(self, '_assembled_bar_line_warned', False):
+                self._assembled_bar_line_warned = True
+                self.get_logger().warn(f"[BarAction] pink bar line unavailable: {exc!r}")
+
+    def _draw_m1_manual_bar_lines(self, world, geom):
+        """Draw the manual bar preview as thick debug lines + a label at the given pose.
+
+        Debug lines are drawn by the viewer no matter what happens to body
+        rendering, so this is the preview that must always be visible: the bar
+        along its grasp axis and a stub at each grasp point toward the tool.
+        Items are replaced in place on every move.
+
+        Args:
+            world: the bar frame's world pose ``(pos, quat_xyzw)``.
+            geom (dict): from ``m1_manual_start.goal_geometry``.
+        """
+        client = self.cfab.client.client_id
+        centre_local, length = getattr(self, '_m1_manual_ghost_dims', (np.zeros(3), 1.4))
+        axis_local = np.asarray(geom['axis_local'], dtype=float)
+        ids = getattr(self, '_m1_manual_debug_ids', None) or {}
+        segments = {'bar': (centre_local - 0.5 * length * axis_local,
+                            centre_local + 0.5 * length * axis_local)}
+        for side, grasp in (('left', geom['grasp_bar_from_left']),
+                            ('right', geom['grasp_bar_from_right'])):
+            g_pos = np.asarray(grasp[0], dtype=float)
+            tool_z = np.asarray(pp.matrix_from_quat(grasp[1]), dtype=float)[:, 2]
+            segments[side] = (g_pos, g_pos - 0.15 * tool_z)
+        colour = MANUAL_BAR_ORANGE[:3]
+        for key, (a, b) in segments.items():
+            a_w = pp.tform_point(world, tuple(a.tolist()))
+            b_w = pp.tform_point(world, tuple(b.tolist()))
+            ids[key] = p.addUserDebugLine(
+                a_w, b_w, lineColorRGB=colour, lineWidth=8.0 if key == 'bar' else 5.0,
+                lifeTime=0, replaceItemUniqueId=ids.get(key, -1), physicsClientId=client)
+        centre_w = np.asarray(pp.tform_point(world, tuple(centre_local.tolist())), dtype=float)
+        ids['text'] = p.addUserDebugText(
+            'M1 start bar (manual)', (centre_w + np.array([0.0, 0.0, 0.12])).tolist(),
+            textColorRGB=colour, textSize=1.4, lifeTime=0,
+            replaceItemUniqueId=ids.get('text', -1), physicsClientId=client)
+        self._m1_manual_debug_ids = ids
+        return centre_w
+
+    def _remove_m1_manual_bar_lines(self):
+        """Delete the debug-line preview of the manual bar."""
+        ids = getattr(self, '_m1_manual_debug_ids', None) or {}
+        for item in ids.values():
+            try:
+                p.removeUserDebugItem(item, physicsClientId=self.cfab.client.client_id)
+            except Exception:
+                pass
+        self._m1_manual_debug_ids = {}
+
+    def _focus_camera_on(self, target, distance=2.5):
+        """Point the PyBullet camera at a world point, keeping its current angles.
+
+        Args:
+            target: world point ``(x, y, z)``.
+            distance (float): camera distance in metres.
+        """
+        try:
+            cam = p.getDebugVisualizerCamera(physicsClientId=self.cfab.client.client_id)
+            yaw, pitch = float(cam[8]), float(cam[9])
+        except Exception:
+            yaw, pitch = 50.0, -35.0
+        pp.set_camera(yaw, pitch, distance, list(map(float, target)))
+
+    def _color_m1_manual_ghost(self, color):
+        """Recolour every primitive of the manual bar preview."""
+        cache = getattr(self, '_m1_manual_ghost_cache', None)
+        if cache is None:
+            return
+        for k in range(getattr(self, '_m1_manual_ghost_shapes', 1)):
+            p.changeVisualShape(cache[1], -1, shapeIndex=k, rgbaColor=color,
+                                physicsClientId=self.cfab.client.client_id)
 
     def _hide_m1_manual_ghost(self):
         """Blank the manual bar preview (it reappears on the next slider move)."""
-        cache = getattr(self, '_m1_manual_ghost_cache', None)
-        if cache is not None:
-            pp.set_color(cache[1], TRANSPARENT)
+        self._color_m1_manual_ghost(TRANSPARENT)
+        self._remove_m1_manual_bar_lines()
+
+    def _poll_m1_manual_preview(self):
+        """Each tick: refresh the bar preview when a manual slider or the anchor moved.
+
+        The slider callbacks already do this, but a widget rebuilt by reset_ui
+        can miss its next drag callback (see ``_m1_home_anchor``), and this also
+        shows the bar right after M1 is loaded, before any slider is touched.
+        """
+        mv = self.current_movement
+        if mv is None or self.cfab is None or self._match_movement_role(mv) != 'M1':
+            return
+        key = (int(self._m1_home_anchor_idx),) + tuple(round(v, 4) for v in self._m1_manual_offsets())
+        if key != getattr(self, '_m1_manual_preview_key', None):
+            self._m1_manual_preview_key = key
+            self._preview_m1_manual_bar()
 
     def _preview_m1_manual_bar(self):
         """Move the see-through bar to the pose the manual sliders describe (no IK).
@@ -5336,21 +5583,40 @@ class HuskyMonitor(Node):
         try:
             geom = self._m1_manual_geometry(mv)
             if geom is None:
+                if not getattr(self, '_m1_manual_preview_warned', False):
+                    self._m1_manual_preview_warned = True
+                    self.get_logger().warn(
+                        "[M1 manual] no bar preview: M2 has no authored start conf, or the "
+                        "bar is not attached in M1's start state.")
                 return
             idx = max(0, min(int(self._m1_home_anchor_idx), len(M1_HOME_ANCHOR_CHOICES) - 1))
             anchor = M1_HOME_ANCHOR_CHOICES[idx] if idx > 0 else 'horizontal'
             slide_m, roll_deg, perp1_m, perp2_m = self._m1_manual_offsets()
             pose = bar_pose_mb(geom, anchor, slide_m=slide_m, roll_deg=roll_deg,
                                perp1_m=perp1_m, perp2_m=perp2_m)
-            ghost = self._m1_manual_ghost()
+            created = getattr(self, '_m1_manual_ghost_cache', None) is None
+            ghost = self._m1_manual_ghost(geom)
             if ghost is None:
                 return
-            pp.set_pose(ghost, pp.multiply(self._live_base_pose(), (pose['pos'], pose['quat'])))
-            pp.set_color(ghost, MANUAL_BAR_ORANGE)
+            world = pp.multiply(self._live_base_pose(), (pose['pos'], pose['quat']))
+            pp.set_pose(ghost, world)
+            self._color_m1_manual_ghost(MANUAL_BAR_ORANGE)
+            centre_w = self._draw_m1_manual_bar_lines(world, geom)
+            if created:
+                mid = pose['bar_mid_mb']
+                print(f"[M1 manual] orange preview bar created (body {ghost}); it follows the "
+                      f"sliders (now centred {100 * mid[0]:+.0f} cm forward, {100 * mid[1]:+.0f} cm "
+                      f"left, {100 * mid[2]:+.0f} cm up of the base; centre at world "
+                      f"{np.round(centre_w, 2).tolist()}). Camera pointed at it.")
+                # Point the camera at the new bar once, so it cannot be missed.
+                self._focus_camera_on(centre_w)
         except Exception as exc:  # a preview must never break the UI loop
             if not getattr(self, '_m1_manual_preview_warned', False):
                 self._m1_manual_preview_warned = True
-                self.get_logger().warn(f"[M1 manual] bar preview unavailable: {exc}")
+                where = traceback.format_exc().strip().splitlines()[-3:]
+                self.get_logger().warn(
+                    f"[M1 manual] bar preview unavailable: {exc!r} at "
+                    + " | ".join(line.strip() for line in where))
 
     def _m1_manual_offsets(self):
         """The four manual start sliders, read live from the widgets.
@@ -7459,6 +7725,10 @@ class HuskyMonitor(Node):
         if self.BAR_ACTION_LIVE_REPLAN_EXE:
             # self.dump_sep_sliders.append(Slider("----------BarAction live replan & exe", lambda: None))
             self.dump_sep_sliders.append(Separator("BarAction live replan & exe"))
+            # Which design problem the BarAction files below belong to (the
+            # folder name under DESIGN_DATA_DIRECTORY, set in __init__.py).
+            self.design_problem_text = StatusText(
+                "  problem", f"design problem: {os.path.basename(str(DESIGN_PROBLEM_NAME))}")
             if not self.available_bar_actions and hasattr(self, '_load_available_bar_actions'):
                 self.available_bar_actions = self._load_available_bar_actions()
             n_files = len(self.available_bar_actions)
@@ -7481,16 +7751,19 @@ class HuskyMonitor(Node):
             self.bar_action_file_text = StatusText("  -> file", "(none)")
             self.buttons.append(Button('Load BarAction', self.load_bar_action_file))
             n_movs = len(self._loaded_movements)
-            # Same 1-entry segfault guard as bar_action_file_slider.
-            self.bar_movement_slider = None
-            if n_movs > 1:
-                self.bar_movement_slider = Slider(
-                    "Movement (idx; 0=M0_synth)",
-                    lambda v: setattr(self, '_selected_movement_idx', int(round(float(v)))),
-                    0, n_movs - 1,
-                    int(self._selected_movement_idx),
-                    integer=True,
-                )
+            # Always built, so the layout does not jump when a BarAction gets
+            # loaded and 'Load Movement' always sits right under this slider.
+            # Before a load it spans 0..1 with nothing behind it (the readout
+            # says so and _slider_index returns -1); the range is never a
+            # single value, which is what would segfault pybullet's legacy
+            # GUI slider (same guard as bar_action_file_slider).
+            self.bar_movement_slider = Slider(
+                "Movement (idx; 0=M0_synth)",
+                lambda v: setattr(self, '_selected_movement_idx', int(round(float(v)))),
+                0, max(1, n_movs - 1),
+                int(self._selected_movement_idx),
+                integer=True,
+            )
             # Same idea for the movement index: show the movement_id it picks.
             self.bar_movement_text = StatusText("  -> movement", "(none)")
             self.buttons.append(Button('Load Movement', self.load_selected_movement))
@@ -8010,6 +8283,8 @@ class HuskyMonitor(Node):
                 sld = getattr(self, name, None)
                 if sld:
                     sld.update()
+            self._poll_m1_manual_preview()
+            self._redraw_assembled_bar_line()
             if hasattr(self, 'm1_adopt_save_toggle') and self.m1_adopt_save_toggle:
                 self.m1_adopt_save_toggle.update()
             # Display-only, so it is refreshed here rather than polled.

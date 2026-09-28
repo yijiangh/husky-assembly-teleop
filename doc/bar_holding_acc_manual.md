@@ -201,10 +201,11 @@ the automatic derivation (a 120 s sweep) is kept as a fallback, see the note.
      | vertical | base z (up) | forward (x) | left (y) |
      | back | base x (forward) | left (y) | up (z) |
 
-   - While you drag any of these sliders a **see-through orange bar** in
-     PyBullet shows the pose you are describing, placed at the live base (no
-     IK yet — the arms appear after Confirm; anchor `0` previews horizontal).
-     Nudge a slider once after Load Movement to make it appear.
+   - As soon as M1 is loaded, and while you drag any of these sliders, a
+     **see-through orange bar** (a cylinder with a stub at each grasp point
+     showing where the tools sit, so the roll is visible) in PyBullet shows
+     the pose you are describing, placed at the live base (no IK yet — the
+     arms appear after Confirm; anchor `0` previews horizontal).
    - **M1: Confirm manual start pose (IK check)** — solves the dual-arm IK
      that holds the bar there with the same grasps as at the goal (branch
      nearest the goal), checks it against the full cell, and prints the bar
@@ -314,10 +315,15 @@ Repeat for each bar-action. Nothing here dismounts the bar.
    `[mocap-acc] ignoring collisions with N built assembly bodies during planning/IK.`
    and the already-built bars to disappear from the view — that is the
    "previous bars are only reaching locations" rule being applied. The ghost
-   robot now stands at this action's parked base pose.
+   robot now stands at this action's parked base pose, and a **thick pink
+   line** (with a label) marks the bar's central axis where it sits when
+   assembled (M3's start pose, the reference the takes are scored against);
+   it stays until the next Load BarAction (log line `[BarAction] pink line =
+   bar_B… at its assembled pose`).
 2. **Drive the mobile base** (joystick, or
    `ros2 run teleop_twist_keyboard teleop_twist_keyboard --ros-args -r /cmd_vel:=/a200_0806/joy_teleop/cmd_vel`)
-   until the mocap-tracked husky roughly overlaps the ghost. A few centimetres
+   until the mocap-tracked husky roughly overlaps the ghost — i.e. until the
+   bar in the grippers can plausibly reach the pink line. A few centimetres
    and a couple of degrees are fine — the servo loop absorbs the rest.
 3. **Set `traj time` to 20–30 s.** Load Movement resets it to M3's 5 s default,
    which is far too fast for the first transfer of a bar. (The loop re-reads the
