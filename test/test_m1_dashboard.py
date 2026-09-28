@@ -17,7 +17,7 @@ from husky_assembly_teleop.dashboard.kinematics import (
 from husky_assembly_teleop.dashboard.run_schema import (
     SCHEMA, bar_mid_along, bar_middle, describe_base, describe_bar_shape,
     describe_candidate, describe_rrt, describe_run, grasp_span_along_bar,
-    runs_dir_default, scenes_dir_default, validate_run, variant_plain,
+    problem_of_run_id, runs_dir_default, scenes_dir_default, validate_run, variant_plain,
 )
 from husky_assembly_teleop.dashboard.run_writer import _bar_extent_local, _rrt_block
 
@@ -291,6 +291,9 @@ def test_frames_payload_is_consistent():
     run = _latest_run()
     if run is None:
         pytest.skip('no run on disk; run scripts/derive_m1_headless.py --bar B3')
+    if not run.get('candidates'):
+        # A plan from a stored start (Adopt / manual start) records no sweep.
+        pytest.skip('newest run has no sweep candidates (planned from a stored start)')
     from husky_assembly_teleop.cfab_session import HUSKY_DUAL_URDF_PATH
 
     nodes_path = os.path.join(scenes_dir_default(), run['problem'], 'scene_nodes.json')
@@ -335,3 +338,10 @@ def test_rrt_block_from_a_failed_search():
     assert 'time budget ran out' in text
     assert '104 cm apart' in text
     assert 'jumped joint branch' in text and 'hit something' in text
+
+
+def test_problem_is_read_off_the_run_id():
+    """The dashboard filters runs by problem using the file name alone."""
+    assert problem_of_run_id('20260923-155029_260716_phase1_test_B3_all.json') == '260716_phase1_test'
+    assert problem_of_run_id('20260924-001058_260921_motion_sample_B3__J_all') == '260921_motion_sample'
+    assert problem_of_run_id('batch_20260924-002242_260921_motion_sample.md') is None

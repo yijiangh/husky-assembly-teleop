@@ -8,7 +8,9 @@ browser reconnects to on its own) for the notifications.
 
 Endpoints
     /                                      the page
-    /api/runs                              one summary line per run, newest first
+    /api/problems                          design problems that have runs + the default
+    /api/runs?problem=<name>               one summary line per run of that problem,
+                                           newest first (all problems without it)
     /api/runs/<id>                         the whole run, plus the sentences
     /api/runs/<id>/candidates/<i>/frames   poses for the 3D viewer
     /api/runs/<id>/robot?conf=goal|start   the robot as triangles, base frame
@@ -23,10 +25,11 @@ import time
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
+from husky_assembly_teleop import DESIGN_PROBLEM_NAME
 from husky_assembly_teleop.dashboard.kinematics import SceneKinematics
 from husky_assembly_teleop.dashboard.run_schema import (
-    describe_base, describe_candidate, describe_rrt, describe_run, runs_dir_default,
-    scenes_dir_default,
+    describe_base, describe_candidate, describe_rrt, describe_run, problem_of_run_id,
+    runs_dir_default, scenes_dir_default,
 )
 
 def _static_dir():
@@ -94,11 +97,44 @@ class RunStore:
                 self._kinematics = SceneKinematics(HUSKY_DUAL_URDF_PATH)
             return self._kinematics
 
-    def list_runs(self):
-        """Summary lines for every run on disk, newest first."""
+    def _run_file_names(self):
+        """The run files in the folder (other files, e.g. batch notes, skipped)."""
+        names = os.listdir(self.runs_dir) if os.path.isdir(self.runs_dir) else []
+        return [name for name in names if name.endswith('.json')]
+
+    def list_problems(self):
+        """The design problems that have runs, and how many each.
+
+        Read off the file names alone (see ``problem_of_run_id``), so no run
+        file is opened.
+
+        Returns:
+            dict: ``{'default': <the monitor's DESIGN_PROBLEM_NAME>,
+            'problems': [{'name', 'n_runs'}, ...]}``, sorted by name.
+        """
+        counts = {}
+        for name in self._run_file_names():
+            problem = problem_of_run_id(name)
+            if problem:
+                counts[problem] = counts.get(problem, 0) + 1
+        return {'default': DESIGN_PROBLEM_NAME,
+                'problems': [{'name': name, 'n_runs': counts[name]}
+                             for name in sorted(counts)]}
+
+    def list_runs(self, problem=None):
+        """Summary lines for the runs on disk, newest first.
+
+        Args:
+            problem (str | None): only the runs of this design problem. Other
+                problems' files are skipped by name, without being opened.
+                None lists every run.
+
+        Returns:
+            list[dict]: one summary line per run.
+        """
         summaries = []
-        for name in os.listdir(self.runs_dir) if os.path.isdir(self.runs_dir) else []:
-            if not name.endswith('.json'):
+        for name in self._run_file_names():
+            if problem and problem_of_run_id(name) != problem:
                 continue
             try:
                 run = self.load(name[:-len('.json')])
@@ -262,7 +298,9 @@ class RunsWatcher:
             self._seen.add(name)
             if announce:
                 print(f'[dashboard] new run: {name}')
-                self.hub.broadcast('run_added', {'id': name[:-len('.json')]})
+                # The page only shows one problem's runs, so say whose run it is.
+                self.hub.broadcast('run_added', {'id': name[:-len('.json')],
+                                                 'problem': problem_of_run_id(name)})
 
     def start(self):
         """Begin watching (never raises; falls back to polling)."""
@@ -370,15 +408,18 @@ def make_handler(store, hub):
             """Route API calls; everything else is a static file."""
             parsed = urlparse(self.path)
             path = unquote(parsed.path)
-            # ! Only this handler's robot route carries a query string, and
+            # ! The robot and runs routes carry a query string, and
             # ! ``parsed.path`` has already dropped it -- so read it here.
             query = parse_qs(parsed.query)
             try:
                 if path == '/events':
                     self._serve_events()
                     return
+                if path == '/api/problems':
+                    self._send_json(store.list_problems())
+                    return
                 if path == '/api/runs':
-                    self._send_json(store.list_runs())
+                    self._send_json(store.list_runs(query.get('problem', [None])[0]))
                     return
                 if path.startswith('/api/runs/'):
                     rest = path[len('/api/runs/'):]

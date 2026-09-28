@@ -156,11 +156,43 @@ async function robotTrace(pose) {
   };
 }
 
+// ---------------------------------------------------------- design problem
+// The runs list shows ONE design problem at a time; the server skips the other
+// problems' run files by name. It starts on the monitor's DESIGN_PROBLEM_NAME.
+const selectedProblem = () => $('problem').value;
+
+async function refreshProblems() {
+  let payload;
+  try {
+    payload = await (await fetch('/api/problems')).json();
+  } catch (error) {
+    fail('could not load the design problems', error);
+    return;
+  }
+  const select = $('problem');
+  // Keep the operator's pick across refreshes; otherwise start on the default.
+  const keep = select.value || payload.default;
+  const names = payload.problems.map((problem) => problem.name);
+  // The default problem may have no runs yet; list it anyway so it can be picked.
+  if (!names.includes(payload.default)) {
+    payload.problems.unshift({ name: payload.default, n_runs: 0 });
+  }
+  select.innerHTML = '';
+  payload.problems.forEach((problem) => {
+    const option = document.createElement('option');
+    option.value = problem.name;
+    option.textContent = `${problem.name} (${problem.n_runs} runs)`;
+    select.appendChild(option);
+  });
+  select.value = keep;
+}
+
 // ---------------------------------------------------------------- run list
 async function refreshRuns(selectId) {
   let runs;
   try {
-    runs = await (await fetch('/api/runs')).json();
+    runs = await (await fetch(
+      `/api/runs?problem=${encodeURIComponent(selectedProblem())}`)).json();
   } catch (error) {
     fail('could not load the runs list', error);
     return;
@@ -168,7 +200,7 @@ async function refreshRuns(selectId) {
   const list = $('run-list');
   list.innerHTML = '';
   if (!runs.length) {
-    list.innerHTML = '<li class="empty">No runs yet.</li>';
+    list.innerHTML = `<li class="empty">No runs yet for ${selectedProblem()}.</li>`;
     return;
   }
   runs.forEach((run) => {
@@ -485,8 +517,11 @@ function connectEvents() {
   const source = new EventSource('/events');
   source.onopen = () => { $('status').textContent = 'listening for new runs'; };
   source.onerror = () => { $('status').textContent = 'reconnecting…'; };
-  source.addEventListener('run_added', (event) => {
-    const id = JSON.parse(event.data).id;
+  source.addEventListener('run_added', async (event) => {
+    const { id, problem } = JSON.parse(event.data);
+    await refreshProblems();  // the run counts changed
+    // Another design problem's run: not listed, not opened, no toast.
+    if (problem !== selectedProblem()) return;
     refreshRuns($('auto-open').checked ? id : null);
     if (!$('auto-open').checked) toast(id);
   });
@@ -504,6 +539,7 @@ function toast(id) {
 }
 
 // -------------------------------------------------------------------- wiring
+$('problem').onchange = () => refreshRuns();
 $('colour-by').onchange = () => currentRun && renderPositions();
 $('stick-mode').onchange = () => currentRun && renderPositions();
 $('robot-pose').onchange = () => currentRun && renderPositions();
@@ -520,6 +556,6 @@ document.addEventListener('keydown', (event) => {
   setFrame(Number(slider.value));
 });
 
-refreshRuns();
+refreshProblems().then(() => refreshRuns());
 connectEvents();
 window.addEventListener('error', (event) => fail('page error', event.error || event.message));

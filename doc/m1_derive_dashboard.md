@@ -108,6 +108,16 @@ Drive by hand if it is worth keeping.
 
 ## 3. Reading the page
 
+### Picking the design problem
+
+The **Design problem** dropdown above the runs list decides whose runs are
+shown. It starts on the monitor's `DESIGN_PROBLEM_NAME`
+(`husky_assembly_teleop/__init__.py`) and lists every problem that has runs,
+with a count. The server tells the problems apart by the run file name
+(`<timestamp>_<problem>_<bar>_<anchor>.json`), so the other problems' files are
+never opened. A new run from another problem only updates the counts: it is not
+listed, auto-opened or announced.
+
 ### The summary
 
 Six or seven sentences at the top. The ones that matter most:

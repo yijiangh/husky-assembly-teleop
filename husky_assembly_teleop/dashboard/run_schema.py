@@ -11,6 +11,7 @@ numbers into the sentences the dashboard shows, because the raw fields
 ! named links -- never fractions or internal field names.
 """
 import os
+import re
 from math import atan2, degrees
 
 
@@ -583,6 +584,30 @@ def run_id(problem, bar_action, anchor_selection, when):
     """
     return (f'{when:%Y%m%d-%H%M%S}_{problem}_{bar_action}_'
             f'{anchor_selection or "all"}')
+
+
+# * A run id is '<timestamp>_<problem>_<bar action>_<anchor>'. The bar action
+# * always starts with 'B<number>' (legacy 'B3', split 'B3__J'), so the problem
+# * is everything between the timestamp and the first '_B<number>'.
+_RUN_ID_PROBLEM_RE = re.compile(r'^\d{8}-\d{6}_(?P<problem>.+?)_B\d+')
+
+
+def problem_of_run_id(run_id):
+    """The design problem a run belongs to, read off its id alone.
+
+    The inverse of ``run_id`` for the problem part: the dashboard uses it to
+    sort run files by problem without opening them.
+
+    Args:
+        run_id (str): a run id or run file name, e.g.
+            ``'20260923-150412_260716_phase1_test_B3_all'``.
+
+    Returns:
+        str | None: e.g. ``'260716_phase1_test'``, or None when the name does
+        not follow the run id pattern (e.g. a batch summary file).
+    """
+    match = _RUN_ID_PROBLEM_RE.match(run_id)
+    return match.group('problem') if match else None
 
 
 def runs_dir_default():

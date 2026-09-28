@@ -2754,6 +2754,32 @@ class HuskyMonitor(Node):
                 except Exception:
                     pass
 
+    def _hide_unmounted_active_bar(self, mv) -> None:
+        """Hide the active bar in M0, where it is not mounted yet.
+
+        ! The Rhino export leaves the active bar in M0's start_state at its
+        ! ASSEMBLED pose (loose, not hidden). But between M0 and M1 an operator
+        ! mounts the bar on the robot's hands, so during M0 the bar is not in the
+        ! scene at all. Left there, it makes a derived M1 start (= M0's goal)
+        ! that reaches through the bar's future place fail M0 as "end
+        ! configuration is in collision", and it is drawn where nothing is.
+        ! The planner is told to ignore it; the view blanks it at Load Movement.
+
+        Only M0 is touched: in M3/M4 the bar really is installed there.
+        Mutates ``mv.start_state`` in place.
+
+        Args:
+            mv: The movement whose start_state to edit.
+        """
+        if self._match_movement_role(mv) != 'M0':
+            return
+        bar_rb = (mv.start_state.rigid_body_states.get(self.active_bar_name)
+                  if mv.start_state is not None and self.active_bar_name else None)
+        if bar_rb is not None and not bar_rb.attached_to_link and not bar_rb.is_hidden:
+            bar_rb.is_hidden = True
+            print(f"[M0] ignoring the not-yet-mounted active bar "
+                  f"{self.active_bar_name!r} at its assembled pose.")
+
     def _authored_motion_type(self, mv):
         """The motion type implied by a movement's authored role.
 
@@ -2990,6 +3016,7 @@ class HuskyMonitor(Node):
                     pass
             self._traj_ghost_orig_colors = {}
 
+        self._hide_unmounted_active_bar(mv)
         try:
             self.cfab.planner.set_robot_cell_state(mv.start_state)
         except Exception as e:
@@ -3025,6 +3052,12 @@ class HuskyMonitor(Node):
                 self._hide_built_assembly_for_mocap(
                     other.start_state, sync_visibility=False)
             self._mocap_hide_applied = True
+
+        # Blank every body this state marks hidden, so the view shows what the
+        # planner checks -- e.g. the not-yet-mounted active bar in M0 (hidden
+        # just before the state push above). The restore at the top of the next
+        # load brings it back.
+        self._sync_pp_visibility_to_hidden(mv.start_state)
 
         # Set up the preview bar/joints for the movement's AUTHORED type (goal
         # state + first trajectory). M1/M2 hold the bar; M0/M3/M4 don't. Each
@@ -4773,20 +4806,7 @@ class HuskyMonitor(Node):
                 "M0 has no target_configuration; plan M1 first (its start "
                 "conf is backfilled as M0's goal).")
             return None
-        # ! The Rhino export leaves the active bar in M0's start_state at its
-        # ! ASSEMBLED pose (loose, not hidden), yet during M0 that bar is not
-        # ! built -- it is still waiting to be mounted in the grippers. M0's goal
-        # ! is M1's start, which M1's derivation checks with the bar held in the
-        # ! grippers, so it never sees that spot as blocked. Leaving the bar there
-        # ! makes a derived M1 start that reaches through the bar's future place
-        # ! fail M0 as "end configuration is in collision". So the planner is told
-        # ! to ignore it (the flag is set before the state push below).
-        bar_rb = (mv.start_state.rigid_body_states.get(self.active_bar_name)
-                  if mv.start_state is not None and self.active_bar_name else None)
-        if bar_rb is not None and not bar_rb.attached_to_link and not bar_rb.is_hidden:
-            bar_rb.is_hidden = True
-            print(f"[M0] ignoring the not-yet-built active bar "
-                  f"{self.active_bar_name!r} at its assembled pose.")
+        self._hide_unmounted_active_bar(mv)
         self._resync_start_state_to_live(mv, 'M0')
         return self._plan_free_and_validate(
             mv, 'M0', mv.target_configuration,

@@ -87,7 +87,7 @@ CALIBRATION_ANALYSIS_DATE = '20260916'
 CALIBRATION_BATCHES = ['j0', 'j1', 'validation', 'punch_validation']
 
 # DESIGN_PROBLEM_NAME = '260811_RobArch_demo'
-DESIGN_PROBLEM_NAME = '260716_phase1_test'
+DESIGN_PROBLEM_NAME = '260715_phase1_test'
 # DESIGN_PROBLEM_NAME = '2026-05-19_reoriented2'
 
 # Rhino .3dm whose "Environment Obstacles" layer is drawn as the layout-diagram
