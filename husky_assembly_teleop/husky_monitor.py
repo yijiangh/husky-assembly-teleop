@@ -85,12 +85,14 @@ from husky_assembly_tamp.motion_planner.api import (
     _derive_constrained_start_for_plan, _build_cfab_collision_fn, _bar_body_id,
     _state_with_conf12, TOOL_LINK_LEFT, TOOL_LINK_RIGHT,
 )
-from husky_assembly_teleop.m1_manual_start import manual_m1_start
+from husky_assembly_teleop.m1_manual_start import bar_pose_mb, goal_geometry, manual_m1_start
 
 DEFAULT_GREY = [0.2, 0.2, 0.2, 0.7]
 GOAL_BLUE = [0, 0.2, 0.5, 0.7]
 TRAJECTORY_GREEN = [0, 0.5, 0.2, 0.7]
 TRANSPARENT = [0, 0.0, 0.0, 0.0]
+# See-through bar that follows the manual M1 start sliders in PyBullet.
+MANUAL_BAR_ORANGE = [1.0, 0.55, 0.0, 0.6]
 
 # Constrained dual-arm free/transfer motion (CDFM) planner resolutions.
 # Used by: M1 initial plan, Button 2b (IK Replan & Transfer → Mv Start),
@@ -5198,6 +5200,123 @@ class HuskyMonitor(Node):
         tool_r = pp.link_from_name(robot_puid, TOOL_LINK_RIGHT)
         return robot_puid, names_12, arm_joints, tool_l, tool_r
 
+    def _on_m1_anchor_slider(self, value):
+        """Anchor slider callback: cache the index and move the bar preview."""
+        self._m1_home_anchor_idx = int(round(float(value)))
+        self._preview_m1_manual_bar()
+
+    def _on_m1_manual_slider(self, attr, value):
+        """Manual start slider callback: cache the value and move the bar preview.
+
+        Args:
+            attr (str): the cached attribute the slider drives.
+            value: the slider's new value.
+        """
+        setattr(self, attr, float(value))
+        self._preview_m1_manual_bar()
+
+    def _m1_manual_geometry(self, mv):
+        """The goal geometry the manual bar pose is built from, once per movement + goal.
+
+        Base independent (grasps, bar axis, goal in the mobile-base frame), so
+        it is cached until the movement or its goal changes.
+
+        Args:
+            mv: the loaded M1 movement.
+
+        Returns:
+            dict | None: see ``m1_manual_start.goal_geometry``; None without a
+            goal configuration or with the bar not attached.
+        """
+        goal_conf = self._m1_goal_conf()
+        if goal_conf is None:
+            return None
+        key = (getattr(mv, 'movement_id', None),
+               tuple(round(float(v), 6) for v in vec12_from_conf(goal_conf)))
+        cached = getattr(self, '_m1_manual_geom_cache', None)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        state = mv.start_state
+        self._fill_missing_start_conf(state)
+        robot_puid, names_12, arm_joints, tool_l, tool_r = self._m1_pybullet_handles()
+        with pp.LockRenderer():
+            geom = goal_geometry(self.cfab.planner, state, self.active_bar_name, goal_conf,
+                                 names_12, robot_puid, arm_joints, tool_l, tool_r)
+            self.cfab.planner.set_robot_cell_state(state)
+        self._m1_manual_geom_cache = (key, geom)
+        return geom
+
+    def _m1_manual_ghost(self):
+        """The see-through copy of the held bar that the manual sliders move.
+
+        Created once per bar (a visual-only clone of the cfab bar body, so no
+        planner ever sees it as an obstacle); a cylinder of the bar's size when
+        the clone fails.
+
+        Returns:
+            int | None: the PyBullet body id, or None without a bar.
+        """
+        name = self.active_bar_name
+        cache = getattr(self, '_m1_manual_ghost_cache', None)
+        if cache is not None and cache[0] == name:
+            return cache[1]
+        if cache is not None:
+            pp.remove_body(cache[1])
+            self._m1_manual_ghost_cache = None
+        puids = (self.cfab.client.rigid_bodies_puids or {}).get(name) or []
+        if not puids:
+            return None
+        ghost = None
+        try:
+            ghost = pp.clone_body(puids[0], collision=False, visual=True)
+        except Exception as exc:
+            print(f"[M1 manual] could not clone the bar for the preview ({exc}); "
+                  "using a cylinder of its size.")
+            lower, upper = pp.get_aabb(puids[0])
+            extents = sorted(float(hi - lo) for lo, hi in zip(lower, upper))
+            ghost = pp.create_cylinder(0.5 * extents[0], extents[-1], color=MANUAL_BAR_ORANGE)
+        pp.set_color(ghost, MANUAL_BAR_ORANGE)
+        self._m1_manual_ghost_cache = (name, ghost)
+        return ghost
+
+    def _hide_m1_manual_ghost(self):
+        """Blank the manual bar preview (it reappears on the next slider move)."""
+        cache = getattr(self, '_m1_manual_ghost_cache', None)
+        if cache is not None:
+            pp.set_color(cache[1], TRANSPARENT)
+
+    def _preview_m1_manual_bar(self):
+        """Move the see-through bar to the pose the manual sliders describe (no IK).
+
+        Runs on every slider change while M1 is loaded, so it only does
+        geometry: the cached goal grasps, the anchor's canonical pose, the
+        operator's roll / slide / shifts, and the live base to place it in the
+        world. The arms appear after Confirm. Anchor `all` previews the first
+        anchor (horizontal).
+        """
+        mv = self.current_movement
+        if (mv is None or mv.start_state is None or self.cfab is None
+                or not self.active_bar_name or self._match_movement_role(mv) != 'M1'):
+            return
+        try:
+            geom = self._m1_manual_geometry(mv)
+            if geom is None:
+                return
+            idx = max(0, min(int(self._m1_home_anchor_idx), len(M1_HOME_ANCHOR_CHOICES) - 1))
+            anchor = M1_HOME_ANCHOR_CHOICES[idx] if idx > 0 else 'horizontal'
+            slide_m, roll_deg, perp1_m, perp2_m = self._m1_manual_offsets()
+            pose = bar_pose_mb(geom, anchor, slide_m=slide_m, roll_deg=roll_deg,
+                               perp1_m=perp1_m, perp2_m=perp2_m)
+            ghost = self._m1_manual_ghost()
+            if ghost is None:
+                return
+            pp.set_pose(ghost, pp.multiply(self._live_base_pose(), (pose['pos'], pose['quat'])))
+            pp.set_color(ghost, MANUAL_BAR_ORANGE)
+        except Exception as exc:  # a preview must never break the UI loop
+            if not getattr(self, '_m1_manual_preview_warned', False):
+                self._m1_manual_preview_warned = True
+                self.get_logger().warn(f"[M1 manual] bar preview unavailable: {exc}")
+
     def _m1_manual_offsets(self):
         """The four manual start sliders, read live from the widgets.
 
@@ -5398,6 +5517,7 @@ class HuskyMonitor(Node):
             result['world_from_bar_start'], result['world_from_bar_goal'],
             result['grasp_bar_from_left'], result['grasp_bar_from_right'],
             goal_conf, corridor=None, source='manual')
+        self._hide_m1_manual_ghost()
         self.adopt_m1_derived_start()
         print("[M1 manual] start adopted -> M1 start / M0 goal. 'Plan Movement' on M1 runs "
               "the BiRRT from it; Movement 0 -> 'Plan Movement' drives the arms there.")
@@ -7344,30 +7464,31 @@ class HuskyMonitor(Node):
             # guard the sliders above need does not apply here.
             self.m1_home_anchor_slider = Slider(
                 "M1 home anchor (0:all,1:horiz,2:vert,3:back)",
-                lambda v: setattr(self, '_m1_home_anchor_idx', int(round(float(v)))),
+                self._on_m1_anchor_slider,
                 0, len(M1_HOME_ANCHOR_CHOICES) - 1,
                 int(self._m1_home_anchor_idx),
                 integer=True,
             )
             # * Manual M1 start (human in the loop): adjust the anchor's bar
-            # * pose, then Confirm runs the collision-checked IK and adopts it.
+            # * pose -- a see-through orange bar follows the sliders in
+            # * PyBullet -- then Confirm runs the collision-checked IK and adopts it.
             # * Which base axes the two perpendicular shifts are depends on the
             # * anchor (printed on Confirm; table in bar_holding_acc_manual.md).
             self.m1_manual_slide_slider = Slider(
                 "M1 manual start: slide along bar (m)",
-                lambda v: setattr(self, '_m1_manual_slide_m', float(v)),
+                lambda v: self._on_m1_manual_slider('_m1_manual_slide_m', v),
                 -M1_MANUAL_SHIFT_RANGE_M, M1_MANUAL_SHIFT_RANGE_M, float(self._m1_manual_slide_m))
             self.m1_manual_roll_slider = Slider(
                 "M1 manual start: roll about bar (deg)",
-                lambda v: setattr(self, '_m1_manual_roll_deg', float(v)),
+                lambda v: self._on_m1_manual_slider('_m1_manual_roll_deg', v),
                 -M1_MANUAL_ROLL_RANGE_DEG, M1_MANUAL_ROLL_RANGE_DEG, float(self._m1_manual_roll_deg))
             self.m1_manual_perp1_slider = Slider(
                 "M1 manual start: shift perp. 1 (m)",
-                lambda v: setattr(self, '_m1_manual_perp1_m', float(v)),
+                lambda v: self._on_m1_manual_slider('_m1_manual_perp1_m', v),
                 -M1_MANUAL_SHIFT_RANGE_M, M1_MANUAL_SHIFT_RANGE_M, float(self._m1_manual_perp1_m))
             self.m1_manual_perp2_slider = Slider(
                 "M1 manual start: shift perp. 2 (m)",
-                lambda v: setattr(self, '_m1_manual_perp2_m', float(v)),
+                lambda v: self._on_m1_manual_slider('_m1_manual_perp2_m', v),
                 -M1_MANUAL_SHIFT_RANGE_M, M1_MANUAL_SHIFT_RANGE_M, float(self._m1_manual_perp2_m))
             self.buttons.append(Button('M1: Confirm manual start pose (IK check)',
                                        self.confirm_m1_manual_start))

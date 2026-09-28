@@ -44,6 +44,115 @@ def perpendicular_base_axes(bar_axis_mb) -> list:
     return [(label, vec) for label, vec in BASE_AXES if abs(float(np.dot(vec, axis))) < 0.5]
 
 
+def goal_geometry(planner, state, active_bar_id: str, goal_conf, joint_names_12,
+                  robot_puid: int, arm_joints, tool_link_left: int, tool_link_right: int):
+    """Everything about the goal that a manual bar pose is built from.
+
+    Read the same way ``_derive_constrained_start_for_plan`` (api.py) does: the
+    bar hangs off one tool0 link with an authored attachment frame; FK at the
+    goal gives the bar pose and both grasps. All mobile-base-frame quantities
+    are base independent, so a caller may cache them per movement.
+
+    Args:
+        planner: the compas_fab ``PyBulletPlanner`` holding the design cell.
+        state (RobotCellState): M1's start state (a full configuration present,
+            the bar attached to a tool0 link). It is pushed to the planner.
+        active_bar_id (str): the held bar's rigid-body name.
+        goal_conf: M1's goal configuration (compas ``Configuration`` or 12-sequence).
+        joint_names_12: the twelve arm joint names, left arm first.
+        robot_puid (int): PyBullet id of the cfab robot.
+        arm_joints: PyBullet joint indices of the twelve arm joints.
+        tool_link_left (int): PyBullet link index of the left tool0.
+        tool_link_right (int): PyBullet link index of the right tool0.
+
+    Returns:
+        dict | None: ``goal_conf`` (12-vector), ``world_from_bar_goal``,
+        ``grasp_bar_from_left`` / ``grasp_bar_from_right`` (bar-from-tool0),
+        ``world_from_mobile_base``, ``mb_from_bar_goal``, ``axis_local`` (the
+        bar's right->left grasp axis in the bar frame) and ``grasp_mid_local``
+        (midpoint between the grasps in the bar frame); None when the bar is
+        not attached in the state.
+    """
+    # FK probes read the PyBullet robot where it stands: put it at the state first.
+    planner.set_robot_cell_state(state)
+    bar_state = (state.rigid_body_states or {}).get(active_bar_id)
+    if (bar_state is None or not getattr(bar_state, 'attached_to_link', None)
+            or getattr(bar_state, 'attachment_frame', None) is None):
+        return None
+    goal_arr = np.asarray(_conf12_from_target(goal_conf, joint_names_12), dtype=float)
+    tool0_from_bar = _pp_pose_from_frame(bar_state.attachment_frame)
+    attach_link = pp.link_from_name(robot_puid, bar_state.attached_to_link)
+    world_from_bar_goal = pp.multiply(
+        _fk_link_pose_pp(planner, goal_arr, robot_puid, arm_joints, attach_link), tool0_from_bar)
+    grasp_l = pp.multiply(pp.invert(world_from_bar_goal),
+                          _fk_link_pose_pp(planner, goal_arr, robot_puid, arm_joints, tool_link_left))
+    grasp_r = pp.multiply(pp.invert(world_from_bar_goal),
+                          _fk_link_pose_pp(planner, goal_arr, robot_puid, arm_joints, tool_link_right))
+    base_frame = getattr(state, 'robot_base_frame', None)
+    world_from_mb = _pp_pose_from_frame(base_frame) if base_frame is not None else IDENTITY_POSE
+    mb_from_bar_goal = pp.multiply(pp.invert(world_from_mb), world_from_bar_goal)
+    # ! The bar's axis for the sliders is the right->left grasp direction in
+    # ! the bar frame (what the anchors align), not the bar's local Z: some
+    # ! exported bar frames point Z the other way, and "+slide" must always
+    # ! mean "toward the left gripper's end".
+    axis_local = np.asarray(grasp_l[0], dtype=float) - np.asarray(grasp_r[0], dtype=float)
+    axis_local /= max(1e-9, float(np.linalg.norm(axis_local)))
+    grasp_mid_local = 0.5 * (np.asarray(grasp_l[0], dtype=float) + np.asarray(grasp_r[0], dtype=float))
+    return {
+        'goal_conf': goal_arr, 'world_from_bar_goal': world_from_bar_goal,
+        'grasp_bar_from_left': grasp_l, 'grasp_bar_from_right': grasp_r,
+        'world_from_mobile_base': world_from_mb, 'mb_from_bar_goal': mb_from_bar_goal,
+        'axis_local': axis_local, 'grasp_mid_local': grasp_mid_local,
+    }
+
+
+def bar_pose_mb(geom: dict, anchor: str, slide_m: float = 0.0, roll_deg: float = 0.0,
+                perp1_m: float = 0.0, perp2_m: float = 0.0) -> dict:
+    """The operator's bar pose in the mobile-base frame (pure geometry, no IK).
+
+    Canonical pose of the carry anchor, then the adjustments in this order:
+    roll about the bar's axis (re-anchoring keeps the grasp midpoint on the
+    anchor point), slide along the axis, and the two shifts along the base
+    axes perpendicular to the bar.
+
+    Args:
+        geom (dict): from ``goal_geometry``.
+        anchor (str): a ``HOME_BAR_ANCHORS`` label.
+        slide_m (float): shift along the bar's axis, metres (+ toward the
+            left gripper's end).
+        roll_deg (float): turn about the bar's own axis, degrees.
+        perp1_m (float): shift along the first perpendicular base axis, metres.
+        perp2_m (float): shift along the second perpendicular base axis, metres.
+
+    Returns:
+        dict: ``pos`` / ``quat`` (the bar frame in the mobile-base frame),
+        ``bar_mid_mb`` (the point midway between the grippers) and
+        ``perp_axes`` (labels of the two perpendicular base axes).
+    """
+    # Kept local like the monitor's own core imports: core pulls in the whole
+    # RRT stack, which the monitor otherwise never imports at module level.
+    from husky_assembly_tamp.motion_planner.dual_arm_task_space_rrt.core import (
+        HOME_BAR_ANCHORS, home_bar_anchor_pose_mb,
+    )
+    grasp_l, grasp_r = geom['grasp_bar_from_left'], geom['grasp_bar_from_right']
+    axis_local = np.asarray(geom['axis_local'], dtype=float)
+    pos, quat = home_bar_anchor_pose_mb(geom['mb_from_bar_goal'], grasp_l, grasp_r, anchor=anchor)
+    if abs(roll_deg) > 1e-9:
+        roll = pp.quat_from_axis_angle(tuple(axis_local.tolist()), float(np.deg2rad(roll_deg)))
+        quat = pp.multiply(((0.0, 0.0, 0.0), tuple(quat)), ((0.0, 0.0, 0.0), tuple(roll)))[1]
+        pos, quat = home_bar_anchor_pose_mb(geom['mb_from_bar_goal'], grasp_l, grasp_r,
+                                            bar_quat_override=tuple(quat), anchor=anchor)
+    rotation = np.asarray(pp.matrix_from_quat(quat), dtype=float)
+    pos = np.asarray(pos, dtype=float) + slide_m * (rotation @ axis_local)
+    perps = perpendicular_base_axes(HOME_BAR_ANCHORS[anchor]['bar_axis_mb'])
+    pos = pos + perp1_m * perps[0][1] + perp2_m * perps[1][1]
+    bar_mid_mb = pos + rotation @ np.asarray(geom['grasp_mid_local'], dtype=float)
+    return {
+        'pos': tuple(pos.tolist()), 'quat': tuple(float(v) for v in quat),
+        'bar_mid_mb': tuple(bar_mid_mb.tolist()), 'perp_axes': (perps[0][0], perps[1][0]),
+    }
+
+
 def manual_m1_start(planner, state, active_bar_id: str, goal_conf, joint_names_12,
                     robot_puid: int, arm_joints, tool_link_left: int, tool_link_right: int, *,
                     anchor: str = 'horizontal', slide_m: float = 0.0, roll_deg: float = 0.0,
@@ -87,11 +196,8 @@ def manual_m1_start(planner, state, active_bar_id: str, goal_conf, joint_names_1
         the goal's branch, for drawing) and ``reseeded`` (True when that
         branch collided and another one was taken).
     """
-    # Kept local like the monitor's own core imports: core pulls in the whole
-    # RRT stack, which the monitor otherwise never imports at module level.
     from husky_assembly_tamp.motion_planner.dual_arm_task_space_rrt.core import (
-        HOME_BAR_ANCHORS, home_bar_anchor_pose_mb, resolve_home_anchors,
-        solve_endpoint_dual_arm_ik,
+        resolve_home_anchors, solve_endpoint_dual_arm_ik,
     )
     result = {
         'start_conf': None, 'goal_conf': None,
@@ -100,37 +206,14 @@ def manual_m1_start(planner, state, active_bar_id: str, goal_conf, joint_names_1
         'bar_start_mb': None, 'bar_mid_mb': None, 'anchor': None, 'perp_axes': None,
         'reason': None, 'collision_conf': None, 'reseeded': False,
     }
-    # FK probes read the PyBullet robot where it stands: put it at the state first.
-    planner.set_robot_cell_state(state)
-
-    # * Goal geometry, the same way _derive_constrained_start_for_plan reads it
-    # * (api.py): the bar hangs off one tool0 link with an authored attachment
-    # * frame; FK at the goal gives the bar pose and both grasps.
-    bar_state = (state.rigid_body_states or {}).get(active_bar_id)
-    if (bar_state is None or not getattr(bar_state, 'attached_to_link', None)
-            or getattr(bar_state, 'attachment_frame', None) is None):
+    geom = goal_geometry(planner, state, active_bar_id, goal_conf, joint_names_12,
+                         robot_puid, arm_joints, tool_link_left, tool_link_right)
+    if geom is None:
         result['reason'] = 'bar_not_attached'
         return result
-    goal_arr = np.asarray(_conf12_from_target(goal_conf, joint_names_12), dtype=float)
-    tool0_from_bar = _pp_pose_from_frame(bar_state.attachment_frame)
-    attach_link = pp.link_from_name(robot_puid, bar_state.attached_to_link)
-    world_from_bar_goal = pp.multiply(
-        _fk_link_pose_pp(planner, goal_arr, robot_puid, arm_joints, attach_link), tool0_from_bar)
-    grasp_l = pp.multiply(pp.invert(world_from_bar_goal),
-                          _fk_link_pose_pp(planner, goal_arr, robot_puid, arm_joints, tool_link_left))
-    grasp_r = pp.multiply(pp.invert(world_from_bar_goal),
-                          _fk_link_pose_pp(planner, goal_arr, robot_puid, arm_joints, tool_link_right))
-    base_frame = getattr(state, 'robot_base_frame', None)
-    world_from_mb = _pp_pose_from_frame(base_frame) if base_frame is not None else IDENTITY_POSE
-    mb_from_bar_goal = pp.multiply(pp.invert(world_from_mb), world_from_bar_goal)
-    # ! The bar's axis for the sliders is the right->left grasp direction in
-    # ! the bar frame (what the anchors align), not the bar's local Z: some
-    # ! exported bar frames point Z the other way, and "+slide" must always
-    # ! mean "toward the left gripper's end".
-    axis_local = np.asarray(grasp_l[0], dtype=float) - np.asarray(grasp_r[0], dtype=float)
-    axis_local /= max(1e-9, float(np.linalg.norm(axis_local)))
-    grasp_mid_local = 0.5 * (np.asarray(grasp_l[0], dtype=float) + np.asarray(grasp_r[0], dtype=float))
-    result.update(goal_conf=goal_arr, world_from_bar_goal=world_from_bar_goal,
+    goal_arr, grasp_l, grasp_r = geom['goal_conf'], geom['grasp_bar_from_left'], geom['grasp_bar_from_right']
+    world_from_mb = geom['world_from_mobile_base']
+    result.update(goal_conf=goal_arr, world_from_bar_goal=geom['world_from_bar_goal'],
                   grasp_bar_from_left=grasp_l, grasp_bar_from_right=grasp_r)
 
     anchors = resolve_home_anchors(None) if anchor in (None, 'all') else [anchor]
@@ -138,25 +221,12 @@ def manual_m1_start(planner, state, active_bar_id: str, goal_conf, joint_names_1
     rng = np.random.default_rng(0)
     try:
         for label in anchors:
-            # Canonical pose for the anchor, then the operator's adjustments:
-            # roll first (re-anchoring keeps the grasp midpoint on the anchor
-            # point), then the shifts.
-            pos, quat = home_bar_anchor_pose_mb(mb_from_bar_goal, grasp_l, grasp_r, anchor=label)
-            if abs(roll_deg) > 1e-9:
-                roll = pp.quat_from_axis_angle(tuple(axis_local.tolist()), float(np.deg2rad(roll_deg)))
-                quat = pp.multiply(((0.0, 0.0, 0.0), tuple(quat)), ((0.0, 0.0, 0.0), tuple(roll)))[1]
-                pos, quat = home_bar_anchor_pose_mb(mb_from_bar_goal, grasp_l, grasp_r,
-                                                    bar_quat_override=tuple(quat), anchor=label)
-            pos = np.asarray(pos, dtype=float)
-            pos = pos + slide_m * (np.asarray(pp.matrix_from_quat(quat), dtype=float) @ axis_local)
-            perps = perpendicular_base_axes(HOME_BAR_ANCHORS[label]['bar_axis_mb'])
-            pos = pos + perp1_m * perps[0][1] + perp2_m * perps[1][1]
-            bar_start_mb = (tuple(pos.tolist()), tuple(float(v) for v in quat))
+            pose = bar_pose_mb(geom, label, slide_m=slide_m, roll_deg=roll_deg,
+                               perp1_m=perp1_m, perp2_m=perp2_m)
+            bar_start_mb = (pose['pos'], pose['quat'])
             world_from_bar_start = pp.multiply(world_from_mb, bar_start_mb)
-            bar_mid_mb = pos + np.asarray(pp.matrix_from_quat(quat), dtype=float) @ grasp_mid_local
-            result.update(anchor=label, perp_axes=(perps[0][0], perps[1][0]),
-                          bar_start_mb=bar_start_mb, bar_mid_mb=tuple(bar_mid_mb.tolist()),
-                          world_from_bar_start=world_from_bar_start)
+            result.update(anchor=label, perp_axes=pose['perp_axes'], bar_start_mb=bar_start_mb,
+                          bar_mid_mb=pose['bar_mid_mb'], world_from_bar_start=world_from_bar_start)
 
             # * IK twice with the same solver: first for reachability, then with
             # * the cell collision check; the difference tells the operator

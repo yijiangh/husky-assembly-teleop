@@ -82,6 +82,9 @@ How to read a run: `doc/m1_derive_dashboard.md`. Session workflow:
   'Plan Movement' on M1 then runs the BiRRT from that stored start
   (`derive_start=False`, unchanged); Step B's transfer loop never used the
   derivation and is unchanged.
+- **Preview (2026-09-28):** a see-through orange clone of the bar follows the
+  sliders in PyBullet (`_preview_m1_manual_bar`: cached goal geometry +
+  `bar_pose_mb`, no IK), placed at the live base; blanked once Confirm succeeds.
 - **Planner change:** none — the sweep and the BiRRT are untouched; the manual
   path only replaces *how the start configuration is chosen*.
 - **Verification (headless, 260716 B3, authored and live mocap base alike):**

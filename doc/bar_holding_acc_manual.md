@@ -201,6 +201,10 @@ the automatic derivation (a 120 s sweep) is kept as a fallback, see the note.
      | vertical | base z (up) | forward (x) | left (y) |
      | back | base x (forward) | left (y) | up (z) |
 
+   - While you drag any of these sliders a **see-through orange bar** in
+     PyBullet shows the pose you are describing, placed at the live base (no
+     IK yet — the arms appear after Confirm; anchor `0` previews horizontal).
+     Nudge a slider once after Load Movement to make it appear.
    - **M1: Confirm manual start pose (IK check)** — solves the dual-arm IK
      that holds the bar there with the same grasps as at the goal (branch
      nearest the goal), checks it against the full cell, and prints the bar
