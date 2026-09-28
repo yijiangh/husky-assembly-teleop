@@ -379,6 +379,13 @@ Repeat for each bar-action. Nothing here dismounts the bar.
   slide it along its axis, or shift it forward/up with the perpendicular
   sliders; `vertical` hangs the bar in front of the base with its lower end
   near the floor, `back` carries it over the robot.
+- **`GOAL COLLISION: CC.4 between attached rigid body 'bar_…' and rigid body
+  'joint_…_male'`** on 3b — the bar and its own fitted joints were re-attached
+  for the mount-once test without the allowed-touch lists of the movement they
+  were copied from, so cfab checked the two overlapping held bodies against
+  each other. Fixed on 2026-09-28 (`_ensure_bar_attached_for_mocap` now carries
+  the touch lists along and lets every held body touch every other held body);
+  if it reappears, the loaded movement's M2 sibling lacks those lists.
 - **`[transfer plan] constrained plan failed`** — click **3b** again (the
   planner is randomized), or improve the base alignment first. The very first
   transfer of a session (bar-loading pose → assembled pose) is the longest path

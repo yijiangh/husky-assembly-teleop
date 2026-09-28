@@ -3532,7 +3532,19 @@ class HuskyMonitor(Node):
             # arm it must be collision-checked and repositioned again --
             # compas_fab skips both steps for a hidden body.
             target_rb.is_hidden = False
+            # ! The allowed-collision lists come along too. The authored release
+            # ! state lets the bar and its joints touch only the tools; once
+            # ! both are held again they overlap each other by design (the
+            # ! joint is fitted onto the bar), and cfab's CC.4 checks every
+            # ! held body against every other body unless one lists the other.
+            target_rb.touch_bodies = sorted(set(target_rb.touch_bodies or []) | set(drb.touch_bodies or []))
+            target_rb.touch_links = sorted(set(target_rb.touch_links or []) | set(drb.touch_links or []))
             injected.append(name)
+        # Held bodies may touch each other (bar <-> its fitted joints), both ways.
+        held = [n for n, rb in rb_states.items() if rb.attached_to_link]
+        for name in held:
+            rb_states[name].touch_bodies = sorted(
+                set(rb_states[name].touch_bodies or []) | (set(held) - {name}))
         self.grasp_link_from_bar = bar_rb.attachment_frame
         self.get_logger().info(
             f"[mocap-acc] injected held attachment for {len(injected)} body(ies) "
@@ -3672,11 +3684,14 @@ class HuskyMonitor(Node):
                     path, state,
                     np.concatenate([self.goal_arm_pose[0], self.goal_arm_pose[1]]))
 
-                # Step 5: pre-execution safeguard. Plot the planned path's
-                # joint continuity + bar-hold EE drift so the operator can
-                # confirm before running it (the servoing loop suppresses this
-                # on its small later-iteration corrections). `state` is the
-                # live-base template used for the plan, so its FK matches.
+                # Step 5: pre-execution preview + safeguard. The planned joint
+                # values always (that is the preview itself, cheap); the joint
+                # continuity + bar-hold EE drift curves when asked, so the
+                # operator can confirm before running it (the servoing loop
+                # suppresses those on its small later-iteration corrections).
+                # `state` is the live-base template used for the plan, so its
+                # FK matches.
+                self.show_planned_joint_values(path, label=mv.movement_id)
                 if show_validation:
                     self.show_transfer_validation(
                         path, state, label=mv.movement_id)
