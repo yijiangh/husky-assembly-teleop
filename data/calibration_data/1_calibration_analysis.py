@@ -17,7 +17,7 @@ from skspatial.plotting import plot_3d
 import matplotlib.pyplot as plt
 import pybullet_planning as pp
 
-from config_loader import load_config, get_robot_urdf, get_shoulder_pan_joint_name, get_arm_base_link_name, HERE
+from config_loader import load_config, get_robot_urdf, get_shoulder_pan_joint_name, get_arm_base_link_name, CALIB_DATA_DIR
 from logging_utils import setup_logger
 
 # Load configuration
@@ -31,13 +31,13 @@ SHOULDER_PAN_JOINT_NAME = get_shoulder_pan_joint_name(robot_name, arm)
 ARM_BASE_LINK_NAME = get_arm_base_link_name(robot_name, arm)
 
 # Configure logging with colored output
-log_file = os.path.join(HERE, date_folder, 'calibration_analysis_log.txt')
+log_file = os.path.join(CALIB_DATA_DIR, date_folder, 'calibration_analysis_log.txt')
 logger = setup_logger(log_file=log_file)
 
 # File paths
-j0_data_file_path = os.path.join(HERE, date_folder, 'j0', 'j0_analysis.json')
-j1_data_file_path = os.path.join(HERE, date_folder, 'j1', 'j1_analysis.json')
-output_dir = os.path.join(HERE, date_folder)
+j0_data_file_path = os.path.join(CALIB_DATA_DIR, date_folder, 'j0', 'j0_analysis.json')
+j1_data_file_path = os.path.join(CALIB_DATA_DIR, date_folder, 'j1', 'j1_analysis.json')
+output_dir = os.path.join(CALIB_DATA_DIR, date_folder)
 
 
 def traj_label(file_name, fallback_idx=0):

@@ -99,7 +99,7 @@ python src/husky-assembly-teleop/data/calibration_data/export_mocap_cameras.py -
 
 This writes `<stem>_cameras.json` + `<stem>_cameras.csv` into the same Drive folder.
 
-> **Note**: calibration trajectory files (`data/calibration_data/<date>/…`) do **not**
+> **Note**: calibration trajectory files (gdrive `data_experiment/calibration_data/<date>/…`) do **not**
 > contain camera inventory — only the GUI button or a mocap_experiments take produce it.
 
 ### 2.2 What the export file contains
@@ -168,7 +168,9 @@ same frame as the cameras, so everything overlays.
 Run the calibration pipeline (see [`calibration_manual.md` §7](calibration_manual.md#7-running-the-calibration-pipeline)).
 Step 1 of the pipeline,
 [`0_circle_fitting.py`](../data/calibration_data/0_circle_fitting.py), writes each
-batch's `{batch}_analysis.json` into `data/calibration_data/<date>/<batch>/`.
+batch's `{batch}_analysis.json` into the gdrive data folder
+`data_experiment/calibration_data/<date>/<batch>/` (the scripts stay in the repo; see
+[`calibration_manual.md` §4.3](calibration_manual.md#43-data-folder-structure)).
 
 Each `_analysis.json` holds, per take:
 - `file_name`

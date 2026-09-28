@@ -21,7 +21,7 @@ import pybullet as p
 
 from config_loader import (
     load_config, get_robot_urdf, get_joint_names,
-    get_tool0_link_name, HERE
+    get_tool0_link_name, CALIB_DATA_DIR
 )
 from logging_utils import setup_logger
 
@@ -34,8 +34,8 @@ ARM = config['arm']
 USE_GUI = config['use_gui']
 
 # File paths
-VALIDATION_DATA_FOLDER = os.path.join(HERE, DATE_FOLDER, VALIDATION_DATA_BATCH)
-CALIBRATION_FILE = os.path.join(HERE, DATE_FOLDER, f'calibrated_transformation_{ROBOT_NAME}_rhino.json')
+VALIDATION_DATA_FOLDER = os.path.join(CALIB_DATA_DIR, DATE_FOLDER, VALIDATION_DATA_BATCH)
+CALIBRATION_FILE = os.path.join(CALIB_DATA_DIR, DATE_FOLDER, f'calibrated_transformation_{ROBOT_NAME}_rhino.json')
 ROBOT_URDF = get_robot_urdf(ROBOT_NAME)
 
 # Configure logging with colored console output

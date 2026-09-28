@@ -42,8 +42,8 @@ SHOW_TIME = False
 SHOW_ERROR_DISTANCE = True  # append "  <err>mm" to outlier point labels
 
 _EXPORT_DIR = (
-    "/home/su/Insync/yijiang94817@gmail.com/Google Drive - Shared with me/"
-    "2025-03 Husky Assembly/data_experiment/visualise_calibration_to_rhino"
+    "/home/su/Insync/2025-03 Husky Assembly/data_experiment/"
+    "visualise_calibration_to_rhino"
 )
 ANALYSIS_JSON = _EXPORT_DIR + "/" + DATE + "/" + BATCH + "_analysis.json"
 # =======================================================================

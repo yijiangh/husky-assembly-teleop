@@ -31,8 +31,14 @@ location, which differ per machine.
 
 | What | Where | Note |
 |------|-------|------|
-| `DESIGN_DATA_DIRECTORY`, `EXPERIMENT_DATA_DIRECTORY` | [`__init__.py:53-54`](../husky_assembly_teleop/__init__.py#L53) | gdrive (Insync) mount paths. |
-| `MOCAP_CAMERA_EXPORT_DIR` | [`husky_monitor.py:64-67`](../husky_assembly_teleop/husky_monitor.py#L64) | where the `collect cameras data` button drops JSON+CSV. -> **TO BE UPDATED**|
+| `DESIGN_DATA_DIRECTORY`, `EXPERIMENT_DATA_DIRECTORY` | [`__init__.py:55-56`](../husky_assembly_teleop/__init__.py#L55) | gdrive (Insync) mount paths. |
+| `CALIBRATION_DATA_DIRECTORY` | [`__init__.py:60`](../husky_assembly_teleop/__init__.py#L60) | where the dated calibration datasets live (`EXPERIMENT_DATA_DIRECTORY/calibration_data`, see [§4.3](#43-data-folder-structure)). Derived -- nothing to edit once the mount path above is right. |
+| `MOCAP_CAMERA_EXPORT_DIR` | [`husky_monitor.py:239`](../husky_assembly_teleop/husky_monitor.py#L239) | where the `collect cameras data` button drops JSON+CSV (`EXPERIMENT_DATA_DIRECTORY/visualise_mocap_camera`). Derived. |
+| gdrive root in standalone scripts | `export_mocap_cameras.py`, `rhino8_import_outliers.py`, `robot_skeleton_viewer.py` in `data/calibration_data/` | these do not import the package (they also run inside Rhino), so the gdrive path is a plain string -- edit it by hand. |
+
+> **Where things live**: the calibration **scripts** stay in the repo under
+> `data/calibration_data/`; the recorded **data** (the dated `YYYYMMDD/` folders)
+> lives on the gdrive under `data_experiment/calibration_data/` (see [§4.3](#43-data-folder-structure)).
 
 ### 0.2 Robot Reference Table
 
@@ -102,7 +108,7 @@ The workstation must be on the same network as the OptiTrack PC to receive strea
 | Workstation (your PC) | your own IP (e.g. `192.168.0.25`) |
 | OptiTrack PC (`DESKTOP-T1HDH98`) | `192.168.0.28` |
 
-These are configured in the code at [`husky_monitor.py:216-219`](../husky_assembly_teleop/husky_monitor.py#L216-L219):
+These are configured in the code at [`husky_monitor.py:233-236`](../husky_assembly_teleop/husky_monitor.py#L233-L236):
 ```python
 CLIENT_IP = '192.168.0.25'
 MOCAP_IP = '192.168.0.28'
@@ -218,7 +224,7 @@ This section covers starting up the Husky robot and the UR5e arm ROS2 drivers. M
 
    > To use a **virtual robot** (no real arm, for testing), do NOT change the launch
    > command. Instead set `FAKE_HARDWARE=1` on the workstation in
-   > [`husky_monitor.py:79`](../husky_assembly_teleop/husky_monitor.py#L79).
+   > [`husky_monitor.py:256`](../husky_assembly_teleop/husky_monitor.py#L256).
 
 ### 2.4 Verify ROS2 Connection
 
@@ -307,19 +313,19 @@ Before collecting data, verify these settings in the code match your setup.
 |------|-------|------|
 | base `mocap_id` (Streaming IDs) | [`husky_world.py:184/191/198`](../husky_assembly_teleop/husky_world.py#L184) | per ROS domain (see [§0.2](#02-robot-reference-table)) ; match Motive **properties > Streaming ID** (see [§0.2](#02-robot-reference-table)) |
 | calib-tool IDs `1862` L / `1861` R | [`husky_world.py:329/333`](../husky_assembly_teleop/husky_world.py#L329) | match Motive (see [§0.2](#02-robot-reference-table)) . **Which arm is calibrated = which `calib_tool_*` block is enabled** — comment out the unused arm for a single-arm run |
-| `CALIBRATION_DATE` + `CALIBRATION_ANALYSIS_DATE` | [`__init__.py:75`](../husky_assembly_teleop/__init__.py#L75) and [`:80`](../husky_assembly_teleop/__init__.py#L80) | both sit next to each other in **one file**; set both to today's date folder (must exist with a `config.yaml`). Nothing to edit in `config_loader.py` — its `DEFAULT_DATE_FOLDER` just re-exports `CALIBRATION_ANALYSIS_DATE` |
-| `CALIBRATION_STATE_SETS` (per arm idx) | [`husky_monitor.py:111-113`](../husky_assembly_teleop/husky_monitor.py#L72) | verify the calib traj-state folder for your arm exists |
+| `CALIBRATION_DATE` + `CALIBRATION_ANALYSIS_DATE` | [`__init__.py:80`](../husky_assembly_teleop/__init__.py#L80) and [`:85`](../husky_assembly_teleop/__init__.py#L85) | both sit next to each other in **one file**; set both to today's date folder, which must exist on the gdrive (`data_experiment/calibration_data/YYYYMMDD/`, [§4.3](#43-data-folder-structure)) with a `config.yaml`. Nothing to edit in `config_loader.py` — its `DEFAULT_DATE_FOLDER` just re-exports `CALIBRATION_ANALYSIS_DATE` |
+| `CALIBRATION_STATE_SETS` (per arm idx) | [`husky_monitor.py:245`](../husky_assembly_teleop/husky_monitor.py#L245) | verify the calib traj-state folder for your arm exists |
 
 
 **Mode flags** — class `HuskyMonitor` switches, each set to `0` or `1`:
 
 | Flag | Where | Set to | Note |
 |------|-------|--------|------|
-| `USE_MOCAP` | [`husky_monitor.py:116`](../husky_assembly_teleop/husky_monitor.py#L116) | `1` | `0` = simulated; `1` = stream real mocap|
-| `FAKE_HARDWARE` | [`husky_monitor.py:117`](../husky_assembly_teleop/husky_monitor.py#L117) | `0` | `0` = real robot; `1` = virtual robot. Keep consistent with `USE_MOCAP` by hand |
-| `USE_CELL_STATE_BASE_POSE` | [`husky_monitor.py:136`](../husky_assembly_teleop/husky_monitor.py#L136) | `0` | `0` = base tracks mocap (normal); `1` = pin base to loaded cell state |
-| `CALIBRATION` | [`husky_monitor.py:140`](../husky_assembly_teleop/husky_monitor.py#L140) | `1` | `1` = calibration mode enabled |
-| `PUNCH_CALIB_VALIDATION` | [`husky_monitor.py:194`](../husky_assembly_teleop/husky_monitor.py#L194) | `0` | `1` only for a punch-validation session (switches EE to punch tips) |
+| `USE_MOCAP` | [`husky_monitor.py:255`](../husky_assembly_teleop/husky_monitor.py#L255) | `1` | `0` = simulated; `1` = stream real mocap|
+| `FAKE_HARDWARE` | [`husky_monitor.py:256`](../husky_assembly_teleop/husky_monitor.py#L256) | `0` | `0` = real robot; `1` = virtual robot. Keep consistent with `USE_MOCAP` by hand |
+| `USE_CELL_STATE_BASE_POSE` | [`husky_monitor.py:287`](../husky_assembly_teleop/husky_monitor.py#L287) | `0` | `0` = base tracks mocap (normal); `1` = pin base to loaded cell state |
+| `CALIBRATION` | [`husky_monitor.py:291`](../husky_assembly_teleop/husky_monitor.py#L291) | `1` | `1` = calibration mode enabled |
+| `PUNCH_CALIB_VALIDATION` | [`husky_monitor.py:362`](../husky_assembly_teleop/husky_monitor.py#L362) | `0` | `1` only for a punch-validation session (switches EE to punch tips) |
 
 ### 4.1 Understanding the GUI Controls
 
@@ -432,10 +438,25 @@ Then switch the **Batch slider to `1` (J1)** and repeat the entire process for a
 
 ### 4.3 Data Folder Structure
 
-The collected data is automatically organized into folders:
+The collected data is **not** stored in the repo. It goes to the gdrive (Insync)
+folder `CALIBRATION_DATA_DIRECTORY` ([`__init__.py:60`](../husky_assembly_teleop/__init__.py#L60)):
 
 ```
-data/calibration_data/
+/home/su/Insync/2025-03 Husky Assembly/data_experiment/calibration_data/
+```
+
+The rest of this manual refers to it as **`$CALIB`**:
+
+```bash
+CALIB="/home/su/Insync/2025-03 Husky Assembly/data_experiment/calibration_data"
+```
+
+The analysis scripts, the `config.yaml` template (`_data_template/`) and
+`debug_utils/` stay in the repo under `data/calibration_data/`. Inside `$CALIB`
+the data is automatically organized into folders:
+
+```
+$CALIB/
   └── YYYYMMDD/                          # Date folder (e.g., 20260126)
       ├── config.yaml                    # Configuration file
       ├── j0/                            # J0 batch data
@@ -510,7 +531,7 @@ Punch validation verifies the calibration accuracy by measuring how consistently
    punch_tool:
      offset_xyz: [X, Y, Z]   # Values from 4-point calibration, in meters
    ```
-   The config file is located at `data/calibration_data/YYYYMMDD/config.yaml`. Save the file after editing it.
+   The config file is located at `$CALIB/YYYYMMDD/config.yaml` on the gdrive ([§4.3](#43-data-folder-structure)). Save the file after editing it.
 
 <!-- SCREENSHOT: UR teach pendant showing 4-point TCP calibration procedure -->
 <!-- SCREENSHOT: Punch tool mounted on the robot flange -->
@@ -553,7 +574,7 @@ Aim for about **4-6 takes** from diverse base positions. Collect more if you wan
 When done collecting:
 
 1. Click **"Save Punch Validation Data"** in the GUI.
-2. The data will be saved to `data/calibration_data/YYYYMMDD/punch_validation/punch_validation_YYYYMMDD_HHMM.json`.
+2. The data will be saved to `$CALIB/YYYYMMDD/punch_validation/punch_validation_<arm>_YYYYMMDD_HHMM.json` on the gdrive ([§4.3](#43-data-folder-structure)).
 
 ---
 
@@ -563,14 +584,18 @@ After collecting all J0 and J1 data (and optionally validation data), run the ca
 
 ### 7.1 Prepare the Config File
 
-1. Navigate to the calibration data folder:
+1. Navigate to the calibration **data** folder on the gdrive ([§4.3](#43-data-folder-structure)):
    ```bash
-   cd ~/ros2_ws/src/husky-assembly-teleop/data/calibration_data/
+   CALIB="/home/su/Insync/2025-03 Husky Assembly/data_experiment/calibration_data"
+   cd "$CALIB"
    ```
 
-2. If this is a new date folder, **copy an existing `config.yaml`** into your date folder:
+2. If this is a new date folder, **copy an existing `config.yaml`** into your date folder
+   (or start from the template kept in the repo):
    ```bash
+   mkdir -p YYYYMMDD
    cp 20260126/config.yaml YYYYMMDD/config.yaml
+   # or: cp ~/ros2_ws/src/husky-assembly-teleop/data/calibration_data/_data_template/config.yaml YYYYMMDD/config.yaml
    ```
 
 3. Edit the config file to match your setup:
@@ -606,7 +631,7 @@ After collecting all J0 and J1 data (and optionally validation data), run the ca
 
 ### 7.2 Set the Date Folder
 
-Both calibration dates live in **one file** — [`husky_assembly_teleop/__init__.py`](../husky_assembly_teleop/__init__.py#L75):
+Both calibration dates live in **one file** — [`husky_assembly_teleop/__init__.py`](../husky_assembly_teleop/__init__.py#L80):
 
 ```bash
 nano ~/ros2_ws/src/husky-assembly-teleop/husky_assembly_teleop/__init__.py
@@ -639,9 +664,12 @@ working on when it starts:
 cd ~/ros2_ws
 source venv/bin/activate
 source install/setup.bash
-cd ~/ros2_ws/src/husky-assembly-teleop/data/calibration_data/
+cd ~/ros2_ws/src/husky-assembly-teleop/data/calibration_data/   # the scripts (repo)
 python run_calibration_pipeline.py
 ```
+
+The scripts run from the repo but read and write the **data** in
+`$CALIB/YYYYMMDD/` on the gdrive ([§4.3](#43-data-folder-structure)).
 
 The pipeline runs 4 steps in sequence:
 
@@ -653,8 +681,10 @@ The pipeline runs 4 steps in sequence:
 | 4 | `3_verify_calibration.py` | Verify calibration quality using validation data |
 
 After completion, you should see:
-- `calibrated_transformation_0806.json` in the date folder (the main output)
-- Various analysis plots (`.png` files)
+- `calibrated_transformation_<robot>_rhino.json` (e.g. `..._0806_rhino.json`) in
+  the gdrive date folder `$CALIB/YYYYMMDD/` -- the main output, and the file the
+  monitor loads for `CALIBRATION_DATE`
+- Various analysis plots (`.png` files) and logs, next to the data they came from
 - A pipeline summary showing all steps passed
 
 <!-- SCREENSHOT: Terminal showing pipeline running and completing successfully -->
@@ -667,16 +697,17 @@ After completion, you should see:
 After the calibration pipeline has completed and you have collected punch validation data:
 
 ```bash
-cd ~/ros2_ws/src/husky-assembly-teleop/data/calibration_data/
+cd ~/ros2_ws/src/husky-assembly-teleop/data/calibration_data/   # the scripts (repo)
 python 4_punch_validation.py
 ```
 
 The script uses the active date folder from `CALIBRATION_ANALYSIS_DATE`
-([`__init__.py:80`](../husky_assembly_teleop/__init__.py#L80)) — it prints it on
+([`__init__.py:85`](../husky_assembly_teleop/__init__.py#L85)) — it prints it on
 the first line — and reads
-`data/calibration_data/YYYYMMDD/punch_validation/`. If both arms have punch
+`$CALIB/YYYYMMDD/punch_validation/` on the gdrive ([§4.3](#43-data-folder-structure)).
+The plots are written into that same folder. If both arms have punch
 validation files in that folder, set `punch_validation.arm` in
-`data/calibration_data/YYYYMMDD/config.yaml` to `left` or `right`. This setting
+`$CALIB/YYYYMMDD/config.yaml` to `left` or `right`. This setting
 is separate from the main `arm` field used in the calibration pipeline.
 
 This script will:
@@ -773,7 +804,7 @@ Work through these in order -- each step tells you whether to stop or continue:
 **To keep working without mocap**, switch the monitor to robot-centric mode --
 the base then comes from each movement's authored `start_state.robot_base_frame`
 instead of being measured. Flip all three flags together in
-[`husky_monitor.py`](../husky_assembly_teleop/husky_monitor.py#L241):
+[`husky_monitor.py`](../husky_assembly_teleop/husky_monitor.py#L255):
 ```python
 USE_MOCAP = 0
 USE_CELL_STATE_BASE_POSE = 1
@@ -803,5 +834,10 @@ BAR_ACTION_MOCAP_ACCURACY_TEST = 0
 ### Pipeline fails at a specific step
 - Check the terminal output for error messages
 - Make sure the `config.yaml` has the correct settings
-- Make sure `CALIBRATION_ANALYSIS_DATE` in [`husky_assembly_teleop/__init__.py`](../husky_assembly_teleop/__init__.py#L80) matches your data folder — every script prints `[config_loader] Using calibration date folder: ...` at startup, so check that line first
-- Verify that the data files exist in the expected subfolders (j0/, j1/)
+- Make sure `CALIBRATION_ANALYSIS_DATE` in [`husky_assembly_teleop/__init__.py`](../husky_assembly_teleop/__init__.py#L85) matches your data folder — every script prints `[config_loader] Using calibration date folder: ...` at startup, so check that line first
+- Verify that the data files exist in the expected subfolders (j0/, j1/) of the **gdrive** date folder `$CALIB/YYYYMMDD/` ([§4.3](#43-data-folder-structure)), not in the repo
+- `Config file not found: ...` → the date folder is missing on this machine: check Insync has finished syncing `data_experiment/calibration_data/`, and that `EXPERIMENT_DATA_DIRECTORY` ([§0.1](#01-new-workstation-setup-one-time)) points at this machine's gdrive mount
+
+### Monitor warns "Base calibration file not found"
+- The monitor loads `calibrated_transformation_<robot>_rhino.json` from `$CALIB/<CALIBRATION_DATE>/` on the gdrive. If it is missing, the base pose runs **uncalibrated**
+- Check that the folder exists and holds that file, that Insync has synced it, and that `EXPERIMENT_DATA_DIRECTORY` ([§0.1](#01-new-workstation-setup-one-time)) is right for this machine

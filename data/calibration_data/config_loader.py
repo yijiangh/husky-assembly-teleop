@@ -4,8 +4,12 @@ Shared configuration loader for calibration pipeline.
 This module provides common configuration and utility functions used across
 all calibration scripts (0_circle_fitting.py through 3_verify_calibration.py).
 
+The dated dataset folders (<date>/config.yaml, j0/, j1/, ...) live on the
+gdrive under CALIB_DATA_DIR, NOT next to these scripts. HERE is only this
+scripts folder (used for sibling scripts and the repo-relative URDF path).
+
 Usage:
-    from config_loader import load_config, HERE
+    from config_loader import load_config, CALIB_DATA_DIR
 
     config = load_config('20250617')  # Pass the date folder name
     # or
@@ -28,7 +32,14 @@ _REPO_ROOT = os.path.abspath(os.path.join(HERE, '..', '..'))
 if _REPO_ROOT not in sys.path:
     sys.path.append(_REPO_ROOT)
 
-from husky_assembly_teleop import CALIBRATION_ANALYSIS_DATE
+from husky_assembly_teleop import CALIBRATION_ANALYSIS_DATE, CALIBRATION_DATA_DIRECTORY, EXPERIMENT_DATA_DIRECTORY
+
+# * Root holding the dated calibration datasets (gdrive). Build every dataset
+# * path as os.path.join(CALIB_DATA_DIR, <date>, ...), never from HERE.
+CALIB_DATA_DIR = CALIBRATION_DATA_DIRECTORY
+
+# Shared gdrive folder where the Rhino/Grasshopper visualisation inputs are staged.
+RHINO_EXPORT_DIR = os.path.join(EXPERIMENT_DATA_DIRECTORY, 'visualise_calibration_to_rhino')
 
 # Date folder every script reads/writes when no folder is passed explicitly.
 # ! To switch datasets, edit CALIBRATION_ANALYSIS_DATE (and usually
@@ -55,7 +66,7 @@ def load_config(date_folder=None):
     # just analysed (the usual source of "why is this the old data?").
     print(f"[config_loader] Using calibration date folder: {date_folder}")
 
-    config_file = os.path.join(HERE, date_folder, 'config.yaml')
+    config_file = os.path.join(CALIB_DATA_DIR, date_folder, 'config.yaml')
     
     if not os.path.exists(config_file):
         raise FileNotFoundError(f"Config file not found: {config_file}")
@@ -73,7 +84,7 @@ def get_data_folder(date_folder=None):
     """Get the path to the data folder for the specified date."""
     if date_folder is None:
         date_folder = DEFAULT_DATE_FOLDER
-    return os.path.join(HERE, date_folder)
+    return os.path.join(CALIB_DATA_DIR, date_folder)
 
 
 def get_robot_urdf(robot_name):

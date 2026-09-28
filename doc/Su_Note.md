@@ -313,12 +313,17 @@ rest builds on them.
 
 ## 8. data/calibration_data/config_loader.py — one place for settings & robot names
 
-- **`DEFAULT_DATE_FOLDER`** (`~line 33`): the constant that picks which dated folder all scripts
+- **`DEFAULT_DATE_FOLDER`** (`~line 48`): the constant that picks which dated folder all scripts
   read/write when no folder is passed. It is **not** edited here — it re-exports
   `CALIBRATION_ANALYSIS_DATE` from `husky_assembly_teleop/__init__.py`, so the live app and these
   offline scripts cannot drift onto different folders. The `sys.path` line above it (`~line 26`) adds
   the repo root so the import also works when a script is run directly, without ROS sourced.
-- **`load_config()`** (`~line 29`): reads `config.yaml` inside the chosen date folder (robot, arm,
+- **`CALIB_DATA_DIR`** (`~line 40`): where the dated datasets live — the gdrive
+  `CALIBRATION_DATA_DIRECTORY` from `husky_assembly_teleop/__init__.py`, **not** this scripts folder.
+  Every script builds its data paths as `os.path.join(CALIB_DATA_DIR, <date>, ...)`; `HERE` (this
+  folder) is only used for sibling scripts and the repo-relative URDF path. `RHINO_EXPORT_DIR` next to
+  it is the gdrive staging folder for the Rhino/Grasshopper viewers.
+- **`load_config()`** (`~line 52`): reads `config.yaml` inside the chosen date folder (robot, arm,
   which batches, etc.) so paths/robot types aren't hard-coded.
 - **Robot-name helpers** (`~lines 87–133`): `get_joint_names`, `get_tool0_link_name`,
   `get_arm_base_link_name`, etc. centralise the "is this the dual-arm 0806 or a single-arm robot, and
@@ -398,15 +403,19 @@ rest builds on them.
 
 - **`DATA_DIRECTORY`** (`~lines 8–52`): tries several locations (installed ROS package, source folder,
   cwd) so the code runs both deployed and standalone.
-- **Hard-coded Google-Drive paths** (`~lines 53–55`): `DESIGN_DATA_DIRECTORY` etc. point at the
+- **Hard-coded Google-Drive paths** (`~lines 55–56`): `DESIGN_DATA_DIRECTORY` etc. point at the
   Insync-mounted Drive and start with `/home/su` — **edit these when moving to another PC** (the mount
   path is machine-specific).
-- **`CALIBRATION_DATE`** (`~line 75`): the dated dataset the **live app** uses — it loads the
+- **`CALIBRATION_DATA_DIRECTORY`** (`~line 60`): `EXPERIMENT_DATA_DIRECTORY/calibration_data` — the
+  gdrive folder holding every dated calibration dataset. The datasets are **not** in the repo any more;
+  only the scripts, `_data_template/` and `debug_utils/` stay in `data/calibration_data/`.
+- **`CALIBRATION_DATE`** (`~line 80`): the dated dataset the **live app** uses — it loads the
   calibrated transform and punch TCP offsets from it, and the Record/Save buttons write new data into
   it. Every part of the app imports this one name, so bumping it repoints everything at a new capture
   (after a restart — it is read once at launch).
-- **`CALIBRATION_ANALYSIS_DATE`** (`~line 80`): the dated dataset the **offline scripts** in
-  `data/calibration_data/` use; `config_loader.DEFAULT_DATE_FOLDER` re-exports it. It sits directly
+- **`CALIBRATION_ANALYSIS_DATE`** (`~line 85`): the dated dataset the **offline scripts** in
+  `data/calibration_data/` use (they read/write it under `CALIBRATION_DATA_DIRECTORY` via
+  `config_loader.CALIB_DATA_DIR`); `config_loader.DEFAULT_DATE_FOLDER` re-exports it. It sits directly
   below `CALIBRATION_DATE` so both dates are chosen in one place — usually the same folder; set them
   apart only to re-analyse an old capture while recording a new one.
 

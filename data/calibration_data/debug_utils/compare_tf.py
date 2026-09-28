@@ -273,7 +273,7 @@ def visualize_transforms(tf1, tf2, results, save_path=None):
 # Add parent directory to path so we can import config_loader
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
-from config_loader import load_config, HERE as CALIBRATION_DATA_DIR
+from config_loader import load_config, CALIB_DATA_DIR as CALIBRATION_DATA_DIR
 
 
 def load_tf_from_json(json_path):
