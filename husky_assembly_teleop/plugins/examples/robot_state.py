@@ -85,12 +85,11 @@ class ExampleRobotStatePlugin(HuskyPlugin):
         """
         now = ctx.now()
         for serial, robot in ctx.world.robots.items():
-            # ! Base pose. Until mocap has sent one valid fix (`has_fix`),
-            #   `position` is only a default, so show dashes. After that, keep
-            #   showing the last pose but grey it out while mocap does not track
-            #   the robot (`tracked` is False).
+            # ! Base pose. None until mocap has sent one valid fix -- numbers()
+            #   shows dashes for None. After that it keeps the last valid pose,
+            #   greyed out while mocap does not track the robot (`tracked`).
             base = robot.base.state
-            pose = base.position if base.has_fix else None
+            pose = base.position
             chips = freshness_chip("mocap", base.last_update_time, now)
             base_lines = values(f"base {numbers(pose, 3, 7, 3)} m", dim=not base.tracked)
 

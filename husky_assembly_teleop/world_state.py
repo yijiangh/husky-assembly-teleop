@@ -36,17 +36,20 @@ class TrackedObject:
 
     Attributes:
         name: Stable identifier, matching the CellObject it corresponds to.
-        position: Position in world frame, metres.
-        orientation: Orientation in world frame, quaternion.
-        tracked: Whether the pose is a live fix. False means stale or never set.
-        last_update_time: ROS time of the most recent observation, seconds.
+        position: Position in world frame, metres. None until the first valid
+            fix, then the last valid one -- the same rule as BaseState.
+        orientation: Orientation in world frame, quaternion (x, y, z, w). Set
+            together with `position`.
+        tracked: Whether the latest sample was valid. Implies `position` is set.
+        last_update_time: ROS time of the most recent observation, seconds, or
+            None before any.
     """
 
     name: str
-    position: np.ndarray = field(default_factory=lambda: np.zeros(3))
-    orientation: np.ndarray = field(default_factory=lambda: np.array([0.0, 0.0, 0.0, 1.0]))
+    position: np.ndarray | None = None
+    orientation: np.ndarray | None = None
     tracked: bool = False
-    last_update_time: float = 0.0
+    last_update_time: float | None = None
 
 
 @dataclass

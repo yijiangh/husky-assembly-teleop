@@ -84,6 +84,12 @@ class HuskyPlugin:
         Called once per tick after every plugin has stepped, inside the
         visualization's atomic block. Assign to handles created in `setup`; do
         not add nodes here.
+
+        ! Display only. Not called at all while the operator has frozen the
+          panels (the Freeze switch at the top), which can last minutes. So
+          nothing that must keep happening goes here: reacting to state,
+          answering a button, safety checks -- those belong in `update`, an
+          intent or a job, which keep running while frozen.
         """
 
     def teardown(self, ctx: PluginContext) -> None:

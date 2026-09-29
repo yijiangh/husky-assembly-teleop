@@ -44,21 +44,35 @@ class ArmConfig:
             RobotState and in plugin code.
         ros_namespace: The arm's namespace under the robot's, e.g. "ur5e" or
             "left_ur5e". Its controller manager and all its topics live there.
-        tcp_yaw_correction: Rotation about Z applied to the TCP pose the UR
-            driver reports, radians. The driver reports it in a frame that
-            accounts for how the arm is mounted; this undoes that. Measured, not
-            derived: -pi/2 on the single-arm rigs, -pi on the dual-arm one.
         end_effector: What is mounted on the flange, or None for a bare arm.
         end_effector_namespace: Namespace of the end effector's driver under the
             robot's, e.g. "gripper" or "left_gripper". Unused when
             `end_effector` is None.
+        cartesian_test_mode: Test mode for Cartesian commands (target frame and
+            target force), on by default. Every check still runs and the target
+            still shows in the 3D view, but nothing is sent to the compliance
+            controller; a banner in the log says so instead.
+            ! Test every arm in this mode first, and again after any change to
+              its URDF, its calibration or the robot's installation (mounting)
+              on the teach pendant. Cartesian targets are computed in a frame
+              that only the URDF and calibration define: if that frame is
+              wrong, the arm is sent somewhere other than the panel shows, and
+              can crash into the robot, itself or the cell.
+            ! Turn it off (False) only when the startup log shows no URDF frame
+              error for this arm (doc/ur_frames.md). Then make the first live
+              move a small one, watched, with a hand on the e-stop.
+        stow_joints: Joint angles to park the arm at, radians, in the UR
+            driver's joint order (pan, lift, elbow, wrist 1-3), or None if this
+            arm has none. The panel's Stow button loads these as a target; the
+            move itself still needs Start.
     """
 
     name: str
     ros_namespace: str
-    tcp_yaw_correction: float = 0.0
     end_effector: EndEffectorKind | None = None
     end_effector_namespace: str = ""
+    stow_joints: tuple[float, ...] | None = None
+    cartesian_test_mode: bool = False
 
 
 @dataclass(frozen=True)
@@ -210,20 +224,33 @@ def row_layout_position(index: int, count: int,
 # ! These are the *calibrated* URDFs, and which one a robot gets is not
 #   cosmetic: the arm kinematics differ per machine. Alice and Belle are the
 #   single-arm rigs, Cindy is dual-arm.
+#
+# ! "_StockUrFrames": the calibrated URDFs with the stock UR base joints
+#   restored (scripts/fix_ur_base_frames.py). See doc/ur_frames.md.
 _URDF_ROOT = "husky_urdf"
-_SINGLE_ARM_URDF = _URDF_ROOT + "/mt_husky_moveit_config/urdf/husky_ur5_e_no_base_joint_{}_Calibrated.urdf"
+_SINGLE_ARM_URDF = (_URDF_ROOT + "/mt_husky_moveit_config/urdf/"
+                    "husky_ur5_e_no_base_joint_{}_Calibrated_StockUrFrames.urdf")
 _DUAL_ARM_URDF = (_URDF_ROOT + "/mt_husky_dual_ur5_e_moveit_config/urdf/"
-                  "husky_dual_ur5_e_no_base_joint_All_Calibrated.urdf")
+                  "husky_dual_ur5_e_no_base_joint_All_Calibrated_StockUrFrames.urdf")
+
+# TODO real stow poses. These are placeholders taken from the old code, and
+#      neither is a stowed arm: the single-arm one is old/husky_robot.py's
+#      UR5e_HOME_STATE (arm pointing straight up), the dual-arm ones are the two
+#      halves of old/utils.py's HUSKY_DUAL_ARM_HOME_CONF_12, which the old code
+#      itself calls "extended arms". Replace with measured stow poses.
+_SINGLE_ARM_STOW = (1.569, -2.973, 2.705, -2.958, 1.572, 0.0)
+_LEFT_ARM_STOW = (1.569, -2.973, 2.705, -2.958, 1.572, 0.0)
+_RIGHT_ARM_STOW = (1.569, -2.973, 2.705, -2.958, 1.572, 0.0)
 
 _SINGLE_ARM_WITH_ROBOTIQ = (
-    ArmConfig(name="ur_arm", ros_namespace="ur5e", tcp_yaw_correction=-math.pi / 2,
-              end_effector="robotiq", end_effector_namespace="gripper"),
+    ArmConfig(name="ur_arm", ros_namespace="ur5e",
+              end_effector="robotiq", end_effector_namespace="gripper", stow_joints=_SINGLE_ARM_STOW),
 )
 _DUAL_ARM_WITH_SCAFFOLDING_V3 = (
-    ArmConfig(name="left_ur_arm", ros_namespace="left_ur5e", tcp_yaw_correction=-math.pi,
-              end_effector="scaffolding_v3", end_effector_namespace="left_gripper"),
-    ArmConfig(name="right_ur_arm", ros_namespace="right_ur5e", tcp_yaw_correction=-math.pi,
-              end_effector="scaffolding_v3", end_effector_namespace="right_gripper"),
+    ArmConfig(name="left_ur_arm", ros_namespace="left_ur5e",
+              end_effector="scaffolding_v3", end_effector_namespace="left_gripper", stow_joints=_LEFT_ARM_STOW),
+    ArmConfig(name="right_ur_arm", ros_namespace="right_ur5e",
+              end_effector="scaffolding_v3", end_effector_namespace="right_gripper", stow_joints=_RIGHT_ARM_STOW),
 )
 
 _ROBOTS_BY_SERIAL = {

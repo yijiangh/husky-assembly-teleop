@@ -195,6 +195,11 @@ class HuskyMonitor(Node):
         """One tick. The order below is deliberate; see the comment on each step."""
         self._tick_index += 1
 
+        # 0. A soft stop the operator asked for (button or Esc) goes first,
+        #    before any plugin gets a step to command something new.
+        if self._viz.take_stop_request():
+            self._soft_stop()
+
         # 1. Mirror measurements into PyBullet before any plugin runs, so
         #    kinematics and collision queries answer against this tick's reality
         #    rather than the previous one's.
@@ -208,9 +213,12 @@ class HuskyMonitor(Node):
 
         # 3. Draw, batched into one update so a browser never renders a frame
         #    where the robot has moved but the bar it holds has not.
+        #    ! While the operator has frozen the panels, no plugin draws: that is
+        #      what keeps their text still enough to select. The core's own
+        #      drawing -- the live robots -- carries on.
         with self._viz.atomic():
             self._viz.draw(self._world)
-            for loaded in tuple(self._loaded.values()):
+            for loaded in tuple(self._loaded.values()) if not self._viz.frozen else ():
                 if self._loaded.get(loaded.name) is not loaded:
                     continue  # disabled during step 2; its UI is already gone
                 try:
@@ -218,6 +226,24 @@ class HuskyMonitor(Node):
                         loaded.plugin.draw(loaded.ctx)
                 except Exception:
                     self._plugin_failed(loaded, "draw")
+
+    def _soft_stop(self) -> None:
+        """Stop every robot and cancel every plugin job.
+
+        ? In the core, not a plugin: a stop must not depend on which plugins are
+          loaded, and only the core reaches every plugin's jobs.
+
+        ! Robots first, jobs second. Cancelling only takes effect at a job's
+          next step, and the robots should not wait for that.
+
+        ! A cancelled job's cleanup still runs, on its next step. Cleanup must
+          not switch a controller back on or start a motion.
+        """
+        self.log_warn("SOFT STOP: stopping every robot and cancelling every plugin job")
+        for robot in self._world.robots.values():
+            robot.soft_stop()
+        for loaded in self._loaded.values():
+            loaded.ctx._cancel_all_jobs()
 
     def _step_plugin(self, loaded: _LoadedPlugin) -> None:
         """Give one plugin its turn: its intents, its update, then its jobs.

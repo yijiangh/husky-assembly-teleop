@@ -22,6 +22,8 @@ widget's `content` every tick in `draw`: viser only sends real changes.
 
 from __future__ import annotations
 
+from html import escape
+
 # Colours. Chips are white text on these, so they read in light and dark theme.
 OK, BUSY, FAIL, NONE = "#2f9e44", "#e8590c", "#e03131", "#868e96"
 SECTION_CTRL, SECTION_SENSOR, SECTION_TOOL = "#4263eb", "#1098ad", "#f08c00"
@@ -34,7 +36,8 @@ def chip(text: str, color: str, title: str = "") -> str:
     """A small coloured label. `title` shows on hover, for detail that would not fit."""
     # ! inline-block + nowrap: a row of chips wraps between chips, never inside
     #   one. The bottom margin keeps wrapped rows from touching.
-    return (f'<span title="{title}" style="display:inline-block;white-space:nowrap;'
+    # Hover text is escaped: it can carry any message, with quotes or arrows.
+    return (f'<span title="{escape(title, quote=True)}" style="display:inline-block;white-space:nowrap;'
             f'background:{color};color:#fff;border-radius:4px;padding:0 5px;'
             f'margin:0 4px 2px 0;font-size:11px;font-weight:600">{text}</span>')
 
@@ -59,6 +62,16 @@ def block(html: str) -> str:
 def note(text: str) -> str:
     """Small gray text, for placeholders."""
     return block(f'<div style="font-size:11px;color:{NONE}">{text}</div>')
+
+
+def warning(text: str, color: str = BUSY) -> str:
+    """One short line of warning text with a warning sign, for what a control does NOT do.
+
+    Args:
+        text: The warning.
+        color: Amber by default; FAIL (red) for something that blocks the control.
+    """
+    return block(f'<div style="font-size:11px;font-weight:600;color:{color}">⚠ {text}</div>')
 
 
 def values(*lines: str, dim: bool = False) -> str:
@@ -90,9 +103,9 @@ def numbers(items, count: int, width: int, digits: int) -> str:
     return " ".join(f"{value:+{width}.{digits}f}" for value in items)
 
 
-def freshness_chip(label: str, last_update_time: float, now: float) -> str:
-    """Green if the last message is recent, amber if stale, gray if none came yet."""
-    if last_update_time == 0.0:
+def freshness_chip(label: str, last_update_time: float | None, now: float) -> str:
+    """Green if the last message is recent, amber if stale, gray if none came yet (None)."""
+    if last_update_time is None:
         return chip(label, NONE, "no data yet")
     if now - last_update_time < STALE_AFTER:
         return chip(label, OK)

@@ -76,6 +76,20 @@ class PluginView(Protocol):
         """Context manager placing new widgets in this plugin's folder."""
         ...
 
+    def panel(self) -> viser.PanelHandle:
+        """Create a separate panel owned by this plugin: a window beside the main one.
+
+        For a plugin whose UI is too big for one folder, e.g. one panel per
+        robot. The operator can move, dock, float or minimise it. Add content
+        with `panel.add_tab(...)` as a context manager, and place it with
+        `dock_right()`, `dock_below(other)` or `float(...)`.
+
+        ! Always through here, never `gui.add_panel()`: a panel is top-level,
+          outside the plugin's folder, and only panels made here are removed
+          when the plugin is torn down.
+        """
+        ...
+
     def clear(self) -> None:
         """Remove every scene node and widget this plugin created."""
         ...

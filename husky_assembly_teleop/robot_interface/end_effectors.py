@@ -17,10 +17,10 @@ from dataclasses import dataclass
 
 from control_msgs.action import GripperCommand
 from crl_husky_msgs.msg import ScaffoldingToolCmd, ScaffoldingToolStatus
-from rclpy.action import ActionClient
 from rclpy.node import Node
 
 from ..config import ArmConfig
+from .connections import RosConnections
 
 
 # --- --- --- --- --- STATE --- --- --- --- ---
@@ -47,19 +47,21 @@ class RobotiqState:
 class ScaffoldingV3State:
     """Last status the scaffolding tool driver published.
 
+    Every field is None until the first status arrives.
+
     Attributes:
         gripper_motor: Driver's state string for the gripper motor (M1).
         joint_motor: Driver's state string for the joint screw motor (M2).
-        current: Motor current as the driver reports it.
+        current: Motor current, in the driver's own units.
         pwm_pct: Motor PWM duty cycle, percent.
-        last_update_time: ROS time of the last status, seconds. 0 means none yet.
+        last_update_time: ROS time of the last status, seconds.
     """
 
-    gripper_motor: str = ""
-    joint_motor: str = ""
-    current: int = 0
-    pwm_pct: int = 0
-    last_update_time: float = 0.0
+    gripper_motor: str | None = None
+    joint_motor: str | None = None
+    current: int | None = None
+    pwm_pct: int | None = None
+    last_update_time: float | None = None
 
 
 @dataclass
@@ -67,12 +69,13 @@ class ScaffoldingV1State:
     """Last outputs we set on a v1 scaffolding tool. See ScaffoldingV1.
 
     Attributes:
-        gripper_closed: Whether the gripper output was last switched on.
-        screw_on: Whether the screw output was last switched on.
+        gripper_closed: Whether the gripper output was last switched on, or
+            None before we set it. The tool reports nothing back.
+        screw_on: Whether the screw output was last switched on, or None.
     """
 
-    gripper_closed: bool = False
-    screw_on: bool = False
+    gripper_closed: bool | None = None
+    screw_on: bool | None = None
 
 
 EndEffectorState = RobotiqState | ScaffoldingV3State | ScaffoldingV1State
@@ -102,6 +105,16 @@ class EndEffector(ABC):
         self._node = node
         self._arm = arm
         self.namespace = f"/{robot_namespace}/{arm.end_effector_namespace}"
+        #: Subclasses create their ROS entities through this, in `_connect`.
+        self._ros = RosConnections(node)
+
+    def _connect(self) -> None:
+        """Create this tool's topics, services and actions. None by default."""
+
+    def reconnect(self) -> None:
+        """Destroy this tool's ROS entities and create them again. Keeps `state`."""
+        self._ros.destroy_all()
+        self._connect()
 
     @abstractmethod
     def open(self) -> None:
@@ -129,8 +142,21 @@ class RobotiqGripper(EndEffector):
         """Create the action client. Does not wait for the server."""
         super().__init__(node, robot_namespace, arm)
         self.state = RobotiqState()
-        self._action = ActionClient(
-            node, GripperCommand, f"{self.namespace}/robotiq_gripper_controller/gripper_cmd")
+        self._connect()
+
+    def _connect(self) -> None:
+        """Create the action client."""
+        self._action = self._ros.action_client(
+            GripperCommand, f"{self.namespace}/robotiq_gripper_controller/gripper_cmd")
+
+    def reconnect(self) -> None:
+        """Reconnect the action client.
+
+        ! A goal sent on the old client never reports back, so `moving` is
+          cleared here rather than left True forever.
+        """
+        super().reconnect()
+        self.state.moving = False
 
     def open(self) -> None:
         """Open fully."""
@@ -202,9 +228,12 @@ class ScaffoldingV3(EndEffector):
         """Create the command publisher and the status subscription."""
         super().__init__(node, robot_namespace, arm)
         self.state = ScaffoldingV3State()
-        self._command = node.create_publisher(ScaffoldingToolCmd, f"{self.namespace}/tool_cmd", 10)
-        self._status = node.create_subscription(
-            ScaffoldingToolStatus, f"{self.namespace}/tool_status", self._on_status, 10)
+        self._connect()
+
+    def _connect(self) -> None:
+        """Create the command publisher and the status subscription."""
+        self._command = self._ros.publisher(ScaffoldingToolCmd, f"{self.namespace}/tool_cmd")
+        self._ros.subscription(ScaffoldingToolStatus, f"{self.namespace}/tool_status", self._on_status)
 
     def open(self) -> None:
         """Run the gripper motor in the loosening direction."""
