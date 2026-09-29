@@ -46,7 +46,7 @@ from scipy.spatial.transform import Rotation
 from ..concurrency import Job, Task, WaitTimeout, wait_until
 from ..context import PluginContext
 from ..plugin import HuskyPlugin, register
-from ..robot_interface import ArmInterface, BaseInterface, ScaffoldingV1
+from ..robot_interface import ArmInterface, BaseInterface, RobotiqGripper, ScaffoldingV1, ScaffoldingV3
 from ..robot_interface.end_effectors import RobotiqState, ScaffoldingV1State, ScaffoldingV3State
 from ..robot_interface.arm import (CARTESIAN_COMPLIANCE_CONTROLLER,
                                    CARTESIAN_MOVE_MAX_ROTATION_SPEED,
@@ -440,15 +440,22 @@ class RobotControlPlugin(HuskyPlugin):
             kind = arm.config.end_effector
             gui.add_html(section("tool", SECTION_TOOL, TOOL_LABELS.get(kind, kind)))
             tool_status = gui.add_html("")
-            if isinstance(arm.end_effector, ScaffoldingV1):
-                # ! Its commands raise until it is ported, and a raising intent
-                #   counts against this plugin. So offer no buttons at all.
-                gui.add_html(note("not ported yet"))
-            else:
-                commands = {"Open": arm.end_effector.open, "Close": arm.end_effector.close,
-                            "Stop": arm.end_effector.stop}
-                grip = gui.add_button_group("Grip", list(commands))
-                grip.on_click(ctx.defer_value(f"grip {label}", lambda clicked: commands[clicked]()))
+            tool = arm.end_effector
+            commands = {"Open": tool.open, "Close": tool.close, "Stop": tool.stop}
+            grip = gui.add_button_group("Grip", list(commands),
+                                        hint="Stop halts every motor of the tool. A v1 gripper only opens or "
+                                             "closes, so there Stop switches the screw off and leaves the grip.")
+            grip.on_click(ctx.defer_value(f"grip {label}", lambda clicked: commands[clicked]()))
+            if isinstance(tool, RobotiqGripper):
+                _build_robotiq_inputs(ctx, gui, label, tool)
+            elif isinstance(tool, (ScaffoldingV1, ScaffoldingV3)):
+                # v1 switches its screw motor on in one direction only; v3 drives it both ways.
+                directions = ({"Run": 1, "Stop": 0} if isinstance(tool, ScaffoldingV1)
+                              else {"Tighten": 1, "Loosen": -1, "Stop": 0})
+                screw = gui.add_button_group("Screw", list(directions), hint="The motor that tightens the bar "
+                                                                             "to the joint. Runs until Stop.")
+                screw.on_click(ctx.defer_value(f"screw {label}",
+                                               lambda clicked, tool=tool: tool.drive_screw(directions[clicked])))
 
         return _ArmWidgets(serial=serial, arm=arm, panel=panel, status=status, tool_status=tool_status,
                            joints=handles["joints"], plan=handles["plan"], pose=handles["pose"],
@@ -529,7 +536,7 @@ class RobotControlPlugin(HuskyPlugin):
             widgets.wrench_line.content = block(values(
                 f"applied {numbers(applied, 3, 6, 1)} N ({TARGET_WRENCH_FRAME})"))
             if widgets.tool_status is not None:
-                widgets.tool_status.content = _tool_status(widgets.arm.state.end_effector)
+                widgets.tool_status.content = _tool_status(widgets.arm.state.end_effector, now)
 
     # --- --- --- --- --- JOBS --- --- --- --- ---
     # Started from intents, so always on the ROS thread.
@@ -939,30 +946,78 @@ def _arm_status(arm: ArmInterface, now: float) -> str:
         dim=stale))
 
 
-def _tool_status(state: object) -> str:
+def _build_robotiq_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, gripper: RobotiqGripper) -> None:
+    """Add the Robotiq-only inputs under Grip: a target opening with a force limit, and Reactivate.
+
+    ? Open and Close above always use the gripper's DEFAULT_EFFORT. The force
+      slider only applies to Go, so a quick Close never grips harder than intended.
+
+    Args:
+        ctx: This plugin's context.
+        gui: The GUI api, inside the arm's tab.
+        label: "<serial> <arm name>", for intent names.
+        gripper: The gripper to command.
+    """
+    position = gui.add_slider("pos rad", min=gripper.OPEN_POSITION, max=gripper.CLOSED_POSITION, step=0.01,
+                              initial_value=gripper.OPEN_POSITION,
+                              hint=f"Knuckle angle: {gripper.OPEN_POSITION} open, {gripper.CLOSED_POSITION} closed.")
+    force = gui.add_slider("force", min=0.0, max=gripper.MAX_EFFORT, step=0.05, initial_value=gripper.DEFAULT_EFFORT,
+                           hint="Force limit, as a fraction of the gripper's full force.")
+    target = gui.add_button_group("Target", ["Go"], hint="Move the fingers to the slider position.")
+    # ! Slider values are read when the intent runs, on the ROS thread.
+    target.on_click(ctx.defer(f"gripper target {label}", lambda: gripper.move(position.value, force.value)))
+    driver = gui.add_button_group("Driver", ["Reactivate"],
+                                  hint="After a fault or power loss. The gripper opens and closes once: "
+                                       "hold nothing in it.")
+    driver.on_click(ctx.defer(f"reactivate gripper {label}", gripper.reactivate))
+
+
+def _tool_status(state: object, now: float) -> str:
     """Status HTML for an end effector: chips, then its numbers, one layout per tool kind."""
     if isinstance(state, RobotiqState):
-        if state.commanded_position is None:
-            chips = chip("idle", NONE, "nothing sent yet")
-        elif state.moving:
-            chips = chip("moving", BUSY)
-        else:
-            chips = chip("closed" if state.commanded_position > 0.4 else "open",
-                         OK if state.last_result_ok else FAIL,
-                         "" if state.last_result_ok else "did not reach its target")
-        position = None if state.commanded_position is None else [state.commanded_position]
-        return block(chips + values(f"pos {numbers(position, 1, 6, 3)} rad"))
+        chips = freshness_chip("joints", state.last_update_time, now)
+        if state.reactivating:
+            chips += chip("reactivating", BUSY)
+        elif state.reactivate_error:
+            chips += chip("reactivate failed", FAIL, state.reactivate_error)
+        if state.moving:
+            chips += chip("moving", BUSY)
+        elif state.last_result_ok is False:
+            chips += chip("short of target", FAIL, "the last command did not reach its target")
+        # Open or closed from where the fingers are; from the target until the first joint state.
+        shown = state.position if state.position is not None else state.commanded_position
+        if shown is not None:
+            chips += chip("closed" if shown > RobotiqGripper.CLOSED_POSITION / 2 else "open", OK)
+        stale = state.last_update_time is None or now - state.last_update_time >= STALE_AFTER
+        measured = None if state.position is None else [state.position]
+        commanded = None if state.commanded_position is None else [state.commanded_position]
+        effort = None if state.commanded_effort is None else [state.commanded_effort]
+        return block(chips + values(f"pos {numbers(measured, 1, 6, 3)} rad",
+                                    f"cmd {numbers(commanded, 1, 6, 3)} rad  force {numbers(effort, 1, 5, 2)}",
+                                    dim=stale))
     if isinstance(state, ScaffoldingV3State):
-        seen = state.last_update_time is not None  # every field is set together
-        chips = (chip(f"grip {state.gripper_motor}", OK) + chip(f"screw {state.joint_motor}", OK)
-                 if seen else chip("tool", NONE, "no status yet"))
-        # Current is in the driver's own units; the message does not say which.
+        chips = freshness_chip("status", state.last_update_time, now)
+        if state.last_update_time is not None:  # every field is set together
+            chips += _motor_chip("grip", state.gripper_motor) + _motor_chip("screw", state.joint_motor)
+        stale = state.last_update_time is None or now - state.last_update_time >= STALE_AFTER
         current = "—".rjust(6) if state.current is None else f"{state.current:6d}"
         pwm = "—".rjust(4) if state.pwm_pct is None else f"{state.pwm_pct:4d}"
-        return block(chips + values(f"I   {current}   pwm {pwm} %", dim=not seen))
+        return block(chips + values(f"I   {current} mA   pwm {pwm} %", dim=stale))
     if isinstance(state, ScaffoldingV1State):
-        grip = {None: "grip ?", True: "grip closed", False: "grip open"}[state.gripper_closed]
-        screw = {None: "screw ?", True: "screw on", False: "screw off"}[state.screw_on]
-        return block(chip(grip, NONE, "last output set; the tool reports nothing back")
-                     + chip(screw, NONE, "last output set; the tool reports nothing back"))
+        chips = freshness_chip("io", state.last_update_time, now)
+        if state.last_request_ok is False:
+            chips += chip("set_io failed", FAIL, "the arm refused the last output change")
+        # The outputs as the UR reports them; the tool itself reports nothing.
+        if state.gripper_closed is not None:
+            chips += chip("grip closed" if state.gripper_closed else "grip open", OK)
+        if state.screw_on is not None:
+            chips += chip("screw on", BUSY) if state.screw_on else chip("screw off", OK)
+        return block(chips)
     return ""
+
+
+def _motor_chip(name: str, motor_state: str | None) -> str:
+    """One v3 motor's chip: busy while it runs, red when stalled, green when idle."""
+    color = {ScaffoldingV3.IDLE: OK, ScaffoldingV3.STALLED: FAIL}.get(motor_state, BUSY)
+    hint = "stalled: Stop clears it before it runs again" if motor_state == ScaffoldingV3.STALLED else ""
+    return chip(f"{name} {str(motor_state).lower()}", color, hint)

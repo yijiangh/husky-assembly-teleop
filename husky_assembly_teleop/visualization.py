@@ -32,6 +32,7 @@ import viser.extras
 import yourdfpy
 
 from .config import RobotConfig
+from .tool_urdfs import resolve_mesh_path
 from .world_state import WorldState
 
 
@@ -78,19 +79,14 @@ def make_matte(mesh: trimesh.Trimesh) -> None:
     )
 
 
-#: Where `package://<pkg>/...` mesh references in our URDFs resolve to: the
-#: packages sit side by side under data/husky_urdf/, so the scheme prefix is
-#: simply replaced by that directory.
-_PACKAGE_PREFIX = "package://"
-
-
 def load_urdf(urdf_file: Path) -> yourdfpy.URDF:
     """Parse a URDF for display, resolving its `package://` mesh references.
 
     ! yourdfpy's own `filename_handler_magic` does not resolve `package://`
       here: it returns the reference unchanged, and yourdfpy then skips the
       mesh silently, so the robot appears as an empty scene graph with no error
-      anywhere. Hence the explicit handler.
+      anywhere. Hence the explicit handler. A URDF from `tool_urdfs.stitch_tools`
+      has absolute paths already, which the handler leaves as they are.
 
     Collision geometry is skipped. It is PyBullet's business, and drawing both
     would double the mesh count for no benefit.
@@ -101,17 +97,14 @@ def load_urdf(urdf_file: Path) -> yourdfpy.URDF:
     Returns:
         yourdfpy.URDF: The parsed model, with visual meshes loaded.
     """
-    package_root = urdf_file.resolve().parent.parent.parent
 
     def resolve(fname: str) -> str:
-        """Turn one `package://` reference into a path under the package root.
+        """Turn one mesh reference into an absolute path.
 
         ! The parameter must be called `fname`: yourdfpy calls the handler with
           that keyword, so renaming it raises a TypeError at load time.
         """
-        if fname.startswith(_PACKAGE_PREFIX):
-            return str(package_root / fname[len(_PACKAGE_PREFIX):])
-        return fname
+        return resolve_mesh_path(fname, urdf_file)
 
     model = yourdfpy.URDF.load(
         str(urdf_file),

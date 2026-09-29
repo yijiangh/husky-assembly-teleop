@@ -30,8 +30,15 @@ What is checked, and why it matters:
                             not move, however healthy the rest looks.
                    ctrl     the arm's controller manager, as for the base.
                    joints   joint_states from the rate limiter. Missing or old is red.
-                   tool     robotiq: action server not connected.
-                            scaffolding_v3: tool_status missing or old.
+  <arm> <tool>   one chip per mounted tool, next to its arm, named after the
+                 tool kind so the row shows what is mounted:
+                   robotiq         action server not connected or its
+                                   joint_states silent is red; a failed
+                                   reactivation or a short grip is amber.
+                   scaffolding_v3  tool_status missing or old is red; a
+                                   stalled motor is amber.
+                   scaffolding_v1  the arm's set_io service missing, or its
+                                   io_states silent, is red.
   objects        every entry in world.tracked_objects: whether it is tracked
                  and how old its last sample is.
 
@@ -219,7 +226,14 @@ def robot_checks(robot: HuskyRobotInterface, now: float) -> list[Check]:
               estop_check(robot.base.state),
               battery_check(robot.base.state, now),
               controller_check("base ctrl", robot.base.state.controllers, now)]
-    return checks + [arm_check(arm, now) for arm in robot.arms.values()]
+    for arm in robot.arms.values():
+        checks.append(arm_check(arm, now))
+        # * The tool is a chip of its own, right after its arm: it has its own
+        #   driver, which can be down while the arm is fine, and the other way round.
+        tool = tool_check(arm, now)
+        if tool is not None:
+            checks.append(tool)
+    return checks
 
 
 def arm_check(arm: ArmInterface, now: float) -> Check:
@@ -241,9 +255,6 @@ def arm_check(arm: ArmInterface, now: float) -> Check:
             parts += [safety_check(state.safety_mode), running_check(state)]
     parts += [controller_check("ctrl", state.controllers, now),
               age_check("joints", "joint_states", state.last_update_time, now)]
-    tool = tool_check(arm, now)
-    if tool is not None:
-        parts.append(tool)
     return combine(arm.config.name, parts)
 
 
@@ -472,22 +483,37 @@ def tool_check(arm: ArmInterface, now: float) -> Check | None:
         now: Current ROS time, seconds.
 
     Returns:
-        Check | None: The tool's chip, or None for a bare arm.
+        Check | None: The tool's chip, labelled "<arm> <tool kind>" so the row
+            shows what is mounted, or None for a bare arm.
     """
     tool = arm.end_effector
-    label = "tool"
+    label = f"{arm.config.name} {arm.config.end_effector}"
     if isinstance(tool, RobotiqGripper):
-        # ? The gripper only reports through its action, so the connection
-        #   and the last result are all there is to check.
+        # ? Three things can be wrong: no action server (cannot command), no
+        #   joint states (cannot see it), or the last command fell short.
         if not tool.server_is_ready():
             return Check(label, BAD, "gripper action server not connected")
+        joints = age_check(label, "gripper joint_states", tool.state.last_update_time, now)
+        if joints.level != GOOD:
+            return joints
+        if tool.state.reactivate_error:
+            return Check(label, WARN, f"reactivation failed: {tool.state.reactivate_error}")
         if tool.state.last_result_ok is False:
             return Check(label, WARN, "last gripper command did not reach its target")
         return Check(label, GOOD, "robotiq connected")
     if isinstance(tool, ScaffoldingV3):
-        return age_check(label, "tool_status", tool.state.last_update_time, now)
+        status = age_check(label, "tool_status", tool.state.last_update_time, now)
+        if status.level == GOOD and ScaffoldingV3.STALLED in (tool.state.gripper_motor, tool.state.joint_motor):
+            # ? Amber, not red: a stall is also how a motor ends up against a
+            #   tight screw. It refuses to run again until Stop clears it.
+            return Check(label, WARN, "a motor is stalled; Stop clears it")
+        return status
     if isinstance(tool, ScaffoldingV1):
-        return Check(label, WARN, "scaffolding_v1 is not implemented; commands will raise")
+        # ? The tool itself reports nothing. What can fail is the arm's set_io
+        #   service, and the io_states that show which outputs are on.
+        if not tool.service_is_ready():
+            return Check(label, BAD, "set_io service not available")
+        return age_check(label, "io_states", tool.state.last_update_time, now)
     return None
 
 

@@ -94,7 +94,15 @@ per-configuration constant tables (`HUSKY_UR5e_JOINT_NAMES` versus
 `HUSKY_DUAL_UR5e_JOINT_NAMES`), selected by that same boolean.
 
 **What the rewrite does about it.** The kinematic configuration comes from the
-URDF and only from the URDF. Mount a different tool, ship a different URDF.
+URDF and only from the URDF. Which tool is mounted is configuration (the
+`tools` parameter), and the tool's own URDF (`data/tool_urdf/`) is stitched onto
+the arm's `tool0` at load time (`tool_urdfs.py`). One combined URDF is written
+and everything reads that one, so the robot and its tools cannot disagree.
+
+Stitching rather than one full URDF per robot and tool combination, because the
+tools change from run to run and per arm, and every full copy of a robot is one
+more file a calibration change has to reach -- the multiplication the next
+section is about.
 
 ## Calibration baked into filenames
 

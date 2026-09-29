@@ -11,21 +11,33 @@ from __future__ import annotations
 
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Literal
+from typing import Literal, get_args
 
 from crl_husky.config_resolver import get_primary_mocap_id_for_robot_serial
 from rclpy.node import Node
 
+from .tool_urdfs import stitch_tools
+
 
 #: End effectors the monitor knows how to drive. Each is one class in
-#: robot_interface/end_effectors.py.
-#:   robotiq         Robotiq 2F-85 through the GripperCommand action.
+#: robot_interface/end_effectors.py, and a model in tool_urdfs.TOOL_URDFS.
+#:   robotiq         Robotiq 2F-85 through the GripperCommand action, joint_states
+#:                   and the activation controller's reactivate service.
 #:   scaffolding_v1  Scaffolding tool switched through UR tool digital outputs (SetIO).
 #:   scaffolding_v3  Scaffolding tool with its RS485 driver (tool_cmd / tool_status).
 #: There is no v2: it never ran on a robot.
 EndEffectorKind = Literal["robotiq", "scaffolding_v1", "scaffolding_v3"]
+END_EFFECTOR_KINDS: tuple[str, ...] = get_args(EndEffectorKind)
+#: Other names accepted by the `tools` parameter: crl_husky's `gripper` launch
+#: argument calls the Robotiq "robotiq_2F_85", so that works here too.
+#: "none" is a bare arm.
+_TOOL_ALIASES: dict[str, str | None] = {"robotiq_2F_85": "robotiq", "none": None}
+
+#: Where the URDFs with the mounted tools stitched on are written. Absolute mesh
+#: paths make them work from anywhere; rewritten on every start.
+STITCHED_URDF_DIRECTORY = Path.home() / ".cache" / "husky_assembly_teleop" / "urdf"
 
 #: Plugins every run loads, before the ones asked for with `-p plugins:=[...]`.
 #: Start the monitor with --no-default, or -p no_default:=true (for launch
@@ -82,8 +94,9 @@ class RobotConfig:
     ! Two sources, split by purpose. The URDF says what the robot *is*:
       kinematics, meshes, joint names. The config says which *drivers* to talk
       to: which arms have a ROS stack and which end effector is mounted on each.
-      The URDF cannot answer the second -- the dual-arm URDF has no tool links at
-      all -- so it is not asked to.
+      The URDF cannot answer the second -- the robot URDFs end at each arm's
+      tool0 -- so it is not asked to. It goes the other way round: the config
+      picks the tools, and their models are stitched onto the URDF.
 
       What *can* change while running, such as which controller an arm is
       using, is not configuration. It is tracked in RobotState.
@@ -93,7 +106,8 @@ class RobotConfig:
             crl_husky's config_resolver and in mocap calibration files.
         ros_namespace: ROS2 namespace the robot publishes under, e.g. "a200_0806".
         urdf_file: Absolute path to the URDF describing this robot as built,
-            including whatever end effectors are currently mounted.
+            including whatever end effectors are currently mounted: the robot's
+            own URDF with the tools stitched on (tool_urdfs.stitch_tools).
         default_position: Where the robot stands before mocap has said
             otherwise, as (x, y, z) in metres. Set by `row_layout_position` so
             several robots do not all sit on top of each other at the origin.
@@ -262,14 +276,16 @@ _ROBOTS_BY_SERIAL = {
 
 def robot_config_from_serial(token: str, data_directory: Path,
                              default_position: tuple[float, float, float] = (0.0, 0.0, 0.0),
-                             default_yaw: float = 0.0) -> RobotConfig:
+                             default_yaw: float = 0.0,
+                             tools: tuple[EndEffectorKind | None, ...] | None = None) -> RobotConfig:
     """Build one RobotConfig from a serial written any of the usual ways.
 
     Accepts "0806", "a200-0806", "a200_0806" or "/a200_0806" and derives the
     canonical serial and ROS namespace from the four digits, matching the layout
     of crl_husky's config/robots/<digits>/robot.yaml. URDF, arms and end
-    effectors come from `_ROBOTS_BY_SERIAL`, the mocap id from crl_husky's
-    config_resolver.
+    effectors come from `_ROBOTS_BY_SERIAL`, unless `tools` says what is
+    mounted today; the mocap id from crl_husky's config_resolver. The mounted
+    tools' models are stitched onto the URDF (tool_urdfs.stitch_tools).
 
     Args:
         token: The serial as typed on the command line.
@@ -277,22 +293,24 @@ def robot_config_from_serial(token: str, data_directory: Path,
         default_position: Where to stand it until mocap says otherwise, usually
             from `row_layout_position`.
         default_yaw: Which way it faces there, radians about Z.
+        tools: The end effector on each arm, in the robot's arm order, None for
+            a bare arm; or None to keep the defaults in `_ROBOTS_BY_SERIAL`.
 
     Returns:
         RobotConfig: Identity, URDF, arms and mocap id for that robot.
 
     Raises:
-        ValueError: If no four-digit serial can be read out of `token`, or that
-            serial is not in `_ROBOTS_BY_SERIAL`.
+        ValueError: If no four-digit serial can be read out of `token`, that
+            serial is not in `_ROBOTS_BY_SERIAL`, or `tools` does not name one
+            tool per arm.
         FileNotFoundError: If the URDF it maps to is not on disk, which usually
             means `data_directory` is wrong, or crl_husky has no
             mocap_config.json for the robot.
     """
-    digits = re.search(r"(\d{4})\s*$", token.strip().strip("/"))
-    if digits is None:
+    number = _serial_digits(token)
+    if number is None:
         raise ValueError(f"cannot read a four-digit robot serial out of {token!r}; "
                          f"expected something like '0806' or 'a200-0806'")
-    number = digits.group(1)
 
     spec = _ROBOTS_BY_SERIAL.get(number)
     if spec is None:
@@ -304,11 +322,24 @@ def robot_config_from_serial(token: str, data_directory: Path,
         raise FileNotFoundError(f"URDF for robot {number!r} not found at {urdf_file}; "
                                 f"check the data_directory parameter")
 
+    arms = spec["arms"]
+    if tools is not None:
+        if len(tools) != len(arms):
+            raise ValueError(f"robot {number!r} has {len(arms)} arm(s) ({', '.join(a.name for a in arms)}), "
+                             f"but {len(tools)} tool(s) were given")
+        arms = tuple(replace(arm, end_effector=tool) for arm, tool in zip(arms, tools))
+    # ! The file name holds the tools, not just the robot: PyBullet caches
+    #   parsed files by path, so the same name with other tools inside could
+    #   load the old ones.
+    combination = "_".join(arm.end_effector or "none" for arm in arms)
+    stitched = stitch_tools(urdf_file, {arm.name: arm.end_effector for arm in arms}, data_directory,
+                            STITCHED_URDF_DIRECTORY / f"a200_{number}__{combination}.urdf")
+
     return RobotConfig(
         serial=f"a200-{number}",
         ros_namespace=f"a200_{number}",
-        urdf_file=urdf_file,
-        arms=spec["arms"],
+        urdf_file=stitched,
+        arms=arms,
         mocap_id=get_primary_mocap_id_for_robot_serial(number),
         default_position=default_position,
         default_yaw=default_yaw,
@@ -328,6 +359,15 @@ def config_from_ros_parameters(node: Node, use_default_plugins: bool = True) -> 
             -p robots:="['0804','0806']" \\
             -p plugins:="['cell']"
 
+    `-p tools:=[...]` says which tool is mounted on each arm, when that differs
+    from the defaults in `_ROBOTS_BY_SERIAL`. One entry per robot, the tools in
+    the robot's arm order (left, right), "none" for a bare arm:
+
+            -p tools:="['0804:scaffolding_v3', '0806:scaffolding_v3,scaffolding_v1']"
+
+    Tool names are END_EFFECTOR_KINDS, or crl_husky's `gripper` launch argument
+    values (robotiq_2F_85), so the robot's launch line can be copied.
+
     `-p no_default:=true` loads only the requested plugins, without
     DEFAULT_PLUGINS. Same as the --no-default flag; either one is enough.
 
@@ -337,6 +377,7 @@ def config_from_ros_parameters(node: Node, use_default_plugins: bool = True) -> 
             requested ones. False when started with --no-default.
     """
     node.declare_parameter("robots", [""])
+    node.declare_parameter("tools", [""])
     node.declare_parameter("plugins", [""])
     node.declare_parameter("data_directory", "")
     node.declare_parameter("no_default", False)
@@ -352,7 +393,7 @@ def config_from_ros_parameters(node: Node, use_default_plugins: bool = True) -> 
 
     no_default = node.get_parameter("no_default").get_parameter_value().bool_value
     return MonitorConfig(
-        robots=_robots_in_a_row(string_list("robots"), data_directory),
+        robots=_robots_in_a_row(string_list("robots"), data_directory, _parse_tools(string_list("tools"))),
         data_directory=data_directory,
         enabled_plugins=_enabled_plugins(string_list("plugins"), use_default_plugins and not no_default),
     )
@@ -373,18 +414,65 @@ def _enabled_plugins(requested: tuple[str, ...], use_default_plugins: bool) -> t
     return tuple(dict.fromkeys(defaults + requested))
 
 
-def _robots_in_a_row(serials: tuple[str, ...], data_directory: Path) -> tuple[RobotConfig, ...]:
+def _parse_tools(entries: tuple[str, ...]) -> dict[str, tuple[EndEffectorKind | None, ...]]:
+    """Read the `tools` parameter: "<serial>:<tool>[,<tool>...]" per robot.
+
+    Args:
+        entries: The parameter's strings, e.g. ("0806:scaffolding_v3,none",).
+
+    Returns:
+        dict[str, tuple[EndEffectorKind | None, ...]]: The tools per arm, keyed
+            by the robot's four-digit serial; None for a bare arm.
+
+    Raises:
+        ValueError: For an entry without a serial, or an unknown tool name.
+    """
+    tools = {}
+    for entry in entries:
+        serial, _, names = entry.partition(":")
+        number = _serial_digits(serial)
+        if number is None or not names:
+            raise ValueError(f"tools entry {entry!r} should look like '0806:scaffolding_v3,scaffolding_v1'")
+        kinds = []
+        for name in (name.strip() for name in names.split(",")):
+            if name in _TOOL_ALIASES:
+                kinds.append(_TOOL_ALIASES[name])
+            elif name in END_EFFECTOR_KINDS:
+                kinds.append(name)
+            else:
+                valid = ", ".join((*END_EFFECTOR_KINDS, *_TOOL_ALIASES))
+                raise ValueError(f"unknown tool {name!r} in tools entry {entry!r}; valid tools are {valid}")
+        tools[number] = tuple(kinds)
+    return tools
+
+
+def _robots_in_a_row(serials: tuple[str, ...], data_directory: Path,
+                     tools: dict[str, tuple[EndEffectorKind | None, ...]]) -> tuple[RobotConfig, ...]:
     """Build a RobotConfig per serial, spaced out along Y in the order given.
 
     Args:
         serials: Robot serials as typed on the command line.
         data_directory: Root the URDF paths are resolved against.
+        tools: Mounted tools per four-digit serial (`_parse_tools`). Robots not
+            in it keep their defaults.
 
     Returns:
         tuple[RobotConfig, ...]: One per serial, in the same order.
     """
+    # ! A tools entry for a robot that is not loaded is almost certainly a
+    #   typo in the serial, which would leave the real robot with the wrong tool.
+    unused = set(tools) - {_serial_digits(serial) for serial in serials}
+    if unused:
+        raise ValueError(f"tools given for robot(s) {', '.join(sorted(unused))}, which are not in `robots`")
     return tuple(
         robot_config_from_serial(serial, data_directory,
-                                 default_position=row_layout_position(index, len(serials)))
+                                 default_position=row_layout_position(index, len(serials)),
+                                 tools=tools.get(_serial_digits(serial)))
         for index, serial in enumerate(serials)
     )
+
+
+def _serial_digits(token: str) -> str | None:
+    """The four-digit serial in "0806", "a200-0806", "/a200_0806" and the like, or None."""
+    digits = re.search(r"(\d{4})\s*$", token.strip().strip("/"))
+    return None if digits is None else digits.group(1)

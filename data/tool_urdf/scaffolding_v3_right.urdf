@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<!--
+  Scaffolding tool v3, right-hand version, for display and collision checking.
+  Stitched onto <arm>_tool0 when the monitor loads a robot: the root link sits
+  exactly on tool0 (tool_urdfs.py). The mesh is the one exported from the
+  planning cell (scripts/export_tool_mesh_from_cell.py), in millimetres, hence
+  the scale. Mesh paths are relative to this file.
+-->
+<robot name="scaffolding_v3_right">
+  <link name="scaffolding_v3_right">
+    <visual>
+      <geometry><mesh filename="../assembly_tool_v3_right_mm_from_cell.obj" scale="0.001 0.001 0.001"/></geometry>
+    </visual>
+    <collision>
+      <geometry><mesh filename="../assembly_tool_v3_right_mm_from_cell.obj" scale="0.001 0.001 0.001"/></geometry>
+    </collision>
+  </link>
+</robot>

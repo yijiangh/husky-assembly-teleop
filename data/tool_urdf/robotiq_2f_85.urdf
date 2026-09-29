@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<!--
+  Robotiq 2F-85, as a single rigid body, for display and collision checking.
+  Stitched onto <arm>_tool0 when the monitor loads a robot: the root link sits
+  exactly on tool0 (tool_urdfs.py). The fingers do not move: this is the static
+  mesh of the gripper closed to 20 mm, as the old monitor used.
+  Mesh paths are relative to this file.
+-->
+<robot name="robotiq_2f_85">
+  <link name="robotiq_2f_85">
+    <visual>
+      <geometry><mesh filename="../husky_urdf/robotiq_85/meshes/static/robotiq_85_close_20mm.obj"/></geometry>
+    </visual>
+    <collision>
+      <geometry><mesh filename="../husky_urdf/robotiq_85/meshes/static/robotiq_85_close_20mm.obj"/></geometry>
+    </collision>
+  </link>
+</robot>
