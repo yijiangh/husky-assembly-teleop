@@ -23,6 +23,7 @@ from contextlib import ExitStack
 from dataclasses import dataclass
 
 import rclpy
+from crl_husky_msgs.msg import MocapRigidBodyPose
 from rclpy.executors import SingleThreadedExecutor, TimeoutException
 from rclpy.node import Node
 from rclpy.signals import SignalHandlerOptions
@@ -30,11 +31,13 @@ from rclpy.signals import SignalHandlerOptions
 from .concurrency import LoopWatchdog
 from .config import MonitorConfig, config_from_ros_parameters
 from .context import PluginContext
+from .mocap import mocap_topic, store_sample
 from .plugin import HuskyPlugin, load_plugins
 from .robot_interface import HuskyRobotInterface
+from .robot_interface.connections import RosConnections
 from .robot_scene import RobotScene
 from .visualization import Visualization
-from .world_state import WorldState
+from .world_state import TrackedObject, WorldState
 
 #: Most ROS callbacks run in one tick. Beyond it the rest wait a tick, so a
 #: flood of messages cannot starve the plugins.
@@ -108,6 +111,8 @@ class HuskyMonitor(Node):
         self._config = config_from_ros_parameters(self)
         self._world = WorldState()
         self._loaded: dict[str, _LoadedPlugin] = {}
+        # The mocap subscription of each tracked object, by object name.
+        self._object_connections: dict[str, RosConnections] = {}
 
         # Monotonic tick counter.
         self._tick_index = 0
@@ -210,6 +215,37 @@ class HuskyMonitor(Node):
             return self._loaded[name].plugin
         except KeyError:
             raise KeyError(f"plugin {name!r} is not loaded") from None
+
+    def track_object(self, name: str, mocap_id: int) -> TrackedObject:
+        """Register a tracked object and subscribe to its mocap pose.
+
+        Args:
+            name: Unique object name.
+            mocap_id: Rigid-body id in the mocap system.
+
+        Returns:
+            TrackedObject: The registry entry, updated by every mocap message.
+
+        Raises:
+            ValueError: If an object with the same name is already tracked.
+        """
+        if name in self._world.tracked_objects:
+            raise ValueError(f"object {name!r} is already tracked")
+        obj = TrackedObject(name=name, mocap_id=mocap_id)
+        connections = RosConnections(self)
+        # * Stored exactly like a robot base's pose.
+        connections.subscription(MocapRigidBodyPose, mocap_topic(mocap_id),
+                                 lambda message: store_sample(obj, message, self.now()))
+        self._world.tracked_objects[name] = obj
+        self._object_connections[name] = connections
+        return obj
+
+    def untrack_object(self, name: str) -> None:
+        """Unsubscribe a tracked object and remove it from the registry. Unknown names are ignored."""
+        connections = self._object_connections.pop(name, None)
+        if connections is not None:
+            connections.destroy_all()
+        self._world.tracked_objects.pop(name, None)
 
     # --- --- --- --- --- RUN --- --- --- --- ---
 

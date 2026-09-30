@@ -28,6 +28,7 @@ from scipy.spatial.transform import Rotation
 
 from ..concurrency import WaitTimeout
 from ..context import PluginContext
+from ..mocap import mocap_check
 from ..plugin import HuskyPlugin, register
 from ..robot_interface import ArmInterface, BaseInterface, RobotiqGripper, ScaffoldingV1, ScaffoldingV3
 from ..robot_interface.end_effectors import RobotiqState, ScaffoldingV1State, ScaffoldingV3State
@@ -41,8 +42,8 @@ from ..robot_interface.base import PLATFORM_VELOCITY_CONTROLLER
 from ..robot_interface.controller_manager import ControllerManagerInterface
 from ..robot_interface.ur_frames import STOCK_YAW
 from ..visualization import quaternion_to_wxyz
-from ..ui_style import (STALE_AFTER, BUSY, FAIL, NONE, OK, SECTION_CTRL, SECTION_SENSOR, SECTION_TOOL, block, chip,
-                        freshness_chip, note, numbers, section, values, warning)
+from ..ui_style import (STALE_AFTER, BUSY, FAIL, NONE, OK, SECTION_CTRL, SECTION_SENSOR, SECTION_TOOL, block,
+                        check_chip, chip, freshness_chip, note, numbers, section, values, warning)
 
 #: Base speed at a Speed of 1. Kept low: this is a test panel.
 MAX_LINEAR_SPEED = 0.3   # m/s
@@ -841,10 +842,8 @@ def _controller_chip(controllers: ControllerManagerInterface) -> str:
 def _base_status(base: BaseInterface, now: float) -> str:
     """Status HTML for a base: chips, then its pose (placeholders before the first fix)."""
     state = base.state
-    chips = _controller_chip(base.controllers) + freshness_chip("mocap", state.last_update_time, now)
-    # Only when mocap reports an invalid pose; no data at all shows on the mocap chip.
-    if state.last_update_time is not None and not state.tracked:
-        chips += chip("untracked", FAIL)
+    # * The same mocap chip as the health panel and every tracked object.
+    chips = _controller_chip(base.controllers) + check_chip(mocap_check("mocap", base.mocap_id, state, now))
     # None before the first valid fix.
     yaw = None if state.orientation is None else Rotation.from_quat(state.orientation).as_euler(
         "xyz", degrees=True)[2:]

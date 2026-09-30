@@ -14,28 +14,22 @@ Loaded by default (config.DEFAULT_PLUGINS); -p no_default:=true turns that off.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
-from html import escape
 
 import viser
 from sensor_msgs.msg import BatteryState
 from ur_dashboard_msgs.msg import RobotMode, SafetyMode
 
 from ..context import PluginContext
+from ..mocap import mocap_check
 from ..plugin import HuskyPlugin, register
 from ..robot_interface import ArmInterface, HuskyRobotInterface, RobotiqGripper, ScaffoldingV1, ScaffoldingV3
 from ..robot_interface.arm import SYNC_STATUS_MAX_AGE, ArmState
 from ..robot_interface.base import BaseState
 from ..robot_interface.controller_manager import REFRESH_PERIOD, ControllerManagerState
-from ..ui_style import BUSY, FAIL, OK, STALE_AFTER, block, chip, section
-from ..world_state import TrackedObject
+from ..ui_style import BAD, BUSY, GOOD, LEVEL_COLORS, OK, STALE_AFTER, WARN, Check, block, check_chip, chip, section
 
 # --- --- --- --- --- THRESHOLDS --- --- --- --- ---
 
-#: Mean marker error, metres, above which the mocap chip turns amber.
-#: ? A guess from typical OptiTrack numbers. The relay's own looser threshold
-#:   (`marker_error_valid_threshold`) marks the pose invalid.
-MARKER_ERROR_WARN = 1e-3
 #: Seconds without a list_controllers answer before a controller manager counts
 #: as gone (two missed polls).
 CONTROLLER_STALE_AFTER = 3 * REFRESH_PERIOD
@@ -64,27 +58,6 @@ ROBOT_ACTIONS = {
     "Resume": "resume_arms",
     "Reconnect": "reconnect",
 }
-
-# Severity levels, ordered so the worst is `max`.
-GOOD, WARN, BAD = 0, 1, 2
-#: Chip colour for each severity.
-LEVEL_COLORS = {GOOD: OK, WARN: BUSY, BAD: FAIL}
-
-
-@dataclass(frozen=True)
-class Check:
-    """The outcome of one health check, shown as one chip.
-
-    Attributes:
-        label: Short chip text, e.g. "mocap" or "left_ur_arm joints".
-        level: GOOD, WARN or BAD.
-        detail: What is wrong, or a short fact when all is well. Shown as the
-            chip's tooltip.
-    """
-
-    label: str
-    level: int
-    detail: str = ""
 
 
 @register
@@ -135,7 +108,9 @@ class HealthPlugin(HuskyPlugin):
         """
         now = ctx.now()
         self._robot_checks = {serial: robot_checks(robot, now) for serial, robot in ctx.world.robots.items()}
-        self._object_checks = [object_check(obj, now) for obj in ctx.world.tracked_objects.values()]
+        # * The same mocap check as a robot base, labelled with the object's name.
+        self._object_checks = [mocap_check(obj.name, obj.mocap_id, obj, now)
+                               for obj in ctx.world.tracked_objects.values()]
 
     def draw(self, ctx: PluginContext) -> None:
         """Copy this tick's checks into the banner and the rows.
@@ -165,7 +140,7 @@ def robot_checks(robot: HuskyRobotInterface, now: float) -> list[Check]:
     Returns:
         list[Check]: One per chip, in display order.
     """
-    checks = [mocap_check(robot.config.mocap_id, robot.base.state, now),
+    checks = [mocap_check("mocap", robot.config.mocap_id, robot.base.state, now),
               estop_check(robot.base.state),
               battery_check(robot.base.state, now),
               controller_check("base ctrl", robot.base.state.controllers, now)]
@@ -214,39 +189,6 @@ def combine(label: str, parts: list[Check]) -> Check:
     worst = next(part for part in parts if part.level == level)
     detail = "\n".join(f"{part.label}: {part.detail}" for part in parts)
     return Check(label if level == GOOD else f"{label} {worst.label}", level, detail)
-
-
-def mocap_check(mocap_id: int | None, state: BaseState, now: float) -> Check:
-    """Whether the base pose is live, and how good the fix is.
-
-    Args:
-        mocap_id: The base's rigid-body id, or None if it has none configured.
-        state: The base's measured state.
-        now: Current ROS time, seconds.
-
-    Returns:
-        Check: The mocap chip.
-    """
-    if mocap_id is None:
-        return Check("mocap", WARN, "no mocap id configured; the base pose is never measured")
-    if state.last_update_time is None:
-        return Check("mocap", BAD, f"no message for rigid body {mocap_id} yet; is mocap_relay running?")
-    age = now - state.last_update_time
-    if age > STALE_AFTER:
-        return Check("mocap", BAD, f"relay silent for over {STALE_AFTER:g}s (rigid body {mocap_id})")
-
-    # ! No marker error value in the text (it changes every sample); colour carries it.
-    label = "mocap"
-    warn_mm = MARKER_ERROR_WARN * 1e3
-    # * Reasons the relay marks a pose invalid: body lost, error past its threshold, or stale.
-    if not state.tracking_valid:
-        return Check(label, BAD, f"rigid body {mocap_id} lost by mocap; markers hidden?")
-    if not state.tracked:
-        return Check(label, BAD, "relay marks the pose invalid (marker error past its threshold, or stale)")
-    if state.marker_error > MARKER_ERROR_WARN:
-        return Check(label, WARN, f"marker error above {warn_mm:g} mm; "
-                                  f"check the markers and the rigid body definition")
-    return Check(label, GOOD, f"rigid body {mocap_id}, marker error under {warn_mm:g} mm")
 
 
 def estop_check(state: BaseState) -> Check:
@@ -449,26 +391,6 @@ def tool_check(arm: ArmInterface, now: float) -> Check | None:
     return None
 
 
-def object_check(obj: TrackedObject, now: float) -> Check:
-    """Whether a tracked object's pose is live.
-
-    Args:
-        obj: The object.
-        now: Current ROS time, seconds.
-
-    Returns:
-        Check: The object's chip, labelled with its name.
-    """
-    if obj.last_update_time is None:
-        return Check(obj.name, BAD, "never seen by mocap")
-    age = now - obj.last_update_time
-    if age > STALE_AFTER:
-        return Check(obj.name, BAD, f"not seen for over {STALE_AFTER:g}s")
-    if not obj.tracked:
-        return Check(obj.name, BAD, "not tracked; markers hidden?")
-    return Check(obj.name, GOOD, "tracked")
-
-
 # --- --- --- --- --- DRAWING --- --- --- --- ---
 
 def render_banner(checks: list[Check]) -> str:
@@ -503,4 +425,4 @@ def render_chips(checks: list[Check]) -> str:
     Returns:
         str: HTML for the row's widget.
     """
-    return block("".join(chip(check.label, LEVEL_COLORS[check.level], escape(check.detail)) for check in checks))
+    return block("".join(check_chip(check) for check in checks))

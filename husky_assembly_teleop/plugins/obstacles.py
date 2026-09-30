@@ -1,8 +1,6 @@
 """
 Fixed lab boxes (tables, cabinets), drawn in the 3D view and added to the shared PyBullet scene.
 
-! Placeholder layout. Replace BOXES with the measured lab furniture.
-
 * Plugins with their own world (e.g. the base planner) read the `boxes` list and
   declare `requires = ("obstacles",)`.
 """
@@ -43,12 +41,31 @@ class Box:
         """tuple[float, float, float, float]: `yaw` as an (x, y, z, w) quaternion."""
         return (0.0, 0.0, math.sin(self.yaw / 2.0), math.cos(self.yaw / 2.0))
 
+    @classmethod
+    def from_top_points(cls, name: str, points: tuple[tuple[float, float, float], ...]) -> Box:
+        """Fit an axis-aligned box from floor to points measured on its top surface.
 
-#: The lab's static obstacles. Clear of the robots' default row along Y at x = 0.
+        The XY footprint is the points' bounding rectangle, so take them at opposite corners.
+        The top height is their mean Z.
+
+        Args:
+            name: Label, shown in collision messages.
+            points: (x, y, z) points on the top surface, metres, world frame.
+
+        Returns:
+            Box: The fitted box, with no yaw.
+        """
+        xs, ys, zs = zip(*points)
+        height = sum(zs) / len(zs)
+        return cls(name, center=((min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2, height / 2),
+                   size=(max(xs) - min(xs), max(ys) - min(ys), height))
+
+
+#: The lab's static obstacles, fitted from mocap pointer samples (2026-09-30) on each top surface.
 BOXES = (
-    Box("table 1", center=(3.0, 0.0, 0.375), size=(1.6, 0.8, 0.75), yaw=math.pi / 2),
-    Box("table 2", center=(0.0, 4.0, 0.375), size=(1.6, 0.8, 0.75)),
-    Box("cabinet", center=(-3.0, -1.5, 0.5), size=(0.6, 1.2, 1.0)),
+    Box.from_top_points("building cabinet", ((-0.412, 2.012, 1.094), (3.788, 2.001, 1.136), (-0.410, 2.612, 1.096))),
+    Box.from_top_points("operator table A", ((-1.584, 0.462, 1.339), (-2.287, 0.456, 1.274), (-1.519, 2.116, 1.369))),
+    Box.from_top_points("operator table B", ((-0.400, 2.756, 1.265), (-1.427, 1.421, 1.329), (-0.481, 1.562, 1.305))),
 )
 
 

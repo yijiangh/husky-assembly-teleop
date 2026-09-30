@@ -15,6 +15,7 @@ from sensor_msgs.msg import BatteryState
 from std_msgs.msg import Bool
 
 from ..config import RobotConfig
+from ..mocap import mocap_topic, store_sample
 from .connections import RosConnections
 from .controller_manager import ControllerManagerInterface, ControllerManagerState
 
@@ -87,6 +88,11 @@ class BaseInterface:
                                       f"pose will never be tracked")
         self._connect()
 
+    @property
+    def mocap_id(self) -> int | None:
+        """int | None: Rigid-body id of the base in the mocap system, or None if untracked."""
+        return self._config.mocap_id
+
     def _connect(self) -> None:
         """Create the velocity publisher and the mocap, e-stop and battery subscriptions."""
         namespace = f"/{self._config.ros_namespace}"
@@ -96,11 +102,8 @@ class BaseInterface:
                                qos_profile_sensor_data)
         self._ros.subscription(BatteryState, f"{namespace}/platform/bms/state", self._on_battery,
                                qos_profile_sensor_data)
-        # * The relay's pose is already calibrated and in the Z-up 'rhino' world
-        #   frame. Use it as is; transforming again would apply it twice.
         if self._config.mocap_id is not None:
-            self._ros.subscription(MocapRigidBodyPose,
-                                   f"/mocap/rigid_body/id_{self._config.mocap_id}/pose", self._on_mocap)
+            self._ros.subscription(MocapRigidBodyPose, mocap_topic(self._config.mocap_id), self._on_mocap)
 
     def reconnect(self) -> None:
         """Recreate this base's topics and clients. Keeps `state`."""
@@ -145,17 +148,7 @@ class BaseInterface:
 
     def _on_mocap(self, message: MocapRigidBodyPose) -> None:
         """Store a mocap sample; an invalid one only clears `tracked`, keeping the last valid pose."""
-        now = self._node.get_clock().now().nanoseconds * 1e-9
-        self.state.tracked = bool(message.pose_valid)
-        # * Kept so the health panel can say why a pose is invalid.
-        self.state.tracking_valid = bool(message.tracking_valid)
-        self.state.marker_error = float(message.marker_error)
-        if self.state.tracked:
-            p, q = message.pose.position, message.pose.orientation
-            self.state.position = np.array([p.x, p.y, p.z])
-            self.state.orientation = np.array([q.x, q.y, q.z, q.w])
-            self.state.last_fix_time = now
-        self.state.last_update_time = now
+        store_sample(self.state, message, self._node.get_clock().now().nanoseconds * 1e-9)
 
     def _on_estop(self, message: Bool) -> None:
         """Store whether the platform's emergency stop is engaged."""

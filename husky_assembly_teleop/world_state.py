@@ -22,20 +22,31 @@ from .robot_interface import HuskyRobotInterface, RobotState
 class TrackedObject:
     """A non-robot rigid body observed by mocap (measurement only, no geometry).
 
+    Its measured fields match BaseState's, so mocap.mocap_check judges both alike.
+
     Attributes:
         name: Stable identifier, matching the CellObject it corresponds to.
+        mocap_id: Rigid-body id in the mocap system it is tracked by.
         position: World-frame position, metres. None until the first valid fix,
             then the last valid one.
         orientation: World-frame quaternion (x, y, z, w). Set with `position`.
         tracked: Whether the latest sample was valid. Implies `position` is set.
+        tracking_valid: Whether NatNet tracked the body in the latest sample.
+            False usually means hidden markers.
+        marker_error: Mean marker error of the latest sample, metres.
         last_update_time: ROS time of the latest observation, seconds, or None.
+        last_fix_time: ROS time of the latest valid observation, seconds, or None.
     """
 
     name: str
+    mocap_id: int
     position: np.ndarray | None = None
     orientation: np.ndarray | None = None
     tracked: bool = False
+    tracking_valid: bool | None = None
+    marker_error: float | None = None
     last_update_time: float | None = None
+    last_fix_time: float | None = None
 
 
 @dataclass
@@ -44,7 +55,8 @@ class WorldState:
 
     Attributes:
         robots: Connected robots, keyed by serial. Each owns its own RobotState.
-        tracked_objects: Mocap-observed non-robot bodies, keyed by name.
+        tracked_objects: Mocap-observed non-robot bodies, keyed by name. Added
+            and removed through PluginContext.track_object / untrack_object.
     """
 
     robots: dict[str, HuskyRobotInterface] = field(default_factory=dict)

@@ -2,6 +2,8 @@
 
 This is a python package for controlling huskies in the mocap space.
 
+> ⚠️ **Heavy refactor in progress**
+
 # Installation
 ## Clone and update submodules
 Install this library from source by cloning this repo to local and install from source.
@@ -150,5 +152,23 @@ In pybullet's viewer, you can pan the camera by holding `alt` (or `ctrl`) and dr
 `alt + right` click to zoom in and out. 
 `alt + middle` click to move the camera up and down. 
 You can also zoom in and out by scrolling the mouse wheel.
+
+### Refactor Section
+
+```shell
+ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['0804']" -p plugins:="['robot_control']"
+ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['0804']" -p tools:="['0804:scaffolding_v3']" -p plugins:="['robot_control']"
+
+ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['0804']" -p plugins:="['robot_control', 'obstacles']"
+
+ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['0804']" -p plugins:="['robot_control', 'mocap_probe']"
+
+ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['0804']" -p plugins:="['robot_control', 'cell', 'obstacles', 'base_planner']"
+
+
+ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['0804']" -p plugins:="['example_plot', 'example_pybullet', 'example_sequence', 'example_ui']"
+
+ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['0804']" -p tools:="['0804:robotiq']" -p plugins:="['robot_control', 'base_planner', 'obstacles', 'example_plot']" -p design_directory:=/home/jakob/ra/workspace/google_data/260814_RobArch_support_ik
+```
 
 

@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from .config import MonitorConfig
     from .plugin import HuskyPlugin
     from .robot_scene import RobotScene
-    from .world_state import WorldState
+    from .world_state import TrackedObject, WorldState
 
 
 @dataclass(frozen=True)
@@ -128,6 +128,14 @@ class MonitorServices(Protocol):
         """
         ...
 
+    def track_object(self, name: str, mocap_id: int) -> "TrackedObject":
+        """Register a tracked object and subscribe to its mocap pose."""
+        ...
+
+    def untrack_object(self, name: str) -> None:
+        """Unsubscribe a tracked object and remove it from the registry."""
+        ...
+
 
 class PluginContext:
     """One plugin's handle on the monitor, and its own runtime bookkeeping.
@@ -217,6 +225,28 @@ class PluginContext:
             raise KeyError(f"plugin {self.name!r} did not declare a dependency on {name!r}; "
                            f"add it to `requires`")
         return self._services.plugin(name)
+
+    def track_object(self, name: str, mocap_id: int) -> "TrackedObject":
+        """Start tracking mocap rigid body `mocap_id` as `world.tracked_objects[name]`.
+
+        ! Call from a hook, intent or task, never from a viser callback. Untrack
+          what you track in your own teardown; nothing does it for you.
+
+        Args:
+            name: Unique object name; shown on the health panel.
+            mocap_id: Rigid-body id in the mocap system.
+
+        Returns:
+            TrackedObject: The entry ROS callbacks keep updating. Read only.
+
+        Raises:
+            ValueError: If `name` is already tracked.
+        """
+        return self._services.track_object(name, mocap_id)
+
+    def untrack_object(self, name: str) -> None:
+        """Stop tracking `name` and remove it from `world.tracked_objects`. Unknown names are ignored."""
+        self._services.untrack_object(name)
 
     # --- --- --- --- --- SCHEDULING --- --- --- --- ---
 

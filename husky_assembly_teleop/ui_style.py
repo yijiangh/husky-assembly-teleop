@@ -11,6 +11,7 @@ widget's `content` each tick in `draw` (viser only sends real changes).
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from html import escape
 
 # Colours: chips put white text on these, readable in light and dark theme.
@@ -20,6 +21,27 @@ SECTION_CTRL, SECTION_SENSOR, SECTION_TOOL = "#4263eb", "#1098ad", "#f08c00"
 #: Age in seconds after which a measurement counts as stale.
 STALE_AFTER = 1.0
 
+# Severity levels of a Check, ordered so the worst is `max`.
+GOOD, WARN, BAD = 0, 1, 2
+#: Chip colour for each severity.
+LEVEL_COLORS = {GOOD: OK, WARN: BUSY, BAD: FAIL}
+
+
+@dataclass(frozen=True)
+class Check:
+    """The outcome of one status check, shown as one chip (see `check_chip`).
+
+    Attributes:
+        label: Short chip text, e.g. "mocap" or "left_ur_arm joints".
+        level: GOOD, WARN or BAD.
+        detail: What is wrong, or a short fact when all is well. Shown as the
+            chip's tooltip.
+    """
+
+    label: str
+    level: int
+    detail: str = ""
+
 
 def chip(text: str, color: str, title: str = "") -> str:
     """A small coloured label; `title` is hover text for extra detail."""
@@ -28,6 +50,11 @@ def chip(text: str, color: str, title: str = "") -> str:
     return (f'<span title="{escape(title, quote=True)}" style="display:inline-block;white-space:nowrap;'
             f'background:{color};color:#fff;border-radius:4px;padding:0 5px;'
             f'margin:0 4px 2px 0;font-size:11px;font-weight:600">{text}</span>')
+
+
+def check_chip(check: Check) -> str:
+    """A chip coloured by the check's level, its detail as hover text."""
+    return chip(check.label, LEVEL_COLORS[check.level], check.detail)
 
 
 def section(label: str, color: str, detail: str = "") -> str:
