@@ -1,8 +1,5 @@
 """
-The only package that talks to a robot.
-
-Everything above reads each part's state and calls its command methods;
-nothing above knows a topic name. One module per part:
+The only package that talks to a robot; callers read state and call commands, never topics.
 
   robot.py               HuskyRobotInterface, RobotState -- composes the parts
   base.py                the mobile base: mocap pose, cmd_vel
@@ -10,24 +7,17 @@ nothing above knows a topic name. One module per part:
   end_effectors.py       one class per tool kind, picked by configuration
   controller_manager.py  the base and every arm each have one; handled alike
 
-! Configuration decides which parts exist (arms, mounted tools). Anything that
-  changes while running, such as the active controller, is tracked in state.
+! Configuration decides which parts exist; anything that changes while running
+  (e.g. the active controller) lives in state.
 
-! One rule for missing data, in every state dataclass here and in WorldState:
+! Missing data: a measured value is None until measured, then keeps the last
+  measured value. Never use stand-ins (zero position, identity quaternion, empty
+  string), so a forgotten check fails with TypeError instead of using a made-up value.
 
-    A measured value is None until it has been measured, and after that keeps
-    the last measured value.
-
-  No stand-ins that look like measurements: no zero position, no identity
-  quaternion, no empty string, no 0 count, no 0.0 timestamp. A forgotten check
-  then fails loudly (TypeError) instead of quietly using a made-up value --
-  which is how the old code teleported the planning robot to the origin.
-
-  Judgements we make ourselves (`tracked`, `is_executing`, `moving`) are plain
-  bools, False until shown true. `tracked` implies the pose is set, so code
-  that checks `tracked` first needs no further None check. In per-item
-  collections (`joint_positions`, `controllers`) a missing key means "not
-  measured".
+- Our own judgements (`tracked`, `is_executing`, `moving`) are bools, False until
+  shown true. `tracked` implies the pose is set.
+- In per-item collections (`joint_positions`, `controllers`) a missing key means
+  "not measured".
 """
 
 from .arm import ArmInterface, ArmState

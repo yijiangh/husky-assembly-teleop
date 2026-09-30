@@ -1,26 +1,18 @@
 """
-Example 2: reading robot configuration and state.
+Example 2: reading robot configuration and state from `ctx.world.robots` (keyed by serial).
 
-Every robot is in `ctx.world.robots`, keyed by serial. Reach its parts the
-same way every time:
-
-  robot.config               fixed for the run: serial, which arms, which tool.
-                             Read it in setup, to decide what to build.
+  robot.config               fixed for the run (serial, arms, tool); read it in setup.
   robot.base.state           measured base: mocap pose and whether it is live.
   robot.arms[name].state     measured arm: joints, controller, tool, wrench.
   robot.arms[name].joint_vector()
-                             the six joint angles in UR order, or None until
-                             all six have arrived.
+                             the six joint angles in UR order, or None until all arrive.
 
-Measured state is written by ROS callbacks between ticks, so read it in
-update or draw, every tick. Within one tick it does not change.
+Measured state is written by ROS callbacks between ticks, so it does not change
+within a tick. Also shows turning a state change into an event by comparing with
+the last tick.
 
-! Read only. A plugin never writes into state; only ROS callbacks do. To make
-  a robot do something, call a method on the part (see robot_control).
-
-Also shows reacting to a change: `update` remembers each arm's controller from
-the last tick and logs when it changes -- the usual way to turn state into
-events without callbacks.
+! Read only: only ROS callbacks write state. To move a robot, call a method on
+  the part (see robot_control).
 
 Run with:  -p plugins:="['example_robot_state']" -p robots:="['0806']"
 """
@@ -42,13 +34,13 @@ class ExampleRobotStatePlugin(HuskyPlugin):
     name = "example_robot_state"
 
     def __init__(self):
-        """No widgets yet; setup builds one per robot."""
+        """Start with no widgets; setup builds one per robot."""
         self._rows: dict[str, viser.GuiHtmlHandle] = {}
-        #: Each arm's controller as seen last tick, keyed by (serial, arm name).
+        #: Each arm's controller last tick, keyed by (serial, arm name).
         self._last_controller: dict[tuple[str, str], str] = {}
 
     def setup(self, ctx: PluginContext) -> None:
-        """Build one row per robot. Configuration decides what exists.
+        """Build one row per robot.
 
         Args:
             ctx: This plugin's context.
@@ -57,13 +49,13 @@ class ExampleRobotStatePlugin(HuskyPlugin):
             if not ctx.world.robots:
                 gui.add_html(block(chip("no robots", NONE, "start with -p robots:=[...]")))
             for serial, robot in ctx.world.robots.items():
-                # * Configuration: fixed, so it can go into the section label once.
+                # * Config is fixed, so it goes into the section label once.
                 arms = ", ".join(f"{name}:{arm.config.end_effector or '-'}" for name, arm in robot.arms.items())
                 gui.add_html(section(serial, SECTION_SENSOR, arms))
                 self._rows[serial] = gui.add_html("")
 
     def update(self, ctx: PluginContext) -> None:
-        """Log controller changes. Compare with last tick; there is no callback for it.
+        """Log controller changes by comparing with last tick.
 
         Args:
             ctx: This plugin's context.
@@ -85,9 +77,8 @@ class ExampleRobotStatePlugin(HuskyPlugin):
         """
         now = ctx.now()
         for serial, robot in ctx.world.robots.items():
-            # ! Base pose. None until mocap has sent one valid fix -- numbers()
-            #   shows dashes for None. After that it keeps the last valid pose,
-            #   greyed out while mocap does not track the robot (`tracked`).
+            # ! Pose is None until mocap sends a valid fix (shown as dashes), then
+            #   keeps the last one, greyed out while `tracked` is False.
             base = robot.base.state
             pose = base.position
             chips = freshness_chip("mocap", base.last_update_time, now)
@@ -101,5 +92,5 @@ class ExampleRobotStatePlugin(HuskyPlugin):
                 arm_lines.append(arm_name)
                 arm_lines.append(f"  q {numbers(None if joints is None else np.degrees(joints), 6, 6, 1)} °")
 
-            # * Plain assignment: viser only sends it to the browser if it changed.
+            # * Viser only sends the content if it changed.
             self._rows[serial].content = block(chips + base_lines + values(*arm_lines))

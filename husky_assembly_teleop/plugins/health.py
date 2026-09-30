@@ -1,63 +1,14 @@
 """
-The health panel: one glance to see whether every robot and tracked object is fine.
+The health panel: one row of chips per robot and per tracked object, plus a banner.
 
-Each robot and each tracked object gets one row of chips. Green means fine,
-amber means it works but look at it, red means it is broken or silent. Hover a
-chip for the detail. The banner on top is green only when every chip is.
+Green is fine, amber works but needs a look, red is broken or silent. Hover a chip
+for detail; the banner is green only when every chip is. Each robot row has
+buttons to unlock a protective stop, resume stopped arms, and reconnect.
 
-What is checked, and why it matters:
+! The checks never command anything and never block: each is a pure function of
+  measured state and the clock, defined below the plugin.
 
-  mocap          the base pose is only ever from mocap. Silent relay, body lost
-                 by NatNet (hidden markers), or a pose the relay marked invalid
-                 are red; a high marker error is amber.
-  estop          the platform's emergency stop. Engaged is red; no message yet
-                 is amber, since then nobody knows.
-  battery        charge from the BMS: amber below BATTERY_WARN, red below
-                 BATTERY_BAD or when the BMS reports a health problem.
-  base ctrl      the base's controller manager. Never answered or stopped
-                 answering is red (driver down, or wifi); no controller running
-                 or a failed switch is amber, as commands will refuse.
-  <arm>          one chip per arm, named after its worst part; the tooltip
-                 lists every part:
-                   sync     status from multi_arm_safety_sync on the robot.
-                            Missing is red.
-                   dash     the arm's dashboard. Not connected is red; no
-                            dashboard_client at all (fake hardware) is amber.
-                   safety   anything but NORMAL is red, as the sync then stops
-                            every arm. A protective stop can be unlocked below.
-                   running  robot mode RUNNING (brakes released) and the
-                            program playing. Anything else is red: the arm will
-                            not move, however healthy the rest looks.
-                   ctrl     the arm's controller manager, as for the base.
-                   joints   joint_states from the rate limiter. Missing or old is red.
-  <arm> <tool>   one chip per mounted tool, next to its arm, named after the
-                 tool kind so the row shows what is mounted:
-                   robotiq         action server not connected or its
-                                   joint_states silent is red; a failed
-                                   reactivation or a short grip is amber.
-                   scaffolding_v3  tool_status missing or old is red; a
-                                   stalled motor is amber.
-                   scaffolding_v1  the arm's set_io service missing, or its
-                                   io_states silent, is red.
-  objects        every entry in world.tracked_objects: whether it is tracked
-                 and how old its last sample is.
-
-Each robot also has
-  - Unlock protective stop, like "Enable robot" on the teach pendant, through
-    multi_arm_safety_sync. The sync restarts ros_control.urp by itself once
-    every arm is operational. ! Clear the cause first; the robot refuses it
-    for 5 s after the stop.
-  - Resume arms, which lifts the soft stop ("Stop all" / Esc) of its arms.
-    The sync restarts them once every arm is operational.
-  - Reconnect, which rebuilds all its topics, services and actions
-    (HuskyRobotInterface.reconnect). Its state is kept, so the chips stay red
-    until fresh data arrives.
-
-! The checks never command anything and never block. Each is a function of
-  measured state and the clock, written as a pure function below the plugin,
-  which keeps them easy to read and to test on their own.
-
-Loaded by default (config.DEFAULT_PLUGINS); --no-default turns that off.
+Loaded by default (config.DEFAULT_PLUGINS); -p no_default:=true turns that off.
 """
 
 from __future__ import annotations
@@ -82,18 +33,17 @@ from ..world_state import TrackedObject
 # --- --- --- --- --- THRESHOLDS --- --- --- --- ---
 
 #: Mean marker error, metres, above which the mocap chip turns amber.
-#: ? A guess from typical OptiTrack numbers (well under a millimetre when the
-#:   rigid body is healthy). The relay has its own, much looser, threshold
-#:   (`marker_error_valid_threshold`) past which it marks the pose invalid.
+#: ? A guess from typical OptiTrack numbers. The relay's own looser threshold
+#:   (`marker_error_valid_threshold`) marks the pose invalid.
 MARKER_ERROR_WARN = 1e-3
 #: Seconds without a list_controllers answer before a controller manager counts
-#: as gone. It is polled every REFRESH_PERIOD, so this allows two missed polls.
+#: as gone (two missed polls).
 CONTROLLER_STALE_AFTER = 3 * REFRESH_PERIOD
 #: Battery charge, 0 to 1, below which the battery chip turns amber, and red.
 BATTERY_WARN = 0.3
 BATTERY_BAD = 0.15
 #: Seconds without a battery message before the reading counts as old.
-#: ? Generous, because the BMS publish rate is not pinned down.
+#: ? Generous: the BMS publish rate is unknown.
 BATTERY_STALE_AFTER = 10.0
 
 #: BMS health values that are fine. Anything else (overheat, dead, ...) is red.
@@ -105,20 +55,17 @@ ROBOT_MODE_NAMES = {getattr(RobotMode, name): name.lower().replace("_", " ")
 SAFETY_MODE_NAMES = {getattr(SafetyMode, name): name.lower().replace("_", " ")
                      for name in dir(SafetyMode) if name.isupper() and isinstance(getattr(SafetyMode, name), int)}
 
-# ! Chip labels and tooltips hold no fast-changing values: no ages, no marker
-#   error, no voltage. viser replaces a row's whole HTML whenever its text
-#   changes, which closes any open tooltip and drops a text selection, so one
-#   ticking number makes every tooltip in its row unusable. Text should change
-#   only when the state it describes changes.
+# ! Keep fast-changing values (ages, marker error, voltage) out of chip text:
+#   any text change rebuilds the row's HTML and closes open tooltips.
 
-#: Robot button label -> the HuskyRobotInterface method it calls.
+#: Robot button label -> HuskyRobotInterface method it calls.
 ROBOT_ACTIONS = {
     "Unlock": "unlock_protective_stop",
     "Resume": "resume_arms",
     "Reconnect": "reconnect",
 }
 
-# Severity levels. Ordered, so the worst of several is simply `max`.
+# Severity levels, ordered so the worst is `max`.
 GOOD, WARN, BAD = 0, 1, 2
 #: Chip colour for each severity.
 LEVEL_COLORS = {GOOD: OK, WARN: BUSY, BAD: FAIL}
@@ -149,13 +96,11 @@ class HealthPlugin(HuskyPlugin):
     def __init__(self):
         """No widgets yet; setup builds them."""
         self._banner: viser.GuiHtmlHandle | None = None
-        #: Per robot, by serial: its section bar and chips. Its Reconnect button
-        #: is a separate widget below.
+        #: Per robot, by serial: its section bar and chips.
         self._robot_rows: dict[str, viser.GuiHtmlHandle] = {}
-        #: One chip row for all tracked objects. One widget, since objects can
-        #: appear while running.
+        #: One row for all tracked objects, which can appear while running.
         self._objects_row: viser.GuiHtmlHandle | None = None
-        #: This tick's checks per robot, by serial, and for the tracked objects.
+        #: This tick's checks per robot (by serial) and for tracked objects.
         self._robot_checks: dict[str, list[Check]] = {}
         self._object_checks: list[Check] = []
 
@@ -169,16 +114,14 @@ class HealthPlugin(HuskyPlugin):
             self._banner = gui.add_html("")
             for serial in ctx.world.robots:
                 self._robot_rows[serial] = gui.add_html("")
-                # ? One button group, so the three sit side by side. viser 1.1 has
-                #   no other side-by-side layout; the price is small buttons with
-                #   no icons and one tooltip for all three.
+                # ? A button group is the only way in viser 1.1 to put the three side by side.
                 actions = gui.add_button_group(
                     "Robot", list(ROBOT_ACTIONS),
                     hint="Unlock: like 'Enable robot' on the teach pendant; clear the cause first. "
                          "Resume: undo 'Stop all' for this robot's arms (the base comes back with its "
                          "controller button in the robot panel). "
                          "Reconnect: rebuild every topic, service and action of this robot.")
-                # ! Default argument, so each group keeps its own serial.
+                # ! Default argument binds this loop's serial.
                 actions.on_click(ctx.defer_value(
                     f"robot action {serial}",
                     lambda clicked, serial=serial: getattr(ctx.world.robots[serial], ROBOT_ACTIONS[clicked])()))
@@ -228,8 +171,7 @@ def robot_checks(robot: HuskyRobotInterface, now: float) -> list[Check]:
               controller_check("base ctrl", robot.base.state.controllers, now)]
     for arm in robot.arms.values():
         checks.append(arm_check(arm, now))
-        # * The tool is a chip of its own, right after its arm: it has its own
-        #   driver, which can be down while the arm is fine, and the other way round.
+        # * The tool gets its own chip: its driver can fail independently of the arm.
         tool = tool_check(arm, now)
         if tool is not None:
             checks.append(tool)
@@ -248,7 +190,7 @@ def arm_check(arm: ArmInterface, now: float) -> Check:
     """
     state = arm.state
     parts = [sync_check(state, now)]
-    # The dashboard's parts are only known while the sync's status is fresh.
+    # Dashboard parts are only known while the sync's status is fresh.
     if parts[0].level < BAD:
         parts += [dashboard_check(state)]
         if state.dashboard_up:
@@ -293,14 +235,10 @@ def mocap_check(mocap_id: int | None, state: BaseState, now: float) -> Check:
     if age > STALE_AFTER:
         return Check("mocap", BAD, f"relay silent for over {STALE_AFTER:g}s (rigid body {mocap_id})")
 
-    # ! No marker error value in the label or tooltip: it changes with every
-    #   sample, and each change rebuilds the row, closing any open tooltip. The
-    #   chip's colour carries the quality instead (amber above MARKER_ERROR_WARN).
+    # ! No marker error value in the text (it changes every sample); colour carries it.
     label = "mocap"
     warn_mm = MARKER_ERROR_WARN * 1e3
-    # * Why the relay marked it invalid, in the order it decides: NatNet lost
-    #   the body, or the marker error is past the relay's threshold, or the
-    #   relay's own cache went stale.
+    # * Reasons the relay marks a pose invalid: body lost, error past its threshold, or stale.
     if not state.tracking_valid:
         return Check(label, BAD, f"rigid body {mocap_id} lost by mocap; markers hidden?")
     if not state.tracked:
@@ -341,8 +279,7 @@ def battery_check(state: BaseState, now: float) -> Check:
         return Check("battery", WARN, "no bms/state message yet")
     percentage = state.battery_percentage
     known = percentage is not None and math.isfinite(percentage)
-    # * In 5 % steps and without the voltage: the BMS reading jitters under
-    #   load, and every change rebuilds the row, closing any open tooltip.
+    # * 5 % steps, no voltage: the reading jitters and would rebuild the row.
     label = f"battery {round(percentage * 20) * 5}%" if known else "battery"
     detail = "charging" if state.battery_charging else "discharging"
     if now - state.battery_update_time > BATTERY_STALE_AFTER:
@@ -409,10 +346,8 @@ def safety_check(mode: int | None) -> Check:
 def running_check(state: ArmState) -> Check:
     """Whether the arm can follow commands: brakes released and external control playing.
 
-    ? Separate from safety because safety NORMAL does not mean the arm can
-      move. After power-on it sits in IDLE with the brakes locked, and even
-      when RUNNING it ignores ROS until ros_control.urp plays. The controller
-      manager and joint_states look healthy through all of this.
+    ? Separate from safety: NORMAL safety still leaves the arm with locked
+      brakes (IDLE) or ignoring ROS until ros_control.urp plays.
 
     Args:
         state: The arm's measured state.
@@ -489,8 +424,7 @@ def tool_check(arm: ArmInterface, now: float) -> Check | None:
     tool = arm.end_effector
     label = f"{arm.config.name} {arm.config.end_effector}"
     if isinstance(tool, RobotiqGripper):
-        # ? Three things can be wrong: no action server (cannot command), no
-        #   joint states (cannot see it), or the last command fell short.
+        # ? Fails as: no action server, no joint states, or a short grip.
         if not tool.server_is_ready():
             return Check(label, BAD, "gripper action server not connected")
         joints = age_check(label, "gripper joint_states", tool.state.last_update_time, now)
@@ -504,13 +438,11 @@ def tool_check(arm: ArmInterface, now: float) -> Check | None:
     if isinstance(tool, ScaffoldingV3):
         status = age_check(label, "tool_status", tool.state.last_update_time, now)
         if status.level == GOOD and ScaffoldingV3.STALLED in (tool.state.gripper_motor, tool.state.joint_motor):
-            # ? Amber, not red: a stall is also how a motor ends up against a
-            #   tight screw. It refuses to run again until Stop clears it.
+            # ? Amber: a stall is normal against a tight screw; Stop clears it.
             return Check(label, WARN, "a motor is stalled; Stop clears it")
         return status
     if isinstance(tool, ScaffoldingV1):
-        # ? The tool itself reports nothing. What can fail is the arm's set_io
-        #   service, and the io_states that show which outputs are on.
+        # ? The tool reports nothing; only the arm's set_io service and io_states can fail.
         if not tool.service_is_ready():
             return Check(label, BAD, "set_io service not available")
         return age_check(label, "io_states", tool.state.last_update_time, now)

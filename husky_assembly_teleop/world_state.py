@@ -1,19 +1,12 @@
 """
-The measured world: where things *actually* are.
+The measured world: where things actually are, as reported by sensors.
 
-! Ownership. WorldState is a registry, not a second copy: per-robot measurements
-  live in RobotState, owned by that robot's HuskyRobotInterface. If it ever
-  caches a robot pose of its own, there are two answers to "where is the arm"
-  and they will drift.
+! Registry only: per-robot measurements live in RobotState, owned by each
+  HuskyRobotInterface. Don't cache robot poses here; two copies will drift.
 
-! Direction. State flows real -> planning, never back, and nothing outside a ROS
-  callback may write here. Once the planner can write into the measurement, a
-  reading no longer means anything. The old code broke this in three places; see
-  doc/refactor_rationale.md.
-
-! Threading. Written only by ROS callbacks, read by the tick and by plugins, all
-  on the single-threaded executor, so no locking. viser callbacks run elsewhere
-  and must go through PluginContext.submit.
+! Data flows real -> planning, never back. Only ROS callbacks may write here, on
+  the single-threaded executor, so there is no locking. viser callbacks must go
+  through PluginContext.submit.
 """
 
 from __future__ import annotations
@@ -27,22 +20,15 @@ from .robot_interface import HuskyRobotInterface, RobotState
 
 @dataclass
 class TrackedObject:
-    """A non-robot rigid body observed by mocap.
-
-    ! Measurement only: no PyBullet body id, no mesh. Geometry belongs to
-      whichever plugin put it in the scene, and the name is the link between the
-      two. Mixing them is what made "real" and "simulated" impossible to pull
-      apart in the old code.
+    """A non-robot rigid body observed by mocap (measurement only, no geometry).
 
     Attributes:
         name: Stable identifier, matching the CellObject it corresponds to.
-        position: Position in world frame, metres. None until the first valid
-            fix, then the last valid one -- the same rule as BaseState.
-        orientation: Orientation in world frame, quaternion (x, y, z, w). Set
-            together with `position`.
+        position: World-frame position, metres. None until the first valid fix,
+            then the last valid one.
+        orientation: World-frame quaternion (x, y, z, w). Set with `position`.
         tracked: Whether the latest sample was valid. Implies `position` is set.
-        last_update_time: ROS time of the most recent observation, seconds, or
-            None before any.
+        last_update_time: ROS time of the latest observation, seconds, or None.
     """
 
     name: str
@@ -60,22 +46,15 @@ class WorldState:
         robots: Connected robots, keyed by serial. Each owns its own RobotState.
         tracked_objects: Mocap-observed non-robot bodies, keyed by name.
 
-            ! Unwired. Read already, by `health`; nothing constructs a
-              TrackedObject or writes into it yet -- that lands with the
-              cell/bar_action port, which is what will track racked bars this
-              way. Wire up a writer once that plugin needs one; do not let this
-              sit read-only-and-empty past that.
+            ! Nothing writes to this yet (`health` already reads it). Add a
+              writer when the cell/bar_action port needs one.
     """
 
     robots: dict[str, HuskyRobotInterface] = field(default_factory=dict)
     tracked_objects: dict[str, TrackedObject] = field(default_factory=dict)
 
     def add_robot(self, robot: HuskyRobotInterface) -> None:
-        """Register a robot.
-
-        ? Explicit, rather than done by the robot's constructor, so constructing
-          an object does not mutate a global scene as a side effect and the two
-          can be separated for a test.
+        """Register a robot; kept separate from its constructor so tests can build one alone.
 
         Args:
             robot: The interface to register. Its serial must be unique.
@@ -90,9 +69,6 @@ class WorldState:
 
     def robot_states(self) -> dict[str, RobotState]:
         """Every robot's measured state, keyed by serial.
-
-        Lets a consumer that only needs measurements -- RobotScene.sync_real --
-        take those instead of the whole world.
 
         Returns:
             dict[str, RobotState]: The live state objects. Treat as read-only.

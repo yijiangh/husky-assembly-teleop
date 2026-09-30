@@ -9,9 +9,11 @@
 <robot name="robotiq_2f_85">
   <link name="robotiq_2f_85">
     <visual>
+      <origin rpy="0 0 1.57079632679"/>
       <geometry><mesh filename="../husky_urdf/robotiq_85/meshes/static/robotiq_85_close_20mm.obj"/></geometry>
     </visual>
     <collision>
+      <origin rpy="0 0 1.57079632679"/>
       <geometry><mesh filename="../husky_urdf/robotiq_85/meshes/static/robotiq_85_close_20mm.obj"/></geometry>
     </collision>
   </link>

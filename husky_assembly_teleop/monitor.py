@@ -15,15 +15,12 @@ Responsibilities, and nothing beyond them:
 
 from __future__ import annotations
 
-import sys
 import time
 import traceback
-from argparse import ArgumentParser
 from dataclasses import dataclass
 
 import rclpy
 from rclpy.node import Node
-from rclpy.utilities import remove_ros_args
 
 from .config import MonitorConfig, config_from_ros_parameters
 from .context import PluginContext
@@ -40,7 +37,12 @@ class _LoadedPlugin:
 
     Attributes:
         plugin: The plugin instance.
-        ctx: Its context: UI slice, intent queue and jobs.
+        ctx: Its context: UI slice, intent queue and jobs. Kept beside the
+            plugin rather than on it, so the plugin's own state cannot collide
+            with monitor-driven internals, and it is built before the context
+            exists. Plugins receive it as a hook argument and never store it.
+        stopped: Set once it failed in setup or too often. A stopped plugin is
+            no longer stepped or drawn, but stays loaded until shutdown.
         errors: Consecutive ticks in which it raised.
         last_error_tick: Index of the tick it last raised in.
         last_slow_warning: ROS time of the last slow-step complaint.
@@ -48,6 +50,7 @@ class _LoadedPlugin:
 
     plugin: HuskyPlugin
     ctx: PluginContext
+    stopped: bool = False
     errors: int = 0
     last_error_tick: int = -1
     last_slow_warning: float = 0.0
@@ -61,12 +64,10 @@ class _LoadedPlugin:
 class HuskyMonitor(Node):
     """The monitor node. Implements MonitorServices for its plugins.
 
-    ! Threading. Two threads, and the boundary between them is the single most
-      important thing in this design.
+    ! Threading. Two threads, and the boundary between them is crucial for correctness.
 
       1. The ROS thread. rclpy.spin is single-threaded, so the tick timer and
-         every subscription -- mocap included, it is an ordinary topic now --
-         are serialised. All state, all PyBullet and all plugin code lives here
+         every subscription are serialised. All state, all PyBullet and all plugin code lives here
          and needs no locks because of it.
       2. viser's threads. A server thread, plus a 32-worker pool for GUI and
          scene-click callbacks. Neither PyBullet nor our state is thread-safe,
@@ -76,25 +77,18 @@ class HuskyMonitor(Node):
       start of its own step, so an intent runs as single-threaded code.
     """
 
-    def __init__(self, use_default_plugins: bool = True):
+    def __init__(self):
         """Bring up state, scene, UI and plugins, then start the tick.
-
-        Args:
-            use_default_plugins: Whether config.DEFAULT_PLUGINS are loaded as
-                well as the requested ones.
         """
         super().__init__("husky_monitor")
 
-        self._config = config_from_ros_parameters(self, use_default_plugins)
+        self._config = config_from_ros_parameters(self)
         self._world = WorldState()
         self._loaded: dict[str, _LoadedPlugin] = {}
 
-        # Counts ticks. Only used to tell "raised again this tick" from "raised
-        # again next tick" when counting a plugin's consecutive failures.
+        # Monotonic tick counter.
         self._tick_index = 0
 
-        # Set before anything can fail, so a construction that dies partway has
-        # something to tear down instead of raising AttributeError on the way.
         self._scene: RobotScene | None = None
         self._viz: Visualization | None = None
         self._tick_timer = None
@@ -103,8 +97,7 @@ class HuskyMonitor(Node):
         try:
             self._build()
         except Exception:
-            # Release what was already acquired. Leaking the PyBullet connection
-            # is the one that bites: the next run finds a stale server.
+            # Release what was already acquired. (PyBullet for example)
             self.shutdown()
             raise
 
@@ -118,9 +111,7 @@ class HuskyMonitor(Node):
             self._scene.load_robot(robot_config)
             self._viz.load_robot(robot_config)
 
-        # load_plugins returns dependency order and dicts keep insertion order,
-        # so walking self._loaded is always that order: a plugin is set up,
-        # stepped and drawn after everything it requires.
+        # Create plugins in dependency order
         for plugin in load_plugins(self._config.enabled_plugins, self.log_error):
             ctx = PluginContext(
                 name=plugin.name,
@@ -131,21 +122,15 @@ class HuskyMonitor(Node):
             )
             self._loaded[plugin.name] = _LoadedPlugin(plugin=plugin, ctx=ctx)
 
-        # Every record exists before any setup runs, so a plugin whose setup
-        # fails can cascade its disable onto the plugins that require it.
-        for loaded in tuple(self._loaded.values()):
-            if self._loaded.get(loaded.name) is not loaded:
-                continue  # already gone: a dependency of this one failed to set up
+        # Plugins stay loaded until shutdown. One that fails in setup is
+        # stopped straight away rather than run against half-built state.
+        for loaded in self._loaded.values():
             try:
                 with self._scene.active():
                     loaded.plugin.setup(loaded.ctx)
             except Exception:
-                # Never start a plugin that could not set itself up, and do not
-                # bother counting towards the error budget: one strike is enough
-                # when the plugin never got off the ground.
-                self.log_error(f"disabling plugin {loaded.name!r}, which failed in setup:\n"
-                               f"{traceback.format_exc()}")
-                self._disable(loaded)
+                self.log_error(f"plugin {loaded.name!r} failed in setup:\n{traceback.format_exc()}")
+                self._stop(loaded)
 
         # Created last, so the first tick cannot fire against a half-built node.
         self._tick_timer = self.create_timer(self._config.tick_period, self._tick)
@@ -195,32 +180,26 @@ class HuskyMonitor(Node):
         """One tick. The order below is deliberate; see the comment on each step."""
         self._tick_index += 1
 
-        # 0. A soft stop the operator asked for (button or Esc) goes first,
-        #    before any plugin gets a step to command something new.
+        # Soft stop has higest priority: it must run before any plugin can command new actions.
         if self._viz.take_stop_request():
             self._soft_stop()
 
-        # 1. Mirror measurements into PyBullet before any plugin runs, so
-        #    kinematics and collision queries answer against this tick's reality
-        #    rather than the previous one's.
+        # 1. Mirror measurements into PyBullet before any plugin runs. Kinematics and collision query need to be up to date.
         self._scene.sync_real(self._world.robot_states())
 
-        # 2. Step each plugin, in dependency order. Anything in the scene that is
-        #    not a live robot was put there by a plugin, which poses and removes
-        #    it itself -- the core neither tracks nor understands it.
-        for loaded in tuple(self._loaded.values()):
-            self._step_plugin(loaded)
+        # 2. Step each plugin, in dependency order
+        for loaded in self._loaded.values():
+            if not loaded.stopped:
+                self._step_plugin(loaded)
 
-        # 3. Draw, batched into one update so a browser never renders a frame
-        #    where the robot has moved but the bar it holds has not.
-        #    ! While the operator has frozen the panels, no plugin draws: that is
-        #      what keeps their text still enough to select. The core's own
-        #      drawing -- the live robots -- carries on.
+        # 3. Draw everything
+        #  ! While frozen, plugins dont render to allow for text selection.
+        #    Robot state still gets drawn even when frozen.
         with self._viz.atomic():
             self._viz.draw(self._world)
-            for loaded in tuple(self._loaded.values()) if not self._viz.frozen else ():
-                if self._loaded.get(loaded.name) is not loaded:
-                    continue  # disabled during step 2; its UI is already gone
+            for loaded in self._loaded.values() if not self._viz.frozen else ():
+                if loaded.stopped:
+                    continue
                 try:
                     with self._scene.active():
                         loaded.plugin.draw(loaded.ctx)
@@ -230,14 +209,8 @@ class HuskyMonitor(Node):
     def _soft_stop(self) -> None:
         """Stop every robot and cancel every plugin job.
 
-        ? In the core, not a plugin: a stop must not depend on which plugins are
+        ! In the core, not a plugin: a stop must not depend on which plugins are
           loaded, and only the core reaches every plugin's jobs.
-
-        ! Robots first, jobs second. Cancelling only takes effect at a job's
-          next step, and the robots should not wait for that.
-
-        ! A cancelled job's cleanup still runs, on its next step. Cleanup must
-          not switch a controller back on or start a motion.
         """
         self.log_warn("SOFT STOP: stopping every robot and cancelling every plugin job")
         for robot in self._world.robots.values():
@@ -246,18 +219,13 @@ class HuskyMonitor(Node):
             loaded.ctx._cancel_all_jobs()
 
     def _step_plugin(self, loaded: _LoadedPlugin) -> None:
-        """Give one plugin its turn: its intents, its update, then its jobs.
+        """Give one plugin its turn: intents, update, then jobs.
 
-        ! Each part is caught on its own. Draining intents, update and pumping
-          jobs each get their own try/except, so a failure in one still lets the
-          others run this tick instead of losing all three to whichever raised
-          first. That can log more than one failure for the same plugin in the
-          same tick; `_plugin_failed` still counts it as one.
+        ! Each part is caught on its own, so a failure in one still lets the
+          others run this tick.
 
-        ! Inside `scene.active()`, like every plugin hook, so plugin code can
-          call `pp` without bracketing it. Per plugin rather than once per tick,
-          so a plugin that points pp elsewhere and forgets to point it back
-          cannot affect the next one.
+        ! Inside `scene.active()`, so plugin code can
+          call `pp` without bracketing it. Per plugin to improve isolation between plugins.
         """
         started = time.perf_counter()
         with self._scene.active():
@@ -298,17 +266,7 @@ class HuskyMonitor(Node):
     # --- --- --- --- --- ERRORS --- --- --- --- ---
 
     def _plugin_failed(self, loaded: _LoadedPlugin, hook: str) -> None:
-        """Log that a plugin raised in `hook`, and disable it if it keeps doing so.
-
-        Without containment here, one plugin raising aborts the tick and every
-        plugin after it silently stops running, with no symptom beyond "the
-        panel froze".
-
-        ! Logs every call, even several for the same plugin in the same tick --
-          intents, update and jobs are caught separately now, so that can
-          happen. `errors` still only counts once per tick: it counts
-          consecutive *ticks* with a failure, not failures, and the tick stamp
-          is what makes a second failure in the same tick not count twice.
+        """Log that a plugin raised in `hook`, and stop it if it keeps doing so.
 
         Args:
             loaded: The plugin whose work raised.
@@ -323,60 +281,34 @@ class HuskyMonitor(Node):
         loaded.last_error_tick = self._tick_index
 
         if loaded.errors >= self._config.max_plugin_errors:
-            self.log_error(f"disabling plugin {loaded.name!r} after "
-                           f"{loaded.errors}/{self._config.max_plugin_errors} failures")
-            self._disable(loaded)
+            self._stop(loaded)
 
-    def _disable(self, loaded: _LoadedPlugin) -> None:
-        """Take a failing plugin out of the tick, with anything that requires it.
+    def _stop(self, loaded: _LoadedPlugin) -> None:
+        """Stop stepping and drawing a failing plugin, so it cannot flood the log.
 
-        ! Disabling cascades. A plugin that declared a dependency may assume it
-          is there, so leaving its dependents running would move the failure
-          somewhere harder to read.
-
-        The failure path, and it says so in the log; shutdown calls `_teardown`
-        directly. Calling this for a plugin that is already gone does nothing.
+        ! Nothing else happens: its UI, jobs and dependents stay as they are
+          until shutdown. A failing plugin is a bug to fix, not to recover from.
         """
-        if self._loaded.get(loaded.name) is not loaded:
-            return
-
-        dependents = [other for other in tuple(self._loaded.values())
-                      if other is not loaded and loaded.name in other.plugin.requires]
-        for dependent in dependents:
-            self.log_error(f"disabling plugin {dependent.name!r}, "
-                           f"which requires {loaded.name!r}")
-            self._disable(dependent)
-
-        self._teardown(loaded)
+        loaded.stopped = True
+        self.log_error(f"stopped plugin {loaded.name!r}; it will not run again until restart")
 
     def _teardown(self, loaded: _LoadedPlugin) -> None:
-        """Stop a plugin's jobs, run its teardown hook and take its UI away.
+        """Cancel a plugin's jobs, run its teardown hook and take its UI away.
 
-        The mechanics only: no cascade, nothing logged as a failure, so shutdown
-        can use it for plugins that are perfectly healthy.
+        ! No waiting for jobs to finish: rclpy no longer spins at shutdown, so a
+          job waiting on the robot would never see it move. Each cancelled job
+          gets one step, so its cleanup runs up to its first wait.
         """
-        if self._loaded.pop(loaded.name, None) is None:
-            return
-
         loaded.ctx._cancel_all_jobs()
-        # Inside `scene.active()` like every other plugin hook: job cleanup and
-        # teardown are where PyBullet bodies get removed.
         with self._scene.active():
-            # Cancelled jobs get a few more steps, so cleanup that has to wait --
-            # releasing a gripper, re-enabling a controller -- runs before the
-            # plugin's UI disappears from under it.
-            for _ in range(self._config.max_cleanup_steps):
-                if not loaded.ctx._jobs:
-                    break
-                try:
-                    loaded.ctx._pump_jobs()
-                except Exception:
-                    self.log_error(f"plugin {loaded.name!r} raised while cancelling its "
-                                   f"jobs:\n{traceback.format_exc()}")
+            try:
+                loaded.ctx._pump_jobs()
+            except Exception:
+                self.log_error(f"plugin {loaded.name!r} raised while cancelling its "
+                               f"jobs:\n{traceback.format_exc()}")
             if loaded.ctx._jobs:
-                self.log_error(f"plugin {loaded.name!r} left {len(loaded.ctx._jobs)} job(s) "
-                               f"unfinished after cancellation; dropping them")
-
+                self.log_warn(f"plugin {loaded.name!r} left {len(loaded.ctx._jobs)} job(s) "
+                              f"unfinished at shutdown; dropping them")
             try:
                 loaded.plugin.teardown(loaded.ctx)
             except Exception:
@@ -403,7 +335,7 @@ class HuskyMonitor(Node):
         if self._tick_timer is not None:
             self._tick_timer.cancel()
         # Reverse dependency order, so a plugin goes before what it depends on.
-        for loaded in reversed(tuple(self._loaded.values())):
+        for loaded in reversed(self._loaded.values()):
             self._teardown(loaded)
         if self._viz is not None:
             self._viz.stop()
@@ -415,25 +347,12 @@ class HuskyMonitor(Node):
 def main(args: list[str] | None = None) -> None:
     """Run the monitor until interrupted, reading sys.argv when `args` is None.
 
-    Own flags go before --ros-args:
-
-        ros2 run husky_assembly_teleop husky_monitor --no-default --ros-args ...
-
-    Launch files set the `no_default` parameter instead; see config.py.
+    Everything is configured through ROS parameters; see config.py.
     """
-    # * Our own flags are whatever is left once the ROS arguments are removed.
-    parser = ArgumentParser(prog="husky_monitor")
-    parser.add_argument("--no-default", action="store_true",
-                        help="load only the plugins in -p plugins:=[...], not config.DEFAULT_PLUGINS "
-                             "(same as -p no_default:=true)")
-    options = parser.parse_args(remove_ros_args(sys.argv if args is None else args)[1:])
-
     rclpy.init(args=args)
     monitor = None
     try:
-        # Inside the try: a constructor that fails after starting viser or
-        # PyBullet still has to reach the cleanup below.
-        monitor = HuskyMonitor(use_default_plugins=not options.no_default)
+        monitor = HuskyMonitor()
         rclpy.spin(monitor)
     except KeyboardInterrupt:
         pass
@@ -441,8 +360,6 @@ def main(args: list[str] | None = None) -> None:
         if monitor is not None:
             monitor.shutdown()
             monitor.destroy_node()
-        # try_shutdown, not shutdown: on Ctrl-C rclpy's own signal handler has
-        # already shut the context down, and a second shutdown raises.
         rclpy.try_shutdown()
 
 

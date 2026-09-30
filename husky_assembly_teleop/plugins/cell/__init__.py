@@ -1,17 +1,16 @@
 """
-The cell: the design, where we are in it, and the geometry that implies.
+The cell: an authored design, the selected movement, and a view of its state.
 
-Split in two because they are different kinds of thing:
+  design.py    the design as authored: robot cells, the schedule, every
+               movement's cell state. Plain data, loaded from a folder.
+  drawing.py   a robot cell state in viser, from forward kinematics.
+  plugin.py    the plugin: owns the selected step, steps through it, and
+               answers what other plugins ask about it.
 
-  assembly.py   the design: elements and the order they go in. Plain data.
-  plugin.py     the plugin: owns the selected index and the compas_fab planning
-                session, and answers the questions other plugins ask.
-
-Importing this package registers CellPlugin, which is how plugin discovery finds
-it.
+Importing this package registers CellPlugin.
 """
 
-from .assembly import Assembly, AssemblyElement, AssemblyStep
+from .design import Design, ScheduledAction, Step, load_design
 from .plugin import CellPlugin
 
-__all__ = ["Assembly", "AssemblyElement", "AssemblyStep", "CellPlugin"]
+__all__ = ["CellPlugin", "Design", "ScheduledAction", "Step", "load_design"]

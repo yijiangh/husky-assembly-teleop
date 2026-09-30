@@ -2,20 +2,12 @@
 The user interface: a viser server, a scene mirroring the world, and one private
 corner of both for each plugin.
 
-! viser is retained mode. Build handles once, then mutate them.
-  There is no frame to draw and no `server.update()`. Add a node, keep the
-  handle, and assign `position` / `wxyz` / `visible` when something changes;
-  viser pushes the diff to browsers on its own thread. Re-adding nodes every
-  tick would leak and flicker.
+! Build viser nodes once and keep the handles; later assign `position` / `wxyz` /
+  `visible`. Re-adding nodes every tick leaks and flickers.
 
-! Threading. The server runs on its own thread and dispatches GUI and
-  scene-click callbacks on a 32-worker pool, so callbacks registered here do NOT
-  run on the ROS thread. They may not touch world state, cell state, PyBullet or
-  ROS -- only hand work to the owning plugin's queue, which is what
-  PluginContext.defer wraps up.
-
-Why this is not called `husky_viser`, and why the old rebuild-the-panel habit
-must not come across: doc/refactor_rationale.md.
+! viser callbacks run on its worker threads, not the ROS thread. They must not
+  touch world state, PyBullet or ROS, only hand work to the plugin's queue
+  (PluginContext.defer).
 """
 
 from __future__ import annotations
@@ -36,10 +28,8 @@ from .tool_urdfs import resolve_mesh_path
 from .world_state import WorldState
 
 
-#: How rough the robot meshes are drawn, 0 = mirror, 1 = completely flat. The
-#: meshes ship with `specular=[128,128,128]` and `glossiness=250`, which reads
-#: as wet plastic under viser's lighting. Just short of 1 so edges still catch
-#: a little light and the shape stays readable.
+#: Mesh roughness, 0 = mirror, 1 = flat. The shipped meshes look like wet
+#: plastic; just under 1 keeps edges readable.
 MATTE_ROUGHNESS = 0.9
 
 #: Shown in the browser tab and at the top of the control panel.
@@ -50,11 +40,9 @@ _DEFAULT_MESH_COLOR = (0.8, 0.8, 0.8, 1.0)
 
 
 def make_matte(mesh: trimesh.Trimesh) -> None:
-    """Give one mesh a matte material in place, keeping the colour it had.
+    """Give one mesh a matte material in place, keeping its colour.
 
-    ! Done on the mesh rather than at the viser call, because `ViserUrdf` adds
-      geometry with `add_mesh_trimesh`, which takes no material arguments -- the
-      appearance comes entirely from what the mesh carries.
+    ! Must be done on the mesh: `ViserUrdf` takes no material arguments.
 
     Args:
         mesh: Mesh to restyle. Modified in place.
@@ -70,8 +58,7 @@ def make_matte(mesh: trimesh.Trimesh) -> None:
         uv=getattr(mesh.visual, "uv", None),
         material=trimesh.visual.material.PBRMaterial(
             baseColorFactor=color,
-            # Keep any texture image the original material had; only the shine
-            # is being changed.
+            # Keep the original texture; only the shine changes.
             baseColorTexture=getattr(material, "image", None),
             metallicFactor=0.0,
             roughnessFactor=MATTE_ROUGHNESS,
@@ -80,16 +67,10 @@ def make_matte(mesh: trimesh.Trimesh) -> None:
 
 
 def load_urdf(urdf_file: Path) -> yourdfpy.URDF:
-    """Parse a URDF for display, resolving its `package://` mesh references.
+    """Parse a URDF for display (visual meshes only), resolving `package://` paths.
 
-    ! yourdfpy's own `filename_handler_magic` does not resolve `package://`
-      here: it returns the reference unchanged, and yourdfpy then skips the
-      mesh silently, so the robot appears as an empty scene graph with no error
-      anywhere. Hence the explicit handler. A URDF from `tool_urdfs.stitch_tools`
-      has absolute paths already, which the handler leaves as they are.
-
-    Collision geometry is skipped. It is PyBullet's business, and drawing both
-    would double the mesh count for no benefit.
+    ! Keep the explicit filename handler: yourdfpy's default leaves `package://`
+      unresolved and silently skips the mesh, giving an empty robot with no error.
 
     Args:
         urdf_file: URDF describing the robot as built.
@@ -101,8 +82,7 @@ def load_urdf(urdf_file: Path) -> yourdfpy.URDF:
     def resolve(fname: str) -> str:
         """Turn one mesh reference into an absolute path.
 
-        ! The parameter must be called `fname`: yourdfpy calls the handler with
-          that keyword, so renaming it raises a TypeError at load time.
+        ! Keep the name `fname`: yourdfpy passes it as a keyword.
         """
         return resolve_mesh_path(fname, urdf_file)
 
@@ -119,11 +99,9 @@ def load_urdf(urdf_file: Path) -> yourdfpy.URDF:
 
 
 def quaternion_to_wxyz(quaternion: np.ndarray) -> tuple[float, float, float, float]:
-    """Reorder a quaternion from the xyzw we carry to the wxyz viser wants.
+    """Reorder a quaternion from xyzw (ROS, PyBullet, RobotState) to viser's wxyz.
 
-    ! Easy to miss and hard to see: a wrong order still renders, just rotated,
-      so the robot looks plausible and points the wrong way. ROS, PyBullet and
-      RobotState all use xyzw; viser scene handles use wxyz.
+    ! A wrong order still renders, just rotated, so it is easy to miss.
 
     Args:
         quaternion: Orientation as (x, y, z, w).
@@ -140,13 +118,11 @@ class _DrawnRobot:
     """The handles and cached configuration for one robot in the viser scene.
 
     Attributes:
-        base: Parent frame carrying the robot's base pose. Moving it moves the
-            whole robot, so draw writes one pose rather than one per link.
+        base: Parent frame carrying the base pose; moves the whole robot.
         urdf: The mesh set, updated through `update_cfg`.
-        joint_names: Actuated joint names, in the order `update_cfg` expects.
-        configuration: Last drawn joint vector, in that same order. Kept so a
-            joint with no measurement this tick holds its value instead of
-            snapping to zero.
+        joint_names: Actuated joint names, in `update_cfg` order.
+        configuration: Last drawn joint vector, so an unmeasured joint holds
+            its value instead of snapping to zero.
     """
 
     base: viser.FrameHandle

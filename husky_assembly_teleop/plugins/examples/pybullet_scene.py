@@ -1,28 +1,18 @@
 """
-Example 3: using the shared PyBullet scene.
+Example 3: a plugin that adds a box to the shared PyBullet scene and checks it against the robots.
 
-`ctx.scene` is a PyBullet client holding the live robots, posed from their
-measurements before any plugin runs each tick. So forward kinematics and
-collision checks against it answer for *this* tick's reality.
+`ctx.scene` is a PyBullet client holding the live robots, posed from this tick's
+measurements before any plugin runs. Each tick the plugin checks the box for
+collision with every robot, reads each arm's tool0 pose by forward kinematics,
+and mirrors both into the 3D view. Buttons move the box.
 
-What this plugin does:
-  - adds one box of its own to the scene, and removes it in teardown
-  - lets the operator move the box with buttons
-  - every tick, checks the box against every robot for collision, and reads
-    each arm's tool0 pose by forward kinematics
-  - mirrors the box and the tool frames into the 3D view (viser)
+! PyBullet rules for plugins:
+  - Call it only on the ROS thread (setup, update, draw, intents, jobs), never
+    directly in a widget callback. There, `pp` already targets `ctx.scene`.
+  - Remove in teardown whatever you add; nothing tracks it for you.
+  - Every other plugin sees what you add (the box is an obstacle for them too).
 
-! Three rules for PyBullet in a plugin:
-  1. Only on the ROS thread: in setup, update, draw, an intent or a job --
-     never directly in a widget callback. There, `pp` already talks to
-     `ctx.scene`: the monitor points it there before every hook.
-  2. Whatever you add, you remove in teardown. Nothing tracks it for you.
-  3. What you add, every other plugin sees. The box below is an obstacle in
-     their collision checks too. Add only what really belongs in the world.
-
-* Look names up once, in setup. A link name that is not in the URDF then
-  stops this plugin at startup with one clear error, instead of failing every
-  tick.
+* Look up link names once in setup, so a wrong name fails at startup, not every tick.
 
 Run with:  -p plugins:="['example_pybullet']" -p robots:="['0806']"
 """
@@ -47,12 +37,12 @@ MOVES = {"−x": (-1, 0), "+x": (1, 0), "−y": (0, -1), "+y": (0, 1)}
 
 @register
 class ExamplePybulletPlugin(HuskyPlugin):
-    """A movable box, checked for collision with the robots, and the arms' tool frames."""
+    """A movable box checked for collision with the robots, plus the arms' tool frames."""
 
     name = "example_pybullet"
 
     def __init__(self):
-        """Nothing in the scene yet; setup adds the box."""
+        """Start empty; setup adds the box."""
         self._box: int | None = None
         self._box_position = np.array(BOX_START)
         self._colliding: list[str] = []
@@ -75,12 +65,11 @@ class ExamplePybulletPlugin(HuskyPlugin):
         pp.set_pose(self._box, pp.Pose(point=self._box_position))
         for serial, body in ctx.scene.robots.items():
             for arm_name in ctx.world.robots[serial].arms:
-                # Link names come from the URDF: the arm's name + "_tool0".
+                # URDF link name: arm name + "_tool0".
                 link = pp.link_from_name(body, f"{arm_name}_tool0")
                 self._tool_links[(serial, arm_name)] = (body, link)
 
-        # * 3D view: everything under ctx.view.scene_root, which is removed for
-        #   us on teardown. Only PyBullet needs manual cleanup.
+        # * 3D view: nodes under ctx.view.scene_root are cleaned up for us.
         root = ctx.view.scene_root
         self._box_view = ctx.view.scene.add_box(f"{root}/box", color=BOX_COLOR,
                                                 dimensions=BOX_SIZE, position=self._box_position)
@@ -95,7 +84,7 @@ class ExamplePybulletPlugin(HuskyPlugin):
             move.on_click(ctx.defer_value("move box", lambda clicked: self._move_box(MOVES[clicked])))
 
     def _move_box(self, direction: tuple[int, int]) -> None:
-        """Move the box one step. An intent, so PyBullet is safe to touch here.
+        """Move the box one step (runs as an intent, so PyBullet is safe here).
 
         Args:
             direction: Unit step in x and y.
@@ -104,7 +93,7 @@ class ExamplePybulletPlugin(HuskyPlugin):
         pp.set_pose(self._box, pp.Pose(point=self._box_position))
 
     def update(self, ctx: PluginContext) -> None:
-        """Collision and forward kinematics against this tick's measured robots.
+        """Check the box for collision and read tool0 poses from this tick's robots.
 
         Args:
             ctx: This plugin's context.
@@ -115,7 +104,7 @@ class ExamplePybulletPlugin(HuskyPlugin):
                             for key, (body, link) in self._tool_links.items()}
 
     def draw(self, ctx: PluginContext) -> None:
-        """Mirror the box and tool frames into the 3D view, and show the numbers.
+        """Update the 3D view and the status text.
 
         Args:
             ctx: This plugin's context.
@@ -137,9 +126,9 @@ class ExamplePybulletPlugin(HuskyPlugin):
         self._status.content = block(state + values(*lines))
 
     def teardown(self, ctx: PluginContext) -> None:
-        """Remove the box from PyBullet. The 3D view and widgets go by themselves.
+        """Remove the box from PyBullet (the 3D view and widgets clean up themselves).
 
-        Also runs when setup failed partway, so check what actually exists.
+        May run after a partial setup, so check the box exists.
 
         Args:
             ctx: This plugin's context.

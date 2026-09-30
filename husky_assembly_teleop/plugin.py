@@ -1,10 +1,8 @@
 """
 The plugin base class, and the registry that finds and orders plugins.
 
-! A plugin owns its own derived state -- trajectories, preview ghosts, plot
-  histories, plans in progress -- on its own instance and nowhere else. That is
-  what stops the god object growing back; splitting files without giving that
-  state a home just moves it. See doc/refactor_rationale.md.
+! Keep a plugin's own derived state (trajectories, plans, plot histories) on its
+  instance, not in the monitor, so the monitor does not grow back into one big object.
 """
 
 from __future__ import annotations
@@ -18,87 +16,54 @@ from .context import PluginContext
 
 
 class HuskyPlugin:
-    """One self-contained feature: its own state, its own UI, its own scene nodes.
+    """One self-contained feature with its own state, UI and scene nodes.
 
-    Override only the hooks you need:
+    Override only the hooks you need: `setup`, `update`, `draw`, `teardown`.
+    Work that takes longer than one tick is a job: a generator started with
+    `ctx.spawn` that waits by yielding.
 
-      - `setup`     build widgets and scene nodes, once.
-      - `update`    anything that has to happen every tick: stream a command,
-                    track a value, check for collisions.
-      - `draw`      copy state into the widgets and scene nodes, every tick.
-      - `teardown`  release what the monitor cannot: hardware, open files,
-                    PyBullet bodies you added.
+    ! Hooks run on the ROS thread, so they can touch world state, the scene and
+      ROS without locking, but must never block: a slow hook stalls every ROS
+      callback. Wait inside a job instead.
 
-    Anything that takes longer than one tick -- a trajectory, a calibration
-    sweep, a plan-then-execute cycle -- is a job: a generator started with
-    `ctx.spawn`, usually from a button, and stopped with `job.cancel()`. It
-    waits by yielding, so its logic reads in the order it happens. See
-    examples/sequence.py.
-
-    ! Every hook runs on the ROS thread, so all of them may touch world state,
-      the scene and ROS with no locking. The one thing they may not do is block:
-      a slow step stalls the tick and every ROS callback behind it. Wait inside
-      a job, with the helpers in concurrency.py.
-
-    ! A hook that raises counts against the plugin. After
-      `config.max_plugin_errors` consecutive ticks with a failure it is torn
-      down, along with anything that requires it. A clean tick clears the count.
+    ! A hook that raises counts as a failed tick. After `config.max_plugin_errors`
+      failed ticks in a row the plugin is stopped until restart; a clean tick
+      resets the count.
     """
 
-    #: Unique name. Used for the scene path, the GUI folder label, the
-    #: enabled-plugins config, dependency declarations and log messages.
+    #: Unique name, used for the scene path, GUI folder, config and logs.
     name: str = "unnamed"
 
-    #: Plugins that must be set up before this one, and which it may reach
-    #: through `ctx.require`. Declaring this is what gives the monitor a
-    #: deterministic order -- which matters, because each plugin drains its own
-    #: intent queue when its turn comes, so it sees an earlier plugin's effects
-    #: this tick and a later one's only next tick.
+    #: Plugins to set up before this one; reach them through `ctx.require`.
     requires: tuple[str, ...] = ()
 
     def setup(self, ctx: PluginContext) -> None:
-        """Register UI and initialise state. Called once, at startup.
+        """Build widgets and scene nodes once, at startup, and keep the handles.
 
-        Build every widget and scene node here, keep the handles on `self`, and
-        mutate them later in `draw`: viser is retained mode, so nothing needs to
-        be -- or should be -- rebuilt per tick. `ctx.view` is the private UI
-        slice to build into.
-
-        A plugin whose setup raises is disabled immediately rather than started
-        against half-built state, so it is fine to let a missing file or an
-        unreachable service propagate from here. `teardown` still runs, so it
-        must cope with a setup that stopped partway.
+        Later, change those handles in `draw` rather than rebuilding them.
+        A raise here stops the plugin, but `teardown` still runs, so it must
+        cope with a half-finished setup.
         """
 
     def update(self, ctx: PluginContext) -> None:
-        """Advance this plugin's state by one tick.
+        """Advance this plugin's state by one tick, after its intents and before its jobs.
 
-        Runs after this plugin's queued intents and before its jobs. The scene
-        already reflects this tick's measurements by the time this runs, so
-        kinematics and collision queries answer against current reality.
+        The scene already holds this tick's measurements.
         """
 
     def draw(self, ctx: PluginContext) -> None:
-        """Push this plugin's state into its scene nodes and widgets.
+        """Copy state into the handles made in `setup`; do not add nodes here.
 
-        Called once per tick after every plugin has stepped, inside the
-        visualization's atomic block. Assign to handles created in `setup`; do
-        not add nodes here.
-
-        ! Display only. Not called at all while the operator has frozen the
-          panels (the Freeze switch at the top), which can last minutes. So
-          nothing that must keep happening goes here: reacting to state,
-          answering a button, safety checks -- those belong in `update`, an
-          intent or a job, which keep running while frozen.
+        ! Display only: skipped while the operator has the panels frozen. Put
+          anything that must keep running (reacting, buttons, safety checks) in
+          `update`, an intent or a job.
         """
 
     def teardown(self, ctx: PluginContext) -> None:
-        """Release anything that outlives the process's own cleanup.
+        """Release what the monitor cannot, once at shutdown, even if stopped.
 
-        Called on shutdown, and when a plugin is disabled after repeated errors.
-        Jobs are cancelled and scene nodes and widgets removed for you; this is
-        for PyBullet bodies the plugin added, open files, recordings and
-        hardware left in an odd state.
+        Jobs, scene nodes and widgets are cleaned up for you; this is for
+        PyBullet bodies, open files, recordings and hardware.
         """
 
 
@@ -107,11 +72,7 @@ PLUGIN_REGISTRY: dict[str, type[HuskyPlugin]] = {}
 
 
 def register(plugin_class: type[HuskyPlugin]) -> type[HuskyPlugin]:
-    """Class decorator that makes a plugin discoverable. Returns it unchanged.
-
-    ! By decorator rather than by an import in the monitor. If HuskyMonitor
-      imported each plugin class by name, adding a plugin would mean editing the
-      monitor -- exactly the coupling the plugin system exists to remove.
+    """Class decorator that registers a plugin under its `name` and returns it unchanged.
 
     Raises:
         ValueError: If `plugin_class.name` is missing or already taken.
@@ -126,14 +87,10 @@ def register(plugin_class: type[HuskyPlugin]) -> type[HuskyPlugin]:
 
 
 def discover(log_error: Callable[[str], None]) -> None:
-    """Import every module under `plugins/`, running their @register calls.
+    """Import every module under `plugins/` so their @register calls run.
 
-    ! One unimportable plugin must not take the monitor down with it.
-      Every module has to be imported to find out what it registers, and plugins
-      pull in heavy optional dependencies -- compas_fab, the Drake planner
-      client, tracikpy. A failure goes to `log_error` and that module is
-      skipped; if it was the one defining a requested plugin, `resolve_order`
-      then reports the name as unregistered.
+    ! A module that fails to import is logged and skipped, not fatal, since
+      plugins pull in heavy optional dependencies.
     """
     from . import plugins
 
@@ -147,14 +104,11 @@ def discover(log_error: Callable[[str], None]) -> None:
 
 def load_plugins(enabled: Iterable[str],
                  log_error: Callable[[str], None]) -> list[HuskyPlugin]:
-    """Discover, resolve dependencies, and instantiate plugins in setup order.
+    """Create the enabled plugins, plus their dependencies, in setup order.
 
     Args:
-        enabled: Names to load, explicitly: a new file under `plugins/` must not
-            enable itself everywhere it is installed. Empty loads nothing, which
-            is a valid way to run the core alone. Dependencies are pulled in
-            even when not listed.
-        log_error: Where to report plugin modules that could not be imported.
+        enabled: Names to load. Empty loads nothing.
+        log_error: Receives a message for each module that fails to import.
 
     Returns:
         list[HuskyPlugin]: Constructed plugins, each after what it requires.
@@ -168,23 +122,18 @@ def load_plugins(enabled: Iterable[str],
 
 
 def resolve_order(requested: Iterable[str]) -> list[str]:
-    """Topologically sort `requested` and its dependencies into setup order.
+    """Sort `requested` and its dependencies so each comes after what it requires.
 
-    ? Why order is worth pinning down. Each plugin drains its own intent queue
-      when its turn comes, rather than everything draining at the top of the
-      tick, which makes ordering observable: a plugin sees an earlier plugin's
-      intents in the same tick, and a later one's only in the next.
+    ? Order matters: a plugin sees an earlier plugin's effects this tick, a later one's next tick.
 
     Raises:
-        KeyError: If a name, or something it requires, is not registered. A
-            module that failed to import looks the same from here, so check the
-            log for a skipped module before assuming a typo.
+        KeyError: If a name is not registered. Also raised when its module failed
+            to import, so check the log before assuming a typo.
         ValueError: If a dependency cycle is found.
     """
     order: list[str] = []
     settled: set[str] = set()
-    # Names on the current depth-first path. A name seen twice on one path is a
-    # cycle, which has to be a hard error: no order satisfies it.
+    # Names on the current path; seeing one twice means a cycle.
     visiting: list[str] = []
 
     def visit(name: str) -> None:

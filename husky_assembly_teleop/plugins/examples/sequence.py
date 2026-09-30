@@ -2,32 +2,21 @@
 Example 4: a long-running sequence that waits, can be cancelled, and asks the
 operator to continue.
 
-The shape of every automation -- a calibration sweep, pick and place, an
-experiment -- with the robot parts replaced by fake waits:
+The sequence is a generator: it reads top to bottom, and each `yield` hands the
+thread back until the next tick. Start spawns it as a job (`ctx.spawn(...)`);
+Cancel calls `job.cancel()`, which raises `Cancelled` at the current `yield` and
+runs the `finally` block, the place to stop motors or open a gripper.
 
-  1. wait 3 s                             (wait_seconds)
-  2. wait for the operator to press Next  (wait_until on a flag, with a timeout)
-  3. wait for a fake sensor to fill up    (wait_until on a reading, with a timeout)
-  4. repeat three times, then finish
+Each cycle, with fake waits in place of robot work (three cycles, then finish):
+  1. wait 3 s                              (wait_seconds)
+  2. wait for the operator to press Next   (wait_until on a flag, with a timeout)
+  3. wait for a fake sensor to fill up     (wait_until on a reading, with a timeout)
 
-* The recipe, the same for anything that takes longer than one tick:
-  - Start spawns the sequence as a job:  `self._job = ctx.spawn(...)`
-  - Cancel cancels it:                   `self._job.cancel()`
-    That raises `Cancelled` at the sequence's current `yield`, and its
-    `finally` block runs -- the place to stop motors or open a gripper.
-  - The sequence is a generator. It reads top to bottom, in the order things
-    happen, yet never blocks: every `yield` hands the thread back until the
-    next tick.
+! Ignore (and log) a button click that does not apply now, such as Next while
+  nothing waits for it: a stored click would fire long after the operator forgot it.
 
-! A button only acts if it makes sense *now*. The buttons always stay where
-  they are and look the same; the handler decides, and ignores (and logs) a
-  click that does not apply -- Next while nothing waits for it, Start while a
-  sequence runs. A click that is stored and acted on later would make things
-  happen long after the operator stopped expecting them.
-
-! Catch the failures you expect. A job that raises counts against the plugin
-  (three failing ticks in a row disable it), so a timeout the operator can
-  cause is caught in the sequence and reported, not raised.
+! Catch the failures you expect, such as a timeout. Repeated failing ticks stop
+  the plugin, so report them from the sequence instead of raising.
 
 Run with:  -p plugins:="['example_sequence']"
 """
@@ -43,7 +32,7 @@ from ...ui_style import BUSY, FAIL, NONE, OK, SECTION_CTRL, block, chip, section
 
 CYCLES = 3
 TIMER_SECONDS = 3.0
-SENSOR_FILL_SECONDS = 4.0     # how long the fake sensor takes to reach 1.0
+SENSOR_FILL_SECONDS = 4.0     # time for the fake sensor to reach 1.0
 NEXT_TIMEOUT = 30.0           # give up if nobody presses Next
 SENSOR_TIMEOUT = 10.0
 
@@ -55,17 +44,17 @@ class ExampleSequencePlugin(HuskyPlugin):
     name = "example_sequence"
 
     def __init__(self):
-        """Idle, with nothing running."""
-        #: The last sequence started, running or finished. None before the first Start.
+        """Start idle."""
+        #: The last sequence started, running or finished; None before the first Start.
         self._job: Job | None = None
         #: Set by the Next button, and only while the sequence waits for it.
         self._next_pressed = False
-        #: What the operator sees: where the sequence is, and how the last one ended.
+        #: What the operator sees: where the sequence is and how the last one ended.
         self.cycle = 0
         self.step = "idle"
         self.outcome = ""
-        #: When the current step started, and how long it should take, for the
-        #: progress bar. None for a step with no set length.
+        #: Start time and expected length of the current step, for the progress
+        #: bar; the length is None if unset.
         self._step_started = 0.0
         self._step_seconds: float | None = None
 
@@ -108,7 +97,7 @@ class ExampleSequencePlugin(HuskyPlugin):
     # --- --- --- --- --- THE SEQUENCE (a job) --- --- --- --- ---
 
     def _sequence(self, ctx: PluginContext) -> Task:
-        """The automation itself. Reads in the order it happens.
+        """Run the automation, written in the order things happen.
 
         Args:
             ctx: This plugin's context.
@@ -134,18 +123,17 @@ class ExampleSequencePlugin(HuskyPlugin):
                                       timeout_s=SENSOR_TIMEOUT, description="the fake sensor")
             self.outcome = "done"
         except WaitTimeout as timeout:
-            # Expected: report it, do not raise (see the module docstring).
+            # Expected: report it, do not raise.
             self.outcome = "timed out"
             ctx.log_warn(str(timeout))
         except Cancelled:
             self.outcome = "cancelled"
-            raise  # ! always let Cancelled go on, so the job ends as cancelled
+            raise  # ! Re-raise, so the job ends as cancelled
         except Exception:
             self.outcome = "failed"
-            raise  # a bug: let it reach the log, with its traceback
+            raise  # a bug: let it reach the log
         finally:
-            # * Runs however the sequence ends. With real hardware, this is
-            #   where motors stop and grippers open.
+            # * Runs however the sequence ends: stop motors and open grippers here.
             self.step, self._step_seconds, self._next_pressed = "idle", None, False
             ctx.log_info(f"sequence ended: {self.outcome}")
 
@@ -162,7 +150,7 @@ class ExampleSequencePlugin(HuskyPlugin):
         self._step_seconds = seconds
 
     def _fake_sensor(self, ctx: PluginContext) -> float:
-        """A pretend reading that rises from 0 to 1 over SENSOR_FILL_SECONDS of the sensor step."""
+        """Return a fake reading that rises from 0 to 1 over the sensor step."""
         return (ctx.now() - self._step_started) / SENSOR_FILL_SECONDS
 
     # --- --- --- --- --- DRAW --- --- --- --- ---

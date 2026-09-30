@@ -1,15 +1,8 @@
 """
 The tools mounted on an arm's flange, one class per kind.
 
-Which kind an arm carries is configuration (ArmConfig.end_effector, overridden
-per run by the `tools` parameter, see config.py) and does not change while
-running. Its model for display and collision checking is in tool_urdfs.py.
-`make_end_effector` turns that setting into the matching class, which creates
-only the topics, services and actions that tool has.
-
-All of them share open / close / stop, so code that only wants to grip does not
-need to know which tool is mounted. Anything tool-specific, such as the
-scaffolding tool's screw, is a method on that class alone.
+`make_end_effector` picks the class from ArmConfig.end_effector. All tools share
+open / close / stop; tool-specific actions (e.g. the screw) live on their class only.
 """
 
 from __future__ import annotations
@@ -34,11 +27,7 @@ from .connections import RosConnections
 
 @dataclass
 class RobotiqState:
-    """What we know about a Robotiq gripper.
-
-    Two sources: the driver's joint_state_broadcaster, which reports where the
-    fingers are, and the GripperCommand action, which reports whether the last
-    command finished and got there.
+    """What we know about a Robotiq gripper, from its joint states and the GripperCommand action.
 
     Attributes:
         position: Measured knuckle angle, radians, or None before the first
@@ -64,9 +53,7 @@ class RobotiqState:
 
 @dataclass
 class ScaffoldingV3State:
-    """Last status the scaffolding tool driver published.
-
-    Every field is None until the first status arrives.
+    """Last status the scaffolding tool driver published; fields are None until the first one.
 
     Attributes:
         gripper_motor: Driver's state string for the gripper motor (M1).
@@ -85,11 +72,10 @@ class ScaffoldingV3State:
 
 @dataclass
 class ScaffoldingV1State:
-    """The two UR tool outputs that drive a v1 scaffolding tool. See ScaffoldingV1.
+    """The two UR tool outputs that drive a v1 scaffolding tool.
 
-    ? The tool itself reports nothing back. These are the outputs as the UR
-      reports them in io_states, so they show what the robot is really
-      switching -- also after the safety sync switched the screw off by itself.
+    ? The tool reports nothing itself; these are the outputs as the UR reports
+      them, so they also show a screw switched off by the safety sync.
 
     Attributes:
         gripper_closed: Whether the gripper output is on, or None before the
@@ -115,14 +101,13 @@ class EndEffector(ABC):
     """What every mounted tool can do.
 
     Attributes:
-        state: The tool's own state dataclass. The arm puts the same object into
-            its ArmState, so it is readable from RobotState.
+        state: The tool's state; the same object is in ArmState.
     """
 
     state: EndEffectorState
 
     def __init__(self, node: Node, robot_namespace: str, arm: ArmConfig):
-        """Remember where the tool's driver lives. Subclasses create its I/O.
+        """Remember where the tool's driver lives; subclasses create the I/O.
 
         Args:
             node: The monitor node.
@@ -131,7 +116,7 @@ class EndEffector(ABC):
         """
         self._node = node
         self._arm = arm
-        #: Where the arm's own driver lives, for tools switched through the arm.
+        #: The arm's own driver, for tools switched through the arm.
         self.arm_namespace = f"/{robot_namespace}/{arm.ros_namespace}"
         self.namespace = f"/{robot_namespace}/{arm.end_effector_namespace}"
         #: Subclasses create their ROS entities through this, in `_connect`.
@@ -159,31 +144,23 @@ class EndEffector(ABC):
 
 
 class RobotiqGripper(EndEffector):
-    """Robotiq 2F-85, driven through its GripperCommand action.
+    """Robotiq 2F-85, moved through the driver's GripperCommand action.
 
-    The driver (crl_husky robotiq_control.launch.py) runs its own controller
-    manager under the tool's namespace, with three controllers:
-      - robotiq_gripper_controller: the GripperCommand action we move with.
-      - joint_state_broadcaster: joint_states, where we read the knuckle angle.
-      - robotiq_activation_controller: the reactivate_gripper service, for a
-        gripper that faulted or lost power.
+    The driver publishes joint_states and offers reactivate_gripper, both under
+    the tool's namespace.
     """
 
     #: Knuckle angle in radians: 0.0 is fully open, 0.8 fully closed.
     OPEN_POSITION = 0.0
     CLOSED_POSITION = 0.8
-    #: Force limit the old UI always sent. Low on purpose: a bar is light.
-    #: The driver reads it as a fraction of full force, 0.0 to 1.0.
+    #: Force limit as a fraction of full force. Low on purpose: a bar is light.
     DEFAULT_EFFORT = 0.1
     MAX_EFFORT = 1.0
-    #: The joint the driver moves and reports; the other finger joints mimic it.
+    #: The joint the driver moves and reports; the other finger joints follow it.
     KNUCKLE_JOINT = "robotiq_85_left_knuckle_joint"
 
     def __init__(self, node: Node, robot_namespace: str, arm: ArmConfig):
-        """Create the action client, the joint state subscription and the reactivate client.
-
-        Does not wait for any of them to connect.
-        """
+        """Create the action client, joint state subscription and reactivate client, without waiting for them."""
         super().__init__(node, robot_namespace, arm)
         self.state = RobotiqState()
         self._connect()
@@ -192,19 +169,16 @@ class RobotiqGripper(EndEffector):
         """Create the action client, the joint state subscription and the reactivate client."""
         self._action = self._ros.action_client(
             GripperCommand, f"{self.namespace}/robotiq_gripper_controller/gripper_cmd")
-        # ? Best effort: only the newest angle matters. The broadcaster runs at
-        #   the controller manager's rate and there is no rate limiter for the
-        #   gripper, so lost samples should not be resent over wifi.
+        # ? Best effort: only the newest angle matters, so lost samples are not resent over wifi.
         self._ros.subscription(JointState, f"{self.namespace}/joint_states", self._on_joint_state,
                                qos_profile_sensor_data)
         self._reactivate = self._ros.client(
             Trigger, f"{self.namespace}/robotiq_activation_controller/reactivate_gripper")
 
     def reconnect(self) -> None:
-        """Reconnect the action client, the subscription and the reactivate client.
+        """Reconnect the action client, subscription and reactivate client.
 
-        ! A goal or request sent on an old client never reports back, so
-          `moving` and `reactivating` are cleared here rather than left True forever.
+        ! Clears `moving` and `reactivating`: a request sent on an old client never reports back.
         """
         super().reconnect()
         self.state.moving = False
@@ -219,12 +193,9 @@ class RobotiqGripper(EndEffector):
         self.move(self.CLOSED_POSITION)
 
     def stop(self) -> None:
-        """Hold where the fingers are now, by commanding the measured position.
+        """Hold the fingers where they are, by commanding the measured position.
 
-        ? GripperCommand has no stop. Cancelling the goal leaves the gripper
-          wherever the driver decides, so commanding where it already is is
-          the predictable choice. Before the first joint state there is no
-          measured position, so the last target is re-sent instead.
+        ? GripperCommand has no stop. Before the first joint state, the last target is re-sent.
         """
         position = self.state.position if self.state.position is not None else self.state.commanded_position
         if position is not None:
@@ -258,9 +229,8 @@ class RobotiqGripper(EndEffector):
     def reactivate(self) -> None:
         """Ask the activation controller to reactivate the gripper.
 
-        * Needed after a fault or a power loss of the tool connector. The
-          gripper opens and closes once while it activates, so nothing should
-          be between its fingers.
+        * Needed after a fault or power loss. The gripper opens and closes once,
+          so keep its fingers clear.
         """
         if not self._reactivate.service_is_ready():
             self._node.get_logger().warning(f"{self.namespace}: reactivate_gripper service is not available")
@@ -303,15 +273,13 @@ class RobotiqGripper(EndEffector):
 class ScaffoldingV3(EndEffector):
     """Scaffolding tool v3: two motors behind an RS485 driver on the robot.
 
-    ! The driver and its message call the motors M1 and M2, which is easy to
-      misread as the movement roles M0..M4 of a BarAction. On the Python side
-      they are named by what they do: GRIPPER_MOTOR and JOINT_MOTOR.
+    ! The driver's M1 and M2 are not the BarAction movement roles M0..M4; use GRIPPER_MOTOR and JOINT_MOTOR.
     """
 
     GRIPPER_MOTOR = 1  # M1: opens and closes the gripper that holds the bar
     JOINT_MOTOR = 2    # M2: drives the screw that tightens the bar to the joint
-    #: The motor states the driver reports (crl_husky onboard/protocol.md).
-    #: A stalled motor refuses to run until STOP clears the flag.
+    #: Motor states the driver reports (crl_husky onboard/protocol.md).
+    #: A stalled motor will not run until `stop()` clears it.
     IDLE, TIGHTENING, LOOSENING, STALLED = "IDLE", "TIGHTENING", "LOOSENING", "STALLED"
 
     def __init__(self, node: Node, robot_namespace: str, arm: ArmConfig):
@@ -334,7 +302,7 @@ class ScaffoldingV3(EndEffector):
         self._drive(self.GRIPPER_MOTOR, 1)
 
     def stop(self) -> None:
-        """Stop both motors and clear a stall. The driver ignores the motor field when stopping."""
+        """Stop both motors and clear a stall."""
         self._drive(self.GRIPPER_MOTOR, 0)
 
     def drive_screw(self, direction: int) -> None:
@@ -364,21 +332,12 @@ class ScaffoldingV3(EndEffector):
 class ScaffoldingV1(EndEffector):
     """Scaffolding tool v1, switched through the UR's two tool digital outputs.
 
-    There is no driver of its own: the arm's io_and_status_controller switches
-    the outputs (SetIO), and reports them back in io_states. Both live in the
-    *arm's* namespace (ArmConfig.ros_namespace), not end_effector_namespace.
+    Uses the arm's own set_io service and io_states, in the arm's namespace.
+    Output 0 is the screw (on runs it one way); output 1 is the gripper.
 
-      tool output 0   screw motor. On runs it in its one direction.
-      tool output 1   gripper. On closes it.
+    ! multi_arm_safety_sync switches output 0 off whenever it stops the arms.
 
-    ! The robot's multi_arm_safety_sync switches tool output 0 off whenever it
-      stops the arms, so a stop there also stops the screw.
-
-    ? Where the pins come from. The screw on output 0 is in old/husky_robot.py
-      (set_screw) and in multi_arm_safety_sync. Output 1 for the gripper is the
-      only other tool output, but "on closes" was never written down anywhere:
-      check it on the robot, and swap GRIPPER_CLOSED_WHEN_ON if it is the
-      other way round.
+    ? "Gripper on = closed" is unverified: check on the robot and flip GRIPPER_CLOSED_WHEN_ON if wrong.
     """
 
     SCREW_PIN = SetIO.Request.PIN_TOOL_DOUT0
@@ -394,7 +353,7 @@ class ScaffoldingV1(EndEffector):
     def _connect(self) -> None:
         """Create the set_io client and the io_states subscription."""
         self._set_io = self._ros.client(SetIO, f"{self.arm_namespace}/io_and_status_controller/set_io")
-        # Through the arm's rate limiter, like ArmInterface's own io_states.
+        # Via the arm's rate limiter, like ArmInterface.
         self._ros.subscription(IOStates, f"{self.arm_namespace}/rate_limiter/io_and_status_controller/io_states",
                                self._on_io_states, qos_profile_sensor_data)
 
@@ -413,8 +372,7 @@ class ScaffoldingV1(EndEffector):
     def stop(self) -> None:
         """Switch the screw off.
 
-        ! The gripper is left as it is. It has no "stopped" state, only open
-          and closed, and switching it would drop or grab whatever it holds.
+        ! The gripper is left alone: it has only open and closed, and switching it would drop or grab the bar.
         """
         self._set(self.SCREW_PIN, False)
 
@@ -422,8 +380,7 @@ class ScaffoldingV1(EndEffector):
         """Run or stop the screw motor.
 
         Args:
-            direction: 1 runs it, 0 stops it. -1 (loosen) is not possible: the
-                output only switches the motor on in its one direction.
+            direction: 1 runs it, 0 stops it. -1 is refused: the motor runs one way only.
         """
         if direction < 0:
             self._node.get_logger().warning(f"{self.arm_namespace}: scaffolding_v1 cannot loosen; nothing sent")

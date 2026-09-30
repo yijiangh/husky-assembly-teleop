@@ -1,142 +1,421 @@
 """
-The cell plugin: owns the loaded design, the selected step, and the planner.
+The cell plugin: loads an authored design and steps through its cell states.
 
-? What this plugin is for.
-  The core knows about the live robots and provides infrastructure. It has no
-  idea what a bar, a rack or an assembly step is. So the design, the position in
-  it, and the planning session all live here.
+Viewer and provider only: it draws one movement's robot cell state at a time,
+and planning plugins that declare `requires = ("cell",)` read the selected
+movement from it. It owns no planner and no PyBullet body.
 
-! It owns a compas_fab session, not a pile of PyBullet bodies.
-  A study of the old code settled this. The live planning path never calls
-  PyBullet collision APIs itself -- `pairwise_collision` appears zero times.
-  Instead `CfabSession` materializes the whole cell in one go through
-  `planner.set_robot_cell(cell)`, and each movement is pushed as a declarative
-  `RobotCellState` via `planner.set_robot_cell_state(state)`. compas_fab owns
-  those body ids, and asserts that the cell and every state carry exactly the
-  same rigid-body ids.
-
-  Two consequences, both of which killed earlier drafts of this file:
-
-  - Do not add and remove bodies per step. The authored `is_hidden` flag on a
-    RigidBodyState is how "not an obstacle right now" is expressed, and the old
-    code's own comment says switching movements that way "no longer re-adds and
-    re-removes the built bars".
-  - Do not compute the per-step layout. It is authored: each movement in a
-    BarAction file carries its own `start_state` with frames, attachments,
-    is_hidden and touch_links already set. This plugin's real job is to *patch*
-    that authored state with live measurements and push it.
-
-! Patching authored state with live measurement is the delicate part.
-  The old code has a documented bug from getting it wrong: it wrote the live
-  base pose into the planning state unconditionally, which teleported the
-  planning robot to the origin whenever mocap had not produced a fix yet. Only
-  tracked values may be copied in. That is the one piece of logic here worth
-  testing properly.
+! The authored state is never modified: what is drawn is a copy (`displayed_state`).
+! Loading is slow (a RobotCell file is ~350 MB), so it runs on a worker thread,
+  and meshes are added to viser a model per tick by a job. The worker only
+  returns a result; the job hands it over on the ROS thread.
 """
 
 from __future__ import annotations
 
+import traceback
+from concurrent.futures import ThreadPoolExecutor
+from html import escape
+from pathlib import Path
+
+from compas_fab.robots import RobotCell
+
+from ...concurrency import Job, Task, WaitTimeout, wait_until
 from ...context import PluginContext
 from ...plugin import HuskyPlugin, register
-from .assembly import Assembly
+from ...ui_style import BUSY, FAIL, NONE, OK, SECTION_CTRL, block, chip, note, section, values
+from .design import Design, Step, displayed_state, load_design
+from .drawing import CellDrawing, CellMeshes, prepare_cell_meshes
+
+#: Give up on a load after this many seconds.
+LOAD_TIMEOUT = 120.0
+
+#: Opacity of the drawn state when "Ghost" is on.
+GHOST_OPACITY = 0.4
+
+
+def _load_in_background(folder: Path, report) -> tuple[Design, dict[str, CellMeshes]]:
+    """Load a design and prepare its meshes. Runs on the worker thread.
+
+    Args:
+        folder: Design folder.
+        report: Called with a progress string.
+
+    Returns:
+        tuple[Design, dict[str, CellMeshes]]: The design, and each cell's meshes by robot id.
+    """
+    design = load_design(folder, report)
+    meshes = {}
+    for robot_id, cell in design.cells.items():
+        report(f"preparing meshes of {robot_id}")
+        meshes[robot_id] = prepare_cell_meshes(cell)
+    return design, meshes
 
 
 @register
 class CellPlugin(HuskyPlugin):
-    """Holds the design and the selected step, and drives the cfab planner."""
+    """Shows one authored robot cell state at a time and steps through the schedule."""
 
     name = "cell"
 
     def __init__(self):
         """Start with nothing loaded."""
-        #: The loaded design. Replaced wholesale on load, never edited in place.
-        self.assembly = Assembly()
+        #: The loaded design, or None. Replaced on load, never edited.
+        self.design: Design | None = None
 
-        #: Which step is selected. The one piece of genuine state here, because
-        #: it is an operator decision rather than a fact about anything.
+        #: Index of the selected step in `design.steps`.
         self.index = 0
 
-        #: The compas_fab planning session: client, robot cell and planner.
-        #: TODO port CfabSession. It owns its own PyBullet client -- deliberately
-        #:      NOT ctx.scene's. The old code let the two share one client id and
-        #:      then had to hide cfab's robot because it overlapped the live one.
-        #:      Two clients, no sharing.
-        self.session = None
+        #: Show the robot at the movement's target configuration instead of its start.
+        self.at_target = False
+
+        #: Goes up whenever the design or selected step changes, so dependents can poll it.
+        self.revision = 0
+
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cell-load")
+        self._load_job: Job | None = None
+        self._build_job: Job | None = None
+        # Written by the worker thread, read by draw; plain assignment, so no lock.
+        self._progress = ""
+        self._error = ""
+
+        self._meshes: dict[str, CellMeshes] = {}
+        #: Robot id -> its cell's viser nodes, built when first needed.
+        self._drawings: dict[str, CellDrawing] = {}
+        self._visible = True
+        self._ghost = False
+        # True when the drawing is out of date and draw must re-pose it.
+        self._stale = True
+
+    # --- --- --- --- --- WHAT OTHER PLUGINS READ --- --- --- --- ---
+
+    @property
+    def step(self) -> Step | None:
+        """Step | None: The selected movement, or None before a design is loaded.
+
+        ! Its start state and target are the authored ones: copy before modifying.
+        """
+        if self.design is None or not self.design.steps:
+            return None
+        return self.design.steps[self.index]
+
+    @property
+    def cell(self) -> RobotCell | None:
+        """RobotCell | None: The selected step's robot cell, or None before a design is loaded."""
+        step = self.step
+        return None if step is None else self.design.cell_for(step)
+
+    # --- --- --- --- --- SETUP --- --- --- --- ---
 
     def setup(self, ctx: PluginContext) -> None:
-        """Build the panel. One widget set, mutated later, never rebuilt.
+        """Build the panel, and load the configured design if there is one.
 
         Args:
             ctx: This plugin's context.
         """
+        folder = ctx.config.design_directory
         with ctx.view.ui() as gui:
-            self._step_slider = gui.add_slider("Step", min=0, max=0, step=1, initial_value=0)
-            self._step_label = gui.add_text("Loaded", initial_value="no design", disabled=True)
+            self._status = gui.add_html("")
+            self._folder = gui.add_text("Folder", initial_value=str(folder or ""),
+                                        hint="Design folder with ActionSchedule.json, BarActions/ "
+                                             "and RobotCell*.json")
+            load = gui.add_button_group("Design", ["Load"])
+            gui.add_html(section("step", SECTION_CTRL))
+            self._slider = gui.add_slider("Step", min=0, max=1, step=1, initial_value=0)
+            go = gui.add_button_group("Go", ["◀ action", "◀", "▶", "action ▶"],
+                                      hint="Previous / next movement, or jump to the previous / next action")
+            show = gui.add_button_group("Show", ["Start", "Target"],
+                                        hint="The robot at the movement's start state, or at its target configuration")
+            view = gui.add_button_group("View", ["Hide", "Ghost"],
+                                        hint="Hide / show the drawn state; ghost makes it see-through")
+            # ! Keep text that changes per step BELOW the buttons, so they never move mid-click.
+            self._details = gui.add_html("")
+            self._error_text = gui.add_html("")
 
-        # ! Every viser callback goes through defer.
-        #   viser fires this on a worker thread; defer turns it into an intent on
-        #   this plugin's queue, so the work happens on the ROS thread where
-        #   touching PyBullet is safe.
-        self._step_slider.on_update(
-            ctx.defer_value("select step", lambda index: self.select_step(ctx, index))
-        )
+        # ! Route every viser callback through defer so it runs on the ROS thread.
+        load.on_click(ctx.defer("load design", lambda: self.load(ctx, Path(self._folder.value.strip()))))
+        self._slider.on_update(ctx.defer_value("select step", lambda value: self.select(int(value))))
+        go.on_click(ctx.defer_value("step button", self._on_go))
+        show.on_click(ctx.defer_value("show", lambda label: self._set_at_target(label == "Target")))
+        view.on_click(ctx.defer_value("view", self._on_view))
 
-        # TODO a file dialog for picking the BarAction file, wired the same way.
+        if folder is not None:
+            self.load(ctx, folder)
 
     def teardown(self, ctx: PluginContext) -> None:
-        """Close the planning session, which owns its own PyBullet connection.
+        """Stop the loading thread.
 
         Args:
             ctx: This plugin's context.
         """
-        # TODO self.session.close() once CfabSession is ported.
+        # A running load cannot be interrupted; its result is dropped.
+        self._executor.shutdown(wait=False, cancel_futures=True)
 
     # --- --- --- --- --- COMMANDS --- --- --- --- ---
-    # Called from intents, so always on the ROS thread.
+    # Run on the ROS thread, via intents.
 
-    def load(self, ctx: PluginContext, assembly: Assembly) -> None:
-        """Replace the design and go back to the first step.
-
-        Args:
-            ctx: This plugin's context.
-            assembly: The design to load.
-        """
-        self.assembly = assembly
-        self.index = 0
-        self._apply(ctx)
-
-    def select_step(self, ctx: PluginContext, index: int) -> None:
-        """Select a step and push its state to the planner.
+    def load(self, ctx: PluginContext, folder: Path) -> None:
+        """Start loading a design folder, replacing the current design when done.
 
         Args:
             ctx: This plugin's context.
-            index: Step index, clamped to the loaded design.
+            folder: The design folder.
         """
-        if not self.assembly.steps:
+        if self._load_job is not None and not self._load_job.done:
+            ctx.log_info("load ignored: a design is already loading")
             return
-        self.index = max(0, min(index, len(self.assembly.steps) - 1))
-        self._apply(ctx)
+        self._load_job = ctx.spawn(f"load {folder.name}", self._load(ctx, folder))
 
-    # --- --- --- --- --- INTERNALS --- --- --- --- ---
+    def select(self, index: int) -> None:
+        """Select a step. Clamped to the design; ignored before one is loaded.
 
-    def _apply(self, ctx: PluginContext) -> None:
-        """Push the current step's state to the planner and refresh the panel.
+        Args:
+            index: Index into `design.steps`.
+        """
+        if self.design is None or not self.design.steps:
+            return
+        index = max(0, min(int(index), len(self.design.steps) - 1))
+        # ! Keep this check: draw writes the slider back, which would otherwise loop.
+        if index == self.index:
+            return
+        self.index = index
+        self._changed()
+
+    def _set_at_target(self, at_target: bool) -> None:
+        """Show the start state or the target configuration.
+
+        Args:
+            at_target: True for the target.
+        """
+        if at_target != self.at_target:
+            self.at_target = at_target
+            self._stale = True
+
+    def _on_go(self, label: str) -> None:
+        """Step to the previous or next movement or action.
+
+        Args:
+            label: The button clicked.
+        """
+        step = self.step
+        if step is None:
+            return
+        if label == "◀":
+            self.select(self.index - 1)
+        elif label == "▶":
+            self.select(self.index + 1)
+        elif label == "◀ action":
+            # First movement of this action, or of the previous one if already there.
+            action = step.action.index - (1 if step.movement_index == 0 else 0)
+            self.select(self.design.first_step_of(max(action, 0)))
+        elif label == "action ▶" and step.action.index + 1 < len(self.design.actions):
+            self.select(self.design.first_step_of(step.action.index + 1))
+
+    def _on_view(self, label: str) -> None:
+        """Toggle hiding or ghosting the drawn state.
+
+        Args:
+            label: The button clicked.
+        """
+        if label == "Hide":
+            self._visible = not self._visible
+        else:
+            self._ghost = not self._ghost
+            for drawing in self._drawings.values():
+                drawing.set_opacity(GHOST_OPACITY if self._ghost else None)
+        self._stale = True
+
+    def _changed(self) -> None:
+        """Note that the design or the selection changed."""
+        self.revision += 1
+        self._stale = True
+
+    # --- --- --- --- --- JOBS --- --- --- --- ---
+
+    def _load(self, ctx: PluginContext, folder: Path) -> Task:
+        """Load a design on the worker thread, then swap it in.
+
+        ! Failures are shown in the panel and log, not raised: a bad folder is
+          the operator's mistake and must not count as a plugin failure.
+
+        Args:
+            ctx: This plugin's context.
+            folder: The design folder.
+
+        Yields:
+            None: Once per tick while the worker loads.
+        """
+        self._error, self._progress = "", f"loading {folder}"
+        future = self._executor.submit(_load_in_background, folder,
+                                       lambda text: setattr(self, "_progress", text))
+        try:
+            yield from wait_until(ctx, future.done, timeout_s=LOAD_TIMEOUT, description="the design to load")
+            design, meshes = future.result()
+        except WaitTimeout as timeout:
+            self._error = str(timeout)
+            ctx.log_error(self._error)
+            return
+        except Exception as failure:
+            self._error = f"{type(failure).__name__}: {failure}"
+            ctx.log_error(f"could not load {folder}:\n{traceback.format_exc()}")
+            return
+        finally:
+            self._progress = ""
+
+        # * Swap in on the ROS thread; `update` builds the new nodes on demand.
+        if self._build_job is not None:
+            self._build_job.cancel()
+        for drawing in self._drawings.values():
+            drawing.remove()
+        self._drawings.clear()
+        self.design, self._meshes, self.index = design, meshes, 0
+        self._changed()
+        ctx.log_info(f"loaded {folder}: {len(design.actions)} actions, {len(design.steps)} movements, "
+                     f"cells for {', '.join(design.cells)}")
+
+    def _build(self, ctx: PluginContext, robot_id: str) -> Task:
+        """Add one cell's meshes to the scene, a model per tick.
+
+        Args:
+            ctx: This plugin's context.
+            robot_id: Whose cell.
+
+        Yields:
+            None: After each model.
+        """
+        self._progress = f"drawing the cell of {robot_id}"
+        drawing = CellDrawing(ctx.view.scene, f"{ctx.view.scene_root}/{robot_id}")
+        if self._ghost:
+            drawing.set_opacity(GHOST_OPACITY)
+        try:
+            yield from drawing.build(self._meshes[robot_id])
+        except BaseException:
+            drawing.remove()  # cancelled by a new load, or failed: leave nothing half-built
+            raise
+        finally:
+            self._progress = ""
+        self._drawings[robot_id] = drawing
+        self._stale = True
+
+    # --- --- --- --- --- TICK --- --- --- --- ---
+
+    def update(self, ctx: PluginContext) -> None:
+        """Start building the selected step's cell, if it has not been drawn yet.
 
         Args:
             ctx: This plugin's context.
         """
-        if not self.assembly.steps:
-            self._step_label.value = "no design"
+        step = self.step
+        if step is None or step.action.robot_id in self._drawings:
             return
+        if self._build_job is None or self._build_job.done:
+            self._build_job = ctx.spawn(f"draw {step.action.robot_id}", self._build(ctx, step.action.robot_id))
 
-        step = self.assembly.steps[self.index]
-        self._step_slider.max = len(self.assembly.steps) - 1
-        self._step_label.value = f"{step.step_id}: {step.element_name}"
+    def draw(self, ctx: PluginContext) -> None:
+        """Pose the drawn cell from the selected state, and fill the panel.
 
-        # TODO take this movement's authored start_state, patch it with the live
-        #      base pose and arm configuration from ctx.world -- but ONLY where
-        #      those are flagged tracked -- and push it with
-        #      self.session.planner.set_robot_cell_state(state).
-        # TODO mirror the same geometry into ctx.view so the browser shows it.
-        #      Add one mesh node per element on first sight and assign transforms
-        #      afterwards; viser is retained mode.
+        Args:
+            ctx: This plugin's context.
+        """
+        self._status.content = self._status_html()
+        step = self.step
+        # Error text sits at the bottom so its height moves no buttons.
+        self._error_text.content = block(values(escape(self._error))) if self._error else ""
+        if step is None:
+            self._details.content = note("no design loaded")
+            return
+        self._slider.max = max(len(self.design.steps) - 1, 1)
+        self._slider.value = self.index
+        self._details.content = self._details_html(step)
+
+        drawing = self._drawings.get(step.action.robot_id)
+        if not self._stale or drawing is None:
+            return
+        self._stale = False
+        # Show only the acting robot's cell; it already includes the other robots.
+        for robot_id, other in self._drawings.items():
+            other.visible = self._visible and robot_id == step.action.robot_id
+        if not self._visible:
+            return
+        try:
+            cell = self.design.cell_for(step)
+            drawing.show(cell, displayed_state(cell, step, self.at_target))
+        except Exception as failure:
+            # ! A state that does not fit its cell is a data problem: report it, do not raise.
+            self._error = f"cannot draw {step.label}: {type(failure).__name__}: {failure}"
+            ctx.log_error(f"{self._error}\n{traceback.format_exc()}")
+        else:
+            self._error = ""
+
+    # --- --- --- --- --- PANEL --- --- --- --- ---
+    # ! Keep every row one line tall (`_one_line`) and the chip set fixed, so
+    #   nothing below shifts between steps.
+
+    def _status_html(self) -> str:
+        """One line of chips: load progress or design, plus any error.
+
+        Returns:
+            str: HTML.
+        """
+        if self._progress:
+            chips = chip(escape(self._progress), BUSY)
+        elif self.design is not None:
+            chips = chip(escape(self.design.folder.name), OK, str(self.design.folder))
+            chips += chip(f"{len(self.design.actions)} actions · {len(self.design.steps)} movements", NONE)
+        else:
+            chips = chip("no design", NONE)
+        if self._error:
+            chips += chip("error", FAIL, self._error)
+        return block(_one_line(chips))
+
+    def _details_html(self, step: Step) -> str:
+        """Two rows of chips and three of text describing the selected step.
+
+        Args:
+            step: The selected step.
+
+        Returns:
+            str: HTML.
+        """
+        movement = step.movement
+        action = step.action
+        which = chip(f"{self.index + 1}/{len(self.design.steps)}", OK)
+        which += chip(escape(action.robot), SECTION_CTRL, action.robot_id)
+        which += chip(type(movement).__name__, NONE, movement.tag)
+
+        # ! Say so when the drawn start is not authored: it is assumed from where the robot last was, or zero.
+        has_start = movement.start_state.robot_configuration is not None
+        has_target = movement.target_configuration is not None
+        if has_start:
+            carries = chip("start conf", OK)
+        elif step.assumed_start is not None:
+            carries = chip(f"start conf from {escape(step.assumed_from)}", BUSY,
+                           "not authored: assumed from where the robot last was")
+        else:
+            carries = chip("no start conf: zero", FAIL)
+        if not self.at_target:
+            carries += chip("showing start", NONE)
+        else:
+            carries += chip("showing target" if has_target else "no target: start", OK if has_target else BUSY)
+        carries += chip("trajectory" if movement.trajectory is not None else "no trajectory",
+                        OK if movement.trajectory is not None else NONE)
+
+        lines = [f"action   {action.index + 1}/{len(self.design.actions)}  {action.action_id}",
+                 f"movement {step.movement_index + 1}/{len(action.action.movements)}  {movement.movement_id}",
+                 f"control  {getattr(movement, 'controller', '')}"]
+        text = values(*(_one_line(escape(line)) for line in lines))
+        return block(_one_line(which) + _one_line(carries) + text)
+
+
+def _one_line(html: str) -> str:
+    """Keep content on one line, cutting anything too wide with "…".
+
+    Uses `pre` so padding spaces still align the columns.
+
+    Args:
+        html: The row's content.
+
+    Returns:
+        str: HTML.
+    """
+    return f'<div style="white-space:pre;overflow:hidden;text-overflow:ellipsis">{html}</div>'

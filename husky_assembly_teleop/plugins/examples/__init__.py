@@ -8,8 +8,7 @@ Small example plugins, one idea each. Read them in order:
 
 Then robot_control.py, which puts these together for real robots.
 
-Importing this package registers all four; none runs unless named in
-`-p plugins:=[...]`.
+Importing this package registers all four; none runs unless named in `-p plugins:=[...]`.
 """
 
 from .pybullet_scene import ExamplePybulletPlugin

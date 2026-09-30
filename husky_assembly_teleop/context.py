@@ -1,20 +1,11 @@
 """
 The plugin contract: what a plugin is handed, and what it is allowed to touch.
 
-! No runtime imports of our own modules beyond concurrency.
-  `plugin` imports this module, so importing it back would be a cycle; the rest
-  are under TYPE_CHECKING for the same reason. Never import `monitor`,
-  `visualization` or `robot_scene` here either -- they import this module.
-  Plugins depend on an interface, the monitor provides it, neither reaches
-  around the other.
+Each plugin gets its own PluginContext, so its queue, jobs and UI are scoped to
+it and disposed of with it.
 
-? One context per plugin, not one shared one.
-  `submit`, `spawn` and `view` are already scoped to their owner, so a plugin
-  cannot queue work onto another, and tearing one down disposes of exactly its
-  own queue, jobs and UI. Nothing has to be filtered by owner afterwards.
-
-Why the old arrangement (the whole monitor as an untyped first argument) had to
-go: doc/refactor_rationale.md.
+! Imports only `concurrency` at runtime; everything else is under TYPE_CHECKING,
+  because `plugin`, `monitor`, `visualization` and `robot_scene` import this module.
 """
 
 from __future__ import annotations
@@ -77,16 +68,10 @@ class PluginView(Protocol):
         ...
 
     def panel(self) -> viser.PanelHandle:
-        """Create a separate panel owned by this plugin: a window beside the main one.
+        """Create a panel owned by this plugin: a window beside the main one.
 
-        For a plugin whose UI is too big for one folder, e.g. one panel per
-        robot. The operator can move, dock, float or minimise it. Add content
-        with `panel.add_tab(...)` as a context manager, and place it with
-        `dock_right()`, `dock_below(other)` or `float(...)`.
-
-        ! Always through here, never `gui.add_panel()`: a panel is top-level,
-          outside the plugin's folder, and only panels made here are removed
-          when the plugin is torn down.
+        ! Always use this instead of `gui.add_panel()`: only panels made here are
+          removed when the plugin is torn down.
         """
         ...
 
@@ -163,17 +148,11 @@ class PluginContext:
         self.view = view
 
         #: The shared PyBullet scene: the live robots, posed from measurements
-        #: every tick, plus whatever plugins add to it.
+        #: every tick. `scene.client_id` and `scene.robots[serial]` are raw
+        #: PyBullet ids, and every hook already runs inside `scene.active()`.
         #:
-        #: ! Raw access, on purpose. `scene.client_id` and `scene.robots[serial]`
-        #:   are real PyBullet ids; call `p` and `pp` with them directly. The
-        #:   monitor runs every plugin hook inside `scene.active()`, so pp free
-        #:   functions already talk to this client.
-        #:
-        #: ! Shared means shared. A body one plugin adds is an obstacle in every
-        #:   other plugin's collision checks, so add only what belongs in the
-        #:   world. Whatever a plugin loads, it removes in its own teardown.
-        #:   Nothing tracks it. That is the trade for having no wrapper.
+        #: ! Shared: a body one plugin adds is an obstacle for every other. Remove
+        #:   what you add in your own teardown; nothing tracks it for you.
         self.scene = scene
 
         self._services = services
@@ -183,8 +162,7 @@ class PluginContext:
         # this plugin's step. queue.Queue is the thread-safe handoff.
         self._intents: queue.Queue[Intent] = queue.Queue()
 
-        # This plugin's running jobs, owned here so that disabling the plugin
-        # disposes of them with it.
+        # This plugin's running jobs, cancelled when it is torn down.
         self._jobs: list[Job] = []
 
     # --- --- --- --- --- STATE --- --- --- --- ---
@@ -216,12 +194,7 @@ class PluginContext:
         self._services.log_error(f"[{self.name}] {message}")
 
     def require(self, name: str) -> "HuskyPlugin":
-        """Get a plugin this one declared a dependency on.
-
-        ! Only declared dependencies resolve. The declaration is what gives the
-          monitor a load order and lets it refuse a cycle; reaching an
-          undeclared plugin would be the old "everything touches everything"
-          with extra steps.
+        """Get a plugin this one declared in `requires`. Undeclared ones do not resolve.
 
         Raises:
             KeyError: If `name` was not declared in `requires`, or is not loaded.
@@ -234,23 +207,15 @@ class PluginContext:
     # --- --- --- --- --- SCHEDULING --- --- --- --- ---
 
     def submit(self, label: str, run: Callable[[], None]) -> None:
-        """Queue `run` onto this plugin's queue, to happen on the ROS thread.
+        """Queue `run` to happen on the ROS thread, at the start of this plugin's next step.
 
-        Safe from any thread. Drained at the start of this plugin's next step,
-        before its update runs. `label` names the work in the error
-        message if it raises.
-
-        ! The only safe way to act on a viser callback. Those fire on a
-          32-worker pool while everything else runs on the ROS thread, and
-          neither PyBullet nor our state is thread-safe. `defer` wraps this up.
+        ! The only safe way to act from a viser callback, which runs on another
+          thread. Safe from any thread. `label` names the work if it raises.
         """
         self._intents.put(Intent(label=label, run=run))
 
     def defer(self, label: str, run: Callable[[], None]) -> Callable[..., Awaitable[None]]:
-        """Wrap `run` as a viser callback that is safe to register.
-
-        For plain buttons, and for any widget whose new value `run` does not need.
-        For a button group, a slider or a dropdown, use `defer_value`.
+        """Wrap `run` as a thread-safe viser callback, for widgets whose value it does not need.
 
         Returns:
             Callable[..., Awaitable[None]]: A callback that ignores viser's event
@@ -264,19 +229,13 @@ class PluginContext:
         return self.defer_value(label, lambda _value: run())
 
     def defer_value(self, label: str, run: Callable[[object], None]) -> Callable[..., Awaitable[None]]:
-        """Wrap `run` as a viser callback that is handed the widget's new value.
+        """Wrap `run` as a thread-safe viser callback that is handed the widget's new value.
 
-        The value is read the moment viser reports the change -- which button of
-        a group was clicked, where a slider was dragged to -- and passed to `run`.
+        ! The value is captured when viser reports the change. Reading
+          `widget.value` inside `run` could see a later change instead.
 
-        ! Why not read `widget.value` inside `run`. By the time the intent
-          runs, the widget may have changed again: two different buttons of a
-          group clicked within one tick would both act as the second.
-
-        ? Why the callback is `async`. viser runs async callbacks on its event
-          loop, straight after storing the new value and in the order the
-          changes arrived; plain callbacks go to a thread pool and may read the
-          value later. Either way, `run` itself happens on the ROS thread.
+        ? `async`, so viser calls it in order on its event loop rather than from
+          its thread pool, where the value might be read late.
 
         Returns:
             Callable[..., Awaitable[None]]: A callback that submits `run(value)`.
@@ -295,9 +254,7 @@ class PluginContext:
     def spawn(self, label: str, task: Task) -> Job:
         """Start `task` as a cancellable job, advanced one step per tick.
 
-        For anything longer than a tick: planning, trajectory execution, a
-        calibration sweep. Runs alongside this plugin's loop, and is cancelled
-        if the plugin is disabled.
+        For anything longer than a tick: planning, trajectory execution, a sweep.
 
         Returns:
             Job: Handle for cancelling it and checking whether it finished.
@@ -307,30 +264,14 @@ class PluginContext:
         return job
 
     # --- --- --- --- --- DRIVEN BY THE MONITOR --- --- --- --- ---
-    # ! Private because the monitor, which owns this object, is the only caller.
-    #   A plugin draining its own queue mid-step would re-enter its own step.
-    #
-    # ! None of these report their own failures. They raise, and the monitor's
-    #   `_guard` decides what a plugin failure costs. Two error policies in two
-    #   places is how the first draft got a counter that could never fire.
+    # ! Private: only the monitor calls these. On failure they log each error
+    #   and raise once, so the monitor alone decides what a failure costs.
 
     def _drain_intents(self) -> None:
-        """Run every intent queued since this plugin's last step.
+        """Run the intents queued when the drain starts; later ones wait a tick.
 
-        ! Only the items present when the drain starts. Work queued by an
-          intent, or by a viser callback firing mid-drain, waits for the next
-          tick; otherwise a callback that re-queues itself would spin here and
-          the tick would never finish.
-
-        ! An intent can land while a job is mid-sequence. The intent runs, the
-          job gets no say. An intent that invalidates a running job -- loading a
-          new action while the old one executes -- must cancel it explicitly.
-
-        ! Every intent present at the start of the drain gets to run, even if an
-          earlier one raised: one bad click must not hold up the rest queued
-          alongside it. Each failure is logged where it happens; if any of them
-          raised, this also raises once at the end so the monitor still counts
-          it against the plugin.
+        - Every intent runs, even if an earlier one raised.
+        - Running jobs are not paused. An intent that invalidates one must cancel it.
 
         Raises:
             RuntimeError: If one or more intents raised.
@@ -350,13 +291,7 @@ class PluginContext:
             raise RuntimeError("one or more intents failed")
 
     def _pump_jobs(self) -> None:
-        """Advance each running job one step and drop the ones that finished.
-
-        ! Every job gets its turn, even if an earlier one raised: unlike one
-          try/except around the whole loop, a job that fails does not cost the
-          rest of them their step this tick. Each failure is logged where it
-          happens; if any of them raised, this also raises once at the end so
-          the monitor still counts it against the plugin.
+        """Advance each job one step, even if an earlier one raised, and drop finished ones.
 
         Raises:
             RuntimeError: If one or more jobs raised.

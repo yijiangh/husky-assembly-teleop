@@ -1,16 +1,15 @@
 """
-Everything about configuring one run: the shape of the configuration, which
-URDF each robot runs, and how a run is read off the command line. Resolved once
-at startup, then read-only.
-
-Nothing imports a global; everything receives a config. Why that replaced the
-old module-level constants: doc/refactor_rationale.md.
+Run configuration: its dataclasses, the URDF for each robot, and reading it from
+ROS parameters. Resolved once at startup, then read-only; pass a config around
+instead of importing globals.
 """
 
 from __future__ import annotations
 
 import math
 import re
+import shutil
+import tempfile
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal, get_args
@@ -21,27 +20,21 @@ from rclpy.node import Node
 from .tool_urdfs import stitch_tools
 
 
-#: End effectors the monitor knows how to drive. Each is one class in
-#: robot_interface/end_effectors.py, and a model in tool_urdfs.TOOL_URDFS.
-#:   robotiq         Robotiq 2F-85 through the GripperCommand action, joint_states
-#:                   and the activation controller's reactivate service.
-#:   scaffolding_v1  Scaffolding tool switched through UR tool digital outputs (SetIO).
-#:   scaffolding_v3  Scaffolding tool with its RS485 driver (tool_cmd / tool_status).
-#: There is no v2: it never ran on a robot.
+#: End effectors the monitor can drive; each has a class in
+#: robot_interface/end_effectors.py and a model in tool_urdfs.TOOL_URDFS.
+#:   robotiq         Robotiq 2F-85 gripper.
+#:   scaffolding_v1  Scaffolding tool switched by UR tool digital outputs.
+#:   scaffolding_v3  Scaffolding tool with an RS485 driver.
 EndEffectorKind = Literal["robotiq", "scaffolding_v1", "scaffolding_v3"]
 END_EFFECTOR_KINDS: tuple[str, ...] = get_args(EndEffectorKind)
-#: Other names accepted by the `tools` parameter: crl_husky's `gripper` launch
-#: argument calls the Robotiq "robotiq_2F_85", so that works here too.
-#: "none" is a bare arm.
+#: Extra names the `tools` parameter accepts: crl_husky's "robotiq_2F_85", and
+#: "none" for a bare arm.
 _TOOL_ALIASES: dict[str, str | None] = {"robotiq_2F_85": "robotiq", "none": None}
 
-#: Where the URDFs with the mounted tools stitched on are written. Absolute mesh
-#: paths make them work from anywhere; rewritten on every start.
-STITCHED_URDF_DIRECTORY = Path.home() / ".cache" / "husky_assembly_teleop" / "urdf"
+#: Robot URDFs with tools stitched on; wiped and rewritten on every start.
+STITCHED_URDF_DIRECTORY = Path(tempfile.gettempdir()) / "husky_stitched_urdf"
 
-#: Plugins every run loads, before the ones asked for with `-p plugins:=[...]`.
-#: Start the monitor with --no-default, or -p no_default:=true (for launch
-#: files), to load only the ones asked for.
+#: Plugins loaded before the requested ones; `-p no_default:=true` skips them.
 DEFAULT_PLUGINS: tuple[str, ...] = ("health",)
 
 
@@ -50,33 +43,22 @@ class ArmConfig:
     """One UR arm on a robot, and what is mounted on it.
 
     Attributes:
-        name: The arm's joint-name prefix in the URDF, without the trailing
-            underscore, e.g. "ur_arm" or "left_ur_arm". Also the key the arm is
-            looked up by everywhere, so one string names it in the URDF, in
-            RobotState and in plugin code.
-        ros_namespace: The arm's namespace under the robot's, e.g. "ur5e" or
-            "left_ur5e". Its controller manager and all its topics live there.
+        name: The arm's URDF joint-name prefix without the trailing underscore,
+            e.g. "ur_arm". Also the key used to look up the arm everywhere.
+        ros_namespace: The arm's namespace under the robot's, e.g. "ur5e".
         end_effector: What is mounted on the flange, or None for a bare arm.
-        end_effector_namespace: Namespace of the end effector's driver under the
-            robot's, e.g. "gripper" or "left_gripper". Unused when
-            `end_effector` is None.
-        cartesian_test_mode: Test mode for Cartesian commands (target frame and
-            target force), on by default. Every check still runs and the target
-            still shows in the 3D view, but nothing is sent to the compliance
-            controller; a banner in the log says so instead.
-            ! Test every arm in this mode first, and again after any change to
-              its URDF, its calibration or the robot's installation (mounting)
-              on the teach pendant. Cartesian targets are computed in a frame
-              that only the URDF and calibration define: if that frame is
-              wrong, the arm is sent somewhere other than the panel shows, and
-              can crash into the robot, itself or the cell.
-            ! Turn it off (False) only when the startup log shows no URDF frame
-              error for this arm (doc/ur_frames.md). Then make the first live
-              move a small one, watched, with a hand on the e-stop.
-        stow_joints: Joint angles to park the arm at, radians, in the UR
-            driver's joint order (pan, lift, elbow, wrist 1-3), or None if this
-            arm has none. The panel's Stow button loads these as a target; the
-            move itself still needs Start.
+        end_effector_namespace: The end effector driver's namespace under the
+            robot's, e.g. "gripper". Unused when `end_effector` is None.
+        cartesian_test_mode: When on, Cartesian commands run every check and
+            show in the 3D view but are not sent to the compliance controller.
+            ! Test each arm in this mode first, and again after any change to
+              its URDF, calibration or pendant mounting: Cartesian targets use
+              a frame only those define, and a wrong one sends the arm off-target.
+            ! Turn it off only when the startup log shows no URDF frame error
+              for this arm (doc/ur_frames.md), then make a small, watched first
+              move with a hand on the e-stop.
+        stow_joints: Parking joint angles in radians, in UR driver order, or
+            None. The Stow button loads them as a target; the move still needs Start.
     """
 
     name: str
@@ -161,41 +143,35 @@ class MonitorConfig:
     Attributes:
         robots: The robots to connect to, in display order.
         data_directory: Root for meshes, URDFs and design data.
-        tick_period: Seconds between ticks. 0.05 (20 Hz) matches the old monitor.
+        design_directory: Design folder (ActionSchedule.json, BarActions/,
+            RobotCell*.json) the `cell` plugin loads at startup, or None to
+            pick one in its panel.
+        tick_period: Seconds between ticks. Default 0.05 (20 Hz)
         viser_port: Port the viser web UI listens on.
-        enabled_plugins: Plugins to load, listed explicitly so a new file under
-            plugins/ cannot enable itself everywhere it is installed:
-            DEFAULT_PLUGINS followed by the requested ones. Empty (with
-            --no-default) runs the core with no plugins, which is a useful
-            thing to ask for.
+        enabled_plugins: Plugins to load.
+            DEFAULT_PLUGINS followed by the requested ones.
         max_plugin_errors: Consecutive ticks a plugin may raise in before it is
-            torn down instead of filling the log forever.
+            stopped instead of filling the log forever.
         slow_step_warn_ratio: Warn when one plugin's step eats more than this
             fraction of the tick budget.
         slow_step_warn_period: Seconds between repeats of one plugin's slow-step
             warning, so a plugin that is slow every tick cannot bury the log.
-        max_cleanup_steps: Extra steps a cancelled job gets for its cleanup
-            before its plugin's UI is taken away. Bounded, because cleanup that
-            never finishes must not block a shutdown.
     """
 
     robots: tuple[RobotConfig, ...]
     data_directory: Path
+    design_directory: Path | None = None
     tick_period: float = 0.05
     viser_port: int = 8080
     enabled_plugins: tuple[str, ...] = ()
     max_plugin_errors: int = 3
     slow_step_warn_ratio: float = 0.5
     slow_step_warn_period: float = 5.0
-    max_cleanup_steps: int = 10
 
 
 # --- --- --- --- --- WHERE ROBOTS STAND BEFORE MOCAP --- --- --- --- ---
-#: Metres between neighbouring robots in the startup layout. A husky is about a
-#: metre long and its arms reach a further 0.85 m, so two metres keeps a fleet
-#: clear of itself while still fitting on screen.
+#: Metres between neighbouring robots in the startup layout.
 ROBOT_LAYOUT_SPACING = 2.0
-
 
 def row_layout_position(index: int, count: int,
                         spacing: float = ROBOT_LAYOUT_SPACING) -> tuple[float, float, float]:
@@ -273,6 +249,9 @@ _ROBOTS_BY_SERIAL = {
     "0806": dict(urdf=_DUAL_ARM_URDF, arms=_DUAL_ARM_WITH_SCAFFOLDING_V3),
 }
 
+#: The robots' names, accepted anywhere a serial is, in any letter case.
+_ROBOT_NAMES = {"alice": "0804", "belle": "0805", "cindy": "0806"}
+
 
 def robot_config_from_serial(token: str, data_directory: Path,
                              default_position: tuple[float, float, float] = (0.0, 0.0, 0.0),
@@ -280,7 +259,8 @@ def robot_config_from_serial(token: str, data_directory: Path,
                              tools: tuple[EndEffectorKind | None, ...] | None = None) -> RobotConfig:
     """Build one RobotConfig from a serial written any of the usual ways.
 
-    Accepts "0806", "a200-0806", "a200_0806" or "/a200_0806" and derives the
+    Accepts "0806", "a200-0806", "a200_0806", "/a200_0806" or the robot's name
+    ("cindy"), and derives the
     canonical serial and ROS namespace from the four digits, matching the layout
     of crl_husky's config/robots/<digits>/robot.yaml. URDF, arms and end
     effectors come from `_ROBOTS_BY_SERIAL`, unless `tools` says what is
@@ -309,8 +289,8 @@ def robot_config_from_serial(token: str, data_directory: Path,
     """
     number = _serial_digits(token)
     if number is None:
-        raise ValueError(f"cannot read a four-digit robot serial out of {token!r}; "
-                         f"expected something like '0806' or 'a200-0806'")
+        raise ValueError(f"cannot read a robot serial or name out of {token!r}; "
+                         f"expected something like '0806', 'a200-0806' or 'cindy'")
 
     spec = _ROBOTS_BY_SERIAL.get(number)
     if spec is None:
@@ -328,12 +308,8 @@ def robot_config_from_serial(token: str, data_directory: Path,
             raise ValueError(f"robot {number!r} has {len(arms)} arm(s) ({', '.join(a.name for a in arms)}), "
                              f"but {len(tools)} tool(s) were given")
         arms = tuple(replace(arm, end_effector=tool) for arm, tool in zip(arms, tools))
-    # ! The file name holds the tools, not just the robot: PyBullet caches
-    #   parsed files by path, so the same name with other tools inside could
-    #   load the old ones.
-    combination = "_".join(arm.end_effector or "none" for arm in arms)
     stitched = stitch_tools(urdf_file, {arm.name: arm.end_effector for arm in arms}, data_directory,
-                            STITCHED_URDF_DIRECTORY / f"a200_{number}__{combination}.urdf")
+                            STITCHED_URDF_DIRECTORY / f"a200_{number}.urdf")
 
     return RobotConfig(
         serial=f"a200-{number}",
@@ -347,7 +323,7 @@ def robot_config_from_serial(token: str, data_directory: Path,
 
 
 # --- --- --- --- --- READING ONE RUN OFF THE COMMAND LINE --- --- --- --- ---
-def config_from_ros_parameters(node: Node, use_default_plugins: bool = True) -> MonitorConfig:
+def config_from_ros_parameters(node: Node) -> MonitorConfig:
     """Build the frozen run configuration from `node`'s ROS2 parameters.
 
     Keeping configuration in ROS parameters means a run can be described by a
@@ -357,7 +333,8 @@ def config_from_ros_parameters(node: Node, use_default_plugins: bool = True) -> 
 
         ros2 run husky_assembly_teleop husky_monitor --ros-args \\
             -p robots:="['0804','0806']" \\
-            -p plugins:="['cell']"
+            -p plugins:="['cell']" \\
+            -p design_directory:=/path/to/260814_RobArch_support_ik
 
     `-p tools:=[...]` says which tool is mounted on each arm, when that differs
     from the defaults in `_ROBOTS_BY_SERIAL`. One entry per robot, the tools in
@@ -369,18 +346,22 @@ def config_from_ros_parameters(node: Node, use_default_plugins: bool = True) -> 
     values (robotiq_2F_85), so the robot's launch line can be copied.
 
     `-p no_default:=true` loads only the requested plugins, without
-    DEFAULT_PLUGINS. Same as the --no-default flag; either one is enough.
+    DEFAULT_PLUGINS.
+
+    Robots may be named instead of numbered ("alice", "belle", "cindy"), in
+    `robots` and in `tools` entries alike.
 
     Args:
         node: The monitor node, whose parameters are read.
-        use_default_plugins: Whether DEFAULT_PLUGINS are loaded as well as the
-            requested ones. False when started with --no-default.
     """
     node.declare_parameter("robots", [""])
     node.declare_parameter("tools", [""])
     node.declare_parameter("plugins", [""])
     node.declare_parameter("data_directory", "")
+    node.declare_parameter("design_directory", "")
     node.declare_parameter("no_default", False)
+
+    shutil.rmtree(STITCHED_URDF_DIRECTORY, ignore_errors=True)
 
     def string_list(name: str) -> tuple[str, ...]:
         """Read a string-array parameter, dropping the empty-string default."""
@@ -391,11 +372,14 @@ def config_from_ros_parameters(node: Node, use_default_plugins: bool = True) -> 
     data_directory = (Path(data_text).expanduser() if data_text
                       else Path(__file__).resolve().parent.parent / "data")
 
+    design_text = node.get_parameter("design_directory").get_parameter_value().string_value.strip()
+
     no_default = node.get_parameter("no_default").get_parameter_value().bool_value
     return MonitorConfig(
         robots=_robots_in_a_row(string_list("robots"), data_directory, _parse_tools(string_list("tools"))),
         data_directory=data_directory,
-        enabled_plugins=_enabled_plugins(string_list("plugins"), use_default_plugins and not no_default),
+        design_directory=Path(design_text).expanduser() if design_text else None,
+        enabled_plugins=_enabled_plugins(string_list("plugins"), not no_default),
     )
 
 
@@ -473,6 +457,29 @@ def _robots_in_a_row(serials: tuple[str, ...], data_directory: Path,
 
 
 def _serial_digits(token: str) -> str | None:
-    """The four-digit serial in "0806", "a200-0806", "/a200_0806" and the like, or None."""
-    digits = re.search(r"(\d{4})\s*$", token.strip().strip("/"))
+    """The four-digit serial in "0806", "a200-0806", "/a200_0806", "Cindy" and the like, or None."""
+    name = token.strip().strip("/")
+    if name.lower() in _ROBOT_NAMES:
+        return _ROBOT_NAMES[name.lower()]
+    digits = re.search(r"(\d{4})\s*$", name)
     return None if digits is None else digits.group(1)
+
+
+def find_robot_serial(robots: tuple[RobotConfig, ...], token: str) -> str | None:
+    """The serial of the configured robot that `token` names, or None if none does.
+
+    For plugins that meet a robot by name, e.g. a design that says "Alice", and
+    need the serial the monitor knows it by ("a200-0804").
+
+    Args:
+        robots: The configured robots, usually `ctx.config.robots`.
+        token: A serial or robot name, written any of the ways `robots` accepts.
+
+    Returns:
+        str | None: The matching robot's serial, or None if it is not configured.
+    """
+    digits = _serial_digits(token)
+    for robot in robots:
+        if digits is not None and _serial_digits(robot.serial) == digits:
+            return robot.serial
+    return None

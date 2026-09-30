@@ -24,36 +24,27 @@ PLATFORM_VELOCITY_CONTROLLER = "platform_velocity_controller"
 
 @dataclass
 class BaseState:
-    """Measured state of the base.
+    """Measured state of the base. None means no message received yet.
 
     Attributes:
-        position: Position in world frame, metres. None until the first valid
-            fix, then the last valid one.
-        orientation: Orientation in world frame, quaternion (x, y, z, w). Set
-            together with `position`.
-        tracked: Whether the latest mocap sample was valid. Implies `position`
-            is set. False means stale or lost: show the pose greyed out, but do
-            not plan or control from it.
-        tracking_valid: Whether NatNet itself tracked the body in the last
-            sample, or None before any sample. False usually means hidden markers.
-        marker_error: Mean marker error of the last sample, metres, as NatNet
-            reports it, or None before any sample.
-        estopped: Whether the platform's emergency stop is engaged, or None
-            before the first message.
-        battery_percentage: Charge from the battery management system, 0 to 1,
-            or None before the first message. NaN if the BMS does not report it.
-        battery_voltage: Battery voltage, volts, or None before the first message.
+        position: Last valid position in world frame, metres.
+        orientation: Last valid orientation, quaternion (x, y, z, w).
+        tracked: Whether the latest mocap sample was valid.
+        tracking_valid: Whether NatNet tracked the body in the last sample.
+            False usually means hidden markers.
+        marker_error: Mean marker error of the last sample, metres.
+        estopped: Whether the platform's emergency stop is engaged.
+        battery_percentage: Charge, 0 to 1. NaN if the BMS does not report it.
+        battery_voltage: Battery voltage, volts.
         battery_charging: Whether the battery reports it is charging.
-        battery_health: The BMS's `power_supply_health`, a BatteryState
-            POWER_SUPPLY_HEALTH_* constant, or None before the first message.
-        battery_update_time: ROS time of the last battery message, seconds, or None.
+        battery_health: BatteryState POWER_SUPPLY_HEALTH_* constant.
+        battery_update_time: ROS time of the last battery message, seconds.
         controllers: The base controller manager's state.
-        last_update_time: ROS time of the last mocap message, valid or not,
-            seconds, or None before any.
-        last_fix_time: ROS time of the last *valid* pose, seconds, or None before any.
+        last_update_time: ROS time of the last mocap message, valid or not, seconds.
+        last_fix_time: ROS time of the last valid pose, seconds.
 
-    ! Which pose to trust, in short: `position is None` -- never measured, show
-      dashes; `tracked` False -- measured before, not now, grey it out.
+    ! `position is None`: never measured, show dashes. `tracked` False: pose is
+      stale, grey it out and do not plan or control from it.
     """
 
     position: np.ndarray | None = None
@@ -75,8 +66,7 @@ class BaseState:
 class BaseInterface:
     """ROS2 interface to one husky base.
 
-    ! Mocap is the only source of the base pose. The odometry TF the old code
-      also listened to is gone: two sources that disagree are worse than one.
+    ! Mocap is the only source of the base pose; do not add a second one.
     """
 
     def __init__(self, node: Node, config: RobotConfig):
@@ -101,22 +91,19 @@ class BaseInterface:
         """Create the velocity publisher and the mocap, e-stop and battery subscriptions."""
         namespace = f"/{self._config.ros_namespace}"
         self._cmd_vel = self._ros.publisher(Twist, f"{namespace}/cmd_vel")
-        # ? Best effort, which receives from reliable and best-effort publishers
-        #   alike. The Clearpath platform's QoS for these is not pinned down here.
+        # ? Best effort QoS, since the platform's publisher QoS is unknown.
         self._ros.subscription(Bool, f"{namespace}/platform/emergency_stop", self._on_estop,
                                qos_profile_sensor_data)
         self._ros.subscription(BatteryState, f"{namespace}/platform/bms/state", self._on_battery,
                                qos_profile_sensor_data)
-        # * crl_husky's mocap_relay publishes this pose already calibrated and in
-        #   the Z-up 'rhino' world frame that Rhino designs and PyBullet share
-        #   (see crl-husky/MOCAP_SETUP.md). Use it as is; converting axes or
-        #   calibrating again here would apply the transform twice.
+        # * The relay's pose is already calibrated and in the Z-up 'rhino' world
+        #   frame. Use it as is; transforming again would apply it twice.
         if self._config.mocap_id is not None:
             self._ros.subscription(MocapRigidBodyPose,
                                    f"/mocap/rigid_body/id_{self._config.mocap_id}/pose", self._on_mocap)
 
     def reconnect(self) -> None:
-        """Destroy this base's topics and clients and create them again. Keeps `state`."""
+        """Recreate this base's topics and clients. Keeps `state`."""
         self._ros.destroy_all()
         self._connect()
         self.controllers.reconnect()
@@ -145,33 +132,22 @@ class BaseInterface:
     def stop(self) -> bool:
         """Soft stop: one zero twist, then switch the velocity controller off.
 
-        ? Why the controller, not just a zero twist. twist_mux listens to
-          other sources too (joystick, RC, interactive marker), and a plugin
-          could send again the next tick. With the controller off nothing
-          drives the wheels until someone switches it on again. The Clearpath
-          stack offers no software e-stop: its twist_mux lock listens to the
-          MCU's own emergency_stop status, which is not ours to publish.
+        ? A zero twist alone is not enough: other sources or a plugin can drive
+          again. With the controller off, nothing drives until it is switched on.
 
         Returns:
             bool: True if the deactivation went out. False if the controller
-                manager is not reachable; the zero twist was sent anyway.
+                manager is unreachable; the zero twist was sent anyway.
         """
-        # * Sent whether or not the controller runs: it costs nothing, and
-        #   brakes the base while the deactivation is on its way.
+        # * Always sent: it brakes the base while the deactivation is on its way.
         self._cmd_vel.publish(Twist())
         return self.controllers.deactivate_all()
 
     def _on_mocap(self, message: MocapRigidBodyPose) -> None:
-        """Store a mocap sample. An invalid sample only clears `tracked`.
-
-        ? `pose_valid` is the relay's combined verdict (fresh, tracked by
-          NatNet, marker error under threshold), so it decides `tracked`. The
-          pose of an invalid sample is not stored: `position` keeps the last
-          valid one, or stays None if there never was one.
-        """
+        """Store a mocap sample; an invalid one only clears `tracked`, keeping the last valid pose."""
         now = self._node.get_clock().now().nanoseconds * 1e-9
         self.state.tracked = bool(message.pose_valid)
-        # * Kept for the health panel, so it can say *why* a pose is not valid.
+        # * Kept so the health panel can say why a pose is invalid.
         self.state.tracking_valid = bool(message.tracking_valid)
         self.state.marker_error = float(message.marker_error)
         if self.state.tracked:

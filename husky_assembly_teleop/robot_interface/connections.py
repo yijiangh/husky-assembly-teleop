@@ -1,15 +1,8 @@
 """
-The ROS entities one interface created, so they can be torn down and rebuilt.
+The ROS entities one interface created, so they can be destroyed and recreated.
 
-Every interface in this package creates its subscriptions, publishers, clients,
-timers and action clients through a RosConnections instead of the node, then
-reconnects by destroying them all and creating them again.
-
-? Why reconnect in place rather than build a new interface.
-  Plugins keep references to interfaces and their state -- a button callback
-  bound to `arm.zero_ft_sensor`, a panel holding `base.controllers`. Replacing
-  the objects would leave those pointing at dead ones. Rebuilding only the ROS
-  side keeps every reference valid, so plugin authors cannot get this wrong.
+Interfaces create all their ROS entities through RosConnections, and reconnect by
+destroying and recreating them, so plugins' references to the interface stay valid.
 """
 
 from __future__ import annotations
@@ -66,16 +59,10 @@ class RosConnections:
         return entity
 
     def _guarded(self, source: str, callback: Callable) -> Callable:
-        """Wrap a callback so that an exception drops the message instead of the node.
+        """Wrap a callback so an exception drops that message instead of killing the node.
 
-        ! Without this, one malformed message -- a zero quaternion, a missing
-          field -- raises out of rclpy.spin and ends the whole monitor, every
-          robot and every plugin with it. A measurement callback only stores
-          data, so skipping one sample is always the smaller harm.
-
-        The first failure is logged with its traceback; later ones from the same
-        source are not, so a bad topic at 500 Hz cannot bury the log. A
-        reconnect creates a fresh wrapper, which reports again.
+        Only the first failure per source is logged (with traceback), so a bad
+        topic cannot flood the log; a reconnect resets this.
 
         Args:
             source: Topic or timer name, for the log.
@@ -103,9 +90,9 @@ class RosConnections:
     def destroy_all(self) -> None:
         """Destroy everything created so far, newest first.
 
-        ! Requests still waiting on a destroyed client or action never get an
-          answer, so their done callbacks never run. Whoever tracks such a
-          request (`switch_in_flight`, a gripper's `moving`) has to clear it.
+        ! Pending requests on destroyed clients never complete, so their done
+          callbacks never run; whoever tracks them (`switch_in_flight`, `moving`)
+          must clear them.
         """
         for destroy in reversed(self._destroyers):
             destroy()

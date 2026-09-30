@@ -1,36 +1,18 @@
 """
-The robot control panel: every connected robot's state, and basic control of it.
+The robot control panel: a tab per robot showing its state, with basic control.
 
-* Start here when writing a plugin. This one is kept small on purpose, so the
-  pattern is easy to see. Every plugin follows the same five rules:
+* Small on purpose, as the pattern to copy when writing a plugin:
+  - `setup` builds every widget once and keeps the handles.
+  - Widget callbacks go through `ctx.defer` / `ctx.defer_value`, never do the
+    work themselves: viser calls them on its own threads, where touching
+    robots or PyBullet is not safe.
+  - `update` does per-tick work (here, streaming the base twist).
+  - Anything longer than a tick is a job started with `ctx.spawn`.
+  - `draw` only copies state into widgets.
+* Robots are commanded and read only through their interfaces; no topic names here.
 
-  1. `setup` builds every widget once and keeps the handles. Nothing is built
-     later. viser keeps widgets alive, so a later change is an assignment.
-  2. A widget callback never does the work itself. It goes through
-     `ctx.defer` (or `ctx.defer_value`, when the work needs to know which
-     button of a group was clicked), which runs the work on the ROS thread at
-     the start of this plugin's next step. viser calls callbacks on its own
-     threads, where touching robots or PyBullet is not safe.
-  3. `update` does whatever has to happen every tick. Here that is streaming
-     the base twist, since the base stops if cmd_vel goes quiet.
-  4. Anything that takes longer than a tick is a job: a generator started with
-     `ctx.spawn`, which waits by yielding. Here that is executing a trajectory.
-  5. `draw` copies state into the widgets and does nothing else. Plain
-     assignments, every tick: viser only sends real changes.
-
-  Robots are only commanded through their interfaces (ctx.world.robots), and
-  only read through their state. This plugin knows no topic names.
-
-Layout: one panel beside the main one, with a tab per robot ("0804", "0806").
-Inside each, inline tabs per part (Base, Left, Right). A robot tab can be
-dragged out into a panel of its own. In each part tab:
-
-  status        coloured chips (controller, freshness, executing) and values
-  CTRL          one button per controller; below it, the running controller's inputs
-  SENSOR/TOOL   actions that do not depend on the controller
-
-* The look (chips, section bars, number rows) comes from ui_style.py, shared
-  by every plugin so they read alike.
+Each part tab (Base, Left, Right) has a status line, a CTRL section (controller
+buttons plus the running controller's inputs) and SENSOR/TOOL actions.
 """
 
 from __future__ import annotations
@@ -61,12 +43,11 @@ from ..visualization import quaternion_to_wxyz
 from ..ui_style import (STALE_AFTER, BUSY, FAIL, NONE, OK, SECTION_CTRL, SECTION_SENSOR, SECTION_TOOL, block, chip,
                         freshness_chip, note, numbers, section, values, warning)
 
-#: The base's speed at a Speed of 1. Kept low: this is a test panel, not a joystick.
+#: Base speed at a Speed of 1. Kept low: this is a test panel.
 MAX_LINEAR_SPEED = 0.3   # m/s
 MAX_ANGULAR_SPEED = 0.5  # rad/s
-#: The hold buttons: label, icon, and the twist they ask for, as signs of the
-#: linear and angular speed. Left turns counter-clockwise (positive ω).
-#: In D-pad order: Forward alone on the top row, then Left, Back, Right.
+#: Hold buttons in D-pad order (Forward, Left, Back, Right): label, icon, and the
+#: signs of the linear and angular speed they ask for.
 HOLD_BUTTONS = (("", viser.Icon.ARROW_UP, 1.0, 0.0),
                 ("", viser.Icon.ROTATE, 0.0, 1.0),
                 ("", viser.Icon.ARROW_DOWN, -1.0, 0.0),
@@ -75,47 +56,38 @@ HOLD_BUTTONS = (("", viser.Icon.ARROW_UP, 1.0, 0.0),
 DPAD_CELLS = ((1, 2), (2, 1), (2, 2), (2, 3))
 #: How often the browser reports a held button, Hz. Matches the 20 Hz tick.
 HOLD_CALLBACK_HZ = 20.0
-#: A hold counts as released once no report has come for this long, seconds.
-#: viser never says "released", so this is the dead man: also what stops the
-#: base when the browser disconnects mid-hold. Five reports' worth, for jitter.
+#: A hold counts as released after this long without a report, seconds.
+#: ! viser never reports a release, so this timeout is what stops the base,
+#:   including when the browser disconnects mid-hold.
 HOLD_TIMEOUT = 0.25
-#: Short slider labels for the six UR joints, in UR_JOINT_NAMES order, and each
-#: joint's range in degrees. The UR5e allows +-360 everywhere but the elbow.
+#: Slider label and range (degrees) per UR joint, in UR_JOINT_NAMES order.
 JOINT_SLIDERS = (("pan", 360), ("lift", 360), ("elbow", 180), ("w1", 360), ("w2", 360), ("w3", 360))
-#: Cartesian target sliders: TCP position range, metres, around the arm's base,
-#: and its step; orientation is roll, pitch, yaw in degrees.
+#: TCP position slider range (metres, around the arm's base) and step.
 POSITION_RANGE, POSITION_STEP = 1.5, 0.001
 POSE_SLIDERS = (("x m", "p"), ("y m", "p"), ("z m", "p"), ("roll °", "a"), ("pitch °", "a"), ("yaw °", "a"))
-#: Poses drawn in the 3D view while the Cartesian controller runs: name, label,
-#: origin colour (r, g, b) and axis length (m). Both are placed through the
-#: controller's own base_link (see `_update_markers`).
+#: Poses drawn in 3D while the Cartesian controller runs: name, label, origin
+#: colour (r, g, b), axis length (m).
 FRAME_MARKERS = (
     ("target", "target (sliders)", (255, 200, 0), 0.12),
     ("reported", "TCP reported", (40, 170, 60), 0.08),
 )
-#: Force arrows in the 3D view, drawn from the reported TCP: the sliders'
-#: force (preview) and the force last applied, with their colours, and how long
-#: an arrow is per newton.
+#: Force arrows drawn from the reported TCP: name, label, colour.
 FORCE_ARROWS = (
     ("force_preview", "force (sliders)", (255, 200, 0)),
     ("force_applied", "force applied", (255, 110, 0)),
 )
 FORCE_ARROW_SCALE = 0.01  # metres per newton: 20 N draws 20 cm
-#: Target force sliders, newtons: each axis within the arm's MAX_TARGET_FORCE.
+#: Target force slider step, newtons.
 FORCE_STEP = 0.5
-#: A move counts as arrived when every joint is this close to its target, degrees.
+#: A move has arrived when every joint is this close to its target, degrees.
 ARRIVED_TOLERANCE = 0.5
-#: Extra seconds, past the planned duration, before a move that has not arrived
-#: is reported as timed out.
+#: Seconds past the planned duration before an unfinished move is reported as timed out.
 ARRIVE_TIMEOUT_MARGIN = 5.0
 
-#: Starting width of the robot panel, pixels. Sized for its widest line, the
-#: arm's joint row: 47 monospace characters at 11 px (~310 px), plus the
-#: readout indent and the padding of two tab levels and the panel. The operator
-#: can still drag it wider or narrower.
+#: Starting panel width, pixels. Fits the arm's joint row, the widest line.
 PANEL_WIDTH = 420
 
-#: Short button labels for controllers. Anything not listed shows its full name.
+#: Short button labels for controllers; unlisted ones show their full name.
 CONTROLLER_LABELS = {
     PLATFORM_VELOCITY_CONTROLLER: "Vel",
     SCALED_JOINT_TRAJECTORY_CONTROLLER: "Joint",
@@ -128,22 +100,16 @@ TOOL_LABELS = {"robotiq": "robotiq", "scaffolding_v1": "v1", "scaffolding_v3": "
 
 
 # --- --- --- --- --- WIDGET HANDLES --- --- --- --- ---
-# ? Plain containers for the handles built in setup, so draw can find them. The
-#   plugin's actual state (what is being driven, which job runs) lives on the
-#   plugin itself, not here.
+# ? Handles built in setup, for draw to find. Plugin state lives on the plugin.
 
 @dataclass
 class _ControllerPanel:
     """Controller buttons for one controller manager, and each controller's inputs.
 
-    The base and every arm get one of these, built by the same function, because
-    they all have a controller manager that works the same way.
-
     Attributes:
         controllers: The controller manager this panel shows and switches.
-        inputs: One folder of inputs per controller. Only the running
-            controller's folder is visible, so an input can only reach a
-            controller that will act on it.
+        inputs: One folder of inputs per controller; only the running
+            controller's folder is visible.
     """
 
     controllers: ControllerManagerInterface
@@ -191,38 +157,28 @@ class RobotControlPlugin(HuskyPlugin):
         self._bases: list[_BaseWidgets] = []
         self._arms: list[_ArmWidgets] = []
 
-        #: Bases whose twist was being streamed on the last tick, by serial. Lets
-        #: update notice when a hold button is released and send one final stop.
+        #: Serials of bases whose twist was streamed last tick, so update can send one final stop on release.
         self._driving: set[str] = set()
 
-        #: The last hold report per base, by serial: the signs of the twist the
-        #: held button asks for, and when the report arrived (ctx.now()).
+        #: Last hold report per base serial: (linear sign, angular sign, arrival time).
         self._held: dict[str, tuple[float, float, float]] = {}
 
-        #: The running trajectory job per arm, keyed by (serial, arm name). One
-        #: at a time per arm: a second press while one runs is ignored.
+        #: Running move job per arm, keyed by (serial, arm name). A press while one runs is ignored.
         self._trajectory_jobs: dict[tuple[str, str], Job] = {}
 
-        #: Arms whose joint sliders should be set at the next draw, keyed like
-        #: `_trajectory_jobs`, with the angles to set (radians), or None for
-        #: the measured joints. Filled by the Current and Stow buttons -- and at
-        #: startup with None, so the sliders show where the arm is, not zero,
-        #: before anyone presses Start. Nothing else touches the sliders.
+        #: Arms whose joint sliders are set on the next update, with the angles
+        #: (radians) or None for the measured joints. Filled by Current and Stow,
+        #: and at startup so the sliders show where the arm is.
         self._load_sliders: dict[tuple[str, str], np.ndarray | None] = {}
 
-        #: Arms whose Cartesian pose sliders should be set to the measured TCP
-        #: at the next update: filled by Load Current, and by every arm at start.
+        #: Arms whose pose sliders are set to the measured TCP on the next update.
         self._load_pose: set[tuple[str, str]] = set()
 
-        #: The target force last sent to each arm's compliance controller, N, or
-        #: absent if none was. The controller keeps it until told otherwise, so
-        #: the panel has to remember and show it.
+        #: Target force last sent to each arm, N. The controller keeps it, so the panel shows it.
         self._applied_force: dict[tuple[str, str], np.ndarray] = {}
 
-        #: This tick's 3D markers per arm, keyed like `_trajectory_jobs`: the
-        #: world pose of each FRAME_MARKERS entry, and the start and end of each
-        #: FORCE_ARROWS entry, that has a value. Absent while the compliance
-        #: controller is not running on that arm.
+        #: This tick's 3D marker poses and force-arrow segments per arm; absent
+        #: while the compliance controller is not running on that arm.
         self._markers: dict[tuple[str, str], dict[str, tuple]] = {}
 
     # --- --- --- --- --- SETUP --- --- --- --- ---
@@ -233,17 +189,13 @@ class RobotControlPlugin(HuskyPlugin):
         Args:
             ctx: This plugin's context.
         """
-        # Straight to the gui api: this plugin uses only its own panels, so it
-        # does not open ui(), which would leave an empty folder in the main panel.
+        # Raw gui api, not ui(): ui() would leave an empty folder in the main panel.
         gui = ctx.view.gui
-        # * Two levels of tabs: one panel beside the main one with a tab per
-        #   robot, and inside each robot tab an inline tab per part (base, each
-        #   arm). The top bar stays one tab per robot however many arms there
-        #   are, and dragging a robot tab out gives that robot a panel of its
-        #   own -- parts and all, since inline tabs cannot be dragged apart.
+        # * One panel with a tab per robot; inside each, inline tabs per part.
+        #   A robot tab can be dragged out into its own panel, parts included.
         panel = ctx.view.panel()
         for serial, robot in ctx.world.robots.items():
-            # "a200-0806" -> "0806": the digits are what people say.
+            # "a200-0806" -> "0806"
             with panel.add_tab(serial.split("-")[-1], icon=viser.Icon.ROBOT):
                 parts = gui.add_tab_group()
                 with parts.add_tab("Base", icon=viser.Icon.CAR):
@@ -271,7 +223,7 @@ class RobotControlPlugin(HuskyPlugin):
         handles: dict[str, viser.GuiInputHandle] = {}
 
         def velocity_inputs() -> None:
-            """Inputs for platform_velocity_controller: hold buttons, driving only while pressed."""
+            """Inputs for platform_velocity_controller: hold buttons that drive while pressed."""
             handles["speed"] = gui.add_slider("Speed", min=0.05, max=1.0, step=0.05, initial_value=0.5,
                                               hint="Fraction of the full speed "
                                                    f"({MAX_LINEAR_SPEED} m/s, {MAX_ANGULAR_SPEED} rad/s).")
@@ -281,7 +233,7 @@ class RobotControlPlugin(HuskyPlugin):
                            for label, icon, _, _ in HOLD_BUTTONS]
             grid.content = _dpad_style([button._impl.uuid for button in buttons])
             for button, (label, _, linear, angular) in zip(buttons, HOLD_BUTTONS):
-                # ! Bind the loop values as defaults, or every button would drive like the last one.
+                # ! Bind loop values as defaults, or every button drives like the last.
                 button.on_hold(ctx.defer(f"hold {label} {serial}",
                                          lambda linear=linear, angular=angular: self._on_hold(ctx, serial,
                                                                                               linear, angular)),
@@ -292,7 +244,7 @@ class RobotControlPlugin(HuskyPlugin):
         return _BaseWidgets(serial=serial, base=base, panel=panel, status=status, speed=handles["speed"])
 
     def _on_hold(self, ctx: PluginContext, serial: str, linear: float, angular: float) -> None:
-        """Note that a hold button is still pressed. Runs as an intent, on the ROS thread.
+        """Record that a hold button is still pressed. Runs as an intent.
 
         Args:
             ctx: This plugin's context.
@@ -329,7 +281,6 @@ class RobotControlPlugin(HuskyPlugin):
             handles["joints"] = [gui.add_slider(f"{name} °", min=-limit, max=limit, step=0.5, initial_value=0.0)
                                  for name, limit in JOINT_SLIDERS]
             handles["plan"] = gui.add_html("")
-            # Loading only sets the sliders; nothing moves until Start.
             load = gui.add_button_group("Load", ["Current", "Stow"],
                                         hint="Set the sliders to where the arm is, or to its stow pose.")
             move = gui.add_button_group("Move", ["Start", "Hold"],
@@ -350,8 +301,7 @@ class RobotControlPlugin(HuskyPlugin):
                 if clicked == "Hold":
                     self._hold_arm(serial, arm)
                 else:
-                    # ! Slider values are read here, when the intent runs: they
-                    #   are settings, and this is the moment the operator committed.
+                    # ! Read sliders here, when the intent runs: the operator commits on Start.
                     target = np.radians([slider.value for slider in handles["joints"]])
                     self._start_move(ctx, serial, arm, target)
 
@@ -377,7 +327,7 @@ class RobotControlPlugin(HuskyPlugin):
                                         hint="Start: move the TCP to the sliders in a straight line, "
                                              "5 s or more. Hold: stop where the TCP is.")
 
-            # ! In the tool frame: see TARGET_WRENCH_FRAME in arm.py for why.
+            # ! Force is in the tool frame (TARGET_WRENCH_FRAME in arm.py).
             gui.add_html(section("force", SECTION_CTRL, f"in {TARGET_WRENCH_FRAME} frame"))
             limit = MAX_TARGET_FORCE / np.sqrt(3.0)  # all three at their limit stay within MAX_TARGET_FORCE
             handles["force"] = [gui.add_slider(f"F{axis} N", min=-limit, max=limit, step=FORCE_STEP, initial_value=0.0,
@@ -388,7 +338,7 @@ class RobotControlPlugin(HuskyPlugin):
                                           hint=f"Apply: push with this force, in the tool frame "
                                                f"({TARGET_WRENCH_FRAME}), until changed. Zero: remove it.")
 
-            # Legend for what the 3D view shows while this controller runs.
+            # Legend for the 3D markers.
             gui.add_html(block("".join(
                 f'<span style="font-size:11px;margin-right:8px;white-space:nowrap">'
                 f'<span style="color:rgb{color}">●</span> {text}</span>'
@@ -413,7 +363,7 @@ class RobotControlPlugin(HuskyPlugin):
                 """Apply or remove the target force. Runs as an intent."""
                 if clicked == "Zero":
                     force = np.zeros(3)
-                    # The sliders go to zero too, so a later Apply does not bring the old force back.
+                    # Zero the sliders too, so a later Apply does not restore the old force.
                     for slider in handles["force"]:
                         slider.value = 0.0
                 else:
@@ -430,7 +380,7 @@ class RobotControlPlugin(HuskyPlugin):
             CARTESIAN_COMPLIANCE_CONTROLLER: compliance_inputs,
         })
 
-        # Does not depend on which controller runs.
+        # Independent of the running controller.
         gui.add_html(section("sensor", SECTION_SENSOR))
         zero = gui.add_button_group("FT", ["Zero"], hint="Tares the current load. Only with nothing gripped.")
         zero.on_click(ctx.defer(f"zero FT {label}", arm.zero_ft_sensor))
@@ -449,7 +399,7 @@ class RobotControlPlugin(HuskyPlugin):
             if isinstance(tool, RobotiqGripper):
                 _build_robotiq_inputs(ctx, gui, label, tool)
             elif isinstance(tool, (ScaffoldingV1, ScaffoldingV3)):
-                # v1 switches its screw motor on in one direction only; v3 drives it both ways.
+                # v1 runs its screw one way only; v3 both ways.
                 directions = ({"Run": 1, "Stop": 0} if isinstance(tool, ScaffoldingV1)
                               else {"Tighten": 1, "Loosen": -1, "Stop": 0})
                 screw = gui.add_button_group("Screw", list(directions), hint="The motor that tightens the bar "
@@ -464,7 +414,7 @@ class RobotControlPlugin(HuskyPlugin):
                            frames=_add_frame_markers(ctx, serial, arm), arrows=_add_force_arrows(ctx, serial, arm))
 
     def teardown(self, ctx: PluginContext) -> None:
-        """Stop any base this plugin was driving, so it does not keep rolling.
+        """At shutdown, stop any base this plugin was driving.
 
         Args:
             ctx: This plugin's context.
@@ -476,11 +426,9 @@ class RobotControlPlugin(HuskyPlugin):
     # --- --- --- --- --- EVERY TICK --- --- --- --- ---
 
     def update(self, ctx: PluginContext) -> None:
-        """Stream the twist of every base with a hold button pressed.
+        """Stream the twist of every held base, and apply queued slider loads and marker updates for arms.
 
-        ? Why every tick. The base stops by itself when cmd_vel goes quiet, which
-          is the safe behaviour we want, so a twist has to be repeated for as
-          long as the operator wants motion.
+        ? Sent every tick because the base stops when cmd_vel goes quiet.
 
         Args:
             ctx: This plugin's context.
@@ -488,7 +436,7 @@ class RobotControlPlugin(HuskyPlugin):
         now = ctx.now()
         for widgets in self._bases:
             held = self._held.get(widgets.serial)
-            # A controller that stopped cannot be driven, so its hold is dropped.
+            # Drop the hold if it timed out or the controller is no longer running.
             if held is not None and (now - held[2] > HOLD_TIMEOUT
                                      or not widgets.base.controllers.is_active(PLATFORM_VELOCITY_CONTROLLER)):
                 del self._held[widgets.serial]
@@ -498,7 +446,7 @@ class RobotControlPlugin(HuskyPlugin):
                 widgets.base.send_twist(held[0] * speed * MAX_LINEAR_SPEED, held[1] * speed * MAX_ANGULAR_SPEED)
                 self._driving.add(widgets.serial)
             elif widgets.serial in self._driving:
-                # Just released: one explicit stop, rather than waiting for the timeout.
+                # Just released: send one stop now.
                 widgets.base.send_twist(0.0, 0.0)
                 self._driving.discard(widgets.serial)
         for widgets in self._arms:
@@ -559,10 +507,9 @@ class RobotControlPlugin(HuskyPlugin):
                                                self._execute_move(ctx, serial, arm, target))
 
     def _hold_arm(self, serial: str, arm: ArmInterface) -> None:
-        """Hold the arm where it is, and end the move job that was waiting for it to arrive.
+        """Hold the arm where it is and cancel its running move job.
 
-        ! The hold goes out first and unconditionally -- also when no job of
-          ours runs, since a trajectory may come from somewhere else.
+        ! The hold is sent even when no job of ours runs: a trajectory may come from elsewhere.
 
         Args:
             serial: The robot's serial.
@@ -576,9 +523,8 @@ class RobotControlPlugin(HuskyPlugin):
     def _execute_move(self, ctx: PluginContext, serial: str, arm: ArmInterface, target: np.ndarray) -> Task:
         """Send a smooth joint move and wait until the arm has arrived.
 
-        ? Arrival is judged from the joints, not from `is_executing`: the arm
-          has arrived when the planned time is up and every joint is within
-          ARRIVED_TOLERANCE of its target.
+        ? Arrived means the planned time is up and every joint is within
+          ARRIVED_TOLERANCE of its target, not `is_executing`.
 
         Args:
             ctx: This plugin's context.
@@ -606,17 +552,15 @@ class RobotControlPlugin(HuskyPlugin):
                                   description=f"{name} to arrive")
             ctx.log_info(f"{name}: arrived")
         except WaitTimeout as timeout:
-            # Reported, not raised: a raising job counts against the plugin.
+            # Logged, not raised: a raising job counts as a plugin failure.
             ctx.log_warn(str(timeout))
-        # ! The sliders are left alone, however the move ends: they are the
-        #   operator's target, and only Current or Stow change them.
+        # ! Sliders are never touched here: only Current or Stow change them.
 
     def _start_cartesian_move(self, ctx: PluginContext, serial: str, arm: ArmInterface,
                               position: np.ndarray, orientation: np.ndarray) -> None:
         """Start the Cartesian move job for one arm, unless any move is already running.
 
-        ! Shares `_trajectory_jobs` with joint moves: one motion per arm at a
-          time, whichever controller it is for, and Hold ends either.
+        ! Shares `_trajectory_jobs` with joint moves: one motion per arm at a time.
 
         Args:
             ctx: This plugin's context.
@@ -637,10 +581,8 @@ class RobotControlPlugin(HuskyPlugin):
                                position: np.ndarray, orientation: np.ndarray) -> Task:
         """Move the TCP to a target by sending one close target per tick.
 
-        ? Why streamed. The compliance controller pulls straight towards its
-          target, with no path or speed of its own, so a far target is a jump.
-          This sends the next point of a smooth `cartesian_move` every tick
-          instead, each one close to where the TCP already is.
+        ? Streamed because the compliance controller jumps straight to its
+          target; each tick sends the next point of a smooth `cartesian_move`.
 
         Args:
             ctx: This plugin's context.
@@ -659,9 +601,7 @@ class RobotControlPlugin(HuskyPlugin):
         duration, sample = cartesian_move(arm.state.tcp_position, arm.state.tcp_orientation,
                                           position, orientation)
         if arm.config.cartesian_test_mode:
-            # ! Test mode: one target, at the TCP, so every check still runs and
-            #   the arm logs its TEST MODE banner. The move itself is not streamed;
-            #   the yellow target marker and the plan line show where it would go.
+            # ! Test mode: send one target at the TCP so the checks run; the move is not streamed.
             arm.send_cartesian_target(*sample(0.0))
             ctx.log_warn(f"{name}: TEST MODE, planned cartesian move of {duration:.1f} s to "
                          f"{np.round(position, 3)} m was not streamed")
@@ -671,8 +611,7 @@ class RobotControlPlugin(HuskyPlugin):
         while True:
             elapsed = ctx.now() - start
             if not arm.send_cartesian_target(*sample(elapsed)):
-                # The arm logged why. Its last accepted target was close to the
-                # TCP, so it settles there; a hold makes that explicit.
+                # The arm logged why; hold so it settles where it is.
                 ctx.log_warn(f"{name}: cartesian move stopped early")
                 arm.hold()
                 return
@@ -684,16 +623,12 @@ class RobotControlPlugin(HuskyPlugin):
     def _update_markers(self, ctx: PluginContext, widgets: _ArmWidgets) -> None:
         """Place one arm's 3D markers: target, reported TCP and force arrows. Runs every tick.
 
-        ? Where they are placed. The compliance controller reads targets in its
-          own `base_link` -- the stock ur_description one the robot runs, which
-          sits on the arm's physical base (`base_link_inertia`) turned back by
-          the stock 180 deg about z. That frame is rebuilt here the same way, so
-          what is drawn is where the controller will take it. Background:
-          doc/ur_frames.md.
+        ? Markers are placed in the controller's own `base_link` (the arm's
+          `base_link_inertia` turned by STOCK_YAW), so they show where the
+          controller will take them. See doc/ur_frames.md.
 
         Args:
-            ctx: This plugin's context. Plugin hooks run with the scene active,
-                so `pp` calls here act on it.
+            ctx: This plugin's context. Hooks run with the scene active, so `pp` calls act on it.
             widgets: One arm's handles.
         """
         key = (widgets.serial, widgets.arm.config.name)
@@ -710,8 +645,7 @@ class RobotControlPlugin(HuskyPlugin):
             local_poses["reported"] = (state.tcp_position, state.tcp_orientation)
         for name, (position, orientation) in local_poses.items():
             markers[f"{name}_world"] = pp.multiply(base, (tuple(position), tuple(orientation)))
-        # Forces are in tool0, so they turn with the reported TCP and start at it.
-        # No arrow without a TCP, or for a zero force.
+        # Forces are in tool0: they start at the reported TCP and turn with it. None for zero force.
         tcp = markers.get("reported_world")
         forces = {"force_preview": np.array([slider.value for slider in widgets.force]),
                   "force_applied": self._applied_force.get(key)}
@@ -722,7 +656,7 @@ class RobotControlPlugin(HuskyPlugin):
         self._markers[key] = markers
 
     def _load_pose_sliders(self, widgets: _ArmWidgets) -> None:
-        """Set one arm's pose sliders to its TCP, if Load Current (or startup) asked for it.
+        """Set one arm's pose sliders to its TCP, if Load Current or startup asked.
 
         Args:
             widgets: One arm's handles.
@@ -730,7 +664,7 @@ class RobotControlPlugin(HuskyPlugin):
         key = (widgets.serial, widgets.arm.config.name)
         state = widgets.arm.state
         if key not in self._load_pose or state.tcp_position is None:
-            return  # nothing asked, or no TCP yet: try again next tick
+            return  # not asked, or no TCP yet
         position, orientation = widgets.arm.to_husky(state.tcp_position, state.tcp_orientation)
         angles = Rotation.from_quat(orientation).as_euler("xyz", degrees=True)
         for slider, value in zip(widgets.pose, [*position, *angles]):
@@ -738,11 +672,10 @@ class RobotControlPlugin(HuskyPlugin):
         self._load_pose.discard(key)
 
     def _load_joint_sliders(self, widgets: _ArmWidgets) -> None:
-        """Set one arm's joint sliders, if Current or Stow (or startup) asked for it.
+        """Set one arm's joint sliders, if Current, Stow or startup asked.
 
-        ! Called from update, not draw. Loading is the answer to a button, and
-          draw is skipped while the panels are frozen -- a Stow pressed then
-          would otherwise leave the old target in the sliders for Start to send.
+        ! Call from update, not draw: draw is skipped while panels are frozen,
+          which would leave a stale target in the sliders for Start to send.
 
         Args:
             widgets: One arm's handles.
@@ -750,7 +683,7 @@ class RobotControlPlugin(HuskyPlugin):
         key = (widgets.serial, widgets.arm.config.name)
         if key not in self._load_sliders:
             return
-        # None means "where the arm is", which has to wait for joint data.
+        # None means the measured joints, which need joint data first.
         angles = widgets.arm.joint_vector() if self._load_sliders[key] is None else self._load_sliders[key]
         if angles is not None:
             for slider, value in zip(widgets.joints, np.degrees(angles)):
@@ -765,8 +698,7 @@ def _build_controller_panel(ctx: PluginContext, gui: viser.GuiApi,
                             input_builders: dict[str, Callable[[], None]]) -> _ControllerPanel:
     """Build the CTRL section: one button per controller, and a folder of inputs for each.
 
-    Every controller the manager may switch to gets a folder, even one with no
-    inputs yet, so there is always an obvious place to add them.
+    Every switchable controller gets a folder, even with no inputs yet.
 
     Args:
         ctx: This plugin's context.
@@ -812,11 +744,8 @@ def _plan_line(widgets: _ArmWidgets) -> str:
 def _dpad_style(uuids: list[str]) -> str:
     """CSS that lays out the four hold buttons, in HOLD_BUTTONS order, as a D-pad.
 
-    ? Why CSS. viser has no grid or row container: every button is a full-width
-      row of its own. The button carries its uuid as its HTML id, sitting in a
-      wrapper div, and the Drive folder holds nothing else, so the folder's
-      content div can be made a three-column grid with Forward in the middle.
-      Needs `:has()`, which every current browser has.
+    ? viser has no grid container, so CSS turns the Drive folder (which holds
+      only these buttons) into a three-column grid. Needs `:has()`.
 
     Args:
         uuids: The buttons' uuids, Forward first.
@@ -827,8 +756,7 @@ def _dpad_style(uuids: list[str]) -> str:
     """
     forward = f'[id="{uuids[0]}"]'
     grid = f"div:has(> div > {forward}) {{ display: grid; grid-template-columns: repeat(3, 1fr); }}"
-    # ! Every button gets its cell explicitly: left to the grid, Left would fill
-    #   the empty cell beside Forward instead of starting the second row.
+    # ! Give every button an explicit cell, or Left fills the empty cell beside Forward.
     cells = "".join(f'div:has(> [id="{uuid}"]) {{ grid-area: {row} / {column}; }}'
                     for uuid, (row, column) in zip(uuids, DPAD_CELLS))
     return f"<style>{grid}{cells}</style>"
@@ -919,11 +847,10 @@ def _base_status(base: BaseInterface, now: float) -> str:
     """Status HTML for a base: chips, then its pose (placeholders before the first fix)."""
     state = base.state
     chips = _controller_chip(base.controllers) + freshness_chip("mocap", state.last_update_time, now)
-    # Only worth a chip when mocap is talking but says the pose is invalid; with
-    # no data at all the gray mocap chip already says it.
+    # Only when mocap reports an invalid pose; no data at all shows on the mocap chip.
     if state.last_update_time is not None and not state.tracked:
         chips += chip("untracked", FAIL)
-    # None before the first valid fix: numbers() then shows dashes.
+    # None before the first valid fix.
     yaw = None if state.orientation is None else Rotation.from_quat(state.orientation).as_euler(
         "xyz", degrees=True)[2:]
     stale = not state.tracked or now - state.last_fix_time >= STALE_AFTER
@@ -949,8 +876,7 @@ def _arm_status(arm: ArmInterface, now: float) -> str:
 def _build_robotiq_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, gripper: RobotiqGripper) -> None:
     """Add the Robotiq-only inputs under Grip: a target opening with a force limit, and Reactivate.
 
-    ? Open and Close above always use the gripper's DEFAULT_EFFORT. The force
-      slider only applies to Go, so a quick Close never grips harder than intended.
+    ? Open and Close always use DEFAULT_EFFORT; the force slider applies only to Go.
 
     Args:
         ctx: This plugin's context.
@@ -964,7 +890,7 @@ def _build_robotiq_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, gri
     force = gui.add_slider("force", min=0.0, max=gripper.MAX_EFFORT, step=0.05, initial_value=gripper.DEFAULT_EFFORT,
                            hint="Force limit, as a fraction of the gripper's full force.")
     target = gui.add_button_group("Target", ["Go"], hint="Move the fingers to the slider position.")
-    # ! Slider values are read when the intent runs, on the ROS thread.
+    # ! Sliders are read when the intent runs, on the ROS thread.
     target.on_click(ctx.defer(f"gripper target {label}", lambda: gripper.move(position.value, force.value)))
     driver = gui.add_button_group("Driver", ["Reactivate"],
                                   hint="After a fault or power loss. The gripper opens and closes once: "
@@ -984,7 +910,7 @@ def _tool_status(state: object, now: float) -> str:
             chips += chip("moving", BUSY)
         elif state.last_result_ok is False:
             chips += chip("short of target", FAIL, "the last command did not reach its target")
-        # Open or closed from where the fingers are; from the target until the first joint state.
+        # From the fingers' position, or the target until the first joint state.
         shown = state.position if state.position is not None else state.commanded_position
         if shown is not None:
             chips += chip("closed" if shown > RobotiqGripper.CLOSED_POSITION / 2 else "open", OK)
@@ -1007,7 +933,7 @@ def _tool_status(state: object, now: float) -> str:
         chips = freshness_chip("io", state.last_update_time, now)
         if state.last_request_ok is False:
             chips += chip("set_io failed", FAIL, "the arm refused the last output change")
-        # The outputs as the UR reports them; the tool itself reports nothing.
+        # Outputs as the UR reports them; the tool reports nothing itself.
         if state.gripper_closed is not None:
             chips += chip("grip closed" if state.gripper_closed else "grip open", OK)
         if state.screw_on is not None:
