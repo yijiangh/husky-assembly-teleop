@@ -1,12 +1,12 @@
 # Scene refactor plan: one backend-free scene, copied once per tick, mirrored into each planner
 
-Status: **phases 1–3 implemented** (see §9). It replaces the shared PyBullet scene
+Status: **phases 0, 1–3 and 5 implemented** (see §9); phases 4 and 6 open. It replaces the shared PyBullet scene
 (`robot_scene.py`) described in `refactor_rationale.md` ("Why there is no abstraction over PyBullet").
 
 Read this first if you are picking it up:
-- `husky_assembly_teleop/world/`: `scene.py`, `geometry.py`, `kinematics.py`, `mirrors/pybullet.py`; `ui/scene_view.py`
+- `husky_assembly_teleop/world/`: `scene.py`, `geometry.py`, `kinematics.py`, `mirrors/pybullet.py`, `mirrors/compas_fab.py`; `ui/scene_view.py`
 - `monitor.py` (`_tick`), `plugin_api/context.py` (`ctx.scene`, `ctx.kinematics`)
-- `old/cfab_session.py` and `old/husky_monitor.py::_bridge_cfab_to_pp_for_bar_action` (how compas_fab was used before)
+- `husky_assembly_teleop/old/cfab_session.py` and `husky_assembly_teleop/old/husky_monitor.py::_bridge_cfab_to_pp_for_bar_action` (how compas_fab was used before)
 
 ---
 
@@ -134,8 +134,11 @@ Rules shared by every mirror:
 - API: `robot(serial)`, `body_ids(id)`, `id_of(pybullet_id)`, `allowed(a, b)` (symmetric, from `touches`), `collisions(serial, margin)` returning our ids, `obstacle_ids()`, `close()`.
 - A planner may add its own private bodies to its mirror's world (e.g. proxy spheres); they're never part of the shared scene.
 
-### 6.2 `CompasFabMirror` (phase 5, one per acting robot)
-- compas_fab's own `PyBulletClient("direct")`. `RobotCell`: the acting robot's stitched URDF and SRDF; every other robot as a `ToolModel` from its URDF (to verify in phase 0); every body as `rigid_body_models[id]`, keys are our ids.
+### 6.2 `CompasFabMirror` (`world/mirrors/compas_fab.py`, one per acting robot)
+- compas_fab's own `PyBulletClient("direct")`. `RobotCell`: the acting robot's stitched URDF and SRDF (`RobotConfig.srdf_file`); every other robot as a `ToolModel` from its stitched URDF, key `robots/<serial>` (the design does the same: `ObstacleRobot<Name>`); every body with collision meshes as `rigid_body_models[id]`, keys are our ids. Bodies without collision meshes are left out (compas_fab would fail on them).
+- ! The SRDFs predate the stitched tools: each tool link may also touch its tool and `<arm>_{wrist_2_link, wrist_3_link, flange, tool0}` (`tool_urdfs.TOOL_TOUCHES_ARM_LINKS`), as the design's `ToolState.touch_links` allow.
+- ! compas_fab checks every stationary tool against every stationary body. Pairs already touching at `sync` can't change while this robot plans, so they are allowed for that snapshot (`static_contacts`).
+- `collisions(joints)` is compas_fab's `check_collision` (~25 ms with 50 bodies: it deep-copies the state per call). `search_check(joint_names)` resolves compas_fab's allowed pairs once and checks only pairs with a moving side (~1.5 ms); tests hold it equal to `check_collision`.
 - **Converting shapes is this mirror's job:** each `Geometry` becomes a `RigidBody` of compas meshes, from `shape_mesh(shape)` for every visual and collision shape, cached per `Geometry` object for the mirror's lifetime.
 - `RobotCellState` from the snapshot:
 
@@ -177,20 +180,20 @@ Rules shared by every mirror:
 
 ## 9. Phases
 
-0. **compas_fab spike** (throwaway). Other robots as `ToolModel`s, `check_collision` against the design's own `RobotCell`, time `set_robot_cell`. Settles §6.2.
+0. ✅ **compas_fab spike.** Other robots as `ToolModel`s work (the design uses them too). `set_robot_cell`: ~2.3 s (robot + 2 tools ~1.9 s, 92 bodies ~0.4 s); loading 3 models ~8 s. Findings in §6.2.
 1. ✅ **Kinematics.** `kinematics.py`, `ctx.kinematics`; `robot_control` and `base_planner` stop reading PyBullet.
 2. ✅ **Scene and drawing.** `geometry.py`, `scene.py`, `ctx.scene`, `take_snapshot` in the tick, core drawing with toggles; `mocap_probe` tracks without drawing its own frame.
 3. ✅ **`PyBulletMirror` and the switch.** `obstacles` and `base_planner` move to the scene together; `example_pybullet` rewritten; `robot_scene.py` deleted.
 4. **Cell objects.** The cell plugin puts bodies (ids, ground with the wheel links in `touches`, attachments from authored states) and drops its own body drawing. Needs open questions 1 and 2.
-5. **`CompasFabMirror`.** Same `check_collision` result as the design's `RobotCell` for a few authored states.
+5. ✅ **`CompasFabMirror`.** Same collision pairs as the design's `RobotCell` on 10 authored Cindy states and 5 with the held bar pushed into the robot (`test/test_compas_fab_mirror.py`, needs `HUSKY_DESIGN_DIRECTORY`). First user: the `arm_planner` plugin (joint-space `birrt`, commit is a stub).
 6. **Published copies.** A planner publishes a modified snapshot for the view (`/worlds/<name>/…`, see-through robots); `base_planner` publishes instead of drawing its own ghost.
 
 ## 10. Open questions
 
 1. **Design naming.** Is `env_` plus `bar_` / `joint_` a fixed convention of the design export? Where does the map from design robot id to serial belong?
-2. **Tool mapping.** The link each design tool id (`AT3L`, `AT3R`, `SupportGripper`, …) maps to in the stitched URDFs.
+2. **Tool mapping.** Partly answered: `AT3L` → `left_ur_arm_scaffolding_v3_left`, `AT3R` → `right_ur_arm_scaffolding_v3_right` (Cindy); bodies attach to `<arm>_tool0` with the grasp as `attachment_frame`. `SupportGripper` (Alice, Belle) is still to map.
 3. **Attachments.** Static and set by `cell` for now. Decide later whether planners take over while they plan.
 4. **pinocchio layout.** One model per robot, or all appended into one.
 5. **Drawing budget.** N meshes per tick (start at 50); simplified visual meshes for very large cells?
 6. **Snapshot freshness.** Refuse or flag robots with `base_tracked=False`, `unmeasured` joints, or a base/joint time skew over a limit? Or leave that to each planner?
-7. **`pp.CLIENT`.** Two `pp` planners at once would conflict. Then either raw `p`, or one `pp` planner at a time.
+7. **`pp.CLIENT`.** (`CompasFabMirror` and `arm_planner` use raw `p` only.) Two `pp` planners at once would conflict. Then either raw `p`, or one `pp` planner at a time.

@@ -16,6 +16,8 @@ tracked objects with geometry.
   only inside `mirror.active()`, and only one `pp` planner thread at a time.
 ! PyBullet reuses body ids after removal. Never keep a PyBullet id outside the
   mirror; translate results to our ids with `id_of`.
+* Debugging: `set_gui(True)` shows the world in PyBullet's own window (one per
+  process). It reconnects the world, so PyBullet ids change; ask again after.
 """
 
 from __future__ import annotations
@@ -70,26 +72,42 @@ def _matches(entry: str, object_id: str) -> bool:
 
 
 class PyBulletMirror:
-    """A private PyBullet DIRECT world that follows the scene snapshots given to `sync`."""
+    """A private PyBullet world that follows the scene snapshots given to `sync`; optionally with a window."""
 
-    def __init__(self, gui: bool = False) -> None:
-        """Connect a new world, empty until the first `sync`.
+    def __init__(self) -> None:
+        """Connect a new world without a window, empty until the first `sync`."""
+        #: The last snapshot synced, to rebuild from when the window opens or closes.
+        self._snapshot: SceneSnapshot | None = None
+        #: Why the window asked for is not open ("" if nothing went wrong).
+        self.window_problem = ""
+        self._connect(gui=False)
+
+    def _connect(self, gui: bool) -> None:
+        """Connect an empty world, with a window if asked for and possible; forget everything built.
+
+        ! A window that can't open (no display, or another one already open) is not
+          an error: the world carries on without one, and `window_problem` says why.
 
         Args:
-            gui: Open PyBullet's own window on it, to watch what a planner sees.
-                ! Only one GUI world per process: a second raises `pybullet.error`.
-                  The window belongs to the mirror's thread, like everything else here.
-
-        Raises:
-            RuntimeError: If a window is asked for but there is no display.
+            gui: Try to open PyBullet's own window.
         """
-        # ! Without an X display PyBullet exits the whole process instead of raising, so
-        #   check first. Its window is X11 only (on Wayland, XWayland sets DISPLAY).
-        if gui and not environ.get("DISPLAY"):
-            raise RuntimeError("there is no display to open a PyBullet window on")
-        self.client_id: int = p.connect(p.GUI if gui else p.DIRECT)
         #: Whether this world has a window.
-        self.gui = gui
+        self.gui = False
+        if gui:
+            # ! Without an X display PyBullet exits the whole process instead of raising, so
+            #   check first. Its window is X11 only (on Wayland, XWayland sets DISPLAY).
+            if not environ.get("DISPLAY"):
+                self.window_problem = "there is no display to open a PyBullet window on"
+            else:
+                try:
+                    self.client_id: int = p.connect(p.GUI)
+                    self.gui = True
+                except p.error as error:
+                    # ? PyBullet allows one window per process; another mirror may have it.
+                    self.window_problem = ("another PyBullet window is open in this process"
+                                           if "Only one" in str(error) else str(error))
+        if not self.gui:
+            self.client_id = p.connect(p.DIRECT)
         # Our id -> what was built for it.
         self._built: dict[str, _Built] = {}
         # PyBullet body id -> our id.
@@ -101,6 +119,41 @@ class PyBulletMirror:
         #   objects. Meshes compare by identity, primitives by value (equal boxes share one).
         self._shapes: dict[tuple[Shape, bool], int] = {}
 
+    # --- --- --- --- --- WINDOW --- --- --- --- ---
+
+    def set_gui(self, gui: bool) -> bool:
+        """Open or close PyBullet's own window on this world, to watch what a planner sees.
+
+        Reconnects and rebuilds everything from the last synced snapshot, so switching
+        takes a moment (every robot loads again). Nothing happens if already so.
+
+        Args:
+            gui: Whether the window should be open.
+
+        Returns:
+            bool: Whether it is open now. If not although asked for, see `window_problem`.
+        """
+        if self._window_closed_by_hand() or gui == self.gui:
+            return self.gui
+        self.close()
+        self.window_problem = ""
+        self._connect(gui)
+        if self._snapshot is not None:
+            self.sync(self._snapshot)
+        return self.gui
+
+    def _window_closed_by_hand(self) -> bool:
+        """If the window was closed by hand, carry on without one.
+
+        Returns:
+            bool: True if it was; the world is then empty until the next `sync`.
+        """
+        if self.connected:
+            return False
+        self._connect(gui=False)
+        self.window_problem = "the PyBullet window was closed"
+        return True
+
     # --- --- --- --- --- SYNC --- --- --- --- ---
 
     def sync(self, snapshot: SceneSnapshot) -> None:
@@ -109,6 +162,8 @@ class PyBulletMirror:
         Args:
             snapshot: The world to copy. It is not modified.
         """
+        self._window_closed_by_hand()  # then rebuild everything below
+        self._snapshot = snapshot
         # Our id -> (source, concave, pose) for everything that should exist.
         wanted: dict[str, tuple[Geometry | RobotConfig, bool, Pose]] = {}
         touches: dict[str, tuple[str, ...]] = {}

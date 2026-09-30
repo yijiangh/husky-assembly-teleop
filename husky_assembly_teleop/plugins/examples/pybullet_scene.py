@@ -18,9 +18,9 @@ The pattern every planner follows:
     PyBullet body ids: those exist only inside one mirror and get reused.
 
 * Look up link names once in setup, so a wrong name fails at startup, not every tick.
-* "PyBullet window" reopens the mirror with PyBullet's own window, to watch what
-  the checks see. ! Only one PyBullet window per process: if another plugin has
-  it, the box unticks itself and says why.
+* "PyBullet window" shows the mirror's world in PyBullet's own window, to watch
+  what the checks see (`ui.pybullet_window`). ! One PyBullet window per process:
+  if another plugin has it, the box unticks itself and says why.
 
 Run with:  -p plugins:="['example_pybullet']" -p robots:="['0806']"
 """
@@ -32,13 +32,13 @@ from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import viser
-from pybullet import error as PyBulletError
 
 from ...plugin_api.context import PluginContext
 from ...world.geometry import box_geometry
 from ...world.mirrors.pybullet import PyBulletMirror
 from ...plugin_api.plugin import HuskyPlugin, register
 from ...world.scene import Body, Pose, SceneSnapshot
+from ...ui.pybullet_window import PyBulletWindowToggle
 from ...ui.style import FAIL, NONE, OK, SECTION_CTRL, block, chip, numbers, section, values
 from ...ui.visualization import quaternion_to_wxyz
 
@@ -66,9 +66,8 @@ class ExamplePybulletPlugin(HuskyPlugin):
         #: Latest result: the ids each robot collides with, by serial, and the tick of the snapshot it's from.
         self._collisions: dict[str, list[str]] = {}
         self._checked_tick = -1
-        #: Whether the operator wants PyBullet's window, and why it isn't open if it isn't.
-        self._gui_wanted = False
-        self._gui_message = ""
+        #: Why the PyBullet window asked for isn't open, or "".
+        self._window_message = ""
         #: Each arm's tool0 world pose, keyed by (serial, arm name).
         self._tool_poses: dict[tuple[str, str], Pose] = {}
         self._tool_frames: dict[tuple[str, str], viser.FrameHandle] = {}
@@ -100,9 +99,8 @@ class ExamplePybulletPlugin(HuskyPlugin):
             gui.add_html(section("box", SECTION_CTRL))
             move = gui.add_button_group("Move", list(MOVES))
             move.on_click(ctx.defer_value("move box", lambda clicked: self._move_box(ctx, MOVES[clicked])))
-            self._gui_box = gui.add_checkbox("PyBullet window", False,
-                                             hint="Show this plugin's PyBullet world in PyBullet's own window")
-            self._gui_box.on_update(ctx.defer_value("pybullet window", self._want_gui))
+            self._window = PyBulletWindowToggle(ctx, gui, self._executor, self._set_gui,
+                                                report=self._set_window_message)
 
         self._check_task = ctx.spawn("collision checks", self._check_loop(ctx))
 
@@ -119,14 +117,9 @@ class ExamplePybulletPlugin(HuskyPlugin):
         # * The next tick's snapshot has the new pose; the core view and our mirror follow.
         body.placement = Pose.from_arrays(position, body.placement.orientation)
 
-    def _want_gui(self, wanted: bool) -> None:
-        """Ask for PyBullet's window, or close it (intent). The next check applies it.
-
-        Args:
-            wanted: The checkbox's value.
-        """
-        if bool(wanted) != self._gui_wanted:
-            self._gui_wanted, self._gui_message = bool(wanted), ""
+    def _set_window_message(self, message: str) -> None:
+        """Show why the PyBullet window asked for isn't open (main thread)."""
+        self._window_message = message
 
     async def _check_loop(self, ctx: PluginContext) -> None:
         """Every tick, check this tick's snapshot on the worker and keep the result.
@@ -140,46 +133,42 @@ class ExamplePybulletPlugin(HuskyPlugin):
         loop = asyncio.get_running_loop()
         while True:
             snapshot = ctx.scene.snapshot  # main thread
-            self._collisions, gui_open, message = await loop.run_in_executor(
-                self._executor, self._check, snapshot, self._gui_wanted)
+            self._collisions, window = await loop.run_in_executor(self._executor, self._check, snapshot)
             self._checked_tick = snapshot.tick
-            if message:
-                self._gui_message = message
-            if self._gui_wanted and not gui_open:
-                self._gui_wanted = False  # draw unticks the box
+            self._window.show(*window)  # unticks the box if the window was closed by hand
             await ctx.next_tick()
 
-    def _check(self, snapshot: SceneSnapshot, gui: bool) -> tuple[dict[str, list[str]], bool, str]:
+    def _check(self, snapshot: SceneSnapshot) -> tuple[dict[str, list[str]], tuple[bool, str]]:
         """Sync the mirror to a snapshot and list what each robot collides with (worker thread).
-
-        Reopens the mirror first when the window is asked for or away. A new mirror
-        loads every robot again, so switching takes a moment.
 
         Args:
             snapshot: The world to check. Read-only.
-            gui: Whether PyBullet's window is wanted.
 
         Returns:
-            tuple[dict[str, list[str]], bool, str]: Our ids of the objects each robot
-                collides with, by serial; whether the window is open; why it isn't, or "".
+            tuple[dict[str, list[str]], tuple[bool, str]]: Our ids of the objects each robot
+                collides with, by serial; whether the PyBullet window is open, and why not.
         """
-        message = ""
-        if self._mirror is not None and not self._mirror.connected:
-            # ? Its window was closed by hand. Carry on without one; the box unticks.
-            self._mirror, gui, message = None, False, "PyBullet window was closed"
-        elif self._mirror is not None and self._mirror.gui != gui:
-            self._mirror.close()
-            self._mirror = None
+        mirror = self._own_mirror()
+        mirror.sync(snapshot)
+        return ({serial: mirror.collisions(serial) for serial in snapshot.robots},
+                (mirror.gui, mirror.window_problem))
+
+    def _set_gui(self, gui: bool, _snapshot: SceneSnapshot) -> tuple[bool, str]:
+        """Open or close PyBullet's window on the mirror (worker thread, for the checkbox).
+
+        ? The snapshot is not needed: the check loop syncs the mirror every tick.
+
+        Returns:
+            tuple[bool, str]: Whether it is open now, and why not.
+        """
+        mirror = self._own_mirror()
+        return mirror.set_gui(gui), mirror.window_problem
+
+    def _own_mirror(self) -> PyBulletMirror:
+        """The mirror, created on first use (worker thread)."""
         if self._mirror is None:
-            # ! On the worker: the mirror (and its window) belongs to this thread.
-            try:
-                self._mirror = PyBulletMirror(gui=gui)
-            except (PyBulletError, RuntimeError) as error:
-                # ? No display, or another plugin already has this process's one PyBullet window.
-                reason = "another one is open in this process" if "Only one" in str(error) else str(error)
-                self._mirror, message = PyBulletMirror(), f"no PyBullet window: {reason}"
-        self._mirror.sync(snapshot)
-        return {serial: self._mirror.collisions(serial) for serial in snapshot.robots}, self._mirror.gui, message
+            self._mirror = PyBulletMirror()  # ! on the worker: the mirror belongs to this thread
+        return self._mirror
 
     def update(self, ctx: PluginContext) -> None:
         """Read the tool0 poses, and restart the checks after a soft stop cancelled them.
@@ -216,10 +205,8 @@ class ExamplePybulletPlugin(HuskyPlugin):
         else:
             state = chip("clear", OK)
         lines.append(f"checked tick  {self._checked_tick}")
-        if self._gui_message:
-            lines.append(self._gui_message)
-        # * Unticks the box when the window could not open or was closed by hand.
-        self._gui_box.value = self._gui_wanted
+        if self._window_message:
+            lines.append(self._window_message)
         self._status.content = block(state + values(*lines))
 
     def teardown(self, ctx: PluginContext) -> None:

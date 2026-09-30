@@ -263,8 +263,30 @@ def test_body_without_collision_meshes_never_collides(mirror, config):
     assert mirror.collisions(config.serial) == []
 
 
-def test_window_without_display_raises(monkeypatch):
-    """Asking for a window without an X display raises, instead of PyBullet exiting the process."""
+def test_window_without_display_falls_back(monkeypatch):
+    """Asking for a window without an X display keeps the world without one and says why."""
     monkeypatch.delenv("DISPLAY", raising=False)
-    with pytest.raises(RuntimeError):
-        PyBulletMirror(gui=True)
+    world = PyBulletMirror()
+    world.sync(snapshot((Body("t/a", box_geometry((1.0, 1.0, 1.0)), Pose()),)))
+    try:
+        assert world.set_gui(True) is False
+        assert not world.gui and "display" in world.window_problem
+        assert world.obstacle_ids() == ["t/a"], "the world is untouched"
+    finally:
+        world.close()
+
+
+def test_world_closed_behind_its_back_is_rebuilt():
+    """If the world disappears (its window closed by hand), the next sync rebuilds it without a window."""
+    world = PyBulletMirror()
+    scene = snapshot((Body("t/a", box_geometry((1.0, 1.0, 1.0)), Pose()),))
+    world.sync(scene)
+    p.disconnect(physicsClientId=world.client_id)
+    try:
+        world.sync(scene)
+        assert world.connected and not world.gui
+        assert world.window_problem == "the PyBullet window was closed"
+        assert world.obstacle_ids() == ["t/a"]
+        assert world.id_of(world.body_ids("t/a")[0]) == "t/a"
+    finally:
+        world.close()

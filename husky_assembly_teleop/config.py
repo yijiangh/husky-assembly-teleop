@@ -90,6 +90,8 @@ class RobotConfig:
         urdf_file: Absolute path to the URDF describing this robot as built,
             including whatever end effectors are currently mounted: the robot's
             own URDF with the tools stitched on (tool_urdfs.stitch_tools).
+        srdf_file: The robot's SRDF (planning groups, link pairs that never
+            collide), or None. Needed by compas_fab planners (CompasFabMirror).
         default_position: Where the robot stands before mocap has said
             otherwise, as (x, y, z) in metres. Set by `row_layout_position` so
             several robots do not all sit on top of each other at the origin.
@@ -119,6 +121,7 @@ class RobotConfig:
     serial: str
     ros_namespace: str
     urdf_file: Path
+    srdf_file: Path | None = None
     arms: tuple[ArmConfig, ...] = ()
     mocap_id: int | None = None
     default_position: tuple[float, float, float] = (0.0, 0.0, 0.0)
@@ -158,6 +161,10 @@ class MonitorConfig:
             warning, so a plugin that is slow every tick cannot bury the log.
         shutdown_grace: Seconds each plugin's cancelled tasks get to clean up at
             shutdown, with ROS still running, before they are dropped.
+        ghost_timeout: Seconds a plugin's ghost robots (targets, plans, previews)
+            stay shown after the last input in it; 0 keeps them once used.
+            ? Ghosts appear only after an input in their plugin, so an unused
+              plugin draws none.
     """
 
     robots: tuple[RobotConfig, ...]
@@ -170,6 +177,7 @@ class MonitorConfig:
     slow_step_warn_ratio: float = 0.5
     slow_step_warn_period: float = 5.0
     shutdown_grace: float = 2.0
+    ghost_timeout: float = 20.0
 
 
 # --- --- --- --- --- WHERE ROBOTS STAND BEFORE MOCAP --- --- --- --- ---
@@ -225,6 +233,8 @@ _SINGLE_ARM_URDF = (_URDF_ROOT + "/mt_husky_moveit_config/urdf/"
                     "husky_ur5_e_no_base_joint_{}_Calibrated_StockUrFrames.urdf")
 _DUAL_ARM_URDF = (_URDF_ROOT + "/mt_husky_dual_ur5_e_moveit_config/urdf/"
                   "husky_dual_ur5_e_no_base_joint_All_Calibrated_StockUrFrames.urdf")
+_SINGLE_ARM_SRDF = _URDF_ROOT + "/mt_husky_moveit_config/config/{}.srdf"
+_DUAL_ARM_SRDF = _URDF_ROOT + "/mt_husky_dual_ur5_e_moveit_config/config/dual_arm_husky.srdf"
 
 # TODO real stow poses. These are placeholders taken from the old code, and
 #      neither is a stowed arm: the single-arm one is old/husky_robot.py's
@@ -247,9 +257,11 @@ _DUAL_ARM_WITH_SCAFFOLDING_V3 = (
 )
 
 _ROBOTS_BY_SERIAL = {
-    "0804": dict(urdf=_SINGLE_ARM_URDF.format("Alice"), arms=_SINGLE_ARM_WITH_ROBOTIQ),
-    "0805": dict(urdf=_SINGLE_ARM_URDF.format("Belle"), arms=_SINGLE_ARM_WITH_ROBOTIQ),
-    "0806": dict(urdf=_DUAL_ARM_URDF, arms=_DUAL_ARM_WITH_SCAFFOLDING_V3),
+    "0804": dict(urdf=_SINGLE_ARM_URDF.format("Alice"), srdf=_SINGLE_ARM_SRDF.format("husky"),
+                 arms=_SINGLE_ARM_WITH_ROBOTIQ),
+    "0805": dict(urdf=_SINGLE_ARM_URDF.format("Belle"), srdf=_SINGLE_ARM_SRDF.format("belle"),
+                 arms=_SINGLE_ARM_WITH_ROBOTIQ),
+    "0806": dict(urdf=_DUAL_ARM_URDF, srdf=_DUAL_ARM_SRDF, arms=_DUAL_ARM_WITH_SCAFFOLDING_V3),
 }
 
 #: The robots' names, accepted anywhere a serial is, in any letter case.
@@ -318,6 +330,7 @@ def robot_config_from_serial(token: str, data_directory: Path,
         serial=f"a200-{number}",
         ros_namespace=f"a200_{number}",
         urdf_file=stitched,
+        srdf_file=data_directory / spec["srdf"],
         arms=arms,
         mocap_id=get_primary_mocap_id_for_robot_serial(number),
         default_position=default_position,
@@ -351,6 +364,9 @@ def config_from_ros_parameters(node: Node) -> MonitorConfig:
     `-p no_default:=true` loads only the requested plugins, without
     DEFAULT_PLUGINS.
 
+    `-p ghost_timeout:=20.0` hides a plugin's ghost robots 20 s after the last
+    input in it (default 0.0: they stay once used).
+
     Robots may be named instead of numbered ("alice", "belle", "cindy"), in
     `robots` and in `tools` entries alike.
 
@@ -363,6 +379,7 @@ def config_from_ros_parameters(node: Node) -> MonitorConfig:
     node.declare_parameter("data_directory", "")
     node.declare_parameter("design_directory", "")
     node.declare_parameter("no_default", False)
+    node.declare_parameter("ghost_timeout", 0.0)
 
     shutil.rmtree(STITCHED_URDF_DIRECTORY, ignore_errors=True)
 
@@ -383,6 +400,7 @@ def config_from_ros_parameters(node: Node) -> MonitorConfig:
         data_directory=data_directory,
         design_directory=Path(design_text).expanduser() if design_text else None,
         enabled_plugins=_enabled_plugins(string_list("plugins"), not no_default),
+        ghost_timeout=node.get_parameter("ghost_timeout").get_parameter_value().double_value,
     )
 
 

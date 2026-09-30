@@ -22,15 +22,16 @@ from html import escape
 
 import numpy as np
 import viser
-import viser.extras
 
 from ...plugin_api.concurrency import timeout
 from ...config import find_robot_serial
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
-from ...ui.pose_input import PlanarPoseInput, yaw_from_xyzw, yaw_to_wxyz
+from ...ui.pose_input import PlanarPoseInput, yaw_from_xyzw
+from ...ui.ghost import PATH_COLOR, TARGET_COLOR, RecentUse, RobotGhost
+from ...ui.pybullet_window import PyBulletWindowToggle
 from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, SECTION_TOOL, block, chip, section, values
-from ...ui.visualization import load_urdf
+from ...world.scene import Pose
 from .path import BasePath
 from .planner import TIME_LIMIT, PlanResult, PlanningWorld, plan_birrt
 
@@ -38,12 +39,10 @@ from .planner import TIME_LIMIT, PlanResult, PlanningWorld, plan_birrt
 STALE_POSITION = 0.05              # m
 STALE_YAW = math.radians(3.0)      # rad
 
-#: Look of the drawings.
-GHOST_COLOR = (0.35, 0.6, 1.0, 0.35)
-PATH_COLOR = (66, 99, 235)         # SECTION_CTRL blue
+#: Look of the path line.
+LINE_COLOR = (66, 99, 235)         # SECTION_CTRL blue
 PATH_HEIGHT = 0.005                # m, just above the grid
 PATH_THICKNESS = 0.015             # m
-TARGET_AXES_LENGTH = 0.25          # m
 
 #: Time slider resolution, seconds.
 SLIDER_STEP = 0.05
@@ -100,14 +99,13 @@ class BasePlannerPlugin(HuskyPlugin):
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="base-plan")
         # ! Worker thread only (sync, search, close); see planner.py.
         self._world = PlanningWorld()
-        # Whether draw must rebuild the path line / move the ghost.
+        # Whether draw must rebuild the path line.
         self._stale_line = True
-        self._stale_drawing = True
 
     # --- --- --- --- --- SETUP --- --- --- --- ---
 
     def setup(self, ctx: PluginContext) -> None:
-        """Build the panel, the target marker, the path line and one ghost per robot.
+        """Build the panel, the path line, and a target ghost and a path ghost per robot.
 
         Args:
             ctx: This plugin's context.
@@ -116,6 +114,8 @@ class BasePlannerPlugin(HuskyPlugin):
         if not serials:
             raise RuntimeError("no robots configured; the base planner has nothing to plan for")
         self.serial = serials[0]
+        #: When the operator last used this panel; ghosts show only while it counts.
+        self._used = RecentUse(ctx.config.ghost_timeout)
         root = ctx.view.scene_root
 
         with ctx.view.ui() as gui:
@@ -138,6 +138,9 @@ class BasePlannerPlugin(HuskyPlugin):
                                           hint="Scrub through the planned path")
             commit = gui.add_button("Commit", color="blue", icon=viser.Icon.SEND,
                                     hint="Send the path to the robot's onboard path follower (stub: logs only)")
+            # * Debugging: watch the planning world, and the search moving the robot around in it.
+            self._window = PyBulletWindowToggle(ctx, gui, self._executor, self._world.set_gui,
+                                                report=lambda message: self._window_problem(ctx, message))
             # ! Keep changing content BELOW the buttons, so nothing moves under the cursor.
             self._details = gui.add_html("")
 
@@ -147,20 +150,14 @@ class BasePlannerPlugin(HuskyPlugin):
         self._slider.on_update(ctx.defer_value("scrub", lambda value: self._scrub(float(value))))
         commit.on_click(ctx.defer("commit", lambda: self._commit(ctx)))
 
-        # * The scene, all hidden until there is something to show.
-        self._target_marker = ctx.view.scene.add_frame(
-            f"{root}/target", axes_length=TARGET_AXES_LENGTH, axes_radius=0.008, visible=False)
         #: The path line, rebuilt per plan (viser fixes the colour count at creation).
         self._line: viser.LineSegmentsHandle | None = None
-        # ? One ghost per robot, built now: mesh loading is too slow for the tick.
-        self._ghosts: dict[str, tuple[viser.FrameHandle, viser.extras.ViserUrdf]] = {}
-        for config in ctx.config.robots:
-            ghost_root = f"{root}/ghost/{config.serial}"
-            frame = ctx.view.scene.add_frame(ghost_root, show_axes=False, visible=False)
-            # The plugin's view is passed so the ghost stays in this plugin's subtree.
-            urdf = viser.extras.ViserUrdf(ctx.view, load_urdf(config.urdf_file), root_node_name=ghost_root,
-                                          mesh_color_override=GHOST_COLOR)
-            self._ghosts[config.serial] = (frame, urdf)
+        # * Two ghosts per robot, built now (mesh loading is too slow for the tick): the
+        #   robot at the target, and on the plan at the slider time. Both can show at once.
+        self._target_ghosts = {config.serial: RobotGhost(ctx, config, f"target/{config.serial}", TARGET_COLOR)
+                               for config in ctx.config.robots}
+        self._path_ghosts = {config.serial: RobotGhost(ctx, config, f"ghost/{config.serial}", PATH_COLOR)
+                             for config in ctx.config.robots}
 
     def teardown(self, ctx: PluginContext) -> None:
         """At shutdown, end any search, then close the planning world.
@@ -178,12 +175,14 @@ class BasePlannerPlugin(HuskyPlugin):
 
     def _choose_robot(self, serial: str) -> None:
         """Plan for another robot. The old plan no longer applies."""
+        self._used.touch()
         if serial != self.serial:
             self.serial = serial
             self._clear()
 
     def _target_changed(self) -> None:
         """The operator edited the target."""
+        self._used.touch()
         self._has_target = True
 
     def _load_target(self, ctx: PluginContext, label: str) -> None:
@@ -193,6 +192,7 @@ class BasePlannerPlugin(HuskyPlugin):
             ctx: This plugin's context.
             label: "Robot" or "Cell".
         """
+        self._used.touch()
         if label == "Robot":
             x, y, yaw = self._current_pose(ctx)
             self._target.set(x, y, yaw)
@@ -226,6 +226,7 @@ class BasePlannerPlugin(HuskyPlugin):
             ctx: This plugin's context.
             label: The button clicked.
         """
+        self._used.touch()
         if label == "Plan":
             self._plan(ctx)
         elif label == "Play":
@@ -275,14 +276,14 @@ class BasePlannerPlugin(HuskyPlugin):
         snapshot = ctx.scene.snapshot
         abort = self._abort
 
-        def search() -> PlanResult:
+        def search() -> tuple[PlanResult, tuple[bool, str]]:
             """Sync the planning world and search. Runs on the worker."""
             self._world.sync(snapshot)
-            return plan_birrt(self._world, serial, start, goal, abort)
+            return plan_birrt(self._world, serial, start, goal, abort), self._world.window()
 
         try:
             async with timeout(TIME_LIMIT + 5.0):
-                result = await loop.run_in_executor(self._executor, search)
+                result, window = await loop.run_in_executor(self._executor, search)
         except asyncio.TimeoutError:
             self.plan_state = "none"
             self._say(f"timed out after {TIME_LIMIT + 5.0}s waiting for the base planner", failed=True)
@@ -292,13 +293,15 @@ class BasePlannerPlugin(HuskyPlugin):
             #   worker to stop and drop its result. Harmless if it already finished.
             abort.set()
 
+        # ? Unticks the box if the window was closed by hand; the plan result below is the last word.
+        self._window.show(*window)
         if result.path is None:
             self.plan_state = "none"
             self._say(f"no plan: {result.reason}", failed=True)
             return
         self.path, self._path_serial, self.plan_state = result.path, serial, "ready"
         self._t, self._playing = 0.0, False
-        self._stale_line = self._stale_drawing = True
+        self._stale_line = True
         how = "straight" if result.direct else "RRT"
         tracked = ctx.world.robots[serial].base.state.tracked
         self._say(f"{how}: {self.path.length:.2f} m, {self.path.duration:.1f} s, found in {result.seconds:.1f} s"
@@ -310,7 +313,7 @@ class BasePlannerPlugin(HuskyPlugin):
         #   changes nothing, which is what ends that round trip.
         if abs(t - self._t) > 1e-9:
             self._t = t
-            self._stale_drawing = True
+            self._used.touch()
 
     def _commit(self, ctx: PluginContext) -> None:
         """Send the plan to the onboard follower, if it is still good.
@@ -318,6 +321,7 @@ class BasePlannerPlugin(HuskyPlugin):
         Args:
             ctx: This plugin's context.
         """
+        self._used.touch()
         if self.plan_state != "ready":
             self._say(f"nothing to commit: the plan is {self.plan_state}", failed=True)
             return
@@ -339,7 +343,14 @@ class BasePlannerPlugin(HuskyPlugin):
         self._plan_task = None
         self.path, self._path_serial, self.plan_state = None, None, "none"
         self._t, self._playing = 0.0, False
-        self._stale_line = self._stale_drawing = True
+        self._stale_line = True
+
+    def _window_problem(self, ctx: PluginContext, message: str) -> None:
+        """Say why the PyBullet window asked for isn't open, in the panel and the log. "" says nothing."""
+        if not message:
+            return
+        ctx.log_warn(message)
+        self._say(message, failed=True)
 
     def _say(self, message: str, failed: bool = False) -> None:
         """Set the one line of feedback under the buttons."""
@@ -362,7 +373,6 @@ class BasePlannerPlugin(HuskyPlugin):
         if self._playing:
             self._t = min(self._t + elapsed, self.path.duration)
             self._playing = self._t < self.path.duration
-            self._stale_drawing = True
 
         # * A ready plan goes stale when the base moves away from its start, or
         #   the target moves away from its goal. A sent plan stays sent.
@@ -395,7 +405,7 @@ class BasePlannerPlugin(HuskyPlugin):
         return float(base.position[0]), float(base.position[1]), yaw_from_xyzw(base.orientation)
 
     def draw(self, ctx: PluginContext) -> None:
-        """Pose the marker, path and ghost, and fill the panel.
+        """Pose the ghosts, redraw the path line if needed, and fill the panel.
 
         Args:
             ctx: This plugin's context.
@@ -405,11 +415,6 @@ class BasePlannerPlugin(HuskyPlugin):
         self._robot.value = self.serial
         self._details.content = self._details_html()
 
-        x, y, yaw = self._target.pose
-        self._target_marker.visible = self._has_target
-        self._target_marker.position = (x, y, PATH_HEIGHT)
-        self._target_marker.wxyz = yaw_to_wxyz(yaw)
-
         duration = 0.0 if self.path is None else self.path.duration
         self._slider.max = max(duration, SLIDER_STEP)
         self._slider.value = round(self._t, 3)
@@ -417,9 +422,7 @@ class BasePlannerPlugin(HuskyPlugin):
         if self._stale_line:
             self._stale_line = False
             self._draw_line(ctx)
-        if self._stale_drawing:
-            self._stale_drawing = False
-            self._draw_ghost(ctx)
+        self._draw_ghosts(ctx)
 
     def _draw_line(self, ctx: PluginContext) -> None:
         """Replace the path line with the current plan's, or remove it.
@@ -438,28 +441,31 @@ class BasePlannerPlugin(HuskyPlugin):
         points = np.column_stack([points, np.full(len(points), PATH_HEIGHT)])
         self._line = ctx.view.scene.add_line_segments(
             f"{ctx.view.scene_root}/path", points=np.stack([points[:-1], points[1:]], axis=1),
-            colors=PATH_COLOR, thickness=PATH_THICKNESS)
+            colors=LINE_COLOR, thickness=PATH_THICKNESS)
 
-    def _draw_ghost(self, ctx: PluginContext) -> None:
-        """Show the ghost of the planned robot at the slider time; hide the others.
+    def _draw_ghosts(self, ctx: PluginContext) -> None:
+        """Show the chosen robot at the target, and the planned robot at the slider time; hide the rest.
+
+        ? Every tick: height and arms are drawn as they are now (a base move does not
+          move the arms), and `show` does nothing when nothing changed.
 
         Args:
             ctx: This plugin's context.
         """
-        for serial, (frame, _urdf) in self._ghosts.items():
-            frame.visible = self.path is not None and serial == self._path_serial
-        if self.path is None:
-            return
-
-        frame, urdf = self._ghosts[self._path_serial]
-        gx, gy, gyaw = self.path.sample(self._t)
-        # Height from the live robot, so the ghost stands where the robot stands.
-        z = ctx.kinematics.base_pose(self._path_serial).position[2]
-        frame.position = (float(gx), float(gy), float(z))
-        frame.wxyz = yaw_to_wxyz(float(gyaw))
-        # * The arms as they are now: a base move does not move them.
-        joints = ctx.kinematics.joints(self._path_serial)
-        urdf.update_cfg(np.array([joints.get(name, 0.0) for name in urdf.get_actuated_joint_names()]))
+        # * Only while the panel is in use (`RecentUse`).
+        in_use = self._used.active
+        shown = {"target": (self.serial, self._target.pose) if in_use and self._has_target else None,
+                 "path": (self._path_serial, self.path.sample(self._t)) if in_use and self.path is not None else None}
+        for kind, ghosts in (("target", self._target_ghosts), ("path", self._path_ghosts)):
+            for serial, ghost in ghosts.items():
+                if shown[kind] is None or shown[kind][0] != serial:
+                    ghost.hide()
+                    continue
+                x, y, yaw = (float(v) for v in shown[kind][1])
+                # Height from the live robot, so the ghost stands where the robot stands.
+                z = float(ctx.kinematics.base_pose(serial).position[2])
+                base = Pose((x, y, z), (0.0, 0.0, math.sin(yaw / 2), math.cos(yaw / 2)))
+                ghost.show(base, ctx.kinematics.joints(serial))
 
     # --- --- --- --- --- PANEL --- --- --- --- ---
 

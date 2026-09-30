@@ -142,6 +142,31 @@ class PlanningWorld:
         hits = self.mirror.collisions(serial, COLLISION_MARGIN, candidates)
         return self._label(hits[0]) if hits else None
 
+    def set_gui(self, gui: bool, snapshot: SceneSnapshot) -> tuple[bool, str]:
+        """Open or close PyBullet's own window on the planning world, for debugging. Worker thread.
+
+        Args:
+            gui: Whether the window should be open.
+            snapshot: The world now. An opened window shows it, even before the first plan.
+
+        Returns:
+            tuple[bool, str]: Whether it is open now, and why not if it was asked for.
+        """
+        if self.mirror is None:
+            self.mirror = PyBulletMirror()
+        is_open = self.mirror.set_gui(gui)
+        if gui:
+            self.sync(snapshot)
+        return is_open, self.mirror.window_problem
+
+    def window(self) -> tuple[bool, str]:
+        """Whether the window is open, and why not. Worker thread, e.g. after a search.
+
+        Returns:
+            tuple[bool, str]: As `set_gui` returns.
+        """
+        return (False, "") if self.mirror is None else (self.mirror.gui, self.mirror.window_problem)
+
     def close(self) -> None:
         """Disconnect the world. On the worker, once no search is running."""
         if self.mirror is not None:
