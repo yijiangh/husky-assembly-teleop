@@ -25,9 +25,9 @@ import numpy as np
 import viser
 import viser.uplot
 
-from ...context import PluginContext
-from ...plugin import HuskyPlugin, register
-from ...ui_style import SECTION_SENSOR, section
+from ...plugin_api.context import PluginContext
+from ...plugin_api.plugin import HuskyPlugin, register
+from ...ui.style import SECTION_SENSOR, section
 
 #: How much history each plot shows, in samples (ticks).
 HISTORY = 200

@@ -5,7 +5,7 @@ The robot control panel: a tab per robot showing its state, with basic control.
   - `setup` builds every widget once and keeps the handles.
   - Widget callbacks go through `ctx.defer` / `ctx.defer_value`, never do the
     work themselves: viser calls them on its own threads, where touching
-    robots or PyBullet is not safe.
+    robots or the scene is not safe.
   - `update` does per-tick work (here, streaming the base twist).
   - Anything longer than a tick is a task started with `ctx.spawn`.
   - `draw` only copies state into widgets.
@@ -22,14 +22,13 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 import numpy as np
-import pybullet_planning as pp
 import viser
 from scipy.spatial.transform import Rotation
 
-from ..concurrency import WaitTimeout
-from ..context import PluginContext
-from ..mocap import mocap_check
-from ..plugin import HuskyPlugin, register
+from ..plugin_api.concurrency import WaitTimeout
+from ..plugin_api.context import PluginContext
+from ..world.mocap import mocap_check
+from ..plugin_api.plugin import HuskyPlugin, register
 from ..robot_interface import ArmInterface, BaseInterface, RobotiqGripper, ScaffoldingV1, ScaffoldingV3
 from ..robot_interface.end_effectors import RobotiqState, ScaffoldingV1State, ScaffoldingV3State
 from ..robot_interface.arm import (CARTESIAN_COMPLIANCE_CONTROLLER,
@@ -41,8 +40,9 @@ from ..robot_interface.arm import (CARTESIAN_COMPLIANCE_CONTROLLER,
 from ..robot_interface.base import PLATFORM_VELOCITY_CONTROLLER
 from ..robot_interface.controller_manager import ControllerManagerInterface
 from ..robot_interface.ur_frames import STOCK_YAW
-from ..visualization import quaternion_to_wxyz
-from ..ui_style import (STALE_AFTER, BUSY, FAIL, NONE, OK, SECTION_CTRL, SECTION_SENSOR, SECTION_TOOL, block,
+from ..world.scene import Pose, compose
+from ..ui.visualization import quaternion_to_wxyz
+from ..ui.style import (STALE_AFTER, BUSY, FAIL, NONE, OK, SECTION_CTRL, SECTION_SENSOR, SECTION_TOOL, block,
                         check_chip, chip, freshness_chip, note, numbers, section, values, warning)
 
 #: Base speed at a Speed of 1. Kept low: this is a test panel.
@@ -624,23 +624,26 @@ class RobotControlPlugin(HuskyPlugin):
           controller will take them. See doc/ur_frames.md.
 
         Args:
-            ctx: This plugin's context. Hooks run with the scene active, so `pp` calls act on it.
+            ctx: This plugin's context. Link poses come from `ctx.kinematics`.
             widgets: One arm's handles.
         """
         key = (widgets.serial, widgets.arm.config.name)
         arm, state = widgets.arm, widgets.arm.state
-        body = ctx.scene.robots.get(widgets.serial)
-        if body is None or not arm.controllers.is_active(CARTESIAN_COMPLIANCE_CONTROLLER):
+        # ! link_pose raises KeyError for a robot kinematics doesn't know: skip the markers instead.
+        known = any(robot.serial == widgets.serial for robot in ctx.config.robots)
+        if not known or not arm.controllers.is_active(CARTESIAN_COMPLIANCE_CONTROLLER):
             self._markers.pop(key, None)
             return
-        inertia = pp.get_link_pose(body, pp.link_from_name(body, f"{arm.config.name}_base_link_inertia"))
-        base = pp.multiply(inertia, ((0.0, 0.0, 0.0), tuple(Rotation.from_euler("z", -STOCK_YAW).as_quat())))
+        inertia = ctx.kinematics.link_pose(widgets.serial, f"{arm.config.name}_base_link_inertia")
+        base = compose(inertia, Pose(orientation=tuple(Rotation.from_euler("z", -STOCK_YAW).as_quat())))
         markers: dict[str, tuple] = {}
         local_poses = {"target": arm.from_husky(*_pose_from_sliders(widgets.pose))}
         if state.tcp_position is not None:
             local_poses["reported"] = (state.tcp_position, state.tcp_orientation)
         for name, (position, orientation) in local_poses.items():
-            markers[f"{name}_world"] = pp.multiply(base, (tuple(position), tuple(orientation)))
+            # * (position, orientation as xyzw), the form `draw` reads.
+            world = compose(base, Pose.from_arrays(position, orientation))
+            markers[f"{name}_world"] = (world.position, world.orientation)
         # Forces are in tool0: they start at the reported TCP and turn with it. None for zero force.
         tcp = markers.get("reported_world")
         forces = {"force_preview": np.array([slider.value for slider in widgets.force]),

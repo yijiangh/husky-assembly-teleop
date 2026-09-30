@@ -23,10 +23,10 @@ from pathlib import Path
 
 from compas_fab.robots import RobotCell
 
-from ...concurrency import timeout
-from ...context import PluginContext
-from ...plugin import HuskyPlugin, register
-from ...ui_style import BUSY, FAIL, NONE, OK, SECTION_CTRL, block, chip, note, section, values
+from ...plugin_api.concurrency import timeout
+from ...plugin_api.context import PluginContext
+from ...plugin_api.plugin import HuskyPlugin, register
+from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, block, chip, note, section, values
 from .design import Design, Step, displayed_state, load_design
 from .drawing import CellDrawing, CellMeshes, prepare_cell_meshes
 

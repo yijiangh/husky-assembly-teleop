@@ -15,7 +15,7 @@ from sensor_msgs.msg import BatteryState
 from std_msgs.msg import Bool
 
 from ..config import RobotConfig
-from ..mocap import mocap_topic, store_sample
+from ..world.mocap import mocap_topic, store_sample
 from .connections import RosConnections
 from .controller_manager import ControllerManagerInterface, ControllerManagerState
 

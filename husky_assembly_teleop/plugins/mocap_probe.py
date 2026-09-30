@@ -34,14 +34,13 @@ from pathlib import Path
 import viser
 from scipy.spatial.transform import Rotation
 
-from ..checklist import CheckList
-from ..context import PluginContext
-from ..mocap import mocap_check
-from ..plugin import HuskyPlugin, register
-from ..ui_style import (BAD, GOOD, LEVEL_COLORS, NONE, SECTION_CTRL, SECTION_SENSOR, WARN, Check, block,
+from ..ui.checklist import CheckList
+from ..plugin_api.context import PluginContext
+from ..world.mocap import mocap_check
+from ..plugin_api.plugin import HuskyPlugin, register
+from ..ui.style import (BAD, GOOD, LEVEL_COLORS, NONE, SECTION_CTRL, SECTION_SENSOR, WARN, Check, block,
                         check_chip, chip, note, numbers, section, values)
-from ..visualization import quaternion_to_wxyz
-from ..world_state import TrackedObject
+from ..world.measured import TrackedObject
 
 #: Name of the probe in `world.tracked_objects` and on the health panel.
 PROBE_NAME = "probe"
@@ -111,7 +110,7 @@ class MocapProbePlugin(HuskyPlugin):
         self._flash_until = 0.0
 
     def setup(self, ctx: PluginContext) -> None:
-        """Build the widgets and the probe's scene frame, and start tracking DEFAULT_MOCAP_ID.
+        """Build the widgets and start tracking DEFAULT_MOCAP_ID. The core draws the probe's frame.
 
         Args:
             ctx: This plugin's context.
@@ -144,10 +143,6 @@ class MocapProbePlugin(HuskyPlugin):
         panel.dock_right()
         panel.minimize()
 
-        # * The probe body frame, shown once tracked.
-        self._frame = ctx.view.scene.add_frame(f"{ctx.view.scene_root}/probe", axes_length=0.1,
-                                               axes_radius=0.004, visible=False)
-
         # ! Callbacks run on a viser thread: hand every action to the main thread.
         track.on_click(ctx.defer("track probe", lambda: self._track(ctx)))
         record.on_click(ctx.defer("record point", lambda: self._record(ctx)))
@@ -174,7 +169,8 @@ class MocapProbePlugin(HuskyPlugin):
         """
         mocap_id = int(self._mocap_id.value)
         ctx.untrack_object(PROBE_NAME)
-        self._probe = ctx.track_object(PROBE_NAME, mocap_id)
+        # * No geometry: a frame only, not an obstacle.
+        self._probe = ctx.track_object(PROBE_NAME, mocap_id, label="mocap probe")
         self._message = f"tracking mocap id {mocap_id}"
         ctx.log_info(self._message)
 
@@ -294,7 +290,7 @@ class MocapProbePlugin(HuskyPlugin):
     # --- --- --- --- --- DRAW --- --- --- --- ---
 
     def draw(self, ctx: PluginContext) -> None:
-        """Show the live probe pose, the sample list and the last action's result.
+        """Show the live probe pose values, the sample list and the last action's result.
 
         Args:
             ctx: This plugin's context.
@@ -308,9 +304,6 @@ class MocapProbePlugin(HuskyPlugin):
         if has_pose:
             rpy = Rotation.from_quat(probe.orientation).as_euler("xyz", degrees=True)
             error_mm = (probe.marker_error * 1e3,)
-            self._frame.position = tuple(probe.position)
-            self._frame.wxyz = quaternion_to_wxyz(probe.orientation)
-        self._frame.visible = has_pose
         self._big.content = self._big_status(ctx, check)
         self._status.content = block(state + values(f"xyz {numbers(probe.position if has_pose else None, 3, 8, 4)} m",
                                                     f"rpy {numbers(rpy, 3, 8, 1)} °",

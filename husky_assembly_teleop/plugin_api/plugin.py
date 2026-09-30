@@ -98,7 +98,7 @@ def discover(log_error: Callable[[str], None]) -> None:
     ! A module that fails to import is logged and skipped, not fatal, since
       plugins pull in heavy optional dependencies.
     """
-    from . import plugins
+    from .. import plugins
 
     for module in pkgutil.iter_modules(plugins.__path__):
         try:

@@ -1,0 +1,227 @@
+"""
+The 3D view of the scene: every body and every tracked object, drawn from each
+tick's snapshot.
+
+    /scene/<group>/<subgroup>/…/<name>   one frame per body, its meshes below
+    /tracked/<name>                      one frame with axes per tracked object
+
+* Building meshes is slow, so at most `build_budget` meshes are built per tick;
+  a large cell fills in over a few ticks. Moves and removes always apply in
+  full, so a body is at worst missing for a few ticks, never shown at an old pose.
+
+! Main thread only. The "Scene" checkboxes are read here, never acted on in a
+  viser callback.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+import viser
+
+from ..world.geometry import BoxShape, CylinderShape, Geometry, Shape
+from ..world.scene import Pose, SceneSnapshot
+
+#: Colour of a body without one of its own, (r, g, b, a) from 0 to 1.
+DEFAULT_COLOR = (0.7, 0.7, 0.7, 1.0)
+#: Group checkboxes go this many id segments deep: "obstacles", "obstacles/tables".
+GROUP_DEPTH = 2
+
+
+def _wxyz(pose: Pose) -> tuple[float, float, float, float]:
+    """Reorder a pose's quaternion from xyzw to viser's wxyz.
+
+    ? Not `visualization.quaternion_to_wxyz`: that module imports this one.
+    """
+    x, y, z, w = pose.orientation
+    return (w, x, y, z)
+
+
+def _groups(body_id: str) -> list[str]:
+    """The group prefixes of an id that get a frame and a checkbox, e.g. "a", "a/b" for "a/b/c"."""
+    parts = body_id.split("/")[:-1]
+    return ["/".join(parts[:depth]) for depth in range(1, min(len(parts), GROUP_DEPTH) + 1)]
+
+
+@dataclass
+class _DrawnBody:
+    """What one body was drawn with, to tell what changed.
+
+    Attributes:
+        geometry: The Geometry object its meshes were built from.
+        color: The colour they were built with.
+        pose: The last world pose assigned to the frame.
+        frame: Frame carrying the pose; its meshes are its children.
+    """
+
+    geometry: Geometry
+    color: tuple[float, float, float, float] | None
+    pose: Pose
+    frame: viser.FrameHandle
+
+
+@dataclass
+class _Group:
+    """A group of bodies sharing an id prefix: one frame to hide them all, one checkbox."""
+
+    frame: viser.FrameHandle
+    checkbox: viser.GuiCheckboxHandle
+
+
+@dataclass
+class _DrawnTracked:
+    """One tracked object's frame and meshes.
+
+    Attributes:
+        frame: Frame with axes, carrying the pose.
+        pose: The last pose assigned to the frame.
+        geometry: The Geometry object the shapes were built from; None if not built (yet).
+        meshes: The shape handles, children of `frame`.
+    """
+
+    frame: viser.FrameHandle
+    pose: Pose
+    geometry: Geometry | None = None
+    meshes: list[viser.SceneNodeHandle] = field(default_factory=list)
+
+
+class SceneView:
+    """Draws the scene's bodies and the tracked objects from each tick's snapshot. Core, main thread only."""
+
+    def __init__(self, server: viser.ViserServer, build_budget: int = 50) -> None:
+        """Create the "Scene" GUI folder and the root frames.
+
+        ? Called before any plugin adds its folder, so "Scene" sits above them.
+
+        Args:
+            server: The viser server to draw in.
+            build_budget: Shapes built at most per `sync`; the rest wait for the next one.
+        """
+        self._server = server
+        self._build_budget = build_budget
+        self._folder = server.gui.add_folder("Scene")
+        with self._folder:
+            self._show_tracked = server.gui.add_checkbox("tracked objects", True)
+        server.scene.add_frame("/scene", show_axes=False)
+        self._tracked_root = server.scene.add_frame("/tracked", show_axes=False)
+        self._bodies: dict[str, _DrawnBody] = {}
+        self._groups: dict[str, _Group] = {}
+        self._tracked: dict[str, _DrawnTracked] = {}
+
+    def sync(self, snapshot: SceneSnapshot) -> None:
+        """Bring the view in line with one snapshot. Call once per tick, inside `server.atomic()`.
+
+        Args:
+            snapshot: The tick's copy of the world.
+        """
+        budget = self._build_budget
+        # Gone, or changed shape or colour: remove now, rebuild below when the budget allows.
+        for body_id, drawn in list(self._bodies.items()):
+            body = snapshot.bodies.get(body_id)
+            if body is None or body.geometry is not drawn.geometry or body.color != drawn.color:
+                drawn.frame.remove()
+                del self._bodies[body_id]
+        self._sync_groups(snapshot)
+
+        for body_id, body in snapshot.bodies.items():
+            pose = snapshot.world_poses[body_id]
+            drawn = self._bodies.get(body_id)
+            if drawn is None:
+                if budget <= 0:
+                    continue  # not drawn yet; built in a later tick
+                frame = self._server.scene.add_frame(f"/scene/{body_id}", show_axes=False,
+                                                     position=pose.position, wxyz=_wxyz(pose))
+                budget -= len(self._add_meshes(f"/scene/{body_id}", body.geometry, body.color))
+                self._bodies[body_id] = _DrawnBody(body.geometry, body.color, pose, frame)
+            elif pose != drawn.pose:
+                # ? Compared first: viser sends a message for every assignment.
+                drawn.frame.position, drawn.frame.wxyz, drawn.pose = pose.position, _wxyz(pose), pose
+
+        self._sync_tracked(snapshot, budget)
+
+    def _sync_groups(self, snapshot: SceneSnapshot) -> None:
+        """Add and remove group frames and checkboxes, and apply each checkbox to its frame."""
+        wanted = sorted({group for body_id in snapshot.bodies for group in _groups(body_id)})
+        # Reverse order removes a subgroup before its parent (removing the parent removes it too).
+        for group in sorted(set(self._groups) - set(wanted), reverse=True):
+            self._groups[group].frame.remove()
+            self._groups[group].checkbox.remove()
+            del self._groups[group]
+        for group in wanted:
+            if group not in self._groups:
+                with self._folder:
+                    checkbox = self._server.gui.add_checkbox(group, True)
+                self._groups[group] = _Group(self._server.scene.add_frame(f"/scene/{group}", show_axes=False),
+                                             checkbox)
+            # * viser hides everything below a hidden frame. It sends nothing if the value is unchanged.
+            self._groups[group].frame.visible = self._groups[group].checkbox.value
+
+    def _sync_tracked(self, snapshot: SceneSnapshot, budget: int) -> None:
+        """Move, show and hide the tracked objects' frames, and build their meshes.
+
+        A name missing from the snapshot (no fix yet, or no longer tracked) is hidden, never removed.
+
+        Args:
+            snapshot: The tick's copy of the world.
+            budget: Shapes left to build this tick.
+        """
+        self._tracked_root.visible = self._show_tracked.value
+        for name, drawn in self._tracked.items():
+            drawn.frame.visible = name in snapshot.tracked
+        for name, entry in snapshot.tracked.items():
+            drawn = self._tracked.get(name)
+            if drawn is None:
+                frame = self._server.scene.add_frame(f"/tracked/{name}", axes_length=0.1, axes_radius=0.004,
+                                                     position=entry.pose.position, wxyz=_wxyz(entry.pose))
+                drawn = self._tracked[name] = _DrawnTracked(frame, entry.pose)
+            elif entry.pose != drawn.pose:
+                drawn.frame.position, drawn.frame.wxyz = entry.pose.position, _wxyz(entry.pose)
+                drawn.pose = entry.pose
+
+            geometry = entry.description.geometry
+            if geometry is not drawn.geometry:
+                for mesh in drawn.meshes:
+                    mesh.remove()
+                drawn.geometry, drawn.meshes = None, []
+                if geometry is not None and budget > 0:
+                    drawn.geometry, drawn.meshes = geometry, self._add_meshes(f"/tracked/{name}", geometry, None)
+                    budget -= len(drawn.meshes)
+
+    def _add_meshes(self, parent: str, geometry: Geometry,
+                    color: tuple[float, float, float, float] | None) -> list[viser.SceneNodeHandle]:
+        """Add a geometry's visual shapes below a frame, in the frame's coordinates.
+
+        Args:
+            parent: Name of the frame.
+            geometry: The shapes to draw.
+            color: (r, g, b, a) from 0 to 1, or None for DEFAULT_COLOR.
+
+        Returns:
+            list[viser.SceneNodeHandle]: One handle per shape.
+        """
+        return [self._add_shape(f"{parent}/mesh_{i}", shape, color or DEFAULT_COLOR)
+                for i, shape in enumerate(geometry.visual)]
+
+    def _add_shape(self, name: str, shape: Shape,
+                   color: tuple[float, float, float, float]) -> viser.SceneNodeHandle:
+        """Add one shape: primitives natively (exact, lit correctly), meshes as triangles.
+
+        Args:
+            name: Scene node name.
+            shape: What to draw, in its parent frame's coordinates.
+            color: (r, g, b, a) from 0 to 1.
+
+        Returns:
+            viser.SceneNodeHandle: Its handle.
+        """
+        r, g, b, a = color
+        look = dict(color=(r, g, b), opacity=None if a >= 1.0 else a)
+        scene = self._server.scene
+        if isinstance(shape, BoxShape):
+            return scene.add_box(name, dimensions=shape.size, position=shape.origin.position,
+                                 wxyz=_wxyz(shape.origin), **look)
+        if isinstance(shape, CylinderShape):
+            # ? viser turns its cylinders onto Z, as PyBullet and trimesh do.
+            return scene.add_cylinder(name, radius=shape.radius, height=shape.height,
+                                      position=shape.origin.position, wxyz=_wxyz(shape.origin), **look)
+        return scene.add_mesh_simple(name, shape.vertices, shape.faces, **look)

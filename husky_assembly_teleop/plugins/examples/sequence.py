@@ -28,10 +28,10 @@ import asyncio
 
 import viser
 
-from ...concurrency import WaitTimeout
-from ...context import PluginContext
-from ...plugin import HuskyPlugin, register
-from ...ui_style import BUSY, FAIL, NONE, OK, SECTION_CTRL, block, chip, section
+from ...plugin_api.concurrency import WaitTimeout
+from ...plugin_api.context import PluginContext
+from ...plugin_api.plugin import HuskyPlugin, register
+from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, block, chip, section
 
 CYCLES = 3
 TIMER_SECONDS = 3.0

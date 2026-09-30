@@ -1,12 +1,12 @@
 """
-The user interface: a viser server, a scene mirroring the world, and one private
-corner of both for each plugin.
+The user interface: a viser server, the world drawn from each tick's snapshot,
+and one private corner of both for each plugin.
 
 ! Build viser nodes once and keep the handles; later assign `position` / `wxyz` /
   `visible`. Re-adding nodes every tick leaks and flickers.
 
 ! viser callbacks run on its worker threads, not the main thread. They must not
-  touch world state, PyBullet or ROS, only hand work to the plugin's queue
+  touch world state, the scene or ROS, only hand work to the plugin's queue
   (PluginContext.defer).
 """
 
@@ -24,10 +24,11 @@ import viser
 import viser.extras
 import yourdfpy
 
-from .config import RobotConfig
-from .tool_urdfs import resolve_mesh_path
-from .ui_style import FAIL
-from .world_state import WorldState
+from ..config import RobotConfig
+from ..world.scene import SceneSnapshot
+from .scene_view import SceneView
+from ..tool_urdfs import resolve_mesh_path
+from .style import FAIL
 
 
 #: Mesh roughness, 0 = mirror, 1 = flat. The shipped meshes look like wet
@@ -117,25 +118,17 @@ def quaternion_to_wxyz(quaternion: np.ndarray) -> tuple[float, float, float, flo
 
 @dataclass
 class _DrawnRobot:
-    """The handles and cached configuration for one robot in the viser scene.
+    """The handles for one robot in the viser scene.
 
     Attributes:
         base: Parent frame carrying the base pose; moves the whole robot.
         urdf: The mesh set, updated through `update_cfg`.
         joint_names: Actuated joint names, in `update_cfg` order.
-        configuration: Last drawn joint vector, so an unmeasured joint holds
-            its value instead of snapping to zero.
     """
 
     base: viser.FrameHandle
     urdf: viser.extras.ViserUrdf
     joint_names: tuple[str, ...]
-    configuration: np.ndarray = None  # type: ignore[assignment]
-
-    def __post_init__(self) -> None:
-        """Start every joint at zero, which is what ViserUrdf draws initially."""
-        if self.configuration is None:
-            self.configuration = np.zeros(len(self.joint_names))
 
 
 class Visualization:
@@ -195,11 +188,12 @@ class Visualization:
 
         # Persistent per-robot handles, keyed by serial. Built once in
         # load_robot, mutated in draw, never rebuilt per tick.
-        #
-        # ! The core draws the real robots and nothing else. Every other piece
-        #   of geometry belongs to a plugin and goes in that plugin's
-        #   PluginView. The core has no idea what a bar or a rack is.
         self._robots: dict[str, _DrawnRobot] = {}
+
+        # * The scene's bodies and the tracked objects, drawn generically: the
+        #   core has no idea what a bar or a rack is. Plugins draw only their
+        #   own extras (targets, paths, markers) in their PluginView.
+        self._scene_view = SceneView(self._server)
 
         self._server.scene.add_grid("/grid", width=10.0, height=10.0)
         self._server.scene.add_frame("/origin", show_axes=True)
@@ -309,32 +303,26 @@ class Visualization:
             self._freeze.hint = ("Click to pause every panel, so its text can be selected and copied. "
                                  "Buttons still act; the robots in the 3D view stay live.")
 
-    def draw(self, world: WorldState) -> None:
-        """Push the measured robot poses into the scene.
+    def draw(self, snapshot: SceneSnapshot) -> None:
+        """Draw this tick's copy of the world: robots, tracked objects and scene bodies.
 
-        Called once per tick inside `atomic()`. Only assigns to handles built in
-        `load_robot`; adds nothing.
+        Called once per tick inside `atomic()`, also while panels are frozen.
+        Robots only get new transforms; the scene view builds what is new.
 
-        ! Only tracked base poses are applied, matching RobotScene. A robot with
-          no mocap fix keeps its last drawn pose rather than jumping to the
-          origin, so the browser and PyBullet agree about where it is.
+        ? Robots show what planners get: the last mocap fix (the default pose
+          before any) and the last value of each joint, as Kinematics keeps them.
 
         Args:
-            world: Measured state to show.
+            snapshot: The tick's copy of the world.
         """
-        for serial, state in world.robot_states().items():
+        for serial, entry in snapshot.robots.items():
             drawn = self._robots.get(serial)
             if drawn is None:
                 continue
-            if state.base.tracked:
-                drawn.base.position = tuple(state.base.position)
-                drawn.base.wxyz = quaternion_to_wxyz(state.base.orientation)
-            # A joint we have no measurement for holds its last drawn value, for
-            # the same reason: absent is not zero.
-            drawn.configuration = np.array(
-                [state.joint_positions.get(name, previous) for name, previous
-                 in zip(drawn.joint_names, drawn.configuration)], dtype=float)
-            drawn.urdf.update_cfg(drawn.configuration)
+            drawn.base.position = entry.base.position
+            drawn.base.wxyz = quaternion_to_wxyz(entry.base.orientation)
+            drawn.urdf.update_cfg(np.array([entry.joints.get(name, 0.0) for name in drawn.joint_names]))
+        self._scene_view.sync(snapshot)
 
     def stop(self) -> None:
         """Shut the server down and join its thread."""
@@ -344,7 +332,7 @@ class Visualization:
 class PluginViewImpl:
     """One plugin's private scene subtree and GUI folder.
 
-    Satisfies the PluginView Protocol in context.py structurally, so this module
+    Satisfies the PluginView Protocol in plugin_api/context.py structurally, so this module
     need not import it and plugins need not import this one.
     """
 

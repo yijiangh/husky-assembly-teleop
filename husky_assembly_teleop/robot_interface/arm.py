@@ -24,7 +24,7 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from ur_msgs.msg import IOStates
 
 from ..config import ArmConfig
-from ..recording import SampleSource
+from .recording import SampleSource
 from .connections import RosConnections
 from .controller_manager import ControllerManagerInterface, ControllerManagerState
 from .end_effectors import EndEffector, EndEffectorState, make_end_effector

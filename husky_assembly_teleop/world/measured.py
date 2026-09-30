@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from .robot_interface import HuskyRobotInterface, RobotState
+from ..robot_interface import HuskyRobotInterface, RobotState
 
 
 @dataclass

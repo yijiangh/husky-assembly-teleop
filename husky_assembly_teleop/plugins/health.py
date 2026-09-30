@@ -19,14 +19,14 @@ import viser
 from sensor_msgs.msg import BatteryState
 from ur_dashboard_msgs.msg import RobotMode, SafetyMode
 
-from ..context import PluginContext
-from ..mocap import mocap_check
-from ..plugin import HuskyPlugin, register
+from ..plugin_api.context import PluginContext
+from ..world.mocap import mocap_check
+from ..plugin_api.plugin import HuskyPlugin, register
 from ..robot_interface import ArmInterface, HuskyRobotInterface, RobotiqGripper, ScaffoldingV1, ScaffoldingV3
 from ..robot_interface.arm import SYNC_STATUS_MAX_AGE, ArmState
 from ..robot_interface.base import BaseState
 from ..robot_interface.controller_manager import REFRESH_PERIOD, ControllerManagerState
-from ..ui_style import BAD, BUSY, GOOD, LEVEL_COLORS, OK, STALE_AFTER, WARN, Check, block, check_chip, chip, section
+from ..ui.style import BAD, BUSY, GOOD, LEVEL_COLORS, OK, STALE_AFTER, WARN, Check, block, check_chip, chip, section
 
 # --- --- --- --- --- THRESHOLDS --- --- --- --- ---
 

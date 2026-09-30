@@ -1,8 +1,7 @@
 # Why the monitor was rewritten the way it was
 
-Background for the `husky_assembly_teleop` core (`monitor.py`, `plugin.py`,
-`context.py`, `concurrency.py`, `config.py`, `world_state.py`,
-`robot_interface.py`, `robot_scene.py`, `visualization.py`).
+Background for the `husky_assembly_teleop` core (`monitor.py`, `config.py`,
+`plugin_api/`, `world/`, `robot_interface/`, `ui/`).
 
 This file holds the *archaeology*: what the old code did, and which specific
 failure each design decision is defending against. It lives here rather than in
@@ -121,8 +120,8 @@ tool is mounted.
 
 ## Blocking waits on the single thread
 
-Everything runs on one thread: the tick, every ROS callback, all planning, all
-PyBullet. A plugin that waits by looping until the arm stops moving freezes the
+Everything runs on one thread: the tick, every ROS callback, every plugin hook
+and task. (Long planning searches run on worker threads, on a copy of the world.) A plugin that waits by looping until the arm stops moving freezes the
 entire node, including the subscriptions that would have told it the arm
 stopped. The old code hit this constantly.
 
@@ -133,9 +132,9 @@ started with `ctx.spawn`, and it waits by awaiting: `ctx.wait_until`,
 Between two awaits a task has the thread to itself and needs no locks.
 
 The tick pumps ROS: it runs every waiting ROS callback at its start, then
-syncs PyBullet, runs the plugin hooks, and resumes the tasks waiting for it.
-Between ticks `WorldState` does not change and always matches the PyBullet
-mirror. The price is that a fast topic needs a queue deep enough for one tick.
+updates forward kinematics, copies the whole world for planners and the view,
+runs the plugin hooks, and resumes the tasks waiting for it. Between ticks
+`WorldState` does not change and always matches the kinematics and the copy. The price is that a fast topic needs a queue deep enough for one tick.
 
 Considered and rejected:
 
@@ -162,33 +161,48 @@ viser is retained mode, so this must not come across: build handles once in
 `setup`, mutate them in `draw`. Re-adding nodes every tick would leak and
 flicker.
 
-## Why there is no abstraction over PyBullet
+## Why the scene is backend-free, and copied once per tick
 
-No scene partitions, no collision-filter type, no body-id hiding, no add/remove
-API. Plugins get the raw client id and the raw body ids.
+The first version of this rewrite had no abstraction over PyBullet: one shared
+PyBullet client with the live robots, raw body ids handed to every plugin, and
+`RobotScene.active()` as the only wrapper (it fixed the old code's scattered
+`saved = pp.CLIENT; pp.CLIENT = ...`, which corrupted the global on early returns).
+Of the old code's PyBullet calls, ~160 were forward-kinematics plumbing and only
+15 were collision or planning, so wrapping "the scene" looked unjustified.
 
-A study of the old code settled this. Of the PyBullet calls that survive the
-viser move, ~160 are forward-kinematics plumbing and 15 are collision or
-planning -- and all 15 sit on a path the old monitor's own docstring calls the
-legacy fallback. `pairwise_collision` is never called at all. The live planning
-path hands everything to `compas_fab`, which materializes its own cell and takes
-a declarative `RobotCellState`. An abstraction over "the scene" would be
-wrapping an API the code barely uses and whose interesting half `compas_fab`
-already owns.
+It stopped fitting once planners came in (`base_planner` first):
 
-If a real shared need shows up once the plugins are ported, factor it out then,
-against actual call sites.
+- **Every planner needs its own world anyway.** A search runs for seconds on a
+  worker thread, and PyBullet is not thread-safe. The base planner already
+  copied robots out of the shared scene into a private one before each search.
+- **Geometry can't be read back out of PyBullet** (`getMeshData` gives nothing
+  for concave meshes, hull points only for convex ones), so a PyBullet world is
+  a poor source of truth for other backends (compas_fab, later coal).
+- **A body one plugin added was an obstacle for every other, and nothing
+  removed it** when that plugin stopped.
+- **The forward-kinematics plumbing needs no physics engine.** `kinematics.py`
+  does it with yourdfpy, once per tick.
 
-The one thing that *is* wrapped is client selection: `RobotScene.active()`. `pp`
-reads a module global to decide which client to talk to, and the old code did
-`saved = pp.CLIENT; pp.CLIENT = ...` at scattered call sites, corrupting the
-global whenever something returned early. The monitor runs every plugin hook
-inside it, so plugin code never selects the client itself -- forgetting to
-would have been silent, and wrong as soon as a second client exists.
+So the core now keeps a plain-Python scene (`world/scene.py`) that plugins put bodies
+into, and copies the whole world once per tick, right after the ROS pump and
+forward kinematics. Planners sync their own mirror (`world/mirrors/pybullet.py`) from
+that copy on their own thread; the 3D view draws the same copy. The design, its
+alternatives and measurements: `scene_refactor_plan.md`.
 
 ## Naming
 
-The UI module is `visualization.py`, not `husky_viser.py`. Naming a module after
+The UI module is `ui/visualization.py`, not `husky_viser.py`. Naming a module after
 its library means swapping the library renames every import above it. Plugins
-talk to a `PluginView`, which is a Protocol in `context.py`, so most of them
+talk to a `PluginView`, which is a Protocol in `plugin_api/context.py`, so most of them
 never mention viser at all.
+
+The core is grouped by what a module is about, not by who calls it:
+- `monitor.py`, `config.py`, `tool_urdfs.py` stay at the top: the entry point
+  and the run configuration everything else is built from.
+- `plugin_api/`: what a plugin is (`plugin.py`) and what it is handed (`context.py`, `concurrency.py`).
+- `world/`: what is in the world and where. `measured.py` (formerly `world_state.py`)
+  holds what sensors report; `scene.py` what we put there; `kinematics.py` the
+  link poses; `mirrors/` the planners' private copies.
+- `robot_interface/`: the only package that talks to a robot, including
+  `recording.py`, which taps its raw ROS messages.
+- `ui/`: the viser server, the 3D view and the panel widgets (`style.py`, formerly `ui_style.py`).

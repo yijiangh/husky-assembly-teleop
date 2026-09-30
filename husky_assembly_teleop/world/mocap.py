@@ -16,7 +16,7 @@ from typing import Protocol
 import numpy as np
 from crl_husky_msgs.msg import MocapRigidBodyPose
 
-from .ui_style import BAD, GOOD, STALE_AFTER, WARN, Check
+from ..ui.style import BAD, GOOD, STALE_AFTER, WARN, Check
 
 #: Mean marker error, metres, above which the mocap chip turns amber.
 #: ? A guess from typical OptiTrack numbers. The relay's own looser threshold

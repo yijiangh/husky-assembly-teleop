@@ -40,7 +40,7 @@ order it happens, and the task's `finally` block is where hardware is made safe.
 ## Open: recording high-rate state
 
 Experiments need state at its full update rate, not the 20 Hz tick. The
-experimental `recording.py` only taps raw ROS messages of a few arm topics. It
+experimental `robot_interface/recording.py` only taps raw ROS messages of a few arm topics. It
 should be just as easy to record any interface state (joint positions, TCP
 pose, a mocap fix, a derived value) at the rate it updates. Undecided how;
 `cell` and `base_planner` are experimental too.

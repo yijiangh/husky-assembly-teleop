@@ -4,7 +4,8 @@ Pick a target for a husky base, plan a path to it, scrub through the path, and c
 ! EXPERIMENTAL: a mockup. Commit is a stub and the planner is a placeholder.
 
 * Planning (bidirectional RRT, planner.py) runs on a worker thread from a task, so
-  the tick never waits; Clear or Stop all ends it early.
+  the tick never waits; Clear or Stop all ends it early. It plans against the
+  tick's scene snapshot: every robot and every scene body (obstacles, cell).
 
 ! Commit is a stub that only logs (`send_to_onboard_follower`).
 ! A plan is only good for the pose it was planned from: if the base, target or
@@ -20,19 +21,18 @@ from concurrent.futures import ThreadPoolExecutor
 from html import escape
 
 import numpy as np
-import pybullet_planning as pp
 import viser
 import viser.extras
 
-from ...concurrency import timeout
+from ...plugin_api.concurrency import timeout
 from ...config import find_robot_serial
-from ...context import PluginContext
-from ...plugin import HuskyPlugin, register
-from ...pose_input import PlanarPoseInput, yaw_from_xyzw, yaw_to_wxyz
-from ...ui_style import BUSY, FAIL, NONE, OK, SECTION_CTRL, SECTION_TOOL, block, chip, section, values
-from ...visualization import load_urdf
+from ...plugin_api.context import PluginContext
+from ...plugin_api.plugin import HuskyPlugin, register
+from ...ui.pose_input import PlanarPoseInput, yaw_from_xyzw, yaw_to_wxyz
+from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, SECTION_TOOL, block, chip, section, values
+from ...ui.visualization import load_urdf
 from .path import BasePath
-from .planner import TIME_LIMIT, PlanningWorld, plan_birrt
+from .planner import TIME_LIMIT, PlanResult, PlanningWorld, plan_birrt
 
 #: The plan goes stale once the base moves this far from its planned start.
 STALE_POSITION = 0.05              # m
@@ -74,7 +74,7 @@ class BasePlannerPlugin(HuskyPlugin):
 
     name = "base_planner"
     experimental = True
-    requires = ("cell", "obstacles")
+    requires = ("cell",)
 
     def __init__(self):
         """Start with no robot chosen, no target and no plan."""
@@ -96,9 +96,10 @@ class BasePlannerPlugin(HuskyPlugin):
         #: The running search, and the flag that ends its worker early.
         self._plan_task: asyncio.Task | None = None
         self._abort = threading.Event()
-        # One worker: searches share one planning world, so they must run one after another.
+        # One worker: it owns the planning world, so searches run one after another.
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="base-plan")
-        self._world: PlanningWorld | None = None
+        # ! Worker thread only (sync, search, close); see planner.py.
+        self._world = PlanningWorld()
         # Whether draw must rebuild the path line / move the ghost.
         self._stale_line = True
         self._stale_drawing = True
@@ -116,9 +117,6 @@ class BasePlannerPlugin(HuskyPlugin):
             raise RuntimeError("no robots configured; the base planner has nothing to plan for")
         self.serial = serials[0]
         root = ctx.view.scene_root
-        # A private copy of every robot, for collision checks.
-        self._world = PlanningWorld(ctx.config.robots)
-        self._world.set_boxes(ctx.require("obstacles").boxes)
 
         with ctx.view.ui() as gui:
             self._status = gui.add_html("")
@@ -170,11 +168,11 @@ class BasePlannerPlugin(HuskyPlugin):
         Args:
             ctx: This plugin's context.
         """
-        # ! Abort first, so the wait is short and the world closes only once unused.
+        # ! Abort first, so the wait is short. The world is closed on its own worker,
+        #   after any search still running there.
         self._abort.set()
-        self._executor.shutdown(wait=True, cancel_futures=True)
-        if self._world is not None:
-            self._world.close()
+        self._executor.submit(self._world.close)
+        self._executor.shutdown(wait=True)
 
     # --- --- --- --- --- COMMANDS (intents, on the main thread) --- --- --- --- ---
 
@@ -272,16 +270,19 @@ class BasePlannerPlugin(HuskyPlugin):
             goal: (x, y, yaw) it should end at.
         """
         loop = asyncio.get_running_loop()
-        # ! A cancelled search's thread runs on until it sees its abort flag. The one
-        #   worker finishes it before this empty job, and only then may the main
-        #   thread snapshot; from there until the search ends only the worker touches the world.
-        await loop.run_in_executor(self._executor, lambda: None)
-        self._world.snapshot(ctx.scene.client_id, ctx.scene.robots)
+        # * The world as it stood at the start of this tick. The worker syncs its
+        #   planning world from it, after any cancelled search still finishing there.
+        snapshot = ctx.scene.snapshot
         abort = self._abort
+
+        def search() -> PlanResult:
+            """Sync the planning world and search. Runs on the worker."""
+            self._world.sync(snapshot)
+            return plan_birrt(self._world, serial, start, goal, abort)
+
         try:
             async with timeout(TIME_LIMIT + 5.0):
-                result = await loop.run_in_executor(self._executor, plan_birrt, self._world, serial,
-                                                    start, goal, abort)
+                result = await loop.run_in_executor(self._executor, search)
         except asyncio.TimeoutError:
             self.plan_state = "none"
             self._say(f"timed out after {TIME_LIMIT + 5.0}s waiting for the base planner", failed=True)
@@ -379,7 +380,7 @@ class BasePlannerPlugin(HuskyPlugin):
     def _current_pose(self, ctx: PluginContext) -> tuple[float, float, float]:
         """Where the chosen robot's base is now, (x, y, yaw).
 
-        ? Read from the PyBullet scene, which holds the last mocap fix, or the
+        ? Read from kinematics, which holds the last mocap fix, or the
           robot's default pose before any. That keeps planning usable without
           mocap (in simulation, or on the bench); Commit is what insists on a
           tracked pose.
@@ -390,8 +391,8 @@ class BasePlannerPlugin(HuskyPlugin):
         Returns:
             tuple[float, float, float]: x, y in metres and yaw in radians, world frame.
         """
-        position, orientation = pp.get_pose(ctx.scene.robots[self.serial])
-        return float(position[0]), float(position[1]), yaw_from_xyzw(orientation)
+        base = ctx.kinematics.base_pose(self.serial)
+        return float(base.position[0]), float(base.position[1]), yaw_from_xyzw(base.orientation)
 
     def draw(self, ctx: PluginContext) -> None:
         """Pose the marker, path and ghost, and fill the panel.
@@ -453,11 +454,11 @@ class BasePlannerPlugin(HuskyPlugin):
         frame, urdf = self._ghosts[self._path_serial]
         gx, gy, gyaw = self.path.sample(self._t)
         # Height from the live robot, so the ghost stands where the robot stands.
-        z = pp.get_pose(ctx.scene.robots[self._path_serial])[0][2]
+        z = ctx.kinematics.base_pose(self._path_serial).position[2]
         frame.position = (float(gx), float(gy), float(z))
         frame.wxyz = yaw_to_wxyz(float(gyaw))
         # * The arms as they are now: a base move does not move them.
-        joints = ctx.world.robots[self._path_serial].state.joint_positions
+        joints = ctx.kinematics.joints(self._path_serial)
         urdf.update_cfg(np.array([joints.get(name, 0.0) for name in urdf.get_actuated_joint_names()]))
 
     # --- --- --- --- --- PANEL --- --- --- --- ---

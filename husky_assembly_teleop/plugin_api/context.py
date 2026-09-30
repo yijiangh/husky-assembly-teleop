@@ -5,7 +5,7 @@ Each plugin gets its own PluginContext, so its queue, tasks and UI are scoped to
 it and disposed of with it.
 
 ! Imports only `concurrency` at runtime; everything else is under TYPE_CHECKING,
-  because `plugin`, `monitor`, `visualization` and `robot_scene` import this module.
+  because `plugin`, `monitor` and `visualization` import this module.
 """
 
 from __future__ import annotations
@@ -26,10 +26,12 @@ from .concurrency import WaitTimeout, describe_exception, ros_future
 T = TypeVar("T")
 
 if TYPE_CHECKING:
-    from .config import MonitorConfig
+    from ..config import MonitorConfig
+    from ..world.geometry import Geometry
+    from ..world.kinematics import Kinematics
     from .plugin import HuskyPlugin
-    from .robot_scene import RobotScene
-    from .world_state import TrackedObject, WorldState
+    from ..world.scene import PluginScene
+    from ..world.measured import TrackedObject, WorldState
 
 
 @dataclass(frozen=True)
@@ -51,7 +53,7 @@ class PluginView(Protocol):
     """A plugin's private scene subtree and GUI folder in viser.
 
     Plugins get one of these rather than the raw ViserServer, which would put
-    every plugin back into one flat namespace. Implemented in visualization.py.
+    every plugin back into one flat namespace. Implemented in ui/visualization.py.
     """
 
     @property
@@ -128,8 +130,9 @@ class MonitorServices(Protocol):
         """
         ...
 
-    def track_object(self, name: str, mocap_id: int) -> "TrackedObject":
-        """Register a tracked object and subscribe to its mocap pose."""
+    def track_object(self, name: str, mocap_id: int, geometry: "Geometry | None" = None,
+                     touches: tuple[str, ...] = (), label: str = "") -> "TrackedObject":
+        """Register a tracked object, describe it in the scene, and subscribe to its mocap pose."""
         ...
 
     def untrack_object(self, name: str) -> None:
@@ -145,14 +148,15 @@ class PluginContext:
     """
 
     def __init__(self, name: str, services: MonitorServices, view: PluginView,
-                 scene: "RobotScene", dependencies: tuple[str, ...] = ()):
+                 scene: "PluginScene", kinematics: "Kinematics", dependencies: tuple[str, ...] = ()):
         """Create a plugin's context.
 
         Args:
             name: The owning plugin's name.
             services: The monitor.
             view: The plugin's private scene subtree and GUI folder.
-            scene: The shared PyBullet scene holding the live robots.
+            scene: The collision scene, limited to this plugin's own ids.
+            kinematics: Robot base, joint and link poses, fixed for this tick.
             dependencies: Names this plugin declared in `requires`. Only these
                 resolve through `require`.
         """
@@ -161,14 +165,15 @@ class PluginContext:
         #: This plugin's corner of the viser UI. Removed wholesale on teardown.
         self.view = view
 
-        #: The shared PyBullet scene: the live robots, posed from measurements
-        #: every tick. `scene.client_id` and `scene.robots[serial]` are raw
-        #: PyBullet ids, and pybullet_planning points at this scene for the
-        #: whole run, in hooks and tasks alike.
-        #:
-        #: ! Shared: a body one plugin adds is an obstacle for every other. Remove
-        #:   what you add in your own teardown; nothing tracks it for you.
+        #: The collision scene (world/scene.py). Put your bodies under "<plugin name>/";
+        #: the core draws them and removes them when this plugin closes.
+        #: `scene.snapshot` is the whole world copied at the start of this tick:
+        #: hand that, never the live bodies, to a worker thread.
         self.scene = scene
+
+        #: Each robot's base pose, joints and link poses, fixed for this tick.
+        #: ! Main thread only.
+        self.kinematics = kinematics
 
         self._services = services
         self._dependencies = dependencies
@@ -226,8 +231,11 @@ class PluginContext:
                            f"add it to `requires`")
         return self._services.plugin(name)
 
-    def track_object(self, name: str, mocap_id: int) -> "TrackedObject":
-        """Start tracking mocap rigid body `mocap_id` as `world.tracked_objects[name]`.
+    def track_object(self, name: str, mocap_id: int, geometry: "Geometry | None" = None,
+                     touches: tuple[str, ...] = (), label: str = "") -> "TrackedObject":
+        """Start tracking mocap rigid body `mocap_id` as `world.tracked_objects[name]`, id "tracked/<name>".
+
+        The core draws it and puts it in every snapshot once it has a fix.
 
         ! Call from a hook, intent or task, never from a viser callback. Untrack
           what you track in your own teardown; nothing does it for you.
@@ -235,6 +243,9 @@ class PluginContext:
         Args:
             name: Unique object name; shown on the health panel.
             mocap_id: Rigid-body id in the mocap system.
+            geometry: Its shape, or None for a frame only that is not an obstacle.
+            touches: Ids allowed to touch it, as for `Body.touches`.
+            label: Display text; empty uses the id.
 
         Returns:
             TrackedObject: The entry ROS callbacks keep updating. Read only.
@@ -242,7 +253,7 @@ class PluginContext:
         Raises:
             ValueError: If `name` is already tracked.
         """
-        return self._services.track_object(name, mocap_id)
+        return self._services.track_object(name, mocap_id, geometry, touches, label)
 
     def untrack_object(self, name: str) -> None:
         """Stop tracking `name` and remove it from `world.tracked_objects`. Unknown names are ignored."""
@@ -363,8 +374,9 @@ class PluginContext:
     async def run_in_thread(self, function: Callable[..., T], *args: Any, **kwargs: Any) -> T:
         """Run a slow computation on a worker thread and wait for its result.
 
-        ! `function` must not touch world state, the shared PyBullet scene, ROS or
-          viser: it runs beside the main thread. Hand it copies of what it needs.
+        ! `function` must not touch world state, the live scene, kinematics, ROS or
+          viser: it runs beside the main thread. Hand it copies of what it needs,
+          such as `scene.snapshot`.
         ! A thread cannot be interrupted. Cancelling the awaiting task abandons the
           result, but the thread runs to the end.
 

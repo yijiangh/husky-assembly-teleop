@@ -17,7 +17,7 @@ from typing import Callable
 import numpy as np
 import viser
 
-from .context import PluginContext
+from ..plugin_api.context import PluginContext
 
 #: Poses closer than this (metres, radians) count as equal, so a value written
 #: into one widget does not bounce back through the other.

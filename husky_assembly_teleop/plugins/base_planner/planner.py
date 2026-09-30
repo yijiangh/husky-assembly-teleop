@@ -1,13 +1,13 @@
 """
 The base planner: an RRT-Connect search (`birrt`) over the base's floor pose
-(x, y, yaw), avoiding the other robots and the static boxes.
+(x, y, yaw), avoiding the other robots and every scene body.
 
-The search runs on a worker thread, in a private PyBullet world (`PlanningWorld`)
-that the main thread poses from the shared scene just before each search.
+The search runs on the plugin's one worker thread, in a private PyBullet world
+(`PlanningWorld`) synced on that thread from the tick's scene snapshot.
 
-! In the worker, use only raw `p` calls with an explicit `physicsClientId`:
-  `pp` functions go through `pp.CLIENT`, which belongs to the main thread.
-! One search at a time per world; do not snapshot while one runs.
+! Worker thread only: create nothing here on the main thread but the object,
+  and sync, search and close on the worker. Use raw `p` calls with
+  `physicsClientId`; `pp.CLIENT` is one global shared by the whole process.
 """
 
 from __future__ import annotations
@@ -22,11 +22,11 @@ import pybullet as p
 from pybullet_planning.motion_planners.rrt_connect import birrt
 from pybullet_planning.motion_planners.utils import waypoints_from_path
 
-from ...config import RobotConfig
-from ..obstacles import Box
+from ...world.mirrors.pybullet import PyBulletMirror
+from ...world.scene import SceneSnapshot, robot_id
 from .path import BasePath, steer, steer_cost, steer_points, timed_path
 
-#: Keep at least this far from every other robot, metres.
+#: Keep at least this far from every other robot and body, metres.
 COLLISION_MARGIN = 0.05
 #: Samples are drawn from the box around start and goal, grown by this much per side, metres.
 SAMPLE_PADDING = 2.0
@@ -63,121 +63,97 @@ class PlanResult:
 
 
 class PlanningWorld:
-    """A private DIRECT PyBullet client holding a copy of every robot, for collision checks."""
+    """A scene mirror for collision checks, plus a cheap floor-footprint pre-check. Worker thread only."""
 
-    def __init__(self, robots: tuple[RobotConfig, ...]):
-        """Connect, and load every robot's URDF. Slow; call from `setup`.
-
-        Args:
-            robots: The configured robots.
-        """
-        # * Raw p calls, not pp's: pp.connect would repoint pp.CLIENT, which the shared scene uses.
-        self.client_id = p.connect(p.DIRECT)
-        #: Robot serial -> body id in this client.
-        self.robots: dict[str, int] = {
-            config.serial: p.loadURDF(str(config.urdf_file), useFixedBase=False, physicsClientId=self.client_id)
-            for config in robots}
-        #: Box body id in this client -> the box's name, for collision messages.
-        self.boxes: dict[int, str] = {}
-        # ? Cheap first pass for `hit_by`: obstacle footprints (min x, min y, max x, max y)
-        #   and each robot's reach. Obstacles out of reach skip the PyBullet query.
-        self._footprints: dict[int, tuple[float, float, float, float]] = {}
+    def __init__(self):
+        """Start empty; the first `sync` loads the robots and bodies (slow, on the worker)."""
+        self.mirror: PyBulletMirror | None = None
+        # Display text for our ids, from the last synced snapshot.
+        self._label = SceneSnapshot().label
+        # ? Cheap first pass for `hit_by`: floor footprints (min x, min y, max x, max y)
+        #   by our id, and each robot's reach. Anything out of reach skips the PyBullet query.
+        self._footprints: dict[str, tuple[float, float, float, float]] = {}
         self._reach: dict[str, float] = {}
 
-    def set_boxes(self, boxes: tuple[Box, ...]) -> None:
-        """Replace the static boxes. Call from `setup`.
+    def sync(self, snapshot: SceneSnapshot) -> None:
+        """Make the world match a snapshot, and refresh footprints and reach.
 
         Args:
-            boxes: The boxes, from the obstacles plugin.
+            snapshot: The tick's copy of the world, taken on the main thread.
         """
-        for body in self.boxes:
-            p.removeBody(body, physicsClientId=self.client_id)
-            self._footprints.pop(body, None)
-        self.boxes = {}
-        for box in boxes:
-            shape = p.createCollisionShape(p.GEOM_BOX, halfExtents=[side / 2 for side in box.size],
-                                           physicsClientId=self.client_id)
-            body = p.createMultiBody(baseMass=0, baseCollisionShapeIndex=shape, basePosition=box.center,
-                                     baseOrientation=box.orientation, physicsClientId=self.client_id)
-            self.boxes[body] = box.name
-            self._footprints[body] = self._footprint(body)
-
-    def snapshot(self, scene_client: int, scene_robots: dict[str, int]) -> None:
-        """Pose every robot here as it stands in the shared scene. Main thread only.
-
-        Args:
-            scene_client: The shared scene's client id.
-            scene_robots: Serial -> body id in the shared scene.
-        """
-        for serial, body in self.robots.items():
-            source = scene_robots[serial]
-            position, orientation = p.getBasePositionAndOrientation(source, physicsClientId=scene_client)
-            p.resetBasePositionAndOrientation(body, position, orientation, physicsClientId=self.client_id)
-            for joint in range(p.getNumJoints(source, physicsClientId=scene_client)):
-                value = p.getJointState(source, joint, physicsClientId=scene_client)[0]
-                p.resetJointState(body, joint, value, physicsClientId=self.client_id)
-            # Footprint and reach depend on arm pose, so refresh them here.
-            self._footprints[body] = footprint = self._footprint(body)
+        if self.mirror is None:
+            # * Created here, on the worker: a mirror lives on one thread.
+            self.mirror = PyBulletMirror()
+        self.mirror.sync(snapshot)
+        self._label = snapshot.label
+        # Footprint and reach depend on arm pose, so refresh them every sync.
+        ids = [robot_id(serial) for serial in self.mirror.robots] + self.mirror.obstacle_ids()
+        self._footprints = {object_id: self._footprint(self.mirror.body_ids(object_id)) for object_id in ids}
+        self._reach = {}
+        for serial, body in self.mirror.robots.items():
+            footprint = self._footprints[robot_id(serial)]
+            position = p.getBasePositionAndOrientation(body, physicsClientId=self.mirror.client_id)[0]
             corners = np.array([(footprint[i], footprint[j]) for i in (0, 2) for j in (1, 3)])
             self._reach[serial] = float(np.max(np.linalg.norm(corners - np.array(position[:2]), axis=1)))
 
-    def _footprint(self, body: int) -> tuple[float, float, float, float]:
-        """A body's floor footprint: its bounding box over every link, in x and y.
+    def _footprint(self, bodies: list[int]) -> tuple[float, float, float, float]:
+        """The floor footprint of some PyBullet bodies: their bounding box over every link, in x and y.
 
         Args:
-            body: Body id in this client.
+            bodies: Body ids in the mirror's world.
 
         Returns:
             tuple[float, float, float, float]: (min x, min y, max x, max y), metres.
         """
-        boxes = [p.getAABB(body, link, physicsClientId=self.client_id)
-                 for link in range(-1, p.getNumJoints(body, physicsClientId=self.client_id))]
+        client = self.mirror.client_id
+        boxes = [p.getAABB(body, link, physicsClientId=client)
+                 for body in bodies for link in range(-1, p.getNumJoints(body, physicsClientId=client))]
         low = np.min([lo for lo, _ in boxes], axis=0)
         high = np.max([hi for _, hi in boxes], axis=0)
         return float(low[0]), float(low[1]), float(high[0]), float(high[1])
 
     def hit_by(self, serial: str, pose) -> str | None:
-        """Place a robot at a floor pose and say which robot or box it hits, if any.
+        """Place a robot at a floor pose and say what it hits, if anything.
 
         Args:
             serial: The robot being planned for.
             pose: (x, y, yaw).
 
         Returns:
-            str | None: The serial of the robot, or the name of the box, it comes
-                within COLLISION_MARGIN of; None if it is clear.
+            str | None: The label of the robot or body it comes within
+                COLLISION_MARGIN of (its id if it has no label); None if it is clear.
         """
-        body = self.robots[serial]
-        z = p.getBasePositionAndOrientation(body, physicsClientId=self.client_id)[0][2]
+        body = self.mirror.robot(serial)
+        client = self.mirror.client_id
+        z = p.getBasePositionAndOrientation(body, physicsClientId=client)[0][2]
         x, y, yaw = pose
+        # ? Moving the robot here is fine: the mirror re-poses robots on every sync.
         p.resetBasePositionAndOrientation(body, (x, y, z), (0.0, 0.0, math.sin(yaw / 2), math.cos(yaw / 2)),
-                                          physicsClientId=self.client_id)
-        # No reach before the first snapshot: check everything.
+                                          physicsClientId=client)
+        own = robot_id(serial)
         reach = self._reach.get(serial, math.inf) + COLLISION_MARGIN
-        obstacles = [(other, obstacle) for other, obstacle in self.robots.items() if other != serial]
-        obstacles += [(name, obstacle) for obstacle, name in self.boxes.items()]
-        for name, obstacle in obstacles:
-            footprint = self._footprints.get(obstacle)
-            if footprint is not None:
-                # Distance from the robot's base origin to the footprint rectangle.
-                dx = max(footprint[0] - x, 0.0, x - footprint[2])
-                dy = max(footprint[1] - y, 0.0, y - footprint[3])
-                if math.hypot(dx, dy) > reach:
-                    continue
-            if p.getClosestPoints(body, obstacle, COLLISION_MARGIN, physicsClientId=self.client_id):
-                return name
-        return None
+        candidates = []
+        for object_id, footprint in self._footprints.items():
+            # Distance from the robot's base origin to the footprint rectangle.
+            dx = max(footprint[0] - x, 0.0, x - footprint[2])
+            dy = max(footprint[1] - y, 0.0, y - footprint[3])
+            if object_id != own and math.hypot(dx, dy) <= reach:
+                candidates.append(object_id)
+        hits = self.mirror.collisions(serial, COLLISION_MARGIN, candidates)
+        return self._label(hits[0]) if hits else None
 
     def close(self) -> None:
-        """Disconnect the client. Only once no search is running."""
-        p.disconnect(physicsClientId=self.client_id)
+        """Disconnect the world. On the worker, once no search is running."""
+        if self.mirror is not None:
+            self.mirror.close()
+            self.mirror = None
 
 
 def plan_birrt(world: PlanningWorld, serial: str, start, goal, abort: threading.Event) -> PlanResult:
     """Plan a collision-free base path from start to goal. Runs on the worker thread.
 
     Args:
-        world: The planning world, already snapshotted. Owned by this call until it returns.
+        world: The planning world, already synced. Owned by this call until it returns.
         serial: The robot to plan for.
         start: (x, y, yaw) where it is.
         goal: (x, y, yaw) where it should end up.

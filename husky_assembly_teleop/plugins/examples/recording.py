@@ -1,7 +1,7 @@
 """
 Example 5: recording an arm's joint states at the full ROS rate.
 
-! EXPERIMENTAL: see recording.py; how recording works is not decided yet.
+! EXPERIMENTAL: see robot_interface/recording.py; how recording works is not decided yet.
 
 "Record 5 s" collects every JointState message for five seconds, saves the
 stamps and positions to an .npz file and shows the sample count and rate.
@@ -29,10 +29,10 @@ from pathlib import Path
 import numpy as np
 import viser
 
-from ...context import PluginContext
-from ...plugin import HuskyPlugin, register
-from ...recording import record
-from ...ui_style import BUSY, NONE, OK, SECTION_SENSOR, block, chip, section, values
+from ...plugin_api.context import PluginContext
+from ...plugin_api.plugin import HuskyPlugin, register
+from ...robot_interface.recording import record
+from ...ui.style import BUSY, NONE, OK, SECTION_SENSOR, block, chip, section, values
 
 RECORD_SECONDS = 5.0
 RECORDING_FOLDER = Path("/tmp/husky_recordings")

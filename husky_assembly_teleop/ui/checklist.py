@@ -21,8 +21,8 @@ from typing import Hashable
 
 import viser
 
-from .context import PluginContext
-from .ui_style import note
+from ..plugin_api.context import PluginContext
+from .style import note
 
 
 class CheckList:

@@ -22,9 +22,9 @@ from __future__ import annotations
 import numpy as np
 import viser
 
-from ...context import PluginContext
-from ...plugin import HuskyPlugin, register
-from ...ui_style import NONE, OK, SECTION_SENSOR, block, chip, freshness_chip, numbers, section, values
+from ...plugin_api.context import PluginContext
+from ...plugin_api.plugin import HuskyPlugin, register
+from ...ui.style import NONE, OK, SECTION_SENSOR, block, chip, freshness_chip, numbers, section, values
 
 
 @register

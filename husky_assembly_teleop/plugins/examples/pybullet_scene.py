@@ -1,138 +1,245 @@
 """
-Example 3: a plugin that adds a box to the shared PyBullet scene and checks it against the robots.
+Example 3: a plugin that puts a box in the scene and checks the robots for collision in its own PyBullet world.
 
-`ctx.scene` is a PyBullet client holding the live robots, posed from this tick's
-measurements before any plugin runs. Each tick the plugin checks the box for
-collision with every robot, reads each arm's tool0 pose by forward kinematics,
-and mirrors both into the 3D view. Buttons move the box.
+The pattern every planner follows:
+  1. Put a body in `ctx.scene`. The core draws it and removes it when the plugin closes.
+     Buttons move it in place (`body.placement = Pose(...)`).
+  2. Read link poses from `ctx.kinematics`: here each arm's tool0, drawn as a frame.
+  3. Check collisions on a copy, on its own thread: a task takes `ctx.scene.snapshot`
+     every tick and hands it to one worker thread, which syncs its own
+     `PyBulletMirror` from it and asks which objects each robot touches.
 
-! PyBullet rules for plugins:
-  - Call it only on the ROS thread (setup, update, draw, intents, jobs), never
-    directly in a widget callback. There, `pp` already targets `ctx.scene`.
-  - Remove in teardown whatever you add; nothing tracks it for you.
-  - Every other plugin sees what you add (the box is an obstacle for them too).
+! Rules for plugins:
+  - Collision objects go in `ctx.scene` as `Body`s under "<plugin name>/…", never
+    straight into PyBullet. There is no shared PyBullet world anymore.
+  - `p` / `pp` only inside your own mirror, on your own worker thread. A mirror is
+    created, synced, queried and closed on that one thread.
+  - Report results with our ids ("example_pybullet/box", "robots/0806"), never
+    PyBullet body ids: those exist only inside one mirror and get reused.
 
 * Look up link names once in setup, so a wrong name fails at startup, not every tick.
+* "PyBullet window" reopens the mirror with PyBullet's own window, to watch what
+  the checks see. ! Only one PyBullet window per process: if another plugin has
+  it, the box unticks itself and says why.
 
 Run with:  -p plugins:="['example_pybullet']" -p robots:="['0806']"
 """
 
 from __future__ import annotations
 
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+
 import numpy as np
-import pybullet_planning as pp
 import viser
+from pybullet import error as PyBulletError
 
-from ...context import PluginContext
-from ...plugin import HuskyPlugin, register
-from ...ui_style import FAIL, NONE, OK, SECTION_CTRL, block, chip, numbers, section, values
-from ...visualization import quaternion_to_wxyz
+from ...plugin_api.context import PluginContext
+from ...world.geometry import box_geometry
+from ...world.mirrors.pybullet import PyBulletMirror
+from ...plugin_api.plugin import HuskyPlugin, register
+from ...world.scene import Body, Pose, SceneSnapshot
+from ...ui.style import FAIL, NONE, OK, SECTION_CTRL, block, chip, numbers, section, values
+from ...ui.visualization import quaternion_to_wxyz
 
+BOX_ID = "example_pybullet/box"  # ! must start with the plugin's name
 BOX_SIZE = (0.3, 0.3, 0.3)       # m
 BOX_START = (1.5, 0.0, 0.15)     # m, standing on the floor
-BOX_COLOR = (0.9, 0.5, 0.1)      # rgb, 0..1; viser and PyBullet both take this
+BOX_COLOR = (0.9, 0.5, 0.1)      # rgb, 0..1
 BOX_STEP = 0.1                   # m per button press
 MOVES = {"−x": (-1, 0), "+x": (1, 0), "−y": (0, -1), "+y": (0, 1)}
 
 
 @register
 class ExamplePybulletPlugin(HuskyPlugin):
-    """A movable box checked for collision with the robots, plus the arms' tool frames."""
+    """A movable box in the scene, a collision check on a worker thread, plus the arms' tool frames."""
 
     name = "example_pybullet"
 
     def __init__(self):
-        """Start empty; setup adds the box."""
-        self._box: int | None = None
-        self._box_position = np.array(BOX_START)
-        self._colliding: list[str] = []
-        #: Each arm's tool0 link, as (robot body id, link id), keyed by (serial, arm name).
-        self._tool_links: dict[tuple[str, str], tuple[int, int]] = {}
-        #: Each arm's tool0 pose from forward kinematics, same keys.
-        self._tool_poses: dict[tuple[str, str], tuple] = {}
+        """Start empty; setup puts the box in the scene and starts the checks."""
+        #: One worker thread, the only one that touches the mirror.
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="example-pybullet")
+        #: Our own PyBullet world, created on the worker at the first check.
+        self._mirror: PyBulletMirror | None = None
+        self._check_task: asyncio.Task | None = None
+        #: Latest result: the ids each robot collides with, by serial, and the tick of the snapshot it's from.
+        self._collisions: dict[str, list[str]] = {}
+        self._checked_tick = -1
+        #: Whether the operator wants PyBullet's window, and why it isn't open if it isn't.
+        self._gui_wanted = False
+        self._gui_message = ""
+        #: Each arm's tool0 world pose, keyed by (serial, arm name).
+        self._tool_poses: dict[tuple[str, str], Pose] = {}
         self._tool_frames: dict[tuple[str, str], viser.FrameHandle] = {}
 
     def setup(self, ctx: PluginContext) -> None:
-        """Add the box to PyBullet and to the 3D view, and build the buttons.
+        """Put the box in the scene, check the tool0 links exist, build the view and start the checks.
 
         Args:
             ctx: This plugin's context.
 
         Raises:
-            ValueError: If a robot's URDF has no tool0 link for one of its arms.
+            KeyError: If a robot's URDF has no tool0 link for one of its arms.
         """
-        self._box = pp.create_box(*BOX_SIZE, color=(*BOX_COLOR, 1.0))
-        pp.set_pose(self._box, pp.Pose(point=self._box_position))
-        for serial, body in ctx.scene.robots.items():
-            for arm_name in ctx.world.robots[serial].arms:
-                # URDF link name: arm name + "_tool0".
-                link = pp.link_from_name(body, f"{arm_name}_tool0")
-                self._tool_links[(serial, arm_name)] = (body, link)
+        ctx.scene.put(Body(id=BOX_ID, geometry=box_geometry(BOX_SIZE), placement=Pose(BOX_START),
+                           color=(*BOX_COLOR, 1.0), label="example box"))
 
-        # * 3D view: nodes under ctx.view.scene_root are cleaned up for us.
+        # * 3D view: only our own extras; the core draws the box. Nodes under
+        #   ctx.view.scene_root are cleaned up for us.
         root = ctx.view.scene_root
-        self._box_view = ctx.view.scene.add_box(f"{root}/box", color=BOX_COLOR,
-                                                dimensions=BOX_SIZE, position=self._box_position)
-        for serial, arm_name in self._tool_links:
-            self._tool_frames[(serial, arm_name)] = ctx.view.scene.add_frame(
-                f"{root}/{serial}/{arm_name}_tool0", axes_length=0.1, axes_radius=0.005)
+        for serial, robot in ctx.world.robots.items():
+            for arm_name in robot.arms:
+                # URDF link name: arm name + "_tool0". A wrong name raises KeyError here, failing setup.
+                ctx.kinematics.link_pose(serial, f"{arm_name}_tool0")
+                self._tool_frames[(serial, arm_name)] = ctx.view.scene.add_frame(
+                    f"{root}/{serial}/{arm_name}_tool0", axes_length=0.1, axes_radius=0.005)
 
         with ctx.view.ui() as gui:
             self._status: viser.GuiHtmlHandle = gui.add_html("")
             gui.add_html(section("box", SECTION_CTRL))
             move = gui.add_button_group("Move", list(MOVES))
-            move.on_click(ctx.defer_value("move box", lambda clicked: self._move_box(MOVES[clicked])))
+            move.on_click(ctx.defer_value("move box", lambda clicked: self._move_box(ctx, MOVES[clicked])))
+            self._gui_box = gui.add_checkbox("PyBullet window", False,
+                                             hint="Show this plugin's PyBullet world in PyBullet's own window")
+            self._gui_box.on_update(ctx.defer_value("pybullet window", self._want_gui))
 
-    def _move_box(self, direction: tuple[int, int]) -> None:
-        """Move the box one step (runs as an intent, so PyBullet is safe here).
+        self._check_task = ctx.spawn("collision checks", self._check_loop(ctx))
+
+    def _move_box(self, ctx: PluginContext, direction: tuple[int, int]) -> None:
+        """Move the box one step, in place (runs as an intent, on the main thread).
 
         Args:
+            ctx: This plugin's context.
             direction: Unit step in x and y.
         """
-        self._box_position[:2] += np.array(direction) * BOX_STEP
-        pp.set_pose(self._box, pp.Pose(point=self._box_position))
+        body = ctx.scene.bodies[BOX_ID]
+        position = np.array(body.placement.position)
+        position[:2] += np.array(direction) * BOX_STEP
+        # * The next tick's snapshot has the new pose; the core view and our mirror follow.
+        body.placement = Pose.from_arrays(position, body.placement.orientation)
+
+    def _want_gui(self, wanted: bool) -> None:
+        """Ask for PyBullet's window, or close it (intent). The next check applies it.
+
+        Args:
+            wanted: The checkbox's value.
+        """
+        if bool(wanted) != self._gui_wanted:
+            self._gui_wanted, self._gui_message = bool(wanted), ""
+
+    async def _check_loop(self, ctx: PluginContext) -> None:
+        """Every tick, check this tick's snapshot on the worker and keep the result.
+
+        ! Cancelling this task (soft stop, plugin closed) abandons the await, but a
+          check already on the worker runs to the end.
+
+        Args:
+            ctx: This plugin's context.
+        """
+        loop = asyncio.get_running_loop()
+        while True:
+            snapshot = ctx.scene.snapshot  # main thread
+            self._collisions, gui_open, message = await loop.run_in_executor(
+                self._executor, self._check, snapshot, self._gui_wanted)
+            self._checked_tick = snapshot.tick
+            if message:
+                self._gui_message = message
+            if self._gui_wanted and not gui_open:
+                self._gui_wanted = False  # draw unticks the box
+            await ctx.next_tick()
+
+    def _check(self, snapshot: SceneSnapshot, gui: bool) -> tuple[dict[str, list[str]], bool, str]:
+        """Sync the mirror to a snapshot and list what each robot collides with (worker thread).
+
+        Reopens the mirror first when the window is asked for or away. A new mirror
+        loads every robot again, so switching takes a moment.
+
+        Args:
+            snapshot: The world to check. Read-only.
+            gui: Whether PyBullet's window is wanted.
+
+        Returns:
+            tuple[dict[str, list[str]], bool, str]: Our ids of the objects each robot
+                collides with, by serial; whether the window is open; why it isn't, or "".
+        """
+        message = ""
+        if self._mirror is not None and not self._mirror.connected:
+            # ? Its window was closed by hand. Carry on without one; the box unticks.
+            self._mirror, gui, message = None, False, "PyBullet window was closed"
+        elif self._mirror is not None and self._mirror.gui != gui:
+            self._mirror.close()
+            self._mirror = None
+        if self._mirror is None:
+            # ! On the worker: the mirror (and its window) belongs to this thread.
+            try:
+                self._mirror = PyBulletMirror(gui=gui)
+            except (PyBulletError, RuntimeError) as error:
+                # ? No display, or another plugin already has this process's one PyBullet window.
+                reason = "another one is open in this process" if "Only one" in str(error) else str(error)
+                self._mirror, message = PyBulletMirror(), f"no PyBullet window: {reason}"
+        self._mirror.sync(snapshot)
+        return {serial: self._mirror.collisions(serial) for serial in snapshot.robots}, self._mirror.gui, message
 
     def update(self, ctx: PluginContext) -> None:
-        """Check the box for collision and read tool0 poses from this tick's robots.
+        """Read the tool0 poses, and restart the checks after a soft stop cancelled them.
 
         Args:
             ctx: This plugin's context.
         """
-        self._colliding = [serial for serial, body in ctx.scene.robots.items()
-                           if pp.pairwise_collision(self._box, body)]
-        self._tool_poses = {key: pp.get_link_pose(body, link)
-                            for key, (body, link) in self._tool_links.items()}
+        self._tool_poses = {(serial, arm_name): ctx.kinematics.link_pose(serial, f"{arm_name}_tool0")
+                            for serial, arm_name in self._tool_frames}
+        # ? Soft stop cancels every task. A task that failed stays down (the failure is reported).
+        if self._check_task is not None and self._check_task.cancelled():
+            self._check_task = ctx.spawn("collision checks", self._check_loop(ctx))
 
     def draw(self, ctx: PluginContext) -> None:
-        """Update the 3D view and the status text.
+        """Move the tool frames and update the status text.
 
         Args:
             ctx: This plugin's context.
         """
-        self._box_view.position = self._box_position
-        lines = [f"box           {numbers(self._box_position, 3, 6, 2)} m"]
-        for (serial, arm_name), (position, orientation) in self._tool_poses.items():
+        box_position = ctx.scene.bodies[BOX_ID].placement.position
+        lines = [f"box           {numbers(box_position, 3, 6, 2)} m"]
+        for (serial, arm_name), pose in self._tool_poses.items():
             frame = self._tool_frames[(serial, arm_name)]
-            frame.position = position
-            # ! PyBullet quaternions are xyzw, viser wants wxyz.
-            frame.wxyz = quaternion_to_wxyz(orientation)
-            lines.append(f"{serial} {arm_name:<8} {numbers(position, 3, 6, 2)} m")
-        if not ctx.scene.robots:
+            frame.position = pose.position
+            # ! Pose quaternions are xyzw, viser wants wxyz.
+            frame.wxyz = quaternion_to_wxyz(pose.orientation)
+            lines.append(f"{serial} {arm_name:<8} {numbers(pose.position, 3, 6, 2)} m")
+        hits = [f"{serial}: {', '.join(ids)}" for serial, ids in self._collisions.items() if ids]
+        if not ctx.world.robots:
             state = chip("no robots", NONE)
-        elif self._colliding:
-            state = chip("collision " + " ".join(self._colliding), FAIL)
+        elif hits:
+            state = chip("collision", FAIL)
+            lines.extend(hits)
         else:
             state = chip("clear", OK)
+        lines.append(f"checked tick  {self._checked_tick}")
+        if self._gui_message:
+            lines.append(self._gui_message)
+        # * Unticks the box when the window could not open or was closed by hand.
+        self._gui_box.value = self._gui_wanted
         self._status.content = block(state + values(*lines))
 
     def teardown(self, ctx: PluginContext) -> None:
-        """Remove the box from PyBullet (the 3D view and widgets clean up themselves).
+        """Close the mirror on its worker thread, then stop the worker.
 
-        May run after a partial setup, so check the box exists.
+        The core removes the box and the view; the monitor cancels the check task.
+        May run after a partial setup.
 
         Args:
             ctx: This plugin's context.
         """
-        if self._box is not None:
-            pp.remove_body(self._box)
-            self._box = None
+        # ? Queued after any check still running, so the mirror closes on its own thread, last.
+        self._executor.submit(self._close_mirror)
+        self._executor.shutdown(wait=True)
+
+    def _close_mirror(self) -> None:
+        """Close the mirror if a check created one (worker thread).
+
+        ? Checked here, not in teardown: a check still running may create it first.
+        """
+        if self._mirror is not None:
+            self._mirror.close()
+            self._mirror = None

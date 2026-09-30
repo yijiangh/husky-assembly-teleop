@@ -4,8 +4,8 @@ The ROS2 node that owns everything and runs the tick.
 Responsibilities, and nothing beyond them:
 
   - program lifecycle: bring the pieces up, run, tear them down again
-  - own the world state, the PyBullet scene and the viser server
-  - hold the robot interfaces, and keep the PyBullet robots in step with them
+  - own the world state, the kinematics, the collision scene and the viser server
+  - hold the robot interfaces, and copy the whole world once per tick
   - drive each plugin: drain its queue, call its update, wake its tasks
   - run the tick in a fixed order, and be the place that order is written down
 
@@ -19,7 +19,6 @@ import asyncio
 import signal
 import time
 import traceback
-from contextlib import ExitStack
 from dataclasses import dataclass
 
 import rclpy
@@ -28,16 +27,18 @@ from rclpy.executors import SingleThreadedExecutor, TimeoutException
 from rclpy.node import Node
 from rclpy.signals import SignalHandlerOptions
 
-from .concurrency import LoopWatchdog
+from .plugin_api.concurrency import LoopWatchdog
 from .config import MonitorConfig, config_from_ros_parameters
-from .context import PluginContext
-from .mocap import mocap_topic, store_sample
-from .plugin import HuskyPlugin, load_plugins
+from .plugin_api.context import PluginContext
+from .world.geometry import Geometry
+from .world.kinematics import Kinematics
+from .world.mocap import mocap_topic, store_sample
+from .plugin_api.plugin import HuskyPlugin, load_plugins
 from .robot_interface import HuskyRobotInterface
 from .robot_interface.connections import RosConnections
-from .robot_scene import RobotScene
-from .visualization import Visualization
-from .world_state import TrackedObject, WorldState
+from .world.scene import PluginScene, Scene, TrackedDescription
+from .ui.visualization import Visualization
+from .world.measured import TrackedObject, WorldState
 
 #: Most ROS callbacks run in one tick. Beyond it the rest wait a tick, so a
 #: flood of messages cannot starve the plugins.
@@ -86,18 +87,21 @@ class HuskyMonitor(Node):
 
       1. The main thread runs one asyncio loop: the tick, every ROS callback
          (pumped from inside the tick), every plugin hook and every plugin task.
-         All state and all PyBullet live here and need no locks because of it.
+         All state, the kinematics and the live scene live here and need no
+         locks because of it.
       2. viser's threads. A server thread with its own asyncio loop, plus a
          worker pool for GUI and scene-click callbacks. Those callbacks may only
          call PluginContext.submit (via defer) and return.
-      3. Worker threads started by PluginContext.run_in_thread, for pure
-         computation on copies. They never touch shared state.
+      3. Worker threads started by PluginContext.run_in_thread or a planner's
+         own executor, for computation on copies (the scene snapshot). They
+         never touch shared state.
 
       submit() is the only crossing point from viser: a plugin's queue is
       drained at the start of its own step, so an intent runs as main-thread code.
 
     ! ROS callbacks run only at the start of each tick. So between ticks
-      WorldState does not change, and it always matches the PyBullet mirror.
+      WorldState does not change, and it always matches the kinematics and
+      the tick's scene snapshot.
       ? Cost: a topic faster than (queue depth x tick rate) loses messages.
         Give a subscription whose every sample matters a deeper queue.
 
@@ -122,10 +126,9 @@ class HuskyMonitor(Node):
         self._executor = SingleThreadedExecutor(context=self.context)
         self._executor.add_node(self)
 
-        self._scene: RobotScene | None = None
+        self._kinematics: Kinematics | None = None
+        self._scene = Scene()
         self._viz: Visualization | None = None
-        # Undone by _release, in reverse. Holds pybullet_planning's client selection.
-        self._exit_stack = ExitStack()
         self._watchdog: LoopWatchdog | None = None
         # Why each stopped plugin stopped, by name, for the banner.
         self._stop_reasons: dict[str, str] = {}
@@ -134,21 +137,17 @@ class HuskyMonitor(Node):
         try:
             self._build()
         except Exception:
-            # Release what was already acquired. (PyBullet for example)
+            # Release what was already acquired. (the viser server for example)
             self._release()
             raise
 
     def _build(self) -> None:
-        """Construct the scene, the UI and the plugins. Called once, by __init__."""
-        self._scene = RobotScene(log_warn=self.log_warn, use_gui=False)
-        # * Point pybullet_planning at the live scene for the whole run, so hooks
-        #   and tasks alike can call `pp` without selecting the client first.
-        self._exit_stack.enter_context(self._scene.active())
+        """Construct the kinematics, the UI and the plugins. Called once, by __init__."""
+        self._kinematics = Kinematics(self._config.robots, log_warn=self.log_warn)
         self._viz = Visualization(port=self._config.viser_port)
 
         for robot_config in self._config.robots:
             self._world.add_robot(HuskyRobotInterface(self, robot_config))
-            self._scene.load_robot(robot_config)
             self._viz.load_robot(robot_config)
 
         # Create plugins in dependency order
@@ -159,7 +158,9 @@ class HuskyMonitor(Node):
                 name=plugin.name,
                 services=self,
                 view=self._viz.view_for(plugin.name),
-                scene=self._scene,
+                scene=PluginScene(self._scene, plugin.name,
+                                  log_warn=lambda message, name=plugin.name: self.log_warn(f"[{name}] {message}")),
+                kinematics=self._kinematics,
                 dependencies=plugin.requires,
             )
             self._loaded[plugin.name] = _LoadedPlugin(plugin=plugin, ctx=ctx)
@@ -216,12 +217,16 @@ class HuskyMonitor(Node):
         except KeyError:
             raise KeyError(f"plugin {name!r} is not loaded") from None
 
-    def track_object(self, name: str, mocap_id: int) -> TrackedObject:
-        """Register a tracked object and subscribe to its mocap pose.
+    def track_object(self, name: str, mocap_id: int, geometry: Geometry | None = None,
+                     touches: tuple[str, ...] = (), label: str = "") -> TrackedObject:
+        """Register a tracked object, describe it in the scene, and subscribe to its mocap pose.
 
         Args:
             name: Unique object name.
             mocap_id: Rigid-body id in the mocap system.
+            geometry: Its shape, or None for a frame only.
+            touches: Ids allowed to touch it.
+            label: Display text; empty uses the id.
 
         Returns:
             TrackedObject: The registry entry, updated by every mocap message.
@@ -236,7 +241,10 @@ class HuskyMonitor(Node):
         # * Stored exactly like a robot base's pose.
         connections.subscription(MocapRigidBodyPose, mocap_topic(mocap_id),
                                  lambda message: store_sample(obj, message, self.now()))
+        if geometry is not None and not geometry.collision:
+            self.log_warn(f"tracked object {name!r} has no collision meshes: it is drawn but never collides")
         self._world.tracked_objects[name] = obj
+        self._scene.tracked[name] = TrackedDescription(geometry=geometry, touches=tuple(touches), label=label)
         self._object_connections[name] = connections
         return obj
 
@@ -246,6 +254,7 @@ class HuskyMonitor(Node):
         if connections is not None:
             connections.destroy_all()
         self._world.tracked_objects.pop(name, None)
+        self._scene.tracked.pop(name, None)
 
     # --- --- --- --- --- RUN --- --- --- --- ---
 
@@ -292,26 +301,31 @@ class HuskyMonitor(Node):
         if self._viz.take_stop_request():
             self._soft_stop()
 
-        # 3. Mirror measurements into PyBullet before any plugin runs. Kinematics and collision query need to be up to date.
-        self._scene.sync_real(self._world.robot_states())
+        # 3. Fix forward kinematics for this tick, before anything reads a link pose.
+        self._kinematics.update(self._world)
 
-        # 4. Step each plugin, in dependency order: intents, then update.
+        # 4. Copy the whole world before any plugin runs: one pump's measurements
+        #    plus every plugin's complete writes of the previous tick. Planners
+        #    and the 3D view read this copy, never the live scene.
+        snapshot = self._scene.take_snapshot(self._world, self._kinematics, self._tick_index, self.now())
+
+        # 5. Step each plugin, in dependency order: intents, then update.
         for loaded in self._loaded.values():
             if not loaded.stopped:
                 self._step_plugin(loaded)
 
-        # 5. Resume the tasks waiting for this tick, in dependency order. Yielding
+        # 6. Resume the tasks waiting for this tick, in dependency order. Yielding
         #    once lets each take its step before the draw.
         #    ? Stopped plugins too: their cancelled tasks may still be cleaning up.
         for loaded in self._loaded.values():
             loaded.ctx._wake_tick_waiters()
         await asyncio.sleep(0)
 
-        # 6. Draw everything
+        # 7. Draw everything
         #  ! While frozen, plugins dont render to allow for text selection.
-        #    Robot state still gets drawn even when frozen.
+        #    Robots and the scene still get drawn even when frozen.
         with self._viz.atomic():
-            self._viz.draw(self._world)
+            self._viz.draw(snapshot)
             for loaded in self._loaded.values() if not self._viz.frozen else ():
                 if loaded.stopped:
                     continue
@@ -473,10 +487,12 @@ class HuskyMonitor(Node):
             self._release()
 
     async def _keep_alive(self) -> None:
-        """A reduced tick during shutdown: ROS, the PyBullet mirror and tick waiters, no hooks."""
+        """A reduced tick during shutdown: ROS, kinematics, the world copy and tick waiters, no hooks."""
         while True:
             self._pump_ros()
-            self._scene.sync_real(self._world.robot_states())
+            self._tick_index += 1
+            self._kinematics.update(self._world)
+            self._scene.take_snapshot(self._world, self._kinematics, self._tick_index, self.now())
             for loaded in self._loaded.values():
                 loaded.ctx._wake_tick_waiters()
             await asyncio.sleep(self._config.tick_period)
@@ -493,12 +509,14 @@ class HuskyMonitor(Node):
                 self.log_error(f"plugin {loaded.name!r} failed in teardown:\n"
                                f"{traceback.format_exc()}")
         loaded.ctx.view.clear()
+        # * Its bodies go with it, so they stop being obstacles for everyone else.
+        self._scene.remove_prefix(f"{loaded.name}/")
 
     def _release(self) -> None:
-        """Release plugins, UI, PyBullet and the executor, in reverse build order.
+        """Release plugins, UI and the executor, in reverse build order.
 
-        ! Must actually run on Ctrl-C. viser's server thread and the PyBullet
-          client both outlive a bare rclpy.shutdown(), so main() makes sure.
+        ! Must actually run on Ctrl-C. viser's server thread outlives a bare
+          rclpy.shutdown(), so main() makes sure.
 
         Safe when construction failed partway, which is how __init__ cleans up after itself.
         """
@@ -507,9 +525,6 @@ class HuskyMonitor(Node):
             self._close(loaded)
         if self._viz is not None:
             self._viz.stop()
-        self._exit_stack.close()
-        if self._scene is not None:
-            self._scene.disconnect()
         self._executor.shutdown()
 
 

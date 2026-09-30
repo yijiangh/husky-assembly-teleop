@@ -15,7 +15,7 @@ Panel (folder `base_planner`), top to bottom:
 3D view (low clutter): small axes at target (only once a target is set), one thin floor line, one see-through ghost robot at slider time. Gizmo only while ticked.
 
 ## Files
-- `pose_input.py` - `PlanarPoseInput`: reusable x/y/yaw fields + transform gizmo, synced on ROS thread. Also `yaw_to_wxyz`, `yaw_from_xyzw`.
+- `ui/pose_input.py` - `PlanarPoseInput`: reusable x/y/yaw fields + transform gizmo, synced on ROS thread. Also `yaw_to_wxyz`, `yaw_from_xyzw`.
 - `plugins/base_planner/path.py` - `BasePath` (times, (x,y,yaw) poses, `sample(t)`); steer = turn/drive/turn (`steer`, `steer_cost`, `steer_points`), `timed_path`, `plan_straight_line`.
 - `plugins/base_planner/planner.py` - `PlanningWorld` (private DIRECT pybullet client, copy of every robot, `snapshot` from shared scene, `hit_by`), `plan_birrt` (pp `birrt` with the steer as extend fn).
 - `plugins/base_planner/plugin.py` - the plugin; `send_to_onboard_follower` stub.
