@@ -16,7 +16,7 @@ from control_msgs.msg import DynamicJointState
 from crl_husky_msgs.msg import ArmStatus
 from geometry_msgs.msg import PoseStamped, WrenchStamped
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import QoSProfile, qos_profile_sensor_data
 from scipy.spatial.transform import Rotation, Slerp
 from sensor_msgs.msg import JointState
 from std_srvs.srv import Trigger
@@ -24,11 +24,18 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from ur_msgs.msg import IOStates
 
 from ..config import ArmConfig
+from ..recording import SampleSource
 from .connections import RosConnections
 from .controller_manager import ControllerManagerInterface, ControllerManagerState
 from .end_effectors import EndEffector, EndEffectorState, make_end_effector
 from .frames import Pose, compose, invert
 from .ur_frames import BASE_LINK_FROM_UR_BASE
+
+# ? Same as qos_profile_sensor_data but deeper. Callbacks drain once per tick, so the
+#   queue must hold one tick of samples plus slack; 100 covers 500 Hz for 200 ms.
+RECORDED_QOS = QoSProfile(depth=100, reliability=qos_profile_sensor_data.reliability,
+                          durability=qos_profile_sensor_data.durability,
+                          history=qos_profile_sensor_data.history)
 
 #: Joint names in the UR driver's order. The URDF has the same names with the arm's prefix.
 UR_JOINT_NAMES = ("shoulder_pan_joint", "shoulder_lift_joint", "elbow_joint",
@@ -177,6 +184,23 @@ def joint_move(start: Sequence[float], target: Sequence[float],
 
 
 @dataclass
+class ArmSamples:
+    """Raw messages of the arm's fast streams, for `record`.
+
+    ! EXPERIMENTAL, like recording.py.
+
+    Attributes:
+        joint_states: JointState messages.
+        tcp_pose: DynamicJointState messages, the ones "tcp_pose" is decoded from.
+        wrench: WrenchStamped messages.
+    """
+
+    joint_states: SampleSource = field(default_factory=SampleSource)
+    tcp_pose: SampleSource = field(default_factory=SampleSource)
+    wrench: SampleSource = field(default_factory=SampleSource)
+
+
+@dataclass
 class ArmState:
     """Measured state of one arm.
 
@@ -257,6 +281,7 @@ class ArmInterface:
         state: Measured state, written only by callbacks.
         controllers: Tracks and switches this arm's controllers.
         end_effector: The mounted tool, or None for a bare arm.
+        samples: Every raw message of the fast streams; listeners stay attached across `reconnect`.
     """
 
     def __init__(self, node: Node, robot_namespace: str, config: ArmConfig, base_in_husky: Pose,
@@ -277,6 +302,7 @@ class ArmInterface:
         self.base_in_husky = base_in_husky
         self.urdf_problem = urdf_problem
         self.state = ArmState()
+        self.samples = ArmSamples()
         #: When each test-mode banner was last logged, ROS time.
         self._test_mode_logged: dict[str, float] = {}
         #: Joint positions, by URDF name, where motion was last detected.
@@ -299,12 +325,12 @@ class ArmInterface:
         sensor = qos_profile_sensor_data
 
         # --- --- measurements --- ---
-        self._ros.subscription(JointState, f"{measured}/joint_states", self._on_joint_state, sensor)
+        self._ros.subscription(JointState, f"{measured}/joint_states", self._on_joint_state, RECORDED_QOS)
         self._ros.subscription(DynamicJointState, f"{measured}/dynamic_joint_states",
-                               self._on_dynamic_joint_state, sensor)
+                               self._on_dynamic_joint_state, RECORDED_QOS)
         self._ros.subscription(IOStates, f"{measured}/io_and_status_controller/io_states",
                                self._on_io_states, sensor)
-        self._ros.subscription(WrenchStamped, f"{measured}/ft_sensor_wrench", self._on_wrench, sensor)
+        self._ros.subscription(WrenchStamped, f"{measured}/ft_sensor_wrench", self._on_wrench, RECORDED_QOS)
 
         # --- --- commands --- ---
         self._trajectory = self._ros.publisher(
@@ -759,6 +785,7 @@ class ArmInterface:
 
     def _on_joint_state(self, message: JointState) -> None:
         """Store joint positions under URDF names and update `is_executing`."""
+        self.samples.joint_states.emit(message)
         now = self._now()
         prefix = f"{self.config.name}_"
         moved = False
@@ -780,6 +807,7 @@ class ArmInterface:
     def _on_dynamic_joint_state(self, message: DynamicJointState) -> None:
         """Store the driver's "tcp_pose", raw (UR Base frame) and in the controller's `base_link`.
         """
+        self.samples.tcp_pose.emit(message)
         if "tcp_pose" not in message.joint_names:
             return
         interface = message.interface_values[message.joint_names.index("tcp_pose")]
@@ -824,6 +852,7 @@ class ArmInterface:
 
     def _on_wrench(self, message: WrenchStamped) -> None:
         """Store the force/torque reading."""
+        self.samples.wrench.emit(message)
         f, t = message.wrench.force, message.wrench.torque
         self.state.wrench = np.array([f.x, f.y, f.z, t.x, t.y, t.z])
 

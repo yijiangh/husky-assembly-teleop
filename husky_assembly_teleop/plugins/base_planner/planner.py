@@ -3,10 +3,10 @@ The base planner: an RRT-Connect search (`birrt`) over the base's floor pose
 (x, y, yaw), avoiding the other robots and the static boxes.
 
 The search runs on a worker thread, in a private PyBullet world (`PlanningWorld`)
-that the ROS thread poses from the shared scene just before each search.
+that the main thread poses from the shared scene just before each search.
 
 ! In the worker, use only raw `p` calls with an explicit `physicsClientId`:
-  `pp` functions go through `pp.CLIENT`, which belongs to the ROS thread.
+  `pp` functions go through `pp.CLIENT`, which belongs to the main thread.
 ! One search at a time per world; do not snapshot while one runs.
 """
 
@@ -103,7 +103,7 @@ class PlanningWorld:
             self._footprints[body] = self._footprint(body)
 
     def snapshot(self, scene_client: int, scene_robots: dict[str, int]) -> None:
-        """Pose every robot here as it stands in the shared scene. ROS thread only.
+        """Pose every robot here as it stands in the shared scene. Main thread only.
 
         Args:
             scene_client: The shared scene's client id.
@@ -181,7 +181,7 @@ def plan_birrt(world: PlanningWorld, serial: str, start, goal, abort: threading.
         serial: The robot to plan for.
         start: (x, y, yaw) where it is.
         goal: (x, y, yaw) where it should end up.
-        abort: Set from the ROS thread to end the search early.
+        abort: Set from the main thread to end the search early.
 
     Returns:
         PlanResult: The path, or why there is none.

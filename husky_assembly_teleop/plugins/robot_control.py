@@ -7,7 +7,7 @@ The robot control panel: a tab per robot showing its state, with basic control.
     work themselves: viser calls them on its own threads, where touching
     robots or PyBullet is not safe.
   - `update` does per-tick work (here, streaming the base twist).
-  - Anything longer than a tick is a job started with `ctx.spawn`.
+  - Anything longer than a tick is a task started with `ctx.spawn`.
   - `draw` only copies state into widgets.
 * Robots are commanded and read only through their interfaces; no topic names here.
 
@@ -17,6 +17,7 @@ buttons plus the running controller's inputs) and SENSOR/TOOL actions.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -25,7 +26,7 @@ import pybullet_planning as pp
 import viser
 from scipy.spatial.transform import Rotation
 
-from ..concurrency import Job, Task, WaitTimeout, wait_until
+from ..concurrency import WaitTimeout
 from ..context import PluginContext
 from ..plugin import HuskyPlugin, register
 from ..robot_interface import ArmInterface, BaseInterface, RobotiqGripper, ScaffoldingV1, ScaffoldingV3
@@ -163,8 +164,8 @@ class RobotControlPlugin(HuskyPlugin):
         #: Last hold report per base serial: (linear sign, angular sign, arrival time).
         self._held: dict[str, tuple[float, float, float]] = {}
 
-        #: Running move job per arm, keyed by (serial, arm name). A press while one runs is ignored.
-        self._trajectory_jobs: dict[tuple[str, str], Job] = {}
+        #: Running move task per arm, keyed by (serial, arm name). A press while one runs is ignored.
+        self._trajectory_tasks: dict[tuple[str, str], asyncio.Task] = {}
 
         #: Arms whose joint sliders are set on the next update, with the angles
         #: (radians) or None for the measured joints. Filled by Current and Stow,
@@ -288,7 +289,7 @@ class RobotControlPlugin(HuskyPlugin):
                                              "Hold: brake to a standstill where the arm is.")
 
             def on_load(clicked: str) -> None:
-                """Load the sliders. Runs as an intent, on the ROS thread."""
+                """Load the sliders. Runs as an intent, on the main thread."""
                 if clicked == "Current":
                     self._load_sliders[key] = None
                 elif arm.config.stow_joints is None:
@@ -297,7 +298,7 @@ class RobotControlPlugin(HuskyPlugin):
                     self._load_sliders[key] = np.array(arm.config.stow_joints)
 
             def on_move(clicked: str) -> None:
-                """Start or Hold. Runs as an intent, on the ROS thread."""
+                """Start or Hold. Runs as an intent, on the main thread."""
                 if clicked == "Hold":
                     self._hold_arm(serial, arm)
                 else:
@@ -352,7 +353,7 @@ class RobotControlPlugin(HuskyPlugin):
                 self._load_pose.add(key)
 
             def on_move(clicked: str) -> None:
-                """Start or Hold. Runs as an intent, on the ROS thread."""
+                """Start or Hold. Runs as an intent, on the main thread."""
                 if clicked == "Hold":
                     self._hold_arm(serial, arm)
                 else:
@@ -486,11 +487,11 @@ class RobotControlPlugin(HuskyPlugin):
             if widgets.tool_status is not None:
                 widgets.tool_status.content = _tool_status(widgets.arm.state.end_effector, now)
 
-    # --- --- --- --- --- JOBS --- --- --- --- ---
-    # Started from intents, so always on the ROS thread.
+    # --- --- --- --- --- TASKS --- --- --- --- ---
+    # Started from intents, so always on the main thread.
 
     def _start_move(self, ctx: PluginContext, serial: str, arm: ArmInterface, target: np.ndarray) -> None:
-        """Start the move job for one arm, unless one is already running.
+        """Start the move task for one arm, unless one is already running.
 
         Args:
             ctx: This plugin's context.
@@ -499,28 +500,28 @@ class RobotControlPlugin(HuskyPlugin):
             target: Joint angles to move to, radians, UR_JOINT_NAMES order.
         """
         key = (serial, arm.config.name)
-        running = self._trajectory_jobs.get(key)
-        if running is not None and not running.done:
+        running = self._trajectory_tasks.get(key)
+        if running is not None and not running.done():
             ctx.log_warn(f"{serial} {arm.config.name}: a move is already running; Send ignored")
             return
-        self._trajectory_jobs[key] = ctx.spawn(f"move {serial} {arm.config.name}",
+        self._trajectory_tasks[key] = ctx.spawn(f"move {serial} {arm.config.name}",
                                                self._execute_move(ctx, serial, arm, target))
 
     def _hold_arm(self, serial: str, arm: ArmInterface) -> None:
-        """Hold the arm where it is and cancel its running move job.
+        """Hold the arm where it is and cancel its running move task.
 
-        ! The hold is sent even when no job of ours runs: a trajectory may come from elsewhere.
+        ! The hold is sent even when no task of ours runs: a trajectory may come from elsewhere.
 
         Args:
             serial: The robot's serial.
             arm: The arm to hold.
         """
         arm.hold()
-        running = self._trajectory_jobs.get((serial, arm.config.name))
-        if running is not None and not running.done:
+        running = self._trajectory_tasks.get((serial, arm.config.name))
+        if running is not None and not running.done():
             running.cancel()
 
-    def _execute_move(self, ctx: PluginContext, serial: str, arm: ArmInterface, target: np.ndarray) -> Task:
+    async def _execute_move(self, ctx: PluginContext, serial: str, arm: ArmInterface, target: np.ndarray) -> None:
         """Send a smooth joint move and wait until the arm has arrived.
 
         ? Arrived means the planned time is up and every joint is within
@@ -531,9 +532,6 @@ class RobotControlPlugin(HuskyPlugin):
             serial: The robot's serial, for messages.
             arm: The arm to move.
             target: Joint angles to move to, radians.
-
-        Yields:
-            None: Once per tick while the arm moves.
         """
         name = f"{serial} {arm.config.name}"
         duration = arm.send_joint_move(target)
@@ -548,19 +546,19 @@ class RobotControlPlugin(HuskyPlugin):
                     and bool(np.all(np.abs(here - target) < np.radians(ARRIVED_TOLERANCE))))
 
         try:
-            yield from wait_until(ctx, arrived, timeout_s=duration + ARRIVE_TIMEOUT_MARGIN,
-                                  description=f"{name} to arrive")
+            await ctx.wait_until(arrived, timeout_s=duration + ARRIVE_TIMEOUT_MARGIN,
+                                 description=f"{name} to arrive")
             ctx.log_info(f"{name}: arrived")
         except WaitTimeout as timeout:
-            # Logged, not raised: a raising job counts as a plugin failure.
+            # Logged, not raised: a raising task counts as a plugin failure.
             ctx.log_warn(str(timeout))
         # ! Sliders are never touched here: only Current or Stow change them.
 
     def _start_cartesian_move(self, ctx: PluginContext, serial: str, arm: ArmInterface,
                               position: np.ndarray, orientation: np.ndarray) -> None:
-        """Start the Cartesian move job for one arm, unless any move is already running.
+        """Start the Cartesian move task for one arm, unless any move is already running.
 
-        ! Shares `_trajectory_jobs` with joint moves: one motion per arm at a time.
+        ! Shares `_trajectory_tasks` with joint moves: one motion per arm at a time.
 
         Args:
             ctx: This plugin's context.
@@ -570,15 +568,15 @@ class RobotControlPlugin(HuskyPlugin):
             orientation: TCP target orientation, quaternion (x, y, z, w).
         """
         key = (serial, arm.config.name)
-        running = self._trajectory_jobs.get(key)
-        if running is not None and not running.done:
+        running = self._trajectory_tasks.get(key)
+        if running is not None and not running.done():
             ctx.log_warn(f"{serial} {arm.config.name}: a move is already running; Start ignored")
             return
-        self._trajectory_jobs[key] = ctx.spawn(f"cartesian move {serial} {arm.config.name}",
+        self._trajectory_tasks[key] = ctx.spawn(f"cartesian move {serial} {arm.config.name}",
                                                self._stream_cartesian_move(ctx, serial, arm, position, orientation))
 
-    def _stream_cartesian_move(self, ctx: PluginContext, serial: str, arm: ArmInterface,
-                               position: np.ndarray, orientation: np.ndarray) -> Task:
+    async def _stream_cartesian_move(self, ctx: PluginContext, serial: str, arm: ArmInterface,
+                                     position: np.ndarray, orientation: np.ndarray) -> None:
         """Move the TCP to a target by sending one close target per tick.
 
         ? Streamed because the compliance controller jumps straight to its
@@ -590,9 +588,6 @@ class RobotControlPlugin(HuskyPlugin):
             arm: The arm to move.
             position: TCP target position, metres, arm base frame.
             orientation: TCP target orientation, quaternion (x, y, z, w).
-
-        Yields:
-            None: Once per tick while the TCP moves.
         """
         name = f"{serial} {arm.config.name}"
         if arm.state.tcp_position is None:
@@ -617,7 +612,7 @@ class RobotControlPlugin(HuskyPlugin):
                 return
             if elapsed >= duration:
                 break
-            yield
+            await ctx.next_tick()
         ctx.log_info(f"{name}: cartesian move done")
 
     def _update_markers(self, ctx: PluginContext, widgets: _ArmWidgets) -> None:
@@ -890,7 +885,7 @@ def _build_robotiq_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, gri
     force = gui.add_slider("force", min=0.0, max=gripper.MAX_EFFORT, step=0.05, initial_value=gripper.DEFAULT_EFFORT,
                            hint="Force limit, as a fraction of the gripper's full force.")
     target = gui.add_button_group("Target", ["Go"], hint="Move the fingers to the slider position.")
-    # ! Sliders are read when the intent runs, on the ROS thread.
+    # ! Sliders are read when the intent runs, on the main thread.
     target.on_click(ctx.defer(f"gripper target {label}", lambda: gripper.move(position.value, force.value)))
     driver = gui.add_button_group("Driver", ["Reactivate"],
                                   hint="After a fault or power loss. The gripper opens and closes once: "

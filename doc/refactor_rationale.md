@@ -126,10 +126,30 @@ PyBullet. A plugin that waits by looping until the arm stops moving freezes the
 entire node, including the subscriptions that would have told it the arm
 stopped. The old code hit this constantly.
 
-**What the rewrite does about it.** `concurrency.py`: anything longer than a
-tick is a job, written as a generator that yields whenever it is willing to be
-interrupted; the monitor advances it one step per tick. Between two yields a plugin has the thread to
-itself and needs no locks.
+**What the rewrite does about it.** One asyncio loop on the main thread runs
+the tick and every plugin task. Anything longer than a tick is an `async def`
+started with `ctx.spawn`, and it waits by awaiting: `ctx.wait_until`,
+`ctx.sleep`, `ctx.ros(future)`, or `ctx.run_in_thread` for heavy computation.
+Between two awaits a task has the thread to itself and needs no locks.
+
+The tick pumps ROS: it runs every waiting ROS callback at its start, then
+syncs PyBullet, runs the plugin hooks, and resumes the tasks waiting for it.
+Between ticks `WorldState` does not change and always matches the PyBullet
+mirror. The price is that a fast topic needs a queue deep enough for one tick.
+
+Considered and rejected:
+
+- *Generator jobs advanced once per tick* (the first version of this rewrite).
+  They worked, but cancellation, timeouts, waiting on ROS futures and handing
+  work to threads were all hand-built.
+- *`rclpy.spin` on its own thread.* Every subscription would then write state
+  concurrently with plugin code, bringing the locking back.
+- *rclpy's own coroutine support.* In Humble it has no sleep, no timeout and no
+  real cancellation.
+
+A plugin that fails too often is stopped together with every plugin that
+requires it, and the panel shows the monitor as broken until restart. Carrying
+on with a dependent reading frozen state would be worse than stopping it.
 
 ## Rebuilding the UI on every state change
 

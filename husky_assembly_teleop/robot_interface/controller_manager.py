@@ -46,8 +46,8 @@ class ControllerManagerState:
 class ControllerManagerInterface:
     """Tracks and switches the controllers of one controller manager.
 
-    ! Nothing blocks: answers land in `state` from the executor thread a few ticks
-      later, so callers poll `state` (e.g. with concurrency.wait_until).
+    ! Nothing blocks: answers land in `state` from the main thread (run by the tick's
+      ROS pump) a few ticks later, so callers poll `state` (e.g. with concurrency.wait_until).
     """
 
     def __init__(self, node: Node, namespace: str, switchable: tuple[str, ...],
@@ -187,7 +187,7 @@ class ControllerManagerInterface:
         self._switch_client.call_async(request).add_done_callback(self._on_deactivate_answer)
         return True
 
-    # --- --- --- --- --- ANSWERS (executor thread) --- --- --- --- ---
+    # --- --- --- --- --- ANSWERS (main thread) --- --- --- --- ---
 
     def _on_deactivate_answer(self, future) -> None:
         """Log a failed `deactivate_all`, then read back what really runs."""

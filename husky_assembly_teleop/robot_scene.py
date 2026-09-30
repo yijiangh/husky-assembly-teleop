@@ -36,7 +36,7 @@ class RobotScene:
     """A PyBullet client with the real robots in it.
 
     ! Threading: PyBullet is not thread-safe, so every call here and every `p`/`pp`
-      call in a plugin must run on the ROS thread. From a viser callback, go
+      call in a plugin must run on the main thread. From a viser callback, go
       through PluginContext.submit.
     """
 

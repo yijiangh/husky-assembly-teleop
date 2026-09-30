@@ -57,13 +57,13 @@ class RobotState:
 class HuskyRobotInterface:
     """ROS2 interface to one husky: a base, its arms, and their tools.
 
-    ! Callbacks run on the node's single executor thread, the same as the tick,
-      so no locking is needed. This breaks if the node gets more than one
-      executor thread or a non-default callback group.
+    ! Callbacks run on the main thread, pumped by the tick at its start, so they
+      never run concurrently with plugin code; don't add a multi-threaded executor
+      or run callbacks elsewhere.
 
     * Plugins reach a robot through `robot.config`, `robot.base.state`,
       `robot.arms[name].state` (read only) and `robot.base.<command>()` /
-      `robot.arms[name].<command>()` (ROS thread only).
+      `robot.arms[name].<command>()` (main thread only).
 
     Attributes:
         config: Identity, URDF, arms and mocap id of this robot.
@@ -124,7 +124,7 @@ class HuskyRobotInterface:
         Objects and state are kept, so held references stay valid; old
         measurements stay until fresh ones arrive, so their age is still true.
 
-        ! ROS thread only, like every command.
+        ! main thread only, like every command.
         """
         self._node.get_logger().info(f"robot {self.config.serial}: reconnecting")
         self._ros.destroy_all()
@@ -162,7 +162,7 @@ class HuskyRobotInterface:
         return p, r.as_quat()
 
     # --- --- --- --- --- COMMANDS --- --- --- --- ---
-    # ! ROS thread only, like the commands on the parts.
+    # ! main thread only, like the commands on the parts.
 
     def unlock_protective_stop(self) -> bool:
         """Clear the protective stop of every arm, like "Enable robot" on the pendant.
@@ -267,7 +267,7 @@ class HuskyRobotInterface:
         second.mark_executing()
         return True
 
-    # --- --- --- --- --- CALLBACKS (executor thread) --- --- --- --- ---
+    # --- --- --- --- --- CALLBACKS (main thread) --- --- --- --- ---
 
     def _on_sync_status(self, message: SafetySyncStatus) -> None:
         """Hand each arm its entry of the sync's status, matched by namespace."""

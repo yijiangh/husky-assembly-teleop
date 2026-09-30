@@ -19,16 +19,17 @@ class HuskyPlugin:
     """One self-contained feature with its own state, UI and scene nodes.
 
     Override only the hooks you need: `setup`, `update`, `draw`, `teardown`.
-    Work that takes longer than one tick is a job: a generator started with
-    `ctx.spawn` that waits by yielding.
+    Work that takes longer than one tick is a task: an `async def` started with
+    `ctx.spawn` that waits by awaiting. Hooks themselves stay plain and short.
 
-    ! Hooks run on the ROS thread, so they can touch world state, the scene and
+    ! Hooks run on the main thread, so they can touch world state, the scene and
       ROS without locking, but must never block: a slow hook stalls every ROS
-      callback. Wait inside a job instead.
+      callback. Wait inside a task instead.
 
-    ! A hook that raises counts as a failed tick. After `config.max_plugin_errors`
-      failed ticks in a row the plugin is stopped until restart; a clean tick
-      resets the count.
+    ! A hook or task that raises counts as a failed tick. After
+      `config.max_plugin_errors` failed ticks in a row the plugin is stopped,
+      with every plugin that requires it, and the monitor shows itself broken
+      until restart. A clean tick resets the count.
     """
 
     #: Unique name, used for the scene path, GUI folder, config and logs.
@@ -37,16 +38,20 @@ class HuskyPlugin:
     #: Plugins to set up before this one; reach them through `ctx.require`.
     requires: tuple[str, ...] = ()
 
+    #: Whether its design is still open. Loading one logs a warning; its module
+    #: docstring says what is undecided.
+    experimental: bool = False
+
     def setup(self, ctx: PluginContext) -> None:
         """Build widgets and scene nodes once, at startup, and keep the handles.
 
         Later, change those handles in `draw` rather than rebuilding them.
-        A raise here stops the plugin, but `teardown` still runs, so it must
-        cope with a half-finished setup.
+        A raise here stops the plugin and its dependents, but `teardown` still
+        runs, so it must cope with a half-finished setup.
         """
 
     def update(self, ctx: PluginContext) -> None:
-        """Advance this plugin's state by one tick, after its intents and before its jobs.
+        """Advance this plugin's state by one tick, after its intents and before its tasks resume.
 
         The scene already holds this tick's measurements.
         """
@@ -56,14 +61,15 @@ class HuskyPlugin:
 
         ! Display only: skipped while the operator has the panels frozen. Put
           anything that must keep running (reacting, buttons, safety checks) in
-          `update`, an intent or a job.
+          `update`, an intent or a task.
         """
 
     def teardown(self, ctx: PluginContext) -> None:
         """Release what the monitor cannot, once at shutdown, even if stopped.
 
-        Jobs, scene nodes and widgets are cleaned up for you; this is for
-        PyBullet bodies, open files, recordings and hardware.
+        Tasks are cancelled and given time to clean up before this runs, and
+        scene nodes and widgets are removed after; this is for PyBullet bodies,
+        open files, recordings and hardware.
         """
 
 

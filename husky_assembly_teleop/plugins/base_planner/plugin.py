@@ -1,7 +1,9 @@
 """
 Pick a target for a husky base, plan a path to it, scrub through the path, and commit it.
 
-* Planning (bidirectional RRT, planner.py) runs on a worker thread as a job, so
+! EXPERIMENTAL: a mockup. Commit is a stub and the planner is a placeholder.
+
+* Planning (bidirectional RRT, planner.py) runs on a worker thread from a task, so
   the tick never waits; Clear or Stop all ends it early.
 
 ! Commit is a stub that only logs (`send_to_onboard_follower`).
@@ -11,6 +13,7 @@ Pick a target for a husky base, plan a path to it, scrub through the path, and c
 
 from __future__ import annotations
 
+import asyncio
 import math
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -21,7 +24,7 @@ import pybullet_planning as pp
 import viser
 import viser.extras
 
-from ...concurrency import Job, Task, WaitTimeout, wait_until
+from ...concurrency import timeout
 from ...config import find_robot_serial
 from ...context import PluginContext
 from ...plugin import HuskyPlugin, register
@@ -70,6 +73,7 @@ class BasePlannerPlugin(HuskyPlugin):
     """Plans, shows and commits a base path from the current pose to a target."""
 
     name = "base_planner"
+    experimental = True
     requires = ("cell", "obstacles")
 
     def __init__(self):
@@ -90,9 +94,9 @@ class BasePlannerPlugin(HuskyPlugin):
         #: One line of feedback on the last action, and whether it was a failure.
         self._message, self._message_failed = "", False
         #: The running search, and the flag that ends its worker early.
-        self._plan_job: Job | None = None
+        self._plan_task: asyncio.Task | None = None
         self._abort = threading.Event()
-        # One worker: searches share one planning world.
+        # One worker: searches share one planning world, so they must run one after another.
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="base-plan")
         self._world: PlanningWorld | None = None
         # Whether draw must rebuild the path line / move the ghost.
@@ -172,7 +176,7 @@ class BasePlannerPlugin(HuskyPlugin):
         if self._world is not None:
             self._world.close()
 
-    # --- --- --- --- --- COMMANDS (intents, on the ROS thread) --- --- --- --- ---
+    # --- --- --- --- --- COMMANDS (intents, on the main thread) --- --- --- --- ---
 
     def _choose_robot(self, serial: str) -> None:
         """Plan for another robot. The old plan no longer applies."""
@@ -249,17 +253,15 @@ class BasePlannerPlugin(HuskyPlugin):
             ctx.log_info("plan ignored: already planning")
             return
         self._clear()
-        # ! Snapshot on the ROS thread; until the search ends only the worker touches the world.
-        self._world.snapshot(ctx.scene.client_id, ctx.scene.robots)
         # A fresh flag per search, so an old search's abort cannot end this one.
         self._abort = threading.Event()
         self.plan_state = "planning"
         self._say(f"planning for {self.serial}…")
-        self._plan_job = ctx.spawn(f"plan {self.serial}",
+        self._plan_task = ctx.spawn(f"plan {self.serial}",
                                    self._search(ctx, self.serial, self._current_pose(ctx), self._target.pose))
 
-    def _search(self, ctx: PluginContext, serial: str, start, goal) -> Task:
-        """Run one search on the worker thread and take its result on the ROS thread.
+    async def _search(self, ctx: PluginContext, serial: str, start, goal) -> None:
+        """Run one search on the worker thread and take its result on the main thread.
 
         ! No path found is reported in the panel, not raised: it is not a bug.
 
@@ -268,23 +270,26 @@ class BasePlannerPlugin(HuskyPlugin):
             serial: The robot to plan for.
             start: (x, y, yaw) it starts from.
             goal: (x, y, yaw) it should end at.
-
-        Yields:
-            None: Once per tick while the worker searches.
         """
+        loop = asyncio.get_running_loop()
+        # ! A cancelled search's thread runs on until it sees its abort flag. The one
+        #   worker finishes it before this empty job, and only then may the main
+        #   thread snapshot; from there until the search ends only the worker touches the world.
+        await loop.run_in_executor(self._executor, lambda: None)
+        self._world.snapshot(ctx.scene.client_id, ctx.scene.robots)
         abort = self._abort
-        future = self._executor.submit(plan_birrt, self._world, serial, start, goal, abort)
         try:
-            yield from wait_until(ctx, future.done, timeout_s=TIME_LIMIT + 5.0, description="the base planner")
-            result = future.result()
-        except WaitTimeout as timeout:
+            async with timeout(TIME_LIMIT + 5.0):
+                result = await loop.run_in_executor(self._executor, plan_birrt, self._world, serial,
+                                                    start, goal, abort)
+        except asyncio.TimeoutError:
             self.plan_state = "none"
-            self._say(str(timeout), failed=True)
+            self._say(f"timed out after {TIME_LIMIT + 5.0}s waiting for the base planner", failed=True)
             return
         finally:
-            # Cancelled, timed out or failed: tell the worker to stop.
-            if not future.done():
-                abort.set()
+            # ! A thread cannot be interrupted: on cancel, timeout or failure, tell the
+            #   worker to stop and drop its result. Harmless if it already finished.
+            abort.set()
 
         if result.path is None:
             self.plan_state = "none"
@@ -326,11 +331,11 @@ class BasePlannerPlugin(HuskyPlugin):
 
     def _clear(self) -> None:
         """Forget the plan, and end a search in progress."""
-        if self._plan_job is not None and not self._plan_job.done:
-            self._plan_job.cancel()
-            self._abort.set()  # stop the worker now, not at the job's next step
+        if self._plan_task is not None and not self._plan_task.done():
+            self._plan_task.cancel()
+            self._abort.set()  # stop the worker now, not at the task's next step
             self._say("planning cancelled")
-        self._plan_job = None
+        self._plan_task = None
         self.path, self._path_serial, self.plan_state = None, None, "none"
         self._t, self._playing = 0.0, False
         self._stale_line = self._stale_drawing = True

@@ -2,15 +2,16 @@
 Example 4: a long-running sequence that waits, can be cancelled, and asks the
 operator to continue.
 
-The sequence is a generator: it reads top to bottom, and each `yield` hands the
-thread back until the next tick. Start spawns it as a job (`ctx.spawn(...)`);
-Cancel calls `job.cancel()`, which raises `Cancelled` at the current `yield` and
-runs the `finally` block, the place to stop motors or open a gripper.
+The sequence is an `async def`: it reads top to bottom, and each `await` hands
+the thread back until the awaited thing is ready. Start spawns it as a task
+(`ctx.spawn(...)`); Cancel calls `task.cancel()`, which raises
+`asyncio.CancelledError` at the current `await` and runs the `finally` block,
+the place to stop motors or open a gripper.
 
 Each cycle, with fake waits in place of robot work (three cycles, then finish):
-  1. wait 3 s                              (wait_seconds)
-  2. wait for the operator to press Next   (wait_until on a flag, with a timeout)
-  3. wait for a fake sensor to fill up     (wait_until on a reading, with a timeout)
+  1. wait 3 s                              (ctx.sleep)
+  2. wait for the operator to press Next   (ctx.wait_until on a flag, with a timeout)
+  3. wait for a fake sensor to fill up     (ctx.wait_until on a reading, with a timeout)
 
 ! Ignore (and log) a button click that does not apply now, such as Next while
   nothing waits for it: a stored click would fire long after the operator forgot it.
@@ -23,9 +24,11 @@ Run with:  -p plugins:="['example_sequence']"
 
 from __future__ import annotations
 
+import asyncio
+
 import viser
 
-from ...concurrency import Cancelled, Job, Task, WaitTimeout, wait_seconds, wait_until
+from ...concurrency import WaitTimeout
 from ...context import PluginContext
 from ...plugin import HuskyPlugin, register
 from ...ui_style import BUSY, FAIL, NONE, OK, SECTION_CTRL, block, chip, section
@@ -46,7 +49,7 @@ class ExampleSequencePlugin(HuskyPlugin):
     def __init__(self):
         """Start idle."""
         #: The last sequence started, running or finished; None before the first Start.
-        self._job: Job | None = None
+        self._task: asyncio.Task | None = None
         #: Set by the Next button, and only while the sequence waits for it.
         self._next_pressed = False
         #: What the operator sees: where the sequence is and how the last one ended.
@@ -61,7 +64,7 @@ class ExampleSequencePlugin(HuskyPlugin):
     @property
     def running(self) -> bool:
         """bool: Whether a sequence is running right now."""
-        return self._job is not None and not self._job.done
+        return self._task is not None and not self._task.done()
 
     def setup(self, ctx: PluginContext) -> None:
         """Build the status, a progress bar and the three buttons.
@@ -76,7 +79,7 @@ class ExampleSequencePlugin(HuskyPlugin):
             buttons = gui.add_button_group("Seq", ["Start", "Next", "Cancel"])
         buttons.on_click(ctx.defer_value("sequence button", lambda clicked: self._on_button(ctx, clicked)))
 
-    # --- --- --- --- --- BUTTONS (an intent, on the ROS thread) --- --- --- --- ---
+    # --- --- --- --- --- BUTTONS (an intent, on the main thread) --- --- --- --- ---
 
     def _on_button(self, ctx: PluginContext, clicked: str) -> None:
         """Act on a button, or ignore it if it does not apply right now.
@@ -86,24 +89,21 @@ class ExampleSequencePlugin(HuskyPlugin):
             clicked: The label of the button that was pressed.
         """
         if clicked == "Start" and not self.running:
-            self._job = ctx.spawn("example sequence", self._sequence(ctx))
+            self._task = ctx.spawn("example sequence", self._sequence(ctx))
         elif clicked == "Next" and self.step == "press Next":
             self._next_pressed = True
         elif clicked == "Cancel" and self.running:
-            self._job.cancel()
+            self._task.cancel()
         else:
             ctx.log_info(f"{clicked} ignored: the sequence is {self.step}")
 
-    # --- --- --- --- --- THE SEQUENCE (a job) --- --- --- --- ---
+    # --- --- --- --- --- THE SEQUENCE (a task) --- --- --- --- ---
 
-    def _sequence(self, ctx: PluginContext) -> Task:
+    async def _sequence(self, ctx: PluginContext) -> None:
         """Run the automation, written in the order things happen.
 
         Args:
             ctx: This plugin's context.
-
-        Yields:
-            None: Once per tick while it waits.
         """
         self.outcome = ""
         try:
@@ -111,24 +111,24 @@ class ExampleSequencePlugin(HuskyPlugin):
                 self.cycle = cycle
 
                 self._begin_step(ctx, "timer", TIMER_SECONDS)
-                yield from wait_seconds(ctx, TIMER_SECONDS)
+                await ctx.sleep(TIMER_SECONDS)
 
                 self._begin_step(ctx, "press Next")
-                yield from wait_until(ctx, lambda: self._next_pressed,
-                                      timeout_s=NEXT_TIMEOUT, description="the operator to press Next")
+                await ctx.wait_until(lambda: self._next_pressed,
+                                     timeout_s=NEXT_TIMEOUT, description="the operator to press Next")
                 self._next_pressed = False
 
                 self._begin_step(ctx, "sensor", SENSOR_FILL_SECONDS)
-                yield from wait_until(ctx, lambda: self._fake_sensor(ctx) >= 1.0,
-                                      timeout_s=SENSOR_TIMEOUT, description="the fake sensor")
+                await ctx.wait_until(lambda: self._fake_sensor(ctx) >= 1.0,
+                                     timeout_s=SENSOR_TIMEOUT, description="the fake sensor")
             self.outcome = "done"
         except WaitTimeout as timeout:
             # Expected: report it, do not raise.
             self.outcome = "timed out"
             ctx.log_warn(str(timeout))
-        except Cancelled:
+        except asyncio.CancelledError:
             self.outcome = "cancelled"
-            raise  # ! Re-raise, so the job ends as cancelled
+            raise  # ! Re-raise, so the task ends as cancelled
         except Exception:
             self.outcome = "failed"
             raise  # a bug: let it reach the log

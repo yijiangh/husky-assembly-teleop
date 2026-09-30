@@ -25,13 +25,21 @@ replaces. See `doc/refactor_rationale.md` for why the old flags had to go, and
 | `scaffolding` | the scaffolding tool buttons | |
 | `joint_stream` | live joint plots | |
 
-## Per tick, or as a job
+## Per tick, or as a task
 
 Anything that just keeps something in step -- `cell`, `joint_stream`,
 `collision_diagnosis` -- does it in `update`, a one-tick function.
 
 Anything with a shape -- calibration sweep, kissing experiment,
-plan-then-execute -- is a job: a generator started with `ctx.spawn` from a
-button, and cancelled with `job.cancel()` from another. The logic reads in the
-order it happens, and the job's `finally` block is where hardware is made safe.
+plan-then-execute -- is a task: an `async def` started with `ctx.spawn` from a
+button, and cancelled with `task.cancel()` from another. The logic reads in the
+order it happens, and the task's `finally` block is where hardware is made safe.
 `plugins/examples/sequence.py` is the template.
+
+## Open: recording high-rate state
+
+Experiments need state at its full update rate, not the 20 Hz tick. The
+experimental `recording.py` only taps raw ROS messages of a few arm topics. It
+should be just as easy to record any interface state (joint positions, TCP
+pose, a mocap fix, a derived value) at the rate it updates. Undecided how;
+`cell` and `base_planner` are experimental too.

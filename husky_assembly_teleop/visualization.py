@@ -5,7 +5,7 @@ corner of both for each plugin.
 ! Build viser nodes once and keep the handles; later assign `position` / `wxyz` /
   `visible`. Re-adding nodes every tick leaks and flickers.
 
-! viser callbacks run on its worker threads, not the ROS thread. They must not
+! viser callbacks run on its worker threads, not the main thread. They must not
   touch world state, PyBullet or ROS, only hand work to the plugin's queue
   (PluginContext.defer).
 """
@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
+from html import escape
 from pathlib import Path
 from typing import Iterator
 
@@ -25,6 +26,7 @@ import yourdfpy
 
 from .config import RobotConfig
 from .tool_urdfs import resolve_mesh_path
+from .ui_style import FAIL
 from .world_state import WorldState
 
 
@@ -160,6 +162,10 @@ class Visualization:
         #     box, which left an empty row at the top of the panel.
         self._server.gui.add_html(f"<title>{PAGE_TITLE}</title>")
 
+        # * Top of the panel, hidden until a plugin is stopped for failing. The
+        #   monitor is then broken and must be restarted; see `show_broken`.
+        self._broken = self._server.gui.add_html("", visible=False)
+
         # * Soft stop of every robot, first in the panel: a button, and Esc from
         #   anywhere on the page. Both only raise a flag; the monitor reads it
         #   at the start of the next tick and does the stopping on its thread.
@@ -168,7 +174,7 @@ class Visualization:
         self._stop_requested = False
         stop = self._server.gui.add_button("Stop all (Esc)", color="red", icon=viser.Icon.HAND_STOP,
                                            hint="Soft stop: stop every arm's program, switch every base "
-                                                "controller off, cancel every plugin job. Resume in the "
+                                                "controller off, cancel every plugin task. Resume in the "
                                                 "health panel. Not an emergency stop.")
         stop.on_click(self._request_stop)
         self._server.gui.add_command("Stop all robots", description="Soft stop of every robot",
@@ -179,7 +185,7 @@ class Visualization:
         #     browser's text selection, so live numbers cannot be copied. viser
         #     has no clipboard call and HTML cannot call back, so the way to copy
         #     is to stop the rewriting: while frozen, the monitor skips every
-        #     plugin's `draw`. Controls, updates and jobs all keep running.
+        #     plugin's `draw`. Controls, updates and tasks all keep running.
         # * One button shows the state and toggles it: green "Live", or orange
         #   "Frozen". A single full-width row, and it never changes height.
         self._frozen = False
@@ -267,6 +273,21 @@ class Visualization:
             return False
         self._stop_requested = False
         return True
+
+    def show_broken(self, stopped: dict[str, str]) -> None:
+        """Show a red banner at the top of the panel: which plugins are stopped, and to restart.
+
+        Args:
+            stopped: Why each stopped plugin stopped, by name, in the order they stopped.
+        """
+        rows = "".join(f"<li><b>{escape(name)}</b>: {escape(reason)}</li>" for name, reason in stopped.items())
+        self._broken.content = (
+            f'<div style="background:{FAIL};color:#fff;border-radius:4px;padding:6px 10px;'
+            f'font-size:12px"><b>⚠ Monitor broken: restart it.</b>'
+            f'<ul style="margin:4px 0 0;padding-left:18px">{rows}</ul>'
+            f'<div style="margin-top:4px">Stopped plugins no longer act on their buttons. '
+            f'Details are in the log.</div></div>')
+        self._broken.visible = True
 
     def _toggle_freeze(self, _event: viser.GuiEvent) -> None:
         """Freeze or unfreeze the panels. A viser callback, on a viser thread.

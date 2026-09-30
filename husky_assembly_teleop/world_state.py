@@ -5,7 +5,7 @@ The measured world: where things actually are, as reported by sensors.
   HuskyRobotInterface. Don't cache robot poses here; two copies will drift.
 
 ! Data flows real -> planning, never back. Only ROS callbacks may write here, on
-  the single-threaded executor, so there is no locking. viser callbacks must go
+  the main thread (run by the tick's ROS pump), so there is no locking. viser callbacks must go
   through PluginContext.submit.
 """
 
@@ -45,9 +45,6 @@ class WorldState:
     Attributes:
         robots: Connected robots, keyed by serial. Each owns its own RobotState.
         tracked_objects: Mocap-observed non-robot bodies, keyed by name.
-
-            ! Nothing writes to this yet (`health` already reads it). Add a
-              writer when the cell/bar_action port needs one.
     """
 
     robots: dict[str, HuskyRobotInterface] = field(default_factory=dict)

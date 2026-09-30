@@ -1,26 +1,29 @@
 """
 The cell plugin: loads an authored design and steps through its cell states.
 
+! EXPERIMENTAL: a first cut. How designs load, and what planning plugins
+  read from it, may still change.
+
 Viewer and provider only: it draws one movement's robot cell state at a time,
 and planning plugins that declare `requires = ("cell",)` read the selected
 movement from it. It owns no planner and no PyBullet body.
 
 ! The authored state is never modified: what is drawn is a copy (`displayed_state`).
 ! Loading is slow (a RobotCell file is ~350 MB), so it runs on a worker thread,
-  and meshes are added to viser a model per tick by a job. The worker only
-  returns a result; the job hands it over on the ROS thread.
+  and meshes are added to viser a model per tick by a task. The worker only
+  returns a result; the task hands it over on the main thread.
 """
 
 from __future__ import annotations
 
+import asyncio
 import traceback
-from concurrent.futures import ThreadPoolExecutor
 from html import escape
 from pathlib import Path
 
 from compas_fab.robots import RobotCell
 
-from ...concurrency import Job, Task, WaitTimeout, wait_until
+from ...concurrency import timeout
 from ...context import PluginContext
 from ...plugin import HuskyPlugin, register
 from ...ui_style import BUSY, FAIL, NONE, OK, SECTION_CTRL, block, chip, note, section, values
@@ -57,6 +60,7 @@ class CellPlugin(HuskyPlugin):
     """Shows one authored robot cell state at a time and steps through the schedule."""
 
     name = "cell"
+    experimental = True
 
     def __init__(self):
         """Start with nothing loaded."""
@@ -72,9 +76,8 @@ class CellPlugin(HuskyPlugin):
         #: Goes up whenever the design or selected step changes, so dependents can poll it.
         self.revision = 0
 
-        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cell-load")
-        self._load_job: Job | None = None
-        self._build_job: Job | None = None
+        self._load_task: asyncio.Task | None = None
+        self._build_task: asyncio.Task | None = None
         # Written by the worker thread, read by draw; plain assignment, so no lock.
         self._progress = ""
         self._error = ""
@@ -132,7 +135,7 @@ class CellPlugin(HuskyPlugin):
             self._details = gui.add_html("")
             self._error_text = gui.add_html("")
 
-        # ! Route every viser callback through defer so it runs on the ROS thread.
+        # ! Route every viser callback through defer so it runs on the main thread.
         load.on_click(ctx.defer("load design", lambda: self.load(ctx, Path(self._folder.value.strip()))))
         self._slider.on_update(ctx.defer_value("select step", lambda value: self.select(int(value))))
         go.on_click(ctx.defer_value("step button", self._on_go))
@@ -142,17 +145,8 @@ class CellPlugin(HuskyPlugin):
         if folder is not None:
             self.load(ctx, folder)
 
-    def teardown(self, ctx: PluginContext) -> None:
-        """Stop the loading thread.
-
-        Args:
-            ctx: This plugin's context.
-        """
-        # A running load cannot be interrupted; its result is dropped.
-        self._executor.shutdown(wait=False, cancel_futures=True)
-
     # --- --- --- --- --- COMMANDS --- --- --- --- ---
-    # Run on the ROS thread, via intents.
+    # Run on the main thread, via intents.
 
     def load(self, ctx: PluginContext, folder: Path) -> None:
         """Start loading a design folder, replacing the current design when done.
@@ -161,10 +155,10 @@ class CellPlugin(HuskyPlugin):
             ctx: This plugin's context.
             folder: The design folder.
         """
-        if self._load_job is not None and not self._load_job.done:
+        if self._load_task is not None and not self._load_task.done():
             ctx.log_info("load ignored: a design is already loading")
             return
-        self._load_job = ctx.spawn(f"load {folder.name}", self._load(ctx, folder))
+        self._load_task = ctx.spawn(f"load {folder.name}", self._load(ctx, folder))
 
     def select(self, index: int) -> None:
         """Select a step. Clamped to the design; ignored before one is loaded.
@@ -230,9 +224,9 @@ class CellPlugin(HuskyPlugin):
         self.revision += 1
         self._stale = True
 
-    # --- --- --- --- --- JOBS --- --- --- --- ---
+    # --- --- --- --- --- TASKS --- --- --- --- ---
 
-    def _load(self, ctx: PluginContext, folder: Path) -> Task:
+    async def _load(self, ctx: PluginContext, folder: Path) -> None:
         """Load a design on the worker thread, then swap it in.
 
         ! Failures are shown in the panel and log, not raised: a bad folder is
@@ -241,18 +235,15 @@ class CellPlugin(HuskyPlugin):
         Args:
             ctx: This plugin's context.
             folder: The design folder.
-
-        Yields:
-            None: Once per tick while the worker loads.
         """
         self._error, self._progress = "", f"loading {folder}"
-        future = self._executor.submit(_load_in_background, folder,
-                                       lambda text: setattr(self, "_progress", text))
         try:
-            yield from wait_until(ctx, future.done, timeout_s=LOAD_TIMEOUT, description="the design to load")
-            design, meshes = future.result()
-        except WaitTimeout as timeout:
-            self._error = str(timeout)
+            # A thread cannot be interrupted: on timeout or cancel its result is dropped.
+            async with timeout(LOAD_TIMEOUT):
+                design, meshes = await ctx.run_in_thread(
+                    _load_in_background, folder, lambda text: setattr(self, "_progress", text))
+        except asyncio.TimeoutError:
+            self._error = f"timed out after {LOAD_TIMEOUT}s waiting for the design to load"
             ctx.log_error(self._error)
             return
         except Exception as failure:
@@ -262,9 +253,9 @@ class CellPlugin(HuskyPlugin):
         finally:
             self._progress = ""
 
-        # * Swap in on the ROS thread; `update` builds the new nodes on demand.
-        if self._build_job is not None:
-            self._build_job.cancel()
+        # * Swap in on the main thread; `update` builds the new nodes on demand.
+        if self._build_task is not None:
+            self._build_task.cancel()
         for drawing in self._drawings.values():
             drawing.remove()
         self._drawings.clear()
@@ -273,22 +264,20 @@ class CellPlugin(HuskyPlugin):
         ctx.log_info(f"loaded {folder}: {len(design.actions)} actions, {len(design.steps)} movements, "
                      f"cells for {', '.join(design.cells)}")
 
-    def _build(self, ctx: PluginContext, robot_id: str) -> Task:
+    async def _build(self, ctx: PluginContext, robot_id: str) -> None:
         """Add one cell's meshes to the scene, a model per tick.
 
         Args:
             ctx: This plugin's context.
             robot_id: Whose cell.
-
-        Yields:
-            None: After each model.
         """
         self._progress = f"drawing the cell of {robot_id}"
         drawing = CellDrawing(ctx.view.scene, f"{ctx.view.scene_root}/{robot_id}")
         if self._ghost:
             drawing.set_opacity(GHOST_OPACITY)
         try:
-            yield from drawing.build(self._meshes[robot_id])
+            for _ in drawing.build(self._meshes[robot_id]):
+                await ctx.next_tick()
         except BaseException:
             drawing.remove()  # cancelled by a new load, or failed: leave nothing half-built
             raise
@@ -308,8 +297,8 @@ class CellPlugin(HuskyPlugin):
         step = self.step
         if step is None or step.action.robot_id in self._drawings:
             return
-        if self._build_job is None or self._build_job.done:
-            self._build_job = ctx.spawn(f"draw {step.action.robot_id}", self._build(ctx, step.action.robot_id))
+        if self._build_task is None or self._build_task.done():
+            self._build_task = ctx.spawn(f"draw {step.action.robot_id}", self._build(ctx, step.action.robot_id))
 
     def draw(self, ctx: PluginContext) -> None:
         """Pose the drawn cell from the selected state, and fill the panel.

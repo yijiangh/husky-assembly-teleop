@@ -6,7 +6,7 @@ the same value. Build one in `setup`, read `pose` when needed.
   6-DOF input if height or tilt is needed.
 
 ! Threading: widget callbacks run on viser threads and only queue the new value
-  (ctx.submit). `pose` is written on the ROS thread only, so reads need no lock.
+  (ctx.submit). `pose` is written on the main thread only, so reads need no lock.
 """
 
 from __future__ import annotations
@@ -67,7 +67,7 @@ class PlanarPoseInput:
             gui: GUI api to add the fields to.
             scene_path: Gizmo path; must be under `ctx.view.scene_root`.
             label: Label of the number row.
-            on_change: Called on the ROS thread when the operator edits the
+            on_change: Called on the main thread when the operator edits the
                 pose. Not called for `set`.
             gizmo_scale: Gizmo size, metres.
         """
@@ -86,7 +86,7 @@ class PlanarPoseInput:
             scene_path, scale=gizmo_scale, active_axes=(True, True, False),
             disable_sliders=False, depth_test=False, visible=False)
 
-        # ! Callbacks only queue the value; it is applied on the ROS thread.
+        # ! Callbacks only queue the value; it is applied on the main thread.
         self._fields.on_update(ctx.defer_value(f"{label} typed", self._on_fields))
         self._show.on_update(ctx.defer_value(f"{label} gizmo shown", self._on_show))
 
@@ -99,7 +99,7 @@ class PlanarPoseInput:
     # --- --- --- --- --- WHAT THE PLUGIN CALLS --- --- --- --- ---
 
     def set(self, x: float, y: float, yaw: float) -> None:
-        """Set the pose from code, without calling `on_change`. ROS thread only.
+        """Set the pose from code, without calling `on_change`. main thread only.
 
         Args:
             x: Metres, world frame.
@@ -108,7 +108,7 @@ class PlanarPoseInput:
         """
         self._apply((float(x), float(y), _wrap(float(yaw))), notify=False)
 
-    # --- --- --- --- --- CALLBACKS (intents, on the ROS thread) --- --- --- --- ---
+    # --- --- --- --- --- CALLBACKS (intents, on the main thread) --- --- --- --- ---
 
     def _on_fields(self, value) -> None:
         """Apply a number-row edit (yaw in degrees)."""

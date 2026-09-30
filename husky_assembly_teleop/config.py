@@ -156,6 +156,8 @@ class MonitorConfig:
             fraction of the tick budget.
         slow_step_warn_period: Seconds between repeats of one plugin's slow-step
             warning, so a plugin that is slow every tick cannot bury the log.
+        shutdown_grace: Seconds each plugin's cancelled tasks get to clean up at
+            shutdown, with ROS still running, before they are dropped.
     """
 
     robots: tuple[RobotConfig, ...]
@@ -167,6 +169,7 @@ class MonitorConfig:
     max_plugin_errors: int = 3
     slow_step_warn_ratio: float = 0.5
     slow_step_warn_period: float = 5.0
+    shutdown_grace: float = 2.0
 
 
 # --- --- --- --- --- WHERE ROBOTS STAND BEFORE MOCAP --- --- --- --- ---

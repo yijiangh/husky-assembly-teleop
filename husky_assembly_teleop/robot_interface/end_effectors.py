@@ -95,7 +95,7 @@ EndEffectorState = RobotiqState | ScaffoldingV3State | ScaffoldingV1State
 
 
 # --- --- --- --- --- INTERFACES --- --- --- --- ---
-# ! ROS thread only, like every command in robot_interface.py.
+# ! main thread only, like every command in robot_interface.py.
 
 class EndEffector(ABC):
     """What every mounted tool can do.

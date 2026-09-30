@@ -3,7 +3,7 @@ Draws a robot cell state in viser: the robot, its tools and the rigid bodies.
 
 - `prepare_cell_meshes` turns compas meshes into numpy triangles (pure data, slow;
   run it on the loading thread).
-- `CellDrawing` owns the viser nodes (ROS thread); a new state only changes poses.
+- `CellDrawing` owns the viser nodes (main thread); a new state only changes poses.
 
 Scene tree per cell:
 
@@ -196,7 +196,7 @@ def link_frames(model: RobotModel, configuration: Configuration | None) -> dict[
     return frames
 
 
-# --- --- --- --- --- DRAWING (ROS thread) --- --- --- --- ---
+# --- --- --- --- --- DRAWING (main thread) --- --- --- --- ---
 
 @dataclass
 class _DrawnModel:
@@ -216,7 +216,7 @@ class _DrawnModel:
 class CellDrawing:
     """The viser nodes for one robot cell, posed from one cell state at a time.
 
-    ! `build` is a generator: drive it from a job so the mesh upload is spread over several ticks.
+    ! `build` is a generator: drive it from a task (`await ctx.next_tick()` per step) so the mesh upload is spread over several ticks.
     """
 
     def __init__(self, scene: viser.SceneApi, root: str):
