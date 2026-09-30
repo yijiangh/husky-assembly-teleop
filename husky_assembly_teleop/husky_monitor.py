@@ -58,6 +58,7 @@ from husky_assembly_teleop.utils import (
 # BarAction (gdrive design-study) loading
 from husky_assembly_teleop.bar_action_io import (
     parse_bar_action, list_bar_actions, find_movement, movement_role,
+    load_action_cycle, cycle_roles, slot_of_index, cycle_start_ee_sources,
 )
 from husky_assembly_teleop.cfab_session import (
     CfabSession, build_default_robot_cell, plan_free_motion,
@@ -433,8 +434,11 @@ class HuskyMonitor(Node):
         self._current_action_path = None
 
         # Per-movement BarAction loader (replaces single-movement load_bar_action).
-        self._loaded_action = None              # BarAssemblyAction | None
-        self._loaded_movements = []             # list[Movement]; M0..M4 straight from the JSON
+        self._loaded_action = None              # first half's action | None
+        self._loaded_action_slots = []          # list[(action, path)]; both halves of the cycle
+        self._loaded_movements = []             # list[Movement]; M0..M4 across those halves
+        self._loaded_movement_roles = []        # 'M0'..'M4' | None, one per loaded movement
+        self._loaded_start_ee_sources = []      # per movement: {side: movement authoring its START pose}
         self._selected_action_file_idx = 0
         self._selected_movement_idx = 0
         # M1 home carry anchor index into M1_HOME_ANCHOR_CHOICES (0 = all).
@@ -1614,9 +1618,12 @@ class HuskyMonitor(Node):
           stores the world ``frame`` directly, so we return that.
         - Bar held by a gripper link: the start_state only stores the grasp
           (``attachment_frame``), so the holding tool0's world pose comes from
-          the PREVIOUS movement's authored ``target_ee_frames`` (a movement
-          starts where the previous one ended) and the grasp is composed onto
-          it.
+          the authored ``target_ee_frames`` of the movement that ran BEFORE this
+          one (a movement starts where the previous one ended) and the grasp is
+          composed onto it. Which movement that is comes from the cycle's
+          start-EE map (``_start_ee_source``): the split export puts screw events
+          between the moving ones, and those have no authored targets, so the
+          list neighbour is not always the one that ends where we start.
 
         ! The held case is never derived by FK from
         ! ``start_state.robot_configuration``. The visual-servoing loop
@@ -1639,11 +1646,11 @@ class HuskyMonitor(Node):
             when the bar / movement / cfab session isn't available.
 
         Raises:
-            RuntimeError: When the bar is held but no authored
-                ``target_ee_frames`` for the holding arm exist on the previous
-                movement. Deliberately fatal rather than falling back to FK: a
-                silently wrong reference pose would be stamped into the saved
-                take and corrupt the offline accuracy numbers.
+            RuntimeError: When the bar is held but no earlier movement authored
+                ``target_ee_frames`` for the holding arm. Deliberately fatal
+                rather than falling back to FK: a silently wrong reference pose
+                would be stamped into the saved take and corrupt the offline
+                accuracy numbers.
         """
         state = getattr(self, 'movement_start_state', None)
         bar_name = getattr(self, 'active_bar_name', None)
@@ -1670,20 +1677,16 @@ class HuskyMonitor(Node):
             return None
         side = 'left' if 'left' in link else 'right'
         idx = self.current_movement_index
-        prev = (self._loaded_movements[idx - 1]
-                if idx is not None and idx > 0 else None)
-        target_ee = (getattr(prev, 'target_ee_frames', None) or {}) if prev else {}
-        if side not in target_ee:
-            where = (f"previous movement {prev.movement_id!r} has no "
-                     f"target_ee_frames[{side!r}]" if prev is not None else
-                     "this is the first movement, so there is no previous "
-                     "movement to take authored target_ee_frames from")
+        prev = self._start_ee_source(idx, side)
+        if prev is None:
             raise RuntimeError(
-                f"Cannot stamp the reference pose of held bar {bar_name!r}: "
-                f"{where}. EE targets are never derived from FK, so there is no "
-                f"safe fallback -- load a movement whose predecessor carries "
-                f"authored target EE frames.")
-        world_from_tool = pose_from_frame(target_ee[side])
+                f"Cannot stamp the reference pose of held bar {bar_name!r}: no "
+                f"movement before {self.current_movement.movement_id!r} authors "
+                f"target_ee_frames[{side!r}] without an arm moving in between. "
+                f"EE targets are never derived from FK, so there is no safe "
+                f"fallback -- load the whole cycle (both halves of a split "
+                f"export) so the bar-held insert is in the list.")
+        world_from_tool = pose_from_frame(prev.target_ee_frames[side])
         tool_from_bar = pose_from_frame(attach)
         pos, quat = pp.multiply(world_from_tool, tool_from_bar)
         return ([float(v) for v in pos], [float(v) for v in quat])
@@ -2275,12 +2278,57 @@ class HuskyMonitor(Node):
     def _match_movement_role(self, mv):
         """Return 'M0' | 'M1' | 'M2' | 'M3' | 'M4' | None for a movement.
 
-        Both export schemas are understood (legacy ``B6_M1_...`` ids and the
-        split jointing/release ``B6_J_M3_...`` / ``B6_R_M2_...`` ids); see
-        ``bar_action_io.movement_role``. Manual and screw-tool movements have
-        no classic role and return None.
+        For a movement of the loaded cycle this is the role worked out once at
+        Load BarAction from the RECORDED MOVEMENT CLASSES
+        (``bar_action_io.cycle_roles``), which is what the whole UI steers by.
+        Anything else -- a movement some script holds on its own -- falls back to
+        reading the role off the id. Manual and screw-tool movements have no
+        classic role and return None.
+
+        Args:
+            mv: The Movement to classify.
+
+        Returns:
+            str | None: The classic role, or None.
         """
+        roles = getattr(self, '_loaded_movement_roles', None) or []
+        for loaded_mv, role in zip(self._loaded_movements, roles):
+            if loaded_mv is mv:
+                return role
         return movement_role(mv)
+
+    def _slot_of_movement(self, idx):
+        """Which loaded FILE the movement at ``idx`` of the cycle came from.
+
+        Args:
+            idx (int): Index into ``self._loaded_movements``.
+
+        Returns:
+            tuple | None: ``(action, path, index_within_that_action)``, or None
+            when the index is out of range.
+        """
+        return slot_of_index(getattr(self, '_loaded_action_slots', []), idx)
+
+    def _start_ee_source(self, idx, side):
+        """The movement whose authored target gives ``side``'s flange pose at
+        the START of movement ``idx``.
+
+        Resolved for the whole cycle at Load BarAction
+        (``bar_action_io.cycle_start_ee_sources``), so every caller gets the same
+        answer instead of walking the movement list itself.
+
+        Args:
+            idx (int): Index into ``self._loaded_movements``.
+            side (str): ``'left'`` or ``'right'``.
+
+        Returns:
+            Movement | None: The authoring movement, or None when nothing
+            authored that flange's start pose.
+        """
+        sources = getattr(self, '_loaded_start_ee_sources', None) or []
+        if idx is None or not 0 <= idx < len(sources):
+            return None
+        return sources[idx].get(side)
 
     def _print_cfab_collision_check_setup(self, state, header='cfab CC setup'):
         """Pretty-print the Allowed-Collision-Matrix (ACM) that cfab's
@@ -2534,10 +2582,16 @@ class HuskyMonitor(Node):
     def load_bar_action_file(self):
         """Parse the selected BarAction JSON; log the movement roster.
 
-        The JSON natively carries all movements M0..M4. M0's authored
-        robot_configuration is null (its start is wherever the robot lives
-        right now), so its start_state gets the live pose injected here and
-        again on every 'Load Movement'.
+        Loads the bar's WHOLE cycle, which the split export keeps in two files
+        (``B6__J.json`` = M0/M1/M2, ``B6__R.json`` = M3/M4). Selecting either
+        half opens both, so ``_loaded_movements`` again holds every classic role
+        in cycle order -- what the accuracy test needs, since measuring at the
+        retreat (M3) reads the insert's (M2) authored targets and grasp. A legacy
+        single-file action loads exactly as before.
+
+        M0's authored robot_configuration is null (its start is wherever the
+        robot lives right now), so its start_state gets the live pose injected
+        here and again on every 'Load Movement'.
         """
         files = self.available_bar_actions
         if not files:
@@ -2557,12 +2611,23 @@ class HuskyMonitor(Node):
         action_path = fname if os.path.isabs(fname) else os.path.join(
             DESIGN_DATA_DIRECTORY, DESIGN_PROBLEM_NAME, 'BarActions', fname,
         )
-        self._current_action_path = action_path
-        self._loaded_action = parse_bar_action(action_path)
+        # Both halves of the cycle, each paired with the file it came from, so a
+        # sidecar save later goes back to its own file.
+        self._loaded_action_slots = load_action_cycle(action_path)
+        self._loaded_action, self._current_action_path = self._loaded_action_slots[0]
 
-        if not self._loaded_action.movements:
+        self._loaded_movements = [
+            mv for action, _path in self._loaded_action_slots
+            for mv in action.movements
+        ]
+        if not self._loaded_movements:
             self.get_logger().warn("BarAction has no movements.")
-        self._loaded_movements = list(self._loaded_action.movements)
+        # Roles come from the recorded movement CLASSES, not from counting
+        # positions in the id -- see bar_action_io.cycle_roles.
+        self._loaded_movement_roles = cycle_roles(self._loaded_action_slots)
+        # Where each movement's flanges START, resolved once for the whole cycle
+        # so no call site has to walk the list (and get it wrong).
+        self._loaded_start_ee_sources = cycle_start_ee_sources(self._loaded_movements)
         # New action => new active bar => the built-assembly hide must be redone
         # (the previously active bar has to go back to hidden, and this action's
         # active bar has to become visible). The first Load Movement below
@@ -2605,7 +2670,9 @@ class HuskyMonitor(Node):
                 self._inject_live_conf_into_state(mv.start_state)
             self._inject_ground_rigid_body_state(mv.start_state)
 
-        print(f"[BarAction] loaded {os.path.basename(action_path)} "
+        loaded_names = ' + '.join(
+            os.path.basename(p) for _action, p in self._loaded_action_slots)
+        print(f"[BarAction] loaded {loaded_names} "
               f"with {len(self._loaded_movements)} movements:")
         for i, mv in enumerate(self._loaded_movements):
             print(f"  [{i}] {mv.movement_id!r} role={self._match_movement_role(mv)}")
@@ -3279,22 +3346,15 @@ class HuskyMonitor(Node):
                 break
             planned_ids.append(mv.movement_id)
 
-        # Export sidecar iff at least one mv now carries a trajectory.
-        # _loaded_movements shares object identity with _loaded_action.movements
-        # (see load_bar_action_file), so mutations already show up in the action.
-        any_traj = any(getattr(mv, 'trajectory', None) is not None
-                       for mv in self._loaded_movements)
-        if any_traj:
-            from compas.data import json_dump
-            stem, ext = os.path.splitext(self._current_action_path)
-            out_path = f"{stem}.live-solved{ext}"
-            try:
-                json_dump(self._loaded_action, out_path)
-                print(f"[Plan Chain] sidecar written -> {out_path}")
-            except Exception as e:
-                self.get_logger().warn(
-                    f"[Plan Chain] failed to write sidecar {out_path}: {e}"
-                )
+        # Export a sidecar for every half that now carries a trajectory.
+        # _loaded_movements shares object identity with the loaded actions'
+        # movements (see load_bar_action_file), so the plans are already in them.
+        planned = [mv for mv in self._loaded_movements
+                   if getattr(mv, 'trajectory', None) is not None]
+        if planned:
+            written = self._write_action_halves_for(planned, 'Plan Chain')
+            if written:
+                print(f"[Plan Chain] sidecar written -> {', '.join(written)}")
         else:
             print("[Plan Chain] no trajectories to export; skipping sidecar.")
 
@@ -3311,12 +3371,11 @@ class HuskyMonitor(Node):
     def reset_selected_movement_to_clean(self):
         """Revert the currently loaded movement to its authored 'clean' state.
 
-        Re-reads the pristine BarAction JSON from
-        ``self._current_action_path`` and overwrites
-        ``self._loaded_movements[current_movement_index]`` and
-        ``self._loaded_action.movements[current_movement_index]`` with the
-        clean-file version (fresh ``start_state``, no propagated
-        ``robot_configuration`` from a downstream chain break, and
+        Re-reads the pristine BarAction JSON of the half this movement came from
+        (the cycle can span a jointing and a release file) and overwrites the
+        movement in both ``self._loaded_movements`` and that half's own
+        ``movements`` list with the clean-file version (fresh ``start_state``, no
+        propagated ``robot_configuration`` from a downstream chain break, and
         ``trajectory=None``). Other movements are untouched: their propagated
         start_confs may now be stale, and a subsequent 'Plan Chain (Live)'
         will re-populate them.
@@ -3332,28 +3391,35 @@ class HuskyMonitor(Node):
             )
             return
         idx = self.current_movement_index
-        if idx is None or self._loaded_action is None:
+        slot = self._slot_of_movement(idx)
+        if idx is None or slot is None:
             self.get_logger().warn(
                 "Loaded-action state missing; cannot reset."
             )
             return
+        # Re-read this movement's OWN half, at its index within that half.
+        action, half_path, local_idx = slot
         try:
-            clean = parse_bar_action(self._current_action_path)
+            clean = parse_bar_action(half_path)
         except Exception as e:
             self.get_logger().warn(f"Failed to parse clean BarAction: {e}")
             return
-        if idx >= len(clean.movements):
+        if local_idx >= len(clean.movements):
             self.get_logger().warn(
                 f"Clean file has {len(clean.movements)} movements; index "
-                f"{idx} out of range."
+                f"{local_idx} out of range."
             )
             return
-        clean_mv = clean.movements[idx]
+        clean_mv = clean.movements[local_idx]
         # Replace by index in BOTH lists so identity stays consistent for
         # any subsequent sidecar export.
         self._loaded_movements[idx] = clean_mv
-        self._loaded_action.movements[idx] = clean_mv
+        action.movements[local_idx] = clean_mv
         self.current_movement = clean_mv
+        # The cycle's start-EE map points at movement OBJECTS, and this just
+        # swapped one, so rebuild it rather than leave an entry naming the
+        # replaced object.
+        self._loaded_start_ee_sources = cycle_start_ee_sources(self._loaded_movements)
         print(f"[Reset Mv] reverted [{idx}] {clean_mv.movement_id!r} to clean.")
         # The freshly parsed state carries neither the ground body (the cell has
         # it, and compas_fab requires cell and state to agree) nor the
@@ -4283,7 +4349,7 @@ class HuskyMonitor(Node):
             return "\033[32mTrue\033[0m"
         return "\033[31mFalse\033[0m"
 
-    def _bar_action_write_path(self) -> str:
+    def _bar_action_write_path(self, path: str = None) -> str:
         """Decide which file the loaded BarAction may be written back to.
 
         ! A CLEAN Rhino export -- a basename carrying no dotted tag, such as
@@ -4293,10 +4359,15 @@ class HuskyMonitor(Node):
         ! already tagged (a previous `.live-solved.json`, say) is written in
         ! place, so repeated saves do not pile up `.live-solved.live-solved`.
 
+        Args:
+            path (str): Which of the loaded cycle's files to write back.
+                Defaults to the first half, which is the whole action for a
+                legacy single-file export.
+
         Returns:
             str: Absolute path to write the action to.
         """
-        path = self._current_action_path
+        path = path or self._current_action_path
         basename = os.path.basename(path)
         if basename.count('.') > 1:
             return path
@@ -4306,6 +4377,41 @@ class HuskyMonitor(Node):
             f"{basename} is a CLEAN export and will not be overwritten; "
             f"writing to {os.path.basename(diverted)} instead.")
         return diverted
+
+    def _write_action_halves_for(self, movements, tag: str):
+        """Save the cycle halves that own ``movements``, each to its own file.
+
+        Only the half a changed movement lives in is written. Step A adopts M0
+        and M1, and the split export keeps both in the jointing file, so the
+        release half has nothing new and gets no sidecar of its own. Reloading
+        still gives the whole cycle: ``load_action_cycle`` looks for the release
+        sidecar, does not find one, and falls back to the clean release export.
+
+        A legacy single-file action has one half and writes one file, as before.
+        The clean export itself is never overwritten -- see
+        ``_bar_action_write_path``.
+
+        Args:
+            movements (list): The movements whose files must be saved.
+            tag (str): Caller name, used in the log lines.
+
+        Returns:
+            list[str] | None: The paths written, or None if a write failed.
+        """
+        written = []
+        for action, path in self._loaded_action_slots:
+            owns = any(any(mv is m for m in action.movements) for mv in movements)
+            if not owns:
+                continue
+            out_path = self._bar_action_write_path(path)
+            try:
+                json_dump(action, out_path)
+            except Exception as e:
+                self.get_logger().error(
+                    f"[{tag}] failed to write {out_path}: {e}")
+                return None
+            written.append(out_path)
+        return written
 
     def _save_m1_m0_confs_to_bar_action_file(self):
         """Persist the just-adopted M0/M1 configurations into the BarAction JSON.
@@ -4341,17 +4447,18 @@ class HuskyMonitor(Node):
                 "No BarAction loaded; click 'Load BarAction' first.")
             return None
 
-        out_path = self._bar_action_write_path()
-        try:
-            json_dump(self._loaded_action, out_path)
-        except Exception as e:
-            self.get_logger().error(f"Failed to write {out_path}: {e}")
+        # M0 and M1 are what adopting changed, so only their half is saved.
+        adopted = [m for m in (self._loaded_movements or [])
+                   if self._match_movement_role(m) in ('M0', 'M1')]
+        written = self._write_action_halves_for(adopted, 'Adopt')
+        if not written:
             return None
+        out_path = written[0]
 
         self.get_logger().info(
-            f"Saved the adopted M0/M1 configurations -> {out_path}. As long as "
-            f"the base stays put, reload this file next session and plan M0 "
-            f"directly.")
+            f"Saved the adopted M0/M1 configurations -> {', '.join(written)}. As "
+            f"long as the base stays put, reload this file next session and plan "
+            f"M0 directly.")
         # A diverted write creates a file that was not in the list; refresh it
         # so the new file can be selected without restarting.
         if out_path != self._current_action_path:
@@ -4398,13 +4505,11 @@ class HuskyMonitor(Node):
                 f"Click 'Plan Movement' with M0 selected first.")
             return None
 
-        out_path = self._bar_action_write_path()
-
-        try:
-            json_dump(self._loaded_action, out_path)
-        except Exception as e:
-            self.get_logger().error(f"Failed to write {out_path}: {e}")
+        # Only M0's own half is saved; the release half is untouched by this.
+        written = self._write_action_halves_for([m0], 'Export M0')
+        if not written:
             return None
+        out_path = written[0]
 
         solved = [m.movement_id for m in self._loaded_movements
                   if getattr(m, 'trajectory', None) is not None]
@@ -6606,38 +6711,44 @@ class HuskyMonitor(Node):
         # 1) Fetch the AUTHORED start EE frames.
         # ! The authored `target_ee_frames` data is the single source of truth for
         # ! EE targets -- never derive them by FK. A movement's START EE pose is
-        # ! the PREVIOUS movement's authored target (M2 starts where M1 ended, M3
-        # ! where M2 ended), so that is what we read here.
+        # ! the authored target of the movement that ran BEFORE it (M2 starts
+        # ! where M1 ended, M3 where M2 ended). WHICH movement that is comes from
+        # ! the cycle's own start-EE map, resolved once at Load BarAction -- not
+        # ! from `index - 1`, which the split export breaks (between the insert
+        # ! and the retreat sit two screw events that author nothing).
         # ! Why FK is wrong: the visual-servoing loop overwrites
         # ! mv.start_state.robot_configuration with the LIVE arm pose after every
         # ! executed iteration (see husky_world.servo_to_movement_start_live). FK
         # ! from that configuration therefore returns wherever the robot currently
         # ! is, so the "target" drifts along with the robot each pass and the loop
         # ! can never converge on the pose the designer actually authored.
-        start_ee_frames = None
-        prev = None
-        if self.current_movement_index > 0:
-            prev = self._loaded_movements[self.current_movement_index - 1]
-            start_ee_frames = prev.target_ee_frames or None
+        idx = self.current_movement_index
+        sources = {side: self._start_ee_source(idx, side)
+                   for side in ('left', 'right')}
+        start_ee_frames = {
+            side: src.target_ee_frames[side]
+            for side, src in sources.items() if src is not None
+        } or None
         # Cache the authored target EE frames on self so
         # `replan_free_to_movement_start_live`'s endpoint verification can
         # compare the composite plan's final tool0 poses back against the
         # authored targets that drove this IK call.
         self._last_ik_target_ee_frames = start_ee_frames
-        if not start_ee_frames or 'left' not in start_ee_frames or 'right' not in start_ee_frames:
+        missing = [side for side, src in sources.items() if src is None]
+        if missing:
             # No authored data to aim at -- warn and do nothing rather than
             # silently falling back to an FK-derived (drifting) target.
-            where = (f"previous movement {prev.movement_id!r} has no left/right "
-                     f"target_ee_frames" if prev is not None else
-                     "this is the first movement, so there is no previous "
-                     "movement to take authored target_ee_frames from")
             self.get_logger().warn(
-                f"No authored start EE frames for {mv.movement_id!r}: {where}. "
-                "Doing nothing (EE targets are never derived from FK)."
+                f"No authored start EE frames for {mv.movement_id!r}: nothing "
+                f"before it authors target_ee_frames for {missing} without an "
+                f"arm moving in between. Doing nothing (EE targets are never "
+                f"derived from FK). If this is a split export, check that Load "
+                f"BarAction opened BOTH halves -- the insert that authors these "
+                f"poses lives in the jointing file."
             )
             return False
-        print(f"[IK Live Base] start EE frames from prev mv {prev.movement_id!r} "
-              f"authored target_ee_frames.")
+        print(f"[IK Live Base] start EE frames from "
+              f"{ {side: src.movement_id for side, src in sources.items()} }.")
 
         # 2) IK at live base using the derived start EE frames. Inject the
         # live base + live arm conf so IK is warm-started from where the
@@ -7025,13 +7136,18 @@ class HuskyMonitor(Node):
     def _load_available_bar_actions(self):
         """Return sorted *.json BarAction filenames under <problem>/BarActions/.
 
+        One entry per BAR, not per file: the split export's release half
+        (``B6__R.json``) is left out of the list because selecting the jointing
+        half already opens both (``load_action_cycle``). Legacy problems are
+        unaffected -- they have no release halves.
+
         Attribute is kept under the legacy name for back-compat with
         UI/widgets and existing callers; contents are now BarAction files.
         """
         action_dir = os.path.join(
             DESIGN_DATA_DIRECTORY, DESIGN_PROBLEM_NAME, 'BarActions',
         )
-        files = list_bar_actions(action_dir)
+        files = list_bar_actions(action_dir, cycle_only=True)
         if not files:
             print(f"No BarAction *.json files under: {action_dir}")
             return []

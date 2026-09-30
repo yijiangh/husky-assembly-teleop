@@ -1028,6 +1028,14 @@ def save_markerset_data(monitor, filename_suffix="", use_experiment_dir=False):
     if mv is not None:
         movement_id = monitor._match_movement_role(mv) or getattr(mv, 'movement_id', None)
 
+    # Name the file this movement actually came from: a split export keeps the
+    # cycle in two files and the monitor loads both, so M3 is usually in the
+    # release half while _current_action_path names the jointing one.
+    action_path = getattr(monitor, '_current_action_path', None)
+    slot = monitor._slot_of_movement(getattr(monitor, 'current_movement_index', None))
+    if slot is not None:
+        action_path = slot[1]
+
     # Bar world pose + AABB dimensions in the movement's start state, stamped
     # here so the offline scripts don't have to re-parse the BarAction file
     # (older on-disk BarActions may no longer import cleanly).
@@ -1065,7 +1073,7 @@ def save_markerset_data(monitor, filename_suffix="", use_experiment_dir=False):
     with open(filename, 'w') as f:
         payload = {
             'mocap_axis_convention': getattr(monitor, 'MOCAP_AXIS_CONVENTION', 'rotated'),
-            'bar_action_path': getattr(monitor, '_current_action_path', None),
+            'bar_action_path': action_path,
             'movement_id': movement_id,
             'bar_name': getattr(monitor, 'active_bar_name', None),
             'bar_start_position': bar_pose[0] if bar_pose is not None else None,
@@ -3204,7 +3212,15 @@ def wait_for_operator_confirm(monitor, prompt, warn=False):
         bool: True if confirmed, False if cancelled.
     """
     monitor._servo_exec_confirmed = False
-    (monitor.get_logger().warn if warn else monitor.get_logger().info)(prompt)
+    # ! One line per severity, on purpose. rclpy records which severity a given
+    # ! logging LINE first used and raises "Logger severity cannot be changed
+    # ! between calls." if that same line later logs at another level. Choosing
+    # ! the method inline put both levels on one line, so the first safeguard
+    # ! pause after an ordinary one killed the monitor mid servo loop.
+    if warn:
+        monitor.get_logger().warn(prompt)
+    else:
+        monitor.get_logger().info(prompt)
     while not getattr(monitor, '_servo_exec_confirmed', False):
         if getattr(monitor, '_servo_abort', False):
             monitor.get_logger().warn('Cancelled by operator; nothing sent.')

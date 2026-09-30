@@ -1,5 +1,11 @@
 # Bar-holding accuracy data processing
 
+> **Migration notes for the split jointing/release export:**
+> [`i-made-new-bar-smooth-floyd.md`](../.claude/plans/i-made-new-bar-smooth-floyd.md)
+> — a step-by-step audit of what every step below needs from the data, checked
+> against `260929_phase1_retest`, and the changes that followed. Local only:
+> `.claude/plans/` is git-ignored, so the link resolves on this machine.
+
 Two scripts turn raw mocap marker takes (recorded while the robot holds a bar
 at a movement's start state) into accuracy numbers:
 
@@ -42,7 +48,7 @@ The live monitor (`Save markerset data` button) writes:
 | field | meaning |
 |-------|---------|
 | `mocap_axis_convention` | `rhino` (current) or legacy `rotated`; drives axis correction on load |
-| `bar_action_path` | absolute path to the BarAction the movement came from |
+| `bar_action_path` | absolute path to the BarAction **half** the movement came from — a Step B take names `B4__R.json`, since M3 lives in the release file |
 | `movement_id` | **string** role of the chosen movement, e.g. `M2`, `M3` |
 | `bar_name` | active bar id, e.g. `bar_B6` |
 | `bar_start_position` / `bar_start_quaternion` | bar world pose in the movement's **start state** (the reference `1_` compares against) |
@@ -76,22 +82,23 @@ collisions are ignored automatically (see the `[mocap-acc]` log line in Step B).
 ### Pre-flight checklist (per session)
 
 **1. Monitor flags** — class attributes on `HuskyMonitor`
-([`husky_monitor.py`](../husky_assembly_teleop/husky_monitor.py)). The first
-three move together; the file carries the same note next to
-`BAR_ACTION_MOCAP_ACCURACY_TEST`.
+([`husky_monitor.py`](../husky_assembly_teleop/husky_monitor.py)), listed in the
+order they appear in the file. `USE_MOCAP`, `USE_CELL_STATE_BASE_POSE` and
+`BAR_ACTION_MOCAP_ACCURACY_TEST` move together (bold below); the file carries
+the same note next to `BAR_ACTION_MOCAP_ACCURACY_TEST`.
 
 | Flag | Line | Mocap accuracy test | Robot-centric demo |
 |------|------|---------------------|--------------------|
-| `USE_MOCAP` | ~239 | **1** | 0 |
-| `USE_CELL_STATE_BASE_POSE` | ~259 | **0** | 1 |
-| `BAR_ACTION_MOCAP_ACCURACY_TEST` | ~275 | **1** | 0 |
-| `FAKE_HARDWARE` | ~240 | 0 | 0 |
-| `BAR_ACTION_LIVE_REPLAN_EXE` | ~269 | 1 | 1 |
-| `CONNECT_COMPLIANT_CONTROLLER` | ~337 | 1 | 1 |
-| `USE_DPG_UI` | ~260 | 1 | 1 |
-| `MOCK_LIVE_POSE_FOR_REPLAN` | ~224 | 0 | 0 |
-| `REPLAN_SKIP_ENV_COLLISIONS_IN_MOTION_PLAN` | ~234 | 0 | 0 |
-| `CALIBRATION`, `PUNCH_CALIB_VALIDATION`, `DUAL_ARM_*` | — | 0 | 0 |
+| `USE_MOCAP` | ~258 | **1** | 0 |
+| `FAKE_HARDWARE` | ~259 | 0 | 0 |
+| `CONNECT_COMPLIANT_CONTROLLER` | ~282 | 0 | 0 |
+| `USE_CELL_STATE_BASE_POSE` | ~290 | **0** | 1 |
+| `USE_DPG_UI` | ~291 | 1 | 1 |
+| `CALIBRATION`, `PUNCH_CALIB_VALIDATION`, `DUAL_ARM_*` | ~294, ~365 | 0 | 0 |
+| `BAR_ACTION_LIVE_REPLAN_EXE` | ~296 | 1 | 1 |
+| `BAR_ACTION_MOCAP_ACCURACY_TEST` | ~306 | **1** | 0 |
+| `MOCK_LIVE_POSE_FOR_REPLAN` | ~346 | 0 | 0 |
+| `REPLAN_SKIP_ENV_COLLISIONS_IN_MOTION_PLAN` | ~356 | 0 | 0 |
 
 With `USE_MOCAP=0` no mocap client starts; with `USE_CELL_STATE_BASE_POSE=1`
 the live base is never written into the movement state
@@ -99,13 +106,25 @@ the live base is never written into the movement state
 authored base. With `BAR_ACTION_MOCAP_ACCURACY_TEST=0` the Record / Servo
 buttons are not built at all.
 
-**2. Design problem** — `DESIGN_PROBLEM_NAME = '260716_phase1_test'` in
-[`__init__.py`](../husky_assembly_teleop/__init__.py) (~line 60). It holds 27
-bar-actions `B3 … B81`; all use the same **1.4 m** bar and the *same* grasp
-frame, so one physical bar + rig serves the whole session. The `BarActions/`
-folder also contains `B33.solved_motion.json` / `B33.solved_keyframe.json`,
-which are **not** actions — the monitor prints the indexed file list at
-startup, read it and skip those two indices.
+`CONNECT_COMPLIANT_CONTROLLER=0` is deliberate here: Steps A–C drive the arms
+with joint tracking only, never the cartesian compliance path, so the flag only
+saves five 2.5 s service waits at startup. The one thing it costs is the
+end-of-M0 force-torque zero in Step A step 4 — it warns instead of taring. **Set
+it to 1 for any session that actually executes M2 or M3.**
+
+**2. Design problem** — `DESIGN_PROBLEM_NAME = '260929_phase1_retest'` in
+[`__init__.py`](../husky_assembly_teleop/__init__.py) (~line 90). It holds 30
+bar-actions, `B1, B4 … B79` plus `B84`, `B86`, `B88`; all use the same **1.4 m**
+bar held the same way — the left tool sits 1180 mm along the bar, the right at
+220 mm, both 80 mm off its axis — so one physical bar + rig serves the whole
+session.
+
+This export splits each bar's cycle into **two files**, `B4__J.json` (jointing:
+travel out, mount, grasp, transfer, tighten, insert) and `B4__R.json` (release:
+untighten, ungrasp, retreat, home), so the folder holds 60 files. The monitor
+lists one entry per bar — the `__J` file — and **opens both halves**, so the
+Movement slider still walks the whole cycle. See *Movement roles* below for
+which index is which.
 
 **3. Calibration date** — `CALIBRATION_DATE`
 ([`__init__.py:80`](../husky_assembly_teleop/__init__.py#L80)), with the offline
@@ -120,16 +139,22 @@ see [`calibration_manual.md` §4.3](calibration_manual.md#43-data-folder-structu
 | `20260623` | Alice 0804, single arm | `calibrated_transformation_0804_rhino.json` |
 | `20260625` | Cindy 0806, **right** arm | `calibrated_transformation_0806_rhino.json` |
 
-Use **`20260622`** for this experiment. The monitor consumes only
-`base_mocap_from_base_footprint` from the chosen file (the arm mount offsets
-come from the URDF, not from here), and 0622/0625 are two independent estimates
-of that one transform which differ by ≈(1.0, 2.9, 0.6) mm and ≈0.2°. The bar's
-world pose is defined through the **left** tool0 in every BarAction
-(`attached_to_link = left_ur_arm_tool0`), so the left-arm calibration keeps that
-chain exact; all previous takes (20260716 … 20260806) used 0622 too. Expect that
-≈3 mm / 0.2° as the floor of the **right** arm's residual — it is the left/right
-calibration discrepancy, not a servoing failure. `20260623` is Alice's
-single-arm calibration and does not apply to Cindy at all.
+**In use now: `20260916`** — a newer Cindy dataset, set in
+[`__init__.py:80`](../husky_assembly_teleop/__init__.py#L80) since 2026-09-21,
+and the one both the 20260928 and 20260929 sessions ran under. Keep it unless
+you deliberately re-calibrate, so the takes stay comparable.
+
+The table above still explains the earlier folders, and the reasoning behind
+them still applies. The monitor consumes only `base_mocap_from_base_footprint`
+from the chosen file (the arm mount offsets come from the URDF, not from here),
+and 0622/0625 are two independent estimates of that one transform which differ
+by ≈(1.0, 2.9, 0.6) mm and ≈0.2°. The bar's world pose is defined through the
+**left** tool0 in every BarAction (`attached_to_link = left_ur_arm_tool0`), so a
+left-arm calibration keeps that chain exact; the takes from 20260716 … 20260806
+used `20260622` for exactly that reason. Expect ≈3 mm / 0.2° as the floor of the
+**right** arm's residual — it is the left/right calibration discrepancy, not a
+servoing failure. `20260623` is Alice's single-arm calibration and does not apply
+to Cindy at all.
 
 **4. Motive**
 
@@ -167,8 +192,37 @@ ros2 run husky_assembly_teleop husky_monitor
 ```
 
 Confirm on startup: the green `mocap client connected: True` line, the indexed
-`Found N BarAction files:` list, and the real (coloured) husky moving in
-PyBullet when you nudge the base.
+`Found 30 BarAction files:` list (one `__J` entry per bar), and the real
+(coloured) husky moving in PyBullet when you nudge the base. Loading a BarAction
+takes a while and reports `tools loaded: 4` — this cell's `RobotCell.json` is
+355 MB and ships the two support robots (`ObstacleRobotAlice`,
+`ObstacleRobotBelle`) as tool models alongside `AT3L` / `AT3R`.
+
+---
+
+### Movement roles — which index is which
+
+Load BarAction opens both halves, so the Movement slider runs 0…9 over the whole
+cycle. The number inside a movement's **id** is its position in its own file, not
+its classic role: **`B4_J_M3_CDFM_transfer_to_approach` is M1, not M3.** Steer by
+the role the UI prints, or by this table:
+
+| idx | movement id | role | what it is |
+|-----|-------------|------|------------|
+| 0 | `B4_J_M0_free_to_load` | **M0** | free travel to the bar-loading pose |
+| 1 | `B4_J_M1_manual_mount_bar` | — | you mount the bar by hand |
+| 2 | `B4_J_M2_tool_grasp_bar` | — | grasping screws clamp the bar |
+| 3 | `B4_J_M3_CDFM_transfer_to_approach` | **M1** | bar-held transfer to the approach |
+| 4 | `B4_J_M4_tool_tighten_joint` | — | jointing screws start tightening |
+| 5 | `B4_J_M5_LM_insert` | **M2** | bar-held linear insert (assembled pose) |
+| 6 | `B4_R_M0_tool_untighten_joint` | — | jointing screws untighten |
+| 7 | `B4_R_M1_tool_ungrasp_bar` | — | grasping screws release the bar |
+| 8 | `B4_R_M2_LM_retreat` | **M3** | per-arm linear retreat — **Step B measures here** |
+| 9 | `B4_R_M3_free_home` | **M4** | free travel home — Step C |
+
+The dashed rows move no arm at all; this protocol never executes them. On a
+legacy single-file export (`260715_phase1_test`) the cycle is the familiar
+0…4 = M0…M4.
 
 ---
 
@@ -180,10 +234,11 @@ executed** (Step B transfers from the bar-loading pose straight to each bar's
 assembled pose), so only M1's *start* is needed. **You choose it by hand** —
 the automatic derivation (a 120 s sweep) is kept as a fallback, see the note.
 
-1. Set **BarAction file (idx)** to your first action (e.g. `B3.json`) and
-   click **Load BarAction**.
-2. **Movement (idx; 0=M0_synth)** → **1** → **Load Movement**. Then pick the
-   bar-loading pose on the sliders and confirm it:
+1. Set **BarAction file (idx)** to your first action (e.g. `B1__J.json`) and
+   click **Load BarAction** — both halves of that bar open together.
+2. **Movement (idx)** → **3** (M1, the transfer; see *Movement roles*) →
+   **Load Movement**. Then pick the bar-loading pose on the sliders and confirm
+   it:
    - **M1 home anchor** — the carry: `1` horizontal (bar across the front),
      `2` vertical (bar upright in front), `3` back (bar fore-aft over the
      robot); `0` tries them in that order and keeps the first that works.
@@ -220,7 +275,7 @@ the automatic derivation (a 120 s sweep) is kept as a fallback, see the note.
      (slide / shift the bar closer, or another anchor); *the arms collide* =
      the colliding pair is drawn (usually the bar or a forearm against the
      base) — roll, slide or shift the bar, or change the anchor.
-3. **Movement (idx; 0=M0_synth)** → **0** → **Load Movement** →
+3. **Movement (idx)** → **0** → **Load Movement** →
    **Plan Movement**: M0 is the free dual-arm motion from wherever the arms are
    now to that start.
 
@@ -251,7 +306,7 @@ the automatic derivation (a 120 s sweep) is kept as a fallback, see the note.
    data` in Step A.**
 
 > **If no start can be confirmed or M0 will not plan**, fall back to the older
-> protocol for the mount only: **Movement (idx; 0=M0_synth)** → **3** →
+> protocol for the mount only: **Movement (idx)** → **8** (M3) →
 > **Load Movement** → drive
 > the base to the ghost → **3) Servo to Mv Start (live loop)** (the *free*
 > planner, no bar mounted) → mount the bar at the assembled pose. Later bars do
@@ -293,8 +348,8 @@ a reach problem from a branch problem — is in
 To reproduce a derivation at the desk, with no robot and no mocap:
 
 ```bash
-python src/husky-assembly-teleop/scripts/derive_m1_headless.py --bar B3
-python src/husky-assembly-teleop/scripts/derive_m1_headless.py --bar B3 --anchor back
+python src/husky-assembly-teleop/scripts/derive_m1_headless.py --bar B1
+python src/husky-assembly-teleop/scripts/derive_m1_headless.py --bar B1 --anchor back
 ```
 
 Run files land in `recorded_data/m1_derive_runs/` and the baked 3D scene in
@@ -309,14 +364,16 @@ Drive by hand if it is worth keeping.
 Repeat for each bar-action. Nothing here dismounts the bar.
 
 1. **BarAction file (idx)** → next action → **Load BarAction**, then
-   **Movement (idx; 0=M0_synth)** → **3** (M3 = the assembled pose, the same
+   **Movement (idx)** → **8** (M3 = the assembled pose, the same
    reference the 20260717 takes used) → **Load Movement**.
-   Expect the log line
+   **Load BarAction** prints
    `[mocap-acc] ignoring collisions with N built assembly bodies during planning/IK.`
-   and the already-built bars to disappear from the view — that is the
-   "previous bars are only reaching locations" rule being applied. The ghost
-   robot now stands at this action's parked base pose, and a **thick pink
-   line** (with a label) marks the bar's central axis where it sits when
+   and the rest of the assembly disappears from the view — that is the
+   "other bars are only reaching locations" rule being applied. It is printed by
+   *Load BarAction*, not by Load Movement, because it is done once per bar (the
+   first movement is auto-loaded there), so scroll up if you are looking for it.
+   The ghost robot now stands at this action's parked base pose, and a **thick
+   pink line** (with a label) marks the bar's central axis where it sits when
    assembled (M3's start pose, the reference the takes are scored against);
    it stays until the next Load BarAction (log line `[BarAction] pink line =
    bar_B… at its assembled pose`).
@@ -363,7 +420,7 @@ Repeat for each bar-action. Nothing here dismounts the bar.
 ### Step C — wrap up
 
 1. Unmount the bar and rig.
-2. Optionally send the arms home: **Movement (idx; 0=M0_synth)** → **4** →
+2. Optionally send the arms home: **Movement (idx)** → **9** (M4) →
    **Load Movement** →
    **Plan Movement** → **Exec Selected Mv Traj (auto)**.
 3. Everything is already on the Drive under
@@ -392,6 +449,13 @@ Repeat for each bar-action. Nothing here dismounts the bar.
   each other. Fixed on 2026-09-28 (`_ensure_bar_attached_for_mocap` now carries
   the touch lists along and lets every held body touch every other held body);
   if it reappears, the loaded movement's M2 sibling lacks those lists.
+- **`ERROR … NULL reference pose`** on Save — the take is written but cannot be
+  scored. Once **3b** has run, the bar is held, so the reference pose is rebuilt
+  as *authored flange target × grasp*, and the flange target comes from the last
+  movement before M3 that authored one — the **insert (M2)**, two screw events
+  earlier and in the *other* half of the cycle. If this appears, the insert is
+  not in the loaded list: check that Load BarAction opened both halves (its
+  banner names two files) rather than a lone `__R`.
 - **`[transfer plan] constrained plan failed`** — click **3b** again (the
   planner is randomized), or improve the base alignment first. The very first
   transfer of a session (bar-loading pose → assembled pose) is the longest path

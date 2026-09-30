@@ -77,7 +77,7 @@ RECORD_DIRECTORY = os.path.join(DATA_DIRECTORY, '..', 'recorded_data')
 #   * husky_monitor reads the punch-tool TCP offsets from <date>/config.yaml
 #   * the Record/Save buttons WRITE new j0 / j1 / validation / punch_validation
 #     data into <date>/
-CALIBRATION_DATE = '20260916'
+CALIBRATION_DATE = '20260916' # or 20260622
 
 # Used by the OFFLINE SCRIPTS in data/calibration_data/ (0_ ... 4_ and the
 # export/visualise helpers). config_loader.py re-exports this as its
@@ -87,7 +87,7 @@ CALIBRATION_ANALYSIS_DATE = '20260916'
 CALIBRATION_BATCHES = ['j0', 'j1', 'validation', 'punch_validation']
 
 # DESIGN_PROBLEM_NAME = '260811_RobArch_demo'
-DESIGN_PROBLEM_NAME = '260715_phase1_test'
+DESIGN_PROBLEM_NAME = '260929_phase1_retest'
 # DESIGN_PROBLEM_NAME = '2026-05-19_reoriented2'
 
 # Rhino .3dm whose "Environment Obstacles" layer is drawn as the layout-diagram

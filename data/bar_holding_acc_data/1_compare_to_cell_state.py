@@ -22,7 +22,9 @@ from husky_assembly_teleop import (
     DESIGN_DATA_DIRECTORY, DESIGN_PROBLEM_NAME, EXPERIMENT_DATA_DIRECTORY, DEFAULT_ENV_3DM,
 )
 from husky_assembly_teleop.utils import pose_from_frame
-from husky_assembly_teleop.bar_action_io import parse_bar_action, find_movement
+from husky_assembly_teleop.bar_action_io import (
+    find_movement, load_action_cycle, cycle_roles, slot_of_index,
+)
 from husky_assembly_teleop.mocap_experiment import (
     fit_bar_from_markerset,
     bar_deviation_from_goal,
@@ -181,6 +183,50 @@ def _resolve_bar_action_path(path):
     return path
 
 
+def _resolve_take_movement(bar_action_path, key):
+    """Find the movement a take was recorded at, over the bar's whole cycle.
+
+    Takes stamp the classic ROLE ('M3'), which the split export does not put in
+    the movement id -- the retreat is ``B6_R_M2_LM_retreat``, so searching the
+    ids for ``_M3_`` lands on ``B6_R_M3_free_home``, which is M4. Loading the
+    cycle also picks up the other half, so a take that named the jointing file
+    for an M3 measurement still resolves.
+
+    Args:
+        bar_action_path (str): The action file the take named.
+        key (int | str): The stamped ``movement_id``, or a legacy index.
+
+    Returns:
+        tuple: ``(index, movement, action, path)`` -- the last two say which
+        file the movement was found in.
+    """
+    slots = load_action_cycle(bar_action_path)
+    movements = [mv for action, _p in slots for mv in action.movements]
+    roles = cycle_roles(slots)
+
+    if isinstance(key, str) and key in roles:
+        idx = roles.index(key)
+    elif isinstance(key, int):
+        idx = key
+    else:
+        # An exact id or a substring: ask each half in turn.
+        idx, offset = None, 0
+        for action, _p in slots:
+            try:
+                local, _mv = find_movement(action, key)
+            except (KeyError, IndexError):
+                offset += len(action.movements)
+                continue
+            idx = offset + local
+            break
+        if idx is None:
+            raise KeyError(f"No movement matches {key!r} in either half of "
+                           f"{os.path.basename(bar_action_path)}.")
+
+    action, path, _local = slot_of_index(slots, idx)
+    return idx, movements[idx], action, path
+
+
 def _find_bar_action_in_folder(stamped_path):
     """Pick a BarAction *.json by scanning the folder the take points at.
 
@@ -270,15 +316,15 @@ def process_file(file_path, override_bar_action=None, override_movement=None):
         if not os.path.exists(bar_action_path):
             print(f"  SKIP {basename}: BarAction not found: {bar_action_path}")
             return [], []
-        try:
-            action = parse_bar_action(bar_action_path)
-        except Exception as e:
-            print(f"  SKIP {basename}: could not parse BarAction "
-                  f"{os.path.basename(bar_action_path)} ({e})")
-            return [], []
         key = movement_id if movement_id else (
             data.get('movement_index') if data.get('movement_index') is not None else 2)
-        idx, mv = find_movement(action, key)
+        try:
+            idx, mv, action, bar_action_path = _resolve_take_movement(
+                bar_action_path, key)
+        except Exception as e:
+            print(f"  SKIP {basename}: could not resolve movement {key!r} in "
+                  f"{os.path.basename(bar_action_path)} ({e})")
+            return [], []
         bar_name = f"bar_{action.active_bar_id}"
         row_bar_action_path = bar_action_path
         movement_id = mv.movement_id
@@ -403,8 +449,8 @@ def open_pp_viewer_for_goal(bar_action_path, movement_key, takes=None):
     from husky_assembly_teleop.cfab_session import CfabSession
 
     problem_name = _problem_name_from_bar_action_path(bar_action_path)
-    action = parse_bar_action(bar_action_path)
-    idx, mv = find_movement(action, movement_key)
+    idx, mv, action, bar_action_path = _resolve_take_movement(
+        bar_action_path, movement_key)
     bar_name = f"bar_{action.active_bar_id}"
     goal_bar_pose, side = goal_bar_pose_from_movement(mv, bar_name)
 
