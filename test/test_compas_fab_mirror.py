@@ -135,6 +135,21 @@ def test_rebuild_only_when_models_change(mirror, configs, monkeypatch):
     assert mirror.collisions() == [], "a body without collision meshes never collides"
 
 
+def test_disabled_body_is_hidden_without_rebuild(mirror, configs, monkeypatch):
+    """Disabling and enabling a body only changes the state: it stops and starts colliding, no rebuild."""
+    builds = []
+    original = mirror.planner.set_robot_cell
+    monkeypatch.setattr(mirror.planner, "set_robot_cell", lambda cell: builds.append(cell) or original(cell))
+    box = box_geometry((0.2, 0.2, 0.2))
+    mirror.sync(world(configs, (Body("t/box", box, Pose((0.0, 0.0, 0.3))),)))
+    assert mirror.collisions()
+    builds.clear()
+    mirror.sync(world(configs, (Body("t/box", box, Pose((0.0, 0.0, 0.3)), enabled=False),)))
+    assert mirror.collisions(full_report=True) == []
+    mirror.sync(world(configs, (Body("t/box", box, Pose((0.0, 0.0, 0.3))),)))
+    assert mirror.collisions() and builds == []
+
+
 def test_search_check_agrees_with_check_collision(mirror, configs):
     """For random arm configurations near a box, Belle and a held body, the fast check and compas_fab agree."""
     arm = list(stow(configs[ALICE]))

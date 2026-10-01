@@ -5,7 +5,7 @@ Small example plugins, one idea each. Read them in order:
   robot_state.py     example_robot_state  reading configuration and measured state
   pybullet_scene.py  example_pybullet     adding to, querying and cleaning up the PyBullet scene
   sequence.py        example_sequence     a long sequence with timers, Next and Cancel
-  recording.py       example_recording    recording a stream at the full ROS rate
+  recording.py       example_recording    live plots and recordings of signals (ctx.trace, ctx.record)
   plot.py            example_plot         live plots with viser's uPlot widget
 
 Then robot_control/, which puts these together for real robots. Importing this

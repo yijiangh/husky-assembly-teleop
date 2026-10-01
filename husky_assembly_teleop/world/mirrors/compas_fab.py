@@ -147,13 +147,14 @@ class CompasFabMirror:
         """
         acting = snapshot.robots[self.serial]
         others = {robot_id(serial): entry for serial, entry in snapshot.robots.items() if serial != self.serial}
-        # Our id -> (geometry, (world pose, placement, touches)), for everything that can collide.
-        bodies = {body_id: (body.geometry, (snapshot.world_poses[body_id], body.placement, body.touches))
+        # Our id -> (geometry, (world pose, placement, touches, enabled)), for everything that can collide.
+        # ? Disabled bodies are built too, but hidden: switching them on and off never rebuilds the cell.
+        bodies = {body_id: (body.geometry, (snapshot.world_poses[body_id], body.placement, body.touches, body.enabled))
                   for body_id, body in snapshot.bodies.items() if body.geometry.collision}
         for name, entry in snapshot.tracked.items():
             geometry = entry.description.geometry
             if geometry is not None and geometry.collision:
-                bodies[tracked_id(name)] = (geometry, (entry.pose, entry.pose, entry.description.touches))
+                bodies[tracked_id(name)] = (geometry, (entry.pose, entry.pose, entry.description.touches, True))
 
         built = (acting.config, {key: entry.config for key, entry in others.items()},
                  {key: value[0] for key, value in bodies.items()})
@@ -224,13 +225,15 @@ class CompasFabMirror:
         self._built = built
         self._names = {id(value): key for key, value in [*tools.items(), *rigid_bodies.items()]}
 
-    def _body_state(self, pose: Pose, placement: Pose | Attachment, touches: tuple[str, ...]) -> RigidBodyState:
+    def _body_state(self, pose: Pose, placement: Pose | Attachment, touches: tuple[str, ...],
+                    enabled: bool) -> RigidBodyState:
         """A body's compas_fab state: attached to one of our links, or stationary at its world pose.
 
         Args:
             pose: Its world pose.
             placement: As in the scene.
             touches: As in the scene.
+            enabled: As in the scene; a disabled body is hidden, so nothing collides with it.
 
         Returns:
             RigidBodyState: The state.
@@ -248,7 +251,8 @@ class CompasFabMirror:
             else:
                 touch_bodies.append(entry)
 
-        state = RigidBodyState(frame=frame_from_pose(pose), touch_links=touch_links, touch_bodies=touch_bodies)
+        state = RigidBodyState(frame=frame_from_pose(pose), touch_links=touch_links, touch_bodies=touch_bodies,
+                               is_hidden=not enabled)
         if isinstance(placement, Attachment):
             if placement.parent == own and placement.link is not None:
                 state.attached_to_link = placement.link
@@ -266,7 +270,8 @@ class CompasFabMirror:
         for tool, tool_body in client.tools_puids.items():
             for body, parts in client.rigid_bodies_puids.items():
                 state = self.state.rigid_body_states[body]
-                if state.attached_to_link or tool in state.touch_bodies:
+                # ? A hidden body is not moved by compas_fab, so its parts may sit anywhere: skip it.
+                if state.is_hidden or state.attached_to_link or tool in state.touch_bodies:
                     continue
                 if any(p.getClosestPoints(tool_body, part, 0.0, physicsClientId=client.client_id) for part in parts):
                     state.touch_bodies.append(tool)

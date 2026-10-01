@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Literal, get_args
 
 from crl_husky.config_resolver import get_primary_mocap_id_for_robot_serial
+from rclpy.exceptions import ParameterUninitializedException
 from rclpy.node import Node
 
 from .tool_urdfs import stitch_tools
@@ -165,7 +166,6 @@ _DUAL_ARM_URDF = (_URDF_ROOT + "/mt_husky_dual_ur5_e_moveit_config/urdf/"
 _SINGLE_ARM_SRDF = _URDF_ROOT + "/mt_husky_moveit_config/config/{}.srdf"
 _DUAL_ARM_SRDF = _URDF_ROOT + "/mt_husky_dual_ur5_e_moveit_config/config/dual_arm_husky.srdf"
 
-# TODO placeholder (arm pointing straight up), not a stowed arm; replace with a measured stow pose.
 _SINGLE_ARM_STOW = (1.569, -2.973, 2.705, -2.958, 1.572, 0.0)
 # Measured parking poses on Cindy (0806), entered in degrees as the status panel shows them.
 _LEFT_ARM_STOW = tuple(math.radians(d) for d in (-88.4, -2.2, -161.3, -108.8, -0.8, 90.7))
@@ -260,7 +260,7 @@ def config_from_ros_parameters(node: Node) -> MonitorConfig:
     - `tools`: one entry per robot, tools in arm order, "none" for a bare arm; only where it differs
       from `_ROBOTS_BY_SERIAL`.
     - `no_default:=true` skips DEFAULT_PLUGINS.
-    - Robots may be named instead of numbered, in `robots` and `tools` alike.
+    - Robots may be named instead of numbered, in `robots` and `tools` alike. `robots:="[]"` runs without robots.
 
     Args:
         node: The monitor node, whose parameters are read.
@@ -282,8 +282,14 @@ def config_from_ros_parameters(node: Node) -> MonitorConfig:
     shutil.rmtree(STITCHED_URDF_DIRECTORY, ignore_errors=True)
 
     def string_list(name: str) -> tuple[str, ...]:
-        """Read a string-array parameter, dropping the empty-string default."""
-        raw = node.get_parameter(name).get_parameter_value().string_array_value
+        """Read a string-array parameter, dropping the empty-string default.
+
+        ? `-p robots:="[]"` gives an empty list with no element type, which ROS keeps as an unset parameter.
+        """
+        try:
+            raw = node.get_parameter(name).get_parameter_value().string_array_value
+        except ParameterUninitializedException:
+            return ()
         return tuple(item for item in raw if item)
 
     data_text = node.get_parameter("data_directory").get_parameter_value().string_value.strip()

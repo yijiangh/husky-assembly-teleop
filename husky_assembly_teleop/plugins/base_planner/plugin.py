@@ -78,7 +78,8 @@ class BasePlannerPlugin(PlannerPlugin):
         """Build the panel, and a target ghost and a path ghost per robot."""
         serials = [robot.serial for robot in ctx.config.robots]
         if not serials:
-            raise RuntimeError("no robots configured; the base planner has nothing to plan for")
+            self._set_up_idle(ctx, "no robots configured: nothing to plan for")
+            return
         self.serial = serials[0]
         root = ctx.view.scene_root
 
@@ -223,6 +224,8 @@ class BasePlannerPlugin(PlannerPlugin):
 
     def draw(self, ctx: PluginContext) -> None:
         """Pose the ghosts, redraw the path line if needed, and fill the panel."""
+        if self.idle:
+            return
         self._status.content = self._status_html(ctx)
         # Loading a target from the cell can switch the robot; show that here.
         self._robot.value = self.serial

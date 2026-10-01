@@ -87,7 +87,8 @@ class ArmPlannerPlugin(PlannerPlugin):
         """Build the panel, and a target ghost and a path ghost per robot with arms."""
         arms = {robot.serial: [arm.name for arm in robot.arms] for robot in ctx.config.robots if robot.arms}
         if not arms:
-            raise RuntimeError("no robots with arms configured; the arm planner has nothing to plan for")
+            self._set_up_idle(ctx, "no robots with arms configured: nothing to plan for")
+            return
         self._arms = arms
         self.serial = next(iter(arms))
         self._world.log = ctx.log_info  # ? the ROS logger is safe to call from the worker
@@ -274,6 +275,8 @@ class ArmPlannerPlugin(PlannerPlugin):
 
     def update(self, ctx: PluginContext) -> None:
         """Apply queued target loads, then advance playback and check for staleness."""
+        if self.idle:
+            return
         if self._load_now:
             self._load_now = False
             if self._load is None:
@@ -287,6 +290,8 @@ class ArmPlannerPlugin(PlannerPlugin):
 
     def draw(self, ctx: PluginContext) -> None:
         """Pose the ghosts and fill the panel."""
+        if self.idle:
+            return
         self._status.content = block(chip(escape(f"{self.serial} {self.arm}"), SECTION_CTRL) + self._plan_chip())
         # Loading a target from the cell can switch the robot or arm; show that here.
         self._robot.value = self.serial

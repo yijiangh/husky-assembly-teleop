@@ -93,6 +93,8 @@ class PyBulletMirror:
         self._owner: dict[int, str] = {}
         # Our id -> its `touches`, from the last synced snapshot.
         self._touches: dict[str, tuple[str, ...]] = {}
+        # Ids of disabled bodies in the last synced snapshot: built, but never collide.
+        self._disabled: set[str] = set()
         # (shape, built concave) -> collision shape id, shared between bodies.
         # ? Keyed by the shape, not `id(obj)` (reused after free); equal primitives share one.
         self._shapes: dict[tuple[Shape, bool], int] = {}
@@ -127,6 +129,7 @@ class PyBulletMirror:
             concave = isinstance(body.placement, Pose) and any(not mesh.convex for mesh in body.geometry.collision)
             wanted[body_id] = (body.geometry, concave, snapshot.world_poses[body_id])
             touches[body_id] = body.touches
+        self._disabled = {body_id for body_id, body in snapshot.bodies.items() if not body.enabled}
         for name, entry in snapshot.tracked.items():
             if entry.description.geometry is not None:
                 wanted[tracked_id(name)] = (entry.description.geometry, False, entry.pose)
@@ -278,12 +281,12 @@ class PyBulletMirror:
         return self._owner[body]
 
     def obstacle_ids(self) -> list[str]:
-        """Our ids of every body and tracked object that can collide, robots excluded.
+        """Our ids of every enabled body and tracked object that can collide, robots excluded.
 
         ? One without collision meshes has no PyBullet body, so it is left out.
         """
         return [object_id for object_id, built in self._built.items()
-                if built.bodies and not object_id.startswith(f"{ROBOTS}/")]
+                if built.bodies and not object_id.startswith(f"{ROBOTS}/") and object_id not in self._disabled]
 
     # --- --- --- --- --- COLLISIONS --- --- --- --- ---
 
@@ -315,7 +318,7 @@ class PyBulletMirror:
         robot = self._built[own]
         hits: set[str] = set()
         for object_id in self._built if candidates is None else candidates:
-            if object_id == own:
+            if object_id == own or object_id in self._disabled:
                 continue
             other = self._built[object_id]
             for body in other.bodies:

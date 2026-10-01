@@ -2,6 +2,12 @@
 The cell plugin: loads an authored design, draws one movement's cell state at a time, and serves the
 selected step to plugins that declare `requires = ("cell",)`.
 
+Every design body goes into the scene as "cell/<body id>", enabled where it stands in the selected movement's
+start (`design.obstacles`): the core draws it and planners avoid it. Robots, and the bodies they hold, are not
+in the scene yet; the plugin draws them as an overlay (`drawing.DesignDrawing`), with the other bodies on request.
+
+The panel lists a window of the schedule's actions around the selected one (`action_window`); click a row to jump.
+
 Loading an old compas_fab export converts it into `<export>_design` (reused while up to date) and loads that.
 The panel warns when the design's tools differ from the configured ones.
 
@@ -23,7 +29,7 @@ from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
 from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, block, chip, note, section, values
 from ...design_io.timing import Stopwatch
-from .design import CellDesign, Step, displayed_joints, load_design
+from .design import CellDesign, Step, displayed_joints, load_design, obstacles
 from .drawing import DesignDrawing, load_robot_models
 
 if TYPE_CHECKING:
@@ -31,6 +37,23 @@ if TYPE_CHECKING:
 
 #: Give up on a load after this many seconds (converting an old export takes about 15).
 LOAD_TIMEOUT = 300.0
+
+#: Rows in the action list: a window of the schedule, the selected action in the middle row.
+ACTION_ROWS = 7
+
+
+def action_window(current: int, count: int, rows: int = ACTION_ROWS) -> int:
+    """The first action shown in the list: `current` in the middle row, except near either end of the schedule.
+
+    Args:
+        current: Index of the selected action in the schedule.
+        count: How many actions the schedule has.
+        rows: How many rows the list has.
+
+    Returns:
+        int: Schedule index of the top row.
+    """
+    return max(0, min(current - rows // 2, count - rows))
 
 
 def _load_in_background(folder: Path, data_directory: Path, report) -> tuple[CellDesign, dict, Stopwatch]:
@@ -89,8 +112,14 @@ class CellPlugin(HuskyPlugin):
         self._drawing: DesignDrawing | None = None
         self._visible = True
         self._ghost = False
+        # Overlay the bodies that do not stand in the state (absent, placeholder) too.
+        self._everything = False
         # True when the drawing is out of date and draw must re-pose it.
         self._stale = True
+        # Schedule index of the action list's top row, as last drawn; clicks on a row are read against it.
+        self._window_start = 0
+        # The `revision` the scene's obstacles were last put for.
+        self._scene_revision = -1
 
     # --- --- --- --- --- WHAT OTHER PLUGINS READ --- --- --- --- ---
 
@@ -114,14 +143,19 @@ class CellPlugin(HuskyPlugin):
                                              "<export>_design next to it")
             load = gui.add_button("Load", hint="Load the folder; an old export is converted first (about 15 s) "
                                                "unless its <export>_design copy is up to date")
+            self._actions_title = gui.add_html(section("actions", SECTION_CTRL))
+            # * A window of the schedule that follows the selection: click a row to jump to that action.
+            self._action_rows = [gui.add_button("·", color="gray") for _ in range(ACTION_ROWS)]
             gui.add_html(section("step", SECTION_CTRL))
             self._slider = gui.add_slider("Step", min=0, max=1, step=1, initial_value=0)
             go = gui.add_button_group("Go", ["◀ action", "◀", "▶", "action ▶"],
                                       hint="Previous / next movement, or jump to the previous / next action")
             show = gui.add_button_group("Show", ["Start", "Target"],
                                         hint="The robot at the movement's start state, or at its target configuration")
-            view = gui.add_button_group("View", ["Hide", "Ghost"],
-                                        hint="Hide / show the drawn state; ghost makes it see-through")
+            view = gui.add_button_group("View", ["Hide", "Ghost", "All"],
+                                        hint="Hide / show the overlay (robots, tools, held bodies; standing bodies "
+                                             "are scene bodies, always drawn); ghost makes it see-through; all also "
+                                             "overlays absent and placeholder bodies, see-through")
             # ! Keep changing text BELOW the buttons, so they never move mid-click.
             self._details = gui.add_html("")
             self._error_text = gui.add_html("")
@@ -132,6 +166,8 @@ class CellPlugin(HuskyPlugin):
         go.on_click(ctx.defer_value("step button", self._on_go))
         show.on_click(ctx.defer_value("show", lambda label: self._set_at_target(label == "Target")))
         view.on_click(ctx.defer_value("view", self._on_view))
+        for row, button in enumerate(self._action_rows):
+            button.on_click(ctx.defer("select action", lambda row=row: self._on_action_row(row)))
 
     # --- --- --- --- --- COMMANDS (intents, on the main thread) --- --- --- --- ---
 
@@ -180,10 +216,20 @@ class CellPlugin(HuskyPlugin):
         elif label == "action ▶" and step.action_index + 1 < self.design.action_count:
             self.select(self.design.first_step_of(step.action_index + 1))
 
+    def _on_action_row(self, row: int) -> None:
+        """Jump to the first movement of the action shown in a row of the list; empty rows do nothing."""
+        if self.design is None:
+            return
+        action = self._window_start + row
+        if action < self.design.action_count:
+            self.select(self.design.first_step_of(action))
+
     def _on_view(self, label: str) -> None:
-        """Toggle hiding or ghosting the drawn state."""
+        """Toggle hiding or ghosting the overlay, or overlaying every body."""
         if label == "Hide":
             self._visible = not self._visible
+        elif label == "All":
+            self._everything = not self._everything
         else:
             self._ghost = not self._ghost  # `update` applies it, also to a drawing still being built
         self._stale = True
@@ -251,7 +297,10 @@ class CellPlugin(HuskyPlugin):
     # --- --- --- --- --- TICK --- --- --- --- ---
 
     def update(self, ctx: PluginContext) -> None:
-        """Start building the design's viser nodes, if a design is loaded and they are not built yet."""
+        """Put the selected step's obstacles into the scene, and start building the design's viser nodes."""
+        if self._scene_revision != self.revision:
+            self._scene_revision = self.revision
+            self._put_obstacles(ctx)
         if self._drawing is not None:
             self._drawing.set_ghost(self._ghost)
             return
@@ -260,11 +309,20 @@ class CellPlugin(HuskyPlugin):
         if self._build_task is None or self._build_task.done():
             self._build_task = ctx.spawn("draw the design", self._build(ctx))
 
+    def _put_obstacles(self, ctx: PluginContext) -> None:
+        """Replace the scene's cell bodies with the selected step's start state."""
+        ctx.scene.remove_prefix(f"{self.name}/")
+        step = self.step
+        if step is not None:
+            # ? Same ids and geometry objects every step: mirrors only move and switch bodies, never rebuild.
+            ctx.scene.put_many(obstacles(self.design, step.movement.start, f"{self.name}/"))
+
     def draw(self, ctx: PluginContext) -> None:
         """Pose the drawn cell from the selected state, and fill the panel."""
         self._status.content = self._status_html()
         step = self.step
         self._error_text.content = block(values(escape(self._error))) if self._error else ""
+        self._draw_action_list(step)
         if step is None:
             self._details.content = note("no design loaded")
             return
@@ -280,7 +338,7 @@ class CellPlugin(HuskyPlugin):
         if not self._visible:
             return
         try:
-            drawing.show(step.movement.start, displayed_joints(step, self.at_target))
+            drawing.show(step.movement.start, displayed_joints(step, self.at_target), self._everything)
         except Exception as failure:
             # ! A state that does not fit its design is a data problem: report it, do not raise.
             self._error = f"cannot draw {step.label}: {type(failure).__name__}: {failure}"
@@ -289,6 +347,26 @@ class CellPlugin(HuskyPlugin):
             self._error = ""
 
     # --- --- --- --- --- PANEL --- --- --- --- ---
+
+    def _draw_action_list(self, step: Step | None) -> None:
+        """Label the action rows from the window around the selected action, and highlight the selected one.
+
+        ? viser sends only props that changed, so assigning every row each draw is cheap.
+        """
+        count = self.design.action_count if self.design is not None else 0
+        current = step.action_index if step is not None else 0
+        self._window_start = action_window(current, count)
+        self._actions_title.content = section("actions", SECTION_CTRL, f"{current + 1}/{count}" if count else "")
+        for row, button in enumerate(self._action_rows):
+            index = self._window_start + row
+            if index >= count:
+                # ! Never hide a row: that would shift the buttons below it.
+                button.label, button.color = "·", "gray"
+                continue
+            action = self.design.design.actions[self.design.design.schedule[index]]
+            robot = self.design.design.robots[action.robot].name
+            button.label = f"{index + 1}. {action.id} · {robot} · {len(action.movements)} mv"
+            button.color = "blue" if index == current else "gray"
     # ! Keep every row one line tall (`_one_line`) and the chip set fixed, so nothing shifts between steps.
 
     def _status_html(self) -> str:

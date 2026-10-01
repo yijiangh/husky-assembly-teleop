@@ -216,8 +216,7 @@ The core is grouped by what a module is about, not by who calls it:
   holds what sensors report; `scene.py` what we put there; `kinematics.py` the
   link poses; `mirrors/` the planners' private copies; `checks.py` and `mocap.py`
   verdicts on a sensor or mocap fix, as data.
-- `robot_interface/`: the only package that talks to a robot, including
-  `recording.py`, which taps its raw ROS messages.
+- `robot_interface/`: the only package that talks to a robot.
 - `ui/`: the viser server (`visualization.py`), the 3D view (`scene_view.py`) and
   the panel widgets (`style.py`, formerly `ui_style.py`; `ghost.py`,
   `pose_input.py`, `checklist.py`, `pybullet_window.py`); `quaternion.py` holds

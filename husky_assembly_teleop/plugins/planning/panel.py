@@ -24,7 +24,7 @@ from async_timeout import timeout
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin
 from ...ui.ghost import RecentUse, RobotGhost, robot_ghosts
-from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, chip, section
+from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, block, chip, note, section
 from .path import TimedPath
 
 if TYPE_CHECKING:
@@ -104,6 +104,8 @@ class PlannerPlugin(HuskyPlugin):
         self._world: PlanningWorld | None = None
         #: When the operator last used this panel; ghosts show only while it counts (`_add_ghosts`).
         self._used: RecentUse | None = None
+        #: Nothing to plan for (e.g. no robots configured): the panel says why, and the hooks do nothing.
+        self.idle = False
 
     # --- --- --- --- --- FOR THE SUBCLASS TO SUPPLY --- --- --- --- ---
 
@@ -172,6 +174,19 @@ class PlannerPlugin(HuskyPlugin):
         robots = list(robots)
         self._target_ghosts = robot_ghosts(ctx, robots, "target")
         self._path_ghosts = robot_ghosts(ctx, robots, "path")
+
+    def _set_up_idle(self, ctx: PluginContext, why: str) -> None:
+        """Instead of the panel, say why there is nothing to plan for, and stay `idle`. Call from setup.
+
+        * Raising instead would stop the plugin and mark the whole monitor broken, e.g. when run without robots.
+
+        Args:
+            ctx: This plugin's context.
+            why: One line, e.g. "no robots configured".
+        """
+        self.idle = True
+        with ctx.view.ui() as gui:
+            gui.add_html(block(note(escape(why))))
 
     def teardown(self, ctx: PluginContext) -> None:
         """End any search, then close the planning world on its worker."""
@@ -296,6 +311,8 @@ class PlannerPlugin(HuskyPlugin):
 
     def update(self, ctx: PluginContext) -> None:
         """Advance playback, and mark a ready plan stale when `stale_reason` says so."""
+        if self.idle:
+            return
         now = ctx.now()
         elapsed = 0.0 if self._last_tick is None else now - self._last_tick
         self._last_tick = now

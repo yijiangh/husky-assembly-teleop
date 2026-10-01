@@ -285,8 +285,9 @@ class HuskyMonitor(Node):
             self._kinematics.update(self._world)
 
         # 4. Copy the whole world before any plugin runs, for planners and the 3D view.
+        now = self.now()
         with self._timer.part("scene snapshot"):
-            snapshot = self._scene.take_snapshot(self._world, self._kinematics, self._tick_index, self.now())
+            snapshot = self._scene.take_snapshot(self._world, self._kinematics, self._tick_index, now)
 
         # 5. Step each plugin, in dependency order: intents, then update. Each hook is timed for stall reports.
         for loaded in self._loaded.values():
@@ -300,7 +301,15 @@ class HuskyMonitor(Node):
             loaded.ctx._wake_tick_waiters()
         await asyncio.sleep(0)
 
-        # 7. Draw. While frozen (for text selection), only robots and the scene are drawn, not plugins.
+        # 7. Sample traces last, so they see this tick's measurements, link poses and commands alike.
+        for loaded in self._loaded.values():
+            if not loaded.stopped:
+                try:
+                    loaded.ctx._sample_traces(now)
+                except Exception:
+                    self._plugin_failed(loaded, "traces")
+
+        # 8. Draw. While frozen (for text selection), only robots and the scene are drawn, not plugins.
         with self._viz.atomic():
             with self._timer.part("robots and scene draw"):
                 self._viz.draw(snapshot)

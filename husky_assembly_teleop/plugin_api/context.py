@@ -3,7 +3,7 @@ The plugin contract: what a plugin is handed, and what it is allowed to touch.
 
 Each plugin gets its own PluginContext, so its queue, tasks and UI are disposed of with it.
 
-! Import only `concurrency` at runtime, the rest under TYPE_CHECKING: `plugin` and `monitor` import this
+! Import only `concurrency` and `trace` at runtime, the rest under TYPE_CHECKING: `plugin` and `monitor` import this
   module.
 """
 
@@ -12,11 +12,13 @@ from __future__ import annotations
 import asyncio
 import queue
 import traceback
+from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import partial
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Coroutine, TypeVar
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Coroutine, Iterator, TypeVar
 
 from .concurrency import WaitTimeout, describe_exception, ros_future
+from .trace import MAX_SAMPLES, Signal, Trace
 
 T = TypeVar("T")
 
@@ -89,6 +91,8 @@ class PluginContext:
         self._tick_waiters: list[asyncio.Future] = []
         # Set once the plugin is stopped or torn down; no new tasks after that.
         self._closed = False
+        # Traces sampled every tick; see trace.
+        self._traces: list[Trace] = []
 
     # --- --- --- --- --- STATE --- --- --- --- ---
 
@@ -154,6 +158,47 @@ class PluginContext:
     def untrack_object(self, name: str) -> None:
         """Stop tracking `name` and remove it from `world.tracked_objects`. Unknown names are ignored."""
         self._monitor.untrack_object(name)
+
+    # --- --- --- --- --- TRACES --- --- --- --- ---
+
+    def trace(self, *signals: Signal, max_samples: int = MAX_SAMPLES) -> Trace:
+        """Sample `signals` once per tick from now on, until `untrace` or this plugin stops; for live plots.
+
+        Sampled after every plugin's update and task step, stamped with the tick's ROS time.
+
+        Args:
+            signals: What to sample, e.g. from `world/signals.py`.
+            max_samples: Cap; past it the oldest sample is dropped for each new one.
+
+        Returns:
+            Trace: The samples, growing each tick. Show it with `ui.trace_plot.TracePlot`.
+
+        Example:
+            >>> self._trace = ctx.trace(signals.joints(arm), max_samples=600)
+        """
+        trace = Trace(signals, max_samples)
+        self._traces.append(trace)
+        return trace
+
+    def untrace(self, trace: Trace) -> None:
+        """Stop sampling `trace`; it keeps its samples. Unknown traces are ignored."""
+        if trace in self._traces:
+            self._traces.remove(trace)
+
+    @contextmanager
+    def record(self, *signals: Signal, max_samples: int = MAX_SAMPLES) -> Iterator[Trace]:
+        """Sample `signals` once per tick while the `with` block runs; it stops even if the task is cancelled.
+
+        Example:
+            >>> with ctx.record(signals.joints(arm), signals.force(arm)) as rec:
+            ...     await ctx.sleep(5.0)
+            >>> rec.save(path)
+        """
+        trace = self.trace(*signals, max_samples=max_samples)
+        try:
+            yield trace
+        finally:
+            self.untrace(trace)
 
     # --- --- --- --- --- SCHEDULING --- --- --- --- ---
 
@@ -334,6 +379,18 @@ class PluginContext:
             if not waiter.done():  # done means its task was cancelled meanwhile
                 waiter.set_result(None)
 
+    def _sample_traces(self, now: float) -> None:
+        """Sample every trace at time `now`.
+
+        Raises:
+            Exception: Whatever a signal raised; later traces miss this tick.
+        """
+        if not self._traces:
+            return
+        with self._monitor.timer.part(f"plugin {self.name!r} traces"):
+            for trace in list(self._traces):
+                trace.sample(now)
+
     def _take_task_failures(self) -> int:
         """How many tasks raised since the last call."""
         failures, self._task_failures = self._task_failures, 0
@@ -347,6 +404,7 @@ class PluginContext:
         return tasks
 
     def _close(self) -> list[asyncio.Task]:
-        """Refuse new tasks from now on and cancel the running ones. Returns them."""
+        """Refuse new tasks from now on, stop sampling traces and cancel the running tasks. Returns them."""
         self._closed = True
+        self._traces.clear()
         return self._cancel_all_tasks()

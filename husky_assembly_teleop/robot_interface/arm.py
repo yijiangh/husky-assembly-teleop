@@ -22,7 +22,6 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from ur_msgs.msg import IOStates
 
 from ..config import ArmConfig
-from .recording import SampleSource
 from .stream_stats import StreamStats
 from .connections import RosConnections
 from .controller_manager import ControllerManagerInterface, ControllerManagerState
@@ -175,23 +174,6 @@ def joint_move(start: Sequence[float], target: Sequence[float],
 
 
 @dataclass
-class ArmSamples:
-    """Raw messages of the arm's fast streams, for `record`.
-
-    ! EXPERIMENTAL, like recording.py.
-
-    Attributes:
-        joint_states: JointState messages.
-        tcp_pose: PoseStamped messages of the driver's "tcp_pose", in the UR Base frame.
-        wrench: WrenchStamped messages.
-    """
-
-    joint_states: SampleSource = field(default_factory=SampleSource)
-    tcp_pose: SampleSource = field(default_factory=SampleSource)
-    wrench: SampleSource = field(default_factory=SampleSource)
-
-
-@dataclass
 class ArmState:
     """Measured state of one arm.
 
@@ -268,7 +250,6 @@ class ArmInterface:
         state: Measured state, written only by callbacks.
         controllers: Tracks and switches this arm's controllers.
         end_effector: The mounted tool, or None for a bare arm.
-        samples: Every raw message of the fast streams; listeners stay attached across `reconnect`.
     """
 
     def __init__(self, node: Node, robot_namespace: str, config: ArmConfig, base_in_husky: Pose,
@@ -288,7 +269,6 @@ class ArmInterface:
         self.base_in_husky = base_in_husky
         self.urdf_problem = urdf_problem
         self.state = ArmState()
-        self.samples = ArmSamples()
         #: When each test-mode banner was last logged, ROS time.
         self._test_mode_logged: dict[str, float] = {}
         #: Joint positions, by URDF name, where motion was last detected.
@@ -748,7 +728,6 @@ class ArmInterface:
 
     def _on_joint_state(self, message: JointState) -> None:
         """Store joint positions under URDF names and update `is_executing`."""
-        self.samples.joint_states.emit(message)
         now = self._now()
         prefix = f"{self.config.name}_"
         moved = False
@@ -770,7 +749,6 @@ class ArmInterface:
 
     def _on_tcp_pose(self, message: PoseStamped) -> None:
         """Store the driver's "tcp_pose", raw (UR Base frame) and in the controller's `base_link`."""
-        self.samples.tcp_pose.emit(message)
         p, o = message.pose.position, message.pose.orientation
         position = np.array([p.x, p.y, p.z])
         quaternion = np.array([o.x, o.y, o.z, o.w])
@@ -811,7 +789,6 @@ class ArmInterface:
 
     def _on_wrench(self, message: WrenchStamped) -> None:
         """Store the force/torque reading."""
-        self.samples.wrench.emit(message)
         f, t = message.wrench.force, message.wrench.torque
         self.state.wrench = np.array([f.x, f.y, f.z, t.x, t.y, t.z])
 

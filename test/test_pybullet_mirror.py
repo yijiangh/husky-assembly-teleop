@@ -277,3 +277,16 @@ def test_window_without_display_raises_and_keeps_the_world(monkeypatch):
         assert world.obstacle_ids() == ["t/a"], "the world is untouched"
     finally:
         world.close()
+
+
+def test_disabled_body_stays_built_but_never_collides(mirror, config, resets):
+    """A disabled body keeps its PyBullet body (no rebuild), is not an obstacle, and collides again once enabled."""
+    robots = {SERIAL: robot_entry(config)}
+    box = box_geometry((0.2, 0.2, 0.2))
+    mirror.sync(snapshot((Body("t/box", box, Pose((0.0, 0.0, 0.3))),), robots))
+    built = mirror.body_ids("t/box")
+    mirror.sync(snapshot((Body("t/box", box, Pose((0.0, 0.0, 0.3)), enabled=False),), robots))
+    assert mirror.body_ids("t/box") == built
+    assert mirror.obstacle_ids() == [] and mirror.collisions(SERIAL) == []
+    mirror.sync(snapshot((Body("t/box", box, Pose((0.0, 0.0, 0.3))),), robots))
+    assert mirror.body_ids("t/box") == built and mirror.collisions(SERIAL) == ["t/box"]

@@ -114,3 +114,16 @@ def test_tracked_objects(server):
 
     view.sync(_snapshot(tracked={"probe": _tracked("probe")}))
     assert view._tracked["probe"].frame.visible and not view._tracked["bar"].frame.visible
+
+
+def test_disabled_bodies_are_hidden_not_removed(server):
+    """A disabled body is built hidden, and switching it keeps its nodes."""
+    view = SceneView(server)
+    off = Body("en/box", BOX, Pose(), enabled=False)
+    view.sync(_snapshot({"en/box": (off, Pose())}))
+    frame = view._bodies["en/box"].frame
+    assert not frame.visible
+    view.sync(_snapshot({"en/box": _body("en/box")}))
+    assert view._bodies["en/box"].frame is frame and frame.visible
+    view.sync(_snapshot({"en/box": (off, Pose())}))
+    assert view._bodies["en/box"].frame is frame and not frame.visible

@@ -92,7 +92,7 @@ class SceneView:
             if drawn is None:
                 if budget <= 0:
                     continue  # not drawn yet; built in a later tick
-                frame = self._server.scene.add_frame(f"/scene/{body_id}", show_axes=False,
+                frame = self._server.scene.add_frame(f"/scene/{body_id}", show_axes=False, visible=body.enabled,
                                                      position=pose.position, wxyz=quaternion_to_wxyz(pose.orientation))
                 budget -= len(self._add_meshes(f"/scene/{body_id}", body.geometry, body.color))
                 self._bodies[body_id] = _DrawnBody(body.geometry, body.color, pose, frame)
@@ -100,6 +100,8 @@ class SceneView:
                 # ? Compared first: viser sends a message for every assignment.
                 drawn.frame.position, drawn.frame.wxyz = pose.position, quaternion_to_wxyz(pose.orientation)
                 drawn.pose = pose
+            if drawn is not None and drawn.frame.visible != body.enabled:
+                drawn.frame.visible = body.enabled  # disabled: hidden, kept for when it comes back
 
         self._sync_tracked(snapshot, budget)
 

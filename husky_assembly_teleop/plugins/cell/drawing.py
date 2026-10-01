@@ -1,6 +1,9 @@
 """
-Draws one state of a design in viser, from the design alone; forward kinematics from each robot's yourdfpy model.
+The cell's overlay: what the core's 3D view cannot draw of one design state, from the design alone; forward
+kinematics from each robot's yourdfpy model.
 
+- * Bodies that `stand` are scene bodies, drawn by the core. The overlay draws the robots, their tools and the
+  bodies they hold, and, when asked, every other body (absent or at a placeholder pose), always see-through.
 - `load_robot_models` is slow: run it on the loading thread.
 - `DesignDrawing` is main thread only; a new state only changes poses, joint values and colours.
 - ? Robots are single-colour meshes (`add_simple_urdf`), so "Ghost" only changes their opacity.
@@ -18,15 +21,13 @@ import yourdfpy
 from ...design_io import Design, Geometry, Pose, State, compose, shape_mesh
 from ...design_io.types import split_link_id
 from ...ui.visualization import FastViserUrdf, add_simple_urdf, joints_changed, load_urdf, quaternion_to_wxyz
+from .design import body_color, stands
 
-#: Colours, RGB 0-255. Held bodies stand out.
-BAR_COLOR = (205, 170, 110)
-JOINT_COLOR = (120, 120, 140)
-GROUND_COLOR = (170, 180, 170)
+#: Colours, RGB 0-255. Held bodies stand out; other bodies use `design.body_color`.
 ATTACHED_COLOR = (240, 120, 30)
 TOOL_COLOR = (70, 70, 80)
 
-#: Opacity of robots, tools and bodies when "Ghost" is on.
+#: Opacity of robots, tools and held bodies when "Ghost" is on, and always of bodies that do not stand.
 GHOST_OPACITY = 0.4
 
 #: Bodies added per tick while building, so a large design never stalls one tick.
@@ -36,15 +37,6 @@ BODIES_PER_TICK = 20
 def load_robot_models(design: Design) -> dict[str, yourdfpy.URDF]:
     """Read every robot's URDF with its visual meshes, by robot id. Any thread."""
     return {robot_id: load_urdf(robot.urdf) for robot_id, robot in design.robots.items()}
-
-
-def body_color(body_id: str) -> tuple[int, int, int]:
-    """The colour of a body nobody holds: bar, ground, or anything else (joint halves)."""
-    if body_id.startswith("bars/"):
-        return BAR_COLOR
-    if body_id.startswith("ground/"):
-        return GROUND_COLOR
-    return JOINT_COLOR
 
 
 @dataclass
@@ -84,6 +76,8 @@ class DesignDrawing:
         #: Tool or body id -> (frame, meshes).
         self._tools: dict[str, tuple[viser.FrameHandle, list[viser.MeshHandle]]] = {}
         self._bodies: dict[str, tuple[viser.FrameHandle, list[viser.MeshHandle]]] = {}
+        #: Body id -> (colour, opacity) its meshes have, so unchanged ones are not sent again.
+        self._looks: dict[str, tuple[tuple[int, int, int], float | None]] = {}
         self._ghost = False
 
     def build(self) -> Iterator[None]:
@@ -105,6 +99,7 @@ class DesignDrawing:
             self._tools[tool_id] = self._add(f"{self._root_path}/{tool_id}", tool.geometry, TOOL_COLOR)
         yield
         for count, (body_id, body) in enumerate(self._design.bodies.items(), start=1):
+            # ? Coloured by `show`, which knows whether the body is held.
             self._bodies[body_id] = self._add(f"{self._root_path}/bodies/{body_id}", body.geometry,
                                               body_color(body_id))
             if count % BODIES_PER_TICK == 0:
@@ -136,13 +131,14 @@ class DesignDrawing:
     def visible(self, value: bool) -> None:
         self._root.visible = value
 
-    def show(self, state: State, joints: Mapping[str, Mapping[str, float]]) -> None:
-        """Pose everything from one state.
+    def show(self, state: State, joints: Mapping[str, Mapping[str, float]], everything: bool = False) -> None:
+        """Pose the overlay from one state.
 
         Args:
             state: Which robots are there and where, which bodies are present, held or moved.
             joints: Robot id -> joint values to draw it at (`design.displayed_joints`);
                 joints not given are drawn at zero.
+            everything: Also draw the bodies that neither stand nor are held (absent, placeholder).
         """
         # * Robots first: tools and held bodies read their links from the posed models.
         for robot_id, robot in self._robots.items():
@@ -167,10 +163,7 @@ class DesignDrawing:
                 frame.visible = True
 
         for body_id, (frame, meshes) in self._bodies.items():
-            if body_id not in state.present:
-                frame.visible = False
-                continue
-            attached = state.attached.get(body_id)
+            attached = state.attached.get(body_id) if body_id in state.present else None
             if attached is not None:
                 holder, link = split_link_id(attached.to)
                 holder_state = state.robots.get(holder)
@@ -178,12 +171,19 @@ class DesignDrawing:
                     frame.visible = False  # held by a robot that is not there
                     continue
                 pose = compose(self._link_pose(holder, link, holder_state.base), attached.grasp)
-                color = ATTACHED_COLOR
+                look = (ATTACHED_COLOR, GHOST_OPACITY if self._ghost else None)
+            elif everything and not stands(state, body_id):
+                pose = state.poses.get(body_id, self._design.bodies[body_id].pose)
+                look = (body_color(body_id), GHOST_OPACITY)
             else:
-                pose, color = state.poses.get(body_id, self._design.bodies[body_id].pose), body_color(body_id)
+                frame.visible = False  # standing: the core draws it; or not asked for
+                continue
             _place(frame, pose)
-            for mesh in meshes:
-                mesh.color = color
+            if self._looks.get(body_id) != look:
+                # ? Compared first: viser sends a message for every assignment.
+                for mesh in meshes:
+                    mesh.color, mesh.opacity = look
+                self._looks[body_id] = look
             frame.visible = True
 
     def _link_pose(self, robot_id: str, link: str, base: Pose) -> Pose:
@@ -191,7 +191,7 @@ class DesignDrawing:
         return compose(base, Pose.from_matrix(self._robots[robot_id].model.get_transform(frame_to=link)))
 
     def set_ghost(self, ghost: bool) -> None:
-        """Draw everything see-through, or solid again."""
+        """Draw robots and tools see-through, or solid again; held bodies follow on the next `show`."""
         if ghost == self._ghost:
             return
         self._ghost = ghost
@@ -199,7 +199,7 @@ class DesignDrawing:
         for robot in self._robots.values():
             for mesh in robot.urdf._meshes:
                 mesh.opacity = opacity
-        for _, meshes in [*self._tools.values(), *self._bodies.values()]:
+        for _, meshes in self._tools.values():
             for mesh in meshes:
                 mesh.opacity = opacity
 

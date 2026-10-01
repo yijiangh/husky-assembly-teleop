@@ -1,6 +1,7 @@
 """
 A design (doc/design_format.md) as the cell plugin steps through it: every movement as a step, and the joints
 to draw each robot at. A movement without authored start joints is drawn where its robot last was.
+`obstacles` turns a state's bodies into scene bodies: the core draws them, and planners avoid them.
 
 ! Runs on a worker thread: nothing here may touch viser, PyBullet or a PluginContext.
 """
@@ -13,9 +14,15 @@ from typing import Callable
 
 from ...design_io.conversion import (DESIGN_FILE, OLD_EXPORT_FILE, convert_export, converted_folder, is_old_export,
                                      is_up_to_date)
-from ...design_io import Action, Design, Movement, read
+from ...design_io import Action, Design, Movement, State, read
 from ...design_io.carry import assumed_start_all
 from ...design_io.timing import Stopwatch
+from ...world.scene import Body
+
+#: Colours of bodies nobody holds, RGB 0-255.
+BAR_COLOR = (205, 170, 110)
+JOINT_COLOR = (120, 120, 140)
+GROUND_COLOR = (170, 180, 170)
 
 
 @dataclass(frozen=True)
@@ -143,3 +150,52 @@ def displayed_joints(step: Step, at_target: bool) -> dict[str, dict[str, float]]
         for robot_id, values in target.joints.items():
             joints.setdefault(robot_id, {}).update(values)
     return joints
+
+
+def body_color(body_id: str) -> tuple[int, int, int]:
+    """The colour of a body nobody holds, RGB 0-255: bar, ground, or anything else (joint halves, obstacles)."""
+    if body_id.startswith("bars/"):
+        return BAR_COLOR
+    if body_id.startswith("ground/"):
+        return GROUND_COLOR
+    return JOINT_COLOR
+
+
+def stands(state: State, body_id: str) -> bool:
+    """Whether a body stands in a state on its own: present, not held by a robot, and not at a placeholder pose.
+
+    * Standing bodies go into the scene enabled; the cell's overlay draws the rest.
+    """
+    return body_id in state.present and body_id not in state.attached and body_id not in state.placeholder
+
+
+def obstacles(cell: CellDesign, state: State, prefix: str) -> list[Body]:
+    """Every body of the design, as a scene body "<prefix><body id>", enabled where it `stands`.
+
+    * Every state gives the same ids, geometry objects and colours, so stepping never rebuilds a body in a
+      mirror or the 3D view: it only moves, enables and disables them.
+    Allowed contacts (the design's and the state's) are kept between bodies; contacts with robots and tools
+    are dropped, as robots are not in the scene yet.
+
+    Args:
+        cell: The loaded design.
+        state: The state, e.g. the selected movement's start.
+        prefix: Id prefix, the owning plugin's "<name>/".
+
+    Returns:
+        list[Body]: One scene body per design body.
+    """
+    bodies = cell.design.bodies
+
+    # * Every allowed contact both ways, as `touches` may name either side.
+    contacts: dict[str, set[str]] = {}
+    pairs = set(state.touches) | {(body_id, other) for body_id, body in bodies.items() for other in body.touches}
+    for a, b in pairs:
+        contacts.setdefault(a, set()).add(b)
+        contacts.setdefault(b, set()).add(a)
+
+    return [Body(f"{prefix}{body_id}", body.geometry, state.poses.get(body_id, body.pose),
+                 touches=tuple(f"{prefix}{other}" for other in sorted(contacts.get(body_id, ())) if other in bodies),
+                 label=body.label or body_id, color=tuple(c / 255 for c in body_color(body_id)) + (1.0,),
+                 enabled=stands(state, body_id))
+            for body_id, body in bodies.items()]

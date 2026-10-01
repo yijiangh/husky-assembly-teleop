@@ -69,6 +69,8 @@ class Body:
             "robots/<serial>/<link>", "tracked/<name>". Either side may list the other.
         label: Display text, e.g. in collision messages. Empty: use the id.
         color: (r, g, b, a) from 0 to 1 for the 3D view, or None for grey.
+        enabled: False: never collides and is not drawn, but mirrors keep it built, so turning it back on is
+            cheap. * Prefer this over removing and re-adding bodies that come and go.
     """
 
     id: str
@@ -77,13 +79,14 @@ class Body:
     touches: tuple[str, ...] = ()
     label: str = ""
     color: tuple[float, float, float, float] | None = None
+    enabled: bool = True
 
     def copy(self) -> Body:
         """A copy that later changes to this body don't reach. Shares the geometry.
 
         ? Built by hand: about 4x faster than `copy.copy`.
         """
-        return Body(self.id, self.geometry, self.placement, self.touches, self.label, self.color)
+        return Body(self.id, self.geometry, self.placement, self.touches, self.label, self.color, self.enabled)
 
 
 @dataclass(eq=False)
@@ -155,6 +158,7 @@ class SceneSnapshot:
         tick: Index of the tick it was taken in.
         time: ROS time it was taken.
         bodies: Copies of every body, by id, except attached ones whose parent has no pose yet.
+            ! Disabled bodies are included: check `Body.enabled` before treating one as an obstacle.
         world_poses: The world pose of every body in `bodies`, attachments resolved.
         robots: Every robot, by serial.
         tracked: Every tracked object that has had a fix, by name.

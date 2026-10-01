@@ -6,7 +6,7 @@ replaces. See `doc/refactor_rationale.md` for why the old flags had to go, and
 
 | Plugin | Replaces | Notes |
 | --- | --- | --- |
-| `example_*` | — | **Done.** Six small teaching plugins in `plugins/examples/`: `example_ui` (widgets, intents), `example_robot_state` (config vs state), `example_pybullet` (scene use and cleanup), `example_sequence` (timers, Next, Cancel), `example_recording` (full-rate recording; experimental), `example_plot` (live uPlot). |
+| `example_*` | — | **Done.** Six small teaching plugins in `plugins/examples/`: `example_ui` (widgets, intents), `example_robot_state` (config vs state), `example_pybullet` (scene use and cleanup), `example_sequence` (timers, Next, Cancel), `example_recording` (live plot and recording of signals), `example_plot` (live uPlot). |
 | `robot_control` | the per-robot status readouts and manual buttons | **Done; the reference plugin.** Shows every robot's state, switches controllers, and holds each controller's inputs (base twist; arm joint moves, streamed Cartesian moves with a compliance force, zero FT; tool open/close/stop, plus Robotiq position and reactivate, scaffolding screw). Read it before writing a new plugin. |
 | `health` | — | **Done; loaded by default** (`config.DEFAULT_PLUGINS`, off with `-p no_default:=true`). One glance at every robot and tracked object: mocap live and its marker error, controller managers answering, joint_states fresh, gripper action connected / tool status fresh. Green banner when all is well. |
 | `cell` | BarAction loading and stepping | **Milestone 1 done: load and view.** Loads a schema 1 design folder through `design_io` (`doc/design_format.md`; `-p design_directory:=...` or the panel; an old compas_fab export is converted on load into `<export>_design`, reused while up to date; `scripts/convert_design.py` does the same offline), steps through every movement of the schedule and draws its authored `RobotCellState` (start or target) from forward kinematics. Purely a viewer and provider: no planner, no PyBullet. Planning plugins declare `requires = ("cell",)` and read `step` / `cell` / `revision` for their goal and initial guess, and bring their own compas_fab client. Next: show precomputed trajectories; put the design's objects into the scene (`doc/scene_refactor_plan.md` phase 4), ids prefixed `cell/` (e.g. `cell/bars/B1`). |
@@ -49,10 +49,15 @@ button, and cancelled with `task.cancel()` from another. The logic reads in the
 order it happens, and the task's `finally` block is where hardware is made safe.
 `plugins/examples/sequence.py` is the template.
 
-## Open: recording high-rate state
+## Recording and live plots: once per tick
 
-Experiments need state at its full update rate, not the 20 Hz tick. The
-experimental `robot_interface/recording.py` only taps raw ROS messages of a few arm topics. It
-should be just as easy to record any interface state (joint positions, TCP
-pose, a mocap fix, a derived value) at the rate it updates. Undecided how;
-`cell`, `base_planner` and `arm_planner` are experimental too.
+A `Signal` (`plugin_api/trace.py`) is any function of live state, so derived
+values (FK, tracking errors) record like measurements. `ctx.trace(...)` samples
+signals every tick for a live `ui/trace_plot.TracePlot`; `with ctx.record(...)`
+does the same for the length of a block, then `rec.save(path)`. Common signals
+are in `world/signals.py`. Recording at the full stream rate was dropped: the
+rate limiter only forwards 50 Hz, and what needs more than 20 Hz (contact
+transients, controller tuning) needs the driver's 500 Hz, i.e. `ros2 bag
+record` on the robot.
+
+Still experimental: `cell`, `base_planner` and `arm_planner`.
