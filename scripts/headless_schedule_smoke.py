@@ -59,6 +59,11 @@ Then the flow, on the fixture's first hold (Alice holds B3):
       H_M2 (linear), gripper CLOSE step with the compliant handoff (controllers
       joint -> compliance -> joint), Mark entry done -> belief 'live' at B3__H's
       end, trajectories saved to B3__H.live-solved.json
+    - the live goal (``alice_live_goal_check``, F3): base not tracked -> the free
+      approach keeps its exported goal; base tracked and moved 3 cm -> its goal
+      is re-solved by IK at the live base (flange on the approach pose), the
+      gripper step and the linear approach start from it, the linear approach
+      plans; base 2 m away -> nothing planned, one 'not planning' warning
   Cindy's restart (domain 86, a new monitor object)
     - start-up: her simulated arms take her own progress.json belief (after
       entry 0), one log line
@@ -96,12 +101,14 @@ takes under a minute (most of it Cindy's R_M3 free plan to home).
 
 import argparse
 import hashlib
+import io
 import os
 import shutil
 import sys
 import tempfile
 import time
 import traceback
+from contextlib import redirect_stdout
 from types import SimpleNamespace
 from typing import Optional
 
@@ -129,7 +136,10 @@ from husky_assembly_teleop.progress_io import (
 )
 from husky_assembly_teleop.robot_registry import other_robots, robot_by_name
 from husky_assembly_teleop.schedule_io import load_schedule, problem_root
-from husky_assembly_teleop.utils import joint_trajectory_from_path, pose_from_frame, vec12_from_conf
+from husky_assembly_teleop.utils import (
+    joint_trajectory_from_path, path_from_joint_trajectory, pose_from_frame, vec12_from_conf,
+)
+from husky_assembly_tamp.motion_planner.api import _fk_link_frame
 
 # * The fixture's first hold: Alice holds B3 (entry B3_H); B3_R is Cindy's
 # * release of B3 and B4_J the jointing whose export poses Alice correctly.
@@ -151,6 +161,15 @@ SAME_TOL = 1e-6
 SEED_TOL = 1e-9
 # The linear plan ends within ~1e-3 rad of the exported target configuration.
 CONF_TOL = 2e-3
+# * Alice's live goal check: how far her tracked base is moved from the authored
+# * one, and how close the re-solved goal must put the flange on the approach pose
+# * (the tolerances of the monitor's goal IK, husky_world.solve_goal_ik_generic).
+LIVE_BASE_SHIFT_M = 0.03
+OUT_OF_REACH_SHIFT_M = 2.0
+FLANGE_POS_TOL = 1e-3
+FLANGE_ANG_TOL = 0.01
+# The re-solved goal at the shifted base must differ from the exported one by more than this.
+GOAL_MOVED_TOL = 1e-3
 
 
 # * ---------------------------------------------------------------------------
@@ -542,6 +561,38 @@ def frame_dist(a, b) -> float:
 def pt(frame) -> list:
     """A frame's point rounded to 4 decimals, for printing."""
     return np.round(list(frame.point), 4).tolist()
+
+
+def frame_residual(a, b) -> tuple:
+    """Distance (m) and rotation angle (rad) between two frames.
+
+    Args:
+        a (Frame): One frame.
+        b (Frame): The other frame.
+
+    Returns:
+        tuple: ``(distance between the points, angle of the rotation from a to b)``.
+    """
+    d_pos = float(np.linalg.norm(np.subtract(list(a.point), list(b.point))))
+    dot = abs(float(np.dot(a.quaternion.xyzw, b.quaternion.xyzw)))
+    return d_pos, 2.0 * float(np.arccos(min(1.0, dot)))
+
+
+def call_keeping_prints(fn, *args) -> tuple:
+    """Call a function, keep what it prints (and still print it), for checks on print-only lines.
+
+    Args:
+        fn: The function.
+        *args: Its arguments.
+
+    Returns:
+        tuple: ``(its return value, everything it printed)``.
+    """
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        out = fn(*args)
+    sys.stdout.write(buf.getvalue())
+    return out, buf.getvalue()
 
 
 def select_movement(monitor, idx: int):
@@ -1201,6 +1252,8 @@ def plan_release(results: Results, monitor, iface: StubInterface, alice, belief)
 def alice_run(results: Results, problem: str, root: str, schedule) -> None:
     """Alice's monitor: run her hold entry end to end, with the compliant gripper handoff.
 
+    Ends with ``alice_live_goal_check`` on the same monitor.
+
     Args:
         results (Results): Where the checks go.
         problem (str): Problem folder name.
@@ -1328,8 +1381,134 @@ def alice_run(results: Results, problem: str, root: str, schedule) -> None:
                       monitor._loaded_entry_bundle.path == clean_path and os.path.isfile(sidecar)
                       and not monitor._schedule_flags[hold.index].sidecar
                       and all(mv.trajectory is None for mv in monitor._loaded_movements))
+
+        # * --- F3: the free approach's goal re-solved by IK at a tracked base
+        alice_live_goal_check(results, monitor, iface, log, hold)
     finally:
         monitor.cfab.close()
+
+
+def alice_live_goal_check(results: Results, monitor, iface: StubInterface,
+                          log: RecordingLogger, hold) -> None:
+    """Alice's free approach plans to the goal IK solves at her LIVE base (F3).
+
+    (a) Base not tracked (USE_MOCAP 0): the goal is the exported target, no IK
+    runs. (b) Base tracked and moved +3 cm in x, arms at home: the free approach
+    plans from the live base, its flange ends on the exported approach pose,
+    and its goal differs from the exported one. (c) The gripper step and the
+    linear approach start where the free approach ends. (d) The linear approach
+    plans. (e) Base +2 m (out of reach): no plan, one 'not planning' warning.
+    Movements are found by kind. The monitor's flags (set on the instance) and
+    the stub's pose are restored at the end.
+
+    Args:
+        results (Results): Where the checks go.
+        monitor (HuskyMonitor): Alice's monitor, her hold entry loaded from the clean export.
+        iface (StubInterface): Alice's stub robot.
+        log (RecordingLogger): Alice's logger.
+        hold (ScheduleEntry): Her hold entry.
+    """
+    alice = monitor._connected_robot()
+    side = alice.side_keys[0]
+    names = list(alice.arm_joint_names[0])
+    exported = monitor._schedule.load_action(hold, prefer_sidecar=False)
+    free_idx = monitor._loaded_index_of(MovementKind.SINGLE_FREE)
+    linear_idx = monitor._loaded_index_of(MovementKind.SINGLE_LINEAR)
+    exported_goal = np.array([exported.movements[free_idx].target_configuration[n] for n in names])
+    authored_pos, authored_rot = pose_from_frame(
+        exported.movements[free_idx].start_state.robot_base_frame)
+
+    def goal_of(mv) -> np.ndarray:
+        return np.array([mv.target_configuration[n] for n in names])
+
+    def arms_at_start(i: int) -> np.ndarray:
+        conf = monitor._loaded_movements[i].start_state.robot_configuration
+        return np.array([conf[n] for n in names])
+
+    flags = ('USE_MOCAP', 'USE_CELL_STATE_BASE_POSE', 'FAKE_HARDWARE')
+    own_flags = {name: vars(monitor)[name] for name in flags if name in vars(monitor)}
+    saved_pose = (iface.position.copy(), iface.rotation.copy(),
+                  [np.asarray(a, dtype=float).copy() for a in iface.arm_joint_pose])
+    try:
+        # * --- (a) base not tracked: the exported goal, no IK
+        monitor.USE_MOCAP = 0
+        mv = select_movement(monitor, free_idx)
+        ok, printed = call_keeping_prints(monitor._resolve_single_arm_goal_live, mv)
+        diff = float(np.abs(goal_of(mv) - exported_goal).max())
+        results.check(f"Alice live goal: base not tracked -> {mv.movement_id} keeps the "
+                      f"exported goal, no IK",
+                      ok is True and diff == 0.0 and 'base not tracked' in printed
+                      and '[goal IK]' not in printed,
+                      f"|goal - exported| {diff:.1e} rad")
+
+        # * --- (b) base tracked, moved +3 cm in x, arms at home: plan the free approach
+        monitor.USE_MOCAP = 1
+        monitor.USE_CELL_STATE_BASE_POSE = 0
+        # ! Mocap drives the base here: with FAKE_HARDWARE, Load Movement would
+        # ! teleport the stub base back to the movement's authored base.
+        monitor.FAKE_HARDWARE = 0
+        iface.position = np.asarray(authored_pos, dtype=float) + [LIVE_BASE_SHIFT_M, 0.0, 0.0]
+        iface.rotation = np.asarray(authored_rot, dtype=float)
+        iface.arm_joint_pose = [np.asarray(UR5e_HOME_STATE, dtype=float).copy()]
+        monitor.load_schedule_entry(hold.index)
+        mv = select_movement(monitor, free_idx)
+        monitor.plan_selected_movement()
+        jt = mv.trajectory
+        end = np.asarray(path_from_joint_trajectory(jt, names)[-1], dtype=float) if jt is not None else None
+        base_err = float(np.abs(np.subtract(list(mv.start_state.robot_base_frame.point),
+                                            iface.position)).max())
+        d_pos = d_ang = goal_moved = np.inf
+        if end is not None:
+            end_state = mv.start_state.copy()
+            monitor._merge_arm_values(end_state, names, end)
+            flange = _fk_link_frame(monitor.cfab.planner, end_state, alice.flange_for_side(side))
+            d_pos, d_ang = frame_residual(flange, mv.target_ee_frames[side])
+            goal_moved = float(np.abs(goal_of(mv) - exported_goal).max())
+        results.check(f"Alice live goal: base tracked +{LIVE_BASE_SHIFT_M * 100:.0f} cm -> "
+                      f"{mv.movement_id} plans from the live base, its flange ends on the "
+                      f"approach pose, goal re-solved",
+                      jt is not None and base_err < SAME_TOL and d_pos < FLANGE_POS_TOL
+                      and d_ang < FLANGE_ANG_TOL and goal_moved > GOAL_MOVED_TOL,
+                      f"{len(jt.points) if jt is not None else 0} points, |base - live| {base_err:.1e} m, "
+                      f"flange {d_pos * 1000:.2f} mm / {d_ang:.4f} rad, "
+                      f"|goal - exported| {goal_moved:.4f} rad")
+        if end is None:
+            return
+
+        # * --- (c) the gripper step and the linear approach start at the free approach's end
+        steps = [i for i in range(free_idx + 1, linear_idx)
+                 if movement_kind(monitor._loaded_movements[i]) in STATIONARY_KINDS] + [linear_idx]
+        diffs = [float(np.abs(arms_at_start(i) - end).max()) for i in steps]
+        results.check(f"Alice live goal: {[monitor._loaded_movements[i].movement_id for i in steps]} "
+                      f"start where {mv.movement_id} ends",
+                      len(steps) > 1 and max(diffs) < SEED_TOL,
+                      f"max diffs {np.round(diffs, 9).tolist()}")
+
+        # * --- (d) the linear approach plans from there
+        mv = select_movement(monitor, linear_idx)
+        monitor.plan_selected_movement()
+        jt = mv.trajectory
+        results.check(f"Alice live goal: {mv.movement_id} plans from the re-solved goal",
+                      jt is not None, f"{len(jt.points) if jt is not None else 0} points")
+
+        # * --- (e) base 2 m away: no collision-free IK, nothing planned
+        iface.position = np.asarray(authored_pos, dtype=float) + [OUT_OF_REACH_SHIFT_M, 0.0, 0.0]
+        monitor.load_schedule_entry(hold.index)
+        mv = select_movement(monitor, free_idx)
+        n = len(log.msgs)
+        monitor.plan_selected_movement()
+        warned = log.since(n, 'warn', 'not planning')
+        results.check(f"Alice live goal: base +{OUT_OF_REACH_SHIFT_M:.0f} m -> {mv.movement_id} "
+                      f"not planned, one warning",
+                      mv.trajectory is None and len(warned) == 1,
+                      warned[0] if warned else 'no warning')
+    finally:
+        for name in flags:
+            if name in own_flags:
+                setattr(monitor, name, own_flags[name])
+            else:
+                vars(monitor).pop(name, None)   # back to the class value
+        iface.position, iface.rotation, iface.arm_joint_pose = saved_pose
 
 
 def first_default_traj_time(kind: str) -> float:

@@ -3749,7 +3749,9 @@ class HuskyMonitor(Node):
         - DUAL_INDEPENDENT_LINEAR: the retreat (``_plan_M3_dispatch``).
         Support robot (single arm):
         - SINGLE_FREE (e.g. ``H_M0``): joint-space BiRRT from the LIVE arm joints
-          to the authored ``target_configuration``.
+          to ``target_configuration``. When mocap tracks the base, that goal is
+          first re-solved by IK for the approach pose at the live base
+          (``_resolve_single_arm_goal_live``); otherwise the exported one is used.
         - SINGLE_LINEAR (e.g. ``H_M2``): straight flange line from the movement's
           start configuration (the previous movement's end, chained by
           ``_accept_trajectory``) to ``target_ee_frames['arm']``.
@@ -3828,6 +3830,10 @@ class HuskyMonitor(Node):
             self._inject_live_conf_into_state(mv.start_state)
             if not self._apply_live_base_to_movement(mv):
                 return
+            # * The goal: the approach pose solved by IK at the live base (the
+            # * exported target was solved for the authored base).
+            if not self._resolve_single_arm_goal_live(mv):
+                return
             # Pause GUI rendering during the search (does nothing when headless).
             with pp.LockRenderer():
                 path, info = plan_free_motion(
@@ -3877,6 +3883,77 @@ class HuskyMonitor(Node):
                 f"previously loaded movement, not {mv.movement_id!r}.")
             return
         self._accept_trajectory(mv, jt, source='Plan')
+
+    def _resolve_single_arm_goal_live(self, mv: Movement) -> bool:
+        """Re-solve a support robot's free-move goal by IK at the live base.
+
+        The exported ``target_configuration`` was solved in Rhino for the
+        authored base. When mocap tracks the base (``_base_pose_is_tracked``)
+        the husky stands somewhere else, so that configuration would put the
+        flange off its approach pose and the linear move to the grasp after it
+        would start from the wrong place. Here the approach pose
+        (``target_ee_frames``) is solved by IK at the live base instead
+        (collision-checked), written into ``mv.target_configuration``, and
+        carried into the start of the steps after it: the gripper step, then
+        the next arm movement (``_carry_configuration_forward``).
+
+        When nothing tracks the base, the robot stands at the authored base:
+        the stored target is kept and no IK runs.
+
+        Call it after ``_inject_live_conf_into_state`` and
+        ``_apply_live_base_to_movement``, so ``mv.start_state`` holds the live
+        base and the live arm joints.
+
+        Args:
+            mv (Movement): The loaded single-arm free movement (with a
+                ``target_configuration``).
+
+        Returns:
+            bool: True to go on planning (the goal was re-solved, or kept);
+            False when no collision-free IK exists at the live base (do not plan).
+        """
+        spec = self._connected_robot()
+        side = spec.side_keys[0]
+        group = spec.planning_groups[0]
+        names = list(spec.arm_joint_names[0])
+        if not self._base_pose_is_tracked():
+            print(f"[live goal] {mv.movement_id}: base not tracked; planning to the "
+                  f"stored target configuration (authored base).")
+            return True
+        frame = (mv.target_ee_frames or {}).get(side)
+        if frame is None:
+            # ! An export defect: a free approach should always carry its pose.
+            self.get_logger().warn(
+                f"[live goal] {mv.movement_id}: the export has no target_ee_frames[{side!r}] "
+                f"to solve the goal for; keeping the stored target configuration.")
+            return True
+        stored = [mv.target_configuration[n] for n in names]
+        # * Attempt 1 starts from the stored target (usually the nearest IK
+        # * branch); the live arm joints are the second seed.
+        ik_state = mv.start_state.copy()
+        self._merge_arm_values(ik_state, names, stored)
+        report = {}
+        conf = solve_goal_ik_generic(
+            self.cfab.planner, ik_state, {group: frame},
+            seed_confs=[mv.start_state.robot_configuration],
+            check_collision=True, report=report)
+        if conf is None:
+            self.get_logger().warn(
+                f"[live goal] {mv.movement_id}: no collision-free IK for its approach pose "
+                f"at the live base ({report.get('last_error')}); not planning.")
+            if report.get('first_colliding_state') is not None:
+                visualize_goal_ik_collision(self, report['first_colliding_state'])
+            return False
+        values = [float(conf[n]) for n in names]
+        for n, v in zip(names, values):
+            mv.target_configuration[n] = v
+        print(f"[live goal] {mv.movement_id}: goal re-solved at the live base; "
+              f"max |live IK - stored target| = "
+              f"{float(np.abs(np.subtract(values, stored)).max()):.4f} rad.")
+        if self.current_movement_index is not None:
+            self._carry_configuration_forward(self.current_movement_index, values,
+                                              source='Live goal')
+        return True
 
     # --- --- --- Chain planning (Button 1) --- --- ---
 

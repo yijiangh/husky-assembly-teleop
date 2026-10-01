@@ -648,6 +648,89 @@ Relevant files:
    (`M1_POSITION_RES`, `M1_ROTATION_RES`): pre-existing, reported to the user, not patched here.
 3. Stage 4 renames the log prefixes (`[M1 manual]`, `[M2 inter-EE invariance]`, ...) and script CLI choices too.
 
+## 4b. Phase C — F3, F1, F2 (planner spec against efc7a58 + stage 2; three commits in this order)
+
+Rules: §0. One owner of `husky_monitor.py` at a time. No new `J_M4`-style token in `husky_assembly_teleop/`
+(gate: `git diff HEAD -- husky_assembly_teleop | grep '^+' | grep -E '(^|[^A-Za-z0-9])(J|R|H|HR)_M[0-9]'` → nothing).
+Smoke checks that need "base tracked" set `USE_MOCAP` / `USE_CELL_STATE_BASE_POSE` on the monitor INSTANCE.
+
+### F3 — support robot re-solves its approach goal by IK at the live base (files: husky_monitor.py, smoke)
+- IK helper: `husky_world.solve_goal_ik_generic(planner, start_state, {group: frame}, *, seed_confs=(), check_collision=True, report=None) -> Optional[Configuration]`
+  (already imported in the monitor; tries `start_state` first, then each seed; 1 mm / 0.01 rad; honours `is_hidden`;
+  `report` gets `last_error`, `first_colliding_state`). Collision drawing: `visualize_goal_ik_collision(self, state)` (cc_diagnosis).
+  "Base tracked" = `_base_pose_is_tracked()`.
+- New `HuskyMonitor._resolve_single_arm_goal_live(self, mv: Movement) -> bool` next to `_plan_by_kind`:
+  1. `spec`, `side = spec.side_keys[0]`, `group = spec.planning_groups[0]`, `names = list(spec.arm_joint_names[0])`.
+  2. base not tracked → print `[live goal] {id}: base not tracked; planning to the stored target configuration (authored base).`, return True.
+  3. no `target_ee_frames[side]` → warn (export defect; keep stored target), return True.
+  4. `stored` = target values by name; `ik_state = mv.start_state.copy()` with `stored` merged by name (`_merge_arm_values`) so attempt 1 is seeded at the stored target.
+  5. `conf = solve_goal_ik_generic(self.cfab.planner, ik_state, {group: frame}, seed_confs=[mv.start_state.robot_configuration], check_collision=True, report=report)`.
+  6. None → warn `[live goal] {id}: no collision-free IK for its approach pose at the live base ({last_error}); not planning.`; draw the colliding state if any; return False.
+  7. write values into `mv.target_configuration` in place by name; print `max |live IK - stored target|`.
+  8. `self._carry_configuration_forward(self.current_movement_index, values, source='Live goal')` when the index is set; return True.
+- `_plan_by_kind` SINGLE_FREE: after the `target_configuration is None` guard, `_inject_live_conf_into_state`, `_apply_live_base_to_movement` → `if not self._resolve_single_arm_goal_live(mv): return` → `plan_free_motion` unchanged. Docstring bullet updated.
+- Smoke `alice_live_goal_check(results, monitor, iface, log, hold)` called as the last statement inside `alice_run`'s try (reuses Alice's monitor):
+  (a) USE_MOCAP=0 on the instance → returns True, target == exported, log `base not tracked`;
+  (b) USE_MOCAP=1, USE_CELL_STATE_BASE_POSE=0, base shifted +3 cm in x, arms home, reload the hold entry, plan H_M0 (by kind) → trajectory, start base == iface position, FK of the end flange (`husky_assembly_tamp.motion_planner.api._fk_link_frame`) within 1 mm / 0.01 rad of `target_ee_frames['arm']`, target differs from exported by > 1e-3;
+  (c) the gripper step and H_M2 start == the H_M0 end; (d) H_M2 plans; (e) base +2 m → no trajectory, warning `not planning`.
+  Restore instance flags / iface position in `finally`. If the real IK fails for planning reasons: report, do not tune (F8).
+
+### F1 — one button: confirm the transfer start, then plan the travel to load (files: husky_monitor.py, smoke)
+- `load_selected_movement(self, index: Optional[int] = None)`: an explicit movement index wins over the slider (in the GUI the slider widget wins over `_selected_movement_idx`); out of range → warn, return.
+- `adopt_m1_derived_start(self) -> bool`; `confirm_m1_manual_start(self) -> bool` (every early return False; success → adopt's result).
+- New `confirm_transfer_start_and_plan_free_to_load(self) -> bool` after `confirm_m1_manual_start`: guards like `plan_selected_movement`
+  (`_refuse_while_tasks_run(what, schedule_only=True)`, `_refuse_display_only_entry`); needs movements; `ti` = transfer, `fi` = travel to load
+  (`_loaded_index_of`, free_home=False), missing → warn; read the transfer-start sliders first (`_m1_manual_offsets()`, `_m1_home_anchor()`)
+  because loading the transfer rebuilds them from the caches; load the transfer by index if needed; `confirm_m1_manual_start()` False →
+  warn "transfer start not adopted; nothing planned", return False; `load_selected_movement(index=fi)`; `plan_selected_movement()`;
+  no trajectory → warn, False; else info naming the next step (Exec), True.
+- build_ui: `Button('Confirm transfer start + plan travel to load', ...)` right after the existing confirm button (kept).
+- Main-session decision: also fix `plan_movement_chain_live` to call `self.load_selected_movement(index=idx)` (pre-existing: in the GUI it
+  planned the slider's movement each round; F2's step slider would make it worse).
+- Smoke `transfer_start_check(results, problem, root, schedule)` after `carry_check` (own Cindy monitor; instance setup of the `_m1_*`
+  caches, `_build_trajectory_waypoint_sliders = lambda: None`, `_plan_M0_dispatch` recorder returning None):
+  (a) perp shift 3 m → False, nothing planned, the transfer stays loaded, travel-to-load target None, warning about no arm configuration;
+  (b) default sliders from a fresh `load_schedule_entry(0)` → recorder called once with the travel to load, which is loaded, and its target == the transfer start.
+  If the real manual-start IK fails (no_ik / collision): report, do not tune.
+
+### F2 — operator steps instead of movements, schedule mode only
+Absorbed = exactly today's mark-only rule (each such step's own button sends nothing; the compliant insert sends the tighten, the
+compliant retreat sends the gripper loosen, untighten is never sent). Grasp, manual, gripper steps stay their own steps.
+Groupings: B1__J → [0] [1] [2] [3] [5(+4)]; B1__R → [2(+0,1)] [3] (after the D7 re-export: [1(+0)] [2]); B3__H / HR one step per movement.
+Nothing depends on an absorbed step being visited (checked: mark-only writes no state; progress/beliefs/flags; carry writes their starts).
+- T3a pure layer (files: bar_action_io.py, schedule_ui.py, husky_world.py, test_bar_action_io.py, test_schedule_ui.py):
+  - `bar_action_io.tool_runs_with_next_motion(mv) -> bool` (scaffolding tool step with `overlaps_next`, or `ungrasp` / `untighten`);
+    `@dataclass(frozen=True) OperatorStep(primary: int, absorbed: tuple = ())`; `operator_steps(movements) -> list[OperatorStep]`
+    (pending absorbed indices join the next ARM movement; any other step flushes pending as own steps first; trailing pending → own steps);
+    `step_index_of(steps, movement_index) -> Optional[int]`.
+  - `schedule_ui.step_button_label` uses the helper (same strings); new `step_readout_text(step_idx, n_steps, primary, absorbed=())`
+    → `step 5/5: B1_J_M5_LM_insert  (+ B1_J_M4_tool_tighten_joint runs with it)` or `step 4/5: <id>  (<kind>)`;
+    new `absorbed_tool_note(mv)`; `now_line_text(entry, step_idx, n_steps, mv)` counts steps (`-- step i/n <id> [kind] ctrl=…`).
+  - `husky_world.run_scaffolding_tool_step`: one `if tool_runs_with_next_motion(mv):` block (same two log texts), behaviour identical.
+  - Tests: `test_tool_runs_with_next_motion`, `test_operator_steps_in_memory` (J, R, D7 R, untighten+manual+retreat, trailing, empty),
+    `test_operator_steps_on_fixture` (B1__J pinned, B1__R derived from the file, B3__H/HR one per movement), `test_step_index_of`,
+    `test_step_readout_text`, `test_absorbed_tool_note`, `test_step_primaries_never_get_a_mark_only_button` (entries 0, 1, 3, 16),
+    updated `test_now_line_text`.
+- T3b monitor + smoke (after F1 and T3a; one F2 commit with T3a):
+  - helpers next to `_shown_movements`: `_shown_steps()` (None in legacy mode; computed on demand), `_selected_movement_index()` (THE single
+    place the slider becomes a movement index; schedule mode + widget → `steps[round(value)].primary`; headless → `_selected_movement_idx`
+    which stays a MOVEMENT index), `_on_step_slider(value)`, `_default_movement_index()` (schedule: first step's primary — an R entry opens on its retreat).
+  - readers/writers: `_finish_action_load` + `load_schedule_entry` use `_default_movement_index()`; `load_selected_movement` uses
+    `_selected_movement_index()` when `index` is None; `_refresh_bar_action_readouts` uses `step_readout_text` in schedule mode;
+    `_now_line` passes the step index/count; build_ui schedule mode: `Slider("Step", self._on_step_slider, 0, max(1, len(steps)-1), …, integer=True)`,
+    readout label `"  -> step"`; legacy unchanged. Scripts keep movement indices (no slider headless).
+  - `exec_selected_movement_traj`: after `_warn_controller_mismatch`, one info line per absorbed step (`absorbed_tool_note`). Routing unchanged.
+  - Smoke `operator_steps_check` after `transfer_start_check`: 5 / 2 steps; fake slider value 4 on entry 0 → insert loaded, readout and
+    now line as above; `select_movement(monitor, tighten_idx)` still loads the tighten step (movement index); exec log lines name the absorbed
+    ids (compliant exec patched with a recorder); entry 1 opens on the retreat.
+- Dispatch check rows unchanged after every commit.
+
+### Open questions left for the user (not implemented)
+- HR (and later entries of a robot that already moved) start from the exported configuration, not live: with a tracked base that differs
+  from the authored one, the linear retreat's exec start check refuses it. Live start for HR?
+- Should F3 also require that mocap saw the connected husky recently before trusting the live base?
+- F2 side effect: the R_M0 tool step (bar drawn in the tools) is no longer a slider position in the GUI.
+
 ## 5. Change log
 (appended by the main session after each reviewed step)
 
@@ -672,3 +755,6 @@ Relevant files:
 - Stage 2 (carry rule + F5e): `_next_arm_index`, `_previous_arm_index`, `_carry_configuration_forward`; used by
   `_accept_trajectory`, `_accept_single_arm_trajectory`, `adopt_m1_derived_start`. Smoke 62/62 (new `carry_check`:
   adopt writes J_M1/J_M2 + travel-to-load goal; accepting a transfer plan writes J_M4 and the insert's start).
+- F3 (support robot live goal): `_resolve_single_arm_goal_live` in the SINGLE_FREE branch of `_plan_by_kind`.
+  Smoke 67/67 under both flag settings (base +3 cm: 67 points, flange 0.94 mm / 0.0026 rad from the approach
+  pose, goal differs from the export by 0.081 rad; H_M2 plans 22 points from it; base +2 m refused).
