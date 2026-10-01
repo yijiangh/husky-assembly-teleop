@@ -42,7 +42,7 @@ Then the flow, on the fixture's first hold (Alice holds B3):
       to it, a husky mocap sees keeps its base
     - entry 4 (B3_R): ObstacleRobotAlice posed from that belief (not parked at
       (50, 50, 0)), equal to what B4__J exports; Reopen of this pending entry is
-      refused; R_M2 (retreat, role M3) and R_M3 (home, role M4) plan with Alice
+      refused; the retreat and the free move home plan with Alice
       posed from her belief; Load Movement of a step drops the planned path;
       Reset All reloads the entry from its clean export
     - entry 16 (B3_HR, Alice's): Mark done -> Alice released and drawn parked;
@@ -109,7 +109,7 @@ from headless_live_monitor_test import StubLogger, _bypass_init_monitor
 from smoke_single_arm_plan import collision_lines
 from husky_assembly_teleop import DESIGN_DATA_DIRECTORY, DESIGN_PROBLEM_NAME
 from husky_assembly_teleop import cfab_session, husky_monitor, husky_world
-from husky_assembly_teleop.bar_action_io import is_built_assembly_body, step_kind
+from husky_assembly_teleop.bar_action_io import MovementKind, is_built_assembly_body, movement_kind, step_kind
 from husky_assembly_teleop.cfab_session import CfabSession
 from husky_assembly_teleop.husky_monitor import BUILT_IGNORED_RGBA
 from husky_assembly_teleop.husky_robot import GRIPPER_MOTOR, JOINT_MOTOR, UR5e_HOME_STATE
@@ -558,17 +558,17 @@ def select_movement(monitor, idx: int):
 # * and entry 1 (R), keyed by (entry kind, movement index in the file). The
 # * movement id is written without its bar prefix ('B1_'). '-' = not run for
 # * this movement; traj_time None = the movement has no default traj time.
-# ! Stage 1 (F5d) intentionally changes `preview` of the stationary steps whose
-# ! start state has the bar attached (J 1, J 2, J 4, R 0) to 'bar_held'.
+# ! Since stage 1 (F5d) the stationary steps whose start state has the bar
+# ! attached (J 1, J 2, J 4, R 0) preview as 'bar_held': the bar is drawn in the tools.
 DISPATCH_FIELDS = ('movement', 'planner', 'exec', 'tool_cmd', 'traj_time', 'starts_live', 'preview')
 DISPATCH_EXPECTED = {
     ('J', 0): ('J_M0_free_to_load', 'free_to_load', 'zero_ft', '-', 30, True, 'free'),
-    ('J', 1): ('J_M1_manual_mount_bar', 'none', '-', '-', None, False, 'free'),
-    ('J', 2): ('J_M2_tool_grasp_bar', 'none', '-', '-', None, False, 'free'),
+    ('J', 1): ('J_M1_manual_mount_bar', 'none', '-', '-', None, False, 'bar_held'),
+    ('J', 2): ('J_M2_tool_grasp_bar', 'none', '-', '-', None, False, 'bar_held'),
     ('J', 3): ('J_M3_CDFM_transfer_to_approach', 'transfer', 'arm_both', '-', 10, False, 'bar_held'),
-    ('J', 4): ('J_M4_tool_tighten_joint', 'none', '-', '-', None, False, 'free'),
+    ('J', 4): ('J_M4_tool_tighten_joint', 'none', '-', '-', None, False, 'bar_held'),
     ('J', 5): ('J_M5_LM_insert', 'insert', 'compliant', 'tighten', 5, False, 'bar_held'),
-    ('R', 0): ('R_M0_tool_untighten_joint', 'none', '-', '-', None, False, 'free'),
+    ('R', 0): ('R_M0_tool_untighten_joint', 'none', '-', '-', None, False, 'bar_held'),
     ('R', 1): ('R_M1_tool_ungrasp_bar', 'none', '-', '-', None, False, 'free'),
     ('R', 2): ('R_M2_LM_retreat', 'retreat', 'compliant', 'loosen_gripper', 5, False, 'free'),
     ('R', 3): ('R_M3_free_home', 'free_home', 'arm_both', '-', 10, False, 'free'),
@@ -1007,7 +1007,7 @@ def cindy_run(results: Results, problem: str, root: str, schedule) -> None:
                       len(log.since(n, 'warn', 'still pending')) == 1
                       and monitor._progress.status(release.index) == 'pending')
 
-        # * --- plan the release with Alice posed from her belief: R_M2 (role M3), R_M3 (role M4)
+        # * --- plan the release with Alice posed from her belief: the retreat, then the free move home
         plan_release(results, monitor, iface, alice, belief)
 
         # * --- Reset All in schedule mode: the loaded ENTRY again, from its clean export
@@ -1058,9 +1058,9 @@ def cindy_run(results: Results, problem: str, root: str, schedule) -> None:
 def plan_release(results: Results, monitor, iface: StubInterface, alice, belief) -> None:
     """Plan Cindy's release movements with the loaded release entry, Alice posed from her belief.
 
-    R_M2 (independent dual-arm linear retreat, Cindy role M3) plans from its
-    exported start; its end is then taken as "executed" (the stub arms jump
-    there) and R_M3 (free move home, role M4) plans from those live arms.
+    The retreat (independent dual-arm linear) plans from its exported start;
+    its end is then taken as "executed" (the stub arms jump there) and the free
+    move home plans from those live arms. Both are found by kind, not by index.
 
     Args:
         results (Results): Where the checks go.
@@ -1070,16 +1070,18 @@ def plan_release(results: Results, monitor, iface: StubInterface, alice, belief)
         belief (RobotBelief): Alice's belief after her hold entry.
     """
     tool = alice.obstacle_tool_name
+    retreat_idx = monitor._loaded_index_of(MovementKind.DUAL_INDEPENDENT_LINEAR)
+    home_idx = monitor._loaded_index_of(MovementKind.DUAL_FREE, free_home=True)
     # Cindy's "mocap" now sees her where the release was authored.
-    retreat = monitor._loaded_movements[2]
+    retreat = monitor._loaded_movements[retreat_idx]
     iface.position, iface.rotation = [np.asarray(v, dtype=float) for v in
                                       pose_from_frame(retreat.start_state.robot_base_frame)]
 
-    mv = select_movement(monitor, 2)
+    mv = select_movement(monitor, retreat_idx)
     monitor.plan_selected_movement()
     jt = mv.trajectory
     posed = mv.start_state.tool_states[tool].frame
-    results.check(f"Cindy: {mv.movement_id} (role {monitor._match_movement_role(mv)}) planned "
+    results.check(f"Cindy: {mv.movement_id} ({movement_kind(mv).value}) planned "
                   f"with {tool} at Alice's belief",
                   jt is not None and frame_dist(posed, belief.base_frame) < SAME_TOL,
                   f"{len(jt.points) if jt else 0} points, {tool} at {pt(posed)}")
@@ -1094,11 +1096,11 @@ def plan_release(results: Results, monitor, iface: StubInterface, alice, belief)
     results.check('Cindy: Load Movement of R_M0 (a tool step) drops the planned path',
                   all(slot[0] is None for slot in monitor.planned_arm_trajectory))
 
-    mv = select_movement(monitor, 3)
+    mv = select_movement(monitor, home_idx)
     monitor.plan_selected_movement()
     jt = mv.trajectory
     posed = mv.start_state.tool_states[tool].frame
-    results.check(f"Cindy: {mv.movement_id} (role {monitor._match_movement_role(mv)}) planned "
+    results.check(f"Cindy: {mv.movement_id} ({movement_kind(mv).value}) planned "
                   f"from the retreat's end with {tool} at Alice's belief",
                   jt is not None and frame_dist(posed, belief.base_frame) < SAME_TOL,
                   f"{len(jt.points) if jt else 0} points")

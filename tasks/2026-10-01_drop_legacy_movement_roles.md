@@ -655,3 +655,17 @@ Relevant files:
 - `465b7bf` Step 0b: dispatch check in `headless_schedule_smoke.py`; today's code matches all 10 rows. Smoke 46/46.
   Found (not fixed, outside scope): `husky_world.split_path_by_distance_to_goal` returns 3 values on its
   short-path early exit; both callers unpack 4.
+- `b19010d` A-F5a–c: `IGNORE_BUILT_ASSEMBLY_COLLISIONS` + `_ignore_built_assembly()`, panel toggle (reloads the
+  entry), ignored built bodies drawn faint at their state frame; preview bodies set up before the hidden ones are
+  drawn. Smoke 54/54. Hold scenes still need the switch ON (Rhino note D5).
+- `7938c32` A-F6 + small items: connected robot seeded from its own belief at start-up; header line
+  "others: …"; traj time of an entry that opens with tool steps; fake-hardware Move Arms to Movement Start.
+  Smoke 60/60, pytest 104 passed. (b) answer: J/H entries already start from the seeded arms; R/HR entries open
+  with a tool step whose exported start is not live (same as with ROS) — left unchanged.
+- Stage 1 (roles out, + F5d, F7 tests): reviewer APPROVE WITH NITS (no defect; every insert/retreat branch of the
+  compliant exec maps 1:1; probe over ~870 movements of 8 problems: F5d rule = old preview on every arm movement,
+  `is_free_home` = old M4 on every DUAL_FREE). Nits fixed in the main session. pytest 116 / 1 skipped, smoke 60/60,
+  single-arm 7/7. Known leftovers: `scripts/inspect_bar_action_collision_geometry.py` `DEFAULT_MOVEMENT = "M1"`
+  (correct for its legacy default problem; stage 3 moves it to schedule entries); pre-existing
+  `husky_world.py` `DATA_FOLDER` undefined in the kissing-probe branch; pre-existing `headless_live_monitor_test`
+  `--draw-tree` imports `M1_POSITION_RES`.

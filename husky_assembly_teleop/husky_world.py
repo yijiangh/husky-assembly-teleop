@@ -19,7 +19,7 @@ import pybullet_planning as pp
 from husky_assembly_teleop import DATA_DIRECTORY, CALIBRATION_DATE, EXPERIMENT_DATA_DIRECTORY, CALIBRATION_DATA_DIRECTORY, DESIGN_PROBLEM_NAME
 from husky_assembly_teleop.common import Husky, TrackedObject, AssemblyObject
 from husky_assembly_teleop.robot_registry import RobotSpec, other_robots, robot_from_env
-from husky_assembly_teleop.bar_action_io import tool_event
+from husky_assembly_teleop.bar_action_io import COMPLIANT_KINDS, MovementKind, tool_event
 from husky_assembly_teleop.schedule_io import load_schedule, problem_root
 from husky_assembly_teleop.progress_io import PARKED_BASE_FRAME, RobotBelief, load_progress
 import husky_assembly_teleop.husky_planning as planning
@@ -1169,21 +1169,24 @@ def save_markerset_data(monitor, filename_suffix="", use_experiment_dir=False):
         os.makedirs(subfolder_path)
         monitor.get_logger().info(f"Created subfolder: {subfolder_path}")
 
-    # Resolve the chosen movement's short string role ('M1', 'M2', ...). We
-    # key downstream processing (the 0_/1_ scripts) on this string id now, not
-    # the integer list index, so movement_index is intentionally dropped.
+    # * The take names its movement by the real movement id (e.g.
+    # B1_R_M2_LM_retreat); the offline 0_/1_ scripts match on it. Older takes
+    # stamped a legacy role name (M0..M4) here, which 1_compare_to_cell_state.py
+    # still reads.
     mv = monitor.current_movement
-    movement_id = None
-    if mv is not None:
-        movement_id = monitor._match_movement_role(mv) or getattr(mv, 'movement_id', None)
+    movement_id = getattr(mv, 'movement_id', None)
 
     # Name the file this movement actually came from: a split export keeps the
-    # cycle in two files and the monitor loads both, so M3 is usually in the
-    # release half while _current_action_path names the jointing one.
+    # cycle in two files and the monitor loads both, so the retreat is usually
+    # in the release half while _current_action_path names the jointing one.
+    # movement_index is the index INSIDE that file (action_file), not the index
+    # in the monitor's concatenated list.
     action_path = getattr(monitor, '_current_action_path', None)
     slot = monitor._slot_of_movement(getattr(monitor, 'current_movement_index', None))
     if slot is not None:
         action_path = slot[1]
+    movement_index = slot[2] if slot else None
+    action_file = os.path.basename(action_path) if action_path else None
 
     # Bar world pose + AABB dimensions in the movement's start state, stamped
     # here so the offline scripts don't have to re-parse the BarAction file
@@ -1223,7 +1226,9 @@ def save_markerset_data(monitor, filename_suffix="", use_experiment_dir=False):
         payload = {
             'mocap_axis_convention': getattr(monitor, 'MOCAP_AXIS_CONVENTION', 'rotated'),
             'bar_action_path': action_path,
+            'action_file': action_file,
             'movement_id': movement_id,
+            'movement_index': movement_index,
             'bar_name': getattr(monitor, 'active_bar_name', None),
             'bar_start_position': bar_pose[0] if bar_pose is not None else None,
             'bar_start_quaternion': bar_pose[1] if bar_pose is not None else None,
@@ -1662,11 +1667,13 @@ def servo_to_movement_start_live(monitor, max_iters=8, pos_tol_mm=0.2,
         return
     mv = monitor.current_movement
     if mv is None or mv.start_state is None:
-        monitor.get_logger().warn('Load an M2/M3 movement first.')
+        monitor.get_logger().warn('Load the insert or the retreat movement first.')
         return
-    role = monitor._match_movement_role(mv)
-    if role not in ('M2', 'M3'):
-        monitor.get_logger().warn(f'Servoing loop only supports M2/M3; current is {role!r}.')
+    kind = monitor._kind_of(mv)
+    if kind not in COMPLIANT_KINDS:
+        monitor.get_logger().warn(
+            f'Servoing loop only supports the insert / retreat; {mv.movement_id} is a '
+            f'{getattr(kind, "value", type(mv).__name__)}.')
         return
 
     # ! Keep the reference target constant across iterations. Button 2 mutates
@@ -3372,7 +3379,7 @@ def _live_tool0_poses(monitor):
 
 
 def _execute_rigid_chunk(monitor, rigid_path12, t_rigid, on_tick=None,
-                         stall_exits=True, label='M2'):
+                         stall_exits=True, label: str = 'rigid'):
     """Run M2's approach under the joint controller, ending early on stall.
 
     Sends ``rigid_path12`` as one dual-arm joint trajectory and waits it out.
@@ -3397,7 +3404,7 @@ def _execute_rigid_chunk(monitor, rigid_path12, t_rigid, on_tick=None,
             True for M2's approach (the thread bit early). M3 must pass False:
             its joint motor is not driving, so a STALLED flag left over from the
             preceding M2 would abort the retreat on its very first tick.
-        label (str): Role tag for the log lines.
+        label (str): Log tag (the movement id).
 
     Yields:
         None: One yield per monitor tick.
@@ -3440,7 +3447,7 @@ def _execute_rigid_chunk(monitor, rigid_path12, t_rigid, on_tick=None,
         if stall_exits and (_scaffolding_joint_motor_stalled(hi, 0)
                             and _scaffolding_joint_motor_stalled(hi, 1)):
             monitor.get_logger().info(
-                '[M2] both joint motors STALLED during the rigid approach -- the '
+                f'[{label}] both joint motors STALLED during the rigid approach -- the '
                 'thread bit early; handing over to compliance now.')
             return True
         yield
@@ -3575,7 +3582,7 @@ def _both_arms_arrived(monitor, cartesian_trajectories, tol_m=LINEAR_ARRIVAL_TOL
         return False
 
 
-def _hold_until_joint_motors_stall(monitor, timeout_s, on_tick=None):
+def _hold_until_joint_motors_stall(monitor, timeout_s, on_tick=None, label: str = 'insert'):
     """Tick in place until both joint motors stall, or the ceiling expires.
 
     Used by M2's rigid-only mode: after the joint trajectory finishes, the
@@ -3586,6 +3593,7 @@ def _hold_until_joint_motors_stall(monitor, timeout_s, on_tick=None):
         monitor: The HuskyMonitor node.
         timeout_s (float): Hard ceiling, for firmware that never reports stall.
         on_tick (callable): Optional ``fn(hi, robot)`` called every tick.
+        label (str): Log tag (the movement id).
 
     Yields:
         None: One yield per monitor tick.
@@ -3599,16 +3607,17 @@ def _hold_until_joint_motors_stall(monitor, timeout_s, on_tick=None):
         if (_scaffolding_joint_motor_stalled(hi, 0)
                 and _scaffolding_joint_motor_stalled(hi, 1)):
             monitor.get_logger().info(
-                '[M2] both joint motors STALLED; rigid-only hold complete.')
+                f'[{label}] both joint motors STALLED; rigid-only hold complete.')
             return
         yield
     monitor.get_logger().warn(
-        f'[M2] rigid-only hold hit its {timeout_s:.0f}s ceiling without both '
+        f'[{label}] rigid-only hold hit its {timeout_s:.0f}s ceiling without both '
         f'joint motors reporting STALLED.')
 
 
 def execute_planned_trajectory_compliant(monitor):
-    """Execute the loaded M2/M3 movement as linear cartesian motion.
+    """Execute the loaded insert (DUAL_CONSTRAINED_LINEAR) or retreat
+    (DUAL_INDEPENDENT_LINEAR) movement as linear cartesian motion.
 
     M3 (retreat) runs entirely under ``cartesian_compliance_controller``, as one
     linear segment between the planned path's endpoints.
@@ -3638,11 +3647,17 @@ def execute_planned_trajectory_compliant(monitor):
         monitor.get_logger().warn(
             "No movement loaded; click 'Load Movement' first.")
         return
-    role = monitor._match_movement_role(monitor.current_movement)
-    if role not in ('M2', 'M3'):
+    mv = monitor.current_movement
+    kind = monitor._kind_of(mv)
+    tag = mv.movement_id
+    if kind not in COMPLIANT_KINDS:
         monitor.get_logger().warn(
-            f"Compliant exec only supports M2/M3; current is {role!r}")
+            f"Compliant exec only runs the insert or the retreat; {tag} is a "
+            f"{getattr(kind, 'value', type(mv).__name__)}.")
         return
+    # * The insert tightens the joint screws; the retreat loosens the grippers.
+    is_insert = kind is MovementKind.DUAL_CONSTRAINED_LINEAR
+    is_retreat = kind is MovementKind.DUAL_INDEPENDENT_LINEAR
     if monitor.planned_arm_trajectory[0][0] is None or \
        monitor.planned_arm_trajectory[1][0] is None:
         monitor.get_logger().warn(
@@ -3686,7 +3701,7 @@ def execute_planned_trajectory_compliant(monitor):
     # controller and never engage compliance, holding the final pose while the
     # screw tightens. The comparison baseline for the split, and the fallback if
     # compliance misbehaves. M3 ignores this -- it is compliant by nature.
-    rigid_only = bool(role == 'M2'
+    rigid_only = bool(is_insert
                       and getattr(monitor, 'm2_exec_rigid_only', False))
     if rigid_only:
         rigid_path = [np.concatenate([np.asarray(l, dtype=float),
@@ -3694,11 +3709,11 @@ def execute_planned_trajectory_compliant(monitor):
                       for l, r in zip(left_path, right_path)]
         t_rigid = t_total
         monitor.get_logger().info(
-            f"[M2] RIGID-ONLY mode: the whole movement runs under "
+            f"[{tag}] RIGID-ONLY mode: the whole movement runs under "
             f"scaled_joint_trajectory_controller ({len(rigid_path)} waypoints, "
             f"{t_rigid:.1f}s), then holds position until both joint motors "
             f"stall. Compliance is never engaged.")
-    elif role == 'M2':
+    elif is_insert:
         requested_mm = float(getattr(monitor, 'm2_compliant_split_mm',
                                      M2_COMPLIANT_SPLIT_MM_DEFAULT))
         path12 = [np.concatenate([np.asarray(l, dtype=float),
@@ -3712,12 +3727,12 @@ def execute_planned_trajectory_compliant(monitor):
             t_rigid = t_total * (rigid_mm / total_mm) if total_mm > 0 else 0.0
             t_total = max(t_total - t_rigid, 0.5)
             monitor.get_logger().info(
-                f"[M2] split at {split_mm:.1f} mm from the assembled pose: "
+                f"[{tag}] split at {split_mm:.1f} mm from the assembled pose: "
                 f"{rigid_mm:.1f} mm RIGID ({len(rigid_path)} waypoints, "
                 f"{t_rigid:.1f}s) then {split_mm:.1f} mm COMPLIANT ({t_total:.1f}s).")
             if split_mm <= 0.0:
                 monitor.get_logger().warn(
-                    "[M2] split distance is 0: the whole move runs rigid and the "
+                    f"[{tag}] split distance is 0: the whole move runs rigid and the "
                     "screw never gets compliant control. Raise the slider unless "
                     "this is deliberate.")
 
@@ -3729,7 +3744,7 @@ def execute_planned_trajectory_compliant(monitor):
     # Same slider, same number of millimetres.
     m3_rigid_tail = None
     t_m3_rigid = 0.0
-    if role == 'M3':
+    if is_retreat:
         requested_mm = float(getattr(monitor, 'm2_compliant_split_mm',
                                      M2_COMPLIANT_SPLIT_MM_DEFAULT))
         path12 = [np.concatenate([np.asarray(l, dtype=float),
@@ -3747,7 +3762,7 @@ def execute_planned_trajectory_compliant(monitor):
             t_total = max(t_compliant, 0.5)
             m3_rigid_tail = trailing
             monitor.get_logger().info(
-                f"[M3] split at {compliant_mm:.1f} mm from the assembled pose: "
+                f"[{tag}] split at {compliant_mm:.1f} mm from the assembled pose: "
                 f"{compliant_mm:.1f} mm COMPLIANT ({t_total:.1f}s) then "
                 f"{at_goal_mm:.1f} mm RIGID ({len(trailing)} waypoints, "
                 f"{t_m3_rigid:.1f}s).")
@@ -3758,7 +3773,7 @@ def execute_planned_trajectory_compliant(monitor):
     # keeps publishing the end pose, and exit only when both arms' joint motors
     # report STALLED. Large t_wait (HOLD_FOR_STALL_TIMEOUT_S) is a hard ceiling
     # fallback if firmware never reports stall.
-    if role == 'M2':
+    if is_insert:
         t_wait = HOLD_FOR_STALL_TIMEOUT_S
         should_continue_fn = lambda: not (
             _scaffolding_joint_motor_stalled(hi, 0) and _scaffolding_joint_motor_stalled(hi, 1))
@@ -3824,15 +3839,15 @@ def execute_planned_trajectory_compliant(monitor):
     #   M3 (retreat) -> Stop All + LOOSEN the gripper motor on both arms
     #                   (releases the bar before backing away).
     _stop_all_both_arms()
-    if role == 'M2':
-        print('[scaffolding] M2: TIGHTEN joint motor on L arm (arm 0)')
+    if is_insert:
+        print(f'[scaffolding] {tag}: TIGHTEN joint motor on L arm (arm 0)')
         hi.send_scaffolding_cmd(1, JOINT_MOTOR, 0)
-        print('[scaffolding] M2: TIGHTEN joint motor on R arm (arm 1)')
+        print(f'[scaffolding] {tag}: TIGHTEN joint motor on R arm (arm 1)')
         hi.send_scaffolding_cmd(1, JOINT_MOTOR, 1)
-    elif role == 'M3':
-        print('[scaffolding] M3: LOOSEN gripper motor on L arm (arm 0)')
+    elif is_retreat:
+        print(f'[scaffolding] {tag}: LOOSEN gripper motor on L arm (arm 0)')
         hi.send_scaffolding_cmd(-1, GRIPPER_MOTOR, 0)
-        print('[scaffolding] M3: LOOSEN gripper motor on R arm (arm 1)')
+        print(f'[scaffolding] {tag}: LOOSEN gripper motor on R arm (arm 1)')
         hi.send_scaffolding_cmd(-1, GRIPPER_MOTOR, 1)
 
     switched_to_compliance = False
@@ -3840,7 +3855,7 @@ def execute_planned_trajectory_compliant(monitor):
         # --- Chunk 1: the rigid approach (M2 only) ---
         if rigid_path is not None:
             ran = yield from _execute_rigid_chunk(
-                monitor, rigid_path, t_rigid, on_tick=_record_wrench)
+                monitor, rigid_path, t_rigid, on_tick=_record_wrench, label=tag)
             if not ran:
                 return
             if rigid_only:
@@ -3848,7 +3863,8 @@ def execute_planned_trajectory_compliant(monitor):
                 # just keep ticking (recording wrench) until the screw stalls or
                 # the ceiling expires; the finally below stops the motors.
                 yield from _hold_until_joint_motors_stall(
-                    monitor, HOLD_FOR_STALL_TIMEOUT_S, on_tick=_record_wrench)
+                    monitor, HOLD_FOR_STALL_TIMEOUT_S, on_tick=_record_wrench,
+                    label=tag)
                 return
             # The arms are now at (or, on an early stall, short of) the split
             # conf. Re-derive the compliant chunk's start from where they
@@ -3872,7 +3888,7 @@ def execute_planned_trajectory_compliant(monitor):
         if not switched_to_compliance:
             monitor.get_logger().error(
                 f'Aborting compliant exec of '
-                f'{monitor.current_movement.movement_id} (role {role}): the arms '
+                f'{monitor.current_movement.movement_id} ({kind.value}): the arms '
                 f'are NOT under the compliance controller, so no motion was '
                 f'commanded. Fix the controller switch and re-run this movement.')
             return
@@ -3890,18 +3906,18 @@ def execute_planned_trajectory_compliant(monitor):
             for side, e in zip(('L', 'R'), errs):
                 pct = (100.0 * e['achieved_mm'] / e['travel_mm']
                        if e['travel_mm'] > 1e-9 else 100.0)
-                print(f"[{role}] {side} tool0: travelled {e['achieved_mm']:.1f} / "
+                print(f"[{tag}] {side} tool0: travelled {e['achieved_mm']:.1f} / "
                       f"{e['travel_mm']:.1f} mm ({pct:.0f}%), "
                       f"{e['remaining_mm']:.1f} mm short of the commanded end.")
             worst = max(e['remaining_mm'] for e in errs)
             spread = abs(errs[0]['achieved_mm'] - errs[1]['achieved_mm'])
             if worst > LINEAR_ARRIVAL_TOL_M * 1000.0:
                 monitor.get_logger().warn(
-                    f"[{role}] arms did NOT reach the commanded end pose: worst "
+                    f"[{tag}] arms did NOT reach the commanded end pose: worst "
                     f"{worst:.1f} mm short, L/R differ by {spread:.1f} mm. The "
                     f"joint controller is about to freeze them there.")
         except Exception as exc:
-            print(f"[{role}] could not measure the final tool0 error: {exc}")
+            print(f"[{tag}] could not measure the final tool0 error: {exc}")
 
         # --- Chunk 2 for M3: the rigid run back, once clear of the joint ---
         if m3_rigid_tail is not None:
@@ -3911,7 +3927,7 @@ def execute_planned_trajectory_compliant(monitor):
             if not (yield from switch_dual_arm_controller(
                     monitor, 'scaled_joint_trajectory_controller')):
                 monitor.get_logger().error(
-                    '[M3] cannot start the retreat: the arms are NOT under '
+                    f'[{tag}] cannot start the retreat: the arms are NOT under '
                     'scaled_joint_trajectory_controller. Nothing was commanded.')
                 return
             switched_to_compliance = False   # the finally has nothing to restore
@@ -3919,9 +3935,9 @@ def execute_planned_trajectory_compliant(monitor):
             # Replan a straight line from where compliance ACTUALLY left the
             # tools to the movement's authored goal frames.
             tail = monitor.replan_linear_to_target_from_live(
-                monitor.current_movement, 'M3')
+                monitor.current_movement, tag)
             if tail is not None:
-                print(f'[M3] replanned retreat: {len(tail)} waypoints from the '
+                print(f'[{tag}] replanned retreat: {len(tail)} waypoints from the '
                       f'live pose to the authored target frames.')
             else:
                 # ! Falling back to the preplanned tail means the FIRST step is a
@@ -3935,7 +3951,7 @@ def execute_planned_trajectory_compliant(monitor):
                 jump_deg = float(np.degrees(np.abs(
                     np.asarray(tail[1]) - live12).max())) if len(tail) > 1 else 0.0
                 monitor.get_logger().error(
-                    f'[M3] replan failed -- FALLING BACK to the preplanned tail. '
+                    f'[{tag}] replan failed -- FALLING BACK to the preplanned tail. '
                     f'Its first step jumps {jump_deg:.1f} deg from where the arms '
                     f'are now, which is the fast snap the replan was meant to '
                     f'avoid. Inspect the preview carefully before confirming.')
@@ -3954,7 +3970,7 @@ def execute_planned_trajectory_compliant(monitor):
 
             if not (yield from wait_for_operator_confirm(
                     monitor,
-                    f'[M3] retreat ready: {len(tail)} waypoints over '
+                    f'[{tag}] retreat ready: {len(tail)} waypoints over '
                     f'{t_m3_rigid:.1f}s. Scrub "Traj viz time" and check the '
                     f'joint plot, then click "Confirm Exec" to run it.')):
                 return
@@ -3963,7 +3979,7 @@ def execute_planned_trajectory_compliant(monitor):
             # ! flag left over from the preceding M2 would abort this on tick 1.
             yield from _execute_rigid_chunk(
                 monitor, tail, t_m3_rigid, on_tick=_record_wrench,
-                stall_exits=False, label='M3')
+                stall_exits=False, label=tag)
     finally:
         # Always stop motors first, then restore the joint controller.
         _stop_all_both_arms()
@@ -3996,7 +4012,7 @@ def execute_planned_trajectory_compliant(monitor):
 
     monitor.get_logger().info(
         f"Compliant exec done for {monitor.current_movement.movement_id} "
-        f"(role {role}); {len(wrench_profile_left)} wrench samples, "
+        f"({kind.value}); {len(wrench_profile_left)} wrench samples, "
         f"peak |F| L={_peak_force(wrench_profile_left):.1f} N / "
         f"R={_peak_force(wrench_profile_right):.1f} N")
 
@@ -4044,18 +4060,18 @@ def execute_trajectory_and_zero_ft(monitor):
 
     if monitor.FAKE_HARDWARE:
         monitor.get_logger().info(
-            'M0 done; skipping FT zero (FAKE_HARDWARE, no sensor to tare).')
+            'Travel to load done; skipping FT zero (FAKE_HARDWARE, no sensor to tare).')
         return
 
     hi: HuskyRobotInterface = monitor.huskies[monitor.selected_robot_id].interface
     zeroed = [hi.zero_ft_sensor(i) for i in range(monitor.get_active_arm_count())]
     if all(zeroed):
         monitor.get_logger().info(
-            'M0 done; FT sensors zeroed on the unloaded tools. Mount the bar '
-            'now, then load and execute M1.')
+            'Travel to load done; FT sensors zeroed on the unloaded tools. Mount the bar '
+            'now, then load and execute the transfer.')
     else:
         monitor.get_logger().warn(
-            'M0 done, but the FT zero did not go out on every arm -- the '
+            'Travel to load done, but the FT zero did not go out on every arm -- the '
             'compliant M2/M3 force readings will carry a stale offset.')
 
 
@@ -4602,8 +4618,8 @@ def run_scaffolding_tool_step(monitor: 'HuskyMonitor',
     tool_action, tool_names, overlaps_next = tool_event(mv)
     tag = f'[tool step {mv.movement_id}]'
     if overlaps_next or tool_action == 'ungrasp':
-        runs_in = ('the compliant insert (M2) that follows' if overlaps_next
-                   else 'the compliant retreat (M3)')
+        runs_in = ('the compliant insert that follows' if overlaps_next
+                   else 'the compliant retreat')
         log.info(f"{tag} '{tool_action}' is issued by the compliant insert/retreat "
                  f"execution ({runs_in}); marked done here, nothing sent.")
         return

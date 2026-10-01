@@ -31,11 +31,11 @@ from rs_data_structure.bar_action import BarSceneAction, Movement
 
 from husky_assembly_teleop import DESIGN_DATA_DIRECTORY
 from husky_assembly_teleop.bar_action_io import (
+    check_action_kinds,
     cycle_start_ee_sources,
     movement_kind,
     parse_bar_action,
     preferred_action_path,
-    roles_for_action,
 )
 from husky_assembly_teleop.robot_registry import ROBOTS, RobotSpec, robot_by_name
 
@@ -524,7 +524,6 @@ class LoadedEntry:
         path (str): The file it was loaded from.
         spec (RobotSpec): The robot running it.
         predecessor (LoadedEntry | None): For ``R`` / ``HR``: the loaded ``J`` / ``H``.
-        roles (list): Classic role per movement (all None for support robots).
         kinds (list): ``MovementKind`` per movement.
         start_ee_sources (list): Per movement, ``{side: Movement | None}`` -- the
             movement whose authored target is where that flange starts.
@@ -535,7 +534,6 @@ class LoadedEntry:
     path: str
     spec: RobotSpec
     predecessor: Optional['LoadedEntry']
-    roles: list
     kinds: list
     start_ee_sources: list
 
@@ -587,7 +585,7 @@ class LoadedEntry:
 
 def load_entry(schedule: ActionSchedule, entry: ScheduleEntry, *,
                prefer_sidecar: bool = True, with_predecessor: bool = True) -> LoadedEntry:
-    """Load an entry's action (and its predecessor) and derive roles, kinds, start poses.
+    """Load an entry's action (and its predecessor) and derive kinds, start poses.
 
     A release starts where its jointing / hold left the arm (e.g. ``B3_R``'s
     retreat starts at ``B3_J``'s insert targets, ``B3_HR``'s retreat at
@@ -604,12 +602,15 @@ def load_entry(schedule: ActionSchedule, entry: ScheduleEntry, *,
         LoadedEntry: The loaded entry.
 
     Raises:
-        ValueError: A file does not match its entry, or the predecessor is for
-            another robot.
+        ValueError: A file does not match its entry, the predecessor is for
+            another robot, or an action holds two (or no) transfer / insert /
+            retreat movements.
     """
     spec = robot_by_name(entry.robot)
     path = schedule.action_path(entry, prefer_sidecar)
     action = _load_checked(entry, path)
+    # * The predecessor goes through this same call, so it is checked too.
+    check_action_kinds(action, os.path.basename(path))
 
     pred = None
     pred_entry = schedule.predecessor(entry) if with_predecessor else None
@@ -629,7 +630,6 @@ def load_entry(schedule: ActionSchedule, entry: ScheduleEntry, *,
         path=path,
         spec=spec,
         predecessor=pred,
-        roles=roles_for_action(action),
         kinds=[movement_kind(mv) for mv in action.movements],
         start_ee_sources=sources[len(pred_movements):],
     )

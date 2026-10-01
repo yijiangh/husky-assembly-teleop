@@ -1,6 +1,6 @@
 """Stand-alone trajectory inspector for a saved BarAction movement.
 
-Loads a BarAction, snaps the selected movement (default M0), reads its saved
+Loads a BarAction, snaps the selected movement (default: index 0), reads its saved
 ``<mv>_trajectory.json`` from disk, opens cfab's PyBullet GUI, and exposes:
 
   - A slider ``Traj t (0..N-1)`` to scrub the waypoint stream. Each tick
@@ -18,11 +18,14 @@ Usage (ros2_ws venv active + install/setup.bash sourced):
 
   # Trajectory scrubber (default mode):
   python src/husky-assembly-teleop/scripts/m0_trajectory_inspector.py \\
-      --bar-action B6.json --movement M0
+      --bar-action B6.json --movement 0
 
   # Target-EE-frames IK check (no trajectory file required):
   python src/husky-assembly-teleop/scripts/m0_trajectory_inspector.py \\
-      --bar-action B6.json --movement M2 --check-target-ee
+      --bar-action B6.json --movement J_M5 --check-target-ee
+
+``--movement`` is the index in the loaded list (a J file loads its J then its R
+movements) or a movement id fragment (exact id, then ``_key_``, then substring).
 
 In the cfab window (scrubber mode):
   - drag ``Traj t (0..N-1)`` to scrub the trajectory
@@ -40,14 +43,16 @@ from types import SimpleNamespace
 
 import numpy as np
 
+from husky_assembly_teleop.bar_action_io import find_movement
+
 
 DEFAULT_PROBLEM = "2026-05-16_double_kissing_jig_demo"
 DEFAULT_BAR_ACTION = "B6.json"
-DEFAULT_MOVEMENT = "M0"
+DEFAULT_MOVEMENT = "0"
 
 # DEFAULT_PROBLEM = "2026-05-19_reoriented2"
 # DEFAULT_BAR_ACTION = "B122.json"
-# DEFAULT_MOVEMENT = "M1"
+# DEFAULT_MOVEMENT = "1"
 
 class StubLogger:
     def warn(self, msg):  print(f"[WARN] {msg}")
@@ -146,11 +151,22 @@ def _attach_stub_husky_interface(monitor, m1_start_state):
     monitor.selected_robot_id = 0
 
 
-def _find_movement_by_role(monitor, role: str):
-    for i, mv in enumerate(monitor._loaded_movements):
-        if monitor._match_movement_role(mv) == role:
-            return i, mv
-    return None, None
+def _pick_movement(monitor, key: str) -> tuple:
+    """Find a loaded movement by index or by movement id (fragment).
+
+    Args:
+        monitor (HuskyMonitor): The headless monitor, a BarAction loaded.
+        key (str): Digits = an index into ``monitor._loaded_movements``; anything
+            else = an exact id, then a ``_key_`` fragment, then a substring.
+
+    Returns:
+        tuple: ``(index, movement)``, or ``(None, None)`` when nothing matches.
+    """
+    try:
+        return find_movement(SimpleNamespace(movements=monitor._loaded_movements),
+                             int(key) if key.isdigit() else key)
+    except (KeyError, IndexError):
+        return None, None
 
 
 def _state_at_waypoint(template_state, q12, joint_names_12):
@@ -274,10 +290,10 @@ def _check_target_ee_frames(monitor, mv) -> None:
                 print(f"  {an}  <->  {bn}")
 
 
-def main(bar_action: str, problem: str, movement_role: str,
+def main(bar_action: str, problem: str, movement_key: str,
          trajectory_path: str | None, check_target_ee: bool = False) -> int:
     print(f"=== m0_trajectory_inspector: problem={problem!r} "
-          f"bar_action={bar_action!r} movement={movement_role!r} ===")
+          f"bar_action={bar_action!r} movement={movement_key!r} ===")
 
     _patch_design_problem(problem)
 
@@ -321,12 +337,12 @@ def main(bar_action: str, problem: str, movement_role: str,
         monitor.load_bar_action_file()
 
         # Pick the target movement and push it into cfab.
-        idx, mv = _find_movement_by_role(monitor, movement_role)
+        idx, mv = _pick_movement(monitor, movement_key)
         if mv is None:
-            print(f"FAIL: no movement with role {movement_role!r} in loaded movements.")
+            print(f"FAIL: no movement matches {movement_key!r}; loaded: "
+                  f"{[m.movement_id for m in monitor._loaded_movements]}")
             return 1
-        print(f"\n--- 'Load Movement' (idx={idx}, role={movement_role}, "
-              f"id={mv.movement_id!r}) ---")
+        print(f"\n--- 'Load Movement' (idx={idx}, id={mv.movement_id!r}) ---")
         monitor._selected_movement_idx = idx
         monitor.load_selected_movement()
 
@@ -484,9 +500,9 @@ if __name__ == "__main__":
                         help=f"DESIGN_PROBLEM_NAME directory. "
                              f"Default: {DEFAULT_PROBLEM!r}.")
     parser.add_argument("--movement", type=str, default=DEFAULT_MOVEMENT,
-                        choices=('M0', 'M1', 'M2', 'M3', 'M4'),
-                        help=f"Which movement's trajectory to inspect. "
-                             f"Default: {DEFAULT_MOVEMENT!r}.")
+                        help=f"Which movement's trajectory to inspect: the index "
+                             f"in the loaded list or an id fragment, e.g. J_M5 or "
+                             f"LM_insert. Default: {DEFAULT_MOVEMENT!r}.")
     parser.add_argument("--trajectory", type=str, default=None,
                         help="Override the trajectory JSON path. Default: "
                              "resolved via monitor._trajectory_file_for(mv).")
@@ -499,7 +515,7 @@ if __name__ == "__main__":
     sys.exit(main(
         bar_action=args.bar_action,
         problem=args.problem,
-        movement_role=args.movement,
+        movement_key=args.movement,
         trajectory_path=args.trajectory,
         check_target_ee=args.check_target_ee,
     ))

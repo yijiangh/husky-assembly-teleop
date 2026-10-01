@@ -3,16 +3,17 @@
 Mirrors the BAR_ACTION_LIVE_REPLAN_EXE UI button sequence in HuskyMonitor:
 
   1. ``load_bar_action_file()``                <- 'Load BarAction'
-  2. for idx in [1, 2, 3, 4, 0]:               <- one click per movement
+  2. for idx in monitor._chain_sequence():     <- one click per movement
         ``load_selected_movement()``           <- 'Load Movement'
         ``plan_selected_movement()``           <- 'Plan Movement'
 
-Each ``plan_selected_movement`` dispatches to ``_plan_M{0,1,2,3,4}_dispatch``
+Each ``plan_selected_movement`` dispatches by movement kind (``_plan_by_kind``)
 and routes through ``_accept_trajectory``, which (a) writes the trajectory to
 ``<DESIGN_DATA_DIRECTORY>/<problem>/Trajectories/<movement_id>_trajectory.json``
 and (b) propagates the end configuration into the next movement's
-``start_state.robot_configuration``. Hence the planning order M1 -> M2 -> M3
--> M4 -> M0: each Mk's plan seeds M(k+1)'s start.
+``start_state.robot_configuration``. Hence the planning order of Plan Chain
+(``_chain_sequence``): transfer -> insert -> retreat -> travel to load -> free
+move home; each plan seeds the next movement's start.
 
 Env-collision behavior matches the live monitor: each dispatcher plans WITH
 environment obstacles enabled (obstacles + ACM come from the movement's
@@ -20,7 +21,7 @@ start_state; the BarAction JSONs author touch_links/touch_bodies natively).
 
 Usage (ros2_ws venv active + install/setup.bash sourced):
   python src/husky-assembly-teleop/scripts/headless_live_monitor_test.py \\
-      --bar-action B6.json [--gui] [--only-movement M2] [--no-save]
+      --bar-action B6.json [--gui] [--only-movement LM_insert] [--no-save]
 """
 
 from __future__ import annotations
@@ -31,6 +32,8 @@ import sys
 from types import SimpleNamespace
 
 import numpy as np
+
+from husky_assembly_teleop.bar_action_io import MovementKind, find_movement
 
 
 DEFAULT_PROBLEM = "2026-05-16_double_kissing_jig_demo"
@@ -98,7 +101,7 @@ def _bypass_init_monitor():
     )
     monitor.show_goal_state = False
     # Both are set by the real __init__; load_selected_movement clamps the
-    # per-role default trajectory time against the max.
+    # per-movement default trajectory time against the max.
     monitor.trajectory_time = 20.0
     monitor.trajectory_time_max = 90.0
     monitor.trajectory_time_slider = None
@@ -126,7 +129,7 @@ def _bypass_init_monitor():
         return None
 
     # Mirror the real set_arm_trajectory: write into planned_arm_trajectory[index]
-    # so headless assertions (e.g. --button replan-m2) can see whether a plan
+    # so headless assertions (e.g. --button replan-insert) can see whether a plan
     # actually populated the per-arm slot.
     def _set_arm_trajectory(traj, index=0):
         monitor.planned_arm_trajectory[index] = traj
@@ -182,16 +185,29 @@ def _attach_stub_husky_interface(monitor, m1_start_state):
     return iface
 
 
+def _kind_text(monitor, mv) -> str:
+    """The movement's kind as text, or its class name for a class with no kind.
+
+    Args:
+        monitor (HuskyMonitor): The headless monitor.
+        mv (Movement): A loaded movement.
+
+    Returns:
+        str: e.g. ``'dual_constrained_free'``.
+    """
+    kind = monitor._kind_of(mv)
+    return kind.value if kind is not None else type(mv).__name__
+
+
 def _print_roster(monitor, header):
     print(f"\n--- {header} ---")
     for i, mv in enumerate(monitor._loaded_movements):
-        role = monitor._match_movement_role(mv)
         has_traj = getattr(mv, 'trajectory', None) is not None
         has_conf = (mv.start_state is not None
                     and getattr(mv.start_state, 'robot_configuration', None) is not None)
         mark = '[PLAN]' if has_traj else '[ -- ]'
         cmark = '[CONF]' if has_conf else '[ -- ]'
-        print(f"  [{i}] {mark} {cmark} role={role} id={mv.movement_id!r}")
+        print(f"  [{i}] {mark} {cmark} kind={_kind_text(monitor, mv)} id={mv.movement_id!r}")
 
 
 def _diagnose_free_plan_collision(monitor, mv) -> None:
@@ -335,10 +351,12 @@ def _diagnose_m0_transit_failure(monitor, mv) -> None:
         HUSKY_DUAL_UR5e_JOINT_NAMES, vec12_from_conf,
     )
 
-    if len(monitor._loaded_movements) < 2:
-        print("[M0 diagnose] no M1 in loaded movements; skipping.")
+    # * The goal is the transfer's start. Found by kind: in split exports index 1
+    # * is the manual mount, not the transfer.
+    m1 = monitor._loaded_movement_of(MovementKind.DUAL_CONSTRAINED_FREE)
+    if m1 is None:
+        print("[M0 diagnose] no transfer movement loaded; skipping.")
         return
-    m1 = monitor._loaded_movements[1]
     if (m1.start_state is None or m1.start_state.robot_configuration is None
             or mv.start_state is None or mv.start_state.robot_configuration is None):
         print("[M0 diagnose] missing start_state.robot_configuration; skipping.")
@@ -540,7 +558,8 @@ def _diagnose_m0_transit_failure(monitor, mv) -> None:
     print("=== end M0 transit-failure diagnosis ===\n")
 
 
-_TREE_DRAW_ROLES = ('M0', 'M1', 'M4')
+# The free moves (BiRRT tree) and the transfer (bar SE(3) tree) draw their trees.
+_TREE_DRAW_KINDS = (MovementKind.DUAL_FREE, MovementKind.DUAL_CONSTRAINED_FREE)
 
 
 def _install_tree_drawing(monitor):
@@ -680,15 +699,14 @@ def _install_tree_drawing(monitor):
     # Only inject draw_fn when planning M0/M4 (free dual-arm BiRRT).
     # M1 also internally drives joint-space BiRRT (free staging inside
     # plan_pose_birrt); for M1 we want the bar-midpoint SE(3) tree only,
-    # not the left/right tool0 FK trees, so we gate by current role.
-    _BIRRT_DRAW_ROLES = {'M0', 'M4'}
+    # not the left/right tool0 FK trees, so we gate on the current movement
+    # being a free move (DUAL_FREE).
     _orig_rrt_connect = _rrt_mod.rrt_connect
 
     def _rrt_connect_with_draw(q1, q2, distance_fn, sample_fn, extend_fn,
                                 collision_fn, **kwargs):
         cur_mv = getattr(monitor, 'current_movement', None)
-        role = monitor._match_movement_role(cur_mv) if cur_mv is not None else None
-        if role in _BIRRT_DRAW_ROLES:
+        if monitor._kind_of(cur_mv) is MovementKind.DUAL_FREE:
             kwargs.setdefault('draw_fn', _draw_fn)
         return _orig_rrt_connect(q1, q2, distance_fn, sample_fn, extend_fn,
                                   collision_fn, **kwargs)
@@ -810,8 +828,7 @@ def _replay_saved_trajectories(monitor, sequence) -> int:
     try:
         for idx in sequence:
             mv = monitor._loaded_movements[idx]
-            role = monitor._match_movement_role(mv)
-            print(f"\n--- staging trajectory: {role} idx={idx} "
+            print(f"\n--- staging trajectory: {_kind_text(monitor, mv)} idx={idx} "
                   f"id={mv.movement_id!r} ---")
             monitor._selected_movement_idx = idx
             monitor.load_selected_movement()
@@ -885,23 +902,32 @@ def _design_data_dir():
     return DESIGN_DATA_DIRECTORY
 
 
-def _run_button_mode(monitor, sequence, role_to_idx, button: str,
-                     bar_action: str) -> int:
+def _run_button_mode(monitor, sequence: list, button: str, bar_action: str) -> int:
     """Drive one of the new consolidated BarAction buttons end-to-end.
 
     button choices:
-      * ``chain``      -- call ``plan_movement_chain_live()`` and assert the
-                          `<action>.live-solved.json` sidecar was written and
-                          round-trips via ``parse_bar_action`` with at least
-                          one movement carrying a fresh trajectory.
-      * ``replan-m2``  -- plan M1 first (so M2's ``start_state.robot_configuration``
-                          gets propagated), load M2, then call
-                          ``replan_free_to_movement_start_live()`` and verify
-                          ``monitor.planned_arm_trajectory`` was populated.
-      * ``replan-m3``  -- plan M1 + M2 first (so M3's start is populated),
-                          load M3, then call
-                          ``replan_free_to_movement_start_live()`` and verify
-                          ``monitor.planned_arm_trajectory``.
+      * ``chain``           -- call ``plan_movement_chain_live()`` and assert the
+                               `<action>.live-solved.json` sidecar was written and
+                               round-trips via ``parse_bar_action`` with at least
+                               one movement carrying a fresh trajectory.
+      * ``replan-insert``   -- plan the transfer first (so the insert's
+                               ``start_state.robot_configuration`` gets
+                               propagated), load the insert, then call
+                               ``replan_free_to_movement_start_live()`` and verify
+                               ``monitor.planned_arm_trajectory`` was populated.
+      * ``replan-retreat``  -- plan the transfer + the insert first (so the
+                               retreat's start is populated), load the retreat,
+                               then call ``replan_free_to_movement_start_live()``
+                               and verify ``monitor.planned_arm_trajectory``.
+
+    Args:
+        monitor (HuskyMonitor): The headless monitor, a BarAction loaded.
+        sequence (list): The planning sequence main built (the buttons do not use it).
+        button (str): One of the choices above.
+        bar_action (str): The BarAction file name (for the log).
+
+    Returns:
+        int: 0 on success, 1 on failure.
     """
     if button == 'chain':
         print(f"\n=== [button=chain] running plan_movement_chain_live() ===")
@@ -931,39 +957,45 @@ def _run_button_mode(monitor, sequence, role_to_idx, button: str,
         _print_roster(monitor, "FINAL roster (button=chain)")
         return 0
 
-    if button in ('replan-m2', 'replan-m3'):
-        target_role = 'M2' if button == 'replan-m2' else 'M3'
-        # Prerequisites: plan M1 (and M2 for the m3 case) so the target
-        # movement's start_state.robot_configuration is populated by
-        # forward-chain propagation.
-        prereq_roles = ['M1'] if target_role == 'M2' else ['M1', 'M2']
-        missing = [r for r in prereq_roles + [target_role] if r not in role_to_idx]
+    if button in ('replan-insert', 'replan-retreat'):
+        # Prerequisites: plan the transfer (and the insert for the retreat case)
+        # so the target movement's start_state.robot_configuration is populated
+        # by forward-chain propagation.
+        if button == 'replan-insert':
+            target_kind = MovementKind.DUAL_CONSTRAINED_LINEAR
+            prereq_kinds = [MovementKind.DUAL_CONSTRAINED_FREE]
+        else:
+            target_kind = MovementKind.DUAL_INDEPENDENT_LINEAR
+            prereq_kinds = [MovementKind.DUAL_CONSTRAINED_FREE,
+                            MovementKind.DUAL_CONSTRAINED_LINEAR]
+        kind_to_idx = {k: monitor._loaded_index_of(k) for k in prereq_kinds + [target_kind]}
+        missing = [k.value for k, i in kind_to_idx.items() if i is None]
         if missing:
-            print(f"FAIL: BarAction lacks required roles {missing}.")
+            print(f"FAIL: BarAction lacks required movement kinds {missing}.")
             return 1
 
-        for r in prereq_roles:
-            idx = role_to_idx[r]
+        for k in prereq_kinds:
+            idx = kind_to_idx[k]
             mv = monitor._loaded_movements[idx]
-            print(f"\n=== [button={button}] pre-plan {r} idx={idx} "
+            print(f"\n=== [button={button}] pre-plan {k.value} idx={idx} "
                   f"id={mv.movement_id!r} ===")
             monitor._selected_movement_idx = idx
             monitor.load_selected_movement()
             monitor.plan_selected_movement()
             if getattr(monitor.current_movement, 'trajectory', None) is None:
-                print(f"FAIL: prerequisite {r} planning failed; cannot "
-                      f"exercise replan on {target_role}.")
+                print(f"FAIL: prerequisite {mv.movement_id} planning failed; cannot "
+                      f"exercise replan on the {target_kind.value} movement.")
                 return 1
 
         # Now load the target movement and exercise Button 2. Reset
         # planned_arm_trajectory to a sentinel first so we can tell whether
-        # Button 2 actually wrote a fresh plan (M1's plan already populated
-        # planned_arm_trajectory; a failed IK inside Button 2 would leave
-        # that old data behind and mislead the assertion).
-        idx = role_to_idx[target_role]
+        # Button 2 actually wrote a fresh plan (the transfer's plan already
+        # populated planned_arm_trajectory; a failed IK inside Button 2 would
+        # leave that old data behind and mislead the assertion).
+        idx = kind_to_idx[target_kind]
         mv = monitor._loaded_movements[idx]
         print(f"\n=== [button={button}] running "
-              f"replan_free_to_movement_start_live() on {target_role} "
+              f"replan_free_to_movement_start_live() on {target_kind.value} "
               f"idx={idx} id={mv.movement_id!r} ===")
         monitor._selected_movement_idx = idx
         monitor.load_selected_movement()
@@ -1095,46 +1127,38 @@ def main(bar_action: str = DEFAULT_BAR_ACTION,
             print("FAIL: load_bar_action_file did not populate _loaded_movements")
             return 1
 
-        # Build the per-role index map so --only-movement can target one
-        # role without re-running the full sequence.
-        role_to_idx: dict[str, int] = {}
-        for i, mv in enumerate(monitor._loaded_movements):
-            r = monitor._match_movement_role(mv)
-            if r and r not in role_to_idx:
-                role_to_idx[r] = i
-
         if only_movement:
-            if only_movement not in role_to_idx:
+            # * Digits = an index into the loaded list; anything else = a
+            # * movement id or a fragment of one (exact id, then _key_, then substring).
+            key = int(only_movement) if only_movement.isdigit() else only_movement
+            try:
+                idx, _mv = find_movement(
+                    SimpleNamespace(movements=monitor._loaded_movements), key)
+            except (KeyError, IndexError):
                 print(f"FAIL: --only-movement {only_movement!r} not in roster "
-                      f"(have {sorted(role_to_idx)})")
+                      f"(have {[m.movement_id for m in monitor._loaded_movements]})")
                 return 1
-            sequence = [role_to_idx[only_movement]]
+            sequence = [idx]
         else:
-            # M1 -> M2 -> M3 -> M0 -> M4. Canonical plan order: forward chain
-            # M1..M3 first (each Mk plan seeds M(k+1)'s start in memory or via
-            # the auto-load propagation). M0 then plans live->M1.start (live
-            # = stub interface, goal = M1.start.robot_configuration after M1
-            # planning). M4 plans last from M3-end (already propagated to
-            # M4.start when M3 was planned) to fixed home.
-            sequence = []
-            for r in ('M1', 'M2', 'M3', 'M0', 'M4'):
-                if r in role_to_idx:
-                    sequence.append(role_to_idx[r])
+            # Plan Chain's order: transfer -> insert -> retreat first (each plan
+            # seeds the next movement's start in memory). The travel to load
+            # then plans live -> transfer start (live = stub interface), and the
+            # free move home plans last from the retreat's end to fixed home.
+            sequence = monitor._chain_sequence()
 
         if not sequence:
-            print("FAIL: empty planning sequence (no recognized movement roles found)")
+            print("FAIL: empty planning sequence (no transfer, insert, retreat or free move found)")
             return 1
 
         # --- REPLAY BRANCH: skip planning, load saved trajectories, animate ---
         if replay:
             return _replay_saved_trajectories(monitor, sequence)
 
-        # --- BUTTON MODE: drive Button 1 (chain) or Button 2 (replan-m2/m3)
-        # end-to-end, then exit. Verifies the new consolidated UI methods
-        # without user interaction.
+        # --- BUTTON MODE: drive Button 1 (chain) or Button 2 (replan-insert /
+        # replan-retreat) end-to-end, then exit. Verifies the new consolidated
+        # UI methods without user interaction.
         if button:
-            return _run_button_mode(monitor, sequence, role_to_idx, button,
-                                    bar_action)
+            return _run_button_mode(monitor, sequence, button, bar_action)
 
         # `--no-save` used to suppress the per-movement JSON write inside
         # `_accept_trajectory`; per-movement JSONs no longer exist (all
@@ -1149,17 +1173,16 @@ def main(bar_action: str = DEFAULT_BAR_ACTION,
         print(f"\n=== planning sequence ({len(sequence)}): {sequence_ids} ===")
 
         revert_tree_drawing = None
-        sequence_roles = {monitor._match_movement_role(monitor._loaded_movements[i])
-                          for i in sequence}
-        draw_tree_active = draw_tree and bool(sequence_roles & set(_TREE_DRAW_ROLES))
+        sequence_kinds = {monitor._kind_of(monitor._loaded_movements[i]) for i in sequence}
+        draw_tree_active = draw_tree and bool(sequence_kinds & set(_TREE_DRAW_KINDS))
         if draw_tree and not draw_tree_active:
-            print(f"[draw-tree] sequence has no role in {_TREE_DRAW_ROLES}; "
-                  f"skipping patch install.")
+            print(f"[draw-tree] sequence has no kind in "
+                  f"{[k.value for k in _TREE_DRAW_KINDS]}; skipping patch install.")
 
         for step, idx in enumerate(sequence, start=1):
             mv = monitor._loaded_movements[idx]
-            role = monitor._match_movement_role(mv)
-            print(f"\n=== [{step}/{len(sequence)}] {role} idx={idx} id={mv.movement_id!r} ===")
+            kind_txt = _kind_text(monitor, mv)
+            print(f"\n=== [{step}/{len(sequence)}] {kind_txt} idx={idx} id={mv.movement_id!r} ===")
 
             print(f"--- simulating 'Load Movement' click (idx={idx}) ---")
             monitor._selected_movement_idx = idx
@@ -1173,16 +1196,16 @@ def main(bar_action: str = DEFAULT_BAR_ACTION,
             if draw_tree_active and revert_tree_drawing is None:
                 revert_tree_drawing = _install_tree_drawing(monitor)
 
-            print(f"--- simulating 'Plan Movement' click ({role}) ---")
+            print(f"--- simulating 'Plan Movement' click ({kind_txt}) ---")
             monitor.plan_selected_movement()
             if getattr(monitor.current_movement, 'trajectory', None) is None:
-                print(f"FAIL: {role} {mv.movement_id!r} planning produced no trajectory "
+                print(f"FAIL: {kind_txt} {mv.movement_id!r} planning produced no trajectory "
                       f"-- aborting sequence.")
-                # For free-plan failures (M0/M4) the most common cause is
-                # the initial conf landing inside an env-obstacle. Run the
-                # name-per-body diagnostic so we know what to ACM-exclude
-                # or fix.
-                if role in ('M0', 'M4'):
+                # For free-plan failures (travel to load, free move home) the
+                # most common cause is the initial conf landing inside an
+                # env-obstacle. Run the name-per-body diagnostic so we know
+                # what to ACM-exclude or fix.
+                if monitor._kind_of(mv) is MovementKind.DUAL_FREE:
                     try:
                         _diagnose_free_plan_collision(monitor, mv)
                     except Exception as e:
@@ -1190,7 +1213,7 @@ def main(bar_action: str = DEFAULT_BAR_ACTION,
                     # When start_conf was feasible but BiRRT couldn't
                     # connect to goal, dig into per-joint Δ and linear-
                     # interpolation collisions to identify what's blocking.
-                    if role == 'M0':
+                    if monitor._is_free_to_load(mv):
                         try:
                             _diagnose_m0_transit_failure(monitor, mv)
                         except Exception as e:
@@ -1236,9 +1259,10 @@ if __name__ == "__main__":
                         help="Open cfab's PyBullet GUI window. Hold the "
                              "window open at the end of the sequence.")
     parser.add_argument("--only-movement", type=str, default=None,
-                        choices=('M0', 'M1', 'M2', 'M3', 'M4'),
-                        help="Plan a single role only (no sequence). Useful "
-                             "for triage after a failure.")
+                        help="Plan a single movement only (no sequence): the "
+                             "index in the loaded list (a J file loads its J "
+                             "then its R movements) or an id fragment, e.g. "
+                             "J_M3 or LM_insert. Useful for triage after a failure.")
     parser.add_argument("--no-save", action="store_true",
                         help="Deprecated no-op (per-movement JSON persistence "
                              "was replaced by the `<action>.live-solved.json` "
@@ -1254,13 +1278,15 @@ if __name__ == "__main__":
                              "SE(3) RRT). Forces --gui on. Left arm edges "
                              "are blue, right arm edges are orange.")
     parser.add_argument("--button", type=str, default=None,
-                        choices=('chain', 'replan-m2', 'replan-m3'),
+                        choices=('chain', 'replan-insert', 'replan-retreat'),
                         help="Exercise one of the new consolidated BarAction "
-                             "buttons instead of the standard M1->M2->M3->M0->M4 "
-                             "loop. 'chain' calls plan_movement_chain_live() and "
-                             "asserts the sidecar. 'replan-m2' / 'replan-m3' "
-                             "plan the M1 (+M2 for m3) prerequisites, then "
-                             "call replan_free_to_movement_start_live().")
+                             "buttons instead of the standard Plan Chain loop "
+                             "(transfer -> insert -> retreat -> travel to load -> "
+                             "free move home). 'chain' calls "
+                             "plan_movement_chain_live() and asserts the sidecar. "
+                             "'replan-insert' / 'replan-retreat' plan the transfer "
+                             "(+ the insert for the retreat) first, then call "
+                             "replan_free_to_movement_start_live().")
     args = parser.parse_args()
     sys.exit(main(
         bar_action=args.bar_action, problem=args.problem,

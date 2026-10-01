@@ -8,24 +8,27 @@ The data classes live in `rs_data_structure.bar_action`. compas's
 - `load_action_cycle(path)` → both halves of one bar's cycle, in order
 - `list_bar_actions(dir)`   → sorted list of *.json filenames
 - `find_movement(action, key)` → (index, movement)
-- `movement_role(mv)`       → the classic 'M0'..'M4' role of a movement
-- `cycle_roles(slots)`      → those roles from the recorded movement CLASSES
-- `roles_for_action(action)` → the same for ONE action (all None for a support
-  robot's hold / hold-release action, which has no classic role)
 - `cycle_start_ee_sources(movements, side_keys)` → per movement, which movement
   authored where each tool flange STARTS
 - `sibling_action_path(path)` → the release file of a jointing file (and back)
 - `clean_action_path` / `sidecar_action_path` / `preferred_action_path` /
   `write_path_for` → the clean export vs its `.live-solved.json` sidecar
 - `movement_kind(mv)`       → what KIND of step a movement is (`MovementKind`),
-  from its class; `step_kind`, `movement_controller`, `tool_event`,
-  `default_trajectory_time` build on it
+  from its class; `step_kind`, `tool_event`, `default_trajectory_time` build on it
+- `COMPLIANT_KINDS`         → the kinds that run under the Cartesian compliance
+  controller (Cindy's insert and retreat)
+- `is_free_home(action, mv)` → whether a free dual-arm move is the move HOME
+  (the other one is the travel out to the loading pose)
+- `check_action_kinds(action)` → refuse an action whose transfer / insert /
+  retreat is missing or doubled
 - `bar_body_name` / `find_bar_body` / `is_built_assembly_body` → the built
   bars' rigid-body names, which differ between Cindy's and the support cells
 
-To classify a movement's motion type, use `movement_kind` (it reads the concrete
-Movement subclass); to know what it does in Cindy's assembly cycle (transfer,
-insert, retreat, ...), use `movement_role` / `roles_for_action`.
+To know what a movement does, use `movement_kind` (it reads the concrete
+Movement subclass): in Cindy's cycle each of the transfer, the insert and the
+retreat has its own class, and the one class used twice (the free dual-arm
+move) is told apart with `is_free_home`. The old M0..M4 roles live in
+`legacy_bar_action_io`, only for reading old takes that were stamped with them.
 
 * Two export schemas exist. The legacy one (up to 260716_phase1_test) writes
 * ONE file per bar, `B6.json`, holding M0..M4. The current one
@@ -51,8 +54,6 @@ from compas.data import json_load
 # by both arms) vs SingleArm (support robot), Free vs Linear.
 import rs_data_structure.bar_action as _bar_action_module
 from rs_data_structure.bar_action import (
-    CONTROLLER_CARTESIAN_COMPLIANT,
-    CONTROLLER_JOINT_TRACKING,
     BarSceneAction,
     BarAssemblyJointingAction,
     BarAssemblyReleaseAction,
@@ -95,8 +96,8 @@ class BarAssemblyAction(BarSceneAction):
 if not hasattr(_bar_action_module, "BarAssemblyAction"):
     _bar_action_module.BarAssemblyAction = BarAssemblyAction
 
-# * The actions of the assembly robot (Cindy). Only these carry the classic
-# * M0..M4 roles; a support robot's hold / hold-release action has none.
+# * Cindy's actions (the assembly robot): the jointing and release halves, and
+# * the legacy single file holding both.
 # Take the legacy class from the module (not the local one above): that is the
 # class compas actually builds, even if a later rs_data_structure ships its own.
 CINDY_ACTION_TYPES = (BarAssemblyJointingAction, BarAssemblyReleaseAction,
@@ -111,141 +112,6 @@ def parse_bar_action(path: str) -> BarSceneAction:
             f"Expected a bar action at {path!r}, got {type(obj).__name__}"
         )
     return obj
-
-
-# * ------------------------------------------------------------- movement roles
-# The classic roles name what a movement does in the assembly cycle:
-#   M0 free travel to the loading pose      M1 bar-held transfer to the approach
-#   M2 linear insertion (bar held)          M3 per-arm linear retreat (bar released)
-#   M4 free travel home
-# The legacy export tags them as ``<bar>_M<n>_<desc>`` directly. The split
-# export tags ``<bar>_J_M<n>_<desc>`` / ``<bar>_R_M<n>_<desc>``, where the
-# number is the position INSIDE that file, so it has to be translated: the
-# manual mount and the screw-tool movements have no classic role (None).
-_LEGACY_ROLE_RE = re.compile(r"_M([0-9])_")
-_SPLIT_ROLE_RE = re.compile(r"_([JR])_M([0-9])_")
-# ! A support robot's hold (``B3_H_M2_...``) and hold-release (``B3_HR_M1_...``)
-# ! ids would otherwise hit the legacy fallback above and read as 'M2' / 'M1',
-# ! routing a support movement into Cindy's compliant insert flow.
-_HOLD_ROLE_RE = re.compile(r"_HR?_M[0-9]_")
-_SPLIT_ROLES = {
-    ("J", 0): "M0",  # free travel to the loading pose
-    ("J", 3): "M1",  # bar-held transfer to the approach
-    ("J", 5): "M2",  # linear insertion
-    ("R", 2): "M3",  # linear retreat
-    ("R", 3): "M4",  # free travel home
-}
-
-
-def movement_role(mv) -> Optional[str]:
-    """Return the classic role 'M0'..'M4' of a movement, or None.
-
-    Works for both export schemas (see the module note). Movements without a
-    classic role -- the operator mounting the bar, the screw tools running,
-    anything a support robot does in a hold / hold-release action -- return None.
-
-    Args:
-        mv: A Movement (only its ``movement_id`` is read).
-
-    Returns:
-        Optional[str]: 'M0'..'M4', or None.
-    """
-    mid = getattr(mv, "movement_id", "") or ""
-    if _HOLD_ROLE_RE.search(mid):
-        return None  # support robot movement: no classic role
-    split = _SPLIT_ROLE_RE.search(mid)
-    if split:
-        return _SPLIT_ROLES.get((split.group(1), int(split.group(2))))
-    legacy = _LEGACY_ROLE_RE.search(mid)
-    return f"M{legacy.group(1)}" if legacy else None
-
-
-# The role a movement's own CLASS pins down, whatever its id says. Each of these
-# appears once per cycle. The fourth moving class, IndependentDualArmFreeMovement,
-# is used TWICE (travel out and travel home), so it is resolved below from the
-# action that owns it instead.
-_ROLE_BY_CLASS = {
-    EndEffectorConstrainedDualArmFreeMovement: "M1",   # bar-held transfer
-    EndEffectorConstrainedDualArmLinearMovement: "M2",  # bar-held linear insert
-    IndependentDualArmLinearMovement: "M3",            # per-arm linear retreat
-}
-
-
-def cycle_roles(slots: list) -> list:
-    """Classic role of every movement in a loaded cycle, from the recorded classes.
-
-    Preferred over calling ``movement_role`` per movement: the ids number
-    movements by their POSITION inside their file, so the split export's
-    translation table is only right as long as nothing is ever inserted or
-    reordered. The class is what the movement *is*, and both export schemas
-    record it in the JSON ``dtype``. Any disagreement with the id is reported,
-    so a re-export that changes the naming is noticed rather than silently
-    mis-steering the operator.
-
-    Args:
-        slots (list): ``(action, path)`` pairs in cycle order, as
-            ``load_action_cycle`` returns them.
-
-    Returns:
-        list: One role ('M0'..'M4') or None per movement, in the same order as
-        the concatenated ``action.movements``. A support robot's action
-        (hold / hold-release) contributes None for each of its movements.
-    """
-    roles, legacy_free_idx = [], []
-    for action, _path in slots:
-        if not isinstance(action, CINDY_ACTION_TYPES):
-            # A support robot's action has no classic roles at all.
-            roles.extend([None] * len(action.movements))
-            continue
-        for mv in action.movements:
-            role = _ROLE_BY_CLASS.get(type(mv))
-            if role is None and type(mv) is IndependentDualArmFreeMovement:
-                # M0 and M4 share this class. The split export separates them by
-                # the action holding them (the jointing half travels OUT to the
-                # loading pose, the release half travels HOME); the legacy
-                # all-in-one file has both, so there they are first and last.
-                if isinstance(action, BarAssemblyJointingAction):
-                    role = "M0"
-                elif isinstance(action, BarAssemblyReleaseAction):
-                    role = "M4"
-                else:
-                    legacy_free_idx.append(len(roles))
-            roles.append(role)
-    if legacy_free_idx:
-        roles[legacy_free_idx[0]] = "M0"
-        roles[legacy_free_idx[-1]] = "M4"
-
-    # Cross-check against the ids, only for Cindy's actions (the ones that
-    # actually carry roles).
-    movements = [(mv, isinstance(action, CINDY_ACTION_TYPES))
-                 for action, _ in slots for mv in action.movements]
-    for (mv, is_cindy), role in zip(movements, roles):
-        if not is_cindy:
-            continue
-        by_id = movement_role(mv)
-        if by_id != role:
-            print(f"[BarAction] role mismatch on {mv.movement_id!r}: the "
-                  f"{type(mv).__name__} class says {role}, the id says {by_id}. "
-                  f"Using {role}; check whether the export's naming changed.")
-    return roles
-
-
-def roles_for_action(action: BarSceneAction) -> list:
-    """Classic role of every movement in ONE loaded action.
-
-    The schedule loads one file per entry, so this is ``cycle_roles`` for a
-    single action. Only Cindy's actions carry roles; a support robot's hold or
-    hold-release action gives None for every movement (and nothing is printed).
-
-    Args:
-        action (BarSceneAction): A loaded action of any kind.
-
-    Returns:
-        list: One role ('M0'..'M4') or None per movement.
-    """
-    if isinstance(action, CINDY_ACTION_TYPES):
-        return cycle_roles([(action, None)])
-    return [None] * len(action.movements)
 
 
 def slot_of_index(slots: list, idx: int):
@@ -543,9 +409,9 @@ def find_movement(action: BarSceneAction, key: Union[int, str]) -> tuple[int, Mo
 
     Examples:
         find_movement(action, 0)     → first movement
-        find_movement(action, "M1")  → first movement whose movement_id
-                                       contains "_M1_" (or equals "M1")
-        find_movement(action, "B6_M3_LM_retreat") → exact-id match
+        find_movement(action, "J_M3")  → first movement whose movement_id
+                                         contains "_J_M3_" (or equals "J_M3")
+        find_movement(action, "B6_R_M2_LM_retreat") → exact-id match
     """
     n = len(action.movements)
     if isinstance(key, int):
@@ -561,7 +427,7 @@ def find_movement(action: BarSceneAction, key: Union[int, str]) -> tuple[int, Mo
         if mv.movement_id == key:
             return idx, mv
 
-    # Substring match (e.g. "M1" → "*_M1_*")
+    # Substring match (e.g. "J_M3" → "*_J_M3_*")
     needle = f"_{key}_"
     for idx, mv in enumerate(action.movements):
         if needle in mv.movement_id:
@@ -578,8 +444,8 @@ def find_movement(action: BarSceneAction, key: Union[int, str]) -> tuple[int, Mo
 
 # * ------------------------------------------------------------- movement kinds
 # What KIND of step a movement is, read from its class (the exporter's
-# discriminator). The roles above only exist for Cindy; kinds cover every robot
-# and are what the planner / executor / UI dispatch on.
+# discriminator). Kinds cover every robot and are what the planner / executor /
+# UI dispatch on.
 class MovementKind(str, Enum):
     """The kind of step a movement is, one per concrete Movement class."""
 
@@ -621,9 +487,28 @@ ARM_KINDS = DUAL_ARM_KINDS | SINGLE_ARM_KINDS
 STATIONARY_KINDS = frozenset({
     MovementKind.GRIPPER_TOOL, MovementKind.SCAFFOLDING_TOOL, MovementKind.MANUAL,
 })
+# * Cindy's insert (tightens the joint screws) and retreat (loosens the
+# * grippers): both run under the Cartesian compliance controller.
+COMPLIANT_KINDS = frozenset({
+    MovementKind.DUAL_CONSTRAINED_LINEAR, MovementKind.DUAL_INDEPENDENT_LINEAR,
+})
 
-# Default duration of a planned arm trajectory, per kind (seconds). For Cindy the
-# monitor's role table (MOVEMENT_TRAJECTORY_TIME_S) takes precedence.
+# * Default duration of a planned arm trajectory, per kind (seconds). 'Load
+# * Movement' writes it into the monitor's "traj time" slider, so the slider
+# * comes back at a sane value for the movement about to run instead of
+# * whatever the previous one left behind.
+# The split is by what the path IS, not by how many waypoints it has:
+#   free moves, transfer   long articulated paths (a free transit, the
+#                          ~270-waypoint constrained bar-loading sweep, the free
+#                          return home) -- give them room so the arms move at a
+#                          watchable speed.
+#   insert, retreat        the ~15 mm linear insert and retreat. Only ~5
+#                          waypoints, and the insert keeps holding under
+#                          compliance after the nominal duration anyway (until
+#                          the joint motor stalls), so a long budget here buys
+#                          nothing and just makes the approach crawl.
+# The operator can always override on the slider before pressing execute; that
+# value is re-read at execution time.
 TRAJECTORY_TIME_BY_KIND_S = {
     MovementKind.DUAL_FREE: 30.0,
     MovementKind.DUAL_CONSTRAINED_FREE: 10.0,
@@ -632,10 +517,9 @@ TRAJECTORY_TIME_BY_KIND_S = {
     MovementKind.SINGLE_FREE: 15.0,
     MovementKind.SINGLE_LINEAR: 5.0,
 }
-
-# The controller Cindy's proven flow runs per role: only the insert (M2) is
-# compliant. Used to warn when an export's Movement.controller disagrees.
-_CINDY_CONTROLLER_BY_ROLE = {"M2": CONTROLLER_CARTESIAN_COMPLIANT}
+# Cindy's free move home is shorter than her travel out to the loading pose
+# (the 30 s in the table above), so it gets its own default.
+FREE_HOME_TRAJECTORY_TIME_S = 10.0
 
 
 def movement_kind(mv: Movement) -> MovementKind:
@@ -675,6 +559,94 @@ def kind_fits_robot(kind: MovementKind, dual_arm: bool) -> bool:
     return True
 
 
+def is_free_home(action: BarSceneAction, mv: Movement) -> bool:
+    """Whether a ``DUAL_FREE`` movement is the free move HOME (not the travel out to the loading pose).
+
+    Cindy's two free moves share one class, so the action holding them tells
+    them apart: the release half travels home, the jointing half travels out to
+    the loading pose, and the legacy single file holds both (out first, home
+    last).
+
+    Args:
+        action (BarSceneAction): The action that holds ``mv``.
+        mv (Movement): One of that action's movements.
+
+    Returns:
+        bool: True only for the free move home. False for any other kind (an
+        unknown class included), and for every movement of a jointing, hold or
+        hold-release action.
+    """
+    if _KIND_BY_CLASS.get(type(mv)) is not MovementKind.DUAL_FREE:
+        return False
+    if isinstance(action, BarAssemblyReleaseAction):
+        return True
+    if isinstance(action, _bar_action_module.BarAssemblyAction):
+        # * Legacy single file: home is the LAST free move. Compared by identity,
+        # * since the movement objects all come from this one loaded action.
+        free_moves = [m for m in action.movements
+                      if _KIND_BY_CLASS.get(type(m)) is MovementKind.DUAL_FREE]
+        return free_moves[-1] is mv
+    return False
+
+
+# * How many movements of each kind Cindy's actions must hold. The monitor finds
+# * the transfer, the insert and the retreat by their kind, so each must be there
+# * exactly once. The legacy single file also holds both free moves (travel out
+# * to the loading pose, then home). Support robots' actions are not checked.
+_REQUIRED_KIND_COUNTS = {
+    BarAssemblyJointingAction: {
+        MovementKind.DUAL_CONSTRAINED_FREE: 1,
+        MovementKind.DUAL_CONSTRAINED_LINEAR: 1,
+    },
+    BarAssemblyReleaseAction: {
+        MovementKind.DUAL_INDEPENDENT_LINEAR: 1,
+    },
+    _bar_action_module.BarAssemblyAction: {
+        MovementKind.DUAL_CONSTRAINED_FREE: 1,
+        MovementKind.DUAL_CONSTRAINED_LINEAR: 1,
+        MovementKind.DUAL_INDEPENDENT_LINEAR: 1,
+        MovementKind.DUAL_FREE: 2,
+    },
+}
+# What each checked kind is in Cindy's cycle, for the error message.
+_KIND_MEANING = {
+    MovementKind.DUAL_FREE: "free move",
+    MovementKind.DUAL_CONSTRAINED_FREE: "transfer",
+    MovementKind.DUAL_CONSTRAINED_LINEAR: "insert",
+    MovementKind.DUAL_INDEPENDENT_LINEAR: "retreat",
+}
+
+
+def check_action_kinds(action: BarSceneAction, source: Optional[str] = None) -> None:
+    """Refuse one of Cindy's actions whose transfer, insert or retreat is missing or doubled.
+
+    The monitor finds the transfer, the insert and the retreat by their movement
+    kind, so an action holding two of them, or none, would silently make it pick
+    the wrong movement. The legacy single file must also hold exactly two free
+    moves, so ``is_free_home`` ("the last one") is unambiguous. Other action
+    types (a support robot's hold / hold release) are not checked.
+
+    Args:
+        action (BarSceneAction): A loaded action.
+        source (str | None): How to name the action in the error, e.g. its file
+            name. Defaults to ``action.action_id``.
+
+    Raises:
+        ValueError: A kind count differs from what the action type needs.
+        TypeError: A movement's class has no kind (see ``movement_kind``).
+    """
+    required = next((counts for cls, counts in _REQUIRED_KIND_COUNTS.items()
+                     if isinstance(action, cls)), None)
+    if required is None:
+        return
+    kinds = [movement_kind(mv) for mv in action.movements]
+    wrong = [f"{kind.value} ({_KIND_MEANING[kind]}) expected {expected}, found {kinds.count(kind)}"
+             for kind, expected in required.items() if kinds.count(kind) != expected]
+    if wrong:
+        raise ValueError(f"{source or action.action_id}: this {type(action).__name__} has the "
+                         f"wrong number of movements: {'; '.join(wrong)}")
+
+
 def step_kind(mv: Movement) -> str:
     """Which UI action runs a movement: the arm, the gripper, the screws, or the operator.
 
@@ -694,30 +666,6 @@ def step_kind(mv: Movement) -> str:
     }[kind]
 
 
-def movement_controller(mv: Movement, role: Optional[str] = None) -> str:
-    """The arm controller the export asks for, with a check against Cindy's roles.
-
-    Cindy's M2 (insert) runs compliant and every other role runs joint tracking;
-    that flow is proven on hardware and stays role-keyed. When ``role`` is given
-    and the exported ``Movement.controller`` says otherwise, one warning is
-    printed so a re-export that changes it is noticed.
-
-    Args:
-        mv (Movement): A loaded movement.
-        role (str | None): Its classic role ('M0'..'M4') for Cindy, else None.
-
-    Returns:
-        str: ``mv.controller`` as exported.
-    """
-    controller = mv.controller
-    if role is not None:
-        expected = _CINDY_CONTROLLER_BY_ROLE.get(role, CONTROLLER_JOINT_TRACKING)
-        if controller != expected:
-            print(f"[BarAction] controller mismatch on {mv.movement_id!r}: the "
-                  f"export says {controller!r}, role {role} runs {expected!r}.")
-    return controller
-
-
 def tool_event(mv: ToolMovement) -> tuple:
     """What a tool step does.
 
@@ -731,23 +679,25 @@ def tool_event(mv: ToolMovement) -> tuple:
     return mv.tool_action, list(mv.tool_names), bool(mv.overlaps_next)
 
 
-def default_trajectory_time(mv: Movement, role: Optional[str] = None,
-                            role_table: Optional[dict] = None) -> Optional[float]:
+def default_trajectory_time(mv: Movement, free_home: bool = False) -> Optional[float]:
     """Default duration of a movement's planned trajectory.
 
     Args:
         mv (Movement): A loaded movement.
-        role (str | None): Its classic role for Cindy, else None.
-        role_table (dict | None): Seconds per role (the monitor's
-            MOVEMENT_TRAJECTORY_TIME_S). Wins over the per-kind default when
-            ``role`` is in it.
+        free_home (bool): The movement is Cindy's free move home (see
+            ``is_free_home``); it then gets ``FREE_HOME_TRAJECTORY_TIME_S``
+            instead of the free-move default. Ignored for every other kind.
 
     Returns:
         float | None: Seconds, or None for a step where no arm moves.
+
+    Raises:
+        TypeError: The movement's class has no kind (see ``movement_kind``).
     """
-    if role is not None and role_table and role in role_table:
-        return role_table[role]
-    return TRAJECTORY_TIME_BY_KIND_S.get(movement_kind(mv))
+    kind = movement_kind(mv)
+    if free_home and kind is MovementKind.DUAL_FREE:
+        return FREE_HOME_TRAJECTORY_TIME_S
+    return TRAJECTORY_TIME_BY_KIND_S.get(kind)
 
 
 # * ------------------------------------------------------ rigid-body naming

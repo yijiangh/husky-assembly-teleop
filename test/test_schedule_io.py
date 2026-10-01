@@ -199,24 +199,27 @@ def test_action_path(schedule):
 
 @needs_fixture
 def test_release_starts_where_the_jointing_left_the_flanges(schedule):
-    """B3_R's untighten / ungrasp / retreat all start at B3_J's insert targets."""
+    """B3_R's tool steps and retreat all start at B3_J's insert targets."""
     loaded = load_entry(schedule, schedule.entry(4))
     assert loaded.predecessor.entry.index == 2 and loaded.predecessor.predecessor is None
-    assert loaded.roles == [None, None, 'M3', 'M4']
-    assert loaded.kinds == [MovementKind.SCAFFOLDING_TOOL, MovementKind.SCAFFOLDING_TOOL,
-                            MovementKind.DUAL_INDEPENDENT_LINEAR, MovementKind.DUAL_FREE]
-    for idx in (0, 1, 2):
+    # * The layout is read off the file: tool steps, then the retreat and the
+    # * free move home. A re-export may add or drop a tool step.
+    kinds = loaded.kinds
+    assert kinds[-2:] == [MovementKind.DUAL_INDEPENDENT_LINEAR, MovementKind.DUAL_FREE]
+    assert all(kind is MovementKind.SCAFFOLDING_TOOL for kind in kinds[:-2])
+    for idx in range(len(kinds) - 1):
         for side in ('left', 'right'):
             assert loaded.start_ee_source(idx, side).movement_id == 'B3_J_M5_LM_insert'
-    assert set(loaded.start_ee_frames(2)) == {'left', 'right'}
-    assert loaded.missing_start_sides(2) == []
+    retreat = kinds.index(MovementKind.DUAL_INDEPENDENT_LINEAR)
+    assert set(loaded.start_ee_frames(retreat)) == {'left', 'right'}
+    assert loaded.missing_start_sides(retreat) == []
 
 
 @needs_fixture
 def test_hold_release_starts_at_the_hold_approach(schedule):
     """B3_HR's movements start where B3_H's linear approach left Alice's flange."""
     loaded = load_entry(schedule, schedule.entry(16))
-    assert loaded.spec.name == 'Alice' and loaded.roles == [None, None]
+    assert loaded.spec.name == 'Alice'
     assert loaded.kinds == [MovementKind.GRIPPER_TOOL, MovementKind.SINGLE_LINEAR]
     for idx in (0, 1):
         assert loaded.start_ee_source(idx, 'arm').movement_id == 'B3_H_M2_LM_to_grasp'
@@ -227,7 +230,6 @@ def test_hold_starts_unknown_then_from_its_own_approach(schedule):
     """B3_H's first movement has no known start; later ones start at its own approach."""
     loaded = load_entry(schedule, schedule.entry(3))
     assert loaded.predecessor is None
-    assert loaded.roles == [None] * 4
     assert loaded.start_ee_source(0, 'arm') is None
     assert loaded.missing_start_sides(0) == ['arm'] and loaded.start_ee_frames(0) == {}
     assert loaded.start_ee_source(2, 'arm').movement_id == 'B3_H_M0_free_to_approach'
@@ -314,3 +316,21 @@ def test_file_that_does_not_match_its_entry(tmp_path):
     shutil.copy(os.path.join(actions, 'B7__H.json'), os.path.join(actions, 'B3__H.json'))
     with pytest.raises(ValueError, match='Belle'):
         copy.load_action(copy.entry(3))
+
+
+@needs_fixture
+def test_load_entry_refuses_two_transfers(tmp_path):
+    """A jointing file whose insert became a second transfer is refused, naming the file."""
+    root = _copy_problem(tmp_path, ['B1__J.json'])
+    path = os.path.join(root, 'BarActions', 'B1__J.json')
+    with open(path) as handle:
+        text = handle.read()
+    # Exactly one insert in the file, and both classes have the same fields.
+    assert text.count('EndEffectorConstrainedDualArmLinearMovement') == 1
+    with open(path, 'w') as handle:
+        handle.write(text.replace('EndEffectorConstrainedDualArmLinearMovement',
+                                  'EndEffectorConstrainedDualArmFreeMovement'))
+
+    copy = load_schedule(root)
+    with pytest.raises(ValueError, match='B1__J.json'):
+        load_entry(copy, copy.entry(0))

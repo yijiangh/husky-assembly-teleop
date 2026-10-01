@@ -1,13 +1,13 @@
 """Derive (or fully plan) the bar transfer for one or many bars without the robot.
 
-The headless twin of the monitor's "M1: Derive Start/Goal only (no RRT)" and
-"Plan Movement" buttons for the bar-held transfer (classic role M1: the
-loading pose -> the insertion approach). It builds the design problem's cell,
+The headless twin of the monitor's "Transfer start: Derive start/goal only
+(no RRT)" and "Plan Movement" buttons for the bar-held transfer (the
+DUAL_CONSTRAINED_FREE movement: the loading pose -> the insertion approach). It builds the design problem's cell,
 loads a bar action, applies the same setup the live monitor does (ground body
 injected; optionally the already-built bars hidden), runs the start derivation
 alone or the whole planner, and writes a run file the dashboard picks up.
 
-* Both export schemas load: the legacy ``B6.json`` (M0..M4 in one file) and
+* Both export schemas load: the legacy ``B6.json`` (the whole cycle in one file) and
 * the split ``B6__J.json`` + ``B6__R.json`` (see ``bar_action_io``).
 
 * Bars the export left without a base (robot base at the world origin) are
@@ -39,7 +39,8 @@ import pybullet_planning as pp
 from compas.data import json_dump
 from husky_assembly_teleop import DESIGN_DATA_DIRECTORY, DESIGN_PROBLEM_NAME
 from husky_assembly_teleop.bar_action_io import (
-    list_bar_actions, movement_role, parse_bar_action, sibling_action_path,
+    MovementKind, is_free_home, list_bar_actions, movement_kind, parse_bar_action,
+    sibling_action_path,
 )
 from husky_assembly_teleop.cfab_session import CfabSession
 from husky_assembly_teleop.dashboard.run_schema import runs_dir_default, scenes_dir_default
@@ -76,21 +77,22 @@ class _Log:
 
 
 # * ----------------------------------------------------------- action files
-def roles_of(action) -> dict:
-    """Map the classic roles ('M0'..'M4') to the movements that play them.
+def transfer_steps(action, release=None) -> dict:
+    """Map each movement kind to the first movement of that kind.
 
     Args:
-        action: a parsed bar action (either schema).
+        action: a parsed bar action (either schema), searched first.
+        release: the paired release action (split export), or None.
 
     Returns:
-        dict: ``{role: movement}``; movements without a role are left out.
+        dict: ``{MovementKind: movement}``, the first movement of each kind over
+        ``action`` then ``release``.
     """
-    roles = {}
-    for mv in action.movements:
-        role = movement_role(mv)
-        if role and role not in roles:
-            roles[role] = mv
-    return roles
+    steps = {}
+    for owner in (action, release):
+        for mv in (owner.movements if owner is not None else []):
+            steps.setdefault(movement_kind(mv), mv)
+    return steps
 
 
 def action_files(problem_dir: str, bar: str) -> tuple:
@@ -138,16 +140,17 @@ def _vec12(conf) -> list:
 def stamp_keyframes(action, base_frame, confs: dict, carry=None):
     """Write a found base and keyframe configurations onto an action, as the export does.
 
-    Every movement gets the base frame. Each solved role's configuration becomes
+    Every movement gets the base frame. Each solved kind's configuration becomes
     that movement's goal, and is carried forward as the start of every following
     movement (the screw-tool and manual steps hold the arms still) until the next
-    solved role. Movements before the first solved role keep their empty start:
+    solved kind. Movements before the first solved kind keep their empty start:
     the transfer's start is the planner's to fill.
 
     Args:
         action: the jointing / release / legacy action to edit in place.
         base_frame (Frame): the accepted robot base frame (metres).
-        confs (dict): ``{role: 12-vector}`` for the solved roles.
+        confs (dict): ``{MovementKind: 12-vector}`` for the solved transfer,
+            insert and retreat.
         carry: the 12-vector the previous action ended on (release files start
             where the jointing file ended), or None.
 
@@ -159,11 +162,11 @@ def stamp_keyframes(action, base_frame, confs: dict, carry=None):
             mv.start_state.robot_base_frame = base_frame
             if carry is not None and mv.start_state.robot_configuration is None:
                 mv.start_state.robot_configuration = conf_from_12vec(carry)
-        role = movement_role(mv)
-        if role in confs:
+        kind = movement_kind(mv)
+        if kind in confs:
             if mv.target_configuration is None:
-                mv.target_configuration = conf_from_12vec(confs[role])
-            carry = confs[role]
+                mv.target_configuration = conf_from_12vec(confs[kind])
+            carry = confs[kind]
     return carry
 
 
@@ -192,13 +195,15 @@ def place_base(session, stub, action, release, clean_path: str, problem_dir: str
     Raises:
         RuntimeError: when the inputs are incomplete or no sampled base solves.
     """
-    roles = roles_of(action)
-    if release is not None:
-        for role, mv in roles_of(release).items():
-            roles.setdefault(role, mv)
-    missing = [role for role in ('M1', 'M2', 'M3') if role not in roles]
+    # ! The external tamp solver (walkable_ground.solve_chain_with_base_search)
+    # ! names its keyframes by the old roles; this is the only place they appear.
+    TAMP_KEYFRAME_KEYS = {'M1': MovementKind.DUAL_CONSTRAINED_FREE,
+                          'M2': MovementKind.DUAL_CONSTRAINED_LINEAR,
+                          'M3': MovementKind.DUAL_INDEPENDENT_LINEAR}
+    steps = transfer_steps(action, release)
+    missing = [kind.value for kind in TAMP_KEYFRAME_KEYS.values() if kind not in steps]
     if missing:
-        raise RuntimeError(f'cannot place the base: no movement plays {missing}')
+        raise RuntimeError(f'cannot place the base: no {missing} movement')
     # The IK chain pushes each movement's start state to the cell, which insists
     # on the ground body the monitor adds.
     for act in (action, release):
@@ -213,26 +218,27 @@ def place_base(session, stub, action, release, clean_path: str, problem_dir: str
 
     # Bar centre = midpoint of the assembled tool0 targets; the base faces the
     # average tool0 +Z, the direction the bar is pushed into its joints.
-    targets = roles['M2'].target_ee_frames or {}
+    targets = steps[MovementKind.DUAL_CONSTRAINED_LINEAR].target_ee_frames or {}
     left, right = targets.get('left'), targets.get('right')
     if left is None or right is None:
         raise RuntimeError('the insertion movement has no left/right target frames')
     midpoint_mm = 500.0 * (np.asarray(left.point, dtype=float) + np.asarray(right.point, dtype=float))
     heading = np.asarray(left.zaxis, dtype=float) + np.asarray(right.zaxis, dtype=float)
-    home = roles.get('M4')
+    home = next((m for owner in (release, action) if owner is not None
+                 for m in owner.movements if is_free_home(owner, m)), None)
     home12 = (_vec12(home.target_configuration)
               if home is not None and home.target_configuration is not None
               else [float(v) for v in HUSKY_DUAL_ARM_HOME_CONF_12])
 
     solved, base_mm = solve_chain_with_base_search(
-        session.planner, {role: roles[role] for role in ('M1', 'M2', 'M3')}, soups,
+        session.planner, {key: steps[kind] for key, kind in TAMP_KEYFRAME_KEYS.items()}, soups,
         midpoint_mm, heading_dir_mm=heading, check_collision=True,
         groups=resolve_arm_groups(session.robot_cell), home_conf_12=home12)
     if solved is None:
         raise RuntimeError('no base on the walkable ground solves the '
                            'transfer -> insert -> retreat IK chain')
     base_frame = mm4_to_frame(base_mm)
-    confs = {role: _vec12(solved[role].robot_configuration) for role in ('M1', 'M2', 'M3')}
+    confs = {kind: _vec12(solved[key].robot_configuration) for key, kind in TAMP_KEYFRAME_KEYS.items()}
 
     saved = []
     carry = stamp_keyframes(action, base_frame, confs)
@@ -251,20 +257,21 @@ def place_base(session, stub, action, release, clean_path: str, problem_dir: str
 
 
 # * ------------------------------------------------------------- planning
-def prepare_state(session, stub, roles: dict, hide_built: bool = True) -> tuple:
+def prepare_state(session, stub, transfer, insert, hide_built: bool = True) -> tuple:
     """Bring the transfer's start state to exactly what the live monitor would plan from.
 
     Args:
         session (CfabSession): the open cell session.
         stub: the monitor stand-in (carries ``active_bar_name`` for the helpers).
-        roles (dict): ``{role: movement}`` from ``roles_of``.
+        transfer (Movement): the bar-held transfer (DUAL_CONSTRAINED_FREE).
+        insert (Movement | None): the insert (DUAL_CONSTRAINED_LINEAR), whose
+            start is the transfer's goal; None when the action has none.
         hide_built (bool): hide the already-built bars, as the mocap-accuracy
             experiment does (they are reaching locations, not real obstacles).
 
     Returns:
         tuple: ``(transfer_start_state, goal_conf)``.
     """
-    transfer = roles['M1']
     state = transfer.start_state
     # The cell carries a ground body the Rhino export does not, and compas_fab
     # insists the two agree.
@@ -281,7 +288,6 @@ def prepare_state(session, stub, roles: dict, hide_built: bool = True) -> tuple:
             state.robot_configuration[name] = float(value)
     # The goal is where the insertion starts (same as the monitor), else the
     # transfer's own authored goal.
-    insert = roles.get('M2')
     goal_conf = (insert.start_state.robot_configuration
                  if insert is not None and insert.start_state is not None else None)
     if goal_conf is None:
@@ -311,9 +317,10 @@ def plan_bar(session, stub, args, bar: str, problem_dir: str) -> dict:
     release_path = sibling_action_path(load_path)
     release = (parse_bar_action(release_path)
                if release_path and os.path.isfile(release_path) else None)
-    roles = roles_of(action)
-    if 'M1' not in roles:
+    steps = transfer_steps(action)
+    if MovementKind.DUAL_CONSTRAINED_FREE not in steps:
         raise RuntimeError(f'{os.path.basename(load_path)} has no bar-held transfer movement')
+    transfer = steps[MovementKind.DUAL_CONSTRAINED_FREE]
     bar_name = f'bar_{getattr(action, "active_bar_id", None) or bar}'
     stub.active_bar_name = bar_name
     row = {'bar': bar, 'file': os.path.basename(load_path), 'base': 'authored'}
@@ -323,20 +330,22 @@ def plan_bar(session, stub, args, bar: str, problem_dir: str) -> dict:
     # which stand-in it used -- see run_schema.BASE_SOURCE_PLAIN. A sidecar IS
     # the base-placement search's own answer, saved on an earlier run.
     base_source = 'base_placement_heuristic' if sidecar else 'bar_action_file'
-    if not base_is_authored(roles['M1'].start_state):
+    if not base_is_authored(transfer.start_state):
         started = time.perf_counter()
         base_frame, _saved = place_base(session, stub, action, release, clean_path, problem_dir)
         row['base'] = (f'heuristic ({base_frame.point.x:.2f}, {base_frame.point.y:.2f}) m '
                        f'in {time.perf_counter() - started:.0f} s')
         base_source = 'base_placement_heuristic'
 
-    state, goal_conf = prepare_state(session, stub, roles, hide_built=not args.no_hide_built)
+    state, goal_conf = prepare_state(session, stub, transfer,
+                                     steps.get(MovementKind.DUAL_CONSTRAINED_LINEAR),
+                                     hide_built=not args.no_hide_built)
     planner = session.planner
     robot_puid = planner.client.robot_puid
     arm_joints = pp.joints_from_names(robot_puid, NAMES_12)
     planner.set_robot_cell_state(state)
     meta = dict(problem=args.problem, bar_action=os.path.splitext(os.path.basename(clean_path))[0],
-                active_bar=bar_name, movement_id=getattr(roles['M1'], 'movement_id', None),
+                active_bar=bar_name, movement_id=transfer.movement_id,
                 home_anchor=args.anchor, source='headless', base_source=base_source,
                 runs_dir=args.runs_dir, scenes_dir=args.scenes_dir)
 
@@ -451,7 +460,7 @@ def main():
     parser.add_argument('--manual-start', default=None, metavar='ANCHOR,SLIDE_M,ROLL_DEG[,PERP1_M,PERP2_M]',
                         help="skip the sweep: IK-check the operator's bar pose, e.g. "
                              "'horizontal,0,0' or 'all,0.1,-30,0,0.05' (what the monitor's "
-                             "'M1: Confirm manual start pose' button does)")
+                             "'Transfer start: Confirm manual pose (IK check)' button does)")
     parser.add_argument('--plan', action='store_true',
                         help='run the full transfer plan (derive + RRT), as Plan Movement '
                              'does, instead of the derive stage alone')

@@ -23,8 +23,10 @@ from husky_assembly_teleop import (
 )
 from husky_assembly_teleop.utils import pose_from_frame
 from husky_assembly_teleop.bar_action_io import (
-    find_movement, load_action_cycle, cycle_roles, slot_of_index,
+    find_movement, load_action_cycle, slot_of_index,
 )
+# The old M0..M4 roles live on only in the legacy module, for old takes.
+from husky_assembly_teleop.legacy_bar_action_io import cycle_roles
 from husky_assembly_teleop.mocap_experiment import (
     fit_bar_from_markerset,
     bar_deviation_from_goal,
@@ -186,11 +188,12 @@ def _resolve_bar_action_path(path):
 def _resolve_take_movement(bar_action_path, key):
     """Find the movement a take was recorded at, over the bar's whole cycle.
 
-    Takes stamp the classic ROLE ('M3'), which the split export does not put in
-    the movement id -- the retreat is ``B6_R_M2_LM_retreat``, so searching the
-    ids for ``_M3_`` lands on ``B6_R_M3_free_home``, which is M4. Loading the
-    cycle also picks up the other half, so a take that named the jointing file
-    for an M3 measurement still resolves.
+    Old takes stamp the classic ROLE ('M3'), which the split export does not put
+    in the movement id -- the retreat is ``B6_R_M2_LM_retreat``, so searching the
+    ids for ``_M3_`` lands on ``B6_R_M3_free_home``, which is M4. Newer takes
+    stamp the real id (``B6_R_M2_LM_retreat``), found by the exact-id search in
+    each half. Loading the cycle also picks up the other half, so a take that
+    named the jointing file for a retreat measurement still resolves.
 
     Args:
         bar_action_path (str): The action file the take named.
