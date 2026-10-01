@@ -53,6 +53,16 @@ Then the flow, on the fixture's first hold (Alice holds B3):
       H_M2 (linear), gripper CLOSE step with the compliant handoff (controllers
       joint -> compliance -> joint), Mark entry done -> belief 'live' at B3__H's
       end, trajectories saved to B3__H.live-solved.json
+  Cindy's restart (domain 86, a new monitor object)
+    - start-up: her simulated arms take her own progress.json belief (after
+      entry 0), one log line
+    - Load entry sets the traj time to the entry's first default (B1_R: its
+      retreat's, as the release opens with tool steps); her next jointing
+      entry's movement 0 starts from the believed configuration
+    - 'Move Arms to Movement Start' with FAKE_HARDWARE moves the simulated arms
+      to the start and sends no command
+    - after Alice's hold is marked done, the header's second line reads
+      'others: Alice <- assumed (entry 3) | Belle <- ...'
 
 ? Why do H_M0 / H_M2 plan here when ``smoke_single_arm_plan.py --collisions
 ? exported`` says the exported hold scene collides? Alice's run turns the
@@ -74,7 +84,7 @@ Usage:
     also ``export HUSKY_IK_BACKEND=gradient``.)
 
 Exit code 0 when every check passes, 1 otherwise. Loads the ~340 MB
-RobotCell files one at a time (Cindy's twice, then Alice's; ~1 GB RAM each);
+RobotCell files one at a time (Cindy's twice, Alice's, then Cindy's again; ~1 GB RAM each);
 takes under a minute (most of it Cindy's R_M3 free plan to home).
 """
 
@@ -106,7 +116,9 @@ from husky_assembly_teleop.husky_robot import GRIPPER_MOTOR, JOINT_MOTOR, UR5e_H
 from husky_assembly_teleop.husky_world import (
     GRIPPER_CLOSE_FOR_BAR_POS, GRIPPER_OPEN_POS, _live_tool0_in_arm_base,
 )
-from husky_assembly_teleop.progress_io import PARKED_BASE_FRAME, belief_after, load_progress
+from husky_assembly_teleop.progress_io import (
+    PARKED_BASE_FRAME, belief_after, load_progress, obstacle_sources,
+)
 from husky_assembly_teleop.robot_registry import other_robots, robot_by_name
 from husky_assembly_teleop.schedule_io import load_schedule, problem_root
 from husky_assembly_teleop.utils import pose_from_frame
@@ -126,6 +138,8 @@ BAR_CONTACT_POS = 0.78
 # Wall-clock time per simulated monitor tick; the handoff's waits are in seconds.
 TICK_S = 0.005
 SAME_TOL = 1e-6
+# The restarted robot's arms are copied from its belief: equal to rounding.
+SEED_TOL = 1e-9
 # The linear plan ends within ~1e-3 rad of the exported target configuration.
 CONF_TOL = 2e-3
 
@@ -1224,12 +1238,139 @@ def alice_run(results: Results, problem: str, root: str, schedule) -> None:
         monitor.cfab.close()
 
 
+def first_default_traj_time(kind: str) -> float:
+    """The first default traj time of an entry kind, from ``DISPATCH_EXPECTED``.
+
+    Movements without a default (tool and manual steps) are skipped.
+
+    Args:
+        kind (str): Entry kind, ``'J'`` or ``'R'``.
+
+    Returns:
+        float: Seconds (the J entry's free move to load, the R entry's retreat).
+    """
+    return next(row[4] for (k, _idx), row in sorted(DISPATCH_EXPECTED.items())
+                if k == kind and row[4] is not None)
+
+
+def cindy_restart_run(results: Results, problem: str, root: str, schedule) -> None:
+    """Cindy's monitor started again: she continues from her progress.json state.
+
+    A NEW monitor object goes through the start-up path (``_load_schedule_state``
+    seeds the connected robot from its own belief, here the one Cindy's run
+    stored when it marked entry 0 done); the stub arms start elsewhere, so the
+    seeding shows. Then: Load entry sets the traj time to the entry's first
+    default; her next jointing entry's movement 0 starts from the believed
+    configuration (it starts live, from the seeded arms); 'Move Arms to Movement
+    Start' with FAKE_HARDWARE moves the simulated arms and sends no command; and
+    after Alice's hold is marked done the header's second line names where
+    Alice's and Belle's poses come from.
+
+    Args:
+        results (Results): Where the checks go.
+        problem (str): Problem folder name.
+        root (str): The scratch problem folder.
+        schedule (ActionSchedule): The scratch schedule.
+    """
+    cindy, alice, belle = (robot_by_name(ASSEMBLY_ROBOT), robot_by_name(SUPPORT_ROBOT),
+                           robot_by_name(OTHER_SUPPORT_ROBOT))
+    first = schedule.entry(0)
+    release = schedule.entry(1)
+    joint_entry = next(e for e in schedule.entries_for_robot(cindy.name)
+                       if e.index > release.index and e.kind == 'J')
+    hold = schedule.find_entry(HELD_BAR, 'H')
+    belief = load_progress(root, schedule).belief(cindy.name)
+    print(f"\n{'=' * 30} CINDY RESTART {'=' * 30}")
+    base = schedule.load_action(first, prefer_sidecar=False).movements[-1].start_state.robot_base_frame
+    monitor, iface, log = make_monitor(cindy, base, problem)
+    add_viz_huskies(monitor, cindy)
+    # The stub arms start at zeros, away from the belief, so the seeding is visible.
+    iface.arm_joint_pose = [np.zeros(6) for _ in range(cindy.n_arms)]
+    try:
+        # * --- start-up: the simulated arms take her own belief
+        n = len(log.msgs)
+        monitor._load_schedule_state()
+        believed = np.array([belief.configuration[name] for name in cindy.all_arm_joint_names]) \
+            if belief is not None else None
+        err = (float(np.abs(np.concatenate(iface.arm_joint_pose) - believed).max())
+               if belief is not None else np.inf)
+        started = log.since(n, 'info', f"[Schedule] {cindy.name} starts from the progress.json state")
+        results.check(f"Cindy restart: her simulated arms start from her progress.json belief "
+                      f"(after entry {first.index}), one log line",
+                      belief is not None and belief.after_entry == first.index
+                      and err < SEED_TOL and len(started) == 1,
+                      f"|arms - belief| {err:.1e} rad")
+
+        # * --- Load entry: traj time = the entry's first default (not the slider's
+        # * --- start-up maximum); the release keeps its exported start (info only)
+        for entry in (release, joint_entry):
+            monitor.trajectory_time = monitor.trajectory_time_max
+            monitor.load_schedule_entry(entry.index)
+            expected = first_default_traj_time(entry.kind)
+            results.check(f"Cindy restart: Load entry {entry.index} ({entry.action_id}) sets traj "
+                          f"time to the entry's first default",
+                          monitor.trajectory_time == expected,
+                          f"{monitor.trajectory_time} s, expected {expected} s")
+            mv0 = monitor._loaded_movements[0]
+            start = mv0.start_state.robot_configuration
+            err = max(abs(start[name] - belief.configuration[name])
+                      for name in cindy.all_arm_joint_names) if belief is not None else np.inf
+            print(f"  {mv0.movement_id}: starts live {0 in monitor._live_start_indices}, "
+                  f"|start - belief| {err:.1e} rad")
+            if entry is joint_entry:
+                # * F6 b: the jointing entry's movement 0 starts where she is believed to be
+                results.check(f"Cindy restart: entry {entry.index} ({entry.action_id}) "
+                              f"{mv0.movement_id} starts from the believed configuration",
+                              0 in monitor._live_start_indices and err < SEED_TOL,
+                              f"|start - belief| {err:.1e} rad")
+
+        # * --- 'Move Arms to Movement Start' with FAKE_HARDWARE: the simulated arms
+        # * --- move to the start, nothing is sent
+        idx = next(i for i, m in enumerate(monitor._loaded_movements)
+                   if m.movement_id.endswith('_LM_insert'))
+        mv = select_movement(monitor, idx)
+        target = [np.array([mv.start_state.robot_configuration[name] for name in names])
+                  for names in monitor._arm_joint_name_sets()]
+        iface.arm_joint_pose = [t + 0.1 for t in target]   # inside the pi/3 guard
+        monitor.FAKE_HARDWARE = True
+        # The fake exec poses the drawn husky (none headless) and waits traj time per waypoint.
+        monitor.huskies[0].object = SimpleNamespace(set_pose=lambda *_a, **_k: None)
+        monitor.trajectory_time = 0.01
+        n_calls = len(iface.calls)
+        try:
+            monitor.move_arms_to_movement_start()
+        finally:
+            monitor.FAKE_HARDWARE = False
+        err = max(float(np.abs(np.asarray(a) - t).max()) for a, t in zip(iface.arm_joint_pose, target))
+        results.check(f"Cindy restart: Move Arms to Movement Start ({mv.movement_id}) with "
+                      f"FAKE_HARDWARE moves the simulated arms, sends no command",
+                      err < SEED_TOL and len(iface.calls) == n_calls
+                      and not any(iface.is_arm_executing),
+                      f"|arms - start| {err:.1e} rad, {len(iface.calls) - n_calls} command(s)")
+
+        # * --- the header's second line: where Alice's and Belle's poses come from
+        monitor.load_schedule_entry(hold.index)
+        monitor.mark_entry_done()
+        run_tasks(monitor, iface, confirm=True)
+        lines = monitor._schedule_header_text().split('\n')
+        sources = obstacle_sources(monitor._progress, cindy.name,
+                                   exported_action=monitor._loaded_action)
+        print('  header: ' + '\n          '.join(lines))
+        results.check("Cindy restart: the header's second line names Alice's and Belle's sources",
+                      len(lines) == 2 and lines[1].startswith('others: ')
+                      and f"{alice.name} <- assumed (entry {hold.index})" in lines[1]
+                      and f"{belle.name} <- {sources[belle.obstacle_tool_name]}" in lines[1],
+                      lines[-1])
+    finally:
+        monitor.cfab.close()
+
+
 # * ---------------------------------------------------------------------------
 # * Main
 # * ---------------------------------------------------------------------------
 
 def main(argv: Optional[list] = None) -> int:
-    """Build the scratch problem, run the dispatch check, Cindy then Alice, print the summary.
+    """Build the scratch problem, run dispatch check, Cindy, Alice, Cindy's restart; print the summary.
 
     Args:
         argv (list | None): Command line (None = ``sys.argv[1:]``).
@@ -1260,7 +1401,7 @@ def main(argv: Optional[list] = None) -> int:
         root = make_scratch_problem(real_root, scratch_design, problem)
         point_package_at(scratch_design)
         schedule = load_schedule(root)
-        for run in (dispatch_check, cindy_run, alice_run):
+        for run in (dispatch_check, cindy_run, alice_run, cindy_restart_run):
             try:
                 run(results, problem, root, schedule)
             except Exception as e:  # keep going: the summary shows where it stopped

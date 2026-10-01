@@ -17,8 +17,9 @@ from husky_assembly_teleop.progress_io import (
     BELIEF_ACTION_END, BELIEF_EXPORTED, BELIEF_LIVE, BELIEF_PARKED, HOLD_HOLDING, HOLD_PENDING,
     HOLD_RELEASED, PARKED_BASE_FRAME, PROGRESS_FILENAME, STATUS_DONE, STATUS_PENDING,
     STATUS_SKIPPED, arm_configuration, belief_after, belief_from_exported, belief_from_live,
-    load_progress, new_progress, new_run_id, obstacle_sources, obstacle_tool_states,
-    parked_belief, progress_path, recompute_belief, save_progress, schedule_fingerprint,
+    load_progress, new_progress, new_run_id, obstacle_sources, obstacle_sources_line,
+    obstacle_tool_states, parked_belief, progress_path, recompute_belief, save_progress,
+    schedule_fingerprint,
 )
 from husky_assembly_teleop.robot_registry import ROBOTS
 from husky_assembly_teleop.schedule_io import SCHEDULE_FILENAME, load_schedule
@@ -308,6 +309,19 @@ def test_obstacle_robots_after_the_hold(schedule):
         'ObstacleRobotAlice': BELIEF_ACTION_END, 'ObstacleRobotBelle': BELIEF_PARKED}
     # From Alice's monitor, Cindy is drawn from her belief after B3_J (entry 2).
     assert obstacle_sources(progress, 'Alice')['ObstacleRobotCindy'] == BELIEF_ACTION_END
+
+
+def test_obstacle_sources_line(schedule):
+    """The header's 'others' line: each other robot's source, with the entry of a stamped belief."""
+    progress = new_progress(schedule)
+    assert obstacle_sources_line(progress, 'Cindy') == 'Alice <- parked | Belle <- parked'
+
+    _mark_done_up_to(progress, schedule, 3)
+    release = schedule.load_action(schedule.entry(4))
+    assert obstacle_sources_line(progress, 'Cindy', exported_action=release) == \
+        'Alice <- action_end_state (entry 3) | Belle <- exported'
+    assert obstacle_sources_line(progress, 'Alice') == \
+        'Cindy <- action_end_state (entry 2) | Belle <- parked'
 
 
 def test_released_robot_is_parked(schedule):

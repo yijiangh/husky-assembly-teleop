@@ -676,3 +676,27 @@ def obstacle_sources(progress: Progress, active_robot: str,
     """
     beliefs = _obstacle_beliefs(progress, active_robot, exported_action)
     return {name: b.source for name, b in beliefs.items()}
+
+
+def obstacle_sources_line(progress: Progress, active_robot: str,
+                          exported_action: Optional[BarSceneAction] = None) -> str:
+    """Where each other robot's pose comes from, as one readout line.
+
+    Same rule as ``obstacle_sources``; a belief stamped with an entry names it.
+
+    Args:
+        progress (Progress): The progress.
+        active_robot (str): The connected robot's short name.
+        exported_action (BarSceneAction | None): The connected robot's loaded action.
+
+    Returns:
+        str: e.g. ``'Alice <- live (entry 3) | Belle <- parked'``, robots in
+        registry order.
+    """
+    beliefs = _obstacle_beliefs(progress, active_robot, exported_action)
+    parts = []
+    for spec in other_robots(active_robot):
+        belief = beliefs[spec.obstacle_tool_name]
+        entry = f" (entry {belief.after_entry})" if belief.after_entry is not None else ''
+        parts.append(f"{spec.name} <- {belief.source}{entry}")
+    return ' | '.join(parts)

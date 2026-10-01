@@ -76,8 +76,8 @@ from husky_assembly_teleop.cfab_session import (
 from husky_assembly_teleop.robot_registry import RobotSpec, robot_by_name
 from husky_assembly_teleop.progress_io import (
     BELIEF_ASSUMED, BELIEF_LIVE, STATUS_PENDING, RobotBelief, belief_after, belief_from_live,
-    load_progress, new_run_id, obstacle_tool_states, obstacle_sources, recompute_belief,
-    save_progress,
+    load_progress, new_run_id, obstacle_tool_states, obstacle_sources, obstacle_sources_line,
+    recompute_belief, save_progress,
 )
 from husky_assembly_teleop.schedule_io import (
     SCHEDULE_FILENAME, LoadedEntry, ScheduleEntry, is_executable_by, load_entry, load_schedule,
@@ -2910,7 +2910,8 @@ class HuskyMonitor(Node):
         ``_current_action_path`` / ``_loaded_action_slots`` / ``_loaded_movements``;
         roles + start-EE sources (from ``loaded`` when given, else the cycle
         helpers); live pose injection into the movements that start live; the
-        ground body; the other robots' obstacle poses; UI rebuild; movement 0.
+        ground body; the other robots' obstacle poses; for a schedule entry the
+        traj time of its first arm movement; UI rebuild; movement 0.
 
         M0's authored robot_configuration is null (its start is wherever the
         robot lives right now), so its start_state gets the live pose injected
@@ -3008,6 +3009,13 @@ class HuskyMonitor(Node):
               f"with {len(self._loaded_movements)} movements:")
         for i, mv in enumerate(self._loaded_movements):
             print(f"  [{i}] {mv.movement_id!r} role={self._match_movement_role(mv)}")
+        # * Load entry: the traj time starts at the entry's first default, not at
+        # * the slider's start-up value (its 90 s maximum). The first movement that
+        # * has one: a release opens with tool steps where no arm moves.
+        if loaded is not None:
+            for mv in self._loaded_movements:
+                if self._set_default_trajectory_time(mv):
+                    break
         # Refresh UI so the Movement slider's range now matches the loaded
         # movement count (was 0..8 before; now 0..len(movements)-1). In the live
         # GUI monitor a freshly selected action starts at its first movement
@@ -3382,6 +3390,36 @@ class HuskyMonitor(Node):
                         role = type(mv).__name__
                 text.set_text(f"[{idx}] {role}  {mv.movement_id}")
 
+    def _set_default_trajectory_time(self, mv) -> bool:
+        """Set ``self.trajectory_time`` (the "traj time" slider) to a movement's default.
+
+        Cindy's role table first; a movement without a role (support robot)
+        gets its kind's default. The slider shows the value at its next rebuild
+        (``reset_ui``), so callers set it before that.
+
+        Args:
+            mv: A movement of the loaded action.
+
+        Returns:
+            bool: True when set; False for a step where no arm moves (or a
+            movement class bar_action_io does not know), which keeps the slider.
+        """
+        role = self._match_movement_role(mv)
+        try:
+            default_traj_time = default_trajectory_time(mv, role, MOVEMENT_TRAJECTORY_TIME_S)
+        except TypeError as e:
+            self.get_logger().warn(f"No default traj time for {mv.movement_id!r}: {e}")
+            return False
+        if default_traj_time is None:
+            return False
+        # Keep it inside the slider's own range, or the rebuilt widget would
+        # clamp and silently disagree with self.trajectory_time.
+        self.trajectory_time = float(
+            min(max(default_traj_time, 1.0), self.trajectory_time_max))
+        print(f"[Movement] traj time -> {self.trajectory_time:.0f}s "
+              f"(default for {role or movement_kind(mv).value})")
+        return True
+
     def load_selected_movement(self):
         """Load the selected movement's start state into cfab + goal ghost.
 
@@ -3441,22 +3479,7 @@ class HuskyMonitor(Node):
         # self.trajectory_time as its current value -- and before the
         # auto-load of the trajectory at the end of this method, since
         # _accept_trajectory stamps this duration onto planned_arm_trajectory.
-        role = self._match_movement_role(mv)
-        # Cindy's role table first; a movement without a role (support robot)
-        # gets its kind's default. None for a step where no arm moves.
-        try:
-            default_traj_time = default_trajectory_time(mv, role, MOVEMENT_TRAJECTORY_TIME_S)
-        except TypeError as e:
-            # A movement class bar_action_io does not know: keep the slider as it is.
-            self.get_logger().warn(f"No default traj time for {mv.movement_id!r}: {e}")
-            default_traj_time = None
-        if default_traj_time is not None:
-            # Keep it inside the slider's own range, or the rebuilt widget would
-            # clamp and silently disagree with self.trajectory_time.
-            self.trajectory_time = float(
-                min(max(default_traj_time, 1.0), self.trajectory_time_max))
-            print(f"[Movement] traj time -> {self.trajectory_time:.0f}s "
-                  f"(default for {role or movement_kind(mv).value})")
+        self._set_default_trajectory_time(mv)
 
         # When the built assembly is ignored (_ignore_built_assembly) it is hidden
         # once per BarAction, so a plain movement switch must NOT un-hide it: skipping
@@ -7924,6 +7947,9 @@ class HuskyMonitor(Node):
         self._selected_entry_idx = min(progress.current_index, len(schedule.entries) - 1)
         self._rescan_schedule_flags()
         self._print_schedule_roster()
+        # * Schedule mode is decided only here (after husky_world.init built the
+        # * huskies), so this is where the connected robot takes its own belief.
+        world._seed_connected_husky_from_progress(self, self._connected_robot())
 
     def _rescan_schedule_flags(self, indices: Optional[list] = None) -> None:
         """Re-read how far each entry's action file is solved (schedule_ui.EntryFlags).
@@ -7953,16 +7979,25 @@ class HuskyMonitor(Node):
                 self._schedule_flags[i] = EntryFlags(0, 0, 0, False)
 
     def _schedule_header_text(self) -> str:
-        """The panel's first line: connected robot, problem, progress.
+        """The panel's header: connected robot, problem, progress; then the other robots.
+
+        The second line says where each other robot's pose comes from
+        (``progress_io.obstacle_sources_line``), so it is visible without the
+        log. Mocap may still override a base on top (see
+        ``_obstacle_beliefs_with_sources``).
 
         Returns:
-            str: e.g. ``'robot Cindy (domain 86) | problem ... | progress 3/48 done'``.
+            str: Two lines, e.g. ``'robot Cindy (domain 86) | problem ... |
+            progress 3/48 done'`` and ``'others: Alice <- live (entry 3) | Belle <- parked'``.
         """
         schedule, progress = self._schedule, self._progress
         connected = self._connected_robot()
         n_done = sum(progress.is_done(e.index) for e in schedule.entries)
+        others = obstacle_sources_line(progress, connected.name,
+                                       exported_action=getattr(self, '_loaded_action', None))
         return (f"robot {connected.name} (domain {connected.domain_id}) | "
-                f"problem {schedule.problem_name} | progress {n_done}/{len(schedule.entries)} done")
+                f"problem {schedule.problem_name} | progress {n_done}/{len(schedule.entries)} done"
+                f"\nothers: {others}")
 
     def _schedule_row_text(self, index: int, *, selected: bool) -> str:
         """One entry's row of the list (schedule_ui.entry_row_text).
@@ -7980,8 +8015,9 @@ class HuskyMonitor(Node):
                               selected=selected)
 
     def _print_schedule_roster(self) -> None:
-        """Print the header line and one row per schedule entry to the terminal."""
-        print(f"[Schedule] {self._schedule_header_text()}")
+        """Print the header lines and one row per schedule entry to the terminal."""
+        for line in self._schedule_header_text().split('\n'):
+            print(f"[Schedule] {line}")
         for e in self._schedule.entries:
             print("  " + self._schedule_row_text(e.index, selected=e.index == self._selected_entry_idx))
 
@@ -8931,7 +8967,8 @@ class HuskyMonitor(Node):
     def _build_schedule_section(self) -> None:
         """Build the schedule panel, in place of the legacy file slider + 'Load BarAction'.
 
-        A header (connected robot, problem, progress), the 'Schedule entry'
+        A header (connected robot, problem, progress; where the other robots'
+        poses come from), the 'Schedule entry'
         slider with its '-> entry' readout, Prev / Next / Load / Mark done /
         Reopen / Rescan, the 'Now:' line, and a collapsible list of entry rows
         around the selected entry (yellow = selected, green = done, grey = another

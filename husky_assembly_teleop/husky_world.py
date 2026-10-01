@@ -21,7 +21,7 @@ from husky_assembly_teleop.common import Husky, TrackedObject, AssemblyObject
 from husky_assembly_teleop.robot_registry import RobotSpec, other_robots, robot_from_env
 from husky_assembly_teleop.bar_action_io import tool_event
 from husky_assembly_teleop.schedule_io import load_schedule, problem_root
-from husky_assembly_teleop.progress_io import PARKED_BASE_FRAME, load_progress
+from husky_assembly_teleop.progress_io import PARKED_BASE_FRAME, RobotBelief, load_progress
 import husky_assembly_teleop.husky_planning as planning
 import husky_assembly_teleop.husky_control as control
 from husky_assembly_teleop.utils import HUSKY_DUAL_UR5e_JOINT_NAMES, HUSKY_DUAL_ARM_HOME_CONF_12, UR5E_JOINT_NAMES, MOCAP_SET_RIG_RB_NAME, conf_from_12vec, get_arm_ik_for_grasp_bar, get_custom_limits, notify, plan_transit_motion, pose_from_frame
@@ -341,15 +341,7 @@ def _seed_viz_huskies_from_progress(monitor, connected: RobotSpec, *,
                 continue
             if belief is None:
                 continue
-            pos, quat = pose_from_frame(belief.base_frame)
-            # Read every joint before changing anything, so a malformed belief
-            # leaves this husky parked instead of half-moved.
-            arm_joint_pose = [np.array([belief.configuration[n] for n in names], dtype=float)
-                              for names in spec.arm_joint_names]
-            if spec.name not in mocap_tracked:
-                hi.position = np.array(pos, dtype=float)
-                hi.rotation = np.array(quat, dtype=float)
-            hi.arm_joint_pose = arm_joint_pose
+            _pose_husky_at_belief(hi, spec, belief, keep_base=spec.name in mocap_tracked)
             where = "base from mocap" if spec.name in mocap_tracked else "until mocap sees it"
             print(f"[world] {spec.name} drawn at its {belief.source} belief "
                   f"(after entry {belief.after_entry}; {where}).")
@@ -357,6 +349,58 @@ def _seed_viz_huskies_from_progress(monitor, connected: RobotSpec, *,
         monitor.get_logger().warn(
             f"Could not read the schedule / progress of {DESIGN_PROBLEM_NAME}: {e}; "
             "the other huskies stay parked until mocap sees them.")
+
+
+def _pose_husky_at_belief(hi, spec: RobotSpec, belief: RobotBelief, *, keep_base: bool) -> None:
+    """Move one husky's interface to a belief: arm joints, and the base unless kept.
+
+    Args:
+        hi: The husky's interface (``position``, ``rotation``, ``arm_joint_pose``).
+        spec (RobotSpec): The husky's robot (its per-arm joint names).
+        belief (RobotBelief): Where it is believed to be.
+        keep_base (bool): True when something else (mocap) drives the base.
+    """
+    pos, quat = pose_from_frame(belief.base_frame)
+    # Read every joint before changing anything, so a malformed belief
+    # leaves this husky where it was instead of half-moved.
+    arm_joint_pose = [np.array([belief.configuration[n] for n in names], dtype=float)
+                      for names in spec.arm_joint_names]
+    if not keep_base:
+        # Rebind (never write in place): see Husky.__init__.
+        hi.position = np.array(pos, dtype=float)
+        hi.rotation = np.array(quat, dtype=float)
+    hi.arm_joint_pose = arm_joint_pose
+
+
+def _seed_connected_husky_from_progress(monitor, connected: RobotSpec) -> None:
+    """Start the connected robot where its own progress.json belief left it.
+
+    * In fake hardware nothing else ever sets the simulated arms, so this is
+    * the state the simulation continues from (e.g. Cindy still holding B3
+    * after Alice's run). On the real robot the first ``joint_states`` message
+    * overwrites the arms. The base is set only when mocap does not drive it;
+    * the drawing then reads ``monitor.goal_base_pose``, so that is set too
+    * (the first 'Load Movement' replaces it with the movement's base).
+
+    Only in schedule mode (the monitor's in-memory ``_progress`` is set by
+    ``_load_schedule_state``); does nothing when the robot has no belief yet.
+
+    Args:
+        monitor: The HuskyMonitor (after create_registry_huskies).
+        connected (RobotSpec): The connected robot.
+    """
+    progress = getattr(monitor, '_progress', None)
+    belief = progress.belief(connected.name) if progress is not None else None
+    if belief is None:
+        return
+    tracked = monitor._base_pose_is_tracked()
+    hi = monitor.huskies[monitor.selected_robot_id].interface
+    _pose_husky_at_belief(hi, connected, belief, keep_base=tracked)
+    if not tracked:
+        monitor.goal_base_pose = (hi.position, hi.rotation)
+    monitor.get_logger().info(
+        f"[Schedule] {connected.name} starts from the progress.json state "
+        f"(after entry {belief.after_entry}, {belief.source}).")
 
 
 def init(monitor):
@@ -2034,47 +2078,65 @@ def execute_arm_trajectory_all(monitor: 'HuskyMonitor', traj_time: float = None)
             path, vel, t, _ = monitor.planned_arm_trajectory[0]
             hi.send_arm_cmd(path, vel, t, index=0)
     else:
-        # fake execution in sim for every arm
-        ho = monitor.huskies[monitor.selected_robot_id].object
-        hi = monitor.huskies[monitor.selected_robot_id].interface
+        _fake_execute_arm_trajectories(
+            monitor, [monitor.planned_arm_trajectory[i] for i in range(n)], traj_time)
 
-        trajectories = [monitor.planned_arm_trajectory[i] for i in range(n)]
-        # Objects attached to each arm, and where each sits relative to the flange
-        attached = [traj[3] for traj in trajectories]
-        tcp_from_object = [obj.grasp if obj is not None else None for obj in attached]
 
-        # Execute all trajectories simultaneously
-        max_points = max(len(traj[0]) for traj in trajectories)
+def _fake_execute_arm_trajectories(monitor: 'HuskyMonitor', trajectories: list,
+                                   traj_time: float) -> None:
+    """FAKE_HARDWARE: play the arm trajectories on the simulated robot (no ROS command).
 
-        # Spread the waypoints over the requested trajectory time so fake
-        # execution takes as long as the real robot would (mirrors the
-        # real-hardware dt = traj_time / (n - 1) in husky_robot.py).
-        step_dt = traj_time / max(max_points - 1, 1)
+    The simulated arms are the connected husky's ``interface.arm_joint_pose``;
+    they step through the waypoints, all arms together, and objects attached
+    to an arm follow its flange. Blocks for about ``traj_time`` seconds.
 
-        for k in range(max_points):
-            # Update each arm's configuration
-            for i, traj in enumerate(trajectories):
-                if k < len(traj[0]):
-                    hi.arm_joint_pose[i] = traj[0][k]
+    Args:
+        monitor (HuskyMonitor): The monitor (its connected husky moves).
+        trajectories (list): One ``(path, velocities, time, attached object)``
+            tuple per arm, as in ``monitor.planned_arm_trajectory``.
+        traj_time (float): Seconds to spread the waypoints over.
+    """
+    spec = monitor._connected_robot()
+    n = len(trajectories)
+    ho = monitor.huskies[monitor.selected_robot_id].object
+    hi = monitor.huskies[monitor.selected_robot_id].interface
 
-            # Update robot pose
-            ho.set_pose((hi.position, hi.rotation), hi.arm_joint_pose)
+    # Objects attached to each arm, and where each sits relative to the flange
+    attached = [traj[3] for traj in trajectories]
+    tcp_from_object = [obj.grasp if obj is not None else None for obj in attached]
 
-            # Update attached objects based on FK
-            for i, traj in enumerate(trajectories):
-                if attached[i] is not None and k < len(traj[0]):
-                    world_from_tcp = ho.get_link_pose_from_name(spec.flange_links[i])
-                    attached[i].set_pose(pp.multiply(world_from_tcp, tcp_from_object[i]))
+    # Execute all trajectories simultaneously
+    max_points = max(len(traj[0]) for traj in trajectories)
 
-            # Set execution flags
-            for i in range(n):
-                hi.is_arm_executing[i] = True
+    # Spread the waypoints over the requested trajectory time so fake
+    # execution takes as long as the real robot would (mirrors the
+    # real-hardware dt = traj_time / (n - 1) in husky_robot.py).
+    step_dt = traj_time / max(max_points - 1, 1)
 
-            pp.wait_for_duration(step_dt)
+    for k in range(max_points):
+        # Update each arm's configuration
+        for i, traj in enumerate(trajectories):
+            if k < len(traj[0]):
+                hi.arm_joint_pose[i] = traj[0][k]
 
-        # Clear execution flags
+        # Update robot pose
+        ho.set_pose((hi.position, hi.rotation), hi.arm_joint_pose)
+
+        # Update attached objects based on FK
+        for i, traj in enumerate(trajectories):
+            if attached[i] is not None and k < len(traj[0]):
+                world_from_tcp = ho.get_link_pose_from_name(spec.flange_links[i])
+                attached[i].set_pose(pp.multiply(world_from_tcp, tcp_from_object[i]))
+
+        # Set execution flags
         for i in range(n):
-            hi.is_arm_executing[i] = False
+            hi.is_arm_executing[i] = True
+
+        pp.wait_for_duration(step_dt)
+
+    # Clear execution flags
+    for i in range(n):
+        hi.is_arm_executing[i] = False
 
 
 # The historical dual-arm name; every Cindy caller still uses it.
@@ -4006,7 +4068,9 @@ def move_arms_to_movement_start(monitor: 'HuskyMonitor') -> None:
 
     Two arms (Cindy) go out as one dual-arm command; a single-arm robot gets
     one plain arm command on arm 0. Joint names come from the loaded cell
-    (``monitor._arm_joint_name_sets()``).
+    (``monitor._arm_joint_name_sets()``). With FAKE_HARDWARE nothing is
+    sent: the simulated arms play the same 2-waypoint path
+    (``_fake_execute_arm_trajectories``).
 
     Safety guard: refuses if any arm's per-joint max |delta| exceeds
     pi/3 rad. Protects against large unintended sweeps when the live arms
@@ -4055,7 +4119,11 @@ def move_arms_to_movement_start(monitor: 'HuskyMonitor') -> None:
         f"(max |delta_q| {deltas_txt} rad, "
         f"t={t_total:.1f}s)"
     )
-    if len(targets) == 2:
+    if monitor.FAKE_HARDWARE:
+        # * No robot to command: move the simulated arms, like the fake-hardware exec.
+        _fake_execute_arm_trajectories(
+            monitor, [([c, t], None, t_total, None) for c, t in zip(currents, targets)], t_total)
+    elif len(targets) == 2:
         multi_arm_trajectory = [
             ([currents[0], targets[0]], None, t_total, None),
             ([currents[1], targets[1]], None, t_total, None),
