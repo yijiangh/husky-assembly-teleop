@@ -6,6 +6,7 @@ The husky robot inteface handling:
 """
 
 import time
+from typing import Union
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 import pybullet_planning as pp
@@ -14,6 +15,7 @@ import pybullet_planning as pp
 from rclpy.node import Node
 from rclpy.action import ActionClient
 from rclpy.client import Client
+from rclpy.task import Future
 
 # base
 from std_msgs.msg._header import Header
@@ -83,56 +85,65 @@ GRIPPER_MOTOR = 1  # tool M1: opens/closes the gripper that holds the bar
 JOINT_MOTOR = 2    # tool M2: drives the screw that tightens the bar to the joint
 
 
+def _gripper_state_dict(msg: Union[GripperCommand.Feedback, GripperCommand.Result]) -> dict:
+    """Copy a GripperCommand feedback or result message into a plain dict.
+
+    Both messages carry the same four fields, so one helper serves both.
+
+    Args:
+        msg (GripperCommand.Feedback | GripperCommand.Result): The gripper's
+            feedback or result message.
+
+    Returns:
+        dict: ``{position, effort, stalled, reached_goal, t}``, where ``t`` is the
+        wall-clock time (``time.time()``) at which the message arrived.
+    """
+    return {
+        'position': msg.position,
+        'effort': msg.effort,
+        'stalled': msg.stalled,
+        'reached_goal': msg.reached_goal,
+        't': time.time(),
+    }
+
+
 class HuskyRobotInterface:
-    position = np.zeros(3)
-    rotation = R.as_quat(R.identity())
-    
-    velocity = np.zeros(3)
-    angular_velocity = np.zeros(3)
-    
-    arm_joint_pose = [UR5e_HOME_STATE]
-    arm_tcp_pose = [pp.Pose()] # TODO: This value reported bz UR5e does not correspond to world position nor to local position (relative to base link). Its something weird in between, probably accounting for mounting orientation set in ur5e.
-    arm_ft_sensor = [[0, 0, 0, 0, 0, 0]]
-    is_arm_executing = [False]
-    last_arm_movement = [0]
-    io_states = [[False for x in range(0,18)]]
-    active_controller = [""]
-    # Why the request in flight for this arm failed, or None. Cleared when a new
-    # switch_controller request goes out, set by its done-callback on a rejected
-    # or errored switch. Lets a waiter fail fast on a KNOWN failure instead of
-    # sitting out its whole timeout -- see world.switch_dual_arm_controller.
-    controller_switch_error = [None]
+    # * All robot state (base pose, arm joints, per-arm flags, ...) is created per
+    # instance in _init_state(). Lists declared here on the class would be SHARED
+    # by every husky, so a second robot would overwrite the first one's readings.
+    # Only true constants stay on the class (velocity_filter_time,
+    # _deprecation_warned).
 
-    # Gripper and screw states for toggle functionality
-    gripper_states = [False]  # False = open, True = closed
-    screw_states = [False]    # False = not actuated, True = actuated
+    def __init__(self, node: Node, name='/a200_0804', use_odom=True, connect_arm=True, connect_gripper=True, dual_arm=False, connect_compliant_controller=False,
+                 connect_ros: bool = True):
+        """Create the interface to one husky and (optionally) connect it to ROS.
 
-    scaffolding_status = [None]
-
-    odom_offset = np.zeros(3)
-    _odom_position = np.zeros(3)
-
-    def __init__(self, node: Node, name='/a200_0804', use_odom=True, connect_arm=True, connect_gripper=True, dual_arm=False, connect_compliant_controller=False):
+        Args:
+            node (Node): ROS node used to create subscriptions, publishers and
+                clients. May be None when ``connect_ros`` is False.
+            name (str): ROS namespace of the robot, e.g. ``'/a200_0804'``.
+            use_odom (bool): Subscribe to the robot's ``/tf`` odometry for the
+                base pose (used when mocap does not track this robot).
+            connect_arm (bool): Wait for the arm action servers (only when the
+                action interface is used instead of the trajectory topic).
+            connect_gripper (bool): Wait for the gripper action servers.
+            dual_arm (bool): True for the two-arm husky, False for single-arm.
+            connect_compliant_controller (bool): Create the force-mode, FT-zero
+                and switch-controller service clients.
+            connect_ros (bool): When False, only set up the robot state and stop
+                there -- no subscriptions, publishers, services or actions. Used
+                for a husky that is only drawn in the viewer (fed by mocap).
+        """
+        self._init_state(2 if dual_arm else 1)
         self.node = node
         self.name = name
         self.dual_arm = dual_arm
         self.connect_compliant_controller = connect_compliant_controller
 
-        self.scaffolding_status = [None]
+        # ! Viz-only husky: stop before anything touches self.node (which may be None).
+        if not connect_ros:
+            return
 
-        if dual_arm:
-            self.arm_joint_pose.append(UR5e_HOME_STATE)
-            self.arm_tcp_pose.append(pp.Pose())
-            self.arm_ft_sensor.append([0, 0, 0, 0, 0, 0])
-            self.is_arm_executing.append(False)
-            self.last_arm_movement.append(0)
-            self.io_states.append([False for x in range(0,18)])
-            self.active_controller.append("")
-            self.controller_switch_error.append(None)
-            self.gripper_states.append(False)
-            self.screw_states.append(False)
-            self.scaffolding_status.append(None)
-        
         q = QoSProfile(depth=10)
         print(q)
         
@@ -380,6 +391,7 @@ class HuskyRobotInterface:
         # Scaffolding tool RS485 clients (replaces SetIO-based gripper/screw control).
         # Indexing matches setio_clients: 0 = left/single, 1 = right.
         self.tool_clients = []
+        # ! broken, do not use
         # if dual_arm:
         #     self.tool_clients.append(ScaffoldingToolClient(node, name, 'left_tool'))
         #     self.tool_clients.append(ScaffoldingToolClient(node, name, 'right_tool'))
@@ -408,6 +420,63 @@ class HuskyRobotInterface:
 
         # done --- --- --- --- ---
         self.node.get_logger().info(f'Husky "{name}" is ready!')
+
+    def _init_state(self, n_arms: int) -> None:
+        """Create this robot's own state: base pose, velocity filter and per-arm lists.
+
+        Every list is built fresh here so no two huskies share one. Per-arm lists
+        have one entry per arm (index 0 = left or the only arm, 1 = right).
+
+        Args:
+            n_arms (int): Number of arms, 2 for the dual-arm husky, 1 otherwise.
+        """
+        self.n_arms = n_arms
+
+        # * base pose (from mocap or odometry) and its velocity estimate
+        self.position = np.zeros(3)
+        self.rotation = R.as_quat(R.identity())
+        self.velocity = np.zeros(3)
+        self.angular_velocity = np.zeros(3)
+        self.odom_offset = np.zeros(3)
+        self._odom_position = np.zeros(3)
+
+        # mocap samples kept for the moving-average velocity filter in mocap_callback
+        self._last_mocap_data = 0
+        self._velocity_samples = []
+        self._angular_velocity_samples = []
+        self._velocity_samples_time = []
+
+        # * per-arm state, one entry per arm
+        self.arm_joint_pose = [UR5e_HOME_STATE.copy() for _ in range(n_arms)]
+        # TODO: This value reported bz UR5e does not correspond to world position nor to local position (relative to base link). Its something weird in between, probably accounting for mounting orientation set in ur5e.
+        self.arm_tcp_pose = [pp.Pose() for _ in range(n_arms)]
+        self.arm_ft_sensor = [[0, 0, 0, 0, 0, 0] for _ in range(n_arms)]
+        self.is_arm_executing = [False] * n_arms
+        self.last_arm_movement = [0] * n_arms
+        self.io_states = [[False for x in range(0, 18)] for _ in range(n_arms)]
+        self.active_controller = [""] * n_arms
+        # Why the request in flight for this arm failed, or None. Cleared when a new
+        # switch_controller request goes out, set by its done-callback on a rejected
+        # or errored switch. Lets a waiter fail fast on a KNOWN failure instead of
+        # sitting out its whole timeout -- see world.switch_dual_arm_controller.
+        self.controller_switch_error = [None] * n_arms
+
+        # Gripper and screw states for toggle functionality
+        self.gripper_states = [False] * n_arms  # False = open, True = closed
+        self.screw_states = [False] * n_arms    # False = not actuated, True = actuated
+
+        self.scaffolding_status = [None] * n_arms
+
+        # * GripperCommand progress, filled by send_gripper_cmd's callbacks.
+        # feedback / result are plain dicts (see _gripper_state_dict), None until
+        # the gripper answers. goal_handle is the accepted (or rejected) goal.
+        self.gripper_feedback = [None] * n_arms
+        self.gripper_result = [None] * n_arms
+        self.gripper_goal_handle = [None] * n_arms
+        # Counts the gripper goals sent per arm. Each goal's callbacks remember the
+        # number it was sent with, so a late answer from an older goal can tell it
+        # no longer owns the three slots above and leave them alone.
+        self._gripper_goal_seq = [0] * n_arms
 
     def _seed_active_controllers(self):
         """Async-seed ``self.active_controller[i]`` from controller_manager.
@@ -534,10 +603,6 @@ class HuskyRobotInterface:
         msg.angular.z = theta_dot
         self.pub_cmd_vel.publish(msg)
     
-    _last_mocap_data = 0
-    _velocity_samples = []
-    _angular_velocity_samples = []
-    _velocity_samples_time = []
     velocity_filter_time = 0.2
     def mocap_callback(self, pos, rot, ts):
         dt = ts - self._last_mocap_data
@@ -706,12 +771,134 @@ class HuskyRobotInterface:
         
         self.pub_cmd_arm_cartesian_force[index].publish(msg)
         
-    def send_gripper_cmd(self, pos, effort, index=0):
+    def send_gripper_cmd(self, pos: float, effort: float, index: int = 0) -> bool:
+        """Send a GripperCommand goal to one arm's gripper and track its progress.
+
+        The gripper's answers land in ``gripper_goal_handle[index]``,
+        ``gripper_feedback[index]`` (latest feedback) and ``gripper_result[index]``
+        (final result), so a caller can poll them. All three are cleared first so
+        a waiter never mistakes the previous command's answer for this one.
+
+        Each goal gets the next number from ``_gripper_goal_seq[index]``. The
+        gripper controller cancels (preempts) a running goal when a new one
+        arrives, so the older goal's "aborted" result can come in AFTER this
+        send; its callbacks see a stale number and leave the slots alone.
+
+        Args:
+            pos (float): Target gripper position, as GripperCommand's
+                ``command.position``.
+            effort (float): Maximum effort, as GripperCommand's ``command.max_effort``.
+            index (int): Arm index (0 = left or the only arm, 1 = right).
+
+        Returns:
+            bool: True if the goal was sent. False (with a warning) when this
+            husky has no gripper action client for that arm (e.g. a viz-only
+            husky built with ``connect_ros=False``), or when the client exists
+            but no gripper action server answers (e.g. Cindy, which has no
+            Robotiq gripper).
+        """
+        clients = getattr(self, 'act_grippers', None)
+        if not clients or index >= len(clients):
+            self._warn_gripper(f'Cannot send gripper command to arm {index} of husky {self.name}: '
+                               'no gripper action client (viz-only husky?)')
+            return False
+        # the client is created even when no gripper server runs, so check the server too
+        if not clients[index].server_is_ready():
+            self._warn_gripper(f'Cannot send gripper command to arm {index} of husky {self.name}: '
+                               'the gripper action server is not ready (no gripper on this robot?)')
+            return False
+
+        self.gripper_goal_handle[index] = None
+        self.gripper_feedback[index] = None
+        self.gripper_result[index] = None
+        self._gripper_goal_seq[index] += 1
+        seq = self._gripper_goal_seq[index]
+
         goal = GripperCommand.Goal()
-        goal.command.position = pos
-        goal.command.max_effort = effort
-        self.act_grippers[index].send_goal_async(goal)
-        
+        goal.command.position = float(pos)
+        goal.command.max_effort = float(effort)
+        send_goal_future = clients[index].send_goal_async(
+            goal, feedback_callback=lambda fb_msg: self._on_gripper_feedback(index, seq, fb_msg))
+        send_goal_future.add_done_callback(lambda fut: self._on_gripper_goal_response(index, seq, fut))
+        return True
+
+    def _warn_gripper(self, msg: str) -> None:
+        """Log a gripper warning through the node, or print it when there is no node.
+
+        Args:
+            msg (str): The warning text.
+        """
+        # ! a viz-only husky may have no node to log through
+        if self.node is not None:
+            self.node.get_logger().warn(msg)
+        else:
+            print(f'[WARN] {msg}')
+
+    def _on_gripper_feedback(self, index: int, seq: int, fb_msg: GripperCommand.Impl.FeedbackMessage) -> None:
+        """Store the latest gripper feedback for one arm.
+
+        Args:
+            index (int): Arm index the goal was sent to.
+            seq (int): The goal's number from ``_gripper_goal_seq[index]`` at send time.
+            fb_msg (GripperCommand.Impl.FeedbackMessage): Feedback message; the
+                fields live in ``fb_msg.feedback``.
+        """
+        # this feedback belongs to an older goal; a newer goal owns the slots now
+        if seq != self._gripper_goal_seq[index]:
+            return
+        self.gripper_feedback[index] = _gripper_state_dict(fb_msg.feedback)
+
+    def _on_gripper_goal_response(self, index: int, seq: int, future: Future) -> None:
+        """Keep the goal handle and, if accepted, ask for the final result.
+
+        A rejected goal never produces a result, so a failed result dict
+        (``reached_goal`` False, ``status`` UNKNOWN, no position / effort) is
+        stored right away to let a waiter stop waiting.
+
+        Args:
+            index (int): Arm index the goal was sent to.
+            seq (int): The goal's number from ``_gripper_goal_seq[index]`` at send time.
+            future (Future): Future returned by ``send_goal_async``; its result is
+                the goal handle.
+        """
+        # this answer belongs to an older goal; a newer goal owns the slots now
+        if seq != self._gripper_goal_seq[index]:
+            return
+        goal_handle = future.result()
+        self.gripper_goal_handle[index] = goal_handle
+        if not goal_handle.accepted:
+            self.node.get_logger().error(f'Gripper {index} goal rejected')
+            self.gripper_result[index] = {
+                'position': None, 'effort': None, 'stalled': False, 'reached_goal': False,
+                'status': GoalStatus.STATUS_UNKNOWN, 't': time.time(),
+            }
+            return
+
+        get_result_future = goal_handle.get_result_async()
+        get_result_future.add_done_callback(lambda fut: self._on_gripper_result(index, seq, fut))
+
+    def _on_gripper_result(self, index: int, seq: int, future: Future) -> None:
+        """Store the gripper's final result for one arm.
+
+        Args:
+            index (int): Arm index the goal was sent to.
+            seq (int): The goal's number from ``_gripper_goal_seq[index]`` at send time.
+            future (Future): Future returned by ``get_result_async``; its result has
+                ``.result`` (the GripperCommand result) and ``.status`` (GoalStatus).
+        """
+        # this result belongs to an older goal (e.g. the one a newer goal preempted);
+        # a newer goal owns the slots now
+        if seq != self._gripper_goal_seq[index]:
+            return
+        response = future.result()
+        result = _gripper_state_dict(response.result)
+        result['status'] = response.status
+        self.gripper_result[index] = result
+        self.node.get_logger().info(
+            f'Gripper {index} done: {self.status_to_str(response.status)}, '
+            f'position {result["position"]:.3f}, reached_goal {result["reached_goal"]}, '
+            f'stalled {result["stalled"]}')
+
     def send_dual_arm_cmd(self, multi_arm_trajectory):
         # raise NotImplementedError("Multi-arm trajectory control is not implemented in this interface.")
 
@@ -878,6 +1065,7 @@ class HuskyRobotInterface:
     def toggle_gripper(self, index=0):
         self._warn_deprecated_once('toggle_gripper')
 
+    # ! broken, do not use
     def set_screw(self, state, index=0):
         """
         Set screw actuation state for the specified arm.
@@ -901,6 +1089,7 @@ class HuskyRobotInterface:
 
         return future
     
+    # ! broken, do not use
     def set_screw(self, state, index=0):
         """
         Set screw actuation state for the specified arm.
@@ -909,6 +1098,7 @@ class HuskyRobotInterface:
         return self.set_screw(not self.screw_states[index], index)
 
     # ---------- new RS485 scaffolding tool wrappers --------------------------
+    # ! broken, do not use
     def tighten_tool(self, index=0, motor='M1'):
         if index >= len(self.tool_clients):
             self.node.get_logger().error(f'Invalid arm index: {index}')
@@ -928,6 +1118,7 @@ class HuskyRobotInterface:
         
         return future
     
+    # ! broken, do not use
     def toggle_screw(self, index=0):
         """
         Toggle screw actuation state for the specified arm.

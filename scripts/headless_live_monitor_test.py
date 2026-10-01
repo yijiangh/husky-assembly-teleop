@@ -171,6 +171,11 @@ def _attach_stub_husky_interface(monitor, m1_start_state):
         position=np.asarray(pos, dtype=float),
         rotation=np.asarray(rot, dtype=float),
         arm_joint_pose=[home.copy(), home.copy()],
+        # same per-arm gripper slots a real HuskyRobotInterface builds in _init_state
+        n_arms=2,
+        gripper_feedback=[None, None],
+        gripper_result=[None, None],
+        gripper_goal_handle=[None, None],
     )
     monitor.huskies = [SimpleNamespace(interface=iface, object=None)]
     monitor.selected_robot_id = 0
