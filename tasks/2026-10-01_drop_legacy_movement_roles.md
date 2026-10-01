@@ -669,3 +669,6 @@ Relevant files:
   (correct for its legacy default problem; stage 3 moves it to schedule entries); pre-existing
   `husky_world.py` `DATA_FOLDER` undefined in the kissing-probe branch; pre-existing `headless_live_monitor_test`
   `--draw-tree` imports `M1_POSITION_RES`.
+- Stage 2 (carry rule + F5e): `_next_arm_index`, `_previous_arm_index`, `_carry_configuration_forward`; used by
+  `_accept_trajectory`, `_accept_single_arm_trajectory`, `adopt_m1_derived_start`. Smoke 62/62 (new `carry_check`:
+  adopt writes J_M1/J_M2 + travel-to-load goal; accepting a transfer plan writes J_M4 and the insert's start).

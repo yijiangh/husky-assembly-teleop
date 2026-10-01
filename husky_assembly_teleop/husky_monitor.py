@@ -4853,7 +4853,11 @@ class HuskyMonitor(Node):
 
         Assigns mv.trajectory, propagates first/last conf to start states (the
         chain rules are keyed by the movement's kind), wires the visualizer,
-        runs CDFM validation, and prints the movement roster. Persistence lives
+        runs CDFM validation, and prints the movement roster. The last conf is
+        carried into the next ARM movement and every step before it where no
+        arm moves (``_carry_configuration_forward``); a transfer also gives its
+        first conf to the steps before it (the manual mount, the tool grasp:
+        F5e). Free moves carry nothing forward. Persistence lives
         on the ``<action>.live-solved.json`` sidecar that
         ``plan_movement_chain_live`` writes -- no per-movement JSONs.
         A single-arm robot takes ``_accept_single_arm_trajectory`` instead.
@@ -4895,43 +4899,42 @@ class HuskyMonitor(Node):
                 # start_state.
                 mv.start_state.robot_configuration = conf_from_12vec(start_vec)
 
-            # Step (3) forward-chain propagation, by kind:
+            idx = self.current_movement_index
+            prev = self._previous_arm_index(idx)
+            # * F5e: the steps where no arm moves before the transfer (the manual
+            # * mount, the tool grasp) stand where the transfer starts, so the
+            # * held bar is drawn at the bar-loading pose there.
+            if kind is MovementKind.DUAL_CONSTRAINED_FREE:
+                self._carry_configuration_forward(
+                    -1 if prev is None else prev, path[0], source=source)
+
+            # Forward carry (the carry rule), by kind:
             #   transfer / insert / retreat: strict chain owners; ALWAYS
-            #     overwrite next.start with traj[-1] (warn first if there's an
-            #     existing value).
-            #   DUAL_FREE: NOT part of the chain. The travel to load ends at
-            #     the transfer's start, which the transfer owns (its own plan);
-            #     the free move home ends the action. Neither writes the next
-            #     list-index movement's start_state.robot_configuration.
-            if kind is MovementKind.DUAL_FREE:
-                pass
-            elif self.current_movement_index + 1 < len(self._loaded_movements):
-                next_mv = self._loaded_movements[self.current_movement_index + 1]
-                if next_mv.start_state is not None:
-                    existing = next_mv.start_state.robot_configuration
-                    new_end = conf_from_12vec(path[-1])
+            #     overwrite the start of the next ARM movement (and of the
+            #     steps where no arm moves before it) with traj[-1]; warn first
+            #     when that arm movement already starts somewhere else.
+            #   DUAL_FREE: carries nothing. The travel to load ends at the
+            #     transfer's start, which the transfer owns (its own plan); the
+            #     free move home ends the action.
+            if kind is not MovementKind.DUAL_FREE:
+                nxt = self._next_arm_index(idx)
+                if nxt is not None:
+                    next_mv = self._loaded_movements[nxt]
                     existing_vec = None
-                    if existing is not None:
-                        existing_vec = vec12_from_conf(existing)
-                    elif self._trajectory_has_waypoints(next_mv):
-                        # If next.start_state has not been populated yet, its
-                        # loaded trajectory still owns the effective start.
-                        existing_vec = path_12_from_joint_trajectory(next_mv.trajectory)[0]
-                    if existing_vec is None:
-                        next_mv.start_state.robot_configuration = new_end
-                        print(
-                            f"[{source}] propagated {mv.movement_id!r}.traj[-1] "
-                            f"-> {next_mv.movement_id!r}."
-                            f"start_state.robot_configuration (was None)."
-                        )
-                    else:
-                        diff = np.abs(path[-1] - existing_vec).max()
+                    if next_mv.start_state is not None:
+                        if next_mv.start_state.robot_configuration is not None:
+                            existing_vec = vec12_from_conf(next_mv.start_state.robot_configuration)
+                        elif self._trajectory_has_waypoints(next_mv):
+                            # If next.start_state has not been populated yet, its
+                            # loaded trajectory still owns the effective start.
+                            existing_vec = path_12_from_joint_trajectory(next_mv.trajectory)[0]
+                    if existing_vec is not None:
+                        diff = float(np.abs(path[-1] - existing_vec).max())
                         if diff > 1e-3:
                             self.get_logger().warn(
                                 f"{source} end of {mv.movement_id!r} differs from "
                                 f"existing {next_mv.movement_id!r}.start by "
-                                f"max {diff:.4f} rad/m; overwriting "
-                                f"(transfer / insert / retreat chain rule)."
+                                f"max {diff:.4f} rad/m; overwriting (carry rule)."
                             )
                             if kind is MovementKind.DUAL_CONSTRAINED_FREE:
                                 self._drop_m2_m3_after_m1_chain_break(
@@ -4940,17 +4943,20 @@ class HuskyMonitor(Node):
                                 )
                             elif (kind is MovementKind.DUAL_CONSTRAINED_LINEAR
                                   and self._kind_of(next_mv) is MovementKind.DUAL_INDEPENDENT_LINEAR):
+                                # insert -> retreat (legacy files, where the
+                                # retreat is in the same loaded list)
                                 self._drop_movement_trajectory(
                                     next_mv,
                                     f"{source} {mv.movement_id} endpoint changed by "
                                     f"max {diff:.4f} rad/m"
                                 )
-                        next_mv.start_state.robot_configuration = new_end
+                self._carry_configuration_forward(idx, path[-1], source=source)
 
-            # Backward continuity check: previous movement's last traj point
-            # should match this movement's first traj point.
-            if self.current_movement_index > 0:
-                prev_mv = self._loaded_movements[self.current_movement_index - 1]
+            # Backward continuity check: the previous ARM movement's last traj
+            # point should match this movement's first traj point (steps where
+            # no arm moves in between are passed over).
+            if prev is not None:
+                prev_mv = self._loaded_movements[prev]
                 prev_jt = getattr(prev_mv, 'trajectory', None)
                 if prev_jt is not None:
                     prev_path = path_12_from_joint_trajectory(prev_jt)
@@ -5028,16 +5034,78 @@ class HuskyMonitor(Node):
         for name, value in zip(joint_names, values):
             state.robot_configuration[name] = float(value)
 
+    # * ---------------------------------------------------------------------
+    # * The carry rule: where an arm movement ends is where the next one starts.
+    # * Steps where no arm moves (tool / manual) in between stand at that same
+    # * configuration, so they get it too (and the held bar is drawn there).
+    # * ---------------------------------------------------------------------
+
+    def _next_arm_index(self, idx: int) -> Optional[int]:
+        """Index of the first loaded movement after ``idx`` in which an arm moves.
+
+        A movement of a class bar_action_io does not know counts as an arm
+        movement, so a walk over the loaded movements stops there.
+
+        Args:
+            idx (int): Index in ``_loaded_movements`` (-1 searches from the first movement).
+
+        Returns:
+            int | None: Its index, or None when no arm moves after ``idx``.
+        """
+        for i in range(idx + 1, len(self._loaded_movements)):
+            if self._kind_of(self._loaded_movements[i]) not in STATIONARY_KINDS:
+                return i
+        return None
+
+    def _previous_arm_index(self, idx: int) -> Optional[int]:
+        """Index of the last loaded movement before ``idx`` in which an arm moves.
+
+        Args:
+            idx (int): Index in ``_loaded_movements``.
+
+        Returns:
+            int | None: Its index, or None when no arm moves before ``idx``.
+        """
+        for i in range(idx - 1, -1, -1):
+            if self._kind_of(self._loaded_movements[i]) not in STATIONARY_KINDS:
+                return i
+        return None
+
+    def _carry_configuration_forward(self, idx: int, values, *, source: str = 'carry') -> None:
+        """Write an arm configuration into the start state of every stationary step after ``idx`` and of the next arm movement, then stop.
+
+        ``idx = -1`` starts at the first movement. The values are written by
+        joint name (``_merge_arm_values``) for every arm joint of the connected
+        robot: 12 for Cindy (left arm then right arm), 6 for a support robot.
+        Movements without a start state are passed over.
+
+        Args:
+            idx (int): Index in ``_loaded_movements`` of the movement the
+                configuration comes from (the walk starts right after it).
+            values (Sequence[float]): One value per arm joint, in
+                ``RobotSpec.all_arm_joint_names`` order.
+            source (str): Log tag, e.g. ``'Plan'``, ``'LoadTraj'`` or ``'Adopt'``.
+        """
+        names = self._connected_robot().all_arm_joint_names
+        for next_mv in self._loaded_movements[idx + 1:]:
+            if next_mv.start_state is not None:
+                self._merge_arm_values(next_mv.start_state, names, values)
+                print(f"[{source}] propagated arm configuration -> "
+                      f"{next_mv.movement_id!r}.start_state.robot_configuration.")
+            if self._kind_of(next_mv) not in STATIONARY_KINDS:
+                break  # an arm moves here: whatever follows starts from its end
+
     def _accept_single_arm_trajectory(self, mv, jt, *, source: str = 'Plan') -> None:
         """Single-arm version of ``_accept_trajectory`` (support robots).
 
         Stores the trajectory, copies its first waypoint into this movement's
         start configuration and its last waypoint into the NEXT movement's, and
         wires the preview. The last waypoint is carried on through steps where
-        no arm moves (gripper / manual) into the next arm movement, so e.g.
-        ``H_M2`` starts where ``H_M0`` ended with ``H_M1`` (gripper open) in
-        between. Cindy's M-role chain rules (M1 owns its start, M2/M3 start
-        checks, ...) do not apply.
+        no arm moves (gripper / manual) into the next arm movement
+        (``_carry_configuration_forward``), so e.g. ``H_M2`` starts where
+        ``H_M0`` ended with ``H_M1`` (gripper open) in between. Cindy's chain
+        rules by kind (the transfer owns its start, the insert and the retreat
+        must start where the chain left them, ...) do not apply.
 
         Args:
             mv: The Movement the trajectory belongs to.
@@ -5051,13 +5119,8 @@ class HuskyMonitor(Node):
             if mv.start_state is not None:
                 self._merge_arm_values(mv.start_state, names, path[0])
             idx = self.current_movement_index
-            for next_mv in self._loaded_movements[idx + 1:] if idx is not None else []:
-                if next_mv.start_state is not None:
-                    self._merge_arm_values(next_mv.start_state, names, path[-1])
-                    print(f"[{source}] propagated {mv.movement_id!r}.traj[-1] -> "
-                          f"{next_mv.movement_id!r}.start_state.robot_configuration.")
-                if movement_kind(next_mv) not in STATIONARY_KINDS:
-                    break  # an arm moves here: whatever follows starts from its end
+            if idx is not None:
+                self._carry_configuration_forward(idx, path[-1], source=source)
 
         self.planned_arm_trajectory = [
             (np.asarray(path), None, self.trajectory_time, None),
@@ -6947,9 +7010,11 @@ class HuskyMonitor(Node):
         ``start_state.robot_configuration`` and backfills M0's
         ``target_configuration`` from it, exactly what a successful M1 plan
         would have left behind -- minus the trajectory. The derived goal is
-        recorded on M1's ``target_configuration`` at the same time. Step A of
-        the mount-once protocol then continues as usual: load M0, Plan
-        Movement, execute, mount the bar.
+        recorded on M1's ``target_configuration`` at the same time. The steps
+        where no arm moves before M1 (the manual mount, the tool grasp) get the
+        same start, so the held bar is drawn at the bar-loading pose there
+        (F5e). Step A of the mount-once protocol then continues as usual:
+        load M0, Plan Movement, execute, mount the bar.
 
         With 'Adopt also saves travel-to-load / transfer confs to file' ticked, those three confs
         are additionally written to the BarAction JSON
@@ -6975,6 +7040,12 @@ class HuskyMonitor(Node):
         m1.start_state.robot_configuration = conf_from_12vec(derived['start_conf'])
         print(f"[M1 adopt] {m1.movement_id!r}.start_state.robot_configuration <- derived start "
               f"(no M1 trajectory; intended for the mount-once protocol).")
+        # * F5e: the steps where no arm moves before the transfer (the manual
+        # * mount, the tool grasp) stand at the bar-loading pose too, so the held
+        # * bar is drawn there. This writes the transfer's start once more, same value.
+        prev = self._previous_arm_index(self._loaded_index_of(MovementKind.DUAL_CONSTRAINED_FREE))
+        self._carry_configuration_forward(
+            -1 if prev is None else prev, derived['start_conf'], source='Adopt')
         # Keep the goal that was derived in the same breath as the start, so
         # the pair is readable in the file rather than only in the log.
         goal_conf = derived.get('goal_conf')

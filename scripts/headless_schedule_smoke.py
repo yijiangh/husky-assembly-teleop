@@ -22,6 +22,12 @@ functions are replaced by recorders (nothing is planned or moved); only the
 compliant exec runs for real on the stub, up to its tool command. It does not
 check planning outcomes.
 
+Then the carry check (its own Cindy monitor, entry 0, fake configurations,
+nothing planned): adopting a transfer start writes it into the steps where no
+arm moves before the transfer (the manual mount, the tool grasp) and into the
+travel to load's goal; accepting a transfer plan writes its last waypoint into
+the insert's start and into the tighten step before it.
+
 Then the flow, on the fixture's first hold (Alice holds B3):
 
   Cindy's run (domain 86)
@@ -84,7 +90,7 @@ Usage:
     also ``export HUSKY_IK_BACKEND=gradient``.)
 
 Exit code 0 when every check passes, 1 otherwise. Loads the ~340 MB
-RobotCell files one at a time (Cindy's twice, Alice's, then Cindy's again; ~1 GB RAM each);
+RobotCell files one at a time (Cindy's three times, Alice's, then Cindy's again; ~1 GB RAM each);
 takes under a minute (most of it Cindy's R_M3 free plan to home).
 """
 
@@ -109,7 +115,9 @@ from headless_live_monitor_test import StubLogger, _bypass_init_monitor
 from smoke_single_arm_plan import collision_lines
 from husky_assembly_teleop import DESIGN_DATA_DIRECTORY, DESIGN_PROBLEM_NAME
 from husky_assembly_teleop import cfab_session, husky_monitor, husky_world
-from husky_assembly_teleop.bar_action_io import MovementKind, is_built_assembly_body, movement_kind, step_kind
+from husky_assembly_teleop.bar_action_io import (
+    STATIONARY_KINDS, MovementKind, is_built_assembly_body, movement_kind, step_kind,
+)
 from husky_assembly_teleop.cfab_session import CfabSession
 from husky_assembly_teleop.husky_monitor import BUILT_IGNORED_RGBA
 from husky_assembly_teleop.husky_robot import GRIPPER_MOTOR, JOINT_MOTOR, UR5e_HOME_STATE
@@ -121,7 +129,7 @@ from husky_assembly_teleop.progress_io import (
 )
 from husky_assembly_teleop.robot_registry import other_robots, robot_by_name
 from husky_assembly_teleop.schedule_io import load_schedule, problem_root
-from husky_assembly_teleop.utils import pose_from_frame
+from husky_assembly_teleop.utils import joint_trajectory_from_path, pose_from_frame, vec12_from_conf
 
 # * The fixture's first hold: Alice holds B3 (entry B3_H); B3_R is Cindy's
 # * release of B3 and B4_J the jointing whose export poses Alice correctly.
@@ -138,7 +146,8 @@ BAR_CONTACT_POS = 0.78
 # Wall-clock time per simulated monitor tick; the handoff's waits are in seconds.
 TICK_S = 0.005
 SAME_TOL = 1e-6
-# The restarted robot's arms are copied from its belief: equal to rounding.
+# A copied configuration is equal to rounding (the restarted robot's arms from
+# its belief; the carry rule's copies).
 SEED_TOL = 1e-9
 # The linear plan ends within ~1e-3 rad of the exported target configuration.
 CONF_TOL = 2e-3
@@ -729,6 +738,89 @@ def dispatch_check(results: Results, problem: str, root: str, schedule) -> None:
     finally:
         for name, fn in originals.items():
             setattr(husky_world, name, fn)
+        monitor.cfab.close()
+
+
+# * ---------------------------------------------------------------------------
+# * Carry check: a configuration reaches the steps where no arm moves
+# * ---------------------------------------------------------------------------
+
+def carry_check(results: Results, problem: str, root: str, schedule) -> None:
+    """Check the carry rule on entry 0 (J): adopting a transfer start, then accepting a transfer plan.
+
+    (a) Adopting a transfer start (what 'Transfer start: Confirm manual pose'
+    ends with) writes it into every step where no arm moves between the travel
+    to load and the transfer (F5e: the bar is drawn in the tools there) and
+    into the travel to load's goal. (b) Accepting a transfer plan writes its
+    last waypoint into the insert's start and into every step where no arm
+    moves in between (the chain fix: before, only the very next step got it).
+    Fake configurations (offsets from the insert's exported start), nothing is
+    planned; only the monitor's bookkeeping is checked.
+
+    Args:
+        results (Results): Where the checks go.
+        problem (str): Problem folder name.
+        root (str): The scratch problem folder (unused; same signature as the other runs).
+        schedule (ActionSchedule): The scratch schedule.
+    """
+    cindy = robot_by_name(ASSEMBLY_ROBOT)
+    first = schedule.entry(0)
+    print(f"\n{'=' * 30} CARRY CHECK {'=' * 30}")
+    base = schedule.load_action(first, prefer_sidecar=False).movements[-1].start_state.robot_base_frame
+    monitor, _iface, _log = make_monitor(cindy, base, problem)
+    add_viz_huskies(monitor, cindy)
+    try:
+        monitor._load_schedule_state()
+        monitor.load_schedule_entry(first.index)
+        movements = monitor._loaded_movements
+        fi = monitor._loaded_index_of(MovementKind.DUAL_FREE, free_home=False)
+        ti = monitor._loaded_index_of(MovementKind.DUAL_CONSTRAINED_FREE)
+        ii = monitor._loaded_index_of(MovementKind.DUAL_CONSTRAINED_LINEAR)
+        insert_start = vec12_from_conf(movements[ii].start_state.robot_configuration)
+
+        def start_of(i: int) -> np.ndarray:
+            return vec12_from_conf(movements[i].start_state.robot_configuration)
+
+        def stationary_between(lo: int, hi: int) -> list:
+            return [i for i in range(lo + 1, hi) if movement_kind(movements[i]) in STATIONARY_KINDS]
+
+        # * --- (a) adopt a transfer start (no file write: the harness skips __init__)
+        s = insert_start + 0.05
+        monitor._m1_adopt_writes_file = False
+        monitor._m1_derived = {'start_conf': s, 'goal_conf': insert_start,
+                               'corridor': None, 'source': 'manual'}
+        monitor.adopt_m1_derived_start()
+        steps = stationary_between(fi, ti)
+        diffs = [float(np.abs(start_of(i) - s).max()) for i in steps]
+        goal_diff = float(np.abs(vec12_from_conf(movements[fi].target_configuration) - s).max())
+        results.check(f"carry: adopting the transfer start writes it into "
+                      f"{[movements[i].movement_id for i in steps]} and "
+                      f"{movements[fi].movement_id}'s goal",
+                      bool(steps) and max(diffs) < SEED_TOL and goal_diff < SEED_TOL,
+                      f"max diffs {np.round(diffs, 9).tolist()}, goal {goal_diff:.1e}")
+
+        # * --- (b) accept a transfer plan that ends away from the insert's start
+        select_movement(monitor, ti)
+        e = insert_start + 0.02
+        # Display only (plots, and validators meant for a real transfer path):
+        # replaced on the instance by functions that do nothing.
+        display_only = ('_validate_cdfm_planned_path', 'show_transfer_validation',
+                        'show_planned_joint_values')
+        for name in display_only:
+            setattr(monitor, name, lambda *_args, **_kwargs: None)
+        try:
+            monitor._accept_trajectory(movements[ti], joint_trajectory_from_path([s, e]),
+                                       source='Plan')
+        finally:
+            for name in display_only:
+                delattr(monitor, name)  # back to the monitor's own methods
+        steps = stationary_between(ti, ii)
+        diffs = [float(np.abs(start_of(i) - e).max()) for i in steps + [ii]]
+        results.check("carry: after accepting a transfer plan, insert start = transfer's last "
+                      f"waypoint (and so do {[movements[i].movement_id for i in steps]})",
+                      bool(steps) and max(diffs) < SEED_TOL,
+                      f"max diffs {np.round(diffs, 9).tolist()}")
+    finally:
         monitor.cfab.close()
 
 
@@ -1372,7 +1464,7 @@ def cindy_restart_run(results: Results, problem: str, root: str, schedule) -> No
 # * ---------------------------------------------------------------------------
 
 def main(argv: Optional[list] = None) -> int:
-    """Build the scratch problem, run dispatch check, Cindy, Alice, Cindy's restart; print the summary.
+    """Build the scratch problem, run dispatch check, carry check, Cindy, Alice, Cindy's restart; print the summary.
 
     Args:
         argv (list | None): Command line (None = ``sys.argv[1:]``).
@@ -1403,7 +1495,7 @@ def main(argv: Optional[list] = None) -> int:
         root = make_scratch_problem(real_root, scratch_design, problem)
         point_package_at(scratch_design)
         schedule = load_schedule(root)
-        for run in (dispatch_check, cindy_run, alice_run, cindy_restart_run):
+        for run in (dispatch_check, carry_check, cindy_run, alice_run, cindy_restart_run):
             try:
                 run(results, problem, root, schedule)
             except Exception as e:  # keep going: the summary shows where it stopped
