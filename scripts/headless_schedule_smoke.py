@@ -12,7 +12,17 @@ tick later. The buttons are the monitor's own methods ('Load entry' =
 ! .live-solved.json sidecars are written there, never into the real design
 ! folder -- the last check confirms the real folder is untouched.
 
-The flow, on the fixture's first hold (Alice holds B3):
+First, the dispatch check (its own Cindy monitor): for every movement of the
+fixture's entry 0 (B1_J) and entry 1 (B1_R) it records which planner method
+'Plan Movement' calls, which ``husky_world`` exec function 'Exec Selected Mv
+Traj' calls, the scaffolding tool command a compliant exec sends (tighten /
+gripper loosen), the traj time default, whether the start is live and the
+preview type, and checks them against ``DISPATCH_EXPECTED``. Planners and exec
+functions are replaced by recorders (nothing is planned or moved); only the
+compliant exec runs for real on the stub, up to its tool command. It does not
+check planning outcomes.
+
+Then the flow, on the fixture's first hold (Alice holds B3):
 
   Cindy's run (domain 86)
     - entry 0 (B1_J): load; while its manual step waits for 'Confirm Exec',
@@ -53,9 +63,9 @@ Usage:
     and the sidecar. (If an IK call complains that ``ssik`` is not installed,
     also ``export HUSKY_IK_BACKEND=gradient``.)
 
-Exit code 0 when every check passes, 1 otherwise. Loads two ~340 MB
-RobotCell files, one at a time (~1 GB RAM each); takes about a minute (most
-of it Cindy's R_M3 free plan to home).
+Exit code 0 when every check passes, 1 otherwise. Loads the ~340 MB
+RobotCell files one at a time (Cindy's twice, then Alice's; ~1 GB RAM each);
+takes under a minute (most of it Cindy's R_M3 free plan to home).
 """
 
 import argparse
@@ -76,9 +86,10 @@ import pybullet_planning as pp
 # script's folder on sys.path).
 from headless_live_monitor_test import StubLogger, _bypass_init_monitor
 from husky_assembly_teleop import DESIGN_DATA_DIRECTORY, DESIGN_PROBLEM_NAME
-from husky_assembly_teleop import cfab_session, husky_monitor
+from husky_assembly_teleop import cfab_session, husky_monitor, husky_world
+from husky_assembly_teleop.bar_action_io import step_kind
 from husky_assembly_teleop.cfab_session import CfabSession
-from husky_assembly_teleop.husky_robot import UR5e_HOME_STATE
+from husky_assembly_teleop.husky_robot import GRIPPER_MOTOR, JOINT_MOTOR, UR5e_HOME_STATE
 from husky_assembly_teleop.husky_world import (
     GRIPPER_CLOSE_FOR_BAR_POS, GRIPPER_OPEN_POS, _live_tool0_in_arm_base,
 )
@@ -268,6 +279,16 @@ class StubInterface:
         """
         self.calls.append(('zero_ft', index))
         return True
+
+    def send_scaffolding_cmd(self, direction: int, motor: int, index: int = 0) -> None:
+        """Scaffolding tool motor command: recorded.
+
+        Args:
+            direction (int): -1 loosen, 0 stop, 1 tighten.
+            motor (int): ``GRIPPER_MOTOR`` or ``JOINT_MOTOR``.
+            index (int): Arm index.
+        """
+        self.calls.append(('scaffolding', direction, motor, index))
 
     # * --- what ROS delivers between two monitor ticks ---
     def tick(self) -> None:
@@ -500,6 +521,188 @@ def select_movement(monitor, idx: int):
     monitor._selected_movement_idx = idx
     monitor.load_selected_movement()
     return monitor.current_movement
+
+
+# * ---------------------------------------------------------------------------
+# * Dispatch check: which planner / exec / tool command each movement reaches
+# * ---------------------------------------------------------------------------
+
+# * What today's monitor does with every movement of the fixture's entry 0 (J)
+# * and entry 1 (R), keyed by (entry kind, movement index in the file). The
+# * movement id is written without its bar prefix ('B1_'). '-' = not run for
+# * this movement; traj_time None = the movement has no default traj time.
+# ! Stage 1 (F5d) intentionally changes `preview` of the stationary steps whose
+# ! start state has the bar attached (J 1, J 2, J 4, R 0) to 'bar_held'.
+DISPATCH_FIELDS = ('movement', 'planner', 'exec', 'tool_cmd', 'traj_time', 'starts_live', 'preview')
+DISPATCH_EXPECTED = {
+    ('J', 0): ('J_M0_free_to_load', 'free_to_load', 'zero_ft', '-', 30, True, 'free'),
+    ('J', 1): ('J_M1_manual_mount_bar', 'none', '-', '-', None, False, 'free'),
+    ('J', 2): ('J_M2_tool_grasp_bar', 'none', '-', '-', None, False, 'free'),
+    ('J', 3): ('J_M3_CDFM_transfer_to_approach', 'transfer', 'arm_both', '-', 10, False, 'bar_held'),
+    ('J', 4): ('J_M4_tool_tighten_joint', 'none', '-', '-', None, False, 'free'),
+    ('J', 5): ('J_M5_LM_insert', 'insert', 'compliant', 'tighten', 5, False, 'bar_held'),
+    ('R', 0): ('R_M0_tool_untighten_joint', 'none', '-', '-', None, False, 'free'),
+    ('R', 1): ('R_M1_tool_ungrasp_bar', 'none', '-', '-', None, False, 'free'),
+    ('R', 2): ('R_M2_LM_retreat', 'retreat', 'compliant', 'loosen_gripper', 5, False, 'free'),
+    ('R', 3): ('R_M3_free_home', 'free_home', 'arm_both', '-', 10, False, 'free'),
+}
+
+
+def tool_command_sent(monitor, iface: StubInterface, compliant_exec) -> str:
+    """Run the real compliant exec on the stub until it sends its tool command, then stop it.
+
+    The compliant exec sends a "stop" (direction 0) to every tool motor, then
+    its own command, before it moves an arm. The stops are left out here.
+
+    Args:
+        monitor (HuskyMonitor): The headless monitor, the movement loaded and a
+            planned path stamped.
+        iface (StubInterface): Records the scaffolding commands.
+        compliant_exec: The real ``husky_world.execute_planned_trajectory_compliant``.
+
+    Returns:
+        str: ``'tighten'`` (joint motor +1, both arms), ``'loosen_gripper'``
+        (gripper motor -1, both arms), the raw ``(direction, motor, arm)``
+        commands when they are neither, or ``'none sent'``.
+    """
+    names = {
+        ((1, JOINT_MOTOR, 0), (1, JOINT_MOTOR, 1)): 'tighten',
+        ((-1, GRIPPER_MOTOR, 0), (-1, GRIPPER_MOTOR, 1)): 'loosen_gripper',
+    }
+    n = len(iface.calls)
+
+    def sent() -> tuple:
+        return tuple(sorted(c[1:] for c in iface.calls[n:] if c[0] == 'scaffolding' and c[1] != 0))
+
+    task = compliant_exec(monitor)
+    try:
+        for _ in range(50):
+            next(task)
+            iface.tick()
+            if sent():
+                break
+    except StopIteration:
+        pass  # the exec ended on its own (its warning says why)
+    finally:
+        # Stops the exec where it is; its own clean-up sends the motor stops.
+        task.close()
+    return names.get(sent(), repr(sent()) if sent() else 'none sent')
+
+
+def dispatch_check(results: Results, problem: str, root: str, schedule) -> None:
+    """Record which planner, exec function and tool command each Cindy movement reaches.
+
+    For every movement of entry 0 (J) and entry 1 (R): 'Plan Movement' with the
+    planner methods replaced by recorders (nothing is planned), then 'Exec
+    Selected Mv Traj' with the ``husky_world`` exec functions replaced by
+    recorders (nothing runs), and for a compliant exec the REAL compliant exec
+    on the stub up to its tool command. Each movement is checked against
+    ``DISPATCH_EXPECTED``.
+
+    Args:
+        results (Results): Where the checks go.
+        problem (str): Problem folder name.
+        root (str): The scratch problem folder (unused; same signature as the other runs).
+        schedule (ActionSchedule): The scratch schedule.
+    """
+    # * Planner method on the monitor -> label. Stage 4 renames the methods;
+    # * only this dict changes then.
+    planner_labels = {
+        '_plan_M0_dispatch': 'free_to_load',
+        '_plan_M1_dispatch': 'transfer',
+        '_plan_M2_dispatch': 'insert',
+        '_plan_M3_dispatch': 'retreat',
+        '_plan_M4_dispatch': 'free_home',
+    }
+    # * husky_world function the exec button calls -> (label, whether the
+    # * monitor queues what it returns as a task).
+    exec_labels = {
+        'execute_planned_trajectory_compliant': ('compliant', True),
+        'execute_trajectory_and_zero_ft': ('zero_ft', True),
+        'execute_arm_trajectory_both': ('arm_both', False),
+        'execute_arm_trajectory_all': ('arm_all', False),
+    }
+    # Set before each Load Movement; no default can give it (defaults are at least 1 s).
+    no_default = -1.0
+
+    cindy = robot_by_name(ASSEMBLY_ROBOT)
+    entries = [schedule.entry(0), schedule.entry(1)]
+    assert [e.kind for e in entries] == ['J', 'R'], \
+        f"the dispatch check needs a J then an R entry first, got {[e.action_id for e in entries]}"
+    print(f"\n{'=' * 30} DISPATCH CHECK {'=' * 30}")
+    base = schedule.load_action(entries[0], prefer_sidecar=False).movements[-1].start_state.robot_base_frame
+    monitor, iface, _log = make_monitor(cindy, base, problem)
+    add_viz_huskies(monitor, cindy)
+    # The compliant exec reads tool0 by FK on the ghost robot; headless, the
+    # planner's robot body (Cindy's URDF) is the ghost (same as the Alice run).
+    monitor.goal_model.robot = monitor.cfab.client.robot_puid
+
+    called = []  # labels of the recorders the last button reached
+
+    def recorder(label: str, queued: bool = False):
+        def record(*_args, **_kwargs):
+            called.append(label)
+            return iter(()) if queued else None  # a queued task that ends at once
+        return record
+
+    real_compliant = husky_world.execute_planned_trajectory_compliant
+    originals = {name: getattr(husky_world, name) for name in exec_labels}
+    try:
+        for name, (label, queued) in exec_labels.items():
+            setattr(husky_world, name, recorder(label, queued))
+        monitor._load_schedule_state()
+        for entry in entries:
+            # * --- planner sweep
+            monitor.load_schedule_entry(entry.index)
+            n_mv = len(monitor._loaded_movements)
+            planners = []
+            for name, label in planner_labels.items():
+                setattr(monitor, name, recorder(label))
+            for idx in range(n_mv):
+                select_movement(monitor, idx)
+                called.clear()
+                monitor.plan_selected_movement()
+                planners.append('+'.join(called) or 'none')
+            for name in planner_labels:
+                delattr(monitor, name)  # back to the monitor's own methods
+
+            # * --- exec sweep, on a fresh load: a "failed" plan (the recorders
+            # * --- return None) clears state, e.g. the transfer's start configuration
+            monitor.load_schedule_entry(entry.index)
+            for idx in range(n_mv):
+                monitor.trajectory_time = no_default
+                mv = select_movement(monitor, idx)
+                traj_time = None if monitor.trajectory_time == no_default else monitor.trajectory_time
+                exec_label = tool_cmd = '-'
+                if step_kind(mv) == 'arm':
+                    # A two-waypoint path where the stub arms stand: exec's "arms at
+                    # the trajectory start" check passes, as after 'Move Arms to
+                    # Movement Start'.
+                    for i, q in enumerate(iface.arm_joint_pose):
+                        monitor.set_arm_trajectory(
+                            (np.asarray([q, q]), None, monitor.trajectory_time, None), i)
+                    called.clear()
+                    monitor.exec_selected_movement_traj()
+                    run_tasks(monitor, iface)
+                    exec_label = '+'.join(called) or 'none'
+                    if exec_label == 'compliant':
+                        tool_cmd = tool_command_sent(monitor, iface, real_compliant)
+                recorded = (mv.movement_id.split('_', 1)[1], planners[idx], exec_label, tool_cmd,
+                            traj_time, idx in monitor._live_start_indices,
+                            monitor._authored_motion_type(mv))
+                expected = DISPATCH_EXPECTED.get((entry.kind, idx))
+                shown = ' '.join(f'{k}={v}' for k, v in zip(DISPATCH_FIELDS[1:], recorded[1:]))
+                diff = ('no expected row' if expected is None else ', '.join(
+                    f'{k} expected {e}' for k, r, e in zip(DISPATCH_FIELDS, recorded, expected)
+                    if r != e))
+                results.check(f'dispatch: {mv.movement_id} {shown}', recorded == expected, diff)
+            n_rows = sum(kind == entry.kind for kind, _ in DISPATCH_EXPECTED)
+            results.check(f"dispatch: entry {entry.index} ({entry.action_id}) has the table's "
+                          f"{n_rows} {entry.kind} movements", n_mv == n_rows, f"{n_mv} loaded")
+    finally:
+        for name, fn in originals.items():
+            setattr(husky_world, name, fn)
+        monitor.cfab.close()
 
 
 # * ---------------------------------------------------------------------------
@@ -867,7 +1070,7 @@ def alice_run(results: Results, problem: str, root: str, schedule) -> None:
 # * ---------------------------------------------------------------------------
 
 def main(argv: Optional[list] = None) -> int:
-    """Build the scratch problem, run Cindy then Alice, print the summary.
+    """Build the scratch problem, run the dispatch check, Cindy then Alice, print the summary.
 
     Args:
         argv (list | None): Command line (None = ``sys.argv[1:]``).
@@ -898,7 +1101,7 @@ def main(argv: Optional[list] = None) -> int:
         root = make_scratch_problem(real_root, scratch_design, problem)
         point_package_at(scratch_design)
         schedule = load_schedule(root)
-        for run in (cindy_run, alice_run):
+        for run in (dispatch_check, cindy_run, alice_run):
             try:
                 run(results, problem, root, schedule)
             except Exception as e:  # keep going: the summary shows where it stopped
