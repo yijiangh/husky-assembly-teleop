@@ -5,6 +5,25 @@ Spec + full change log: `tasks/2026-09-30_support_robot_schedule_monitor.md`.
 Approved plan + exporter-defect note: `~/.claude/plans/i-am-about-to-clever-lerdorf.md`.
 Operator manual: `doc/support_robot_schedule_manual.md`. Test manual: `doc/support_robot_test_manual.md`.
 
+## 0. Update (2026-10-01 evening) — role removal + dry-run fixes landed; read this first
+
+Branch `yh/multi-robot-monitor`. Spec + change log: `tasks/2026-10-01_drop_legacy_movement_roles.md`;
+plan: `~/.claude/plans/i-realize-that-you-iterative-token.md`. Committed in order: dispatch check (smoke),
+F4 floor allows ground joints, F5a–c built-bar switch, F6 state carry-over + small items, stage 1 (M0–M4
+roles removed; kind-keyed), stage 2 (carry rule, F5e), F3 support live goal, F1 combined button, F2 operator
+steps. Checks: pytest 126 / 1 skipped, schedule smoke 75/75, single-arm smoke 7/7. Manuals updated for Part A.
+! `husky_monitor.py` still carries the uncommitted dry-run flags (`USE_MOCAP = 0`, `FAKE_HARDWARE = 1`).
+
+Next:
+1. User's Part A walk-through with the updated `doc/support_robot_test_manual.md` (GUI gate).
+2. Open bug, not fixed (needs the user's OK): a `.live-solved.json` sidecar keeps the `is_hidden` flags the
+   monitor set when built bars were ignored, so reloading it hides the built bars (planner ignores them)
+   even with the switch OFF. Seen in `~/husky_dryrun/design/260920_dryrun/BarActions/B4__J.live-solved.json`
+   (92 of 93 bodies hidden vs 72 of 92 in the clean export). GPU render: `~/husky_dryrun/probe/roles_refactor_render.png`.
+3. Stage 4 (rename by meaning) after the GUI gate; stage 3 (schedule-only) after the Rhino re-export (D5–D8;
+   D8 = complete schedule for `260929_phase1_retest`, added to the Rhino repo's issue list).
+4. F8 planning failures, together with the user.
+
 ## 1. State of the code
 
 - Repo `husky-assembly-teleop`, branch `yh/mocap_bar_reaching_acc_test`. Committed on 2026-10-01 on top of
