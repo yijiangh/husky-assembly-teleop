@@ -34,7 +34,7 @@ from husky_assembly_teleop.bar_action_io import (
     ARM_KINDS, STATIONARY_KINDS, LIVE_SOLVED_TAG, clean_action_path, _clean_action_path,
     sidecar_action_path, preferred_action_path, write_path_for,
     BUILT_ASSEMBLY_RB_PREFIXES, is_built_assembly_body, bar_body_name, find_bar_body,
-    bar_id_of_body,
+    bar_id_of_body, is_ground_joint_body,
 )
 
 # The two exports under test, one per schema. 260715 writes one file per bar
@@ -508,6 +508,14 @@ def test_rigid_body_naming():
     assert bar_id_of_body('joint_B12_male') is None
     assert bar_id_of_body('env_joint_B12_male') is None
     assert bar_id_of_body('obstacle_env1') is None
+
+
+def test_ground_joint_naming():
+    """Ground joints with and without the support prefix; other bodies are not."""
+    for name in ('joint_G1-T20Ground-1_ground', 'env_joint_G1-T20Ground-0_ground'):
+        assert is_ground_joint_body(name), name
+    for name in ('joint_J1-12_female', 'bar_B1', 'obstacle_ground'):
+        assert not is_ground_joint_body(name), name
 
 
 @needs_schedule_export

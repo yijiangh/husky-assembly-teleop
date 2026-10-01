@@ -21,7 +21,7 @@ import os
 import tempfile
 from contextlib import contextmanager
 from types import MethodType
-from typing import Iterator, Optional, Tuple
+from typing import Iterable, Iterator, Optional, Tuple
 
 import numpy as np
 import pybullet_planning as pp
@@ -44,7 +44,7 @@ from compas_robots.resources import LocalPackageMeshLoader
 import rs_data_structure  # noqa: F401
 
 from husky_assembly_teleop import DATA_DIRECTORY, DESIGN_DATA_DIRECTORY
-from husky_assembly_teleop.bar_action_io import find_bar_body
+from husky_assembly_teleop.bar_action_io import find_bar_body, is_ground_joint_body
 from husky_assembly_teleop.robot_registry import ROBOTS, robot_by_name
 
 # * Robot description files now come from the robot registry (one RobotSpec per
@@ -209,6 +209,31 @@ def build_ground_rigid_body(problem_name):
     return RigidBody(visual_meshes=slabs, collision_meshes=slabs, native_scale=1.0)
 
 
+def ground_touch_bodies(rb_names: Iterable[str], obstacle_tools: Iterable[str],
+                        existing: Optional[Iterable[str]] = None) -> list[str]:
+    """Bodies and tools the floor may touch in one cell state.
+
+    * A ground joint (``joint_*_ground``, see ``is_ground_joint_body``) stands on
+    * the floor by construction, whether it still rides with the bar or is
+    * already built, so the floor allows it. compas_fab's attached-body check is
+    * symmetric (listing either body in the other's ``touch_bodies`` skips the
+    * pair), so the floor's list is enough.
+
+    Args:
+        rb_names (Iterable[str]): Rigid-body names of the state
+            (e.g. ``state.rigid_body_states``).
+        obstacle_tools (Iterable[str]): ``ObstacleRobot<Name>`` tools present in
+            the cell.
+        existing (Iterable[str] | None): Allowances the ground entry already
+            carries; they are kept.
+
+    Returns:
+        list[str]: Sorted names, each listed once.
+    """
+    ground_joints = {name for name in rb_names if is_ground_joint_body(name)}
+    return sorted(set(existing or []) | set(obstacle_tools) | ground_joints)
+
+
 def inject_ground_rigid_body_state(cell: RobotCell, state: RobotCellState) -> None:
     """Give a cell state the ground body, with the wheels-only allowance.
 
@@ -224,13 +249,14 @@ def inject_ground_rigid_body_state(cell: RobotCell, state: RobotCellState) -> No
     ! floor, so their wheels touch it too. Both are static, so that contact would
     ! veto every plan while no arm motion could change it; the ground lists them
     ! in ``touch_bodies`` (compas_fab then skips the tool <-> floor check).
+    ! The state's ground joints are listed there too (see ``ground_touch_bodies``).
 
     Args:
         cell (RobotCell): The session's cell (``CfabSession.robot_cell``).
         state (RobotCellState): State to edit in place. Left unchanged when the
             cell has no ground body. When the state already carries a ground
-            entry (e.g. a sidecar written by an older monitor), the wheel links
-            and obstacle robots are ADDED to its allowances instead.
+            entry (e.g. a sidecar written by an older monitor), the wheel links,
+            obstacle robots and ground joints are ADDED to its allowances instead.
     """
     if state is None or cell is None:
         return
@@ -246,12 +272,12 @@ def inject_ground_rigid_body_state(cell: RobotCell, state: RobotCellState) -> No
         # An older file may carry a ground without the obstacle-robot allowance;
         # without it a robot standing on the floor vetoes every plan.
         ground.touch_links = sorted(set(ground.touch_links or []) | set(GROUND_TOUCH_LINKS))
-        ground.touch_bodies = sorted(set(ground.touch_bodies or []) | set(obstacle_tools))
+        ground.touch_bodies = ground_touch_bodies(rb_states, obstacle_tools, ground.touch_bodies)
         return
     rb_states[GROUND_RIGID_BODY_NAME] = RigidBodyState(
         frame=Frame.worldXY(),
         touch_links=list(GROUND_TOUCH_LINKS),
-        touch_bodies=obstacle_tools,
+        touch_bodies=ground_touch_bodies(rb_states, obstacle_tools),
     )
 
 

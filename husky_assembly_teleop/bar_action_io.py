@@ -771,6 +771,21 @@ def is_built_assembly_body(name: str) -> bool:
     return name.startswith(BUILT_ASSEMBLY_RB_PREFIXES)
 
 
+def is_ground_joint_body(name: str) -> bool:
+    """Whether a rigid body is a ground joint (the foot that sets a bar on the floor).
+
+    Args:
+        name (str): Rigid-body name in a RobotCell, e.g.
+            ``'joint_G1-T20Ground-1_ground'`` or ``'env_joint_G1-T20Ground-0_ground'``.
+
+    Returns:
+        bool: True for ``joint_*_ground`` and ``env_joint_*_ground``.
+    """
+    if name.startswith(_SUPPORT_RB_PREFIX):
+        name = name[len(_SUPPORT_RB_PREFIX):]
+    return name.startswith("joint_") and name.endswith("_ground")
+
+
 def bar_body_name(bar_id: str, rb_prefix: str = "") -> str:
     """Rigid-body name of a bar in a cell.
 
