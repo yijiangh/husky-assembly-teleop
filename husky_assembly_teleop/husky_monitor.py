@@ -113,6 +113,9 @@ DEFAULT_GREY = [0.2, 0.2, 0.2, 0.7]
 GOAL_BLUE = [0, 0.2, 0.5, 0.7]
 TRAJECTORY_GREEN = [0, 0.5, 0.2, 0.7]
 TRANSPARENT = [0, 0.0, 0.0, 0.0]
+# Faint grey for built bars / joints the planner ignores (IGNORE_BUILT_ASSEMBLY_COLLISIONS):
+# still drawn where they stand, but clearly "not counted".
+BUILT_IGNORED_RGBA = (0.6, 0.6, 0.6, 0.25)
 # See-through bar that follows the manual M1 start sliders in PyBullet.
 MANUAL_BAR_ORANGE = [1.0, 0.55, 0.0, 0.6]
 # See-through bar at the loaded action's assembled pose (M3 start), the target to drive to.
@@ -327,14 +330,21 @@ class HuskyMonitor(Node):
     USE_ACTION_SCHEDULE = 1
     # Set 1 for the mocap bar-holding accuracy experiment: adds the markerset
     # record/save buttons + the servoing tracker, hides the already-built
-    # assembly (so its bars are ignored by collision checks), and force-attaches
-    # the active bar for the transfer replan. Keep 0 for the robot-centric
+    # assembly (so its bars are ignored by collision checks; legacy BarAction
+    # list only, schedule mode uses IGNORE_BUILT_ASSEMBLY_COLLISIONS below), and
+    # force-attaches the active bar for the transfer replan. Keep 0 for the robot-centric
     # replay demo, where the built assembly should stay visible and collision-checked.
     # ! These three flags move together, so flip all of them when switching mode:
     # !   mocap accuracy test  : USE_MOCAP=1, BAR_ACTION_LIVE_REPLAN_EXE = 1, USE_CELL_STATE_BASE_POSE=0, BAR_ACTION_MOCAP_ACCURACY_TEST=1
     # !   robot-centric demo   : USE_MOCAP=0, BAR_ACTION_LIVE_REPLAN_EXE = 1, USE_CELL_STATE_BASE_POSE=1, BAR_ACTION_MOCAP_ACCURACY_TEST=0
     # (see doc/bar_holding_acc_manual.md, "Pre-flight checklist")
     BAR_ACTION_MOCAP_ACCURACY_TEST = 1  # show Record + Fit + Viz / Save markerset data
+    # * Schedule mode: 1 = the planner and IK ignore collisions with the already-built
+    # * bars and joints, which are then drawn faint (BUILT_IGNORED_RGBA) so it shows
+    # * that they do not count. 0 = the built structure is a real obstacle, drawn
+    # * as usual. The panel toggle "Ignore built-bar collisions" changes it while
+    # * the monitor runs. See _ignore_built_assembly.
+    IGNORE_BUILT_ASSEMBLY_COLLISIONS = 0
     DUAL_ARM_EE_CONSTR_ACCURACY_MOCAP_TEST = 0
 
     # Set to 1 to dump cfab's collision-check setup (its ACM / allowed-collision
@@ -494,6 +504,7 @@ class HuskyMonitor(Node):
         self.schedule_entry_text = None
         self.schedule_now_text = None
         self.schedule_rows = []
+        self.ignore_built_toggle = None         # "Ignore built-bar collisions" Toggle
         self._selected_action_file_idx = 0
         self._selected_movement_idx = 0
         # M1 home carry anchor index into M1_HOME_ANCHOR_CHOICES (0 = all).
@@ -518,12 +529,17 @@ class HuskyMonitor(Node):
         # Original RGBA of the built-assembly bodies HIDDEN by
         # _sync_pp_visibility_to_hidden (restored at the top of the next load).
         self._traj_ghost_orig_colors = {}       # body puid -> RGBA
-        # BAR_ACTION_MOCAP_ACCURACY_TEST: True once the built assembly has been
-        # flagged hidden + blanked for the CURRENTLY loaded BarAction. The set
+        # When the built assembly is ignored (_ignore_built_assembly): True once it
+        # has been flagged hidden + drawn faint for the CURRENTLY loaded BarAction. The set
         # of hidden bodies depends only on the action's active bar, so switching
         # MOVEMENTS can skip the whole show/re-hide cycle. Reset by
         # load_bar_action_file when a new action (new active bar) is parsed.
         self._mocap_hide_applied = False
+        # Names of the built bodies _hide_built_assembly_for_mocap flagged hidden
+        # for the loaded action: the planner ignores them, the view draws them
+        # faint. Bodies the export itself hides (not built yet) are not in it.
+        # Emptied when a new action is parsed (_finish_action_load).
+        self._collision_ignored_bodies = set()
         # Original RGBA of the PREVIEW bodies (bar/joints/tools) recoloured by
         # _refresh_preview_attached_bodies. Kept separate from the hidden-body
         # cache so re-syncing the preview at trajectory time never un-hides the
@@ -2935,6 +2951,7 @@ class HuskyMonitor(Node):
         # active bar has to become visible). The first Load Movement below
         # re-applies it for the whole action.
         self._mocap_hide_applied = False
+        self._collision_ignored_bodies = set()
 
         # Init the per-problem cfab session + robot cell now so 'Load
         # Movement' is just a state push afterwards. The startup default
@@ -3036,7 +3053,22 @@ class HuskyMonitor(Node):
             return
         inject_ground_rigid_body_state(getattr(self.cfab, 'robot_cell', None), state)
 
-    def _hide_built_assembly_for_mocap(self, state, sync_visibility=True):
+    def _ignore_built_assembly(self) -> bool:
+        """Whether the planner and IK ignore the already-built bars and joints right now.
+
+        Schedule mode: the ``IGNORE_BUILT_ASSEMBLY_COLLISIONS`` switch (the
+        panel toggle sets it on this monitor). Legacy BarAction list: the mocap
+        accuracy test's ``BAR_ACTION_MOCAP_ACCURACY_TEST``, as before.
+
+        Returns:
+            bool: True when ``_hide_built_assembly_for_mocap`` should run.
+        """
+        # Read through getattr: the headless harnesses skip __init__.
+        if getattr(self, '_schedule', None) is not None:
+            return bool(self.IGNORE_BUILT_ASSEMBLY_COLLISIONS)
+        return bool(self.BAR_ACTION_MOCAP_ACCURACY_TEST)
+
+    def _hide_built_assembly_for_mocap(self, state, sync_visibility: bool = True) -> None:
         """Flag the already-built (static) assembly bars/joints ``is_hidden`` so
         the cfab planner and IK ignore collisions with them.
 
@@ -3049,10 +3081,14 @@ class HuskyMonitor(Node):
           - robot self-collision (CC.1) and robot<->tool (CC.2).
         ``is_hidden`` only skips the collision + repositioning steps.
 
-        Used only in the bar-holding accuracy experiment, where the built
-        structure's real-world placement is approximate and must not block the
-        live replans. Mutates ``state.rigid_body_states`` in place. No-op if the
-        state has no rigid bodies.
+        Runs when ``_ignore_built_assembly()`` says so: the schedule-mode switch
+        ``IGNORE_BUILT_ASSEMBLY_COLLISIONS``, or the bar-holding accuracy
+        experiment, where the built structure's real-world placement is
+        approximate and must not block the live replans. Mutates
+        ``state.rigid_body_states`` in place; does nothing to a state without
+        rigid bodies. The names of the bodies it flags are added to
+        ``_collision_ignored_bodies`` (the view draws those faint); bodies the
+        export already hides (not built yet) are left alone, so they stay blanked.
 
         Applied ONCE PER BARACTION (see ``_mocap_hide_applied``): the hidden set
         depends only on the action's active bar, so every movement of the same
@@ -3063,10 +3099,10 @@ class HuskyMonitor(Node):
 
         Args:
             state: The RobotCellState whose rigid_body_states to edit in place.
-            sync_visibility (bool): Also blank the flagged bodies in the PyBullet
-                view. True for the state whose scene is currently shown; False
-                when only tagging the other movements' states (their bodies are
-                the same ones, already blanked).
+            sync_visibility (bool): Also redraw the flagged bodies (faint) in the
+                PyBullet view. True for the state whose scene is currently shown;
+                False when only tagging the other movements' states (their bodies
+                are the same ones, already drawn).
         """
         rb_states = getattr(state, 'rigid_body_states', None) or {}
         active = getattr(self, 'active_bar_name', None)
@@ -3078,25 +3114,31 @@ class HuskyMonitor(Node):
                 continue  # grasped bar's joints / any held body: keep checked
             if not is_built_assembly_body(name):
                 continue  # environment obstacles etc.: keep shown + checked
+            if rb.is_hidden:
+                continue  # hidden by the export (not built yet), or flagged earlier
             rb.is_hidden = True
             hidden.append(name)
-        if hidden and sync_visibility:
-            self.get_logger().info(
-                f"[mocap-acc] ignoring collisions with {len(hidden)} built "
-                f"assembly bodies during planning/IK.")
-        # Mirror the flags into the PyBullet view so the hidden bodies also
-        # DISAPPEAR from the screen -- otherwise the built assembly still shows,
-        # which reads as "still in play" even though planning/IK ignore it.
+        # Read through getattr: scripts/derive_m1_headless.py passes a stand-in
+        # object that has no such set.
+        self._collision_ignored_bodies = (
+            set(getattr(self, '_collision_ignored_bodies', None) or ()) | set(hidden))
+        # Mirror the flags into the PyBullet view, so it shows that planning/IK
+        # ignore these bodies (drawn faint) -- see _sync_pp_visibility_to_hidden.
         if sync_visibility:
             self._sync_pp_visibility_to_hidden(state)
 
     def _sync_pp_visibility_to_hidden(self, state):
-        """Draw each ``is_hidden`` rigid body transparent in the PyBullet scene.
+        """Draw each ``is_hidden`` rigid body faint or transparent in the PyBullet scene.
 
         ``is_hidden`` only tells the cfab planner / IK to skip collisions with a
         body; the body itself stays drawn. This makes the picture match the
-        model: any body flagged hidden is blanked (fully transparent) in
-        PyBullet. Its pre-hide colour is cached in ``_traj_ghost_orig_colors``
+        model:
+          - a built body the planner only ignores (``_collision_ignored_bodies``)
+            is still there: drawn faint (``BUILT_IGNORED_RGBA``) at its state
+            frame;
+          - any other hidden body (the export hides it: not built yet, or the
+            not-yet-mounted active bar) is blanked (``TRANSPARENT``).
+        Its pre-hide colour is cached in ``_traj_ghost_orig_colors``
         -- the same cache ``load_selected_movement`` restores from at the top of
         the next load -- so the body reappears (with its original colour) once
         it is no longer hidden. Only the hide direction is applied here; the
@@ -3111,9 +3153,11 @@ class HuskyMonitor(Node):
             return
         puids_by_name = self.cfab.client.rigid_bodies_puids or {}
         rb_states = getattr(state, 'rigid_body_states', None) or {}
+        ignored = getattr(self, '_collision_ignored_bodies', None) or set()
         for name, rb in rb_states.items():
             if not bool(getattr(rb, 'is_hidden', False)):
                 continue
+            faint = name in ignored
             for body in puids_by_name.get(name, []) or []:
                 # Cache the current colour once so the reload-time restore is
                 # lossless (skip if already cached this load).
@@ -3125,9 +3169,14 @@ class HuskyMonitor(Node):
                     except Exception:
                         self._traj_ghost_orig_colors[body] = [0.7, 0.7, 0.7, 1.0]
                 try:
-                    pp.set_color(body, TRANSPARENT)
+                    pp.set_color(body, BUILT_IGNORED_RGBA if faint else TRANSPARENT)
                 except Exception:
                     pass
+                if faint:
+                    # ! compas_fab does not move is_hidden bodies, so place it here.
+                    # Only static bodies are ever flagged (see
+                    # _hide_built_assembly_for_mocap), so the state frame is its pose.
+                    pp.set_pose(body, pose_from_frame(rb.frame))
 
     def _hide_unmounted_active_bar(self, mv) -> None:
         """Hide the active bar in M0, where it is not mounted yet.
@@ -3222,6 +3271,12 @@ class HuskyMonitor(Node):
                 continue
             body = ids[0]
             # Cache the current color once so the next refresh / load restores it.
+            # ! A body _sync_pp_visibility_to_hidden drew faint / blank in another
+            # ! movement (e.g. B1's joints: standing in J_M0, held in J_M3) keeps its
+            # ! true colour in that cache; take it from there, or the faint colour
+            # ! would come back as this body's "original".
+            if body not in self._preview_body_orig_colors and body in self._traj_ghost_orig_colors:
+                self._preview_body_orig_colors[body] = list(self._traj_ghost_orig_colors[body])
             if body not in self._preview_body_orig_colors:
                 try:
                     vis = p.getVisualShapeData(body)
@@ -3403,15 +3458,15 @@ class HuskyMonitor(Node):
             print(f"[Movement] traj time -> {self.trajectory_time:.0f}s "
                   f"(default for {role or movement_kind(mv).value})")
 
-        # In the mocap-accuracy test the built assembly is hidden once per
-        # BarAction, so a plain movement switch must NOT un-hide it: skipping
+        # When the built assembly is ignored (_ignore_built_assembly) it is hidden
+        # once per BarAction, so a plain movement switch must NOT un-hide it: skipping
         # the restore below (and the re-hide further down) is what stops the
         # built bars from flashing back in and out on every Load Movement. The
         # colour cache is deliberately kept: _sync_pp_visibility_to_hidden only
         # caches a body it hasn't seen, so keeping it preserves the TRUE
         # original colours (clearing it would later cache TRANSPARENT as the
         # "original" and lose them for good).
-        skip_built_assembly_resync = (self.BAR_ACTION_MOCAP_ACCURACY_TEST
+        skip_built_assembly_resync = (self._ignore_built_assembly()
                                       and getattr(self, '_mocap_hide_applied', False))
 
         if not skip_built_assembly_resync:
@@ -3445,9 +3500,23 @@ class HuskyMonitor(Node):
         bar_rb = rb_states.get(self.active_bar_name) if self.active_bar_name else None
         self.grasp_link_from_bar = bar_rb.attachment_frame if (bar_rb and bar_rb.attachment_frame) else None
 
-        # Bar-holding accuracy experiment only: ignore collisions with the
-        # already-built assembly (static bars/joints) for all subsequent
-        # planning/IK, keeping self, tools, and the grasped bar + its joints
+        # Set up the preview bar/joints for the movement's AUTHORED type (goal
+        # state + first trajectory). M1/M2 hold the bar; M0/M3/M4 don't. Each
+        # planner call site re-runs this with the real motion type afterwards,
+        # so e.g. a free transit to a bar-held movement's start still shows no
+        # bar.
+        # ! Done BEFORE the hidden bodies are drawn below: it first gives the
+        # ! previous movement's preview bodies their colours back, and a joint
+        # ! held there may be a built body ignored here (B1's joints: held in
+        # ! R_M0, standing in R_M2). Done after, it would undo the faint colour
+        # ! and leave the preview's colour as the "original" in the hidden cache.
+        self._refresh_preview_attached_bodies(
+            self._authored_motion_type(mv), mv.start_state)
+
+        # Only when the built assembly is ignored (_ignore_built_assembly: the
+        # schedule-mode switch, or the bar-holding accuracy experiment): ignore
+        # collisions with the already-built assembly (static bars/joints) for all
+        # subsequent planning/IK, keeping self, tools, and the grasped bar + its joints
         # checked. Done ONCE PER BARACTION, on the first Load Movement after the
         # action is parsed -- and after the state push above, so the built
         # bodies are spawned/positioned in the scene before they're flagged.
@@ -3455,7 +3524,7 @@ class HuskyMonitor(Node):
         # action, so the same hidden set applies): later movements keep their
         # planning/IK correct AND their set_robot_cell_state skips repositioning
         # those bodies, so no more add/remove churn when switching movements.
-        if (self.BAR_ACTION_MOCAP_ACCURACY_TEST
+        if (self._ignore_built_assembly()
                 and not getattr(self, '_mocap_hide_applied', False)):
             self._hide_built_assembly_for_mocap(mv.start_state)
             for other in self._loaded_movements:
@@ -3464,20 +3533,16 @@ class HuskyMonitor(Node):
                 self._hide_built_assembly_for_mocap(
                     other.start_state, sync_visibility=False)
             self._mocap_hide_applied = True
+            self.get_logger().info(
+                f"[built bars] collisions with {len(self._collision_ignored_bodies)} "
+                f"built bodies ignored (drawn faint)")
 
-        # Blank every body this state marks hidden, so the view shows what the
+        # Blank every body this state marks hidden (built bodies the planner only
+        # ignores: drawn faint), so the view shows what the
         # planner checks -- e.g. the not-yet-mounted active bar in M0 (hidden
         # just before the state push above). The restore at the top of the next
         # load brings it back.
         self._sync_pp_visibility_to_hidden(mv.start_state)
-
-        # Set up the preview bar/joints for the movement's AUTHORED type (goal
-        # state + first trajectory). M1/M2 hold the bar; M0/M3/M4 don't. Each
-        # planner call site re-runs this with the real motion type afterwards,
-        # so e.g. a free transit to a bar-held movement's start still shows no
-        # bar.
-        self._refresh_preview_attached_bodies(
-            self._authored_motion_type(mv), mv.start_state)
 
         if mv.start_state.robot_configuration is not None:
             rc = mv.start_state.robot_configuration
@@ -8161,6 +8226,27 @@ class HuskyMonitor(Node):
             self._selected_movement_idx = 0
         self.reset_ui(self.goal_arm_pose)
 
+    def set_ignore_built_assembly_collisions(self, on: bool) -> None:
+        """'Ignore built-bar collisions' toggle: set the switch and reload the loaded entry.
+
+        The ignore flags are written into every movement's start state at the
+        first Load Movement of an action, so the entry is reloaded ('Load entry')
+        to start again from clean states; that load then applies the new setting.
+        ! Planned paths not saved to a sidecar are dropped by the reload.
+
+        Args:
+            on (bool): True = the planner and IK ignore the built bars and joints
+                (drawn faint); False = they are obstacles again.
+        """
+        self.IGNORE_BUILT_ASSEMBLY_COLLISIONS = int(bool(on))
+        self._mocap_hide_applied = False
+        entry = getattr(self, '_loaded_entry', None)
+        self.get_logger().info(
+            f"[built bars] ignore built-bar collisions: {'ON' if on else 'OFF'}"
+            + (f" -- reloading entry {entry.index}" if entry is not None else ""))
+        if entry is not None:
+            self.load_schedule_entry(entry.index)
+
     def mark_entry_done(self) -> None:
         """'Mark entry done' button: queue ``_mark_entry_done_task`` (it may wait for Confirm Exec).
 
@@ -8871,6 +8957,14 @@ class HuskyMonitor(Node):
         self.buttons.append(Button('Mark entry done', self.mark_entry_done))
         self.buttons.append(Button('Reopen entry (reload clean)', self.reopen_entry))
         self.buttons.append(Button('Rescan schedule status', self.rescan_schedule_status))
+        # * Ticked: the planner and IK ignore the built bars and joints, which are
+        # * drawn faint so it is visible that the switch is on. Changing it reloads
+        # * the loaded entry. Seeded from the flag so a reset_ui rebuild keeps the tick.
+        self.ignore_built_toggle = Toggle(
+            "Ignore built-bar collisions (bars drawn faint)",
+            self.set_ignore_built_assembly_collisions,
+            bool(self.IGNORE_BUILT_ASSEMBLY_COLLISIONS),
+        )
         self.schedule_now_text = StatusText("  now", self._now_line())
         lo, hi = visible_row_window(n, selected, SCHEDULE_ROWS_SHOWN)
         self._schedule_row_window = (lo, hi)
@@ -9797,6 +9891,9 @@ class HuskyMonitor(Node):
             sld = getattr(self, 'schedule_entry_slider', None)
             if sld:
                 sld.update()
+            tgl = getattr(self, 'ignore_built_toggle', None)
+            if tgl:
+                tgl.update()
             # Display-only, so it is refreshed here rather than polled.
             self._refresh_bar_action_readouts()
             self._refresh_schedule_readouts()

@@ -25,6 +25,14 @@ check planning outcomes.
 Then the flow, on the fixture's first hold (Alice holds B3):
 
   Cindy's run (domain 86)
+    - the built-structure switch first (``built_bars_check``), on entries 0 and 1:
+      switch OFF (default) -> B1_J_M5_LM_insert's start and end states have no
+      pair with the floor ``obstacle_ground`` in the full collision report (the
+      ground joints may stand on it), B1_R never hides B1 or its joints; the panel
+      toggle ON -> the entry reloads, the built joints are ignored and drawn
+      faint where they stand, bodies not built yet stay blanked; OFF again ->
+      the reload brings clean states back (also for a joint that rode in a
+      held-bar preview in between)
     - entry 0 (B1_J): load; while its manual step waits for 'Confirm Exec',
       Mark entry done and Load entry are refused (one task at a time); Mark
       entry done -> progress.json, Cindy's belief 'live'
@@ -47,10 +55,12 @@ Then the flow, on the fixture's first hold (Alice holds B3):
       end, trajectories saved to B3__H.live-solved.json
 
 ? Why do H_M0 / H_M2 plan here when ``smoke_single_arm_plan.py --collisions
-? exported`` says the exported hold scene collides? The monitor's class flag
-? BAR_ACTION_MOCAP_ACCURACY_TEST (1 by default) hides the built assembly from
-? collision checks ("[mocap-acc] ignoring collisions with 91 built assembly
-? bodies"), future bar B5 included. The real assembly run sets it to 0.
+? exported`` says the exported hold scene collides? Alice's run turns the
+? monitor's built-bar switch ON (IGNORE_BUILT_ASSEMBLY_COLLISIONS, the panel's
+? "Ignore built-bar collisions" toggle), which hides the built assembly from
+? collision checks ("[built bars] collisions with N built bodies ignored (drawn
+? faint)"), future bar B5 included. Everything else runs with the switch OFF,
+? its default; Cindy's release plans do not need it.
 
 Usage:
 
@@ -80,15 +90,18 @@ from types import SimpleNamespace
 from typing import Optional
 
 import numpy as np
+import pybullet as p
 import pybullet_planning as pp
 
-# The legacy harness in this same folder (importable because Python puts the
-# script's folder on sys.path).
+# The legacy harness and the single-arm smoke in this same folder (importable
+# because Python puts the script's folder on sys.path).
 from headless_live_monitor_test import StubLogger, _bypass_init_monitor
+from smoke_single_arm_plan import collision_lines
 from husky_assembly_teleop import DESIGN_DATA_DIRECTORY, DESIGN_PROBLEM_NAME
 from husky_assembly_teleop import cfab_session, husky_monitor, husky_world
-from husky_assembly_teleop.bar_action_io import step_kind
+from husky_assembly_teleop.bar_action_io import is_built_assembly_body, step_kind
 from husky_assembly_teleop.cfab_session import CfabSession
+from husky_assembly_teleop.husky_monitor import BUILT_IGNORED_RGBA
 from husky_assembly_teleop.husky_robot import GRIPPER_MOTOR, JOINT_MOTOR, UR5e_HOME_STATE
 from husky_assembly_teleop.husky_world import (
     GRIPPER_CLOSE_FOR_BAR_POS, GRIPPER_OPEN_POS, _live_tool0_in_arm_base,
@@ -706,6 +719,145 @@ def dispatch_check(results: Results, problem: str, root: str, schedule) -> None:
 
 
 # * ---------------------------------------------------------------------------
+# * Built-structure switch: collisions with the built bars checked or ignored
+# * ---------------------------------------------------------------------------
+
+def body_color(monitor, name: str) -> list:
+    """The RGBA a rigid body is drawn with in the planner's PyBullet world.
+
+    Args:
+        monitor (HuskyMonitor): The headless monitor.
+        name (str): Rigid-body name in the cell.
+
+    Returns:
+        list[float]: RGBA of the body's first visual shape.
+    """
+    body = monitor.cfab.client.rigid_bodies_puids[name][0]
+    return list(p.getVisualShapeData(body, physicsClientId=pp.CLIENT)[0][7])
+
+
+def built_bars_check(results: Results, monitor, log: RecordingLogger, schedule) -> None:
+    """The built-bar switch (IGNORE_BUILT_ASSEMBLY_COLLISIONS) on Cindy's entries 0 and 1.
+
+    Switch OFF (its default): the start and end states of entry 0's insert
+    (movement 5, ``B1_J_M5_LM_insert``) have no pair with the floor
+    ``obstacle_ground`` in the full collision report -- the ground joints may
+    stand on it -- and entry 1
+    (B1_R) never hides B1 or its joints. Then the panel toggle's method turns it
+    ON: the entry reloads, the built bodies are ignored and drawn faint where
+    they stand (even after something moved one: compas_fab does not move hidden
+    bodies, the monitor places them), bodies the export hides (not built yet)
+    stay blanked. OFF again: the reload brings clean states back. Last, a joint
+    standing in J_M0 (faint when ON) and riding in J_M3's preview is drawn as
+    usual again once the switch is OFF. Ends with the switch OFF.
+
+    Args:
+        results (Results): Where the checks go.
+        monitor (HuskyMonitor): Cindy's monitor in schedule mode, switch OFF.
+        log (RecordingLogger): The monitor's logger.
+        schedule (ActionSchedule): The scratch schedule.
+    """
+    joint_entry, release = schedule.entry(0), schedule.entry(1)
+    results.check('Built bars: the switch is OFF by default in schedule mode',
+                  not monitor._ignore_built_assembly())
+
+    # * --- the ground joints may stand on the floor during the insert
+    monitor.load_schedule_entry(joint_entry.index)
+    mv = select_movement(monitor, 5)
+    # ! The ground joints reach the floor only at the insert's END (bar assembled):
+    # ! its start state is clean even without the allowance. So the end state --
+    # ! the start state with the robot at the target configuration -- is checked too.
+    end = mv.start_state.copy()
+    end.robot_configuration = mv.target_configuration
+    for label, state in (('start', mv.start_state), ('end', end)):
+        lines = collision_lines(monitor.cfab.planner, state)
+        print(f"  full collision report of {mv.movement_id}'s {label} state: {len(lines)} pair(s)")
+        for line in lines:
+            print(f"    {line}")
+        ground = [line for line in lines if 'obstacle_ground' in line]
+        results.check(f'Built bars OFF: {mv.movement_id} {label} state has no obstacle_ground pair '
+                      f'(full collision report)',
+                      mv.movement_id.endswith('_LM_insert')
+                      and 'obstacle_ground' in state.rigid_body_states and not ground,
+                      f"{len(lines)} other colliding pair(s), listed above" if not ground
+                      else '; '.join(ground))
+
+    # * --- the release: B1 (bar + joints) is never hidden
+    monitor.load_schedule_entry(release.index)
+    mv = select_movement(monitor, 0)
+    held = sorted(n for n, rb in mv.start_state.rigid_body_states.items()
+                  if is_built_assembly_body(n) and (rb.attached_to_link or rb.attached_to_tool))
+
+    def hidden_somewhere(names: list) -> list:
+        """The names hidden in the start state of any loaded movement."""
+        return sorted({n for m in monitor._loaded_movements for n in names
+                       if m.start_state.rigid_body_states[n].is_hidden})
+
+    results.check(f"Built bars OFF: {release.action_id} never hides {monitor.active_bar_name} and "
+                  f"its joints, nothing ignored",
+                  monitor.active_bar_name in held and not hidden_somewhere(held)
+                  and not monitor._collision_ignored_bodies,
+                  f"{len(held)} bodies held at {mv.movement_id}")
+
+    # * --- the panel toggle ON: reload, the built joints ignored and drawn faint
+    clean = schedule.load_action(release, prefer_sidecar=False).movements
+    # What the monitor must ignore: every static built body of the action that
+    # the export does not hide, except the action's own bar.
+    built = {n for m in clean for n, rb in m.start_state.rigid_body_states.items()
+             if is_built_assembly_body(n) and n != monitor.active_bar_name and not rb.is_hidden
+             and not (rb.attached_to_link or rb.attached_to_tool)}
+    n = len(log.msgs)
+    monitor.set_ignore_built_assembly_collisions(True)
+    select_movement(monitor, 0)
+    ignored = set(monitor._collision_ignored_bodies)
+    logged = log.since(n, 'info', f"[built bars] collisions with {len(built)} built bodies "
+                                  f"ignored (drawn faint)")
+    results.check(f"Built bars ON (toggle): entry {release.index} reloaded, its built bodies "
+                  f"ignored, one log line",
+                  monitor._loaded_entry.index == release.index and built and ignored == built
+                  and len(logged) == 1, f"{len(ignored)} ignored: {sorted(ignored)}")
+
+    # Something moves a built joint away; the next Load Movement puts it back.
+    joint = sorted(built)[0]
+    body = monitor.cfab.client.rigid_bodies_puids[joint][0]
+    pp.set_pose(body, ((50.0, 50.0, 0.0), (0.0, 0.0, 0.0, 1.0)))
+    mv = select_movement(monitor, 2)
+    rb_states = mv.start_state.rigid_body_states
+    pos_err = float(np.abs(np.subtract(pp.get_pose(body)[0], list(rb_states[joint].frame.point))).max())
+    not_built = sorted(n for n, rb in rb_states.items()
+                       if is_built_assembly_body(n) and rb.is_hidden and n not in ignored)[0]
+    results.check(f"Built bars ON: at {mv.movement_id} {joint} drawn faint at its state frame, "
+                  f"{not_built} (not built yet) blanked",
+                  rb_states[joint].is_hidden and pos_err < SAME_TOL
+                  and np.allclose(body_color(monitor, joint), BUILT_IGNORED_RGBA)
+                  and body_color(monitor, not_built)[3] == 0.0,
+                  f"|pos - frame| {pos_err:.1e} m, rgba {np.round(body_color(monitor, joint), 2).tolist()}")
+
+    # * --- OFF again: clean states, drawn as usual
+    monitor.set_ignore_built_assembly_collisions(False)
+    select_movement(monitor, 2)
+    results.check(f"Built bars OFF again (toggle): entry {release.index} reloaded clean, "
+                  f"nothing ignored, {joint} drawn as usual",
+                  not monitor._collision_ignored_bodies and not hidden_somewhere(held)
+                  and body_color(monitor, joint)[3] > BUILT_IGNORED_RGBA[3],
+                  f"rgba {np.round(body_color(monitor, joint), 2).tolist()}")
+
+    # * --- the same joint stands in J_M0 (faint when ON) and rides in J_M3's
+    # * --- preview: switched OFF, the faint colour must not come back
+    monitor.load_schedule_entry(joint_entry.index)
+    monitor.set_ignore_built_assembly_collisions(True)
+    select_movement(monitor, 0)
+    faint_on = np.allclose(body_color(monitor, joint), BUILT_IGNORED_RGBA)
+    select_movement(monitor, 3)
+    monitor.set_ignore_built_assembly_collisions(False)
+    mv = select_movement(monitor, 0)
+    results.check(f"Built bars: {joint} faint at {mv.movement_id} when ON, drawn as usual there "
+                  f"after a held preview and the switch OFF",
+                  faint_on and body_color(monitor, joint)[3] > BUILT_IGNORED_RGBA[3],
+                  f"rgba {np.round(body_color(monitor, joint), 2).tolist()}")
+
+
+# * ---------------------------------------------------------------------------
 # * The two runs
 # * ---------------------------------------------------------------------------
 
@@ -736,6 +888,9 @@ def cindy_run(results: Results, problem: str, root: str, schedule) -> None:
         results.check('Cindy: schedule mode ON, first pending entry selected',
                       monitor._schedule is not None and monitor._selected_entry_idx == 0,
                       f"{len(monitor._schedule.entries) if monitor._schedule else 0} entries")
+
+        # * --- the built-bar switch on her first two entries (OFF again afterwards)
+        built_bars_check(results, monitor, log, schedule)
 
         # * --- her own entry: load + Mark entry done
         monitor.load_schedule_entry(first.index)
@@ -952,6 +1107,10 @@ def alice_run(results: Results, problem: str, root: str, schedule) -> None:
     print(f"\n{'=' * 30} ALICE RUN {'=' * 30}")
     # Alice's "mocap" puts her where B3__H was authored; her arm starts at UR5e home.
     monitor, iface, log = make_monitor(alice, clean.movements[-1].start_state.robot_base_frame, problem)
+    # ! Alice's exported hold scene collides with the built structure (frozen Cindy
+    # ! vs future bar B5, Rhino note D5), so her plans need the built-bar switch ON
+    # ! (the panel's "Ignore built-bar collisions"). Set before her entry is loaded.
+    monitor.IGNORE_BUILT_ASSEMBLY_COLLISIONS = 1
     try:
         monitor._load_schedule_state()
         monitor.load_schedule_entry(hold.index)
