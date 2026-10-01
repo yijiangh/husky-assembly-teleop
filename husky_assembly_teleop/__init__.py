@@ -52,8 +52,16 @@ def _get_data_directory():
         return installed_data_dir
 
 DATA_DIRECTORY = _get_data_directory()
-DESIGN_DATA_DIRECTORY = '/home/su/Insync/2025-03 Husky Assembly/data_design_study'
-EXPERIMENT_DATA_DIRECTORY = '/home/su/Insync/2025-03 Husky Assembly/data_experiment'
+# * The gdrive folders sit at a different path on every PC (Insync mount name,
+# * user name). The defaults below are the robot-control PC's; set the
+# * environment variables DESIGN_DATA_DIRECTORY / EXPERIMENT_DATA_DIRECTORY to
+# * point at your own copy without editing this file.
+DESIGN_DATA_DIRECTORY = os.environ.get(
+    'DESIGN_DATA_DIRECTORY',
+    '/home/su/Insync/2025-03 Husky Assembly/data_design_study')
+EXPERIMENT_DATA_DIRECTORY = os.environ.get(
+    'EXPERIMENT_DATA_DIRECTORY',
+    '/home/su/Insync/2025-03 Husky Assembly/data_experiment')
 # * Calibration DATASETS (the dated <date>/ folders) live on the gdrive, not in
 # * the repo. The analysis scripts, the config template (_data_template/) and
 # * debug_utils/ stay in the repo under data/calibration_data/.
@@ -87,7 +95,9 @@ CALIBRATION_ANALYSIS_DATE = '20260916'
 CALIBRATION_BATCHES = ['j0', 'j1', 'validation', 'punch_validation']
 
 # DESIGN_PROBLEM_NAME = '260811_RobArch_demo'
-DESIGN_PROBLEM_NAME = '260929_phase1_retest'
+# * Override per run with the environment variable DESIGN_PROBLEM_NAME, e.g.
+# *   export DESIGN_PROBLEM_NAME=260920_RobArch_demo_revamp_backup
+DESIGN_PROBLEM_NAME = os.environ.get('DESIGN_PROBLEM_NAME', '260929_phase1_retest')
 # DESIGN_PROBLEM_NAME = '2026-05-19_reoriented2'
 
 # Rhino .3dm whose "Environment Obstacles" layer is drawn as the layout-diagram

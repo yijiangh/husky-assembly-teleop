@@ -31,7 +31,9 @@ setup(
         # the interchange format is reproducible across the three consumer
         # repos (husky-assembly-teleop, husky_assembly_tamp,
         # bar_joint_rhino_design_workflow).
-        'rs_data_structure @ git+https://github.com/yijiangh/rs_data_structure.git@36564dc494ecb48fa61c0fa31c894747e1274000',
+        # 8912325 = split assembly actions + hold actions + single-arm / tool
+        # movements (same SHA as the external/rs_data_structure submodule).
+        'rs_data_structure @ git+https://github.com/yijiangh/rs_data_structure.git@8912325d05955da7d84a32fcfc89980674e8ed95',
     ],
     zip_safe=True,
     maintainer='Jakob Genhart',

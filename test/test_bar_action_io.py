@@ -11,17 +11,38 @@ import types
 import pytest
 
 import rs_data_structure.bar_action as bar_action_module
+from compas.geometry import Frame
+from rs_data_structure.bar_action import (
+    EndEffectorConstrainedDualArmFreeMovement,
+    EndEffectorConstrainedDualArmLinearMovement,
+    GripperToolMovement,
+    IndependentDualArmFreeMovement,
+    IndependentDualArmLinearMovement,
+    ManualMovement,
+    ScaffoldingToolMovement,
+    SingleArmFreeMovement,
+    SingleArmLinearMovement,
+    ToolMovement,
+)
 
 from husky_assembly_teleop import DESIGN_DATA_DIRECTORY
 from husky_assembly_teleop.bar_action_io import (
     BarAssemblyAction, movement_role, sibling_action_path, list_bar_actions,
     load_action_cycle, cycle_roles, slot_of_index, cycle_start_ee_sources,
+    parse_bar_action, roles_for_action, MovementKind, movement_kind, kind_fits_robot,
+    step_kind, movement_controller, tool_event, default_trajectory_time,
+    ARM_KINDS, STATIONARY_KINDS, LIVE_SOLVED_TAG, clean_action_path, _clean_action_path,
+    sidecar_action_path, preferred_action_path, write_path_for,
+    BUILT_ASSEMBLY_RB_PREFIXES, is_built_assembly_body, bar_body_name, find_bar_body,
+    bar_id_of_body,
 )
 
 # The two exports under test, one per schema. 260715 writes one file per bar
 # holding M0..M4; 260929 splits each bar into a jointing and a release half.
 LEGACY_PROBLEM = '260715_phase1_test'
 SPLIT_PROBLEM = '260929_phase1_retest'
+# The multi-robot export: Cindy's __J/__R plus the support robots' __H/__HR.
+SCHEDULE_PROBLEM = '260920_RobArch_demo_revamp_backup'
 
 # * Three bars, picked for how they sit across the two exports:
 # *   B1  -- in both, and its poses and configurations are identical, so the
@@ -279,3 +300,224 @@ def test_every_legacy_bar_still_exported():
     A re-export that drops a bar fails here rather than at the robot.
     """
     assert _bars_in(LEGACY_PROBLEM) <= _bars_in(SPLIT_PROBLEM)
+
+
+# * ================================================ support robots (hold export)
+
+needs_schedule_export = pytest.mark.skipif(
+    not os.path.isdir(_actions_dir(SCHEDULE_PROBLEM)),
+    reason='the multi-robot design-study export is not on this machine',
+)
+
+
+def _load_schedule_action(name: str):
+    """Load one action file of the multi-robot export.
+
+    Args:
+        name (str): File stem, e.g. ``'B3__H'``.
+
+    Returns:
+        BarSceneAction: The loaded action.
+    """
+    return parse_bar_action(os.path.join(_actions_dir(SCHEDULE_PROBLEM), f'{name}.json'))
+
+
+# * ------------------------------------------------- hold-id guard on roles
+
+def test_hold_ids_have_no_role():
+    """H / HR ids must not fall through to the legacy '_M<n>_' pattern."""
+    for mid in ('B3_H_M0_free_to_approach', 'B3_H_M2_LM_to_grasp',
+                'B3_H_M3_gripper_close', 'B3_HR_M0_gripper_open', 'B3_HR_M1_LM_retreat'):
+        assert movement_role(_mv(mid)) is None, mid
+    # Cindy's ids are unchanged.
+    assert movement_role(_mv('B3_J_M5_LM_insert')) == 'M2'
+    assert movement_role(_mv('B3_R_M2_LM_retreat')) == 'M3'
+    assert movement_role(_mv('B3_M2_LM_mate')) == 'M2'
+
+
+@needs_schedule_export
+def test_roles_for_real_actions(capsys):
+    """Cindy's halves keep their roles; a support robot's actions have none, silently."""
+    assert roles_for_action(_load_schedule_action('B3__J')) == ['M0', None, None, 'M1', None, 'M2']
+    assert roles_for_action(_load_schedule_action('B3__R')) == [None, None, 'M3', 'M4']
+    hold, hold_release = _load_schedule_action('B3__H'), _load_schedule_action('B3__HR')
+    assert roles_for_action(hold) == [None] * 4
+    assert roles_for_action(hold_release) == [None] * 2
+    # The multi-file form must not print a role mismatch for them either.
+    assert cycle_roles([(hold, None), (hold_release, None)]) == [None] * 6
+    assert capsys.readouterr().out == ''
+
+
+# * ------------------------------------------------- movement kinds
+
+_KIND_OF_CLASS = {
+    IndependentDualArmFreeMovement: MovementKind.DUAL_FREE,
+    EndEffectorConstrainedDualArmFreeMovement: MovementKind.DUAL_CONSTRAINED_FREE,
+    EndEffectorConstrainedDualArmLinearMovement: MovementKind.DUAL_CONSTRAINED_LINEAR,
+    IndependentDualArmLinearMovement: MovementKind.DUAL_INDEPENDENT_LINEAR,
+    SingleArmFreeMovement: MovementKind.SINGLE_FREE,
+    SingleArmLinearMovement: MovementKind.SINGLE_LINEAR,
+    GripperToolMovement: MovementKind.GRIPPER_TOOL,
+    ScaffoldingToolMovement: MovementKind.SCAFFOLDING_TOOL,
+    ManualMovement: MovementKind.MANUAL,
+}
+
+
+def test_movement_kind_for_every_class():
+    """Every concrete movement class maps to its own MovementKind."""
+    for cls, kind in _KIND_OF_CLASS.items():
+        assert movement_kind(cls(movement_id='x')) is kind, cls.__name__
+
+
+def test_movement_kind_rejects_unknown_classes():
+    """The bare tool base and any new subclass fail loudly instead of guessing."""
+    class NewSingleArmMovement(SingleArmFreeMovement):
+        pass
+
+    with pytest.raises(TypeError):
+        movement_kind(ToolMovement(movement_id='x'))
+    with pytest.raises(TypeError):
+        movement_kind(NewSingleArmMovement(movement_id='x'))
+
+
+def test_kind_groups_and_robot_fit():
+    """Arm and stationary kinds split all kinds; arm kinds fit only their robot type."""
+    assert ARM_KINDS | STATIONARY_KINDS == set(MovementKind)
+    assert not ARM_KINDS & STATIONARY_KINDS
+    assert kind_fits_robot(MovementKind.DUAL_FREE, dual_arm=True)
+    assert not kind_fits_robot(MovementKind.DUAL_CONSTRAINED_LINEAR, dual_arm=False)
+    assert kind_fits_robot(MovementKind.SINGLE_LINEAR, dual_arm=False)
+    assert not kind_fits_robot(MovementKind.SINGLE_FREE, dual_arm=True)
+    for kind in STATIONARY_KINDS:
+        assert kind_fits_robot(kind, dual_arm=True) and kind_fits_robot(kind, dual_arm=False)
+
+
+def test_step_kind():
+    """Each movement class maps to the right step label (arm / gripper / scaffold / manual)."""
+    assert step_kind(SingleArmLinearMovement()) == 'arm'
+    assert step_kind(IndependentDualArmFreeMovement()) == 'arm'
+    assert step_kind(GripperToolMovement()) == 'gripper'
+    assert step_kind(ScaffoldingToolMovement()) == 'scaffold'
+    assert step_kind(ManualMovement()) == 'manual'
+
+
+def test_movement_controller_warns_on_disagreement(capsys):
+    """Cindy's M2 runs compliant, every other role joint tracking."""
+    insert = EndEffectorConstrainedDualArmLinearMovement(
+        movement_id='B3_J_M5_LM_insert', controller='cartesian_compliant')
+    assert movement_controller(insert, 'M2') == 'cartesian_compliant'
+    assert movement_controller(insert) == 'cartesian_compliant'
+    assert capsys.readouterr().out == ''
+
+    retreat = IndependentDualArmLinearMovement(
+        movement_id='B3_R_M2_LM_retreat', controller='cartesian_compliant')
+    assert movement_controller(retreat, 'M3') == 'cartesian_compliant'   # export wins
+    out = capsys.readouterr().out
+    assert out.count('\n') == 1 and 'B3_R_M2_LM_retreat' in out
+    # Support movements have no role: nothing to compare, nothing printed.
+    assert movement_controller(SingleArmLinearMovement(controller='cartesian_compliant')) \
+        == 'cartesian_compliant'
+    assert capsys.readouterr().out == ''
+
+
+def test_tool_event():
+    """tool_event returns the (action, tool names, overlaps_next) of a tool movement."""
+    close = GripperToolMovement(tool_action='close', tool_names=['SupportGripper'])
+    assert tool_event(close) == ('close', ['SupportGripper'], False)
+    tighten = ScaffoldingToolMovement(tool_action='tighten', tool_names=['AT3L', 'AT3R'],
+                                      overlaps_next=True)
+    assert tool_event(tighten) == ('tighten', ['AT3L', 'AT3R'], True)
+
+
+def test_default_trajectory_time():
+    """The monitor's role table wins for Cindy; otherwise the per-kind default."""
+    role_table = {'M0': 30.0, 'M4': 10.0}
+    home = IndependentDualArmFreeMovement()
+    assert default_trajectory_time(home) == 30.0
+    assert default_trajectory_time(home, role='M4', role_table=role_table) == 10.0
+    assert default_trajectory_time(home, role='M9', role_table=role_table) == 30.0
+    assert default_trajectory_time(EndEffectorConstrainedDualArmFreeMovement()) == 10.0
+    assert default_trajectory_time(SingleArmFreeMovement()) == 15.0
+    assert default_trajectory_time(SingleArmLinearMovement()) == 5.0
+    assert default_trajectory_time(GripperToolMovement()) is None
+    assert default_trajectory_time(ManualMovement(), role='M1', role_table=role_table) is None
+
+
+# * ------------------------------------------------- start poses for one arm
+
+def test_start_ee_sources_single_arm_carry_and_clear():
+    """Same rules as Cindy's two sides, with the support robot's one 'arm' side."""
+    free = SingleArmFreeMovement(movement_id='free', target_ee_frames={'arm': Frame.worldXY()})
+    opened = GripperToolMovement(movement_id='open')
+    linear = SingleArmLinearMovement(movement_id='linear', target_ee_frames={'arm': Frame.worldXY()})
+    closed = GripperToolMovement(movement_id='close')
+    joint_goal = SingleArmFreeMovement(movement_id='joint_goal')      # moves, authors nothing
+    manual = ManualMovement(movement_id='manual')
+
+    sources = cycle_start_ee_sources([free, opened, linear, closed, joint_goal, manual],
+                                     side_keys=('arm',))
+    assert [s['arm'] for s in sources] == [None, free, free, linear, linear, None]
+    assert all(set(s) == {'arm'} for s in sources)
+
+
+# * ------------------------------------------------- clean export vs sidecar
+
+def test_action_path_helpers(tmp_path):
+    """Clean export and live-solved sidecar paths map to each other; clean files are never overwritten."""
+    clean = str(tmp_path / 'B3__J.json')
+    sidecar = str(tmp_path / f'B3__J.{LIVE_SOLVED_TAG}.json')
+    assert LIVE_SOLVED_TAG == 'live-solved'
+
+    assert _clean_action_path is clean_action_path
+    assert clean_action_path(sidecar) == clean
+    assert clean_action_path(clean) == clean
+    assert sidecar_action_path(clean) == sidecar
+    assert sidecar_action_path(sidecar) == sidecar          # calling twice changes nothing
+    assert sidecar_action_path(clean, tag='solved_keyframe') == str(
+        tmp_path / 'B3__J.solved_keyframe.json')
+
+    # Preferred = the sidecar only once it is on disk.
+    assert preferred_action_path(clean) == clean
+    assert preferred_action_path(sidecar) == clean
+    open(sidecar, 'w').close()
+    assert preferred_action_path(clean) == sidecar
+
+    # A clean export is never written over; a tagged file is written in place.
+    assert write_path_for(clean) == sidecar
+    assert write_path_for(sidecar) == sidecar
+
+
+# * ------------------------------------------------- rigid-body naming
+
+def test_rigid_body_naming():
+    """Bar / joint body names with and without the support prefix, and back to the bar id."""
+    assert BUILT_ASSEMBLY_RB_PREFIXES == ('bar_', 'joint_', 'env_bar_', 'env_joint_')
+    for name in ('bar_B3', 'joint_B3_male', 'env_bar_B3', 'env_joint_B3_female'):
+        assert is_built_assembly_body(name), name
+    for name in ('obstacle_env1', 'obstacle_ground', 'ObstacleRobotAlice'):
+        assert not is_built_assembly_body(name), name
+
+    assert bar_body_name('B3') == 'bar_B3'
+    assert bar_body_name('B3', 'env_') == 'env_bar_B3'
+    assert find_bar_body(['bar_B3', 'joint_B3_male'], 'B3') == 'bar_B3'
+    assert find_bar_body({'env_bar_B3'}, 'B3') == 'env_bar_B3'
+    assert find_bar_body(['bar_B31'], 'B3') is None
+
+    assert bar_id_of_body('bar_B12') == 'B12'
+    assert bar_id_of_body('env_bar_B12') == 'B12'
+    assert bar_id_of_body('joint_B12_male') is None
+    assert bar_id_of_body('env_joint_B12_male') is None
+    assert bar_id_of_body('obstacle_env1') is None
+
+
+@needs_schedule_export
+def test_kinds_and_tool_events_of_real_hold_actions():
+    """The hold export's classes and tool fields, as the exporter writes them."""
+    hold = _load_schedule_action('B3__H')
+    assert [movement_kind(mv) for mv in hold.movements] == [
+        MovementKind.SINGLE_FREE, MovementKind.GRIPPER_TOOL,
+        MovementKind.SINGLE_LINEAR, MovementKind.GRIPPER_TOOL]
+    assert tool_event(hold.movements[1]) == ('open', ['SupportGripper'], False)
+    assert tool_event(hold.movements[3]) == ('close', ['SupportGripper'], False)
+    jointing = _load_schedule_action('B3__J')
+    assert tool_event(jointing.movements[4]) == ('tighten', ['AT3L', 'AT3R'], True)

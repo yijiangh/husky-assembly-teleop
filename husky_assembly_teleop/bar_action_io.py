@@ -10,13 +10,22 @@ The data classes live in `rs_data_structure.bar_action`. compas's
 - `find_movement(action, key)` → (index, movement)
 - `movement_role(mv)`       → the classic 'M0'..'M4' role of a movement
 - `cycle_roles(slots)`      → those roles from the recorded movement CLASSES
-- `cycle_start_ee_sources(movements)` → per movement, which movement authored
-  where each tool flange STARTS
+- `roles_for_action(action)` → the same for ONE action (all None for a support
+  robot's hold / hold-release action, which has no classic role)
+- `cycle_start_ee_sources(movements, side_keys)` → per movement, which movement
+  authored where each tool flange STARTS
 - `sibling_action_path(path)` → the release file of a jointing file (and back)
+- `clean_action_path` / `sidecar_action_path` / `preferred_action_path` /
+  `write_path_for` → the clean export vs its `.live-solved.json` sidecar
+- `movement_kind(mv)`       → what KIND of step a movement is (`MovementKind`),
+  from its class; `step_kind`, `movement_controller`, `tool_event`,
+  `default_trajectory_time` build on it
+- `bar_body_name` / `find_bar_body` / `is_built_assembly_body` → the built
+  bars' rigid-body names, which differ between Cindy's and the support cells
 
-To classify a movement's motion type, use `isinstance(mv, ...)` against the
-concrete Movement subclasses; to know what it does in the assembly cycle
-(transfer, insert, retreat, ...), use `movement_role`.
+To classify a movement's motion type, use `movement_kind` (it reads the concrete
+Movement subclass); to know what it does in Cindy's assembly cycle (transfer,
+insert, retreat, ...), use `movement_role` / `roles_for_action`.
 
 * Two export schemas exist. The legacy one (up to 260716_phase1_test) writes
 * ONE file per bar, `B6.json`, holding M0..M4. The current one
@@ -30,25 +39,34 @@ from __future__ import annotations
 
 import os
 import re
-from typing import Optional, Union
+from enum import Enum
+from typing import Container, Optional, Union
 
 from compas.data import json_load
 
 # Importing the movement classes registers their compas dtypes so json_load
-# can rebuild them. Concrete class = coordination x motion type:
-# Independent vs EndEffectorConstrained (bar held by both arms), Free vs Linear.
+# can rebuild them (the package import also registers the support robots'
+# hold actions from rs_data_structure.hold_action). Concrete class =
+# coordination x motion type: Independent vs EndEffectorConstrained (bar held
+# by both arms) vs SingleArm (support robot), Free vs Linear.
 import rs_data_structure.bar_action as _bar_action_module
 from rs_data_structure.bar_action import (
+    CONTROLLER_CARTESIAN_COMPLIANT,
+    CONTROLLER_JOINT_TRACKING,
     BarSceneAction,
     BarAssemblyJointingAction,
     BarAssemblyReleaseAction,
     Movement,
     ManualMovement,
     ToolMovement,
+    GripperToolMovement,
+    ScaffoldingToolMovement,
     IndependentDualArmFreeMovement,
     EndEffectorConstrainedDualArmFreeMovement,
     EndEffectorConstrainedDualArmLinearMovement,
     IndependentDualArmLinearMovement,
+    SingleArmFreeMovement,
+    SingleArmLinearMovement,
 )
 
 # * The two kinds of step where NO ARM MOVES: the operator mounting the bar by
@@ -77,6 +95,13 @@ class BarAssemblyAction(BarSceneAction):
 if not hasattr(_bar_action_module, "BarAssemblyAction"):
     _bar_action_module.BarAssemblyAction = BarAssemblyAction
 
+# * The actions of the assembly robot (Cindy). Only these carry the classic
+# * M0..M4 roles; a support robot's hold / hold-release action has none.
+# Take the legacy class from the module (not the local one above): that is the
+# class compas actually builds, even if a later rs_data_structure ships its own.
+CINDY_ACTION_TYPES = (BarAssemblyJointingAction, BarAssemblyReleaseAction,
+                      _bar_action_module.BarAssemblyAction)
+
 
 def parse_bar_action(path: str) -> BarSceneAction:
     """Load a bar action (jointing, release or legacy all-in-one) from JSON."""
@@ -99,6 +124,10 @@ def parse_bar_action(path: str) -> BarSceneAction:
 # manual mount and the screw-tool movements have no classic role (None).
 _LEGACY_ROLE_RE = re.compile(r"_M([0-9])_")
 _SPLIT_ROLE_RE = re.compile(r"_([JR])_M([0-9])_")
+# ! A support robot's hold (``B3_H_M2_...``) and hold-release (``B3_HR_M1_...``)
+# ! ids would otherwise hit the legacy fallback above and read as 'M2' / 'M1',
+# ! routing a support movement into Cindy's compliant insert flow.
+_HOLD_ROLE_RE = re.compile(r"_HR?_M[0-9]_")
 _SPLIT_ROLES = {
     ("J", 0): "M0",  # free travel to the loading pose
     ("J", 3): "M1",  # bar-held transfer to the approach
@@ -112,8 +141,8 @@ def movement_role(mv) -> Optional[str]:
     """Return the classic role 'M0'..'M4' of a movement, or None.
 
     Works for both export schemas (see the module note). Movements without a
-    classic role -- the operator mounting the bar, the screw tools running --
-    return None.
+    classic role -- the operator mounting the bar, the screw tools running,
+    anything a support robot does in a hold / hold-release action -- return None.
 
     Args:
         mv: A Movement (only its ``movement_id`` is read).
@@ -122,6 +151,8 @@ def movement_role(mv) -> Optional[str]:
         Optional[str]: 'M0'..'M4', or None.
     """
     mid = getattr(mv, "movement_id", "") or ""
+    if _HOLD_ROLE_RE.search(mid):
+        return None  # support robot movement: no classic role
     split = _SPLIT_ROLE_RE.search(mid)
     if split:
         return _SPLIT_ROLES.get((split.group(1), int(split.group(2))))
@@ -157,10 +188,15 @@ def cycle_roles(slots: list) -> list:
 
     Returns:
         list: One role ('M0'..'M4') or None per movement, in the same order as
-        the concatenated ``action.movements``.
+        the concatenated ``action.movements``. A support robot's action
+        (hold / hold-release) contributes None for each of its movements.
     """
     roles, legacy_free_idx = [], []
     for action, _path in slots:
+        if not isinstance(action, CINDY_ACTION_TYPES):
+            # A support robot's action has no classic roles at all.
+            roles.extend([None] * len(action.movements))
+            continue
         for mv in action.movements:
             role = _ROLE_BY_CLASS.get(type(mv))
             if role is None and type(mv) is IndependentDualArmFreeMovement:
@@ -179,14 +215,37 @@ def cycle_roles(slots: list) -> list:
         roles[legacy_free_idx[0]] = "M0"
         roles[legacy_free_idx[-1]] = "M4"
 
-    movements = [mv for action, _ in slots for mv in action.movements]
-    for mv, role in zip(movements, roles):
+    # Cross-check against the ids, only for Cindy's actions (the ones that
+    # actually carry roles).
+    movements = [(mv, isinstance(action, CINDY_ACTION_TYPES))
+                 for action, _ in slots for mv in action.movements]
+    for (mv, is_cindy), role in zip(movements, roles):
+        if not is_cindy:
+            continue
         by_id = movement_role(mv)
         if by_id != role:
             print(f"[BarAction] role mismatch on {mv.movement_id!r}: the "
                   f"{type(mv).__name__} class says {role}, the id says {by_id}. "
                   f"Using {role}; check whether the export's naming changed.")
     return roles
+
+
+def roles_for_action(action: BarSceneAction) -> list:
+    """Classic role of every movement in ONE loaded action.
+
+    The schedule loads one file per entry, so this is ``cycle_roles`` for a
+    single action. Only Cindy's actions carry roles; a support robot's hold or
+    hold-release action gives None for every movement (and nothing is printed).
+
+    Args:
+        action (BarSceneAction): A loaded action of any kind.
+
+    Returns:
+        list: One role ('M0'..'M4') or None per movement.
+    """
+    if isinstance(action, CINDY_ACTION_TYPES):
+        return cycle_roles([(action, None)])
+    return [None] * len(action.movements)
 
 
 def slot_of_index(slots: list, idx: int):
@@ -215,7 +274,7 @@ def slot_of_index(slots: list, idx: int):
     return None
 
 
-def cycle_start_ee_sources(movements: list) -> list:
+def cycle_start_ee_sources(movements: list, side_keys: tuple = ("left", "right")) -> list:
     """Per movement, which movement says where each tool flange STARTS.
 
     A movement's own ``target_ee_frames`` is where it ENDS. Its START pose is the
@@ -252,12 +311,15 @@ def cycle_start_ee_sources(movements: list) -> list:
 
     Args:
         movements (list): The loaded cycle's movements, in order.
+        side_keys (tuple): The robot's ``target_ee_frames`` keys:
+            ``('left', 'right')`` for Cindy, ``('arm',)`` for a support robot
+            (``RobotSpec.side_keys``).
 
     Returns:
-        list: One ``{'left': Movement | None, 'right': Movement | None}`` per
-        movement, in the same order.
+        list: One ``{side: Movement | None}`` dict per movement (e.g.
+        ``{'left': ..., 'right': ...}``), in the same order.
     """
-    carried = {"left": None, "right": None}
+    carried = {side: None for side in side_keys}
     sources = []
     for mv in movements:
         sources.append(dict(carried))  # the poses this movement STARTS from
@@ -292,7 +354,14 @@ def sibling_action_path(path: str) -> Optional[str]:
     return None
 
 
-def _clean_action_path(path: str) -> str:
+# * ------------------------------------------------ clean export vs sidecar
+# The Rhino exporter writes the CLEAN file ``B3__J.json``. Anything the monitor
+# solves live is saved next to it as ``B3__J.live-solved.json`` (the sidecar),
+# so the clean export is only ever written by the exporter.
+LIVE_SOLVED_TAG = "live-solved"
+
+
+def clean_action_path(path: str) -> str:
     """The plain ``<stem>.json`` behind a sidecar path.
 
     ``B6__R.live-solved.json`` -> ``B6__R.json``; a path that is already plain
@@ -306,6 +375,61 @@ def _clean_action_path(path: str) -> str:
     """
     folder, name = os.path.split(path)
     return os.path.join(folder, f"{name.split('.', 1)[0]}.json")
+
+
+# The older private name keeps working (load_action_cycle below uses it).
+_clean_action_path = clean_action_path
+
+
+def sidecar_action_path(path: str, tag: str = LIVE_SOLVED_TAG) -> str:
+    """The tagged sidecar next to an action file.
+
+    ``B3__J.json`` and ``B3__J.live-solved.json`` both give
+    ``B3__J.live-solved.json``, so calling it twice changes nothing.
+
+    Args:
+        path (str): The clean export or any of its sidecars.
+        tag (str): The sidecar tag.
+
+    Returns:
+        str: ``<folder>/<stem>.<tag>.json``.
+    """
+    clean = clean_action_path(path)
+    return f"{os.path.splitext(clean)[0]}.{tag}.json"
+
+
+def preferred_action_path(path: str, tag: str = LIVE_SOLVED_TAG) -> str:
+    """The file to load for an action: the sidecar when it exists, else the clean export.
+
+    Args:
+        path (str): The clean export or any of its sidecars.
+        tag (str): The sidecar tag.
+
+    Returns:
+        str: The sidecar's path if that file is on disk, else the clean path.
+    """
+    sidecar = sidecar_action_path(path, tag)
+    return sidecar if os.path.isfile(sidecar) else clean_action_path(path)
+
+
+def write_path_for(path: str) -> str:
+    """Which file a loaded action may be written back to (no file access).
+
+    Same rule as ``HuskyMonitor._bar_action_write_path``: a CLEAN export (a
+    basename with a single dot, ``B3__J.json``) is never overwritten, the write
+    goes to ``B3__J.live-solved.json`` instead; an already tagged file is
+    written in place, so repeated saves do not pile up tags.
+
+    Args:
+        path (str): The path the action was loaded from.
+
+    Returns:
+        str: The path to write to.
+    """
+    if os.path.basename(path).count(".") > 1:
+        return path
+    stem, ext = os.path.splitext(path)
+    return f"{stem}.{LIVE_SOLVED_TAG}{ext}"
 
 
 def load_action_cycle(path: str) -> list:
@@ -450,3 +574,244 @@ def find_movement(action: BarSceneAction, key: Union[int, str]) -> tuple[int, Mo
 
     available = [mv.movement_id for mv in action.movements]
     raise KeyError(f"No movement matches {key!r}. Available: {available}")
+
+
+# * ------------------------------------------------------------- movement kinds
+# What KIND of step a movement is, read from its class (the exporter's
+# discriminator). The roles above only exist for Cindy; kinds cover every robot
+# and are what the planner / executor / UI dispatch on.
+class MovementKind(str, Enum):
+    """The kind of step a movement is, one per concrete Movement class."""
+
+    DUAL_FREE = "dual_free"
+    DUAL_CONSTRAINED_FREE = "dual_constrained_free"
+    DUAL_CONSTRAINED_LINEAR = "dual_constrained_linear"
+    DUAL_INDEPENDENT_LINEAR = "dual_independent_linear"
+    SINGLE_FREE = "single_free"
+    SINGLE_LINEAR = "single_linear"
+    GRIPPER_TOOL = "gripper_tool"
+    SCAFFOLDING_TOOL = "scaffolding_tool"
+    MANUAL = "manual"
+
+
+# ! Looked up by the EXACT class, so a new Movement subclass fails loudly
+# ! (TypeError) instead of being handled like its parent. The bare ToolMovement
+# ! base is never exported and has no kind.
+_KIND_BY_CLASS = {
+    IndependentDualArmFreeMovement: MovementKind.DUAL_FREE,
+    EndEffectorConstrainedDualArmFreeMovement: MovementKind.DUAL_CONSTRAINED_FREE,
+    EndEffectorConstrainedDualArmLinearMovement: MovementKind.DUAL_CONSTRAINED_LINEAR,
+    IndependentDualArmLinearMovement: MovementKind.DUAL_INDEPENDENT_LINEAR,
+    SingleArmFreeMovement: MovementKind.SINGLE_FREE,
+    SingleArmLinearMovement: MovementKind.SINGLE_LINEAR,
+    GripperToolMovement: MovementKind.GRIPPER_TOOL,
+    ScaffoldingToolMovement: MovementKind.SCAFFOLDING_TOOL,
+    ManualMovement: MovementKind.MANUAL,
+}
+
+DUAL_ARM_KINDS = frozenset({
+    MovementKind.DUAL_FREE,
+    MovementKind.DUAL_CONSTRAINED_FREE,
+    MovementKind.DUAL_CONSTRAINED_LINEAR,
+    MovementKind.DUAL_INDEPENDENT_LINEAR,
+})
+SINGLE_ARM_KINDS = frozenset({MovementKind.SINGLE_FREE, MovementKind.SINGLE_LINEAR})
+ARM_KINDS = DUAL_ARM_KINDS | SINGLE_ARM_KINDS
+# Steps where no arm moves (same idea as STATIONARY_MOVEMENT_TYPES above).
+STATIONARY_KINDS = frozenset({
+    MovementKind.GRIPPER_TOOL, MovementKind.SCAFFOLDING_TOOL, MovementKind.MANUAL,
+})
+
+# Default duration of a planned arm trajectory, per kind (seconds). For Cindy the
+# monitor's role table (MOVEMENT_TRAJECTORY_TIME_S) takes precedence.
+TRAJECTORY_TIME_BY_KIND_S = {
+    MovementKind.DUAL_FREE: 30.0,
+    MovementKind.DUAL_CONSTRAINED_FREE: 10.0,
+    MovementKind.DUAL_CONSTRAINED_LINEAR: 5.0,
+    MovementKind.DUAL_INDEPENDENT_LINEAR: 5.0,
+    MovementKind.SINGLE_FREE: 15.0,
+    MovementKind.SINGLE_LINEAR: 5.0,
+}
+
+# The controller Cindy's proven flow runs per role: only the insert (M2) is
+# compliant. Used to warn when an export's Movement.controller disagrees.
+_CINDY_CONTROLLER_BY_ROLE = {"M2": CONTROLLER_CARTESIAN_COMPLIANT}
+
+
+def movement_kind(mv: Movement) -> MovementKind:
+    """The kind of step a movement is, from its exact class.
+
+    Args:
+        mv (Movement): A loaded movement.
+
+    Returns:
+        MovementKind: Its kind.
+
+    Raises:
+        TypeError: The class is not one of the known concrete movement classes.
+    """
+    kind = _KIND_BY_CLASS.get(type(mv))
+    if kind is None:
+        raise TypeError(f"no MovementKind for {type(mv).__name__} "
+                        f"({getattr(mv, 'movement_id', '?')!r})")
+    return kind
+
+
+def kind_fits_robot(kind: MovementKind, dual_arm: bool) -> bool:
+    """Whether a robot with one or two arms can run a kind of step.
+
+    Args:
+        kind (MovementKind): The step kind.
+        dual_arm (bool): True for Cindy.
+
+    Returns:
+        bool: Dual-arm motions only fit the dual-arm robot, single-arm motions only
+        a single-arm robot; tool and manual steps fit both.
+    """
+    if kind in DUAL_ARM_KINDS:
+        return dual_arm
+    if kind in SINGLE_ARM_KINDS:
+        return not dual_arm
+    return True
+
+
+def step_kind(mv: Movement) -> str:
+    """Which UI action runs a movement: the arm, the gripper, the screws, or the operator.
+
+    Args:
+        mv (Movement): A loaded movement.
+
+    Returns:
+        str: ``'arm'``, ``'gripper'``, ``'scaffold'`` or ``'manual'``.
+    """
+    kind = movement_kind(mv)
+    if kind in ARM_KINDS:
+        return "arm"
+    return {
+        MovementKind.GRIPPER_TOOL: "gripper",
+        MovementKind.SCAFFOLDING_TOOL: "scaffold",
+        MovementKind.MANUAL: "manual",
+    }[kind]
+
+
+def movement_controller(mv: Movement, role: Optional[str] = None) -> str:
+    """The arm controller the export asks for, with a check against Cindy's roles.
+
+    Cindy's M2 (insert) runs compliant and every other role runs joint tracking;
+    that flow is proven on hardware and stays role-keyed. When ``role`` is given
+    and the exported ``Movement.controller`` says otherwise, one warning is
+    printed so a re-export that changes it is noticed.
+
+    Args:
+        mv (Movement): A loaded movement.
+        role (str | None): Its classic role ('M0'..'M4') for Cindy, else None.
+
+    Returns:
+        str: ``mv.controller`` as exported.
+    """
+    controller = mv.controller
+    if role is not None:
+        expected = _CINDY_CONTROLLER_BY_ROLE.get(role, CONTROLLER_JOINT_TRACKING)
+        if controller != expected:
+            print(f"[BarAction] controller mismatch on {mv.movement_id!r}: the "
+                  f"export says {controller!r}, role {role} runs {expected!r}.")
+    return controller
+
+
+def tool_event(mv: ToolMovement) -> tuple:
+    """What a tool step does.
+
+    Args:
+        mv (ToolMovement): A gripper or scaffolding tool movement.
+
+    Returns:
+        tuple: ``(tool_action, tool_names, overlaps_next)``, e.g.
+        ``('tighten', ['AT3L', 'AT3R'], True)``.
+    """
+    return mv.tool_action, list(mv.tool_names), bool(mv.overlaps_next)
+
+
+def default_trajectory_time(mv: Movement, role: Optional[str] = None,
+                            role_table: Optional[dict] = None) -> Optional[float]:
+    """Default duration of a movement's planned trajectory.
+
+    Args:
+        mv (Movement): A loaded movement.
+        role (str | None): Its classic role for Cindy, else None.
+        role_table (dict | None): Seconds per role (the monitor's
+            MOVEMENT_TRAJECTORY_TIME_S). Wins over the per-kind default when
+            ``role`` is in it.
+
+    Returns:
+        float | None: Seconds, or None for a step where no arm moves.
+    """
+    if role is not None and role_table and role in role_table:
+        return role_table[role]
+    return TRAJECTORY_TIME_BY_KIND_S.get(movement_kind(mv))
+
+
+# * ------------------------------------------------------ rigid-body naming
+# The built assembly's rigid bodies: bars 'bar_<id>' and connectors
+# 'joint_<id>_male/female' in Cindy's cell, the same with an 'env_' prefix in
+# the support robots' cells. Environment obstacles ('obstacle_*') are NOT in
+# this list on purpose -- they must stay visible and collision-checked.
+BUILT_ASSEMBLY_RB_PREFIXES = ("bar_", "joint_", "env_bar_", "env_joint_")
+_SUPPORT_RB_PREFIX = "env_"
+
+
+def is_built_assembly_body(name: str) -> bool:
+    """Whether a rigid body is one of the built assembly's bars or joints.
+
+    Args:
+        name (str): Rigid-body name in a RobotCell.
+
+    Returns:
+        bool: True for ``bar_*``, ``joint_*``, ``env_bar_*``, ``env_joint_*``.
+    """
+    return name.startswith(BUILT_ASSEMBLY_RB_PREFIXES)
+
+
+def bar_body_name(bar_id: str, rb_prefix: str = "") -> str:
+    """Rigid-body name of a bar in a cell.
+
+    Args:
+        bar_id (str): e.g. ``'B3'``.
+        rb_prefix (str): The cell's prefix (``RobotSpec.rb_prefix``).
+
+    Returns:
+        str: e.g. ``'bar_B3'`` or ``'env_bar_B3'``.
+    """
+    return f"{rb_prefix}bar_{bar_id}"
+
+
+def find_bar_body(rb_names: Container[str], bar_id: str) -> Optional[str]:
+    """The name a bar actually has in a cell, whichever prefix that cell uses.
+
+    Args:
+        rb_names (Container[str]): The cell's rigid-body names (a list, set,
+            dict keys, ... anything supporting ``in``).
+        bar_id (str): e.g. ``'B3'``.
+
+    Returns:
+        str | None: ``'bar_<id>'`` or ``'env_bar_<id>'``, whichever is present,
+        else None.
+    """
+    for prefix in ("", _SUPPORT_RB_PREFIX):
+        name = bar_body_name(bar_id, prefix)
+        if name in rb_names:
+            return name
+    return None
+
+
+def bar_id_of_body(name: str) -> Optional[str]:
+    """The bar id behind a bar's rigid-body name.
+
+    Args:
+        name (str): e.g. ``'bar_B3'`` or ``'env_bar_B3'``.
+
+    Returns:
+        str | None: ``'B3'``, or None when the body is not a bar.
+    """
+    if name.startswith(_SUPPORT_RB_PREFIX):
+        name = name[len(_SUPPORT_RB_PREFIX):]
+    return name[len("bar_"):] if name.startswith("bar_") else None
