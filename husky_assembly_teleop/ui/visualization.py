@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
+from functools import cache
 from html import escape
 from pathlib import Path
 from typing import Iterator
@@ -19,6 +20,7 @@ import numpy as np
 import trimesh
 import viser
 import viser.extras
+import viser.transforms
 import yourdfpy
 
 from ..config import RobotConfig
@@ -38,13 +40,93 @@ PAGE_TITLE = "Husky Monitor"
 #: Fallback colour for a mesh that carries no colour of its own.
 _DEFAULT_MESH_COLOR = (0.8, 0.8, 0.8, 1.0)
 
-#: Joint change (rad or m) below which a robot is not re-posed; `ViserUrdf.update_cfg` costs 7-9 ms per robot.
+#: Joint change (rad or m) below which a robot is not re-posed.
 JOINT_TOLERANCE = 1e-4
 
 
 def joints_changed(values: np.ndarray, shown: np.ndarray | None) -> bool:
     """Whether joint values differ from those shown (None: nothing shown yet) by more than JOINT_TOLERANCE."""
     return shown is None or not np.allclose(values, shown, rtol=0.0, atol=JOINT_TOLERANCE)
+
+
+@dataclass(eq=False)
+class _MovingJoint:
+    """One non-fixed joint's frame and what poses it.
+
+    Attributes:
+        frame: The child link's frame, posed relative to the parent link's.
+        prismatic: True if it slides, False if it turns.
+        index: Index of the value driving it in `update_cfg`'s vector.
+        multiplier: Mimic multiplier, 1 if not a mimic joint.
+        offset: Mimic offset, 0 if not a mimic joint.
+        wxyz: Rotation of the joint origin.
+        position: Position of the joint origin, scaled.
+        axis: Unit joint axis in the parent frame (origin rotation applied); scaled if prismatic.
+    """
+
+    frame: viser.FrameHandle
+    prismatic: bool
+    index: int
+    multiplier: float
+    offset: float
+    wxyz: tuple[float, float, float, float]
+    position: np.ndarray
+    axis: np.ndarray
+
+
+class FastViserUrdf(viser.extras.ViserUrdf):
+    """A `ViserUrdf` whose `update_cfg` re-poses only the frames of moving joints, from each joint's origin and axis.
+
+    ? viser's own reads every joint's transform back from the model's scene graph and converts it to a quaternion:
+      7 ms for a 38-joint robot, of which the kinematics is 0.4 ms.
+    ! Does not pose the yourdfpy model: pose it yourself before reading `get_transform` from it.
+    """
+
+    def __init__(self, *args, **kwargs):
+        """As `ViserUrdf`; poses the model's meshes at zero joints.
+
+        Raises:
+            NotImplementedError: If a joint is floating or planar.
+        """
+        super().__init__(*args, **kwargs)
+        index = {name: i for i, name in enumerate(self._urdf.actuated_joint_names)}
+        self._moving: list[_MovingJoint] = []
+        # ? Visual and collision trees repeat the joints; `_joint_map_values` lines up with `_joint_frames`.
+        for joint, frame in zip(self._joint_map_values, self._joint_frames):
+            origin = np.eye(4) if joint.origin is None else joint.origin
+            wxyz = tuple(viser.transforms.SO3.from_matrix(origin[:3, :3]).wxyz)
+            position = origin[:3, 3] * self._scale
+            frame.wxyz, frame.position = wxyz, position
+            if joint.type == "fixed":
+                continue
+            if joint.type not in ("revolute", "continuous", "prismatic"):
+                raise NotImplementedError(f"joint {joint.name!r} is {joint.type}")
+            mimic = joint.mimic
+            axis = np.asarray(joint.axis, dtype=float) / np.linalg.norm(joint.axis)
+            prismatic = joint.type == "prismatic"
+            self._moving.append(_MovingJoint(
+                frame=frame, prismatic=prismatic,
+                index=index[joint.name if mimic is None else mimic.joint],
+                multiplier=1.0 if mimic is None or mimic.multiplier is None else mimic.multiplier,
+                offset=0.0 if mimic is None or mimic.offset is None else mimic.offset,
+                wxyz=wxyz, position=position,
+                axis=origin[:3, :3] @ axis * self._scale if prismatic else axis))
+
+    def update_cfg(self, configuration: np.ndarray) -> None:
+        """Pose the moving joints' frames at these values, in `get_actuated_joint_names` order."""
+        for joint in self._moving:
+            value = float(configuration[joint.index]) * joint.multiplier + joint.offset
+            if joint.prismatic:
+                joint.frame.position = joint.position + joint.axis * value
+            else:
+                # Origin rotation, then the turn about the axis: q_origin * (cos(a/2), sin(a/2) axis).
+                w1, x1, y1, z1 = joint.wxyz
+                s = np.sin(value / 2)
+                w2, x2, y2, z2 = np.cos(value / 2), s * joint.axis[0], s * joint.axis[1], s * joint.axis[2]
+                joint.frame.wxyz = (w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+                                    w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+                                    w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+                                    w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2)
 
 
 def make_matte(mesh: trimesh.Trimesh) -> None:
@@ -103,12 +185,29 @@ def load_urdf(urdf_file: Path) -> yourdfpy.URDF:
     return model
 
 
+@cache
+def shared_urdf(urdf_file: Path) -> yourdfpy.URDF:
+    """`load_urdf`, parsed once per file and shared: each robot and ghost would otherwise re-read its meshes
+    (about 1 s per robot).
+
+    ! `FastViserUrdf` never poses it, and anyone else posing it would change it for every user: never read
+      `get_transform` from it. Main thread only.
+
+    Args:
+        urdf_file: URDF describing the robot as built.
+
+    Returns:
+        yourdfpy.URDF: The parsed model, shared by every caller with this file.
+    """
+    return load_urdf(urdf_file)
+
+
 def mesh_color(mesh: trimesh.Trimesh) -> tuple[int, int, int]:
     """A mesh's colour, RGB 0-255, from the material `make_matte` gave it."""
     return tuple(int(c) for c in mesh.visual.material.baseColorFactor[:3])
 
 
-def add_simple_urdf(target, model: yourdfpy.URDF, root: str) -> viser.extras.ViserUrdf:
+def add_simple_urdf(target, model: yourdfpy.URDF, root: str) -> FastViserUrdf:
     """Draw a URDF below `root` as single-colour meshes, each in its own material's colour.
 
     ! Only the real robots (`Visualization.load_robot`) are drawn as GLB, with textures. Everything else uses
@@ -120,10 +219,10 @@ def add_simple_urdf(target, model: yourdfpy.URDF, root: str) -> viser.extras.Vis
         root: Scene path to draw it below.
 
     Returns:
-        viser.extras.ViserUrdf: The drawn URDF; pose it with `update_cfg`, fade it through its meshes' `.opacity`.
+        FastViserUrdf: The drawn URDF; pose it with `update_cfg`, fade it through its meshes' `.opacity`.
     """
     # * A colour override makes ViserUrdf add single-colour meshes; each then gets its own colour back.
-    urdf = viser.extras.ViserUrdf(target, model, root_node_name=root, mesh_color_override=_DEFAULT_MESH_COLOR[:3])
+    urdf = FastViserUrdf(target, model, root_node_name=root, mesh_color_override=_DEFAULT_MESH_COLOR[:3])
     # ? ViserUrdf adds one mesh node per visual mesh, in `scene.geometry` order.
     for handle, mesh in zip(urdf._meshes, model.scene.geometry.values()):
         handle.color = mesh_color(mesh)
@@ -142,7 +241,7 @@ class _DrawnRobot:
     """
 
     base: viser.FrameHandle
-    urdf: viser.extras.ViserUrdf
+    urdf: FastViserUrdf
     joint_names: tuple[str, ...]
     values: np.ndarray | None = None
 
@@ -204,8 +303,8 @@ class Visualization:
         base.position = config.default_position
         base.wxyz = quaternion_to_wxyz(config.default_orientation)
 
-        model = load_urdf(config.urdf_file)
-        drawn = viser.extras.ViserUrdf(self._server, model, root_node_name=root)
+        model = shared_urdf(config.urdf_file)
+        drawn = FastViserUrdf(self._server, model, root_node_name=root)
         self._robots[config.serial] = _DrawnRobot(
             base=base, urdf=drawn, joint_names=tuple(drawn.get_actuated_joint_names()))
 

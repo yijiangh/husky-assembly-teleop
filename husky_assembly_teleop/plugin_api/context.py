@@ -216,7 +216,8 @@ class PluginContext:
         if self._closed:
             work.close()  # never started; closing it avoids a "never awaited" warning
             raise RuntimeError(f"plugin {self.name!r} is stopped; it cannot start {label!r}")
-        task = asyncio.get_running_loop().create_task(work, name=f"{self.name}: {label}")
+        name = f"{self.name}: {label}"
+        task = asyncio.get_running_loop().create_task(self._monitor.timer.timed_task(name, work), name=name)
         self._tasks.add(task)
         task.add_done_callback(self._task_finished)
         return task

@@ -60,14 +60,14 @@ def test_silent_stream_reads_zero():
 @pytest.mark.parametrize("quality, level", [
     (StreamQuality(rate=None, max_gap=None), WARN),
     (StreamQuality(rate=0.0, max_gap=None), BAD),
-    (StreamQuality(rate=99.0, max_gap=0.012), GOOD),
-    (StreamQuality(rate=80.0, max_gap=0.012), WARN),
-    (StreamQuality(rate=99.0, max_gap=0.1), WARN),
-    (StreamQuality(rate=30.0, max_gap=0.012), BAD),
-    (StreamQuality(rate=95.0, max_gap=0.5), BAD),
+    (StreamQuality(rate=49.5, max_gap=0.025), GOOD),
+    (StreamQuality(rate=40.0, max_gap=0.025), WARN),
+    (StreamQuality(rate=49.5, max_gap=0.15), WARN),
+    (StreamQuality(rate=15.0, max_gap=0.025), BAD),
+    (StreamQuality(rate=47.5, max_gap=0.5), BAD),
 ])
 def test_stream_check_levels(quality: StreamQuality, level: int):
-    """Thresholds: 90 / 50 Hz and 50 / 200 ms."""
+    """Thresholds at 50 Hz joint_states: 45 / 25 Hz and 100 / 200 ms."""
     assert stream_check("left", quality).level == level
 
 

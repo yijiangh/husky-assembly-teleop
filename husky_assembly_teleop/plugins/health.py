@@ -42,8 +42,8 @@ BATTERY_STALE_AFTER = 10.0
 SIGNAL_RATE_WARN = 0.9
 SIGNAL_RATE_BAD = 0.5
 #: Largest gap between joint_states, seconds, above which the signal chip turns amber, then red.
-#: ? At 100 Hz, 50 ms is about four samples lost in a row.
-SIGNAL_GAP_WARN = 0.05
+#: ? At 50 Hz, 100 ms is about four samples lost in a row.
+SIGNAL_GAP_WARN = 0.1
 SIGNAL_GAP_BAD = 0.2
 
 #: BMS health values that are fine; anything else is red.

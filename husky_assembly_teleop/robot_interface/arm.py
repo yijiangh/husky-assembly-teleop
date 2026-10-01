@@ -11,7 +11,6 @@ from typing import Sequence
 
 import numpy as np
 from builtin_interfaces.msg import Duration
-from control_msgs.msg import DynamicJointState
 from crl_husky_msgs.msg import ArmStatus
 from geometry_msgs.msg import PoseStamped, WrenchStamped
 from rclpy.node import Node
@@ -37,7 +36,7 @@ RECORDED_QOS = QoSProfile(depth=100, reliability=qos_profile_sensor_data.reliabi
                           history=qos_profile_sensor_data.history)
 
 #: joint_states per second the robot's rate limiter sends (crl_husky rate_limiter DEFAULT_RATE).
-JOINT_STATES_RATE = 100.0
+JOINT_STATES_RATE = 50.0
 
 #: Joint names in the UR driver's order. The URDF has the same names with the arm's prefix.
 UR_JOINT_NAMES = ("shoulder_pan_joint", "shoulder_lift_joint", "elbow_joint",
@@ -183,7 +182,7 @@ class ArmSamples:
 
     Attributes:
         joint_states: JointState messages.
-        tcp_pose: DynamicJointState messages, the ones "tcp_pose" is decoded from.
+        tcp_pose: PoseStamped messages of the driver's "tcp_pose", in the UR Base frame.
         wrench: WrenchStamped messages.
     """
 
@@ -312,8 +311,8 @@ class ArmInterface:
 
         # --- --- measurements --- ---
         self._ros.subscription(JointState, f"{measured}/joint_states", self._on_joint_state, RECORDED_QOS)
-        self._ros.subscription(DynamicJointState, f"{measured}/dynamic_joint_states",
-                               self._on_dynamic_joint_state, RECORDED_QOS)
+        # * The rate limiter extracts "tcp_pose" from dynamic_joint_states, which is large and slow to decode.
+        self._ros.subscription(PoseStamped, f"{measured}/tcp_pose", self._on_tcp_pose, RECORDED_QOS)
         self._ros.subscription(IOStates, f"{measured}/io_and_status_controller/io_states",
                                self._on_io_states, sensor)
         self._ros.subscription(WrenchStamped, f"{measured}/ft_sensor_wrench", self._on_wrench, RECORDED_QOS)
@@ -769,16 +768,12 @@ class ArmInterface:
         stamp = message.header.stamp
         self.state.joint_states_stats.add(now, stamp.sec + stamp.nanosec * 1e-9)
 
-    def _on_dynamic_joint_state(self, message: DynamicJointState) -> None:
+    def _on_tcp_pose(self, message: PoseStamped) -> None:
         """Store the driver's "tcp_pose", raw (UR Base frame) and in the controller's `base_link`."""
         self.samples.tcp_pose.emit(message)
-        if "tcp_pose" not in message.joint_names:
-            return
-        interface = message.interface_values[message.joint_names.index("tcp_pose")]
-        values = dict(zip(interface.interface_names, interface.values))
-        position = np.array([values["position.x"], values["position.y"], values["position.z"]])
-        quaternion = np.array([values["orientation.x"], values["orientation.y"],
-                               values["orientation.z"], values["orientation.w"]])
+        p, o = message.pose.position, message.pose.orientation
+        position = np.array([p.x, p.y, p.z])
+        quaternion = np.array([o.x, o.y, o.z, o.w])
         # ! An all-zero quaternion means "no pose yet" (startup, fake hardware): keep the last good one.
         if not np.linalg.norm(quaternion) > 1e-6:
             return

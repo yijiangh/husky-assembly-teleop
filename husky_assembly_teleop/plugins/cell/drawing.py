@@ -13,12 +13,11 @@ from typing import Iterator, Mapping
 
 import numpy as np
 import viser
-import viser.extras
 import yourdfpy
 
 from ...design_io import Design, Geometry, Pose, State, compose, shape_mesh
 from ...design_io.types import split_link_id
-from ...ui.visualization import add_simple_urdf, joints_changed, load_urdf, quaternion_to_wxyz
+from ...ui.visualization import FastViserUrdf, add_simple_urdf, joints_changed, load_urdf, quaternion_to_wxyz
 
 #: Colours, RGB 0-255. Held bodies stand out.
 BAR_COLOR = (205, 170, 110)
@@ -55,13 +54,13 @@ class _Robot:
     Attributes:
         frame: Node at the robot base; the meshes hang below it.
         urdf: The meshes, posed by `update_cfg`.
-        model: The yourdfpy model `urdf` poses; read for forward kinematics.
+        model: The yourdfpy model, posed alongside `urdf`; read for forward kinematics.
         names: Actuated joint names, in `update_cfg` order.
         values: Joint values last shown, or None before the first show.
     """
 
     frame: viser.FrameHandle
-    urdf: viser.extras.ViserUrdf
+    urdf: FastViserUrdf
     model: yourdfpy.URDF
     names: tuple[str, ...]
     values: np.ndarray | None = None
@@ -159,6 +158,7 @@ class DesignDrawing:
             values = np.array([float(given.get(name, 0.0)) for name in robot.names])
             if joints_changed(values, robot.values):
                 robot.urdf.update_cfg(values)
+                robot.model.update_cfg(values)
                 robot.values = values
             robot.frame.visible = True
             for flange, tool_id in tools.items():

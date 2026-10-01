@@ -14,12 +14,11 @@ from __future__ import annotations
 
 import asyncio
 import gc
-import sys
-import threading
 import time
 import traceback
+from collections.abc import Coroutine as CoroutineABC
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, Callable, Iterator
+from typing import TYPE_CHECKING, Any, Callable, Coroutine, Iterator
 
 if TYPE_CHECKING:
     from rclpy.task import Future as RosFuture
@@ -58,131 +57,180 @@ def describe_exception(error: BaseException) -> str:
     return "".join(traceback.format_exception(type(error), error, error.__traceback__))
 
 
-#: Functions in which a thread waits without working, e.g. the loop polling for events.
-_WAITS = ("select", "poll", "wait", "sleep", "wait_for_ready_callbacks")
+class TickTimer:
+    """Times every tick's parts and every plugin task's steps; logs where the time went when a tick starts late.
 
+    The monitor wraps each part of a tick in `part`, and `ctx.spawn` wraps each task in `timed_task`, which times
+    each step the task runs between two `await`s. A late tick's report lists everything measured since the
+    previous tick started, slowest first: a full account, not a sample.
 
-class LoopWatchdog:
-    """Logs the main thread's stack when a plugin hook or task holds the thread too long.
-
-    A thread watches a heartbeat the loop bumps every few ms. The monitor wraps each plugin hook in `watching`,
-    so a slow hook is timed on its own and named in the report; otherwise the report names the running task.
-    Each stall is reported twice: once when it passes the limit, with the stack, and once when it ends, with
-    its full length.
-
-    ? The watchdog thread needs the GIL, so it can wake late while the loop runs numpy or C code: the first
-      report's time is then past the limit, and its stack is wherever the main thread happened to be.
-    ? A stall is not always the main thread's own work: garbage collection (on any thread) and other threads
-      holding the GIL stall it too. So the first report also lists the other threads, and the second the time
-      spent collecting garbage during the stall.
+    ? Each part is wall time, so it includes waiting for the GIL while another thread runs Python.
+    ? "idle" is the loop blocked waiting for events; "other" is what no part covers: loop callbacks (ROS futures,
+      viser events, thread results) and the loop itself.
+    ! Main thread only.
     """
 
-    #: Seconds between heartbeats, and between checks.
-    PERIOD = 0.005
+    #: Parts shorter than this (seconds) are added up into one line of the report.
+    SMALL_PART = 0.001
 
-    def __init__(self, loop: asyncio.AbstractEventLoop, limit: float, repeat_after: float,
+    def __init__(self, loop: asyncio.AbstractEventLoop, late_after: float, repeat_after: float,
                  log_warn: Callable[[str], None]):
-        """Start watching.
+        """Start measuring.
 
         Args:
-            loop: The monitor's loop. Must be running in the calling thread.
-            limit: Seconds without a heartbeat before a stall is reported.
-            repeat_after: Seconds between two reports with the same name.
-            log_warn: Receives each report. Called from the watchdog thread.
+            loop: The monitor's loop; the time it waits for events counts as idle.
+            late_after: Seconds after it was due that a tick counts as late.
+            repeat_after: Seconds between two reports; the worst late tick in between is reported next.
+            log_warn: Receives each report.
         """
-        self._loop = loop
-        self._limit = limit
+        self._late_after = late_after
         self._repeat_after = repeat_after
         self._log_warn = log_warn
-        self._beat = time.monotonic()
-        # Seconds spent collecting garbage so far, on any thread; and that total at the last heartbeat.
-        self._gc_total = 0.0
-        self._gc_at_beat = 0.0
+        # Seconds per part since the current tick started, and a note per part (e.g. a message count).
+        self._parts: dict[str, float] = {}
+        self._notes: dict[str, str] = {}
+        # When the current tick started (perf_counter), and seconds the loop was idle since.
+        self._started: float | None = None
+        self._idle = 0.0
         self._gc_started = 0.0
+        # Late ticks since the last report, and the worst of them as (seconds late, report).
+        self._late_count = 0
+        self._worst: tuple[float, str] | None = None
+        self._last_report = -float("inf")
         gc.callbacks.append(self._time_gc)
-        # Set by `watching`; None names the running task instead.
-        self._label: str | None = None
-        self._last_report: dict[str, float] = {}
-        self._main_thread = threading.get_ident()
-        self._stopped = threading.Event()
-        self._heartbeat = loop.call_soon(self._bump)
-        self._thread = threading.Thread(target=self._watch, name="loop-watchdog", daemon=True)
-        self._thread.start()
+        # * Idle is the time the loop blocks in its selector waiting for events: time that call.
+        #   ? `_selector` is private to asyncio's selector loops; without one, idle time shows as "other".
+        self._selector = getattr(loop, "_selector", None)
+        if self._selector is not None:
+            select = self._selector.select
+
+            def timed_select(timeout: float | None = None) -> list:
+                started = time.perf_counter()
+                try:
+                    return select(timeout)
+                finally:
+                    self._idle += time.perf_counter() - started
+
+            self._selector.select = timed_select
 
     @contextmanager
-    def watching(self, label: str) -> Iterator[None]:
-        """Time the block on its own clock and name it `label` in a report, e.g. "plugin 'health' update"."""
-        self._label = label
-        self._beat = time.monotonic()
+    def part(self, name: str) -> Iterator[None]:
+        """Time the block as part `name` of the current tick, e.g. "plugin 'health' update"."""
+        started = time.perf_counter()
         try:
             yield
         finally:
-            self._label = None
-            self._beat = time.monotonic()
+            self.add(name, time.perf_counter() - started)
+
+    def add(self, name: str, seconds: float) -> None:
+        """Add `seconds` to part `name` of the current tick."""
+        self._parts[name] = self._parts.get(name, 0.0) + seconds
+
+    def note(self, name: str, text: str) -> None:
+        """Show `text` next to part `name` in a report, e.g. how many messages it handled."""
+        self._notes[name] = text
+
+    def timed_task(self, name: str, work: Coroutine[Any, Any, Any]) -> Coroutine[Any, Any, Any]:
+        """Wrap a task's coroutine so each of its steps adds to part "task `name`"."""
+        return _TimedCoroutine(work, lambda seconds: self.add(f"task {name!r}", seconds))
+
+    def start_tick(self, index: int, late: float) -> None:
+        """Close the previous tick's account, reporting it if this tick is late, and start a new one.
+
+        Args:
+            index: This tick's number.
+            late: Seconds this tick started after it was due.
+        """
+        now = time.perf_counter()
+        if self._started is not None and late > self._late_after:
+            self._late_count += 1
+            if self._worst is None or late > self._worst[0]:
+                self._worst = (late, self._describe(index, late, now - self._started))
+        if self._worst is not None and now - self._last_report >= self._repeat_after:
+            more = (f"\n{self._late_count - 1} other late ticks since the last report, this was the worst."
+                    if self._late_count > 1 else "")
+            self._log_warn(self._worst[1] + more)
+            self._last_report, self._late_count, self._worst = now, 0, None
+        self._started, self._idle = now, 0.0
+        self._parts.clear()
+        self._notes.clear()
 
     def stop(self) -> None:
-        """Stop watching. Safe to call twice."""
-        self._stopped.set()
-        self._heartbeat.cancel()
+        """Stop timing garbage collection and idle time. Safe to call twice."""
         if self._time_gc in gc.callbacks:
             gc.callbacks.remove(self._time_gc)
+        if self._selector is not None and "select" in vars(self._selector):
+            del self._selector.select  # back to the class's own
+
+    def _describe(self, index: int, late: float, cycle: float) -> str:
+        """Write the report for one late tick: every part since the previous tick started, slowest first."""
+        parts = sorted(self._parts.items(), key=lambda item: -item[1])
+        lines = [f"  {seconds * 1e3:6.1f} ms  {name}" + (f" ({self._notes[name]})" if name in self._notes else "")
+                 for name, seconds in parts if seconds >= self.SMALL_PART]
+        small = [seconds for _, seconds in parts if seconds < self.SMALL_PART]
+        if small:
+            lines.append(f"  {sum(small) * 1e3:6.1f} ms  {len(small)} parts under {self.SMALL_PART * 1e3:.0f} ms each")
+        lines.append(f"  {self._idle * 1e3:6.1f} ms  idle")
+        other = cycle - sum(self._parts.values()) - self._idle
+        if other >= self.SMALL_PART:
+            lines.append(f"  {other * 1e3:6.1f} ms  other")
+        hint = ""
+        if parts and parts[0][0].startswith(("plugin", "task")):
+            hint = ("\n! A slow plugin hook or task blocks every robot and plugin: "
+                    "move slow work to `ctx.run_in_thread`.")
+        return (f"tick {index} started {late * 1e3:.0f} ms late; the {cycle * 1e3:.0f} ms since the previous tick "
+                f"started went to:\n" + "\n".join(lines) + hint)
 
     def _time_gc(self, phase: str, _info: dict) -> None:
-        """Add up the time spent collecting garbage. Called by `gc` before and after each collection."""
-        if phase == "start":
-            self._gc_started = time.monotonic()
-        else:
-            self._gc_total += time.monotonic() - self._gc_started
+        """Add garbage collection (on any thread) as a part. Called by `gc` before and after each collection.
 
-    def _bump(self) -> None:
-        """Record that the loop is alive, and schedule the next bump. On the loop."""
-        self._beat = time.monotonic()
-        self._gc_at_beat = self._gc_total
-        self._heartbeat = self._loop.call_later(self.PERIOD, self._bump)
-
-    def _watch(self) -> None:
-        """Poll the heartbeat and report each stall once. On the watchdog thread."""
-        reported_beat, reported_name, gc_before = None, "", 0.0
-        while not self._stopped.wait(self.PERIOD):
-            beat = self._beat
-            if reported_beat is not None and beat != reported_beat:
-                # ? `beat` is the newest heartbeat after the stall: late only by however long this thread slept past it.
-                self._log_warn(f"{reported_name} released the main thread after {(beat - reported_beat) * 1e3:.0f} ms"
-                               f"; {(self._gc_total - gc_before) * 1e3:.0f} ms of it collecting garbage")
-                reported_beat = None
-            stalled = time.monotonic() - beat
-            if stalled < self._limit or beat == reported_beat:
-                continue
-            # ? Read from another thread; a race only mislabels one report.
-            name = self._label
-            if name is None:
-                task = asyncio.current_task(self._loop)
-                name = f"task {task.get_name()!r}" if task is not None else "a loop callback"
-            now = time.monotonic()
-            if now - self._last_report.get(name, -float("inf")) < self._repeat_after:
-                continue
-            reported_beat, reported_name, gc_before = beat, name, self._gc_at_beat
-            self._last_report[name] = now
-            frames = sys._current_frames()
-            frame = frames.get(self._main_thread)
-            stack = "".join(traceback.format_stack(frame)[-6:]) if frame is not None else ""
-            if frame is not None and frame.f_code.co_name in _WAITS:
-                stack += ("! The main thread is only waiting here: another thread (below) or garbage collection "
-                          "holds the GIL.\n")
-            self._log_warn(f"{name} is holding the main thread ({stalled * 1e3:.0f} ms so far), blocking every "
-                           f"robot and plugin; move slow work to `ctx.run_in_thread`. Now at:\n{stack}"
-                           f"Other threads now at:\n{self._other_threads(frames)}")
-
-    def _other_threads(self, frames: dict) -> str:
-        """One line per thread other than the main thread and this one: its name and innermost line.
-
-        ? A thread in a wait (`wait`, `select`, `poll`, `sleep`) is idle; one anywhere else may be what holds the GIL.
+        ? The one call from other threads; a race with the main thread only misplaces one collection's time.
         """
-        names = {thread.ident: thread.name for thread in threading.enumerate()}
-        lines = []
-        for ident, frame in frames.items():
-            if ident in (self._main_thread, threading.get_ident()):
-                continue
-            where = traceback.extract_stack(frame)[-1]
-            lines.append(f"  {names.get(ident, ident)}: {where.filename}:{where.lineno} in {where.name}\n")
-        return "".join(lines)
+        if phase == "start":
+            self._gc_started = time.perf_counter()
+        else:
+            self.add("garbage collection", time.perf_counter() - self._gc_started)
+
+
+class _TimedCoroutine(CoroutineABC):
+    """A coroutine that reports how long each of its steps took: each run between two `await`s.
+
+    ? asyncio drives a task only through `send` and `throw`, so wrapping them times every step.
+    """
+
+    def __init__(self, work: Coroutine[Any, Any, Any], on_step: Callable[[float], None]):
+        """Wrap `work`; `on_step(seconds)` is called after each step."""
+        self._work = work
+        self._on_step = on_step
+
+    def send(self, value: Any) -> Any:
+        """Run one step of the wrapped coroutine."""
+        started = time.perf_counter()
+        try:
+            return self._work.send(value)
+        finally:
+            self._on_step(time.perf_counter() - started)
+
+    def throw(self, *args: Any) -> Any:
+        """Raise inside the wrapped coroutine (e.g. a cancel) and run it to its next `await`."""
+        started = time.perf_counter()
+        try:
+            return self._work.throw(*args)
+        finally:
+            self._on_step(time.perf_counter() - started)
+
+    def close(self) -> None:
+        """Close the wrapped coroutine."""
+        self._work.close()
+
+    def __await__(self) -> Iterator[Any]:
+        """Iterate the steps, for `await`."""
+        return self
+
+    def __iter__(self) -> Iterator[Any]:
+        """Iterate the steps."""
+        return self
+
+    def __next__(self) -> Any:
+        """Run one step."""
+        return self.send(None)

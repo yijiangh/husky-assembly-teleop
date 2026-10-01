@@ -108,9 +108,9 @@ class MonitorConfig:
         viser_port: Port the viser web UI listens on.
         enabled_plugins: Plugins to load: DEFAULT_PLUGINS, then the requested ones.
         max_plugin_errors: Consecutive ticks a plugin may raise in before it is stopped.
-        slow_step_warn_ratio: Warn, with the stack, when a plugin hook or task holds the main thread for more
-            than this fraction of the tick.
-        slow_step_warn_period: Seconds between repeats of one plugin hook's or task's slow warning.
+        late_tick_warn_ratio: Warn, with where the time went, when a tick starts more than this fraction of
+            `tick_period` late.
+        late_tick_warn_period: Seconds between two late-tick warnings; the worst tick in between is reported.
         shutdown_grace: Seconds each plugin's cancelled tasks get to clean up at shutdown.
         ghost_timeout: Seconds a plugin's ghost robots stay shown after the last input in it;
             0 keeps them. Ghosts appear only after an input in their plugin.
@@ -123,8 +123,8 @@ class MonitorConfig:
     viser_port: int = 8080
     enabled_plugins: tuple[str, ...] = ()
     max_plugin_errors: int = 3
-    slow_step_warn_ratio: float = 0.5
-    slow_step_warn_period: float = 5.0
+    late_tick_warn_ratio: float = 0.2
+    late_tick_warn_period: float = 5.0
     shutdown_grace: float = 2.0
     ghost_timeout: float = 20.0
 
@@ -165,10 +165,11 @@ _DUAL_ARM_URDF = (_URDF_ROOT + "/mt_husky_dual_ur5_e_moveit_config/urdf/"
 _SINGLE_ARM_SRDF = _URDF_ROOT + "/mt_husky_moveit_config/config/{}.srdf"
 _DUAL_ARM_SRDF = _URDF_ROOT + "/mt_husky_dual_ur5_e_moveit_config/config/dual_arm_husky.srdf"
 
-# TODO placeholders (arm pointing straight up), not stowed arms; replace with measured stow poses.
+# TODO placeholder (arm pointing straight up), not a stowed arm; replace with a measured stow pose.
 _SINGLE_ARM_STOW = (1.569, -2.973, 2.705, -2.958, 1.572, 0.0)
-_LEFT_ARM_STOW = (1.569, -2.973, 2.705, -2.958, 1.572, 0.0)
-_RIGHT_ARM_STOW = (1.569, -2.973, 2.705, -2.958, 1.572, 0.0)
+# Measured parking poses on Cindy (0806), entered in degrees as the status panel shows them.
+_LEFT_ARM_STOW = tuple(math.radians(d) for d in (-88.4, -2.2, -161.3, -108.8, -0.8, 90.7))
+_RIGHT_ARM_STOW = tuple(math.radians(d) for d in (87.0, -179.8, 159.3, -74.7, 1.9, -90.2))
 
 _SINGLE_ARM_WITH_ROBOTIQ = (
     ArmConfig(name="ur_arm", ros_namespace="ur5e",

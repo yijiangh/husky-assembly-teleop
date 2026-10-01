@@ -144,7 +144,7 @@ Exactly one of the geometry keys, plus an optional `origin`.
 | `coupled` | bool | no | `true`: the arms hold one object together (end-effector constrained). Default `false`. |
 | `controller` | enum | yes | `joint_tracking`, `cartesian_compliant`, `none`. |
 | `tools` | array of tool ids | yes for `tool` | Tools that act. |
-| `tool_action` | string | yes for `tool` | E.g. `grasp`, `tighten`, `release`, `open`, `close`. |
+| `tool_action` | string | yes for `tool` | E.g. `grasp`, `tighten`, `ungrasp`, `untighten`, `open`, `close`. |
 | `overlaps_next` | bool | no | `tool` only: runs on through the next movement. Default `false`. |
 | `start` | State (§5.2) | yes | Authored start state. |
 | `target` | Target (§5.3) | no | Where the movement should end. |
@@ -268,7 +268,7 @@ its `RobotCellState` for one State.
 | Design | compas_fab |
 |---|---|
 | Acting robot URDF + SRDF | `robot_model`, `robot_semantics`; mesh paths made absolute before loading |
-| `arms` | Planning group: the SRDF group ending at that link, rooted at the URDF root (as Rhino uses `base_left_arm_manipulator`) |
+| `arms` | Planning group: the SRDF group ending at that link whose base link is nearest the URDF root (as Rhino uses `base_left_arm_manipulator`) |
 | Other robot | `ToolModel` from its URDF, its tool meshes welded to the flange |
 | Tool of the acting robot | `ToolModel`: visual and collision meshes, `frame` = `tcp` |
 | Body | `RigidBody`; primitives triangulated |
@@ -282,8 +282,9 @@ its `RobotCellState` for one State.
 | other `touches` entry | `touch_bodies` |
 
 The reverse path reads the current export (App. B), not a `RobotCell`: `legacy.read_legacy` (or
-`from_export` on a loaded export). Lossy: primitives stay meshes. A body `attached_to_tool` is not
-supported yet (the converter raises an error).
+`from_export` on a loaded export). Lossy: primitives stay meshes. The converter raises an error, instead of
+dropping data, for a body `attached_to_tool`, a trajectory, a hidden or configured tool, a tool attached off its
+flange, and a tool with moving joints. Action files not in the schedule are left out and listed.
 
 ## Appendix B. Current export → schema 1
 

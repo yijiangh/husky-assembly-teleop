@@ -1,4 +1,4 @@
-"""Tests for the legacy converter's refusals: data a design cannot carry stops the conversion instead of being dropped."""
+"""Tests for the legacy converter's refusals: data a design cannot carry stops the conversion, not dropped."""
 
 from types import SimpleNamespace
 

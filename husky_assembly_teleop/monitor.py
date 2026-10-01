@@ -13,7 +13,9 @@ import asyncio
 import gc
 import signal
 import sys
+import time
 import traceback
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 import rclpy
@@ -21,7 +23,7 @@ from rclpy.executors import SingleThreadedExecutor, TimeoutException
 from rclpy.node import Node
 from rclpy.signals import SignalHandlerOptions
 
-from .plugin_api.concurrency import LoopWatchdog
+from .plugin_api.concurrency import TickTimer
 from .config import MonitorConfig, config_from_ros_parameters
 from .plugin_api.context import PluginContext
 from .design_io.geometry import Geometry
@@ -99,7 +101,10 @@ class HuskyMonitor(Node):
         self._kinematics: Kinematics | None = None
         self._scene = Scene()
         self._viz: Visualization | None = None
-        self._watchdog: LoopWatchdog | None = None
+        # * Built before the plugins, so tasks started in their setup are timed too.
+        self._timer = TickTimer(asyncio.get_running_loop(),
+                                late_after=self._config.tick_period * self._config.late_tick_warn_ratio,
+                                repeat_after=self._config.late_tick_warn_period, log_warn=self.log_warn)
         # Why each stopped plugin stopped, by name, for the banner.
         self._stop_reasons: dict[str, str] = {}
         self._shut_down = False
@@ -113,15 +118,21 @@ class HuskyMonitor(Node):
 
     def _build(self) -> None:
         """Construct the kinematics, the UI and the plugins. Called once, by __init__."""
-        self._kinematics = Kinematics(self._config.robots, log_warn=self.log_warn)
-        self._viz = Visualization(port=self._config.viser_port)
+        with self._timed("kinematics"):
+            self._kinematics = Kinematics(self._config.robots, log_warn=self.log_warn)
+        with self._timed("viser server"):
+            self._viz = Visualization(port=self._config.viser_port)
 
         for robot_config in self._config.robots:
-            self._world.add_robot(HuskyRobotInterface(self, robot_config))
-            self._viz.load_robot(robot_config)
+            with self._timed(f"robot {robot_config.serial} interface"):
+                self._world.add_robot(HuskyRobotInterface(self, robot_config))
+            with self._timed(f"robot {robot_config.serial} model in viser"):
+                self._viz.load_robot(robot_config)
 
         # Create plugins in dependency order
-        for plugin in load_plugins(self._config.enabled_plugins, self.log_error):
+        with self._timed("plugin import and construction"):
+            plugins = load_plugins(self._config.enabled_plugins, self.log_error)
+        for plugin in plugins:
             if plugin.experimental:
                 self.log_warn(f"plugin {plugin.name!r} is experimental: its behaviour and API may change")
             ctx = PluginContext(
@@ -141,10 +152,20 @@ class HuskyMonitor(Node):
                 continue
             loaded.set_up = True
             try:
-                loaded.plugin.setup(loaded.ctx)
+                with self._timed(f"plugin {loaded.name!r} setup"):
+                    loaded.plugin.setup(loaded.ctx)
             except Exception:
                 self.log_error(f"plugin {loaded.name!r} failed in setup:\n{traceback.format_exc()}")
                 self._stop(loaded, "failed in setup")
+
+    @contextmanager
+    def _timed(self, what: str):
+        """Log how long the body took, to see where startup time goes."""
+        started = time.perf_counter()
+        try:
+            yield
+        finally:
+            self.log_info(f"startup: {what} took {(time.perf_counter() - started) * 1e3:.0f} ms")
 
     # --- --- --- --- --- FOR PluginContext (documented there) --- --- --- --- ---
 
@@ -152,6 +173,11 @@ class HuskyMonitor(Node):
     def config(self) -> MonitorConfig:
         """MonitorConfig: Read-only run configuration."""
         return self._config
+
+    @property
+    def timer(self) -> TickTimer:
+        """TickTimer: Times each tick's parts and every plugin task's steps."""
+        return self._timer
 
     @property
     def world(self) -> WorldState:
@@ -210,7 +236,7 @@ class HuskyMonitor(Node):
     async def run(self) -> None:
         """Tick every `tick_period` until Ctrl-C or SIGTERM.
 
-        ! A tick that runs late is not made up with a burst of fast ones.
+        ! A tick that runs late is not made up with a burst of fast ones: the schedule restarts from it.
         """
         loop = asyncio.get_running_loop()
         stop = asyncio.Event()
@@ -218,25 +244,25 @@ class HuskyMonitor(Node):
         for number in signals:
             loop.add_signal_handler(number, stop.set)
 
-        # Names this task in stall reports outside plugin hooks.
-        asyncio.current_task().set_name("monitor tick")
         # * Everything alive now (modules, models, the viser scene) lives until shutdown: keep it out of later
         #   garbage collections, which hold the GIL on whichever thread runs them.
         gc.freeze()
-        self._watchdog = LoopWatchdog(
-            loop, limit=self._config.tick_period * self._config.slow_step_warn_ratio,
-            repeat_after=self._config.slow_step_warn_period, log_warn=self.log_warn)
         try:
             due = loop.time()
             while not stop.is_set():
-                await self._tick()
-                due = max(due + self._config.tick_period, loop.time())
-                await asyncio.sleep(due - loop.time())
+                started = loop.time()
+                self._timer.start_tick(self._tick_index + 1, late=started - due)
+                if self._tick_index == 0:
+                    with self._timed("first tick"):
+                        await self._tick()
+                else:
+                    await self._tick()
+                due = max(due, started) + self._config.tick_period
+                await asyncio.sleep(max(due - loop.time(), 0.0))
         finally:
             # * A second Ctrl-C during shutdown now interrupts it.
             for number in signals:
                 loop.remove_signal_handler(number)
-            self._watchdog.stop()
             self.log_info("stopping: cancelling plugin tasks and tearing down")
 
     # --- --- --- --- --- TICK --- --- --- --- ---
@@ -246,22 +272,26 @@ class HuskyMonitor(Node):
         self._tick_index += 1
 
         # 1. Run every ROS callback that is waiting, so the world is as fresh as it gets.
-        self._pump_ros()
+        with self._timer.part("ROS callbacks"):
+            count = self._pump_ros()
+        self._timer.note("ROS callbacks", f"{count} callbacks")
 
         # 2. Soft stop before any plugin can command new actions.
         if self._viz.take_stop_request():
             self._soft_stop()
 
         # 3. Fix forward kinematics for this tick, before anything reads a link pose.
-        self._kinematics.update(self._world)
+        with self._timer.part("kinematics"):
+            self._kinematics.update(self._world)
 
         # 4. Copy the whole world before any plugin runs, for planners and the 3D view.
-        snapshot = self._scene.take_snapshot(self._world, self._kinematics, self._tick_index, self.now())
+        with self._timer.part("scene snapshot"):
+            snapshot = self._scene.take_snapshot(self._world, self._kinematics, self._tick_index, self.now())
 
         # 5. Step each plugin, in dependency order: intents, then update. Each hook is timed for stall reports.
         for loaded in self._loaded.values():
             if not loaded.stopped:
-                with self._watchdog.watching(f"plugin {loaded.name!r} step"):
+                with self._timer.part(f"plugin {loaded.name!r} update"):
                     self._step_plugin(loaded)
 
         # 6. Resume tasks waiting for this tick, in dependency order; yielding once lets each step before the draw.
@@ -272,32 +302,38 @@ class HuskyMonitor(Node):
 
         # 7. Draw. While frozen (for text selection), only robots and the scene are drawn, not plugins.
         with self._viz.atomic():
-            self._viz.draw(snapshot)
+            with self._timer.part("robots and scene draw"):
+                self._viz.draw(snapshot)
             for loaded in self._loaded.values() if not self._viz.frozen else ():
                 if loaded.stopped:
                     continue
                 try:
-                    with self._watchdog.watching(f"plugin {loaded.name!r} draw"):
+                    with self._timer.part(f"plugin {loaded.name!r} draw"):
                         loaded.plugin.draw(loaded.ctx)
                 except Exception:
                     self._plugin_failed(loaded, "draw")
 
-    def _pump_ros(self) -> None:
+    def _pump_ros(self) -> int:
         """Run every ROS callback that is ready: subscriptions, service answers, timers.
 
         A callback that raises is logged and dropped.
+
+        Returns:
+            int: How many callbacks ran.
         """
-        budget = ROS_CALLBACKS_PER_TICK - self._drain_subscriptions()
-        for _ in range(max(budget, 0)):
+        count = self._drain_subscriptions()
+        for _ in range(max(ROS_CALLBACKS_PER_TICK - count, 0)):
             try:
                 handler, _entity, _node = self._executor.wait_for_ready_callbacks(timeout_sec=0.0)
             except TimeoutException:
-                return  # nothing more is ready
+                return count  # nothing more is ready
+            count += 1
             handler()
             if handler.exception() is not None:
                 self.log_error(f"ROS callback failed:\n{handler.exception()!r}")
         self.log_warn(f"more than {ROS_CALLBACKS_PER_TICK} ROS callbacks were ready in one tick; "
                       f"the rest run next tick")
+        return count
 
     def _drain_subscriptions(self) -> int:
         """Run the callback of every queued message of every subscription, oldest first.
@@ -465,6 +501,7 @@ class HuskyMonitor(Node):
         if self._viz is not None:
             self._viz.stop()
         self._executor.shutdown()
+        self._timer.stop()
 
 
 # --- --- --- --- --- MAIN --- --- --- --- ---
@@ -477,7 +514,9 @@ GIL_SWITCH_INTERVAL = 0.001
 
 async def _run_monitor() -> None:
     """Build the monitor, tick until stopped, then shut it down cleanly."""
+    started = time.perf_counter()
     monitor = HuskyMonitor()
+    monitor.log_info(f"startup: monitor built in {(time.perf_counter() - started) * 1e3:.0f} ms")
     try:
         await monitor.run()
     finally:

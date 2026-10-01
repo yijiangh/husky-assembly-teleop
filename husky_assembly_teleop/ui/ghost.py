@@ -13,10 +13,9 @@ import time
 from typing import TYPE_CHECKING, Iterable, Mapping
 
 import numpy as np
-import viser.extras
 
 from .quaternion import quaternion_to_wxyz
-from .visualization import load_urdf
+from .visualization import FastViserUrdf, shared_urdf
 
 if TYPE_CHECKING:
     from ..config import RobotConfig
@@ -71,8 +70,8 @@ class RobotGhost:
         path = f"{ctx.view.scene_root}/ghosts/{kind}/{config.serial}"
         color = KIND_COLORS[kind]
         self._frame = ctx.view.scene.add_frame(path, show_axes=False, visible=False)
-        self._urdf = viser.extras.ViserUrdf(ctx.view, load_urdf(config.urdf_file), root_node_name=path,
-                                            mesh_color_override=color)
+        self._urdf = FastViserUrdf(ctx.view, shared_urdf(config.urdf_file), root_node_name=path,
+                                   mesh_color_override=color)
         self._names = self._urdf.get_actuated_joint_names()
         # What is shown now: (position, orientation, joint values), or None while hidden.
         self._shown: tuple | None = None

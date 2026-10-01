@@ -15,7 +15,7 @@ from husky_assembly_teleop.design_io.pose import Pose
 DATA = Path(__file__).resolve().parent.parent / "data"
 
 # ? 2 m wide: at 3 m the detour barely fits the sampled area (SAMPLE_PADDING) next to Cindy; half the searches failed.
-# ? 2 m wide: at 3 m the detour barely fits the sampled area (SAMPLE_PADDING) next to Cindy, and half the searches failed.
+# ? 2 m wide: at 3 m the detour barely fits the sampled area (SAMPLE_PADDING) next to Cindy; half the searches failed.
 WALL = Body("test/wall", box_geometry((2.0, 0.3, 1.0)), Pose((0.0, -2.5, 0.5)), label="wall")
 
 
