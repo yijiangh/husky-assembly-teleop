@@ -34,6 +34,14 @@ transfer start + plan travel to load' with the bar 3 m away plans nothing and
 leaves the transfer loaded; with the default sliders right after 'Load entry'
 it loads the travel to load and plans it, its goal being the adopted start.
 
+Then the operator steps check (its own Cindy monitor, entries 0 and 1, the
+compliant exec replaced by a recorder): entry 0 has 5 steps, entry 1 has 2; a
+'Step' slider at 4 loads the insert and the '-> step' readout and 'Now:' line
+count steps; without a slider widget an index still means a movement (the
+tighten loads); exec of the insert names the tighten that runs with it, exec
+of the retreat names the untighten and the ungrasp; entry 1 opens on its
+retreat.
+
 Then the flow, on the fixture's first hold (Alice holds B3):
 
   Cindy's run (domain 86)
@@ -101,7 +109,7 @@ Usage:
     also ``export HUSKY_IK_BACKEND=gradient``.)
 
 Exit code 0 when every check passes, 1 otherwise. Loads the ~340 MB
-RobotCell files one at a time (Cindy's four times, Alice's, then Cindy's again; ~1 GB RAM each);
+RobotCell files one at a time (Cindy's five times, Alice's, then Cindy's again; ~1 GB RAM each);
 takes under a minute (most of it Cindy's R_M3 free plan to home).
 """
 
@@ -129,7 +137,8 @@ from smoke_single_arm_plan import collision_lines
 from husky_assembly_teleop import DESIGN_DATA_DIRECTORY, DESIGN_PROBLEM_NAME
 from husky_assembly_teleop import cfab_session, husky_monitor, husky_world
 from husky_assembly_teleop.bar_action_io import (
-    STATIONARY_KINDS, MovementKind, is_built_assembly_body, movement_kind, step_kind,
+    STATIONARY_KINDS, MovementKind, OperatorStep, is_built_assembly_body, movement_kind, step_kind,
+    tool_runs_with_next_motion,
 )
 from husky_assembly_teleop.cfab_session import CfabSession
 from husky_assembly_teleop.husky_monitor import BUILT_IGNORED_RGBA
@@ -969,6 +978,136 @@ def transfer_start_check(results: Results, problem: str, root: str, schedule) ->
 
 
 # * ---------------------------------------------------------------------------
+# * Operator steps: a tool step that runs with the next arm movement is no stop (F2)
+# * ---------------------------------------------------------------------------
+
+def operator_steps_check(results: Results, problem: str, root: str, schedule) -> None:
+    """The 'Step' slider on entry 0 (J) and entry 1 (R): operator steps instead of movements.
+
+    (a) Entry 0 has 5 steps; the last one is the insert, with the joint tighten
+    running with it. (b) A fake 'Step' slider widget at 4 (the last step):
+    'Load Movement' loads the insert, the '-> step' readout names the insert
+    and the tighten, the 'Now:' line says step 5/5. (c) Without a widget (the
+    headless scripts) the selected index is still a MOVEMENT index:
+    ``select_movement`` on the tighten loads the tighten. (d) 'Exec Selected
+    Mv Traj' on the insert (the compliant exec replaced by a recorder) logs
+    one line naming the tighten. (e) Entry 1, loaded the way the GUI does,
+    has 2 steps and opens on its retreat; the retreat's exec logs one line
+    each for the untighten and the ungrasp.
+
+    Args:
+        results (Results): Where the checks go.
+        problem (str): Problem folder name.
+        root (str): The scratch problem folder (unused; same signature as the other runs).
+        schedule (ActionSchedule): The scratch schedule.
+    """
+    cindy = robot_by_name(ASSEMBLY_ROBOT)
+    first, release = schedule.entry(0), schedule.entry(1)
+    print(f"\n{'=' * 30} OPERATOR STEPS CHECK {'=' * 30}")
+    base = schedule.load_action(first, prefer_sidecar=False).movements[-1].start_state.robot_base_frame
+    monitor, iface, log = make_monitor(cindy, base, problem)
+    add_viz_huskies(monitor, cindy)
+    compliant_calls = []  # the movement loaded at each compliant exec
+
+    def record_compliant(mon):
+        compliant_calls.append(mon.current_movement)
+        return iter(())  # a queued task that ends at once
+
+    def exec_notes(idx: int) -> list:
+        """Load an arm movement, stamp a path where the stub arms stand, press 'Exec Selected Mv Traj'.
+
+        Args:
+            idx (int): Movement index in the loaded action.
+
+        Returns:
+            list[str]: The info lines it logged about tool steps that run with it.
+        """
+        select_movement(monitor, idx)
+        for i, q in enumerate(iface.arm_joint_pose):
+            monitor.set_arm_trajectory((np.asarray([q, q]), None, monitor.trajectory_time, None), i)
+        n = len(log.msgs)
+        monitor.exec_selected_movement_traj()
+        run_tasks(monitor, iface)
+        return log.since(n, 'info', 'runs with this movement')
+
+    real_compliant = husky_world.execute_planned_trajectory_compliant
+    husky_world.execute_planned_trajectory_compliant = record_compliant
+    try:
+        monitor._load_schedule_state()
+
+        # * --- (a) entry 0: five steps, the tighten runs with the insert
+        monitor.load_schedule_entry(first.index)
+        movements = monitor._loaded_movements
+        steps = monitor._shown_steps()
+        ii = monitor._loaded_index_of(MovementKind.DUAL_CONSTRAINED_LINEAR)
+        tool_idx = [i for i, mv in enumerate(movements) if tool_runs_with_next_motion(mv)]
+        insert, tighten = movements[ii], movements[tool_idx[0]]
+        results.check(f"steps: entry 0 has 5 steps, the last = {insert.movement_id} "
+                      f"with {tighten.movement_id}",
+                      len(steps) == 5 and steps[-1] == OperatorStep(ii, (tool_idx[0],)),
+                      f"{steps}")
+
+        # * --- (b) a 'Step' slider widget at 4: the insert, readout and Now line count steps
+        shown = []  # what the '-> step' readout was set to
+        monitor.bar_movement_text = SimpleNamespace(set_text=shown.append)
+        monitor.bar_movement_slider = SimpleNamespace(value=4)
+        monitor.load_selected_movement()
+        monitor._refresh_bar_action_readouts()
+        now = monitor._now_line()
+        want_readout = f"step 5/5: {insert.movement_id}  (+ {tighten.movement_id} runs with it)"
+        want_now = (f"-- step 5/5 {insert.movement_id} "
+                    f"[{MovementKind.DUAL_CONSTRAINED_LINEAR.value}] ctrl={insert.controller}")
+        results.check(f"steps: 'Step' slider at 4 -> {insert.movement_id} loaded, "
+                      f"readout '{want_readout}', Now line '{want_now}'",
+                      monitor.current_movement is insert and monitor._selected_movement_idx == ii
+                      and shown == [want_readout] and now.endswith(want_now),
+                      f"loaded {monitor.current_movement_index}, readout {shown}, {now!r}")
+
+        # * --- (c) no widget: select_movement keeps meaning a movement index
+        del monitor.bar_movement_slider
+        mv = select_movement(monitor, tool_idx[0])
+        results.check(f"steps: without a slider widget, movement {tool_idx[0]} still loads "
+                      f"{tighten.movement_id}",
+                      mv is tighten and monitor.current_movement_index == tool_idx[0],
+                      f"loaded {monitor.current_movement_index} "
+                      f"({mv.movement_id if mv is not None else None})")
+
+        # * --- (d) exec the insert: one line names the tighten
+        notes = exec_notes(ii)
+        results.check(f"steps: exec {insert.movement_id} logs one line naming {tighten.movement_id}",
+                      compliant_calls == [insert] and len(notes) == 1
+                      and tighten.movement_id in notes[0],
+                      f"compliant exec calls {len(compliant_calls)}, lines {notes}")
+
+        # * --- (e) entry 1 as the GUI loads it: two steps, opens on the retreat
+        # The live monitor opens a loaded action on its first step; the pink
+        # assembled-bar line of the accuracy test is left out headless.
+        monitor._is_live_monitor = True
+        monitor.BAR_ACTION_MOCAP_ACCURACY_TEST = 0
+        monitor.load_schedule_entry(release.index)
+        movements = monitor._loaded_movements
+        steps = monitor._shown_steps()
+        ri = monitor._loaded_index_of(MovementKind.DUAL_INDEPENDENT_LINEAR)
+        tool_idx = [i for i, mv in enumerate(movements) if tool_runs_with_next_motion(mv)]
+        retreat = movements[ri]
+        ids = [movements[j].movement_id for j in tool_idx]
+        results.check(f"steps: entry 1 has 2 steps and opens on {retreat.movement_id} "
+                      f"(with {ids})",
+                      len(steps) == 2 and steps[0] == OperatorStep(ri, tuple(tool_idx))
+                      and monitor.current_movement is retreat
+                      and monitor._selected_movement_idx == ri,
+                      f"{steps}, loaded {monitor.current_movement_index}")
+        notes = exec_notes(ri)
+        results.check(f"steps: exec {retreat.movement_id} logs one line each for {ids}",
+                      compliant_calls[1:] == [retreat] and len(ids) == 2 and len(notes) == 2
+                      and all(i in note for i, note in zip(ids, notes)),
+                      f"compliant exec calls {len(compliant_calls)}, lines {notes}")
+    finally:
+        husky_world.execute_planned_trajectory_compliant = real_compliant
+        monitor.cfab.close()
+
+
+# * ---------------------------------------------------------------------------
 # * Built-structure switch: collisions with the built bars checked or ignored
 # * ---------------------------------------------------------------------------
 
@@ -1736,7 +1875,7 @@ def cindy_restart_run(results: Results, problem: str, root: str, schedule) -> No
 # * ---------------------------------------------------------------------------
 
 def main(argv: Optional[list] = None) -> int:
-    """Build the scratch problem, run dispatch, carry and transfer start checks, Cindy, Alice, Cindy's restart; print the summary.
+    """Build the scratch problem, run dispatch, carry, transfer start and operator steps checks, Cindy, Alice, Cindy's restart; print the summary.
 
     Args:
         argv (list | None): Command line (None = ``sys.argv[1:]``).
@@ -1767,8 +1906,8 @@ def main(argv: Optional[list] = None) -> int:
         root = make_scratch_problem(real_root, scratch_design, problem)
         point_package_at(scratch_design)
         schedule = load_schedule(root)
-        for run in (dispatch_check, carry_check, transfer_start_check, cindy_run, alice_run,
-                    cindy_restart_run):
+        for run in (dispatch_check, carry_check, transfer_start_check, operator_steps_check,
+                    cindy_run, alice_run, cindy_restart_run):
             try:
                 run(results, problem, root, schedule)
             except Exception as e:  # keep going: the summary shows where it stopped

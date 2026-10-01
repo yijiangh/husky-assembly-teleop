@@ -37,6 +37,7 @@ from husky_assembly_teleop.bar_action_io import (
     sidecar_action_path, preferred_action_path, write_path_for,
     BUILT_ASSEMBLY_RB_PREFIXES, is_built_assembly_body, bar_body_name, find_bar_body,
     bar_id_of_body, is_ground_joint_body,
+    tool_runs_with_next_motion, OperatorStep, operator_steps, step_index_of,
 )
 
 # The two exports under test, one per schema. 260715 writes one file per bar
@@ -436,3 +437,101 @@ def test_kinds_and_tool_events_of_real_hold_actions():
     assert tool_event(hold.movements[3]) == ('close', ['SupportGripper'], False)
     jointing = _load_schedule_action('B3__J')
     assert tool_event(jointing.movements[4]) == ('tighten', ['AT3L', 'AT3R'], True)
+
+
+# * ------------------------------------------------- operator steps
+
+def _screw_step(movement_id: str, tool_action: str, overlaps_next: bool = False):
+    """One of Cindy's scaffolding-tool steps, built in memory.
+
+    Args:
+        movement_id (str): Its id.
+        tool_action (str): e.g. ``'tighten'``.
+        overlaps_next (bool): Whether it overlaps the next movement.
+
+    Returns:
+        ScaffoldingToolMovement: The step.
+    """
+    return ScaffoldingToolMovement(movement_id=movement_id, tool_action=tool_action,
+                                   tool_names=['AT3L', 'AT3R'], overlaps_next=overlaps_next)
+
+
+def test_tool_runs_with_next_motion():
+    """Only the overlapping tighten, the ungrasp and the untighten of the screw tool run with the next motion."""
+    assert tool_runs_with_next_motion(_screw_step('tighten', 'tighten', overlaps_next=True))
+    assert tool_runs_with_next_motion(_screw_step('ungrasp', 'ungrasp'))
+    assert tool_runs_with_next_motion(_screw_step('untighten', 'untighten'))
+    assert not tool_runs_with_next_motion(_screw_step('grasp', 'grasp'))
+    assert not tool_runs_with_next_motion(_screw_step('tighten', 'tighten', overlaps_next=False))
+    # The rule is about the screw tool only: a support gripper step never runs with the next motion.
+    assert not tool_runs_with_next_motion(GripperToolMovement(tool_action='ungrasp', overlaps_next=True))
+    assert not tool_runs_with_next_motion(ManualMovement(movement_id='mount'))
+    assert not tool_runs_with_next_motion(EndEffectorConstrainedDualArmLinearMovement(movement_id='insert'))
+    assert not tool_runs_with_next_motion(ToolMovement(movement_id='bare'))   # class with no kind
+
+
+def test_operator_steps_in_memory():
+    """Absorbed tool steps join the next compliant arm movement; anything else ends the wait."""
+    jointing = [
+        IndependentDualArmFreeMovement(movement_id='free_to_load'),
+        ManualMovement(movement_id='mount'),
+        _screw_step('grasp', 'grasp'),
+        EndEffectorConstrainedDualArmFreeMovement(movement_id='transfer'),
+        _screw_step('tighten', 'tighten', overlaps_next=True),
+        EndEffectorConstrainedDualArmLinearMovement(movement_id='insert'),
+    ]
+    assert operator_steps(jointing) == [
+        OperatorStep(0), OperatorStep(1), OperatorStep(2), OperatorStep(3), OperatorStep(5, (4,))]
+
+    retreat = IndependentDualArmLinearMovement(movement_id='retreat')
+    home = IndependentDualArmFreeMovement(movement_id='home')
+    untighten = _screw_step('untighten', 'untighten')
+    ungrasp = _screw_step('ungrasp', 'ungrasp')
+    assert operator_steps([untighten, ungrasp, retreat, home]) == [
+        OperatorStep(2, (0, 1)), OperatorStep(3)]
+    # * After the re-export without the untighten (Rhino note D7).
+    assert operator_steps([ungrasp, retreat, home]) == [OperatorStep(1, (0,)), OperatorStep(2)]
+    # A manual step between them: the waiting untighten becomes its own step first.
+    assert operator_steps([untighten, ManualMovement(movement_id='mount'), retreat]) == [
+        OperatorStep(0), OperatorStep(1), OperatorStep(2)]
+    # Nothing follows: a trailing tool step stays its own step.
+    insert = EndEffectorConstrainedDualArmLinearMovement(movement_id='insert')
+    assert operator_steps([insert, _screw_step('tighten', 'tighten', overlaps_next=True)]) == [
+        OperatorStep(0), OperatorStep(1)]
+    # ! Never hidden behind a movement that would not send it: a tighten before a
+    # ! free move (not compliant) stays its own step.
+    assert operator_steps([_screw_step('tighten', 'tighten', overlaps_next=True),
+                           IndependentDualArmFreeMovement(movement_id='free')]) == [
+        OperatorStep(0), OperatorStep(1)]
+    assert operator_steps([]) == []
+
+
+@needs_schedule_export
+def test_operator_steps_on_fixture():
+    """B1__J folds its tighten into the insert, B1__R its screw steps into the retreat.
+
+    The support robots' hold and hold release keep one step per movement.
+    """
+    jointing = _load_schedule_action('B1__J').movements
+    assert operator_steps(jointing) == [
+        OperatorStep(0), OperatorStep(1), OperatorStep(2), OperatorStep(3), OperatorStep(5, (4,))]
+
+    # * The release's screw steps may change with a re-export (Rhino note D7), so
+    # * the layout is read from the file: every step before the retreat joins it.
+    release = _load_schedule_action('B1__R').movements
+    n = len(release)
+    assert all(tool_runs_with_next_motion(mv) for mv in release[:n - 2])
+    assert operator_steps(release) == [OperatorStep(n - 2, tuple(range(n - 2))), OperatorStep(n - 1)]
+
+    for name in ('B3__H', 'B3__HR'):
+        movements = _load_schedule_action(name).movements
+        assert operator_steps(movements) == [OperatorStep(i) for i in range(len(movements))], name
+
+
+def test_step_index_of():
+    """A movement maps to the step holding it, as primary or absorbed; anything else to None."""
+    steps = [OperatorStep(0), OperatorStep(1), OperatorStep(2), OperatorStep(3), OperatorStep(5, (4,))]
+    assert [step_index_of(steps, i) for i in range(6)] == [0, 1, 2, 3, 4, 4]
+    assert step_index_of(steps, 6) is None
+    assert step_index_of(steps, None) is None
+    assert step_index_of([], 0) is None

@@ -10,15 +10,19 @@ import shutil
 import pytest
 from compas.data import json_dump
 from compas_fab.robots import JointTrajectory, JointTrajectoryPoint
+from rs_data_structure.bar_action import IndependentDualArmLinearMovement, ScaffoldingToolMovement
 
 from husky_assembly_teleop import DESIGN_DATA_DIRECTORY
-from husky_assembly_teleop.bar_action_io import parse_bar_action, sidecar_action_path, step_kind
+from husky_assembly_teleop.bar_action_io import (
+    operator_steps, parse_bar_action, sidecar_action_path, step_kind,
+)
 from husky_assembly_teleop.robot_registry import robot_by_name
 from husky_assembly_teleop.schedule_io import SCHEDULE_FILENAME, load_entry, load_schedule
 from husky_assembly_teleop.schedule_ui import (
     ROW_COLOR_DONE, ROW_COLOR_OTHER_ROBOT, ROW_COLOR_PENDING, ROW_COLOR_SELECTED,
-    EntryFlags, entry_row_text, knobs_for_assembly_robot, missing_action_files,
-    now_line_text, row_color, scan_entry_flags, step_button_label, visible_row_window,
+    EntryFlags, absorbed_tool_note, entry_row_text, knobs_for_assembly_robot,
+    missing_action_files, now_line_text, row_color, scan_entry_flags, step_button_label,
+    step_readout_text, visible_row_window,
 )
 
 SCHEDULE_PROBLEM = '260920_RobArch_demo_revamp_backup'
@@ -156,6 +160,72 @@ def test_step_button_label_of_an_unknown_movement_class_is_none():
     assert step_button_label(Odd()) is None
 
 
+# * ------------------------------------------------------------- operator steps
+MARK_ONLY_PREFIX = 'Mark tool step done'
+
+
+@needs_fixture
+@pytest.mark.parametrize('index', [0, 1, 3, 16])
+def test_step_primaries_never_get_a_mark_only_button(schedule, index):
+    """No step the operator lands on is mark-only; the absorbed steps are exactly the mark-only ones."""
+    movements = load_entry(schedule, schedule.entry(index)).movements
+    steps = operator_steps(movements)
+    for step in steps:
+        label = step_button_label(movements[step.primary])
+        assert label is None or not label.startswith(MARK_ONLY_PREFIX), movements[step.primary].movement_id
+    absorbed = {j for step in steps for j in step.absorbed}
+    mark_only = {i for i, mv in enumerate(movements)
+                 if (step_button_label(mv) or '').startswith(MARK_ONLY_PREFIX)}
+    assert absorbed == mark_only
+
+
+@needs_fixture
+def test_step_readout_text(schedule):
+    """The step readout: id and kind, or id and the tool steps that run with it."""
+    movements = load_entry(schedule, schedule.entry(0)).movements
+    steps = operator_steps(movements)
+    texts = [step_readout_text(k, len(steps), movements[step.primary],
+                               tuple(movements[j] for j in step.absorbed))
+             for k, step in enumerate(steps)]
+    assert texts[3] == 'step 4/5: B1_J_M3_CDFM_transfer_to_approach  (dual_constrained_free)'
+    assert texts[4] == 'step 5/5: B1_J_M5_LM_insert  (+ B1_J_M4_tool_tighten_joint runs with it)'
+
+    # Two absorbed steps (the release before the D7 re-export), and an unknown class.
+    untighten = ScaffoldingToolMovement(movement_id='untighten', tool_action='untighten')
+    ungrasp = ScaffoldingToolMovement(movement_id='ungrasp', tool_action='ungrasp')
+    retreat = IndependentDualArmLinearMovement(movement_id='retreat')
+    assert (step_readout_text(0, 2, retreat, (untighten, ungrasp))
+            == "step 1/2: retreat  (+ ungrasp runs with it; untighten not sent: "
+               "'Loosen Joint' by hand if needed)")
+
+    class Odd:
+        movement_id = 'odd'
+
+    assert step_readout_text(0, 1, Odd()) == 'step 1/1: odd  (Odd)'
+
+
+def test_absorbed_tool_note():
+    """The exec log line names the absorbed step and who sends its tool action."""
+    tighten = ScaffoldingToolMovement(movement_id='B1_J_M4_tool_tighten_joint',
+                                      tool_action='tighten', overlaps_next=True)
+    assert absorbed_tool_note(tighten) == (
+        "B1_J_M4_tool_tighten_joint ('tighten') runs with this movement: "
+        "the compliant insert sends it (joint motors TIGHTENING).")
+    ungrasp = ScaffoldingToolMovement(movement_id='B1_R_M1_tool_ungrasp_bar', tool_action='ungrasp')
+    assert absorbed_tool_note(ungrasp) == (
+        "B1_R_M1_tool_ungrasp_bar ('ungrasp') runs with this movement: "
+        "the compliant retreat sends it (gripper motors LOOSENING).")
+    untighten = ScaffoldingToolMovement(movement_id='B1_R_M0_tool_untighten_joint',
+                                        tool_action='untighten')
+    assert absorbed_tool_note(untighten) == (
+        "B1_R_M0_tool_untighten_joint ('untighten') runs with this movement: "
+        "nothing is sent (use the manual 'Loosen Joint' button if the tool must back off).")
+    # The tool action decides, not overlaps_next: an ungrasp exported with it is still an ungrasp.
+    ungrasp_overlapping = ScaffoldingToolMovement(movement_id='ungrasp', tool_action='ungrasp',
+                                                  overlaps_next=True)
+    assert 'gripper motors LOOSENING' in absorbed_tool_note(ungrasp_overlapping)
+
+
 # * ------------------------------------------------------------- rows / now line
 @needs_fixture
 def test_entry_row_text(schedule):
@@ -186,11 +256,16 @@ def test_row_color():
 
 @needs_fixture
 def test_now_line_text(schedule):
-    """The 'Now:' line with a movement, without one, and with no entry loaded."""
+    """The 'Now:' line counts steps; without a movement; with no entry loaded."""
     loaded = load_entry(schedule, schedule.entry(3))
     assert (now_line_text(schedule.entry(3), 2, 4, loaded.movements[2])
-            == 'Now: entry 3 -- H B3 by Alice -- movement 3/4 B3_H_M2_LM_to_grasp '
+            == 'Now: entry 3 -- H B3 by Alice -- step 3/4 B3_H_M2_LM_to_grasp '
                '[single_linear] ctrl=joint_tracking')
+    # Cindy's jointing half: the insert (movement 6 of 6) is step 5 of 5.
+    jointing = load_entry(schedule, schedule.entry(0)).movements
+    assert (now_line_text(schedule.entry(0), 4, len(operator_steps(jointing)), jointing[5])
+            == 'Now: entry 0 -- J B1 by Cindy -- step 5/5 B1_J_M5_LM_insert '
+               '[dual_constrained_linear] ctrl=cartesian_compliant')
     assert (now_line_text(schedule.entry(3), None, 4, None)
             == 'Now: entry 3 -- H B3 by Alice -- no movement loaded')
     assert now_line_text(None, None, 0, None).startswith('Now: no entry loaded')

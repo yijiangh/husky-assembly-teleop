@@ -762,3 +762,8 @@ Nothing depends on an absorbed step being visited (checked: mark-only writes no 
   `reset_selected_movement_to_clean` load by explicit index (in the GUI the slider widget won over the cached index).
   Smoke 69/69. The real manual-start IK at the default sliders on B1 found a start ("branch nearest the goal
   collided; another IK branch was taken"; start-to-goal joint difference 6.14 rad) — F8 territory.
+- F2 (operator steps, T3a + T3b): reviewer APPROVE WITH NITS (379 BarAction files of 21 problems: groupings
+  J `0 1 2 3 5+4`, R `2+0,1 3`, H/HR/legacy one per movement; no lost tool command). Review fixes applied:
+  tool steps fold only into a COMPLIANT movement (never hidden behind one that would not send them); the exec
+  note decides by tool action before overlaps_next; the readout says an untighten is not sent. Smoke 75/75,
+  pytest 126 / 1 skipped.

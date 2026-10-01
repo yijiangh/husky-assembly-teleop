@@ -21,6 +21,11 @@ The data classes live in `rs_data_structure.bar_action`. compas's
   (the other one is the travel out to the loading pose)
 - `check_action_kinds(action)` → refuse an action whose transfer / insert /
   retreat is missing or doubled
+- `tool_runs_with_next_motion(mv)` → whether a tool step is carried out by the
+  arm movement after it (its own button only marks it done)
+- `OperatorStep` / `operator_steps(movements)` → the steps the operator walks
+  through: each such tool step joins the next arm movement
+- `step_index_of(steps, movement_index)` → which step holds a movement
 - `bar_body_name` / `find_bar_body` / `is_built_assembly_body` → the built
   bars' rigid-body names, which differ between Cindy's and the support cells
 
@@ -42,6 +47,7 @@ from __future__ import annotations
 
 import os
 import re
+from dataclasses import dataclass
 from enum import Enum
 from typing import Container, Optional, Union
 
@@ -677,6 +683,108 @@ def tool_event(mv: ToolMovement) -> tuple:
         ``('tighten', ['AT3L', 'AT3R'], True)``.
     """
     return mv.tool_action, list(mv.tool_names), bool(mv.overlaps_next)
+
+
+# * ------------------------------------------------------------ operator steps
+# Some of Cindy's screw-tool steps send nothing on their own: the arm movement
+# after them does the tool work (or nobody does it on purpose). The operator
+# should not have to stop on such a step, so it is folded into that movement.
+def tool_runs_with_next_motion(mv: Movement) -> bool:
+    """Whether a tool step is carried out by the arm movement after it.
+
+    These are the scaffolding-tool steps whose own button only marks them done:
+
+    - 'tighten' with ``overlaps_next`` (the joint tighten before the insert):
+      the compliant insert starts the joint motors TIGHTENING;
+    - 'ungrasp' (the release's gripper loosen): the compliant retreat starts the
+      gripper motors LOOSENING;
+    - 'untighten' (the release's joint loosen): never sent, on purpose. The
+      compliant retreat does not reverse the joint motor, since that may back
+      the just-tightened screw off the bar; the operator has the manual
+      'Loosen Joint' button if the tool must back off.
+
+    Args:
+        mv (Movement): A loaded movement.
+
+    Returns:
+        bool: True for those steps; False for every other movement (arm, manual,
+        gripper, a scaffolding 'grasp', or a class with no kind).
+    """
+    if _KIND_BY_CLASS.get(type(mv)) is not MovementKind.SCAFFOLDING_TOOL:
+        return False
+    tool_action, _names, overlaps_next = tool_event(mv)
+    return overlaps_next or tool_action in ("ungrasp", "untighten")
+
+
+@dataclass(frozen=True)
+class OperatorStep:
+    """One step the operator runs: an arm movement plus the tool steps that run with it.
+
+    Attributes:
+        primary (int): Index of the movement the step loads and runs.
+        absorbed (tuple): Indices of the tool steps carried out by that movement
+            (``tool_runs_with_next_motion``), in order. Empty for most steps.
+    """
+
+    primary: int
+    absorbed: tuple = ()
+
+
+def operator_steps(movements: list) -> list[OperatorStep]:
+    """Group an action's movements into the steps the operator walks through.
+
+    A tool step that runs with the next motion (``tool_runs_with_next_motion``)
+    joins the next arm movement when that movement is compliant (the insert or
+    the retreat: ``COMPLIANT_KINDS``, whose exec sends the tool command). Every
+    other movement is a step of its own. Any other step met while such tool
+    steps are still waiting ends the wait (a manual, gripper or other tool
+    step, or an arm movement that is not compliant): the waiting ones become
+    steps of their own first, and so do any left over at the end of the action.
+    ! So a tool step is never hidden behind a movement that would not send it.
+
+    Example (Cindy's jointing half, by movement index)::
+
+        0 free move, 1 manual mount, 2 grasp, 3 transfer, 4 tighten, 5 insert
+        -> [0] [1] [2] [3] [5 (+4)]
+
+    Args:
+        movements (list): The loaded action's movements, in order.
+
+    Returns:
+        list[OperatorStep]: The steps, in order; every movement index appears
+        exactly once (as a primary or absorbed).
+    """
+    steps = []
+    waiting = []
+    for i, mv in enumerate(movements):
+        if tool_runs_with_next_motion(mv):
+            waiting.append(i)
+        elif _KIND_BY_CLASS.get(type(mv)) in COMPLIANT_KINDS:
+            steps.append(OperatorStep(i, tuple(waiting)))
+            waiting = []
+        else:
+            steps.extend(OperatorStep(j) for j in waiting)
+            waiting = []
+            steps.append(OperatorStep(i))
+    steps.extend(OperatorStep(j) for j in waiting)
+    return steps
+
+
+def step_index_of(steps: list, movement_index: Optional[int]) -> Optional[int]:
+    """Which step holds a movement, as its primary or as an absorbed tool step.
+
+    Args:
+        steps (list): ``operator_steps`` of the loaded action.
+        movement_index (int | None): A movement index of that action.
+
+    Returns:
+        int | None: The step's index, or None when no step holds the movement
+        (no movement, or an index out of range).
+    """
+    for k, step in enumerate(steps):
+        if movement_index == step.primary or movement_index in step.absorbed:
+            return k
+    return None
 
 
 def default_trajectory_time(mv: Movement, free_home: bool = False) -> Optional[float]:

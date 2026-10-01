@@ -64,7 +64,7 @@ from husky_assembly_teleop.bar_action_io import (
     MovementKind, STATIONARY_KINDS, SINGLE_ARM_KINDS, DUAL_ARM_KINDS, COMPLIANT_KINDS,
     movement_kind, step_kind, kind_fits_robot, is_free_home, check_action_kinds,
     default_trajectory_time, is_built_assembly_body, bar_body_name, find_bar_body,
-    clean_action_path,
+    clean_action_path, operator_steps, step_index_of,
 )
 from rs_data_structure.bar_action import CONTROLLER_CARTESIAN_COMPLIANT, CONTROLLER_JOINT_TRACKING, Movement
 from husky_assembly_teleop.cfab_session import (
@@ -85,8 +85,9 @@ from husky_assembly_teleop.schedule_io import (
     problem_root,
 )
 from husky_assembly_teleop.schedule_ui import (
-    EntryFlags, entry_row_text, knobs_for_assembly_robot, missing_action_files, now_line_text,
-    row_color, scan_entry_flags, step_button_label, visible_row_window,
+    EntryFlags, absorbed_tool_note, entry_row_text, knobs_for_assembly_robot,
+    missing_action_files, now_line_text, row_color, scan_entry_flags, step_button_label,
+    step_readout_text, visible_row_window,
 )
 from husky_assembly_teleop import common as _common
 from husky_assembly_teleop.ui_backend import make_backend, DearPyGuiBackend, bind_default_font
@@ -3013,7 +3014,8 @@ class HuskyMonitor(Node):
         start-EE sources (from ``loaded`` when given, else the cycle
         helper); live pose injection into the movements that start live; the
         ground body; the other robots' obstacle poses; for a schedule entry the
-        traj time of its first arm movement; UI rebuild; movement 0.
+        traj time of its first arm movement; UI rebuild; the first step's
+        movement (``_default_movement_index``).
 
         M0's authored robot_configuration is null (its start is wherever the
         robot lives right now), so its start_state gets the live pose injected
@@ -3116,15 +3118,16 @@ class HuskyMonitor(Node):
             for mv in self._loaded_movements:
                 if self._set_default_trajectory_time(mv):
                     break
-        # Refresh UI so the Movement slider's range now matches the loaded
-        # movement count (was 0..8 before; now 0..len(movements)-1). In the live
-        # GUI monitor a freshly selected action starts at its first movement
-        # (M0), so reset the index before the rebuild so the slider comes back
-        # at 0. Headless scripts (_is_live_monitor=False) load their own target
+        # Refresh UI so the Movement / Step slider's range now matches the
+        # loaded action. In the live GUI monitor a freshly selected action starts
+        # at its first step (_default_movement_index: movement 0, or in schedule
+        # mode the first step's movement -- a release opens on its retreat), so
+        # set the index before the rebuild so the slider comes back there.
+        # Headless scripts (_is_live_monitor=False) load their own target
         # movement explicitly, so leave their selection alone.
         live = getattr(self, '_is_live_monitor', False)
         if live:
-            self._selected_movement_idx = 0
+            self._selected_movement_idx = self._default_movement_index()
         self.reset_ui(self.goal_arm_pose)
 
         # Trajectories now live on mv objects in memory (loaded natively via
@@ -3471,7 +3474,8 @@ class HuskyMonitor(Node):
         Called every UI tick. Reads the live widget positions rather than the
         cached indices, so the text always names the file / movement that
         'Load BarAction' and 'Load Movement' would actually act on -- a label
-        that lagged a drag would be worse than no label at all.
+        that lagged a drag would be worse than no label at all. In schedule
+        mode the second line names the operator step (``step_readout_text``).
         """
         text = getattr(self, 'bar_action_file_text', None)
         if text is not None:
@@ -3484,10 +3488,17 @@ class HuskyMonitor(Node):
         text = getattr(self, 'bar_movement_text', None)
         if text is not None:
             movements = self._shown_movements() or []
-            idx = self._slider_index(getattr(self, 'bar_movement_slider', None),
-                                     self._selected_movement_idx, len(movements))
+            steps = self._shown_steps()
+            idx = self._selected_movement_index()
             if idx < 0:
                 text.set_text("(load a BarAction first)")
+            elif steps is not None:
+                # * Schedule mode: the step, and the tool steps that run with it.
+                k = step_index_of(steps, idx)
+                step = steps[k]
+                text.set_text(step_readout_text(
+                    k, len(steps), movements[step.primary],
+                    tuple(movements[j] for j in step.absorbed)))
             else:
                 mv = movements[idx]
                 # The id plus its kind (what the planner and exec steer by). The
@@ -3535,11 +3546,13 @@ class HuskyMonitor(Node):
         trajectory), so 'Exec' can never replay the previous movement's path.
 
         Args:
-            index (int | None): Movement index to load. None = the 'Movement'
-                slider's (the 'Load Movement' button). Code that loads a
-                movement of its own choice passes it here: in the GUI the
-                slider widget wins over ``_selected_movement_idx``, so setting
-                that attribute alone would load the slider's movement instead.
+            index (int | None): Movement index to load. None = the slider's
+                (the 'Load Movement' button; in schedule mode the 'Step'
+                slider's step, see ``_selected_movement_index``). Code that
+                loads a movement of its own choice passes it here: in the GUI
+                the slider widget wins over ``_selected_movement_idx``, so
+                setting that attribute alone would load the slider's movement
+                instead.
         """
         if self._refuse_while_tasks_run('Load Movement', schedule_only=True):
             return
@@ -3552,10 +3565,9 @@ class HuskyMonitor(Node):
             return
         n_movements = len(self._loaded_movements)
         if index is None:
-            # Same shared resolution as load_bar_action_file, so this loads
-            # exactly the movement the '-> movement' readout names.
-            idx = self._slider_index(getattr(self, 'bar_movement_slider', None),
-                                     self._selected_movement_idx, n_movements)
+            # Same shared resolution as the readouts, so this loads exactly the
+            # movement the '-> movement' / '-> step' readout names.
+            idx = self._selected_movement_index()
         elif 0 <= index < n_movements:
             idx = int(index)
         else:
@@ -4777,7 +4789,8 @@ class HuskyMonitor(Node):
           via ``world.execute_arm_trajectory_both``.
         When the export asks for another controller, that is warned once per
         movement (``_warn_controller_mismatch``). A movement class the monitor
-        does not know is refused.
+        does not know is refused. In schedule mode one info line per tool step
+        that runs with this movement (``schedule_ui.absorbed_tool_note``).
 
         Refuses when the live arms are not already parked at the trajectory's
         first waypoint -- press 'Move Arms to Movement Start' first. Also
@@ -4874,6 +4887,13 @@ class HuskyMonitor(Node):
         runs = (CONTROLLER_CARTESIAN_COMPLIANT if kind in COMPLIANT_KINDS
                 else CONTROLLER_JOINT_TRACKING)
         self._warn_controller_mismatch(mv, runs)
+        # * Schedule mode: the operator does not stop on the tool steps that run
+        # * with this movement, so say here what happens to each of them.
+        steps = self._shown_steps()
+        k = step_index_of(steps, self.current_movement_index) if steps is not None else None
+        if k is not None:
+            for j in steps[k].absorbed:
+                self.get_logger().info(absorbed_tool_note(self._loaded_movements[j]))
         # ! Always call through the world module (world.execute_*): the dispatch
         # ! check (headless_schedule_smoke) replaces these module attributes.
         if kind in COMPLIANT_KINDS:
@@ -8510,7 +8530,7 @@ class HuskyMonitor(Node):
         return "'Load entry'" if getattr(self, '_schedule', None) is not None else "'Load BarAction'"
 
     def _shown_movements(self) -> list:
-        """The movements the Movement slider and its readouts list.
+        """The movements the Movement / Step slider and its readouts list.
 
         Returns:
             list: The connected robot's loaded movements, or -- while another
@@ -8521,8 +8541,73 @@ class HuskyMonitor(Node):
             return list(loaded.movements)
         return self._loaded_movements
 
+    def _shown_steps(self) -> Optional[list]:
+        """The operator steps of the shown movements (schedule mode only).
+
+        A tool step that runs with the next arm movement is folded into it
+        (``bar_action_io.operator_steps``), so the operator does not stop on it.
+        Worked out again on every call: the list is short.
+
+        Returns:
+            list[OperatorStep] | None: The steps of ``_shown_movements()`` (empty
+            before a load); None on a legacy problem, whose slider keeps
+            listing movements.
+        """
+        if getattr(self, '_schedule', None) is None:
+            return None
+        return operator_steps(self._shown_movements() or [])
+
+    def _selected_movement_index(self) -> int:
+        """The movement index the 'Movement' / 'Step' slider points at.
+
+        The ONE place the slider position becomes a movement index. In
+        schedule mode the slider widget holds a STEP index, which maps to that
+        step's movement (its primary); without a widget (the headless scripts)
+        ``_selected_movement_idx`` is used as it is. ``_selected_movement_idx``
+        is always a MOVEMENT index.
+
+        Returns:
+            int: A valid index into ``_shown_movements()``, or -1 when there are
+            no movements.
+        """
+        movements = self._shown_movements() or []
+        slider = getattr(self, 'bar_movement_slider', None)
+        steps = self._shown_steps()
+        if steps is None or slider is None:
+            return self._slider_index(slider, self._selected_movement_idx, len(movements))
+        if not steps:
+            return -1
+        cached_step = step_index_of(steps, self._selected_movement_idx) or 0
+        return steps[self._slider_index(slider, cached_step, len(steps))].primary
+
+    def _on_step_slider(self, value: float) -> None:
+        """'Step' slider callback: remember the picked step's movement index.
+
+        Args:
+            value (float): The slider position (a step index).
+        """
+        steps = self._shown_steps() or []
+        if steps:
+            k = max(0, min(int(round(float(value))), len(steps) - 1))
+            self._selected_movement_idx = steps[k].primary
+
+    def _default_movement_index(self) -> int:
+        """The movement a freshly loaded action opens on.
+
+        Returns:
+            int: Schedule mode: the first step's movement (a release entry opens
+            on its retreat, the tool steps before it run with it). Legacy
+            problems: 0.
+        """
+        steps = self._shown_steps()
+        return steps[0].primary if steps else 0
+
     def _now_line(self) -> str:
-        """The 'Now:' line: loaded entry and movement (schedule_ui.now_line_text).
+        """The 'Now:' line: loaded entry, step and movement (schedule_ui.now_line_text).
+
+        An entry is only ever loaded in schedule mode, so the line counts
+        operator steps (``_shown_steps``); a legacy problem gets the "no entry
+        loaded" line.
 
         Returns:
             str: The line.
@@ -8530,17 +8615,16 @@ class HuskyMonitor(Node):
         entry = getattr(self, '_loaded_entry', None)
         if entry is None:
             return now_line_text(None, None, 0, None)
+        steps = self._shown_steps() or []
         if self._entry_is_executable_here(entry):
-            movements = self._loaded_movements
-            return now_line_text(entry, self.current_movement_index, len(movements),
-                                 self.current_movement)
+            return now_line_text(entry, step_index_of(steps, self.current_movement_index),
+                                 len(steps), self.current_movement)
         # Display only: nothing is loaded into the cell, so follow the slider.
-        movements = self._shown_movements()
-        idx = self._slider_index(getattr(self, 'bar_movement_slider', None),
-                                 self._selected_movement_idx, len(movements))
+        idx = self._selected_movement_index()
         if idx < 0:
             return now_line_text(entry, None, 0, None)
-        return now_line_text(entry, idx, len(movements), movements[idx])
+        return now_line_text(entry, step_index_of(steps, idx), len(steps),
+                             self._shown_movements()[idx])
 
     def _refresh_schedule_readouts(self) -> None:
         """Keep the schedule panel's lines in step with the sliders (every UI tick).
@@ -8599,11 +8683,12 @@ class HuskyMonitor(Node):
         """'Load entry' button: load one schedule entry's action.
 
         The connected robot's own entry goes through ``_finish_action_load``
-        (cell session, live start, obstacle beliefs, UI, movement 0), exactly like
-        'Load BarAction'. ! Another robot's entry is loaded for DISPLAY ONLY: its
-        states name that robot's joints, so they are never pushed into this
-        robot's cell. Its movements are listed, the readouts follow it, Plan /
-        Exec / step stay refused, and 'Mark entry done' still works.
+        (cell session, live start, obstacle beliefs, UI, the first step's
+        movement), exactly like 'Load BarAction'. ! Another robot's entry is
+        loaded for DISPLAY ONLY: its states name that robot's joints, so they
+        are never pushed into this robot's cell. Its movements are listed, the
+        readouts follow it, Plan / Exec / step stay refused, and 'Mark entry
+        done' still works.
 
         The previous entry's loaded movement, planned path and joint preview are
         dropped first, so nothing planned for it can be executed on this one.
@@ -8660,7 +8745,7 @@ class HuskyMonitor(Node):
         for i, (mv, kind) in enumerate(zip(loaded.movements, loaded.kinds)):
             print(f"  [{i}] {mv.movement_id} [{kind.value}] ctrl={mv.controller}")
         if getattr(self, '_is_live_monitor', False):
-            self._selected_movement_idx = 0
+            self._selected_movement_idx = self._default_movement_index()
         self.reset_ui(self.goal_arm_pose)
 
     def set_ignore_built_assembly_collisions(self, on: bool) -> None:
@@ -9757,15 +9842,30 @@ class HuskyMonitor(Node):
             # says so and _slider_index returns -1); the range is never a
             # single value, which is what would segfault pybullet's legacy
             # GUI slider (same guard as bar_action_file_slider).
-            self.bar_movement_slider = Slider(
-                "Movement (index in this action file)",
-                lambda v: setattr(self, '_selected_movement_idx', int(round(float(v)))),
-                0, max(1, n_movs - 1),
-                int(self._selected_movement_idx),
-                integer=True,
-            )
-            # Same idea for the movement index: show the movement_id it picks.
-            self.bar_movement_text = StatusText("  -> movement", "(none)")
+            steps = self._shown_steps()
+            if steps is not None:
+                # * Schedule mode: the slider walks the operator steps (a tool
+                # * step that runs with the next arm movement has no position of
+                # * its own); _selected_movement_index maps a step to its movement.
+                self.bar_movement_slider = Slider(
+                    "Step",
+                    self._on_step_slider,
+                    0, max(1, len(steps) - 1),
+                    int(step_index_of(steps, self._selected_movement_idx) or 0),
+                    integer=True,
+                )
+                # Names the step it picks and the tool steps that run with it.
+                self.bar_movement_text = StatusText("  -> step", "(none)")
+            else:
+                self.bar_movement_slider = Slider(
+                    "Movement (index in this action file)",
+                    lambda v: setattr(self, '_selected_movement_idx', int(round(float(v)))),
+                    0, max(1, n_movs - 1),
+                    int(self._selected_movement_idx),
+                    integer=True,
+                )
+                # Same idea for the movement index: show the movement_id it picks.
+                self.bar_movement_text = StatusText("  -> movement", "(none)")
             self.buttons.append(Button('Load Movement', self.load_selected_movement))
             if show_assembly_knobs:
                 # Transfer derived-start carry anchor selector (see M1_HOME_ANCHOR_CHOICES).

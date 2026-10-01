@@ -19,7 +19,7 @@ import pybullet_planning as pp
 from husky_assembly_teleop import DATA_DIRECTORY, CALIBRATION_DATE, EXPERIMENT_DATA_DIRECTORY, CALIBRATION_DATA_DIRECTORY, DESIGN_PROBLEM_NAME
 from husky_assembly_teleop.common import Husky, TrackedObject, AssemblyObject
 from husky_assembly_teleop.robot_registry import RobotSpec, other_robots, robot_from_env
-from husky_assembly_teleop.bar_action_io import COMPLIANT_KINDS, MovementKind, tool_event
+from husky_assembly_teleop.bar_action_io import COMPLIANT_KINDS, MovementKind, tool_event, tool_runs_with_next_motion
 from husky_assembly_teleop.schedule_io import load_schedule, problem_root
 from husky_assembly_teleop.progress_io import PARKED_BASE_FRAME, RobotBelief, load_progress
 import husky_assembly_teleop.husky_planning as planning
@@ -4591,17 +4591,21 @@ def run_scaffolding_tool_step(monitor: 'HuskyMonitor',
                               mv: ScaffoldingToolMovement) -> Generator[None, None, None]:
     """Run one of Cindy's scaffolding-tool steps (``ScaffoldingToolMovement``).
 
-    - 'tighten' with ``overlaps_next`` (J_M4) and 'ungrasp' (R_M1): mark only.
-      ``execute_planned_trajectory_compliant`` already sends them: the compliant
-      insert (M2) starts the joint motors TIGHTENING, the compliant retreat (M3)
-      starts the gripper motors LOOSENING.
-    - 'untighten' (R_M0): mark only, on purpose (user decision 2026-09-30). The
-      proven compliant retreat (M3) never reverses the JOINT motor, and doing so
-      may back the just-tightened joint screw off the bar. If the tool has to
-      back off, the operator uses the manual 'Loosen Joint' button.
-    - 'grasp' (J_M2): after the operator confirms, STOP (clears a left-over
-      stall), then gripper motor TIGHTEN (+1) on every arm until each reports
-      STALLED (ceiling HOLD_FOR_STALL_TIMEOUT_S), then STOP.
+    - The steps that run with the next arm movement
+      (``bar_action_io.tool_runs_with_next_motion``) are marked done only:
+      - 'tighten' with ``overlaps_next`` (the joint tighten before the insert)
+        and 'ungrasp' (the release's gripper loosen):
+        ``execute_planned_trajectory_compliant`` already sends them: the
+        compliant insert starts the joint motors TIGHTENING, the compliant
+        retreat starts the gripper motors LOOSENING.
+      - 'untighten' (the release's joint loosen): on purpose (user decision
+        2026-09-30). The proven compliant retreat never reverses the JOINT
+        motor, and doing so may back the just-tightened joint screw off the
+        bar. If the tool has to back off, the operator uses the manual
+        'Loosen Joint' button.
+    - 'grasp' (the jointing half's bar grasp): after the operator confirms, STOP
+      (clears a left-over stall), then gripper motor TIGHTEN (+1) on every arm
+      until each reports STALLED (ceiling HOLD_FOR_STALL_TIMEOUT_S), then STOP.
 
     Motor and direction are the ones the manual 'Tighten Gripper' button sends.
     'Cancel Exec' during the wait stops the motors early.
@@ -4617,16 +4621,17 @@ def run_scaffolding_tool_step(monitor: 'HuskyMonitor',
     log = monitor.get_logger()
     tool_action, tool_names, overlaps_next = tool_event(mv)
     tag = f'[tool step {mv.movement_id}]'
-    if overlaps_next or tool_action == 'ungrasp':
-        runs_in = ('the compliant insert that follows' if overlaps_next
-                   else 'the compliant retreat')
-        log.info(f"{tag} '{tool_action}' is issued by the compliant insert/retreat "
-                 f"execution ({runs_in}); marked done here, nothing sent.")
-        return
-    if tool_action == 'untighten':
-        # ! Mark only (see the docstring): the joint motor is never reversed here.
-        log.info(f"{tag} 'untighten' is left to the operator, like the proven M3 flow: "
-                 f"nothing sent. Use the manual 'Loosen Joint' button if the tool must back off.")
+    if tool_runs_with_next_motion(mv):
+        if overlaps_next or tool_action == 'ungrasp':
+            runs_in = ('the compliant insert that follows' if overlaps_next
+                       else 'the compliant retreat')
+            log.info(f"{tag} '{tool_action}' is issued by the compliant insert/retreat "
+                     f"execution ({runs_in}); marked done here, nothing sent.")
+        else:
+            # ! The untighten is mark only (see the docstring): the joint motor
+            # ! is never reversed here.
+            log.info(f"{tag} 'untighten' is left to the operator, like the proven M3 flow: "
+                     f"nothing sent. Use the manual 'Loosen Joint' button if the tool must back off.")
         return
 
     hi: HuskyRobotInterface = monitor.huskies[monitor.selected_robot_id].interface

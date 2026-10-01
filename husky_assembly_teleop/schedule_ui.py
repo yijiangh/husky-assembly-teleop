@@ -1,7 +1,7 @@
 """Text and rules behind the monitor's ActionSchedule panel (no UI toolkit here).
 
 The monitor's schedule section lists every schedule entry as one line, names
-the entry and movement the operator is on, and labels the one "run this step"
+the entry and step the operator is on, and labels the one "run this step"
 button. Everything that decides WHAT those widgets say lives here as plain
 functions, so it can be tested without Dear PyGui, PyBullet or ROS:
 
@@ -9,8 +9,11 @@ functions, so it can be tested without Dear PyGui, PyBullet or ROS:
   (arm movements with a goal configuration / a trajectory, sidecar or not)
 - ``missing_action_files(schedule)`` -> entries whose action file is not on disk
 - ``step_button_label(mv)``       -> the label of the step button, None for an arm move
+- ``step_readout_text``           -> the "-> step" readout next to the step slider
+- ``absorbed_tool_note(mv)``      -> the exec log line for a tool step that runs
+  with the arm movement being executed
 - ``entry_row_text`` / ``row_color`` -> one row of the entry list
-- ``now_line_text``               -> the "Now: entry k -- ... -- movement i/n ..." line
+- ``now_line_text``               -> the "Now: entry k -- ... -- step i/n ..." line
 - ``visible_row_window``          -> which rows of a long schedule are shown
 - ``knobs_for_assembly_robot``    -> whether Cindy's M1 / M2 tuning widgets apply
 
@@ -32,6 +35,7 @@ from husky_assembly_teleop.bar_action_io import (
     sidecar_action_path,
     step_kind,
     tool_event,
+    tool_runs_with_next_motion,
 )
 from husky_assembly_teleop.progress_io import STATUS_DONE
 from husky_assembly_teleop.robot_registry import ROLE_ASSEMBLY, RobotSpec
@@ -142,15 +146,93 @@ def step_button_label(mv: Optional[Movement]) -> Optional[str]:
         if tool_action == 'close':
             return 'Exec gripper step: CLOSE + compliant handoff'
         return f'Exec gripper step: {str(tool_action).upper()}'
-    # * Scaffolding: J_M4 tighten (overlaps_next) and R_M1 ungrasp are sent by the
-    # * compliant insert / retreat, so their button only marks them done.
-    if overlaps_next or tool_action == 'ungrasp':
-        return f'Mark tool step done ({tool_action} runs with the next movement)'
-    # ! R_M0 untighten is mark-only too: the joint motor is never reversed by the
-    # ! schedule (it may back the just-tightened screw off the bar).
-    if tool_action == 'untighten':
+    # * Scaffolding steps that run with the next arm movement only mark themselves
+    # * done (bar_action_io.tool_runs_with_next_motion).
+    if tool_runs_with_next_motion(mv):
+        # The joint tighten before the insert and the release's gripper loosen
+        # are sent by the compliant insert / retreat.
+        if overlaps_next or tool_action == 'ungrasp':
+            return f'Mark tool step done ({tool_action} runs with the next movement)'
+        # ! The release's joint untighten: the schedule never reverses the joint
+        # ! motor (it may back the just-tightened screw off the bar).
         return 'Mark tool step done (untighten: use Loosen Joint by hand if needed)'
     return f'Tool step: {tool_action}'
+
+
+def _kind_text(mv: Movement) -> str:
+    """A movement's kind as shown in the panel, e.g. ``'single_linear'``.
+
+    Args:
+        mv (Movement): The movement.
+
+    Returns:
+        str: The ``MovementKind`` value, or the class name for a class the
+        monitor does not know.
+    """
+    try:
+        return movement_kind(mv).value
+    except TypeError:
+        return type(mv).__name__
+
+
+def step_readout_text(step_idx: int, n_steps: int, primary: Movement,
+                      absorbed: tuple = ()) -> str:
+    """The readout next to the step slider: which step, and what it runs.
+
+    Examples (step numbers count from 1)::
+
+        step 4/5: <transfer id>  (dual_constrained_free)
+        step 5/5: <insert id>  (+ <tighten id> runs with it)
+        step 1/2: <retreat id>  (+ <ungrasp id> runs with it; <untighten id> not sent: 'Loosen Joint' by hand if needed)
+
+    Args:
+        step_idx (int): The step's index (0-based) among the action's steps.
+        n_steps (int): How many steps the action has.
+        primary (Movement): The movement the step loads and runs.
+        absorbed (tuple): The tool steps (Movements) that run with it, in order.
+
+    Returns:
+        str: The line.
+    """
+    head = f"step {step_idx + 1}/{n_steps}: {primary.movement_id}"
+    if not absorbed:
+        return f"{head}  ({_kind_text(primary)})"
+    # * An untighten is never sent by the schedule: say so here, before Exec,
+    # * rather than listing it among the tool steps that run with the movement.
+    sent = [mv.movement_id for mv in absorbed if tool_event(mv)[0] != 'untighten']
+    not_sent = [mv.movement_id for mv in absorbed if tool_event(mv)[0] == 'untighten']
+    parts = []
+    if sent:
+        parts.append(f"+ {', '.join(sent)} {'runs' if len(sent) == 1 else 'run'} with it")
+    if not_sent:
+        parts.append(f"{', '.join(not_sent)} not sent: 'Loosen Joint' by hand if needed")
+    return f"{head}  ({'; '.join(parts)})"
+
+
+def absorbed_tool_note(mv: Movement) -> str:
+    """The exec log line for a tool step that runs with the arm movement being executed.
+
+    Same rule as ``step_button_label`` and ``husky_world.run_scaffolding_tool_step``:
+    the compliant insert sends the joint tighten, the compliant retreat sends the
+    gripper loosen, and the untighten is never sent.
+
+    Args:
+        mv (Movement): One of the step's absorbed tool steps
+            (``bar_action_io.tool_runs_with_next_motion`` is True for it).
+
+    Returns:
+        str: The line, naming the tool step's id and its tool action.
+    """
+    tool_action, _names, _overlaps_next = tool_event(mv)
+    head = f"{mv.movement_id} ('{tool_action}') runs with this movement:"
+    # ! Tool action first: an ungrasp / untighten exported with overlaps_next is
+    # ! still not a tighten.
+    if tool_action == 'ungrasp':
+        return f"{head} the compliant retreat sends it (gripper motors LOOSENING)."
+    if tool_action == 'untighten':
+        return (f"{head} nothing is sent (use the manual 'Loosen Joint' button "
+                f"if the tool must back off).")
+    return f"{head} the compliant insert sends it (joint motors TIGHTENING)."
 
 
 def entry_row_text(entry: ScheduleEntry, flags: EntryFlags, status: str, *,
@@ -202,19 +284,20 @@ def row_color(status: str, *, executable: bool, selected: bool) -> tuple:
     return ROW_COLOR_PENDING
 
 
-def now_line_text(entry: Optional[ScheduleEntry], mv_idx: Optional[int], n_mv: int,
+def now_line_text(entry: Optional[ScheduleEntry], step_idx: Optional[int], n_steps: int,
                   mv: Optional[Movement]) -> str:
-    """The "where am I" line: loaded entry and movement.
+    """The "where am I" line: loaded entry, the step it is on and its loaded movement.
 
-    Example: ``'Now: entry 3 -- H B3 by Alice -- movement 3/4
-    B3_H_M2_LM_to_grasp [single_linear] ctrl=joint_tracking'`` (movement numbers
-    count from 1).
+    Example: ``'Now: entry 3 -- H B3 by Alice -- step 3/4 <movement id>
+    [single_linear] ctrl=joint_tracking'``. Step numbers count from 1; a
+    support robot's entry has one step per movement.
 
     Args:
         entry (ScheduleEntry | None): The loaded entry.
-        mv_idx (int | None): The movement's index (0-based) in the entry's action.
-        n_mv (int): How many movements the action has.
-        mv (Movement | None): The movement.
+        step_idx (int | None): The step's index (0-based) among the action's
+            steps (``bar_action_io.operator_steps``).
+        n_steps (int): How many steps the action has.
+        mv (Movement | None): The loaded movement.
 
     Returns:
         str: The line.
@@ -222,14 +305,10 @@ def now_line_text(entry: Optional[ScheduleEntry], mv_idx: Optional[int], n_mv: i
     if entry is None:
         return 'Now: no entry loaded (pick one, then Load entry)'
     head = f"Now: entry {entry.index} -- {entry.kind} {entry.bar_id} by {entry.robot}"
-    if mv is None or mv_idx is None:
+    if mv is None or step_idx is None:
         return f"{head} -- no movement loaded"
-    try:
-        kind = movement_kind(mv).value
-    except TypeError:
-        kind = type(mv).__name__
-    return (f"{head} -- movement {mv_idx + 1}/{n_mv} {mv.movement_id} "
-            f"[{kind}] ctrl={mv.controller}")
+    return (f"{head} -- step {step_idx + 1}/{n_steps} {mv.movement_id} "
+            f"[{_kind_text(mv)}] ctrl={mv.controller}")
 
 
 def visible_row_window(n: int, selected: int, size: int) -> tuple:
