@@ -3140,7 +3140,7 @@ class HuskyMonitor(Node):
         # the previously loaded action until 'Load Movement' is clicked. Only
         # in the live monitor; the scripts drive their own movement loads.
         if live:
-            self.load_selected_movement()
+            self.load_selected_movement(index=self._selected_movement_idx)
             # * Mount-once mocap test: mark where this bar ends up, so the base
             # * can be parked by eye before the transfer loop.
             if self.BAR_ACTION_MOCAP_ACCURACY_TEST:
@@ -3527,12 +3527,19 @@ class HuskyMonitor(Node):
               f"{', free move home' if free_home else ''})")
         return True
 
-    def load_selected_movement(self):
+    def load_selected_movement(self, index: Optional[int] = None):
         """Load the selected movement's start state into cfab + goal ghost.
 
         In schedule mode the planned-trajectory slots and the joint preview are
         emptied first (and refilled below when the movement carries its own
         trajectory), so 'Exec' can never replay the previous movement's path.
+
+        Args:
+            index (int | None): Movement index to load. None = the 'Movement'
+                slider's (the 'Load Movement' button). Code that loads a
+                movement of its own choice passes it here: in the GUI the
+                slider widget wins over ``_selected_movement_idx``, so setting
+                that attribute alone would load the slider's movement instead.
         """
         if self._refuse_while_tasks_run('Load Movement', schedule_only=True):
             return
@@ -3543,11 +3550,19 @@ class HuskyMonitor(Node):
         if not self._loaded_movements:
             self.get_logger().warn(f"No BarAction loaded; click {self._load_hint()} first.")
             return
-        # Same shared resolution as load_bar_action_file, so this loads
-        # exactly the movement the '-> movement' readout names.
-        idx = self._slider_index(getattr(self, 'bar_movement_slider', None),
-                                 self._selected_movement_idx,
-                                 len(self._loaded_movements))
+        n_movements = len(self._loaded_movements)
+        if index is None:
+            # Same shared resolution as load_bar_action_file, so this loads
+            # exactly the movement the '-> movement' readout names.
+            idx = self._slider_index(getattr(self, 'bar_movement_slider', None),
+                                     self._selected_movement_idx, n_movements)
+        elif 0 <= index < n_movements:
+            idx = int(index)
+        else:
+            self.get_logger().warn(
+                f"Load Movement: no movement {index}; this action has {n_movements}.")
+            return
+        # The slider is rebuilt from this (reset_ui below), so it follows the load.
         self._selected_movement_idx = idx
         mv = self._loaded_movements[idx]
 
@@ -3977,9 +3992,9 @@ class HuskyMonitor(Node):
         """Plan transfer -> insert -> retreat -> travel to load -> free move home, live.
 
         For each index of ``_chain_sequence()`` (the loaded movements of the kinds
-        in ``_CHAIN_KIND_ORDER``): set the movement slider to that index, call
-        ``load_selected_movement()`` so the cfab scene / goal viz sync, then
-        call ``plan_selected_movement()``. ``plan_selected_movement`` already
+        in ``_CHAIN_KIND_ORDER``): call ``load_selected_movement(index=idx)``
+        so the cfab scene / goal viz sync (the slider follows), then call
+        ``plan_selected_movement()``. ``plan_selected_movement`` already
         applies the live base via ``_apply_live_base_to_movement``, warm-starts
         IK from any stored start conf, dispatches to the kind's
         planner, and routes through ``_accept_trajectory`` (state propagation
@@ -4036,9 +4051,9 @@ class HuskyMonitor(Node):
             print(f"\n=== [Plan Chain {step}/{len(sequence)}] {kind.value} idx={idx} "
                   f"id={mv.movement_id!r} ===")
 
-            # Simulate the UI: slider -> Load Movement -> Plan Movement.
-            self._selected_movement_idx = idx
-            self.load_selected_movement()
+            # Simulate the UI: Load Movement -> Plan Movement. The index is
+            # passed in: in the GUI the slider would win over an attribute.
+            self.load_selected_movement(index=idx)
             self.plan_selected_movement()
 
             planned_traj = getattr(self.current_movement, 'trajectory', None)
@@ -4148,8 +4163,9 @@ class HuskyMonitor(Node):
         self._inject_ground_rigid_body_state(clean_mv.start_state)
         self._mocap_hide_applied = False
         # Re-run the standard Load Movement path so movement_start_state,
-        # target_ee_frames, and the cfab scene sync to the fresh object.
-        self.load_selected_movement()
+        # target_ee_frames, and the cfab scene sync to the fresh object (this
+        # movement, even when the slider was moved since it was loaded).
+        self.load_selected_movement(index=idx)
 
     def reset_all_movements_to_clean(self):
         """Reload the pristine BarAction from disk (matches
@@ -6855,7 +6871,7 @@ class HuskyMonitor(Node):
         print("[M1 preview] 'Traj viz time' 0 = START (bar-loading), 1 = GOAL "
               "(approach); cfab 'Constrained t' slider steps the same waypoints. " + hint)
 
-    def confirm_m1_manual_start(self):
+    def confirm_m1_manual_start(self) -> bool:
         """Human-in-the-loop M1 start: IK-check the bar pose chosen on the sliders and adopt it.
 
         Instead of the automatic derivation (a 120 s sweep that is sensitive
@@ -6871,16 +6887,21 @@ class HuskyMonitor(Node):
         Movement' on M1 then runs the BiRRT from that start; 'Plan Movement'
         on M0 drives the arms there. Re-adjust and confirm again freely --
         each confirm takes well under a second.
+
+        Returns:
+            bool: True when the start was adopted; False when the transfer is
+            not loaded, no goal is known, or the IK found no collision-free
+            arm configuration for the bar pose (already warned).
         """
         ctx = self._m1_live_context('Confirm manual start')
         if ctx is None:
-            return
+            return False
         mv, state, goal_conf, home_anchor = ctx
         if goal_conf is None:
             self.get_logger().warn(
                 "[M1 manual] needs M2's authored start conf as the goal "
                 "(target_ee_frames alone are not enough here).")
-            return
+            return False
         anchor = home_anchor or 'all'
         slide_m, roll_deg, perp1_m, perp2_m = self._m1_manual_offsets()
         planner = self.cfab.planner
@@ -6905,12 +6926,12 @@ class HuskyMonitor(Node):
             self.get_logger().warn(
                 "[M1 manual] the bar is not attached in M1's start state; the transfer "
                 "needs it in the grippers (see _ensure_bar_attached_for_mocap).")
-            return
+            return False
         if reason == 'no_ik':
             self.get_logger().warn(
                 "[M1 manual] no arm configuration holds the bar there -- slide, roll or "
                 "shift it, or pick another anchor.")
-            return
+            return False
         if reason == 'collision':
             self.get_logger().warn(
                 "[M1 manual] the arms collide holding the bar there (pair drawn) -- "
@@ -6919,7 +6940,7 @@ class HuskyMonitor(Node):
             for n, v in zip(names_12, result['collision_conf']):
                 diag_state.robot_configuration[n] = float(v)
             visualize_goal_ik_collision(self, diag_state)
-            return
+            return False
         if result['reseeded']:
             print("[M1 manual] note: the branch nearest the goal collided; another "
                   "IK branch was taken (the BiRRT may find it harder to connect).")
@@ -6929,13 +6950,72 @@ class HuskyMonitor(Node):
             result['grasp_bar_from_left'], result['grasp_bar_from_right'],
             goal_conf, corridor=None, source='manual')
         self._hide_m1_manual_ghost()
-        self.adopt_m1_derived_start()
+        if not self.adopt_m1_derived_start():
+            return False
         fi = self._loaded_index_of(MovementKind.DUAL_FREE, free_home=False)
         free_to_load = ('the travel to load' if fi is None else
                         f"{self._loaded_movements[fi].movement_id} (index {fi})")
         print(f"[M1 manual] start adopted -> transfer start / travel-to-load goal. 'Plan "
               f"Movement' on {mv.movement_id} runs the BiRRT from it; {free_to_load} -> "
               f"'Plan Movement' drives the arms there.")
+        return True
+
+    def confirm_transfer_start_and_plan_free_to_load(self) -> bool:
+        """'Confirm transfer start + plan travel to load' button: two clicks in one.
+
+        First 'Transfer start: Confirm manual pose (IK check)'
+        (``confirm_m1_manual_start``) with the pose on the transfer-start
+        sliders; when that start is adopted (it becomes the travel to load's
+        goal), the travel to load is loaded and planned ('Load Movement' +
+        'Plan Movement'). It stays loaded with its planned path on screen, so
+        the next click is 'Exec'. Works straight after 'Load entry': the
+        transfer is loaded first when another movement is.
+
+        When the start is not adopted, nothing is planned and the transfer
+        stays loaded, so the sliders can be adjusted and the button clicked
+        again. The separate confirm button stays for adjusting the pose
+        without planning.
+
+        Returns:
+            bool: True when the travel to load got a trajectory; False when the
+            start was not adopted or the plan failed (already warned).
+        """
+        what = 'Confirm transfer start + plan travel to load'
+        if self._refuse_while_tasks_run(what, schedule_only=True):
+            return False
+        if self._refuse_display_only_entry(what):
+            return False
+        if not self._loaded_movements:
+            self.get_logger().warn(f"No BarAction loaded; click {self._load_hint()} first.")
+            return False
+        ti = self._loaded_index_of(MovementKind.DUAL_CONSTRAINED_FREE)
+        fi = self._loaded_index_of(MovementKind.DUAL_FREE, free_home=False)
+        if ti is None or fi is None:
+            self.get_logger().warn(
+                f"{what}: this action has no transfer or no travel to load.")
+            return False
+        # ! Read the transfer-start sliders BEFORE loading the transfer: that
+        # ! load rebuilds them from their cached values, and these two calls
+        # ! copy the sliders' live positions into those caches.
+        self._m1_manual_offsets()
+        self._m1_home_anchor()
+        if self.current_movement_index != ti:
+            self.load_selected_movement(index=ti)
+        if not self.confirm_m1_manual_start():
+            self.get_logger().warn(f"{what}: transfer start not adopted; nothing planned.")
+            return False
+        self.load_selected_movement(index=fi)
+        self.plan_selected_movement()
+        free_to_load = self._loaded_movements[fi]
+        if free_to_load.trajectory is None:
+            self.get_logger().warn(
+                f"{what}: {free_to_load.movement_id} has no trajectory (see the "
+                f"planner's warning above).")
+            return False
+        self.get_logger().info(
+            f"{what}: {free_to_load.movement_id} planned; check the preview, then "
+            f"'Exec Selected Mv Traj (auto)'.")
+        return True
 
     def derive_m1_endpoints_live(self):
         """Run ONLY M1's start derivation against the live base -- no RRT --
@@ -7080,7 +7160,7 @@ class HuskyMonitor(Node):
             except Exception:
                 pass
 
-    def adopt_m1_derived_start(self):
+    def adopt_m1_derived_start(self) -> bool:
         """Make the last derived START M1's start conf and M0's goal.
 
         Writes ``self._m1_derived['start_conf']`` into M1's
@@ -7104,16 +7184,20 @@ class HuskyMonitor(Node):
         ! (_clear_m1_start_conf_without_trajectory) is enforced only when an
         ! M1 plan FAILS, so the adopted start survives normal use; a later
         ! successful 'Plan Movement' on M1 simply overwrites it.
+
+        Returns:
+            bool: True when a start was adopted; False when there was nothing
+            to adopt or no transfer movement (already warned).
         """
         derived = getattr(self, '_m1_derived', None)
         if not derived:
             self.get_logger().warn(
                 "Nothing to adopt: click 'Transfer start: Derive start/goal only' first.")
-            return
+            return False
         m1 = self._loaded_movement_of(MovementKind.DUAL_CONSTRAINED_FREE)
         if m1 is None or m1.start_state is None:
             self.get_logger().warn("No transfer movement with a start_state is loaded.")
-            return
+            return False
         m1.start_state.robot_configuration = conf_from_12vec(derived['start_conf'])
         print(f"[M1 adopt] {m1.movement_id!r}.start_state.robot_configuration <- derived start "
               f"(no M1 trajectory; intended for the mount-once protocol).")
@@ -7148,6 +7232,7 @@ class HuskyMonitor(Node):
         if fi is not None:
             print(f"[M1 adopt] next: select {self._loaded_movements[fi].movement_id} "
                   f"(index {fi}) -> Load Movement -> Plan Movement -> Exec.")
+        return True
 
     # How far the tool0_L -> tool0_R transform may differ between M1's start
     # and its goal before the two configurations count as holding the bar
@@ -9716,6 +9801,9 @@ class HuskyMonitor(Node):
                     -M1_MANUAL_SHIFT_RANGE_M, M1_MANUAL_SHIFT_RANGE_M, float(self._m1_manual_perp2_m))
                 self.buttons.append(Button('Transfer start: Confirm manual pose (IK check)',
                                            self.confirm_m1_manual_start))
+                # * The same confirm, then the travel to load is loaded and planned.
+                self.buttons.append(Button('Confirm transfer start + plan travel to load',
+                                           self.confirm_transfer_start_and_plan_free_to_load))
             else:
                 self.m1_home_anchor_slider = None
                 self.m1_manual_slide_slider = None

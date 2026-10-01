@@ -758,3 +758,7 @@ Nothing depends on an absorbed step being visited (checked: mark-only writes no 
 - F3 (support robot live goal): `_resolve_single_arm_goal_live` in the SINGLE_FREE branch of `_plan_by_kind`.
   Smoke 67/67 under both flag settings (base +3 cm: 67 points, flange 0.94 mm / 0.0026 rad from the approach
   pose, goal differs from the export by 0.081 rad; H_M2 plans 22 points from it; base +2 m refused).
+- F1 (one button) + `load_selected_movement(index=...)`; Plan Chain, `_finish_action_load` and
+  `reset_selected_movement_to_clean` load by explicit index (in the GUI the slider widget won over the cached index).
+  Smoke 69/69. The real manual-start IK at the default sliders on B1 found a start ("branch nearest the goal
+  collided; another IK branch was taken"; start-to-goal joint difference 6.14 rad) — F8 territory.

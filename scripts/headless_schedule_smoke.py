@@ -28,6 +28,12 @@ arm moves before the transfer (the manual mount, the tool grasp) and into the
 travel to load's goal; accepting a transfer plan writes its last waypoint into
 the insert's start and into the tighten step before it.
 
+Then the transfer start check (its own Cindy monitor, entry 0, the real
+manual-start IK, the travel to load's planner replaced by a recorder): 'Confirm
+transfer start + plan travel to load' with the bar 3 m away plans nothing and
+leaves the transfer loaded; with the default sliders right after 'Load entry'
+it loads the travel to load and plans it, its goal being the adopted start.
+
 Then the flow, on the fixture's first hold (Alice holds B3):
 
   Cindy's run (domain 86)
@@ -95,7 +101,7 @@ Usage:
     also ``export HUSKY_IK_BACKEND=gradient``.)
 
 Exit code 0 when every check passes, 1 otherwise. Loads the ~340 MB
-RobotCell files one at a time (Cindy's three times, Alice's, then Cindy's again; ~1 GB RAM each);
+RobotCell files one at a time (Cindy's four times, Alice's, then Cindy's again; ~1 GB RAM each);
 takes under a minute (most of it Cindy's R_M3 free plan to home).
 """
 
@@ -876,6 +882,93 @@ def carry_check(results: Results, problem: str, root: str, schedule) -> None:
 
 
 # * ---------------------------------------------------------------------------
+# * Transfer start: confirm it and plan the travel to load in one click (F1)
+# * ---------------------------------------------------------------------------
+
+def transfer_start_check(results: Results, problem: str, root: str, schedule) -> None:
+    """The 'Confirm transfer start + plan travel to load' button on entry 0 (J).
+
+    Runs the real manual-start IK (``confirm_m1_manual_start``); the travel to
+    load's planner is replaced by a recorder that plans nothing. (a) A bar
+    pose 3 m away (perpendicular shift 1): the button returns False, the
+    recorder is not called, the transfer stays loaded, the travel to load has
+    no goal, and the warning says no arm configuration holds the bar. (b) The
+    sliders at their defaults, right after a fresh 'Load entry': the recorder
+    is called once with the travel to load, which is left loaded, and its goal
+    is the adopted transfer start.
+
+    Args:
+        results (Results): Where the checks go.
+        problem (str): Problem folder name.
+        root (str): The scratch problem folder (unused; same signature as the other runs).
+        schedule (ActionSchedule): The scratch schedule.
+    """
+    cindy = robot_by_name(ASSEMBLY_ROBOT)
+    first = schedule.entry(0)
+    print(f"\n{'=' * 30} TRANSFER START CHECK {'=' * 30}")
+    base = schedule.load_action(first, prefer_sidecar=False).movements[-1].start_state.robot_base_frame
+    monitor, _iface, log = make_monitor(cindy, base, problem)
+    add_viz_huskies(monitor, cindy)
+    # The monitor's __init__ (skipped by the harness) sets the transfer-start caches.
+    monitor._m1_derived = None
+    monitor._m1_adopt_writes_file = False  # no file write
+    monitor._m1_home_anchor_idx = 0
+    monitor._m1_manual_slide_m = monitor._m1_manual_roll_deg = 0.0
+    monitor._m1_manual_perp1_m = monitor._m1_manual_perp2_m = 0.0
+    # Display only (the PyBullet 'Constrained t' slider): replaced by a function that does nothing.
+    monitor._build_trajectory_waypoint_sliders = lambda: None
+    planned = []  # the movements the travel to load's planner was called with
+
+    def record_free_to_load(mv):
+        planned.append(mv)
+        return None  # nothing planned
+
+    monitor._plan_M0_dispatch = record_free_to_load
+    try:
+        monitor._load_schedule_state()
+
+        # * --- (a) a bar pose out of reach: nothing planned, the transfer stays loaded
+        monitor.load_schedule_entry(first.index)
+        movements = monitor._loaded_movements
+        ti = monitor._loaded_index_of(MovementKind.DUAL_CONSTRAINED_FREE)
+        fi = monitor._loaded_index_of(MovementKind.DUAL_FREE, free_home=False)
+        monitor._m1_manual_perp1_m = 3.0
+        n = len(log.msgs)
+        ok = monitor.confirm_transfer_start_and_plan_free_to_load()
+        no_conf = log.since(n, 'warn', 'no arm configuration')
+        nothing = log.since(n, 'warn', 'nothing planned')
+        results.check(f"transfer start: bar 3 m away -> False, nothing planned, "
+                      f"{movements[ti].movement_id} stays loaded, "
+                      f"{movements[fi].movement_id} has no goal",
+                      ok is False and not planned and monitor.current_movement_index == ti
+                      and movements[fi].target_configuration is None
+                      and len(no_conf) == 1 and len(nothing) == 1,
+                      f"returned {ok}, planner calls {len(planned)}, "
+                      f"loaded {monitor.current_movement_index}, "
+                      f"warning {no_conf[0] if no_conf else 'none'!r}")
+
+        # * --- (b) default sliders after a fresh Load entry: the travel to load is planned
+        monitor._m1_manual_perp1_m = 0.0
+        monitor.load_schedule_entry(first.index)
+        movements = monitor._loaded_movements
+        ok = monitor.confirm_transfer_start_and_plan_free_to_load()
+        free_to_load = movements[fi]
+        transfer_start = movements[ti].start_state.robot_configuration
+        goal_diff = np.inf
+        if free_to_load.target_configuration is not None and transfer_start is not None:
+            goal_diff = float(np.abs(vec12_from_conf(free_to_load.target_configuration)
+                                     - vec12_from_conf(transfer_start)).max())
+        results.check(f"transfer start: default sliders -> {free_to_load.movement_id} loaded "
+                      f"and planned once, its goal = the adopted transfer start",
+                      len(planned) == 1 and planned[0] is free_to_load
+                      and monitor.current_movement is free_to_load and goal_diff < SEED_TOL,
+                      f"returned {ok} (the recorder plans nothing), planner calls {len(planned)}, "
+                      f"loaded {monitor.current_movement_index}, |goal - transfer start| {goal_diff:.1e}")
+    finally:
+        monitor.cfab.close()
+
+
+# * ---------------------------------------------------------------------------
 # * Built-structure switch: collisions with the built bars checked or ignored
 # * ---------------------------------------------------------------------------
 
@@ -1643,7 +1736,7 @@ def cindy_restart_run(results: Results, problem: str, root: str, schedule) -> No
 # * ---------------------------------------------------------------------------
 
 def main(argv: Optional[list] = None) -> int:
-    """Build the scratch problem, run dispatch check, carry check, Cindy, Alice, Cindy's restart; print the summary.
+    """Build the scratch problem, run dispatch, carry and transfer start checks, Cindy, Alice, Cindy's restart; print the summary.
 
     Args:
         argv (list | None): Command line (None = ``sys.argv[1:]``).
@@ -1674,7 +1767,8 @@ def main(argv: Optional[list] = None) -> int:
         root = make_scratch_problem(real_root, scratch_design, problem)
         point_package_at(scratch_design)
         schedule = load_schedule(root)
-        for run in (dispatch_check, carry_check, cindy_run, alice_run, cindy_restart_run):
+        for run in (dispatch_check, carry_check, transfer_start_check, cindy_run, alice_run,
+                    cindy_restart_run):
             try:
                 run(results, problem, root, schedule)
             except Exception as e:  # keep going: the summary shows where it stopped
