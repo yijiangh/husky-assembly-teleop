@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Loopback-only CycloneDDS config for running the monitor WITHOUT any robot network
+  (the FAKE_HARDWARE dry run, doc/support_robot_test_manual.md Part A).
+
+  Use it per terminal, on top of the robot config that ~/.bashrc sets:
+    export CYCLONEDDS_URI=file://$HOME/Code/ros2_ws/src/husky-assembly-teleop/config/cyclonedds_localhost.xml
+
+  - Works with the USB-ethernet adapter unplugged (~/.cyclonedds.xml pins it, and DDS
+    refuses to start when it is missing).
+  - Nothing leaves this machine, so a powered-on robot on the same ROS_DOMAIN_ID can
+    never receive a command from the dry run.
+  - The loopback interface has no multicast, so processes find each other by unicast
+    to localhost; ParticipantIndex/MaxAutoParticipantIndex leave room for the monitor,
+    the ros2 CLI and its daemon at the same time.
+-->
+<CycloneDDS xmlns="https://cdds.io/config">
+  <Domain id="any">
+    <General>
+      <Interfaces>
+        <NetworkInterface name="lo"/>
+      </Interfaces>
+      <AllowMulticast>false</AllowMulticast>
+    </General>
+    <Discovery>
+      <ParticipantIndex>auto</ParticipantIndex>
+      <MaxAutoParticipantIndex>32</MaxAutoParticipantIndex>
+      <Peers>
+        <Peer address="localhost"/>
+      </Peers>
+    </Discovery>
+  </Domain>
+</CycloneDDS>
