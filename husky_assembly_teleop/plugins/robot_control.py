@@ -41,8 +41,8 @@ from ..robot_interface.base import PLATFORM_VELOCITY_CONTROLLER
 from ..robot_interface.controller_manager import ControllerManagerInterface
 from ..robot_interface.ur_frames import STOCK_YAW
 from ..world.scene import Pose, compose
-from ..ui.ghost import TARGET_COLOR, RecentUse, RobotGhost
-from ..ui.visualization import quaternion_to_wxyz
+from ..ui.ghost import RecentUse, RobotGhost, robot_ghosts
+from ..ui.quaternion import quaternion_to_wxyz
 from ..ui.style import (STALE_AFTER, BUSY, FAIL, NONE, OK, SECTION_CTRL, SECTION_SENSOR, SECTION_TOOL, block,
                         check_chip, chip, freshness_chip, note, numbers, section, values, warning)
 
@@ -57,6 +57,33 @@ HOLD_BUTTONS = (("", viser.Icon.ARROW_UP, 1.0, 0.0),
                 ("", viser.Icon.ROTATE_CLOCKWISE, 0.0, -1.0))
 #: Each hold button's D-pad cell, (row, column), in HOLD_BUTTONS order.
 DPAD_CELLS = ((1, 2), (2, 1), (2, 2), (2, 3))
+
+
+def _dpad_css() -> str:
+    """CSS that lays out the hold buttons as a D-pad, in every robot's Drive folder.
+
+    ? viser has no grid container, so CSS turns the Drive folder into a three-column
+      grid. Buttons are found by their icon's class (`icon-tabler-<name>`, from the
+      public `icon` argument), and the folder is one holding all four of them, so a
+      folder that only shares an icon or two keeps its normal layout. Needs `:has()`.
+      (A cell rule outside such a folder does nothing: grid-area needs a grid parent.)
+
+    Returns:
+        str: A <style> element, for an html widget outside the Drive folder
+            (inside, it would take a grid cell).
+    """
+    def button(icon: str) -> str:
+        return f"button .icon-tabler-{icon}"
+
+    folder = "div" + "".join(f":has(> div > {button(icon)})" for _, icon, _, _ in HOLD_BUTTONS)
+    grid = f"{folder} {{ display: grid; grid-template-columns: repeat(3, 1fr); }}"
+    # ! Give every button an explicit cell, or Left fills the empty cell beside Forward.
+    cells = "".join(f"div:has(> {button(icon)}) {{ grid-area: {row} / {column}; }}"
+                    for (_, icon, _, _), (row, column) in zip(HOLD_BUTTONS, DPAD_CELLS))
+    return f"<style>{grid}{cells}</style>"
+
+
+DPAD_STYLE = _dpad_css()
 #: How often the browser reports a held button, Hz. Matches the 20 Hz tick.
 HOLD_CALLBACK_HZ = 20.0
 #: A hold counts as released after this long without a report, seconds.
@@ -68,15 +95,15 @@ JOINT_SLIDERS = (("pan", 360), ("lift", 360), ("elbow", 180), ("w1", 360), ("w2"
 #: TCP position slider range (metres, around the arm's base) and step.
 POSITION_RANGE, POSITION_STEP = 1.5, 0.001
 POSE_SLIDERS = (("x m", "p"), ("y m", "p"), ("z m", "p"), ("roll °", "a"), ("pitch °", "a"), ("yaw °", "a"))
-#: Poses drawn in 3D while the Cartesian controller runs: name, label, origin
-#: colour (r, g, b), axis length (m).
+#: Poses drawn in 3D while the Cartesian controller runs: kind, label, origin
+#: colour (r, g, b), axis length (m). Each kind is drawn at "cartesian/<kind>/<serial>/<arm>".
 FRAME_MARKERS = (
     ("target", "target (sliders)", (255, 200, 0), 0.12),
-    ("reported", "TCP reported", (40, 170, 60), 0.08),
+    ("tcp", "TCP reported", (40, 170, 60), 0.08),
 )
-#: Force arrows drawn from the reported TCP: name, label, colour.
+#: Force arrows drawn from the reported TCP: kind, label, colour.
 FORCE_ARROWS = (
-    ("force_preview", "force (sliders)", (255, 200, 0)),
+    ("force_target", "force (sliders)", (255, 200, 0)),
     ("force_applied", "force applied", (255, 110, 0)),
 )
 FORCE_ARROW_SCALE = 0.01  # metres per newton: 20 N draws 20 cm
@@ -184,9 +211,9 @@ class RobotControlPlugin(HuskyPlugin):
         #: while the compliance controller is not running on that arm.
         self._markers: dict[tuple[str, str], dict[str, tuple]] = {}
 
-        #: Per robot, a ghost at its arms' joint slider targets, built in setup.
-        self._previews: dict[str, RobotGhost] = {}
-        #: Per arm, when the operator last used its joint inputs; its preview shows only while it counts.
+        #: Per robot, a target ghost at its arms' joint slider values, built in setup.
+        self._target_ghosts: dict[str, RobotGhost] = {}
+        #: Per arm, when the operator last used its joint inputs; its ghost shows only while it counts.
         self._joints_used: dict[tuple[str, str], RecentUse] = {}
         #: Per arm, the joint slider values `_load_joint_sliders` wrote last. ! Writing a slider
         #: fires its callback too; a callback that finds these values is ours, not the operator's.
@@ -217,8 +244,7 @@ class RobotControlPlugin(HuskyPlugin):
         panel.dock_right()
         panel.set_width(PANEL_WIDTH)
         # ? Built now: mesh loading is too slow for the tick.
-        self._previews = {config.serial: RobotGhost(ctx, config, f"preview/{config.serial}", TARGET_COLOR)
-                          for config in ctx.config.robots}
+        self._target_ghosts = robot_ghosts(ctx, ctx.config.robots, "target")
 
     def _build_base(self, ctx: PluginContext, gui: viser.GuiApi, serial: str,
                     base: BaseInterface) -> _BaseWidgets:
@@ -245,7 +271,7 @@ class RobotControlPlugin(HuskyPlugin):
             with gui.add_folder("Drive"):
                 buttons = [gui.add_button(label, icon=icon, hint="Drives while held.")
                            for label, icon, _, _ in HOLD_BUTTONS]
-            grid.content = _dpad_style([button._impl.uuid for button in buttons])
+            grid.content = DPAD_STYLE
             for button, (label, _, linear, angular) in zip(buttons, HOLD_BUTTONS):
                 # ! Bind loop values as defaults, or every button drives like the last.
                 button.on_hold(ctx.defer(f"hold {label} {serial}",
@@ -510,9 +536,9 @@ class RobotControlPlugin(HuskyPlugin):
                 f"applied {numbers(applied, 3, 6, 1)} N ({TARGET_WRENCH_FRAME})"))
             if widgets.tool_status is not None:
                 widgets.tool_status.content = _tool_status(widgets.arm.state.end_effector, now)
-        self._draw_previews(ctx)
+        self._draw_ghosts(ctx)
 
-    def _draw_previews(self, ctx: PluginContext) -> None:
+    def _draw_ghosts(self, ctx: PluginContext) -> None:
         """Show each arm at its joint sliders while they are in use and differ from the arm.
 
         * Only the arms that qualify are drawn (with their tools); the base stays where it is.
@@ -520,7 +546,7 @@ class RobotControlPlugin(HuskyPlugin):
         Args:
             ctx: This plugin's context.
         """
-        for serial, ghost in self._previews.items():
+        for serial, ghost in self._target_ghosts.items():
             joints = dict(ctx.kinematics.joints(serial))
             parts = []
             for widgets in self._arms:
@@ -688,14 +714,14 @@ class RobotControlPlugin(HuskyPlugin):
         markers: dict[str, tuple] = {}
         local_poses = {"target": arm.from_husky(*_pose_from_sliders(widgets.pose))}
         if state.tcp_position is not None:
-            local_poses["reported"] = (state.tcp_position, state.tcp_orientation)
+            local_poses["tcp"] = (state.tcp_position, state.tcp_orientation)
         for name, (position, orientation) in local_poses.items():
             # * (position, orientation as xyzw), the form `draw` reads.
             world = compose(base, Pose.from_arrays(position, orientation))
             markers[f"{name}_world"] = (world.position, world.orientation)
         # Forces are in tool0: they start at the reported TCP and turn with it. None for zero force.
-        tcp = markers.get("reported_world")
-        forces = {"force_preview": np.array([slider.value for slider in widgets.force]),
+        tcp = markers.get("tcp_world")
+        forces = {"force_target": np.array([slider.value for slider in widgets.force]),
                   "force_applied": self._applied_force.get(key)}
         for name, force in forces.items():
             if tcp is not None and force is not None and np.linalg.norm(force) > 0.0:
@@ -790,27 +816,6 @@ def _plan_line(widgets: _ArmWidgets) -> str:
                         f"(≤{np.degrees(JOINT_MOVE_MAX_SPEED):.0f} °/s, ≥{JOINT_MOVE_MIN_DURATION:.0f} s)"))
 
 
-def _dpad_style(uuids: list[str]) -> str:
-    """CSS that lays out the four hold buttons, in HOLD_BUTTONS order, as a D-pad.
-
-    ? viser has no grid container, so CSS turns the Drive folder (which holds
-      only these buttons) into a three-column grid. Needs `:has()`.
-
-    Args:
-        uuids: The buttons' uuids, Forward first.
-
-    Returns:
-        str: A <style> element, for an html widget outside the Drive folder
-            (inside, it would take a grid cell).
-    """
-    forward = f'[id="{uuids[0]}"]'
-    grid = f"div:has(> div > {forward}) {{ display: grid; grid-template-columns: repeat(3, 1fr); }}"
-    # ! Give every button an explicit cell, or Left fills the empty cell beside Forward.
-    cells = "".join(f'div:has(> [id="{uuid}"]) {{ grid-area: {row} / {column}; }}'
-                    for uuid, (row, column) in zip(uuids, DPAD_CELLS))
-    return f"<style>{grid}{cells}</style>"
-
-
 def _pose_from_sliders(sliders: list[viser.GuiSliderHandle]) -> tuple[np.ndarray, np.ndarray]:
     """The TCP target the pose sliders describe, in the husky's base_link: position and quaternion.
 
@@ -824,6 +829,21 @@ def _pose_from_sliders(sliders: list[viser.GuiSliderHandle]) -> tuple[np.ndarray
     return np.array(values_[:3]), Rotation.from_euler("xyz", values_[3:], degrees=True).as_quat()
 
 
+def _marker_path(ctx: PluginContext, kind: str, serial: str, arm: ArmInterface) -> str:
+    """Scene path of one arm's Cartesian marker; kind first, so one toggle hides it on every arm.
+
+    Args:
+        ctx: This plugin's context.
+        kind: A FRAME_MARKERS or FORCE_ARROWS kind, e.g. "target".
+        serial: The robot's serial.
+        arm: The arm.
+
+    Returns:
+        str: "<plugin root>/cartesian/<kind>/<serial>/<arm>".
+    """
+    return f"{ctx.view.scene_root}/cartesian/{kind}/{serial}/{arm.config.name}"
+
+
 def _add_frame_markers(ctx: PluginContext, serial: str, arm: ArmInterface) -> dict[str, viser.FrameHandle]:
     """Create one arm's frame-check markers in the 3D view, hidden until needed.
 
@@ -835,8 +855,7 @@ def _add_frame_markers(ctx: PluginContext, serial: str, arm: ArmInterface) -> di
     Returns:
         dict[str, viser.FrameHandle]: One marker per FRAME_MARKERS name.
     """
-    root = f"{ctx.view.scene_root}/{serial}/{arm.config.name}"
-    return {name: ctx.view.scene.add_frame(f"{root}/{name}", axes_length=length, axes_radius=0.004,
+    return {name: ctx.view.scene.add_frame(_marker_path(ctx, name, serial, arm), axes_length=length, axes_radius=0.004,
                                            origin_radius=0.012, origin_color=color, visible=False)
             for name, _, color, length in FRAME_MARKERS}
 
@@ -852,9 +871,9 @@ def _add_force_arrows(ctx: PluginContext, serial: str, arm: ArmInterface) -> dic
     Returns:
         dict[str, viser.ArrowsHandle]: One arrow per FORCE_ARROWS name.
     """
-    root = f"{ctx.view.scene_root}/{serial}/{arm.config.name}"
-    return {name: ctx.view.scene.add_arrows(f"{root}/{name}", points=np.zeros((1, 2, 3)), colors=color,
-                                            shaft_radius=0.004, head_radius=0.012, head_length=0.03, visible=False)
+    return {name: ctx.view.scene.add_arrows(_marker_path(ctx, name, serial, arm), points=np.zeros((1, 2, 3)),
+                                            colors=color, shaft_radius=0.004, head_radius=0.012, head_length=0.03,
+                                            visible=False)
             for name, _, color in FORCE_ARROWS}
 
 

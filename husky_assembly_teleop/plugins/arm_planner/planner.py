@@ -1,5 +1,5 @@
 """
-The arm planner: an RRT-Connect search (`birrt`) over one arm's six joints, avoiding
+The arm planner: an RRT-Connect search (`planning.search.connect`) over one arm's six joints, avoiding
 the robot itself, the other robots and every scene body, with compas_fab's rules.
 
 The search runs on the plugin's one worker thread, in a compas_fab world
@@ -15,23 +15,17 @@ from __future__ import annotations
 import math
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Sequence
 
 import numpy as np
-from pybullet_planning.motion_planners.rrt_connect import birrt
-from pybullet_planning.motion_planners.utils import waypoints_from_path
 
+from ...planning.path import TimedPath
+from ...planning.search import PlanResult, connect
 from ...robot_interface.arm import JOINT_MOVE_MAX_SPEED, UR_JOINT_LIMITS, UR_JOINT_NAMES
 from ...world.mirrors.compas_fab import CompasFabMirror
 from ...world.scene import SceneSnapshot
 
-#: Give up searching after this long, seconds. The first plan for a robot also loads its models.
-TIME_LIMIT = 10.0
-#: RRT-Connect iterations per attempt, extra attempts, and smoothing iterations.
-MAX_ITERATIONS = 2000
-RESTARTS = 2
-SMOOTHING = 100
 #: Collision-checking resolution along a move, radians per joint.
 JOINT_STEP = 0.05
 #: Joint speed of the preview, rad/s: the same as robot_control's joint moves.
@@ -50,71 +44,31 @@ def arm_joint_names(arm_name: str) -> list[str]:
     return [f"{arm_name}_{name}" for name in UR_JOINT_NAMES]
 
 
-@dataclass
-class ArmPath:
+@dataclass(frozen=True)
+class ArmPath(TimedPath):
     """A joint path for one arm, timed at a constant joint speed for the preview.
+
+    `points` are joint values in radians, shape (n, 6), in `joint_names` order.
 
     Attributes:
         joint_names: The six joints, in the order of each waypoint.
-        waypoints: (n, 6) joint values, radians; the first is the start.
-        times: Time at each waypoint, seconds from the start.
     """
 
-    joint_names: list[str]
-    waypoints: np.ndarray
-    times: np.ndarray = field(init=False)
+    joint_names: tuple[str, ...]
 
-    def __post_init__(self):
-        """Time each segment by its largest joint change at PREVIEW_SPEED."""
-        steps = np.max(np.abs(np.diff(self.waypoints, axis=0)), axis=1) / PREVIEW_SPEED
-        self.times = np.concatenate([[0.0], np.cumsum(steps)])
-
-    @property
-    def duration(self) -> float:
-        """float: Seconds from start to goal."""
-        return float(self.times[-1])
-
-    @property
-    def start(self) -> np.ndarray:
-        """np.ndarray: The first waypoint."""
-        return self.waypoints[0]
-
-    @property
-    def goal(self) -> np.ndarray:
-        """np.ndarray: The last waypoint."""
-        return self.waypoints[-1]
-
-    def sample(self, t: float) -> np.ndarray:
-        """Joint values at time `t`, straight between waypoints; clamped to the ends.
+    @classmethod
+    def at_preview_speed(cls, joint_names: Sequence[str], waypoints: np.ndarray) -> ArmPath:
+        """Time each segment by its largest joint change at PREVIEW_SPEED.
 
         Args:
-            t: Seconds from the start.
+            joint_names: The six joints.
+            waypoints: (n, 6) joint values, radians; the first is the start.
 
         Returns:
-            np.ndarray: Six joint values.
+            ArmPath: The timed path.
         """
-        return np.array([np.interp(t, self.times, column) for column in self.waypoints.T])
-
-
-class PlanningAborted(Exception):
-    """Raised inside a search to end it early."""
-
-
-@dataclass
-class PlanResult:
-    """What a search came back with.
-
-    Attributes:
-        path: The path, or None if none was found.
-        reason: Why not, when `path` is None; empty otherwise.
-        seconds: How long it took, loading and syncing included.
-        direct: Whether the straight move was already free.
-    """
-
-    path: ArmPath | None
-    reason: str = ""
-    seconds: float = 0.0
-    direct: bool = False
+        steps = np.max(np.abs(np.diff(waypoints, axis=0)), axis=1) / PREVIEW_SPEED
+        return cls(times=np.concatenate([[0.0], np.cumsum(steps)]), points=waypoints, joint_names=tuple(joint_names))
 
 
 class ArmPlanningWorld:
@@ -206,7 +160,7 @@ def _distance(q1: Sequence[float], q2: Sequence[float]) -> float:
 
 
 def plan_arm(world: ArmPlanningWorld, mirror: CompasFabMirror, arm_name: str, goal: Sequence[float],
-             abort: threading.Event) -> PlanResult:
+             abort: threading.Event) -> PlanResult[ArmPath]:
     """Plan a collision-free joint path for one arm, from where it is in the synced world to `goal`.
 
     Args:
@@ -217,7 +171,7 @@ def plan_arm(world: ArmPlanningWorld, mirror: CompasFabMirror, arm_name: str, go
         abort: Set from the main thread to end the search early.
 
     Returns:
-        PlanResult: The path, or why there is none.
+        PlanResult[ArmPath]: The path, or why there is none.
     """
     started = time.time()
     names = arm_joint_names(arm_name)
@@ -237,29 +191,9 @@ def plan_arm(world: ArmPlanningWorld, mirror: CompasFabMirror, arm_name: str, go
         return PlanResult(None, reason("target", hit), time.time() - started)
 
     limits = np.array(UR_JOINT_LIMITS)
-
-    def sample_fn():
-        return tuple(np.random.uniform(-limits, limits))
-
-    def collision_fn(q, **_kwargs):
-        # birrt may pass a `diagnosis` flag; ignored.
-        if abort.is_set():
-            raise PlanningAborted()
-        return check(q) is not None
-
-    try:
-        direct = all(not collision_fn(q) for q in _extend(start, goal))
-        waypoints = [start, goal] if direct else \
-            birrt(start, goal, _distance, sample_fn, _extend, collision_fn, max_time=TIME_LIMIT,
-                  max_iterations=MAX_ITERATIONS, restarts=RESTARTS, smooth=SMOOTHING)
-    except PlanningAborted:
-        return PlanResult(None, "cancelled", time.time() - started)
-    if waypoints is None:
-        return PlanResult(None, f"no path found in {TIME_LIMIT:.0f} s", time.time() - started)
-
-    # ! birrt returns every small step, maybe without the start: keep only the corners,
-    #   ending exactly at the goal (interpolated steps are off by rounding).
-    if tuple(waypoints[0]) != start:
-        waypoints = [start] + list(waypoints)
-    waypoints = waypoints_from_path(waypoints)[:-1] + [goal]
-    return PlanResult(ArmPath(names, np.array(waypoints, dtype=float)), seconds=time.time() - started, direct=direct)
+    corners = connect(start, goal, _distance, lambda: tuple(np.random.uniform(-limits, limits)), _extend,
+                      lambda q: check(q) is not None, abort)
+    if corners.states is None:
+        return PlanResult(None, corners.reason, time.time() - started)
+    path = ArmPath.at_preview_speed(names, np.array(corners.states, dtype=float))
+    return PlanResult(path, seconds=time.time() - started, direct=corners.direct)

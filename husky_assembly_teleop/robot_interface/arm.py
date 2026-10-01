@@ -640,13 +640,13 @@ class ArmInterface:
         Returns:
             tuple[np.ndarray, np.ndarray]: Position and quaternion in the husky frame.
         """
-        p, r = compose(self.base_in_husky, (np.asarray(position, dtype=float), Rotation.from_quat(orientation)))
-        return p, r.as_quat()
+        pose = compose(self.base_in_husky, Pose.from_arrays(position, orientation))
+        return np.array(pose.position), np.array(pose.orientation)
 
     def from_husky(self, position: Sequence[float], orientation: Sequence[float]) -> tuple[np.ndarray, np.ndarray]:
         """Convert a pose from the husky frame to this arm's base_link. Inverse of `to_husky`."""
-        p, r = compose(invert(self.base_in_husky), (np.asarray(position, dtype=float), Rotation.from_quat(orientation)))
-        return p, r.as_quat()
+        pose = compose(invert(self.base_in_husky), Pose.from_arrays(position, orientation))
+        return np.array(pose.position), np.array(pose.orientation)
 
     def target_vs_reported(self, position: np.ndarray, orientation: np.ndarray) -> str:
         """Compare a target, in the UR Base frame, with the raw reported TCP, in one line.

@@ -13,7 +13,6 @@ from typing import Sequence
 import numpy as np
 from crl_husky_msgs.msg import MultiArmTrajectory, SafetySyncStatus
 from rclpy.node import Node
-from scipy.spatial.transform import Rotation
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_srvs.srv import Trigger
 
@@ -140,7 +139,7 @@ class HuskyRobotInterface:
         base = self.base.state
         if base.position is None:
             return None
-        return compose((base.position, Rotation.from_quat(base.orientation)), self._husky_in_mocap_frame)
+        return compose(Pose.from_arrays(base.position, base.orientation), self._husky_in_mocap_frame)
 
     def to_world(self, position, orientation) -> tuple[np.ndarray, np.ndarray] | None:
         """Convert a husky-frame pose to the world; None before the first mocap fix.
@@ -150,16 +149,16 @@ class HuskyRobotInterface:
         husky = self.husky_in_world()
         if husky is None:
             return None
-        p, r = compose(husky, (np.asarray(position, dtype=float), Rotation.from_quat(orientation)))
-        return p, r.as_quat()
+        pose = compose(husky, Pose.from_arrays(position, orientation))
+        return np.array(pose.position), np.array(pose.orientation)
 
     def from_world(self, position, orientation) -> tuple[np.ndarray, np.ndarray] | None:
         """Convert a world pose to the husky frame; None before the first mocap fix."""
         husky = self.husky_in_world()
         if husky is None:
             return None
-        p, r = compose(invert(husky), (np.asarray(position, dtype=float), Rotation.from_quat(orientation)))
-        return p, r.as_quat()
+        pose = compose(invert(husky), Pose.from_arrays(position, orientation))
+        return np.array(pose.position), np.array(pose.orientation)
 
     # --- --- --- --- --- COMMANDS --- --- --- --- ---
     # ! main thread only, like the commands on the parts.

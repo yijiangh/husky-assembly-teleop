@@ -11,36 +11,17 @@ widget's `content` each tick in `draw` (viser only sends real changes).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from html import escape
+
+# * Re-exported: plugins import checks and chips from one place.
+from ..world.checks import BAD, GOOD, STALE_AFTER, WARN, Check  # noqa: F401
 
 # Colours: chips put white text on these, readable in light and dark theme.
 OK, BUSY, FAIL, NONE = "#2f9e44", "#e8590c", "#e03131", "#868e96"
 SECTION_CTRL, SECTION_SENSOR, SECTION_TOOL = "#4263eb", "#1098ad", "#f08c00"
 
-#: Age in seconds after which a measurement counts as stale.
-STALE_AFTER = 1.0
-
-# Severity levels of a Check, ordered so the worst is `max`.
-GOOD, WARN, BAD = 0, 1, 2
 #: Chip colour for each severity.
 LEVEL_COLORS = {GOOD: OK, WARN: BUSY, BAD: FAIL}
-
-
-@dataclass(frozen=True)
-class Check:
-    """The outcome of one status check, shown as one chip (see `check_chip`).
-
-    Attributes:
-        label: Short chip text, e.g. "mocap" or "left_ur_arm joints".
-        level: GOOD, WARN or BAD.
-        detail: What is wrong, or a short fact when all is well. Shown as the
-            chip's tooltip.
-    """
-
-    label: str
-    level: int
-    detail: str = ""
 
 
 def chip(text: str, color: str, title: str = "") -> str:

@@ -72,7 +72,7 @@ def test_path_goes_around_a_box(world, config):
     path = result.path
     np.testing.assert_allclose(path.start, start)
     np.testing.assert_allclose(path.goal, goal)
-    steps = [q for q1, q2 in zip(path.waypoints[:-1], path.waypoints[1:]) for q in _extend(q1, q2)]
+    steps = [q for q1, q2 in zip(path.points[:-1], path.points[1:]) for q in _extend(q1, q2)]
     for q in steps[::3]:
         assert mirror.collisions(dict(zip(NAMES, q))) == [], f"collides at {q}"
 
@@ -97,7 +97,7 @@ def test_start_in_collision_is_refused(world, config):
 
 def test_path_timing():
     """Segments are timed by their largest joint change; sample interpolates and clamps."""
-    path = ArmPath(NAMES, np.array([[0.0] * 6, [1.0, 0.5, 0, 0, 0, 0], [1.0, 0.5, 0, 0, 0, 2.0]]))
+    path = ArmPath.at_preview_speed(NAMES, np.array([[0.0] * 6, [1.0, 0.5, 0, 0, 0, 0], [1.0, 0.5, 0, 0, 0, 2.0]]))
     np.testing.assert_allclose(np.diff(path.times) * np.radians(20.0), [1.0, 2.0])
     np.testing.assert_allclose(path.sample(path.times[1] / 2)[:2], [0.5, 0.25])
     np.testing.assert_allclose(path.sample(1e9), path.goal)

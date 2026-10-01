@@ -166,7 +166,7 @@ Rules shared by every mirror:
 | Tracked objects | `/tracked/<name>` frame + visual meshes (if any); hidden without a fix | every tick |
 | Scene bodies | `/scene/<id>` frame, meshes `/scene/<id>/<i>` | built when new or the geometry changed (at most N per tick), moved when the pose changed, removed when gone |
 
-- One "Scene" folder: a checkbox per path prefix down to depth 2 (`obstacles`, `obstacles/tables`, …), plus "tracked objects".
+- No visibility checkboxes of its own: viser's debug view already toggles each scene path.
 - Batched building: a large cell fills in over a few ticks. Moves and removes always apply in full, so a body is at worst missing for a few ticks, never shown at an old pose.
 
 ## 8. Rules for plugin authors (in `plugins/__init__.py`)

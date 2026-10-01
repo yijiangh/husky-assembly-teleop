@@ -17,12 +17,11 @@ world per tick for planners and the 3D view.
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Callable, Iterable
 
-import numpy as np
-from scipy.spatial.transform import Rotation
+# Pose, compose and ids live in design_io, shared with design files; re-exported here.
+from ..design_io.pose import ID_PATTERN, Pose, check_id, compose  # noqa: F401
 
 if TYPE_CHECKING:
     from ..config import RobotConfig
@@ -30,73 +29,8 @@ if TYPE_CHECKING:
     from .kinematics import Kinematics
     from .measured import WorldState
 
-#: What an id may contain: path segments of letters, digits, `_`, `.` and `-`, joined by `/`.
-ID_PATTERN = re.compile(r"[A-Za-z0-9_.\-]+(/[A-Za-z0-9_.\-]+)*")
 #: First id segments that belong to the core, never to a plugin.
 ROBOTS, TRACKED = "robots", "tracked"
-
-
-# --- --- --- --- --- POSES --- --- --- --- ---
-
-@dataclass(frozen=True)
-class Pose:
-    """A pose in the world, or in a parent frame.
-
-    Attributes:
-        position: (x, y, z), metres.
-        orientation: Quaternion (x, y, z, w), the ROS and PyBullet order.
-    """
-
-    position: tuple[float, float, float] = (0.0, 0.0, 0.0)
-    orientation: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0)
-
-    @classmethod
-    def from_arrays(cls, position, orientation) -> Pose:
-        """Build a pose from any sequences (numpy arrays included).
-
-        Args:
-            position: (x, y, z), metres.
-            orientation: Quaternion (x, y, z, w).
-
-        Returns:
-            Pose: The same pose, as plain floats.
-        """
-        return cls(tuple(float(v) for v in position), tuple(float(v) for v in orientation))
-
-    @classmethod
-    def from_matrix(cls, matrix: np.ndarray) -> Pose:
-        """Build a pose from a 4x4 homogeneous transform.
-
-        Args:
-            matrix: 4x4 transform.
-
-        Returns:
-            Pose: The same pose.
-        """
-        # ! Copy: yourdfpy hands out read-only matrices, which this scipy version refuses.
-        return cls.from_arrays(matrix[:3, 3], Rotation.from_matrix(np.array(matrix[:3, :3])).as_quat())
-
-    def matrix(self) -> np.ndarray:
-        """Return this pose as a 4x4 homogeneous transform."""
-        matrix = np.eye(4)
-        matrix[:3, :3] = Rotation.from_quat(self.orientation).as_matrix()
-        matrix[:3, 3] = self.position
-        return matrix
-
-
-def compose(a: Pose, b: Pose) -> Pose:
-    """Chain two poses: `b` is given in the frame of `a`; the result is in the frame `a` is in.
-
-    Args:
-        a: The parent frame's pose.
-        b: The pose inside that frame.
-
-    Returns:
-        Pose: `b` in the frame `a` is given in.
-    """
-    rotation = Rotation.from_quat(a.orientation)
-    return Pose.from_arrays(np.asarray(a.position) + rotation.apply(b.position),
-                            (rotation * Rotation.from_quat(b.orientation)).as_quat())
 
 
 # --- --- --- --- --- IDS --- --- --- --- ---
@@ -109,16 +43,6 @@ def robot_id(serial: str) -> str:
 def tracked_id(name: str) -> str:
     """The id of a tracked object: "tracked/<name>"."""
     return f"{TRACKED}/{name}"
-
-
-def check_id(body_id: str) -> None:
-    """Refuse an id with characters outside ID_PATTERN.
-
-    Raises:
-        ValueError: If the id is not a valid path.
-    """
-    if not ID_PATTERN.fullmatch(body_id):
-        raise ValueError(f"invalid id {body_id!r}: use letters, digits, '_', '.', '-' and '/' only")
 
 
 # --- --- --- --- --- WHAT PLUGINS PUT IN --- --- --- --- ---

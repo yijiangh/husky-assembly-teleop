@@ -1,4 +1,4 @@
-"""Tests for `scene_view`: building on a budget, moving only on change, removing, toggles, tracked objects."""
+"""Tests for `scene_view`: building on a budget, moving only on change, removing, tracked objects."""
 
 import pytest
 import viser
@@ -85,37 +85,18 @@ def test_rebuilds_on_new_geometry_or_color(server):
     assert view._bodies["rebuild/a"].frame is not second
 
 
-def test_removes_bodies_and_empty_groups(server):
-    """A body gone from the snapshot loses its nodes; a group with no bodies left loses frame and checkbox."""
+def test_removes_bodies(server):
+    """A body gone from the snapshot loses its nodes."""
     view = SceneView(server)
     view.sync(_snapshot({"rm/tables/t1": _body("rm/tables/t1"), "rm/chairs/c1": _body("rm/chairs/c1")}))
-    assert set(view._groups) == {"rm", "rm/tables", "rm/chairs"}
-    checkbox = view._groups["rm/tables"].checkbox
 
     view.sync(_snapshot({"rm/chairs/c1": _body("rm/chairs/c1")}))
-    assert set(view._groups) == {"rm", "rm/chairs"}
-    assert "/scene/rm/tables" not in _nodes(server) and "/scene/rm/tables/t1/mesh_0" not in _nodes(server)
-    assert checkbox._impl.removed
+    assert set(view._bodies) == {"rm/chairs/c1"}
+    assert "/scene/rm/tables/t1" not in _nodes(server) and "/scene/rm/tables/t1/mesh_0" not in _nodes(server)
 
     view.sync(_snapshot())
-    assert view._groups == {} and view._bodies == {}
-    assert not any(name.startswith("/scene/rm") for name in _nodes(server))
-
-
-def test_toggle_hides_group(server):
-    """Unticking a group's checkbox hides its frame on the next sync; ticking shows it again."""
-    view = SceneView(server)
-    snapshot = _snapshot({"toggle/a/b": _body("toggle/a/b")})
-    view.sync(snapshot)
-    group = view._groups["toggle/a"]
-    assert group.frame.visible
-
-    group.checkbox.value = False  # what a click in the browser does
-    view.sync(snapshot)
-    assert not group.frame.visible
-    group.checkbox.value = True
-    view.sync(snapshot)
-    assert group.frame.visible
+    assert view._bodies == {}
+    assert "/scene/rm/chairs/c1" not in _nodes(server)
 
 
 def test_tracked_objects(server):
@@ -132,7 +113,3 @@ def test_tracked_objects(server):
 
     view.sync(_snapshot(tracked={"probe": _tracked("probe")}))
     assert view._tracked["probe"].frame.visible and not view._tracked["bar"].frame.visible
-
-    view._show_tracked.value = False
-    view.sync(_snapshot())
-    assert not view._tracked_root.visible

@@ -18,14 +18,14 @@ from dataclasses import dataclass
 from functools import partial
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Coroutine, Protocol, TypeVar
 
-import viser
-from rclpy.task import Future as RosFuture
-
 from .concurrency import WaitTimeout, describe_exception, ros_future
 
 T = TypeVar("T")
 
 if TYPE_CHECKING:
+    import viser
+    from rclpy.task import Future as RosFuture
+
     from ..config import MonitorConfig
     from ..world.geometry import Geometry
     from ..world.kinematics import Kinematics

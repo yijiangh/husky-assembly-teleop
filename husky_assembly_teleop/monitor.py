@@ -22,7 +22,6 @@ import traceback
 from dataclasses import dataclass
 
 import rclpy
-from crl_husky_msgs.msg import MocapRigidBodyPose
 from rclpy.executors import SingleThreadedExecutor, TimeoutException
 from rclpy.node import Node
 from rclpy.signals import SignalHandlerOptions
@@ -32,10 +31,10 @@ from .config import MonitorConfig, config_from_ros_parameters
 from .plugin_api.context import PluginContext
 from .world.geometry import Geometry
 from .world.kinematics import Kinematics
-from .world.mocap import mocap_topic, store_sample
 from .plugin_api.plugin import HuskyPlugin, load_plugins
 from .robot_interface import HuskyRobotInterface
 from .robot_interface.connections import RosConnections
+from .robot_interface.mocap import subscribe_mocap
 from .world.scene import PluginScene, Scene, TrackedDescription
 from .ui.visualization import Visualization
 from .world.measured import TrackedObject, WorldState
@@ -239,8 +238,7 @@ class HuskyMonitor(Node):
         obj = TrackedObject(name=name, mocap_id=mocap_id)
         connections = RosConnections(self)
         # * Stored exactly like a robot base's pose.
-        connections.subscription(MocapRigidBodyPose, mocap_topic(mocap_id),
-                                 lambda message: store_sample(obj, message, self.now()))
+        subscribe_mocap(connections, mocap_id, obj, self.now)
         if geometry is not None and not geometry.collision:
             self.log_warn(f"tracked object {name!r} has no collision meshes: it is drawn but never collides")
         self._world.tracked_objects[name] = obj

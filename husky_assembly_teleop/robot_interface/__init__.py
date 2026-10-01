@@ -6,6 +6,7 @@ The only package that talks to a robot; callers read state and call commands, ne
   arm.py                 one UR arm: joints, TCP, wrench, IO, commands
   end_effectors.py       one class per tool kind, picked by configuration
   controller_manager.py  the base and every arm each have one; handled alike
+  mocap.py               mocap samples for bases and tracked objects: topic, storing
 
 ! Configuration decides which parts exist; anything that changes while running
   (e.g. the active controller) lives in state.

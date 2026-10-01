@@ -15,6 +15,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from ...planning.path import TimedPath
+
 #: Planning speeds; low, since the onboard follower sets its own speed.
 MAX_LINEAR_SPEED = 0.2   # m/s
 MAX_ANGULAR_SPEED = 0.3  # rad/s
@@ -24,49 +26,17 @@ POSITION_TOLERANCE = 0.005  # m
 
 
 @dataclass(frozen=True)
-class BasePath:
+class BasePath(TimedPath):
     """A timed path of the base on the floor.
 
-    Attributes:
-        times: Seconds from the start at which each waypoint is reached, rising
-            from 0. Shape (N,).
-        poses: Waypoints (x, y, yaw), metres and radians, world frame. Shape
-            (N, 3). Yaw is unwrapped so blending never turns the long way.
+    `points` are (x, y, yaw) waypoints, metres and radians, world frame, shape (N, 3).
+    Yaw is unwrapped so blending never turns the long way.
     """
-
-    times: np.ndarray
-    poses: np.ndarray
-
-    @property
-    def duration(self) -> float:
-        """float: Seconds from start to end."""
-        return float(self.times[-1])
 
     @property
     def length(self) -> float:
         """float: Distance driven, metres, turns not counted."""
-        return float(np.sum(np.linalg.norm(np.diff(self.poses[:, :2], axis=0), axis=1)))
-
-    @property
-    def start(self) -> np.ndarray:
-        """np.ndarray: First pose, (x, y, yaw)."""
-        return self.poses[0]
-
-    @property
-    def goal(self) -> np.ndarray:
-        """np.ndarray: Last pose, (x, y, yaw)."""
-        return self.poses[-1]
-
-    def sample(self, t: float) -> np.ndarray:
-        """The pose at time `t`, clamped to the path's start and end.
-
-        Args:
-            t: Seconds from the start.
-
-        Returns:
-            np.ndarray: (x, y, yaw) at that time.
-        """
-        return np.array([np.interp(t, self.times, self.poses[:, axis]) for axis in range(3)])
+        return float(np.sum(np.linalg.norm(np.diff(self.points[:, :2], axis=0), axis=1)))
 
     def floor_points(self, samples_per_metre: float = 20.0) -> np.ndarray:
         """Points along the path on the floor, for drawing it as a line.
@@ -77,8 +47,8 @@ class BasePath:
         Returns:
             np.ndarray: (M, 2) x, y points, including every waypoint.
         """
-        points = [self.poses[0, :2]]
-        for a, b in zip(self.poses[:-1, :2], self.poses[1:, :2]):
+        points = [self.points[0, :2]]
+        for a, b in zip(self.points[:-1, :2], self.points[1:, :2]):
             count = max(int(np.linalg.norm(b - a) * samples_per_metre), 1)
             points.extend(a + (b - a) * (i / count) for i in range(1, count + 1))
         return np.array(points)
@@ -131,7 +101,7 @@ def steer_cost(q1, q2, rotation_weight: float = 0.3) -> float:
     return cost
 
 
-def steer_points(q1, q2, position_step: float = 0.05, yaw_step: float = 0.05) -> list[tuple[float, float, float]]:
+def steer_points(q1, q2, position_step: float, yaw_step: float) -> list[tuple[float, float, float]]:
     """The move from `q1` to `q2` in small steps, for collision checking.
 
     Args:
@@ -175,24 +145,7 @@ def timed_path(poses, linear_speed: float = MAX_LINEAR_SPEED, angular_speed: flo
         if seconds > 1e-6:
             times.append(times[-1] + seconds)
             kept.append(pose)
-    return BasePath(times=np.array(times), poses=np.array(kept))
-
-
-def plan_straight_line(start: tuple[float, float, float], goal: tuple[float, float, float],
-                       linear_speed: float = MAX_LINEAR_SPEED,
-                       angular_speed: float = MAX_ANGULAR_SPEED) -> BasePath:
-    """One steer from start to goal, with no collision check.
-
-    Args:
-        start: (x, y, yaw) where the base is now, metres and radians.
-        goal: (x, y, yaw) where it should end up.
-        linear_speed: Driving speed, m/s.
-        angular_speed: Turning speed, rad/s.
-
-    Returns:
-        BasePath: Up to four waypoints: start, facing the goal, at the goal, at its yaw.
-    """
-    return timed_path([tuple(start)] + steer(start, goal), linear_speed, angular_speed)
+    return BasePath(times=np.array(times), points=np.array(kept))
 
 
 def _angle(angle: float) -> float:

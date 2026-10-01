@@ -1,359 +1,253 @@
 """
-Draws a robot cell state in viser: the robot, its tools and the rigid bodies.
+Draws one state of a design in viser, from the design alone (design_io); no compas.
 
-- `prepare_cell_meshes` turns compas meshes into numpy triangles (pure data, slow;
-  run it on the loading thread).
-- `CellDrawing` owns the viser nodes (main thread); a new state only changes poses.
+- `load_robot_models` reads each robot's URDF with its meshes (yourdfpy; slow, run it on the
+  loading thread).
+- `DesignDrawing` owns the viser nodes of the whole design (main thread); a new state only
+  changes poses, joint values and colours.
 
-Scene tree per cell:
+Scene tree, below the drawing's root:
 
-    <root>/robot/<link>/<i>      link frames under the base, meshes inside
-    <root>/tool/<tool>/...       same, for each tool
-    <root>/body/<body>/<i>       meshes under the rigid body's frame
+    robots/<name>      frame at the robot base, its URDF meshes below (ViserUrdf)
+    tools/<tool …>     frame at the tool's flange, its shapes below
+    bodies/<body id>   frame at the body, its shapes below
 
-Poses come from compas_robots forward kinematics, not PyBullet.
+Forward kinematics is each robot's yourdfpy model, posed by `ViserUrdf.update_cfg`; tools and
+held bodies read their link from it after the robots are posed.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Iterator
+from dataclasses import dataclass
+from typing import Iterator, Mapping
 
 import numpy as np
 import viser
-from compas.datastructures import Mesh
-from compas.geometry import Frame, Transformation
-from compas_fab.robots import RobotCell, RobotCellState
-from compas_robots import Configuration, RobotModel
+import viser.extras
+import yourdfpy
 
-#: RGB 0-255 for a link whose URDF has no material.
-DEFAULT_LINK_COLOR = (180, 180, 180)
-#: Rigid-body colours (RGB 0-255); attached bodies stand out.
+from ...design_io import Design, Geometry, Pose, State, compose, shape_mesh
+from ...design_io.types import split_link_id
+from ...ui.visualization import load_urdf, quaternion_to_wxyz
+
+#: Colours, RGB 0-255. Held bodies stand out.
 BAR_COLOR = (205, 170, 110)
 JOINT_COLOR = (120, 120, 140)
+GROUND_COLOR = (170, 180, 170)
 ATTACHED_COLOR = (240, 120, 30)
+TOOL_COLOR = (70, 70, 80)
 
-#: The design export parks unused robots here without marking them hidden, so a
-#: tool at this point is skipped.
-PARKED_POSITION = (50.0, 50.0, 0.0)
-PARKED_TOLERANCE = 1e-3  # metres
+#: Opacity of tools and bodies when "Ghost" is on.
+GHOST_OPACITY = 0.4
+#: Robot colour (r, g, b, alpha 0-1) when "Ghost" is on. Robot meshes are GLB, which has no
+#: opacity of its own, so ghosting redraws them in this colour.
+GHOST_ROBOT_COLOR = (0.75, 0.75, 0.78, 0.4)
 
-
-@dataclass(frozen=True)
-class MeshPart:
-    """One triangle mesh, ready for viser.
-
-    Attributes:
-        vertices: (V, 3) float32, in metres, in the owning link's or body's frame.
-        faces: (F, 3) uint32 vertex indices.
-        color: RGB 0-255.
-    """
-
-    vertices: np.ndarray
-    faces: np.ndarray
-    color: tuple[int, int, int]
+#: Bodies added per tick while building, so a large design never stalls one tick.
+BODIES_PER_TICK = 20
 
 
-@dataclass(frozen=True)
-class CellMeshes:
-    """Every mesh of one robot cell, prepared on the loading thread.
-
-    Attributes:
-        robot: Link name -> meshes, for the robot model.
-        tools: Tool id -> link name -> meshes.
-        bodies: Rigid body id -> meshes.
-    """
-
-    robot: dict[str, list[MeshPart]]
-    tools: dict[str, dict[str, list[MeshPart]]]
-    bodies: dict[str, list[MeshPart]]
-
-
-# --- --- --- --- --- PREPARING (loading thread) --- --- --- --- ---
-
-def _triangles(mesh: Mesh, transformation: Transformation | None = None, scale: float = 1.0) -> tuple[np.ndarray, np.ndarray]:
-    """Triangulate a compas mesh into numpy arrays.
+def load_robot_models(design: Design) -> dict[str, yourdfpy.URDF]:
+    """Read every robot's URDF with its visual meshes. Any thread.
 
     Args:
-        mesh: The compas mesh.
-        transformation: Applied to the vertices after scaling, or None.
-        scale: Uniform scale applied first, e.g. a rigid body's native_scale.
+        design: The design; its robots' URDF paths are absolute.
 
     Returns:
-        tuple[np.ndarray, np.ndarray]: (V, 3) float32 vertices and (F, 3) uint32 faces.
+        dict[str, yourdfpy.URDF]: Robot id -> model.
     """
-    vertices, faces = mesh.to_vertices_and_faces(triangulated=True)
-    points = np.asarray(vertices, dtype=float) * scale
-    if transformation is not None:
-        matrix = np.asarray(transformation.matrix, dtype=float)
-        points = points @ matrix[:3, :3].T + matrix[:3, 3]
-    return points.astype(np.float32), np.asarray(faces, dtype=np.uint32).reshape(-1, 3)
+    return {robot_id: load_urdf(robot.urdf) for robot_id, robot in design.robots.items()}
 
 
-def _link_meshes(model: RobotModel) -> dict[str, list[MeshPart]]:
-    """Collect the visual meshes of a robot or tool model, in link frames.
+def body_color(body_id: str) -> tuple[int, int, int]:
+    """The colour of a body nobody holds: bar, ground, or anything else (joint halves)."""
+    if body_id.startswith("bars/"):
+        return BAR_COLOR
+    if body_id.startswith("ground/"):
+        return GROUND_COLOR
+    return JOINT_COLOR
 
-    Each visual's origin and scale are baked into the vertices.
-
-    Args:
-        model: A compas RobotModel or ToolModel.
-
-    Returns:
-        dict[str, list[MeshPart]]: Link name -> meshes; links without visuals are left out.
-    """
-    links: dict[str, list[MeshPart]] = {}
-    for link in model.links:
-        parts = []
-        for visual in link.visual:
-            shape = visual.geometry.shape
-            # ? Only mesh geometry is drawn; URDF primitives (box, cylinder) are skipped.
-            meshes = getattr(shape, "meshes", None) or []
-            origin = Transformation.from_frame(visual.origin) if visual.origin else None
-            scale = getattr(shape, "scale", None)
-            if scale is not None:
-                scale_matrix = Transformation.from_matrix(np.diag([*scale, 1.0]).tolist())
-                origin = scale_matrix if origin is None else origin * scale_matrix
-            material = visual.material
-            rgba = material.color.rgba if material is not None and material.color is not None else None
-            color = tuple(int(round(c * 255)) for c in rgba[:3]) if rgba else DEFAULT_LINK_COLOR
-            for mesh in meshes:
-                vertices, faces = _triangles(mesh, origin)
-                parts.append(MeshPart(vertices, faces, color))
-        if parts:
-            links[link.name] = parts
-    return links
-
-
-def prepare_cell_meshes(cell: RobotCell) -> CellMeshes:
-    """Turn every mesh of a cell into numpy triangles; safe on any thread.
-
-    Args:
-        cell: The robot cell.
-
-    Returns:
-        CellMeshes: The robot's, each tool's and each rigid body's meshes.
-    """
-    bodies = {}
-    for body_id, body in cell.rigid_body_models.items():
-        # Placeholder colour; `CellDrawing.show` sets the real one per state.
-        bodies[body_id] = [MeshPart(*_triangles(mesh, scale=body.native_scale), BAR_COLOR)
-                           for mesh in body.visual_meshes]
-    return CellMeshes(
-        robot=_link_meshes(cell.robot_model),
-        tools={tool_id: _link_meshes(tool) for tool_id, tool in cell.tool_models.items()},
-        bodies=bodies,
-    )
-
-
-# --- --- --- --- --- POSES --- --- --- --- ---
-
-def _pose(frame: Frame) -> tuple[tuple[float, float, float], tuple[float, float, float, float]]:
-    """Convert a compas frame to viser's (position, wxyz).
-
-    Args:
-        frame: The frame.
-
-    Returns:
-        tuple: Position (x, y, z) and quaternion (w, x, y, z).
-    """
-    return tuple(frame.point), tuple(frame.quaternion.wxyz)
-
-
-def _is_parked(frame: Frame) -> bool:
-    """Whether a tool sits at the parking spot, meaning "not in this step".
-
-    Args:
-        frame: The tool's base frame.
-
-    Returns:
-        bool: True if it is at PARKED_POSITION.
-    """
-    return bool(np.allclose(list(frame.point), PARKED_POSITION, atol=PARKED_TOLERANCE))
-
-
-def link_frames(model: RobotModel, configuration: Configuration | None) -> dict[str, Frame]:
-    """Compute every link's frame relative to the model's base, in one pass.
-
-    Args:
-        model: Robot or tool model.
-        configuration: Joint values; missing joints are zero. None for a model
-            with no joints.
-
-    Returns:
-        dict[str, Frame]: Link name -> frame. The root link is at the base.
-    """
-    full = model.zero_configuration()
-    if configuration is not None:
-        given = dict(zip(configuration.joint_names, configuration.joint_values))
-        full = Configuration([given.get(name, value) for name, value in zip(full.joint_names, full.joint_values)],
-                             full.joint_types, full.joint_names)
-    transformations = model.compute_transformations(full)
-    frames = {}
-    for link in model.links:
-        joint = link.parent_joint
-        frames[link.name] = (joint.current_origin.transformed(transformations[joint.name])
-                             if joint else Frame.worldXY())
-    return frames
-
-
-# --- --- --- --- --- DRAWING (main thread) --- --- --- --- ---
 
 @dataclass
-class _DrawnModel:
-    """The viser nodes of one robot or tool model.
+class _Robot:
+    """One robot's nodes and model.
 
     Attributes:
-        base: Frame node at the model's base.
-        links: Link name -> frame node, child of `base`.
-        meshes: Every mesh node below the links, for opacity changes.
+        frame: Node at the robot base; the meshes hang below it.
+        urdf: The meshes, posed by `update_cfg`.
+        model: The yourdfpy model `urdf` poses; read for forward kinematics.
+        names: Actuated joint names, in `update_cfg` order.
+        values: Joint values last shown, or None before the first show.
     """
 
-    base: viser.FrameHandle
-    links: dict[str, viser.FrameHandle] = field(default_factory=dict)
-    meshes: list[viser.MeshHandle] = field(default_factory=list)
+    frame: viser.FrameHandle
+    urdf: viser.extras.ViserUrdf
+    model: yourdfpy.URDF
+    names: tuple[str, ...]
+    values: np.ndarray | None = None
 
 
-class CellDrawing:
-    """The viser nodes for one robot cell, posed from one cell state at a time.
+class DesignDrawing:
+    """Every robot, tool and body of a design in viser, posed from one state at a time."""
 
-    ! `build` is a generator: drive it from a task (`await ctx.next_tick()` per step) so the mesh upload is spread over several ticks.
-    """
-
-    def __init__(self, scene: viser.SceneApi, root: str):
-        """Create the (empty, hidden) root node.
+    def __init__(self, view, root: str, design: Design, models: Mapping[str, yourdfpy.URDF]):
+        """Create the root node; `build` adds the rest.
 
         Args:
-            scene: The viser scene api.
-            root: Scene path for this cell, below the plugin's scene root.
+            view: The plugin's view (PluginView); ViserUrdf adds the robot meshes through it.
+            root: Scene path of the drawing, below the plugin's scene root.
+            design: The design.
+            models: Robot id -> model, from `load_robot_models`.
         """
-        self._scene = scene
-        self._root_path = root
-        self._root = scene.add_frame(root, show_axes=False, visible=False)
-        self._robot: _DrawnModel | None = None
-        self._tools: dict[str, _DrawnModel] = {}
-        self._bodies: dict[str, viser.FrameHandle] = {}
-        self._body_meshes: dict[str, list[viser.MeshHandle]] = {}
-        self._opacity: float | None = None
+        self._view, self._root_path, self._design, self._models = view, root, design, models
+        self._root = view.scene.add_frame(root, show_axes=False)
+        self._robots: dict[str, _Robot] = {}
+        #: Tool or body id -> (frame, meshes).
+        self._tools: dict[str, tuple[viser.FrameHandle, list[viser.MeshHandle]]] = {}
+        self._bodies: dict[str, tuple[viser.FrameHandle, list[viser.MeshHandle]]] = {}
+        self._ghost = False
 
-    def build(self, meshes: CellMeshes) -> Iterator[None]:
-        """Add every mesh node, yielding after each model.
-
-        Args:
-            meshes: The cell's prepared meshes.
+    def build(self) -> Iterator[None]:
+        """Add every node: one robot per tick, then the tools, then BODIES_PER_TICK bodies per tick.
 
         Yields:
-            None: After each robot or tool model, and after the rigid bodies.
+            None: When a tick's share is done.
         """
-        self._robot = self._add_model(f"{self._root_path}/robot", meshes.robot)
-        yield
-        for tool_id, links in meshes.tools.items():
-            self._tools[tool_id] = self._add_model(f"{self._root_path}/tool/{tool_id}", links)
+        for robot_id, model in self._models.items():
+            path = f"{self._root_path}/{robot_id}"
+            frame = self._view.scene.add_frame(path, show_axes=False, visible=False)
+            urdf = self._robot_meshes(model, path)
+            self._robots[robot_id] = _Robot(frame, urdf, model, tuple(urdf.get_actuated_joint_names()))
             yield
-        for body_id, parts in meshes.bodies.items():
-            path = f"{self._root_path}/body/{body_id}"
-            self._bodies[body_id] = self._scene.add_frame(path, show_axes=False, visible=False)
-            self._body_meshes[body_id] = [self._add_mesh(f"{path}/{i}", part) for i, part in enumerate(parts)]
+        for tool_id, tool in self._design.tools.items():
+            self._tools[tool_id] = self._add(f"{self._root_path}/{tool_id}", tool.geometry, TOOL_COLOR)
         yield
+        for count, (body_id, body) in enumerate(self._design.bodies.items(), start=1):
+            self._bodies[body_id] = self._add(f"{self._root_path}/bodies/{body_id}", body.geometry,
+                                              body_color(body_id))
+            if count % BODIES_PER_TICK == 0:
+                yield
 
-    def _add_model(self, path: str, links: dict[str, list[MeshPart]]) -> _DrawnModel:
-        """Add one robot or tool model's nodes.
+    def _robot_meshes(self, model: yourdfpy.URDF, path: str) -> viser.extras.ViserUrdf:
+        """A robot's meshes below `path`, in its own colours, or the ghost colour."""
+        return viser.extras.ViserUrdf(self._view, model, root_node_name=path,
+                                      mesh_color_override=GHOST_ROBOT_COLOR if self._ghost else None)
 
-        Args:
-            path: Scene path of the model's base node.
-            links: Link name -> meshes.
-
-        Returns:
-            _DrawnModel: Its handles.
-        """
-        drawn = _DrawnModel(base=self._scene.add_frame(path, show_axes=False))
-        for link_name, parts in links.items():
-            link_path = f"{path}/{link_name}"
-            drawn.links[link_name] = self._scene.add_frame(link_path, show_axes=False)
-            drawn.meshes += [self._add_mesh(f"{link_path}/{i}", part) for i, part in enumerate(parts)]
-        return drawn
-
-    def _add_mesh(self, path: str, part: MeshPart) -> viser.MeshHandle:
-        """Add one mesh node at identity below its parent.
+    def _add(self, path: str, geometry: Geometry, color: tuple[int, int, int]):
+        """A hidden frame with a geometry's visual shapes below it.
 
         Args:
-            path: Scene path.
-            part: The mesh.
+            path: Scene path of the frame.
+            geometry: The shapes, in the frame's coordinates.
+            color: RGB 0-255.
 
         Returns:
-            viser.MeshHandle: Its handle.
+            tuple: (frame, meshes).
         """
-        return self._scene.add_mesh_simple(path, part.vertices, part.faces, color=part.color,
-                                           opacity=self._opacity)
+        frame = self._view.scene.add_frame(path, show_axes=False, visible=False)
+        meshes = []
+        for index, shape in enumerate(geometry.visual):
+            mesh = shape_mesh(shape)  # primitives (bar cylinders) as triangles, cached per shape
+            meshes.append(self._view.scene.add_mesh_simple(
+                f"{path}/{index}", mesh.vertices.astype(np.float32), mesh.faces.astype(np.uint32),
+                color=color, opacity=GHOST_OPACITY if self._ghost else None))
+        return frame, meshes
 
     # --- --- --- --- --- PER STATE --- --- --- --- ---
 
     @property
     def visible(self) -> bool:
-        """bool: Whether this cell is shown."""
+        """bool: Whether the drawing is shown."""
         return self._root.visible
 
     @visible.setter
     def visible(self, value: bool) -> None:
         self._root.visible = value
 
-    def show(self, cell: RobotCell, state: RobotCellState) -> None:
+    def show(self, state: State, joints: Mapping[str, Mapping[str, float]]) -> None:
         """Pose everything from one state.
 
         Args:
-            cell: The cell this drawing was built from.
-            state: A state with a full robot configuration and resolved frames
-                for attached objects (design.displayed_state).
+            state: Which robots are there and where, which bodies are present, held or moved.
+            joints: Robot id -> joint values to draw it at (`design.displayed_joints`);
+                joints not given are drawn at zero.
         """
-        self._pose_model(self._robot, cell.robot_model, state.robot_configuration, state.robot_base_frame)
-
-        for tool_id, drawn in self._tools.items():
-            tool_state = state.tool_states.get(tool_id)
-            if tool_state is None or tool_state.is_hidden or tool_state.frame is None or _is_parked(tool_state.frame):
-                drawn.base.visible = False
+        # * Robots first: tools and held bodies read their links from the posed models.
+        for robot_id, robot in self._robots.items():
+            robot_state = state.robots.get(robot_id)
+            tools = self._design.robots[robot_id].tools
+            if robot_state is None:
+                robot.frame.visible = False
+                for tool_id in tools.values():
+                    self._tools[tool_id][0].visible = False
                 continue
-            self._pose_model(drawn, cell.tool_models[tool_id], tool_state.configuration, tool_state.frame)
+            _place(robot.frame, robot_state.base)
+            given = joints.get(robot_id, {})
+            robot.values = np.array([float(given.get(name, 0.0)) for name in robot.names])
+            robot.urdf.update_cfg(robot.values)
+            robot.frame.visible = True
+            for flange, tool_id in tools.items():
+                frame = self._tools[tool_id][0]
+                _place(frame, self._link_pose(robot_id, flange, robot_state.base))
+                frame.visible = True
 
-        for body_id, node in self._bodies.items():
-            body_state = state.rigid_body_states.get(body_id)
-            if body_state is None or body_state.is_hidden or body_state.frame is None:
-                node.visible = False
+        for body_id, (frame, meshes) in self._bodies.items():
+            if body_id not in state.present:
+                frame.visible = False
                 continue
-            node.position, node.wxyz = _pose(body_state.frame)
-            node.visible = True
-            attached = bool(body_state.attached_to_link or body_state.attached_to_tool)
-            color = ATTACHED_COLOR if attached else (BAR_COLOR if "bar" in body_id else JOINT_COLOR)
-            for mesh in self._body_meshes[body_id]:
+            attached = state.attached.get(body_id)
+            if attached is not None:
+                holder, link = split_link_id(attached.to)
+                holder_state = state.robots.get(holder)
+                if holder_state is None:
+                    frame.visible = False  # held by a robot that is not there
+                    continue
+                pose = compose(self._link_pose(holder, link, holder_state.base), attached.grasp)
+                color = ATTACHED_COLOR
+            else:
+                pose, color = state.poses.get(body_id, self._design.bodies[body_id].pose), body_color(body_id)
+            _place(frame, pose)
+            for mesh in meshes:
                 mesh.color = color
+            frame.visible = True
 
-    def _pose_model(self, drawn: _DrawnModel, model: RobotModel, configuration: Configuration | None,
-                    base_frame: Frame | None) -> None:
-        """Place one model's base and links.
-
-        Args:
-            drawn: Its nodes.
-            model: The robot or tool model.
-            configuration: Its joint values, or None for all zero.
-            base_frame: Where its base is in the world, or None for the origin.
-        """
-        drawn.base.position, drawn.base.wxyz = _pose(base_frame or Frame.worldXY())
-        drawn.base.visible = True
-        for link_name, frame in link_frames(model, configuration).items():
-            node = drawn.links.get(link_name)
-            if node is not None:
-                node.position, node.wxyz = _pose(frame)
-
-    def set_opacity(self, opacity: float | None) -> None:
-        """Set the opacity of every mesh.
+    def _link_pose(self, robot_id: str, link: str, base: Pose) -> Pose:
+        """A link's world pose, from the robot's model as last posed.
 
         Args:
-            opacity: 0-1, or None for opaque.
+            robot_id: The robot.
+            link: Link name.
+            base: The robot's base pose.
+
+        Returns:
+            Pose: The link in world.
         """
-        self._opacity = opacity
-        models = [self._robot, *self._tools.values()] if self._robot else list(self._tools.values())
-        for mesh in [m for drawn in models for m in drawn.meshes] + \
-                [m for meshes in self._body_meshes.values() for m in meshes]:
-            mesh.opacity = opacity
+        return compose(base, Pose.from_matrix(self._robots[robot_id].model.get_transform(frame_to=link)))
+
+    def set_ghost(self, ghost: bool) -> None:
+        """Draw everything see-through, or solid again.
+
+        Args:
+            ghost: See-through.
+        """
+        if ghost == self._ghost:
+            return
+        self._ghost = ghost
+        for _, meshes in [*self._tools.values(), *self._bodies.values()]:
+            for mesh in meshes:
+                mesh.opacity = GHOST_OPACITY if ghost else None
+        for robot_id, robot in self._robots.items():
+            robot.urdf.remove()
+            robot.urdf = self._robot_meshes(robot.model, f"{self._root_path}/{robot_id}")
+            if robot.values is not None:
+                robot.urdf.update_cfg(robot.values)
 
     def remove(self) -> None:
-        """Remove every node of this cell from the scene."""
+        """Remove every node of the drawing."""
         self._root.remove()
+
+
+def _place(frame: viser.FrameHandle, pose: Pose) -> None:
+    """Move a frame node to a pose."""
+    frame.position = tuple(float(v) for v in pose.position)
+    frame.wxyz = quaternion_to_wxyz(pose.orientation)

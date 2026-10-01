@@ -1,6 +1,6 @@
 """
-The base planner: an RRT-Connect search (`birrt`) over the base's floor pose
-(x, y, yaw), avoiding the other robots and every scene body.
+The base planner: an RRT-Connect search (`planning.search.connect`) over the base's
+floor pose (x, y, yaw), avoiding the other robots and every scene body.
 
 The search runs on the plugin's one worker thread, in a private PyBullet world
 (`PlanningWorld`) synced on that thread from the tick's scene snapshot.
@@ -15,13 +15,11 @@ from __future__ import annotations
 import math
 import threading
 import time
-from dataclasses import dataclass
 
 import numpy as np
 import pybullet as p
-from pybullet_planning.motion_planners.rrt_connect import birrt
-from pybullet_planning.motion_planners.utils import waypoints_from_path
 
+from ...planning.search import PlanResult, connect
 from ...world.mirrors.pybullet import PyBulletMirror
 from ...world.scene import SceneSnapshot, robot_id
 from .path import BasePath, steer, steer_cost, steer_points, timed_path
@@ -30,36 +28,9 @@ from .path import BasePath, steer, steer_cost, steer_points, timed_path
 COLLISION_MARGIN = 0.05
 #: Samples are drawn from the box around start and goal, grown by this much per side, metres.
 SAMPLE_PADDING = 2.0
-#: Give up after this long, seconds.
-TIME_LIMIT = 10.0
-#: RRT-Connect iterations per attempt, extra attempts, and smoothing iterations.
-MAX_ITERATIONS = 2000
-RESTARTS = 2
-SMOOTHING = 100
 #: Collision-checking resolution along a move: metres driven, radians turned.
 POSITION_STEP = 0.05
 YAW_STEP = 0.05
-
-
-class PlanningAborted(Exception):
-    """Raised inside a search to end it early."""
-
-
-@dataclass
-class PlanResult:
-    """What a search came back with.
-
-    Attributes:
-        path: The timed path, or None if none was found.
-        reason: Why not, when `path` is None; empty otherwise.
-        seconds: How long the search took.
-        direct: Whether the straight move was already free.
-    """
-
-    path: BasePath | None
-    reason: str = ""
-    seconds: float = 0.0
-    direct: bool = False
 
 
 class PlanningWorld:
@@ -174,7 +145,7 @@ class PlanningWorld:
             self.mirror = None
 
 
-def plan_birrt(world: PlanningWorld, serial: str, start, goal, abort: threading.Event) -> PlanResult:
+def plan_birrt(world: PlanningWorld, serial: str, start, goal, abort: threading.Event) -> PlanResult[BasePath]:
     """Plan a collision-free base path from start to goal. Runs on the worker thread.
 
     Args:
@@ -185,12 +156,12 @@ def plan_birrt(world: PlanningWorld, serial: str, start, goal, abort: threading.
         abort: Set from the main thread to end the search early.
 
     Returns:
-        PlanResult: The path, or why there is none.
+        PlanResult[BasePath]: The path, or why there is none.
     """
     started = time.time()
     start, goal = tuple(map(float, start)), tuple(map(float, goal))
 
-    # * Report a blocked start or target explicitly; birrt would only return None.
+    # * Report a blocked start or target explicitly; the search would only fail.
     for name, pose in (("start", start), ("target", goal)):
         other = world.hit_by(serial, pose)
         if other is not None:
@@ -199,34 +170,26 @@ def plan_birrt(world: PlanningWorld, serial: str, start, goal, abort: threading.
     low = np.minimum(start[:2], goal[:2]) - SAMPLE_PADDING
     high = np.maximum(start[:2], goal[:2]) + SAMPLE_PADDING
 
-    def sample_fn():
+    def sample():
         x, y = np.random.uniform(low, high)
         return (float(x), float(y), float(np.random.uniform(-math.pi, math.pi)))
 
-    def extend_fn(q1, q2):
+    def extend(q1, q2):
         return steer_points(q1, q2, POSITION_STEP, YAW_STEP)
 
-    def collision_fn(q, **_kwargs):
-        # birrt may pass a `diagnosis` flag; ignored.
-        if abort.is_set():
-            raise PlanningAborted()
+    def collides(q) -> bool:
         return world.hit_by(serial, q) is not None
 
-    direct = all(not collision_fn(q) for q in extend_fn(start, goal))
-    waypoints = birrt(start, goal, steer_cost, sample_fn, extend_fn, collision_fn,
-                      max_time=TIME_LIMIT, max_iterations=MAX_ITERATIONS, restarts=RESTARTS, smooth=SMOOTHING)
-    if waypoints is None:
-        return PlanResult(None, f"no path found in {TIME_LIMIT:.0f} s", time.time() - started)
-
-    # ! A free straight move comes back from birrt as every small step, without the
-    #   start. Restore the start and keep only the corners so both results match.
-    if tuple(waypoints[0]) != start:
-        waypoints = waypoints_from_path([start] + list(waypoints))
+    corners = connect(start, goal, steer_cost, sample, extend, collides, abort)
+    if corners.states is None:
+        return PlanResult(None, corners.reason, time.time() - started)
 
     # * Rejoin the corners with `steer` and re-check: the joined path is not guaranteed collision-free.
     poses = [start]
-    for q1, q2 in zip(waypoints[:-1], waypoints[1:]):
+    for q1, q2 in zip(corners.states[:-1], corners.states[1:]):
         poses += steer(q1, q2)
-        if any(collision_fn(q) for q in extend_fn(q1, q2)):
+        if abort.is_set():
+            return PlanResult(None, "cancelled", time.time() - started)
+        if any(collides(q) for q in extend(q1, q2)):
             return PlanResult(None, "the smoothed path collides; plan again", time.time() - started)
-    return PlanResult(timed_path(poses), seconds=time.time() - started, direct=direct)
+    return PlanResult(timed_path(poses), seconds=time.time() - started, direct=corners.direct)

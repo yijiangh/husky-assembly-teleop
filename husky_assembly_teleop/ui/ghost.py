@@ -1,8 +1,10 @@
 """
 A see-through copy of a robot in a plugin's 3D view, posed by hand: for targets, planned paths and previews.
 
-* Build ghosts in `setup` (loading the meshes takes a moment), then `show` or `hide`
-  them in `draw`. `show` does nothing when nothing changed, so it can run every tick.
+* Build ghosts in `setup` with `robot_ghosts` (loading the meshes takes a moment), then
+  `show` or `hide` them in `draw`. `show` does nothing when nothing changed, so it can run every tick.
+* Every ghost lives at "<plugin root>/ghosts/<kind>/<serial>", so the debug view shows each
+  plugin's ghosts as one "ghosts" category with the same subcategories everywhere.
 * Context: show a plugin's ghosts only while it is in use (`RecentUse`): after the
   operator's input in it, for `MonitorConfig.ghost_timeout` seconds (0: from then on).
   Only the last one used anywhere is active, so ghosts of one panel show at a time:
@@ -13,12 +15,13 @@ A see-through copy of a robot in a plugin's 3D view, posed by hand: for targets,
 from __future__ import annotations
 
 import time
-from typing import TYPE_CHECKING, Mapping
+from typing import TYPE_CHECKING, Iterable, Mapping
 
 import numpy as np
 import viser.extras
 
-from .visualization import load_urdf, quaternion_to_wxyz
+from .quaternion import quaternion_to_wxyz
+from .visualization import load_urdf
 
 if TYPE_CHECKING:
     from ..config import RobotConfig
@@ -28,6 +31,8 @@ if TYPE_CHECKING:
 #: Colours (r, g, b, alpha from 0 to 1) shared by the plugins, so a target and a path look the same everywhere.
 TARGET_COLOR = (1.0, 0.78, 0.0, 0.35)   # yellow: where it should go
 PATH_COLOR = (0.35, 0.6, 1.0, 0.35)     # blue: where the plan has it at the slider time
+#: The kinds of ghost, by scene subcategory, with their colours.
+KIND_COLORS = {"target": TARGET_COLOR, "path": PATH_COLOR}
 
 
 class RecentUse:
@@ -60,16 +65,16 @@ class RecentUse:
 class RobotGhost:
     """One see-through robot, hidden until shown."""
 
-    def __init__(self, ctx: PluginContext, config: RobotConfig, name: str, color: tuple[float, float, float, float]):
-        """Load the robot's meshes under the plugin's scene root.
+    def __init__(self, ctx: PluginContext, config: RobotConfig, kind: str):
+        """Load the robot's meshes at "<plugin root>/ghosts/<kind>/<serial>".
 
         Args:
             ctx: The owning plugin's context; the ghost lives in its view.
             config: The robot; its stitched URDF is drawn.
-            name: Scene path under the plugin's root, e.g. "target/a200-0804".
-            color: (r, g, b, alpha), 0 to 1.
+            kind: A key of KIND_COLORS: "target" or "path". Sets the colour.
         """
-        path = f"{ctx.view.scene_root}/{name}"
+        path = f"{ctx.view.scene_root}/ghosts/{kind}/{config.serial}"
+        color = KIND_COLORS[kind]
         self._frame = ctx.view.scene.add_frame(path, show_axes=False, visible=False)
         # The plugin's view is passed so the ghost stays in the plugin's subtree.
         self._urdf = viser.extras.ViserUrdf(ctx.view, load_urdf(config.urdf_file), root_node_name=path,
@@ -110,3 +115,17 @@ class RobotGhost:
         if self._shown is not None:
             self._shown = None
             self._frame.visible = False
+
+
+def robot_ghosts(ctx: PluginContext, robots: Iterable[RobotConfig], kind: str) -> dict[str, RobotGhost]:
+    """One ghost of a kind per robot, by serial. Call in `setup`: loading the meshes is too slow for the tick.
+
+    Args:
+        ctx: The owning plugin's context.
+        robots: The robots to build a ghost for.
+        kind: A key of KIND_COLORS: "target" or "path".
+
+    Returns:
+        dict[str, RobotGhost]: The ghosts, hidden, by robot serial.
+    """
+    return {config.serial: RobotGhost(ctx, config, kind) for config in robots}

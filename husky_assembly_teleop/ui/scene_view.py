@@ -8,9 +8,7 @@ tick's snapshot.
 * Building meshes is slow, so at most `build_budget` meshes are built per tick;
   a large cell fills in over a few ticks. Moves and removes always apply in
   full, so a body is at worst missing for a few ticks, never shown at an old pose.
-
-! Main thread only. The "Scene" checkboxes are read here, never acted on in a
-  viser callback.
+* No visibility toggles here: viser's debug view already toggles each scene path.
 """
 
 from __future__ import annotations
@@ -21,26 +19,10 @@ import viser
 
 from ..world.geometry import BoxShape, CylinderShape, Geometry, Shape
 from ..world.scene import Pose, SceneSnapshot
+from .quaternion import quaternion_to_wxyz
 
 #: Colour of a body without one of its own, (r, g, b, a) from 0 to 1.
 DEFAULT_COLOR = (0.7, 0.7, 0.7, 1.0)
-#: Group checkboxes go this many id segments deep: "obstacles", "obstacles/tables".
-GROUP_DEPTH = 2
-
-
-def _wxyz(pose: Pose) -> tuple[float, float, float, float]:
-    """Reorder a pose's quaternion from xyzw to viser's wxyz.
-
-    ? Not `visualization.quaternion_to_wxyz`: that module imports this one.
-    """
-    x, y, z, w = pose.orientation
-    return (w, x, y, z)
-
-
-def _groups(body_id: str) -> list[str]:
-    """The group prefixes of an id that get a frame and a checkbox, e.g. "a", "a/b" for "a/b/c"."""
-    parts = body_id.split("/")[:-1]
-    return ["/".join(parts[:depth]) for depth in range(1, min(len(parts), GROUP_DEPTH) + 1)]
 
 
 @dataclass
@@ -58,14 +40,6 @@ class _DrawnBody:
     color: tuple[float, float, float, float] | None
     pose: Pose
     frame: viser.FrameHandle
-
-
-@dataclass
-class _Group:
-    """A group of bodies sharing an id prefix: one frame to hide them all, one checkbox."""
-
-    frame: viser.FrameHandle
-    checkbox: viser.GuiCheckboxHandle
 
 
 @dataclass
@@ -89,9 +63,7 @@ class SceneView:
     """Draws the scene's bodies and the tracked objects from each tick's snapshot. Core, main thread only."""
 
     def __init__(self, server: viser.ViserServer, build_budget: int = 50) -> None:
-        """Create the "Scene" GUI folder and the root frames.
-
-        ? Called before any plugin adds its folder, so "Scene" sits above them.
+        """Create the root frames.
 
         Args:
             server: The viser server to draw in.
@@ -99,13 +71,9 @@ class SceneView:
         """
         self._server = server
         self._build_budget = build_budget
-        self._folder = server.gui.add_folder("Scene")
-        with self._folder:
-            self._show_tracked = server.gui.add_checkbox("tracked objects", True)
         server.scene.add_frame("/scene", show_axes=False)
-        self._tracked_root = server.scene.add_frame("/tracked", show_axes=False)
+        server.scene.add_frame("/tracked", show_axes=False)
         self._bodies: dict[str, _DrawnBody] = {}
-        self._groups: dict[str, _Group] = {}
         self._tracked: dict[str, _DrawnTracked] = {}
 
     def sync(self, snapshot: SceneSnapshot) -> None:
@@ -121,7 +89,6 @@ class SceneView:
             if body is None or body.geometry is not drawn.geometry or body.color != drawn.color:
                 drawn.frame.remove()
                 del self._bodies[body_id]
-        self._sync_groups(snapshot)
 
         for body_id, body in snapshot.bodies.items():
             pose = snapshot.world_poses[body_id]
@@ -130,31 +97,15 @@ class SceneView:
                 if budget <= 0:
                     continue  # not drawn yet; built in a later tick
                 frame = self._server.scene.add_frame(f"/scene/{body_id}", show_axes=False,
-                                                     position=pose.position, wxyz=_wxyz(pose))
+                                                     position=pose.position, wxyz=quaternion_to_wxyz(pose.orientation))
                 budget -= len(self._add_meshes(f"/scene/{body_id}", body.geometry, body.color))
                 self._bodies[body_id] = _DrawnBody(body.geometry, body.color, pose, frame)
             elif pose != drawn.pose:
                 # ? Compared first: viser sends a message for every assignment.
-                drawn.frame.position, drawn.frame.wxyz, drawn.pose = pose.position, _wxyz(pose), pose
+                drawn.frame.position, drawn.frame.wxyz = pose.position, quaternion_to_wxyz(pose.orientation)
+                drawn.pose = pose
 
         self._sync_tracked(snapshot, budget)
-
-    def _sync_groups(self, snapshot: SceneSnapshot) -> None:
-        """Add and remove group frames and checkboxes, and apply each checkbox to its frame."""
-        wanted = sorted({group for body_id in snapshot.bodies for group in _groups(body_id)})
-        # Reverse order removes a subgroup before its parent (removing the parent removes it too).
-        for group in sorted(set(self._groups) - set(wanted), reverse=True):
-            self._groups[group].frame.remove()
-            self._groups[group].checkbox.remove()
-            del self._groups[group]
-        for group in wanted:
-            if group not in self._groups:
-                with self._folder:
-                    checkbox = self._server.gui.add_checkbox(group, True)
-                self._groups[group] = _Group(self._server.scene.add_frame(f"/scene/{group}", show_axes=False),
-                                             checkbox)
-            # * viser hides everything below a hidden frame. It sends nothing if the value is unchanged.
-            self._groups[group].frame.visible = self._groups[group].checkbox.value
 
     def _sync_tracked(self, snapshot: SceneSnapshot, budget: int) -> None:
         """Move, show and hide the tracked objects' frames, and build their meshes.
@@ -165,17 +116,17 @@ class SceneView:
             snapshot: The tick's copy of the world.
             budget: Shapes left to build this tick.
         """
-        self._tracked_root.visible = self._show_tracked.value
         for name, drawn in self._tracked.items():
             drawn.frame.visible = name in snapshot.tracked
         for name, entry in snapshot.tracked.items():
             drawn = self._tracked.get(name)
             if drawn is None:
                 frame = self._server.scene.add_frame(f"/tracked/{name}", axes_length=0.1, axes_radius=0.004,
-                                                     position=entry.pose.position, wxyz=_wxyz(entry.pose))
+                                                     position=entry.pose.position,
+                                                     wxyz=quaternion_to_wxyz(entry.pose.orientation))
                 drawn = self._tracked[name] = _DrawnTracked(frame, entry.pose)
             elif entry.pose != drawn.pose:
-                drawn.frame.position, drawn.frame.wxyz = entry.pose.position, _wxyz(entry.pose)
+                drawn.frame.position, drawn.frame.wxyz = entry.pose.position, quaternion_to_wxyz(entry.pose.orientation)
                 drawn.pose = entry.pose
 
             geometry = entry.description.geometry
@@ -219,9 +170,10 @@ class SceneView:
         scene = self._server.scene
         if isinstance(shape, BoxShape):
             return scene.add_box(name, dimensions=shape.size, position=shape.origin.position,
-                                 wxyz=_wxyz(shape.origin), **look)
+                                 wxyz=quaternion_to_wxyz(shape.origin.orientation), **look)
         if isinstance(shape, CylinderShape):
             # ? viser turns its cylinders onto Z, as PyBullet and trimesh do.
             return scene.add_cylinder(name, radius=shape.radius, height=shape.height,
-                                      position=shape.origin.position, wxyz=_wxyz(shape.origin), **look)
+                                      position=shape.origin.position,
+                                      wxyz=quaternion_to_wxyz(shape.origin.orientation), **look)
         return scene.add_mesh_simple(name, shape.vertices, shape.faces, **look)

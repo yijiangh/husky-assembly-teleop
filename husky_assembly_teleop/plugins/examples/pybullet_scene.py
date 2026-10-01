@@ -40,7 +40,7 @@ from ...plugin_api.plugin import HuskyPlugin, register
 from ...world.scene import Body, Pose, SceneSnapshot
 from ...ui.pybullet_window import PyBulletWindowToggle
 from ...ui.style import FAIL, NONE, OK, SECTION_CTRL, block, chip, numbers, section, values
-from ...ui.visualization import quaternion_to_wxyz
+from ...ui.quaternion import quaternion_to_wxyz
 
 BOX_ID = "example_pybullet/box"  # ! must start with the plugin's name
 BOX_SIZE = (0.3, 0.3, 0.3)       # m

@@ -4,14 +4,19 @@ import math
 
 import numpy as np
 
-from husky_assembly_teleop.plugins.base_planner.path import (MAX_ANGULAR_SPEED, MAX_LINEAR_SPEED,
-                                                             plan_straight_line, steer_cost, steer_points)
+from husky_assembly_teleop.plugins.base_planner.path import (MAX_ANGULAR_SPEED, MAX_LINEAR_SPEED, steer,
+                                                             steer_cost, steer_points, timed_path)
+
+
+def plan_straight_line(start, goal):
+    """One steer from start to goal, timed: the path the RRT makes of a free straight move."""
+    return timed_path([start] + steer(start, goal))
 
 
 def test_ahead_is_drive_only():
     """A goal straight ahead, same yaw: one straight leg, timed by the drive speed."""
     path = plan_straight_line((0.0, 0.0, 0.0), (1.0, 0.0, 0.0))
-    assert len(path.poses) == 2
+    assert len(path.points) == 2
     assert math.isclose(path.duration, 1.0 / MAX_LINEAR_SPEED)
     assert math.isclose(path.length, 1.0)
     np.testing.assert_allclose(path.sample(path.duration / 2), (0.5, 0.0, 0.0))
@@ -20,7 +25,7 @@ def test_ahead_is_drive_only():
 def test_turn_drive_turn():
     """A goal to the left, facing back: turn to it, drive, turn to its yaw."""
     path = plan_straight_line((0.0, 0.0, 0.0), (0.0, 1.0, math.pi / 2 + 0.5))
-    np.testing.assert_allclose(path.poses[1], (0.0, 0.0, math.pi / 2))
+    np.testing.assert_allclose(path.points[1], (0.0, 0.0, math.pi / 2))
     np.testing.assert_allclose(path.goal[:2], (0.0, 1.0))
     assert math.isclose(path.goal[2], math.pi / 2 + 0.5)
 
@@ -28,8 +33,8 @@ def test_turn_drive_turn():
 def test_behind_is_reversed():
     """A goal just behind, same yaw: reverse, never turn."""
     path = plan_straight_line((0.0, 0.0, 0.0), (-1.0, 0.0, 0.0))
-    assert np.allclose(path.poses[:, 2], 0.0)
-    assert len(path.poses) == 2
+    assert np.allclose(path.points[:, 2], 0.0)
+    assert len(path.points) == 2
 
 
 def test_turn_on_the_spot_takes_short_way():

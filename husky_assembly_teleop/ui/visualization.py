@@ -26,6 +26,7 @@ import yourdfpy
 
 from ..config import RobotConfig
 from ..world.scene import SceneSnapshot
+from .quaternion import quaternion_to_wxyz
 from .scene_view import SceneView
 from ..tool_urdfs import resolve_mesh_path
 from .style import FAIL
@@ -101,21 +102,6 @@ def load_urdf(urdf_file: Path) -> yourdfpy.URDF:
     return model
 
 
-def quaternion_to_wxyz(quaternion: np.ndarray) -> tuple[float, float, float, float]:
-    """Reorder a quaternion from xyzw (ROS, PyBullet, RobotState) to viser's wxyz.
-
-    ! A wrong order still renders, just rotated, so it is easy to miss.
-
-    Args:
-        quaternion: Orientation as (x, y, z, w).
-
-    Returns:
-        tuple[float, float, float, float]: The same rotation as (w, x, y, z).
-    """
-    x, y, z, w = (float(value) for value in quaternion)
-    return (w, x, y, z)
-
-
 @dataclass
 class _DrawnRobot:
     """The handles for one robot in the viser scene.
@@ -138,7 +124,7 @@ class Visualization:
       gets `atomic()`, `draw()` and `stop()`. Nothing above holds a ViserServer.
     """
 
-    def __init__(self, port: int = 8080):
+    def __init__(self, port: int):
         """Start the viser server.
 
         Args:

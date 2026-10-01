@@ -1,12 +1,8 @@
 """
-Mocap rigid bodies, the same for every body: robot bases and tracked objects alike.
+Judging a mocap fix, the same for every body: robot bases and tracked objects alike.
 
-  mocap_topic    where the relay publishes a body's pose
-  store_sample   how a sample is written into a body's measured state
-  mocap_check    how a body's tracking state and quality are judged, as one chip
-
-! Keep these the only place that reads MocapRigidBodyPose, so a base and an
-  object can never disagree about what "tracked" means.
+Receiving samples is the ROS side's job (robot_interface/mocap.py); this module
+only reads the stored fields, so it needs no ROS.
 """
 
 from __future__ import annotations
@@ -14,9 +10,7 @@ from __future__ import annotations
 from typing import Protocol
 
 import numpy as np
-from crl_husky_msgs.msg import MocapRigidBodyPose
-
-from ..ui.style import BAD, GOOD, STALE_AFTER, WARN, Check
+from .checks import BAD, GOOD, STALE_AFTER, WARN, Check
 
 #: Mean marker error, metres, above which the mocap chip turns amber.
 #: ? A guess from typical OptiTrack numbers. The relay's own looser threshold
@@ -45,35 +39,6 @@ class MocapBody(Protocol):
     marker_error: float | None
     last_update_time: float | None
     last_fix_time: float | None
-
-
-def mocap_topic(mocap_id: int) -> str:
-    """The relay topic of one rigid body.
-
-    * The relay's pose is already calibrated and in the Z-up 'rhino' world
-      frame. Use it as is; transforming again would apply it twice.
-    """
-    return f"/mocap/rigid_body/id_{mocap_id}/pose"
-
-
-def store_sample(body: MocapBody, message: MocapRigidBodyPose, now: float) -> None:
-    """Write one mocap sample into `body`; an invalid one only clears `tracked`, keeping the last valid pose.
-
-    Args:
-        body: The body's measured state, changed in place.
-        message: The relay's sample.
-        now: ROS time of arrival, seconds.
-    """
-    body.tracked = bool(message.pose_valid)
-    # * Kept so the mocap chip can say why a pose is invalid.
-    body.tracking_valid = bool(message.tracking_valid)
-    body.marker_error = float(message.marker_error)
-    if body.tracked:
-        p, q = message.pose.position, message.pose.orientation
-        body.position = np.array([p.x, p.y, p.z])
-        body.orientation = np.array([q.x, q.y, q.z, q.w])
-        body.last_fix_time = now
-    body.last_update_time = now
 
 
 def mocap_check(label: str, mocap_id: int | None, body: MocapBody, now: float) -> Check:

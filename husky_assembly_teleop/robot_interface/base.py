@@ -7,7 +7,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 import numpy as np
-from crl_husky_msgs.msg import MocapRigidBodyPose
 from geometry_msgs.msg import Twist
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
@@ -15,9 +14,9 @@ from sensor_msgs.msg import BatteryState
 from std_msgs.msg import Bool
 
 from ..config import RobotConfig
-from ..world.mocap import mocap_topic, store_sample
 from .connections import RosConnections
 from .controller_manager import ControllerManagerInterface, ControllerManagerState
+from .mocap import subscribe_mocap
 
 #: The base's only controller for now. cmd_vel goes through it.
 PLATFORM_VELOCITY_CONTROLLER = "platform_velocity_controller"
@@ -103,7 +102,8 @@ class BaseInterface:
         self._ros.subscription(BatteryState, f"{namespace}/platform/bms/state", self._on_battery,
                                qos_profile_sensor_data)
         if self._config.mocap_id is not None:
-            self._ros.subscription(MocapRigidBodyPose, mocap_topic(self._config.mocap_id), self._on_mocap)
+            subscribe_mocap(self._ros, self._config.mocap_id, self.state,
+                            lambda: self._node.get_clock().now().nanoseconds * 1e-9)
 
     def reconnect(self) -> None:
         """Recreate this base's topics and clients. Keeps `state`."""
@@ -145,10 +145,6 @@ class BaseInterface:
         # * Always sent: it brakes the base while the deactivation is on its way.
         self._cmd_vel.publish(Twist())
         return self.controllers.deactivate_all()
-
-    def _on_mocap(self, message: MocapRigidBodyPose) -> None:
-        """Store a mocap sample; an invalid one only clears `tracked`, keeping the last valid pose."""
-        store_sample(self.state, message, self._node.get_clock().now().nanoseconds * 1e-9)
 
     def _on_estop(self, message: Bool) -> None:
         """Store whether the platform's emergency stop is engaged."""

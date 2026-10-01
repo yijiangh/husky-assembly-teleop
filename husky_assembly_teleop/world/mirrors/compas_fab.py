@@ -33,15 +33,14 @@ from os import environ
 from typing import TYPE_CHECKING, Mapping, Sequence
 
 import pybullet as p
-from compas.datastructures import Mesh
 from compas.geometry import Frame
 from compas_fab.backends import CollisionCheckError, PyBulletClient, PyBulletPlanner
 from compas_fab.backends.pybullet.conversions import pose_from_frame
 from compas_fab.robots import RigidBody, RigidBodyState, RobotCell, RobotCellState, RobotSemantics, ToolState
 from compas_robots import Configuration, RobotModel, ToolModel
 
+from ...design_io.compas_fab import filled, frame_from_pose, load_model, rigid_body, subtree  # noqa: F401
 from ...tool_urdfs import TOOL_TOUCHES_ARM_LINKS
-from ..geometry import shape_mesh
 from ..scene import ROBOTS, Attachment, Pose, SceneSnapshot, robot_id, tracked_id
 
 if TYPE_CHECKING:
@@ -49,67 +48,6 @@ if TYPE_CHECKING:
 
     from ...config import RobotConfig
     from ..geometry import Geometry
-
-
-def frame_from_pose(pose: Pose) -> Frame:
-    """A compas frame from one of our poses.
-
-    Args:
-        pose: Position and (x, y, z, w) quaternion.
-
-    Returns:
-        Frame: The same pose.
-    """
-    x, y, z, w = pose.orientation
-    return Frame.from_quaternion([w, x, y, z], point=list(pose.position))
-
-
-def rigid_body(geometry: Geometry) -> RigidBody:
-    """A compas_fab rigid body of a geometry's collision shapes, as triangle meshes.
-
-    ? The collision meshes are also the visual ones: what PyBullet's window shows is what is checked.
-
-    Args:
-        geometry: Our geometry; it is not kept.
-
-    Returns:
-        RigidBody: One mesh per collision shape, in metres.
-    """
-    meshes = [Mesh.from_vertices_and_faces(mesh.vertices.tolist(), mesh.faces.tolist())
-              for mesh in map(shape_mesh, geometry.collision)]
-    return RigidBody(visual_meshes=meshes, collision_meshes=meshes, native_scale=1.0)
-
-
-def load_model(urdf_file) -> RobotModel:
-    """Parse a URDF and load its meshes. Slow (seconds): keep the result.
-
-    Args:
-        urdf_file: A stitched URDF; its mesh paths are absolute.
-
-    Returns:
-        RobotModel: With geometry.
-    """
-    model = RobotModel.from_urdf_file(str(urdf_file))
-    model.load_geometry()
-    return model
-
-
-def _subtree(model: RobotModel, link_name: str) -> set[str]:
-    """A link and every link below it.
-
-    Args:
-        model: The robot.
-        link_name: Where to start.
-
-    Returns:
-        set[str]: Link names, `link_name` included.
-    """
-    names, todo = set(), [model.get_link_by_name(link_name)]
-    while todo:
-        link = todo.pop()
-        names.add(link.name)
-        todo.extend(model.get_link_by_name(joint.child.link) for joint in link.joints)
-    return names
 
 
 def semantics_with_tools(config: RobotConfig, model: RobotModel) -> RobotSemantics:
@@ -138,7 +76,7 @@ def semantics_with_tools(config: RobotConfig, model: RobotModel) -> RobotSemanti
         tool0 = f"{arm.name}_tool0"
         if tool0 not in links:
             continue
-        tool = _subtree(model, tool0)
+        tool = subtree(model, tool0)
         near = tool | {f"{arm.name}_{suffix}" for suffix in TOOL_TOUCHES_ARM_LINKS} & links
         disabled |= {(a, b) for a in tool for b in near if a != b}
     semantics.disabled_collisions = disabled
@@ -258,10 +196,10 @@ class CompasFabMirror:
 
         state = RobotCellState(
             robot_base_frame=frame_from_pose(acting.base),
-            robot_configuration=_filled(self.cell.zero_full_configuration(), acting.joints),
+            robot_configuration=filled(self.cell.zero_full_configuration(), acting.joints),
             tool_states={key: ToolState(frame=frame_from_pose(entry.base),
-                                        configuration=_filled(self.cell.tool_models[key].zero_configuration(),
-                                                              entry.joints))
+                                        configuration=filled(self.cell.tool_models[key].zero_configuration(),
+                                                             entry.joints))
                          for key, entry in others.items()},
             rigid_body_states={key: self._body_state(*placed) for key, (_, placed) in bodies.items()})
         self.planner.set_robot_cell_state(state)
@@ -360,7 +298,7 @@ class CompasFabMirror:
         Returns:
             Configuration: Every configurable joint.
         """
-        return _filled(self.state.robot_configuration, joints)
+        return filled(self.state.robot_configuration, joints)
 
     def state_at(self, joints: Mapping[str, float]) -> RobotCellState:
         """The synced state with some joints changed; shares everything else with `state`.
@@ -424,21 +362,6 @@ class CompasFabMirror:
             self.client.client_id = None
 
 
-def _filled(configuration: Configuration, joints: Mapping[str, float]) -> Configuration:
-    """A copy of a configuration with the values in `joints` for the joints it has.
-
-    Args:
-        configuration: Joint names, types and default values.
-        joints: Values by joint name; others are ignored.
-
-    Returns:
-        Configuration: The new configuration.
-    """
-    values = [float(joints.get(name, value))
-              for name, value in zip(configuration.joint_names, configuration.joint_values)]
-    return Configuration(values, configuration.joint_types, configuration.joint_names)
-
-
 # --- --- --- --- --- FAST CHECKS FOR SEARCHES --- --- --- --- ---
 
 @dataclass(frozen=True)
@@ -484,7 +407,7 @@ class SearchCheck:
         own = robot_id(mirror.serial)
 
         # * What moves: every link below a searched joint, and the bodies attached to those links.
-        moving = set().union(*(_subtree(model, model.get_joint_by_name(name).child.link) for name in joint_names))
+        moving = set().union(*(subtree(model, model.get_joint_by_name(name).child.link) for name in joint_names))
         bodies = {name: body for name, body in state.rigid_body_states.items()
                   if not body.is_hidden and name in client.rigid_bodies_puids}
         carried = {name for name, body in bodies.items() if body.attached_to_link in moving}

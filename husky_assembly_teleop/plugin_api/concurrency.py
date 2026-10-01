@@ -30,10 +30,12 @@ import sys
 import threading
 import time
 import traceback
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from async_timeout import timeout  # noqa: F401  (re-exported for plugins)
-from rclpy.task import Future as RosFuture
+
+if TYPE_CHECKING:
+    from rclpy.task import Future as RosFuture
 
 
 class WaitTimeout(asyncio.TimeoutError):

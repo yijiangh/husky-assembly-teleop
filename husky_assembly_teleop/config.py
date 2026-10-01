@@ -10,7 +10,7 @@ import math
 import re
 import shutil
 import tempfile
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, fields, replace
 from pathlib import Path
 from typing import Literal, get_args
 
@@ -133,7 +133,7 @@ class RobotConfig:
         """tuple[float, float, float, float]: `default_yaw` as an (x, y, z, w) quaternion.
 
         xyzw is what PyBullet, ROS and RobotState all use. Viser wants wxyz, and
-        `visualization.quaternion_to_wxyz` does that conversion at the boundary.
+        `ui.quaternion.quaternion_to_wxyz` does that conversion at the boundary.
         """
         half = self.default_yaw / 2.0
         return (0.0, 0.0, math.sin(half), math.cos(half))
@@ -149,7 +149,7 @@ class MonitorConfig:
         design_directory: Design folder (ActionSchedule.json, BarActions/,
             RobotCell*.json) the `cell` plugin loads at startup, or None to
             pick one in its panel.
-        tick_period: Seconds between ticks. Default 0.05 (20 Hz)
+        tick_period: Seconds between ticks.
         viser_port: Port the viser web UI listens on.
         enabled_plugins: Plugins to load.
             DEFAULT_PLUGINS followed by the requested ones.
@@ -163,6 +163,7 @@ class MonitorConfig:
             shutdown, with ROS still running, before they are dropped.
         ghost_timeout: Seconds a plugin's ghost robots (targets, plans, previews)
             stay shown after the last input in it; 0 keeps them once used.
+            Settable with `-p ghost_timeout:=...`.
             ? Ghosts appear only after an input in their plugin, so an unused
               plugin draws none.
     """
@@ -178,6 +179,13 @@ class MonitorConfig:
     slow_step_warn_period: float = 5.0
     shutdown_grace: float = 2.0
     ghost_timeout: float = 20.0
+
+
+#: MonitorConfig fields settable with `-p <name>:=<value>`.
+#: ! Each is declared with the field's own default (`_declare_tunables`). Never
+#:   write a default a second time -- in declare_parameter, a signature or a
+#:   docstring -- or the two drift and the one that wins is not the one you read.
+_TUNABLE_FIELDS: tuple[str, ...] = ("ghost_timeout",)
 
 
 # --- --- --- --- --- WHERE ROBOTS STAND BEFORE MOCAP --- --- --- --- ---
@@ -365,7 +373,8 @@ def config_from_ros_parameters(node: Node) -> MonitorConfig:
     DEFAULT_PLUGINS.
 
     `-p ghost_timeout:=20.0` hides a plugin's ghost robots 20 s after the last
-    input in it (default 0.0: they stay once used).
+    input in it. Every field in `_TUNABLE_FIELDS` is set the same way, and
+    defaults to its MonitorConfig default.
 
     Robots may be named instead of numbered ("alice", "belle", "cindy"), in
     `robots` and in `tools` entries alike.
@@ -379,7 +388,7 @@ def config_from_ros_parameters(node: Node) -> MonitorConfig:
     node.declare_parameter("data_directory", "")
     node.declare_parameter("design_directory", "")
     node.declare_parameter("no_default", False)
-    node.declare_parameter("ghost_timeout", 0.0)
+    tunables = _declare_tunables(node)
 
     shutil.rmtree(STITCHED_URDF_DIRECTORY, ignore_errors=True)
 
@@ -400,8 +409,20 @@ def config_from_ros_parameters(node: Node) -> MonitorConfig:
         data_directory=data_directory,
         design_directory=Path(design_text).expanduser() if design_text else None,
         enabled_plugins=_enabled_plugins(string_list("plugins"), not no_default),
-        ghost_timeout=node.get_parameter("ghost_timeout").get_parameter_value().double_value,
+        **tunables,
     )
+
+
+def _declare_tunables(node: Node) -> dict[str, object]:
+    """Declare each of `_TUNABLE_FIELDS` with its MonitorConfig default, and read it back.
+
+    Returns:
+        dict[str, object]: Field name to value, ready to pass to MonitorConfig.
+    """
+    defaults = {field.name: field.default for field in fields(MonitorConfig)}
+    for name in _TUNABLE_FIELDS:
+        node.declare_parameter(name, defaults[name])
+    return {name: node.get_parameter(name).value for name in _TUNABLE_FIELDS}
 
 
 def _enabled_plugins(requested: tuple[str, ...], use_default_plugins: bool) -> tuple[str, ...]:

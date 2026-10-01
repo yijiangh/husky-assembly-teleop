@@ -1,55 +1,29 @@
 """
-The design as authored: robot cells, the action schedule and every movement's
-cell state, loaded once from a design folder as read-only data.
+A design (doc/design_format.md) as the cell plugin steps through it: every movement of the
+schedule, and the joints to draw each robot at.
 
-The folder holds ActionSchedule.json (action order and robot), BarActions/*.json
-(one Action per file) and RobotCell*.json (one cell per robot; the other robots
-appear in it as tools named ObstacleRobot<Name>).
-
-! Nothing is computed from the design: each movement's `start_state` is used as authored.
-
-! Runs on a worker thread (see plugin.py), so never touch viser, PyBullet or a
-  PluginContext here: loading takes seconds.
+* Everything shown comes from the `design_io.Design`; nothing here builds compas_fab cells or
+  states. Planners build those in their own mirrors (world/mirrors/compas_fab.py).
+* An export in the old compas_fab format is read with compas and converted in memory
+  (`load_old_export`), then shown the same way.
+* A movement without authored start joints is drawn where its robot last was
+  (`design_io.carry`); the step says so.
+! Runs on a worker thread: nothing here touches viser, PyBullet or a PluginContext.
 """
 
 from __future__ import annotations
 
-import json
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from compas.data import json_load
-from compas_fab.robots import RobotCell, RobotCellState
-from compas_robots import Configuration
+from ...design_conversion import SERIALS, robot_files
+from ...design_io import Action, Design, Movement, read
+from ...design_io.carry import assumed_start_all
+from ...design_io.timing import Stopwatch
 
-# ! Importing rs_data_structure registers the Action/Movement types; json_load needs them.
-from rs_data_structure import Action, Movement
-
-#: The schedule file every design folder must have.
-SCHEDULE_FILE = "ActionSchedule.json"
-
-#: Robot cell files: "RobotCell.json" and "RobotCell_<Name>.json".
-CELL_FILE_PATTERN = "RobotCell*.json"
-
-
-@dataclass(frozen=True)
-class ScheduledAction:
-    """One entry of the action schedule, with its action file loaded.
-
-    Attributes:
-        index: Position in the schedule, from 0.
-        action_id: As authored, e.g. "B3_H_hold".
-        robot: Short robot name from the schedule, e.g. "Alice".
-        robot_id: Full id, e.g. "single-arm_husky_Alice"; matches the robot model name of its RobotCell.
-        action: The loaded rs_data_structure Action.
-    """
-
-    index: int
-    action_id: str
-    robot: str
-    robot_id: str
-    action: Action
+#: A design folder has this file; an export in the old compas_fab format has ActionSchedule.json instead.
+DESIGN_FILE = "design.json"
 
 
 @dataclass(frozen=True)
@@ -57,52 +31,52 @@ class Step:
     """One movement of one action: the unit the viewer steps through.
 
     Attributes:
-        action: The scheduled action the movement belongs to.
+        action: The action it belongs to.
+        action_index: Position of the action in the schedule, from 0.
         movement_index: Position of the movement in its action, from 0.
-        movement: The movement, with its authored start state and target.
-        assumed_start: Guessed joint values to draw when the start state has no
-            configuration (set by `carry_forward`), else None. Display only.
-        assumed_from: Source of `assumed_start` for the panel: a movement id or "own target".
+        movement: The movement, as authored.
+        assumed_start: The acting robot's joints to draw when the start has none, or None.
+        assumed_from: Where `assumed_start` came from (a movement id, "own target", "… (later)").
     """
 
-    action: ScheduledAction
+    action: Action
+    action_index: int
     movement_index: int
     movement: Movement
-    assumed_start: dict[str, float] | None = None
+    assumed_start: dict | None = None
     assumed_from: str = ""
 
     @property
     def label(self) -> str:
         """str: Short name for the panel, e.g. "B3_H_M1_gripper_open"."""
-        return self.movement.movement_id
+        return self.movement.id
 
 
 @dataclass(frozen=True)
-class Design:
-    """A whole loaded design folder.
+class CellDesign:
+    """A loaded design and its steps.
 
     Attributes:
-        folder: Where it was loaded from.
-        cells: Robot cell per robot id (the cell's robot model name).
-        actions: The schedule, in execution order.
-        steps: Every movement of every action, flattened in execution order.
+        source: The folder it was loaded from.
+        design: The design: as read, or converted in memory from an old export.
+        steps: Every movement of every action, in schedule order.
+        is_old_export: Whether it came from an export in the old compas_fab format.
     """
 
-    folder: Path
-    cells: dict[str, RobotCell]
-    actions: tuple[ScheduledAction, ...]
+    source: Path
+    design: Design
     steps: tuple[Step, ...]
+    is_old_export: bool = False
 
-    def cell_for(self, step: Step) -> RobotCell:
-        """The robot cell a step's state belongs to.
+    @property
+    def folder(self) -> Path:
+        """Path: Where the design was loaded from."""
+        return self.source
 
-        Args:
-            step: A step of this design.
-
-        Returns:
-            RobotCell: The cell of the robot doing that step's action.
-        """
-        return self.cells[step.action.robot_id]
+    @property
+    def action_count(self) -> int:
+        """int: How many actions the schedule has."""
+        return len(self.design.schedule)
 
     def first_step_of(self, action_index: int) -> int:
         """Index into `steps` of the first movement of an action.
@@ -114,177 +88,111 @@ class Design:
             int: The step index.
         """
         for index, step in enumerate(self.steps):
-            if step.action.index == action_index:
+            if step.action_index == action_index:
                 return index
         raise IndexError(f"no action {action_index} in the schedule")
 
 
-# --- --- --- --- --- LOADING --- --- --- --- ---
-
-def load_design(folder: Path, report: Callable[[str], None] = lambda _text: None) -> Design:
-    """Load a design folder: every robot cell, the schedule and its actions.
+def load_design(folder: Path, report: Callable[[str], None] = lambda _text: None,
+                watch: Stopwatch | None = None) -> CellDesign:
+    """Read a design folder.
 
     Args:
-        folder: The design folder, holding ActionSchedule.json.
-        report: Told what is being loaded, for the panel. Called from the
-            loading thread, so it should do no more than store the string.
+        folder: The design folder, holding design.json.
+        report: Told what is being done, for the panel. Called from the loading thread.
+        watch: Gets a lap per step, if given.
 
     Returns:
-        Design: The loaded design.
+        CellDesign: The design and its steps.
 
     Raises:
-        FileNotFoundError: If the folder, its schedule, a robot cell or an
-            action file is missing.
-        ValueError: If the schedule names a robot that has no cell, or an
-            action file belongs to a different robot than the schedule says.
+        FileNotFoundError: If the folder has no design.json; an old export is named as such.
     """
     folder = Path(folder).expanduser()
-    schedule_file = folder / SCHEDULE_FILE
-    if not schedule_file.is_file():
-        raise FileNotFoundError(f"no {SCHEDULE_FILE} in {folder}")
-    schedule = json.loads(schedule_file.read_text())
-
-    # * Robot cells, keyed by robot model name (not file name).
-    cells: dict[str, RobotCell] = {}
-    cell_files = sorted(folder.glob(CELL_FILE_PATTERN))
-    if not cell_files:
-        raise FileNotFoundError(f"no {CELL_FILE_PATTERN} in {folder}")
-    for number, cell_file in enumerate(cell_files, start=1):
-        report(f"loading {cell_file.name} ({number}/{len(cell_files)})")
-        cell = json_load(str(cell_file))
-        cells[cell.robot_model.name] = cell
-
-    # * Load each scheduled action file and check its robot.
-    robots = schedule["robots"]
-    actions = []
-    for entry in schedule["schedule"]:
-        report(f"loading {entry['file']}")
-        robot_id = robots[entry["robot"]]["robot_id"]
-        if robot_id not in cells:
-            raise ValueError(f"schedule entry {entry['action_id']!r} is for {robot_id!r}, which has "
-                             f"no robot cell; cells found for {', '.join(sorted(cells))}")
-        action = json_load(str(folder / entry["file"]))
-        if action.robot_id != robot_id:
-            raise ValueError(f"{entry['file']} is for {action.robot_id!r}, but the schedule "
-                             f"gives it to {entry['robot']!r} ({robot_id!r})")
-        actions.append(ScheduledAction(index=len(actions), action_id=entry["action_id"],
-                                       robot=entry["robot"], robot_id=robot_id, action=action))
-
-    steps = carry_forward([Step(action=scheduled, movement_index=index, movement=movement)
-                           for scheduled in actions
-                           for index, movement in enumerate(scheduled.action.movements)])
-    return Design(folder=folder, cells=cells, actions=tuple(actions), steps=steps)
+    if not (folder / DESIGN_FILE).is_file():
+        if (folder / "ActionSchedule.json").is_file():
+            raise FileNotFoundError(f"{folder} is an export in the old compas_fab format: use load_old_export")
+        raise FileNotFoundError(f"no {DESIGN_FILE} in {folder}")
+    watch = watch if watch is not None else Stopwatch()
+    report(f"reading {folder.name}")
+    design = read(folder)
+    watch.lap("read design")
+    steps = _steps(design)
+    watch.lap("steps")
+    return CellDesign(source=folder, design=design, steps=steps)
 
 
-# --- --- --- --- --- STATES --- --- --- --- ---
-
-def _joints(configuration: Configuration | None) -> dict[str, float]:
-    """A configuration as joint name -> value; empty for None."""
-    return dict(zip(configuration.joint_names, configuration.joint_values)) if configuration else {}
-
-
-def carry_forward(steps: list[Step]) -> tuple[Step, ...]:
-    """Give each step without an authored start configuration the robot's last known pose.
-
-    ? Free movements have no start configuration, and drawing them at zero
-      joints stretches the arm through the structure.
-
-    - Per robot, an authored start sets the pose, then the step's target moves it (only the joints it names).
-    - Before any known pose, a step uses its own target, else the robot's next known start.
-    - A robot with no known pose anywhere stays at zero.
+def load_old_export(folder: Path, data_directory: Path,
+                    report: Callable[[str], None] = lambda _text: None,
+                    watch: Stopwatch | None = None) -> CellDesign:
+    """Read an export in the old compas_fab format and convert it in memory, without writing anything.
 
     Args:
-        steps: Every step, in schedule order.
+        folder: The export folder, holding ActionSchedule.json.
+        data_directory: The monitor's data directory, for the robots' URDF and SRDF files.
+        report: Told what is being done, for the panel. Called from the loading thread.
+        watch: Gets a lap per step, if given.
 
     Returns:
-        tuple[Step, ...]: The same steps, with `assumed_start` / `assumed_from` filled in.
+        CellDesign: With `is_old_export` set.
     """
-    # Robot id -> (last known joint values, id of the movement they came from).
-    last: dict[str, tuple[dict[str, float], str]] = {}
-    result = []
-    for step in steps:
-        movement = step.movement
-        robot_id = step.action.robot_id
-        authored = _joints(movement.start_state.robot_configuration)
-        target = _joints(movement.target_configuration)
-        assumed, source = None, ""
-        if authored:
-            start = authored
-        elif robot_id in last:
-            assumed, source = last[robot_id]
-            start = assumed
-        elif target:
-            assumed, source = target, "own target"
-            start = assumed
-        else:
-            start = {}
-        result.append(replace(step, assumed_start=assumed, assumed_from=source))
+    # ? Imported here: reading the old format needs compas and rs_data_structure, and only this does.
+    from ...design_io.legacy import from_export, load_export
 
-        # Where the robot is after this step.
-        if start or target:
-            last[robot_id] = ({**start, **target}, movement.movement_id)
-
-    # * Steps with no pose and no target: take the robot's next known start (walk backwards).
-    upcoming: dict[str, tuple[dict[str, float], str]] = {}
-    for index in reversed(range(len(result))):
-        step = result[index]
-        robot_id = step.action.robot_id
-        known = _joints(step.movement.start_state.robot_configuration) or step.assumed_start
-        if known:
-            upcoming[robot_id] = (known, step.movement.movement_id)
-        elif robot_id in upcoming:
-            joints, source = upcoming[robot_id]
-            result[index] = replace(step, assumed_start=joints, assumed_from=f"{source} (later)")
-    return tuple(result)
+    folder = Path(folder).expanduser()
+    watch = watch if watch is not None else Stopwatch()
+    export = load_export(folder, report, watch)
+    report("converting in memory")
+    design = from_export(export, robot_files(data_directory), serials=SERIALS, report=lambda _line: None)
+    watch.lap("convert in memory")
+    steps = _steps(design)
+    watch.lap("steps")
+    return CellDesign(source=folder, design=design, steps=steps, is_old_export=True)
 
 
-def full_configuration(cell: RobotCell, configuration: Configuration | None) -> Configuration:
-    """Fill a partial or missing configuration up to every joint, with zero for missing ones.
-
-    ? Forward kinematics needs a value for every configurable joint.
+def _steps(design: Design) -> tuple[Step, ...]:
+    """Every movement of the schedule as a step, with its assumed start joints.
 
     Args:
-        cell: The robot cell whose robot the configuration is for.
-        configuration: Authored joint values, or None.
+        design: The design.
 
     Returns:
-        Configuration: Every configurable joint, authored values where given.
+        tuple[Step, ...]: In schedule order.
     """
-    full = cell.zero_full_configuration()
-    given = dict(zip(configuration.joint_names, configuration.joint_values)) if configuration else {}
-    values = [given.get(name, value) for name, value in zip(full.joint_names, full.joint_values)]
-    return Configuration(values, full.joint_types, full.joint_names)
+    assumed = assumed_start_all(design)
+    steps = []
+    for action_index, action_id in enumerate(design.schedule):
+        action = design.actions[action_id]
+        for movement_index, movement in enumerate(action.movements):
+            joints, source = assumed.get((action_id, movement.id), (None, ""))
+            steps.append(Step(action, action_index, movement_index, movement, joints, source))
+    return tuple(steps)
 
 
-def displayed_state(cell: RobotCell, step: Step, at_target: bool) -> RobotCellState:
-    """The state to show for a step: its start, or its start with the target configuration.
+def displayed_joints(step: Step, at_target: bool) -> dict[str, dict[str, float]]:
+    """The joint values to draw each robot of a step's start state at.
 
-    Returns a new state with a full configuration and object frames filled in;
-    the authored state is not modified.
+    Authored joints where the state has them; for the acting robot without any, `step.assumed_start`;
+    with `at_target`, the target's joints replace those they name. Robots not in the state are left
+    out, and joints nobody gives are drawn at zero.
 
     Args:
-        cell: The step's robot cell.
-        step: The step; `assumed_start` is used when it has no authored start.
-        at_target: Use the movement's `target_configuration` instead of the
-            start; joints it does not name keep their start value.
+        step: The step.
+        at_target: Use the movement's target joints.
 
     Returns:
-        RobotCellState: The state to draw.
+        dict[str, dict[str, float]]: Robot id -> joint name -> value.
     """
-    movement = step.movement
-    start = movement.start_state
-    configuration = full_configuration(cell, start.robot_configuration)
-    if start.robot_configuration is None and step.assumed_start:
-        configuration = Configuration([step.assumed_start.get(name, value) for name, value
-                                       in zip(configuration.joint_names, configuration.joint_values)],
-                                      configuration.joint_types, configuration.joint_names)
-    if at_target and movement.target_configuration is not None:
-        target = dict(zip(movement.target_configuration.joint_names, movement.target_configuration.joint_values))
-        configuration = Configuration([target.get(name, value) for name, value
-                                       in zip(configuration.joint_names, configuration.joint_values)],
-                                      configuration.joint_types, configuration.joint_names)
-    # ? Shares the authored tool/body states on purpose: compute_attach_objects_frames
-    #   already deep-copies (~40 ms), so a second copy would double the cost.
-    state = RobotCellState(robot_base_frame=start.robot_base_frame, robot_configuration=configuration,
-                           tool_states=start.tool_states, rigid_body_states=start.rigid_body_states)
-    return cell.compute_attach_objects_frames(state)
+    joints = {}
+    for robot_id, robot_state in step.movement.start.robots.items():
+        if robot_state is None:
+            continue
+        given = robot_state.joints
+        if given is None and robot_id == step.action.robot:
+            given = step.assumed_start
+        joints[robot_id] = dict(given or {})
+    target = step.movement.target
+    if at_target and target is not None:
+        for robot_id, values in target.joints.items():
+            joints.setdefault(robot_id, {}).update(values)
+    return joints

@@ -242,9 +242,15 @@ class RobotiqGripper(EndEffector):
     def _on_reactivated(self, future) -> None:
         """Record whether the reactivation worked."""
         self.state.reactivating = False
-        response = future.result()
+        try:
+            response = future.result()
+        except Exception as error:
+            response, raised = None, f"reactivate_gripper raised: {error}"
+        else:
+            raised = ""
         if response is None or not response.success:
-            self.state.reactivate_error = "no answer" if response is None else (response.message or "failed")
+            answer = "no answer" if response is None else (response.message or "failed")
+            self.state.reactivate_error = raised or answer
             self._node.get_logger().warning(f"{self.namespace}: reactivation failed: {self.state.reactivate_error}")
 
     def _on_joint_state(self, message: JointState) -> None:
@@ -255,9 +261,14 @@ class RobotiqGripper(EndEffector):
         self.state.last_update_time = self._node.get_clock().now().nanoseconds * 1e-9
 
     def _on_goal_answer(self, future) -> None:
-        """Wait for the result of an accepted goal; record a rejected one."""
-        handle = future.result()
-        if not handle.accepted:
+        """Wait for the result of an accepted goal; record a rejected or failed one."""
+        # ! Guarded: a raise here would leave `moving` True for good.
+        try:
+            handle = future.result()
+        except Exception as error:
+            handle = None
+            self._node.get_logger().warning(f"{self.namespace}: gripper goal failed: {error}")
+        if handle is None or not handle.accepted:
             self.state.moving = False
             self.state.last_result_ok = False
             return
@@ -266,7 +277,12 @@ class RobotiqGripper(EndEffector):
     def _on_result(self, future) -> None:
         """Record that the command finished and whether it got there."""
         self.state.moving = False
-        result = future.result().result
+        try:
+            result = future.result().result
+        except Exception as error:
+            self.state.last_result_ok = False
+            self._node.get_logger().warning(f"{self.namespace}: gripper result failed: {error}")
+            return
         self.state.last_result_ok = bool(result.reached_goal or result.stalled)
 
 
@@ -400,7 +416,11 @@ class ScaffoldingV1(EndEffector):
 
     def _on_set(self, future) -> None:
         """Record whether the arm switched the output."""
-        response = future.result()
+        try:
+            response = future.result()
+        except Exception as error:
+            response = None
+            self._node.get_logger().warning(f"{self.arm_namespace}: set_io raised: {error}")
         self.state.last_request_ok = response is not None and bool(response.success)
         if not self.state.last_request_ok:
             self._node.get_logger().warning(f"{self.arm_namespace}: set_io request failed")

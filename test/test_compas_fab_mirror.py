@@ -204,7 +204,7 @@ def test_same_result_as_the_design_cell():
     from compas_fab.backends import CollisionCheckError, PyBulletClient, PyBulletPlanner
     import rs_data_structure  # noqa: F401  registers the Action types for json_load
 
-    from husky_assembly_teleop.plugins.cell.design import full_configuration
+    from husky_assembly_teleop.design_io.compas_fab import filled
 
     folder = Path(DESIGN)
     design_cell = json_load(str(folder / "RobotCell.json"))
@@ -215,7 +215,9 @@ def test_same_result_as_the_design_cell():
         for movement in json_load(str(folder / "BarActions" / file)).movements:
             if movement.start_state.robot_configuration is not None:
                 state = movement.start_state.copy()
-                state.robot_configuration = full_configuration(design_cell, state.robot_configuration)
+                given = state.robot_configuration
+                state.robot_configuration = filled(design_cell.zero_full_configuration(),
+                                                   dict(zip(given.joint_names, given.joint_values)))
                 states.append((movement.movement_id, state))
     assert states
 
