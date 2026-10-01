@@ -8,6 +8,7 @@ import sys, re
 print(f"Running with Python: {sys.executable}")
 
 from collections import defaultdict
+from contextlib import nullcontext
 import os
 import time, copy
 import threading
@@ -19,7 +20,7 @@ from datetime import datetime
 from types import SimpleNamespace
 import numpy as np
 
-from typing import List, Tuple
+from typing import Generator, List, Optional, Tuple
 from scipy.spatial.transform import Rotation as R
 
 import rclpy
@@ -31,14 +32,15 @@ import pybullet_planning as pp
 
 from husky_assembly_teleop import DATA_DIRECTORY, DESIGN_DATA_DIRECTORY, EXPERIMENT_DATA_DIRECTORY, CALIBRATION_DATA_DIRECTORY, CALIBRATION_BATCHES, DESIGN_PROBLEM_NAME, CALIBRATION_DATE
 import husky_assembly_teleop.husky_world as world
-from husky_assembly_teleop.husky_world import _solve_bar_action_goal_ik
+from husky_assembly_teleop.husky_world import _solve_bar_action_goal_ik, solve_goal_ik_generic
 import husky_assembly_teleop.mocap_experiment as mocap_experiment
 from husky_assembly_teleop.mocap_experiment import (
     fit_bar_from_markerset, bar_deviation_from_goal, draw_marker_take_in_pp,
 )
 from husky_assembly_teleop.husky_robot import GRIPPER_MOTOR, JOINT_MOTOR, UR5e_HOME_STATE
 from husky_assembly_teleop.common import (
-    Button, Slider, SliderGroup, Toggle, StatusText, Separator, TextInput, LiveMultiPlot, HistoryPlot, Husky, TrackedObject, HuskyObject, AssemblyObject, HUSKY_UR5e_JOINT_NAMES, lerp, load_gripper
+    Button, Slider, SliderGroup, Toggle, StatusText, Separator, TextInput, LiveMultiPlot, HistoryPlot, Husky, TrackedObject, HuskyObject, AssemblyObject, HUSKY_UR5e_JOINT_NAMES, lerp, load_gripper,
+    Group,
 )
 from husky_assembly_teleop.cc_diagnosis import (
     clear_collision_diagnosis, visualize_goal_ik_collision,
@@ -51,7 +53,7 @@ from husky_assembly_teleop.utils import (
     pose_from_frame, frame_from_pose, pose_from_transformation, transformation_from_pose,
     mocap_pos_y_up_to_z_up, mocap_quat_y_up_to_z_up,
     vec12_from_conf, conf_from_12vec, conf_from_6vec,
-    joint_trajectory_from_path, path_12_from_joint_trajectory,
+    joint_trajectory_from_path, path_12_from_joint_trajectory, path_from_joint_trajectory,
     HUSKY_DUAL_ARM_HOME_CONF_12, HUSKY_DUAL_UR5e_JOINT_NAMES, MOCAP_SET_RIG_RB_NAME,
 )
 
@@ -59,12 +61,31 @@ from husky_assembly_teleop.utils import (
 from husky_assembly_teleop.bar_action_io import (
     parse_bar_action, list_bar_actions, find_movement, movement_role,
     load_action_cycle, cycle_roles, slot_of_index, cycle_start_ee_sources,
+    MovementKind, STATIONARY_KINDS, SINGLE_ARM_KINDS, DUAL_ARM_KINDS, movement_kind, step_kind,
+    kind_fits_robot, default_trajectory_time, is_built_assembly_body, bar_body_name, find_bar_body,
+    clean_action_path,
 )
+from rs_data_structure.bar_action import CONTROLLER_CARTESIAN_COMPLIANT
 from husky_assembly_teleop.cfab_session import (
-    CfabSession, build_default_robot_cell, plan_free_motion,
+    CfabSession, build_default_robot_cell, plan_free_motion, plan_linear_motion,
     arm_joint_names_for_group, SINGLE_ARM_GROUP,
     HUSKY_DUAL_URDF_PATH, HUSKY_DUAL_SRDF_PATH,
     GROUND_RIGID_BODY_NAME,
+    inject_ground_rigid_body_state, apply_obstacle_robot_beliefs,
+)
+from husky_assembly_teleop.robot_registry import RobotSpec, robot_by_name
+from husky_assembly_teleop.progress_io import (
+    BELIEF_ASSUMED, BELIEF_LIVE, STATUS_PENDING, RobotBelief, belief_after, belief_from_live,
+    load_progress, new_run_id, obstacle_tool_states, obstacle_sources, recompute_belief,
+    save_progress,
+)
+from husky_assembly_teleop.schedule_io import (
+    SCHEDULE_FILENAME, LoadedEntry, ScheduleEntry, is_executable_by, load_entry, load_schedule,
+    problem_root,
+)
+from husky_assembly_teleop.schedule_ui import (
+    EntryFlags, entry_row_text, knobs_for_assembly_robot, missing_action_files, now_line_text,
+    row_color, scan_entry_flags, step_button_label, visible_row_window,
 )
 from husky_assembly_teleop import common as _common
 from husky_assembly_teleop.ui_backend import make_backend, DearPyGuiBackend, bind_default_font
@@ -72,7 +93,7 @@ from husky_assembly_teleop.ui_backend import make_backend, DearPyGuiBackend, bin
 from compas.data import json_load, json_dump
 from compas.geometry import Frame, Transformation
 from compas_fab.backends import CollisionCheckError
-from compas_fab.robots import JointTrajectory, JointTrajectoryPoint, RigidBodyState
+from compas_fab.robots import JointTrajectory, JointTrajectoryPoint, RobotCellState
 from compas_fab.robots.time_ import Duration
 from compas_robots import Configuration
 from compas_robots.model import Joint
@@ -201,6 +222,13 @@ MOVEMENT_TRAJECTORY_TIME_S = {
     'M4': 10.0,
 }
 
+# * Another husky's mocap base is used as its obstacle pose only when its rigid
+# * body arrived this recently (seconds); an older pose falls back to the belief.
+LIVE_OBSTACLE_MAX_AGE_S = 0.5
+# * 'Mark entry done' stores the connected robot's mocap base as its belief only
+# * when mocap saw it this recently (seconds); otherwise the action's authored base.
+LIVE_BELIEF_MAX_AGE_S = 1.0
+
 # Legend for the "planned joint values" preview plot. A BarAction trajectory
 # waypoint is always a 12-vec (left arm's 6 joints, then the right arm's), in
 # the shoulder -> wrist order of HUSKY_DUAL_UR5e_JOINT_NAMES.
@@ -208,26 +236,17 @@ PLANNED_JOINT_PLOT_LABELS = [
     f'{side} {name}' for side in ('L', 'R')
     for name in ('pan', 'lift', 'elbow', 'w1', 'w2', 'w3')
 ]
+# A support robot's (single-arm) waypoint is a 6-vec: one arm, no side prefix.
+PLANNED_JOINT_PLOT_LABELS_SINGLE_ARM = ['pan', 'lift', 'elbow', 'w1', 'w2', 'w3']
 
-# Rigid-body name prefixes for the BUILT ASSEMBLY (from RobotCell.json): bars
-# are 'bar_<id>' and their connectors are 'joint_<id>_male/female'. Environment
-# collision obstacles are 'obstacle_env<n>' and are deliberately NOT listed
-# here -- the mocap-accuracy hide only drops the built bars/joints, and must
-# keep the environment obstacles both visible and collision-checked.
-BUILT_ASSEMBLY_RB_PREFIXES = ('bar_', 'joint_')
+# * How many schedule entry rows the schedule panel shows at once (a window
+# * around the selected entry, see schedule_ui.visible_row_window).
+SCHEDULE_ROWS_SHOWN = 12
 
-# Robot links allowed to touch the ground (GROUND_RIGID_BODY_NAME). The floor is
-# modelled honestly at z=0, and the husky's wheels rest exactly on it: the URDF
-# puts base_footprint->base_link at 0.13228 m and base_link->wheel at 0.03282 m,
-# so each wheel centre is at 0.1651 m -- exactly the wheel radius. The wheels are
-# therefore permanently tangent to the floor, while the chassis clears it by
-# 132 mm. Without this allowed-collision every configuration would read as
-# colliding. Only the four wheels are exempt, so an arm or tool dipping below
-# the floor is still caught.
-GROUND_TOUCH_LINKS = (
-    'front_left_wheel_link', 'front_right_wheel_link',
-    'rear_left_wheel_link', 'rear_right_wheel_link',
-)
+# * The BUILT ASSEMBLY's rigid-body names (bars 'bar_<id>' / 'env_bar_<id>' and
+# * their connectors) now live in bar_action_io (BUILT_ASSEMBLY_RB_PREFIXES,
+# * is_built_assembly_body), and the ground's wheel allowance in cfab_session
+# * (GROUND_TOUCH_LINKS, applied by inject_ground_rigid_body_state).
 
 EXISTING_ELEMENT_COLOR = pp.RED
 CURRENT_ELEMENT_COLOR = pp.BLUE
@@ -290,10 +309,22 @@ class HuskyMonitor(Node):
     USE_CELL_STATE_BASE_POSE = 0
     USE_DPG_UI = 1   # 0 = legacy PyBullet debug GUI; 1 = Dear PyGui control panel
     UI_FONT_SIZE = 20  # base size for all DPG widgets (separators override to 20 in the backend)
+    # ! Size of the PyBullet window's mesh buffer, in MB. When it is full, bodies
+    # ! loaded later are silently NOT drawn. PyBullet's default is too small for
+    # ! three huskies + the goal ghost + the compas_fab planning robot: the blue/
+    # ! green ghost and the red planning robot vanished. 512 verified; a 1024 MB
+    # ! request did not take effect on this machine.
+    PYBULLET_GUI_MESH_BUFFER_MB = 512
 
     CALIBRATION = 0
 
     BAR_ACTION_LIVE_REPLAN_EXE = 1    # show Load BarAction / Load Movement / replan buttons
+    # * Set 0 to always use the legacy BarAction file list. With 1, a design
+    # * problem whose ActionSchedule.json is COMPLETE (every entry's action file,
+    # * clean export or .live-solved sidecar, is on disk) is driven entry by entry
+    # * from the schedule panel instead (see _load_schedule_state). Incomplete
+    # * schedules (e.g. an accuracy-test export) keep the legacy list.
+    USE_ACTION_SCHEDULE = 1
     # Set 1 for the mocap bar-holding accuracy experiment: adds the markerset
     # record/save buttons + the servoing tracker, hides the already-built
     # assembly (so its bars are ignored by collision checks), and force-attaches
@@ -372,6 +403,7 @@ class HuskyMonitor(Node):
 
         # simple async tasks to be executed every tick
         self.tasks = []
+        self._running_task = None  # the task update() is stepping right now (see its task loop)
 
         # Marks this instance as the live ROS-driven monitor (vs. a headless
         # test harness that bypasses __init__). Headless flows skip
@@ -383,6 +415,9 @@ class HuskyMonitor(Node):
         self.name_from_mocap_id = {}
         self._mocap_cache_lock = threading.Lock()
         self._mocap_rigidbody_cache = {}
+        # time.monotonic() of the last real (non-zero) pose per rigid body; the
+        # cache above keeps a body's last pose forever, so this says how fresh it is.
+        self._mocap_rigidbody_stamp = {}
         self._mocap_rigidbody_id_from_name = {}
         self._mocap_labeled_marker_cache = defaultdict(dict)
         self.mocap_experiment_recording = None
@@ -439,6 +474,26 @@ class HuskyMonitor(Node):
         self._loaded_movements = []             # list[Movement]; M0..M4 across those halves
         self._loaded_movement_roles = []        # 'M0'..'M4' | None, one per loaded movement
         self._loaded_start_ee_sources = []      # per movement: {side: movement authoring its START pose}
+        self._live_start_indices = set()        # movements whose start is the live robot pose
+        # ActionSchedule progress (progress_io.Progress) of the design problem, or
+        # None (legacy problem / not loaded yet). Set by the schedule UI; read via
+        # getattr everywhere because the headless harnesses skip __init__.
+        self._progress = None
+        # * ActionSchedule mode (_load_schedule_state). All of these stay None /
+        # * empty on a legacy problem; like _progress, read them via getattr.
+        self._schedule = None                   # schedule_io.ActionSchedule
+        self._schedule_flags = {}               # entry index -> schedule_ui.EntryFlags
+        self._schedule_run_id = None            # progress_io.new_run_id of this monitor run
+        self._selected_entry_idx = 0            # what the 'Schedule entry' slider points at
+        self._loaded_entry = None               # schedule_io.ScheduleEntry last loaded
+        self._loaded_entry_bundle = None        # its schedule_io.LoadedEntry
+        self._schedule_row_window = (0, 0)      # (lo, hi) entries shown as rows
+        self._clean_entries = set()             # entries reopened this run: load their clean export
+        self.schedule_header_text = None
+        self.schedule_entry_slider = None
+        self.schedule_entry_text = None
+        self.schedule_now_text = None
+        self.schedule_rows = []
         self._selected_action_file_idx = 0
         self._selected_movement_idx = 0
         # M1 home carry anchor index into M1_HOME_ANCHOR_CHOICES (0 = all).
@@ -609,6 +664,8 @@ class HuskyMonitor(Node):
         # Initialize board validation if enabled
         if self.BAR_ACTION_LIVE_REPLAN_EXE:
             self.available_bar_actions = self._load_available_bar_actions()
+            # Schedule mode or the legacy file list -- decided once, here.
+            self._load_schedule_state()
             self.available_joint_trajectories = self._load_available_joint_trajectories()
 
         if self.CALIBRATION:
@@ -833,6 +890,18 @@ class HuskyMonitor(Node):
         if self.huskies:
             return 2 if self.huskies[self.selected_robot_id].dual_arm else 1
         return 2
+
+    def _connected_robot(self) -> RobotSpec:
+        """The registry spec of the robot this monitor run drives.
+
+        ``husky_world.init`` sets ``connected_robot`` from ROS_DOMAIN_ID. The
+        headless harnesses build the monitor without running it, so Cindy (the
+        only robot they drive) is the fallback.
+
+        Returns:
+            RobotSpec: The connected robot.
+        """
+        return getattr(self, 'connected_robot', None) or robot_by_name('Cindy')
 
     # --- Joint live-stream plot (radians/degrees readout + scrolling record) ---
     def _joint_stream_source(self):
@@ -1541,10 +1610,10 @@ class HuskyMonitor(Node):
                         object_pose = pp.multiply(world_from_tcp, gripper_tcp_from_object)
                         obj.set_pose(object_pose)
 
-                    hi.is_arm_executing = True
+                    hi.is_arm_executing[self.selected_arm_index] = True
                     pp.wait_for_duration(step_dt)
 
-                hi.is_arm_executing = False
+                hi.is_arm_executing[self.selected_arm_index] = False
 
     # NOTE: the old single-arm `execute_arm_trajectory_with_servoing` shim was
     # removed. The bar-holding visual servoing is now the dual-arm generator
@@ -1598,7 +1667,14 @@ class HuskyMonitor(Node):
         if bar_rb is None or bar_rb.attachment_frame is None:
             return None
         attached_link = getattr(bar_rb, 'attached_to_link', '') or ''
-        side = 'left' if 'left' in attached_link else 'right'
+        spec = self._connected_robot()
+        try:
+            side = spec.side_of_link(attached_link)
+        except KeyError:
+            # Not a flange / arm base link (e.g. a tool link): the only side of a
+            # single-arm robot, else guess the side from the link's name.
+            side = (spec.side_keys[0] if spec.n_arms == 1
+                    else ('left' if 'left' in attached_link else 'right'))
         target = self.target_ee_frames.get(side)
         if target is None:
             return None
@@ -1675,7 +1751,7 @@ class HuskyMonitor(Node):
         link = getattr(bar_rb, 'attached_to_link', None)
         if attach is None or not link:
             return None
-        side = 'left' if 'left' in link else 'right'
+        side = self._connected_robot().side_of_link(link)
         idx = self.current_movement_index
         prev = self._start_ee_source(idx, side)
         if prev is None:
@@ -1973,14 +2049,15 @@ class HuskyMonitor(Node):
             print(f"Error parsing BarAction: {e}")
             return False
 
-        # 3) Ensure a cfab session for this problem.
-        if self.cfab is None or self.cfab.problem_name != DESIGN_PROBLEM_NAME:
+        # 3) Ensure a cfab session for this problem (the connected robot's cell).
+        if self._cfab_needs_design_session():
 
             if self.cfab is not None:
                 self.cfab.close()
             try:
                 existing_client_id = pp.CLIENT if pp.is_connected() else None
                 self.cfab = CfabSession(DESIGN_PROBLEM_NAME,
+                                        cell_filename=self._connected_robot().cell_file,
                                         connection_type="gui",
                                         enable_debug_gui=True,
                                         existing_client_id=existing_client_id)
@@ -2009,7 +2086,7 @@ class HuskyMonitor(Node):
         self.current_movement_index = idx
         self.movement_start_state = mv.start_state
         self.target_ee_frames = mv.target_ee_frames or None
-        self.active_bar_name = f"bar_{action.active_bar_id}"
+        self.active_bar_name = self._active_bar_body_name(mv.start_state, action.active_bar_id)
 
         # Read grasp (= attachment_frame of the active bar in the gripper
         # link's frame). Same info already lives in start_state; we cache
@@ -2025,8 +2102,10 @@ class HuskyMonitor(Node):
         # body poses, attaches tool bodies to their parent links, and sets
         # up the ACM internally. The freshly parsed state must first be given
         # the ground body the session added to the cell (compas_fab requires
-        # cell and state to hold the same rigid-body ids).
+        # cell and state to hold the same rigid-body ids), and the other robots
+        # posed where we believe they are.
         self._inject_ground_rigid_body_state(mv.start_state)
+        self._apply_obstacle_beliefs(mv.start_state)
         try:
             self.cfab.planner.set_robot_cell_state(mv.start_state)
         except Exception as e:
@@ -2144,32 +2223,34 @@ class HuskyMonitor(Node):
         robot_puid = client.robot_puid
         cid = client.client_id
 
-        # 1) Ghost EE proxy bodies (tiny invisible spheres) — recreate per
-        #    cfab session. pp routes EE attachments through get_collision_fn,
-        #    so the child must be a distinct body (robot-vs-robot collapses).
+        # 1) Ghost EE proxy bodies (tiny invisible spheres), one per arm flange
+        #    of the connected robot (left + right for Cindy, one for a support
+        #    robot) — recreate per cfab session. pp routes EE attachments
+        #    through get_collision_fn, so the child must be a distinct body
+        #    (robot-vs-robot collapses).
         if getattr(self, "_bar_action_cfab_id", None) != cid:
-            col = p.createCollisionShape(p.GEOM_SPHERE, radius=0.001, physicsClientId=cid)
-            ghost_L = p.createMultiBody(baseMass=0, baseCollisionShapeIndex=col,
-                                          basePosition=[0.0, 0.0, -100.0], physicsClientId=cid)
-            col2 = p.createCollisionShape(p.GEOM_SPHERE, radius=0.001, physicsClientId=cid)
-            ghost_R = p.createMultiBody(baseMass=0, baseCollisionShapeIndex=col2,
-                                          basePosition=[0.0, 0.0, -100.0], physicsClientId=cid)
-            self._bar_action_ghost_bodies = {ghost_L, ghost_R}
+            flange_links = self._connected_robot().flange_links
+            ghosts = []
+            for _flange in flange_links:
+                col = p.createCollisionShape(p.GEOM_SPHERE, radius=0.001, physicsClientId=cid)
+                ghosts.append(p.createMultiBody(baseMass=0, baseCollisionShapeIndex=col,
+                                                basePosition=[0.0, 0.0, -100.0], physicsClientId=cid))
+            self._bar_action_ghost_bodies = set(ghosts)
             self._bar_action_cfab_id = cid
             # Need pp.CLIENT == cid for link_from_name / Attachment below.
             _saved = pp.CLIENT
             pp.CLIENT = cid
             pp.CLIENTS.setdefault(cid, True)
             try:
-                left_tool_link = pp.link_from_name(robot_puid, 'left_ur_arm_tool0')
-                right_tool_link = pp.link_from_name(robot_puid, 'right_ur_arm_tool0')
                 identity_grasp = ((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0))
+                ee_list = []
+                for flange, ghost in zip(flange_links, ghosts):
+                    tool_link = pp.link_from_name(robot_puid, flange)
+                    ee_list.append(
+                        (ghost, pp.Attachment(robot_puid, tool_link, identity_grasp, ghost)))
                 self._bar_action_husky = SimpleNamespace(object=SimpleNamespace(
                     robot=robot_puid,
-                    ee_list=[
-                        (ghost_L, pp.Attachment(robot_puid, left_tool_link, identity_grasp, ghost_L)),
-                        (ghost_R, pp.Attachment(robot_puid, right_tool_link, identity_grasp, ghost_R)),
-                    ],
+                    ee_list=ee_list,
                 ))
             finally:
                 pp.CLIENT = _saved
@@ -2185,6 +2266,170 @@ class HuskyMonitor(Node):
         self.active_extra_bodies = []
         self.bar_from_extra = []
         self.active_bar_aabb_dims = self.get_active_bar_aabb_dims()
+
+    # --- --- --- the connected robot's design cell + the other robots --- --- ---
+
+    def _cfab_needs_design_session(self) -> bool:
+        """Whether ``self.cfab`` must be (re)created for the current design problem.
+
+        The session must hold the CONNECTED robot's own cell of this problem
+        (``RobotCell.json`` for Cindy, ``RobotCell_<Name>.json`` for a support
+        robot), so it is replaced when either the problem or the cell differs --
+        e.g. the startup default rig, whose problem_name is None.
+
+        Returns:
+            bool: True when there is no session or it holds another cell.
+        """
+        return (self.cfab is None
+                or self.cfab.problem_name != DESIGN_PROBLEM_NAME
+                or getattr(self.cfab, 'cell_filename', None) != self._connected_robot().cell_file)
+
+    def _active_bar_body_name(self, state: Optional[RobotCellState],
+                              bar_id: Optional[str]) -> Optional[str]:
+        """Rigid-body name of the active bar in the loaded cell.
+
+        Cindy's cell calls it ``bar_<id>``, the support robots' cells
+        ``env_bar_<id>``; whichever the state carries wins, else the connected
+        robot's naming.
+
+        Args:
+            state (RobotCellState | None): A movement's start state.
+            bar_id (str | None): The action's active bar id, e.g. ``'B3'``.
+
+        Returns:
+            str | None: e.g. ``'bar_B3'`` or ``'env_bar_B3'``; None without a bar id.
+        """
+        if not bar_id:
+            return None
+        rb_states = getattr(state, 'rigid_body_states', None) or {}
+        return (find_bar_body(rb_states, bar_id)
+                or bar_body_name(bar_id, self._connected_robot().rb_prefix))
+
+    def _movement_starts_live(self, idx: int, mv) -> bool:
+        """Whether a movement's start is wherever the robot is right now.
+
+        True for Cindy's M0 (its authored robot_configuration is null), for
+        the first movement of any action whose start configuration is null
+        (a support robot's ``H_M0``), and for movement 0 of a schedule entry of
+        kind 'J' or 'H': those always start wherever the robot is, even when a
+        ``.live-solved.json`` sidecar stored the start of an earlier run. Such a
+        start_state gets the LIVE arm joints (and tracked base) injected at load.
+
+        ! Only meaningful on freshly parsed movements: after the first injection
+        ! the configuration is no longer null. ``_finish_action_load`` therefore
+        ! keeps the answer in ``self._live_start_indices``.
+
+        Args:
+            idx (int): The movement's index in ``_loaded_movements``.
+            mv: The Movement.
+
+        Returns:
+            bool: True when the live pose must be injected.
+        """
+        if mv.start_state is None:
+            return False
+        # load_schedule_entry sets _loaded_entry before the load that asks this.
+        entry = getattr(self, '_loaded_entry', None)
+        if (idx == 0 and getattr(self, '_schedule', None) is not None
+                and entry is not None and entry.kind in ('J', 'H')):
+            return True
+        return (self._match_movement_role(mv) == 'M0'
+                or (idx == 0 and mv.start_state.robot_configuration is None))
+
+    def _mocap_sees_husky(self, husky, max_age_s: float = LIVE_OBSTACLE_MAX_AGE_S) -> bool:
+        """Whether mocap reported a husky's rigid body within the last ``max_age_s`` seconds.
+
+        ! The rigid-body cache is never cleared and keeps being re-fed, so
+        ! being in it says nothing about being seen; the stamps do.
+
+        Args:
+            husky (Husky): The husky (its ``name`` is the rigid-body name).
+            max_age_s (float): How old the last sighting may be, in seconds.
+
+        Returns:
+            bool: True when the husky's rigid body arrived recently enough.
+        """
+        with getattr(self, '_mocap_cache_lock', None) or nullcontext():
+            stamp = (getattr(self, '_mocap_rigidbody_stamp', None) or {}).get(
+                getattr(husky, 'name', None))
+        return stamp is not None and time.monotonic() - stamp < max_age_s
+
+    def _obstacle_beliefs_with_sources(self) -> tuple:
+        """Where each OTHER robot's obstacle tool goes, and where that came from.
+
+        Two layers:
+          1. With a schedule loaded (``_progress`` set): the progress_io rule --
+             released its hold -> parked; else its progress.json belief; else the
+             loaded action's exported tool state; else parked.
+          2. On top: any other husky that mocap tracks RIGHT NOW gets its LIVE
+             base, keeping the belief's joints -- or the joints it is drawn with
+             when there is no belief. "Right now" means all of: mocap drives the
+             bases (USE_MOCAP on, USE_CELL_STATE_BASE_POSE off), its rigid body
+             arrived less than ``LIVE_OBSTACLE_MAX_AGE_S`` ago, and it has a base
+             calibration (without one the drawn base is the marker body, not
+             the robot's footprint).
+        Without a schedule and with nothing tracked, both are empty and the
+        exported tool states are left as they are.
+
+        Returns:
+            tuple: ``({obstacle_tool_name: (Frame, Configuration)},
+            {obstacle_tool_name: source})``, source one of progress_io's
+            ``BELIEF_*`` values.
+        """
+        connected = self._connected_robot()
+        progress = getattr(self, '_progress', None)
+        beliefs, sources = {}, {}
+        if progress is not None:
+            exported = getattr(self, '_loaded_action', None)
+            beliefs = obstacle_tool_states(progress, connected.name, exported_action=exported)
+            sources = obstacle_sources(progress, connected.name, exported_action=exported)
+
+        if not self._base_pose_is_tracked():
+            return beliefs, sources
+        for name, husky in (getattr(self, 'husky_by_name', None) or {}).items():
+            if name == connected.name or not self._mocap_sees_husky(husky):
+                continue
+            if not getattr(husky, 'has_base_calibration', False):
+                continue
+            spec = robot_by_name(name)
+            hi = husky.interface
+            # The live base, with the joints the husky is drawn with.
+            live = belief_from_live(spec, (hi.position, hi.rotation), hi.arm_joint_pose)
+            belief = progress.belief(name) if progress is not None else None
+            configuration = belief.configuration if belief is not None else live.configuration
+            beliefs[spec.obstacle_tool_name] = (live.base_frame, configuration)
+            sources[spec.obstacle_tool_name] = BELIEF_LIVE
+        return beliefs, sources
+
+    def _obstacle_beliefs(self) -> dict:
+        """Where to pose each other robot's obstacle tool (see _obstacle_beliefs_with_sources).
+
+        Returns:
+            dict: ``{obstacle_tool_name: (Frame, Configuration)}``; empty when
+            there is no schedule progress and no other husky is tracked.
+        """
+        return self._obstacle_beliefs_with_sources()[0]
+
+    def _apply_obstacle_beliefs(self, state, beliefs: Optional[dict] = None) -> None:
+        """Re-pose the other robots' obstacle tools in a state (in place).
+
+        Also lets a support robot that holds a bar right now touch that bar
+        (``cfab_session.apply_obstacle_robot_beliefs``).
+
+        Args:
+            state (RobotCellState | None): The state to edit.
+            beliefs (dict | None): Precomputed ``_obstacle_beliefs()``, to share
+                one lookup across many states; computed here when None.
+        """
+        if state is None or self.cfab is None:
+            return
+        if beliefs is None:
+            beliefs = self._obstacle_beliefs()
+        progress = getattr(self, '_progress', None)
+        holding = progress.holding_bars() if progress is not None else None
+        apply_obstacle_robot_beliefs(state, self.cfab.robot_cell,
+                                     self._connected_robot().name, beliefs,
+                                     holding_bars=holding)
 
     def _apply_live_base_to_movement(self, mv):
         """Point ``mv.start_state`` at the live husky base and push it to cfab.
@@ -2234,6 +2479,8 @@ class HuskyMonitor(Node):
                     print(f"[apply live base] {mv.movement_id!r}: base moved "
                           f"{moved:.3f} m from the authored frame to the tracked "
                           f"live pose.")
+        # The other robots too: live mocap base > progress belief > export.
+        self._apply_obstacle_beliefs(mv.start_state)
         try:
             self.cfab.planner.set_robot_cell_state(mv.start_state)
         except Exception as e:
@@ -2468,38 +2715,47 @@ class HuskyMonitor(Node):
                         print(f"      CHECK  {l}  <->  {body_name}")
         print(f"=== end {header} ===\n")
 
-    def _arm_joint_name_sets(self):
+    def _arm_joint_name_sets(self) -> list:
         """Return the per-arm UR joint-name lists of the loaded cfab cell.
 
         Dual rig: [left 6 names, right 6 names]. Single rig: [6 names].
         Derived from the cell's SRDF groups so the same code serves Alice /
         Belle (single-arm) and Cindy (dual-arm).
+
+        Returns:
+            list: One list of 6 joint names per arm.
         """
         cell = self.cfab.robot_cell
         groups = cell.robot_semantics.groups
         if 'base_left_arm_manipulator' in groups:
             return [arm_joint_names_for_group(cell, 'base_left_arm_manipulator'),
                     arm_joint_names_for_group(cell, 'base_right_arm_manipulator')]
-        return [arm_joint_names_for_group(cell, SINGLE_ARM_GROUP)]
+        # The support robot's planning group ('manipulator': the design cells
+        # attach the SupportGripper to it; same 6 joints as base_arm_manipulator).
+        return [arm_joint_names_for_group(cell, self._connected_robot().planning_groups[0])]
 
     def _fill_missing_start_conf(self, state):
-        """Fill a None robot_configuration with the dual-arm home pose.
+        """Fill a None robot_configuration with the robot's home pose.
 
         Authored BarAction states before chain planning can carry no
         robot_configuration; planners still need a seed dict for IK.
-        No-op when the state already has one.
+        Nothing changes when the state already has one. Home is the dual-arm
+        home for Cindy, UR5e home for a single-arm robot.
 
         Args:
             state: RobotCellState modified in place (None is ignored).
         """
         if state is None or state.robot_configuration is not None:
             return
+        name_sets = self._arm_joint_name_sets()
+        dual = len(name_sets) == 2
+        home = HUSKY_DUAL_ARM_HOME_CONF_12 if dual else UR5e_HOME_STATE
         state.robot_configuration = self.cfab.robot_cell.zero_full_configuration()
-        for i, names in enumerate(self._arm_joint_name_sets()):
-            for n, v in zip(names, HUSKY_DUAL_ARM_HOME_CONF_12[i * 6:(i + 1) * 6]):
+        for i, names in enumerate(name_sets):
+            for n, v in zip(names, home[i * 6:(i + 1) * 6]):
                 state.robot_configuration[n] = float(v)
         print("[fill] start_state.robot_configuration was None; seeded with "
-              "dual-arm home.")
+              f"{'dual-arm' if dual else 'UR5e'} home.")
 
     def _base_pose_is_tracked(self):
         """True when an external tracker measures where the husky base is.
@@ -2592,7 +2848,14 @@ class HuskyMonitor(Node):
         M0's authored robot_configuration is null (its start is wherever the
         robot lives right now), so its start_state gets the live pose injected
         here and again on every 'Load Movement'.
+
+        ! Refused while an ActionSchedule drives the run: there 'Load entry'
+        ! loads one entry's file with its predecessor and the other robots' beliefs.
         """
+        if getattr(self, '_schedule', None) is not None:
+            self.get_logger().warn(
+                "An ActionSchedule drives this run; use 'Load entry' to load an action.")
+            return
         files = self.available_bar_actions
         if not files:
             if hasattr(self, '_load_available_bar_actions'):
@@ -2613,33 +2876,71 @@ class HuskyMonitor(Node):
         )
         # Both halves of the cycle, each paired with the file it came from, so a
         # sidecar save later goes back to its own file.
-        self._loaded_action_slots = load_action_cycle(action_path)
-        self._loaded_action, self._current_action_path = self._loaded_action_slots[0]
+        slots = load_action_cycle(action_path)
+        self.get_logger().info(f"Loading BarAction from file {action_path}")
+        self._finish_action_load(slots[0][0], slots[0][1], slots=slots)
+
+    def _finish_action_load(self, action, path: str, loaded=None, *,
+                            slots: Optional[list] = None) -> None:
+        """Make a parsed action the loaded one: session, states, UI, movement 0.
+
+        Shared tail of every action loader: the legacy file slider
+        (``load_bar_action_file``, which passes the bar's whole J + R cycle as
+        ``slots``) and the schedule loader (one file per entry, with its
+        ``schedule_io.LoadedEntry``).
+
+        Steps: the connected robot's design cell session (created or replaced
+        when the problem or the cell changed); ``_loaded_action`` /
+        ``_current_action_path`` / ``_loaded_action_slots`` / ``_loaded_movements``;
+        roles + start-EE sources (from ``loaded`` when given, else the cycle
+        helpers); live pose injection into the movements that start live; the
+        ground body; the other robots' obstacle poses; UI rebuild; movement 0.
+
+        M0's authored robot_configuration is null (its start is wherever the
+        robot lives right now), so its start_state gets the live pose injected
+        here and again on every 'Load Movement'.
+
+        Args:
+            action: The parsed action (first half of the cycle for the legacy loader).
+            path (str): The file it came from.
+            loaded (schedule_io.LoadedEntry | None): The schedule entry bundle;
+                its roles and start-EE sources (which walk the predecessor entry
+                too) are used instead of recomputing them from this file alone.
+            slots (list | None): ``(action, path)`` pairs when more than one file
+                makes up the loaded movements (the legacy J + R cycle); defaults
+                to ``[(action, path)]``.
+        """
+        self._loaded_action_slots = slots if slots is not None else [(action, path)]
+        self._loaded_action, self._current_action_path = action, path
 
         self._loaded_movements = [
-            mv for action, _path in self._loaded_action_slots
-            for mv in action.movements
+            mv for slot_action, _path in self._loaded_action_slots
+            for mv in slot_action.movements
         ]
         if not self._loaded_movements:
             self.get_logger().warn("BarAction has no movements.")
-        # Roles come from the recorded movement CLASSES, not from counting
-        # positions in the id -- see bar_action_io.cycle_roles.
-        self._loaded_movement_roles = cycle_roles(self._loaded_action_slots)
-        # Where each movement's flanges START, resolved once for the whole cycle
-        # so no call site has to walk the list (and get it wrong).
-        self._loaded_start_ee_sources = cycle_start_ee_sources(self._loaded_movements)
+        if loaded is not None:
+            self._loaded_movement_roles = list(loaded.roles)
+            self._loaded_start_ee_sources = list(loaded.start_ee_sources)
+        else:
+            # Roles come from the recorded movement CLASSES, not from counting
+            # positions in the id -- see bar_action_io.cycle_roles.
+            self._loaded_movement_roles = cycle_roles(self._loaded_action_slots)
+            # Where each movement's flanges START, resolved once for the whole
+            # cycle so no call site has to walk the list (and get it wrong).
+            self._loaded_start_ee_sources = cycle_start_ee_sources(
+                self._loaded_movements, self._connected_robot().side_keys)
         # New action => new active bar => the built-assembly hide must be redone
         # (the previously active bar has to go back to hidden, and this action's
         # active bar has to become visible). The first Load Movement below
         # re-applies it for the whole action.
         self._mocap_hide_applied = False
 
-        self.get_logger().info(f"Loading BarAction from file {action_path}")
-
         # Init the per-problem cfab session + robot cell now so 'Load
         # Movement' is just a state push afterwards. The startup default
-        # session (problem_name None, no design bars) is replaced here.
-        if self.cfab is None or self.cfab.problem_name != DESIGN_PROBLEM_NAME:
+        # session (problem_name None, no design bars) is replaced here, and so
+        # is a session on another robot's cell.
+        if self._cfab_needs_design_session():
             if self.cfab is not None:
                 self.cfab.close()
                 self.cfab = None
@@ -2647,6 +2948,7 @@ class HuskyMonitor(Node):
                 existing_client_id = pp.CLIENT if pp.is_connected() else None
                 with pp.LockRenderer():
                     self.cfab = CfabSession(DESIGN_PROBLEM_NAME,
+                                            cell_filename=self._connected_robot().cell_file,
                                             connection_type="gui",
                                             enable_debug_gui=True,
                                             existing_client_id=existing_client_id)
@@ -2662,13 +2964,26 @@ class HuskyMonitor(Node):
         # base frame) from the live robot so downstream consistency checks
         # and planning see real values. Every freshly parsed state also needs
         # the ground body, which the Rhino export does not carry (the cell has
-        # it, and compas_fab requires cell and state to agree).
-        for mv in self._loaded_movements:
+        # it, and compas_fab requires cell and state to agree), and the other
+        # robots posed where we believe they are (the export's guess may be
+        # stale, e.g. a held bar's release parks its own holder).
+        # ! Decide which movements start live BEFORE injecting anything: the
+        # ! injection fills the null robot_configuration that the rule looks at,
+        # ! so asking again later ('Load Movement') would always say no.
+        self._live_start_indices = {
+            i for i, mv in enumerate(self._loaded_movements)
+            if self._movement_starts_live(i, mv)}
+        beliefs, sources = self._obstacle_beliefs_with_sources()
+        for i, mv in enumerate(self._loaded_movements):
             if mv.start_state is None:
                 continue
-            if self._match_movement_role(mv) == 'M0':
+            if i in self._live_start_indices:
                 self._inject_live_conf_into_state(mv.start_state)
             self._inject_ground_rigid_body_state(mv.start_state)
+            self._apply_obstacle_beliefs(mv.start_state, beliefs)
+        if sources:
+            print("[obstacle robots] posed from: " + ", ".join(
+                f"{name} <- {source}" for name, source in sorted(sources.items())))
 
         loaded_names = ' + '.join(
             os.path.basename(p) for _action, p in self._loaded_action_slots)
@@ -2709,30 +3024,17 @@ class HuskyMonitor(Node):
     def _inject_ground_rigid_body_state(self, state):
         """Give a cell state the ground body, with the wheels-only allowance.
 
-        ``CfabSession`` adds the floor (``GROUND_RIGID_BODY_NAME``) to the design
-        cell, and compas_fab asserts that a cell and any state pushed to it hold
-        exactly the same rigid-body ids -- so every freshly parsed movement
-        state needs a matching entry or ``set_robot_cell_state`` raises. The
-        floor is stationary at the world origin, and lists the four wheel links
-        in ``touch_links`` so resting on it is not reported as a collision
-        (see GROUND_TOUCH_LINKS); anything else that reaches the floor still is.
+        See ``cfab_session.inject_ground_rigid_body_state`` (this monitor's
+        session cell supplies the ground body).
 
         Args:
-            state: RobotCellState to edit in place. No-op when the cell has no
-                ground body or the state already carries it.
+            state: RobotCellState to edit in place. Left unchanged when there is
+                no session, the cell has no ground body, or the state already
+                carries it.
         """
         if state is None or self.cfab is None:
             return
-        cell = getattr(self.cfab, 'robot_cell', None)
-        if cell is None or GROUND_RIGID_BODY_NAME not in (cell.rigid_body_models or {}):
-            return
-        rb_states = getattr(state, 'rigid_body_states', None)
-        if rb_states is None or GROUND_RIGID_BODY_NAME in rb_states:
-            return
-        rb_states[GROUND_RIGID_BODY_NAME] = RigidBodyState(
-            frame=Frame.worldXY(),
-            touch_links=list(GROUND_TOUCH_LINKS),
-        )
+        inject_ground_rigid_body_state(getattr(self.cfab, 'robot_cell', None), state)
 
     def _hide_built_assembly_for_mocap(self, state, sync_visibility=True):
         """Flag the already-built (static) assembly bars/joints ``is_hidden`` so
@@ -2774,7 +3076,7 @@ class HuskyMonitor(Node):
                 continue  # never hide the grasped bar itself
             if rb.attached_to_tool or rb.attached_to_link:
                 continue  # grasped bar's joints / any held body: keep checked
-            if not name.startswith(BUILT_ASSEMBLY_RB_PREFIXES):
+            if not is_built_assembly_body(name):
                 continue  # environment obstacles etc.: keep shown + checked
             rb.is_hidden = True
             hidden.append(name)
@@ -3007,21 +3309,39 @@ class HuskyMonitor(Node):
 
         text = getattr(self, 'bar_movement_text', None)
         if text is not None:
-            movements = self._loaded_movements or []
+            movements = self._shown_movements() or []
             idx = self._slider_index(getattr(self, 'bar_movement_slider', None),
                                      self._selected_movement_idx, len(movements))
             if idx < 0:
                 text.set_text("(load a BarAction first)")
             else:
                 mv = movements[idx]
-                # Role is what you actually steer by; the id alone is long.
-                role = self._match_movement_role(mv) or '??'
+                # Role is what you actually steer by; the id alone is long. A
+                # movement without a Cindy role (support robot, tool / manual
+                # step) shows its kind instead.
+                role = self._match_movement_role(mv)
+                if role is None:
+                    try:
+                        role = movement_kind(mv).value
+                    except TypeError:
+                        role = type(mv).__name__
                 text.set_text(f"[{idx}] {role}  {mv.movement_id}")
 
     def load_selected_movement(self):
-        """Load the selected movement's start state into cfab + goal ghost."""
+        """Load the selected movement's start state into cfab + goal ghost.
+
+        In schedule mode the planned-trajectory slots and the joint preview are
+        emptied first (and refilled below when the movement carries its own
+        trajectory), so 'Exec' can never replay the previous movement's path.
+        """
+        if self._refuse_while_tasks_run('Load Movement', schedule_only=True):
+            return
+        # ! Another robot's entry is only shown: its states name that robot's
+        # ! joints, which the connected robot's cell does not have.
+        if self._refuse_display_only_entry('Load Movement'):
+            return
         if not self._loaded_movements:
-            self.get_logger().warn("No BarAction loaded; click 'Load BarAction' first.")
+            self.get_logger().warn(f"No BarAction loaded; click {self._load_hint()} first.")
             return
         # Same shared resolution as load_bar_action_file, so this loads
         # exactly the movement the '-> movement' readout names.
@@ -3031,9 +3351,11 @@ class HuskyMonitor(Node):
         self._selected_movement_idx = idx
         mv = self._loaded_movements[idx]
 
-        # If M0, re-snapshot live conf/base into its start_state so a robot
-        # that moved since 'Load BarAction' still plans from where it is.
-        if self._match_movement_role(mv) == 'M0' and mv.start_state is not None:
+        # If M0 (or an action's first movement with no authored start conf),
+        # re-snapshot live conf/base into its start_state so a robot that moved
+        # since 'Load BarAction' still plans from where it is. The set was
+        # worked out at load, before the first injection filled the null conf.
+        if idx in getattr(self, '_live_start_indices', set()):
             self._inject_live_conf_into_state(mv.start_state)
 
         if mv.start_state is None:
@@ -3041,8 +3363,15 @@ class HuskyMonitor(Node):
             return
 
         if self.cfab is None:
-            self.get_logger().warn("cfab not initialized; click 'Load BarAction' first.")
+            self.get_logger().warn(f"cfab not initialized; click {self._load_hint()} first.")
             return
+
+        # * Schedule mode: drop the previous movement's planned path and joint
+        # * preview together with the movement itself. A movement that carries
+        # * its own trajectory re-fills both at the end of this load.
+        if getattr(self, '_schedule', None) is not None:
+            self._reset_planned_arm_trajectory()
+            self._preview_joint_data = None
 
         self.current_action = self._loaded_action
         self.current_movement = mv
@@ -3050,7 +3379,7 @@ class HuskyMonitor(Node):
         self.movement_start_state = mv.start_state
         self.target_ee_frames = mv.target_ee_frames or None
         bar_id = getattr(self._loaded_action, 'active_bar_id', None) if self._loaded_action else None
-        self.active_bar_name = f"bar_{bar_id}" if bar_id else None
+        self.active_bar_name = self._active_bar_body_name(mv.start_state, bar_id)
 
         # Point the "traj time" slider at this role's default duration. Set it
         # BEFORE the reset_ui() below, which rebuilds the slider with
@@ -3058,14 +3387,21 @@ class HuskyMonitor(Node):
         # auto-load of the trajectory at the end of this method, since
         # _accept_trajectory stamps this duration onto planned_arm_trajectory.
         role = self._match_movement_role(mv)
-        default_traj_time = MOVEMENT_TRAJECTORY_TIME_S.get(role)
+        # Cindy's role table first; a movement without a role (support robot)
+        # gets its kind's default. None for a step where no arm moves.
+        try:
+            default_traj_time = default_trajectory_time(mv, role, MOVEMENT_TRAJECTORY_TIME_S)
+        except TypeError as e:
+            # A movement class bar_action_io does not know: keep the slider as it is.
+            self.get_logger().warn(f"No default traj time for {mv.movement_id!r}: {e}")
+            default_traj_time = None
         if default_traj_time is not None:
             # Keep it inside the slider's own range, or the rebuilt widget would
             # clamp and silently disagree with self.trajectory_time.
             self.trajectory_time = float(
                 min(max(default_traj_time, 1.0), self.trajectory_time_max))
             print(f"[Movement] traj time -> {self.trajectory_time:.0f}s "
-                  f"(default for {role})")
+                  f"(default for {role or movement_kind(mv).value})")
 
         # In the mocap-accuracy test the built assembly is hidden once per
         # BarAction, so a plain movement switch must NOT un-hide it: skipping
@@ -3090,6 +3426,9 @@ class HuskyMonitor(Node):
             self._traj_ghost_orig_colors = {}
 
         self._hide_unmounted_active_bar(mv)
+        # Re-pose the other robots so the view shows where they are now (a
+        # husky mocap started tracking since the load moves to its live base).
+        self._apply_obstacle_beliefs(mv.start_state)
         try:
             self.cfab.planner.set_robot_cell_state(mv.start_state)
         except Exception as e:
@@ -3143,10 +3482,9 @@ class HuskyMonitor(Node):
         if mv.start_state.robot_configuration is not None:
             rc = mv.start_state.robot_configuration
             try:
-                self.goal_arm_pose[0] = np.array(
-                    [rc[n] for n in HUSKY_DUAL_UR5e_JOINT_NAMES[0]])
-                self.goal_arm_pose[1] = np.array(
-                    [rc[n] for n in HUSKY_DUAL_UR5e_JOINT_NAMES[1]])
+                # One entry per arm of the loaded cell (2 for Cindy, 1 otherwise).
+                for i, names in enumerate(self._arm_joint_name_sets()):
+                    self.goal_arm_pose[i] = np.array([rc[n] for n in names])
             except (KeyError, AttributeError) as e:
                 print(f"WARN: could not extract arm joint values: {e}")
         if mv.start_state.robot_base_frame is not None:
@@ -3194,13 +3532,19 @@ class HuskyMonitor(Node):
 
     def plan_selected_movement(self):
         """Dispatch the right planner for the loaded movement; store trajectory."""
+        if self._refuse_while_tasks_run('Plan Movement', schedule_only=True):
+            return
+        if self._refuse_display_only_entry('Plan Movement'):
+            return
         if self.current_movement is None:
             self.get_logger().warn("No movement loaded; click 'Load Movement' first.")
             return
         mv = self.current_movement
         role = self._match_movement_role(mv)
         if role is None:
-            self.get_logger().warn(f"Unknown movement role for {mv.movement_id!r}; skipping.")
+            # * No classic Cindy role: a support robot's movement, or a tool /
+            # * manual step. Dispatch on the movement's class instead.
+            self._plan_by_kind(mv)
             return
 
         # Re-read the swept-check slider's LIVE position: a rebuilt widget can
@@ -3256,6 +3600,98 @@ class HuskyMonitor(Node):
 
         self._accept_trajectory(mv, jt, source='Plan', role=role)
 
+    def _plan_by_kind(self, mv) -> None:
+        """Plan a movement that has no classic Cindy role, by its movement kind.
+
+        - SINGLE_FREE (e.g. ``H_M0``): joint-space BiRRT from the LIVE arm joints
+          to the authored ``target_configuration``.
+        - SINGLE_LINEAR (e.g. ``H_M2``): straight flange line from the movement's
+          start configuration (the previous movement's end, chained by
+          ``_accept_trajectory``) to ``target_ee_frames['arm']``.
+        - Tool / manual steps: nothing to plan (no arm moves).
+        Both plans run at the live base with the other robots posed from
+        their beliefs (``_apply_live_base_to_movement``).
+
+        Args:
+            mv: The loaded Movement (``self.current_movement``).
+        """
+        try:
+            kind = movement_kind(mv)
+        except TypeError as e:
+            self.get_logger().warn(f"Can not plan {mv.movement_id!r}: {e}; skipping.")
+            return
+        if kind in STATIONARY_KINDS:
+            self.get_logger().info(
+                f"Nothing to plan for {mv.movement_id!r} ({kind.value}): no arm moves in it.")
+            return
+        spec = self._connected_robot()
+        # ! The legacy file slider still lists every robot's files (B3__H, B3__HR),
+        # ! so a movement of another robot can end up loaded here.
+        if not kind_fits_robot(kind, spec.dual_arm):
+            arms = 'dual-arm' if kind in DUAL_ARM_KINDS else 'single-arm'
+            self.get_logger().warn(
+                f"{mv.movement_id!r} is a {arms} movement ({kind.value}); the "
+                f"connected robot is {spec.name}. Not planning it.")
+            return
+        if kind not in (MovementKind.SINGLE_FREE, MovementKind.SINGLE_LINEAR):
+            self.get_logger().warn(
+                f"Unknown movement role for {mv.movement_id!r} ({kind.value}); skipping.")
+            return
+        if mv.trajectory is not None:
+            self.get_logger().warn(f"Overwriting existing trajectory for {mv.movement_id!r}")
+
+        group = spec.planning_groups[0]
+        if kind == MovementKind.SINGLE_FREE:
+            if mv.target_configuration is None:
+                self.get_logger().warn(
+                    f"{mv.movement_id!r} has no target_configuration to plan to.")
+                return
+            # A free approach starts wherever the arm is right now.
+            self._inject_live_conf_into_state(mv.start_state)
+            if not self._apply_live_base_to_movement(mv):
+                return
+            # Pause GUI rendering during the search (does nothing when headless).
+            with pp.LockRenderer():
+                path, info = plan_free_motion(
+                    self.cfab.planner, mv.start_state, mv.target_configuration,
+                    group=group, max_time=30.0, max_iterations=100)
+            if path is None:
+                self.get_logger().warn(
+                    f"[single-arm free] {mv.movement_id!r}: {info.get('failure_reason')}")
+            # Name the waypoints in the order plan_free_motion wrote them.
+            jt = (joint_trajectory_from_path(
+                      path, arm_joint_names_for_group(self.cfab.robot_cell, group))
+                  if path is not None else None)
+        else:
+            side = spec.side_keys[0]
+            target = (mv.target_ee_frames or {}).get(side)
+            if target is None:
+                self.get_logger().warn(
+                    f"{mv.movement_id!r} has no target_ee_frames[{side!r}] to move "
+                    f"the flange to; not planning it.")
+                return
+            # ! A linear move from a made-up (home) start would sweep somewhere
+            # ! else entirely, so refuse instead of filling one in.
+            if mv.start_state.robot_configuration is None:
+                self.get_logger().warn(
+                    f"{mv.movement_id!r} has no start configuration: plan the "
+                    f"movement before it first (its end becomes this start).")
+                return
+            if not self._apply_live_base_to_movement(mv):
+                return
+            with pp.LockRenderer():
+                jt = plan_linear_motion(self.cfab.planner, mv.start_state, target, group=group)
+
+        if jt is None:
+            self.get_logger().warn(f"Plan for {mv.movement_id!r} ({kind.value}) FAILED.")
+            # Same as the role path: clear the preview so it does not keep
+            # showing the previous movement's plan.
+            self._reset_planned_arm_trajectory()
+            self._preview_joint_data = None
+            self._draw_preview_joint_values()
+            return
+        self._accept_trajectory(mv, jt, source='Plan')
+
     # --- --- --- Chain planning (Button 1) --- --- ---
 
     # Canonical BarAction plan order:
@@ -3291,14 +3727,18 @@ class HuskyMonitor(Node):
         ``self._loaded_movements``) via ``compas.data.json_dump`` to
         ``<original>.live-solved.json`` in the same directory.
         """
+        if self._refuse_while_tasks_run('Plan Chain', schedule_only=True):
+            return
+        if self._refuse_display_only_entry('Plan Chain'):
+            return
         if not self._loaded_movements:
             self.get_logger().warn(
-                "No movements loaded; click 'Load BarAction' first."
+                f"No movements loaded; click {self._load_hint()} first."
             )
             return
         if not self._current_action_path:
             self.get_logger().warn(
-                "No BarAction file path known (was it loaded via 'Load BarAction'?)."
+                f"No BarAction file path known (was it loaded via {self._load_hint()}?)."
             )
             return
 
@@ -3380,6 +3820,8 @@ class HuskyMonitor(Node):
         start_confs may now be stale, and a subsequent 'Plan Chain (Live)'
         will re-populate them.
         """
+        if self._refuse_while_tasks_run('Reset Selected Mv to Clean', schedule_only=True):
+            return
         if self.current_movement is None:
             self.get_logger().warn(
                 "No movement loaded; click 'Load Movement' first."
@@ -3399,8 +3841,15 @@ class HuskyMonitor(Node):
             return
         # Re-read this movement's OWN half, at its index within that half.
         action, half_path, local_idx = slot
+        read_path = half_path
+        if getattr(self, '_schedule', None) is not None:
+            # * Schedule mode: the loaded file may be the entry's .live-solved
+            # * sidecar; "clean" means the exported file next to it.
+            clean_path = clean_action_path(half_path)
+            if os.path.isfile(clean_path):
+                read_path = clean_path
         try:
-            clean = parse_bar_action(half_path)
+            clean = parse_bar_action(read_path)
         except Exception as e:
             self.get_logger().warn(f"Failed to parse clean BarAction: {e}")
             return
@@ -3418,8 +3867,13 @@ class HuskyMonitor(Node):
         self.current_movement = clean_mv
         # The cycle's start-EE map points at movement OBJECTS, and this just
         # swapped one, so rebuild it rather than leave an entry naming the
-        # replaced object.
-        self._loaded_start_ee_sources = cycle_start_ee_sources(self._loaded_movements)
+        # replaced object. A schedule entry's first movements start where its
+        # predecessor entry (J before R, H before HR) ended, so walk that too.
+        loaded = getattr(self, '_loaded_entry_bundle', None)
+        pred = (list(loaded.predecessor.movements) if getattr(self, '_schedule', None) is not None
+                and loaded is not None and loaded.predecessor is not None else [])
+        self._loaded_start_ee_sources = cycle_start_ee_sources(
+            pred + self._loaded_movements, self._connected_robot().side_keys)[len(pred):]
         print(f"[Reset Mv] reverted [{idx}] {clean_mv.movement_id!r} to clean.")
         # The freshly parsed state carries neither the ground body (the cell has
         # it, and compas_fab requires cell and state to agree) nor the
@@ -3444,7 +3898,26 @@ class HuskyMonitor(Node):
 
         Refuses if the currently loaded action is itself a
         ``.live-solved.json`` sidecar (that's not the clean file).
+
+        * Schedule mode: reloads the loaded ENTRY from its clean export instead
+        * (``load_schedule_entry(..., prefer_sidecar=False)``); the sidecar stays
+        * on disk.
         """
+        if getattr(self, '_schedule', None) is not None:
+            if self._refuse_while_tasks_run('Reset All Mvs to Clean'):
+                return
+            entry = getattr(self, '_loaded_entry', None)
+            if entry is None:
+                self.get_logger().warn("No schedule entry loaded; click 'Load entry' first.")
+                return
+            print(f"[Reset All] reloading schedule entry {entry.index} "
+                  f"({entry.action_id}) from its clean export")
+            # Keep using the clean export for the rest of this run (as after a
+            # Reopen), so a later plain 'Load entry' does not bring the sidecar back.
+            self._clean_entries = getattr(self, '_clean_entries', set()) | {entry.index}
+            self._rescan_schedule_flags([entry.index])
+            self.load_schedule_entry(entry.index, prefer_sidecar=False)
+            return
         if not self._current_action_path:
             self.get_logger().warn(
                 "No BarAction file path known; cannot reset."
@@ -4012,18 +4485,43 @@ class HuskyMonitor(Node):
           settle, via ``world.execute_trajectory_and_zero_ft`` (also a queued
           generator). M0 is the last movement with empty tools, so it is the
           only safe place to tare -- see that function.
+        Support robot's single-arm free / linear movement -> joint-tracking via
+          ``world.execute_arm_trajectory_all`` (arm 0).
         else  -> joint-tracking via ``world.execute_arm_trajectory_both``.
 
         Refuses when the live arms are not already parked at the trajectory's
-        first waypoint -- press 'Move Arms to Movement Start' first.
+        first waypoint -- press 'Move Arms to Movement Start' first. Also
+        refuses a gripper / scaffolding-tool / manual step: those are run by
+        ``exec_selected_movement_step``. In schedule mode also refused while a
+        queued step / execution still runs (see ``_refuse_while_tasks_run``).
         """
+        if self._refuse_while_tasks_run('Exec Selected Mv Traj', schedule_only=True):
+            return
+        if self._refuse_display_only_entry('Exec Selected Mv Traj'):
+            return
         if self.current_movement is None:
             self.get_logger().warn(
                 "No movement loaded; click 'Load Movement' first."
             )
             return
-        if self.planned_arm_trajectory[0][0] is None or \
-           self.planned_arm_trajectory[1][0] is None:
+        try:
+            kind = movement_kind(self.current_movement)
+        except TypeError:
+            # A movement class bar_action_io does not know: run it the old way
+            # (by its Cindy role), as before movement kinds existed.
+            kind = None
+        # ! No arm moves in a tool / manual step, so the only trajectory there
+        # ! is one left over from the movement before it -- running it would
+        # ! replay that motion.
+        if kind in STATIONARY_KINDS:
+            self.get_logger().warn(
+                f"{self.current_movement.movement_id!r} is a "
+                f"{step_kind(self.current_movement)} step, not an arm movement: "
+                f"nothing to execute here. Run it with the step exec "
+                f"(exec_selected_movement_step) instead.")
+            return
+        if any(self.planned_arm_trajectory[i][0] is None
+               for i in range(self._connected_robot().n_arms)):
             self.get_logger().warn(
                 "No planned trajectory for this movement; click 'Load Movement "
                 "Trajectory' (or 'Plan Movement' for M0) first."
@@ -4068,7 +4566,7 @@ class HuskyMonitor(Node):
         if deviations and not self.FAKE_HARDWARE:
             if max(deviations) > self.EXEC_START_CONF_TOLERANCE_RAD:
                 per_arm = ' / '.join(f'{side}={d:.3f}' for side, d
-                                     in zip(('L', 'R'), deviations))
+                                     in zip(self._connected_robot().side_keys, deviations))
                 self.get_logger().warn(
                     f"Arms are not at the start of "
                     f"{self.current_movement.movement_id!r}: max joint offset "
@@ -4081,12 +4579,78 @@ class HuskyMonitor(Node):
                 return
 
         role = self._match_movement_role(self.current_movement)
-        if role in ('M2', 'M3'):
+        # * Support robot movements carry no Cindy role: dispatch on the kind.
+        if role is None and kind in SINGLE_ARM_KINDS:
+            if self.current_movement.controller == CONTROLLER_CARTESIAN_COMPLIANT:
+                # ! Only joint tracking is wired for a single arm; say so rather
+                # ! than silently running a different controller than exported.
+                self.get_logger().warn(
+                    f"{self.current_movement.movement_id!r} asks for the "
+                    f"{CONTROLLER_CARTESIAN_COMPLIANT} controller, but single-arm "
+                    f"movements run under joint tracking.")
+            world.execute_arm_trajectory_all(self)
+        elif role in ('M2', 'M3'):
             self.tasks.append(world.execute_planned_trajectory_compliant(self))
         elif role == 'M0':
             self.tasks.append(world.execute_trajectory_and_zero_ft(self))
         else:
             world.execute_arm_trajectory_both(self)
+
+    def exec_selected_movement_step(self) -> None:
+        """Run the loaded movement, whatever kind of step it is (the schedule's one exec button).
+
+        Arm movements go through ``exec_selected_movement_traj``. The other steps
+        wait (for the operator's 'Confirm Exec', the gripper or the tool), so they
+        are queued on ``self.tasks`` for the monitor tick to pump:
+
+        - gripper  -> ``world.exec_gripper_tool_movement`` (open, or close with the
+          compliant handoff);
+        - manual   -> ``world.run_manual_step`` (the operator confirms it is done);
+        - scaffold -> ``world.run_scaffolding_tool_step`` (grasp / untighten, or
+          mark-only for the steps the compliant insert / retreat already runs).
+
+        Refused while ANY queued step / execution still runs or waits for
+        'Confirm Exec' (one click on 'Confirm Exec' would answer both waits),
+        while another robot's entry is shown, and for a movement class the
+        monitor does not know.
+        """
+        if self._refuse_while_tasks_run('Exec step'):
+            return
+        if self._refuse_display_only_entry('Exec step'):
+            return
+        mv = self.current_movement
+        if mv is None:
+            self.get_logger().warn("No movement loaded; click 'Load Movement' first.")
+            return
+        try:
+            kind = step_kind(mv)
+        except TypeError as e:
+            self.get_logger().warn(
+                f"{mv.movement_id!r}: {e}. Not run as a step; an arm movement runs "
+                f"with 'Exec Selected Mv Traj (auto)'.")
+            return
+        if kind == 'arm':
+            self.exec_selected_movement_traj()
+            return
+        run_step = {
+            'gripper': world.exec_gripper_tool_movement,
+            'manual': world.run_manual_step,
+            'scaffold': world.run_scaffolding_tool_step,
+        }[kind]
+        self.get_logger().info(f"Queued {kind} step {mv.movement_id!r}.")
+        self.tasks.append(run_step(self, mv))
+
+    def move_arms_to_movement_start(self) -> None:
+        """'Move Arms to Movement Start' button: ``world.move_arms_to_movement_start``.
+
+        Refused while another robot's schedule entry is loaded for display only,
+        and in schedule mode while a queued step / execution still runs.
+        """
+        if self._refuse_while_tasks_run('Move Arms to Movement Start', schedule_only=True):
+            return
+        if self._refuse_display_only_entry('Move Arms to Movement Start'):
+            return
+        world.move_arms_to_movement_start(self)
 
     def _accept_trajectory(self, mv, jt, *, source='Plan', role=None):
         """Common post-step after a trajectory is either planned or loaded.
@@ -4095,7 +4659,11 @@ class HuskyMonitor(Node):
         wires the visualizer, runs CDFM validation, and prints the movement
         roster. Persistence lives on the ``<action>.live-solved.json`` sidecar
         that ``plan_movement_chain_live`` writes -- no per-movement JSONs.
+        A single-arm robot takes ``_accept_single_arm_trajectory`` instead.
         """
+        if self._connected_robot().n_arms == 1:
+            self._accept_single_arm_trajectory(mv, jt, source=source)
+            return
         mv.trajectory = jt
         path = path_12_from_joint_trajectory(jt)
         if path:
@@ -4232,6 +4800,62 @@ class HuskyMonitor(Node):
 
         self._print_movement_roster(tag=tag)
 
+    def _merge_arm_values(self, state, joint_names: list, values) -> None:
+        """Write arm joint values into a state's robot_configuration, BY NAME.
+
+        Args:
+            state (RobotCellState): Edited in place. A None robot_configuration
+                is first created as the cell's zero configuration.
+            joint_names (list): The joints to set.
+            values (Sequence[float]): One value per joint.
+        """
+        if state.robot_configuration is None:
+            state.robot_configuration = self.cfab.robot_cell.zero_full_configuration()
+        for name, value in zip(joint_names, values):
+            state.robot_configuration[name] = float(value)
+
+    def _accept_single_arm_trajectory(self, mv, jt, *, source: str = 'Plan') -> None:
+        """Single-arm version of ``_accept_trajectory`` (support robots).
+
+        Stores the trajectory, copies its first waypoint into this movement's
+        start configuration and its last waypoint into the NEXT movement's, and
+        wires the preview. The last waypoint is carried on through steps where
+        no arm moves (gripper / manual) into the next arm movement, so e.g.
+        ``H_M2`` starts where ``H_M0`` ended with ``H_M1`` (gripper open) in
+        between. Cindy's M-role chain rules (M1 owns its start, M2/M3 start
+        checks, ...) do not apply.
+
+        Args:
+            mv: The Movement the trajectory belongs to.
+            jt (JointTrajectory): The planned or loaded trajectory.
+            source (str): Log tag, e.g. ``'Plan'`` or ``'LoadTraj'``.
+        """
+        names = list(self._connected_robot().arm_joint_names[0])
+        mv.trajectory = jt
+        path = path_from_joint_trajectory(jt, names)
+        if path:
+            if mv.start_state is not None:
+                self._merge_arm_values(mv.start_state, names, path[0])
+            idx = self.current_movement_index
+            for next_mv in self._loaded_movements[idx + 1:] if idx is not None else []:
+                if next_mv.start_state is not None:
+                    self._merge_arm_values(next_mv.start_state, names, path[-1])
+                    print(f"[{source}] propagated {mv.movement_id!r}.traj[-1] -> "
+                          f"{next_mv.movement_id!r}.start_state.robot_configuration.")
+                if movement_kind(next_mv) not in STATIONARY_KINDS:
+                    break  # an arm moves here: whatever follows starts from its end
+
+        self.planned_arm_trajectory = [
+            (np.asarray(path), None, self.trajectory_time, None),
+            (None, None, None, None),
+        ]
+        self._refresh_preview_attached_bodies(
+            self._authored_motion_type(mv), mv.start_state)
+        self.set_to_show_traj_state()
+        print(f"[{source}] {mv.movement_id!r}: {len(path)} waypoints stored.")
+        self.show_planned_joint_values(path, label=mv.movement_id)
+        self._print_movement_roster(tag=source)
+
     def _backfill_m0_target_from_m1(self):
         """Set M0.target_configuration = M1.start_state.robot_configuration.
 
@@ -4272,7 +4896,7 @@ class HuskyMonitor(Node):
         if jt is None:
             self.get_logger().warn(
                 f"{mv.movement_id!r} has no trajectory in memory. Re-load a "
-                ".live-solved.json sidecar via 'Load BarAction', or run "
+                f".live-solved.json sidecar via {self._load_hint()}, or run "
                 "'Plan Chain (Live)'."
             )
             return
@@ -4444,7 +5068,7 @@ class HuskyMonitor(Node):
         """
         if not self._loaded_action or not self._current_action_path:
             self.get_logger().warn(
-                "No BarAction loaded; click 'Load BarAction' first.")
+                f"No BarAction loaded; click {self._load_hint()} first.")
             return None
 
         # M0 and M1 are what adopting changed, so only their half is saved.
@@ -4491,7 +5115,7 @@ class HuskyMonitor(Node):
         """
         if not self._loaded_action or not self._current_action_path:
             self.get_logger().warn(
-                "No BarAction loaded; click 'Load BarAction' first.")
+                f"No BarAction loaded; click {self._load_hint()} first.")
             return None
         m0 = next((m for m in (self._loaded_movements or [])
                    if self._match_movement_role(m) == 'M0'), None)
@@ -6682,10 +7306,12 @@ class HuskyMonitor(Node):
     def ik_live_base_for_selected_movement(self):
         """IK at the LIVE base for the current movement's START EE frames.
 
-        Intended for M2/M3. Solves dual-arm IK to the authored world-frame start
-        EE poses but for the LIVE base, warm-started from the LIVE robot arm
-        conf, with full cfab collision checking against the movement's
-        start_state ACM. On success it sets goal_arm_pose; the user then clicks
+        Intended for M2/M3 (and a support robot's linear moves). Solves IK for
+        every arm of the connected robot (``RobotSpec.side_keys``) to the
+        authored world-frame start EE poses but for the LIVE base, warm-started
+        from the LIVE robot arm conf, with full cfab collision checking against
+        the movement's start_state ACM. On success it sets goal_arm_pose (one
+        entry per arm); the user then clicks
         'Plan Both Arms to Goal (composite)' to plan a free transit there. Does
         NOT write mv.trajectory.
 
@@ -6703,6 +7329,8 @@ class HuskyMonitor(Node):
             failure. Existing UI callers ignore the return value; the new
             ``replan_free_to_movement_start_live`` uses it to bail cleanly.
         """
+        if self._refuse_display_only_entry('IK Live Base'):
+            return False
         if self.current_movement is None:
             self.get_logger().warn("Load a movement first.")
             return False
@@ -6723,8 +7351,9 @@ class HuskyMonitor(Node):
         # ! is, so the "target" drifts along with the robot each pass and the loop
         # ! can never converge on the pose the designer actually authored.
         idx = self.current_movement_index
+        spec = self._connected_robot()
         sources = {side: self._start_ee_source(idx, side)
-                   for side in ('left', 'right')}
+                   for side in spec.side_keys}
         start_ee_frames = {
             side: src.target_ee_frames[side]
             for side, src in sources.items() if src is not None
@@ -6760,51 +7389,66 @@ class HuskyMonitor(Node):
         live_state = mv.start_state.copy()
         hi = self.huskies[self.selected_robot_id].interface
         self._inject_live_conf_into_state(live_state)
+        # The other robots where they are now (a husky mocap sees moves live).
+        self._apply_obstacle_beliefs(live_state)
         self.cfab.planner.set_robot_cell_state(live_state)
-        # Override target_ee_frames so _solve_bar_action_goal_ik uses the
-        # start-state derived frames (it reads monitor.target_ee_frames).
         # Also pass mv.start_state.robot_configuration as an alternate IK
         # seed: it's a bar-holding pose whose FK produces the very target
         # frames, so trac_ik seeded there converges to that (or a nearby)
         # collision-free branch, escaping the self-colliding branches
         # trac_ik lands on when seeded from the extended-arm HOME conf.
-        alt_seed = None
-        if mv.start_state.robot_configuration is not None:
+        if spec.dual_arm:
+            # Override target_ee_frames so _solve_bar_action_goal_ik uses the
+            # start-state derived frames (it reads monitor.target_ee_frames).
+            alt_seed = None
+            if mv.start_state.robot_configuration is not None:
+                try:
+                    alt_seed = vec12_from_conf(mv.start_state.robot_configuration)
+                except Exception:
+                    alt_seed = None
+            saved_targets = self.target_ee_frames
+            self.target_ee_frames = start_ee_frames
             try:
-                alt_seed = vec12_from_conf(mv.start_state.robot_configuration)
-            except Exception:
-                alt_seed = None
-        saved_targets = self.target_ee_frames
-        self.target_ee_frames = start_ee_frames
-        try:
-            conf12 = _solve_bar_action_goal_ik(
-                self, live_state, skip_env_collisions=False, verbose=False,
-                alt_seed_conf12=alt_seed,
-            )
-        finally:
-            self.target_ee_frames = saved_targets
+                conf12 = _solve_bar_action_goal_ik(
+                    self, live_state, skip_env_collisions=False, verbose=False,
+                    alt_seed_conf12=alt_seed,
+                )
+            finally:
+                self.target_ee_frames = saved_targets
+            arm_confs = None if conf12 is None else [conf12[:6], conf12[6:]]
+        else:
+            # Single-arm robot: same IK core, one group, one flange target.
+            seeds = ([mv.start_state.robot_configuration]
+                     if mv.start_state.robot_configuration is not None else [])
+            conf = solve_goal_ik_generic(
+                self.cfab.planner, live_state,
+                {spec.group_for_side(side): frame for side, frame in start_ee_frames.items()},
+                seed_confs=seeds)
+            arm_confs = None
+            if conf is not None:
+                goal_state = live_state.copy()
+                goal_state.robot_configuration = conf
+                self.movement_goal_state = goal_state
+                arm_confs = [[conf[n] for n in names] for names in spec.arm_joint_names]
 
-        if conf12 is None:
+        if arm_confs is None:
             self.get_logger().warn("IK at live base FAILED.")
             return False
-        self.goal_arm_pose[0] = np.asarray(conf12[:6])
-        self.goal_arm_pose[1] = np.asarray(conf12[6:])
+        for i, arm_conf in enumerate(arm_confs):
+            self.goal_arm_pose[i] = np.asarray(arm_conf, dtype=float)
         # Ghost must render live_base + IK conf together; otherwise the
         # ghost's tool0 drifts (live_base != start_state base, so rendering
         # stored-base + IK-conf gives a different tool0).
         self.goal_base_pose = (hi.position, hi.rotation)
 
-        # Self-test: FK at the GOAL state (live_base + IK_conf, set by
-        # _solve_bar_action_goal_ik on monitor.movement_goal_state). Do NOT
-        # use the local live_state here — _solve_bar_action_goal_ik writes
-        # the new conf onto a copy, so live_state.robot_configuration is
-        # still the OLD seed conf, which would FK to (live_base * FK(old))
-        # — i.e. the target offset by exactly the base offset, masking a
-        # successful IK as an apparent failure.
+        # Self-test: FK at the GOAL state (live_base + IK_conf, stored on
+        # monitor.movement_goal_state by the IK above). Do NOT use the local
+        # live_state here — the IK writes the new conf onto a copy, so
+        # live_state.robot_configuration is still the OLD seed conf, which would
+        # FK to (live_base * FK(old)) — i.e. the target offset by exactly the
+        # base offset, masking a successful IK as an apparent failure.
         gs = getattr(self, 'movement_goal_state', None)
         try:
-            fk_left = _fk_link_frame(self.cfab.planner, gs, "left_ur_arm_tool0")
-            fk_right = _fk_link_frame(self.cfab.planner, gs, "right_ur_arm_tool0")
             def _residual(fk_frame, tg_frame):
                 d_pos = float(np.linalg.norm(
                     np.asarray(fk_frame.point) - np.asarray(tg_frame.point)
@@ -6815,13 +7459,12 @@ class HuskyMonitor(Node):
                     np.clip(abs(float(np.dot(q_fk, q_tg))), 0.0, 1.0)
                 ))
                 return d_pos, d_ang
-            d_pos_L, d_ang_L = _residual(fk_left, start_ee_frames['left'])
-            d_pos_R, d_ang_R = _residual(fk_right, start_ee_frames['right'])
-            print(
-                f"[IK Live Base] FK self-test residual: "
-                f"L pos={d_pos_L*1000:.2f} mm ang={np.degrees(d_ang_L):.3f} deg | "
-                f"R pos={d_pos_R*1000:.2f} mm ang={np.degrees(d_ang_R):.3f} deg"
-            )
+            parts = []
+            for side in spec.side_keys:
+                fk = _fk_link_frame(self.cfab.planner, gs, spec.flange_for_side(side))
+                d_pos, d_ang = _residual(fk, start_ee_frames[side])
+                parts.append(f"{side} pos={d_pos*1000:.2f} mm ang={np.degrees(d_ang):.3f} deg")
+            print("[IK Live Base] FK self-test residual: " + " | ".join(parts))
         except Exception as e:
             self.get_logger().warn(f"FK self-test failed: {e}")
 
@@ -7156,6 +7799,634 @@ class HuskyMonitor(Node):
             print(f"  {i}: {fname}")
         return files
 
+    # * ------------------------------------------------------------------
+    # * ActionSchedule panel: one schedule entry (one action file, one robot)
+    # * is the unit of work. The connected robot plans and runs its OWN
+    # * entries; another robot's entry is only shown (and can be marked done).
+    # * Everything below reads its state with getattr(...): the headless
+    # * harnesses build the monitor without __init__, so none of it exists there
+    # * and they keep the legacy behaviour.
+    # * ------------------------------------------------------------------
+
+    def _problem_dir(self) -> str:
+        """The design problem folder, ``<DESIGN_DATA_DIRECTORY>/<DESIGN_PROBLEM_NAME>``.
+
+        Returns:
+            str: The folder holding ``ActionSchedule.json``, ``progress.json`` and ``BarActions/``.
+        """
+        return problem_root(DESIGN_PROBLEM_NAME, DESIGN_DATA_DIRECTORY)
+
+    def _load_schedule_state(self) -> None:
+        """Pick schedule mode or the legacy BarAction list, once at start-up.
+
+        Schedule mode needs ``USE_ACTION_SCHEDULE`` on and a COMPLETE schedule:
+        ``ActionSchedule.json`` loads and every entry's action file (clean export
+        or sidecar) is on disk. Otherwise the legacy file slider stays and ONE
+        line says why -- accuracy-test problems also ship a schedule, but only a
+        few of its files. In schedule mode this also loads ``progress.json``
+        (which is what poses the other robots from their beliefs), selects the
+        first pending entry and prints the roster.
+        """
+        self._schedule = None
+        self._progress = None
+        self._schedule_flags = {}
+        self._clean_entries = set()
+        legacy = "-- using the legacy BarAction list."
+        if not self.USE_ACTION_SCHEDULE:
+            print(f"[Schedule] USE_ACTION_SCHEDULE is 0 {legacy}")
+            return
+        root = self._problem_dir()
+        try:
+            schedule = load_schedule(root)
+        except ValueError as e:
+            print(f"[Schedule] {SCHEDULE_FILENAME} is not a valid schedule ({e}) {legacy}")
+            return
+        if schedule is None:
+            print(f"[Schedule] {DESIGN_PROBLEM_NAME} has no {SCHEDULE_FILENAME} {legacy}")
+            return
+        missing = missing_action_files(schedule)
+        if missing:
+            print(f"[Schedule] {SCHEDULE_FILENAME} lists {len(schedule.entries)} entries but "
+                  f"{len(missing)} files are missing {legacy}")
+            return
+        try:
+            progress = load_progress(root, schedule)
+        except ValueError as e:
+            print(f"[Schedule] cannot use progress.json ({e}) {legacy}")
+            return
+        self._schedule, self._progress = schedule, progress
+        self._schedule_run_id = new_run_id(self._connected_robot().name)
+        self._selected_entry_idx = min(progress.current_index, len(schedule.entries) - 1)
+        self._rescan_schedule_flags()
+        self._print_schedule_roster()
+
+    def _rescan_schedule_flags(self, indices: Optional[list] = None) -> None:
+        """Re-read how far each entry's action file is solved (schedule_ui.EntryFlags).
+
+        Scans the file 'Load entry' would load: its ``.live-solved.json`` sidecar
+        when there is one (unless the entry was reopened in this run), else the
+        clean export. ! A file that cannot be read or parsed only warns and shows
+        zero counts: this also runs inside 'Mark entry done', where an exception
+        would stop the monitor tick.
+
+        Args:
+            indices (list | None): Entry indices to rescan; None = every entry.
+        """
+        schedule = getattr(self, '_schedule', None)
+        if schedule is None:
+            return
+        if indices is None:
+            indices = range(len(schedule.entries))
+        clean_entries = getattr(self, '_clean_entries', None) or set()
+        self._schedule_flags = dict(getattr(self, '_schedule_flags', None) or {})
+        for i in indices:
+            path = schedule.action_path(schedule.entry(i), prefer_sidecar=i not in clean_entries)
+            try:
+                self._schedule_flags[i] = scan_entry_flags(path)
+            except (OSError, ValueError, KeyError) as e:
+                self.get_logger().warn(f"[Schedule] cannot scan entry {i} ({path}): {e}")
+                self._schedule_flags[i] = EntryFlags(0, 0, 0, False)
+
+    def _schedule_header_text(self) -> str:
+        """The panel's first line: connected robot, problem, progress.
+
+        Returns:
+            str: e.g. ``'robot Cindy (domain 86) | problem ... | progress 3/48 done'``.
+        """
+        schedule, progress = self._schedule, self._progress
+        connected = self._connected_robot()
+        n_done = sum(progress.is_done(e.index) for e in schedule.entries)
+        return (f"robot {connected.name} (domain {connected.domain_id}) | "
+                f"problem {schedule.problem_name} | progress {n_done}/{len(schedule.entries)} done")
+
+    def _schedule_row_text(self, index: int, *, selected: bool) -> str:
+        """One entry's row of the list (schedule_ui.entry_row_text).
+
+        Args:
+            index (int): Schedule index.
+            selected (bool): Whether the entry slider points at it.
+
+        Returns:
+            str: The row.
+        """
+        entry = self._schedule.entry(index)
+        return entry_row_text(entry, self._schedule_flags[index], self._progress.status(index),
+                              executable=self._entry_is_executable_here(entry),
+                              selected=selected)
+
+    def _print_schedule_roster(self) -> None:
+        """Print the header line and one row per schedule entry to the terminal."""
+        print(f"[Schedule] {self._schedule_header_text()}")
+        for e in self._schedule.entries:
+            print("  " + self._schedule_row_text(e.index, selected=e.index == self._selected_entry_idx))
+
+    def _selected_schedule_index(self) -> int:
+        """The entry the 'Schedule entry' slider points at, read live (see _slider_index).
+
+        Returns:
+            int: A valid schedule index.
+        """
+        return self._slider_index(getattr(self, 'schedule_entry_slider', None),
+                                  getattr(self, '_selected_entry_idx', 0),
+                                  len(self._schedule.entries))
+
+    def _entry_is_executable_here(self, entry: Optional[ScheduleEntry] = None) -> bool:
+        """Whether this monitor run may plan / execute an entry.
+
+        Args:
+            entry (ScheduleEntry | None): The entry; None = the loaded one.
+
+        Returns:
+            bool: True when the connected robot runs the entry, when no entry is
+            loaded, and always on a legacy problem (no schedule).
+        """
+        if getattr(self, '_schedule', None) is None:
+            return True
+        if entry is None:
+            entry = getattr(self, '_loaded_entry', None)
+        return entry is None or is_executable_by(entry, self._connected_robot().name)
+
+    def _refuse_display_only_entry(self, what: str) -> bool:
+        """Warn and say True when another robot's entry is loaded (for display only).
+
+        Args:
+            what (str): The refused action, for the warning (e.g. ``'Plan Movement'``).
+
+        Returns:
+            bool: True when the caller must stop.
+        """
+        if self._entry_is_executable_here():
+            return False
+        entry = self._loaded_entry
+        self.get_logger().warn(
+            f"{what} refused: entry {entry.index} ({entry.action_id}) belongs to "
+            f"{entry.robot}; it is loaded for display only on "
+            f"{self._connected_robot().name}.")
+        return True
+
+    def _refuse_while_tasks_run(self, what: str, *, schedule_only: bool = False) -> bool:
+        """Warn and return True while a queued step / execution is running or waiting for 'Confirm Exec'.
+
+        ! One task at a time: every wait shares the single 'Confirm Exec' /
+        ! 'Cancel Exec' pair, so a second queued task would be released by the
+        ! same click. Loading another entry or movement mid-task would also change
+        ! what the running task reads.
+
+        Args:
+            what (str): The refused action, for the warning (e.g. ``'Load entry'``).
+            schedule_only (bool): Only refuse in schedule mode. For Cindy's
+                existing buttons, which never refused on a legacy problem.
+
+        Returns:
+            bool: True when the caller must stop.
+        """
+        if schedule_only and getattr(self, '_schedule', None) is None:
+            return False
+        # The task that is running right now (the caller may be inside it) is
+        # not "another" task -- see the task loop in update().
+        running = getattr(self, '_running_task', None)
+        if not [t for t in (getattr(self, 'tasks', None) or []) if t is not running]:
+            return False
+        self.get_logger().warn(
+            f"{what} refused: a step / execution is still running or waiting for "
+            f"'Confirm Exec'. Finish it or click 'Cancel Exec' first.")
+        return True
+
+    def queue_servo_to_movement_start(self, use_transfer: bool = False) -> None:
+        """Queue the visual-servoing loop ('3) / 3b) Servo to Mv Start').
+
+        ! In schedule mode it is refused while another task runs: the loop waits
+        ! on the same 'Confirm Exec' as the steps, so one click would release both.
+        ! Legacy problems keep the old behaviour (always queued).
+
+        Args:
+            use_transfer (bool): Plan a bar-held constrained transfer each
+                iteration (button 3b) instead of a free transit (button 3).
+        """
+        if self._refuse_while_tasks_run('Servo to Mv Start', schedule_only=True):
+            return
+        self.tasks.append(world.servo_to_movement_start_live(self, use_transfer=use_transfer))
+
+    def _load_hint(self) -> str:
+        """Name of the button that loads an action, for the "click ... first" messages.
+
+        Returns:
+            str: ``"'Load entry'"`` in schedule mode, else ``"'Load BarAction'"``.
+        """
+        return "'Load entry'" if getattr(self, '_schedule', None) is not None else "'Load BarAction'"
+
+    def _shown_movements(self) -> list:
+        """The movements the Movement slider and its readouts list.
+
+        Returns:
+            list: The connected robot's loaded movements, or -- while another
+            robot's entry is loaded for display only -- that entry's movements.
+        """
+        loaded = getattr(self, '_loaded_entry_bundle', None)
+        if loaded is not None and not self._entry_is_executable_here():
+            return list(loaded.movements)
+        return self._loaded_movements
+
+    def _now_line(self) -> str:
+        """The 'Now:' line: loaded entry and movement (schedule_ui.now_line_text).
+
+        Returns:
+            str: The line.
+        """
+        entry = getattr(self, '_loaded_entry', None)
+        if entry is None:
+            return now_line_text(None, None, 0, None)
+        if self._entry_is_executable_here(entry):
+            movements = self._loaded_movements
+            return now_line_text(entry, self.current_movement_index, len(movements),
+                                 self.current_movement)
+        # Display only: nothing is loaded into the cell, so follow the slider.
+        movements = self._shown_movements()
+        idx = self._slider_index(getattr(self, 'bar_movement_slider', None),
+                                 self._selected_movement_idx, len(movements))
+        if idx < 0:
+            return now_line_text(entry, None, 0, None)
+        return now_line_text(entry, idx, len(movements), movements[idx])
+
+    def _refresh_schedule_readouts(self) -> None:
+        """Keep the schedule panel's lines in step with the sliders (every UI tick).
+
+        The '-> entry' readout names the entry 'Load entry' would open, the
+        'Now:' line what is loaded, and the rows move their '>' marker. Row
+        colours only change on the next rebuild.
+        """
+        schedule = getattr(self, '_schedule', None)
+        if schedule is None:
+            return
+        selected = self._selected_schedule_index()
+        text = getattr(self, 'schedule_entry_text', None)
+        if text is not None:
+            entry = schedule.entry(selected)
+            text.set_text(f"{self._schedule_row_text(selected, selected=False).strip()}  "
+                          f"({os.path.basename(entry.file)})")
+        text = getattr(self, 'schedule_now_text', None)
+        if text is not None:
+            text.set_text(self._now_line())
+        lo, hi = getattr(self, '_schedule_row_window', (0, 0))
+        for row, i in zip(getattr(self, 'schedule_rows', None) or [], range(lo, hi)):
+            row.set_text(self._schedule_row_text(i, selected=i == selected))
+
+    def select_prev_entry(self) -> None:
+        """'Prev entry' button: point the entry slider one entry up (loads nothing)."""
+        self._select_entry(self._selected_schedule_index() - 1)
+
+    def select_next_entry(self) -> None:
+        """'Next entry' button: point the entry slider one entry down (loads nothing)."""
+        self._select_entry(self._selected_schedule_index() + 1)
+
+    def _select_entry(self, index: int) -> None:
+        """Point the entry slider at an entry, clamped to the schedule.
+
+        Args:
+            index (int): Wanted schedule index.
+        """
+        if getattr(self, '_schedule', None) is None:
+            return
+        idx = max(0, min(int(index), len(self._schedule.entries) - 1))
+        self._selected_entry_idx = idx
+        slider = getattr(self, 'schedule_entry_slider', None)
+        if slider is not None:
+            slider.set_value(idx)
+        # ! A PyBullet debug slider can not be moved from code, and its position
+        # ! wins in _selected_schedule_index, so rebuild the panel there instead.
+        # On DPG, rebuild only when the entry left the shown rows, so the rows
+        # re-centre on it and its row is highlighted.
+        lo, hi = getattr(self, '_schedule_row_window', (0, 0))
+        if not isinstance(_common._global_backend, DearPyGuiBackend) or not lo <= idx < hi:
+            self.reset_ui(self.goal_arm_pose)
+
+    def load_schedule_entry(self, index: Optional[int] = None, *,
+                            prefer_sidecar: Optional[bool] = None) -> None:
+        """'Load entry' button: load one schedule entry's action.
+
+        The connected robot's own entry goes through ``_finish_action_load``
+        (cell session, live start, obstacle beliefs, UI, movement 0), exactly like
+        'Load BarAction'. ! Another robot's entry is loaded for DISPLAY ONLY: its
+        states name that robot's joints, so they are never pushed into this
+        robot's cell. Its movements are listed, the readouts follow it, Plan /
+        Exec / step stay refused, and 'Mark entry done' still works.
+
+        The previous entry's loaded movement, planned path and joint preview are
+        dropped first, so nothing planned for it can be executed on this one.
+        Refused while a queued step / execution still runs.
+
+        Args:
+            index (int | None): Schedule index; None = the entry slider's.
+            prefer_sidecar (bool | None): Load the ``.live-solved.json`` sidecar
+                when there is one. None = yes, unless the entry was reopened in
+                this run (``_clean_entries``); False = the clean export (see
+                ``reset_all_movements_to_clean``).
+        """
+        if self._refuse_while_tasks_run('Load entry'):
+            return
+        schedule = getattr(self, '_schedule', None)
+        if schedule is None:
+            self.get_logger().warn("No ActionSchedule loaded; use 'Load BarAction'.")
+            return
+        idx = self._selected_schedule_index() if index is None else int(index)
+        self._selected_entry_idx = idx
+        entry = schedule.entry(idx)
+        if prefer_sidecar is None:
+            prefer_sidecar = idx not in (getattr(self, '_clean_entries', None) or set())
+        loaded = load_entry(schedule, entry, prefer_sidecar=prefer_sidecar)
+        # Set before the load below: its UI rebuild reads the loaded entry.
+        self._loaded_entry, self._loaded_entry_bundle = entry, loaded
+        # ! Forget the previous entry's movement and planned path: 'Exec' must
+        # ! never replay a trajectory that was planned for another entry.
+        self.current_movement = None
+        self.current_movement_index = None
+        self.movement_start_state = None
+        self.target_ee_frames = None
+        self._reset_planned_arm_trajectory()
+        self._preview_joint_data = None
+        self.get_logger().info(
+            f"Loading schedule entry {idx} ({entry.action_id}, {entry.robot}) from {loaded.path}")
+        if self._entry_is_executable_here(entry):
+            self._finish_action_load(loaded.action, loaded.path, loaded)
+            return
+
+        self.get_logger().warn(
+            f"Entry {idx} belongs to {entry.robot}; loaded for display only -- "
+            f"Plan/Exec are disabled on {self._connected_robot().name}.")
+        print(f"[Schedule] entry {idx} {entry.action_id} "
+              f"({os.path.basename(loaded.path)}), {len(loaded.movements)} movements:")
+        for i, (mv, kind) in enumerate(zip(loaded.movements, loaded.kinds)):
+            print(f"  [{i}] {mv.movement_id} [{kind.value}] ctrl={mv.controller}")
+        if getattr(self, '_is_live_monitor', False):
+            self._selected_movement_idx = 0
+        self.reset_ui(self.goal_arm_pose)
+
+    def mark_entry_done(self) -> None:
+        """'Mark entry done' button: queue ``_mark_entry_done_task`` (it may wait for Confirm Exec).
+
+        The loaded entry is captured NOW, at the click. Refused while any queued
+        step / execution still runs or waits: one 'Confirm Exec' click would
+        otherwise answer both waits (and a double click would mark twice).
+        """
+        if self._refuse_while_tasks_run("'Mark entry done'"):
+            return
+        # ! Arm motions sent directly (not as tasks) are invisible to the guard
+        # ! above; marking done mid-motion would store a mid-motion 'live' belief.
+        # ! Checked here only, so a stuck flag cannot lock out every button.
+        hi = self.huskies[self.selected_robot_id].interface if getattr(self, 'huskies', None) else None
+        if hi is not None and any(bool(x) for x in getattr(hi, 'is_arm_executing', [])):
+            self.get_logger().warn("'Mark entry done' refused: an arm is still moving. "
+                                   "Wait until it stops.")
+            return
+        self.tasks.append(self._mark_entry_done_task(
+            getattr(self, '_loaded_entry', None), getattr(self, '_loaded_entry_bundle', None)))
+
+    def _mark_entry_done_task(self, entry: Optional[ScheduleEntry],
+                              loaded: Optional[LoadedEntry]) -> Generator[None, None, None]:
+        """Mark an entry done, store the acting robot's belief, save ``progress.json``.
+
+        - The connected robot's own entry: the belief is LIVE -- the mocap base
+          (or, not seen by mocap, the action's authored base) and the measured
+          arm joints. When the entry's action carries planned trajectories they
+          are saved to its ``.live-solved.json`` sidecar (the clean export is
+          never written).
+        - Another robot's entry: only after the operator's 'Confirm Exec'; the
+          belief is that robot's EXPORTED end state, recorded as 'assumed'.
+
+        Then the drawn other huskies move to their new beliefs, the entry's flags
+        are rescanned, the slider moves to the first pending entry and the panel
+        is rebuilt.
+
+        ! Runs on the monitor tick, which does not catch exceptions (one would
+        ! stop the monitor), so reading the belief and saving only log errors.
+
+        Args:
+            entry (ScheduleEntry | None): The entry loaded when the button was clicked.
+            loaded (LoadedEntry | None): Its loaded bundle.
+
+        Yields:
+            None: One yield per monitor tick while waiting for the operator.
+        """
+        progress = getattr(self, '_progress', None)
+        if entry is None or loaded is None or progress is None:
+            self.get_logger().warn("No schedule entry loaded; click 'Load entry' first.")
+            return
+        connected = self._connected_robot()
+        executable = self._entry_is_executable_here(entry)
+        if not executable:
+            # Clear a stale 'Cancel Exec' so it cannot skip this confirm.
+            self._servo_abort = False
+            confirmed = yield from world.wait_for_operator_confirm(
+                self,
+                f"Entry {entry.index} belongs to {entry.robot}. Confirm Exec to mark it "
+                f"done with the EXPORTED end state (belief 'assumed'); Cancel Exec to abort.")
+            # A 'Cancel Exec' used here must not cancel the next step's confirm.
+            self._servo_abort = False
+            if not confirmed:
+                return
+        try:
+            belief = (self._live_belief(loaded) if executable else
+                      belief_after(loaded.action, loaded.spec, entry.index, source=BELIEF_ASSUMED))
+        except Exception as e:
+            # Any failure here (a missing base frame, a malformed action) must not
+            # escape: the monitor tick does not catch task exceptions.
+            self.get_logger().error(
+                f"Entry {entry.index} NOT marked done: no end state for {entry.robot} ({e}).")
+            return
+
+        run_id = getattr(self, '_schedule_run_id', None) or new_run_id(connected.name)
+        progress.mark_done(entry, connected.name, run_id, belief)
+        # A new mark: 'Load entry' may prefer this entry's sidecar again.
+        self._clean_entries = getattr(self, '_clean_entries', set()) - {entry.index}
+        try:
+            path = save_progress(progress, self._problem_dir())
+            print(f"[Schedule] entry {entry.index} {entry.action_id} marked done by "
+                  f"{connected.name}; {entry.robot}'s belief <- {belief.source}. Saved {path}.")
+        except Exception as e:
+            self.get_logger().error(
+                f"Entry {entry.index} is marked done in this run only: progress.json could "
+                f"not be saved ({e}). Fix the problem, then 'Mark entry done' again.")
+        self._redraw_other_huskies_from_progress()
+        # * Keep what was planned for this entry, in its sidecar. (The writer
+        # * logs its own write errors.)
+        if executable and any(getattr(mv, 'trajectory', None) is not None
+                              for mv in loaded.action.movements):
+            written = self._write_action_halves_for(loaded.action.movements, tag='Mark done')
+            if written:
+                print(f"[Schedule] planned trajectories saved to "
+                      f"{', '.join(os.path.basename(w) for w in written)}.")
+        self._rescan_schedule_flags([entry.index])
+        self._selected_entry_idx = min(progress.current_index, len(self._schedule.entries) - 1)
+        self.reset_ui(self.goal_arm_pose)
+
+    def _live_belief(self, loaded: LoadedEntry) -> RobotBelief:
+        """The connected robot's belief right now, for marking its own entry done.
+
+        Args:
+            loaded (LoadedEntry): The loaded entry (its robot is the connected one).
+
+        Returns:
+            RobotBelief: Source 'live': the mocap base when mocap drives the base
+            and saw this robot in the last ``LIVE_BELIEF_MAX_AGE_S`` seconds, else
+            (with a warning when mocap should have seen it) the base the action
+            was authored at; the measured arm joints.
+        """
+        spec = loaded.spec
+        husky = self.huskies[self.selected_robot_id]
+        hi = husky.interface
+        if self._base_pose_is_tracked() and self._mocap_sees_husky(husky, LIVE_BELIEF_MAX_AGE_S):
+            base_pose = (hi.position, hi.rotation)
+        else:
+            base_pose = pose_from_frame(loaded.action.movements[-1].start_state.robot_base_frame)
+            if self._base_pose_is_tracked():
+                self.get_logger().warn(
+                    f"Mocap has not seen {spec.name} in the last {LIVE_BELIEF_MAX_AGE_S:.0f} s; "
+                    f"its belief stores the base {loaded.entry.action_id} was authored at.")
+        arms = [hi.arm_joint_pose[i] for i in range(spec.n_arms)]
+        return belief_from_live(spec, base_pose, arms, loaded.entry.index)
+
+    def _redraw_other_huskies_from_progress(self) -> None:
+        """Move the drawn not-connected huskies to where the progress now puts them.
+
+        Same rule as at start-up (``husky_world._seed_viz_huskies_from_progress``,
+        which reads the in-memory progress here): belief, or parked when released
+        or without a belief. A husky mocap sees right now keeps its live base.
+        Called after the progress changes, so the view matches the collision scene.
+        """
+        husky_by_name = getattr(self, 'husky_by_name', None)
+        if not husky_by_name:
+            return
+        tracked = frozenset(name for name, husky in husky_by_name.items()
+                            if self._mocap_sees_husky(husky))
+        world._seed_viz_huskies_from_progress(self, self._connected_robot(), mocap_tracked=tracked)
+
+    def reopen_entry(self, index: Optional[int] = None) -> None:
+        """'Reopen entry (reload clean)' button: put the loaded entry back to pending.
+
+        ``Progress.reopen`` undoes what marking it done recorded (its hold; the
+        acting robot's belief when it came from this entry), ``progress.json`` is
+        saved, and the entry is reloaded from its CLEAN export, so trajectories
+        planned before are dropped from memory. Its sidecar stays on disk: this
+        run keeps loading the clean export (``_clean_entries``) until the entry is
+        marked done again; after a restart the sidecar is preferred again.
+        Refused for an entry that is still pending, and while a queued step /
+        execution still runs.
+
+        ! When the button targets the LOADED entry but the entry slider shows a
+        ! different one, it first asks for 'Confirm Exec' naming both -- the
+        ! readout the operator is looking at is the slider's, not the loaded one.
+
+        Args:
+            index (int | None): Schedule index; None = the LOADED entry (the entry
+                slider's when nothing is loaded).
+        """
+        if self._refuse_while_tasks_run('Reopen entry'):
+            return
+        schedule = getattr(self, '_schedule', None)
+        progress = getattr(self, '_progress', None)
+        if schedule is None or progress is None:
+            self.get_logger().warn("No ActionSchedule loaded; nothing to reopen.")
+            return
+        loaded = getattr(self, '_loaded_entry', None)
+        if index is not None:
+            idx = int(index)
+        elif loaded is not None:
+            idx = loaded.index
+        else:
+            idx = self._selected_schedule_index()
+        entry = schedule.entry(idx)
+        if progress.status(idx) == STATUS_PENDING:
+            self.get_logger().warn(
+                f"Reopen refused: entry {idx} ({entry.action_id}) is still pending.")
+            return
+        slider_idx = self._selected_schedule_index()
+        if index is None and loaded is not None and slider_idx != idx:
+            # The operator may think they are reopening the slider's entry.
+            self.tasks.append(self._reopen_entry_after_confirm(idx, slider_idx))
+            return
+        self._reopen_entry_now(idx)
+
+    def _reopen_entry_after_confirm(self, idx: int, slider_idx: int) -> Generator[None, None, None]:
+        """Ask for 'Confirm Exec' before reopening the LOADED entry the slider does not show.
+
+        Args:
+            idx (int): The loaded entry, which will be reopened.
+            slider_idx (int): The entry the slider shows, named in the prompt.
+
+        Yields:
+            None: One yield per monitor tick while waiting.
+        """
+        entry = self._schedule.entry(idx)
+        self._servo_abort = False
+        try:
+            ok = yield from world.wait_for_operator_confirm(
+                self, f"Reopen the LOADED entry {idx} ({entry.action_id}), not the slider's entry "
+                      f"{slider_idx}? Its recorded end state is dropped. 'Confirm Exec' to reopen, "
+                      f"'Cancel Exec' to keep it done.", warn=True)
+        finally:
+            self._servo_abort = False
+        if ok:
+            self._reopen_entry_now(idx)
+
+    def _reopen_entry_now(self, idx: int) -> None:
+        """Put entry ``idx`` back to pending, save, and reload it from its clean export.
+
+        After ``Progress.reopen`` drops the acting robot's belief (when it came
+        from this entry), the belief of that robot's previous DONE entry is
+        restored (``recompute_belief``). Without it, a support robot that still
+        holds a bar would vanish from the other robots' collision scenes -- e.g.
+        reopening B3_HR leaves Alice holding B3 with no belief, and the exported
+        B3__R parks her.
+
+        Args:
+            idx (int): Schedule index of a done entry.
+        """
+        schedule, progress = self._schedule, self._progress
+        entry = schedule.entry(idx)
+        progress.reopen(entry)
+        if progress.belief(entry.robot) is None:
+            try:
+                previous = recompute_belief(progress, schedule, entry.robot)
+            except Exception as e:
+                previous = None
+                self.get_logger().warn(
+                    f"[Schedule] could not rebuild {entry.robot}'s belief from its previous "
+                    f"done entry ({e}); it falls back to the exported pose.")
+            if previous is not None:
+                progress.set_belief(entry.robot, previous)
+                print(f"[Schedule] {entry.robot}'s belief restored from entry {previous.after_entry}.")
+        try:
+            path = save_progress(progress, self._problem_dir())
+        except Exception as e:
+            self.get_logger().error(f"[Schedule] could not save progress.json after the reopen: {e}")
+            path = '(not saved)'
+        self._clean_entries = getattr(self, '_clean_entries', set()) | {idx}
+        print(f"[Schedule] entry {idx} {entry.action_id} reopened (pending). Saved {path}.")
+        sidecar = schedule.action_path(entry)
+        if sidecar != schedule.action_path(entry, prefer_sidecar=False):
+            print(f"[Schedule] {os.path.basename(sidecar)} stays on disk: this run loads the "
+                  f"clean export until the entry is marked done again; after a restart the "
+                  f"sidecar is preferred again.")
+        self._redraw_other_huskies_from_progress()
+        self._rescan_schedule_flags([idx])
+        self.load_schedule_entry(idx)
+
+    def rescan_schedule_status(self) -> None:
+        """'Rescan schedule status' button: re-read ``progress.json`` and every entry's flags.
+
+        Refused while a queued step / execution still runs.
+        """
+        if self._refuse_while_tasks_run('Rescan schedule status'):
+            return
+        schedule = getattr(self, '_schedule', None)
+        if schedule is None:
+            return
+        self._progress = load_progress(self._problem_dir(), schedule)
+        self._redraw_other_huskies_from_progress()
+        self._rescan_schedule_flags()
+        self._print_schedule_roster()
+        self.reset_ui(self.goal_arm_pose)
+
     def _load_available_joint_trajectories(self):
         """
         Load available JointTrajectory files from the hardcoded directory.
@@ -7350,8 +8621,28 @@ class HuskyMonitor(Node):
 
     # --- --- --- --- --- SETUP PYBULLET --- --- --- --- ---
     def start_pybullet(self):
-        # start pybullet simulator
-        pp.connect(use_gui=True, shadows=True, color=[0.9, 0.9, 1.0])
+        """Open the PyBullet window, with a mesh buffer big enough for every robot we draw.
+
+        ``pp.connect`` has no way to pass PyBullet's window options, so
+        ``pybullet.connect`` is wrapped for this one call only to append
+        ``--max_shape_capacity_in_bytes`` / ``--max_num_object_capacity`` (see
+        ``PYBULLET_GUI_MESH_BUFFER_MB``), then restored.
+        """
+        extra_options = (
+            f' --max_shape_capacity_in_bytes={int(self.PYBULLET_GUI_MESH_BUFFER_MB) * 1024 * 1024}'
+            f' --max_num_object_capacity={256 * 1024}')
+        pybullet_connect = p.connect
+
+        def _connect_with_bigger_buffer(method, options='', **kwargs):
+            """``pybullet.connect`` with the bigger window buffer appended to its options."""
+            return pybullet_connect(method, options=(options or '') + extra_options, **kwargs)
+
+        p.connect = _connect_with_bigger_buffer
+        try:
+            # start pybullet simulator
+            pp.connect(use_gui=True, shadows=True, color=[0.9, 0.9, 1.0])
+        finally:
+            p.connect = pybullet_connect
         # * PyBullet's debug GUI panel (the on-screen parameter sliders) is only
         # * used by the legacy PyBulletBackend control panel. When the Dear PyGui
         # * UI is enabled, all the controls live in the separate DPG window, so we
@@ -7394,7 +8685,8 @@ class HuskyMonitor(Node):
                         dual_arm=True, 
                         ee_types=ee_types,  # Use all types for dual arm
                         force_regenerate=False,
-                        punch_tool_offset=[self.get_punch_tool_offset(0), self.get_punch_tool_offset(1)]
+                        punch_tool_offset=[self.get_punch_tool_offset(0), self.get_punch_tool_offset(1)],
+                        name=first_husky.name,  # same (calibrated) URDF as the real robot
                     )
                     self.goal_model_single = None  # Not needed for dual arm
                     self.goal_model_dual = self.goal_model
@@ -7405,7 +8697,8 @@ class HuskyMonitor(Node):
                         dual_arm=False, 
                         ee_types=ee_types[:1] if ee_types else None,  # Take first type for single arm
                         force_regenerate=False,
-                        punch_tool_offset=self.get_punch_tool_offset(0)
+                        punch_tool_offset=self.get_punch_tool_offset(0),
+                        name=first_husky.name,  # same (calibrated) URDF as the real robot
                     )
                     self.goal_model_single = self.goal_model
                     self.goal_model_dual = None  # Not needed for single arm
@@ -7549,6 +8842,48 @@ class HuskyMonitor(Node):
             dpg.destroy_context()
             self._offset_dpg = None
 
+    def _build_schedule_section(self) -> None:
+        """Build the schedule panel, in place of the legacy file slider + 'Load BarAction'.
+
+        A header (connected robot, problem, progress), the 'Schedule entry'
+        slider with its '-> entry' readout, Prev / Next / Load / Mark done /
+        Reopen / Rescan, the 'Now:' line, and a collapsible list of entry rows
+        around the selected entry (yellow = selected, green = done, grey = another
+        robot's). ``_refresh_schedule_readouts`` keeps the texts current every
+        tick; the row colours change on the next rebuild (every load / mark /
+        reopen does one).
+        """
+        schedule = self._schedule
+        n = len(schedule.entries)
+        selected = max(0, min(int(self._selected_entry_idx), n - 1))
+        self.schedule_header_text = StatusText("  schedule", self._schedule_header_text())
+        # Never a single-value range: that segfaults pybullet's legacy slider
+        # (same guard as the Movement slider).
+        self.schedule_entry_slider = Slider(
+            "Schedule entry (idx)",
+            lambda v: setattr(self, '_selected_entry_idx', int(round(float(v)))),
+            0, max(1, n - 1), selected, integer=True,
+        )
+        self.schedule_entry_text = StatusText("  -> entry", "")
+        self.buttons.append(Button('Prev entry', self.select_prev_entry))
+        self.buttons.append(Button('Next entry', self.select_next_entry))
+        self.buttons.append(Button('Load entry', self.load_schedule_entry))
+        self.buttons.append(Button('Mark entry done', self.mark_entry_done))
+        self.buttons.append(Button('Reopen entry (reload clean)', self.reopen_entry))
+        self.buttons.append(Button('Rescan schedule status', self.rescan_schedule_status))
+        self.schedule_now_text = StatusText("  now", self._now_line())
+        lo, hi = visible_row_window(n, selected, SCHEDULE_ROWS_SHOWN)
+        self._schedule_row_window = (lo, hi)
+        self.schedule_rows = []
+        with Group(f"Schedule entries {lo}..{hi - 1} of {n}"):
+            for i in range(lo, hi):
+                is_selected = i == selected
+                color = row_color(self._progress.status(i),
+                                  executable=self._entry_is_executable_here(schedule.entry(i)),
+                                  selected=is_selected)
+                self.schedule_rows.append(StatusText(
+                    f"  entry {i}", self._schedule_row_text(i, selected=is_selected), color=color))
+
     def build_ui(self, target_conf=None):
         arm_slider_label = "arm id (0 only)" if self.get_active_arm_count() == 1 else "arm id (0:L,1:R)"
         arm_slider_max = 1   # integer 0/1; single-arm extra clips to 0 in update_selected_arm_id
@@ -7657,11 +8992,14 @@ class HuskyMonitor(Node):
                 width=620, height=780, show=preview_visible)
             # Planned joint values per waypoint. Distinct from the "Joint Live
             # Stream" window, which shows what the real robot is doing now.
-            # Labelled for 12 joints explicitly (not via _joint_stream_labels,
-            # which follows the ACTIVE arm count): a BarAction waypoint is
-            # always a 12-vec, left arm then right arm.
+            # One series per arm joint of the CONNECTED robot (n_arms * 6): a
+            # waypoint is a 12-vec on Cindy (left arm then right arm) and a
+            # 6-vec on a support robot. A row of another length is not drawn.
+            planned_labels = (PLANNED_JOINT_PLOT_LABELS
+                              if self._connected_robot().n_arms == 2
+                              else PLANNED_JOINT_PLOT_LABELS_SINGLE_ARM)
             self.preview_joint_plot = HistoryPlot(
-                "planned joint values", PLANNED_JOINT_PLOT_LABELS,
+                "planned joint values", planned_labels,
                 "joint value [deg]", parent="movement_preview_window",
                 group_size=6, history=4096)
             # max joint step [deg]; the continuity threshold is printed, not drawn.
@@ -7784,13 +9122,12 @@ class HuskyMonitor(Node):
             # (long) move; preview it with the traj viz slider, then click
             # 'Confirm Servo Exec' to run it (later iterations run unattended).
             self.buttons.append(Button('3) Servo to Mv Start (live loop)',
-                lambda: self.tasks.append(world.servo_to_movement_start_live(self))))
+                lambda: self.queue_servo_to_movement_start()))
             # Same servoing loop, but every iteration plans a bar-held
             # constrained transfer (Button 2b) instead of a free transit —
             # for when the bar stays mounted throughout the session.
             self.buttons.append(Button('3b) Servo to Mv Start (transfer loop)',
-                lambda: self.tasks.append(world.servo_to_movement_start_live(
-                    self, use_transfer=True))))
+                lambda: self.queue_servo_to_movement_start(use_transfer=True)))
 
             self.buttons.append(Button(
                 'Export Dual-Traj',
@@ -7845,28 +9182,43 @@ class HuskyMonitor(Node):
             # folder name under DESIGN_DATA_DIRECTORY, set in __init__.py).
             self.design_problem_text = StatusText(
                 "  problem", f"design problem: {os.path.basename(str(DESIGN_PROBLEM_NAME))}")
-            if not self.available_bar_actions and hasattr(self, '_load_available_bar_actions'):
-                self.available_bar_actions = self._load_available_bar_actions()
-            n_files = len(self.available_bar_actions)
-            # Reset on rebuild; slider only created when >=2 entries
-            # (a 1-entry slider has rangeMin == rangeMax which segfaults
-            # pybullet's GUI thread — same hazard as board_validation_state_slider).
-            self.bar_action_file_slider = None
-            if n_files > 1:
-                self.bar_action_file_slider = Slider(
-                    "BarAction file (idx)",
-                    lambda v: setattr(self, '_selected_action_file_idx', int(round(float(v)))),
-                    0, n_files - 1,
-                    int(self._selected_action_file_idx),
-                    integer=True,
-                )
-            # Spells out which file that index actually is, so you can see what
-            # 'Load BarAction' will open before clicking it. Created even when
-            # the slider was skipped (1 file), since naming that one file is
-            # exactly as useful. Kept current by _refresh_bar_action_readouts.
-            self.bar_action_file_text = StatusText("  -> file", "(none)")
-            self.buttons.append(Button('Load BarAction', self.load_bar_action_file))
-            n_movs = len(self._loaded_movements)
+            # * A problem with a complete ActionSchedule is driven entry by entry
+            # * (see _load_schedule_state); every other problem keeps the file list.
+            schedule_mode = getattr(self, '_schedule', None) is not None
+            if schedule_mode:
+                self.bar_action_file_slider = None
+                self.bar_action_file_text = None
+                self._build_schedule_section()
+            else:
+                if not self.available_bar_actions and hasattr(self, '_load_available_bar_actions'):
+                    self.available_bar_actions = self._load_available_bar_actions()
+                n_files = len(self.available_bar_actions)
+                # Reset on rebuild; slider only created when >=2 entries
+                # (a 1-entry slider has rangeMin == rangeMax which segfaults
+                # pybullet's GUI thread — same hazard as board_validation_state_slider).
+                self.bar_action_file_slider = None
+                if n_files > 1:
+                    self.bar_action_file_slider = Slider(
+                        "BarAction file (idx)",
+                        lambda v: setattr(self, '_selected_action_file_idx', int(round(float(v)))),
+                        0, n_files - 1,
+                        int(self._selected_action_file_idx),
+                        integer=True,
+                    )
+                # Spells out which file that index actually is, so you can see what
+                # 'Load BarAction' will open before clicking it. Created even when
+                # the slider was skipped (1 file), since naming that one file is
+                # exactly as useful. Kept current by _refresh_bar_action_readouts.
+                self.bar_action_file_text = StatusText("  -> file", "(none)")
+                self.buttons.append(Button('Load BarAction', self.load_bar_action_file))
+            # * Cindy's M1 / M2 tuning widgets only apply to the assembly robot's
+            # * own entries (schedule mode); the legacy list always shows them.
+            # Hidden ones are set to None, which every reader of them tolerates.
+            show_assembly_knobs = (not schedule_mode or knobs_for_assembly_robot(
+                getattr(self, '_loaded_entry', None), self._connected_robot()))
+            # The movements of the loaded action -- or of another robot's entry
+            # loaded for display only (see _shown_movements).
+            n_movs = len(self._shown_movements())
             # Always built, so the layout does not jump when a BarAction gets
             # loaded and 'Load Movement' always sits right under this slider.
             # Before a load it spans 0..1 with nothing behind it (the readout
@@ -7883,66 +9235,77 @@ class HuskyMonitor(Node):
             # Same idea for the movement index: show the movement_id it picks.
             self.bar_movement_text = StatusText("  -> movement", "(none)")
             self.buttons.append(Button('Load Movement', self.load_selected_movement))
-            # M1 derived-start carry anchor selector (see M1_HOME_ANCHOR_CHOICES).
-            # Fixed 0..3 range -> always >=2 entries, so the 1-entry segfault
-            # guard the sliders above need does not apply here.
-            self.m1_home_anchor_slider = Slider(
-                "M1 home anchor (0:all,1:horiz,2:vert,3:back)",
-                self._on_m1_anchor_slider,
-                0, len(M1_HOME_ANCHOR_CHOICES) - 1,
-                int(self._m1_home_anchor_idx),
-                integer=True,
-            )
-            # * Manual M1 start (human in the loop): adjust the anchor's bar
-            # * pose -- a see-through orange bar follows the sliders in
-            # * PyBullet -- then Confirm runs the collision-checked IK and adopts it.
-            # * Which base axes the two perpendicular shifts are depends on the
-            # * anchor (printed on Confirm; table in bar_holding_acc_manual.md).
-            self.m1_manual_slide_slider = Slider(
-                "M1 manual start: slide along bar (m)",
-                lambda v: self._on_m1_manual_slider('_m1_manual_slide_m', v),
-                -M1_MANUAL_SHIFT_RANGE_M, M1_MANUAL_SHIFT_RANGE_M, float(self._m1_manual_slide_m))
-            self.m1_manual_roll_slider = Slider(
-                "M1 manual start: roll about bar (deg)",
-                lambda v: self._on_m1_manual_slider('_m1_manual_roll_deg', v),
-                -M1_MANUAL_ROLL_RANGE_DEG, M1_MANUAL_ROLL_RANGE_DEG, float(self._m1_manual_roll_deg))
-            self.m1_manual_perp1_slider = Slider(
-                "M1 manual start: shift perp. 1 (m)",
-                lambda v: self._on_m1_manual_slider('_m1_manual_perp1_m', v),
-                -M1_MANUAL_SHIFT_RANGE_M, M1_MANUAL_SHIFT_RANGE_M, float(self._m1_manual_perp1_m))
-            self.m1_manual_perp2_slider = Slider(
-                "M1 manual start: shift perp. 2 (m)",
-                lambda v: self._on_m1_manual_slider('_m1_manual_perp2_m', v),
-                -M1_MANUAL_SHIFT_RANGE_M, M1_MANUAL_SHIFT_RANGE_M, float(self._m1_manual_perp2_m))
-            self.buttons.append(Button('M1: Confirm manual start pose (IK check)',
-                                       self.confirm_m1_manual_start))
+            if show_assembly_knobs:
+                # M1 derived-start carry anchor selector (see M1_HOME_ANCHOR_CHOICES).
+                # Fixed 0..3 range -> always >=2 entries, so the 1-entry segfault
+                # guard the sliders above need does not apply here.
+                self.m1_home_anchor_slider = Slider(
+                    "M1 home anchor (0:all,1:horiz,2:vert,3:back)",
+                    self._on_m1_anchor_slider,
+                    0, len(M1_HOME_ANCHOR_CHOICES) - 1,
+                    int(self._m1_home_anchor_idx),
+                    integer=True,
+                )
+                # * Manual M1 start (human in the loop): adjust the anchor's bar
+                # * pose -- a see-through orange bar follows the sliders in
+                # * PyBullet -- then Confirm runs the collision-checked IK and adopts it.
+                # * Which base axes the two perpendicular shifts are depends on the
+                # * anchor (printed on Confirm; table in bar_holding_acc_manual.md).
+                self.m1_manual_slide_slider = Slider(
+                    "M1 manual start: slide along bar (m)",
+                    lambda v: self._on_m1_manual_slider('_m1_manual_slide_m', v),
+                    -M1_MANUAL_SHIFT_RANGE_M, M1_MANUAL_SHIFT_RANGE_M, float(self._m1_manual_slide_m))
+                self.m1_manual_roll_slider = Slider(
+                    "M1 manual start: roll about bar (deg)",
+                    lambda v: self._on_m1_manual_slider('_m1_manual_roll_deg', v),
+                    -M1_MANUAL_ROLL_RANGE_DEG, M1_MANUAL_ROLL_RANGE_DEG, float(self._m1_manual_roll_deg))
+                self.m1_manual_perp1_slider = Slider(
+                    "M1 manual start: shift perp. 1 (m)",
+                    lambda v: self._on_m1_manual_slider('_m1_manual_perp1_m', v),
+                    -M1_MANUAL_SHIFT_RANGE_M, M1_MANUAL_SHIFT_RANGE_M, float(self._m1_manual_perp1_m))
+                self.m1_manual_perp2_slider = Slider(
+                    "M1 manual start: shift perp. 2 (m)",
+                    lambda v: self._on_m1_manual_slider('_m1_manual_perp2_m', v),
+                    -M1_MANUAL_SHIFT_RANGE_M, M1_MANUAL_SHIFT_RANGE_M, float(self._m1_manual_perp2_m))
+                self.buttons.append(Button('M1: Confirm manual start pose (IK check)',
+                                           self.confirm_m1_manual_start))
+            else:
+                self.m1_home_anchor_slider = None
+                self.m1_manual_slide_slider = None
+                self.m1_manual_roll_slider = None
+                self.m1_manual_perp1_slider = None
+                self.m1_manual_perp2_slider = None
             self.buttons.append(Button('Plan Movement', self.plan_selected_movement))
-            # * M1 in two clicks without the RRT: derive + show the start/goal
-            # confs, then adopt the start as M1's start / M0's goal.
-            self.buttons.append(Button('M1: Derive Start/Goal only (no RRT)',
-                                       self.derive_m1_endpoints_live))
-            self.buttons.append(Button('M1: Adopt derived start -> M0 goal',
-                                       self.adopt_m1_derived_start))
-            # * Ticked: adopting ALSO writes M0's and M1's configurations into
-            # * the BarAction file, so a session that exits can reload and plan
-            # * M0 without deriving M1 again. Only meaningful while the base
-            # * has not moved -- see _save_m1_m0_confs_to_bar_action_file.
-            # Seeded from the flag so a reset_ui rebuild keeps the tick.
-            self.m1_adopt_save_toggle = Toggle(
-                "Adopt also saves M0/M1 confs to file",
-                lambda v: setattr(self, '_m1_adopt_writes_file', bool(v)),
-                bool(self._m1_adopt_writes_file),
-            )
+            if show_assembly_knobs:
+                # * M1 in two clicks without the RRT: derive + show the start/goal
+                # confs, then adopt the start as M1's start / M0's goal.
+                self.buttons.append(Button('M1: Derive Start/Goal only (no RRT)',
+                                           self.derive_m1_endpoints_live))
+                self.buttons.append(Button('M1: Adopt derived start -> M0 goal',
+                                           self.adopt_m1_derived_start))
+                # * Ticked: adopting ALSO writes M0's and M1's configurations into
+                # * the BarAction file, so a session that exits can reload and plan
+                # * M0 without deriving M1 again. Only meaningful while the base
+                # * has not moved -- see _save_m1_m0_confs_to_bar_action_file.
+                # Seeded from the flag so a reset_ui rebuild keeps the tick.
+                self.m1_adopt_save_toggle = Toggle(
+                    "Adopt also saves M0/M1 confs to file",
+                    lambda v: setattr(self, '_m1_adopt_writes_file', bool(v)),
+                    bool(self._m1_adopt_writes_file),
+                )
+            else:
+                self.m1_adopt_save_toggle = None
             self.buttons.append(Button('Load Movement Trajectory', self.load_selected_movement_trajectory))
             # * Button 1: plan the M1->M2->M3->M0->M4 chain in one click,
             # export the mutated action as `<name>.live-solved.json` sidecar.
             self.buttons.append(Button('Plan Chain (Live)', self.plan_movement_chain_live))
-            # * Persist the live-planned M0 so the next session can load it
-            # instead of re-planning. Writes the whole action back to the file
-            # that is loaded (never to a clean Rhino export -- see the method).
-            self.buttons.append(Button(
-                'Save M0 Plan to BarAction file',
-                self.export_m0_plan_to_bar_action_file))
+            if show_assembly_knobs:
+                # * Persist the live-planned M0 so the next session can load it
+                # instead of re-planning. Writes the whole action back to the file
+                # that is loaded (never to a clean Rhino export -- see the method).
+                self.buttons.append(Button(
+                    'Save M0 Plan to BarAction file',
+                    self.export_m0_plan_to_bar_action_file))
             # * Reset the currently loaded movement to its authored ("clean")
             # state; downstream propagated start_confs may become stale, and
             # the next chain plan will re-populate them.
@@ -7966,6 +9329,13 @@ class HuskyMonitor(Node):
             self.buttons.append(Button(
                 'Exec Selected Mv Traj (auto)',
                 self.exec_selected_movement_traj))
+            # * Schedule mode: the ONE button that runs a step where no arm moves
+            # * (gripper / manual / scaffolding tool), labelled with what it does.
+            # * Only built for such a step of the connected robot's own entry.
+            step_label = (step_button_label(self.current_movement)
+                          if schedule_mode and self._entry_is_executable_here() else None)
+            if step_label is not None:
+                self.buttons.append(Button(step_label, self.exec_selected_movement_step))
 
             # ! Shared confirm/cancel pair (world.wait_for_operator_confirm).
             # ! These MUST live here, next to the execute button, not in the
@@ -7981,20 +9351,24 @@ class HuskyMonitor(Node):
             self.buttons.append(Button('Cancel Exec',
                 lambda: setattr(self, '_servo_abort', True)))
 
-            # M2 hands over from the rigid joint controller to compliance this
-            # far short of the assembled pose. Read live at execution time.
-            self.m2_split_slider = Slider(
-                "M2 rigid->compliant split (mm to goal)",
-                lambda v: setattr(self, 'm2_compliant_split_mm', float(v)),
-                0.0, M2_COMPLIANT_SPLIT_MM_MAX, float(self.m2_compliant_split_mm),
-            )
-            # 1 = run all of M2 rigid, never engaging compliance (the split
-            # slider above is then ignored).
-            self.m2_rigid_only_slider = Slider(
-                "M2 exec (0:rigid+compliant split, 1:rigid only)",
-                lambda v: setattr(self, 'm2_exec_rigid_only', bool(round(float(v)))),
-                0, 1, int(bool(self.m2_exec_rigid_only)), integer=True,
-            )
+            if show_assembly_knobs:
+                # M2 hands over from the rigid joint controller to compliance this
+                # far short of the assembled pose. Read live at execution time.
+                self.m2_split_slider = Slider(
+                    "M2 rigid->compliant split (mm to goal)",
+                    lambda v: setattr(self, 'm2_compliant_split_mm', float(v)),
+                    0.0, M2_COMPLIANT_SPLIT_MM_MAX, float(self.m2_compliant_split_mm),
+                )
+                # 1 = run all of M2 rigid, never engaging compliance (the split
+                # slider above is then ignored).
+                self.m2_rigid_only_slider = Slider(
+                    "M2 exec (0:rigid+compliant split, 1:rigid only)",
+                    lambda v: setattr(self, 'm2_exec_rigid_only', bool(round(float(v)))),
+                    0, 1, int(bool(self.m2_exec_rigid_only)), integer=True,
+                )
+            else:
+                self.m2_split_slider = None
+                self.m2_rigid_only_slider = None
             # 0 disables the dense swept collision re-check that gates M0/M4
             # plans. Faster planning, unverified paths.
             self.fm_swept_validation_slider = Slider(
@@ -8006,7 +9380,7 @@ class HuskyMonitor(Node):
 
             self.buttons.append(Button(
                 'Move Arms to Movement Start (offline target)',
-                lambda: world.move_arms_to_movement_start(self)))
+                self.move_arms_to_movement_start))
 
         if self.BAR_ACTION_MOCAP_ACCURACY_TEST:
             self.buttons.append(Button('Record markerset take', self.record_bar_holding_marker_take))
@@ -8261,6 +9635,11 @@ class HuskyMonitor(Node):
         with self._mocap_cache_lock:
             self._mocap_rigidbody_cache[name] = (pos, rot)
             self._mocap_rigidbody_id_from_name[name] = int(id)
+            # ! An all-zero position is how an untracked body comes through (NatNet
+            # ! calls this before it parses tracking_valid), so it must not count
+            # ! as a fresh sighting.
+            if np.any(pos):
+                self._mocap_rigidbody_stamp[name] = time.monotonic()
     
     def receive_mocap_frame(self, data):
         ts = data['timestamp']
@@ -8274,8 +9653,14 @@ class HuskyMonitor(Node):
         if self.mocap_experiment_recording is not None:
             self._record_raw_mocap_snapshot(ts, raw_snapshot, rigid_body_ids)
 
-        for h in self.huskies:
+        for i, h in enumerate(self.huskies):
             if h.name not in raw_snapshot:
+                continue
+            # ! The cache is never cleared: an OTHER (not connected) husky follows
+            # ! mocap only while it is really seen, else it stays where
+            # ! progress.json put it -- the same freshness rule its collision
+            # ! obstacle uses, so the drawing matches the planning scene.
+            if i != self.selected_robot_id and not self._mocap_sees_husky(h):
                 continue
             world_from_mocap = raw_snapshot[h.name]
             # apply calibrated base transformation here
@@ -8345,7 +9730,13 @@ class HuskyMonitor(Node):
         # update robot state
         for i, h in enumerate(self.huskies):
             hi = h.interface
-            if self._base_pose_is_tracked():
+            if i != self.selected_robot_id:
+                # * A husky this run does not drive (viz-only): always drawn where
+                # * mocap puts it -- until mocap sees it, at its progress.json
+                # * belief or else parked far away (husky_world seeds both). It
+                # * never follows or changes the goal base pose.
+                h.object.set_pose((hi.position, hi.rotation), hi.arm_joint_pose)
+            elif self._base_pose_is_tracked():
                 # mocap drives the husky base pose
                 h.object.set_pose((hi.position, hi.rotation), hi.arm_joint_pose)
                 # set the goal pose of base since we are teleoperating the base
@@ -8403,8 +9794,12 @@ class HuskyMonitor(Node):
             self._redraw_assembled_bar_line()
             if hasattr(self, 'm1_adopt_save_toggle') and self.m1_adopt_save_toggle:
                 self.m1_adopt_save_toggle.update()
+            sld = getattr(self, 'schedule_entry_slider', None)
+            if sld:
+                sld.update()
             # Display-only, so it is refreshed here rather than polled.
             self._refresh_bar_action_readouts()
+            self._refresh_schedule_readouts()
             if hasattr(self, 'm2_split_slider') and self.m2_split_slider:
                 self.m2_split_slider.update()
             if hasattr(self, 'm2_rigid_only_slider') and self.m2_rigid_only_slider:
@@ -8497,10 +9892,16 @@ class HuskyMonitor(Node):
                         
         # run tasks
         for t in self.tasks:
+            # Remember which task is running: code inside it may call a method
+            # that refuses while tasks run (e.g. a confirmed reopen reloads its
+            # entry), and that task must not count as "another" task.
+            self._running_task = t
             try:
                next(t)
             except StopIteration:
                 self.tasks.remove(t)
+            finally:
+                self._running_task = None
                 
         world.update(self)
 

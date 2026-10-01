@@ -121,11 +121,19 @@ class UIBackend:
     def add_separator(self, label: str) -> int:
         raise NotImplementedError
 
-    def add_status_text(self, label: str, default: str = "") -> int:
+    def add_status_text(self, label: str, default: str = "",
+                        color: Optional[Sequence[int]] = None) -> int:
         """Add a read-only one-line text display, updated via `set_value`.
 
         Used to spell out what a neighbouring numeric widget currently means
         (an index slider showing the file name it selects, say).
+
+        Args:
+            label (str): Widget label.
+            default (str): The first text shown.
+            color (Sequence[int] | None): RGBA 0-255 text colour; None = the
+                backend's own readout colour. Backends that cannot colour text
+                ignore it.
         """
         raise NotImplementedError
 
@@ -266,7 +274,7 @@ class PyBulletBackend(UIBackend):
         # PyBullet debug params can't be individually shown/hidden; nothing to do.
         return
 
-    def add_status_text(self, label, default=""):
+    def add_status_text(self, label, default="", color=None):
         # PyBullet's debug pane holds parameters, not free text, so there is
         # nowhere to draw this. The handle is still real, which keeps the
         # caller's set_value() calls harmless.
@@ -915,11 +923,13 @@ class DearPyGuiBackend(UIBackend):
         if tag is not None and self.dpg.does_item_exist(tag):
             self.dpg.configure_item(tag, show=bool(visible))
 
-    def add_status_text(self, label, default=""):
+    def add_status_text(self, label, default="", color=None):
         dpg = self.dpg
-        # Greenish so it reads as a derived readout rather than a control.
+        # Greenish by default so it reads as a derived readout rather than a
+        # control; a caller colour (e.g. the schedule rows' done / other-robot
+        # colours) replaces it.
         tag = dpg.add_text(default, parent=self._current_parent,
-                           color=(150, 200, 150, 255))
+                           color=tuple(color) if color is not None else (150, 200, 150, 255))
         h = self._new_handle()
         self._handles[h] = {"kind": "status_text", "tag": tag}
         return h

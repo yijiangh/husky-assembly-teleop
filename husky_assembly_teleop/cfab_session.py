@@ -19,7 +19,9 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-from typing import Optional, Tuple
+from contextlib import contextmanager
+from types import MethodType
+from typing import Iterator, Optional, Tuple
 
 import numpy as np
 import pybullet_planning as pp
@@ -27,8 +29,13 @@ import pybullet_planning as pp
 from compas.data import json_load
 from compas.datastructures import Mesh
 from compas.geometry import Frame
-from compas_fab.backends import PyBulletClient, PyBulletPlanner
-from compas_fab.robots import RigidBody, RobotCell, RobotCellState, RobotSemantics
+from compas_fab.backends import (
+    BackendError, PyBulletClient, PyBulletPlanner,
+)
+from compas_fab.robots import (
+    FrameWaypoints, JointTrajectory, RigidBody, RigidBodyState, RobotCell, RobotCellState,
+    RobotSemantics, TargetMode,
+)
 from compas_robots import RobotModel, ToolModel
 from compas_robots.resources import LocalPackageMeshLoader
 
@@ -37,27 +44,19 @@ from compas_robots.resources import LocalPackageMeshLoader
 import rs_data_structure  # noqa: F401
 
 from husky_assembly_teleop import DATA_DIRECTORY, DESIGN_DATA_DIRECTORY
+from husky_assembly_teleop.bar_action_io import find_bar_body
+from husky_assembly_teleop.robot_registry import ROBOTS, robot_by_name
 
-# Robot description files for the two rig layouts. The dual-arm paths used to
-# come from husky_assembly_tamp's run.py, but that module no longer resolves
-# after the submodule prune, so this repo's own copies are the source now.
-HUSKY_DUAL_URDF_PATH = os.path.join(
-    DATA_DIRECTORY,
-    'husky_urdf/mt_husky_dual_ur5_e_moveit_config/urdf/'
-    'husky_dual_ur5_e_no_base_joint_All_Calibrated.urdf')
-HUSKY_DUAL_SRDF_PATH = os.path.join(
-    DATA_DIRECTORY,
-    'husky_urdf/mt_husky_dual_ur5_e_moveit_config/config/dual_arm_husky.srdf')
-# Per-robot calibrated single-arm files, keyed by robot name (see
-# husky_world.init ROBOT_CONFIGS: Alice=0804, Belle=0805).
-HUSKY_SINGLE_URDF_PATHS = {
-    '0804': os.path.join(DATA_DIRECTORY, 'husky_urdf/mt_husky_moveit_config/urdf/husky_ur5_e_no_base_joint_Alice_Calibrated.urdf'),
-    '0805': os.path.join(DATA_DIRECTORY, 'husky_urdf/mt_husky_moveit_config/urdf/husky_ur5_e_no_base_joint_Belle_Calibrated.urdf'),
-}
-HUSKY_SINGLE_SRDF_PATHS = {
-    '0804': os.path.join(DATA_DIRECTORY, 'husky_urdf/mt_husky_moveit_config/config/husky.srdf'),
-    '0805': os.path.join(DATA_DIRECTORY, 'husky_urdf/mt_husky_moveit_config/config/belle.srdf'),
-}
+# * Robot description files now come from the robot registry (one RobotSpec per
+# * husky). The module-level names below are kept as aliases so every existing
+# * `from cfab_session import HUSKY_DUAL_URDF_PATH` keeps working.
+HUSKY_DUAL_URDF_PATH = robot_by_name('Cindy').urdf_path
+HUSKY_DUAL_SRDF_PATH = robot_by_name('Cindy').srdf_path
+# Per-robot calibrated single-arm files, keyed by serial (Alice=0804, Belle=0805).
+HUSKY_SINGLE_URDF_PATHS = {spec.serial: spec.urdf_path
+                           for spec in ROBOTS.values() if not spec.dual_arm}
+HUSKY_SINGLE_SRDF_PATHS = {spec.serial: spec.srdf_path
+                           for spec in ROBOTS.values() if not spec.dual_arm}
 # ToolModels exported once from the design-study RobotCell.json (meshes are
 # embedded in the JSON). Re-export if the Rhino tool geometry changes.
 TOOL_MODEL_DIR = os.path.join(DATA_DIRECTORY, 'tool_models')
@@ -70,9 +69,21 @@ SINGLE_ARM_GROUP = 'base_arm_manipulator'
 # --- Ground / walkable-ground collision geometry ---------------------------
 # Cell rigid-body name for the floor. The `obstacle_` prefix (matching the
 # Rhino-exported `obstacle_env*` bodies) deliberately keeps it OUT of
-# husky_monitor.BUILT_ASSEMBLY_RB_PREFIXES, so the mocap-accuracy hide never
+# bar_action_io.BUILT_ASSEMBLY_RB_PREFIXES, so the mocap-accuracy hide never
 # blanks the ground: it must stay collision-checked in every BarAction.
 GROUND_RIGID_BODY_NAME = 'obstacle_ground'
+# Robot links allowed to touch the ground (GROUND_RIGID_BODY_NAME). The floor is
+# modelled honestly at z=0, and the husky's wheels rest exactly on it: the URDF
+# puts base_footprint->base_link at 0.13228 m and base_link->wheel at 0.03282 m,
+# so each wheel centre is at 0.1651 m -- exactly the wheel radius. The wheels are
+# therefore permanently tangent to the floor, while the chassis clears it by
+# 132 mm. Without this allowed-collision every configuration would read as
+# colliding. Only the four wheels are exempt, so an arm or tool dipping below
+# the floor is still caught. (Same link names on the single- and dual-arm URDFs.)
+GROUND_TOUCH_LINKS = (
+    'front_left_wheel_link', 'front_right_wheel_link',
+    'rear_left_wheel_link', 'rear_right_wheel_link',
+)
 # The floor sits at z=0 (faithful to reality) and is extruded DOWNWARD by this
 # much. A flat, zero-thickness polygon would collapse into a zero-volume convex
 # hull in PyBullet (compas_fab adds rigid bodies with concavity=False), which is
@@ -198,6 +209,52 @@ def build_ground_rigid_body(problem_name):
     return RigidBody(visual_meshes=slabs, collision_meshes=slabs, native_scale=1.0)
 
 
+def inject_ground_rigid_body_state(cell: RobotCell, state: RobotCellState) -> None:
+    """Give a cell state the ground body, with the wheels-only allowance.
+
+    ``CfabSession`` adds the floor (``GROUND_RIGID_BODY_NAME``) to the design
+    cell, and compas_fab asserts that a cell and any state pushed to it hold
+    exactly the same rigid-body ids -- so every freshly parsed movement state
+    needs a matching entry or ``set_robot_cell_state`` raises. The floor is
+    stationary at the world origin, and lists the four wheel links in
+    ``touch_links`` so resting on it is not reported as a collision (see
+    GROUND_TOUCH_LINKS); anything else that reaches the floor still is.
+
+    ! The OTHER robots (the ``ObstacleRobot<Name>`` tools) stand on the same
+    ! floor, so their wheels touch it too. Both are static, so that contact would
+    ! veto every plan while no arm motion could change it; the ground lists them
+    ! in ``touch_bodies`` (compas_fab then skips the tool <-> floor check).
+
+    Args:
+        cell (RobotCell): The session's cell (``CfabSession.robot_cell``).
+        state (RobotCellState): State to edit in place. Left unchanged when the
+            cell has no ground body. When the state already carries a ground
+            entry (e.g. a sidecar written by an older monitor), the wheel links
+            and obstacle robots are ADDED to its allowances instead.
+    """
+    if state is None or cell is None:
+        return
+    if GROUND_RIGID_BODY_NAME not in (cell.rigid_body_models or {}):
+        return
+    rb_states = getattr(state, 'rigid_body_states', None)
+    if rb_states is None:
+        return
+    obstacle_tools = [spec.obstacle_tool_name for spec in ROBOTS.values()
+                      if spec.obstacle_tool_name in (cell.tool_models or {})]
+    ground = rb_states.get(GROUND_RIGID_BODY_NAME)
+    if ground is not None:
+        # An older file may carry a ground without the obstacle-robot allowance;
+        # without it a robot standing on the floor vetoes every plan.
+        ground.touch_links = sorted(set(ground.touch_links or []) | set(GROUND_TOUCH_LINKS))
+        ground.touch_bodies = sorted(set(ground.touch_bodies or []) | set(obstacle_tools))
+        return
+    rb_states[GROUND_RIGID_BODY_NAME] = RigidBodyState(
+        frame=Frame.worldXY(),
+        touch_links=list(GROUND_TOUCH_LINKS),
+        touch_bodies=obstacle_tools,
+    )
+
+
 class CfabSession:
     """Per-problem cfab planner session.
 
@@ -208,6 +265,7 @@ class CfabSession:
     """
 
     def __init__(self, problem_name: str, *,
+                 cell_filename: str = "RobotCell.json",
                  connection_type: str = "direct",
                  enable_debug_gui: bool = False,
                  existing_client_id: int | None = None,
@@ -215,16 +273,22 @@ class CfabSession:
         """Open a cfab planner session.
 
         Args:
-            problem_name: Design-study problem folder holding RobotCell.json.
+            problem_name (str): Design-study problem folder holding the cell file.
                 Ignored (may be None) when ``robot_cell`` is given directly.
-            connection_type: PyBullet connection type ("direct" or "gui").
-            enable_debug_gui: Show the PyBullet sidebar in the cfab GUI window.
-            existing_client_id: Adopt the monitor's already-open PyBullet
-                connection instead of opening a new one.
-            robot_cell: Pre-built RobotCell (e.g. from
-                ``build_default_robot_cell``); skips the RobotCell.json load.
+            cell_filename (str): Which robot's cell to load from the problem
+                folder: ``'RobotCell.json'`` (Cindy) or ``'RobotCell_<Name>.json'``
+                (a support robot, see ``RobotSpec.cell_file``).
+            connection_type (str): PyBullet connection type ("direct" or "gui").
+            enable_debug_gui (bool): Show the PyBullet sidebar in the cfab GUI window.
+            existing_client_id (int | None): Adopt the monitor's already-open
+                PyBullet connection instead of opening a new one.
+            robot_cell (RobotCell | None): Pre-built RobotCell (e.g. from
+                ``build_default_robot_cell``); skips the cell file load.
         """
         self.problem_name = problem_name if robot_cell is None else None
+        # None for a caller-supplied cell, so a later design-problem load always
+        # replaces it (the monitor compares problem_name AND cell_filename).
+        self.cell_filename = cell_filename if robot_cell is None else None
         self._owns_client_connection = existing_client_id is None
         # ``enable_debug_gui`` toggles ``pybullet.COV_ENABLE_GUI``. Off by
         # default (matches compas_fab); set to True to get the sidebar +
@@ -245,7 +309,7 @@ class CfabSession:
             self.planner = PyBulletPlanner(self.client)
             if robot_cell is None:
                 robot_cell_path = os.path.join(
-                    DESIGN_DATA_DIRECTORY, problem_name, "RobotCell.json"
+                    DESIGN_DATA_DIRECTORY, problem_name, cell_filename
                 )
                 robot_cell = json_load(robot_cell_path)
                 # The Rhino-exported cell has no floor, so the planners would
@@ -255,9 +319,9 @@ class CfabSession:
                 # startup default rig) carries no design geometry and is left
                 # alone. Every state pushed to this planner must then carry a
                 # matching RigidBodyState (compas_fab asserts the cell and the
-                # state hold exactly the same rigid-body ids); the monitor's
-                # `_inject_ground_rigid_body_state` does that, and also grants
-                # the wheels-only allowed collision.
+                # state hold exactly the same rigid-body ids);
+                # `inject_ground_rigid_body_state` below does that, and also
+                # grants the wheels-only allowed collision.
                 robot_cell.rigid_body_models[GROUND_RIGID_BODY_NAME] = (
                     build_ground_rigid_body(problem_name))
             self.planner.set_robot_cell(robot_cell)
@@ -521,3 +585,213 @@ def plan_free_motion(planner, start_state: RobotCellState, goal_conf, *,
         info['failure_reason'] = 'birrt_failed'
         return None, info
     return [np.asarray(q, dtype=float) for q in raw_path], info
+
+
+# ============================================================================
+# * compas_fab forward-kinematics workaround (used by plan_linear_motion only)
+# ============================================================================
+# ! The pinned compas_fab (external/compas_fab @ 995122d) has a bug in
+# ! PyBulletForwardKinematics.forward_kinematics
+# ! (backends/pybullet/backend_features/pybullet_forward_kinematics.py:99-102):
+# ! set_robot_cell_state already places the robot base at robot_base_frame in
+# ! PyBullet, so the link pose PyBullet reports is in WORLD coordinates -- yet the
+# ! function multiplies it by robot_base_frame a second time. With the robot
+# ! anywhere but the world origin (always, with mocap bases) the "start pose" that
+# ! plan_cartesian_motion interpolates from is metres off and the plan fails.
+# ? TODO: drop this workaround once compas_fab is fixed upstream and the pin bumped.
+
+def _forward_kinematics_world(planner, robot_cell_state: RobotCellState, target_mode,
+                              group: Optional[str] = None,
+                              native_scale: Optional[float] = None,
+                              options: Optional[dict] = None) -> Frame:
+    """compas_fab's forward_kinematics without the second robot-base transform.
+
+    Same steps and signature as
+    ``PyBulletForwardKinematics.forward_kinematics``, minus the final
+    multiplication by ``robot_base_frame`` (the PyBullet link pose is already in
+    the world frame).
+
+    Args:
+        planner: The PyBulletPlanner this is bound to.
+        robot_cell_state (RobotCellState): State to evaluate.
+        target_mode (TargetMode): Which frame to return (ROBOT = the group's flange).
+        group (str, optional): Planning group; defaults to the cell's main group.
+        native_scale (float, optional): Unit scale, as in compas_fab.
+        options (dict, optional): Unused, kept for the same signature.
+
+    Returns:
+        Frame: The requested frame in world coordinates.
+    """
+    client = planner.client
+    robot_cell = client.robot_cell
+    group = group or robot_cell.main_group_name
+    robot_cell_state.assert_target_mode_match(target_mode, group)
+    planner.set_robot_cell_state(robot_cell_state)
+    link_name = robot_cell.get_end_effector_link_name(group)
+    pcf_frame = client._get_link_frame(client.robot_link_puids[link_name], client.robot_puid)
+    target_frame = robot_cell.pcf_to_target_frames(robot_cell_state, pcf_frame, target_mode, group)
+    if native_scale:
+        target_frame.scale(1 / native_scale)
+    return target_frame
+
+
+@contextmanager
+def _world_frame_forward_kinematics(planner) -> Iterator[None]:
+    """Use the corrected forward kinematics on ONE planner while the block runs.
+
+    The fix is set on the planner instance only (an instance attribute hides the
+    class method), and removed again on exit, so no other planner or later call
+    in the process sees a changed compas_fab.
+
+    Args:
+        planner: The PyBulletPlanner to patch for the duration of the block.
+
+    Yields:
+        None.
+    """
+    had_own = 'forward_kinematics' in vars(planner)
+    previous = vars(planner).get('forward_kinematics')
+    planner.forward_kinematics = MethodType(_forward_kinematics_world, planner)
+    try:
+        yield
+    finally:
+        if had_own:
+            planner.forward_kinematics = previous
+        else:
+            del planner.forward_kinematics
+
+
+def plan_linear_motion(planner, start_state: RobotCellState, target_frame: Frame, *,
+                       group: str, max_step_distance: float = 0.005,
+                       max_step_angle: float = 0.05, max_jump_revolute: float = 0.35,
+                       check_collision: bool = True,
+                       verbose: bool = False) -> Optional[JointTrajectory]:
+    """Straight-line tool0 motion for ONE planning group, with cfab collision checks.
+
+    Used for a support robot's linear approach / retreat (SingleArmLinearMovement).
+    The flange (tool0 of ``group``) moves on a straight line from where the
+    start configuration puts it to ``target_frame``; each interpolated pose is
+    solved by IK seeded from the previous point.
+
+    Args:
+        planner: compas_fab PyBulletPlanner with the robot cell loaded.
+        start_state (RobotCellState): Start state; its ``robot_configuration``
+            (full configuration) is where the motion starts.
+        target_frame (Frame): World-frame goal of the group's flange (tool0).
+        group (str): Planning group, e.g. ``'manipulator'``.
+        max_step_distance (float): Max flange travel between two points, meters.
+        max_step_angle (float): Max flange rotation between two points, radians.
+        max_jump_revolute (float): Max joint change between two points, radians;
+            a bigger jump is subdivided, and fails the plan when it cannot be.
+        check_collision (bool): Collision-check the start and every point.
+        verbose (bool): Print compas_fab's step-by-step planning log.
+
+    Returns:
+        JointTrajectory | None: The group's joints per point, ``points[0]``
+        being the start configuration; None when planning failed (the reason
+        is printed).
+    """
+    # ! Equal tolerances on purpose: compas_fab's plan_cartesian_motion_frame_waypoints
+    # ! builds every interpolated FrameTarget with
+    # ! tolerance_position=waypoints.tolerance_ORIENTATION (upstream bug), so a
+    # ! different position tolerance here would be silently ignored.
+    waypoints = FrameWaypoints([target_frame], target_mode=TargetMode.ROBOT,
+                               tolerance_position=1e-3, tolerance_orientation=1e-3)
+    options = {
+        'max_step_distance': float(max_step_distance),
+        'max_step_angle': float(max_step_angle),
+        'max_jump_revolute': float(max_jump_revolute),
+        'check_collision': bool(check_collision),
+        'verbose': bool(verbose),
+        # * Passed on to every step's IK. compas_fab's default of 20 descent
+        # * iterations is too few for the 1 mm / 1 mrad tolerance: on B3__H's
+        # * approach the IK gave up a quarter of the way along the line.
+        'max_descend_iterations': 200,
+    }
+    try:
+        # * The planner reads the start pose through forward kinematics; use the
+        # * corrected one (see _world_frame_forward_kinematics above).
+        with _world_frame_forward_kinematics(planner):
+            return planner.plan_cartesian_motion(waypoints, start_state, group, options=options)
+    except (BackendError, ValueError) as e:
+        # BackendError covers every compas_fab planning / kinematics / collision
+        # error (MotionPlanningError, PlanningGroupNotSupported, KinematicsError);
+        # ValueError covers a start state without the group's joints.
+        # e.message, not str(e): compas_fab rewrites the message of a joint-jump
+        # error after creating it, and only .message carries the rewrite.
+        print(f"[linear plan] group {group!r} FAILED ({type(e).__name__}): "
+              f"{getattr(e, 'message', None) or e}")
+        return None
+
+
+def apply_obstacle_robot_beliefs(state: RobotCellState, robot_cell: RobotCell,
+                                 active_robot: str, beliefs: dict,
+                                 holding_bars: Optional[dict] = None) -> None:
+    """Pose the OTHER robots' obstacle tools in a cell state from what we believe.
+
+    Each robot appears in the other robots' cells as a frozen tool
+    ``ObstacleRobot<Name>``: its ``frame`` is the robot base in the world and its
+    ``configuration`` the arm joints. The exporter writes one guess per state;
+    the monitor knows better (live mocap, or the end state of the entry that
+    robot last finished), so this overwrites it. Mirrors the Rhino side's
+    ``configure_robot_obstacle`` and ``whitelist_frozen_contact``
+    (``bar_joint_rhino_design_workflow/scripts/core/robot_obstacles.py``).
+
+    ! The configuration is merged BY JOINT NAME into the tool's zero
+    ! configuration, never by position: Cindy's URDF declares her right arm
+    ! first, while the beliefs list the left arm first.
+
+    Args:
+        state (RobotCellState): The state to edit in place.
+        robot_cell (RobotCell): The cell the state belongs to (for the obstacle
+            tools' zero configurations).
+        active_robot (str): The connected robot's short name; its own obstacle
+            tool (never in its own cell) and its own hold are skipped.
+        beliefs (dict): ``{obstacle_tool_name: (Frame, Configuration | None)}``,
+            e.g. from ``progress_io.obstacle_tool_states``. A None configuration
+            keeps the state's joints and only moves the base. Tools the state
+            does not carry are ignored.
+        holding_bars (dict | None): ``{robot_name: bar_id}`` for support robots
+            clamped onto a bar right now. That robot's obstacle tool is allowed to
+            touch the bar (added to the bar's ``touch_bodies``) -- the contact is
+            real by construction, and both are static, so it would otherwise
+            veto every plan.
+    """
+    own_tool = robot_by_name(active_robot).obstacle_tool_name
+    tool_states = state.tool_states or {}
+    for tool_name, (frame, configuration) in beliefs.items():
+        if tool_name == own_tool or tool_name not in tool_states:
+            continue
+        tool_state = tool_states[tool_name]
+        tool_state.frame = frame.copy()
+        if configuration is None:
+            continue
+        merged = robot_cell.tool_models[tool_name].zero_configuration()
+        values = configuration.joint_dict
+        matched = 0
+        for name in merged.joint_names:
+            if name in values:
+                merged[name] = float(values[name])
+                matched += 1
+        if matched < len(values):
+            # ! Some believed joints have no counterpart in the tool: those stay at
+            # ! zero, so the obstacle robot is drawn and collision-checked wrongly.
+            print(f"[obstacle robots] WARNING: only {matched}/{len(values)} believed joints "
+                  f"of {tool_name!r} match the tool's joint names; the rest stay at zero.")
+        tool_state.configuration = merged
+
+    rb_states = state.rigid_body_states or {}
+    for robot, bar_id in (holding_bars or {}).items():
+        if robot == active_robot:
+            continue
+        tool_name = robot_by_name(robot).obstacle_tool_name
+        bar_name = find_bar_body(rb_states, bar_id)
+        if bar_name is None:
+            # ! Say so: without the entry the frozen contact stays forbidden.
+            print(f"[obstacle robots] NOTE: {robot} holds bar {bar_id}, but this state "
+                  f"has no rigid body for it to whitelist {tool_name!r} on.")
+            continue
+        rb = rb_states[bar_name]
+        existing = list(rb.touch_bodies or [])
+        if tool_name not in existing:
+            rb.touch_bodies = sorted(set(existing) | {tool_name})

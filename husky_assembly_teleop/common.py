@@ -6,11 +6,13 @@ import os
 import numpy as np
 import pybullet as p
 import json
+from typing import Optional
 
 import pybullet_planning as pp
 
 from husky_assembly_teleop import DATA_DIRECTORY, DESIGN_DATA_DIRECTORY
 from husky_assembly_teleop.husky_robot import HuskyRobotInterface
+from husky_assembly_teleop.robot_registry import robot_by_name, robot_by_namespace
 from husky_assembly_teleop.utils import UR5E_JOINT_NAMES
 
 # --- --- UI BACKEND HOOK --- ---
@@ -57,24 +59,35 @@ HUSKY_DUAL_UR5e_JOINT_NAMES = [["left_ur_arm_shoulder_pan_joint",
 # the pp scene uses simple gripper geometry instead of the per-problem
 # tool URDFs.
 
-def load_robot(dual_arm=False):
+def load_robot(dual_arm: bool = False, name: Optional[str] = None) -> int:
     """
     Load robot URDF without end effectors.
-    
+
     Args:
-        dual_arm: Whether this is a dual-arm robot
-        
+        dual_arm (bool): Whether this is a dual-arm robot. Only used when
+            ``name`` is not given or is not in the robot registry.
+        name (str | None): The husky's ROS namespace (e.g. ``'/a200_0805'``).
+            When given, that robot's own calibrated URDF is taken from the robot
+            registry. Without it (or for a namespace the registry does not know,
+            with a warning), the dual-arm husky loads Cindy's URDF and a
+            single-arm husky Alice's.
+
     Returns:
-        robot: PyBullet robot body ID
+        int: PyBullet robot body ID
     """
-    robot_urdf = None
     print('loading robot urdf from:', DATA_DIRECTORY)
-    if dual_arm:
-        robot_urdf = os.path.join(DATA_DIRECTORY,'husky_urdf/mt_husky_dual_ur5_e_moveit_config/urdf/husky_dual_ur5_e_no_base_joint_All_Calibrated.urdf')
-    else:
-        # INSERT_YOUR_CODE
-        print("WARNING: Loading uncalibrated URDF for the single arm Husky robot.")
-        robot_urdf = os.path.join(DATA_DIRECTORY,'husky_urdf/mt_husky_moveit_config/urdf/husky_ur5_e_no_base_joint_Alice_Calibrated.urdf')
+    spec = None
+    if name is not None:
+        try:
+            spec = robot_by_namespace(name)
+        except KeyError as e:
+            print(f"[WARN] {e.args[0]}; loading the default "
+                  f"{'dual-arm' if dual_arm else 'single-arm'} URDF instead.")
+    if spec is None:
+        # ! No (known) namespace: every single-arm husky gets Alice's URDF
+        # ! (Belle's calibration would be wrong). Pass the name when you know it.
+        spec = robot_by_name('Cindy' if dual_arm else 'Alice')
+    robot_urdf = spec.urdf_path
 
     assert os.path.exists(robot_urdf)
     robot = pp.load_pybullet(robot_urdf, fixed_base=False, cylinder=False)
@@ -305,7 +318,27 @@ class Husky():
     """
     def __init__(self, monitor, name, mocap_id=None, pos=np.zeros(3), rot=np.array((0, 0, 0, 1)),
                  connect_arm=True, connect_gripper=True, base_calibration_file=None, calibration=False, dual_arm=False, ee_types=None, force_regenerate=False, punch_tool_offset=None,
-                 connect_compliant_controller=False):
+                 connect_compliant_controller=False, connect_ros: bool = True):
+        """Create the husky's ROS interface and its PyBullet body, and register it.
+
+        Args:
+            monitor: The HuskyMonitor (also the ROS node of the interface).
+            name (str): ROS namespace, e.g. ``'/a200_0806'``.
+            mocap_id (int | None): Mocap rigid-body id of the base (None = odometry).
+            pos (np.ndarray): Initial base position.
+            rot (np.ndarray): Initial base quaternion (xyzw).
+            connect_arm (bool): Wait for the arm action servers.
+            connect_gripper (bool): Wait for the gripper action servers.
+            base_calibration_file (str | None): JSON with base_mocap_from_base_footprint.
+            calibration (bool): Calibration mode (calib tip end effector).
+            dual_arm (bool): True for the two-arm husky.
+            ee_types (list | None): End-effector mesh per arm.
+            force_regenerate (bool): Unused (kept for backwards compat).
+            punch_tool_offset: tool0 -> punch tip offset(s) for the punch tool.
+            connect_compliant_controller (bool): Create the compliant-controller clients.
+            connect_ros (bool): False for a husky that is only drawn (moved by
+                mocap), with no ROS subscriptions, publishers or clients at all.
+        """
         self.name = name
         self.mocap_id = mocap_id
         self.interface = HuskyRobotInterface(monitor,
@@ -315,16 +348,23 @@ class Husky():
                                              connect_gripper=connect_gripper,
                                              dual_arm=dual_arm,
                                              connect_compliant_controller=connect_compliant_controller,
+                                             connect_ros=connect_ros,
                                              )
-        self.object = HuskyObject(calibration=calibration, dual_arm=dual_arm, ee_types=ee_types, force_regenerate=force_regenerate, punch_tool_offset=punch_tool_offset)
+        self.object = HuskyObject(calibration=calibration, dual_arm=dual_arm, ee_types=ee_types, force_regenerate=force_regenerate, punch_tool_offset=punch_tool_offset,
+                                  name=name)
         self.dual_arm = dual_arm
         self.connect_gripper = connect_gripper
         self.ee_types = list(ee_types or [])
         
-        self.interface.position = pos
-        self.interface.rotation = rot
+        # ! Copy: the default arguments are single arrays shared by every call, so
+        # ! assigning them directly would make all huskies share one base pose.
+        self.interface.position = np.array(pos, dtype=float)
+        self.interface.rotation = np.array(rot, dtype=float)
 
         self.base_mocap_from_base_footprint = pp.Pose(point=np.zeros(3))
+        # Without a calibration file the mocap pose is the marker body, not the
+        # base footprint, so the monitor does not use it as a live obstacle pose.
+        self.has_base_calibration = bool(base_calibration_file)
         if base_calibration_file:
             # read from json
             with open(base_calibration_file, 'r') as file:
@@ -345,10 +385,22 @@ class HuskyObject():
     End effectors are now created and attached during initialization based on the ee_types parameter.
     This makes it easier to specify different end effectors for different robots at the high level.
     """
-    def __init__(self, calibration=False, dual_arm=False, ee_types=None, force_regenerate=False, punch_tool_offset=None):
+    def __init__(self, calibration=False, dual_arm=False, ee_types=None, force_regenerate=False, punch_tool_offset=None,
+                 name: Optional[str] = None):
+        """Load the robot body, create its end effectors and attach them.
+
+        Args:
+            calibration (bool): Calibration mode (calib tip end effector).
+            dual_arm (bool): True for the two-arm husky.
+            ee_types (list | None): End-effector mesh per arm.
+            force_regenerate (bool): Unused (kept for backwards compat).
+            punch_tool_offset: tool0 -> punch tip offset(s) for the punch tool.
+            name (str | None): The husky's ROS namespace; picks its own URDF
+                (see load_robot).
+        """
         with pp.LockRenderer(False):
             with pp.HideOutput():
-                robot = load_robot(dual_arm=dual_arm)
+                robot = load_robot(dual_arm=dual_arm, name=name)
                 self.robot = robot
                 self.dual_arm = dual_arm
 
@@ -489,6 +541,17 @@ class Slider:
         """
         return _backend().get_value(self._handle)
 
+    def set_value(self, value: float) -> None:
+        """Move the slider to `value` (the action callback does NOT fire).
+
+        Same as `TextInput.set_value`. ! The PyBullet backend cannot move a
+        debug slider from code, so on PyBullet nothing changes (see its set_value).
+
+        Args:
+            value (float): The new position (rounded for an integer slider).
+        """
+        _backend().set_value(self._handle, int(round(float(value))) if self.integer else float(value))
+
 class SliderGroup:
     def __init__(self, names, action, min_vals, max_vals, current_vals):
         self.names = names
@@ -541,9 +604,17 @@ class StatusText:
     no callback and nothing to poll: whoever owns it calls `set_text` when the
     value it mirrors changes.
     """
-    def __init__(self, name, default=""):
+    def __init__(self, name, default="", *, color=None):
+        """Create the readout.
+
+        Args:
+            name (str): Widget label (not drawn by the DPG backend).
+            default (str): The first text shown.
+            color (tuple | None): RGBA 0-255 text colour (DPG only; None keeps
+                the backend's readout colour, and PyBullet ignores it).
+        """
         self.name = name
-        self._handle = _backend().add_status_text(name, default)
+        self._handle = _backend().add_status_text(name, default, color=color)
         self._shown = str(default)
 
     def set_text(self, text):

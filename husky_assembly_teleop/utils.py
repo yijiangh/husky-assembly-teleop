@@ -1,5 +1,6 @@
 import sys, os, argparse
 import socket, json
+from typing import TYPE_CHECKING, Optional
 
 import numpy as np
 import pybullet as p
@@ -9,6 +10,11 @@ from husky_assembly_teleop import DATA_DIRECTORY
 from pybullet_planning import multiply, Pose, Euler, Point
 from tracikpy import TracIKSolver
 # import ikfast_ur5e
+
+# Only for type hints: compas_fab is imported inside the functions that use it,
+# so importing this module stays light.
+if TYPE_CHECKING:
+    from compas_fab.robots import JointTrajectory
 
 HERE = os.path.dirname(__file__)
 
@@ -147,39 +153,92 @@ def conf_from_6vec(vec6, arm_index: int = 0):
     return Configuration.from_revolute_values(vals, joint_names=names)
 
 
-def joint_trajectory_from_path(path_12):
-    """Wrap a list / array of 12-vecs into a compas_fab JointTrajectory.
+def joint_trajectory_from_path(path, joint_names: Optional[list] = None) -> 'JointTrajectory':
+    """Wrap a list / array of joint vectors into a compas_fab JointTrajectory.
 
-    The trajectory uses HUSKY_DUAL_UR5e_JOINT_NAMES (12 names, left then
-    right). One JointTrajectoryPoint per waypoint.
+    One JointTrajectoryPoint per waypoint, all joints revolute.
+
+    Args:
+        path (Sequence): Waypoints, each one value per joint in ``joint_names``.
+        joint_names (list | None): The joints the values belong to. Defaults to
+            Cindy's 12 arm joints (HUSKY_DUAL_UR5e_JOINT_NAMES, left then right);
+            a support robot passes its 6 ``ur_arm_*`` names.
+
+    Returns:
+        JointTrajectory: The trajectory, named with ``joint_names``.
+
+    Raises:
+        ValueError: A waypoint does not have one value per joint.
     """
     from compas_fab.robots import JointTrajectory, JointTrajectoryPoint
     from compas_robots.model import Joint
-    names = list(HUSKY_DUAL_UR5e_JOINT_NAMES[0]) + list(HUSKY_DUAL_UR5e_JOINT_NAMES[1])
+    if joint_names is None:
+        joint_names = list(HUSKY_DUAL_UR5e_JOINT_NAMES[0]) + list(HUSKY_DUAL_UR5e_JOINT_NAMES[1])
+    names = list(joint_names)
     types = [Joint.REVOLUTE] * len(names)
     points = []
-    for i, q in enumerate(path_12):
+    for i, q in enumerate(path):
         q = list(map(float, q))
-        if len(q) != 12:
-            raise ValueError(f"path_12[{i}] must be length 12, got {len(q)}")
+        if len(q) != len(names):
+            raise ValueError(f"path[{i}] must be length {len(names)}, got {len(q)}")
         points.append(JointTrajectoryPoint(joint_values=q, joint_types=types, joint_names=names))
     return JointTrajectory(trajectory_points=points, joint_names=names)
 
 
-def path_12_from_joint_trajectory(jt):
-    """Extract a list of 12-vec numpy arrays from a movement's trajectory.
+def path_from_joint_trajectory(jt, joint_names: Optional[list] = None) -> list:
+    """Extract a list of joint vectors from a movement's trajectory.
 
     Mostly the inverse of joint_trajectory_from_path, but it accepts BOTH
     shapes that a ``Movement.trajectory`` field is written in, because the
     two producers disagree:
 
       * a compas_fab ``JointTrajectory`` (what the live monitor stores, and
-        what its ``<action>.live-solved.json`` sidecar round-trips), whose
-        joint_names are HUSKY_DUAL_UR5e_JOINT_NAMES[0]+[1]; and
-      * a plain list of 12-element lists (what the offline
+        what its ``<action>.live-solved.json`` sidecar round-trips); its
+        values are picked BY NAME, so the stored joint order does not matter;
+      * a plain list of lists (what the offline
         ``headless_bar_action_planner.py`` writes into
         ``<bar>.solved_motion.json``, via its ``_path_from_jt``), already in
-        that same left-then-right joint order.
+        the ``joint_names`` order.
+
+    Args:
+        jt: A JointTrajectory, a sequence of joint-value sequences, or None.
+        joint_names (list | None): Which joints to read, in the order wanted.
+            Defaults to Cindy's 12 arm joints (HUSKY_DUAL_UR5e_JOINT_NAMES[0]+[1]).
+
+    Returns:
+        list[numpy.ndarray]: One vector per waypoint. Empty when jt is None.
+
+    Raises:
+        ValueError: A raw waypoint does not have one value per joint.
+    """
+    if joint_names is None:
+        joint_names = list(HUSKY_DUAL_UR5e_JOINT_NAMES[0]) + list(HUSKY_DUAL_UR5e_JOINT_NAMES[1])
+    names = list(joint_names)
+    if jt is None:
+        return []
+    points = getattr(jt, 'points', None)
+    if points is None:
+        # Raw list of vectors: already in the canonical order, just check the
+        # width so a malformed file fails here rather than deep in a planner.
+        path = []
+        for i, q in enumerate(jt):
+            q = np.asarray(q, dtype=float)
+            if q.shape != (len(names),):
+                raise ValueError(
+                    f"trajectory waypoint [{i}] must be length {len(names)}, got {q.shape}")
+            path.append(q)
+        return path
+    return [
+        np.asarray([float(p.joint_values[p.joint_names.index(n)]) for n in names],
+                   dtype=float)
+        for p in points
+    ]
+
+
+def path_12_from_joint_trajectory(jt) -> list:
+    """Cindy's 12-vec path from a movement's trajectory (left arm then right arm).
+
+    Kept under its old name for the dual-arm code; see path_from_joint_trajectory.
 
     Args:
         jt: A JointTrajectory, a sequence of 12-element sequences, or None.
@@ -187,26 +246,8 @@ def path_12_from_joint_trajectory(jt):
     Returns:
         list[numpy.ndarray]: One 12-vec per waypoint. Empty when jt is None.
     """
-    if jt is None:
-        return []
-    points = getattr(jt, 'points', None)
-    if points is None:
-        # Raw list of 12-vecs: already in the canonical order, just check the
-        # width so a malformed file fails here rather than deep in a planner.
-        path = []
-        for i, q in enumerate(jt):
-            q = np.asarray(q, dtype=float)
-            if q.shape != (12,):
-                raise ValueError(
-                    f"trajectory waypoint [{i}] must be length 12, got {q.shape}")
-            path.append(q)
-        return path
-    names = list(HUSKY_DUAL_UR5e_JOINT_NAMES[0]) + list(HUSKY_DUAL_UR5e_JOINT_NAMES[1])
-    return [
-        np.asarray([float(p.joint_values[p.joint_names.index(n)]) for n in names],
-                   dtype=float)
-        for p in points
-    ]
+    return path_from_joint_trajectory(jt)
+
 
 def pose_from_transformation(tf, scale=1.0):
     frame = Frame.from_transformation(tf)
