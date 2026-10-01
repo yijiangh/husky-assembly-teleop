@@ -1,25 +1,12 @@
 """
-The cell plugin: loads an authored design and steps through its cell states.
+The cell plugin: loads an authored design, draws one movement's cell state at a time, and serves the
+selected step to plugins that declare `requires = ("cell",)`.
 
-! EXPERIMENTAL: a first cut. How designs load, and what planning plugins
-  read from it, may still change.
+Loading an old compas_fab export converts it into `<export>_design` (reused while up to date) and loads that.
+The panel warns when the design's tools differ from the configured ones.
 
-Viewer and provider only: it draws one movement's robot cell state at a time,
-and planning plugins that declare `requires = ("cell",)` read the selected
-movement from it. It owns no planner and no PyBullet body.
-
-* Reads schema 1 design folders (doc/design_format.md) through `design_io`. For an export in
-  the old compas_fab format the first Load asks: Convert writes it into `<export>_design` next to
-  it (or switches to that copy if it is up to date) and loads it; Load again reads the old
-  export with compas and converts it in memory, writing nothing.
-* Drawing and stepping use only the `design_io.Design` (drawing.py): no compas_fab cells or
-  states. Planners build those in their own mirrors.
-* Planned states use the design's tools; the live robots keep the monitor's. When the two
-  disagree for a configured robot, the panel warns (tasks/2026-10-01_design_io_library.md §10).
-! The authored state is never modified: what is drawn is posed from it (`displayed_joints`).
-! Reading the robots' meshes takes a moment, so loading runs on a worker thread, and the
-  viser nodes are added a robot per tick by a task. The worker only returns a result; the
-  task hands it over on the main thread.
+! EXPERIMENTAL: how designs load, and what planners read, may still change.
+! Loading runs on a worker thread that only returns a result; viser nodes are added on the main thread.
 """
 
 from __future__ import annotations
@@ -31,40 +18,36 @@ from pathlib import Path
 
 from typing import TYPE_CHECKING
 
-from ...design_conversion import convert_export, converted_folder, is_old_export, is_up_to_date
-from ...plugin_api.concurrency import timeout
+from async_timeout import timeout
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
 from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, block, chip, note, section, values
 from ...design_io.timing import Stopwatch
-from .design import CellDesign, Step, displayed_joints, load_design, load_old_export
+from .design import CellDesign, Step, displayed_joints, load_design
 from .drawing import DesignDrawing, load_robot_models
 
 if TYPE_CHECKING:
     from ...config import RobotConfig
 
-#: Give up on a load after this many seconds.
-LOAD_TIMEOUT = 120.0
-
-#: Give up on converting an old export after this many seconds (it takes about 15).
-CONVERT_TIMEOUT = 300.0
+#: Give up on a load after this many seconds (converting an old export takes about 15).
+LOAD_TIMEOUT = 300.0
 
 
-def _load_in_background(folder: Path, report, old_export_data: Path | None = None
-                        ) -> tuple[CellDesign, dict, Stopwatch]:
-    """Load a design and read its robots' URDFs with their meshes. Runs on the worker thread.
+def _load_in_background(folder: Path, data_directory: Path, report) -> tuple[CellDesign, dict, Stopwatch]:
+    """Load a design, converting an old export first, and read its robots' URDFs with their meshes.
+
+    Runs on the worker thread.
 
     Args:
         folder: Design folder, or an old export.
+        data_directory: The monitor's data directory, for converting an old export.
         report: Called with a progress string.
-        old_export_data: For an old export, the monitor's data directory (robot files); None for a design.
 
     Returns:
-        tuple: The design, each robot's yourdfpy model by robot id, and the time each step took.
+        tuple: The design, each robot's yourdfpy model by robot id, and the stopwatch.
     """
     watch = Stopwatch()
-    design = (load_design(folder, report, watch) if old_export_data is None
-              else load_old_export(folder, old_export_data, report, watch))
+    design = load_design(folder, data_directory, report, watch)
     report("reading the robots' URDFs and meshes")
     models = load_robot_models(design.design)
     watch.lap("robot URDFs and meshes")
@@ -86,7 +69,7 @@ class CellPlugin(HuskyPlugin):
         #: Index of the selected step in `design.steps`.
         self.index = 0
 
-        #: Show the robot at the movement's target configuration instead of its start.
+        #: Show the robot at the movement's target instead of its start.
         self.at_target = False
 
         #: Goes up whenever the design or selected step changes, so dependents can poll it.
@@ -99,10 +82,6 @@ class CellPlugin(HuskyPlugin):
         self._error = ""
         # Where the design's tools differ from the monitor's configured ones, one line per robot.
         self._tool_mismatch: list[str] = []
-        #: An old-format export the operator loaded, waiting for Convert or a second Load; None otherwise.
-        self._pending_export: Path | None = None
-        # What the panel asks about it; worked out once, as it reads the export's files.
-        self._question = ""
 
         #: Robot id -> its yourdfpy model, for the drawing.
         self._models: dict = {}
@@ -117,10 +96,7 @@ class CellPlugin(HuskyPlugin):
 
     @property
     def step(self) -> Step | None:
-        """Step | None: The selected movement, or None before a design is loaded.
-
-        ! Its start state and target are the authored ones: copy before modifying.
-        """
+        """Step | None: The selected movement, or None before a design is loaded. ! Copy before modifying."""
         if self.design is None or not self.design.steps:
             return None
         return self.design.steps[self.index]
@@ -128,21 +104,16 @@ class CellPlugin(HuskyPlugin):
     # --- --- --- --- --- SETUP --- --- --- --- ---
 
     def setup(self, ctx: PluginContext) -> None:
-        """Build the panel, and load the configured design if there is one.
-
-        Args:
-            ctx: This plugin's context.
-        """
+        """Build the panel, with the configured design folder filled in; nothing loads until Load is clicked."""
         folder = ctx.config.design_directory
         with ctx.view.ui() as gui:
             self._status = gui.add_html("")
             self._folder = gui.add_text("Folder", initial_value=str(folder or ""),
                                         hint="Design folder with design.json (doc/design_format.md), or an "
-                                             "export in the old compas_fab format to convert")
-            load = gui.add_button_group("Design", ["Load", "Convert"],
-                                        hint="Load the folder. For an old-format export, Convert writes it as a "
-                                             "design into <export>_design next to it (or switches to that copy) "
-                                             "and loads it; Load again opens the export as it is")
+                                             "export in the old compas_fab format, converted into "
+                                             "<export>_design next to it")
+            load = gui.add_button("Load", hint="Load the folder; an old export is converted first (about 15 s) "
+                                               "unless its <export>_design copy is up to date")
             gui.add_html(section("step", SECTION_CTRL))
             self._slider = gui.add_slider("Step", min=0, max=1, step=1, initial_value=0)
             go = gui.add_button_group("Go", ["◀ action", "◀", "▶", "action ▶"],
@@ -151,64 +122,33 @@ class CellPlugin(HuskyPlugin):
                                         hint="The robot at the movement's start state, or at its target configuration")
             view = gui.add_button_group("View", ["Hide", "Ghost"],
                                         hint="Hide / show the drawn state; ghost makes it see-through")
-            # ! Keep text that changes per step BELOW the buttons, so they never move mid-click.
+            # ! Keep changing text BELOW the buttons, so they never move mid-click.
             self._details = gui.add_html("")
             self._error_text = gui.add_html("")
 
         # ! Route every viser callback through defer so it runs on the main thread.
-        load.on_click(ctx.defer_value("design button", lambda label: self._on_design(ctx, label)))
+        load.on_click(ctx.defer("load design", lambda: self.load(ctx, Path(self._folder.value.strip()))))
         self._slider.on_update(ctx.defer_value("select step", lambda value: self.select(int(value))))
         go.on_click(ctx.defer_value("step button", self._on_go))
         show.on_click(ctx.defer_value("show", lambda label: self._set_at_target(label == "Target")))
         view.on_click(ctx.defer_value("view", self._on_view))
 
-        if folder is not None:
-            self.load(ctx, folder)
-
-    # --- --- --- --- --- COMMANDS --- --- --- --- ---
-    # Run on the main thread, via intents.
+    # --- --- --- --- --- COMMANDS (intents, on the main thread) --- --- --- --- ---
 
     def load(self, ctx: PluginContext, folder: Path) -> None:
         """Start loading a design folder, replacing the current design when done.
 
         Args:
             ctx: This plugin's context.
-            folder: The design folder.
+            folder: The design folder, or an old export to convert first.
         """
         if self._load_task is not None and not self._load_task.done():
             ctx.log_info("load ignored: a design is already loading")
             return
         self._load_task = ctx.spawn(f"load {folder.name}", self._load(ctx, folder))
 
-    def _on_design(self, ctx: PluginContext, label: str) -> None:
-        """Load the folder in the text field; or convert the old export waiting for an answer.
-
-        Args:
-            ctx: This plugin's context.
-            label: The button clicked.
-        """
-        if label == "Load":
-            self.load(ctx, Path(self._folder.value.strip()))
-        elif self._pending_export is None:
-            ctx.log_info("convert ignored: load an export in the old compas_fab format first")
-        elif self._load_task is not None and not self._load_task.done():
-            ctx.log_info("convert ignored: a design is already loading")
-        else:
-            export, copy = self._pending_export, converted_folder(self._pending_export)
-            self._pending_export = None
-            if is_up_to_date(export):
-                # * Already converted: switch to the copy.
-                self._folder.value = str(copy)
-                self._load_task = ctx.spawn(f"load {copy.name}", self._load(ctx, copy))
-            else:
-                self._load_task = ctx.spawn(f"convert {export.name}", self._convert(ctx, export))
-
     def select(self, index: int) -> None:
-        """Select a step. Clamped to the design; ignored before one is loaded.
-
-        Args:
-            index: Index into `design.steps`.
-        """
+        """Select a step by index into `design.steps`, clamped; ignored before a design is loaded."""
         if self.design is None or not self.design.steps:
             return
         index = max(0, min(int(index), len(self.design.steps) - 1))
@@ -219,21 +159,13 @@ class CellPlugin(HuskyPlugin):
         self._changed()
 
     def _set_at_target(self, at_target: bool) -> None:
-        """Show the start state or the target configuration.
-
-        Args:
-            at_target: True for the target.
-        """
+        """Show the start state, or the target."""
         if at_target != self.at_target:
             self.at_target = at_target
             self._stale = True
 
     def _on_go(self, label: str) -> None:
-        """Step to the previous or next movement or action.
-
-        Args:
-            label: The button clicked.
-        """
+        """Step to the previous or next movement or action."""
         step = self.step
         if step is None:
             return
@@ -249,17 +181,11 @@ class CellPlugin(HuskyPlugin):
             self.select(self.design.first_step_of(step.action_index + 1))
 
     def _on_view(self, label: str) -> None:
-        """Toggle hiding or ghosting the drawn state.
-
-        Args:
-            label: The button clicked.
-        """
+        """Toggle hiding or ghosting the drawn state."""
         if label == "Hide":
             self._visible = not self._visible
         else:
-            self._ghost = not self._ghost
-            if self._drawing is not None:
-                self._drawing.set_ghost(self._ghost)
+            self._ghost = not self._ghost  # `update` applies it, also to a drawing still being built
         self._stale = True
 
     def _changed(self) -> None:
@@ -270,30 +196,14 @@ class CellPlugin(HuskyPlugin):
     # --- --- --- --- --- TASKS --- --- --- --- ---
 
     async def _load(self, ctx: PluginContext, folder: Path) -> None:
-        """Load a design on the worker thread, then swap it in.
-
-        ! Failures are shown in the panel and log, not raised: a bad folder is
-          the operator's mistake and must not count as a plugin failure.
-
-        Args:
-            ctx: This plugin's context.
-            folder: The design folder.
-        """
+        """Load a design on the worker thread, then swap it in; failures go to the panel and log, not raised."""
         folder = Path(folder).expanduser()
-        old = is_old_export(folder)
-        # * An old-format export: the first Load asks (Convert, or Load again to open it as it is).
-        if old and self._pending_export != folder:
-            self._pending_export, self._question, self._error = folder, _convert_question(folder), ""
-            ctx.log_warn(self._question)
-            return
-        self._pending_export = None
         self._error, self._progress = "", f"loading {folder}"
         try:
-            # A thread cannot be interrupted: on timeout or cancel its result is dropped.
             async with timeout(LOAD_TIMEOUT):
                 design, models, watch = await ctx.run_in_thread(
-                    _load_in_background, folder, lambda text: setattr(self, "_progress", text),
-                    ctx.config.data_directory if old else None)
+                    _load_in_background, folder, ctx.config.data_directory,
+                    lambda text: setattr(self, "_progress", text))
         except asyncio.TimeoutError:
             self._error = f"timed out after {LOAD_TIMEOUT}s waiting for the design to load"
             ctx.log_error(self._error)
@@ -312,51 +222,16 @@ class CellPlugin(HuskyPlugin):
             self._drawing.remove()
             self._drawing = None
         self.design, self._models, self.index = design, models, 0
+        self._folder.value = str(design.source)  # the converted copy, for an old export
         self._changed()
-        ctx.log_info(f"loaded {folder} ({'old compas_fab export' if design.is_old_export else 'design'}) "
-                     f"in {watch.summary()}; {design.action_count} actions, {len(design.steps)} movements")
-        # ? Not counted here: adding the viser nodes, over the next ticks (`_build` logs it).
+        ctx.log_info(f"loaded {design.source} in {watch.summary()}; "
+                     f"{design.action_count} actions, {len(design.steps)} movements")
         self._tool_mismatch = tool_mismatches(design, ctx.config.robots)
         for line in self._tool_mismatch:
             ctx.log_warn(f"design tools differ from the configured ones: {line}")
 
-    async def _convert(self, ctx: PluginContext, export: Path) -> None:
-        """Convert an old-format export into `<export>_design` on the worker thread, then load it.
-
-        ! Failures go to the panel and log, as for loading.
-
-        Args:
-            ctx: This plugin's context.
-            export: The export folder.
-        """
-        destination = converted_folder(export)
-        self._error, self._progress = "", f"converting {export.name}"
-        watch = Stopwatch()
-        try:
-            async with timeout(CONVERT_TIMEOUT):
-                await ctx.run_in_thread(convert_export, export, destination, ctx.config.data_directory,
-                                        lambda text: setattr(self, "_progress", text), watch)
-        except asyncio.TimeoutError:
-            self._error = f"timed out after {CONVERT_TIMEOUT}s converting {export}"
-            ctx.log_error(self._error)
-            return
-        except Exception as failure:
-            self._error = f"could not convert: {type(failure).__name__}: {failure}"
-            ctx.log_error(f"could not convert {export}:\n{traceback.format_exc()}")
-            return
-        finally:
-            self._progress = ""
-        ctx.log_info(f"converted {export} into {destination} in {watch.summary()}")
-        self._pending_export = None
-        self._folder.value = str(destination)
-        await self._load(ctx, destination)
-
     async def _build(self, ctx: PluginContext) -> None:
-        """Add the design's viser nodes, a robot per tick.
-
-        Args:
-            ctx: This plugin's context.
-        """
+        """Add the design's viser nodes, spread over ticks."""
         self._progress = "drawing the design"
         watch = Stopwatch()
         drawing = DesignDrawing(ctx.view, f"{ctx.view.scene_root}/design", self.design.design, self._models)
@@ -376,37 +251,26 @@ class CellPlugin(HuskyPlugin):
     # --- --- --- --- --- TICK --- --- --- --- ---
 
     def update(self, ctx: PluginContext) -> None:
-        """Start building the design's viser nodes, if a design is loaded and they are not built yet.
-
-        Args:
-            ctx: This plugin's context.
-        """
-        if self.design is None or self._drawing is not None:
+        """Start building the design's viser nodes, if a design is loaded and they are not built yet."""
+        if self._drawing is not None:
+            self._drawing.set_ghost(self._ghost)
+            return
+        if self.design is None:
             return
         if self._build_task is None or self._build_task.done():
             self._build_task = ctx.spawn("draw the design", self._build(ctx))
 
     def draw(self, ctx: PluginContext) -> None:
-        """Pose the drawn cell from the selected state, and fill the panel.
-
-        Args:
-            ctx: This plugin's context.
-        """
+        """Pose the drawn cell from the selected state, and fill the panel."""
         self._status.content = self._status_html()
         step = self.step
-        # Error text sits at the bottom so its height moves no buttons.
         self._error_text.content = block(values(escape(self._error))) if self._error else ""
-        if self._pending_export is not None:
-            # The question sits below the buttons, so asking moves none of them.
-            self._details.content = note(escape(self._question))
-        elif step is None:
-            self._details.content = note("no design loaded")
         if step is None:
+            self._details.content = note("no design loaded")
             return
         self._slider.max = max(len(self.design.steps) - 1, 1)
         self._slider.value = self.index
-        if self._pending_export is None:
-            self._details.content = self._details_html(step)
+        self._details.content = self._details_html(step)
 
         drawing = self._drawing
         if not self._stale or drawing is None:
@@ -425,24 +289,14 @@ class CellPlugin(HuskyPlugin):
             self._error = ""
 
     # --- --- --- --- --- PANEL --- --- --- --- ---
-    # ! Keep every row one line tall (`_one_line`) and the chip set fixed, so
-    #   nothing below shifts between steps.
+    # ! Keep every row one line tall (`_one_line`) and the chip set fixed, so nothing shifts between steps.
 
     def _status_html(self) -> str:
-        """One line of chips: load progress or design, plus any error.
-
-        Returns:
-            str: HTML.
-        """
+        """One line of chips: load progress or design, plus any error."""
         if self._progress:
             chips = chip(escape(self._progress), BUSY)
-        elif self._pending_export is not None:
-            chips = chip("old export: Convert, or Load again", BUSY, self._question)
         elif self.design is not None:
-            chips = chip(escape(self.design.folder.name), OK, str(self.design.folder))
-            if self.design.is_old_export:
-                chips += chip("old format", BUSY, "an export in the old compas_fab format, converted in memory; "
-                                                  "Load it again to be offered the conversion")
+            chips = chip(escape(self.design.source.name), OK, str(self.design.source))
             chips += chip(f"{self.design.action_count} actions · {len(self.design.steps)} movements", NONE)
             if self._tool_mismatch:
                 chips += chip("tools differ", BUSY, "; ".join(self._tool_mismatch))
@@ -453,21 +307,14 @@ class CellPlugin(HuskyPlugin):
         return block(_one_line(chips))
 
     def _details_html(self, step: Step) -> str:
-        """Two rows of chips and three of text describing the selected step.
-
-        Args:
-            step: The selected step.
-
-        Returns:
-            str: HTML.
-        """
+        """Two rows of chips and three of text describing the selected step."""
         movement, action = step.movement, step.action
         robot = self.design.design.robots[action.robot]
         which = chip(f"{self.index + 1}/{len(self.design.steps)}", OK)
         which += chip(escape(robot.name), SECTION_CTRL, action.robot)
         which += chip(movement.type + (" coupled" if movement.coupled else ""), NONE, movement.label)
 
-        # ! Say so when the drawn start is not authored: it is assumed from where the robot last was, or zero.
+        # ! Say so when the drawn start is not authored.
         target = movement.target.joints.get(action.robot) if movement.target is not None else None
         if movement.start.robots[action.robot].joints is not None:
             carries = chip("start conf", OK)
@@ -491,10 +338,7 @@ class CellPlugin(HuskyPlugin):
 
 
 def tool_mismatches(design: CellDesign, robots: tuple[RobotConfig, ...]) -> list[str]:
-    """Where the design's tools differ from the configured ones, for robots known to both by serial.
-
-    ? Planned states use the design's tools, the measured robot the configured ones; another kind
-      on a flange means the plan was made for another tool than the one mounted.
+    """Where the design's tools differ from the configured (mounted) ones, for robots known to both by serial.
 
     Args:
         design: The loaded design.
@@ -520,33 +364,6 @@ def tool_mismatches(design: CellDesign, robots: tuple[RobotConfig, ...]) -> list
     return lines
 
 
-def _convert_question(export: Path) -> str:
-    """What the panel asks when an old-format export is loaded.
-
-    Args:
-        export: The export folder.
-
-    Returns:
-        str: The question, naming the converted copy's folder.
-    """
-    copy = converted_folder(export)
-    if is_up_to_date(export):
-        convert = f"a converted copy exists: Convert switches to {copy}"
-    else:
-        convert = f"Convert writes it as a design into {copy} and loads that"
-    return (f"{export.name} is an export in the old compas_fab format; {convert}. "
-            f"Load again opens the old export as it is.")
-
-
 def _one_line(html: str) -> str:
-    """Keep content on one line, cutting anything too wide with "…".
-
-    Uses `pre` so padding spaces still align the columns.
-
-    Args:
-        html: The row's content.
-
-    Returns:
-        str: HTML.
-    """
+    """Keep content on one line, cutting anything too wide with "…"; `pre` keeps padded columns aligned."""
     return f'<div style="white-space:pre;overflow:hidden;text-overflow:ellipsis">{html}</div>'

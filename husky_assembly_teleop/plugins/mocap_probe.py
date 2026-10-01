@@ -1,24 +1,12 @@
 """
-A mocap probe: track one rigid body, show its live pose, and record points with it.
+A mocap probe: track one rigid body, show its live pose, and record points with it, e.g. obstacle corners.
 
-Good for measuring corners of obstacles and structures: touch the corner with the
-probe, type a label, press Record. Points are numbered per label ("table_1",
-"table_2", ...), listed with a checkbox each at the bottom of the panel, and shown
-in the 3D view (selected ones highlighted). Delete and Export act on the selected
-points only, so one session can yield one file per obstacle.
+Points are numbered per label ("table_1", ...) and shown in the 3D view. Delete and
+Export act on the selected points, so one session can give one file per obstacle.
+A big "Probe" status panel (minimized on the right) is readable from across the room.
 
-* The recorded point is the rigid body's origin: set the pivot in Motive to the
-  probe tip.
-* Tracks DEFAULT_MOCAP_ID from startup; "Track" switches to another id.
-* The probe appears on the health panel as "probe". Its chip is the shared mocap
-  check (mocap.mocap_check), the same as every robot base.
-* A big status panel, readable from across the room: green / amber / red for the
-  mocap state, a blue flash when a point is recorded. Starts minimized as the
-  "Probe" tab on the right; expand it, or float and resize it.
-* Recording is refused while that chip is red. Amber (high marker error) still
-  records; the marker error is saved with each sample.
-
-Files go to ~/husky_probe (change EXPORT_FOLDER).
+! The recorded point is the rigid body's origin: set the pivot in Motive to the probe tip.
+! Recording is refused while the mocap chip is red; amber records, with its marker error.
 
 Run with:  -p plugins:="['mocap_probe']"
 """
@@ -38,8 +26,9 @@ from ..ui.checklist import CheckList
 from ..plugin_api.context import PluginContext
 from ..world.mocap import mocap_check
 from ..plugin_api.plugin import HuskyPlugin, register
-from ..ui.style import (BAD, GOOD, LEVEL_COLORS, NONE, SECTION_CTRL, SECTION_SENSOR, WARN, Check, block,
-                        check_chip, chip, note, numbers, section, values)
+from ..ui.style import (LEVEL_COLORS, NONE, SECTION_CTRL, SECTION_SENSOR, block, check_chip, chip, note, numbers,
+                        section, values)
+from ..world.checks import BAD, GOOD, WARN, Check
 from ..world.measured import TrackedObject
 
 #: Name of the probe in `world.tracked_objects` and on the health panel.
@@ -67,9 +56,9 @@ class Sample:
     """One recorded probe point, in the world frame (mocap, Z-up), metres.
 
     Attributes:
-        id: Stable number, unique within this run, in recording order.
-        name: `label` plus its running number, e.g. "table_3". Unique within this run.
-        label: What the operator typed, e.g. "table"; groups the points of one obstacle.
+        id: Unique within this run, in recording order.
+        name: `label` plus its running number, e.g. "table_3"; unique within this run.
+        label: What the operator typed, e.g. "table".
         position: Rigid-body origin, (x, y, z).
         orientation: Rigid-body orientation, quaternion (x, y, z, w).
         mocap_id: Rigid-body id the probe was tracked by.
@@ -98,7 +87,7 @@ class MocapProbePlugin(HuskyPlugin):
         self._probe: TrackedObject | None = None
         self.samples: list[Sample] = []
         self._next_id = 1
-        # Last number given per label. Never lowered, so names stay unique after a delete.
+        # Last number given per label; never lowered, so names stay unique after a delete.
         self._label_counts: dict[str, int] = {}
         # Scene markers per sample id: the sphere and the label.
         self._markers: dict[int, tuple[viser.IcosphereHandle, viser.LabelHandle]] = {}
@@ -110,7 +99,7 @@ class MocapProbePlugin(HuskyPlugin):
         self._flash_until = 0.0
 
     def setup(self, ctx: PluginContext) -> None:
-        """Build the widgets and start tracking DEFAULT_MOCAP_ID. The core draws the probe's frame.
+        """Build the widgets and start tracking DEFAULT_MOCAP_ID.
 
         Args:
             ctx: This plugin's context.
@@ -135,8 +124,7 @@ class MocapProbePlugin(HuskyPlugin):
             self._result: viser.GuiHtmlHandle = gui.add_html("")
             self._list = CheckList(ctx, gui, "Samples", empty_text="no samples yet")
 
-        # * Big status in its own panel, so it can be floated and made large.
-        #   Raw gui api, not ui(): ui() would place the html in the plugin's folder.
+        # * Big status in its own panel, so it can be floated and enlarged. Raw gui api: ui() would use our folder.
         panel = ctx.view.panel()
         with panel.add_tab("Probe", icon=viser.Icon.CROSSHAIR):
             self._big: viser.GuiHtmlHandle = ctx.view.gui.add_html("")
@@ -169,20 +157,20 @@ class MocapProbePlugin(HuskyPlugin):
         """
         mocap_id = int(self._mocap_id.value)
         ctx.untrack_object(PROBE_NAME)
-        # * No geometry: a frame only, not an obstacle.
+        # * No geometry: a frame, not an obstacle.
         self._probe = ctx.track_object(PROBE_NAME, mocap_id, label="mocap probe")
         self._message = f"tracking mocap id {mocap_id}"
         ctx.log_info(self._message)
 
     def _record(self, ctx: PluginContext) -> None:
-        """Record the probe position as a new, selected sample, if the pose is live.
+        """Record the probe position as a new, selected sample, unless the mocap check is red.
 
         Args:
             ctx: This plugin's context.
         """
         check = self._check(ctx)
         if check is None or check.level == BAD:
-            # ! Never record a stale or invalid pose: it would be a wrong corner, silently.
+            # ! Never record a stale or invalid pose: it would silently give a wrong corner.
             self._message = f"not recorded: {check.detail if check else 'probe not tracked'}"
             ctx.log_warn(self._message)
             return
@@ -261,16 +249,13 @@ class MocapProbePlugin(HuskyPlugin):
         self._markers[sample.id] = (sphere, label)
 
     def _big_status(self, ctx: PluginContext, check: Check | None) -> str:
-        """The big status panel: one colour and one word, readable at a distance.
+        """The big status panel's HTML: one colour and one word, readable at a distance.
 
-        ! Only slow-changing text here (no live numbers): any change re-renders it.
+        ! No live numbers here: any text change re-renders it.
 
         Args:
             ctx: This plugin's context.
             check: The probe's mocap check, or None when nothing is tracked.
-
-        Returns:
-            str: HTML for the big status widget.
         """
         if ctx.now() < self._flash_until:
             color, word, detail = FLASH_COLOR, "RECORDED", self.samples[-1].name if self.samples else ""
@@ -278,7 +263,7 @@ class MocapProbePlugin(HuskyPlugin):
             color, word, detail = NONE, "NOT TRACKING", "enter a mocap id and press Track"
         else:
             color, word, detail = LEVEL_COLORS[check.level], BIG_WORDS[check.level], check.detail
-        # ? vh units: the box grows with the window, so a floated, enlarged panel fills up.
+        # ? vh units, so the box grows with a floated, enlarged panel.
         return (f'<div style="background:{color};color:#fff;border-radius:8px;min-height:40vh;'
                 f'display:flex;flex-direction:column;align-items:center;justify-content:center;'
                 f'text-align:center;padding:12px;margin:0 8px 8px">'

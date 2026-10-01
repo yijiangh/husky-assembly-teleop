@@ -1,19 +1,9 @@
 """
-Draws one state of a design in viser, from the design alone (design_io); no compas.
+Draws one state of a design in viser, from the design alone; forward kinematics from each robot's yourdfpy model.
 
-- `load_robot_models` reads each robot's URDF with its meshes (yourdfpy; slow, run it on the
-  loading thread).
-- `DesignDrawing` owns the viser nodes of the whole design (main thread); a new state only
-  changes poses, joint values and colours.
-
-Scene tree, below the drawing's root:
-
-    robots/<name>      frame at the robot base, its URDF meshes below (ViserUrdf)
-    tools/<tool …>     frame at the tool's flange, its shapes below
-    bodies/<body id>   frame at the body, its shapes below
-
-Forward kinematics is each robot's yourdfpy model, posed by `ViserUrdf.update_cfg`; tools and
-held bodies read their link from it after the robots are posed.
+- `load_robot_models` is slow: run it on the loading thread.
+- `DesignDrawing` is main thread only; a new state only changes poses, joint values and colours.
+- ? Robots are single-colour meshes (`add_simple_urdf`), so "Ghost" only changes their opacity.
 """
 
 from __future__ import annotations
@@ -28,7 +18,7 @@ import yourdfpy
 
 from ...design_io import Design, Geometry, Pose, State, compose, shape_mesh
 from ...design_io.types import split_link_id
-from ...ui.visualization import load_urdf, quaternion_to_wxyz
+from ...ui.visualization import add_simple_urdf, joints_changed, load_urdf, quaternion_to_wxyz
 
 #: Colours, RGB 0-255. Held bodies stand out.
 BAR_COLOR = (205, 170, 110)
@@ -37,25 +27,15 @@ GROUND_COLOR = (170, 180, 170)
 ATTACHED_COLOR = (240, 120, 30)
 TOOL_COLOR = (70, 70, 80)
 
-#: Opacity of tools and bodies when "Ghost" is on.
+#: Opacity of robots, tools and bodies when "Ghost" is on.
 GHOST_OPACITY = 0.4
-#: Robot colour (r, g, b, alpha 0-1) when "Ghost" is on. Robot meshes are GLB, which has no
-#: opacity of its own, so ghosting redraws them in this colour.
-GHOST_ROBOT_COLOR = (0.75, 0.75, 0.78, 0.4)
 
 #: Bodies added per tick while building, so a large design never stalls one tick.
 BODIES_PER_TICK = 20
 
 
 def load_robot_models(design: Design) -> dict[str, yourdfpy.URDF]:
-    """Read every robot's URDF with its visual meshes. Any thread.
-
-    Args:
-        design: The design; its robots' URDF paths are absolute.
-
-    Returns:
-        dict[str, yourdfpy.URDF]: Robot id -> model.
-    """
+    """Read every robot's URDF with its visual meshes, by robot id. Any thread."""
     return {robot_id: load_urdf(robot.urdf) for robot_id, robot in design.robots.items()}
 
 
@@ -116,7 +96,10 @@ class DesignDrawing:
         for robot_id, model in self._models.items():
             path = f"{self._root_path}/{robot_id}"
             frame = self._view.scene.add_frame(path, show_axes=False, visible=False)
-            urdf = self._robot_meshes(model, path)
+            urdf = add_simple_urdf(self._view, model, path)
+            if self._ghost:
+                for mesh in urdf._meshes:
+                    mesh.opacity = GHOST_OPACITY
             self._robots[robot_id] = _Robot(frame, urdf, model, tuple(urdf.get_actuated_joint_names()))
             yield
         for tool_id, tool in self._design.tools.items():
@@ -128,18 +111,8 @@ class DesignDrawing:
             if count % BODIES_PER_TICK == 0:
                 yield
 
-    def _robot_meshes(self, model: yourdfpy.URDF, path: str) -> viser.extras.ViserUrdf:
-        """A robot's meshes below `path`, in its own colours, or the ghost colour."""
-        return viser.extras.ViserUrdf(self._view, model, root_node_name=path,
-                                      mesh_color_override=GHOST_ROBOT_COLOR if self._ghost else None)
-
     def _add(self, path: str, geometry: Geometry, color: tuple[int, int, int]):
-        """A hidden frame with a geometry's visual shapes below it.
-
-        Args:
-            path: Scene path of the frame.
-            geometry: The shapes, in the frame's coordinates.
-            color: RGB 0-255.
+        """A hidden frame at `path` with a geometry's visual shapes below it, coloured RGB 0-255.
 
         Returns:
             tuple: (frame, meshes).
@@ -183,8 +156,10 @@ class DesignDrawing:
                 continue
             _place(robot.frame, robot_state.base)
             given = joints.get(robot_id, {})
-            robot.values = np.array([float(given.get(name, 0.0)) for name in robot.names])
-            robot.urdf.update_cfg(robot.values)
+            values = np.array([float(given.get(name, 0.0)) for name in robot.names])
+            if joints_changed(values, robot.values):
+                robot.urdf.update_cfg(values)
+                robot.values = values
             robot.frame.visible = True
             for flange, tool_id in tools.items():
                 frame = self._tools[tool_id][0]
@@ -212,35 +187,21 @@ class DesignDrawing:
             frame.visible = True
 
     def _link_pose(self, robot_id: str, link: str, base: Pose) -> Pose:
-        """A link's world pose, from the robot's model as last posed.
-
-        Args:
-            robot_id: The robot.
-            link: Link name.
-            base: The robot's base pose.
-
-        Returns:
-            Pose: The link in world.
-        """
+        """A link's world pose, from the robot's model as last posed and its base pose."""
         return compose(base, Pose.from_matrix(self._robots[robot_id].model.get_transform(frame_to=link)))
 
     def set_ghost(self, ghost: bool) -> None:
-        """Draw everything see-through, or solid again.
-
-        Args:
-            ghost: See-through.
-        """
+        """Draw everything see-through, or solid again."""
         if ghost == self._ghost:
             return
         self._ghost = ghost
+        opacity = GHOST_OPACITY if ghost else None
+        for robot in self._robots.values():
+            for mesh in robot.urdf._meshes:
+                mesh.opacity = opacity
         for _, meshes in [*self._tools.values(), *self._bodies.values()]:
             for mesh in meshes:
-                mesh.opacity = GHOST_OPACITY if ghost else None
-        for robot_id, robot in self._robots.items():
-            robot.urdf.remove()
-            robot.urdf = self._robot_meshes(robot.model, f"{self._root_path}/{robot_id}")
-            if robot.values is not None:
-                robot.urdf.update_cfg(robot.values)
+                mesh.opacity = opacity
 
     def remove(self) -> None:
         """Remove every node of the drawing."""

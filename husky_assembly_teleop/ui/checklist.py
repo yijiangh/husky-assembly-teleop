@@ -1,18 +1,8 @@
 """
 A selectable list: one checkbox per item in a collapsible folder, "Select all" on top.
 
-viser 1.1 has no list or multi-select widget; this is the stand-in. Build one in
-`setup`, `add` / `remove` items from intents, read `selected()` when acting on
-the selection, and call `sync()` from `draw`.
-
-! Item checkboxes have no callbacks: their values are operator settings, read
-  when needed. Only "Select all" acts, through an intent.
-
-* Rows are packed tightly, with the box before the label, by CSS (`_tight_style`).
-
-! viser runs `on_update` also when Python assigns `.value`. "Select all" is
-  assigned in `sync`, so its callback ignores events without a client, or every
-  sync would untick the list.
+viser 1.1 has no multi-select widget. Build one in `setup`, `add` / `remove` items from intents, read
+`selected()` when acting, and call `sync()` from `draw`. Item checkboxes have no callbacks.
 """
 
 from __future__ import annotations
@@ -43,7 +33,7 @@ class CheckList:
         self._gui = gui
         self._folder = gui.add_folder(label)
         with self._folder:
-            # ? The style sits in the folder as an empty div; it takes no space.
+            # ? An empty div holding the style; takes no space.
             style = gui.add_html("")
             self._all = gui.add_checkbox("Select all", initial_value=False)
             self._empty = gui.add_html(note(empty_text))
@@ -93,7 +83,7 @@ class CheckList:
     async def _on_select_all(self, event: viser.GuiEvent) -> None:
         """Tick or untick every item when the operator clicks "Select all". Runs on a viser thread."""
         if event.client is None:
-            return  # our own assignment in `sync`, not a click
+            return  # ! viser also fires on our own assignment in `sync`; acting on it would untick the list
         value = bool(event.target.value)
         self._ctx.submit("select all" if value else "select none", lambda: self._set_all(value))
 
@@ -106,10 +96,8 @@ class CheckList:
 def _tight_style(select_all_uuid: str) -> str:
     """CSS that packs the rows of one CheckList: no gap between rows, box before a full-width label.
 
-    ? viser has no list styling, so this targets its DOM (viser 1.1): the folder's
-      container holds one div per row, `row > flex > label box > p > label[for=<uuid>]`.
-      The container is found through the "Select all" label, so no other folder changes.
-      If a viser update breaks this, the list only goes back to normal spacing.
+    ? Targets viser 1.1's DOM, `row > flex > label box > p > label[for=<uuid>]`, found through the
+      "Select all" label so no other folder changes. If a viser update breaks it, only the spacing reverts.
 
     Args:
         select_all_uuid: The "Select all" checkbox's uuid.

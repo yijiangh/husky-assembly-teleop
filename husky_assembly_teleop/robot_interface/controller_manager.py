@@ -1,11 +1,7 @@
 """
-One ros2_control controller manager, and which of its controllers is running.
+One ros2_control controller manager (of the base or an arm), and which of its controllers is running.
 
-The base and each arm have their own controller manager; this one class handles
-all of them, differing only in which controllers they may switch between.
-
-! The running controller can be changed from outside, so it is read back from the
-  controller manager, never assumed from the last request.
+! The running controller can change from outside, so it is always read back, never assumed from the last request.
 """
 
 from __future__ import annotations
@@ -26,13 +22,10 @@ class ControllerManagerState:
     """What one controller manager last told us.
 
     Attributes:
-        controllers: Reported controller name to lifecycle state. Empty until the
-            first answer.
-        active: The running switchable controller, or None if none runs or no
-            answer has arrived (see `last_update_time`).
+        controllers: Reported controller name to lifecycle state.
+        active: The running switchable controller, or None if none runs or no answer has arrived.
         switch_in_flight: Controller a switch is waiting on, or None.
-        switch_error: Why the last switch failed, or None. Cleared when a new
-            switch goes out.
+        switch_error: Why the last switch failed, or None. Cleared when a new switch goes out.
         last_update_time: ROS time in seconds of the last answer, or None.
     """
 
@@ -46,8 +39,7 @@ class ControllerManagerState:
 class ControllerManagerInterface:
     """Tracks and switches the controllers of one controller manager.
 
-    ! Nothing blocks: answers land in `state` from the main thread (run by the tick's
-      ROS pump) a few ticks later, so callers poll `state` (e.g. with concurrency.wait_until).
+    ! Nothing blocks: answers land in `state` a few ticks later, so poll it (e.g. with `ctx.wait_until`).
     """
 
     def __init__(self, node: Node, namespace: str, switchable: tuple[str, ...],
@@ -65,7 +57,7 @@ class ControllerManagerInterface:
         self.switchable = switchable
         self.state = state
         self._ros = RosConnections(node)
-        # Set once the missing service is logged, so it is not repeated every poll.
+        # Set once the missing service is logged, so it is not logged every poll.
         self._reported_unavailable = False
         self._connect()
 
@@ -75,15 +67,13 @@ class ControllerManagerInterface:
             ListControllers, f"{self.namespace}/controller_manager/list_controllers")
         self._switch_client = self._ros.client(
             SwitchController, f"{self.namespace}/controller_manager/switch_controller")
-        # * Polled because the service is often not up yet at construction and
-        #   controllers can change externally. `active` is None until the first answer.
+        # * Polled: the service is often not up yet at construction, and controllers can change externally.
         self._ros.timer(REFRESH_PERIOD, self.refresh)
 
     def reconnect(self) -> None:
         """Recreate the clients and poll timer, keeping `state`.
 
-        ! A pending switch is dropped: its answer never arrives, and it would
-          block every later switch.
+        ! Drops a pending switch: its answer never arrives and it would block every later switch.
         """
         self._ros.destroy_all()
         self.state.switch_in_flight = None
@@ -115,18 +105,13 @@ class ControllerManagerInterface:
         return True
 
     def switch(self, controller: str) -> bool:
-        """Start `controller`, stopping whichever switchable one is running.
-
-        Asynchronous: `state.active` updates on success, `state.switch_error` on
-        failure. Already running counts as success.
+        """Start `controller`, stopping whichever switchable one is running; the outcome lands in `state`.
 
         Args:
             controller: One of `switchable`.
 
         Returns:
-            bool: True if the request went out or nothing was needed. False if
-                `controller` is not switchable, the service is not up, or a
-                switch is still pending; `state.switch_error` says which.
+            bool: True if the request went out or it already runs. False otherwise; `state.switch_error` says why.
         """
         if controller not in self.switchable:
             self.state.switch_error = (f"{controller!r} is not one of {self.switchable} "
@@ -140,15 +125,13 @@ class ControllerManagerInterface:
             self._node.get_logger().error(self.state.switch_error)
             return False
         if self.state.switch_in_flight is not None:
-            # ! Refused, not queued: the deactivate list below comes from the last
-            #   poll, which the pending switch has made stale.
+            # ! Refused, not queued: the pending switch makes the deactivate list below stale.
             self.state.switch_error = (f"{self.namespace}: still switching to "
                                        f"{self.state.switch_in_flight!r}, ignoring {controller!r}")
             self._node.get_logger().error(self.state.switch_error)
             return False
 
-        # ? Deactivates every other switchable controller reported active, not just
-        #   `state.active`, which may be empty while another still holds the joints.
+        # ? Every other active switchable controller, not just `state.active`, which may miss one.
         request = SwitchController.Request()
         request.activate_controllers = [controller]
         request.deactivate_controllers = [
@@ -164,16 +147,12 @@ class ControllerManagerInterface:
         return True
 
     def deactivate_all(self) -> bool:
-        """Stop every switchable controller and start none, as part of the soft stop.
+        """Stop every switchable controller and start none, for the soft stop.
 
-        - Sent even while a switch is pending, since a stop must not wait; the
-          controller manager handles requests in order, so this one wins.
-        - Lists every switchable controller, as the last report may be stale.
-          Best effort, so already-inactive ones do not fail the request.
+        Sent even while a switch is pending: requests are handled in order, so this one wins.
 
         Returns:
-            bool: True if the request went out; False if the service is not up
-                (`state.switch_error` says so).
+            bool: True if the request went out; False if the service is not up.
         """
         if not self._switch_client.service_is_ready():
             self.state.switch_error = f"{self.namespace}: switch_controller is not available, cannot stop"

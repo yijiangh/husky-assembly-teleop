@@ -1,15 +1,15 @@
 """
 Example 1: widgets, buttons and intents.
 
-A counter showing the three steps every panel goes through:
+A counter showing the three steps of every panel:
 
   1. setup    build the widgets once and keep the handles on `self`
-  2. click    viser calls back on its own thread; `ctx.defer` or
-              `ctx.defer_value` turns that into an intent run on the ROS thread
+  2. click    viser calls back on its own thread; `ctx.defer` / `ctx.defer_value`
+              turn that into an intent run on the ROS thread
   3. draw     copy the plugin's state into the widgets, once per tick
 
-! Keep state on `self` (here `self.count`), not in widget values; widgets only
-  display it. Operator settings (step size, "Below 0") may be read from widgets.
+! Keep state on `self` (here `self.count`); widgets only display it. Operator
+  settings (step size, "Below 0") may be read from widgets.
 
 Run with:  -p plugins:="['example_ui']"
 """
@@ -35,7 +35,7 @@ class ExampleUiPlugin(HuskyPlugin):
         self.presses = 0
 
     def setup(self, ctx: PluginContext) -> None:
-        """Build the widgets once and route their callbacks through `ctx.defer`/`defer_value`.
+        """Build the widgets once and route their callbacks through `ctx.defer` / `defer_value`.
 
         Args:
             ctx: This plugin's context.
@@ -49,16 +49,14 @@ class ExampleUiPlugin(HuskyPlugin):
             self._step = gui.add_slider("Step", min=1, max=10, step=1, initial_value=1)
             self._allow_negative = gui.add_checkbox("Below 0", initial_value=False)
 
-        # ! Never do the work inside the callback: it runs on a viser thread,
-        #   where plugin state, robots and PyBullet are not safe to touch.
-        #   defer_value passes the widget's new value; defer passes nothing.
+        # ! Never do the work inside the callback: it runs on a viser thread, where plugin
+        #   state and robots are not safe to touch. defer_value passes the new value; defer nothing.
         self._buttons.on_click(ctx.defer_value("count button", self._on_button))
-        # ! Settings that constrain the state must act when changed, or a
-        #   negative count would stay after "Below 0" is unticked.
+        # ! A setting that limits the state must act when changed, or a negative count stays after unticking.
         self._allow_negative.on_update(ctx.defer("below zero", self._apply_limits))
 
     def _on_button(self, clicked: str) -> None:
-        """Apply one button press. Runs as an intent, on the ROS thread.
+        """Apply one button press (intent, on the ROS thread).
 
         Args:
             clicked: The label of the button that was pressed.
@@ -72,7 +70,7 @@ class ExampleUiPlugin(HuskyPlugin):
         self._apply_limits()
 
     def _apply_limits(self) -> None:
-        """Keep the count within what the settings allow. Runs as an intent."""
+        """Keep the count within what the settings allow (intent)."""
         if not self._allow_negative.value:
             self.count = max(self.count, 0)
 

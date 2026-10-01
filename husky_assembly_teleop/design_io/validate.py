@@ -1,9 +1,7 @@
 """
-Check a design against the rules of format §9 (rules 2–11; rule 1 is the reader's).
+Check a design against rules 2–11 of format §9 (rule 1 is the reader's).
 
-* Every problem is collected, then `DesignError` is raised once with all of them. Each message
-  starts with "rule <n>:" and says where the problem is.
-* Robot files are parsed once per path in one call.
+Every problem is collected and raised in one `DesignError`, each line starting with "rule <n>: <where>".
 """
 
 from __future__ import annotations
@@ -31,9 +29,7 @@ def validate(design: Design, *, check_robot_meshes: bool = True) -> None:
 
     Args:
         design: The design, in memory or read from a folder.
-        check_robot_meshes: Check rule 11 (URDF meshes by relative path). `write` turns it off:
-            its robots may still be source files with `package://` meshes, which it copies and
-            rewrites; the read at its end checks the rule on the copies.
+        check_robot_meshes: Check rule 11 (URDF meshes by relative path); `write` turns it off for its source URDFs.
 
     Raises:
         DesignError: With every problem found, if there is any.

@@ -1,13 +1,10 @@
 """
 Recording every message of a stream at the full ROS rate.
 
-! EXPERIMENTAL: not decided yet. This taps raw ROS messages only. The aim is
-  that any interface state (joint positions, TCP pose, a mocap fix, a derived
-  value) can be asked for at its full update rate just as easily, so expect
-  this API to change.
+! EXPERIMENTAL: taps raw ROS messages only; expect this API to change.
 
-A `SampleSource` is fed with each raw message by its subscription callback;
-`record(source)` collects them, stamped by the sender, for as long as its `with` block runs.
+A subscription callback feeds each raw message to a `SampleSource`; `record(source)` collects them
+for as long as its `with` block runs.
 """
 
 from __future__ import annotations
@@ -23,8 +20,7 @@ MAX_SAMPLES = 1_000_000
 class SampleSource:
     """Every raw message of one stream, passed on to whoever listens.
 
-    ! Listeners run inside the subscription callback, on the main thread. Keep them
-      cheap (an append).
+    ! Listeners run inside the subscription callback, on the main thread; keep them cheap.
     """
 
     def __init__(self):
@@ -32,23 +28,12 @@ class SampleSource:
         self._listeners: list[Callable[[Any], None]] = []
 
     def emit(self, message: Any) -> None:
-        """Hand one message to every listener.
-
-        Args:
-            message: The raw ROS message.
-        """
+        """Hand one raw message to every listener."""
         for listener in list(self._listeners):
             listener(message)
 
     def listen(self, callback: Callable[[Any], None]) -> Callable[[], None]:
-        """Call `callback(message)` for every message from now on.
-
-        Args:
-            callback: Called with each raw message.
-
-        Returns:
-            Callable[[], None]: A function that removes the listener again.
-        """
+        """Call `callback(message)` for every message from now on; return a function that removes it."""
         self._listeners.append(callback)
         return lambda: self._listeners.remove(callback) if callback in self._listeners else None
 
@@ -56,9 +41,8 @@ class SampleSource:
 class Recording:
     """Collects `(stamp_seconds, message)` pairs from a source while a `with` block runs.
 
-    * The stamp is the message's `header.stamp`, the sender's sample time. The node
-      clock would give the drain time, and callbacks run in batches once per tick.
-    ! A driver that leaves the header empty gives stamp 0.0; it is recorded as is.
+    * Stamped with `header.stamp` (sender time), since callbacks run in batches once per tick.
+    ! A driver that leaves the header empty gives stamp 0.0.
 
     Attributes:
         samples: The `(stamp_seconds, message)` pairs, in arrival order.

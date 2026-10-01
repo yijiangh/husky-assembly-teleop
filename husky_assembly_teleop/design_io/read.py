@@ -1,11 +1,7 @@
 """
-Read a design folder (doc/design_format.md) into a `Design`.
+Read a design folder (doc/design_format.md) into a `Design`: check every file's format and schema, parse, validate.
 
-    read(folder):  check format + schema of every file → parse → validate → Design
-
-! Another `schema` in any file stops the read with `SchemaMismatch`, naming the commit that wrote
-  it (format §7). Files written by different commits of the same schema are fine.
-* Robot URDF/SRDF paths come back absolute. Mesh files are read once per file (`MeshCache`).
+Files written by different commits of the same schema read fine; another schema raises `SchemaMismatch`.
 """
 
 from __future__ import annotations
@@ -50,8 +46,7 @@ def read(folder: Path) -> Design:
     for path in sorted((folder / "actions").glob("*.json")):
         raw_actions[path.stem] = _load(path, f"actions/{path.name}", ACTION_FORMAT)
 
-    # * 2. Parse. Problems that only files have (a missing mesh, a wrong action id) are collected
-    #   here and reported together with what `validate` finds.
+    # * 2. Parse. File-only problems (a missing mesh, a wrong action id) are reported with what `validate` finds.
     problems: List[str] = []
     meshes = _Meshes(folder, problems)
     try:
@@ -124,18 +119,13 @@ class _Meshes:
         self.moved: Dict[Tuple[str, Pose], TriMesh] = {}
 
     def get(self, reference: str, origin: Optional[Pose], owner: str) -> Optional[TriMesh]:
-        """The mesh of a `{"mesh": ...}` shape; None (and a problem noted) if the file is missing.
-
-        ? A TriMesh has no origin of its own: a mesh shape with an `origin` is moved into the owner's
-          frame here, once per file and origin.
+        """The mesh of a `{"mesh": ...}` shape, moved by its `origin`; None (and a problem noted) if missing.
 
         Args:
             reference: The file, relative to the design folder.
             origin: The shape's `origin`, or None.
             owner: Id of the tool or body, for messages.
 
-        Returns:
-            TriMesh | None: The mesh in the owner's frame.
         """
         path = self.folder / reference
         if not path.is_file():

@@ -113,15 +113,19 @@ Do not diff two URDFs against each other either: a calibrated URDF and a working
 URDF differ in which end effectors are mounted, so their link sets differ, and
 xacro expansion order makes a structural diff unreliable.
 
-**What the rewrite does about it.** Calibration is a small explicit overlay
-keyed by joint name -- each entry a delta on that joint's origin xyz/rpy --
-applied after parsing. Reviewable and diffable in git, and independent of which
-tool is mounted.
+**What the rewrite does about it (planned, not yet implemented).** Calibration
+is a small explicit overlay keyed by joint name -- each entry a delta on that
+joint's origin xyz/rpy -- applied after parsing. Reviewable and diffable in git,
+and independent of which tool is mounted. For now `RobotConfig.calibration_file`
+exists but nothing reads it, and the calibrated URDFs are still used (TODO in
+`config.py`).
 
 ## Blocking waits on the single thread
 
-Everything runs on one thread: the tick, every ROS callback, every plugin hook
-and task. (Long planning searches run on worker threads, on a copy of the world.) A plugin that waits by looping until the arm stops moving freezes the
+Everything that touches state runs on one thread: the tick, every ROS callback,
+every plugin hook and task. viser runs its own thread, and its GUI callbacks may
+only `submit` work to the main thread and return; long planning searches run on
+worker threads, on a copy of the world. A plugin that waits by looping until the arm stops moving freezes the
 entire node, including the subscriptions that would have told it the arm
 stopped. The old code hit this constantly.
 
@@ -132,8 +136,9 @@ started with `ctx.spawn`, and it waits by awaiting: `ctx.wait_until`,
 Between two awaits a task has the thread to itself and needs no locks.
 
 The tick pumps ROS: it runs every waiting ROS callback at its start, then
-updates forward kinematics, copies the whole world for planners and the view,
-runs the plugin hooks, and resumes the tasks waiting for it. Between ticks
+handles a soft stop, updates forward kinematics, copies the whole world for
+planners and the view, runs the plugin hooks (intents, then update), resumes
+the tasks waiting for it, and draws. Between ticks
 `WorldState` does not change and always matches the kinematics and the copy. The price is that a fast topic needs a queue deep enough for one tick.
 
 Considered and rejected:
@@ -149,6 +154,9 @@ Considered and rejected:
 A plugin that fails too often is stopped together with every plugin that
 requires it, and the panel shows the monitor as broken until restart. Carrying
 on with a dependent reading frozen state would be worse than stopping it.
+Stopping only cancels their tasks, to end the error spam: their UI and scene
+bodies stay until shutdown, on purpose, so the operator can investigate before
+restarting.
 
 ## Rebuilding the UI on every state change
 
@@ -165,7 +173,8 @@ flicker.
 
 The first version of this rewrite had no abstraction over PyBullet: one shared
 PyBullet client with the live robots, raw body ids handed to every plugin, and
-`RobotScene.active()` as the only wrapper (it fixed the old code's scattered
+`RobotScene.active()` (now `PyBulletMirror.active()` in
+`world/mirrors/pybullet.py`) as the only wrapper (it fixed the old code's scattered
 `saved = pp.CLIENT; pp.CLIENT = ...`, which corrupted the global on early returns).
 Of the old code's PyBullet calls, ~160 were forward-kinematics plumbing and only
 15 were collision or planning, so wrapping "the scene" looked unjustified.
@@ -179,7 +188,8 @@ It stopped fitting once planners came in (`base_planner` first):
   for concave meshes, hull points only for convex ones), so a PyBullet world is
   a poor source of truth for other backends (compas_fab, later coal).
 - **A body one plugin added was an obstacle for every other, and nothing
-  removed it** when that plugin stopped.
+  removed it** when that plugin went away. Now a plugin's bodies go with it at
+  shutdown (not when it is stopped for failing; see above).
 - **The forward-kinematics plumbing needs no physics engine.** `kinematics.py`
   does it with yourdfpy, once per tick.
 
@@ -193,16 +203,24 @@ alternatives and measurements: `scene_refactor_plan.md`.
 
 The UI module is `ui/visualization.py`, not `husky_viser.py`. Naming a module after
 its library means swapping the library renames every import above it. Plugins
-talk to a `PluginView`, which is a Protocol in `plugin_api/context.py`, so most of them
+talk to a `PluginView` (in `ui/visualization.py`) through their context, so most of them
 never mention viser at all.
 
 The core is grouped by what a module is about, not by who calls it:
 - `monitor.py`, `config.py`, `tool_urdfs.py` stay at the top: the entry point
   and the run configuration everything else is built from.
 - `plugin_api/`: what a plugin is (`plugin.py`) and what it is handed (`context.py`, `concurrency.py`).
+- `plugins/`: one module or package per feature; `plugins/planning/` is the
+  shared base for the planner plugins and registers none itself.
 - `world/`: what is in the world and where. `measured.py` (formerly `world_state.py`)
   holds what sensors report; `scene.py` what we put there; `kinematics.py` the
-  link poses; `mirrors/` the planners' private copies.
+  link poses; `mirrors/` the planners' private copies; `checks.py` and `mocap.py`
+  verdicts on a sensor or mocap fix, as data.
 - `robot_interface/`: the only package that talks to a robot, including
   `recording.py`, which taps its raw ROS messages.
-- `ui/`: the viser server, the 3D view and the panel widgets (`style.py`, formerly `ui_style.py`).
+- `ui/`: the viser server (`visualization.py`), the 3D view (`scene_view.py`) and
+  the panel widgets (`style.py`, formerly `ui_style.py`; `ghost.py`,
+  `pose_input.py`, `checklist.py`, `pybullet_window.py`); `quaternion.py` holds
+  the quaternion order at the viser boundary.
+- `design_io/`: reads, writes and validates design folders; imports nothing else
+  of ours, since it moves to its own repository later.

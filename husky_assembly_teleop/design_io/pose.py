@@ -1,7 +1,5 @@
 """
-Poses and ids: the vocabulary shared by design files and the monitor's scene.
-
-! No imports from outside `design_io`: this package moves to its own repository.
+Poses and ids, shared by design files and the monitor's scene.
 """
 
 from __future__ import annotations
@@ -32,27 +30,17 @@ class Pose:
 
     @classmethod
     def from_arrays(cls, position, orientation) -> Pose:
-        """Build a pose from any sequences (numpy arrays included).
+        """Build a pose from any sequences (numpy arrays included), stored as plain floats.
 
         Args:
             position: (x, y, z), metres.
             orientation: Quaternion (x, y, z, w).
-
-        Returns:
-            Pose: The same pose, as plain floats.
         """
         return cls(tuple(float(v) for v in position), tuple(float(v) for v in orientation))
 
     @classmethod
     def from_matrix(cls, matrix: np.ndarray) -> Pose:
-        """Build a pose from a 4x4 homogeneous transform.
-
-        Args:
-            matrix: 4x4 transform.
-
-        Returns:
-            Pose: The same pose.
-        """
+        """Build a pose from a 4x4 homogeneous transform."""
         # ! Copy: yourdfpy hands out read-only matrices, which this scipy version refuses.
         return cls.from_arrays(matrix[:3, 3], Rotation.from_matrix(np.array(matrix[:3, :3])).as_quat())
 
@@ -70,9 +58,6 @@ def compose(a: Pose, b: Pose) -> Pose:
     Args:
         a: The parent frame's pose.
         b: The pose inside that frame.
-
-    Returns:
-        Pose: `b` in the frame `a` is given in.
     """
     rotation = Rotation.from_quat(a.orientation)
     return Pose.from_arrays(np.asarray(a.position) + rotation.apply(b.position),
@@ -88,10 +73,10 @@ def invert(a: Pose) -> Pose:
 # --- --- --- --- --- IDS --- --- --- --- ---
 
 def check_id(body_id: str) -> None:
-    """Refuse an id with characters outside ID_PATTERN.
+    """Refuse an id that does not match ID_PATTERN.
 
     Raises:
-        ValueError: If the id is not a valid path.
+        ValueError: If the id is invalid.
     """
     if not ID_PATTERN.fullmatch(body_id):
         raise ValueError(f"invalid id {body_id!r}: use letters, digits, '_', '.', '-' and '/' only")

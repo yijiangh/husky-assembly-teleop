@@ -1,20 +1,14 @@
 """
 Write a `Design` into a design folder (doc/design_format.md), then read it back.
 
-    write(design, folder):  validate → robots/ → meshes/ → design.json → actions/*.json → read(folder)
-
-* Every file gets the `writer` block of the running library (`version.writer_info`).
-* Each mesh is written once: shapes holding the same TriMesh object, or meshes with equal
-  vertices and faces, share one file `meshes/<owner id>.obj` (owner: first tool or body using it).
-* Keys at their default are left out, and `visual` is left out when it equals `collision`.
-! A non-empty folder is refused unless `overwrite=True`; then old `actions/*.json` and `meshes/`
-  are deleted first, so files from an earlier write never linger.
+Equal meshes share one file `meshes/<first owner id>.obj`; keys at their default, and `visual` equal to
+`collision`, are left out.
 """
 
 from __future__ import annotations
 
 import json
-import math
+import re
 import shutil
 from hashlib import sha1
 from pathlib import Path
@@ -31,8 +25,6 @@ from .types import Action, Design, Movement, RobotSpec, State, Target, Writer
 from .validate import validate
 from .version import writer_info
 
-#: Lines longer than this are split over several lines, where the value allows it.
-LINE_WIDTH = 100
 #: Decimals kept in written floats: a picometre, far below any measurement or calibration.
 FLOAT_DIGITS = 12
 
@@ -41,22 +33,20 @@ def write(design: Design, folder: Path, *, overwrite: bool = False, package_dirs
     """Write a design into a folder.
 
     Args:
-        design: The design; it is validated first (all rules but 11, which the read-back checks).
+        design: The design; validated first (rule 11 only on the read-back).
         folder: The design folder. Created if missing.
-        overwrite: Write into a folder that already has files. Old action files and meshes are deleted.
-        package_dirs: Where to find ROS packages named by `package://` mesh references in robot URDFs
-            (see `robot_files.copy_robot`).
+        overwrite: Write into a non-empty folder, deleting its old action files and meshes first.
+        package_dirs: Where to find ROS packages named by `package://` mesh references in robot URDFs.
 
     Returns:
-        Design: The design as read back from the folder: absolute paths, meshes from its files.
+        Design: The design as read back from the folder.
 
     Raises:
         DesignError: If the design breaks a format rule.
         FileExistsError: If the folder is not empty and `overwrite` is False.
         FileNotFoundError: If a mesh referenced by a robot URDF is missing.
     """
-    # ? Rule 11 is left to the read at the end: source URDFs may name meshes by `package://`,
-    #   and only the copies written here must use relative paths.
+    # ? Rule 11 is left to the read-back: source URDFs may use `package://`; only the copies must be relative.
     validate(design, check_robot_meshes=False)
     folder = Path(folder).resolve()
     if folder.exists() and any(folder.iterdir()):
@@ -169,9 +159,14 @@ def _writer(writer: Writer) -> Dict[str, Any]:
     return {"schema": writer.schema, "library": writer.library, "commit": writer.commit, "dirty": writer.dirty}
 
 
+def _float(value: float) -> float:
+    """A float rounded to FLOAT_DIGITS, so noise like -3.4e-20 is written as 0.0 (`+ 0.0` turns -0.0 into 0.0)."""
+    return round(float(value), FLOAT_DIGITS) + 0.0
+
+
 def _pose(pose: Pose) -> List[float]:
     """A pose as `[x, y, z, qx, qy, qz, qw]`."""
-    return [float(v) for v in (*pose.position, *pose.orientation)]
+    return [_float(v) for v in (*pose.position, *pose.orientation)]
 
 
 def _shape(shape: Shape, meshes: _MeshFiles, owner: str) -> Dict[str, Any]:
@@ -179,9 +174,9 @@ def _shape(shape: Shape, meshes: _MeshFiles, owner: str) -> Dict[str, Any]:
     if isinstance(shape, TriMesh):
         return {"mesh": meshes.reference(shape, owner)}
     if isinstance(shape, BoxShape):
-        entry: Dict[str, Any] = {"box": [float(v) for v in shape.size]}
+        entry: Dict[str, Any] = {"box": [_float(v) for v in shape.size]}
     elif isinstance(shape, CylinderShape):
-        entry = {"cylinder": [float(shape.radius), float(shape.height)]}
+        entry = {"cylinder": [_float(shape.radius), _float(shape.height)]}
     else:
         raise TypeError(f"{owner}: unknown shape {shape!r}")
     if shape.origin != Pose():
@@ -200,11 +195,11 @@ def _geometry(geometry: Geometry, meshes: _MeshFiles, owner: str) -> Dict[str, A
 
 def _joints(joints: Optional[Dict[str, float]]) -> Optional[Dict[str, float]]:
     """A joint map as plain floats, or None."""
-    return None if joints is None else {name: float(value) for name, value in joints.items()}
+    return None if joints is None else {name: _float(value) for name, value in joints.items()}
 
 
 def _state(state: State) -> Dict[str, Any]:
-    """A State (format §5.2). Sets are written sorted, so equal states give equal files."""
+    """A State (format §5.2), sets sorted so equal states give equal files."""
     robots = {robot: None if value is None else {"base": _pose(value.base), "joints": _joints(value.joints)}
               for robot, value in state.robots.items()}
     return {"robots": robots, "present": sorted(state.present), **_drop_empty({
@@ -233,7 +228,6 @@ def _movement(movement: Movement) -> Dict[str, Any]:
     entry["start"] = _state(movement.start)
     if movement.target is not None:
         entry["target"] = _target(movement.target)
-    # ? `notes` are the producer's planning hints, passed through as they are.
     entry.update(_drop_empty({"label": movement.label, "notes": dict(movement.notes)}))
     return entry
 
@@ -249,57 +243,13 @@ def _action(action: Action, writer: Dict[str, Any]) -> Dict[str, Any]:
 
 # --- --- --- --- --- JSON TEXT --- --- --- --- ---
 
+#: A list of numbers as `json.dumps(indent=2)` spreads it over lines; it can only start outside a string.
+_NUMBER_LIST = re.compile(r"\[\n[-+.\deE,\s]+\]")
+
+
 def _write_json(path: Path, value: Any) -> None:
-    """Write one JSON file in the design's layout (see `_dumps`)."""
-    path.write_text(_dumps(value) + "\n", encoding="utf-8")
-
-
-def _dumps(value: Any, indent: int = 0, column: int = 0) -> str:
-    """JSON text that people can read: indented by 2, short values kept on one line.
-
-    * A list of numbers (pose, box size) always stays on one line. Other lists and maps go on one
-      line when that fits in LINE_WIDTH, else one entry per line.
-    * Floats are rounded to FLOAT_DIGITS decimals, then written with `repr`. NaN and infinity are
-      refused (format §3).
-
-    Args:
-        value: Plain JSON data (dict, list, str, int, float, bool, None).
-        indent: Indentation of the line this value starts on.
-        column: Where on that line the value starts (after its key, if any).
-
-    Returns:
-        str: The text, without a trailing newline.
-    """
-    flat = _flat(value)
-    is_numbers = isinstance(value, (list, tuple)) and all(_is_number(item) for item in value)
-    if not isinstance(value, (dict, list, tuple)) or is_numbers or column + len(flat) <= LINE_WIDTH:
-        return flat
-    inner = " " * (indent + 2)
-    if isinstance(value, dict):
-        items = []
-        for key, item in value.items():
-            prefix = f"{inner}{json.dumps(key, ensure_ascii=False)}: "
-            items.append(prefix + _dumps(item, indent + 2, len(prefix)))
-        return "{\n" + ",\n".join(items) + "\n" + " " * indent + "}"
-    items = [inner + _dumps(item, indent + 2, indent + 2) for item in value]
-    return "[\n" + ",\n".join(items) + "\n" + " " * indent + "]"
-
-
-def _is_number(value: Any) -> bool:
-    """Whether a value is an int or float (not a bool)."""
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
-
-
-def _flat(value: Any) -> str:
-    """A value as JSON on one line, floats rounded to FLOAT_DIGITS decimals."""
-    if isinstance(value, dict):
-        return "{" + ", ".join(f"{json.dumps(key, ensure_ascii=False)}: {_flat(item)}"
-                               for key, item in value.items()) + "}"
-    if isinstance(value, (list, tuple)):
-        return "[" + ", ".join(_flat(item) for item in value) + "]"
-    if isinstance(value, float):
-        if not math.isfinite(value):
-            raise ValueError(f"{value!r} cannot be written: design files have no NaN or infinity")
-        # ? Rounding turns numerical noise (-3.4e-20 for a zero) into 0.0; + 0.0 turns -0.0 into 0.0.
-        return repr(round(float(value), FLOAT_DIGITS) + 0.0)
-    return json.dumps(value, ensure_ascii=False)
+    """Write one JSON file indented by 2, with each list of numbers (a pose, joints) on one line."""
+    text = json.dumps(value, indent=2, ensure_ascii=False, allow_nan=False)
+    # * "[\n  1.0,\n  2.0\n]" -> "[1.0, 2.0]"
+    text = _NUMBER_LIST.sub(lambda match: "[" + " ".join(match.group()[1:-1].split()) + "]", text)
+    path.write_text(text + "\n", encoding="utf-8")

@@ -1,20 +1,17 @@
 """
 The shared look of plugin panels: coloured chips, section bars, number rows.
 
-Chips are green = ok, amber = in progress or stale, red = failed, gray = no data.
-Every helper returns an HTML string for viser's `add_html`; assign it to the
-widget's `content` each tick in `draw` (viser only sends real changes).
+Chips are green = ok, amber = in progress or stale, red = failed, gray = no data. Every helper returns
+HTML for viser's `add_html`; assigning it in every `draw` is cheap (viser only sends changes).
 
-! Never hide or grey out buttons, since that shifts the layout. Ignore actions
-  that do not apply in their handler and log it.
+! Never hide or grey out buttons, since that shifts the layout: ignore and log inapplicable actions instead.
 """
 
 from __future__ import annotations
 
 from html import escape
 
-# * Re-exported: plugins import checks and chips from one place.
-from ..world.checks import BAD, GOOD, STALE_AFTER, WARN, Check  # noqa: F401
+from ..world.checks import BAD, GOOD, STALE_AFTER, WARN, Check
 
 # Colours: chips put white text on these, readable in light and dark theme.
 OK, BUSY, FAIL, NONE = "#2f9e44", "#e8590c", "#e03131", "#868e96"
@@ -26,8 +23,7 @@ LEVEL_COLORS = {GOOD: OK, WARN: BUSY, BAD: FAIL}
 
 def chip(text: str, color: str, title: str = "") -> str:
     """A small coloured label; `title` is hover text for extra detail."""
-    # inline-block + nowrap: rows wrap between chips, never inside one.
-    # Hover text is escaped because it can carry any message.
+    # nowrap: rows wrap between chips, never inside one.
     return (f'<span title="{escape(title, quote=True)}" style="display:inline-block;white-space:nowrap;'
             f'background:{color};color:#fff;border-radius:4px;padding:0 5px;'
             f'margin:0 4px 2px 0;font-size:11px;font-weight:600">{text}</span>')

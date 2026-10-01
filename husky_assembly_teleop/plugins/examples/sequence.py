@@ -1,23 +1,18 @@
 """
-Example 4: a long-running sequence that waits, can be cancelled, and asks the
-operator to continue.
+Example 4: a long-running sequence that waits, can be cancelled, and asks the operator to continue.
 
-The sequence is an `async def`: it reads top to bottom, and each `await` hands
-the thread back until the awaited thing is ready. Start spawns it as a task
-(`ctx.spawn(...)`); Cancel calls `task.cancel()`, which raises
-`asyncio.CancelledError` at the current `await` and runs the `finally` block,
-the place to stop motors or open a gripper.
+The sequence is an `async def` that reads top to bottom; each `await` hands the
+thread back until the thing is ready. Start spawns it with `ctx.spawn`; Cancel calls
+`task.cancel()`, which raises `asyncio.CancelledError` at the current `await` and
+runs `finally`, the place to stop motors or open a gripper.
 
-Each cycle, with fake waits in place of robot work (three cycles, then finish):
+Three cycles of fake waits in place of robot work:
   1. wait 3 s                              (ctx.sleep)
   2. wait for the operator to press Next   (ctx.wait_until on a flag, with a timeout)
   3. wait for a fake sensor to fill up     (ctx.wait_until on a reading, with a timeout)
 
-! Ignore (and log) a button click that does not apply now, such as Next while
-  nothing waits for it: a stored click would fire long after the operator forgot it.
-
-! Catch the failures you expect, such as a timeout. Repeated failing ticks stop
-  the plugin, so report them from the sequence instead of raising.
+! Ignore (and log) a click that does not apply now: a stored click would fire long after it was forgotten.
+! Catch the failures you expect, such as a timeout, and report them: repeated failing ticks stop the plugin.
 
 Run with:  -p plugins:="['example_sequence']"
 """
@@ -56,8 +51,7 @@ class ExampleSequencePlugin(HuskyPlugin):
         self.cycle = 0
         self.step = "idle"
         self.outcome = ""
-        #: Start time and expected length of the current step, for the progress
-        #: bar; the length is None if unset.
+        #: Start time and expected length (or None) of the current step, for the progress bar.
         self._step_started = 0.0
         self._step_seconds: float | None = None
 
@@ -79,7 +73,7 @@ class ExampleSequencePlugin(HuskyPlugin):
             buttons = gui.add_button_group("Seq", ["Start", "Next", "Cancel"])
         buttons.on_click(ctx.defer_value("sequence button", lambda clicked: self._on_button(ctx, clicked)))
 
-    # --- --- --- --- --- BUTTONS (an intent, on the main thread) --- --- --- --- ---
+    # --- --- --- --- --- BUTTONS (intent, on the main thread) --- --- --- --- ---
 
     def _on_button(self, ctx: PluginContext, clicked: str) -> None:
         """Act on a button, or ignore it if it does not apply right now.

@@ -30,8 +30,7 @@ class BaseState:
         position: Last valid position in world frame, metres.
         orientation: Last valid orientation, quaternion (x, y, z, w).
         tracked: Whether the latest mocap sample was valid.
-        tracking_valid: Whether NatNet tracked the body in the last sample.
-            False usually means hidden markers.
+        tracking_valid: Whether NatNet tracked the body in the last sample (False: usually hidden markers).
         marker_error: Mean marker error of the last sample, metres.
         estopped: Whether the platform's emergency stop is engaged.
         battery_percentage: Charge, 0 to 1. NaN if the BMS does not report it.
@@ -43,8 +42,7 @@ class BaseState:
         last_update_time: ROS time of the last mocap message, valid or not, seconds.
         last_fix_time: ROS time of the last valid pose, seconds.
 
-    ! `position is None`: never measured, show dashes. `tracked` False: pose is
-      stale, grey it out and do not plan or control from it.
+    ! `tracked` False means the pose is stale: grey it out and don't plan or control from it.
     """
 
     position: np.ndarray | None = None
@@ -133,16 +131,11 @@ class BaseInterface:
         return True
 
     def stop(self) -> bool:
-        """Soft stop: one zero twist, then switch the velocity controller off.
-
-        ? A zero twist alone is not enough: other sources or a plugin can drive
-          again. With the controller off, nothing drives until it is switched on.
+        """Soft stop: one zero twist to brake, then switch the velocity controller off so nothing drives.
 
         Returns:
-            bool: True if the deactivation went out. False if the controller
-                manager is unreachable; the zero twist was sent anyway.
+            bool: True if the deactivation went out. False if the controller manager is unreachable.
         """
-        # * Always sent: it brakes the base while the deactivation is on its way.
         self._cmd_vel.publish(Twist())
         return self.controllers.deactivate_all()
 

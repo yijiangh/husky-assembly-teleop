@@ -1,12 +1,7 @@
 """
-A floor-pose input: number fields in the panel plus a 3D gizmo, always showing
-the same value. Build one in `setup`, read `pose` when needed.
+A floor-pose input (x, y, yaw): number fields plus a 3D gizmo showing the same value.
 
-! Planar only (x, y, yaw): the gizmo is flattened to the floor. Make a separate
-  6-DOF input if height or tilt is needed.
-
-! Threading: widget callbacks run on viser threads and only queue the new value
-  (ctx.submit). `pose` is written on the main thread only, so reads need no lock.
+Build one in `setup` and read `pose` when needed; it is written on the main thread only.
 """
 
 from __future__ import annotations
@@ -19,8 +14,7 @@ import viser
 
 from ..plugin_api.context import PluginContext
 
-#: Poses closer than this (metres, radians) count as equal, so a value written
-#: into one widget does not bounce back through the other.
+#: Poses closer than this (metres, radians) count as equal, so writing one widget doesn't bounce back.
 SAME_POSE_TOLERANCE = 1e-3
 
 
@@ -58,17 +52,14 @@ class PlanarPoseInput:
 
     def __init__(self, ctx: PluginContext, gui: viser.GuiApi, scene_path: str, label: str = "Target",
                  on_change: Callable[[], None] | None = None, gizmo_scale: float = 0.5):
-        """Build the fields and a gizmo that stays hidden until "Gizmo" is ticked.
-
-        Call inside `ctx.view.ui()` so the fields land in the plugin's folder.
+        """Build the fields and a gizmo hidden until "Gizmo" is ticked. Call inside `ctx.view.ui()`.
 
         Args:
             ctx: The owning plugin's context.
             gui: GUI api to add the fields to.
             scene_path: Gizmo path; must be under `ctx.view.scene_root`.
             label: Label of the number row.
-            on_change: Called on the main thread when the operator edits the
-                pose. Not called for `set`.
+            on_change: Called on the main thread when the operator edits the pose; not for `set`.
             gizmo_scale: Gizmo size, metres.
         """
         self._ctx = ctx
@@ -99,7 +90,7 @@ class PlanarPoseInput:
     # --- --- --- --- --- WHAT THE PLUGIN CALLS --- --- --- --- ---
 
     def set(self, x: float, y: float, yaw: float) -> None:
-        """Set the pose from code, without calling `on_change`. main thread only.
+        """Set the pose from code, without calling `on_change`. Main thread only.
 
         Args:
             x: Metres, world frame.
@@ -127,8 +118,7 @@ class PlanarPoseInput:
     def _apply(self, pose: tuple[float, float, float], notify: bool) -> None:
         """Store a pose and copy it into both widgets.
 
-        ! Writing a widget queues its callback back here; the tolerance check
-          below ends that loop.
+        ? Writing a widget queues its callback back here; the tolerance check ends that loop.
 
         Args:
             pose: (x, y, yaw), metres and radians.

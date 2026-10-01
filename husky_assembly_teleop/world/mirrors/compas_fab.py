@@ -1,36 +1,25 @@
 """
 A compas_fab planning world for one acting robot, filled from a `SceneSnapshot`.
 
-    worker thread:  mirror.sync(snapshot) → mirror.collisions(joints) / mirror.planner
+The acting robot is the cell's `RobotModel`; every other robot is a `ToolModel` keyed "robots/<serial>";
+scene bodies and tracked objects are `RigidBody`s keyed by our id, attached when held by the acting robot.
+`sync` rebuilds the cell (~2 s) only when a model, body id or geometry changed. `collisions` is compas_fab's
+own check; `search_check` is a fast copy of it for searches. `set_gui(True)` shows the world in PyBullet's
+own window (one per process) for debugging.
 
-What goes where in the compas_fab cell:
-- The acting robot: the `RobotModel` from its stitched URDF, with its SRDF.
-- Every other robot: a `ToolModel` from its stitched URDF, keyed "robots/<serial>",
-  placed at its base with its measured joints (as the design's "ObstacleRobot…" tools).
-- Scene bodies and tracked objects with collision meshes: `RigidBody`s keyed by our id.
-  Attached to one of the acting robot's links: `attached_to_link`; anything
-  else is stationary at its world pose.
-- `touches`: a link of the acting robot goes to `touch_links`; any other id to
-  `touch_bodies` (another robot's link as the whole robot: it is one tool).
-
-* `sync` rebuilds the cell (`set_robot_cell`, ~2 s) only when a robot model, a body id
-  or a geometry changed; otherwise it only sets the new state.
-* `collisions` is compas_fab's own `check_collision` (~25 ms with 50 bodies: it copies
-  the whole state every call). For searches, `search_check` gives the same answer for
-  the moving parts in a few ms (see `SearchCheck`).
-! compas_fab checks every stationary tool against every stationary body. Such pairs
-  can't change while this robot plans, so the ones already touching at `sync` are
-  allowed for that snapshot and listed in `static_contacts`.
-! compas_fab builds each collision mesh as its convex hull.
-! One thread only: create, sync and query a mirror on the same thread.
+- ! One thread only: create, sync and query a mirror on the same thread.
+- ! Stationary tool/body pairs already touching at `sync` are allowed for that snapshot (`static_contacts`).
+- ! compas_fab builds each collision mesh as its convex hull.
+- ? Robots are loaded without their visual shapes (`load_model(visual=False)`), and bodies with their collision
+  shapes as visuals: loading is faster, and PyBullet's window shows exactly what is checked.
 """
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from itertools import combinations
-from os import environ
-from typing import TYPE_CHECKING, Mapping, Sequence
+from typing import TYPE_CHECKING, Callable, Mapping, Sequence
 
 import pybullet as p
 from compas.geometry import Frame
@@ -39,23 +28,24 @@ from compas_fab.backends.pybullet.conversions import pose_from_frame
 from compas_fab.robots import RigidBody, RigidBodyState, RobotCell, RobotCellState, RobotSemantics, ToolState
 from compas_robots import Configuration, RobotModel, ToolModel
 
-from ...design_io.compas_fab import filled, frame_from_pose, load_model, rigid_body, subtree  # noqa: F401
+from ...design_io.compas_fab import filled, frame_from_pose, load_model, rigid_body, subtree
 from ...tool_urdfs import TOOL_TOUCHES_ARM_LINKS
-from ..scene import ROBOTS, Attachment, Pose, SceneSnapshot, robot_id, tracked_id
+from . import check_display
+from ..scene import ROBOTS, Attachment, SceneSnapshot, robot_id, tracked_id
+from ...design_io.pose import Pose
 
 if TYPE_CHECKING:
     from compas_robots.model import Link
 
     from ...config import RobotConfig
-    from ..geometry import Geometry
+    from ...design_io.geometry import Geometry
 
 
 def semantics_with_tools(config: RobotConfig, model: RobotModel) -> RobotSemantics:
     """The robot's SRDF, plus the pairs a stitched tool may touch.
 
-    ? The SRDFs predate the stitched tools, so without this every tool collides with
-      its own wrist. Each tool link may touch the rest of its tool and the arm links in
-      `TOOL_TOUCHES_ARM_LINKS`, as the design's ToolState.touch_links allow.
+    ? Without this every tool collides with its own wrist: each tool link may touch its tool and the arm
+      links in `TOOL_TOUCHES_ARM_LINKS`.
 
     Args:
         config: The robot; `srdf_file` must be set.
@@ -86,18 +76,18 @@ def semantics_with_tools(config: RobotConfig, model: RobotModel) -> RobotSemanti
 class CompasFabMirror:
     """A compas_fab PyBullet world planning for one robot, following the snapshots given to `sync`."""
 
-    def __init__(self, serial: str) -> None:
+    def __init__(self, serial: str, log: Callable[[str], None] | None = None) -> None:
         """Connect an empty world without a window; the first `sync` loads everything (slow).
 
         Args:
             serial: The acting robot; every other robot becomes an obstacle.
+            log: Called on this mirror's thread with one line per full rebuild of the cell: why, and how long.
         """
         self.serial = serial
-        #: Why the window asked for is not open ("" if nothing went wrong).
-        self.window_problem = ""
-        #: The last snapshot synced, to rebuild from when the window opens or closes.
-        self._snapshot: SceneSnapshot | None = None
-        # * Kept for the mirror's lifetime: loading and converting is the slow part.
+        self._log = log
+        #: compas_fab's client and planner. Use them only on the owning thread.
+        self.client: PyBulletClient | None = None
+        # * Cached for the mirror's lifetime: loading and converting is the slow part.
         # The acting robot's config, model and semantics.
         self._robot: tuple[RobotConfig, RobotModel, RobotSemantics] | None = None
         # Other robots' configs -> their tool models.
@@ -107,31 +97,20 @@ class CompasFabMirror:
         self._connect(gui=False)
 
     def _connect(self, gui: bool) -> None:
-        """Connect an empty world, with a window if asked for and possible; forget the cell.
+        """Replace the world with a new, empty one, with PyBullet's own window if asked for.
 
-        Args:
-            gui: Try to open PyBullet's own window.
+        Raises:
+            RuntimeError: If a window is asked for without an X display.
+            pybullet.error: If another PyBullet window is open in this process. The old world stays.
         """
-        self.gui = False
-        #: compas_fab's client and planner. Use them only on the owning thread.
-        self.client: PyBulletClient | None = None
         if gui:
-            # ! Without an X display PyBullet exits the whole process instead of raising, so check first.
-            if not environ.get("DISPLAY"):
-                self.window_problem = "there is no display to open a PyBullet window on"
-            else:
-                client = PyBulletClient("gui", verbose=False)
-                try:
-                    client.__enter__()
-                    self.client, self.gui = client, True
-                except p.error as error:
-                    client._cache_dir.cleanup()
-                    # ? PyBullet allows one window per process; another mirror may have it.
-                    self.window_problem = ("another PyBullet window is open in this process"
-                                           if "Only one" in str(error) else str(error))
-        if self.client is None:
-            self.client = PyBulletClient("direct", verbose=False)
-            self.client.__enter__()
+            check_display()
+        client = PyBulletClient("gui" if gui else "direct", verbose=False)
+        client.__enter__()
+        if self.client is not None:
+            self.close()
+        #: Whether PyBullet's own window shows this world.
+        self.client, self.gui = client, gui
         self.planner = PyBulletPlanner(self.client)
         #: The cell as last built, and the state as last synced (None before the first sync).
         self.cell: RobotCell | None = None
@@ -140,29 +119,20 @@ class CompasFabMirror:
         self.static_contacts: list[tuple[str, str]] = []
         # What the cell was built from: acting config, other configs by id, geometry by id.
         self._built: tuple | None = None
-        # id() of each tool and rigid body model in the cell -> our id, to translate
-        # collision pairs. ? Safe: the cell keeps every model alive while this is used.
+        # id() of each tool and rigid body model in the cell -> our id. ? Safe: the cell keeps them alive.
         self._names: dict[int, str] = {}
 
-    # --- --- --- --- --- WINDOW --- --- --- --- ---
+    def set_gui(self, gui: bool) -> None:
+        """Open or close PyBullet's own window, for debugging. The world is empty until the next `sync`.
 
-    def set_gui(self, gui: bool) -> bool:
-        """Open or close PyBullet's own window on this world, rebuilding from the last snapshot.
+        - ! Closing the window by hand ends the world; `set_gui(False)` brings it back.
 
-        Args:
-            gui: Whether the window should be open.
-
-        Returns:
-            bool: Whether it is open now. If not although asked for, see `window_problem`.
+        Raises:
+            RuntimeError: If a window is asked for without an X display.
+            pybullet.error: If another PyBullet window is open in this process.
         """
-        if self.connected and gui == self.gui:
-            return self.gui
-        self.close()
-        self.window_problem = ""
-        self._connect(gui)
-        if self._snapshot is not None:
-            self.sync(self._snapshot)
-        return self.gui
+        if gui != self.gui:
+            self._connect(gui)
 
     # --- --- --- --- --- SYNC --- --- --- --- ---
 
@@ -175,10 +145,6 @@ class CompasFabMirror:
         Raises:
             KeyError: If the acting robot is not in the snapshot.
         """
-        if not self.connected:
-            self._connect(gui=False)
-            self.window_problem = "the PyBullet window was closed"
-        self._snapshot = snapshot
         acting = snapshot.robots[self.serial]
         others = {robot_id(serial): entry for serial, entry in snapshot.robots.items() if serial != self.serial}
         # Our id -> (geometry, (world pose, placement, touches)), for everything that can collide.
@@ -192,7 +158,12 @@ class CompasFabMirror:
         built = (acting.config, {key: entry.config for key, entry in others.items()},
                  {key: value[0] for key, value in bodies.items()})
         if not self._same(built):
+            why = self._rebuild_reason(built)
+            started = time.monotonic()
             self._build(built)
+            if self._log is not None:
+                self._log(f"rebuilt the planning cell for {self.serial} in {time.monotonic() - started:.1f} s; "
+                          f"why: {why}")
 
         state = RobotCellState(
             robot_base_frame=frame_from_pose(acting.base),
@@ -215,6 +186,17 @@ class CompasFabMirror:
         return (acting == old_acting and others == old_others and geometries.keys() == old_geometries.keys()
                 and all(geometry is old_geometries[key] for key, geometry in geometries.items()))
 
+    def _rebuild_reason(self, built: tuple) -> str:
+        """Why the cell must be rebuilt for `built`, in the terms `_same` compares; for the log."""
+        if self._built is None:
+            return "first build"
+        acting, others, geometries = built
+        old_acting, old_others, old_geometries = self._built
+        reasons = ["the acting robot's config changed"] if acting != old_acting else []
+        reasons += _changes("robots", others, old_others, lambda new, old: new == old)
+        reasons += _changes("bodies", geometries, old_geometries, lambda new, old: new is old)
+        return "; ".join(reasons)
+
     def _build(self, built: tuple) -> None:
         """Build the cell and hand it to compas_fab. Slow: loads models the first time, writes OBJ files.
 
@@ -223,12 +205,15 @@ class CompasFabMirror:
         """
         acting, others, geometries = built
         if self._robot is None or self._robot[0] != acting:
-            model = load_model(acting.urdf_file)
+            model = load_model(acting.urdf_file, visual=False)
             self._robot = (acting, model, semantics_with_tools(acting, model))
         _, model, semantics = self._robot
-        self._tools = {config: self._tools.get(config) or ToolModel.from_robot_model(load_model(config.urdf_file),
-                                                                                     Frame.worldXY())
-                       for config in others.values()}
+
+        def tool_model(config: RobotConfig) -> ToolModel:
+            """Another robot as a tool, collision shapes only."""
+            return ToolModel.from_robot_model(load_model(config.urdf_file, visual=False), Frame.worldXY())
+
+        self._tools = {config: self._tools.get(config) or tool_model(config) for config in others.values()}
         self._bodies = {geometry: self._bodies.get(geometry) or rigid_body(geometry)
                         for geometry in geometries.values()}
         tools = {key: self._tools[config] for key, config in others.items()}
@@ -362,6 +347,28 @@ class CompasFabMirror:
             self.client.client_id = None
 
 
+def _changes(kind: str, new: Mapping, old: Mapping, same: Callable[[object, object], bool]) -> list[str]:
+    """What differs between two maps of our id -> model, for the rebuild log.
+
+    Args:
+        kind: What the ids are, e.g. "bodies".
+        new: The models now.
+        old: The models the cell was built from.
+        same: Whether a new model counts as the old one (equal configs; for geometry, the same object).
+
+    Returns:
+        list[str]: Up to three parts, e.g. "bodies added: bars/3, bars/4".
+    """
+    parts = []
+    for label, ids in (("added", new.keys() - old.keys()), ("removed", old.keys() - new.keys()),
+                       ("changed", {key for key in new.keys() & old.keys() if not same(new[key], old[key])})):
+        if ids:
+            ids = sorted(ids)
+            shown = ", ".join(ids[:5]) + (f" and {len(ids) - 5} more" if len(ids) > 5 else "")
+            parts.append(f"{kind} {label}: {shown}")
+    return parts
+
+
 # --- --- --- --- --- FAST CHECKS FOR SEARCHES --- --- --- --- ---
 
 @dataclass(frozen=True)
@@ -380,17 +387,15 @@ class _Part:
 
 
 class SearchCheck:
-    """compas_fab's collision rules for a search over some joints, resolved once, checked fast.
+    """compas_fab's collision rules for a search over some joints, resolved once and checked fast.
 
-    compas_fab's `check_collision` copies the whole state and walks every pair on each
-    call. Here the allowed pairs (SRDF, touch links, touch bodies, hidden objects) are
-    resolved once from the synced state, and only pairs with a moving side are kept:
-    the searched joints' links and the bodies attached to them. A call then sets
-    those joints, moves the attached bodies and checks the kept pairs.
+    * Why ours: compas_fab's `check_collision` resets the whole cell and walks every pair on each call
+      (3.6 ms vs 0.16 ms here; arm plans ran ~12x slower and hit the search time limit). Replace it once
+      compas_fab offers a fast repeated check.
 
-    ! Pairs where nothing moves are not checked: check the start once with `collisions`.
-    ! It leaves the world at the last configuration checked; `sync` and `collisions` put it back.
-    ! Build it after `sync`, and again after the next one.
+    - ! Only pairs with a moving side are checked: check the start once with `collisions`.
+    - ! It leaves the world at the last configuration checked; `sync` and `collisions` put it back.
+    - ! Build it after each `sync`.
     """
 
     def __init__(self, mirror: CompasFabMirror, joint_names: Sequence[str]):

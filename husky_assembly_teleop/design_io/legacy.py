@@ -1,14 +1,9 @@
 """
-Read the current compas_fab export (RobotCell*.json, BarActions/, ActionSchedule.json,
-WalkableGround.json) into a schema 1 `Design`. Rules: tasks/2026-10-01_design_io_library.md §8.
+Read an old compas_fab export (RobotCell*.json, BarActions/, ActionSchedule.json, WalkableGround.json) into a
+schema 1 `Design`.
 
-    design = read_legacy(folder, robot_files)       # then design_io.write(design, new_folder)
-    export = load_export(folder)                    # the compas_fab objects as they are, e.g. to view them
-
-* The robots come from their URDF and SRDF files (`robot_files`), not from the models embedded in
-  the cells; every joint of the embedded model is checked against the file.
-* Every id is made once, from any cell: `bar_B1` and `env_bar_B1` are both `bars/B1`.
-! Slow: loads three ~350 MB cells (~15 s). Imports compas and rs_data_structure.
+Robots come from the given URDF and SRDF files, checked joint by joint against the models in the cells.
+! Slow (~15 s for three ~350 MB cells). Imports compas and rs_data_structure.
 """
 
 from __future__ import annotations
@@ -35,7 +30,7 @@ from .types import (Action, Attached, BodySpec, Design, Movement, RobotSpec, Rob
 from .timing import Stopwatch
 from .version import writer_info
 
-#: Movement class -> (type, both arms of a dual-arm robot move, coupled).
+#: Movement class -> (movement type, coupled).
 MOVEMENT_KINDS: Dict[str, Tuple[str, bool]] = {
     "IndependentDualArmFreeMovement": ("free", False),
     "EndEffectorConstrainedDualArmFreeMovement": ("free", True),
@@ -70,13 +65,7 @@ _SAME = 1e-6
 
 
 def default_tool_kind(name: str) -> str:
-    """The execution kind of a Rhino tool name: scaffolding tools and the support gripper.
-
-    Args:
-        name: Rhino registry name, e.g. "AT3L", "AT3_E1R", "SupportGripper".
-
-    Returns:
-        str: The monitor's end effector kind.
+    """The end effector kind of a Rhino tool name, e.g. "AT3L" or "SupportGripper".
 
     Raises:
         KeyError: For a name this rule does not know.
@@ -92,7 +81,7 @@ def default_tool_kind(name: str) -> str:
 
 @dataclass(frozen=True)
 class Export:
-    """An export folder as compas_fab and rs_data_structure objects, loaded from its JSON as is.
+    """An export folder as compas_fab and rs_data_structure objects, as loaded.
 
     Attributes:
         folder: The export folder.
@@ -110,24 +99,14 @@ class Export:
         """Our id of a robot named in the schedule: "Cindy" -> "robots/cindy"."""
         return f"robots/{name.lower()}"
 
-    def cell_of(self, robot_id: str) -> RobotCell:
-        """The cell in which a robot (our id) is the acting one."""
-        for name, entry in self.schedule["robots"].items():
-            if self.robot_id(name) == robot_id:
-                return self.cells[entry["robot_id"]]
-        raise KeyError(f"no robot {robot_id!r} in the schedule of {self.folder}")
-
 
 def load_export(folder, report: Callable[[str], None] = print, watch: Optional[Stopwatch] = None) -> Export:
-    """Load an export with compas: every cell, the schedule and every scheduled action.
+    """Load an export's cells, schedule and scheduled actions with compas.
 
     Args:
         folder: The export folder, holding ActionSchedule.json.
         report: Told what is being loaded.
         watch: Gets a lap per cell file and one for the actions, if given.
-
-    Returns:
-        Export: The loaded objects, unchanged.
     """
     folder = Path(folder)
     schedule = json.loads((folder / "ActionSchedule.json").read_text())
@@ -149,18 +128,7 @@ def read_legacy(folder, robot_files: Mapping[str, Tuple[Path, Path]],
                 serials: Optional[Mapping[str, str]] = None,
                 tool_kind: Callable[[str], str] = default_tool_kind,
                 report: Callable[[str], None] = print) -> Design:
-    """Read a current export folder into a schema 1 design, in memory: `load_export`, then `from_export`.
-
-    Args:
-        folder: The export folder, holding ActionSchedule.json.
-        robot_files: Robot name as in the schedule ("Cindy") -> (URDF, SRDF) the cells were built from.
-        serials: Robot name -> hardware serial ("0806"), for robots that exist.
-        tool_kind: Rhino tool name -> execution kind.
-        report: Told about everything filled in or dropped, one line each.
-
-    Returns:
-        Design: With `folder` None; `design_io.write` puts it on disk.
-    """
+    """Read an export folder into an in-memory design (`folder` None): `load_export`, then `from_export`."""
     report(f"reading {folder}")
     return from_export(load_export(folder, report), robot_files, serials, tool_kind, report)
 
@@ -169,25 +137,28 @@ def from_export(export: Export, robot_files: Mapping[str, Tuple[Path, Path]],
                 serials: Optional[Mapping[str, str]] = None,
                 tool_kind: Callable[[str], str] = default_tool_kind,
                 report: Callable[[str], None] = print) -> Design:
-    """Convert a loaded export into a schema 1 design, in memory. The export is not modified.
+    """Convert a loaded export into an in-memory design (`folder` None); the export is not modified.
 
     Args:
         export: From `load_export`.
         robot_files: Robot name as in the schedule ("Cindy") -> (URDF, SRDF) the cells were built from.
-        serials: Robot name -> hardware serial ("0806"), for robots that exist.
-        tool_kind: Rhino tool name -> execution kind.
+        serials: Robot name -> hardware serial ("0806").
+        tool_kind: Rhino tool name -> end effector kind.
         report: Told about everything filled in or dropped, one line each.
 
-    Returns:
-        Design: With `folder` None.
-
     Raises:
-        ValueError: If a robot's URDF does not match the model in its cell (joint names or origins).
+        ValueError: If a robot's URDF does not match the model in its cell (joint names or origins), or the
+            export holds data a design cannot carry (`_refuse_unsupported`, a tool with moving joints).
     """
     schedule, cells, actions = export.schedule, export.cells, export.actions
     names = {entry["robot_id"]: name for name, entry in schedule["robots"].items()}   # robot_id -> "Cindy"
     robot_ids = {name: export.robot_id(name) for name in schedule["robots"]}         # "Cindy" -> robots/cindy
 
+    unscheduled = sorted({path.name for path in (export.folder / "BarActions").glob("*.json")}
+                         - {Path(entry["file"]).name for entry in schedule["schedule"]})
+    if unscheduled:
+        report(f"{len(unscheduled)} BarActions file(s) are not in the schedule and are left out: "
+               f"{', '.join(unscheduled)}")
     converter = _Converter(cells, names, robot_ids, robot_files, serials or {}, tool_kind, report)
     converter.collect(actions)
     ground = _walkable_ground(export.folder / "WalkableGround.json", converter, report)
@@ -206,14 +177,7 @@ def from_export(export: Export, robot_files: Mapping[str, Tuple[Path, Path]],
 # --- --- --- --- --- CONVERSION --- --- --- --- ---
 
 def body_id(name: str) -> str:
-    """Our id of a rigid body of the current export.
-
-    Args:
-        name: E.g. "bar_B1", "env_bar_B1", "joint_J1-3_male", "obstacle_column".
-
-    Returns:
-        str: E.g. "bars/B1", "joints/J1-3_male", "obstacles/column".
-    """
+    """Our id of an export's rigid body, e.g. "bar_B1" and "env_bar_B1" -> "bars/B1"; unknown prefixes -> obstacles."""
     name = name[len("env_"):] if name.startswith("env_") else name
     for prefix, group in (("bar_", "bars"), ("joint_", "joints"), ("obstacle_", "obstacles")):
         if name.startswith(prefix):
@@ -250,11 +214,7 @@ class _Converter:
     # --- --- robots, tools and bodies, from every movement --- ---
 
     def collect(self, actions) -> None:
-        """Find robots, tools and bodies, and each body's design pose, from every movement.
-
-        Args:
-            actions: (schedule entry, action) pairs in schedule order.
-        """
+        """Find robots, tools, bodies and each body's design pose, from (schedule entry, action) pairs."""
         tool_names: Dict[str, set] = {}    # cell tool name -> robots that carry it
         mounts: Dict[str, Dict[str, str]] = {}
         tool_touches: Dict[Tuple[str, str], set] = {}
@@ -262,6 +222,7 @@ class _Converter:
             robot = self.robot_ids[entry["robot"]]
             cell = self.cells[action.robot_id]
             for movement in action.movements:
+                _refuse_unsupported(movement)
                 for name, tool_state in movement.start_state.tool_states.items():
                     if name.startswith("ObstacleRobot") or not tool_state.attached_to_group:
                         continue
@@ -286,8 +247,7 @@ class _Converter:
                                            tools={flange: self._tool_ids[(robot, name)]
                                                   for flange, name in sorted(flanges.items())})
 
-        # * Bodies: geometry from the first cell that has them, design pose from the last movement
-        #   in which they are present and not held.
+        # * Bodies: geometry from the first cell that has them, pose from the last movement where present and unheld.
         poses: Dict[str, Pose] = {}
         for cell in self.cells.values():
             for name, rigid_body in cell.rigid_body_models.items():
@@ -314,9 +274,6 @@ class _Converter:
             entry: Its ActionSchedule.json entry.
             action: The loaded rs_data_structure action.
             ground: Ids of the ground bodies, present in every state.
-
-        Returns:
-            Action: The converted action.
         """
         robot = self.robot_ids[entry["robot"]]
         cell = self.cells[action.robot_id]
@@ -330,7 +287,7 @@ class _Converter:
                       label=action.tag or "")
 
     def movement(self, robot: str, cell: RobotCell, movement, bar: str, ground: Tuple[str, ...]) -> Movement:
-        """One movement, its start state and its target.
+        """One rs_data_structure movement, with its start state and target.
 
         Args:
             robot: The acting robot's id.
@@ -338,9 +295,6 @@ class _Converter:
             movement: The rs_data_structure movement.
             bar: The action's bar name ("B3").
             ground: Ids of the ground bodies.
-
-        Returns:
-            Movement: The converted movement.
         """
         kind, coupled = MOVEMENT_KINDS[type(movement).__name__]
         flanges = tuple(link_id(robot, flange) for flange in self.robots[robot].tools)
@@ -356,15 +310,12 @@ class _Converter:
                         target=self.target(robot, movement, flanges), label=movement.tag or "", notes=notes)
 
     def target(self, robot: str, movement, flanges: Tuple[str, ...]) -> Optional[Target]:
-        """A movement's target: its target configuration and flange frames.
+        """A movement's target configuration and flange frames, or None when it has neither.
 
         Args:
             robot: The acting robot's id.
             movement: The rs_data_structure movement.
-            flanges: The acting robot's flange link ids, left before right.
-
-        Returns:
-            Target | None: None when the movement has neither.
+            flanges: The acting robot's flange link ids.
         """
         joints = {}
         if movement.target_configuration is not None:
@@ -381,7 +332,7 @@ class _Converter:
 
     def state(self, robot: str, cell: RobotCell, legacy: RobotCellState, ground: Tuple[str, ...],
               placeholder: frozenset) -> State:
-        """One start state.
+        """One compas_fab start state as a State.
 
         Args:
             robot: The acting robot's id.
@@ -389,9 +340,6 @@ class _Converter:
             legacy: The compas_fab state.
             ground: Ids of the ground bodies, always present.
             placeholder: Ids whose pose is a placeholder.
-
-        Returns:
-            State: The converted state.
         """
         robots: Dict[str, Optional[RobotState]] = {other: None for other in self.robots}
         configuration = legacy.robot_configuration
@@ -436,15 +384,7 @@ class _Converter:
         return body_id(name)
 
     def _joints(self, robot: str, configuration) -> Dict[str, float]:
-        """Every movable joint of a robot: the configuration's values, the rest from its last state or zero.
-
-        Args:
-            robot: The robot's id.
-            configuration: A compas configuration, possibly partial.
-
-        Returns:
-            dict[str, float]: Joint name -> value.
-        """
+        """Every movable joint from a possibly partial configuration; the rest from the robot's last state or zero."""
         given = dict(zip(configuration.joint_names, map(float, configuration.joint_values))) if configuration else {}
         last = self._last.get(robot, {})
         movable = self._files[robot][2]
@@ -466,16 +406,7 @@ def _same(a: Pose, b: Pose) -> bool:
 
 
 def _tri(mesh, matrix: Optional[np.ndarray] = None, scale: float = 1.0) -> TriMesh:
-    """A compas mesh as one of ours, scaled, then transformed.
-
-    Args:
-        mesh: The compas mesh.
-        matrix: 4x4 transform applied after scaling, or None.
-        scale: Uniform scale to metres.
-
-    Returns:
-        TriMesh: The triangles.
-    """
+    """A compas mesh as one of ours, scaled, then transformed by a 4x4 `matrix` if given."""
     vertices, faces = mesh.to_vertices_and_faces(triangulated=True)
     points = np.asarray(vertices, dtype=float) * scale
     if matrix is not None:
@@ -484,10 +415,7 @@ def _tri(mesh, matrix: Optional[np.ndarray] = None, scale: float = 1.0) -> TriMe
 
 
 def _shared(geometry: Geometry) -> Geometry:
-    """The same geometry, its visual shapes replaced by the collision ones when they are equal.
-
-    ? So the writer sees one list and leaves `visual` out (format §4.3).
-    """
+    """The same geometry, its visual shapes replaced by the collision ones when equal, so the writer omits `visual`."""
     same = len(geometry.visual) == len(geometry.collision) and all(
         np.array_equal(v.vertices, c.vertices) and np.array_equal(v.faces, c.faces)
         for v, c in zip(geometry.visual, geometry.collision))
@@ -499,15 +427,36 @@ def _body_geometry(rigid_body) -> Geometry:
     return _shared(Geometry.from_rigid_body(rigid_body))
 
 
-def _model_geometry(model) -> Geometry:
-    """A tool model's meshes in its base frame, at zero configuration: visual and collision.
+def _refuse_unsupported(movement) -> None:
+    """Raise if a movement holds data a design cannot carry, instead of dropping it.
 
-    Args:
-        model: A compas ToolModel (a RobotModel).
-
-    Returns:
-        Geometry: Each link's meshes with its link frame, visual origin and mesh scale applied.
+    Raises:
+        ValueError: For a trajectory, or a tool state that is hidden, configured or attached off its flange.
     """
+    where = movement.movement_id
+    if getattr(movement, "trajectory", None) is not None:
+        raise ValueError(f"{where}: has a trajectory; planned results are not part of a design (format §8)")
+    for name, tool_state in movement.start_state.tool_states.items():
+        if name.startswith("ObstacleRobot"):
+            continue
+        if tool_state.is_hidden:
+            raise ValueError(f"{where}: tool {name} is hidden; a design has no hidden tools")
+        if tool_state.configuration is not None:
+            raise ValueError(f"{where}: tool {name} has a configuration; design tools have no joints")
+        frame = tool_state.attachment_frame
+        if frame is not None and not np.allclose(np.asarray(frame.to_transformation().matrix), np.eye(4), atol=_SAME):
+            raise ValueError(f"{where}: tool {name} is attached off its flange; a design mounts tools on the flange")
+
+
+def _model_geometry(model) -> Geometry:
+    """A compas ToolModel's meshes in its base frame.
+
+    Raises:
+        ValueError: If the tool has a joint that moves: a design tool is one rigid shape.
+    """
+    moving = [joint.name for joint in model.joints if joint.type != joint.FIXED]
+    if moving:
+        raise ValueError(f"tool {model.name} has moving joints {moving}; a design tool is one rigid shape")
     transformations = model.compute_transformations(model.zero_configuration())
 
     def shapes(which: str):
@@ -529,15 +478,12 @@ def _model_geometry(model) -> Geometry:
 
 
 def _walkable_ground(path: Path, converter: _Converter, report: Callable[[str], None]) -> Dict[str, BodySpec]:
-    """The walkable ground patches as `ground/<id>` bodies: slabs below each polygon, in metres.
+    """The walkable ground patches as `ground/<id>` slab bodies in metres; empty if the file is missing.
 
     Args:
         path: WalkableGround.json.
         converter: For the robots' wheel links, allowed to touch the ground.
         report: Told about the conversion.
-
-    Returns:
-        dict[str, BodySpec]: Ground bodies by id; empty if the file is missing.
     """
     if not path.is_file():
         report("no WalkableGround.json: no ground bodies")
@@ -558,14 +504,7 @@ def _walkable_ground(path: Path, converter: _Converter, report: Callable[[str], 
 
 
 def _slab(polygon: np.ndarray) -> TriMesh:
-    """Extrude a polygon downward by GROUND_THICKNESS into a closed slab (top face at the polygon).
-
-    Args:
-        polygon: (n, 3) corners in order.
-
-    Returns:
-        TriMesh: The slab, triangulated.
-    """
+    """Extrude an (n, 3) polygon downward by GROUND_THICKNESS into a closed, triangulated slab."""
     n = len(polygon)
     top = polygon
     bottom = polygon - np.array([0.0, 0.0, GROUND_THICKNESS])
@@ -580,14 +519,7 @@ def _slab(polygon: np.ndarray) -> TriMesh:
 
 
 def _check_model(cell: RobotCell, urdf: Path) -> None:
-    """Check that a URDF is the robot embedded in a cell: same joints, same joint origins.
-
-    ? Calibration lives in the joint origins, so a URDF with the right names but another
-      calibration is caught here.
-
-    Args:
-        cell: The cell.
-        urdf: The URDF meant to be the same robot.
+    """Check that a URDF has the same joints and joint origins (the calibration) as the robot in a cell.
 
     Raises:
         ValueError: If joint names differ, or an origin differs by more than _SAME.

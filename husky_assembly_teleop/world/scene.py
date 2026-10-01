@@ -1,18 +1,14 @@
 """
-The scene: every collision object we don't measure, plus one copy of the whole
-world per tick for planners and the 3D view.
+The scene: every collision object we don't measure, plus a per-tick snapshot of the whole world
+for planners and the 3D view.
 
-    tick:  pump ROS → kinematics.update → take_snapshot → plugins → draw
-                                           └─ planners and the 3D view read this copy
+The snapshot is taken before plugins run, so it holds one ROS pump's measurements and every plugin's
+complete writes of the previous tick.
 
-* Plugins change bodies freely, in place or with `put`, during their step. The
-  copy is taken before any plugin runs, so it always holds one ROS pump's
-  measurements and every plugin's complete writes of the previous tick.
-
-! Main thread only: the scene, `Body` objects in it and `take_snapshot`.
-  A snapshot can be read from any thread; treat it as read-only.
-! To change a body's shape, assign a new `Geometry`. Never change one in place:
-  mirrors rebuild only when the geometry object is a different one.
+- ! Main thread only: the scene, its `Body` objects and `take_snapshot`. A snapshot can be read from
+  any thread; treat it as read-only.
+- ! To change a body's shape, assign a new `Geometry`, never edit one in place: mirrors rebuild only
+  when the geometry object changes.
 """
 
 from __future__ import annotations
@@ -20,12 +16,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Callable, Iterable
 
-# Pose, compose and ids live in design_io, shared with design files; re-exported here.
-from ..design_io.pose import ID_PATTERN, Pose, check_id, compose  # noqa: F401
+from ..design_io.pose import Pose, check_id, compose
 
 if TYPE_CHECKING:
     from ..config import RobotConfig
-    from .geometry import Geometry
+    from ..design_io.geometry import Geometry
     from .kinematics import Kinematics
     from .measured import WorldState
 
@@ -70,9 +65,8 @@ class Body:
         id: Unique path, "<owning plugin>/<group…>/<name>". Never changes.
         geometry: Its shape. ! Assign a new one to change it; never edit it in place.
         placement: A world pose, or an attachment to a robot link or tracked object.
-        touches: Ids allowed to touch it: bodies, "robots/<serial>" (the whole
-            robot), "robots/<serial>/<link>" (one link), "tracked/<name>".
-            Symmetric: it doesn't matter which side lists the other.
+        touches: Ids allowed to touch it: bodies, "robots/<serial>" (whole robot),
+            "robots/<serial>/<link>", "tracked/<name>". Either side may list the other.
         label: Display text, e.g. in collision messages. Empty: use the id.
         color: (r, g, b, a) from 0 to 1 for the 3D view, or None for grey.
     """
@@ -87,7 +81,7 @@ class Body:
     def copy(self) -> Body:
         """A copy that later changes to this body don't reach. Shares the geometry.
 
-        ? Built by hand: about four times faster than `copy.copy` for a dataclass.
+        ? Built by hand: about 4x faster than `copy.copy`.
         """
         return Body(self.id, self.geometry, self.placement, self.touches, self.label, self.color)
 
@@ -114,17 +108,15 @@ class RobotEntry:
     """One robot, as measured at the start of the tick.
 
     Attributes:
-        config: The robot's configuration. Its `urdf_file` is the stitched URDF.
-            ! A different config object means a different robot model: mirrors reload it.
+        config: The robot's configuration. ! A different config object makes mirrors reload the model.
         base: Last valid mocap pose, or the configured default before any.
         base_tracked: Whether the latest mocap sample was valid.
         joints: Last measured value per actuated joint.
         unmeasured: Joints never measured; their value in `joints` is 0.
         base_time: ROS time of the mocap fix behind `base`, or None.
-        joints_time: ROS time of the oldest arm's latest joint state, or None
-            if an arm has never reported.
-            ! Base and arms are measured by different sensors at different
-              instants. While the robot moves, `base_time - joints_time` is the error.
+        joints_time: ROS time of the oldest arm's latest joint state, or None if an arm never reported.
+            ! Base and arms are measured at different instants; while moving, `base_time - joints_time`
+            is the error.
     """
 
     config: RobotConfig
@@ -162,8 +154,7 @@ class SceneSnapshot:
     Attributes:
         tick: Index of the tick it was taken in.
         time: ROS time it was taken.
-        bodies: Copies of every body, by id. An attached body whose parent has no
-            pose (a tracked object never seen) is left out.
+        bodies: Copies of every body, by id, except attached ones whose parent has no pose yet.
         world_poses: The world pose of every body in `bodies`, attachments resolved.
         robots: Every robot, by serial.
         tracked: Every tracked object that has had a fix, by name.
@@ -191,7 +182,7 @@ class SceneSnapshot:
 # --- --- --- --- --- THE STORE --- --- --- --- ---
 
 class Scene:
-    """Every body plugins put in, the tracked objects' descriptions, and the latest copy. One instance, core.
+    """Every body plugins put in, the tracked objects' descriptions, and the latest snapshot.
 
     ! Main thread only.
     """
@@ -234,7 +225,7 @@ class Scene:
         return self._snapshot
 
     def take_snapshot(self, world: WorldState, kinematics: Kinematics, tick: int, time: float) -> SceneSnapshot:
-        """Copy the whole world. The monitor calls this once per tick, after kinematics.update.
+        """Copy the whole world; called once per tick, after kinematics.update.
 
         Args:
             world: Measured state, for tracked objects and timestamps.
@@ -281,7 +272,8 @@ class Scene:
             return placement
         kind, name = placement.parent.split("/", 1)
         if kind == ROBOTS:
-            parent = kinematics.base_pose(name) if placement.link is None else kinematics.link_pose(name, placement.link)
+            parent = (kinematics.base_pose(name) if placement.link is None
+                      else kinematics.link_pose(name, placement.link))
         else:
             entry = tracked.get(name)
             if entry is None:
@@ -293,8 +285,7 @@ class Scene:
 class PluginScene:
     """A plugin's handle on the scene (`ctx.scene`): it may add and remove only ids under its own name.
 
-    ! Bodies in `bodies` are the live ones: changing a field changes the scene.
-      Change only your own; nothing stops you from changing another plugin's.
+    ! `bodies` holds the live ones: change only your own; nothing stops you from changing another plugin's.
     """
 
     def __init__(self, scene: Scene, owner: str, log_warn: Callable[[str], None]):

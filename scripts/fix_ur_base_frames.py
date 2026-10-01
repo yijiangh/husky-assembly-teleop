@@ -6,7 +6,8 @@ Usage:
 
 Writes `<in>_StockUrFrames.urdf`. For each arm, the joints below
 `<arm>_base_link` are set to the stock rpy 0 0 pi, and the rotation that was
-there moves into the mount joint above, so every link stays where it was.
+there moves into the mount joint above, so every link except a mis-set
+`<arm>_base` stays where it was.
 Why: doc/ur_frames.md.
 """
 

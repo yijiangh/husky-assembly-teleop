@@ -1,6 +1,6 @@
 # Design file format, schema 1
 
-Status: **proposal**. Replaces the compas_fab JSON export (`RobotCell*.json`, `BarActions/`,
+Status: **implemented** (schema 1). Replaces the compas_fab JSON export (`RobotCell*.json`, `BarActions/`,
 `ActionSchedule.json`, `WalkableGround.json`). Read and written by the `design_io` library
 (plan: `tasks/2026-10-01_design_io_library.md`).
 
@@ -58,6 +58,7 @@ modeling-only objects that do not exist physically (Rhino "fake bars" and their 
 | `robots/<robot>` | robot | `robots/cindy` |
 | `robots/<robot>/<link>` | one URDF link of a robot | `robots/cindy/left_ur_arm_tool0` |
 | `tools/<tool>` | tool mounted on a robot | `tools/AT3L` |
+| `tools/<robot>/<tool>` | tool whose name is mounted on several robots | `tools/alice/SupportGripper` |
 | `bars/<bar>` | bar | `bars/B3` |
 | `joints/<joint>` | joint half | `joints/J1-3_male` |
 | `ground/<ground>` | walkable ground surface | `ground/WG0` |
@@ -199,14 +200,14 @@ At least one key.
 ## 7. Writer and versioning
 
 ```json
-"writer": {"schema": 1, "library": "design_io", "commit": "a1b2c3d", "dirty": false}
+"writer": {"schema": 1, "library": "design_io", "commit": "3f9c2e71b0ad", "dirty": false}
 ```
 
 | Key | Meaning |
 |---|---|
 | `schema` | Format version. Incremented on every incompatible change. |
 | `library` | Name of the writing library. |
-| `commit` | Its git commit, or `"unknown"`. |
+| `commit` | Its git commit (12-character short hash), or `"unknown"`. |
 | `dirty` | Written from uncommitted library changes. |
 
 A reader accepts only its own `schema`. On mismatch it stops and names `commit`: to read an old
@@ -239,7 +240,7 @@ A reader rejects a design that breaks any rule.
 | # | Decision | Reason |
 |---|---|---|
 | R1 | One world, not one cell per robot | Three robots share one scene. compas_fab's one-robot-per-planner limit is a property of that backend, handled by its adapter (App. A), not by the file. |
-| R2 | One id per object, path-shaped | Current exports name one bar `bar_B1` or `env_bar_B1` depending on the cell. Paths give grouping without a `kind` field, and match the monitor's scene ids. |
+| R2 | One id per object, path-shaped | Current exports name one bar `bar_B1` or `env_bar_B1` depending on the cell. Paths give grouping without a `kind` field. |
 | R3 | `null` for an absent robot | The parking pose `(50, 50, 0)` is indistinguishable from a real pose to every reader that does not know the convention. |
 | R4 | Full state per movement | Kept from the producer (`bar_action.py`): any movement is readable without replaying earlier ones. States hold no geometry, so repetition is small. |
 | R5 | `joints: null` has one meaning | "Not fixed at design time." The producer's two readings (live current, planner fills) are decided by the consumer, not the file. |
@@ -255,7 +256,7 @@ A reader rejects a design that breaks any rule.
 | R15 | Schema number plus commit, no conversion | Old designs are read with old code. The number keeps one reader working across commits that did not change the format; the commit says which code to use otherwise. |
 | R16 | Planner results in `solutions/` | The exported design never changes after export; each planning run is attributable. |
 | R17 | Arms named by flange link, not SRDF group | The arm-only and base-rooted groups (`Left arm`, `base_left_arm_manipulator`) move the same six joints and end at the same link; they differ only in the root frame for IK targets. Which group to plan with is a planner choice; the file states only what moves. |
-| R18 | Tool `id` and `kind` both | The id names a geometry variant (Rhino's candidates `AT3L`, `AT3_E1L`, …); the kind names the hardware driver (`scaffolding_v3`). Several variants share one driver, so neither can replace the other. |
+| R18 | Tool `id` and `kind` both | The id names a geometry variant (Rhino's candidates `AT3L`, `AT3_E1L`, …); the kind names the hardware driver (`scaffolding_v3`). Several variants share one driver, so neither can replace the other. A tool name mounted on several robots (`SupportGripper`) gets the robot in its id: `tools/<robot>/<tool>`. |
 | R19 | No modeling-only objects | Rhino's fake bars give a real bar's male joint a partner to be placed against; they are excluded from every collision scene and never assembled. Only the Rhino document needs them. |
 | R20 | Relative robot mesh paths | The design folder can move. compas_robots resolves a plain path against the working directory, so resolving against the URDF folder is the reader's job. |
 
@@ -269,7 +270,7 @@ its `RobotCellState` for one State.
 | Acting robot URDF + SRDF | `robot_model`, `robot_semantics`; mesh paths made absolute before loading |
 | `arms` | Planning group: the SRDF group ending at that link, rooted at the URDF root (as Rhino uses `base_left_arm_manipulator`) |
 | Other robot | `ToolModel` from its URDF, its tool meshes welded to the flange |
-| Tool of the acting robot | `ToolModel`: collision meshes, `frame` = `tcp` |
+| Tool of the acting robot | `ToolModel`: visual and collision meshes, `frame` = `tcp` |
 | Body | `RigidBody`; primitives triangulated |
 | Acting robot `base`, `joints` | `robot_base_frame`, `robot_configuration` (`None` for `null`) |
 | Other robot present | `ToolState`: `frame` = base, `configuration` = joints |
@@ -280,8 +281,9 @@ its `RobotCellState` for one State.
 | `touches` entry naming an acting-robot link | `touch_links` |
 | other `touches` entry | `touch_bodies` |
 
-`from_compas_fab` reads the other way. Lossy: primitives stay meshes; `attached_to_tool` becomes a
-link attachment with the composed grasp.
+The reverse path reads the current export (App. B), not a `RobotCell`: `legacy.read_legacy` (or
+`from_export` on a loaded export). Lossy: primitives stay meshes. A body `attached_to_tool` is not
+supported yet (the converter raises an error).
 
 ## Appendix B. Current export → schema 1
 
@@ -310,15 +312,15 @@ link attachment with the composed grasp.
 ```json
 {
   "format": "husky_design",
-  "writer": {"schema": 1, "library": "design_io", "commit": "a1b2c3d", "dirty": false},
+  "writer": {"schema": 1, "library": "design_io", "commit": "3f9c2e71b0ad", "dirty": false},
   "robots": {
     "robots/cindy": {"urdf": "robots/cindy/robot.urdf", "srdf": "robots/cindy/robot.srdf", "serial": "0806",
                      "tools": {"left_ur_arm_tool0": "tools/AT3L", "right_ur_arm_tool0": "tools/AT3R"}},
     "robots/alice": {"urdf": "robots/alice/robot.urdf", "srdf": "robots/alice/robot.srdf", "serial": "0804",
-                     "tools": {"ur_arm_tool0": "tools/SupportGripper"}}
+                     "tools": {"ur_arm_tool0": "tools/alice/SupportGripper"}}
   },
   "tools": {
-    "tools/AT3L": {"collision": [{"mesh": "meshes/tools/AT3_E1L.obj"}], "tcp": [0, 0, 0.12, 0, 0, 0, 1],
+    "tools/AT3L": {"collision": [{"mesh": "meshes/tools/AT3L.obj"}], "tcp": [0, 0, 0.12, 0, 0, 0, 1],
                    "kind": "scaffolding_v3", "touches": ["robots/cindy/left_ur_arm_wrist_3_link"]}
   },
   "bodies": {
@@ -336,7 +338,7 @@ link attachment with the composed grasp.
 ```json
 {
   "format": "husky_design/action",
-  "writer": {"schema": 1, "library": "design_io", "commit": "a1b2c3d", "dirty": false},
+  "writer": {"schema": 1, "library": "design_io", "commit": "3f9c2e71b0ad", "dirty": false},
   "id": "B3_H_hold", "type": "bar_holding", "robot": "robots/alice", "bar": "bars/B3",
   "ground": ["ground/WG0"], "supports_until": ["bars/B4", "bars/B9"],
   "movements": [

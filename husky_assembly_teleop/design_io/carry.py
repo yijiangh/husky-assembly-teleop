@@ -1,14 +1,10 @@
 """
-Joints to assume for a movement whose acting robot has no authored start joints (`joints: null`).
+Joints to assume, for display and planner seeding only, when a movement's acting robot has `joints: null`.
 
-? Free movements often leave the start joints to the planner. Drawing them at zero stretches the
-  arm through the structure; seeding a planner there is poor too. These joints are for display and
-  seeding only, never written into a design.
-
-* Per robot, in schedule order (only the movements that robot acts in):
-  - an authored start sets its pose, then the movement's target joints move it (only those named);
-  - before its first known pose, a movement uses its own target joints;
-  - failing that, the robot's next known start, looking ahead.
+* Per robot, in schedule order:
+  - an authored start sets its joints, then the movement's target joints (those named) move it;
+  - before its first known joints, a movement uses its own target joints;
+  - failing that, the robot's next known start.
 """
 
 from __future__ import annotations
@@ -33,7 +29,7 @@ def _target(movement: Movement, robot: str) -> Dict[str, float]:
 
 
 def assumed_start_all(design: Design) -> dict[tuple[str, str], Assumed]:
-    """Assumed start joints of every movement, in one pass (see the module docstring for the rule).
+    """Assumed start joints of every movement, by the rule in the module docstring.
 
     Args:
         design: The design.
@@ -78,9 +74,7 @@ def assumed_start_all(design: Design) -> dict[tuple[str, str], Assumed]:
 
 
 def assumed_joints(design: Design, action_id: str, movement_id: str) -> tuple[dict[str, float] | None, str]:
-    """Joints to draw or seed the acting robot at, when a movement's start joints for it are None.
-
-    ? Walks the whole schedule on every call; use `assumed_start_all` for many movements.
+    """Assumed start joints of one movement. Walks the whole schedule; use `assumed_start_all` for many.
 
     Args:
         design: The design.

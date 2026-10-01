@@ -1,23 +1,19 @@
 """
-Converting an export in the old compas_fab format into a schema 1 design (doc/design_format.md).
+Convert an export in the old compas_fab format into a schema 1 design, written next to it in `<export>_design`.
 
-    convert_export(export, converted_folder(export), data_directory)
-
-* The robot files are the calibrated URDFs and SRDFs the Rhino workflow builds its cells from,
-  found in the monitor's data directory; they are copied into the design with their meshes.
-* The converted design goes next to the export, in `<export>_design`, so the export is never
-  changed and a converted copy is found again the next time.
-! Slow (~15 s: the export's cells are ~350 MB each). Call it off the main thread.
+The robots are the calibrated URDFs and SRDFs from the data directory, copied into the design with their meshes.
+! Slow (~15 s, the cells are ~350 MB each): call it off the main thread.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Optional
 
-from .design_io import write
-from .design_io.legacy import from_export, load_export
-from .design_io.timing import Stopwatch
+from .write import write
+from .legacy import from_export, load_export
+from .timing import Stopwatch
+from .types import Design
 
 #: A folder holding this is an export in the old compas_fab format.
 OLD_EXPORT_FILE = "ActionSchedule.json"
@@ -42,25 +38,22 @@ SERIALS = {"Cindy": "0806", "Alice": "0804", "Belle": "0805"}
 
 
 def is_old_export(folder: Path) -> bool:
-    """Whether a folder is an export in the old compas_fab format (and not a schema 1 design)."""
+    """Whether a folder is an old compas_fab export and not a schema 1 design."""
     folder = Path(folder)
     return (folder / OLD_EXPORT_FILE).is_file() and not (folder / DESIGN_FILE).is_file()
 
 
 def converted_folder(export: Path) -> Path:
-    """Where an export's converted design goes: a sibling folder named `<export>_design`."""
+    """The sibling folder `<export>_design` an export is converted into."""
     export = Path(export).expanduser().resolve()
     return export.with_name(export.name + CONVERTED_SUFFIX)
 
 
 def is_up_to_date(export: Path) -> bool:
-    """Whether the export's converted copy exists and is newer than every file of the export.
+    """Whether the export's converted copy exists and is newer than every JSON file of the export.
 
     Args:
         export: The export folder.
-
-    Returns:
-        bool: False if there is no converted copy, or the export changed after it was written.
     """
     design_file = converted_folder(export) / DESIGN_FILE
     if not design_file.is_file():
@@ -81,8 +74,25 @@ def robot_files(data_directory: Path) -> dict:
     return {name: (data_directory / urdf, data_directory / srdf) for name, (urdf, srdf) in ROBOT_FILES.items()}
 
 
+def convert_in_memory(export: Path, data_directory: Path, report: Callable[[str], None] = print,
+                      watch: Optional[Stopwatch] = None) -> Design:
+    """Load an export and convert it into an in-memory design (`folder` None), writing nothing.
+
+    Args:
+        export: The export folder, holding ActionSchedule.json.
+        data_directory: The monitor's data directory, holding `husky_urdf/`.
+        report: Told what is being done.
+        watch: Gets a lap per step, if given.
+    """
+    watch = watch if watch is not None else Stopwatch()
+    loaded = load_export(export, report, watch)
+    design = from_export(loaded, robot_files(data_directory), serials=SERIALS, report=report)
+    watch.lap("convert")
+    return design
+
+
 def convert_export(export: Path, destination: Path, data_directory: Path,
-                   report: Callable[[str], None] = print, watch: Stopwatch | None = None) -> Path:
+                   report: Callable[[str], None] = print, watch: Optional[Stopwatch] = None) -> Path:
     """Convert an export into a schema 1 design folder, replacing what is there.
 
     Args:
@@ -90,15 +100,13 @@ def convert_export(export: Path, destination: Path, data_directory: Path,
         destination: The design folder to write.
         data_directory: The monitor's data directory, holding `husky_urdf/`.
         report: Told what is being done.
-        watch: Gets a lap per step (loading each file, converting, writing), if given.
+        watch: Gets a lap per step, if given.
 
     Returns:
         Path: The design folder.
     """
     watch = watch if watch is not None else Stopwatch()
-    loaded = load_export(export, report, watch)
-    design = from_export(loaded, robot_files(data_directory), serials=SERIALS, report=report)
-    watch.lap("convert")
+    design = convert_in_memory(export, data_directory, report, watch)
     report(f"writing {destination}")
     write(design, destination, overwrite=True, package_dirs=[data_directory / "husky_urdf"])
     watch.lap("write (copy robots, read back, validate)")

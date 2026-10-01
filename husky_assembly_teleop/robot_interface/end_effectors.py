@@ -1,8 +1,8 @@
 """
 The tools mounted on an arm's flange, one class per kind.
 
-`make_end_effector` picks the class from ArmConfig.end_effector. All tools share
-open / close / stop; tool-specific actions (e.g. the screw) live on their class only.
+`make_end_effector` picks the class from ArmConfig.end_effector. All tools share open / close / stop;
+tool-specific actions (e.g. the screw) live on their class only.
 """
 
 from __future__ import annotations
@@ -30,8 +30,7 @@ class RobotiqState:
     """What we know about a Robotiq gripper, from its joint states and the GripperCommand action.
 
     Attributes:
-        position: Measured knuckle angle, radians, or None before the first
-            joint state.
+        position: Measured knuckle angle, radians.
         last_update_time: ROS time of the last joint state, seconds.
         commanded_position: Last position sent, or None before the first command.
         commanded_effort: Force limit sent with it, or None.
@@ -74,12 +73,10 @@ class ScaffoldingV3State:
 class ScaffoldingV1State:
     """The two UR tool outputs that drive a v1 scaffolding tool.
 
-    ? The tool reports nothing itself; these are the outputs as the UR reports
-      them, so they also show a screw switched off by the safety sync.
+    ? The tool reports nothing itself; these are the outputs as the UR reports them.
 
     Attributes:
-        gripper_closed: Whether the gripper output is on, or None before the
-            first io_states.
+        gripper_closed: Whether the gripper output says closed.
         screw_on: Whether the screw output is on, or None.
         last_update_time: ROS time of the last io_states, seconds.
         last_request_ok: Whether the last set_io request succeeded, or None.
@@ -95,7 +92,7 @@ EndEffectorState = RobotiqState | ScaffoldingV3State | ScaffoldingV1State
 
 
 # --- --- --- --- --- INTERFACES --- --- --- --- ---
-# ! main thread only, like every command in robot_interface.py.
+# ! Main thread only, like every command in robot_interface.
 
 class EndEffector(ABC):
     """What every mounted tool can do.
@@ -107,7 +104,7 @@ class EndEffector(ABC):
     state: EndEffectorState
 
     def __init__(self, node: Node, robot_namespace: str, arm: ArmConfig):
-        """Remember where the tool's driver lives; subclasses create the I/O.
+        """Remember where the tool's driver lives; subclasses create the ROS entities in `_connect`.
 
         Args:
             node: The monitor node.
@@ -119,7 +116,6 @@ class EndEffector(ABC):
         #: The arm's own driver, for tools switched through the arm.
         self.arm_namespace = f"/{robot_namespace}/{arm.ros_namespace}"
         self.namespace = f"/{robot_namespace}/{arm.end_effector_namespace}"
-        #: Subclasses create their ROS entities through this, in `_connect`.
         self._ros = RosConnections(node)
 
     def _connect(self) -> None:
@@ -144,11 +140,7 @@ class EndEffector(ABC):
 
 
 class RobotiqGripper(EndEffector):
-    """Robotiq 2F-85, moved through the driver's GripperCommand action.
-
-    The driver publishes joint_states and offers reactivate_gripper, both under
-    the tool's namespace.
-    """
+    """Robotiq 2F-85, moved through the driver's GripperCommand action."""
 
     #: Knuckle angle in radians: 0.0 is fully open, 0.8 fully closed.
     OPEN_POSITION = 0.0
@@ -160,7 +152,7 @@ class RobotiqGripper(EndEffector):
     KNUCKLE_JOINT = "robotiq_85_left_knuckle_joint"
 
     def __init__(self, node: Node, robot_namespace: str, arm: ArmConfig):
-        """Create the action client, joint state subscription and reactivate client, without waiting for them."""
+        """Create the action client, joint state subscription and reactivate client."""
         super().__init__(node, robot_namespace, arm)
         self.state = RobotiqState()
         self._connect()
@@ -193,10 +185,7 @@ class RobotiqGripper(EndEffector):
         self.move(self.CLOSED_POSITION)
 
     def stop(self) -> None:
-        """Hold the fingers where they are, by commanding the measured position.
-
-        ? GripperCommand has no stop. Before the first joint state, the last target is re-sent.
-        """
+        """Hold the fingers where they are by commanding the measured (or else last commanded) position."""
         position = self.state.position if self.state.position is not None else self.state.commanded_position
         if position is not None:
             self.move(position, self.state.commanded_effort or self.DEFAULT_EFFORT)
@@ -209,9 +198,8 @@ class RobotiqGripper(EndEffector):
         """Move to `position`.
 
         Args:
-            position: Knuckle angle in radians, OPEN_POSITION to CLOSED_POSITION.
-                Clipped to that range.
-            effort: Force limit passed to the driver, 0.0 to MAX_EFFORT. Clipped.
+            position: Knuckle angle in radians, clipped to OPEN_POSITION..CLOSED_POSITION.
+            effort: Force limit, clipped to 0.0..MAX_EFFORT.
         """
         if not self.server_is_ready():
             self._node.get_logger().warning(f"{self.namespace}: gripper action server is not available")
@@ -229,8 +217,7 @@ class RobotiqGripper(EndEffector):
     def reactivate(self) -> None:
         """Ask the activation controller to reactivate the gripper.
 
-        * Needed after a fault or power loss. The gripper opens and closes once,
-          so keep its fingers clear.
+        ! Needed after a fault or power loss. The gripper opens and closes once, so keep its fingers clear.
         """
         if not self._reactivate.service_is_ready():
             self._node.get_logger().warning(f"{self.namespace}: reactivate_gripper service is not available")
@@ -348,10 +335,8 @@ class ScaffoldingV3(EndEffector):
 class ScaffoldingV1(EndEffector):
     """Scaffolding tool v1, switched through the UR's two tool digital outputs.
 
-    Uses the arm's own set_io service and io_states, in the arm's namespace.
-    Output 0 is the screw (on runs it one way); output 1 is the gripper.
-
-    ! multi_arm_safety_sync switches output 0 off whenever it stops the arms.
+    Output 0 is the screw (on runs it one way; the safety sync switches it off when it stops the arms);
+    output 1 is the gripper.
 
     ? "Gripper on = closed" is unverified: check on the robot and flip GRIPPER_CLOSED_WHEN_ON if wrong.
     """
@@ -388,7 +373,7 @@ class ScaffoldingV1(EndEffector):
     def stop(self) -> None:
         """Switch the screw off.
 
-        ! The gripper is left alone: it has only open and closed, and switching it would drop or grab the bar.
+        ! Leaves the gripper alone: switching it would drop or grab the bar.
         """
         self._set(self.SCREW_PIN, False)
 

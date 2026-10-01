@@ -1,10 +1,7 @@
 """
-Mocap on the ROS side: where the relay publishes a rigid body, and how a sample is
-stored. The same for robot bases and tracked objects.
+Mocap on the ROS side: the relay topic of a rigid body, and how a sample is stored (bases and objects alike).
 
-! Keep this the only place that reads MocapRigidBodyPose, so a base and an
-  object can never disagree about what "tracked" means. Judging a fix is
-  `world.mocap.mocap_check`.
+! Keep this the only reader of MocapRigidBodyPose, so bases and objects agree on what "tracked" means.
 """
 
 from __future__ import annotations
@@ -23,8 +20,7 @@ if TYPE_CHECKING:
 def mocap_topic(mocap_id: int) -> str:
     """The relay topic of one rigid body.
 
-    * The relay's pose is already calibrated and in the Z-up 'rhino' world
-      frame. Use it as is; transforming again would apply it twice.
+    * Its pose is already calibrated and in the Z-up world frame; don't transform it again.
     """
     return f"/mocap/rigid_body/id_{mocap_id}/pose"
 
@@ -34,7 +30,7 @@ def subscribe_mocap(ros: RosConnections, mocap_id: int, body: "MocapBody",
     """Keep `body` updated from rigid body `mocap_id`.
 
     Args:
-        ros: The connections the subscription belongs to (destroyed with them).
+        ros: The connections the subscription belongs to.
         mocap_id: Rigid-body id in the mocap system.
         body: The measured state to write into.
         now: Current ROS time in seconds, stamped on each sample.

@@ -1,23 +1,18 @@
 """
 The ROS2 node that owns everything and runs the tick.
 
-Responsibilities, and nothing beyond them:
+It owns the world state, kinematics, scene, viser server and robot interfaces, drives each plugin, and
+is where the tick order is written down.
 
-  - program lifecycle: bring the pieces up, run, tear them down again
-  - own the world state, the kinematics, the collision scene and the viser server
-  - hold the robot interfaces, and copy the whole world once per tick
-  - drive each plugin: drain its queue, call its update, wake its tasks
-  - run the tick in a fixed order, and be the place that order is written down
-
-! No feature code here. Every experiment, panel and diagnostic is a plugin with
-  its own state. What happens otherwise: doc/refactor_rationale.md.
+! No feature code here: every experiment, panel and diagnostic is a plugin.
 """
 
 from __future__ import annotations
 
 import asyncio
+import gc
 import signal
-import time
+import sys
 import traceback
 from dataclasses import dataclass
 
@@ -29,18 +24,17 @@ from rclpy.signals import SignalHandlerOptions
 from .plugin_api.concurrency import LoopWatchdog
 from .config import MonitorConfig, config_from_ros_parameters
 from .plugin_api.context import PluginContext
-from .world.geometry import Geometry
+from .design_io.geometry import Geometry
 from .world.kinematics import Kinematics
 from .plugin_api.plugin import HuskyPlugin, load_plugins
-from .robot_interface import HuskyRobotInterface
+from .robot_interface.robot import HuskyRobotInterface
 from .robot_interface.connections import RosConnections
 from .robot_interface.mocap import subscribe_mocap
 from .world.scene import PluginScene, Scene, TrackedDescription
 from .ui.visualization import Visualization
 from .world.measured import TrackedObject, WorldState
 
-#: Most ROS callbacks run in one tick. Beyond it the rest wait a tick, so a
-#: flood of messages cannot starve the plugins.
+#: Most ROS callbacks run in one tick; the rest wait, so a flood cannot starve the plugins.
 ROS_CALLBACKS_PER_TICK = 5000
 
 
@@ -50,18 +44,12 @@ class _LoadedPlugin:
 
     Attributes:
         plugin: The plugin instance.
-        ctx: Its context: UI slice, intent queue and tasks. Kept beside the
-            plugin rather than on it, so the plugin's own state cannot collide
-            with monitor-driven internals, and it is built before the context
-            exists. Plugins receive it as a hook argument and never store it.
-        stopped: Set once it, or a plugin it depends on, failed in setup or too
-            often. A stopped plugin is no longer stepped or drawn, its tasks are
-            cancelled, but it stays loaded until shutdown.
-        set_up: Whether its setup was started, so teardown only runs if so.
+        ctx: Its context, kept here rather than on the plugin; plugins get it as a hook argument.
+        stopped: Set once it or a dependency failed too often; no longer stepped or drawn, but loaded.
+        set_up: Whether its setup was started; teardown runs only if so.
         closed: Whether its teardown has run.
         errors: Consecutive ticks in which it raised.
         last_error_tick: Index of the tick it last raised in.
-        last_slow_warning: ROS time of the last slow-step complaint.
     """
 
     plugin: HuskyPlugin
@@ -71,7 +59,6 @@ class _LoadedPlugin:
     closed: bool = False
     errors: int = 0
     last_error_tick: int = -1
-    last_slow_warning: float = 0.0
 
     @property
     def name(self) -> str:
@@ -80,31 +67,16 @@ class _LoadedPlugin:
 
 
 class HuskyMonitor(Node):
-    """The monitor node. Implements MonitorServices for its plugins.
+    """The monitor node. Plugins reach it only through their PluginContext.
 
-    ! Threading. The boundary between these is crucial for correctness.
+    Threads:
+      1. Main: one asyncio loop runs the tick, ROS callbacks, plugin hooks and tasks; all state lives here, unlocked.
+      2. viser's: GUI callbacks may only call PluginContext.submit (via defer) and return.
+      3. Workers (run_in_thread, planner executors): compute on copies such as the snapshot, never shared state.
 
-      1. The main thread runs one asyncio loop: the tick, every ROS callback
-         (pumped from inside the tick), every plugin hook and every plugin task.
-         All state, the kinematics and the live scene live here and need no
-         locks because of it.
-      2. viser's threads. A server thread with its own asyncio loop, plus a
-         worker pool for GUI and scene-click callbacks. Those callbacks may only
-         call PluginContext.submit (via defer) and return.
-      3. Worker threads started by PluginContext.run_in_thread or a planner's
-         own executor, for computation on copies (the scene snapshot). They
-         never touch shared state.
-
-      submit() is the only crossing point from viser: a plugin's queue is
-      drained at the start of its own step, so an intent runs as main-thread code.
-
-    ! ROS callbacks run only at the start of each tick. So between ticks
-      WorldState does not change, and it always matches the kinematics and
-      the tick's scene snapshot.
-      ? Cost: a topic faster than (queue depth x tick rate) loses messages.
-        Give a subscription whose every sample matters a deeper queue.
-
-    ! Construct it inside a running asyncio loop: plugin setup may start tasks.
+    - ! ROS callbacks run only at the start of each tick, so a topic faster than queue depth x tick rate
+      loses messages: give one whose every sample matters a deeper queue.
+    - ! Construct it inside a running asyncio loop: plugin setup may start tasks.
     """
 
     def __init__(self):
@@ -120,8 +92,7 @@ class HuskyMonitor(Node):
         # Monotonic tick counter.
         self._tick_index = 0
 
-        # ? rclpy's executor, used only to find and run ready callbacks; the
-        #   tick decides when. See _pump_ros.
+        # ? Used only to run ready callbacks when the tick says; see _pump_ros.
         self._executor = SingleThreadedExecutor(context=self.context)
         self._executor.add_node(self)
 
@@ -136,7 +107,7 @@ class HuskyMonitor(Node):
         try:
             self._build()
         except Exception:
-            # Release what was already acquired. (the viser server for example)
+            # Release what was already acquired, e.g. the viser server.
             self._release()
             raise
 
@@ -155,7 +126,7 @@ class HuskyMonitor(Node):
                 self.log_warn(f"plugin {plugin.name!r} is experimental: its behaviour and API may change")
             ctx = PluginContext(
                 name=plugin.name,
-                services=self,
+                monitor=self,
                 view=self._viz.view_for(plugin.name),
                 scene=PluginScene(self._scene, plugin.name,
                                   log_warn=lambda message, name=plugin.name: self.log_warn(f"[{name}] {message}")),
@@ -164,9 +135,7 @@ class HuskyMonitor(Node):
             )
             self._loaded[plugin.name] = _LoadedPlugin(plugin=plugin, ctx=ctx)
 
-        # Plugins stay loaded until shutdown. One that fails in setup is
-        # stopped straight away, with its dependents, rather than run against
-        # half-built state. A dependent stopped that way is never set up.
+        # A plugin failing setup is stopped with its dependents; those are never set up.
         for loaded in self._loaded.values():
             if loaded.stopped:
                 continue
@@ -177,7 +146,7 @@ class HuskyMonitor(Node):
                 self.log_error(f"plugin {loaded.name!r} failed in setup:\n{traceback.format_exc()}")
                 self._stop(loaded, "failed in setup")
 
-    # --- --- --- --- --- MonitorServices --- --- --- --- ---
+    # --- --- --- --- --- FOR PluginContext (documented there) --- --- --- --- ---
 
     @property
     def config(self) -> MonitorConfig:
@@ -186,11 +155,11 @@ class HuskyMonitor(Node):
 
     @property
     def world(self) -> WorldState:
-        """WorldState: Measured reality. Written only by ROS callbacks."""
+        """WorldState: Measured reality."""
         return self._world
 
     def now(self) -> float:
-        """Seconds from the node clock, so waits behave under bag playback."""
+        """Current ROS time in seconds."""
         return self.get_clock().now().nanoseconds * 1e-9
 
     def log_info(self, message: str) -> None:
@@ -206,11 +175,7 @@ class HuskyMonitor(Node):
         self.get_logger().error(message)
 
     def plugin(self, name: str) -> HuskyPlugin:
-        """Look up a loaded plugin by name.
-
-        Raises:
-            KeyError: If no plugin by that name is loaded.
-        """
+        """Look up a loaded plugin by name; KeyError if none is loaded."""
         try:
             return self._loaded[name].plugin
         except KeyError:
@@ -218,21 +183,7 @@ class HuskyMonitor(Node):
 
     def track_object(self, name: str, mocap_id: int, geometry: Geometry | None = None,
                      touches: tuple[str, ...] = (), label: str = "") -> TrackedObject:
-        """Register a tracked object, describe it in the scene, and subscribe to its mocap pose.
-
-        Args:
-            name: Unique object name.
-            mocap_id: Rigid-body id in the mocap system.
-            geometry: Its shape, or None for a frame only.
-            touches: Ids allowed to touch it.
-            label: Display text; empty uses the id.
-
-        Returns:
-            TrackedObject: The registry entry, updated by every mocap message.
-
-        Raises:
-            ValueError: If an object with the same name is already tracked.
-        """
+        """Register a tracked object, describe it in the scene, and subscribe to its mocap pose."""
         if name in self._world.tracked_objects:
             raise ValueError(f"object {name!r} is already tracked")
         obj = TrackedObject(name=name, mocap_id=mocap_id)
@@ -247,7 +198,7 @@ class HuskyMonitor(Node):
         return obj
 
     def untrack_object(self, name: str) -> None:
-        """Unsubscribe a tracked object and remove it from the registry. Unknown names are ignored."""
+        """Unsubscribe a tracked object and remove it from the registry."""
         connections = self._object_connections.pop(name, None)
         if connections is not None:
             connections.destroy_all()
@@ -267,12 +218,14 @@ class HuskyMonitor(Node):
         for number in signals:
             loop.add_signal_handler(number, stop.set)
 
-        # Stalls of this task are plugin hooks, which _step_plugin times itself.
-        tick_task = asyncio.current_task()
+        # Names this task in stall reports outside plugin hooks.
+        asyncio.current_task().set_name("monitor tick")
+        # * Everything alive now (modules, models, the viser scene) lives until shutdown: keep it out of later
+        #   garbage collections, which hold the GIL on whichever thread runs them.
+        gc.freeze()
         self._watchdog = LoopWatchdog(
             loop, limit=self._config.tick_period * self._config.slow_step_warn_ratio,
-            repeat_after=self._config.slow_step_warn_period, log_warn=self.log_warn,
-            ignore=lambda: tick_task)
+            repeat_after=self._config.slow_step_warn_period, log_warn=self.log_warn)
         try:
             due = loop.time()
             while not stop.is_set():
@@ -302,43 +255,40 @@ class HuskyMonitor(Node):
         # 3. Fix forward kinematics for this tick, before anything reads a link pose.
         self._kinematics.update(self._world)
 
-        # 4. Copy the whole world before any plugin runs: one pump's measurements
-        #    plus every plugin's complete writes of the previous tick. Planners
-        #    and the 3D view read this copy, never the live scene.
+        # 4. Copy the whole world before any plugin runs, for planners and the 3D view.
         snapshot = self._scene.take_snapshot(self._world, self._kinematics, self._tick_index, self.now())
 
-        # 5. Step each plugin, in dependency order: intents, then update.
+        # 5. Step each plugin, in dependency order: intents, then update. Each hook is timed for stall reports.
         for loaded in self._loaded.values():
             if not loaded.stopped:
-                self._step_plugin(loaded)
+                with self._watchdog.watching(f"plugin {loaded.name!r} step"):
+                    self._step_plugin(loaded)
 
-        # 6. Resume the tasks waiting for this tick, in dependency order. Yielding
-        #    once lets each take its step before the draw.
+        # 6. Resume tasks waiting for this tick, in dependency order; yielding once lets each step before the draw.
         #    ? Stopped plugins too: their cancelled tasks may still be cleaning up.
         for loaded in self._loaded.values():
             loaded.ctx._wake_tick_waiters()
         await asyncio.sleep(0)
 
-        # 7. Draw everything
-        #  ! While frozen, plugins dont render to allow for text selection.
-        #    Robots and the scene still get drawn even when frozen.
+        # 7. Draw. While frozen (for text selection), only robots and the scene are drawn, not plugins.
         with self._viz.atomic():
             self._viz.draw(snapshot)
             for loaded in self._loaded.values() if not self._viz.frozen else ():
                 if loaded.stopped:
                     continue
                 try:
-                    loaded.plugin.draw(loaded.ctx)
+                    with self._watchdog.watching(f"plugin {loaded.name!r} draw"):
+                        loaded.plugin.draw(loaded.ctx)
                 except Exception:
                     self._plugin_failed(loaded, "draw")
 
     def _pump_ros(self) -> None:
         """Run every ROS callback that is ready: subscriptions, service answers, timers.
 
-        ! Guarded callbacks (RosConnections) log their own failures; anything
-          else that raises is logged here and dropped, like a guarded one.
+        A callback that raises is logged and dropped.
         """
-        for _ in range(ROS_CALLBACKS_PER_TICK):
+        budget = ROS_CALLBACKS_PER_TICK - self._drain_subscriptions()
+        for _ in range(max(budget, 0)):
             try:
                 handler, _entity, _node = self._executor.wait_for_ready_callbacks(timeout_sec=0.0)
             except TimeoutException:
@@ -349,11 +299,33 @@ class HuskyMonitor(Node):
         self.log_warn(f"more than {ROS_CALLBACKS_PER_TICK} ROS callbacks were ready in one tick; "
                       f"the rest run next tick")
 
+    def _drain_subscriptions(self) -> int:
+        """Run the callback of every queued message of every subscription, oldest first.
+
+        ! The executor takes only one message per subscription per tick: a 100 Hz topic would be read at
+          the tick rate, from the old end of its queue (measured: about 1 s behind with depth 100).
+
+        Returns:
+            int: How many messages were taken, at most ROS_CALLBACKS_PER_TICK.
+        """
+        taken = 0
+        for subscription in self.subscriptions:
+            while taken < ROS_CALLBACKS_PER_TICK:
+                with subscription.handle:
+                    message_and_info = subscription.handle.take_message(subscription.msg_type, subscription.raw)
+                if message_and_info is None:
+                    break  # this queue is empty
+                taken += 1
+                try:
+                    subscription.callback(message_and_info[0])
+                except Exception as error:
+                    self.log_error(f"ROS callback of {subscription.topic_name} failed:\n{error!r}")
+        return taken
+
     def _soft_stop(self) -> None:
         """Stop every robot and cancel every plugin task.
 
-        ! In the core, not a plugin: a stop must not depend on which plugins are
-          loaded, and only the core reaches every plugin's tasks.
+        In the core so it works whichever plugins are loaded.
         """
         self.log_warn("SOFT STOP: stopping every robot and cancelling every plugin task")
         for robot in self._world.robots.values():
@@ -364,14 +336,11 @@ class HuskyMonitor(Node):
     def _step_plugin(self, loaded: _LoadedPlugin) -> None:
         """Give one plugin its turn: count failed tasks, run intents, then update.
 
-        ! Each part is caught on its own, so a failure in one still lets the
-          others run this tick, unless it got the plugin stopped.
+        Each part is caught on its own, so one failing still lets the others run unless the plugin got stopped.
         """
-        started = time.perf_counter()
         if loaded.ctx._take_task_failures():
             self._plugin_failed(loaded, "a task", details="")
-        # Intents first, so work handed in from the UI is applied before
-        # the update that reacts to it runs.
+        # Intents first, so UI work is applied before the update that reacts to it.
         if not loaded.stopped:
             try:
                 loaded.ctx._drain_intents()
@@ -383,25 +352,6 @@ class HuskyMonitor(Node):
             except Exception:
                 self._plugin_failed(loaded, "update")
 
-        self._warn_if_slow(loaded, time.perf_counter() - started)
-
-    def _warn_if_slow(self, loaded: _LoadedPlugin, elapsed: float) -> None:
-        """Complain when a plugin's step (`elapsed` seconds) ate too much budget.
-
-        "Wait by awaiting, never by blocking" is only enforceable if breaking it
-        is noisy; otherwise it shows up as a sticky UI and nobody knows which
-        plugin is responsible. Tasks are watched by LoopWatchdog instead.
-        """
-        if elapsed <= self._config.tick_period * self._config.slow_step_warn_ratio:
-            return
-        now = self.now()
-        if now - loaded.last_slow_warning < self._config.slow_step_warn_period:
-            return
-        loaded.last_slow_warning = now
-        self.log_warn(f"plugin {loaded.name!r} took {elapsed * 1e3:.0f} ms of the "
-                      f"{self._config.tick_period * 1e3:.0f} ms tick; "
-                      f"move slow work into a task")
-
     # --- --- --- --- --- ERRORS --- --- --- --- ---
 
     def _plugin_failed(self, loaded: _LoadedPlugin, hook: str, details: str | None = None) -> None:
@@ -410,8 +360,7 @@ class HuskyMonitor(Node):
         Args:
             loaded: The plugin whose work raised.
             hook: Which part was running, for the log message.
-            details: What to log with it. None logs the exception being handled;
-                "" logs nothing more, when the details were logged already.
+            details: Extra log text; None logs the exception being handled, "" nothing.
         """
         if details is None:
             details = traceback.format_exc()
@@ -429,9 +378,7 @@ class HuskyMonitor(Node):
     def _stop(self, loaded: _LoadedPlugin, reason: str) -> None:
         """Stop a failing plugin and every plugin that depends on it, and show the monitor as broken.
 
-        ! Stopping cancels their tasks, so their cleanup runs, and nothing else:
-          their UI stays until shutdown. A stopped plugin is a bug to fix and
-          restart for, not something to recover from.
+        Only their tasks are cancelled; their UI stays until shutdown. There is no recovery short of a restart.
 
         Args:
             loaded: The plugin that failed.
@@ -459,11 +406,8 @@ class HuskyMonitor(Node):
     async def shutdown(self) -> None:
         """Cancel every plugin's tasks, let them clean up, then tear everything down.
 
-        Plugins go in reverse dependency order, so a plugin's cleanup can still
-        use what it depends on. ROS keeps running meanwhile, so cleanup can
-        send a final hold and see it take effect.
-
-        Safe to call twice.
+        Reverse dependency order, so cleanup can still use dependencies; ROS keeps running so a final hold
+        takes effect. Safe to call twice.
         """
         if self._shut_down:
             return
@@ -513,10 +457,7 @@ class HuskyMonitor(Node):
     def _release(self) -> None:
         """Release plugins, UI and the executor, in reverse build order.
 
-        ! Must actually run on Ctrl-C. viser's server thread outlives a bare
-          rclpy.shutdown(), so main() makes sure.
-
-        Safe when construction failed partway, which is how __init__ cleans up after itself.
+        ! Must run on Ctrl-C: viser's server thread outlives rclpy.shutdown(). Safe after a partial construction.
         """
         for loaded in reversed(self._loaded.values()):
             loaded.ctx._close()
@@ -527,6 +468,13 @@ class HuskyMonitor(Node):
 
 
 # --- --- --- --- --- MAIN --- --- --- --- ---
+
+#: Seconds a busy thread may keep the GIL while another waits for it (Python's default is 5 ms).
+#: ? Each time the main thread gives up the GIL (a ROS wait, a socket write), it can wait this long to get it
+#:   back while a worker (planning, loading) runs Python: at 5 ms a 0.1 ms tick took ~390 ms, at 1 ms ~70 ms.
+GIL_SWITCH_INTERVAL = 0.001
+
+
 async def _run_monitor() -> None:
     """Build the monitor, tick until stopped, then shut it down cleanly."""
     monitor = HuskyMonitor()
@@ -538,13 +486,10 @@ async def _run_monitor() -> None:
 
 
 def main(args: list[str] | None = None) -> None:
-    """Run the monitor until interrupted, reading sys.argv when `args` is None.
-
-    Everything is configured through ROS parameters; see config.py.
-    """
-    # ! No rclpy signal handler: it would shut ROS down on Ctrl-C before plugin
-    #   tasks could send their final commands. The monitor handles Ctrl-C itself.
+    """Run the monitor until interrupted, reading sys.argv when `args` is None. Configured by ROS parameters."""
+    # ! No rclpy signal handler: it would shut ROS down before plugin tasks send their final commands.
     rclpy.init(args=args, signal_handler_options=SignalHandlerOptions.NO)
+    sys.setswitchinterval(GIL_SWITCH_INTERVAL)
     try:
         asyncio.run(_run_monitor())
     except KeyboardInterrupt:

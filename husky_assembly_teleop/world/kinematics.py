@@ -1,13 +1,8 @@
 """
 Each robot's base pose, joint values and link poses, fixed once per tick.
 
-    tick:  pump ROS → kinematics.update → take_snapshot → plugins → draw
-
-* One per monitor, updated once per tick right after the ROS pump and before the
-  world copy, so every reader in the tick sees the same robot poses.
-* The only place outside the 3D view that parses URDFs with yourdfpy. It has its
-  own parsed models (no meshes), separate from the 3D view's, so neither changes
-  the other's joint state.
+Updated right after the ROS pump and before the snapshot, so every reader in a tick sees the same poses.
+Its parsed URDFs (no meshes) are separate from the 3D view's, so neither changes the other's joint state.
 
 ! Main thread only.
 """
@@ -19,7 +14,7 @@ from typing import TYPE_CHECKING, Callable, Mapping
 
 from yourdfpy import URDF
 
-from .scene import Pose, compose
+from ..design_io.pose import Pose, compose
 from ..tool_urdfs import resolve_mesh_path
 
 if TYPE_CHECKING:
@@ -71,11 +66,10 @@ class Kinematics:
     def update(self, world: WorldState) -> None:
         """Take every robot's latest measurements and recompute its link transforms.
 
-        ! A missing measurement keeps the last value, not zero: an untracked base
-          keeps its last pose, and an absent joint keeps its last value.
+        ! A missing measurement (untracked base, absent joint, absent robot) keeps the last value, not zero.
 
         Args:
-            world: Measured state; robots it doesn't have keep their last values.
+            world: Measured state.
         """
         for serial, robot in self._robots.items():
             interface = world.robots.get(serial)
@@ -142,7 +136,7 @@ class Kinematics:
     def link_pose(self, serial: str, link: str) -> Pose:
         """World pose of one link's frame, from this tick's base pose and joint values.
 
-        ? Computed on the first call after `update` (about 70 us), then looked up.
+        ? Computed on the first call after `update` (about 70 us), then cached.
 
         Args:
             serial: The robot.

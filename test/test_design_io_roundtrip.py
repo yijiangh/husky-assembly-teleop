@@ -166,6 +166,19 @@ def test_copy_robot_resolves_packages(tmp_path: Path):
         copy_robot(urdf, srdf, tmp_path / "dest2", [])
 
 
+def test_copy_robot_twice_keeps_mesh_paths(tmp_path: Path):
+    """Copying a design's own robot again keeps `meshes/<path>`; it does not nest a second `meshes/`."""
+    package = tmp_path / "ws" / "husky_description"
+    (package / "meshes").mkdir(parents=True)
+    (package / "meshes" / "base_link.stl").write_bytes(b"solid x\nendsolid x\n")
+    urdf, srdf = write_robot_files(tmp_path / "src", mesh="package://husky_description/meshes/base_link.stl",
+                                   write_mesh_file=False)
+    first, first_srdf = copy_robot(urdf, srdf, tmp_path / "a", [tmp_path / "ws"])
+    second, _ = copy_robot(first, first_srdf, tmp_path / "b")
+    assert mesh_references(second) == mesh_references(first) == ["meshes/husky_description/meshes/base_link.stl"] * 2
+    assert second.read_bytes() == first.read_bytes()
+
+
 def test_resolved_urdf_text(tmp_path: Path):
     """Relative mesh paths become absolute against the URDF's folder."""
     urdf, _ = write_robot_files(tmp_path)

@@ -1,8 +1,7 @@
 """
 The plugin base class, and the registry that finds and orders plugins.
 
-! Keep a plugin's own derived state (trajectories, plans, plot histories) on its
-  instance, not in the monitor, so the monitor does not grow back into one big object.
+! Keep a plugin's derived state (plans, plot histories) on its instance, not in the monitor.
 """
 
 from __future__ import annotations
@@ -18,18 +17,11 @@ from .context import PluginContext
 class HuskyPlugin:
     """One self-contained feature with its own state, UI and scene nodes.
 
-    Override only the hooks you need: `setup`, `update`, `draw`, `teardown`.
-    Work that takes longer than one tick is a task: an `async def` started with
-    `ctx.spawn` that waits by awaiting. Hooks themselves stay plain and short.
+    Override only the hooks you need; work longer than one tick goes in a task started with `ctx.spawn`.
 
-    ! Hooks run on the main thread, so they can touch world state, the scene and
-      ROS without locking, but must never block: a slow hook stalls every ROS
-      callback. Wait inside a task instead.
-
-    ! A hook or task that raises counts as a failed tick. After
-      `config.max_plugin_errors` failed ticks in a row the plugin is stopped,
-      with every plugin that requires it, and the monitor shows itself broken
-      until restart. A clean tick resets the count.
+    - ! Hooks run on the main thread and must never block: a slow hook stalls every ROS callback.
+    - ! After `config.max_plugin_errors` failed ticks in a row (a hook or task raised), the plugin and its
+      dependents are stopped until restart.
     """
 
     #: Unique name, used for the scene path, GUI folder, config and logs.
@@ -38,38 +30,28 @@ class HuskyPlugin:
     #: Plugins to set up before this one; reach them through `ctx.require`.
     requires: tuple[str, ...] = ()
 
-    #: Whether its design is still open. Loading one logs a warning; its module
-    #: docstring says what is undecided.
+    #: Whether its design is still open; loading it logs a warning.
     experimental: bool = False
 
     def setup(self, ctx: PluginContext) -> None:
-        """Build widgets and scene nodes once, at startup, and keep the handles.
+        """Build widgets and scene nodes once, at startup, and keep the handles for `draw`.
 
-        Later, change those handles in `draw` rather than rebuilding them.
-        A raise here stops the plugin and its dependents, but `teardown` still
-        runs, so it must cope with a half-finished setup.
+        ! `teardown` still runs after a raise here, so it must cope with a half-finished setup.
         """
 
     def update(self, ctx: PluginContext) -> None:
-        """Advance this plugin's state by one tick, after its intents and before its tasks resume.
-
-        The scene already holds this tick's measurements.
-        """
+        """Advance this plugin's state by one tick, after its intents and before its tasks resume."""
 
     def draw(self, ctx: PluginContext) -> None:
         """Copy state into the handles made in `setup`; do not add nodes here.
 
-        ! Display only: skipped while the operator has the panels frozen. Put
-          anything that must keep running (reacting, buttons, safety checks) in
-          `update`, an intent or a task.
+        ! Skipped while the panels are frozen: put anything that must keep running in `update`, an intent or a task.
         """
 
     def teardown(self, ctx: PluginContext) -> None:
-        """Release what the monitor cannot, once at shutdown, even if stopped.
+        """Release what the monitor cannot (PyBullet bodies, files, hardware), once at shutdown, even if stopped.
 
-        Tasks are cancelled and given time to clean up before this runs, and
-        scene nodes and widgets are removed after; this is for PyBullet bodies,
-        open files, recordings and hardware.
+        Tasks are cancelled before this runs; scene nodes and widgets are removed after.
         """
 
 
@@ -95,8 +77,7 @@ def register(plugin_class: type[HuskyPlugin]) -> type[HuskyPlugin]:
 def discover(log_error: Callable[[str], None]) -> None:
     """Import every module under `plugins/` so their @register calls run.
 
-    ! A module that fails to import is logged and skipped, not fatal, since
-      plugins pull in heavy optional dependencies.
+    A module that fails to import is logged and skipped.
     """
     from .. import plugins
 
@@ -133,8 +114,7 @@ def resolve_order(requested: Iterable[str]) -> list[str]:
     ? Order matters: a plugin sees an earlier plugin's effects this tick, a later one's next tick.
 
     Raises:
-        KeyError: If a name is not registered. Also raised when its module failed
-            to import, so check the log before assuming a typo.
+        KeyError: If a name is not registered, including when its module failed to import (see the log).
         ValueError: If a dependency cycle is found.
     """
     order: list[str] = []

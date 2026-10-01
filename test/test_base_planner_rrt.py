@@ -7,13 +7,14 @@ import numpy as np
 import pytest
 
 from husky_assembly_teleop.config import robot_config_from_serial
-from husky_assembly_teleop.world.geometry import box_geometry
+from husky_assembly_teleop.design_io.geometry import box_geometry
 from husky_assembly_teleop.plugins.base_planner.planner import PlanningWorld, plan_birrt
-from husky_assembly_teleop.world.scene import Body, Pose, RobotEntry, SceneSnapshot
+from husky_assembly_teleop.world.scene import Body, RobotEntry, SceneSnapshot
+from husky_assembly_teleop.design_io.pose import Pose
 
 DATA = Path(__file__).resolve().parent.parent / "data"
 
-#: A wall across the straight line from (0, -1) to (0, -4).
+# ? 2 m wide: at 3 m the detour barely fits the sampled area (SAMPLE_PADDING) next to Cindy; half the searches failed.
 # ? 2 m wide: at 3 m the detour barely fits the sampled area (SAMPLE_PADDING) next to Cindy, and half the searches failed.
 WALL = Body("test/wall", box_geometry((2.0, 0.3, 1.0)), Pose((0.0, -2.5, 0.5)), label="wall")
 
@@ -49,6 +50,7 @@ def world(robots):
     world.close()
 
 
+@pytest.mark.slow
 def test_goes_around_a_robot_in_the_way(world, robots, alice):
     """The straight line runs through Cindy, so the path must detour, and never touch her."""
     world.sync(_snapshot(robots))
@@ -74,6 +76,7 @@ def test_target_inside_a_robot_is_refused_with_a_reason(world, robots, alice):
     assert result.path is None and "target" in result.reason
 
 
+@pytest.mark.slow
 def test_goes_around_a_body(world, robots, alice):
     """A wall across the straight line: the path detours, never touches it, and a blocked target names it."""
     world.sync(_snapshot(robots, [WALL]))

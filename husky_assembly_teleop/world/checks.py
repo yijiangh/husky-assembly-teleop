@@ -1,8 +1,7 @@
 """
 Status checks: a verdict on one thing (a sensor, a controller, a mocap fix) as data.
 
-Judging lives here, drawing lives in ui/style.py (`check_chip`), so the world can
-judge its own state without depending on how it is shown.
+Drawing lives in ui/style.py (`check_chip`), so judging needs no UI.
 """
 
 from __future__ import annotations
@@ -23,8 +22,7 @@ class Check:
     Attributes:
         label: Short chip text, e.g. "mocap" or "left_ur_arm joints".
         level: GOOD, WARN or BAD.
-        detail: What is wrong, or a short fact when all is well. Shown as the
-            chip's tooltip.
+        detail: What is wrong, or a short fact when all is well; the chip's tooltip.
     """
 
     label: str

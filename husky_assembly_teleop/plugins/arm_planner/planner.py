@@ -1,12 +1,6 @@
 """
-The arm planner: an RRT-Connect search (`planning.search.connect`) over one arm's six joints, avoiding
-the robot itself, the other robots and every scene body, with compas_fab's rules.
+RRT-Connect over one arm's six joints, avoiding the robot itself, the other robots and every scene body.
 
-The search runs on the plugin's one worker thread, in a compas_fab world
-(`CompasFabMirror`, one per robot) synced on that thread from the tick's scene snapshot.
-
-* The start is checked once in full (`collisions`); the search then uses the mirror's
-  fast `search_check`, which only looks at what the arm moves.
 ! Worker thread only: sync, search and close on the worker.
 """
 
@@ -16,12 +10,12 @@ import math
 import threading
 import time
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Callable, Sequence
 
 import numpy as np
 
-from ...planning.path import TimedPath
-from ...planning.search import PlanResult, connect
+from ..planning.path import TimedPath
+from ..planning.search import PlanResult, connect
 from ...robot_interface.arm import JOINT_MOVE_MAX_SPEED, UR_JOINT_LIMITS, UR_JOINT_NAMES
 from ...world.mirrors.compas_fab import CompasFabMirror
 from ...world.scene import SceneSnapshot
@@ -33,14 +27,7 @@ PREVIEW_SPEED = JOINT_MOVE_MAX_SPEED
 
 
 def arm_joint_names(arm_name: str) -> list[str]:
-    """The URDF names of one arm's joints, in the UR driver's order.
-
-    Args:
-        arm_name: E.g. "left_ur_arm".
-
-    Returns:
-        list[str]: Six joint names.
-    """
+    """The URDF names of one arm's six joints (e.g. arm "left_ur_arm"), in the UR driver's order."""
     return [f"{arm_name}_{name}" for name in UR_JOINT_NAMES]
 
 
@@ -79,8 +66,12 @@ class ArmPlanningWorld:
         self._mirrors: dict[str, CompasFabMirror] = {}
         #: The robot synced last; the PyBullet window shows its world.
         self.serial: str | None = None
+        #: Whether the PyBullet window is open.
+        self.gui = False
         # Display text for our ids, from the last synced snapshot.
         self.label = SceneSnapshot().label
+        #: Given to each mirror: logs each full rebuild of its cell, and why. Set by the plugin.
+        self.log: Callable[[str], None] | None = None
 
     def sync(self, snapshot: SceneSnapshot, serial: str) -> CompasFabMirror:
         """Make one robot's planning world match a snapshot.
@@ -92,53 +83,41 @@ class ArmPlanningWorld:
         Returns:
             CompasFabMirror: Its mirror, synced.
         """
-        mirror = self._mirrors.get(serial)
-        if mirror is None:
-            mirror = self._mirrors[serial] = CompasFabMirror(serial)
-        gui = self.serial is not None and self._mirrors[self.serial].gui
-        if serial != self.serial and gui:
+        mirror = self._mirror(serial)
+        if self.gui and serial != self.serial:
             # ? One window per process: it follows the robot being planned for.
             self._mirrors[self.serial].set_gui(False)
+            mirror.set_gui(True)
         self.serial = serial
         mirror.sync(snapshot)
-        if gui:
-            mirror.set_gui(True)
         self.label = snapshot.label
         return mirror
 
-    def set_gui(self, gui: bool, snapshot: SceneSnapshot, serial: str) -> tuple[bool, str]:
-        """Open or close PyBullet's own window on a robot's planning world. Worker thread.
-
-        Opening builds the robot's world from `snapshot` if it has none yet (slow the
-        first time: loads the models), so the window works before the first plan.
+    def set_gui(self, gui: bool, snapshot: SceneSnapshot, serial: str) -> None:
+        """Open or close PyBullet's own window on a robot's planning world, for debugging. Worker thread.
 
         Args:
             gui: Whether the window should be open.
-            snapshot: The world now.
+            snapshot: The world now, shown even before the first plan.
             serial: The robot whose world to show.
 
-        Returns:
-            tuple[bool, str]: Whether it is open now, and why not if it was asked for.
+        Raises:
+            RuntimeError: If there is no X display.
+            pybullet.error: If another PyBullet window is open in this process.
         """
-        if not gui:
-            mirror = self._mirrors.get(self.serial)
-            return (False, "") if mirror is None else (mirror.set_gui(False), "")
-        if self.serial not in (None, serial):
-            self._mirrors[self.serial].set_gui(False)  # ? one window per process
-        mirror = self._mirrors.get(serial)
-        if mirror is None:
-            mirror = self._mirrors[serial] = CompasFabMirror(serial)
-        self.serial = serial
-        # ? Window first, then sync: the other order would build the cell twice.
-        is_open = mirror.set_gui(True)
-        mirror.sync(snapshot)
-        self.label = snapshot.label
-        return is_open, mirror.window_problem
+        if self.serial is not None:
+            self._mirrors[self.serial].set_gui(False)
+        self.gui = False
+        if gui:
+            self._mirror(serial).set_gui(True)  # ? before sync, so the cell is built once
+            self.gui = True
+            self.sync(snapshot, serial)
 
-    def window(self) -> tuple[bool, str]:
-        """Whether the window is open, and why not. Worker thread, e.g. after a search."""
-        mirror = self._mirrors.get(self.serial)
-        return (False, "") if mirror is None else (mirror.gui, mirror.window_problem)
+    def _mirror(self, serial: str) -> CompasFabMirror:
+        """A robot's mirror, made on first use."""
+        if serial not in self._mirrors:
+            self._mirrors[serial] = CompasFabMirror(serial, log=self.log)
+        return self._mirrors[serial]
 
     def close(self) -> None:
         """Disconnect every world. On the worker, once no search is running."""
@@ -165,7 +144,7 @@ def plan_arm(world: ArmPlanningWorld, mirror: CompasFabMirror, arm_name: str, go
 
     Args:
         world: The planning world, for labels.
-        mirror: The robot's mirror, already synced. Owned by this call until it returns.
+        mirror: The robot's mirror, already synced.
         arm_name: Which arm, e.g. "ur_arm".
         goal: Six joint values, radians, UR driver order.
         abort: Set from the main thread to end the search early.
@@ -181,7 +160,7 @@ def plan_arm(world: ArmPlanningWorld, mirror: CompasFabMirror, arm_name: str, go
     def reason(where: str, pair: tuple[str, str]) -> str:
         return f"{where} is in collision: {world.label(pair[0])} with {world.label(pair[1])}"
 
-    # * A full check of the start, static pairs included; the search check leaves those out.
+    # * Check the start in full once; the fast `search_check` skips pairs the arm does not move.
     hits = mirror.collisions()
     if hits:
         return PlanResult(None, reason("start", hits[0]), time.time() - started)

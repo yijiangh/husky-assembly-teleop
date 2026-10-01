@@ -7,12 +7,10 @@ Example 2: reading robot configuration and state from `ctx.world.robots` (keyed 
   robot.arms[name].joint_vector()
                              the six joint angles in UR order, or None until all arrive.
 
-Measured state is written by ROS callbacks between ticks, so it does not change
-within a tick. Also shows turning a state change into an event by comparing with
-the last tick.
+Measured state is written by ROS callbacks between ticks, so it is constant within
+a tick. Also shows turning a state change into an event by comparing with last tick.
 
-! Read only: only ROS callbacks write state. To move a robot, call a method on
-  the part (see robot_control).
+! Read only. To move a robot, call a method on the part (see robot_control).
 
 Run with:  -p plugins:="['example_robot_state']" -p robots:="['0806']"
 """
@@ -77,8 +75,7 @@ class ExampleRobotStatePlugin(HuskyPlugin):
         """
         now = ctx.now()
         for serial, robot in ctx.world.robots.items():
-            # ! Pose is None until mocap sends a valid fix (shown as dashes), then
-            #   keeps the last one, greyed out while `tracked` is False.
+            # ! Pose is None (dashes) until the first valid fix, then keeps the last, greyed while not `tracked`.
             base = robot.base.state
             pose = base.position
             chips = freshness_chip("mocap", base.last_update_time, now)
@@ -92,5 +89,5 @@ class ExampleRobotStatePlugin(HuskyPlugin):
                 arm_lines.append(arm_name)
                 arm_lines.append(f"  q {numbers(None if joints is None else np.degrees(joints), 6, 6, 1)} °")
 
-            # * Viser only sends the content if it changed.
+            # * Viser sends the content only if it changed.
             self._rows[serial].content = block(chips + base_lines + values(*arm_lines))

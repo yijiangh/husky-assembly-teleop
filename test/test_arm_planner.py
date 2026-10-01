@@ -12,8 +12,9 @@ import pytest
 from husky_assembly_teleop.config import robot_config_from_serial
 from husky_assembly_teleop.plugins.arm_planner.planner import (ArmPath, ArmPlanningWorld, _extend, arm_joint_names,
                                                                plan_arm)
-from husky_assembly_teleop.world.geometry import box_geometry
-from husky_assembly_teleop.world.scene import Body, Pose, RobotEntry, SceneSnapshot
+from husky_assembly_teleop.design_io.geometry import box_geometry
+from husky_assembly_teleop.world.scene import Attachment, Body, RobotEntry, SceneSnapshot
+from husky_assembly_teleop.design_io.pose import Pose
 
 DATA = Path(__file__).resolve().parent.parent / "data"
 ALICE = "0804"
@@ -38,8 +39,9 @@ def world():
 def snapshot(config, start, bodies=()) -> SceneSnapshot:
     """Alice at the origin with her arm at `start`, and some bodies."""
     robot = RobotEntry(config, Pose(), True, dict(zip(NAMES, start)), frozenset(), None, None)
-    return SceneSnapshot(bodies={body.id: body for body in bodies},
-                         world_poses={body.id: body.placement for body in bodies}, robots={ALICE: robot})
+    poses = {body.id: body.placement if isinstance(body.placement, Pose) else body.placement.grasp
+             for body in bodies}
+    return SceneSnapshot(bodies={body.id: body for body in bodies}, world_poses=poses, robots={ALICE: robot})
 
 
 def start_and_goal(config):
@@ -59,6 +61,7 @@ def tool_at(world, config, joints) -> Pose:
     return Pose.from_arrays(state[4], (0.0, 0.0, 0.0, 1.0))
 
 
+@pytest.mark.slow
 def test_path_goes_around_a_box(world, config):
     """A box where the straight swing passes is avoided; every step of the path is clear by compas_fab's check."""
     start, goal = start_and_goal(config)
@@ -86,6 +89,18 @@ def test_target_in_collision_is_refused_with_a_reason(world, config):
     assert result.path is None and result.reason.startswith("target is in collision") and "the box" in result.reason
 
 
+def test_held_body_counts(world, config):
+    """A body held on tool0 that would hit a box at the target is refused, though the arm may touch the box."""
+    start, goal = start_and_goal(config)
+    held = Body("t/held", box_geometry((0.05, 0.05, 0.05)), Attachment("robots/0804", "ur_arm_tool0", Pose()),
+                touches=("robots/0804",), label="the held part")
+    box = Body("t/box", box_geometry((0.05, 0.05, 0.05)), tool_at(world, config, goal), touches=("robots/0804",),
+               label="the box")
+    mirror = world.sync(snapshot(config, start, (held, box)), ALICE)
+    result = plan_arm(world, mirror, ARM, goal, threading.Event())
+    assert result.path is None and result.reason == "target is in collision: the held part with the box"
+
+
 def test_start_in_collision_is_refused(world, config):
     """A start with the tool inside a box is refused before searching."""
     start, goal = start_and_goal(config)
@@ -103,15 +118,15 @@ def test_path_timing():
     np.testing.assert_allclose(path.sample(1e9), path.goal)
 
 
-def test_window_before_any_plan_builds_the_world(config, monkeypatch):
-    """Ticking the window box first builds the robot's world from the snapshot; without a display it says why."""
+def test_window_without_display_raises(config, monkeypatch):
+    """Without an X display, asking for the window raises and leaves it closed; closing it is always fine."""
     monkeypatch.delenv("DISPLAY", raising=False)
     world = ArmPlanningWorld()
     try:
         start, _ = start_and_goal(config)
-        is_open, problem = world.set_gui(True, snapshot(config, start), ALICE)
-        assert not is_open and "no display" in problem
-        assert world.serial == ALICE and world._mirrors[ALICE].state is not None
-        assert world.set_gui(False, snapshot(config, start), ALICE) == (False, "")
+        with pytest.raises(RuntimeError, match="display"):
+            world.set_gui(True, snapshot(config, start), ALICE)
+        assert not world.gui
+        world.set_gui(False, snapshot(config, start), ALICE)
     finally:
         world.close()

@@ -3,7 +3,7 @@
     python scripts/convert_design.py <export folder> [<design folder>]
 
 The design folder defaults to `<export>_design` next to the export, where the cell plugin also
-puts and finds it. Robot files come from this repository's `data/` (husky_assembly_teleop.design_conversion).
+puts and finds it. Robot files come from this repository's `data/` (husky_assembly_teleop.design_io.conversion).
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
-from husky_assembly_teleop.design_conversion import convert_export, converted_folder  # noqa: E402
+from husky_assembly_teleop.design_io.conversion import convert_export, converted_folder  # noqa: E402
 from husky_assembly_teleop.design_io.timing import Stopwatch  # noqa: E402
 
 

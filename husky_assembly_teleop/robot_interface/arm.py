@@ -1,8 +1,7 @@
 """
 One UR arm: its measured state, its controllers, and commanding it.
 
-Every arm gets the same topics and services; each command checks the running
-controller itself.
+Each command checks the running controller and its inputs itself before sending.
 """
 
 from __future__ import annotations
@@ -25,17 +24,20 @@ from ur_msgs.msg import IOStates
 
 from ..config import ArmConfig
 from .recording import SampleSource
+from .stream_stats import StreamStats
 from .connections import RosConnections
 from .controller_manager import ControllerManagerInterface, ControllerManagerState
 from .end_effectors import EndEffector, EndEffectorState, make_end_effector
-from .frames import Pose, compose, invert
+from ..design_io.pose import Pose, compose, invert
 from .ur_frames import BASE_LINK_FROM_UR_BASE
 
-# ? Same as qos_profile_sensor_data but deeper. Callbacks drain once per tick, so the
-#   queue must hold one tick of samples plus slack; 100 covers 500 Hz for 200 ms.
+# ? qos_profile_sensor_data but deeper, to hold one tick of samples: 100 covers 500 Hz for 200 ms.
 RECORDED_QOS = QoSProfile(depth=100, reliability=qos_profile_sensor_data.reliability,
                           durability=qos_profile_sensor_data.durability,
                           history=qos_profile_sensor_data.history)
+
+#: joint_states per second the robot's rate limiter sends (crl_husky rate_limiter DEFAULT_RATE).
+JOINT_STATES_RATE = 100.0
 
 #: Joint names in the UR driver's order. The URDF has the same names with the arm's prefix.
 UR_JOINT_NAMES = ("shoulder_pan_joint", "shoulder_lift_joint", "elbow_joint",
@@ -55,13 +57,10 @@ CARTESIAN_START_TOLERANCE = 0.05
 #: Largest turn, radians, between the TCP and a cartesian target; more means a wrong frame.
 CARTESIAN_START_ANGLE_TOLERANCE = np.radians(5.0)
 
-# * Cartesian frames: see BASE_LINK_FROM_UR_BASE in ur_frames.py.
-
-# ! Our own guards: the trajectory controller checks only the message's form, not
-#   the start, speeds or joint limits, so we check them before sending.
+# ! Our own guards: the trajectory controller does not check the start, speeds or joint limits.
 #: Joint limits of the UR5e, radians, UR_JOINT_NAMES order. +-360 deg except the elbow.
 UR_JOINT_LIMITS = np.radians([360.0, 360.0, 180.0, 360.0, 360.0, 360.0])
-#: Fastest any joint may be asked to move, rad/s. A sanity limit against a wrong duration or units.
+#: Fastest any joint may be asked to move, rad/s; catches a wrong duration or units.
 TRAJECTORY_MAX_JOINT_SPEED = np.radians(60.0)
 #: Joint state older than this, seconds, is too old to trust.
 JOINT_STATE_MAX_AGE = 0.5
@@ -81,8 +80,7 @@ CARTESIAN_STEP_WINDOW = 0.5
 #: Rough UR5e reach, metres, from the shoulder (this high above base_link). Targets beyond it are refused.
 UR5E_REACH = 0.85
 UR5E_SHOULDER_HEIGHT = 0.163
-#: Frame a target wrench is applied in. The controller reads it in the tool frame
-#: and ignores frame_id (`hand_frame_control` defaults to true).
+#: Frame of a target wrench. The controller always reads it in the tool frame (`hand_frame_control`).
 TARGET_WRENCH_FRAME = "tool0"
 #: Largest target force (N) and torque (N m) `send_target_wrench` sends.
 MAX_TARGET_FORCE = 50.0
@@ -115,14 +113,9 @@ def cartesian_move(start_position: Sequence[float], start_orientation: Sequence[
                    max_speed: float = CARTESIAN_MOVE_MAX_SPEED,
                    max_rotation_speed: float = CARTESIAN_MOVE_MAX_ROTATION_SPEED,
                    min_duration: float = CARTESIAN_MOVE_MIN_DURATION):
-    """A smooth straight-line TCP move with an even turn, from rest to rest.
+    """A smooth straight-line TCP move with an even turn (slerp), from rest to rest, on `joint_move`'s cosine profile.
 
-    Uses the cosine profile of `joint_move` on both distance and angle (slerp).
-    T = max(min_duration, pi / 2 * distance / max_speed,
-    pi / 2 * angle / max_rotation_speed).
-
-    ! No collision checking, and joints can still move fast near a singularity.
-      For moves an operator sets up and watches.
+    ! No collision checking, and joints can still move fast near a singularity. For watched moves only.
 
     Args:
         start_position: TCP position now, metres, in the arm's base_link frame.
@@ -156,12 +149,11 @@ def cartesian_move(start_position: Sequence[float], start_orientation: Sequence[
 def joint_move(start: Sequence[float], target: Sequence[float],
                max_speed: float = JOINT_MOVE_MAX_SPEED,
                min_duration: float = JOINT_MOVE_MIN_DURATION) -> tuple[np.ndarray, np.ndarray, float]:
-    """A smooth straight-line joint-space move, from rest to rest.
+    """A smooth straight-line joint-space move, from rest to rest; all joints start and stop together.
 
-    Every joint follows s(t) = (1 - cos(pi t / T)) / 2, so all start and stop
-    together. T = max(min_duration, pi / 2 * max|target - start| / max_speed).
+    Every joint follows s(t) = (1 - cos(pi t / T)) / 2.
 
-    ! No collision checking. For moves an operator sets up and watches.
+    ! No collision checking. For watched moves only.
 
     Args:
         start: Joint angles now, radians, UR_JOINT_NAMES order.
@@ -170,8 +162,8 @@ def joint_move(start: Sequence[float], target: Sequence[float],
         min_duration: Shortest allowed duration, seconds.
 
     Returns:
-        tuple[np.ndarray, np.ndarray, float]: Waypoint positions (N x 6), their
-            velocities (N x 6), and the duration T in seconds. Waypoints are evenly spaced.
+        tuple[np.ndarray, np.ndarray, float]: Evenly spaced waypoint positions (N x 6), their velocities
+            (N x 6), and the duration T in seconds.
     """
     start, target = np.asarray(start, dtype=float), np.asarray(target, dtype=float)
     delta = target - start
@@ -206,43 +198,38 @@ class ArmState:
 
     Attributes:
         joint_positions: URDF joint name to position, radians. Empty until the first message.
-        tcp_position: TCP position, metres, in the compliance controller's
-            `base_link` (BASE_LINK_FROM_UR_BASE), the frame commands use. None before the first pose.
+        tcp_position: TCP position, metres, in the compliance controller's `base_link`, the frame commands use.
         tcp_orientation: TCP quaternion (x, y, z, w), same frame.
         tcp_raw_position: The TCP as the driver reports it, in the UR Base frame.
         tcp_raw_orientation: Its quaternion (x, y, z, w).
-        tcp_update_time: ROS time of the last valid TCP pose, seconds, or None.
-        sent_target_position: Last Cartesian target sent, metres, same frame as
-            `tcp_position`, or None. Commanded, not measured.
+        tcp_update_time: ROS time of the last valid TCP pose, seconds.
+        sent_target_position: Last Cartesian target sent (commanded, not measured), same frame as `tcp_position`.
         sent_target_orientation: Its quaternion (x, y, z, w).
-        sent_target_time: ROS time it was sent, seconds, or None.
-            ! In test mode (ArmConfig.cartesian_test_mode) these hold the target
-              that *would* have been sent.
-        wrench: Force/torque reading (fx, fy, fz, tx, ty, tz), or None.
-        digital_in: UR digital inputs by pin, or None.
+        sent_target_time: ROS time it was sent, seconds.
+            ! In `cartesian_test_mode` these hold the target that *would* have been sent.
+        wrench: Force/torque reading (fx, fy, fz, tx, ty, tz).
+        digital_in: UR digital inputs by pin.
         is_executing: Whether the arm is moving under a trajectory we sent.
-            ? Guessed from motion, since a topic has no "done": True from sending
-              until the joints have been still for STILL_AFTER.
+            ? Guessed from motion: True from sending until the joints have been still for STILL_AFTER.
         controllers: The arm controller manager's state.
 
-        * The fields below come from multi_arm_safety_sync (see `on_sync_status`).
-        status_update_time: ROS time of the last sync status, seconds, or None.
-            Older than SYNC_STATUS_MAX_AGE, the fields below count as unknown.
+        * The fields below come from multi_arm_safety_sync (`on_sync_status`).
+        status_update_time: ROS time of the last sync status, seconds. Older than SYNC_STATUS_MAX_AGE
+            means the fields below are unknown.
         dashboard_up: Whether the arm's dashboard_client runs (False with fake hardware).
         dashboard_connected: Whether the dashboard is connected to the arm.
         safety_mode: UR SafetyMode constant, or None if unknown.
-        robot_mode: UR RobotMode constant, or None if unknown. Only RUNNING
-            means the arm can move.
-        program_playing: Whether the pendant program is playing; the arm follows
-            ROS commands only while ros_control.urp plays.
+        robot_mode: UR RobotMode constant, or None if unknown. Only RUNNING means the arm can move.
+        program_playing: Whether the pendant program plays; the arm follows ROS only while ros_control.urp plays.
         program_name: The loaded program's file name, or "".
-        operational: The sync's verdict (dashboard connected, safety NORMAL, robot
-            RUNNING). If any arm is not, the sync stops every arm.
+        operational: The sync's verdict (connected, safety NORMAL, robot RUNNING); if any arm is not,
+            the sync stops every arm.
         problem: What the sync says is wrong with this arm, or "".
         stop_reason: Why the sync last stopped every arm, or "".
         end_effector: State of the mounted tool, or None for a bare arm.
-        last_motion_time: ROS time the joints last moved or a trajectory was sent, or None.
-        last_update_time: ROS time of the last joint_states, or None.
+        last_motion_time: ROS time the joints last moved or a trajectory was sent.
+        last_update_time: ROS time of the last joint_states.
+        joint_states_stats: Rate and gaps of joint_states, to judge the wifi link.
     """
 
     joint_positions: dict[str, float] = field(default_factory=dict)
@@ -271,6 +258,7 @@ class ArmState:
     end_effector: EndEffectorState | None = None
     last_motion_time: float | None = None
     last_update_time: float | None = None
+    joint_states_stats: StreamStats = field(default_factory=StreamStats)
 
 
 class ArmInterface:
@@ -293,8 +281,7 @@ class ArmInterface:
             robot_namespace: The robot's namespace, e.g. "a200_0806".
             config: This arm.
             base_in_husky: This arm's base_link in the husky frame.
-            urdf_problem: Why the URDF breaks the stock UR frames
-                (ur_frames.stock_frame_problem), or None. If set, Cartesian targets are refused.
+            urdf_problem: Why the URDF breaks the stock UR frames, or None. If set, Cartesian targets are refused.
         """
         self._node = node
         self.config = config
@@ -320,7 +307,6 @@ class ArmInterface:
         """Create the arm's subscriptions, publishers and clients."""
         namespace = self._namespace
         # * Driver topics come through a rate limiter on the robot, to spare the wifi.
-        # ? Best effort: only the newest sample matters, so lost ones are not resent.
         measured = f"{namespace}/rate_limiter"
         sensor = qos_profile_sensor_data
 
@@ -349,7 +335,7 @@ class ArmInterface:
             self.end_effector.reconnect()
 
     # --- --- --- --- --- COMMANDS --- --- --- --- ---
-    # ! ROS thread only (plugin update, job step, or intent). Never from a viser callback.
+    # ! Main thread only. Never from a viser callback.
 
     def build_trajectory(self, positions: Sequence[Sequence[float]], duration: float,
                          velocities: Sequence[Sequence[float]] | None = None) -> JointTrajectory | None:
@@ -486,21 +472,14 @@ class ArmInterface:
         return None
 
     def hold(self) -> bool:
-        """Stop the arm where it is now, under whichever controller is running.
+        """Stop the arm at its measured joints or TCP, under whichever controller is running.
 
-        ? Joint trajectory: sends one at-rest point at the measured joints
-          (an empty one is rejected). Cartesian compliance: targets the measured
-          TCP; the caller must stop sending new targets.
-
-        ! Holds where the arm was *measured*, a wifi trip behind: about a degree
-          of back-motion at 20 deg/s.
-        ! Refused on stale measurements, since an old position could mean a jump.
-          Use the teach pendant then.
+        - Under Cartesian compliance, the caller must stop sending new targets.
+        - Refused on stale measurements (an old position could mean a jump); use the teach pendant then.
         ! A target wrench stays applied; zero it separately.
 
         Returns:
-            bool: True if sent. False (reason logged) if neither controller is
-                running or the measurement is missing or stale.
+            bool: True if sent. False (reason logged) if neither controller runs or the measurement is stale.
         """
         log = self._node.get_logger()
         if self.controllers.is_active(CARTESIAN_COMPLIANCE_CONTROLLER):
@@ -574,8 +553,8 @@ class ArmInterface:
             orientation: Target orientation, quaternion (x, y, z, w).
             hold: True only from `hold`; its target is the reported TCP, so a URDF problem does not stop it.
 
-        ! The controller does not interpolate: a target far from the TCP is a
-          jump. Send bigger moves as many close targets, one per tick (see `cartesian_move`).
+        ! The controller does not interpolate: send bigger moves as many close targets, one per tick
+          (`cartesian_move`).
 
         Returns:
             bool: True if sent. False (reason logged) if a check fails.
@@ -649,16 +628,13 @@ class ArmInterface:
         return np.array(pose.position), np.array(pose.orientation)
 
     def target_vs_reported(self, position: np.ndarray, orientation: np.ndarray) -> str:
-        """Compare a target, in the UR Base frame, with the raw reported TCP, in one line.
+        """Compare a target with the raw reported TCP, both in UR Base, as one log line.
 
-        The first target of a move starts at the TCP, so any difference is a frame error.
+        For a move's first target, which starts at the TCP, any difference is a frame error.
 
         Args:
             position: The target, metres, in the compliance controller's base_link.
             orientation: Its quaternion (x, y, z, w).
-
-        Returns:
-            str: The comparison.
         """
         raw_p = self.state.tcp_raw_position
         target_p = BASE_LINK_FROM_UR_BASE.inv().apply(position)
@@ -670,15 +646,7 @@ class ArmInterface:
                 f"difference {distance:.2f} mm {angle:.3f} deg")
 
     def _cartesian_step_refusal(self, position: np.ndarray, orientation: np.ndarray) -> str | None:
-        """Check a target is not a jump from the one sent just before it.
-
-        Args:
-            position: The new target's position, metres.
-            orientation: The new target's quaternion.
-
-        Returns:
-            str | None: Why it is refused, or None.
-        """
+        """Return why a target jumps too far from the one sent just before it, or None."""
         state = self.state
         if state.sent_target_time is None or self._now() - state.sent_target_time > CARTESIAN_STEP_WINDOW:
             return None  # nothing sent just now: the TCP check covers it
@@ -698,7 +666,7 @@ class ArmInterface:
             what: Which command, e.g. "target frame".
             detail: Its values, for the log.
         """
-        # ! Throttled per command: rclpy's throttle is per line, so one banner would silence the other.
+        # ! Throttled by hand: rclpy throttles per call site, so one banner would silence the other.
         now = self._now()
         if now - self._test_mode_logged.get(what, -np.inf) < 1.0:
             return
@@ -716,7 +684,7 @@ class ArmInterface:
                            torque: Sequence[float] = (0.0, 0.0, 0.0)) -> bool:
         """Send a target wrench to the compliance controller.
 
-        ! In the TOOL frame (tool0), not the arm's base, and it turns with the tool.
+        ! In the tool frame (tool0), not the arm's base, so it turns with the tool.
         ! Stays applied until another wrench is sent, even through a hold. Send zeros to remove it.
 
         Args:
@@ -752,8 +720,7 @@ class ArmInterface:
     def zero_ft_sensor(self) -> bool:
         """Re-zero the force/torque sensor, taring the current reading.
 
-        ! Only when the arm holds nothing but its own tool: zeroing while gripping
-          a bar tares away the weight the compliant execution must measure.
+        ! Only when the arm holds nothing but its tool: zeroing while gripping a bar tares away its weight.
 
         Returns:
             bool: True if the request went out. False if the service is not up.
@@ -765,10 +732,7 @@ class ArmInterface:
         return True
 
     def mark_executing(self) -> None:
-        """Record that a trajectory was just sent, so `is_executing` is True now.
-
-        ? Otherwise a waiter checking right after sending would see it as already finished.
-        """
+        """Record that a trajectory was just sent, so a waiter checking at once doesn't see it as finished."""
         self.state.is_executing = True
         self.state.last_motion_time = self._now()
 
@@ -780,7 +744,7 @@ class ArmInterface:
         values = [self.state.joint_positions.get(prefix + name) for name in UR_JOINT_NAMES]
         return None if any(value is None for value in values) else np.array(values)
 
-    # --- --- --- --- --- CALLBACKS (executor thread) --- --- --- --- ---
+    # --- --- --- --- --- CALLBACKS (main thread) --- --- --- --- ---
     # ! Only write into self.state here: no planning, drawing or file IO.
 
     def _on_joint_state(self, message: JointState) -> None:
@@ -795,18 +759,18 @@ class ArmInterface:
             reference = self._motion_reference.setdefault(key, float(position))
             if abs(position - reference) > MOTION_THRESHOLD:
                 moved = True
-        # ? Compared with where motion was last seen, not the previous message: a
-        #   slow move never crosses the threshold between two messages.
+        # ? Compared with where motion was last seen, not the previous message, so slow moves count too.
         if moved:
             self._motion_reference = {key: self.state.joint_positions[key] for key in self._motion_reference}
             self.state.last_motion_time = now
         elif self.state.last_motion_time is None or now - self.state.last_motion_time > STILL_AFTER:
             self.state.is_executing = False
         self.state.last_update_time = now
+        stamp = message.header.stamp
+        self.state.joint_states_stats.add(now, stamp.sec + stamp.nanosec * 1e-9)
 
     def _on_dynamic_joint_state(self, message: DynamicJointState) -> None:
-        """Store the driver's "tcp_pose", raw (UR Base frame) and in the controller's `base_link`.
-        """
+        """Store the driver's "tcp_pose", raw (UR Base frame) and in the controller's `base_link`."""
         self.samples.tcp_pose.emit(message)
         if "tcp_pose" not in message.joint_names:
             return

@@ -1,18 +1,11 @@
 """
-PlannerPlugin: the part of a planner plugin that does not depend on what is planned.
+PlannerPlugin: plan to a target on a worker thread, preview the path, commit it.
 
-A planner plugin picks a target, plans a path to it on a worker thread, previews the
-path with a time slider and ghosts, and commits it. This base holds that flow:
+Plan states: none -> planning -> ready -> sent; a ready plan goes stale when the robot or target moves.
 
-  none -> planning -> ready -> sent        Plan, then Commit
-                        \\-> stale          the robot or target moved since planning
-
-* A subclass supplies the planning problem through five methods: `make_search`,
-  `stale_reason`, `send_plan`, `show_target` and `show_path`. It builds its own
-  panel in `setup` from the helpers here (`_add_path_controls`, `_add_ghosts`) and
-  draws it in `draw` (`_draw_slider`, `_draw_ghosts`, `_plan_chip`, `_message_html`).
-! No PyBullet or compas_fab here: the planning world is the subclass's, created on
-  its worker thread. The base only closes it (`close()`) at teardown.
+* Subclasses implement `make_search`, `stale_reason`, `send_plan`, `show_target` and `show_path`,
+  and build their panel from `_add_path_controls`, `_add_ghosts` and the `_draw_*` helpers.
+! The planning world is the subclass's, created on the worker thread; the base only closes it at teardown.
 """
 
 from __future__ import annotations
@@ -26,16 +19,16 @@ from typing import TYPE_CHECKING, Any, Callable, Iterable, Protocol
 
 import viser
 
-from ..config import find_robot_serial
-from ..plugin_api.concurrency import timeout
-from ..plugin_api.context import PluginContext
-from ..plugin_api.plugin import HuskyPlugin
-from ..ui.ghost import RecentUse, RobotGhost, robot_ghosts
-from ..ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, chip, section
+from ...config import find_robot_serial
+from async_timeout import timeout
+from ...plugin_api.context import PluginContext
+from ...plugin_api.plugin import HuskyPlugin
+from ...ui.ghost import RecentUse, RobotGhost, robot_ghosts
+from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, chip, section
 from .path import TimedPath
 
 if TYPE_CHECKING:
-    from ..config import RobotConfig
+    from ...config import RobotConfig
     from .search import PlanResult
 
 #: Time slider resolution, seconds.
@@ -49,7 +42,7 @@ _STATE_CHIPS = {"none": ("no plan", NONE), "planning": ("planning…", BUSY), "r
 
 
 class PlanningWorld(Protocol):
-    """What the base needs of a subclass's planning world: that it can be closed on the worker."""
+    """A subclass's planning world, as far as the base needs it."""
 
     def close(self) -> None:
         """Disconnect the world. On the worker, once no search is running."""
@@ -63,14 +56,10 @@ class Search:
         serial: The robot the plan is for.
         label: Task name, e.g. "plan a200-0806".
         message: Shown in the panel while planning.
-        work: Syncs the planning world and searches. Runs on the worker thread; must
-            stop soon after the `abort` it was built with is set.
-        time_limit: Seconds to wait for `work` before giving up, margin included.
-        accepted: On the main thread, when a path was found: remember anything the
-            subclass needs about it, and return the panel message and whether it is
-            a warning.
-        finished: On the main thread, after `work` returned, path or not. E.g. to
-            update the PyBullet window checkbox.
+        work: Syncs the world and searches, on the worker; must stop soon after its `abort` is set.
+        time_limit: Seconds to wait for `work`, margin included.
+        accepted: Main thread, when a path was found: returns the panel message and whether it is a warning.
+        finished: Main thread, after `work` returned, path or not.
     """
 
     serial: str
@@ -176,9 +165,8 @@ class PlannerPlugin(HuskyPlugin):
     def _add_ghosts(self, ctx: PluginContext, robots: Iterable[RobotConfig]) -> None:
         """Build a target ghost and a path ghost per robot, shown only while the panel is in use.
 
-        ? Built in setup: loading the meshes is too slow for the tick.
-        ! All under "ghosts/", so no scene node of the subclass can share their path: removing
-          a node removes everything below it (e.g. a "path" line would take "path/<serial>").
+        ! Call in setup (loading meshes is too slow for a tick). Ghosts live under "ghosts/": keep subclass
+          nodes elsewhere, since removing a node removes everything below it.
         """
         self._used = RecentUse(ctx.config.ghost_timeout)
         robots = list(robots)
@@ -186,13 +174,8 @@ class PlannerPlugin(HuskyPlugin):
         self._path_ghosts = robot_ghosts(ctx, robots, "path")
 
     def teardown(self, ctx: PluginContext) -> None:
-        """At shutdown, end any search, then close the planning world on its worker.
-
-        Args:
-            ctx: This plugin's context.
-        """
-        # ! Abort first, so the wait is short; the world is closed after any search still running.
-        self._abort.set()
+        """End any search, then close the planning world on its worker."""
+        self._abort.set()  # first, so the shutdown wait is short
         if self._world is not None:
             self._executor.submit(self._world.close)
         self._executor.shutdown(wait=True)
@@ -236,10 +219,7 @@ class PlannerPlugin(HuskyPlugin):
         self._plan_task = ctx.spawn(search.label, self._run(search, self._abort))
 
     async def _run(self, search: Search, abort: threading.Event) -> None:
-        """Run one search on the worker thread and take its result on the main thread.
-
-        ! No path found is reported in the panel, not raised: it is not a bug.
-        """
+        """Run one search on the worker and take its result on the main thread; no path is reported, not raised."""
         try:
             async with timeout(search.time_limit):
                 result = await asyncio.get_running_loop().run_in_executor(self._executor, search.work)
@@ -248,8 +228,7 @@ class PlannerPlugin(HuskyPlugin):
             self._say(f"timed out after {search.time_limit:.0f}s waiting for the planner", failed=True)
             return
         finally:
-            # ! A thread cannot be interrupted: on cancel, timeout or failure, tell the
-            #   worker to stop and drop its result. Harmless if it already finished.
+            # ! Threads cannot be interrupted: always tell the worker to stop.
             abort.set()
 
         search.finished()
@@ -263,8 +242,7 @@ class PlannerPlugin(HuskyPlugin):
 
     def _scrub(self, t: float) -> None:
         """Show the path at time `t`."""
-        # ! draw writes the slider back, which lands here again; the same value
-        #   changes nothing, which is what ends that round trip.
+        # ! Keep this check: draw writes the slider back, which would otherwise loop.
         if abs(t - self._t) > 1e-9:
             self._t = t
             self._used.touch()
@@ -310,13 +288,6 @@ class PlannerPlugin(HuskyPlugin):
             return None
         return step, serial, robot.name
 
-    def _report_problem(self, ctx: PluginContext, message: str) -> None:
-        """Say a problem in the panel and the log, e.g. why the PyBullet window isn't open. "" says nothing."""
-        if not message:
-            return
-        ctx.log_warn(message)
-        self._say(message, failed=True)
-
     def _say(self, message: str, failed: bool = False) -> None:
         """Set the one line of feedback under the buttons."""
         self._message, self._message_failed = message, failed
@@ -324,11 +295,7 @@ class PlannerPlugin(HuskyPlugin):
     # --- --- --- --- --- TICK --- --- --- --- ---
 
     def update(self, ctx: PluginContext) -> None:
-        """Advance playback, and notice when a ready plan no longer fits (`stale_reason`).
-
-        Args:
-            ctx: This plugin's context.
-        """
+        """Advance playback, and mark a ready plan stale when `stale_reason` says so."""
         now = ctx.now()
         elapsed = 0.0 if self._last_tick is None else now - self._last_tick
         self._last_tick = now
@@ -353,11 +320,7 @@ class PlannerPlugin(HuskyPlugin):
         self._slider.value = round(self._t, 3)
 
     def _draw_ghosts(self, ctx: PluginContext) -> None:
-        """Show the chosen robot at the target and the planned robot on the path; hide every other ghost.
-
-        * Only while the panel is in use (`RecentUse`).
-        ? Every tick: `show` does nothing when nothing changed.
-        """
+        """Show the target and path ghosts while the panel is in use; hide every other ghost."""
         in_use = self._used.active
         target = self.serial if in_use and self._has_target else None
         planned = self._path_serial if in_use and self.path is not None else None

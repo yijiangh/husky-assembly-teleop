@@ -10,9 +10,8 @@ Two scrolling plots of the last few seconds, one sample per tick:
   2. update   append one sample per series to a fixed-length history
   3. draw     assign `handle.data`; viser sends the new arrays to the browser
 
-! `data` is a tuple of 1-D arrays of equal length: x first, then one per series,
-  matching `series` in order. Assign a new tuple; editing the arrays in place
-  is not sent.
+! `data` is a tuple of equal-length 1-D arrays: x first, then one per series in
+  `series` order. Assign a new tuple: arrays edited in place are not sent.
 
 Run with:  -p plugins:="['example_plot']"
 """

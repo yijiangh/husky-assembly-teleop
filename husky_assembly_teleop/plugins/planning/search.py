@@ -1,11 +1,7 @@
 """
-Running a bidirectional RRT (RRT-Connect, `birrt`) between two states, for any planner.
+RRT-Connect (`birrt`) between two states: the planner supplies sampling, stepping, distance and collision checks.
 
-The planner supplies what makes its problem its own -- how to sample, step, measure
-and check a state -- and gets back the corners of a collision-free path. Collision
-checking is the caller's: this module never sees a PyBullet or compas_fab world.
-
-! Runs on a planner's worker thread; `abort` is how the main thread ends it early.
+! Runs on a planner's worker thread; the main thread ends it early through `abort`.
 """
 
 from __future__ import annotations
@@ -98,8 +94,7 @@ def connect(start: State, goal: State, distance: Callable[[State, State], float]
     if path is None:
         return Corners(None, f"no path found in {TIME_LIMIT:.0f} s")
 
-    # ! birrt returns every small step, maybe without the start: keep only the corners,
-    #   ending exactly at the goal (interpolated steps are off by rounding).
+    # birrt returns every small step, maybe without the start: keep the corners, ending exactly at the goal.
     if tuple(path[0]) != tuple(start):
         path = [start] + list(path)
     return Corners(waypoints_from_path(path)[:-1] + [goal], direct=direct)

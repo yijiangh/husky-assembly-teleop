@@ -1,14 +1,9 @@
 """
 Pick a target for a husky base, plan a path to it, scrub through the path, and commit it.
 
-! EXPERIMENTAL. Commit is a stub that only logs (`send_to_onboard_follower`), and the
-  path model (turn-drive-turn at constant speed) will change to follow the base's dynamics.
+The flow is `plugins.planning.panel.PlannerPlugin`; this adds the planar target, the floor line and the PyBullet world.
 
-* The flow (plan on a worker, preview, stale, commit) is `planning.panel.PlannerPlugin`.
-  Here: the planar target, the floor line, and a private PyBullet world (planner.py)
-  holding every robot and scene body.
-! A plan is only good for the pose it was planned from: if the base or target moves it
-  goes stale, stays on screen, and Commit refuses it until replanned.
+! EXPERIMENTAL: Commit only logs (`send_to_onboard_follower`), and the turn-drive-turn path model will change.
 """
 
 from __future__ import annotations
@@ -22,13 +17,13 @@ import viser
 
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import register
-from ...planning.panel import WAIT_MARGIN, PlannerPlugin, Search
-from ...planning.search import TIME_LIMIT, PlanResult
+from ..planning.panel import WAIT_MARGIN, PlannerPlugin, Search
+from ..planning.search import TIME_LIMIT, PlanResult
 from ...ui.ghost import RobotGhost
 from ...ui.pose_input import PlanarPoseInput, yaw_from_xyzw
-from ...ui.pybullet_window import PyBulletWindowToggle
+from ...ui.pybullet_window import add_pybullet_window_toggle
 from ...ui.style import BUSY, OK, SECTION_CTRL, SECTION_TOOL, block, chip, section, values
-from ...world.scene import Pose
+from ...design_io.pose import Pose
 from .path import BasePath
 from .planner import PlanningWorld, plan_birrt
 
@@ -45,8 +40,7 @@ PATH_THICKNESS = 0.015             # m
 def send_to_onboard_follower(ctx: PluginContext, serial: str, path: BasePath) -> bool:
     """Hand a path to a robot's onboard path follower. STUB: only logs.
 
-    TODO Publish the path (e.g. nav_msgs/Path, world frame) through a method on
-         BaseInterface, so this plugin needs no topic names.
+    TODO Publish the path (e.g. nav_msgs/Path, world frame) through a BaseInterface method.
 
     Args:
         ctx: The plugin's context, for logging.
@@ -73,21 +67,15 @@ class BasePlannerPlugin(PlannerPlugin):
         """Start with no robot chosen, no target and no plan."""
         super().__init__()
         self.path: BasePath | None = None
-        # ! Worker thread only (sync, search, close); see planner.py.
+        # ! Worker thread only (sync, search, close).
         self._world = PlanningWorld()
         # Whether draw must rebuild the path line.
         self._stale_line = True
-        #: The PyBullet window's state, read on the worker after a search.
-        self._window_state = (False, "")
 
     # --- --- --- --- --- SETUP --- --- --- --- ---
 
     def setup(self, ctx: PluginContext) -> None:
-        """Build the panel, the path line, and a target ghost and a path ghost per robot.
-
-        Args:
-            ctx: This plugin's context.
-        """
+        """Build the panel, and a target ghost and a path ghost per robot."""
         serials = [robot.serial for robot in ctx.config.robots]
         if not serials:
             raise RuntimeError("no robots configured; the base planner has nothing to plan for")
@@ -111,8 +99,7 @@ class BasePlannerPlugin(PlannerPlugin):
                                               "planning)",
                                     commit_hint="Send the path to the robot's onboard path follower (stub: logs only)")
             # * Debugging: watch the planning world, and the search moving the robot around in it.
-            self._window = PyBulletWindowToggle(ctx, gui, self._executor, self._world.set_gui,
-                                                report=lambda message: self._report_problem(ctx, message))
+            add_pybullet_window_toggle(ctx, gui, self._executor, self._world.set_gui)
             # ! Keep changing content BELOW the buttons, so nothing moves under the cursor.
             self._details = gui.add_html("")
 
@@ -169,15 +156,12 @@ class BasePlannerPlugin(PlannerPlugin):
     def make_search(self, ctx: PluginContext, abort: threading.Event) -> Search:
         """Search from the robot's current pose to the target, in the tick's snapshot."""
         serial, start, goal = self.serial, self._current_pose(ctx), self._target.pose
-        # * The world as it stood at the start of this tick. The worker syncs its
-        #   planning world from it, after any cancelled search still finishing there.
+        # * Take the snapshot here, on the main thread; the worker syncs from it.
         snapshot = ctx.scene.snapshot
 
         def work() -> PlanResult:
             self._world.sync(snapshot)
-            result = plan_birrt(self._world, serial, start, goal, abort)
-            self._window_state = self._world.window()
-            return result
+            return plan_birrt(self._world, serial, start, goal, abort)
 
         def accepted(result: PlanResult) -> tuple[str, bool]:
             self._stale_line = True
@@ -187,9 +171,7 @@ class BasePlannerPlugin(PlannerPlugin):
                     + ("" if tracked else ", from an untracked pose"), not tracked)
 
         return Search(serial=serial, label=f"plan {serial}", message=f"planning for {serial}…", work=work,
-                      time_limit=TIME_LIMIT + WAIT_MARGIN, accepted=accepted,
-                      # ? Unticks the box if the window was closed by hand.
-                      finished=lambda: self._window.show(*self._window_state))
+                      time_limit=TIME_LIMIT + WAIT_MARGIN, accepted=accepted)
 
     def stale_reason(self, ctx: PluginContext) -> str:
         """Stale once the base moves away from the plan's start, or the target from its goal."""
@@ -221,10 +203,7 @@ class BasePlannerPlugin(PlannerPlugin):
         self._show_at(ctx, ghost, self._path_serial, self.path.sample(self._t))
 
     def _show_at(self, ctx: PluginContext, ghost: RobotGhost, serial: str, pose) -> None:
-        """Show `ghost` at floor pose (x, y, yaw), height and arms from the live robot.
-
-        ? A base move does not move the arms, so they are drawn as they are now.
-        """
+        """Show `ghost` at floor pose (x, y, yaw), height and arms from the live robot."""
         x, y, yaw = (float(v) for v in pose)
         z = float(ctx.kinematics.base_pose(serial).position[2])
         ghost.show(Pose((x, y, z), (0.0, 0.0, math.sin(yaw / 2), math.cos(yaw / 2))), ctx.kinematics.joints(serial))
@@ -232,18 +211,10 @@ class BasePlannerPlugin(PlannerPlugin):
     # --- --- --- --- --- READING --- --- --- --- ---
 
     def _current_pose(self, ctx: PluginContext) -> tuple[float, float, float]:
-        """Where the chosen robot's base is now, (x, y, yaw).
+        """Where the chosen robot's base is now: x, y in metres and yaw in radians, world frame.
 
-        ? Read from kinematics, which holds the last mocap fix, or the
-          robot's default pose before any. That keeps planning usable without
-          mocap (in simulation, or on the bench); Commit is what insists on a
-          tracked pose.
-
-        Args:
-            ctx: This plugin's context.
-
-        Returns:
-            tuple[float, float, float]: x, y in metres and yaw in radians, world frame.
+        ? From kinematics (last mocap fix, else the default pose), so planning works without mocap;
+          only Commit needs a tracked pose.
         """
         base = ctx.kinematics.base_pose(self.serial)
         return float(base.position[0]), float(base.position[1]), yaw_from_xyzw(base.orientation)
@@ -251,11 +222,7 @@ class BasePlannerPlugin(PlannerPlugin):
     # --- --- --- --- --- DRAW --- --- --- --- ---
 
     def draw(self, ctx: PluginContext) -> None:
-        """Pose the ghosts, redraw the path line if needed, and fill the panel.
-
-        Args:
-            ctx: This plugin's context.
-        """
+        """Pose the ghosts, redraw the path line if needed, and fill the panel."""
         self._status.content = self._status_html(ctx)
         # Loading a target from the cell can switch the robot; show that here.
         self._robot.value = self.serial
@@ -267,11 +234,7 @@ class BasePlannerPlugin(PlannerPlugin):
         self._draw_ghosts(ctx)
 
     def _draw_line(self, ctx: PluginContext) -> None:
-        """Replace the path line with the current plan's, or remove it.
-
-        Args:
-            ctx: This plugin's context.
-        """
+        """Replace the path line with the current plan's, or remove it."""
         if self._line is not None:
             self._line.remove()
             self._line = None
@@ -286,14 +249,7 @@ class BasePlannerPlugin(PlannerPlugin):
             colors=LINE_COLOR, thickness=PATH_THICKNESS)
 
     def _status_html(self, ctx: PluginContext) -> str:
-        """One line of chips: the robot and whether it is tracked, and the plan's state.
-
-        Args:
-            ctx: This plugin's context.
-
-        Returns:
-            str: HTML.
-        """
+        """One line of chips: the robot, whether it is tracked, and the plan's state."""
         tracked = ctx.world.robots[self.serial].base.state.tracked
         chips = chip(escape(self.serial), SECTION_CTRL)
         chips += chip("tracked" if tracked else "not tracked", OK if tracked else BUSY,
@@ -301,11 +257,7 @@ class BasePlannerPlugin(PlannerPlugin):
         return block(chips + self._plan_chip())
 
     def _details_html(self) -> str:
-        """Numbers of the target and the plan, and the last message. Fixed number of rows.
-
-        Returns:
-            str: HTML.
-        """
+        """Numbers of the target and the plan, and the last message, in a fixed number of rows."""
         x, y, yaw = self._target.pose
         target = f"target  {x:+7.3f} {y:+7.3f} {math.degrees(yaw):+7.1f}°" if self._has_target else "target  —"
         if self.path is None:
@@ -319,15 +271,7 @@ class BasePlannerPlugin(PlannerPlugin):
 
 
 def _differs(pose, reference) -> bool:
-    """Whether two floor poses are further apart than the stale thresholds.
-
-    Args:
-        pose: (x, y, yaw).
-        reference: (x, y, yaw).
-
-    Returns:
-        bool: True if the position or the heading differs by more than allowed.
-    """
+    """Whether two (x, y, yaw) floor poses differ by more than STALE_POSITION or STALE_YAW."""
     dx, dy = pose[0] - reference[0], pose[1] - reference[1]
     dyaw = math.atan2(math.sin(pose[2] - reference[2]), math.cos(pose[2] - reference[2]))
     return math.hypot(dx, dy) > STALE_POSITION or abs(dyaw) > STALE_YAW

@@ -1,8 +1,7 @@
 """
-The ROS entities one interface created, so they can be destroyed and recreated.
+The ROS entities one interface created, so a reconnect can destroy and recreate them.
 
-Interfaces create all their ROS entities through RosConnections, and reconnect by
-destroying and recreating them, so plugins' references to the interface stay valid.
+Interfaces create every ROS entity through RosConnections, so plugins' references to the interface stay valid.
 """
 
 from __future__ import annotations
@@ -61,8 +60,7 @@ class RosConnections:
     def _guarded(self, source: str, callback: Callable) -> Callable:
         """Wrap a callback so an exception drops that message instead of killing the node.
 
-        Only the first failure per source is logged (with traceback), so a bad
-        topic cannot flood the log; a reconnect resets this.
+        Only the first failure per source is logged, until the next reconnect.
 
         Args:
             source: Topic or timer name, for the log.
@@ -90,9 +88,8 @@ class RosConnections:
     def destroy_all(self) -> None:
         """Destroy everything created so far, newest first.
 
-        ! Pending requests on destroyed clients never complete, so their done
-          callbacks never run; whoever tracks them (`switch_in_flight`, `moving`)
-          must clear them.
+        ! Requests pending on destroyed clients never complete; whoever tracks them
+          (`switch_in_flight`, `moving`) must clear them.
         """
         for destroy in reversed(self._destroyers):
             destroy()

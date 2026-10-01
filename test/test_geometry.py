@@ -5,9 +5,9 @@ import pytest
 from compas.datastructures import Mesh
 from compas_fab.robots import RigidBody
 
-from husky_assembly_teleop.world.geometry import (BoxShape, CylinderShape, Geometry, TriMesh, box_geometry,
-                                            cylinder_geometry, shape_mesh)
-from husky_assembly_teleop.world.scene import Pose
+from husky_assembly_teleop.design_io.geometry import (BoxShape, CylinderShape, Geometry, TriMesh, box_geometry,
+                                                      cylinder_geometry, shape_mesh)
+from husky_assembly_teleop.design_io.pose import Pose
 
 
 def _extents(mesh: TriMesh) -> np.ndarray:

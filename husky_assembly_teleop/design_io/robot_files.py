@@ -1,10 +1,7 @@
 """
-URDF and SRDF helpers: link and joint names, planning group tips, mesh references, and copying a
-robot with its meshes into a design folder.
+URDF and SRDF helpers in plain `xml.etree` (runs in Rhino too): names, group tips, mesh references, copying.
 
-* Plain `xml.etree`: no URDF library, so this runs wherever the core runs (Rhino included).
-! Mesh references inside a design's URDF are paths relative to the URDF file (format §6). Readers
-  resolve them against the URDF's folder, never the working directory.
+! A design URDF's mesh paths are relative to the URDF: resolve them against its folder, not the working directory.
 """
 
 from __future__ import annotations
@@ -20,53 +17,27 @@ PACKAGE_SCHEME, FILE_SCHEME = "package://", "file://"
 # --- --- --- --- --- READING --- --- --- --- ---
 
 def _root(path: Path) -> Element:
-    """Parse an XML file, keeping comments (so a copied URDF keeps them).
-
-    Args:
-        path: The XML file.
-
-    Returns:
-        Element: Its root element.
-    """
+    """The root element of an XML file, comments kept so a copied URDF keeps them."""
     parser = XMLParser(target=TreeBuilder(insert_comments=True))
     return parse(str(path), parser=parser).getroot()
 
 
 def urdf_links(urdf: Path) -> set[str]:
-    """Every link name of a URDF.
-
-    Args:
-        urdf: The URDF file.
-
-    Returns:
-        set[str]: Link names.
-    """
+    """Every link name of a URDF."""
     return {link.get("name") for link in _root(urdf).findall("link")}
 
 
 def urdf_joints(urdf: Path) -> dict[str, str]:
-    """Every joint of a URDF with its type, in file order.
-
-    Args:
-        urdf: The URDF file.
-
-    Returns:
-        dict[str, str]: Joint name -> type ("revolute", "fixed", ...).
-    """
+    """Joint name -> type ("revolute", "fixed", ...) of a URDF, in file order."""
     return {joint.get("name"): joint.get("type") for joint in _root(urdf).findall("joint")}
 
 
 def movable_joints(urdf: Path, srdf: Path) -> tuple[str, ...]:
-    """The joints a design state must list (format §5.2): every joint that moves on its own.
-
-    * Left out: fixed joints, SRDF `<passive_joint>`s (e.g. wheels) and mimic joints (they follow another).
+    """The joints a design state must list, in URDF order: all but fixed, SRDF-passive (wheels) and mimic ones.
 
     Args:
         urdf: The URDF file.
         srdf: The SRDF file of the same robot.
-
-    Returns:
-        tuple[str, ...]: Joint names, in URDF order.
     """
     passive = {joint.get("name") for joint in _root(srdf).findall("passive_joint")}
     return tuple(joint.get("name") for joint in _root(urdf).findall("joint")
@@ -75,14 +46,7 @@ def movable_joints(urdf: Path, srdf: Path) -> tuple[str, ...]:
 
 
 def srdf_group_tips(srdf: Path) -> dict[str, str]:
-    """The tip link of every SRDF group made of a chain.
-
-    Args:
-        srdf: The SRDF file.
-
-    Returns:
-        dict[str, str]: Group name -> tip link. Groups without a `<chain>` are left out.
-    """
+    """Group name -> tip link of every SRDF group made of a `<chain>`."""
     tips = {}
     for group in _root(srdf).findall("group"):
         chain = group.find("chain")
@@ -92,41 +56,20 @@ def srdf_group_tips(srdf: Path) -> dict[str, str]:
 
 
 def mesh_references(urdf: Path) -> list[str]:
-    """Every mesh file name a URDF references, as written, in file order (repeats included).
-
-    Args:
-        urdf: The URDF file.
-
-    Returns:
-        list[str]: `filename` of every `<mesh>` element.
-    """
+    """The `filename` of every `<mesh>` in a URDF, as written, in file order (repeats included)."""
     return [mesh.get("filename", "") for mesh in _root(urdf).iter("mesh")]
 
 
 def is_relative_reference(filename: str) -> bool:
-    """Whether a URDF mesh reference is a plain relative path (no `package://`, `file://`, or absolute path).
-
-    Args:
-        filename: A `<mesh filename=...>` value.
-
-    Returns:
-        bool: True for a path relative to the URDF file.
-    """
+    """Whether a `<mesh filename=...>` is a plain relative path (no `package://`, `file://`, or absolute path)."""
     return not (filename.startswith(PACKAGE_SCHEME) or filename.startswith(FILE_SCHEME)
                 or Path(filename).is_absolute())
 
 
 def resolved_urdf_text(urdf: Path) -> str:
-    """The URDF text with every relative mesh path made absolute against the URDF's folder.
+    """The URDF text with relative mesh paths made absolute; other references are left as they are.
 
-    ? compas_robots resolves plain paths against the working directory, so compas callers load this
-      text instead of the file.
-
-    Args:
-        urdf: The URDF file.
-
-    Returns:
-        str: The URDF, other references (`package://`, absolute) left as they are.
+    ? compas_robots resolves plain paths against the working directory, so compas callers load this instead.
     """
     root = _root(urdf)
     folder = Path(urdf).resolve().parent
@@ -140,15 +83,7 @@ def resolved_urdf_text(urdf: Path) -> str:
 # --- --- --- --- --- COPYING --- --- --- --- ---
 
 def _find_package(name: str, package_dirs: Sequence[Path]) -> Optional[Path]:
-    """The folder of a ROS package: `<dir>/<name>` for a search dir, or a dir that is the package itself.
-
-    Args:
-        name: Package name.
-        package_dirs: Folders to search.
-
-    Returns:
-        Path | None: The package folder, or None if not found.
-    """
+    """The folder of a ROS package: `<dir>/<name>`, or a dir that is the package itself; None if not found."""
     for folder in package_dirs:
         folder = Path(folder)
         if folder.name == name and folder.is_dir():
@@ -164,11 +99,10 @@ def _without_anchor(path: Path) -> str:
 
 
 def _locate(filename: str, urdf_folder: Path, package_dirs: Sequence[Path]) -> Tuple[Path, str]:
-    """Find a referenced mesh and choose where its copy goes below `meshes/`.
+    """Find a referenced mesh and choose its path below `meshes/`.
 
-    * `package://<pkg>/<rest>` keeps `<pkg>/<rest>`, so meshes of different packages never collide.
-    * A plain relative path inside the URDF's folder keeps that relative path. Anything else keeps
-      its whole absolute path without the leading `/` (unique, if long).
+    The path is `<pkg>/<rest>` for `package://`, the relative path for files inside the URDF's folder,
+    else the absolute path without its leading `/`.
 
     Args:
         filename: The reference as written in the URDF.
@@ -191,9 +125,14 @@ def _locate(filename: str, urdf_folder: Path, package_dirs: Sequence[Path]) -> T
         path = Path(filename[len(FILE_SCHEME):] if filename.startswith(FILE_SCHEME) else filename)
         source = path if path.is_absolute() else (urdf_folder / path)
         source = source.resolve()
-        try:
-            below = source.relative_to(urdf_folder.resolve()).as_posix()
-        except ValueError:
+        # ? A design's own URDF already keeps its meshes under `meshes/`: keep that path, or a rewrite nests it again.
+        for base in (urdf_folder.resolve() / "meshes", urdf_folder.resolve()):
+            try:
+                below = source.relative_to(base).as_posix()
+                break
+            except ValueError:
+                continue
+        else:
             below = _without_anchor(source)
     if not source.is_file():
         raise FileNotFoundError(f"mesh {filename!r} not found (looked at {source})")
@@ -201,16 +140,13 @@ def _locate(filename: str, urdf_folder: Path, package_dirs: Sequence[Path]) -> T
 
 
 def copy_robot(urdf: Path, srdf: Path, dest_dir: Path, package_dirs: Sequence[Path] = ()) -> tuple[Path, Path]:
-    """Copy a robot into a design: `robot.urdf`, `robot.srdf` and every mesh they need.
-
-    * Meshes go to `dest_dir/meshes/<path>` and the copied URDF names them relative to itself.
+    """Copy a robot into a design: `robot.urdf`, `robot.srdf`, and every mesh under `meshes/`, named relatively.
 
     Args:
         urdf: Source URDF.
         srdf: Source SRDF.
         dest_dir: The robot's folder in the design, e.g. `<design>/robots/cindy`. Created if missing.
-        package_dirs: Where to find packages named by `package://` references: folders that contain
-            package folders, or package folders themselves.
+        package_dirs: Folders holding packages named by `package://`, or package folders themselves.
 
     Returns:
         tuple[Path, Path]: The copied URDF and SRDF.

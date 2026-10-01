@@ -15,7 +15,8 @@ import numpy as np
 import pytest
 
 EXPORT = Path("/home/jakob/ra/workspace/google_data/260814_RobArch_support_ik")
-pytestmark = pytest.mark.skipif(not (EXPORT / "ActionSchedule.json").is_file(), reason="export not on this machine")
+pytestmark = [pytest.mark.skipif(not (EXPORT / "ActionSchedule.json").is_file(), reason="export not on this machine"),
+              pytest.mark.slow]
 
 DATA = Path(__file__).resolve().parent.parent / "data"
 
@@ -30,7 +31,7 @@ def _same_frame(a, b, tolerance: float = 1e-6) -> bool:
 def converted(tmp_path_factory):
     """The export converted and written, read back, with the original actions and cells."""
     from compas.data import json_load
-    from husky_assembly_teleop.design_conversion import convert_export
+    from husky_assembly_teleop.design_io.conversion import convert_export
     from husky_assembly_teleop.design_io import read
 
     folder = tmp_path_factory.mktemp("design")

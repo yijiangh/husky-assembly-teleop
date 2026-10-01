@@ -1,41 +1,34 @@
 """
-A private PyBullet world, filled from a `SceneSnapshot`: robots, scene bodies and
-tracked objects with geometry.
+A private PyBullet world filled from a `SceneSnapshot`: robots, scene bodies and tracked objects with geometry.
 
-    worker thread:  mirror.sync(snapshot) → collision checks in mirror.client_id
+`sync` only rebuilds or moves what changed; robots are re-posed every sync. `set_gui(True)` shows the world
+in PyBullet's own window (one per process) for debugging; it shows collision shapes only, as nothing visual
+is loaded.
 
-* `sync` only does what changed: it builds new or reshaped objects, removes gone
-  ones and moves a body only when its pose changed. Robots are re-posed every sync.
-! A planner that moves a body (not a robot) while searching must put it back
-  itself: `sync` compares with the pose it last applied, not with PyBullet.
-* Every call is a raw `p.*` call with `physicsClientId`, so other PyBullet worlds
-  in the process are never touched.
-
-! One thread only: create, sync and query a mirror on the same thread.
-! `pp.CLIENT` (pybullet_planning) is one global for the whole process. Use `pp`
-  only inside `mirror.active()`, and only one `pp` planner thread at a time.
-! PyBullet reuses body ids after removal. Never keep a PyBullet id outside the
-  mirror; translate results to our ids with `id_of`.
-* Debugging: `set_gui(True)` shows the world in PyBullet's own window (one per
-  process). It reconnects the world, so PyBullet ids change; ask again after.
+- ! One thread only: create, sync and query a mirror on the same thread.
+- ! A planner that moves a body (not a robot) must put it back: `sync` compares with the pose it last applied.
+- ! Use `pp` (pybullet_planning) only inside `mirror.active()`, one `pp` thread at a time: `pp.CLIENT` is global.
+- ! Never keep a PyBullet id outside the mirror: ids are reused after removal and change on `set_gui`;
+  translate with `id_of`.
 """
 
 from __future__ import annotations
 
 from contextlib import contextmanager
-from os import environ
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Iterable, Iterator
 
 import pybullet as p
 import pybullet_planning as pp
 
-from ..geometry import BoxShape, CylinderShape
-from ..scene import ROBOTS, Pose, SceneSnapshot, robot_id, tracked_id
+from ...design_io.geometry import BoxShape, CylinderShape
+from . import check_display
+from ..scene import ROBOTS, SceneSnapshot, robot_id, tracked_id
+from ...design_io.pose import Pose
 
 if TYPE_CHECKING:
     from ...config import RobotConfig
-    from ..geometry import Geometry, Shape
+    from ...design_io.geometry import Geometry, Shape
 
 
 @dataclass(eq=False)
@@ -72,42 +65,28 @@ def _matches(entry: str, object_id: str) -> bool:
 
 
 class PyBulletMirror:
-    """A private PyBullet world that follows the scene snapshots given to `sync`; optionally with a window."""
+    """A private PyBullet world that follows the scene snapshots given to `sync`."""
 
     def __init__(self) -> None:
         """Connect a new world without a window, empty until the first `sync`."""
-        #: The last snapshot synced, to rebuild from when the window opens or closes.
-        self._snapshot: SceneSnapshot | None = None
-        #: Why the window asked for is not open ("" if nothing went wrong).
-        self.window_problem = ""
+        self.client_id: int | None = None
         self._connect(gui=False)
 
     def _connect(self, gui: bool) -> None:
-        """Connect an empty world, with a window if asked for and possible; forget everything built.
+        """Replace the world with a new, empty one, with PyBullet's own window if asked for.
 
-        ! A window that can't open (no display, or another one already open) is not
-          an error: the world carries on without one, and `window_problem` says why.
-
-        Args:
-            gui: Try to open PyBullet's own window.
+        Raises:
+            RuntimeError: If a window is asked for without an X display.
+            pybullet.error: If another PyBullet window is open in this process. The old world stays.
         """
-        #: Whether this world has a window.
-        self.gui = False
         if gui:
-            # ! Without an X display PyBullet exits the whole process instead of raising, so
-            #   check first. Its window is X11 only (on Wayland, XWayland sets DISPLAY).
-            if not environ.get("DISPLAY"):
-                self.window_problem = "there is no display to open a PyBullet window on"
-            else:
-                try:
-                    self.client_id: int = p.connect(p.GUI)
-                    self.gui = True
-                except p.error as error:
-                    # ? PyBullet allows one window per process; another mirror may have it.
-                    self.window_problem = ("another PyBullet window is open in this process"
-                                           if "Only one" in str(error) else str(error))
-        if not self.gui:
-            self.client_id = p.connect(p.DIRECT)
+            check_display()
+        client_id = p.connect(p.GUI if gui else p.DIRECT)
+        if self.client_id is not None:
+            self.close()
+        self.client_id = client_id
+        #: Whether PyBullet's own window shows this world.
+        self.gui = gui
         # Our id -> what was built for it.
         self._built: dict[str, _Built] = {}
         # PyBullet body id -> our id.
@@ -115,44 +94,20 @@ class PyBulletMirror:
         # Our id -> its `touches`, from the last synced snapshot.
         self._touches: dict[str, tuple[str, ...]] = {}
         # (shape, built concave) -> collision shape id, shared between bodies.
-        # ? Keyed by the shape itself, never `id(obj)`: Python reuses ids of freed
-        #   objects. Meshes compare by identity, primitives by value (equal boxes share one).
+        # ? Keyed by the shape, not `id(obj)` (reused after free); equal primitives share one.
         self._shapes: dict[tuple[Shape, bool], int] = {}
 
-    # --- --- --- --- --- WINDOW --- --- --- --- ---
+    def set_gui(self, gui: bool) -> None:
+        """Open or close PyBullet's own window, for debugging. The world is empty until the next `sync`.
 
-    def set_gui(self, gui: bool) -> bool:
-        """Open or close PyBullet's own window on this world, to watch what a planner sees.
+        - ! Closing the window by hand ends the world; `set_gui(False)` brings it back.
 
-        Reconnects and rebuilds everything from the last synced snapshot, so switching
-        takes a moment (every robot loads again). Nothing happens if already so.
-
-        Args:
-            gui: Whether the window should be open.
-
-        Returns:
-            bool: Whether it is open now. If not although asked for, see `window_problem`.
+        Raises:
+            RuntimeError: If a window is asked for without an X display.
+            pybullet.error: If another PyBullet window is open in this process.
         """
-        if self._window_closed_by_hand() or gui == self.gui:
-            return self.gui
-        self.close()
-        self.window_problem = ""
-        self._connect(gui)
-        if self._snapshot is not None:
-            self.sync(self._snapshot)
-        return self.gui
-
-    def _window_closed_by_hand(self) -> bool:
-        """If the window was closed by hand, carry on without one.
-
-        Returns:
-            bool: True if it was; the world is then empty until the next `sync`.
-        """
-        if self.connected:
-            return False
-        self._connect(gui=False)
-        self.window_problem = "the PyBullet window was closed"
-        return True
+        if gui != self.gui:
+            self._connect(gui)
 
     # --- --- --- --- --- SYNC --- --- --- --- ---
 
@@ -162,16 +117,13 @@ class PyBulletMirror:
         Args:
             snapshot: The world to copy. It is not modified.
         """
-        self._window_closed_by_hand()  # then rebuild everything below
-        self._snapshot = snapshot
         # Our id -> (source, concave, pose) for everything that should exist.
         wanted: dict[str, tuple[Geometry | RobotConfig, bool, Pose]] = {}
         touches: dict[str, tuple[str, ...]] = {}
         for serial, entry in snapshot.robots.items():
             wanted[robot_id(serial)] = (entry.config, False, entry.base)
         for body_id, body in snapshot.bodies.items():
-            # ! Concave only when free: Bullet can't collide two concave meshes,
-            #   and an attached body may meet another concave body.
+            # ! Concave only when free: Bullet can't collide two concave meshes, and attached bodies move.
             concave = isinstance(body.placement, Pose) and any(not mesh.convex for mesh in body.geometry.collision)
             wanted[body_id] = (body.geometry, concave, snapshot.world_poses[body_id])
             touches[body_id] = body.touches
@@ -218,7 +170,9 @@ class PyBulletMirror:
             pose: Its world pose.
         """
         if object_id.startswith(f"{ROBOTS}/"):
-            body = p.loadURDF(str(source.urdf_file), useFixedBase=False, physicsClientId=self.client_id)
+            # * Collision shapes only: the visual meshes are large and slow to load (~0.6 s per robot), and unused.
+            body = p.loadURDF(str(source.urdf_file), useFixedBase=False, flags=p.URDF_IGNORE_VISUAL_SHAPES,
+                              physicsClientId=self.client_id)
             p.resetBasePositionAndOrientation(body, pose.position, pose.orientation, physicsClientId=self.client_id)
             infos = [p.getJointInfo(body, i, physicsClientId=self.client_id)
                      for i in range(p.getNumJoints(body, physicsClientId=self.client_id))]
@@ -252,8 +206,7 @@ class PyBulletMirror:
 
         Args:
             shape: A box, a cylinder or triangles, in the body's frame.
-            concave: For a mesh: build it as a concave triangle mesh; otherwise as the
-                convex hull of its vertices. Primitives are always exact.
+            concave: For a mesh, build a concave triangle mesh instead of the convex hull. Ignored for primitives.
 
         Returns:
             int: The collision shape id.
@@ -277,8 +230,7 @@ class PyBulletMirror:
                 shape_id = p.createCollisionShape(p.GEOM_MESH, vertices=shape.vertices, indices=shape.faces.flatten(),
                                                   flags=p.GEOM_FORCE_CONCAVE_TRIMESH, physicsClientId=client)
             else:
-                # ! Vertices only. Given triangles, PyBullet builds a concave mesh even
-                #   without the concave flag, and two of those never collide.
+                # ! Vertices only: given triangles, PyBullet builds a concave mesh, and two of those never collide.
                 shape_id = p.createCollisionShape(p.GEOM_MESH, vertices=shape.vertices, physicsClientId=client)
             self._shapes[key] = shape_id
         return shape_id
@@ -286,9 +238,7 @@ class PyBulletMirror:
     def _drop_unused_shapes(self) -> None:
         """Forget cached shapes no body uses any more, so their meshes can be freed.
 
-        ! PyBullet (3.2.x) refuses `removeCollisionShape` for a shape any body has
-          ever used, even after that body is removed; it only prints a warning. So
-          the PyBullet side of a dropped shape stays allocated until `close`.
+        ? PyBullet (3.2.x) won't remove a shape any body ever used, so its PyBullet side stays until `close`.
         """
         used = {(mesh, built.concave and not mesh.convex)
                 for object_id, built in self._built.items() if not object_id.startswith(f"{ROBOTS}/")
@@ -338,10 +288,7 @@ class PyBulletMirror:
     # --- --- --- --- --- COLLISIONS --- --- --- --- ---
 
     def allowed(self, a: str, b: str) -> bool:
-        """Whether two ids may touch: either lists the other in its `touches`.
-
-        An entry "robots/<serial>" allows every link "robots/<serial>/<link>";
-        "robots/<serial>/<link>" allows only that link.
+        """Whether two ids may touch: either lists the other in its `touches` ("robots/<serial>" covers all links).
 
         Args:
             a: An id: body, tracked object, robot or robot link.

@@ -10,11 +10,13 @@ from xml.etree.ElementTree import parse
 import numpy as np
 from scipy.spatial.transform import Rotation
 
+from .frames import joint_origin
+
 #: Stock ur_description turns both joints below `<arm>_base_link` 180 deg about z.
 STOCK_YAW = np.pi
 
-#: The compliance controller's `base_link` seen from the UR Base frame (the
-#: reported TCP's frame). ! Fixed by the stock description; never read from our URDFs.
+#: The compliance controller's `base_link` seen from the UR Base frame (the reported TCP's frame).
+#: ! Fixed by the stock description; never read it from our URDFs.
 BASE_LINK_FROM_UR_BASE = Rotation.from_euler("z", STOCK_YAW)
 
 
@@ -34,12 +36,10 @@ def stock_frame_problem(urdf_file: Path, arm_name: str) -> str | None:
             continue
         if joint.find("child").get("link") not in (f"{arm_name}_base_link_inertia", f"{arm_name}_base"):
             continue
-        origin = joint.find("origin")
-        xyz = np.array([float(v) for v in origin.get("xyz", "0 0 0").split()])
-        rpy = [float(v) for v in origin.get("rpy", "0 0 0").split()]
-        turn = (Rotation.from_euler("z", STOCK_YAW).inv() * Rotation.from_euler("xyz", rpy)).magnitude()
+        xyz, rotation = joint_origin(joint)
+        turn = (Rotation.from_euler("z", STOCK_YAW).inv() * rotation).magnitude()
         if np.linalg.norm(xyz) > 1e-6 or turn > 1e-6:
-            wrong.append(f"{joint.get('name')} (rpy {origin.get('rpy')})")
+            wrong.append(f"{joint.get('name')} (rpy {joint.find('origin').get('rpy')})")
     if not wrong:
         return None
     return (f"URDF {urdf_file.name}, arm {arm_name}: joints below {arm_name}_base_link are not the stock UR "

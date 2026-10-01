@@ -1,10 +1,5 @@
 """
-Lap times of a slow job (loading, converting), for one log line.
-
-    watch = Stopwatch()
-    ...; watch.lap("read design")
-    ...; watch.lap("cells")
-    log(f"loaded in {watch.summary()}")      # "loaded in 4.2 s: read design 0.1 s, cells 4.1 s"
+Lap times of a slow job (loading, converting), summarised in one log line.
 """
 
 from __future__ import annotations
@@ -23,10 +18,7 @@ class Stopwatch:
         self.laps: List[Tuple[str, float]] = []
 
     def lap(self, name: str) -> float:
-        """End the current lap and name it.
-
-        Args:
-            name: What the lap was spent on. A name used before adds to that lap.
+        """End the current lap and name it; a name used before adds to that lap.
 
         Returns:
             float: Seconds of this lap.

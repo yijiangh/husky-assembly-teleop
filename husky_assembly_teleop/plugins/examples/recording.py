@@ -3,20 +3,15 @@ Example 5: recording an arm's joint states at the full ROS rate.
 
 ! EXPERIMENTAL: see robot_interface/recording.py; how recording works is not decided yet.
 
-"Record 5 s" collects every JointState message for five seconds, saves the
-stamps and positions to an .npz file and shows the sample count and rate.
+"Record 5 s" saves every JointState message for five seconds (stamps and positions)
+to an .npz file in RECORDING_FOLDER, and shows the sample count and rate.
 
-  * The subscription queue is deep enough for one tick of samples, and
-    `record` listens to every message, so the 20 Hz tick does not thin the data.
-  * Samples are stamped with the message's `header.stamp`. Callbacks run in
-    batches at tick time, so the node clock would give the drain time instead.
-  * `with record(...)` detaches when the block ends, also when the task is
-    cancelled (soft stop, plugin stop), so no listener is left behind.
+  * `record` sees every message, not one per tick, and uses each message's `header.stamp`:
+    callbacks run in batches at tick time, so the node clock would be wrong.
+  * `with record(...)` detaches when the block ends, also when the task is cancelled.
 
-! If the loop stalls for longer than the queue covers (about 200 ms at 500 Hz),
-  DDS drops samples. A recording that must never lose one: use `ros2 bag record`.
-
-Files go to /tmp/husky_recordings (change RECORDING_FOLDER).
+! If the loop stalls longer than the queue covers (about 200 ms at 500 Hz), DDS drops
+  samples. To never lose one, use `ros2 bag record`.
 
 Run with:  -p plugins:="['example_recording']" -p robots:="['0806']"
 """
@@ -67,11 +62,11 @@ class ExampleRecordingPlugin(HuskyPlugin):
         if self._arm is None:
             ctx.log_warn("example_recording: no robot with an arm, nothing to record")
             return
-        # * `defer` runs the async def as an intent, which spawns it as a task.
+        # * The intent spawns the async def as a task.
         button.on_click(ctx.defer("record", lambda: self._start(ctx)))
 
     def _start(self, ctx: PluginContext) -> None:
-        """Start a recording unless one is running. Runs as an intent.
+        """Start a recording unless one is running (intent).
 
         Args:
             ctx: This plugin's context.
@@ -99,7 +94,7 @@ class ExampleRecordingPlugin(HuskyPlugin):
         RECORDING_FOLDER.mkdir(parents=True, exist_ok=True)
         path = RECORDING_FOLDER / f"joint_states_{time.strftime('%Y%m%d_%H%M%S')}.npz"
         np.savez(path, stamps=stamps, positions=positions)
-        # * Rate from the sender's stamps, so it is the true sample rate.
+        # * Rate from the sender's stamps: the true sample rate.
         rate = (len(stamps) - 1) / (stamps[-1] - stamps[0]) if len(stamps) > 1 and stamps[-1] > stamps[0] else 0.0
         self._result = f"{len(stamps)} samples, {rate:.0f} Hz -> {path}"
         ctx.log_info(f"recording saved: {self._result}")

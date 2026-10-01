@@ -1,14 +1,10 @@
 """
 Joins the mounted tools onto a robot's URDF, writing one combined URDF.
 
-Robot URDFs end at each arm's tool0; each tool has its own small URDF under
-data/tool_urdf/. Joining:
-  - Tool names get the arm's name as a prefix, so both arms can carry the same tool.
-  - A fixed joint puts the tool's root link on <arm>_tool0.
-  - All mesh paths are made absolute.
+Each tool's names get the arm's name as a prefix, its root link is fixed to <arm>_tool0, and all mesh
+paths are made absolute.
 
-* Adding a tool model: put its URDF in data/tool_urdf/ (root link in the tool0
-  frame) and add it to TOOL_URDFS.
+* Adding a tool model: put its URDF in data/tool_urdf/ (root link in the tool0 frame) and add it to TOOL_URDFS.
 """
 
 from __future__ import annotations
@@ -29,13 +25,11 @@ TOOL_URDFS: dict[str, str | dict[str, str]] = {
                        "right_ur_arm": "scaffolding_v3_right.urdf"},
 }
 
-#: Links of its arm ("<arm>_<suffix>") a mounted tool may touch, as the design's
-#: ToolState.touch_links allow. The SRDFs predate the stitched tools, so
-#: collision checkers that use them add these pairs themselves (CompasFabMirror).
+#: Links of its arm ("<arm>_<suffix>") a mounted tool may touch. The SRDFs don't list these pairs,
+#: so collision checkers add them themselves.
 TOOL_TOUCHES_ARM_LINKS = ("wrist_2_link", "wrist_3_link", "flange", "tool0")
 
-#: `package://<pkg>/...` resolves against the directory three levels above the URDF
-#: (<root>/<package>/urdf/<file>.urdf).
+#: `package://<pkg>/...` resolves three levels above the URDF (<root>/<package>/urdf/<file>.urdf).
 _PACKAGE_PREFIX = "package://"
 _FILE_PREFIX = "file://"
 
@@ -44,12 +38,8 @@ def resolve_mesh_path(filename: str, urdf_file: Path) -> str:
     """Turn one mesh reference of a URDF into an absolute path.
 
     Args:
-        filename: The mesh's `filename` attribute: `package://<pkg>/...`,
-            `file://...`, a path relative to the URDF, or an absolute path.
+        filename: The mesh's `filename`: `package://...`, `file://...`, relative to the URDF, or absolute.
         urdf_file: The URDF the reference is written in.
-
-    Returns:
-        str: The absolute path of the mesh.
     """
     if filename.startswith(_PACKAGE_PREFIX):
         return str(urdf_file.resolve().parent.parent.parent / filename[len(_PACKAGE_PREFIX):])
@@ -95,8 +85,7 @@ def stitch_tools(robot_urdf: Path, tools: dict[str, str | None], data_directory:
         Path: `out_file`.
 
     Raises:
-        ValueError: If an arm has no tool0 link in `robot_urdf`, or a tool URDF
-            has no single root link.
+        ValueError: If an arm has no tool0 link, or a tool URDF has no single root link.
     """
     tree = parse(robot_urdf)
     robot = tree.getroot()
@@ -142,7 +131,7 @@ def _prefix_names(tool: Element, prefix: str, tool_file: Path) -> str:
         tool_file: The tool URDF, for error messages.
 
     Returns:
-        str: The prefixed root link (the one no joint moves).
+        str: The prefixed root link.
 
     Raises:
         ValueError: If the tool does not have exactly one root link.

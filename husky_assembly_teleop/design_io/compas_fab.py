@@ -1,23 +1,15 @@
 """
-A design as compas_fab objects: one `RobotCell` per acting robot, one `RobotCellState` per state.
+A design as compas_fab objects: one `RobotCell` per acting robot (format App. A), and its `RobotCellState`s.
 
-    to_robot_cell(design, "robots/cindy")          -> RobotCell   (format App. A)
-    to_cell_state(design, "robots/cindy", state)   -> RobotCellState for that cell
-
-* compas_fab plans one robot per cell, so each acting robot gets its own cell: every other robot
-  is a `ToolModel` of its whole URDF, with its tools welded to its flanges, keyed by its robot id.
-* Keys in the cell are our ids (`bars/B1`, `tools/AT3L`, `robots/alice`), or other names via
-  `names` (our id -> cell name) for code that expects the old ones.
-* The helpers here (`frame_from_pose`, `rigid_body`, `load_model`, `subtree`, `filled`) are shared
-  with the monitor's `world/mirrors/compas_fab.py`.
+Every other robot is a `ToolModel` of its whole URDF with its tools welded on; cell keys are our ids unless
+`names` maps them. A robot absent from a state is parked at PARKED_POSITION, since compas_fab needs every tool.
 ! Importing this module imports compas; `design_io` itself never imports it.
-! A robot that is not in a state is parked far away (PARKED_POSITION): compas_fab needs every tool
-  in every state. The producer's own cells do the same.
 """
 
 from __future__ import annotations
 
 import hashlib
+import os
 from pathlib import Path
 from typing import Callable, Dict, List, Mapping, Optional
 
@@ -34,67 +26,79 @@ from .pose import Pose, compose
 from .robot_files import resolved_urdf_text
 from .types import ROBOT_PREFIX, Design, LinkPose, State, split_link_id
 
-#: Where a robot that is not in a state is put in a compas_fab state: far from any cell, on the floor.
+#: Where a robot absent from a state is put: far from any cell, on the floor.
 PARKED_POSITION = (50.0, 50.0, 0.0)
 
-# URDF path -> loaded model. Loading a robot with its meshes takes seconds; every cell shares one.
-# ! Shared: never change a cached model; copy it first (`model.copy()`).
-_MODELS: Dict[Path, RobotModel] = {}
+# (URDF path, with visuals) -> loaded model (loading takes seconds). ! Shared: copy before changing (`model.copy()`).
+_MODELS: Dict[tuple, RobotModel] = {}
 
-# SHA-1 of a mesh file's bytes -> its compas meshes. Robots share mesh files: the same UR arm and
-# wheels on every husky, the wheel four times per robot. ! Shared: never change these meshes.
+# SHA-1 of a mesh file's bytes -> its compas meshes; robots share many mesh files. ! Shared: never change them.
 _MESHES: Dict[str, List[Mesh]] = {}
+
+#: Rows per write when saving an OBJ file. Each write holds the GIL; short ones keep the main thread responsive.
+_OBJ_ROWS = 5000
+
+
+class FileMesh(Mesh):
+    """A compas mesh read from a mesh file (`_file_meshes`); saves itself as OBJ fast, and once per path.
+
+    ? compas_fab's `set_robot_cell` writes every robot mesh to "<its guid>.obj" each time, in pure Python:
+      ~10 s per robot, holding the GIL and stalling the monitor. These meshes never change, so a file
+      this mesh already wrote is still right.
+
+    Attributes:
+        arrays: Vertices (V, 3) and triangles (F, 3), as read; None on a copy, which writes the compas way.
+        written: Paths this mesh wrote; set together with `arrays`.
+    """
+
+    arrays: Optional[tuple] = None
+    written: Optional[set] = None
+
+    def to_obj(self, filepath, precision=None, unweld=False, **kwargs) -> None:
+        """Write the mesh as an OBJ file at `filepath`, unless this mesh already wrote it there.
+
+        Args:
+            filepath: Where to write.
+            precision: Ignored when written from `arrays` (9 decimals).
+            unweld: Passed on when written the compas way.
+        """
+        if self.arrays is None:
+            super().to_obj(filepath, precision=precision, unweld=unweld, **kwargs)
+            return
+        if filepath in self.written and os.path.exists(filepath):
+            return
+        vertices, faces = self.arrays
+        with open(filepath, "w") as file:
+            for start in range(0, len(vertices), _OBJ_ROWS):
+                rows = vertices[start:start + _OBJ_ROWS]
+                file.write(("v %.9f %.9f %.9f\n" * len(rows)) % tuple(rows.ravel().tolist()))
+            for start in range(0, len(faces), _OBJ_ROWS):
+                rows = faces[start:start + _OBJ_ROWS] + 1  # OBJ counts vertices from 1
+                file.write(("f %d %d %d\n" * len(rows)) % tuple(rows.ravel().tolist()))
+        self.written.add(filepath)
 
 
 # --- --- --- --- --- CONVERSIONS --- --- --- --- ---
 
 def frame_from_pose(pose: Pose) -> Frame:
-    """A compas frame from one of our poses.
-
-    Args:
-        pose: Position and (x, y, z, w) quaternion.
-
-    Returns:
-        Frame: The same pose.
-    """
+    """A compas frame from one of our poses."""
     x, y, z, w = pose.orientation
     return Frame.from_quaternion([w, x, y, z], point=list(pose.position))
 
 
 def pose_from_frame(frame: Frame) -> Pose:
-    """One of our poses from a compas frame.
-
-    Args:
-        frame: The frame.
-
-    Returns:
-        Pose: The same pose, quaternion as (x, y, z, w).
-    """
+    """One of our poses from a compas frame."""
     w, x, y, z = frame.quaternion.wxyz
     return Pose.from_arrays(frame.point, (x, y, z, w))
 
 
 def compas_mesh(mesh: TriMesh) -> Mesh:
-    """A compas mesh from one of ours.
-
-    Args:
-        mesh: Our triangle mesh.
-
-    Returns:
-        Mesh: The same triangles.
-    """
+    """A compas mesh from one of ours."""
     return Mesh.from_vertices_and_faces(mesh.vertices.tolist(), mesh.faces.tolist())
 
 
 def _joined(shapes) -> Optional[Mesh]:
-    """All shapes as one compas mesh, or None if there are none.
-
-    Args:
-        shapes: Our shapes.
-
-    Returns:
-        Mesh | None: Their triangles in one mesh.
-    """
+    """All shapes as one compas mesh, or None if there are none."""
     meshes = [shape_mesh(shape) for shape in shapes]
     if not meshes:
         return None
@@ -105,78 +109,68 @@ def _joined(shapes) -> Optional[Mesh]:
 
 
 def rigid_body(geometry: Geometry, draw_visual: bool = False) -> RigidBody:
-    """A compas_fab rigid body of a geometry, as triangle meshes in metres.
+    """A compas_fab rigid body of a geometry, one triangle mesh per shape, in metres.
 
     Args:
         geometry: Our geometry; it is not kept.
-        draw_visual: Use the visual shapes as visual meshes. By default the collision meshes
-            are also the visual ones, so what a PyBullet window shows is what is checked.
-
-    Returns:
-        RigidBody: One mesh per shape.
+        draw_visual: Use the visual shapes as visual meshes; by default they are the collision ones,
+            so a PyBullet window shows what is checked.
     """
     collision = [compas_mesh(shape_mesh(shape)) for shape in geometry.collision]
     visual = [compas_mesh(shape_mesh(shape)) for shape in geometry.visual] if draw_visual else collision
     return RigidBody(visual_meshes=visual, collision_meshes=collision, native_scale=1.0)
 
 
-def load_model(urdf_file) -> RobotModel:
-    """Parse a URDF and load its meshes, cached per file. Slow (seconds) the first time.
-
-    ? Relative mesh paths are made absolute first: compas_robots resolves a plain path
-      against the working directory, not the URDF's folder.
+def load_model(urdf_file, visual: bool = True) -> RobotModel:
+    """Parse a URDF and load its meshes, cached per file; slow (seconds) the first time.
 
     Args:
-        urdf_file: A URDF; its mesh paths relative to it or absolute.
+        urdf_file: The URDF.
+        visual: Keep the visual shapes. Without them (for planning) loading is much faster: the visual
+            meshes are the large ones.
 
     Returns:
         RobotModel: With geometry. ! Shared: copy before changing it.
     """
     path = Path(urdf_file).resolve()
-    model = _MODELS.get(path)
+    model = _MODELS.get((path, visual))
     if model is None:
         model = RobotModel.from_urdf_string(resolved_urdf_text(path))
-        # ? Instead of `model.load_geometry()`, which parses every OBJ in pure Python (~3 s per robot)
-        #   and parses a file again for every link using it: read with trimesh, once per file content.
+        if not visual:
+            for link in model.links:
+                link.visual = []
+        # ? Not `model.load_geometry()`: that parses every OBJ in pure Python (~3 s per robot), once per link.
         for link in model.links:
             for item in (*link.visual, *link.collision):
                 shape = item.geometry.shape
                 filename = getattr(shape, "filename", None)
                 if filename:
                     shape.meshes = _file_meshes(filename)
-        _MODELS[path] = model
+        _MODELS[path, visual] = model
     return model
 
 
 def _file_meshes(filename: str) -> List[Mesh]:
-    """A mesh file as compas meshes, read once per file content.
-
-    Args:
-        filename: Absolute path, possibly with `file://`.
+    """A mesh file (absolute path, maybe `file://`) as one compas mesh, read once per file content.
 
     Returns:
-        list[Mesh]: One mesh (all of the file's geometry). ! Shared between every link using it.
+        list[Mesh]: One mesh. ! Shared between every link using it.
     """
     path = Path(filename[len("file://"):] if filename.startswith("file://") else filename)
     key = hashlib.sha1(path.read_bytes()).hexdigest()
     meshes = _MESHES.get(key)
     if meshes is None:
         mesh = trimesh.load(str(path), force="mesh", process=False)
-        meshes = [Mesh.from_vertices_and_faces(mesh.vertices.tolist(), mesh.faces.tolist())]
+        file_mesh = FileMesh.from_vertices_and_faces(mesh.vertices.tolist(), mesh.faces.tolist())
+        file_mesh.arrays = (np.asarray(mesh.vertices, dtype=float), np.asarray(mesh.faces, dtype=np.int64))
+        file_mesh.written = set()
+        meshes = [file_mesh]
         _MESHES[key] = meshes
     return meshes
 
 
 def subtree(model: RobotModel, link_name: str) -> set:
-    """A link and every link below it.
-
-    Args:
-        model: The robot.
-        link_name: Where to start.
-
-    Returns:
-        set[str]: Link names, `link_name` included.
-    """
+    """The names of a link and every link below it."""
     names, todo = set(), [model.get_link_by_name(link_name)]
     while todo:
         link = todo.pop()
@@ -190,10 +184,7 @@ def filled(configuration: Configuration, joints: Optional[Mapping[str, float]]) 
 
     Args:
         configuration: Joint names, types and default values.
-        joints: Values by joint name; others are ignored. None keeps the defaults.
-
-    Returns:
-        Configuration: The new configuration.
+        joints: Values by joint name; unknown names are ignored. None keeps the defaults.
     """
     joints = joints or {}
     values = [float(joints.get(name, value))
@@ -209,39 +200,16 @@ def _name(names: Optional[Mapping[str, str]], our_id: str) -> str:
 
 
 def _tool_model(design: Design, tool_id: str, name: str) -> ToolModel:
-    """A tool of the acting robot: its shapes as one mesh, its TCP as the tool frame.
-
-    Args:
-        design: The design.
-        tool_id: The tool.
-        name: Its key in the cell.
-
-    Returns:
-        ToolModel: The tool, its base at the flange link.
-    """
+    """A tool of the acting robot, keyed `name`: its shapes as one mesh, its TCP as the tool frame."""
     tool = design.tools[tool_id]
     return ToolModel(_joined(tool.geometry.visual), frame_from_pose(tool.tcp),
                      collision=_joined(tool.geometry.collision), name=name)
 
 
 def _robot_as_tool(design: Design, robot_id: str, name: str) -> ToolModel:
-    """Another robot as one articulated tool: its whole URDF, its tools welded to its flanges.
-
-    ? As the producer's frozen-robot obstacles (`robot_obstacles.py`): each tool becomes a link
-      on a fixed joint at its flange, so it follows the arm and collides with it.
-
-    Args:
-        design: The design.
-        robot_id: The robot.
-        name: Its key in the cell.
-
-    Returns:
-        ToolModel: Its base at the robot's URDF root.
-    """
+    """Another robot as one articulated tool keyed `name`: its whole URDF, each tool a link fixed at its flange."""
     robot = design.robots[robot_id]
-    # ? from_robot_model builds new links (sharing the meshes, which are never changed), so the
-    #   tools are welded onto the result and the cached model stays as it is. No deep copy: that
-    #   copied every mesh and took ~6 s per robot.
+    # ? from_robot_model builds new links, so the cached model is not changed; a deep copy took ~6 s per robot.
     tool = ToolModel.from_robot_model(load_model(robot.urdf), Frame.worldXY())
     for link_name, tool_id in robot.tools.items():
         geometry = design.tools[tool_id].geometry
@@ -255,16 +223,13 @@ def _robot_as_tool(design: Design, robot_id: str, name: str) -> ToolModel:
 
 def to_robot_cell(design: Design, robot_id: str, names: Optional[Mapping[str, str]] = None,
                   include: Optional[Callable[[str], bool]] = None) -> RobotCell:
-    """A compas_fab cell for one acting robot (format App. A).
+    """A compas_fab cell: the acting robot with its SRDF and tools, every other robot, and the bodies.
 
     Args:
         design: The design.
         robot_id: The acting robot.
         names: Our id -> key in the cell, for ids that should keep another name.
         include: Which bodies to put in the cell, by id; all by default.
-
-    Returns:
-        RobotCell: The acting robot with its SRDF, its tools, every other robot and the bodies.
     """
     robot = design.robots[robot_id]
     model = load_model(robot.urdf)
@@ -280,17 +245,14 @@ def to_robot_cell(design: Design, robot_id: str, names: Optional[Mapping[str, st
 
 
 def planning_group(cell: RobotCell, link: str) -> str:
-    """The SRDF group that ends at a flange link, preferring one rooted at the URDF root.
+    """The SRDF group ending at a flange link whose base link is nearest the URDF root (targets in the base frame).
 
-    ? Arm-only and base-rooted groups move the same joints (format R17); the base-rooted one
-      takes targets in the robot base frame, as the producer plans the assembly robot.
+    ? E.g. `base_left_arm_manipulator` (from base_footprint) over `Left arm` (from the arm's base link); the
+      URDF root itself (world_link) starts no group. Ties keep the SRDF order.
 
     Args:
         cell: A cell of the robot.
         link: Flange link name, e.g. "left_ur_arm_tool0".
-
-    Returns:
-        str: The group name.
 
     Raises:
         KeyError: If no group ends at that link.
@@ -298,15 +260,22 @@ def planning_group(cell: RobotCell, link: str) -> str:
     groups = [group for group in cell.group_names if cell.get_end_effector_link_name(group) == link]
     if not groups:
         raise KeyError(f"no SRDF group of {cell.robot_model.name} ends at link {link!r}")
-    root = cell.robot_model.root.name
-    rooted = [group for group in groups if cell.get_base_link_name(group) == root]
-    return (rooted or groups)[0]
+    return min(groups, key=lambda group: _depth(cell.robot_model, cell.get_base_link_name(group)))
+
+
+def _depth(model: RobotModel, link_name: str) -> int:
+    """How many joints lie between the URDF root and a link."""
+    depth, link = 0, model.get_link_by_name(link_name)
+    while link.parent_joint is not None:
+        link = model.get_link_by_name(link.parent_joint.parent.link)
+        depth += 1
+    return depth
 
 
 def to_cell_state(design: Design, robot_id: str, state: State, cell: RobotCell,
                   names: Optional[Mapping[str, str]] = None,
                   joints: Optional[Mapping[str, float]] = None) -> RobotCellState:
-    """A compas_fab state for a cell made by `to_robot_cell` (format App. A).
+    """A compas_fab state for a cell made by `to_robot_cell`.
 
     Args:
         design: The design.
@@ -314,11 +283,7 @@ def to_cell_state(design: Design, robot_id: str, state: State, cell: RobotCell,
         state: The state.
         cell: The acting robot's cell; bodies it leaves out are left out here too.
         names: As given to `to_robot_cell`.
-        joints: Joint values to use for the acting robot where the state has none (e.g. from
-            `carry.assumed_joints`). None keeps compas_fab's "no configuration".
-
-    Returns:
-        RobotCellState: The state.
+        joints: Acting robot joints to use where the state has none (e.g. `carry.assumed_joints`).
     """
     robot = design.robots[robot_id]
     acting = state.robots[robot_id]
@@ -407,14 +372,7 @@ def to_cell_state(design: Design, robot_id: str, state: State, cell: RobotCell,
 # --- --- --- --- --- KINEMATICS --- --- --- --- ---
 
 def compas_link_pose(design: Design) -> LinkPose:
-    """Forward kinematics from each robot's URDF, for `types.world_pose`.
-
-    Args:
-        design: The design whose robots are used.
-
-    Returns:
-        LinkPose: (robot id, link, joints, base) -> link pose in world. Joints not given are zero.
-    """
+    """Forward kinematics from each robot's URDF, for `types.world_pose`; joints not given are zero."""
     def link_pose(robot_id: str, link: str, joints: Mapping[str, float], base: Pose) -> Pose:
         model = load_model(design.robots[robot_id].urdf)
         frame = model.forward_kinematics(filled(model.zero_configuration(), joints), link_name=link)

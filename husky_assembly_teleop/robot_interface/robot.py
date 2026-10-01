@@ -1,8 +1,7 @@
 """
 One physical robot: its base, its arms, and the state they measure together.
 
-HuskyRobotInterface only composes the parts. Only what concerns all arms at
-once lives here: the multi-arm trajectory and the multi_arm_safety_sync calls.
+Only what concerns all arms at once lives here: the multi-arm trajectory and the multi_arm_safety_sync calls.
 """
 
 from __future__ import annotations
@@ -19,7 +18,8 @@ from std_srvs.srv import Trigger
 from ..config import RobotConfig
 from .arm import ArmInterface, ArmState
 from .base import BaseInterface, BaseState
-from .frames import HUSKY_FRAME, MOCAP_FRAME, Pose, compose, fixed_transform, invert
+from .frames import HUSKY_FRAME, MOCAP_FRAME, fixed_transform
+from ..design_io.pose import Pose, compose, invert
 from .ur_frames import stock_frame_problem
 from .connections import RosConnections
 
@@ -31,8 +31,7 @@ SAFETY_SYNC = "MultiArmSafetySync"
 class RobotState:
     """Measured state of one robot, for the scene and viewer.
 
-    ! Plugins should read `robot.base.state` and `robot.arms[name].state`
-      instead. They are the same live objects, not copies.
+    ! Plugins should read `robot.base.state` and `robot.arms[name].state` instead (the same live objects).
 
     Attributes:
         serial: Which robot this describes.
@@ -56,13 +55,9 @@ class RobotState:
 class HuskyRobotInterface:
     """ROS2 interface to one husky: a base, its arms, and their tools.
 
-    ! Callbacks run on the main thread, pumped by the tick at its start, so they
-      never run concurrently with plugin code; don't add a multi-threaded executor
-      or run callbacks elsewhere.
-
-    * Plugins reach a robot through `robot.config`, `robot.base.state`,
-      `robot.arms[name].state` (read only) and `robot.base.<command>()` /
-      `robot.arms[name].<command>()` (main thread only).
+    ! Callbacks run on the main thread at the start of each tick, never alongside plugin code;
+      don't add a multi-threaded executor.
+    ! Plugins read `robot.base.state` / `robot.arms[name].state` and call commands on the main thread only.
 
     Attributes:
         config: Identity, URDF, arms and mocap id of this robot.
@@ -72,19 +67,16 @@ class HuskyRobotInterface:
     """
 
     def __init__(self, node: Node, config: RobotConfig):
-        """Build the base and one ArmInterface per configured arm.
-
-        Does not wait for the robot; service availability is checked per call.
+        """Build the base and one ArmInterface per configured arm, without waiting for the robot.
 
         Args:
-            node: The monitor node that owns the subscriptions, publishers and clients.
+            node: The monitor node.
             config: The robot to connect to.
         """
         self._node = node
         self.config = config
         self.base = BaseInterface(node, config)
-        # ! A non-stock URDF frame is logged as an error and the arm refuses
-        #   Cartesian targets: it would look right but move wrong (doc/ur_frames.md).
+        # ! A non-stock URDF frame makes the arm refuse Cartesian targets: it would look right but move wrong.
         self.arms = {}
         for arm in config.arms:
             problem = stock_frame_problem(config.urdf_file, arm.name)
@@ -118,12 +110,9 @@ class HuskyRobotInterface:
                 MultiArmTrajectory, f"/{self.config.ros_namespace}/multi_arm_joint_trajectory")
 
     def reconnect(self) -> None:
-        """Recreate every topic, service and action of this robot, for when it stopped answering.
+        """Recreate every topic, service and action of this robot, keeping objects and state.
 
-        Objects and state are kept, so held references stay valid; old
-        measurements stay until fresh ones arrive, so their age is still true.
-
-        ! main thread only, like every command.
+        ! Main thread only, like every command.
         """
         self._node.get_logger().info(f"robot {self.config.serial}: reconnecting")
         self._ros.destroy_all()
@@ -166,8 +155,8 @@ class HuskyRobotInterface:
     def unlock_protective_stop(self) -> bool:
         """Clear the protective stop of every arm, like "Enable robot" on the pendant.
 
-        ! Clear the cause first. The robot refuses for 5 s after the stop and
-          only in remote control mode; check the safety mode to see if it worked.
+        ! Clear the cause first. The robot refuses for 5 s after the stop and outside remote control mode;
+          check the safety mode to see if it worked.
 
         Returns:
             bool: True if the request went out. False if the sync is not reachable.
@@ -180,8 +169,7 @@ class HuskyRobotInterface:
         - Arms: stay stopped until `resume_arms`.
         - Base: see BaseInterface.stop; resume by switching its controller on.
 
-        ! Not an emergency stop: it needs wifi, the monitor and the on-board
-          nodes. Use the teach pendant or platform e-stop for that.
+        ! Not an emergency stop: it needs wifi and the on-board nodes. Use the pendant or platform e-stop.
         """
         self._node.get_logger().warning(f"robot {self.config.serial}: SOFT STOP")
         self.base.stop()
@@ -232,16 +220,14 @@ class HuskyRobotInterface:
 
     def send_multi_arm_trajectory(self, positions: dict[str, Sequence[Sequence[float]]],
                                   duration: float) -> bool:
-        """Send one trajectory to each arm, started together; nothing is sent unless both pass `ArmInterface.build_trajectory`'s checks.
+        """Send one trajectory to each arm, started together; nothing is sent unless both pass their checks.
 
         Args:
-            positions: Waypoints per arm name, for both arms (format as in
-                ArmInterface.build_trajectory).
+            positions: Waypoints per arm name, as for `ArmInterface.build_trajectory`.
             duration: Total time for both, seconds.
 
         Returns:
-            bool: True if sent. False if this robot does not have two arms, an
-                arm is missing from `positions`, or either trajectory fails its checks.
+            bool: True if sent. False (reason logged) if the robot lacks two arms or a trajectory is refused.
         """
         if self._multi_arm is None:
             self._node.get_logger().error(f"robot {self.config.serial}: multi-arm trajectory "
@@ -253,7 +239,6 @@ class HuskyRobotInterface:
             return False
         # trajectory1 / trajectory2 follow the configured arm order.
         first, second = self.arms.values()
-        # Built first: a message field refuses None.
         first_trajectory = first.build_trajectory(positions[first.config.name], duration)
         second_trajectory = second.build_trajectory(positions[second.config.name], duration)
         if first_trajectory is None or second_trajectory is None:

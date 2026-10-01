@@ -1,11 +1,5 @@
 """
-A timed base path, and the "steer" move a differential-drive base can make.
-
-A path is a list of timed floor poses; between two poses the base moves at
-constant speed. A steer is turn to face the next pose, drive straight, turn to
-its yaw. The RRT (planner.py) uses it as its local planner.
-
-! Pure math: no viser, no PyBullet, no ROS, so it is safe on any thread.
+A timed base path, and the turn-drive-turn "steer" the RRT uses as its local planner. Pure math, safe on any thread.
 """
 
 from __future__ import annotations
@@ -15,7 +9,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from ...planning.path import TimedPath
+from ..planning.path import TimedPath
 
 #: Planning speeds; low, since the onboard follower sets its own speed.
 MAX_LINEAR_SPEED = 0.2   # m/s
@@ -55,12 +49,9 @@ class BasePath(TimedPath):
 
 
 def steer(q1, q2) -> list[tuple[float, float, float]]:
-    """The corner poses of the move from `q1` to `q2`: turn, drive straight, turn.
+    """The corner poses of the move from `q1` to `q2`: turn, drive forwards or backwards (less turning), turn.
 
-    ? Drives forwards or backwards, whichever needs less turning.
-
-    ! Yaws continue from `q1` and may lie outside (-pi, pi]; the last pose
-      matches `q2`'s heading, not necessarily its exact yaw number.
+    ! Yaws continue from `q1` and may lie outside (-pi, pi]: the last pose has `q2`'s heading, not its yaw number.
 
     Args:
         q1: (x, y, yaw) to start from, metres and radians.

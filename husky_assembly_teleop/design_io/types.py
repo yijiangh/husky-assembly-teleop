@@ -1,10 +1,7 @@
 """
-The design in memory: one frozen dataclass per object of doc/design_format.md.
+The design in memory: one frozen dataclass per object of doc/design_format.md, fields named as the file keys.
 
-* Field names follow the file keys. Ids are full ids (`robots/cindy`, `bars/B1`).
-* Geometry is `design_io.geometry.Geometry`, poses are `design_io.pose.Pose`.
-! Frozen, and the dicts and tuples inside are never changed after construction. Build a new
-  object instead (`dataclasses.replace`).
+! Never change the dicts inside after construction; build a new object with `dataclasses.replace`.
 """
 
 from __future__ import annotations
@@ -165,8 +162,7 @@ class Movement:
     overlaps_next: bool = False
     target: Optional[Target] = None
     label: str = ""
-    #: Producer's planning hints (e.g. `lm_distance_mm`, `approach_axis`), passed through unchanged.
-    #: ? Temporary: to be replaced by typed fields (plan Q8).
+    #: Producer's planning hints (e.g. `lm_distance_mm`), passed through unchanged. ? To become typed fields.
     notes: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -237,17 +233,16 @@ def split_link_id(value: str) -> Tuple[str, str]:
 
 
 def world_pose(design: Design, state: State, body_id: str, link_pose: LinkPose) -> Optional[Pose]:
-    """Where a body is in a state: attached, moved, or at its design pose; None if absent.
+    """A body's world pose in a state: attached, moved, or at its design pose.
 
     Args:
         design: The design.
         state: The state.
         body_id: A body id.
-        link_pose: Forward kinematics, for attached bodies. The library has none of its own.
+        link_pose: Forward kinematics for attached bodies; this library has none of its own.
 
     Returns:
-        Pose | None: World pose, or None if the body is not present, or held by a robot whose
-            joints are not fixed in this state.
+        Pose | None: None if the body is absent, or held by a robot whose joints are not fixed.
     """
     if body_id not in state.present:
         return None

@@ -16,9 +16,10 @@ import pytest
 
 from husky_assembly_teleop.config import robot_config_from_serial
 from husky_assembly_teleop.robot_interface.arm import UR_JOINT_NAMES
-from husky_assembly_teleop.world.geometry import Geometry, box_geometry
+from husky_assembly_teleop.design_io.geometry import Geometry, box_geometry
 from husky_assembly_teleop.world.mirrors.compas_fab import CompasFabMirror
-from husky_assembly_teleop.world.scene import Attachment, Body, Pose, RobotEntry, SceneSnapshot
+from husky_assembly_teleop.world.scene import Attachment, Body, RobotEntry, SceneSnapshot
+from husky_assembly_teleop.design_io.pose import Pose
 
 DATA = Path(__file__).resolve().parent.parent / "data"
 ALICE, BELLE = "0804", "0805"

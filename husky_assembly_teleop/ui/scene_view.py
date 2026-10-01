@@ -1,14 +1,9 @@
 """
-The 3D view of the scene: every body and every tracked object, drawn from each
-tick's snapshot.
+The 3D view of the scene: bodies under /scene/<id> and tracked objects under /tracked/<name>, drawn from
+each tick's snapshot.
 
-    /scene/<group>/<subgroup>/…/<name>   one frame per body, its meshes below
-    /tracked/<name>                      one frame with axes per tracked object
-
-* Building meshes is slow, so at most `build_budget` meshes are built per tick;
-  a large cell fills in over a few ticks. Moves and removes always apply in
-  full, so a body is at worst missing for a few ticks, never shown at an old pose.
-* No visibility toggles here: viser's debug view already toggles each scene path.
+At most `build_budget` meshes are built per tick, so a large cell fills in over a few ticks; moves and
+removes always apply in full, so a body is never shown at an old pose.
 """
 
 from __future__ import annotations
@@ -17,8 +12,9 @@ from dataclasses import dataclass, field
 
 import viser
 
-from ..world.geometry import BoxShape, CylinderShape, Geometry, Shape
-from ..world.scene import Pose, SceneSnapshot
+from ..design_io.geometry import BoxShape, CylinderShape, Geometry, Shape
+from ..world.scene import SceneSnapshot
+from ..design_io.pose import Pose
 from .quaternion import quaternion_to_wxyz
 
 #: Colour of a body without one of its own, (r, g, b, a) from 0 to 1.
@@ -60,7 +56,7 @@ class _DrawnTracked:
 
 
 class SceneView:
-    """Draws the scene's bodies and the tracked objects from each tick's snapshot. Core, main thread only."""
+    """Draws the scene's bodies and the tracked objects from each tick's snapshot. Main thread only."""
 
     def __init__(self, server: viser.ViserServer, build_budget: int = 50) -> None:
         """Create the root frames.
@@ -108,9 +104,7 @@ class SceneView:
         self._sync_tracked(snapshot, budget)
 
     def _sync_tracked(self, snapshot: SceneSnapshot, budget: int) -> None:
-        """Move, show and hide the tracked objects' frames, and build their meshes.
-
-        A name missing from the snapshot (no fix yet, or no longer tracked) is hidden, never removed.
+        """Move, show and hide the tracked objects' frames, and build their meshes. Missing ones are hidden.
 
         Args:
             snapshot: The tick's copy of the world.

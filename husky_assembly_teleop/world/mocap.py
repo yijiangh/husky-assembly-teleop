@@ -1,8 +1,7 @@
 """
-Judging a mocap fix, the same for every body: robot bases and tracked objects alike.
+Judging a mocap fix, the same for robot bases and tracked objects.
 
-Receiving samples is the ROS side's job (robot_interface/mocap.py); this module
-only reads the stored fields, so it needs no ROS.
+Only reads stored fields, so it needs no ROS; receiving samples is robot_interface/mocap.py's job.
 """
 
 from __future__ import annotations
@@ -42,9 +41,7 @@ class MocapBody(Protocol):
 
 
 def mocap_check(label: str, mocap_id: int | None, body: MocapBody, now: float) -> Check:
-    """Whether a body's pose is live, and how good the fix is.
-
-    GOOD means safe to use; WARN is usable but imprecise; BAD means do not use the pose.
+    """Judge whether a body's pose is live and how good the fix is: GOOD safe, WARN imprecise, BAD unusable.
 
     Args:
         label: Chip text, e.g. "mocap" or the object's name.

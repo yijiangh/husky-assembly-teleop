@@ -1,12 +1,9 @@
 """
 The measured world: where things actually are, as reported by sensors.
 
-! Registry only: per-robot measurements live in RobotState, owned by each
-  HuskyRobotInterface. Don't cache robot poses here; two copies will drift.
-
-! Data flows real -> planning, never back. Only ROS callbacks may write here, on
-  the main thread (run by the tick's ROS pump), so there is no locking. viser callbacks must go
-  through PluginContext.submit.
+- ! Don't cache robot poses here: they live in each robot's RobotState, and two copies drift.
+- ! Only ROS callbacks write here, on the main thread, so there is no locking; viser callbacks
+  must go through PluginContext.submit.
 """
 
 from __future__ import annotations
@@ -15,20 +12,17 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from ..robot_interface import HuskyRobotInterface, RobotState
+from ..robot_interface.robot import HuskyRobotInterface
 
 
 @dataclass
 class TrackedObject:
-    """A non-robot rigid body observed by mocap (measurement only, no geometry).
-
-    Its measured fields match BaseState's, so mocap.mocap_check judges both alike.
+    """A non-robot rigid body observed by mocap (measurement only, no geometry); judged like BaseState.
 
     Attributes:
         name: Stable identifier, matching the CellObject it corresponds to.
         mocap_id: Rigid-body id in the mocap system it is tracked by.
-        position: World-frame position, metres. None until the first valid fix,
-            then the last valid one.
+        position: World-frame position of the last valid fix, metres, or None before one.
         orientation: World-frame quaternion (x, y, z, w). Set with `position`.
         tracked: Whether the latest sample was valid. Implies `position` is set.
         tracking_valid: Whether NatNet tracked the body in the latest sample.
@@ -55,15 +49,15 @@ class WorldState:
 
     Attributes:
         robots: Connected robots, keyed by serial. Each owns its own RobotState.
-        tracked_objects: Mocap-observed non-robot bodies, keyed by name. Added
-            and removed through PluginContext.track_object / untrack_object.
+        tracked_objects: Mocap-observed non-robot bodies, keyed by name. Changed only through
+            PluginContext.track_object / untrack_object.
     """
 
     robots: dict[str, HuskyRobotInterface] = field(default_factory=dict)
     tracked_objects: dict[str, TrackedObject] = field(default_factory=dict)
 
     def add_robot(self, robot: HuskyRobotInterface) -> None:
-        """Register a robot; kept separate from its constructor so tests can build one alone.
+        """Register a robot.
 
         Args:
             robot: The interface to register. Its serial must be unique.
@@ -75,11 +69,3 @@ class WorldState:
         if serial in self.robots:
             raise ValueError(f"robot {serial} is already registered")
         self.robots[serial] = robot
-
-    def robot_states(self) -> dict[str, RobotState]:
-        """Every robot's measured state, keyed by serial.
-
-        Returns:
-            dict[str, RobotState]: The live state objects. Treat as read-only.
-        """
-        return {serial: robot.state for serial, robot in self.robots.items()}

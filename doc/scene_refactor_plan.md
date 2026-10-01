@@ -1,10 +1,10 @@
 # Scene refactor plan: one backend-free scene, copied once per tick, mirrored into each planner
 
 Status: **phases 0, 1–3 and 5 implemented** (see §9); phases 4 and 6 open. It replaces the shared PyBullet scene
-(`robot_scene.py`) described in `refactor_rationale.md` ("Why there is no abstraction over PyBullet").
+(`robot_scene.py`); the reasons are in `refactor_rationale.md` ("Why the scene is backend-free, and copied once per tick").
 
 Read this first if you are picking it up:
-- `husky_assembly_teleop/world/`: `scene.py`, `geometry.py`, `kinematics.py`, `mirrors/pybullet.py`, `mirrors/compas_fab.py`; `ui/scene_view.py`
+- `husky_assembly_teleop/world/`: `scene.py`, `kinematics.py`, `mirrors/pybullet.py`, `mirrors/compas_fab.py`; `design_io/geometry.py` (shapes), `design_io/pose.py` (poses); `ui/scene_view.py`
 - `monitor.py` (`_tick`), `plugin_api/context.py` (`ctx.scene`, `ctx.kinematics`)
 - `husky_assembly_teleop/old/cfab_session.py` and `husky_assembly_teleop/old/husky_monitor.py::_bridge_cfab_to_pp_for_bar_action` (how compas_fab was used before)
 
@@ -14,7 +14,7 @@ Read this first if you are picking it up:
 
 1. **One scene of collision objects**, owned by the core and free of any physics or collision backend. Plugins (`obstacles`, `cell`) add their objects to it.
 2. **Planners get a consistent copy of the whole world**: measured robots and tracked objects plus every scene object, all from the same moment. They mirror it into their own backend: PyBullet (`base_planner`), later compas_fab, pinocchio + coal.
-3. **The core draws the scene** (robots, tracked objects and scene objects), with toggles per group.
+3. **The core draws the scene** (robots, tracked objects and scene objects); viser's debug view toggles visibility.
 4. **Syncing a mirror is cheap.** Geometry is converted once and uploaded once per backend. Afterwards a sync only moves what moved.
 
 Non-goals, for now: a planner changing an attachment while it plans, and several planners controlling one robot (execution locking).
@@ -81,13 +81,13 @@ cell/bars/B1                        scene body, owner = plugin "cell"
 
 - **Allowed characters:** `[A-Za-z0-9_.-]` and `/`. Display text goes in `label`.
 - **Owner:** a plugin may only `put` and `remove` ids starting with its own name (`ctx.scene` checks). When a plugin closes, the monitor removes everything under `<plugin>/`.
-- **Groups:** the path is the grouping. The view's toggles are path prefixes.
+- **Groups:** the path is the grouping (and the viser node path, so viser's debug view can hide a group).
 - **Stable:** an id never changes while its object exists.
 
 ## 5. Data model
 
 ### 5.1 `scene.py`
-- `Pose(position, orientation)`: frozen, compared by value. `compose(a, b)`, `Pose.from_matrix`, `Pose.matrix()`.
+- `Pose`, `compose` (from `design_io/pose.py`): `Pose(position, orientation)` is frozen, compared by value; `compose(a, b)`, `Pose.from_matrix`, `Pose.matrix()`.
 - `Attachment(parent, link, grasp)`: held by `robots/<serial>` (link, or None for the base) or `tracked/<name>`.
 - `Body(id, geometry, placement: Pose | Attachment, touches, label, color)`: **mutable**. `touches` lists ids allowed to touch it (bodies, `robots/<serial>` for the whole robot, `robots/<serial>/<link>`, `tracked/<name>`); it is symmetric.
 - `TrackedDescription(geometry, touches, label)`: given to `ctx.track_object`. `WorldState.TrackedObject` stays measurement only.
@@ -95,7 +95,7 @@ cell/bars/B1                        scene body, owner = plugin "cell"
 - `SceneSnapshot(tick, time, bodies, world_poses, robots, tracked)`: `bodies` are copies (sharing geometry); `world_poses` holds every body's resolved world pose; `robots` is `RobotEntry` by serial; `tracked` is `TrackedEntry` by name, only those with a fix.
 - `PluginScene` (`ctx.scene`): owner-checked `put`, `put_many`, `remove`, `remove_prefix`; `bodies`; `snapshot`.
 
-### 5.2 `geometry.py`
+### 5.2 `design_io/geometry.py`
 - A **shape** is `TriMesh | BoxShape | CylinderShape`, in the body's frame. Later maybe more primitives, or a URDF.
   - `TriMesh(vertices, faces, convex)`: read-only numpy arrays, `convex` computed once. Compared by identity.
   - `BoxShape(size, origin)`, `CylinderShape(radius, height, origin)` (along Z, centred): frozen, compared by value. `origin` places the shape inside the body, as a URDF `<origin>` does.
@@ -131,7 +131,7 @@ Rules shared by every mirror:
 - Robots: `loadURDF(config.urdf_file, useFixedBase=False)`, reloaded when the `RobotConfig` object changes; base and joints set every sync.
 - Bodies and tracked objects with geometry: one multibody per collision shape. Boxes and cylinders are exact PyBullet primitives, their `origin` as the collision frame. Meshes are built from our arrays (faster than compas_fab's OBJ round trip). Equal primitives share one PyBullet shape.
   - ! Concave (`GEOM_FORCE_CONCAVE_TRIMESH`) only for a free body whose mesh isn't convex. Attached bodies and tracked objects are always convex: Bullet can't collide two concave meshes. A body that changes between free and attached is rebuilt.
-- API: `robot(serial)`, `body_ids(id)`, `id_of(pybullet_id)`, `allowed(a, b)` (symmetric, from `touches`), `collisions(serial, margin)` returning our ids, `obstacle_ids()`, `close()`.
+- API: `robot(serial)`, `robots`, `body_ids(id)`, `id_of(pybullet_id)`, `allowed(a, b)` (symmetric, from `touches`), `collisions(serial, margin, candidates)` returning our ids (`candidates` limits the check to those ids), `obstacle_ids()`, `active()` (points `pp` at this world), `set_gui(gui)`, `connected`, `close()`.
 - A planner may add its own private bodies to its mirror's world (e.g. proxy spheres); they're never part of the shared scene.
 
 ### 6.2 `CompasFabMirror` (`world/mirrors/compas_fab.py`, one per acting robot)
@@ -139,7 +139,7 @@ Rules shared by every mirror:
 - ! The SRDFs predate the stitched tools: each tool link may also touch its tool and `<arm>_{wrist_2_link, wrist_3_link, flange, tool0}` (`tool_urdfs.TOOL_TOUCHES_ARM_LINKS`), as the design's `ToolState.touch_links` allow.
 - ! compas_fab checks every stationary tool against every stationary body. Pairs already touching at `sync` can't change while this robot plans, so they are allowed for that snapshot (`static_contacts`).
 - `collisions(joints)` is compas_fab's `check_collision` (~25 ms with 50 bodies: it deep-copies the state per call). `search_check(joint_names)` resolves compas_fab's allowed pairs once and checks only pairs with a moving side (~1.5 ms); tests hold it equal to `check_collision`.
-- **Converting shapes is this mirror's job:** each `Geometry` becomes a `RigidBody` of compas meshes, from `shape_mesh(shape)` for every visual and collision shape, cached per `Geometry` object for the mirror's lifetime.
+- **Shapes are converted by `design_io.compas_fab.rigid_body`:** each `Geometry` becomes a `RigidBody` of compas meshes, from `shape_mesh(shape)` for every collision shape (also used as visual meshes by default). The mirror only caches the result per `Geometry` object for its lifetime.
 - `RobotCellState` from the snapshot:
 
   | Our data | compas_fab |
@@ -182,18 +182,18 @@ Rules shared by every mirror:
 
 0. ✅ **compas_fab spike.** Other robots as `ToolModel`s work (the design uses them too). `set_robot_cell`: ~2.3 s (robot + 2 tools ~1.9 s, 92 bodies ~0.4 s); loading 3 models ~8 s. Findings in §6.2.
 1. ✅ **Kinematics.** `kinematics.py`, `ctx.kinematics`; `robot_control` and `base_planner` stop reading PyBullet.
-2. ✅ **Scene and drawing.** `geometry.py`, `scene.py`, `ctx.scene`, `take_snapshot` in the tick, core drawing with toggles; `mocap_probe` tracks without drawing its own frame.
+2. ✅ **Scene and drawing.** `geometry.py`, `scene.py`, `ctx.scene`, `take_snapshot` in the tick, core drawing; `mocap_probe` tracks without drawing its own frame.
 3. ✅ **`PyBulletMirror` and the switch.** `obstacles` and `base_planner` move to the scene together; `example_pybullet` rewritten; `robot_scene.py` deleted.
-4. **Cell objects.** The cell plugin puts bodies (ids, ground with the wheel links in `touches`, attachments from authored states) and drops its own body drawing. Needs open questions 1 and 2.
-5. ✅ **`CompasFabMirror`.** Same collision pairs as the design's `RobotCell` on 10 authored Cindy states and 5 with the held bar pushed into the robot (`test/test_compas_fab_mirror.py`, needs `HUSKY_DESIGN_DIRECTORY`). First user: the `arm_planner` plugin (joint-space `birrt`, commit is a stub).
+4. **Cell objects.** The cell plugin puts bodies (ids, ground with the wheel links in `touches`, attachments from authored states) and drops its own body drawing. Decided: the cell prefixes design ids (design `bars/B1` → scene `cell/bars/B1`), and robots are referenced by serial (design `robots/cindy` → scene `robots/0806`, via the design's `serial` field). Needs what remains of open question 2.
+5. ✅ **`CompasFabMirror`.** Same collision pairs as the design's `RobotCell` on 10 authored Cindy states and 5 with the held bar pushed into the robot (`test/test_compas_fab_mirror.py`, needs `HUSKY_DESIGN_DIRECTORY` pointing to an old-format export with `RobotCell.json`; ! update it to schema 1 later). First user: the `arm_planner` plugin (joint-space RRT-Connect, `plugins.planning.search.connect`; commit is a stub).
 6. **Published copies.** A planner publishes a modified snapshot for the view (`/worlds/<name>/…`, see-through robots); `base_planner` publishes instead of drawing its own ghost.
 
 ## 10. Open questions
 
-1. **Design naming.** Is `env_` plus `bar_` / `joint_` a fixed convention of the design export? Where does the map from design robot id to serial belong?
-2. **Tool mapping.** Partly answered: `AT3L` → `left_ur_arm_scaffolding_v3_left`, `AT3R` → `right_ur_arm_scaffolding_v3_right` (Cindy); bodies attach to `<arm>_tool0` with the grasp as `attachment_frame`. `SupportGripper` (Alice, Belle) is still to map.
+1. ✅ **Design naming.** Answered by `design_format.md`: `design_io/legacy.py` converts `env_` / `bar_` / `joint_` names to path ids (`bars/B1`), and each design robot has a `serial` field. Ids in the scene use serials (`robots/0806`): serials for all machine use, names only for humans; user-facing inputs accept both.
+2. **Tool mapping.** Mostly answered: each design robot lists its `tools` by flange link (`design_format.md`); bodies attach to `<arm>_tool0` with the grasp as `attachment_frame`. Still open: the design tool id → stitched-URDF tool link for `SupportGripper` (Alice, Belle); `AT3L` → `left_ur_arm_scaffolding_v3_left`, `AT3R` → `right_ur_arm_scaffolding_v3_right` (Cindy) are known.
 3. **Attachments.** Static and set by `cell` for now. Decide later whether planners take over while they plan.
 4. **pinocchio layout.** One model per robot, or all appended into one.
 5. **Drawing budget.** N meshes per tick (start at 50); simplified visual meshes for very large cells?
 6. **Snapshot freshness.** Refuse or flag robots with `base_tracked=False`, `unmeasured` joints, or a base/joint time skew over a limit? Or leave that to each planner?
-7. **`pp.CLIENT`.** (`CompasFabMirror` and `arm_planner` use raw `p` only.) Two `pp` planners at once would conflict. Then either raw `p`, or one `pp` planner at a time.
+7. **`pp.CLIENT`.** No current planner uses `pp`: all use raw `p` (`base_planner/planner.py`); only `PyBulletMirror.active()` touches `pp.CLIENT`. If two `pp` planners ever run at once they would conflict: then either raw `p`, or one `pp` planner at a time.

@@ -1,14 +1,10 @@
 """
 Pick a joint target for one arm, plan a collision-free path to it, scrub through the path, and commit it.
 
-! EXPERIMENTAL, not yet tested thoroughly. Commit is a stub that only logs (`send_to_arm`).
+The flow is `plugins.planning.panel.PlannerPlugin`; this adds the joint sliders, the arm choice and a compas_fab
+world per robot. The first plan for a robot loads the models (several seconds).
 
-* The flow (plan on a worker, preview, stale, commit) is `planning.panel.PlannerPlugin`.
-  Here: the joint sliders, the arm choice, and a compas_fab world per robot (planner.py)
-  holding the robot itself (SRDF and stitched tools), the other robots and every scene body.
-! The first plan for a robot loads its models and the others' (several seconds).
-! A plan is only good for where the robot was when planned: if the arm or base moves
-  or the target changes it goes stale, stays on screen, and Commit refuses it.
+! EXPERIMENTAL, not yet tested thoroughly: Commit only logs (`send_to_arm`).
 """
 
 from __future__ import annotations
@@ -21,11 +17,11 @@ import numpy as np
 
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import register
-from ...planning.panel import WAIT_MARGIN, PlannerPlugin, Search
-from ...planning.search import TIME_LIMIT, PlanResult
+from ..planning.panel import WAIT_MARGIN, PlannerPlugin, Search
+from ..planning.search import TIME_LIMIT, PlanResult
 from ...robot_interface.arm import UR_JOINT_LIMITS
 from ...ui.ghost import RobotGhost
-from ...ui.pybullet_window import PyBulletWindowToggle
+from ...ui.pybullet_window import add_pybullet_window_toggle
 from ...ui.style import SECTION_CTRL, SECTION_TOOL, block, chip, section, values
 from .planner import ArmPath, ArmPlanningWorld, arm_joint_names, plan_arm
 
@@ -42,8 +38,7 @@ SLIDER_NAMES = ("pan", "lift", "elbow", "w1", "w2", "w3")
 def send_to_arm(ctx: PluginContext, serial: str, arm_name: str, path: ArmPath) -> bool:
     """Hand a path to an arm. STUB: only logs.
 
-    TODO Resample the path evenly in time with a smooth speed profile and send it with
-         `ArmInterface.send_joint_trajectory`, which checks limits, speed and start.
+    TODO Resample with a smooth speed profile and send via `ArmInterface.send_joint_trajectory`.
 
     Args:
         ctx: The plugin's context, for logging.
@@ -77,32 +72,25 @@ class ArmPlannerPlugin(PlannerPlugin):
         self._path_base: np.ndarray | None = None
         #: Robots whose models the worker has loaded, so later plans need no load allowance.
         self._loaded: set[str] = set()
-        # ! Worker thread only (sync, search, close); see planner.py.
+        # ! Worker thread only (sync, search, close).
         self._world = ArmPlanningWorld()
-        #: The PyBullet window's state, read on the worker after a search.
-        self._window_state = (False, "")
         #: Target slider values to set on the next update (radians), or None.
         self._load: np.ndarray | None = None
-        #: Load the sliders from where the arm is on the next update (at startup, and on a new
-        #: robot or arm), unless `_load` is set by then. ? Needs ctx, which update has.
+        #: Load the sliders from the arm's current joints on the next update, unless `_load` is set.
         self._load_now = True
-        #: The target slider values update wrote last. ! Writing a slider fires its callback
-        #: too; a callback that finds these values is ours, not the operator's.
+        #: The slider values update wrote last, so their callback is not taken for the operator's.
         self._written: tuple[float, ...] | None = None
 
     # --- --- --- --- --- SETUP --- --- --- --- ---
 
     def setup(self, ctx: PluginContext) -> None:
-        """Build the panel, and a target ghost and a path ghost per robot with arms.
-
-        Args:
-            ctx: This plugin's context.
-        """
+        """Build the panel, and a target ghost and a path ghost per robot with arms."""
         arms = {robot.serial: [arm.name for arm in robot.arms] for robot in ctx.config.robots if robot.arms}
         if not arms:
             raise RuntimeError("no robots with arms configured; the arm planner has nothing to plan for")
         self._arms = arms
         self.serial = next(iter(arms))
+        self._world.log = ctx.log_info  # ? the ROS logger is safe to call from the worker
         self.arm = arms[self.serial][0]
 
         with ctx.view.ui() as gui:
@@ -123,13 +111,10 @@ class ArmPlannerPlugin(PlannerPlugin):
                                               "where the arm is to the target; play or pause the preview; remove "
                                               "the plan (or stop planning)",
                                     commit_hint="Send the path to the arm (stub: logs only)")
-            # * Debugging: watch the planning world, and the search moving the arm around in it.
-            # ? The window shows the chosen robot's world. `self.serial` is read on the worker:
-            #   a str, so at worst it is the robot chosen a moment later.
-            self._window = PyBulletWindowToggle(
-                ctx, gui, self._executor,
-                lambda gui, snapshot: self._world.set_gui(gui, snapshot, self.serial),
-                report=lambda message: self._report_problem(ctx, message))
+            # * Debugging: watch the search in the chosen robot's planning world.
+            # ? `self.serial` is read on the worker; at worst it is the robot chosen a moment later.
+            add_pybullet_window_toggle(ctx, gui, self._executor,
+                                       lambda gui, snapshot: self._world.set_gui(gui, snapshot, self.serial))
             # ! Keep changing content BELOW the buttons, so nothing moves under the cursor.
             self._details = gui.add_html("")
 
@@ -217,16 +202,13 @@ class ArmPlannerPlugin(PlannerPlugin):
     def make_search(self, ctx: PluginContext, abort: threading.Event) -> Search:
         """Search from where the arm is in the tick's snapshot to the slider target."""
         serial, arm, goal = self.serial, self.arm, self._target()
-        # * The world as it stood at the start of this tick; the arm starts where it is in it.
+        # * Take the snapshot here, on the main thread; the arm starts where it is in it.
         snapshot = ctx.scene.snapshot
         base = np.array(snapshot.robots[serial].base.position)
         loading = serial not in self._loaded
 
         def work() -> PlanResult:
-            mirror = self._world.sync(snapshot, serial)
-            result = plan_arm(self._world, mirror, arm, goal, abort)
-            self._window_state = self._world.window()
-            return result
+            return plan_arm(self._world, self._world.sync(snapshot, serial), arm, goal, abort)
 
         def accepted(result: PlanResult) -> tuple[str, bool]:
             self._path_arm, self._path_base = arm, base
@@ -234,14 +216,10 @@ class ArmPlannerPlugin(PlannerPlugin):
             return (f"{how}: {len(self.path.points)} waypoints, {self.path.duration:.1f} s, "
                     f"found in {result.seconds:.1f} s"), False
 
-        def finished() -> None:
-            self._loaded.add(serial)
-            self._window.show(*self._window_state)
-
         return Search(serial=serial, label=f"plan {serial} {arm}",
                       message=f"planning for {serial} {arm}…" + (" (loading the models first)" if loading else ""),
                       work=work, time_limit=TIME_LIMIT + WAIT_MARGIN + (LOAD_ALLOWANCE if loading else 0.0),
-                      accepted=accepted, finished=finished)
+                      accepted=accepted, finished=lambda: self._loaded.add(serial))
 
     def stale_reason(self, ctx: PluginContext) -> str:
         """Stale once the arm or base moves away from the plan's start, or the target from its goal."""
@@ -295,11 +273,7 @@ class ArmPlannerPlugin(PlannerPlugin):
     # --- --- --- --- --- TICK --- --- --- --- ---
 
     def update(self, ctx: PluginContext) -> None:
-        """Apply queued target loads, then advance playback and check for staleness.
-
-        Args:
-            ctx: This plugin's context.
-        """
+        """Apply queued target loads, then advance playback and check for staleness."""
         if self._load_now:
             self._load_now = False
             if self._load is None:
@@ -312,11 +286,7 @@ class ArmPlannerPlugin(PlannerPlugin):
         super().update(ctx)
 
     def draw(self, ctx: PluginContext) -> None:
-        """Pose the ghosts and fill the panel.
-
-        Args:
-            ctx: This plugin's context.
-        """
+        """Pose the ghosts and fill the panel."""
         self._status.content = block(chip(escape(f"{self.serial} {self.arm}"), SECTION_CTRL) + self._plan_chip())
         # Loading a target from the cell can switch the robot or arm; show that here.
         self._robot.value = self.serial
@@ -328,11 +298,7 @@ class ArmPlannerPlugin(PlannerPlugin):
         self._draw_ghosts(ctx)
 
     def _details_html(self) -> str:
-        """The plan and the joints at the slider time, and the last message. Fixed number of rows.
-
-        Returns:
-            str: HTML.
-        """
+        """The plan, the joints at the slider time, and the last message, in a fixed number of rows."""
         if self.path is None:
             path, at = "path    —", "at t    —"
         else:

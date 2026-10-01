@@ -2,8 +2,9 @@
 
 import pytest
 
-from husky_assembly_teleop.world.geometry import Geometry, box_geometry
-from husky_assembly_teleop.world.scene import Body, PluginScene, Pose, Scene
+from husky_assembly_teleop.design_io.geometry import Geometry, box_geometry
+from husky_assembly_teleop.world.scene import Body, PluginScene, Scene
+from husky_assembly_teleop.design_io.pose import Pose
 
 
 def test_only_own_ids():

@@ -1,8 +1,7 @@
 """
-Fixed lab obstacles (tables, cabinets as boxes; tripods as cylinders), put into the scene.
+Fixed lab obstacles (tables and cabinets as boxes, tripods as cylinders), put into the scene.
 
-* Ids: "obstacles/boxes/<name>" and "obstacles/cylinders/<name>". The core draws them.
-* Planners get them from the scene snapshot (`ctx.scene.snapshot`), like every other body.
+Ids are "obstacles/boxes/<name>" and "obstacles/cylinders/<name>"; planners see them in `ctx.scene.snapshot`.
 """
 
 from __future__ import annotations
@@ -12,9 +11,10 @@ import re
 from dataclasses import dataclass
 
 from ..plugin_api.context import PluginContext
-from ..world.geometry import box_geometry, cylinder_geometry
+from ..design_io.geometry import box_geometry, cylinder_geometry
 from ..plugin_api.plugin import HuskyPlugin, register
-from ..world.scene import Body, Pose
+from ..world.scene import Body
+from ..design_io.pose import Pose
 
 #: Muted grey, so the obstacles read as furniture.
 BOX_COLOR = (150, 150, 160)
@@ -43,10 +43,9 @@ class Box:
 
     @classmethod
     def from_top_points(cls, name: str, points: tuple[tuple[float, float, float], ...]) -> Box:
-        """Fit an axis-aligned box from floor to points measured on its top surface.
+        """Fit an axis-aligned box from the floor up to points measured on its top surface.
 
-        The XY footprint is the points' bounding rectangle, so take them at opposite corners.
-        The top height is their mean Z.
+        The footprint is the points' bounding rectangle (so take opposite corners); the height is their mean Z.
 
         Args:
             name: Label, shown in collision messages.
@@ -77,7 +76,7 @@ class Cylinder:
     radius: float
     height: float
 
-    #: Upright; the (x, y, z, w) quaternion shared with `Box`.
+    #: Upright, as an (x, y, z, w) quaternion like `Box.orientation`.
     orientation = (0.0, 0.0, 0.0, 1.0)
 
     @classmethod
@@ -127,12 +126,12 @@ class ObstaclesPlugin(HuskyPlugin):
     name = "obstacles"
 
     def __init__(self):
-        """Keep the obstacle lists; other code reads `boxes` and `cylinders`."""
+        """Keep the obstacle lists."""
         self.boxes: tuple[Box, ...] = BOXES
         self.cylinders: tuple[Cylinder, ...] = CYLINDERS
 
     def setup(self, ctx: PluginContext) -> None:
-        """Put one scene body per box and cylinder. They are removed automatically when the plugin closes.
+        """Put one scene body per box and cylinder; the core removes them when the plugin closes.
 
         Args:
             ctx: This plugin's context.

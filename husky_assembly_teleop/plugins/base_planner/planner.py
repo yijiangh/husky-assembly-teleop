@@ -1,13 +1,8 @@
 """
-The base planner: an RRT-Connect search (`planning.search.connect`) over the base's
-floor pose (x, y, yaw), avoiding the other robots and every scene body.
+RRT-Connect over the base's floor pose (x, y, yaw), avoiding the other robots and every scene body.
 
-The search runs on the plugin's one worker thread, in a private PyBullet world
-(`PlanningWorld`) synced on that thread from the tick's scene snapshot.
-
-! Worker thread only: create nothing here on the main thread but the object,
-  and sync, search and close on the worker. Use raw `p` calls with
-  `physicsClientId`; `pp.CLIENT` is one global shared by the whole process.
+! Worker thread only: construct `PlanningWorld` anywhere, but sync, search and close on the worker.
+! Use raw `p` calls with `physicsClientId`: `pp.CLIENT` is one global shared by the whole process.
 """
 
 from __future__ import annotations
@@ -19,7 +14,7 @@ import time
 import numpy as np
 import pybullet as p
 
-from ...planning.search import PlanResult, connect
+from ..planning.search import PlanResult, connect
 from ...world.mirrors.pybullet import PyBulletMirror
 from ...world.scene import SceneSnapshot, robot_id
 from .path import BasePath, steer, steer_cost, steer_points, timed_path
@@ -41,8 +36,7 @@ class PlanningWorld:
         self.mirror: PyBulletMirror | None = None
         # Display text for our ids, from the last synced snapshot.
         self._label = SceneSnapshot().label
-        # ? Cheap first pass for `hit_by`: floor footprints (min x, min y, max x, max y)
-        #   by our id, and each robot's reach. Anything out of reach skips the PyBullet query.
+        # ? Cheap pre-check for `hit_by`: floor footprints (min x, min y, max x, max y) by id, and robot reach.
         self._footprints: dict[str, tuple[float, float, float, float]] = {}
         self._reach: dict[str, float] = {}
 
@@ -53,8 +47,7 @@ class PlanningWorld:
             snapshot: The tick's copy of the world, taken on the main thread.
         """
         if self.mirror is None:
-            # * Created here, on the worker: a mirror lives on one thread.
-            self.mirror = PyBulletMirror()
+            self.mirror = PyBulletMirror()  # here, on the worker: a mirror lives on one thread
         self.mirror.sync(snapshot)
         self._label = snapshot.label
         # Footprint and reach depend on arm pose, so refresh them every sync.
@@ -91,8 +84,7 @@ class PlanningWorld:
             pose: (x, y, yaw).
 
         Returns:
-            str | None: The label of the robot or body it comes within
-                COLLISION_MARGIN of (its id if it has no label); None if it is clear.
+            str | None: Label of the first robot or body within COLLISION_MARGIN; None if clear.
         """
         body = self.mirror.robot(serial)
         client = self.mirror.client_id
@@ -113,30 +105,21 @@ class PlanningWorld:
         hits = self.mirror.collisions(serial, COLLISION_MARGIN, candidates)
         return self._label(hits[0]) if hits else None
 
-    def set_gui(self, gui: bool, snapshot: SceneSnapshot) -> tuple[bool, str]:
+    def set_gui(self, gui: bool, snapshot: SceneSnapshot) -> None:
         """Open or close PyBullet's own window on the planning world, for debugging. Worker thread.
 
         Args:
             gui: Whether the window should be open.
-            snapshot: The world now. An opened window shows it, even before the first plan.
+            snapshot: The world now, shown even before the first plan.
 
-        Returns:
-            tuple[bool, str]: Whether it is open now, and why not if it was asked for.
+        Raises:
+            RuntimeError: If there is no X display.
+            pybullet.error: If another PyBullet window is open in this process.
         """
         if self.mirror is None:
             self.mirror = PyBulletMirror()
-        is_open = self.mirror.set_gui(gui)
-        if gui:
-            self.sync(snapshot)
-        return is_open, self.mirror.window_problem
-
-    def window(self) -> tuple[bool, str]:
-        """Whether the window is open, and why not. Worker thread, e.g. after a search.
-
-        Returns:
-            tuple[bool, str]: As `set_gui` returns.
-        """
-        return (False, "") if self.mirror is None else (self.mirror.gui, self.mirror.window_problem)
+        self.mirror.set_gui(gui)
+        self.sync(snapshot)
 
     def close(self) -> None:
         """Disconnect the world. On the worker, once no search is running."""
@@ -149,7 +132,7 @@ def plan_birrt(world: PlanningWorld, serial: str, start, goal, abort: threading.
     """Plan a collision-free base path from start to goal. Runs on the worker thread.
 
     Args:
-        world: The planning world, already synced. Owned by this call until it returns.
+        world: The planning world, already synced.
         serial: The robot to plan for.
         start: (x, y, yaw) where it is.
         goal: (x, y, yaw) where it should end up.
