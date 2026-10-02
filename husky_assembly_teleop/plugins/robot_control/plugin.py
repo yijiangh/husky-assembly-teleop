@@ -23,13 +23,13 @@ from scipy.spatial.transform import Rotation
 from ...plugin_api.concurrency import WaitTimeout
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
-from ...robot_interface.arm import (CARTESIAN_COMPLIANCE_CONTROLLER, SCALED_JOINT_TRAJECTORY_CONTROLLER,
-                                    TARGET_WRENCH_FRAME, UR_JOINT_NAMES, ArmInterface, cartesian_move)
+from ...robot_interface.arm import (CARTESIAN_COMPLIANCE_CONTROLLER, FREE_DRIVE_CONTROLLER,
+                                    SCALED_JOINT_TRAJECTORY_CONTROLLER, TARGET_WRENCH_FRAME, UR_JOINT_NAMES, ArmInterface, cartesian_move)
 from ...robot_interface.base import PLATFORM_VELOCITY_CONTROLLER, BaseInterface
 from ...ui.ghost import RecentUse, RobotGhost, robot_ghosts
 from ...ui.style import SECTION_SENSOR, block, numbers, section, values
-from .arm_panel import (ComplianceInputs, JointInputs, build_compliance_inputs, build_joint_inputs, build_tool_inputs,
-                        joint_plan_line, pose_from_sliders, pose_plan_line)
+from .arm_panel import (ComplianceInputs, JointInputs, build_compliance_inputs, build_free_drive_inputs,
+                        build_joint_inputs, build_tool_inputs, joint_plan_line, pose_from_sliders, pose_plan_line)
 from .dpad import HOLD_TIMEOUT, MAX_ANGULAR_SPEED, MAX_LINEAR_SPEED, build_velocity_inputs
 from .markers import add_force_arrows, add_frame_markers, draw_markers, place_markers
 from .status import ControllerPanel, arm_status, base_status, build_controller_panel, show_only_running, tool_status
@@ -189,6 +189,7 @@ class RobotControlPlugin(HuskyPlugin):
         panel, built = build_controller_panel(ctx, gui, arm.controllers, {
             SCALED_JOINT_TRAJECTORY_CONTROLLER: joint_inputs,
             CARTESIAN_COMPLIANCE_CONTROLLER: compliance_inputs,
+            FREE_DRIVE_CONTROLLER: partial(build_free_drive_inputs, gui),
         })
 
         # Independent of the running controller.
@@ -292,7 +293,7 @@ class RobotControlPlugin(HuskyPlugin):
         self._draw_ghosts(ctx)
 
     def _draw_ghosts(self, ctx: PluginContext) -> None:
-        """Show each arm (with its tool) at its joint sliders while they are in use and differ from the arm.
+        """Show each arm (with its tool) at its joint sliders while they are in use, even on top of the arm.
 
         Args:
             ctx: This plugin's context.
@@ -302,13 +303,11 @@ class RobotControlPlugin(HuskyPlugin):
             parts = []
             for widgets in self._arms:
                 name = widgets.arm.config.name
-                here = widgets.arm.joint_vector()
-                if widgets.serial != serial or here is None or not self._joints_used[(serial, name)].active:
-                    continue
+                if widgets.serial != serial or not self._joints_used[(serial, name)].active:
+                    continue  # another robot's arm, or sliders not in use
+                parts.append(f"{name}_")
                 target = np.radians([slider.value for slider in widgets.joint.joints])
-                if np.max(np.abs(target - here)) > np.radians(ARRIVED_TOLERANCE):
-                    parts.append(f"{name}_")
-                    joints.update(zip((f"{name}_{joint}" for joint in UR_JOINT_NAMES), target))
+                joints.update(zip((f"{name}_{joint}" for joint in UR_JOINT_NAMES), target))
             if parts:
                 ghost.show(ctx.kinematics.base_pose(serial), joints, parts=tuple(parts))
             else:

@@ -81,6 +81,8 @@ class HealthPlugin(HuskyPlugin):
         #: This tick's checks per robot (by serial) and for tracked objects.
         self._robot_checks: dict[str, list[Check]] = {}
         self._object_checks: list[Check] = []
+        #: Last level per (row, chip label), to log when a chip changes colour.
+        self._levels: dict[tuple[str, str], int] = {}
 
     def setup(self, ctx: PluginContext) -> None:
         """Build the banner, one chip row and action buttons per robot, and the objects row.
@@ -115,6 +117,32 @@ class HealthPlugin(HuskyPlugin):
         self._robot_checks = {serial: robot_checks(robot, now) for serial, robot in ctx.world.robots.items()}
         self._object_checks = [mocap_check(obj.name, obj.mocap_id, obj, now)
                                for obj in ctx.world.tracked_objects.values()]
+        for row, checks in [*self._robot_checks.items(), ("objects", self._object_checks)]:
+            self._log_changes(ctx, row, checks)
+
+    def _log_changes(self, ctx: PluginContext, row: str, checks: list[Check]) -> None:
+        """Log every chip that changed colour since the last tick, so short outages can be traced later.
+
+        A chip's first level is not logged: at start every chip is still waiting for its robot.
+
+        Args:
+            ctx: This plugin's context.
+            row: The row, a robot's serial or "objects".
+            checks: That row's checks this tick.
+        """
+        for check in checks:
+            key = (row, check.label)
+            before = self._levels.get(key)
+            self._levels[key] = check.level
+            if before is None or before == check.level:
+                continue
+            message = f"health {row} {check.label}: {LEVEL_NAMES[before]} -> {LEVEL_NAMES[check.level]}: {check.detail}"
+            if check.level == BAD:
+                ctx.log_error(message)
+            elif check.level > before:
+                ctx.log_warn(message)
+            else:
+                ctx.log_info(message)
 
     def draw(self, ctx: PluginContext) -> None:
         """Copy this tick's checks into the banner and the rows.
@@ -129,6 +157,10 @@ class HealthPlugin(HuskyPlugin):
                                                 + render_chips(checks))
         self._objects_row.content = (section("objects", LEVEL_COLORS[worst_level(self._object_checks)])
                                      + render_chips(self._object_checks)) if self._object_checks else ""
+
+
+#: Chip colours by level, for the log.
+LEVEL_NAMES = {GOOD: "green", WARN: "amber", BAD: "red"}
 
 
 # --- --- --- --- --- CHECKS (`now` is ROS time, seconds) --- --- --- --- ---
@@ -417,11 +449,8 @@ def tool_check(arm: ArmInterface, now: float) -> Check | None:
             return Check(label, WARN, "last gripper command did not reach its target")
         return Check(label, GOOD, "robotiq connected")
     if isinstance(tool, ScaffoldingV3):
-        status = age_check(label, "tool_status", tool.state.last_update_time, now)
-        if status.level == GOOD and ScaffoldingV3.STALLED in (tool.state.gripper_motor, tool.state.joint_motor):
-            # ? Amber: a stall is normal against a tight screw; Stop clears it.
-            return Check(label, WARN, "a motor is stalled; Stop clears it")
-        return status
+        # ? A stalled motor is not checked: the screws stall on purpose once tight.
+        return age_check(label, "tool_status", tool.state.last_update_time, now)
     if isinstance(tool, ScaffoldingV1):
         # ? The tool reports nothing; only the arm's set_io service and io_states can fail.
         if not tool.service_is_ready():

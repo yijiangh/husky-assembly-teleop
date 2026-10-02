@@ -3,6 +3,9 @@ The tools mounted on an arm's flange, one class per kind.
 
 `make_end_effector` picks the class from ArmConfig.end_effector. All tools share open / close / stop;
 tool-specific actions (e.g. the screw) live on their class only.
+
+Every command sent and every change in what the tool reports is logged at info level, so the log tells
+what the tool was asked to do and what it did.
 """
 
 from __future__ import annotations
@@ -59,6 +62,7 @@ class ScaffoldingV3State:
         joint_motor: Driver's state string for the joint screw motor (M2).
         current: Motor current, in the driver's own units.
         pwm_pct: Motor PWM duty cycle, percent.
+        buttons_held: Per ScaffoldingV3.BUTTONS, whether it is held. Empty with firmware before v1.1.0.
         last_update_time: ROS time of the last status, seconds.
     """
 
@@ -66,24 +70,23 @@ class ScaffoldingV3State:
     joint_motor: str | None = None
     current: int | None = None
     pwm_pct: int | None = None
+    buttons_held: tuple[bool, ...] = ()
     last_update_time: float | None = None
 
 
 @dataclass
 class ScaffoldingV1State:
-    """The two UR tool outputs that drive a v1 scaffolding tool.
+    """The UR tool output that drives a v1 scaffolding tool's gripper.
 
-    ? The tool reports nothing itself; these are the outputs as the UR reports them.
+    ? The tool reports nothing itself; this is the output as the UR reports it.
 
     Attributes:
         gripper_closed: Whether the gripper output says closed.
-        screw_on: Whether the screw output is on, or None.
         last_update_time: ROS time of the last io_states, seconds.
         last_request_ok: Whether the last set_io request succeeded, or None.
     """
 
     gripper_closed: bool | None = None
-    screw_on: bool | None = None
     last_update_time: float | None = None
     last_request_ok: bool | None = None
 
@@ -121,6 +124,10 @@ class EndEffector(ABC):
     def _connect(self) -> None:
         """Create this tool's topics, services and actions. None by default."""
 
+    def _log(self, message: str) -> None:
+        """Log `message` at info level, prefixed with the tool's namespace."""
+        self._node.get_logger().info(f"{self.namespace}: {message}")
+
     def reconnect(self) -> None:
         """Destroy this tool's ROS entities and create them again. Keeps `state`."""
         self._ros.destroy_all()
@@ -136,7 +143,7 @@ class EndEffector(ABC):
 
     @abstractmethod
     def stop(self) -> None:
-        """Stop every motor of the tool."""
+        """Stop every motor of the tool that can be stopped."""
 
 
 class RobotiqGripper(EndEffector):
@@ -209,6 +216,7 @@ class RobotiqGripper(EndEffector):
         goal = GripperCommand.Goal()
         goal.command.position = position
         goal.command.max_effort = effort
+        self._log(f"gripper move to {position:.3f} rad, force {effort:.2f}")
         self.state.commanded_position = position
         self.state.commanded_effort = effort
         self.state.moving = True
@@ -222,6 +230,7 @@ class RobotiqGripper(EndEffector):
         if not self._reactivate.service_is_ready():
             self._node.get_logger().warning(f"{self.namespace}: reactivate_gripper service is not available")
             return
+        self._log("gripper reactivating")
         self.state.reactivating = True
         self.state.reactivate_error = ""
         self._reactivate.call_async(Trigger.Request()).add_done_callback(self._on_reactivated)
@@ -239,6 +248,8 @@ class RobotiqGripper(EndEffector):
             answer = "no answer" if response is None else (response.message or "failed")
             self.state.reactivate_error = raised or answer
             self._node.get_logger().warning(f"{self.namespace}: reactivation failed: {self.state.reactivate_error}")
+        else:
+            self._log("gripper reactivated")
 
     def _on_joint_state(self, message: JointState) -> None:
         """Copy the knuckle angle into state."""
@@ -258,6 +269,7 @@ class RobotiqGripper(EndEffector):
         if handle is None or not handle.accepted:
             self.state.moving = False
             self.state.last_result_ok = False
+            self._node.get_logger().warning(f"{self.namespace}: gripper goal rejected")
             return
         handle.get_result_async().add_done_callback(self._on_result)
 
@@ -271,19 +283,27 @@ class RobotiqGripper(EndEffector):
             self._node.get_logger().warning(f"{self.namespace}: gripper result failed: {error}")
             return
         self.state.last_result_ok = bool(result.reached_goal or result.stalled)
+        outcome = "reached goal" if result.reached_goal else "stalled" if result.stalled else "fell short"
+        self._log(f"gripper {outcome} at {result.position:.3f} rad")
 
 
 class ScaffoldingV3(EndEffector):
-    """Scaffolding tool v3: two motors behind an RS485 driver on the robot.
+    """Scaffolding tool v3: two screw motors behind an RS485 driver on the robot.
+
+    Each motor tightens or loosens, and stops by itself on a stall. Only one runs at a time: starting one
+    stops the other. A stalled motor refuses to start, in either direction, until a stop; the one stop
+    command halts both motors and clears both stalls (scaffolding_tool_controller firmware, protocol.cpp).
 
     ! The driver's M1 and M2 are not the BarAction movement roles M0..M4; use GRIPPER_MOTOR and JOINT_MOTOR.
     """
 
-    GRIPPER_MOTOR = 1  # M1: opens and closes the gripper that holds the bar
-    JOINT_MOTOR = 2    # M2: drives the screw that tightens the bar to the joint
+    GRIPPER_MOTOR = 1  # M1: the screw that clamps the bar in the tool; tightening closes
+    JOINT_MOTOR = 2    # M2: the screw that fixes the bar to the joint
     #: Motor states the driver reports (crl_husky onboard/protocol.md).
-    #: A stalled motor will not run until `stop()` clears it.
     IDLE, TIGHTENING, LOOSENING, STALLED = "IDLE", "TIGHTENING", "LOOSENING", "STALLED"
+    #: The tool's buttons, in the driver's order. B1/B2 run the gripper motor, B3/B4 the joint screw;
+    #: C12 and C34 are chords (both buttons of a pair together), which run no motor (crl_husky protocol.md).
+    BUTTONS = ("B1", "B2", "B3", "B4", "C12", "C34")
 
     def __init__(self, node: Node, robot_namespace: str, arm: ArmConfig):
         """Create the command publisher and the status subscription."""
@@ -297,26 +317,42 @@ class ScaffoldingV3(EndEffector):
         self._ros.subscription(ScaffoldingToolStatus, f"{self.namespace}/tool_status", self._on_status)
 
     def open(self) -> None:
-        """Run the gripper motor in the loosening direction."""
+        """Loosen the gripper screw."""
         self._drive(self.GRIPPER_MOTOR, -1)
 
     def close(self) -> None:
-        """Run the gripper motor in the tightening direction."""
+        """Tighten the gripper screw."""
         self._drive(self.GRIPPER_MOTOR, 1)
 
     def stop(self) -> None:
-        """Stop both motors and clear a stall."""
-        self._drive(self.GRIPPER_MOTOR, 0)
+        """Stop both motors and clear their stalls."""
+        self._log("stop")
+        self._publish(0, 0)  # the driver ignores the motor on a stop
 
     def drive_screw(self, direction: int) -> None:
         """Run the joint screw motor.
 
         Args:
-            direction: 1 tightens, -1 loosens, 0 stops.
+            direction: 1 tightens, -1 loosens, 0 stops both motors (see `stop`).
         """
-        self._drive(self.JOINT_MOTOR, direction)
+        if direction == 0:
+            self.stop()
+        else:
+            self._drive(self.JOINT_MOTOR, direction)
 
     def _drive(self, motor: int, direction: int) -> None:
+        """Start `motor` tightening (1) or loosening (-1), unless it is stalled."""
+        name = "gripper" if motor == self.GRIPPER_MOTOR else "joint screw"
+        verb = "tighten" if direction > 0 else "loosen"
+        stalled = self.state.gripper_motor if motor == self.GRIPPER_MOTOR else self.state.joint_motor
+        if stalled == self.STALLED:
+            self._node.get_logger().warning(f"{self.namespace}: {name} is stalled, Stop it before it can "
+                                            f"{verb}; nothing sent")
+            return
+        self._log(f"{name}: {verb}")
+        self._publish(motor, direction)
+
+    def _publish(self, motor: int, direction: int) -> None:
         """Publish one command to the driver."""
         message = ScaffoldingToolCmd()
         message.motor = motor
@@ -324,7 +360,23 @@ class ScaffoldingV3(EndEffector):
         self._command.publish(message)
 
     def _on_status(self, message: ScaffoldingToolStatus) -> None:
-        """Copy the driver's status into state."""
+        """Copy the driver's status into state; log the motors' state changes."""
+        for name, old, new in (("gripper", self.state.gripper_motor, message.state_m1),
+                               ("joint screw", self.state.joint_motor, message.state_m2)):
+            if new != old:
+                change = new.lower() if old is None else f"{old.lower()} -> {new.lower()}"
+                self._log(f"{name} {change} (current {message.current})")
+        held = tuple(message.buttons_held)
+        for i, name in enumerate(self.BUTTONS[:len(held)]):
+            was_held = i < len(self.state.buttons_held) and self.state.buttons_held[i]
+            pressed = i < len(message.buttons_pressed) and message.buttons_pressed[i]
+            if pressed and not held[i]:
+                self._log(f"button {name} tapped")  # pressed and released between two polls
+            elif held[i] and not was_held:
+                self._log(f"button {name} pressed")
+            elif was_held and not held[i]:
+                self._log(f"button {name} released")
+        self.state.buttons_held = held
         self.state.gripper_motor = message.state_m1
         self.state.joint_motor = message.state_m2
         self.state.current = message.current
@@ -333,15 +385,14 @@ class ScaffoldingV3(EndEffector):
 
 
 class ScaffoldingV1(EndEffector):
-    """Scaffolding tool v1, switched through the UR's two tool digital outputs.
+    """Scaffolding tool v1: a two-state gripper switched through a UR tool digital output.
 
-    Output 0 is the screw (on runs it one way; the safety sync switches it off when it stops the arms);
-    output 1 is the gripper.
+    The gripper is only ever open or closed; it cannot stop between. The joint screw (tool output 0) is not
+    supported: its firmware versions disagree on what the outputs mean.
 
     ? "Gripper on = closed" is unverified: check on the robot and flip GRIPPER_CLOSED_WHEN_ON if wrong.
     """
 
-    SCREW_PIN = SetIO.Request.PIN_TOOL_DOUT0
     GRIPPER_PIN = SetIO.Request.PIN_TOOL_DOUT1
     GRIPPER_CLOSED_WHEN_ON = True
 
@@ -364,29 +415,16 @@ class ScaffoldingV1(EndEffector):
 
     def open(self) -> None:
         """Switch the gripper output to open."""
+        self._log("gripper open")
         self._set(self.GRIPPER_PIN, not self.GRIPPER_CLOSED_WHEN_ON)
 
     def close(self) -> None:
         """Switch the gripper output to closed."""
+        self._log("gripper close")
         self._set(self.GRIPPER_PIN, self.GRIPPER_CLOSED_WHEN_ON)
 
     def stop(self) -> None:
-        """Switch the screw off.
-
-        ! Leaves the gripper alone: switching it would drop or grab the bar.
-        """
-        self._set(self.SCREW_PIN, False)
-
-    def drive_screw(self, direction: int) -> None:
-        """Run or stop the screw motor.
-
-        Args:
-            direction: 1 runs it, 0 stops it. -1 is refused: the motor runs one way only.
-        """
-        if direction < 0:
-            self._node.get_logger().warning(f"{self.arm_namespace}: scaffolding_v1 cannot loosen; nothing sent")
-            return
-        self._set(self.SCREW_PIN, direction > 0)
+        """Nothing to stop: the gripper only switches, and the screw is not supported."""
 
     def _set(self, pin: int, on: bool) -> None:
         """Ask the arm to switch one tool output."""
@@ -411,12 +449,13 @@ class ScaffoldingV1(EndEffector):
             self._node.get_logger().warning(f"{self.arm_namespace}: set_io request failed")
 
     def _on_io_states(self, message: IOStates) -> None:
-        """Copy the two tool outputs into state."""
+        """Copy the gripper output into state; log when it changes."""
         for pin in message.digital_out_states:
-            if pin.pin == self.SCREW_PIN:
-                self.state.screw_on = bool(pin.state)
-            elif pin.pin == self.GRIPPER_PIN:
-                self.state.gripper_closed = bool(pin.state) == self.GRIPPER_CLOSED_WHEN_ON
+            if pin.pin == self.GRIPPER_PIN:
+                closed = bool(pin.state) == self.GRIPPER_CLOSED_WHEN_ON
+                if closed != self.state.gripper_closed:
+                    self._log(f"gripper output says {'closed' if closed else 'open'}")
+                self.state.gripper_closed = closed
         self.state.last_update_time = self._node.get_clock().now().nanoseconds * 1e-9
 
 

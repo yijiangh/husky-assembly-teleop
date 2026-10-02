@@ -26,6 +26,8 @@ class ControllerManagerState:
         active: The running switchable controller, or None if none runs or no answer has arrived.
         switch_in_flight: Controller a switch is waiting on, or None.
         switch_error: Why the last switch failed, or None. Cleared when a new switch goes out.
+        requested: The controller this monitor last switched to, while it is still the running one (or the
+            switch is pending); None otherwise, e.g. after a stop or a switch from outside.
         last_update_time: ROS time in seconds of the last answer, or None.
     """
 
@@ -33,6 +35,7 @@ class ControllerManagerState:
     active: str | None = None
     switch_in_flight: str | None = None
     switch_error: str | None = None
+    requested: str | None = None
     last_update_time: float | None = None
 
 
@@ -119,6 +122,7 @@ class ControllerManagerInterface:
             self._node.get_logger().error(self.state.switch_error)
             return False
         if self.state.active == controller:
+            self.state.requested = controller
             return True
         if not self._switch_client.service_is_ready():
             self.state.switch_error = f"{self.namespace}: switch_controller is not available"
@@ -141,6 +145,7 @@ class ControllerManagerInterface:
         request.start_asap = True
 
         self.state.switch_in_flight = controller
+        self.state.requested = controller
         self.state.switch_error = None
         future = self._switch_client.call_async(request)
         future.add_done_callback(lambda done: self._on_switch_answer(controller, done))
@@ -162,6 +167,7 @@ class ControllerManagerInterface:
         request.deactivate_controllers = list(self.switchable)
         request.strictness = SwitchController.Request.BEST_EFFORT
         request.start_asap = True
+        self.state.requested = None
         self.state.switch_error = None
         self._switch_client.call_async(request).add_done_callback(self._on_deactivate_answer)
         return True
@@ -193,6 +199,9 @@ class ControllerManagerInterface:
         self.state.controllers = {c.name: c.state for c in response.controller}
         running = [name for name in self.switchable if self.state.controllers.get(name) == "active"]
         self.state.active = running[0] if running else None
+        # Something else runs now (a failed switch, the soft stop, a switch from outside): no longer ours.
+        if self.state.switch_in_flight is None and self.state.requested != self.state.active:
+            self.state.requested = None
         self.state.last_update_time = self._node.get_clock().now().nanoseconds * 1e-9
 
     def _on_switch_answer(self, controller: str, future) -> None:

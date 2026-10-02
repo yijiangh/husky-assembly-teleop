@@ -1,7 +1,8 @@
 """
 The shared look of plugin panels: coloured chips, section bars, number rows.
 
-Chips are green = ok, amber = in progress or stale, red = failed, gray = no data. Every helper returns
+Chips are green = ok, blue = an expected end state (e.g. a stalled screw), amber = in progress or stale,
+red = failed, gray = no data. Every helper returns
 HTML for viser's `add_html`; assigning it in every `draw` is cheap (viser only sends changes).
 
 ! Never hide or grey out buttons, since that shifts the layout: ignore and log inapplicable actions instead.
@@ -15,6 +16,7 @@ from ..world.checks import BAD, GOOD, STALE_AFTER, WARN, Check
 
 # Colours: chips put white text on these, readable in light and dark theme.
 OK, BUSY, FAIL, NONE = "#2f9e44", "#e8590c", "#e03131", "#868e96"
+INFO = "#1c7ed6"
 SECTION_CTRL, SECTION_SENSOR, SECTION_TOOL = "#4263eb", "#1098ad", "#f08c00"
 
 #: Chip colour for each severity.

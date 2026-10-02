@@ -14,7 +14,7 @@ from .checks import BAD, GOOD, STALE_AFTER, WARN, Check
 #: Mean marker error, metres, above which the mocap chip turns amber.
 #: ? A guess from typical OptiTrack numbers. The relay's own looser threshold
 #:   (`marker_error_valid_threshold`) marks the pose invalid.
-MARKER_ERROR_WARN = 1e-3
+MARKER_ERROR_WARN = 2e-3
 
 
 class MocapBody(Protocol):

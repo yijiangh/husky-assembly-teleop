@@ -12,23 +12,24 @@ import viser
 from scipy.spatial.transform import Rotation
 
 from ...plugin_api.context import PluginContext
-from ...robot_interface.arm import (CARTESIAN_COMPLIANCE_CONTROLLER, SCALED_JOINT_TRAJECTORY_CONTROLLER,
-                                    ArmInterface)
+from ...robot_interface.arm import (CARTESIAN_COMPLIANCE_CONTROLLER, FREE_DRIVE_CONTROLLER,
+                                    SCALED_JOINT_TRAJECTORY_CONTROLLER, ArmInterface)
 from ...robot_interface.base import PLATFORM_VELOCITY_CONTROLLER, BaseInterface
 from ...robot_interface.controller_manager import ControllerManagerInterface
 from ...robot_interface.stream_stats import WINDOW, StreamQuality
 from ...robot_interface.end_effectors import (RobotiqGripper, RobotiqState, ScaffoldingV1State, ScaffoldingV3,
                                               ScaffoldingV3State)
-from ...ui.style import (BUSY, FAIL, NONE, OK, SECTION_CTRL, block, check_chip, chip, freshness_chip, note, numbers,
+from ...ui.style import (BUSY, FAIL, INFO, NONE, OK, SECTION_CTRL, block, check_chip, chip, freshness_chip, note, numbers,
                          section, values)
 from ...world.checks import STALE_AFTER
-from ...world.mocap import mocap_check
+from ...world.mocap import MARKER_ERROR_WARN, MocapBody, mocap_check
 
 #: Short button labels for controllers; unlisted ones show their full name.
 CONTROLLER_LABELS = {
     PLATFORM_VELOCITY_CONTROLLER: "Vel",
     SCALED_JOINT_TRAJECTORY_CONTROLLER: "Joint",
     CARTESIAN_COMPLIANCE_CONTROLLER: "Cart",
+    FREE_DRIVE_CONTROLLER: "Free",
 }
 
 
@@ -109,7 +110,23 @@ def base_status(base: BaseInterface, now: float) -> str:
         "xyz", degrees=True)[2:]
     stale = not state.tracked or now - state.last_fix_time >= STALE_AFTER
     return block(chips + values(f"xyz {numbers(state.position, 3, 7, 3)} m",
-                                f"yaw {numbers(yaw, 1, 7, 1)} °", dim=stale))
+                                f"yaw {numbers(yaw, 1, 7, 1)} °", dim=stale) + _mocap_line(state, now))
+
+
+def _mocap_line(body: MocapBody, now: float) -> str:
+    """The fix behind the mocap chip: marker error, age of the last valid fix, and why it is invalid.
+
+    * Live numbers belong here, not in the health tooltip, which closes on every change.
+    """
+    error = "—".rjust(5) if body.marker_error is None else f"{body.marker_error * 1e3:5.2f}"
+    age = "—".rjust(5) if body.last_fix_time is None else f"{(now - body.last_fix_time) * 1e3:5.0f}"
+    flags = ""
+    if body.tracking_valid is False:
+        flags = "  lost"
+    elif body.last_update_time is not None and not body.tracked:
+        flags = "  invalid"
+    return values(f"mocap err {error} mm (warn {MARKER_ERROR_WARN * 1e3:g})  fix {age} ms ago{flags}",
+                  dim=body.last_update_time is None)
 
 
 def arm_status(arm: ArmInterface, now: float) -> str:
@@ -164,6 +181,8 @@ def tool_status(state: object, now: float) -> str:
         chips = freshness_chip("status", state.last_update_time, now)
         if state.last_update_time is not None:  # every field is set together
             chips += _motor_chip("grip", state.gripper_motor) + _motor_chip("screw", state.joint_motor)
+            chips += "".join(chip(name, INFO, "held on the tool")
+                             for name, held in zip(ScaffoldingV3.BUTTONS, state.buttons_held) if held)
         stale = state.last_update_time is None or now - state.last_update_time >= STALE_AFTER
         current = "—".rjust(6) if state.current is None else f"{state.current:6d}"
         pwm = "—".rjust(4) if state.pwm_pct is None else f"{state.pwm_pct:4d}"
@@ -175,14 +194,12 @@ def tool_status(state: object, now: float) -> str:
         # Outputs as the UR reports them; the tool itself reports nothing.
         if state.gripper_closed is not None:
             chips += chip("grip closed" if state.gripper_closed else "grip open", OK)
-        if state.screw_on is not None:
-            chips += chip("screw on", BUSY) if state.screw_on else chip("screw off", OK)
         return block(chips)
     return ""
 
 
 def _motor_chip(name: str, motor_state: str | None) -> str:
-    """One v3 motor's chip: busy while it runs, red when stalled, green when idle."""
-    color = {ScaffoldingV3.IDLE: OK, ScaffoldingV3.STALLED: FAIL}.get(motor_state, BUSY)
-    hint = "stalled: Stop clears it before it runs again" if motor_state == ScaffoldingV3.STALLED else ""
+    """One v3 motor's chip: busy while it runs, blue when stalled (screwed tight, as intended), green when idle."""
+    color = {ScaffoldingV3.IDLE: OK, ScaffoldingV3.STALLED: INFO}.get(motor_state, BUSY)
+    hint = "screwed tight; Stop clears the stall before it runs again" if motor_state == ScaffoldingV3.STALLED else ""
     return chip(f"{name} {str(motor_state).lower()}", color, hint)

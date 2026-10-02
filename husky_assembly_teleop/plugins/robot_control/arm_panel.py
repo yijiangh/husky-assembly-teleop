@@ -31,6 +31,11 @@ POSE_SLIDERS = (("x m", "p"), ("y m", "p"), ("z m", "p"), ("roll °", "a"), ("pi
 FORCE_STEP = 0.5
 #: Short names for end effector kinds, shown next to the TOOL section label.
 TOOL_LABELS = {"robotiq": "robotiq", "scaffolding_v1": "v1", "scaffolding_v3": "v3"}
+#: Hint on the Grip buttons, per end effector kind.
+GRIP_HINTS = {"robotiq": "Stop holds the fingers where they are.",
+              "scaffolding_v1": "The gripper is only ever open or closed.",
+              "scaffolding_v3": "A screw clamps the bar and stops by itself when tight. Stop halts both "
+                                "motors and clears both stalls; a stalled motor will not start until then."}
 
 
 @dataclass
@@ -183,6 +188,16 @@ def build_compliance_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, a
     return ComplianceInputs(pose=pose, pose_plan=pose_plan, force=force, wrench_line=wrench_line)
 
 
+def build_free_drive_inputs(gui: viser.GuiApi) -> None:
+    """Add the free drive controller's folder: no inputs, only how to use it.
+
+    Args:
+        gui: The GUI api, inside the controller's folder.
+    """
+    gui.add_html(note("The arm can be pushed by hand. Switch to Joint to hold it where it is. "
+                      "Check the payload on the pendant first: a wrong one makes the arm sag or rise."))
+
+
 def build_tool_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, arm: ArmInterface) -> viser.GuiHtmlHandle:
     """Add the TOOL section for the arm's end effector: its status line and buttons.
 
@@ -199,19 +214,19 @@ def build_tool_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, arm: Ar
     gui.add_html(section("tool", SECTION_TOOL, TOOL_LABELS.get(kind, kind)))
     status = gui.add_html("")
     tool = arm.end_effector
-    commands = {"Open": tool.open, "Close": tool.close, "Stop": tool.stop}
-    grip = gui.add_button_group("Grip", list(commands),
-                                hint="Stop halts every motor of the tool. A v1 gripper only opens or "
-                                     "closes, so there Stop switches the screw off and leaves the grip.")
+    commands = {"Open": tool.open, "Close": tool.close}
+    if not isinstance(tool, ScaffoldingV1):  # its gripper cannot stop halfway
+        commands["Stop"] = tool.stop
+    grip = gui.add_button_group("Grip", list(commands), hint=GRIP_HINTS.get(kind))
     grip.on_click(ctx.defer_value(f"grip {label}", lambda clicked: commands[clicked]()))
     if isinstance(tool, RobotiqGripper):
         _build_robotiq_inputs(ctx, gui, label, tool)
-    elif isinstance(tool, (ScaffoldingV1, ScaffoldingV3)):
-        # v1 runs its screw one way only; v3 both ways.
-        directions = ({"Run": 1, "Stop": 0} if isinstance(tool, ScaffoldingV1)
-                      else {"Tighten": 1, "Loosen": -1, "Stop": 0})
-        screw = gui.add_button_group("Screw", list(directions), hint="The motor that tightens the bar "
-                                                                     "to the joint. Runs until Stop.")
+    elif isinstance(tool, ScaffoldingV3):
+        directions = {"Tighten": 1, "Loosen": -1, "Stop": 0}
+        screw = gui.add_button_group("Screw", list(directions),
+                                     hint="Fixes the bar to the joint; stops by itself when tight. Only one "
+                                          "motor runs at a time, so starting this stops the gripper. Stop "
+                                          "halts both.")
         screw.on_click(ctx.defer_value(f"screw {label}", lambda clicked: tool.drive_screw(directions[clicked])))
     return status
 
