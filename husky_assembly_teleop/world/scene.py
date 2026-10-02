@@ -1,6 +1,5 @@
 """
-The scene: every collision object we don't measure, plus a per-tick snapshot of the whole world
-for planners and the 3D view.
+The scene (collision objects we don't measure) and a per-tick world snapshot for planners and the 3D view.
 
 The snapshot is taken before plugins run, so it holds one ROS pump's measurements and every plugin's
 complete writes of the previous tick.

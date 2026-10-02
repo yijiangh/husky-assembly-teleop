@@ -43,4 +43,3 @@ def test_different_or_missing_tool_is_reported():
 def test_robots_not_configured_are_skipped():
     """A design robot without a serial, or not loaded, is not compared."""
     assert tool_mismatches(_design("robotiq", "robotiq"), ()) == []
-

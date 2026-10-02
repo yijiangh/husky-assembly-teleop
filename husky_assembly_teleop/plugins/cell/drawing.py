@@ -1,6 +1,7 @@
 """
-The cell's overlay: what the core's 3D view cannot draw of one design state, from the design alone; forward
-kinematics from each robot's yourdfpy model.
+The cell's overlay: what the core's 3D view cannot draw of one design state.
+
+Drawn from the design alone, with forward kinematics from each robot's yourdfpy model.
 
 - * Bodies that `stand` are scene bodies, drawn by the core. The overlay draws the robots, their tools and the
   bodies they hold, and, when asked, every other body (absent or at a placeholder pose), always see-through.

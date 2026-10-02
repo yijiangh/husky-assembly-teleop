@@ -1,5 +1,11 @@
 # Software Reorganization for Husky Assembly Mega-Repo (Journal-Version Target)
 
+> ⚠️ **Superseded** by the monitor rewrite (2026-09). Kept for the cross-repo questions it raises. What replaced what:
+> - Data contract (compas_fab JSON as lingua franca): replaced by the schema 1 design format, `doc/design_format.md` and `design_io/`; compas_fab objects are built only inside planner mirrors.
+> - Planner architecture (shared pybullet world, `husky_planner` lib): replaced by the backend-free scene and per-planner mirrors, `doc/scene_refactor_plan.md`; RRT-Connect in `plugins/planning/`.
+> - `design_interface/`, `common.py`, `husky_planning.py`, `husky_world.py`: gone (old ones in `old/`).
+> - Still open: the dual-arm constrained planner (Drake `planner_server` in `husky_assembly_tamp`, for the `bar_action` plugin) and the duplicated `husky_urdf` in the Rhino repo.
+
 ## Context
 
 We are extending the robarch2026 paper (`doc/robarch2026_robotic_scaffolding_v1.pdf`) into a journal version that adds the multi-agent and chained-MP story sketched in the ITJ papers (`supporting_materials/papers/2025_CAAD_validation.pdf`, `Timber_Assembly_SCF2021.pdf`). The system has accreted into three components developed on different OSs, and the seams are now leaky:

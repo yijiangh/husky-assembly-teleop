@@ -1,6 +1,4 @@
-"""
-Poses and ids, shared by design files and the monitor's scene.
-"""
+"""Poses and ids, shared by design files and the monitor's scene."""
 
 from __future__ import annotations
 

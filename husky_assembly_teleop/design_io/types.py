@@ -32,6 +32,7 @@ class DesignError(ValueError):
     """A design breaks the format. `problems` lists every broken rule found, one line each."""
 
     def __init__(self, problems):
+        """Collect `problems`, one string per broken rule."""
         self.problems = list(problems)
         super().__init__("invalid design:\n  " + "\n  ".join(self.problems))
 
@@ -40,6 +41,7 @@ class SchemaMismatch(DesignError):
     """A file was written with another schema. Read it with the library at `commit`."""
 
     def __init__(self, path: str, schema: int, commit: str, expected: int):
+        """Name the file, its schema and the commit that wrote it."""
         self.schema, self.commit = schema, commit
         super().__init__([f"{path} has schema {schema}, this library reads schema {expected}; "
                           f"check out design_io at commit {commit} to read it"])

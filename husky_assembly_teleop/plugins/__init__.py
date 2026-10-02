@@ -1,6 +1,7 @@
 """
-One module (or package) per feature, found by `plugin.discover`. Add a file with
-@register and list it in `enabled_plugins` to run it.
+One module (or package) per feature, found by `plugin.discover`.
+
+Add a file with @register and list it in `enabled_plugins` to run it.
 
 ! Everything that is not a real robot lives here; the core knows nothing about
   bars, racks or assembly steps. Plugins draw only into their own PluginView.

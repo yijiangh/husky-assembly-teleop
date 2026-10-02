@@ -1,6 +1,7 @@
 """
-Read an old compas_fab export (RobotCell*.json, BarActions/, ActionSchedule.json, WalkableGround.json) into a
-schema 1 `Design`.
+Read an old compas_fab export into a schema 1 `Design`.
+
+The export is RobotCell*.json, BarActions/, ActionSchedule.json and WalkableGround.json.
 
 Robots come from the given URDF and SRDF files, checked joint by joint against the models in the cells.
 ! Slow (~15 s for three ~350 MB cells). Imports compas and rs_data_structure.

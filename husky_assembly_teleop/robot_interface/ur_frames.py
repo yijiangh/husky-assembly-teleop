@@ -1,6 +1,4 @@
-"""
-The UR frame convention, and a startup check that our URDFs keep it (see doc/ur_frames.md).
-"""
+"""The UR frame convention, and a startup check that our URDFs keep it (see doc/ur_frames.md)."""
 
 from __future__ import annotations
 

@@ -255,7 +255,7 @@ def robot_config_from_serial(token: str, data_directory: Path,
 
 # --- --- --- --- --- READING ONE RUN OFF THE COMMAND LINE --- --- --- --- ---
 def config_from_ros_parameters(node: Node) -> MonitorConfig:
-    """Build the frozen run configuration from `node`'s ROS2 parameters.
+    r"""Build the frozen run configuration from `node`'s ROS2 parameters.
 
     - `tools`: one entry per robot, tools in arm order, "none" for a bare arm; only where it differs
       from `_ROBOTS_BY_SERIAL`.
@@ -266,9 +266,9 @@ def config_from_ros_parameters(node: Node) -> MonitorConfig:
         node: The monitor node, whose parameters are read.
 
     Example:
-        ros2 run husky_assembly_teleop husky_monitor --ros-args \\
-            -p robots:="['0804','cindy']" -p plugins:="['cell']" \\
-            -p tools:="['0804:scaffolding_v3', '0806:scaffolding_v3,none']" \\
+        ros2 run husky_assembly_teleop husky_monitor --ros-args \
+            -p robots:="['0804','cindy']" -p plugins:="['cell']" \
+            -p tools:="['0804:scaffolding_v3', '0806:scaffolding_v3,none']" \
             -p design_directory:=/path/to/design
     """
     node.declare_parameter("robots", [""])

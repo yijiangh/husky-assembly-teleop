@@ -1,6 +1,5 @@
 """
-The user interface: a viser server, the world drawn from each tick's snapshot, and one private corner
-for each plugin.
+The user interface: a viser server, the world drawn from each tick's snapshot, and one private corner for each plugin.
 
 - ! Build viser nodes once and keep the handles: re-adding them every tick leaks and flickers.
 - ! viser callbacks run on viser's threads: they must not touch world state, the scene or ROS, only
@@ -187,8 +186,9 @@ def load_urdf(urdf_file: Path) -> yourdfpy.URDF:
 
 @cache
 def shared_urdf(urdf_file: Path) -> yourdfpy.URDF:
-    """`load_urdf`, parsed once per file and shared: each robot and ghost would otherwise re-read its meshes
-    (about 1 s per robot).
+    """`load_urdf`, parsed once per file and shared.
+
+    Each robot and ghost would otherwise re-read its meshes (about 1 s per robot).
 
     ! `FastViserUrdf` never poses it, and anyone else posing it would change it for every user: never read
       `get_transform` from it. Main thread only.

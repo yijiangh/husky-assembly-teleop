@@ -1,3 +1,5 @@
+# pybullet_planning, compas_fab, rs_data_structure and husky_assembly_tamp are installed
+# editable from external/ (see README), not from here.
 # We need a special version of pybullet_planning:
 # pip install pybullet_planning git+https://github.com/yijiangh/pybullet_planning.git@yh/disable_ghalton
 #pybullet_planning==0.6.0
@@ -5,17 +7,20 @@ compas_fab==1.1.0 # use wip_process branch
 roslibpy<2.0.0 # compas_fab 1.1.0 uses roslibpy.actionlib which was removed in roslibpy 2.0.0
 numpy<1.25.0
 setuptools<=70.0.0
-kdtree==0.16
-matplotlib==3.10.3
-dearpygui>=2.3.1,<3  # control panel (HuskyMonitor.USE_DPG_UI=1); falls back to legacy PyBullet UI if absent
-opencv-python
 viser==1.1.1  # web UI; pinned because its scene/gui API moves between releases
 yourdfpy==0.0.60  # URDF parsing for viser.extras.ViserUrdf (robot meshes in the browser)
 # * Imported directly by the monitor or its plugins; listed even when another
 #   package here already pulls them in, so removing that one cannot break us.
 async-timeout>=4.0  # concurrency.timeout, the asyncio.timeout backport for Python 3.10
 scipy>=1.8  # rotations in robot_interface and robot_control
-trimesh>=4.0  # mesh materials in visualization.py
+trimesh==4.12.2  # ! design_io must run in Rhino 8 (Python 3.9): 4.12.2 is the newest release for 3.9
 pybullet>=3.2  # raw client calls in base_planner/planner.py
 compas>=2.0  # cell plugin; compas_fab above needs it too
 compas_robots>=0.6  # cell plugin
+
+# ! Potentially obsolete: only the old monitor (husky_assembly_teleop/old/) imports these.
+#   Kept until its remaining features are ported; drop each one once nothing needs it.
+kdtree==0.16
+matplotlib==3.10.3
+dearpygui>=2.3.1,<3  # old monitor's control panel (USE_DPG_UI)
+opencv-python  # old mocap_experiment webcam capture

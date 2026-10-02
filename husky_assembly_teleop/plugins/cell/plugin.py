@@ -1,6 +1,7 @@
 """
-The cell plugin: loads an authored design, draws one movement's cell state at a time, and serves the
-selected step to plugins that declare `requires = ("cell",)`.
+The cell plugin: loads an authored design and draws one movement's cell state at a time.
+
+It serves the selected step to plugins that declare `requires = ("cell",)`.
 
 Every design body goes into the scene as "cell/<body id>", enabled where it stands in the selected movement's
 start (`design.obstacles`): the core draws it and planners avoid it. Robots, and the bodies they hold, are not

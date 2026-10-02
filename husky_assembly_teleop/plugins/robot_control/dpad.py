@@ -1,6 +1,4 @@
-"""
-The base's D-pad: four hold buttons that drive while pressed, and a speed slider.
-"""
+"""The base's D-pad: four hold buttons that drive while pressed, and a speed slider."""
 
 from __future__ import annotations
 

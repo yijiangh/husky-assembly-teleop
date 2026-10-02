@@ -1,6 +1,4 @@
-"""
-The mobile base of one husky: its pose from mocap, and driving it.
-"""
+"""The mobile base of one husky: its pose from mocap, and driving it."""
 
 from __future__ import annotations
 
@@ -87,7 +85,7 @@ class BaseInterface:
 
     @property
     def mocap_id(self) -> int | None:
-        """int | None: Rigid-body id of the base in the mocap system, or None if untracked."""
+        """Rigid-body id of the base in the mocap system, or None if untracked."""
         return self._config.mocap_id
 
     def _connect(self) -> None:

@@ -42,6 +42,7 @@ class MeshCache:
     """Meshes read so far, by file: one TriMesh object per file."""
 
     def __init__(self):
+        """Start with no meshes read."""
         self._meshes: Dict[Path, TriMesh] = {}
 
     def get(self, path: Path) -> TriMesh:

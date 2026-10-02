@@ -1,5 +1,12 @@
 # Husky Extrinsic Calibration Manual
 
+> ⚠️ **Outdated: written for the old monitor (`husky_assembly_teleop/old/`, runnable on `master`, see README "Running the old monitor").** Kept as reference for porting.
+> - §1 Mocap and network: replaced by the mocap relay (README, "Start the mocap relay"); the monitor sets no IPs.
+> - §2 Robot startup: see crl-husky's README (Zenoh on domain 80, not one `ROS_DOMAIN_ID` per robot).
+> - §3–6 Data collection and punch validation: **missing** in the new monitor (`calibration` and `punch_validation` plugins, `doc/plugin_roadmap.md`).
+> - §7–8 Offline pipeline (`data/calibration_data/`): standalone scripts, not checked against the new code.
+> - **Different:** the base calibration is applied by the relay, from `crl-husky/crl_husky/config/mocap/calibrations/` (crl-husky `MOCAP_SETUP.md`), not by the monitor. Copy new results there.
+
 This manual walks you through the complete extrinsic calibration procedure for the Husky robot, from powering on the motion capture system to running the calibration pipeline. Follow each section in order.
 
 > **Audience**: This guide assumes basic familiarity with the robot hardware but provides detailed command-line instructions for each step.

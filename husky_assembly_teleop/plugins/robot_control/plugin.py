@@ -24,7 +24,8 @@ from ...plugin_api.concurrency import WaitTimeout
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
 from ...robot_interface.arm import (CARTESIAN_COMPLIANCE_CONTROLLER, FREE_DRIVE_CONTROLLER,
-                                    SCALED_JOINT_TRAJECTORY_CONTROLLER, TARGET_WRENCH_FRAME, UR_JOINT_NAMES, ArmInterface, cartesian_move)
+                                    SCALED_JOINT_TRAJECTORY_CONTROLLER, TARGET_WRENCH_FRAME, UR_JOINT_NAMES,
+                                    ArmInterface, cartesian_move)
 from ...robot_interface.base import PLATFORM_VELOCITY_CONTROLLER, BaseInterface
 from ...ui.ghost import RecentUse, RobotGhost, robot_ghosts
 from ...ui.style import SECTION_SENSOR, block, numbers, section, values

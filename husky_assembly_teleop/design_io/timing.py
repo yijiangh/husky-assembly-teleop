@@ -1,6 +1,4 @@
-"""
-Lap times of a slow job (loading, converting), summarised in one log line.
-"""
+"""Lap times of a slow job (loading, converting), summarised in one log line."""
 
 from __future__ import annotations
 

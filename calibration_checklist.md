@@ -1,5 +1,7 @@
 # Data collection
 
+> ⚠️ **Outdated: written for the old monitor (`husky_assembly_teleop/old/`, runnable on `master`, see README "Running the old monitor")** (`husky_world`, its GUI buttons). The data collection is **missing** in the new monitor (`calibration` plugin, `doc/plugin_roadmap.md`); see also `doc/calibration_manual.md`.
+
 Make sure that the `base_calibration_file` input for Husky class creation in `husky_world` is set to None before the start of calibration.
 
 ## Joint 0 (z axis of the arm base link)

@@ -1,5 +1,7 @@
 """
-A timed base path, and the turn-drive-turn "steer" the RRT uses as its local planner. Pure math, safe on any thread.
+A timed base path, and the turn-drive-turn "steer" the RRT uses as its local planner.
+
+Pure math, safe on any thread.
 """
 
 from __future__ import annotations

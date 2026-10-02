@@ -9,8 +9,8 @@ import pytest
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 DESIGN_IO = PACKAGE_ROOT / "husky_assembly_teleop" / "design_io"
-#: Modules that need compas; they are not part of the core that must run on 3.9 alone.
-WITH_COMPAS = ("compas_fab", "legacy")
+#: Modules that need compas (conversion through legacy); not part of the core that must run on 3.9 alone.
+WITH_COMPAS = ("compas_fab", "legacy", "conversion")
 
 
 def test_syntax_is_python_39():

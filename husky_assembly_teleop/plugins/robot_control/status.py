@@ -1,6 +1,4 @@
-"""
-The CTRL section that switches controllers, and the status readouts of bases, arms and tools.
-"""
+"""The CTRL section that switches controllers, and the status readouts of bases, arms and tools."""
 
 from __future__ import annotations
 
@@ -19,8 +17,8 @@ from ...robot_interface.controller_manager import ControllerManagerInterface
 from ...robot_interface.stream_stats import WINDOW, StreamQuality
 from ...robot_interface.end_effectors import (RobotiqGripper, RobotiqState, ScaffoldingV1State, ScaffoldingV3,
                                               ScaffoldingV3State)
-from ...ui.style import (BUSY, FAIL, INFO, NONE, OK, SECTION_CTRL, block, check_chip, chip, freshness_chip, note, numbers,
-                         section, values)
+from ...ui.style import (BUSY, FAIL, INFO, NONE, OK, SECTION_CTRL, block, check_chip, chip, freshness_chip, note,
+                         numbers, section, values)
 from ...world.checks import STALE_AFTER
 from ...world.mocap import MARKER_ERROR_WARN, MocapBody, mocap_check
 

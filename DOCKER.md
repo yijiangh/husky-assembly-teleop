@@ -1,5 +1,7 @@
 # Docker Setup for Husky Assembly Teleop
 
+> ❓ **Unknown state.** Last changed 2026-04 (Yijiang), before the monitor rewrite; not tested with the new monitor. Is anyone still using it? It installs tracikpy and an X server for PyBullet, publishes viser's port 8080 only with host networking, and sets `ROS_DOMAIN_ID=0` without Zenoh (the robots run Zenoh on domain 80). Applies to `Dockerfile`, `Dockerfile.dev`, `docker-compose.yml`, `docker/` and `.devcontainer/`.
+
 This guide explains how to run the husky-assembly-teleop ROS2 node in a Docker container on any machine (Windows, Linux, or Mac).
 
 ## Prerequisites

@@ -1,18 +1,6 @@
-import os
-from glob import glob
 from setuptools import find_packages, setup
 
 package_name = 'husky_assembly_teleop'
-
-def strip_first_dir(path):
-    first_sep = path.strip('/').find('/')
-    if first_sep < 0:
-        return ''
-    else:
-        return path[first_sep+1:]
-
-def copy_dir(dst, src):
-    return [(os.path.join(dst, strip_first_dir(dirpath)), [os.path.join(dirpath, f) for f in files]) for (dirpath, dirnames, files) in os.walk(src)]
 
 setup(
     name=package_name,
@@ -22,16 +10,15 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
-        #('share/' + package_name + '/data',  glob(os.path.join('data', '**', '*.*'), recursive=True)),
-        #('share/' + package_name + '/data',  [f for f in copy_dir('data', '')]),
-    ], #copy_dir('share/' + package_name + '/data', 'data'),
+    ],
     install_requires=[
         'setuptools',
         # Shared BarAssemblyAction / Movement schema; pinned to a git SHA so
         # the interchange format is reproducible across the three consumer
         # repos (husky-assembly-teleop, husky_assembly_tamp,
         # bar_joint_rhino_design_workflow).
-        'rs_data_structure @ git+https://github.com/yijiangh/rs_data_structure.git@36564dc494ecb48fa61c0fa31c894747e1274000',
+        'rs_data_structure @ git+https://github.com/yijiangh/rs_data_structure.git'
+        '@36564dc494ecb48fa61c0fa31c894747e1274000',
     ],
     zip_safe=True,
     maintainer='Jakob Genhart',
@@ -42,13 +29,6 @@ setup(
     entry_points={
         'console_scripts': [
             'husky_monitor = husky_assembly_teleop.monitor:main',
-            'optitrack_python_sample = husky_assembly_teleop.optitrack.PythonSample:main',
-            'test_mocap = husky_assembly_teleop.optitrack.test_mocap:main',
-            # ! Dead until ported: these point at modules that now live under
-            # old/. Repoint them at their replacements, or drop them.
-            # 'test_setio = husky_assembly_teleop.test_setio:main',
-            # 'mocap_experiment_analyze = husky_assembly_teleop.mocap_experiment:main_analyze',
-            # 'mocap_experiment_report = husky_assembly_teleop.mocap_experiment:main_report',
         ],
     },
 )

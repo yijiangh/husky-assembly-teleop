@@ -1,3 +1,5 @@
+# ! Old monitor only: imports husky_monitor, husky_world, cfab_session (now in old/), so it does not run here.
+#   Port as the `collision_diagnosis` plugin (doc/plugin_roadmap.md).
 """Stand-alone trajectory inspector for a saved BarAction movement.
 
 Loads a BarAction, snaps the selected movement (default M0), reads its saved

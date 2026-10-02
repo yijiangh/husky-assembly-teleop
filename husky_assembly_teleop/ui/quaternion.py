@@ -1,6 +1,7 @@
 """
-Quaternion order at the viser boundary: everything else (ROS, PyBullet, RobotState,
-scene poses) is (x, y, z, w); viser alone wants (w, x, y, z).
+Quaternion order at the viser boundary: viser alone wants (w, x, y, z).
+
+Everything else (ROS, PyBullet, RobotState, scene poses) is (x, y, z, w).
 
 ! A leaf module, importing nothing of ours, so every ui module can use it.
 """

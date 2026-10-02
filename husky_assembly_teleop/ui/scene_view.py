@@ -1,6 +1,7 @@
 """
-The 3D view of the scene: bodies under /scene/<id> and tracked objects under /tracked/<name>, drawn from
-each tick's snapshot.
+The 3D view of the scene, drawn from each tick's snapshot.
+
+Bodies go under /scene/<id>, tracked objects under /tracked/<name>.
 
 At most `build_budget` meshes are built per tick, so a large cell fills in over a few ticks; moves and
 removes always apply in full, so a body is never shown at an old pose.

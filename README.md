@@ -2,7 +2,7 @@
 
 This is a python package for controlling huskies in the mocap space.
 
-> ⚠️ **Heavy refactor in progress**
+> ⚠️ **Heavy refactor; ✅ ready for peer testing**
 
 # Installation
 ## Clone and update submodules
@@ -10,6 +10,8 @@ Install this library from source by cloning this repo to local and install from 
 ```
 git clone --recursive git@github.com:yijiangh/husky-assembly-teleop.git
 ```
+> ⚠️ The monitor depends on [crl-husky](https://gitlab.inf.ethz.ch/crl/robot-control/crl-husky) (mocap relay, robot configs, `crl_husky_msgs`), cloned next to this repo as `src/crl-husky`. **Whenever you pull this repo, pull and rebuild crl-husky too**: the two change together.
+
 The `--recursive` flag when cloning above is used for initializing all the git submodules. You can learn more about submodules [here](https://github.com/CGAL/cgal-swig-bindings/wiki/Installation).
 
 Later in the development, whenever you need to update the submodules, issue the following:
@@ -19,14 +21,11 @@ git submodule update --init --recursive
 
 ### Updating Submodules
 
-**Using Cursor's Built-in GitHub Plugin:**
-When using Cursor's built-in GitHub plugin, pulling changes will automatically update submodules recursively. The plugin handles submodule updates automatically during pull operations. (I think this is true? Please try!)
-
-**Using Git Command Line:**
-When using git command line, `git pull` will only update the main repository. To update all submodules recursively, you need to run:
+`git pull` will only update the main repository. To update all submodules recursively, you need to run:
 ```bash
 git pull
 git submodule update --init --recursive
+git -C ../crl-husky pull
 ```
 
 Alternatively, you can configure git to automatically update submodules during pulls:
@@ -62,7 +61,7 @@ python3 -m pip install -e src/husky-assembly-teleop/external/rs_data_structure
 python3 -m pip install -e src/husky-assembly-teleop/external/husky_assembly_tamp
 
 # The monitor's dependencies (versions as in requirements.txt)
-python3 -m pip install "viser==1.1.1" "yourdfpy==0.0.60" "trimesh>=4.0" "async-timeout>=4.0" "compas_robots>=0.6" \
+python3 -m pip install "viser==1.1.1" "yourdfpy==0.0.60" "trimesh==4.12.2" "async-timeout>=4.0" "compas_robots>=0.6" \
     "scipy>=1.8" "pybullet>=3.2" "compas>=2.0"
 ```
 
@@ -123,7 +122,9 @@ If you ran into issues related to `setuptools`, try the following **inside** the
 ## Mocap Connection Setup
 Read the [Mocap wiki](https://gitlab.inf.ethz.ch/crl/crl-wiki/-/wikis/HW/OptiTrack) for more information on how to create a rigid body in Motive and how to set the IP address of the OptiTrack server.
 
-## Tracikpy (Linux-only)
+## Tracikpy (Linux-only, potentially obsolete)
+> ⚠️ Only the old monitor (`old/`) uses tracikpy, and the dependencies in the last block of `requirements.txt`. The new monitor runs without them; they stay until the remaining features are ported.
+
 Tracikpy is a minimal yet reliable and fast inverse kinematics solver that simply takes a URDF and a target pose and returns a solution.
 However, it only works on Linux and is very hard to configure on a Windows machine. Thus, atm we couldn't use it for the Grasshopper/Rhino design interface.
 
@@ -152,6 +153,18 @@ The monitor is a small core that ticks and owns the shared state; every feature 
 | `ui/` | The viser web UI and shared widgets. |
 | `design_io/` | Reading and writing design folders (`doc/design_format.md`). |
 | `old/` | The old monitor, for reference only. |
+
+## Documentation
+
+| Doc | What it covers |
+|---|---|
+| `AGENTS.md` | Conventions, build and test commands; for coding agents and people alike. |
+| `doc/refactor_rationale.md` | Why the core is built the way it is. |
+| `doc/plugin_roadmap.md` | Which plugins exist, and which old features are still to be ported. |
+| `doc/scene_refactor_plan.md`, `doc/design_format.md`, `doc/ur_frames.md` | The scene, the design file format, the UR arm frames. |
+| `tasks/` | Specs written while building a feature. |
+| `doc/calibration_manual.md` and the other manuals | **Outdated**, written for the old monitor; each says at the top what is missing or different now. |
+| `DOCKER.md` | **Unknown state**, not tested with the new monitor. |
 
 > 🚧 A fuller overview (how the monitor fits with crl-husky, the planners and the Rhino design workflow) is still to be written.
 
@@ -286,7 +299,7 @@ To return to the new monitor, check out its branch, update the submodules and re
    ```
 2. Install the new dependencies: the ROS packages and Python packages in [One-time setup](#one-time-setup). New compared with the old monitor: `viser`, `yourdfpy`, `trimesh`, `async-timeout`, `compas_robots`, and the Zenoh packages.
 3. Switch to Zenoh: set `export RMW_IMPLEMENTATION=rmw_zenoh_cpp ROS_DOMAIN_ID=80` in `~/.bashrc`, replacing any per-robot `ROS_DOMAIN_ID`, and set up the router as described in crl-husky's README ([Zenoh](../crl-husky/README.md#zenoh)).
-4. Build with the venv's Python, as in [Build and run](#build-and-run).
+4. Build both packages with the venv's Python, as in [Build and run](#build-and-run): `python3 -m colcon build --symlink-install --packages-up-to husky_assembly_teleop` also builds crl-husky.
 5. Verify: `ros2 topic list | grep a200` lists the robots' topics.
 
 ## Mocap rigid bodies

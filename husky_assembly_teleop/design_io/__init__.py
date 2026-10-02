@@ -1,6 +1,7 @@
 """
-design_io: read, write and validate design folders (doc/design_format.md), and convert them to
-and from compas_fab (`design_io.compas_fab`, imported on its own so compas stays optional).
+Read, write and validate design folders (doc/design_format.md), and convert them to and from compas_fab.
+
+`design_io.compas_fab` is imported on its own, so compas stays optional.
 
 ! Imports nothing from `husky_assembly_teleop` outside this package: it moves to its own
   repository later. Runs on Python 3.9 (Rhino 8).

@@ -12,12 +12,23 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""ament pep257 check of our docstrings (Google style): the package without old/, test/ and scripts/."""
+
+from pathlib import Path
+
 from ament_pep257.main import main
 import pytest
+
+
+#: Our code: the package without the old monitor, plus tests and scripts. external/ and data/ are not ours.
+ROOT = Path(__file__).resolve().parents[1]
+PATHS = [str(ROOT / d) for d in ("husky_assembly_teleop", "test", "scripts")]
+EXCLUDE = [str(ROOT / "husky_assembly_teleop" / "old")]
 
 
 @pytest.mark.linter
 @pytest.mark.pep257
 def test_pep257():
-    rc = main(argv=['.', 'test'])
+    """No docstring findings for Google style; the summary may start on either line (D212 off)."""
+    rc = main(argv=['--convention', 'google', '--add-ignore', 'D212', '--exclude', *EXCLUDE, '--', *PATHS])
     assert rc == 0, 'Found code style errors / warnings'

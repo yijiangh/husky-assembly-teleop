@@ -1,5 +1,7 @@
 """
-Small example plugins, one idea each. Read them in order:
+Small example plugins, one idea each.
+
+Read them in order:
 
   ui.py              example_ui           widgets, buttons, intents
   robot_state.py     example_robot_state  reading configuration and measured state

@@ -18,7 +18,7 @@ def _set_writer(path: Path, **changes) -> None:
 
 @pytest.mark.parametrize("name", ["design.json", "actions/B2_H_hold.json"])
 def test_other_schema_names_commit(tmp_path: Path, name: str):
-    """schema 999 in any file raises SchemaMismatch naming that file's commit."""
+    """Schema 999 in any file raises SchemaMismatch naming that file's commit."""
     write(build_design(tmp_path), tmp_path / "out")
     _set_writer(tmp_path / "out" / name, schema=999, commit="deadbeef1234")
     with pytest.raises(SchemaMismatch, match="deadbeef1234") as error:

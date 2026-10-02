@@ -13,6 +13,7 @@ Names are mapped to design ids before comparing (`bar_B1`, `env_bar_B1` -> `bars
 `obstacle_ground`, design `ground/*`) are compared on their own. Each difference kind is listed with its count
 and examples, and marked as explained (KNOWN) or not.
 ! Loads seven cells of ~350 MB: ~4 GB of memory and ~5 minutes, a third of it PyBullet collision checks.
+! The `old` loader imports husky_assembly_teleop/old: drop it from this script when old/ is deleted.
 """
 
 from __future__ import annotations
@@ -129,6 +130,7 @@ class Report:
     """Categories per loader pair."""
 
     def __init__(self):
+        """Start with no categories and no notes."""
         self.pairs: Dict[str, Dict[str, Category]] = defaultdict(dict)
         self.notes: List[str] = []
 
@@ -750,9 +752,8 @@ def compare_body_state(category: Category, a: Loaded, b: Loaded, robot: str, x, 
                        mirrored: Tuple[set, set] = (set(), set())) -> List[Tuple[str, str]]:
     """Problems between two states of one body.
 
-    Args:
-        mirrored: Per loader, the bodies listing this one in their `touch_bodies`; a `touch_bodies` difference
-            that this closes is reported as "mirrored".
+    `mirrored`: per loader, the bodies listing this one in their `touch_bodies`; a `touch_bodies` difference
+    that this closes is reported as "mirrored".
     """
     if x.is_hidden != y.is_hidden:
         return [("body state: hidden differs", f"{x.is_hidden} vs {y.is_hidden}")]

@@ -1,6 +1,6 @@
 # 2026-10-01 `design_io`: first version of the design library
 
-Status: **M1–M5 implemented** (M5 without the scene bodies, see §6). Format: `doc/design_format.md` (schema 1).
+Status: **M1–M5b implemented** (M5b: standing bodies only; held bodies and robots are still overlay-only, see §6). Format: `doc/design_format.md` (schema 1).
 
 ## 1. Goal
 
@@ -36,6 +36,8 @@ husky_assembly_teleop/design_io/
 ├── validate.py      validate(design) -> None; raises DesignError with every problem found
 ├── robot_files.py   URDF/SRDF reading (xml only) and copying into a design
 ├── carry.py         assumed_joints(design, action_id, movement_id) -> (joints, source)
+├── conversion.py    old export -> `<export>_design` on load, reused while up to date
+├── timing.py        Stopwatch for load timings
 ├── compas_fab.py    to_robot_cell, to_cell_state, planning_group, compas_link_pose;
 │                    helpers shared with world/mirrors/compas_fab.py
 └── legacy.py        read_legacy(folder, robot_files, serials) -> Design   (current compas_fab export)
@@ -171,7 +173,7 @@ class Design:
 | M3 | `legacy.py`, `from_compas_fab`, `scripts/convert_design.py`. | `260814_RobArch_support_ik` converts: 3 robots, 48 actions, 224 movements, one id per body, no parked robots, ground in metres. |
 | M4 | `to_robot_cell`, `to_cell_state`; `world/mirrors/compas_fab.py` uses the shared helpers. | Round trip on the 260814 export (§7, T5) passes for all 224 movements. |
 | M5 | `cell` plugin reads schema 1 through `design_io`; `carry.py` replaces `design.carry_forward`; the base and arm planners read the step's `design_io` values; tool mismatch warning (§10). Drawing and stepping use only the `Design` (robot URDFs via yourdfpy, tools at their flanges, bodies from their shapes); compas_fab cells and states are built only in planners' mirrors. | The plugin shows the converted design as it showed the legacy one. |
-| M5b | Design bodies into `ctx.scene` (scene plan phase 4), so live planners collide with the built structure. | Split from M5: it changes what live planners see, and attachments there follow the measured robot. |
+| M5b | Design bodies into `ctx.scene` (scene plan phase 4), so live planners collide with the built structure. | Done for standing bodies (`cell/design.obstacles`, `test_cell_obstacles`): every body as `cell/<id>`, enabled where present, not held and not a placeholder; contacts with robots and tools dropped. Open: held bodies as scene attachments that follow the measured robot. |
 | M6 | Extraction to its own repository; monitor uses it as a submodule under `external/`. | C1 test green before the move; monitor tests green after. |
 
 Not in version 1: `solutions/` files, GLB writing, changes to the Rhino exporter.

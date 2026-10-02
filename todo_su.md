@@ -1,5 +1,7 @@
 # For Su
 
+> Personal to-do list (Su), not project tasks. Written against the old monitor (`husky_assembly_teleop/old/`); the open items there have not been checked against the new one.
+
 # Bar holding accuracy test
 
 ToDo:

@@ -1,3 +1,5 @@
+# ! Old monitor only: imports husky_monitor, utils, husky_robot (now in old/), so it does not run here.
+#   Port as a headless test of the `bar_action` plugin (doc/plugin_roadmap.md).
 """Headless full-sequence test for the BarAction (cfab) planning path.
 
 Mirrors the BAR_ACTION_LIVE_REPLAN_EXE UI button sequence in HuskyMonitor:

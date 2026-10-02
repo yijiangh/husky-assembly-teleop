@@ -1,5 +1,9 @@
 # Bar-holding accuracy data processing
 
+> ⚠️ **Outdated: written for the old monitor (`husky_assembly_teleop/old/`, runnable on `master`, see README "Running the old monitor").**
+> - Recording a take: **missing** in the new monitor (`mocap_accuracy` plugin, `doc/plugin_roadmap.md`).
+> - `0_` / `1_` processing scripts in `data/bar_holding_acc_data/`: import `husky_assembly_teleop.mocap_experiment`, `.cfab_session`, `.utils`, which now live in `old/`, so they do not run as they are.
+
 Two scripts turn raw mocap marker takes (recorded while the robot holds a bar
 at a movement's start state) into accuracy numbers:
 

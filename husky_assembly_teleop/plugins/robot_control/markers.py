@@ -1,6 +1,4 @@
-"""
-The 3D markers drawn while an arm's Cartesian controller runs: target and TCP frames, and force arrows.
-"""
+"""The 3D markers drawn while an arm's Cartesian controller runs: target and TCP frames, and force arrows."""
 
 from __future__ import annotations
 

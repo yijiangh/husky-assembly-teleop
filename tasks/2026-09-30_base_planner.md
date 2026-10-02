@@ -1,5 +1,11 @@
 # 2026-09-30 base_planner plugin
 
+> **Status 2026-10-02**, where the code has moved on from this spec (current state in `doc/plugin_roadmap.md`):
+> - The panel flow (plan, preview, stale, commit) moved into `plugins/planning/panel.PlannerPlugin`, shared with `arm_planner`; it requires `cell`. RRT-Connect is `plugins/planning/search.connect`.
+> - Obstacles: `base_planner` no longer requires `obstacles` or copies its boxes. It plans around everything in the scene snapshot (other robots, `obstacles`, later the design's bodies).
+> - `obstacles.BOXES` are the measured lab furniture (2026-09-30), plus `CYLINDERS` for tripods. That TODO is done.
+> - `plan_straight_line` is gone.
+
 Run: `-p plugins:="['base_planner']"` (pulls in `cell`).
 
 ## What

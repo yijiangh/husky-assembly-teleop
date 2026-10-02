@@ -1,6 +1,4 @@
-"""
-A timed path: states (a base pose, arm joints, ...) and when each is reached. Pure math, safe on any thread.
-"""
+"""A timed path: states (a base pose, arm joints, ...) and when each is reached. Pure math, safe on any thread."""
 
 from __future__ import annotations
 

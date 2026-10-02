@@ -1,6 +1,8 @@
 """
-A design (doc/design_format.md) as the cell plugin steps through it: every movement as a step, and the joints
-to draw each robot at. A movement without authored start joints is drawn where its robot last was.
+A design (doc/design_format.md) as the cell plugin steps through it.
+
+Every movement is a step, with the joints to draw each robot at. A movement without authored start joints is
+drawn where its robot last was.
 `obstacles` turns a state's bodies into scene bodies: the core draws them, and planners avoid them.
 
 ! Runs on a worker thread: nothing here may touch viser, PyBullet or a PluginContext.
