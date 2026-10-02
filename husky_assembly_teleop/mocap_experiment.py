@@ -1427,6 +1427,208 @@ def _reroot_gdrive_path(path):
     return path
 
 
+def read_mocap_cameras_3dm(path, layer_name='Mocap::mocap_cameras'):
+    """Mocap camera positions, view cones and labels from a Rhino ``.3dm`` layer.
+
+    Motive's camera layout is drawn into the model as one point per camera, a
+    few lines showing where each one looks, and a text dot naming it. Each line
+    is attached to the camera whose point it starts from, which is what gives
+    the cone its orientation.
+
+    Args:
+        path (str): The ``.3dm`` file to read.
+        layer_name (str): Full layer path, matched without regard to case.
+
+    Each camera is drawn as three short lines forming its own set of axes, plus
+    one longer line. The three short ones are read as the camera's orientation.
+
+    ! The layer holds each camera drawn several times over (the Rhino importer
+    ! having been run more than once), so cameras are de-duplicated by position
+    ! -- otherwise one camera's lines get handed to its own copies.
+
+    ! The line of sight is the SECOND axis (the green one the Rhino importer
+    ! draws for Y), not the long grey line. doc/visualization_manual.md section
+    ! 2.4 says that long line is the look axis, along the camera's local -Z --
+    ! that is wrong for this data, and measurably so: over all eleven cameras
+    ! the green Y axis sits a median of 11.9 degrees off the direction to the
+    ! mocap origin (3.7-20.5), while the grey line sits at 88.3 degrees, i.e.
+    ! square to where the camera is actually pointing. Most likely the importer
+    ! draws -Z after the y-up to z-up conversion has already rotated the body
+    ! frame. The axes are identified here by file order, which the object
+    ! colours confirm is X, Y, Z.
+
+    Returns:
+        list: ``[{'name': str, 'position': [x,y,z], 'direction': [x,y,z],
+        'right': [x,y,z], 'up': [x,y,z]}]`` in metres, one per camera.
+        ``direction`` is a unit vector along the camera's line of sight. Empty
+        when the layer or the file is missing.
+    """
+    key = (os.path.abspath(path), 'cameras:' + layer_name.lower())
+    if key in _env_3dm_cache:
+        return _env_3dm_cache[key]
+    cameras = []
+    try:
+        import rhino3dm as r3
+    except Exception:
+        print("  [mocap] rhino3dm not installed; camera layer skipped")
+        _env_3dm_cache[key] = cameras
+        return cameras
+    model = None
+    for _ in range(3):                # Insync may touch the file mid-read
+        model = r3.File3dm.Read(path)
+        if model is not None:
+            break
+    layer_idx = {l.Index for l in (model.Layers if model else [])
+                 if l.FullPath.lower() == layer_name.lower()}
+    if model is None or not layer_idx:
+        print(f"  [mocap] layer {layer_name!r} not found in "
+              f"{os.path.basename(path)}")
+        _env_3dm_cache[key] = cameras
+        return cameras
+
+    scale = 0.001                     # mm -> m
+    points, segments, labels = [], [], []
+    for o in model.Objects:
+        if o.Attributes.LayerIndex not in layer_idx:
+            continue
+        g = o.Geometry
+        kind = type(g).__name__
+        if kind == 'Point':
+            points.append(_xyz(g.Location, scale))
+        elif kind == 'LineCurve':
+            segments.append([_xyz(g.PointAtStart, scale), _xyz(g.PointAtEnd, scale)])
+        elif kind == 'TextDot':
+            labels.append((g.Text, _xyz(g.Point, scale)))
+
+    # * One camera per distinct position. Rounding to a tenth of a millimetre is
+    # * what collapses the repeated copies onto each other.
+    at = {}
+    for p in points:
+        at.setdefault(tuple(round(v, 4) for v in p), p)
+    for text, where in labels:
+        at.setdefault(tuple(round(v, 4) for v in where), where)
+
+    # * Every line is drawn FROM its camera, so group by the starting point and
+    # * keep the three short ones -- the camera's own axes. Identical copies are
+    # * dropped on the way in.
+    AXIS_MAX_M = 0.3
+    axes = {spot: [] for spot in at}
+    for a, b in segments:
+        spot = tuple(round(v, 4) for v in a)
+        length = _distance(a, b)
+        if spot not in at or length > AXIS_MAX_M or length <= 0:
+            continue
+        unit = [(b[i] - a[i]) / length for i in range(3)]
+        if not any(_distance(unit, seen) < 1e-6 for seen in axes[spot]):
+            axes[spot].append(unit)
+
+    named = {tuple(round(v, 4) for v in where): text for text, where in labels}
+
+    cameras = []
+    for spot, origin in at.items():
+        triad = axes[spot]
+        if len(triad) != 3:
+            continue
+        cameras.append({
+            'name': named.get(spot, ''),
+            'position': list(origin),
+            'right': triad[0],
+            'direction': triad[1],       # ? the line of sight -- see above
+            'up': triad[2],
+        })
+    dropped = len(at) - len(cameras)
+    print(f"  [mocap] {len(cameras)} cameras on layer {layer_name!r}"
+          + (f" ({dropped} without a full set of axes, skipped)" if dropped else ""))
+
+    _env_3dm_cache[key] = cameras
+    return cameras
+
+
+def _xyz(point, scale):
+    """A rhino3dm point as a plain scaled ``[x, y, z]`` list.
+
+    Args:
+        point: Any rhino3dm object with X/Y/Z members.
+        scale (float): Multiplier, normally 0.001 for mm to metres.
+
+    Returns:
+        list: Three floats.
+    """
+    return [point.X * scale, point.Y * scale, point.Z * scale]
+
+
+def _distance(a, b):
+    """Straight-line distance between two ``[x, y, z]`` points.
+
+    Args:
+        a (list): First point.
+        b (list): Second point.
+
+    Returns:
+        float: The distance, in whatever units the points use.
+    """
+    return math.dist(a, b)
+
+
+def latest_batch_folder(default=None):
+    """Name of the newest bar-holding session folder that holds takes.
+
+    Used as the default ``batch`` argument so the scripts land on the session
+    just recorded instead of a date hard-coded months ago.
+
+    Args:
+        default (str): Returned when no session folder can be found.
+
+    Returns:
+        str: A folder name such as ``'20261001'``, or ``default``.
+    """
+    from husky_assembly_teleop import EXPERIMENT_DATA_DIRECTORY
+    root = os.path.join(EXPERIMENT_DATA_DIRECTORY, 'bar_holding_acc_data')
+    if not os.path.isdir(root):
+        return default
+    sessions = []
+    for name in os.listdir(root):
+        # * A session folder is a bare date; '<date>-servoing', '-archive' and
+        # * '-viz' are its companions, not sessions of their own.
+        if not name.isdigit() or not os.path.isdir(os.path.join(root, name)):
+            continue
+        if any(f.startswith('bar_holding_acc_') and f.endswith('.json')
+               for f in os.listdir(os.path.join(root, name))):
+            sessions.append(name)
+    return max(sessions) if sessions else default
+
+
+def env_3dm_for_bar_action(bar_action_path, override=None):
+    """The Rhino file whose ``env`` layer describes this session's cell.
+
+    The design problem's name is in the BarAction path a take stamped, and its
+    Rhino file sits beside the other design files under the same name. Deriving
+    it keeps the scripts working after a re-export, where ``DEFAULT_ENV_3DM``
+    would be pointing at last season's file.
+
+    Args:
+        bar_action_path (str): Any take's stamped ``bar_action_path``.
+        override (str): An explicit path from the command line, which wins.
+
+    Returns:
+        str: The chosen ``.3dm``, or None when neither it nor the fallback is
+        on disk.
+    """
+    from husky_assembly_teleop import DEFAULT_ENV_3DM
+    if override:
+        return override
+    if bar_action_path:
+        # <...>/<problem>/BarActions/B1__R.json  ->  <problem>
+        problem = os.path.basename(os.path.dirname(os.path.dirname(
+            _reroot_gdrive_path(bar_action_path))))
+        candidate = os.path.join(os.path.dirname(DESIGN_DATA_DIRECTORY),
+                                 'assembly - demo', problem + '.3dm')
+        if os.path.exists(candidate):
+            return candidate
+    # ! DEFAULT_ENV_3DM names a file that may well not exist any more.
+    return DEFAULT_ENV_3DM if os.path.exists(DEFAULT_ENV_3DM) else None
+
+
 def problem_dir_from_bar_action_path(bar_action_path):
     """``<...>/<problem>/BarActions/x.json`` -> ``<...>/<problem>``.
 
@@ -1588,14 +1790,61 @@ def _walkable_ground_polygons(problem_dir):
 
 _env_3dm_cache = {}
 
+def _meshes_of_3dm_solid(geometry, r3):
+    """The drawable meshes of one Rhino solid, however it was drawn.
+
+    Rhino stores a solid in whichever form it was made: a plain mesh already has
+    vertices and faces, an extrusion builds one on demand, and a polysurface
+    (``Brep``) only meshes one face at a time, so it comes back as several.
+
+    Args:
+        geometry: A rhino3dm geometry object.
+        r3 (module): The imported ``rhino3dm`` module.
+
+    Returns:
+        list: Zero or more rhino3dm ``Mesh`` objects. Empty for anything that
+        is not a solid, or that Rhino declines to mesh.
+    """
+    kind = type(geometry).__name__
+    if kind == 'Mesh':
+        return [geometry]
+    if kind == 'Extrusion':
+        mesh = geometry.GetMesh(r3.MeshType.Default)
+        return [mesh] if mesh else []
+    if kind == 'Brep':
+        # ! A Brep has no GetMesh of its own -- only its faces do.
+        faces = [geometry.Faces[i].GetMesh(r3.MeshType.Default)
+                 for i in range(len(geometry.Faces))]
+        return [m for m in faces if m]
+    # ? SubD carries no meshing method in rhino3dm, so it cannot be drawn here.
+    return []
+
+
+# * Rhino types we can draw if -- and only if -- the file carries their mesh.
+_SOLID_3DM_TYPES = ('Mesh', 'Extrusion', 'Brep', 'SubD')
+
 
 def read_env_obstacles_3dm(path, layer_name='Environment Obstacles'):
-    """Obstacle meshes from a Rhino ``.3dm`` layer as metre-scaled dicts:
+    """Obstacle solids from a Rhino ``.3dm`` layer as metre-scaled dicts:
     ``[{'verts': [[x,y,z],...], 'faces': [[i,j,k(,l)],...]}, ...]``.
 
-    Returns ``[]`` (with a printed note) if rhino3dm is missing, the file can't
-    be read, or the layer is absent. Cached per (path, layer). Rhino model units
-    here are millimetres → converted to metres.
+    Reads every solid on the layer, whichever way it was drawn in Rhino: a mesh
+    is used as it is, while an extrusion, a polysurface (``Brep``) or a SubD is
+    asked for its mesh first. Curves, hatches and text are not geometry we can
+    draw, so they are skipped -- on a floor-plan layer they are the majority of
+    the objects and none of the environment.
+
+    Args:
+        path (str): The ``.3dm`` file to read.
+        layer_name (str): Layer to read, matched without regard to case. Only
+            that exact layer, not its sublayers.
+
+    Returns:
+        list: One dict per solid. Empty (with a printed note) if rhino3dm is
+        missing, the file can't be read, or the layer is absent.
+
+    Cached per (path, layer). Rhino model units here are millimetres →
+    converted to metres.
     """
     key = (os.path.abspath(path), layer_name.lower())
     if key in _env_3dm_cache:
@@ -1622,20 +1871,34 @@ def read_env_obstacles_3dm(path, layer_name='Environment Obstacles'):
         print(f"  [layout] layer {layer_name!r} not found in {os.path.basename(path)}")
         _env_3dm_cache[key] = obstacles
         return obstacles
+    skipped = 0
     for o in model.Objects:
         if o.Attributes.LayerIndex not in layer_idx:
             continue
-        g = o.Geometry
-        if type(g).__name__ != 'Mesh':
-            continue
-        verts = [[g.Vertices[i].X * scale, g.Vertices[i].Y * scale,
-                  g.Vertices[i].Z * scale] for i in range(len(g.Vertices))]
-        faces = []
-        for i in range(len(g.Faces)):
-            f = tuple(g.Faces[i])                       # (a,b,c,d); tri if c==d
-            faces.append([f[0], f[1], f[2]] if f[2] == f[3]
-                         else [f[0], f[1], f[2], f[3]])
-        obstacles.append({'verts': verts, 'faces': faces})
+        meshes = _meshes_of_3dm_solid(o.Geometry, r3)
+        # ! A solid with no mesh is worth counting, not worth failing on.
+        # ! Curves, hatches and text are not solids and are not counted.
+        if not meshes and type(o.Geometry).__name__ in _SOLID_3DM_TYPES:
+            skipped += 1
+        for mesh in meshes:
+            verts = [[mesh.Vertices[i].X * scale, mesh.Vertices[i].Y * scale,
+                      mesh.Vertices[i].Z * scale]
+                     for i in range(len(mesh.Vertices))]
+            faces = []
+            for i in range(len(mesh.Faces)):
+                f = tuple(mesh.Faces[i])                # (a,b,c,d); tri if c==d
+                faces.append([f[0], f[1], f[2]] if f[2] == f[3]
+                             else [f[0], f[1], f[2], f[3]])
+            obstacles.append({'verts': verts, 'faces': faces})
+    if skipped:
+        # ! rhino3dm can only read a mesh Rhino already saved -- it has no
+        # ! mesher of its own, so there is nothing the code can do here. Say
+        # ! plainly what to do about it instead of drawing a thin scene.
+        print(f"  [layout] {skipped} of {skipped + len(obstacles)} solid(s) on "
+              f"layer {layer_name!r} carry no saved mesh and are not drawn.\n"
+              f"           To include them: open "
+              f"{os.path.basename(path)} in Rhino, set the viewport to Shaded "
+              f"so the meshes are built, and save.")
     _env_3dm_cache[key] = obstacles
     return obstacles
 

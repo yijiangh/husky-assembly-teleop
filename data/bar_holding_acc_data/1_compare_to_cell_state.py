@@ -14,16 +14,23 @@ import os
 import sys
 import argparse
 
+# ! Running this file directly puts only its OWN folder on the import path, not
+# ! the repo, so the package import below fails with ModuleNotFoundError even
+# ! when you are sitting in the repo root. Put the repo root on the path first.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__)))))
+
 import numpy as np
 import matplotlib.pyplot as plt
 import pybullet_planning as pp
 
 from husky_assembly_teleop import (
-    DESIGN_DATA_DIRECTORY, DESIGN_PROBLEM_NAME, EXPERIMENT_DATA_DIRECTORY, DEFAULT_ENV_3DM,
+    DESIGN_DATA_DIRECTORY, DESIGN_PROBLEM_NAME, EXPERIMENT_DATA_DIRECTORY,
 )
 from husky_assembly_teleop.utils import pose_from_frame
 from husky_assembly_teleop.bar_action_io import (
     find_movement, load_action_cycle, cycle_roles, slot_of_index,
+    resolve_take_movement,
 )
 from husky_assembly_teleop.mocap_experiment import (
     fit_bar_from_markerset,
@@ -34,6 +41,9 @@ from husky_assembly_teleop.mocap_experiment import (
     draw_marker_take_in_pp,
     enable_scroll_zoom,
     show_scrollable,
+    _reroot_gdrive_path,
+    latest_batch_folder,
+    env_3dm_for_bar_action,
 )
 
 
@@ -161,70 +171,11 @@ def _plot_compare(ax, fit, goal_bar_pose, take_label, dev, marker_pts=None, bar_
     _equal_axes_3d(ax, np.vstack(pts_for_bounds))
 
 
-def _resolve_bar_action_path(path):
-    """Re-root a bar_action_path stamped on another machine onto this one.
-
-    Older takes stamped an absolute path under a different home directory
-    (e.g. ``/home/yijiangh/Insync/.../2025-03 Husky Assembly/...``) since the
-    data now lives on google drive. Anything under the shared
-    '2025-03 Husky Assembly' gdrive folder is re-based onto the copy this
-    machine mounts (derived from ``DESIGN_DATA_DIRECTORY``). Returns the
-    original path when no fix is needed or possible.
-    """
-    if not path or os.path.exists(path):
-        return path
-    marker = '2025-03 Husky Assembly'
-    if marker in path and marker in DESIGN_DATA_DIRECTORY:
-        tail = path.split(marker, 1)[1].lstrip('/\\')
-        current_root = DESIGN_DATA_DIRECTORY.split(marker, 1)[0] + marker
-        candidate = os.path.join(current_root, tail)
-        if os.path.exists(candidate):
-            return candidate
-    return path
-
-
-def _resolve_take_movement(bar_action_path, key):
-    """Find the movement a take was recorded at, over the bar's whole cycle.
-
-    Takes stamp the classic ROLE ('M3'), which the split export does not put in
-    the movement id -- the retreat is ``B6_R_M2_LM_retreat``, so searching the
-    ids for ``_M3_`` lands on ``B6_R_M3_free_home``, which is M4. Loading the
-    cycle also picks up the other half, so a take that named the jointing file
-    for an M3 measurement still resolves.
-
-    Args:
-        bar_action_path (str): The action file the take named.
-        key (int | str): The stamped ``movement_id``, or a legacy index.
-
-    Returns:
-        tuple: ``(index, movement, action, path)`` -- the last two say which
-        file the movement was found in.
-    """
-    slots = load_action_cycle(bar_action_path)
-    movements = [mv for action, _p in slots for mv in action.movements]
-    roles = cycle_roles(slots)
-
-    if isinstance(key, str) and key in roles:
-        idx = roles.index(key)
-    elif isinstance(key, int):
-        idx = key
-    else:
-        # An exact id or a substring: ask each half in turn.
-        idx, offset = None, 0
-        for action, _p in slots:
-            try:
-                local, _mv = find_movement(action, key)
-            except (KeyError, IndexError):
-                offset += len(action.movements)
-                continue
-            idx = offset + local
-            break
-        if idx is None:
-            raise KeyError(f"No movement matches {key!r} in either half of "
-                           f"{os.path.basename(bar_action_path)}.")
-
-    action, path, _local = slot_of_index(slots, idx)
-    return idx, movements[idx], action, path
+# * Both of these now live in the package so the other scripts can call them
+# * too: the path fixer is mocap_experiment._reroot_gdrive_path, and the
+# * role-to-movement lookup is bar_action_io.resolve_take_movement.
+_resolve_bar_action_path = _reroot_gdrive_path
+_resolve_take_movement = resolve_take_movement
 
 
 def _find_bar_action_in_folder(stamped_path):
@@ -493,9 +444,10 @@ def aggregate(rows):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('batch', nargs='?', default='20260706',
-                        help='batch folder name under EXPERIMENT_DATA_DIRECTORY/bar_holding_acc_data/ '
-                             '(default: 20260706)')
+    parser.add_argument('batch', nargs='?', default=None,
+                        help='session folder name under EXPERIMENT_DATA_DIRECTORY/'
+                             'bar_holding_acc_data/, e.g. 20261001 '
+                             '(default: the newest session on disk)')
     parser.add_argument('--bar-action', default=None, help='override stamped bar_action_path (absolute)')
     parser.add_argument('--movement', default=None, help='override movement_id (e.g. M2)')
     parser.add_argument('--export', action='store_true', help='dump compared_<batch>.json')
@@ -515,15 +467,13 @@ def main():
     if args.problem:
         problem_override = (args.problem if os.path.isdir(args.problem)
                             else os.path.join(DESIGN_DATA_DIRECTORY, args.problem))
-    # Fall back to the default phase1 .3dm so the environment draws without the
-    # flag; --env-3dm still overrides. Print a status line so it's never silently blank.
-    env_3dm = args.env_3dm or (DEFAULT_ENV_3DM if os.path.exists(DEFAULT_ENV_3DM) else None)
-    if env_3dm:
-        print(f"[layout] environment from {os.path.basename(env_3dm)}")
-    else:
-        print("[layout] no environment .3dm found; pass --env-3dm <file.3dm> to draw obstacles")
+    batch = args.batch or latest_batch_folder()
+    if not batch:
+        sys.exit("no session folder found; pass one, e.g. 20261001")
+    if not args.batch:
+        print(f"[session] no batch given; using the newest one: {batch}")
 
-    data_folder = os.path.join(EXPERIMENT_DATA_DIRECTORY, 'bar_holding_acc_data', args.batch)
+    data_folder = os.path.join(EXPERIMENT_DATA_DIRECTORY, 'bar_holding_acc_data', batch)
     if not os.path.isdir(data_folder):
         sys.exit(f"data folder not found: {data_folder}")
 
@@ -533,6 +483,17 @@ def main():
     )
     if not files:
         sys.exit(f"no bar_holding_acc_*.json files in {data_folder}")
+
+    # * The environment comes from the design problem this session's takes name,
+    # * so it follows a re-export. --env-3dm still overrides. Print a status line
+    # * so it is never silently blank.
+    with open(files[0], 'r') as handle:
+        env_3dm = env_3dm_for_bar_action(json.load(handle).get('bar_action_path'),
+                                         args.env_3dm)
+    if env_3dm:
+        print(f"[layout] environment from {os.path.basename(env_3dm)}")
+    else:
+        print("[layout] no environment .3dm found; pass --env-3dm <file.3dm> to draw obstacles")
 
     all_rows = []
     all_fits = []

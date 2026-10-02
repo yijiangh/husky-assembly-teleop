@@ -26,10 +26,16 @@ import os
 import sys
 import argparse
 
+# ! Running this file directly puts only its OWN folder on the import path, not
+# ! the repo, so the package import below fails with ModuleNotFoundError even
+# ! when you are sitting in the repo root. Put the repo root on the path first.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__)))))
+
 import numpy as np
 import matplotlib.pyplot as plt
 
-from husky_assembly_teleop import EXPERIMENT_DATA_DIRECTORY, DESIGN_DATA_DIRECTORY, DEFAULT_ENV_3DM
+from husky_assembly_teleop import EXPERIMENT_DATA_DIRECTORY, DESIGN_DATA_DIRECTORY
 from husky_assembly_teleop.mocap_experiment import (
     fit_bar_from_markerset,
     build_layout,
@@ -37,6 +43,8 @@ from husky_assembly_teleop.mocap_experiment import (
     problem_dir_from_bar_action_path,
     enable_scroll_zoom,
     show_scrollable,
+    latest_batch_folder,
+    env_3dm_for_bar_action,
 )
 
 
@@ -122,6 +130,31 @@ def _plot_take(ax, fit, take_label, bar_name=None):
     _equal_axes_3d(ax,
                    np.vstack([pair_centers, tips, ocf,
                               z_a, z_b, fit_a, fit_b]))
+
+
+def _first_bar_action_path(data_folder):
+    """The BarAction path stamped by the first take in a session folder.
+
+    Used to work out which design problem the session belongs to, and from that
+    which Rhino file holds its environment.
+
+    Args:
+        data_folder (str): The session folder.
+
+    Returns:
+        str: The stamped path, or None when the folder holds no readable take.
+    """
+    if not os.path.isdir(data_folder):
+        return None
+    for name in sorted(os.listdir(data_folder)):
+        if not (name.startswith('bar_holding_acc_') and name.endswith('.json')):
+            continue
+        try:
+            with open(os.path.join(data_folder, name), 'r') as handle:
+                return json.load(handle).get('bar_action_path')
+        except Exception:
+            continue
+    return None
 
 
 def process_batch(data_folder, export=True, viewer=False, problem_override=None, env_3dm=None):
@@ -271,9 +304,10 @@ def process_batch(data_folder, export=True, viewer=False, problem_override=None,
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('batch', nargs='?', default='20260706',
-                        help='batch folder name under EXPERIMENT_DATA_DIRECTORY/bar_holding_acc_data/ '
-                             '(default: 20260706)')
+    parser.add_argument('batch', nargs='?', default=None,
+                        help='session folder name under EXPERIMENT_DATA_DIRECTORY/'
+                             'bar_holding_acc_data/, e.g. 20261001 '
+                             '(default: the newest session on disk)')
     parser.add_argument('--no-export', action='store_true')
     parser.add_argument('--viewer', action='store_true')
     parser.add_argument('--problem', default=None,
@@ -289,14 +323,21 @@ if __name__ == '__main__':
         problem_override = (args.problem if os.path.isdir(args.problem)
                             else os.path.join(DESIGN_DATA_DIRECTORY, args.problem))
 
-    # Fall back to the default phase1 .3dm so the environment draws without the
-    # flag; --env-3dm still overrides. Print a status line so it's never silently blank.
-    env_3dm = args.env_3dm or (DEFAULT_ENV_3DM if os.path.exists(DEFAULT_ENV_3DM) else None)
+    batch = args.batch or latest_batch_folder()
+    if not batch:
+        sys.exit("no session folder found; pass one, e.g. 20261001")
+    if not args.batch:
+        print(f"[session] no batch given; using the newest one: {batch}")
+    data_folder = os.path.join(EXPERIMENT_DATA_DIRECTORY, 'bar_holding_acc_data', batch)
+
+    # * The environment comes from the design problem this session's takes name,
+    # * so it follows a re-export. --env-3dm still overrides. Print a status line
+    # * so it is never silently blank.
+    env_3dm = env_3dm_for_bar_action(_first_bar_action_path(data_folder), args.env_3dm)
     if env_3dm:
         print(f"[layout] environment from {os.path.basename(env_3dm)}")
     else:
         print("[layout] no environment .3dm found; pass --env-3dm <file.3dm> to draw obstacles")
 
-    data_folder = os.path.join(EXPERIMENT_DATA_DIRECTORY, 'bar_holding_acc_data', args.batch)
     process_batch(data_folder, export=not args.no_export, viewer=args.viewer,
                   problem_override=problem_override, env_3dm=env_3dm)

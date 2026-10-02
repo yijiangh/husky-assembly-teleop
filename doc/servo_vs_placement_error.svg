@@ -1,0 +1,153 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 760" width="980" height="760"
+     font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif">
+  <defs>
+    <marker id="a" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">
+      <path d="M0,0 L7,3 L0,6 z" fill="#44506a"/>
+    </marker>
+    <marker id="ar" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">
+      <path d="M0,0 L7,3 L0,6 z" fill="#c0392b"/>
+    </marker>
+    <marker id="ag" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">
+      <path d="M0,0 L7,3 L0,6 z" fill="#1a8a3e"/>
+    </marker>
+  </defs>
+
+  <rect width="980" height="760" fill="#ffffff"/>
+  <text x="26" y="34" font-size="19" font-weight="700" fill="#17202e">
+    Why the servo residual is small while the bar is still millimetres off
+  </text>
+  <text x="26" y="56" font-size="13" fill="#6b7686">
+    Two different measurements, taken with two different instruments. Only one of them is the answer.
+  </text>
+
+  <!-- ============ PANEL A : the two measurements ============ -->
+  <rect x="26" y="76" width="455" height="236" rx="8" fill="#f4f8fc" stroke="#cdd9e6"/>
+  <text x="44" y="100" font-size="13" font-weight="700" fill="#1d3f72">A · WHAT THE SERVO LOOP MEASURES</text>
+  <text x="44" y="120" font-size="12" fill="#44506a">“Did I reach the pose I aimed at?”</text>
+
+  <!-- servo chain -->
+  <rect x="44" y="136" width="96" height="34" rx="5" fill="#ffffff" stroke="#8fb4d9"/>
+  <text x="92" y="157" font-size="11.5" text-anchor="middle" fill="#17202e">mocap base pose</text>
+  <line x1="140" y1="153" x2="178" y2="153" stroke="#44506a" stroke-width="1.4" marker-end="url(#a)"/>
+  <rect x="180" y="136" width="96" height="34" rx="5" fill="#ffffff" stroke="#8fb4d9"/>
+  <text x="228" y="157" font-size="11.5" text-anchor="middle" fill="#17202e">joint encoders</text>
+  <line x1="276" y1="153" x2="314" y2="153" stroke="#44506a" stroke-width="1.4" marker-end="url(#a)"/>
+  <rect x="316" y="136" width="124" height="34" rx="5" fill="#ffffff" stroke="#8fb4d9"/>
+  <text x="378" y="152" font-size="11.5" text-anchor="middle" fill="#17202e">flange pose,</text>
+  <text x="378" y="165" font-size="11.5" text-anchor="middle" fill="#17202e">computed by FK</text>
+
+  <text x="44" y="198" font-size="12" fill="#44506a">compared against</text>
+  <rect x="166" y="184" width="200" height="24" rx="5" fill="#ffffff" stroke="#8fb4d9"/>
+  <text x="266" y="201" font-size="11.5" text-anchor="middle" fill="#17202e">the commanded flange pose</text>
+
+  <rect x="44" y="222" width="396" height="68" rx="6" fill="#fff" stroke="#1a8a3e" stroke-width="1.5"/>
+  <text x="58" y="242" font-size="12" font-weight="700" fill="#1a8a3e">servo residual = 0.23 – 1.24 mm</text>
+  <text x="58" y="260" font-size="11.5" fill="#44506a">Both sides of this comparison are produced by the</text>
+  <text x="58" y="275" font-size="11.5" fill="#44506a">
+    <tspan font-weight="700">same model of the robot</tspan>. The loop can always drive it to zero.
+  </text>
+
+  <!-- mocap measurement -->
+  <rect x="501" y="76" width="453" height="236" rx="8" fill="#fdf5f3" stroke="#e8c4bc"/>
+  <text x="519" y="100" font-size="13" font-weight="700" fill="#a93226">B · WHAT THE MOCAP CAMERAS MEASURE</text>
+  <text x="519" y="120" font-size="12" fill="#44506a">“Is the bar where the design says?”</text>
+
+  <rect x="519" y="136" width="110" height="34" rx="5" fill="#ffffff" stroke="#e0a89c"/>
+  <text x="574" y="157" font-size="10.5" text-anchor="middle" fill="#17202e">8 markers on the bar</text>
+  <line x1="629" y1="153" x2="667" y2="153" stroke="#44506a" stroke-width="1.4" marker-end="url(#a)"/>
+  <rect x="669" y="136" width="104" height="34" rx="5" fill="#ffffff" stroke="#e0a89c"/>
+  <text x="721" y="157" font-size="11.5" text-anchor="middle" fill="#17202e">fitted bar axis</text>
+  <line x1="773" y1="153" x2="811" y2="153" stroke="#44506a" stroke-width="1.4" marker-end="url(#a)"/>
+  <rect x="813" y="136" width="124" height="34" rx="5" fill="#ffffff" stroke="#e0a89c"/>
+  <text x="875" y="157" font-size="11.5" text-anchor="middle" fill="#17202e">where the bar is</text>
+
+  <text x="519" y="198" font-size="12" fill="#44506a">compared against</text>
+  <rect x="641" y="184" width="180" height="24" rx="5" fill="#ffffff" stroke="#e0a89c"/>
+  <text x="731" y="201" font-size="11.5" text-anchor="middle" fill="#17202e">the authored bar pose</text>
+
+  <rect x="519" y="222" width="396" height="68" rx="6" fill="#fff" stroke="#c0392b" stroke-width="1.5"/>
+  <text x="533" y="242" font-size="12" font-weight="700" fill="#c0392b">placement error = 1.95 – 5.62 mm</text>
+  <text x="533" y="260" font-size="11.5" fill="#44506a">An <tspan font-weight="700">independent</tspan> instrument that never looks at the</text>
+  <text x="533" y="275" font-size="11.5" fill="#44506a">robot's model. This is the experiment's actual answer.</text>
+
+  <!-- ============ PANEL C : the chain ============ -->
+  <text x="26" y="348" font-size="13" font-weight="700" fill="#17202e">
+    C · THE GAP IS EVERYTHING BETWEEN THE FLANGE AND THE BAR THAT THE LOOP CANNOT SEE
+  </text>
+
+  <!-- chain boxes -->
+  <g font-size="11">
+    <rect x="30" y="368" width="128" height="40" rx="5" fill="#eef4fa" stroke="#8fb4d9"/>
+    <text x="94" y="385" text-anchor="middle" fill="#17202e">mocap body</text>
+    <text x="94" y="399" text-anchor="middle" fill="#17202e">on the robot</text>
+
+    <rect x="214" y="368" width="128" height="40" rx="5" fill="#eef4fa" stroke="#8fb4d9"/>
+    <text x="278" y="385" text-anchor="middle" fill="#17202e">kinematic base</text>
+    <text x="278" y="399" text-anchor="middle" fill="#17202e">(base_footprint)</text>
+
+    <rect x="398" y="368" width="128" height="40" rx="5" fill="#eef4fa" stroke="#8fb4d9"/>
+    <text x="462" y="391" text-anchor="middle" fill="#17202e">flange (tool0)</text>
+
+    <rect x="582" y="368" width="128" height="40" rx="5" fill="#eef4fa" stroke="#8fb4d9"/>
+    <text x="646" y="391" text-anchor="middle" fill="#17202e">the grippers</text>
+
+    <rect x="766" y="368" width="150" height="40" rx="5" fill="#fdecea" stroke="#c0392b"/>
+    <text x="841" y="385" text-anchor="middle" font-weight="700" fill="#17202e">the bar itself</text>
+    <text x="841" y="399" text-anchor="middle" fill="#a93226">what you measured</text>
+  </g>
+
+  <!-- links with the error source named under each -->
+  <g stroke="#c0392b" stroke-width="1.6">
+    <line x1="158" y1="388" x2="206" y2="388" marker-end="url(#ar)"/>
+    <line x1="342" y1="388" x2="390" y2="388" marker-end="url(#ar)"/>
+    <line x1="526" y1="388" x2="574" y2="388" marker-end="url(#ar)"/>
+    <line x1="710" y1="388" x2="758" y2="388" marker-end="url(#ar)"/>
+  </g>
+  <g font-size="10" fill="#a93226" text-anchor="middle">
+    <text x="182" y="428">base</text><text x="182" y="440">calibration</text>
+    <text x="366" y="428">arm</text><text x="366" y="440">kinematics</text>
+    <text x="550" y="428">tool / TCP</text><text x="550" y="440">offset</text>
+    <text x="734" y="428">where the bar sits</text><text x="734" y="440">in the jaws, + flex</text>
+  </g>
+
+  <!-- what the servo loop can see -->
+  <path d="M30,462 L30,476 L526,476 L526,462" fill="none" stroke="#1a8a3e" stroke-width="1.6"/>
+  <text x="278" y="494" font-size="11.5" text-anchor="middle" font-weight="700" fill="#1a8a3e">
+    the servo loop closes the loop only over THIS much
+  </text>
+  <path d="M532,462 L532,476 L916,476 L916,462" fill="none" stroke="#c0392b" stroke-width="1.6"
+        stroke-dasharray="5 3"/>
+  <text x="724" y="494" font-size="11.5" text-anchor="middle" font-weight="700" fill="#c0392b">
+    …and is blind to all of this
+  </text>
+
+  <text x="30" y="522" font-size="12" fill="#44506a">
+    Each link is a transform the robot <tspan font-weight="700">assumes</tspan>. If an assumed transform is wrong, the loop still converges —
+  </text>
+  <text x="30" y="539" font-size="12" fill="#44506a">
+    it just converges confidently to the wrong place. Precise, but not accurate.
+  </text>
+
+  <!-- ============ PANEL D : the evidence ============ -->
+  <rect x="26" y="560" width="928" height="178" rx="8" fill="#f6faf7" stroke="#bfdcc8"/>
+  <text x="44" y="584" font-size="13" font-weight="700" fill="#1a8a3e">
+    D · YOUR DATA SAYS IT IS A CALIBRATION OFFSET, NOT RANDOM NOISE
+  </text>
+  <text x="44" y="604" font-size="12" fill="#44506a">
+    Take each bar's error as a vector and ask: is it the same vector every time? It depends which frame you ask in.
+  </text>
+
+  <g font-size="11.5">
+    <rect x="44" y="618" width="430" height="100" rx="6" fill="#fff" stroke="#cdd9e6"/>
+    <text x="60" y="638" font-weight="700" fill="#17202e">measured in the WORLD frame</text>
+    <text x="60" y="658" fill="#44506a">mean error  [−0.3, +0.1, −2.2] mm</text>
+    <text x="60" y="676" fill="#44506a">scatter     ± [2.5, 2.3, 1.2] mm  ← large</text>
+    <text x="60" y="700" font-weight="700" fill="#a93226">a fixed offset explains only 53%</text>
+
+    <rect x="506" y="618" width="430" height="100" rx="6" fill="#fff" stroke="#1a8a3e" stroke-width="1.5"/>
+    <text x="522" y="638" font-weight="700" fill="#17202e">measured in the ROBOT'S OWN frame</text>
+    <text x="522" y="658" fill="#44506a">mean error  [+2.5, +1.2, −2.2] mm</text>
+    <text x="522" y="676" fill="#44506a">scatter     ± [1.1, 1.5, 1.2] mm  ← much tighter</text>
+    <text x="522" y="700" font-weight="700" fill="#1a8a3e">a fixed offset explains 87%</text>
+  </g>
+</svg>

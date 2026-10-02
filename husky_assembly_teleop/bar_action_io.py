@@ -450,3 +450,47 @@ def find_movement(action: BarSceneAction, key: Union[int, str]) -> tuple[int, Mo
 
     available = [mv.movement_id for mv in action.movements]
     raise KeyError(f"No movement matches {key!r}. Available: {available}")
+
+
+def resolve_take_movement(bar_action_path: str, key: Union[int, str]) -> tuple:
+    """Find the movement a marker take was recorded at, over the bar's whole cycle.
+
+    Takes stamp the classic ROLE ('M3'), which the split export does not put in
+    the movement id -- the retreat is ``B6_R_M2_LM_retreat``, so searching the
+    ids for ``_M3_`` lands on ``B6_R_M3_free_home``, which is M4. Loading the
+    cycle also picks up the other half, so a take that named the jointing file
+    for an M3 measurement still resolves.
+
+    Args:
+        bar_action_path (str): The action file the take named.
+        key (int | str): The stamped ``movement_id``, or a legacy index.
+
+    Returns:
+        tuple: ``(index, movement, action, path)`` -- the last two say which
+        file the movement was found in.
+    """
+    slots = load_action_cycle(bar_action_path)
+    movements = [mv for action, _p in slots for mv in action.movements]
+    roles = cycle_roles(slots)
+
+    if isinstance(key, str) and key in roles:
+        idx = roles.index(key)
+    elif isinstance(key, int):
+        idx = key
+    else:
+        # An exact id or a substring: ask each half in turn.
+        idx, offset = None, 0
+        for action, _p in slots:
+            try:
+                local, _mv = find_movement(action, key)
+            except (KeyError, IndexError):
+                offset += len(action.movements)
+                continue
+            idx = offset + local
+            break
+        if idx is None:
+            raise KeyError(f"No movement matches {key!r} in either half of "
+                           f"{os.path.basename(bar_action_path)}.")
+
+    action, path, _local = slot_of_index(slots, idx)
+    return idx, movements[idx], action, path
