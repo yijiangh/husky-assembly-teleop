@@ -42,25 +42,45 @@ It is **strongly recommended** to use a Python virtual environment (venv) for de
 
 If you use the `--system-site-packages` flag when creating your venv, you can use system-installed tools like `colcon` without needing to install them inside the venv. This approach has been used reliably for years.
 
-### One-time venv setup
+### One-time setup
+
+All commands in this README run in the workspace root, the folder that holds `src/`, `venv/` and `install/`. The monitor also needs [crl-husky](https://gitlab.inf.ethz.ch/crl/robot-control/crl-husky) in `src/crl-husky`: it provides the mocap relay, the robot configs and `crl_husky_msgs`.
 
 ```bash
-# One time setup
-python3 -m venv venv --system-site-packages
+# ROS packages
+sudo apt install ros-humble-ur-msgs ros-humble-ur-dashboard-msgs ros-humble-control-msgs \
+    ros-humble-controller-manager-msgs ros-humble-rmw-zenoh-cpp ros-humble-zenoh-cpp-vendor
 
-# In your build terminal
+# The venv
+python3 -m venv venv --system-site-packages
 source venv/bin/activate
+
+# Packages developed alongside this one, editable
 python3 -m pip install -e src/husky-assembly-teleop/external/pybullet_planning
 python3 -m pip install -e src/husky-assembly-teleop/external/compas_fab
 python3 -m pip install -e src/husky-assembly-teleop/external/rs_data_structure
 python3 -m pip install -e src/husky-assembly-teleop/external/husky_assembly_tamp
-python3 -m pip install <your_dependencies>
+
+# The monitor's dependencies (versions as in requirements.txt)
+python3 -m pip install "viser==1.1.1" "yourdfpy==0.0.60" "trimesh>=4.0" "async-timeout>=4.0" "compas_robots>=0.6" \
+    "scipy>=1.8" "pybullet>=3.2" "compas>=2.0"
+```
+
+Set up Zenoh as described in crl-husky's README ([Zenoh](../crl-husky/README.md#zenoh)): `export RMW_IMPLEMENTATION=rmw_zenoh_cpp ROS_DOMAIN_ID=80` in `~/.bashrc`, and the router once.
+
+### Build and run
+
+Build with the venv's Python; otherwise the installed scripts do not use the venv.
+
+```bash
+# Build terminal
+source venv/bin/activate
 python3 -m colcon build --symlink-install
 
-# In your running terminal
-<venv_name>/bin/activate
+# Running terminal
+source venv/bin/activate
 source install/setup.bash
-ros2 run husky_assembly_teleop husky_monitor
+ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['alice']" -p plugins:="['robot_control']"
 ```
 
 <details>
@@ -120,55 +140,163 @@ pip install -r requirements.txt
 
 # Code Structure
 
-This package is intended to be a hardware deployment code. Its relationship to other parts of the overall system is shown below.
+The monitor is a small core that ticks and owns the shared state; every feature is a plugin. Each folder's `__init__.py` lists its files.
 
-![Code Structure](./doc/husky_assembly_code_org.png)
+| Folder | What is in it |
+|---|---|
+| `monitor.py`, `config.py` | The ROS node and its tick; the run configuration, read from the ROS parameters. |
+| `plugin_api/` | What a plugin is (`HuskyPlugin`, `@register`) and what it gets (`PluginContext`). |
+| `plugins/` | One module or package per feature. Start from `robot_control/` or `examples/` when writing one. |
+| `robot_interface/` | The only code that talks to robots: base, arms, tools, mocap subscriptions. |
+| `world/` | Measured state, mocap checks, kinematics, the scene planners read. |
+| `ui/` | The viser web UI and shared widgets. |
+| `design_io/` | Reading and writing design folders (`doc/design_format.md`). |
+| `old/` | The old monitor, for reference only. |
+
+> 🚧 A fuller overview (how the monitor fits with crl-husky, the planners and the Rhino design workflow) is still to be written.
 
 # Usage
 
-### Initiate network connection
-1. Turn on the power for the TPLink, the OptiTrack system (the Netgear router).
-2. Connect your computer to the TPLink via an Ethernet cable.
-3. Test your Ethernet connection to the Optitrack server computer by pinging the server's IP address. You can find this by running `ipconfig` in the command prompt on the server PC. Update `MOCAP_IP`'s value in the `husky_monitor.py` script.
-4. Find our the IP address of your PC, and then confirm this by pinging it from the PC. Update `CLIENT_IP`'s value in the `husky_monitor.py` script.
-5. Open the Motive software on the server PC.
+## 1. Start the mocap relay
+
+The monitor does not connect to Motive. The `mocap_relay` node from crl-husky receives the OptiTrack stream and publishes each rigid body as a ROS topic, calibrated and in the Z-up world frame. The monitor and all other mocap consumers subscribe to these topics.
+
+> ⚠️ Exactly one relay must run per ROS domain, and it must stay running while mocap is in use. Two relays in one domain would publish interleaved poses with different delays and possibly different calibrations. A relay therefore refuses to start if another one already runs in its domain. Stopping the relay stops mocap for every consumer in that domain.
+
+```shell
+ros2 launch crl_husky mocap.launch.py                           # Motive PC at 192.168.0.28 (default)
+ros2 launch crl_husky mocap.launch.py server_ip:=192.168.0.117  # another Motive PC
+```
+
+Without a relay, no mocap is available. Details in crl-husky's `MOCAP_SETUP.md`.
+
+## 2. Start the monitor
+
+```shell
+ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['alice']" -p plugins:="['robot_control']"
+```
+
+The UI is served at http://localhost:8080, or the next free port (8081, ...) if 8080 is in use; the log states the port. Other PCs on the network reach it at `http://<host-ip>:8080`.
+
+**Quit:** press Ctrl-C once and wait. During shutdown the plugins send their final hold commands; a second Ctrl-C skips them.
+
+**Stop all (Esc):** stops every robot and cancels every plugin task. The monitor keeps running.
+
+### Panels
+
+Some plugins show content in panels separate from the main control panel. Panels can be moved, docked, collapsed and resized:
+
+- Drag the bar at the top of a panel to float it, or drop it on a screen edge or next to another docked panel to dock it.
+- The control at the right end of that bar collapses and expands the panel.
+- Drag the edge of a floating panel to resize it.
+
+Example: `mocap_probe` shows the probe state in a **Probe** panel, collapsed on the right at start. Floated and enlarged, its text scales with the panel and is readable from a distance.
+
+### Parameters
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `robots` | none | Robots to connect to, by serial or name: `0804`, `alice`, `a200-0806`, `Cindy`. `"[]"` runs without robots. |
+| `plugins` | none | Plugins to load, see below. `health` is always added, unless `no_default_plugins:=true`. |
+| `tools` | per robot | Only where the mounted tools differ from the defaults: `'<robot>:<tool>[,<tool>...]'`, one tool per arm in arm order. Tools: `robotiq`, `scaffolding_v1`, `scaffolding_v3`, `none`. Defaults: Alice and Belle `robotiq`, Cindy `scaffolding_v3,scaffolding_v3`. |
+| `design_directory` | none | Design folder the `cell` plugin loads at startup; without it, pick one in its panel. |
+| `data_directory` | `data/` of this repo | Root for meshes, URDFs and designs. |
+| `no_default_plugins` | `false` | `true` skips the default plugins (`health`). |
+| `ghost_timeout` | `20.0` | Seconds a plugin's ghost robots stay after the last input in it; 0 keeps them. |
+
+### Plugins
+
+| Plugin | What it does |
+|---|---|
+| `health` | Loaded by default. Shows the status of each robot and tracked object, with Unlock, Resume and Reconnect. |
+| `robot_control` | One tab per robot: drives the base, moves the arms (joint targets or compliance), stows them, operates the tools. |
+| `obstacles` | Adds the fixed lab furniture to the scene as collision obstacles for the planners. |
+| `mocap_probe` | Tracks the probe and records points with it, e.g. obstacle corners; exports JSON. Shows its state in a separate panel, see [Panels](#panels). |
+| `cell` | Loads a design and shows the cell state of one movement at a time. Experimental. |
+| `base_planner` | Plans a collision-free path for a base. Experimental: Commit only logs the path. |
+| `arm_planner` | Plans a collision-free arm motion to a joint target. Experimental: Commit only logs the path. |
+| `example_plot`, `example_ui`, `example_sequence`, `example_pybullet`, `example_recording`, `example_robot_state` | Minimal plugins, as templates for new ones. |
+
+### Examples
+
+```shell
+# Drive one robot
+ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['alice']" -p plugins:="['robot_control']"
+
+# All three robots at once
+ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['alice','belle','cindy']" -p plugins:="['robot_control']"
+
+# Alice with the scaffolding tool instead of the Robotiq, Cindy with only one tool (on the left arm)
+ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['alice','cindy']" \
+    -p tools:="['alice:scaffolding_v3', 'cindy:scaffolding_v3,none']" -p plugins:="['robot_control']"
+
+# Measure obstacles with the mocap probe (no robots needed)
+ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="[]" -p plugins:="['mocap_probe']"
+
+# Assembly: a design, the lab obstacles and the base planner
+ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['alice','cindy']" \
+    -p plugins:="['robot_control', 'cell', 'obstacles', 'base_planner']" -p design_directory:=/path/to/design
+
+# Plan arm motions too
+ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['cindy']" \
+    -p plugins:="['robot_control', 'obstacles', 'arm_planner']"
+
+# Try the plugin examples
+ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['alice']" \
+    -p plugins:="['example_plot', 'example_pybullet', 'example_sequence', 'example_ui']"
+```
+
+## What changed from the old monitor
+
+The old monitor is `husky_monitor.py` on `master`. A copy is kept in `husky_assembly_teleop/old/` for reference; it does not run from there.
+
+| | Old monitor | New monitor |
+|---|---|---|
+| **Robots** | One per run, selected by `ROS_DOMAIN_ID` (84, 85, 86), Cyclone DDS. | Any number per run, selected with `robots`. All robots run Zenoh on `ROS_DOMAIN_ID=80`. |
+| **Configuration** | Constants in `husky_monitor.py` (`USE_MOCAP`, `USE_DPG_UI`, `BAR_ACTION_...`), changed in the code. | ROS parameters on the command line. Features are plugins, selected with `plugins`. |
+| **UI** | PyBullet window and Dear PyGui panel on the PC running the monitor. | Web page (viser) at http://localhost:8080, reachable from other PCs. PyBullet only as an optional debug window in some plugins. |
+| **Mocap** | NatNet client inside the monitor; `CLIENT_IP` and `MOCAP_IP` set in the code; axis conversion and calibration in the monitor. | Separate `mocap_relay` node ([step 1](#1-start-the-mocap-relay)). Poses arrive calibrated, in the Rhino Z-up frame. |
+| **Tracked objects** | `TrackedObject(...)` in `husky_world.py`. | `ctx.track_object(name, mocap_id, ...)` in a plugin, as in `plugins/mocap_probe.py`. |
+| **Tools** | Fixed per robot in the code. | Defaults per robot, overridden with `tools`. Cindy's onboard launch takes one tool per arm (`gripper_left`, `gripper_right`; see crl-husky's README). |
+| **Bar actions, live replan, servoing, accuracy tests** | Built in. | Not ported yet; use the old monitor. |
+| **Quit** | Close the windows or Ctrl-C. | Ctrl-C once, then wait for the final hold commands. |
+
+### Running the old monitor
+
+The old monitor requires Cyclone DDS and the robot's own domain. Switch the robot to Cyclone first, as described in crl-husky's README ([Still using Cyclone DDS](../crl-husky/README.md#still-using-cyclone-dds-eg-for-the-old-monitor)). The old monitor connects to Motive directly and does not use the relay.
+
+```shell
+git -C src/husky-assembly-teleop checkout master
+git -C src/husky-assembly-teleop submodule update --init --recursive
+python3 -m colcon build --symlink-install --packages-select husky_assembly_teleop
+source install/setup.bash
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp ROS_DOMAIN_ID=86   # robot's domain: 84 Alice, 85 Belle, 86 Cindy
+ros2 run husky_assembly_teleop husky_monitor
+```
+
+To return to the new monitor, check out its branch, update the submodules and rebuild.
+
+## Migrating a workspace to the new monitor
+
+1. Update both repositories:
+   ```shell
+   git -C src/husky-assembly-teleop pull
+   git -C src/husky-assembly-teleop submodule update --init --recursive
+   git -C src/crl-husky pull
+   ```
+2. Install the new dependencies: the ROS packages and Python packages in [One-time setup](#one-time-setup). New compared with the old monitor: `viser`, `yourdfpy`, `trimesh`, `async-timeout`, `compas_robots`, and the Zenoh packages.
+3. Switch to Zenoh: set `export RMW_IMPLEMENTATION=rmw_zenoh_cpp ROS_DOMAIN_ID=80` in `~/.bashrc`, replacing any per-robot `ROS_DOMAIN_ID`, and set up the router as described in crl-husky's README ([Zenoh](../crl-husky/README.md#zenoh)).
+4. Build with the venv's Python, as in [Build and run](#build-and-run).
+5. Verify: `ros2 topic list | grep a200` lists the robots' topics.
+
+## Mocap rigid bodies
 
 ### Register a new rigid body in Motive
-6. Then, you will need to register a new rigid body by selecting a few markers on the Motive software, follow [the documentation](https://docs.optitrack.com/motive/rigid-body-tracking). Next, note the `Streaming ID` of the rigid body you just registered. You can find this by clicking on the rigid body in the `Assets` panel in Motive. \
-\
-Alternatively, activate an already existing rigid body in the `Assets` panel.
+Register a new rigid body by selecting a few markers in Motive, following [the documentation](https://docs.optitrack.com/motive/rigid-body-tracking), and note its `Streaming ID` (click it in the `Assets` panel). Or activate an existing rigid body in the `Assets` panel. The relay publishes it as `/mocap/rigid_body/id_<Streaming ID>/pose` as soon as Motive streams it.
 
 ### Calibrate rigid body
 
-Add the 3D model to the object in motive and move the pivot until the model aligns with the markers. If more precision is needed, use a probe to sample corners on the real object. These additional probe points can be used to improve the alignment of the model.
+Add the 3D model to the object in Motive and move the pivot until the model aligns with the markers. If more precision is needed, use a probe to sample corners on the real object. These additional probe points can be used to improve the alignment of the model.
 
-### Edit the python script to add your rigid body
-
-Add a `TrackedObject(monitor, name, streaming_id, pos, rot, scale, model)` in `husky_world.py`. This object should now be automatically tracked using mocap.
-
-### Tips 💡 
-In pybullet's viewer, you can pan the camera by holding `alt` (or `ctrl`) and dragging the mouse. 
-`alt + left` click to rotate the camera. 
-`alt + right` click to zoom in and out. 
-`alt + middle` click to move the camera up and down. 
-You can also zoom in and out by scrolling the mouse wheel.
-
-### Refactor Section
-
-```shell
-ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['0804']" -p plugins:="['robot_control']"
-ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['0804']" -p tools:="['0804:scaffolding_v3']" -p plugins:="['robot_control']"
-
-ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['0804']" -p plugins:="['robot_control', 'obstacles']"
-
-ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['0804']" -p plugins:="['robot_control', 'mocap_probe']"
-
-ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['0804']" -p plugins:="['robot_control', 'cell', 'obstacles', 'base_planner']"
-
-
-ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['0804']" -p plugins:="['example_plot', 'example_pybullet', 'example_sequence', 'example_ui']"
-
-ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['0804']" -p tools:="['0804:robotiq']" -p plugins:="['robot_control', 'base_planner', 'obstacles', 'example_plot']" -p design_directory:=/home/jakob/ra/workspace/google_data/260814_RobArch_support_ik
-```
-
-
+### Tips 💡
+In the browser view: left-drag rotates, right-drag pans, scroll zooms.

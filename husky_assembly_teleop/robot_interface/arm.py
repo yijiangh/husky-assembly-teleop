@@ -26,7 +26,7 @@ from ..config import ArmConfig
 from .stream_stats import StreamStats
 from .connections import RosConnections
 from .controller_manager import ControllerManagerInterface, ControllerManagerState
-from .end_effectors import EndEffector, EndEffectorState, ScaffoldingV3, make_end_effector
+from .end_effectors import EndEffector, EndEffectorState, make_end_effector
 from ..design_io.pose import Pose, compose, invert
 from .ur_frames import BASE_LINK_FROM_UR_BASE
 
@@ -44,20 +44,15 @@ UR_JOINT_NAMES = ("shoulder_pan_joint", "shoulder_lift_joint", "elbow_joint",
 
 SCALED_JOINT_TRAJECTORY_CONTROLLER = "scaled_joint_trajectory_controller"
 CARTESIAN_COMPLIANCE_CONTROLLER = "cartesian_compliance_controller"
-#: UR freedrive: the arm can be pushed by hand, only while it keeps hearing from us (FREE_DRIVE_PERIOD).
+#: UR freedrive: the arm can be pushed by hand, only while it keeps hearing from us (FREE_DRIVE_HEARTBEAT).
+#: ? The tool's button chord runs free drive on the robot (crl_husky onboard/free_drive_buttons.py), not here.
 FREE_DRIVE_CONTROLLER = "free_drive_controller"
 #: The controllers an arm switches between, only one at a time.
 ARM_CONTROLLERS = (SCALED_JOINT_TRAJECTORY_CONTROLLER, CARTESIAN_COMPLIANCE_CONTROLLER, FREE_DRIVE_CONTROLLER)
-#: Seconds between free drive checks: the tool's button, and the "keep free drive on" message while the
-#: free drive controller runs. It ends free drive after 1 s without one (inactive_timeout in crl_husky
-#: ur_controllers.yaml), so a lost link or a dead monitor ends it too. Short, so a released button ends it fast.
-FREE_DRIVE_PERIOD = 0.05
-#: The tool button that runs free drive while held (a ScaffoldingV3.BUTTONS name).
-FREE_DRIVE_BUTTON = "C12"
-#: ! Off for now: the tool button is ignored. Free drive still works from the Free button. True turns it on.
-FREE_DRIVE_BY_BUTTON = True
-#: Tool status older than this, seconds, counts as the button released.
-FREE_DRIVE_BUTTON_MAX_AGE = 0.5
+#: Seconds between "keep free drive on" messages while the free drive controller runs. It ends free drive
+#: after 1 s without one (inactive_timeout in crl_husky ur_controllers.yaml), so a lost link or a dead
+#: monitor ends it too.
+FREE_DRIVE_HEARTBEAT = 0.2
 #: multi_arm_safety_sync status older than this, seconds, counts as unknown.
 SYNC_STATUS_MAX_AGE = 3.0
 
@@ -288,12 +283,6 @@ class ArmInterface:
         self._motion_reference: dict[str, float] = {}
         #: Whether free drive was being kept on at the last heartbeat, to log the change.
         self._free_drive_on = False
-        #: The free drive button at the last check; None until the tool first reports it.
-        self._free_drive_button_held: bool | None = None
-        #: Whether the button started the current free drive, so its release ends it.
-        self._free_drive_by_button = False
-        #: Released while a switch was pending: end free drive once that switch is answered.
-        self._free_drive_end_pending = False
         self._namespace = f"/{robot_namespace}/{config.ros_namespace}"
         self._ros = RosConnections(node)
 
@@ -325,7 +314,7 @@ class ArmInterface:
         self._target_wrench = self._ros.publisher(WrenchStamped, f"{namespace}/target_wrench")
         self._zero_ft = self._ros.client(Trigger, f"{namespace}/io_and_status_controller/zero_ftsensor")
         self._free_drive = self._ros.publisher(Bool, f"{namespace}/{FREE_DRIVE_CONTROLLER}/enable_freedrive_mode")
-        self._ros.timer(FREE_DRIVE_PERIOD, self._update_free_drive)
+        self._ros.timer(FREE_DRIVE_HEARTBEAT, self._keep_free_drive)
         # Safety and program state arrive via HuskyRobotInterface._on_sync_status.
 
     def reconnect(self) -> None:
@@ -733,60 +722,14 @@ class ArmInterface:
         self._zero_ft.call_async(Trigger.Request())
         return True
 
-    def _read_free_drive_button(self) -> bool | None:
-        """Whether FREE_DRIVE_BUTTON is held; False if the tool status is stale, None if the tool has no such button."""
-        tool = self.end_effector
-        if not isinstance(tool, ScaffoldingV3) or len(tool.state.buttons_held) != len(ScaffoldingV3.BUTTONS):
-            return None
-        if self._now() - tool.state.last_update_time > FREE_DRIVE_BUTTON_MAX_AGE:
-            return False  # ! a lost link must end free drive, like a release
-        return tool.state.buttons_held[ScaffoldingV3.BUTTONS.index(FREE_DRIVE_BUTTON)]
+    def _keep_free_drive(self) -> None:
+        """While the free drive controller runs because we switched to it, keep free drive on; log on and off.
 
-    def _start_free_drive_by_button(self) -> None:
-        """The free drive button was pressed: switch to free drive, unless the arm is busy or not operational."""
-        log = self._node.get_logger()
-        updated = self.state.status_update_time
-        known = updated is not None and self._now() - updated <= SYNC_STATUS_MAX_AGE and self.state.dashboard_up
-        if self.state.is_executing:
-            log.warning(f"arm {self.config.name}: {FREE_DRIVE_BUTTON} pressed, but the arm is executing; "
-                        f"no free drive")
-        elif known and not self.state.operational:
-            log.warning(f"arm {self.config.name}: {FREE_DRIVE_BUTTON} pressed, but the arm is not operational "
-                        f"({self.state.problem}); no free drive")
-        else:
-            log.info(f"arm {self.config.name}: {FREE_DRIVE_BUTTON} pressed, free drive while held")
-            self._free_drive_by_button = self.controllers.switch(FREE_DRIVE_CONTROLLER)
-
-    def _update_free_drive(self) -> None:
-        """Follow the free drive button, and keep free drive on while we run it; log on and off.
-
-        - The button runs free drive while held; its release switches back to the joint controller, which holds
-          the arm where it was let go.
-        - ! Free drive is kept on only after our own switch (a click or the button): a controller left active by
-          another tool or an earlier monitor run must not start it by itself. Switching away, the soft stop or a
-          switch from outside ends it.
+        ! Only after our own switch: a controller left active by another tool or an earlier monitor run must not
+          start free drive by itself. Switching away, the soft stop or a switch from outside ends it.
         """
-        held = self._read_free_drive_button() if FREE_DRIVE_BY_BUTTON else None
-        # ? The first reading is only remembered: a button already held when the monitor starts does nothing.
-        if held is not None and self._free_drive_button_held is not None and held != self._free_drive_button_held:
-            if held:
-                self._start_free_drive_by_button()
-            elif self._free_drive_by_button:
-                self._node.get_logger().info(f"arm {self.config.name}: {FREE_DRIVE_BUTTON} released, "
-                                             f"ending free drive")
-                self._free_drive.publish(Bool(data=False))  # ends it now, without waiting for the switch
-                self._free_drive_by_button = False
-                self._free_drive_end_pending = True
-        if held is not None:
-            self._free_drive_button_held = held
-        # A switch still pending (a quick press) would refuse the next one: wait for its answer.
-        if self._free_drive_end_pending and self.controllers.state.switch_in_flight is None:
-            self._free_drive_end_pending = False
-            self.controllers.switch(SCALED_JOINT_TRAJECTORY_CONTROLLER)
-
         state = self.controllers.state
-        on = (self.controllers.is_active(FREE_DRIVE_CONTROLLER) and state.requested == FREE_DRIVE_CONTROLLER
-              and not self._free_drive_end_pending)
+        on = self.controllers.is_active(FREE_DRIVE_CONTROLLER) and state.requested == FREE_DRIVE_CONTROLLER
         if on != self._free_drive_on:
             self._node.get_logger().info(f"arm {self.config.name}: free drive {'on' if on else 'off'}")
             self._free_drive_on = on

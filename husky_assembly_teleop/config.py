@@ -33,7 +33,7 @@ _TOOL_ALIASES: dict[str, str | None] = {"robotiq_2F_85": "robotiq", "none": None
 #: Robot URDFs with tools stitched on; wiped and rewritten on every start.
 STITCHED_URDF_DIRECTORY = Path(tempfile.gettempdir()) / "husky_stitched_urdf"
 
-#: Plugins loaded before the requested ones; `-p no_default:=true` skips them.
+#: Plugins loaded before the requested ones; `-p no_default_plugins:=true` skips them.
 DEFAULT_PLUGINS: tuple[str, ...] = ("health",)
 
 
@@ -259,7 +259,7 @@ def config_from_ros_parameters(node: Node) -> MonitorConfig:
 
     - `tools`: one entry per robot, tools in arm order, "none" for a bare arm; only where it differs
       from `_ROBOTS_BY_SERIAL`.
-    - `no_default:=true` skips DEFAULT_PLUGINS.
+    - `no_default_plugins:=true` skips DEFAULT_PLUGINS.
     - Robots may be named instead of numbered, in `robots` and `tools` alike. `robots:="[]"` runs without robots.
 
     Args:
@@ -276,7 +276,7 @@ def config_from_ros_parameters(node: Node) -> MonitorConfig:
     node.declare_parameter("plugins", [""])
     node.declare_parameter("data_directory", "")
     node.declare_parameter("design_directory", "")
-    node.declare_parameter("no_default", False)
+    node.declare_parameter("no_default_plugins", False)
     node.declare_parameter("ghost_timeout", MonitorConfig.ghost_timeout)
 
     shutil.rmtree(STITCHED_URDF_DIRECTORY, ignore_errors=True)
@@ -298,12 +298,12 @@ def config_from_ros_parameters(node: Node) -> MonitorConfig:
 
     design_text = node.get_parameter("design_directory").get_parameter_value().string_value.strip()
 
-    no_default = node.get_parameter("no_default").get_parameter_value().bool_value
+    no_default_plugins = node.get_parameter("no_default_plugins").get_parameter_value().bool_value
     return MonitorConfig(
         robots=_robots_in_a_row(string_list("robots"), data_directory, _parse_tools(string_list("tools"))),
         data_directory=data_directory,
         design_directory=Path(design_text).expanduser() if design_text else None,
-        enabled_plugins=_enabled_plugins(string_list("plugins"), not no_default),
+        enabled_plugins=_enabled_plugins(string_list("plugins"), not no_default_plugins),
         ghost_timeout=node.get_parameter("ghost_timeout").value,
     )
 
