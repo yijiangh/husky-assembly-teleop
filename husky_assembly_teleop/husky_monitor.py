@@ -256,8 +256,8 @@ class HuskyMonitor(Node):
     # without any external tracking. The husky base is then assumed to be
     # exactly where the plan says it is (each movement's
     # start_state.robot_base_frame), see _live_base_pose().
-    USE_MOCAP = 1
-    FAKE_HARDWARE = 0
+    USE_MOCAP = 0
+    FAKE_HARDWARE = 1
 
     # * Set 0 to skip connecting the UR SetIO service clients (gripper/screw IO).
     # Saves the 2.5 s startup wait + "SetIO Service i not available!" warning
