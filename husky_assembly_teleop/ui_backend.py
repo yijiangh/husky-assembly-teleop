@@ -1092,12 +1092,19 @@ class DearPyGuiBackend(UIBackend):
                 dpg.set_value(plot["header_tag"],
                               f"{plot['name']}  (n={n_pts})")
             if n_pts >= 1:
-                dpg.fit_axis_data(plot["x_axis"])
-                dpg.fit_axis_data(plot["y_axis"])
-                # A single point fits to a zero-width range (invisible); widen it.
                 if n_pts == 1:
+                    # A single point fits to a zero-width range (invisible); widen it.
                     x0 = xs[0]
                     dpg.set_axis_limits(plot["x_axis"], x0 - 1.0, x0 + 1.0)
+                else:
+                    # ! set_axis_limits LOCKS the axis against pan and zoom, and
+                    # ! fit_axis_data cannot override a lock -- so the one-point
+                    # ! widening above has to be released, or the plot freezes on
+                    # ! its first sample while later points walk off the right
+                    # ! edge (the readouts keep updating, which hides it).
+                    dpg.set_axis_limits_auto(plot["x_axis"])
+                    dpg.fit_axis_data(plot["x_axis"])
+                dpg.fit_axis_data(plot["y_axis"])
             plot["dirty"] = False
         dpg.render_dearpygui_frame()
         return True

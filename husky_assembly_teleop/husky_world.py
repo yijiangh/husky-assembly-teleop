@@ -19,7 +19,7 @@ from husky_assembly_teleop import DATA_DIRECTORY, CALIBRATION_DATE, EXPERIMENT_D
 from husky_assembly_teleop.common import Husky, TrackedObject, AssemblyObject
 import husky_assembly_teleop.husky_planning as planning
 import husky_assembly_teleop.husky_control as control
-from husky_assembly_teleop.utils import HUSKY_DUAL_UR5e_JOINT_NAMES, UR5E_JOINT_NAMES, MOCAP_SET_RIG_RB_NAME, conf_from_12vec, get_arm_ik_for_grasp_bar, get_custom_limits, notify, plan_transit_motion, pose_from_frame
+from husky_assembly_teleop.utils import HUSKY_DUAL_UR5e_JOINT_NAMES, UR5E_JOINT_NAMES, MOCAP_SET_RIG_RB_NAME, conf_from_12vec, frame_from_pose, get_arm_ik_for_grasp_bar, get_custom_limits, notify, plan_transit_motion, pose_from_frame
 from husky_assembly_teleop.scaffolding import parse_mt_geometric, create_collision_bodies, create_couplers, flatten_list
 from husky_assembly_teleop.cfab_session import CfabSession, build_default_robot_cell
 from husky_assembly_teleop.cc_diagnosis import visualize_goal_ik_collision
@@ -1387,6 +1387,199 @@ def measure_base_pose_diff(monitor, start_base_pose):
     }
 
 
+# * --------------------------------------------- servo loop safety thresholds
+# How large a path may be before the loop stops and asks. Not about where the
+# bar ends up (that is the measurement, in mm) -- about what the arms do ON THE
+# WAY. Measured as the furthest any joint gets from where the path started, over
+# every waypoint; the first-to-last difference reads 0 for a path that swings
+# out and comes back.
+SERVO_EXCURSION_CONFIRM_DEG = 5.0
+
+# Commanded joint speed the recommended duration aims for. 3 deg/s puts a 60 deg
+# first transfer at 20 s, which is what the manual asks for by hand.
+SERVO_RECOMMENDED_DEG_PER_S = 3.0
+SERVO_MIN_TRAJ_TIME_S = 3.0
+
+# Below this the arms are already where the plan would put them, so there is
+# nothing to plan: asking a randomised planner for a zero-length path is what
+# produces 360 deg sweeps that start and end in the same place.
+SERVO_MIN_CORRECTION_MM = 0.5
+
+# A held bar fixes the transform between the two flanges, so authored targets
+# that disagree with it by more than this cannot BOTH be met; the difference is
+# split between the arms instead of being dumped entirely on the right one.
+# Matches the threshold `_verify_transfer_endpoint` already warns at.
+SERVO_GRASP_SPLIT_MM = 2.0
+
+
+def unwrap_goal_to_start(raw_goal_12, start_12):
+    """Rewrite goal joint values to the turn nearest the start configuration.
+
+    Trac_IK can return a joint a full turn off the branch nearest the seed --
+    ``-4.12 rad`` where ``+2.16 rad`` gives the very same tool0 pose. The pose is
+    identical either way, so nothing about the target moves; only the number
+    changes. But every "how far is this move?" quantity downstream reads that
+    number, so left raw it makes a standstill look like a 360 deg journey (the
+    free planner then cannot connect, and the bar-held planner is handed a
+    zero-motion task it has no exit for). UR5e joints have limits well past
+    2*pi, so the rewritten value is always in range.
+
+    Args:
+        raw_goal_12 (Sequence[float]): IK goal, left arm's 6 joints then right.
+        start_12 (Sequence[float]): The configuration to stay nearest to.
+
+    Returns:
+        tuple[np.ndarray, float, list[int]]: the unwrapped 12-vec, the largest
+        correction applied (rad), and the indices of the joints corrected.
+    """
+    raw = np.asarray(raw_goal_12, dtype=float)
+    start = np.asarray(start_12, dtype=float)
+    two_pi = 2.0 * np.pi
+    unwrapped = raw - np.round((raw - start) / two_pi) * two_pi
+    corrections = np.abs(raw - unwrapped)
+    max_correction = float(np.max(corrections)) if corrections.size else 0.0
+    corrected = np.where(corrections > 1e-6)[0].tolist()
+    return unwrapped, max_correction, corrected
+
+
+def recommended_traj_time(excursion_deg, max_time):
+    """How long the next move should take, from how far it actually travels.
+
+    Keeps the commanded speed roughly constant instead of cramming whatever was
+    planned into a fixed duration: a 60 deg first transfer lands near the 20 s
+    the manual asks for, a small correction sits at the floor, and a path that
+    travels much further gets proportionally longer rather than becoming a
+    lunge.
+
+    Args:
+        excursion_deg (float): Largest joint travel along the path (see
+            ``_path_motion_summary``), in degrees.
+        max_time (float): The 'traj time' slider's upper bound.
+
+    Returns:
+        float: Seconds, between SERVO_MIN_TRAJ_TIME_S and ``max_time``.
+    """
+    wanted = float(excursion_deg) / SERVO_RECOMMENDED_DEG_PER_S
+    return float(min(max(wanted, SERVO_MIN_TRAJ_TIME_S), float(max_time)))
+
+
+def _wrench_magnitudes(monitor):
+    """Force and torque magnitude at each tool flange, right now.
+
+    Magnitudes rather than components: the sensor reads in its own wrist frame,
+    which turns with the arm, so a single axis means little across iterations
+    while the total load is comparable.
+
+    Args:
+        monitor: The HuskyMonitor node.
+
+    Returns:
+        dict | None: ``{'left': {'force_N': f, 'torque_Nm': t}, 'right': {...}}``,
+        or None when no FT reading is available.
+    """
+    try:
+        hi = monitor.huskies[monitor.selected_robot_id].interface
+        out = {}
+        for i, side in enumerate(('left', 'right')):
+            w = np.asarray(hi.arm_ft_sensor[i], dtype=float)
+            out[side] = {'force_N': float(np.linalg.norm(w[:3])),
+                         'torque_Nm': float(np.linalg.norm(w[3:6]))}
+        return out
+    except Exception:
+        return None
+
+
+def _planned_correction_mm(monitor, goal12):
+    """How far each flange would actually move if ``goal12`` were executed.
+
+    ! Measured at the FLANGE, in millimetres, although the move itself is
+    ! commanded in joint values. The two are not interchangeable: -198 deg and
+    ! +162 deg are the same physical pose, so comparing the goal configuration
+    ! against the live one in joint space can report a full turn where nothing
+    ! moves at all -- which is precisely how a standstill got planned as a 360
+    ! deg sweep of the bar. Where the bar ends up is a pose question, so it is
+    ! asked in millimetres, like every other accuracy number in this experiment;
+    ! joint values stay what we hand the controller.
+
+    Args:
+        monitor: The HuskyMonitor node.
+        goal12 (Sequence[float]): The IK goal, left arm then right.
+
+    Returns:
+        dict | None: ``{'left': mm, 'right': mm}``, or None when the ghost
+        robot's poses cannot be read (headless harnesses).
+    """
+    try:
+        live_left, live_right = _live_tool0_poses(monitor)
+        goal_left, goal_right = _tool0_poses_at_conf(monitor, goal12)
+    except Exception:
+        return None
+    return {
+        'left': float(np.linalg.norm(
+            np.asarray(goal_left[0]) - np.asarray(live_left[0]))) * 1e3,
+        'right': float(np.linalg.norm(
+            np.asarray(goal_right[0]) - np.asarray(live_right[0]))) * 1e3,
+    }
+
+
+def _log_residuals(monitor, aim_frames, authored_frames, tag='servo'):
+    """Report the flange error against what the loop aims at AND the authored pose.
+
+    When a grasp mismatch has been split between the arms these differ, and both
+    matter: the first is what servoing can still null out, the second is the
+    honest bar-placement error the take will be scored against. Logging only the
+    first would hide the split; only the second would look like a loop that
+    never converges.
+
+    Args:
+        monitor: The HuskyMonitor node.
+        aim_frames (dict): The targets the IK actually solved to.
+        authored_frames (dict): The movement's authored targets.
+        tag (str): Prefix for the log lines.
+    """
+    try:
+        aim = measure_servo_tool0_error(monitor, aim_frames)
+        monitor.get_logger().info(
+            f"[{tag}] vs aimed targets: L={aim['left']['pos_norm_mm']:.2f} "
+            f"R={aim['right']['pos_norm_mm']:.2f} mm")
+        if authored_frames is not None and authored_frames is not aim_frames:
+            authored = measure_servo_tool0_error(monitor, authored_frames)
+            monitor.get_logger().info(
+                f"[{tag}] vs AUTHORED targets (bar placement): "
+                f"L={authored['left']['pos_norm_mm']:.2f} "
+                f"R={authored['right']['pos_norm_mm']:.2f} mm")
+    except Exception as e:
+        monitor.get_logger().warn(f"[{tag}] could not measure residuals: {e}")
+
+
+def _apply_recommended_traj_time(monitor, excursion_deg):
+    """Set the 'traj time' slider to a duration that suits this path.
+
+    So that forgetting the slider is safe: the recommendation is already in it
+    by the time the confirm pause appears, and dragging it still wins, because
+    the value is re-read live when the move is sent.
+
+    Args:
+        monitor: The HuskyMonitor node.
+        excursion_deg (float): How far the path travels (``_path_motion_summary``).
+
+    Returns:
+        float: The seconds written.
+    """
+    seconds = recommended_traj_time(
+        excursion_deg, getattr(monitor, 'trajectory_time_max', 90))
+    monitor.trajectory_time = seconds
+    sld = getattr(monitor, 'trajectory_time_slider', None)
+    if sld is not None:
+        try:
+            sld.set(seconds)
+        except Exception:
+            pass  # legacy PyBullet sliders cannot be rewritten; the value stands
+    print(f"[servo] traj time set to {seconds:.0f}s for a path travelling "
+          f"{excursion_deg:.1f} deg; drag the slider to override.")
+    return seconds
+
+
 def _live_trajectory_time(monitor):
     """Duration (s) to run the next servoing move over, read live from the slider.
 
@@ -1425,9 +1618,16 @@ def _path_motion_summary(planned_arm_trajectory):
             list of 6-joint waypoints for that arm (``None`` when unplanned).
 
     Returns:
-        tuple[int, float]: ``(n_waypoints, max_joint_delta_deg)`` from the first
-        to the last waypoint across both arms, or ``(0, 0.0)`` when either arm
-        has no path.
+        tuple[int, float, float]: ``(n_waypoints, net_delta_deg,
+        excursion_deg)``, or ``(0, 0.0, 0.0)`` when either arm has no path.
+        ``net_delta_deg`` is first waypoint to last; ``excursion_deg`` is the
+        furthest any joint gets from where it started, over EVERY waypoint.
+
+    ! Read the excursion, not the net delta, when deciding whether a path is
+    ! safe to send. A path that swings far out and returns to its own start has
+    ! a net delta of 0 while travelling the whole way and back -- the servo loop
+    ! used to call such a plan a "tiny correction" and cram 173 waypoints into
+    ! 3 s with a 1.4 m bar in the grippers.
     """
     # A path exists when it is not None AND non-empty. Use `is not None` +
     # `len(...)` (never bool(array)/.any()/.all()): `is not None` is an
@@ -1438,18 +1638,107 @@ def _path_motion_summary(planned_arm_trajectory):
     left_path, right_path = planned_arm_trajectory[0][0], planned_arm_trajectory[1][0]
     if (left_path is None or len(left_path) == 0
             or right_path is None or len(right_path) == 0):
-        return 0, 0.0
+        # Three values, like every other return here: callers unpack by position.
+        return 0, 0.0, 0.0
     # Max joint delta between start (first waypoint) and end (last waypoint)
     max_delta_rad = max(
         float(np.max(np.abs(np.asarray(path[-1], dtype=float)
                             - np.asarray(path[0], dtype=float))))
         for path in (left_path, right_path)
     )
-    return len(left_path), float(np.rad2deg(max_delta_rad))
+    # Same subtraction, but against EVERY waypoint rather than only the last:
+    # `path` is (n_waypoints x 6), so `path - path[0]` gives each joint's offset
+    # from where it started, at every point along the way, and the largest of
+    # those is how far the arm actually travels. One vectorised pass over an
+    # array already in memory (~0.1 us more than the line above).
+    excursion_rad = max(
+        float(np.max(np.abs(np.asarray(path, dtype=float)
+                            - np.asarray(path[0], dtype=float))))
+        for path in (left_path, right_path)
+    )
+    return (len(left_path), float(np.rad2deg(max_delta_rad)),
+            float(np.rad2deg(excursion_rad)))
+
+
+def servo_safeguard_drill(monitor, travel_deg=20.0, n_waypoints=127):
+    """Fire drill: stage a path that goes nowhere the long way, and never send it.
+
+    Proves the safeguard on the real robot without moving it. The staged path has
+    the exact shape of the 2026-09-30 failure -- it starts and ends at the live
+    configuration, so the first-to-last measurement reads ~0 deg, while travelling
+    ``travel_deg`` in between -- and running it exercises the real measurement,
+    the real pause text, the real preview and the real Confirm / Cancel buttons.
+
+    ! There is NO code path here that commands the robot. Confirming reports what
+    ! would have been sent and stops. The staged trajectory is also cleared on the
+    ! way out, so no later 'Exec' button can pick it up.
+
+    Args:
+        monitor: The HuskyMonitor node.
+        travel_deg (float): How far the drill path should travel, in degrees.
+            Keep it above SERVO_EXCURSION_CONFIRM_DEG or the gate correctly
+            stays quiet.
+        n_waypoints (int): Waypoint count; 127 mirrors the real incident.
+
+    Yields:
+        None: One yield per monitor tick while the operator decides.
+    """
+    hi = monitor.huskies[monitor.selected_robot_id].interface
+    live = [np.asarray(hi.arm_joint_pose[i], dtype=float).copy() for i in range(2)]
+
+    # Out and back: sin() is 0 at both ends, so the path returns exactly to the
+    # live configuration -- what made the old safeguard call this "0.0 deg".
+    bump = np.sin(np.linspace(0.0, np.pi, n_waypoints)) * np.radians(travel_deg)
+    paths = []
+    for arm in range(2):
+        path = np.tile(live[arm], (n_waypoints, 1))
+        path[:, 5] = path[:, 5] + bump          # wrist roll, the bar-spinning joint
+        paths.append(path)
+
+    monitor.get_logger().warn(
+        f"[drill] staging a path that travels {travel_deg:.0f} deg and ends where "
+        f"it starts ({n_waypoints} waypoints). NOTHING will be sent to the robot.")
+    monitor.set_arm_trajectory((paths[0], None, monitor.trajectory_time, None), index=0)
+    monitor.set_arm_trajectory((paths[1], None, monitor.trajectory_time, None), index=1)
+    monitor.set_to_show_traj_state()
+
+    n, net_delta_deg, excursion_deg = _path_motion_summary(monitor.planned_arm_trajectory)
+    monitor.get_logger().info(
+        f"[drill] measured: travels {excursion_deg:.1f} deg, ends "
+        f"{net_delta_deg:.1f} deg from where it starts. The old rule compared "
+        f"only first-to-last, so it saw {net_delta_deg:.1f} deg and sent it.")
+    _apply_recommended_traj_time(monitor, excursion_deg)
+
+    if excursion_deg <= SERVO_EXCURSION_CONFIRM_DEG:
+        monitor.get_logger().warn(
+            f"[drill] {excursion_deg:.1f} deg is under the "
+            f"{SERVO_EXCURSION_CONFIRM_DEG} deg threshold, so no pause is due. "
+            f"Re-run with a larger travel_deg to see the gate fire.")
+    else:
+        confirmed = yield from wait_for_operator_confirm(
+            monitor,
+            f'[drill] SAFEGUARD: this path travels {excursion_deg:.1f}° and ends '
+            f'{net_delta_deg:.1f}° from where it starts ({n} waypoints). Scrub '
+            f'"Traj viz time" to watch it sweep, then "Cancel Exec" to end the '
+            f'drill (or "Confirm Exec" -- which still sends nothing).',
+            warn=True,
+        )
+        if confirmed:
+            monitor.get_logger().warn(
+                f"[drill] confirmed -- a real run would now send {n} waypoints "
+                f"over {_live_trajectory_time(monitor):.0f} s. The drill sends "
+                f"nothing.")
+        else:
+            monitor.get_logger().info("[drill] cancelled; nothing was sent.")
+
+    # ! Leave no executable degenerate path behind for an 'Exec' button to find.
+    monitor.planned_arm_trajectory[0] = (None, None, None, None)
+    monitor.planned_arm_trajectory[1] = (None, None, None, None)
+    monitor.get_logger().info("[drill] staged path cleared.")
 
 
 def servo_to_movement_start_live(monitor, max_iters=8, pos_tol_mm=0.2,
-                                 later_iter_traj_time=3.0, settle_seconds=2.0,
+                                 settle_seconds=2.0,
                                  confirm_first_iter=True, use_transfer=False,
                                  log_data=True):
     """Iterative visual-servoing loop to the current M2/M3 movement start pose.
@@ -1468,13 +1757,11 @@ def servo_to_movement_start_live(monitor, max_iters=8, pos_tol_mm=0.2,
     is manually mounted in the grippers it stays mounted across all iterations,
     so every correction move must keep both tool0s rigidly locked to the bar.
 
-    Trajectory duration differs by iteration: the FIRST transit is a large move
-    from wherever the arms are now, so it runs over the "traj time" slider's
-    LIVE value (read via ``_live_trajectory_time`` right before the move, so a
-    drag made during the confirm pause still counts -- 'Load Movement' resets
-    that slider to the role default of 5 s, which is far too fast for the first
-    transfer); every later iteration is a tiny near-target correction and runs
-    over the short ``later_iter_traj_time``.
+    Trajectory duration is set per iteration from how far the planned path
+    actually travels (``_apply_recommended_traj_time``), written into the "traj
+    time" slider before the confirm pause, and then read back LIVE right before
+    the move -- so a forgotten slider runs at a sensible speed and a drag made
+    during the pause still wins.
 
     This is a generator run as a monitor task (``monitor.tasks``); it yields between
     steps so the 20 Hz tick keeps flowing mocap while the arms move. Progress is
@@ -1484,15 +1771,14 @@ def servo_to_movement_start_live(monitor, max_iters=8, pos_tol_mm=0.2,
         monitor: The HuskyMonitor node.
         max_iters (int): Hard cap on servoing iterations.
         pos_tol_mm (float): Stop once both arms' tool0 position error is below this.
-        later_iter_traj_time (float): Trajectory duration (seconds) for iterations
-            after the first. The first iteration uses ``monitor.trajectory_time``.
         settle_seconds (float): Extra time to wait after each trajectory finishes so
             the centre-of-gravity-shifted base settles in the mocap stream before we
             measure. Added on top of the trajectory's own duration.
         confirm_first_iter (bool): If True, pause after planning the first (long)
             move so the operator can preview it via the traj viz slider and click
-            'Confirm Servo Exec' before it runs. Later iterations always run
-            unattended. If False, the whole loop runs without any prompt.
+            'Confirm Servo Exec' before it runs. Later iterations run unattended
+            UNLESS their path travels more than ``SERVO_EXCURSION_CONFIRM_DEG``,
+            which always pauses. If False, the first move takes that same rule.
         use_transfer (bool): If True, every iteration plans with the constrained
             dual-arm transfer planner (bar mounted in the grippers); if False,
             with the free composite transit planner (no bar).
@@ -1542,16 +1828,45 @@ def servo_to_movement_start_live(monitor, max_iters=8, pos_tol_mm=0.2,
 
     data = []
     target = None
+    authored_target = None
+    # Iteration-0 readings every later iteration is reported against. A dict so
+    # the nested _record can write it without a nonlocal declaration.
+    baseline = {'wrench': None}
 
     def _record(iter_i):
         """Measure the residuals, log them, push to the live tracker, store them."""
         err = measure_servo_tool0_error(monitor, target)
         base = measure_base_pose_diff(monitor, start_base_pose)
-        data.append({'iter': iter_i, 'tool0': err, 'base': base})
+        wrench = _wrench_magnitudes(monitor)
+        data.append({'iter': iter_i, 'tool0': err, 'base': base, 'wrench': wrench})
         monitor.push_servoing_tracker(iter_i, err, base)
         monitor.get_logger().info(
             f"[servo {iter_i}] tool0 pos L={err['left']['pos_norm_mm']:.2f} "
             f"R={err['right']['pos_norm_mm']:.2f} mm")
+        # What the arms are carrying, and how that has changed since the loop
+        # started. The bar is rigid and held at both ends, so load that CLIMBS
+        # across iterations is the arms straining it -- the one failure the
+        # position residuals cannot show.
+        if wrench is not None:
+            if baseline.get('wrench') is None:
+                baseline['wrench'] = wrench
+            b = baseline['wrench']
+            monitor.get_logger().info(
+                f"[servo {iter_i}] load L={wrench['left']['force_N']:.1f} N / "
+                f"{wrench['left']['torque_Nm']:.2f} Nm "
+                f"({wrench['left']['force_N'] - b['left']['force_N']:+.1f} N vs "
+                f"iter 0) | R={wrench['right']['force_N']:.1f} N / "
+                f"{wrench['right']['torque_Nm']:.2f} Nm "
+                f"({wrench['right']['force_N'] - b['right']['force_N']:+.1f} N)")
+        # When a grasp mismatch was split, `target` is the reachable pair the
+        # loop drives to zero; the authored pair is the bar placement the take
+        # is scored against. Report both so the split is never silent.
+        if authored_target is not None and authored_target is not target:
+            auth = measure_servo_tool0_error(monitor, authored_target)
+            monitor.get_logger().info(
+                f"[servo {iter_i}] vs AUTHORED (bar placement) "
+                f"L={auth['left']['pos_norm_mm']:.2f} "
+                f"R={auth['right']['pos_norm_mm']:.2f} mm")
         return err
 
     # * the visual servoing iterations
@@ -1573,13 +1888,36 @@ def servo_to_movement_start_live(monitor, max_iters=8, pos_tol_mm=0.2,
         if not monitor.ik_live_base_for_selected_movement():
             monitor.get_logger().warn('Servoing: live-base IK failed; stopping.')
             break
+
+        # Step 1b: is there anything left to ask for? Compare the flanges at the
+        # IK goal with the flanges right now. Below half a millimetre the arms
+        # are already where the plan would put them, and handing a randomised
+        # planner a zero-length problem is exactly what produced 127-waypoint
+        # sweeps of the bar that began and ended in the same place. Stop instead,
+        # leaving the movement loaded and the bar attached so 'Record + Fit +
+        # Viz' works straight away.
+        goal12 = np.concatenate([monitor.goal_arm_pose[0], monitor.goal_arm_pose[1]])
+        correction_mm = _planned_correction_mm(monitor, goal12)
+        if correction_mm is not None and max(correction_mm.values()) < SERVO_MIN_CORRECTION_MM:
+            monitor.get_logger().info(
+                f'### SERVOING stopped at iter {it}: nothing left to plan '
+                f'(correction L={correction_mm["left"]:.2f} R={correction_mm["right"]:.2f} mm, '
+                f'under {SERVO_MIN_CORRECTION_MM} mm).')
+            _log_residuals(monitor, target, authored_target, tag=f'servo {it}')
+            break
+
         # Step 2: replan the move to that goal — a bar-held constrained transfer
         # (Button 2b) when the bar is mounted, else a free transit (Button 2).
         # The transfer safeguard plot is only worth showing on the first (large)
         # move; later iterations are tiny near-target corrections, so suppress
         # the validation plot there (it == 1 only).
         if use_transfer:
-            monitor.replan_transfer_to_movement_start_live(show_validation=(it == 1))
+            # Iteration 1 is the long move onto the bar's target and may have to
+            # go around something, so it explores (the sampling planner). Every
+            # later iteration is a small correction that should be carried
+            # straight there, with both flanges locked to the bar.
+            monitor.replan_transfer_to_movement_start_live(
+                show_validation=(it == 1), prefer_linear=(it > 1))
         else:
             monitor.replan_free_to_movement_start_live()
 
@@ -1600,43 +1938,54 @@ def servo_to_movement_start_live(monitor, max_iters=8, pos_tol_mm=0.2,
             if not target or 'left' not in target or 'right' not in target:
                 monitor.get_logger().warn('Servoing: no target EE frames; stopping.')
                 break
+            # The authored pair, kept separately: when a grasp mismatch has been
+            # split between the arms, `target` is the reachable pair the loop
+            # converges on and this is the one the bar is finally scored against.
+            authored_target = copy.deepcopy(
+                getattr(monitor, '_authored_ik_target_ee_frames', None)) or target
             _record(0)
 
         # The first transit is a big move from wherever the arms are now: pause
         # (while still yielding, so the traj viz slider keeps previewing the
         # planned path) until the operator clicks 'Confirm Servo Exec'. Later
         # iterations are short near-target corrections and run unattended.
+        # Set the 'traj time' slider to a duration that suits how far this path
+        # really travels, before any pause, so a forgotten slider still runs at a
+        # sane speed -- and a drag during the pause still wins (the value is
+        # re-read live at send time).
+        n_waypoints, net_delta_deg, excursion_deg = _path_motion_summary(
+            monitor.planned_arm_trajectory)
+        _apply_recommended_traj_time(monitor, excursion_deg)
+
         if it == 1 and confirm_first_iter:
-            n_waypoints, max_delta_deg = _path_motion_summary(
-                monitor.planned_arm_trajectory)
             yield from wait_for_operator_confirm(
                 monitor,
-                f"[servo] First move planned: {n_waypoints} waypoints, max joint "
-                f"delta {max_delta_deg:.1f} deg, over "
-                f"{_live_trajectory_time(monitor):.0f} s. Preview it with the "
-                f"traj viz slider; drag 'traj time' now if that is too fast (it "
-                f"is re-read when you confirm), then click 'Confirm Exec' to "
-                f"execute (later iterations run automatically).")
+                f"[servo] First move planned: {n_waypoints} waypoints, travels "
+                f"{excursion_deg:.1f} deg (ends {net_delta_deg:.1f} deg from "
+                f"where it starts), over {_live_trajectory_time(monitor):.0f} s. "
+                f"Preview it with the traj viz slider; drag 'traj time' now if "
+                f"that is too fast (it is re-read when you confirm), then click "
+                f"'Confirm Exec' to execute.")
 
         # Abort requested during the confirm pause (or otherwise): stop before
         # sending the first move to the robot.
         if _aborted():
             break
 
-        # * Safeguard: any iteration's plan with >10 waypoints or >5° max joint
-        # * delta requires operator confirmation (prevents unexpected large moves).
-        # * This catches servo iterations where stale state might cause wrong plans.
-        n_waypoints, max_delta_deg = _path_motion_summary(
-            monitor.planned_arm_trajectory)
+        # * Safeguard: a plan that TRAVELS more than SERVO_EXCURSION_CONFIRM_DEG
+        # * needs operator confirmation. Judged on the excursion, never on the
+        # * waypoint count (a dense path can be harmless) nor on the first-to-last
+        # * delta (a path that swings out and returns reads 0 and is not).
         if n_waypoints:
-            needs_confirm = (n_waypoints > 10 or max_delta_deg > 5.0)
-            if needs_confirm and (it > 1 or not confirm_first_iter):
-                # Iteration > 1 OR first iter without confirm: safeguard pause
+            if excursion_deg > SERVO_EXCURSION_CONFIRM_DEG and (it > 1 or not confirm_first_iter):
                 yield from wait_for_operator_confirm(
                     monitor,
-                    f'[servo] SAFEGUARD: large/long motion detected iter {it}: '
-                    f'{n_waypoints} waypoints, max joint delta {max_delta_deg:.1f}°. '
-                    f'Preview with the slider, then click "Confirm Exec" to proceed.',
+                    f'[servo] SAFEGUARD iter {it}: this path travels '
+                    f'{excursion_deg:.1f}° and ends {net_delta_deg:.1f}° from where '
+                    f'it starts ({n_waypoints} waypoints, over '
+                    f'{_live_trajectory_time(monitor):.0f} s). Scrub "Traj viz time" '
+                    f'to see it, adjust "traj time" if needed, then click '
+                    f'"Confirm Exec" -- or "Cancel Exec" to stop and record instead.',
                     warn=True,
                 )
                 if _aborted():
@@ -1648,11 +1997,10 @@ def servo_to_movement_start_live(monitor, max_iters=8, pos_tol_mm=0.2,
         if it == 1:
             monitor.show_servoing_tracker()
 
-        # First transit is a big move (use the slider time, re-read here so a
-        # drag made during the confirm pause counts); later iterations are tiny
-        # near-target corrections (use the short later_iter_traj_time).
-        traj_time = (_live_trajectory_time(monitor) if it == 1
-                     else later_iter_traj_time)
+        # Every iteration uses the slider, re-read here so a drag made during the
+        # confirm pause counts. It was set to this path's recommended time above,
+        # so forgetting to touch it is safe; dragging it overrides.
+        traj_time = _live_trajectory_time(monitor)
 
         # Execute both arms, then wait out the whole motion + a settle margin.
         # ! We wait by TIME, not by hi.is_arm_executing: that flag clears after
@@ -2203,15 +2551,13 @@ def plan_both_arms_to_goal(monitor, use_composite=False, debug=False,
         )
         start_12 = np.concatenate([start_left, start_right])
         raw_goal_12 = np.concatenate([left_conf, right_conf])
-        two_pi = 2.0 * np.pi
-        unwrapped_goal_12 = raw_goal_12 - np.round((raw_goal_12 - start_12) / two_pi) * two_pi
-        max_wrap_delta = float(np.max(np.abs(raw_goal_12 - unwrapped_goal_12)))
-        if max_wrap_delta > 1e-6:
-            wrapped_joints = np.where(np.abs(raw_goal_12 - unwrapped_goal_12) > 1e-6)[0]
+        unwrapped_goal_12, max_wrap_delta, wrapped_joints = unwrap_goal_to_start(
+            raw_goal_12, start_12)
+        if wrapped_joints:
             print(
                 f"[composite plan] unwrapped goal to +/- pi of start "
                 f"(max wrap correction {max_wrap_delta:.4f} rad on "
-                f"{len(wrapped_joints)} joint(s) at indices {wrapped_joints.tolist()})."
+                f"{len(wrapped_joints)} joint(s) at indices {wrapped_joints})."
             )
 
         # * Pass a compas Configuration as the goal so `_conf12_from_target` in
@@ -3090,6 +3436,95 @@ def _live_tool0_poses(monitor):
     finally:
         pp.set_joint_positions(ghost, left_joints, saved_left)
         pp.set_joint_positions(ghost, right_joints, saved_right)
+
+
+def grasp_mismatch(authored_left, authored_right, held_left, held_right):
+    """How far an authored tool0 target pair is from the grasp actually held.
+
+    Both grippers hold ONE rigid bar, so the transform between the flanges is
+    fixed by the physical grasp. If the authored pair implies a different
+    transform, the two targets cannot both be reached, and this is the size of
+    that impossibility.
+
+    The single implementation behind two users: the servo loop splits the
+    discrepancy between the arms before solving IK, and
+    ``_verify_transfer_endpoint``'s check D reports it after planning.
+
+    Args:
+        authored_left (Frame): Authored world tool0 target, left arm.
+        authored_right (Frame): Authored world tool0 target, right arm.
+        held_left: Left tool0 pose actually held, as a pybullet pose or a Frame.
+        held_right: Right tool0 pose actually held, same form.
+
+    Returns:
+        dict: ``held_rel`` (left->right transform the bar imposes),
+        ``offset`` (world-frame vector from where the right flange would land
+        to where it is authored, metres), ``pos`` (its magnitude) and ``ang``
+        (rotation discrepancy, radians).
+    """
+    def _pose(x):
+        return x if isinstance(x, tuple) else pose_from_frame(x)
+
+    a_left, a_right = _pose(authored_left), _pose(authored_right)
+    held_rel = pp.multiply(pp.invert(_pose(held_left)), _pose(held_right))
+    # Where the right flange lands if the left one is exactly on target.
+    predicted_right = pp.multiply(a_left, held_rel)
+    offset = (np.asarray(a_right[0], dtype=float)
+              - np.asarray(predicted_right[0], dtype=float))
+    # abs() on the dot product: q and -q are the same rotation.
+    q_auth = np.asarray(pp.multiply(pp.invert(a_left), a_right)[1], dtype=float)
+    q_held = np.asarray(held_rel[1], dtype=float)
+    ang = 2.0 * float(np.arccos(np.clip(abs(float(np.dot(q_auth, q_held))), 0.0, 1.0)))
+    return {
+        'held_rel': held_rel,
+        'offset': offset,
+        'pos': float(np.linalg.norm(offset)),
+        'ang': ang,
+    }
+
+
+def split_grasp_mismatch(monitor, authored_left, authored_right):
+    """Share an impossible target pair between the two arms instead of one.
+
+    Left alone, the IK satisfies the left target and leaves the whole
+    discrepancy on the right: the bar pivots about the left grasp, so one end is
+    perfect and the far end carries everything (16.7 mm at the grasp became
+    ~24 mm at the bar tip on B37). Moving both targets half way gives a pair
+    consistent with the bar actually held, so the IK can meet BOTH and the bar
+    lands as close to its authored place as a rigid bar allows.
+
+    Args:
+        monitor: The HuskyMonitor node.
+        authored_left (Frame): Authored world tool0 target, left arm.
+        authored_right (Frame): Authored world tool0 target, right arm.
+
+    Returns:
+        tuple[dict, float]: ``({'left': Frame, 'right': Frame}, mismatch_m)``.
+        The authored pair comes back unchanged when the mismatch is under
+        ``SERVO_GRASP_SPLIT_MM`` or the live poses cannot be read.
+    """
+    authored = {'left': authored_left, 'right': authored_right}
+    try:
+        live_left, live_right = _live_tool0_poses(monitor)
+    except Exception as e:
+        monitor.get_logger().warn(
+            f"[servo] cannot read the held grasp ({e}); aiming at the authored "
+            f"targets unchanged.")
+        return authored, 0.0
+
+    m = grasp_mismatch(authored_left, authored_right, live_left, live_right)
+    if m['pos'] < SERVO_GRASP_SPLIT_MM * 1e-3:
+        return authored, m['pos']
+
+    # Meet in the middle: shift the left target half way toward the authored
+    # right, then derive the right from the bar actually held, so the pair is
+    # reachable by construction.
+    left_pose = pose_from_frame(authored_left)
+    split_left = ((np.asarray(left_pose[0], dtype=float) + m['offset'] / 2.0).tolist(),
+                  left_pose[1])
+    split_right = pp.multiply(split_left, m['held_rel'])
+    return ({'left': frame_from_pose(split_left),
+             'right': frame_from_pose(split_right)}, m['pos'])
 
 
 def _execute_rigid_chunk(monitor, rigid_path12, t_rigid, on_tick=None,

@@ -7,7 +7,7 @@
 import sys, re
 print(f"Running with Python: {sys.executable}")
 
-from collections import defaultdict
+from collections import defaultdict, deque
 import os
 import time, copy
 import threading
@@ -193,6 +193,11 @@ M2_COMPLIANT_SPLIT_MM_MAX = 30.0
 M3_REPLAN_MAX_STEP_DISTANCE = 0.001   # m
 M3_REPLAN_MAX_STEP_ANGLE = 0.05       # rad
 
+# * Shortest gap between two "[traj viz] waypoint i/N" lines. Dragging the
+# * preview slider steps through a waypoint per pixel, so this keeps the drag
+# * to a few readable lines instead of one per waypoint.
+TRAJ_VIZ_REPORT_INTERVAL_S = 0.5
+
 MOVEMENT_TRAJECTORY_TIME_S = {
     'M0': 30.0,
     'M1': 10.0,
@@ -204,6 +209,11 @@ MOVEMENT_TRAJECTORY_TIME_S = {
 # Legend for the "planned joint values" preview plot. A BarAction trajectory
 # waypoint is always a 12-vec (left arm's 6 joints, then the right arm's), in
 # the shoulder -> wrist order of HUSKY_DUAL_UR5e_JOINT_NAMES.
+# Wrench samples kept, by the plots AND by the profile replayed into them on a
+# UI rebuild. At the ~20 Hz tick this is ~7 minutes, which covers the 300 s M2
+# stall ceiling; a continuously-running FT watch then rolls instead of growing.
+WRENCH_HISTORY_SAMPLES = 8192
+
 PLANNED_JOINT_PLOT_LABELS = [
     f'{side} {name}' for side in ('L', 'R')
     for name in ('pan', 'lift', 'elbow', 'w1', 'w2', 'w3')
@@ -1124,6 +1134,52 @@ class HuskyMonitor(Node):
             return None
         return (force, self.compliant_torque_plot)
 
+    def zero_force_sensors(self):
+        """Tare both arms' force/torque sensors.
+
+        ! Only correct with nothing but the tool in hand: zeroing while the bar
+        ! is gripped tares away the bar's weight, which is exactly the load that
+        ! reveals it bending later.
+        """
+        h = self.huskies[self.selected_robot_id]
+        n = 2 if h.dual_arm else 1
+        ok = [h.interface.zero_ft_sensor(i) for i in range(n)]
+        if all(ok):
+            self.get_logger().info(
+                f"Zeroed {n} force/torque sensor(s). Do this with the tool EMPTY "
+                f"-- taring with the bar held hides its weight.")
+
+    def toggle_ft_watch(self):
+        """Start/stop streaming the live tool0 wrench into the force plots.
+
+        The same plots the compliant executions draw into, fed from the FT
+        subscription that runs regardless of the compliance stack. Useful while
+        the arms hold the bar and stand still: a force or torque that climbs
+        with no motion is the bar being strained.
+        """
+        on = not getattr(self, '_ft_watch_active', False)
+        self._ft_watch_active = on
+        if on:
+            self.reset_compliant_wrench(label='live FT watch')
+            self._ft_watch_start = time.time()
+            self.get_logger().info(
+                "FT watch ON: live wrench -> the force/torque plots. These are "
+                "RAW readings, so read them for CHANGE, not absolute force.")
+        else:
+            self.get_logger().info("FT watch OFF.")
+
+    def _service_ft_watch(self):
+        """Push one live wrench sample per tick while the FT watch is on."""
+        if not getattr(self, '_ft_watch_active', False):
+            return
+        try:
+            hi = self.huskies[self.selected_robot_id].interface
+            self.push_compliant_wrench(
+                time.time() - self._ft_watch_start,
+                list(hi.arm_ft_sensor[0]), list(hi.arm_ft_sensor[1]))
+        except Exception:
+            pass  # a missing sensor must never take the monitor tick down
+
     def reset_compliant_wrench(self, label=''):
         """Start recording a fresh wrench profile and show the plots.
 
@@ -1135,7 +1191,14 @@ class HuskyMonitor(Node):
             label (str): Short tag for the run (e.g. movement id), kept with the
                 samples so a redraw after a UI rebuild still knows what it shows.
         """
-        self._compliant_wrench_data = {'label': label, 'samples': []}
+        # ! Bounded, and to the SAME depth the plots keep. This profile is
+        # ! replayed sample-by-sample on every UI rebuild
+        # ! (_repopulate_compliant_wrench, called from build_ui, which the servo
+        # ! loop triggers twice per iteration), so an unbounded list would grow
+        # ! the rebuild cost and the memory without end during a long watch --
+        # ! and anything past the plots' own ring buffer is never drawn anyway.
+        self._compliant_wrench_data = {
+            'label': label, 'samples': deque(maxlen=WRENCH_HISTORY_SAMPLES)}
         plots = self._compliant_wrench_plots()
         if plots is None:
             return
@@ -1162,7 +1225,8 @@ class HuskyMonitor(Node):
         """
         data = getattr(self, '_compliant_wrench_data', None)
         if data is None:
-            data = self._compliant_wrench_data = {'label': '', 'samples': []}
+            data = self._compliant_wrench_data = {
+                'label': '', 'samples': deque(maxlen=WRENCH_HISTORY_SAMPLES)}
         sample = (float(elapsed_s),
                   [float(v) for v in left_wrench],
                   [float(v) for v in right_wrench])
@@ -1192,7 +1256,11 @@ class HuskyMonitor(Node):
             return
         for plot in plots:
             plot.reset()
-        for sample in data['samples']:
+        # ! Iterate a SNAPSHOT. A rebuild can land while the live FT watch is
+        # ! streaming at 20 Hz, and replaying straight from the buffer then reads
+        # ! it while it is being appended to -- which a list quietly mis-replays
+        # ! and a bounded deque refuses outright.
+        for sample in list(data['samples']):
             self._draw_compliant_wrench_sample(*sample)
         for plot in plots:
             plot.set_visible(True)
@@ -3623,7 +3691,8 @@ class HuskyMonitor(Node):
             f"from {donor_mv.movement_id!r}: {injected}.")
         return bool(bar_rb.attached_to_link)
 
-    def replan_transfer_to_movement_start_live(self, show_validation=True):
+    def replan_transfer_to_movement_start_live(self, show_validation=True,
+                                               prefer_linear=False):
         """Fresh live-base IK to the movement's start EE targets, then a
         CONSTRAINED dual-arm ("transfer") plan from the live conf to that
         IK-solved conf, keeping the mounted bar's rigid grasp intact.
@@ -3643,7 +3712,17 @@ class HuskyMonitor(Node):
         bar to be attached in the movement's start_state — that attachment
         is what makes the planner treat the bar as held.
 
+        Two planners, by job. The SAMPLING one (default, and what the first
+        servo iteration uses) explores, which is what a long first transfer
+        from the bar-loading pose needs. ``prefer_linear`` instead carries the
+        bar STRAIGHT to its target, solving each fragment's IK from the previous
+        one -- right for the small corrections that follow, where exploring
+        produces a long detour back to almost where it started. If the straight
+        line cannot be solved, this warns and falls back to the sampling planner.
+
         Args:
+            prefer_linear (bool): Try the straight-line bar move first. The
+                servo loop sets this for every iteration after the first.
             show_validation (bool): When True (button default), draw the
                 pre-execution safeguard curves (joint continuity + bar-hold
                 EE drift) in the "Movement Preview" DPG window and log a
@@ -3711,24 +3790,67 @@ class HuskyMonitor(Node):
                 # own goal IK.
                 state = mv.start_state.copy()
                 self._inject_live_conf_into_state(state)
-                goal_conf = conf_from_12vec(np.concatenate(
-                    [self.goal_arm_pose[0], self.goal_arm_pose[1]]))
-                path, info = plan_constrained_dual_arm(
-                    self.cfab.planner, state,
-                    active_bar_id=self.active_bar_name,
-                    goal_conf=goal_conf,
-                    stage=M1_PLANNER_STAGE,
-                    position_res=CDFM_POSITION_RES,
-                    rotation_res=CDFM_ROTATION_RES,
-                    max_time=120.0,
-                )
-                if path is None:
-                    self.get_logger().warn(
-                        f"[transfer plan] constrained plan failed: "
-                        f"{info.get('failure_reason', 'unknown')}."
+                # ! Rewrite any joint the IK returned a full turn off the live
+                # ! one. The pose is identical either way, but left raw it makes
+                # ! a standstill measure as a 360 deg journey -- and the planner,
+                # ! which turns this conf into a bar POSE, then gets handed a
+                # ! zero-motion task it has no exit for. Same correction the free
+                # ! transit applies (world.plan_both_arms_to_goal).
+                start12 = np.concatenate(
+                    [[float(state.robot_configuration[n]) for n in names]
+                     for names in self._arm_joint_name_sets()])
+                goal12, wrap_rad, wrapped = world.unwrap_goal_to_start(
+                    np.concatenate([self.goal_arm_pose[0], self.goal_arm_pose[1]]),
+                    start12)
+                if wrapped:
+                    print(f"[transfer plan] unwrapped goal to +/- pi of the live "
+                          f"conf (max {wrap_rad:.3f} rad on joints {wrapped}).")
+                goal_conf = conf_from_12vec(goal12)
+                # * A correction wants the bar carried STRAIGHT to its target:
+                # * interpolate the bar pose from where it is now to where the
+                # * targets put it, and solve each fragment's IK from the
+                # * previous one, so both flanges stay locked to the grasp
+                # * actually held. The sampling planner explores instead, which
+                # * on a near-zero correction means a long detour back to where
+                # * it started (60 deg travelled to close 0.6 deg).
+                path = None
+                if prefer_linear:
+                    jt = plan_constrained_dual_arm_linear(
+                        self.cfab.planner, state,
+                        active_bar_id=self.active_bar_name,
+                        goal_ee_frames=self._last_ik_target_ee_frames,
+                        skip_env_collisions=False,
                     )
-                    return
-                print(f"[transfer plan] OK ({len(path)} waypoints, bar-held).")
+                    path = path_12_from_joint_trajectory(jt) if jt is not None else None
+                    if path:
+                        print(f"[transfer plan] OK ({len(path)} waypoints, "
+                              f"bar-held, LINEAR).")
+                    else:
+                        self.get_logger().warn(
+                            "[transfer plan] the straight-line bar move could not "
+                            "be solved (IK or collision along the line), so the "
+                            "SAMPLING planner is being used instead. It explores, "
+                            "so the path may travel much further than the "
+                            "correction needs -- check the SAFEGUARD figures "
+                            "before confirming.")
+                if not path:
+                    path, info = plan_constrained_dual_arm(
+                        self.cfab.planner, state,
+                        active_bar_id=self.active_bar_name,
+                        goal_conf=goal_conf,
+                        stage=M1_PLANNER_STAGE,
+                        position_res=CDFM_POSITION_RES,
+                        rotation_res=CDFM_ROTATION_RES,
+                        max_time=120.0,
+                    )
+                    if path is None:
+                        self.get_logger().warn(
+                            f"[transfer plan] constrained plan failed: "
+                            f"{info.get('failure_reason', 'unknown')}."
+                        )
+                        return
+                    print(f"[transfer plan] OK ({len(path)} waypoints, bar-held, "
+                          f"sampled).")
 
                 # Fill the same trajectory slots Button 2 fills, so 'Exec
                 # Both Arm Trajs' and the servoing loop pick the path up
@@ -6587,14 +6709,13 @@ class HuskyMonitor(Node):
         # physical grasp, so the two authored targets can only BOTH be reached
         # if they imply that same relative transform. Whatever is left over
         # here is a residual the transfer servo loop can never null out.
+        # Same helper the servo loop splits with, so the number reported here
+        # and the one acted on there can never drift apart.
         start_state = _state_at(np.asarray(path12[0], dtype=float))
-        authored_rel = (Transformation.from_frame(targets['left']).inverted()
-                        * Transformation.from_frame(targets['right']))
-        held_rel = (Transformation.from_frame(_tool0(start_state, 'left')).inverted()
-                    * Transformation.from_frame(_tool0(start_state, 'right')))
-        delta = Frame.from_transformation(authored_rel.inverted() * held_rel)
-        d_pos = float(np.linalg.norm(list(delta.point)))
-        d_ang = 2.0 * float(np.arccos(min(max(abs(float(delta.quaternion.w)), 0.0), 1.0)))
+        mismatch = world.grasp_mismatch(
+            targets['left'], targets['right'],
+            _tool0(start_state, 'left'), _tool0(start_state, 'right'))
+        d_pos, d_ang = mismatch['pos'], mismatch['ang']
         print(
             f"[transfer verify D] authored left->right relative tool0 vs the "
             f"one physically held: pos={d_pos * 1000:.2f} mm "
@@ -6602,13 +6723,11 @@ class HuskyMonitor(Node):
         )
         if d_pos > 0.002:
             self.get_logger().warn(
-                f"[transfer verify] The mounted bar's grasp does not match the "
-                f"authored one by {d_pos * 1000:.1f} mm. Both arms hold ONE "
-                f"rigid bar, so both authored tool0 targets cannot be reached "
-                f"at once: the planner puts the LEFT arm on target and the "
-                f"RIGHT arm absorbs the whole mismatch. Expect ~this much "
-                f"steady-state right-arm error in the servoing tracker, and no "
-                f"amount of extra iterations will remove it."
+                f"[transfer verify] Mounted grasp differs from the authored one "
+                f"by {d_pos * 1000:.1f} mm, so both tool0 targets cannot be met "
+                f"at once. The servo loop splits it: ~{d_pos * 1000 / 2:.1f} mm "
+                f"per flange. The remainder is the grasp, not the servoing -- "
+                f"more iterations will not remove it."
             )
 
     def _check_inter_ee_invariance(self, jt, template_state):
@@ -6729,12 +6848,27 @@ class HuskyMonitor(Node):
             side: src.target_ee_frames[side]
             for side, src in sources.items() if src is not None
         } or None
-        # Cache the authored target EE frames on self so
-        # `replan_free_to_movement_start_live`'s endpoint verification can
-        # compare the composite plan's final tool0 poses back against the
-        # authored targets that drove this IK call.
-        self._last_ik_target_ee_frames = start_ee_frames
         missing = [side for side, src in sources.items() if src is None]
+
+        # ! One rigid bar in two grippers fixes the transform between the
+        # ! flanges, so authored targets that disagree with the mounted grasp
+        # ! cannot BOTH be met. Left alone the IK satisfies the left and dumps
+        # ! the whole discrepancy on the right, pivoting the bar about the left
+        # ! grasp. Share it instead: the split pair is reachable, so the loop
+        # ! converges on it and the bar lands as close to its authored place as
+        # ! a rigid bar allows.
+        self._authored_ik_target_ee_frames = start_ee_frames
+        if start_ee_frames is not None and not missing:
+            start_ee_frames, mismatch_m = world.split_grasp_mismatch(
+                self, start_ee_frames['left'], start_ee_frames['right'])
+            if mismatch_m * 1e3 >= world.SERVO_GRASP_SPLIT_MM:
+                self.get_logger().warn(
+                    f"[servo] mounted grasp differs from authored by "
+                    f"{mismatch_m * 1e3:.1f} mm; split between the arms "
+                    f"(~{mismatch_m * 1e3 / 2:.1f} mm per flange).")
+        # Cache the targets this IK actually solved to, so the endpoint
+        # verification and the servo tracker compare against the same pair.
+        self._last_ik_target_ee_frames = start_ee_frames
         if missing:
             # No authored data to aim at -- warn and do nothing rather than
             # silently falling back to an FK-derived (drifting) target.
@@ -6853,7 +6987,27 @@ class HuskyMonitor(Node):
             return
         labeled = copy.deepcopy(self._mocap_labeled_marker_cache[rb_mocap_name])
         # Minimal take payload; matches the field offline analysis reads.
-        self.marker_set_data.append({rb_mocap_name: labeled})
+        take = {rb_mocap_name: labeled}
+        # Tool-flange load at the instant of the take. With one bar held by both
+        # grippers, a take made while the arms strain it is not the same
+        # measurement as one made on a clean hold -- and once the session is over
+        # the saved numbers are the only way to tell them apart. Raw wrenches so
+        # nothing is lost, magnitudes alongside for reading at a glance.
+        try:
+            hi = self.huskies[self.selected_robot_id].interface
+            mags = world._wrench_magnitudes(self) or {}
+            take['tool_ft'] = {
+                'left_raw': [float(v) for v in hi.arm_ft_sensor[0]],
+                'right_raw': [float(v) for v in hi.arm_ft_sensor[1]],
+                'left_force_N': mags.get('left', {}).get('force_N'),
+                'left_torque_Nm': mags.get('left', {}).get('torque_Nm'),
+                'right_force_N': mags.get('right', {}).get('force_N'),
+                'right_torque_Nm': mags.get('right', {}).get('torque_Nm'),
+            }
+        except Exception as e:
+            take['tool_ft'] = None
+            self.get_logger().warn(f"take recorded without a force reading: {e}")
+        self.marker_set_data.append(take)
 
         try:
             fit = fit_bar_from_markerset(labeled)
@@ -6863,10 +7017,14 @@ class HuskyMonitor(Node):
         uids = draw_marker_take_in_pp(labeled, fit)
         self._bar_holding_fit_line_uids.extend(uids)
         ocf = fit['ocf_position']
+        ft = take.get('tool_ft') or {}
+        load = (f" | load L={ft['left_force_N']:.1f}N/{ft['left_torque_Nm']:.2f}Nm "
+                f"R={ft['right_force_N']:.1f}N/{ft['right_torque_Nm']:.2f}Nm"
+                if ft.get('left_force_N') is not None else "")
         self.get_logger().info(
             f"[bar take, shared viz] ocf=({ocf[0]:.3f},{ocf[1]:.3f},{ocf[2]:.3f}) m | "
             f"max_resid={fit['center_to_line_dist_max_m']*1000:.2f} mm | "
-            f"bar_len={fit['bar_length_observed']:.4f} m"
+            f"bar_len={fit['bar_length_observed']:.4f} m{load}"
         )
 
     def save_bar_holding_marker_data(self):
@@ -7561,7 +7719,11 @@ class HuskyMonitor(Node):
         # Shim Slider: a PyBullet debug param in PyBullet mode, a DPG widget in DPG
         # mode (so it lives in whichever GUI is active). Its callback updates
         # self.traj_viz_time, which the preview reads in update().
-        self.traj_viz_time_slider = Slider("Traj viz time", self.update_traj_viz_time, 0.0, 1.0, 1.0)
+        # Seed from the current scrub position, not a literal 1.0: reset_ui runs
+        # mid-servo-loop, and snapping the handle back to the end while the ghost
+        # stayed where it was made the slider look broken.
+        self.traj_viz_time_slider = Slider(
+            "Traj viz time", self.update_traj_viz_time, 0.0, 1.0, self.traj_viz_time)
 
         # * Switch the ghost between the goal conf (blue) and the planned
         # * trajectory (green, scrubbed by the slider above). Lives here
@@ -7713,11 +7875,11 @@ class HuskyMonitor(Node):
             self.compliant_force_plot = HistoryPlot(
                 "tool0 force", wrench_labels, "force [N]",
                 parent="compliant_wrench_window", group_size=3,
-                palette=wrench_palette, history=8192)
+                palette=wrench_palette, history=WRENCH_HISTORY_SAMPLES)
             self.compliant_torque_plot = HistoryPlot(
                 "tool0 torque", wrench_labels, "torque [Nm]",
                 parent="compliant_wrench_window", group_size=3,
-                palette=wrench_palette, history=8192)
+                palette=wrench_palette, history=WRENCH_HISTORY_SAMPLES)
             for plot in (self.compliant_force_plot, self.compliant_torque_plot):
                 plot.set_visible(wrench_visible)
             self._repopulate_compliant_wrench()
@@ -7980,6 +8142,20 @@ class HuskyMonitor(Node):
             # prevents anything further being sent.
             self.buttons.append(Button('Cancel Exec',
                 lambda: setattr(self, '_servo_abort', True)))
+
+            # ! Tare with the tool EMPTY -- zeroing while the bar is gripped
+            # ! subtracts the bar's own weight, which is the load that shows it
+            # ! bending. So: Step A, before mounting.
+            self.buttons.append(Button('Zero Force Sensor (BOTH)',
+                                       self.zero_force_sensors))
+            # Live force/torque trace, for watching the bar take load while the
+            # arms stand still.
+            self.buttons.append(Button('Toggle FT Watch (live)',
+                                       self.toggle_ft_watch))
+            # Fire drill for the servo safeguard: stages a path shaped like the
+            # 2026-09-30 failure and runs the real gate. Sends nothing, ever.
+            self.buttons.append(Button('Safeguard Drill (sends nothing)',
+                lambda: self.tasks.append(world.servo_safeguard_drill(self))))
 
             # M2 hands over from the rigid joint controller to compliance this
             # far short of the assembled pose. Read live at execution time.
@@ -8429,7 +8605,18 @@ class HuskyMonitor(Node):
         # self.assembly_goal_position_slider_group.update()
             
         # preview_time = p.readUserDebugParameter(self.time_slider)
-        preview_time = self.traj_viz_time  # updated by update_traj_viz_time (both UI modes)
+        # Read the widget itself, not just the callback-updated attribute: this
+        # slider is rebuilt by reset_ui on every live-base IK (twice per servo
+        # iteration), and a freshly rebuilt widget can miss the next drag's
+        # callback -- which leaves the preview frozen exactly when it is the only
+        # way to see what is about to be executed. Same live re-read as every
+        # other execution-relevant slider.
+        sld = getattr(self, 'traj_viz_time_slider', None)
+        if sld is not None:
+            v = sld.value
+            if v is not None:
+                self.traj_viz_time = float(v)
+        preview_time = self.traj_viz_time
         goal_base_pose = self.goal_base_pose
         # Preview must not mutate self.goal_arm_pose; planners consume that
         # field as the actual target configuration.
@@ -8466,6 +8653,18 @@ class HuskyMonitor(Node):
                     
                     if arm_traj_idx < len(self.planned_arm_trajectory[i][0]) and len(self.planned_arm_trajectory[i][0]) > 0:
                         goal_arm_pose[i] = self.planned_arm_trajectory[i][0][arm_traj_idx]
+                    # Say which waypoint is on screen when it changes, AND how far
+                    # that waypoint sits from the path's start -- otherwise a
+                    # preview with nothing to show and a scrub that is not being
+                    # applied look identical.
+                    if i == 0 and arm_traj_idx != getattr(self, '_last_previewed_waypoint', None):
+                        self._last_previewed_waypoint = arm_traj_idx
+                        # Reported after the ghost is actually posed, below.
+                        path = self.planned_arm_trajectory[i][0]
+                        self._traj_viz_report = (
+                            arm_traj_idx, N,
+                            np.asarray(path[arm_traj_idx], dtype=float),
+                            np.asarray(path[0], dtype=float))
 
                     # we don't do interpolation here bc I want to see the exact trajectory points
                     # dt = arm_traj_idx_float - arm_traj_idx
@@ -8485,6 +8684,37 @@ class HuskyMonitor(Node):
         arm_pose = goal_arm_pose if self.goal_model.dual_arm else goal_arm_pose[:1]
         self.goal_model.set_pose(goal_base_pose, arm_pose)
 
+        # Scrub readout, printed only AFTER the ghost has been posed: it reads
+        # the ghost's joints back out of PyBullet, so "the slider moved" and
+        # "the ghost moved" are reported separately instead of being inferred
+        # from each other.
+        # ! Rate-limited. Dragging across a long path steps through a waypoint
+        # ! per pixel, and a line each would bury the terminal -- on the 127
+        # ! waypoint path this was written for, one drag printed 127 lines. A
+        # ! few lines per second still answer the question it exists for: is the
+        # ! scrub being applied at all, or does this path simply not move?
+        report = getattr(self, '_traj_viz_report', None)
+        if report is not None and (
+                time.time() - getattr(self, '_traj_viz_reported_at', 0.0)
+                >= TRAJ_VIZ_REPORT_INTERVAL_S):
+            self._traj_viz_reported_at = time.time()
+            self._traj_viz_report = None
+            idx, n_pts, want, first = report
+            try:
+                ghost = self.goal_model.robot
+                shown = np.asarray(pp.get_joint_positions(
+                    ghost, pp.joints_from_names(
+                        ghost, self.goal_model.get_arm_joint_names(index=0))),
+                    dtype=float)
+                gap = float(np.degrees(np.max(np.abs(shown - want))))
+                state = ("ghost matches" if gap < 0.1
+                         else f"GHOST OFF BY {gap:.1f} deg")
+            except Exception as e:
+                state = f"ghost readback failed: {e}"
+            print(f"[traj viz] waypoint {idx + 1}/{n_pts}: L arm "
+                  f"{np.degrees(np.max(np.abs(want - first))):.1f} deg from the "
+                  f"path's start; {state}")
+
         # Drag attached-body ghosts along with the goal_model: pose follows
         # the parent link's FK at the current goal_arm_pose / preview-time
         # interpolation, composed with the stored attachment_frame.
@@ -8495,6 +8725,8 @@ class HuskyMonitor(Node):
             except Exception:
                 pass
                         
+        self._service_ft_watch()
+
         # run tasks
         for t in self.tasks:
             try:

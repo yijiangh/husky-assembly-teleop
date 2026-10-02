@@ -489,6 +489,19 @@ class Slider:
         """
         return _backend().get_value(self._handle)
 
+    def set(self, value):
+        """Move the on-screen handle to ``value``.
+
+        ! Writing a widget fires no on-change callback, so the caller must also
+        ! update whatever attribute that callback would have set.
+        No-op on the legacy PyBullet backend, whose debug sliders cannot be
+        rewritten in place.
+
+        Args:
+            value: The new slider position.
+        """
+        _backend().set_value(self._handle, value)
+
 class SliderGroup:
     def __init__(self, names, action, min_vals, max_vals, current_vals):
         self.names = names

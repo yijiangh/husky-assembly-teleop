@@ -88,7 +88,7 @@ CALIBRATION_BATCHES = ['j0', 'j1', 'validation', 'punch_validation']
 
 # DESIGN_PROBLEM_NAME = '260811_RobArch_demo'
 DESIGN_PROBLEM_NAME = '260929_phase1_retest'
-# DESIGN_PROBLEM_NAME = '2026-05-19_reoriented2'
+# DESIGN_PROBLEM_NAME = '260715_phase1_test'
 
 # Rhino .3dm whose "Environment Obstacles" layer is drawn as the layout-diagram
 # environment (0_/1_ --viewer). Change the filename here to switch environments,
