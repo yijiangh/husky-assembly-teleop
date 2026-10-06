@@ -76,6 +76,8 @@ python3 -m pip list | grep -iE "pybullet.planning|compas.fab|rs.data.structure|h
 
 Set up Zenoh as described in crl-husky's README ([Zenoh](../crl-husky/README.md#zenoh)): `export RMW_IMPLEMENTATION=rmw_zenoh_cpp ROS_DOMAIN_ID=80` in `~/.bashrc`, and the router once.
 
+**Time sync (every control PC, once).** All machines on the lab network keep one time, so TF, logs and recorded data from the robots, the mocap PC and the control PCs line up. The control PCs are the time reference: the robots and the mocap PC follow them. So every PC that runs the monitor must take part, with a fixed IP in `.201`–`.210` reserved in the router and chrony configured as in crl-husky's [TIME_SYNC](../crl-husky/TIME_SYNC.md#control-pc-ubuntu). Check with `chronyc -n sources`: one source is marked `^*`, or none if this PC is the reference itself.
+
 ### Build and run
 
 Build with the venv's Python; otherwise the installed scripts do not use the venv.
@@ -308,8 +310,9 @@ To return to the new monitor, check out its branch, update the submodules and re
    ```
 2. Install the new dependencies: the ROS packages and Python packages in [One-time setup](#one-time-setup). New compared with the old monitor: `viser`, `yourdfpy`, `trimesh`, `async-timeout`, `compas_robots`, and the Zenoh packages.
 3. Switch to Zenoh: set `export RMW_IMPLEMENTATION=rmw_zenoh_cpp ROS_DOMAIN_ID=80` in `~/.bashrc`, replacing any per-robot `ROS_DOMAIN_ID`, and set up the router as described in crl-husky's README ([Zenoh](../crl-husky/README.md#zenoh)).
-4. Build both packages with the venv's Python, as in [Build and run](#build-and-run): `python3 -m colcon build --symlink-install --packages-up-to husky_assembly_teleop` also builds crl-husky.
-5. Verify: `ros2 topic list | grep a200` lists the robots' topics.
+4. Set up time sync on this PC: a fixed IP slot and chrony, as in [Time sync](#one-time-setup) and crl-husky's [TIME_SYNC](../crl-husky/TIME_SYNC.md#control-pc-ubuntu).
+5. Build both packages with the venv's Python, as in [Build and run](#build-and-run): `python3 -m colcon build --symlink-install --packages-up-to husky_assembly_teleop` also builds crl-husky.
+6. Verify: `ros2 topic list | grep a200` lists the robots' topics, and `chronyc -n sources` marks a time source `^*` (or none, if this PC is the reference).
 
 ## Mocap rigid bodies
 
