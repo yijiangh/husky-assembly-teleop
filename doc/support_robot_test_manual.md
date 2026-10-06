@@ -12,6 +12,15 @@ What the buttons do is explained in `doc/support_robot_schedule_manual.md`; this
 document only says what to click and **what you should see**. Tick the boxes as you
 go; anything that does not match "Expect" is worth a note (log lines + what you did).
 
+> **! Transfer workaround in use (since 2026-10-06, until the bar-held transfer planner is ready).**
+> The bar-held transfer planner rarely finds a path, so every J entry runs the transfer as a
+> plain free move **without the bar**: tick
+> `Workaround: plan the transfer as a free move (no bar, from the live arms)` (under
+> `Plan Movement`) once per monitor run. Order of a J entry: **transfer** (empty tools, from the
+> live arms to the insertion start) → **manual mount** (mount the bar by hand there) →
+> **tool grasp** → **insert**. The travel to load is skipped. The flow without the box is kept
+> below under "Later, without the workaround".
+
 ---
 
 ## 0. Before both parts
@@ -171,51 +180,53 @@ its own: it runs with the insert.
       the readout under the `Step` slider reads `step 1/5: B1_J_M0_free_to_load  (dual_free)`.
 - [ ] `traj time` shows the travel to load's default (log `[Movement] traj time -> ...s (default for dual_free)`),
       not 90 s.
-- [ ] **Step 1, travel to load — one click.** The travel to load ends where the transfer starts
-      (the bar-loading pose), and the export leaves that pose open. Choose it with the sliders
-      `Transfer start: home anchor (0:all,1:horiz,2:vert,3:back)`, `Transfer start: slide along bar (m)`,
-      `Transfer start: roll about bar (deg)`, `Transfer start: shift perp. 1 (m)` and
-      `Transfer start: shift perp. 2 (m)` (all at 0 is a fine first try), then click
-      **`Confirm transfer start + plan travel to load`** →
-      `[M1 manual] start adopted -> transfer start / travel-to-load goal. ...`, then
-      `[Plan] 'B1_J_M0_free_to_load': N waypoints stored.` and
-      `Confirm transfer start + plan travel to load: B1_J_M0_free_to_load planned; check the preview, then 'Exec Selected Mv Traj (auto)'.`
-      The travel to load stays loaded: drag `Traj viz time` to preview; `Exec Selected Mv Traj (auto)`
-      → the simulated arms move.
-  - The see-through orange bar follows the sliders only while the transfer is loaded: to see it,
-    first `Step` → 3 (readout `step 4/5: B1_J_M3_CDFM_transfer_to_approach ...`) → `Load Movement`.
-    The button works from either step.
-  - If no arm configuration holds the bar there: `[M1 manual] no arm configuration holds the bar there ...`
-    and `...: transfer start not adopted; nothing planned.` The transfer stays loaded; adjust the
-    sliders and click again. `Transfer start: Confirm manual pose (IK check)` does the same check
-    without planning (for adjusting the pose).
-  - *Planning the travel to load / the transfer depends on the bar-loading pose you picked; with
-    all sliders at 0 both failed in Claude's earlier test (`birrt_failed`, the transfer finding no
-    path) — a planner matter we debug together, not a pass/fail item of this checklist. If they
-    fail, carry on with the steps below.*
-- [ ] Step 2, manual mount (`B1_J_M1_manual_mount_bar`): `Step` → 1 → `Load Movement`. The bar is
-      drawn in the tools at the bar-loading pose. A new button
-      **`Operator done (manual step) -> then Confirm Exec`** appears. Click it → log asks for Confirm.
+- [ ] Tick `Workaround: plan the transfer as a free move (no bar, from the live arms)` (under
+      `Plan Movement`; it keeps its tick when the panel is rebuilt). Skip step 1 (travel to load).
+- [ ] **Transfer, as a free move without the bar** (`B1_J_M3_CDFM_transfer_to_approach`):
+      `Step` → 3 (readout `step 4/5: B1_J_M3_CDFM_transfer_to_approach ...`) → `Load Movement` →
+      `Plan Movement` →
+      `[transfer workaround] free move (no bar) from the live arms to the insertion start; max |goal - stored goal| = ... rad`
+      and `[Plan] 'B1_J_M3_CDFM_transfer_to_approach': N waypoints stored.`
+      - [ ] The preview (`Traj viz time`) starts at the simulated arms and ends with the empty
+            tools at the insertion start (just short of the bar's assembled pose); **no bar** is
+            drawn moving with the tools.
+      - [ ] `Exec Selected Mv Traj (auto)` → the simulated arms go there.
+  - If it reports `no collision-free IK for the insertion start at the live base ...`, the drawn
+    colliding pair says what is in the way; if the free move finds no path, note the log lines —
+    planner matters we look at together, not pass/fail items of this checklist.
+- [ ] Manual mount (`B1_J_M1_manual_mount_bar`): `Step` → 1 → `Load Movement`. The bar is drawn in
+      the tools **at the insertion start** (where the transfer ended — this is where you mount
+      it). A new button **`Operator done (manual step) -> then Confirm Exec`** appears. Click it →
+      log asks for Confirm.
   - [ ] *One-task rule:* while it waits, click `Mark entry done` and `Load entry` → both
         **refused** ("still running or waiting for 'Confirm Exec'").
   - [ ] `Confirm Exec` → `confirmed done by the operator`.
-- [ ] Step 3, tool grasp (`B1_J_M2_tool_grasp_bar`): `Step` → 2 → `Load Movement`; the bar is again
-      drawn in the tools at the bar-loading pose. Button `Tool step: grasp` → `Confirm Exec`. Without hardware
+- [ ] Tool grasp (`B1_J_M2_tool_grasp_bar`): `Step` → 2 → `Load Movement`; the bar is again drawn in
+      the tools at the insertion start. Button `Tool step: grasp` → `Confirm Exec`. Without hardware
       no tool status arrives: either wait for `hit the 30s ceiling ... check the grip`, or click
       `Cancel Exec` → `cancelled by the operator; stopping the motors`. Both end with `STOP sent`.
-- [ ] Step 4, transfer (`B1_J_M3_CDFM_transfer_to_approach`): `Step` → 3 → `Load Movement` →
-      `Plan Movement` → `Exec ...` → the simulated arms move.
-- [ ] Step 5, insert: `Step` → 4 → `Load Movement`. The readout reads
+- [ ] Insert: `Step` → 4 → `Load Movement`. The readout reads
       `step 5/5: B1_J_M5_LM_insert  (+ B1_J_M4_tool_tighten_joint runs with it)` and there is
-      **no** `Mark tool step done` button. `Plan Movement` (or `Load Movement Trajectory`) and preview.
-      No collision is reported between a ground joint (`joint_G1-T20Ground-..._ground`) and the
-      floor (`obstacle_ground`).
+      **no** `Mark tool step done` button. `Plan Movement` → the insert plans from where the
+      transfer ended; preview. No collision is reported between a ground joint
+      (`joint_G1-T20Ground-..._ground`) and the floor (`obstacle_ground`).
       **Do not Exec in Part A** — the compliant insert needs the real controllers (in fake mode
       it would only publish and wait 30 s for a screw stall).
 - [ ] `Mark entry done` → `[Schedule] entry 0 B1_J_joint marked done by Cindy; Cindy's belief <- live.`
       Row 0 turns green, header `1/48`, the slider jumps to 1, and
       `cat "$DRY/progress.json"` shows entry `"0"` = done. A `B1__J.live-solved.json` appears in
       `$DRY/BarActions/` (it holds the trajectories you planned).
+
+*Later, without the workaround (once the bar-held transfer planner is ready; box unticked).* The
+order is then travel to load → manual mount → tool grasp → transfer (bar held) → insert, and the
+travel to load ends at the bar-loading pose, which you choose with the `Transfer start: ...`
+sliders (home anchor, slide along bar, roll about bar, shift perp. 1 / 2; all at 0 is a fine first
+try). **`Confirm transfer start + plan travel to load`** adopts that pose
+(`[M1 manual] start adopted -> transfer start / travel-to-load goal. ...`) and plans the travel to
+load (`... B1_J_M0_free_to_load planned; check the preview, then 'Exec Selected Mv Traj (auto)'.`).
+If no arm configuration holds the bar there, it says so and plans nothing;
+`Transfer start: Confirm manual pose (IK check)` checks a pose without planning. The see-through
+orange bar follows the sliders only while the transfer is loaded.
 
 **Entry 1 — B1 release.** `Load entry`. Two steps: retreat, free move home.
 - [ ] It opens on the retreat: readout
@@ -233,8 +244,8 @@ its own: it runs with the insert.
       `[built bars] collisions with N built bodies ignored (drawn faint)`; B1 and its joints turn
       faint grey. Untick it → the entry reloads and they are solid again. Leave it unticked for
       Cindy's entries.
-- [ ] Then the same steps as entry 0 (manual mount and tool grasp may be skipped), then
-      `Mark entry done` → `3/48`, slider on 3.
+- [ ] Then the same steps as entry 0 (transfer as a free move, manual mount, tool grasp, insert;
+      mount and grasp may be skipped in Part A), then `Mark entry done` → `3/48`, slider on 3.
 
 **Entry 3 — Alice's hold, seen from Cindy.** `Load entry`.
 - [ ] Warning `Entry 3 belongs to Alice; loaded for display only`; its four movements are listed.
@@ -295,9 +306,9 @@ ros2 run husky_assembly_teleop husky_monitor
       It opens on the retreat (`step 1/2: B3_R_M2_LM_retreat ...`).
 - [ ] Retreat `Plan Movement` → ≈ 12 waypoints with Alice in the scene; step 2 (free move home)
       plan → ≈ 75; Exec the free move home.
-- [ ] `Mark entry done`; then entries 5–8 (B4, B5): each J entry starts with
-      `Confirm transfer start + plan travel to load`; plan each arm step; Exec all but the insert
-      and the retreat (compliant); mark done → header `9/48`.
+- [ ] `Mark entry done`; then entries 5–8 (B4, B5): each J entry as entry 0 (tick the transfer
+      workaround again after a restart: transfer as a free move → mount → grasp → insert); plan each
+      arm step; Exec all but the insert and the retreat (compliant); mark done → header `9/48`.
 
 ## A6. Recovery buttons
 
@@ -456,6 +467,12 @@ With a bar mounted on Cindy's tools: load entry 0, `Step` → 2 (`B1_J_M2_tool_g
 Follow the table in `doc/support_robot_schedule_manual.md` ("Four-bar test"). Checkpoints:
 
 **Cindy, entries 0–2** (`ROS_DOMAIN_ID=86`)
+- [ ] J entries with the transfer workaround ticked (see the note at the top): the transfer moves
+      the **empty tools** from the live arms to the insertion start, right next to the built
+      structure. Before `Exec`, check in the preview that the tools stop short of the bar's
+      assembled pose and clear the built bars. After it: mount the bar by hand in the tools at that
+      pose (`Operator done (manual step)` → `Confirm Exec`), run the tool grasp, then plan the
+      insert (it starts where the transfer ended) and run it.
 - [ ] Each entry ends with `Mark entry done` → `Cindy's belief <- live`; header count goes up.
 - [ ] The insert (`B*_J_M5_LM_insert`) and the retreat (`B*_R_M2_LM_retreat`) run the compliant
       flow; afterwards the log says the joint controller is restored. At `Exec` the log names the
@@ -495,6 +512,8 @@ Follow the table in `doc/support_robot_schedule_manual.md` ("Four-bar test"). Ch
 | progress is wrong beyond repair | quit, edit or delete `<problem>/progress.json` (all entries pending again) |
 | a plan fails with "start ... in collision" | read the pair in the log; for `ObstacleRobotCindy <-> env_bar_*` in Alice's run check that `Ignore built-bar collisions (bars drawn faint)` is ticked |
 | built bars missing although the toggle is OFF | a sidecar written while they were ignored (! known issue, A2): `Reopen entry (reload clean)` |
+| the transfer plans with the bar held / tries the bar-held planner | the workaround box is unticked (it starts unticked after every restart): tick `Workaround: plan the transfer as a free move ...` and plan again |
+| `[transfer workaround] ... no collision-free IK for the insertion start` | read the drawn colliding pair; note it and send the log |
 
 ## B7. What to send back
 

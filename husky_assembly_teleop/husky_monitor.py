@@ -32,7 +32,7 @@ import pybullet_planning as pp
 
 from husky_assembly_teleop import DATA_DIRECTORY, DESIGN_DATA_DIRECTORY, EXPERIMENT_DATA_DIRECTORY, CALIBRATION_DATA_DIRECTORY, CALIBRATION_BATCHES, DESIGN_PROBLEM_NAME, CALIBRATION_DATE
 import husky_assembly_teleop.husky_world as world
-from husky_assembly_teleop.husky_world import _solve_bar_action_goal_ik, solve_goal_ik_generic
+from husky_assembly_teleop.husky_world import _solve_bar_action_goal_ik, solve_goal_ik_generic, unwrap_to_nearest
 import husky_assembly_teleop.mocap_experiment as mocap_experiment
 from husky_assembly_teleop.mocap_experiment import (
     fit_bar_from_markerset, bar_deviation_from_goal, draw_marker_take_in_pp,
@@ -324,6 +324,13 @@ class HuskyMonitor(Node):
     # * as usual. The panel toggle "Ignore built-bar collisions" changes it while
     # * the monitor runs. See _ignore_built_assembly.
     IGNORE_BUILT_ASSEMBLY_COLLISIONS = 0
+    # ! Temporary workaround while the transfer's bar-held planner rarely finds a
+    # ! path: 1 = 'Plan Movement' on the transfer plans a plain dual-arm free move
+    # ! from the live arms to the insertion start, with NO bar in the tools (the
+    # ! operator mounts the bar there afterwards). The panel toggle "Workaround:
+    # ! plan the transfer as a free move ..." changes it while the monitor runs.
+    # ! See _plan_transfer_as_free_move.
+    TRANSFER_AS_FREE_MOVE = 0
     DUAL_ARM_EE_CONSTR_ACCURACY_MOCAP_TEST = 0
 
     # Set to 1 to dump cfab's collision-check setup (its ACM / allowed-collision
@@ -3327,6 +3334,9 @@ class HuskyMonitor(Node):
         Movement; the replan buttons override it with the type of the plan they
         actually ran.
 
+        ! With the transfer workaround ticked (``_transfer_as_free_move``) the
+        ! transfer is a free move without the bar, so it previews as ``'free'``.
+
         Args:
             mv: The Movement to classify.
 
@@ -3335,6 +3345,8 @@ class HuskyMonitor(Node):
         """
         state = getattr(mv, 'start_state', None)
         if state is None:
+            return 'free'
+        if self._kind_of(mv) is MovementKind.DUAL_CONSTRAINED_FREE and self._transfer_as_free_move():
             return 'free'
         rb_states = getattr(state, 'rigid_body_states', None) or {}
         held = any(is_built_assembly_body(name)
@@ -3771,7 +3783,9 @@ class HuskyMonitor(Node):
         Cindy (dual arm):
         - DUAL_FREE: the travel to the loading pose (``_plan_M0_dispatch``) or,
           when ``_is_free_home``, the free move home (``_plan_M4_dispatch``).
-        - DUAL_CONSTRAINED_FREE: the bar transfer (``_plan_M1_dispatch``).
+        - DUAL_CONSTRAINED_FREE: the bar transfer (``_plan_M1_dispatch``), or,
+          with the workaround box ticked (``_transfer_as_free_move``), a free
+          move without the bar (``_plan_transfer_as_free_move``).
         - DUAL_CONSTRAINED_LINEAR: the insert (``_plan_M2_dispatch``).
         - DUAL_INDEPENDENT_LINEAR: the retreat (``_plan_M3_dispatch``).
         Support robot (single arm):
@@ -3840,7 +3854,9 @@ class HuskyMonitor(Node):
             planner = {
                 MovementKind.DUAL_FREE: (self._plan_M4_dispatch if self._is_free_home(mv)
                                          else self._plan_M0_dispatch),
-                MovementKind.DUAL_CONSTRAINED_FREE: self._plan_M1_dispatch,
+                MovementKind.DUAL_CONSTRAINED_FREE: (self._plan_transfer_as_free_move
+                                                     if self._transfer_as_free_move()
+                                                     else self._plan_M1_dispatch),
                 MovementKind.DUAL_CONSTRAINED_LINEAR: self._plan_M2_dispatch,
                 MovementKind.DUAL_INDEPENDENT_LINEAR: self._plan_M3_dispatch,
             }[kind]
@@ -3981,6 +3997,105 @@ class HuskyMonitor(Node):
             self._carry_configuration_forward(self.current_movement_index, values,
                                               source='Live goal')
         return True
+
+    # * --- --- --- Transfer workaround: a free move without the bar --- --- ---
+
+    def _transfer_as_free_move(self) -> bool:
+        """Whether the transfer workaround box is ticked (plan the transfer as a free move).
+
+        Reads the checkbox live and re-syncs the flag first: a checkbox rebuilt
+        by reset_ui can miss the next click's callback (same as the 'Adopt also
+        saves ...' checkbox). The flag is read with a default because headless
+        harnesses build the monitor without its __init__.
+
+        Returns:
+            bool: True when the transfer is planned as a free move without the bar.
+        """
+        toggle = getattr(self, 'transfer_free_move_toggle', None)
+        if toggle is not None and toggle.value is not None:
+            self.TRANSFER_AS_FREE_MOVE = int(toggle.value)
+        return bool(getattr(self, 'TRANSFER_AS_FREE_MOVE', 0))
+
+    def _plan_transfer_as_free_move(self, mv: Movement) -> Optional[JointTrajectory]:
+        """Workaround: plan the transfer as a plain dual-arm free move, without the bar.
+
+        ! Temporary, while the bar-held planner (``_plan_M1_dispatch``) rarely
+        ! finds a path. The bar and its joints are NOT carried during the move:
+        ! the operator mounts the bar at the insertion start afterwards. What
+        ! comes after is unchanged: ``_accept_trajectory`` hands the move's end
+        ! to the tighten step and the insert.
+
+        1. Start: the live arm joints, written into ``mv.start_state`` (the live
+           base is already there, from ``_plan_by_kind``).
+        2. Goal: the transfer's usual goal (the insertion start), re-solved by
+           IK for its ``target_ee_frames`` at the live base. Solved on a copy of
+           the insert's start state (the bar held at the insertion start), the
+           other robots posed from their beliefs, seeded with the stored goal
+           (``_m1_goal_conf``) and the live arms, collision-checked.
+        3. Each goal joint is shifted by whole turns to within +/- pi of the
+           start (``unwrap_to_nearest``), so the search does not turn a joint
+           the long way round.
+        4. The free planner (``_plan_free_and_validate``: BiRRT + swept check)
+           runs on a copy of ``mv.start_state`` in which every held body (the
+           bar and its joints) is let go and hidden, so the planner neither
+           carries it nor collides with it.
+
+        Args:
+            mv (Movement): The loaded transfer (DUAL_CONSTRAINED_FREE).
+
+        Returns:
+            JointTrajectory | None: The free path, or None when no IK or no path was found.
+        """
+        stored = self._m1_goal_conf()
+        if not mv.target_ee_frames or stored is None:
+            self.get_logger().warn(
+                f"[transfer workaround] {mv.movement_id}: needs its target_ee_frames and the "
+                f"insert's start configuration (the stored goal); not planning.")
+            return None
+        spec = self._connected_robot()
+        insert = self._loaded_movement_of(MovementKind.DUAL_CONSTRAINED_LINEAR)
+
+        # 1. Start: the live arms.
+        self._inject_live_conf_into_state(mv.start_state)
+        start12 = vec12_from_conf(mv.start_state.robot_configuration)
+
+        # 2. Goal: the insertion start at the live base, with the bar held there.
+        ik_state = insert.start_state.copy()
+        ik_state.robot_base_frame = mv.start_state.robot_base_frame
+        self._apply_obstacle_beliefs(ik_state)
+        report = {}
+        conf = solve_goal_ik_generic(
+            self.cfab.planner, ik_state,
+            {spec.group_for_side(side): frame for side, frame in mv.target_ee_frames.items()},
+            seed_confs=[stored, mv.start_state.robot_configuration],
+            check_collision=True, report=report)
+        if conf is None:
+            self.get_logger().warn(
+                f"[transfer workaround] {mv.movement_id}: no collision-free IK for the "
+                f"insertion start at the live base ({report.get('last_error')}); not planning.")
+            if report.get('first_colliding_state') is not None:
+                visualize_goal_ik_collision(self, report['first_colliding_state'])
+            return None
+        raw12 = vec12_from_conf(conf)
+
+        # 3. The goal joints within +/- pi of the start.
+        goal12 = unwrap_to_nearest(raw12, start12)
+
+        # 4. Plan without the bar: every held body is let go and hidden.
+        state = mv.start_state.copy()
+        for rb in state.rigid_body_states.values():
+            if rb.attached_to_link or rb.attached_to_tool:
+                rb.attached_to_link = None
+                rb.attached_to_tool = None
+                rb.attachment_frame = None
+                rb.is_hidden = True
+        print(f"[transfer workaround] free move (no bar) from the live arms to the insertion "
+              f"start; max |goal - stored goal| = "
+              f"{float(np.abs(raw12 - vec12_from_conf(stored)).max()):.4f} rad")
+        return self._plan_free_and_validate(
+            mv, mv.movement_id, conf_from_12vec(goal12), state=state,
+            max_time=120.0, max_iterations=50,
+        )
 
     # --- --- --- Chain planning (Button 1) --- --- ---
 
@@ -4975,6 +5090,11 @@ class HuskyMonitor(Node):
         ``plan_movement_chain_live`` writes -- no per-movement JSONs.
         A single-arm robot takes ``_accept_single_arm_trajectory`` instead.
 
+        ! With the transfer workaround ticked (``_transfer_as_free_move``) the
+        ! transfer is a free move without the bar: the steps before it get its
+        ! LAST conf (the bar is mounted at the insertion start) and its bar-hold
+        ! checks are skipped (they would only report the hold as broken).
+
         Args:
             mv: The Movement the trajectory belongs to.
             jt (JointTrajectory): The planned or loaded trajectory.
@@ -4986,6 +5106,7 @@ class HuskyMonitor(Node):
         mv.trajectory = jt
         path = path_12_from_joint_trajectory(jt)
         kind = self._kind_of(mv)
+        as_free_move = kind is MovementKind.DUAL_CONSTRAINED_FREE and self._transfer_as_free_move()
         if path:
             start_vec = np.asarray(path[0], dtype=float)
             if kind in COMPLIANT_KINDS and mv.start_state is not None:
@@ -5017,9 +5138,16 @@ class HuskyMonitor(Node):
             # * F5e: the steps where no arm moves before the transfer (the manual
             # * mount, the tool grasp) stand where the transfer starts, so the
             # * held bar is drawn at the bar-loading pose there.
+            # ! Workaround ticked: the operator mounts the bar where the free move
+            # ! ENDS (the insertion start), so those steps get its end instead.
             if kind is MovementKind.DUAL_CONSTRAINED_FREE:
                 self._carry_configuration_forward(
-                    -1 if prev is None else prev, path[0], source=source)
+                    -1 if prev is None else prev, path[-1] if as_free_move else path[0],
+                    source=source)
+                if as_free_move:
+                    # The walk above also wrote into the transfer itself; its
+                    # start stays where the free move starts (the live arms).
+                    mv.start_state.robot_configuration = conf_from_12vec(start_vec)
 
             # Forward carry (the carry rule), by kind:
             #   transfer / insert / retreat: strict chain owners; ALWAYS
@@ -5119,9 +5247,11 @@ class HuskyMonitor(Node):
         # ! start gets the bar attached (_ensure_bar_attached_for_mocap), and a
         # ! bar-hold drift check on the retreat would mean nothing.
         bar_hold_kinds = (MovementKind.DUAL_CONSTRAINED_FREE, MovementKind.DUAL_CONSTRAINED_LINEAR)
-        if kind in bar_hold_kinds:
-            self.show_transfer_validation(path, mv.start_state, label=mv.movement_id)
-        self._validate_cdfm_planned_path(mv, path)
+        # ! Workaround ticked: the transfer holds no bar, so no bar-hold checks.
+        if not as_free_move:
+            if kind in bar_hold_kinds:
+                self.show_transfer_validation(path, mv.start_state, label=mv.movement_id)
+            self._validate_cdfm_planned_path(mv, path)
 
         # The travel to load's goal is wherever the transfer starts. Once the
         # transfer's trajectory is accepted (its start_state now carries a
@@ -5542,7 +5672,7 @@ class HuskyMonitor(Node):
             self.reset_ui(self.goal_arm_pose)
         return out_path
 
-    def _validate_free_planned_path(self, mv, path12):
+    def _validate_free_planned_path(self, mv, path12, state: Optional[RobotCellState] = None):
         """Re-check a free (M0/M4) path densely BETWEEN its waypoints.
 
         ``plan_free_dual_arm`` only tests the configurations its extend function
@@ -5557,10 +5687,6 @@ class HuskyMonitor(Node):
         purely to NAME what was struck, so the report is "segment 47->48 hits
         bar_B21" rather than an opaque failure.
 
-        Args:
-            mv: The movement whose path this is (for log lines).
-            path12 (Sequence): Planned waypoints, each a 12-vec.
-
         Skipped entirely when ``self.fm_swept_validation_enabled`` is False (the
         "swept collision check" slider). It then reports OK so the callers' gates
         pass -- but says so loudly, because a silently-skipped safety check is
@@ -5569,6 +5695,8 @@ class HuskyMonitor(Node):
         Args:
             mv: The movement whose path this is (for log lines).
             path12 (Sequence): Planned waypoints, each a 12-vec.
+            state (RobotCellState | None): The state the path was planned from
+                (bodies, base, the other joints). None = ``mv.start_state``.
 
         Returns:
             dict: ``{'ok': bool, 'samples': int, 'bad_segments': list, 'bodies':
@@ -5591,7 +5719,7 @@ class HuskyMonitor(Node):
 
         planner = self.cfab.planner
         names_12 = list(HUSKY_DUAL_UR5e_JOINT_NAMES[0]) + list(HUSKY_DUAL_UR5e_JOINT_NAMES[1])
-        template = mv.start_state
+        template = mv.start_state if state is None else state
         # Raw-pybullet naming needs the cfab client's bodies; the ground is
         # excluded because the wheels rest on it by construction (the ACM allows
         # it, so compas_fab is right to stay quiet about it).
@@ -5693,7 +5821,8 @@ class HuskyMonitor(Node):
                 print(f"   ... and {len(verdict['bad_segments']) - 10} more segments")
         return verdict
 
-    def _plan_free_and_validate(self, mv, tag: str, goal_conf, **plan_kwargs):
+    def _plan_free_and_validate(self, mv, tag: str, goal_conf, *,
+                                state: Optional[RobotCellState] = None, **plan_kwargs):
         """Plan a free (M0/M4) movement, then gate it on the dense re-check.
 
         Returns the JointTrajectory only if the path survives
@@ -5706,14 +5835,18 @@ class HuskyMonitor(Node):
             mv: The movement being planned.
             tag (str): Log tag (the movement id).
             goal_conf: Goal configuration passed to ``plan_free_dual_arm``.
+            state (RobotCellState | None): The state to plan from (start
+                configuration, bodies, base). None = ``mv.start_state``; the
+                transfer workaround passes a copy without the bar.
             **plan_kwargs: Extra arguments for ``plan_free_dual_arm``.
 
         Returns:
             JointTrajectory | None: None when planning or validation failed.
         """
+        state = mv.start_state if state is None else state
         with pp.LockRenderer():
             path, info = plan_free_dual_arm(
-                self.cfab.planner, mv.start_state, goal_conf,
+                self.cfab.planner, state, goal_conf,
                 joint_resolution=FM_JOINT_RESOLUTION, **plan_kwargs)
         if path is None:
             reason = info.get('failure_reason')
@@ -5721,18 +5854,19 @@ class HuskyMonitor(Node):
             if reason == 'start_or_goal_in_collision':
                 # The planner only says "start or goal"; name the pairs and
                 # draw them, and check joint limits while we are at it.
-                self._diagnose_free_plan_endpoints(mv, goal_conf, tag)
+                self._diagnose_free_plan_endpoints(mv, goal_conf, tag, state=state)
             return None
         print(f"[{tag}] planned {len(path)} waypoints at "
               f"{FM_JOINT_RESOLUTION} rad; verifying swept path...")
-        if not self._validate_free_planned_path(mv, path)['ok']:
+        if not self._validate_free_planned_path(mv, path, state=state)['ok']:
             self.get_logger().error(
                 f"[{tag}] plan REJECTED: it sweeps through the scene between "
                 f"waypoints. Re-run 'Plan Movement' for a different RRT sample.")
             return None
         return joint_trajectory_from_path(path)
 
-    def _diagnose_free_plan_endpoints(self, mv, goal_conf, tag: str):
+    def _diagnose_free_plan_endpoints(self, mv, goal_conf, tag: str, *,
+                                      state: Optional[RobotCellState] = None):
         """Explain a free plan's ``start_or_goal_in_collision`` failure.
 
         ``plan_free_dual_arm`` rejects the request when either endpoint fails
@@ -5760,18 +5894,22 @@ class HuskyMonitor(Node):
                 live arms + live base) is the plan's start.
             goal_conf: The plan's goal, a compas Configuration or a 12-vec.
             tag (str): Log tag (the movement id).
+            state (RobotCellState | None): The state the plan started from,
+                when it is not ``mv.start_state`` (the transfer workaround plans
+                on a copy without the bar).
         """
         planner = self.cfab.planner if self.cfab is not None else None
         if planner is None or mv is None or mv.start_state is None:
             return
+        start = mv.start_state if state is None else state
         names_12 = list(HUSKY_DUAL_UR5e_JOINT_NAMES[0]) + list(HUSKY_DUAL_UR5e_JOINT_NAMES[1])
         try:
             goal12 = (np.asarray(goal_conf, dtype=float)
                       if isinstance(goal_conf, (list, tuple, np.ndarray))
                       else vec12_from_conf(goal_conf))
             endpoints = [
-                ('START (live arms at the live base)', mv.start_state),
-                ('GOAL', _state_with_conf12(mv.start_state, goal12, names_12)),
+                ('START (live arms at the live base)', start),
+                ('GOAL', _state_with_conf12(start, goal12, names_12)),
             ]
 
             # --- Collisions: who against who, per endpoint.
@@ -5818,7 +5956,7 @@ class HuskyMonitor(Node):
             finally:
                 pp.CLIENT = saved_client
             # Leave the scene at the plan's start, as the planner found it.
-            planner.set_robot_cell_state(mv.start_state)
+            planner.set_robot_cell_state(start)
         except Exception as e:
             print(f"[{tag} diag] ERROR while diagnosing the endpoints: {e}")
 
@@ -9912,6 +10050,15 @@ class HuskyMonitor(Node):
                 self.m1_manual_perp2_slider = None
             self.buttons.append(Button('Plan Movement', self.plan_selected_movement))
             if show_assembly_knobs:
+                # ! Workaround (temporary): ticked = 'Plan Movement' on the transfer
+                # ! plans a free move from the live arms to the insertion start,
+                # ! without the bar (see _plan_transfer_as_free_move).
+                # Seeded from the flag so a reset_ui rebuild keeps the tick.
+                self.transfer_free_move_toggle = Toggle(
+                    "Workaround: plan the transfer as a free move (no bar, from the live arms)",
+                    lambda v: setattr(self, 'TRANSFER_AS_FREE_MOVE', int(bool(v))),
+                    bool(self.TRANSFER_AS_FREE_MOVE),
+                )
                 # * The transfer start in two clicks without the RRT: derive + show
                 # the start/goal confs, then adopt the start as the transfer's
                 # start / the travel to load's goal.
@@ -9931,6 +10078,7 @@ class HuskyMonitor(Node):
                     bool(self._m1_adopt_writes_file),
                 )
             else:
+                self.transfer_free_move_toggle = None
                 self.m1_adopt_save_toggle = None
             self.buttons.append(Button('Load Movement Trajectory', self.load_selected_movement_trajectory))
             # * Button 1: plan transfer -> insert -> retreat -> travel to load ->
@@ -10432,6 +10580,9 @@ class HuskyMonitor(Node):
             self._redraw_assembled_bar_line()
             if hasattr(self, 'm1_adopt_save_toggle') and self.m1_adopt_save_toggle:
                 self.m1_adopt_save_toggle.update()
+            tgl = getattr(self, 'transfer_free_move_toggle', None)
+            if tgl:
+                tgl.update()
             sld = getattr(self, 'schedule_entry_slider', None)
             if sld:
                 sld.update()

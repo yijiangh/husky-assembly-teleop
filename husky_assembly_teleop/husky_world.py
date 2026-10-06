@@ -2275,6 +2275,27 @@ def _free_planner_skip_env_collisions(enable):
         _api._build_cfab_collision_fn = _orig
 
 
+def unwrap_to_nearest(goal, start) -> np.ndarray:
+    """Shift each goal joint by whole turns (2*pi) so it lies within +/- pi of its start value.
+
+    IK can return a joint value a full turn away from the nearest equivalent one
+    (same flange pose); a free planner would then have to turn that joint the
+    long way round, which it rarely manages in its time budget. UR5e joints
+    have limits well past 2*pi, so the shifted value stays in range.
+
+    Args:
+        goal (Sequence[float]): Goal joint values.
+        start (Sequence[float]): Start joint values, in the same order.
+
+    Returns:
+        np.ndarray: The goal joint values, each within +/- pi of its start value.
+    """
+    goal = np.asarray(goal, dtype=float)
+    start = np.asarray(start, dtype=float)
+    two_pi = 2.0 * np.pi
+    return goal - np.round((goal - start) / two_pi) * two_pi
+
+
 def plan_both_arms_to_goal(monitor, use_composite=False, debug=False,
                            skip_env_collisions=False):
     """
@@ -2404,8 +2425,7 @@ def plan_both_arms_to_goal(monitor, use_composite=False, debug=False,
         )
         start_12 = np.concatenate([start_left, start_right])
         raw_goal_12 = np.concatenate([left_conf, right_conf])
-        two_pi = 2.0 * np.pi
-        unwrapped_goal_12 = raw_goal_12 - np.round((raw_goal_12 - start_12) / two_pi) * two_pi
+        unwrapped_goal_12 = unwrap_to_nearest(raw_goal_12, start_12)
         max_wrap_delta = float(np.max(np.abs(raw_goal_12 - unwrapped_goal_12)))
         if max_wrap_delta > 1e-6:
             wrapped_joints = np.where(np.abs(raw_goal_12 - unwrapped_goal_12) > 1e-6)[0]

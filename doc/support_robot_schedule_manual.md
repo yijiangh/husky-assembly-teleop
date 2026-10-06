@@ -168,6 +168,32 @@ tool grasp steps show the bar in the tools at the bar-loading pose.
 `Transfer start: Derive start/goal only (no RRT)` + `Adopt derived start ->
 travel-to-load goal` are the automatic alternative.
 
+### Transfer workaround (temporary): the transfer as a free move, no bar
+
+! **In use for every J entry since 2026-10-06, until the bar-held transfer planner is
+ready** (then the section above applies again).
+
+The transfer's bar-held planner rarely finds a path yet. To test the live replan
+and the insertion accuracy now, tick **`Workaround: plan the transfer as a free
+move (no bar, from the live arms)`** (under `Plan Movement`; off by default, class
+flag `TRANSFER_AS_FREE_MOVE`). While it is ticked, `Plan Movement` on the transfer
+plans a plain dual-arm free move: from wherever the arms are now to the transfer's
+usual goal (the insertion start), solved by IK at the live base. The bar is **not**
+in the tools during that move: you mount it by hand at the insertion start
+afterwards. Log: `[transfer workaround] free move (no bar) from the live arms to the
+insertion start; max |goal - stored goal| = ... rad`.
+
+1. `Load entry` (a J entry). The travel to load is not needed: skip it.
+2. `Step` → the transfer step → `Load Movement`.
+3. `Plan Movement` → the free move to the insertion start; preview with `Traj viz time`.
+4. `Exec Selected Mv Traj (auto)` → the arms go there (joint tracking, empty tools).
+5. `Step` back to the manual mount step → `Load Movement`: the bar is drawn in the
+   tools at the insertion start. Mount the bar there by hand, then the tool grasp step.
+6. `Step` → the insert → `Plan Movement` (it starts where the transfer ended) → `Exec`.
+
+! Nothing checks the bar during the move: do not tick the box with a bar already
+mounted. Untick it to go back to the bar-held planner.
+
 ### The support robot's free approach
 
 With mocap tracking the support robot's base, `Plan Movement` on its free approach
@@ -200,7 +226,7 @@ gripper simply closes with the arm stiff (logged).
 
 | run (`ROS_DOMAIN_ID`) | entry | what to do |
 |---|---|---|
-| 86 Cindy | 0 `B1_J` | Load entry · set the `Transfer start: ...` sliders → `Confirm transfer start + plan travel to load` → preview → Exec (travel to load) · manual mount step · tool grasp step · transfer Plan + Exec · insert Plan/Load traj + Exec (compliant insert; the tighten runs with it) · **Mark entry done** |
+| 86 Cindy | 0 `B1_J` | Load entry · tick the transfer workaround (once per run) · transfer Plan (free move, no bar) + Exec · manual mount step (mount the bar at the insertion start) · tool grasp step · insert Plan + Exec (compliant insert; the tighten runs with it) · **Mark entry done**. (Without the workaround, later: travel to load via `Confirm transfer start + plan travel to load` first, transfer with the bar held after the grasp.) |
 | 86 | 1 `B1_R` | opens on the retreat: Plan + Exec (compliant retreat; the ungrasp runs with it, the untighten is not sent) · free move home Plan + Exec · Mark done |
 | 86 | 2 `B3_J` | as entry 0 |
 | 86 | 3 `B3_H` | grey (Alice's). **Quit.** |

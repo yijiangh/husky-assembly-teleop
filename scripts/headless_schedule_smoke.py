@@ -42,6 +42,14 @@ tighten loads); exec of the insert names the tighten that runs with it, exec
 of the retreat names the untighten and the ungrasp; entry 1 opens on its
 retreat.
 
+Then the transfer free move check (its own Cindy monitor, entry 0, the
+workaround box ``TRANSFER_AS_FREE_MOVE`` ticked, the free planner replaced by a
+recorder that returns [start, goal]): the goal puts both flanges on the
+transfer's target frames; the planner gets a state with the bar and its joints
+hidden and not attached; after acceptance the manual mount, the tool grasp,
+the tighten and the insert start at the goal; unticked, the bar-held planner
+is called as before. One real free plan is reported as INFO (not a check).
+
 Then the flow, on the fixture's first hold (Alice holds B3):
 
   Cindy's run (domain 86)
@@ -109,7 +117,7 @@ Usage:
     also ``export HUSKY_IK_BACKEND=gradient``.)
 
 Exit code 0 when every check passes, 1 otherwise. Loads the ~340 MB
-RobotCell files one at a time (Cindy's five times, Alice's, then Cindy's again; ~1 GB RAM each);
+RobotCell files one at a time (Cindy's six times, Alice's, then Cindy's again; ~1 GB RAM each);
 takes under a minute (most of it Cindy's R_M3 free plan to home).
 """
 
@@ -1108,6 +1116,169 @@ def operator_steps_check(results: Results, problem: str, root: str, schedule) ->
 
 
 # * ---------------------------------------------------------------------------
+# * Transfer workaround: the transfer planned as a free move without the bar
+# * ---------------------------------------------------------------------------
+
+def transfer_free_move_check(results: Results, problem: str, root: str, schedule) -> None:
+    """The transfer workaround box (``TRANSFER_AS_FREE_MOVE``) on entry 0 (J).
+
+    With the box ticked, 'Plan Movement' on the transfer (loaded by kind) runs
+    with the free planner (``plan_free_dual_arm``, replaced where husky_monitor
+    looks it up) recording its call and returning the two-point path [start,
+    goal], and the swept check passing. (a) The goal puts both flanges on the
+    transfer's target frames (1 mm / 0.01 rad) and the workaround's log line is
+    printed. (b) The state handed to the planner (and to the swept check) has
+    every body held in the transfer's start state -- the bar and its joints --
+    hidden and not attached; the transfer's own start state still holds them.
+    (c) After acceptance the tighten step and the insert start at the goal, so
+    do the manual mount and the tool grasp, the transfer itself starts at the
+    live arms, and the bar-hold checks did not run. (d) Box unticked: the
+    bar-held planner (``_plan_M1_dispatch``, a recorder) is called and the free
+    planner is not (the dispatch check's rows cover the other movements).
+    Then ONE real free plan (box ticked, nothing replaced but the bar-hold
+    checks) is reported as INFO, not as a check: the move ends next to the
+    structure and may not be found.
+
+    Args:
+        results (Results): Where the checks go.
+        problem (str): Problem folder name.
+        root (str): The scratch problem folder (unused; same signature as the other runs).
+        schedule (ActionSchedule): The scratch schedule.
+    """
+    cindy = robot_by_name(ASSEMBLY_ROBOT)
+    first = schedule.entry(0)
+    print(f"\n{'=' * 30} TRANSFER FREE MOVE CHECK {'=' * 30}")
+    base = schedule.load_action(first, prefer_sidecar=False).movements[-1].start_state.robot_base_frame
+    monitor, iface, log = make_monitor(cindy, base, problem)
+    add_viz_huskies(monitor, cindy)
+    free_plans = []    # (state, goal 12-vec) the free planner was called with
+    swept_states = []  # the states the swept check was called with
+    m1_calls = []      # the movements the bar-held planner was called with
+    hold_checks = []   # the bar-hold checks that ran
+
+    def record_free_plan(_planner, state, goal_conf, **_kwargs):
+        goal = vec12_from_conf(goal_conf)
+        free_plans.append((state, goal))
+        return [vec12_from_conf(state.robot_configuration), goal], {}
+
+    def record_swept_check(_mv, _path12, state=None):
+        swept_states.append(state)
+        return {'ok': True}
+
+    def record_bar_held_plan(mv):
+        m1_calls.append(mv)
+        return None  # nothing planned
+
+    real_free_plan = husky_monitor.plan_free_dual_arm
+    try:
+        monitor._load_schedule_state()
+        monitor.load_schedule_entry(first.index)
+        movements = monitor._loaded_movements
+        fi = monitor._loaded_index_of(MovementKind.DUAL_FREE, free_home=False)
+        ti = monitor._loaded_index_of(MovementKind.DUAL_CONSTRAINED_FREE)
+        ii = monitor._loaded_index_of(MovementKind.DUAL_CONSTRAINED_LINEAR)
+
+        def start_of(i: int) -> np.ndarray:
+            return vec12_from_conf(movements[i].start_state.robot_configuration)
+
+        def stationary_between(lo: int, hi: int) -> list:
+            return [i for i in range(lo + 1, hi) if movement_kind(movements[i]) in STATIONARY_KINDS]
+
+        # * --- box ticked: the free planner and the swept check replaced by recorders
+        monitor.TRANSFER_AS_FREE_MOVE = 1
+        husky_monitor.plan_free_dual_arm = record_free_plan
+        monitor._validate_free_planned_path = record_swept_check
+        monitor._plan_M1_dispatch = record_bar_held_plan
+        for name in ('show_transfer_validation', '_validate_cdfm_planned_path'):
+            setattr(monitor, name, lambda *_a, _name=name, **_k: hold_checks.append(_name))
+        monitor.load_selected_movement(index=ti)
+        mv = monitor.current_movement
+        live = np.concatenate([np.asarray(a, dtype=float) for a in iface.arm_joint_pose])
+        _, printed = call_keeping_prints(monitor.plan_selected_movement)
+        if not free_plans:
+            results.check(f"transfer free move: ticked -> {mv.movement_id} reaches the free planner",
+                          False, f"bar-held planner calls {len(m1_calls)}")
+            return
+        plan_state, goal = free_plans[0]
+
+        # * --- (a) the goal: both flanges on the transfer's target frames
+        goal_state = plan_state.copy()
+        monitor._merge_arm_values(goal_state, cindy.all_arm_joint_names, goal)
+        residuals = [frame_residual(_fk_link_frame(monitor.cfab.planner, goal_state,
+                                                   cindy.flange_for_side(side)),
+                                    mv.target_ee_frames[side])
+                     for side in cindy.side_keys]
+        results.check(f"transfer free move: ticked -> {mv.movement_id} plans a free move whose "
+                      f"goal puts both flanges on its target frames, log line printed",
+                      len(free_plans) == 1 and not m1_calls
+                      and '[transfer workaround] free move (no bar)' in printed
+                      and all(d < FLANGE_POS_TOL and a < FLANGE_ANG_TOL for d, a in residuals),
+                      f"free planner calls {len(free_plans)}, bar-held planner calls {len(m1_calls)}, "
+                      "flanges " + ', '.join(f"{d * 1000:.2f} mm / {a:.4f} rad" for d, a in residuals))
+
+        # * --- (b) the planning state: the bar and its joints let go and hidden
+        held = sorted(n for n, rb in mv.start_state.rigid_body_states.items()
+                      if rb.attached_to_link or rb.attached_to_tool)
+        planned_rbs = plan_state.rigid_body_states
+        let_go = [n for n in held if planned_rbs[n].is_hidden and not planned_rbs[n].attached_to_link
+                  and not planned_rbs[n].attached_to_tool]
+        results.check(f"transfer free move: the planning state has the bar and its joints hidden and "
+                      f"not attached ({mv.movement_id}'s own start state still holds them)",
+                      monitor.active_bar_name in held and let_go == held
+                      and len(swept_states) == 1 and swept_states[0] is plan_state,
+                      f"held in the start state {held}, let go and hidden {let_go}, "
+                      f"swept check calls {len(swept_states)}")
+
+        # * --- (c) after acceptance: the steps around the transfer stand at the goal
+        steps = stationary_between(fi, ti) + stationary_between(ti, ii) + [ii]
+        diffs = [float(np.abs(start_of(i) - goal).max()) for i in steps]
+        start_diff = float(np.abs(start_of(ti) - live).max())
+        results.check(f"transfer free move: after acceptance "
+                      f"{[movements[i].movement_id for i in steps]} start at the goal, "
+                      f"{mv.movement_id} at the live arms, no bar-hold checks",
+                      mv.trajectory is not None and len(steps) == 4 and max(diffs) < SEED_TOL
+                      and start_diff < SEED_TOL and not hold_checks,
+                      f"max diffs {np.round(diffs, 9).tolist()}, |start - live arms| {start_diff:.1e}, "
+                      f"bar-hold checks run {hold_checks}")
+
+        # * --- (d) box unticked: the bar-held planner, as before
+        monitor.TRANSFER_AS_FREE_MOVE = 0
+        monitor.load_schedule_entry(first.index)
+        monitor.load_selected_movement(index=ti)
+        n_free = len(free_plans)
+        monitor.plan_selected_movement()
+        results.check(f"transfer free move: unticked -> {monitor.current_movement.movement_id} goes "
+                      f"to the bar-held planner (_plan_M1_dispatch) as before",
+                      len(m1_calls) == 1 and m1_calls[0] is monitor.current_movement
+                      and len(free_plans) == n_free,
+                      f"bar-held planner calls {len(m1_calls)}, free planner calls "
+                      f"{len(free_plans) - n_free}")
+
+        # * --- INFO, not a check: one real free plan with the box ticked
+        husky_monitor.plan_free_dual_arm = real_free_plan
+        delattr(monitor, '_validate_free_planned_path')  # back to the monitor's own method
+        monitor.TRANSFER_AS_FREE_MOVE = 1
+        monitor.load_schedule_entry(first.index)
+        monitor.load_selected_movement(index=ti)
+        mv = monitor.current_movement
+        n = len(log.msgs)
+        t0 = time.time()
+        _, printed = call_keeping_prints(monitor.plan_selected_movement)
+        took = time.time() - t0
+        if mv.trajectory is not None:
+            outcome = f"found, {len(mv.trajectory.points)} points"
+        else:
+            reasons = ([line.strip() for line in printed.splitlines() if 'plan_free_dual_arm failed' in line]
+                       + log.since(n, 'error', 'REJECTED') + log.since(n, 'warn', '[transfer workaround]'))
+            outcome = f"not found: {reasons[0] if reasons else 'see the log above'}"
+        print(f"[INFO] transfer free move, one real plan (box ticked, arms at UR5e home): "
+              f"{outcome} ({took:.1f} s)")
+    finally:
+        husky_monitor.plan_free_dual_arm = real_free_plan
+        monitor.cfab.close()
+
+
+# * ---------------------------------------------------------------------------
 # * Built-structure switch: collisions with the built bars checked or ignored
 # * ---------------------------------------------------------------------------
 
@@ -1875,7 +2046,7 @@ def cindy_restart_run(results: Results, problem: str, root: str, schedule) -> No
 # * ---------------------------------------------------------------------------
 
 def main(argv: Optional[list] = None) -> int:
-    """Build the scratch problem, run dispatch, carry, transfer start and operator steps checks, Cindy, Alice, Cindy's restart; print the summary.
+    """Build the scratch problem, run dispatch, carry, transfer start, operator steps and transfer free move checks, Cindy, Alice, Cindy's restart; print the summary.
 
     Args:
         argv (list | None): Command line (None = ``sys.argv[1:]``).
@@ -1907,7 +2078,7 @@ def main(argv: Optional[list] = None) -> int:
         point_package_at(scratch_design)
         schedule = load_schedule(root)
         for run in (dispatch_check, carry_check, transfer_start_check, operator_steps_check,
-                    cindy_run, alice_run, cindy_restart_run):
+                    transfer_free_move_check, cindy_run, alice_run, cindy_restart_run):
             try:
                 run(results, problem, root, schedule)
             except Exception as e:  # keep going: the summary shows where it stopped
