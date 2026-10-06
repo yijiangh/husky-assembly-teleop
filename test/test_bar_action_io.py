@@ -10,6 +10,7 @@ import pytest
 
 import rs_data_structure.bar_action as bar_action_module
 from compas.geometry import Frame
+from compas_fab.robots import RigidBodyState, RobotCellState
 from rs_data_structure.bar_action import (
     BarAssemblyJointingAction,
     BarAssemblyReleaseAction,
@@ -36,7 +37,7 @@ from husky_assembly_teleop.bar_action_io import (
     ARM_KINDS, STATIONARY_KINDS, LIVE_SOLVED_TAG, clean_action_path, _clean_action_path,
     sidecar_action_path, preferred_action_path, write_path_for,
     BUILT_ASSEMBLY_RB_PREFIXES, is_built_assembly_body, bar_body_name, find_bar_body,
-    bar_id_of_body, is_ground_joint_body,
+    bar_id_of_body, is_ground_joint_body, held_ground_joints,
     tool_runs_with_next_motion, OperatorStep, operator_steps, step_index_of,
 )
 
@@ -46,6 +47,9 @@ LEGACY_PROBLEM = '260715_phase1_test'
 SPLIT_PROBLEM = '260929_phase1_retest'
 # The multi-robot export: Cindy's __J/__R plus the support robots' __H/__HR.
 SCHEDULE_PROBLEM = '260920_RobArch_demo_revamp_backup'
+# The newer multi-robot export: its grounded bars have no tighten step and end
+# with a manual foundation fix instead.
+HOLDING_TEST_PROBLEM = '261006_3bar_holding_test'
 
 # * Three bars, picked for how they sit across the two exports:
 # *   B1  -- in both, and its poses and configurations are identical, so the
@@ -156,6 +160,10 @@ def test_every_legacy_bar_still_exported():
 needs_schedule_export = pytest.mark.skipif(
     not os.path.isdir(_actions_dir(SCHEDULE_PROBLEM)),
     reason='the multi-robot design-study export is not on this machine',
+)
+needs_holding_test_export = pytest.mark.skipif(
+    not os.path.isdir(_actions_dir(HOLDING_TEST_PROBLEM)),
+    reason='the 261006 multi-robot export is not on this machine',
 )
 
 
@@ -424,6 +432,61 @@ def test_ground_joint_naming():
         assert is_ground_joint_body(name), name
     for name in ('joint_J1-12_female', 'bar_B1', 'obstacle_ground'):
         assert not is_ground_joint_body(name), name
+
+
+# * ------------------------------------------------- grounded bars
+
+# * The two grounded bars of both exports and the ground joints they are grasped
+# * on at the insert. Every other bar is grasped on its male joints.
+GROUNDED_BAR_JOINTS = {
+    'B1': ['joint_G1-T20Ground-0_ground', 'joint_G1-T20Ground-1_ground'],
+    'B5': ['joint_G5-T20Ground-0_ground', 'joint_G5-T20Ground-1_ground'],
+}
+
+
+def _insert_start_state(problem: str, bar: str):
+    """The start state of a bar's insert, found by kind (not by index).
+
+    Args:
+        problem (str): Design problem folder name.
+        bar (str): Bar id, e.g. ``'B1'``.
+
+    Returns:
+        RobotCellState: The start state of the jointing action's one
+        DUAL_CONSTRAINED_LINEAR movement.
+    """
+    action = parse_bar_action(os.path.join(_actions_dir(problem), f'{bar}__J.json'))
+    inserts = [mv for mv in action.movements
+               if movement_kind(mv) is MovementKind.DUAL_CONSTRAINED_LINEAR]
+    assert len(inserts) == 1, [mv.movement_id for mv in action.movements]
+    return inserts[0].start_state
+
+
+def test_held_ground_joints_in_memory():
+    """Only a ground joint attached to a link or a tool is held; no state holds nothing."""
+    assert held_ground_joints(None) == []
+    ground = 'joint_G1-T20Ground-0_ground'
+    state = RobotCellState(rigid_body_states={
+        # Ground joints standing on the floor (built), with and without the support prefix.
+        ground: RigidBodyState(Frame.worldXY()),
+        'env_joint_G2-T20Ground-0_ground': RigidBodyState(Frame.worldXY()),
+        # A normal bar's male joint in a tool is not a ground joint.
+        'joint_J1-12_male': RigidBodyState(Frame.worldXY(), attached_to_link='left_ur_arm_tool0'),
+    })
+    assert held_ground_joints(state) == []
+    state.rigid_body_states[ground].attached_to_tool = 'AT3L'
+    assert held_ground_joints(state) == [ground]
+
+
+@pytest.mark.parametrize('problem', [
+    pytest.param(SCHEDULE_PROBLEM, marks=needs_schedule_export),
+    pytest.param(HOLDING_TEST_PROBLEM, marks=needs_holding_test_export),
+])
+def test_held_ground_joints_on_exports(problem):
+    """At the insert B1 and B5 hold their two ground joints (grounded); B3 holds none."""
+    for bar, joints in GROUNDED_BAR_JOINTS.items():
+        assert held_ground_joints(_insert_start_state(problem, bar)) == joints, bar
+    assert held_ground_joints(_insert_start_state(problem, 'B3')) == []
 
 
 @needs_schedule_export

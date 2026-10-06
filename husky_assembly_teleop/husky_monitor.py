@@ -64,7 +64,7 @@ from husky_assembly_teleop.bar_action_io import (
     MovementKind, STATIONARY_KINDS, SINGLE_ARM_KINDS, DUAL_ARM_KINDS, COMPLIANT_KINDS,
     movement_kind, step_kind, kind_fits_robot, is_free_home, check_action_kinds,
     default_trajectory_time, is_built_assembly_body, bar_body_name, find_bar_body,
-    clean_action_path, operator_steps, step_index_of,
+    clean_action_path, operator_steps, step_index_of, held_ground_joints,
 )
 from rs_data_structure.bar_action import CONTROLLER_CARTESIAN_COMPLIANT, CONTROLLER_JOINT_TRACKING, Movement
 from husky_assembly_teleop.cfab_session import (
@@ -4998,8 +4998,12 @@ class HuskyMonitor(Node):
 
         # Only the insert and the retreat run compliant; everything else (also a
         # single arm, where only joint tracking is wired) runs joint tracking.
+        # * A grounded bar's insert (ground joints in the tools) runs joint
+        # * tracking too and never tightens (husky_world.execute_planned_trajectory_compliant).
         # Say so (once per movement) when the export asks for another controller.
-        runs = (CONTROLLER_CARTESIAN_COMPLIANT if kind in COMPLIANT_KINDS
+        grounded = (kind is MovementKind.DUAL_CONSTRAINED_LINEAR
+                    and bool(held_ground_joints(mv.start_state)))
+        runs = (CONTROLLER_CARTESIAN_COMPLIANT if kind in COMPLIANT_KINDS and not grounded
                 else CONTROLLER_JOINT_TRACKING)
         self._warn_controller_mismatch(mv, runs)
         # * Schedule mode: the operator does not stop on the tool steps that run
@@ -5008,7 +5012,15 @@ class HuskyMonitor(Node):
         k = step_index_of(steps, self.current_movement_index) if steps is not None else None
         if k is not None:
             for j in steps[k].absorbed:
-                self.get_logger().info(absorbed_tool_note(self._loaded_movements[j]))
+                tool_mv = self._loaded_movements[j]
+                if grounded:
+                    # ! An exported tighten step on a grounded bar is an export
+                    # ! defect: nothing is sent for it.
+                    self.get_logger().info(
+                        f"{tool_mv.movement_id} not sent: grounded bar, its insert never "
+                        f"tightens (Rhino note D9).")
+                else:
+                    self.get_logger().info(absorbed_tool_note(tool_mv))
         # ! Always call through the world module (world.execute_*): the dispatch
         # ! check (headless_schedule_smoke) replaces these module attributes.
         if kind in COMPLIANT_KINDS:

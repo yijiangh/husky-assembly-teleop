@@ -118,6 +118,7 @@ itself has no step of its own: it runs with that movement.
 | entry | steps |
 |---|---|
 | J (e.g. `B1_J`) | 5: travel to load · manual mount · tool grasp · transfer · insert (+ the tighten runs with it) |
+| J of a **grounded bar** (held on its ground joints, e.g. `B1`, `B5` in the 2026-10-06 export) | 6: travel to load · manual mount · tool grasp · transfer · insert · manual fix foundation. The insert runs **rigid only** (joint tracking) and **never tightens**, whatever the export says (an exported tighten step is ignored; Rhino note D9) |
 | R (e.g. `B1_R`) | 2: retreat (+ the ungrasp runs with it; the untighten is **not sent** — `Loosen Joint` by hand if needed) · free move home. The entry opens on its retreat |
 | H, HR (support robot) | one step per movement |
 

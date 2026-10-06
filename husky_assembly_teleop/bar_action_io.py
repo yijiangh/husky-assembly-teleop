@@ -28,6 +28,8 @@ The data classes live in `rs_data_structure.bar_action`. compas's
 - `step_index_of(steps, movement_index)` → which step holds a movement
 - `bar_body_name` / `find_bar_body` / `is_built_assembly_body` → the built
   bars' rigid-body names, which differ between Cindy's and the support cells
+- `held_ground_joints(state)` → the ground joints held in the tools: a GROUNDED
+  bar (its insert runs rigid and never tightens)
 
 To know what a movement does, use `movement_kind` (it reads the concrete
 Movement subclass): in Cindy's cycle each of the transfer, the insert and the
@@ -842,6 +844,28 @@ def is_ground_joint_body(name: str) -> bool:
     if name.startswith(_SUPPORT_RB_PREFIX):
         name = name[len(_SUPPORT_RB_PREFIX):]
     return name.startswith("joint_") and name.endswith("_ground")
+
+
+def held_ground_joints(state) -> list:
+    """The ground joints a robot holds in its tools in a cell state.
+
+    * A GROUNDED bar (B1, B5) is grasped on its ground joints, which stand
+    * straight on the floor: there is no female joint to mate with, so its insert
+    * runs rigid and the joint motors never tighten. A normal bar is grasped on
+    * its male joints (``joint_*_male``) instead. No exported field says which bar
+    * is grounded, so this reads it from the insert's start state.
+
+    Args:
+        state (RobotCellState | None): A cell state, e.g. the insert's start state.
+
+    Returns:
+        list: Names of the attached (``attached_to_link`` or ``attached_to_tool``)
+        ground joints, sorted; empty for a normal bar or no state.
+    """
+    rb_states = getattr(state, 'rigid_body_states', None) or {}
+    return sorted(name for name, rb in rb_states.items()
+                  if is_ground_joint_body(name)
+                  and (getattr(rb, 'attached_to_link', None) or getattr(rb, 'attached_to_tool', None)))
 
 
 def bar_body_name(bar_id: str, rb_prefix: str = "") -> str:

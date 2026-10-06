@@ -487,6 +487,9 @@ Follow the table in `doc/support_robot_schedule_manual.md` ("Four-bar test"). Ch
       `B1_J_M4_tool_tighten_joint ('tighten') runs with this movement: the compliant insert sends it (joint motors TIGHTENING).`
       (retreat: the ungrasp → gripper motors LOOSENING; the untighten → nothing sent). The
       retreat also warns once that the export asks for `joint_tracking` — expected.
+      **Grounded bars** (B1, B5: held on their ground joints) are the exception for the insert: it
+      runs rigid only and never tightens (`[...] grounded bar (holds ...): rigid insert ..., no tighten`;
+      an exported tighten step is logged as `not sent: grounded bar`). Their retreat is as above.
 - [ ] After entry 2: Cindy is holding B3 at the assembled pose, **under the joint controller**
       (check `ros2 control list_controllers -c /a200_0806/left_ur5e/controller_manager` and `right_ur5e`).
       Then quit the monitor — Cindy keeps holding (her driver keeps running).

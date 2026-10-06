@@ -19,7 +19,9 @@ import pybullet_planning as pp
 from husky_assembly_teleop import DATA_DIRECTORY, CALIBRATION_DATE, EXPERIMENT_DATA_DIRECTORY, CALIBRATION_DATA_DIRECTORY, DESIGN_PROBLEM_NAME
 from husky_assembly_teleop.common import Husky, TrackedObject, AssemblyObject
 from husky_assembly_teleop.robot_registry import RobotSpec, other_robots, robot_from_env
-from husky_assembly_teleop.bar_action_io import COMPLIANT_KINDS, MovementKind, tool_event, tool_runs_with_next_motion
+from husky_assembly_teleop.bar_action_io import (
+    COMPLIANT_KINDS, MovementKind, held_ground_joints, tool_event, tool_runs_with_next_motion,
+)
 from husky_assembly_teleop.schedule_io import load_schedule, problem_root
 from husky_assembly_teleop.progress_io import PARKED_BASE_FRAME, RobotBelief, load_progress
 import husky_assembly_teleop.husky_planning as planning
@@ -3678,6 +3680,12 @@ def execute_planned_trajectory_compliant(monitor):
     # * The insert tightens the joint screws; the retreat loosens the grippers.
     is_insert = kind is MovementKind.DUAL_CONSTRAINED_LINEAR
     is_retreat = kind is MovementKind.DUAL_INDEPENDENT_LINEAR
+    # * A GROUNDED bar (B1, B5) is held on its ground joints: there is no female
+    # * joint to screw into, so its insert runs rigid (joint tracking only) and the
+    # * joint motors never tighten; it ends when the motion is done. A tighten step
+    # * in the export is ignored (Rhino note D9). The retreat is the same for all bars.
+    ground_joints = held_ground_joints(mv.start_state) if is_insert else []
+    grounded = bool(ground_joints)
     if monitor.planned_arm_trajectory[0][0] is None or \
        monitor.planned_arm_trajectory[1][0] is None:
         monitor.get_logger().warn(
@@ -3722,17 +3730,23 @@ def execute_planned_trajectory_compliant(monitor):
     # screw tightens. The comparison baseline for the split, and the fallback if
     # compliance misbehaves. M3 ignores this -- it is compliant by nature.
     rigid_only = bool(is_insert
-                      and getattr(monitor, 'm2_exec_rigid_only', False))
+                      and (grounded or getattr(monitor, 'm2_exec_rigid_only', False)))
     if rigid_only:
         rigid_path = [np.concatenate([np.asarray(l, dtype=float),
                                       np.asarray(r, dtype=float)])
                       for l, r in zip(left_path, right_path)]
         t_rigid = t_total
-        monitor.get_logger().info(
-            f"[{tag}] RIGID-ONLY mode: the whole movement runs under "
-            f"scaled_joint_trajectory_controller ({len(rigid_path)} waypoints, "
-            f"{t_rigid:.1f}s), then holds position until both joint motors "
-            f"stall. Compliance is never engaged.")
+        if grounded:
+            monitor.get_logger().info(
+                f"[{tag}] grounded bar (holds {', '.join(ground_joints)}): rigid insert "
+                f"under scaled_joint_trajectory_controller ({len(rigid_path)} waypoints, "
+                f"{t_rigid:.1f}s), no tighten; it ends when the motion is done.")
+        else:
+            monitor.get_logger().info(
+                f"[{tag}] RIGID-ONLY mode: the whole movement runs under "
+                f"scaled_joint_trajectory_controller ({len(rigid_path)} waypoints, "
+                f"{t_rigid:.1f}s), then holds position until both joint motors "
+                f"stall. Compliance is never engaged.")
     elif is_insert:
         requested_mm = float(getattr(monitor, 'm2_compliant_split_mm',
                                      M2_COMPLIANT_SPLIT_MM_DEFAULT))
@@ -3855,11 +3869,12 @@ def execute_planned_trajectory_compliant(monitor):
 
     # Pre-exec scaffolding tool commands, per movement role:
     #   M2 (mate)    -> Stop All + TIGHTEN the joint motor on both arms
-    #                   (screws the bar down against the scaffold).
+    #                   (screws the bar down against the scaffold); a grounded
+    #                   bar gets the Stop All only (no screw to drive).
     #   M3 (retreat) -> Stop All + LOOSEN the gripper motor on both arms
     #                   (releases the bar before backing away).
     _stop_all_both_arms()
-    if is_insert:
+    if is_insert and not grounded:
         print(f'[scaffolding] {tag}: TIGHTEN joint motor on L arm (arm 0)')
         hi.send_scaffolding_cmd(1, JOINT_MOTOR, 0)
         print(f'[scaffolding] {tag}: TIGHTEN joint motor on R arm (arm 1)')
@@ -3874,9 +3889,16 @@ def execute_planned_trajectory_compliant(monitor):
     try:
         # --- Chunk 1: the rigid approach (M2 only) ---
         if rigid_path is not None:
+            # ! Grounded: no screw is driven, so a STALLED flag could only be a
+            # ! stale one; it must not end the motion early.
             ran = yield from _execute_rigid_chunk(
-                monitor, rigid_path, t_rigid, on_tick=_record_wrench, label=tag)
+                monitor, rigid_path, t_rigid, on_tick=_record_wrench,
+                stall_exits=not grounded, label=tag)
             if not ran:
+                return
+            if grounded:
+                monitor.get_logger().info(
+                    f"[{tag}] grounded bar: rigid insert done (no tighten).")
                 return
             if rigid_only:
                 # No chunk 2. The joint controller holds the final waypoint, so

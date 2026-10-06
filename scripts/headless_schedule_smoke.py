@@ -16,8 +16,9 @@ First, the dispatch check (its own Cindy monitor): for every movement of the
 fixture's entry 0 (B1_J) and entry 1 (B1_R) it records which planner method
 'Plan Movement' calls, which ``husky_world`` exec function 'Exec Selected Mv
 Traj' calls, the scaffolding tool command a compliant exec sends (tighten /
-gripper loosen), the traj time default, whether the start is live and the
-preview type, and checks them against ``DISPATCH_EXPECTED``. Planners and exec
+gripper loosen; none for the insert of B1, a grounded bar), the traj time
+default, whether the start is live and the preview type, and checks them
+against ``DISPATCH_EXPECTED``. Planners and exec
 functions are replaced by recorders (nothing is planned or moved); only the
 compliant exec runs for real on the stub, up to its tool command. It does not
 check planning outcomes.
@@ -49,6 +50,16 @@ transfer's target frames; the planner gets a state with the bar and its joints
 hidden and not attached; after acceptance the manual mount, the tool grasp,
 the tighten and the insert start at the goal; unticked, the bar-held planner
 is called as before. One real free plan is reported as INFO (not a check).
+
+Then the grounded insert check (its own Cindy monitor, entries 0 and 2, a
+straight joint path stamped for each insert, nothing planned): the REAL
+compliant exec runs on the stub. B1's insert (a grounded bar: ground joints in
+the tools) through 'Exec Selected Mv Traj' to its end: one joint trajectory for
+both arms with the whole path, only the motor stops, no compliance controller,
+no wait for the joint motors to stall, the 'grounded bar' lines, and its
+tighten step logged as not sent (Rhino note D9). B3's insert (a normal bar) up
+to its request for the compliance controller: TIGHTEN on both joint motors
+first, as before.
 
 Then the flow, on the fixture's first hold (Alice holds B3):
 
@@ -117,7 +128,7 @@ Usage:
     also ``export HUSKY_IK_BACKEND=gradient``.)
 
 Exit code 0 when every check passes, 1 otherwise. Loads the ~340 MB
-RobotCell files one at a time (Cindy's six times, Alice's, then Cindy's again; ~1 GB RAM each);
+RobotCell files one at a time (Cindy's seven times, Alice's, then Cindy's again; ~1 GB RAM each);
 takes under a minute (most of it Cindy's R_M3 free plan to home).
 """
 
@@ -145,14 +156,14 @@ from smoke_single_arm_plan import collision_lines
 from husky_assembly_teleop import DESIGN_DATA_DIRECTORY, DESIGN_PROBLEM_NAME
 from husky_assembly_teleop import cfab_session, husky_monitor, husky_world
 from husky_assembly_teleop.bar_action_io import (
-    STATIONARY_KINDS, MovementKind, OperatorStep, is_built_assembly_body, movement_kind, step_kind,
-    tool_runs_with_next_motion,
+    STATIONARY_KINDS, MovementKind, OperatorStep, held_ground_joints, is_built_assembly_body,
+    movement_kind, step_kind, tool_runs_with_next_motion,
 )
 from husky_assembly_teleop.cfab_session import CfabSession
 from husky_assembly_teleop.husky_monitor import BUILT_IGNORED_RGBA
 from husky_assembly_teleop.husky_robot import GRIPPER_MOTOR, JOINT_MOTOR, UR5e_HOME_STATE
 from husky_assembly_teleop.husky_world import (
-    GRIPPER_CLOSE_FOR_BAR_POS, GRIPPER_OPEN_POS, _live_tool0_in_arm_base,
+    GRIPPER_CLOSE_FOR_BAR_POS, GRIPPER_OPEN_POS, HOLD_FOR_STALL_TIMEOUT_S, _live_tool0_in_arm_base,
 )
 from husky_assembly_teleop.progress_io import (
     ARCHIVE_DIRNAME, PARKED_BASE_FRAME, STATUS_PENDING, belief_after, load_progress,
@@ -164,6 +175,7 @@ from husky_assembly_teleop.utils import (
     joint_trajectory_from_path, path_from_joint_trajectory, pose_from_frame, vec12_from_conf,
 )
 from husky_assembly_tamp.motion_planner.api import _fk_link_frame
+from rs_data_structure.bar_action import CONTROLLER_JOINT_TRACKING
 
 # * The fixture's first hold: Alice holds B3 (entry B3_H); B3_R is Cindy's
 # * release of B3 and B4_J the jointing whose export poses Alice correctly.
@@ -194,6 +206,13 @@ FLANGE_POS_TOL = 1e-3
 FLANGE_ANG_TOL = 0.01
 # The re-solved goal at the shifted base must differ from the exported one by more than this.
 GOAL_MOVED_TOL = 1e-3
+# * Grounded insert check: the inserts run for real on the stub, along a straight
+# * joint path of this many waypoints, with a short traj time (the rigid chunk
+# * waits it out by the clock). A grounded insert must be over well before the
+# * 30 s wait for the joint motors to stall.
+INSERT_PATH_WAYPOINTS = 11
+INSERT_TRAJ_TIME_S = 0.5
+GROUNDED_INSERT_MAX_S = 5.0
 
 
 # * ---------------------------------------------------------------------------
@@ -240,8 +259,9 @@ class StubInterface:
 
     Commands take effect the way ROS delivers them: a controller switch is
     acknowledged on the next tick, a gripper goal streams feedback positions
-    tick by tick and then its result. An arm trajectory is "executed" at once:
-    the arm stands at the last waypoint afterwards.
+    tick by tick and then its result. An arm trajectory (one arm or both arms
+    in one command) is "executed" at once: the arm stands at the last waypoint
+    afterwards.
     """
 
     def __init__(self, spec, base_frame):
@@ -265,6 +285,11 @@ class StubInterface:
         self.gripper_goal_handle = [None] * n
         # The gripper action server "answers" (see husky_world._gripper_server_ready).
         self.act_grippers = [SimpleNamespace(server_is_ready=lambda: True) for _ in range(n)]
+        # What the compliant exec reads every tick: the force/torque sensors (no
+        # force) and the scaffolding tools' status (no message yet, so no motor
+        # ever reports STALLED).
+        self.arm_ft_sensor = [[0.0] * 6 for _ in range(n)]
+        self.scaffolding_status = [None] * n
         self.finger_pos = 0.0
         self.calls = []                          # every command, in order
         self.controller_history = [JOINT_CTRL]   # arm 0's active controller after each ack
@@ -288,6 +313,18 @@ class StubInterface:
         """
         self.calls.append(('arm', len(path), traj_time, index))
         self.arm_joint_pose[index] = np.asarray(path[-1], dtype=float)
+
+    def send_dual_arm_cmd(self, multi_arm_trajectory) -> None:
+        """One joint trajectory for both arms at once: each arm ends up at its last waypoint.
+
+        Args:
+            multi_arm_trajectory: One ``(path, vel, traj_time, attached)`` tuple
+                per arm, the layout of the monitor's ``planned_arm_trajectory``.
+        """
+        self.calls.append(('dual_arm', tuple(len(traj[0]) for traj in multi_arm_trajectory),
+                           multi_arm_trajectory[0][2]))
+        for i, traj in enumerate(multi_arm_trajectory):
+            self.arm_joint_pose[i] = np.asarray(traj[0][-1], dtype=float)
 
     def send_gripper_cmd(self, pos: float, effort: float, index: int = 0) -> bool:
         """Gripper goal: feedback positions over the next ticks, then the result.
@@ -644,6 +681,10 @@ def select_movement(monitor, idx: int):
 # * this movement; traj_time None = the movement has no default traj time.
 # ! Since stage 1 (F5d) the stationary steps whose start state has the bar
 # ! attached (J 1, J 2, J 4, R 0) preview as 'bar_held': the bar is drawn in the tools.
+# ! B1 (entry 0) is a GROUNDED bar (held on its ground joints at the insert): its
+# ! insert runs rigid and never tightens, so J 5 sends no tool command; the
+# ! exported tighten step (J 4) is an export defect (Rhino note D9).
+# ! grounded_insert_check covers the grounded insert and a normal one (B3).
 DISPATCH_FIELDS = ('movement', 'planner', 'exec', 'tool_cmd', 'traj_time', 'starts_live', 'preview')
 DISPATCH_EXPECTED = {
     ('J', 0): ('J_M0_free_to_load', 'free_to_load', 'zero_ft', '-', 30, True, 'free'),
@@ -651,7 +692,7 @@ DISPATCH_EXPECTED = {
     ('J', 2): ('J_M2_tool_grasp_bar', 'none', '-', '-', None, False, 'bar_held'),
     ('J', 3): ('J_M3_CDFM_transfer_to_approach', 'transfer', 'arm_both', '-', 10, False, 'bar_held'),
     ('J', 4): ('J_M4_tool_tighten_joint', 'none', '-', '-', None, False, 'bar_held'),
-    ('J', 5): ('J_M5_LM_insert', 'insert', 'compliant', 'tighten', 5, False, 'bar_held'),
+    ('J', 5): ('J_M5_LM_insert', 'insert', 'compliant', 'none sent', 5, False, 'bar_held'),
     ('R', 0): ('R_M0_tool_untighten_joint', 'none', '-', '-', None, False, 'bar_held'),
     ('R', 1): ('R_M1_tool_ungrasp_bar', 'none', '-', '-', None, False, 'free'),
     ('R', 2): ('R_M2_LM_retreat', 'retreat', 'compliant', 'loosen_gripper', 5, False, 'free'),
@@ -663,11 +704,13 @@ def tool_command_sent(monitor, iface: StubInterface, compliant_exec) -> str:
     """Run the real compliant exec on the stub until it sends its tool command, then stop it.
 
     The compliant exec sends a "stop" (direction 0) to every tool motor, then
-    its own command, before it moves an arm. The stops are left out here.
+    its own command, before it moves an arm. The stops are left out here. A
+    grounded bar's insert sends no command of its own: the 50 steps then run
+    inside its rigid joint motion, which closing the exec stops.
 
     Args:
-        monitor (HuskyMonitor): The headless monitor, the movement loaded and a
-            planned path stamped.
+        monitor (HuskyMonitor): The headless monitor, the movement loaded, a
+            planned path stamped and ``ready_for_compliant_exec`` called.
         iface (StubInterface): Records the scaffolding commands.
         compliant_exec: The real ``husky_world.execute_planned_trajectory_compliant``.
 
@@ -698,6 +741,22 @@ def tool_command_sent(monitor, iface: StubInterface, compliant_exec) -> str:
         # Stops the exec where it is; its own clean-up sends the motor stops.
         task.close()
     return names.get(sent(), repr(sent()) if sent() else 'none sent')
+
+
+def ready_for_compliant_exec(monitor) -> None:
+    """Give a headless Cindy monitor what the real compliant exec reads besides the stub interface.
+
+    The exec reads tool0 by FK on the ghost robot; headless, the planner's robot
+    body (Cindy's URDF) is the ghost (same as the Alice run). Its rigid chunk
+    (the insert's approach, the whole insert of a grounded bar) reads the drawn
+    husky's robot body only to hand it to the wrench recorder, which does not
+    use it, so an empty one is enough.
+
+    Args:
+        monitor (HuskyMonitor): The headless monitor (``make_monitor``).
+    """
+    monitor.goal_model.robot = monitor.cfab.client.robot_puid
+    monitor.huskies[0].object = SimpleNamespace(robot=None)
 
 
 def dispatch_check(results: Results, problem: str, root: str, schedule) -> None:
@@ -744,9 +803,7 @@ def dispatch_check(results: Results, problem: str, root: str, schedule) -> None:
     base = schedule.load_action(entries[0], prefer_sidecar=False).movements[-1].start_state.robot_base_frame
     monitor, iface, _log = make_monitor(cindy, base, problem)
     add_viz_huskies(monitor, cindy)
-    # The compliant exec reads tool0 by FK on the ghost robot; headless, the
-    # planner's robot body (Cindy's URDF) is the ghost (same as the Alice run).
-    monitor.goal_model.robot = monitor.cfab.client.robot_puid
+    ready_for_compliant_exec(monitor)
 
     called = []  # labels of the recorders the last button reached
 
@@ -1037,7 +1094,10 @@ def operator_steps_check(results: Results, problem: str, root: str, schedule) ->
         n = len(log.msgs)
         monitor.exec_selected_movement_traj()
         run_tasks(monitor, iface)
-        return log.since(n, 'info', 'runs with this movement')
+        # B1 (entry 0) is a grounded bar: the line for its tighten says it is not
+        # sent (its wording is checked in grounded_insert_check).
+        return (log.since(n, 'info', 'runs with this movement')
+                + log.since(n, 'info', 'not sent: grounded bar'))
 
     real_compliant = husky_world.execute_planned_trajectory_compliant
     husky_world.execute_planned_trajectory_compliant = record_compliant
@@ -1276,6 +1336,172 @@ def transfer_free_move_check(results: Results, problem: str, root: str, schedule
               f"{outcome} ({took:.1f} s)")
     finally:
         husky_monitor.plan_free_dual_arm = real_free_plan
+        monitor.cfab.close()
+
+
+# * ---------------------------------------------------------------------------
+# * Grounded bar: its insert runs rigid and never tightens (Rhino note D9)
+# * ---------------------------------------------------------------------------
+
+def grounded_insert_check(results: Results, problem: str, root: str, schedule) -> None:
+    """A grounded bar's insert runs rigid and never tightens; a normal bar's insert is unchanged.
+
+    The fixture's entry 0 is B1, a GROUNDED bar (its insert's start state holds
+    two ground joints in the tools); entry 2 is B3, a normal bar. Each insert
+    (loaded by kind) gets a straight joint path from its start to its target
+    configuration (nothing planned), the stub arms at its start and a short
+    traj time, and runs the REAL ``husky_world.execute_planned_trajectory_compliant``
+    on the stub. B1 runs through 'Exec Selected Mv Traj', pumped to its end
+    like the monitor tick: (a) one joint trajectory for both arms with the
+    whole path, no tool command but the motor stops, no request for the
+    compliance controller; (b) it ends with its motion (no wait for the joint
+    motors to stall) and logs both 'grounded bar' lines; (c) the exec says the
+    absorbed tighten step is not sent (Rhino note D9) and, when the export asks
+    for another controller, that it runs joint tracking. (d) B3: the exec runs
+    until it asks for the compliance controller and is stopped there; it sent
+    TIGHTEN to both joint motors first, as before.
+
+    Args:
+        results (Results): Where the checks go.
+        problem (str): Problem folder name.
+        root (str): The scratch problem folder (unused; same signature as the other runs).
+        schedule (ActionSchedule): The scratch schedule.
+    """
+    cindy = robot_by_name(ASSEMBLY_ROBOT)
+    grounded, normal = schedule.entry(0), schedule.entry(2)
+    assert [e.kind for e in (grounded, normal)] == ['J', 'J'], \
+        f"the grounded insert check needs jointing entries 0 and 2, got " \
+        f"{[e.action_id for e in (grounded, normal)]}"
+    print(f"\n{'=' * 30} GROUNDED INSERT CHECK {'=' * 30}")
+    base = schedule.load_action(grounded, prefer_sidecar=False).movements[-1].start_state.robot_base_frame
+    monitor, iface, log = make_monitor(cindy, base, problem)
+    add_viz_huskies(monitor, cindy)
+    ready_for_compliant_exec(monitor)
+
+    def load_insert(entry):
+        """'Load entry', load its insert, stamp a straight joint path, stand the stub arms at its start.
+
+        Args:
+            entry (ScheduleEntry): One of Cindy's jointing entries.
+
+        Returns:
+            tuple: ``(the insert, its (n, 12) path)``.
+        """
+        monitor.load_schedule_entry(entry.index)
+        mv = select_movement(monitor, monitor._loaded_index_of(MovementKind.DUAL_CONSTRAINED_LINEAR))
+        path = np.linspace(vec12_from_conf(mv.start_state.robot_configuration),
+                           vec12_from_conf(mv.target_configuration), INSERT_PATH_WAYPOINTS)
+        monitor.trajectory_time = INSERT_TRAJ_TIME_S
+        for i in range(cindy.n_arms):
+            arm_path = path[:, 6 * i:6 * (i + 1)]
+            monitor.set_arm_trajectory((arm_path, None, INSERT_TRAJ_TIME_S, None), i)
+            iface.arm_joint_pose[i] = arm_path[0].copy()
+        return mv, path
+
+    def tool_cmds(n: int) -> list:
+        """Scaffolding commands after the first ``n`` stub calls, the stops left out.
+
+        Args:
+            n (int): How many stub calls to skip.
+
+        Returns:
+            list[tuple]: Sorted ``(direction, motor, arm)``.
+        """
+        return sorted(c[1:] for c in iface.calls[n:] if c[0] == 'scaffolding' and c[1] != 0)
+
+    def compliance_requests(n: int) -> list:
+        """Requests to switch to the compliance controller after the first ``n`` stub calls.
+
+        Args:
+            n (int): How many stub calls to skip.
+
+        Returns:
+            list[tuple]: The recorded ``switch`` calls.
+        """
+        return [c for c in iface.calls[n:] if c[0] == 'switch' and c[2] == COMPLIANCE_CTRL]
+
+    try:
+        monitor._load_schedule_state()
+
+        # * --- (a)-(c) B1: the whole insert through the exec button, to its end
+        mv, path = load_insert(grounded)
+        ground_joints = held_ground_joints(mv.start_state)
+        tighten = [m.movement_id for m in monitor._loaded_movements if tool_runs_with_next_motion(m)]
+        n_calls, n_log = len(iface.calls), len(log.msgs)
+        t0 = time.time()
+        monitor.exec_selected_movement_traj()
+        queued = len(monitor.tasks)
+        run_tasks(monitor, iface)
+        took = time.time() - t0
+        joint_cmds = [c for c in iface.calls[n_calls:] if c[0] == 'dual_arm']
+        stops = {c[1:] for c in iface.calls[n_calls:] if c[0] == 'scaffolding' and c[1] == 0}
+        all_stops = {(0, motor, arm) for motor in (GRIPPER_MOTOR, JOINT_MOTOR) for arm in (0, 1)}
+        results.check(
+            f"grounded insert: {mv.movement_id} (holds {ground_joints}) runs as ONE joint "
+            f"trajectory for both arms with the whole path, sends only the motor stops, "
+            f"never asks for {COMPLIANCE_CTRL}",
+            len(ground_joints) == 2 and queued == 1
+            and joint_cmds == [('dual_arm', (len(path), len(path)), INSERT_TRAJ_TIME_S)]
+            and not tool_cmds(n_calls) and stops == all_stops
+            and not compliance_requests(n_calls),
+            f"joint commands {joint_cmds}, tool commands {tool_cmds(n_calls)}, "
+            f"stops {sorted(stops)}, compliance requests {len(compliance_requests(n_calls))}")
+
+        started = log.since(n_log, 'info', 'grounded bar (holds ')
+        done = log.since(n_log, 'info', 'grounded bar: rigid insert done (no tighten).')
+        results.check(
+            f"grounded insert: {mv.movement_id} ends with its {INSERT_TRAJ_TIME_S} s motion, "
+            f"no wait for the joint motors to stall (up to {HOLD_FOR_STALL_TIMEOUT_S:.0f} s), "
+            f"both 'grounded bar' lines logged",
+            took < GROUNDED_INSERT_MAX_S and len(started) == 1 and len(done) == 1
+            and all(j in started[0] for j in ground_joints),
+            f"took {took:.2f} s, lines {started + done}")
+
+        notes = log.since(n_log, 'info', 'not sent: grounded bar')
+        tool_lines = log.since(n_log, 'info', 'runs with this movement')
+        ctrl_warns = log.since(n_log, 'warn', 'the monitor runs this')
+        # The export may already ask for joint tracking (Rhino note D9): then no warning.
+        want_warns = int(mv.controller != CONTROLLER_JOINT_TRACKING)
+        results.check(
+            f"grounded insert: exec of {mv.movement_id} logs "
+            f"'{', '.join(tighten)} not sent: grounded bar' "
+            f"(Rhino note D9) and says it runs under {CONTROLLER_JOINT_TRACKING}",
+            len(tighten) == 1 and len(notes) == 1
+            and notes[0].startswith(f"{tighten[0]} not sent: grounded bar") and not tool_lines
+            and len(ctrl_warns) == want_warns
+            and all(w.endswith(f"under {CONTROLLER_JOINT_TRACKING}.") for w in ctrl_warns),
+            f"notes {notes}, tool step lines {tool_lines}, controller warnings {ctrl_warns}")
+
+        # * --- (d) B3, a normal bar: the exec until it asks for the compliance controller
+        mv, path = load_insert(normal)
+        n_calls, n_log = len(iface.calls), len(log.msgs)
+        task = husky_world.execute_planned_trajectory_compliant(monitor)
+        try:
+            for _ in range(3000):
+                next(task)
+                if compliance_requests(n_calls):
+                    break
+                iface.tick()
+                time.sleep(TICK_S)
+        except StopIteration:
+            pass  # the exec ended on its own (its log says why)
+        finally:
+            # Stopped while it waits for the switch: the compliance controller
+            # never became active, so its own clean-up only stops the motors.
+            task.close()
+        joint_cmds = [c for c in iface.calls[n_calls:] if c[0] == 'dual_arm']
+        results.check(
+            f"grounded insert: {mv.movement_id} (a normal bar, holds "
+            f"{held_ground_joints(mv.start_state)}) still TIGHTENs both joint motors, "
+            f"then asks for {COMPLIANCE_CTRL}",
+            not held_ground_joints(mv.start_state)
+            and tool_cmds(n_calls) == [(1, JOINT_MOTOR, 0), (1, JOINT_MOTOR, 1)]
+            and len(compliance_requests(n_calls)) == cindy.n_arms
+            and not log.since(n_log, 'info', 'grounded bar'),
+            f"tool commands {tool_cmds(n_calls)}, compliance requests "
+            f"{len(compliance_requests(n_calls))}, rigid approach before it: "
+            f"{f'{joint_cmds[0][1][0]} waypoints' if joint_cmds else 'none'}")
+    finally:
         monitor.cfab.close()
 
 
@@ -2083,7 +2309,7 @@ def cindy_restart_run(results: Results, problem: str, root: str, schedule) -> No
 # * ---------------------------------------------------------------------------
 
 def main(argv: Optional[list] = None) -> int:
-    """Build the scratch problem, run dispatch, carry, transfer start, operator steps and transfer free move checks, Cindy, Alice, Cindy's restart; print the summary.
+    """Build the scratch problem, run dispatch, carry, transfer start, operator steps, transfer free move and grounded insert checks, Cindy, Alice, Cindy's restart; print the summary.
 
     Args:
         argv (list | None): Command line (None = ``sys.argv[1:]``).
@@ -2115,7 +2341,8 @@ def main(argv: Optional[list] = None) -> int:
         point_package_at(scratch_design)
         schedule = load_schedule(root)
         for run in (dispatch_check, carry_check, transfer_start_check, operator_steps_check,
-                    transfer_free_move_check, cindy_run, alice_run, cindy_restart_run):
+                    transfer_free_move_check, grounded_insert_check, cindy_run, alice_run,
+                    cindy_restart_run):
             try:
                 run(results, problem, root, schedule)
             except Exception as e:  # keep going: the summary shows where it stopped
