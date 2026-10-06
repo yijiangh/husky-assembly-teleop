@@ -14,9 +14,9 @@ from compas_robots import Configuration
 
 from husky_assembly_teleop import DESIGN_DATA_DIRECTORY
 from husky_assembly_teleop.progress_io import (
-    BELIEF_ACTION_END, BELIEF_EXPORTED, BELIEF_LIVE, BELIEF_PARKED, HOLD_HOLDING, HOLD_PENDING,
+    ARCHIVE_DIRNAME, BELIEF_ACTION_END, BELIEF_EXPORTED, BELIEF_LIVE, BELIEF_PARKED, HOLD_HOLDING, HOLD_PENDING,
     HOLD_RELEASED, PARKED_BASE_FRAME, PROGRESS_FILENAME, STATUS_DONE, STATUS_PENDING,
-    STATUS_SKIPPED, arm_configuration, belief_after, belief_from_exported, belief_from_live,
+    STATUS_SKIPPED, archive_progress_and_saved_plans, arm_configuration, belief_after, belief_from_exported, belief_from_live,
     load_progress, new_progress, new_run_id, obstacle_sources, obstacle_sources_line,
     obstacle_tool_states, parked_belief, progress_path, recompute_belief, save_progress,
     schedule_fingerprint,
@@ -143,6 +143,45 @@ def test_changed_schedule_warns_once_and_keeps_statuses(schedule, tmp_problem, c
 
 
 # * ------------------------------------------------------------- statuses and holds
+
+def test_archive_progress_and_saved_plans(schedule, tmp_problem):
+    """'Reset schedule to the Rhino export': progress and saved plans move aside, nothing else."""
+    progress = new_progress(schedule)
+    _mark_done_up_to(progress, schedule, 3)
+    save_progress(progress, tmp_problem)
+    actions = os.path.join(tmp_problem, 'BarActions')
+    os.makedirs(actions)
+    for name in ('B1__J.json', 'B1__J.live-solved.json', 'B3__H.live-solved.json'):
+        with open(os.path.join(actions, name), 'w') as handle:
+            handle.write('{}')
+    older = os.path.join(tmp_problem, ARCHIVE_DIRNAME, 'older', 'BarActions')
+    os.makedirs(older)
+    with open(os.path.join(older, 'B1__R.live-solved.json'), 'w') as handle:
+        handle.write('{}')
+
+    folder, moved = archive_progress_and_saved_plans(tmp_problem, stamp='reset1')
+
+    assert folder == os.path.join(tmp_problem, ARCHIVE_DIRNAME, 'reset1')
+    assert sorted(moved) == sorted([PROGRESS_FILENAME,
+                                    os.path.join('BarActions', 'B1__J.live-solved.json'),
+                                    os.path.join('BarActions', 'B3__H.live-solved.json')])
+    for rel in moved:
+        assert os.path.isfile(os.path.join(folder, rel)), rel
+        assert not os.path.exists(os.path.join(tmp_problem, rel)), rel
+    # The clean export, the schedule and an earlier archive stay where they are.
+    assert os.path.isfile(os.path.join(actions, 'B1__J.json'))
+    assert os.path.isfile(os.path.join(tmp_problem, SCHEDULE_FILENAME))
+    assert os.path.isfile(os.path.join(older, 'B1__R.live-solved.json'))
+
+    # Loading again starts over: every entry pending, no beliefs.
+    fresh = load_progress(tmp_problem, schedule)
+    assert all(fresh.status(e.index) == STATUS_PENDING for e in schedule.entries)
+    assert fresh.current_index == 0 and not fresh.robots
+
+    # Nothing left to move: nothing moved, no folder created.
+    folder2, moved2 = archive_progress_and_saved_plans(tmp_problem, stamp='reset2')
+    assert moved2 == [] and not os.path.exists(folder2)
+
 
 def test_mark_skip_reopen_and_holds(schedule):
     """Marking, skipping and reopening entries moves the current index and the hold states."""

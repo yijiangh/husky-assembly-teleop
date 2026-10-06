@@ -76,9 +76,9 @@ from husky_assembly_teleop.cfab_session import (
 )
 from husky_assembly_teleop.robot_registry import RobotSpec, robot_by_name
 from husky_assembly_teleop.progress_io import (
-    BELIEF_ASSUMED, BELIEF_LIVE, STATUS_PENDING, RobotBelief, belief_after, belief_from_live,
-    load_progress, new_run_id, obstacle_tool_states, obstacle_sources, obstacle_sources_line,
-    recompute_belief, save_progress,
+    BELIEF_ASSUMED, BELIEF_LIVE, STATUS_PENDING, RobotBelief, archive_progress_and_saved_plans,
+    belief_after, belief_from_live, load_progress, new_run_id, obstacle_tool_states,
+    obstacle_sources, obstacle_sources_line, recompute_belief, save_progress,
 )
 from husky_assembly_teleop.schedule_io import (
     SCHEDULE_FILENAME, LoadedEntry, ScheduleEntry, is_executable_by, load_entry, load_schedule,
@@ -9173,6 +9173,71 @@ class HuskyMonitor(Node):
         self._print_schedule_roster()
         self.reset_ui(self.goal_arm_pose)
 
+    def reset_schedule_to_export(self) -> None:
+        """'Reset schedule to the Rhino export' button: start the schedule over (after 'Confirm Exec').
+
+        Queues ``_reset_schedule_task``. Refused while a queued step / execution
+        still runs, and without an ActionSchedule.
+        """
+        if self._refuse_while_tasks_run('Reset schedule to the Rhino export'):
+            return
+        if getattr(self, '_schedule', None) is None:
+            self.get_logger().warn("No ActionSchedule loaded; nothing to reset.")
+            return
+        self.tasks.append(self._reset_schedule_task())
+
+    def _reset_schedule_task(self) -> Generator[None, None, None]:
+        """Ask for 'Confirm Exec', then put the whole schedule back to the clean Rhino export.
+
+        ``progress.json`` and every saved plan (``*.live-solved.json``) are moved to
+        ``<problem>/archive/<time>/`` (``archive_progress_and_saved_plans``; nothing
+        is deleted, moving them back restores the old state). Then the schedule is
+        read again as at start-up (``_load_schedule_state``): every entry pending,
+        no robot beliefs (the other huskies are drawn parked), the first entry
+        selected; when an entry was loaded, the first entry is loaded from its
+        clean export.
+
+        ! Another robot's monitor that is running keeps its old progress in memory
+        ! and would write it back at its next 'Mark entry done': restart it too.
+
+        Yields:
+            None: One yield per monitor tick while waiting for the confirmation.
+        """
+        problem_dir = self._problem_dir()
+        self._servo_abort = False
+        try:
+            ok = yield from world.wait_for_operator_confirm(
+                self, f"Reset the WHOLE schedule to the Rhino export? progress.json and every "
+                      f"saved plan (*.live-solved.json) in {problem_dir} are moved to its "
+                      f"archive/ folder (nothing is deleted); every entry becomes pending. "
+                      f"'Confirm Exec' to reset, 'Cancel Exec' to keep everything.", warn=True)
+        finally:
+            self._servo_abort = False
+        if not ok:
+            self.get_logger().info("[Schedule] reset cancelled; nothing changed.")
+            return
+        try:
+            archive, moved = archive_progress_and_saved_plans(problem_dir)
+        except OSError as e:
+            self.get_logger().error(f"[Schedule] reset failed while moving files ({e}); "
+                                    f"check {problem_dir} by hand.")
+            return
+        if moved:
+            self.get_logger().info(
+                f"[Schedule] reset to the Rhino export: moved {len(moved)} file(s) "
+                f"({', '.join(moved)}) to {archive}. Restart any other robot's monitor too.")
+        else:
+            self.get_logger().info("[Schedule] reset to the Rhino export: no progress or saved "
+                                   "plans to move; every entry is pending.")
+        was_loaded = getattr(self, '_loaded_entry', None) is not None
+        # * The same path as at start-up: progress.json is gone, so every entry is pending.
+        self._load_schedule_state()
+        self._redraw_other_huskies_from_progress()
+        if was_loaded and getattr(self, '_schedule', None) is not None:
+            self.load_schedule_entry(self._selected_entry_idx)
+        else:
+            self.reset_ui(self.goal_arm_pose)
+
     def _load_available_joint_trajectories(self):
         """
         Load available JointTrajectory files from the hardcoded directory.
@@ -9618,6 +9683,8 @@ class HuskyMonitor(Node):
         self.buttons.append(Button('Mark entry done', self.mark_entry_done))
         self.buttons.append(Button('Reopen entry (reload clean)', self.reopen_entry))
         self.buttons.append(Button('Rescan schedule status', self.rescan_schedule_status))
+        # ! Start over: every entry pending, every saved plan set aside (asks for 'Confirm Exec').
+        self.buttons.append(Button('Reset schedule to the Rhino export', self.reset_schedule_to_export))
         # * Ticked: the planner and IK ignore the built bars and joints, which are
         # * drawn faint so it is visible that the switch is on. Changing it reloads
         # * the loaded entry. Seeded from the flag so a reset_ui rebuild keeps the tick.

@@ -30,6 +30,7 @@ import os
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
 from hashlib import sha1
+from shutil import move
 from typing import Optional
 
 from compas.data import json_dumps, json_load
@@ -37,10 +38,13 @@ from compas.geometry import Frame
 from compas_robots import Configuration
 from rs_data_structure.bar_action import BarSceneAction
 
+from husky_assembly_teleop.bar_action_io import LIVE_SOLVED_TAG
 from husky_assembly_teleop.robot_registry import RobotSpec, other_robots, robot_by_name
 from husky_assembly_teleop.schedule_io import ActionSchedule, ScheduleEntry
 
 PROGRESS_FILENAME = 'progress.json'
+# Where 'Reset schedule to the Rhino export' moves the progress and the saved plans.
+ARCHIVE_DIRNAME = 'archive'
 SCHEMA_VERSION = 1
 
 # * Entry statuses.
@@ -465,6 +469,45 @@ def save_progress(progress: Progress, problem_root: str) -> str:
         handle.write(json_dumps(progress.to_dict(), pretty=True))
     os.replace(tmp, path)
     return path
+
+
+def archive_progress_and_saved_plans(problem_root: str,
+                                     stamp: Optional[str] = None) -> tuple[str, list[str]]:
+    """Move a problem's progress and saved plans aside, so it starts again from the Rhino export.
+
+    Moves ``progress.json`` and every saved plan (``*.live-solved.json``, written
+    next to the clean exports) into ``<problem_root>/archive/<stamp>/``, keeping
+    their paths relative to the problem folder. Nothing is deleted: moving the
+    files back restores the previous state. The clean Rhino exports and
+    ``ActionSchedule.json`` are not touched, and earlier archives are left alone.
+
+    Args:
+        problem_root (str): The design problem folder.
+        stamp (str | None): Name of the archive subfolder; None = the current
+            time, e.g. ``'20261006T143012'``.
+
+    Returns:
+        tuple[str, list[str]]: The archive folder and the moved files (paths
+        relative to ``problem_root``). Nothing is created when there is
+        nothing to move (empty list).
+    """
+    archive_root = os.path.join(problem_root, ARCHIVE_DIRNAME)
+    to_move = []
+    if os.path.isfile(progress_path(problem_root)):
+        to_move.append(PROGRESS_FILENAME)
+    saved_plan_ending = f'.{LIVE_SOLVED_TAG}.json'
+    for here, subfolders, files in os.walk(problem_root):
+        if os.path.abspath(here) == os.path.abspath(problem_root) and ARCHIVE_DIRNAME in subfolders:
+            subfolders.remove(ARCHIVE_DIRNAME)  # earlier archives stay where they are
+        for name in sorted(files):
+            if name.endswith(saved_plan_ending):
+                to_move.append(os.path.relpath(os.path.join(here, name), problem_root))
+    folder = os.path.join(archive_root, stamp or datetime.now().strftime('%Y%m%dT%H%M%S'))
+    for rel in to_move:
+        target = os.path.join(folder, rel)
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        move(os.path.join(problem_root, rel), target)
+    return folder, to_move
 
 
 def new_run_id(robot: str, now: Optional[datetime] = None) -> str:

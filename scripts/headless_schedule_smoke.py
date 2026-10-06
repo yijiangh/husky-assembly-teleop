@@ -155,7 +155,8 @@ from husky_assembly_teleop.husky_world import (
     GRIPPER_CLOSE_FOR_BAR_POS, GRIPPER_OPEN_POS, _live_tool0_in_arm_base,
 )
 from husky_assembly_teleop.progress_io import (
-    PARKED_BASE_FRAME, belief_after, load_progress, obstacle_sources,
+    ARCHIVE_DIRNAME, PARKED_BASE_FRAME, STATUS_PENDING, belief_after, load_progress,
+    obstacle_sources,
 )
 from husky_assembly_teleop.robot_registry import other_robots, robot_by_name
 from husky_assembly_teleop.schedule_io import load_schedule, problem_root
@@ -1940,7 +1941,10 @@ def cindy_restart_run(results: Results, problem: str, root: str, schedule) -> No
     configuration (it starts live, from the seeded arms); 'Move Arms to Movement
     Start' with FAKE_HARDWARE moves the simulated arms and sends no command; and
     after Alice's hold is marked done the header's second line names where
-    Alice's and Belle's poses come from.
+    Alice's and Belle's poses come from. Last, 'Reset schedule to the Rhino
+    export': with 'Cancel Exec' nothing changes; confirmed, progress.json and the
+    saved plans move to archive/, every entry is pending and entry 0 loads its
+    clean export.
 
     Args:
         results (Results): Where the checks go.
@@ -2037,6 +2041,39 @@ def cindy_restart_run(results: Results, problem: str, root: str, schedule) -> No
                       and f"{alice.name} <- assumed (entry {hold.index})" in lines[1]
                       and f"{belle.name} <- {sources[belle.obstacle_tool_name]}" in lines[1],
                       lines[-1])
+
+        # * --- 'Reset schedule to the Rhino export': cancelled first, then confirmed
+        before = folder_snapshot(root)
+        monitor.reset_schedule_to_export()
+        next(monitor.tasks[0])    # one tick: the reset now waits at its confirm gate
+        monitor._servo_abort = True    # 'Cancel Exec'
+        run_tasks(monitor, iface, confirm=False)
+        results.check("Cindy restart: 'Reset schedule to the Rhino export' + 'Cancel Exec' "
+                      "changes nothing", folder_snapshot(root) == before
+                      and monitor._progress.is_done(hold.index))
+
+        saved_plans = sorted(rel for rel in before if rel.endswith('.live-solved.json'))
+        monitor.reset_schedule_to_export()
+        run_tasks(monitor, iface, confirm=True)
+        after = folder_snapshot(root)
+        archived = sorted(rel for rel in after if rel.startswith(ARCHIVE_DIRNAME + os.sep))
+        left = sorted(rel for rel in after
+                      if rel.endswith('.live-solved.json') and rel not in archived)
+        progress = monitor._progress
+        parked = np.asarray(list(PARKED_BASE_FRAME.point), dtype=float)
+        results.check("Cindy restart: after 'Confirm Exec' the reset moves progress.json and the "
+                      "saved plans to archive/, every entry is pending, entry 0 loads its clean "
+                      "export, Alice and Belle are drawn parked",
+                      'progress.json' not in after and not left and len(saved_plans) > 0
+                      and len(archived) == len(saved_plans) + 1
+                      and all(progress.status(e.index) == STATUS_PENDING for e in schedule.entries)
+                      and not progress.robots and progress.current_index == 0
+                      and monitor._loaded_entry is not None and monitor._loaded_entry.index == 0
+                      and '.live-solved' not in os.path.basename(monitor._current_action_path)
+                      and all(np.allclose(drawn_base(monitor, spec.name), parked)
+                              for spec in (alice, belle)),
+                      f"{len(saved_plans)} saved plan(s) + progress.json -> "
+                      f"{sorted({os.sep.join(rel.split(os.sep)[:2]) for rel in archived})}")
     finally:
         monitor.cfab.close()
 

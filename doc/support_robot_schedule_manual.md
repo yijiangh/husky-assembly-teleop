@@ -104,6 +104,7 @@ ros2 run husky_assembly_teleop husky_monitor
 | `Mark entry done` | records the entry as done and remembers where the robot ended (see below) |
 | `Reopen entry (reload clean)` | sets the LOADED entry back to pending, restores that robot's end state from its previous done entry, and reloads the clean export. If the slider shows a different entry it first asks for `Confirm Exec`, naming both |
 | `Rescan schedule status` | re-reads `progress.json` and the IK/trajectory flags |
+| `Reset schedule to the Rhino export` | after `Confirm Exec`: moves `progress.json` and every saved plan (`*.live-solved.json`) to `<problem>/archive/<time>/` (nothing deleted; move them back to undo), then every entry is pending, no robot beliefs (others drawn parked), entry 0 loads its clean export. A monitor of another robot that is running keeps its old progress in memory: restart it too |
 | `Ignore built-bar collisions (bars drawn faint)` | OFF = built bars are obstacles; ON = ignored by planner and IK, drawn faint (see Pre-flight 2). Changing it reloads the loaded entry |
 | `now` line | `Now: entry k -- <type> <bar> by <robot> -- step i/n <movement id> [<kind>] ctrl=<controller>` |
 | row list | grey = other robot, green = done, yellow = selected |

@@ -321,6 +321,13 @@ ros2 run husky_assembly_teleop husky_monitor
 - [ ] **Reset All Mvs to Clean** → reloads the loaded entry from its clean export (log names the
       `.json` without `.live-solved`).
 - [ ] **Rescan schedule status** → roster printed again, matching `progress.json`.
+- [ ] **Reset schedule to the Rhino export** (do this last in Part A): click it → the log asks to
+      confirm resetting the WHOLE schedule → `Cancel Exec` → `[Schedule] reset cancelled; nothing changed.`
+      Click it again → `Confirm Exec` →
+      `[Schedule] reset to the Rhino export: moved N file(s) (progress.json, BarActions/...live-solved.json, ...) to .../archive/<time>.`
+      Header `0/48 done`, every row pending, `others: Alice <- parked | Belle <- parked`, Alice and
+      Belle drawn parked, entry 0 loaded from its clean export. `ls "$DRY/archive/"` shows the
+      folder; nothing was deleted (moving the files back restores the old state).
 - [ ] **Legacy problem still works**: quit, `export DESIGN_PROBLEM_NAME=260929_phase1_retest` and
       `DESIGN_DATA_DIRECTORY="$GD/data_design_study"`, start → one line
       `ActionSchedule.json lists 180 entries but ... files are missing -- using the legacy BarAction list`
@@ -509,7 +516,7 @@ Follow the table in `doc/support_robot_schedule_manual.md` ("Four-bar test"). Ch
 | "refused: a step / execution is still running" | finish it or `Cancel Exec`, then retry |
 | arm may be left compliant (loud error in the log) | `Switch to Joint (BOTH)` or the `ros2 control switch_controllers` line in B0 |
 | marked an entry done by mistake | load it, `Reopen entry (reload clean)` (the robot's previous end state is restored) |
-| progress is wrong beyond repair | quit, edit or delete `<problem>/progress.json` (all entries pending again) |
+| progress is wrong beyond repair / start over from the Rhino export | `Reset schedule to the Rhino export` → `Confirm Exec` (progress.json and the saved plans go to `<problem>/archive/<time>/`; restart any other robot's monitor too) |
 | a plan fails with "start ... in collision" | read the pair in the log; for `ObstacleRobotCindy <-> env_bar_*` in Alice's run check that `Ignore built-bar collisions (bars drawn faint)` is ticked |
 | built bars missing although the toggle is OFF | a sidecar written while they were ignored (! known issue, A2): `Reopen entry (reload clean)` |
 | the transfer plans with the bar held / tries the bar-held planner | the workaround box is unticked (it starts unticked after every restart): tick `Workaround: plan the transfer as a free move ...` and plan again |
