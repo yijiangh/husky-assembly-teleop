@@ -187,11 +187,18 @@ insertion start; max |goal - stored goal| = ... rad`.
 
 1. `Load entry` (a J entry). The travel to load is not needed: skip it.
 2. `Step` → the transfer step → `Load Movement`.
-3. `Plan Movement` → the free move to the insertion start; preview with `Traj viz time`.
-4. `Exec Selected Mv Traj (auto)` → the arms go there (joint tracking, empty tools).
-5. `Step` back to the manual mount step → `Load Movement`: the bar is drawn in the
+3. `Transfer start: Confirm manual pose (IK check)` → can the arms reach the insertion
+   start (the Rhino pose) from where the base stands? `[transfer workaround] insertion
+   start reachable from the live base (blue ghost); ...` and the blue ghost shows the
+   arms there; or `... no collision-free IK for the insertion start at the live base ...`:
+   drive the base and check again. The `Transfer start:` sliders are not used here.
+4. `Plan Movement` → the free move to the configuration the IK check showed (solved
+   again when the base moved more than 2 mm since); preview with `Traj viz time`.
+   `Confirm transfer start + plan travel to load` does 3 and 4 in one click.
+5. `Exec Selected Mv Traj (auto)` → the arms go there (joint tracking, empty tools).
+6. `Step` back to the manual mount step → `Load Movement`: the bar is drawn in the
    tools at the insertion start. Mount the bar there by hand, then the tool grasp step.
-6. `Step` → the insert → `Plan Movement` (it starts where the transfer ended) → `Exec`.
+7. `Step` → the insert → `Plan Movement` (it starts where the transfer ended) → `Exec`.
 
 ! Nothing checks the bar during the move: do not tick the box with a bar already
 mounted. Untick it to go back to the bar-held planner.

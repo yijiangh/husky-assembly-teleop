@@ -2277,25 +2277,68 @@ def _free_planner_skip_env_collisions(enable):
         _api._build_cfab_collision_fn = _orig
 
 
-def unwrap_to_nearest(goal, start) -> np.ndarray:
-    """Shift each goal joint by whole turns (2*pi) so it lies within +/- pi of its start value.
+def unwrap_to_nearest(goal, start, lower=None, upper=None) -> np.ndarray:
+    """Shift each goal joint by whole turns (2*pi) to the equivalent value nearest its start.
 
     IK can return a joint value a full turn away from the nearest equivalent one
     (same flange pose); a free planner would then have to turn that joint the
-    long way round, which it rarely manages in its time budget. UR5e joints
-    have limits well past 2*pi, so the shifted value stays in range.
+    long way round, which it rarely manages in its time budget.
+
+    ! With ``lower`` / ``upper`` given, only values inside the joint limits are
+    ! picked. Most UR5e joints turn +/- 2*pi, but the ELBOW only +/- pi: there the
+    ! nearest equivalent value can lie outside the limits (start +2.26, IK -1.06
+    ! -> +5.22), a goal the arm can never reach. The elbow then keeps its
+    ! in-range value and turns the long way, which is the only way it can.
+    ! A joint with no in-range equivalent at all keeps its nearest value (the
+    ! caller's limit check reports it).
 
     Args:
         goal (Sequence[float]): Goal joint values.
         start (Sequence[float]): Start joint values, in the same order.
+        lower (Sequence[float] | None): Lower joint limits, same order (see ``arm_joint_limits``).
+        upper (Sequence[float] | None): Upper joint limits, same order.
 
     Returns:
-        np.ndarray: The goal joint values, each within +/- pi of its start value.
+        np.ndarray: The goal joint values: each within +/- pi of its start
+        value, or (with limits) the in-range equivalent nearest its start.
     """
     goal = np.asarray(goal, dtype=float)
     start = np.asarray(start, dtype=float)
     two_pi = 2.0 * np.pi
-    return goal - np.round((goal - start) / two_pi) * two_pi
+    out = goal - np.round((goal - start) / two_pi) * two_pi
+    if lower is None or upper is None:
+        return out
+    for i, (lo, hi) in enumerate(zip(lower, upper)):
+        # Equivalent values up to two turns either side of the nearest one.
+        in_range = [v for v in (out[i] + k * two_pi for k in (0, -1, 1, -2, 2))
+                    if lo - 1e-9 <= v <= hi + 1e-9]
+        if in_range:
+            out[i] = min(in_range, key=lambda v: abs(v - start[i]))
+    return out
+
+
+def arm_joint_limits(planner, joint_names) -> tuple:
+    """URDF lower / upper limits of some joints of the cfab planning robot.
+
+    Args:
+        planner: The compas_fab ``PyBulletPlanner`` (``monitor.cfab.planner``).
+        joint_names (Sequence[str]): The joints, e.g. Cindy's twelve arm joints.
+
+    Returns:
+        tuple: ``(lower, upper)``, two np.ndarrays in the order of ``joint_names``.
+    """
+    # pybullet_planning reads from its "current client": point it at the
+    # planner's world for the query, then put it back.
+    saved_client = pp.CLIENT
+    pp.CLIENT = planner.client.client_id
+    pp.CLIENTS.setdefault(pp.CLIENT, True)
+    try:
+        robot = planner.client.robot_puid
+        limits = [pp.get_joint_limits(robot, j) for j in pp.joints_from_names(robot, joint_names)]
+    finally:
+        pp.CLIENT = saved_client
+    return (np.asarray([lo for lo, _ in limits], dtype=float),
+            np.asarray([hi for _, hi in limits], dtype=float))
 
 
 def plan_both_arms_to_goal(monitor, use_composite=False, debug=False,
@@ -2413,8 +2456,9 @@ def plan_both_arms_to_goal(monitor, use_composite=False, debug=False,
         # the time budget. The M0 transit-failure probe in
         # scripts/headless_live_monitor_test.py showed this decisively:
         # planning to the raw goal failed at 120s; planning to the
-        # canonical (+/- pi of start) goal succeeded quickly. UR5e joints
-        # have limits well past 2*pi so an unwrap is always in-range.
+        # canonical (+/- pi of start) goal succeeded quickly.
+        # ! The elbow turns only +/- pi: the unwrap keeps every joint inside
+        # ! its URDF limits (see unwrap_to_nearest).
         left_joint_names = HUSKY_DUAL_UR5e_JOINT_NAMES[0]
         right_joint_names = HUSKY_DUAL_UR5e_JOINT_NAMES[1]
         start_left = np.asarray(
@@ -2427,7 +2471,9 @@ def plan_both_arms_to_goal(monitor, use_composite=False, debug=False,
         )
         start_12 = np.concatenate([start_left, start_right])
         raw_goal_12 = np.concatenate([left_conf, right_conf])
-        unwrapped_goal_12 = unwrap_to_nearest(raw_goal_12, start_12)
+        unwrapped_goal_12 = unwrap_to_nearest(
+            raw_goal_12, start_12,
+            *arm_joint_limits(monitor.cfab.planner, list(left_joint_names) + list(right_joint_names)))
         max_wrap_delta = float(np.max(np.abs(raw_goal_12 - unwrapped_goal_12)))
         if max_wrap_delta > 1e-6:
             wrapped_joints = np.where(np.abs(raw_goal_12 - unwrapped_goal_12) > 1e-6)[0]

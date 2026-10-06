@@ -7,7 +7,7 @@
 import sys, re
 print(f"Running with Python: {sys.executable}")
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from contextlib import nullcontext
 import os
 import time, copy
@@ -32,7 +32,9 @@ import pybullet_planning as pp
 
 from husky_assembly_teleop import DATA_DIRECTORY, DESIGN_DATA_DIRECTORY, EXPERIMENT_DATA_DIRECTORY, CALIBRATION_DATA_DIRECTORY, CALIBRATION_BATCHES, DESIGN_PROBLEM_NAME, CALIBRATION_DATE
 import husky_assembly_teleop.husky_world as world
-from husky_assembly_teleop.husky_world import _solve_bar_action_goal_ik, solve_goal_ik_generic, unwrap_to_nearest
+from husky_assembly_teleop.husky_world import (
+    _solve_bar_action_goal_ik, arm_joint_limits, solve_goal_ik_generic, unwrap_to_nearest,
+)
 import husky_assembly_teleop.mocap_experiment as mocap_experiment
 from husky_assembly_teleop.mocap_experiment import (
     fit_bar_from_markerset, bar_deviation_from_goal, draw_marker_take_in_pp,
@@ -446,6 +448,10 @@ class HuskyMonitor(Node):
         # Result of the last 'M1: Derive Start/Goal only' click (see
         # derive_m1_endpoints_live); consumed by adopt_m1_derived_start.
         self._m1_derived = None
+        # Transfer workaround: the last goal IK at the live base (movement id,
+        # base frame, configuration), so 'Plan Movement' plans to the
+        # configuration the IK check showed (_solve_transfer_goal_at_live_base).
+        self._transfer_goal_live = None
         # Ticked by the 'Adopt also saves ...' checkbox: whether adopting the
         # derived start also writes the confs to the BarAction file on disk.
         self._m1_adopt_writes_file = False
@@ -3589,6 +3595,8 @@ class HuskyMonitor(Node):
         # The slider is rebuilt from this (reset_ui below), so it follows the load.
         self._selected_movement_idx = idx
         mv = self._loaded_movements[idx]
+        # A load starts over: the transfer goal is solved again at the next check / plan.
+        self._transfer_goal_live = None
 
         # If M0 (or an action's first movement with no authored start conf),
         # re-snapshot live conf/base into its start_state so a robot that moved
@@ -4028,13 +4036,14 @@ class HuskyMonitor(Node):
         1. Start: the live arm joints, written into ``mv.start_state`` (the live
            base is already there, from ``_plan_by_kind``).
         2. Goal: the transfer's usual goal (the insertion start), re-solved by
-           IK for its ``target_ee_frames`` at the live base. Solved on a copy of
-           the insert's start state (the bar held at the insertion start), the
-           other robots posed from their beliefs, seeded with the stored goal
-           (``_m1_goal_conf``) and the live arms, collision-checked.
+           IK for its ``target_ee_frames`` at the live base
+           (``_solve_transfer_goal_at_live_base``). When the IK check
+           (``_check_transfer_goal_at_live_base``) ran just before and the base
+           has not moved since, its configuration is used as is.
         3. Each goal joint is shifted by whole turns to within +/- pi of the
            start (``unwrap_to_nearest``), so the search does not turn a joint
-           the long way round.
+           the long way round -- unless that leaves the joint's URDF limits
+           (the elbow turns only +/- pi), then it keeps its in-range value.
         4. The free planner (``_plan_free_and_validate``: BiRRT + swept check)
            runs on a copy of ``mv.start_state`` in which every held body (the
            bar and its joints) is let go and hidden, so the planner neither
@@ -4046,40 +4055,21 @@ class HuskyMonitor(Node):
         Returns:
             JointTrajectory | None: The free path, or None when no IK or no path was found.
         """
-        stored = self._m1_goal_conf()
-        if not mv.target_ee_frames or stored is None:
-            self.get_logger().warn(
-                f"[transfer workaround] {mv.movement_id}: needs its target_ee_frames and the "
-                f"insert's start configuration (the stored goal); not planning.")
-            return None
-        spec = self._connected_robot()
-        insert = self._loaded_movement_of(MovementKind.DUAL_CONSTRAINED_LINEAR)
-
         # 1. Start: the live arms.
         self._inject_live_conf_into_state(mv.start_state)
         start12 = vec12_from_conf(mv.start_state.robot_configuration)
 
-        # 2. Goal: the insertion start at the live base, with the bar held there.
-        ik_state = insert.start_state.copy()
-        ik_state.robot_base_frame = mv.start_state.robot_base_frame
-        self._apply_obstacle_beliefs(ik_state)
-        report = {}
-        conf = solve_goal_ik_generic(
-            self.cfab.planner, ik_state,
-            {spec.group_for_side(side): frame for side, frame in mv.target_ee_frames.items()},
-            seed_confs=[stored, mv.start_state.robot_configuration],
-            check_collision=True, report=report)
+        # 2. Goal: the insertion start at the live base, with the bar held there
+        # (the IK check's configuration when the base has not moved since).
+        conf = self._solve_transfer_goal_at_live_base(mv)
         if conf is None:
-            self.get_logger().warn(
-                f"[transfer workaround] {mv.movement_id}: no collision-free IK for the "
-                f"insertion start at the live base ({report.get('last_error')}); not planning.")
-            if report.get('first_colliding_state') is not None:
-                visualize_goal_ik_collision(self, report['first_colliding_state'])
             return None
         raw12 = vec12_from_conf(conf)
 
-        # 3. The goal joints within +/- pi of the start.
-        goal12 = unwrap_to_nearest(raw12, start12)
+        # 3. The goal joints within +/- pi of the start, but never outside their
+        # limits (the elbow turns only +/- pi: it may have to go the long way).
+        names_12 = list(HUSKY_DUAL_UR5e_JOINT_NAMES[0]) + list(HUSKY_DUAL_UR5e_JOINT_NAMES[1])
+        goal12 = unwrap_to_nearest(raw12, start12, *arm_joint_limits(self.cfab.planner, names_12))
 
         # 4. Plan without the bar: every held body is let go and hidden.
         state = mv.start_state.copy()
@@ -4091,11 +4081,138 @@ class HuskyMonitor(Node):
                 rb.is_hidden = True
         print(f"[transfer workaround] free move (no bar) from the live arms to the insertion "
               f"start; max |goal - stored goal| = "
-              f"{float(np.abs(raw12 - vec12_from_conf(stored)).max()):.4f} rad")
+              f"{self._transfer_goal_live['max_diff_rad']:.4f} rad")
         return self._plan_free_and_validate(
             mv, mv.movement_id, conf_from_12vec(goal12), state=state,
             max_time=120.0, max_iterations=50,
         )
+
+    def _solve_transfer_goal_at_live_base(self, mv: Movement) -> Optional[Configuration]:
+        """Transfer workaround: the arm configuration at the insertion start, from the live base.
+
+        The insertion start is where Rhino put the bar (the transfer's
+        ``target_ee_frames``, world coordinates); only the base comes from the
+        live robot. So when the base stands too far from the Rhino pose (or too
+        close to it), no arm configuration reaches it and this returns None.
+
+        Solved on a copy of the insert's start state (the bar held at the
+        insertion start) with the live base and the other robots posed from
+        their beliefs, seeded with the stored goal (``_m1_goal_conf``) and the
+        live arms, collision-checked (``solve_goal_ik_generic``).
+
+        * The result is kept in ``self._transfer_goal_live``. The next call for
+        * the same transfer returns it unchanged while the base has moved less
+        * than 2 mm / 0.5 deg since (mocap jitter stays far below that), so
+        * 'Plan Movement' plans to exactly the configuration the IK check showed;
+        * a fresh solve could land on another arm branch. After a bigger move it
+        * is solved again, seeded with the previous result first.
+
+        Args:
+            mv (Movement): The loaded transfer, its start state already at the
+                live base (``_apply_live_base_to_movement``) with the live arms.
+
+        Returns:
+            Configuration | None: The goal configuration, or None (already
+            warned; the colliding pair is drawn when there is one).
+        """
+        stored = self._m1_goal_conf()
+        if not mv.target_ee_frames or stored is None:
+            self.get_logger().warn(
+                f"[transfer workaround] {mv.movement_id}: needs its target_ee_frames and the "
+                f"insert's start configuration (the stored goal).")
+            return None
+        base = mv.start_state.robot_base_frame
+        # (getattr: the headless harnesses build the monitor without __init__.)
+        cached = getattr(self, '_transfer_goal_live', None)
+        if cached is not None and (cached['movement_id'] != mv.movement_id or base is None):
+            cached = None
+        if cached is not None:
+            # How far the base moved since the last solve (the axis change is
+            # about the turn angle, in radians, for small turns).
+            shift_m = float(np.linalg.norm(np.subtract(base.point, cached['base'].point)))
+            turn_rad = max(float(np.linalg.norm(np.subtract(base.xaxis, cached['base'].xaxis))),
+                           float(np.linalg.norm(np.subtract(base.yaxis, cached['base'].yaxis))))
+            if shift_m < 0.002 and turn_rad < np.radians(0.5):
+                print(f"[transfer workaround] {mv.movement_id}: goal from the last IK check "
+                      f"(the base moved {1000 * shift_m:.1f} mm since).")
+                return cached['conf']
+            print(f"[transfer workaround] the base moved {1000 * shift_m:.0f} mm / about "
+                  f"{np.degrees(turn_rad):.1f} deg since the last IK check; solving the goal again.")
+
+        spec = self._connected_robot()
+        insert = self._loaded_movement_of(MovementKind.DUAL_CONSTRAINED_LINEAR)
+        ik_state = insert.start_state.copy()
+        ik_state.robot_base_frame = base
+        self._apply_obstacle_beliefs(ik_state)
+        seeds = [stored, mv.start_state.robot_configuration]
+        if cached is not None:
+            seeds.insert(0, cached['conf'])
+        report = {}
+        conf = solve_goal_ik_generic(
+            self.cfab.planner, ik_state,
+            {spec.group_for_side(side): frame for side, frame in mv.target_ee_frames.items()},
+            seed_confs=seeds, check_collision=True, report=report)
+        if conf is None:
+            self._transfer_goal_live = None
+            self.get_logger().warn(
+                f"[transfer workaround] {mv.movement_id}: no collision-free IK for the "
+                f"insertion start at the live base ({report.get('last_error')}). The base "
+                f"stands too far from (or too close to) the Rhino pose, or something is in "
+                f"the way (colliding pair drawn when there is one): drive the base, check again.")
+            if report.get('first_colliding_state') is not None:
+                visualize_goal_ik_collision(self, report['first_colliding_state'])
+            return None
+        self._transfer_goal_live = {
+            'movement_id': mv.movement_id,
+            'base': base.copy() if base is not None else None,
+            'conf': conf,
+            # How far the live-base solve lands from the stored (Rhino) goal.
+            'max_diff_rad': float(np.abs(vec12_from_conf(conf) - vec12_from_conf(stored)).max()),
+        }
+        return conf
+
+    def _check_transfer_goal_at_live_base(self, mv: Movement, state) -> bool:
+        """Transfer workaround: what 'Transfer start: Confirm manual pose (IK check)' does then.
+
+        With the workaround ticked the transfer starts from the live arms and
+        carries no bar, so the bar-loading start on the 'Transfer start:'
+        sliders plays no part. What matters is whether the arms reach the
+        insertion start (the Rhino pose) from where the base stands now. This
+        solves that afresh (``_solve_transfer_goal_at_live_base``) and shows it
+        on the blue goal ghost; 'Plan Movement' then plans the free move to
+        exactly this configuration while the base stays put.
+
+        ! Nothing is staged for 'Exec' and nothing is adopted or saved: the
+        ! ghost only shows the goal. The arms move only after 'Plan Movement'.
+
+        Args:
+            mv (Movement): The loaded transfer.
+            state (RobotCellState): ``mv.start_state``, the live base already in it.
+
+        Returns:
+            bool: True when a collision-free configuration was found.
+        """
+        print("[transfer workaround] IK check: can the arms reach the insertion start (the "
+              "Rhino pose) from the live base? The 'Transfer start:' sliders are not used.")
+        self._inject_live_conf_into_state(state)
+        self._transfer_goal_live = None   # every click solves afresh
+        conf = self._solve_transfer_goal_at_live_base(mv)
+        if conf is None:
+            return False
+        # Blue goal ghost at the found configuration on the live base (same
+        # display as ik_live_base_for_selected_movement).
+        goal12 = vec12_from_conf(conf)
+        self.goal_arm_pose[0] = goal12[:6].copy()
+        self.goal_arm_pose[1] = goal12[6:].copy()
+        self.goal_base_pose = pose_from_frame(state.robot_base_frame)
+        self._hide_m1_manual_ghost()
+        self.reset_ui(self.goal_arm_pose)
+        self.set_to_show_goal_state()
+        self.get_logger().info(
+            f"[transfer workaround] insertion start reachable from the live base (blue "
+            f"ghost); max |goal - stored goal| = {self._transfer_goal_live['max_diff_rad']:.4f} "
+            f"rad. 'Plan Movement' plans the free move there.")
+        return True
 
     # --- --- --- Chain planning (Button 1) --- --- ---
 
@@ -5837,6 +5954,10 @@ class HuskyMonitor(Node):
                                 state: Optional[RobotCellState] = None, **plan_kwargs):
         """Plan a free (M0/M4) movement, then gate it on the dense re-check.
 
+        Refuses right away (no search) when the start or the goal has a joint
+        outside its URDF limits, with the endpoint report
+        (``_diagnose_free_plan_endpoints``).
+
         Returns the JointTrajectory only if the path survives
         ``_validate_free_planned_path``; a path that sweeps through the built
         assembly is REJECTED rather than handed on with a warning, because the
@@ -5856,6 +5977,26 @@ class HuskyMonitor(Node):
             JointTrajectory | None: None when planning or validation failed.
         """
         state = mv.start_state if state is None else state
+        # * Fail fast on joint limits. The planner's collision check ignores
+        # * them, so an endpoint outside them only showed as a search that ran
+        # * its whole budget (the sampler stays inside the limits) -- or worse,
+        # * as a path the arm cannot follow.
+        names_12 = list(HUSKY_DUAL_UR5e_JOINT_NAMES[0]) + list(HUSKY_DUAL_UR5e_JOINT_NAMES[1])
+        lower, upper = arm_joint_limits(self.cfab.planner, names_12)
+        goal12 = (np.asarray(goal_conf, dtype=float)
+                  if isinstance(goal_conf, (list, tuple, np.ndarray)) else vec12_from_conf(goal_conf))
+        outside = [f"{label} {name}={v:+.3f} rad (limits [{lo:+.3f}, {hi:+.3f}])"
+                   for label, vec in (('start', vec12_from_conf(state.robot_configuration)),
+                                      ('goal', goal12))
+                   for name, v, lo, hi in zip(names_12, vec, lower, upper)
+                   if not lo - 1e-6 <= v <= hi + 1e-6]
+        if outside:
+            self.get_logger().warn(
+                f"[{tag}] not planning: joint value(s) outside the URDF limits, the arm can "
+                f"never get there: {'; '.join(outside)}.")
+            self._diagnose_free_plan_endpoints(mv, goal_conf, tag, state=state)
+            return None
+        t0 = time.time()
         with pp.LockRenderer():
             path, info = plan_free_dual_arm(
                 self.cfab.planner, state, goal_conf,
@@ -5863,10 +6004,15 @@ class HuskyMonitor(Node):
         if path is None:
             reason = info.get('failure_reason')
             print(f"[{tag}] plan_free_dual_arm failed: {reason}")
-            if reason == 'start_or_goal_in_collision':
-                # The planner only says "start or goal"; name the pairs and
-                # draw them, and check joint limits while we are at it.
+            if reason in ('start_or_goal_in_collision', 'birrt_failed'):
+                # The planner only says "start or goal" / "no path"; name the
+                # endpoint pairs and draw them, and check joint limits.
                 self._diagnose_free_plan_endpoints(mv, goal_conf, tag, state=state)
+            if reason == 'birrt_failed':
+                # * Both endpoints were collision-free: say what made the search hard.
+                self._diagnose_free_plan_search(
+                    mv, goal_conf, tag, state=state, elapsed_s=time.time() - t0,
+                    plan_kwargs=plan_kwargs)
             return None
         print(f"[{tag}] planned {len(path)} waypoints at "
               f"{FM_JOINT_RESOLUTION} rad; verifying swept path...")
@@ -5879,7 +6025,11 @@ class HuskyMonitor(Node):
 
     def _diagnose_free_plan_endpoints(self, mv, goal_conf, tag: str, *,
                                       state: Optional[RobotCellState] = None):
-        """Explain a free plan's ``start_or_goal_in_collision`` failure.
+        """Explain a free plan's ``start_or_goal_in_collision`` or ``birrt_failed`` failure.
+
+        For ``birrt_failed`` both endpoints passed the collision check, so this
+        mostly confirms that and reports the joint limits (a goal outside them
+        looks like a search failure); ``_diagnose_free_plan_search`` follows.
 
         ``plan_free_dual_arm`` rejects the request when either endpoint fails
         the cfab collision check, but pybullet_planning only prints
@@ -5971,6 +6121,132 @@ class HuskyMonitor(Node):
             planner.set_robot_cell_state(start)
         except Exception as e:
             print(f"[{tag} diag] ERROR while diagnosing the endpoints: {e}")
+
+    def _diagnose_free_plan_search(self, mv, goal_conf, tag: str, *,
+                                   state: Optional[RobotCellState] = None,
+                                   elapsed_s: float = 0.0,
+                                   plan_kwargs: Optional[dict] = None):
+        """Explain a free plan's ``birrt_failed``: both endpoints are clear, yet no path was found.
+
+        Runs after ``_diagnose_free_plan_endpoints`` (endpoint collisions, joint
+        limits). Three more clues, printed with the movement's tag:
+
+        1. The budget: how long the search ran, against its ``max_time`` /
+           ``max_iterations`` when the caller set them, and which joint has to
+           turn the most.
+        2. How hemmed in each endpoint is: the share of configurations within
+           one planning step (``FM_JOINT_RESOLUTION`` on every joint) that
+           collide, and the pairs they hit most. An endpoint where nearly every
+           neighbour collides sits in a tight pocket the random search rarely
+           gets into or out of.
+        3. The straight joint path from start to goal, checked at the planning
+           step: where it first collides and with what. That configuration's
+           pairs are drawn in the PyBullet window, and the red planning robot
+           is left standing there.
+
+        A one-line verdict closes the report. A diagnostic must never turn a
+        soft planning failure into a crash, so the body is guarded and any error
+        is reported and swallowed.
+
+        Args:
+            mv: The movement that failed to plan.
+            goal_conf: The plan's goal, a compas Configuration or a 12-vec.
+            tag (str): Log tag (the movement id).
+            state (RobotCellState | None): The state the plan started from
+                (None = ``mv.start_state``; the transfer workaround plans on a
+                copy without the bar).
+            elapsed_s (float): How long the failed search took, in seconds.
+            plan_kwargs (dict | None): The extra arguments the plan got
+                (``max_time``, ``max_iterations``), for the budget line.
+        """
+        planner = self.cfab.planner if self.cfab is not None else None
+        if planner is None or mv is None or mv.start_state is None:
+            return
+        start = mv.start_state if state is None else state
+        names_12 = list(HUSKY_DUAL_UR5e_JOINT_NAMES[0]) + list(HUSKY_DUAL_UR5e_JOINT_NAMES[1])
+        plan_kwargs = plan_kwargs or {}
+        n_near, near_rad = 30, FM_JOINT_RESOLUTION   # neighbours per endpoint, their reach
+        tight = 0.8   # share of colliding neighbours above which an endpoint counts as boxed in
+
+        def collides(conf12) -> bool:
+            """Whether a 12-vec collides in the plan's scene (same check as the planner)."""
+            try:
+                planner.check_collision(_state_with_conf12(start, conf12, names_12),
+                                        options={"verbose": False})
+                return False
+            except CollisionCheckError:
+                return True
+
+        try:
+            start12 = vec12_from_conf(start.robot_configuration)
+            goal12 = (np.asarray(goal_conf, dtype=float)
+                      if isinstance(goal_conf, (list, tuple, np.ndarray))
+                      else vec12_from_conf(goal_conf))
+
+            # --- 1. The budget, and the biggest joint move.
+            delta = np.abs(goal12 - start12)
+            j = int(np.argmax(delta))
+            budget = ''
+            if 'max_time' in plan_kwargs:
+                budget += f" of its {float(plan_kwargs['max_time']):.0f} s budget"
+            if 'max_iterations' in plan_kwargs:
+                budget += f" ({int(plan_kwargs['max_iterations'])} restarts at most)"
+            print(f"[{tag} diag] the search ran {elapsed_s:.1f} s{budget}; the largest joint "
+                  f"move is {names_12[j]} by {delta[j]:.2f} rad.")
+
+            # --- 2. How much room each endpoint has.
+            rng = np.random.default_rng(0)   # same neighbours every time: comparable reports
+            boxed_in = []
+            for label, conf in (('START', start12), ('GOAL', goal12)):
+                hits, pairs = 0, Counter()
+                for _ in range(n_near):
+                    q = conf + rng.uniform(-near_rad, near_rad, size=12)
+                    if not collides(q):
+                        continue
+                    hits += 1
+                    if hits <= 8:   # naming the pairs is slower; a few samples are enough
+                        records = collect_collision_contacts(
+                            planner, _state_with_conf12(start, q, names_12))
+                        pairs.update(f"{r['name_a']} <-> {r['name_b']}" for r in records)
+                top = ', '.join(f"{pair} ({n}x)" for pair, n in pairs.most_common(3))
+                print(f"[{tag} diag] {label}: {hits}/{n_near} configurations within "
+                      f"{near_rad:.2f} rad of it (every joint) collide"
+                      + (f"; most often {top}" if top else '') + '.')
+                if hits >= tight * n_near:
+                    boxed_in.append(label)
+
+            # --- 3. The straight joint path: where does it first collide?
+            n_steps = max(1, int(np.ceil(float(delta.max()) / FM_JOINT_RESOLUTION)))
+            first = next((k for k in range(1, n_steps)
+                          if collides(start12 + (goal12 - start12) * (k / n_steps))), None)
+            if first is None:
+                print(f"[{tag} diag] the straight joint path from start to goal is "
+                      f"collision-free at {FM_JOINT_RESOLUTION} rad steps.")
+            else:
+                print(f"[{tag} diag] the straight joint path first collides "
+                      f"{100.0 * first / n_steps:.0f}% of the way to the goal; there (drawn, "
+                      f"the red planning robot stands at it):")
+                visualize_goal_ik_collision(self, _state_with_conf12(
+                    start, start12 + (goal12 - start12) * (first / n_steps), names_12))
+
+            # --- Verdict.
+            if boxed_in:
+                print(f"[{tag} diag] VERDICT: the {' and the '.join(boxed_in)} "
+                      f"{'sits' if len(boxed_in) == 1 else 'sit'} in a tight "
+                      f"pocket: nearly every nearby configuration collides (pairs above), so the "
+                      f"random search hardly gets in or out. Give it room (move the base or "
+                      f"what it hits), then plan again.")
+            elif first is None:
+                # ! The planner tries the straight path first (pp check_direct), so
+                # ! a clear straight path should never end in birrt_failed.
+                print(f"[{tag} diag] VERDICT: unexpected: the straight path checks clear here and "
+                      f"the planner tries it first. Plan again; if it repeats, keep this log.")
+            else:
+                print(f"[{tag} diag] VERDICT: both endpoints have room; the search found no way "
+                      f"around what blocks the straight path (pairs above) within its budget. "
+                      f"Plan again (each try samples anew), or move the base to open a wider way.")
+        except Exception as e:
+            print(f"[{tag} diag] ERROR while diagnosing the search: {e}")
 
     def _validate_cdfm_planned_path(self, mv, path12):
         """Run sparse path_validation checks for a planned transfer (CDFM) path.
@@ -7058,15 +7334,24 @@ class HuskyMonitor(Node):
         on M0 drives the arms there. Re-adjust and confirm again freely --
         each confirm takes well under a second.
 
+        ! With the transfer workaround ticked (``_transfer_as_free_move``) the
+        ! sliders are not used: this checks instead whether the arms reach the
+        ! insertion start (the Rhino pose) from the live base, the goal 'Plan
+        ! Movement' will plan to (``_check_transfer_goal_at_live_base``).
+        ! Nothing is adopted then.
+
         Returns:
-            bool: True when the start was adopted; False when the transfer is
-            not loaded, no goal is known, or the IK found no collision-free
-            arm configuration for the bar pose (already warned).
+            bool: True when the start was adopted (workaround: when the
+            insertion start is reachable); False when the transfer is not
+            loaded, no goal is known, or the IK found no collision-free arm
+            configuration (already warned).
         """
         ctx = self._m1_live_context('Confirm manual start')
         if ctx is None:
             return False
         mv, state, goal_conf, home_anchor = ctx
+        if self._transfer_as_free_move():
+            return self._check_transfer_goal_at_live_base(mv, state)
         if goal_conf is None:
             self.get_logger().warn(
                 "[M1 manual] needs M2's authored start conf as the goal "
@@ -7146,9 +7431,14 @@ class HuskyMonitor(Node):
         again. The separate confirm button stays for adjusting the pose
         without planning.
 
+        ! With the transfer workaround ticked the travel to load is skipped:
+        ! the confirm checks the insertion start at the live base, and on
+        ! success the TRANSFER itself is planned (the free move without the bar).
+
         Returns:
-            bool: True when the travel to load got a trajectory; False when the
-            start was not adopted or the plan failed (already warned).
+            bool: True when the travel to load (workaround: the transfer) got a
+            trajectory; False when the start was not adopted / not reachable or
+            the plan failed (already warned).
         """
         what = 'Confirm transfer start + plan travel to load'
         if self._refuse_while_tasks_run(what, schedule_only=True):
@@ -7158,9 +7448,10 @@ class HuskyMonitor(Node):
         if not self._loaded_movements:
             self.get_logger().warn(f"No BarAction loaded; click {self._load_hint()} first.")
             return False
+        workaround = self._transfer_as_free_move()
         ti = self._loaded_index_of(MovementKind.DUAL_CONSTRAINED_FREE)
         fi = self._loaded_index_of(MovementKind.DUAL_FREE, free_home=False)
-        if ti is None or fi is None:
+        if ti is None or (fi is None and not workaround):
             self.get_logger().warn(
                 f"{what}: this action has no transfer or no travel to load.")
             return False
@@ -7174,6 +7465,19 @@ class HuskyMonitor(Node):
         if not self.confirm_m1_manual_start():
             self.get_logger().warn(f"{what}: transfer start not adopted; nothing planned.")
             return False
+        if workaround:
+            # * Workaround: plan the transfer itself (it is still loaded).
+            self.plan_selected_movement()
+            transfer = self._loaded_movements[ti]
+            if transfer.trajectory is None:
+                self.get_logger().warn(
+                    f"{what}: {transfer.movement_id} has no trajectory (see the "
+                    f"planner's warning above).")
+                return False
+            self.get_logger().info(
+                f"{what}: {transfer.movement_id} planned as a free move (workaround); check "
+                f"the preview, then 'Exec Selected Mv Traj (auto)'.")
+            return True
         self.load_selected_movement(index=fi)
         self.plan_selected_movement()
         free_to_load = self._loaded_movements[fi]
