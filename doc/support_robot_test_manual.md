@@ -407,6 +407,67 @@ On the workstation (`export ROS_DOMAIN_ID=<84|86>`, `RMW_IMPLEMENTATION=rmw_cycl
 - [ ] Mocap: Motive streams 1860 (Cindy) and 1840 (Alice). Monitor start-up prints
       `mocap client connected: True`.
 
+## B2b. Driving the base from the command line (when the joystick does not connect)
+
+**Setup — paste into a new terminal** (no venv needed; the workstation's network adapter on the
+robot network is found by its `192.168.0.x` address, so it works whichever USB-ethernet dongle is
+plugged in). Set `ROS_DOMAIN_ID` for the robot you drive: Cindy `86`, Alice `84`, Belle `85`.
+
+```bash
+source /opt/ros/humble/setup.bash
+export ROS_DOMAIN_ID=86            # Cindy 86 | Alice 84 | Belle 85
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+IFACE=$(ip -o -4 addr show | awk '$4 ~ /^192\.168\.0\./ {print $2; exit}')
+export CYCLONEDDS_URI="<CycloneDDS><Domain><General><Interfaces><NetworkInterface name=\"$IFACE\"/></Interfaces></General></Domain></CycloneDDS>"
+ros2 daemon stop >/dev/null 2>&1
+echo "[robot env] domain $ROS_DOMAIN_ID via ${IFACE:-NO ADAPTER ON 192.168.0.x}"
+ros2 topic info /a200_0806/cmd_vel --no-daemon --spin-time 5   # expect: Subscription count: 1 (twist_mux)
+```
+
+- `[robot env] ... via NO ADAPTER ON 192.168.0.x`: the dongle is not plugged in / has no address
+  (`ip -brief addr`).
+- `Unknown topic`: the robot is not visible — wrong domain, the robot's ROS is not running on
+  CycloneDDS, or the base driver is down.
+- In the commands below replace `/a200_0806` with the robot you drive: Alice `/a200_0804`,
+  Belle `/a200_0805`.
+
+How the base listens (checked on Cindy): `<ns>/cmd_vel` (`geometry_msgs/msg/Twist`) goes into
+`twist_mux` as its lowest-priority input (`external`, priority 1); `twist_mux` drives
+`platform_velocity_controller`.
+- **The base stops 0.5 s after the last message** (mux timeout), so a command has to be
+  published continuously; stopping the publisher stops the base.
+- The joystick (priority 10), the RC remote (12) and the interactive marker (8) **override**
+  `cmd_vel` while they publish; the Husky e-stop locks out everything.
+- ! Hand on the e-stop. Drive slowly near the structure. Moving the base makes planned
+  trajectories stale (the monitor plans at the live base): plan again after driving.
+
+**Keyboard (recommended):**
+
+```bash
+ros2 run teleop_twist_keyboard teleop_twist_keyboard --ros-args \
+    -r cmd_vel:=/a200_0806/cmd_vel -p speed:=0.1 -p turn:=0.3
+```
+
+`speed` (m/s) and `turn` (rad/s) are the starting maximum speeds (defaults 0.5 and 1.0 are too
+fast near the structure). In that terminal: **hold** `i` forward, `,` backward, `j` / `l` turn
+left / right on the spot, `u` / `o` forward while turning; `k` (or any other key) stops; releasing
+the key stops the base within 0.5 s. `q` / `z` raise / lower both speeds by 10 %, `w` / `x` only
+the linear, `e` / `c` only the turning speed. `Ctrl-C` quits.
+
+**Fixed moves with `ros2 topic pub`** (`-r 10` = 10 messages per second, `-t N` = stop after N
+messages, so N / 10 seconds; `Ctrl-C` stops early):
+
+```bash
+# forward 0.1 m/s for 2 s (about 20 cm); use x: -0.1 to back up
+ros2 topic pub -r 10 -t 20 /a200_0806/cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.1}}"
+# turn on the spot, 0.2 rad/s for 3 s (about 34 deg, counter-clockwise seen from above); z: -0.2 = clockwise
+ros2 topic pub -r 10 -t 30 /a200_0806/cmd_vel geometry_msgs/msg/Twist "{angular: {z: 0.2}}"
+```
+
+**Check what reaches the base** (second terminal): `ros2 topic echo /a200_0806/platform/cmd_vel_unstamped`
+shows the twist `twist_mux` passes on; `ros2 topic echo /a200_0806/platform/emergency_stop`
+shows `data: true` while the e-stop is engaged (then nothing moves).
+
 ## B3. Alice — hardware checks before the assembly (no bar, clear workspace)
 
 Start the monitor as Alice (`ROS_DOMAIN_ID=84`) with the Part B flags (built-bar toggle
