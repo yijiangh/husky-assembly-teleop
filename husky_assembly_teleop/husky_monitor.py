@@ -236,7 +236,7 @@ EXISTING_ELEMENT_COLOR = pp.RED
 CURRENT_ELEMENT_COLOR = pp.BLUE
 DEFAULT_BAR_POS = pp.Point(0.8, 0, 1.3)
 
-CLIENT_IP = '192.168.0.25' # Set to your own IP
+CLIENT_IP = '192.168.0.29' # Set to your own IP
 # ! Both are DHCP leases and do move. If mocap logs "connected: False", see
 # ! doc/calibration_manual.md section 1.4 before touching anything else.
 MOCAP_IP = '192.168.0.28' # set to the mocap PC's IP, get this from Motive Settings>Streaming pane->Local interface
@@ -258,8 +258,8 @@ class HuskyMonitor(Node):
     # without any external tracking. The husky base is then assumed to be
     # exactly where the plan says it is (each movement's
     # start_state.robot_base_frame), see _live_base_pose().
-    USE_MOCAP = 0
-    FAKE_HARDWARE = 1
+    USE_MOCAP = 1
+    FAKE_HARDWARE = 0
 
     # * Set 0 to skip connecting the UR SetIO service clients (gripper/screw IO).
     # Saves the 2.5 s startup wait + "SetIO Service i not available!" warning
@@ -270,7 +270,7 @@ class HuskyMonitor(Node):
     # Saves the 2.5 s per-arm wait + "list_controllers service unavailable"
     # warning; active_controller stays "" (first switch_controller request may
     # then be rejected by controller_manager, see _seed_active_controllers).
-    LIST_CONTROLLER_SERVICES = 0
+    LIST_CONTROLLER_SERVICES = 1
     # * Set 0 to skip creating the compliant-controller ROS interfaces
     # (target_wrench publishers + start_force_mode / zero_ftsensor /
     # switch_controller service clients). Saves 2.5 s per client (5 waits on a
@@ -282,7 +282,7 @@ class HuskyMonitor(Node):
     # are not built. The FT *subscription* is created unconditionally, so the
     # live force plot works either way.
     # ! Set 1 for any session that executes M2/M3 (cartesian compliance).
-    CONNECT_COMPLIANT_CONTROLLER = 0
+    CONNECT_COMPLIANT_CONTROLLER = 1
 
     # When USE_MOCAP=1, by default the husky base in PyBullet tracks mocap.
     # Set USE_CELL_STATE_BASE_POSE=1 to override that and pin the base to
