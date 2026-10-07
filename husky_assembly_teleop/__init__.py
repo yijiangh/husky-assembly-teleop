@@ -97,7 +97,7 @@ CALIBRATION_BATCHES = ['j0', 'j1', 'validation', 'punch_validation']
 # DESIGN_PROBLEM_NAME = '260811_RobArch_demo'
 # * Override per run with the environment variable DESIGN_PROBLEM_NAME, e.g.
 # *   export DESIGN_PROBLEM_NAME=260920_RobArch_demo_revamp_backup
-DESIGN_PROBLEM_NAME = os.environ.get('DESIGN_PROBLEM_NAME', '260929_phase1_retest')
+DESIGN_PROBLEM_NAME = os.environ.get('DESIGN_PROBLEM_NAME', '261006_3bar_holding_test')
 # DESIGN_PROBLEM_NAME = '2026-05-19_reoriented2'
 
 # Rhino .3dm whose "Environment Obstacles" layer is drawn as the layout-diagram

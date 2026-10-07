@@ -244,7 +244,8 @@ EXISTING_ELEMENT_COLOR = pp.RED
 CURRENT_ELEMENT_COLOR = pp.BLUE
 DEFAULT_BAR_POS = pp.Point(0.8, 0, 1.3)
 
-CLIENT_IP = '192.168.0.29' # Set to your own IP
+CLIENT_IP = '192.168.0.25' # husky PC Set to your own IP
+# CLIENT_IP = '192.168.0.29' # Razor laptop Set to your own IP
 # ! Both are DHCP leases and do move. If mocap logs "connected: False", see
 # ! doc/calibration_manual.md section 1.4 before touching anything else.
 MOCAP_IP = '192.168.0.28' # set to the mocap PC's IP, get this from Motive Settings>Streaming pane->Local interface
@@ -340,7 +341,7 @@ class HuskyMonitor(Node):
     # ! operator mounts the bar there afterwards). The panel toggle "Workaround:
     # ! plan the transfer as a free move ..." changes it while the monitor runs.
     # ! See _plan_transfer_as_free_move.
-    TRANSFER_AS_FREE_MOVE = 0
+    TRANSFER_AS_FREE_MOVE = 1
     DUAL_ARM_EE_CONSTR_ACCURACY_MOCAP_TEST = 0
 
     # Set to 1 to dump cfab's collision-check setup (its ACM / allowed-collision
