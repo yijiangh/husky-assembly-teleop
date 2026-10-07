@@ -1,9 +1,9 @@
-"""Tests for `scene_view`: building on a budget, moving only on change, removing, tracked objects."""
+"""Tests for `scene_view`: building on a budget, moving only on change, removing, tracked objects, collision mode."""
 
 import pytest
 import viser
 
-from husky_assembly_teleop.design_io.geometry import box_geometry
+from husky_assembly_teleop.design_io.geometry import BoxShape, Geometry, box_geometry
 from husky_assembly_teleop.world.scene import Body, SceneSnapshot, TrackedDescription, TrackedEntry
 from husky_assembly_teleop.design_io.pose import Pose
 from husky_assembly_teleop.ui.scene_view import SceneView
@@ -51,7 +51,7 @@ def test_builds_on_budget(server):
     assert len(view._bodies) == 2
     view.sync(snapshot)
     assert set(view._bodies) == {"budget/b0", "budget/b1", "budget/b2"}
-    assert "/scene/budget/b2/mesh_0" in _nodes(server)
+    assert "/scene/budget/b2/visual_0" in _nodes(server)
 
 
 def test_moves_only_on_change(server, monkeypatch):
@@ -93,7 +93,7 @@ def test_removes_bodies(server):
 
     view.sync(_snapshot({"rm/chairs/c1": _body("rm/chairs/c1")}))
     assert set(view._bodies) == {"rm/chairs/c1"}
-    assert "/scene/rm/tables/t1" not in _nodes(server) and "/scene/rm/tables/t1/mesh_0" not in _nodes(server)
+    assert "/scene/rm/tables/t1" not in _nodes(server) and "/scene/rm/tables/t1/visual_0" not in _nodes(server)
 
     view.sync(_snapshot())
     assert view._bodies == {}
@@ -105,7 +105,7 @@ def test_tracked_objects(server):
     view = SceneView(server)
     view.sync(_snapshot(tracked={"probe": _tracked("probe"), "bar": _tracked("bar", geometry=BOX)}))
     assert view._tracked["probe"].meshes == []
-    assert len(view._tracked["bar"].meshes) == 1 and "/tracked/bar/mesh_0" in _nodes(server)
+    assert len(view._tracked["bar"].meshes) == 1 and "/tracked/bar/visual_0" in _nodes(server)
 
     view.sync(_snapshot(tracked={"bar": _tracked("bar", geometry=BOX, pose=Pose((0.0, 0.0, 1.0)))}))
     assert not view._tracked["probe"].frame.visible
@@ -127,3 +127,29 @@ def test_disabled_bodies_are_hidden_not_removed(server):
     assert view._bodies["en/box"].frame is frame and frame.visible
     view.sync(_snapshot({"en/box": (off, Pose())}))
     assert view._bodies["en/box"].frame is frame and not frame.visible
+
+
+def test_collision_mode_rebuilds_with_collision_shapes(server):
+    """Switching to collision shapes rebuilds bodies and tracked objects from `geometry.collision`, and back.
+
+    The visual is offset, as a floor mark is: the collision shape must not inherit its position.
+    """
+    floor_mark = BoxShape((1.0, 1.0, 0.01), Pose((0.0, 0.0, -0.995)))
+    split = Geometry(visual=(floor_mark,), collision=(BoxShape((1.0, 1.0, 2.0)),))
+    view = SceneView(server)
+    snapshot = _snapshot({"col/wall": _body("col/wall", geometry=split)},
+                         tracked={"col_bar": _tracked("col_bar", geometry=split)})
+    view.sync(snapshot)
+    frame = view._bodies["col/wall"].frame
+    assert tuple(server.scene._handle_from_node_name["/scene/col/wall/visual_0"].dimensions) == (1.0, 1.0, 0.01)
+
+    view.sync(snapshot, collision=True)
+    assert view._bodies["col/wall"].frame is not frame
+    collision = server.scene._handle_from_node_name["/scene/col/wall/collision_0"]
+    assert tuple(collision.dimensions) == (1.0, 1.0, 2.0) and tuple(collision.position) == (0.0, 0.0, 0.0)
+    assert "/scene/col/wall/visual_0" not in _nodes(server)
+    assert tuple(view._tracked["col_bar"].meshes[0].dimensions) == (1.0, 1.0, 2.0)
+
+    view.sync(snapshot)
+    assert tuple(server.scene._handle_from_node_name["/scene/col/wall/visual_0"].dimensions) == (1.0, 1.0, 0.01)
+    assert tuple(view._tracked["col_bar"].meshes[0].dimensions) == (1.0, 1.0, 0.01)

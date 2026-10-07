@@ -39,6 +39,9 @@ PAGE_TITLE = "Husky Monitor"
 #: Fallback colour for a mesh that carries no colour of its own.
 _DEFAULT_MESH_COLOR = (0.8, 0.8, 0.8, 1.0)
 
+#: Colour of the robots' collision meshes, RGB 0-1, when the view shows collision shapes.
+COLLISION_COLOR = (0.9, 0.35, 0.35)
+
 #: Joint change (rad or m) below which a robot is not re-posed.
 JOINT_TOLERANCE = 1e-4
 
@@ -153,16 +156,17 @@ def make_matte(mesh: trimesh.Trimesh) -> None:
     )
 
 
-def load_urdf(urdf_file: Path) -> yourdfpy.URDF:
-    """Parse a URDF for display (visual meshes only), resolving `package://` paths.
+def load_urdf(urdf_file: Path, collision: bool = False) -> yourdfpy.URDF:
+    """Parse a URDF for display, resolving `package://` paths.
 
     ! Keep the filename handler: yourdfpy's default silently skips `package://` meshes.
 
     Args:
         urdf_file: URDF describing the robot as built.
+        collision: Also load the collision meshes, for `ViserUrdf(load_collision_meshes=True)`.
 
     Returns:
-        yourdfpy.URDF: The parsed model, with visual meshes loaded.
+        yourdfpy.URDF: The parsed model, with visual meshes (and collision meshes if asked) loaded.
     """
 
     def resolve(fname: str) -> str:
@@ -176,8 +180,8 @@ def load_urdf(urdf_file: Path) -> yourdfpy.URDF:
         str(urdf_file),
         filename_handler=resolve,
         load_meshes=True,
-        build_collision_scene_graph=False,
-        load_collision_meshes=False,
+        build_collision_scene_graph=collision,
+        load_collision_meshes=collision,
     )
     for mesh in model.scene.geometry.values():
         make_matte(mesh)
@@ -186,9 +190,10 @@ def load_urdf(urdf_file: Path) -> yourdfpy.URDF:
 
 @cache
 def shared_urdf(urdf_file: Path) -> yourdfpy.URDF:
-    """`load_urdf`, parsed once per file and shared.
+    """`load_urdf` with collision meshes, parsed once per file and shared.
 
-    Each robot and ghost would otherwise re-read its meshes (about 1 s per robot).
+    Each robot and ghost would otherwise re-read its meshes (about 1 s per robot). ? The collision meshes add
+    about 0.1 s per robot.
 
     ! `FastViserUrdf` never poses it, and anyone else posing it would change it for every user: never read
       `get_transform` from it. Main thread only.
@@ -199,7 +204,7 @@ def shared_urdf(urdf_file: Path) -> yourdfpy.URDF:
     Returns:
         yourdfpy.URDF: The parsed model, shared by every caller with this file.
     """
-    return load_urdf(urdf_file)
+    return load_urdf(urdf_file, collision=True)
 
 
 def mesh_color(mesh: trimesh.Trimesh) -> tuple[int, int, int]:
@@ -283,6 +288,13 @@ class Visualization:
         self._freeze.on_click(self._toggle_freeze)
         self._show_freeze_state()
 
+        # * Read by `draw` each tick, so the switch is applied on the main thread.
+        self._show_collision = self._server.gui.add_checkbox(
+            "Collision", initial_value=False,
+            hint="Draw what collision checks use instead of what things look like: robots in red, "
+                 "scene bodies and tracked objects in their own colour.")
+        self._collision_shown = False
+
         # Per-robot handles by serial, built once in load_robot.
         self._robots: dict[str, _DrawnRobot] = {}
 
@@ -304,9 +316,18 @@ class Visualization:
         base.wxyz = quaternion_to_wxyz(config.default_orientation)
 
         model = shared_urdf(config.urdf_file)
-        drawn = FastViserUrdf(self._server, model, root_node_name=root)
+        drawn = FastViserUrdf(self._server, model, root_node_name=root, load_collision_meshes=True,
+                              collision_mesh_color_override=COLLISION_COLOR)
+        self._show_robot_collision(drawn, self._collision_shown)
         self._robots[config.serial] = _DrawnRobot(
             base=base, urdf=drawn, joint_names=tuple(drawn.get_actuated_joint_names()))
+
+    @staticmethod
+    def _show_robot_collision(urdf: FastViserUrdf, collision: bool) -> None:
+        """Show a robot's collision meshes or its visual ones. A URDF without collision meshes stays visual."""
+        # ? viser warns instead of hiding when a URDF has no collision meshes.
+        if urdf._collision_root_frame is not None:
+            urdf.show_visual, urdf.show_collision = not collision, collision
 
     def view_for(self, plugin_name: str) -> PluginView:
         """Carve out a private scene subtree and GUI folder for one plugin.
@@ -385,6 +406,11 @@ class Visualization:
         Args:
             snapshot: The tick's copy of the world.
         """
+        collision = self._show_collision.value
+        if collision != self._collision_shown:
+            self._collision_shown = collision
+            for drawn in self._robots.values():
+                self._show_robot_collision(drawn.urdf, collision)
         for serial, entry in snapshot.robots.items():
             drawn = self._robots.get(serial)
             if drawn is None:
@@ -395,7 +421,7 @@ class Visualization:
             if joints_changed(values, drawn.values):
                 drawn.urdf.update_cfg(values)
                 drawn.values = values
-        self._scene_view.sync(snapshot)
+        self._scene_view.sync(snapshot, collision)
 
     def stop(self) -> None:
         """Shut the server down and join its thread."""

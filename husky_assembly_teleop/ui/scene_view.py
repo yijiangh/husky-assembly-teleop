@@ -4,7 +4,8 @@ The 3D view of the scene, drawn from each tick's snapshot.
 Bodies go under /scene/<id>, tracked objects under /tracked/<name>.
 
 At most `build_budget` meshes are built per tick, so a large cell fills in over a few ticks; moves and
-removes always apply in full, so a body is never shown at an old pose.
+removes always apply in full, so a body is never shown at an old pose. Switching between visual and collision
+shapes rebuilds everything, at the same budget.
 """
 
 from __future__ import annotations
@@ -72,13 +73,24 @@ class SceneView:
         server.scene.add_frame("/tracked", show_axes=False)
         self._bodies: dict[str, _DrawnBody] = {}
         self._tracked: dict[str, _DrawnTracked] = {}
+        self._collision = False
 
-    def sync(self, snapshot: SceneSnapshot) -> None:
+    def sync(self, snapshot: SceneSnapshot, collision: bool = False) -> None:
         """Bring the view in line with one snapshot. Call once per tick, inside `server.atomic()`.
 
         Args:
             snapshot: The tick's copy of the world.
+            collision: Draw the collision shapes instead of the visual ones.
         """
+        if collision != self._collision:
+            self._collision = collision
+            for drawn in self._bodies.values():
+                drawn.frame.remove()
+            self._bodies.clear()
+            for drawn in self._tracked.values():
+                for mesh in drawn.meshes:
+                    mesh.remove()
+                drawn.geometry, drawn.meshes = None, []
         budget = self._build_budget
         # Gone, or changed shape or colour: remove now, rebuild below when the budget allows.
         for body_id, drawn in list(self._bodies.items()):
@@ -137,7 +149,7 @@ class SceneView:
 
     def _add_meshes(self, parent: str, geometry: Geometry,
                     color: tuple[float, float, float, float] | None) -> list[viser.SceneNodeHandle]:
-        """Add a geometry's visual shapes below a frame, in the frame's coordinates.
+        """Add a geometry's visual shapes, or its collision ones while drawing those, below a frame.
 
         Args:
             parent: Name of the frame.
@@ -147,8 +159,11 @@ class SceneView:
         Returns:
             list[viser.SceneNodeHandle]: One handle per shape.
         """
-        return [self._add_shape(f"{parent}/mesh_{i}", shape, color or DEFAULT_COLOR)
-                for i, shape in enumerate(geometry.visual)]
+        # ! Distinct names per mode: viser keeps a removed node's pose for a new node of the same name, so a
+        #   collision shape would inherit an offset visual's position (e.g. floor marks, drawn 1 m underground).
+        kind, shapes = ("collision", geometry.collision) if self._collision else ("visual", geometry.visual)
+        return [self._add_shape(f"{parent}/{kind}_{i}", shape, color or DEFAULT_COLOR)
+                for i, shape in enumerate(shapes)]
 
     def _add_shape(self, name: str, shape: Shape,
                    color: tuple[float, float, float, float]) -> viser.SceneNodeHandle:
