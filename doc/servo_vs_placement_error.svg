@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 760" width="980" height="760"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 790" width="980" height="790"
      font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif">
   <defs>
     <marker id="a" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">
@@ -12,7 +12,7 @@
     </marker>
   </defs>
 
-  <rect width="980" height="760" fill="#ffffff"/>
+  <rect width="980" height="790" fill="#ffffff"/>
   <text x="26" y="34" font-size="19" font-weight="700" fill="#17202e">
     Why the servo residual is small while the bar is still millimetres off
   </text>
@@ -41,7 +41,9 @@
   <text x="266" y="201" font-size="11.5" text-anchor="middle" fill="#17202e">the commanded flange pose</text>
 
   <rect x="44" y="222" width="396" height="68" rx="6" fill="#fff" stroke="#1a8a3e" stroke-width="1.5"/>
-  <text x="58" y="242" font-size="12" font-weight="700" fill="#1a8a3e">servo residual = 0.23 – 1.24 mm</text>
+  <text x="58" y="242" font-size="12" font-weight="700" fill="#1a8a3e">servo residual = 0.23 – 1.24 mm
+    <tspan font-weight="400" fill="#6b7686"> · sample, 20261001</tspan>
+  </text>
   <text x="58" y="260" font-size="11.5" fill="#44506a">Both sides of this comparison are produced by the</text>
   <text x="58" y="275" font-size="11.5" fill="#44506a">
     <tspan font-weight="700">same model of the robot</tspan>. The loop can always drive it to zero.
@@ -66,7 +68,9 @@
   <text x="731" y="201" font-size="11.5" text-anchor="middle" fill="#17202e">the authored bar pose</text>
 
   <rect x="519" y="222" width="396" height="68" rx="6" fill="#fff" stroke="#c0392b" stroke-width="1.5"/>
-  <text x="533" y="242" font-size="12" font-weight="700" fill="#c0392b">placement error = 1.95 – 5.62 mm</text>
+  <text x="533" y="242" font-size="12" font-weight="700" fill="#c0392b">placement error = 2.61 – 6.61 mm
+    <tspan font-weight="400" fill="#6b7686"> · sample, 20261001</tspan>
+  </text>
   <text x="533" y="260" font-size="11.5" fill="#44506a">An <tspan font-weight="700">independent</tspan> instrument that never looks at the</text>
   <text x="533" y="275" font-size="11.5" fill="#44506a">robot's model. This is the experiment's actual answer.</text>
 
@@ -135,6 +139,7 @@
   </text>
   <text x="44" y="604" font-size="12" fill="#44506a">
     Take each bar's error as a vector and ask: is it the same vector every time? It depends which frame you ask in.
+    <tspan fill="#6b7686">Sample, 20261001.</tspan>
   </text>
 
   <g font-size="11.5">
@@ -142,12 +147,20 @@
     <text x="60" y="638" font-weight="700" fill="#17202e">measured in the WORLD frame</text>
     <text x="60" y="658" fill="#44506a">mean error  [−0.3, +0.1, −2.2] mm</text>
     <text x="60" y="676" fill="#44506a">scatter     ± [2.5, 2.3, 1.2] mm  ← large</text>
-    <text x="60" y="700" font-weight="700" fill="#a93226">a fixed offset explains only 53%</text>
+    <text x="60" y="700" font-weight="700" fill="#a93226">a fixed offset explains only 27%</text>
 
     <rect x="506" y="618" width="430" height="100" rx="6" fill="#fff" stroke="#1a8a3e" stroke-width="1.5"/>
     <text x="522" y="638" font-weight="700" fill="#17202e">measured in the ROBOT'S OWN frame</text>
     <text x="522" y="658" fill="#44506a">mean error  [+2.5, +1.2, −2.2] mm</text>
     <text x="522" y="676" fill="#44506a">scatter     ± [1.1, 1.5, 1.2] mm  ← much tighter</text>
-    <text x="522" y="700" font-weight="700" fill="#1a8a3e">a fixed offset explains 87%</text>
+    <text x="522" y="700" font-weight="700" fill="#1a8a3e">a fixed offset explains 72%</text>
   </g>
+
+  <!-- Footer: what on this diagram is general and what is one session's -->
+  <text x="26" y="762" font-size="11" fill="#6b7686">
+    The structure of this diagram is general; <tspan font-weight="700">every number on it is a sample from session 20261001</tspan>. For a current session,
+  </text>
+  <text x="26" y="778" font-size="11" fill="#6b7686">
+    <tspan font-style="italic">3_session_report.py</tspan> regenerates the equivalent as <tspan font-style="italic">figures/2_system_map.svg</tspan>, with that session's own measurements and verdicts.
+  </text>
 </svg>

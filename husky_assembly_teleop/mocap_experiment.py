@@ -1333,6 +1333,42 @@ def pair_fit_to_goal(fit, goal_bar_pose):
     }
 
 
+def tip_distances(pairing):
+    """Measure the fitted bar against the authored one at three places.
+
+    ! The headline placement error is the WORST of the three, not the distance
+    ! at the start alone. A bar that sits right at one end and is out at the
+    ! other is placed badly, and the start distance on its own would call it
+    ! good -- B88 on 20261001 runs 4.50 / 5.25 / 6.61 mm, so start-only
+    ! under-reports it by 2.1 mm.
+
+    Their SPREAD is the other half of the story: three alike means the bar is
+    shifted bodily, three different means it is tilted about one end.
+
+    The one place these three distances are computed, so
+    ``1_compare_to_cell_state.py`` and ``2_session_viewer.py`` cannot disagree.
+
+    Args:
+        pairing (dict): Output of :func:`pair_fit_to_goal`.
+
+    Returns:
+        dict: ``{start_m, middle_m, end_m, worst_m, mean_m, spread_m}``.
+    """
+    import numpy as np
+
+    start = float(np.linalg.norm(pairing['fit_start'] - pairing['goal_start']))
+    end = float(np.linalg.norm(pairing['fit_end'] - pairing['goal_end']))
+    middle = float(np.linalg.norm(
+        (pairing['fit_start'] + pairing['fit_end']) / 2.0
+        - (pairing['goal_start'] + pairing['goal_end']) / 2.0))
+    three = (start, middle, end)
+    return {
+        'start_m': start, 'middle_m': middle, 'end_m': end,
+        'worst_m': max(three), 'mean_m': sum(three) / 3.0,
+        'spread_m': max(three) - min(three),
+    }
+
+
 def make_axis_corrector(saved_convention):
     """Return a callable mapping a saved-marker xyz into the rhino world frame.
 
@@ -1589,7 +1625,7 @@ def latest_batch_folder(default=None):
     sessions = []
     for name in os.listdir(root):
         # * A session folder is a bare date; '<date>-servoing', '-archive' and
-        # * '-viz' are its companions, not sessions of their own.
+        # * '-result' are its companions, not sessions of their own.
         if not name.isdigit() or not os.path.isdir(os.path.join(root, name)):
             continue
         if any(f.startswith('bar_holding_acc_') and f.endswith('.json')

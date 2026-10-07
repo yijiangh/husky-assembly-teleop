@@ -64,11 +64,28 @@ offline scripts score it later without you remembering anything.
 | `bar_name` | active bar id, e.g. `bar_B6` |
 | `bar_start_position` / `bar_start_quaternion` | bar world pose in the movement's **start state** (the reference `1_` compares against) |
 | `bar_dimensions` | bar AABB extents `[dx, dy, dz]` in metres; the longest is the nominal bar length |
-| `raw_data` | list of takes; each has a `bar_rig` marker dict (`Record + Fit + Viz` also stamps `joint_conf`, base poses) and a `tool_ft` dict — both wrists' raw `[fx,fy,fz,tx,ty,tz]` plus force/torque magnitudes at the instant of the take, so a strained hold can be told from a clean one after the session. `null` on a rig with no FT reading |
+| `raw_data` | list of takes; each has a `bar_rig` marker dict and a `tool_ft` dict — both wrists' raw `[fx,fy,fz,tx,ty,tz]` plus force/torque magnitudes at the instant of the take, so a strained hold can be told from a clean one after the session. `null` on a rig with no FT reading |
 
 `bar_start_position/quaternion` and `bar_dimensions` are stamped so the offline
 scripts don't have to re-parse (and re-resolve) the BarAction file. Older takes
 lack them — see **Old data** below.
+
+> ⚠️ **A take carries no robot state.** The list above is the whole of it:
+> markers and wrenches, nothing else. `Record + Fit + Viz (shared)` writes a
+> deliberately minimal payload — an earlier version of this table claimed it
+> also stamped `joint_conf` and the base poses, and it does not.
+> [`0_bar_acc_data_processing.py`](../data/bar_holding_acc_data/0_bar_acc_data_processing.py)
+> reads those two fields and gets `null` on every take.
+>
+> The *older* recorder behind `request_marketset_button`
+> ([`husky_world.py`](../husky_assembly_teleop/husky_world.py)) does write them,
+> so the fix is to copy those lines across — but write **all twelve** joint
+> values, not the one arm's six that path saves, since the bar is held in both
+> grippers. Until then, the robot's configuration at the instant of a
+> measurement is not recoverable: the servo run holds only base drift *relative
+> to its own start*, never an absolute pose. The authored base from the
+> BarAction is a good enough stand-in for anything frame-related (the robot
+> parks within centimetres of it), but arm posture cannot be tested at all.
 
 ---
 
@@ -456,14 +473,25 @@ Repeat for each bar-action. Nothing here dismounts the bar.
    - Watch progress with **Toggle Servoing Tracker**. The loop stops when both
      arms are under 0.2 mm or after 8 iterations, and auto-saves
      `servoing_data_<ts>.json` + `servoing_performance_<ts>.png` under
-     `<YYYYMMDD>-servoing/`. A typical good run: iteration 1 leaves a few mm,
-     by iteration 3–5 both arms sit at 0.2–0.5 mm.
+     `<YYYYMMDD>-servoing/` — the four panels are explained under
+     [The figures](#the-figures-and-what-each-one-answers). A typical good run:
+     iteration 1 leaves a few mm, by iteration 3–5 both arms sit at 0.2–0.5 mm.
    - If the mounted grasp does not match the authored one, the log says so and
      **splits the difference between the arms** (`~X mm per flange`) instead of
-     leaving the left perfect and the right carrying all of it. Two residual
-     lines then appear per iteration: *vs aimed targets* (what servoing can still
-     null out, which should converge) and *vs AUTHORED* (the honest bar-placement
-     error, which will not drop below half the mismatch).
+     leaving the left perfect and the right carrying all of it. A second residual
+     line then appears per iteration — *vs AUTHORED (bar placement)*, the honest
+     bar-placement error, which will not drop below half the mismatch — beside
+     the usual tool0 line, which is measured against the *aimed* (split) pair.
+     > A third pair of lines, labelled *vs aimed targets* **and** *vs AUTHORED
+     > targets*, prints only on the `nothing left to plan` early exit, not every
+     > iteration.
+     >
+     > ⚠️ **None of this reaches the saved file.** `servoing_data_*.json` records
+     > the residual against the *aimed* pair only — no authored residual, no
+     > mismatch magnitude, no flag saying a split happened. So a clean mount and
+     > a 16 mm mismatch halved between the arms look identical on disk. The
+     > honest number exists only in the terminal. See the next note for how to
+     > tell them apart anyway.
 5. **Record + Fit + Viz (shared)** once per take — take at least 3, watching
    `max_resid` (a few mm or less) and `bar_len` (≈ 1.400 m). A bad fit can be
    thrown out with **Discard unsaved takes** (it drops *all* takes recorded
@@ -543,6 +571,28 @@ Repeat for each bar-action. Nothing here dismounts the bar.
   once. The loop splits it, ~X/2 mm per flange, and the `vs AUTHORED` residual
   settles there. More iterations will not help: re-mount the bar if X is large
   enough to matter for the measurement.
+  > ⚠️ Since the split landed, **check D can no longer catch this.** It feeds the
+  > split pair back into `grasp_mismatch`, which is consistent with the held
+  > grasp by construction, so it reports ≈0 mm and its warning never fires. The
+  > warning quoted above comes from the servo loop, not from check D. Check C's
+  > label says "vs AUTHORED target" while also comparing against the split pair.
+
+- **Was the split on for this run?** The saved file does not say, so read the
+  shape of the run instead — in `servoing_performance_*.png` or in the
+  `tool0 pos L=… R=…` log lines:
+
+  | what you see | what it means |
+  |---|---|
+  | both wrists fall together towards zero | either the grasp matched, or the split did its job |
+  | **one wrist near zero, the other on a flat plateau** that never drops, and the run burns every iteration | **no split was applied** — the whole mismatch is parked on one arm |
+
+  With the split on, the aimed pair is consistent with the grasp actually held
+  by construction, so both flanges are reachable at once and both residuals
+  converge. A standing plateau on one arm alone is the *un-split* signature.
+  > **Dating note.** `split_grasp_mismatch` was committed on **2026-10-02**, so
+  > every run before that date is un-split. Session 20261001 is: on 12 of its
+  > 20 runs the left sits at 0.09 mm while the right holds a flat 0.94 mm.
+  > **Servo residuals are therefore not comparable across that date.**
 - **The safeguard pauses on a plan that looks like nothing** — read the
   *travels* figure. `travels 180 deg (ends 0 deg from where it starts)` is the
   known planner fault in **Known hazard** below: cancel and replan rather
@@ -610,7 +660,7 @@ on the dot product in `quat_angle_between`, and a trivial-path exit in
 
 ## 3 · Looking at the results
 
-Three scripts turn the raw mocap takes into answers. Run them in order:
+Four scripts turn the raw mocap takes into answers. Run them in order:
 
 - **`0_bar_acc_data_processing.py`** — fits the bar axis from the markers and
   reports its pose, orientation and length. No BarAction needed; this is the
@@ -621,6 +671,111 @@ Three scripts turn the raw mocap takes into answers. Run them in order:
   number.
 - **`2_session_viewer.py`** — draws the whole session at once as a single
   offline 3D web page you can rotate, zoom and click.
+- **`3_session_report.py`** — writes that session's findings: three figures,
+  a `RESULTS.md` written for someone who has never read this manual, and a
+  `numbers.json` holding every figure it quotes.
+
+The first three answer *what happened to this bar*. The fourth answers *what
+happened to this session*, which is a different question and the one a reader
+usually wants first.
+
+> **Where the numbers live.** This manual describes the **method**; a session's
+> **numbers** live with that session, in
+> `<batch>-result/RESULTS.md`. Where a figure below is illustrated with values
+> from 20261001, they are examples of how to read it, not a result to cite.
+
+---
+
+### The figures, and what each one answers
+
+Every picture in the pipeline, what question it answers, and what to look at
+first. The five marked **⚠ no section** had no explanation anywhere before this
+table; the rest have their own sections below.
+
+| figure | where from | the question | look at first | a bad one looks like |
+|---|---|---|---|---|
+| `servoing_performance_*.png` | written by the live monitor after every servo run, into `<date>-servoing/` | did the arms converge, and did the base move under them? | the two `\|d\|` curves in the top-left panel | one curve near zero and the other on a **flat plateau** — see below |
+| per-take 3D fit panel | `0_ --viewer` | does mocap see a clean, straight, correctly-long bar? | the `ctr→line max` in the panel title | markers visibly off the red line |
+| goal-vs-fitted panel | `1_ --viewer` | did the bar land where the design said? | the magenta `Δstart` and blue `Δend` labels | the two Δ very different — the bar is tilted |
+| marker-validation panel | `1_ --viewer` | is the error the **camera** or the **robot**? | dots above the dashed 2 mm line; red take labels | any red label — that take's deviation is unreliable |
+| `--pp-viewer` overlay | `1_ --pp-viewer` | is the goal pose sane inside the real cell? | whether the triad sits where you expect | the goal nowhere near the structure — a frame bug |
+| layout diagram | `0_`/`1_ --viewer` | where in the assembly is this bar, and where did the robot park? | the red bar against the grey ones | — (positions are approximate; see the TODO at the end) |
+| the 3D session page | `2_session_viewer.py` | which bars landed badly, and does it cluster? | the colour, then click a bar | — |
+| `1_what_changed.svg` | `3_session_report.py` | did the session stay the same throughout? | the dashed vertical step lines | a step you did not know about |
+| `2_system_map.svg` | `3_session_report.py` | which part of the system is the error in? | the verdict chips on the arrows | — |
+| `3_shift_or_tilt.svg` | `3_session_report.py` | is the bar displaced or rotated? | how sloped the lines are | — |
+| `servo_vs_placement_error.svg` | hand-drawn, in `doc/` | why do the two numbers disagree at all? | panel C, the chain | — (a concept diagram, no data) |
+
+#### ⚠ `servoing_performance_<ts>.png` — did the arms get there?
+
+One per servo run, so about one per bar. **Four panels, and the x axis is always
+the iteration number**:
+
+| | top-left | top-right |
+|---|---|---|
+| | tool0 **position** error (mm) | tool0 **orientation** error (deg) |
+| | **bottom-left** | **bottom-right** |
+| | **base** drift (mm) | **base** rotation drift (deg) |
+
+**The colour key, which is the thing you need and the figure does not print:**
+
+- **red = left arm**, **green = right arm**, **blue = the husky base**
+- four shades per family = **x, y, z, and `|d|`** (the magnitude). The `|d|`
+  curves are drawn thickest — those are the ones to read.
+- the base panels measure drift **against that run's own start**, not against
+  the authored base.
+
+**How to read it:**
+
+- *both `|d|` curves falling together towards zero* — a healthy run.
+- *one near zero and the other stuck on a flat plateau* — the two authored
+  flange targets cannot both be reached with the bar as it is actually gripped.
+  Iterating will not fix it; the grasp has to change. This is the single most
+  useful shape in the whole pipeline, and it is what the "is the split on?" note
+  in Troubleshooting turns on.
+- *a rising blue curve* — the husky moved under the arms. Expected at a
+  millimetre or so (the arms' weight on the suspension); metres means something
+  physically moved, or the run was restarted.
+
+#### ⚠ The marker-validation panel — camera or robot?
+
+Drawn by `1_ --viewer` alongside the compare panels. Its whole job is deciding
+whether a deviation is real. Two stacked panels sharing one x axis (one slot per
+take):
+
+- **top** — every marker's reconstruction error as a dot, the take's mean as a
+  black tick, the **fit residual** as a hollow blue diamond, and a **dashed line
+  at 2 mm**: the gate. Above the gate, or fewer than 8 markers received, and the
+  take label goes **red**.
+- **bottom** — that take's placement and lateral deviation as paired bars, with
+  the angular deviation as an orange line on the right-hand axis.
+
+**The rule, in one line: all markers good and a small fit residual means the
+deviation is the ROBOT; markers over the gate or missing means the deviation is
+the CAMERA and cannot be trusted.** The figure says this in its own footer too.
+
+#### ⚠ The `0_` per-take 3D panel
+
+One per take. Blue dots are the marker-pair midpoints, the **red solid line** is
+the fitted bar, the **green dashed line** is world +Z through the same point
+(the reference for `angle_to_Z`), and the magenta star is the fitted midpoint.
+Read the title first: a large `ctr→line max` means the marker pairing went
+wrong, and that take should be treated with suspicion before anything else.
+
+#### ⚠ The `1_` goal-vs-fitted panel
+
+One per take. **Red solid = where mocap found the bar, green dashed = where the
+design wanted it.** Grey dots are the raw markers, there so you can eyeball the
+fit against the data. The two dotted connectors are the error: **magenta joins
+the starts (`Δstart`), blue joins the ends (`Δend`)**. If the two Δ are alike
+the bar is shifted bodily; if they differ it is tilted about one end.
+
+#### ⚠ The `--pp-viewer` overlay
+
+Not a plot — a PyBullet window with the real cell loaded. **Red dots are the raw
+markers, the blue line is the fitted bar, and the drawn triad is the goal pose.**
+It is a sanity check against a frame or convention mistake, not a measurement:
+you are asking "is the pose I am scoring against in a sensible place?"
 
 ---
 
@@ -692,21 +847,31 @@ one, and warns when several exist (pass `--bar-action` to pick).
 
 | field | meaning |
 |-------|---------|
-| `start_dev` | distance from the fitted bar's lower tip to the reference pose origin (mm) — the primary position error (see caveat) |
+| `placement` | **the headline.** `max` of the distance at the start, the middle and the end (mm). All three are printed beside it |
 | `angle_dev` | angle between fitted and reference bar axes (deg) |
 | `lateral_dev` | perpendicular offset of the fitted OCF from the reference bar axis (mm) — sideways slip |
+| `center_to_line_dist_max` | the fit residual: worst marker pair in this take (mm) |
+| `start_dev` | the distance at the start tip alone — kept for reference, since it was the headline until 2026-10-06 (see caveat) |
 | `pos_dev(ocf↔goal)` / `d_ocf_vs_goal` | OCF-vs-reference (mm). **Not** the true centre error while the OCF-origin caveat holds |
 | `d_mid_vs_goalmid` | mid-point-vs-mid-point per-axis diff (mm), reconstructed along the reference axis |
 
-The `--export` JSON and the final `=== aggregate ===` block report mean / std /
-max of `start_dev`, `angle_dev`, `lateral_dev`, and the fit-quality residual.
+**Both headline numbers are worst-case, never an average over places**: the
+placement error is the worst of the three distances, and the fit residual is the
+worst marker pair. The `=== aggregate ===` block says so at the top and reports
+`placement`, `angle_dev`, the fit residual and `tip_spread` (the gap between the
+best and worst of the three places — small means the bar is shifted bodily,
+large means it is tilted), with `start_dev` and `pos_dev` kept below as
+reference. The three distances come from
+[`tip_distances`](../husky_assembly_teleop/mocap_experiment.py), which
+`2_session_viewer.py` also calls, so this report and the 3D page cannot disagree.
 
 #### ⚠️ OCF-origin caveat (temporary)
 
 The rhino RobotCell export writes the bar's **lower tip** (smallest world-Z) as
 the frame origin instead of the mid-point. So the reference `bar_start_position`
-is a *tip*, not the centre. The script works around this by comparing the fitted
-bar's lower tip to it (`start_dev`), which is the trustworthy position metric.
+is a *tip*, not the centre. The script works around this by pairing the fitted
+bar's tips to the reference tips and measuring between matched points, which is
+what makes `placement` and `start_dev` trustworthy.
 `pos_dev`/`d_ocf_vs_goal` compare mid-point to tip and will read ~half a bar
 length off — kept only for reference. Remove this workaround once the export is
 fixed.
@@ -731,7 +896,7 @@ scripts, so a new test needs no code change — run it with the new date and you
 get that session's page. It writes
 
 ```
-bar_holding_acc_data/<batch>-viz/session_<batch>.html
+bar_holding_acc_data/<batch>-result/session_<batch>.html
 ```
 
 **Examples** — each line is complete and runnable (from `/home/su/ros2_ws`, with
@@ -752,6 +917,12 @@ python $V 20261001 --no-robots
 
 # skip the mocap camera rig
 python $V 20261001 --no-cameras
+
+# how the 3D library is carried (default 'inline' works everywhere -- see
+# "Sharing it as a link" below before changing this)
+python $V 20261001 --vendor inline     # one ordinary script, nothing fetched
+python $V 20261001 --vendor embed      # an import map of data: URLs
+python $V 20261001 --vendor sibling    # three .js files written beside the page
 
 # force a different Rhino file for the environment
 python $V 20261001 --env-3dm "/home/su/Insync/2025-03 Husky Assembly/assembly - demo/260929_phase1_retest.3dm"
@@ -784,21 +955,41 @@ internet** — copy it anywhere, mail it, open it in any browser.
 |---|---|
 | **left drag** | rotate · **right drag** move · **scroll** zoom |
 | **left click a bar** (or one of its markers) | selects it: a detail card opens above the colour key, and that robot appears |
-| **right click** empty space, **Esc**, or the card's **×** | unpins it |
+| **Esc**, or the card's **×** | unpins it |
 | clicking empty space | **does nothing** — the selection stays until you unpin it |
 | **M** | cycles the colour metric |
 | *reset view* | re-frames on the bars |
+
+> **Right click does not unpin.** The right button is also how the view is
+> moved, and a pan that ended without quite enough movement threw the card
+> away. Esc and the **×** are the two ways out.
 
 The selected bar glows, so you can rotate away and still see which one the card
 is describing. The checkboxes hide the environment, the authored poses, the
 markers, the robot positions, the mocap cameras or the labels.
 
-Each bar is drawn where mocap found it, with its **8 markers** and a thin white
-outline at the **authored pose**, so the error reads as a visible gap and not
-only as a colour. Each bar is also **labelled with the measurement currently
-being coloured** — `B19 · 1.95 mm` — so switching the metric relabels every bar
-and the scene answers "how much?" as well as "how bad?" without a click. Untick
-**labels** if they crowd.
+Each bar is drawn as its **centre line**: **solid** where mocap found it,
+**dashed** where it was authored, with a short line joining the matching tips —
+that join *is* the placement error, at its true size. Lines rather than solid
+bars because at a few millimetres of error the two would overlap into one shape.
+The 8 markers are drawn as spheres beside it. Each bar is also **labelled with
+the measurement in the "data by" picker** — `B19 · 2.61 mm` — so switching it
+relabels every bar and the scene answers "how much?" as well as "how bad?"
+without a click. Untick **labels** if they crowd.
+
+> **The servo residual is the exception**: it is one reading *per gripper*, so
+> even with nothing selected the two numbers are written at the two grip
+> points (`L 0.15 mm` at one end, `R 0.33 mm` at the other) and the bar's own
+> label keeps just its name. Squeezed together at one end of the bar they
+> would say nothing about which wrist is which.
+
+When the colour shows the **placement error**, each bar is **shaded along its
+length** rather than filled with one colour. Both the detected and the authored
+bar are straight, so the gap between them changes smoothly from one end to the
+other, and the shading is that gap at every point — a bar that goes green at
+one end and red at the other is *tilted*, one that is the same colour
+throughout is *shifted bodily*. Every other measurement is a single number for
+the whole bar, so for those the rod is one flat colour.
 
 Every robot shows as a flat **dashed dark-blue footprint outline** on the floor
 with a solid triangle at its front giving the direction it faced — unfilled, so
@@ -812,13 +1003,48 @@ The link shapes are sent once and each robot adds only one matrix per link, so
 #### What the detail card shows
 
 Clicking a bar opens a card at the bottom-left, directly above the colour key,
-with everything measured for that bar in three blocks:
+with everything measured for that bar, one block per measurement:
 
 | block | fields |
 |---|---|
-| **mocap** | placement error, rotation error, fit residual, bar length, number of takes and their spread |
+| **placement error** | the distance between the detected and authored bar at the start, the middle and the end, then the worst and the average of the three |
+| **rotation error** | the angle between the two bar axes |
+| **fit residual** | the worst pair in the worst take, then a typical take for comparison, then each marker pair's own distance by marker number, ordered from the start end |
 | **servo**, last iteration | tool0 left/right (mm), rotation left/right (deg), iteration count |
 | **load** | the imbalance, with both wrist magnitudes under it |
+
+**The block that answers the "data by" picker is highlighted and its own
+numbers are set in bold**, so clicking a bar answers the question the picker
+asked instead of leaving you to find it among the others. In the placement
+block the bold one is the *biggest* of the three distances, which is the
+headline number.
+
+#### The numbers written along the selected bar
+
+The same picker decides what is written **beside the bar itself**, each number
+at the place on the bar it was measured at:
+
+| data by | what appears in the 3D view | when |
+|---|---|---|
+| **placement error** | three numbers, at the start, the middle and the end | selected bar |
+| **rotation error** | one number, at the middle | selected bar |
+| **fit residual** | one number per marker pair, at that pair | selected bar |
+| **servo residual** | `L …` and `R …`, at the point on the bar each gripper holds | **every bar**, selected or not |
+| **load imbalance** | `L …` and `R …` at the two grippers, and the `gap` at the middle | selected bar |
+
+All of these are drawn for the bar you clicked. The **servo residual** is also
+drawn for *every* bar with nothing selected, because its two numbers only mean
+something once they sit at the two grip points.
+
+The grip points come from the authored wrist flanges projected onto the
+detected bar — for this session's bars that puts the left number 1180 mm along
+and the right at 220 mm, which is where the tools actually sit. With
+`--no-robots` there are no wrists to project, so the two fall back to a fifth
+of the way in from each end; the `L` and `R` in front of the numbers mean the
+reading is never ambiguous either way.
+
+The selected bar's own label drops its number and keeps only the bar name,
+since the numbers are now written along the bar.
 
 #### The mocap cameras
 
@@ -861,6 +1087,13 @@ Motive connected, that export becomes the better source.
 
 ![why the servo residual is small while the bar is off](servo_vs_placement_error.svg)
 
+> **The figure above is drawn from session 20261001.** Its structure is general
+> — the two instruments, the chain, which part of it the loop can see — but
+> every number printed on it is that session's. Read them as an illustration,
+> not as a specification. For a current session, the equivalent is
+> `figures/2_system_map.svg`, which `3_session_report.py` regenerates with that
+> session's own numbers.
+
 These two numbers measure **different things with different instruments**, and
 the gap between them is the point of the experiment:
 
@@ -868,10 +1101,12 @@ the gap between them is the point of the experiment:
 |---|---|---|
 | what | the **wrists** against their commanded poses | the **bar** against its authored pose |
 | measured by | the robot, from its own encoders and model | the mocap cameras, independently |
-| 20261001 | 0.23 – 1.24 mm (median 0.73) | 1.95 – 5.62 mm (median **4.22**) |
+| *sample: 20261001* | *0.23 – 1.24 mm (median 0.73)* | *2.61 – 6.61 mm (median 4.28)* |
 
-Placement is about **6× the servo residual**, and they correlate only r = +0.51 —
-B1 converged to 0.23 mm and still landed 4.34 mm out, 18× worse.
+Expect the placement error to be **several times** the servo residual, and the
+two to be only loosely related. *In the 20261001 sample it was about 6×, with
+r = +0.54 — and B1 converged to 0.23 mm while still landing 4.34 mm out, 18×
+worse.*
 
 The reason is that the servo loop compares two quantities it computes *itself*,
 through the same assumed transforms: mocap body → kinematic base → arm → flange.
@@ -879,20 +1114,155 @@ It can always drive that to zero. Everything past the flange — the tool offset
 where the bar actually sits in the jaws, bar flex — plus any error inside those
 assumed transforms, is invisible to it. **Precise, but not accurate.**
 
-**It is a calibration offset, not noise.** Taking each bar's error as a vector:
-in the world frame the mean is `[−0.3, +0.1, −2.2] mm` with ±`[2.5, 2.3, 1.2]`
-scatter, so a single fixed offset explains only **53%**. Re-expressed in each
-robot's *own base frame* the mean is `[+2.5, +1.2, −2.2] mm` with much tighter
-±`[1.1, 1.5, 1.2]` — a fixed offset now explains **87%**. The error travels with
-the robot, which points at the base/tool calibration chain rather than at the
-mocap-to-world registration or at random noise.
+**It is a calibration offset, not noise.** Take each bar's error at the start tip
+as a *vector* — not "4 mm out" but "4 mm out, in this direction" — and ask which
+coordinate system makes the arrows agree with each other. The one they agree in
+is the one the fault is fixed to. `3_session_report.py` computes this per
+session and prints it in both `RESULTS.md` and the system-map figure.
 
-#### Reading the colour
+The arithmetic is `1 − Σ‖e − mean‖² / Σ‖e‖²`: the share of the error that
+disappears if you subtract **one single correction** from every bar. Equivalently,
+what that correction buys you — the "gets you to" column.
 
-There are **two identical "colour by" dropdowns** — one at the top of the right
-panel, and one **inside the legend** at the bottom-left, next to the colour bar
-itself. Either switches the gradient; the key **M** cycles through them. The
-legend relabels itself and recounts the bars in each band.
+*Sample, 20261001: in the room a fixed offset explains **27%**, in the robot's
+own frame **72%** — and 20 of the 20 bars are pushed the same way along the
+robot's first axis, where in the room only 8 of 20 are. The error turns with the
+robot.* Panel D of the figure above shows this for that session.
+
+> ⚠️ **The figure's panel D, and an earlier version of this section, quote 53%
+> and 87%.** Those were `|mean| / RMS`, a ratio of *lengths*, reported as if it
+> were a share of the error. The correct figures are the 27% / 72% above.
+> Nothing the panel concludes changes; only the two percentages are wrong, and
+> the hand-drawn SVG has not been redrawn.
+
+Per-session numbers live in that session's `RESULTS.md`, not here.
+
+#### What each number actually is
+
+| number | formula |
+|---|---|
+| **placement error** (mm) | `max` over the start / middle / end of `‖ detected − authored ‖` |
+| **rotation error** (deg) | `arccos( \| fitted_axis · authored_axis \| )` |
+| **fit residual** (mm) | per take: max over the 4 marker pairs of the perpendicular distance to the fitted axis; then the **max over the takes**. Worst all the way through — a typical-take figure is shown beside it for comparison |
+| **tool0 left / right** (mm) | `‖ FK(base_mocap, joint_encoders) − commanded_frame ‖` |
+| **load imbalance** (N) | `\| ‖F_left‖ − ‖F_right‖ \|` |
+
+A few details that matter:
+
+- **Placement error is the worst of three places, not the start alone.** It
+  used to be the start distance only, which calls a bar good when it is right
+  at one end and out at the other. The fitted bar's two tips are first ordered
+  so the one **nearer the authored start** counts as the start — otherwise a bar
+  built end-for-end would report a ~1.4 m error
+  ([`pair_fit_to_goal`](../husky_assembly_teleop/mocap_experiment.py)).
+  The card shows all three distances and their average, so what the headline
+  number does and does not cover stays visible. Their *spread* is the useful
+  part: alike means the bar is shifted, different means it is tilted.
+  *Samples from 20261001: B88 reads 4.50 mm at its start and 6.61 mm at its end,
+  so start-only would have under-reported it by 2.1 mm; B43 runs 5.20 → 3.31 →
+  1.70 mm, pivoting about its far end, and B88 runs 4.50 → 5.25 → 6.61 mm,
+  pivoting about its near end.*
+  > The **at the start** row is the `start_dev` that
+  > `1_compare_to_cell_state.py` prints — the two still cannot disagree, it is
+  > simply no longer the headline. *Sample, 20261001: the three places
+  > average 4.10 / 3.47 / 3.49 mm, while the worst-of-three averages
+  > 4.32 mm. The start is the worst place for 15 of the 20 bars and the
+  > end for the other 5; the middle never is, which is what you would
+  > expect of a bar that is tilted rather than bent.*
+- The rotation uses the **absolute** dot product, so it ignores which way along
+  the bar each axis points and always lands in 0–90°.
+- The fit residual is deliberately a **max, not a mean** — both over the four
+  pairs *and* over the takes. One bad pair in one take is exactly the thing
+  worth seeing, and either average would hide it behind the good ones. The
+  detail card also lists **each pair's own distance** by marker number, so a
+  single bad pair can be named, and shows a typical take beside the worst one
+  so you can tell "one bad reading" from "this bar fitted badly throughout".
+  > The pairs are ordered **along the bar, from the start end**, before the
+  > takes are averaged. The fit itself hands them back in the order they were
+  > matched (closest to the nominal cross-bar distance first), which changes
+  > from take to take: B1's third and fourth pairs swap over in one of its
+  > three takes, and averaging without re-ordering first put both of those
+  > numbers halfway between the two real pairs.
+- The tool0 residuals come from the **last iteration** of the paired servo run,
+  and both sides of that comparison are computed by the robot from its own
+  model — see the precision-vs-accuracy note above. **Both wrists are shown**,
+  on the bar and in the card; only the colour follows the worse of the two.
+
+The same table is in the viewer: click a bar, then **show the formulas** at the
+bottom of its card.
+
+#### How the five numbers relate
+
+![how the five measurements relate](error_relationships.svg)
+
+> ⚠️ **This figure is one session's result (20261001), not a specification** —
+> and it was drawn against the **old** placement error (the start distance
+> alone), so it reads `+0.50 / −0.25 / −0.06` and `4.10 mm / 75%` where the
+> table below reads `+0.51 / −0.18 / −0.05` and `4.32 mm / 71%`. It has not been
+> redrawn. For a current session use **`figures/2_system_map.svg`** from
+> `3_session_report.py`, which carries the same relationships with that
+> session's own numbers *and* the partial correlations this figure lacks.
+
+**What is general here** is the shape of the question: which of the five
+measurements actually drives the placement error, and is each link a real
+mechanism or a coincidence. **What is session-specific** is every number below.
+*The sample is the 20 bars of session 20261001:*
+
+| against placement error | r | what it means |
+|---|---|---|
+| **rotation error** | **+0.49** | the dominant mechanism — see below |
+| **tool0 right** | **+0.51** | *but see the caveat under point 2* |
+| tool0 left | −0.18 | driven exact, so it carries little information |
+| **fit residual** | **−0.05** | **no relationship at all** |
+
+Three things follow, and the third is the useful one:
+
+1. **The measurement is clean.** Fit residual is flat against everything
+   (*0.28–1.51 mm, r = −0.05 with placement in this sample*). If the placement
+   error were mocap noise, these two would move together. They do not, so the
+   error is real. **This is the one check to repeat on every session**, because
+   it is what licenses believing the placement number at all.
+2. **The two wrists trade off** (r = −0.53): the planner holds the left flange
+   on target and lets the right take up the physical grasp mismatch.
+   > ⚠️ This section used to go on to say that the right wrist therefore
+   > *tracks the outcome*. **Check that one against the clock before believing
+   > it.** On 20261001 the right-wrist residual grew steadily through the
+   > afternoon (r = +0.84 with recording order) and so did the placement error,
+   > which manufactures a correlation between them out of nothing: the raw
+   > +0.51 collapses to **+0.15** once recording order is held still. Only the
+   > rotation link survives that test (+0.49 → +0.47).
+   > `3_session_report.py` prints both columns for exactly this reason.
+   > Two more caveats on the wrist numbers: they are measured against the pair
+   > of targets the IK actually aimed at, which since 2026-10-02 may be the
+   > *split* pair rather than the authored one (see the split note in
+   > Troubleshooting); and the split landed after the 20261001 session, so
+   > those runs show the older "left exact, right carries it" behaviour.
+3. **It is mostly a tilt, not a shift.** A pure rotation of the bar about its far
+   end would move the measured tip by `L · sin(θ)`. *In this sample the mean
+   rotation of 0.125° over a 1.40 m bar gives 3.06 mm against a measured 4.32 mm
+   — roughly 71%.* So most of the millimetres are the bar being slightly
+   *rotated*, amplified by its own length, which means the thing to go and fix
+   is an **angle**, not a displacement. The shading along each bar in the viewer
+   is the same story drawn out: a bar that changes colour from one end to the
+   other is pivoting about the quiet end.
+
+The noise floor depends on how many bars a session has: `|r|` below about
+`2/√n` is indistinguishable from chance, so treat anything smaller as "no
+signal" rather than "a small signal". *With this sample's 20 bars that is 0.45.*
+`3_session_report.py` computes the floor per session and prints it on the
+figure.
+
+### Reading the colour
+
+The legend card carries **two separate pickers**:
+
+- **colour by** — which measurement drives the gradient and the legend bands.
+  The key **M** cycles it.
+- **data by** — which measurement is written on each bar's label, written
+  along the selected bar, and highlighted in its detail card.
+
+They start on the same metric but are independent, so you can colour by
+placement error while reading the load imbalance off every bar.
 
 The ramp runs **green → yellow → red** across the band, with a flat **purple**
 for anything past the top of it (those bars are also named in the legend) and
@@ -902,24 +1272,31 @@ grey for "not measured".
 |---|---|---|
 | **placement error** (default) | 0 – 5 mm | purple |
 | rotation error | 0 – 0.25 deg | " |
+| fit residual | 0 – 1.5 mm | " |
 | servo residual (last iteration) | 0 – 1.5 mm | " |
 | **load imbalance** | 0 – 2 N | " |
 
 ⚠️ Two things to keep in mind about this ramp. Red and green are the classic
 pair colour-blind readers cannot separate — brightness still rises then falls
 across it, and the legend counts the bars per band, so no number depends on hue
-alone. And because the scale tops out at **5 mm**, a typical bar in this session
-(4.1–4.6 mm) lands in the **orange**: that is honest, it really is at ~85% of
-the limit, but if you would rather the normal band read calm, raise `high` for
-the `placement` metric in `METRICS` (`2_session_viewer.py`).
+alone. And the scale tops out at **5 mm**, so if a session's typical bar sits
+near that, most of the scene reads **orange** — honest, since it really is near
+the limit, but easy to misread as alarm. If you would rather the normal band
+read calm, raise `high` for the `placement` metric in `METRICS`
+(`2_session_viewer.py`). *Sample, 20261001: the 16 bars inside the scale run
+2.6–5.0 mm with a median of 4.3, i.e. ~85% of the limit, and the scene is
+mostly orange.*
 
 Anything past the top of the scale gets a single warning colour rather than a
 gradient step, so one bad bar cannot flatten the range the good ones live in.
-Grey means **not measured**.
+Grey means **not measured**. On a bar shaded along its length this applies
+**per point**: a bar that crosses 5 mm only near one end turns purple just
+there.
 
-The placement error is the same `start_dev` `1_compare_to_cell_state.py` prints —
-same helpers, so the two cannot disagree. (Checked on 20261001: all 20 bars
-agree.)
+Every number comes from the same helpers `1_compare_to_cell_state.py` uses, so
+the two cannot disagree: both call
+[`tip_distances`](../husky_assembly_teleop/mocap_experiment.py) for the three
+distances, and the card's **at the start** row *is* that script's `start_dev`.
 
 #### Reading the load — is the robot bending the bar?
 
@@ -962,6 +1339,57 @@ means Rhino still has it open, and the solid count you get may be from a
 half-saved state. If the environment looks wrong, check for that lock, save and
 close in Rhino, then re-run.
 
+#### When a robot does not hold its bar
+
+The robot is drawn exactly as its BarAction describes it. If the authored pose
+and the authored bar disagree, the viewer says so rather than quietly drawing a
+misleading arm: a red note in the detail card, and a line on the console.
+
+The check compares the worse wrist against the bar it is meant to be gripping.
+Both are authored, so it compares the export against itself. Every sound bar
+sits at **80 mm** — the grasp offset — so anything past a few hundred is wrong.
+
+When it fires, the viewer **keeps the parking footprint and drops the arm
+links**: the base is still correct, and drawing joint values that do not hold
+the bar would be worse than drawing nothing. The card says why.
+
+> *Sample, 20261001: one bar trips it — `B52`, whose worse wrist sits 956 mm
+> from its own bar (the other at 385 mm) where all 19 others sit at exactly
+> 80.0 mm. Scanning all 30 bars of that design problem found no others, so it is
+> a one-off and not an exporter bug. The stored pose is a **valid** one in the
+> wrong slot: the two arms still hold a correct 0.960 m gap between them, just
+> 1.56 m away from the bar — a carry pose written where the assembled pose
+> belongs. The measurement is unaffected (mocap never looks at the robot); only
+> the preview is, and `B52__R.json` is worth re-exporting.*
+
+#### Sharing it as a link (Claude artifact)
+
+The `.html` can be published as a **Claude artifact**, which gives a URL
+colleagues open in their own browser — no file to send, nothing to install:
+
+> *Example, session 20261001:*
+> https://claude.ai/artifact/GiLd4bzkKDjHsbkHLwjGWx
+
+An artifact is **private until you share it** from the share menu on its page.
+Publishing uploads the session's measurements (marker positions, errors, servo
+residuals, forces, robot poses and the cell geometry) to claude.ai, so treat it
+as you would any other copy of the data.
+
+To refresh it after re-generating, re-publish to the **same URL** rather than
+creating a second artifact.
+
+⚠️ **This is why the default build is `--vendor inline`.** The artifact host
+wraps the page inside a document of its own and serves it from a path where
+neither a `data:` URL nor a relative filename resolves. Both of the obvious ways
+to carry three.js therefore fail *silently* — a blank page, no error. The inline
+build bundles the library, its controls and the viewer into one ordinary
+`<script>` with nothing imported, fetched or mapped, which is the only form that
+works both from disk and when served.
+
+If a served copy ever does come up blank, the page says so: it installs an error
+handler and a six-second watchdog before anything else loads, and shows a red
+panel naming the failure instead of showing nothing.
+
 #### If it says the 3D library is missing
 
 ```
@@ -974,15 +1402,69 @@ page carries its own copy, so it keeps working anywhere.
 
 ---
 
+### `3_session_report.py` — what happened to this session
+
+The other three ask about one bar at a time. This one asks about the session, and
+writes its answer where the session's data lives:
+
+```bash
+cd /home/su/ros2_ws
+source venv/bin/activate
+python src/husky-assembly-teleop/data/bar_holding_acc_data/3_session_report.py 20261001
+```
+
+The `batch` argument is optional and defaults to the newest session on disk.
+Everything lands in `<batch>-result/`, beside the 3D page `2_` writes:
+
+| file | what it is |
+|---|---|
+| `RESULTS.md` | the findings, written for someone who has never read this manual: what was done, a glossary, then the numbers |
+| `numbers.json` | every number the figures and the prose quote, so any sentence can be checked |
+| `figures/1_what_changed.svg` | did the session stay the same from the first bar to the last? |
+| `figures/2_system_map.svg` | which part of the system is the error in, and which numbers move together? |
+| `figures/3_shift_or_tilt.svg` | is each bar displaced, or rotated about one end? |
+
+Nothing in it is session-specific — run it on a new date and you get that
+session's report. It reuses `collect_session` from `2_session_viewer.py`, so no
+measurement is computed twice.
+
+**Three things it does that the per-bar scripts cannot:**
+
+- **It checks whether the session drifted.** Every possible split point is tried
+  and the clearest kept — *from the values alone; clock times never enter the
+  search*, they are attached afterwards only to name the bar. Each candidate is
+  then compared against two simpler stories (no change at all, a slow steady
+  drift) and reported as a step only when it beats both. When it does not, the
+  report says so instead of claiming one.
+- **It separates a real relationship from a coincidence of timing.** Every
+  correlation is printed twice: raw, and with the session's drift held still.
+  Two numbers that both grew over the same afternoon correlate without either
+  driving the other, and on 20261001 that is exactly what the servo-residual
+  link turns out to be.
+- **It localises the error.** Each bar's error is taken as a *vector* and
+  re-expressed in the room, in the robot's own frame and at the flange. The
+  frame the arrows agree in is the part of the machine the fault is fixed to.
+
+---
+
 ### Layout diagram (assembly context panel)
 
-`--viewer` draws **each bar-action in its own cell** (two per row), and overlays a
-small **layout inset at that cell's top-right** showing **where this bar sits in
-the whole assembly**: **origin** yellow, all bars **grey**, tested bar **red**,
-environment **blue** (steelblue), and the **robot base** orange **parked for this
-bar's action** (it differs per bar). `0_`'s inset is a **2D top view**; `1_`'s is a
-**3D** view. With many bars the figure is tall and opens in a **scrollable window**
-— drag the right scrollbar to see more rows (see Viewer controls below).
+`--viewer` draws **each bar-action in its own cell** (two per row) and, in a
+**separate top-level window of its own**, a layout diagram showing **where the
+tested bars sit in the whole assembly**: **origin** yellow, all bars **grey**,
+tested bar **red**, environment **blue** (steelblue), and the **robot base**
+orange **parked for this bar's action** (it differs per bar). `0_`'s is a
+**2D top view**; `1_`'s is a **3D** view. With many bars the per-take figure is
+tall and opens in a **scrollable window** — drag the right scrollbar to see more
+rows (see Viewer controls below).
+
+> An earlier version of this section called the layout an *inset at the
+> subplot's top-right*. It is not: both scripts build it as its own figure, so
+> it can be zoomed and panned without disturbing the per-take panels.
+
+> ⚠️ `0_` passes the **fitted** bar tips to the layout and `1_` passes the
+> **goal** tips, so the red "tested bar" is not quite the same line in the two
+> diagrams. At this scale the difference is invisible, but do not measure off it.
 
 #### Where each element's data comes from
 

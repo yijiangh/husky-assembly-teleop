@@ -36,6 +36,7 @@ from husky_assembly_teleop.mocap_experiment import (
     fit_bar_from_markerset,
     bar_deviation_from_goal,
     pair_fit_to_goal,
+    tip_distances,
     make_axis_corrector,
     convert_markerset_axes,
     draw_marker_take_in_pp,
@@ -115,6 +116,7 @@ def _plot_compare(ax, fit, goal_bar_pose, take_label, dev, marker_pts=None, bar_
     lateral_mm = dev['lateral_dev_m'] * 1000
     start_dev_mm = pairing['start_dev_m'] * 1000
     end_dev_mm = pairing['end_dev_m'] * 1000
+    placement_mm = tip_distances(pairing)['worst_m'] * 1000
 
     raw_pts = None
     if marker_pts:
@@ -160,7 +162,7 @@ def _plot_compare(ax, fit, goal_bar_pose, take_label, dev, marker_pts=None, bar_
     bid = (bar_name or '?').replace('bar_', '')
     ax.set_title(
         f"{short}\n"
-        f"bar = {bid} | Δstart = {start_dev_mm:.2f} mm\n"
+        f"bar = {bid} | placement = {placement_mm:.2f} mm (worst of the 3 places)\n"
         f"ang(fit,goal) = {angle_deg:.2f}° | lateral = {lateral_mm:.2f} mm",
         fontsize=8,
     )
@@ -324,6 +326,10 @@ def process_file(file_path, override_bar_action=None, override_movement=None):
         pairing = pair_fit_to_goal(fit, goal_bar_pose)
         fitted_start = pairing['fit_start']
         start_dev_m = pairing['start_dev_m']
+        # * The headline placement error is the WORST of start / middle / end,
+        # * not the start alone -- see tip_distances(). Same helper the session
+        # * viewer uses, so the two reports cannot disagree.
+        tips_mm = tip_distances(pairing)
         d_ocf_vs_goal_mm = (
             np.asarray(ocf, dtype=float) - np.asarray(goal_bar_pose[0], dtype=float)
         ) * 1000.0  # signed mm; NOTE: goal_pos = lower-tip per rhino-export bug
@@ -338,7 +344,9 @@ def process_file(file_path, override_bar_action=None, override_movement=None):
         d_mid_vs_goalmid_mm = (np.asarray(ocf, dtype=float) - goal_mid) * 1000.0
         print(
             f"  take {i}: "
-            f"start_dev={start_dev_m*1000:.2f} mm | "
+            f"placement={tips_mm['worst_m']*1000:.2f} mm "
+            f"(worst of {tips_mm['start_m']*1000:.2f} / {tips_mm['middle_m']*1000:.2f} / "
+            f"{tips_mm['end_m']*1000:.2f}) | "
             f"angle_dev={np.rad2deg(dev['angle_rad']):.3f} deg | "
             f"lateral_dev={dev['lateral_dev_m']*1000:.2f} mm | "
             f"center_to_line_dist_max={fit['center_to_line_dist_max_m']*1000:.2f} mm | "
@@ -364,6 +372,12 @@ def process_file(file_path, override_bar_action=None, override_movement=None):
             'center_to_line_dist_rms_m': fit['center_to_line_dist_rms_m'],
             'pos_dev_m': dev['pos_dev_m'],
             'start_dev_m': start_dev_m,
+            # The headline number and the three distances behind it.
+            'placement_m': tips_mm['worst_m'],
+            'tip_start_m': tips_mm['start_m'],
+            'tip_middle_m': tips_mm['middle_m'],
+            'tip_end_m': tips_mm['end_m'],
+            'tip_spread_m': tips_mm['spread_m'],
             'angle_dev_rad': dev['angle_rad'],
             'lateral_dev_m': dev['lateral_dev_m'],
         })
@@ -430,15 +444,23 @@ def aggregate(rows):
         return
     pos = np.array([r['pos_dev_m'] for r in rows]) * 1000
     start = np.array([r['start_dev_m'] for r in rows]) * 1000
+    place = np.array([r['placement_m'] for r in rows]) * 1000
+    spread = np.array([r['tip_spread_m'] for r in rows]) * 1000
     ang = np.rad2deg([r['angle_dev_rad'] for r in rows])
     lat = np.array([r['lateral_dev_m'] for r in rows]) * 1000
     st = np.array([r['center_to_line_dist_max_m'] for r in rows]) * 1000
     print(f"\n=== aggregate over {len(rows)} takes ===")
-    print("  (start_dev = fitted lower tip vs goal_pos; TEMP bug-compat metric)")
-    print(f"  start_dev_mm:      mean={start.mean():.2f}  std={start.std():.2f}  max={start.max():.2f}")
+    print("  Both headline numbers are WORST-case, never an average over places:")
+    print("  placement = worst of start/middle/end; fit residual = worst marker pair.")
+    print(f"  placement_mm:      mean={place.mean():.2f}  std={place.std():.2f}  max={place.max():.2f}")
     print(f"  angle_dev_deg:     mean={ang.mean():.3f}  std={ang.std():.3f}  max={ang.max():.3f}")
+    print(f"  fit_residual_mm:   mean={st.mean():.2f}  std={st.std():.2f}  max={st.max():.2f}")
+    print(f"  tip_spread_mm:     mean={spread.mean():.2f}  max={spread.max():.2f}   "
+          f"(small = bar shifted bodily, large = tilted about one end)")
     print(f"  lateral_dev_mm:    mean={lat.mean():.2f}  std={lat.std():.2f}  max={lat.max():.2f}")
-    print(f"  center_to_line_dist_max_mm: mean={st.mean():.2f}  std={st.std():.2f}  max={st.max():.2f}")
+    print("  --- kept for reference only ---")
+    print(f"  start_dev_mm:      mean={start.mean():.2f}  std={start.std():.2f}  max={start.max():.2f}"
+          f"   (the start tip alone; under-reports by {place.mean()-start.mean():.2f} mm on average)")
     print(f"  pos_dev_mm(ocf↔goal): mean={pos.mean():.2f}  std={pos.std():.2f}  max={pos.max():.2f}")
 
 
@@ -577,7 +599,7 @@ def main():
                 'count': len(marker_pts),
                 'expected': 8,
                 'fit_max_mm': row['center_to_line_dist_max_m'] * 1000.0,
-                'start_dev_mm': row['start_dev_m'] * 1000.0,
+                'start_dev_mm': row['placement_m'] * 1000.0,
                 'lateral_dev_mm': row['lateral_dev_m'] * 1000.0,
                 'angle_dev_deg': np.rad2deg(row['angle_dev_rad']),
             })

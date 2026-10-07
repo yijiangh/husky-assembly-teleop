@@ -12,7 +12,7 @@ Run it with the session folder name, the same way as the other two scripts::
 
     python 2_session_viewer.py 20261001
 
-which writes ``<session>-viz/session_<session>.html`` next to the data.
+which writes ``<session>-result/session_<session>.html`` next to the data.
 
 What it reads:
 - ``<batch>/bar_holding_acc_*.json``   -- the marker takes, one per bar
@@ -28,6 +28,7 @@ import argparse
 import base64
 import json
 import os
+import re
 import sys
 import webbrowser
 from datetime import datetime
@@ -46,6 +47,7 @@ from husky_assembly_teleop.mocap_experiment import (
     fit_bar_from_markerset,
     bar_deviation_from_goal,
     pair_fit_to_goal,
+    tip_distances,
     make_axis_corrector,
     convert_markerset_axes,
     read_env_obstacles_3dm,
@@ -92,18 +94,61 @@ FT_INVALID_BELOW_N = 1.5
 # * so one bad bar cannot flatten the range the good ones live in.
 METRICS = [
     {'key': 'placement', 'label': 'placement error', 'unit': 'mm', 'high': 5.0,
-     'help': 'how far the bar ended up from where it was meant to be, '
-             'measured by mocap against the authored pose'},
+     'help': 'how far the bar ended up from where it was meant to be: the '
+             'WORST of the three places along it that are measured',
+     'formula': 'max over the start, middle and end of '
+                '‖ detected − authored ‖',
+     'detail': 'The detected and authored bars are compared at the same three '
+               'points along each, and the largest of the three is the '
+               'number -- a bar that is right at one end and out at the other '
+               'is placed badly, and the start on its own would call it good. '
+               'The fitted tips are paired to the authored ones first, so the '
+               'number does not flip when a bar is built end-for-end. Both '
+               'bars are straight, so the gap changes smoothly from one end to '
+               'the other: that is what the shading along each bar shows.'},
     {'key': 'rotation', 'label': 'rotation error', 'unit': 'deg', 'high': 0.25,
-     'help': 'angle between the bar axis as built and as authored'},
+     'help': 'angle between the bar axis as built and as authored',
+     'formula': 'arccos( | fitted_axis · authored_axis | )',
+     'detail': 'The absolute value makes it blind to which way along the bar '
+               'each axis points, so the answer is always 0-90 deg.'},
+    {'key': 'fit_residual', 'label': 'fit residual', 'unit': 'mm', 'high': 1.5,
+     'help': 'how well the 8 markers lie on one straight line -- the QUALITY '
+             'of the measurement, not an error of the robot',
+     'formula': 'max perpendicular distance from a marker-pair midpoint '
+                'to the fitted axis',
+     'detail': 'Per take the worst of the four pairs, then averaged over the '
+               'takes: deliberately a max, because one bad pair is the thing '
+               'worth seeing and a mean would hide it behind three good ones. '
+               'Across this session it does not correlate with placement error '
+               '(r = -0.05), which is what says the placement error is real.'},
     {'key': 'servo', 'label': 'servo residual', 'unit': 'mm', 'high': 1.5,
-     'help': 'how far the worse wrist still was from its target on the last '
-             'servo iteration, before the markers were recorded'},
+     'help': 'how far each wrist still was from its target on the last servo '
+             'iteration, before the markers were recorded. Both wrists are '
+             'written on the bar; the colour follows the worse of the two',
+     'formula': 'max( ‖tool0_left − target_left‖ , ‖tool0_right − target_right‖ )',
+     'detail': 'Taken from the LAST iteration of the paired servo run. Both '
+               'sides are computed by the robot from its own encoders and base '
+               'pose, so this says whether the robot reached what it aimed at '
+               '-- not whether it aimed at the right place.'},
     {'key': 'load', 'label': 'load imbalance', 'unit': 'N', 'high': 2.0,
      'help': 'gap between the two wrists force magnitudes. The two grippers '
              'pull against each other through the bar, so a BALANCED pair is a '
              'bar in clean axial load; the gap is the part the bar has to '
-             'absorb sideways, i.e. bending'},
+             'absorb sideways, i.e. bending',
+     'formula': '| ‖F_left‖ − ‖F_right‖ |',
+     'detail': 'Both wrists hold one rigid bar, so an equal and opposite pair '
+               'is clean axial load. What is left over is what the bar must '
+               'take sideways.'},
+]
+
+# * Measurements shown in the detail card that are not colour metrics.
+EXTRA_FORMULAS = [
+    {'label': 'tool0 left / right', 'unit': 'mm',
+     'formula': '‖ FK(base_mocap, joint_encoders) − commanded_frame ‖',
+     'detail': 'Per wrist, on the servo run final iteration. The left flange is '
+               'driven exact and the right absorbs the grasp mismatch, so only '
+               'the right one tracks the placement error (r = +0.51 against '
+               '-0.18 for the left).'},
 ]
 
 
@@ -282,6 +327,29 @@ def _run_last_forces(run: dict) -> tuple:
 # * Measuring one bar, through the same helpers 1_compare_to_cell_state.py uses
 # ---------------------------------------------------------------------------
 
+def _pairs_along_bar(fit: dict, start_tip: list) -> list:
+    """The marker pairs of one take, ordered from one end of the bar along it.
+
+    ! The fit hands the pairs back in the order they were MATCHED -- closest to
+    ! the nominal cross-bar distance first -- which is not the order they sit
+    ! in along the bar and which changes from take to take. Averaging the takes
+    ! without re-ordering them therefore mixes two different physical pairs
+    ! together: their numbers come out identical and both land halfway between
+    ! the two pairs in the 3D view.
+
+    Args:
+        fit (dict): One take's fit from ``fit_bar_from_markerset``.
+        start_tip (list): The bar tip to measure from, so every take counts
+            its pairs from the same end.
+
+    Returns:
+        list: Pair indices, the one nearest that tip first.
+    """
+    start = np.asarray(start_tip, dtype=float)
+    centers = np.asarray(fit['pair_centers'], dtype=float)
+    return [int(i) for i in np.argsort(np.linalg.norm(centers - start, axis=1))]
+
+
 def measure_take(path: str) -> dict:
     """Fit the bar in one take file and compare it to its authored pose.
 
@@ -309,6 +377,7 @@ def measure_take(path: str) -> dict:
     goal_pose = (list(goal_position), list(goal_quaternion))
 
     placements, rotations, residuals = [], [], []
+    per_pair, pair_ids, pair_points = [], [], []
     tips, markers = [], []
     unfittable = None
     for entry in data.get('raw_data') or []:
@@ -326,6 +395,12 @@ def measure_take(path: str) -> dict:
         placements.append(pairing['start_dev_m'] * 1000.0)
         rotations.append(np.rad2deg(deviation['angle_rad']))
         residuals.append(fit['center_to_line_dist_max_m'] * 1000.0)
+        order = _pairs_along_bar(fit, pairing['fit_start'])
+        per_pair.append([fit['center_to_line_dists_m'][i] * 1000.0
+                         for i in order])
+        pair_ids.append([list(fit['pairs'][i]) for i in order])
+        pair_points.append([list(map(float, fit['pair_centers'][i]))
+                            for i in order])
         tips.append([list(pairing['fit_start']), list(pairing['fit_end'])])
         markers.append([list(map(float, m['pos'])) for m in points.values()])
 
@@ -347,20 +422,59 @@ def measure_take(path: str) -> dict:
         'movement': data.get('movement_id'),
         'bar_action_path': data.get('bar_action_path'),
         'n_takes': len(placements),
-        'placement': float(np.mean(placements)),
+        # ? How much the repeat takes of this bar disagreed at the start tip --
+        # ? a fraction of a millimetre when the markers were seen cleanly. The
+        # ? placement error itself is added by add_tip_distances().
         'placement_spread': float(np.ptp(placements)),
         'rotation': float(np.mean(rotations)),
-        'fit_residual': float(np.mean(residuals)),
+        # * Worst all the way through: the worst marker pair in a take, then the
+        # * worst take. One bad pair in one take is exactly the thing worth
+        # * seeing, and any averaging hides it behind the good ones.
+        'fit_residual': float(np.max(residuals)),
+        'fit_residual_mean': float(np.mean(residuals)),
+        # Each marker pair's own distance from the fitted axis, averaged over
+        # the takes, so a single bad pair can be picked out by name.
+        'pair_residuals': [float(v) for v in np.mean(per_pair, axis=0)],
+        'pair_ids': pair_ids[0],
+        'pair_points': [list(map(float, c)) for c in np.mean(pair_points, axis=0)],
         'bar_length': float(np.linalg.norm(
             np.array(tips[0][0]) - np.array(tips[0][1]))),
         'fitted': [list(np.mean([t[0] for t in tips], axis=0)),
                    list(np.mean([t[1] for t in tips], axis=0))],
+
         'authored': [list(map(float, goal_pairing['goal_start'])),
                      list(map(float, goal_pairing['goal_end']))],
         'markers': markers[0],
         'force_left': forces[0] if forces else None,
         'force_right': forces[1] if forces else None,
     }
+
+
+def add_tip_distances(record: dict) -> None:
+    """Measure the detected and authored bars against each other at three places.
+
+    The headline ``placement`` number is the WORST of the three. A bar that
+    sits right at one end and is out at the other is placed badly, and the
+    start distance on its own -- which this number used to be -- would call it
+    good. Their spread is the other half of the story: all three alike means
+    the bar is shifted bodily, three different numbers mean it is tilted.
+
+    Args:
+        record (dict): A bar record, edited in place.
+    """
+    # * One shared helper with 1_compare_to_cell_state.py, so the page and that
+    # * report cannot drift apart on the headline number.
+    tips = tip_distances({
+        'fit_start': np.asarray(record['fitted'][0], dtype=float),
+        'fit_end': np.asarray(record['fitted'][1], dtype=float),
+        'goal_start': np.asarray(record['authored'][0], dtype=float),
+        'goal_end': np.asarray(record['authored'][1], dtype=float),
+    })
+    record['tip_start'] = tips['start_m'] * 1000.0
+    record['tip_middle'] = tips['middle_m'] * 1000.0
+    record['tip_end'] = tips['end_m'] * 1000.0
+    record['tip_mean'] = tips['mean_m'] * 1000.0
+    record['placement'] = tips['worst_m'] * 1000.0
 
 
 def add_servo_numbers(record: dict, run_path: str) -> None:
@@ -373,6 +487,8 @@ def add_servo_numbers(record: dict, run_path: str) -> None:
     record['run'] = os.path.basename(run_path) if run_path else None
     record['servo'] = None
     record['iterations'] = None
+    record['servo_left'] = record['servo_right'] = None
+    record['rot_left'] = record['rot_right'] = None
     if run_path:
         iterations = _load_json(run_path).get('servoing_data') or []
         if iterations:
@@ -447,7 +563,18 @@ def build_robots(records: list) -> dict:
     for record in records:
         matrices = _robot_link_matrices(record, kinematics, geometry)
         record['robot'] = matrices
+        record['robot_holds_bar'] = _wrist_to_bar_mm(record)
         resolved += bool(matrices)
+        # ! A configuration that does not hold its own bar is a fault in the
+        # ! export (B52 on 20261001 stores a horizontal carry pose where the
+        # ! assembled pose should be). During the session the monitor ignored
+        # ! those joint values and solved IK from the authored flange targets,
+        # ! so drawing them here would show arms the robot never had. Keep the
+        # ! base -- the parking spot is still right -- and drop the arm links;
+        # ! the detail card says why they are missing.
+        if matrices and not _robot_holds_bar(record):
+            matrices['links'] = {}
+    _warn_about_loose_robots(records)
     print(f"[robot] {resolved} of {len(records)} bars resolved their robot pose; "
           f"{len(geometry)} link shapes, "
           f"{sum(len(f) for _p, f in geometry.values())} triangles, sent once")
@@ -477,6 +604,145 @@ def _pack_link_meshes(geometry: dict) -> dict:
             'bits': 16 if index_type is np.uint16 else 32,
         }
     return packed
+
+
+# * How far a wrist may sit from the bar before the pose is not a grasp. The
+# * grippers hold the bar 80 mm off its axis, so anything near that is right and
+# * anything far past it means the configuration and the bar disagree.
+GRASP_OFFSET_MM = 80.0
+GRASP_OFFSET_TOLERANCE_MM = 250.0
+
+
+def _closest_point_on_segment(point, start, end) -> tuple:
+    """The nearest point on a line segment, and how far away it is.
+
+    Args:
+        point (numpy.ndarray): The point to measure from.
+        start (numpy.ndarray): One end of the segment.
+        end (numpy.ndarray): The other end.
+
+    Returns:
+        tuple: ``(point_on_the_segment, distance_m)``.
+    """
+    along = end - start
+    length = float(np.linalg.norm(along))
+    direction = along / length
+    # ! Clamped to the segment, not to its infinite line, so a wrist beyond a
+    # ! bar's end is measured against the end rather than past it.
+    reach = float(np.clip(np.dot(point - start, direction), 0.0, length))
+    foot = start + reach * direction
+    return foot, float(np.linalg.norm(point - foot))
+
+
+def _wrist_position(record: dict, side: str):
+    """Where one authored wrist flange sits in the world.
+
+    Args:
+        record (dict): A bar record carrying ``robot``.
+        side (str): ``'left'`` or ``'right'``.
+
+    Returns:
+        numpy.ndarray: The wrist origin, or None when no robot was resolved.
+    """
+    robot = record.get('robot')
+    if not robot:
+        return None
+    matrix = robot['links'].get(f'{side}_ur_arm_wrist_3_link')
+    if matrix is None:
+        return None
+    return np.asarray(matrix, dtype=float).reshape(4, 4).T[:3, 3]
+
+
+def _wrist_to_bar_mm(record: dict) -> float:
+    """How far the further wrist sits from the bar the robot is meant to hold.
+
+    Both are authored, so this compares the export against itself: at the
+    movement the take was recorded at, the arms should be gripping the bar.
+
+    Args:
+        record (dict): A bar record with ``robot`` and ``authored`` set.
+
+    Returns:
+        float: Distance in mm for the worse wrist, or None without a robot.
+    """
+    if not record.get('robot'):
+        return None
+    start = np.asarray(record['authored'][0], dtype=float)
+    end = np.asarray(record['authored'][1], dtype=float)
+    worst = 0.0
+    for side in ('left', 'right'):
+        wrist = _wrist_position(record, side)
+        if wrist is None:
+            continue
+        worst = max(worst, _closest_point_on_segment(wrist, start, end)[1])
+    return worst * 1000.0
+
+
+# * Where the two grippers' numbers go when there is no robot to ask: a fifth
+# * of the way in from each end of the bar. Which end is which is then only a
+# * guess, so the page writes "L" and "R" in front of the numbers either way.
+GRASP_FALLBACK_ALONG = {'left': 0.8, 'right': 0.2}
+
+
+def add_grasp_points(record: dict) -> None:
+    """Mark where along the bar each gripper holds it.
+
+    The page writes the per-wrist numbers -- the servo residual and the force
+    each tool reads -- beside the place on the bar they were measured at,
+    rather than both in the middle. The wrists are authored, so each one is
+    projected onto the bar mocap actually found.
+
+    Args:
+        record (dict): A bar record with ``fitted`` set, edited in place.
+    """
+    start = np.asarray(record['fitted'][0], dtype=float)
+    end = np.asarray(record['fitted'][1], dtype=float)
+    points = {}
+    for side, fraction in GRASP_FALLBACK_ALONG.items():
+        wrist = _wrist_position(record, side)
+        on_bar = (start + (end - start) * fraction if wrist is None
+                  else _closest_point_on_segment(wrist, start, end)[0])
+        points[side] = [round(float(v), 5) for v in on_bar]
+    record['grasp'] = points
+
+
+def _warn_about_loose_robots(records: list) -> None:
+    """Say which bars have an authored pose that does not hold their own bar.
+
+    ! This catches a fault in the EXPORT, not in the measurement: the robot is
+    ! drawn exactly as the BarAction describes it, so a wrist far from the bar
+    ! means that file's movement and bar disagree with each other.
+
+    Args:
+        records (list): Bar records carrying ``robot_holds_bar``.
+    """
+    loose = [r for r in records
+             if r.get('robot_holds_bar') is not None and not _robot_holds_bar(r)]
+    for record in loose:
+        print(f"  ! {record['bar']}: the authored robot pose does not hold its "
+              f"own bar (worse wrist {record['robot_holds_bar']:.0f} mm away, "
+              f"expected about {GRASP_OFFSET_MM:.0f}). Footprint kept, arms not "
+              f"drawn, flagged in the viewer; the fault is in "
+              f"{os.path.basename(record.get('bar_action_path') or '?')} -- "
+              f"re-export it.")
+
+
+def _robot_holds_bar(record: dict) -> bool:
+    """Whether the authored joint values actually grip the authored bar.
+
+    The one place the tolerance is applied, so the console warning and the
+    decision to drop the arm links can never disagree.
+
+    Args:
+        record (dict): A bar record carrying ``robot_holds_bar`` (mm, or None).
+
+    Returns:
+        bool: True when the worse wrist is within tolerance of the grasp offset.
+        A record with no robot at all counts as holding -- there is nothing to
+        drop.
+    """
+    distance = record.get('robot_holds_bar')
+    return distance is None or distance <= GRASP_OFFSET_MM + GRASP_OFFSET_TOLERANCE_MM
 
 
 def _robot_link_matrices(record: dict, kinematics, geometry: dict) -> dict:
@@ -672,17 +938,11 @@ def _pack(array: np.ndarray) -> str:
 # * Writing the page
 # ---------------------------------------------------------------------------
 
-def embed_three_js() -> str:
-    """Put the 3D library inside the page, so it needs no network.
-
-    The library is three files. ``three.core.min.js`` stands alone;
-    ``three.module.min.js`` loads it by relative path, which an embedded module
-    cannot follow, so those two references are rewritten to a name the import
-    map below defines; ``OrbitControls.js`` (mouse rotate/zoom/pan) asks for
-    "three", which the map also supplies.
+def _check_three_js() -> tuple:
+    """Read the three library files, or explain how to fetch them.
 
     Returns:
-        str: The ``<script type="importmap">`` block.
+        tuple: ``(core, module, controls)`` as text.
 
     Raises:
         SystemExit: When the library files have not been downloaded.
@@ -695,10 +955,23 @@ def embed_three_js() -> str:
             + "\n  ".join(missing)
             + "\n\nThey are not kept in git. Download them once with:\n"
               "  scripts/fetch_dashboard_vendor.sh")
+    return (open(THREE_CORE).read(), open(THREE_MODULE).read(),
+            open(ORBIT_CONTROLS).read())
 
-    core = open(THREE_CORE).read()
-    module = open(THREE_MODULE).read()
-    controls = open(ORBIT_CONTROLS).read()
+
+def embed_three_js() -> str:
+    """Put the 3D library inside the page, so it needs no network.
+
+    The library is three files. ``three.core.min.js`` stands alone;
+    ``three.module.min.js`` loads it by relative path, which an embedded module
+    cannot follow, so those two references are rewritten to a name the import
+    map below defines; ``OrbitControls.js`` (mouse rotate/zoom/pan) asks for
+    "three", which the map also supplies.
+
+    Returns:
+        str: The ``<script type="importmap">`` block.
+    """
+    core, module, controls = _check_three_js()
     rewritten = module.replace('"./three.core.min.js"', '"three-core"')
     if rewritten == module:
         raise SystemExit("three.module.min.js no longer refers to its core file "
@@ -719,21 +992,194 @@ def embed_three_js() -> str:
             + '</script>')
 
 
-def write_page(scene: dict, out_path: str) -> None:
-    """Write the finished single-file page.
+def _specifiers(block: str, importing: bool = False) -> list:
+    """Split an import/export name list into ``(outside, inside)`` pairs.
+
+    ! The two directions are mirror images and mixing them up is silent.
+    ! ``export{a as Vector3}`` means the file calls it ``a`` and the world sees
+    ! ``Vector3``, so the outside name is on the RIGHT. ``import{Vector3 as e}``
+    ! means the world calls it ``Vector3`` and the file calls it ``e``, so the
+    ! outside name is on the LEFT.
+
+    Args:
+        block (str): The text between the braces.
+        importing (bool): True for an import list, False for an export list.
+
+    Returns:
+        list: ``[(outside_name, inside_name), ...]``.
+    """
+    pairs = []
+    for piece in block.split(','):
+        piece = ' '.join(piece.split())
+        if not piece:
+            continue
+        if ' as ' in piece:
+            left, right = (part.strip() for part in piece.split(' as ', 1))
+            pairs.append((left, right) if importing else (right, left))
+        else:
+            pairs.append((piece, piece))
+    return pairs
+
+
+def _as_scoped_module(source: str, name: str, incoming: str = None,
+                      from_object: str = None) -> str:
+    """Rewrite one ES module as a self-contained expression.
+
+    The file's ``import`` becomes a plain destructuring from an object the
+    caller already built, and its ``export`` becomes a returned object. Wrapping
+    each file in its OWN function keeps their short minified names apart -- the
+    core and the renderer build both use names like ``e`` and ``t`` at the top
+    level, so pasting them into one scope would collide.
+
+    Args:
+        source (str): The module's text.
+        name (str): For error messages.
+        incoming (str): Regex matching the import statement to replace, if any.
+        from_object (str): The expression the imported names come from.
+
+    Returns:
+        str: ``(function(){ ... return {...}; })()``.
+    """
+    # ! Handle `export{...}from"other.js"` BEFORE the plain `export{...}`. It is
+    # ! a re-export: the names are forwarded straight out of the other file and
+    # ! never exist in this one. Matching only its `export{...}` half would
+    # ! leave a dangling `from"..."` (a syntax error) and would also claim
+    # ! local variables that were never declared.
+    given = []
+    for match in list(re.finditer(
+            r'export\s*\{([^}]*)\}\s*from\s*[\'"][^\'"]*[\'"]\s*;?', source)):
+        for outside, inside in _specifiers(match.group(1)):
+            given.append((outside, f'{from_object}["{inside}"]'))
+    source = re.sub(r'export\s*\{[^}]*\}\s*from\s*[\'"][^\'"]*[\'"]\s*;?',
+                    '', source)
+
+    for match in list(re.finditer(r'export\s*\{([^}]*)\}\s*;?', source)):
+        for outside, inside in _specifiers(match.group(1)):
+            given.append((outside, inside))
+    if not given:
+        raise SystemExit(f"{name}: found no export list to bundle.")
+    source = re.sub(r'export\s*\{[^}]*\}\s*;?', '', source)
+
+    if incoming:
+        match = re.search(incoming, source)
+        if not match:
+            raise SystemExit(f"{name}: its import statement no longer looks the "
+                             f"way the bundler expects.")
+        taken = _specifiers(match.group(1), importing=True)
+        pulled = ','.join(f'{outside}:{inside}' for outside, inside in taken)
+        source = (source[:match.start()] + f'const {{{pulled}}}={from_object};'
+                  + source[match.end():])
+
+    body = ','.join(f'"{outside}":{expression}' for outside, expression in given)
+    return f'(function(){{\n{source}\nreturn {{{body}}};\n}})()'
+
+
+def bundle_three_js(viewer_js: str) -> str:
+    """The 3D library and the viewer as ONE ordinary inline script.
+
+    ! This is what a page needs when it is SERVED rather than opened from disk.
+    ! A host may wrap the page inside a document of its own and serve it from a
+    ! path where neither a ``data:`` URL nor a relative filename resolves, so
+    ! an import map and sibling files both fail and the page comes up blank.
+    ! Nothing here is imported, fetched or mapped: the library, its controls and
+    ! the viewer are one script with no outside reference at all.
+
+    Args:
+        viewer_js (str): The viewer module, whose own imports are removed.
+
+    Returns:
+        str: A ``<script>`` body.
+    """
+    core, module, controls = _check_three_js()
+    core_expr = _as_scoped_module(core, 'three.core.min.js')
+    module_expr = _as_scoped_module(
+        module, 'three.module.min.js',
+        incoming=r'import\s*\{([^}]*)\}\s*from\s*"\./three\.core\.min\.js"\s*;?',
+        from_object='__core')
+    controls_expr = _as_scoped_module(
+        controls, 'OrbitControls.js',
+        incoming=r'import\s*\{([^}]*)\}\s*from\s*[\'"]three[\'"]\s*;?',
+        from_object='THREE')
+
+    # The viewer asks for the library by name; here it is already in scope.
+    body = re.sub(r'^\s*import\s[^\n]*\n', '', viewer_js, flags=re.M)
+    return (
+        '(function(){\n'
+        '"use strict";\n'
+        f'const __core={core_expr};\n'
+        f'const __three={module_expr};\n'
+        # * The renderer build re-exports most of the core, but merging both is
+        # * what guarantees every name the viewer reaches for is present.
+        'const THREE=Object.assign({},__core,__three);\n'
+        f'const __controls={controls_expr};\n'
+        'const OrbitControls=__controls["OrbitControls"];\n'
+        f'\n{body}\n'
+        '})();'
+    )
+
+
+def sibling_three_js(out_path: str) -> str:
+    """Write the 3D library next to the page and point the import map at it.
+
+    ! Needed wherever the page is SERVED rather than opened from disk. A hosted
+    ! page usually runs under a content-security policy, and those routinely
+    ! refuse to execute a ``data:`` script -- which is how the embedded build
+    ! carries the library, so the page comes up blank with the whole module
+    ! blocked. Plain sibling files are fetched normally and pass.
+
+    The page is then no longer a single file: the three ``.js`` files have to
+    travel with it.
+
+    Args:
+        out_path (str): The ``.html`` being written; the library lands beside it.
+
+    Returns:
+        str: The ``<script type="importmap">`` block.
+    """
+    core, module, controls = _check_three_js()
+    beside = os.path.dirname(os.path.abspath(out_path))
+    for name, text in (('three.core.min.js', core),
+                       ('three.module.min.js', module),   # keeps its own import
+                       ('OrbitControls.js', controls)):
+        with open(os.path.join(beside, name), 'w') as handle:
+            handle.write(text)
+    imports = {
+        'three': './three.module.min.js',
+        'three/addons/controls/OrbitControls.js': './OrbitControls.js',
+    }
+    return ('<script type="importmap">'
+            + json.dumps({'imports': imports})
+            + '</script>')
+
+
+def write_page(scene: dict, out_path: str, vendor: str = 'embed') -> None:
+    """Write the finished page.
 
     Args:
         scene (dict): Everything the page draws.
         out_path (str): Where to write the ``.html``.
+        vendor (str): ``'embed'`` keeps the 3D library inside the file, so it
+            travels alone; ``'sibling'`` writes the library beside it, which is
+            what a hosted copy needs.
     """
     template_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                  '2_session_viewer.js')
     with open(template_path, 'r') as handle:
         viewer_js = handle.read()
 
+    if vendor == 'inline':
+        # One ordinary script, nothing imported or fetched: the only form that
+        # survives being served inside someone else's page.
+        importmap, script_open = '', '<script>'
+        viewer_js = bundle_three_js(viewer_js)
+    else:
+        importmap = (sibling_three_js(out_path) if vendor == 'sibling'
+                     else embed_three_js())
+        script_open = '<script type="module">'
     html = _PAGE_TEMPLATE.format(
         title=scene['title'],
-        importmap=embed_three_js(),
+        importmap=importmap,
+        script_open=script_open,
         data=json.dumps(scene, separators=(',', ':')),
         viewer_js=viewer_js,
     )
@@ -741,10 +1187,16 @@ def write_page(scene: dict, out_path: str) -> None:
         handle.write(html)
 
     size_mb = os.path.getsize(out_path) / (1024 * 1024)
-    external = html.count('http://') + html.count('https://')
+    # ? Count only what the browser would actually FETCH. Plain text matches are
+    # ? no use now that the library is inlined unencoded: its source carries an
+    # ? XML namespace URI and a citation in a shader comment, neither a request.
+    external = len(re.findall(r'(?:src|href)\s*=\s*["\']https?://', html))
     print(f"\n[page] {out_path}")
     print(f"       {size_mb:.1f} MB, {external} external references "
           f"({'fully offline' if external == 0 else 'NOT offline!'})")
+    if vendor == 'sibling':
+        print("       the 3D library sits beside it as three .js files; they "
+              "must travel with the page")
 
 
 _PAGE_TEMPLATE = """<!DOCTYPE html>
@@ -791,6 +1243,15 @@ label.chk {{ display:flex; align-items:center; gap:7px; padding:3px 0;
   max-height:calc(100vh - 250px); overflow-y:auto; }}
 #detail.open {{ display:block; }}
 #detail h2:first-of-type {{ margin-top:0; }}
+/* * The card is one block per measurement, and the one the "data by" picker
+   * asks for is marked and set in bold -- so clicking a bar answers the
+   * question the picker asked instead of leaving it among the others. */
+.block h2 {{ margin-top:0; }}
+.block {{ margin-top:16px; }}
+.block.focus {{ margin:16px -9px 0; padding:8px 9px 7px; border-radius:6px;
+  background:#eef4fc; border:1px solid #c7dbf4; }}
+.pill {{ margin-left:7px; padding:1px 5px; border-radius:3px;
+  background:var(--accent); color:#fff; font-size:9px; letter-spacing:.06em; }}
 #detail-close {{ position:absolute; top:7px; right:9px; width:auto; margin:0;
   padding:0 7px 2px; font-size:16px; line-height:1.3; color:var(--dim);
   background:transparent; border-color:transparent; }}
@@ -819,16 +1280,36 @@ label.chk {{ display:flex; align-items:center; gap:7px; padding:3px 0;
   margin-right:5px; vertical-align:-1px; border:1px solid rgba(0,0,0,.12); }}
 #hint {{ position:absolute; top:12px; left:14px; color:var(--dim);
   font-size:11px; line-height:1.7; }}
+.formula {{ margin:9px 0 0; }}
+.formula code {{ display:block; margin:3px 0 2px; padding:4px 7px;
+  background:#eef2f7; border:1px solid #dde4ec; border-radius:4px;
+  font-size:11.5px; color:#1d3f72; overflow-wrap:anywhere; }}
+#formula-toggle {{ width:auto; padding:3px 9px; font-size:11px; }}
+#detail {{ scrollbar-width:thin; scrollbar-color:#4a7fb5 transparent; }}
+#detail::-webkit-scrollbar {{ width:9px; }}
+#detail::-webkit-scrollbar-thumb {{ background:#4a7fb5; border-radius:5px; }}
+#detail::-webkit-scrollbar-track {{ background:transparent; }}
+.flag {{ margin:8px 0 0; padding:7px 9px; border-radius:6px;
+  background:#fff6f5; border:1px solid #e2a79c; color:#7a2318; font-size:11.5px; }}
+#boot {{ display:none; }}
+#boot.boot-error {{ display:block; position:absolute; top:70px; left:14px;
+  max-width:560px; background:#fff6f5; border:1px solid #e2a79c;
+  border-radius:8px; padding:14px 16px; font-size:12.5px; line-height:1.6;
+  color:#7a2318; }}
+#boot code {{ background:#f3e2de; padding:1px 4px; border-radius:3px; }}
 #status {{ margin-top:12px; padding-top:10px; border-top:1px solid var(--line);
   color:var(--dim); font-size:11px; }}
 </style></head><body>
 <div id="app">
   <div id="scene">
     <div id="hint">left drag to rotate, right drag to move, scroll to zoom<br>
-      left click a bar to select and see detail, right click or ESC to unpin</div>
+      left click a bar to select and see detail, ESC or the card's &times;
+      to unpin</div>
     <div class="card" id="detail"></div>
     <div class="card" id="legend">
       <div id="legend-head"><span>colour by</span><select id="metric-legend"></select></div>
+      <div id="legend-head"><span style="min-width:52px">data by</span>
+        <select id="data-legend"></select></div>
       <div id="legend-body"></div>
       <div id="layers">
         <label><input type="checkbox" id="show-env" checked> environment</label>
@@ -848,8 +1329,29 @@ label.chk {{ display:flex; align-items:center; gap:7px; padding:3px 0;
     <div id="status"></div>
   </div>
 </div>
+<div id="boot"></div>
+<script>
+/* ! A module that fails to load leaves a BLANK page -- no error, nothing. That
+   ! is exactly what happens when a host's content-security policy refuses the
+   ! script, so say so on the page instead of showing nothing. */
+(function () {{
+  var box = document.getElementById('boot');
+  function fail(what) {{
+    if (window.__viewerReady) return;
+    box.className = 'boot-error';
+    box.innerHTML = '<b>The 3D view did not start.</b><br>' + what
+      + '<br><br>If this page is being served rather than opened from a file, '
+      + 'its 3D library may have been blocked. Re-generate it with '
+      + '<code>--vendor sibling</code> and keep the three .js files beside it.';
+  }}
+  window.addEventListener('error', function (e) {{
+    fail(e.message ? ('<code>' + e.message + '</code>') : 'A script was blocked or failed to load.');
+  }}, true);
+  setTimeout(function () {{ fail('It did not finish starting.'); }}, 6000);
+}})();
+</script>
 <script type="application/json" id="scene-data">{data}</script>
-<script type="module">
+{script_open}
 {viewer_js}
 </script></body></html>
 """
@@ -891,18 +1393,26 @@ def collect_session(batch_dir: str, with_robots: bool) -> dict:
         record = measure_take(take)
         if record is None:
             continue
+        add_tip_distances(record)
         add_servo_numbers(record, pairing[take])
         records.append(record)
-        print(f"  {record['bar']:>5s}  placement {record['placement']:6.2f} mm  "
+        print(f"  {record['bar']:>5s}  placement {record['placement']:6.2f} mm "
+              f"(worst of {record['tip_start']:.2f} / "
+              f"{record['tip_middle']:.2f} / {record['tip_end']:.2f})  "
               f"rotation {record['rotation']:6.3f} deg  "
               f"load gap {_show(record['load'])}"
               f"{'' if record['load_valid'] else '  (load not measured)'}")
 
     shared = build_robots(records) if with_robots else None
+    # ? After the robots, so a resolved wrist can be used; without one this
+    # ? falls back to a fixed point near each end of the bar.
+    for record in records:
+        add_grasp_points(record)
     return {
         'title': f"bar-holding session {os.path.basename(batch_dir)}",
         'generated': datetime.now().strftime('%Y-%m-%d %H:%M'),
         'metrics': METRICS,
+        'extra_formulas': EXTRA_FORMULAS,
         'bars': records,
         'robot': shared,
         'env': None,
@@ -956,6 +1466,12 @@ def main() -> None:
                         help='skip the robot poses (faster)')
     parser.add_argument('--no-cameras', action='store_true',
                         help='skip the mocap camera rig')
+    parser.add_argument('--vendor', choices=('inline', 'embed', 'sibling'), default='inline',
+                        help="where the 3D library goes: 'inline' bundles it "
+                             "into one ordinary script (default -- works both "
+                             "from disk and when served); 'embed' uses an "
+                             "import map of data: URLs; 'sibling' writes it "
+                             "beside the page as three .js files")
     parser.add_argument('--out', default=None, help='output .html path')
     parser.add_argument('--open', action='store_true',
                         help='open the page when it is written')
@@ -979,10 +1495,10 @@ def main() -> None:
     scene['env'] = build_environment(env_3dm)
     scene['cameras'] = [] if args.no_cameras else build_cameras(env_3dm)
 
-    out_path = args.out or os.path.join(batch_dir + '-viz',
+    out_path = args.out or os.path.join(batch_dir + '-result',
                                         f'session_{batch}.html')
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    write_page(scene, out_path)
+    write_page(scene, out_path, args.vendor)
     if args.open:
         webbrowser.open('file://' + os.path.abspath(out_path))
 
