@@ -455,6 +455,9 @@ class HuskyRobotInterface:
         self.last_arm_movement = [0] * n_arms
         self.io_states = [[False for x in range(0, 18)] for _ in range(n_arms)]
         self.active_controller = [""] * n_arms
+        # True while a list_controllers query for that arm is out (see
+        # refresh_active_controllers); the answer clears it.
+        self.controller_query_pending = [False] * n_arms
         # Why the request in flight for this arm failed, or None. Cleared when a new
         # switch_controller request goes out, set by its done-callback on a rejected
         # or errored switch. Lets a waiter fail fast on a KNOWN failure instead of
@@ -500,31 +503,75 @@ class HuskyRobotInterface:
             fut.add_done_callback(
                 lambda f, idx=i: self._on_list_controllers_response(idx, f))
 
+    def refresh_active_controllers(self, arm_indices=None) -> list:
+        """Ask controller_manager which motion controller each arm runs NOW. Asynchronous.
+
+        The answer lands in ``active_controller[i]`` (``""`` when no known motion
+        controller is active) and clears ``controller_query_pending[i]``.
+        * Asked before every controller switch (``world.switch_arm_controllers``):
+        * the start-up query may have found no controller_manager (the arms were
+        * launched after the monitor, so the cache stayed ""), and a switch made
+        * outside the monitor (a ``ros2 service call``, a driver restart) leaves
+        * the cache stale. Either way a STRICT switch request built from it is
+        * rejected even when the wanted controller is already active.
+
+        Args:
+            arm_indices (list[int] | None): Arms to ask about; None = every arm.
+
+        Returns:
+            list[int]: The arms a request went out for (empty when there is no
+            list_controllers client or its service is not up).
+        """
+        clients = getattr(self, 'list_controllers_client', None) or []
+        asked = []
+        for i in (range(len(clients)) if arm_indices is None else arm_indices):
+            if i >= len(clients) or not clients[i].service_is_ready():
+                continue
+            self.controller_query_pending[i] = True
+            fut = clients[i].call_async(ListControllers.Request())
+            fut.add_done_callback(lambda f, idx=i: self._on_list_controllers_response(idx, f))
+            asked.append(i)
+        return asked
+
     def _on_list_controllers_response(self, i, fut):
+        """Store the known motion controller controller_manager reports active on arm ``i``.
+
+        ``""`` when none of them is active. Logs only when the value changes.
+
+        Args:
+            i (int): Arm index.
+            fut (Future): The ``list_controllers`` call's future.
+        """
         try:
-            resp = fut.result()
-        except Exception as e:
-            self.node.get_logger().warn(
-                f'arm {i}: list_controllers failed: {e}; active_controller stays ""')
-            return
-        if resp is None:
-            self.node.get_logger().warn(
-                f'arm {i}: list_controllers returned None; active_controller stays ""')
-            return
-        active = next(
-            (c.name for c in resp.controller
-             if c.state == 'active' and c.name in _KNOWN_MOTION_CONTROLLERS),
-            None,
-        )
-        if active is None:
-            self.node.get_logger().warn(
-                f'arm {i}: no known motion controller active '
-                f'(saw {[(c.name, c.state) for c in resp.controller]}); '
-                f'active_controller stays ""')
-            return
-        self.active_controller[i] = active
-        self.node.get_logger().info(
-            f'arm {i}: active_controller seeded to {active!r} from controller_manager')
+            try:
+                resp = fut.result()
+            except Exception as e:
+                self.node.get_logger().warn(
+                    f'arm {i}: list_controllers failed: {e}; active_controller stays '
+                    f'{self.active_controller[i]!r}')
+                return
+            if resp is None:
+                self.node.get_logger().warn(
+                    f'arm {i}: list_controllers returned None; active_controller stays '
+                    f'{self.active_controller[i]!r}')
+                return
+            active = next(
+                (c.name for c in resp.controller
+                 if c.state == 'active' and c.name in _KNOWN_MOTION_CONTROLLERS),
+                "",
+            )
+            if active != self.active_controller[i]:
+                if active:
+                    self.node.get_logger().info(
+                        f'arm {i}: controller_manager reports {active!r} active '
+                        f'(cached: {self.active_controller[i]!r})')
+                else:
+                    self.node.get_logger().warn(
+                        f'arm {i}: no known motion controller active '
+                        f'(saw {[(c.name, c.state) for c in resp.controller]})')
+            self.active_controller[i] = active
+        finally:
+            self.controller_query_pending[i] = False
 
     def switch_controller(self, from_ctrl, to_ctrl, arm_index=0):
         """Request a controller switch on one arm. Asynchronous.
@@ -555,7 +602,9 @@ class HuskyRobotInterface:
         msg = SwitchController.Request()
 
         msg.start_asap = True
-        msg.deactivate_controllers = [from_ctrl]
+        # "" = no known controller is active: only activate (a "" name in the
+        # deactivate list makes a STRICT switch fail).
+        msg.deactivate_controllers = [from_ctrl] if from_ctrl else []
         msg.activate_controllers = [to_ctrl]
         msg.strictness = SwitchController.Request.STRICT
 

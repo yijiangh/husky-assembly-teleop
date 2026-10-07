@@ -63,7 +63,19 @@ def _nonzero_range(vmin: float, vmax: float) -> Tuple[float, float]:
 class UIBackend:
     """Abstract UI backend; do NOT instantiate. See PyBulletBackend / DearPyGuiBackend."""
 
-    def add_button(self, label: str, on_click: Callable[[], None]) -> int:
+    def add_button(self, label: str, on_click: Callable[[], None],
+                   color: Optional[Sequence[int]] = None) -> int:
+        """Add a push button.
+
+        Args:
+            label (str): The button text.
+            on_click (Callable[[], None]): Called on each click.
+            color (Sequence[int] | None): Optional RGB (0-255) fill colour to make
+                the button stand out; None keeps the default look.
+
+        Returns:
+            int: The widget handle.
+        """
         raise NotImplementedError
 
     def add_slider_float(self, label: str, vmin: float, vmax: float,
@@ -137,6 +149,17 @@ class UIBackend:
         """
         raise NotImplementedError
 
+    def set_on_click(self, handle: int, on_click: Callable[[], None]) -> None:
+        """Call ``on_click`` when a widget (e.g. a status text line) is left-clicked.
+
+        Backends that cannot do this (PyBullet) leave the widget as it is.
+
+        Args:
+            handle (int): The widget handle.
+            on_click (Callable[[], None]): Called on each left click.
+        """
+        return
+
     def begin_group(self, label: str, *, collapsible: bool = True) -> None:
         raise NotImplementedError
 
@@ -193,7 +216,8 @@ class PyBulletBackend(UIBackend):
             self._warned_legacy_widgets.add(key)
             logger.warning(msg)
 
-    def add_button(self, label, on_click):
+    def add_button(self, label, on_click, color=None):
+        # PyBullet debug buttons cannot be coloured; ``color`` is ignored.
         dbg = p.addUserDebugParameter(label, 1.0, 0.0, 0.0)
         prev = p.readUserDebugParameter(dbg)
         h = self._new_handle()
@@ -417,6 +441,8 @@ class DearPyGuiBackend(UIBackend):
         self._parent_stack: List[Any] = ["root"]
         self._next_handle = 1
         self._handles: Dict[int, Dict[str, Any]] = {}
+        self._button_themes: Dict[tuple, int] = {}   # RGB -> theme (see _button_theme)
+        self._click_registries: List[Any] = []        # see set_on_click; deleted by clear()
         self._live_plots: List[Dict[str, Any]] = []
         self._live_multi: List[Dict[str, Any]] = []
         # Push-based per-iteration plots (add_history_plot). The caller appends
@@ -472,13 +498,40 @@ class DearPyGuiBackend(UIBackend):
     def _current_parent(self):
         return self._parent_stack[-1]
 
-    def add_button(self, label, on_click):
+    def add_button(self, label, on_click, color=None):
         dpg = self.dpg
         tag = dpg.add_button(label=label, parent=self._current_parent,
                              callback=lambda *a: on_click())
+        if color is not None:
+            dpg.bind_item_theme(tag, self._button_theme(color))
         h = self._new_handle()
         self._handles[h] = {"kind": "button", "tag": tag}
         return h
+
+    def _button_theme(self, color: Sequence[int]) -> int:
+        """A button theme filled with ``color``, built once per colour and reused.
+
+        Themes are not children of the panel window, so they survive ``clear()``
+        and every rebuild reuses the same few themes.
+
+        Args:
+            color (Sequence[int]): RGB (0-255) fill colour.
+
+        Returns:
+            int: The DPG theme id.
+        """
+        key = tuple(int(c) for c in color[:3])
+        if key not in self._button_themes:
+            dpg = self.dpg
+            lighter = tuple(min(255, int(c * 1.25 + 25)) for c in key)   # mouse over it
+            darker = tuple(int(c * 0.7) for c in key)                     # while pressed
+            with dpg.theme() as theme:
+                with dpg.theme_component(dpg.mvButton):
+                    dpg.add_theme_color(dpg.mvThemeCol_Button, key)
+                    dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, lighter)
+                    dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, darker)
+            self._button_themes[key] = theme
+        return self._button_themes[key]
 
     def add_slider_float(self, label, vmin, vmax, default, on_change):
         dpg = self.dpg
@@ -934,6 +987,22 @@ class DearPyGuiBackend(UIBackend):
         self._handles[h] = {"kind": "status_text", "tag": tag}
         return h
 
+    def set_on_click(self, handle, on_click):
+        """Call ``on_click`` when the widget is left-clicked (an item-clicked handler).
+
+        The handler registry is a top-level item, not a child of the panel
+        window, so it is tracked and deleted by ``clear()`` with the widget.
+        """
+        dpg = self.dpg
+        info = self._handles.get(handle)
+        if not info or info.get("tag") is None:
+            return
+        with dpg.item_handler_registry() as registry:
+            dpg.add_item_clicked_handler(button=dpg.mvMouseButton_Left,
+                                         callback=lambda *a: on_click())
+        dpg.bind_item_handler_registry(info["tag"], registry)
+        self._click_registries.append(registry)
+
     def add_separator(self, label):
         dpg = self.dpg
         dpg.add_separator(parent=self._current_parent)
@@ -992,6 +1061,11 @@ class DearPyGuiBackend(UIBackend):
         # second copy. The "root" window itself, font registries, and the separator
         # font survive (they're not children of the window).
         self.dpg.delete_item("root", children_only=True)
+        # The click handlers of the deleted widgets (top-level items, see set_on_click).
+        for registry in self._click_registries:
+            if self.dpg.does_item_exist(registry):
+                self.dpg.delete_item(registry)
+        self._click_registries.clear()
         self._parent_stack = ["root"]
         self._handles.clear()
         self._live_plots.clear()

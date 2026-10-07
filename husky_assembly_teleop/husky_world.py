@@ -1453,6 +1453,7 @@ def measure_servo_tool0_error(monitor, target_ee_frames):
             "pos_err_mm" (list[float]): [dx, dy, dz] position error in millimetres.
             "pos_norm_mm" (float): position error magnitude in millimetres.
             "rot_err_deg" (list[float]): per-axis orientation error in degrees.
+            "observed_pose" (tuple): the live tool0 pose (point, xyzw quaternion), world frame.
     """
     h = monitor.huskies[monitor.selected_robot_id]
     ho = h.object
@@ -1470,6 +1471,7 @@ def measure_servo_tool0_error(monitor, target_ee_frames):
             "pos_err_mm": pos_err_mm.tolist(),
             "pos_norm_mm": float(np.linalg.norm(pos_err_mm)),
             "rot_err_deg": rot_err_deg,
+            "observed_pose": observed,
         }
     return out
 
@@ -2985,6 +2987,9 @@ def execute_linear_cartesian_move(robot, hi, start_time, cartesian_trajectory, i
 # switch acks well inside a second; this is only a ceiling so a dead or
 # unresponsive controller_manager cannot wedge the task queue forever.
 CONTROLLER_SWITCH_TIMEOUT_S = 5.0
+# How long to wait for controller_manager to say which controller is active
+# before a switch (answers in milliseconds); after it, the cached value is used.
+CONTROLLER_QUERY_TIMEOUT_S = 2.0
 
 
 def switch_arm_controllers(monitor: 'HuskyMonitor', to_ctrl: str, timeout_s: float = CONTROLLER_SWITCH_TIMEOUT_S,
@@ -3026,6 +3031,15 @@ def switch_arm_controllers(monitor: 'HuskyMonitor', to_ctrl: str, timeout_s: flo
     spec = monitor._connected_robot()
     arms = list(range(spec.n_arms)) if arm_indices is None else list(arm_indices)
     sides = [spec.side_keys[i] for i in arms]
+    # * Ask controller_manager what each arm runs NOW instead of trusting the
+    # * cache (see HuskyRobotInterface.refresh_active_controllers): a start-up
+    # * query that found no controller_manager leaves it "", a switch made
+    # * outside the monitor leaves it stale. No answer in time = use the cache.
+    refresh = getattr(hi, 'refresh_active_controllers', None)   # test stubs have none
+    asked = refresh(arms) if refresh is not None else []
+    query_deadline = time.time() + CONTROLLER_QUERY_TIMEOUT_S
+    while any(hi.controller_query_pending[i] for i in asked) and time.time() < query_deadline:
+        yield
     # Already there: say so without touching controller_manager. A switch whose
     # deactivate and activate name the SAME controller is rejected under STRICT,
     # so asking anyway would turn "nothing to do" into a spurious failure.
@@ -4094,12 +4108,13 @@ def execute_planned_trajectory_compliant(monitor):
             switched_to_compliance = False   # the finally has nothing to restore
 
             # Replan a straight line from where compliance ACTUALLY left the
-            # tools to the movement's authored goal frames.
+            # tools to the retreat goals 'Plan Movement' used (see
+            # HuskyMonitor._live_retreat_targets).
             tail = monitor.replan_linear_to_target_from_live(
                 monitor.current_movement, tag)
             if tail is not None:
                 print(f'[{tag}] replanned retreat: {len(tail)} waypoints from the '
-                      f'live pose to the authored target frames.')
+                      f'live pose to the retreat goals.')
             else:
                 # ! Falling back to the preplanned tail means the FIRST step is a
                 # ! jump from the drifted pose onto the planned line -- the fast

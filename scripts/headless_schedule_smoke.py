@@ -1975,9 +1975,11 @@ def cindy_run(results: Results, problem: str, root: str, schedule) -> None:
 def plan_release(results: Results, monitor, iface: StubInterface, alice, belief) -> None:
     """Plan Cindy's release movements with the loaded release entry, Alice posed from her belief.
 
-    The retreat (independent dual-arm linear) plans from its exported start;
-    its end is then taken as "executed" (the stub arms jump there) and the free
-    move home plans from those live arms. Both are found by kind, not by index.
+    The retreat (independent dual-arm linear) plans from the live arms, so the
+    stub arms first stand at its exported start (where the insert leaves them on
+    the real robot); its end is then taken as "executed" (the stub arms jump
+    there) and the free move home plans from those live arms. Both are found by
+    kind, not by index.
 
     Args:
         results (Results): Where the checks go.
@@ -1993,6 +1995,9 @@ def plan_release(results: Results, monitor, iface: StubInterface, alice, belief)
     retreat = monitor._loaded_movements[retreat_idx]
     iface.position, iface.rotation = [np.asarray(v, dtype=float) for v in
                                       pose_from_frame(retreat.start_state.robot_base_frame)]
+    # The insert "ran": the arms stand at the retreat's exported start.
+    start12 = vec12_from_conf(retreat.start_state.robot_configuration)
+    iface.arm_joint_pose = [start12[:6].copy(), start12[6:].copy()]
 
     mv = select_movement(monitor, retreat_idx)
     monitor.plan_selected_movement()

@@ -154,7 +154,7 @@ refused. Finish it or click `Cancel Exec`.
 The travel to load ends where the transfer starts (the bar-loading pose), and the
 export leaves that pose open, so it is chosen here:
 
-1. `Load entry` (it opens on step 1, the travel to load);
+1. `Load entry` (it opens on the transfer, already loaded);
 2. set the `Transfer start: home anchor (0:all,1:horiz,2:vert,3:back)`,
    `Transfer start: slide along bar (m)`, `Transfer start: roll about bar (deg)`,
    `Transfer start: shift perp. 1 (m)` and `Transfer start: shift perp. 2 (m)`
@@ -192,7 +192,10 @@ insertion start; max |goal - stored goal| = ... rad`.
    start (the Rhino pose) from where the base stands? `[transfer workaround] insertion
    start reachable from the live base (blue ghost); ...` and the blue ghost shows the
    arms there; or `... no collision-free IK for the insertion start at the live base ...`:
-   drive the base and check again. The `Transfer start:` sliders are not used here.
+   drive the base and check again. The `Transfer start:` sliders are not used here: they
+   disappear from the panel while the box is ticked (and the orange bar preview with them).
+   `Draw tool0: live (mocap + FK) vs target (Rhino)` (any time a movement is loaded) draws
+   each arm's live tool0 next to the loaded movement's target tool0 and logs the gap.
 4. `Plan Movement` → the free move to the configuration the IK check showed (solved
    again when the base moved more than 2 mm since); preview with `Traj viz time`.
    `Confirm transfer start + plan travel to load` does 3 and 4 in one click.

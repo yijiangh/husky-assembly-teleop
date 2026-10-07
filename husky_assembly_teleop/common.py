@@ -502,10 +502,18 @@ class HuskyObject():
         return pp.get_link_pose(self.robot, pp.link_from_name(self.robot, link_name))
 
 class Button:
-    def __init__(self, name, action):
+    def __init__(self, name, action, color=None):
+        """A push button.
+
+        Args:
+            name (str): The button text.
+            action (Callable[[], None]): Called on each click.
+            color (Sequence[int] | None): Optional RGB (0-255) fill colour (Dear
+                PyGui only) for the buttons that matter most; None = default look.
+        """
         self.name = name
         self.action = action
-        self._handle = _backend().add_button(name, action)
+        self._handle = _backend().add_button(name, action, color=color)
 
     def update(self):
         # In DPG mode this is a no-op (callback already fired). In PyBullet
@@ -604,7 +612,7 @@ class StatusText:
     no callback and nothing to poll: whoever owns it calls `set_text` when the
     value it mirrors changes.
     """
-    def __init__(self, name, default="", *, color=None):
+    def __init__(self, name, default="", *, color=None, on_click=None):
         """Create the readout.
 
         Args:
@@ -612,10 +620,14 @@ class StatusText:
             default (str): The first text shown.
             color (tuple | None): RGBA 0-255 text colour (DPG only; None keeps
                 the backend's readout colour, and PyBullet ignores it).
+            on_click (Callable[[], None] | None): Called when the line is
+                left-clicked (DPG only), e.g. a schedule row selecting its entry.
         """
         self.name = name
         self._handle = _backend().add_status_text(name, default, color=color)
         self._shown = str(default)
+        if on_click is not None:
+            _backend().set_on_click(self._handle, on_click)
 
     def set_text(self, text):
         """Update the line, skipping the backend when the text is unchanged.

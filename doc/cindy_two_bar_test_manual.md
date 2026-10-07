@@ -22,7 +22,8 @@ untighten step** any more (ungrasp → retreat → free move home).
 > `Workaround: plan the transfer as a free move (no bar, from the live arms)` (under
 > `Plan Movement`) once per monitor run — it starts unticked. With the box ticked,
 > `Transfer start: Confirm manual pose (IK check)` checks whether the arms reach the insertion
-> start (the Rhino pose) from where the base stands; the `Transfer start:` sliders are not used.
+> start (the Rhino pose) from where the base stands; the `Transfer start:` sliders (the bar-loading
+> pose) are not used and disappear from the panel while the box is ticked.
 > Order of a jointing entry:
 > **transfer** (empty tools, from the live arms to the insertion start) → **manual mount** (mount
 > the bar by hand there) → **tool grasp** → **insert** (→ **fix foundation** for B1). The travel
@@ -207,7 +208,7 @@ ros2 topic pub -r 10 -t 30 /a200_0806/cmd_vel geometry_msgs/msg/Twist "{angular:
   5 s, free move home 10 s).
 - `Cancel Exec` ends a waiting step.
 - If a log line says an arm may still be under the compliance controller: press
-  **`Switch to Joint (BOTH)`**, or from the checks pane:
+  **`Switch to Joint (BOTH)`** (further down the panel, under `CONTROLLERS`), or from the checks pane:
 
 ```bash
 for a in left right; do
@@ -229,11 +230,14 @@ ros2 run husky_assembly_teleop husky_monitor
       `[Schedule] others: Alice <- parked | Belle <- parked`, the 48-entry roster, and
       `mocap client connected: True`.
 - [ ] Panel: a **Schedule** section; `Ignore built-bar collisions (bars drawn faint)` unticked; the
-      slider above `Load Movement` is called `Step`.
+      slider above `Load Movement` is called `Step`. Clicking a row of the `Schedule entries` list
+      selects that entry (the `Schedule entry (idx)` slider jumps there; nothing is loaded until
+      `Load entry`).
 - [ ] PyBullet: Cindy drawn at her real base (mocap) with her real arm poses
       (`Toggle Joint Live Stream` shows 12 joints following the arms).
 - [ ] Tick `Workaround: plan the transfer as a free move (no bar, from the live arms)` (under
-      `Plan Movement`).
+      `Plan Movement`) → the five `Transfer start:` sliders above it disappear (they come back
+      when it is unticked).
 
 ---
 
@@ -242,12 +246,20 @@ ros2 run husky_assembly_teleop husky_monitor
 Select entry 0 → `Load entry`. Six steps: travel to load (skipped), manual mount, tool grasp,
 transfer, insert, fix foundation (manual). B1 has no tighten step.
 
-- [ ] **Transfer** (`B1_J_M3_CDFM_transfer_to_approach`): `Step` → 3 (readout
-      `step 4/6: B1_J_M3_CDFM_transfer_to_approach ...`) → `Load Movement`.
+- [ ] **Transfer** (`B1_J_M3_CDFM_transfer_to_approach`): `Load entry` opens on it, already loaded
+      (readout `step 4/6: B1_J_M3_CDFM_transfer_to_approach ...`, `traj time` 10 s). To come back
+      to it later: `Step` → 3 → `Load Movement`.
   - [ ] **IK check** (workaround box ticked): `Transfer start: Confirm manual pose (IK check)` →
         `[transfer workaround] insertion start reachable from the live base (blue ghost); max |goal - stored goal| = ... rad`.
         The blue ghost shows the arms at the insertion start. Nothing moves and nothing is staged
         for `Exec` yet.
+  - Optional, any time a movement is loaded: `Draw tool0: live (mocap + FK) vs target (Rhino)`
+    draws each arm's tool0 twice in PyBullet: `<side> tool0 target (Rhino)` (long axes, the loaded
+    movement's exported target) and `<side> tool0 live (mocap + FK)` (short axes, the live arm
+    joints on the mocap base), joined by a black line, and logs the gap:
+    `[tool0 check] B1_J_M3_CDFM_transfer_to_approach: tool0 live (mocap base + FK) minus target (Rhino): left ... mm (dx/dy/dz ...), axes x/y/z ... deg | right ...`.
+    Before the transfer runs the gap is large (the arms are not there yet); click it again after
+    the transfer to see what is left. A movement without target poses only warns.
   - `... no collision-free IK for the insertion start at the live base ...`: the base stands too
     far from (or too close to) B1's Rhino pose, or the drawn colliding pair is in the way. Drive
     the base (section 3) and click the IK check again.
@@ -289,7 +301,13 @@ transfer, insert, fix foundation (manual). B1 has no tighten step.
 
 - [ ] Readout `step 1/2: B1_R_M1_LM_retreat  (+ B1_R_M0_tool_ungrasp_bar runs with it)`.
 - [ ] B1 and its joints drawn solid (built, collision-checked).
-- [ ] **Retreat** (`B1_R_M1_LM_retreat`): `Plan Movement` → preview → `Exec Selected Mv Traj (auto)` →
+- [ ] **Retreat** (`B1_R_M1_LM_retreat`): `Plan Movement` plans it from where the arms **are** (the
+      compliant insert leaves them a little off its planned end):
+      `[B1_R_M1_LM_retreat] start_state resynced to the live arms (max joint drift ... deg)` and
+      `[retreat live] B1_R_M1_LM_retreat: goals = the live tool0 poses moved 50 mm back: left along (...), N mm from the exported goal; right ...`
+      (each tool0 backs off 50 mm along its exported retreat axis, orientation kept; scene
+      collisions are checked). No path → the `[B1_R_M1_LM_retreat diag]` block (section 12).
+      Then preview (starts at the live arms) → `Exec Selected Mv Traj (auto)` →
       log: the ungrasp runs with it (gripper motors LOOSENING), and once
       `'B1_R_M1_LM_retreat': the export asks for the joint_tracking controller; the monitor runs this dual_independent_linear movement under ...` (expected).
       After the compliant part it stops: `[B1_R_M1_LM_retreat] retreat ready: N waypoints over ...s. ...`
@@ -370,9 +388,10 @@ In the full run Alice clamps B3 here, so it stays in place when Cindy lets go in
 | `Exec` refused: arms not at the trajectory start | `Move Arms to Movement Start (offline target)` (refuses joint changes above pi/3), then `Exec` |
 | the transfer plans with the bar held / tries the bar-held planner | the workaround box is unticked (it starts unticked after every restart): tick it, plan again |
 | `[transfer workaround] ... no collision-free IK for the insertion start` (IK check or plan) | the base is too far from / too close to the Rhino pose, or the drawn colliding pair is in the way: move the base (section 3), IK check again; note it in the log |
-| the IK check passes although the base is far from the Rhino pose; it prints `[M1 manual] ...` lines | the workaround box is unticked: the button then checks the bar-loading start next to the robot, not the insertion start. Tick it and check again |
+| the IK check passes although the base is far from the Rhino pose; it prints `[M1 manual] ...` lines | the workaround box is unticked (the `Transfer start:` sliders are showing): the button then checks the bar-loading start next to the robot, not the insertion start. Tick it and check again |
 | a plan fails with "start ... in collision" | read the pair in the log; in entry 4 see the Alice fallback in section 10 |
 | `not planning: joint value(s) outside the URDF limits` (right away, no search) | the start or goal has a joint the arm cannot reach (the UR5e elbow turns only +/- pi); the message names it. Should not happen for the transfer any more (its goal keeps every joint in range): note the line in the log |
+| `Plan for '..._LM_retreat'` / `'..._LM_insert' ... FAILED` (a straight-line plan) | read the `[<movement> diag]` block after it: the START's colliding pairs with the movement's ACM entry of each body (a contact is allowed only when listed there), its joint limits, the failing waypoint and why its IK candidates were turned down (collide / would flip an arm), and a `VERDICT`. The red planning robot and the contacts are drawn, plus that waypoint's two tool0 targets (`Remove all drawing` clears them). A START collision the ACM does not allow = an export gap or the arms are not where the export expects: note the pair in the log. The retreat's replan during exec prints the same block before it falls back to the planned tail (Confirm pause) |
 | `plan_free_dual_arm failed: birrt_failed` (both ends collision-free, no path found) | read the `[... diag]` lines after it: joint limits of start and goal, how many nearby configurations collide at each end (and with what), where the straight joint path first collides (drawn; the red robot stands there), and a `VERDICT` line. A tight pocket at the GOAL: drive the base to give the arms room, IK check, plan again. Otherwise plan again |
 | no Cindy topics / `Unknown topic` | dongle (`ip -brief addr`), domain 86, Cindy's ROS on CycloneDDS (0.3) |
 | marked an entry done by mistake | load it, `Reopen entry (reload clean)` |
@@ -382,7 +401,8 @@ In the full run Alice clamps B3 here, so it stays in place when Cindy lets go in
 
 - The monitor log (`~/husky_real/monitor.log`, or copy the terminal).
 - `$GD/data_design_study/261006_3bar_holding_test/progress.json` after the run.
-- Per jointing entry: the `[transfer workaround] ... max |goal - stored goal|` line, whether the
+- Per jointing entry: the `[transfer workaround] ... max |goal - stored goal|` line, the
+  `[tool0 check] ... minus target (Rhino)` line from `Draw tool0: ...` after the transfer, whether the
   mounted bar sat in the tools at the insertion start, and how the insert finished (stall time,
   any rigid / compliant warnings).
 - Per release entry: the `retreat ready` line and whether the arms backed off cleanly.

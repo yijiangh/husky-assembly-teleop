@@ -3,7 +3,7 @@
 Mirrors the BAR_ACTION_LIVE_REPLAN_EXE UI button sequence in HuskyMonitor:
 
   1. ``load_bar_action_file()``                <- 'Load BarAction'
-  2. for idx in monitor._chain_sequence():     <- one click per movement
+  2. for idx in plan_sequence(monitor):        <- one click per movement
         ``load_selected_movement()``           <- 'Load Movement'
         ``plan_selected_movement()``           <- 'Plan Movement'
 
@@ -11,9 +11,11 @@ Each ``plan_selected_movement`` dispatches by movement kind (``_plan_by_kind``)
 and routes through ``_accept_trajectory``, which (a) writes the trajectory to
 ``<DESIGN_DATA_DIRECTORY>/<problem>/Trajectories/<movement_id>_trajectory.json``
 and (b) propagates the end configuration into the next movement's
-``start_state.robot_configuration``. Hence the planning order of Plan Chain
-(``_chain_sequence``): transfer -> insert -> retreat -> travel to load -> free
-move home; each plan seeds the next movement's start.
+``start_state.robot_configuration``. Hence the planning order
+(``plan_sequence``): transfer -> insert -> retreat -> travel to load -> free
+move home; each plan seeds the next movement's start. The retreat plans from
+the live arms, so the stub arms first stand at its start (the insert's planned
+end), as if the insert had run.
 
 Env-collision behavior matches the live monitor: each dispatcher plans WITH
 environment obstacles enabled (obstacles + ACM come from the movement's
@@ -183,6 +185,40 @@ def _attach_stub_husky_interface(monitor, m1_start_state):
     monitor.huskies = [SimpleNamespace(interface=iface, object=None)]
     monitor.selected_robot_id = 0
     return iface
+
+
+# * Planning order, by movement kind: transfer (its derived start) -> insert
+# * (starts at the transfer's last waypoint) -> retreat (the insert's last
+# * waypoint) -> travel to load (goal = the transfer's start) -> free move home.
+PLAN_KIND_ORDER = (
+    MovementKind.DUAL_CONSTRAINED_FREE,
+    MovementKind.DUAL_CONSTRAINED_LINEAR,
+    MovementKind.DUAL_INDEPENDENT_LINEAR,
+    MovementKind.DUAL_FREE,
+)
+
+
+def plan_sequence(monitor) -> list:
+    """The loaded movement indices to plan, in order.
+
+    Every movement of each kind in ``PLAN_KIND_ORDER``; among the DUAL_FREE ones
+    the travel to load comes before the free move home.
+
+    Args:
+        monitor (HuskyMonitor): The headless monitor, a BarAction loaded.
+
+    Returns:
+        list[int]: Indices into ``monitor._loaded_movements``.
+    """
+    movements = getattr(monitor, '_loaded_movements', None) or []
+    sequence = []
+    for kind in PLAN_KIND_ORDER:
+        indices = [i for i, m in enumerate(movements) if monitor._kind_of(m) is kind]
+        if kind is MovementKind.DUAL_FREE:
+            # False (travel to load) sorts before True (home); the sort is stable.
+            indices.sort(key=lambda i: monitor._is_free_home(movements[i]))
+        sequence.extend(indices)
+    return sequence
 
 
 def _kind_text(monitor, mv) -> str:
@@ -906,10 +942,6 @@ def _run_button_mode(monitor, sequence: list, button: str, bar_action: str) -> i
     """Drive one of the new consolidated BarAction buttons end-to-end.
 
     button choices:
-      * ``chain``           -- call ``plan_movement_chain_live()`` and assert the
-                               `<action>.live-solved.json` sidecar was written and
-                               round-trips via ``parse_bar_action`` with at least
-                               one movement carrying a fresh trajectory.
       * ``replan-insert``   -- plan the transfer first (so the insert's
                                ``start_state.robot_configuration`` gets
                                propagated), load the insert, then call
@@ -929,34 +961,6 @@ def _run_button_mode(monitor, sequence: list, button: str, bar_action: str) -> i
     Returns:
         int: 0 on success, 1 on failure.
     """
-    if button == 'chain':
-        print(f"\n=== [button=chain] running plan_movement_chain_live() ===")
-        monitor.plan_movement_chain_live()
-
-        # Assert sidecar written + round-trips.
-        stem, ext = os.path.splitext(monitor._current_action_path)
-        sidecar_path = f"{stem}.live-solved{ext}"
-        if not os.path.isfile(sidecar_path):
-            print(f"FAIL: expected sidecar {sidecar_path!r} not found.")
-            return 1
-        from husky_assembly_teleop.bar_action_io import parse_bar_action
-        try:
-            reloaded = parse_bar_action(sidecar_path)
-        except Exception as e:
-            print(f"FAIL: sidecar {sidecar_path!r} did not round-trip: {e}")
-            return 1
-        with_traj = [
-            mv.movement_id for mv in reloaded.movements
-            if getattr(mv, 'trajectory', None) is not None
-        ]
-        if not with_traj:
-            print(f"FAIL: sidecar round-trip has zero trajectories.")
-            return 1
-        print(f"[button=chain] OK: sidecar has {len(with_traj)} movement "
-              f"trajectories: {with_traj}")
-        _print_roster(monitor, "FINAL roster (button=chain)")
-        return 0
-
     if button in ('replan-insert', 'replan-retreat'):
         # Prerequisites: plan the transfer (and the insert for the retreat case)
         # so the target movement's start_state.robot_configuration is populated
@@ -1140,11 +1144,11 @@ def main(bar_action: str = DEFAULT_BAR_ACTION,
                 return 1
             sequence = [idx]
         else:
-            # Plan Chain's order: transfer -> insert -> retreat first (each plan
+            # The planning order: transfer -> insert -> retreat first (each plan
             # seeds the next movement's start in memory). The travel to load
             # then plans live -> transfer start (live = stub interface), and the
             # free move home plans last from the retreat's end to fixed home.
-            sequence = monitor._chain_sequence()
+            sequence = plan_sequence(monitor)
 
         if not sequence:
             print("FAIL: empty planning sequence (no transfer, insert, retreat or free move found)")
@@ -1154,8 +1158,8 @@ def main(bar_action: str = DEFAULT_BAR_ACTION,
         if replay:
             return _replay_saved_trajectories(monitor, sequence)
 
-        # --- BUTTON MODE: drive Button 1 (chain) or Button 2 (replan-insert /
-        # replan-retreat) end-to-end, then exit. Verifies the new consolidated
+        # --- BUTTON MODE: drive Button 2 (replan-insert / replan-retreat)
+        # end-to-end, then exit. Verifies the new consolidated
         # UI methods without user interaction.
         if button:
             return _run_button_mode(monitor, sequence, button, bar_action)
@@ -1163,7 +1167,7 @@ def main(bar_action: str = DEFAULT_BAR_ACTION,
         # `--no-save` used to suppress the per-movement JSON write inside
         # `_accept_trajectory`; per-movement JSONs no longer exist (all
         # persistence now goes through the `<action>.live-solved.json`
-        # sidecar written by `plan_movement_chain_live`). Kept for CLI
+        # sidecar). Kept for CLI
         # backward-compat -- warn and ignore.
         if no_save:
             print("[--no-save] deprecated; per-mv JSON persistence removed "
@@ -1195,6 +1199,14 @@ def main(bar_action: str = DEFAULT_BAR_ACTION,
             # cfab->pp bridge; install tree-draw patches on first load.
             if draw_tree_active and revert_tree_drawing is None:
                 revert_tree_drawing = _install_tree_drawing(monitor)
+
+            # The retreat plans from the live arms: the insert "ran", so the stub
+            # arms stand at the retreat's start (the insert's planned end).
+            if monitor._kind_of(mv) is MovementKind.DUAL_INDEPENDENT_LINEAR:
+                from husky_assembly_teleop.utils import vec12_from_conf
+                start12 = vec12_from_conf(mv.start_state.robot_configuration)
+                monitor.huskies[monitor.selected_robot_id].interface.arm_joint_pose = [
+                    start12[:6].copy(), start12[6:].copy()]
 
             print(f"--- simulating 'Plan Movement' click ({kind_txt}) ---")
             monitor.plan_selected_movement()
@@ -1266,7 +1278,7 @@ if __name__ == "__main__":
     parser.add_argument("--no-save", action="store_true",
                         help="Deprecated no-op (per-movement JSON persistence "
                              "was replaced by the `<action>.live-solved.json` "
-                             "sidecar written by Plan Chain (Live)).")
+                             "sidecar).")
     parser.add_argument("--replay", action="store_true",
                         help="Skip planning. Uses in-memory trajectories "
                              "populated by loading a `.live-solved.json` "
@@ -1278,12 +1290,10 @@ if __name__ == "__main__":
                              "SE(3) RRT). Forces --gui on. Left arm edges "
                              "are blue, right arm edges are orange.")
     parser.add_argument("--button", type=str, default=None,
-                        choices=('chain', 'replan-insert', 'replan-retreat'),
-                        help="Exercise one of the new consolidated BarAction "
-                             "buttons instead of the standard Plan Chain loop "
-                             "(transfer -> insert -> retreat -> travel to load -> "
-                             "free move home). 'chain' calls "
-                             "plan_movement_chain_live() and asserts the sidecar. "
+                        choices=('replan-insert', 'replan-retreat'),
+                        help="Exercise one of the live-replan buttons instead of "
+                             "the standard planning loop (transfer -> insert -> "
+                             "retreat -> travel to load -> free move home). "
                              "'replan-insert' / 'replan-retreat' plan the transfer "
                              "(+ the insert for the retreat) first, then call "
                              "replan_free_to_movement_start_live().")
