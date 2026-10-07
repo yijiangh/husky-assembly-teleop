@@ -1,5 +1,7 @@
 """
-The health panel: a banner, one row of chips per robot (with Unlock, Resume, Reconnect) and one for tracked objects.
+The health panel: a banner, a row per robot (with Unlock, Resume, Reconnect) and one for tracked objects.
+
+A robot's row has a line of chips for its base and one for each arm with its tool.
 
 Green is fine, amber needs a look, red is broken or silent; hover a chip for detail.
 Loaded by default (config.DEFAULT_PLUGINS).
@@ -21,11 +23,13 @@ from ..plugin_api.plugin import HuskyPlugin, register
 from ..robot_interface.arm import ArmInterface
 from ..robot_interface.end_effectors import RobotiqGripper, ScaffoldingV1, ScaffoldingV3
 from ..robot_interface.robot import HuskyRobotInterface
-from ..robot_interface.arm import JOINT_STATES_RATE, SYNC_STATUS_MAX_AGE, ArmState
+from ..robot_interface.arm import JOINT_STATES_RATE as ARM_RATE
+from ..robot_interface.arm import SYNC_STATUS_MAX_AGE, ArmState
+from ..robot_interface.base import JOINT_STATES_RATE as BASE_RATE
 from ..robot_interface.base import BaseState
 from ..robot_interface.controller_manager import REFRESH_PERIOD, ControllerManagerState
 from ..robot_interface.stream_stats import WINDOW, StreamQuality
-from ..ui.style import BUSY, LEVEL_COLORS, OK, block, check_chip, chip, section
+from ..ui.style import BUSY, LEVEL_COLORS, NONE, OK, block, check_chip, chip, section
 from ..world.checks import BAD, GOOD, STALE_AFTER, WARN, Check
 
 # --- --- --- --- --- THRESHOLDS --- --- --- --- ---
@@ -38,13 +42,19 @@ BATTERY_BAD = 0.15
 #: Seconds without a battery message before the reading counts as old. Generous: the BMS rate is unknown.
 BATTERY_STALE_AFTER = 10.0
 
-#: Share of JOINT_STATES_RATE arriving below which the signal chip turns amber, then red.
+#: Share of a stream's nominal rate arriving below which the signal chip turns amber, then red.
 SIGNAL_RATE_WARN = 0.9
 SIGNAL_RATE_BAD = 0.5
 #: Largest gap between joint_states, seconds, above which the signal chip turns amber, then red.
-#: ? At 50 Hz, 100 ms is about four samples lost in a row.
+#: ? At 50 Hz, 100 ms is about four samples lost in a row; at the base's 30 Hz, two.
 SIGNAL_GAP_WARN = 0.1
 SIGNAL_GAP_BAD = 0.2
+#: Delay (`StreamQuality.delay`), seconds: above these the chip turns amber, then red (robot clock behind, or a slow
+#: network); below these negative ones too (robot clock ahead, for certain). ? Synced, it reads 1 to 5 ms.
+SIGNAL_DELAY_WARN = 0.03
+SIGNAL_DELAY_BAD = 0.1
+SIGNAL_AHEAD_WARN = -0.005
+SIGNAL_AHEAD_BAD = -0.02
 
 #: BMS health values that are fine; anything else is red.
 BATTERY_HEALTH_OK = (BatteryState.POWER_SUPPLY_HEALTH_UNKNOWN, BatteryState.POWER_SUPPLY_HEALTH_GOOD)
@@ -78,8 +88,8 @@ class HealthPlugin(HuskyPlugin):
         self._robot_rows: dict[str, viser.GuiHtmlHandle] = {}
         #: One row for all tracked objects.
         self._objects_row: viser.GuiHtmlHandle | None = None
-        #: This tick's checks per robot (by serial) and for tracked objects.
-        self._robot_checks: dict[str, list[Check]] = {}
+        #: This tick's checks per robot (by serial), as (line name, checks), and for tracked objects.
+        self._robot_checks: dict[str, list[tuple[str, list[Check]]]] = {}
         self._object_checks: list[Check] = []
         #: Last level per (row, chip position), to log when a chip changes colour.
         self._levels: dict[tuple[str, int], int] = {}
@@ -117,7 +127,9 @@ class HealthPlugin(HuskyPlugin):
         self._robot_checks = {serial: robot_checks(robot, now) for serial, robot in ctx.world.robots.items()}
         self._object_checks = [mocap_check(obj.name, obj.mocap_id, obj, now)
                                for obj in ctx.world.tracked_objects.values()]
-        for row, checks in [*self._robot_checks.items(), ("objects", self._object_checks)]:
+        lines = [(f"{serial} {name}", checks) for serial, robot_lines in self._robot_checks.items()
+                 for name, checks in robot_lines]
+        for row, checks in [*lines, ("objects", self._object_checks)]:
             self._log_changes(ctx, row, checks)
 
     def _log_changes(self, ctx: PluginContext, row: str, checks: list[Check]) -> None:
@@ -127,7 +139,7 @@ class HealthPlugin(HuskyPlugin):
 
         Args:
             ctx: This plugin's context.
-            row: The row, a robot's serial or "objects".
+            row: The line, "<serial> <base or arm>", or "objects".
             checks: That row's checks this tick.
         """
         # * Keyed by position, not label: combined chips change their label with their colour.
@@ -151,11 +163,12 @@ class HealthPlugin(HuskyPlugin):
         Args:
             ctx: This plugin's context.
         """
-        every_check = [check for checks in self._robot_checks.values() for check in checks]
+        every_check = [check for lines in self._robot_checks.values() for _name, checks in lines for check in checks]
         self._banner.content = render_banner(every_check + self._object_checks)
-        for serial, checks in self._robot_checks.items():
-            self._robot_rows[serial].content = (section(serial, LEVEL_COLORS[worst_level(checks)])
-                                                + render_chips(checks))
+        for serial, lines in self._robot_checks.items():
+            robot = [check for _name, checks in lines for check in checks]
+            self._robot_rows[serial].content = (section(serial, LEVEL_COLORS[worst_level(robot)])
+                                                + "".join(render_line(name, checks) for name, checks in lines))
         self._objects_row.content = (section("objects", LEVEL_COLORS[worst_level(self._object_checks)])
                                      + render_chips(self._object_checks)) if self._object_checks else ""
 
@@ -166,55 +179,44 @@ LEVEL_NAMES = {GOOD: "green", WARN: "amber", BAD: "red"}
 
 # --- --- --- --- --- CHECKS (`now` is ROS time, seconds) --- --- --- --- ---
 
-def robot_checks(robot: HuskyRobotInterface, now: float) -> list[Check]:
-    """Every check for one robot: wifi signal, mocap, base controllers, then each arm.
+def robot_checks(robot: HuskyRobotInterface, now: float) -> list[tuple[str, list[Check]]]:
+    """Every check for one robot: a line for the base, then one per arm with its tool.
 
     Args:
         robot: The robot to check.
         now: Current ROS time, seconds.
 
     Returns:
-        list[Check]: One per chip, in display order.
+        list[tuple[str, list[Check]]]: (line name, one check per chip), in display order.
     """
-    checks = [signal_check(robot, now),
-              mocap_check("mocap", robot.config.mocap_id, robot.base.state, now),
-              estop_check(robot.base.state),
-              battery_check(robot.base.state, now),
-              controller_check("base ctrl", robot.base.state.controllers, now)]
+    state = robot.base.state
+    base = state.joint_states_stats.quality(now)
+    lines = [("base", [stream_check("signal", base, BASE_RATE) if base.seen else
+                       Check("signal", WARN, "no platform joint_states yet; the simulator has none"),
+                       mocap_check("mocap", robot.config.mocap_id, state, now),
+                       estop_check(state),
+                       battery_check(state, now),
+                       controller_check("ctrl", state.controllers, now)])]
     for arm in robot.arms.values():
-        checks.append(arm_check(arm, now))
+        checks = [stream_check("signal", arm.state.joint_states_stats.quality(now), ARM_RATE), arm_check(arm, now)]
         # * The tool gets its own chip: its driver fails independently of the arm.
         tool = tool_check(arm, now)
         if tool is not None:
             checks.append(tool)
-    return checks
+        lines.append((arm.config.name, checks))
+    return lines
 
 
-def signal_check(robot: HuskyRobotInterface, now: float) -> Check:
-    """How well the wifi carries the robot's streams, judged by each arm's joint_states.
-
-    Args:
-        robot: The robot to check.
-        now: Current ROS time, seconds.
-
-    Returns:
-        Check: One chip for the robot, labelled with the worst arm when not all are good.
-    """
-    if not robot.arms:
-        return Check("signal", WARN, "no arm, so no stream to judge the link by")
-    return combine("signal", [stream_check(arm.config.name, arm.state.joint_states_stats.quality(now))
-                              for arm in robot.arms.values()])
-
-
-def stream_check(label: str, quality: StreamQuality) -> Check:
-    """Whether joint_states arrive at the rate limiter's rate without gaps.
+def stream_check(label: str, quality: StreamQuality, rate: float = ARM_RATE) -> Check:
+    """Whether joint_states arrive at their rate, without gaps, and with stamps the monitor's clock agrees with.
 
     ! Only thresholds in the text, never the measured values: they change every tick and would
       rebuild the row, closing its tooltips.
 
     Args:
         label: Chip text, e.g. the arm's name.
-        quality: The stream's recent rate and largest gap.
+        quality: The stream's recent rate, largest gap and delay.
+        rate: The stream's nominal rate, Hz.
 
     Returns:
         Check: BAD when silent or far off, WARN when a little off, else GOOD.
@@ -223,7 +225,7 @@ def stream_check(label: str, quality: StreamQuality) -> Check:
         return Check(label, WARN, f"joint_states seen for under {WINDOW:g}s; still measuring")
     if quality.rate == 0.0:
         return Check(label, BAD, f"no joint_states in the last {WINDOW:g}s")
-    rate_warn, rate_bad = SIGNAL_RATE_WARN * JOINT_STATES_RATE, SIGNAL_RATE_BAD * JOINT_STATES_RATE
+    rate_warn, rate_bad = SIGNAL_RATE_WARN * rate, SIGNAL_RATE_BAD * rate
     gap = quality.max_gap or 0.0
     problems = []
     if quality.rate < rate_bad:
@@ -234,13 +236,19 @@ def stream_check(label: str, quality: StreamQuality) -> Check:
         problems.append((BAD, f"a gap over {SIGNAL_GAP_BAD * 1e3:g} ms"))
     elif gap > SIGNAL_GAP_WARN:
         problems.append((WARN, f"a gap over {SIGNAL_GAP_WARN * 1e3:g} ms"))
+    delay = quality.delay
+    if delay is not None and delay < SIGNAL_AHEAD_WARN:
+        level, limit = (BAD, SIGNAL_AHEAD_BAD) if delay < SIGNAL_AHEAD_BAD else (WARN, SIGNAL_AHEAD_WARN)
+        problems.append((level, f"stamps over {-limit * 1e3:g} ms in the future (robot clock ahead; time sync?)"))
+    elif delay is not None and delay > SIGNAL_DELAY_WARN:
+        level, limit = (BAD, SIGNAL_DELAY_BAD) if delay > SIGNAL_DELAY_BAD else (WARN, SIGNAL_DELAY_WARN)
+        problems.append((level, f"every message over {limit * 1e3:g} ms late (robot clock behind, or a slow link)"))
     if problems:
         text = " and ".join(text for _level, text in problems)
-        return Check(label, max(level for level, _text in problems),
-                     f"{text} in the last {WINDOW:g}s; samples lost on the wifi?")
-    unknown = "; gaps unknown (unstamped)" if quality.max_gap is None else ""
-    return Check(label, GOOD, f"joint_states at {rate_warn:g} Hz or more, "
-                              f"no gap over {SIGNAL_GAP_WARN * 1e3:g} ms{unknown}")
+        return Check(label, max(level for level, _text in problems), f"{text} in the last {WINDOW:g}s")
+    unknown = "; gaps and delay unknown (unstamped)" if quality.delay is None else ""
+    return Check(label, GOOD, f"joint_states at {rate_warn:g} Hz or more, no gap over {SIGNAL_GAP_WARN * 1e3:g} ms, "
+                              f"clock within {-SIGNAL_AHEAD_WARN * 1e3:g}/{SIGNAL_DELAY_WARN * 1e3:g} ms{unknown}")
 
 
 def arm_check(arm: ArmInterface, now: float) -> Check:
@@ -259,7 +267,7 @@ def arm_check(arm: ArmInterface, now: float) -> Check:
             parts += [safety_check(state.safety_mode), running_check(state)]
     parts += [controller_check("ctrl", state.controllers, now),
               age_check("joints", "joint_states", state.last_update_time, now)]
-    return combine(arm.config.name, parts)
+    return combine("arm", parts)
 
 
 def combine(label: str, parts: list[Check]) -> Check:
@@ -434,10 +442,10 @@ def tool_check(arm: ArmInterface, now: float) -> Check | None:
         now: Current ROS time, seconds.
 
     Returns:
-        Check | None: Labelled "<arm> <tool kind>", or None for a bare arm.
+        Check | None: Labelled with the tool kind, or None for a bare arm.
     """
     tool = arm.end_effector
-    label = f"{arm.config.name} {arm.config.end_effector}"
+    label = arm.config.end_effector
     if isinstance(tool, RobotiqGripper):
         if not tool.server_is_ready():
             return Check(label, BAD, "gripper action server not connected")
@@ -485,3 +493,10 @@ def worst_level(checks: list[Check]) -> int:
 def render_chips(checks: list[Check]) -> str:
     """One row's HTML: a chip per check, its detail in the tooltip."""
     return block("".join(check_chip(check) for check in checks))
+
+
+def render_line(name: str, checks: list[Check]) -> str:
+    """One line of a robot's row: its part's name in gray, then a chip per check."""
+    label = (f'<span style="display:inline-block;width:42px;font-size:11px;color:{NONE}">'
+             f'{name}</span>')
+    return block(label + "".join(check_chip(check) for check in checks))

@@ -101,14 +101,15 @@ def _controller_chip(controllers: ControllerManagerInterface) -> str:
 
 
 def base_status(base: BaseInterface, now: float) -> str:
-    """Status HTML for a base: chips, then its pose (placeholders before the first fix)."""
+    """Status HTML for a base: chips, then its pose (placeholders before the first fix) and wifi."""
     state = base.state
     chips = _controller_chip(base.controllers) + check_chip(mocap_check("mocap", base.mocap_id, state, now))
     yaw = None if state.orientation is None else Rotation.from_quat(state.orientation).as_euler(
         "xyz", degrees=True)[2:]
     stale = not state.tracked or now - state.last_fix_time >= STALE_AFTER
     return block(chips + values(f"xyz {numbers(state.position, 3, 7, 3)} m",
-                                f"yaw {numbers(yaw, 1, 7, 1)} °", dim=stale) + _mocap_line(state, now))
+                                f"yaw {numbers(yaw, 1, 7, 1)} °", dim=stale) + _mocap_line(state, now)
+                 + _wifi_line(state.joint_states_stats.quality(now)))
 
 
 def _mocap_line(body: MocapBody, now: float) -> str:
@@ -143,13 +144,14 @@ def arm_status(arm: ArmInterface, now: float) -> str:
 
 
 def _wifi_line(quality: StreamQuality) -> str:
-    """joint_states rate and largest gap over the last WINDOW seconds; gray while still measuring.
+    """joint_states rate, largest gap and delay over the last WINDOW seconds; gray while still measuring.
 
     * Live numbers belong here, not in the health tooltip, which closes on every change.
     """
     rate = "—".rjust(4) if quality.rate is None else f"{quality.rate:4.0f}"
     gap = "—".rjust(4) if quality.max_gap is None else f"{quality.max_gap * 1e3:4.0f}"
-    return values(f"wifi {rate} Hz  max gap {gap} ms  ({WINDOW:g} s)", dim=quality.rate is None)
+    delay = "—".rjust(4) if quality.delay is None else f"{quality.delay * 1e3:4.0f}"
+    return values(f"wifi {rate} Hz  max gap {gap} ms  delay {delay} ms  ({WINDOW:g} s)", dim=quality.rate is None)
 
 
 def tool_status(state: object, now: float) -> str:
