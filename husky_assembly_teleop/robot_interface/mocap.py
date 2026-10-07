@@ -6,15 +6,13 @@ Mocap on the ROS side: the relay topic of a rigid body, and how a sample is stor
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Callable
+from typing import Callable
 
 import numpy as np
 from crl_husky_msgs.msg import MocapRigidBodyPose
 
+from ..world.mocap import MARKER_ERROR_WINDOW, MocapBody
 from .connections import RosConnections
-
-if TYPE_CHECKING:
-    from ..world.mocap import MocapBody
 
 
 def mocap_topic(mocap_id: int) -> str:
@@ -25,7 +23,7 @@ def mocap_topic(mocap_id: int) -> str:
     return f"/mocap/rigid_body/id_{mocap_id}/pose"
 
 
-def subscribe_mocap(ros: RosConnections, mocap_id: int, body: "MocapBody",
+def subscribe_mocap(ros: RosConnections, mocap_id: int, body: MocapBody,
                     now: Callable[[], float]) -> None:
     """Keep `body` updated from rigid body `mocap_id`.
 
@@ -39,7 +37,7 @@ def subscribe_mocap(ros: RosConnections, mocap_id: int, body: "MocapBody",
                      lambda message: store_sample(body, message, now()))
 
 
-def store_sample(body: "MocapBody", message: MocapRigidBodyPose, now: float) -> None:
+def store_sample(body: MocapBody, message: MocapRigidBodyPose, now: float) -> None:
     """Write one mocap sample into `body`; an invalid one only clears `tracked`, keeping the last valid pose.
 
     Args:
@@ -58,4 +56,7 @@ def store_sample(body: "MocapBody", message: MocapRigidBodyPose, now: float) -> 
         stamp = message.header.stamp.sec + 1e-9 * message.header.stamp.nanosec
         # ! Capture time, so speeds and tracking errors use when the pose was true, not when it arrived.
         body.last_fix_time = stamp if stamp > 0.0 else now
+        body.marker_errors.append((now, body.marker_error))
+    while body.marker_errors and body.marker_errors[0][0] < now - MARKER_ERROR_WINDOW:
+        body.marker_errors.popleft()
     body.last_update_time = now

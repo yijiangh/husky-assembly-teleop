@@ -81,8 +81,8 @@ class HealthPlugin(HuskyPlugin):
         #: This tick's checks per robot (by serial) and for tracked objects.
         self._robot_checks: dict[str, list[Check]] = {}
         self._object_checks: list[Check] = []
-        #: Last level per (row, chip label), to log when a chip changes colour.
-        self._levels: dict[tuple[str, str], int] = {}
+        #: Last level per (row, chip position), to log when a chip changes colour.
+        self._levels: dict[tuple[str, int], int] = {}
 
     def setup(self, ctx: PluginContext) -> None:
         """Build the banner, one chip row and action buttons per robot, and the objects row.
@@ -130,8 +130,9 @@ class HealthPlugin(HuskyPlugin):
             row: The row, a robot's serial or "objects".
             checks: That row's checks this tick.
         """
-        for check in checks:
-            key = (row, check.label)
+        # * Keyed by position, not label: combined chips change their label with their colour.
+        for index, check in enumerate(checks):
+            key = (row, index)
             before = self._levels.get(key)
             self._levels[key] = check.level
             if before is None or before == check.level:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -29,6 +30,7 @@ class BaseState:
         orientation: Last valid orientation, quaternion (x, y, z, w).
         tracked: Whether the latest mocap sample was valid.
         tracking_valid: Whether NatNet tracked the body in the last sample (False: usually hidden markers).
+        marker_errors: (ROS time, marker error) of the valid samples in the last MARKER_ERROR_WINDOW, oldest first.
         marker_error: Mean marker error of the last sample, metres.
         estopped: Whether the platform's emergency stop is engaged.
         battery_percentage: Charge, 0 to 1. NaN if the BMS does not report it.
@@ -48,6 +50,7 @@ class BaseState:
     tracked: bool = False
     tracking_valid: bool | None = None
     marker_error: float | None = None
+    marker_errors: deque[tuple[float, float]] = field(default_factory=deque)
     estopped: bool | None = None
     battery_percentage: float | None = None
     battery_voltage: float | None = None

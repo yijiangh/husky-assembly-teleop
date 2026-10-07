@@ -8,6 +8,7 @@ The measured world: where things actually are, as reported by sensors.
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -27,6 +28,7 @@ class TrackedObject:
         tracked: Whether the latest sample was valid. Implies `position` is set.
         tracking_valid: Whether NatNet tracked the body in the latest sample.
             False usually means hidden markers.
+        marker_errors: (ROS time, marker error) of the valid samples in the last MARKER_ERROR_WINDOW, oldest first.
         marker_error: Mean marker error of the latest sample, metres.
         last_update_time: ROS time of the latest observation, seconds, or None.
         last_fix_time: ROS time of the latest valid observation, seconds, or None.
@@ -39,6 +41,7 @@ class TrackedObject:
     tracked: bool = False
     tracking_valid: bool | None = None
     marker_error: float | None = None
+    marker_errors: deque[tuple[float, float]] = field(default_factory=deque)
     last_update_time: float | None = None
     last_fix_time: float | None = None
 
