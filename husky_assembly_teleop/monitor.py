@@ -20,6 +20,7 @@ from dataclasses import dataclass
 
 import rclpy
 from rclpy.executors import SingleThreadedExecutor, TimeoutException
+from rclpy.impl.implementation_singleton import rclpy_implementation as _rclpy
 from rclpy.node import Node
 from rclpy.signals import SignalHandlerOptions
 
@@ -107,6 +108,8 @@ class HuskyMonitor(Node):
                                 repeat_after=self._config.late_tick_warn_period, log_warn=self.log_warn)
         # Why each stopped plugin stopped, by name, for the banner.
         self._stop_reasons: dict[str, str] = {}
+        # Topics whose messages did not decode, so each is reported once.
+        self._undecodable: set[str] = set()
         self._shut_down = False
 
         try:
@@ -356,8 +359,17 @@ class HuskyMonitor(Node):
         taken = 0
         for subscription in self.subscriptions:
             while taken < ROS_CALLBACKS_PER_TICK:
-                with subscription.handle:
-                    message_and_info = subscription.handle.take_message(subscription.msg_type, subscription.raw)
+                try:
+                    with subscription.handle:
+                        message_and_info = subscription.handle.take_message(subscription.msg_type, subscription.raw)
+                except _rclpy.RCLError as error:
+                    # * A message that does not decode (usually a publisher built with another message definition)
+                    #   is skipped, not fatal; warned once per topic.
+                    if subscription.topic_name not in self._undecodable:
+                        self._undecodable.add(subscription.topic_name)
+                        self.log_error(f"cannot decode messages on {subscription.topic_name}: is the publisher "
+                                       f"built with the same message definition? Skipping them.\n{error}")
+                    break
                 if message_and_info is None:
                     break  # this queue is empty
                 taken += 1
