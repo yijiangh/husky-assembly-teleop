@@ -28,7 +28,7 @@ class MocapBody(Protocol):
             False usually means hidden markers.
         marker_error: Mean marker error of the latest sample, metres.
         last_update_time: ROS time of the latest sample, valid or not, seconds.
-        last_fix_time: ROS time of the latest valid sample, seconds.
+        last_fix_time: ROS time the latest valid sample was captured, seconds.
     """
 
     position: np.ndarray | None

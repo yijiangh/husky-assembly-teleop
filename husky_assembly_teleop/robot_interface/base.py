@@ -38,7 +38,7 @@ class BaseState:
         battery_update_time: ROS time of the last battery message, seconds.
         controllers: The base controller manager's state.
         last_update_time: ROS time of the last mocap message, valid or not, seconds.
-        last_fix_time: ROS time of the last valid pose, seconds.
+        last_fix_time: ROS time the last valid pose was captured, seconds.
 
     ! `tracked` False means the pose is stale: grey it out and don't plan or control from it.
     """

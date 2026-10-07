@@ -33,7 +33,7 @@ def subscribe_mocap(ros: RosConnections, mocap_id: int, body: "MocapBody",
         ros: The connections the subscription belongs to.
         mocap_id: Rigid-body id in the mocap system.
         body: The measured state to write into.
-        now: Current ROS time in seconds, stamped on each sample.
+        now: Current ROS time in seconds, for when a sample arrived.
     """
     ros.subscription(MocapRigidBodyPose, mocap_topic(mocap_id),
                      lambda message: store_sample(body, message, now()))
@@ -44,8 +44,8 @@ def store_sample(body: "MocapBody", message: MocapRigidBodyPose, now: float) -> 
 
     Args:
         body: The body's measured state, changed in place.
-        message: The relay's sample.
-        now: ROS time of arrival, seconds.
+        message: The relay's sample, stamped with when the cameras captured it.
+        now: ROS time of arrival, seconds; also the capture time of a sample without a stamp.
     """
     body.tracked = bool(message.pose_valid)
     # * Kept so the mocap chip can say why a pose is invalid.
@@ -55,5 +55,7 @@ def store_sample(body: "MocapBody", message: MocapRigidBodyPose, now: float) -> 
         p, q = message.pose.position, message.pose.orientation
         body.position = np.array([p.x, p.y, p.z])
         body.orientation = np.array([q.x, q.y, q.z, q.w])
-        body.last_fix_time = now
+        stamp = message.header.stamp.sec + 1e-9 * message.header.stamp.nanosec
+        # ! Capture time, so speeds and tracking errors use when the pose was true, not when it arrived.
+        body.last_fix_time = stamp if stamp > 0.0 else now
     body.last_update_time = now
