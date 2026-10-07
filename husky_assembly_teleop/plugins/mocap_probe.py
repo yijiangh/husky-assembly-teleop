@@ -589,26 +589,39 @@ class MocapProbePlugin(HuskyPlugin):
                                     f"err {_error_mm(grid.total_error())}", here))
 
     def _big_status(self, ctx: PluginContext, check: Check | None) -> str:
-        """The big status panel's HTML: one colour and one word, readable at a distance.
+        """The big status panel's HTML: one colour and one word, readable at a distance, and the probe's x y z.
 
-        ! No live numbers here: any text change re-renders it.
+        ! Any text change re-renders it: the only live numbers are x y z, rounded to the millimetre.
 
         Args:
             ctx: This plugin's context.
             check: The probe's mocap check, or None when nothing is tracked.
         """
+        # * No check detail here (the side panel's chip has it): only the recorded point's name.
+        detail = ""
         if ctx.now() < self._flash_until:
             color, word, detail = FLASH_COLOR, "RECORDED", self.samples[-1].name if self.samples else ""
         elif check is None:
-            color, word, detail = NONE, "NOT TRACKING", "enter a mocap id and press Track"
+            color, word = NONE, "NOT TRACKING"
         else:
-            color, word, detail = LEVEL_COLORS[check.level], BIG_WORDS[check.level], check.detail
+            color, word = LEVEL_COLORS[check.level], BIG_WORDS[check.level]
+        if detail:
+            detail = f'<div style="font-size:clamp(14px,2.5vw,32px);opacity:.9">{escape(detail)}</div>'
+        probe = self._probe
+        position = ""
+        if probe is not None and probe.position is not None:
+            # * Fixed width and sign, so the digits stand still while the probe moves; dim when the fix is stale.
+            dim = "opacity:.5;" if check is None or check.level == BAD else ""
+            rows = "".join(f"<div>{axis} {value:+7.3f}</div>" for axis, value in zip("xyz", probe.position))
+            position = (f'<div style="font:700 clamp(20px,5vw,64px)/1.2 monospace;white-space:pre;'
+                        f'margin-top:8px;{dim}">{rows}</div>')
         # ? vh units, so the box grows with a floated, enlarged panel.
         return (f'<div style="background:{color};color:#fff;border-radius:8px;min-height:40vh;'
                 f'display:flex;flex-direction:column;align-items:center;justify-content:center;'
                 f'text-align:center;padding:12px;margin:0 8px 8px">'
                 f'<div style="font-size:clamp(32px,9vw,120px);font-weight:800;line-height:1.1">{word}</div>'
-                f'<div style="font-size:clamp(14px,2.5vw,32px);opacity:.9">{escape(detail)}</div>'
+                f'{detail}'
+                f'{position}'
                 f'<div style="font-size:clamp(14px,2.5vw,32px);opacity:.9">{len(self.samples)} points'
                 f'{" · mapping coverage" if self._mapping.value else ""}</div>'
                 f'</div>')
