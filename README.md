@@ -223,10 +223,28 @@ Example: `mocap_probe` shows the probe state in a **Probe** panel, collapsed on 
 | `robots` | none | Robots to connect to, by serial or name: `0804`, `alice`, `a200-0806`, `Cindy`. `"[]"` runs without robots. |
 | `plugins` | none | Plugins to load, see below. `health` is always added, unless `no_default_plugins:=true`. |
 | `tools` | per robot | Only where the mounted tools differ from the defaults: `'<robot>:<tool>[,<tool>...]'`, one tool per arm in arm order. Tools: `robotiq`, `scaffolding_v1`, `scaffolding_v3`, `none`. Defaults: Alice and Belle `robotiq`, Cindy `scaffolding_v3,scaffolding_v3`. |
-| `design_directory` | none | Design folder the `cell` plugin loads at startup; without it, pick one in its panel. |
+| `design_directory` | none | Design folder the `cell` plugin loads at startup, relative to `drive_root` (e.g. `data_design_study/260814_RobArch_support_ik`) or absolute; without it, pick one in its panel. |
 | `data_directory` | `data/` of this repo | Root for meshes, URDFs and designs. |
+| `drive_root` | `$HUSKY_DRIVE_ROOT` | Local copy of the project's Google Drive folder (`2025-03 Husky Assembly`), for experiment data; see [Experiment data](#experiment-data-google-drive). |
 | `no_default_plugins` | `false` | `true` skips the default plugins (`health`). |
 | `ghost_timeout` | `20.0` | Seconds a plugin's ghost robots stay after the last input in it; 0 keeps them. |
+
+### Experiment data (Google Drive)
+
+Experiment data lives in the project's Google Drive folder, synced to your PC (e.g. with Insync), not in this repo. Point the monitor and the analysis scripts at your local copy of the `2025-03 Husky Assembly` folder itself; the path above it differs per user.
+
+```shell
+# In ~/.bashrc, or each terminal: read by the monitor and the scripts
+export HUSKY_DRIVE_ROOT="$HOME/Insync/<account>/Google Drive - Shared with me/2025-03 Husky Assembly"
+
+# Or for one monitor run; the parameter wins over the variable
+ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['alice']" -p plugins:="['base_exp']" \
+    -p drive_root:="$HOME/Insync/<account>/Google Drive - Shared with me/2025-03 Husky Assembly"
+```
+
+Paths are given relative to this folder, e.g. `data_design_study/260814_RobArch_support_ik`; absolute paths still work, for data elsewhere. `base_exp` does not start without the root and its `data_experiment/base_exp/` folder; `cell` needs the root to load a relative design folder.
+
+**Folders under the root are never created by the code.** Create them in Google Drive and sync them instead. The reason: with selective sync, a folder can exist in Drive but be missing on your PC, because it is not synced there. If the code then created it locally, Insync would upload it as a new folder, and Google Drive, unlike a normal file system, allows several folders with the same name side by side. You would end up with two `base_exp` folders, the runs split between them. The code only creates new folders inside an existing one (e.g. a folder per run), which cannot clash.
 
 ### Plugins
 
@@ -260,7 +278,7 @@ ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="[]" -p plugi
 
 # Assembly: a design, the lab obstacles and the base planner
 ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['alice','cindy']" \
-    -p plugins:="['robot_control', 'cell', 'obstacles', 'base_planner']" -p design_directory:=/path/to/design
+    -p plugins:="['robot_control', 'cell', 'obstacles', 'base_planner']" -p design_directory:=data_design_study/260814_RobArch_support_ik
 
 # Plan arm motions too
 ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['cindy']" \

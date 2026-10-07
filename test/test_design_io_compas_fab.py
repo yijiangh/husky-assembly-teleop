@@ -4,7 +4,7 @@ For every movement of the 260814 export: each body's hidden flag, attachment and
 robot's placement and joints, and the acting robot's base and joints match the original start state;
 and compas_fab's `check_collision` finds the same pairs in both cells.
 
-Skipped when the export folder is not on this machine.
+Skipped when the export is not under the Drive root (HUSKY_DRIVE_ROOT) on this machine.
 """
 
 from __future__ import annotations
@@ -14,7 +14,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-EXPORT = Path("/home/jakob/ra/workspace/google_data/260814_RobArch_support_ik")
+from husky_assembly_teleop.drive import drive_root
+
+EXPORT = (drive_root() or Path("/missing")) / "data_design_study/260814_RobArch_support_ik"
 pytestmark = [pytest.mark.skipif(not (EXPORT / "ActionSchedule.json").is_file(), reason="export not on this machine"),
               pytest.mark.slow]
 

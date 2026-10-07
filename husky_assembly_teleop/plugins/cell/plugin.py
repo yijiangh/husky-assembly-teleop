@@ -9,10 +9,12 @@ in the scene yet; the plugin draws them as an overlay (`drawing.DesignDrawing`),
 
 The panel lists a window of the schedule's actions around the selected one (`action_window`); click a row to jump.
 
+Design folders are given relative to the Drive root (`drive.py`), e.g. "data_design_study/<design>", or absolute.
 Loading an old compas_fab export converts it into `<export>_design` (reused while up to date) and loads that.
 The panel warns when the design's tools differ from the configured ones.
 
 ! EXPERIMENTAL: how designs load, and what planners read, may still change.
+! Loading a relative folder needs the Drive root (HUSKY_DRIVE_ROOT or `drive_root`).
 ! Loading runs on a worker thread that only returns a result; viser nodes are added on the main thread.
 """
 
@@ -26,6 +28,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from async_timeout import timeout
+from ...drive import drive_folder
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
 from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, block, chip, note, section, values
@@ -139,9 +142,10 @@ class CellPlugin(HuskyPlugin):
         with ctx.view.ui() as gui:
             self._status = gui.add_html("")
             self._folder = gui.add_text("Folder", initial_value=str(folder or ""),
-                                        hint="Design folder with design.json (doc/design_format.md), or an "
-                                             "export in the old compas_fab format, converted into "
-                                             "<export>_design next to it")
+                                        hint="Design folder relative to the Drive root, e.g. "
+                                             "data_design_study/<design>, or absolute: with design.json "
+                                             "(doc/design_format.md), or an export in the old compas_fab format, "
+                                             "converted into <export>_design next to it")
             load = gui.add_button("Load", hint="Load the folder; an old export is converted first (about 15 s) "
                                                "unless its <export>_design copy is up to date")
             self._actions_title = gui.add_html(section("actions", SECTION_CTRL))
@@ -177,10 +181,15 @@ class CellPlugin(HuskyPlugin):
 
         Args:
             ctx: This plugin's context.
-            folder: The design folder, or an old export to convert first.
+            folder: The design folder (relative to the Drive root, or absolute), or an old export to convert first.
         """
         if self._load_task is not None and not self._load_task.done():
             ctx.log_info("load ignored: a design is already loading")
+            return
+        try:
+            folder = drive_folder(ctx.config.drive_root, folder)
+        except FileNotFoundError as error:
+            self._error = str(error)
             return
         self._load_task = ctx.spawn(f"load {folder.name}", self._load(ctx, folder))
 
@@ -269,7 +278,10 @@ class CellPlugin(HuskyPlugin):
             self._drawing.remove()
             self._drawing = None
         self.design, self._models, self.index = design, models, 0
-        self._folder.value = str(design.source)  # the converted copy, for an old export
+        # The converted copy, for an old export.
+        root = ctx.config.drive_root
+        self._folder.value = str(design.source.relative_to(root) if root and design.source.is_relative_to(root)
+                                 else design.source)
         self._changed()
         ctx.log_info(f"loaded {design.source} in {watch.summary()}; "
                      f"{design.action_count} actions, {len(design.steps)} movements")
