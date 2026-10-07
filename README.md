@@ -235,6 +235,7 @@ Example: `mocap_probe` shows the probe state in a **Probe** panel, collapsed on 
 | `health` | Loaded by default. Shows the status of each robot and tracked object, with Unlock, Resume and Reconnect. |
 | `robot_control` | One tab per robot: drives the base, moves the arms (joint targets or compliance), stows them, operates the tools. |
 | `obstacles` | Adds the fixed lab furniture to the scene as collision obstacles for the planners. |
+| `debug_gizmo` | Debug only. Click any scene body with a world pose (e.g. an obstacle) in the 3D view, or pick it from the dropdown, then drag it with a gizmo or type its position and roll/pitch/yaw. **Add** puts temporary boxes and cylinders into the scene (planners avoid them); resize them with the small corner gizmo or by typing **Size**, and **Remove** them. **Log** prints position, quaternion, roll/pitch/yaw (and size), **Reset** puts a body back. Nothing is saved. |
 | `mocap_probe` | Tracks the probe and records points with it, e.g. obstacle corners; exports JSON. Shows its state in a separate panel, see [Panels](#panels). |
 | `cell` | Loads a design and shows the cell state of one movement at a time. Experimental. |
 | `base_planner` | Plans a collision-free path for a base. Experimental: Commit only logs the path. |
