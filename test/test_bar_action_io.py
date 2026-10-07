@@ -37,7 +37,7 @@ from husky_assembly_teleop.bar_action_io import (
     ARM_KINDS, STATIONARY_KINDS, LIVE_SOLVED_TAG, clean_action_path, _clean_action_path,
     sidecar_action_path, preferred_action_path, write_path_for,
     BUILT_ASSEMBLY_RB_PREFIXES, is_built_assembly_body, bar_body_name, find_bar_body,
-    bar_id_of_body, is_ground_joint_body, held_ground_joints,
+    bar_id_of_body, is_ground_joint_body, held_ground_joints, mating_arm_sides,
     tool_runs_with_next_motion, OperatorStep, operator_steps, step_index_of,
 )
 
@@ -487,6 +487,53 @@ def test_held_ground_joints_on_exports(problem):
     for bar, joints in GROUNDED_BAR_JOINTS.items():
         assert held_ground_joints(_insert_start_state(problem, bar)) == joints, bar
     assert held_ground_joints(_insert_start_state(problem, 'B3')) == []
+
+
+# * ------------------------------------------------- one-sided bars
+
+# * The one-sided bars of both exports and the arm whose male joint mates: the
+# * other male's female sits on a staging bar (B2, B6, B11, B14) that is never
+# * built. Grounded bars mate on no arm; every other bar on both.
+ONE_SIDED_BAR_SIDES = {'B3': ['left'], 'B7': ['left'], 'B12': ['right'], 'B15': ['right']}
+
+
+def test_mating_arm_sides_in_memory():
+    """A held male mates when its female is in the state, hidden or not; unheld pairs never count."""
+    assert mating_arm_sides(None) == []
+    state = RobotCellState(rigid_body_states={
+        # B3's two held males: the left one's female is on built B1, the right one's is absent.
+        'joint_J1-3_male': RigidBodyState(Frame.worldXY(), attached_to_link='left_ur_arm_tool0'),
+        'joint_J1-3_female': RigidBodyState(Frame.worldXY()),
+        'joint_J2-3_male': RigidBodyState(Frame.worldXY(), attached_to_link='right_ur_arm_tool0'),
+        # A built joint (both halves standing in the structure) is held by nobody.
+        'joint_J1-4_male': RigidBodyState(Frame.worldXY()),
+        'joint_J1-4_female': RigidBodyState(Frame.worldXY()),
+    })
+    assert mating_arm_sides(state) == ['left']
+    state.rigid_body_states['joint_J2-3_female'] = RigidBodyState(Frame.worldXY())
+    assert mating_arm_sides(state) == ['left', 'right']
+    # ! The built-bar switch hides built joints in place: a hidden female still mates.
+    state.rigid_body_states['joint_J1-3_female'].is_hidden = True
+    assert mating_arm_sides(state) == ['left', 'right']
+    # A male held through its tool instead of the flange link.
+    right = state.rigid_body_states['joint_J2-3_male']
+    right.attached_to_link, right.attached_to_tool = None, 'AT3R'
+    assert mating_arm_sides(state) == ['left', 'right']
+
+
+@pytest.mark.parametrize('problem', [
+    pytest.param(SCHEDULE_PROBLEM, marks=needs_schedule_export),
+    pytest.param(HOLDING_TEST_PROBLEM, marks=needs_holding_test_export),
+])
+def test_mating_arm_sides_on_exports(problem):
+    """Every jointing file: one-sided bars mate on one arm, grounded bars on none, the rest on both."""
+    bars = sorted(name[:-len('__J.json')] for name in os.listdir(_actions_dir(problem))
+                  if name.endswith('__J.json'))
+    assert set(ONE_SIDED_BAR_SIDES) | set(GROUNDED_BAR_JOINTS) <= set(bars), bars
+    for bar in bars:
+        want = ([] if bar in GROUNDED_BAR_JOINTS
+                else ONE_SIDED_BAR_SIDES.get(bar, ['left', 'right']))
+        assert mating_arm_sides(_insert_start_state(problem, bar)) == want, bar
 
 
 @needs_schedule_export

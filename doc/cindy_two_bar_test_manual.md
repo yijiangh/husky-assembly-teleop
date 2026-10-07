@@ -305,16 +305,22 @@ transfer, insert (the tighten runs with the insert). Same workflow as entry 0, w
 numbers:
 
 - [ ] Built B1 and its joints drawn solid; the transfer's preview clears them.
-- [ ] **Transfer** (`B3_J_M3_CDFM_transfer_to_approach`): `Step` → 3 (readout `step 4/5: ...`) →
-      `Load Movement` → `Transfer start: Confirm manual pose (IK check)` → `Plan Movement` →
+- [ ] **Transfer** (`B3_J_M3_CDFM_transfer_to_approach`): already loaded by `Load entry` (readout
+      `step 4/5: ...`) → `Transfer start: Confirm manual pose (IK check)` → `Plan Movement` →
       preview → `Exec Selected Mv Traj (auto)`.
 - [ ] **Manual mount** (`Step` → 1) → mount B3 → `Confirm Exec`; **tool grasp** (`Step` → 2) → `Confirm Exec`.
 - [ ] **Insert** (`B3_J_M5_LM_insert`): `Step` → 4; readout
       `step 5/5: B3_J_M5_LM_insert  (+ B3_J_M4_tool_tighten_joint runs with it)` → `Plan Movement` →
       `Exec Selected Mv Traj (auto)` → log
-      `B3_J_M4_tool_tighten_joint ('tighten') runs with this movement: the compliant insert sends it (joint motors TIGHTENING).`;
-      rigid approach, compliance for the last mm, the joint motors tighten until they stall, then
-      the joint controller is restored.
+      `B3_J_M4_tool_tighten_joint ('tighten') runs with this movement: the compliant insert sends it (LEFT joint motor TIGHTENING only; the right joint has no female to screw into, its joint motor is not driven).`
+      and, until the Rhino re-export (note D10), the warning
+      `'B3_J_M4_tool_tighten_joint': the export lists tool_names ['AT3L', 'AT3R']; the monitor tightens only ['AT3L'] ...` (expected).
+      B3 is **one-sided**: its right male's female sits on the staging bar B2, so only the left
+      joint is screwed in. Log `[B3_J_M5_LM_insert] one-sided bar: the left joint mates, so only the L joint motor TIGHTENs ...`
+      and `[scaffolding] B3_J_M5_LM_insert: TIGHTEN joint motor on L arm (arm 0)` (no R line).
+      Rigid approach, compliance for the last mm on **both** arms, the **left** joint motor
+      tightens until it stalls (the right one is never driven), then the joint controller is
+      restored.
 - [ ] After the insert: Cindy holds B3 at its assembled pose, **joint controller active**
       (section 2's controller check).
 - [ ] `Mark entry done` → header `3/48`.

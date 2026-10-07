@@ -551,6 +551,10 @@ Follow the table in `doc/support_robot_schedule_manual.md` ("Four-bar test"). Ch
       **Grounded bars** (B1, B5: held on their ground joints) are the exception for the insert: it
       runs rigid only and never tightens (`[...] grounded bar (holds ...): rigid insert ..., no tighten`;
       an exported tighten step is logged as `not sent: grounded bar`). Their retreat is as above.
+      **One-sided bars** (B3, B7 mate left; B12, B15 mate right: the other male's female sits on a
+      staging bar) tighten only the mating arm's joint motor and end when it stalls
+      (`... LEFT joint motor TIGHTENING only ...`, plus a `tightens only ['AT3L']` warning until the
+      Rhino re-export, note D10).
 - [ ] After entry 2: Cindy is holding B3 at the assembled pose, **under the joint controller**
       (check `ros2 control list_controllers -c /a200_0806/left_ur5e/controller_manager` and `right_ur5e`).
       Then quit the monitor — Cindy keeps holding (her driver keeps running).

@@ -10,8 +10,8 @@ functions, so it can be tested without Dear PyGui, PyBullet or ROS:
 - ``missing_action_files(schedule)`` -> entries whose action file is not on disk
 - ``step_button_label(mv)``       -> the label of the step button, None for an arm move
 - ``step_readout_text``           -> the "-> step" readout next to the step slider
-- ``absorbed_tool_note(mv)``      -> the exec log line for a tool step that runs
-  with the arm movement being executed
+- ``absorbed_tool_note(mv, mating_sides)`` -> the exec log line for a tool step
+  that runs with the arm movement being executed
 - ``entry_row_text`` / ``row_color`` -> one row of the entry list
 - ``now_line_text``               -> the "Now: entry k -- ... -- step i/n ..." line
 - ``visible_row_window``          -> which rows of a long schedule are shown
@@ -209,16 +209,19 @@ def step_readout_text(step_idx: int, n_steps: int, primary: Movement,
     return f"{head}  ({'; '.join(parts)})"
 
 
-def absorbed_tool_note(mv: Movement) -> str:
+def absorbed_tool_note(mv: Movement, mating_sides: Optional[list] = None) -> str:
     """The exec log line for a tool step that runs with the arm movement being executed.
 
     Same rule as ``step_button_label`` and ``husky_world.run_scaffolding_tool_step``:
-    the compliant insert sends the joint tighten, the compliant retreat sends the
-    gripper loosen, and the untighten is never sent.
+    the compliant insert sends the joint tighten (only to the MATING arms), the
+    compliant retreat sends the gripper loosen, and the untighten is never sent.
 
     Args:
         mv (Movement): One of the step's absorbed tool steps
             (``bar_action_io.tool_runs_with_next_motion`` is True for it).
+        mating_sides (list[str] | None): For the tighten, the arms whose joint
+            motor the insert drives (``bar_action_io.mating_arm_sides`` of the
+            insert's start state). None or both sides = both joint motors.
 
     Returns:
         str: The line, naming the tool step's id and its tool action.
@@ -232,7 +235,18 @@ def absorbed_tool_note(mv: Movement) -> str:
     if tool_action == 'untighten':
         return (f"{head} nothing is sent (use the manual 'Loosen Joint' button "
                 f"if the tool must back off).")
-    return f"{head} the compliant insert sends it (joint motors TIGHTENING)."
+    if mating_sides is None or len(mating_sides) == 2:
+        return f"{head} the compliant insert sends it (joint motors TIGHTENING)."
+    if not mating_sides:
+        return (f"{head} nothing is sent: no held male joint has its female in the insert's "
+                f"start state and the bar is not grounded (export/design error; the insert "
+                f"refuses to run).")
+    # * One-sided bar: one male mates, the other is only a grasp point.
+    side = mating_sides[0]
+    other = 'right' if side == 'left' else 'left'
+    return (f"{head} the compliant insert sends it ({side.upper()} joint motor TIGHTENING "
+            f"only; the {other} joint has no female to screw into, its joint motor is not "
+            f"driven).")
 
 
 def entry_row_text(entry: ScheduleEntry, flags: EntryFlags, status: str, *,

@@ -211,6 +211,14 @@ def test_absorbed_tool_note():
     assert absorbed_tool_note(tighten) == (
         "B1_J_M4_tool_tighten_joint ('tighten') runs with this movement: "
         "the compliant insert sends it (joint motors TIGHTENING).")
+    assert absorbed_tool_note(tighten, mating_sides=['left', 'right']) == absorbed_tool_note(tighten)
+    # * One-sided bar (B3): only the mating arm's joint motor is driven.
+    assert absorbed_tool_note(tighten, mating_sides=['left']) == (
+        "B1_J_M4_tool_tighten_joint ('tighten') runs with this movement: "
+        "the compliant insert sends it (LEFT joint motor TIGHTENING only; the right joint "
+        "has no female to screw into, its joint motor is not driven).")
+    assert 'nothing is sent: no held male joint has its female' in absorbed_tool_note(
+        tighten, mating_sides=[])
     ungrasp = ScaffoldingToolMovement(movement_id='B1_R_M1_tool_ungrasp_bar', tool_action='ungrasp')
     assert absorbed_tool_note(ungrasp) == (
         "B1_R_M1_tool_ungrasp_bar ('ungrasp') runs with this movement: "

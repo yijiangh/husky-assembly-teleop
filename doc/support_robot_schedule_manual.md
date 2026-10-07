@@ -117,9 +117,10 @@ itself has no step of its own: it runs with that movement.
 
 | entry | steps |
 |---|---|
-| J (e.g. `B1_J`) | 5: travel to load · manual mount · tool grasp · transfer · insert (+ the tighten runs with it) |
+| J (e.g. `B1_J`) | 5: travel to load · manual mount · tool grasp · transfer · insert (+ the tighten runs with it). The entry opens on its transfer (loaded right away) |
 | J of a **grounded bar** (held on its ground joints, e.g. `B1`, `B5` in the 2026-10-06 export) | 6: travel to load · manual mount · tool grasp · transfer · insert · manual fix foundation. The insert runs **rigid only** (joint tracking) and **never tightens**, whatever the export says (an exported tighten step is ignored; Rhino note D9) |
-| R (e.g. `B1_R`) | 2: retreat (+ the ungrasp runs with it; the untighten is **not sent** — `Loosen Joint` by hand if needed) · free move home. The entry opens on its retreat |
+| J of a **one-sided bar** (one held male joint has no female in the insert's start state: its female sits on a staging bar; e.g. `B3`, `B7` mate left, `B12`, `B15` mate right in the 2026-10-06 export) | 5, as a normal J. The insert TIGHTENs only the **mating** arm's joint motor and ends when that motor stalls; both arms still run the rigid approach and the compliant last mm. The export's tighten step still names both tools: a warning says so until the Rhino re-export (note D10) |
+| R (e.g. `B1_R`) | 2: retreat (+ the ungrasp runs with it; the untighten is **not sent** — `Loosen Joint` by hand if needed) · free move home. The entry opens on its retreat. The retreat is planned from the live arms: each tool0 backs off the export's `lm_distance_mm` (50 mm) along its `retreat_axes_world`, scene collisions checked; a failed straight-line plan prints a `[<movement> diag]` block and draws the collision |
 | H, HR (support robot) | one step per movement |
 
 The readout under the slider names the step and what runs with it, e.g.

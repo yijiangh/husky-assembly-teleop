@@ -30,6 +30,9 @@ The data classes live in `rs_data_structure.bar_action`. compas's
   bars' rigid-body names, which differ between Cindy's and the support cells
 - `held_ground_joints(state)` → the ground joints held in the tools: a GROUNDED
   bar (its insert runs rigid and never tightens)
+- `mating_arm_sides(state)` → the arms whose held male joint has a female to
+  screw into: only their joint motors tighten at the insert (a ONE-SIDED bar
+  such as B3 mates on one arm only)
 
 To know what a movement does, use `movement_kind` (it reads the concrete
 Movement subclass): in Cindy's cycle each of the transfer, the insert and the
@@ -866,6 +869,49 @@ def held_ground_joints(state) -> list:
     return sorted(name for name, rb in rb_states.items()
                   if is_ground_joint_body(name)
                   and (getattr(rb, 'attached_to_link', None) or getattr(rb, 'attached_to_tool', None)))
+
+
+# Which arm a scaffolding tool sits on (Cindy's RobotSpec.tool_names / side_keys pairing).
+_TOOL_SIDES = {'AT3L': 'left', 'AT3R': 'right'}
+
+
+def mating_arm_sides(state) -> list:
+    """The arms whose held male joint has a female to screw into, in a cell state.
+
+    * A normal bar is held on two male joints and both mate: both joint motors
+    * tighten at the insert and it ends when both stall. A ONE-SIDED bar (B3, B7,
+    * B12, B15 in the 2026-10-06 export) is held on two male joints but only one
+    * mates: the other male's female sits on a staging ("fake") bar that is never
+    * built, so it is not in the state at all. That male is only a grasp point:
+    * its joint motor is not driven and nobody waits for its stall. A grounded bar
+    * holds no male joint and gives [] (see ``held_ground_joints``). The export's
+    * tighten step still names both tools, so this reads it from the insert's
+    * start state (Rhino note D10).
+
+    ! Presence only, ``is_hidden`` is NOT read: the built-bar switch
+    ! (``HuskyMonitor._hide_built_assembly_for_mocap``) flags every built joint
+    ! hidden in place on the loaded start states, the mating female included.
+
+    Args:
+        state (RobotCellState | None): A cell state, e.g. the insert's start state.
+
+    Returns:
+        list[str]: ``'left'`` / ``'right'``, sorted; e.g. ``['left']`` for B3,
+        ``['left', 'right']`` for a normal bar, empty for a grounded bar or no state.
+    """
+    rb_states = getattr(state, 'rigid_body_states', None) or {}
+    sides = []
+    for name, rb in rb_states.items():
+        link = getattr(rb, 'attached_to_link', None)
+        tool = getattr(rb, 'attached_to_tool', None)
+        if not (name.startswith('joint_') and name.endswith('_male') and (link or tool)):
+            continue
+        # Same joint id, other half: 'joint_J1-3_male' mates with 'joint_J1-3_female'.
+        if name[:-len('_male')] + '_female' not in rb_states:
+            continue
+        # The flange link names its side ('left_ur_arm_tool0'); a tool names it by its id.
+        sides.append(link.split('_', 1)[0] if link else _TOOL_SIDES[tool])
+    return sorted(sides)
 
 
 def bar_body_name(bar_id: str, rb_prefix: str = "") -> str:

@@ -20,7 +20,7 @@ from husky_assembly_teleop import DATA_DIRECTORY, CALIBRATION_DATE, EXPERIMENT_D
 from husky_assembly_teleop.common import Husky, TrackedObject, AssemblyObject
 from husky_assembly_teleop.robot_registry import RobotSpec, other_robots, robot_from_env
 from husky_assembly_teleop.bar_action_io import (
-    COMPLIANT_KINDS, MovementKind, held_ground_joints, tool_event, tool_runs_with_next_motion,
+    COMPLIANT_KINDS, MovementKind, held_ground_joints, mating_arm_sides, tool_event, tool_runs_with_next_motion,
 )
 from husky_assembly_teleop.schedule_io import load_schedule, problem_root
 from husky_assembly_teleop.progress_io import PARKED_BASE_FRAME, RobotBelief, load_progress
@@ -3113,6 +3113,54 @@ def _scaffolding_joint_motor_stalled(hi, index):
     return s is not None and s.state_m2 == 'STALLED'
 
 
+class _JointStallGate:
+    """Answers "has every MATING arm's joint motor stalled since TIGHTEN was sent?".
+
+    One gate serves a whole insert: the rigid approach's early exit, the
+    rigid-only hold and the compliant tail's exit all ask the same question. The
+    arms are the ones whose joint motor was told to tighten
+    (``bar_action_io.mating_arm_sides``): both on a normal bar, one on a
+    one-sided bar such as B3.
+
+    ! An arm counts only once it has shown NOT stalled since the command (the
+    ! same latch ``run_scaffolding_tool_step`` uses for the grasp): the driver
+    ! polls the tool at 20 Hz, so the first reading(s) after STOP + TIGHTEN can
+    ! still be the old STALLED, which would end the insert on its first tick.
+    """
+
+    def __init__(self, hi: HuskyRobotInterface, arms: list):
+        """Start watching the joint motors of ``arms``.
+
+        Args:
+            hi (HuskyRobotInterface): Interface carrying ``scaffolding_status``.
+            arms (list[int]): Arm indices whose joint motor tightens (0 = left, 1 = right).
+        """
+        self.hi = hi
+        self.arms = list(arms)
+        self._moved = {i: False for i in self.arms}
+
+    @property
+    def text(self) -> str:
+        """str: The watched motors for log lines, e.g. ``'L joint motor'`` or ``'L+R joint motors'``."""
+        return '+'.join('LR'[i] for i in self.arms) + (
+            ' joint motor' if len(self.arms) == 1 else ' joint motors')
+
+    def all_stalled(self) -> bool:
+        """Read the arms' status once; True when every watched joint motor has run and now stalls.
+
+        Returns:
+            bool: True once every arm in ``arms`` has shown NOT stalled since the
+            gate was made and now reports STALLED. False while one has not, and
+            always False with no arm.
+        """
+        for i in self.arms:
+            s = self.hi.scaffolding_status[i]
+            if s is not None and s.state_m2 != 'STALLED':
+                self._moved[i] = True
+        return bool(self.arms) and all(
+            self._moved[i] and _scaffolding_joint_motor_stalled(self.hi, i) for i in self.arms)
+
+
 def _scaffolding_gripper_motor_stalled(hi: HuskyRobotInterface, index: int) -> bool:
     """v3 stall read for the scaffolding tool's GRIPPER motor (holds the bar).
 
@@ -3447,7 +3495,7 @@ def _live_tool0_poses(monitor):
 
 
 def _execute_rigid_chunk(monitor, rigid_path12, t_rigid, on_tick=None,
-                         stall_exits=True, label: str = 'rigid'):
+                         stall_gate: Optional[_JointStallGate] = None, label: str = 'rigid'):
     """Run M2's approach under the joint controller, ending early on stall.
 
     Sends ``rigid_path12`` as one dual-arm joint trajectory and waits it out.
@@ -3456,11 +3504,11 @@ def _execute_rigid_chunk(monitor, rigid_path12, t_rigid, on_tick=None,
     ! ARM_NOT_EXECUTING_TIME (1 s) of no joint change, so a controller slow to
     ! start trips it and we would hand over to compliance mid-approach.
 
-    If BOTH joint motors report STALLED the wait returns immediately: the thread
-    bit earlier than the nominal split, and the caller's switch to compliance
-    then deactivates the joint controller, abandoning the rest of the
-    trajectory. That controller switch IS the cut-short mechanism -- the topic
-    trajectory interface has no cancel.
+    If every MATING arm's joint motor reports STALLED (``stall_gate``) the wait
+    returns immediately: the thread bit earlier than the nominal split, and the
+    caller's switch to compliance then deactivates the joint controller,
+    abandoning the rest of the trajectory. That controller switch IS the
+    cut-short mechanism -- the topic trajectory interface has no cancel.
 
     Args:
         monitor: The HuskyMonitor node.
@@ -3468,10 +3516,10 @@ def _execute_rigid_chunk(monitor, rigid_path12, t_rigid, on_tick=None,
         t_rigid (float): Duration for the chunk, seconds.
         on_tick (callable): Optional ``fn(hi, robot)`` called every tick, so the
             wrench recording spans this chunk too.
-        stall_exits (bool): End early when both joint motors report STALLED.
-            True for M2's approach (the thread bit early). M3 must pass False:
-            its joint motor is not driving, so a STALLED flag left over from the
-            preceding M2 would abort the retreat on its very first tick.
+        stall_gate (_JointStallGate | None): End early when it says every mating
+            joint motor stalled: M2's approach (the thread bit early). None = run
+            the whole chunk: a grounded insert and M3, whose joint motors are not
+            driving, so a STALLED flag could only be a stale one.
         label (str): Log tag (the movement id).
 
     Yields:
@@ -3512,10 +3560,9 @@ def _execute_rigid_chunk(monitor, rigid_path12, t_rigid, on_tick=None,
     while time.time() < deadline:
         if on_tick is not None:
             on_tick(hi, robot)
-        if stall_exits and (_scaffolding_joint_motor_stalled(hi, 0)
-                            and _scaffolding_joint_motor_stalled(hi, 1)):
+        if stall_gate is not None and stall_gate.all_stalled():
             monitor.get_logger().info(
-                f'[{label}] both joint motors STALLED during the rigid approach -- the '
+                f'[{label}] {stall_gate.text} STALLED during the rigid approach -- the '
                 'thread bit early; handing over to compliance now.')
             return True
         yield
@@ -3650,8 +3697,9 @@ def _both_arms_arrived(monitor, cartesian_trajectories, tol_m=LINEAR_ARRIVAL_TOL
         return False
 
 
-def _hold_until_joint_motors_stall(monitor, timeout_s, on_tick=None, label: str = 'insert'):
-    """Tick in place until both joint motors stall, or the ceiling expires.
+def _hold_until_joint_motors_stall(monitor, timeout_s, stall_gate: _JointStallGate,
+                                   on_tick=None, label: str = 'insert'):
+    """Tick in place until every mating joint motor stalls, or the ceiling expires.
 
     Used by M2's rigid-only mode: after the joint trajectory finishes, the
     controller holds its last waypoint on its own, so all this has to do is keep
@@ -3660,6 +3708,7 @@ def _hold_until_joint_motors_stall(monitor, timeout_s, on_tick=None, label: str 
     Args:
         monitor: The HuskyMonitor node.
         timeout_s (float): Hard ceiling, for firmware that never reports stall.
+        stall_gate (_JointStallGate): The insert's gate: the mating arms' joint motors.
         on_tick (callable): Optional ``fn(hi, robot)`` called every tick.
         label (str): Log tag (the movement id).
 
@@ -3672,15 +3721,14 @@ def _hold_until_joint_motors_stall(monitor, timeout_s, on_tick=None, label: str 
     while time.time() < deadline:
         if on_tick is not None:
             on_tick(hi, robot)
-        if (_scaffolding_joint_motor_stalled(hi, 0)
-                and _scaffolding_joint_motor_stalled(hi, 1)):
+        if stall_gate.all_stalled():
             monitor.get_logger().info(
-                f'[{label}] both joint motors STALLED; rigid-only hold complete.')
+                f'[{label}] {stall_gate.text} STALLED; rigid-only hold complete.')
             return
         yield
     monitor.get_logger().warn(
-        f'[{label}] rigid-only hold hit its {timeout_s:.0f}s ceiling without both '
-        f'joint motors reporting STALLED.')
+        f'[{label}] rigid-only hold hit its {timeout_s:.0f}s ceiling without the '
+        f'{stall_gate.text} reporting STALLED.')
 
 
 def execute_planned_trajectory_compliant(monitor):
@@ -3703,9 +3751,15 @@ def execute_planned_trajectory_compliant(monitor):
          where the screw needs the arms free to pull the bar in.
 
     The handover point is the operator's slider, measured as tool0 distance from
-    the final assembled pose. It moves to compliance early if both joint motors
-    stall during the rigid chunk (the thread bit sooner than expected) -- driving
-    position control against an engaged screw is exactly what this split avoids.
+    the final assembled pose. It moves to compliance early if every mating joint
+    motor stalls during the rigid chunk (the thread bit sooner than expected) --
+    driving position control against an engaged screw is exactly what this split
+    avoids.
+
+    Only the MATING arms' joint motors tighten (``bar_action_io.mating_arm_sides``):
+    both on a normal bar, one on a one-sided bar (B3: the right male has no
+    female to screw into). Both arms still run the same rigid approach and the
+    same compliant tail, and go back to rigid when the mating motor(s) stall.
 
     Safety contract: the live arms must already be at the planned start conf;
     otherwise `send_arm_cmd_cartesian` rejects targets (>5 cm from current TCP)
@@ -3732,6 +3786,18 @@ def execute_planned_trajectory_compliant(monitor):
     # * in the export is ignored (Rhino note D9). The retreat is the same for all bars.
     ground_joints = held_ground_joints(mv.start_state) if is_insert else []
     grounded = bool(ground_joints)
+    # * A ONE-SIDED bar (B3, B7, B12, B15) mates on one joint only: the other
+    # * arm's male has no female in the start state (it sits on a staging bar),
+    # * so only the mating arm's joint motor tightens and every stall check waits
+    # * for the mating arm(s) alone (Rhino note D10).
+    mating_sides = mating_arm_sides(mv.start_state) if is_insert and not grounded else []
+    mating_arms = [('left', 'right').index(s) for s in mating_sides]
+    if is_insert and not grounded and not mating_arms:
+        # ! Nothing to screw and nothing to wait for: an export / design error.
+        monitor.get_logger().error(
+            f"[{tag}] no mating arm: no held male joint has its female in the start "
+            f"state and the bar is not grounded. Export/design error; nothing was commanded.")
+        return
     if monitor.planned_arm_trajectory[0][0] is None or \
        monitor.planned_arm_trajectory[1][0] is None:
         monitor.get_logger().warn(
@@ -3739,6 +3805,13 @@ def execute_planned_trajectory_compliant(monitor):
         return
 
     hi: HuskyRobotInterface = monitor.huskies[monitor.selected_robot_id].interface
+    # One gate for the whole insert: rigid early exit, rigid-only hold, compliant exit.
+    stall_gate = _JointStallGate(hi, mating_arms) if is_insert else None
+    if len(mating_arms) == 1:
+        monitor.get_logger().info(
+            f"[{tag}] one-sided bar: the {mating_sides[0]} joint mates, so only the "
+            f"{stall_gate.text} TIGHTENs and the insert ends when it stalls; the other "
+            f"arm's joint has no female in the start state, its joint motor is not driven.")
     ghost_robot = monitor.goal_model.robot
     left_joints = pp.joints_from_names(ghost_robot, HUSKY_DUAL_UR5e_JOINT_NAMES[0])
     right_joints = pp.joints_from_names(ghost_robot, HUSKY_DUAL_UR5e_JOINT_NAMES[1])
@@ -3791,7 +3864,7 @@ def execute_planned_trajectory_compliant(monitor):
             monitor.get_logger().info(
                 f"[{tag}] RIGID-ONLY mode: the whole movement runs under "
                 f"scaled_joint_trajectory_controller ({len(rigid_path)} waypoints, "
-                f"{t_rigid:.1f}s), then holds position until both joint motors "
+                f"{t_rigid:.1f}s), then holds position until the {stall_gate.text} "
                 f"stall. Compliance is never engaged.")
     elif is_insert:
         requested_mm = float(getattr(monitor, 'm2_compliant_split_mm',
@@ -3850,13 +3923,13 @@ def execute_planned_trajectory_compliant(monitor):
     # The M2 movement holds the end pose under compliance while the JOINT motor
     # tightens the screw against the scaffold; the loop must NOT terminate on
     # motion-time budget alone. Inflate t_wait so execute_linear_cartesian_move
-    # keeps publishing the end pose, and exit only when both arms' joint motors
-    # report STALLED. Large t_wait (HOLD_FOR_STALL_TIMEOUT_S) is a hard ceiling
-    # fallback if firmware never reports stall.
+    # keeps publishing the end pose, and exit only when every MATING arm's joint
+    # motor reports STALLED (the gate; a one-sided bar waits for one arm). Large
+    # t_wait (HOLD_FOR_STALL_TIMEOUT_S) is a hard ceiling fallback if firmware
+    # never reports stall.
     if is_insert:
         t_wait = HOLD_FOR_STALL_TIMEOUT_S
-        should_continue_fn = lambda: not (
-            _scaffolding_joint_motor_stalled(hi, 0) and _scaffolding_joint_motor_stalled(hi, 1))
+        should_continue_fn = lambda: not stall_gate.all_stalled()
     else:
         # M3: keep republishing the end pose for a settle window so a lagging
         # arm can catch up, and end it as soon as BOTH arms have arrived rather
@@ -3914,17 +3987,17 @@ def execute_planned_trajectory_compliant(monitor):
         monitor.push_compliant_wrench(time.time() - exec_start_time, left, right)
 
     # Pre-exec scaffolding tool commands, per movement role:
-    #   M2 (mate)    -> Stop All + TIGHTEN the joint motor on both arms
-    #                   (screws the bar down against the scaffold); a grounded
-    #                   bar gets the Stop All only (no screw to drive).
+    #   M2 (mate)    -> Stop All + TIGHTEN the joint motor on every MATING arm
+    #                   (screws the bar down against the scaffold); a one-sided
+    #                   bar's other arm and a grounded bar get the Stop All only
+    #                   (no screw to drive).
     #   M3 (retreat) -> Stop All + LOOSEN the gripper motor on both arms
     #                   (releases the bar before backing away).
     _stop_all_both_arms()
     if is_insert and not grounded:
-        print(f'[scaffolding] {tag}: TIGHTEN joint motor on L arm (arm 0)')
-        hi.send_scaffolding_cmd(1, JOINT_MOTOR, 0)
-        print(f'[scaffolding] {tag}: TIGHTEN joint motor on R arm (arm 1)')
-        hi.send_scaffolding_cmd(1, JOINT_MOTOR, 1)
+        for i in mating_arms:
+            print(f'[scaffolding] {tag}: TIGHTEN joint motor on {"LR"[i]} arm (arm {i})')
+            hi.send_scaffolding_cmd(1, JOINT_MOTOR, i)
     elif is_retreat:
         print(f'[scaffolding] {tag}: LOOSEN gripper motor on L arm (arm 0)')
         hi.send_scaffolding_cmd(-1, GRIPPER_MOTOR, 0)
@@ -3936,10 +4009,10 @@ def execute_planned_trajectory_compliant(monitor):
         # --- Chunk 1: the rigid approach (M2 only) ---
         if rigid_path is not None:
             # ! Grounded: no screw is driven, so a STALLED flag could only be a
-            # ! stale one; it must not end the motion early.
+            # ! stale one; it must not end the motion early (no gate).
             ran = yield from _execute_rigid_chunk(
                 monitor, rigid_path, t_rigid, on_tick=_record_wrench,
-                stall_exits=not grounded, label=tag)
+                stall_gate=None if grounded else stall_gate, label=tag)
             if not ran:
                 return
             if grounded:
@@ -3951,8 +4024,8 @@ def execute_planned_trajectory_compliant(monitor):
                 # just keep ticking (recording wrench) until the screw stalls or
                 # the ceiling expires; the finally below stops the motors.
                 yield from _hold_until_joint_motors_stall(
-                    monitor, HOLD_FOR_STALL_TIMEOUT_S, on_tick=_record_wrench,
-                    label=tag)
+                    monitor, HOLD_FOR_STALL_TIMEOUT_S, stall_gate,
+                    on_tick=_record_wrench, label=tag)
                 return
             # The arms are now at (or, on an early stall, short of) the split
             # conf. Re-derive the compliant chunk's start from where they
@@ -4063,11 +4136,11 @@ def execute_planned_trajectory_compliant(monitor):
                     f'joint plot, then click "Confirm Exec" to run it.')):
                 return
 
-            # ! stall_exits=False: M3's joint motor is not driving, so a STALLED
+            # ! No stall gate: M3's joint motor is not driving, so a STALLED
             # ! flag left over from the preceding M2 would abort this on tick 1.
             yield from _execute_rigid_chunk(
                 monitor, tail, t_m3_rigid, on_tick=_record_wrench,
-                stall_exits=False, label=tag)
+                stall_gate=None, label=tag)
     finally:
         # Always stop motors first, then restore the joint controller.
         _stop_all_both_arms()

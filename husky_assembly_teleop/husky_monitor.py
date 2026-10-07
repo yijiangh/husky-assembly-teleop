@@ -66,7 +66,7 @@ from husky_assembly_teleop.bar_action_io import (
     MovementKind, STATIONARY_KINDS, SINGLE_ARM_KINDS, DUAL_ARM_KINDS, COMPLIANT_KINDS,
     movement_kind, step_kind, kind_fits_robot, is_free_home, check_action_kinds,
     default_trajectory_time, is_built_assembly_body, bar_body_name, find_bar_body,
-    clean_action_path, operator_steps, step_index_of, held_ground_joints,
+    clean_action_path, operator_steps, step_index_of, held_ground_joints, mating_arm_sides,
 )
 from rs_data_structure.bar_action import CONTROLLER_CARTESIAN_COMPLIANT, CONTROLLER_JOINT_TRACKING, Movement
 from husky_assembly_teleop.cfab_session import (
@@ -2646,24 +2646,28 @@ class HuskyMonitor(Node):
             f"the monitor runs this {kind_text} movement under {runs}.")
         warned.add(mv.movement_id)
 
-    def _chain_sequence(self) -> list:
-        """The loaded movement indices 'Plan Chain' plans, in order.
+    def _warn_tighten_tool_mismatch(self, tool_mv, sides: list) -> None:
+        """Warn when the export's tighten step names other tools than the mating arms'.
 
-        Every movement of each kind in ``_CHAIN_KIND_ORDER``; among the DUAL_FREE
-        ones the travel to load comes before the free move home.
+        The monitor decides which joint motors tighten from the insert's start
+        state (``bar_action_io.mating_arm_sides``); the export's ``tool_names`` are
+        only cross-checked, as ``_warn_controller_mismatch`` does for the
+        controller. Today's exports name both tools on every bar, so a one-sided
+        bar (B3) warns until the Rhino re-export (note D10) makes them agree.
 
-        Returns:
-            list[int]: Indices into ``_loaded_movements``.
+        Args:
+            tool_mv (ToolMovement): The tighten step that runs with the insert.
+            sides (list[str]): The mating arms, e.g. ``['left']``.
         """
-        movements = getattr(self, '_loaded_movements', None) or []
-        sequence = []
-        for kind in self._CHAIN_KIND_ORDER:
-            indices = [i for i, m in enumerate(movements) if self._kind_of(m) is kind]
-            if kind is MovementKind.DUAL_FREE:
-                # False (travel to load) sorts before True (home); the sort is stable.
-                indices.sort(key=lambda i: self._is_free_home(movements[i]))
-            sequence.extend(indices)
-        return sequence
+        spec = self._connected_robot()
+        want = [spec.tool_names[spec.side_keys.index(s)] for s in sides]
+        names = list(tool_mv.tool_names)
+        if not sides or sorted(names) == sorted(want):
+            return
+        self.get_logger().warn(
+            f"{tool_mv.movement_id!r}: the export lists tool_names {names}; the monitor "
+            f"tightens only {want} (the {' + '.join(sides)} joint mates in the insert's "
+            f"start state). Re-export the bar to make them agree (Rhino note D10).")
 
     def _slot_of_movement(self, idx):
         """Which loaded FILE the movement at ``idx`` of the cycle came from.
@@ -5120,6 +5124,10 @@ class HuskyMonitor(Node):
         # Say so (once per movement) when the export asks for another controller.
         grounded = (kind is MovementKind.DUAL_CONSTRAINED_LINEAR
                     and bool(held_ground_joints(mv.start_state)))
+        # * A normal insert tightens only the MATING arms' joint motors: one arm on
+        # * a one-sided bar such as B3 (bar_action_io.mating_arm_sides).
+        sides = (mating_arm_sides(mv.start_state)
+                 if kind is MovementKind.DUAL_CONSTRAINED_LINEAR and not grounded else None)
         runs = (CONTROLLER_CARTESIAN_COMPLIANT if kind in COMPLIANT_KINDS and not grounded
                 else CONTROLLER_JOINT_TRACKING)
         self._warn_controller_mismatch(mv, runs)
@@ -5137,7 +5145,9 @@ class HuskyMonitor(Node):
                         f"{tool_mv.movement_id} not sent: grounded bar, its insert never "
                         f"tightens (Rhino note D9).")
                 else:
-                    self.get_logger().info(absorbed_tool_note(tool_mv))
+                    self.get_logger().info(absorbed_tool_note(tool_mv, mating_sides=sides))
+                    if sides is not None and tool_mv.tool_action == 'tighten':
+                        self._warn_tighten_tool_mismatch(tool_mv, sides)
         # ! Always call through the world module (world.execute_*): the dispatch
         # ! check (headless_schedule_smoke) replaces these module attributes.
         if kind in COMPLIANT_KINDS:
