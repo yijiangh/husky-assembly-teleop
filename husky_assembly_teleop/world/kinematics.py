@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Callable, Mapping
 from yourdfpy import URDF
 
 from ..design_io.pose import Pose, compose
+from ..robot_interface.arm import UR_JOINT_NAMES
 from ..tool_urdfs import resolve_mesh_path
 
 if TYPE_CHECKING:
@@ -30,7 +31,7 @@ class _Robot:
         urdf: Parsed model without meshes; its link transforms follow `joints`.
         base: World pose of the URDF's root link.
         joints: Value per actuated joint, in the URDF's order.
-        unmeasured: Joints never measured; their value in `joints` is 0.
+        unmeasured: Joints never measured; their value in `joints` is from `stow_joints`, or 0.
         link_poses: World poses already asked for this tick, by link. Emptied by `update`.
     """
 
@@ -45,7 +46,7 @@ class Kinematics:
     """Each robot's base pose, joint values and link poses, fixed once per tick. Main thread only."""
 
     def __init__(self, robots: tuple[RobotConfig, ...], log_warn: Callable[[str], None]):
-        """Parse every robot's URDF once and start each at its default pose, joints at 0.
+        """Parse every robot's URDF once and start each at its default pose, arms stowed, other joints at 0.
 
         Args:
             robots: The robots' configurations; `urdf_file` is the stitched URDF.
@@ -58,10 +59,12 @@ class Kinematics:
         for config in robots:
             urdf = _load_urdf(config)
             names = urdf.actuated_joint_names
+            joints = dict.fromkeys(names, 0.0)
+            joints.update(_stow_joints(config, joints))
             self._robots[config.serial] = _Robot(
                 urdf=urdf, base=Pose.from_arrays(config.default_position, config.default_orientation),
-                joints=dict.fromkeys(names, 0.0), unmeasured=frozenset(names))
-            urdf.update_cfg([0.0] * len(names))
+                joints=joints, unmeasured=frozenset(names))
+            urdf.update_cfg(list(joints.values()))
 
     def update(self, world: WorldState) -> None:
         """Take every robot's latest measurements and recompute its link transforms.
@@ -110,7 +113,7 @@ class Kinematics:
         return self._robot(serial).joints
 
     def unmeasured(self, serial: str) -> frozenset[str]:
-        """Actuated joints never measured; their value is 0.
+        """Actuated joints never measured; their value is the arm's stow pose (`ArmConfig.stow_joints`), or 0.
 
         Raises:
             KeyError: If no robot has that serial.
@@ -163,6 +166,16 @@ class Kinematics:
         if robot is None:
             raise KeyError(f"no robot {serial!r} in kinematics; known: {sorted(self._robots)}")
         return robot
+
+
+def _stow_joints(config: RobotConfig, joints: Mapping[str, float]) -> dict[str, float]:
+    """Each arm's `stow_joints` by URDF joint name, for arms that have them; names the URDF lacks are left out."""
+    stowed = {}
+    for arm in config.arms:
+        if arm.stow_joints is not None:
+            stowed.update((f"{arm.name}_{name}", value) for name, value in zip(UR_JOINT_NAMES, arm.stow_joints)
+                          if f"{arm.name}_{name}" in joints)
+    return stowed
 
 
 def _load_urdf(config: RobotConfig) -> URDF:

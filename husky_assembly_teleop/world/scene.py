@@ -114,7 +114,7 @@ class RobotEntry:
         base: Last valid mocap pose, or the configured default before any.
         base_tracked: Whether the latest mocap sample was valid.
         joints: Last measured value per actuated joint.
-        unmeasured: Joints never measured; their value in `joints` is 0.
+        unmeasured: Joints never measured; their value in `joints` is the arm's stow pose, or 0.
         base_time: ROS time of the mocap fix behind `base`, or None.
         joints_time: ROS time of the oldest arm's latest joint state, or None if an arm never reported.
             ! Base and arms are measured at different instants; while moving, `base_time - joints_time`

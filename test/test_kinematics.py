@@ -11,6 +11,7 @@ import pytest
 from scipy.spatial.transform import Rotation
 
 from husky_assembly_teleop.config import robot_config_from_serial
+from husky_assembly_teleop.robot_interface.arm import UR_JOINT_NAMES
 from husky_assembly_teleop.world.kinematics import Kinematics
 from husky_assembly_teleop.design_io.pose import Pose
 
@@ -91,11 +92,15 @@ def test_matches_pybullet(config):
 
 
 def test_starts_at_default_pose_with_joints_unmeasured(config):
-    """Before any measurement: default base pose, every joint 0 and unmeasured."""
+    """Before any measurement: default base pose, arms stowed, other joints 0, every joint unmeasured."""
     kinematics = Kinematics((config,), log_warn=print)
     serial = config.serial
     assert kinematics.base_pose(serial) == Pose.from_arrays(config.default_position, config.default_orientation)
-    assert set(kinematics.joints(serial).values()) == {0.0}
+    joints = kinematics.joints(serial)
+    stowed = {f"{arm.name}_{name}": value for arm in config.arms
+              for name, value in zip(UR_JOINT_NAMES, arm.stow_joints)}
+    assert stowed and {name: joints[name] for name in stowed} == stowed
+    assert {value for name, value in joints.items() if name not in stowed} <= {0.0}
     assert kinematics.unmeasured(serial) == frozenset(kinematics.joint_names(serial))
 
 
