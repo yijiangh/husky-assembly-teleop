@@ -9,3 +9,7 @@ reports
 __pycache__
 .pytest_cache
 .claude
+# Recordings written by plugins (base_exp)
+data/recordings/
+# Separate clone of the design study repo
+data/husky_assembly_design_study/
