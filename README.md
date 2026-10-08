@@ -54,15 +54,24 @@ sudo apt install ros-humble-ur-msgs ros-humble-ur-dashboard-msgs ros-humble-cont
 python3 -m venv venv --system-site-packages
 source venv/bin/activate
 
+# Ubuntu 22.04's pip (22.0.2) cannot install pyproject-only packages such as
+# rs_data_structure in editable mode ("missing the 'build_editable' hook")
+python3 -m pip install -U pip wheel
+
 # Packages developed alongside this one, editable
 python3 -m pip install -e src/husky-assembly-teleop/external/pybullet_planning
 python3 -m pip install -e src/husky-assembly-teleop/external/compas_fab
 python3 -m pip install -e src/husky-assembly-teleop/external/rs_data_structure
-python3 -m pip install -e src/husky-assembly-teleop/external/husky_assembly_tamp
+# --no-deps: husky_assembly_tamp pins compas_fab and rs_data_structure to git URLs,
+# and pip would replace the editable copies above with those
+python3 -m pip install --no-deps -e src/husky-assembly-teleop/external/husky_assembly_tamp
 
-# The monitor's dependencies (versions as in requirements.txt)
+# The monitor's dependencies (versions as in requirements.txt); matplotlib is for husky_assembly_tamp
 python3 -m pip install "viser==1.1.1" "yourdfpy==0.0.60" "trimesh==4.12.2" "async-timeout>=4.0" "compas_robots>=0.6" \
-    "scipy>=1.8" "pybullet>=3.2" "compas>=2.0"
+    "scipy>=1.8" "pybullet>=3.2" "compas>=2.0" "matplotlib==3.10.3"
+
+# Check: all four should list a location under src/husky-assembly-teleop/external
+python3 -m pip list | grep -iE "pybullet.planning|compas.fab|rs.data.structure|husky.assembly.tamp"
 ```
 
 Set up Zenoh as described in crl-husky's README ([Zenoh](../crl-husky/README.md#zenoh)): `export RMW_IMPLEMENTATION=rmw_zenoh_cpp ROS_DOMAIN_ID=80` in `~/.bashrc`, and the router once.
