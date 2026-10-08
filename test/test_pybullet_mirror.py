@@ -11,12 +11,11 @@ import pybullet_planning as pp
 import pytest
 
 from husky_assembly_teleop.config import robot_config_from_serial
-from husky_assembly_teleop.design_io.geometry import (BoxShape, CylinderShape, Geometry, TriMesh, box_geometry,
-                                                      shape_mesh)
+from bar_assembly_core.design_io.geometry import (BoxShape, CylinderShape, Geometry, TriMesh, box_geometry, shape_mesh)
 from husky_assembly_teleop.world.mirrors.pybullet import PyBulletMirror
 from husky_assembly_teleop.world.scene import (Attachment, Body, RobotEntry, SceneSnapshot, TrackedDescription,
                                                TrackedEntry)
-from husky_assembly_teleop.design_io.pose import Pose
+from bar_assembly_core.design_io.pose import Pose
 
 DATA = Path(__file__).resolve().parent.parent / "data"
 SERIAL = "0804"

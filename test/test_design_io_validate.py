@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from design_io_fixtures import build_design, joints, with_action, with_movement, with_start, write_robot_files
 
-from husky_assembly_teleop.design_io import Attached, Design, DesignError, Pose, RobotState, Target, validate
+from bar_assembly_core.design_io import Attached, Design, DesignError, Pose, RobotState, Target, validate
 
 
 def _problems(design: Design) -> list:

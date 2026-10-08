@@ -21,14 +21,14 @@ from typing import TYPE_CHECKING, Iterable, Iterator
 import pybullet as p
 import pybullet_planning as pp
 
-from ...design_io.geometry import BoxShape, CylinderShape
+from bar_assembly_core.design_io.geometry import BoxShape, CylinderShape
 from . import check_display
 from ..scene import ROBOTS, SceneSnapshot, robot_id, tracked_id
-from ...design_io.pose import Pose
+from bar_assembly_core.design_io.pose import Pose
 
 if TYPE_CHECKING:
     from ...config import RobotConfig
-    from ...design_io.geometry import Geometry, Shape
+    from bar_assembly_core.design_io.geometry import Geometry, Shape
 
 
 @dataclass(eq=False)

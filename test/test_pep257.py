@@ -22,7 +22,7 @@ import pytest
 
 #: Our code: the package without the old monitor, plus tests and scripts. external/ and data/ are not ours.
 ROOT = Path(__file__).resolve().parents[1]
-PATHS = [str(ROOT / d) for d in ("husky_assembly_teleop", "test", "scripts")]
+PATHS = [str(ROOT / d) for d in ("husky_assembly_teleop", "bar_assembly_core", "test", "scripts")]
 EXCLUDE = [str(ROOT / "husky_assembly_teleop" / "old")]
 
 

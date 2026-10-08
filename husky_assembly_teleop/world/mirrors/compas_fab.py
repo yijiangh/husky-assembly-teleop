@@ -28,17 +28,17 @@ from compas_fab.backends.pybullet.conversions import pose_from_frame
 from compas_fab.robots import RigidBody, RigidBodyState, RobotCell, RobotCellState, RobotSemantics, ToolState
 from compas_robots import Configuration, RobotModel, ToolModel
 
-from ...design_io.compas_fab import filled, frame_from_pose, load_model, rigid_body, subtree
+from bar_assembly_core.mirrors.compas_convert import filled, frame_from_pose, load_model, rigid_body, subtree
 from ...tool_urdfs import TOOL_TOUCHES_ARM_LINKS
 from . import check_display
 from ..scene import ROBOTS, Attachment, SceneSnapshot, robot_id, tracked_id
-from ...design_io.pose import Pose
+from bar_assembly_core.design_io.pose import Pose
 
 if TYPE_CHECKING:
     from compas_robots.model import Link
 
     from ...config import RobotConfig
-    from ...design_io.geometry import Geometry
+    from bar_assembly_core.design_io.geometry import Geometry
 
 
 def semantics_with_tools(config: RobotConfig, model: RobotModel) -> RobotSemantics:

@@ -22,7 +22,7 @@ from compas_robots import RobotModel
 # ! Registers the dtypes of the action and movement classes, so json_load can rebuild them.
 import rs_data_structure  # noqa: F401
 
-from .compas_fab import PARKED_POSITION, pose_from_frame
+from ..mirrors.compas_convert import PARKED_POSITION, pose_from_frame
 from .geometry import Geometry, TriMesh
 from .pose import Pose
 from .robot_files import movable_joints, urdf_joints, urdf_links

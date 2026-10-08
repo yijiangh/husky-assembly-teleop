@@ -9,7 +9,7 @@ import viser
 from design_io_fixtures import build_design
 from test_compas_fab_mirror import configs, mirror, tool0, world  # noqa: F401 (fixtures)
 
-from husky_assembly_teleop.design_io import BodySpec, State, box_geometry, write
+from bar_assembly_core.design_io import BodySpec, State, box_geometry, write
 from husky_assembly_teleop.plugins.cell.design import CellDesign, displayed_joints, load_design, obstacles
 from husky_assembly_teleop.plugins.cell.drawing import GHOST_OPACITY, DesignDrawing, load_robot_models
 from husky_assembly_teleop.world.scene import PluginScene, Scene

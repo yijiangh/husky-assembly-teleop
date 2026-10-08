@@ -26,11 +26,11 @@ import numpy as np
 import viser
 
 from ...plugin_api.context import PluginContext
-from ...design_io.geometry import box_geometry
+from bar_assembly_core.design_io.geometry import box_geometry
 from ...world.mirrors.pybullet import PyBulletMirror
 from ...plugin_api.plugin import HuskyPlugin, register
 from ...world.scene import Body, SceneSnapshot
-from ...design_io.pose import Pose
+from bar_assembly_core.design_io.pose import Pose
 from ...ui.style import FAIL, NONE, OK, SECTION_CTRL, block, chip, numbers, section, values
 from ...ui.quaternion import quaternion_to_wxyz
 

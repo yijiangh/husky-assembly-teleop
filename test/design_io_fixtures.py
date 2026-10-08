@@ -5,10 +5,10 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
-from husky_assembly_teleop.design_io import (Action, Attached, BodySpec, BoxShape, CylinderShape, Design, Geometry,
-                                             Movement, Pose, RobotSpec, RobotState, State, Target, ToolSpec, TriMesh,
-                                             Writer)
-from husky_assembly_teleop.design_io.meshes import write_mesh
+from bar_assembly_core.design_io import (Action, Attached, BodySpec, BoxShape, CylinderShape, Design, Geometry,
+                                         Movement, Pose, RobotSpec, RobotState, State, Target, ToolSpec, TriMesh,
+                                         Writer)
+from bar_assembly_core.design_io.meshes import write_mesh
 
 WRITER = Writer(1, "design_io", "test", False)
 #: Joints a state must list for the fake robot (the wheel is passive, the tool0 joints fixed).

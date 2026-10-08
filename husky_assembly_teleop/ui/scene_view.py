@@ -14,9 +14,9 @@ from dataclasses import dataclass, field
 
 import viser
 
-from ..design_io.geometry import BoxShape, CylinderShape, Geometry, Shape
+from bar_assembly_core.design_io.geometry import BoxShape, CylinderShape, Geometry, Shape
 from ..world.scene import SceneSnapshot
-from ..design_io.pose import Pose
+from bar_assembly_core.design_io.pose import Pose
 from .quaternion import quaternion_to_wxyz
 
 #: Colour of a body without one of its own, (r, g, b, a) from 0 to 1.

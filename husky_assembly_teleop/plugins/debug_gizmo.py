@@ -20,8 +20,8 @@ import numpy as np
 import viser
 from scipy.spatial.transform import Rotation
 
-from ..design_io.geometry import Geometry, box_geometry, cylinder_geometry, shape_mesh
-from ..design_io.pose import Pose
+from bar_assembly_core.design_io.geometry import Geometry, box_geometry, cylinder_geometry, shape_mesh
+from bar_assembly_core.design_io.pose import Pose
 from ..plugin_api.context import PluginContext
 from ..plugin_api.plugin import HuskyPlugin, register
 from ..ui.quaternion import quaternion_to_wxyz

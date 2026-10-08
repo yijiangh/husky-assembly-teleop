@@ -2,9 +2,8 @@
 
 from design_io_fixtures import WRITER
 
-from husky_assembly_teleop.design_io import (Action, Design, Movement, Pose, RobotState, State, Target,
-                                             assumed_joints)
-from husky_assembly_teleop.design_io.carry import assumed_start_all
+from bar_assembly_core.design_io import (Action, Design, Movement, Pose, RobotState, State, Target, assumed_joints)
+from bar_assembly_core.design_io.carry import assumed_start_all
 
 ROBOTS = ("robots/a", "robots/b")
 

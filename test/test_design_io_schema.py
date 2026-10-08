@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from design_io_fixtures import build_design
 
-from husky_assembly_teleop.design_io import DesignError, SchemaMismatch, read, write
+from bar_assembly_core.design_io import DesignError, SchemaMismatch, read, write
 
 
 def _set_writer(path: Path, **changes) -> None:

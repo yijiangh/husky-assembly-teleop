@@ -13,7 +13,7 @@ from scipy.spatial.transform import Rotation
 from husky_assembly_teleop.config import robot_config_from_serial
 from husky_assembly_teleop.robot_interface.arm import UR_JOINT_NAMES
 from husky_assembly_teleop.world.kinematics import Kinematics
-from husky_assembly_teleop.design_io.pose import Pose
+from bar_assembly_core.design_io.pose import Pose
 
 DATA = Path(__file__).resolve().parent.parent / "data"
 

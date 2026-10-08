@@ -15,7 +15,7 @@ from xml.etree.ElementTree import Element, parse
 
 from scipy.spatial.transform import Rotation
 
-from ..design_io.pose import Pose, compose
+from bar_assembly_core.design_io.pose import Pose, compose
 
 #: Frame of husky Cartesian targets (the URDF's husky base_link).
 HUSKY_FRAME = "base_link"

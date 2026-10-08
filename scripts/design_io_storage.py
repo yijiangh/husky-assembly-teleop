@@ -31,7 +31,7 @@ def quiet(_text: str) -> None:
 
 def step_convert(export: str, design: str) -> dict:
     """Convert the export into a design folder."""
-    from husky_assembly_teleop.design_io.conversion import convert_export
+    from bar_assembly_core.design_io.conversion import convert_export
     convert_export(Path(export), Path(design), DATA, quiet)
     return {}
 
@@ -40,7 +40,7 @@ def step_roundtrip(design: str, tmp: str) -> dict:
     """Validate, then read -> write -> read twice: equal designs, same files, same bytes."""
     from test_design_io_roundtrip import _comparable
 
-    from husky_assembly_teleop.design_io import read, validate, write
+    from bar_assembly_core.design_io import read, validate, write
     first = read(Path(design))
     a, b = Path(tmp) / "a", Path(tmp) / "b"
     second = write(first, a, package_dirs=[DATA / "husky_urdf"])

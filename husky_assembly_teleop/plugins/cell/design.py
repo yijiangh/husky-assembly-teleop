@@ -14,11 +14,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from ...design_io.conversion import (DESIGN_FILE, OLD_EXPORT_FILE, convert_export, converted_folder, is_old_export,
-                                     is_up_to_date)
-from ...design_io import Action, Design, Movement, State, read
-from ...design_io.carry import assumed_start_all
-from ...design_io.timing import Stopwatch
+from bar_assembly_core.design_io.conversion import (DESIGN_FILE, OLD_EXPORT_FILE, convert_export, converted_folder,
+                                                    is_old_export, is_up_to_date)
+from bar_assembly_core.design_io import Action, Design, Movement, State, read
+from bar_assembly_core.design_io.carry import assumed_start_all
+from bar_assembly_core.design_io.timing import Stopwatch
 from ...world.scene import Body
 
 #: Colours of bodies nobody holds, RGB 0-255.

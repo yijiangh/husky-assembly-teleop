@@ -47,11 +47,11 @@ sys.path.insert(0, str(REPO))
 DATA = REPO / "data"
 
 import rs_data_structure  # noqa: E402,F401  (registers the action dtypes for json_load)
-from husky_assembly_teleop.design_io import read  # noqa: E402
-from husky_assembly_teleop.design_io.compas_fab import PARKED_POSITION, to_cell_state, to_robot_cell  # noqa: E402
-from husky_assembly_teleop.design_io.conversion import convert_export  # noqa: E402
-from husky_assembly_teleop.design_io.legacy import body_id, load_export  # noqa: E402
-from husky_assembly_teleop.design_io.timing import Stopwatch  # noqa: E402
+from bar_assembly_core.design_io import read  # noqa: E402
+from bar_assembly_core.design_io.compas_fab import PARKED_POSITION, to_cell_state, to_robot_cell  # noqa: E402
+from bar_assembly_core.design_io.conversion import convert_export  # noqa: E402
+from bar_assembly_core.design_io.legacy import body_id, load_export  # noqa: E402
+from bar_assembly_core.design_io.timing import Stopwatch  # noqa: E402
 
 #: Tolerances: joints (rad or m), frame positions (m) and rotations (rad), mesh points (m), areas/volumes (relative).
 JOINT_TOL, FRAME_TOL, MESH_TOL, RELATIVE_TOL = 1e-9, 1e-6, 1e-6, 1e-6

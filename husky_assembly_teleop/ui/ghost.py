@@ -20,7 +20,7 @@ from .visualization import FastViserUrdf, shared_urdf
 if TYPE_CHECKING:
     from ..config import RobotConfig
     from ..plugin_api.context import PluginContext
-    from ..design_io.pose import Pose
+    from bar_assembly_core.design_io.pose import Pose
 
 #: Colours (r, g, b, alpha from 0 to 1) shared by the plugins.
 TARGET_COLOR = (1.0, 0.78, 0.0, 0.35)   # yellow: where it should go

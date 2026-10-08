@@ -27,7 +27,7 @@ from rclpy.signals import SignalHandlerOptions
 from .plugin_api.concurrency import TickTimer
 from .config import MonitorConfig, config_from_ros_parameters
 from .plugin_api.context import PluginContext
-from .design_io.geometry import Geometry
+from bar_assembly_core.design_io.geometry import Geometry
 from .world.kinematics import Kinematics
 from .plugin_api.plugin import HuskyPlugin, load_plugins
 from .robot_interface.robot import HuskyRobotInterface

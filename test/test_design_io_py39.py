@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
-DESIGN_IO = PACKAGE_ROOT / "husky_assembly_teleop" / "design_io"
+DESIGN_IO = PACKAGE_ROOT / "bar_assembly_core" / "design_io"
 #: Modules that need compas (conversion through legacy); not part of the core that must run on 3.9 alone.
 WITH_COMPAS = ("compas_fab", "legacy", "conversion")
 
@@ -29,8 +29,8 @@ def test_imports_under_python_39():
         pytest.skip("uv is not installed")
     modules = sorted(p.stem for p in DESIGN_IO.glob("*.py") if p.stem not in WITH_COMPAS and p.stem != "__init__")
     code = (f"import sys; sys.path.insert(0, {str(PACKAGE_ROOT)!r})\n"
-            "import husky_assembly_teleop.design_io\n"
-            + "".join(f"import husky_assembly_teleop.design_io.{name}\n" for name in modules)
+            "import bar_assembly_core.design_io\n"
+            + "".join(f"import bar_assembly_core.design_io.{name}\n" for name in modules)
             + "assert sys.version_info[:2] == (3, 9), sys.version\n"
             "assert 'compas' not in sys.modules\n")
     command = ["uv", "run", "--python", "3.9", "--no-project", "--with", "numpy", "--with", "scipy",

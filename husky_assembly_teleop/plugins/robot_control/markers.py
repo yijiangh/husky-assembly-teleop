@@ -6,7 +6,7 @@ import numpy as np
 import viser
 from scipy.spatial.transform import Rotation
 
-from ...design_io.pose import Pose, compose
+from bar_assembly_core.design_io.pose import Pose, compose
 from ...plugin_api.context import PluginContext
 from ...robot_interface.arm import CARTESIAN_COMPLIANCE_CONTROLLER, ArmInterface
 from ...robot_interface.ur_frames import STOCK_YAW

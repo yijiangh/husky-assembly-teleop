@@ -15,11 +15,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Callable, Iterable
 
-from ..design_io.pose import Pose, check_id, compose
+from bar_assembly_core.design_io.pose import Pose, check_id, compose
 
 if TYPE_CHECKING:
     from ..config import RobotConfig
-    from ..design_io.geometry import Geometry
+    from bar_assembly_core.design_io.geometry import Geometry
     from .kinematics import Kinematics
     from .measured import WorldState
 

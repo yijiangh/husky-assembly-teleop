@@ -32,7 +32,7 @@ from ...drive import drive_folder
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
 from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, block, chip, note, section, values
-from ...design_io.timing import Stopwatch
+from bar_assembly_core.design_io.timing import Stopwatch
 from .design import CellDesign, Step, displayed_joints, load_design, obstacles
 from .drawing import DesignDrawing, load_robot_models
 

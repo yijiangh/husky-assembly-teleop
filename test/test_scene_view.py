@@ -3,9 +3,9 @@
 import pytest
 import viser
 
-from husky_assembly_teleop.design_io.geometry import BoxShape, Geometry, box_geometry
+from bar_assembly_core.design_io.geometry import BoxShape, Geometry, box_geometry
 from husky_assembly_teleop.world.scene import Body, SceneSnapshot, TrackedDescription, TrackedEntry
-from husky_assembly_teleop.design_io.pose import Pose
+from bar_assembly_core.design_io.pose import Pose
 from husky_assembly_teleop.ui.scene_view import SceneView
 
 BOX = box_geometry((0.1, 0.1, 0.1))

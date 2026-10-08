@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Callable, Mapping
 
 from yourdfpy import URDF
 
-from ..design_io.pose import Pose, compose
+from bar_assembly_core.design_io.pose import Pose, compose
 from ..robot_interface.arm import UR_JOINT_NAMES
 from ..tool_urdfs import resolve_mesh_path
 

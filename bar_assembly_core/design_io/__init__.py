@@ -3,8 +3,7 @@ Read, write and validate design folders (doc/design_format.md), and convert them
 
 `design_io.compas_fab` is imported on its own, so compas stays optional.
 
-! Imports nothing from `husky_assembly_teleop` outside this package: it moves to its own
-  repository later. Runs on Python 3.9 (Rhino 8).
+! Imports only from `bar_assembly_core` (see its rules). Runs on Python 3.9 (Rhino 8).
 """
 
 from __future__ import annotations

@@ -23,7 +23,7 @@ from ...ui.ghost import RobotGhost
 from ...ui.pose_input import PlanarPoseInput, yaw_from_xyzw
 from ...ui.pybullet_window import add_pybullet_window_toggle
 from ...ui.style import BUSY, OK, SECTION_CTRL, SECTION_TOOL, block, chip, section, values
-from ...design_io.pose import Pose
+from bar_assembly_core.design_io.pose import Pose
 from .path import BasePath
 from .planner import PlanningWorld, plan_birrt
 
