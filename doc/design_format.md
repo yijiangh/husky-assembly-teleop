@@ -1,8 +1,9 @@
 # Design file format, schema 1
 
 Status: **implemented** (schema 1). Replaces the compas_fab JSON export (`RobotCell*.json`, `BarActions/`,
-`ActionSchedule.json`, `WalkableGround.json`). Read and written by the `design_io` library
-(plan: `tasks/2026-10-01_design_io_library.md`).
+`ActionSchedule.json`, `WalkableGround.json`). Read and written by the `design_io` library, part of the shared core
+`bar_assembly_core` (plans: `tasks/2026-10-01_design_io_library.md`, `tasks/2026-10-08_shared_core.md`). The core
+also turns a design into scenes (`Design.scene_at`, `scene_after`) for its mirrors; the format does not depend on them.
 
 Sections 1–9 define the format. Section 10 gives the reasons. Appendices map it to compas_fab
 and to the current export, and give an example.
@@ -262,15 +263,17 @@ A reader rejects a design that breaks any rule.
 
 ## Appendix A. Mapping to compas_fab
 
-`to_robot_cell(design, robot)` builds one `RobotCell` for one acting robot; `to_cell_state` builds
-its `RobotCellState` for one State.
+Planners get a compas_fab cell by syncing a scene (`design.scene_at(movement)`) into a `CompasFabMirror` for the acting
+robot (`bar_assembly_core/mirrors/compas_fab.py`), which follows this mapping. `design_io.compas_fab.to_robot_cell`
+(one `RobotCell` per acting robot) and `to_cell_state` (its `RobotCellState` for one State) map a design directly;
+they stay as the reference the equivalence check (`scripts/design_io_equivalence.py`) compares the mirror with.
 
 | Design | compas_fab |
 |---|---|
 | Acting robot URDF + SRDF | `robot_model`, `robot_semantics`; mesh paths made absolute before loading |
 | `arms` | Planning group: the SRDF group ending at that link whose base link is nearest the URDF root (as Rhino uses `base_left_arm_manipulator`) |
 | Other robot | `ToolModel` from its URDF, its tool meshes welded to the flange |
-| Tool of the acting robot | `ToolModel`: visual and collision meshes, `frame` = `tcp` |
+| Tool of the acting robot | `ToolModel`: visual and collision meshes, `frame` = `tcp`; attached to the group ending at its flange, `touch_links` = its arm's wrist and flange links and the tool's own `touches` |
 | Body | `RigidBody`; primitives triangulated |
 | Acting robot `base`, `joints` | `robot_base_frame`, `robot_configuration` (`None` for `null`) |
 | Other robot present | `ToolState`: `frame` = base, `configuration` = joints |

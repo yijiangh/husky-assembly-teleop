@@ -8,10 +8,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, FrozenSet, Literal, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, FrozenSet, Literal, Optional, Tuple
 
 from .geometry import Geometry
 from .pose import Pose, compose
+
+if TYPE_CHECKING:
+    from ..scene import SceneSnapshot
 
 MovementType = Literal["free", "linear", "manual", "tool"]
 ActionType = Literal["bar_jointing", "bar_release", "bar_holding", "bar_holding_release"]
@@ -209,6 +212,23 @@ class Design:
             action = self.actions[action_id]
             for movement in action.movements:
                 yield action, movement
+
+    def scene_at(self, movement: Movement) -> SceneSnapshot:
+        """The world at the start of one movement; it shares nothing mutable with the design (`scenes.scene_at`).
+
+        ! Needs yourdfpy. Run it when the design or the movement changes, not every tick.
+        """
+        # ? Imported here: the scene, its robots and yourdfpy stay out of `import design_io`.
+        from .scenes import scene_at
+        return scene_at(self, movement)
+
+    def scene_after(self, bar: str) -> SceneSnapshot:
+        """The world once a bar is built, following the schedule (`scenes.scene_after`).
+
+        ! Needs yourdfpy.
+        """
+        from .scenes import scene_after
+        return scene_after(self, bar)
 
 
 # --- --- --- --- --- DERIVED --- --- --- --- ---

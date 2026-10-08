@@ -3,9 +3,10 @@ The cell plugin: loads an authored design and draws one movement's cell state at
 
 It serves the selected step to plugins that declare `requires = ("cell",)`.
 
-Every design body goes into the scene as "cell/<body id>", enabled where it stands in the selected movement's
-start (`design.obstacles`): the core draws it and planners avoid it. Robots, and the bodies they hold, are not
-in the scene yet; the plugin draws them as an overlay (`drawing.DesignDrawing`), with the other bodies on request.
+Every body of the selected movement's design scene (`Design.scene_at`) goes into the scene as "cell/<body id>"
+(`design.scene_bodies`): the core draws it and planners avoid it. A body the plan holds follows the configured real
+robot. The planned robots, and the bodies they hold, are drawn as an overlay (`drawing.DesignDrawing`), with the other
+bodies on request. The plugin only reads designs: it never edits one.
 
 The panel lists a window of the schedule's actions around the selected one (`action_window`); click a row to jump.
 
@@ -33,7 +34,7 @@ from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
 from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, block, chip, note, section, values
 from bar_assembly_core.design_io.timing import Stopwatch
-from .design import CellDesign, Step, displayed_joints, load_design, obstacles
+from .design import CellDesign, Step, displayed_joints, load_design, scene_bodies
 from .drawing import DesignDrawing, load_robot_models
 
 if TYPE_CHECKING:
@@ -323,12 +324,23 @@ class CellPlugin(HuskyPlugin):
             self._build_task = ctx.spawn("draw the design", self._build(ctx))
 
     def _put_obstacles(self, ctx: PluginContext) -> None:
-        """Replace the scene's cell bodies with the selected step's start state."""
+        """Replace the scene's cell bodies with the selected step's design scene; held bodies follow the real robot.
+
+        ! Runs only when `revision` changes: `scene_at` is too slow for every tick.
+        """
         ctx.scene.remove_prefix(f"{self.name}/")
         step = self.step
-        if step is not None:
-            # ? Same ids and geometry objects every step: mirrors only move and switch bodies, never rebuild.
-            ctx.scene.put_many(obstacles(self.design, step.movement.start, f"{self.name}/"))
+        if step is None:
+            return
+        # ? Same ids and geometry objects every step: mirrors only move and switch bodies, never rebuild.
+        try:
+            bodies = scene_bodies(self.design, step, ctx.config.robots, f"{self.name}/")
+        except ValueError as refused:
+            # ! A grasp the real robot can't take is a data problem: report it, put the bodies without the robots.
+            self._error = f"held bodies left where planned: {refused}"
+            ctx.log_error(self._error)
+            bodies = scene_bodies(self.design, step, (), f"{self.name}/")
+        ctx.scene.put_many(bodies)
 
     def draw(self, ctx: PluginContext) -> None:
         """Pose the drawn cell from the selected state, and fill the panel."""

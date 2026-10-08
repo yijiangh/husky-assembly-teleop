@@ -12,10 +12,12 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 CORE = PACKAGE_ROOT / "bar_assembly_core"
 #: Pure-core modules: they must import with numpy, scipy and trimesh alone.
 PURE = ("bar_assembly_core", "bar_assembly_core.design_io", "bar_assembly_core.scene", "bar_assembly_core.ur",
+        "bar_assembly_core.robot", "bar_assembly_core.ids", "bar_assembly_core.hold",
         *(f"bar_assembly_core.design_io.{p.stem}" for p in sorted((CORE / "design_io").glob("*.py"))
-          if p.stem not in ("__init__", "compas_fab", "legacy", "conversion")))
+          if p.stem not in ("__init__", "compas_fab", "legacy", "conversion", "scenes")))
 #: Modules with extra dependencies (`requirements.txt`). legacy and conversion also need rs_data_structure.
-EXTRAS = ("bar_assembly_core.kinematics", "bar_assembly_core.mirrors", "bar_assembly_core.mirrors.compas_convert",
+EXTRAS = ("bar_assembly_core.kinematics", "bar_assembly_core.design_io.scenes", "bar_assembly_core.mirrors",
+          "bar_assembly_core.mirrors.compas_convert",
           "bar_assembly_core.mirrors.pybullet", "bar_assembly_core.mirrors.compas_fab",
           "bar_assembly_core.design_io.compas_fab")
 CORE_PACKAGES = ("numpy", "scipy", "trimesh==4.12.2")
@@ -59,7 +61,12 @@ def test_core_imports_under_python_39():
 
 
 def test_mirrors_import_under_python_39():
-    """FK, the mirrors and the compas conversions import under Python 3.9 with their extras installed."""
+    """FK, the mirrors and the compas conversions import under Python 3.9 with their extras; `scene_at` runs."""
     if not all((PACKAGE_ROOT / package).is_dir() for package in EXTRA_PACKAGES if package.startswith("./")):
         pytest.skip("external/ submodules not checked out")
-    _run_39(CORE_PACKAGES + EXTRA_PACKAGES, PURE + EXTRAS)
+    scene_at = (f"import tempfile, pathlib; sys.path.insert(0, {str(PACKAGE_ROOT / 'test')!r})\n"
+                "from design_io_fixtures import build_design\n"
+                "design = build_design(pathlib.Path(tempfile.mkdtemp()))\n"
+                "scene = design.scene_at(next(movement for _, movement in design.movements()))\n"
+                "assert 'bars/B1' in scene.world_poses and scene.robots['robots/cindy'].unmeasured\n")
+    _run_39(CORE_PACKAGES + EXTRA_PACKAGES, PURE + EXTRAS, scene_at)

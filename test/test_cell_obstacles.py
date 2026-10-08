@@ -1,16 +1,22 @@
-"""The cell plugin puts every design body into the scene, enabled where it stands; the core draws them."""
+"""The cell plugin puts every body of a step's design scene into the scene; held ones follow the real robot."""
 
 from __future__ import annotations
 
 from dataclasses import replace
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import viser
 from design_io_fixtures import build_design
 from test_compas_fab_mirror import configs, mirror, tool0, world  # noqa: F401 (fixtures)
 
-from bar_assembly_core.design_io import BodySpec, State, box_geometry, write
-from husky_assembly_teleop.plugins.cell.design import CellDesign, displayed_joints, load_design, obstacles
+from bar_assembly_core.design_io import Action, BodySpec, Movement, State, ToolSpec, box_geometry, write
+from bar_assembly_core.robot import robot_model
+from bar_assembly_core.design_io.pose import Pose
+from bar_assembly_core.scene import Attachment
+from husky_assembly_teleop.config import robot_config_from_serial
+from husky_assembly_teleop.plugins.cell.design import CellDesign, Step, displayed_joints, load_design, scene_bodies
 from husky_assembly_teleop.plugins.cell.drawing import GHOST_OPACITY, DesignDrawing, load_robot_models
 from husky_assembly_teleop.world.scene import PluginScene, Scene
 
@@ -22,9 +28,17 @@ def cell(tmp_path) -> CellDesign:
     return load_design(tmp_path / "design", tmp_path)
 
 
-def _by_id(cell: CellDesign, step_index: int) -> dict:
-    """The obstacles of one step's start state, by scene id."""
-    return {body.id: body for body in obstacles(cell, cell.steps[step_index].movement.start, "cell/")}
+def _by_id(cell: CellDesign, step_index: int, robots=()) -> dict:
+    """The scene bodies of one step, by scene id, with `robots` configured."""
+    return {body.id: body for body in scene_bodies(cell, cell.steps[step_index], robots, "cell/")}
+
+
+def _real_cindy(cell: CellDesign) -> SimpleNamespace:
+    """A configured robot standing in for Cindy (serial 0806): the design's URDF, with its own tool on left_tool0."""
+    spec = cell.design.robots["robots/cindy"]
+    tool = ToolSpec("tools/a200-0806/left", box_geometry((0.05, 0.05, 0.05)), Pose(), "scaffolding_v3")
+    return SimpleNamespace(serial="a200-0806", model=robot_model("a200-0806", spec.urdf, spec.srdf,
+                                                                 {"left_tool0": tool}))
 
 
 def _enabled(bodies: dict) -> set[str]:
@@ -39,7 +53,7 @@ def test_every_body_every_step(cell):
 
 
 def test_held_and_absent_bodies_disabled_robot_touches_dropped(cell):
-    """B1_M0: B1 is held by cindy and B2, J2 are absent, so only the joint and the ground stand."""
+    """B1_M0, no robot configured: B1 is held by cindy and B2, J2 are absent, so only the joint and the ground stand."""
     bodies = _by_id(cell, 0)
     assert _enabled(bodies) == {"cell/joints/J1_male", "cell/ground/WG0"}
     assert bodies["cell/ground/WG0"].touches == ()
@@ -64,6 +78,22 @@ def test_design_geometry_and_fixed_colour_every_step(cell):
     assert later["cell/bars/B1"].label == "first bar" and later["cell/bars/B1"].enabled
 
 
+def test_held_body_follows_the_configured_robot(cell):
+    """With Cindy configured, B1 is held by her real link, and touches name the real robot and its tool."""
+    bodies = _by_id(cell, 0, (_real_cindy(cell),))
+    assert bodies["cell/bars/B1"].enabled
+    assert bodies["cell/bars/B1"].placement == Attachment("robots/a200-0806", "left_tool0", Pose((0.0, 0.0, 0.12)))
+    assert "tools/a200-0806/left" in bodies["cell/bars/B1"].touches
+    assert bodies["cell/ground/WG0"].touches == ("robots/a200-0806/wheel_link",)
+
+
+def test_robot_without_the_held_link_is_refused(cell):
+    """The real Cindy's URDF has no `left_tool0`: retargeting the grasp is refused, not guessed."""
+    real = robot_config_from_serial("0806", Path(__file__).resolve().parent.parent / "data")
+    with pytest.raises(ValueError, match="left_tool0"):
+        _by_id(cell, 0, (real,))
+
+
 def test_scene_accepts_them(cell):
     """Every id is valid and owned by "cell/"; each has collision shapes, so nothing is warned about."""
     warnings = []
@@ -78,9 +108,11 @@ def test_arm_planner_mirror_sees_a_cell_obstacle(mirror, configs, tmp_path):  # 
     design = replace(build_design(tmp_path), bodies={
         "obstacles/box": BodySpec("obstacles/box", tool0(mirror), box_geometry((0.1, 0.1, 0.1)))})
     cell = CellDesign(tmp_path, design, ())
-    state = State(robots={}, present=frozenset({"obstacles/box"}), poses={}, attached={})
+    movement = Movement("M0", "free", "none", State(robots={}, present=frozenset({"obstacles/box"}), poses={},
+                                                    attached={}))
+    step = Step(Action("A0", "bar_jointing", "robots/cindy", "bars/B1", (movement,)), 0, 0, movement)
 
-    mirror.sync(world(configs, obstacles(cell, state, "cell/")))
+    mirror.sync(world(configs, scene_bodies(cell, step, (), "cell/")))
     assert any("cell/obstacles/box" in pair for pair in mirror.collisions(full_report=True))
 
 

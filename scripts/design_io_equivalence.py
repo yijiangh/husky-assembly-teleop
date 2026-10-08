@@ -8,6 +8,8 @@ Loaders, each giving one `RobotCell` per acting robot and one `RobotCellState` p
           Cindy's scheduled actions with the floor state added. It never loaded the Alice/Belle cells.
   new     `design_io.legacy.load_export`, as loaded.
   design  `convert_export` into a temporary folder, `read`, then `compas_fab.to_robot_cell` / `to_cell_state`.
+With collisions, the design's scenes (`Design.scene_at`) also go through a `CompasFabMirror` per acting robot, and
+its colliding pairs are compared with the design loader's ("design vs mirror").
 
 Names are mapped to design ids before comparing (`bar_B1`, `env_bar_B1` -> `bars/B1`); the floors (old
 `obstacle_ground`, design `ground/*`) are compared on their own. Each difference kind is listed with its count
@@ -52,6 +54,7 @@ from bar_assembly_core.design_io.compas_fab import PARKED_POSITION, to_cell_stat
 from bar_assembly_core.design_io.conversion import convert_export  # noqa: E402
 from bar_assembly_core.design_io.legacy import body_id, load_export  # noqa: E402
 from bar_assembly_core.design_io.timing import Stopwatch  # noqa: E402
+from bar_assembly_core.mirrors.compas_fab import CompasFabMirror  # noqa: E402
 
 #: Tolerances: joints (rad or m), frame positions (m) and rotations (rad), mesh points (m), areas/volumes (relative).
 JOINT_TOL, FRAME_TOL, MESH_TOL, RELATIVE_TOL = 1e-9, 1e-6, 1e-6, 1e-6
@@ -65,30 +68,33 @@ PAIRS = (("old", "new"), ("new", "design"), ("old", "design"))
 #: Difference kinds that are explained, with the reason and code reference. Any other kind is UNEXPECTED.
 KNOWN = {
     "floor: only in old": "the export has no floor; the old app adds one (old/cfab_session.py:254)",
-    "floor: only in design": "the export has no floor; design_io adds WalkableGround slabs (design_io/legacy.py:761)",
+    "floor: only in design": "the export has no floor; design_io adds WalkableGround slabs (legacy._walkable_ground)",
     "floor geometry: differs": "old drops each WalkableGround vertex's z, so every slab top is at z=0 "
-                               "(old/cfab_session.py:149-152); design keeps the 3D polygon (design_io/legacy.py:781)",
+                               "(old/cfab_session.py:149-152); design keeps the 3D polygon (legacy._slab)",
     "floor state: touch differs": "old lets only the acting robot's four wheel links touch the floor "
                                   "(old/husky_monitor.py:202); design lets every robot's wheel links touch it "
-                                  "(design_io/legacy.py:772), so the other robots are touch_bodies",
+                                  "(legacy._walkable_ground), so the other robots are touch_bodies",
     "floor pairs: only in old": "pairs with the old app's floor; the export has none (old/cfab_session.py:254)",
-    "floor pairs: only in design": "pairs with design_io's floor; the export has none (design_io/legacy.py:761)",
+    "floor pairs: only in design": "pairs with design_io's floor; the export has none (legacy._walkable_ground)",
     "floor pairs: differ": "old flags the other robots standing on its floor (no touch allowed, see floor state), "
                            "and catches contacts between z=0 and the design floor's real top (z=-0.0156 m)",
     "tool state: group name differs, same flange": "Alice/Belle exports attach the gripper to the arm-only group "
                                                    "`manipulator`; design picks the base-rooted `base_arm_manipulator` "
-                                                   "(design_io/compas_fab.py:193, format App. A). compas_fab attaches "
+                                                   "(compas_convert.planning_group, App. A). compas_fab attaches "
                                                    "to the same last link",
     "tool state: attached tool has a frame": "the Alice/Belle exports set `frame` on the attached gripper; compas_fab "
                                              "ignores it for attached tools (pybullet_set_robot_cell_state.py:88)",
     "tool state: attachment_frame None vs identity": "compas_fab reads None as identity "
                                                      "(pybullet_set_robot_cell_state.py:235)",
-    "body state: touch_bodies mirrored": "design lists a body-body touch on both bodies (design_io/compas_fab.py:235); "
+    "body state: touch_bodies mirrored": "design lists a body-body touch on both bodies (compas_fab.to_cell_state); "
                                          "the export on one. compas_fab CC.4 reads both lists, so it checks the same",
     "other robot: welded tool link named differently": "export `<flange>_obstacle_tool`, design_io `<flange>_tool` "
-                                                       "(design_io/compas_fab.py:163); the links are matched by name "
+                                                       "(compas_convert.robot_as_tool); the links are matched by name "
                                                        "and compared, and collisions report the whole robot",
     "geometry: visual differs": "the export holds compas copies of the visual meshes; design reads the URDF's files",
+    "pairs allowed by static_contacts": "the mirror allows other robots' tool/body pairs already touching at sync "
+                                        "(mirrors/compas_fab.py `_allow_static_contacts`); to_cell_state has no such "
+                                        "rule",
 }
 
 
@@ -895,17 +901,74 @@ def compare_collisions(report: Report, pair, found: Dict[str, dict]) -> None:
         category.deviation("pairs per state", max(len(x), len(y)))
 
 
+def _floor(name: str) -> str:
+    """A design id, or GROUND for any floor body."""
+    return GROUND if name.startswith("ground/") else name
+
+
+def mirror_collisions(design, keys: List[Tuple[str, str]]) -> Tuple[dict, dict]:
+    """The mirror's colliding pairs per movement: `design.scene_at` synced into a CompasFabMirror per acting robot.
+
+    Args:
+        design: The design.
+        keys: (action id, movement id) of the movements to check.
+
+    Returns:
+        tuple[dict, dict]: Pairs per movement, as sorted design ids (GROUND for a floor), and the pairs the mirror's
+            `static_contacts` allowed in that movement.
+    """
+    movements = {(action.id, movement.id): (action.robot, movement) for action, movement in design.movements()}
+    found, allowed, mirrors = {}, {}, {}
+    try:
+        for key in keys:
+            robot, movement = movements[key]
+            mirror = mirrors.get(robot) or mirrors.setdefault(robot, CompasFabMirror(robot))
+            mirror.sync(design.scene_at(movement))
+            found[key] = {tuple(sorted(map(_floor, pair))) for pair in mirror.collisions(full_report=True)}
+            allowed[key] = {tuple(sorted(map(_floor, pair))) for pair in mirror.static_contacts}
+    finally:
+        for mirror in mirrors.values():
+            mirror.close()
+    return found, allowed
+
+
+def compare_mirror(report: Report, design: dict, mirror: dict, allowed: dict) -> None:
+    """The design loader's pairs against the mirror's; pairs only the mirror's static contacts hide are told apart."""
+    category = report.category(("design", "mirror"), "collision pairs")
+    for key in sorted(set(design) & set(mirror)):
+        x, y = design[key], mirror[key]
+        floor_x, floor_y = {p for p in x if GROUND in p}, {p for p in y if GROUND in p}
+        hidden = (x - y) & allowed[key]
+        problems = []
+        if (x - floor_x - hidden) != (y - floor_y):
+            problems.append(("pairs differ", f"only design {sorted((x - floor_x - hidden) - y)}, "
+                                             f"only mirror {sorted((y - floor_y) - x)}"))
+        if hidden - floor_x:
+            problems.append(("pairs allowed by static_contacts", f"{sorted(hidden - floor_x)}"))
+        if floor_x != floor_y:
+            problems.append(("floor pairs: differ", f"only design {sorted(floor_x - floor_y)}, "
+                                                    f"only mirror {sorted(floor_y - floor_x)}"))
+        category.add(key[1], problems)
+        category.deviation("pairs per state", max(len(x), len(y)))
+
+
 # --- --- --- --- --- RUN --- --- --- --- ---
 
 def run(export: Path, collisions: bool = True, log: Callable[[str], None] = print) -> Report:
     """Load the export with all three loaders and compare every pair."""
     export = Path(export).expanduser().resolve()
-    report = Report()
     with TemporaryDirectory() as tmp:
-        log("converting")
-        convert(export, Path(tmp) / "design")
-        log("loading: design_io")
-        design_loaded, design = load_design(Path(tmp) / "design")
+        # ! The converted design stays until the end: the mirror loads its robot files late.
+        return _run(export, Path(tmp) / "design", collisions, log)
+
+
+def _run(export: Path, folder: Path, collisions: bool, log: Callable[[str], None]) -> Report:
+    """`run`, with the export converted into `folder`."""
+    report = Report()
+    log("converting")
+    convert(export, folder)
+    log("loading: design_io")
+    design_loaded, design = load_design(folder)
     log("loading: export loader")
     loaded = {"new": load_new(export), "design": design_loaded}
     log("loading: old app")
@@ -938,6 +1001,12 @@ def run(export: Path, collisions: bool = True, log: Callable[[str], None] = prin
         report.notes.append(f"collisions: {skipped} movements without a configuration are not checked")
         for pair in PAIRS:
             compare_collisions(report, pair, found)
+        keys = [key for key, (_, state) in loaded["design"].states.items() if state.robot_configuration is not None]
+        log(f"collisions: mirror ({len(keys)} states)")
+        found["mirror"], allowed = mirror_collisions(design, keys)
+        compare_mirror(report, found["design"], found["mirror"], allowed)
+        report.notes.append(f"mirror: {sum(map(len, found['mirror'].values()))} colliding pairs over {len(keys)} "
+                            f"movements; design: {sum(len(found['design'][key]) for key in keys)}")
     return report
 
 

@@ -3,7 +3,8 @@ A design (doc/design_format.md) as the cell plugin steps through it.
 
 Every movement is a step, with the joints to draw each robot at. A movement without authored start joints is
 drawn where its robot last was.
-`obstacles` turns a state's bodies into scene bodies: the core draws them, and planners avoid them.
+`scene_bodies` turns a step's design scene (`Design.scene_at`) into scene bodies: the core draws them, and planners
+avoid them. Bodies the plan holds follow the configured real robot.
 
 ! Runs on a worker thread: nothing here may touch viser, PyBullet or a PluginContext.
 """
@@ -12,14 +13,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 from bar_assembly_core.design_io.conversion import (DESIGN_FILE, OLD_EXPORT_FILE, convert_export, converted_folder,
                                                     is_old_export, is_up_to_date)
 from bar_assembly_core.design_io import Action, Design, Movement, State, read
 from bar_assembly_core.design_io.carry import assumed_start_all
 from bar_assembly_core.design_io.timing import Stopwatch
-from bar_assembly_core.scene import Body
+from bar_assembly_core.ids import IdMap, retarget
+from bar_assembly_core.scene import Attachment, Body
+from bar_assembly_core.scene import robot_id as scene_robot_id
+
+if TYPE_CHECKING:
+    from ...config import RobotConfig
 
 #: Colours of bodies nobody holds, RGB 0-255.
 BAR_COLOR = (205, 170, 110)
@@ -171,33 +177,57 @@ def stands(state: State, body_id: str) -> bool:
     return body_id in state.present and body_id not in state.attached and body_id not in state.placeholder
 
 
-def obstacles(cell: CellDesign, state: State, prefix: str) -> list[Body]:
-    """Every body of the design, as a scene body "<prefix><body id>", enabled where it `stands`.
+def scene_bodies(cell: CellDesign, step: Step, robots: tuple[RobotConfig, ...], prefix: str) -> list[Body]:
+    """Every body of a step's design scene, as a scene body "<prefix><body id>".
 
-    * Every state gives the same ids, geometry objects and colours, so stepping never rebuilds a body in a
-      mirror or the 3D view: it only moves, enables and disables them.
-    Allowed contacts (the design's and the state's) are kept between bodies; contacts with robots and tools
-    are dropped, as robots are not in the scene yet.
+    The scene is edited for the live world:
+    - a held body is attached to the configured robot with the planned robot's serial (`retarget`); held by a robot
+      not configured, it is disabled where the plan has it;
+    - a body at a placeholder pose is disabled;
+    - `touches` name the real robots, their tools and the prefixed ids; those of robots not configured are dropped.
+
+    * Every step gives the same ids, geometry objects and colours, so stepping never rebuilds a body in a mirror or
+      the 3D view: it only moves, enables and disables them.
 
     Args:
         cell: The loaded design.
-        state: The state, e.g. the selected movement's start.
+        step: The step; its movement's start is the state.
+        robots: The configured robots, `ctx.config.robots`.
         prefix: Id prefix, the owning plugin's "<name>/".
 
     Returns:
         list[Body]: One scene body per design body.
+
+    Raises:
+        ValueError: If a configured robot lacks a link the plan holds a body by.
     """
-    bodies = cell.design.bodies
+    scene = cell.design.scene_at(step.movement)
+    configured = {config.serial[-4:]: config for config in robots if config.model is not None}
+    # * Small explicit maps: planned robot -> real robot, and each planned tool -> the real tool on the same flange.
+    pairs, models = {}, {}
+    for planned, spec in cell.design.robots.items():
+        config = configured.get(spec.serial or "")
+        if config is None:
+            continue
+        real = pairs[planned] = scene_robot_id(config.serial)
+        models[real] = config.model
+        for flange, tool in scene.robots[planned].model.tools.items():
+            if flange in config.model.tools:
+                pairs[tool.id] = config.model.tools[flange].id
+    robot_map = IdMap(pairs)
+    ids = IdMap({**pairs, **{body_id: f"{prefix}{body_id}" for body_id in scene.bodies}})
+    held = {body_id: body.placement for body_id, body in scene.bodies.items()
+            if isinstance(body.placement, Attachment)}
+    moved = retarget({body_id: held[body_id] for body_id in held if held[body_id].parent in robot_map},
+                     robot_map, models)
 
-    # * Every allowed contact both ways, as `touches` may name either side.
-    contacts: dict[str, set[str]] = {}
-    pairs = set(state.touches) | {(body_id, other) for body_id, body in bodies.items() for other in body.touches}
-    for a, b in pairs:
-        contacts.setdefault(a, set()).add(b)
-        contacts.setdefault(b, set()).add(a)
-
-    return [Body(f"{prefix}{body_id}", body.geometry, state.poses.get(body_id, body.pose),
-                 touches=tuple(f"{prefix}{other}" for other in sorted(contacts.get(body_id, ())) if other in bodies),
-                 label=body.label or body_id, color=tuple(c / 255 for c in body_color(body_id)) + (1.0,),
-                 enabled=stands(state, body_id))
-            for body_id, body in bodies.items()]
+    bodies = []
+    for body_id, body in scene.bodies.items():
+        placement = moved.get(body_id) or scene.world_poses.get(body_id, cell.design.bodies[body_id].pose)
+        enabled = (body.enabled and body_id not in step.movement.start.placeholder
+                   and (body_id not in held or body_id in moved))
+        bodies.append(Body(ids(body_id), body.geometry, placement,
+                           touches=tuple(ids(other) for other in body.touches if other in ids),
+                           label=body.label or body_id, color=tuple(c / 255 for c in body_color(body_id)) + (1.0,),
+                           enabled=enabled))
+    return bodies
