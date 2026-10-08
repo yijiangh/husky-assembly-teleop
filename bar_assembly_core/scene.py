@@ -32,12 +32,12 @@ class Attachment:
     Attributes:
         parent: A robot id ("robots/cindy") or a body id ("tracked/probe").
         link: URDF link name for a robot, or None for its base (and for a body).
-        grasp: The body's pose in the parent link's (or body's) frame.
+        offset: The body's pose in the parent link's (or body's) frame.
     """
 
     parent: str
     link: Optional[str]
-    grasp: Pose
+    offset: Pose
 
 
 @dataclass(eq=False)
@@ -133,7 +133,7 @@ def same_source(new: object, old: object) -> bool:
 
 def world_poses(bodies: Mapping[str, Body], robots: Mapping[str, RobotObject],
                 link_pose: LinkPose) -> Dict[str, Pose]:
-    """The world pose of every body whose parent has one: its own pose, or its parent's composed with the grasp.
+    """The world pose of every body whose parent has one: its own pose, or its parent's composed with the offset.
 
     Args:
         bodies: The bodies, by id.
@@ -154,10 +154,10 @@ def world_poses(bodies: Mapping[str, Body], robots: Mapping[str, RobotObject],
         elif placement.parent in robots:
             robot = robots[placement.parent]
             parent = robot.base if placement.link is None else link_pose(robot, placement.link)
-            pose = compose(parent, placement.grasp)
+            pose = compose(parent, placement.offset)
         elif placement.parent in bodies and placement.parent not in seen:
             parent = resolve(placement.parent, seen | {body_id})
-            pose = None if parent is None else compose(parent, placement.grasp)
+            pose = None if parent is None else compose(parent, placement.offset)
         else:
             pose = None
         poses[body_id] = pose
@@ -170,7 +170,7 @@ def world_poses(bodies: Mapping[str, Body], robots: Mapping[str, RobotObject],
 
 def retarget(attachments: Mapping[str, Attachment], robot_map: IdMap,
              models: Mapping[str, RobotModel]) -> Dict[str, Attachment]:
-    """The same attachments held by other robots: only the robot id changes; link and grasp stay.
+    """The same attachments held by other robots: only the robot id changes; link and offset stay.
 
     The link names are the same in both URDF variants of a robot, so a planned grasp carries over to the real robot.
     Attachments to a body, not a robot, are kept as they are.
@@ -195,5 +195,5 @@ def retarget(attachments: Mapping[str, Attachment], robot_map: IdMap,
         target = robot_map(attachment.parent)
         if attachment.link is not None and attachment.link not in models[target].links:
             raise ValueError(f"{body_id}: {target} has no link {attachment.link!r} to hold it by")
-        result[body_id] = Attachment(target, attachment.link, attachment.grasp)
+        result[body_id] = Attachment(target, attachment.link, attachment.offset)
     return result

@@ -56,7 +56,7 @@ def world(configs, bodies=(), belle: Pose | None = None, belle_model=None) -> Sc
     robots = {ALICE_ID: RobotObject(ALICE_ID, configs[ALICE].model, Pose(), stow(configs[ALICE])),
               BELLE_ID: RobotObject(BELLE_ID, belle_model or configs[BELLE].model, belle or Pose((10.0, 0.0, 0.0)),
                                     stow(configs[BELLE]))}
-    poses = {body.id: body.placement if isinstance(body.placement, Pose) else body.placement.grasp
+    poses = {body.id: body.placement if isinstance(body.placement, Pose) else body.placement.offset
              for body in bodies}
     return Scene(bodies={body.id: body for body in bodies}, world_poses=poses, robots=robots)
 
@@ -216,7 +216,7 @@ def _design_snapshot(state, geometries, cindy) -> Scene:
         else:
             placement = _pose(body.frame)
         bodies[name] = Body(name, geometries[name], placement, touches)
-        poses[name] = placement if isinstance(placement, Pose) else placement.grasp
+        poses[name] = placement if isinstance(placement, Pose) else placement.offset
     return Scene(bodies=bodies, world_poses=poses, robots=robots)
 
 

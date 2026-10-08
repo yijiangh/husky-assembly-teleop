@@ -29,8 +29,8 @@ def _movement(design, movement_id):
 
 
 def test_scene_at_robots_and_held_body(design):
-    """An absent robot is disabled, unknown joints are unmeasured, a held body follows its link."""
-    scene = design.scene_at(_movement(design, "B1_M0_free"))
+    """An absent robot is disabled, unknown joints are unmeasured, a carried body follows its link."""
+    scene = design.scene_at(_movement(design, "B1_M0_mount"))
     alice, cindy = scene.robots["robots/alice"], scene.robots["robots/cindy"]
     assert not alice.enabled and cindy.enabled
     assert cindy.unmeasured == frozenset(cindy.model.movable_joints) and cindy.acting_problems()
@@ -39,36 +39,42 @@ def test_scene_at_robots_and_held_body(design):
     np.testing.assert_allclose(scene.world_poses["bars/B1"].position,
                                compose(tool0, Pose((0.0, 0.0, 0.12))).position, atol=1e-9)
     assert not scene.bodies["bars/B2"].enabled and scene.bodies["joints/J1_male"].enabled
-    # * Touches both ways: the state's (B1-AT3L) and the design's (J2 lists B1).
-    assert {"tools/AT3L", "joints/J2_male"} <= set(scene.bodies["bars/B1"].touches)
-    assert "left_link2" in cindy.model.tool_touches["left_tool0"], "the design tool's touches are on the model"
+    # * Derived contacts: the tool sits on J1, so it may touch J1's part (B1 and J1); J1 is connected to B1;
+    #   the present robot's ground links may touch the ground.
+    assert set(scene.bodies["bars/B1"].touches) == {"tools/AT3L", "joints/J1_male"}
+    assert set(scene.bodies["joints/J1_male"].touches) == {"tools/AT3L", "bars/B1"}
+    assert scene.bodies["ground/WG0"].touches == ("robots/cindy/wheel_link",)
+    assert "left_link2" in cindy.model.tool_touches["left_tool0"], "the tool's mount contacts are on the model"
+
+
+def test_scene_at_unknown_base(design):
+    """A base the design leaves open makes the robot refuse to act until its owner sets one."""
+    cindy = design.scene_at(_movement(design, "B1_M4_retreat")).robots["robots/cindy"]
+    assert not cindy.base_tracked and "its base is not tracked" in cindy.acting_problems()
 
 
 def test_scene_shares_only_geometry_and_models(design):
     """Editing a scene never reaches the design or another scene; geometry and models are the same objects."""
-    movement = _movement(design, "B1_M1_tighten")
+    movement = _movement(design, "B1_M1_grasp")
     first, second = design.scene_at(movement), design.scene_at(movement)
     first.robots["robots/cindy"].joints["left_joint1"] = 9.0
-    first.bodies["bars/B2"].enabled = False
+    first.bodies["ground/WG0"].enabled = False
     assert movement.start.robots["robots/cindy"].joints["left_joint1"] != 9.0
-    assert second.robots["robots/cindy"].joints["left_joint1"] != 9.0 and second.bodies["bars/B2"].enabled
+    assert second.robots["robots/cindy"].joints["left_joint1"] != 9.0 and second.bodies["ground/WG0"].enabled
     assert first.bodies["bars/B2"] is not second.bodies["bars/B2"]
     assert first.bodies["bars/B2"].geometry is design.bodies["bars/B2"].geometry
     assert first.robots["robots/cindy"].model is second.robots["robots/cindy"].model
     # ? A new Design object with the same robots and tools keeps the same model: mirrors don't rebuild.
     edited = replace(design, schedule=design.schedule)
     assert edited.scene_at(movement).robots["robots/cindy"].model is first.robots["robots/cindy"].model
-    # * The placeholder pose is kept: disabling it is the scene owner's choice.
-    assert first.bodies["bars/B1"].placement == design.bodies["bars/B1"].pose and second.bodies["bars/B1"].enabled
 
 
 def test_scene_after_follows_the_schedule(design):
-    """After B1: the next action's start. After B2, the last bar: its last movement with the target joints."""
+    """After B1: the next action's start. After B2, the last bar: its last movement, target joints applied."""
     after_b1 = design.scene_after("bars/B1")
     assert after_b1.robots["robots/alice"].enabled and after_b1.bodies["bars/B2"].enabled
     after_b2 = design.scene_after("bars/B2")
-    target = design.actions["B2_H_hold"].movements[-1].target.joints["robots/alice"]
-    assert all(after_b2.robots["robots/alice"].joints[name] == value for name, value in target.items())
+    assert set(after_b2.robots["robots/alice"].joints.values()) == {1.0}
     with pytest.raises(KeyError):
         design.scene_after("bars/none")
 
@@ -95,7 +101,7 @@ def test_id_map_refuses_unmapped_ids():
 
 def test_retarget_swaps_the_robot_only(design):
     """The grasp and link carry over to the mapped robot; an unmapped robot or a missing link is refused."""
-    scene = design.scene_at(_movement(design, "B1_M0_free"))
+    scene = design.scene_at(_movement(design, "B1_M0_mount"))
     model = scene.robots["robots/cindy"].model
     held = {"bars/B1": scene.bodies["bars/B1"].placement, "t/on_body": Attachment("bars/B1", None, Pose())}
     moved = retarget(held, IdMap({"robots/cindy": "robots/real"}), {"robots/real": model})

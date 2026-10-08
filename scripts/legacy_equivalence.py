@@ -7,9 +7,10 @@ Loaders, each giving one `RobotCell` per acting robot and one `RobotCellState` p
   old     the pre-refactor monitor (husky_assembly_teleop/old): RobotCell.json plus its floor body, and
           Cindy's scheduled actions with the floor state added. It never loaded the Alice/Belle cells.
   new     `legacy.export.load_export`, as loaded.
-  design  `convert_export` into a temporary folder, `read`, then `compas_fab.to_robot_cell` / `to_cell_state`.
-With collisions, the design's scenes (`Design.scene_at`) also go through a `CompasFabMirror` per acting robot, and
-its colliding pairs are compared with the design loader's ("design vs mirror").
+With collisions, the export is also converted into a schema 2 design (`convert_export` into a temporary folder,
+`read`), and each movement's scene (`Design.scene_at`) goes through a `CompasFabMirror` for its acting robot; its
+colliding pairs are compared with the export's own ("new vs mirror"). Movements merged by the conversion (an insert
+run into its tighten) are compared under the first one's id.
 
 Names are mapped to design ids before comparing (`bar_B1`, `env_bar_B1` -> `bars/B1`); the floors (old
 `obstacle_ground`, design `ground/*`) are compared on their own. Each difference kind is listed with its count
@@ -50,7 +51,7 @@ DATA = REPO / "data"
 
 import rs_data_structure  # noqa: E402,F401  (registers the action dtypes for json_load)
 from bar_assembly_core.design import read  # noqa: E402
-from bar_assembly_core.legacy.compas_fab import PARKED_POSITION, to_cell_state, to_robot_cell  # noqa: E402
+from bar_assembly_core.mirrors.compas import PARKED_POSITION  # noqa: E402
 from bar_assembly_core.legacy.conversion import convert_export  # noqa: E402
 from bar_assembly_core.legacy.export import body_id, load_export  # noqa: E402
 from bar_assembly_core.legacy.timing import Stopwatch  # noqa: E402
@@ -62,40 +63,18 @@ JOINT_TOL, FRAME_TOL, MESH_TOL, RELATIVE_TOL = 1e-9, 1e-6, 1e-6, 1e-6
 GROUND = "<ground>"
 #: The old app's floor body (old/cfab_session.py:75).
 OLD_GROUND = "obstacle_ground"
-LOADERS = ("old", "new", "design")
-PAIRS = (("old", "new"), ("new", "design"), ("old", "design"))
+LOADERS = ("old", "new")
+PAIRS = (("old", "new"),)
 
 #: Difference kinds that are explained, with the reason and code reference. Any other kind is UNEXPECTED.
 KNOWN = {
     "floor: only in old": "the export has no floor; the old app adds one (old/cfab_session.py:254)",
-    "floor: only in design": "the export has no floor; the converter adds WalkableGround slabs "
-                             "(legacy._walkable_ground)",
-    "floor geometry: differs": "old drops each WalkableGround vertex's z, so every slab top is at z=0 "
-                               "(old/cfab_session.py:149-152); design keeps the 3D polygon (legacy._slab)",
-    "floor state: touch differs": "old lets only the acting robot's four wheel links touch the floor "
-                                  "(old/husky_monitor.py:202); design lets every robot's wheel links touch it "
-                                  "(legacy._walkable_ground), so the other robots are touch_bodies",
     "floor pairs: only in old": "pairs with the old app's floor; the export has none (old/cfab_session.py:254)",
     "floor pairs: only in design": "pairs with design's floor; the export has none (legacy._walkable_ground)",
-    "floor pairs: differ": "old flags the other robots standing on its floor (no touch allowed, see floor state), "
-                           "and catches contacts between z=0 and the design floor's real top (z=-0.0156 m)",
-    "tool state: group name differs, same flange": "Alice/Belle exports attach the gripper to the arm-only group "
-                                                   "`manipulator`; design picks the base-rooted `base_arm_manipulator` "
-                                                   "(mirrors.compas.planning_group, App. A). compas_fab attaches "
-                                                   "to the same last link",
-    "tool state: attached tool has a frame": "the Alice/Belle exports set `frame` on the attached gripper; compas_fab "
-                                             "ignores it for attached tools (pybullet_set_robot_cell_state.py:88)",
-    "tool state: attachment_frame None vs identity": "compas_fab reads None as identity "
-                                                     "(pybullet_set_robot_cell_state.py:235)",
-    "body state: touch_bodies mirrored": "design lists a body-body touch on both bodies (compas_fab.to_cell_state); "
-                                         "the export on one. compas_fab CC.4 reads both lists, so it checks the same",
-    "other robot: welded tool link named differently": "export `<flange>_obstacle_tool`, design `<flange>_tool` "
-                                                       "(mirrors.compas.robot_as_tool); the links are matched by name "
-                                                       "and compared, and collisions report the whole robot",
-    "geometry: visual differs": "the export holds compas copies of the visual meshes; design reads the URDF's files",
+    "floor pairs: differ": "old and the mirror check different floors: old's slab tops at z=0, the converted design "
+                           "keeps the 3D polygons (legacy._slab)",
     "pairs allowed by static_contacts": "the mirror allows other robots' tool/body pairs already touching at sync "
-                                        "(mirrors/compas_fab.py `_allow_static_contacts`); to_cell_state has no such "
-                                        "rule",
+                                        "(mirrors/compas_fab.py `_allow_static_contacts`); the export has no such rule",
 }
 
 
@@ -288,28 +267,6 @@ def load_new(export: Path, watch: Optional[Stopwatch] = None) -> Loaded:
     return Loaded("new", cells, states)
 
 
-def load_design(design_folder: Path, robots: Optional[Tuple[str, ...]] = None, watch: Optional[Stopwatch] = None):
-    """`read` a converted design, then one cell per robot and one state per movement (cell keys are design ids).
-
-    Args:
-        design_folder: The converted design.
-        robots: Only these acting robots (e.g. Cindy's, to match the old app); all by default.
-        watch: Gets a lap for reading, the cells and the states, if given.
-
-    Returns:
-        tuple[Loaded, Design]
-    """
-    design = read(design_folder)
-    _lap(watch, "read")
-    cells = {robot: to_robot_cell(design, robot) for robot in design.robots if robots is None or robot in robots}
-    _lap(watch, "cells (URDF, SRDF, meshes)")
-    states = {(action.id, movement.id): (action.robot, to_cell_state(design, action.robot, movement.start,
-                                                                     cells[action.robot]))
-              for action, movement in design.movements() if action.robot in cells}
-    _lap(watch, "states (to_cell_state)")
-    return Loaded("design", cells, states), design
-
-
 def convert(export: Path, destination: Path) -> Path:
     """`legacy.conversion.convert_export` with the repository's robot files."""
     return convert_export(export, destination, DATA, report=quiet)
@@ -321,7 +278,7 @@ def name_maps(loaded: Loaded, design) -> None:
         tools = {tool_id.split("/")[-1]: tool_id for tool_id in design.robots[robot].tools.values()}
         keys = {}
         for key in [*cell.tool_models, *cell.rigid_body_models]:
-            if loaded.label == "design" or key.startswith("ground/"):
+            if key.startswith("ground/"):
                 keys[key] = GROUND if key.startswith("ground/") else key
             elif key == OLD_GROUND:
                 keys[key] = GROUND
@@ -720,8 +677,7 @@ def compare_states(report: Report, pair, a: Loaded, b: Loaded, key) -> None:
                 problems += [(f"tool state: {k}", d) for k, d in compare_frames(tools, x.frame, y.frame, "frame")]
             la, lb = set(x.touch_links), set(y.touch_links)
             if la != lb:
-                kind = ("tool state: touch_links superset" if lb > la and b.label == "design" else
-                        "tool state: touch_links differ")
+                kind = "tool state: touch_links differ"
                 problems.append((kind, f"only first {sorted(la - lb)}, only second {sorted(lb - la)}"))
         tools.add(f"{item} {tool}", problems)
 
@@ -785,8 +741,6 @@ def compare_body_state(category: Category, a: Loaded, b: Loaded, robot: str, x, 
             kind = "body state: hidden body touches differ"
         elif what == "touch_bodies" and la | mirrored[0] == lb | mirrored[1]:
             kind = "body state: touch_bodies mirrored"
-        elif lb > la and b.label == "design":
-            kind = f"body state: {what} superset"
         else:
             kind = f"body state: {what} differ"
         problems.append((kind, f"only first {sorted(la - lb)}, only second {sorted(lb - la)}"))
@@ -933,22 +887,22 @@ def mirror_collisions(design, keys: List[Tuple[str, str]]) -> Tuple[dict, dict]:
     return found, allowed
 
 
-def compare_mirror(report: Report, design: dict, mirror: dict, allowed: dict) -> None:
-    """The design loader's pairs against the mirror's; pairs only the mirror's static contacts hide are told apart."""
-    category = report.category(("design", "mirror"), "collision pairs")
-    for key in sorted(set(design) & set(mirror)):
-        x, y = design[key], mirror[key]
+def compare_mirror(report: Report, export: dict, mirror: dict, allowed: dict) -> None:
+    """The export's pairs against the mirror's; pairs only the mirror's static contacts hide are told apart."""
+    category = report.category(("new", "mirror"), "collision pairs")
+    for key in sorted(set(export) & set(mirror)):
+        x, y = export[key], mirror[key]
         floor_x, floor_y = {p for p in x if GROUND in p}, {p for p in y if GROUND in p}
         hidden = (x - y) & allowed[key]
         problems = []
         if (x - floor_x - hidden) != (y - floor_y):
-            problems.append(("pairs differ", f"only design {sorted((x - floor_x - hidden) - y)}, "
+            problems.append(("pairs differ", f"only export {sorted((x - floor_x - hidden) - y)}, "
                                              f"only mirror {sorted((y - floor_y) - x)}"))
         if hidden - floor_x:
             problems.append(("pairs allowed by static_contacts", f"{sorted(hidden - floor_x)}"))
         if floor_x != floor_y:
-            problems.append(("floor pairs: differ", f"only design {sorted(floor_x - floor_y)}, "
-                                                    f"only mirror {sorted(floor_y - floor_x)}"))
+            kind = "floor pairs: only in design" if not floor_x else "floor pairs: differ"
+            problems.append((kind, f"only export {sorted(floor_x - floor_y)}, only mirror {sorted(floor_y - floor_x)}"))
         category.add(key[1], problems)
         category.deviation("pairs per state", max(len(x), len(y)))
 
@@ -969,9 +923,9 @@ def _run(export: Path, folder: Path, collisions: bool, log: Callable[[str], None
     log("converting")
     convert(export, folder)
     log("loading: design")
-    design_loaded, design = load_design(folder)
+    design = read(folder)
     log("loading: export loader")
-    loaded = {"new": load_new(export), "design": design_loaded}
+    loaded = {"new": load_new(export)}
     log("loading: old app")
     loaded["old"] = load_old(export)
     for each in loaded.values():
@@ -1002,12 +956,13 @@ def _run(export: Path, folder: Path, collisions: bool, log: Callable[[str], None
         report.notes.append(f"collisions: {skipped} movements without a configuration are not checked")
         for pair in PAIRS:
             compare_collisions(report, pair, found)
-        keys = [key for key, (_, state) in loaded["design"].states.items() if state.robot_configuration is not None]
+        movements = {(action.id, movement.id) for action, movement in design.movements()}
+        keys = [key for key in found["new"] if key in movements]
         log(f"collisions: mirror ({len(keys)} states)")
         found["mirror"], allowed = mirror_collisions(design, keys)
-        compare_mirror(report, found["design"], found["mirror"], allowed)
+        compare_mirror(report, found["new"], found["mirror"], allowed)
         report.notes.append(f"mirror: {sum(map(len, found['mirror'].values()))} colliding pairs over {len(keys)} "
-                            f"movements; design: {sum(len(found['design'][key]) for key in keys)}")
+                            f"movements; export: {sum(len(found['new'][key]) for key in keys)}")
     return report
 
 
@@ -1032,13 +987,8 @@ def step_new(export: str) -> dict:
 
 
 def step_design(design: str) -> dict:
-    """Time `read` + every cell + every movement state."""
-    return _timed(lambda watch: load_design(Path(design), watch=watch))
-
-
-def step_design_cindy(design: str) -> dict:
-    """Time `read` + Cindy's cell + Cindy's movement states: the old app's scope."""
-    return _timed(lambda watch: load_design(Path(design), robots=("robots/cindy",), watch=watch))
+    """Time `read` of the converted design."""
+    return _timed(lambda watch: (read(Path(design)), watch.lap("read")))
 
 
 def step_convert(export: str, design: str) -> dict:

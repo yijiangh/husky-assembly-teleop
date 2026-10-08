@@ -12,9 +12,9 @@ ROBOTS = ("robots/a", "robots/b")
 def _movement(movement_id: str, robot: str, start=None, target=None) -> Movement:
     """A free movement of `robot`: its start joints (or None) and target joints (or None)."""
     robots = {r: RobotState(Pose(), start if r == robot else None) for r in ROBOTS}
-    return Movement(id=movement_id, type="free", controller="joint_tracking", arms=(f"{robot}/tool0",),
-                    start=State(robots=robots, present=frozenset(), poses={}, attached={}),
-                    target=Target(joints={robot: target}, links={}) if target else None)
+    return Movement(id=movement_id, arms=(f"{robot}/tool0",), path="free", controller="position",
+                    start=State(robots=robots, present=frozenset(), poses={}),
+                    target=Target(joints={robot: target}) if target else None)
 
 
 def _design(*actions) -> Design:

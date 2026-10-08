@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from design_fixtures import build_design, joints, with_action, with_movement, with_start, write_robot_files
 
-from bar_assembly_core.design import Attached, Design, DesignError, RobotState, Target, validate
+from bar_assembly_core.design import Carried, Design, DesignError, LineSpec, RobotState, Target, validate
 from bar_assembly_core.geometry import Pose
 
 
@@ -55,8 +55,8 @@ def test_rule_4_references(tmp_path: Path):
     design = build_design(tmp_path)
     _reports(with_action(design, "B1_J_joint", bar="bars/NOPE"), 4, "unknown body 'bars/NOPE'")
     _reports(with_action(design, "B1_J_joint", robot="robots/nobody"), 4, "unknown robot 'robots/nobody'")
-    attached = {"bars/B1": Attached("robots/cindy/no_link", Pose())}
-    _reports(with_start(design, "B1_J_joint", 0, attached=attached), 4, "no link 'no_link'")
+    carried = {"bars/B1": Carried("robots/cindy/no_link", Pose())}
+    _reports(with_start(design, "B1_J_joint", 0, carried=carried), 4, "no link 'no_link'")
 
 
 def test_rule_5_tool_mounts(tmp_path: Path):
@@ -81,20 +81,25 @@ def test_rule_6_joints(tmp_path: Path):
 
 
 def test_rule_7_states(tmp_path: Path):
-    """A state without a robot, a pose for an absent body, a body both moved and attached."""
+    """A state is complete: every robot, a pose or carrier for every present body and nothing else, every tool."""
     design = build_design(tmp_path)
     start = design.actions["B1_J_joint"].movements[0].start
     only_cindy = {"robots/cindy": start.robots["robots/cindy"]}
     _reports(with_start(design, "B1_J_joint", 0, robots=only_cindy), 7, "robot robots/alice is not listed")
-    _reports(with_start(design, "B1_J_joint", 0, poses={"bars/B2": Pose()}), 7, "bars/B2 has a pose")
-    _reports(with_start(design, "B1_J_joint", 0, poses={"bars/B1": Pose()}), 7, "both in poses and in attached")
+    _reports(with_start(design, "B1_J_joint", 0, poses={**start.poses, "bars/B2": Pose()}), 7, "bars/B2 has a pose")
+    _reports(with_start(design, "B1_J_joint", 0, poses={**start.poses, "bars/B1": Pose()}), 7,
+             "both in poses and in carried")
+    _reports(with_start(design, "B1_J_joint", 0, poses={}), 7, "ground/WG0 is present but has neither")
+    _reports(with_start(design, "B1_J_joint", 0, tools={"tools/Grip": None}), 7, "tool tools/AT3L is not listed")
+    grip = {**start.tools, "tools/Grip": {"grip": "open"}}
+    _reports(with_start(design, "B1_J_joint", 0, tools=grip), 7, "its robot robots/alice is not in this state")
 
 
-def test_rule_8_attached_to_absent_robot(tmp_path: Path):
-    """A body held by a robot that is not in the state."""
+def test_rule_8_carried_by_absent_robot(tmp_path: Path):
+    """A body carried by a robot that is not in the state."""
     design = build_design(tmp_path)
-    attached = {"bars/B1": Attached("robots/alice/left_tool0", Pose())}
-    _reports(with_start(design, "B1_J_joint", 0, attached=attached), 8, "attached to robots/alice")
+    carried = {"bars/B1": Carried("robots/alice/left_tool0", Pose())}
+    _reports(with_start(design, "B1_J_joint", 0, carried=carried), 8, "carried by robots/alice")
 
 
 def test_rule_9_unit_quaternions(tmp_path: Path):
@@ -123,11 +128,59 @@ def test_rule_11_robot_meshes(tmp_path: Path):
         _reports(replace(design, robots={**design.robots, "robots/alice": robot}), 11, text)
 
 
+def test_rule_12_movement_parts(tmp_path: Path):
+    """Path and controller exactly when arms move, a line only on a linear path, and what each ending needs."""
+    design = build_design(tmp_path)
+    _reports(with_movement(design, "B1_J_joint", 0, arms=("robots/cindy/left_tool0",)), 12,
+             "arms move, so path must be")
+    _reports(with_movement(design, "B1_J_joint", 2, controller="position"), 12,
+             "ends_on tools with arm motion needs controller compliant")
+    _reports(with_movement(design, "B1_J_joint", 4, path="free"), 12, "a line needs path linear")
+    _reports(with_movement(design, "B1_J_joint", 1, target=None), 12, "a manual step needs ends_on operator")
+    _reports(with_movement(design, "B1_J_joint", 3, ends_on="operator"), 12, "ends_on operator is a manual step")
+    line = {"robots/cindy/left_tool0": LineSpec((0.0, 0.0, -2.0), 0.015)}
+    _reports(with_movement(design, "B1_J_joint", 2, line=line), 9, "has length 2.0, not 1")
+
+
+def test_rule_13_tool_states(tmp_path: Path):
+    """Channel values from the kind's vocabulary, every channel, and `on` a present body."""
+    design = build_design(tmp_path)
+    _reports(with_movement(design, "B1_J_joint", 1, target=Target(tools={"tools/AT3L": {"grip": "half"}})), 13,
+             "grip must be one of ('open', 'closed')")
+    start = design.actions["B1_J_joint"].movements[0].start
+    _reports(with_start(design, "B1_J_joint", 0, tools={**start.tools, "tools/AT3L": {"grip": "open", "on": None}}),
+             13, "lacks channels ['joint']")
+    on_absent = {**start.tools, "tools/AT3L": {"grip": "open", "joint": "loose", "on": "bars/B2"}}
+    _reports(with_start(design, "B1_J_joint", 0, tools=on_absent), 13, "on 'bars/B2', which is not present")
+    tool = replace(design.tools["tools/Grip"], kind="laser")
+    _reports(replace(design, tools={**design.tools, "tools/Grip": tool}), 13, "unknown tool kind 'laser'")
+
+
+def test_rule_14_carrying(tmp_path: Path):
+    """Carrying needs a tool on the part and, while arms move, a closed grip; a closed tool pins its arm."""
+    design = build_design(tmp_path)
+    tools = design.actions["B1_J_joint"].movements[0].start.tools
+    loose = {**tools, "tools/AT3L": {"grip": "open", "joint": "loose", "on": None}}
+    _reports(with_start(design, "B1_J_joint", 0, tools=loose), 14, "no tool of it is on its part")
+    _reports(with_start(design, "B1_J_joint", 2, tools=tools), 14, "while tools/AT3L grip is 'open'")
+    closed = {**tools, "tools/AT3L": {"grip": "closed", "joint": "tight", "on": "joints/J1_male"}}
+    _reports(with_start(design, "B1_J_joint", 4, tools=closed), 14, "the arm is pinned")
+
+
+def test_rule_15_and_16_notes_and_connections(tmp_path: Path):
+    """Notes are flat; a connection joins two different known bodies."""
+    design = build_design(tmp_path)
+    _reports(with_movement(design, "B1_J_joint", 2, notes={"axes": {"left": [0, 1, 0]}}), 15, "flat values only")
+    _reports(with_action(design, "B2_H_hold", notes={"axes": [0, 1, 0]}), 15, "flat values only")
+    _reports(replace(design, connections=design.connections | {("bars/B1", "bars/B1")}), 16, "connected to itself")
+    _reports(replace(design, connections=design.connections | {("bars/B1", "bars/B9")}), 4, "unknown body 'bars/B9'")
+
+
 def test_all_problems_reported_at_once(tmp_path: Path):
     """Several broken rules give one error listing every one of them."""
     design = build_design(tmp_path)
     design = with_action(design, "B1_J_joint", bar="bars/NOPE")
-    design = with_start(design, "B2_H_hold", 0, poses={"bars/B9": Pose()})
+    design = with_start(design, "B2_H_hold", 0, poses={"bars/B9": Pose()})  # also drops every pose
     body = design.bodies["bars/B2"]
     design = replace(design, bodies={**design.bodies, "bars/B2": replace(body, pose=Pose(orientation=(0, 0, 0, 2)))})
     problems = _problems(design)

@@ -117,7 +117,7 @@ class CellPlugin(HuskyPlugin):
         self._drawing: DesignDrawing | None = None
         self._visible = True
         self._ghost = False
-        # Overlay the bodies that do not stand in the state (absent, placeholder) too.
+        # Overlay the bodies that do not stand in the state (absent ones) too.
         self._everything = False
         # True when the drawing is out of date and draw must re-pose it.
         self._stale = True
@@ -161,7 +161,7 @@ class CellPlugin(HuskyPlugin):
             view = gui.add_button_group("View", ["Hide", "Ghost", "All"],
                                         hint="Hide / show the overlay (robots, tools, held bodies; standing bodies "
                                              "are scene bodies, always drawn); ghost makes it see-through; all also "
-                                             "overlays absent and placeholder bodies, see-through")
+                                             "overlays absent bodies, see-through")
             # ! Keep changing text BELOW the buttons, so they never move mid-click.
             self._details = gui.add_html("")
             self._error_text = gui.add_html("")
@@ -415,7 +415,7 @@ class CellPlugin(HuskyPlugin):
         robot = self.design.design.robots[action.robot]
         which = chip(f"{self.index + 1}/{len(self.design.steps)}", OK)
         which += chip(escape(robot.name), SECTION_CTRL, action.robot)
-        which += chip(movement.type + (" coupled" if movement.coupled else ""), NONE, movement.label)
+        which += chip(escape(movement_kind(movement)), NONE, movement.label)
 
         # ! Say so when the drawn start is not authored.
         target = movement.target.joints.get(action.robot) if movement.target is not None else None
@@ -430,14 +430,26 @@ class CellPlugin(HuskyPlugin):
             carries += chip("showing start", NONE)
         else:
             carries += chip("showing target" if target else "no target: start", OK if target else BUSY)
-        carries += chip(movement.controller, NONE)
+        carries += chip(movement.controller or "no arm moves", NONE)
+        carries += chip(f"ends on {movement.ends_on}", NONE)
 
-        moves = [arm.split("/")[-1] for arm in movement.arms] or [tool.split("/")[-1] for tool in movement.tools]
+        moves = [arm.split("/")[-1] for arm in movement.arms] + [
+            f"{tool.split('/')[-1]} {' '.join(f'{channel} {value}' for channel, value in channels.items())}"
+            for tool, channels in movement.tool_change.items()]
         lines = [f"action   {step.action_index + 1}/{self.design.action_count}  {action.id}",
                  f"movement {step.movement_index + 1}/{len(action.movements)}  {movement.id}",
                  f"moves    {', '.join(moves) or '-'}"]
         text = values(*(_one_line(escape(line)) for line in lines))
         return block(_one_line(which) + _one_line(carries) + text)
+
+
+def movement_kind(movement) -> str:
+    """A movement's kind from its parts, e.g. "linear coupled + tools", "tools", "manual"."""
+    if movement.ends_on == "operator":
+        return "manual"
+    arms = f"{movement.path}{' coupled' if movement.coupled else ''}" if movement.arms else ""
+    tools = "tools" if movement.tool_change else ""
+    return " + ".join(part for part in (arms, tools) if part)
 
 
 def tool_mismatches(design: CellDesign, robots: tuple[RobotConfig, ...]) -> list[str]:

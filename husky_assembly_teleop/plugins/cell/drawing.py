@@ -4,7 +4,7 @@ The cell's overlay: what the core's 3D view cannot draw of one design state.
 Drawn from the design alone, with forward kinematics from each robot's yourdfpy model.
 
 - * Bodies that `stand` are scene bodies, drawn by the core. The overlay draws the robots, their tools and the
-  bodies they hold, and, when asked, every other body (absent or at a placeholder pose), always see-through.
+  bodies they carry, and, when asked, every other body (absent ones), always see-through.
 - `load_robot_models` is slow: run it on the loading thread.
 - `DesignDrawing` is main thread only; a new state only changes poses, joint values and colours.
 - ? Robots are single-colour meshes (`add_simple_urdf`), so "Ghost" only changes their opacity.
@@ -140,13 +140,14 @@ class DesignDrawing:
             state: Which robots are there and where, which bodies are present, held or moved.
             joints: Robot id -> joint values to draw it at (`design.displayed_joints`);
                 joints not given are drawn at zero.
-            everything: Also draw the bodies that neither stand nor are held (absent, placeholder).
+            everything: Also draw the bodies that neither stand nor are carried (absent ones).
         """
         # * Robots first: tools and held bodies read their links from the posed models.
         for robot_id, robot in self._robots.items():
             robot_state = state.robots.get(robot_id)
             tools = self._design.robots[robot_id].tools
-            if robot_state is None:
+            if robot_state is None or robot_state.base is None:
+                # ? Absent, or its base not decided by the design: there is nowhere to draw it.
                 robot.frame.visible = False
                 for tool_id in tools.values():
                     self._tools[tool_id][0].visible = False
@@ -165,14 +166,14 @@ class DesignDrawing:
                 frame.visible = True
 
         for body_id, (frame, meshes) in self._bodies.items():
-            attached = state.attached.get(body_id) if body_id in state.present else None
-            if attached is not None:
-                holder, link = split_link_id(attached.to)
+            carried = state.carried.get(body_id) if body_id in state.present else None
+            if carried is not None:
+                holder, link = split_link_id(carried.to)
                 holder_state = state.robots.get(holder)
-                if holder_state is None:
-                    frame.visible = False  # held by a robot that is not there
+                if holder_state is None or holder_state.base is None:
+                    frame.visible = False  # carried by a robot that is not drawn
                     continue
-                pose = compose(self._link_pose(holder, link, holder_state.base), attached.grasp)
+                pose = compose(self._link_pose(holder, link, holder_state.base), carried.offset)
                 look = (ATTACHED_COLOR, GHOST_OPACITY if self._ghost else None)
             elif everything and not stands(state, body_id):
                 pose = state.poses.get(body_id, self._design.bodies[body_id].pose)

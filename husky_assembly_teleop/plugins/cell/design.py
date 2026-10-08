@@ -171,11 +171,11 @@ def body_color(body_id: str) -> tuple[int, int, int]:
 
 
 def stands(state: State, body_id: str) -> bool:
-    """Whether a body stands in a state on its own: present, not held by a robot, and not at a placeholder pose.
+    """Whether a body stands in a state on its own: present and not carried by a robot.
 
     * Standing bodies go into the scene enabled; the cell's overlay draws the rest.
     """
-    return body_id in state.present and body_id not in state.attached and body_id not in state.placeholder
+    return body_id in state.present and body_id not in state.carried
 
 
 def scene_bodies(cell: CellDesign, step: Step, robots: tuple[RobotConfig, ...], prefix: str) -> list[Body]:
@@ -184,7 +184,6 @@ def scene_bodies(cell: CellDesign, step: Step, robots: tuple[RobotConfig, ...], 
     The scene is edited for the live world:
     - a held body is attached to the configured robot with the planned robot's serial (`retarget`); held by a robot
       not configured, it is disabled where the plan has it;
-    - a body at a placeholder pose is disabled;
     - `touches` name the real robots, their tools and the prefixed ids; those of robots not configured are dropped.
 
     * Every step gives the same ids, geometry objects and colours, so stepping never rebuilds a body in a mirror or
@@ -225,8 +224,7 @@ def scene_bodies(cell: CellDesign, step: Step, robots: tuple[RobotConfig, ...], 
     bodies = []
     for body_id, body in scene.bodies.items():
         placement = moved.get(body_id) or scene.world_poses.get(body_id, cell.design.bodies[body_id].pose)
-        enabled = (body.enabled and body_id not in step.movement.start.placeholder
-                   and (body_id not in held or body_id in moved))
+        enabled = body.enabled and (body_id not in held or body_id in moved)
         bodies.append(Body(ids(body_id), body.geometry, placement,
                            touches=tuple(ids(other) for other in body.touches if other in ids),
                            label=body.label or body_id, color=tuple(c / 255 for c in body_color(body_id)) + (1.0,),

@@ -92,7 +92,7 @@ cell/bars/B1                        scene body, owner = plugin "cell"
 
 ### 5.1 `bar_assembly_core/scene.py`, `robot.py`; monitor `world/scene.py`
 - `Pose`, `compose` (`geometry.py`): `Pose(position, orientation)` is frozen, compared by value; `compose(a, b)`, `Pose.from_matrix`, `Pose.matrix()`.
-- `Attachment(parent, link, grasp)`: held by a robot (link, or None for the base) or fixed to another body (`tracked/<name>`).
+- `Attachment(parent, link, offset)`: held by a robot (link, or None for the base) or fixed to another body (`tracked/<name>`).
 - `Body(id, geometry, placement: Pose | Attachment, touches, label, color, enabled)`: **mutable**. `touches` lists ids allowed to touch it (bodies, `robots/<name>` for the whole robot, `robots/<name>/<link>`, mounted tools by tool id); it is symmetric.
 - `RobotModel(name, urdf, srdf, flanges, tools, tool_touches, stock_ur_frames)`: frozen, compared by identity. `RobotObject(id, model, base, joints, enabled, base_tracked, unmeasured, base_time, joints_time, label)`: one robot at one moment; `acting_problems()` says why it can't be planned for.
 - `Scene(tick, time, bodies, world_poses, robots)`: `bodies` are copies (sharing geometry), tracked objects included as `tracked/<name>`; `world_poses` holds every body's resolved world pose (`world_poses(bodies, robots, link_pose)`); `robots` are `RobotObject`s by id.
@@ -147,7 +147,7 @@ Rules shared by every mirror:
   | Our data | compas_fab |
   |---|---|
   | Acting robot base and joints | `robot_base_frame`, `robot_configuration` |
-  | Body attached to the acting robot | `attached_to_link=link`, `attachment_frame=grasp` |
+  | Body attached to the acting robot | `attached_to_link=link`, `attachment_frame=offset` |
   | Body attached to another robot or to a body | stationary: `frame` = `world_poses[id]`, the parent's id in `touch_bodies` |
   | `touches` entry that is one of the acting robot's links | `touch_links` |
   | any other `touches` entry | `touch_bodies` |

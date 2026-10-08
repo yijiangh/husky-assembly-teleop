@@ -28,14 +28,15 @@ class Tool:
     Attributes:
         id: E.g. "tools/AT3L" (a design's) or "tools/a200-0806/left_ur_arm" (a live robot's).
         kind: The end effector kind, e.g. "scaffolding_v3".
-        touches: Ids the tool may touch, as written in a design (e.g. "robots/cindy/left_ur_arm_wrist_2_link").
+        mount_contacts: Robot links the tool may always touch, as link ids (e.g.
+            "robots/cindy/left_ur_arm_wrist_2_link"): how it is mounted, like the SRDF's disabled collisions.
     """
 
     id: str
     geometry: Geometry
     tcp: Pose
     kind: str
-    touches: Tuple[str, ...] = ()
+    mount_contacts: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, eq=False)

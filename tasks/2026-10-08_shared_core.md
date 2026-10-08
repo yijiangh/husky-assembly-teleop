@@ -81,10 +81,8 @@ Stays in the monitor: `RobotConfig` (gains `model: RobotModel`), `robot_interfac
 
 ## 7. Schema 2 candidates (collected while working)
 
-- `connections` (decision 10).
-- Tool state per `State` (a tool's opening, which tool is mounted).
-- Typed `notes` (format Q8).
-- `solutions/` files.
+Taken up by schema 2 (§11): `connections` (decision 10), tool state per `State`, flat `notes`, the content hash for
+`solutions/`. Still open: §9.5.
 
 ## 8. Report
 
@@ -109,16 +107,17 @@ and trimesh==4.12.2. **yourdfpy** is needed by `kinematics` and `design.scenes`,
 | `ids` | `ID_PATTERN`, `check_id`, `ROBOTS`, `TOOLS`, `TRACKED`, `robot_id(name)`, `tracked_id(name)`, `link_id(robot, link)`, `split_link_id(id)`; `IdMap(pairs)`: `ids(id)` (KeyError if unmapped), `id in ids`, `ids.get(id)`, a mapped robot maps its links. |
 | `urdf` | `urdf_links`, `urdf_joints`, `movable_joints(urdf, srdf)`, `srdf_group_tips`, `resolved_urdf_text`, `copy_robot`; UR conventions `UR_JOINT_NAMES`, `TOOL_TOUCHES_ARM_LINKS`, `stock_frame_problem(urdf, arm)`. |
 | `kinematics` | `ForwardKinematics().link_pose(urdf, base, joints, link) -> Pose`; `load_urdf(path)`. One instance per thread. |
-| `robot` | `Tool(id, geometry, tcp, kind, touches)` (geometry and TCP in the flange frame); `RobotModel(name, urdf, srdf, flanges, tools, tool_touches, stock_ur_frames)`: frozen, by identity; `.links`, `.movable_joints`. `robot_model(name, urdf, srdf, tools=None, touches=None)`. `RobotObject(id, model, base, joints, enabled=True, base_tracked=True, unmeasured=frozenset(), base_time=None, joints_time=None, label="")`, `.copy()`, `.acting_problems() -> list[str]`. |
-| `scene` | `Attachment(parent, link, grasp)` (parent: robot id or body id); `Body(id, geometry, placement, touches=(), label="", color=None, enabled=True)`, `.copy()`; `Scene(tick, time, bodies, world_poses, robots)`, `.copy()`, `.label(id)`; `world_poses(bodies, robots, link_pose)`; `same_source(new, old)`; `retarget(attachments, robot_map, models)`. |
-| `design` | The format: `read(folder)`, `write(design, folder)`, `validate(design)`, `Design` (`.scene_at(movement)`, `.scene_after(bar)`, `.movements()`), `RobotSpec`, `BodySpec`, `State`, `Movement`, `Action`, `Target`, `Attached`, `DesignError`, `SchemaMismatch`; `assumed_joints`, `assumed_start_all` (`design.carry`). |
+| `robot` | `Tool(id, geometry, tcp, kind, mount_contacts)` (geometry and TCP in the flange frame); `RobotModel(name, urdf, srdf, flanges, tools, tool_touches, stock_ur_frames)`: frozen, by identity; `.links`, `.movable_joints`. `robot_model(name, urdf, srdf, tools=None, touches=None)` (`touches`: flange -> links). `RobotObject(id, model, base, joints, enabled=True, base_tracked=True, unmeasured=frozenset(), base_time=None, joints_time=None, label="")`, `.copy()`, `.acting_problems() -> list[str]`. |
+| `scene` | `Attachment(parent, link, offset)` (parent: robot id or body id); `Body(id, geometry, placement, touches=(), label="", color=None, enabled=True)`, `.copy()`; `Scene(tick, time, bodies, world_poses, robots)`, `.copy()`, `.label(id)`; `world_poses(bodies, robots, link_pose)`; `same_source(new, old)`; `retarget(attachments, robot_map, models)`. |
+| `design` | The format, schema 2 (`doc/design_format.md`): `read(folder)`, `write(design, folder)`, `validate(design)`, `content_hash(json_file)`; `Design` (`.scene_at(movement)`, `.scene_after(bar)`, `.movements()`, `.connections`, `.writer`, `.producer`), `Writer`, `Producer`, `RobotSpec` (`ground_links`), `BodySpec` (`part`, `markers`), `State` (`robots`, `present`, `poses`, `carried`, `tools`), `RobotState` (base and joints may be null), `Carried(to, offset)`, `Movement` (`arms`, `path`, `coupled`, `controller`, `line`, `ends_on`, `target`, `notes`), `LineSpec`, `Target(joints, links, tools)`, `Action` (`notes`), `ToolState`, `DesignError`, `SchemaMismatch`; `TOOL_CHANNELS`, `ON` (`design.vocabulary`); `assumed_joints`, `assumed_start_all` (`design.carry`). |
+| `design.relations` | `part_of(design)`, `members(parts, body)`, `allowed_contacts(design, state)`: the contacts derived from `on`, `connections` and `ground_links`. |
 | `design.scenes` | `scene_at(design, movement)`, `scene_after(design, bar)`, `design_model(design, robot_id) -> RobotModel` (cached by content). |
 | `design.hold` | `release_bar(design, action_id)`, `hold_scene(scene, bar)`, `hold_scene_for(design, action_id)`. |
 | `mirrors.compas_fab` | `CompasFabMirror(robot_id, log=None)`: `.sync(scene)`, `.collisions(joints=None, full_report=False)`, `.search_check(joint_names)`, `.lend()`, `.state`, `.cell`, `.static_contacts`, `.configuration(joints)`, `.state_at(joints)`, `.set_gui(gui)`, `.close()`. |
 | `mirrors.pybullet` | `PyBulletMirror()`: `.sync(scene)`, `.collisions(robot_id, margin=0.0, candidates=None)`, `.allowed(a, b)`, `.robot(robot_id)`, `.robots`, `.body_ids(id)`, `.id_of(pybullet_id)`, `.obstacle_ids()`, `.active()`, `.set_gui(gui)`, `.close()`. |
 | `mirrors.compas` | `frame_from_pose`, `pose_from_frame`, `rigid_body(geometry)`, `load_model(urdf, visual=True)`, `tool_model(tool, name)`, `robot_as_tool(urdf, tools, name, visual=True)`, `planning_group(cell, flange)`, `filled`, `subtree`, `PARKED_POSITION`. |
 | `mirrors.pp_client` | `pp_client(client_id)`: pybullet_planning acts on that world inside the block; restored after. |
-| `legacy` | `export.read_legacy(folder, robot_files)`, `export.load_export`, `conversion.convert_export`; `compas_fab.to_robot_cell` / `to_cell_state` (the reference for `scripts/legacy_equivalence.py`). |
+| `legacy` | `export.read_legacy(folder, robot_files)`, `export.load_export`, `export.from_export`; `conversion.convert_export(export, destination, data_directory)`, `conversion.convert_in_memory`. The old export becomes schema 2 directly (format Appendix B). |
 
 Ids: one canonical id per object. Robots are `robots/cindy` when planned, `robots/a200-0806` when measured. Links are
 `robots/<name>/<link>`. Mounted tools use their tool id (`tools/AT3L`; a live one is `tools/a200-0806/left_ur_arm`).
@@ -166,6 +165,7 @@ mirror.sync(next_scene)                                   #    writes the full s
 | 1 | The design stays an ordinary editable object. | Unchanged: the frozen dataclasses edited with `dataclasses.replace`, as before. No versioning. | — |
 | Facts | "`<arm>_base_link` differs by 90°" between the URDF variants. | Measured: Alice differs at `ur_arm_base_link` (90°); Cindy only at `right_ur_arm_base` (90°). All other links agree (`test/test_core_scene.py::test_frame_convention_and_fk_comparison`). | Cindy's turn sits in another joint. `RobotModel.stock_ur_frames` records the convention. |
 | Step 1 | Move `design_io` unchanged. | Moved, then split by layer in §10: the format is `design/`, the old export `legacy/`, poses and shapes `geometry.py`. They now live with the converter in `legacy/`. | The brief asked for the helpers to move. Only the legacy modules depend on `mirrors`. |
+| — | Schema 2 allowed contacts: a tool on its part, connections, ground links, mount contacts. | Two mate rules added: a mated half may touch its mate's part, and a tool may touch the halves mated to the part it is on (`design.relations`). | In both exports a male half touches its mate's bar after insertion (36 contacts); the proposal's rules alone report them as collisions. Mates still never merge parts. **Please confirm or reject.** |
 | — | Scene type name. | One type, `Scene`, for the world at one moment: the monitor keeps a live one plugins edit and hands out a copy per tick (§10). | Two classes for one concept; the live/copy split is a rule about instances, enforced by `PluginScene`. |
 
 Further changes reviewers should know about:
@@ -187,17 +187,44 @@ Further changes reviewers should know about:
 robots in a scene, a real robot pressing into a body would be hidden from every other robot's plans. The equivalence
 runs list these pairs separately ("pairs allowed by static_contacts"); counts are in §9.6. Nothing else was changed.
 
-### 9.5 Schema 2 candidates and deferred work
+### 9.5 Schema 2: what changed for hosts, and what is still open
 
-Schema 2 candidates:
-- `connections` (decision 10): bar with joint halves, mated halves.
-- Tool state per `State` (opening; which tool is mounted).
-- Typed `notes` (`lm_distance_mm`, `approach_axis`, …).
-- `solutions/` (planner results).
-- Tool `touches` are robot-specific ids (`robots/cindy/left_ur_arm_wrist_2_link`), so one tool spec can't be shared
-  between robots. Link names relative to the mounting robot would remove that.
+Schema 2 is in (§11). The library reads and writes schema 2 only: `read` refuses a schema 1 `design.json` with
+`SchemaMismatch`. The monitor converts an old export straight to schema 2 (`legacy/`); a stale `<export>_design`
+copy is regenerated on load. For Rhino and tamp:
+- **Renames.** `State.attached` → `carried` (`Carried(to, offset)`); `Tool.touches` → `mount_contacts`;
+  `Attachment.grasp` → `offset`. Placeholder bars are gone: a body is in `present` or absent.
+- **New in the files.** `connections`, `ground_links`, tool states with `on`, movement parts (`arms`, `path`,
+  `coupled`, `controller`, `line`, `ends_on`), `target.tools`, `producer`, flat `notes` on actions and movements.
+  Validation rules 12–16 cover them (format §9).
+- **Ungrasp, both forms valid.** A tool-only movement (`target.tools`, no arms), or a compliant linear back-off with
+  a tool change and `ends_on: tools`. The converter writes the tool-only form: the export has no line for it.
+- **Content hash.** `content_hash(file)`: SHA-256 of one JSON file without `writer` and `producer`, keys sorted,
+  floats rounded to 12 decimals. Stable across a read and rewrite of the converted 260814 design.
+- **Allowed contacts are derived** (`design.relations`); `scene_at` uses them for body touches. Mate rules: §9.3.
+
+What the converter derives, because the old export does not store it (format Appendix B):
+- `connections` from body–body contacts: a half with the bar it is carried with (else the single bar it touches),
+  mated halves, and ground connectors with the ground under their design position (floor area, 5 cm margin). The
+  36 contacts of a half with its mate's bar are not connections.
+- Tool states replayed along the schedule from released. `on`: a scaffolding tool on the male or ground half it
+  touches; a support gripper (never in the export's contacts) on its action's bar from its `close`; cleared after
+  an arm motion that started open.
+- Bodies another robot carries are carried over into each state (states are complete); the supported bar is
+  present at its design pose in its hold release.
+- `tighten` with `overlaps_next` and the insert become one movement with `ends_on: tools`.
+- `line` from `retreat_axes_world` / `lm_distance_mm`, else from start to target.
+- Gaps: 42 unscheduled BarActions files in 260814 are left out. Notes the planner consumed (`ends_on`,
+  `constraint`, `bar_arm_side`, `planner_fills`, …) are dropped. Movements with a `trajectory` are refused.
+
+Still open:
+- `mount_contacts` are robot-specific ids (`robots/cindy/left_ur_arm_wrist_2_link`), so one tool spec can't be
+  shared between robots. Link names relative to the mounting robot would remove that.
 - The design's robot URDFs are the non-stock variants. Either require stock UR frames in designs, or record the
   convention in `design.json`.
+- `solutions/` holds only the hash convention so far; no solution file format.
+- Replacing yourdfpy with a small numpy FK, so `scene_at` needs nothing beyond numpy, scipy and trimesh (asked, not
+  decided).
 
 Deferred or stubbed:
 - Commit is still a stub in both planners.
@@ -209,21 +236,27 @@ Deferred or stubbed:
   (first tick 9 ms), but not on hardware: no plans were run through the UI.
 - `uv` is not installed on this machine, so `test_core_py39.py` skips without it. The runs below used uv 0.12.23
   installed to a scratch folder.
-- Not touched: the Rhino and tamp repositories, `external/` and its pins, VAMP/PRM export, IK, the file format.
+- Not touched: the Rhino and tamp repositories, `external/` and its pins, VAMP/PRM export, IK. The file format
+  changed only by the user's schema 2 request.
 - Tamp: `_conf12_from_target` catches `TypeError`/`KeyError` but not the `IndexError` a numpy goal raises, so pass
   goals as lists or `Configuration`s.
 
 ### 9.6 Test results
 
+Schema 2, on 2026-10-08:
+
 | Check | Result |
 |---|---|
-| Quick set and linters (`pytest -m "not slow"`, with `HUSKY_DESIGN_DIRECTORY` = 260814 export and uv on PATH) | 193 passed, 2 skipped (copyright stub; equivalence test needs `DESIGN_IO_EQUIVALENCE_EXPORT`, run by hand below) |
-| Slow set (`pytest -m slow`) | 7 passed, including `test_compas_fab_lend.py` (tamp `plan_free_dual_arm` on a lent planner, on a client other than 0) |
-| Python 3.9 (`uv run --python 3.9`, no PYTHONPATH, so no ROS) | `import bar_assembly_core, bar_assembly_core.mirrors` (and every core module) works: prints `3.9.25`, rclpy not loaded. The pure core imports with numpy, scipy and trimesh alone; `Design.scene_at` runs under 3.9. |
-| Equivalence, 260814_RobArch_support_ik | 0 unexpected kinds. Mirror (`scene_at` → `CompasFabMirror`) vs `to_cell_state`: 137 of 140 movements identical; the other 3 differ only by pairs `static_contacts` allows (`bars/B5`–`robots/cindy` in Alice's `B3_H_M1..M3`). No floor-pair differences. Pairs: mirror 22, design 25. |
-| Equivalence, 260920_RobArch_demo_revamp_backup | Same: 0 unexpected, 137/140 identical, the same 3 `static_contacts` pairs, no floor differences. Pairs: mirror 20, design 23. |
-| Monitor | Starts with `robots:=['0804','0806']` and the four plugins, ticks without errors (no hardware). |
-| Timing (260814, 94 bodies) | `scene_at` 3.0 ms per movement (run only when the design or step changes); scene copy 0.055 ms; `scene_after` 0.2 ms. |
+| Quick set (`pytest`) | 194 passed, 4 skipped (Python 3.9 without uv on PATH; the mirror test and the equivalence test without their environment variables, run below) |
+| Linters (`pytest -m "" -k "flake8 or pep257"`) | pass |
+| Slow set (`pytest -m slow`) | 5 passed, including `test_compas_fab_lend.py` (tamp `plan_free_dual_arm` on a lent planner, on a client other than 0) |
+| `test_compas_fab_mirror.py` with `HUSKY_DESIGN_DIRECTORY` = 260814 export | 9 passed |
+| Python 3.9 (`test_core_py39.py`, scratch uv) | 3 passed: every core module imports under 3.9 without ROS |
+| Conversion, 260814_RobArch_support_ik | 3 robots, 4 tools, 94 bodies, 112 connections, 48 actions, 204 movements; valid after writing |
+| Conversion, 260920_RobArch_demo_revamp_backup | 3 robots, 4 tools, 95 bodies, 112 connections, 48 actions, 204 movements; valid after writing |
+| Equivalence, 260814 (`scripts/legacy_equivalence.py`) | 0 unexpected kinds. Converted design → `scene_at` → `CompasFabMirror` vs the export loaded directly, 120 movements with configurations: 112 identical. 5 differ by a pair the design's `ground/` bodies add (`robots/cindy/left_ur_arm_forearm_link` with the ground in `B13_J_M4`, `B13_R_M0..M1`, …; the export loader has no floor). 3 differ by `static_contacts` pairs (`bars/B5`–`robots/cindy` in `B3_H_M1..M3`). |
+| Equivalence, 260920 | 0 unexpected kinds: 117 of 120 identical; the other 3 are the same `static_contacts` pairs. |
+| Monitor | Starts with `robots:=['0804','0806']` and `robot_control`, `cell`, `base_planner`, `arm_planner`, `mocap_probe`; first tick 11 ms, no errors (no hardware). The cell plugin's load path turns a schema 1 copy into schema 2 in 13.3 s; `scene_bodies` 4.0 ms per step. |
 
 ## 10. Refactor before the hand-off (user request, 2026-10-08)
 
@@ -239,10 +272,10 @@ bar_assembly_core/              each layer imports only the ones above it
 ├── kinematics.py  ForwardKinematics (yourdfpy)
 ├── robot.py       Tool, RobotModel, robot_model, RobotObject
 ├── scene.py       Attachment, Body, Scene, world_poses, same_source, retarget
-├── design/        the file format: types, read, write, validate, meshes, version; carry (assumed joints),
-│                  scenes (scene_at, scene_after; yourdfpy), hold
+├── design/        the file format: types, read, write, validate, meshes, version, vocabulary; relations
+│                  (derived contacts), carry (assumed joints), scenes (scene_at, scene_after; yourdfpy), hold
 ├── mirrors/       compas.py (conversions), compas_fab.py, pybullet.py, pp_client.py
-└── legacy/        export.py (old export → Design), conversion.py, compas_fab.py (to_cell_state harness), timing.py
+└── legacy/        export.py (old export → schema 2 Design), conversion.py, timing.py
 ```
 
 | # | Work | Done when |
@@ -250,3 +283,24 @@ bar_assembly_core/              each layer imports only the ones above it
 | R1 | Moves and merges with `git mv`; split names to their layer. | Files in place. |
 | R2 | Rewrite every import (core, monitor, tests, scripts) by name; rename the types. | Quick, slow and linters pass; 3.9 check passes. |
 | R3 | Docs, report §9, AGENTS.md. | No stale paths (`design_io.`, `compas_convert`, `SceneSnapshot`, `ToolSpec`). |
+
+## 11. Schema 2 (user request, 2026-10-08)
+
+Spec: the doc "Husky design format: schema 2 proposal" (claude.ai, 2026-10-08). Answers: the library reads and writes
+schema 2 only (no conversion inside it); `legacy/` converts the old export straight to schema 2 and a schema 1
+`<export>_design` copy is regenerated; the ungrasp may be a tool-only movement or a compliant linear back-off with a
+tool change (both valid), and the converter writes the tool-only form, having no line for it; of `solutions/` only the
+deterministic content hash goes in now.
+
+| # | Work | Done when |
+|---|---|---|
+| S1 | `design/types.py`, `vocabulary.py` (tool channels per kind), `read.py`, `write.py` (+ `content_hash`), `validate.py` (schema 2 rules), `version.SCHEMA = 2`; core `Tool.touches` → `mount_contacts`, scene `Attachment.grasp` → `offset`. | Round trip and one failing design per rule. |
+| S2 | `design/scenes.py`: poses from every state, `carried`, derived allowed contacts (tool on its part, connections, ground links, mount contacts). | Core scene tests. |
+| S3 | `legacy/export.py` → schema 2: `connections` from body–body contacts (+ ground connectors to their action's ground), `ground_links`, `mount_contacts`, tool states replayed along the schedule, `on` (scaffolding: the touched male/ground half; robotiq: the bar from its `close`; both cleared after a retreat), placeholders not present, movement parts, tighten + insert merged, `line` from notes or target − start, notes flat. `legacy/compas_fab.py` goes; the equivalence check compares the export with the mirror. | Both exports convert and validate; equivalence: only explained kinds. |
+| S4 | Cell plugin, drawing, planners, docs (`design_format.md` → schema 2), tests. | Quick, slow, linters, 3.9 pass; monitor starts. |
+
+Status: S1–S4 done; results in §9.6, host-facing changes in §9.5.
+
+Converter derivations checked on the 260814 data: every scaffolding tool touches at most one male or ground half
+(288 states one, 32 states one of two halves, 128 none); support grippers never appear in contacts (448 states), so
+their `on` follows the action; 140 distinct body–body pairs (bar–half 108, mates 32).

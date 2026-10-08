@@ -1,8 +1,8 @@
 """
-Write a `Design` into a design folder (doc/design_format.md), then read it back.
+Write a `Design` into a design folder (doc/design_format.md), then read it back; and the content hash of a file.
 
-Equal meshes share one file `meshes/<first owner id>.obj`; keys at their default, and `visual` equal to
-`collision`, are left out.
+The writer is deterministic: fixed key order, floats rounded to FLOAT_DIGITS. Equal meshes share one file
+`meshes/<first owner id>.obj`; keys at their default, and `visual` equal to `collision`, are left out.
 """
 
 from __future__ import annotations
@@ -10,18 +10,17 @@ from __future__ import annotations
 import json
 import re
 import shutil
-from hashlib import sha1
+from hashlib import sha1, sha256
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
 
-from ..geometry import BoxShape, CylinderShape, Geometry, Shape, TriMesh
-from .meshes import write_mesh
-from ..geometry import Pose
-from .read import ACTION_FORMAT, DESIGN_FORMAT, read
+from ..geometry import BoxShape, CylinderShape, Geometry, Pose, Shape, TriMesh
 from ..urdf import copy_robot
-from .types import Action, Design, Movement, RobotSpec, State, Target, Writer
+from .meshes import write_mesh
+from .read import ACTION_FORMAT, DESIGN_FORMAT, read
+from .types import Action, Design, Movement, Producer, RobotSpec, State, Target, Writer
 from .validate import validate
 from .version import writer_info
 
@@ -63,13 +62,17 @@ def write(design: Design, folder: Path, *, overwrite: bool = False, package_dirs
     manifest = {
         "format": DESIGN_FORMAT,
         "writer": writer,
+        **({"producer": _producer(design.producer)} if design.producer is not None else {}),
         "robots": robots,
         "tools": {tool_id: _drop_empty({**_geometry(tool.geometry, meshes, tool_id), "tcp": _pose(tool.tcp),
-                                        "kind": tool.kind, "touches": list(tool.touches)})
+                                        "kind": tool.kind, "mount_contacts": list(tool.mount_contacts)})
                   for tool_id, tool in design.tools.items()},
         "bodies": {body_id: _drop_empty({"pose": _pose(body.pose), **_geometry(body.geometry, meshes, body_id),
-                                         "touches": list(body.touches), "label": body.label})
+                                         "label": body.label, "part": body.part,
+                                         "markers": {name: [_float(v) for v in point]
+                                                     for name, point in body.markers.items()}})
                    for body_id, body in design.bodies.items()},
+        **_drop_empty({"connections": [list(pair) for pair in sorted(design.connections)]}),
         "schedule": list(design.schedule),
     }
     _write_json(folder / "design.json", manifest)
@@ -100,7 +103,7 @@ def _robot(robot: RobotSpec, folder: Path, package_dirs: Sequence[Path]) -> Dict
         shutil.rmtree(robot_dir, ignore_errors=True)
         urdf, srdf = copy_robot(robot.urdf, robot.srdf, robot_dir, package_dirs)
     return _drop_empty({"urdf": _relative(urdf, folder), "srdf": _relative(srdf, folder),
-                        "serial": robot.serial, "tools": dict(robot.tools)})
+                        "serial": robot.serial, "tools": dict(robot.tools), "ground_links": list(robot.ground_links)})
 
 
 def _relative(path: Path, folder: Path) -> str:
@@ -159,6 +162,11 @@ def _writer(writer: Writer) -> Dict[str, Any]:
     return {"schema": writer.schema, "library": writer.library, "commit": writer.commit, "dirty": writer.dirty}
 
 
+def _producer(producer: Producer) -> Dict[str, Any]:
+    """The `producer` block."""
+    return {"repo": producer.repo, "commit": producer.commit, "dirty": producer.dirty, "command": producer.command}
+
+
 def _float(value: float) -> float:
     """A float rounded to FLOAT_DIGITS, so noise like -3.4e-20 is written as 0.0 (`+ 0.0` turns -0.0 into 0.0)."""
     return round(float(value), FLOAT_DIGITS) + 0.0
@@ -200,35 +208,37 @@ def _joints(joints: Optional[Dict[str, float]]) -> Optional[Dict[str, float]]:
 
 def _state(state: State) -> Dict[str, Any]:
     """A State (format §5.2), sets sorted so equal states give equal files."""
-    robots = {robot: None if value is None else {"base": _pose(value.base), "joints": _joints(value.joints)}
+    robots = {robot: None if value is None else {"base": None if value.base is None else _pose(value.base),
+                                                 "joints": _joints(value.joints)}
               for robot, value in state.robots.items()}
     return {"robots": robots, "present": sorted(state.present), **_drop_empty({
-        "poses": {body: _pose(pose) for body, pose in state.poses.items()},
-        "attached": {body: {"to": value.to, "grasp": _pose(value.grasp)} for body, value in state.attached.items()},
-        "touches": [list(pair) for pair in sorted(tuple(sorted(pair)) for pair in state.touches)],
-        "placeholder": sorted(state.placeholder)})}
+        "poses": {body: _pose(pose) for body, pose in sorted(state.poses.items())},
+        "carried": {body: {"to": value.to, "offset": _pose(value.offset)}
+                    for body, value in sorted(state.carried.items())},
+        "tools": {tool: None if value is None else dict(value) for tool, value in sorted(state.tools.items())}})}
 
 
 def _target(target: Target) -> Dict[str, Any]:
     """A Target (format §5.3)."""
     return _drop_empty({"joints": {robot: _joints(joints) for robot, joints in target.joints.items()},
-                        "links": {link: _pose(pose) for link, pose in target.links.items()}})
+                        "links": {link: _pose(pose) for link, pose in target.links.items()},
+                        "tools": {tool: dict(channels) for tool, channels in target.tools.items()}})
 
 
 def _movement(movement: Movement) -> Dict[str, Any]:
-    """A Movement (format §5.1). `arms` and `tools` are written whenever their movement type needs them."""
-    entry: Dict[str, Any] = {"id": movement.id, "type": movement.type}
-    if movement.arms or movement.type in ("free", "linear"):
-        entry["arms"] = list(movement.arms)
-    entry.update(_drop_empty({"coupled": movement.coupled}))
-    entry["controller"] = movement.controller
-    if movement.tools or movement.type == "tool":
-        entry["tools"] = list(movement.tools)
-    entry.update(_drop_empty({"tool_action": movement.tool_action, "overlaps_next": movement.overlaps_next}))
+    """A Movement (format §5.1): only the parts it has; `ends_on` left out at "target"."""
+    entry: Dict[str, Any] = {"id": movement.id, **_drop_empty({"label": movement.label})}
+    entry.update(_drop_empty({
+        "arms": list(movement.arms), "path": movement.path, "coupled": movement.coupled,
+        "controller": movement.controller,
+        "line": {flange: {"direction": [_float(v) for v in line.direction], "distance": _float(line.distance)}
+                 for flange, line in movement.line.items()}}))
+    if movement.ends_on != "target":
+        entry["ends_on"] = movement.ends_on
     entry["start"] = _state(movement.start)
     if movement.target is not None:
         entry["target"] = _target(movement.target)
-    entry.update(_drop_empty({"label": movement.label, "notes": dict(movement.notes)}))
+    entry.update(_drop_empty({"notes": dict(movement.notes)}))
     return entry
 
 
@@ -237,7 +247,7 @@ def _action(action: Action, writer: Dict[str, Any]) -> Dict[str, Any]:
     return {"format": ACTION_FORMAT, "writer": writer, "id": action.id, "type": action.type,
             "robot": action.robot, "bar": action.bar,
             **_drop_empty({"ground": list(action.ground), "supports_until": list(action.supports_until),
-                           "label": action.label}),
+                           "label": action.label, "notes": dict(action.notes)}),
             "movements": [_movement(movement) for movement in action.movements]}
 
 
@@ -253,3 +263,35 @@ def _write_json(path: Path, value: Any) -> None:
     # * "[\n  1.0,\n  2.0\n]" -> "[1.0, 2.0]"
     text = _NUMBER_LIST.sub(lambda match: "[" + " ".join(match.group()[1:-1].split()) + "]", text)
     path.write_text(text + "\n", encoding="utf-8")
+
+
+# --- --- --- --- --- CONTENT HASH --- --- --- --- ---
+
+def content_hash(path: Path) -> str:
+    """The SHA-256 of a design or action file's content: its JSON without `writer` and `producer`.
+
+    Keys sorted and floats rounded to FLOAT_DIGITS, so re-exporting an unchanged design gives the same hash from any
+    library commit. Files outside the design (solutions, runs, planner caches) record it to notice a changed design.
+
+    Args:
+        path: `design.json` or an action file.
+
+    Returns:
+        str: 64 hex digits.
+    """
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    data.pop("writer", None)
+    data.pop("producer", None)
+    text = json.dumps(_canonical(data), sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+    return sha256(text.encode("utf-8")).hexdigest()
+
+
+def _canonical(value: Any) -> Any:
+    """A JSON value with every float rounded as the writer rounds it."""
+    if isinstance(value, float):
+        return _float(value)
+    if isinstance(value, list):
+        return [_canonical(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _canonical(item) for key, item in value.items()}
+    return value

@@ -13,7 +13,7 @@ from typing import Optional
 from .types import Writer
 
 #: Format version. Increment on every incompatible change to doc/design_format.md.
-SCHEMA = 1
+SCHEMA = 2
 #: Library name written into every file.
 LIBRARY = "design_io"
 

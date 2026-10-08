@@ -21,7 +21,7 @@ PURE = ("bar_assembly_core", "bar_assembly_core.geometry", "bar_assembly_core.id
 EXTRAS = ("bar_assembly_core.kinematics", "bar_assembly_core.design.scenes", "bar_assembly_core.mirrors",
           "bar_assembly_core.mirrors.compas", "bar_assembly_core.mirrors.pp_client",
           "bar_assembly_core.mirrors.pybullet",
-          "bar_assembly_core.mirrors.compas_fab", "bar_assembly_core.legacy.compas_fab")
+          "bar_assembly_core.mirrors.compas_fab")
 CORE_PACKAGES = ("numpy", "scipy", "trimesh==4.12.2")
 EXTRA_PACKAGES = ("yourdfpy", "pybullet", "compas_robots", "./external/compas_fab", "./external/pybullet_planning")
 

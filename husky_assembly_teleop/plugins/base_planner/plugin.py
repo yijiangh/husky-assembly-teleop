@@ -149,6 +149,9 @@ class BasePlannerPlugin(PlannerPlugin):
         self._choose_robot(serial)
         # ? The design's base pose is the URDF root (base_footprint), as in mocap and PyBullet.
         base = step.movement.start.robots[step.action.robot].base
+        if base is None:
+            self._say(f"{step.label} leaves {robot_name}'s base to the planner: no target to load", failed=True)
+            return
         self._target.set(float(base.position[0]), float(base.position[1]), yaw_from_xyzw(base.orientation))
         self._has_target = True
         self._say(f"target from {step.label} ({robot_name})")

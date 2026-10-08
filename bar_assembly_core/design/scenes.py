@@ -13,13 +13,13 @@ import threading
 from functools import lru_cache
 from typing import Dict, Optional, Set, Tuple
 
-from ..kinematics import ForwardKinematics
-from ..robot import RobotModel, RobotObject, robot_model
-from ..scene import Attachment, Body, Scene, world_poses
 from ..geometry import Pose
-from .types import Design, Movement, State
-from ..robot import Tool
 from ..ids import split_link_id
+from ..kinematics import ForwardKinematics
+from ..robot import RobotModel, RobotObject, Tool, robot_model
+from ..scene import Attachment, Body, Scene, world_poses
+from .relations import allowed_contacts
+from .types import Design, Movement, State
 
 # * One forward kinematics per thread: a parsed URDF keeps the joints it was last set to.
 _local = threading.local()
@@ -46,7 +46,8 @@ def design_model(design: Design, robot_id: str) -> RobotModel:
 @lru_cache(maxsize=64)
 def _model(robot_id: str, urdf, srdf, tools: Tuple[Tuple[str, Tool], ...]) -> RobotModel:
     """`design_model`, cached: a tool's `Geometry` hashes by identity, so a new design object is a new model."""
-    touches = {flange: tuple(split_link_id(entry)[1] for entry in tool.touches if entry.startswith(f"{robot_id}/"))
+    touches = {flange: tuple(split_link_id(entry)[1] for entry in tool.mount_contacts
+                             if entry.startswith(f"{robot_id}/"))
                for flange, tool in tools}
     return robot_model(robot_id.split("/", 1)[1], urdf, srdf, dict(tools), touches)
 
@@ -55,9 +56,10 @@ def scene_at(design: Design, movement: Movement) -> Scene:
     """The world at the start of a movement, as the design gives it.
 
     - A robot absent from the state is disabled; one with `joints: null` has every movable joint `unmeasured`
-      (at 0), so planners refuse it until its owner fills them in (e.g. `carry.assumed_joints`).
-    - A held body is attached to its robot link; an absent body is disabled. Placeholder poses are kept as given.
-    - `touches` hold every allowed contact both ways: the design's, its tools' and the state's.
+      (at 0), one with `base: null` is not `base_tracked`, so planners refuse it until its owner fills them in.
+    - A carried body is attached to its robot link; an absent body is disabled.
+    - `touches` hold every allowed contact both ways, derived (`relations.allowed_contacts`); mount contacts are on
+      the robot model.
 
     Args:
         design: The design.
@@ -107,23 +109,22 @@ def _scene(design: Design, state: State, target_joints: Optional[Dict[str, Dict[
         joints = dict(robot_state.joints or {})
         joints.update((target_joints or {}).get(robot_id, {}))
         unknown = frozenset() if robot_state.joints is not None else frozenset(model.movable_joints) - set(joints)
-        robots[robot_id] = RobotObject(robot_id, model, robot_state.base, joints, unmeasured=unknown, label=spec.name)
+        # ? A base the design leaves open counts as not tracked: planners refuse it until its owner fills it in.
+        robots[robot_id] = RobotObject(robot_id, model, robot_state.base or Pose(), joints,
+                                       base_tracked=robot_state.base is not None, unmeasured=unknown, label=spec.name)
 
-    # * Every allowed contact, both ways: design-level touches of bodies and tools, and this state's.
+    # * Allowed contacts are derived, never stored: both ways, on every body that takes part.
     contacts: Dict[str, Set[str]] = {}
-    pairs = set(state.touches)
-    pairs |= {(body_id, other) for body_id, body in design.bodies.items() for other in body.touches}
-    pairs |= {(tool_id, other) for tool_id, tool in design.tools.items() for other in tool.touches}
-    for a, b in pairs:
+    for a, b in allowed_contacts(design, state):
         contacts.setdefault(a, set()).add(b)
         contacts.setdefault(b, set()).add(a)
 
     bodies: Dict[str, Body] = {}
     for body_id, spec in design.bodies.items():
-        attached = state.attached.get(body_id)
-        if attached is not None:
-            robot_id, link = split_link_id(attached.to)
-            placement = Attachment(robot_id, link, attached.grasp)
+        carried = state.carried.get(body_id)
+        if carried is not None:
+            robot_id, link = split_link_id(carried.to)
+            placement = Attachment(robot_id, link, carried.offset)
         else:
             placement = state.poses.get(body_id, spec.pose)
         bodies[body_id] = Body(body_id, spec.geometry, placement, tuple(sorted(contacts.get(body_id, ()))),

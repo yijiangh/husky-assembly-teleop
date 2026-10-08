@@ -271,7 +271,7 @@ class CompasFabMirror:
         if isinstance(placement, Attachment):
             if placement.parent == own and placement.link is not None:
                 state.attached_to_link = placement.link
-                state.attachment_frame = frame_from_pose(placement.grasp)
+                state.attachment_frame = frame_from_pose(placement.offset)
             elif placement.parent != own:
                 # Held by another robot or fixed to a body: stationary here, but it may touch its holder.
                 state.touch_bodies.append(placement.parent)

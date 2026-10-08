@@ -1,4 +1,4 @@
-"""The old app, the export loader and the design library give the same planning objects, up to explained differences.
+"""The old app, the export loader and the converted design's mirror agree, up to explained differences.
 
 Runs scripts/legacy_equivalence.py on the export named by DESIGN_IO_EQUIVALENCE_EXPORT; skipped when unset or
 missing. ! Slow (~5 minutes, ~4 GB of memory): set DESIGN_IO_EQUIVALENCE_COLLISIONS=0 to skip PyBullet.
@@ -38,4 +38,5 @@ def test_three_loaders_agree():
     # * The old app and the export loader read the same files: they must agree on everything but the floor.
     for name, category in report.pairs["old vs new"].items():
         assert all(kind.startswith("floor") for kind in category.counts), (name, dict(category.counts))
-    assert report.pairs["new vs design"]["state base+joints"].compared > 0
+    if collisions:
+        assert report.pairs["new vs mirror"]["collision pairs"].compared > 0

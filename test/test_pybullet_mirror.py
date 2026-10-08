@@ -61,7 +61,7 @@ def snapshot(bodies: tuple[Body, ...] = (), robots: dict[str, RobotObject] | Non
     Returns:
         Scene: The world to sync.
     """
-    poses = {body.id: body.placement if isinstance(body.placement, Pose) else body.placement.grasp
+    poses = {body.id: body.placement if isinstance(body.placement, Pose) else body.placement.offset
              for body in bodies}
     return Scene(bodies={body.id: body for body in bodies}, world_poses=poses, robots=robots or {})
 

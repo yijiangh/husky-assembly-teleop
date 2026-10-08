@@ -10,12 +10,11 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from ..geometry import BoxShape, CylinderShape, Geometry, Shape, TriMesh
-from .meshes import MeshCache
-from ..geometry import Pose
-from .types import (Action, Attached, BodySpec, Design, DesignError, Movement, RobotSpec, RobotState, SchemaMismatch,
-                    State, Target, Writer)
+from ..geometry import BoxShape, CylinderShape, Geometry, Pose, Shape, TriMesh
 from ..robot import Tool
+from .meshes import MeshCache
+from .types import (Action, BodySpec, Carried, Design, DesignError, LineSpec, Movement, Producer, RobotSpec, RobotState,
+                    SchemaMismatch, State, Target, Writer)
 from .validate import validate
 from .version import SCHEMA
 
@@ -52,9 +51,11 @@ def read(folder: Path) -> Design:
     meshes = _Meshes(folder, problems)
     try:
         writer = _writer(manifest["writer"])
+        producer = _producer(manifest["producer"]) if "producer" in manifest else None
         robots = {key: _robot(key, value, folder) for key, value in manifest["robots"].items()}
         tools = {key: _tool(key, value, meshes) for key, value in manifest["tools"].items()}
         bodies = {key: _body(key, value, meshes) for key, value in manifest["bodies"].items()}
+        connections = frozenset(_pair(pair) for pair in manifest.get("connections", ()))
         schedule = tuple(manifest["schedule"])
     except (KeyError, TypeError, ValueError, AttributeError) as error:
         raise DesignError([f"design.json: malformed ({type(error).__name__}: {error})"]) from error
@@ -67,8 +68,8 @@ def read(folder: Path) -> Design:
         if actions[name].id != name:
             problems.append(f"rule 3: actions/{name}.json has id {actions[name].id!r}, not its file name")
 
-    design = Design(folder=folder, writer=writer, robots=robots, tools=tools, bodies=bodies,
-                    schedule=schedule, actions=actions)
+    design = Design(folder=folder, writer=writer, robots=robots, tools=tools, bodies=bodies, schedule=schedule,
+                    actions=actions, connections=connections, producer=producer)
     # * 3. Validate: every problem at once.
     try:
         validate(design)
@@ -156,10 +157,22 @@ def _writer(raw: Dict[str, Any]) -> Writer:
     return Writer(int(raw["schema"]), str(raw["library"]), str(raw["commit"]), bool(raw["dirty"]))
 
 
+def _producer(raw: Dict[str, Any]) -> Producer:
+    """The `producer` block."""
+    return Producer(str(raw["repo"]), str(raw["commit"]), bool(raw["dirty"]), str(raw["command"]))
+
+
+def _pair(raw) -> Tuple[str, str]:
+    """A pair of ids, sorted."""
+    first, second = raw
+    return tuple(sorted((str(first), str(second))))
+
+
 def _robot(key: str, raw: Dict[str, Any], folder: Path) -> RobotSpec:
     """A robot entry; its file paths made absolute."""
     return RobotSpec(id=key, urdf=(folder / raw["urdf"]).resolve(), srdf=(folder / raw["srdf"]).resolve(),
-                     serial=raw.get("serial"), tools=dict(raw.get("tools", {})))
+                     serial=raw.get("serial"), tools=dict(raw.get("tools", {})),
+                     ground_links=tuple(raw.get("ground_links", ())))
 
 
 def _shapes(raw_shapes, meshes: _Meshes, owner: str) -> Tuple[Shape, ...]:
@@ -191,13 +204,14 @@ def _geometry(raw: Dict[str, Any], meshes: _Meshes, owner: str) -> Geometry:
 def _tool(key: str, raw: Dict[str, Any], meshes: _Meshes) -> Tool:
     """A tool entry."""
     return Tool(id=key, geometry=_geometry(raw, meshes, key), tcp=_pose(raw["tcp"]), kind=str(raw["kind"]),
-                touches=tuple(raw.get("touches", ())))
+                mount_contacts=tuple(raw.get("mount_contacts", ())))
 
 
 def _body(key: str, raw: Dict[str, Any], meshes: _Meshes) -> BodySpec:
     """A body entry."""
     return BodySpec(id=key, pose=_pose(raw["pose"]), geometry=_geometry(raw, meshes, key),
-                    touches=tuple(raw.get("touches", ())), label=str(raw.get("label", "")))
+                    label=str(raw.get("label", "")), part=str(raw.get("part", "")),
+                    markers={name: tuple(float(v) for v in point) for name, point in raw.get("markers", {}).items()})
 
 
 # --- --- --- --- --- ACTION FILES --- --- --- --- ---
@@ -211,30 +225,35 @@ def _state(raw: Dict[str, Any]) -> State:
     """A State (format §5.2)."""
     robots = {}
     for robot, value in raw["robots"].items():
-        robots[robot] = None if value is None else RobotState(_pose(value["base"]), _joints(value["joints"]))
+        robots[robot] = None if value is None else RobotState(None if value["base"] is None else _pose(value["base"]),
+                                                              _joints(value["joints"]))
     return State(robots=robots,
                  present=frozenset(raw["present"]),
                  poses={body: _pose(pose) for body, pose in raw.get("poses", {}).items()},
-                 attached={body: Attached(value["to"], _pose(value["grasp"]))
-                           for body, value in raw.get("attached", {}).items()},
-                 touches=frozenset(tuple(sorted(pair)) for pair in raw.get("touches", ())),
-                 placeholder=frozenset(raw.get("placeholder", ())))
+                 carried={body: Carried(value["to"], _pose(value["offset"]))
+                          for body, value in raw.get("carried", {}).items()},
+                 tools={tool: None if value is None else {key: None if v is None else str(v)
+                                                          for key, v in value.items()}
+                        for tool, value in raw.get("tools", {}).items()})
 
 
 def _target(raw: Optional[Dict[str, Any]]) -> Optional[Target]:
-    """A Target (format §5.3), or None if absent."""
+    """A Target (format §5.3), or None for `null` or absent."""
     if raw is None:
         return None
     return Target(joints={robot: _joints(values) for robot, values in raw.get("joints", {}).items()},
-                  links={link: _pose(pose) for link, pose in raw.get("links", {}).items()})
+                  links={link: _pose(pose) for link, pose in raw.get("links", {}).items()},
+                  tools={tool: {channel: str(value) for channel, value in channels.items()}
+                         for tool, channels in raw.get("tools", {}).items()})
 
 
 def _movement(raw: Dict[str, Any]) -> Movement:
     """A Movement (format §5.1)."""
-    return Movement(id=raw["id"], type=raw["type"], controller=raw["controller"], start=_state(raw["start"]),
-                    arms=tuple(raw.get("arms", ())), coupled=bool(raw.get("coupled", False)),
-                    tools=tuple(raw.get("tools", ())), tool_action=raw.get("tool_action"),
-                    overlaps_next=bool(raw.get("overlaps_next", False)), target=_target(raw.get("target")),
+    return Movement(id=raw["id"], start=_state(raw["start"]), arms=tuple(raw.get("arms", ())), path=raw.get("path"),
+                    coupled=bool(raw.get("coupled", False)), controller=raw.get("controller"),
+                    line={flange: LineSpec(tuple(float(v) for v in value["direction"]), float(value["distance"]))
+                          for flange, value in raw.get("line", {}).items()},
+                    ends_on=str(raw.get("ends_on", "target")), target=_target(raw.get("target")),
                     label=str(raw.get("label", "")), notes=dict(raw.get("notes", {})))
 
 
@@ -243,4 +262,4 @@ def _action(raw: Dict[str, Any]) -> Action:
     return Action(id=raw["id"], type=raw["type"], robot=raw["robot"], bar=raw["bar"],
                   movements=tuple(_movement(movement) for movement in raw["movements"]),
                   ground=tuple(raw.get("ground", ())), supports_until=tuple(raw.get("supports_until", ())),
-                  label=str(raw.get("label", "")))
+                  label=str(raw.get("label", "")), notes=dict(raw.get("notes", {})))

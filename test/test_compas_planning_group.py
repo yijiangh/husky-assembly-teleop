@@ -7,7 +7,7 @@ from pathlib import Path
 from compas_fab.robots import RobotCell, RobotSemantics
 from design_fixtures import write_robot_files
 
-from bar_assembly_core.legacy.compas_fab import load_model, planning_group
+from bar_assembly_core.mirrors.compas import load_model, planning_group
 
 
 def test_base_rooted_group_wins_below_a_world_link(tmp_path: Path):

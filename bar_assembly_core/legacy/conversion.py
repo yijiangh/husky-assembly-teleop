@@ -1,5 +1,5 @@
 """
-Convert an export in the old compas_fab format into a schema 1 design, written next to it in `<export>_design`.
+Convert an export in the old compas_fab format into a schema 2 design, written next to it in `<export>_design`.
 
 The robots are the calibrated URDFs and SRDFs from the data directory, copied into the design with their meshes.
 ! Slow (~15 s, the cells are ~350 MB each): call it off the main thread.
@@ -7,17 +7,19 @@ The robots are the calibrated URDFs and SRDFs from the data directory, copied in
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Callable, Optional
 
+from ..design.types import Design
+from ..design.version import SCHEMA
 from ..design.write import write
 from .export import from_export, load_export
 from .timing import Stopwatch
-from ..design.types import Design
 
 #: A folder holding this is an export in the old compas_fab format.
 OLD_EXPORT_FILE = "ActionSchedule.json"
-#: A folder holding this is a schema 1 design.
+#: A folder holding this is a design (its schema is in `writer.schema`).
 DESIGN_FILE = "design.json"
 #: Added to an export's folder name for its converted copy.
 CONVERTED_SUFFIX = "_design"
@@ -50,13 +52,19 @@ def converted_folder(export: Path) -> Path:
 
 
 def is_up_to_date(export: Path) -> bool:
-    """Whether the export's converted copy exists and is newer than every JSON file of the export.
+    """Whether the export's converted copy exists, has this library's schema, and is newer than the export's JSON.
 
     Args:
         export: The export folder.
     """
     design_file = converted_folder(export) / DESIGN_FILE
     if not design_file.is_file():
+        return False
+    try:
+        schema = json.loads(design_file.read_text(encoding="utf-8"))["writer"]["schema"]
+    except (ValueError, KeyError, TypeError):
+        return False
+    if schema != SCHEMA:
         return False
     written = design_file.stat().st_mtime
     return all(path.stat().st_mtime <= written for path in Path(export).rglob("*.json"))

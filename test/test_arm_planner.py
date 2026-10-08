@@ -41,7 +41,7 @@ def world():
 def snapshot(config, start, bodies=()) -> Scene:
     """Alice at the origin with her arm at `start`, and some bodies."""
     robot = RobotObject(robot_id(ALICE), config.model, Pose(), dict(zip(NAMES, start)))
-    poses = {body.id: body.placement if isinstance(body.placement, Pose) else body.placement.grasp
+    poses = {body.id: body.placement if isinstance(body.placement, Pose) else body.placement.offset
              for body in bodies}
     return Scene(bodies={body.id: body for body in bodies}, world_poses=poses, robots={robot.id: robot})
 
