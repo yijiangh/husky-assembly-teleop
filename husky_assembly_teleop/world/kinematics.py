@@ -10,15 +10,15 @@ Its parsed URDFs (no meshes) are separate from the 3D view's, so neither changes
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Mapping
 
+from yourdfpy import URDF
+
 from bar_assembly_core.geometry import Pose, compose
-from bar_assembly_core.kinematics import load_urdf
 from bar_assembly_core.urdf import UR_JOINT_NAMES
 
 if TYPE_CHECKING:
-    from yourdfpy import URDF
-
     from ..config import RobotConfig
     from .measured import WorldState
 
@@ -57,7 +57,7 @@ class Kinematics:
         # (serial, joint name) pairs already warned about, so each is reported once.
         self._unknown_joints: set[tuple[str, str]] = set()
         for config in robots:
-            urdf = load_urdf(config.urdf_file)
+            urdf = _load_urdf(config.urdf_file)
             names = urdf.actuated_joint_names
             joints = dict.fromkeys(names, 0.0)
             joints.update(_stow_joints(config, joints))
@@ -176,3 +176,9 @@ def _stow_joints(config: RobotConfig, joints: Mapping[str, float]) -> dict[str, 
             stowed.update((f"{arm.name}_{name}", value) for name, value in zip(UR_JOINT_NAMES, arm.stow_joints)
                           if f"{arm.name}_{name}" in joints)
     return stowed
+
+
+def _load_urdf(urdf_file: Path) -> URDF:
+    """Parse a URDF for kinematics only: no meshes are loaded."""
+    return URDF.load(str(urdf_file), load_meshes=False, build_collision_scene_graph=False,
+                     load_collision_meshes=False)

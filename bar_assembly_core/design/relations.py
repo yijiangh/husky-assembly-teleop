@@ -1,42 +1,98 @@
 """
-Relations between bodies, robots and tools that the format stores once and readers derive from (format §5.5).
+What follows from a state and the design without being stored (format §5.5): where a body is, mate status, contacts.
 
-A part is a bar plus the joint halves connected to it; mates (two connected halves) connect parts but never merge
-them. Allowed contacts are derived, never stored:
-- a tool with the part it sits on, and with the halves mated to that part;
-- connected bodies, and a mated half with its mate's part (a male half sits against its mate's bar);
-- a robot's ground links with ground bodies;
-- a tool with its mount contacts (the robot model's, `RobotModel.tool_touches`).
+- Where a bar is: built -> its design pose; attached and not built -> its first holder's link times the grasp;
+  otherwise the pose in `State.poses`, else its design pose. A mounted half follows its bar.
+- Allowed contacts: a tool with the body it is on, a half with its bar, the two sides of a pending or engaged mate,
+  a present robot's ground links with ground bodies. Mount contacts belong to the robot model (`RobotModel`).
 """
 
 from __future__ import annotations
 
-from typing import Dict, Iterable, Set, Tuple
+from typing import Dict, Optional, Set, Tuple, Union
 
-from .types import Design, State
-from .vocabulary import ON
+from ..geometry import Pose, compose, invert
+from .types import BAR_PREFIX, GROUND_PREFIX, HALF_PREFIX, Design, Holder, State
 
-GROUND_PREFIX, BAR_PREFIX, HALF_PREFIX = "ground/", "bars/", "joints/"
+#: Mate status (format §5.5): which contacts a mate allows at one moment.
+OPEN, PENDING, ENGAGED, NOT_RELEVANT = "open", "pending", "engaged", "not relevant"
+
+#: A mate: two body ids, sorted.
+Mate = Tuple[str, str]
 
 
-def part_of(design: Design) -> Dict[str, str]:
-    """The bar each body's part belongs to: a bar maps to itself, a body connected to a bar to that bar.
+def bar_of(design: Design, body: str) -> Optional[str]:
+    """The bar a body belongs to: a bar itself, a half its mount; None for ground, obstacles and unmounted halves."""
+    if body.startswith(BAR_PREFIX):
+        return body
+    spec = design.bodies.get(body)
+    return spec.mount if spec is not None else None
+
+
+def is_present(design: Design, state: State, body: str) -> bool:
+    """Whether a body exists in a state: bars and ground when listed, halves with their bar, obstacles always."""
+    if body.startswith((BAR_PREFIX, GROUND_PREFIX)):
+        return body in state.present
+    if body.startswith(HALF_PREFIX):
+        bar = bar_of(design, body)
+        return bar is not None and bar in state.present
+    return True
+
+
+def mount_offset(design: Design, half: str) -> Pose:
+    """A half's pose in its bar's frame, from the two design poses."""
+    spec = design.bodies[half]
+    return compose(invert(design.bodies[spec.mount].pose), spec.pose)
+
+
+def placement(design: Design, state: State, body: str) -> Union[Pose, Holder]:
+    """Where a body is by the pose rule: a world pose, or the holding link and the body's pose in that link's frame.
+
+    Args:
+        design: The design.
+        state: The state; only meaningful for a present body.
+        body: A body id.
 
     Returns:
-        dict[str, str]: Body id -> bar id. Bodies in no part (ground, obstacles, loose halves) are left out.
+        Pose | Holder: A Holder for an attached, unbuilt bar (its first holder) and for the halves mounted on it.
     """
-    parts = {body: body for body in design.bodies if body.startswith(BAR_PREFIX)}
-    for a, b in design.connections:
-        for bar, other in ((a, b), (b, a)):
-            if bar.startswith(BAR_PREFIX) and not other.startswith((BAR_PREFIX, GROUND_PREFIX)):
-                parts.setdefault(other, bar)
-    return parts
+    bar = bar_of(design, body)
+    holders = state.attached.get(bar, ()) if bar is not None else ()
+    staged = state.poses.get(bar) if bar is not None else None
+    if bar is None or bar in state.built or not (holders or staged):
+        return design.bodies[body].pose  # ? its own design pose, also for a half: exact, not composed
+    if holders:
+        holder = holders[0]
+        return holder if body == bar else Holder(holder.to, compose(holder.grasp, mount_offset(design, body)))
+    return staged if body == bar else compose(staged, mount_offset(design, body))
 
 
-def members(parts: Dict[str, str], body: str) -> Set[str]:
-    """Every body of the part `body` belongs to; just `body` if it is in no part."""
-    bar = parts.get(body)
-    return {other for other, owner in parts.items() if owner == bar} if bar is not None else {body}
+def mate_status(design: Design, state: State, mate: Mate) -> str:
+    """The status of one mate in a state, from the `built` and `attached` flags of its two sides.
+
+    A ground body counts as built. Engaged: both sides built. Pending: one built, the other present, attached and not
+    built (being joined or removed). Not relevant: neither side present. Anything else is open: no contact allowed.
+    """
+    sides = [bar_of(design, side) or side for side in mate]
+
+    def built(side: str) -> bool:
+        return side.startswith(GROUND_PREFIX) or side in state.built
+
+    present = [side in state.present for side in sides]
+    if not any(present):
+        return NOT_RELEVANT
+    if all(built(side) and side in state.present for side in sides):
+        return ENGAGED
+    for one, other in (sides, sides[::-1]):
+        if built(one) and one in state.present and other in state.present and other in state.attached \
+                and not built(other):
+            return PENDING
+    return OPEN
+
+
+def mate_statuses(design: Design, state: State) -> Dict[Mate, str]:
+    """The status of every mate of the design in a state."""
+    return {mate: mate_status(design, state, mate) for mate in sorted(design.mates)}
 
 
 def allowed_contacts(design: Design, state: State) -> Set[Tuple[str, str]]:
@@ -44,34 +100,30 @@ def allowed_contacts(design: Design, state: State) -> Set[Tuple[str, str]]:
 
     Args:
         design: The design.
-        state: The state; only present bodies and the tools' `on` matter.
+        state: The state.
 
     Returns:
         set[tuple[str, str]]: Pairs of ids: bodies, tools, and robot links "robots/<robot>/<link>".
     """
     pairs: Set[Tuple[str, str]] = set()
 
-    def add(a: str, others: Iterable[str]) -> None:
-        pairs.update(tuple(sorted((a, b))) for b in others if b != a)
+    def add(a: str, b: str) -> None:
+        if a != b:
+            pairs.add((a, b) if a < b else (b, a))
 
-    parts = part_of(design)
-    mates: Dict[str, Set[str]] = {}
-    for a, b in design.connections:
-        add(a, (b,))
-        if a.startswith(HALF_PREFIX) and b.startswith(HALF_PREFIX):
-            mates.setdefault(a, set()).add(b)
-            mates.setdefault(b, set()).add(a)
-    for half, others in mates.items():
-        for other in others:
-            add(half, members(parts, other))
     for tool, tool_state in state.tools.items():
-        on = tool_state.get(ON) if tool_state else None
-        if on is not None:
-            part = members(parts, on)
-            add(tool, part | {mate for body in part for mate in mates.get(body, ())})
+        if tool_state is not None and tool_state.on is not None and is_present(design, state, tool_state.on):
+            add(tool, tool_state.on)
+    for body_id, body in design.bodies.items():
+        if body.mount is not None and is_present(design, state, body_id):
+            add(body_id, body.mount)
+    for mate in design.mates:
+        if mate_status(design, state, mate) in (PENDING, ENGAGED):
+            add(*mate)
     grounds = [body for body in state.present if body.startswith(GROUND_PREFIX)]
     for robot_id, robot in design.robots.items():
         if state.robots.get(robot_id) is not None:
             for link in robot.ground_links:
-                add(f"{robot_id}/{link}", grounds)
+                for ground in grounds:
+                    add(f"{robot_id}/{link}", ground)
     return pairs

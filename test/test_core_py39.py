@@ -12,18 +12,17 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 CORE = PACKAGE_ROOT / "bar_assembly_core"
 #: Pure-core modules: they must import with numpy, scipy and trimesh alone.
 PURE = ("bar_assembly_core", "bar_assembly_core.geometry", "bar_assembly_core.ids", "bar_assembly_core.urdf",
-        "bar_assembly_core.robot", "bar_assembly_core.scene", "bar_assembly_core.design", "bar_assembly_core.legacy",
-        "bar_assembly_core.legacy.timing",
-        *(f"bar_assembly_core.design.{p.stem}" for p in sorted((CORE / "design").glob("*.py"))
-          if p.stem not in ("__init__", "scenes")))
+        "bar_assembly_core.kinematics", "bar_assembly_core.robot", "bar_assembly_core.scene",
+        "bar_assembly_core.design", "bar_assembly_core.legacy", "bar_assembly_core.legacy.timing",
+        *(f"bar_assembly_core.design.{p.stem}" for p in sorted((CORE / "design").glob("*.py")) if p.stem != "__init__"))
 #: Modules with extra dependencies (`requirements.txt`). legacy.export and legacy.conversion also need
 #: rs_data_structure.
-EXTRAS = ("bar_assembly_core.kinematics", "bar_assembly_core.design.scenes", "bar_assembly_core.mirrors",
+EXTRAS = ("bar_assembly_core.mirrors",
           "bar_assembly_core.mirrors.compas", "bar_assembly_core.mirrors.pp_client",
           "bar_assembly_core.mirrors.pybullet",
           "bar_assembly_core.mirrors.compas_fab")
 CORE_PACKAGES = ("numpy", "scipy", "trimesh==4.12.2")
-EXTRA_PACKAGES = ("yourdfpy", "pybullet", "compas_robots", "./external/compas_fab", "./external/pybullet_planning")
+EXTRA_PACKAGES = ("pybullet", "compas_robots", "./external/compas_fab", "./external/pybullet_planning")
 
 
 def test_syntax_is_python_39():
@@ -58,17 +57,25 @@ def _run_39(packages: tuple, modules: tuple, extra_check: str = "") -> None:
 
 
 def test_core_imports_under_python_39():
-    """The pure core imports under Python 3.9 with only numpy, scipy and trimesh, and loads no compas."""
-    _run_39(CORE_PACKAGES, PURE, "assert 'compas' not in sys.modules\n")
+    """The pure core imports and runs under Python 3.9 with only numpy, scipy and trimesh, without compas.
+
+    It writes, reads and plan-checks the test design, and builds a scene of it.
+    """
+    run = (f"import tempfile, pathlib; sys.path.insert(0, {str(PACKAGE_ROOT / 'test')!r})\n"
+           "from design_fixtures import build_design\n"
+           "from bar_assembly_core.design import write\n"
+           "from bar_assembly_core.design.plan_check import check_plan\n"
+           "folder = pathlib.Path(tempfile.mkdtemp())\n"
+           "design = write(build_design(folder), folder / 'out')\n"
+           "assert check_plan(design).ok\n"
+           "scene = design.scene_at(next(movement for _, movement in design.movements()))\n"
+           "assert 'bars/B2' in scene.world_poses and scene.robots['robots/cindy'].unmeasured\n"
+           "assert 'compas' not in sys.modules and 'yourdfpy' not in sys.modules\n")
+    _run_39(CORE_PACKAGES, PURE, run)
 
 
 def test_mirrors_import_under_python_39():
-    """FK, the mirrors and the compas conversions import under Python 3.9 with their extras; `scene_at` runs."""
+    """The mirrors and the compas conversions import under Python 3.9 with their extras."""
     if not all((PACKAGE_ROOT / package).is_dir() for package in EXTRA_PACKAGES if package.startswith("./")):
         pytest.skip("external/ submodules not checked out")
-    scene_at = (f"import tempfile, pathlib; sys.path.insert(0, {str(PACKAGE_ROOT / 'test')!r})\n"
-                "from design_fixtures import build_design\n"
-                "design = build_design(pathlib.Path(tempfile.mkdtemp()))\n"
-                "scene = design.scene_at(next(movement for _, movement in design.movements()))\n"
-                "assert 'bars/B1' in scene.world_poses and scene.robots['robots/cindy'].unmeasured\n")
-    _run_39(CORE_PACKAGES + EXTRA_PACKAGES, PURE + EXTRAS, scene_at)
+    _run_39(CORE_PACKAGES + EXTRA_PACKAGES, PURE + EXTRAS)

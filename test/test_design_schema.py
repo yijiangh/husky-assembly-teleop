@@ -16,7 +16,7 @@ def _set_writer(path: Path, **changes) -> None:
     path.write_text(json.dumps(data))
 
 
-@pytest.mark.parametrize("name", ["design.json", "actions/B2_H_hold.json"])
+@pytest.mark.parametrize("name", ["design.json", "actions/B1_H_hold.json"])
 def test_other_schema_names_commit(tmp_path: Path, name: str):
     """Schema 999 in any file raises SchemaMismatch naming that file's commit."""
     write(build_design(tmp_path), tmp_path / "out")

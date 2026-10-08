@@ -1,18 +1,19 @@
 """
 Read an old compas_fab export into a schema 2 `Design`.
 
-The export is RobotCell*.json, BarActions/, ActionSchedule.json and WalkableGround.json.
-
-Robots come from the given URDF and SRDF files, checked joint by joint against the models in the cells.
+The export is RobotCell*.json, BarActions/, ActionSchedule.json and WalkableGround.json. Robots come from the given
+URDF and SRDF files, checked joint by joint against the models in the cells. The bars' `attached` and `built` flags
+and the tool states are replayed along the schedule (format Appendix B), not copied from the export's states.
 ! Slow (~15 s for three ~350 MB cells). Imports compas and rs_data_structure.
 """
 
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Callable, Dict, List, Mapping, Optional, Tuple
+from typing import Callable, Dict, List, Mapping, Optional, Set, Tuple
 
 import numpy as np
 from compas.data import json_load
@@ -22,13 +23,12 @@ from compas_robots import RobotModel
 # ! Registers the dtypes of the action and movement classes, so json_load can rebuild them.
 import rs_data_structure  # noqa: F401
 
-from ..design.types import (Action, BodySpec, Carried, Design, LineSpec, Movement, Producer, RobotSpec, RobotState,
-                            State, Target)
+from ..design.types import (Action, BodySpec, Design, Holder, LineSpec, Movement, Producer, RobotSpec, RobotState,
+                            State, Target, ToolState)
 from ..design.version import writer_info
-from ..design.vocabulary import ON, released
-from ..geometry import Geometry, Pose, TriMesh
-from ..ids import link_id
-from ..kinematics import ForwardKinematics
+from ..geometry import Geometry, Pose, TriMesh, compose, invert
+from ..ids import link_id, split_link_id
+from ..kinematics import link_pose
 from ..mirrors.compas import PARKED_POSITION, pose_from_frame
 from ..robot import Tool
 from ..urdf import movable_joints, urdf_joints, urdf_links
@@ -55,17 +55,22 @@ ACTION_KINDS: Dict[str, str] = {
     "BarHoldingReleaseAction": "bar_holding_release",
 }
 
-#: Notes that became fields, or are planner status that belongs in `solutions/` (format §5.6); the rest stay notes.
-_CONSUMED_NOTES = ("bar_pose_is_placeholder", "lm_axis", "lm_distance_mm", "retreat_axes_world", "ends_on",
-                   "constraint", "bar_arm_side", "planner_fills", "start_config_is_none", "unplanned_offline",
-                   "goal_backfilled_from")
+#: Notes that became typed fields (`line`, `ends_on`), say what other fields already say, or are planner status that
+#: belongs in `solutions/` (proposal, Notes). The rest stay notes, for people.
+_CONSUMED_NOTES = ("lm_axis", "lm_distance_mm", "retreat_axes_world", "ends_on", "constraint", "bar_arm_side",
+                   "planner_fills", "start_config_is_none", "unplanned_offline", "goal_backfilled_from",
+                   "bar_pose_is_placeholder")
 
 #: Schema 1 controller -> schema 2 controller (None: no arm moves).
 _CONTROLLERS = {"joint_tracking": "position", "cartesian_compliant": "compliant", "none": None}
 
-#: Schema 1 tool action -> (channel, value) it ends in.
-_TOOL_ACTIONS = {"grasp": ("grip", "closed"), "close": ("grip", "closed"), "ungrasp": ("grip", "open"),
-                 "open": ("grip", "open"), "tighten": ("joint", "tight"), "untighten": ("joint", "loose")}
+#: Schema 1 tool action -> the grip it ends with; "tighten" becomes a drive, "untighten" is dropped.
+_GRIPS = {"grasp": "closed", "close": "closed", "ungrasp": "open", "open": "open"}
+
+#: Joint half id -> (bar pair or ground name, subtype), e.g. "joints/J3-10_male", "joints/G1-T20Ground-0_ground".
+_HALF_ID = re.compile(r"joints/(?P<pair>J\d+-\d+|G\d+-.*)_(?P<subtype>male|female|ground)")
+#: The catalogue type of every half in the exports (the ids name only the bar pair).
+_JOINT_TYPE = "T20"
 
 #: Depth of the slab the walkable ground polygons are extruded into, downward, metres.
 GROUND_THICKNESS = 0.05
@@ -73,8 +78,8 @@ GROUND_THICKNESS = 0.05
 #: Coordinates beyond this are millimetres (WalkableGround.json is written in Rhino's units).
 _MILLIMETRE_THRESHOLD = 50.0
 
-#: How far outside a ground body's floor area a ground connector may stand and still rest on it, metres.
-_GROUND_MARGIN = 0.05
+#: How far a tool's TCP may be from the half it is on, metres.
+_TCP_REACH = 0.01
 
 #: Poses closer than this are the same, metres or quaternion units.
 _SAME = 1e-6
@@ -179,25 +184,20 @@ def from_export(export: Export, robot_files: Mapping[str, Tuple[Path, Path]],
     converter.collect(actions)
     ground = _walkable_ground(export.folder / "WalkableGround.json", report)
     converter.bodies.update(ground)
-    # * Pass 1: every movement as read; pass 2: schema 2, following the schedule.
-    raw = [converter.raw_action(entry, action, tuple(ground)) for entry, action in actions]
-    connections = converter.connections(raw)
-    design_actions = converter.actions(raw, connections)
-    if converter.filled:
-        report(f"{converter.filled} configuration(s) listed only some joints; the others were taken from the "
-               f"robot's previous state, or zero")
-    if converter.mate_bar_contacts:
-        report(f"{converter.mate_bar_contacts} contact(s) of a joint half with its mate's bar are not connections "
-               f"(mates connect parts, never merge them); the mate contact rule still allows them")
-    if converter.no_line:
-        report(f"{converter.no_line} linear movement(s) without a line: neither notes nor start and target give one")
+    # * Pass 1: every movement as read; then mounts and mates; pass 2: schema 2, replayed along the schedule.
+    raw = [converter.raw_action(entry, action) for entry, action in actions]
+    converter.mount_halves(raw)
+    mates = converter.mates()
+    design_actions = converter.actions(raw)
+    for line in converter.notes:
+        report(line)
     report(f"{len(converter.robots)} robots, {len(converter.tools)} tools, {len(converter.bodies)} bodies, "
-           f"{len(connections)} connections, {len(design_actions)} actions, "
+           f"{len(mates)} mates, {len(design_actions)} actions, "
            f"{sum(len(a.movements) for a in design_actions.values())} movements")
     writer = writer_info()
     return Design(folder=None, writer=writer, robots=converter.robots, tools=converter.tools,
                   bodies=converter.bodies, schedule=tuple(entry["action_id"] for entry, _ in actions),
-                  actions=design_actions, connections=connections,
+                  actions=design_actions, mates=mates,
                   producer=Producer("husky-assembly-teleop", writer.commit, writer.dirty, "legacy.export.from_export"))
 
 
@@ -205,7 +205,12 @@ def from_export(export: Export, robot_files: Mapping[str, Tuple[Path, Path]],
 
 @dataclass
 class _RawMovement:
-    """One export movement as read, before schema 2: its start state, target and schema 1 fields."""
+    """One export movement as read, before schema 2: its start state, target and schema 1 fields.
+
+    Attributes:
+        carried: Body -> (link id, the body's pose in that link's frame), as the export attaches it.
+        poses: World pose of every present body the export does not attach.
+    """
 
     id: str
     kind: str
@@ -216,10 +221,8 @@ class _RawMovement:
     tool_action: Optional[str]
     overlaps_next: bool
     robots: Dict[str, Optional[RobotState]]
-    present: set
+    carried: Dict[str, Tuple[str, Pose]]
     poses: Dict[str, Pose]
-    carried: Dict[str, Carried]
-    touches: set
     joints: Dict[str, Dict[str, float]]
     links: Dict[str, Pose]
     label: str
@@ -270,8 +273,8 @@ class _Converter:
         self.filled = 0
         #: How many linear movements got no line.
         self.no_line = 0
-        #: How many export contacts of a joint half with its mate's bar were not made connections.
-        self.mate_bar_contacts = 0
+        #: Lines for the report: what was derived, dropped or found inconsistent.
+        self.notes: List[str] = []
         self._serials = {self.robot_ids[name]: serial for name, serial in serials.items()}
         for robot_id, name in names.items():
             urdf, srdf = (Path(path) for path in robot_files[name])
@@ -338,13 +341,12 @@ class _Converter:
 
     # --- --- pass 1: every movement as read --- ---
 
-    def raw_action(self, entry: dict, action, ground: Tuple[str, ...]) -> "_RawAction":
+    def raw_action(self, entry: dict, action) -> "_RawAction":
         """One schedule entry, its movements read but not yet in schema 2.
 
         Args:
             entry: Its ActionSchedule.json entry.
             action: The loaded rs_data_structure action.
-            ground: Ids of the ground bodies, present in every state.
         """
         robot = self.robot_ids[entry["robot"]]
         cell = self.cells[action.robot_id]
@@ -353,19 +355,13 @@ class _Converter:
             bar=f"bars/{action.active_bar_id}", label=action.tag or "",
             ground=tuple(f"ground/{name}" for name in getattr(action, "walkable_ground_ids", []) or []),
             supports_until=tuple(f"bars/{bar}" for bar in getattr(action, "supported_until", []) or []),
-            movements=tuple(self.raw_movement(robot, cell, movement, action.active_bar_id, ground)
-                            for movement in action.movements))
+            movements=tuple(self.raw_movement(robot, cell, movement) for movement in action.movements))
 
-    def raw_movement(self, robot: str, cell: RobotCell, movement, bar: str, ground: Tuple[str, ...]) -> "_RawMovement":
+    def raw_movement(self, robot: str, cell: RobotCell, movement) -> "_RawMovement":
         """One rs_data_structure movement as read: its start state, target and schema 1 fields."""
         kind, coupled = MOVEMENT_KINDS[type(movement).__name__]
         flanges = tuple(link_id(robot, flange) for flange in self.robots[robot].tools)
-        placeholder = {f"bars/{bar}"} if (movement.notes or {}).get("bar_pose_is_placeholder") else set()
-        robots, present, poses, carried, touches = self.raw_state(robot, movement.start_state, ground)
-        # ? Schema 2: a body at a placeholder pose is not present.
-        present -= placeholder
-        for body in placeholder:
-            poses.pop(body, None)
+        robots, carried, poses = self.raw_state(robot, movement.start_state)
         joints, links = {}, {}
         if movement.target_configuration is not None:
             joints[robot] = dict(zip(movement.target_configuration.joint_names,
@@ -377,9 +373,8 @@ class _Converter:
             arms=flanges if kind in ("free", "linear") else (),
             tools=tuple(self._tool_ids[(robot, name)] for name in getattr(movement, "tool_names", []) or []),
             tool_action=getattr(movement, "tool_action", None) if kind == "tool" else None,
-            overlaps_next=bool(getattr(movement, "overlaps_next", False)), robots=robots, present=present,
-            poses=poses, carried=carried, touches=touches, joints=joints, links=links, label=movement.tag or "",
-            notes=dict(movement.notes or {}))
+            overlaps_next=bool(getattr(movement, "overlaps_next", False)), robots=robots, carried=carried,
+            poses=poses, joints=joints, links=links, label=movement.tag or "", notes=dict(movement.notes or {}))
 
     @staticmethod
     def _flange(flanges: Tuple[str, ...], key: str, where: str) -> str:
@@ -389,8 +384,8 @@ class _Converter:
             raise ValueError(f"{where}: cannot tell which flange {key!r} is")
         return matches[0]
 
-    def raw_state(self, robot: str, legacy: RobotCellState, ground: Tuple[str, ...]):
-        """One compas_fab start state: robots, present bodies, poses of every free one, carried, contacts."""
+    def raw_state(self, robot: str, legacy: RobotCellState):
+        """One compas_fab start state: every robot, the bodies the acting robot attaches, the others' poses."""
         robots: Dict[str, Optional[RobotState]] = {other: None for other in self.robots}
         configuration = legacy.robot_configuration
         robots[robot] = RobotState(base=pose_from_frame(legacy.robot_base_frame),
@@ -403,175 +398,248 @@ class _Converter:
                 continue
             robots[other] = RobotState(base=pose_from_frame(tool_state.frame),
                                        joints=self._joints(other, tool_state.configuration))
-        present = set(ground)
-        poses = {key: self.bodies[key].pose for key in ground}
-        carried, touches = {}, set()
+        carried, poses = {}, {}
         for name, body_state in legacy.rigid_body_states.items():
             key = body_id(name)
             if body_state.is_hidden:
                 continue
-            present.add(key)
             if body_state.attached_to_link:
-                carried[key] = Carried(to=link_id(robot, body_state.attached_to_link),
-                                       offset=pose_from_frame(body_state.attachment_frame))
+                carried[key] = (link_id(robot, body_state.attached_to_link),
+                                pose_from_frame(body_state.attachment_frame))
             elif body_state.attached_to_tool:
                 raise ValueError(f"{key}: attached to a tool; the converter does not handle that yet")
-            else:
-                poses[key] = (pose_from_frame(body_state.frame) if body_state.frame is not None
-                              else self.bodies[key].pose)
-            for link in body_state.touch_links:
-                touches.add(tuple(sorted((key, link_id(robot, link)))))
-            for other in body_state.touch_bodies:
-                touches.add(tuple(sorted((key, self._touch_id(robot, other)))))
-        return robots, present, poses, carried, touches
+            elif body_state.frame is not None:
+                poses[key] = pose_from_frame(body_state.frame)
+        return robots, carried, poses
 
-    def _touch_id(self, robot: str, name: str) -> str:
-        """Our id of a compas_fab touch_bodies entry: a body, a tool of the acting robot, or another robot."""
-        if name.startswith("ObstacleRobot"):
-            return self.robot_ids[name[len("ObstacleRobot"):]]
-        if (robot, name) in self._tool_ids:
-            return self._tool_ids[(robot, name)]
-        return body_id(name)
+    # --- --- mounts and mates --- ---
 
-    # --- --- pass 2: schema 2 --- ---
+    def mount_halves(self, raw: List["_RawAction"]) -> None:
+        """Give each half its `mount`, the bar it is carried with in the jointing actions, and its `part` (from its id).
 
-    def connections(self, raw: List["_RawAction"]) -> frozenset:
-        """Bodies joined in the design: each joint half and its bar, mated halves, ground connectors and their ground.
-
-        - A half's bar is the one it is carried with ("held by the same link, its joint halves included"), else the
-          one bar it touches in the export.
-        - A half also touching its mate's bar is not connected to it: mates connect parts, never merge them
-          (counted in `mate_bar_contacts`).
-        - A ground connector is connected to the ground bodies under its design position (by their floor area),
-          else to the ground of the action that places its bar.
+        Raises:
+            ValueError: If a half is carried with two bars, or with none.
         """
-        parent: Dict[str, str] = {}
+        mounts: Dict[str, str] = {}
         for action in raw:
+            if action.type != "bar_jointing":
+                continue
             for movement in action.movements:
-                if action.bar in movement.carried:
-                    for body in movement.carried:
-                        if body.startswith("joints/"):
-                            parent.setdefault(body, action.bar)
-        contacts = {pair for action in raw for movement in action.movements for pair in movement.touches
-                    if all(side in self.bodies for side in pair)}
-        for a, b in sorted(contacts):
-            for half, bar in ((a, b), (b, a)):
-                if half.startswith("joints/") and bar.startswith("bars/"):
-                    parent.setdefault(half, bar)
-        pairs = {tuple(sorted(pair)) for pair in parent.items()}
-        for a, b in contacts:
-            if a.startswith("joints/") and b.startswith("joints/"):
-                pairs.add((a, b))
-            elif {a.split("/")[0], b.split("/")[0]} == {"joints", "bars"} and (a, b) not in pairs:
-                self.mate_bar_contacts += 1
-        grounds = {key: self._floor_area(body) for key, body in self.bodies.items() if key.startswith("ground/")}
-        for action in raw:
-            for half, bar in parent.items():
-                if bar == action.bar and half.endswith("_ground"):
-                    x, y = self.bodies[half].pose.position[:2]
-                    under = [key for key, (low, high) in grounds.items()
-                             if low[0] - _GROUND_MARGIN <= x <= high[0] + _GROUND_MARGIN
-                             and low[1] - _GROUND_MARGIN <= y <= high[1] + _GROUND_MARGIN]
-                    pairs.update(tuple(sorted((half, ground))) for ground in (under or action.ground))
+                if action.bar not in movement.carried:
+                    continue
+                for body in movement.carried:
+                    if body.startswith("joints/") and mounts.setdefault(body, action.bar) != action.bar:
+                        raise ValueError(f"{body} is carried with {mounts[body]} and with {action.bar}")
+        for key, body in list(self.bodies.items()):
+            if not key.startswith("joints/"):
+                continue
+            if key not in mounts:
+                raise ValueError(f"{key} is never carried with a bar in a jointing action: no mount")
+            match = _HALF_ID.fullmatch(key)
+            part = f"{_JOINT_TYPE}/{match['subtype'].capitalize()}" if match else ""
+            self.bodies[key] = replace(body, mount=mounts[key], part=part)
+
+    def mates(self) -> frozenset:
+        """The joints of the finished structure, from the half ids.
+
+        - `J<a>-<b>_male` mates `J<a>-<b>_female` when both are in the design.
+        - A ground half (`G<n>-…_ground`) mates the ground body it stands on: the one whose walkable polygons are
+          nearest its design position seen from above (0 when it is above one; the nearest in height wins a tie).
+        """
+        pairs: Set[Tuple[str, str]] = set()
+        footprints = {key: _footprints(body) for key, body in self.bodies.items() if key.startswith("ground/")}
+        unmated = []
+        for key in sorted(self.bodies):
+            match = _HALF_ID.fullmatch(key)
+            if match is None:
+                continue
+            other = f"joints/{match['pair']}_{'female' if match['subtype'] == 'male' else 'male'}"
+            if match["subtype"] in ("male", "female"):
+                if other in self.bodies:
+                    pairs.add(tuple(sorted((key, other))))
+                else:
+                    unmated.append(key)
+            elif footprints:
+                position = np.asarray(self.bodies[key].pose.position)
+                ground = min(footprints, key=lambda name: _footprint_distance(position, footprints[name]))
+                pairs.add(tuple(sorted((key, ground))))
+                gap = _footprint_distance(position, footprints[ground])[0]
+                if gap > 0.0:
+                    self.notes.append(f"{key} stands {gap * 1000:.0f} mm beside {ground}, its nearest ground")
+        if unmated:
+            self.notes.append(f"{len(unmated)} half(s) without a partner in the design (it sits on a bar the design "
+                              f"leaves out): {', '.join(unmated)}")
         return frozenset(pairs)
 
-    @staticmethod
-    def _floor_area(body: BodySpec) -> Tuple[np.ndarray, np.ndarray]:
-        """The (x, y) bounding box of a ground body's collision shapes in world, as (low, high)."""
-        points = np.vstack([shape.vertices for shape in body.geometry.collision])
-        points = points @ body.pose.matrix()[:3, :3].T + body.pose.position
-        return points[:, :2].min(axis=0), points[:, :2].max(axis=0)
+    # --- --- pass 2: schema 2, replayed along the schedule --- ---
 
-    def actions(self, raw: List["_RawAction"], connections: frozenset) -> Dict[str, Action]:
-        """Every action in schema 2, following the schedule: tool states replayed, tighten and insert merged."""
-        tool_kinds = {tool_id: tool.kind for tool_id, tool in self.tools.items()}
-        # Tool id -> its current state (channels and "on"), from the start.
-        current = {tool_id: {**released(kind), ON: None} for tool_id, kind in tool_kinds.items()}
-        mounted = {tool: robot_id for robot_id, robot in self.robots.items() for tool in robot.tools.values()}
-        fk = ForwardKinematics()
-        # Robot id -> what it carried at the start of its last own movement.
-        last_carried: Dict[str, Dict[str, Carried]] = {}
+    def actions(self, raw: List["_RawAction"]) -> Dict[str, Action]:
+        """Every action in schema 2: `attached`, `built` and tool states replayed along the schedule.
+
+        - A manual mount attaches the bar to every flange carrying it or its halves; the scaffolding tools are then
+          on the male or ground half at their TCP. A support gripper is on its bar from its close, and the bar is
+          attached to it when the grip closes.
+        - Tighten (with `overlaps_next`) and the insert become one movement that builds the bar.
+        - An ungrasp or open releases what that flange holds; a tool leaves the body its arm no longer holds when
+          the next arm motion (the retreat) ends.
+        - Dropped: the untighten opening every release (untighten now removes a bar), and grip changes to the grip a
+          tool already has.
+        """
+        flange_of = {tool: link_id(robot_id, flange) for robot_id, robot in self.robots.items()
+                     for flange, tool in robot.tools.items()}
+        grounds = frozenset(key for key in self.bodies if key.startswith("ground/"))
+        tools = {tool: ToolState() for tool in self.tools}
+        attached: Dict[str, Tuple[Holder, ...]] = {}
+        built: Set[str] = set()
+        dropped: Dict[str, List[str]] = {"untighten": [], "grip unchanged": []}
+        # Largest gaps between the export and the replay: built bars' poses, held bars' grasps.
+        gaps = {"pose": 0.0, "grasp": 0.0}
         result = {}
         for action in raw:
-            movements, index = [], 0
+            movements = []
             last_links: Dict[str, Pose] = {}
+            index = 0
             while index < len(action.movements):
                 move = action.movements[index]
-                merged = move.overlaps_next and index + 1 < len(action.movements)
+                merged = move.tool_action == "tighten" and move.overlaps_next and index + 1 < len(action.movements)
                 arm_move = action.movements[index + 1] if merged else move
-                self._on_from_contacts(action, move, current, tool_kinds)
-                # * A support gripper sits on the bar once its approach ends, before it closes.
+                index += 2 if merged else 1
+                grips = {tool: _GRIPS[move.tool_action] for tool in move.tools} if move.tool_action in _GRIPS else {}
+                if move.tool_action == "untighten":
+                    dropped["untighten"].append(move.id)
+                    continue
+                if move.kind == "tool" and not merged and all(tools[tool].grip == grip for tool, grip in grips.items()):
+                    dropped["grip unchanged"].append(move.id)
+                    continue
                 if move.tool_action == "close":
                     for tool in move.tools:
-                        if tool_kinds[tool] == "robotiq":
-                            current[tool][ON] = action.bar
-                # ? The export leaves out what another robot holds (Alice's states lack the bar Cindy holds in place):
-                #   a schema 2 state is complete, so another present robot keeps carrying what it last carried.
-                carried, present, poses = dict(move.carried), set(move.present), dict(move.poses)
-                for other, bodies in last_carried.items():
-                    if other != action.robot and move.robots.get(other) is not None:
-                        for body, value in bodies.items():
-                            if body not in present:
-                                carried[body] = value
-                                present.add(body)
-                                poses.pop(body, None)
-                if action.type == "bar_holding_release":
-                    # ? The export hides the supported bar from its own support robot; it is built, so present.
-                    for body in (action.bar, *(half for pair in connections for half in pair
-                                               if action.bar in pair and half.startswith("joints/"))):
-                        if body not in present and body not in carried:
-                            present.add(body)
-                            poses[body] = self.bodies[body].pose
-                last_carried[action.robot] = dict(move.carried)
-                start = State(robots=dict(move.robots), present=frozenset(present), poses=poses, carried=carried,
-                              tools={tool: (dict(current[tool]) if move.robots.get(mounted[tool]) is not None
-                                            else None) for tool in sorted(current)})
-                changes = {tool: dict([_TOOL_ACTIONS[move.tool_action]]) for tool in move.tools} \
-                    if move.tool_action else {}
+                        tools[tool] = replace(tools[tool], on=action.bar)
+                start = State(robots=dict(move.robots), present=grounds | built | set(attached),
+                              attached=dict(attached), built=frozenset(built), tools=dict(tools))
+                self._compare_export(move, start, gaps)
+
+                # * What the movement changes.
+                after = dict(attached)
+                if move.kind == "manual":
+                    after[action.bar] = self._mounted_holders(action, move)
+                for tool, grip in sorted(grips.items()):
+                    if grip == "closed" and self.tools[tool].kind == "robotiq":
+                        holder = self._support_holder(move, flange_of[tool], action.bar, built)
+                        after[action.bar] = (*after.get(action.bar, ()), holder)
+                    elif grip == "open":
+                        after = {bar: tuple(holder for holder in holders if holder.to != flange_of[tool])
+                                 for bar, holders in after.items()}
+                        after = {bar: holders for bar, holders in after.items() if holders}
+                built_after = built | {action.bar} if merged else built
                 path = arm_move.kind if arm_move.kind in ("free", "linear") else None
                 notes = {**move.notes, **arm_move.notes} if merged else move.notes
+                target = Target(joints=dict(arm_move.joints), links=dict(arm_move.links), tools=grips,
+                                attached=after if after != attached else None,
+                                built=frozenset(built_after) if built_after != built else None)
                 movement = Movement(
                     id=move.id, start=start, arms=arm_move.arms, path=path,
                     coupled=arm_move.coupled if path else False,
                     controller=_CONTROLLERS[arm_move.controller] if path else None,
-                    line=self._line(action.robot, arm_move, start, last_links, fk) if path == "linear" else {},
-                    ends_on="tools" if merged else "operator" if move.kind == "manual" else "target",
-                    target=(Target(joints=dict(arm_move.joints), links=dict(arm_move.links), tools=changes)
-                            if arm_move.joints or arm_move.links or changes else None),
+                    line=self._line(action.robot, arm_move, start, last_links) if path == "linear" else {},
+                    drives={tool: "tighten" for tool in move.tools} if merged else {},
+                    ends_on="operator" if move.kind == "manual" else "tools" if move.kind == "tool" else "target",
+                    target=target if target != Target() else None,
                     label=arm_move.label or move.label,
                     notes={key: value for key, value in notes.items()
                            if key not in _CONSUMED_NOTES and isinstance(value, (str, int, float, bool))})
                 movements.append(movement)
-                # * After the movement: tool channels change, and a tool leaves its body once an arm motion that
-                #   started open ends (the retreat).
-                for tool, channels in changes.items():
-                    current[tool].update(channels)
-                for flange in movement.arms:
-                    tool = self.robots[action.robot].tools.get(flange.rsplit("/", 1)[1])
-                    if tool and start.tools[tool] and start.tools[tool].get("grip") == "open":
-                        current[tool][ON] = None
+
+                # * After the movement.
+                attached, built = after, set(built_after)
+                for tool, grip in grips.items():
+                    tools[tool] = replace(tools[tool], grip=grip)
+                if move.kind == "manual":
+                    for holder in attached[action.bar]:
+                        tool = self.robots[action.robot].tools.get(split_link_id(holder.to)[1])
+                        if tool is not None:
+                            tools[tool] = replace(tools[tool], on=self._half_at_tcp(holder, tool, action.bar))
+                for arm in movement.arms:
+                    tool = self.robots[action.robot].tools.get(split_link_id(arm)[1])
+                    on = tools[tool].on if tool is not None else None
+                    if on is not None and not any(holder.to == arm for holder in attached.get(self._bar(on), ())):
+                        tools[tool] = replace(tools[tool], on=None)
                 last_links.update(arm_move.links)
-                index += 2 if merged else 1
             result[action.id] = Action(id=action.id, type=action.type, robot=action.robot, bar=action.bar,
                                        movements=tuple(movements), ground=action.ground,
                                        supports_until=action.supports_until, label=action.label)
+        self.notes.append(f"dropped {len(dropped['untighten'])} untighten movement(s) opening the releases (untighten "
+                          f"now removes a bar), and {len(dropped['grip unchanged'])} tool movement(s) setting a grip "
+                          f"the tool already had: {', '.join(dropped['grip unchanged'])}")
+        self.notes.append(f"export against the replay: built bars at most {gaps['pose'] * 1000:.3g} mm from their "
+                          f"design pose, held bars' grasps at most {gaps['grasp'] * 1000:.3g} mm from the export's")
+        if self.filled:
+            self.notes.append(f"{self.filled} configuration(s) listed only some joints; the others were taken from "
+                              f"the robot's previous state, or zero")
+        if self.no_line:
+            self.notes.append(f"{self.no_line} linear movement(s) without a line: neither notes nor start and target "
+                              f"give one")
         return result
 
-    def _on_from_contacts(self, action: "_RawAction", move: "_RawMovement", current: Dict[str, dict],
-                          kinds: Dict[str, str]) -> None:
-        """Set where the acting robot's scaffolding tools sit from the export's contacts: the male or ground half."""
-        for tool in self.robots[action.robot].tools.values():
-            if kinds[tool] != "scaffolding_v3":
-                continue
-            touched = {side for pair in move.touches if tool in pair for side in pair if side != tool}
-            halves = sorted(body for body in touched if body.startswith("joints/")
-                            and body.endswith(("_male", "_ground")))
-            if len(halves) > 1:
-                raise ValueError(f"{move.id}: {tool} touches {halves}; cannot tell which it sits on")
-            current[tool][ON] = halves[0] if halves else None
+    def _bar(self, body: str) -> Optional[str]:
+        """The bar a body belongs to: itself, or a half's mount."""
+        return body if body.startswith("bars/") else self.bodies[body].mount
 
-    def _line(self, robot: str, move: "_RawMovement", start: State, last_links: Dict[str, Pose],
-              fk: ForwardKinematics) -> Dict[str, LineSpec]:
+    def _mount(self, half: str) -> Pose:
+        """A half's pose in its bar's frame, from the two design poses."""
+        return compose(invert(self.bodies[self.bodies[half].mount].pose), self.bodies[half].pose)
+
+    def _mounted_holders(self, action: "_RawAction", move: "_RawMovement") -> Tuple[Holder, ...]:
+        """The holders of a bar the operator mounts, each with the bar's pose in its flange's frame.
+
+        First the flange the export attaches the bar to, then every other flange carrying one of its halves.
+        """
+        link, grasp = move.carried[action.bar]
+        holders = [Holder(link, grasp)]
+        for body, (other, offset) in sorted(move.carried.items()):
+            if self.bodies.get(body) and self.bodies[body].mount == action.bar \
+                    and other not in {holder.to for holder in holders}:
+                holders.append(Holder(other, compose(offset, invert(self._mount(body)))))
+        return tuple(holders)
+
+    def _support_holder(self, move: "_RawMovement", flange: str, bar: str, built: Set[str]) -> Holder:
+        """A support gripper's hold on a built bar: the bar's design pose in the flange frame, by forward kinematics."""
+        robot, link = split_link_id(flange)
+        robot_state = move.robots.get(robot)
+        if bar not in built or robot_state is None or robot_state.joints is None:
+            raise ValueError(f"{move.id}: {robot} closes on {bar}, which is not built, or its joints are unknown")
+        world = link_pose(self._files[robot][0], robot_state.base, robot_state.joints, link)
+        return Holder(flange, compose(invert(world), self.bodies[bar].pose))
+
+    def _half_at_tcp(self, holder: Holder, tool: str, bar: str) -> Optional[str]:
+        """The male or ground half of a bar at a scaffolding tool's TCP, from the holder's grasp; None for a gripper.
+
+        Raises:
+            ValueError: If no such half is within _TCP_REACH of the TCP.
+        """
+        if self.tools[tool].kind != "scaffolding_v3":
+            return None
+        tcp = np.asarray(self.tools[tool].tcp.position)
+        halves = [key for key, body in self.bodies.items() if body.mount == bar and key.endswith(("_male", "_ground"))]
+        distance, half = min((float(np.linalg.norm(np.subtract(compose(holder.grasp, self._mount(key)).position, tcp))),
+                              key) for key in halves)
+        if distance > _TCP_REACH:
+            raise ValueError(f"{tool}: no male or ground half of {bar} at its TCP (nearest {half}, "
+                             f"{distance * 1000:.1f} mm away)")
+        return half
+
+    def _compare_export(self, move: "_RawMovement", start: State, gaps: Dict[str, float]) -> None:
+        """Track how far the export's own state is from the replayed one: built bars' poses, attached bars' grasps."""
+        for bar in start.built:
+            if bar in move.poses and bar not in start.attached:
+                gaps["pose"] = max(gaps["pose"], _gap(move.poses[bar], self.bodies[bar].pose))
+        for bar, holders in start.attached.items():
+            if bar in move.carried:
+                link, offset = move.carried[bar]
+                for holder in holders:
+                    if holder.to == link:
+                        gaps["grasp"] = max(gaps["grasp"], _gap(offset, holder.grasp))
+
+    def _line(self, robot: str, move: "_RawMovement", start: State, last_links: Dict[str, Pose]) -> Dict[str, LineSpec]:
         """Each moving flange's line: the notes' world axes and distance, or start to target; empty if neither."""
         axes = move.notes.get("retreat_axes_world")
         distance = move.notes.get("lm_distance_mm")
@@ -584,7 +652,7 @@ class _Converter:
                     direction = np.asarray(axes[side], dtype=float)
                     length = float(distance) / 1000.0 if distance else None
             if (direction is None or length is None) and flange in move.links:
-                begin = self._flange_pose(robot, flange, start, last_links, fk)
+                begin = self._flange_pose(robot, flange, start, last_links)
                 if begin is not None:
                     step = np.subtract(move.links[flange].position, begin.position)
                     direction = step if direction is None else direction
@@ -598,12 +666,11 @@ class _Converter:
             return {}
         return lines
 
-    def _flange_pose(self, robot: str, flange: str, start: State, last_links: Dict[str, Pose],
-                     fk: ForwardKinematics) -> Optional[Pose]:
+    def _flange_pose(self, robot: str, flange: str, start: State, last_links: Dict[str, Pose]) -> Optional[Pose]:
         """Where a flange is at a movement's start: forward kinematics of the start joints, else the previous target."""
         robot_state = start.robots.get(robot)
         if robot_state is not None and robot_state.joints is not None and robot_state.base is not None:
-            return fk.link_pose(self._files[robot][0], robot_state.base, robot_state.joints, flange.rsplit("/", 1)[1])
+            return link_pose(self._files[robot][0], robot_state.base, robot_state.joints, flange.rsplit("/", 1)[1])
         return last_links.get(flange)
 
     def _joints(self, robot: str, configuration) -> Dict[str, float]:
@@ -623,9 +690,42 @@ class _Converter:
 
 def _same(a: Pose, b: Pose) -> bool:
     """Whether two poses are equal within _SAME (quaternion sign ignored)."""
+    return _gap(a, b) < _SAME
+
+
+def _gap(a: Pose, b: Pose) -> float:
+    """The larger of two poses' position distance and quaternion difference (sign ignored)."""
     q_a, q_b = np.asarray(a.orientation), np.asarray(b.orientation)
-    return (np.allclose(a.position, b.position, atol=_SAME)
-            and min(np.abs(q_a - q_b).max(), np.abs(q_a + q_b).max()) < _SAME)
+    return max(float(np.linalg.norm(np.subtract(a.position, b.position))),
+               float(min(np.abs(q_a - q_b).max(), np.abs(q_a + q_b).max())))
+
+
+def _footprints(body: BodySpec) -> List[np.ndarray]:
+    """The walkable polygons of a ground body in world, each (n, 3): the top faces of its slabs (`_slab`)."""
+    matrix = body.pose.matrix()
+    return [shape.vertices[:len(shape.vertices) // 2] @ matrix[:3, :3].T + matrix[:3, 3]
+            for shape in body.geometry.collision]
+
+
+def _footprint_distance(point: np.ndarray, polygons: List[np.ndarray]) -> Tuple[float, float]:
+    """How far a point is from a ground seen from above (0 above a polygon), then its height above that polygon."""
+    best = (np.inf, np.inf)
+    for polygon in polygons:
+        xy, x, y = polygon[:, :2], point[0], point[1]
+        inside = False
+        for (x1, y1), (x2, y2) in zip(xy, np.roll(xy, -1, axis=0)):
+            if (y1 > y) != (y2 > y) and x < x1 + (y - y1) * (x2 - x1) / (y2 - y1):
+                inside = not inside
+        if inside:
+            distance = 0.0
+        else:
+            starts, ends = xy, np.roll(xy, -1, axis=0)
+            edges = ends - starts
+            t = np.clip(np.einsum("ij,ij->i", point[:2] - starts, edges) / np.maximum(
+                np.einsum("ij,ij->i", edges, edges), 1e-18), 0.0, 1.0)
+            distance = float(np.min(np.linalg.norm(starts + t[:, None] * edges - point[:2], axis=1)))
+        best = min(best, (distance, abs(float(point[2] - polygon[:, 2].mean()))))
+    return best
 
 
 def _tri(mesh, matrix: Optional[np.ndarray] = None, scale: float = 1.0) -> TriMesh:

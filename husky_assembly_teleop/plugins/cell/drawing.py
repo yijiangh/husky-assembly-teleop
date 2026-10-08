@@ -19,7 +19,8 @@ import numpy as np
 import viser
 import yourdfpy
 
-from bar_assembly_core.design import Design, State
+from bar_assembly_core.design import Design, Holder, State
+from bar_assembly_core.design.relations import is_present, placement
 from bar_assembly_core.geometry import Geometry, Pose, compose, shape_mesh
 from bar_assembly_core.ids import split_link_id
 from ...ui.visualization import FastViserUrdf, add_simple_urdf, joints_changed, load_urdf, quaternion_to_wxyz
@@ -140,7 +141,7 @@ class DesignDrawing:
             state: Which robots are there and where, which bodies are present, held or moved.
             joints: Robot id -> joint values to draw it at (`design.displayed_joints`);
                 joints not given are drawn at zero.
-            everything: Also draw the bodies that neither stand nor are carried (absent ones).
+            everything: Also draw the bodies that neither stand nor move with a robot (absent ones).
         """
         # * Robots first: tools and held bodies read their links from the posed models.
         for robot_id, robot in self._robots.items():
@@ -166,17 +167,17 @@ class DesignDrawing:
                 frame.visible = True
 
         for body_id, (frame, meshes) in self._bodies.items():
-            carried = state.carried.get(body_id) if body_id in state.present else None
-            if carried is not None:
-                holder, link = split_link_id(carried.to)
+            where = placement(self._design, state, body_id)
+            if isinstance(where, Holder) and is_present(self._design, state, body_id):
+                holder, link = split_link_id(where.to)
                 holder_state = state.robots.get(holder)
                 if holder_state is None or holder_state.base is None:
-                    frame.visible = False  # carried by a robot that is not drawn
+                    frame.visible = False  # held by a robot that is not drawn
                     continue
-                pose = compose(self._link_pose(holder, link, holder_state.base), carried.offset)
+                pose = compose(self._link_pose(holder, link, holder_state.base), where.grasp)
                 look = (ATTACHED_COLOR, GHOST_OPACITY if self._ghost else None)
-            elif everything and not stands(state, body_id):
-                pose = state.poses.get(body_id, self._design.bodies[body_id].pose)
+            elif everything and not stands(self._design, state, body_id):
+                pose = where if isinstance(where, Pose) else self._design.bodies[body_id].pose
                 look = (body_color(body_id), GHOST_OPACITY)
             else:
                 frame.visible = False  # standing: the core draws it; or not asked for

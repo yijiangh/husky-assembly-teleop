@@ -101,7 +101,7 @@ def convert_in_memory(export: Path, data_directory: Path, report: Callable[[str]
 
 def convert_export(export: Path, destination: Path, data_directory: Path,
                    report: Callable[[str], None] = print, watch: Optional[Stopwatch] = None) -> Path:
-    """Convert an export into a schema 1 design folder, replacing what is there.
+    """Convert an export into a schema 2 design folder, replacing what is there.
 
     Args:
         export: The export folder, holding ActionSchedule.json.

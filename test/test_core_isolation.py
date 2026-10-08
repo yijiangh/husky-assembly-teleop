@@ -48,3 +48,20 @@ def test_import_skips_compas():
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=env, timeout=120)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "[]"
+
+
+def test_no_core_module_reads_notes():
+    """No core module reads a note key: notes are for people (the legacy converter reads the old export's only)."""
+    found = []
+    for path in sorted(CORE.rglob("*.py")):
+        if "legacy" in path.parts:
+            continue
+        for node in ast.walk(ast.parse(path.read_text(), str(path))):
+            reads = (isinstance(node, ast.Subscript) and isinstance(node.value, ast.Attribute)
+                     and node.value.attr == "notes")
+            reads |= (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                      and node.func.attr in ("get", "pop", "__getitem__") and isinstance(node.func.value, ast.Attribute)
+                      and node.func.value.attr == "notes")
+            if reads:
+                found.append(f"{path.relative_to(CORE)}:{node.lineno}")
+    assert not found, found

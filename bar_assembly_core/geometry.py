@@ -48,7 +48,7 @@ class Pose:
     @classmethod
     def from_matrix(cls, matrix: np.ndarray) -> Pose:
         """Build a pose from a 4x4 homogeneous transform."""
-        # ! Copy: yourdfpy hands out read-only matrices, which this scipy version refuses.
+        # ! Copy: some callers (yourdfpy) hand out read-only matrices, which this scipy version refuses.
         return cls.from_arrays(matrix[:3, 3], Rotation.from_matrix(np.array(matrix[:3, :3])).as_quat())
 
     def matrix(self) -> np.ndarray:

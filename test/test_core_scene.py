@@ -7,10 +7,11 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from yourdfpy import URDF
 
 from bar_assembly_core.geometry import box_geometry
 from bar_assembly_core.geometry import Pose, compose
-from bar_assembly_core.kinematics import ForwardKinematics
+from bar_assembly_core.kinematics import link_pose
 from bar_assembly_core.robot import RobotObject, robot_model
 from bar_assembly_core.scene import Attachment, Body, Scene, world_poses
 from husky_assembly_teleop.config import robot_config_from_serial
@@ -51,26 +52,27 @@ def test_frame_convention_and_fk_comparison(robot):
     other = robot_model(robot, DATA / "husky_urdf" / urdf, live.srdf)
     assert live.stock_ur_frames and not other.stock_ur_frames
     assert other.links == live.links and other.flanges == live.flanges
-    fk = ForwardKinematics()
     joints = dict(zip(live.movable_joints, np.random.default_rng(1).uniform(-2.0, 2.0, len(live.movable_joints))))
     differ = {}
     for link in sorted(live.links):
-        a, b = fk.link_pose(live.urdf, Pose(), joints, link), fk.link_pose(other.urdf, Pose(), joints, link)
+        a, b = link_pose(live.urdf, Pose(), joints, link), link_pose(other.urdf, Pose(), joints, link)
         angle = np.degrees(2 * np.arccos(min(1.0, abs(float(np.dot(a.orientation, b.orientation))))))
         if np.linalg.norm(np.subtract(a.position, b.position)) > 1e-6 or angle > 1e-4:
             differ[link] = angle
     assert list(differ) == [turned] and differ[turned] == pytest.approx(90.0, abs=1e-6)
 
 
-def test_fk_matches_live_kinematics(cindy):
-    """The core FK on the model's URDF gives the monitor's link poses for the same base and joints."""
-    kinematics = Kinematics((cindy,), log_warn=print)
-    joints = dict(kinematics.joints(cindy.serial))
-    base = kinematics.base_pose(cindy.serial)
-    fk = ForwardKinematics()
-    for link in ("left_ur_arm_tool0", "right_ur_arm_wrist_3_link", "base_link"):
-        ours, live = fk.link_pose(cindy.model.urdf, base, joints, link), kinematics.link_pose(cindy.serial, link)
-        np.testing.assert_allclose(ours.position, live.position, atol=1e-9)
+def test_fk_matches_yourdfpy(cindy):
+    """The core's numpy FK gives yourdfpy's link poses (the monitor's FK) for every link, mimic joints included."""
+    urdf = URDF.load(str(cindy.model.urdf), load_meshes=False, build_collision_scene_graph=False,
+                     load_collision_meshes=False)
+    values = np.random.default_rng(2).uniform(-2.0, 2.0, len(urdf.actuated_joint_names))
+    urdf.update_cfg(values)
+    joints = dict(zip(urdf.actuated_joint_names, values))
+    base = Pose((1.0, 2.0, 0.3), (0.0, 0.0, 0.6, 0.8))
+    for link in sorted(cindy.model.links):
+        live = compose(base, Pose.from_matrix(urdf.get_transform(frame_to=link, frame_from=urdf.base_link)))
+        np.testing.assert_allclose(link_pose(cindy.model.urdf, base, joints, link).matrix(), live.matrix(), atol=1e-9)
 
 
 def test_acting_problems(cindy):
@@ -92,10 +94,9 @@ def test_world_poses_follow_parents(cindy):
     bodies = {"a": Body("a", box_geometry((0.1, 0.1, 0.1)), Attachment("robots/r", "left_ur_arm_tool0", grasp)),
               "b": Body("b", box_geometry((0.1, 0.1, 0.1)), Attachment("a", None, grasp)),
               "c": Body("c", box_geometry((0.1, 0.1, 0.1)), Attachment("robots/missing", None, grasp))}
-    fk = ForwardKinematics()
     poses = world_poses(bodies, robots,
-                        lambda robot, link: fk.link_pose(robot.model.urdf, robot.base, robot.joints, link))
-    tool0 = fk.link_pose(cindy.model.urdf, Pose((1.0, 0.0, 0.0)), {}, "left_ur_arm_tool0")
+                        lambda robot, link: link_pose(robot.model.urdf, robot.base, robot.joints, link))
+    tool0 = link_pose(cindy.model.urdf, Pose((1.0, 0.0, 0.0)), {}, "left_ur_arm_tool0")
     assert set(poses) == {"a", "b"}
     np.testing.assert_allclose(poses["a"].position, compose(tool0, grasp).position)
     np.testing.assert_allclose(poses["b"].position, compose(poses["a"], grasp).position)

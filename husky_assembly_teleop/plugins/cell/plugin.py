@@ -434,8 +434,8 @@ class CellPlugin(HuskyPlugin):
         carries += chip(f"ends on {movement.ends_on}", NONE)
 
         moves = [arm.split("/")[-1] for arm in movement.arms] + [
-            f"{tool.split('/')[-1]} {' '.join(f'{channel} {value}' for channel, value in channels.items())}"
-            for tool, channels in movement.tool_change.items()]
+            f"{tool.split('/')[-1]} grip {grip}" for tool, grip in movement.grip_change.items()] + [
+            f"{tool.split('/')[-1]} {direction}" for tool, direction in movement.drives.items()]
         lines = [f"action   {step.action_index + 1}/{self.design.action_count}  {action.id}",
                  f"movement {step.movement_index + 1}/{len(action.movements)}  {movement.id}",
                  f"moves    {', '.join(moves) or '-'}"]
@@ -448,7 +448,7 @@ def movement_kind(movement) -> str:
     if movement.ends_on == "operator":
         return "manual"
     arms = f"{movement.path}{' coupled' if movement.coupled else ''}" if movement.arms else ""
-    tools = "tools" if movement.tool_change else ""
+    tools = "tools" if movement.has_tool_part else ""
     return " + ".join(part for part in (arms, tools) if part)
 
 

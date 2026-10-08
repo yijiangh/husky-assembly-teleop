@@ -10,7 +10,9 @@ Loaders, each giving one `RobotCell` per acting robot and one `RobotCellState` p
 With collisions, the export is also converted into a schema 2 design (`convert_export` into a temporary folder,
 `read`), and each movement's scene (`Design.scene_at`) goes through a `CompasFabMirror` for its acting robot; its
 colliding pairs are compared with the export's own ("new vs mirror"). Movements merged by the conversion (an insert
-run into its tighten) are compared under the first one's id.
+run into its tighten) are compared under the first one's id; movements the conversion drops (the untighten opening
+each release) are not compared. Pairs that follow from schema 2's narrower allowed contacts are listed under their
+own kinds (`_narrower`).
 
 Names are mapped to design ids before comparing (`bar_B1`, `env_bar_B1` -> `bars/B1`); the floors (old
 `obstacle_ground`, design `ground/*`) are compared on their own. Each difference kind is listed with its count
@@ -51,6 +53,7 @@ DATA = REPO / "data"
 
 import rs_data_structure  # noqa: E402,F401  (registers the action dtypes for json_load)
 from bar_assembly_core.design import read  # noqa: E402
+from bar_assembly_core.design.relations import bar_of, is_present  # noqa: E402
 from bar_assembly_core.mirrors.compas import PARKED_POSITION  # noqa: E402
 from bar_assembly_core.legacy.conversion import convert_export  # noqa: E402
 from bar_assembly_core.legacy.export import body_id, load_export  # noqa: E402
@@ -64,6 +67,9 @@ GROUND = "<ground>"
 #: The old app's floor body (old/cfab_session.py:75).
 OLD_GROUND = "obstacle_ground"
 LOADERS = ("old", "new")
+#: Kinds of mirror-only (or export-only) pairs that follow from schema 2's narrower allowed contacts.
+NARROW_HELD, NARROW_MATE_BAR = "narrower contacts: tool with its half's bar", "narrower contacts: bar with mate's half"
+NARROW_MATE_TOOL, EXPORT_EARLY_BAR = "narrower contacts: tool with mate's half", "export shows a bar before its mount"
 PAIRS = (("old", "new"),)
 
 #: Difference kinds that are explained, with the reason and code reference. Any other kind is UNEXPECTED.
@@ -75,6 +81,17 @@ KNOWN = {
                            "keeps the 3D polygons (legacy._slab)",
     "pairs allowed by static_contacts": "the mirror allows other robots' tool/body pairs already touching at sync "
                                         "(mirrors/compas_fab.py `_allow_static_contacts`); the export has no such rule",
+    # * Schema 2's allowed contacts are narrower than the export's touches (format §8.4): these pairs are new, and
+    #   every one is listed. They are explained, not hidden.
+    NARROW_HELD: "new pair: a Cindy tool with the bar whose half it is on (held or not). Schema 2 allows a tool only "
+                 "the body it is on (the half); compas_fab tests each tool by its convex hull, which wraps around the "
+                 "bar (the exact meshes keep >= 1.7 mm apart at their vertices)",
+    NARROW_MATE_BAR: "new pair: an inserted bar with the female half its own male half mates; schema 2 allows only "
+                     "the two halves of a pending mate",
+    NARROW_MATE_TOOL: "new pair: a Cindy tool with the female half its half mates; schema 2 allows a tool only the "
+                      "body it is on",
+    EXPORT_EARLY_BAR: "only the export: it shows a bar before the operator mounts it; schema 2 replays the schedule, "
+                      "so the bar is not present yet",
 }
 
 
@@ -887,17 +904,26 @@ def mirror_collisions(design, keys: List[Tuple[str, str]]) -> Tuple[dict, dict]:
     return found, allowed
 
 
-def compare_mirror(report: Report, export: dict, mirror: dict, allowed: dict) -> None:
-    """The export's pairs against the mirror's; pairs only the mirror's static contacts hide are told apart."""
+def compare_mirror(report: Report, export: dict, mirror: dict, allowed: dict, design) -> None:
+    """The export's pairs against the mirror's, every pair listed.
+
+    Pairs only the mirror's static contacts hide, and pairs that follow from schema 2's narrower contacts
+    (`_narrower`), are told apart.
+    """
     category = report.category(("new", "mirror"), "collision pairs")
+    movements = {(action.id, movement.id): movement for action, movement in design.movements()}
     for key in sorted(set(export) & set(mirror)):
         x, y = export[key], mirror[key]
         floor_x, floor_y = {p for p in x if GROUND in p}, {p for p in y if GROUND in p}
         hidden = (x - y) & allowed[key]
         problems = []
-        if (x - floor_x - hidden) != (y - floor_y):
-            problems.append(("pairs differ", f"only export {sorted((x - floor_x - hidden) - y)}, "
-                                             f"only mirror {sorted((y - floor_y) - x)}"))
+        kinds = defaultdict(list)
+        for pair in sorted((x - floor_x - hidden) - y):
+            kinds[_narrower(design, movements[key].start, pair, only_export=True)].append(pair)
+        for pair in sorted((y - floor_y) - x):
+            kinds[_narrower(design, movements[key].start, pair, only_export=False)].append(pair)
+        for kind, pairs in kinds.items():
+            problems.append((kind, f"{sorted(pairs)}"))
         if hidden - floor_x:
             problems.append(("pairs allowed by static_contacts", f"{sorted(hidden - floor_x)}"))
         if floor_x != floor_y:
@@ -905,6 +931,31 @@ def compare_mirror(report: Report, export: dict, mirror: dict, allowed: dict) ->
             problems.append((kind, f"only export {sorted(floor_x - floor_y)}, only mirror {sorted(floor_y - floor_x)}"))
         category.add(key[1], problems)
         category.deviation("pairs per state", max(len(x), len(y)))
+
+
+def _narrower(design, state, pair: Tuple[str, str], only_export: bool) -> str:
+    """Why one pair differs between the export and the mirror, as a KNOWN kind, or "pairs differ" if unexplained."""
+    a, b = pair
+    if only_export:
+        bars = [side for side in pair if side.startswith("bars/")]
+        return EXPORT_EARLY_BAR if bars and not is_present(design, state, bars[0]) else "pairs differ"
+    partner = {side: other for mate in design.mates for side, other in (mate, mate[::-1])}
+    tool = next((side for side in pair if side.startswith("tools/")), None)
+    body = b if tool == a else a
+    on = state.tools[tool].on if tool is not None and state.tools.get(tool) else None
+    if tool is not None and body.startswith("bars/"):
+        holders = {holder.to for holder in state.attached.get(body, ())}
+        flange = next((f"{robot_id}/{link}" for robot_id, robot in design.robots.items()
+                       for link, mounted in robot.tools.items() if mounted == tool), None)
+        works_on = flange in holders or (on is not None and bar_of(design, on) == body)
+        return NARROW_HELD if works_on else "pairs differ"
+    if tool is not None and body.startswith("joints/"):
+        return NARROW_MATE_TOOL if on is not None and partner.get(on) == body else "pairs differ"
+    if {a.split("/")[0], b.split("/")[0]} == {"bars", "joints"}:
+        bar, half = (a, b) if a.startswith("bars/") else (b, a)
+        mated = partner.get(half)
+        return NARROW_MATE_BAR if mated is not None and bar_of(design, mated) == bar else "pairs differ"
+    return "pairs differ"
 
 
 # --- --- --- --- --- RUN --- --- --- --- ---
@@ -960,7 +1011,7 @@ def _run(export: Path, folder: Path, collisions: bool, log: Callable[[str], None
         keys = [key for key in found["new"] if key in movements]
         log(f"collisions: mirror ({len(keys)} states)")
         found["mirror"], allowed = mirror_collisions(design, keys)
-        compare_mirror(report, found["new"], found["mirror"], allowed)
+        compare_mirror(report, found["new"], found["mirror"], allowed, design)
         report.notes.append(f"mirror: {sum(map(len, found['mirror'].values()))} colliding pairs over {len(keys)} "
                             f"movements; export: {sum(len(found['new'][key]) for key in keys)}")
     return report

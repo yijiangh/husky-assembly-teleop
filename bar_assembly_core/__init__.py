@@ -3,9 +3,10 @@ The shared core of bar assembly, used alike by the monitor, the Rhino plugin and
 
 Layers, each importing only the ones above it:
     geometry, ids     poses, shapes, ids                                          numpy, scipy, trimesh
-    urdf, kinematics  URDF/SRDF files, UR conventions; forward kinematics         kinematics: + yourdfpy
+    urdf, kinematics  URDF/SRDF files, UR conventions; forward kinematics
     robot, scene      RobotModel, RobotObject; Body, Scene: the world at one moment
-    design            the file format; design.scenes turns a design into scenes   design.scenes: + yourdfpy
+    design            the file format and its file checks; design.scenes turns a design into scenes,
+                      design.plan_check runs the plan checks, design.solutions reads and writes planner results
     mirrors           a scene in PyBullet or compas_fab, for planners             + pybullet, compas_fab
     legacy            the old compas_fab export (optional)                       + compas, rs_data_structure
 

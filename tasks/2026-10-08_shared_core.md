@@ -189,6 +189,9 @@ runs list these pairs separately ("pairs allowed by static_contacts"); counts ar
 
 ### 9.5 Schema 2: what changed for hosts, and what is still open
 
+! Superseded by §12 (schema 2, final revision): `carried`, `connections`, the `joint` tool channel and rules 1–16
+are gone. Kept below as the record of the first draft.
+
 Schema 2 is in (§11). The library reads and writes schema 2 only: `read` refuses a schema 1 `design.json` with
 `SchemaMismatch`. The monitor converts an old export straight to schema 2 (`legacy/`); a stale `<export>_design`
 copy is regenerated on load. For Rhino and tamp:
@@ -304,3 +307,80 @@ Status: S1–S4 done; results in §9.6, host-facing changes in §9.5.
 Converter derivations checked on the 260814 data: every scaffolding tool touches at most one male or ground half
 (288 states one, 32 states one of two halves, 128 none); support grippers never appear in contacts (448 states), so
 their `on` follows the action; 140 distinct body–body pairs (bar–half 108, mates 32).
+
+## 12. Schema 2, final revision (user request, 2026-10-08)
+
+Spec: "Husky design format: schema 2 proposal", final version (it supersedes the draft §11 implemented in e328f5b).
+The in-repo copy is `doc/design_format.md`. Built on the uncommitted removal of yourdfpy from the core's FK (another
+session): its `bar_assembly_core/kinematics.py` was missing from the working tree, so `link_pose` was written here in
+numpy (revolute, continuous, prismatic, mimic; equal to yourdfpy within 1e-15 on all 18 URDFs in `data/`).
+
+### 12.1 What changed, and why
+
+| Area | Draft (§11) | Final | Why |
+|---|---|---|---|
+| Body ↔ body | `connections` (half–bar, half–half, half–ground) | `BodySpec.mount` (half → bar) and design-level `mates` | Separates the relation that moves bodies (mount) from the one that only joins them (mate) |
+| State | `present` (all bodies), `poses` (every unheld body), `carried` (body → `{to, offset}`) | `present` (bars and ground), `attached` (bar → list of `{to, grasp}`), `built`, `poses` (staged bars only) | One pose rule; halves follow by mount; a built bar may have several holders |
+| Tool state | channels per kind (`grip`, `joint` loose/tight) + `on` | `ToolState(grip, on)`; the jointing screw is `Movement.drives` (`tighten`/`loosen`) | The screw leaves no lasting state; tightness belongs to the mate |
+| Target | `tools`: channel changes | `tools`: grip changes; `attached`, `built`: the whole value at the end when it changes | `attached`/`built` change only inside movements, as the operations say |
+| Checks | rules 1–16 in `validate` | A1–A14 (file checks: `read`, `write`, `validate`, solutions) and B1–B14 (`design.plan_check.check_plan`) | File checks on every read; plan checks on demand |
+| Contacts | tool with its whole part and the halves mated to it; mated half with its mate's part | tool with the body it is on; half with its bar; pending/engaged mates; ground links with ground | The spec's narrower rules; the extra draft rules are gone |
+| Solutions | content hash only | `design.solutions`: `Solution`, `MovementResult`, `read_solutions`, `write_solution`, `solved_against`, `is_stale`, `solution_warnings` | Specified file; stale = warning; chaining rule |
+| FK | yourdfpy (`ForwardKinematics`) | numpy `kinematics.link_pose` | `scene_at`, B14 and the converter need nothing beyond numpy, scipy, trimesh |
+
+### 12.2 Converter (`legacy/export.py`)
+
+Pass 1 reads every movement as before. Then: `mount` from the bar each half is carried with in its jointing action;
+`part` `T20/<Male|Female|Ground>` from the id; `mates` from `J<a>-<b>_male`/`_female` pairs, and each ground half with
+the ground body whose walkable polygons are nearest its design position seen from above. Pass 2 replays `attached`,
+`built` and the tool states along the schedule (Appendix B of the format). Robot states stay as in the export.
+
+### 12.3 Results
+
+| Check | Result |
+|---|---|
+| Quick set (`pytest`) | 223 passed, 4 skipped (uv not on PATH; mirror and equivalence tests without their variables, run below) |
+| Linters (`pytest -m "" -k "flake8 or pep257"`) | pass |
+| Slow set (`pytest -m slow`, `HUSKY_DESIGN_STUDY` set) | 13 passed, including `test_legacy_conversion.py` on both exports (27 s) |
+| `test_compas_fab_mirror.py` + `test_legacy_equivalence.py` on the 260814 export | 10 passed |
+| Monitor cell path on converted 260814 | `load_design`, `scene_bodies` for all 182 steps (with and without the real robots: 1.0 ms each, none refused), overlay drawing of every step |
+| Python 3.9 (`test_core_py39.py`) | 3 passed (scratch uv): the pure core now includes `kinematics`, `design.scenes`, `plan_check`, `solutions`, and runs write/read/plan check/`scene_at` |
+| 260814 | 48 actions, 182 movements (224 − 20 merged tightens − 20 untightens − 2 repeated support `open`s), 94 bodies, 36 mates; A: pass; B: 2 errors (B11), 4 warnings (B5); actions 0.70 MB (spec estimate ~0.76 MB, 1.11 MB in schema 1) |
+| 260920 | Same counts, 95 bodies; A: pass; B: 4 errors (the same 2 B11, 2 B14), 4 warnings (B5); actions 0.71 MB |
+
+Plan-check errors found in the exports themselves:
+- B11 (both): in Belle's next hold release the export still shows Alice at her grasp joints after her retreat
+  (`B3_HR_M1 → B7_HR_M0`, `B12_HR_M1 → B15_HR_M0`); her note says she drives away.
+- B14 (260920): at `B16_R_M1` the export's joints put B16 295 mm and 12° from its design pose, for both flanges.
+- B5: the 4 male halves on B3, B7, B12, B15 whose partners sit on the fake bars B2, B6, B11, B14.
+
+Equivalence (`scripts/legacy_equivalence.py`, export vs converted design's `CompasFabMirror`, 98 movements with
+configurations; the dropped untightens are not compared): 0 unexpected kinds on both exports. New pairs, each listed
+under its own kind (`_narrower`), none hidden:
+
+| Kind | 260814 | 260920 |
+|---|---|---|
+| Identical movements | 34 / 98 | 37 / 98 |
+| A Cindy tool with the bar whose half it is on (insert start, ungrasp start, retreat start of every bar) | 60 movements, 120 pairs | 58, 116 |
+| An inserted bar with the female halves its males mate (B19, B21 inserts) | 2, 4 | 2, 4 |
+| A Cindy tool with the female half its half mates (B19, B21 ungrasp and retreat) | 4, 8 | 4, 8 |
+| Floor pairs only the design has (`B13`, Cindy's forearm on the ground) | 4 | 0 |
+| Only the export: `bars/B5` with Cindy in `B3_H_M1..M3` (the export shows B5 before its mount; was "static_contacts") | 3 | 3 |
+
+The tool–bar pairs are not real contacts: the exact meshes stay ≥ 1.72 mm apart at the tools' vertices (no vertex
+inside the bar), but compas_fab loads each tool through `robot_model_to_urdf` without `concavity`, so PyBullet tests its
+convex hull, which wraps around the bar. The draft's broad rule (tool with its whole part) hid this. Open question:
+see the final report.
+
+### 12.4 Resolved ambiguities and deviations
+
+- `target.attached` / `target.built` hold the whole value at the end, written only when the movement changes it.
+- Mate status "open" also covers combinations the spec's table leaves out (e.g. one side built, the other staged).
+- Tool states start `null` (not decided) and are replayed; a tool move that sets the grip a tool already has is
+  dropped by the converter (B12_H_M1, B15_H_M1), since `target.tools` names only changes.
+- A tool's state is kept (not `null`) while its robot is absent: the grip does not change when the robot drives off.
+- `line` is required on every linear path (A11), and every half needs a `mount` (A12).
+- B11 compares bases only within an action (robots drive between actions) and skips values left `null`.
+- B14: part seats `T20/Male` = identity, `T20/Ground` = 180° about TCP z; tolerance 0.1 mm / 1 mrad.
+- B9 checks only that the path is linear, not that it moves away.
+- `scene_after(bar)` keeps its meaning: the start after the bar's last action (with holds, its hold release).

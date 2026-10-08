@@ -1,6 +1,7 @@
 """Tests for design write and read (T3): a design written and read back is the same design."""
 
 import json
+import re
 from dataclasses import replace
 from pathlib import Path
 
@@ -30,9 +31,9 @@ def _comparable(design: Design) -> dict:
     return {
         "robots": {k: (r.id, r.serial, r.tools, r.ground_links) for k, r in design.robots.items()},
         "tools": {k: (t.id, _geometry(t.geometry), t.tcp, t.kind, t.mount_contacts) for k, t in design.tools.items()},
-        "bodies": {k: (b.id, b.pose, _geometry(b.geometry), b.label, b.part, b.markers)
+        "bodies": {k: (b.id, b.pose, _geometry(b.geometry), b.label, b.part, b.markers, b.mount)
                    for k, b in design.bodies.items()},
-        "connections": design.connections,
+        "mates": design.mates,
         "producer": design.producer,
         "schedule": design.schedule,
         "actions": design.actions,
@@ -40,7 +41,7 @@ def _comparable(design: Design) -> dict:
 
 
 def test_write_then_read_is_equal(tmp_path: Path):
-    """read(write(d)) equals d, down to every state, tool state, target, line and note."""
+    """read(write(d)) equals d, down to every state, holder, tool state, target, line, drive and note."""
     design = build_design(tmp_path)
     back = write(design, tmp_path / "out")
     assert back.folder == (tmp_path / "out").resolve()
@@ -53,7 +54,7 @@ def test_write_then_read_is_equal(tmp_path: Path):
 
 
 def test_shared_mesh_written_once(tmp_path: Path):
-    """Two bodies with one mesh share one file, and read back share one TriMesh object."""
+    """Bodies with one mesh share one file, and read back share one TriMesh object."""
     design = build_design(tmp_path)
     # * A copy with equal content is also written only once.
     copy = TriMesh.from_arrays(TETRA.vertices, TETRA.faces)
@@ -62,12 +63,13 @@ def test_shared_mesh_written_once(tmp_path: Path):
     back = write(replace(design, bodies=bodies), tmp_path / "out")
     files = sorted(p.relative_to(tmp_path / "out" / "meshes").as_posix()
                    for p in (tmp_path / "out" / "meshes").rglob("*") if p.is_file())
-    assert files == ["joints/J1_male.obj", "tools/AT3L.obj"]
+    assert files == ["joints/G1_ground.obj", "tools/AT3L.obj"]
     manifest = json.loads((tmp_path / "out" / "design.json").read_text())
-    for body in ("joints/J1_male", "joints/J2_male", "obstacles/O1"):
-        assert manifest["bodies"][body]["collision"] == [{"mesh": "meshes/joints/J1_male.obj"}]
-    meshes = [back.bodies[b].geometry.collision[0] for b in ("joints/J1_male", "joints/J2_male", "obstacles/O1")]
-    assert meshes[0] is meshes[1] is meshes[2]
+    shared = ("joints/G1_ground", "joints/J1_female", "joints/J1_male", "obstacles/O1")
+    for body in shared:
+        assert manifest["bodies"][body]["collision"] == [{"mesh": "meshes/joints/G1_ground.obj"}]
+    meshes = [back.bodies[b].geometry.collision[0] for b in shared]
+    assert all(mesh is meshes[0] for mesh in meshes)
     assert back.bodies["joints/J1_male"].geometry.visual[0] is meshes[0]
 
 
@@ -79,22 +81,30 @@ def test_visual_left_out_when_equal(tmp_path: Path):
     assert len(manifest["bodies"]["bars/B1"]["visual"]) == 2
     assert "mount_contacts" not in manifest["tools"]["tools/Grip"] and "label" not in manifest["bodies"]["bars/B2"]
     assert "serial" not in manifest["robots"]["robots/alice"] and "part" not in manifest["bodies"]["bars/B2"]
-    action = json.loads((tmp_path / "out" / "actions" / "B2_H_hold.json").read_text())
+    assert manifest["bodies"]["joints/J1_male"]["mount"] == "bars/B2" and "mount" not in manifest["bodies"]["bars/B2"]
+    assert manifest["mates"] == [["ground/WG0", "joints/G1_ground"], ["joints/J1_female", "joints/J1_male"]]
+    action = json.loads((tmp_path / "out" / "actions" / "B1_H_hold.json").read_text())
     movement = action["movements"][0]
     assert "coupled" not in movement and "ends_on" not in movement and "notes" not in movement
-    assert "carried" not in movement["start"] and "line" not in movement
+    assert "line" not in movement and "drives" not in movement
+    assert movement["start"]["built"] == ["bars/B1"] and list(movement["start"]["attached"]) == ["bars/B1"]
+    assert movement["start"]["tools"]["tools/Grip"] == {"grip": "open", "on": None}
     assert movement["target"] == {"joints": {"robots/alice": {"left_joint1": 1.0, "left_joint2": 1.0,
                                                               "right_joint1": 1.0, "right_joint2": 1.0}}}
     close = action["movements"][1]
-    assert "arms" not in close and "path" not in close and "controller" not in close
-    assert close["target"] == {"tools": {"tools/Grip": {"grip": "closed"}}}
+    assert "arms" not in close and "path" not in close and "controller" not in close and close["ends_on"] == "tools"
+    assert close["target"]["tools"] == {"tools/Grip": {"grip": "closed"}}
+    assert [holder["to"] for holder in close["target"]["attached"]["bars/B1"]] == [
+        "robots/cindy/left_tool0", "robots/alice/left_tool0"], "holders keep their order: the first sets the pose"
+    retreat = json.loads((tmp_path / "out" / "actions" / "B1_R_release.json").read_text())["movements"][1]
+    assert "target" not in retreat, "target null: end where the next movement starts"
 
 
 def test_writer_block_in_every_file(tmp_path: Path):
     """design.json and each action file carry the writer block of this library."""
     write(build_design(tmp_path), tmp_path / "out")
     files = [tmp_path / "out" / "design.json", *sorted((tmp_path / "out" / "actions").glob("*.json"))]
-    assert len(files) == 3
+    assert len(files) == 6
     for path in files:
         writer = json.loads(path.read_text())["writer"]
         assert writer["schema"] == 2 and writer["library"] == "design_io"
@@ -105,7 +115,7 @@ def test_poses_on_one_line(tmp_path: Path):
     """Poses and joint vectors stay on one line; no NaN."""
     write(build_design(tmp_path), tmp_path / "out")
     text = (tmp_path / "out" / "actions" / "B1_J_joint.json").read_text()
-    assert '"offset": [0.0, 0.0, 0.12, 0.0, 0.0, 0.0, 1.0]' in text
+    assert re.search(r'"grasp": \[[-0-9.e, ]+\]', text) and '"direction": [0.0, 0.0, -1.0]' in text
     assert "NaN" not in text
 
 
@@ -122,6 +132,18 @@ def test_content_hash_ignores_writer_and_formatting(tmp_path: Path):
     data["movements"][2]["line"]["robots/cindy/left_tool0"]["distance"] = 0.02
     path.write_text(json.dumps(data))
     assert content_hash(path) != before
+
+
+def test_content_hash_is_deterministic(tmp_path: Path):
+    """Writing the same design twice, from another commit, or rewriting what was read gives the same hashes."""
+    design = build_design(tmp_path)
+    write(design, tmp_path / "a")
+    back = write(replace(design, writer=replace(design.writer, commit="other")), tmp_path / "b")
+    write(back, tmp_path / "c")
+    for name in ("design.json", *(f"actions/{action}.json" for action in design.schedule)):
+        hashes = {content_hash(tmp_path / folder / name) for folder in "abc"}
+        assert len(hashes) == 1, name
+    assert (tmp_path / "a" / "design.json").read_text() == (tmp_path / "c" / "design.json").read_text()
 
 
 def test_non_empty_folder_refused(tmp_path: Path):
@@ -238,4 +260,4 @@ def test_floats_are_rounded(tmp_path: Path):
     back = write(replace(design, bodies=bodies), tmp_path / "out")
     assert back.bodies["bars/B2"].pose.position == (0.5, 0.0, 0.0)
     manifest = (tmp_path / "out" / "design.json").read_text()
-    assert "e-20" not in manifest and "-0.0" not in manifest
+    assert "e-20" not in manifest and not re.search(r"-0\.0[,\]]", manifest)

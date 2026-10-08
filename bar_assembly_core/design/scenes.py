@@ -3,26 +3,20 @@ Scenes from a design: the world at one movement (`scene_at`), or once a bar is b
 
 A scene shares nothing mutable with the design: bodies, robots, joints and touches are new; only `Geometry` and
 `RobotModel` objects are shared, and a robot's model is the same object for every scene of the same robot.
-
-! Needs yourdfpy (forward kinematics for held bodies): `Design.scene_at` imports this module on first use.
 """
 
 from __future__ import annotations
 
-import threading
 from functools import lru_cache
 from typing import Dict, Optional, Set, Tuple
 
 from ..geometry import Pose
 from ..ids import split_link_id
-from ..kinematics import ForwardKinematics
+from ..kinematics import link_pose
 from ..robot import RobotModel, RobotObject, Tool, robot_model
 from ..scene import Attachment, Body, Scene, world_poses
-from .relations import allowed_contacts
-from .types import Design, Movement, State
-
-# * One forward kinematics per thread: a parsed URDF keeps the joints it was last set to.
-_local = threading.local()
+from .relations import allowed_contacts, is_present, placement
+from .types import Design, Holder, Movement, State
 
 
 def design_model(design: Design, robot_id: str) -> RobotModel:
@@ -57,7 +51,8 @@ def scene_at(design: Design, movement: Movement) -> Scene:
 
     - A robot absent from the state is disabled; one with `joints: null` has every movable joint `unmeasured`
       (at 0), one with `base: null` is not `base_tracked`, so planners refuse it until its owner fills them in.
-    - A carried body is attached to its robot link; an absent body is disabled.
+    - Bodies follow the pose rule (`relations.placement`): an attached, unbuilt bar and its halves are attached to
+      the first holder's link; every other body has a world pose. An absent body is disabled.
     - `touches` hold every allowed contact both ways, derived (`relations.allowed_contacts`); mount contacts are on
       the robot model.
 
@@ -121,18 +116,13 @@ def _scene(design: Design, state: State, target_joints: Optional[Dict[str, Dict[
 
     bodies: Dict[str, Body] = {}
     for body_id, spec in design.bodies.items():
-        carried = state.carried.get(body_id)
-        if carried is not None:
-            robot_id, link = split_link_id(carried.to)
-            placement = Attachment(robot_id, link, carried.offset)
-        else:
-            placement = state.poses.get(body_id, spec.pose)
-        bodies[body_id] = Body(body_id, spec.geometry, placement, tuple(sorted(contacts.get(body_id, ()))),
-                               spec.label, enabled=body_id in state.present)
+        where = placement(design, state, body_id)
+        if isinstance(where, Holder):
+            robot_id, link = split_link_id(where.to)
+            where = Attachment(robot_id, link, where.grasp)
+        bodies[body_id] = Body(body_id, spec.geometry, where, tuple(sorted(contacts.get(body_id, ()))),
+                               spec.label, enabled=is_present(design, state, body_id))
 
-    fk = getattr(_local, "fk", None)
-    if fk is None:
-        fk = _local.fk = ForwardKinematics()
-    poses = world_poses(bodies, robots, lambda robot, link: fk.link_pose(robot.model.urdf, robot.base, robot.joints,
-                                                                         link))
+    poses = world_poses(bodies, robots, lambda robot, link: link_pose(robot.model.urdf, robot.base, robot.joints,
+                                                                      link))
     return Scene(bodies=bodies, world_poses=poses, robots=robots)

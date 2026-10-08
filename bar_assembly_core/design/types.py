@@ -27,11 +27,10 @@ CONTROLLERS: Tuple[str, ...] = ("position", "compliant")
 ENDS_ON: Tuple[str, ...] = ("target", "tools", "operator")
 
 #: Body id prefixes (format §3.1).
-BODY_PREFIXES: Tuple[str, ...] = ("bars/", "joints/", "ground/", "obstacles/")
+BAR_PREFIX, HALF_PREFIX, GROUND_PREFIX, OBSTACLE_PREFIX = "bars/", "joints/", "ground/", "obstacles/"
+BODY_PREFIXES: Tuple[str, ...] = (BAR_PREFIX, HALF_PREFIX, GROUND_PREFIX, OBSTACLE_PREFIX)
 ROBOT_PREFIX, TOOL_PREFIX = f"{ROBOTS}/", f"{TOOLS}/"
 
-#: A tool's state: channel -> value (None: not decided), plus "on": the body the tool sits on, if any.
-ToolState = Dict[str, Optional[str]]
 #: A note value: flat only.
 Note = Union[str, int, float, bool]
 
@@ -108,6 +107,7 @@ class BodySpec:
     Attributes:
         part: Catalogue reference, e.g. "T20/Female"; empty if none.
         markers: Marker label -> (x, y, z), metres, for placement checks and mocap registration.
+        mount: A connector half's bar: the half is fixed to it for the whole design and follows it. None otherwise.
     """
 
     id: str
@@ -116,6 +116,7 @@ class BodySpec:
     label: str = ""
     part: str = ""
     markers: Dict[str, Tuple[float, float, float]] = field(default_factory=dict)
+    mount: Optional[str] = None
 
 
 # --- --- --- --- --- STATES --- --- --- --- ---
@@ -129,29 +130,39 @@ class RobotState:
 
 
 @dataclass(frozen=True)
-class Carried:
-    """A body that moves with a robot: `to` is "robots/<robot>/<link>", `offset` the body pose in that link's frame."""
+class Holder:
+    """A robot link holding a bar: `to` is "robots/<robot>/<link>", `grasp` the bar pose in that link's frame."""
 
     to: str
-    offset: Pose
+    grasp: Pose
+
+
+@dataclass(frozen=True)
+class ToolState:
+    """A tool at one moment: its grip ("open", "closed", or None: not decided) and the body it is on, if any."""
+
+    grip: Optional[str] = None
+    on: Optional[str] = None
 
 
 @dataclass(frozen=True)
 class State:
-    """One complete moment (format §5.2): readable on its own.
+    """One complete moment (format §5.2): readable on its own, together with the design.
 
     Attributes:
         robots: Every robot; None = not in the scene.
-        present: Bodies in the scene.
-        poses: The world pose of every present body that is not carried.
-        carried: Bodies that move with a robot link.
-        tools: Every mounted tool's state (`ToolState`); None = its robot is absent, or the state is unknown.
+        present: Bars and ground in the scene; halves are present with their bar, obstacles always.
+        attached: Bar -> the robot links holding it, the first one setting its pose while it is not built.
+        built: Bars fixed in the structure: they take their design pose.
+        poses: World poses of present bars that are neither built nor attached, where away from the design pose.
+        tools: Every mounted tool's state; None = its robot is absent.
     """
 
     robots: Dict[str, Optional[RobotState]]
     present: FrozenSet[str]
-    poses: Dict[str, Pose]
-    carried: Dict[str, Carried] = field(default_factory=dict)
+    attached: Dict[str, Tuple[Holder, ...]] = field(default_factory=dict)
+    built: FrozenSet[str] = frozenset()
+    poses: Dict[str, Pose] = field(default_factory=dict)
     tools: Dict[str, Optional[ToolState]] = field(default_factory=dict)
 
 
@@ -170,12 +181,16 @@ class Target:
     Attributes:
         joints: Robot id -> joint -> value; a subset of joints is allowed.
         links: Link id -> world pose.
-        tools: Tool id -> the channels that change -> their value at the end.
+        tools: Tool id -> its grip at the end, only for the tools whose grip changes.
+        attached: The whole `attached` map at the end, if the movement changes it; None: unchanged.
+        built: The whole `built` set at the end, if the movement changes it; None: unchanged.
     """
 
     joints: Dict[str, Dict[str, float]] = field(default_factory=dict)
     links: Dict[str, Pose] = field(default_factory=dict)
-    tools: Dict[str, Dict[str, str]] = field(default_factory=dict)
+    tools: Dict[str, str] = field(default_factory=dict)
+    attached: Optional[Dict[str, Tuple[Holder, ...]]] = None
+    built: Optional[FrozenSet[str]] = None
 
 
 @dataclass(frozen=True)
@@ -188,6 +203,7 @@ class Movement:
         coupled: The arms keep their relative pose (they hold one bar).
         controller: "position" or "compliant", when arms move.
         line: Per moving flange of a linear path: direction and distance.
+        drives: Tool id -> "tighten" or "loosen": the jointing screw runs during the movement.
         ends_on: "target" (arms reached it, tools done), "tools" (tools done) or "operator" (confirmed).
         target: None: end where the next movement starts.
         notes: For people only; flat values. No program reads them.
@@ -200,15 +216,21 @@ class Movement:
     coupled: bool = False
     controller: Optional[str] = None
     line: Dict[str, LineSpec] = field(default_factory=dict)
+    drives: Dict[str, str] = field(default_factory=dict)
     ends_on: str = "target"
     target: Optional[Target] = None
     label: str = ""
     notes: Dict[str, Note] = field(default_factory=dict)
 
     @property
-    def tool_change(self) -> Dict[str, Dict[str, str]]:
-        """dict: Tool id -> the channels this movement changes, from its target (empty if none)."""
+    def grip_change(self) -> Dict[str, str]:
+        """dict: Tool id -> the grip it ends with, for the tools whose grip this movement changes."""
         return dict(self.target.tools) if self.target is not None else {}
+
+    @property
+    def has_tool_part(self) -> bool:
+        """bool: Whether the movement changes a grip or runs a drive."""
+        return bool(self.grip_change or self.drives)
 
 
 @dataclass(frozen=True)
@@ -233,8 +255,8 @@ class Design:
     Attributes:
         folder: Where it was read from or written to; None for a design only in memory.
         actions: Keyed by action id; `schedule` gives their order.
-        connections: Pairs of bodies joined in the design (joint half and bar, mated halves, ground connector and
-            ground), each sorted: an allowed contact when both are present, never a placement dependency.
+        mates: Joints of the finished structure, each pair sorted: a male and a female half, or a ground half and a
+            ground body. They never move anything; their status follows from the state (`relations.mate_status`).
         producer: The code that made the design, or None.
     """
 
@@ -245,8 +267,12 @@ class Design:
     bodies: Dict[str, BodySpec]
     schedule: Tuple[str, ...]
     actions: Dict[str, Action]
-    connections: FrozenSet[Tuple[str, str]] = frozenset()
+    mates: FrozenSet[Tuple[str, str]] = frozenset()
     producer: Optional[Producer] = None
+
+    def halves_of(self, bar: str) -> Tuple[str, ...]:
+        """The connector halves mounted on a bar, sorted."""
+        return tuple(sorted(body_id for body_id, body in self.bodies.items() if body.mount == bar))
 
     def movements(self):
         """Every (action, movement) in execution order.
@@ -262,16 +288,13 @@ class Design:
     def scene_at(self, movement: Movement) -> Scene:
         """The world at the start of one movement; it shares nothing mutable with the design (`scenes.scene_at`).
 
-        ! Needs yourdfpy. Run it when the design or the movement changes, not every tick.
+        ! Run it when the design or the movement changes, not every tick.
         """
-        # ? Imported here: the scene, its robots and yourdfpy stay out of `import design`.
+        # ? Imported here: the scene and its robots stay out of `import design`.
         from .scenes import scene_at
         return scene_at(self, movement)
 
     def scene_after(self, bar: str) -> Scene:
-        """The world once a bar is built, following the schedule (`scenes.scene_after`).
-
-        ! Needs yourdfpy.
-        """
+        """The world once a bar is built, following the schedule (`scenes.scene_after`)."""
         from .scenes import scene_after
         return scene_after(self, bar)

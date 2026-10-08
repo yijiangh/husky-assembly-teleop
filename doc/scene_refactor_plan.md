@@ -110,7 +110,7 @@ cell/bars/B1                        scene body, owner = plugin "cell"
 
 ### 5.3 `kinematics.py`
 - Monitor `world/kinematics.py`: `Kinematics(robots, log_warn)` parses each stitched URDF once without meshes. `update(world)`: base from mocap when tracked, else the last one (the default at start); joints from the latest measurement, else the last value; then one `update_cfg` per robot. `base_pose`, `joints`, `unmeasured`, `joint_names`, `link_names`, `link_pose(serial, link)`. Plugins use `ctx.kinematics`.
-- Core `bar_assembly_core/kinematics.py`: `ForwardKinematics.link_pose(urdf, base, joints, link)`, the same yourdfpy code without ROS, for scenes built from designs.
+- Core `bar_assembly_core/kinematics.py`: `link_pose(urdf, base, joints, link)` in numpy (revolute, prismatic, mimic joints; tested equal to yourdfpy), for scenes built from designs. The monitor's per-tick `Kinematics` keeps yourdfpy.
 
 ## 6. Mirrors (`bar_assembly_core/mirrors/`)
 

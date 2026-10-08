@@ -17,8 +17,9 @@ from typing import TYPE_CHECKING, Callable
 
 from bar_assembly_core.legacy.conversion import (DESIGN_FILE, OLD_EXPORT_FILE, convert_export, converted_folder,
                                                  is_old_export, is_up_to_date)
-from bar_assembly_core.design import Action, Design, Movement, State, read
+from bar_assembly_core.design import Action, Design, Holder, Movement, State, read
 from bar_assembly_core.design.carry import assumed_start_all
+from bar_assembly_core.design.relations import is_present, placement
 from bar_assembly_core.legacy.timing import Stopwatch
 from bar_assembly_core.ids import IdMap
 from bar_assembly_core.scene import retarget
@@ -170,12 +171,12 @@ def body_color(body_id: str) -> tuple[int, int, int]:
     return JOINT_COLOR
 
 
-def stands(state: State, body_id: str) -> bool:
-    """Whether a body stands in a state on its own: present and not carried by a robot.
+def stands(design: Design, state: State, body_id: str) -> bool:
+    """Whether a body stands in a state on its own: present, and not an attached, unbuilt bar or one of its halves.
 
     * Standing bodies go into the scene enabled; the cell's overlay draws the rest.
     """
-    return body_id in state.present and body_id not in state.carried
+    return is_present(design, state, body_id) and not isinstance(placement(design, state, body_id), Holder)
 
 
 def scene_bodies(cell: CellDesign, step: Step, robots: tuple[RobotConfig, ...], prefix: str) -> list[Body]:

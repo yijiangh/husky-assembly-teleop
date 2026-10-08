@@ -12,7 +12,7 @@ import re
 import shutil
 from hashlib import sha1, sha256
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -20,7 +20,7 @@ from ..geometry import BoxShape, CylinderShape, Geometry, Pose, Shape, TriMesh
 from ..urdf import copy_robot
 from .meshes import write_mesh
 from .read import ACTION_FORMAT, DESIGN_FORMAT, read
-from .types import Action, Design, Movement, Producer, RobotSpec, State, Target, Writer
+from .types import Action, Design, Holder, Movement, Producer, RobotSpec, State, Target, Writer
 from .validate import validate
 from .version import writer_info
 
@@ -29,10 +29,10 @@ FLOAT_DIGITS = 12
 
 
 def write(design: Design, folder: Path, *, overwrite: bool = False, package_dirs: Sequence[Path] = ()) -> Design:
-    """Write a design into a folder.
+    """Write a design into a folder; `source/`, `solutions/` and `runs/` in it are left as they are.
 
     Args:
-        design: The design; validated first (rule 11 only on the read-back).
+        design: The design; validated first (A3–A13; the robot meshes only on the read-back).
         folder: The design folder. Created if missing.
         overwrite: Write into a non-empty folder, deleting its old action files and meshes first.
         package_dirs: Where to find ROS packages named by `package://` mesh references in robot URDFs.
@@ -45,7 +45,7 @@ def write(design: Design, folder: Path, *, overwrite: bool = False, package_dirs
         FileExistsError: If the folder is not empty and `overwrite` is False.
         FileNotFoundError: If a mesh referenced by a robot URDF is missing.
     """
-    # ? Rule 11 is left to the read-back: source URDFs may use `package://`; only the copies must be relative.
+    # ? Robot meshes are checked on the read-back: source URDFs may use `package://`; only the copies must be relative.
     validate(design, check_robot_meshes=False)
     folder = Path(folder).resolve()
     if folder.exists() and any(folder.iterdir()):
@@ -70,9 +70,10 @@ def write(design: Design, folder: Path, *, overwrite: bool = False, package_dirs
         "bodies": {body_id: _drop_empty({"pose": _pose(body.pose), **_geometry(body.geometry, meshes, body_id),
                                          "label": body.label, "part": body.part,
                                          "markers": {name: [_float(v) for v in point]
-                                                     for name, point in body.markers.items()}})
+                                                     for name, point in body.markers.items()},
+                                         "mount": body.mount})
                    for body_id, body in design.bodies.items()},
-        **_drop_empty({"connections": [list(pair) for pair in sorted(design.connections)]}),
+        **_drop_empty({"mates": [list(pair) for pair in sorted(design.mates)]}),
         "schedule": list(design.schedule),
     }
     _write_json(folder / "design.json", manifest)
@@ -206,23 +207,34 @@ def _joints(joints: Optional[Dict[str, float]]) -> Optional[Dict[str, float]]:
     return None if joints is None else {name: _float(value) for name, value in joints.items()}
 
 
+def _holders(attached: Dict[str, Tuple[Holder, ...]]) -> Dict[str, Any]:
+    """An `attached` map, bars sorted; each bar's holders keep their order (the first sets the pose)."""
+    return {bar: [{"to": holder.to, "grasp": _pose(holder.grasp)} for holder in holders]
+            for bar, holders in sorted(attached.items())}
+
+
 def _state(state: State) -> Dict[str, Any]:
     """A State (format §5.2), sets sorted so equal states give equal files."""
     robots = {robot: None if value is None else {"base": None if value.base is None else _pose(value.base),
                                                  "joints": _joints(value.joints)}
               for robot, value in state.robots.items()}
     return {"robots": robots, "present": sorted(state.present), **_drop_empty({
-        "poses": {body: _pose(pose) for body, pose in sorted(state.poses.items())},
-        "carried": {body: {"to": value.to, "offset": _pose(value.offset)}
-                    for body, value in sorted(state.carried.items())},
-        "tools": {tool: None if value is None else dict(value) for tool, value in sorted(state.tools.items())}})}
+        "attached": _holders(state.attached), "built": sorted(state.built),
+        "poses": {body: _pose(pose) for body, pose in sorted(state.poses.items())}}),
+        "tools": {tool: None if value is None else {"grip": value.grip, "on": value.on}
+                  for tool, value in sorted(state.tools.items())}}
 
 
 def _target(target: Target) -> Dict[str, Any]:
-    """A Target (format §5.3)."""
-    return _drop_empty({"joints": {robot: _joints(joints) for robot, joints in target.joints.items()},
-                        "links": {link: _pose(pose) for link, pose in target.links.items()},
-                        "tools": {tool: dict(channels) for tool, channels in target.tools.items()}})
+    """A Target (format §5.3); `attached` and `built` only when the movement changes them."""
+    entry = _drop_empty({"joints": {robot: _joints(joints) for robot, joints in target.joints.items()},
+                         "links": {link: _pose(pose) for link, pose in target.links.items()},
+                         "tools": {tool: {"grip": grip} for tool, grip in sorted(target.tools.items())}})
+    if target.attached is not None:
+        entry["attached"] = _holders(target.attached)
+    if target.built is not None:
+        entry["built"] = sorted(target.built)
+    return entry
 
 
 def _movement(movement: Movement) -> Dict[str, Any]:
@@ -232,7 +244,8 @@ def _movement(movement: Movement) -> Dict[str, Any]:
         "arms": list(movement.arms), "path": movement.path, "coupled": movement.coupled,
         "controller": movement.controller,
         "line": {flange: {"direction": [_float(v) for v in line.direction], "distance": _float(line.distance)}
-                 for flange, line in movement.line.items()}}))
+                 for flange, line in movement.line.items()},
+        "drives": dict(sorted(movement.drives.items()))}))
     if movement.ends_on != "target":
         entry["ends_on"] = movement.ends_on
     entry["start"] = _state(movement.start)
@@ -268,13 +281,13 @@ def _write_json(path: Path, value: Any) -> None:
 # --- --- --- --- --- CONTENT HASH --- --- --- --- ---
 
 def content_hash(path: Path) -> str:
-    """The SHA-256 of a design or action file's content: its JSON without `writer` and `producer`.
+    """The SHA-256 of a JSON file's content, without `writer` and `producer`.
 
     Keys sorted and floats rounded to FLOAT_DIGITS, so re-exporting an unchanged design gives the same hash from any
     library commit. Files outside the design (solutions, runs, planner caches) record it to notice a changed design.
 
     Args:
-        path: `design.json` or an action file.
+        path: `design.json`, an action file, or any other JSON file.
 
     Returns:
         str: 64 hex digits.
