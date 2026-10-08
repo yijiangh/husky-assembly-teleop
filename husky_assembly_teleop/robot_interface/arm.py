@@ -28,6 +28,7 @@ from .connections import RosConnections
 from .controller_manager import ControllerManagerInterface, ControllerManagerState
 from .end_effectors import EndEffector, EndEffectorState, make_end_effector
 from bar_assembly_core.design_io.pose import Pose, compose, invert
+from bar_assembly_core.ur import UR_JOINT_NAMES
 from .ur_frames import BASE_LINK_FROM_UR_BASE
 
 # ? qos_profile_sensor_data but deeper, to hold one tick of samples: 100 covers 500 Hz for 200 ms.
@@ -37,10 +38,6 @@ RECORDED_QOS = QoSProfile(depth=100, reliability=qos_profile_sensor_data.reliabi
 
 #: joint_states per second the robot's rate limiter sends (crl_husky rate_limiter DEFAULT_RATE).
 JOINT_STATES_RATE = 50.0
-
-#: Joint names in the UR driver's order. The URDF has the same names with the arm's prefix.
-UR_JOINT_NAMES = ("shoulder_pan_joint", "shoulder_lift_joint", "elbow_joint",
-                  "wrist_1_joint", "wrist_2_joint", "wrist_3_joint")
 
 SCALED_JOINT_TRAJECTORY_CONTROLLER = "scaled_joint_trajectory_controller"
 CARTESIAN_COMPLIANCE_CONTROLLER = "cartesian_compliance_controller"

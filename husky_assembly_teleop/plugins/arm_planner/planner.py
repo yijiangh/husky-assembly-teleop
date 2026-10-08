@@ -17,8 +17,8 @@ import numpy as np
 from ..planning.path import TimedPath
 from ..planning.search import PlanResult, connect
 from ...robot_interface.arm import JOINT_MOVE_MAX_SPEED, UR_JOINT_LIMITS, UR_JOINT_NAMES
-from ...world.mirrors.compas_fab import CompasFabMirror
-from ...world.scene import SceneSnapshot
+from bar_assembly_core.mirrors.compas_fab import CompasFabMirror
+from bar_assembly_core.scene import SceneSnapshot
 
 #: Collision-checking resolution along a move, radians per joint.
 JOINT_STEP = 0.05

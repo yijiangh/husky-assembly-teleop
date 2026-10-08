@@ -25,10 +25,6 @@ TOOL_URDFS: dict[str, str | dict[str, str]] = {
                        "right_ur_arm": "scaffolding_v3_right.urdf"},
 }
 
-#: Links of its arm ("<arm>_<suffix>") a mounted tool may touch. The SRDFs don't list these pairs,
-#: so collision checkers add them themselves.
-TOOL_TOUCHES_ARM_LINKS = ("wrist_2_link", "wrist_3_link", "flange", "tool0")
-
 #: `package://<pkg>/...` resolves three levels above the URDF (<root>/<package>/urdf/<file>.urdf).
 _PACKAGE_PREFIX = "package://"
 _FILE_PREFIX = "file://"

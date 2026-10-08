@@ -4,7 +4,7 @@ import pytest
 import viser
 
 from bar_assembly_core.design_io.geometry import BoxShape, Geometry, box_geometry
-from husky_assembly_teleop.world.scene import Body, SceneSnapshot, TrackedDescription, TrackedEntry
+from bar_assembly_core.scene import Body, SceneSnapshot, TrackedDescription, TrackedEntry
 from bar_assembly_core.design_io.pose import Pose
 from husky_assembly_teleop.ui.scene_view import SceneView
 

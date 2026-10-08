@@ -28,20 +28,19 @@ from compas_fab.backends.pybullet.conversions import pose_from_frame
 from compas_fab.robots import RigidBody, RigidBodyState, RobotCell, RobotCellState, RobotSemantics, ToolState
 from compas_robots import Configuration, RobotModel, ToolModel
 
-from bar_assembly_core.mirrors.compas_convert import filled, frame_from_pose, load_model, rigid_body, subtree
-from ...tool_urdfs import TOOL_TOUCHES_ARM_LINKS
+from .compas_convert import filled, frame_from_pose, load_model, rigid_body, subtree
 from . import check_display
-from ..scene import ROBOTS, Attachment, SceneSnapshot, robot_id, tracked_id
-from bar_assembly_core.design_io.pose import Pose
+from ..scene import ROBOTS, Attachment, RobotDescription, SceneSnapshot, robot_id, tracked_id
+from ..ur import TOOL_TOUCHES_ARM_LINKS
+from ..design_io.pose import Pose
 
 if TYPE_CHECKING:
     from compas_robots.model import Link
 
-    from ...config import RobotConfig
-    from bar_assembly_core.design_io.geometry import Geometry
+    from ..design_io.geometry import Geometry
 
 
-def semantics_with_tools(config: RobotConfig, model: RobotModel) -> RobotSemantics:
+def semantics_with_tools(config: RobotDescription, model: RobotModel) -> RobotSemantics:
     """The robot's SRDF, plus the pairs a stitched tool may touch.
 
     ? Without this every tool collides with its own wrist: each tool link may touch its tool and the arm
@@ -58,7 +57,7 @@ def semantics_with_tools(config: RobotConfig, model: RobotModel) -> RobotSemanti
         ValueError: If the robot has no SRDF.
     """
     if config.srdf_file is None:
-        raise ValueError(f"{config.serial} has no SRDF (RobotConfig.srdf_file); compas_fab needs one")
+        raise ValueError(f"{config.serial} has no SRDF (RobotDescription.srdf_file); compas_fab needs one")
     semantics = RobotSemantics.from_srdf_file(str(config.srdf_file), model)
     disabled = set(semantics.disabled_collisions)
     links = {link.name for link in model.links}
@@ -89,9 +88,9 @@ class CompasFabMirror:
         self.client: PyBulletClient | None = None
         # * Cached for the mirror's lifetime: loading and converting is the slow part.
         # The acting robot's config, model and semantics.
-        self._robot: tuple[RobotConfig, RobotModel, RobotSemantics] | None = None
+        self._robot: tuple[RobotDescription, RobotModel, RobotSemantics] | None = None
         # Other robots' configs -> their tool models.
-        self._tools: dict[RobotConfig, ToolModel] = {}
+        self._tools: dict[RobotDescription, ToolModel] = {}
         # Geometry -> rigid body. ? Keyed by the object itself (identity), never `id(obj)`.
         self._bodies: dict[Geometry, RigidBody] = {}
         self._connect(gui=False)
@@ -210,7 +209,7 @@ class CompasFabMirror:
             self._robot = (acting, model, semantics_with_tools(acting, model))
         _, model, semantics = self._robot
 
-        def tool_model(config: RobotConfig) -> ToolModel:
+        def tool_model(config: RobotDescription) -> ToolModel:
             """Another robot as a tool, collision shapes only."""
             return ToolModel.from_robot_model(load_model(config.urdf_file, visual=False), Frame.worldXY())
 

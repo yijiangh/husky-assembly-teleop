@@ -26,7 +26,7 @@ from ..plugin_api.context import PluginContext
 from ..plugin_api.plugin import HuskyPlugin, register
 from ..ui.quaternion import quaternion_to_wxyz
 from ..ui.style import SECTION_CTRL, block, note, numbers, section, values
-from ..world.scene import Body
+from bar_assembly_core.scene import Body
 
 #: Dropdown entry while no body can be moved.
 NONE_ENTRY = "(none)"

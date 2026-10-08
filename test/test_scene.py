@@ -3,7 +3,8 @@
 import pytest
 
 from bar_assembly_core.design_io.geometry import Geometry, box_geometry
-from husky_assembly_teleop.world.scene import Body, PluginScene, Scene
+from bar_assembly_core.scene import Body
+from husky_assembly_teleop.world.scene import PluginScene, Scene
 from bar_assembly_core.design_io.pose import Pose
 
 

@@ -23,7 +23,7 @@ import viser.transforms
 import yourdfpy
 
 from ..config import RobotConfig
-from ..world.scene import SceneSnapshot
+from bar_assembly_core.scene import SceneSnapshot
 from .quaternion import quaternion_to_wxyz
 from .scene_view import SceneView
 from ..tool_urdfs import resolve_mesh_path

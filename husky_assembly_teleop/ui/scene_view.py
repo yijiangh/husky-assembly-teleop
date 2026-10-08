@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 import viser
 
 from bar_assembly_core.design_io.geometry import BoxShape, CylinderShape, Geometry, Shape
-from ..world.scene import SceneSnapshot
+from bar_assembly_core.scene import SceneSnapshot
 from bar_assembly_core.design_io.pose import Pose
 from .quaternion import quaternion_to_wxyz
 

@@ -27,9 +27,9 @@ import viser
 
 from ...plugin_api.context import PluginContext
 from bar_assembly_core.design_io.geometry import box_geometry
-from ...world.mirrors.pybullet import PyBulletMirror
+from bar_assembly_core.mirrors.pybullet import PyBulletMirror
 from ...plugin_api.plugin import HuskyPlugin, register
-from ...world.scene import Body, SceneSnapshot
+from bar_assembly_core.scene import Body, SceneSnapshot
 from bar_assembly_core.design_io.pose import Pose
 from ...ui.style import FAIL, NONE, OK, SECTION_CTRL, block, chip, numbers, section, values
 from ...ui.quaternion import quaternion_to_wxyz

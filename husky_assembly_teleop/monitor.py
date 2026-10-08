@@ -33,7 +33,8 @@ from .plugin_api.plugin import HuskyPlugin, load_plugins
 from .robot_interface.robot import HuskyRobotInterface
 from .robot_interface.connections import RosConnections
 from .robot_interface.mocap import subscribe_mocap
-from .world.scene import PluginScene, Scene, TrackedDescription
+from bar_assembly_core.scene import TrackedDescription
+from .world.scene import PluginScene, Scene
 from .ui.visualization import Visualization
 from .world.measured import TrackedObject, WorldState
 

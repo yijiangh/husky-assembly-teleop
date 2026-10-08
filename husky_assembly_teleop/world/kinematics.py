@@ -12,13 +12,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Callable, Mapping
 
-from yourdfpy import URDF
-
 from bar_assembly_core.design_io.pose import Pose, compose
-from ..robot_interface.arm import UR_JOINT_NAMES
-from ..tool_urdfs import resolve_mesh_path
+from bar_assembly_core.kinematics import load_urdf
+from bar_assembly_core.ur import UR_JOINT_NAMES
 
 if TYPE_CHECKING:
+    from yourdfpy import URDF
+
     from ..config import RobotConfig
     from .measured import WorldState
 
@@ -57,7 +57,7 @@ class Kinematics:
         # (serial, joint name) pairs already warned about, so each is reported once.
         self._unknown_joints: set[tuple[str, str]] = set()
         for config in robots:
-            urdf = _load_urdf(config)
+            urdf = load_urdf(config.urdf_file)
             names = urdf.actuated_joint_names
             joints = dict.fromkeys(names, 0.0)
             joints.update(_stow_joints(config, joints))
@@ -176,24 +176,3 @@ def _stow_joints(config: RobotConfig, joints: Mapping[str, float]) -> dict[str, 
             stowed.update((f"{arm.name}_{name}", value) for name, value in zip(UR_JOINT_NAMES, arm.stow_joints)
                           if f"{arm.name}_{name}" in joints)
     return stowed
-
-
-def _load_urdf(config: RobotConfig) -> URDF:
-    """Parse a robot's URDF for kinematics only: no meshes are loaded.
-
-    Args:
-        config: The robot; its `urdf_file` is parsed.
-
-    Returns:
-        URDF: The parsed model, with a scene graph for link transforms.
-    """
-
-    def resolve(fname: str) -> str:
-        """Turn one mesh reference into an absolute path.
-
-        ! Keep the name `fname`: yourdfpy passes it as a keyword.
-        """
-        return resolve_mesh_path(fname, config.urdf_file)
-
-    return URDF.load(str(config.urdf_file), filename_handler=resolve, load_meshes=False,
-                     build_collision_scene_graph=False, load_collision_meshes=False)

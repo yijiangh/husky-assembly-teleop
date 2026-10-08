@@ -17,8 +17,8 @@ import pytest
 from husky_assembly_teleop.config import robot_config_from_serial
 from husky_assembly_teleop.robot_interface.arm import UR_JOINT_NAMES
 from bar_assembly_core.design_io.geometry import Geometry, box_geometry
-from husky_assembly_teleop.world.mirrors.compas_fab import CompasFabMirror
-from husky_assembly_teleop.world.scene import Attachment, Body, RobotEntry, SceneSnapshot
+from bar_assembly_core.mirrors.compas_fab import CompasFabMirror
+from bar_assembly_core.scene import Attachment, Body, RobotEntry, SceneSnapshot
 from bar_assembly_core.design_io.pose import Pose
 
 DATA = Path(__file__).resolve().parent.parent / "data"

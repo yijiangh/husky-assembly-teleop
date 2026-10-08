@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from ..plugin_api.context import PluginContext
 from bar_assembly_core.design_io.geometry import BoxShape, Geometry, Shape, box_geometry, cylinder_geometry
 from ..plugin_api.plugin import HuskyPlugin, register
-from ..world.scene import Body
+from bar_assembly_core.scene import Body
 from bar_assembly_core.design_io.pose import Pose
 
 #: Muted grey, so the obstacles read as furniture.

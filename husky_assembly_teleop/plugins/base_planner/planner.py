@@ -15,8 +15,8 @@ import numpy as np
 import pybullet as p
 
 from ..planning.search import PlanResult, connect
-from ...world.mirrors.pybullet import PyBulletMirror
-from ...world.scene import SceneSnapshot, robot_id
+from bar_assembly_core.mirrors.pybullet import PyBulletMirror
+from bar_assembly_core.scene import SceneSnapshot, robot_id
 from .path import BasePath, steer, steer_cost, steer_points, timed_path
 
 #: Keep at least this far from every other robot and body, metres.

@@ -21,14 +21,13 @@ from typing import TYPE_CHECKING, Iterable, Iterator
 import pybullet as p
 import pybullet_planning as pp
 
-from bar_assembly_core.design_io.geometry import BoxShape, CylinderShape
+from ..design_io.geometry import BoxShape, CylinderShape
 from . import check_display
-from ..scene import ROBOTS, SceneSnapshot, robot_id, tracked_id
-from bar_assembly_core.design_io.pose import Pose
+from ..scene import ROBOTS, RobotDescription, SceneSnapshot, robot_id, tracked_id
+from ..design_io.pose import Pose
 
 if TYPE_CHECKING:
-    from ...config import RobotConfig
-    from bar_assembly_core.design_io.geometry import Geometry, Shape
+    from ..design_io.geometry import Geometry, Shape
 
 
 @dataclass(eq=False)
@@ -36,7 +35,7 @@ class _Built:
     """What the mirror built for one of our ids.
 
     Attributes:
-        source: The `Geometry` or `RobotConfig` object it was built from.
+        source: The `Geometry` or `RobotDescription` object it was built from.
         concave: Whether non-convex meshes were built concave (free bodies only).
         pose: The pose last applied.
         bodies: PyBullet body ids, one per collision shape (one for a robot).
@@ -44,7 +43,7 @@ class _Built:
         links: Robots only: link name per link index + 1 (index -1, the base, first).
     """
 
-    source: Geometry | RobotConfig
+    source: Geometry | RobotDescription
     concave: bool
     pose: Pose
     bodies: list[int]
@@ -120,7 +119,7 @@ class PyBulletMirror:
             snapshot: The world to copy. It is not modified.
         """
         # Our id -> (source, concave, pose) for everything that should exist.
-        wanted: dict[str, tuple[Geometry | RobotConfig, bool, Pose]] = {}
+        wanted: dict[str, tuple[Geometry | RobotDescription, bool, Pose]] = {}
         touches: dict[str, tuple[str, ...]] = {}
         for serial, entry in snapshot.robots.items():
             wanted[robot_id(serial)] = (entry.config, False, entry.base)
@@ -163,11 +162,11 @@ class PyBulletMirror:
 
         self._drop_unused_shapes()
 
-    def _build(self, object_id: str, source: Geometry | RobotConfig, concave: bool, pose: Pose) -> None:
+    def _build(self, object_id: str, source: Geometry | RobotDescription, concave: bool, pose: Pose) -> None:
         """Build one object at a pose and record it.
 
         Args:
-            object_id: Our id; "robots/<serial>" means `source` is a RobotConfig.
+            object_id: Our id; "robots/<serial>" means `source` is a RobotDescription.
             source: What to build.
             concave: Whether to build non-convex meshes concave.
             pose: Its world pose.
