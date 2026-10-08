@@ -23,7 +23,6 @@ from typing import TYPE_CHECKING, Iterable, Iterator, List, Union
 from xml.etree.ElementTree import ElementTree, SubElement, fromstring
 
 import pybullet as p
-import pybullet_planning as pp
 import trimesh
 from scipy.spatial.transform import Rotation
 
@@ -33,6 +32,7 @@ from ..design_io.robot_files import resolved_urdf_text
 from ..robot import RobotModel
 from ..scene import ROBOTS, TRACKED, SceneSnapshot, same_source
 from . import check_display
+from .pp_client import pp_client
 
 if TYPE_CHECKING:
     from ..design_io.geometry import Geometry, Shape
@@ -415,17 +415,13 @@ class PyBulletMirror:
 
     @contextmanager
     def active(self) -> Iterator[None]:
-        """Point pybullet_planning's free functions at this world, and restore the previous one after.
+        """Point pybullet_planning's free functions at this world, and restore the previous one after (`pp_client`).
 
         Yields:
             None: Inside the block, `pp` functions act on this world.
         """
-        previous = pp.CLIENT
-        pp.CLIENT = self.client_id
-        try:
+        with pp_client(self.client_id):
             yield
-        finally:
-            pp.CLIENT = previous
 
     @property
     def connected(self) -> bool:

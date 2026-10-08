@@ -17,7 +17,7 @@ PURE = ("bar_assembly_core", "bar_assembly_core.design_io", "bar_assembly_core.s
           if p.stem not in ("__init__", "compas_fab", "legacy", "conversion", "scenes")))
 #: Modules with extra dependencies (`requirements.txt`). legacy and conversion also need rs_data_structure.
 EXTRAS = ("bar_assembly_core.kinematics", "bar_assembly_core.design_io.scenes", "bar_assembly_core.mirrors",
-          "bar_assembly_core.mirrors.compas_convert",
+          "bar_assembly_core.mirrors.compas_convert", "bar_assembly_core.mirrors.pp_client",
           "bar_assembly_core.mirrors.pybullet", "bar_assembly_core.mirrors.compas_fab",
           "bar_assembly_core.design_io.compas_fab")
 CORE_PACKAGES = ("numpy", "scipy", "trimesh==4.12.2")

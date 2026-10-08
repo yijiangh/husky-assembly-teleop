@@ -1,6 +1,6 @@
 # 2026-10-08 Shared core: `bar_assembly_core`
 
-Status: **planned**. Brief: `husky_assembly_teleop/core_extraction_prompt.md` (decisions 1–16 there are fixed).
+Status: **steps 1–5 implemented**; report in §9. Brief: the core extraction prompt (decisions 1–16 there are fixed).
 
 ## 1. Goal
 
@@ -33,19 +33,19 @@ bar_assembly_core/
 ├── requirements.txt
 ├── design_io/             moved from husky_assembly_teleop/design_io (step 1)
 │   ├── types.py           + Design.scene_at(movement), Design.scene_after(bar)  (delegate to scenes.py)
-│   ├── scenes.py          scene_at / scene_after: design -> scene (step 4)
-│   ├── models.py          robot_model(design, robot_id) -> RobotModel, cached by content (step 4)
-│   └── compas_fab.py      to_robot_cell / to_cell_state / planning_group: legacy test harness only
+│   ├── scenes.py          scene_at / scene_after, design_model(design, robot_id) cached by content (step 4)
+│   └── compas_fab.py      to_robot_cell / to_cell_state: legacy test harness only
 ├── ur.py                  UR_JOINT_NAMES, TOOL_TOUCHES_ARM_LINKS, stock_frame_problem  (ROS-free)
-├── robot.py               RobotModel (frozen, identity), RobotObject (validity flags), acting_problems
-├── scene.py               Attachment, Body, SceneSnapshot, world_poses(...)
-├── kinematics.py          ForwardKinematics: link_pose(model, base, joints, link); fk_difference(a, b, links, joints)
+├── robot.py               RobotModel (frozen, identity), robot_model(...), RobotObject (validity flags)
+├── scene.py               Attachment, Body, SceneSnapshot, same_source, world_poses(...)
+├── kinematics.py          ForwardKinematics: link_pose(urdf, base, joints, link)
 ├── ids.py                 IdMap (explicit; refuses unmapped), retarget(attachments, robot_map, models)
 ├── hold.py                release_bar(design, action_id), hold_scene(scene, bar_id)
 └── mirrors/
     ├── __init__.py        check_display
     ├── compas_convert.py  frame_from_pose, pose_from_frame, load_model, rigid_body, subtree, filled,
-    │                      PARKED_POSITION, FileMesh (moved out of design_io/compas_fab.py in step 1)
+    │                      PARKED_POSITION, FileMesh (step 1); tool_model, robot_as_tool, planning_group (step 3)
+    ├── pp_client.py       pp_client(client_id): pybullet_planning pointed at one world (step 5)
     ├── pybullet.py        PyBulletMirror
     └── compas_fab.py      CompasFabMirror (+ lend), SearchCheck
 ```
@@ -88,4 +88,137 @@ Stays in the monitor: `RobotConfig` (gains `model: RobotModel`), `robot_interfac
 
 ## 8. Report
 
-Filled in at the end (§9 of this file): public API, host checklist, decisions not followed, deferred work, test results.
+§9, written for the maintainers of `bar_joint_rhino_design_workflow` and `husky_assembly_tamp`.
+
+## 9. Report: the shared core, for the Rhino and tamp reviewers
+
+`bar_assembly_core/` sits next to `husky_assembly_teleop/` in this repository. It imports nothing from the monitor,
+ROS, viser or crl_husky (`test/test_core_isolation.py`), and it runs on Python 3.9 (`test/test_core_py39.py`).
+Moving it to its own repository is a copy of the folder.
+
+### 9.1 Public API
+
+Dependencies: numpy, scipy, trimesh==4.12.2. **yourdfpy** is needed only by `kinematics` and `design_io.scenes`
+(so by `Design.scene_at` / `scene_after`). compas, compas_fab 1.1.0, compas_robots, pybullet and pybullet_planning
+are needed by `mirrors` and the legacy `design_io.compas_fab` / `legacy`. The list is in `bar_assembly_core/requirements.txt`.
+
+| Module | Main types and functions |
+|---|---|
+| `design_io` | Unchanged API (`read`, `write`, `validate`, `Design`, `RobotSpec`, `ToolSpec`, `BodySpec`, `State`, `Movement`, `Action`, `Pose`, `Geometry`, …). New: `Design.scene_at(movement) -> SceneSnapshot`, `Design.scene_after(bar: str) -> SceneSnapshot`. |
+| `design_io.scenes` | `scene_at(design, movement)`, `scene_after(design, bar)`, `design_model(design, robot_id) -> RobotModel` (cached by content). |
+| `design_io.compas_fab` | `to_robot_cell`, `to_cell_state`, `compas_link_pose`: the legacy direct mapping, kept as the reference the equivalence check compares the mirror with. |
+| `robot` | `RobotModel(name, urdf, srdf, flanges, tools: {flange: ToolSpec}, tool_touches: {flange: (link, …)}, stock_ur_frames)`: frozen, compared by identity; `.links`, `.movable_joints`. `robot_model(name, urdf, srdf, tools=None, touches=None) -> RobotModel`. `RobotObject(id, model, base, joints, enabled=True, base_tracked=True, unmeasured=frozenset(), base_time=None, joints_time=None, label="")`, with `.copy()` and `.acting_problems() -> list[str]`. |
+| `scene` | `Body(id, geometry, placement: Pose | Attachment, touches=(), label="", color=None, enabled=True)` with `.copy()`; `Attachment(parent, link, grasp)`, where the parent is a robot id or a body id; `SceneSnapshot(tick, time, bodies, world_poses, robots)` with `.copy()` and `.label(id)`; `world_poses(bodies, robots, link_pose) -> dict`; `same_source(new, old) -> bool`; `ROBOTS`, `TRACKED`, `robot_id(name)`, `tracked_id(name)`. |
+| `kinematics` | `ForwardKinematics().link_pose(urdf, base, joints, link) -> Pose`; `load_urdf(path)`. One instance per thread. |
+| `ids` | `IdMap(pairs)`: `ids(id)` (KeyError if unmapped), `id in ids`, `ids.get(id)`. A mapped robot maps its links. `retarget(attachments, robot_map: IdMap, models: {id: RobotModel}) -> dict[str, Attachment]`. |
+| `hold` | `release_bar(design, action_id) -> str`, `hold_scene(scene, bar) -> SceneSnapshot`, `hold_scene_for(design, action_id)`. |
+| `ur` | `UR_JOINT_NAMES`, `TOOL_TOUCHES_ARM_LINKS`, `STOCK_YAW`, `joint_origin(joint)`, `stock_frame_problem(urdf, arm)`. |
+| `mirrors.compas_fab` | `CompasFabMirror(robot_id, log=None)`: `.sync(scene)`, `.collisions(joints=None, full_report=False) -> [(id, id)]`, `.search_check(joint_names) -> SearchCheck`, `.lend()` (context manager yielding the `PyBulletPlanner`), `.state`, `.cell`, `.static_contacts`, `.configuration(joints)`, `.state_at(joints)`, `.set_gui(gui)`, `.close()`. |
+| `mirrors.pybullet` | `PyBulletMirror()`: `.sync(scene)`, `.collisions(robot_id, margin=0.0, candidates=None) -> [id]`, `.allowed(a, b)`, `.robot(robot_id)`, `.robots`, `.body_ids(id)`, `.id_of(pybullet_id)`, `.obstacle_ids()`, `.active()`, `.set_gui(gui)`, `.close()`. |
+| `mirrors.compas_convert` | `frame_from_pose`, `pose_from_frame`, `rigid_body(geometry)`, `load_model(urdf, visual=True)`, `tool_model(tool, name)`, `robot_as_tool(urdf, tools, name, visual=True)`, `planning_group(cell, flange)`, `filled(configuration, joints)`, `subtree(model, link)`, `PARKED_POSITION`. |
+| `mirrors.pp_client` | `pp_client(client_id)`: inside the block, pybullet_planning acts on that world; restored after. |
+
+Ids: one canonical id per object. Robots are `robots/cindy` when planned, `robots/a200-0806` when measured. Links are
+`robots/<name>/<link>`. Mounted tools use their tool id (`tools/AT3L`; a live one is `tools/a200-0806/left_ur_arm`).
+Bodies use design ids (`bars/B1`). Measured objects are `tracked/<name>`.
+
+### 9.2 What a host does
+
+```python
+from bar_assembly_core.design_io import read
+from bar_assembly_core.mirrors.compas_fab import CompasFabMirror
+from bar_assembly_core.hold import hold_scene_for
+
+design = read(folder)                                     # 1. models: design robots get theirs inside scene_at
+scene = design.scene_at(movement)                         # 2. the world at one movement (or design.scene_after(bar))
+robot = scene.robots["robots/cindy"]                      # 3. edit the scene, never the design
+robot.joints.update(seed); robot.unmeasured = frozenset() #    e.g. fill joints the design leaves null
+scene.bodies["bars/B3"].enabled = False                   #    e.g. disable the held bar for a plan
+mirror = CompasFabMirror("robots/cindy")                  # 4. one mirror per acting robot, one thread
+mirror.sync(scene)                                        #    rebuilds the cell only for new models or geometry
+with mirror.lend() as planner:                            #    pybullet_planning points at the mirror's world here
+    path, info = plan_free_dual_arm(planner, mirror.state, goal)
+mirror.sync(next_scene)                                   #    writes the full state again
+```
+
+- **Build a `RobotModel`**: from a design robot, `design_io.scenes.design_model(design, robot_id)`, which `scene_at`
+  already uses. Otherwise `robot_model(name, urdf, srdf, tools={flange: ToolSpec}, touches={flange: [link, …]})`:
+  the URDF without tools; each tool's geometry and TCP are in its flange frame. Build each model once and share it:
+  mirrors compare models by identity, and a new object means a rebuild (~2 s).
+- **Get a scene**: `design.scene_at(movement)`, `design.scene_after(bar)`, or `hold_scene_for(design, action_id)`.
+  Scenes share nothing mutable with the design, only `Geometry` and `RobotModel` objects.
+- **Edit it**: change `RobotObject` and `Body` fields in place, or start from `scene.copy()`. After moving a robot or
+  changing a placement, recompute `scene.world_poses = world_poses(scene.bodies, scene.robots, link_pose)`.
+- **Sync and lend**: `mirror.sync(scene)`, then `collisions`, `search_check` or `lend`. A robot with
+  `acting_problems()` (absent, base untracked, unknown joints) is refused with `ValueError`. Inside `lend()` only
+  one pybullet_planning user may run in the process; after it, sync before using the mirror again.
+
+### 9.3 Decisions not followed as written
+
+| # | Decision | What was done | Why |
+|---|---|---|---|
+| 15 | `lend()` calls `pybullet_planning.set_client` and restores the previous client. | It calls `set_client`, **and** sets `CLIENT` in every loaded `pybullet_planning` module, then restores each one (`mirrors/pp_client.py`). The user approved this. | 17 pybullet_planning modules copy `CLIENT` at import (`from pybullet_planning.utils import CLIENT`). After `set_client(b)`, `pp.get_bodies()` still reads client 0. Tamp has worked so far only because its world happened to be client 0. The old `PyBulletMirror.active()` (`pp.CLIENT = …`) had the same flaw and now uses `pp_client` too. A fix upstream (`get_client()` at call time) would make the rebinding unnecessary. |
+| 9 | `retarget(attachments, robot_map)` | `retarget(attachments, robot_map, models)` | Refusing a link the target lacks needs the target's model. `robot_map` is an `IdMap`. |
+| 7 | Move `TOOL_TOUCHES_ARM_LINKS` onto the model. | The constant moved to `ur.py`. `robot_model()` resolves it into `RobotModel.tool_touches` (per flange, link names), together with the design tool's own `touches`. | The model carries the result; the convention stays shared. |
+| 5 | Refuse an acting robot whose joints are unmeasured. | Only the model's movable joints count (`RobotModel.movable_joints`: not fixed, not SRDF-passive, no mimic). | Wheels and gripper fingers are never measured; counting them would refuse every real robot. |
+| 1 | The design stays an ordinary editable object. | Unchanged: the frozen dataclasses edited with `dataclasses.replace`, as before. No versioning. | — |
+| Facts | "`<arm>_base_link` differs by 90°" between the URDF variants. | Measured: Alice differs at `ur_arm_base_link` (90°); Cindy only at `right_ur_arm_base` (90°). All other links agree (`test_core_scene.py::test_frame_convention_and_fk_comparison`). | Cindy's turn sits in another joint. `RobotModel.stock_ur_frames` records the convention. |
+| Step 1 | Move `design_io` unchanged. | Unchanged, except that the compas helpers moved to `mirrors/compas_convert.py`. `design_io.compas_fab` and `design_io.legacy` now import them from there. | The brief asked for the helpers to move. Only the legacy modules depend on `mirrors`. |
+| — | Scene type name. | Kept `SceneSnapshot` (the monitor's per-tick copy is the same type). | Smallest diff; a rename is cheap later. |
+
+Further changes reviewers should know about:
+- **Tools are separate everywhere in planning.** A live robot's `RobotModel` holds its tools as `ToolSpec`s read from
+  the tool URDFs (collision meshes at zero joints, TCP at tool0, because the monitor knows no TCP). In compas_fab they
+  are `ToolModel`s attached to the SRDF group ending at their flange. `PyBulletMirror` writes one URDF per model with
+  each tool as a fixed link, so raw `p` moves keep it on the robot. `SearchCheck` now carries attached tools like
+  held bodies (tested equal to `check_collision`). The stitched tool URDFs remain only for drawing and the monitor's
+  `Kinematics`.
+- **The monitor's base planner no longer plans from an untracked base** (decision 5); it reports why instead.
+- **The cell plugin**: held bodies now follow the configured real robot (`retarget`), and touches name the real robots
+  and tools. A grasp the real robot can't take (a missing link) is refused, reported in the panel, and the bodies are
+  put without the robots.
+
+### 9.4 Flag: `static_contacts` hides contacts
+
+`CompasFabMirror` still allows any pair of a *stationary* tool (another robot) and a body that already touch at
+`sync`. One change: the acting robot's own tools are never allowed this way, because they move with it. With real
+robots in a scene, a real robot pressing into a body would be hidden from every other robot's plans. The equivalence
+runs list these pairs separately ("pairs allowed by static_contacts"); counts are in §9.6. Nothing else was changed.
+
+### 9.5 Schema 2 candidates and deferred work
+
+Schema 2 candidates:
+- `connections` (decision 10): bar with joint halves, mated halves.
+- Tool state per `State` (opening; which tool is mounted).
+- Typed `notes` (`lm_distance_mm`, `approach_axis`, …).
+- `solutions/` (planner results).
+- Tool `touches` are robot-specific ids (`robots/cindy/left_ur_arm_wrist_2_link`), so one tool spec can't be shared
+  between robots. Link names relative to the mounting robot would remove that.
+- The design's robot URDFs are the non-stock variants. Either require stock UR frames in designs, or record the
+  convention in `design.json`.
+
+Deferred or stubbed:
+- Commit is still a stub in both planners.
+- No limit on the skew between `base_time` and `joints_time` yet.
+- After an edit, the owner must recompute `world_poses`; the core does not track edits.
+- Moving touches onto real robots lives in the cell plugin (`scene_bodies`), not in the core.
+- The core FK takes a URDF path; a model whose tools move would need more.
+- The monitor was started with `robot_control`, `cell`, `base_planner` and `arm_planner` and ticks without errors
+  (first tick 9 ms), but not on hardware: no plans were run through the UI.
+- `uv` is not installed on this machine, so `test_core_py39.py` skips without it. The runs below used uv 0.12.23
+  installed to a scratch folder.
+- Not touched: the Rhino and tamp repositories, `external/` and its pins, VAMP/PRM export, IK, the file format.
+- Tamp: `_conf12_from_target` catches `TypeError`/`KeyError` but not the `IndexError` a numpy goal raises, so pass
+  goals as lists or `Configuration`s.
+
+### 9.6 Test results
+
+| Check | Result |
+|---|---|
+| Quick set and linters (`pytest -m "not slow"`, with `HUSKY_DESIGN_DIRECTORY` = 260814 export and uv on PATH) | 193 passed, 2 skipped (copyright stub; equivalence test needs `DESIGN_IO_EQUIVALENCE_EXPORT`, run by hand below) |
+| Slow set (`pytest -m slow`) | 7 passed, including `test_compas_fab_lend.py` (tamp `plan_free_dual_arm` on a lent planner, on a client other than 0) |
+| Python 3.9 (`uv run --python 3.9`, no PYTHONPATH, so no ROS) | `import bar_assembly_core, bar_assembly_core.mirrors` (and every core module) works: prints `3.9.25`, rclpy not loaded. The pure core imports with numpy, scipy and trimesh alone; `Design.scene_at` runs under 3.9. |
+| Equivalence, 260814_RobArch_support_ik | 0 unexpected kinds. Mirror (`scene_at` → `CompasFabMirror`) vs `to_cell_state`: 137 of 140 movements identical; the other 3 differ only by pairs `static_contacts` allows (`bars/B5`–`robots/cindy` in Alice's `B3_H_M1..M3`). No floor-pair differences. Pairs: mirror 22, design 25. |
+| Equivalence, 260920_RobArch_demo_revamp_backup | Same: 0 unexpected, 137/140 identical, the same 3 `static_contacts` pairs, no floor differences. Pairs: mirror 20, design 23. |
+| Monitor | Starts with `robots:=['0804','0806']` and the four plugins, ticks without errors (no hardware). |
+| Timing (260814, 94 bodies) | `scene_at` 3.0 ms per movement (run only when the design or step changes); scene copy 0.055 ms; `scene_after` 0.2 ms. |

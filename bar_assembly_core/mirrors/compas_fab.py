@@ -5,10 +5,10 @@ The acting robot is the cell's robot, each of its mounted tools a `ToolModel` at
 its flange (as the Rhino plugin and tamp build cells). Every other robot is one `ToolModel` keyed by its robot id,
 parked far away while absent; bodies are `RigidBody`s keyed by our id, attached when held by the acting robot.
 `sync` rebuilds the cell (~2 s) only when a model, body id or geometry object changed. `collisions` is compas_fab's
-own check; `search_check` is a fast copy of it for searches. `set_gui(True)` shows the world in PyBullet's
-own window (one per process) for debugging.
+own check; `search_check` is a fast copy of it for searches. `lend` hands the planner to other code, such as tamp.
+`set_gui(True)` shows the world in PyBullet's own window (one per process) for debugging.
 
-- ! One thread only: create, sync and query a mirror on the same thread.
+- ! One thread only: create, sync, query and lend a mirror on the same thread.
 - ! Other robots' tool/body pairs already touching at `sync` are allowed for that snapshot (`static_contacts`).
 - ! compas_fab builds each collision mesh as its convex hull.
 - ? Robots are loaded without their visual shapes (`load_model(visual=False)`), and bodies with their collision
@@ -18,9 +18,10 @@ own window (one per process) for debugging.
 from __future__ import annotations
 
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from itertools import combinations
-from typing import TYPE_CHECKING, Callable, Dict, Mapping, Optional, Sequence, Tuple, Union
+from typing import TYPE_CHECKING, Callable, Dict, Iterator, Mapping, Optional, Sequence, Tuple, Union
 
 import pybullet as p
 from compas.geometry import Frame
@@ -33,6 +34,7 @@ from ..design_io.pose import Pose
 from ..robot import RobotModel
 from ..scene import ROBOTS, Attachment, SceneSnapshot, same_source
 from . import check_display
+from .pp_client import pp_client
 from .compas_convert import (PARKED_POSITION, filled, frame_from_pose, load_model, planning_group, rigid_body,
                              robot_as_tool, subtree, tool_model)
 
@@ -111,6 +113,8 @@ class CompasFabMirror:
         self._groups: Dict[str, str] = {}
         # id() of each tool and rigid body model in the cell -> our id. ? Safe: the cell keeps them alive.
         self._names: dict[int, str] = {}
+        # Lent since the last sync: the borrower may have left any state, or another cell.
+        self._dirty = False
 
     def set_gui(self, gui: bool) -> None:
         """Open or close PyBullet's own window, for debugging. The world is empty until the next `sync`.
@@ -148,6 +152,8 @@ class CompasFabMirror:
 
         built = (acting.model, {key: robot.model for key, robot in others.items()},
                  {key: value[0] for key, value in bodies.items()})
+        if self._dirty and self.client.robot_cell is not self.cell:
+            self._built = None  # the borrower set a cell of its own
         if not self._same(built):
             why = self._rebuild_reason(built)
             started = time.monotonic()
@@ -171,8 +177,10 @@ class CompasFabMirror:
             robot_configuration=filled(self.cell.zero_full_configuration(), acting.joints),
             tool_states=tool_states,
             rigid_body_states={key: self._body_state(*placed) for key, (_, placed) in bodies.items()})
+        # * Always the full state: after `lend` nothing in the world can be trusted.
         self.planner.set_robot_cell_state(state)
         self.state = state
+        self._dirty = False
         self._allow_static_contacts()
 
     def _same(self, built: tuple) -> bool:
@@ -287,6 +295,21 @@ class CompasFabMirror:
                 if any(p.getClosestPoints(tool_body, part, 0.0, physicsClientId=client.client_id) for part in parts):
                     state.touch_bodies.append(tool)
                     self.static_contacts.append((tool, body))
+
+    @contextmanager
+    def lend(self) -> Iterator[PyBulletPlanner]:
+        """Hand this world's compas_fab planner to other code (e.g. tamp), with pybullet_planning pointed at it.
+
+        - ! The borrower may leave the world in any state: the mirror counts as changed, and the next `sync` writes
+          the full state (and rebuilds the cell if the borrower set its own). Build a `search_check` after it.
+        - ! One pybullet_planning user at a time in the whole process (`pp_client`).
+
+        Yields:
+            PyBulletPlanner: The planner, its cell and state as of the last `sync`.
+        """
+        self._dirty = True
+        with pp_client(self.client.client_id):
+            yield self.planner
 
     # --- --- --- --- --- QUERIES --- --- --- --- ---
 
