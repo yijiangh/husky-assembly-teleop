@@ -1,13 +1,14 @@
 """
-A private PyBullet world filled from a `SceneSnapshot`: robots, scene bodies and tracked objects with geometry.
+A private PyBullet world filled from a `SceneSnapshot`: robots with their tools, and the bodies with geometry.
 
-`sync` only rebuilds or moves what changed; robots are re-posed every sync. `set_gui(True)` shows the world
+`sync` only rebuilds or moves what changed; robots are re-posed every sync. A robot is loaded from a URDF the
+mirror writes once per `RobotModel`, each mounted tool a fixed link at its flange. `set_gui(True)` shows the world
 in PyBullet's own window (one per process) for debugging; it shows collision shapes only, as nothing visual
 is loaded.
 
 - ! One thread only: create, sync and query a mirror on the same thread.
 - ! A planner that moves a body (not a robot) must put it back: `sync` compares with the pose it last applied.
-- ! Use `pp` (pybullet_planning) only inside `mirror.active()`, one `pp` thread at a time: `pp.CLIENT` is global.
+- ! Use `pp` (pybullet_planning) only inside `mirror.active()`, one `pp` thread at a time: its client is global.
 - ! Never keep a PyBullet id outside the mirror: ids are reused after removal and change on `set_gui`;
   translate with `id_of`.
 """
@@ -16,15 +17,22 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Iterable, Iterator
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from typing import TYPE_CHECKING, Iterable, Iterator, List, Union
+from xml.etree.ElementTree import ElementTree, SubElement, fromstring
 
 import pybullet as p
 import pybullet_planning as pp
+import trimesh
+from scipy.spatial.transform import Rotation
 
 from ..design_io.geometry import BoxShape, CylinderShape
-from . import check_display
-from ..scene import ROBOTS, RobotDescription, SceneSnapshot, robot_id, tracked_id
 from ..design_io.pose import Pose
+from ..design_io.robot_files import resolved_urdf_text
+from ..robot import RobotModel
+from ..scene import ROBOTS, TRACKED, SceneSnapshot, same_source
+from . import check_display
 
 if TYPE_CHECKING:
     from ..design_io.geometry import Geometry, Shape
@@ -35,20 +43,22 @@ class _Built:
     """What the mirror built for one of our ids.
 
     Attributes:
-        source: The `Geometry` or `RobotDescription` object it was built from.
+        source: The `Geometry` or `RobotModel` object it was built from.
         concave: Whether non-convex meshes were built concave (free bodies only).
         pose: The pose last applied.
         bodies: PyBullet body ids, one per collision shape (one for a robot).
         joints: Robots only: joint name -> joint index.
         links: Robots only: link name per link index + 1 (index -1, the base, first).
+        tools: Robots only: link name -> id of the mounted tool it is.
     """
 
-    source: Geometry | RobotDescription
+    source: Union[Geometry, RobotModel]
     concave: bool
     pose: Pose
-    bodies: list[int]
-    joints: dict[str, int] = field(default_factory=dict)
-    links: list[str] = field(default_factory=list)
+    bodies: List[int]
+    joints: dict = field(default_factory=dict)
+    links: List[str] = field(default_factory=list)
+    tools: dict = field(default_factory=dict)
 
 
 def _text(name: bytes) -> str:
@@ -56,8 +66,28 @@ def _text(name: bytes) -> str:
     return name.decode("utf-8")
 
 
+def _tool_link(flange: str) -> str:
+    """The name of the link a mounted tool becomes in the URDF the mirror writes."""
+    return f"{flange}_tool"
+
+
+def _names(object_id: str, built: _Built, link: int) -> List[str]:
+    """The ids `touches` may name one side of a contact by: the body, or the robot link and its tool's id.
+
+    Args:
+        object_id: The body's or robot's id.
+        built: What was built for it.
+        link: PyBullet link index of the contact; -1 is the base.
+    """
+    if not built.links:
+        return [object_id]
+    name = built.links[link + 1]
+    tool = built.tools.get(name)
+    return [f"{object_id}/{name}"] + ([tool] if tool is not None else [])
+
+
 def _matches(entry: str, object_id: str) -> bool:
-    """Whether a `touches` entry names an id: exactly, or "robots/<serial>" for any of its links."""
+    """Whether a `touches` entry names an id: exactly, or "robots/<name>" for any of its links."""
     if entry == object_id:
         return True
     return entry.startswith(f"{ROBOTS}/") and entry.count("/") == 1 and object_id.startswith(f"{entry}/")
@@ -92,11 +122,16 @@ class PyBulletMirror:
         self._owner: dict[int, str] = {}
         # Our id -> its `touches`, from the last synced snapshot.
         self._touches: dict[str, tuple[str, ...]] = {}
-        # Ids of disabled bodies in the last synced snapshot: built, but never collide.
+        # Ids of disabled bodies and robots in the last synced snapshot: built, but never collide.
         self._disabled: set[str] = set()
+        # Robot id -> why it can't be planned for (`RobotObject.acting_problems`), from the last synced snapshot.
+        self._problems: dict[str, list[str]] = {}
         # (shape, built concave) -> collision shape id, shared between bodies.
         # ? Keyed by the shape, not `id(obj)` (reused after free); equal primitives share one.
         self._shapes: dict[tuple[Shape, bool], int] = {}
+        # RobotModel -> the URDF written for it with its tools, in `_files` (made on first use).
+        self._urdfs: dict[RobotModel, Path] = {}
+        self._files: TemporaryDirectory | None = None
 
     def set_gui(self, gui: bool) -> None:
         """Open or close PyBullet's own window, for debugging. The world is empty until the next `sync`.
@@ -119,26 +154,25 @@ class PyBulletMirror:
             snapshot: The world to copy. It is not modified.
         """
         # Our id -> (source, concave, pose) for everything that should exist.
-        wanted: dict[str, tuple[Geometry | RobotDescription, bool, Pose]] = {}
+        wanted: dict[str, tuple[Geometry | RobotModel, bool, Pose]] = {}
         touches: dict[str, tuple[str, ...]] = {}
-        for serial, entry in snapshot.robots.items():
-            wanted[robot_id(serial)] = (entry.config, False, entry.base)
+        for object_id, robot in snapshot.robots.items():
+            wanted[object_id] = (robot.model, False, robot.base)
         for body_id, body in snapshot.bodies.items():
-            # ! Concave only when free: Bullet can't collide two concave meshes, and attached bodies move.
-            concave = isinstance(body.placement, Pose) and any(not mesh.convex for mesh in body.geometry.collision)
+            # ! Concave only when free and unmeasured: Bullet can't collide two concave meshes, and those others move.
+            concave = (isinstance(body.placement, Pose) and not body_id.startswith(f"{TRACKED}/")
+                       and any(not mesh.convex for mesh in body.geometry.collision))
             wanted[body_id] = (body.geometry, concave, snapshot.world_poses[body_id])
             touches[body_id] = body.touches
-        self._disabled = {body_id for body_id, body in snapshot.bodies.items() if not body.enabled}
-        for name, entry in snapshot.tracked.items():
-            if entry.description.geometry is not None:
-                wanted[tracked_id(name)] = (entry.description.geometry, False, entry.pose)
-                touches[tracked_id(name)] = entry.description.touches
+        self._disabled = ({body_id for body_id, body in snapshot.bodies.items() if not body.enabled}
+                          | {object_id for object_id, robot in snapshot.robots.items() if not robot.enabled})
+        self._problems = {object_id: robot.acting_problems() for object_id, robot in snapshot.robots.items()}
         self._touches = touches
 
         # * Remove everything gone or to be rebuilt first, so no freed PyBullet id is still in our tables.
         for object_id, built in list(self._built.items()):
             target = wanted.get(object_id)
-            if target is None or target[0] is not built.source or target[1] != built.concave:
+            if target is None or not same_source(target[0], built.source) or target[1] != built.concave:
                 self._remove(object_id)
 
         for object_id, (source, concave, pose) in wanted.items():
@@ -146,34 +180,34 @@ class PyBulletMirror:
             if built is None:
                 self._build(object_id, source, concave, pose)
             # ? Robots are re-posed every sync (cheap): planners move them around while searching.
-            elif pose != built.pose or object_id.startswith(f"{ROBOTS}/"):
+            elif pose != built.pose or object_id in snapshot.robots:
                 for body in built.bodies:
                     p.resetBasePositionAndOrientation(body, pose.position, pose.orientation,
                                                       physicsClientId=self.client_id)
                 built.pose = pose
 
-        for serial, entry in snapshot.robots.items():
-            built = self._built[robot_id(serial)]
-            for name, value in entry.joints.items():
-                # ? Joints the URDF lacks are skipped silently; Kinematics already warns about them.
+        for object_id, robot in snapshot.robots.items():
+            built = self._built[object_id]
+            for name, value in robot.joints.items():
+                # ? Joints the URDF lacks are skipped silently; whoever measures them warns.
                 joint = built.joints.get(name)
                 if joint is not None:
                     p.resetJointState(built.bodies[0], joint, value, physicsClientId=self.client_id)
 
         self._drop_unused_shapes()
 
-    def _build(self, object_id: str, source: Geometry | RobotDescription, concave: bool, pose: Pose) -> None:
+    def _build(self, object_id: str, source: Geometry | RobotModel, concave: bool, pose: Pose) -> None:
         """Build one object at a pose and record it.
 
         Args:
-            object_id: Our id; "robots/<serial>" means `source` is a RobotDescription.
-            source: What to build.
+            object_id: Our id.
+            source: What to build: a robot's model, or a body's geometry.
             concave: Whether to build non-convex meshes concave.
             pose: Its world pose.
         """
-        if object_id.startswith(f"{ROBOTS}/"):
+        if isinstance(source, RobotModel):
             # * Collision shapes only: the visual meshes are large and slow to load (~0.6 s per robot), and unused.
-            body = p.loadURDF(str(source.urdf_file), useFixedBase=False, flags=p.URDF_IGNORE_VISUAL_SHAPES,
+            body = p.loadURDF(str(self._robot_urdf(source)), useFixedBase=False, flags=p.URDF_IGNORE_VISUAL_SHAPES,
                               physicsClientId=self.client_id)
             p.resetBasePositionAndOrientation(body, pose.position, pose.orientation, physicsClientId=self.client_id)
             infos = [p.getJointInfo(body, i, physicsClientId=self.client_id)
@@ -181,7 +215,8 @@ class PyBulletMirror:
             built = _Built(source, concave, pose, [body],
                            joints={_text(info[1]): info[0] for info in infos},
                            links=[_text(p.getBodyInfo(body, physicsClientId=self.client_id)[0])]
-                           + [_text(info[12]) for info in infos])
+                           + [_text(info[12]) for info in infos],
+                           tools={_tool_link(flange): tool.id for flange, tool in source.tools.items()})
         else:
             bodies = [p.createMultiBody(baseMass=0,
                                         baseCollisionShapeIndex=self._shape(mesh, concave and not mesh.convex),
@@ -243,28 +278,68 @@ class PyBulletMirror:
         ? PyBullet (3.2.x) won't remove a shape any body ever used, so its PyBullet side stays until `close`.
         """
         used = {(mesh, built.concave and not mesh.convex)
-                for object_id, built in self._built.items() if not object_id.startswith(f"{ROBOTS}/")
+                for built in self._built.values() if not isinstance(built.source, RobotModel)
                 for mesh in built.source.collision}
         self._shapes = {key: shape for key, shape in self._shapes.items() if key in used}
 
+    def _robot_urdf(self, model: RobotModel) -> Path:
+        """The URDF of a robot model with each tool a fixed link at its flange; written once per model.
+
+        Args:
+            model: The robot's model.
+
+        Returns:
+            Path: The URDF, in this mirror's own folder, with absolute mesh paths.
+        """
+        path = self._urdfs.get(model)
+        if path is not None:
+            return path
+        if self._files is None:
+            self._files = TemporaryDirectory(prefix="pybullet_mirror_")
+        folder = Path(self._files.name)
+        stem = f"{model.name}_{len(self._urdfs)}"
+        root = fromstring(resolved_urdf_text(model.urdf))
+        for flange, tool in model.tools.items():
+            link = SubElement(root, "link", name=_tool_link(flange))
+            for index, shape in enumerate(tool.geometry.collision):
+                collision = SubElement(link, "collision")
+                geometry = SubElement(collision, "geometry")
+                if isinstance(shape, BoxShape):
+                    SubElement(geometry, "box", size=" ".join(str(v) for v in shape.size))
+                elif isinstance(shape, CylinderShape):
+                    SubElement(geometry, "cylinder", radius=str(shape.radius), length=str(shape.height))
+                else:
+                    mesh_file = folder / f"{stem}_{flange}_{index}.obj"
+                    trimesh.Trimesh(shape.vertices, shape.faces, process=False).export(str(mesh_file))
+                    SubElement(geometry, "mesh", filename=str(mesh_file))
+                origin = getattr(shape, "origin", Pose())
+                SubElement(collision, "origin", xyz=" ".join(str(v) for v in origin.position),
+                           rpy=" ".join(str(v) for v in Rotation.from_quat(origin.orientation).as_euler("xyz")))
+            joint = SubElement(root, "joint", name=f"{_tool_link(flange)}_joint", type="fixed")
+            SubElement(joint, "parent", link=flange)
+            SubElement(joint, "child", link=_tool_link(flange))
+        path = self._urdfs[model] = folder / f"{stem}.urdf"
+        ElementTree(root).write(str(path), encoding="utf-8", xml_declaration=True)
+        return path
+
     # --- --- --- --- --- LOOKUP --- --- --- --- ---
 
-    def robot(self, serial: str) -> int:
-        """The PyBullet body id of a robot.
+    def robot(self, object_id: str) -> int:
+        """The PyBullet body id of a robot, by robot id.
 
         Raises:
             KeyError: If no such robot was synced.
         """
-        return self._built[robot_id(serial)].bodies[0]
+        return self._built[object_id].bodies[0]
 
     @property
     def robots(self) -> dict[str, int]:
-        """Serial -> PyBullet body id of every robot, as a new dict."""
-        return {object_id.split("/", 1)[1]: built.bodies[0]
-                for object_id, built in self._built.items() if object_id.startswith(f"{ROBOTS}/")}
+        """Robot id -> PyBullet body id of every robot, as a new dict."""
+        return {object_id: built.bodies[0] for object_id, built in self._built.items()
+                if isinstance(built.source, RobotModel)}
 
     def body_ids(self, object_id: str) -> list[int]:
-        """The PyBullet bodies of a body, tracked object or "robots/<serial>".
+        """The PyBullet bodies of a body or robot.
 
         Raises:
             KeyError: If the id is not in this world.
@@ -272,7 +347,7 @@ class PyBulletMirror:
         return list(self._built[object_id].bodies)
 
     def id_of(self, body: int) -> str:
-        """Our id of a PyBullet body: a body's or tracked object's id, or "robots/<serial>".
+        """Our id of a PyBullet body: a body's or a robot's.
 
         Raises:
             KeyError: If the mirror did not build that body (e.g. a planner's own).
@@ -280,20 +355,20 @@ class PyBulletMirror:
         return self._owner[body]
 
     def obstacle_ids(self) -> list[str]:
-        """Our ids of every enabled body and tracked object that can collide, robots excluded.
+        """Our ids of every enabled body that can collide, robots excluded.
 
         ? One without collision meshes has no PyBullet body, so it is left out.
         """
         return [object_id for object_id, built in self._built.items()
-                if built.bodies and not object_id.startswith(f"{ROBOTS}/") and object_id not in self._disabled]
+                if built.bodies and not isinstance(built.source, RobotModel) and object_id not in self._disabled]
 
     # --- --- --- --- --- COLLISIONS --- --- --- --- ---
 
     def allowed(self, a: str, b: str) -> bool:
-        """Whether two ids may touch: either lists the other in its `touches` ("robots/<serial>" covers all links).
+        """Whether two ids may touch: either lists the other in its `touches` ("robots/<name>" covers all links).
 
         Args:
-            a: An id: body, tracked object, robot or robot link.
+            a: An id: body, robot, robot link or mounted tool.
             b: Another id.
 
         Returns:
@@ -302,33 +377,37 @@ class PyBulletMirror:
         return (any(_matches(entry, b) for entry in self._touches.get(a, ()))
                 or any(_matches(entry, a) for entry in self._touches.get(b, ())))
 
-    def collisions(self, serial: str, margin: float = 0.0, candidates: Iterable[str] | None = None) -> list[str]:
+    def collisions(self, object_id: str, margin: float = 0.0, candidates: Iterable[str] | None = None) -> list[str]:
         """Everything within `margin` of a robot, as it stands now, except allowed pairs.
 
         Args:
-            serial: The robot to check.
+            object_id: The robot to check, by id.
             margin: Distance below which two objects count as colliding, metres.
             candidates: Only check these ids (e.g. after a cheap pre-check), or None for everything.
 
         Returns:
-            list[str]: Our ids of the other robots, bodies and tracked objects hit; sorted, unique.
+            list[str]: Our ids of the other robots and bodies hit; sorted, unique.
+
+        Raises:
+            ValueError: If the robot can't be planned for (`RobotObject.acting_problems`).
         """
-        own = robot_id(serial)
-        robot = self._built[own]
+        if self._problems.get(object_id):
+            raise ValueError(f"cannot check {object_id}: {'; '.join(self._problems[object_id])}")
+        robot = self._built[object_id]
         hits: set[str] = set()
-        for object_id in self._built if candidates is None else candidates:
-            if object_id == own or object_id in self._disabled:
+        for other_id in self._built if candidates is None else candidates:
+            if other_id == object_id or other_id in self._disabled:
                 continue
-            other = self._built[object_id]
+            other = self._built[other_id]
             for body in other.bodies:
                 for contact in p.getClosestPoints(robot.bodies[0], body, margin, physicsClientId=self.client_id):
                     # ? contact[3] / contact[4]: link index on each side; -1 is the base, links[0].
-                    link = f"{own}/{robot.links[contact[3] + 1]}"
-                    target = f"{object_id}/{other.links[contact[4] + 1]}" if other.links else object_id
-                    if not self.allowed(link, target):
-                        hits.add(object_id)
+                    own = _names(object_id, robot, contact[3])
+                    target = _names(other_id, other, contact[4])
+                    if not any(self.allowed(a, b) for a in own for b in target):
+                        hits.add(other_id)
                         break
-                if object_id in hits:
+                if other_id in hits:
                     break
         return sorted(hits)
 
@@ -354,7 +433,9 @@ class PyBulletMirror:
         return bool(p.isConnected(physicsClientId=self.client_id))
 
     def close(self) -> None:
-        """Disconnect this world, unless already gone. The mirror can't be used afterwards."""
+        """Disconnect this world and delete its files, unless already gone. The mirror can't be used afterwards."""
         if self.connected:
             p.disconnect(physicsClientId=self.client_id)
-        self._built, self._owner, self._shapes = {}, {}, {}
+        if self._files is not None:
+            self._files.cleanup()
+        self._built, self._owner, self._shapes, self._urdfs, self._files = {}, {}, {}, {}, None

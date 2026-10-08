@@ -1,14 +1,15 @@
 """
 A compas_fab planning world for one acting robot, filled from a `SceneSnapshot`.
 
-The acting robot is the cell's `RobotModel`; every other robot is a `ToolModel` keyed "robots/<serial>";
-scene bodies and tracked objects are `RigidBody`s keyed by our id, attached when held by the acting robot.
-`sync` rebuilds the cell (~2 s) only when a model, body id or geometry changed. `collisions` is compas_fab's
+The acting robot is the cell's robot, each of its mounted tools a `ToolModel` attached to the SRDF group ending at
+its flange (as the Rhino plugin and tamp build cells). Every other robot is one `ToolModel` keyed by its robot id,
+parked far away while absent; bodies are `RigidBody`s keyed by our id, attached when held by the acting robot.
+`sync` rebuilds the cell (~2 s) only when a model, body id or geometry object changed. `collisions` is compas_fab's
 own check; `search_check` is a fast copy of it for searches. `set_gui(True)` shows the world in PyBullet's
 own window (one per process) for debugging.
 
 - ! One thread only: create, sync and query a mirror on the same thread.
-- ! Stationary tool/body pairs already touching at `sync` are allowed for that snapshot (`static_contacts`).
+- ! Other robots' tool/body pairs already touching at `sync` are allowed for that snapshot (`static_contacts`).
 - ! compas_fab builds each collision mesh as its convex hull.
 - ? Robots are loaded without their visual shapes (`load_model(visual=False)`), and bodies with their collision
   shapes as visuals: loading is faster, and PyBullet's window shows exactly what is checked.
@@ -19,80 +20,68 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 from itertools import combinations
-from typing import TYPE_CHECKING, Callable, Mapping, Sequence
+from typing import TYPE_CHECKING, Callable, Dict, Mapping, Optional, Sequence, Tuple, Union
 
 import pybullet as p
 from compas.geometry import Frame
 from compas_fab.backends import CollisionCheckError, PyBulletClient, PyBulletPlanner
 from compas_fab.backends.pybullet.conversions import pose_from_frame
 from compas_fab.robots import RigidBody, RigidBodyState, RobotCell, RobotCellState, RobotSemantics, ToolState
-from compas_robots import Configuration, RobotModel, ToolModel
+from compas_robots import Configuration, ToolModel
 
-from .compas_convert import filled, frame_from_pose, load_model, rigid_body, subtree
-from . import check_display
-from ..scene import ROBOTS, Attachment, RobotDescription, SceneSnapshot, robot_id, tracked_id
-from ..ur import TOOL_TOUCHES_ARM_LINKS
 from ..design_io.pose import Pose
+from ..robot import RobotModel
+from ..scene import ROBOTS, Attachment, SceneSnapshot, same_source
+from . import check_display
+from .compas_convert import (PARKED_POSITION, filled, frame_from_pose, load_model, planning_group, rigid_body,
+                             robot_as_tool, subtree, tool_model)
 
 if TYPE_CHECKING:
+    from compas_robots import RobotModel as CompasRobotModel
     from compas_robots.model import Link
 
     from ..design_io.geometry import Geometry
 
 
-def semantics_with_tools(config: RobotDescription, model: RobotModel) -> RobotSemantics:
-    """The robot's SRDF, plus the pairs a stitched tool may touch.
+@dataclass(eq=False)
+class _Acting:
+    """The acting robot as compas_fab objects, built once per `RobotModel`.
 
-    ? Without this every tool collides with its own wrist: each tool link may touch its tool and the arm
-      links in `TOOL_TOUCHES_ARM_LINKS`.
-
-    Args:
-        config: The robot; `srdf_file` must be set.
-        model: Its model, from the stitched URDF.
-
-    Returns:
-        RobotSemantics: Groups and disabled collisions.
-
-    Raises:
-        ValueError: If the robot has no SRDF.
+    Attributes:
+        source: The model they were built from.
+        model: Its URDF, collision shapes only.
+        semantics: Its SRDF.
+        tools: Tool id -> its compas_fab tool, one per mounted tool.
+        flanges: Tool id -> the flange it is mounted on.
     """
-    if config.srdf_file is None:
-        raise ValueError(f"{config.serial} has no SRDF (RobotDescription.srdf_file); compas_fab needs one")
-    semantics = RobotSemantics.from_srdf_file(str(config.srdf_file), model)
-    disabled = set(semantics.disabled_collisions)
-    links = {link.name for link in model.links}
-    for arm in config.arms:
-        tool0 = f"{arm.name}_tool0"
-        if tool0 not in links:
-            continue
-        tool = subtree(model, tool0)
-        near = tool | {f"{arm.name}_{suffix}" for suffix in TOOL_TOUCHES_ARM_LINKS} & links
-        disabled |= {(a, b) for a in tool for b in near if a != b}
-    semantics.disabled_collisions = disabled
-    return semantics
+
+    source: RobotModel
+    model: CompasRobotModel
+    semantics: RobotSemantics
+    tools: Dict[str, ToolModel]
+    flanges: Dict[str, str]
 
 
 class CompasFabMirror:
     """A compas_fab PyBullet world planning for one robot, following the snapshots given to `sync`."""
 
-    def __init__(self, serial: str, log: Callable[[str], None] | None = None) -> None:
+    def __init__(self, robot_id: str, log: Callable[[str], None] | None = None) -> None:
         """Connect an empty world without a window; the first `sync` loads everything (slow).
 
         Args:
-            serial: The acting robot; every other robot becomes an obstacle.
+            robot_id: The acting robot, e.g. "robots/a200-0806"; every other robot becomes an obstacle.
             log: Called on this mirror's thread with one line per full rebuild of the cell: why, and how long.
         """
-        self.serial = serial
+        self.robot_id = robot_id
         self._log = log
         #: compas_fab's client and planner. Use them only on the owning thread.
         self.client: PyBulletClient | None = None
         # * Cached for the mirror's lifetime: loading and converting is the slow part.
-        # The acting robot's config, model and semantics.
-        self._robot: tuple[RobotDescription, RobotModel, RobotSemantics] | None = None
-        # Other robots' configs -> their tool models.
-        self._tools: dict[RobotDescription, ToolModel] = {}
+        self._acting: _Acting | None = None
+        # (our id, model) of other robots -> their tool models.
+        self._others: Dict[Tuple[str, RobotModel], ToolModel] = {}
         # Geometry -> rigid body. ? Keyed by the object itself (identity), never `id(obj)`.
-        self._bodies: dict[Geometry, RigidBody] = {}
+        self._bodies: Dict[Geometry, RigidBody] = {}
         self._connect(gui=False)
 
     def _connect(self, gui: bool) -> None:
@@ -116,8 +105,10 @@ class CompasFabMirror:
         self.state: RobotCellState | None = None
         #: (tool, body) pairs of our ids already touching at the last sync, and so allowed.
         self.static_contacts: list[tuple[str, str]] = []
-        # What the cell was built from: acting config, other configs by id, geometry by id.
+        # What the cell was built from: acting model, other models by id, geometry by id.
         self._built: tuple | None = None
+        # Tool id -> SRDF group its tool is attached to, for the cell as built.
+        self._groups: Dict[str, str] = {}
         # id() of each tool and rigid body model in the cell -> our id. ? Safe: the cell keeps them alive.
         self._names: dict[int, str] = {}
 
@@ -143,48 +134,56 @@ class CompasFabMirror:
 
         Raises:
             KeyError: If the acting robot is not in the snapshot.
+            ValueError: If it can't be planned for (`RobotObject.acting_problems`), or has no SRDF.
         """
-        acting = snapshot.robots[self.serial]
-        others = {robot_id(serial): entry for serial, entry in snapshot.robots.items() if serial != self.serial}
+        acting = snapshot.robots[self.robot_id]
+        problems = acting.acting_problems()
+        if problems:
+            raise ValueError(f"cannot plan for {self.robot_id}: {'; '.join(problems)}")
+        others = {key: robot for key, robot in snapshot.robots.items() if key != self.robot_id}
         # Our id -> (geometry, (world pose, placement, touches, enabled)), for everything that can collide.
         # ? Disabled bodies are built too, but hidden: switching them on and off never rebuilds the cell.
         bodies = {body_id: (body.geometry, (snapshot.world_poses[body_id], body.placement, body.touches, body.enabled))
                   for body_id, body in snapshot.bodies.items() if body.geometry.collision}
-        for name, entry in snapshot.tracked.items():
-            geometry = entry.description.geometry
-            if geometry is not None and geometry.collision:
-                bodies[tracked_id(name)] = (geometry, (entry.pose, entry.pose, entry.description.touches, True))
 
-        built = (acting.config, {key: entry.config for key, entry in others.items()},
+        built = (acting.model, {key: robot.model for key, robot in others.items()},
                  {key: value[0] for key, value in bodies.items()})
         if not self._same(built):
             why = self._rebuild_reason(built)
             started = time.monotonic()
             self._build(built)
             if self._log is not None:
-                self._log(f"rebuilt the planning cell for {self.serial} in {time.monotonic() - started:.1f} s; "
+                self._log(f"rebuilt the planning cell for {self.robot_id} in {time.monotonic() - started:.1f} s; "
                           f"why: {why}")
 
+        model = acting.model
+        tool_states = {key: ToolState(frame=None, attached_to_group=self._groups[key],
+                                      touch_links=list(model.tool_touches.get(self._acting.flanges[key], ())),
+                                      attachment_frame=Frame.worldXY())
+                       for key in self._acting.tools}
+        for key, robot in others.items():
+            zero = self.cell.tool_models[key].zero_configuration()
+            # ? compas_fab needs every tool in every state: an absent robot is parked far away.
+            tool_states[key] = (ToolState(frame=frame_from_pose(robot.base), configuration=filled(zero, robot.joints))
+                                if robot.enabled else ToolState(frame=Frame(PARKED_POSITION), configuration=zero))
         state = RobotCellState(
             robot_base_frame=frame_from_pose(acting.base),
             robot_configuration=filled(self.cell.zero_full_configuration(), acting.joints),
-            tool_states={key: ToolState(frame=frame_from_pose(entry.base),
-                                        configuration=filled(self.cell.tool_models[key].zero_configuration(),
-                                                             entry.joints))
-                         for key, entry in others.items()},
+            tool_states=tool_states,
             rigid_body_states={key: self._body_state(*placed) for key, (_, placed) in bodies.items()})
         self.planner.set_robot_cell_state(state)
         self.state = state
         self._allow_static_contacts()
 
     def _same(self, built: tuple) -> bool:
-        """Whether the cell was built from these models: equal configs, the same geometry objects."""
+        """Whether the cell was built from these models: the same model and geometry objects, by `same_source`."""
         if self._built is None:
             return False
         acting, others, geometries = built
         old_acting, old_others, old_geometries = self._built
-        return (acting == old_acting and others == old_others and geometries.keys() == old_geometries.keys()
-                and all(geometry is old_geometries[key] for key, geometry in geometries.items()))
+        return same_source(acting, old_acting) and all(
+            new.keys() == old.keys() and all(same_source(value, old[key]) for key, value in new.items())
+            for new, old in ((others, old_others), (geometries, old_geometries)))
 
     def _rebuild_reason(self, built: tuple) -> str:
         """Why the cell must be rebuilt for `built`, in the terms `_same` compares; for the log."""
@@ -192,39 +191,45 @@ class CompasFabMirror:
             return "first build"
         acting, others, geometries = built
         old_acting, old_others, old_geometries = self._built
-        reasons = ["the acting robot's config changed"] if acting != old_acting else []
-        reasons += _changes("robots", others, old_others, lambda new, old: new == old)
-        reasons += _changes("bodies", geometries, old_geometries, lambda new, old: new is old)
+        reasons = [] if same_source(acting, old_acting) else ["the acting robot's model changed"]
+        reasons += _changes("robots", others, old_others)
+        reasons += _changes("bodies", geometries, old_geometries)
         return "; ".join(reasons)
 
     def _build(self, built: tuple) -> None:
         """Build the cell and hand it to compas_fab. Slow: loads models the first time, writes OBJ files.
 
         Args:
-            built: (acting config, other configs by our id, geometry by our id).
+            built: (acting model, other models by our id, geometry by our id).
+
+        Raises:
+            ValueError: If the acting robot has no SRDF.
         """
         acting, others, geometries = built
-        if self._robot is None or self._robot[0] != acting:
-            model = load_model(acting.urdf_file, visual=False)
-            self._robot = (acting, model, semantics_with_tools(acting, model))
-        _, model, semantics = self._robot
+        if self._acting is None or not same_source(acting, self._acting.source):
+            if acting.srdf is None:
+                raise ValueError(f"{self.robot_id} has no SRDF (RobotModel.srdf); compas_fab needs one")
+            model = load_model(acting.urdf, visual=False)
+            self._acting = _Acting(acting, model, RobotSemantics.from_srdf_file(str(acting.srdf), model),
+                                   {tool.id: tool_model(tool, tool.id) for tool in acting.tools.values()},
+                                   {tool.id: flange for flange, tool in acting.tools.items()})
 
-        def tool_model(config: RobotDescription) -> ToolModel:
-            """Another robot as a tool, collision shapes only."""
-            return ToolModel.from_robot_model(load_model(config.urdf_file, visual=False), Frame.worldXY())
-
-        self._tools = {config: self._tools.get(config) or tool_model(config) for config in others.values()}
+        self._others = {(key, model): self._others.get((key, model))
+                        or robot_as_tool(model.urdf, model.tools, key, visual=False)
+                        for key, model in others.items()}
         self._bodies = {geometry: self._bodies.get(geometry) or rigid_body(geometry)
                         for geometry in geometries.values()}
-        tools = {key: self._tools[config] for key, config in others.items()}
+        tools = {**self._acting.tools, **{key: self._others[key, model] for key, model in others.items()}}
         rigid_bodies = {key: self._bodies[geometry] for key, geometry in geometries.items()}
 
-        self.cell = RobotCell(model, semantics, tool_models=tools, rigid_body_models=rigid_bodies)
+        self.cell = RobotCell(self._acting.model, self._acting.semantics, tool_models=tools,
+                              rigid_body_models=rigid_bodies)
         self.planner.set_robot_cell(self.cell)
         self._built = built
+        self._groups = {key: planning_group(self.cell, flange) for key, flange in self._acting.flanges.items()}
         self._names = {id(value): key for key, value in [*tools.items(), *rigid_bodies.items()]}
 
-    def _body_state(self, pose: Pose, placement: Pose | Attachment, touches: tuple[str, ...],
+    def _body_state(self, pose: Pose, placement: Union[Pose, Attachment], touches: Tuple[str, ...],
                     enabled: bool) -> RigidBodyState:
         """A body's compas_fab state: attached to one of our links, or stationary at its world pose.
 
@@ -237,13 +242,15 @@ class CompasFabMirror:
         Returns:
             RigidBodyState: The state.
         """
-        own = robot_id(self.serial)
+        own = self.robot_id
         touch_links, touch_bodies = [], []
         for entry in touches:
             if entry.startswith(f"{own}/"):
                 touch_links.append(entry.split("/", 2)[2])
             elif entry == own:
+                # The whole robot: every link and every mounted tool.
                 touch_links.extend(link.name for link in self.cell.robot_model.links)
+                touch_bodies.extend(self._acting.tools)
             elif entry.startswith(f"{ROBOTS}/"):
                 # Another robot is one tool: any of its links means the whole robot.
                 touch_bodies.append("/".join(entry.split("/", 2)[:2]))
@@ -257,16 +264,21 @@ class CompasFabMirror:
                 state.attached_to_link = placement.link
                 state.attachment_frame = frame_from_pose(placement.grasp)
             elif placement.parent != own:
-                # Held by another robot or a tracked object: stationary here, but it may touch its holder.
+                # Held by another robot or fixed to a body: stationary here, but it may touch its holder.
                 state.touch_bodies.append(placement.parent)
             # ? Held by our base: stationary, since the base does not move while an arm plans.
         return state
 
     def _allow_static_contacts(self) -> None:
-        """Allow stationary tool/body pairs already touching now; they can't change while this robot plans."""
+        """Allow other robots' tool/body pairs already touching now; they can't change while this robot plans.
+
+        ! Never the acting robot's own tools: they move with it, so their contacts are real.
+        """
         self.static_contacts = []
         client = self.client
         for tool, tool_body in client.tools_puids.items():
+            if self.state.tool_states[tool].attached_to_group is not None:
+                continue
             for body, parts in client.rigid_bodies_puids.items():
                 state = self.state.rigid_body_states[body]
                 # ? A hidden body is not moved by compas_fab, so its parts may sit anywhere: skip it.
@@ -303,15 +315,15 @@ class CompasFabMirror:
                               tool_states=self.state.tool_states, rigid_body_states=self.state.rigid_body_states)
 
     def collisions(self, joints: Mapping[str, float] | None = None, full_report: bool = False) -> list[tuple[str, str]]:
-        """What collides with the acting robot at the synced state, some joints changed.
+        """What collides with the acting robot or its tools at the synced state, some joints changed.
 
         Args:
             joints: Values by joint name to check at, or None for the synced state.
             full_report: Find every pair; otherwise stop at the first.
 
         Returns:
-            list[tuple[str, str]]: Colliding pairs as our ids, e.g. ("robots/0806/left_ur_arm_wrist_3_link",
-                "obstacles/tables/A"). Empty if clear.
+            list[tuple[str, str]]: Colliding pairs as our ids, e.g. ("robots/a200-0806/left_ur_arm_wrist_3_link",
+                "obstacles/tables/A"); a mounted tool by its tool id. Empty if clear.
         """
         state = self.state if joints is None else self.state_at(joints)
         try:
@@ -334,7 +346,7 @@ class CompasFabMirror:
     def _our_id(self, model: Link | ToolModel | RigidBody) -> str:
         """Our id of one side of a compas_fab collision pair."""
         name = self._names.get(id(model))
-        return name if name is not None else f"{robot_id(self.serial)}/{model.name}"
+        return name if name is not None else f"{self.robot_id}/{model.name}"
 
     @property
     def connected(self) -> bool:
@@ -351,21 +363,20 @@ class CompasFabMirror:
             self.client.client_id = None
 
 
-def _changes(kind: str, new: Mapping, old: Mapping, same: Callable[[object, object], bool]) -> list[str]:
+def _changes(kind: str, new: Mapping, old: Mapping) -> list[str]:
     """What differs between two maps of our id -> model, for the rebuild log.
 
     Args:
         kind: What the ids are, e.g. "bodies".
         new: The models now.
         old: The models the cell was built from.
-        same: Whether a new model counts as the old one (equal configs; for geometry, the same object).
 
     Returns:
         list[str]: Up to three parts, e.g. "bodies added: bars/3, bars/4".
     """
     parts = []
     for label, ids in (("added", new.keys() - old.keys()), ("removed", old.keys() - new.keys()),
-                       ("changed", {key for key in new.keys() & old.keys() if not same(new[key], old[key])})):
+                       ("changed", {key for key in new.keys() & old.keys() if not same_source(new[key], old[key])})):
         if ids:
             ids = sorted(ids)
             shown = ", ".join(ids[:5]) + (f" and {len(ids) - 5} more" if len(ids) > 5 else "")
@@ -386,8 +397,15 @@ class _Part:
     """
 
     body: int
-    link: int | None
+    link: Optional[int]
     name: str
+
+
+def _offset(client_id: int, robot: int, link: int, body: int) -> tuple:
+    """Where a body sits in a robot link's frame now, as (position, quaternion)."""
+    state = p.getLinkState(robot, link, computeForwardKinematics=True, physicsClientId=client_id)
+    inverse = p.invertTransform(state[4], state[5])
+    return p.multiplyTransforms(*inverse, *p.getBasePositionAndOrientation(body, physicsClientId=client_id))
 
 
 class SearchCheck:
@@ -413,9 +431,9 @@ class SearchCheck:
         self._client_id = client.client_id
         self._robot = client.robot_puid
         self._joints = [client.robot_joint_puids[name] for name in joint_names]
-        own = robot_id(mirror.serial)
+        own = mirror.robot_id
 
-        # * What moves: every link below a searched joint, and the bodies attached to those links.
+        # * What moves: every link below a searched joint, and the bodies and tools attached to those links.
         moving = set().union(*(subtree(model, model.get_joint_by_name(name).child.link) for name in joint_names))
         bodies = {name: body for name, body in state.rigid_body_states.items()
                   if not body.is_hidden and name in client.rigid_bodies_puids}
@@ -423,6 +441,14 @@ class SearchCheck:
         #: (PyBullet parts, link index, attachment as (position, quaternion)) of each carried body.
         self._carried = [(client.rigid_bodies_puids[name], client.robot_link_puids[bodies[name].attached_to_link],
                           pose_from_frame(bodies[name].attachment_frame)) for name in carried]
+        # ? compas_fab placed the acting robot's tools at `sync`: keep each where it sits in its flange's frame.
+        flanges = {name: mirror.cell.get_end_effector_link_name(tool.attached_to_group)
+                   for name, tool in state.tool_states.items() if tool.attached_to_group is not None}
+        carried_tools = {name for name, flange in flanges.items()
+                         if flange in moving and not state.tool_states[name].is_hidden}
+        self._carried += [([client.tools_puids[name]], client.robot_link_puids[flanges[name]],
+                           _offset(self._client_id, self._robot, client.robot_link_puids[flanges[name]],
+                                   client.tools_puids[name])) for name in carried_tools]
 
         # ? Links without collision shapes (tool0, flange, …) never hit anything: leave them out.
         links = {name: _Part(self._robot, index, f"{own}/{name}") for name, index in client.robot_link_puids.items()
@@ -435,8 +461,8 @@ class SearchCheck:
         disabled = client.unordered_disabled_collisions
         pairs = [(links[a], links[b]) for a, b in combinations(links, 2)
                  if (a in moving or b in moving) and frozenset((a, b)) not in disabled]
-        pairs += [(links[link], tool) for link in links.keys() & moving for name, tool in tools.items()
-                  if link not in state.tool_states[name].touch_links]
+        pairs += [(links[link], tool) for link in links for name, tool in tools.items()
+                  if (link in moving or name in carried_tools) and link not in state.tool_states[name].touch_links]
         pairs += [(links[link], part) for link in links for name, body in bodies.items()
                   if (link in moving or name in carried) and link not in body.touch_links for part in parts[name]]
         for name in carried:
@@ -446,13 +472,13 @@ class SearchCheck:
                         name in body.touch_bodies or other in bodies[name].touch_bodies:
                     continue
                 pairs += [(a, b) for a in parts[name] for b in parts[other]]
-            pairs += [(tool, part) for tool_name, tool in tools.items()
-                      if bodies[name].attached_to_tool != tool_name and tool_name not in bodies[name].touch_bodies
-                      for part in parts[name]]
+        pairs += [(tool, part) for tool_name, tool in tools.items() for name, body in bodies.items()
+                  if (name in carried or tool_name in carried_tools)
+                  and body.attached_to_tool != tool_name and tool_name not in body.touch_bodies for part in parts[name]]
         #: (body A, body B, getClosestPoints link arguments, names) per pair.
         self._pairs = [(a.body, b.body, {**({"linkIndexA": a.link} if a.link is not None else {}),
                                          **({"linkIndexB": b.link} if b.link is not None else {})}, (a.name, b.name))
-                       for a, b in pairs]
+                       for a, b in dict.fromkeys(pairs)]
 
     def __call__(self, values: Sequence[float]) -> tuple[str, str] | None:
         """Set the searched joints and report the first colliding pair.

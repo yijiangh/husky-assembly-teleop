@@ -1,8 +1,10 @@
 """
 The monitor's live scene (collision objects we don't measure), and its per-tick snapshot for planners and the 3D view.
 
-The data types (`Body`, `SceneSnapshot`, …) are the core's (`bar_assembly_core.scene`). The snapshot is taken
-before plugins run, so it holds one ROS pump's measurements and every plugin's complete writes of the previous tick.
+The data types (`Body`, `RobotObject`, `SceneSnapshot`) are the core's (`bar_assembly_core.scene`). The snapshot is
+taken before plugins run, so it holds one ROS pump's measurements and every plugin's complete writes of the previous
+tick. Each measured robot is a `RobotObject` "robots/<serial>"; each tracked object with a fix, a `Body`
+"tracked/<name>".
 
 - ! Main thread only: the scene, its `Body` objects and `take_snapshot`. A snapshot can be read from
   any thread; treat it as read-only.
@@ -10,15 +12,35 @@ before plugins run, so it holds one ROS pump's measurements and every plugin's c
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable, Iterable
 
-from bar_assembly_core.design_io.pose import Pose, check_id, compose
-from bar_assembly_core.scene import (ROBOTS, TRACKED, Attachment, Body, RobotEntry, SceneSnapshot, TrackedDescription,
-                                     TrackedEntry)
+from bar_assembly_core.design_io.geometry import Geometry
+from bar_assembly_core.design_io.pose import Pose, check_id
+from bar_assembly_core.robot import RobotObject
+from bar_assembly_core.scene import ROBOTS, TRACKED, Attachment, Body, SceneSnapshot, robot_id, tracked_id, world_poses
 
 if TYPE_CHECKING:
     from .kinematics import Kinematics
     from .measured import WorldState
+
+#: The geometry of a tracked object that is a frame only: drawn, never collides.
+NO_GEOMETRY = Geometry((), ())
+
+
+@dataclass(eq=False)
+class TrackedDescription:
+    """What a tracked object is, given when tracking starts.
+
+    Attributes:
+        geometry: Its shape, or None for a frame only that is not an obstacle (e.g. the mocap probe).
+        touches: Ids allowed to touch it, as for `Body.touches`.
+        label: Display text. Empty: use the id.
+    """
+
+    geometry: Geometry | None = None
+    touches: tuple[str, ...] = ()
+    label: str = ""
 
 
 # --- --- --- --- --- THE STORE --- --- --- --- ---
@@ -80,48 +102,33 @@ class Scene:
         """
         robots = {}
         for serial, robot in world.robots.items():
+            model = robot.config.model
             arm_times = [arm.state.last_update_time for arm in robot.arms.values()]
-            robots[serial] = RobotEntry(
-                config=robot.config, base=kinematics.base_pose(serial), base_tracked=robot.base.state.tracked,
-                joints=dict(kinematics.joints(serial)), unmeasured=kinematics.unmeasured(serial),
+            # ! Only movable joints count as unmeasured: wheels and gripper fingers are never measured.
+            robots[robot_id(serial)] = RobotObject(
+                id=robot_id(serial), model=model, base=kinematics.base_pose(serial),
+                joints=dict(kinematics.joints(serial)), base_tracked=robot.base.state.tracked,
+                unmeasured=kinematics.unmeasured(serial).intersection(model.movable_joints),
                 base_time=robot.base.state.last_fix_time,
                 joints_time=None if None in arm_times else min(arm_times, default=None))
 
-        tracked = {}
+        live = dict(self.bodies)
         for name, obj in world.tracked_objects.items():
             if obj.position is None:
                 continue  # never seen: no pose to give it
-            tracked[name] = TrackedEntry(name=name, description=self.tracked.get(name, TrackedDescription()),
-                                         pose=Pose.from_arrays(obj.position, obj.orientation),
-                                         tracked=obj.tracked, time=obj.last_fix_time)
+            description = self.tracked.get(name, TrackedDescription())
+            live[tracked_id(name)] = Body(tracked_id(name), description.geometry or NO_GEOMETRY,
+                                          Pose.from_arrays(obj.position, obj.orientation), description.touches,
+                                          description.label)
 
-        bodies, world_poses = {}, {}
-        for body_id, body in self.bodies.items():
-            pose = self._world_pose(body.placement, kinematics, tracked)
-            if pose is not None:
-                bodies[body_id] = body.copy()
-                world_poses[body_id] = pose
+        def link_pose(robot: RobotObject, link: str) -> Pose:
+            """A measured robot's link pose, from this tick's kinematics (keyed by serial)."""
+            return kinematics.link_pose(robot.id.split("/", 1)[1], link)
 
-        self._snapshot = SceneSnapshot(tick=tick, time=time, bodies=bodies, world_poses=world_poses,
-                                       robots=robots, tracked=tracked)
+        poses = world_poses(live, robots, link_pose)
+        bodies = {body_id: body.copy() for body_id, body in live.items() if body_id in poses}
+        self._snapshot = SceneSnapshot(tick=tick, time=time, bodies=bodies, world_poses=poses, robots=robots)
         return self._snapshot
-
-    @staticmethod
-    def _world_pose(placement: Pose | Attachment, kinematics: Kinematics,
-                    tracked: dict[str, TrackedEntry]) -> Pose | None:
-        """Resolve a placement to a world pose, or None if its parent has no pose."""
-        if isinstance(placement, Pose):
-            return placement
-        kind, name = placement.parent.split("/", 1)
-        if kind == ROBOTS:
-            parent = (kinematics.base_pose(name) if placement.link is None
-                      else kinematics.link_pose(name, placement.link))
-        else:
-            entry = tracked.get(name)
-            if entry is None:
-                return None
-            parent = entry.pose
-        return compose(parent, placement.grasp)
 
 
 class PluginScene:

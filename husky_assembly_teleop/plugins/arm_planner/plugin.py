@@ -23,6 +23,7 @@ from ...robot_interface.arm import UR_JOINT_LIMITS
 from ...ui.ghost import RobotGhost
 from ...ui.pybullet_window import add_pybullet_window_toggle
 from ...ui.style import SECTION_CTRL, SECTION_TOOL, block, chip, section, values
+from bar_assembly_core.scene import robot_id
 from .planner import ArmPath, ArmPlanningWorld, arm_joint_names, plan_arm
 
 #: The plan goes stale once a joint moves this far from the planned start, or the base this far.
@@ -205,10 +206,14 @@ class ArmPlannerPlugin(PlannerPlugin):
         serial, arm, goal = self.serial, self.arm, self._target()
         # * Take the snapshot here, on the main thread; the arm starts where it is in it.
         snapshot = ctx.scene.snapshot
-        base = np.array(snapshot.robots[serial].base.position)
+        base = np.array(snapshot.robots[robot_id(serial)].base.position)
         loading = serial not in self._loaded
 
         def work() -> PlanResult:
+            # ! Refuse a robot whose base is not tracked or whose joints are not known: the plan would be a guess.
+            problems = snapshot.robots[robot_id(serial)].acting_problems()
+            if problems:
+                return PlanResult(None, f"{serial} can't be planned for: {'; '.join(problems)}", 0.0)
             return plan_arm(self._world, self._world.sync(snapshot, serial), arm, goal, abort)
 
         def accepted(result: PlanResult) -> tuple[str, bool]:

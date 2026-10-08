@@ -16,7 +16,7 @@ import pybullet as p
 
 from ..planning.search import PlanResult, connect
 from bar_assembly_core.mirrors.pybullet import PyBulletMirror
-from bar_assembly_core.scene import SceneSnapshot, robot_id
+from bar_assembly_core.scene import SceneSnapshot
 from .path import BasePath, steer, steer_cost, steer_points, timed_path
 
 #: Keep at least this far from every other robot and body, metres.
@@ -51,14 +51,14 @@ class PlanningWorld:
         self.mirror.sync(snapshot)
         self._label = snapshot.label
         # Footprint and reach depend on arm pose, so refresh them every sync.
-        ids = [robot_id(serial) for serial in self.mirror.robots] + self.mirror.obstacle_ids()
+        ids = list(self.mirror.robots) + self.mirror.obstacle_ids()
         self._footprints = {object_id: self._footprint(self.mirror.body_ids(object_id)) for object_id in ids}
         self._reach = {}
-        for serial, body in self.mirror.robots.items():
-            footprint = self._footprints[robot_id(serial)]
+        for object_id, body in self.mirror.robots.items():
+            footprint = self._footprints[object_id]
             position = p.getBasePositionAndOrientation(body, physicsClientId=self.mirror.client_id)[0]
             corners = np.array([(footprint[i], footprint[j]) for i in (0, 2) for j in (1, 3)])
-            self._reach[serial] = float(np.max(np.linalg.norm(corners - np.array(position[:2]), axis=1)))
+            self._reach[object_id] = float(np.max(np.linalg.norm(corners - np.array(position[:2]), axis=1)))
 
     def _footprint(self, bodies: list[int]) -> tuple[float, float, float, float]:
         """The floor footprint of some PyBullet bodies: their bounding box over every link, in x and y.
@@ -76,25 +76,24 @@ class PlanningWorld:
         high = np.max([hi for _, hi in boxes], axis=0)
         return float(low[0]), float(low[1]), float(high[0]), float(high[1])
 
-    def hit_by(self, serial: str, pose) -> str | None:
+    def hit_by(self, own: str, pose) -> str | None:
         """Place a robot at a floor pose and say what it hits, if anything.
 
         Args:
-            serial: The robot being planned for.
+            own: The robot being planned for, by id.
             pose: (x, y, yaw).
 
         Returns:
             str | None: Label of the first robot or body within COLLISION_MARGIN; None if clear.
         """
-        body = self.mirror.robot(serial)
+        body = self.mirror.robot(own)
         client = self.mirror.client_id
         z = p.getBasePositionAndOrientation(body, physicsClientId=client)[0][2]
         x, y, yaw = pose
         # ? Moving the robot here is fine: the mirror re-poses robots on every sync.
         p.resetBasePositionAndOrientation(body, (x, y, z), (0.0, 0.0, math.sin(yaw / 2), math.cos(yaw / 2)),
                                           physicsClientId=client)
-        own = robot_id(serial)
-        reach = self._reach.get(serial, math.inf) + COLLISION_MARGIN
+        reach = self._reach.get(own, math.inf) + COLLISION_MARGIN
         candidates = []
         for object_id, footprint in self._footprints.items():
             # Distance from the robot's base origin to the footprint rectangle.
@@ -102,7 +101,7 @@ class PlanningWorld:
             dy = max(footprint[1] - y, 0.0, y - footprint[3])
             if object_id != own and math.hypot(dx, dy) <= reach:
                 candidates.append(object_id)
-        hits = self.mirror.collisions(serial, COLLISION_MARGIN, candidates)
+        hits = self.mirror.collisions(own, COLLISION_MARGIN, candidates)
         return self._label(hits[0]) if hits else None
 
     def set_gui(self, gui: bool, snapshot: SceneSnapshot) -> None:
@@ -128,12 +127,12 @@ class PlanningWorld:
             self.mirror = None
 
 
-def plan_birrt(world: PlanningWorld, serial: str, start, goal, abort: threading.Event) -> PlanResult[BasePath]:
+def plan_birrt(world: PlanningWorld, own: str, start, goal, abort: threading.Event) -> PlanResult[BasePath]:
     """Plan a collision-free base path from start to goal. Runs on the worker thread.
 
     Args:
         world: The planning world, already synced.
-        serial: The robot to plan for.
+        own: The robot to plan for, by id.
         start: (x, y, yaw) where it is.
         goal: (x, y, yaw) where it should end up.
         abort: Set from the main thread to end the search early.
@@ -146,7 +145,7 @@ def plan_birrt(world: PlanningWorld, serial: str, start, goal, abort: threading.
 
     # * Report a blocked start or target explicitly; the search would only fail.
     for name, pose in (("start", start), ("target", goal)):
-        other = world.hit_by(serial, pose)
+        other = world.hit_by(own, pose)
         if other is not None:
             return PlanResult(None, f"{name} is in collision with {other}", time.time() - started)
 
@@ -161,7 +160,7 @@ def plan_birrt(world: PlanningWorld, serial: str, start, goal, abort: threading.
         return steer_points(q1, q2, POSITION_STEP, YAW_STEP)
 
     def collides(q) -> bool:
-        return world.hit_by(serial, q) is not None
+        return world.hit_by(own, q) is not None
 
     corners = connect(start, goal, steer_cost, sample, extend, collides, abort)
     if corners.states is None:

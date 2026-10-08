@@ -11,24 +11,15 @@ base_link (doc/ur_frames.md). Quaternions are (x, y, z, w).
 from __future__ import annotations
 
 from pathlib import Path
-from xml.etree.ElementTree import Element, parse
-
-from scipy.spatial.transform import Rotation
+from xml.etree.ElementTree import parse
 
 from bar_assembly_core.design_io.pose import Pose, compose
+from bar_assembly_core.ur import joint_origin
 
 #: Frame of husky Cartesian targets (the URDF's husky base_link).
 HUSKY_FRAME = "base_link"
 #: Frame mocap tracks.
 MOCAP_FRAME = "base_footprint"
-
-
-def joint_origin(joint: Element) -> tuple[list[float], Rotation]:
-    """Return a URDF joint's `<origin>` as (xyz, rotation); a missing origin or attribute is zero."""
-    origin = joint.find("origin")
-    xyz = origin.get("xyz", "0 0 0") if origin is not None else "0 0 0"
-    rpy = origin.get("rpy", "0 0 0") if origin is not None else "0 0 0"
-    return [float(v) for v in xyz.split()], Rotation.from_euler("xyz", [float(v) for v in rpy.split()])
 
 
 def fixed_transform(urdf_file: Path, parent: str, child: str) -> Pose:

@@ -411,8 +411,8 @@ class Visualization:
             self._collision_shown = collision
             for drawn in self._robots.values():
                 self._show_robot_collision(drawn.urdf, collision)
-        for serial, entry in snapshot.robots.items():
-            drawn = self._robots.get(serial)
+        for object_id, entry in snapshot.robots.items():
+            drawn = self._robots.get(object_id.split("/", 1)[1])  # ? measured robots are "robots/<serial>"
             if drawn is None:
                 continue
             drawn.base.position = entry.base.position

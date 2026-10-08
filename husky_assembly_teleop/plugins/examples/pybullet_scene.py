@@ -55,7 +55,7 @@ class ExamplePybulletPlugin(HuskyPlugin):
         #: Our own PyBullet world, created on the worker at the first check.
         self._mirror: PyBulletMirror | None = None
         self._check_task: asyncio.Task | None = None
-        #: Latest result: ids each robot collides with, by serial, and the snapshot's tick.
+        #: Latest result: ids each robot collides with, by robot id, and the snapshot's tick.
         self._collisions: dict[str, list[str]] = {}
         self._checked_tick = -1
         #: Each arm's tool0 world pose, keyed by (serial, arm name).
@@ -126,12 +126,14 @@ class ExamplePybulletPlugin(HuskyPlugin):
             snapshot: The world to check. Read-only.
 
         Returns:
-            dict[str, list[str]]: Our ids of the objects each robot collides with, by serial.
+            dict[str, list[str]]: Our ids of the objects each robot collides with, by robot id. Robots that
+                can't be checked (base not tracked, joints not known) are left out.
         """
         if self._mirror is None:
             self._mirror = PyBulletMirror()  # ! on the worker: the mirror belongs to this thread
         self._mirror.sync(snapshot)
-        return {serial: self._mirror.collisions(serial) for serial in snapshot.robots}
+        return {object_id: self._mirror.collisions(object_id) for object_id, robot in snapshot.robots.items()
+                if not robot.acting_problems()}
 
     def update(self, ctx: PluginContext) -> None:
         """Read the tool0 poses, and restart the checks after a soft stop cancelled them.
@@ -159,7 +161,7 @@ class ExamplePybulletPlugin(HuskyPlugin):
             # ! Pose quaternions are xyzw, viser wants wxyz.
             frame.wxyz = quaternion_to_wxyz(pose.orientation)
             lines.append(f"{serial} {arm_name:<8} {numbers(pose.position, 3, 6, 2)} m")
-        hits = [f"{serial}: {', '.join(ids)}" for serial, ids in self._collisions.items() if ids]
+        hits = [f"{object_id}: {', '.join(ids)}" for object_id, ids in self._collisions.items() if ids]
         if not ctx.world.robots:
             state = chip("no robots", NONE)
         elif hits:

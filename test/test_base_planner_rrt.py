@@ -9,7 +9,8 @@ import pytest
 from husky_assembly_teleop.config import robot_config_from_serial
 from bar_assembly_core.design_io.geometry import box_geometry
 from husky_assembly_teleop.plugins.base_planner.planner import PlanningWorld, plan_birrt
-from bar_assembly_core.scene import Body, RobotEntry, SceneSnapshot
+from bar_assembly_core.robot import RobotObject
+from bar_assembly_core.scene import Body, SceneSnapshot, robot_id
 from bar_assembly_core.design_io.pose import Pose
 
 DATA = Path(__file__).resolve().parent.parent / "data"
@@ -23,8 +24,7 @@ def _snapshot(robots, bodies=()) -> SceneSnapshot:
     """Alice at the origin, Cindy parked 2 m ahead of her, plus `bodies`."""
     alice, cindy = robots
     bases = {alice.serial: Pose(), cindy.serial: Pose((2.0, 0.0, 0.0))}
-    entries = {config.serial: RobotEntry(config=config, base=bases[config.serial], base_tracked=True, joints={},
-                                         unmeasured=frozenset(), base_time=None, joints_time=None)
+    entries = {robot_id(config.serial): RobotObject(robot_id(config.serial), config.model, bases[config.serial], {})
                for config in robots}
     return SceneSnapshot(bodies={body.id: body for body in bodies},
                          world_poses={body.id: body.placement for body in bodies}, robots=entries)
@@ -38,8 +38,8 @@ def robots():
 
 @pytest.fixture(scope="module")
 def alice(robots):
-    """Alice's serial, the robot every test plans for."""
-    return robots[0].serial
+    """Alice's robot id, the robot every test plans for."""
+    return robot_id(robots[0].serial)
 
 
 @pytest.fixture(scope="module")
@@ -91,7 +91,7 @@ def test_goes_around_a_body(world, robots, alice):
 
 def test_body_allowed_to_touch_is_ignored(world, robots, alice):
     """A body that lists the robot in `touches` doesn't block it (e.g. the ground under the wheels)."""
-    pad = Body("test/pad", box_geometry((1.5, 1.5, 0.02)), Pose((0.0, 0.0, 0.0)), touches=(f"robots/{alice}",))
+    pad = Body("test/pad", box_geometry((1.5, 1.5, 0.02)), Pose((0.0, 0.0, 0.0)), touches=(alice,))
     world.sync(_snapshot(robots, [pad]))
     assert world.hit_by(alice, (0.0, 0.0, 0.0)) is None
 

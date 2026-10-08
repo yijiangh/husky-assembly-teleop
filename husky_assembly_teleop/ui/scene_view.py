@@ -1,7 +1,7 @@
 """
 The 3D view of the scene, drawn from each tick's snapshot.
 
-Bodies go under /scene/<id>, tracked objects under /tracked/<name>.
+Bodies go under /scene/<id>; tracked objects (ids "tracked/<name>") get axes too.
 
 At most `build_budget` meshes are built per tick, so a large cell fills in over a few ticks; moves and
 removes always apply in full, so a body is never shown at an old pose. Switching between visual and collision
@@ -10,12 +10,12 @@ shapes rebuilds everything, at the same budget.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import viser
 
 from bar_assembly_core.design_io.geometry import BoxShape, CylinderShape, Geometry, Shape
-from bar_assembly_core.scene import SceneSnapshot
+from bar_assembly_core.scene import TRACKED, SceneSnapshot
 from bar_assembly_core.design_io.pose import Pose
 from .quaternion import quaternion_to_wxyz
 
@@ -40,25 +40,8 @@ class _DrawnBody:
     frame: viser.FrameHandle
 
 
-@dataclass
-class _DrawnTracked:
-    """One tracked object's frame and meshes.
-
-    Attributes:
-        frame: Frame with axes, carrying the pose.
-        pose: The last pose assigned to the frame.
-        geometry: The Geometry object the shapes were built from; None if not built (yet).
-        meshes: The shape handles, children of `frame`.
-    """
-
-    frame: viser.FrameHandle
-    pose: Pose
-    geometry: Geometry | None = None
-    meshes: list[viser.SceneNodeHandle] = field(default_factory=list)
-
-
 class SceneView:
-    """Draws the scene's bodies and the tracked objects from each tick's snapshot. Main thread only."""
+    """Draws the scene's bodies, tracked objects included, from each tick's snapshot. Main thread only."""
 
     def __init__(self, server: viser.ViserServer, build_budget: int = 50) -> None:
         """Create the root frames.
@@ -70,9 +53,7 @@ class SceneView:
         self._server = server
         self._build_budget = build_budget
         server.scene.add_frame("/scene", show_axes=False)
-        server.scene.add_frame("/tracked", show_axes=False)
         self._bodies: dict[str, _DrawnBody] = {}
-        self._tracked: dict[str, _DrawnTracked] = {}
         self._collision = False
 
     def sync(self, snapshot: SceneSnapshot, collision: bool = False) -> None:
@@ -87,10 +68,6 @@ class SceneView:
             for drawn in self._bodies.values():
                 drawn.frame.remove()
             self._bodies.clear()
-            for drawn in self._tracked.values():
-                for mesh in drawn.meshes:
-                    mesh.remove()
-                drawn.geometry, drawn.meshes = None, []
         budget = self._build_budget
         # Gone, or changed shape or colour: remove now, rebuild below when the budget allows.
         for body_id, drawn in list(self._bodies.items()):
@@ -105,8 +82,11 @@ class SceneView:
             if drawn is None:
                 if budget <= 0:
                     continue  # not drawn yet; built in a later tick
-                frame = self._server.scene.add_frame(f"/scene/{body_id}", show_axes=False, visible=body.enabled,
-                                                     position=pose.position, wxyz=quaternion_to_wxyz(pose.orientation))
+                # * Tracked objects show their frame: some are a frame only (the mocap probe).
+                axes = body_id.startswith(f"{TRACKED}/")
+                frame = self._server.scene.add_frame(f"/scene/{body_id}", show_axes=axes, axes_length=0.1,
+                                                     axes_radius=0.004, visible=body.enabled, position=pose.position,
+                                                     wxyz=quaternion_to_wxyz(pose.orientation))
                 budget -= len(self._add_meshes(f"/scene/{body_id}", body.geometry, body.color))
                 self._bodies[body_id] = _DrawnBody(body.geometry, body.color, pose, frame)
             elif pose != drawn.pose:
@@ -115,37 +95,6 @@ class SceneView:
                 drawn.pose = pose
             if drawn is not None and drawn.frame.visible != body.enabled:
                 drawn.frame.visible = body.enabled  # disabled: hidden, kept for when it comes back
-
-        self._sync_tracked(snapshot, budget)
-
-    def _sync_tracked(self, snapshot: SceneSnapshot, budget: int) -> None:
-        """Move, show and hide the tracked objects' frames, and build their meshes. Missing ones are hidden.
-
-        Args:
-            snapshot: The tick's copy of the world.
-            budget: Shapes left to build this tick.
-        """
-        for name, drawn in self._tracked.items():
-            drawn.frame.visible = name in snapshot.tracked
-        for name, entry in snapshot.tracked.items():
-            drawn = self._tracked.get(name)
-            if drawn is None:
-                frame = self._server.scene.add_frame(f"/tracked/{name}", axes_length=0.1, axes_radius=0.004,
-                                                     position=entry.pose.position,
-                                                     wxyz=quaternion_to_wxyz(entry.pose.orientation))
-                drawn = self._tracked[name] = _DrawnTracked(frame, entry.pose)
-            elif entry.pose != drawn.pose:
-                drawn.frame.position, drawn.frame.wxyz = entry.pose.position, quaternion_to_wxyz(entry.pose.orientation)
-                drawn.pose = entry.pose
-
-            geometry = entry.description.geometry
-            if geometry is not drawn.geometry:
-                for mesh in drawn.meshes:
-                    mesh.remove()
-                drawn.geometry, drawn.meshes = None, []
-                if geometry is not None and budget > 0:
-                    drawn.geometry, drawn.meshes = geometry, self._add_meshes(f"/tracked/{name}", geometry, None)
-                    budget -= len(drawn.meshes)
 
     def _add_meshes(self, parent: str, geometry: Geometry,
                     color: tuple[float, float, float, float] | None) -> list[viser.SceneNodeHandle]:

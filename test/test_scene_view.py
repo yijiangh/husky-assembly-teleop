@@ -4,7 +4,7 @@ import pytest
 import viser
 
 from bar_assembly_core.design_io.geometry import BoxShape, Geometry, box_geometry
-from bar_assembly_core.scene import Body, SceneSnapshot, TrackedDescription, TrackedEntry
+from bar_assembly_core.scene import Body, SceneSnapshot
 from bar_assembly_core.design_io.pose import Pose
 from husky_assembly_teleop.ui.scene_view import SceneView
 
@@ -24,13 +24,11 @@ def _nodes(server: viser.ViserServer) -> set[str]:
     return set(server.scene._handle_from_node_name)
 
 
-def _snapshot(bodies: dict[str, tuple[Body, Pose]] | None = None,
-              tracked: dict[str, TrackedEntry] | None = None) -> SceneSnapshot:
-    """Build a snapshot from bodies with their world poses, and tracked entries."""
+def _snapshot(bodies: dict[str, tuple[Body, Pose]] | None = None) -> SceneSnapshot:
+    """Build a snapshot from bodies with their world poses."""
     bodies = bodies or {}
     return SceneSnapshot(bodies={body_id: body for body_id, (body, _) in bodies.items()},
-                         world_poses={body_id: pose for body_id, (_, pose) in bodies.items()},
-                         tracked=tracked or {})
+                         world_poses={body_id: pose for body_id, (_, pose) in bodies.items()})
 
 
 def _body(body_id: str, geometry=BOX, pose: Pose = Pose()) -> tuple[Body, Pose]:
@@ -38,9 +36,9 @@ def _body(body_id: str, geometry=BOX, pose: Pose = Pose()) -> tuple[Body, Pose]:
     return Body(body_id, geometry, pose), pose
 
 
-def _tracked(name: str, geometry=None, pose: Pose = Pose()) -> TrackedEntry:
-    """Make a tracked object with a fix at `pose`."""
-    return TrackedEntry(name, TrackedDescription(geometry), pose, True, None)
+def _tracked(name: str, geometry=None, pose: Pose = Pose()) -> tuple[Body, Pose]:
+    """Make a tracked object "tracked/<name>" with a fix at `pose`; a frame only without geometry."""
+    return _body(f"tracked/{name}", geometry or Geometry((), ()), pose)
 
 
 def test_builds_on_budget(server):
@@ -101,19 +99,17 @@ def test_removes_bodies(server):
 
 
 def test_tracked_objects(server):
-    """A tracked object gets a frame, meshes only with geometry, follows its pose and hides when missing."""
+    """A tracked object is a body with axes: meshes only with geometry; it follows its pose and goes when missing."""
     view = SceneView(server)
-    view.sync(_snapshot(tracked={"probe": _tracked("probe"), "bar": _tracked("bar", geometry=BOX)}))
-    assert view._tracked["probe"].meshes == []
-    assert len(view._tracked["bar"].meshes) == 1 and "/tracked/bar/visual_0" in _nodes(server)
+    view.sync(_snapshot({"tracked/probe": _tracked("probe"), "tracked/bar": _tracked("bar", geometry=BOX)}))
+    assert "/scene/tracked/probe" in _nodes(server) and not any(
+        name.startswith("/scene/tracked/probe/") for name in _nodes(server))
+    assert view._bodies["tracked/probe"].frame.show_axes
+    assert "/scene/tracked/bar/visual_0" in _nodes(server)
 
-    view.sync(_snapshot(tracked={"bar": _tracked("bar", geometry=BOX, pose=Pose((0.0, 0.0, 1.0)))}))
-    assert not view._tracked["probe"].frame.visible
-    assert view._tracked["bar"].frame.visible
-    assert tuple(view._tracked["bar"].frame.position) == (0.0, 0.0, 1.0)
-
-    view.sync(_snapshot(tracked={"probe": _tracked("probe")}))
-    assert view._tracked["probe"].frame.visible and not view._tracked["bar"].frame.visible
+    view.sync(_snapshot({"tracked/bar": _tracked("bar", geometry=BOX, pose=Pose((0.0, 0.0, 1.0)))}))
+    assert "tracked/probe" not in view._bodies
+    assert tuple(view._bodies["tracked/bar"].frame.position) == (0.0, 0.0, 1.0)
 
 
 def test_disabled_bodies_are_hidden_not_removed(server):
@@ -137,8 +133,8 @@ def test_collision_mode_rebuilds_with_collision_shapes(server):
     floor_mark = BoxShape((1.0, 1.0, 0.01), Pose((0.0, 0.0, -0.995)))
     split = Geometry(visual=(floor_mark,), collision=(BoxShape((1.0, 1.0, 2.0)),))
     view = SceneView(server)
-    snapshot = _snapshot({"col/wall": _body("col/wall", geometry=split)},
-                         tracked={"col_bar": _tracked("col_bar", geometry=split)})
+    snapshot = _snapshot({"col/wall": _body("col/wall", geometry=split),
+                          "tracked/col_bar": _tracked("col_bar", geometry=split)})
     view.sync(snapshot)
     frame = view._bodies["col/wall"].frame
     assert tuple(server.scene._handle_from_node_name["/scene/col/wall/visual_0"].dimensions) == (1.0, 1.0, 0.01)
@@ -148,8 +144,10 @@ def test_collision_mode_rebuilds_with_collision_shapes(server):
     collision = server.scene._handle_from_node_name["/scene/col/wall/collision_0"]
     assert tuple(collision.dimensions) == (1.0, 1.0, 2.0) and tuple(collision.position) == (0.0, 0.0, 0.0)
     assert "/scene/col/wall/visual_0" not in _nodes(server)
-    assert tuple(view._tracked["col_bar"].meshes[0].dimensions) == (1.0, 1.0, 2.0)
+    bar = server.scene._handle_from_node_name["/scene/tracked/col_bar/collision_0"]
+    assert tuple(bar.dimensions) == (1.0, 1.0, 2.0)
 
     view.sync(snapshot)
     assert tuple(server.scene._handle_from_node_name["/scene/col/wall/visual_0"].dimensions) == (1.0, 1.0, 0.01)
-    assert tuple(view._tracked["col_bar"].meshes[0].dimensions) == (1.0, 1.0, 0.01)
+    bar = server.scene._handle_from_node_name["/scene/tracked/col_bar/visual_0"]
+    assert tuple(bar.dimensions) == (1.0, 1.0, 0.01)

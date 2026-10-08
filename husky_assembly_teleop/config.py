@@ -18,8 +18,9 @@ from crl_husky.config_resolver import get_primary_mocap_id_for_robot_serial
 from rclpy.exceptions import ParameterUninitializedException
 from rclpy.node import Node
 
+from bar_assembly_core.robot import RobotModel, robot_model
 from .drive import drive_root
-from .tool_urdfs import stitch_tools
+from .tool_urdfs import stitch_tools, tool_spec
 
 
 #: End effectors the monitor can drive (classes in robot_interface/end_effectors.py).
@@ -65,8 +66,9 @@ class ArmConfig:
 class RobotConfig:
     """Everything needed to talk to, and draw, one physical robot.
 
-    The URDF says what the robot is (kinematics, meshes); the config says which drivers and tools it has,
-    and the tools' models are stitched onto the URDF. Anything that changes while running lives in RobotState.
+    The URDF says what the robot is (kinematics, meshes); the config says which drivers and tools it has.
+    `urdf_file` has the tools stitched on, for drawing and live kinematics; `model` keeps them separate, for planning
+    scenes and mirrors. Anything that changes while running lives in RobotState.
 
     Attributes:
         serial: Clearpath serial such as "a200-0806".
@@ -78,6 +80,8 @@ class RobotConfig:
         arms: The arms, in the multi-arm trajectory's order (the first is `trajectory1`).
         mocap_id: Rigid-body id of the base in the mocap system, or None if the robot is not tracked.
         calibration_file: Joint-origin overlay for the URDF, or None. Nothing reads it yet.
+        model: What mirrors build the live robot from: the URDF without tools, the SRDF, and each tool as a
+            separate `ToolSpec`. None for a config made by hand without one.
     """
 
     serial: str
@@ -90,6 +94,7 @@ class RobotConfig:
     default_yaw: float = 0.0
     # TODO: wire up calibration_file and drop the calibrated URDFs in `_ROBOTS_BY_SERIAL`, or remove it.
     calibration_file: Path | None = None
+    model: RobotModel | None = None
 
     @property
     def default_orientation(self) -> tuple[float, float, float, float]:
@@ -244,6 +249,11 @@ def robot_config_from_serial(token: str, data_directory: Path,
         arms = tuple(replace(arm, end_effector=tool) for arm, tool in zip(arms, tools))
     stitched = stitch_tools(urdf_file, {arm.name: arm.end_effector for arm in arms}, data_directory,
                             STITCHED_URDF_DIRECTORY / f"a200_{number}.urdf")
+    # * The same URDF without tools (mesh paths made absolute), and the tools apart, for planning.
+    bare = stitch_tools(urdf_file, {}, data_directory, STITCHED_URDF_DIRECTORY / f"a200_{number}_model.urdf")
+    tools = {f"{arm.name}_tool0": tool_spec(arm.end_effector, arm.name, data_directory,
+                                            f"tools/a200-{number}/{arm.name}")
+             for arm in arms if arm.end_effector is not None}
 
     return RobotConfig(
         serial=f"a200-{number}",
@@ -254,6 +264,8 @@ def robot_config_from_serial(token: str, data_directory: Path,
         mocap_id=get_primary_mocap_id_for_robot_serial(number),
         default_position=default_position,
         default_yaw=default_yaw,
+        model=robot_model(f"a200-{number}", bare, data_directory / spec["srdf"],
+                          {flange: tool for flange, tool in tools.items() if tool is not None}),
     )
 
 

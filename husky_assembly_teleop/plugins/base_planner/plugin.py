@@ -24,6 +24,7 @@ from ...ui.pose_input import PlanarPoseInput, yaw_from_xyzw
 from ...ui.pybullet_window import add_pybullet_window_toggle
 from ...ui.style import BUSY, OK, SECTION_CTRL, SECTION_TOOL, block, chip, section, values
 from bar_assembly_core.design_io.pose import Pose
+from bar_assembly_core.scene import robot_id
 from .path import BasePath
 from .planner import PlanningWorld, plan_birrt
 
@@ -161,15 +162,18 @@ class BasePlannerPlugin(PlannerPlugin):
         snapshot = ctx.scene.snapshot
 
         def work() -> PlanResult:
+            # ! Refuse a robot whose base is not tracked or whose joints are not known: the plan would be a guess.
+            problems = snapshot.robots[robot_id(serial)].acting_problems()
+            if problems:
+                return PlanResult(None, f"{serial} can't be planned for: {'; '.join(problems)}", 0.0)
             self._world.sync(snapshot)
-            return plan_birrt(self._world, serial, start, goal, abort)
+            return plan_birrt(self._world, robot_id(serial), start, goal, abort)
 
         def accepted(result: PlanResult) -> tuple[str, bool]:
             self._stale_line = True
             how = "straight" if result.direct else "RRT"
-            tracked = ctx.world.robots[serial].base.state.tracked
-            return (f"{how}: {self.path.length:.2f} m, {self.path.duration:.1f} s, found in {result.seconds:.1f} s"
-                    + ("" if tracked else ", from an untracked pose"), not tracked)
+            return (f"{how}: {self.path.length:.2f} m, {self.path.duration:.1f} s, "
+                    f"found in {result.seconds:.1f} s"), False
 
         return Search(serial=serial, label=f"plan {serial}", message=f"planning for {serial}…", work=work,
                       time_limit=TIME_LIMIT + WAIT_MARGIN, accepted=accepted)
@@ -214,8 +218,7 @@ class BasePlannerPlugin(PlannerPlugin):
     def _current_pose(self, ctx: PluginContext) -> tuple[float, float, float]:
         """Where the chosen robot's base is now: x, y in metres and yaw in radians, world frame.
 
-        ? From kinematics (last mocap fix, else the default pose), so planning works without mocap;
-          only Commit needs a tracked pose.
+        ? From kinematics (last mocap fix, else the default pose), for drawing; planning refuses an untracked base.
         """
         base = ctx.kinematics.base_pose(self.serial)
         return float(base.position[0]), float(base.position[1]), yaw_from_xyzw(base.orientation)
@@ -256,7 +259,7 @@ class BasePlannerPlugin(PlannerPlugin):
         tracked = ctx.world.robots[self.serial].base.state.tracked
         chips = chip(escape(self.serial), SECTION_CTRL)
         chips += chip("tracked" if tracked else "not tracked", OK if tracked else BUSY,
-                      "" if tracked else "planning from the last known or default pose")
+                      "" if tracked else "planning needs the base tracked by mocap")
         return block(chips + self._plan_chip())
 
     def _details_html(self) -> str:

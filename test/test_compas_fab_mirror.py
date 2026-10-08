@@ -18,11 +18,14 @@ from husky_assembly_teleop.config import robot_config_from_serial
 from husky_assembly_teleop.robot_interface.arm import UR_JOINT_NAMES
 from bar_assembly_core.design_io.geometry import Geometry, box_geometry
 from bar_assembly_core.mirrors.compas_fab import CompasFabMirror
-from bar_assembly_core.scene import Attachment, Body, RobotEntry, SceneSnapshot
+from bar_assembly_core.robot import RobotObject
+from bar_assembly_core.scene import Attachment, Body, SceneSnapshot
 from bar_assembly_core.design_io.pose import Pose
 
 DATA = Path(__file__).resolve().parent.parent / "data"
 ALICE, BELLE = "0804", "0805"
+#: Their ids in scenes, and Alice's gripper's id.
+ALICE_ID, BELLE_ID, GRIPPER = "robots/a200-0804", "robots/a200-0805", "tools/a200-0804/ur_arm"
 
 
 @pytest.fixture(scope="module")
@@ -34,7 +37,7 @@ def configs():
 @pytest.fixture(scope="module")
 def mirror():
     """One mirror planning for Alice, shared by the tests: loading the models takes seconds."""
-    mirror = CompasFabMirror(ALICE)
+    mirror = CompasFabMirror(ALICE_ID)
     yield mirror
     mirror.close()
 
@@ -45,14 +48,14 @@ def stow(config) -> dict[str, float]:
     return {f"{arm.name}_{name}": value for name, value in zip(UR_JOINT_NAMES, arm.stow_joints)}
 
 
-def world(configs, bodies=(), belle: Pose | None = None) -> SceneSnapshot:
+def world(configs, bodies=(), belle: Pose | None = None, belle_model=None) -> SceneSnapshot:
     """Alice at the origin with the arm stowed, Belle at `belle` (default: far away), and some bodies.
 
     ? An attached body's world pose is not used by the mirror for Alice's own links; its grasp stands in.
     """
-    robots = {ALICE: RobotEntry(configs[ALICE], Pose(), True, stow(configs[ALICE]), frozenset(), None, None),
-              BELLE: RobotEntry(configs[BELLE], belle or Pose((10.0, 0.0, 0.0)), True, stow(configs[BELLE]),
-                                frozenset(), None, None)}
+    robots = {ALICE_ID: RobotObject(ALICE_ID, configs[ALICE].model, Pose(), stow(configs[ALICE])),
+              BELLE_ID: RobotObject(BELLE_ID, belle_model or configs[BELLE].model, belle or Pose((10.0, 0.0, 0.0)),
+                                    stow(configs[BELLE]))}
     poses = {body.id: body.placement if isinstance(body.placement, Pose) else body.placement.grasp
              for body in bodies}
     return SceneSnapshot(bodies={body.id: body for body in bodies}, world_poses=poses, robots=robots)
@@ -67,56 +70,61 @@ def tool0(mirror: CompasFabMirror) -> Pose:
 
 
 def test_stowed_robot_is_clear(mirror, configs):
-    """The stowed arm, its stitched gripper and the other robot far away: nothing collides."""
+    """The stowed arm, its gripper and the other robot far away: nothing collides."""
     mirror.sync(world(configs))
     assert mirror.collisions(full_report=True) == []
 
 
 def test_box_at_the_tool_and_touches(mirror, configs):
-    """A box at tool0 is reported with our ids; touching the robot allows it."""
+    """A box at tool0 is reported with our ids, the gripper by its tool id; touching the robot allows it."""
     mirror.sync(world(configs))
     box = box_geometry((0.1, 0.1, 0.1))
     at_tool = tool0(mirror)
     mirror.sync(world(configs, (Body("t/box", box, at_tool),)))
     hits = mirror.collisions(full_report=True)
-    assert hits and all(a.startswith("robots/0804/") and b == "t/box" for a, b in hits)
+    assert hits and all((a.startswith(f"{ALICE_ID}/") or a == GRIPPER) and b == "t/box" for a, b in hits)
+    assert (GRIPPER, "t/box") in hits
 
-    mirror.sync(world(configs, (Body("t/box", box, at_tool, touches=("robots/0804",)),)))
+    mirror.sync(world(configs, (Body("t/box", box, at_tool, touches=(ALICE_ID,)),)))
     assert mirror.collisions() == []
-    links = tuple(f"robots/0804/{a.split('/')[-1]}" for a, _ in hits)
-    mirror.sync(world(configs, (Body("t/box", box, at_tool, touches=links),)))
+    sides = tuple(a for a, _ in hits)
+    mirror.sync(world(configs, (Body("t/box", box, at_tool, touches=sides),)))
     assert mirror.collisions() == []
 
 
 def test_other_robot_is_an_obstacle(mirror, configs):
-    """Belle overlapping Alice is reported as "robots/0805"."""
+    """Belle overlapping Alice is reported by her robot id; absent, she is parked and never collides."""
     mirror.sync(world(configs, belle=Pose((0.3, 0.0, 0.0))))
     hits = mirror.collisions(full_report=True)
-    assert hits and {b for _, b in hits} == {"robots/0805"}
+    assert hits and {b for _, b in hits} == {BELLE_ID}
+    scene = world(configs, belle=Pose((0.3, 0.0, 0.0)))
+    scene.robots[BELLE_ID].enabled = False
+    mirror.sync(scene)
+    assert mirror.collisions(full_report=True) == []
 
 
 def test_stationary_contacts_are_allowed(mirror, configs):
     """A box inside Belle, far from Alice, is allowed for the snapshot and listed."""
     mirror.sync(world(configs, (Body("t/box", box_geometry((0.2, 0.2, 0.2)), Pose((10.0, 0.0, 0.3))),)))
     assert mirror.collisions() == []
-    assert mirror.static_contacts == [("robots/0805", "t/box")]
+    assert mirror.static_contacts == [(BELLE_ID, "t/box")]
 
 
 def test_attached_body_moves_with_the_arm(mirror, configs):
     """A body on tool0 hits a box where tool0 is, and is clear of it once the arm moves away."""
     mirror.sync(world(configs))
     at_tool = tool0(mirror)
-    held = Body("t/held", box_geometry((0.05, 0.05, 0.05)), Attachment("robots/0804", "ur_arm_tool0", Pose()),
-                touches=("robots/0804",))
+    held = Body("t/held", box_geometry((0.05, 0.05, 0.05)), Attachment(ALICE_ID, "ur_arm_tool0", Pose()),
+                touches=(ALICE_ID,))
     # The box may touch the robot, so only the held body can hit it.
-    box = Body("t/box", box_geometry((0.05, 0.05, 0.05)), at_tool, touches=("robots/0804",))
+    box = Body("t/box", box_geometry((0.05, 0.05, 0.05)), at_tool, touches=(ALICE_ID,))
     mirror.sync(world(configs, (held, box)))
     assert mirror.collisions(full_report=True) == [("t/held", "t/box")]
     assert ("t/held", "t/box") not in mirror.collisions({"ur_arm_shoulder_lift_joint": -1.8}, full_report=True)
 
 
 def test_rebuild_only_when_models_change(mirror, configs, monkeypatch):
-    """A moved body only sets the state; a new geometry or robot config rebuilds the cell."""
+    """A moved body only sets the state; a new geometry or robot model object rebuilds the cell."""
     builds = []
     original = mirror.planner.set_robot_cell
     monkeypatch.setattr(mirror.planner, "set_robot_cell", lambda cell: builds.append(cell) or original(cell))
@@ -128,8 +136,8 @@ def test_rebuild_only_when_models_change(mirror, configs, monkeypatch):
     away = Body("t/box", box_geometry((0.2, 0.2, 0.2)), Pose((5.0, 0.0, 0.3)))
     mirror.sync(world(configs, (away,)))
     assert len(builds) == 1 and mirror.collisions() == []
-    mirror.sync(world(dict(configs, **{BELLE: replace(configs[BELLE])}), (away,)))
-    assert len(builds) == 1, "an equal config is the same robot model"
+    mirror.sync(world(configs, (away,), belle_model=replace(configs[BELLE].model)))
+    assert len(builds) == 2, "an equal model in a new object is rebuilt: models are compared by identity"
     visual_only = Geometry(box.visual, ())
     mirror.sync(world(configs, (Body("t/ghost", visual_only, Pose((0.0, 0.0, 0.3))),)))
     assert mirror.collisions() == [], "a body without collision meshes never collides"
@@ -153,9 +161,8 @@ def test_disabled_body_is_hidden_without_rebuild(mirror, configs, monkeypatch):
 def test_search_check_agrees_with_check_collision(mirror, configs):
     """For random arm configurations near a box, Belle and a held body, the fast check and compas_fab agree."""
     arm = list(stow(configs[ALICE]))
-    grasp = Attachment("robots/0804", "ur_arm_tool0", Pose((0.0, 0.0, 0.2)))
-    held = Body("t/held", box_geometry((0.4, 0.05, 0.05)), grasp,
-                touches=("robots/0804/ur_arm_robotiq_2f_85", "robots/0804/ur_arm_wrist_3_link"))
+    grasp = Attachment(ALICE_ID, "ur_arm_tool0", Pose((0.0, 0.0, 0.2)))
+    held = Body("t/held", box_geometry((0.4, 0.05, 0.05)), grasp, touches=(GRIPPER, f"{ALICE_ID}/ur_arm_wrist_3_link"))
     box = Body("t/box", box_geometry((0.3, 0.3, 0.3)), Pose((0.8, 0.0, 0.8)))
     mirror.sync(world(configs, (held, box), belle=Pose((1.2, 0.8, 0.0))))
     assert mirror.collisions() == [], "the start must be clear: the fast check leaves static pairs out"
@@ -173,10 +180,10 @@ def test_search_check_agrees_with_check_collision(mirror, configs):
 # --- --- --- --- --- AGAINST THE DESIGN'S OWN CELL --- --- --- --- ---
 
 DESIGN = os.environ.get("HUSKY_DESIGN_DIRECTORY")
-#: Design tool -> our stitched link or robot (Cindy's scaffolding tools, the other robots).
-DESIGN_TOOLS = {"AT3L": "robots/0806/left_ur_arm_scaffolding_v3_left",
-                "AT3R": "robots/0806/right_ur_arm_scaffolding_v3_right",
-                "ObstacleRobotAlice": "robots/0804", "ObstacleRobotBelle": "robots/0805"}
+CINDY_ID = "robots/a200-0806"
+#: Design tool -> our mounted tool or robot (Cindy's scaffolding tools, the other robots).
+DESIGN_TOOLS = {"AT3L": "tools/a200-0806/left_ur_arm", "AT3R": "tools/a200-0806/right_ur_arm",
+                "ObstacleRobotAlice": ALICE_ID, "ObstacleRobotBelle": BELLE_ID}
 #: Cindy's actions to compare, and one movement of each with an authored configuration.
 DESIGN_ACTIONS = ("B3__J.json", "B5__J.json", "B12__J.json", "B20__J.json", "B23__J.json")
 
@@ -190,21 +197,22 @@ def _pose(frame) -> Pose:
 def _design_snapshot(state, geometries, cindy) -> SceneSnapshot:
     """Our snapshot of a design state for Cindy: robots, visible bodies, attachments and touches."""
     from husky_assembly_teleop.config import robot_config_from_serial as config_for
-    robots = {"0806": RobotEntry(cindy, _pose(state.robot_base_frame), True,
-                                 dict(zip(state.robot_configuration.joint_names,
-                                          state.robot_configuration.joint_values)), frozenset(), None, None)}
+    robots = {CINDY_ID: RobotObject(CINDY_ID, cindy.model, _pose(state.robot_base_frame),
+                                    dict(zip(state.robot_configuration.joint_names,
+                                             state.robot_configuration.joint_values)))}
     for name, serial in (("ObstacleRobotAlice", ALICE), ("ObstacleRobotBelle", BELLE)):
         tool = state.tool_states[name]
         joints = dict(zip(tool.configuration.joint_names, tool.configuration.joint_values))
-        robots[serial] = RobotEntry(config_for(serial, DATA), _pose(tool.frame), True, joints, frozenset(), None, None)
+        robots[DESIGN_TOOLS[name]] = RobotObject(DESIGN_TOOLS[name], config_for(serial, DATA).model,
+                                                 _pose(tool.frame), joints)
     bodies, poses = {}, {}
     for name, body in state.rigid_body_states.items():
         if body.is_hidden:
             continue
         touches = tuple(DESIGN_TOOLS.get(other, other) for other in body.touch_bodies) + \
-            tuple(f"robots/0806/{link}" for link in body.touch_links)
+            tuple(f"{CINDY_ID}/{link}" for link in body.touch_links)
         if body.attached_to_link:
-            placement = Attachment("robots/0806", body.attached_to_link, _pose(body.attachment_frame))
+            placement = Attachment(CINDY_ID, body.attached_to_link, _pose(body.attachment_frame))
         else:
             placement = _pose(body.frame)
         bodies[name] = Body(name, geometries[name], placement, touches)
@@ -259,7 +267,7 @@ def test_same_result_as_the_design_cell():
                 expected[label] = {frozenset(map(lambda model: _design_id(design_cell, model), pair))
                                    for pair in error.collision_pairs}
 
-    mirror = CompasFabMirror("0806")
+    mirror = CompasFabMirror(CINDY_ID)
     try:
         for label, state in states + pushed:
             mirror.sync(_design_snapshot(state, geometries, cindy))
@@ -280,7 +288,7 @@ def _design_id(cell, model) -> str:
     for name, value in [*cell.tool_models.items(), *cell.rigid_body_models.items()]:
         if value is model:
             return DESIGN_TOOLS.get(name, name)
-    return f"robots/0806/{model.name}"
+    return f"{CINDY_ID}/{model.name}"
 
 
 def _listed(pairs: set[frozenset]) -> list[tuple[str, ...]]:

@@ -18,7 +18,7 @@ from ..planning.path import TimedPath
 from ..planning.search import PlanResult, connect
 from ...robot_interface.arm import JOINT_MOVE_MAX_SPEED, UR_JOINT_LIMITS, UR_JOINT_NAMES
 from bar_assembly_core.mirrors.compas_fab import CompasFabMirror
-from bar_assembly_core.scene import SceneSnapshot
+from bar_assembly_core.scene import SceneSnapshot, robot_id
 
 #: Collision-checking resolution along a move, radians per joint.
 JOINT_STEP = 0.05
@@ -116,7 +116,7 @@ class ArmPlanningWorld:
     def _mirror(self, serial: str) -> CompasFabMirror:
         """A robot's mirror, made on first use."""
         if serial not in self._mirrors:
-            self._mirrors[serial] = CompasFabMirror(serial, log=self.log)
+            self._mirrors[serial] = CompasFabMirror(robot_id(serial), log=self.log)
         return self._mirrors[serial]
 
     def close(self) -> None:

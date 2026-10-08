@@ -12,28 +12,14 @@ from __future__ import annotations
 
 from typing import Callable, Dict, Mapping, Optional
 
-import numpy as np
-from compas.datastructures import Mesh
 from compas.geometry import Frame
 from compas_fab.robots import RigidBodyState, RobotCell, RobotCellState, RobotSemantics, ToolState
-from compas_robots import RobotModel, ToolModel
-from compas_robots.model import Joint
+from compas_robots import ToolModel
 
-from ..mirrors.compas_convert import PARKED_POSITION, filled, frame_from_pose, load_model, pose_from_frame, rigid_body
-from .geometry import shape_mesh
+from ..mirrors.compas_convert import (PARKED_POSITION, filled, frame_from_pose, load_model, planning_group,
+                                      pose_from_frame, rigid_body, robot_as_tool, tool_model)
 from .pose import Pose, compose
 from .types import ROBOT_PREFIX, Design, LinkPose, State, split_link_id
-
-
-def _joined(shapes) -> Optional[Mesh]:
-    """All shapes as one compas mesh, or None if there are none."""
-    meshes = [shape_mesh(shape) for shape in shapes]
-    if not meshes:
-        return None
-    offsets = np.cumsum([0] + [len(mesh.vertices) for mesh in meshes[:-1]])
-    vertices = np.vstack([mesh.vertices for mesh in meshes])
-    faces = np.vstack([mesh.faces + offset for mesh, offset in zip(meshes, offsets)])
-    return Mesh.from_vertices_and_faces(vertices.tolist(), faces.tolist())
 
 
 # --- --- --- --- --- CELLS --- --- --- --- ---
@@ -45,24 +31,13 @@ def _name(names: Optional[Mapping[str, str]], our_id: str) -> str:
 
 def _tool_model(design: Design, tool_id: str, name: str) -> ToolModel:
     """A tool of the acting robot, keyed `name`: its shapes as one mesh, its TCP as the tool frame."""
-    tool = design.tools[tool_id]
-    return ToolModel(_joined(tool.geometry.visual), frame_from_pose(tool.tcp),
-                     collision=_joined(tool.geometry.collision), name=name)
+    return tool_model(design.tools[tool_id], name)
 
 
 def _robot_as_tool(design: Design, robot_id: str, name: str) -> ToolModel:
     """Another robot as one articulated tool keyed `name`: its whole URDF, each tool a link fixed at its flange."""
     robot = design.robots[robot_id]
-    # ? from_robot_model builds new links, so the cached model is not changed; a deep copy took ~6 s per robot.
-    tool = ToolModel.from_robot_model(load_model(robot.urdf), Frame.worldXY())
-    for link_name, tool_id in robot.tools.items():
-        geometry = design.tools[tool_id].geometry
-        visual, collision = _joined(geometry.visual), _joined(geometry.collision)
-        child = tool.add_link(f"{link_name}_tool", visual_meshes=[visual] if visual else None,
-                              collision_meshes=[collision] if collision else None)
-        tool.add_joint(f"{link_name}_tool_joint", Joint.FIXED, tool.get_link_by_name(link_name), child)
-    tool.name = name
-    return tool
+    return robot_as_tool(robot.urdf, {link: design.tools[tool] for link, tool in robot.tools.items()}, name)
 
 
 def to_robot_cell(design: Design, robot_id: str, names: Optional[Mapping[str, str]] = None,
@@ -86,34 +61,6 @@ def to_robot_cell(design: Design, robot_id: str, names: Optional[Mapping[str, st
     bodies = {_name(names, body_id): rigid_body(body.geometry, draw_visual=True)
               for body_id, body in design.bodies.items() if include is None or include(body_id)}
     return RobotCell(model, semantics, tool_models=tools, rigid_body_models=bodies)
-
-
-def planning_group(cell: RobotCell, link: str) -> str:
-    """The SRDF group ending at a flange link whose base link is nearest the URDF root (targets in the base frame).
-
-    ? E.g. `base_left_arm_manipulator` (from base_footprint) over `Left arm` (from the arm's base link); the
-      URDF root itself (world_link) starts no group. Ties keep the SRDF order.
-
-    Args:
-        cell: A cell of the robot.
-        link: Flange link name, e.g. "left_ur_arm_tool0".
-
-    Raises:
-        KeyError: If no group ends at that link.
-    """
-    groups = [group for group in cell.group_names if cell.get_end_effector_link_name(group) == link]
-    if not groups:
-        raise KeyError(f"no SRDF group of {cell.robot_model.name} ends at link {link!r}")
-    return min(groups, key=lambda group: _depth(cell.robot_model, cell.get_base_link_name(group)))
-
-
-def _depth(model: RobotModel, link_name: str) -> int:
-    """How many joints lie between the URDF root and a link."""
-    depth, link = 0, model.get_link_by_name(link_name)
-    while link.parent_joint is not None:
-        link = model.get_link_by_name(link.parent_joint.parent.link)
-        depth += 1
-    return depth
 
 
 def to_cell_state(design: Design, robot_id: str, state: State, cell: RobotCell,

@@ -1,8 +1,8 @@
 """
-Joins the mounted tools onto a robot's URDF, writing one combined URDF.
+The mounted tools' models: joined onto a robot's URDF for drawing and live kinematics, or as `ToolSpec`s for planning.
 
-Each tool's names get the arm's name as a prefix, its root link is fixed to <arm>_tool0, and all mesh
-paths are made absolute.
+Stitching gives each tool's names the arm's name as a prefix, fixes its root link to <arm>_tool0, and makes all mesh
+paths absolute. Planning cells keep tools separate: `tool_spec` reads a tool URDF's collision shapes.
 
 * Adding a tool model: put its URDF in data/tool_urdf/ (root link in the tool0 frame) and add it to TOOL_URDFS.
 """
@@ -11,6 +11,10 @@ from __future__ import annotations
 
 from pathlib import Path
 from xml.etree.ElementTree import Element, SubElement, parse
+
+from yourdfpy import URDF
+
+from bar_assembly_core.design_io import Geometry, Pose, ToolSpec, TriMesh
 
 #: Where the tool URDFs live, under the data directory.
 TOOL_URDF_DIRECTORY = "tool_urdf"
@@ -66,6 +70,36 @@ def tool_urdf(kind: str, arm_name: str, data_directory: Path) -> Path | None:
             raise ValueError(f"no {kind} model for arm {arm_name!r}; known arms: {', '.join(entry)}")
         entry = entry[arm_name]
     return data_directory / TOOL_URDF_DIRECTORY / entry
+
+
+def tool_spec(kind: str, arm_name: str, data_directory: Path, tool_id: str) -> ToolSpec | None:
+    """A tool for planning cells: its URDF's collision meshes at zero joints, in the tool0 frame; TCP at tool0.
+
+    Args:
+        kind: The end effector kind (config.EndEffectorKind).
+        arm_name: The arm it is mounted on, e.g. "left_ur_arm".
+        data_directory: The data root, where the tool URDFs are.
+        tool_id: Its id in scenes, e.g. "tools/a200-0806/left_ur_arm".
+
+    Returns:
+        ToolSpec | None: The tool, or None for a tool without a model.
+
+    Raises:
+        ValueError: If `kind` has models for some arms, but not for this one.
+    """
+    tool_file = tool_urdf(kind, arm_name, data_directory)
+    if tool_file is None:
+        return None
+
+    def resolve(fname: str) -> str:
+        """Turn one mesh reference into an absolute path. ! Keep the name `fname`: yourdfpy passes it as a keyword."""
+        return resolve_mesh_path(fname, tool_file)
+
+    model = URDF.load(str(tool_file), build_scene_graph=False, load_meshes=False, build_collision_scene_graph=True,
+                      load_collision_meshes=True, filename_handler=resolve)
+    shapes = tuple(TriMesh.from_arrays(mesh.vertices, mesh.faces)
+                   for mesh in model.collision_scene.dump(concatenate=False))
+    return ToolSpec(id=tool_id, geometry=Geometry(shapes, shapes), tcp=Pose(), kind=kind)
 
 
 def stitch_tools(robot_urdf: Path, tools: dict[str, str | None], data_directory: Path, out_file: Path) -> Path:
