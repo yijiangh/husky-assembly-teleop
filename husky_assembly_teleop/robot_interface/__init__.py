@@ -2,7 +2,7 @@
 The only package that talks to a robot; callers read state and call commands, never topics.
 
   robot.py               HuskyRobotInterface, RobotState: composes the parts
-  base.py                the mobile base: mocap pose, cmd_vel
+  base.py                the mobile base: mocap pose, cmd_vel, onboard path follower
   arm.py                 one UR arm: joints, TCP, wrench, IO, commands
   end_effectors.py       one class per tool kind, picked by configuration
   controller_manager.py  one per base and per arm

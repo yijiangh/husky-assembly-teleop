@@ -22,10 +22,12 @@
   <depend>tf2_msgs</depend>
   <depend>geometry_msgs</depend>
   <depend>sensor_msgs</depend>
+  <depend>nav_msgs</depend>
   <depend>ur_msgs</depend>
   <depend>ur_dashboard_msgs</depend>
   <depend>std_msgs</depend>
   <depend>control_msgs</depend>
+  <depend>rcl_interfaces</depend>
   <exec_depend>scaffolding_tool_msgs</exec_depend>
 
   <export>
