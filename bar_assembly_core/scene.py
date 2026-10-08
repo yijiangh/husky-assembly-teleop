@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Callable, Dict, Mapping, Optional, Tuple, Union
 
 from .geometry import Pose, compose
-from .ids import IdMap, ROBOTS
+from .ids import ROBOTS, IdMap, check_id
 from .robot import RobotModel, RobotObject
 
 if TYPE_CHECKING:
@@ -91,6 +91,25 @@ class Scene:
     bodies: Dict[str, Body] = field(default_factory=dict)
     world_poses: Dict[str, Pose] = field(default_factory=dict)
     robots: Dict[str, RobotObject] = field(default_factory=dict)
+
+    def put(self, body: Body) -> None:
+        """Add a body, or replace the one with the same id. ! `world_poses` is not updated: recompute it.
+
+        Raises:
+            ValueError: If the id is invalid.
+        """
+        check_id(body.id)
+        self.bodies[body.id] = body
+
+    def remove(self, body_id: str) -> None:
+        """Remove one body. Unknown ids are ignored."""
+        self.bodies.pop(body_id, None)
+        self.world_poses.pop(body_id, None)
+
+    def remove_prefix(self, prefix: str) -> None:
+        """Remove every body whose id starts with `prefix`, e.g. "cell/"."""
+        for body_id in [body_id for body_id in self.bodies if body_id.startswith(prefix)]:
+            self.remove(body_id)
 
     def copy(self) -> Scene:
         """A copy whose bodies and robots can be edited without changing this one. Shares geometry and models."""

@@ -7,7 +7,7 @@ and the drawing. It replaces the shared PyBullet scene
 
 Read this first if you are picking it up:
 - `bar_assembly_core/`: `geometry.py` (poses, shapes), `ids.py`, `robot.py`, `scene.py`, `kinematics.py`, `mirrors/pybullet.py`, `mirrors/compas_fab.py`
-- `husky_assembly_teleop/world/`: `scene.py` (`LiveScene`, `take_snapshot`), `kinematics.py` (live forward kinematics); `ui/scene_view.py`
+- `husky_assembly_teleop/world/`: `scene.py` (`take_snapshot`, `PluginScene`), `kinematics.py` (live forward kinematics); `ui/scene_view.py`
 - `monitor.py` (`_tick`), `plugin_api/context.py` (`ctx.scene`, `ctx.kinematics`)
 - `husky_assembly_teleop/old/cfab_session.py` and `husky_assembly_teleop/old/husky_monitor.py::_bridge_cfab_to_pp_for_bar_action` (how compas_fab was used before)
 
@@ -96,7 +96,7 @@ cell/bars/B1                        scene body, owner = plugin "cell"
 - `Body(id, geometry, placement: Pose | Attachment, touches, label, color, enabled)`: **mutable**. `touches` lists ids allowed to touch it (bodies, `robots/<name>` for the whole robot, `robots/<name>/<link>`, mounted tools by tool id); it is symmetric.
 - `RobotModel(name, urdf, srdf, flanges, tools, tool_touches, stock_ur_frames)`: frozen, compared by identity. `RobotObject(id, model, base, joints, enabled, base_tracked, unmeasured, base_time, joints_time, label)`: one robot at one moment; `acting_problems()` says why it can't be planned for.
 - `Scene(tick, time, bodies, world_poses, robots)`: `bodies` are copies (sharing geometry), tracked objects included as `tracked/<name>`; `world_poses` holds every body's resolved world pose (`world_poses(bodies, robots, link_pose)`); `robots` are `RobotObject`s by id.
-- Monitor only: `TrackedDescription(geometry, touches, label)` given to `ctx.track_object`; `LiveScene`: `bodies` (live dict), `tracked` (descriptions), `put`, `remove`, `remove_prefix`, `snapshot`, `take_snapshot`; `PluginScene` (`ctx.scene`): owner-checked `put`, `put_many`, `remove`, `remove_prefix`; `bodies`; `snapshot`.
+- Monitor only: one live `Scene` plugins edit, and each tick's copy of it. `take_snapshot(scene, world, kinematics, tick, time)` sets the measured robots, moves tracked bodies (`tracked/<name>`, put by `ctx.track_object`, disabled until the first fix), resolves world poses and returns the copy. `PluginScene` (`ctx.scene`): owner-checked `put`, `put_many`, `remove`, `remove_prefix`; `bodies` (live); `snapshot` (the copy). ! The live scene never reaches a plugin or a thread directly.
 
 ### 5.2 `bar_assembly_core/geometry.py`
 - A **shape** is `TriMesh | BoxShape | CylinderShape`, in the body's frame. Later maybe more primitives, or a URDF.

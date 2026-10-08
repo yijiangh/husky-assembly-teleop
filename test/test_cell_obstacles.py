@@ -20,7 +20,8 @@ from bar_assembly_core.scene import Attachment
 from husky_assembly_teleop.config import robot_config_from_serial
 from husky_assembly_teleop.plugins.cell.design import CellDesign, Step, displayed_joints, load_design, scene_bodies
 from husky_assembly_teleop.plugins.cell.drawing import GHOST_OPACITY, DesignDrawing, load_robot_models
-from husky_assembly_teleop.world.scene import LiveScene, PluginScene
+from bar_assembly_core.scene import Scene
+from husky_assembly_teleop.world.scene import PluginScene
 
 
 @pytest.fixture
@@ -99,7 +100,7 @@ def test_robot_without_the_held_link_is_refused(cell):
 def test_scene_accepts_them(cell):
     """Every id is valid and owned by "cell/"; each has collision shapes, so nothing is warned about."""
     warnings = []
-    PluginScene(LiveScene(), "cell", warnings.append).put_many(_by_id(cell, 2).values())
+    PluginScene(Scene(), "cell", warnings.append, Scene).put_many(_by_id(cell, 2).values())
     assert warnings == []
 
 

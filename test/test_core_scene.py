@@ -12,10 +12,10 @@ from bar_assembly_core.geometry import box_geometry
 from bar_assembly_core.geometry import Pose, compose
 from bar_assembly_core.kinematics import ForwardKinematics
 from bar_assembly_core.robot import RobotObject, robot_model
-from bar_assembly_core.scene import Attachment, Body, world_poses
+from bar_assembly_core.scene import Attachment, Body, Scene, world_poses
 from husky_assembly_teleop.config import robot_config_from_serial
 from husky_assembly_teleop.world.kinematics import Kinematics
-from husky_assembly_teleop.world.scene import LiveScene, TrackedDescription
+from husky_assembly_teleop.world.scene import take_snapshot, tracked_body
 
 DATA = Path(__file__).resolve().parent.parent / "data"
 #: Robot -> (serial, the design copy's URDF variant, the one link it turns 90 degrees against the stock UR frames).
@@ -112,10 +112,11 @@ def test_monitor_snapshot_has_robot_objects_and_tracked_bodies(cindy):
     probe = SimpleNamespace(position=np.array([1.0, 2.0, 3.0]), orientation=np.array([0.0, 0.0, 0.0, 1.0]),
                             tracked=True, last_fix_time=None)
     world = SimpleNamespace(robots={cindy.serial: robot}, tracked_objects={"probe": probe})
-    scene = LiveScene()
-    scene.tracked["probe"] = TrackedDescription(label="the probe")
+    scene = Scene()
+    scene.put(tracked_body("probe", label="the probe"))
+    scene.put(tracked_body("unseen"))
     scene.put(Body("t/tip", box_geometry((0.01, 0.01, 0.01)), Attachment("tracked/probe", None, Pose((0.0, 0.0, 0.1)))))
-    snapshot = scene.take_snapshot(world, kinematics, tick=1, time=0.0)
+    snapshot = take_snapshot(scene, world, kinematics, tick=1, time=0.0)
 
     entry = snapshot.robots["robots/a200-0806"]
     assert entry.model is cindy.model and not entry.base_tracked
@@ -123,3 +124,7 @@ def test_monitor_snapshot_has_robot_objects_and_tracked_bodies(cindy):
     assert snapshot.bodies["tracked/probe"].label == "the probe"
     assert snapshot.world_poses["t/tip"].position == pytest.approx((1.0, 2.0, 3.1))
     assert snapshot.label("tracked/probe") == "the probe"
+    assert not snapshot.bodies["tracked/unseen"].enabled, "no fix yet"
+    # * The copy is not the live scene: editing one never reaches the other.
+    snapshot.bodies["t/tip"].enabled = False
+    assert scene.bodies["t/tip"].enabled and snapshot.bodies["t/tip"] is not scene.bodies["t/tip"]

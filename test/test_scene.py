@@ -3,14 +3,14 @@
 import pytest
 
 from bar_assembly_core.geometry import Geometry, box_geometry
-from bar_assembly_core.scene import Body
-from husky_assembly_teleop.world.scene import LiveScene, PluginScene
+from bar_assembly_core.scene import Body, Scene
+from husky_assembly_teleop.world.scene import PluginScene
 from bar_assembly_core.geometry import Pose
 
 
 def test_only_own_ids():
     """A plugin may put and remove only ids under its own name."""
-    scene = PluginScene(LiveScene(), "cell", log_warn=lambda _message: None)
+    scene = PluginScene(Scene(), "cell", lambda _message: None, Scene)
     scene.put(Body("cell/bars/B1", box_geometry((1.0, 0.1, 0.1)), Pose()))
     with pytest.raises(ValueError):
         scene.put(Body("obstacles/B1", box_geometry((1.0, 0.1, 0.1)), Pose()))
@@ -21,7 +21,7 @@ def test_only_own_ids():
 def test_body_without_collision_meshes_warns_once():
     """A body that is drawn but never collides is reported, once per id."""
     warnings: list[str] = []
-    scene = PluginScene(LiveScene(), "cell", log_warn=warnings.append)
+    scene = PluginScene(Scene(), "cell", warnings.append, Scene)
     visual_only = Geometry(box_geometry((1.0, 1.0, 1.0)).visual, ())
     for _ in range(2):
         scene.put(Body("cell/ghost", visual_only, Pose()))

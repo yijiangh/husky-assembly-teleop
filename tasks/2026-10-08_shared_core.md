@@ -166,7 +166,7 @@ mirror.sync(next_scene)                                   #    writes the full s
 | 1 | The design stays an ordinary editable object. | Unchanged: the frozen dataclasses edited with `dataclasses.replace`, as before. No versioning. | — |
 | Facts | "`<arm>_base_link` differs by 90°" between the URDF variants. | Measured: Alice differs at `ur_arm_base_link` (90°); Cindy only at `right_ur_arm_base` (90°). All other links agree (`test/test_core_scene.py::test_frame_convention_and_fk_comparison`). | Cindy's turn sits in another joint. `RobotModel.stock_ur_frames` records the convention. |
 | Step 1 | Move `design_io` unchanged. | Moved, then split by layer in §10: the format is `design/`, the old export `legacy/`, poses and shapes `geometry.py`. They now live with the converter in `legacy/`. | The brief asked for the helpers to move. Only the legacy modules depend on `mirrors`. |
-| — | Scene type name. | `Scene` (the monitor's live store is `LiveScene`). | Renamed in §10, before anyone outside depends on it. |
+| — | Scene type name. | One type, `Scene`, for the world at one moment: the monitor keeps a live one plugins edit and hands out a copy per tick (§10). | Two classes for one concept; the live/copy split is a rule about instances, enforced by `PluginScene`. |
 
 Further changes reviewers should know about:
 - **Tools are separate everywhere in planning.** A live robot's `RobotModel` holds its tools as `Tool`s read from
@@ -228,7 +228,7 @@ Deferred or stubbed:
 ## 10. Refactor before the hand-off (user request, 2026-10-08)
 
 Goal: a minimal core whose layout reads as its layering. Answers: layered layout; legacy converter inside the core as
-`legacy/`; `SceneSnapshot` → `Scene` (monitor's store → `LiveScene`), `ToolSpec` → `Tool`; `design_io` → `design`
+`legacy/`; `SceneSnapshot` → `Scene`; the monitor's store is a `Scene` too (no `LiveScene`; tracked objects are bodies), `ToolSpec` → `Tool`; `design_io` → `design`
 (the `library` value written into design.json stays "design_io": no format change).
 
 ```

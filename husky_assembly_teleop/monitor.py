@@ -33,7 +33,9 @@ from .plugin_api.plugin import HuskyPlugin, load_plugins
 from .robot_interface.robot import HuskyRobotInterface
 from .robot_interface.connections import RosConnections
 from .robot_interface.mocap import subscribe_mocap
-from .world.scene import LiveScene, PluginScene, TrackedDescription
+from bar_assembly_core.ids import tracked_id
+from bar_assembly_core.scene import Scene
+from .world.scene import PluginScene, take_snapshot, tracked_body
 from .ui.visualization import Visualization
 from .world.measured import TrackedObject, WorldState
 
@@ -100,7 +102,9 @@ class HuskyMonitor(Node):
         self._executor.add_node(self)
 
         self._kinematics: Kinematics | None = None
-        self._scene = LiveScene()
+        #: The live scene plugins edit, and this tick's copy of it (`take_snapshot`).
+        self._scene = Scene()
+        self._snapshot = Scene()
         self._viz: Visualization | None = None
         # * Built before the plugins, so tasks started in their setup are timed too.
         self._timer = TickTimer(asyncio.get_running_loop(),
@@ -143,7 +147,8 @@ class HuskyMonitor(Node):
                 monitor=self,
                 view=self._viz.view_for(plugin.name),
                 scene=PluginScene(self._scene, plugin.name,
-                                  log_warn=lambda message, name=plugin.name: self.log_warn(f"[{name}] {message}")),
+                                  log_warn=lambda message, name=plugin.name: self.log_warn(f"[{name}] {message}"),
+                                  snapshot=lambda: self._snapshot),
                 kinematics=self._kinematics,
                 dependencies=plugin.requires,
             )
@@ -222,7 +227,7 @@ class HuskyMonitor(Node):
         if geometry is not None and not geometry.collision:
             self.log_warn(f"tracked object {name!r} has no collision meshes: it is drawn but never collides")
         self._world.tracked_objects[name] = obj
-        self._scene.tracked[name] = TrackedDescription(geometry=geometry, touches=tuple(touches), label=label)
+        self._scene.put(tracked_body(name, geometry, touches, label))
         self._object_connections[name] = connections
         return obj
 
@@ -232,7 +237,7 @@ class HuskyMonitor(Node):
         if connections is not None:
             connections.destroy_all()
         self._world.tracked_objects.pop(name, None)
-        self._scene.tracked.pop(name, None)
+        self._scene.remove(tracked_id(name))
 
     # --- --- --- --- --- RUN --- --- --- --- ---
 
@@ -290,7 +295,8 @@ class HuskyMonitor(Node):
         # 4. Copy the whole world before any plugin runs, for planners and the 3D view.
         now = self.now()
         with self._timer.part("scene snapshot"):
-            snapshot = self._scene.take_snapshot(self._world, self._kinematics, self._tick_index, now)
+            snapshot = self._snapshot = take_snapshot(self._scene, self._world, self._kinematics,
+                                                      self._tick_index, now)
 
         # 5. Step each plugin, in dependency order: intents, then update. Each hook is timed for stall reports.
         for loaded in self._loaded.values():
@@ -491,7 +497,7 @@ class HuskyMonitor(Node):
             self._pump_ros()
             self._tick_index += 1
             self._kinematics.update(self._world)
-            self._scene.take_snapshot(self._world, self._kinematics, self._tick_index, self.now())
+            self._snapshot = take_snapshot(self._scene, self._world, self._kinematics, self._tick_index, self.now())
             for loaded in self._loaded.values():
                 loaded.ctx._wake_tick_waiters()
             await asyncio.sleep(self._config.tick_period)

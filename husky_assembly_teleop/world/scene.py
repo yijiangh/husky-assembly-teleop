@@ -1,25 +1,25 @@
 """
-The monitor's live scene (collision objects we don't measure), and its per-tick snapshot for planners and the 3D view.
+The monitor's live scene, and the copy of it each tick that planners and the 3D view read.
 
-The data types (`Body`, `RobotObject`, `Scene`) are the core's (`bar_assembly_core.scene`). The snapshot is
-taken before plugins run, so it holds one ROS pump's measurements and every plugin's complete writes of the previous
-tick. Each measured robot is a `RobotObject` "robots/<serial>"; each tracked object with a fix, a `Body`
-"tracked/<name>".
+Both are `Scene`s (`bar_assembly_core.scene`): plugins edit the live one through `PluginScene`; `take_snapshot`
+copies it.
 
-- ! Main thread only: the scene, its `Body` objects and `take_snapshot`. A snapshot can be read from
-  any thread; treat it as read-only.
+The copy is taken before plugins run, so it holds one ROS pump's measurements and every plugin's complete writes of
+the previous tick. Each measured robot is a `RobotObject` "robots/<serial>"; each tracked object a `Body`
+"tracked/<name>", disabled until its first mocap fix.
+
+- ! Main thread only: the live scene, its `Body` objects and `take_snapshot`. A copy can be read from any thread;
+  treat it as read-only.
+- ! Never hand the live scene to a plugin or a thread: plugins get a `PluginScene`, threads its `snapshot`.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable, Iterable
 
-from bar_assembly_core.geometry import Geometry
-from bar_assembly_core.geometry import Pose
-from bar_assembly_core.ids import check_id
-from bar_assembly_core.robot import RobotObject
+from bar_assembly_core.geometry import Geometry, Pose
 from bar_assembly_core.ids import ROBOTS, TRACKED, robot_id, tracked_id
+from bar_assembly_core.robot import RobotObject
 from bar_assembly_core.scene import Attachment, Body, Scene, world_poses
 
 if TYPE_CHECKING:
@@ -30,107 +30,60 @@ if TYPE_CHECKING:
 NO_GEOMETRY = Geometry((), ())
 
 
-@dataclass(eq=False)
-class TrackedDescription:
-    """What a tracked object is, given when tracking starts.
+def tracked_body(name: str, geometry: Geometry | None = None, touches: tuple[str, ...] = (), label: str = "") -> Body:
+    """The body of a tracked object "tracked/<name>", disabled until `take_snapshot` gives it a mocap fix.
 
-    Attributes:
+    Args:
+        name: Tracking name.
         geometry: Its shape, or None for a frame only that is not an obstacle (e.g. the mocap probe).
         touches: Ids allowed to touch it, as for `Body.touches`.
         label: Display text. Empty: use the id.
     """
-
-    geometry: Geometry | None = None
-    touches: tuple[str, ...] = ()
-    label: str = ""
+    return Body(tracked_id(name), geometry or NO_GEOMETRY, Pose(), tuple(touches), label, enabled=False)
 
 
-# --- --- --- --- --- THE STORE --- --- --- --- ---
+def take_snapshot(scene: Scene, world: WorldState, kinematics: Kinematics, tick: int, time: float) -> Scene:
+    """Bring the live scene up to this tick's measurements, and copy it; called once per tick, after kinematics.
 
-class LiveScene:
-    """Every body plugins put in, the tracked objects' descriptions, and the latest snapshot.
+    Sets every robot from the measurements, moves each tracked object with a fix to it, and resolves world poses.
 
-    ! Main thread only.
+    Args:
+        scene: The live scene.
+        world: Measured state, for robots, tracked objects and timestamps.
+        kinematics: Robot bases, joints and link poses, updated this tick.
+        tick: The tick's index.
+        time: ROS time now.
+
+    Returns:
+        Scene: The copy for this tick. Bodies whose parent has no pose are left out of it.
     """
+    robots = {}
+    for serial, robot in world.robots.items():
+        model = robot.config.model
+        arm_times = [arm.state.last_update_time for arm in robot.arms.values()]
+        # ! Only movable joints count as unmeasured: wheels and gripper fingers are never measured.
+        robots[robot_id(serial)] = RobotObject(
+            id=robot_id(serial), model=model, base=kinematics.base_pose(serial),
+            joints=dict(kinematics.joints(serial)), base_tracked=robot.base.state.tracked,
+            unmeasured=kinematics.unmeasured(serial).intersection(model.movable_joints),
+            base_time=robot.base.state.last_fix_time,
+            joints_time=None if None in arm_times else min(arm_times, default=None))
+    scene.robots = robots
 
-    def __init__(self):
-        """Start empty, with an empty snapshot."""
-        #: Live bodies by id. Plugins change them during their step.
-        self.bodies: dict[str, Body] = {}
-        #: Tracked objects' descriptions, by tracking name. Written by track_object.
-        self.tracked: dict[str, TrackedDescription] = {}
-        self._snapshot = Scene()
+    for name, obj in world.tracked_objects.items():
+        body = scene.bodies.get(tracked_id(name))
+        if body is not None and obj.position is not None:
+            body.placement, body.enabled = Pose.from_arrays(obj.position, obj.orientation), True
 
-    def put(self, body: Body) -> None:
-        """Add a body, or replace the one with the same id.
+    def link_pose(robot: RobotObject, link: str) -> Pose:
+        """A measured robot's link pose, from this tick's kinematics (keyed by serial)."""
+        return kinematics.link_pose(robot.id.split("/", 1)[1], link)
 
-        Raises:
-            ValueError: If the id or the attachment's parent is invalid.
-        """
-        check_id(body.id)
-        if body.id.split("/", 1)[0] in (ROBOTS, TRACKED):
-            raise ValueError(f"{body.id!r}: ids under '{ROBOTS}/' and '{TRACKED}/' belong to the core")
-        if isinstance(body.placement, Attachment) and \
-                body.placement.parent.split("/", 1)[0] not in (ROBOTS, TRACKED):
-            raise ValueError(f"{body.id!r}: attached to {body.placement.parent!r}, "
-                             f"which is neither 'robots/<serial>' nor 'tracked/<name>'")
-        self.bodies[body.id] = body
-
-    def remove(self, body_id: str) -> None:
-        """Remove one body. Unknown ids are ignored."""
-        self.bodies.pop(body_id, None)
-
-    def remove_prefix(self, prefix: str) -> None:
-        """Remove every body whose id starts with `prefix`, e.g. "cell/" when the cell plugin closes."""
-        for body_id in [body_id for body_id in self.bodies if body_id.startswith(prefix)]:
-            del self.bodies[body_id]
-
-    @property
-    def snapshot(self) -> Scene:
-        """Scene: The copy taken at the start of this tick."""
-        return self._snapshot
-
-    def take_snapshot(self, world: WorldState, kinematics: Kinematics, tick: int, time: float) -> Scene:
-        """Copy the whole world; called once per tick, after kinematics.update.
-
-        Args:
-            world: Measured state, for tracked objects and timestamps.
-            kinematics: Robot bases, joints and link poses, updated this tick.
-            tick: The tick's index.
-            time: ROS time now.
-
-        Returns:
-            Scene: The new copy, also kept as `snapshot`.
-        """
-        robots = {}
-        for serial, robot in world.robots.items():
-            model = robot.config.model
-            arm_times = [arm.state.last_update_time for arm in robot.arms.values()]
-            # ! Only movable joints count as unmeasured: wheels and gripper fingers are never measured.
-            robots[robot_id(serial)] = RobotObject(
-                id=robot_id(serial), model=model, base=kinematics.base_pose(serial),
-                joints=dict(kinematics.joints(serial)), base_tracked=robot.base.state.tracked,
-                unmeasured=kinematics.unmeasured(serial).intersection(model.movable_joints),
-                base_time=robot.base.state.last_fix_time,
-                joints_time=None if None in arm_times else min(arm_times, default=None))
-
-        live = dict(self.bodies)
-        for name, obj in world.tracked_objects.items():
-            if obj.position is None:
-                continue  # never seen: no pose to give it
-            description = self.tracked.get(name, TrackedDescription())
-            live[tracked_id(name)] = Body(tracked_id(name), description.geometry or NO_GEOMETRY,
-                                          Pose.from_arrays(obj.position, obj.orientation), description.touches,
-                                          description.label)
-
-        def link_pose(robot: RobotObject, link: str) -> Pose:
-            """A measured robot's link pose, from this tick's kinematics (keyed by serial)."""
-            return kinematics.link_pose(robot.id.split("/", 1)[1], link)
-
-        poses = world_poses(live, robots, link_pose)
-        bodies = {body_id: body.copy() for body_id, body in live.items() if body_id in poses}
-        self._snapshot = Scene(tick=tick, time=time, bodies=bodies, world_poses=poses, robots=robots)
-        return self._snapshot
+    scene.tick, scene.time = tick, time
+    scene.world_poses = world_poses(scene.bodies, robots, link_pose)
+    return Scene(tick, time, {body_id: body.copy() for body_id, body in scene.bodies.items()
+                              if body_id in scene.world_poses},
+                 dict(scene.world_poses), {key: robot.copy() for key, robot in robots.items()})
 
 
 class PluginScene:
@@ -139,15 +92,17 @@ class PluginScene:
     ! `bodies` holds the live ones: change only your own; nothing stops you from changing another plugin's.
     """
 
-    def __init__(self, scene: LiveScene, owner: str, log_warn: Callable[[str], None]):
-        """Wrap the scene for one plugin.
+    def __init__(self, scene: Scene, owner: str, log_warn: Callable[[str], None], snapshot: Callable[[], Scene]):
+        """Wrap the live scene for one plugin.
 
         Args:
-            scene: The one scene.
+            scene: The live scene.
             owner: The plugin's name; its ids must start with "<owner>/".
             log_warn: Reports bodies that are drawn but never collide.
+            snapshot: Returns this tick's copy.
         """
         self._scene = scene
+        self._snapshot = snapshot
         self._prefix = f"{owner}/"
         self._log_warn = log_warn
         # Ids already warned about, so each is reported once.
@@ -161,15 +116,22 @@ class PluginScene:
     @property
     def snapshot(self) -> Scene:
         """Scene: The copy taken at the start of this tick. Hand this to worker threads."""
-        return self._scene.snapshot
+        return self._snapshot()
 
     def put(self, body: Body) -> None:
         """Add a body, or replace yours with the same id.
 
         Raises:
-            ValueError: If the id doesn't start with "<plugin name>/", or is invalid.
+            ValueError: If the id doesn't start with "<plugin name>/", or is invalid; or the body is attached to
+                something other than a robot or a tracked object.
         """
         self._check_owner(body.id)
+        if body.id.split("/", 1)[0] in (ROBOTS, TRACKED):
+            raise ValueError(f"{body.id!r}: ids under '{ROBOTS}/' and '{TRACKED}/' belong to the monitor")
+        if isinstance(body.placement, Attachment) and \
+                body.placement.parent.split("/", 1)[0] not in (ROBOTS, TRACKED):
+            raise ValueError(f"{body.id!r}: attached to {body.placement.parent!r}, "
+                             f"which is neither 'robots/<serial>' nor 'tracked/<name>'")
         self._scene.put(body)
         if not body.geometry.collision and body.id not in self._warned:
             self._warned.add(body.id)
