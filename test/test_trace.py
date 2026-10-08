@@ -87,3 +87,11 @@ def test_record_samples_only_inside_its_block():
         raise RuntimeError("task failed")
     ctx._sample_traces(4.0)
     assert len(failed) == 0
+
+
+def test_plot_range_ignores_unknown_values():
+    """The fitted y axis skips NaN, keeps a minimum span, and ends on whole steps."""
+    from husky_assembly_teleop.ui.trace_plot import _nice_range
+    assert _nice_range(np.array([[np.nan, 0.0], [np.nan, 0.0]]), 0.02) == (-0.01, 0.01)
+    assert _nice_range(np.array([[np.nan], [np.nan]]), 2.0) == (-2.0, 2.0)
+    assert _nice_range(np.array([[-0.0021], [0.0043]]), 0.002) == (-0.003, 0.005)
