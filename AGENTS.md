@@ -41,6 +41,7 @@ When briefing a subagent to write or edit comments, paste this section into its 
   - ! It imports nothing from `husky_assembly_teleop`, ROS or viser, and runs on Python 3.9: change it in the submodule following its own `AGENTS.md`, run its own tests there (`cd external/scaffolding_assembly_core && python3 -m pytest`), commit and push it, then commit the new submodule pointer here.
 - `husky_assembly_teleop/plugins/__init__.py`: the rules every plugin follows. `plugins/robot_control/` is the reference plugin, `plugins/examples/` the templates.
 - `doc/refactor_rationale.md`: why the core is built the way it is. `doc/plugin_roadmap.md`: which old features are still to be ported. `doc/scene_refactor_plan.md`: the scene.
+- `doc/experiment_design_guide.md` and `doc/experiment_report_guide.md`: JG's Experiment Design Guide: how to plan, build and analyse an experiment, and how its generated reports are written.
 - `husky_assembly_teleop/old/`: the old monitor, reference only. It does not run; never import it from new code.
 - Docs marked outdated at the top describe the old monitor.
 
