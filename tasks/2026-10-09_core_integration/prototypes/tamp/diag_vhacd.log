@@ -1,0 +1,11 @@
+one hull per tool (core today)   B10_J_M4_tool_tighten_joint      [('tools/AT3L', 'bars/B10'), ('tools/AT3R', 'bars/B10')]
+one hull per tool (core today)   B10_R_M2_LM_retreat              [('tools/AT3L', 'bars/B10'), ('tools/AT3R', 'bars/B10')]
+one hull per tool (core today)   B19_J_M4_tool_tighten_joint      [('bars/B19', 'joints/J17-19_female'), ('bars/B19', 'joints/J18-19_female'), ('tools/AT3L', 'bars/B19'), ('tools/AT3R', 'bars/B19')]
+one hull per tool (core today)   B21_J_M4_tool_tighten_joint      [('bars/B21', 'joints/J17-21_female'), ('bars/B21', 'joints/J18-21_female'), ('tools/AT3L', 'bars/B21'), ('tools/AT3R', 'bars/B21')]
+one hull per tool (core today)   B19_R_M2_LM_retreat              [('tools/AT3L', 'bars/B19'), ('tools/AT3L', 'joints/J17-19_female'), ('tools/AT3R', 'bars/B19'), ('tools/AT3R', 'joints/J18-19_female')]
+VHACD parts                      B10_J_M4_tool_tighten_joint      [('tools/AT3L', 'bars/B10'), ('tools/AT3R', 'bars/B10')]
+VHACD parts                      B10_R_M2_LM_retreat              [('tools/AT3L', 'bars/B10'), ('tools/AT3R', 'bars/B10')]
+VHACD parts                      B19_J_M4_tool_tighten_joint      [('bars/B19', 'joints/J17-19_female'), ('bars/B19', 'joints/J18-19_female'), ('tools/AT3L', 'bars/B19'), ('tools/AT3R', 'bars/B19')]
+VHACD parts                      B21_J_M4_tool_tighten_joint      [('bars/B21', 'joints/J17-21_female'), ('bars/B21', 'joints/J18-21_female'), ('tools/AT3L', 'bars/B21'), ('tools/AT3R', 'bars/B21')]
+VHACD parts                      B19_R_M2_LM_retreat              [('tools/AT3L', 'bars/B19'), ('tools/AT3L', 'joints/J17-19_female'), ('tools/AT3R', 'bars/B19'), ('tools/AT3R', 'joints/J18-19_female')]
+parts per tool: {129896548980272: 4, 129896548983680: 4}

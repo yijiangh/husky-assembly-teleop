@@ -1,0 +1,16 @@
+B10_R_M3_free_home start->goal max |d| rad: 4.997
+tools at start: {'tools/AT3L': ToolState(grip='open', on=None), 'tools/AT3R': ToolState(grip='open', on=None), 'tools/alice/SupportGripper': ToolState(grip='open', on=None), 'tools/belle/SupportGripper': ToolState(grip='open', on=None)}
+straight joint path: 27/41 samples collision-free; pairs hit (samples): [(('tools/AT3L', 'joints/J3-4_male'), 7), (('tools/AT3L', 'bars/B4'), 7), (('tools/AT3L', 'joints/J3-4_female'), 6), (('tools/AT3L', 'joints/J3-10_male'), 4), (('tools/AT3R', 'bars/B7'), 3), (('tools/AT3R', 'joints/J7-10_female'), 3), (('tools/AT3R', 'joints/J7-10_male'), 3), (('tools/AT3R', 'bars/B10'), 2)]
+with bars<->tools allowed: 28/41 free; pairs: [(('tools/AT3L', 'joints/J3-4_male'), 7), (('tools/AT3L', 'joints/J3-4_female'), 6), (('tools/AT3L', 'joints/J3-10_male'), 4), (('tools/AT3R', 'joints/J7-10_female'), 3), (('tools/AT3R', 'joints/J7-10_male'), 3), (('robots/cindy/right_ur_arm_wrist_1_link', 'bars/B10'), 2), (('robots/cindy/right_ur_arm_wrist_2_link', 'bars/B9'), 2), (('robots/cindy/right_ur_arm_wrist_3_link', 'bars/B10'), 1)]
+Traceback (most recent call last):
+  File "/tmp/claude-1000/-home-jakob-ra-workspace-design-core-src/ebd6696b-192b-4364-a2f6-676e208c1501/scratchpad/tamp_review/diag_home.py", line 51, in <module>
+    path, info = api.plan_free_dual_arm(planner, mirror.state, goal, max_time=20)
+  File "/home/jakob/ra/workspace_design_core/src/husky-assembly-teleop/external/husky_assembly_tamp/husky_assembly_tamp/motion_planner/api.py", line 707, in plan_free_dual_arm
+    goal_conf_arr = _conf12_from_target(goal_conf, joint_names_12)
+  File "/home/jakob/ra/workspace_design_core/src/husky-assembly-teleop/external/husky_assembly_tamp/husky_assembly_tamp/motion_planner/api.py", line 103, in _conf12_from_target
+    [float(target_configuration[n]) for n in joint_names_12], dtype=float,
+  File "/home/jakob/ra/workspace_design_core/src/husky-assembly-teleop/external/husky_assembly_tamp/husky_assembly_tamp/motion_planner/api.py", line 103, in <listcomp>
+    [float(target_configuration[n]) for n in joint_names_12], dtype=float,
+IndexError: only integers, slices (`:`), ellipsis (`...`), numpy.newaxis (`None`) and integer or boolean arrays are valid indices
+with bars<->tools allowed: 28/41 free; pairs: [(('tools/AT3L', 'joints/J3-4_male'), 7), (('tools/AT3L', 'joints/J3-4_female'), 6), (('tools/AT3L', 'joints/J3-10_male'), 4), (('tools/AT3R', 'joints/J7-10_female'), 3), (('tools/AT3R', 'joints/J7-10_male'), 3), (('robots/cindy/right_ur_arm_wrist_1_link', 'bars/B10'), 2), (('robots/cindy/right_ur_arm_wrist_2_link', 'bars/B9'), 2), (('robots/cindy/right_ur_arm_wrist_3_link', 'bars/B10'), 1)]
+plan_free_dual_arm with bars<->tools allowed: 202 None

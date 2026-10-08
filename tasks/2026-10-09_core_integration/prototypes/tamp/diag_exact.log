@@ -1,0 +1,6 @@
+B10_J_M4_tool_tighten_joint    tools/AT3L   vs bars/B10: signed distance (m) hull -0.0013, vhacd x4 -0.0020, exact >0.05
+B10_J_M4_tool_tighten_joint    tools/AT3R   vs bars/B10: signed distance (m) hull -0.0013, vhacd x4 -0.0020, exact >0.05
+B19_J_M4_tool_tighten_joint    tools/AT3L   vs bars/B12: signed distance (m) hull >0.05, vhacd x4 >0.05, exact >0.05
+B19_J_M4_tool_tighten_joint    tools/AT3R   vs bars/B12: signed distance (m) hull >0.05, vhacd x4 >0.05, exact >0.05
+B12_J_M4_tool_tighten_joint    tools/AT3L   vs bars/B12: signed distance (m) hull -0.0013, vhacd x4 -0.0020, exact >0.05
+B12_J_M4_tool_tighten_joint    tools/AT3R   vs bars/B12: signed distance (m) hull -0.0013, vhacd x4 -0.0020, exact >0.05
