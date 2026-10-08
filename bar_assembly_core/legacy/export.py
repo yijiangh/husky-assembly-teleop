@@ -22,14 +22,15 @@ from compas_robots import RobotModel
 # ! Registers the dtypes of the action and movement classes, so json_load can rebuild them.
 import rs_data_structure  # noqa: F401
 
-from ..mirrors.compas_convert import PARKED_POSITION, pose_from_frame
-from .geometry import Geometry, TriMesh
-from .pose import Pose
-from .robot_files import movable_joints, urdf_joints, urdf_links
-from .types import (Action, Attached, BodySpec, Design, Movement, RobotSpec, RobotState, State, Target,
-                    ToolSpec, link_id)
+from ..mirrors.compas import PARKED_POSITION, pose_from_frame
+from ..geometry import Geometry, TriMesh
+from ..geometry import Pose
+from ..urdf import movable_joints, urdf_joints, urdf_links
+from ..design.types import Action, Attached, BodySpec, Design, Movement, RobotSpec, RobotState, State, Target
+from ..robot import Tool
+from ..ids import link_id
 from .timing import Stopwatch
-from .version import writer_info
+from ..design.version import writer_info
 
 #: Movement class -> (movement type, coupled).
 MOVEMENT_KINDS: Dict[str, Tuple[str, bool]] = {
@@ -194,7 +195,7 @@ class _Converter:
                  tool_kind: Callable[[str], str], report: Callable[[str], None]):
         self.cells, self.names, self.robot_ids, self.report = cells, names, robot_ids, report
         self.robots: Dict[str, RobotSpec] = {}
-        self.tools: Dict[str, ToolSpec] = {}
+        self.tools: Dict[str, Tool] = {}
         self.bodies: Dict[str, BodySpec] = {}
         self._tool_kind = tool_kind
         # Robot id -> (URDF, SRDF, movable joints in URDF order).
@@ -239,8 +240,8 @@ class _Converter:
             self._tool_ids[(robot, name)] = tool
             cell = next(cell for cell_id, cell in self.cells.items() if self.robot_ids[self.names[cell_id]] == robot)
             model = cell.tool_models[name]
-            self.tools[tool] = ToolSpec(id=tool, geometry=_model_geometry(model), tcp=pose_from_frame(model.frame),
-                                        kind=self._tool_kind(name), touches=tuple(sorted(touches)))
+            self.tools[tool] = Tool(id=tool, geometry=_model_geometry(model), tcp=pose_from_frame(model.frame),
+                                    kind=self._tool_kind(name), touches=tuple(sorted(touches)))
 
         for robot, (urdf, srdf, _) in self._files.items():
             flanges = mounts.get(robot, {})

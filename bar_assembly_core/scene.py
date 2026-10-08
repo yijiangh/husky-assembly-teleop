@@ -14,27 +14,15 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Callable, Dict, Mapping, Optional, Tuple, Union
 
-from .design_io.pose import Pose, compose
-from .robot import RobotObject
+from .geometry import Pose, compose
+from .ids import IdMap, ROBOTS
+from .robot import RobotModel, RobotObject
 
 if TYPE_CHECKING:
-    from .design_io.geometry import Geometry
-
-#: First id segments of robots and of measured objects.
-ROBOTS, TRACKED = "robots", "tracked"
+    from .geometry import Geometry
 
 #: Forward kinematics given by the scene's owner: (robot, link name) -> the link's world pose.
 LinkPose = Callable[[RobotObject, str], Pose]
-
-
-def robot_id(name: str) -> str:
-    """The id of a robot: "robots/<name>", e.g. "robots/a200-0806"."""
-    return f"{ROBOTS}/{name}"
-
-
-def tracked_id(name: str) -> str:
-    """The id of a measured object: "tracked/<name>"."""
-    return f"{TRACKED}/{name}"
 
 
 @dataclass(frozen=True)
@@ -85,7 +73,7 @@ class Body:
 
 
 @dataclass(eq=False)
-class SceneSnapshot:
+class Scene:
     """The world at one moment: bodies with their resolved world poses, and robots.
 
     Attributes:
@@ -104,10 +92,10 @@ class SceneSnapshot:
     world_poses: Dict[str, Pose] = field(default_factory=dict)
     robots: Dict[str, RobotObject] = field(default_factory=dict)
 
-    def copy(self) -> SceneSnapshot:
+    def copy(self) -> Scene:
         """A copy whose bodies and robots can be edited without changing this one. Shares geometry and models."""
-        return SceneSnapshot(self.tick, self.time, {key: body.copy() for key, body in self.bodies.items()},
-                             dict(self.world_poses), {key: robot.copy() for key, robot in self.robots.items()})
+        return Scene(self.tick, self.time, {key: body.copy() for key, body in self.bodies.items()},
+                     dict(self.world_poses), {key: robot.copy() for key, robot in self.robots.items()})
 
     def label(self, object_id: str) -> str:
         """Display text for any id: a body's or robot's label, else the id itself."""
@@ -159,3 +147,34 @@ def world_poses(bodies: Mapping[str, Body], robots: Mapping[str, RobotObject],
     for body_id in bodies:
         resolve(body_id, frozenset())
     return {body_id: pose for body_id, pose in poses.items() if pose is not None}
+
+
+def retarget(attachments: Mapping[str, Attachment], robot_map: IdMap,
+             models: Mapping[str, RobotModel]) -> Dict[str, Attachment]:
+    """The same attachments held by other robots: only the robot id changes; link and grasp stay.
+
+    The link names are the same in both URDF variants of a robot, so a planned grasp carries over to the real robot.
+    Attachments to a body, not a robot, are kept as they are.
+
+    Args:
+        attachments: Body id -> attachment, e.g. the held bodies of a design scene.
+        robot_map: Robot id -> the robot to hold it instead, e.g. {"robots/cindy": "robots/a200-0806"}.
+        models: The target robots' models, by their ids.
+
+    Returns:
+        dict[str, Attachment]: Body id -> the new attachment.
+
+    Raises:
+        KeyError: If a holding robot is not in `robot_map`, or its target is not in `models`.
+        ValueError: If the target model lacks the link.
+    """
+    result = {}
+    for body_id, attachment in attachments.items():
+        if not attachment.parent.startswith(f"{ROBOTS}/"):
+            result[body_id] = attachment
+            continue
+        target = robot_map(attachment.parent)
+        if attachment.link is not None and attachment.link not in models[target].links:
+            raise ValueError(f"{body_id}: {target} has no link {attachment.link!r} to hold it by")
+        result[body_id] = Attachment(target, attachment.link, attachment.grasp)
+    return result

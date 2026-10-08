@@ -12,7 +12,7 @@ from typing import Dict
 
 from trimesh import Trimesh, load
 
-from .geometry import TriMesh
+from ..geometry import TriMesh
 
 
 def read_mesh(path: Path) -> TriMesh:

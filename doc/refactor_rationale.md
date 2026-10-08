@@ -221,5 +221,6 @@ The core is grouped by what a module is about, not by who calls it:
   the panel widgets (`style.py`, formerly `ui_style.py`; `ghost.py`,
   `pose_input.py`, `checklist.py`, `pybullet_window.py`); `quaternion.py` holds
   the quaternion order at the viser boundary.
-- `design_io/`: reads, writes and validates design folders; imports nothing else
-  of ours, since it moves to its own repository later.
+- `bar_assembly_core/` (next to the package): the core shared with the Rhino plugin
+  and the planners: the design format, robots, scenes and mirrors; it imports
+  nothing of the monitor, since it moves to its own repository later.

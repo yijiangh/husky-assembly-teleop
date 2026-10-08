@@ -12,10 +12,11 @@ import pytest
 from husky_assembly_teleop.config import robot_config_from_serial
 from husky_assembly_teleop.plugins.arm_planner.planner import (ArmPath, ArmPlanningWorld, _extend, arm_joint_names,
                                                                plan_arm)
-from bar_assembly_core.design_io.geometry import box_geometry
+from bar_assembly_core.geometry import box_geometry
 from bar_assembly_core.robot import RobotObject
-from bar_assembly_core.scene import Attachment, Body, SceneSnapshot, robot_id
-from bar_assembly_core.design_io.pose import Pose
+from bar_assembly_core.scene import Attachment, Body, Scene
+from bar_assembly_core.ids import robot_id
+from bar_assembly_core.geometry import Pose
 
 DATA = Path(__file__).resolve().parent.parent / "data"
 ALICE = "0804"
@@ -37,12 +38,12 @@ def world():
     world.close()
 
 
-def snapshot(config, start, bodies=()) -> SceneSnapshot:
+def snapshot(config, start, bodies=()) -> Scene:
     """Alice at the origin with her arm at `start`, and some bodies."""
     robot = RobotObject(robot_id(ALICE), config.model, Pose(), dict(zip(NAMES, start)))
     poses = {body.id: body.placement if isinstance(body.placement, Pose) else body.placement.grasp
              for body in bodies}
-    return SceneSnapshot(bodies={body.id: body for body in bodies}, world_poses=poses, robots={robot.id: robot})
+    return Scene(bodies={body.id: body for body in bodies}, world_poses=poses, robots={robot.id: robot})
 
 
 def start_and_goal(config):

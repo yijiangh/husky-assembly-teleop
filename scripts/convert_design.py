@@ -3,7 +3,7 @@
     python scripts/convert_design.py <export folder> [<design folder>]
 
 The design folder defaults to `<export>_design` next to the export, where the cell plugin also
-puts and finds it. Robot files come from this repository's `data/` (bar_assembly_core.design_io.conversion).
+puts and finds it. Robot files come from this repository's `data/` (bar_assembly_core.legacy.conversion).
 """
 
 from __future__ import annotations
@@ -15,8 +15,8 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
-from bar_assembly_core.design_io.conversion import convert_export, converted_folder  # noqa: E402
-from bar_assembly_core.design_io.timing import Stopwatch  # noqa: E402
+from bar_assembly_core.legacy.conversion import convert_export, converted_folder  # noqa: E402
+from bar_assembly_core.legacy.timing import Stopwatch  # noqa: E402
 
 
 def main() -> None:

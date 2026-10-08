@@ -9,11 +9,11 @@ import pybullet as p
 import pybullet_planning as pp
 import pytest
 
-from bar_assembly_core.design_io.pose import Pose
+from bar_assembly_core.geometry import Pose
 from bar_assembly_core.mirrors.compas_fab import CompasFabMirror
 from bar_assembly_core.robot import RobotObject
-from bar_assembly_core.scene import SceneSnapshot
-from bar_assembly_core.ur import UR_JOINT_NAMES
+from bar_assembly_core.scene import Scene
+from bar_assembly_core.urdf import UR_JOINT_NAMES
 from husky_assembly_teleop.config import robot_config_from_serial
 
 DATA = Path(__file__).resolve().parent.parent / "data"
@@ -32,7 +32,7 @@ def test_tamp_plans_on_a_lent_planner_and_sync_restores_the_world():
     api = pytest.importorskip("husky_assembly_tamp.motion_planner.api")
     cindy = robot_config_from_serial("0806", DATA)
     stow = {f"{arm.name}_{name}": value for arm in cindy.arms for name, value in zip(UR_JOINT_NAMES, arm.stow_joints)}
-    scene = SceneSnapshot(robots={CINDY: RobotObject(CINDY, cindy.model, Pose(), dict(stow))})
+    scene = Scene(robots={CINDY: RobotObject(CINDY, cindy.model, Pose(), dict(stow))})
     # ? Another world first, so the mirror's is not client 0: pp's functions default to 0 at import.
     other = p.connect(p.DIRECT)
     mirror = CompasFabMirror(CINDY)

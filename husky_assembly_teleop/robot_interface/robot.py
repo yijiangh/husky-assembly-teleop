@@ -19,7 +19,7 @@ from ..config import RobotConfig
 from .arm import ArmInterface, ArmState
 from .base import BaseInterface, BaseState
 from .frames import HUSKY_FRAME, MOCAP_FRAME, fixed_transform
-from bar_assembly_core.design_io.pose import Pose, compose, invert
+from bar_assembly_core.geometry import Pose, compose, invert
 from .ur_frames import stock_frame_problem
 from .connections import RosConnections
 

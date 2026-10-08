@@ -6,8 +6,8 @@ and the drawing. It replaces the shared PyBullet scene
 (`robot_scene.py`); the reasons are in `refactor_rationale.md` ("Why the scene is backend-free, and copied once per tick").
 
 Read this first if you are picking it up:
-- `bar_assembly_core/`: `scene.py`, `robot.py`, `kinematics.py`, `mirrors/pybullet.py`, `mirrors/compas_fab.py`; `design_io/geometry.py` (shapes), `design_io/pose.py` (poses)
-- `husky_assembly_teleop/world/`: `scene.py` (live `Scene`, `take_snapshot`), `kinematics.py` (live forward kinematics); `ui/scene_view.py`
+- `bar_assembly_core/`: `geometry.py` (poses, shapes), `ids.py`, `robot.py`, `scene.py`, `kinematics.py`, `mirrors/pybullet.py`, `mirrors/compas_fab.py`
+- `husky_assembly_teleop/world/`: `scene.py` (`LiveScene`, `take_snapshot`), `kinematics.py` (live forward kinematics); `ui/scene_view.py`
 - `monitor.py` (`_tick`), `plugin_api/context.py` (`ctx.scene`, `ctx.kinematics`)
 - `husky_assembly_teleop/old/cfab_session.py` and `husky_assembly_teleop/old/husky_monitor.py::_bridge_cfab_to_pp_for_bar_action` (how compas_fab was used before)
 
@@ -91,14 +91,14 @@ cell/bars/B1                        scene body, owner = plugin "cell"
 ## 5. Data model
 
 ### 5.1 `bar_assembly_core/scene.py`, `robot.py`; monitor `world/scene.py`
-- `Pose`, `compose` (from `design_io/pose.py`): `Pose(position, orientation)` is frozen, compared by value; `compose(a, b)`, `Pose.from_matrix`, `Pose.matrix()`.
+- `Pose`, `compose` (`geometry.py`): `Pose(position, orientation)` is frozen, compared by value; `compose(a, b)`, `Pose.from_matrix`, `Pose.matrix()`.
 - `Attachment(parent, link, grasp)`: held by a robot (link, or None for the base) or fixed to another body (`tracked/<name>`).
 - `Body(id, geometry, placement: Pose | Attachment, touches, label, color, enabled)`: **mutable**. `touches` lists ids allowed to touch it (bodies, `robots/<name>` for the whole robot, `robots/<name>/<link>`, mounted tools by tool id); it is symmetric.
 - `RobotModel(name, urdf, srdf, flanges, tools, tool_touches, stock_ur_frames)`: frozen, compared by identity. `RobotObject(id, model, base, joints, enabled, base_tracked, unmeasured, base_time, joints_time, label)`: one robot at one moment; `acting_problems()` says why it can't be planned for.
-- `SceneSnapshot(tick, time, bodies, world_poses, robots)`: `bodies` are copies (sharing geometry), tracked objects included as `tracked/<name>`; `world_poses` holds every body's resolved world pose (`world_poses(bodies, robots, link_pose)`); `robots` are `RobotObject`s by id.
-- Monitor only: `TrackedDescription(geometry, touches, label)` given to `ctx.track_object`; `Scene`: `bodies` (live dict), `tracked` (descriptions), `put`, `remove`, `remove_prefix`, `snapshot`, `take_snapshot`; `PluginScene` (`ctx.scene`): owner-checked `put`, `put_many`, `remove`, `remove_prefix`; `bodies`; `snapshot`.
+- `Scene(tick, time, bodies, world_poses, robots)`: `bodies` are copies (sharing geometry), tracked objects included as `tracked/<name>`; `world_poses` holds every body's resolved world pose (`world_poses(bodies, robots, link_pose)`); `robots` are `RobotObject`s by id.
+- Monitor only: `TrackedDescription(geometry, touches, label)` given to `ctx.track_object`; `LiveScene`: `bodies` (live dict), `tracked` (descriptions), `put`, `remove`, `remove_prefix`, `snapshot`, `take_snapshot`; `PluginScene` (`ctx.scene`): owner-checked `put`, `put_many`, `remove`, `remove_prefix`; `bodies`; `snapshot`.
 
-### 5.2 `design_io/geometry.py`
+### 5.2 `bar_assembly_core/geometry.py`
 - A **shape** is `TriMesh | BoxShape | CylinderShape`, in the body's frame. Later maybe more primitives, or a URDF.
   - `TriMesh(vertices, faces, convex)`: read-only numpy arrays, `convex` computed once. Compared by identity.
   - `BoxShape(size, origin)`, `CylinderShape(radius, height, origin)` (along Z, centred): frozen, compared by value. `origin` places the shape inside the body, as a URDF `<origin>` does.
@@ -141,7 +141,7 @@ Rules shared by every mirror:
 - ! compas_fab checks every stationary tool against every stationary body. Other robots' pairs already touching at `sync` can't change while this robot plans, so they are allowed for that snapshot (`static_contacts`). The acting robot's own tools are never allowed this way.
 - `lend()`: hands the planner to other code (tamp) with pybullet_planning pointed at this world; the next `sync` writes the full state, and rebuilds the cell if the borrower set its own.
 - `collisions(joints)` is compas_fab's `check_collision` (~25 ms with 50 bodies: it deep-copies the state per call). `search_check(joint_names)` resolves compas_fab's allowed pairs once and checks only pairs with a moving side, carrying held bodies and the arm's tools along (~1.5 ms); tests hold it equal to `check_collision`.
-- **Shapes are converted by `mirrors/compas_convert.rigid_body`:** each `Geometry` becomes a `RigidBody` of compas meshes, from `shape_mesh(shape)` for every collision shape (also used as visual meshes by default). The mirror only caches the result per `Geometry` object for its lifetime.
+- **Shapes are converted by `mirrors/compas.rigid_body`:** each `Geometry` becomes a `RigidBody` of compas meshes, from `shape_mesh(shape)` for every collision shape (also used as visual meshes by default). The mirror only caches the result per `Geometry` object for its lifetime.
 - `RobotCellState` from the snapshot:
 
   | Our data | compas_fab |
@@ -192,7 +192,7 @@ Rules shared by every mirror:
 
 ## 10. Open questions
 
-1. ✅ **Design naming.** Answered by `design_format.md`: `design_io/legacy.py` converts `env_` / `bar_` / `joint_` names to path ids (`bars/B1`), and each design robot has a `serial` field. Measured robots' ids use serials (`robots/a200-0806`): serials for all machine use, names only for humans; user-facing inputs accept both.
+1. ✅ **Design naming.** Answered by `design_format.md`: `legacy/export.py` converts `env_` / `bar_` / `joint_` names to path ids (`bars/B1`), and each design robot has a `serial` field. Measured robots' ids use serials (`robots/a200-0806`): serials for all machine use, names only for humans; user-facing inputs accept both.
 2. ✅ **Tool mapping.** Tools are separate objects in every planning cell; a design tool maps to the configured robot's tool on the same flange (`cell/design.scene_bodies`).
 3. **Attachments.** Static and set by `cell` for now. Decide later whether planners take over while they plan.
 4. **pinocchio layout.** One model per robot, or all appended into one.

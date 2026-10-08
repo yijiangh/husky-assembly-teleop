@@ -8,14 +8,14 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from bar_assembly_core.design_io.geometry import box_geometry
-from bar_assembly_core.design_io.pose import Pose, compose
+from bar_assembly_core.geometry import box_geometry
+from bar_assembly_core.geometry import Pose, compose
 from bar_assembly_core.kinematics import ForwardKinematics
 from bar_assembly_core.robot import RobotObject, robot_model
 from bar_assembly_core.scene import Attachment, Body, world_poses
 from husky_assembly_teleop.config import robot_config_from_serial
 from husky_assembly_teleop.world.kinematics import Kinematics
-from husky_assembly_teleop.world.scene import Scene, TrackedDescription
+from husky_assembly_teleop.world.scene import LiveScene, TrackedDescription
 
 DATA = Path(__file__).resolve().parent.parent / "data"
 #: Robot -> (serial, the design copy's URDF variant, the one link it turns 90 degrees against the stock UR frames).
@@ -34,7 +34,7 @@ def cindy():
 
 
 def test_live_model_keeps_tools_apart(cindy):
-    """The live model's URDF has no tool links; each tool is a ToolSpec that may touch its arm's wrist links."""
+    """The live model's URDF has no tool links; each tool is a Tool that may touch its arm's wrist links."""
     model = cindy.model
     assert model.flanges == ("left_ur_arm_tool0", "right_ur_arm_tool0") and model.stock_ur_frames
     assert not any("scaffolding" in link for link in model.links)
@@ -112,7 +112,7 @@ def test_monitor_snapshot_has_robot_objects_and_tracked_bodies(cindy):
     probe = SimpleNamespace(position=np.array([1.0, 2.0, 3.0]), orientation=np.array([0.0, 0.0, 0.0, 1.0]),
                             tracked=True, last_fix_time=None)
     world = SimpleNamespace(robots={cindy.serial: robot}, tracked_objects={"probe": probe})
-    scene = Scene()
+    scene = LiveScene()
     scene.tracked["probe"] = TrackedDescription(label="the probe")
     scene.put(Body("t/tip", box_geometry((0.01, 0.01, 0.01)), Attachment("tracked/probe", None, Pose((0.0, 0.0, 0.1)))))
     snapshot = scene.take_snapshot(world, kinematics, tick=1, time=0.0)

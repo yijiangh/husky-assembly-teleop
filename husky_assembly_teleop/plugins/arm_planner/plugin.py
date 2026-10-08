@@ -23,7 +23,7 @@ from ...robot_interface.arm import UR_JOINT_LIMITS
 from ...ui.ghost import RobotGhost
 from ...ui.pybullet_window import add_pybullet_window_toggle
 from ...ui.style import SECTION_CTRL, SECTION_TOOL, block, chip, section, values
-from bar_assembly_core.scene import robot_id
+from bar_assembly_core.ids import robot_id
 from .planner import ArmPath, ArmPlanningWorld, arm_joint_names, plan_arm
 
 #: The plan goes stale once a joint moves this far from the planned start, or the base this far.

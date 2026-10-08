@@ -7,8 +7,8 @@ once the last of those is built (`Design.scene_after`), with the held bar disabl
 
 from __future__ import annotations
 
-from .design_io.types import Design
-from .scene import SceneSnapshot
+from .types import Design
+from ..scene import Scene
 
 
 def release_bar(design: Design, action_id: str) -> str:
@@ -34,7 +34,7 @@ def release_bar(design: Design, action_id: str) -> str:
     return max(action.supports_until, key=last_built.__getitem__)
 
 
-def hold_scene(scene: SceneSnapshot, bar: str) -> SceneSnapshot:
+def hold_scene(scene: Scene, bar: str) -> Scene:
     """A copy of a scene with the held bar disabled; the scene given is not changed.
 
     Args:
@@ -49,6 +49,6 @@ def hold_scene(scene: SceneSnapshot, bar: str) -> SceneSnapshot:
     return held
 
 
-def hold_scene_for(design: Design, action_id: str) -> SceneSnapshot:
+def hold_scene_for(design: Design, action_id: str) -> Scene:
     """The hold scene of a `bar_holding` action: `hold_scene(design.scene_after(release_bar(…)), action.bar)`."""
     return hold_scene(design.scene_after(release_bar(design, action_id)), design.actions[action_id].bar)

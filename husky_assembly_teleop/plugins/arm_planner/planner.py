@@ -18,7 +18,8 @@ from ..planning.path import TimedPath
 from ..planning.search import PlanResult, connect
 from ...robot_interface.arm import JOINT_MOVE_MAX_SPEED, UR_JOINT_LIMITS, UR_JOINT_NAMES
 from bar_assembly_core.mirrors.compas_fab import CompasFabMirror
-from bar_assembly_core.scene import SceneSnapshot, robot_id
+from bar_assembly_core.scene import Scene
+from bar_assembly_core.ids import robot_id
 
 #: Collision-checking resolution along a move, radians per joint.
 JOINT_STEP = 0.05
@@ -69,11 +70,11 @@ class ArmPlanningWorld:
         #: Whether the PyBullet window is open.
         self.gui = False
         # Display text for our ids, from the last synced snapshot.
-        self.label = SceneSnapshot().label
+        self.label = Scene().label
         #: Given to each mirror: logs each full rebuild of its cell, and why. Set by the plugin.
         self.log: Callable[[str], None] | None = None
 
-    def sync(self, snapshot: SceneSnapshot, serial: str) -> CompasFabMirror:
+    def sync(self, snapshot: Scene, serial: str) -> CompasFabMirror:
         """Make one robot's planning world match a snapshot.
 
         Args:
@@ -93,7 +94,7 @@ class ArmPlanningWorld:
         self.label = snapshot.label
         return mirror
 
-    def set_gui(self, gui: bool, snapshot: SceneSnapshot, serial: str) -> None:
+    def set_gui(self, gui: bool, snapshot: Scene, serial: str) -> None:
         """Open or close PyBullet's own window on a robot's planning world, for debugging. Worker thread.
 
         Args:

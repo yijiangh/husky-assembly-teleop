@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from rclpy.task import Future as RosFuture
 
     from ..config import MonitorConfig
-    from bar_assembly_core.design_io.geometry import Geometry
+    from bar_assembly_core.geometry import Geometry
     from ..monitor import HuskyMonitor
     from ..ui.visualization import PluginView
     from ..world.kinematics import Kinematics

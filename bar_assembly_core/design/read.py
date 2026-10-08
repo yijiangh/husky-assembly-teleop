@@ -10,11 +10,12 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from .geometry import BoxShape, CylinderShape, Geometry, Shape, TriMesh
+from ..geometry import BoxShape, CylinderShape, Geometry, Shape, TriMesh
 from .meshes import MeshCache
-from .pose import Pose
-from .types import (Action, Attached, BodySpec, Design, DesignError, Movement, RobotSpec, RobotState,
-                    SchemaMismatch, State, Target, ToolSpec, Writer)
+from ..geometry import Pose
+from .types import (Action, Attached, BodySpec, Design, DesignError, Movement, RobotSpec, RobotState, SchemaMismatch,
+                    State, Target, Writer)
+from ..robot import Tool
 from .validate import validate
 from .version import SCHEMA
 
@@ -187,10 +188,10 @@ def _geometry(raw: Dict[str, Any], meshes: _Meshes, owner: str) -> Geometry:
     return Geometry(visual, collision)
 
 
-def _tool(key: str, raw: Dict[str, Any], meshes: _Meshes) -> ToolSpec:
+def _tool(key: str, raw: Dict[str, Any], meshes: _Meshes) -> Tool:
     """A tool entry."""
-    return ToolSpec(id=key, geometry=_geometry(raw, meshes, key), tcp=_pose(raw["tcp"]), kind=str(raw["kind"]),
-                    touches=tuple(raw.get("touches", ())))
+    return Tool(id=key, geometry=_geometry(raw, meshes, key), tcp=_pose(raw["tcp"]), kind=str(raw["kind"]),
+                touches=tuple(raw.get("touches", ())))
 
 
 def _body(key: str, raw: Dict[str, Any], meshes: _Meshes) -> BodySpec:

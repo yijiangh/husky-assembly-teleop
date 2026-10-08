@@ -1,7 +1,7 @@
 # Design file format, schema 1
 
 Status: **implemented** (schema 1). Replaces the compas_fab JSON export (`RobotCell*.json`, `BarActions/`,
-`ActionSchedule.json`, `WalkableGround.json`). Read and written by the `design_io` library, part of the shared core
+`ActionSchedule.json`, `WalkableGround.json`). Read and written by `bar_assembly_core.design`, part of the shared core
 `bar_assembly_core` (plans: `tasks/2026-10-01_design_io_library.md`, `tasks/2026-10-08_shared_core.md`). The core
 also turns a design into scenes (`Design.scene_at`, `scene_after`) for its mirrors; the format does not depend on them.
 
@@ -264,9 +264,9 @@ A reader rejects a design that breaks any rule.
 ## Appendix A. Mapping to compas_fab
 
 Planners get a compas_fab cell by syncing a scene (`design.scene_at(movement)`) into a `CompasFabMirror` for the acting
-robot (`bar_assembly_core/mirrors/compas_fab.py`), which follows this mapping. `design_io.compas_fab.to_robot_cell`
+robot (`bar_assembly_core/mirrors/compas_fab.py`), which follows this mapping. `legacy.compas_fab.to_robot_cell`
 (one `RobotCell` per acting robot) and `to_cell_state` (its `RobotCellState` for one State) map a design directly;
-they stay as the reference the equivalence check (`scripts/design_io_equivalence.py`) compares the mirror with.
+they stay as the reference the equivalence check (`scripts/legacy_equivalence.py`) compares the mirror with.
 
 | Design | compas_fab |
 |---|---|

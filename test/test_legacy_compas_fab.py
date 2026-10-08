@@ -33,8 +33,8 @@ def _same_frame(a, b, tolerance: float = 1e-6) -> bool:
 def converted(tmp_path_factory):
     """The export converted and written, read back, with the original actions and cells."""
     from compas.data import json_load
-    from bar_assembly_core.design_io.conversion import convert_export
-    from bar_assembly_core.design_io import read
+    from bar_assembly_core.legacy.conversion import convert_export
+    from bar_assembly_core.design import read
 
     folder = tmp_path_factory.mktemp("design")
     design = read(convert_export(EXPORT, folder, DATA, report=lambda _line: None))
@@ -50,7 +50,7 @@ def converted(tmp_path_factory):
 
 def _legacy_names(design, acting: str):
     """Maps from the export's names to ours, for one acting robot's cell."""
-    from bar_assembly_core.design_io.legacy import body_id
+    from bar_assembly_core.legacy.export import body_id
 
     def name(key: str) -> str:
         if key.startswith("ObstacleRobot"):
@@ -64,7 +64,7 @@ def _legacy_names(design, acting: str):
 
 def test_states_match(converted):
     """Every start state of every movement comes back with the same frames and flags."""
-    from bar_assembly_core.design_io.compas_fab import PARKED_POSITION, to_cell_state, to_robot_cell
+    from bar_assembly_core.legacy.compas_fab import PARKED_POSITION, to_cell_state, to_robot_cell
 
     design, cells, originals = converted
     new_cells = {robot: to_robot_cell(design, robot) for robot in design.robots}
@@ -117,7 +117,7 @@ def test_collisions_match(converted):
     """compas_fab finds the same colliding pairs in the original and the converted cells."""
     from compas_fab.backends import CollisionCheckError, PyBulletClient, PyBulletPlanner
 
-    from bar_assembly_core.design_io.compas_fab import to_cell_state, to_robot_cell
+    from bar_assembly_core.legacy.compas_fab import to_cell_state, to_robot_cell
 
     design, cells, originals = converted
     not_ground = lambda body_id: not body_id.startswith("ground/")  # the export has no ground  # noqa: E731

@@ -8,17 +8,19 @@ from types import SimpleNamespace
 
 import pytest
 import viser
-from design_io_fixtures import build_design
+from design_fixtures import build_design
 from test_compas_fab_mirror import configs, mirror, tool0, world  # noqa: F401 (fixtures)
 
-from bar_assembly_core.design_io import Action, BodySpec, Movement, State, ToolSpec, box_geometry, write
+from bar_assembly_core.design import Action, BodySpec, Movement, State, write
+from bar_assembly_core.robot import Tool
+from bar_assembly_core.geometry import box_geometry
 from bar_assembly_core.robot import robot_model
-from bar_assembly_core.design_io.pose import Pose
+from bar_assembly_core.geometry import Pose
 from bar_assembly_core.scene import Attachment
 from husky_assembly_teleop.config import robot_config_from_serial
 from husky_assembly_teleop.plugins.cell.design import CellDesign, Step, displayed_joints, load_design, scene_bodies
 from husky_assembly_teleop.plugins.cell.drawing import GHOST_OPACITY, DesignDrawing, load_robot_models
-from husky_assembly_teleop.world.scene import PluginScene, Scene
+from husky_assembly_teleop.world.scene import LiveScene, PluginScene
 
 
 @pytest.fixture
@@ -36,7 +38,7 @@ def _by_id(cell: CellDesign, step_index: int, robots=()) -> dict:
 def _real_cindy(cell: CellDesign) -> SimpleNamespace:
     """A configured robot standing in for Cindy (serial 0806): the design's URDF, with its own tool on left_tool0."""
     spec = cell.design.robots["robots/cindy"]
-    tool = ToolSpec("tools/a200-0806/left", box_geometry((0.05, 0.05, 0.05)), Pose(), "scaffolding_v3")
+    tool = Tool("tools/a200-0806/left", box_geometry((0.05, 0.05, 0.05)), Pose(), "scaffolding_v3")
     return SimpleNamespace(serial="a200-0806", model=robot_model("a200-0806", spec.urdf, spec.srdf,
                                                                  {"left_tool0": tool}))
 
@@ -97,7 +99,7 @@ def test_robot_without_the_held_link_is_refused(cell):
 def test_scene_accepts_them(cell):
     """Every id is valid and owned by "cell/"; each has collision shapes, so nothing is warned about."""
     warnings = []
-    PluginScene(Scene(), "cell", warnings.append).put_many(_by_id(cell, 2).values())
+    PluginScene(LiveScene(), "cell", warnings.append).put_many(_by_id(cell, 2).values())
     assert warnings == []
 
 

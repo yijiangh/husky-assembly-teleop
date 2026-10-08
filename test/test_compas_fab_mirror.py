@@ -16,11 +16,11 @@ import pytest
 
 from husky_assembly_teleop.config import robot_config_from_serial
 from husky_assembly_teleop.robot_interface.arm import UR_JOINT_NAMES
-from bar_assembly_core.design_io.geometry import Geometry, box_geometry
+from bar_assembly_core.geometry import Geometry, box_geometry
 from bar_assembly_core.mirrors.compas_fab import CompasFabMirror
 from bar_assembly_core.robot import RobotObject
-from bar_assembly_core.scene import Attachment, Body, SceneSnapshot
-from bar_assembly_core.design_io.pose import Pose
+from bar_assembly_core.scene import Attachment, Body, Scene
+from bar_assembly_core.geometry import Pose
 
 DATA = Path(__file__).resolve().parent.parent / "data"
 ALICE, BELLE = "0804", "0805"
@@ -48,7 +48,7 @@ def stow(config) -> dict[str, float]:
     return {f"{arm.name}_{name}": value for name, value in zip(UR_JOINT_NAMES, arm.stow_joints)}
 
 
-def world(configs, bodies=(), belle: Pose | None = None, belle_model=None) -> SceneSnapshot:
+def world(configs, bodies=(), belle: Pose | None = None, belle_model=None) -> Scene:
     """Alice at the origin with the arm stowed, Belle at `belle` (default: far away), and some bodies.
 
     ? An attached body's world pose is not used by the mirror for Alice's own links; its grasp stands in.
@@ -58,7 +58,7 @@ def world(configs, bodies=(), belle: Pose | None = None, belle_model=None) -> Sc
                                     stow(configs[BELLE]))}
     poses = {body.id: body.placement if isinstance(body.placement, Pose) else body.placement.grasp
              for body in bodies}
-    return SceneSnapshot(bodies={body.id: body for body in bodies}, world_poses=poses, robots=robots)
+    return Scene(bodies={body.id: body for body in bodies}, world_poses=poses, robots=robots)
 
 
 def tool0(mirror: CompasFabMirror) -> Pose:
@@ -194,7 +194,7 @@ def _pose(frame) -> Pose:
     return Pose.from_arrays(frame.point, (x, y, z, w))
 
 
-def _design_snapshot(state, geometries, cindy) -> SceneSnapshot:
+def _design_snapshot(state, geometries, cindy) -> Scene:
     """Our snapshot of a design state for Cindy: robots, visible bodies, attachments and touches."""
     from husky_assembly_teleop.config import robot_config_from_serial as config_for
     robots = {CINDY_ID: RobotObject(CINDY_ID, cindy.model, _pose(state.robot_base_frame),
@@ -217,7 +217,7 @@ def _design_snapshot(state, geometries, cindy) -> SceneSnapshot:
             placement = _pose(body.frame)
         bodies[name] = Body(name, geometries[name], placement, touches)
         poses[name] = placement if isinstance(placement, Pose) else placement.grasp
-    return SceneSnapshot(bodies=bodies, world_poses=poses, robots=robots)
+    return Scene(bodies=bodies, world_poses=poses, robots=robots)
 
 
 @pytest.mark.skipif(not DESIGN, reason="set HUSKY_DESIGN_DIRECTORY to a design folder")
@@ -228,7 +228,7 @@ def test_same_result_as_the_design_cell():
     from compas_fab.backends import CollisionCheckError, PyBulletClient, PyBulletPlanner
     import rs_data_structure  # noqa: F401  registers the Action types for json_load
 
-    from bar_assembly_core.mirrors.compas_convert import filled
+    from bar_assembly_core.mirrors.compas import filled
 
     folder = Path(DESIGN)
     design_cell = json_load(str(folder / "RobotCell.json"))

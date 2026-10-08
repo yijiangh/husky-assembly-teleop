@@ -11,11 +11,11 @@ import pybullet_planning as pp
 import pytest
 
 from husky_assembly_teleop.config import robot_config_from_serial
-from bar_assembly_core.design_io.geometry import (BoxShape, CylinderShape, Geometry, TriMesh, box_geometry, shape_mesh)
+from bar_assembly_core.geometry import BoxShape, CylinderShape, Geometry, TriMesh, box_geometry, shape_mesh
 from bar_assembly_core.mirrors.pybullet import PyBulletMirror
 from bar_assembly_core.robot import RobotObject
-from bar_assembly_core.scene import Attachment, Body, SceneSnapshot
-from bar_assembly_core.design_io.pose import Pose
+from bar_assembly_core.scene import Attachment, Body, Scene
+from bar_assembly_core.geometry import Pose
 
 DATA = Path(__file__).resolve().parent.parent / "data"
 SERIAL = "0804"
@@ -51,7 +51,7 @@ def resets(monkeypatch) -> list[int]:
     return calls
 
 
-def snapshot(bodies: tuple[Body, ...] = (), robots: dict[str, RobotObject] | None = None) -> SceneSnapshot:
+def snapshot(bodies: tuple[Body, ...] = (), robots: dict[str, RobotObject] | None = None) -> Scene:
     """Build a snapshot from bodies, resolving an attachment to the robot's base as the grasp pose.
 
     Args:
@@ -59,11 +59,11 @@ def snapshot(bodies: tuple[Body, ...] = (), robots: dict[str, RobotObject] | Non
         robots: Robots by id.
 
     Returns:
-        SceneSnapshot: The world to sync.
+        Scene: The world to sync.
     """
     poses = {body.id: body.placement if isinstance(body.placement, Pose) else body.placement.grasp
              for body in bodies}
-    return SceneSnapshot(bodies={body.id: body for body in bodies}, world_poses=poses, robots=robots or {})
+    return Scene(bodies={body.id: body for body in bodies}, world_poses=poses, robots=robots or {})
 
 
 def robot_entry(config, joints: dict[str, float] | None = None, base: Pose = Pose(), object_id: str = ROBOT,

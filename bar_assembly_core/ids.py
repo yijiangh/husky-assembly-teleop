@@ -1,17 +1,57 @@
 """
-Small explicit id maps at the edges, and moving planned attachments onto other robots.
+Ids: one canonical id per object, a path such as "bars/B1", "robots/cindy" or "robots/cindy/left_ur_arm_tool0".
 
-The core uses one id per object ("bars/B1", "robots/cindy"). Where two id spaces meet (a planned robot and the real
-one, a mocap rigid body and a design body, design ids and a plugin's prefixed scene ids) an `IdMap` lists every
-pair; an id it does not list is refused, never guessed.
+Where two id spaces meet (a planned robot and the real one, a mocap rigid body and a design body, design ids and a
+plugin's prefixed scene ids) an `IdMap` lists every pair; an id it does not list is refused, never guessed.
 """
 
 from __future__ import annotations
 
-from typing import Dict, Mapping
+import re
+from typing import Dict, Mapping, Tuple
 
-from .robot import RobotModel
-from .scene import ROBOTS, Attachment
+#: What an id may contain: path segments of letters, digits, `_`, `.` and `-`, joined by `/`.
+ID_PATTERN = re.compile(r"[A-Za-z0-9_.\-]+(/[A-Za-z0-9_.\-]+)*")
+
+#: First id segments of robots, mounted tools and measured objects.
+ROBOTS, TOOLS, TRACKED = "robots", "tools", "tracked"
+
+
+def check_id(object_id: str) -> None:
+    """Refuse an id that does not match ID_PATTERN.
+
+    Raises:
+        ValueError: If the id is invalid.
+    """
+    if not ID_PATTERN.fullmatch(object_id):
+        raise ValueError(f"invalid id {object_id!r}: use letters, digits, '_', '.', '-' and '/' only")
+
+
+def robot_id(name: str) -> str:
+    """The id of a robot: "robots/<name>", e.g. "robots/a200-0806"."""
+    return f"{ROBOTS}/{name}"
+
+
+def tracked_id(name: str) -> str:
+    """The id of a measured object: "tracked/<name>"."""
+    return f"{TRACKED}/{name}"
+
+
+def link_id(robot: str, link: str) -> str:
+    """The id of one robot link: "robots/<robot>/<link>" from a robot id and a link name."""
+    return f"{robot}/{link}"
+
+
+def split_link_id(value: str) -> Tuple[str, str]:
+    """Split "robots/<robot>/<link>" into (robot id, link name).
+
+    Raises:
+        ValueError: If `value` is not a link id.
+    """
+    parts = value.split("/")
+    if len(parts) != 3 or parts[0] != ROBOTS:
+        raise ValueError(f"{value!r} is not a link id 'robots/<robot>/<link>'")
+    return f"{parts[0]}/{parts[1]}", parts[2]
 
 
 class IdMap:
@@ -55,34 +95,3 @@ class IdMap:
         if parts[0] == ROBOTS and len(parts) == 3 and robot in self.pairs:
             return f"{self.pairs[robot]}/{parts[2]}"
         return None
-
-
-def retarget(attachments: Mapping[str, Attachment], robot_map: IdMap,
-             models: Mapping[str, RobotModel]) -> Dict[str, Attachment]:
-    """The same attachments held by other robots: only the robot id changes; link and grasp stay.
-
-    The link names are the same in both URDF variants of a robot, so a planned grasp carries over to the real robot.
-    Attachments to a body, not a robot, are kept as they are.
-
-    Args:
-        attachments: Body id -> attachment, e.g. the held bodies of a design scene.
-        robot_map: Robot id -> the robot to hold it instead, e.g. {"robots/cindy": "robots/a200-0806"}.
-        models: The target robots' models, by their ids.
-
-    Returns:
-        dict[str, Attachment]: Body id -> the new attachment.
-
-    Raises:
-        KeyError: If a holding robot is not in `robot_map`, or its target is not in `models`.
-        ValueError: If the target model lacks the link.
-    """
-    result = {}
-    for body_id, attachment in attachments.items():
-        if not attachment.parent.startswith(f"{ROBOTS}/"):
-            result[body_id] = attachment
-            continue
-        target = robot_map(attachment.parent)
-        if attachment.link is not None and attachment.link not in models[target].links:
-            raise ValueError(f"{body_id}: {target} has no link {attachment.link!r} to hold it by")
-        result[body_id] = Attachment(target, attachment.link, attachment.grasp)
-    return result

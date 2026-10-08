@@ -1,5 +1,5 @@
 """
-The mounted tools' models: joined onto a robot's URDF for drawing and live kinematics, or as `ToolSpec`s for planning.
+The mounted tools' models: joined onto a robot's URDF for drawing and live kinematics, or as `Tool`s for planning.
 
 Stitching gives each tool's names the arm's name as a prefix, fixes its root link to <arm>_tool0, and makes all mesh
 paths absolute. Planning cells keep tools separate: `tool_spec` reads a tool URDF's collision shapes.
@@ -14,7 +14,8 @@ from xml.etree.ElementTree import Element, SubElement, parse
 
 from yourdfpy import URDF
 
-from bar_assembly_core.design_io import Geometry, Pose, ToolSpec, TriMesh
+from bar_assembly_core.geometry import Geometry, Pose, TriMesh
+from bar_assembly_core.robot import Tool
 
 #: Where the tool URDFs live, under the data directory.
 TOOL_URDF_DIRECTORY = "tool_urdf"
@@ -72,7 +73,7 @@ def tool_urdf(kind: str, arm_name: str, data_directory: Path) -> Path | None:
     return data_directory / TOOL_URDF_DIRECTORY / entry
 
 
-def tool_spec(kind: str, arm_name: str, data_directory: Path, tool_id: str) -> ToolSpec | None:
+def tool_spec(kind: str, arm_name: str, data_directory: Path, tool_id: str) -> Tool | None:
     """A tool for planning cells: its URDF's collision meshes at zero joints, in the tool0 frame; TCP at tool0.
 
     Args:
@@ -82,7 +83,7 @@ def tool_spec(kind: str, arm_name: str, data_directory: Path, tool_id: str) -> T
         tool_id: Its id in scenes, e.g. "tools/a200-0806/left_ur_arm".
 
     Returns:
-        ToolSpec | None: The tool, or None for a tool without a model.
+        Tool | None: The tool, or None for a tool without a model.
 
     Raises:
         ValueError: If `kind` has models for some arms, but not for this one.
@@ -99,7 +100,7 @@ def tool_spec(kind: str, arm_name: str, data_directory: Path, tool_id: str) -> T
                       load_collision_meshes=True, filename_handler=resolve)
     shapes = tuple(TriMesh.from_arrays(mesh.vertices, mesh.faces)
                    for mesh in model.collision_scene.dump(concatenate=False))
-    return ToolSpec(id=tool_id, geometry=Geometry(shapes, shapes), tcp=Pose(), kind=kind)
+    return Tool(id=tool_id, geometry=Geometry(shapes, shapes), tcp=Pose(), kind=kind)
 
 
 def stitch_tools(robot_urdf: Path, tools: dict[str, str | None], data_directory: Path, out_file: Path) -> Path:

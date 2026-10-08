@@ -13,8 +13,8 @@ from __future__ import annotations
 from pathlib import Path
 from xml.etree.ElementTree import parse
 
-from bar_assembly_core.design_io.pose import Pose, compose
-from bar_assembly_core.ur import joint_origin
+from bar_assembly_core.geometry import Pose, compose
+from bar_assembly_core.urdf import joint_origin
 
 #: Frame of husky Cartesian targets (the URDF's husky base_link).
 HUSKY_FRAME = "base_link"

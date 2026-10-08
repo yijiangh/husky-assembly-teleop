@@ -1,12 +1,12 @@
-"""Tests for design_io schema checks (T6): a file of another schema is refused, naming its commit."""
+"""Tests for design schema checks (T6): a file of another schema is refused, naming its commit."""
 
 import json
 from pathlib import Path
 
 import pytest
-from design_io_fixtures import build_design
+from design_fixtures import build_design
 
-from bar_assembly_core.design_io import DesignError, SchemaMismatch, read, write
+from bar_assembly_core.design import DesignError, SchemaMismatch, read, write
 
 
 def _set_writer(path: Path, **changes) -> None:

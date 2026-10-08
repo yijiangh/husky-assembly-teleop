@@ -1,10 +1,16 @@
 """
-The shared core of bar assembly: design files, the scene of one moment, and its mirrors in collision backends.
+The shared core of bar assembly, used alike by the monitor, the Rhino plugin and the planners.
 
-`design_io` reads and writes designs; the monitor, the Rhino plugin and the planners use the same package.
+Layers, each importing only the ones above it:
+    geometry, ids     poses, shapes, ids                                          numpy, scipy, trimesh
+    urdf, kinematics  URDF/SRDF files, UR conventions; forward kinematics         kinematics: + yourdfpy
+    robot, scene      RobotModel, RobotObject; Body, Scene: the world at one moment
+    design            the file format; design.scenes turns a design into scenes   design.scenes: + yourdfpy
+    mirrors           a scene in PyBullet or compas_fab, for planners             + pybullet, compas_fab
+    legacy            the old compas_fab export (optional)                       + compas, rs_data_structure
 
 - ! Imports nothing from `husky_assembly_teleop`, ROS or viser: the package moves to its own repository as a copy.
-- ! Runs on Python 3.9 (Rhino 8). Core dependencies: numpy, scipy, trimesh (`requirements.txt` lists the extras).
+- ! Runs on Python 3.9 (Rhino 8).
 """
 
 from __future__ import annotations

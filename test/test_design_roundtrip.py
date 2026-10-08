@@ -1,4 +1,4 @@
-"""Tests for design_io write and read (T3): a design written and read back is the same design."""
+"""Tests for design write and read (T3): a design written and read back is the same design."""
 
 import json
 from dataclasses import replace
@@ -6,12 +6,13 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from design_io_fixtures import TETRA, build_design, write_robot_files
+from design_fixtures import TETRA, build_design, write_robot_files
 
-from bar_assembly_core.design_io import BodySpec, Design, Geometry, Pose, TriMesh, read, write
-from bar_assembly_core.design_io.meshes import read_mesh, write_mesh
-from bar_assembly_core.design_io.robot_files import (copy_robot, mesh_references, movable_joints, resolved_urdf_text,
-                                                     srdf_group_tips, urdf_joints, urdf_links)
+from bar_assembly_core.design import BodySpec, Design, read, write
+from bar_assembly_core.geometry import Geometry, Pose, TriMesh
+from bar_assembly_core.design.meshes import read_mesh, write_mesh
+from bar_assembly_core.urdf import (copy_robot, mesh_references, movable_joints, resolved_urdf_text, srdf_group_tips,
+                                    urdf_joints, urdf_links)
 
 
 def _shapes(shapes) -> list:

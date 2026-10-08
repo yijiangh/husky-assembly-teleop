@@ -1,4 +1,4 @@
-"""Tests for the core's isolation: it imports nothing of the monitor, ROS or viser, and `design_io` skips compas."""
+"""Tests for the core's isolation: it imports nothing of the monitor, ROS or viser, and `design` skips compas."""
 
 import ast
 import os
@@ -41,8 +41,8 @@ def test_no_forbidden_imports():
 
 
 def test_import_skips_compas():
-    """`import bar_assembly_core.design_io` loads no compas package."""
-    code = ("import sys, bar_assembly_core.design_io\n"
+    """`import bar_assembly_core.design` loads no compas package."""
+    code = ("import sys, bar_assembly_core.design\n"
             "print(sorted(m for m in sys.modules if m.split('.')[0] in ('compas', 'compas_fab', 'compas_robots')))")
     env = {**os.environ, "PYTHONPATH": os.pathsep.join([str(PACKAGE_ROOT), os.environ.get("PYTHONPATH", "")])}
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=env, timeout=120)

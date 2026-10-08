@@ -1,5 +1,5 @@
 """
-A compas_fab planning world for one acting robot, filled from a `SceneSnapshot`.
+A compas_fab planning world for one acting robot, filled from a `Scene`.
 
 The acting robot is the cell's robot, each of its mounted tools a `ToolModel` attached to the SRDF group ending at
 its flange (as the Rhino plugin and tamp build cells). Every other robot is one `ToolModel` keyed by its robot id,
@@ -30,19 +30,20 @@ from compas_fab.backends.pybullet.conversions import pose_from_frame
 from compas_fab.robots import RigidBody, RigidBodyState, RobotCell, RobotCellState, RobotSemantics, ToolState
 from compas_robots import Configuration, ToolModel
 
-from ..design_io.pose import Pose
+from ..geometry import Pose
 from ..robot import RobotModel
-from ..scene import ROBOTS, Attachment, SceneSnapshot, same_source
+from ..ids import ROBOTS
+from ..scene import Attachment, Scene, same_source
 from . import check_display
 from .pp_client import pp_client
-from .compas_convert import (PARKED_POSITION, filled, frame_from_pose, load_model, planning_group, rigid_body,
-                             robot_as_tool, subtree, tool_model)
+from .compas import (PARKED_POSITION, filled, frame_from_pose, load_model, planning_group, rigid_body, robot_as_tool,
+                     subtree, tool_model)
 
 if TYPE_CHECKING:
     from compas_robots import RobotModel as CompasRobotModel
     from compas_robots.model import Link
 
-    from ..design_io.geometry import Geometry
+    from ..geometry import Geometry
 
 
 @dataclass(eq=False)
@@ -130,7 +131,7 @@ class CompasFabMirror:
 
     # --- --- --- --- --- SYNC --- --- --- --- ---
 
-    def sync(self, snapshot: SceneSnapshot) -> None:
+    def sync(self, snapshot: Scene) -> None:
         """Make the world match a snapshot: rebuild the cell if its models changed, then set the state.
 
         Args:

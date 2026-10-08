@@ -3,9 +3,9 @@
 import pytest
 import viser
 
-from bar_assembly_core.design_io.geometry import BoxShape, Geometry, box_geometry
-from bar_assembly_core.scene import Body, SceneSnapshot
-from bar_assembly_core.design_io.pose import Pose
+from bar_assembly_core.geometry import BoxShape, Geometry, box_geometry
+from bar_assembly_core.scene import Body, Scene
+from bar_assembly_core.geometry import Pose
 from husky_assembly_teleop.ui.scene_view import SceneView
 
 BOX = box_geometry((0.1, 0.1, 0.1))
@@ -24,11 +24,11 @@ def _nodes(server: viser.ViserServer) -> set[str]:
     return set(server.scene._handle_from_node_name)
 
 
-def _snapshot(bodies: dict[str, tuple[Body, Pose]] | None = None) -> SceneSnapshot:
+def _snapshot(bodies: dict[str, tuple[Body, Pose]] | None = None) -> Scene:
     """Build a snapshot from bodies with their world poses."""
     bodies = bodies or {}
-    return SceneSnapshot(bodies={body_id: body for body_id, (body, _) in bodies.items()},
-                         world_poses={body_id: pose for body_id, (_, pose) in bodies.items()})
+    return Scene(bodies={body_id: body for body_id, (body, _) in bodies.items()},
+                 world_poses={body_id: pose for body_id, (_, pose) in bodies.items()})
 
 
 def _body(body_id: str, geometry=BOX, pose: Pose = Pose()) -> tuple[Body, Pose]:

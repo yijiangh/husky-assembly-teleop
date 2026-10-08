@@ -27,8 +27,8 @@ from .stream_stats import StreamStats
 from .connections import RosConnections
 from .controller_manager import ControllerManagerInterface, ControllerManagerState
 from .end_effectors import EndEffector, EndEffectorState, make_end_effector
-from bar_assembly_core.design_io.pose import Pose, compose, invert
-from bar_assembly_core.ur import UR_JOINT_NAMES
+from bar_assembly_core.geometry import Pose, compose, invert
+from bar_assembly_core.urdf import UR_JOINT_NAMES
 from .ur_frames import BASE_LINK_FROM_UR_BASE
 
 # ? qos_profile_sensor_data but deeper, to hold one tick of samples: 100 covers 500 Hz for 200 ms.

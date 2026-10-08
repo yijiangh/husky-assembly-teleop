@@ -13,12 +13,12 @@ from xml.etree.ElementTree import ParseError
 
 import numpy as np
 
-from .geometry import BoxShape, CylinderShape, Geometry
-from .pose import ID_PATTERN, Pose
-from .robot_files import (is_relative_reference, mesh_references, movable_joints, srdf_group_tips, urdf_joints,
-                          urdf_links)
-from .types import (ACTION_TYPES, BODY_PREFIXES, CONTROLLERS, MOVEMENT_TYPES, ROBOT_PREFIX, TOOL_PREFIX, Design,
-                    DesignError, State)
+from ..geometry import BoxShape, CylinderShape, Geometry
+from ..ids import ID_PATTERN
+from ..geometry import Pose
+from ..urdf import is_relative_reference, mesh_references, movable_joints, srdf_group_tips, urdf_joints, urdf_links
+from .types import (ACTION_TYPES, BODY_PREFIXES, CONTROLLERS, Design, DesignError, MOVEMENT_TYPES, ROBOT_PREFIX, State,
+                    TOOL_PREFIX)
 
 #: How far a quaternion's length may be from 1 (rule 9).
 UNIT_TOLERANCE = 1e-6

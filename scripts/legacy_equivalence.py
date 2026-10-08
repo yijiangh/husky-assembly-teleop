@@ -1,12 +1,12 @@
-"""Check that the old app, the export loader and design_io hand the planner the same compas_fab objects.
+"""Check that the old app, the export loader and the design library hand the planner the same compas_fab objects.
 
-    python scripts/design_io_equivalence.py <export> [--json out.json] [--no-collisions]
+    python scripts/legacy_equivalence.py <export> [--json out.json] [--no-collisions]
                                             [--timing [--runs 3] [--no-compare]]
 
 Loaders, each giving one `RobotCell` per acting robot and one `RobotCellState` per movement start:
   old     the pre-refactor monitor (husky_assembly_teleop/old): RobotCell.json plus its floor body, and
           Cindy's scheduled actions with the floor state added. It never loaded the Alice/Belle cells.
-  new     `design_io.legacy.load_export`, as loaded.
+  new     `legacy.export.load_export`, as loaded.
   design  `convert_export` into a temporary folder, `read`, then `compas_fab.to_robot_cell` / `to_cell_state`.
 With collisions, the design's scenes (`Design.scene_at`) also go through a `CompasFabMirror` per acting robot, and
 its colliding pairs are compared with the design loader's ("design vs mirror").
@@ -49,11 +49,11 @@ sys.path.insert(0, str(REPO))
 DATA = REPO / "data"
 
 import rs_data_structure  # noqa: E402,F401  (registers the action dtypes for json_load)
-from bar_assembly_core.design_io import read  # noqa: E402
-from bar_assembly_core.design_io.compas_fab import PARKED_POSITION, to_cell_state, to_robot_cell  # noqa: E402
-from bar_assembly_core.design_io.conversion import convert_export  # noqa: E402
-from bar_assembly_core.design_io.legacy import body_id, load_export  # noqa: E402
-from bar_assembly_core.design_io.timing import Stopwatch  # noqa: E402
+from bar_assembly_core.design import read  # noqa: E402
+from bar_assembly_core.legacy.compas_fab import PARKED_POSITION, to_cell_state, to_robot_cell  # noqa: E402
+from bar_assembly_core.legacy.conversion import convert_export  # noqa: E402
+from bar_assembly_core.legacy.export import body_id, load_export  # noqa: E402
+from bar_assembly_core.legacy.timing import Stopwatch  # noqa: E402
 from bar_assembly_core.mirrors.compas_fab import CompasFabMirror  # noqa: E402
 
 #: Tolerances: joints (rad or m), frame positions (m) and rotations (rad), mesh points (m), areas/volumes (relative).
@@ -68,19 +68,20 @@ PAIRS = (("old", "new"), ("new", "design"), ("old", "design"))
 #: Difference kinds that are explained, with the reason and code reference. Any other kind is UNEXPECTED.
 KNOWN = {
     "floor: only in old": "the export has no floor; the old app adds one (old/cfab_session.py:254)",
-    "floor: only in design": "the export has no floor; design_io adds WalkableGround slabs (legacy._walkable_ground)",
+    "floor: only in design": "the export has no floor; the converter adds WalkableGround slabs "
+                             "(legacy._walkable_ground)",
     "floor geometry: differs": "old drops each WalkableGround vertex's z, so every slab top is at z=0 "
                                "(old/cfab_session.py:149-152); design keeps the 3D polygon (legacy._slab)",
     "floor state: touch differs": "old lets only the acting robot's four wheel links touch the floor "
                                   "(old/husky_monitor.py:202); design lets every robot's wheel links touch it "
                                   "(legacy._walkable_ground), so the other robots are touch_bodies",
     "floor pairs: only in old": "pairs with the old app's floor; the export has none (old/cfab_session.py:254)",
-    "floor pairs: only in design": "pairs with design_io's floor; the export has none (legacy._walkable_ground)",
+    "floor pairs: only in design": "pairs with design's floor; the export has none (legacy._walkable_ground)",
     "floor pairs: differ": "old flags the other robots standing on its floor (no touch allowed, see floor state), "
                            "and catches contacts between z=0 and the design floor's real top (z=-0.0156 m)",
     "tool state: group name differs, same flange": "Alice/Belle exports attach the gripper to the arm-only group "
                                                    "`manipulator`; design picks the base-rooted `base_arm_manipulator` "
-                                                   "(compas_convert.planning_group, App. A). compas_fab attaches "
+                                                   "(mirrors.compas.planning_group, App. A). compas_fab attaches "
                                                    "to the same last link",
     "tool state: attached tool has a frame": "the Alice/Belle exports set `frame` on the attached gripper; compas_fab "
                                              "ignores it for attached tools (pybullet_set_robot_cell_state.py:88)",
@@ -88,8 +89,8 @@ KNOWN = {
                                                      "(pybullet_set_robot_cell_state.py:235)",
     "body state: touch_bodies mirrored": "design lists a body-body touch on both bodies (compas_fab.to_cell_state); "
                                          "the export on one. compas_fab CC.4 reads both lists, so it checks the same",
-    "other robot: welded tool link named differently": "export `<flange>_obstacle_tool`, design_io `<flange>_tool` "
-                                                       "(compas_convert.robot_as_tool); the links are matched by name "
+    "other robot: welded tool link named differently": "export `<flange>_obstacle_tool`, design `<flange>_tool` "
+                                                       "(mirrors.compas.robot_as_tool); the links are matched by name "
                                                        "and compared, and collisions report the whole robot",
     "geometry: visual differs": "the export holds compas copies of the visual meshes; design reads the URDF's files",
     "pairs allowed by static_contacts": "the mirror allows other robots' tool/body pairs already touching at sync "
@@ -275,7 +276,7 @@ def load_old(export: Path, watch: Optional[Stopwatch] = None) -> Loaded:
 
 
 def load_new(export: Path, watch: Optional[Stopwatch] = None) -> Loaded:
-    """`design_io.legacy.load_export`: every cell and every scheduled movement's start state, as loaded."""
+    """`legacy.export.load_export`: every cell and every scheduled movement's start state, as loaded."""
     loaded = load_export(export, quiet, watch)
     robots = {entry["robot_id"]: f"robots/{name.lower()}" for name, entry in loaded.schedule["robots"].items()}
     cells = {robots[name]: cell for name, cell in loaded.cells.items()}
@@ -310,7 +311,7 @@ def load_design(design_folder: Path, robots: Optional[Tuple[str, ...]] = None, w
 
 
 def convert(export: Path, destination: Path) -> Path:
-    """`design_io.conversion.convert_export` with the repository's robot files."""
+    """`legacy.conversion.convert_export` with the repository's robot files."""
     return convert_export(export, destination, DATA, report=quiet)
 
 
@@ -495,12 +496,12 @@ def compare_parts(category: Category, a: List[Part], b: List[Part], label: str) 
 
 # --- --- --- --- --- CELL COMPARISONS --- --- --- --- ---
 
-#: The export names another robot's welded tool link `<flange>_obstacle_tool`; design_io `<flange>_tool`.
+#: The export names another robot's welded tool link `<flange>_obstacle_tool`; design `<flange>_tool`.
 WELDED_EXPORT, WELDED_DESIGN = "_obstacle_tool", "_tool"
 
 
 def _same_name(name: str) -> str:
-    """A link or joint name with the export's welded-tool suffix written as design_io's."""
+    """A link or joint name with the export's welded-tool suffix written as design's."""
     return name.replace(WELDED_EXPORT, WELDED_DESIGN)
 
 
@@ -967,7 +968,7 @@ def _run(export: Path, folder: Path, collisions: bool, log: Callable[[str], None
     report = Report()
     log("converting")
     convert(export, folder)
-    log("loading: design_io")
+    log("loading: design")
     design_loaded, design = load_design(folder)
     log("loading: export loader")
     loaded = {"new": load_new(export), "design": design_loaded}

@@ -1,5 +1,5 @@
 """
-Shapes of bodies, in the body's frame: triangle meshes and primitives (box, cylinder).
+Poses and shapes, the values every layer shares: a `Pose` in a parent frame, and a body's `Geometry`.
 
 Backends draw primitives natively where they can and use `shape_mesh` for the rest.
 ! Never change a `Geometry` or shape after building it: mirrors cache per object and only rebuild for a new one.
@@ -12,14 +12,70 @@ from functools import lru_cache
 from typing import TYPE_CHECKING, Union
 
 import numpy as np
+from scipy.spatial.transform import Rotation
 from trimesh import Trimesh
 from trimesh.creation import box, cylinder
-
-from .pose import Pose
 
 if TYPE_CHECKING:
     from compas.datastructures import Mesh
     from compas_fab.robots import RigidBody
+
+
+# --- --- --- --- --- POSES --- --- --- --- ---
+
+@dataclass(frozen=True)
+class Pose:
+    """A pose in the world, or in a parent frame.
+
+    Attributes:
+        position: (x, y, z), metres.
+        orientation: Quaternion (x, y, z, w), the ROS and PyBullet order.
+    """
+
+    position: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    orientation: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0)
+
+    @classmethod
+    def from_arrays(cls, position, orientation) -> Pose:
+        """Build a pose from any sequences (numpy arrays included), stored as plain floats.
+
+        Args:
+            position: (x, y, z), metres.
+            orientation: Quaternion (x, y, z, w).
+        """
+        return cls(tuple(float(v) for v in position), tuple(float(v) for v in orientation))
+
+    @classmethod
+    def from_matrix(cls, matrix: np.ndarray) -> Pose:
+        """Build a pose from a 4x4 homogeneous transform."""
+        # ! Copy: yourdfpy hands out read-only matrices, which this scipy version refuses.
+        return cls.from_arrays(matrix[:3, 3], Rotation.from_matrix(np.array(matrix[:3, :3])).as_quat())
+
+    def matrix(self) -> np.ndarray:
+        """Return this pose as a 4x4 homogeneous transform."""
+        matrix = np.eye(4)
+        matrix[:3, :3] = Rotation.from_quat(self.orientation).as_matrix()
+        matrix[:3, 3] = self.position
+        return matrix
+
+
+def compose(a: Pose, b: Pose) -> Pose:
+    """Chain two poses: `b` is given in the frame of `a`; the result is in the frame `a` is in.
+
+    Args:
+        a: The parent frame's pose.
+        b: The pose inside that frame.
+    """
+    rotation = Rotation.from_quat(a.orientation)
+    return Pose.from_arrays(np.asarray(a.position) + rotation.apply(b.position),
+                            (rotation * Rotation.from_quat(b.orientation)).as_quat())
+
+
+def invert(a: Pose) -> Pose:
+    """The inverse pose: where the parent frame is, seen from inside `a`."""
+    inverse = Rotation.from_quat(a.orientation).inv()
+    return Pose.from_arrays(-inverse.apply(a.position), inverse.as_quat())
+
 
 #: Sides around the circle when a cylinder is turned into triangles.
 CYLINDER_SECTIONS = 32

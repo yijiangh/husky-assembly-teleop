@@ -1,14 +1,15 @@
-"""Shared builders for the design_io tests: tiny robot files and a small valid two-robot design."""
+"""Shared builders for the design tests: tiny robot files and a small valid two-robot design."""
 
 from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
 
-from bar_assembly_core.design_io import (Action, Attached, BodySpec, BoxShape, CylinderShape, Design, Geometry,
-                                         Movement, Pose, RobotSpec, RobotState, State, Target, ToolSpec, TriMesh,
-                                         Writer)
-from bar_assembly_core.design_io.meshes import write_mesh
+from bar_assembly_core.design import (Action, Attached, BodySpec, Design, Movement, RobotSpec, RobotState, State,
+                                      Target, Writer)
+from bar_assembly_core.geometry import BoxShape, CylinderShape, Geometry, Pose, TriMesh
+from bar_assembly_core.robot import Tool
+from bar_assembly_core.design.meshes import write_mesh
 
 WRITER = Writer(1, "design_io", "test", False)
 #: Joints a state must list for the fake robot (the wheel is passive, the tool0 joints fixed).
@@ -115,10 +116,10 @@ def build_design(folder: Path) -> Design:
     }
     tool_mesh = TriMesh.from_arrays(TETRA.vertices * 2, TETRA.faces)
     tools = {
-        "tools/AT3L": ToolSpec("tools/AT3L", Geometry((tool_mesh,), (tool_mesh,)), Pose((0.0, 0.0, 0.12)),
-                               "scaffolding_v3", touches=("robots/cindy/left_link2",)),
-        "tools/Grip": ToolSpec("tools/Grip", Geometry((BoxShape((0.1, 0.1, 0.2)),), (BoxShape((0.1, 0.1, 0.2)),)),
-                               Pose((0.0, 0.0, 0.2)), "robotiq"),
+        "tools/AT3L": Tool("tools/AT3L", Geometry((tool_mesh,), (tool_mesh,)), Pose((0.0, 0.0, 0.12)),
+                           "scaffolding_v3", touches=("robots/cindy/left_link2",)),
+        "tools/Grip": Tool("tools/Grip", Geometry((BoxShape((0.1, 0.1, 0.2)),), (BoxShape((0.1, 0.1, 0.2)),)),
+                           Pose((0.0, 0.0, 0.2)), "robotiq"),
     }
     bar = CylinderShape(0.0125, 0.9, Pose((0.0, 0.0, 0.45)))
     box = BoxShape((0.05, 0.05, 0.05), turned(0.3, 0.9))

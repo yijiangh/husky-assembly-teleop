@@ -12,9 +12,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Callable, Mapping
 
-from bar_assembly_core.design_io.pose import Pose, compose
+from bar_assembly_core.geometry import Pose, compose
 from bar_assembly_core.kinematics import load_urdf
-from bar_assembly_core.ur import UR_JOINT_NAMES
+from bar_assembly_core.urdf import UR_JOINT_NAMES
 
 if TYPE_CHECKING:
     from yourdfpy import URDF

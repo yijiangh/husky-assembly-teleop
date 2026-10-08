@@ -1,9 +1,10 @@
-"""Tests for design_io carry: joints assumed for movements without authored start joints."""
+"""Tests for design carry: joints assumed for movements without authored start joints."""
 
-from design_io_fixtures import WRITER
+from design_fixtures import WRITER
 
-from bar_assembly_core.design_io import (Action, Design, Movement, Pose, RobotState, State, Target, assumed_joints)
-from bar_assembly_core.design_io.carry import assumed_start_all
+from bar_assembly_core.design import Action, Design, Movement, RobotState, State, Target, assumed_joints
+from bar_assembly_core.geometry import Pose
+from bar_assembly_core.design.carry import assumed_start_all
 
 ROBOTS = ("robots/a", "robots/b")
 

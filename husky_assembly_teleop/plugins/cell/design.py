@@ -15,14 +15,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
-from bar_assembly_core.design_io.conversion import (DESIGN_FILE, OLD_EXPORT_FILE, convert_export, converted_folder,
-                                                    is_old_export, is_up_to_date)
-from bar_assembly_core.design_io import Action, Design, Movement, State, read
-from bar_assembly_core.design_io.carry import assumed_start_all
-from bar_assembly_core.design_io.timing import Stopwatch
-from bar_assembly_core.ids import IdMap, retarget
+from bar_assembly_core.legacy.conversion import (DESIGN_FILE, OLD_EXPORT_FILE, convert_export, converted_folder,
+                                                 is_old_export, is_up_to_date)
+from bar_assembly_core.design import Action, Design, Movement, State, read
+from bar_assembly_core.design.carry import assumed_start_all
+from bar_assembly_core.legacy.timing import Stopwatch
+from bar_assembly_core.ids import IdMap
+from bar_assembly_core.scene import retarget
 from bar_assembly_core.scene import Attachment, Body
-from bar_assembly_core.scene import robot_id as scene_robot_id
+from bar_assembly_core.ids import robot_id as scene_robot_id
 
 if TYPE_CHECKING:
     from ...config import RobotConfig

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from scipy.spatial.transform import Rotation
 
-from bar_assembly_core.ur import STOCK_YAW, stock_frame_problem
+from bar_assembly_core.urdf import STOCK_YAW, stock_frame_problem
 
 __all__ = ["BASE_LINK_FROM_UR_BASE", "STOCK_YAW", "stock_frame_problem"]
 

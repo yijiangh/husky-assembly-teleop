@@ -19,10 +19,10 @@ from compas_fab.robots import RigidBody, RobotCell
 from compas_robots import Configuration, RobotModel, ToolModel
 from compas_robots.model import Joint
 
-from ..design_io.geometry import Geometry, TriMesh, shape_mesh
-from ..design_io.pose import Pose
-from ..design_io.robot_files import resolved_urdf_text
-from ..design_io.types import ToolSpec
+from ..geometry import Geometry, TriMesh, shape_mesh
+from ..geometry import Pose
+from ..urdf import resolved_urdf_text
+from ..robot import Tool
 
 #: Where a robot absent from a state is put: far from any cell, on the floor.
 PARKED_POSITION = (50.0, 50.0, 0.0)
@@ -190,13 +190,13 @@ def joined_mesh(shapes) -> Optional[Mesh]:
     return Mesh.from_vertices_and_faces(vertices.tolist(), faces.tolist())
 
 
-def tool_model(tool: ToolSpec, name: str) -> ToolModel:
+def tool_model(tool: Tool, name: str) -> ToolModel:
     """A mounted tool as a compas_fab tool keyed `name`: its shapes as one mesh, its TCP as the tool frame."""
     return ToolModel(joined_mesh(tool.geometry.visual), frame_from_pose(tool.tcp),
                      collision=joined_mesh(tool.geometry.collision), name=name)
 
 
-def robot_as_tool(urdf, tools: Mapping[str, ToolSpec], name: str, visual: bool = True) -> ToolModel:
+def robot_as_tool(urdf, tools: Mapping[str, Tool], name: str, visual: bool = True) -> ToolModel:
     """A whole robot as one articulated tool keyed `name`, each mounted tool a link fixed at its flange.
 
     Args:

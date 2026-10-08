@@ -1,5 +1,5 @@
 """
-A private PyBullet world filled from a `SceneSnapshot`: robots with their tools, and the bodies with geometry.
+A private PyBullet world filled from a `Scene`: robots with their tools, and the bodies with geometry.
 
 `sync` only rebuilds or moves what changed; robots are re-posed every sync. A robot is loaded from a URDF the
 mirror writes once per `RobotModel`, each mounted tool a fixed link at its flange. `set_gui(True)` shows the world
@@ -26,16 +26,17 @@ import pybullet as p
 import trimesh
 from scipy.spatial.transform import Rotation
 
-from ..design_io.geometry import BoxShape, CylinderShape
-from ..design_io.pose import Pose
-from ..design_io.robot_files import resolved_urdf_text
+from ..geometry import BoxShape, CylinderShape
+from ..geometry import Pose
+from ..urdf import resolved_urdf_text
 from ..robot import RobotModel
-from ..scene import ROBOTS, TRACKED, SceneSnapshot, same_source
+from ..ids import ROBOTS, TRACKED
+from ..scene import Scene, same_source
 from . import check_display
 from .pp_client import pp_client
 
 if TYPE_CHECKING:
-    from ..design_io.geometry import Geometry, Shape
+    from ..geometry import Geometry, Shape
 
 
 @dataclass(eq=False)
@@ -147,7 +148,7 @@ class PyBulletMirror:
 
     # --- --- --- --- --- SYNC --- --- --- --- ---
 
-    def sync(self, snapshot: SceneSnapshot) -> None:
+    def sync(self, snapshot: Scene) -> None:
         """Make this world match a snapshot: remove, (re)build and move only what changed.
 
         Args:

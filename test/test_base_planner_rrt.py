@@ -7,11 +7,12 @@ import numpy as np
 import pytest
 
 from husky_assembly_teleop.config import robot_config_from_serial
-from bar_assembly_core.design_io.geometry import box_geometry
+from bar_assembly_core.geometry import box_geometry
 from husky_assembly_teleop.plugins.base_planner.planner import PlanningWorld, plan_birrt
 from bar_assembly_core.robot import RobotObject
-from bar_assembly_core.scene import Body, SceneSnapshot, robot_id
-from bar_assembly_core.design_io.pose import Pose
+from bar_assembly_core.scene import Body, Scene
+from bar_assembly_core.ids import robot_id
+from bar_assembly_core.geometry import Pose
 
 DATA = Path(__file__).resolve().parent.parent / "data"
 
@@ -20,14 +21,14 @@ DATA = Path(__file__).resolve().parent.parent / "data"
 WALL = Body("test/wall", box_geometry((2.0, 0.3, 1.0)), Pose((0.0, -2.5, 0.5)), label="wall")
 
 
-def _snapshot(robots, bodies=()) -> SceneSnapshot:
+def _snapshot(robots, bodies=()) -> Scene:
     """Alice at the origin, Cindy parked 2 m ahead of her, plus `bodies`."""
     alice, cindy = robots
     bases = {alice.serial: Pose(), cindy.serial: Pose((2.0, 0.0, 0.0))}
     entries = {robot_id(config.serial): RobotObject(robot_id(config.serial), config.model, bases[config.serial], {})
                for config in robots}
-    return SceneSnapshot(bodies={body.id: body for body in bodies},
-                         world_poses={body.id: body.placement for body in bodies}, robots=entries)
+    return Scene(bodies={body.id: body for body in bodies},
+                 world_poses={body.id: body.placement for body in bodies}, robots=entries)
 
 
 @pytest.fixture(scope="module")

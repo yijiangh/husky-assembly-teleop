@@ -13,7 +13,7 @@ from typing import Dict, Mapping
 
 from yourdfpy import URDF
 
-from .design_io.pose import Pose, compose
+from .geometry import Pose, compose
 
 
 def load_urdf(urdf_file: Path) -> URDF:

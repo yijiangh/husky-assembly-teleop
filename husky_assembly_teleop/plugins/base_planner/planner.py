@@ -16,7 +16,7 @@ import pybullet as p
 
 from ..planning.search import PlanResult, connect
 from bar_assembly_core.mirrors.pybullet import PyBulletMirror
-from bar_assembly_core.scene import SceneSnapshot
+from bar_assembly_core.scene import Scene
 from .path import BasePath, steer, steer_cost, steer_points, timed_path
 
 #: Keep at least this far from every other robot and body, metres.
@@ -35,12 +35,12 @@ class PlanningWorld:
         """Start empty; the first `sync` loads the robots and bodies (slow, on the worker)."""
         self.mirror: PyBulletMirror | None = None
         # Display text for our ids, from the last synced snapshot.
-        self._label = SceneSnapshot().label
+        self._label = Scene().label
         # ? Cheap pre-check for `hit_by`: floor footprints (min x, min y, max x, max y) by id, and robot reach.
         self._footprints: dict[str, tuple[float, float, float, float]] = {}
         self._reach: dict[str, float] = {}
 
-    def sync(self, snapshot: SceneSnapshot) -> None:
+    def sync(self, snapshot: Scene) -> None:
         """Make the world match a snapshot, and refresh footprints and reach.
 
         Args:
@@ -104,7 +104,7 @@ class PlanningWorld:
         hits = self.mirror.collisions(own, COLLISION_MARGIN, candidates)
         return self._label(hits[0]) if hits else None
 
-    def set_gui(self, gui: bool, snapshot: SceneSnapshot) -> None:
+    def set_gui(self, gui: bool, snapshot: Scene) -> None:
         """Open or close PyBullet's own window on the planning world, for debugging. Worker thread.
 
         Args:

@@ -4,8 +4,8 @@ A design as compas_fab objects: one `RobotCell` per acting robot (format App. A)
 Every other robot is a `ToolModel` of its whole URDF with its tools welded on; cell keys are our ids unless
 `names` maps them. A robot absent from a state is parked at PARKED_POSITION, since compas_fab needs every tool.
 
-- ! A legacy test harness (the design_io equivalence checks): planners build cells through the mirrors.
-- ! Importing this module imports compas; `design_io` itself never imports it.
+- ! A test harness for the equivalence check (scripts/legacy_equivalence.py): planners build cells through the mirrors.
+- ! Importing this module imports compas; the core never imports it.
 """
 
 from __future__ import annotations
@@ -16,10 +16,11 @@ from compas.geometry import Frame
 from compas_fab.robots import RigidBodyState, RobotCell, RobotCellState, RobotSemantics, ToolState
 from compas_robots import ToolModel
 
-from ..mirrors.compas_convert import (PARKED_POSITION, filled, frame_from_pose, load_model, planning_group,
-                                      pose_from_frame, rigid_body, robot_as_tool, tool_model)
-from .pose import Pose, compose
-from .types import ROBOT_PREFIX, Design, LinkPose, State, split_link_id
+from ..mirrors.compas import (PARKED_POSITION, filled, frame_from_pose, load_model, planning_group, pose_from_frame,
+                              rigid_body, robot_as_tool, tool_model)
+from ..geometry import Pose, compose
+from ..design.types import ROBOT_PREFIX, Design, State
+from ..ids import split_link_id
 
 
 # --- --- --- --- --- CELLS --- --- --- --- ---
@@ -162,8 +163,8 @@ def to_cell_state(design: Design, robot_id: str, state: State, cell: RobotCell,
 
 # --- --- --- --- --- KINEMATICS --- --- --- --- ---
 
-def compas_link_pose(design: Design) -> LinkPose:
-    """Forward kinematics from each robot's URDF, for `types.world_pose`; joints not given are zero."""
+def compas_link_pose(design: Design) -> Callable[[str, str, Mapping[str, float], Pose], Pose]:
+    """Forward kinematics from each robot's URDF: (robot id, link, joints, base) -> link pose; missing joints 0."""
     def link_pose(robot_id: str, link: str, joints: Mapping[str, float], base: Pose) -> Pose:
         model = load_model(design.robots[robot_id].urdf)
         frame = model.forward_kinematics(filled(model.zero_configuration(), joints), link_name=link)

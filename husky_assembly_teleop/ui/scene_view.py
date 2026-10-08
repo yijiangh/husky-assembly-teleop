@@ -14,9 +14,10 @@ from dataclasses import dataclass
 
 import viser
 
-from bar_assembly_core.design_io.geometry import BoxShape, CylinderShape, Geometry, Shape
-from bar_assembly_core.scene import TRACKED, SceneSnapshot
-from bar_assembly_core.design_io.pose import Pose
+from bar_assembly_core.geometry import BoxShape, CylinderShape, Geometry, Shape
+from bar_assembly_core.ids import TRACKED
+from bar_assembly_core.scene import Scene
+from bar_assembly_core.geometry import Pose
 from .quaternion import quaternion_to_wxyz
 
 #: Colour of a body without one of its own, (r, g, b, a) from 0 to 1.
@@ -56,7 +57,7 @@ class SceneView:
         self._bodies: dict[str, _DrawnBody] = {}
         self._collision = False
 
-    def sync(self, snapshot: SceneSnapshot, collision: bool = False) -> None:
+    def sync(self, snapshot: Scene, collision: bool = False) -> None:
         """Bring the view in line with one snapshot. Call once per tick, inside `server.atomic()`.
 
         Args:

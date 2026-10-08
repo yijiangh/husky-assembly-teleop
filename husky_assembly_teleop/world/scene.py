@@ -1,7 +1,7 @@
 """
 The monitor's live scene (collision objects we don't measure), and its per-tick snapshot for planners and the 3D view.
 
-The data types (`Body`, `RobotObject`, `SceneSnapshot`) are the core's (`bar_assembly_core.scene`). The snapshot is
+The data types (`Body`, `RobotObject`, `Scene`) are the core's (`bar_assembly_core.scene`). The snapshot is
 taken before plugins run, so it holds one ROS pump's measurements and every plugin's complete writes of the previous
 tick. Each measured robot is a `RobotObject` "robots/<serial>"; each tracked object with a fix, a `Body`
 "tracked/<name>".
@@ -15,10 +15,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable, Iterable
 
-from bar_assembly_core.design_io.geometry import Geometry
-from bar_assembly_core.design_io.pose import Pose, check_id
+from bar_assembly_core.geometry import Geometry
+from bar_assembly_core.geometry import Pose
+from bar_assembly_core.ids import check_id
 from bar_assembly_core.robot import RobotObject
-from bar_assembly_core.scene import ROBOTS, TRACKED, Attachment, Body, SceneSnapshot, robot_id, tracked_id, world_poses
+from bar_assembly_core.ids import ROBOTS, TRACKED, robot_id, tracked_id
+from bar_assembly_core.scene import Attachment, Body, Scene, world_poses
 
 if TYPE_CHECKING:
     from .kinematics import Kinematics
@@ -45,7 +47,7 @@ class TrackedDescription:
 
 # --- --- --- --- --- THE STORE --- --- --- --- ---
 
-class Scene:
+class LiveScene:
     """Every body plugins put in, the tracked objects' descriptions, and the latest snapshot.
 
     ! Main thread only.
@@ -57,7 +59,7 @@ class Scene:
         self.bodies: dict[str, Body] = {}
         #: Tracked objects' descriptions, by tracking name. Written by track_object.
         self.tracked: dict[str, TrackedDescription] = {}
-        self._snapshot = SceneSnapshot()
+        self._snapshot = Scene()
 
     def put(self, body: Body) -> None:
         """Add a body, or replace the one with the same id.
@@ -84,11 +86,11 @@ class Scene:
             del self.bodies[body_id]
 
     @property
-    def snapshot(self) -> SceneSnapshot:
-        """SceneSnapshot: The copy taken at the start of this tick."""
+    def snapshot(self) -> Scene:
+        """Scene: The copy taken at the start of this tick."""
         return self._snapshot
 
-    def take_snapshot(self, world: WorldState, kinematics: Kinematics, tick: int, time: float) -> SceneSnapshot:
+    def take_snapshot(self, world: WorldState, kinematics: Kinematics, tick: int, time: float) -> Scene:
         """Copy the whole world; called once per tick, after kinematics.update.
 
         Args:
@@ -98,7 +100,7 @@ class Scene:
             time: ROS time now.
 
         Returns:
-            SceneSnapshot: The new copy, also kept as `snapshot`.
+            Scene: The new copy, also kept as `snapshot`.
         """
         robots = {}
         for serial, robot in world.robots.items():
@@ -127,7 +129,7 @@ class Scene:
 
         poses = world_poses(live, robots, link_pose)
         bodies = {body_id: body.copy() for body_id, body in live.items() if body_id in poses}
-        self._snapshot = SceneSnapshot(tick=tick, time=time, bodies=bodies, world_poses=poses, robots=robots)
+        self._snapshot = Scene(tick=tick, time=time, bodies=bodies, world_poses=poses, robots=robots)
         return self._snapshot
 
 
@@ -137,7 +139,7 @@ class PluginScene:
     ! `bodies` holds the live ones: change only your own; nothing stops you from changing another plugin's.
     """
 
-    def __init__(self, scene: Scene, owner: str, log_warn: Callable[[str], None]):
+    def __init__(self, scene: LiveScene, owner: str, log_warn: Callable[[str], None]):
         """Wrap the scene for one plugin.
 
         Args:
@@ -157,8 +159,8 @@ class PluginScene:
         return self._scene.bodies
 
     @property
-    def snapshot(self) -> SceneSnapshot:
-        """SceneSnapshot: The copy taken at the start of this tick. Hand this to worker threads."""
+    def snapshot(self) -> Scene:
+        """Scene: The copy taken at the start of this tick. Hand this to worker threads."""
         return self._scene.snapshot
 
     def put(self, body: Body) -> None:

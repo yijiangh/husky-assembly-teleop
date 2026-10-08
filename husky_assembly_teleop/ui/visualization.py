@@ -23,7 +23,7 @@ import viser.transforms
 import yourdfpy
 
 from ..config import RobotConfig
-from bar_assembly_core.scene import SceneSnapshot
+from bar_assembly_core.scene import Scene
 from .quaternion import quaternion_to_wxyz
 from .scene_view import SceneView
 from ..tool_urdfs import resolve_mesh_path
@@ -398,7 +398,7 @@ class Visualization:
             self._freeze.hint = ("Click to pause every panel, so its text can be selected and copied. "
                                  "Buttons still act; the robots in the 3D view stay live.")
 
-    def draw(self, snapshot: SceneSnapshot) -> None:
+    def draw(self, snapshot: Scene) -> None:
         """Draw this tick's copy of the world: robots, tracked objects and scene bodies.
 
         Called once per tick inside `atomic()`, also while frozen.

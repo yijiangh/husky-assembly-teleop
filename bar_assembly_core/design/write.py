@@ -16,11 +16,11 @@ from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
 
-from .geometry import BoxShape, CylinderShape, Geometry, Shape, TriMesh
+from ..geometry import BoxShape, CylinderShape, Geometry, Shape, TriMesh
 from .meshes import write_mesh
-from .pose import Pose
+from ..geometry import Pose
 from .read import ACTION_FORMAT, DESIGN_FORMAT, read
-from .robot_files import copy_robot
+from ..urdf import copy_robot
 from .types import Action, Design, Movement, RobotSpec, State, Target, Writer
 from .validate import validate
 from .version import writer_info

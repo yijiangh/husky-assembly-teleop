@@ -7,7 +7,7 @@ from compas.geometry import Frame
 from compas_robots import ToolModel
 from compas_robots.model import Joint
 
-from bar_assembly_core.design_io.legacy import _model_geometry, _refuse_unsupported
+from bar_assembly_core.legacy.export import _model_geometry, _refuse_unsupported
 
 
 def _movement(trajectory=None, **tool) -> SimpleNamespace:

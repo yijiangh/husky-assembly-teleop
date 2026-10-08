@@ -11,15 +11,17 @@ import pytest
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 CORE = PACKAGE_ROOT / "bar_assembly_core"
 #: Pure-core modules: they must import with numpy, scipy and trimesh alone.
-PURE = ("bar_assembly_core", "bar_assembly_core.design_io", "bar_assembly_core.scene", "bar_assembly_core.ur",
-        "bar_assembly_core.robot", "bar_assembly_core.ids", "bar_assembly_core.hold",
-        *(f"bar_assembly_core.design_io.{p.stem}" for p in sorted((CORE / "design_io").glob("*.py"))
-          if p.stem not in ("__init__", "compas_fab", "legacy", "conversion", "scenes")))
-#: Modules with extra dependencies (`requirements.txt`). legacy and conversion also need rs_data_structure.
-EXTRAS = ("bar_assembly_core.kinematics", "bar_assembly_core.design_io.scenes", "bar_assembly_core.mirrors",
-          "bar_assembly_core.mirrors.compas_convert", "bar_assembly_core.mirrors.pp_client",
-          "bar_assembly_core.mirrors.pybullet", "bar_assembly_core.mirrors.compas_fab",
-          "bar_assembly_core.design_io.compas_fab")
+PURE = ("bar_assembly_core", "bar_assembly_core.geometry", "bar_assembly_core.ids", "bar_assembly_core.urdf",
+        "bar_assembly_core.robot", "bar_assembly_core.scene", "bar_assembly_core.design", "bar_assembly_core.legacy",
+        "bar_assembly_core.legacy.timing",
+        *(f"bar_assembly_core.design.{p.stem}" for p in sorted((CORE / "design").glob("*.py"))
+          if p.stem not in ("__init__", "scenes")))
+#: Modules with extra dependencies (`requirements.txt`). legacy.export and legacy.conversion also need
+#: rs_data_structure.
+EXTRAS = ("bar_assembly_core.kinematics", "bar_assembly_core.design.scenes", "bar_assembly_core.mirrors",
+          "bar_assembly_core.mirrors.compas", "bar_assembly_core.mirrors.pp_client",
+          "bar_assembly_core.mirrors.pybullet",
+          "bar_assembly_core.mirrors.compas_fab", "bar_assembly_core.legacy.compas_fab")
 CORE_PACKAGES = ("numpy", "scipy", "trimesh==4.12.2")
 EXTRA_PACKAGES = ("yourdfpy", "pybullet", "compas_robots", "./external/compas_fab", "./external/pybullet_planning")
 
@@ -65,7 +67,7 @@ def test_mirrors_import_under_python_39():
     if not all((PACKAGE_ROOT / package).is_dir() for package in EXTRA_PACKAGES if package.startswith("./")):
         pytest.skip("external/ submodules not checked out")
     scene_at = (f"import tempfile, pathlib; sys.path.insert(0, {str(PACKAGE_ROOT / 'test')!r})\n"
-                "from design_io_fixtures import build_design\n"
+                "from design_fixtures import build_design\n"
                 "design = build_design(pathlib.Path(tempfile.mkdtemp()))\n"
                 "scene = design.scene_at(next(movement for _, movement in design.movements()))\n"
                 "assert 'bars/B1' in scene.world_poses and scene.robots['robots/cindy'].unmeasured\n")

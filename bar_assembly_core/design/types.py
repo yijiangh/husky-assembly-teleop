@@ -8,13 +8,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Dict, FrozenSet, Literal, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, FrozenSet, Literal, Optional, Tuple
 
-from .geometry import Geometry
-from .pose import Pose, compose
+from ..geometry import Geometry, Pose
+from ..ids import ROBOTS, TOOLS
+from ..robot import Tool
 
 if TYPE_CHECKING:
-    from ..scene import SceneSnapshot
+    from ..scene import Scene
 
 MovementType = Literal["free", "linear", "manual", "tool"]
 ActionType = Literal["bar_jointing", "bar_release", "bar_holding", "bar_holding_release"]
@@ -26,7 +27,7 @@ CONTROLLERS: Tuple[str, ...] = ("joint_tracking", "cartesian_compliant", "none")
 
 #: Body id prefixes (format §3.1).
 BODY_PREFIXES: Tuple[str, ...] = ("bars/", "joints/", "ground/", "obstacles/")
-ROBOT_PREFIX, TOOL_PREFIX = "robots/", "tools/"
+ROBOT_PREFIX, TOOL_PREFIX = f"{ROBOTS}/", f"{TOOLS}/"
 
 
 # --- --- --- --- --- ERRORS --- --- --- --- ---
@@ -47,7 +48,7 @@ class SchemaMismatch(DesignError):
         """Name the file, its schema and the commit that wrote it."""
         self.schema, self.commit = schema, commit
         super().__init__([f"{path} has schema {schema}, this library reads schema {expected}; "
-                          f"check out design_io at commit {commit} to read it"])
+                          f"check out bar_assembly_core at commit {commit} to read it"])
 
 
 # --- --- --- --- --- DESIGN-LEVEL OBJECTS --- --- --- --- ---
@@ -80,17 +81,6 @@ class RobotSpec:
     def name(self) -> str:
         """str: The id without its prefix, e.g. "cindy"."""
         return self.id[len(ROBOT_PREFIX):]
-
-
-@dataclass(frozen=True)
-class ToolSpec:
-    """A tool (format §4.2). Geometry and `tcp` are in the flange link frame."""
-
-    id: str
-    geometry: Geometry
-    tcp: Pose
-    kind: str
-    touches: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -197,7 +187,7 @@ class Design:
     folder: Optional[Path]
     writer: Writer
     robots: Dict[str, RobotSpec]
-    tools: Dict[str, ToolSpec]
+    tools: Dict[str, Tool]
     bodies: Dict[str, BodySpec]
     schedule: Tuple[str, ...]
     actions: Dict[str, Action]
@@ -213,66 +203,19 @@ class Design:
             for movement in action.movements:
                 yield action, movement
 
-    def scene_at(self, movement: Movement) -> SceneSnapshot:
+    def scene_at(self, movement: Movement) -> Scene:
         """The world at the start of one movement; it shares nothing mutable with the design (`scenes.scene_at`).
 
         ! Needs yourdfpy. Run it when the design or the movement changes, not every tick.
         """
-        # ? Imported here: the scene, its robots and yourdfpy stay out of `import design_io`.
+        # ? Imported here: the scene, its robots and yourdfpy stay out of `import design`.
         from .scenes import scene_at
         return scene_at(self, movement)
 
-    def scene_after(self, bar: str) -> SceneSnapshot:
+    def scene_after(self, bar: str) -> Scene:
         """The world once a bar is built, following the schedule (`scenes.scene_after`).
 
         ! Needs yourdfpy.
         """
         from .scenes import scene_after
         return scene_after(self, bar)
-
-
-# --- --- --- --- --- DERIVED --- --- --- --- ---
-
-#: Forward kinematics supplied by the caller: (robot id, link name, joints, base) -> link pose in world.
-LinkPose = Callable[[str, str, Dict[str, float], Pose], Pose]
-
-
-def link_id(robot: str, link: str) -> str:
-    """The id of one robot link: "robots/<robot>/<link>" from a robot id and a link name."""
-    return f"{robot}/{link}"
-
-
-def split_link_id(value: str) -> Tuple[str, str]:
-    """Split "robots/<robot>/<link>" into (robot id, link name).
-
-    Raises:
-        ValueError: If `value` is not a link id.
-    """
-    parts = value.split("/")
-    if len(parts) != 3 or parts[0] != ROBOT_PREFIX.rstrip("/"):
-        raise ValueError(f"{value!r} is not a link id 'robots/<robot>/<link>'")
-    return f"{parts[0]}/{parts[1]}", parts[2]
-
-
-def world_pose(design: Design, state: State, body_id: str, link_pose: LinkPose) -> Optional[Pose]:
-    """A body's world pose in a state: attached, moved, or at its design pose.
-
-    Args:
-        design: The design.
-        state: The state.
-        body_id: A body id.
-        link_pose: Forward kinematics for attached bodies; this library has none of its own.
-
-    Returns:
-        Pose | None: None if the body is absent, or held by a robot whose joints are not fixed.
-    """
-    if body_id not in state.present:
-        return None
-    if body_id in state.attached:
-        attached = state.attached[body_id]
-        robot, link = split_link_id(attached.to)
-        robot_state = state.robots.get(robot)
-        if robot_state is None or robot_state.joints is None:
-            return None
-        return compose(link_pose(robot, link, robot_state.joints, robot_state.base), attached.grasp)
-    return state.poses.get(body_id, design.bodies[body_id].pose)

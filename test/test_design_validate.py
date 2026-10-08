@@ -1,12 +1,13 @@
-"""Tests for design_io validate (T4): one broken design per format §9 rule, and all problems at once."""
+"""Tests for design validate (T4): one broken design per format §9 rule, and all problems at once."""
 
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
-from design_io_fixtures import build_design, joints, with_action, with_movement, with_start, write_robot_files
+from design_fixtures import build_design, joints, with_action, with_movement, with_start, write_robot_files
 
-from bar_assembly_core.design_io import Attached, Design, DesignError, Pose, RobotState, Target, validate
+from bar_assembly_core.design import Attached, Design, DesignError, RobotState, Target, validate
+from bar_assembly_core.geometry import Pose
 
 
 def _problems(design: Design) -> list:

@@ -15,9 +15,11 @@ from typing import Dict, Optional, Set, Tuple
 
 from ..kinematics import ForwardKinematics
 from ..robot import RobotModel, RobotObject, robot_model
-from ..scene import Attachment, Body, SceneSnapshot, world_poses
-from .pose import Pose
-from .types import Design, Movement, State, ToolSpec, split_link_id
+from ..scene import Attachment, Body, Scene, world_poses
+from ..geometry import Pose
+from .types import Design, Movement, State
+from ..robot import Tool
+from ..ids import split_link_id
 
 # * One forward kinematics per thread: a parsed URDF keeps the joints it was last set to.
 _local = threading.local()
@@ -42,14 +44,14 @@ def design_model(design: Design, robot_id: str) -> RobotModel:
 
 
 @lru_cache(maxsize=64)
-def _model(robot_id: str, urdf, srdf, tools: Tuple[Tuple[str, ToolSpec], ...]) -> RobotModel:
+def _model(robot_id: str, urdf, srdf, tools: Tuple[Tuple[str, Tool], ...]) -> RobotModel:
     """`design_model`, cached: a tool's `Geometry` hashes by identity, so a new design object is a new model."""
     touches = {flange: tuple(split_link_id(entry)[1] for entry in tool.touches if entry.startswith(f"{robot_id}/"))
                for flange, tool in tools}
     return robot_model(robot_id.split("/", 1)[1], urdf, srdf, dict(tools), touches)
 
 
-def scene_at(design: Design, movement: Movement) -> SceneSnapshot:
+def scene_at(design: Design, movement: Movement) -> Scene:
     """The world at the start of a movement, as the design gives it.
 
     - A robot absent from the state is disabled; one with `joints: null` has every movable joint `unmeasured`
@@ -62,12 +64,12 @@ def scene_at(design: Design, movement: Movement) -> SceneSnapshot:
         movement: One of its movements.
 
     Returns:
-        SceneSnapshot: A new scene, `tick` -1.
+        Scene: A new scene, `tick` -1.
     """
     return _scene(design, movement.start)
 
 
-def scene_after(design: Design, bar: str) -> SceneSnapshot:
+def scene_after(design: Design, bar: str) -> Scene:
     """The world once a bar is built, following the schedule.
 
     That is the start of the first movement after the last action of that bar; after the schedule's last action, its
@@ -78,7 +80,7 @@ def scene_after(design: Design, bar: str) -> SceneSnapshot:
         bar: A bar id, e.g. "bars/B3".
 
     Returns:
-        SceneSnapshot: A new scene.
+        Scene: A new scene.
 
     Raises:
         KeyError: If no action places that bar.
@@ -93,7 +95,7 @@ def scene_after(design: Design, bar: str) -> SceneSnapshot:
     return _scene(design, last.start, last.target.joints if last.target is not None else None)
 
 
-def _scene(design: Design, state: State, target_joints: Optional[Dict[str, Dict[str, float]]] = None) -> SceneSnapshot:
+def _scene(design: Design, state: State, target_joints: Optional[Dict[str, Dict[str, float]]] = None) -> Scene:
     """A new scene of one design state; `target_joints` (robot id -> joints) override the state's."""
     robots: Dict[str, RobotObject] = {}
     for robot_id, spec in design.robots.items():
@@ -132,4 +134,4 @@ def _scene(design: Design, state: State, target_joints: Optional[Dict[str, Dict[
         fk = _local.fk = ForwardKinematics()
     poses = world_poses(bodies, robots, lambda robot, link: fk.link_pose(robot.model.urdf, robot.base, robot.joints,
                                                                          link))
-    return SceneSnapshot(bodies=bodies, world_poses=poses, robots=robots)
+    return Scene(bodies=bodies, world_poses=poses, robots=robots)

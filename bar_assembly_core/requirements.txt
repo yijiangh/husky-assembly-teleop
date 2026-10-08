@@ -1,8 +1,9 @@
-# * Core: design_io, the scene, ids. Must install in Rhino 8's CPython 3.9.
+# * Core (geometry, ids, urdf, robot, scene, design). Must install in Rhino 8's CPython 3.9.
 numpy
 scipy
 trimesh==4.12.2  # newest release for Python 3.9
 # * Extras, each needed only by the modules named.
-# yourdfpy                # kinematics (forward kinematics, so Design.scene_at for held bodies)
-# compas, compas_fab==1.1.0, compas_robots   # mirrors.compas_*, design_io.compas_fab, design_io.legacy
+# yourdfpy                                  # kinematics, design.scenes (Design.scene_at, scene_after)
+# compas, compas_fab==1.1.0, compas_robots  # mirrors, legacy
 # pybullet, pybullet_planning               # mirrors
+# rs_data_structure                         # legacy.export, legacy.conversion

@@ -7,11 +7,12 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
-from design_io_fixtures import build_design
+from design_fixtures import build_design
 
-from bar_assembly_core.design_io.pose import Pose, compose
-from bar_assembly_core.hold import hold_scene, hold_scene_for, release_bar
-from bar_assembly_core.ids import IdMap, retarget
+from bar_assembly_core.geometry import Pose, compose
+from bar_assembly_core.design.hold import hold_scene, hold_scene_for, release_bar
+from bar_assembly_core.ids import IdMap
+from bar_assembly_core.scene import retarget
 from bar_assembly_core.kinematics import ForwardKinematics
 from bar_assembly_core.scene import Attachment
 

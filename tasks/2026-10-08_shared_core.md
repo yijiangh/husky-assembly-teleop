@@ -1,6 +1,6 @@
 # 2026-10-08 Shared core: `bar_assembly_core`
 
-Status: **steps 1–5 implemented**; report in §9. Brief: the core extraction prompt (decisions 1–16 there are fixed).
+Status: **steps 1–5 and the refactor (§10) implemented**; report in §9. Brief: the core extraction prompt (decisions 1–16 there are fixed).
 
 ## 1. Goal
 
@@ -25,7 +25,7 @@ same package; its move to its own repository must be a copy.
 | R2 | Python 3.9: every module has `from __future__ import annotations`; no `match`, no runtime `X \| Y`, no `slots=`/`kw_only=`, no `zip(strict=)`. | `test/test_core_py39.py` (syntax for all files; `uv run --python 3.9` import of `bar_assembly_core`, `.design_io`, `.mirrors`, `.mirrors.pybullet`, `.mirrors.compas_fab`) |
 | R3 | Core dependencies numpy, scipy, trimesh==4.12.2. Extras: yourdfpy (`kinematics`, so `scene_at`), compas, compas_fab, compas_robots, pybullet, pybullet_planning (`mirrors`, `design_io.compas_fab`, `design_io.legacy`). Listed in `bar_assembly_core/requirements.txt`. | `import bar_assembly_core.design_io` without compas (existing T1) |
 
-## 4. Package layout (target)
+## 4. Package layout (steps 1–5; superseded by the layout in §10)
 
 ```
 bar_assembly_core/
@@ -98,25 +98,27 @@ Moving it to its own repository is a copy of the folder.
 
 ### 9.1 Public API
 
-Dependencies: numpy, scipy, trimesh==4.12.2. **yourdfpy** is needed only by `kinematics` and `design_io.scenes`
-(so by `Design.scene_at` / `scene_after`). compas, compas_fab 1.1.0, compas_robots, pybullet and pybullet_planning
-are needed by `mirrors` and the legacy `design_io.compas_fab` / `legacy`. The list is in `bar_assembly_core/requirements.txt`.
+Layers, each importing only the ones above it (`bar_assembly_core/__init__.py`). The core layers need numpy, scipy
+and trimesh==4.12.2. **yourdfpy** is needed by `kinematics` and `design.scenes`, so by `Design.scene_at` and
+`scene_after`. `mirrors` needs pybullet, pybullet_planning, compas, compas_fab 1.1.0 and compas_robots, and
+`legacy` needs compas and rs_data_structure. The list is in `bar_assembly_core/requirements.txt`.
 
 | Module | Main types and functions |
 |---|---|
-| `design_io` | Unchanged API (`read`, `write`, `validate`, `Design`, `RobotSpec`, `ToolSpec`, `BodySpec`, `State`, `Movement`, `Action`, `Pose`, `Geometry`, …). New: `Design.scene_at(movement) -> SceneSnapshot`, `Design.scene_after(bar: str) -> SceneSnapshot`. |
-| `design_io.scenes` | `scene_at(design, movement)`, `scene_after(design, bar)`, `design_model(design, robot_id) -> RobotModel` (cached by content). |
-| `design_io.compas_fab` | `to_robot_cell`, `to_cell_state`, `compas_link_pose`: the legacy direct mapping, kept as the reference the equivalence check compares the mirror with. |
-| `robot` | `RobotModel(name, urdf, srdf, flanges, tools: {flange: ToolSpec}, tool_touches: {flange: (link, …)}, stock_ur_frames)`: frozen, compared by identity; `.links`, `.movable_joints`. `robot_model(name, urdf, srdf, tools=None, touches=None) -> RobotModel`. `RobotObject(id, model, base, joints, enabled=True, base_tracked=True, unmeasured=frozenset(), base_time=None, joints_time=None, label="")`, with `.copy()` and `.acting_problems() -> list[str]`. |
-| `scene` | `Body(id, geometry, placement: Pose | Attachment, touches=(), label="", color=None, enabled=True)` with `.copy()`; `Attachment(parent, link, grasp)`, where the parent is a robot id or a body id; `SceneSnapshot(tick, time, bodies, world_poses, robots)` with `.copy()` and `.label(id)`; `world_poses(bodies, robots, link_pose) -> dict`; `same_source(new, old) -> bool`; `ROBOTS`, `TRACKED`, `robot_id(name)`, `tracked_id(name)`. |
+| `geometry` | `Pose(position, orientation)` (frozen, by value), `compose(a, b)`, `invert(a)`; `TriMesh`, `BoxShape`, `CylinderShape`, `Geometry(visual, collision)` (by identity), `box_geometry`, `cylinder_geometry`, `shape_mesh(shape)`. |
+| `ids` | `ID_PATTERN`, `check_id`, `ROBOTS`, `TOOLS`, `TRACKED`, `robot_id(name)`, `tracked_id(name)`, `link_id(robot, link)`, `split_link_id(id)`; `IdMap(pairs)`: `ids(id)` (KeyError if unmapped), `id in ids`, `ids.get(id)`, a mapped robot maps its links. |
+| `urdf` | `urdf_links`, `urdf_joints`, `movable_joints(urdf, srdf)`, `srdf_group_tips`, `resolved_urdf_text`, `copy_robot`; UR conventions `UR_JOINT_NAMES`, `TOOL_TOUCHES_ARM_LINKS`, `stock_frame_problem(urdf, arm)`. |
 | `kinematics` | `ForwardKinematics().link_pose(urdf, base, joints, link) -> Pose`; `load_urdf(path)`. One instance per thread. |
-| `ids` | `IdMap(pairs)`: `ids(id)` (KeyError if unmapped), `id in ids`, `ids.get(id)`. A mapped robot maps its links. `retarget(attachments, robot_map: IdMap, models: {id: RobotModel}) -> dict[str, Attachment]`. |
-| `hold` | `release_bar(design, action_id) -> str`, `hold_scene(scene, bar) -> SceneSnapshot`, `hold_scene_for(design, action_id)`. |
-| `ur` | `UR_JOINT_NAMES`, `TOOL_TOUCHES_ARM_LINKS`, `STOCK_YAW`, `joint_origin(joint)`, `stock_frame_problem(urdf, arm)`. |
-| `mirrors.compas_fab` | `CompasFabMirror(robot_id, log=None)`: `.sync(scene)`, `.collisions(joints=None, full_report=False) -> [(id, id)]`, `.search_check(joint_names) -> SearchCheck`, `.lend()` (context manager yielding the `PyBulletPlanner`), `.state`, `.cell`, `.static_contacts`, `.configuration(joints)`, `.state_at(joints)`, `.set_gui(gui)`, `.close()`. |
-| `mirrors.pybullet` | `PyBulletMirror()`: `.sync(scene)`, `.collisions(robot_id, margin=0.0, candidates=None) -> [id]`, `.allowed(a, b)`, `.robot(robot_id)`, `.robots`, `.body_ids(id)`, `.id_of(pybullet_id)`, `.obstacle_ids()`, `.active()`, `.set_gui(gui)`, `.close()`. |
-| `mirrors.compas_convert` | `frame_from_pose`, `pose_from_frame`, `rigid_body(geometry)`, `load_model(urdf, visual=True)`, `tool_model(tool, name)`, `robot_as_tool(urdf, tools, name, visual=True)`, `planning_group(cell, flange)`, `filled(configuration, joints)`, `subtree(model, link)`, `PARKED_POSITION`. |
-| `mirrors.pp_client` | `pp_client(client_id)`: inside the block, pybullet_planning acts on that world; restored after. |
+| `robot` | `Tool(id, geometry, tcp, kind, touches)` (geometry and TCP in the flange frame); `RobotModel(name, urdf, srdf, flanges, tools, tool_touches, stock_ur_frames)`: frozen, by identity; `.links`, `.movable_joints`. `robot_model(name, urdf, srdf, tools=None, touches=None)`. `RobotObject(id, model, base, joints, enabled=True, base_tracked=True, unmeasured=frozenset(), base_time=None, joints_time=None, label="")`, `.copy()`, `.acting_problems() -> list[str]`. |
+| `scene` | `Attachment(parent, link, grasp)` (parent: robot id or body id); `Body(id, geometry, placement, touches=(), label="", color=None, enabled=True)`, `.copy()`; `Scene(tick, time, bodies, world_poses, robots)`, `.copy()`, `.label(id)`; `world_poses(bodies, robots, link_pose)`; `same_source(new, old)`; `retarget(attachments, robot_map, models)`. |
+| `design` | The format: `read(folder)`, `write(design, folder)`, `validate(design)`, `Design` (`.scene_at(movement)`, `.scene_after(bar)`, `.movements()`), `RobotSpec`, `BodySpec`, `State`, `Movement`, `Action`, `Target`, `Attached`, `DesignError`, `SchemaMismatch`; `assumed_joints`, `assumed_start_all` (`design.carry`). |
+| `design.scenes` | `scene_at(design, movement)`, `scene_after(design, bar)`, `design_model(design, robot_id) -> RobotModel` (cached by content). |
+| `design.hold` | `release_bar(design, action_id)`, `hold_scene(scene, bar)`, `hold_scene_for(design, action_id)`. |
+| `mirrors.compas_fab` | `CompasFabMirror(robot_id, log=None)`: `.sync(scene)`, `.collisions(joints=None, full_report=False)`, `.search_check(joint_names)`, `.lend()`, `.state`, `.cell`, `.static_contacts`, `.configuration(joints)`, `.state_at(joints)`, `.set_gui(gui)`, `.close()`. |
+| `mirrors.pybullet` | `PyBulletMirror()`: `.sync(scene)`, `.collisions(robot_id, margin=0.0, candidates=None)`, `.allowed(a, b)`, `.robot(robot_id)`, `.robots`, `.body_ids(id)`, `.id_of(pybullet_id)`, `.obstacle_ids()`, `.active()`, `.set_gui(gui)`, `.close()`. |
+| `mirrors.compas` | `frame_from_pose`, `pose_from_frame`, `rigid_body(geometry)`, `load_model(urdf, visual=True)`, `tool_model(tool, name)`, `robot_as_tool(urdf, tools, name, visual=True)`, `planning_group(cell, flange)`, `filled`, `subtree`, `PARKED_POSITION`. |
+| `mirrors.pp_client` | `pp_client(client_id)`: pybullet_planning acts on that world inside the block; restored after. |
+| `legacy` | `export.read_legacy(folder, robot_files)`, `export.load_export`, `conversion.convert_export`; `compas_fab.to_robot_cell` / `to_cell_state` (the reference for `scripts/legacy_equivalence.py`). |
 
 Ids: one canonical id per object. Robots are `robots/cindy` when planned, `robots/a200-0806` when measured. Links are
 `robots/<name>/<link>`. Mounted tools use their tool id (`tools/AT3L`; a live one is `tools/a200-0806/left_ur_arm`).
@@ -125,9 +127,9 @@ Bodies use design ids (`bars/B1`). Measured objects are `tracked/<name>`.
 ### 9.2 What a host does
 
 ```python
-from bar_assembly_core.design_io import read
+from bar_assembly_core.design import read
+from bar_assembly_core.design.hold import hold_scene_for
 from bar_assembly_core.mirrors.compas_fab import CompasFabMirror
-from bar_assembly_core.hold import hold_scene_for
 
 design = read(folder)                                     # 1. models: design robots get theirs inside scene_at
 scene = design.scene_at(movement)                         # 2. the world at one movement (or design.scene_after(bar))
@@ -141,9 +143,9 @@ with mirror.lend() as planner:                            #    pybullet_planning
 mirror.sync(next_scene)                                   #    writes the full state again
 ```
 
-- **Build a `RobotModel`**: from a design robot, `design_io.scenes.design_model(design, robot_id)`, which `scene_at`
-  already uses. Otherwise `robot_model(name, urdf, srdf, tools={flange: ToolSpec}, touches={flange: [link, …]})`:
-  the URDF without tools; each tool's geometry and TCP are in its flange frame. Build each model once and share it:
+- **Build a `RobotModel`**: from a design robot, `design.scenes.design_model(design, robot_id)`, which `scene_at`
+  already uses. Otherwise `robot_model(name, urdf, srdf, tools={flange: Tool}, touches={flange: [link, …]})`: the
+  URDF without tools; each tool's geometry and TCP are in its flange frame. Build each model once and share it:
   mirrors compare models by identity, and a new object means a rebuild (~2 s).
 - **Get a scene**: `design.scene_at(movement)`, `design.scene_after(bar)`, or `hold_scene_for(design, action_id)`.
   Scenes share nothing mutable with the design, only `Geometry` and `RobotModel` objects.
@@ -159,15 +161,15 @@ mirror.sync(next_scene)                                   #    writes the full s
 |---|---|---|---|
 | 15 | `lend()` calls `pybullet_planning.set_client` and restores the previous client. | It calls `set_client`, **and** sets `CLIENT` in every loaded `pybullet_planning` module, then restores each one (`mirrors/pp_client.py`). The user approved this. | 17 pybullet_planning modules copy `CLIENT` at import (`from pybullet_planning.utils import CLIENT`). After `set_client(b)`, `pp.get_bodies()` still reads client 0. Tamp has worked so far only because its world happened to be client 0. The old `PyBulletMirror.active()` (`pp.CLIENT = …`) had the same flaw and now uses `pp_client` too. A fix upstream (`get_client()` at call time) would make the rebinding unnecessary. |
 | 9 | `retarget(attachments, robot_map)` | `retarget(attachments, robot_map, models)` | Refusing a link the target lacks needs the target's model. `robot_map` is an `IdMap`. |
-| 7 | Move `TOOL_TOUCHES_ARM_LINKS` onto the model. | The constant moved to `ur.py`. `robot_model()` resolves it into `RobotModel.tool_touches` (per flange, link names), together with the design tool's own `touches`. | The model carries the result; the convention stays shared. |
+| 7 | Move `TOOL_TOUCHES_ARM_LINKS` onto the model. | The constant moved to `urdf.py`. `robot_model()` resolves it into `RobotModel.tool_touches` (per flange, link names), together with the design tool's own `touches`. | The model carries the result; the convention stays shared. |
 | 5 | Refuse an acting robot whose joints are unmeasured. | Only the model's movable joints count (`RobotModel.movable_joints`: not fixed, not SRDF-passive, no mimic). | Wheels and gripper fingers are never measured; counting them would refuse every real robot. |
 | 1 | The design stays an ordinary editable object. | Unchanged: the frozen dataclasses edited with `dataclasses.replace`, as before. No versioning. | — |
-| Facts | "`<arm>_base_link` differs by 90°" between the URDF variants. | Measured: Alice differs at `ur_arm_base_link` (90°); Cindy only at `right_ur_arm_base` (90°). All other links agree (`test_core_scene.py::test_frame_convention_and_fk_comparison`). | Cindy's turn sits in another joint. `RobotModel.stock_ur_frames` records the convention. |
-| Step 1 | Move `design_io` unchanged. | Unchanged, except that the compas helpers moved to `mirrors/compas_convert.py`. `design_io.compas_fab` and `design_io.legacy` now import them from there. | The brief asked for the helpers to move. Only the legacy modules depend on `mirrors`. |
-| — | Scene type name. | Kept `SceneSnapshot` (the monitor's per-tick copy is the same type). | Smallest diff; a rename is cheap later. |
+| Facts | "`<arm>_base_link` differs by 90°" between the URDF variants. | Measured: Alice differs at `ur_arm_base_link` (90°); Cindy only at `right_ur_arm_base` (90°). All other links agree (`test/test_core_scene.py::test_frame_convention_and_fk_comparison`). | Cindy's turn sits in another joint. `RobotModel.stock_ur_frames` records the convention. |
+| Step 1 | Move `design_io` unchanged. | Moved, then split by layer in §10: the format is `design/`, the old export `legacy/`, poses and shapes `geometry.py`. They now live with the converter in `legacy/`. | The brief asked for the helpers to move. Only the legacy modules depend on `mirrors`. |
+| — | Scene type name. | `Scene` (the monitor's live store is `LiveScene`). | Renamed in §10, before anyone outside depends on it. |
 
 Further changes reviewers should know about:
-- **Tools are separate everywhere in planning.** A live robot's `RobotModel` holds its tools as `ToolSpec`s read from
+- **Tools are separate everywhere in planning.** A live robot's `RobotModel` holds its tools as `Tool`s read from
   the tool URDFs (collision meshes at zero joints, TCP at tool0, because the monitor knows no TCP). In compas_fab they
   are `ToolModel`s attached to the SRDF group ending at their flange. `PyBulletMirror` writes one URDF per model with
   each tool as a fixed link, so raw `p` moves keep it on the robot. `SearchCheck` now carries attached tools like
@@ -201,7 +203,7 @@ Deferred or stubbed:
 - Commit is still a stub in both planners.
 - No limit on the skew between `base_time` and `joints_time` yet.
 - After an edit, the owner must recompute `world_poses`; the core does not track edits.
-- Moving touches onto real robots lives in the cell plugin (`scene_bodies`), not in the core.
+- Moving touches onto real robots lives in the cell plugin (`scene_bodies`); the core has `retarget` for attachments only.
 - The core FK takes a URDF path; a model whose tools move would need more.
 - The monitor was started with `robot_control`, `cell`, `base_planner` and `arm_planner` and ticks without errors
   (first tick 9 ms), but not on hardware: no plans were run through the UI.
@@ -222,3 +224,29 @@ Deferred or stubbed:
 | Equivalence, 260920_RobArch_demo_revamp_backup | Same: 0 unexpected, 137/140 identical, the same 3 `static_contacts` pairs, no floor differences. Pairs: mirror 20, design 23. |
 | Monitor | Starts with `robots:=['0804','0806']` and the four plugins, ticks without errors (no hardware). |
 | Timing (260814, 94 bodies) | `scene_at` 3.0 ms per movement (run only when the design or step changes); scene copy 0.055 ms; `scene_after` 0.2 ms. |
+
+## 10. Refactor before the hand-off (user request, 2026-10-08)
+
+Goal: a minimal core whose layout reads as its layering. Answers: layered layout; legacy converter inside the core as
+`legacy/`; `SceneSnapshot` → `Scene` (monitor's store → `LiveScene`), `ToolSpec` → `Tool`; `design_io` → `design`
+(the `library` value written into design.json stays "design_io": no format change).
+
+```
+bar_assembly_core/              each layer imports only the ones above it
+├── geometry.py    Pose, compose, invert, TriMesh, BoxShape, CylinderShape, Geometry, shape_mesh   (pose + geometry)
+├── ids.py         ID_PATTERN, check_id, link_id, split_link_id, robot_id, tracked_id, IdMap
+├── urdf.py        URDF/SRDF reading and copying, UR conventions                                (robot_files + ur)
+├── kinematics.py  ForwardKinematics (yourdfpy)
+├── robot.py       Tool, RobotModel, robot_model, RobotObject
+├── scene.py       Attachment, Body, Scene, world_poses, same_source, retarget
+├── design/        the file format: types, read, write, validate, meshes, version; carry (assumed joints),
+│                  scenes (scene_at, scene_after; yourdfpy), hold
+├── mirrors/       compas.py (conversions), compas_fab.py, pybullet.py, pp_client.py
+└── legacy/        export.py (old export → Design), conversion.py, compas_fab.py (to_cell_state harness), timing.py
+```
+
+| # | Work | Done when |
+|---|---|---|
+| R1 | Moves and merges with `git mv`; split names to their layer. | Files in place. |
+| R2 | Rewrite every import (core, monitor, tests, scripts) by name; rename the types. | Quick, slow and linters pass; 3.9 check passes. |
+| R3 | Docs, report §9, AGENTS.md. | No stale paths (`design_io.`, `compas_convert`, `SceneSnapshot`, `ToolSpec`). |

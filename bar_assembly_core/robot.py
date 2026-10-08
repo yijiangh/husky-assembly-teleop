@@ -13,14 +13,29 @@ from functools import cached_property
 from pathlib import Path
 from typing import Dict, FrozenSet, List, Mapping, Optional, Sequence, Tuple
 
-from .design_io.pose import Pose
-from .design_io.robot_files import movable_joints as srdf_movable_joints
-from .design_io.robot_files import urdf_joints, urdf_links
-from .design_io.types import ToolSpec
-from .ur import TOOL_TOUCHES_ARM_LINKS, stock_frame_problem
+from .geometry import Geometry, Pose
+from .urdf import TOOL_TOUCHES_ARM_LINKS, stock_frame_problem, urdf_joints, urdf_links
+from .urdf import movable_joints as srdf_movable_joints
 
 #: Suffix of the links tools mount on (UR convention: "<arm>_tool0").
 FLANGE_SUFFIX = "_tool0"
+
+
+@dataclass(frozen=True)
+class Tool:
+    """A tool mounted on a flange (format §4.2). Geometry and `tcp` are in the flange link frame.
+
+    Attributes:
+        id: E.g. "tools/AT3L" (a design's) or "tools/a200-0806/left_ur_arm" (a live robot's).
+        kind: The end effector kind, e.g. "scaffolding_v3".
+        touches: Ids the tool may touch, as written in a design (e.g. "robots/cindy/left_ur_arm_wrist_2_link").
+    """
+
+    id: str
+    geometry: Geometry
+    tcp: Pose
+    kind: str
+    touches: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, eq=False)
@@ -42,7 +57,7 @@ class RobotModel:
     urdf: Path
     srdf: Optional[Path]
     flanges: Tuple[str, ...]
-    tools: Mapping[str, ToolSpec]
+    tools: Mapping[str, Tool]
     tool_touches: Mapping[str, Tuple[str, ...]]
     stock_ur_frames: bool
 
@@ -59,7 +74,7 @@ class RobotModel:
         return tuple(name for name, kind in urdf_joints(self.urdf).items() if kind != "fixed")
 
 
-def robot_model(name: str, urdf: Path, srdf: Optional[Path], tools: Optional[Mapping[str, ToolSpec]] = None,
+def robot_model(name: str, urdf: Path, srdf: Optional[Path], tools: Optional[Mapping[str, Tool]] = None,
                 touches: Optional[Mapping[str, Sequence[str]]] = None) -> RobotModel:
     """A robot model with its flanges, tool touches and frame convention read from its URDF.
 
@@ -68,7 +83,7 @@ def robot_model(name: str, urdf: Path, srdf: Optional[Path], tools: Optional[Map
         urdf: The URDF without tools.
         srdf: The SRDF, or None.
         tools: Flange -> mounted tool.
-        touches: Flange -> more links its tool may touch, beyond the arm links in `ur.TOOL_TOUCHES_ARM_LINKS`.
+        touches: Flange -> more links its tool may touch, beyond the arm links in `urdf.TOOL_TOUCHES_ARM_LINKS`.
 
     Returns:
         RobotModel: A new model. ! Build each model once and share it: a new object makes mirrors rebuild.

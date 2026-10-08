@@ -162,8 +162,9 @@ The monitor is a small core that ticks and owns the shared state; every feature 
 | `robot_interface/` | The only code that talks to robots: base, arms, tools, mocap subscriptions. |
 | `world/` | Measured state, mocap checks, kinematics, the scene planners read. |
 | `ui/` | The viser web UI and shared widgets. |
-| `design_io/` | Reading and writing design folders (`doc/design_format.md`). |
 | `old/` | The old monitor, for reference only. |
+
+`bar_assembly_core/` (next to the package) is the core shared with the Rhino plugin and the planners: the design file format (`design/`), robots and scenes, and their mirrors in PyBullet and compas_fab. Its layers are listed in `bar_assembly_core/__init__.py`.
 
 ## Documentation
 

@@ -19,8 +19,9 @@ import numpy as np
 import viser
 import yourdfpy
 
-from bar_assembly_core.design_io import Design, Geometry, Pose, State, compose, shape_mesh
-from bar_assembly_core.design_io.types import split_link_id
+from bar_assembly_core.design import Design, State
+from bar_assembly_core.geometry import Geometry, Pose, compose, shape_mesh
+from bar_assembly_core.ids import split_link_id
 from ...ui.visualization import FastViserUrdf, add_simple_urdf, joints_changed, load_urdf, quaternion_to_wxyz
 from .design import body_color, stands
 

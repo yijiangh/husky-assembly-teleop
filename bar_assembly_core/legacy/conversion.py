@@ -10,10 +10,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable, Optional
 
-from .write import write
-from .legacy import from_export, load_export
+from ..design.write import write
+from .export import from_export, load_export
 from .timing import Stopwatch
-from .types import Design
+from ..design.types import Design
 
 #: A folder holding this is an export in the old compas_fab format.
 OLD_EXPORT_FILE = "ActionSchedule.json"

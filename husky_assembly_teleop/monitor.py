@@ -27,13 +27,13 @@ from rclpy.signals import SignalHandlerOptions
 from .plugin_api.concurrency import TickTimer
 from .config import MonitorConfig, config_from_ros_parameters
 from .plugin_api.context import PluginContext
-from bar_assembly_core.design_io.geometry import Geometry
+from bar_assembly_core.geometry import Geometry
 from .world.kinematics import Kinematics
 from .plugin_api.plugin import HuskyPlugin, load_plugins
 from .robot_interface.robot import HuskyRobotInterface
 from .robot_interface.connections import RosConnections
 from .robot_interface.mocap import subscribe_mocap
-from .world.scene import PluginScene, Scene, TrackedDescription
+from .world.scene import LiveScene, PluginScene, TrackedDescription
 from .ui.visualization import Visualization
 from .world.measured import TrackedObject, WorldState
 
@@ -100,7 +100,7 @@ class HuskyMonitor(Node):
         self._executor.add_node(self)
 
         self._kinematics: Kinematics | None = None
-        self._scene = Scene()
+        self._scene = LiveScene()
         self._viz: Visualization | None = None
         # * Built before the plugins, so tasks started in their setup are timed too.
         self._timer = TickTimer(asyncio.get_running_loop(),

@@ -81,7 +81,7 @@ class RobotConfig:
         mocap_id: Rigid-body id of the base in the mocap system, or None if the robot is not tracked.
         calibration_file: Joint-origin overlay for the URDF, or None. Nothing reads it yet.
         model: What mirrors build the live robot from: the URDF without tools, the SRDF, and each tool as a
-            separate `ToolSpec`. None for a config made by hand without one.
+            separate `Tool`. None for a config made by hand without one.
     """
 
     serial: str

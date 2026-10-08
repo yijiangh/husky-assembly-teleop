@@ -1,9 +1,9 @@
 """Size on disk, export cell composition and the design round trip, for one old compas_fab export.
 
-    python scripts/design_io_storage.py <export folder> [--json results.json]
+    python scripts/design_storage.py <export folder> [--json results.json]
 
 * Converts into a temporary folder; the export and its `<export>_design` copy are not touched.
-* Loader timing and the loader equality check are in `design_io_equivalence.py`.
+* Loader timing and the loader equality check are in `legacy_equivalence.py`.
 ! Parsing each export cell takes ~2 s and a few GB of memory.
 """
 
@@ -31,16 +31,16 @@ def quiet(_text: str) -> None:
 
 def step_convert(export: str, design: str) -> dict:
     """Convert the export into a design folder."""
-    from bar_assembly_core.design_io.conversion import convert_export
+    from bar_assembly_core.legacy.conversion import convert_export
     convert_export(Path(export), Path(design), DATA, quiet)
     return {}
 
 
 def step_roundtrip(design: str, tmp: str) -> dict:
     """Validate, then read -> write -> read twice: equal designs, same files, same bytes."""
-    from test_design_io_roundtrip import _comparable
+    from test_design_roundtrip import _comparable
 
-    from bar_assembly_core.design_io import read, validate, write
+    from bar_assembly_core.design import read, validate, write
     first = read(Path(design))
     a, b = Path(tmp) / "a", Path(tmp) / "b"
     second = write(first, a, package_dirs=[DATA / "husky_urdf"])
