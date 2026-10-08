@@ -166,21 +166,27 @@ class Trace:
         newest = (self._first + self._count - 1) % len(self._rows)
         return self._rows[newest, self._columns[name]].copy()
 
-    def save(self, path: str | Path) -> Path:
+    def save(self, path: str | Path, extra: dict[str, Any] | None = None) -> Path:
         """Write every sample to an .npz file, creating its folder.
 
         Keys: "t" (seconds), each signal's name (samples x channels), and "<name>.labels", "<name>.unit".
+
+        Args:
+            path: The file to write.
+            extra: More arrays to store, e.g. the commanded path; keys must not clash with the above.
 
         Returns:
             Path: The file written.
         """
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        arrays = {"t": self.times()}
+        arrays = {"t": self.times(), **(extra or {})}
         for signal in self.signals:
             arrays[signal.name] = self.values(signal.name)
             arrays[f"{signal.name}.labels"] = np.array(signal.channels)
             arrays[f"{signal.name}.unit"] = np.array(signal.unit)
+        if extra and len(arrays) != 1 + 3 * len(self.signals) + len(extra):
+            raise ValueError(f"extra keys {sorted(extra)} clash with the trace's own")
         np.savez(path, **arrays)
         return path
 
