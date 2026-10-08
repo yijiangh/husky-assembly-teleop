@@ -174,6 +174,7 @@ The monitor is a small core that ticks and owns the shared state; every feature 
 | `doc/plugin_roadmap.md` | Which plugins exist, and which old features are still to be ported. |
 | `doc/scene_refactor_plan.md`, `doc/design_format.md`, `doc/ur_frames.md` | The scene, the design file format, the UR arm frames. |
 | `tasks/` | Specs written while building a feature. |
+| `doc/base_exp_manual.md` | Base controller experiments: goal and hypotheses, the three experiments (robot model, model over conditions, controllers), how to run them and where the results are. |
 | `doc/calibration_manual.md` and the other manuals | **Outdated**, written for the old monitor; each says at the top what is missing or different now. |
 | `DOCKER.md` | **Unknown state**, not tested with the new monitor. |
 
@@ -215,6 +216,7 @@ Some plugins show content in panels separate from the main control panel. Panels
 - Drag the edge of a floating panel to resize it.
 
 Example: `mocap_probe` shows the probe state in a **Probe** panel, collapsed on the right at start. Floated and enlarged, its text scales with the panel and is readable from a distance.
+`base_exp` shows its live error and command plots in a **Base tracking** panel, docked on the left.
 
 ### Parameters
 
@@ -258,6 +260,7 @@ Paths are given relative to this folder, e.g. `data_design_study/260814_RobArch_
 | `cell` | Loads a design and shows the cell state of one movement at a time. Experimental. |
 | `base_planner` | Plans a collision-free path for a base. Experimental: Commit only logs the path. |
 | `arm_planner` | Plans a collision-free arm motion to a joint target. Experimental: Commit only logs the path. |
+| `base_exp` | Drives test paths (straight, turn, arc, sine, drive-turn-drive; geometric or timed) from where the base stands with the onboard pure pursuit follower, with live error plots; the monitor measures every run's errors itself, the same for every controller, and keeps recording until the robot settles; each run gets its own folder under `data_experiment/base_exp/<experiment name>/` on the Drive (`drive_root`) with the recording (.npz), its setup (sim or real, sim model, controller and parameters) and numbers (experiment.json), and an overview plot (.png). **Start auto** runs paths at one fixed speed, the standard paths (the same 10 in every scenario, resumed per experiment and setup) or random paths from a grid of distances and angles, or constant commands open loop over a grid of speeds and turn rates; each run is checked to keep 0.3 m from every robot and scene body (load `obstacles` for the lab border); during any run the robot is soft-stopped and automation paused if it comes within 0.1 m of anything. Experimental; needs `crl_husky pure_pursuit` on the robot, or `pure_pursuit_sim.launch.py` to test. Analyse the runs with `scripts/analyze_base_exp.py`: `summary.md` compares the controllers, `robot_model.md` fits a model of the robot, `constant_commands.md` shows how it changes with speed and turn rate. How to run: [doc/base_exp_manual.md](doc/base_exp_manual.md). |
 | `example_plot`, `example_ui`, `example_sequence`, `example_pybullet`, `example_recording`, `example_robot_state` | Minimal plugins, as templates for new ones. |
 
 ### Examples
