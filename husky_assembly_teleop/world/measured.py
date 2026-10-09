@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from ..robot_interface.robot import HuskyRobotInterface
+from .mocap import RawMarkers
 
 
 @dataclass
@@ -32,6 +33,7 @@ class TrackedObject:
         marker_error: Mean marker error of the latest sample, metres.
         last_update_time: ROS time of the latest observation, seconds, or None.
         last_fix_time: ROS time of the latest valid observation, seconds, or None.
+        markers: Raw markers of the latest observation, valid or not, or None before one.
     """
 
     name: str
@@ -44,6 +46,7 @@ class TrackedObject:
     marker_errors: deque[tuple[float, float]] = field(default_factory=deque)
     last_update_time: float | None = None
     last_fix_time: float | None = None
+    markers: RawMarkers | None = None
 
 
 @dataclass

@@ -13,6 +13,7 @@ from sensor_msgs.msg import BatteryState, JointState
 from std_msgs.msg import Bool
 
 from ..config import RobotConfig
+from ..world.mocap import RawMarkers
 from .connections import RosConnections
 from .controller_manager import ControllerManagerInterface, ControllerManagerState
 from .mocap import subscribe_mocap
@@ -44,6 +45,7 @@ class BaseState:
         controllers: The base controller manager's state.
         last_update_time: ROS time of the last mocap message, valid or not, seconds.
         last_fix_time: ROS time the last valid pose was captured, seconds.
+        markers: Raw mocap markers of the last mocap message, valid or not, or None before one.
         wheel_positions: Wheel joint angles from the platform's joint_states, radians, by joint name.
         wheel_velocities: Wheel joint speeds from the platform's joint_states, rad/s, by joint name.
         joint_states_update_time: ROS time of the last platform joint_states, seconds.
@@ -68,6 +70,7 @@ class BaseState:
     controllers: ControllerManagerState = field(default_factory=ControllerManagerState)
     last_update_time: float | None = None
     last_fix_time: float | None = None
+    markers: RawMarkers | None = None
     wheel_positions: dict[str, float] = field(default_factory=dict)
     wheel_velocities: dict[str, float] = field(default_factory=dict)
     joint_states_update_time: float | None = None

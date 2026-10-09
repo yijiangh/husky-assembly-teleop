@@ -11,7 +11,7 @@ from typing import Callable
 import numpy as np
 from crl_husky_msgs.msg import MocapRigidBodyPose
 
-from ..world.mocap import MARKER_ERROR_WINDOW, MocapBody
+from ..world.mocap import MARKER_ERROR_WINDOW, MocapBody, RawMarkers
 from .connections import RosConnections
 
 
@@ -49,6 +49,9 @@ def store_sample(body: MocapBody, message: MocapRigidBodyPose, now: float) -> No
     # * Kept so the mocap chip can say why a pose is invalid.
     body.tracking_valid = bool(message.tracking_valid)
     body.marker_error = float(message.marker_error)
+    body.markers = RawMarkers(ids=np.array(message.marker_ids, dtype=int),
+                              positions=np.array([[p.x, p.y, p.z] for p in message.marker_positions]).reshape(-1, 3),
+                              measured=np.array(message.marker_measured, dtype=bool))
     if body.tracked:
         p, q = message.pose.position, message.pose.orientation
         body.position = np.array([p.x, p.y, p.z])
