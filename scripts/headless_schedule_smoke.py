@@ -164,8 +164,8 @@ from smoke_single_arm_plan import collision_lines
 from husky_assembly_teleop import DESIGN_DATA_DIRECTORY, DESIGN_PROBLEM_NAME
 from husky_assembly_teleop import cfab_session, husky_monitor, husky_world
 from husky_assembly_teleop.bar_action_io import (
-    STATIONARY_KINDS, MovementKind, OperatorStep, held_ground_joints, is_built_assembly_body,
-    mating_arm_sides,
+    FEMALE_JOINT_SUFFIXES, STATIONARY_KINDS, MovementKind, OperatorStep, held_ground_joints,
+    is_built_assembly_body, mating_arm_sides,
     movement_kind, step_kind, tool_runs_with_next_motion,
 )
 from husky_assembly_teleop.cfab_session import CfabSession
@@ -1627,9 +1627,10 @@ def one_sided_insert_check(results: Results, problem: str, root: str, schedule) 
 
         # * --- (d) no mating female in the start state, not grounded: refuses to run
         states = mv.start_state.rigid_body_states
-        female = next(name[:-len('_male')] + '_female' for name, rb in states.items()
+        female = next(name[:-len('_male')] + suffix for name, rb in states.items()
+                      for suffix in FEMALE_JOINT_SUFFIXES
                       if name.endswith('_male') and (rb.attached_to_link or '').startswith(side)
-                      and name[:-len('_male')] + '_female' in states)
+                      and name[:-len('_male')] + suffix in states)
         removed = states.pop(female)
         n_calls, n_log = len(iface.calls), len(log.msgs)
         task = husky_world.execute_planned_trajectory_compliant(monitor)

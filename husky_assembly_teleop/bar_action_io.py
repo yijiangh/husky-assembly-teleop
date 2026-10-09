@@ -874,9 +874,17 @@ def held_ground_joints(state) -> list:
 # Which arm a scaffolding tool sits on (Cindy's RobotSpec.tool_names / side_keys pairing).
 _TOOL_SIDES = {'AT3L': 'left', 'AT3R': 'right'}
 
+# * The two halves of a joint share its id: 'joint_J1-3_male' mates with the
+# * female half 'joint_J1-3_female', which the export names 'joint_J1-3_mocap'
+# * when a mocap marker set is mounted on it (still the female half).
+FEMALE_JOINT_SUFFIXES = ('_female', '_mocap')
+
 
 def mating_arm_sides(state) -> list:
     """The arms whose held male joint has a female to screw into, in a cell state.
+
+    The female half is ``joint_<id>_female``, or ``joint_<id>_mocap`` when mocap
+    markers are mounted on it (``FEMALE_JOINT_SUFFIXES``).
 
     * A normal bar is held on two male joints and both mate: both joint motors
     * tighten at the insert and it ends when both stall. A ONE-SIDED bar (B3, B7,
@@ -906,8 +914,10 @@ def mating_arm_sides(state) -> list:
         tool = getattr(rb, 'attached_to_tool', None)
         if not (name.startswith('joint_') and name.endswith('_male') and (link or tool)):
             continue
-        # Same joint id, other half: 'joint_J1-3_male' mates with 'joint_J1-3_female'.
-        if name[:-len('_male')] + '_female' not in rb_states:
+        # Same joint id, other half: 'joint_J1-3_male' mates with 'joint_J1-3_female'
+        # (or 'joint_J1-3_mocap', a female with mocap markers on it).
+        joint_id = name[:-len('_male')]
+        if not any(joint_id + suffix in rb_states for suffix in FEMALE_JOINT_SUFFIXES):
             continue
         # The flange link names its side ('left_ur_arm_tool0'); a tool names it by its id.
         sides.append(link.split('_', 1)[0] if link else _TOOL_SIDES[tool])

@@ -519,6 +519,10 @@ def test_mating_arm_sides_in_memory():
     right = state.rigid_body_states['joint_J2-3_male']
     right.attached_to_link, right.attached_to_tool = None, 'AT3R'
     assert mating_arm_sides(state) == ['left', 'right']
+    # A female with mocap markers on it is exported as 'joint_*_mocap': it mates too.
+    del state.rigid_body_states['joint_J2-3_female']
+    state.rigid_body_states['joint_J2-3_mocap'] = RigidBodyState(Frame.worldXY())
+    assert mating_arm_sides(state) == ['left', 'right']
 
 
 @pytest.mark.parametrize('problem', [
