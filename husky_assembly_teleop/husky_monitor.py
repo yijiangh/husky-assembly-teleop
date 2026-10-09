@@ -5360,8 +5360,11 @@ class HuskyMonitor(Node):
           ``world.execute_trajectory_and_zero_ft`` (also a queued generator).
           It is the last movement with empty tools, so it is the only safe
           place to tare -- see that function.
-        - everything else (the transfer, the free move home) -> joint tracking
-          via ``world.execute_arm_trajectory_both``.
+        - the transfer (DUAL_CONSTRAINED_FREE) -> joint tracking, then the
+          visual-servo correction onto the insert's start, via
+          ``world.execute_transfer_then_servo`` (a queued generator; with the
+          workaround ticked it first pauses for the operator to mount the bar).
+        - the free move home -> joint tracking via ``world.execute_arm_trajectory_both``.
         When the export asks for another controller, that is warned once per
         movement (``_warn_controller_mismatch``). A movement class the monitor
         does not know is refused. In schedule mode one info line per tool step
@@ -5495,6 +5498,10 @@ class HuskyMonitor(Node):
             world.execute_arm_trajectory_all(self)
         elif kind is MovementKind.DUAL_FREE and not self._is_free_home(mv):
             self.tasks.append(world.execute_trajectory_and_zero_ft(self))
+        elif kind is MovementKind.DUAL_CONSTRAINED_FREE:
+            # * The transfer: joint tracking, then the visual-servo correction at
+            # * its end (the base's centre of mass shifts under the carried bar).
+            self.tasks.append(world.execute_transfer_then_servo(self))
         else:
             world.execute_arm_trajectory_both(self)
 
@@ -5816,6 +5823,57 @@ class HuskyMonitor(Node):
                       f"{next_mv.movement_id!r}.start_state.robot_configuration.")
             if self._kind_of(next_mv) not in STATIONARY_KINDS:
                 break  # an arm moves here: whatever follows starts from its end
+
+    def _adopt_servo_corrected_end(self, transfer_idx: int, planned_end12, *,
+                                   as_free_move: bool) -> None:
+        """After the servo at the transfer's end: the live arms become its end and the insert's start.
+
+        The servo loop already wrote the live joints into the insert's start
+        state. This also carries them into the steps between (the tighten) and,
+        with the workaround ticked, into the steps before the transfer (the
+        manual mount, the tool grasp), which stand where the bar was mounted --
+        the same carry ``_accept_trajectory`` does for a planned transfer. The
+        stale insert trajectory is dropped and the last correction path cleared,
+        so 'Exec' cannot replay it. Nothing changes when the arms did not move
+        (servo skipped, cancelled before a move, or already on target).
+
+        ! The live configuration is also added to the transfer's trajectory as
+        ! its last waypoint. 'Load Movement' on the transfer (also the automatic
+        ! load on 'Load entry', and the .live-solved.json sidecar) re-accepts
+        ! that trajectory, and the carry rule then writes its END into the
+        ! insert: the PLANNED end would erase the correction.
+        ! _accept_trajectory is not called here: it takes the chain position
+        ! from the LOADED movement, which is the insert by now.
+
+        Args:
+            transfer_idx (int): Index of the transfer in ``_loaded_movements``.
+            planned_end12 (Sequence[float]): The transfer's planned last
+                waypoint, 12 joints (left arm then right arm).
+            as_free_move (bool): The transfer ran as the workaround's free move.
+        """
+        hi = self.huskies[self.selected_robot_id].interface
+        live12 = np.concatenate([np.asarray(hi.arm_joint_pose[i], dtype=float) for i in range(2)])
+        self._reset_planned_arm_trajectory()
+        moved = float(np.abs(live12 - np.asarray(planned_end12, dtype=float)).max())
+        if moved <= 1e-3:
+            print(f"[Servo] arms within {moved:.4f} rad of the transfer's planned end; "
+                  f"nothing to carry.")
+            return
+        transfer = self._loaded_movements[transfer_idx]
+        if self._trajectory_has_waypoints(transfer):
+            transfer.trajectory = joint_trajectory_from_path(
+                path_12_from_joint_trajectory(transfer.trajectory) + [live12])
+        self._carry_configuration_forward(transfer_idx, live12, source='Servo')
+        if as_free_move and transfer.start_state is not None:
+            # The walk also writes into the transfer itself; its start stays
+            # where the free move started (as in _accept_trajectory).
+            # ! A copy: the walk edits the configuration in place.
+            start_conf = transfer.start_state.robot_configuration.copy()
+            prev = self._previous_arm_index(transfer_idx)
+            self._carry_configuration_forward(-1 if prev is None else prev, live12, source='Servo')
+            transfer.start_state.robot_configuration = start_conf
+        self._drop_m2_m3_after_m1_chain_break(
+            f"Servo moved {transfer.movement_id}'s end by max {moved:.4f} rad")
 
     def _accept_single_arm_trajectory(self, mv, jt, *, source: str = 'Plan') -> None:
         """Single-arm version of ``_accept_trajectory`` (support robots).
@@ -10762,8 +10820,10 @@ class HuskyMonitor(Node):
         # error [mm], tool0 orientation error [deg], mobile-base position drift
         # [mm], mobile-base orientation drift [deg]). Fed one point per servoing
         # iteration by world.servo_to_movement_start_live via push_servoing_tracker.
-        # Dear PyGui only, and only for the bar-holding accuracy experiment.
-        if self.USE_DPG_UI and self.BAR_ACTION_MOCAP_ACCURACY_TEST:
+        # Dear PyGui only, dual-arm only: the accuracy test's loop and the
+        # correction after the schedule's transfer (world.execute_transfer_then_servo).
+        if (self.USE_DPG_UI and self.BAR_ACTION_LIVE_REPLAN_EXE
+                and self._connected_robot().dual_arm):
             visible = getattr(self, '_servoing_tracker_visible', False)
             _common._global_backend.add_window(
                 "Servoing Live Tracker", tag="servoing_tracker_window",
@@ -11169,6 +11229,10 @@ class HuskyMonitor(Node):
             # 2026-09-30 failure and runs the real gate. Sends nothing, ever.
             self.buttons.append(Button('Safeguard Drill (sends nothing)',
                 lambda: self.tasks.append(world.servo_safeguard_drill(self))))
+            # The servo tracker window: the accuracy test's loop and the
+            # correction after each transfer feed it (dual-arm only).
+            if self._connected_robot().dual_arm:
+                self.buttons.append(Button('Toggle Servoing Tracker', self.toggle_servoing_tracker))
 
             if show_assembly_knobs:
                 # The insert hands over from the rigid joint controller to compliance this
@@ -11292,7 +11356,6 @@ class HuskyMonitor(Node):
             # Drops unsaved takes (e.g. the post-mount fit check) so they never
             # ride into the next bar's saved file.
             self.buttons.append(Button('Discard unsaved takes', self.discard_bar_holding_marker_takes))
-            self.buttons.append(Button('Toggle Servoing Tracker', self.toggle_servoing_tracker))
 
         if self.DUAL_ARM_EE_CONSTR_ACCURACY_MOCAP_TEST:
             # self.dump_sep_sliders.append(Slider("----------Dual Arm Acc Test", lambda : None))

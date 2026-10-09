@@ -181,7 +181,8 @@ from husky_assembly_teleop.progress_io import (
 from husky_assembly_teleop.robot_registry import other_robots, robot_by_name
 from husky_assembly_teleop.schedule_io import load_schedule, problem_root
 from husky_assembly_teleop.utils import (
-    joint_trajectory_from_path, path_from_joint_trajectory, pose_from_frame, vec12_from_conf,
+    frame_from_pose, joint_trajectory_from_path, path_from_joint_trajectory, pose_from_frame,
+    vec12_from_conf,
 )
 from husky_assembly_tamp.motion_planner.api import _fk_link_frame
 from rs_data_structure.bar_action import CONTROLLER_JOINT_TRACKING
@@ -223,6 +224,11 @@ GOAL_MOVED_TOL = 1e-3
 INSERT_PATH_WAYPOINTS = 11
 INSERT_TRAJ_TIME_S = 0.5
 GROUNDED_INSERT_MAX_S = 5.0
+# * Transfer servo check: the stub base settles this far (x, metres) off its
+# * authored pose after the transfer, and the correction must bring tool0 within
+# * this of the authored targets (the goal IK solves to 1 mm).
+TRANSFER_SERVO_BASE_SHIFT_M = 0.01
+TRANSFER_SERVO_TOL_MM = 1.5
 
 
 # * ---------------------------------------------------------------------------
@@ -701,7 +707,7 @@ DISPATCH_EXPECTED = {
     ('J', 0): ('J_M0_free_to_load', 'free_to_load', 'zero_ft', '-', 30, True, 'free'),
     ('J', 1): ('J_M1_manual_mount_bar', 'none', '-', '-', None, False, 'bar_held'),
     ('J', 2): ('J_M2_tool_grasp_bar', 'none', '-', '-', None, False, 'bar_held'),
-    ('J', 3): ('J_M3_CDFM_transfer_to_approach', 'transfer', 'arm_both', '-', 10, False, 'bar_held'),
+    ('J', 3): ('J_M3_CDFM_transfer_to_approach', 'transfer', 'transfer_servo', '-', 10, False, 'bar_held'),
     ('J', 4): ('J_M4_tool_tighten_joint', 'none', '-', '-', None, False, 'bar_held'),
     ('J', 5): ('J_M5_LM_insert', 'insert', 'compliant', 'none sent', 5, False, 'bar_held'),
     ('R', 0): ('R_M0_tool_untighten_joint', 'none', '-', '-', None, False, 'bar_held'),
@@ -803,6 +809,7 @@ def dispatch_check(results: Results, problem: str, root: str, schedule) -> None:
     exec_labels = {
         'execute_planned_trajectory_compliant': ('compliant', True),
         'execute_trajectory_and_zero_ft': ('zero_ft', True),
+        'execute_transfer_then_servo': ('transfer_servo', True),
         'execute_arm_trajectory_both': ('arm_both', False),
         'execute_arm_trajectory_all': ('arm_all', False),
     }
@@ -1651,6 +1658,276 @@ def one_sided_insert_check(results: Results, problem: str, root: str, schedule) 
 
 
 # * ---------------------------------------------------------------------------
+# * Transfer servo: the visual-servo correction after the transfer
+# * ---------------------------------------------------------------------------
+
+class StubHuskyObject:
+    """Stands in for the drawn husky (``Husky.object``) that the servo's measurement poses.
+
+    ``set_pose`` stores the base pose and the arm configurations;
+    ``get_link_pose_from_name`` answers by FK in the planner, on a copy of the
+    loaded movement's start state at that base and those arms. With the stub
+    arms standing at the commanded last waypoint, the measured tool0 is the FK
+    of the commanded configuration at the stub base.
+    """
+
+    def __init__(self, monitor):
+        """Keep the monitor; nothing is posed yet.
+
+        Args:
+            monitor (HuskyMonitor): The headless monitor (its planner and loaded movement).
+        """
+        self.monitor = monitor
+        self.pose = None
+        self.arm_confs = None
+        self.robot = None  # the wrench recorder hands it on, never reads it
+
+    def set_pose(self, pose, arm_confs) -> None:
+        """Store the base pose and the arm configurations.
+
+        Args:
+            pose (tuple): pybullet (point, quaternion) of the base.
+            arm_confs (Sequence): One joint vector per arm.
+        """
+        self.pose = pose
+        self.arm_confs = [np.asarray(q, dtype=float) for q in arm_confs]
+
+    def get_link_pose_from_name(self, link: str) -> tuple:
+        """A link's world pose by FK at the stored base and arms.
+
+        Args:
+            link (str): Link name, e.g. ``'left_ur_arm_tool0'``.
+
+        Returns:
+            tuple: pybullet (point, quaternion).
+        """
+        state = self.monitor.current_movement.start_state.copy()
+        state.robot_base_frame = frame_from_pose(self.pose)
+        self.monitor._merge_arm_values(state, robot_by_name(ASSEMBLY_ROBOT).all_arm_joint_names,
+                                       np.concatenate(self.arm_confs))
+        return pose_from_frame(_fk_link_frame(self.monitor.cfab.planner, state, link))
+
+
+def transfer_servo_check(results: Results, problem: str, root: str, schedule) -> None:
+    """The visual-servo correction that runs after the transfer, on entry 0 (J).
+
+    The transfer gets an accepted two-point trajectory standing at the insert's
+    exported start; the stub base is moved ``TRANSFER_SERVO_BASE_SHIFT_M`` off
+    the authored base (the centre-of-mass shift the servo corrects); the bar-held
+    correction planner is replaced by a recorder that runs the REAL live-base IK
+    and stages [live arms, IK goal]. 'Exec Selected Mv Traj' on the transfer then
+    runs ``husky_world.execute_transfer_then_servo`` on the stub, the servo
+    record replaced by a recorder.
+    Box ticked (the workaround), confirms answered: (a) the transfer's joint
+    command, then at least one correction, every correction planned with
+    ``prefer_linear``; (b) at most 2 iterations, tool0 within
+    ``TRANSFER_SERVO_TOL_MM`` of the authored targets, the record labelled with
+    the insert; (c) the insert and the steps around the transfer (tighten;
+    mount + grasp, ticked) start at the corrected arms, the transfer's own start
+    unchanged; (d) the transfer's trajectory ends at the corrected arms (one more
+    waypoint), the insert's stale trajectory is dropped, nothing is staged for
+    'Exec'; (e) reloading the transfer keeps the insert at the corrected arms.
+    Box unticked: (f) no mount pause, the correction runs, the mount + grasp
+    steps are left where the bar was mounted (the transfer's start).
+    Box ticked, 'Cancel Exec' at the mount pause: (g) no correction is sent and
+    the insert still starts where the transfer ended.
+
+    Args:
+        results (Results): Where the checks go.
+        problem (str): Problem folder name.
+        root (str): The scratch problem folder (unused; same signature as the other runs).
+        schedule (ActionSchedule): The scratch schedule.
+    """
+    cindy = robot_by_name(ASSEMBLY_ROBOT)
+    first = schedule.entry(0)
+    assert first.kind == 'J', f"the transfer servo check needs jointing entry 0, got {first.action_id}"
+    print(f"\n{'=' * 30} TRANSFER SERVO CHECK {'=' * 30}")
+    base = schedule.load_action(first, prefer_sidecar=False).movements[-1].start_state.robot_base_frame
+    monitor, iface, log = make_monitor(cindy, base, problem)
+    add_viz_huskies(monitor, cindy)
+    ready_for_compliant_exec(monitor)
+    monitor.huskies[0].object = StubHuskyObject(monitor)
+    monitor.FAKE_HARDWARE, monitor.USE_MOCAP, monitor.USE_CELL_STATE_BASE_POSE = False, 1, 0
+    authored_position = np.asarray(iface.position, dtype=float).copy()
+    replans = []  # prefer_linear of every correction plan
+    records = []  # (log_label, movement_id) of every servo record
+
+    def record_replan(show_validation=True, prefer_linear=False):
+        """The bar-held correction planner: the REAL live-base IK, then [live arms, IK goal]."""
+        replans.append(prefer_linear)
+        if not monitor.ik_live_base_for_selected_movement():
+            return
+        for i in range(cindy.n_arms):
+            live = np.asarray(iface.arm_joint_pose[i], dtype=float)
+            monitor.set_arm_trajectory(
+                (np.asarray([live, monitor.goal_arm_pose[i]]), None, monitor.trajectory_time, None), i)
+
+    def record_save(_monitor, _data, planner_mode='free', root_dir='', label='', movement_id=''):
+        records.append((label, movement_id, root_dir))
+
+    def stage(ticked: bool) -> tuple:
+        """Load entry 0 fresh and stand everything where a just-run transfer leaves it.
+
+        Args:
+            ticked (bool): The workaround box.
+
+        Returns:
+            tuple: ``(transfer index, insert index, the transfer's end 12-vec)``.
+        """
+        monitor.TRANSFER_AS_FREE_MOVE = int(ticked)
+        monitor.load_schedule_entry(first.index)
+        ti = monitor._loaded_index_of(MovementKind.DUAL_CONSTRAINED_FREE)
+        ii = monitor._loaded_index_of(MovementKind.DUAL_CONSTRAINED_LINEAR)
+        q = vec12_from_conf(monitor._loaded_movements[ii].start_state.robot_configuration)
+        select_movement(monitor, ti)
+        # Display only (plots, and validators meant for a real transfer path).
+        display_only = ('_validate_cdfm_planned_path', 'show_transfer_validation',
+                        'show_planned_joint_values')
+        for name in display_only:
+            setattr(monitor, name, lambda *_args, **_kwargs: None)
+        try:
+            monitor._accept_trajectory(monitor._loaded_movements[ti],
+                                       joint_trajectory_from_path([q, q]), source='Smoke')
+        finally:
+            for name in display_only:
+                delattr(monitor, name)
+        # A stale insert plan, made before the correction.
+        monitor._loaded_movements[ii].trajectory = joint_trajectory_from_path([q, q])
+        for i in range(cindy.n_arms):
+            iface.arm_joint_pose[i] = q[6 * i:6 * (i + 1)].copy()
+            monitor.set_arm_trajectory((np.asarray([q[6 * i:6 * (i + 1)]] * 2), None, 1.0, None), i)
+        monitor.trajectory_time = 1.0
+        # The base settled off its authored pose: what the servo corrects.
+        iface.position = authored_position + np.array([TRANSFER_SERVO_BASE_SHIFT_M, 0.0, 0.0])
+        return ti, ii, q
+
+    def start_of(i: int) -> np.ndarray:
+        return vec12_from_conf(monitor._loaded_movements[i].start_state.robot_configuration)
+
+    def stationary_between(lo: int, hi: int) -> list:
+        movements = monitor._loaded_movements
+        return [i for i in range(lo + 1, hi) if movement_kind(movements[i]) in STATIONARY_KINDS]
+
+    real_save = husky_world._save_servoing_data
+    try:
+        monitor._load_schedule_state()
+        monitor.replan_transfer_to_movement_start_live = record_replan
+        husky_world._save_servoing_data = record_save
+
+        # * --- (a)-(e) box ticked: transfer -> mount pause -> correction
+        ti, ii, q = stage(ticked=True)
+        transfer = monitor._loaded_movements[ti]
+        transfer_start = start_of(ti)
+        n_waypoints = len(path_from_joint_trajectory(transfer.trajectory))
+        n_calls, n_log = len(iface.calls), len(log.msgs)
+        monitor.exec_selected_movement_traj()
+        queued = len(monitor.tasks)
+        run_tasks(monitor, iface)
+        live = np.concatenate([np.asarray(a, dtype=float) for a in iface.arm_joint_pose])
+        joint_cmds = [c for c in iface.calls[n_calls:] if c[0] == 'dual_arm']
+        prompts = log.since(n_log, 'info', 'mount the bar and clamp it with the tool buttons')
+        results.check(
+            "transfer servo: ticked -> the transfer runs, the mount pause asks to clamp with the tool "
+            "buttons, then >= 1 correction, every one planned on a straight line (prefer_linear)",
+            queued == 1 and len(prompts) == 1 and len(joint_cmds) >= 2
+            and bool(replans) and all(replans),
+            f"queued {queued}, mount prompts {len(prompts)}, joint commands {len(joint_cmds)}, "
+            f"prefer_linear {replans}")
+
+        iterations = log.since(n_log, 'info', '### SERVOING iteration')
+        err = husky_world.measure_servo_tool0_error(monitor, monitor._authored_ik_target_ee_frames)
+        worst = max(err[side]['pos_norm_mm'] for side in cindy.side_keys)
+        insert = monitor._loaded_movements[ii]
+        results.check(
+            f"transfer servo: converges in <= 2 iterations, tool0 within {TRANSFER_SERVO_TOL_MM} mm "
+            f"of the authored targets, record labelled with {insert.movement_id}",
+            1 <= len(iterations) <= 2 and worst < TRANSFER_SERVO_TOL_MM
+            and records == [(f'{insert.movement_id}_servoing', insert.movement_id,
+                             husky_world.BAR_ACTION_LIVE_REPLAN_EXE_DIR)],
+            f"iterations {len(iterations)}, worst tool0 {worst:.3f} mm, records {records}")
+
+        around = stationary_between(-1, ti) + stationary_between(ti, ii) + [ii]
+        diffs = [float(np.abs(start_of(i) - live).max()) for i in around]
+        moved = float(np.abs(live - q).max())
+        results.check(
+            f"transfer servo: {[monitor._loaded_movements[i].movement_id for i in around]} start at "
+            f"the corrected arms, {transfer.movement_id}'s own start unchanged",
+            moved > 1e-3 and len(around) >= 3 and max(diffs) < SEED_TOL
+            and float(np.abs(start_of(ti) - transfer_start).max()) < SEED_TOL,
+            f"arms moved {moved:.4f} rad, max diffs {np.round(diffs, 9).tolist()}")
+
+        path = path_from_joint_trajectory(transfer.trajectory)
+        results.check(
+            f"transfer servo: {transfer.movement_id}'s trajectory ends at the corrected arms (one "
+            f"more waypoint), {insert.movement_id}'s stale trajectory dropped, nothing staged for Exec",
+            len(path) == n_waypoints + 1 and float(np.abs(np.asarray(path[-1]) - live).max()) < SEED_TOL
+            and not monitor._trajectory_has_waypoints(insert)
+            and monitor.planned_arm_trajectory[0][0] is None,
+            f"waypoints {n_waypoints} -> {len(path)}, insert trajectory "
+            f"{'kept' if monitor._trajectory_has_waypoints(insert) else 'dropped'}")
+
+        select_movement(monitor, ti)
+        reload_diff = float(np.abs(start_of(ii) - live).max())
+        results.check(
+            f"transfer servo: reloading {transfer.movement_id} keeps {insert.movement_id} at the "
+            f"corrected arms (the reload hazard)",
+            reload_diff < SEED_TOL, f"|insert start - corrected arms| {reload_diff:.1e}")
+
+        # * --- (f) box unticked: no mount pause; mount + grasp stay at the transfer's start
+        replans.clear()
+        ti, ii, q = stage(ticked=False)
+        before = {i: start_of(i) for i in stationary_between(-1, ti)}
+        n_calls, n_log = len(iface.calls), len(log.msgs)
+        monitor.exec_selected_movement_traj()
+        run_tasks(monitor, iface)
+        live = np.concatenate([np.asarray(a, dtype=float) for a in iface.arm_joint_pose])
+        joint_cmds = [c for c in iface.calls[n_calls:] if c[0] == 'dual_arm']
+        prompts = log.since(n_log, 'info', 'mount the bar and clamp it with the tool buttons')
+        kept = [float(np.abs(start_of(i) - v).max()) for i, v in before.items()]
+        results.check(
+            "transfer servo: unticked -> no mount pause, >= 1 straight-line correction, insert at "
+            "the corrected arms, mount + grasp left where the bar was mounted",
+            not prompts and len(joint_cmds) >= 2 and bool(replans) and all(replans)
+            and float(np.abs(start_of(ii) - live).max()) < SEED_TOL
+            and bool(kept) and max(kept) < SEED_TOL,
+            f"mount prompts {len(prompts)}, joint commands {len(joint_cmds)}, prefer_linear {replans}, "
+            f"mount/grasp moved {np.round(kept, 9).tolist()}")
+
+        # * --- (g) box ticked, 'Cancel Exec' at the mount pause
+        replans.clear()
+        ti, ii, q = stage(ticked=True)
+        n_calls, n_log = len(iface.calls), len(log.msgs)
+        monitor.exec_selected_movement_traj()
+        task = monitor.tasks[0]
+        ended = False
+        for _ in range(3000):
+            monitor._running_task = task
+            try:
+                next(task)
+            except StopIteration:
+                ended = True
+                break
+            finally:
+                monitor._running_task = None
+            if log.since(n_log, 'info', 'mount the bar and clamp it with the tool buttons'):
+                monitor._servo_abort = True  # 'Cancel Exec'
+            iface.tick()
+            time.sleep(TICK_S)
+        monitor.tasks.clear()
+        joint_cmds = [c for c in iface.calls[n_calls:] if c[0] == 'dual_arm']
+        results.check(
+            "transfer servo: 'Cancel Exec' at the mount pause -> no correction sent, the insert "
+            "still starts where the transfer ended",
+            ended and len(joint_cmds) == 1 and not replans
+            and float(np.abs(start_of(ii) - q).max()) < SEED_TOL,
+            f"ended {ended}, joint commands {len(joint_cmds)}, correction plans {len(replans)}")
+    finally:
+        husky_world._save_servoing_data = real_save
+        monitor.tasks.clear()
+        monitor.cfab.close()
+
+
+# * ---------------------------------------------------------------------------
 # * Built-structure switch: collisions with the built bars checked or ignored
 # * ---------------------------------------------------------------------------
 
@@ -2492,6 +2769,7 @@ def main(argv: Optional[list] = None) -> int:
         schedule = load_schedule(root)
         for run in (dispatch_check, carry_check, transfer_start_check, operator_steps_check,
                     transfer_free_move_check, grounded_insert_check, one_sided_insert_check,
+                    transfer_servo_check,
                     cindy_run, alice_run,
                     cindy_restart_run):
             try:

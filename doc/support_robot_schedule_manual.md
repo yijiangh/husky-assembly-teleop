@@ -117,7 +117,7 @@ itself has no step of its own: it runs with that movement.
 
 | entry | steps |
 |---|---|
-| J (e.g. `B1_J`) | 5: travel to load · manual mount · tool grasp · transfer · insert (+ the tighten runs with it). The entry opens on its transfer (loaded right away) |
+| J (e.g. `B1_J`) | 5: travel to load · manual mount · tool grasp · transfer · insert (+ the tighten runs with it). The entry opens on its transfer (loaded right away). After the transfer's motion its exec corrects the tool0 placement with the accuracy test's visual servo (see "Visual-servo correction after the transfer" below) and leaves the insert loaded |
 | J of a **grounded bar** (held on its ground joints, e.g. `B1`, `B5` in the 2026-10-06 export) | 6: travel to load · manual mount · tool grasp · transfer · insert · manual fix foundation. The insert runs **rigid only** (joint tracking) and **never tightens**, whatever the export says (an exported tighten step is ignored; Rhino note D9) |
 | J of a **one-sided bar** (one held male joint has no female in the insert's start state: its female sits on a staging bar; e.g. `B3`, `B7` mate left, `B12`, `B15` mate right in the 2026-10-06 export) | 5, as a normal J. The insert TIGHTENs only the **mating** arm's joint motor and ends when that motor stalls; both arms still run the rigid approach and the compliant last mm. The export's tighten step still names both tools: a warning says so until the Rhino re-export (note D10) |
 | R (e.g. `B1_R`) | 2: retreat (+ the ungrasp runs with it; the untighten is **not sent** — `Loosen Joint` by hand if needed) · free move home. The entry opens on its retreat. The retreat is planned from the live arms: each tool0 backs off the export's `lm_distance_mm` (50 mm) along its `retreat_axes_world`, scene collisions checked; a failed straight-line plan prints a `[<movement> diag]` block and draws the collision. After its compliant part, the rigid part runs without `Confirm Exec` when every guardrail passes (`husky_world.retreat_guardrails`: replan, start, compliant part, contact, grippers open, tool0 paths, joints, speed; panel box `Retreat: skip Confirm when the checks pass`) and asks when one fails |
@@ -203,13 +203,39 @@ insertion start; max |goal - stored goal| = ... rad`.
 4. `Plan Movement` → the free move to the configuration the IK check showed (solved
    again when the base moved more than 2 mm since); preview with `Traj viz time`.
    `Confirm transfer start + plan travel to load` does 3 and 4 in one click.
-5. `Exec Selected Mv Traj (auto)` → the arms go there (joint tracking, empty tools).
-6. `Step` back to the manual mount step → `Load Movement`: the bar is drawn in the
-   tools at the insertion start. Mount the bar there by hand, then the tool grasp step.
-7. `Step` → the insert → `Plan Movement` (it starts where the transfer ended) → `Exec`.
+5. `Exec Selected Mv Traj (auto)` → the arms go there (joint tracking, empty tools),
+   then the exec pauses: `[transfer ...] the arms stand at the insertion start with EMPTY
+   tools: mount the bar and clamp it with the tool buttons, then click 'Confirm Exec'.`
+6. Mount the bar by hand and clamp it with the buttons on the tools → `Confirm Exec`.
+   This replaces the manual mount and tool grasp steps (no click on them). The visual
+   servo then corrects the tool0 placement (below) and loads the insert.
+7. The insert → `Plan Movement` (it starts where the servo left the arms) → `Exec`.
 
 ! Nothing checks the bar during the move: do not tick the box with a bar already
 mounted. Untick it to go back to the bar-held planner.
+
+### Visual-servo correction after the transfer
+
+Carrying the bar shifts the base's centre of mass, so after the transfer the tool0s
+stand a few mm off the Rhino pose the insert starts from. `Exec Selected Mv Traj (auto)`
+on the transfer therefore runs, after the motion (`world.execute_transfer_then_servo`):
+
+1. Workaround box ticked: the mount pause (step 5-6 above). `Cancel Exec` there ends
+   it with no correction.
+2. The insert is loaded and the bar-holding accuracy test's servo loop runs on it
+   (`servo_to_movement_start_live`, `doc/bar_holding_acc_manual.md`): live-base IK to the
+   transfer's Rhino targets, a straight-line bar-held correction (the sampling planner
+   only as fallback), first move previewed + `Confirm Exec`, later ones alone unless a
+   path travels more than 5 deg (`SAFEGUARD`), up to 8 iterations, stop below 0.2 mm or
+   when less than 0.5 mm is left to plan. `Cancel Exec` stops it between steps.
+3. Where the arms ended up becomes the transfer's end and the insert's start
+   (`[Servo] propagated arm configuration -> ...`), also after reloading the transfer;
+   a stale insert plan is dropped. The record goes to
+   `bar_action_live_replan_exe/<date>-servoing/<insert id>_servoing_*` on the drive.
+
+Needs the real arms and the mocap base (`FAKE_HARDWARE = 0`, `USE_MOCAP = 1`,
+`USE_CELL_STATE_BASE_POSE = 0`); otherwise `servo skipped (...)` and the insert starts
+where the transfer ended.
 
 ### The support robot's free approach
 

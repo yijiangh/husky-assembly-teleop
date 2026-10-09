@@ -363,16 +363,40 @@ transfer, insert, fix foundation (manual). B1 has no tighten step.
         (`... solving the goal again.`).
   - [ ] Preview (`Traj viz time`): starts at the live arms, ends with the **empty** tools at the
         insertion start, just short of B1's assembled pose, clear of the floor and anything built.
-  - [ ] Raise `traj time` (first run), `Exec Selected Mv Traj (auto)` → the arms go there.
-- [ ] **Manual mount** (`B1_J_M1_manual_mount_bar`): `Step` → 1 → `Load Movement` (the bar is drawn
+  - [ ] Raise `traj time` (first run), `Exec Selected Mv Traj (auto)` → the arms go there. The
+        exec then stays running (the next buttons are refused until it ends) and corrects the
+        tool0 placement with the visual servo of the bar-holding accuracy test (the base's centre
+        of mass shifts under the arms, so the tools land a few mm off the Rhino pose):
+  - [ ] **Mount pause** (workaround box ticked): `[transfer B1_J_M3_CDFM_transfer_to_approach] the arms stand at the insertion start with EMPTY tools: mount the bar and clamp it with the tool buttons, then click 'Confirm Exec'. ...`
+        → mount B1 by hand in both tools and clamp it with the **buttons on the tools** →
+        `Confirm Exec`. This does the **Manual mount** and **Tool grasp** steps below: skip them,
+        no click. `Cancel Exec` here ends it without a correction (`mount pause cancelled; no servo correction.`).
+  - [ ] The insert is loaded by itself (`[Movement] loaded [..] 'B1_J_M4_LM_insert' ...`) and the
+        servo runs: `### SERVOING iteration 1/8`, `[IK Live Base] ...`,
+        `[transfer plan] OK (N waypoints, bar-held, LINEAR).` and the pause
+        `[servo] First move planned: N waypoints, travels X deg ...` → scrub `Traj viz time`
+        (a few mm with the bar held) → `Confirm Exec`. Later iterations run alone unless a path
+        travels more than 5 deg (`[servo] SAFEGUARD iter N: ...` → preview, `Confirm Exec`).
+        Each pass logs `[servo N] tool0 pos L=... R=... mm`; the `Servoing Live Tracker` window
+        (`Toggle Servoing Tracker`) plots them.
+  - [ ] It ends with `### SERVOING converged at iter N (< 0.2 mm)` or
+        `### SERVOING stopped at iter N: nothing left to plan ...` (or after 8 iterations), the
+        record `... B1_J_M4_LM_insert_servoing_data_<ts>.json` / `_performance_<ts>.png` under
+        `bar_action_live_replan_exe/<date>-servoing/` on the drive, and
+        `[Servo] propagated arm configuration -> ...` for the steps around the transfer and the
+        insert (the corrected arms are now the transfer's end and the insert's start).
+        `servo skipped (FAKE_HARDWARE ...)` / `(the base is not tracked by mocap)` = no correction.
+- [ ] **Manual mount** (`B1_J_M1_manual_mount_bar`), only with the workaround box **unticked**
+      (otherwise done in the mount pause): `Step` → 1 → `Load Movement` (the bar is drawn
       in the tools at the insertion start) → `Operator done (manual step) -> then Confirm Exec` →
       mount B1 by hand in both tools → `Confirm Exec` → `confirmed done by the operator`.
-- [ ] **Tool grasp** (`B1_J_M2_tool_grasp_bar`): `Step` → 2 → `Load Movement` → `Tool step: grasp` →
+- [ ] **Tool grasp** (`B1_J_M2_tool_grasp_bar`), likewise: `Step` → 2 → `Load Movement` → `Tool step: grasp` →
       `Confirm Exec` → `STOP`, gripper motors tighten, `every gripper motor STALLED after N s: bar clamped`,
       `STOP sent`.
 - [ ] **Insert, grounded bar** (`B1_J_M4_LM_insert`): `Step` → 4 → `Load Movement`; readout
-      `step 5/6: B1_J_M4_LM_insert  (dual_constrained_linear)` → `Plan Movement` (it starts where the
-      transfer ended) → preview; no ground-joint ↔ floor collision is reported.
+      `step 5/6: B1_J_M4_LM_insert  (dual_constrained_linear)` (already loaded after the servo) →
+      `Plan Movement` (it starts where the servo left the arms) → preview; no ground-joint ↔ floor
+      collision is reported.
       B1 is held on its ground joints, so its insert runs **rigid only** (joint tracking, compliance
       never engaged) and the joint motors **never tighten**; the `Insert: ...` knobs do not apply.
       Raise `traj time` (first run; the rigid insert has no force limit) → `Exec Selected Mv Traj (auto)` →
@@ -424,9 +448,11 @@ numbers:
 - [ ] Built B1 and its joints drawn solid; the transfer's preview clears them.
 - [ ] **Transfer** (`B3_J_M3_CDFM_transfer_to_approach`): already loaded by `Load entry` (readout
       `step 4/5: ...`) → `Transfer start: Confirm manual pose (IK check)` → `Plan Movement` →
-      preview → `Exec Selected Mv Traj (auto)`.
-- [ ] **Manual mount** (`Step` → 1) → mount B3 → `Confirm Exec`; **tool grasp** (`Step` → 2) → `Confirm Exec`.
-- [ ] **Insert** (`B3_J_M5_LM_insert`): `Step` → 4; readout
+      preview → `Exec Selected Mv Traj (auto)` → mount pause: mount B3, clamp it with the tool
+      buttons → `Confirm Exec` → the servo correction as in entry 0 (first move: preview,
+      `Confirm Exec`) → `### SERVOING converged ...` / `stopped ...`. Manual mount and tool grasp
+      are done in that pause (box unticked: `Step` → 1 → `Confirm Exec`; `Step` → 2 → `Confirm Exec`).
+- [ ] **Insert** (`B3_J_M5_LM_insert`): already loaded after the servo (else `Step` → 4); readout
       `step 5/5: B3_J_M5_LM_insert  (+ B3_J_M4_tool_tighten_joint runs with it)` → `Plan Movement` →
       `Exec Selected Mv Traj (auto)` → log
       `B3_J_M4_tool_tighten_joint ('tighten') runs with this movement: the compliant insert sends it (LEFT joint motor TIGHTENING only; the right joint has no female to screw into, its joint motor is not driven).`
@@ -493,6 +519,9 @@ In the full run Alice clamps B3 here, so it stays in place when Cindy lets go in
 | `Plan for '..._LM_retreat'` / `'..._LM_insert' ... FAILED` (a straight-line plan) | read the `[<movement> diag]` block after it: the START's colliding pairs with the movement's ACM entry of each body (a contact is allowed only when listed there), its joint limits, the failing waypoint and why its IK candidates were turned down (collide / would flip an arm), and a `VERDICT`. The red planning robot and the contacts are drawn, plus that waypoint's two tool0 targets (`Remove all drawing` clears them). A START collision the ACM does not allow = an export gap or the arms are not where the export expects: note the pair in the log. The retreat's replan during exec prints the same block before it falls back to the planned tail (Confirm pause) |
 | the retreat stops at `retreat ready, but N check(s) FAILED` | read the `check FAIL` lines: `grippers` not `STALLED` = a gripper did not open (do not confirm before it is open); `contact` = a tool still pushes on the structure; `compliant part` may fail from gravity sag alone (note its numbers; the limits are first guesses); `replan` = the fallback tail, whose first step jumps. Confirm only when the preview looks right. Untick `Retreat: skip Confirm when the checks pass` to always get the pause |
 | `plan_free_dual_arm failed: birrt_failed` (both ends collision-free, no path found) | read the `[... diag]` lines after it: joint limits of start and goal, how many nearby configurations collide at each end (and with what), where the straight joint path first collides (drawn; the red robot stands there), and a `VERDICT` line. A tight pocket at the GOAL: drive the base to give the arms room, IK check, plan again. Otherwise plan again |
+| `Cancel Exec` at the transfer's mount pause | no correction; the insert starts where the transfer ended (re-running the transfer is refused: the arms stand at its end, not its start). Mount and clamp the bar, then plan and run the insert as usual |
+| `servo skipped (FAKE_HARDWARE)` / `(the base is not tracked by mocap)` after the transfer | `FAKE_HARDWARE = 1`, or `USE_MOCAP = 0` / `USE_CELL_STATE_BASE_POSE = 1` (section 0.1): the servo needs the real arms and the mocap base |
+| `Servoing: live-base IK failed; stopping.` / `[transfer plan] the straight-line bar move could not be solved ...` | the corrected pose is not reachable (or collides) from where the base stands; with the sampling fallback check the `SAFEGUARD` figures before confirming. The insert then starts where the servo left the arms |
 | no Cindy topics / `Unknown topic` | `eno1` on `192.168.0.x` and Cindy pings (0.4), domain 86 + CycloneDDS in this pane (1.1 / 1.2), Cindy's launch still running with domain 86 + CycloneDDS (0.3) |
 | no tool status (section 2) / grasp steps get no answer | Cindy's launch is missing `gripper:=scaffolding_v3` (0.3) |
 | `mocap client connected: False` | `CLIENT_IP` is not this PC's `eno1` address (0.1), or the Motive PC is no longer `192.168.0.28` (`doc/calibration_manual.md` 1.4) |

@@ -4,6 +4,7 @@ This module contains the world definition and high level actions or sequences of
 
 import os, time
 import contextlib
+from itertools import product
 from typing import TYPE_CHECKING, Generator, Optional
 import asyncio.runners
 import asyncio
@@ -18,7 +19,7 @@ import pybullet_planning as pp
 
 from husky_assembly_teleop import DATA_DIRECTORY, CALIBRATION_DATE, EXPERIMENT_DATA_DIRECTORY, CALIBRATION_DATA_DIRECTORY, DESIGN_PROBLEM_NAME
 from husky_assembly_teleop.common import Husky, TrackedObject, AssemblyObject
-from husky_assembly_teleop.robot_registry import RobotSpec, other_robots, robot_from_env
+from husky_assembly_teleop.robot_registry import RobotSpec, other_robots, robot_by_name, robot_from_env
 from husky_assembly_teleop.bar_action_io import (
     COMPLIANT_KINDS, MovementKind, held_ground_joints, mating_arm_sides, tool_event, tool_runs_with_next_motion,
 )
@@ -37,6 +38,8 @@ from compas_fab.backends import CollisionCheckError, InverseKinematicsError, Pla
 from compas_fab.robots import FrameTarget, RobotCellState, TargetMode
 from compas_robots import Configuration
 from rs_data_structure.bar_action import GripperToolMovement, ManualMovement, ScaffoldingToolMovement
+from husky_assembly_tamp.keyframe import ssik_inprocess
+from husky_assembly_tamp.motion_planner import ssik_ik
 
 import matplotlib.pyplot as plt
 import compas
@@ -57,6 +60,14 @@ DATA_DIR = DATA_DIRECTORY
 CALIB_DATA_DIR = CALIBRATION_DATA_DIRECTORY
 BAR_HOLDING_ACC_DATA_DIR = os.path.join(DATA_DIR, "bar_holding_acc_data")
 BAR_HOLDING_ACC_EXPERIMENT_DIR = os.path.join(EXPERIMENT_DATA_DIRECTORY, "bar_holding_acc_data")
+# * The real assembly runs (schedule monitor): the servo records of the
+# * correction after each transfer land here, apart from the accuracy test's.
+BAR_ACTION_LIVE_REPLAN_EXE_DIR = os.path.join(EXPERIMENT_DATA_DIRECTORY, "bar_action_live_replan_exe")
+# Extra wait after an arm move before measuring: the base, shifted by the arms'
+# centre of mass, settles in the mocap stream (the servo loop's default).
+SERVO_SETTLE_SECONDS = 2.0
+# The monitor tick that pumps the tasks (20 Hz).
+MONITOR_TICK_S = 0.05
 
 # Servoing tracker line colors (RGB 0-255), shared by the DPG live tracker
 # (husky_monitor build_ui) and the static plot. Per family the order is
@@ -1866,9 +1877,12 @@ def servo_safeguard_drill(monitor, travel_deg=20.0, n_waypoints=127):
 
 
 def servo_to_movement_start_live(monitor, max_iters=8, pos_tol_mm=0.2,
-                                 settle_seconds=2.0,
+                                 settle_seconds=SERVO_SETTLE_SECONDS,
                                  confirm_first_iter=True, use_transfer=False,
-                                 log_data=True):
+                                 prefer_linear_from_iter: int = 2,
+                                 log_data=True,
+                                 log_dir: str = BAR_HOLDING_ACC_EXPERIMENT_DIR,
+                                 log_label: str = 'servoing'):
     """Iterative visual-servoing loop to the current M2/M3 movement start pose.
 
     One iteration mirrors the manual three clicks: (1) live-base IK from the latest
@@ -1910,7 +1924,16 @@ def servo_to_movement_start_live(monitor, max_iters=8, pos_tol_mm=0.2,
         use_transfer (bool): If True, every iteration plans with the constrained
             dual-arm transfer planner (bar mounted in the grippers); if False,
             with the free composite transit planner (no bar).
+        prefer_linear_from_iter (int): With ``use_transfer``, the first
+            iteration that carries the bar on a straight line (the sampling
+            planner only as fallback). 2 for the accuracy test, whose first move
+            is the long one from the bar-loading pose; 1 right after the
+            schedule's transfer, where every correction is already mm-scale.
         log_data (bool): Save a JSON + PNG record of the run when done.
+        log_dir (str): Root folder of that record (a dated ``-servoing``
+            subfolder is made in it).
+        log_label (str): File name prefix of that record, e.g.
+            ``'B3_J_M5_LM_insert_servoing'``.
 
     Yields:
         None: cooperative yields so the monitor tick keeps running.
@@ -2042,12 +2065,13 @@ def servo_to_movement_start_live(monitor, max_iters=8, pos_tol_mm=0.2,
         # move; later iterations are tiny near-target corrections, so suppress
         # the validation plot there (it == 1 only).
         if use_transfer:
-            # Iteration 1 is the long move onto the bar's target and may have to
-            # go around something, so it explores (the sampling planner). Every
-            # later iteration is a small correction that should be carried
-            # straight there, with both flanges locked to the bar.
+            # In the accuracy test iteration 1 is the long move onto the bar's
+            # target and may have to go around something, so it explores (the
+            # sampling planner). Every small correction is carried straight
+            # there, with both flanges locked to the bar.
             monitor.replan_transfer_to_movement_start_live(
-                show_validation=(it == 1), prefer_linear=(it > 1))
+                show_validation=(it == 1),
+                prefer_linear=(it >= prefer_linear_from_iter))
         else:
             monitor.replan_free_to_movement_start_live()
 
@@ -2220,16 +2244,26 @@ def servo_to_movement_start_live(monitor, max_iters=8, pos_tol_mm=0.2,
     # A run cancelled during the confirm pause has just the baseline point and
     # isn't worth a record.
     if log_data and len(data) > 1:
-        _save_servoing_data(monitor, data,
-                            planner_mode='transfer' if use_transfer else 'free')
+        # ! A missing drive must not raise inside the task: an exception there
+        # ! stops the monitor tick.
+        try:
+            _save_servoing_data(monitor, data,
+                                planner_mode='transfer' if use_transfer else 'free',
+                                root_dir=log_dir, label=log_label,
+                                movement_id=mv.movement_id)
+        except Exception as e:
+            monitor.get_logger().warn(f'[servo] could not save the servoing record: {e}')
 
 
-def _save_servoing_data(monitor, data, planner_mode='free'):
+def _save_servoing_data(monitor, data, planner_mode='free',
+                        root_dir: str = BAR_HOLDING_ACC_EXPERIMENT_DIR,
+                        label: str = 'servoing', movement_id: str = ''):
     """Save a servoing run's per-iteration residuals as JSON + a summary PNG.
 
-    Writes into a dated ``<YYYYMMDD>-servoing`` subfolder of the Google Drive
-    experiment data dir (BAR_HOLDING_ACC_EXPERIMENT_DIR), alongside the marker
-    takes for this experiment.
+    Writes into a dated ``<YYYYMMDD>-servoing`` subfolder of ``root_dir`` on the
+    Google Drive: the accuracy test's folder (BAR_HOLDING_ACC_EXPERIMENT_DIR,
+    alongside its marker takes) by default, the assembly runs' folder
+    (BAR_ACTION_LIVE_REPLAN_EXE_DIR) for the correction after a transfer.
 
     Args:
         monitor: The HuskyMonitor node (for logging only).
@@ -2238,15 +2272,19 @@ def _save_servoing_data(monitor, data, planner_mode='free'):
         planner_mode (str): 'free' (transit, no bar) or 'transfer' (bar-held
             constrained) — recorded in the JSON so offline analysis can tell
             the two run kinds apart.
+        root_dir (str): Folder the dated subfolder goes in.
+        label (str): File name prefix: ``<label>_data_<ts>.json`` and
+            ``<label>_performance_<ts>.png``.
+        movement_id (str): The movement servoed to, recorded in the JSON.
     """
-    subfolder = os.path.join(BAR_HOLDING_ACC_EXPERIMENT_DIR,
-                             f"{datetime.now().strftime('%Y%m%d')}-servoing")
+    subfolder = os.path.join(root_dir, f"{datetime.now().strftime('%Y%m%d')}-servoing")
     os.makedirs(subfolder, exist_ok=True)
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
 
-    data_filename = os.path.join(subfolder, f'servoing_data_{timestamp}.json')
+    data_filename = os.path.join(subfolder, f'{label}_data_{timestamp}.json')
     with open(data_filename, 'w') as f:
-        json.dump({'planner_mode': planner_mode, 'servoing_data': data}, f, indent=2)
+        json.dump({'planner_mode': planner_mode, 'movement_id': movement_id,
+                   'servoing_data': data}, f, indent=2)
     monitor.get_logger().info(f'Servoing data saved to {data_filename}')
 
     # ! Build the figure with the pure Agg backend (Figure + FigureCanvasAgg),
@@ -2313,7 +2351,7 @@ def _save_servoing_data(monitor, data, planner_mode='free'):
     axes[1, 1].legend(fontsize=8); axes[1, 1].grid(True)
 
     fig.tight_layout()
-    plot_filename = os.path.join(subfolder, f'servoing_performance_{timestamp}.png')
+    plot_filename = os.path.join(subfolder, f'{label}_performance_{timestamp}.png')
     fig.savefig(plot_filename)
     monitor.get_logger().info(f'Servoing performance plot saved to {plot_filename}')
 
@@ -2924,6 +2962,121 @@ def _state_with_seed(state, seed_conf: Configuration) -> RobotCellState:
     return seeded
 
 
+# * Which ssik arm solves which of Cindy's planning groups ('left' / 'right').
+# * ssik solvers are built for Cindy's two arms only (husky_assembly_tamp
+# * asset/ssik, from her calibrated URDF); a support robot's 'manipulator' group
+# * has none and keeps PyBullet's built-in IK.
+_SSIK_ARM_OF_GROUP = dict(zip(robot_by_name('Cindy').planning_groups,
+                              robot_by_name('Cindy').side_keys))
+# Most solutions ssik returns per arm (a UR arm has at most 8).
+SSIK_MAX_SOLUTIONS = 8
+# The ssik-unavailable warning is printed once per process, not on every solve.
+_ssik_fallback_warned = False
+
+
+def _ssik_arms_for(targets: dict) -> Optional[dict]:
+    """Which ssik arm solves each target group, or None when ssik cannot solve them all.
+
+    Args:
+        targets (dict): ``{planning group: Frame}``, as ``solve_goal_ik_generic`` takes.
+
+    Returns:
+        dict | None: ``{planning group: 'left' | 'right'}`` when every group is
+        one of Cindy's arms and ssik is usable here; None otherwise (a support
+        robot, ``HUSKY_IK_BACKEND=gradient``, or ssik not installed), and the
+        caller falls back to PyBullet's built-in IK.
+    """
+    global _ssik_fallback_warned
+    arms = {group: _SSIK_ARM_OF_GROUP.get(group) for group in targets}
+    if not arms or None in arms.values():
+        return None  # a support robot: no ssik solver built for its arm
+    if ssik_ik.ik_backend() == 'ssik' and ssik_inprocess.available():
+        return arms
+    if not _ssik_fallback_warned:
+        why = ('HUSKY_IK_BACKEND=gradient' if ssik_ik.ik_backend() != 'ssik'
+               else "ssik is not installed in this Python ('pip install \"ssik>=4.1,<5\"')")
+        print(f"[goal IK] ! {why}: Cindy's goal IK falls back to PyBullet's built-in IK "
+              f"(stops within 1 mm / 0.01 rad, random restarts).")
+        _ssik_fallback_warned = True
+    return None
+
+
+def _solve_goal_ik_ssik(planner, start_state, targets: dict, arms: dict, *,
+                        check_collision: bool, cc_options: dict,
+                        report: dict) -> Optional[Configuration]:
+    """Cindy's goal IK with ssik: every exact solution, the nearest collision-free pair.
+
+    ssik solves each arm in closed form on the calibrated URDF, so every
+    solution is exact (no 1 mm tolerance) and all of them are listed (up to 8
+    per arm). The solutions are moved to the turn of each joint nearest the
+    start configuration (within the joint limits) and the left/right pairs are
+    tried nearest first, by the largest joint move from the start; the first
+    pair that passes the collision check wins. There is nothing random, so the
+    same input always gives the same answer.
+
+    ! The start state's configuration is the reference: the live arms for the
+    ! servo, the stored goal for the transfer's IK check. Extra seeds would not
+    ! add solutions (ssik already lists all of them), so none are taken.
+    ! The planner must already hold ``start_state`` (its base pose places each
+    ! arm's base link, which ssik solves in).
+
+    Args:
+        planner: compas_fab PyBulletPlanner with Cindy's cell loaded.
+        start_state (RobotCellState): The reference configuration and the
+            template every candidate goal state is copied from.
+        targets (dict): ``{planning group: Frame}``, world-frame tool0 targets.
+        arms (dict): ``{planning group: 'left' | 'right'}`` (``_ssik_arms_for``).
+        check_collision (bool): Collision-check each candidate pair.
+        cc_options (dict): Options for ``planner.check_collision``.
+        report (dict): Filled like ``solve_goal_ik_generic``'s ``report``.
+
+    Returns:
+        Configuration | None: The full robot configuration of the nearest
+        collision-free pair, or None (an arm cannot reach its target, or every
+        pair collides).
+    """
+    robot = planner.client.robot_puid
+    reference = start_state.robot_configuration
+    per_group = []  # (joint names, solutions nearest first, reference 6-vector)
+    for group, frame in targets.items():
+        arm = arms[group]
+        names = ssik_inprocess.joint_names(arm)
+        seed6 = np.array([float(reference[n]) for n in names])
+        solutions = ssik_ik.ssik_arm_branches(robot, arm, pose_from_frame(frame), seed6,
+                                              max_solutions=SSIK_MAX_SOLUTIONS)
+        if not solutions:
+            report['last_error'] = f"{group} FAIL: ssik finds no solution (target out of reach)"
+            print(f"[goal IK] ssik: {report['last_error']}")
+            return None
+        per_group.append((names, solutions, seed6))
+
+    def largest_move(pair) -> float:
+        return max(float(np.max(np.abs(q - seed6)))
+                   for q, (_names, _solutions, seed6) in zip(pair, per_group))
+
+    pairs = sorted(product(*(solutions for _names, solutions, _seed in per_group)),
+                   key=largest_move)
+    for k, pair in enumerate(pairs, start=1):
+        state = start_state.copy()
+        for q, (names, _solutions, _seed) in zip(pair, per_group):
+            for n, v in zip(names, q):
+                state.robot_configuration[n] = float(v)
+        if check_collision:
+            try:
+                planner.check_collision(state, cc_options)
+            except CollisionCheckError as e:
+                if report['first_colliding_state'] is None:
+                    report['first_colliding_state'] = state
+                first_line = (e.message or '').splitlines()[0] if e.message else ''
+                report['last_error'] = f"GOAL COLLISION: {first_line}"
+                continue
+        print(f"[goal IK] ssik: solution pair {k}/{len(pairs)} OK (largest joint move "
+              f"from the reference {np.degrees(largest_move(pair)):.1f} deg).")
+        return state.robot_configuration
+    print(f"[goal IK] ssik: all {len(pairs)} solution pairs collide; last: {report['last_error']}")
+    return None
+
+
 def solve_goal_ik_generic(planner, start_state, targets: dict, *, seed_confs=(),
                           check_collision: bool = True, verbose: bool = False,
                           skip_env_collisions: bool = False, ik_max_results: int = 20,
@@ -2932,9 +3085,18 @@ def solve_goal_ik_generic(planner, start_state, targets: dict, *, seed_confs=(),
     """Goal IK for one or more planning groups, with cfab collision checking.
 
     Group-generic core of the live-base IK: Cindy passes her two arm groups,
-    a support robot its one ``manipulator``. The groups are solved one after
-    the other, each seeded with the previous group's result, then the merged
-    configuration is collision-checked ONCE.
+    a support robot its one ``manipulator``.
+
+    * Cindy's two arms are solved with ssik (``_solve_goal_ik_ssik``): exact,
+    * every solution listed, the nearest collision-free pair wins. A support
+    * robot (no ssik solver built for it), or a session without ssik, takes
+    * PyBullet's built-in IK through compas_fab (``planner.inverse_kinematics``:
+    * ``pybullet.calculateInverseKinematics`` repeated until within 1 mm /
+    * 0.01 rad, random restarts), described below.
+
+    PyBullet IK: the groups are solved one after the other, each seeded with
+    the previous group's result, then the merged configuration is
+    collision-checked ONCE.
 
     * Each group's IK runs with check_collision=False even when a checked
     * result is wanted. Reason: the LEFT IK's per-call collision check would run
@@ -2945,7 +3107,8 @@ def solve_goal_ik_generic(planner, start_state, targets: dict, *, seed_confs=(),
     * state (both arms at their targets) is collision-free.
 
     Tries ``start_state`` first, then ``start_state`` seeded with each of
-    ``seed_confs`` in turn, and returns the first valid solution.
+    ``seed_confs`` in turn, and returns the first valid solution. (ssik takes
+    ``start_state`` only: it lists every solution, so seeds add nothing.)
 
     Args:
         planner: compas_fab PyBulletPlanner with the robot cell loaded.
@@ -2954,14 +3117,15 @@ def solve_goal_ik_generic(planner, start_state, targets: dict, *, seed_confs=(),
         targets (dict): ``{planning group: Frame}``, world-frame flange (tool0)
             targets, solved in this order.
         seed_confs (Iterable[Configuration]): Extra seeds, merged by joint
-            name into a copy of ``start_state``.
+            name into a copy of ``start_state`` (PyBullet IK only).
         check_collision (bool): Collision-check the merged configuration.
         verbose (bool): Pass-through to compas_fab IK / collision check.
         skip_env_collisions (bool): Skip the CC.3 (link <-> rigid body), CC.4
             (attached body <-> body) and CC.5 (tool <-> body) checks, keeping only
             robot self-collision (CC.1) and robot <-> tool (CC.2).
-        ik_max_results (int): compas_fab IK ``max_results``.
-        ik_max_descend_iterations (int): compas_fab IK ``max_descend_iterations``.
+        ik_max_results (int): compas_fab IK ``max_results`` (PyBullet IK only).
+        ik_max_descend_iterations (int): compas_fab IK ``max_descend_iterations``
+            (PyBullet IK only).
         report (dict | None): When given, filled with ``last_error`` (str),
             ``first_colliding_state`` (the first merged state the collision check
             rejected, or None) and ``state_push_failed`` (bool), for diagnostics.
@@ -3006,6 +3170,13 @@ def solve_goal_ik_generic(planner, start_state, targets: dict, *, seed_confs=(),
             opts["_skip_cc3"] = True
             opts["_skip_cc4"] = True
             opts["_skip_cc5"] = True
+
+    # * Cindy's two arms: ssik (exact, deterministic). Everything else: PyBullet IK below.
+    arms = _ssik_arms_for(targets)
+    if arms is not None and start_state.robot_configuration is not None:
+        return _solve_goal_ik_ssik(planner, start_state, targets, arms,
+                                   check_collision=check_collision,
+                                   cc_options=cc_options, report=report)
 
     def _solve_groups(seed_state):
         # Returns (goal_state, error_message, colliding_state). The third slot
@@ -4851,6 +5022,26 @@ def execute_planned_trajectory_compliant(monitor):
 FT_ZERO_SETTLE_SECONDS = 2.0
 
 
+def execute_arm_trajectory_both_and_wait(monitor, traj_time: float, settle_seconds: float):
+    """Send both arms' planned trajectory, then wait until it has run plus a settle margin.
+
+    ! Waits by TIME, not by hi.is_arm_executing: that flag clears after only
+    ! ARM_NOT_EXECUTING_TIME (1 s) of no joint change, so a controller slow to
+    ! start trips it while the arm is still moving.
+
+    Args:
+        monitor (HuskyMonitor): Provides the planned trajectory and the interface.
+        traj_time (float): Duration the trajectory is sent over, seconds.
+        settle_seconds (float): Extra wait after it, seconds.
+
+    Yields:
+        None: One yield per monitor tick while the motion runs.
+    """
+    execute_arm_trajectory_both(monitor, traj_time)
+    for _ in range(int(np.ceil((traj_time + settle_seconds) / MONITOR_TICK_S))):
+        yield
+
+
 def execute_trajectory_and_zero_ft(monitor):
     """Run the loaded joint trajectory, then re-zero both arms' FT sensors.
 
@@ -4876,15 +5067,8 @@ def execute_trajectory_and_zero_ft(monitor):
         by ``monitor.update``'s task loop.
     """
     traj_time = float(monitor.trajectory_time) or 5.0
-    execute_arm_trajectory_both(monitor, traj_time)
-
-    # ! Wait by TIME, not by hi.is_arm_executing -- same reason as the servoing
-    # loop: that flag clears after only ARM_NOT_EXECUTING_TIME (1 s) of no joint
-    # change, so a controller slow to start trips it while the arm is still
-    # moving and we would tare mid-motion.
-    tick_dt = 0.05  # matches the 20 Hz monitor tick that pumps this task
-    for _ in range(int(np.ceil((traj_time + FT_ZERO_SETTLE_SECONDS) / tick_dt))):
-        yield
+    # Tare only once the arms stand still (waited by time, see the helper).
+    yield from execute_arm_trajectory_both_and_wait(monitor, traj_time, FT_ZERO_SETTLE_SECONDS)
 
     if monitor.FAKE_HARDWARE:
         monitor.get_logger().info(
@@ -4901,6 +5085,87 @@ def execute_trajectory_and_zero_ft(monitor):
         monitor.get_logger().warn(
             'Travel to load done, but the FT zero did not go out on every arm -- the '
             'compliant M2/M3 force readings will carry a stale offset.')
+
+
+def execute_transfer_then_servo(monitor):
+    """Run the loaded transfer, then servo the held bar onto the insert's start.
+
+    Carrying the bar shifts the base's centre of mass, so the tool0s land a few
+    mm off the transfer's authored end -- where the insert starts and a male
+    joint must meet its female. After the motion this loads the insert and runs
+    the bar-holding accuracy test's servo loop on it (``servo_to_movement_start_live``:
+    bar held, straight-line corrections from iteration 1, every guardrail and
+    confirm pause of the test kept), then makes where the arms really are the
+    transfer's end and the insert's start (``_adopt_servo_corrected_end``).
+
+    * Workaround box ticked (the transfer ran WITHOUT the bar): pauses first so
+    * the operator mounts the bar and clamps it with the tool's own buttons, then
+    * clicks 'Confirm Exec'. No tool step is sent from here.
+    'Cancel Exec' at any pause ends the task; nothing more is sent (a trajectory
+    already sent still finishes). Without real hardware or a mocap-tracked base
+    the servo is skipped with a log line and the insert starts where the
+    transfer ended.
+
+    Args:
+        monitor (HuskyMonitor): The transfer loaded and planned (the exec button
+            checked it), its trajectory in ``planned_arm_trajectory``.
+
+    Yields:
+        None: One yield per monitor tick.
+    """
+    log = monitor.get_logger()
+    transfer, transfer_idx = monitor.current_movement, monitor.current_movement_index
+    tag = f'[transfer {transfer.movement_id}]'
+    # ! Read these BEFORE anything rebuilds the panel: the exec button has just
+    # ! synced trajectory_time from the slider, and the servo loop rewrites it
+    # ! (_apply_recommended_traj_time).
+    traj_time = float(monitor.trajectory_time) or 5.0
+    as_free_move = monitor._transfer_as_free_move()
+    insert_idx = monitor._loaded_index_of(MovementKind.DUAL_CONSTRAINED_LINEAR)
+    planned_end12 = np.concatenate([
+        np.asarray(monitor.planned_arm_trajectory[i][0][-1], dtype=float) for i in range(2)])
+
+    # * 1. The transfer itself, exactly as before.
+    yield from execute_arm_trajectory_both_and_wait(monitor, traj_time, SERVO_SETTLE_SECONDS)
+
+    # * 2. Workaround: the tools are empty -- the operator mounts the bar now.
+    if as_free_move:
+        monitor._servo_abort = False
+        confirmed = yield from wait_for_operator_confirm(
+            monitor,
+            f"{tag} the arms stand at the insertion start with EMPTY tools: mount the "
+            f"bar and clamp it with the tool buttons, then click 'Confirm Exec'. "
+            f"'Cancel Exec' ends here (the insert then starts where the transfer "
+            f"ended, no correction).")
+        monitor._servo_abort = False
+        if not confirmed:
+            log.info(f"{tag} mount pause cancelled; no servo correction.")
+            return
+
+    # * 3. The servo works on the LOADED movement: load the insert.
+    if insert_idx is None:
+        log.warn(f"{tag} this action has no insert; nothing to servo to.")
+        return
+    monitor.load_selected_movement(index=insert_idx)   # not refused: this task is the running one
+    if monitor.FAKE_HARDWARE or not monitor._base_pose_is_tracked():
+        why = 'FAKE_HARDWARE' if monitor.FAKE_HARDWARE else 'the base is not tracked by mocap'
+        log.info(f"{tag} servo skipped ({why}); the insert starts where the transfer ended.")
+        return
+    insert = monitor.current_movement
+    try:
+        yield from servo_to_movement_start_live(
+            monitor, max_iters=8, pos_tol_mm=0.2, settle_seconds=SERVO_SETTLE_SECONDS,
+            confirm_first_iter=True, use_transfer=True, prefer_linear_from_iter=1,
+            log_data=True, log_dir=BAR_ACTION_LIVE_REPLAN_EXE_DIR,
+            log_label=f'{insert.movement_id}_servoing')
+    except Exception as e:
+        # ! The task loop catches StopIteration only: any other exception would
+        # ! stop the monitor tick.
+        log.error(f"{tag} servo loop failed: {e}")
+
+    # * 4. Where the arms really are becomes the transfer's end and the insert's
+    # * start (also after a cancel: a partial correction is still carried).
+    monitor._adopt_servo_corrected_end(transfer_idx, planned_end12, as_free_move=as_free_move)
 
 
 MOVE_TO_MOVEMENT_START_MAX_DELTA_RAD = np.pi / 3.0
