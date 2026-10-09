@@ -14,28 +14,38 @@ import os
 import sys
 import argparse
 
+# ! Running this file directly puts only its OWN folder on the import path, not
+# ! the repo, so the package import below fails with ModuleNotFoundError even
+# ! when you are sitting in the repo root. Put the repo root on the path first.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__)))))
+
 import numpy as np
 import matplotlib.pyplot as plt
 import pybullet_planning as pp
 
 from husky_assembly_teleop import (
-    DESIGN_DATA_DIRECTORY, DESIGN_PROBLEM_NAME, EXPERIMENT_DATA_DIRECTORY, DEFAULT_ENV_3DM,
+    DESIGN_DATA_DIRECTORY, DESIGN_PROBLEM_NAME, EXPERIMENT_DATA_DIRECTORY,
 )
 from husky_assembly_teleop.utils import pose_from_frame
 from husky_assembly_teleop.bar_action_io import (
     find_movement, load_action_cycle, slot_of_index,
 )
 # The old M0..M4 roles live on only in the legacy module, for old takes.
-from husky_assembly_teleop.legacy_bar_action_io import cycle_roles
+from husky_assembly_teleop.legacy_bar_action_io import cycle_roles, resolve_take_movement
 from husky_assembly_teleop.mocap_experiment import (
     fit_bar_from_markerset,
     bar_deviation_from_goal,
     pair_fit_to_goal,
+    tip_distances,
     make_axis_corrector,
     convert_markerset_axes,
     draw_marker_take_in_pp,
     enable_scroll_zoom,
     show_scrollable,
+    _reroot_gdrive_path,
+    latest_batch_folder,
+    env_3dm_for_bar_action,
 )
 
 
@@ -107,6 +117,7 @@ def _plot_compare(ax, fit, goal_bar_pose, take_label, dev, marker_pts=None, bar_
     lateral_mm = dev['lateral_dev_m'] * 1000
     start_dev_mm = pairing['start_dev_m'] * 1000
     end_dev_mm = pairing['end_dev_m'] * 1000
+    placement_mm = tip_distances(pairing)['worst_m'] * 1000
 
     raw_pts = None
     if marker_pts:
@@ -152,7 +163,7 @@ def _plot_compare(ax, fit, goal_bar_pose, take_label, dev, marker_pts=None, bar_
     bid = (bar_name or '?').replace('bar_', '')
     ax.set_title(
         f"{short}\n"
-        f"bar = {bid} | Δstart = {start_dev_mm:.2f} mm\n"
+        f"bar = {bid} | placement = {placement_mm:.2f} mm (worst of the 3 places)\n"
         f"ang(fit,goal) = {angle_deg:.2f}° | lateral = {lateral_mm:.2f} mm",
         fontsize=8,
     )
@@ -163,71 +174,11 @@ def _plot_compare(ax, fit, goal_bar_pose, take_label, dev, marker_pts=None, bar_
     _equal_axes_3d(ax, np.vstack(pts_for_bounds))
 
 
-def _resolve_bar_action_path(path):
-    """Re-root a bar_action_path stamped on another machine onto this one.
-
-    Older takes stamped an absolute path under a different home directory
-    (e.g. ``/home/yijiangh/Insync/.../2025-03 Husky Assembly/...``) since the
-    data now lives on google drive. Anything under the shared
-    '2025-03 Husky Assembly' gdrive folder is re-based onto the copy this
-    machine mounts (derived from ``DESIGN_DATA_DIRECTORY``). Returns the
-    original path when no fix is needed or possible.
-    """
-    if not path or os.path.exists(path):
-        return path
-    marker = '2025-03 Husky Assembly'
-    if marker in path and marker in DESIGN_DATA_DIRECTORY:
-        tail = path.split(marker, 1)[1].lstrip('/\\')
-        current_root = DESIGN_DATA_DIRECTORY.split(marker, 1)[0] + marker
-        candidate = os.path.join(current_root, tail)
-        if os.path.exists(candidate):
-            return candidate
-    return path
-
-
-def _resolve_take_movement(bar_action_path, key):
-    """Find the movement a take was recorded at, over the bar's whole cycle.
-
-    Old takes stamp the classic ROLE ('M3'), which the split export does not put
-    in the movement id -- the retreat is ``B6_R_M2_LM_retreat``, so searching the
-    ids for ``_M3_`` lands on ``B6_R_M3_free_home``, which is M4. Newer takes
-    stamp the real id (``B6_R_M2_LM_retreat``), found by the exact-id search in
-    each half. Loading the cycle also picks up the other half, so a take that
-    named the jointing file for a retreat measurement still resolves.
-
-    Args:
-        bar_action_path (str): The action file the take named.
-        key (int | str): The stamped ``movement_id``, or a legacy index.
-
-    Returns:
-        tuple: ``(index, movement, action, path)`` -- the last two say which
-        file the movement was found in.
-    """
-    slots = load_action_cycle(bar_action_path)
-    movements = [mv for action, _p in slots for mv in action.movements]
-    roles = cycle_roles(slots)
-
-    if isinstance(key, str) and key in roles:
-        idx = roles.index(key)
-    elif isinstance(key, int):
-        idx = key
-    else:
-        # An exact id or a substring: ask each half in turn.
-        idx, offset = None, 0
-        for action, _p in slots:
-            try:
-                local, _mv = find_movement(action, key)
-            except (KeyError, IndexError):
-                offset += len(action.movements)
-                continue
-            idx = offset + local
-            break
-        if idx is None:
-            raise KeyError(f"No movement matches {key!r} in either half of "
-                           f"{os.path.basename(bar_action_path)}.")
-
-    action, path, _local = slot_of_index(slots, idx)
-    return idx, movements[idx], action, path
+# * Both of these now live in the package so the other scripts can call them
+# * too: the path fixer is mocap_experiment._reroot_gdrive_path, and the
+# * role-to-movement lookup is legacy_bar_action_io.resolve_take_movement.
+_resolve_bar_action_path = _reroot_gdrive_path
+_resolve_take_movement = resolve_take_movement
 
 
 def _find_bar_action_in_folder(stamped_path):
@@ -376,6 +327,10 @@ def process_file(file_path, override_bar_action=None, override_movement=None):
         pairing = pair_fit_to_goal(fit, goal_bar_pose)
         fitted_start = pairing['fit_start']
         start_dev_m = pairing['start_dev_m']
+        # * The headline placement error is the WORST of start / middle / end,
+        # * not the start alone -- see tip_distances(). Same helper the session
+        # * viewer uses, so the two reports cannot disagree.
+        tips_mm = tip_distances(pairing)
         d_ocf_vs_goal_mm = (
             np.asarray(ocf, dtype=float) - np.asarray(goal_bar_pose[0], dtype=float)
         ) * 1000.0  # signed mm; NOTE: goal_pos = lower-tip per rhino-export bug
@@ -390,7 +345,9 @@ def process_file(file_path, override_bar_action=None, override_movement=None):
         d_mid_vs_goalmid_mm = (np.asarray(ocf, dtype=float) - goal_mid) * 1000.0
         print(
             f"  take {i}: "
-            f"start_dev={start_dev_m*1000:.2f} mm | "
+            f"placement={tips_mm['worst_m']*1000:.2f} mm "
+            f"(worst of {tips_mm['start_m']*1000:.2f} / {tips_mm['middle_m']*1000:.2f} / "
+            f"{tips_mm['end_m']*1000:.2f}) | "
             f"angle_dev={np.rad2deg(dev['angle_rad']):.3f} deg | "
             f"lateral_dev={dev['lateral_dev_m']*1000:.2f} mm | "
             f"center_to_line_dist_max={fit['center_to_line_dist_max_m']*1000:.2f} mm | "
@@ -416,6 +373,12 @@ def process_file(file_path, override_bar_action=None, override_movement=None):
             'center_to_line_dist_rms_m': fit['center_to_line_dist_rms_m'],
             'pos_dev_m': dev['pos_dev_m'],
             'start_dev_m': start_dev_m,
+            # The headline number and the three distances behind it.
+            'placement_m': tips_mm['worst_m'],
+            'tip_start_m': tips_mm['start_m'],
+            'tip_middle_m': tips_mm['middle_m'],
+            'tip_end_m': tips_mm['end_m'],
+            'tip_spread_m': tips_mm['spread_m'],
             'angle_dev_rad': dev['angle_rad'],
             'lateral_dev_m': dev['lateral_dev_m'],
         })
@@ -482,23 +445,32 @@ def aggregate(rows):
         return
     pos = np.array([r['pos_dev_m'] for r in rows]) * 1000
     start = np.array([r['start_dev_m'] for r in rows]) * 1000
+    place = np.array([r['placement_m'] for r in rows]) * 1000
+    spread = np.array([r['tip_spread_m'] for r in rows]) * 1000
     ang = np.rad2deg([r['angle_dev_rad'] for r in rows])
     lat = np.array([r['lateral_dev_m'] for r in rows]) * 1000
     st = np.array([r['center_to_line_dist_max_m'] for r in rows]) * 1000
     print(f"\n=== aggregate over {len(rows)} takes ===")
-    print("  (start_dev = fitted lower tip vs goal_pos; TEMP bug-compat metric)")
-    print(f"  start_dev_mm:      mean={start.mean():.2f}  std={start.std():.2f}  max={start.max():.2f}")
+    print("  Both headline numbers are WORST-case, never an average over places:")
+    print("  placement = worst of start/middle/end; fit residual = worst marker pair.")
+    print(f"  placement_mm:      mean={place.mean():.2f}  std={place.std():.2f}  max={place.max():.2f}")
     print(f"  angle_dev_deg:     mean={ang.mean():.3f}  std={ang.std():.3f}  max={ang.max():.3f}")
+    print(f"  fit_residual_mm:   mean={st.mean():.2f}  std={st.std():.2f}  max={st.max():.2f}")
+    print(f"  tip_spread_mm:     mean={spread.mean():.2f}  max={spread.max():.2f}   "
+          f"(small = bar shifted bodily, large = tilted about one end)")
     print(f"  lateral_dev_mm:    mean={lat.mean():.2f}  std={lat.std():.2f}  max={lat.max():.2f}")
-    print(f"  center_to_line_dist_max_mm: mean={st.mean():.2f}  std={st.std():.2f}  max={st.max():.2f}")
+    print("  --- kept for reference only ---")
+    print(f"  start_dev_mm:      mean={start.mean():.2f}  std={start.std():.2f}  max={start.max():.2f}"
+          f"   (the start tip alone; under-reports by {place.mean()-start.mean():.2f} mm on average)")
     print(f"  pos_dev_mm(ocf↔goal): mean={pos.mean():.2f}  std={pos.std():.2f}  max={pos.max():.2f}")
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('batch', nargs='?', default='20260706',
-                        help='batch folder name under EXPERIMENT_DATA_DIRECTORY/bar_holding_acc_data/ '
-                             '(default: 20260706)')
+    parser.add_argument('batch', nargs='?', default=None,
+                        help='session folder name under EXPERIMENT_DATA_DIRECTORY/'
+                             'bar_holding_acc_data/, e.g. 20261001 '
+                             '(default: the newest session on disk)')
     parser.add_argument('--bar-action', default=None, help='override stamped bar_action_path (absolute)')
     parser.add_argument('--movement', default=None, help='override movement_id (e.g. M2)')
     parser.add_argument('--export', action='store_true', help='dump compared_<batch>.json')
@@ -518,15 +490,13 @@ def main():
     if args.problem:
         problem_override = (args.problem if os.path.isdir(args.problem)
                             else os.path.join(DESIGN_DATA_DIRECTORY, args.problem))
-    # Fall back to the default phase1 .3dm so the environment draws without the
-    # flag; --env-3dm still overrides. Print a status line so it's never silently blank.
-    env_3dm = args.env_3dm or (DEFAULT_ENV_3DM if os.path.exists(DEFAULT_ENV_3DM) else None)
-    if env_3dm:
-        print(f"[layout] environment from {os.path.basename(env_3dm)}")
-    else:
-        print("[layout] no environment .3dm found; pass --env-3dm <file.3dm> to draw obstacles")
+    batch = args.batch or latest_batch_folder()
+    if not batch:
+        sys.exit("no session folder found; pass one, e.g. 20261001")
+    if not args.batch:
+        print(f"[session] no batch given; using the newest one: {batch}")
 
-    data_folder = os.path.join(EXPERIMENT_DATA_DIRECTORY, 'bar_holding_acc_data', args.batch)
+    data_folder = os.path.join(EXPERIMENT_DATA_DIRECTORY, 'bar_holding_acc_data', batch)
     if not os.path.isdir(data_folder):
         sys.exit(f"data folder not found: {data_folder}")
 
@@ -536,6 +506,17 @@ def main():
     )
     if not files:
         sys.exit(f"no bar_holding_acc_*.json files in {data_folder}")
+
+    # * The environment comes from the design problem this session's takes name,
+    # * so it follows a re-export. --env-3dm still overrides. Print a status line
+    # * so it is never silently blank.
+    with open(files[0], 'r') as handle:
+        env_3dm = env_3dm_for_bar_action(json.load(handle).get('bar_action_path'),
+                                         args.env_3dm)
+    if env_3dm:
+        print(f"[layout] environment from {os.path.basename(env_3dm)}")
+    else:
+        print("[layout] no environment .3dm found; pass --env-3dm <file.3dm> to draw obstacles")
 
     all_rows = []
     all_fits = []
@@ -619,7 +600,7 @@ def main():
                 'count': len(marker_pts),
                 'expected': 8,
                 'fit_max_mm': row['center_to_line_dist_max_m'] * 1000.0,
-                'start_dev_mm': row['start_dev_m'] * 1000.0,
+                'start_dev_mm': row['placement_m'] * 1000.0,
                 'lateral_dev_mm': row['lateral_dev_m'] * 1000.0,
                 'angle_dev_deg': np.rad2deg(row['angle_dev_rad']),
             })

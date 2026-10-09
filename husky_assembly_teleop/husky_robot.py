@@ -277,6 +277,17 @@ class HuskyRobotInterface:
         else:
             self.pub_cmd_arm_cartesian.append(self.node.create_publisher(PoseStamped, name + '/ur5e/target_frame', 10))
             
+        # * Taring the force sensors is useful without the compliance stack --
+        # the bar-accuracy session zeroes before mounting the bar and then
+        # watches the load for bending. Creating a client is free; only the
+        # blocking wait_for_service below stays behind the flag.
+        self.zero_ft_sensor_client = []
+        if dual_arm:
+            self.zero_ft_sensor_client.append(node.create_client(Trigger, name + '/left_ur5e/io_and_status_controller/zero_ftsensor'))
+            self.zero_ft_sensor_client.append(node.create_client(Trigger, name + '/right_ur5e/io_and_status_controller/zero_ftsensor'))
+        else:
+            self.zero_ft_sensor_client.append(node.create_client(Trigger, name + '/ur5e/io_and_status_controller/zero_ftsensor'))
+
         if connect_compliant_controller:
             self.pub_cmd_arm_cartesian_force = []
             if dual_arm:
@@ -297,13 +308,6 @@ class HuskyRobotInterface:
             for fs in self.force_services:
                 fs.wait_for_service(timeout_sec=2.5)
                 self.node.get_logger().info(f'Force Service Client {fs.service_is_ready()}')
-
-            self.zero_ft_sensor_client = []
-            if dual_arm:
-                self.zero_ft_sensor_client.append(node.create_client(Trigger, name + '/left_ur5e/io_and_status_controller/zero_ftsensor'))
-                self.zero_ft_sensor_client.append(node.create_client(Trigger, name + '/right_ur5e/io_and_status_controller/zero_ftsensor'))
-            else:
-                self.zero_ft_sensor_client.append(node.create_client(Trigger, name + '/ur5e/io_and_status_controller/zero_ftsensor'))
 
             for fs in self.zero_ft_sensor_client:
                 fs.wait_for_service(timeout_sec=2.5)
@@ -745,16 +749,17 @@ class HuskyRobotInterface:
 
         Returns:
             bool: True if the request went out (its future is kept in
-            ``ft_zero_future[index]``). False (with a warning) when the service
-            client does not exist -- it is only created under
-            ``connect_compliant_controller``, so callers degrade to a no-op
-            instead of an AttributeError inside the monitor tick.
+            ``ft_zero_future[index]``). False (with a warning) when this rig has
+            no client for that arm, so callers degrade to a no-op instead of an
+            AttributeError inside the monitor tick. The clients are always
+            created; only the wait for the service sits behind
+            ``connect_compliant_controller``.
         """
         clients = getattr(self, 'zero_ft_sensor_client', None)
         if not clients or index >= len(clients):
             self.node.get_logger().warn(
                 f'Cannot zero FT sensor on arm {index}: no zero_ftsensor service '
-                'client (set HuskyMonitor.CONNECT_COMPLIANT_CONTROLLER = 1).')
+                'client for this rig.')
             return False
         self.ft_zero_future[index] = clients[index].call_async(Trigger.Request())
         return True

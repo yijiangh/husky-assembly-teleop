@@ -9,8 +9,14 @@ at a movement's start state) into accuracy numbers:
 - **`1_compare_to_cell_state.py`** — additionally compares the fitted bar
   against the *intended* bar pose (the movement's start-state pose), so you get
   a deviation in mm / degrees.
+- **`2_session_viewer.py`** — draws the whole session at once as a single
+  offline 3D web page you can rotate, zoom and click: every bar where mocap
+  found it, coloured by error, with the cell, the robot at each parking spot and
+  the mocap camera rig. Full details in
+  [`doc/bar_holding_acc_manual.md`](../../doc/bar_holding_acc_manual.md).
 
-Run `0_` first to sanity-check the fits, then `1_` for the actual accuracy.
+Run `0_` first to sanity-check the fits, then `1_` for the actual accuracy, then
+`2_` to see the session as a whole.
 
 ---
 
@@ -95,30 +101,32 @@ step 12 is the actual `Record + Fit + Viz (shared)` → `Save markerset data`.
 
 ## Setup
 
-From the ros2 workspace root, with the project venv active and the overlay sourced:
+The venv is all you need — these scripts put the repo on the import path
+themselves, so they run from any directory:
 
 ```bash
 cd /home/su/ros2_ws
 source venv/bin/activate
-source install/setup.bash          # so `import husky_assembly_teleop` resolves
 ```
+
+> Seeing `ModuleNotFoundError: No module named 'husky_assembly_teleop'`? You are
+> on an older checkout. Running a file directly puts only *its own folder* on the
+> import path, not the directory you are standing in.
 
 ---
 
 ## `0_bar_acc_data_processing.py` — fit + report
 
-The `batch` (date folder) argument is optional and **defaults to `20260706`**;
-pass another folder name to override.
+The `batch` (session folder) argument is optional and **defaults to the newest
+session on disk**; pass a folder name to pick another.
 
 ```bash
-python src/husky-assembly-teleop/data/bar_holding_acc_data/0_bar_acc_data_processing.py            # default batch 20260706
-python .../0_bar_acc_data_processing.py 20260517               # a specific batch
-python .../0_bar_acc_data_processing.py 20260517 --no-export   # don't write compiled JSON
-python .../0_bar_acc_data_processing.py 20260517 --viewer      # 3D matplotlib per take
+P=src/husky-assembly-teleop/data/bar_holding_acc_data/0_bar_acc_data_processing.py
 
-python src/husky-assembly-teleop/data/bar_holding_acc_data/0_bar_acc_data_processing.py 20260708
-
-python src/husky-assembly-teleop/data/bar_holding_acc_data/1_compare_to_cell_state.py 20260708
+python $P                      # the newest session, found automatically
+python $P 20261001             # one named session
+python $P 20261001 --no-export # don't write compiled_bar_holding_acc.json
+python $P 20261001 --viewer    # 3D matplotlib per take, plus the layout diagram
 ```
 
 Writes `compiled_bar_holding_acc.json` in the batch folder (unless `--no-export`).
@@ -142,19 +150,17 @@ run-to-run repeatability (`d_ocf_from_take0`) before trusting `1_`.
 
 ## `1_compare_to_cell_state.py` — compare to the intended pose
 
-The `batch` argument is optional and **defaults to `20260706`**.
+The `batch` argument is optional and **defaults to the newest session on disk**.
 
 ```bash
-python .../1_compare_to_cell_state.py                          # default batch 20260706
-python .../1_compare_to_cell_state.py 20260517                 # a specific batch
-python .../1_compare_to_cell_state.py 20260517 --export        # write compared_to_cell_state.json
-python .../1_compare_to_cell_state.py 20260517 --viewer        # 3D goal-vs-fitted plots
-python .../1_compare_to_cell_state.py 20260517 --pp-viewer     # pybullet: cell state + goal bar + takes
-python .../1_compare_to_cell_state.py 20260517 --movement M2 --bar-action /abs/path/B6.json   # overrides
+C=src/husky-assembly-teleop/data/bar_holding_acc_data/1_compare_to_cell_state.py
 
-python src/husky-assembly-teleop/data/bar_holding_acc_data/0_bar_acc_data_processing.py 20260708
-
-python src/husky-assembly-teleop/data/bar_holding_acc_data/1_compare_to_cell_state.py 20260708
+python $C                   # the newest session, found automatically
+python $C 20261001          # one named session
+python $C 20261001 --export # write compared_to_cell_state.json
+python $C 20261001 --viewer # 3D goal-vs-fitted plots + the marker-validation panel
+python $C 20261001 --pp-viewer                                   # pybullet: cell state + goal bar + takes
+python $C 20261001 --movement M2 --bar-action /abs/path/B6.json  # overrides
 ```
 
 **Reference pose:** if the take has `bar_start_position/quaternion`, that stamped

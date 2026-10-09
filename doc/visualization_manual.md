@@ -144,9 +144,27 @@ GhPython).
 On layer **`mocap_cameras`**, per camera:
 - a **point** at the camera position;
 - the **orientation frame** — red **X**, green **Y**, blue **Z** axis lines;
-- a gray **view-direction line** along the camera's local **−Z** (the OptiTrack look
-  axis);
+- a gray **view-direction line** along the camera's local **−Z** (intended as the
+  OptiTrack look axis — ⚠️ see below);
 - a text dot with the camera name.
+
+> ### ⚠️ The grey view-direction line points the wrong way
+>
+> Measured over all 11 cameras baked into
+> `assembly - demo/260929_phase1_retest.3dm`, the grey −Z line sits a median of
+> **88.3°** from the direction to the mocap origin — square to where the camera
+> actually looks. The **green Y axis** is the real line of sight, at a median of
+> **11.9°** (range 3.7–20.5°).
+>
+> The likely cause: the exporter converts position and quaternion from Motive's
+> y-up frame to z-up (`mocap_quat_y_up_to_z_up`), which rotates the camera's own
+> body frame too, so **−Z is no longer the look axis afterwards** — +Y is. The
+> importer draws −Z regardless.
+>
+> Until `import_mocap_cameras_rhino.py` is fixed, read the **green** axis as the
+> viewing direction and ignore the grey line.
+> `2_session_viewer.py` already follows the green axis when it draws the camera
+> cones (see `read_mocap_cameras_3dm` in `mocap_experiment.py`).
 
 Plus a single point at world `(0,0,0)` on layer **`mocap_origin`** = the MoCap origin.
 
