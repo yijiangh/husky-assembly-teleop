@@ -17,7 +17,7 @@ import pytest
 from husky_assembly_teleop.config import robot_config_from_serial
 from husky_assembly_teleop.robot_interface.arm import UR_JOINT_NAMES
 from bar_assembly_core.geometry import Geometry, box_geometry
-from bar_assembly_core.mirrors.compas_fab import CompasFabMirror
+from bar_assembly_core.mirrors.compas_fab import HIDDEN_POSITION, CompasFabMirror
 from bar_assembly_core.robot import RobotObject
 from bar_assembly_core.scene import Attachment, Body, Scene
 from bar_assembly_core.geometry import Pose
@@ -144,7 +144,7 @@ def test_rebuild_only_when_models_change(mirror, configs, monkeypatch):
 
 
 def test_disabled_body_is_hidden_without_rebuild(mirror, configs, monkeypatch):
-    """Disabling and enabling a body only changes the state: it stops and starts colliding, no rebuild."""
+    """Disabling and enabling a body only changes the state: it leaves PyBullet and comes back, no rebuild."""
     builds = []
     original = mirror.planner.set_robot_cell
     monkeypatch.setattr(mirror.planner, "set_robot_cell", lambda cell: builds.append(cell) or original(cell))
@@ -154,8 +154,16 @@ def test_disabled_body_is_hidden_without_rebuild(mirror, configs, monkeypatch):
     builds.clear()
     mirror.sync(world(configs, (Body("t/box", box, Pose((0.0, 0.0, 0.3)), enabled=False),)))
     assert mirror.collisions(full_report=True) == []
+    assert np.allclose(box_position(mirror, "t/box"), HIDDEN_POSITION), "code reading PyBullet must not see it"
     mirror.sync(world(configs, (Body("t/box", box, Pose((0.0, 0.0, 0.3))),)))
     assert mirror.collisions() and builds == []
+    assert np.allclose(box_position(mirror, "t/box"), (0.0, 0.0, 0.3))
+
+
+def box_position(mirror: CompasFabMirror, body: str) -> tuple:
+    """Where a body's first part stands in the mirror's PyBullet world."""
+    part = mirror.client.rigid_bodies_puids[body][0]
+    return p.getBasePositionAndOrientation(part, physicsClientId=mirror.client.client_id)[0]
 
 
 def test_search_check_agrees_with_check_collision(mirror, configs):

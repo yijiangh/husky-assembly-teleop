@@ -12,6 +12,8 @@ own check; `search_check` is a fast copy of it for searches. `lend` hands the pl
 - ! One thread only: create, sync, query and lend a mirror on the same thread.
 - ! Other robots' tool/body pairs already touching at `sync` are allowed for that snapshot (`static_contacts`).
 - ! compas_fab builds each collision mesh as its convex hull.
+- ! A hidden body is moved to HIDDEN_POSITION in PyBullet: compas_fab only skips it in its own checks, and code
+  reading the PyBullet world directly (tamp after `lend`, the GUI) would still see it where it last stood.
 - ? Robots are loaded without their visual shapes (`load_model(visual=False)`), and bodies with their collision
   shapes as visuals: loading is faster, and PyBullet's window shows exactly what is checked.
 """
@@ -39,6 +41,9 @@ from . import check_display
 from .pp_client import pp_client
 from .compas import (PARKED_POSITION, filled, frame_from_pose, load_model, planning_group, rigid_body, robot_as_tool,
                      subtree, tool_model)
+
+#: Where hidden bodies are moved in PyBullet: far from the robots, and from PARKED_POSITION where absent robots stand.
+HIDDEN_POSITION = (-50.0, -50.0, -50.0)
 
 if TYPE_CHECKING:
     from compas_robots import RobotModel as CompasRobotModel
@@ -191,9 +196,18 @@ class CompasFabMirror:
             rigid_body_states={key: self._body_state(*placed) for key, (_, placed) in bodies.items()})
         # * Always the full state: after `lend` nothing in the world can be trusted.
         self.planner.set_robot_cell_state(state)
+        self._move_hidden_away(state)
         self.state = state
         self._dirty = False
         self._allow_static_contacts()
+
+    def _move_hidden_away(self, state: RobotCellState) -> None:
+        """Move every hidden body far away in PyBullet; compas_fab leaves it where the last state put it."""
+        for name, body in state.rigid_body_states.items():
+            if body.is_hidden:
+                for part in self.client.rigid_bodies_puids.get(name, ()):
+                    p.resetBasePositionAndOrientation(part, HIDDEN_POSITION, (0.0, 0.0, 0.0, 1.0),
+                                                      physicsClientId=self.client.client_id)
 
     def _same(self, built: tuple) -> bool:
         """Whether the cell was built from these models: the same model and geometry objects, by `same_source`."""
