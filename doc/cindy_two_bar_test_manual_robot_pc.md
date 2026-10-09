@@ -390,8 +390,15 @@ transfer, insert, fix foundation (manual). B1 has no tighten step.
       Then preview (starts at the live arms) → `Exec Selected Mv Traj (auto)` →
       log: the ungrasp runs with it (gripper motors LOOSENING), and once
       `'B1_R_M1_LM_retreat': the export asks for the joint_tracking controller; the monitor runs this dual_independent_linear movement under ...` (expected).
-      After the compliant part it stops: `[B1_R_M1_LM_retreat] retreat ready: N waypoints over ...s. ...`
-      → check the preview → `Confirm Exec` → the arms back off. Joint controller restored afterwards.
+      After the compliant part the monitor checks the rigid part: `[B1_R_M1_LM_retreat] check PASS / FAIL ...`
+      lines (replan, start, compliant part, contact, grippers, left / right tool0 path, joints,
+      speed). All PASS and `Retreat: skip Confirm when the checks pass` ticked (the default) →
+      `every retreat check passed: running the rigid part now ..., no Confirm.` and the arms back
+      off without a pause. Before the compliant part both force sensors are zeroed:
+      `force sensors zeroed before the compliant part (|F| a/b -> c/d N)` (the left / right reading
+      before and after; a leftover force would otherwise push the tools into the joint).
+      A FAIL → `retreat ready, but N check(s) FAILED ...` → read the FAIL lines,
+      check the preview → `Confirm Exec` (or `Cancel Exec`). Joint controller restored afterwards.
 - [ ] **Free move home** (`B1_R_M2_free_home`): `Step` → 1 → `Load Movement` → `Plan Movement` →
       preview → `Exec Selected Mv Traj (auto)`.
 - [ ] `Mark entry done` → header `2/48`.
@@ -472,6 +479,7 @@ In the full run Alice clamps B3 here, so it stays in place when Cindy lets go in
 | a plan fails with "start ... in collision" | read the pair in the log; in entry 4 see the Alice fallback in section 10 |
 | `not planning: joint value(s) outside the URDF limits` (right away, no search) | the start or goal has a joint the arm cannot reach (the UR5e elbow turns only +/- pi); the message names it. Should not happen for the transfer any more (its goal keeps every joint in range): note the line in the log |
 | `Plan for '..._LM_retreat'` / `'..._LM_insert' ... FAILED` (a straight-line plan) | read the `[<movement> diag]` block after it: the START's colliding pairs with the movement's ACM entry of each body (a contact is allowed only when listed there), its joint limits, the failing waypoint and why its IK candidates were turned down (collide / would flip an arm), and a `VERDICT`. The red planning robot and the contacts are drawn, plus that waypoint's two tool0 targets (`Remove all drawing` clears them). A START collision the ACM does not allow = an export gap or the arms are not where the export expects: note the pair in the log. The retreat's replan during exec prints the same block before it falls back to the planned tail (Confirm pause) |
+| the retreat stops at `retreat ready, but N check(s) FAILED` | read the `check FAIL` lines: `grippers` not `STALLED` = a gripper did not open (do not confirm before it is open); `contact` = a tool still pushes on the structure; `compliant part` may fail from gravity sag alone (note its numbers; the limits are first guesses); `replan` = the fallback tail, whose first step jumps. Confirm only when the preview looks right. Untick `Retreat: skip Confirm when the checks pass` to always get the pause |
 | `plan_free_dual_arm failed: birrt_failed` (both ends collision-free, no path found) | read the `[... diag]` lines after it: joint limits of start and goal, how many nearby configurations collide at each end (and with what), where the straight joint path first collides (drawn; the red robot stands there), and a `VERDICT` line. A tight pocket at the GOAL: drive the base to give the arms room, IK check, plan again. Otherwise plan again |
 | no Cindy topics / `Unknown topic` | `eno1` on `192.168.0.x` and Cindy pings (0.4), domain 86 + CycloneDDS in this pane (1.1 / 1.2), Cindy's launch still running with domain 86 + CycloneDDS (0.3) |
 | no tool status (section 2) / grasp steps get no answer | Cindy's launch is missing `gripper:=scaffolding_v3` (0.3) |
@@ -487,6 +495,7 @@ In the full run Alice clamps B3 here, so it stays in place when Cindy lets go in
   `[tool0 check] ... minus target (Rhino)` line from `Draw tool0: ...` after the transfer, whether the
   mounted bar sat in the tools at the insertion start, and how the insert finished (stall time,
   any rigid / compliant warnings).
-- Per release entry: the `retreat ready` line and whether the arms backed off cleanly.
+- Per release entry: the `[..._LM_retreat] check ...` lines (which passed, the numbers of any FAIL),
+  and whether the arms backed off cleanly.
 - Entry 0: how B1's rigid insert ended (the `grounded bar` lines; the bar's final fit before fixing
   the foundation).

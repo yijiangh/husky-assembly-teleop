@@ -3745,6 +3745,221 @@ def _hold_until_joint_motors_stall(monitor, timeout_s, stall_gate: _JointStallGa
         f'{stall_gate.text} reporting STALLED.')
 
 
+# * Retreat guardrails (retreat_guardrails): the rigid part runs without
+# * 'Confirm Exec' only when every one of them holds. First guesses, to tune.
+RETREAT_GUARD_START_TOL_RAD = 0.01      # first waypoint vs the live joints
+RETREAT_GUARD_ARRIVAL_MM = 3.0          # compliant part: worst tool0 short of its end
+RETREAT_GUARD_LR_SPREAD_MM = 3.0        # compliant part: |left - right| travelled
+RETREAT_GUARD_FORCE_N = 20.0            # |F| per arm after the compliant part
+RETREAT_GUARD_GRIPPER_WAIT_S = 3.0      # wait for a gripper still LOOSENING
+RETREAT_GUARD_LENGTH_TOL_MM = 5.0       # tool0 path length vs distance to the goal
+RETREAT_GUARD_BACKTRACK_MM = 2.0        # tool0 moving back toward the structure
+RETREAT_GUARD_ROT_DEG = 3.0             # tool0 orientation change along the tail
+RETREAT_GUARD_JOINT_TRAVEL_RAD = 0.35   # total travel of any one joint
+RETREAT_GUARD_SPEED_MM_S = 50.0         # tool0 speed of the rigid part
+
+
+def retreat_guardrails(monitor, tail, *, replanned: bool, compliant_errs,
+                       t_rigid: float, wait_for_grippers: bool = True):
+    """Check the retreat's rigid part before it runs, right after its compliant part.
+
+    Seven checks, each one PASS / FAIL line with its measured value:
+
+    1. replan: the tail is the fresh straight line from the live pose (not the
+       fallback planned tail, whose first step jumps from where the arms are).
+    2. start: its first waypoint is the live joints (the arms did not move since).
+    3. compliant part: each tool0 got close to the compliant end, and left and
+       right travelled about the same (? gravity sag may trip this; to watch).
+    4. contact: the force/torque sensors read low (the tools let go).
+    5. grippers: both gripper motors report STALLED, i.e. the loosen ran to its
+       end and the grippers are open (waits a little while one still LOOSENs).
+    6. path, per arm (FK of the tail): its length matches the distance to the
+       retreat goal, it ends at the goal, never moves back toward the structure,
+       keeps the tool orientation, and no joint travels far (no branch flip).
+    7. speed: the tool0 speed of the rigid part is moderate.
+
+    ! Fails safe: a check that cannot be evaluated counts as failed.
+
+    Args:
+        monitor (HuskyMonitor): The monitor (live arms, tool status, F/T, goals).
+        tail (list[numpy.ndarray]): The rigid part's 12-joint waypoints.
+        replanned (bool): True when ``tail`` came from the live replan.
+        compliant_errs (list[dict] | None): ``_tool0_pose_errors`` measured right
+            after the compliant part (None when it was not measured).
+        t_rigid (float): Duration of the rigid part, seconds.
+        wait_for_grippers (bool): Wait up to ``RETREAT_GUARD_GRIPPER_WAIT_S`` for
+            a gripper that still LOOSENs (False: read the state once).
+
+    Yields:
+        None: One yield per monitor tick while waiting for the grippers.
+
+    Returns:
+        tuple: ``(all_passed, lines)``: bool, and one "PASS ..." / "FAIL ..." line
+        per check.
+    """
+    hi = monitor.huskies[monitor.selected_robot_id].interface
+    results = []
+
+    def note(ok: bool, text: str) -> None:
+        """Record one check."""
+        results.append((bool(ok), text))
+
+    # 1. The fresh line, not the fallback.
+    note(replanned, 'replan: fresh straight line from the live pose' if replanned
+         else 'replan: FAILED, the fallback tail jumps from where the arms are')
+
+    # 2. It starts where the arms are.
+    live12 = np.concatenate([np.asarray(hi.arm_joint_pose[0], dtype=float),
+                             np.asarray(hi.arm_joint_pose[1], dtype=float)])
+    dev = float(np.abs(np.asarray(tail[0], dtype=float) - live12).max())
+    note(dev <= RETREAT_GUARD_START_TOL_RAD,
+         f'start: first waypoint {dev:.4f} rad from the live joints '
+         f'(limit {RETREAT_GUARD_START_TOL_RAD})')
+
+    # 3. The compliant part got the tools out.
+    if not compliant_errs:
+        note(False, 'compliant part: tool0 progress was not measured')
+    else:
+        worst = max(e['remaining_mm'] for e in compliant_errs)
+        done = [e['achieved_mm'] for e in compliant_errs]
+        spread = abs(done[0] - done[-1])
+        note(worst <= RETREAT_GUARD_ARRIVAL_MM and spread <= RETREAT_GUARD_LR_SPREAD_MM,
+             f'compliant part: worst tool0 {worst:.1f} mm short of its end (limit '
+             f'{RETREAT_GUARD_ARRIVAL_MM}), L/R travelled {done[0]:.1f}/{done[-1]:.1f} mm '
+             f'(spread limit {RETREAT_GUARD_LR_SPREAD_MM})')
+
+    # 4. No force left on the tools.
+    forces = [float(np.linalg.norm(np.asarray(hi.arm_ft_sensor[i][:3], dtype=float)))
+              for i in range(2)]
+    note(max(forces) <= RETREAT_GUARD_FORCE_N,
+         f'contact: |F| L/R {forces[0]:.1f}/{forces[1]:.1f} N (limit {RETREAT_GUARD_FORCE_N})')
+
+    # 5. The grippers are open (the loosen ran until the motor stalled).
+    def gripper_states():
+        """Each tool's gripper motor state (M1), or 'no status'."""
+        return [getattr(hi.scaffolding_status[i], 'state_m1', None) or 'no status'
+                if hi.scaffolding_status[i] is not None else 'no status' for i in range(2)]
+    if wait_for_grippers:
+        deadline = time.time() + RETREAT_GUARD_GRIPPER_WAIT_S
+        while 'LOOSENING' in gripper_states() and time.time() < deadline:
+            yield
+    states = gripper_states()
+    note(all(st == 'STALLED' for st in states),
+         f'grippers: motor states L/R {states[0]}/{states[1]} (want STALLED = fully open)')
+
+    # 6. + 7. The tail's tool0 path, per arm.
+    try:
+        mv = monitor.current_movement
+        goals = monitor._retreat_goal_frames(mv) or {}
+        poses = [_tool0_poses_at_conf(monitor, q) for q in tail]
+        lengths = []
+        for k, side in enumerate(('left', 'right')):
+            pts = np.array([np.asarray(pp.point_from_pose(p_[k]), dtype=float) for p_ in poses])
+            quats = [np.asarray(pp.quat_from_pose(p_[k]), dtype=float) for p_ in poses]
+            length = float(np.sum(np.linalg.norm(np.diff(pts, axis=0), axis=1)))
+            lengths.append(length)
+            goal = np.asarray(goals[side].point, dtype=float) if goals.get(side) is not None else pts[-1]
+            remaining = float(np.linalg.norm(goal - pts[0]))
+            to_goal = float(np.linalg.norm(goal - pts[-1]))
+            # How far a later waypoint falls back behind the furthest one so far,
+            # along the retreat direction (start -> goal).
+            u = (goal - pts[0]) / remaining if remaining > 1e-9 else np.zeros(3)
+            proj = (pts - pts[0]) @ u
+            backtrack = float(np.max(np.maximum.accumulate(proj) - proj))
+            turn = max(float(np.degrees(2.0 * np.arccos(min(1.0, abs(float(np.dot(quats[0], q)))))))
+                       for q in quats)
+            note(abs(length - remaining) * 1e3 <= RETREAT_GUARD_LENGTH_TOL_MM
+                 and to_goal * 1e3 <= RETREAT_GUARD_LENGTH_TOL_MM
+                 and backtrack * 1e3 <= RETREAT_GUARD_BACKTRACK_MM
+                 and turn <= RETREAT_GUARD_ROT_DEG,
+                 f'{side} tool0 path: {length * 1e3:.1f} mm for {remaining * 1e3:.1f} mm to the '
+                 f'goal, ends {to_goal * 1e3:.1f} mm from it (limits '
+                 f'{RETREAT_GUARD_LENGTH_TOL_MM} mm), backtracks {backtrack * 1e3:.1f} mm '
+                 f'(limit {RETREAT_GUARD_BACKTRACK_MM}), turns {turn:.1f} deg '
+                 f'(limit {RETREAT_GUARD_ROT_DEG})')
+        travel = np.sum(np.abs(np.diff(np.asarray(tail, dtype=float), axis=0)), axis=0)
+        j = int(np.argmax(travel))
+        names = list(HUSKY_DUAL_UR5e_JOINT_NAMES[0]) + list(HUSKY_DUAL_UR5e_JOINT_NAMES[1])
+        note(travel[j] <= RETREAT_GUARD_JOINT_TRAVEL_RAD,
+             f'joints: largest total travel {travel[j]:.3f} rad on {names[j]} '
+             f'(limit {RETREAT_GUARD_JOINT_TRAVEL_RAD})')
+        speed = max(lengths) * 1e3 / max(float(t_rigid), 1e-6)
+        note(speed <= RETREAT_GUARD_SPEED_MM_S,
+             f'speed: tool0 {speed:.1f} mm/s over {t_rigid:.1f} s '
+             f'(limit {RETREAT_GUARD_SPEED_MM_S})')
+    except Exception as exc:
+        note(False, f'path: could not be checked ({exc})')
+
+    lines = [f"{'PASS' if ok else 'FAIL'} {text}" for ok, text in results]
+    return all(ok for ok, _ in results), lines
+
+
+# How long the retreat waits for the driver to confirm its force/torque zero.
+FT_ZERO_TIMEOUT_S = 2.0
+
+
+def _zero_force_sensors_before_retreat(monitor, tag: str):
+    """Zero every arm's force/torque sensor and wait for the driver to confirm it.
+
+    Called right before the retreat's compliant part. The compliance controller
+    moves each tool until stiffness x offset balances the force it reads, so a
+    force left in the reading -- a sensor bias, or the contact preload left by
+    the insert -- drives the tool on its own: on the real robot both tools
+    pushed about 12 mm INTO the joint at the start of the retreat. Zeroed here,
+    the compliant part reacts only to the forces that appear while backing off.
+
+    ! Zeroed on purpose while the bar is still gripped and in contact: the usual
+    ! rule (zero only when the tool holds nothing) does not apply, the point is
+    ! to tare exactly this state.
+
+    Never blocks the retreat: when a zero cannot be sent or is not confirmed in
+    ``FT_ZERO_TIMEOUT_S``, it warns and the retreat goes on with the reading as is.
+
+    Args:
+        monitor (HuskyMonitor): The monitor (its connected robot's interface).
+        tag (str): Log tag (the movement id).
+
+    Yields:
+        None: One yield per monitor tick while waiting for the driver.
+
+    Returns:
+        bool: True when every arm's zero was confirmed.
+    """
+    if monitor.FAKE_HARDWARE:
+        return True     # no sensor to tare
+    hi = monitor.huskies[monitor.selected_robot_id].interface
+    arms = range(monitor.get_active_arm_count())
+    before = [float(np.linalg.norm(np.asarray(hi.arm_ft_sensor[i][:3], dtype=float))) for i in arms]
+    if not all([hi.zero_ft_sensor(i) for i in arms]):
+        monitor.get_logger().warn(
+            f'[{tag}] could not zero the force sensors before the compliant part; it reacts '
+            f'to the current reading (|F| ' + '/'.join(f'{f:.1f}' for f in before) + ' N).')
+        return False
+    futures = [getattr(hi, 'ft_zero_future', [None] * len(before))[i] for i in arms]
+    deadline = time.time() + FT_ZERO_TIMEOUT_S
+    while not all(f is None or f.done() for f in futures) and time.time() < deadline:
+        yield
+    # No future = an interface that keeps none (a test stub): nothing to wait for.
+    confirmed = all(f is None or (f.done() and getattr(f.result(), 'success', True))
+                    for f in futures)
+    # A few ticks for the sensor stream to show the zeroed values.
+    settle = time.time() + 0.1
+    while time.time() < settle:
+        yield
+    after = [float(np.linalg.norm(np.asarray(hi.arm_ft_sensor[i][:3], dtype=float))) for i in arms]
+    text = (f'|F| ' + '/'.join(f'{f:.1f}' for f in before) + ' -> '
+            + '/'.join(f'{f:.1f}' for f in after) + ' N')
+    if confirmed:
+        monitor.get_logger().info(
+            f'[{tag}] force sensors zeroed before the compliant part ({text}).')
+    else:
+        monitor.get_logger().warn(
+            f'[{tag}] the force sensor zero was not confirmed (the driver reported a failure '
+            f'or did not answer within {FT_ZERO_TIMEOUT_S:.0f}s; {text}); going on with the '
+            f'reading as is.')
+    return confirmed
+
+
 def execute_planned_trajectory_compliant(monitor):
     """Execute the loaded insert (DUAL_CONSTRAINED_LINEAR) or retreat
     (DUAL_INDEPENDENT_LINEAR) movement as linear cartesian motion.
@@ -3911,6 +4126,7 @@ def execute_planned_trajectory_compliant(monitor):
     # Same slider, same number of millimetres.
     m3_rigid_tail = None
     t_m3_rigid = 0.0
+    compliant_errs = None   # tool0 progress of the compliant part (retreat_guardrails)
     if is_retreat:
         requested_mm = float(getattr(monitor, 'm2_compliant_split_mm',
                                      M2_COMPLIANT_SPLIT_MM_DEFAULT))
@@ -4051,6 +4267,10 @@ def execute_planned_trajectory_compliant(monitor):
             cartesian_trajectories[1][0] = R_start
 
         # --- Chunk 2: the compliant phase (all of M3; M2's final split_mm) ---
+        # * Retreat: tare the force sensors first, while the arms are still under
+        # * joint control and at rest (see _zero_force_sensors_before_retreat).
+        if is_retreat:
+            yield from _zero_force_sensors_before_retreat(monitor, tag)
         # wait until the switch is completely (yield will go back to top level monitor to get updated state)
         switched_to_compliance = yield from switch_dual_arm_controller(
             monitor,
@@ -4078,6 +4298,7 @@ def execute_planned_trajectory_compliant(monitor):
         # a short-retracted arm is only visible by eye in the viewer.
         try:
             errs = _tool0_pose_errors(monitor, cartesian_trajectories)
+            compliant_errs = errs
             for side, e in zip(('L', 'R'), errs):
                 pct = (100.0 * e['achieved_mm'] / e['travel_mm']
                        if e['travel_mm'] > 1e-9 else 100.0)
@@ -4112,6 +4333,7 @@ def execute_planned_trajectory_compliant(monitor):
             # HuskyMonitor._live_retreat_targets).
             tail = monitor.replan_linear_to_target_from_live(
                 monitor.current_movement, tag)
+            replanned = tail is not None
             if tail is not None:
                 print(f'[{tag}] replanned retreat: {len(tail)} waypoints from the '
                       f'live pose to the retreat goals.')
@@ -4144,12 +4366,35 @@ def execute_planned_trajectory_compliant(monitor):
                 tail, label=f'{monitor.current_movement.movement_id} (retreat)')
             monitor.set_to_show_traj_state()
 
-            if not (yield from wait_for_operator_confirm(
-                    monitor,
-                    f'[{tag}] retreat ready: {len(tail)} waypoints over '
-                    f'{t_m3_rigid:.1f}s. Scrub "Traj viz time" and check the '
-                    f'joint plot, then click "Confirm Exec" to run it.')):
-                return
+            # * Guardrails: with the panel box ticked the rigid part runs at once
+            # * when every check passes; a failed check (or the box unticked)
+            # * asks for 'Confirm Exec' as before.
+            skip_if_ok = monitor._retreat_skip_confirm()
+            all_ok, check_lines = yield from retreat_guardrails(
+                monitor, tail, replanned=replanned, compliant_errs=compliant_errs,
+                t_rigid=t_m3_rigid, wait_for_grippers=skip_if_ok)
+            for line in check_lines:
+                print(f'[{tag}] check {line}')
+            if skip_if_ok and all_ok:
+                monitor.get_logger().info(
+                    f'[{tag}] every retreat check passed: running the rigid part now '
+                    f'({len(tail)} waypoints over {t_m3_rigid:.1f}s), no Confirm.')
+            elif all_ok:
+                if not (yield from wait_for_operator_confirm(
+                        monitor,
+                        f'[{tag}] retreat ready: {len(tail)} waypoints over '
+                        f'{t_m3_rigid:.1f}s. Scrub "Traj viz time" and check the '
+                        f'joint plot, then click "Confirm Exec" to run it.')):
+                    return
+            else:
+                n_failed = sum(line.startswith('FAIL') for line in check_lines)
+                if not (yield from wait_for_operator_confirm(
+                        monitor,
+                        f'[{tag}] retreat ready, but {n_failed} check(s) FAILED (the '
+                        f'"check FAIL" lines above): {len(tail)} waypoints over '
+                        f'{t_m3_rigid:.1f}s. Scrub "Traj viz time" and check the joint '
+                        f'plot, then click "Confirm Exec" to run it.', warn=True)):
+                    return
 
             # ! No stall gate: M3's joint motor is not driving, so a STALLED
             # ! flag left over from the preceding M2 would abort this on tick 1.

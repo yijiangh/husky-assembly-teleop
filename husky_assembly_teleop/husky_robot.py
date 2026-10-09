@@ -458,6 +458,9 @@ class HuskyRobotInterface:
         # True while a list_controllers query for that arm is out (see
         # refresh_active_controllers); the answer clears it.
         self.controller_query_pending = [False] * n_arms
+        # The last zero_ftsensor request per arm (a service future), so a caller
+        # can wait for the driver to confirm the zero (see zero_ft_sensor).
+        self.ft_zero_future = [None] * n_arms
         # Why the request in flight for this arm failed, or None. Cleared when a new
         # switch_controller request goes out, set by its done-callback on a rejected
         # or errored switch. Lets a waiter fail fast on a KNOWN failure instead of
@@ -741,8 +744,9 @@ class HuskyRobotInterface:
             index (int): Arm index (0 = left, 1 = right).
 
         Returns:
-            bool: True if the request went out. False (with a warning) when the
-            service client does not exist -- it is only created under
+            bool: True if the request went out (its future is kept in
+            ``ft_zero_future[index]``). False (with a warning) when the service
+            client does not exist -- it is only created under
             ``connect_compliant_controller``, so callers degrade to a no-op
             instead of an AttributeError inside the monitor tick.
         """
@@ -752,7 +756,7 @@ class HuskyRobotInterface:
                 f'Cannot zero FT sensor on arm {index}: no zero_ftsensor service '
                 'client (set HuskyMonitor.CONNECT_COMPLIANT_CONTROLLER = 1).')
             return False
-        clients[index].call_async(Trigger.Request())
+        self.ft_zero_future[index] = clients[index].call_async(Trigger.Request())
         return True
         
     def send_force_mode_command(self, force, index=0):

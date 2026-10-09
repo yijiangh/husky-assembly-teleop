@@ -342,6 +342,11 @@ class HuskyMonitor(Node):
     # ! plan the transfer as a free move ..." changes it while the monitor runs.
     # ! See _plan_transfer_as_free_move.
     TRANSFER_AS_FREE_MOVE = 1
+    # * The retreat's rigid part (after its compliant part): 1 = run it at once
+    # * when every guardrail passes (husky_world.retreat_guardrails) and ask for
+    # * 'Confirm Exec' only when one fails; 0 = always ask. The panel checkbox
+    # * "Retreat: skip Confirm when the checks pass" changes it while the monitor runs.
+    RETREAT_SKIP_CONFIRM_IF_CHECKS_PASS = 1
     DUAL_ARM_EE_CONSTR_ACCURACY_MOCAP_TEST = 0
 
     # Set to 1 to dump cfab's collision-check setup (its ACM / allowed-collision
@@ -4043,6 +4048,20 @@ class HuskyMonitor(Node):
             self.TRANSFER_AS_FREE_MOVE = int(ticked)
         return bool(getattr(self, 'TRANSFER_AS_FREE_MOVE', 0))
 
+    def _retreat_skip_confirm(self) -> bool:
+        """Whether the retreat's rigid part may run without 'Confirm Exec' when its checks pass.
+
+        Reads the panel checkbox live, once (see ``_transfer_as_free_move``).
+
+        Returns:
+            bool: True when the box is ticked (or, without the box, the class flag is 1).
+        """
+        toggle = getattr(self, 'retreat_skip_confirm_toggle', None)
+        ticked = toggle.value if toggle is not None else None
+        if ticked is not None:
+            self.RETREAT_SKIP_CONFIRM_IF_CHECKS_PASS = int(ticked)
+        return bool(getattr(self, 'RETREAT_SKIP_CONFIRM_IF_CHECKS_PASS', 0))
+
     def _plan_transfer_as_free_move(self, mv: Movement) -> Optional[JointTrajectory]:
         """Workaround: plan the transfer as a plain dual-arm free move, without the bar.
 
@@ -6676,12 +6695,7 @@ class HuskyMonitor(Node):
         if self.cfab is None or mv is None or mv.start_state is None:
             self.get_logger().warn(f"[{tag}] replan: no cfab session or start_state.")
             return None
-        # The goals 'Plan Movement' planned the retreat to, else the exported frames.
-        live_goals = getattr(self, '_retreat_live_targets', None)
-        if live_goals is not None and live_goals['movement_id'] == mv.movement_id:
-            targets = live_goals['frames']
-        else:
-            targets = getattr(mv, 'target_ee_frames', None) or None
+        targets = self._retreat_goal_frames(mv)
         if not targets or 'left' not in targets or 'right' not in targets:
             self.get_logger().warn(
                 f"[{tag}] replan: {mv.movement_id!r} has no left/right "
@@ -8436,6 +8450,20 @@ class HuskyMonitor(Node):
             # Say (and draw) why no straight line was found.
             self._diagnose_cartesian_plan_failure(tag, mv.start_state, report)
         return jt
+
+    def _retreat_goal_frames(self, mv) -> Optional[dict]:
+        """The retreat's goals: those 'Plan Movement' planned it to, else the exported frames.
+
+        Args:
+            mv: The retreat being executed.
+
+        Returns:
+            dict | None: ``{"left": Frame, "right": Frame}`` (world), or None.
+        """
+        live_goals = getattr(self, '_retreat_live_targets', None)
+        if live_goals is not None and live_goals['movement_id'] == mv.movement_id:
+            return live_goals['frames']
+        return getattr(mv, 'target_ee_frames', None) or None
 
     def _live_retreat_targets(self, mv) -> Optional[dict]:
         """Each arm's retreat goal: its live tool0 moved back along the export's retreat axis.
@@ -10737,9 +10765,18 @@ class HuskyMonitor(Node):
                     lambda v: setattr(self, 'm2_exec_rigid_only', bool(round(float(v)))),
                     0, 1, int(bool(self.m2_exec_rigid_only)), integer=True,
                 )
+                # * Ticked: the retreat's rigid part runs without 'Confirm Exec' when
+                # * every guardrail passes (husky_world.retreat_guardrails); a failed
+                # * check still asks. Seeded from the flag so a rebuild keeps the tick.
+                self.retreat_skip_confirm_toggle = Toggle(
+                    "Retreat: skip Confirm when the checks pass",
+                    lambda v: setattr(self, 'RETREAT_SKIP_CONFIRM_IF_CHECKS_PASS', int(bool(v))),
+                    bool(self.RETREAT_SKIP_CONFIRM_IF_CHECKS_PASS),
+                )
             else:
                 self.m2_split_slider = None
                 self.m2_rigid_only_slider = None
+                self.retreat_skip_confirm_toggle = None
             # 0 disables the dense swept collision re-check that gates the free moves'
             # plans. Faster planning, unverified paths.
             self.fm_swept_validation_slider = Slider(
@@ -11271,6 +11308,9 @@ class HuskyMonitor(Node):
                 self.m2_split_slider.update()
             if hasattr(self, 'm2_rigid_only_slider') and self.m2_rigid_only_slider:
                 self.m2_rigid_only_slider.update()
+            tgl = getattr(self, 'retreat_skip_confirm_toggle', None)
+            if tgl:
+                tgl.update()
             if hasattr(self, 'fm_swept_validation_slider') and self.fm_swept_validation_slider:
                 self.fm_swept_validation_slider.update()
 
