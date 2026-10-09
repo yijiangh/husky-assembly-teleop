@@ -3,8 +3,9 @@ What follows from a state and the design without being stored (format §5.5): wh
 
 - Where a bar is: built -> its design pose; attached and not built -> its first holder's link times the grasp;
   otherwise the pose in `State.poses`, else its design pose. A mounted half follows its bar.
-- Allowed contacts: a tool with the body it is on, a half with its bar, the two sides of a pending or engaged mate,
-  a present robot's ground links with ground bodies. Mount contacts belong to the robot model (`RobotModel`).
+- Allowed contacts: a tool with the whole part it is on, a half with its bar, a pending or engaged mate's halves with
+  each other and with each other's bar, a ground-mated half and a present robot's ground links with every ground body.
+  Mount contacts belong to the robot model (`RobotModel`).
 """
 
 from __future__ import annotations
@@ -98,6 +99,12 @@ def mate_statuses(design: Design, state: State) -> Dict[Mate, str]:
 def allowed_contacts(design: Design, state: State) -> Set[Tuple[str, str]]:
     """Every allowed contact in a state, each pair sorted (mount contacts excepted: they are the robot model's).
 
+    - A tool on a body may touch that body's whole part: its bar and every half mounted on it.
+    - A half may touch its bar; the halves of a pending or engaged mate each other, and each other's bar.
+    - A half mated to a ground body, and a present robot's ground links, may touch every present ground body.
+
+    ? Collision models are coarser than the parts: a tool's convex hull overlaps the bar it holds by about 1 mm.
+
     Args:
         design: The design.
         state: The state.
@@ -111,16 +118,28 @@ def allowed_contacts(design: Design, state: State) -> Set[Tuple[str, str]]:
         if a != b:
             pairs.add((a, b) if a < b else (b, a))
 
+    def part(body: str) -> Tuple[str, ...]:
+        bar = bar_of(design, body)
+        return (bar, *design.halves_of(bar)) if bar is not None else (body,)
+
+    grounds = [body for body in state.present if body.startswith(GROUND_PREFIX)]
     for tool, tool_state in state.tools.items():
         if tool_state is not None and tool_state.on is not None and is_present(design, state, tool_state.on):
-            add(tool, tool_state.on)
+            for body in part(tool_state.on):
+                add(tool, body)
     for body_id, body in design.bodies.items():
         if body.mount is not None and is_present(design, state, body_id):
             add(body_id, body.mount)
     for mate in design.mates:
         if mate_status(design, state, mate) in (PENDING, ENGAGED):
             add(*mate)
-    grounds = [body for body in state.present if body.startswith(GROUND_PREFIX)]
+            for side, other in (mate, mate[::-1]):
+                if side.startswith(HALF_PREFIX) and other.startswith(HALF_PREFIX):
+                    add(side, design.bodies[other].mount)
+        for side, other in (mate, mate[::-1]):
+            if side.startswith(HALF_PREFIX) and other.startswith(GROUND_PREFIX) and is_present(design, state, side):
+                for ground in grounds:
+                    add(side, ground)
     for robot_id, robot in design.robots.items():
         if state.robots.get(robot_id) is not None:
             for link in robot.ground_links:

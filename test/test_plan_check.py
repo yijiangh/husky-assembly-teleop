@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from design_fixtures import build_design, joints, with_movement, with_start
 
-from bar_assembly_core.design import Design, Holder, RobotState, Target, ToolState
+from bar_assembly_core.design import Design, Holder, PartSpec, RobotState, Target, ToolState
 from bar_assembly_core.design.plan_check import check_plan, end_state
 from bar_assembly_core.geometry import Pose
 
@@ -174,3 +174,18 @@ def test_end_state_applies_the_target(design):
     end = end_state(insert)
     assert end.built == {"bars/B1"} and end.robots["robots/cindy"].joints["left_joint1"] == 0.5
     assert end.tools["tools/AT3L"] == insert.start.tools["tools/AT3L"]
+
+
+def test_b11_on_changes_only_in_targets(design):
+    """A tool that arrives between two movements, instead of in a target, breaks the chain."""
+    mount = design.actions["B1_J_joint"].movements[0]
+    _errors(with_movement(design, "B1_J_joint", 0, target=replace(mount.target, on={})), 11,
+            "tools/AT3L on changes from None to joints/G1_ground between movements")
+    assert end_state(mount).tools["tools/AT3L"].on == "joints/G1_ground"
+
+
+def test_b14_seats_from_the_parts_catalogue(design):
+    """The design's `parts` win over the built-in seats."""
+    turned = PartSpec(Pose(orientation=(0.0, 0.0, 1.0, 0.0)))
+    _errors(replace(design, parts={"T20/Male": turned}), 14, "the grasp of bars/B2 on robots/cindy/left_tool0")
+    assert check_plan(replace(design, parts={"T20/Male": PartSpec(Pose())})).ok

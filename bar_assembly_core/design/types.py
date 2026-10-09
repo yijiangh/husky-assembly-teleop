@@ -181,7 +181,8 @@ class Target:
     Attributes:
         joints: Robot id -> joint -> value; a subset of joints is allowed.
         links: Link id -> world pose.
-        tools: Tool id -> its grip at the end, only for the tools whose grip changes.
+        tools: Tool id -> the grip it is commanded to, only for the tools the movement commands.
+        on: Tool id -> the body it is on at the end (None: on nothing), only for the tools whose `on` changes.
         attached: The whole `attached` map at the end, if the movement changes it; None: unchanged.
         built: The whole `built` set at the end, if the movement changes it; None: unchanged.
     """
@@ -189,6 +190,7 @@ class Target:
     joints: Dict[str, Dict[str, float]] = field(default_factory=dict)
     links: Dict[str, Pose] = field(default_factory=dict)
     tools: Dict[str, str] = field(default_factory=dict)
+    on: Dict[str, Optional[str]] = field(default_factory=dict)
     attached: Optional[Dict[str, Tuple[Holder, ...]]] = None
     built: Optional[FrozenSet[str]] = None
 
@@ -224,7 +226,7 @@ class Movement:
 
     @property
     def grip_change(self) -> Dict[str, str]:
-        """dict: Tool id -> the grip it ends with, for the tools whose grip this movement changes."""
+        """dict: Tool id -> the grip it ends with, for the tools this movement commands."""
         return dict(self.target.tools) if self.target is not None else {}
 
     @property
@@ -249,6 +251,13 @@ class Action:
 
 
 @dataclass(frozen=True)
+class PartSpec:
+    """A catalogue part (format §4.5), e.g. "T20/Male": `seat` is the half's pose in the frame of the TCP on it."""
+
+    seat: Pose
+
+
+@dataclass(frozen=True)
 class Design:
     """A whole design folder (format §2).
 
@@ -258,6 +267,7 @@ class Design:
         mates: Joints of the finished structure, each pair sorted: a male and a female half, or a ground half and a
             ground body. They never move anything; their status follows from the state (`relations.mate_status`).
         producer: The code that made the design, or None.
+        parts: Catalogue part name -> its seat, for the parts the producer knows; B14 checks grasps against them.
     """
 
     folder: Optional[Path]
@@ -269,6 +279,7 @@ class Design:
     actions: Dict[str, Action]
     mates: FrozenSet[Tuple[str, str]] = frozenset()
     producer: Optional[Producer] = None
+    parts: Dict[str, PartSpec] = field(default_factory=dict)
 
     def halves_of(self, bar: str) -> Tuple[str, ...]:
         """The connector halves mounted on a bar, sorted."""

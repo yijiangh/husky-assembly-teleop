@@ -62,15 +62,16 @@ def test_mate_status(design):
 
 
 def test_allowed_contacts_are_derived(design):
-    """At B2's insert: tools with their body, halves with their bars, pending and engaged mates, wheels with ground.
+    """At B2's insert: tools with their whole part, halves with their bars, mates with each other's bar, wheels.
 
-    Nothing else: not a tool with the rest of the bar it holds.
+    A pending or engaged mate's halves touch each other and each other's bar.
     """
     contacts = allowed_contacts(design, _start(design, "B2_M3_insert"))
     assert contacts == {
-        ("joints/J1_male", "tools/AT3L"), ("bars/B1", "tools/Grip"),
+        ("joints/J1_male", "tools/AT3L"), ("bars/B2", "tools/AT3L"),
+        ("bars/B1", "tools/Grip"), ("joints/G1_ground", "tools/Grip"), ("joints/J1_female", "tools/Grip"),
         ("bars/B1", "joints/G1_ground"), ("bars/B1", "joints/J1_female"), ("bars/B2", "joints/J1_male"),
-        G1_MATE, J1_MATE,
+        G1_MATE, J1_MATE, ("bars/B1", "joints/J1_male"), ("bars/B2", "joints/J1_female"),
         ("ground/WG0", "robots/alice/wheel_link"), ("ground/WG0", "robots/cindy/wheel_link"),
     }
     # * Before B1 is mounted: B1's halves are absent, the open J1 mate allows nothing, Alice (absent) has no wheels.

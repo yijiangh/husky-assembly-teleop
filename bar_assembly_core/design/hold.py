@@ -1,54 +1,64 @@
 """
-Hold scenes, a planning helper: the world a support robot plans its release in.
+Hold scenes, a planning helper: where a support robot's hold is solved, and where its release is checked.
 
-A `bar_holding` action holds its bar until the bars in `supports_until` are built. Its hold scene is the world
-once the last of those is built (`Design.scene_after`), with the held bar disabled. The format has no field for it.
+Both are plain `scene_at` scenes, because every design state is the cell at that moment: the hold is solved at the
+start of the movement that closes the gripper (Cindy still holds the bar at its assembled pose), and its release is
+checked at the start of the matching `bar_holding_release` (every bar in `supports_until` built).
 """
 
 from __future__ import annotations
 
-from .types import Design
+from typing import Tuple
+
 from ..scene import Scene
+from .types import Design, Movement
 
 
-def release_bar(design: Design, action_id: str) -> str:
-    """The bar whose building lets a holding action let go: the one of its `supports_until` built last.
+def closing_movement(design: Design, action_id: str) -> Movement:
+    """The movement of a `bar_holding` action that attaches the held bar to the support robot.
+
+    Raises:
+        ValueError: If the action is not a `bar_holding` action, or none of its movements attaches its bar.
+    """
+    action = design.actions[action_id]
+    if action.type != "bar_holding":
+        raise ValueError(f"{action_id} is a {action.type} action, not bar_holding")
+    for movement in action.movements:
+        attached = movement.target.attached if movement.target is not None else None
+        if attached is not None and any(holder.to.startswith(f"{action.robot}/")
+                                        for holder in attached.get(action.bar, ())):
+            return movement
+    raise ValueError(f"{action_id}: no movement attaches {action.bar} to {action.robot}")
+
+
+def release_movement(design: Design, action_id: str) -> Movement:
+    """The first movement of the `bar_holding_release` that ends a `bar_holding` action.
+
+    Raises:
+        ValueError: If no later release of the same bar by the same robot is in the schedule.
+    """
+    action = design.actions[action_id]
+    later = design.schedule[design.schedule.index(action_id) + 1:]
+    for other_id in later:
+        other = design.actions[other_id]
+        if other.type == "bar_holding_release" and other.robot == action.robot and other.bar == action.bar \
+                and other.movements:
+            return other.movements[0]
+    raise ValueError(f"{action_id}: no later bar_holding_release of {action.bar} by {action.robot}")
+
+
+def hold_scenes(design: Design, action_id: str) -> Tuple[Scene, Scene]:
+    """The two scenes of a hold: solve it in the first, and check each candidate in the second.
 
     Args:
         design: The design.
         action_id: A `bar_holding` action.
 
     Returns:
-        str: A bar id.
+        tuple[Scene, Scene]: `scene_at(closing_movement)` and `scene_at(release_movement)`.
 
     Raises:
-        ValueError: If the action is not a `bar_holding` action with `supports_until`.
+        ValueError: As `closing_movement` and `release_movement`.
     """
-    action = design.actions[action_id]
-    if action.type != "bar_holding" or not action.supports_until:
-        raise ValueError(f"{action_id} is a {action.type} action without supports_until: it holds nothing until later")
-    last_built = {design.actions[other].bar: index for index, other in enumerate(design.schedule)}
-    missing = [bar for bar in action.supports_until if bar not in last_built]
-    if missing:
-        raise ValueError(f"{action_id}: no action builds {missing}")
-    return max(action.supports_until, key=last_built.__getitem__)
-
-
-def hold_scene(scene: Scene, bar: str) -> Scene:
-    """A copy of a scene with the held bar disabled; the scene given is not changed.
-
-    Args:
-        scene: Usually `design.scene_after(release_bar(design, action_id))`.
-        bar: The held bar's id.
-
-    Raises:
-        KeyError: If the scene has no such body.
-    """
-    held = scene.copy()
-    held.bodies[bar].enabled = False
-    return held
-
-
-def hold_scene_for(design: Design, action_id: str) -> Scene:
-    """The hold scene of a `bar_holding` action: `hold_scene(design.scene_after(release_bar(…)), action.bar)`."""
-    return hold_scene(design.scene_after(release_bar(design, action_id)), design.actions[action_id].bar)
+    return (design.scene_at(closing_movement(design, action_id)),
+            design.scene_at(release_movement(design, action_id)))

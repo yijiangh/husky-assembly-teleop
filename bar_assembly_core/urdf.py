@@ -9,6 +9,8 @@ Names, groups, mesh references and copying, in plain `xml.etree` (runs in Rhino 
 from __future__ import annotations
 
 import shutil
+from hashlib import sha256
+from io import BytesIO
 from pathlib import Path, PurePath
 from typing import Dict, List, Optional, Sequence, Tuple
 from xml.etree.ElementTree import Element, ElementTree, TreeBuilder, XMLParser, parse, tostring
@@ -144,6 +146,25 @@ def _locate(filename: str, urdf_folder: Path, package_dirs: Sequence[Path]) -> T
     return source, below
 
 
+def _robot_copy(urdf: Path, srdf: Path, package_dirs: Sequence[Path]) -> Tuple[bytes, bytes, Dict[str, Path]]:
+    """What `copy_robot` writes, in memory: the URDF with its mesh paths rewritten, the SRDF, and the meshes.
+
+    Returns:
+        tuple: URDF bytes, SRDF bytes, and each mesh's path below `meshes/` -> its source file.
+    """
+    urdf = Path(urdf)
+    tree = ElementTree(_root(urdf))
+    copies: Dict[str, Tuple[Path, str]] = {}
+    for mesh in tree.getroot().iter("mesh"):
+        filename = mesh.get("filename", "")
+        if filename not in copies:
+            copies[filename] = _locate(filename, urdf.parent, package_dirs)
+        mesh.set("filename", f"meshes/{copies[filename][1]}")
+    text = BytesIO()
+    tree.write(text, encoding="utf-8", xml_declaration=True)
+    return text.getvalue(), Path(srdf).read_bytes(), {below: source for source, below in copies.values()}
+
+
 def copy_robot(urdf: Path, srdf: Path, dest_dir: Path, package_dirs: Sequence[Path] = ()) -> tuple[Path, Path]:
     """Copy a robot into a design: `robot.urdf`, `robot.srdf`, and every mesh under `meshes/`, named relatively.
 
@@ -159,28 +180,43 @@ def copy_robot(urdf: Path, srdf: Path, dest_dir: Path, package_dirs: Sequence[Pa
     Raises:
         FileNotFoundError: If a referenced mesh (or its package) is missing.
     """
-    urdf, srdf, dest_dir = Path(urdf), Path(srdf), Path(dest_dir)
-    # ? Parse everything before writing: the source may already be the destination.
-    tree = ElementTree(_root(urdf))
-    srdf_text = Path(srdf).read_bytes()
-    copies: Dict[str, Tuple[Path, str]] = {}
-    for mesh in tree.getroot().iter("mesh"):
-        filename = mesh.get("filename", "")
-        if filename not in copies:
-            copies[filename] = _locate(filename, urdf.parent, package_dirs)
-        mesh.set("filename", f"meshes/{copies[filename][1]}")
-
+    dest_dir = Path(dest_dir)
+    # ? Read everything before writing: the source may already be the destination.
+    urdf_text, srdf_text, meshes = _robot_copy(urdf, srdf, package_dirs)
     dest_dir.mkdir(parents=True, exist_ok=True)
-    for source, below in copies.values():
+    for below, source in meshes.items():
         target = dest_dir / "meshes" / below
         if target.exists() and target.resolve() == source.resolve():
             continue
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, target)
     urdf_out, srdf_out = dest_dir / "robot.urdf", dest_dir / "robot.srdf"
-    tree.write(str(urdf_out), encoding="utf-8", xml_declaration=True)
+    urdf_out.write_bytes(urdf_text)
     srdf_out.write_bytes(srdf_text)
     return urdf_out, srdf_out
+
+
+#: (file stats of a robot's URDF, SRDF and meshes) -> its files hash; reading 40 MB of meshes takes a while.
+_FILES_HASHES: Dict[tuple, str] = {}
+
+
+def robot_files_hash(urdf: Path, srdf: Path, package_dirs: Sequence[Path] = ()) -> str:
+    """The SHA-256 of a robot's files as `copy_robot` writes them: URDF, SRDF and every mesh with its path.
+
+    The same for a source robot and for its copy in a design, so a design hashes the same in memory and on disk.
+
+    Raises:
+        FileNotFoundError: If a referenced mesh (or its package) is missing.
+    """
+    urdf_text, srdf_text, meshes = _robot_copy(urdf, srdf, package_dirs)
+    stats = tuple((below, source.stat().st_mtime_ns, source.stat().st_size) for below, source in sorted(meshes.items()))
+    key = (urdf_text, srdf_text, stats)
+    if key not in _FILES_HASHES:
+        digest = sha256(urdf_text + b"\0" + srdf_text)
+        for below, source in sorted(meshes.items()):
+            digest.update(b"\0" + below.encode("utf-8") + b"\0" + source.read_bytes())
+        _FILES_HASHES[key] = digest.hexdigest()
+    return _FILES_HASHES[key]
 
 
 # --- --- --- --- --- UR ARMS --- --- --- --- ---

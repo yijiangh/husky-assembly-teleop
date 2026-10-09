@@ -186,7 +186,7 @@ def build_design(folder: Path) -> Design:
         movements=(
             Movement(id="B1_M0_mount", ends_on="operator", label="operator mounts B1",
                      start=state(cindy_at(None), None, ToolState(None, None), grip_open, {}),
-                     target=Target(attached=held_c)),
+                     target=Target(attached=held_c, on={"tools/AT3L": "joints/G1_ground"})),
             Movement(id="B1_M1_grasp", ends_on="tools", start=state(cindy_at(joints(0.25)), None, on_g1_open, grip_open,
                                                                     held_c),
                      target=Target(tools={"tools/AT3L": "closed"})),
@@ -203,7 +203,7 @@ def build_design(folder: Path) -> Design:
         movements=(
             Movement(id="B1_H_M0_approach", arms=(grip_flange,), path="free", controller="position",
                      start=state(cindy_at(inserted), alice_at(None), on_g1_closed, grip_open, held_c, ("bars/B1",)),
-                     target=Target(joints={"robots/alice": joints(1.0)})),
+                     target=Target(joints={"robots/alice": joints(1.0)}, on={"tools/Grip": "bars/B1"})),
             Movement(id="B1_H_M1_close", ends_on="tools",
                      start=state(cindy_at(inserted), alice_at(joints(1.0)), on_g1_closed, ToolState("open", "bars/B1"),
                                  held_c, ("bars/B1",)),
@@ -213,7 +213,7 @@ def build_design(folder: Path) -> Design:
     b1_release = Action(
         id="B1_R_release", type="bar_release", robot="robots/cindy", bar="bars/B1",
         movements=(
-            Movement(id="B1_R_M0_ungrasp", ends_on="tools",
+            Movement(id="B1_R_M0_ungrasp", ends_on="tools", drives={"tools/AT3L": "loosen"},
                      start=state(cindy_at(inserted), alice_at(joints(1.0)), on_g1_closed, grip_on_b1, held_ca,
                                  ("bars/B1",)),
                      target=Target(tools={"tools/AT3L": "open"}, attached=held_a)),
@@ -229,7 +229,7 @@ def build_design(folder: Path) -> Design:
             Movement(id="B2_M0_mount", ends_on="operator",
                      start=state(cindy_at(joints(0.0)), alice_at(joints(1.0)), released, grip_on_b1, held_a,
                                  ("bars/B1",)),
-                     target=Target(attached=b2_held)),
+                     target=Target(attached=b2_held, on={"tools/AT3L": "joints/J1_male"})),
             Movement(id="B2_M1_grasp", ends_on="tools",
                      start=state(cindy_at(joints(0.0)), alice_at(joints(1.0)), on_j1_open, grip_on_b1, b2_held,
                                  ("bars/B1",), {}),
@@ -256,7 +256,7 @@ def build_design(folder: Path) -> Design:
                      line={grip_flange: LineSpec((0.0, 0.0, 1.0), 0.1)},
                      start=state(cindy_at(joints(0.35)), alice_at(joints(1.0)), on_j1_closed,
                                  ToolState("open", "bars/B1"), b2_held_c, ("bars/B1", "bars/B2"), {}),
-                     target=Target(joints={"robots/alice": joints(0.9)})),
+                     target=Target(joints={"robots/alice": joints(0.9)}, on={"tools/Grip": None})),
         ))
     actions = (b1_joint, b1_hold, b1_release, b2_joint, b1_hold_release)
     return Design(folder=None, writer=WRITER, robots=robots, tools=tools, bodies=bodies,

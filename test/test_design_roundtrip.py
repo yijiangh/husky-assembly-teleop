@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 from design_fixtures import TETRA, build_design, write_robot_files
 
-from bar_assembly_core.design import BodySpec, Design, content_hash, read, write
+from bar_assembly_core.design import BodySpec, Design, DesignError, content_hash, design_hashes, read, write
 from bar_assembly_core.geometry import Geometry, Pose, TriMesh
 from bar_assembly_core.design.meshes import read_mesh, write_mesh
 from bar_assembly_core.urdf import (copy_robot, mesh_references, movable_joints, resolved_urdf_text, srdf_group_tips,
@@ -54,7 +54,7 @@ def test_write_then_read_is_equal(tmp_path: Path):
 
 
 def test_shared_mesh_written_once(tmp_path: Path):
-    """Bodies with one mesh share one file, and read back share one TriMesh object."""
+    """Bodies with one mesh share one file named by its content, and read back share one TriMesh object."""
     design = build_design(tmp_path)
     # * A copy with equal content is also written only once.
     copy = TriMesh.from_arrays(TETRA.vertices, TETRA.faces)
@@ -63,11 +63,12 @@ def test_shared_mesh_written_once(tmp_path: Path):
     back = write(replace(design, bodies=bodies), tmp_path / "out")
     files = sorted(p.relative_to(tmp_path / "out" / "meshes").as_posix()
                    for p in (tmp_path / "out" / "meshes").rglob("*") if p.is_file())
-    assert files == ["joints/G1_ground.obj", "tools/AT3L.obj"]
+    assert len(files) == 2 and all(re.fullmatch(r"[0-9a-f]{16}\.obj", name) for name in files)
     manifest = json.loads((tmp_path / "out" / "design.json").read_text())
     shared = ("joints/G1_ground", "joints/J1_female", "joints/J1_male", "obstacles/O1")
+    name = manifest["bodies"]["joints/G1_ground"]["collision"][0]["mesh"]
     for body in shared:
-        assert manifest["bodies"][body]["collision"] == [{"mesh": "meshes/joints/G1_ground.obj"}]
+        assert manifest["bodies"][body]["collision"] == [{"mesh": name}]
     meshes = [back.bodies[b].geometry.collision[0] for b in shared]
     assert all(mesh is meshes[0] for mesh in meshes)
     assert back.bodies["joints/J1_male"].geometry.visual[0] is meshes[0]
@@ -90,7 +91,8 @@ def test_visual_left_out_when_equal(tmp_path: Path):
     assert movement["start"]["built"] == ["bars/B1"] and list(movement["start"]["attached"]) == ["bars/B1"]
     assert movement["start"]["tools"]["tools/Grip"] == {"grip": "open", "on": None}
     assert movement["target"] == {"joints": {"robots/alice": {"left_joint1": 1.0, "left_joint2": 1.0,
-                                                              "right_joint1": 1.0, "right_joint2": 1.0}}}
+                                                              "right_joint1": 1.0, "right_joint2": 1.0}},
+                                  "tools": {"tools/Grip": {"on": "bars/B1"}}}, "the approach ends with the grip on B1"
     close = action["movements"][1]
     assert "arms" not in close and "path" not in close and "controller" not in close and close["ends_on"] == "tools"
     assert close["target"]["tools"] == {"tools/Grip": {"grip": "closed"}}
@@ -107,7 +109,7 @@ def test_writer_block_in_every_file(tmp_path: Path):
     assert len(files) == 6
     for path in files:
         writer = json.loads(path.read_text())["writer"]
-        assert writer["schema"] == 2 and writer["library"] == "design_io"
+        assert writer["schema"] == 2 and writer["library"] == "bar_assembly_core"
         assert isinstance(writer["commit"], str) and isinstance(writer["dirty"], bool)
 
 
@@ -261,3 +263,30 @@ def test_floats_are_rounded(tmp_path: Path):
     assert back.bodies["bars/B2"].pose.position == (0.5, 0.0, 0.0)
     manifest = (tmp_path / "out" / "design.json").read_text()
     assert "e-20" not in manifest and not re.search(r"-0\.0[,\]]", manifest)
+
+
+def test_hashes_in_memory_equal_the_written_files(tmp_path: Path):
+    """`design_hashes` gives the hashes of the files `write` writes, before and after writing."""
+    design = build_design(tmp_path)
+    manifest_hash, action_hashes = design_hashes(design)
+    back = write(design, tmp_path / "out")
+    assert manifest_hash == content_hash(tmp_path / "out" / "design.json")
+    assert action_hashes == {a: content_hash(tmp_path / "out" / "actions" / f"{a}.json") for a in design.schedule}
+    assert design_hashes(back) == (manifest_hash, action_hashes)
+    # * A changed mesh changes the hash, although no id or pose changed.
+    tool = design.tools["tools/AT3L"]
+    bigger = TriMesh.from_arrays(TETRA.vertices * 3.0, TETRA.faces)
+    changed = replace(design, tools={**design.tools,
+                                     "tools/AT3L": replace(tool, geometry=Geometry((bigger,), (bigger,)))})
+    assert design_hashes(changed)[0] != manifest_hash
+
+
+def test_robot_files_are_hashed(tmp_path: Path):
+    """design.json records each robot's files hash; a robot file changed later is an A4 error on read."""
+    write(build_design(tmp_path), tmp_path / "out")
+    manifest = json.loads((tmp_path / "out" / "design.json").read_text())
+    assert re.fullmatch(r"[0-9a-f]{64}", manifest["robots"]["robots/cindy"]["files_hash"])
+    srdf = tmp_path / "out" / "robots" / "cindy" / "robot.srdf"
+    srdf.write_text(srdf.read_text() + "\n<!-- edited -->\n")
+    with pytest.raises(DesignError, match="A4: robots/cindy: the robot files changed"):
+        read(tmp_path / "out")

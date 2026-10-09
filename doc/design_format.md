@@ -1,7 +1,8 @@
 # Design file format, schema 2
 
-Status: **implemented** (schema 2, final revision). Read and written by `bar_assembly_core.design`, part of the shared
-core `bar_assembly_core` (plan: `tasks/2026-10-08_shared_core.md` §12). This is the in-repo copy of the doc "Husky
+Status: **implemented** (schema 2, final revision, with the decisions of 2026-10-09). Read and written by
+`bar_assembly_core.design`, part of the shared core `bar_assembly_core` (plan: husky-assembly-teleop
+`tasks/2026-10-08_shared_core.md` §12; decisions: `tasks/2026-10-09_core_integration/README.md`). This is the in-repo copy of the doc "Husky
 design format: schema 2 proposal", which also gives the reasons and the examples from the 260814 export. Where the
 proposal leaves a point open, the choice made here is marked **Resolved**.
 
@@ -34,7 +35,7 @@ start state, its target and the parts that say what moves and how it ends.
 <design>/
 ├── design.json                  manifest: robots, tools, bodies, mates, schedule
 ├── actions/<action id>.json     one file per scheduled action
-├── meshes/<any path>.obj|.stl|.glb
+├── meshes/<content hash>.obj       written by the library; read: any path, .obj|.stl|.glb
 ├── robots/<robot>/robot.urdf, robot.srdf, meshes/…
 ├── source/                      optional: the .3dm, joint_pairs.json, robotic_tools.json it came from (never read)
 ├── solutions/<action id>.json   planner results (§10); never written by the exporter
@@ -70,14 +71,27 @@ display text and contains no `/`.
 | `ground/<ground>` | walkable ground surface | `ground/WG0` |
 | `obstacles/<name>` | other static body | `obstacles/column_A` |
 
-Action and movement ids are plain names without `/` (`B7_J_joint`, `B7_J_M5`), unique per design.
+Action and movement ids are plain names without `/`, unique per design. Producers name them by role, so people and
+programs find a movement without counting: an action is `<bar>_<code>` (`J` jointing, `R` release, `H` holding, `HR`
+holding release), a movement `<action>_<role>`, with `_2`, `_3`, … when a role repeats.
+
+| Action | Roles, in order |
+|---|---|
+| `B10_J` | `load`, `mount`, `grasp`, `transfer`, `insert` |
+| `B10_R` | `ungrasp`, `retreat`, `home` |
+| `B3_H` | `approach`, `open`, `to_grasp`, `close` |
+| `B3_HR` | `open`, `retreat`, `leave` |
+
+The role is a naming convention: what a movement does is in its typed fields.
 
 ### 3.2 Content hashes
 
 The content hash of a file is the SHA-256 of its JSON with `writer` and `producer` removed, keys sorted, floats rounded
-to 12 decimals (`design.content_hash`). The writer is deterministic (fixed key order, the same rounding), so
-re-exporting an unchanged design gives the same hashes, also from a newer library commit. Readers never match by id
-alone:
+to 12 decimals (`design.content_hash`). The writer is deterministic (ids sorted, the same rounding), so re-exporting an
+unchanged design gives the same hashes, also from a newer library commit. `design.json` covers every file it refers
+to: meshes are named by their content, and each robot records the hash of its files (`files_hash`).
+`design.design_hashes(design)` gives the hashes a `write` would give without writing, so a host can tell a stale
+solution while the design is still in memory. Readers never match by id alone:
 
 | File | Records | On a mismatch |
 |---|---|---|
@@ -96,6 +110,7 @@ alone:
 | `tools` | map tool id → Tool | yes | Every tool; may be empty. |
 | `bodies` | map id → Body | yes | Every body. |
 | `mates` | array of [body id, body id] | no | Joints of the finished structure (§8.3): a male and a female half, or a ground half and a ground body. |
+| `parts` | map part name → Part | no | The catalogue parts the producer knows (§4.5). |
 | `schedule` | array of action ids | yes | Execution order across all robots: the only order. |
 
 ### 4.1 Robot
@@ -103,6 +118,7 @@ alone:
 | Key | Type | Req. | Meaning |
 |---|---|---|---|
 | `urdf`, `srdf` | path | yes | Robot description; planning groups, passive joints, disabled collisions. |
+| `files_hash` | string | no | SHA-256 of the URDF, the SRDF and every mesh the URDF names, as copied into the design. Written by the library; a mismatch on read is an A4 error. |
 | `serial` | string or `null` | no | Hardware serial (`"0806"`). |
 | `tools` | map link name → tool id | no | Tools mounted on this robot, by flange link. |
 | `ground_links` | array of link names | no | The links the robot stands on (its wheels): they may touch any `ground/` body. |
@@ -137,6 +153,15 @@ The offset of a half on its bar follows from the two design poses. Bars do not l
 Exactly one geometry key, plus an optional `origin`: `{"mesh": <path>}` (§6), `{"box": [sx, sy, sz]}` centred at
 `origin`, `{"cylinder": [radius, length]}` along the Z axis of `origin`, centred at it. `"origin"`: the shape's pose in
 the owner's frame; absent: identity.
+
+### 4.5 Part
+
+| Key | Type | Req. | Meaning |
+|---|---|---|---|
+| `seat` | Pose | yes | The half's pose in the frame of the tool centre point acting on it. B14 checks grasps against it. |
+
+Rhino writes the catalogue from `joint_pairs.json` and `robotic_tools.json`. Without an entry, the plan checks fall back
+to their built-in seats (`T20/Male` at the TCP, `T20/Ground` turned 180° about its z axis), and warn for other parts.
 
 ## 5. Action file `actions/<action id>.json`
 
@@ -180,8 +205,10 @@ both (insert, the compliant forms of ungrasp and untighten); a **manual step** n
 1. When a movement ends: `target`: every moving arm reached its target and every tool part finished; `tools`: every
    tool part finished, the arms stop wherever they are; `operator`: the operator confirmed.
 2. `ends_on: tools` needs a tool part; with arm motion it also needs `controller: compliant`.
-3. Unknown states are allowed after a manual step: the next start may have `null` joints, bases or tool states. A
-   movement that starts unknown is planned at execution; its `solutions/` entry stays `not_planned` until then.
+3. `null` bases, joints and tool states are allowed anywhere: the design does not decide them. A planner may choose
+   them offline and writes what it chose into its solution (`bases`, `start`); the monitor fills them from
+   measurements at execution. Planning mirrors park other robots whose base or joints are `null`;
+   `scenes.seeded` fills in the robot being planned for.
 4. `target: null` means "end where the next movement starts".
 5. `attached` and `built` may change within a movement; start and target say which: a manual mount or a grasp
    attaches the bar, an insert ends with it built, an ungrasp ends with it no longer attached, an untighten ends with
@@ -195,7 +222,7 @@ both (insert, the compliant forms of ungrasp and untighten); a **manual step** n
 |---|---|---|---|---|---|
 | Grasp | attached (resting in the tools), not built | none | grip → closed | stall | attached, not built |
 | Insert | attached, not built | `linear`, `coupled`, `compliant`, forward | drive `tighten` | stall | attached and **built**: Cindy is frozen |
-| Ungrasp, after an insert | attached and built | Form A: `linear`, `compliant`, back. Form B: none, then a careful retreat | grip → open | timeout | built, **no longer attached** |
+| Ungrasp, after an insert | attached and built | Form A: `linear`, `compliant`, back. Form B: none, then a careful retreat | grip → open, and drive `loosen` to back the jointing screw off | timeout | built, **no longer attached** |
 | Untighten, to remove a bar | attached and built | Form A: `linear`, `coupled`, `compliant`, back. Form B: none, then a retreat that moves the bar | drive `loosen` | timeout | attached, **no longer built** |
 
 ### 5.2 State
@@ -222,7 +249,7 @@ both (insert, the compliant forms of ungrasp and untighten); a **manual step** n
 |---|---|---|
 | `joints` | map robot id → (map joint → value) | Target joint values; a subset of joints is allowed. |
 | `links` | map link id → Pose | Target world pose of a link, e.g. a flange. |
-| `tools` | map tool id → {`grip`} | Only the tools whose grip changes, with the grip they end with. |
+| `tools` | map tool id → {`grip`, `on`} | Each key optional, at least one. `grip`: the grip the tool is commanded to (commanding the grip it has is allowed: the hardware repeats it). `on`: the body it is on at the end, or `null` when it leaves; only where `on` changes. |
 | `attached` | map bar id → array of Holder | **Resolved:** the whole `attached` map at the end, written only when the movement changes it. |
 | `built` | array of bar ids | **Resolved:** the whole `built` list at the end, written only when the movement changes it. |
 
@@ -267,8 +294,8 @@ raises the schema number. Motor activity (`IDLE`, `TIGHTENING`, `LOOSENING`, `ST
 |---|---|---|---|---|
 | `scaffolding_v3` | jointing screw | `tighten`, `loosen` | Motor M2 | `tighten`: stall; `loosen`: timeout |
 
-A grip change is the difference between the start and the target; `target.tools` names only the tools whose grip
-changes. The tightness belongs to the mate, not the tool.
+A grip change is a `grip` in `target.tools`; it names the tools the movement commands. The tightness belongs to the
+mate, not the tool. A `loosen` drive leaves the bar built, unless the target clears `built` (an untighten).
 
 ## 8. Bar states and relations
 
@@ -304,8 +331,9 @@ changes. The tightness belongs to the mate, not the tool.
 | On | tool → body | No: collision information only | `on` in `State.tools` |
 | Mated | half ↔ half, or ground half ↔ ground | No | `mates` in `design.json` |
 
-`on` is set when the tool arrives at the body (the operator mounts the bar, or an approach ends) and cleared when it
-leaves (a retreat or a compliant back-off ends). A Cindy tool is on the half at its TCP (the male or a ground half); a
+`on` is set by the target of the movement that brings the tool to the body (the operator's mount, or a support's
+linear approach) and cleared by the target of the movement it leaves in (a retreat or a compliant back-off); it never
+changes between movements (B11). A Cindy tool is on the half at its TCP (the male or a ground half); a
 support gripper is on the bar it supports.
 
 A mate's status follows from the `built` and `attached` flags of its two sides (`relations.mate_status`); a ground
@@ -324,19 +352,21 @@ Derived, never stored (`relations.allowed_contacts`):
 
 | Rule | Derived from |
 |---|---|
-| A tool may touch the body it is on (that body only) | `on` |
+| A tool may touch the whole part it is on: the bar and every half mounted on it | `on`, `mount` |
 | A half may touch the bar it is mounted on | `mount` |
-| The two sides of a pending or engaged mate may touch | `mates`, `built`, `attached` |
+| The halves of a pending or engaged mate may touch each other, and each other's bar | `mates`, `built`, `attached` |
+| A half mated to a ground body may touch every present `ground/` body | `mates`, the body's prefix |
 | A present robot's ground links may touch any `ground/` body | `ground_links`, the body's prefix |
 | A tool may touch its mount contacts | `mount_contacts` (on the robot model) |
 
-Cindy's tools clear the bar they hold by 1.00–1.34 mm, so keep a collision safety margin below 1 mm for those pairs.
+The part rules are as wide as the parts because collision models are coarser than the parts: compas_fab checks each
+tool as one convex hull, which overlaps the bar it holds by about 1 mm (the real meshes are 1.0 mm apart).
 
 ## 9. Writer and producer
 
 ```json
-"writer": {"schema": 2, "library": "design_io", "commit": "3f9c2e71b0ad", "dirty": false},
-"producer": {"repo": "bar_joint_rhino_design_workflow", "commit": "9a1b…", "dirty": false, "command": "RSExportAllBarActions"}
+"writer": {"schema": 2, "library": "bar_assembly_core", "commit": "3f9c2e71b0ad", "dirty": false},
+"producer": {"repo": "bar_joint_rhino_design_workflow", "commit": "9a1b…", "dirty": false, "command": "RSExportDesign"}
 ```
 
 `writer` names the library that wrote the file: `schema`, `library`, `commit` (or `"unknown"`), `dirty`. A reader
@@ -367,10 +397,15 @@ Neither ever changes the design, and the design never refers to them.
 | `start_overridden` | bool | The planner moved a start the design had fixed; neighbours must agree with it. |
 | `end` | robot id → joints | Solved end joints. |
 | `trajectory` | object or `null` | `robot`, `joint_names`, `positions`, optional `times`: one trajectory per robot over all its moving joints. |
-| `path_poses` | link id → [Pose] | Optional: the flange path, for showing the attached bar. |
+| `path_poses` | link or body id → [Pose] | Optional: a flange's or the attached bar's path, for showing the bar. |
 
-- **Chaining.** Each movement starts where the previous one ended (1e-6 rad), across actions in `schedule` order; the
-  reader reports every break (`solution_warnings`).
+- **Chaining.** Each movement starts where the previous one ended, within 1e-3 (radians or metres: the planners' IK
+  tolerance), across actions in `schedule` order; the reader reports every break (`solution_warnings`).
+- **The design wins.** Where the design gives target joints or a base, a solution's end must reach them (1e-3; a
+  planner snaps its last waypoint to them); `bases`, `start` and `keyframe_only` only fill what the design leaves
+  `null`. A keyframe chain may span one bar's J and R actions, on one base.
+- **No arm motion.** A movement no arm moves in (a grip, a drive, a manual step) is `solved` with `start` equal to
+  `end` and no trajectory (`MovementResult.still`), written by whoever plans the action.
 - **Latest only.** One file per action holds the latest result; history lives in dated copies or in git.
 - **Partial chains are normal.** Unplanned movements say `not_planned`.
 
@@ -394,13 +429,13 @@ Two groups of checks, run at different times. Every message starts with its chec
 | A1 | Every file is UTF-8 JSON without `NaN` or `Infinity`, and `format` and `writer.schema` match in every file |
 | A2 | Every required key is present with the right type, and no unknown key appears outside `notes` |
 | A3 | Ids match the id pattern, are unique and use a known prefix; labels contain no `/` |
-| A4 | Every reference resolves: robot, tool, body, half and action ids, and every file under the design folder (meshes, URDF, SRDF, and the URDF's mesh paths, relative to the URDF) |
+| A4 | Every reference resolves: robot, tool, body, half and action ids, and every file under the design folder (meshes, URDF, SRDF, and the URDF's mesh paths, relative to the URDF). A robot's `files_hash` matches its files |
 | A5 | `schedule` and `actions/` match one to one, and each action file's `id` equals its file name |
 | A6 | Each tool is mounted on exactly one robot, at a link its URDF declares |
 | A7 | Every pose has 7 numbers and a unit quaternion (tolerance 1e-6) |
 | A8 | Each state lists every robot, as a `RobotState` or `null`. A `joints` map names only joints the robot's URDF declares, and lists all non-passive ones |
 | A9 | In each state, `present` lists only bars and ground; `attached`, `built` and `poses` name only present bars; `poses` never names a built or attached bar; every holder has a link id `to` and a `grasp` |
-| A10 | Every state lists every mounted tool. `grip` values and `drives` directions come from the vocabulary of that tool's kind, and `on` names an existing body or is `null` |
+| A10 | Every state lists every mounted tool. `grip` values and `drives` directions come from the vocabulary of that tool's kind, and `on` (in states and targets) names an existing body or is `null` |
 | A11 | `path` and `controller` are present exactly when `arms` is not empty; `ends_on` is one of its values; `line` appears only on linear paths, with one entry per moving arm (unit direction, positive distance) |
 | A12 | Every half's `mount` names an existing bar (only halves have one). `mates` pairs two halves, or a half and a ground body, and each half is in at most one mate |
 | A13 | `notes` values are strings, numbers or booleans |
@@ -429,11 +464,12 @@ Two groups of checks, run at different times. Every message starts with its chec
 | B14 | Grasps agree with the geometry. For a tool on a connector half, the grasp is TCP × part seat × mount offset; for several holders, forward kinematics agrees whenever joints are known | error |
 
 **Resolved** in the implementation:
-- B11 compares joints, grips, present bars, `attached` (holders and grasps) and `built`; bases only within one action,
+- B11 compares joints, grips, tool `on`, present bars, `attached` (holders and grasps) and `built`; bases only within one action,
   because robots drive between actions. Values left open (`null`) are not compared, nor is the acting robot's joints
   after an arm motion whose target gives none.
-- B14 compares within 0.1 mm and 1 mrad. The part seats (`plan_check.PART_SEATS`): `T20/Male` at the TCP;
-  `T20/Ground` turned 180° about the TCP's z axis. A tool on a half of another part is reported as a B14 warning.
+- B14 compares within 0.1 mm and 1 mrad. The part seats come from `parts` (§4.5), else `plan_check.PART_SEATS`
+  (`T20/Male` at the TCP; `T20/Ground` turned 180° about the TCP's z axis). A tool on a half of a part with no seat is
+  reported as a B14 warning.
   For a built bar, every holder's forward kinematics must give the design pose.
 - B9 checks that the arm's path is linear; that it moves away is not checked.
 - B10 checks within a movement; between movements B11 refuses any change.
@@ -465,7 +501,7 @@ robot (`bar_assembly_core/mirrors/compas_fab.py`):
 |---|---|
 | Acting robot URDF + SRDF | `RobotCell.robot_model`, `robot_semantics` |
 | Tool of the acting robot | `ToolModel` keyed by its tool id, `frame` = `tcp`; attached to the SRDF group ending at its flange; `touch_links` = mount contacts and the arm's wrist and flange links |
-| Other robot | One `ToolModel` of its URDF, its tools welded to the flanges; at its base with its joints, or parked when absent |
+| Other robot | One `ToolModel` of its URDF, its tools welded to the flanges; at its base with its joints, or parked when absent or when its base or joints are `null` (`mirror.parked`) |
 | Body | `RigidBody`; primitives triangulated; hidden when absent (a half with its bar) |
 | Attached, unbuilt bar and its halves, held by the acting robot | `attached_to_link` = the first holder's link, `attachment_frame` = grasp (× mount offset for a half) |
 | Held by another robot, or built | stationary at its world pose |
@@ -486,12 +522,15 @@ the export's per-state attachments and contacts.
 | Half ids | `part`: `T20/Male`, `T20/Female`, `T20/Ground` (every half in the exports is type T20) |
 | `J<a>-<b>_male` and `J<a>-<b>_female` | a mate, when both are in the design (4 male halves in each export have no female: their partner sits on a fake bar) |
 | `G<n>-…_ground` | a mate with the ground body whose walkable polygons are nearest its design position seen from above (0 when above one; the nearest in height wins a tie) |
-| Manual mount (`ManualMovement`) | `ends_on: operator`; the bar becomes attached to every flange carrying it or one of its halves (grasps from the export's attachment frames); the scaffolding tools are then on the male or ground half at their TCP |
+| Manual mount (`ManualMovement`) | `ends_on: operator`; the bar becomes attached to every flange carrying it or one of its halves (grasps from the export's attachment frames); its target puts the scaffolding tools on the male or ground half at their TCP |
 | `grasp` / `close` | grip → `closed`; a support gripper is on its bar from its close, and the bar becomes attached to it (grasp by forward kinematics) |
-| `tighten` (`overlaps_next`) + the insert | one movement under the tighten's id: linear, coupled, compliant, `drives: tighten`, `ends_on: tools`; the bar is built at its end |
-| `untighten` opening every release | dropped (untighten now removes a bar) |
-| `ungrasp` / `open` | form B: a tool move, grip → `open`, the flange's holders removed; the tools stay on their body until the following retreat ends |
-| A tool move setting the grip a tool already has (two support `open`s) | dropped |
+| Action and movement ids | by role (§3.1): `B10_J_joint` → `B10_J`, its insert → `B10_J_insert` |
+| `tighten` (`overlaps_next`) + the insert | one movement, `<action>_insert`: linear, coupled, compliant, `drives: tighten`, `ends_on: tools`; the bar is built at its end |
+| `untighten` opening every release | folded into the ungrasp after it: `drives: loosen`, the bar stays built |
+| `ungrasp` / `open` | form B: a tool move, grip → `open`, the flange's holders removed; the tools stay on their body until the following retreat, whose target clears `on` |
+| A support's `close` | the movement before it (the linear approach) ends with the gripper `on` the bar |
+| A tool move setting the grip a tool already has (two support `open`s) | kept: the hardware repeats it |
+| Part seats | `parts` for `T20/Male` and `T20/Ground`, from `plan_check.PART_SEATS` |
 | Movement class | `arms`, `path`, `coupled`, `controller` (`joint_tracking` → `position`, `cartesian_compliant` → `compliant`) |
 | `lm_axis`, `lm_distance_mm`, `retreat_axes_world` | `line`: the axes and distance, else start to target |
 | Notes | per §5.4; planner status dropped |
@@ -507,33 +546,35 @@ the export's per-state attachments and contacts.
 ```json
 {
   "format": "husky_design",
-  "writer": {"schema": 2, "library": "design_io", "commit": "3f9c2e71b0ad", "dirty": false},
+  "writer": {"schema": 2, "library": "bar_assembly_core", "commit": "3f9c2e71b0ad", "dirty": false},
   "robots": {
-    "robots/cindy": {"urdf": "robots/cindy/robot.urdf", "srdf": "robots/cindy/robot.srdf", "serial": "0806",
+    "robots/cindy": {"urdf": "robots/cindy/robot.urdf", "srdf": "robots/cindy/robot.srdf", "files_hash": "9f2c…",
+                     "serial": "0806",
                      "tools": {"left_ur_arm_tool0": "tools/AT3L", "right_ur_arm_tool0": "tools/AT3R"},
                      "ground_links": ["front_left_wheel_link", "front_right_wheel_link", "rear_left_wheel_link",
                                       "rear_right_wheel_link"]}
   },
   "tools": {
-    "tools/AT3L": {"collision": [{"mesh": "meshes/tools/AT3L.obj"}], "tcp": [-0.07, 0, 0.08, 0, 0, 0, 1],
+    "tools/AT3L": {"collision": [{"mesh": "meshes/3e1f0c9a7b2d4e61.obj"}], "tcp": [-0.07, 0, 0.08, 0, 0, 0, 1],
                    "kind": "scaffolding_v3", "mount_contacts": ["robots/cindy/left_ur_arm_wrist_3_link"]}
   },
   "bodies": {
     "bars/B3":             {"pose": [0.10, 2.20, 0.05, 0, 0.7071, 0, 0.7071], "collision": [{"cylinder": [0.0125, 0.90]}]},
-    "joints/J3-10_female": {"pose": [0.10, 2.35, 0.05, 0, 0, 0, 1], "collision": [{"mesh": "meshes/joints/J3-10_female.obj"}],
+    "joints/J3-10_female": {"pose": [0.10, 2.35, 0.05, 0, 0, 0, 1], "collision": [{"mesh": "meshes/a07c55e2d9f81b3c.obj"}],
                             "part": "T20/Female", "mount": "bars/B3"},
-    "joints/J3-10_male":   {"pose": [0.10, 2.36, 0.05, 0, 0, 0, 1], "collision": [{"mesh": "meshes/joints/J3-10_male.obj"}],
+    "joints/J3-10_male":   {"pose": [0.10, 2.36, 0.05, 0, 0, 0, 1], "collision": [{"mesh": "meshes/c49d2b80e6a17f05.obj"}],
                             "part": "T20/Male", "mount": "bars/B10"}
   },
   "mates": [["ground/WG0", "joints/G1-T20Ground-0_ground"], ["joints/J3-10_female", "joints/J3-10_male"]],
-  "schedule": ["B1_J_joint", "B1_R_release", "B3_J_joint", "B3_H_hold", "B3_R_release"]
+  "parts": {"T20/Male": {"seat": [0, 0, 0, 0, 0, 0, 1]}, "T20/Ground": {"seat": [0, 0, 0, 0, 0, 1, 0]}},
+  "schedule": ["B1_J", "B1_R", "B3_J", "B3_H", "B3_R"]
 }
 ```
 
 The insertion of B10, one combined movement (abridged):
 
 ```json
-{"id": "B10_J_M4", "label": "Insert",
+{"id": "B10_J_insert", "label": "Insert",
  "arms": ["robots/cindy/left_ur_arm_tool0", "robots/cindy/right_ur_arm_tool0"],
  "path": "linear", "coupled": true, "controller": "compliant",
  "line": {"robots/cindy/left_ur_arm_tool0": {"direction": [-1, 0, 0], "distance": 0.015},
@@ -553,6 +594,13 @@ The insertion of B10, one combined movement (abridged):
 The grasp, a tool move:
 
 ```json
-{"id": "B10_J_M2", "label": "Grasp", "ends_on": "tools", "start": {"…": "…"},
+{"id": "B10_J_grasp", "label": "Grasp", "ends_on": "tools", "start": {"…": "…"},
  "target": {"tools": {"tools/AT3L": {"grip": "closed"}, "tools/AT3R": {"grip": "closed"}}}}
+```
+
+The retreat after the ungrasp, which takes the tools off the halves:
+
+```json
+{"id": "B10_R_retreat", "arms": ["…", "…"], "path": "linear", "controller": "position", "line": {"…": "…"},
+ "start": {"…": "…"}, "target": {"links": {"…": "…"}, "tools": {"tools/AT3L": {"on": null}, "tools/AT3R": {"on": null}}}}
 ```

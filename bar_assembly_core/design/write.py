@@ -1,8 +1,9 @@
 """
 Write a `Design` into a design folder (doc/design_format.md), then read it back; and the content hash of a file.
 
-The writer is deterministic: fixed key order, floats rounded to FLOAT_DIGITS. Equal meshes share one file
-`meshes/<first owner id>.obj`; keys at their default, and `visual` equal to `collision`, are left out.
+The writer is deterministic: ids sorted, floats rounded to FLOAT_DIGITS, each mesh in `meshes/<content hash>.obj`, so
+equal designs give equal files and `design_hashes` can tell the hashes without writing. Keys at their default, and
+`visual` equal to `collision`, are left out.
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 
 from ..geometry import BoxShape, CylinderShape, Geometry, Pose, Shape, TriMesh
-from ..urdf import copy_robot
+from ..urdf import copy_robot, robot_files_hash
 from .meshes import write_mesh
 from .read import ACTION_FORMAT, DESIGN_FORMAT, read
 from .types import Action, Design, Holder, Movement, Producer, RobotSpec, State, Target, Writer
@@ -57,30 +58,54 @@ def write(design: Design, folder: Path, *, overwrite: bool = False, package_dirs
     folder.mkdir(parents=True, exist_ok=True)
 
     writer = _writer(writer_info())
-    robots = {robot_id: _robot(robot, folder, package_dirs) for robot_id, robot in design.robots.items()}
-    meshes = _MeshFiles(folder)
-    manifest = {
-        "format": DESIGN_FORMAT,
-        "writer": writer,
-        **({"producer": _producer(design.producer)} if design.producer is not None else {}),
-        "robots": robots,
-        "tools": {tool_id: _drop_empty({**_geometry(tool.geometry, meshes, tool_id), "tcp": _pose(tool.tcp),
-                                        "kind": tool.kind, "mount_contacts": list(tool.mount_contacts)})
-                  for tool_id, tool in design.tools.items()},
-        "bodies": {body_id: _drop_empty({"pose": _pose(body.pose), **_geometry(body.geometry, meshes, body_id),
-                                         "label": body.label, "part": body.part,
-                                         "markers": {name: [_float(v) for v in point]
-                                                     for name, point in body.markers.items()},
-                                         "mount": body.mount})
-                   for body_id, body in design.bodies.items()},
-        **_drop_empty({"mates": [list(pair) for pair in sorted(design.mates)]}),
-        "schedule": list(design.schedule),
-    }
-    _write_json(folder / "design.json", manifest)
+    robots = {robot_id: _robot(robot, folder, package_dirs) for robot_id, robot in sorted(design.robots.items())}
+    _write_json(folder / "design.json", _manifest(design, writer, robots, _MeshFiles(folder)))
     (folder / "actions").mkdir(exist_ok=True)
     for action_id in design.schedule:
         _write_json(folder / "actions" / f"{action_id}.json", _action(design.actions[action_id], writer))
     return read(folder)
+
+
+def _manifest(design: Design, writer: Dict[str, Any], robots: Dict[str, Any], meshes: "_MeshFiles") -> Dict[str, Any]:
+    """The content of `design.json`, given the robot entries and where meshes go."""
+    return {
+        "format": DESIGN_FORMAT,
+        "writer": writer,
+        **({"producer": _producer(design.producer)} if design.producer is not None else {}),
+        "robots": robots,
+        "tools": {tool_id: _drop_empty({**_geometry(tool.geometry, meshes), "tcp": _pose(tool.tcp),
+                                        "kind": tool.kind, "mount_contacts": list(tool.mount_contacts)})
+                  for tool_id, tool in sorted(design.tools.items())},
+        "bodies": {body_id: _drop_empty({"pose": _pose(body.pose), **_geometry(body.geometry, meshes),
+                                         "label": body.label, "part": body.part,
+                                         "markers": {name: [_float(v) for v in point]
+                                                     for name, point in sorted(body.markers.items())},
+                                         "mount": body.mount})
+                   for body_id, body in sorted(design.bodies.items())},
+        **_drop_empty({"mates": [list(pair) for pair in sorted(design.mates)],
+                       "parts": {name: {"seat": _pose(part.seat)} for name, part in sorted(design.parts.items())}}),
+        "schedule": list(design.schedule),
+    }
+
+
+def design_hashes(design: Design, package_dirs: Sequence[Path] = ()) -> Tuple[str, Dict[str, str]]:
+    """The content hashes `write` would give, without writing: of `design.json` and of every action file.
+
+    Compare them with a solution's `solved_against` to tell whether it is stale, e.g. while the design is open in Rhino.
+
+    Args:
+        design: The design, in memory or read from a folder.
+        package_dirs: As for `write`: where to find packages named by `package://` in the robot URDFs.
+
+    Returns:
+        tuple[str, dict[str, str]]: The hash of `design.json`, and action id -> the hash of its file.
+    """
+    robots = {robot_id: _robot_entry(robot, f"robots/{robot.name}/robot.urdf", f"robots/{robot.name}/robot.srdf",
+                                     robot_files_hash(robot.urdf, robot.srdf, package_dirs))
+              for robot_id, robot in sorted(design.robots.items())}
+    manifest = _manifest(design, {}, robots, _MeshFiles(None))
+    return _value_hash(manifest), {action_id: _value_hash(_action(design.actions[action_id], {}))
+                                   for action_id in design.schedule}
 
 
 # --- --- --- --- --- ROBOTS AND MESHES --- --- --- --- ---
@@ -103,8 +128,13 @@ def _robot(robot: RobotSpec, folder: Path, package_dirs: Sequence[Path]) -> Dict
         # ? A fresh copy: remove what an earlier write left in this robot's folder.
         shutil.rmtree(robot_dir, ignore_errors=True)
         urdf, srdf = copy_robot(robot.urdf, robot.srdf, robot_dir, package_dirs)
-    return _drop_empty({"urdf": _relative(urdf, folder), "srdf": _relative(srdf, folder),
-                        "serial": robot.serial, "tools": dict(robot.tools), "ground_links": list(robot.ground_links)})
+    return _robot_entry(robot, _relative(urdf, folder), _relative(srdf, folder), robot_files_hash(urdf, srdf))
+
+
+def _robot_entry(robot: RobotSpec, urdf: str, srdf: str, files_hash: str) -> Dict[str, Any]:
+    """A robot entry with its file paths in the design and the hash of those files."""
+    return _drop_empty({"urdf": urdf, "srdf": srdf, "files_hash": files_hash, "serial": robot.serial,
+                        "tools": dict(sorted(robot.tools.items())), "ground_links": list(robot.ground_links)})
 
 
 def _relative(path: Path, folder: Path) -> str:
@@ -113,41 +143,28 @@ def _relative(path: Path, folder: Path) -> str:
 
 
 class _MeshFiles:
-    """The mesh files of one write: one file per mesh object, and per distinct content."""
+    """The mesh files of one write, each named by its content: `meshes/<hash>.obj`, written on first use."""
 
-    def __init__(self, folder: Path):
+    def __init__(self, folder: Optional[Path]):
+        """Write into `folder`; None: only name the files (`design_hashes`)."""
         self.folder = folder
         self.by_object: Dict[int, str] = {}
-        self.by_content: Dict[str, str] = {}
-        self.used: set = set()
+        self.written: set = set()
         # ? Keep the meshes alive: `by_object` is keyed by object identity.
         self.kept: List[TriMesh] = []
 
-    def reference(self, mesh: TriMesh, owner: str) -> str:
-        """The file of a mesh, written on first use.
-
-        Args:
-            mesh: The mesh.
-            owner: Id of the tool or body using it; names the file if this is its first use.
-
-        Returns:
-            str: The file, relative to the design folder.
-        """
-        if id(mesh) in self.by_object:
-            return self.by_object[id(mesh)]
-        content = sha1(np.ascontiguousarray(mesh.vertices, dtype=np.float64).tobytes()
-                       + b"|" + np.ascontiguousarray(mesh.faces, dtype=np.int64).tobytes()).hexdigest()
-        if content not in self.by_content:
-            name, number = f"meshes/{owner}.obj", 0
-            while name in self.used:
-                number += 1
-                name = f"meshes/{owner}_{number}.obj"
-            self.used.add(name)
-            write_mesh(mesh, self.folder / name)
-            self.by_content[content] = name
-        self.by_object[id(mesh)] = self.by_content[content]
-        self.kept.append(mesh)
-        return self.by_content[content]
+    def reference(self, mesh: TriMesh) -> str:
+        """The file of a mesh, relative to the design folder; written on first use."""
+        if id(mesh) not in self.by_object:
+            content = sha1(np.ascontiguousarray(mesh.vertices, dtype=np.float64).tobytes()
+                           + b"|" + np.ascontiguousarray(mesh.faces, dtype=np.int64).tobytes()).hexdigest()
+            name = f"meshes/{content[:16]}.obj"
+            if self.folder is not None and name not in self.written:
+                write_mesh(mesh, self.folder / name)
+                self.written.add(name)
+            self.by_object[id(mesh)] = name
+            self.kept.append(mesh)
+        return self.by_object[id(mesh)]
 
 
 # --- --- --- --- --- TO JSON VALUES --- --- --- --- ---
@@ -178,27 +195,27 @@ def _pose(pose: Pose) -> List[float]:
     return [_float(v) for v in (*pose.position, *pose.orientation)]
 
 
-def _shape(shape: Shape, meshes: _MeshFiles, owner: str) -> Dict[str, Any]:
+def _shape(shape: Shape, meshes: _MeshFiles) -> Dict[str, Any]:
     """One shape (format §4.4); `origin` left out at identity."""
     if isinstance(shape, TriMesh):
-        return {"mesh": meshes.reference(shape, owner)}
+        return {"mesh": meshes.reference(shape)}
     if isinstance(shape, BoxShape):
         entry: Dict[str, Any] = {"box": [_float(v) for v in shape.size]}
     elif isinstance(shape, CylinderShape):
         entry = {"cylinder": [_float(shape.radius), _float(shape.height)]}
     else:
-        raise TypeError(f"{owner}: unknown shape {shape!r}")
+        raise TypeError(f"unknown shape {shape!r}")
     if shape.origin != Pose():
         entry["origin"] = _pose(shape.origin)
     return entry
 
 
-def _geometry(geometry: Geometry, meshes: _MeshFiles, owner: str) -> Dict[str, Any]:
+def _geometry(geometry: Geometry, meshes: _MeshFiles) -> Dict[str, Any]:
     """`collision`, plus `visual` when it differs (same shapes in the same order counts as equal)."""
-    entry = {"collision": [_shape(shape, meshes, owner) for shape in geometry.collision]}
+    entry = {"collision": [_shape(shape, meshes) for shape in geometry.collision]}
     # ? TriMesh compares by object and primitives by value, so this is "same shapes, same order".
     if tuple(geometry.visual) != tuple(geometry.collision):
-        entry["visual"] = [_shape(shape, meshes, owner) for shape in geometry.visual]
+        entry["visual"] = [_shape(shape, meshes) for shape in geometry.visual]
     return entry
 
 
@@ -226,10 +243,13 @@ def _state(state: State) -> Dict[str, Any]:
 
 
 def _target(target: Target) -> Dict[str, Any]:
-    """A Target (format §5.3); `attached` and `built` only when the movement changes them."""
+    """A Target (format §5.3); `on`, `attached` and `built` only when the movement changes them."""
+    tools: Dict[str, Dict[str, Any]] = {tool: {"grip": grip} for tool, grip in target.tools.items()}
+    for tool, body in target.on.items():
+        tools.setdefault(tool, {})["on"] = body
     entry = _drop_empty({"joints": {robot: _joints(joints) for robot, joints in target.joints.items()},
                          "links": {link: _pose(pose) for link, pose in target.links.items()},
-                         "tools": {tool: {"grip": grip} for tool, grip in sorted(target.tools.items())}})
+                         "tools": dict(sorted(tools.items()))})
     if target.attached is not None:
         entry["attached"] = _holders(target.attached)
     if target.built is not None:
@@ -292,9 +312,12 @@ def content_hash(path: Path) -> str:
     Returns:
         str: 64 hex digits.
     """
-    data = json.loads(Path(path).read_text(encoding="utf-8"))
-    data.pop("writer", None)
-    data.pop("producer", None)
+    return _value_hash(json.loads(Path(path).read_text(encoding="utf-8")))
+
+
+def _value_hash(data: Dict[str, Any]) -> str:
+    """`content_hash` of a JSON object as it would be written."""
+    data = {key: value for key, value in json.loads(json.dumps(data)).items() if key not in ("writer", "producer")}
     text = json.dumps(_canonical(data), sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
     return sha256(text.encode("utf-8")).hexdigest()
 

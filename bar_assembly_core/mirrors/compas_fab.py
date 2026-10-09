@@ -3,7 +3,8 @@ A compas_fab planning world for one acting robot, filled from a `Scene`.
 
 The acting robot is the cell's robot, each of its mounted tools a `ToolModel` attached to the SRDF group ending at
 its flange (as the Rhino plugin and tamp build cells). Every other robot is one `ToolModel` keyed by its robot id,
-parked far away while absent; bodies are `RigidBody`s keyed by our id, attached when held by the acting robot.
+parked far away while absent or while its base or joints are unknown (`parked`); bodies are `RigidBody`s keyed by
+our id, attached when held by the acting robot.
 `sync` rebuilds the cell (~2 s) only when a model, body id or geometry object changed. `collisions` is compas_fab's
 own check; `search_check` is a fast copy of it for searches. `lend` hands the planner to other code, such as tamp.
 `set_gui(True)` shows the world in PyBullet's own window (one per process) for debugging.
@@ -106,6 +107,8 @@ class CompasFabMirror:
         #: The cell as last built, and the state as last synced (None before the first sync).
         self.cell: RobotCell | None = None
         self.state: RobotCellState | None = None
+        #: Other robots in the scene but parked at the last sync, because their base or joints are unknown.
+        self.parked: tuple[str, ...] = ()
         #: (tool, body) pairs of our ids already touching at the last sync, and so allowed.
         self.static_contacts: list[tuple[str, str]] = []
         # What the cell was built from: acting model, other models by id, geometry by id.
@@ -168,11 +171,19 @@ class CompasFabMirror:
                                       touch_links=list(model.tool_touches.get(self._acting.flanges[key], ())),
                                       attachment_frame=Frame.worldXY())
                        for key in self._acting.tools}
+        parked = []
         for key, robot in others.items():
             zero = self.cell.tool_models[key].zero_configuration()
-            # ? compas_fab needs every tool in every state: an absent robot is parked far away.
-            tool_states[key] = (ToolState(frame=frame_from_pose(robot.base), configuration=filled(zero, robot.joints))
-                                if robot.enabled else ToolState(frame=Frame(PARKED_POSITION), configuration=zero))
+            # ? compas_fab needs every tool in every state: an absent robot, or one whose base or joints are unknown,
+            #   is parked far away instead of standing at a guess.
+            if robot.enabled and robot.base_tracked and not robot.unmeasured:
+                tool_states[key] = ToolState(frame=frame_from_pose(robot.base),
+                                             configuration=filled(zero, robot.joints))
+            else:
+                tool_states[key] = ToolState(frame=Frame(PARKED_POSITION), configuration=zero)
+                if robot.enabled:
+                    parked.append(key)
+        self.parked = tuple(parked)
         state = RobotCellState(
             robot_base_frame=frame_from_pose(acting.base),
             robot_configuration=filled(self.cell.zero_full_configuration(), acting.joints),

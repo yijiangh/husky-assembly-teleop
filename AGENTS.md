@@ -38,6 +38,7 @@ When briefing a subagent to write or edit comments, paste this section into its 
 
 - `README.md`: install, run, parameters, plugins.
 - `bar_assembly_core/`: the core shared with the Rhino plugin and the planners: the design format (`design/`), robots, scenes and their mirrors; layers in its `__init__.py`. It imports nothing from `husky_assembly_teleop`, ROS or viser, and runs on Python 3.9 (`test_core_isolation.py`, `test_core_py39.py`).
+  - ! A copy of `jeliag/bar_assembly_core` (commit `43dec56`; its dependencies and extras are in that repo's `pyproject.toml`). Change the core there first, then copy it here: `rsync -a --delete --exclude __pycache__ ../bar_assembly_core/bar_assembly_core/ bar_assembly_core/`, plus `doc/design_format.md` and the core tests in `test/`. Once that repo is public, this folder is replaced by a dependency on it.
 - `husky_assembly_teleop/plugins/__init__.py`: the rules every plugin follows. `plugins/robot_control/` is the reference plugin, `plugins/examples/` the templates.
 - `doc/refactor_rationale.md`: why the core is built the way it is. `doc/plugin_roadmap.md`: which old features are still to be ported. `doc/scene_refactor_plan.md`, `doc/design_format.md`: scene and design file format.
 - `husky_assembly_teleop/old/`: the old monitor, reference only. It does not run; never import it from new code.

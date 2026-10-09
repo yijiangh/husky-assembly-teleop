@@ -14,7 +14,7 @@ from typing import Callable, Optional
 from ..design.types import Design
 from ..design.version import SCHEMA
 from ..design.write import write
-from .export import from_export, load_export
+from .export import CONVERTER, from_export, load_export
 from .timing import Stopwatch
 
 #: A folder holding this is an export in the old compas_fab format.
@@ -52,7 +52,7 @@ def converted_folder(export: Path) -> Path:
 
 
 def is_up_to_date(export: Path) -> bool:
-    """Whether the export's converted copy exists, has this library's schema, and is newer than the export's JSON.
+    """Whether the export's converted copy exists, was made by this converter version, and is newer than the export.
 
     Args:
         export: The export folder.
@@ -61,10 +61,11 @@ def is_up_to_date(export: Path) -> bool:
     if not design_file.is_file():
         return False
     try:
-        schema = json.loads(design_file.read_text(encoding="utf-8"))["writer"]["schema"]
+        manifest = json.loads(design_file.read_text(encoding="utf-8"))
+        schema, command = manifest["writer"]["schema"], manifest["producer"]["command"]
     except (ValueError, KeyError, TypeError):
         return False
-    if schema != SCHEMA:
+    if schema != SCHEMA or command != CONVERTER:
         return False
     written = design_file.stat().st_mtime
     return all(path.stat().st_mtime <= written for path in Path(export).rglob("*.json"))

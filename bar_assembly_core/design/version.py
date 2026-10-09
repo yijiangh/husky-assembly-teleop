@@ -15,7 +15,7 @@ from .types import Writer
 #: Format version. Increment on every incompatible change to doc/design_format.md.
 SCHEMA = 2
 #: Library name written into every file.
-LIBRARY = "design_io"
+LIBRARY = "bar_assembly_core"
 
 _PACKAGE_DIR = Path(__file__).resolve().parent
 

@@ -20,8 +20,8 @@ from ..urdf import srdf_group_tips
 from .relations import ENGAGED, bar_of, mate_status, mount_offset
 from .types import BAR_PREFIX, GROUND_PREFIX, HALF_PREFIX, Action, Design, Holder, Movement, RobotState, State
 
-#: Part -> the half's pose in the frame of the tool centre point holding it (B14): a ground half sits turned 180°
-#: about the TCP's z axis.
+#: Part -> the half's pose in the frame of the tool centre point holding it (B14), for designs without a `parts`
+#: catalogue: a ground half sits turned 180° about the TCP's z axis. The design's `parts` win.
 PART_SEATS: Dict[str, Pose] = {"T20/Male": Pose(), "T20/Ground": Pose(orientation=(0.0, 0.0, 1.0, 0.0))}
 #: How far a grasp may be from the geometry (B14), metres and radians.
 GRASP_TOLERANCE: Tuple[float, float] = (1e-4, 1e-3)
@@ -42,17 +42,19 @@ class PlanReport:
         return not self.errors
 
 
-def check_plan(design: Design, *, geometry: bool = True, seats: Mapping[str, Pose] = PART_SEATS) -> PlanReport:
+def check_plan(design: Design, *, geometry: bool = True, seats: Optional[Mapping[str, Pose]] = None) -> PlanReport:
     """Run the plan checks B1–B14 on a design that passed the file checks.
 
     Args:
         design: The design.
         geometry: Also run B13 and B14, which read the robot files.
-        seats: Part -> the half's pose in its tool's TCP frame, for B14.
+        seats: Part -> the half's pose in its tool's TCP frame, for B14. None: the design's `parts`, then PART_SEATS.
 
     Returns:
         PlanReport: Errors and warnings, each check's messages in schedule order.
     """
+    if seats is None:
+        seats = {**PART_SEATS, **{name: part.seat for name, part in design.parts.items()}}
     checker = _PlanChecker(design, seats)
     checker.run(geometry)
     return PlanReport(tuple(checker.errors), tuple(checker.warnings))
@@ -61,7 +63,7 @@ def check_plan(design: Design, *, geometry: bool = True, seats: Mapping[str, Pos
 def end_state(movement: Movement) -> State:
     """The state a movement ends in, as far as the design says: the start with the target applied.
 
-    The target's joints, grips, `attached` and `built` replace the start's; tool `on` and the rest stay.
+    The target's joints, grips, tool `on`, `attached` and `built` replace the start's; the rest stays.
     ! The acting robot's joints are unknown (None) after an arm motion whose target gives none of its joints.
     """
     start, target = movement.start, movement.target
@@ -80,6 +82,9 @@ def end_state(movement: Movement) -> State:
     for tool, grip in target.tools.items():
         if tools.get(tool) is not None:
             tools[tool] = replace(tools[tool], grip=grip)
+    for tool, body in target.on.items():
+        if tools.get(tool) is not None:
+            tools[tool] = replace(tools[tool], on=body)
     attached = start.attached if target.attached is None else target.attached
     built = start.built if target.built is None else target.built
     return replace(start, robots=robots, tools=tools, attached=dict(attached), built=frozenset(built),
@@ -272,8 +277,8 @@ class _PlanChecker:
     def check_chain(self, action: Action, movement: Movement, next_action: Action, following: Movement) -> None:
         """B11: a movement ends where the next one starts, across actions in schedule order.
 
-        Joints, grips, `present`, `attached` and `built` are compared; bases only within one action, because robots
-        drive between actions. Values the design leaves open (None) are not compared.
+        Joints, grips, tool `on`, `present`, `attached` and `built` are compared; bases only within one action,
+        because robots drive between actions. Values the design leaves open (None) are not compared.
         """
         if movement.target is None:
             return  # ? By definition: it ends where the next one starts.
@@ -296,6 +301,9 @@ class _PlanChecker:
             if tool_state is not None and other is not None and None not in (tool_state.grip, other.grip) \
                     and tool_state.grip != other.grip:
                 self.error(11, at, f"{tool} grip changes from {tool_state.grip} to {other.grip} between movements")
+            if tool_state is not None and other is not None and tool_state.on != other.on:
+                self.error(11, at, f"{tool} on changes from {tool_state.on} to {other.on} between movements: a "
+                                   f"target sets it")
         bars = {body for body in end.present | start.present if body.startswith(BAR_PREFIX)}
         if {bar for bar in bars if bar in end.present} != {bar for bar in bars if bar in start.present}:
             self.error(11, at, f"present bars change between movements: "

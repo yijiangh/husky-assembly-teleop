@@ -57,7 +57,7 @@ class Step:
 
     @property
     def label(self) -> str:
-        """str: Short name for the panel, e.g. "B3_H_M1_gripper_open"."""
+        """str: Short name for the panel, e.g. "B3_HR_open"."""
         return self.movement.id
 
 

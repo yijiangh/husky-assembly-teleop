@@ -239,7 +239,7 @@ class _Checker:
                 self.link_known(value, f"{tool_id} mount_contacts")
 
     def check_bodies(self) -> None:
-        """Body poses and markers, mounts and mates (A4, A7, A12)."""
+        """Body poses and markers, mounts and mates, part seats (A4, A7, A12)."""
         design = self.design
         for body_id, body in design.bodies.items():
             self.check_pose(body.pose, f"{body_id} pose")
@@ -264,6 +264,8 @@ class _Checker:
         for half, count in in_mates.items():
             if count > 1:
                 self.add(12, "mates", f"{half} is in {count} mates, at most one allowed")
+        for name, part in design.parts.items():
+            self.check_pose(part.seat, f"parts {name} seat")
 
     def check_schedule(self) -> None:
         """`schedule` and the action files match one to one (A5)."""
@@ -400,7 +402,7 @@ class _Checker:
                 self.check_pose(holder.grasp, f"{where} grasp of {bar}")
 
     def check_target(self, movement: Movement, where: str) -> None:
-        """A target names known robots, joints, links, tools, grips and bars (A4, A7–A10)."""
+        """A target names known robots, joints, links, tools, grips, bodies and bars (A4, A7–A10)."""
         design, target = self.design, movement.target
         for robot, joints in target.joints.items():
             if robot not in design.robots:
@@ -413,6 +415,9 @@ class _Checker:
         for tool, grip in target.tools.items():
             if self.tool_known(tool, f"{where} tools") and grip not in GRIP:
                 self.add(10, f"{where} {tool}", f"grip must be one of {GRIP}, not {grip!r}")
+        for tool, body in target.on.items():
+            if self.tool_known(tool, f"{where} tools") and body is not None and body not in design.bodies:
+                self.add(10, f"{where} {tool}", f"on {body!r}, which is not a body")
         if target.attached is not None:
             self.bodies_known(target.attached, f"{where} attached", (BAR_PREFIX,), check=9)
             self.check_holders(target.attached, where)

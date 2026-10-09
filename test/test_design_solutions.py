@@ -95,3 +95,25 @@ def test_chaining_breaks_are_reported(design):
     write_solution(design, replace(solution, movements={**solution.movements, "B2_M2_transfer": jumped}))
     warnings = solution_warnings(design, read_solutions(design))
     assert warnings == ["solutions: robots/cindy ends B2_M1_grasp and starts B2_M2_transfer 0.1 apart"]
+
+
+def test_tool_moves_are_solved_still(design):
+    """A movement no arm moves in is solved, ending where it starts; it chains like any other."""
+    solution = _solution(design)
+    still = MovementResult.still({"robots/cindy": joints(0.0)})
+    assert (still.status, still.trajectory) == ("solved", None)
+    assert still.start == still.end == {"robots/cindy": joints(0.0)}
+    write_solution(design, replace(solution, movements={**solution.movements, "B2_M1_grasp": still}))
+    assert solution_warnings(design, read_solutions(design)) == []
+
+
+def test_solved_ends_must_reach_the_design(design):
+    """The design's target joints win: a solved end away from them is reported; IK noise within 1e-3 is not."""
+    solution = _solution(design)
+    near = replace(solution.movements["B2_M2_transfer"], end={"robots/cindy": joints(0.3005)})
+    write_solution(design, replace(solution, movements={**solution.movements, "B2_M2_transfer": near}))
+    assert solution_warnings(design, read_solutions(design)) == []
+    away = replace(near, end={"robots/cindy": joints(0.31)})
+    write_solution(design, replace(solution, movements={**solution.movements, "B2_M2_transfer": away}))
+    assert solution_warnings(design, read_solutions(design)) == [
+        "solutions: robots/cindy ends B2_M2_transfer 0.01 from the design's target joints"]

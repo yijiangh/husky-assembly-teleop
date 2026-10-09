@@ -10,7 +10,7 @@ Layers, each importing only the ones above it:
     mirrors           a scene in PyBullet or compas_fab, for planners             + pybullet, compas_fab
     legacy            the old compas_fab export (optional)                       + compas, rs_data_structure
 
-- ! Imports nothing from `husky_assembly_teleop`, ROS or viser: the package moves to its own repository as a copy.
+- ! Imports nothing from `husky_assembly_teleop`, ROS or viser (`tests/test_core_isolation.py`).
 - ! Runs on Python 3.9 (Rhino 8).
 """
 

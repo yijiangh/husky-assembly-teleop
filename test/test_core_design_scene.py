@@ -10,7 +10,8 @@ import pytest
 from design_fixtures import build_design
 
 from bar_assembly_core.geometry import Pose, compose, invert
-from bar_assembly_core.design.hold import hold_scene, hold_scene_for, release_bar
+from bar_assembly_core.design.hold import closing_movement, hold_scenes, release_movement
+from bar_assembly_core.design.scenes import seeded
 from bar_assembly_core.ids import IdMap
 from bar_assembly_core.scene import retarget
 from bar_assembly_core.kinematics import link_pose
@@ -48,7 +49,7 @@ def test_scene_at_robots_and_held_body(design):
     np.testing.assert_allclose(scene.world_poses["bars/B1"].position, compose(tool0, grasp).position, atol=1e-9)
     # * Derived contacts: the tool with the half it is on, halves with their bar, the pending ground mate, wheels.
     assert set(scene.bodies["joints/G1_ground"].touches) == {"tools/AT3L", "bars/B1", "ground/WG0"}
-    assert set(scene.bodies["bars/B1"].touches) == {"joints/G1_ground", "joints/J1_female"}
+    assert set(scene.bodies["bars/B1"].touches) == {"joints/G1_ground", "joints/J1_female", "tools/AT3L"}
     assert set(scene.bodies["ground/WG0"].touches) == {"joints/G1_ground", "robots/cindy/wheel_link"}
     assert "left_link2" in cindy.model.tool_touches["left_tool0"], "the tool's mount contacts are on the model"
 
@@ -93,15 +94,18 @@ def test_scene_after_follows_the_schedule(design):
         design.scene_after("bars/none")
 
 
-def test_hold_scene(design):
-    """Alice holds B1 until B2 is built: her hold scene is the world after B2, B1 disabled; nothing else changes."""
-    assert release_bar(design, "B1_H_hold") == "bars/B2"
-    held = hold_scene_for(design, "B1_H_hold")
-    assert not held.bodies["bars/B1"].enabled and held.bodies["joints/J1_female"].enabled
-    after = design.scene_after("bars/B2")
-    assert hold_scene(after, "bars/B1").bodies["bars/B1"].enabled is False and after.bodies["bars/B1"].enabled
+def test_hold_scenes(design):
+    """Alice's hold of B1 is solved where her grip closes (Cindy still holds B1) and checked where she lets go."""
+    assert closing_movement(design, "B1_H_hold").id == "B1_H_M1_close"
+    assert release_movement(design, "B1_H_hold").id == "B1_HR_M0_open"
+    solve, release = hold_scenes(design, "B1_H_hold")
+    assert solve.bodies["bars/B1"].enabled and solve.bodies["bars/B2"].placement == Pose((2.0, 0.0, 0.1))
+    assert isinstance(solve.bodies["bars/B1"].placement, Pose)
+    assert "tools/Grip" in solve.bodies["joints/J1_female"].touches
+    assert isinstance(release.bodies["bars/B2"].placement, Pose) and release.bodies["bars/B2"].placement != Pose(
+        (2.0, 0.0, 0.1))
     with pytest.raises(ValueError):
-        release_bar(design, "B1_J_joint")
+        closing_movement(design, "B1_J_joint")
 
 
 def test_id_map_refuses_unmapped_ids():
@@ -127,3 +131,16 @@ def test_retarget_swaps_the_robot_only(design):
     other = SimpleNamespace(links=frozenset({"base_link"}))  # ? only `links` is read
     with pytest.raises(ValueError, match="left_tool0"):
         retarget(held, IdMap({"robots/cindy": "robots/real"}), {"robots/real": other})
+
+
+def test_seeded_fills_in_what_the_design_leaves_open(design):
+    """Cindy's joints are null at her mount: seeded, she can be planned for; known joints keep their value."""
+    scene = design.scene_at(_movement(design, "B1_M0_mount"))
+    cindy = scene.robots["robots/cindy"]
+    assert cindy.acting_problems()
+    seeded(scene, "robots/cindy", {"left_joint1": 0.4})
+    assert not cindy.acting_problems() and cindy.joints["left_joint1"] == 0.4 and cindy.joints["left_joint2"] == 0.0
+    scene = design.scene_at(_movement(design, "B1_M1_grasp"))
+    before = dict(scene.robots["robots/cindy"].joints)
+    seeded(scene, "robots/cindy", {"left_joint1": 0.4})
+    assert scene.robots["robots/cindy"].joints == before

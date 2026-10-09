@@ -15,8 +15,8 @@ PURE = ("bar_assembly_core", "bar_assembly_core.geometry", "bar_assembly_core.id
         "bar_assembly_core.kinematics", "bar_assembly_core.robot", "bar_assembly_core.scene",
         "bar_assembly_core.design", "bar_assembly_core.legacy", "bar_assembly_core.legacy.timing",
         *(f"bar_assembly_core.design.{p.stem}" for p in sorted((CORE / "design").glob("*.py")) if p.stem != "__init__"))
-#: Modules with extra dependencies (`requirements.txt`). legacy.export and legacy.conversion also need
-#: rs_data_structure.
+#: Modules with extra dependencies (the extras in the core's `pyproject.toml`). legacy.export and legacy.conversion
+#: also need rs_data_structure.
 EXTRAS = ("bar_assembly_core.mirrors",
           "bar_assembly_core.mirrors.compas", "bar_assembly_core.mirrors.pp_client",
           "bar_assembly_core.mirrors.pybullet",

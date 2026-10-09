@@ -1,6 +1,8 @@
 """
 Scenes from a design: the world at one movement (`scene_at`), or once a bar is built (`scene_after`).
 
+`seeded` makes a scene plannable for a robot whose base or joints the design leaves open.
+
 A scene shares nothing mutable with the design: bodies, robots, joints and touches are new; only `Geometry` and
 `RobotModel` objects are shared, and a robot's model is the same object for every scene of the same robot.
 """
@@ -8,7 +10,7 @@ A scene shares nothing mutable with the design: bodies, robots, joints and touch
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Dict, Optional, Set, Tuple
+from typing import Dict, Mapping, Optional, Set, Tuple
 
 from ..geometry import Pose
 from ..ids import split_link_id
@@ -123,6 +125,36 @@ def _scene(design: Design, state: State, target_joints: Optional[Dict[str, Dict[
         bodies[body_id] = Body(body_id, spec.geometry, where, tuple(sorted(contacts.get(body_id, ()))),
                                spec.label, enabled=is_present(design, state, body_id))
 
-    poses = world_poses(bodies, robots, lambda robot, link: link_pose(robot.model.urdf, robot.base, robot.joints,
-                                                                      link))
-    return Scene(bodies=bodies, world_poses=poses, robots=robots)
+    scene = Scene(bodies=bodies, world_poses={}, robots=robots)
+    scene.world_poses = _world_poses(scene)
+    return scene
+
+
+def _world_poses(scene: Scene) -> Dict[str, Pose]:
+    """Every body's world pose in a scene, attached ones by forward kinematics of their robot."""
+    return world_poses(scene.bodies, scene.robots,
+                       lambda robot, link: link_pose(robot.model.urdf, robot.base, robot.joints, link))
+
+
+def seeded(scene: Scene, robot_id: str, joints: Optional[Mapping[str, float]] = None,
+           base: Optional[Pose] = None) -> None:
+    """Fill in a robot's unknown joints and base in a scene, in place, so a planner can start from them.
+
+    `null` in a design means "not decided by the design": a planner may choose the values, and writes what it chose
+    into its solution (`start`, `bases`). Other robots with unknown state are parked by the compas_fab mirror.
+
+    Args:
+        scene: A scene from `scene_at`; changed in place.
+        robot_id: The robot to fill in; it is enabled.
+        joints: Values for its unknown joints; the rest are 0. Known joints keep their value.
+        base: Its base, if the design leaves it open; else the origin (a planner sampling bases replaces it).
+    """
+    robot = scene.robots[robot_id]
+    robot.enabled = True
+    if robot.unmeasured:
+        given = dict(joints or {})
+        robot.joints = {**robot.joints, **{name: given.get(name, 0.0) for name in robot.unmeasured}}
+        robot.unmeasured = frozenset()
+    if not robot.base_tracked:
+        robot.base, robot.base_tracked = base or Pose(), True
+    scene.world_poses = _world_poses(scene)

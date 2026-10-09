@@ -22,8 +22,9 @@ from .write import _float, _joints, _pose, _write_json, _writer, content_hash
 SOLUTION_FORMAT = "husky_design/solution"
 #: A movement's result: solved; base and end joints only; failed (with a reason); not planned yet.
 STATUSES: Tuple[str, ...] = ("solved", "keyframe_only", "failed", "not_planned")
-#: How far a movement's solved start may be from the previous solved end, radians or metres (chaining rule).
-CHAIN_TOLERANCE = 1e-6
+#: How far a movement's solved start may be from the previous solved end, and a solved end from the design's target
+#: joints, radians or metres: the planners' IK tolerance.
+CHAIN_TOLERANCE = 1e-3
 
 
 @dataclass(frozen=True)
@@ -68,7 +69,7 @@ class MovementResult:
         start_overridden: The planner moved a start the design had fixed; neighbours must agree with it.
         end: Robot id -> solved end joints.
         trajectory: The path, or None.
-        path_poses: Link id -> the flange poses along the path, for showing an attached bar.
+        path_poses: Link or body id -> its poses along the path, for showing an attached bar.
     """
 
     status: str
@@ -79,6 +80,15 @@ class MovementResult:
     end: Dict[str, Dict[str, float]] = field(default_factory=dict)
     trajectory: Optional[Trajectory] = None
     path_poses: Dict[str, Tuple[Pose, ...]] = field(default_factory=dict)
+
+    @staticmethod
+    def still(joints: Dict[str, Dict[str, float]]) -> "MovementResult":
+        """The result of a movement no arm moves in (a grip, a drive, a manual step): solved, ending where it starts.
+
+        Args:
+            joints: Robot id -> its joints during the movement.
+        """
+        return MovementResult(status="solved", start=joints, end=joints)
 
 
 @dataclass(frozen=True)
@@ -159,10 +169,11 @@ def read_solutions(design: Design) -> Dict[str, Solution]:
 
 
 def solution_warnings(design: Design, solutions: Dict[str, Solution]) -> List[str]:
-    """Stale solutions (A14) and every break of the chaining rule, one line each.
+    """Stale solutions (A14), every break of the chaining rule, and solved ends away from the design, one line each.
 
-    Chaining: each movement starts where the one before it in schedule order ended, robot by robot, within
-    CHAIN_TOLERANCE; only results with joints (solved, keyframe_only) count.
+    - Chaining: each movement starts where the one before it in schedule order ended, robot by robot, within
+      CHAIN_TOLERANCE; only results with joints (solved, keyframe_only) count.
+    - The design wins: where a movement's target gives joints, its solved end must reach them within CHAIN_TOLERANCE.
     """
     warnings = [f"A14: solutions/{action_id}.json is stale: the design or the action changed since it was planned"
                 for action_id, solution in sorted(solutions.items()) if is_stale(design, solution)]
@@ -183,6 +194,10 @@ def solution_warnings(design: Design, solutions: Dict[str, Solution]) -> List[st
                                     f"{gap:.3g} apart")
         for robot, joints in result.end.items():
             last[robot] = (movement.id, joints)
+            wanted = movement.target.joints.get(robot, {}) if movement.target is not None else {}
+            gap = max((abs(joints[name] - value) for name, value in wanted.items() if name in joints), default=0.0)
+            if gap > CHAIN_TOLERANCE:
+                warnings.append(f"solutions: {robot} ends {movement.id} {gap:.3g} from the design's target joints")
     return warnings
 
 

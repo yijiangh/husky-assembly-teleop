@@ -23,8 +23,9 @@ from compas_robots import RobotModel
 # ! Registers the dtypes of the action and movement classes, so json_load can rebuild them.
 import rs_data_structure  # noqa: F401
 
-from ..design.types import (Action, BodySpec, Design, Holder, LineSpec, Movement, Producer, RobotSpec, RobotState,
-                            State, Target, ToolState)
+from ..design.plan_check import PART_SEATS
+from ..design.types import (Action, BodySpec, Design, Holder, LineSpec, Movement, PartSpec, Producer, RobotSpec,
+                            RobotState, State, Target, ToolState)
 from ..design.version import writer_info
 from ..geometry import Geometry, Pose, TriMesh, compose, invert
 from ..ids import link_id, split_link_id
@@ -64,8 +65,15 @@ _CONSUMED_NOTES = ("lm_axis", "lm_distance_mm", "retreat_axes_world", "ends_on",
 #: Schema 1 controller -> schema 2 controller (None: no arm moves).
 _CONTROLLERS = {"joint_tracking": "position", "cartesian_compliant": "compliant", "none": None}
 
-#: Schema 1 tool action -> the grip it ends with; "tighten" becomes a drive, "untighten" is dropped.
+#: Schema 1 tool action -> the grip it ends with; "tighten" becomes a drive, "untighten" a drive of the next ungrasp.
 _GRIPS = {"grasp": "closed", "close": "closed", "ungrasp": "open", "open": "open"}
+
+#: The converter's name and version, written as the design's `producer.command`. ! Bump the number whenever the
+#: output changes: converted copies made by another version are converted again (`conversion.is_up_to_date`).
+CONVERTER = "legacy.export.from_export/2"
+
+#: Action type -> the code in its id, e.g. "B10_J" (format §3.1).
+ACTION_CODES = {"bar_jointing": "J", "bar_release": "R", "bar_holding": "H", "bar_holding_release": "HR"}
 
 #: Joint half id -> (bar pair or ground name, subtype), e.g. "joints/J3-10_male", "joints/G1-T20Ground-0_ground".
 _HALF_ID = re.compile(r"joints/(?P<pair>J\d+-\d+|G\d+-.*)_(?P<subtype>male|female|ground)")
@@ -195,10 +203,11 @@ def from_export(export: Export, robot_files: Mapping[str, Tuple[Path, Path]],
            f"{len(mates)} mates, {len(design_actions)} actions, "
            f"{sum(len(a.movements) for a in design_actions.values())} movements")
     writer = writer_info()
+    parts = {body.part for body in converter.bodies.values()}
     return Design(folder=None, writer=writer, robots=converter.robots, tools=converter.tools,
-                  bodies=converter.bodies, schedule=tuple(entry["action_id"] for entry, _ in actions),
-                  actions=design_actions, mates=mates,
-                  producer=Producer("husky-assembly-teleop", writer.commit, writer.dirty, "legacy.export.from_export"))
+                  bodies=converter.bodies, schedule=tuple(design_actions), actions=design_actions, mates=mates,
+                  producer=Producer("bar_assembly_core", writer.commit, writer.dirty, CONVERTER),
+                  parts={name: PartSpec(seat) for name, seat in PART_SEATS.items() if name in parts})
 
 
 # --- --- --- --- --- CONVERSION --- --- --- --- ---
@@ -474,16 +483,17 @@ class _Converter:
     # --- --- pass 2: schema 2, replayed along the schedule --- ---
 
     def actions(self, raw: List["_RawAction"]) -> Dict[str, Action]:
-        """Every action in schema 2: `attached`, `built` and tool states replayed along the schedule.
+        """Every action in schema 2, in schedule order: `attached`, `built` and tool states replayed along the schedule.
 
-        - A manual mount attaches the bar to every flange carrying it or its halves; the scaffolding tools are then
-          on the male or ground half at their TCP. A support gripper is on its bar from its close, and the bar is
-          attached to it when the grip closes.
+        - Ids name the bar, the action and each movement's role (`B10_J`, `B10_J_insert`), as Rhino writes them.
+        - A manual mount attaches the bar to every flange carrying it or its halves, and ends with the scaffolding
+          tools on the male or ground half at their TCP. A support gripper is on its bar from the end of the movement
+          before its close, and the bar is attached to it when the grip closes.
         - Tighten (with `overlaps_next`) and the insert become one movement that builds the bar.
-        - An ungrasp or open releases what that flange holds; a tool leaves the body its arm no longer holds when
-          the next arm motion (the retreat) ends.
-        - Dropped: the untighten opening every release (untighten now removes a bar), and grip changes to the grip a
-          tool already has.
+        - The untighten opening every release becomes a `loosen` drive of the ungrasp that follows it: it backs the
+          jointing screw off, and the bar stays built.
+        - An ungrasp or open releases what that flange holds; a tool leaves the body its arm no longer holds at the
+          end of the next arm motion (the retreat).
         """
         flange_of = {tool: link_id(robot_id, flange) for robot_id, robot in self.robots.items()
                      for flange, tool in robot.tools.items()}
@@ -491,13 +501,16 @@ class _Converter:
         tools = {tool: ToolState() for tool in self.tools}
         attached: Dict[str, Tuple[Holder, ...]] = {}
         built: Set[str] = set()
-        dropped: Dict[str, List[str]] = {"untighten": [], "grip unchanged": []}
+        folded: List[str] = []
         # Largest gaps between the export and the replay: built bars' poses, held bars' grasps.
         gaps = {"pose": 0.0, "grasp": 0.0}
-        result = {}
+        result: Dict[str, Action] = {}
         for action in raw:
-            movements = []
+            action_id = _unique(f"{action.bar.split('/', 1)[1]}_{ACTION_CODES[action.type]}", result)
+            movements: List[Movement] = []
             last_links: Dict[str, Pose] = {}
+            loosen: Dict[str, str] = {}
+            mounted = False
             index = 0
             while index < len(action.movements):
                 move = action.movements[index]
@@ -506,14 +519,22 @@ class _Converter:
                 index += 2 if merged else 1
                 grips = {tool: _GRIPS[move.tool_action] for tool in move.tools} if move.tool_action in _GRIPS else {}
                 if move.tool_action == "untighten":
-                    dropped["untighten"].append(move.id)
+                    loosen.update((tool, "loosen") for tool in move.tools)
+                    folded.append(move.id)
                     continue
-                if move.kind == "tool" and not merged and all(tools[tool].grip == grip for tool, grip in grips.items()):
-                    dropped["grip unchanged"].append(move.id)
-                    continue
+                on: Dict[str, Optional[str]] = {}
                 if move.tool_action == "close":
-                    for tool in move.tools:
-                        tools[tool] = replace(tools[tool], on=action.bar)
+                    # * The gripper arrives on its bar at the end of the movement before the close.
+                    previous = movements[-1] if movements else None
+                    arrive = {tool: action.bar for tool in move.tools}
+                    if previous is None:
+                        on.update(arrive)
+                    else:
+                        if previous.target is not None:
+                            movements[-1] = replace(previous, target=replace(previous.target,
+                                                                             on={**previous.target.on, **arrive}))
+                        for tool in move.tools:
+                            tools[tool] = replace(tools[tool], on=action.bar)
                 start = State(robots=dict(move.robots), present=grounds | built | set(attached),
                               attached=dict(attached), built=frozenset(built), tools=dict(tools))
                 self._compare_export(move, start, gaps)
@@ -522,6 +543,10 @@ class _Converter:
                 after = dict(attached)
                 if move.kind == "manual":
                     after[action.bar] = self._mounted_holders(action, move)
+                    for holder in after[action.bar]:
+                        tool = self.robots[action.robot].tools.get(split_link_id(holder.to)[1])
+                        if tool is not None:
+                            on[tool] = self._half_at_tcp(holder, tool, action.bar)
                 for tool, grip in sorted(grips.items()):
                     if grip == "closed" and self.tools[tool].kind == "robotiq":
                         holder = self._support_holder(move, flange_of[tool], action.bar, built)
@@ -530,18 +555,28 @@ class _Converter:
                         after = {bar: tuple(holder for holder in holders if holder.to != flange_of[tool])
                                  for bar, holders in after.items()}
                         after = {bar: holders for bar, holders in after.items() if holders}
+                for arm in arm_move.arms:
+                    tool = self.robots[action.robot].tools.get(split_link_id(arm)[1])
+                    body = tools[tool].on if tool is not None else None
+                    if body is not None and not any(holder.to == arm for holder in after.get(self._bar(body), ())):
+                        on[tool] = None
                 built_after = built | {action.bar} if merged else built
                 path = arm_move.kind if arm_move.kind in ("free", "linear") else None
                 notes = {**move.notes, **arm_move.notes} if merged else move.notes
-                target = Target(joints=dict(arm_move.joints), links=dict(arm_move.links), tools=grips,
+                drives = {tool: "tighten" for tool in move.tools} if merged else {}
+                if grips and loosen:
+                    drives.update(loosen)
+                    loosen = {}
+                target = Target(joints=dict(arm_move.joints), links=dict(arm_move.links), tools=grips, on=on,
                                 attached=after if after != attached else None,
                                 built=frozenset(built_after) if built_after != built else None)
+                role = _role(action.type, arm_move.kind if merged else move.kind, grips, merged, mounted)
                 movement = Movement(
-                    id=move.id, start=start, arms=arm_move.arms, path=path,
-                    coupled=arm_move.coupled if path else False,
+                    id=_unique(f"{action_id}_{role}", {m.id for m in movements}), start=start, arms=arm_move.arms,
+                    path=path, coupled=arm_move.coupled if path else False,
                     controller=_CONTROLLERS[arm_move.controller] if path else None,
                     line=self._line(action.robot, arm_move, start, last_links) if path == "linear" else {},
-                    drives={tool: "tighten" for tool in move.tools} if merged else {},
+                    drives=drives,
                     ends_on="operator" if move.kind == "manual" else "tools" if move.kind == "tool" else "target",
                     target=target if target != Target() else None,
                     label=arm_move.label or move.label,
@@ -551,25 +586,18 @@ class _Converter:
 
                 # * After the movement.
                 attached, built = after, set(built_after)
+                mounted = mounted or move.kind == "manual"
                 for tool, grip in grips.items():
                     tools[tool] = replace(tools[tool], grip=grip)
-                if move.kind == "manual":
-                    for holder in attached[action.bar]:
-                        tool = self.robots[action.robot].tools.get(split_link_id(holder.to)[1])
-                        if tool is not None:
-                            tools[tool] = replace(tools[tool], on=self._half_at_tcp(holder, tool, action.bar))
-                for arm in movement.arms:
-                    tool = self.robots[action.robot].tools.get(split_link_id(arm)[1])
-                    on = tools[tool].on if tool is not None else None
-                    if on is not None and not any(holder.to == arm for holder in attached.get(self._bar(on), ())):
-                        tools[tool] = replace(tools[tool], on=None)
+                for tool, body in on.items():
+                    tools[tool] = replace(tools[tool], on=body)
                 last_links.update(arm_move.links)
-            result[action.id] = Action(id=action.id, type=action.type, robot=action.robot, bar=action.bar,
+            if loosen:
+                self.notes.append(f"{action_id}: an untighten with no ungrasp after it was dropped")
+            result[action_id] = Action(id=action_id, type=action.type, robot=action.robot, bar=action.bar,
                                        movements=tuple(movements), ground=action.ground,
                                        supports_until=action.supports_until, label=action.label)
-        self.notes.append(f"dropped {len(dropped['untighten'])} untighten movement(s) opening the releases (untighten "
-                          f"now removes a bar), and {len(dropped['grip unchanged'])} tool movement(s) setting a grip "
-                          f"the tool already had: {', '.join(dropped['grip unchanged'])}")
+        self.notes.append(f"folded {len(folded)} untighten movement(s) into the ungrasp after them, as a loosen drive")
         self.notes.append(f"export against the replay: built bars at most {gaps['pose'] * 1000:.3g} mm from their "
                           f"design pose, held bars' grasps at most {gaps['grasp'] * 1000:.3g} mm from the export's")
         if self.filled:
@@ -684,6 +712,32 @@ class _Converter:
         joints = {name: given.get(name, last.get(name, 0.0)) for name in movable}
         self._last[robot] = joints
         return joints
+
+
+def _role(action_type: str, kind: str, grips: Dict[str, str], merged: bool, mounted: bool) -> str:
+    """A movement's role in its id, as Rhino names them (format §3.1), e.g. "insert" or "to_grasp"."""
+    if merged:
+        return "insert"
+    if kind == "manual":
+        return "mount"
+    if kind == "tool":
+        closing = "closed" in grips.values()
+        if action_type in ("bar_jointing", "bar_release"):
+            return "grasp" if closing else "ungrasp"
+        return "close" if closing else "open"
+    if kind == "linear":
+        return "to_grasp" if action_type == "bar_holding" else "retreat"
+    return {"bar_jointing": "transfer" if mounted else "load", "bar_release": "home", "bar_holding": "approach",
+            "bar_holding_release": "leave"}[action_type]
+
+
+def _unique(name: str, taken) -> str:
+    """`name`, or `name_2`, `name_3`, … if it is taken."""
+    found, number = name, 1
+    while found in taken:
+        number += 1
+        found = f"{name}_{number}"
+    return found
 
 
 # --- --- --- --- --- GEOMETRY --- --- --- --- ---

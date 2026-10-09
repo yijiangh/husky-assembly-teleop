@@ -13,8 +13,9 @@ from typing import Any, Dict, List, Optional, Tuple
 from ..geometry import BoxShape, CylinderShape, Geometry, Pose, Shape, TriMesh
 from ..robot import Tool
 from .meshes import MeshCache
-from .types import (Action, BodySpec, Design, DesignError, Holder, LineSpec, Movement, Producer, RobotSpec, RobotState,
-                    SchemaMismatch, State, Target, ToolState, Writer)
+from ..urdf import robot_files_hash
+from .types import (Action, BodySpec, Design, DesignError, Holder, LineSpec, Movement, PartSpec, Producer, RobotSpec,
+                    RobotState, SchemaMismatch, State, Target, ToolState, Writer)
 from .validate import validate
 from .version import SCHEMA
 
@@ -25,10 +26,12 @@ DESIGN_FORMAT, ACTION_FORMAT = "husky_design", "husky_design/action"
 #: "{t" is a map of t, "[t" a list of t, "null|t" also allows null.
 KEYS: Dict[str, Dict[str, str]] = {
     "design": {"format": "str", "writer": "writer", "?producer": "producer", "robots": "{robot", "tools": "{tool",
-               "bodies": "{body", "?mates": "[[str", "schedule": "[str"},
+               "bodies": "{body", "?mates": "[[str", "?parts": "{part", "schedule": "[str"},
     "writer": {"schema": "num", "library": "str", "commit": "str", "dirty": "bool"},
     "producer": {"repo": "str", "commit": "str", "dirty": "bool", "command": "str"},
-    "robot": {"urdf": "str", "srdf": "str", "?serial": "null|str", "?tools": "{str", "?ground_links": "[str"},
+    "robot": {"urdf": "str", "srdf": "str", "?files_hash": "str", "?serial": "null|str", "?tools": "{str",
+              "?ground_links": "[str"},
+    "part": {"seat": "pose"},
     "tool": {"collision": "[shape", "?visual": "[shape", "tcp": "pose", "kind": "str", "?mount_contacts": "[str"},
     "body": {"pose": "pose", "collision": "[shape", "?visual": "[shape", "?label": "str", "?part": "str",
              "?markers": "{nums", "?mount": "str"},
@@ -45,8 +48,9 @@ KEYS: Dict[str, Dict[str, str]] = {
     "robot_state": {"base": "null|pose", "joints": "null|{num"},
     "holder": {"to": "str", "grasp": "pose"},
     "tool_state": {"grip": "null|str", "on": "null|str"},
-    "target": {"?joints": "{{num", "?links": "{pose", "?tools": "{grip", "?attached": "{[holder", "?built": "[str"},
-    "grip": {"grip": "str"},
+    "target": {"?joints": "{{num", "?links": "{pose", "?tools": "{tool_change", "?attached": "{[holder",
+               "?built": "[str"},
+    "tool_change": {"?grip": "str", "?on": "null|str"},
     # * solutions/<action id>.json
     "solution": {"format": "str", "writer": "writer", "planner": "planner", "action": "str",
                  "solved_against": "solved_against", "movements": "{result"},
@@ -101,13 +105,25 @@ def read(folder: Path) -> Design:
                     schedule=tuple(manifest["schedule"]),
                     actions={name: _action(raw) for name, raw in raw_actions.items()},
                     mates=frozenset(tuple(sorted(pair)) for pair in manifest.get("mates", ())),
-                    producer=_producer(manifest["producer"]) if "producer" in manifest else None)
+                    producer=_producer(manifest["producer"]) if "producer" in manifest else None,
+                    parts={name: PartSpec(_pose(raw["seat"])) for name, raw in manifest.get("parts", {}).items()})
     for name, action in design.actions.items():
         if action.id != name:
             problems.append(f"A5: actions/{name}.json has id {action.id!r}, not its file name")
     for pair in manifest.get("mates", ()):
         if len(pair) != 2:
             problems.append(f"A12: design.json mates: {pair!r} is not a pair")
+    for robot_id, raw in manifest["robots"].items():
+        robot = design.robots[robot_id]
+        if "files_hash" in raw and robot.urdf.is_file() and robot.srdf.is_file():
+            try:
+                found = robot_files_hash(robot.urdf, robot.srdf)
+            except FileNotFoundError as error:
+                found = None
+                problems.append(f"A4: {robot_id}: {error}")
+            if found is not None and found != raw["files_hash"]:
+                problems.append(f"A4: {robot_id}: the robot files changed since the design was written "
+                                f"(files_hash does not match)")
 
     # * 3. Validate: every problem at once.
     try:
@@ -193,6 +209,8 @@ def check_keys(value: Any, kind: str, where: str, problems: List[str]) -> None:
             problems.append(f"A2: {where}: unknown keys {unknown}")
         if kind == "shape" and sum(key in value for key in ("mesh", "box", "cylinder")) != 1:
             problems.append(f"A2: {where}: a shape has exactly one of mesh, box, cylinder")
+        if kind == "tool_change" and not value:
+            problems.append(f"A2: {where}: a tool change has a grip, an on, or both")
         for key, item in value.items():
             if key in keys:
                 check_keys(item, keys[key], f"{where} {key}", problems)
@@ -351,7 +369,8 @@ def _target(raw: Optional[Dict[str, Any]]) -> Optional[Target]:
         return None
     return Target(joints={robot: _joints(values) for robot, values in raw.get("joints", {}).items()},
                   links={link: _pose(pose) for link, pose in raw.get("links", {}).items()},
-                  tools={tool: value["grip"] for tool, value in raw.get("tools", {}).items()},
+                  tools={tool: value["grip"] for tool, value in raw.get("tools", {}).items() if "grip" in value},
+                  on={tool: value["on"] for tool, value in raw.get("tools", {}).items() if "on" in value},
                   attached=_holders(raw["attached"]) if "attached" in raw else None,
                   built=frozenset(raw["built"]) if "built" in raw else None)
 
