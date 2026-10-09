@@ -12,6 +12,7 @@ import pytest
 
 from husky_assembly_teleop.config import robot_config_from_serial
 from bar_assembly_core.geometry import BoxShape, CylinderShape, Geometry, TriMesh, box_geometry, shape_mesh
+from bar_assembly_core.mirrors import HIDDEN_POSITION
 from bar_assembly_core.mirrors.pybullet import PyBulletMirror
 from bar_assembly_core.robot import RobotObject
 from bar_assembly_core.scene import Attachment, Body, Scene
@@ -314,7 +315,7 @@ def test_window_without_display_raises_and_keeps_the_world(monkeypatch):
 
 
 def test_disabled_body_stays_built_but_never_collides(mirror, config, resets):
-    """A disabled body keeps its PyBullet body (no rebuild), is not an obstacle, and collides again once enabled."""
+    """A disabled body keeps its PyBullet body (no rebuild) but leaves the world; it collides again once enabled."""
     robots = {ROBOT: robot_entry(config)}
     box = box_geometry((0.2, 0.2, 0.2))
     mirror.sync(snapshot((Body("t/box", box, Pose((0.0, 0.0, 0.3))),), robots))
@@ -322,5 +323,12 @@ def test_disabled_body_stays_built_but_never_collides(mirror, config, resets):
     mirror.sync(snapshot((Body("t/box", box, Pose((0.0, 0.0, 0.3)), enabled=False),), robots))
     assert mirror.body_ids("t/box") == built
     assert mirror.obstacle_ids() == [] and mirror.collisions(ROBOT) == []
+    assert np.allclose(position(mirror, built[0]), HIDDEN_POSITION), "the window must not show it"
     mirror.sync(snapshot((Body("t/box", box, Pose((0.0, 0.0, 0.3))),), robots))
     assert mirror.body_ids("t/box") == built and mirror.collisions(ROBOT) == ["t/box"]
+    assert np.allclose(position(mirror, built[0]), (0.0, 0.0, 0.3))
+
+
+def position(mirror: PyBulletMirror, body: int) -> tuple:
+    """Where a PyBullet body stands in the mirror's world."""
+    return p.getBasePositionAndOrientation(body, physicsClientId=mirror.client_id)[0]

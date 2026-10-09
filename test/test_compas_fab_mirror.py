@@ -17,7 +17,8 @@ import pytest
 from husky_assembly_teleop.config import robot_config_from_serial
 from husky_assembly_teleop.robot_interface.arm import UR_JOINT_NAMES
 from bar_assembly_core.geometry import Geometry, box_geometry
-from bar_assembly_core.mirrors.compas_fab import HIDDEN_POSITION, CompasFabMirror
+from bar_assembly_core.mirrors import HIDDEN_POSITION
+from bar_assembly_core.mirrors.compas_fab import CompasFabMirror
 from bar_assembly_core.robot import RobotObject
 from bar_assembly_core.scene import Attachment, Body, Scene
 from bar_assembly_core.geometry import Pose

@@ -32,7 +32,7 @@ from ..urdf import resolved_urdf_text
 from ..robot import RobotModel
 from ..ids import ROBOTS, TRACKED
 from ..scene import Scene, same_source
-from . import check_display
+from . import HIDDEN_POSITION, check_display
 from .pp_client import pp_client
 
 if TYPE_CHECKING:
@@ -176,7 +176,10 @@ class PyBulletMirror:
             if target is None or not same_source(target[0], built.source) or target[1] != built.concave:
                 self._remove(object_id)
 
+        hidden = Pose(HIDDEN_POSITION)
         for object_id, (source, concave, pose) in wanted.items():
+            # * A disabled object leaves the world: queries skip it too, but the window and `pp` users would see it.
+            pose = hidden if object_id in self._disabled else pose
             built = self._built.get(object_id)
             if built is None:
                 self._build(object_id, source, concave, pose)

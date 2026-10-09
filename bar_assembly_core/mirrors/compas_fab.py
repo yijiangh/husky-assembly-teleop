@@ -12,8 +12,8 @@ own check; `search_check` is a fast copy of it for searches. `lend` hands the pl
 - ! One thread only: create, sync, query and lend a mirror on the same thread.
 - ! Other robots' tool/body pairs already touching at `sync` are allowed for that snapshot (`static_contacts`).
 - ! compas_fab builds each collision mesh as its convex hull.
-- ! A hidden body is moved to HIDDEN_POSITION in PyBullet: compas_fab only skips it in its own checks, and code
-  reading the PyBullet world directly (tamp after `lend`, the GUI) would still see it where it last stood.
+- ! compas_fab only skips a hidden body in its own checks and leaves it where it last stood: `sync` moves it to
+  HIDDEN_POSITION.
 - ? Robots are loaded without their visual shapes (`load_model(visual=False)`), and bodies with their collision
   shapes as visuals: loading is faster, and PyBullet's window shows exactly what is checked.
 """
@@ -37,13 +37,10 @@ from ..geometry import Pose
 from ..robot import RobotModel
 from ..ids import ROBOTS
 from ..scene import Attachment, Scene, same_source
-from . import check_display
+from . import HIDDEN_POSITION, check_display
 from .pp_client import pp_client
 from .compas import (PARKED_POSITION, filled, frame_from_pose, load_model, planning_group, rigid_body, robot_as_tool,
                      subtree, tool_model)
-
-#: Where hidden bodies are moved in PyBullet: far from the robots, and from PARKED_POSITION where absent robots stand.
-HIDDEN_POSITION = (-50.0, -50.0, -50.0)
 
 if TYPE_CHECKING:
     from compas_robots import RobotModel as CompasRobotModel
