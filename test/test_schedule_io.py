@@ -120,6 +120,41 @@ def test_hold_without_any_end_is_rejected_at_load():
     assert synthetic.hold_end_index(synthetic.hold_window('B3')) == 4
 
 
+def test_open_hold_of_a_range_export():
+    """A range export's hold released after a bar beyond the range is on until the end.
+
+    Same shape as the exporter's range bundles: ``assembly_seq`` stops at the
+    range's last bar, and the hold names a later release bar with no release entry.
+    """
+    data = {
+        'schema_version': 1,
+        'robots': {name: {'robot_id': ROBOTS[name].robot_id, 'role': role}
+                   for name, role in (('Cindy', 'assembly'), ('Alice', 'support'))},
+        'assembly_seq': ['B20', 'B21', 'B22'],
+        'export_range': {'from_bar_id': 'B20', 'until_bar_id': 'B22'},
+        'holds': [{'bar_id': 'B21', 'robot': 'Alice', 'release_after_bar_id': 'B37'}],
+        'schedule': [
+            _entry_dict(0, 'B20', 'BarAssemblyJointingAction', 'Cindy', 'J'),
+            _entry_dict(1, 'B21', 'BarAssemblyJointingAction', 'Cindy', 'J'),
+            _entry_dict(2, 'B21', 'BarHoldingAction', 'Alice', 'H'),
+            _entry_dict(3, 'B21', 'BarAssemblyReleaseAction', 'Cindy', 'R'),
+            _entry_dict(4, 'B22', 'BarAssemblyJointingAction', 'Cindy', 'J'),
+        ],
+    }
+    schedule = ActionSchedule.from_dict(data, '/p/prob')
+    hold = schedule.hold_window('B21')
+    assert hold.release_after_seq is None and hold.release_entry_index is None
+    assert schedule.hold_end_index(hold) == 5                       # past the last entry
+    assert schedule.held_bar_ids(hold) == ['B21', 'B22']
+    assert schedule.robots_holding_at(schedule.entry(4)) == {'Alice': 'B21'}
+    assert 'Alice' not in schedule.robots_holding_at(schedule.entry(2))   # she is acting
+
+    # Without export_range the same file is an export error, as before.
+    del data['export_range']
+    with pytest.raises(ValueError, match="names 'B37', which is not in assembly_seq"):
+        ActionSchedule.from_dict(data, '/p/prob')
+
+
 # * ------------------------------------------------------------- the real schedule
 
 @needs_fixture

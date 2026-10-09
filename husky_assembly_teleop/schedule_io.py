@@ -10,6 +10,12 @@ per problem. It lists every action of the assembly in execution order::
      "schedule": [{"index": 0, "action_id": "B1_J_joint", "type": "BarAssemblyJointingAction",
                    "bar_id": "B1", "robot": "Cindy", "file": "BarActions/B1__J.json"}, ...]}
 
+A RANGE export (``"export_range": {"from_bar_id", "until_bar_id"}``) covers only
+part of the assembly: ``assembly_seq`` stops at ``until`` and ``holds`` lists the
+holds under way during the range. A hold released after a bar beyond ``until``
+names a bar that is not in ``assembly_seq`` and has no release entry: it is an
+OPEN hold, still on at the end of the bundle (see ``HoldWindow``).
+
 One schedule entry = one action file = the monitor's unit of work. Entry kinds:
 ``J`` jointing and ``R`` release (Cindy), ``H`` hold and ``HR`` hold release
 (a support robot). A release's movements START where its jointing / hold left
@@ -124,7 +130,9 @@ class HoldWindow:
         robot (str): The support robot holding it.
         release_after_bar_id (str): The last bar that must be built before release.
         hold_start_seq (int): Position of ``bar_id`` in ``assembly_seq``.
-        release_after_seq (int): Position of ``release_after_bar_id`` in ``assembly_seq``.
+        release_after_seq (int | None): Position of ``release_after_bar_id`` in
+            ``assembly_seq``; None for an OPEN hold of a range export (released
+            after a bar beyond the range, so the hold is on until the end).
         hold_entry_index (int): Schedule index of the hold (``H``) entry.
         release_entry_index (int | None): Schedule index of the hold release
             (``HR``) entry, or None when the schedule has none.
@@ -134,7 +142,7 @@ class HoldWindow:
     robot: str
     release_after_bar_id: str
     hold_start_seq: int
-    release_after_seq: int
+    release_after_seq: Optional[int]
     hold_entry_index: int
     release_entry_index: Optional[int]
 
@@ -150,6 +158,8 @@ class ActionSchedule:
         assembly_seq (list): Bar ids in assembly order.
         holds (list): One ``HoldWindow`` per hold, in file order.
         entries (list): ``ScheduleEntry`` per action, in execution order.
+        export_range (dict | None): ``{'from_bar_id', 'until_bar_id'}`` of a range
+            export, as in the file; None for an export that does not say.
     """
 
     problem_root: str
@@ -158,6 +168,7 @@ class ActionSchedule:
     assembly_seq: list
     holds: list = field(default_factory=list)
     entries: list = field(default_factory=list)
+    export_range: Optional[dict] = None
 
     @classmethod
     def from_dict(cls, data: dict, problem_root: str) -> 'ActionSchedule':
@@ -174,14 +185,15 @@ class ActionSchedule:
             ValueError: The file breaks one of the rules checked here (schema
                 version, contiguous indices, known types / robots, hold bars in
                 the assembly sequence with a hold entry each, and a known end
-                for every hold).
+                for every hold -- an open hold of a range export counts as one).
         """
         if data.get('schema_version') != SCHEMA_VERSION:
             raise ValueError(f"{SCHEDULE_FILENAME}: schema_version "
                              f"{data.get('schema_version')!r}, expected {SCHEMA_VERSION}")
         schedule = cls(problem_root=problem_root, schema_version=data['schema_version'],
                        robots=dict(data['robots']), assembly_seq=list(data['assembly_seq']),
-                       entries=[ScheduleEntry.from_dict(d) for d in data['schedule']])
+                       entries=[ScheduleEntry.from_dict(d) for d in data['schedule']],
+                       export_range=data.get('export_range'))
         schedule._check_entries()
         schedule.holds = [schedule._hold_window_from_dict(h) for h in data.get('holds', [])]
         return schedule
@@ -217,12 +229,21 @@ class ActionSchedule:
             HoldWindow: With positions and entry indices filled in.
 
         Raises:
-            ValueError: A bar is not in the assembly sequence, the bar has no
-                hold entry for that robot, or the hold has no end (neither a
-                hold release entry nor a release of ``release_after_bar_id``).
+            ValueError: A bar is not in the assembly sequence (except the release
+                bar of an open hold, see below), the bar has no hold entry for
+                that robot, or the hold has no end (neither a hold release entry
+                nor a release of ``release_after_bar_id``).
         """
+        # * A range export cuts assembly_seq at its last bar, so a hold released
+        # * after a later bar names a bar that is not in it: an OPEN hold, still
+        # * on at the end of the bundle (no release entry). Only a file that says
+        # * it is a range export may have one; elsewhere it is an export error.
+        # ? The monitor cannot tell a bar beyond the range from a misspelt one;
+        # ? the exporter's hold plan only names real bars.
+        open_hold = (self.export_range is not None
+                     and hold['release_after_bar_id'] not in self.assembly_seq)
         for key in ('bar_id', 'release_after_bar_id'):
-            if hold[key] not in self.assembly_seq:
+            if hold[key] not in self.assembly_seq and not (open_hold and key == 'release_after_bar_id'):
                 raise ValueError(f"{SCHEDULE_FILENAME}: hold {hold} names {hold[key]!r}, "
                                  f"which is not in assembly_seq")
         hold_entry = self.find_entry(hold['bar_id'], 'H')
@@ -230,7 +251,8 @@ class ActionSchedule:
             raise ValueError(f"{SCHEDULE_FILENAME}: hold {hold} has no H entry by that robot")
         release_entry = self.find_entry(hold['bar_id'], 'HR')
         # * hold_end_index needs one of the two to know when the hold is over
-        if release_entry is None and self.find_entry(hold['release_after_bar_id'], 'R') is None:
+        if (not open_hold and release_entry is None
+                and self.find_entry(hold['release_after_bar_id'], 'R') is None):
             raise ValueError(f"{SCHEDULE_FILENAME}: hold {hold} has no HR entry and no R entry "
                              f"for {hold['release_after_bar_id']!r}, so its end is unknown")
         return HoldWindow(
@@ -238,7 +260,8 @@ class ActionSchedule:
             robot=hold['robot'],
             release_after_bar_id=hold['release_after_bar_id'],
             hold_start_seq=self.seq_position(hold['bar_id']),
-            release_after_seq=self.seq_position(hold['release_after_bar_id']),
+            release_after_seq=(None if open_hold
+                               else self.seq_position(hold['release_after_bar_id'])),
             hold_entry_index=hold_entry.index,
             release_entry_index=release_entry.index if release_entry is not None else None,
         )
@@ -349,11 +372,15 @@ class ActionSchedule:
             hold (HoldWindow): A hold.
 
         Returns:
-            int: The hold release entry's index when there is one; otherwise the
-            entry right after the release (``R``) of ``release_after_bar_id``.
+            int: The hold release entry's index when there is one; for an open
+            hold (range export) one past the last entry -- it is still on at the
+            end; otherwise the entry right after the release (``R``) of
+            ``release_after_bar_id``.
         """
         if hold.release_entry_index is not None:
             return hold.release_entry_index
+        if hold.release_after_seq is None:
+            return len(self.entries)
         return self.find_entry(hold.release_after_bar_id, 'R').index + 1
 
     def robots_holding_at(self, entry: ScheduleEntry) -> dict:
@@ -379,9 +406,11 @@ class ActionSchedule:
 
         Returns:
             list: ``assembly_seq`` from the held bar to ``release_after_bar_id``,
-            both included.
+            both included (to the end of ``assembly_seq`` for an open hold).
         """
-        return self.assembly_seq[hold.hold_start_seq:hold.release_after_seq + 1]
+        end = (len(self.assembly_seq) if hold.release_after_seq is None
+               else hold.release_after_seq + 1)
+        return self.assembly_seq[hold.hold_start_seq:end]
 
     def executable_by(self, robot: str) -> list:
         """The entries the given robot can run (only its own).
