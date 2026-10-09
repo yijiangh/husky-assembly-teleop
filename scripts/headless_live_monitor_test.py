@@ -117,6 +117,11 @@ def _bypass_init_monitor():
     monitor._traj_ghost_bodies = []
     monitor._traj_ghost_orig_colors = {}
     monitor._ee_target_pose_uids = []
+    # 'Visual diagnosis' state (see HuskyMonitor._draw_cartesian_viz).
+    monitor._cartesian_viz = None
+    monitor._cartesian_viz_handles = []
+    monitor._visual_diag_applied = False
+    monitor._visual_diag_orig_colors = {}
     # 2-slot list so set_arm_trajectory can index into it (real monitor
     # inits this the same way).
     monitor.planned_arm_trajectory = [(None, None, None, None),

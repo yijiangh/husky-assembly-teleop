@@ -340,6 +340,18 @@ transfer, insert, fix foundation (manual). B1 has no tighten step.
     `[tool0 check] B1_J_M3_CDFM_transfer_to_approach: tool0 live (mocap base + FK) minus target (Rhino): left ... mm (dx/dy/dz ...), axes x/y/z ... deg | right ...`.
     Before the transfer runs the gap is large (the arms are not there yet); click it again after
     the transfer to see what is left. A movement without target poses only warns.
+  - Optional, for the insert / retreat: tick `Visual diagnosis (see-through robot, insert/retreat
+    tool0 frames + path)` (under the button above). The grey live robot and its tools turn
+    see-through, and every insert / retreat plan (`Plan Movement`, and the retreat's replan during
+    exec) draws, per arm: `<side> Rhino start` / `<side> Rhino target` (long axes, the exported
+    tool0 frames; the start is the previous movement's target), `<side> plan start` /
+    `<side> plan end` (short axes, the plan's first and last waypoint; for the retreat the start is
+    the live tool0), a black line from each Rhino frame to its plan frame, and the waypoint path
+    IK follows (green line with small axes; red from the failing waypoint on when the plan failed).
+    It logs `[B1_R_M1_LM_retreat viz] left: N waypoints over 50.0 mm; plan start is d mm / a deg from Rhino start; plan end is ... from Rhino target.`
+    Ticking it after a plan draws that last plan; unticking removes the drawing and brings the
+    robot back. For the insert only the left Rhino target is used (the right tool follows the
+    bar), so a right `plan end` gap means the two exported targets disagree.
   - `... no collision-free IK for the insertion start at the live base ...`: the base stands too
     far from (or too close to) B1's Rhino pose, or the drawn colliding pair is in the way. Drive
     the base (section 3) and click the IK check again.

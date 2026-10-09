@@ -132,6 +132,9 @@ BUILT_IGNORED_RGBA = (0.6, 0.6, 0.6, 0.25)
 MANUAL_BAR_ORANGE = [1.0, 0.55, 0.0, 0.6]
 # See-through bar at the loaded action's assembled pose (M3 start), the target to drive to.
 ASSEMBLED_BAR_PINK = [1.0, 0.3, 0.7, 0.5]
+# * 'Visual diagnosis' on: the alpha of the grey live robots and their tools, so the
+# * drawn tool0 frames inside them stay visible.
+VISUAL_DIAG_ROBOT_ALPHA = 0.3
 
 # Constrained dual-arm free/transfer motion (CDFM) planner resolutions.
 # Used by: M1 initial plan, Button 2b (IK Replan & Transfer → Mv Start),
@@ -213,6 +216,21 @@ M2_COMPLIANT_SPLIT_MM_MAX = 30.0
 # offline linear planners (headless_bar_action_planner's DEFAULT_MAX_STEP_*).
 M3_REPLAN_MAX_STEP_DISTANCE = 0.001   # m
 M3_REPLAN_MAX_STEP_ANGLE = 0.05       # rad
+
+
+def _frame_gap(a: Frame, b: Frame) -> Tuple[float, float]:
+    """How far apart two frames are: their origins, and the rotation between them.
+
+    Args:
+        a (Frame): First frame (world).
+        b (Frame): Second frame (world).
+
+    Returns:
+        tuple[float, float]: Origin distance in mm, rotation angle in degrees.
+    """
+    (pa, qa), (pb, qb) = pose_from_frame(a), pose_from_frame(b)
+    angle = (R.from_quat(qa).inv() * R.from_quat(qb)).magnitude()
+    return 1000.0 * float(np.linalg.norm(np.subtract(pa, pb))), float(np.degrees(angle))
 
 # * Another husky's mocap base is used as its obstacle pose only when its rigid
 # * body arrived this recently (seconds); an older pose falls back to the belief.
@@ -347,6 +365,12 @@ class HuskyMonitor(Node):
     # * 'Confirm Exec' only when one fails; 0 = always ask. The panel checkbox
     # * "Retreat: skip Confirm when the checks pass" changes it while the monitor runs.
     RETREAT_SKIP_CONFIRM_IF_CHECKS_PASS = 1
+    # * 1 = 'Visual diagnosis' on: the grey live robots and their tools are drawn
+    # * see-through, and each insert / retreat plan (also the retreat's replan
+    # * during exec) draws the Rhino and planned tool0 frames and its waypoint path
+    # * (_draw_cartesian_viz). The panel checkbox "Visual diagnosis ..." changes it
+    # * while the monitor runs.
+    VISUAL_DIAGNOSIS = 0
     DUAL_ARM_EE_CONSTR_ACCURACY_MOCAP_TEST = 0
 
     # Set to 1 to dump cfab's collision-check setup (its ACM / allowed-collision
@@ -525,6 +549,13 @@ class HuskyMonitor(Node):
         # link is lossless.
         self._cc_diag_handles = []              # list[int]
         self._cc_diag_orig_colors = {}          # (body, link) -> RGBA before highlight
+        # 'Visual diagnosis' (_draw_cartesian_viz): the last insert / retreat plan's
+        # frames, the uids of their drawing, the see-through state now in the
+        # scene, and the live robots' colours before they were made see-through.
+        self._cartesian_viz = None              # dict | None, see _record_cartesian_viz
+        self._cartesian_viz_handles = []        # list[int]
+        self._visual_diag_applied = False
+        self._visual_diag_orig_colors = {}      # (body, link) -> RGBA before see-through
         # Per-movement attached-body ghosts. The bodies are the ones cfab
         # already spawned via set_robot_cell_state; we just re-color them
         # TRAJECTORY_GREEN and re-pose them via goal_model FK each tick so
@@ -802,9 +833,11 @@ class HuskyMonitor(Node):
         # p.removeAllUserParameters()
         # Clear the ACTIVE backend's widgets (PyBullet params OR DPG widgets) so the
         # rebuild below doesn't stack a duplicate panel in DPG mode.
-        # Read the workaround box before its widget is deleted: its click
-        # callback can be missed, and the rebuild seeds the box from the flag.
+        # Read the workaround and visual-diagnosis boxes before their widgets are
+        # deleted: a click callback can be missed, and the rebuild seeds each box
+        # from its flag.
         self._transfer_as_free_move()
+        self._visual_diagnosis()
         if _common._global_backend is not None:
             _common._global_backend.clear()
         self.buttons.clear()
@@ -822,6 +855,7 @@ class HuskyMonitor(Node):
         """
         pp.remove_all_debug()
         clear_collision_diagnosis(self)
+        self._cartesian_viz_handles = []   # already removed above
 
     def toggle_show_goal_state(self):
         """Flip the ghost robot between the goal conf and the planned trajectory.
@@ -4320,6 +4354,200 @@ class HuskyMonitor(Node):
         print(f"[tool0 check] {mv.movement_id}: tool0 live (mocap base + FK) minus target (Rhino): {gaps}")
         return err
 
+    # --- --- --- Visual diagnosis of the insert / retreat (Cartesian) plans --- --- ---
+
+    def _visual_diagnosis(self) -> bool:
+        """Whether 'Visual diagnosis' is on.
+
+        Reads the panel checkbox live, once (see ``_transfer_as_free_move``).
+
+        Returns:
+            bool: True when the box is ticked (or, without the box, the class flag is 1).
+        """
+        toggle = getattr(self, 'visual_diagnosis_toggle', None)
+        ticked = toggle.value if toggle is not None else None
+        if ticked is not None:
+            self.VISUAL_DIAGNOSIS = int(ticked)
+        return bool(getattr(self, 'VISUAL_DIAGNOSIS', 0))
+
+    def _apply_visual_diagnosis(self, on: bool) -> None:
+        """Turn 'Visual diagnosis' on or off in the PyBullet scene.
+
+        On: the grey live robots and their tools turn see-through, and the last
+        insert / retreat plan is drawn (``_draw_cartesian_viz``). Off: both undone.
+
+        Args:
+            on (bool): The checkbox state.
+        """
+        self._set_live_robots_see_through(on)
+        if on:
+            self._draw_cartesian_viz()
+        else:
+            self._clear_cartesian_viz()
+        self._visual_diag_applied = on
+
+    def _set_live_robots_see_through(self, see_through: bool) -> None:
+        """Draw every live (grey) robot and its tools see-through, or as before.
+
+        Each link keeps its colour, with its alpha lowered to
+        ``VISUAL_DIAG_ROBOT_ALPHA``. The colours from before are kept (first
+        write wins, like the collision diagnosis) and put back on restore.
+
+        Args:
+            see_through (bool): True = see-through, False = the colours from before.
+        """
+        if not see_through:
+            for (body, link), rgba in self._visual_diag_orig_colors.items():
+                try:
+                    pp.set_color(body, rgba, link=link)
+                except Exception:
+                    pass   # the body is gone (e.g. a robot was removed)
+            self._visual_diag_orig_colors = {}
+            return
+        for husky in self.huskies:
+            obj = getattr(husky, 'object', None)
+            if obj is None:
+                continue   # nothing drawn for it (headless stubs)
+            for body in [obj.robot] + [ee for ee, _ in getattr(obj, 'ee_list', None) or []]:
+                for entry in p.getVisualShapeData(body):
+                    # Entry: link index at 1, RGBA at 7.
+                    link, rgba = entry[1], list(entry[7])
+                    if (body, link) in self._visual_diag_orig_colors:
+                        continue
+                    self._visual_diag_orig_colors[(body, link)] = rgba
+                    # min(): a hidden (fully transparent) link stays hidden.
+                    pp.set_color(body, rgba[:3] + [min(rgba[3], VISUAL_DIAG_ROBOT_ALPHA)],
+                                 link=link)
+
+    def _authored_start_ee_frames(self, mv) -> dict:
+        """The tool0 frames Rhino exported for the START of ``mv``.
+
+        A movement starts where the movement before it ended, so these are the
+        ``target_ee_frames`` of the movement that authors each arm's start
+        (``_start_ee_source``): the transfer's target for the insert, the
+        insert's target for the retreat.
+
+        Args:
+            mv: A loaded movement.
+
+        Returns:
+            dict: ``{side: Frame}`` (world) for the arms that have one; empty when
+            nothing before ``mv`` authors them.
+        """
+        idx = next((i for i, m in enumerate(self._loaded_movements) if m is mv), None)
+        frames = {}
+        for side in ('left', 'right'):
+            src = self._start_ee_source(idx, side)
+            frame = (getattr(src, 'target_ee_frames', None) or {}).get(side) if src else None
+            if frame is not None:
+                frames[side] = frame
+        return frames
+
+    def _record_cartesian_viz(self, mv, tag: str, report: dict) -> None:
+        """Keep what an insert / retreat plan worked from, and draw it when 'Visual diagnosis' is on.
+
+        Called after every straight-line plan (insert, retreat, and the retreat's
+        replan during exec), whether it found a path or not. Kept so that ticking
+        the box after a plan still shows it.
+
+        Args:
+            mv: The planned movement.
+            tag (str): Log tag (the movement id).
+            report (dict): The planner's report; ``waypoint_frames`` holds the tool0
+                path IK followed, ``waypoint`` the failing waypoint (failure only).
+        """
+        waypoints = (report or {}).get('waypoint_frames')
+        if not waypoints:
+            return
+        self._cartesian_viz = {
+            'tag': tag,
+            'rhino_start': self._authored_start_ee_frames(mv),
+            'rhino_target': dict(getattr(mv, 'target_ee_frames', None) or {}),
+            'waypoints': waypoints,
+            'failed_at': report.get('waypoint'),
+        }
+        if self._visual_diagnosis():
+            self._draw_cartesian_viz()
+
+    def _clear_cartesian_viz(self) -> None:
+        """Remove the 'Visual diagnosis' drawing (the kept plan data stays)."""
+        for uid in self._cartesian_viz_handles:
+            try:
+                pp.remove_debug(uid)
+            except Exception:
+                pass
+        self._cartesian_viz_handles = []
+
+    def _draw_cartesian_viz(self) -> None:
+        """Draw the last insert / retreat plan's tool0 frames and waypoint path, and print the gaps.
+
+        Per arm:
+
+        * Rhino start / Rhino target: the exported tool0 frames (long axes, blue
+        *   labels). The start is the previous movement's target.
+        * plan start / plan end: the first and last waypoint of the plan (short
+        *   axes, red labels). The start is FK of the planned start configuration
+        *   at the live base (for the retreat: the live arms).
+        * The waypoint path: a green line through every tool0 waypoint, small
+        *   axes on some of them to show the orientation. When the plan failed, the
+        *   line turns red from the waypoint before the failing one on.
+        A black line joins each Rhino frame to its plan frame.
+        """
+        self._clear_cartesian_viz()
+        viz = self._cartesian_viz
+        if viz is None or not pp.has_gui():
+            return
+        tag, failed_at = viz['tag'], viz['failed_at']
+        uids = []
+
+        def frame_and_label(frame: Frame, length: float, text: str, color, drop: float) -> list:
+            """Axes at ``frame`` plus a label ``drop`` m below its origin."""
+            pose = pose_from_frame(frame)
+            return list(pp.draw_pose(pose, length=length)) + [
+                pp.add_text(text, position=np.add(pose[0], [0, 0, -drop]), color=color)]
+
+        with pp.LockRenderer():
+            for side in ('left', 'right'):
+                path = viz['waypoints'].get(side) or []
+                if not path:
+                    continue
+                rhino = {k: viz[f'rhino_{k}'].get(side) for k in ('start', 'target')}
+                plan = {'start': path[0], 'end': path[-1]}
+                for k, frame in rhino.items():
+                    if frame is not None:
+                        uids += frame_and_label(frame, 0.12, f"{side} Rhino {k}",
+                                                (0, 0, 0.8, 1), 0.0)
+                for k, frame in plan.items():
+                    uids += frame_and_label(frame, 0.06, f"{side} plan {k}", (0.8, 0, 0, 1), 0.03)
+                for rk, pk in (('start', 'start'), ('target', 'end')):
+                    if rhino[rk] is not None:
+                        uids.append(pp.add_line(list(rhino[rk].point), list(plan[pk].point),
+                                                color=(0, 0, 0, 1), width=1))
+                # The path: about 10 small axes along it, whatever its step.
+                every = max(1, len(path) // 10)
+                for i, frame in enumerate(path):
+                    if i % every == 0:
+                        uids += list(pp.draw_pose(pose_from_frame(frame), length=0.02))
+                    if i > 0:
+                        bad = failed_at is not None and i >= failed_at
+                        uids.append(pp.add_line(list(path[i - 1].point), list(frame.point), width=3,
+                                                color=(1, 0, 0, 1) if bad else (0, 0.7, 0, 1)))
+
+                # Print the gaps (what the drawing shows, in numbers).
+                length_mm = 1000.0 * sum(
+                    np.linalg.norm(np.subtract(b.point, a.point)) for a, b in zip(path, path[1:]))
+                parts = [f"{len(path)} waypoints over {length_mm:.1f} mm"]
+                for rk, pk in (('start', 'start'), ('target', 'end')):
+                    if rhino[rk] is not None:
+                        d_mm, a_deg = _frame_gap(rhino[rk], plan[pk])
+                        parts.append(f"plan {pk} is {d_mm:.1f} mm / {a_deg:.1f} deg "
+                                     f"from Rhino {rk}")
+                print(f"[{tag} viz] {side}: " + '; '.join(parts) + '.')
+        if failed_at is not None:
+            print(f"[{tag} viz] the plan failed at waypoint {failed_at}: the path is red from "
+                  f"there on.")
+        self._cartesian_viz_handles = uids
+
     # --- --- --- Reset (per-movement + all) --- --- ---
 
     def reset_selected_movement_to_clean(self):
@@ -6289,7 +6517,7 @@ class HuskyMonitor(Node):
             report (dict): Filled by the planner's IK loop (see
                 ``_run_dual_arm_cartesian_ik_loop_ssik``); empty when it stopped earlier.
         """
-        if not report:
+        if 'waypoint' not in (report or {}):
             print(f"[{tag} diag] the planner stopped before its waypoint loop (no report); "
                   f"nothing to show.")
             return
@@ -6733,6 +6961,7 @@ class HuskyMonitor(Node):
             self.get_logger().error(f"[{tag}] replan RAISED: {exc!r}")
             traceback.print_exc()
             return None
+        self._record_cartesian_viz(mv, f"{tag} replan", report)
         if jt is None:
             self.get_logger().error(
                 f"[{tag}] replan FAILED: no collision-free, continuous cartesian "
@@ -8152,6 +8381,7 @@ class HuskyMonitor(Node):
         else:
             # Say (and draw) why no straight line was found.
             self._diagnose_cartesian_plan_failure(mv.movement_id, mv.start_state, report)
+        self._record_cartesian_viz(mv, mv.movement_id, report)
         return jt
 
     def _bar_hold_ee_drift(self, path12, template_state):
@@ -8449,6 +8679,7 @@ class HuskyMonitor(Node):
         if jt is None:
             # Say (and draw) why no straight line was found.
             self._diagnose_cartesian_plan_failure(tag, mv.start_state, report)
+        self._record_cartesian_viz(mv, tag, report)
         return jt
 
     def _retreat_goal_frames(self, mv) -> Optional[dict]:
@@ -10659,6 +10890,15 @@ class HuskyMonitor(Node):
             # * live tool0 (mocap base + FK), with the gap printed.
             self.buttons.append(Button('Draw tool0: live (mocap + FK) vs target (Rhino)',
                                        self.draw_tool0_live_vs_target))
+            # * Ticked: the grey live robots turn see-through and every insert /
+            # * retreat plan draws its Rhino + planned tool0 frames and waypoint path
+            # * (also the last one, at the tick). update() applies a change.
+            # Seeded from the flag so a reset_ui rebuild keeps the tick.
+            self.visual_diagnosis_toggle = Toggle(
+                "Visual diagnosis (see-through robot, insert/retreat tool0 frames + path)",
+                lambda v: setattr(self, 'VISUAL_DIAGNOSIS', int(bool(v))),
+                bool(self.VISUAL_DIAGNOSIS),
+            )
             self.buttons.append(Button('Plan Movement', self.plan_selected_movement,
                                        color=BUTTON_PLAN_RGB))
             if show_assembly_knobs:
@@ -11311,6 +11551,14 @@ class HuskyMonitor(Node):
             tgl = getattr(self, 'retreat_skip_confirm_toggle', None)
             if tgl:
                 tgl.update()
+            tgl = getattr(self, 'visual_diagnosis_toggle', None)
+            if tgl:
+                tgl.update()
+                # * Box ticked / unticked: see-through robots + the drawing, or
+                # * back. Read live, not from the click callback (see above).
+                ticked = self._visual_diagnosis()
+                if ticked != self._visual_diag_applied:
+                    self._apply_visual_diagnosis(ticked)
             if hasattr(self, 'fm_swept_validation_slider') and self.fm_swept_validation_slider:
                 self.fm_swept_validation_slider.update()
 

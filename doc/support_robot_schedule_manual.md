@@ -196,6 +196,10 @@ insertion start; max |goal - stored goal| = ... rad`.
    disappear from the panel while the box is ticked (and the orange bar preview with them).
    `Draw tool0: live (mocap + FK) vs target (Rhino)` (any time a movement is loaded) draws
    each arm's live tool0 next to the loaded movement's target tool0 and logs the gap.
+   `Visual diagnosis (...)` (the box under it) makes the grey live robot see-through and
+   draws each insert / retreat plan: the Rhino start / target tool0 frames, the plan's start /
+   end frames and its waypoint path (red from a failing waypoint), with the gaps logged as
+   `[<movement> viz] ...`.
 4. `Plan Movement` → the free move to the configuration the IK check showed (solved
    again when the base moved more than 2 mm since); preview with `Traj viz time`.
    `Confirm transfer start + plan travel to load` does 3 and 4 in one click.
