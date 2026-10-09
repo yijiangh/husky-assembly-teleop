@@ -2,7 +2,8 @@
 
 Schema 2 of the design format is implemented in `bar_assembly_core` and matches the spec, apart from the gaps below.
 Two reviews (Rhino plugin, tamp) found that schema 2 fits both consumers. One blocker is shared: the allowed tool
-contacts. Eleven decisions are open (last section); nothing below is decided yet.
+contacts. Eleven decisions were open; all were taken the same day (last section) and are implemented in
+`jeliag/bar_assembly_core`, branch `jg/decisions-2026-10-09`.
 
 ## Files in this folder
 
@@ -113,7 +114,7 @@ Checked by reading the converted 260814 design and rerunning the plan checker.
   `plan_action`, `solve_keyframes`, a CLI replacing the headless planner's I/O) depends on `bar_assembly_core[mirrors]`.
   Effort about 2–2.5 weeks, plus about a week for PRM and VAMP.
 
-## Open decisions (to discuss)
+## Decisions (open on the morning of 2026-10-09)
 
 | # | Decision | Raised by |
 | --- | --- | --- |
@@ -131,6 +132,26 @@ Checked by reading the converted 260814 design and rerunning the plan checker.
 
 Also from the implementer (some overlap with the table): the release form per bar (A or B), whether the converter
 should repair inconsistent export states, and the seats for `T20/Female` and `T20/MoCap`.
+
+### Taken on 2026-10-09
+
+| # | Outcome |
+| --- | --- |
+| 1 | Yes. `relations.allowed_contacts`: a tool touches its whole part; pending or engaged mates' halves also each other's bar; a ground-mated half every ground body. |
+| 2 | Yes. `target.tools.<tool>` is `{grip?, on?}`; `Target.on`; B11 compares `on`. |
+| 3 | No new marker: `null` = not decided by the design; planners may fill it (into `solutions/`), the monitor at execution. The compas_fab mirror parks other robots with unknown state (`mirror.parked`); `scenes.seeded` fills the acting robot. |
+| 4 | No special scenes: `hold.hold_scenes` = `scene_at` of the closing movement (solve) and of the hold release (check). |
+| 5 | R_M0 folds into the ungrasp: `drives: loosen` with the grip opening, `built` unchanged. |
+| 6 | Ids sorted, meshes `meshes/<content hash>.obj`, robot `files_hash` (A4 on read), `design_hashes` in memory. `adopt()` deferred. |
+| 7 | Yes: `CHAIN_TOLERANCE = 1e-3`, `MovementResult.still`, solved ends must reach the design's target joints. |
+| 8 | Yes: `<bar>_<J/R/H/HR>` and `<action>_<role>`; the converter renames. |
+| 9 | Yes: optional `parts` in `design.json`; B14 uses it before `PART_SEATS`. |
+| 10 | Done: `jeliag/bar_assembly_core`, a submodule in Rhino; CI on 3.9 and 3.10. Teleop switches to it with the monitor integration. |
+| 11 | Rhino's support IK for now; a tamp single-arm planner later. |
+
+Implementer's questions: no release-form flag (the movements show it); the converter converts faithfully (repeated
+opens kept, no repair); seats for `T20/Female` and `T20/MoCap` come from Rhino's `parts` when a tool acts on them.
+`writer.library` is now `bar_assembly_core`. Bars stay meshes in converted designs; Rhino writes cylinders.
 
 ## Housekeeping
 
