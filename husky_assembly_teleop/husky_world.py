@@ -4237,8 +4237,8 @@ def _hold_until_joint_motors_stall(monitor, timeout_s, stall_gate: _JointStallGa
         f'{stall_gate.text} reporting STALLED.')
 
 
-# * Retreat guardrails (retreat_guardrails): the rigid part runs without
-# * 'Confirm Exec' only when every one of them holds. First guesses, to tune.
+# * Retreat checks (retreat_guardrails): printed right before the rigid part,
+# * which runs whatever they say (no 'Confirm Exec'). First guesses, to tune.
 RETREAT_GUARD_START_TOL_RAD = 0.01      # first waypoint vs the live joints
 RETREAT_GUARD_ARRIVAL_MM = 3.0          # compliant part: worst tool0 short of its end
 RETREAT_GUARD_LR_SPREAD_MM = 3.0        # compliant part: |left - right| travelled
@@ -4252,10 +4252,11 @@ RETREAT_GUARD_SPEED_MM_S = 50.0         # tool0 speed of the rigid part
 
 
 def retreat_guardrails(monitor, tail, *, replanned: bool, compliant_errs,
-                       t_rigid: float, wait_for_grippers: bool = True):
+                       t_rigid: float):
     """Check the retreat's rigid part before it runs, right after its compliant part.
 
-    Seven checks, each one PASS / FAIL line with its measured value:
+    A report only: the rigid part runs whatever the checks say. Seven checks,
+    each one PASS / FAIL line with its measured value:
 
     1. replan: the tail is the fresh straight line from the live pose (not the
        fallback planned tail, whose first step jumps from where the arms are).
@@ -4279,8 +4280,6 @@ def retreat_guardrails(monitor, tail, *, replanned: bool, compliant_errs,
         compliant_errs (list[dict] | None): ``_tool0_pose_errors`` measured right
             after the compliant part (None when it was not measured).
         t_rigid (float): Duration of the rigid part, seconds.
-        wait_for_grippers (bool): Wait up to ``RETREAT_GUARD_GRIPPER_WAIT_S`` for
-            a gripper that still LOOSENs (False: read the state once).
 
     Yields:
         None: One yield per monitor tick while waiting for the grippers.
@@ -4331,10 +4330,10 @@ def retreat_guardrails(monitor, tail, *, replanned: bool, compliant_errs,
         """Each tool's gripper motor state (M1), or 'no status'."""
         return [getattr(hi.scaffolding_status[i], 'state_m1', None) or 'no status'
                 if hi.scaffolding_status[i] is not None else 'no status' for i in range(2)]
-    if wait_for_grippers:
-        deadline = time.time() + RETREAT_GUARD_GRIPPER_WAIT_S
-        while 'LOOSENING' in gripper_states() and time.time() < deadline:
-            yield
+    # Give a gripper still opening a moment to finish before the arms pull back.
+    deadline = time.time() + RETREAT_GUARD_GRIPPER_WAIT_S
+    while 'LOOSENING' in gripper_states() and time.time() < deadline:
+        yield
     states = gripper_states()
     note(all(st == 'STALLED' for st in states),
          f'grippers: motor states L/R {states[0]}/{states[1]} (want STALLED = fully open)')
@@ -4832,8 +4831,8 @@ def execute_planned_trajectory_compliant(monitor):
             else:
                 # ! Falling back to the preplanned tail means the FIRST step is a
                 # ! jump from the drifted pose onto the planned line -- the fast
-                # ! motion this replan exists to remove. Say so plainly; the
-                # ! confirm pause below is what stops it happening unnoticed.
+                # ! motion this replan exists to remove. Say so plainly: it runs
+                # ! right away (no 'Confirm Exec' pause any more).
                 live12 = np.concatenate([
                     np.asarray(hi.arm_joint_pose[0], dtype=float),
                     np.asarray(hi.arm_joint_pose[1], dtype=float)])
@@ -4844,7 +4843,7 @@ def execute_planned_trajectory_compliant(monitor):
                     f'[{tag}] replan failed -- FALLING BACK to the preplanned tail. '
                     f'Its first step jumps {jump_deg:.1f} deg from where the arms '
                     f'are now, which is the fast snap the replan was meant to '
-                    f'avoid. Inspect the preview carefully before confirming.')
+                    f'avoid.')
 
             # Show exactly what will run: the traj-viz scrub and the joint plot.
             # ! Deliberately NOT via _accept_trajectory -- that does chain
@@ -4858,35 +4857,20 @@ def execute_planned_trajectory_compliant(monitor):
                 tail, label=f'{monitor.current_movement.movement_id} (retreat)')
             monitor.set_to_show_traj_state()
 
-            # * Guardrails: with the panel box ticked the rigid part runs at once
-            # * when every check passes; a failed check (or the box unticked)
-            # * asks for 'Confirm Exec' as before.
-            skip_if_ok = monitor._retreat_skip_confirm()
+            # * The checks are a report only: the rigid part runs right after them,
+            # * no 'Confirm Exec' (the operator confirmed every time anyway).
             all_ok, check_lines = yield from retreat_guardrails(
                 monitor, tail, replanned=replanned, compliant_errs=compliant_errs,
-                t_rigid=t_m3_rigid, wait_for_grippers=skip_if_ok)
+                t_rigid=t_m3_rigid)
             for line in check_lines:
                 print(f'[{tag}] check {line}')
-            if skip_if_ok and all_ok:
-                monitor.get_logger().info(
-                    f'[{tag}] every retreat check passed: running the rigid part now '
-                    f'({len(tail)} waypoints over {t_m3_rigid:.1f}s), no Confirm.')
-            elif all_ok:
-                if not (yield from wait_for_operator_confirm(
-                        monitor,
-                        f'[{tag}] retreat ready: {len(tail)} waypoints over '
-                        f'{t_m3_rigid:.1f}s. Scrub "Traj viz time" and check the '
-                        f'joint plot, then click "Confirm Exec" to run it.')):
-                    return
-            else:
-                n_failed = sum(line.startswith('FAIL') for line in check_lines)
-                if not (yield from wait_for_operator_confirm(
-                        monitor,
-                        f'[{tag}] retreat ready, but {n_failed} check(s) FAILED (the '
-                        f'"check FAIL" lines above): {len(tail)} waypoints over '
-                        f'{t_m3_rigid:.1f}s. Scrub "Traj viz time" and check the joint '
-                        f'plot, then click "Confirm Exec" to run it.', warn=True)):
-                    return
+            n_failed = sum(line.startswith('FAIL') for line in check_lines)
+            checks = ('every check passed' if all_ok
+                      else f'{n_failed} check(s) FAILED, see the "check FAIL" lines above')
+            log = monitor.get_logger()
+            (log.info if all_ok else log.warn)(
+                f'[{tag}] running the rigid part now ({len(tail)} waypoints over '
+                f'{t_m3_rigid:.1f}s); {checks}.')
 
             # ! No stall gate: M3's joint motor is not driving, so a STALLED
             # ! flag left over from the preceding M2 would abort this on tick 1.
