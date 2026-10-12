@@ -253,21 +253,41 @@ gripper step and the linear approach after it:
 When the base is not tracked, the exported goal is used
 (`[live goal] ...: base not tracked; ...`). When no collision-free IK exists at the
 live base, nothing is planned (`... not planning.`, the collision drawn if there is one).
+On Alice the IK is her own exact ssik solver (`asset/ssik/alice_ur_arm_ik.py` in
+husky_assembly_tamp, built 2026-10-12 from her calibrated URDF), used only once a
+check finds the planner's robot has those kinematics; Belle keeps PyBullet IK.
+
+In a hold entry, `Exec Selected Mv Traj (auto)` on the free approach then servos
+tool0 onto the approach pose (`world.execute_free_approach_then_servo` ->
+`servo_single_arm_to_target_live`), the single-arm twin of the correction after
+Cindy's transfer: live-base IK nearest the live arm, a joint move per pass, first
+move previewed + `Confirm Exec`, SAFEGUARD above 5 deg, stop below 0.2 mm, the
+`Servoing Live Tracker`, a record under `bar_action_live_replan_exe/<date>-servoing/`.
+The live arm then becomes the start of the gripper step and the straight approach.
+The straight approach plans from the live arm (`start_state resynced to the live
+arms ...`), so its IK stays on the arm's branch.
 
 ### The grip handoff (gripper close, Alice)
 
 1. zero the F/T sensor (fingers open, touching nothing);
-2. send the close goal, arm stiff (`scaled_joint_trajectory_controller`);
-3. when the fingers have travelled 80 % of the way (gripper feedback), capture
-   the current tool0 pose, check it agrees with the arm-reported TCP (≤ 5 cm),
-   switch to `cartesian_compliance_controller`;
-4. publish that CAPTURED pose + zero wrench every tick; end the hold if the arm
-   drifts more than 20 mm (`GRIP_HANDOFF_MAX_DRIFT_M`);
-5. when the gripper stalls / reaches its goal, switch back to joint tracking —
+2. capture the current tool0 pose (arm still stiff), check it agrees with the
+   arm-reported TCP (≤ 10 mm, 2 deg), then switch to `cartesian_compliance_controller`
+   **before** anything closes. The target is sent in the controller's frame (UR's
+   `base_link`): on Alice that is the monitor's arm base turned 90 deg about z
+   (`HuskyRobotInterface._to_controller_frame`; before 2026-10-12 it was sent
+   unturned and the arm jumped 21 mm towards a target 559 mm away);
+3. send the close goal and publish that CAPTURED pose + zero wrench every tick,
+   so the arm gives way while the jaws centre on the bar; end the hold if the arm
+   drifts more than 10 mm (`GRIP_HANDOFF_MAX_DRIFT_M`);
+4. when the gripper stalls / reaches its goal, switch back to joint tracking —
    always, also on Cancel, timeout or error.
 
-If there is no gripper feedback, no compliance flag or `FAKE_HARDWARE=1`, the
-gripper simply closes with the arm stiff (logged).
+Compliant first (2026-10-12) because a switch partway through the close would need
+the finger position (Alice's humble `gripper_action_controller` sends no action
+feedback) and would have to fire before the fingers touch the bar, which depends on
+the bar diameter and the gripper speed. Without the compliance flag, with
+`FAKE_HARDWARE=1`, or when FK and the arm's TCP disagree, the gripper simply closes
+with the arm stiff (logged). When the switch to compliance fails, nothing is closed.
 
 ---
 
@@ -325,9 +345,9 @@ Step-by-step test plan (dry run with `FAKE_HARDWARE`, then the robots):
 
 ## To confirm on hardware (not testable here)
 
-- Robotiq `gripper_cmd` publishes **feedback** during the stroke (the monitor opens
-  to 0.426 and closes to 0.8); without feedback every close is a stiff close.
-- `switch_fraction = 0.8` switches before the fingers touch the bar.
+- Robotiq `gripper_cmd` sends **no feedback** on Alice (checked 2026-10-12); the
+  handoff does not need it (compliant before the close). The handoff itself is still to
+  be seen with a bar on hardware.
 - Alice's `arm_tcp_pose` matches the FK tool0 in `base_link` (otherwise the 5 cm
   check skips the handoff every time).
 - Compliance holds the bar without sagging; tune `GRIP_HANDOFF_MAX_DRIFT_M`.

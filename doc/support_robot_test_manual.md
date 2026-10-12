@@ -480,12 +480,10 @@ ticked). **Do not `Mark entry done` in B3** — these are tests.
 - [ ] A **Gripper** section is present (`Open Gripper Full`, `Close Gripper for Bar`) and the
       `Switch to Compliance (BOTH)` / `Switch to Joint (BOTH)` / `Zero Force Sensor (BOTH)` buttons.
 
-**B3.2 Does the gripper send feedback?** (decides whether the handoff can happen at all)
-- [ ] Second terminal: `ros2 topic echo /a200_0804/gripper/robotiq_gripper_controller/gripper_cmd/_action/feedback`
-- [ ] `Open Gripper Full`, then `Close Gripper for Bar`.
-- [ ] **Note:** do feedback messages stream during the close, with `position` rising towards ~0.8?
-      If **no feedback** arrives, the handoff never triggers and every close is stiff (safe, logged
-      as "finished before 80 %"). Tell me — the trigger then needs another signal.
+**B3.2 The gripper by hand**
+- [ ] `Open Gripper Full`, then `Close Gripper for Bar`: the jaws open and close. (The gripper
+      action sends no feedback, only its final result, checked 2026-10-12; the handoff in B3.4
+      does not need any: the arm goes compliant before the close.)
 
 **B3.3 Controller switch, by hand** (hand on the e-stop, gripper empty, arm in a safe pose)
 - [ ] `Switch to Compliance (BOTH)` → `list_controllers` shows `cartesian_compliance_controller`
@@ -496,15 +494,14 @@ ticked). **Do not `Mark entry done` in B3** — these are tests.
 - [ ] `Open Gripper Full`. `Load entry` 3, `Step` slider → 3 (readout
       `step 4/4: B3_H_M3_gripper_close ...`) → `Load Movement`.
 - [ ] Click `Exec gripper step: CLOSE + compliant handoff` → `Confirm Exec`. Expect, in order:
-  - `phase 1/4: ensuring scaled_joint_trajectory_controller`
-  - F/T sensor zeroed, then `phase 2/4: close goal sent (position 0.43 -> 0.800 ...)`
-  - `phase 3/4: gripper at 0.6.. (80% of the stroke); ...` then the switch to `cartesian_compliance_controller`
-  - `phase 4/4: arm under cartesian_compliance_controller (target = tool0 pose captured at the switch)`
+  - `phase 1/3: ensuring scaled_joint_trajectory_controller`
+  - F/T sensor zeroed, then `phase 2/3: switching arm 0 ... -> cartesian_compliance_controller BEFORE the close (fingers still open)`
+  - `phase 3/3: close goal sent (position 0.426 -> 0.800 ...); arm under cartesian_compliance_controller (target = tool0 pose captured before the switch, zero wrench) ...`
   - gripper result (`reached_goal`), then the switch back to `scaled_joint_trajectory_controller`.
 - [ ] `list_controllers` afterwards: **joint controller active**.
 - [ ] **If instead** you see `FK tool0 and the arm-reported TCP disagree by more than 5 cm; no handoff`:
       the single-arm TCP frame does not match the monitor's FK — note the numbers and tell me.
-- [ ] Repeat once and press `Cancel Exec` during phase 4 → the hold ends **and the controller
+- [ ] Repeat once and press `Cancel Exec` during phase 3 → the hold ends **and the controller
       switches back to joint** (the gripper keeps closing with the arm stiff — logged).
 
 **B3.5 The approach motion in the air** (Cindy away from B3's location, or the area clear)
@@ -595,6 +592,5 @@ Follow the table in `doc/support_robot_schedule_manual.md` ("Four-bar test"). Ch
 
 - The terminal log of each run (copy the whole thing).
 - `progress.json` after the run.
-- From B3.2: did gripper feedback arrive, and the positions you saw.
 - From B3.4: the phase lines, any "disagree by more than 5 cm" warning, and how the arm behaved while compliant.
 - From B3.5 / B5: the free-approach calibration check (how far off the jaws were) and its `[live goal]` line.

@@ -208,7 +208,15 @@ def create_end_effector(ee_type="assembly_tool_v3_left", load_calib_tip=False, d
     else:
         raise ValueError(f"Unknown end effector type: {ee_type}. Valid types: assembly_tool_v3_left, assembly_tool_v3_right, robotiq_gripper, custom_gripper, punch_tool, calib_tip")
 
-def attach_end_effectors(robot, ee_list, dual_arm=False):
+# * How an end-effector mesh sits on tool0, when not exactly on it: the mesh's
+# * frame in tool0's frame. The Robotiq 2F-85 mesh is turned 90 deg about tool0's
+# * z on the real robots (Alice's mounting; checked against the real gripper 2026-10-12).
+TOOL0_FROM_EE_MESH = {
+    'robotiq_gripper': pp.Pose(euler=pp.Euler(yaw=np.pi / 2)),
+}
+
+
+def attach_end_effectors(robot, ee_list, dual_arm=False, ee_types=None):
     """
     Attach end effectors to robot tool0 links.
     
@@ -216,6 +224,9 @@ def attach_end_effectors(robot, ee_list, dual_arm=False):
         robot: PyBullet robot body ID
         ee_list: List of end effector body IDs
         dual_arm: Whether this is a dual-arm robot
+        ee_types (list | None): End-effector type per body, same order as
+            ``ee_list``; a type in ``TOOL0_FROM_EE_MESH`` is attached with that
+            offset, every other one exactly on tool0.
         
     Returns:
         attached_ee_list: List of (ee_body, ee_attachment) tuples
@@ -232,9 +243,11 @@ def attach_end_effectors(robot, ee_list, dual_arm=False):
             tool0_link_name = 'ur_arm_tool0'
         
         tool0_pose = pp.get_link_pose(robot, pp.link_from_name(robot, tool0_link_name))
+        ee_type = ee_types[i] if ee_types is not None and i < len(ee_types) else None
+        mesh_pose = pp.multiply(tool0_pose, TOOL0_FROM_EE_MESH.get(ee_type, pp.unit_pose()))
         
-        # Set end effector pose
-        pp.set_pose(ee, tool0_pose)
+        # Set end effector pose (the attachment keeps this offset from tool0)
+        pp.set_pose(ee, mesh_pose)
         
         # Create attachment
         ee_attachment = pp.create_attachment(robot, pp.link_from_name(robot, tool0_link_name), ee)
@@ -446,7 +459,7 @@ class HuskyObject():
                     assert len(ee_list) == 1, f"Expected 1 end effector for single arm, got {len(ee_list)}"
 
                 self.ee_types = ee_types
-                self.ee_list = attach_end_effectors(robot, ee_list, dual_arm=dual_arm)
+                self.ee_list = attach_end_effectors(robot, ee_list, dual_arm=dual_arm, ee_types=ee_types)
                 self.old_color = None
        
     def set_pose(self, base_pose, arm_joint_states, index=0):

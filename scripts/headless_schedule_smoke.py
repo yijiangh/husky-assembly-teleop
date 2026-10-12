@@ -2392,9 +2392,10 @@ def alice_run(results: Results, problem: str, root: str, schedule) -> None:
         results.check(f'Alice: {mv.movement_id} controllers joint -> compliance -> joint',
                       iface.controller_history == [JOINT_CTRL, COMPLIANCE_CTRL, JOINT_CTRL]
                       and switches == [(JOINT_CTRL, COMPLIANCE_CTRL), (COMPLIANCE_CTRL, JOINT_CTRL)])
-        results.check(f'Alice: {mv.movement_id} F/T zeroed, close sent, THEN compliance; '
+        # The arm goes compliant BEFORE the close is sent (husky_world.grip_with_compliant_handoff).
+        results.check(f'Alice: {mv.movement_id} F/T zeroed, compliance, THEN close sent; '
                       f'fixed target + zero wrench while compliant',
-                      kinds.index('zero_ft') < kinds.index('gripper') < kinds.index('switch')
+                      kinds.index('zero_ft') < kinds.index('switch') < kinds.index('gripper')
                       and ('gripper', GRIPPER_CLOSE_FOR_BAR_POS, 0) in calls
                       and cart and all(c[2] == COMPLIANCE_CTRL for c in cart)
                       and len({c[3] for c in cart}) == 1

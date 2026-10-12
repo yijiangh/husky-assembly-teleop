@@ -22,7 +22,8 @@ from husky_assembly_teleop import DATA_DIRECTORY, CALIBRATION_DATE, BASE_CALIBRA
 from husky_assembly_teleop.common import Husky, TrackedObject, AssemblyObject
 from husky_assembly_teleop.robot_registry import RobotSpec, other_robots, robot_by_name, robot_from_env
 from husky_assembly_teleop.bar_action_io import (
-    COMPLIANT_KINDS, MovementKind, held_ground_joints, mating_arm_sides, tool_event, tool_runs_with_next_motion,
+    COMPLIANT_KINDS, STATIONARY_KINDS, MovementKind, held_ground_joints, mating_arm_sides, tool_event,
+    tool_runs_with_next_motion,
 )
 from husky_assembly_teleop.schedule_io import load_schedule, problem_root
 from husky_assembly_teleop.progress_io import PARKED_BASE_FRAME, RobotBelief, load_progress
@@ -40,6 +41,7 @@ from compas_fab.robots import FrameTarget, RobotCellState, TargetMode
 from compas_robots import Configuration
 from rs_data_structure.bar_action import GripperToolMovement, ManualMovement, ScaffoldingToolMovement
 from husky_assembly_tamp.keyframe import ssik_inprocess
+from husky_assembly_tamp.keyframe.config import SSIK_ARM_BUILD
 from husky_assembly_tamp.motion_planner import ssik_ik
 
 import matplotlib.pyplot as plt
@@ -1465,11 +1467,12 @@ def measure_servo_tool0_error(monitor, target_ee_frames):
 
     Args:
         monitor: The HuskyMonitor node.
-        target_ee_frames (dict): {"left": Frame, "right": Frame}, the authored
-            world-frame tool0 targets as compas Frames.
+        target_ee_frames (dict): One authored world-frame tool0 target (compas
+            Frame) per side of the connected robot: ``{"left": .., "right": ..}``
+            on Cindy, ``{"arm": ..}`` on a support robot.
 
     Returns:
-        dict: Per side ("left"/"right") a dict with:
+        dict: Per side (the robot's ``side_keys``) a dict with:
             "pos_err_mm" (list[float]): [dx, dy, dz] position error in millimetres.
             "pos_norm_mm" (float): position error magnitude in millimetres.
             "rot_err_deg" (list[float]): per-axis orientation error in degrees.
@@ -1480,7 +1483,8 @@ def measure_servo_tool0_error(monitor, target_ee_frames):
     hi = h.interface
     # Sync the sim to the live mocap base + live arm joints, then read tool0 FK.
     ho.set_pose((hi.position, hi.rotation), hi.arm_joint_pose)
-    link_from_side = {"left": "left_ur_arm_tool0", "right": "right_ur_arm_tool0"}
+    spec = monitor._connected_robot()
+    link_from_side = dict(zip(spec.side_keys, spec.flange_links))
     out = {}
     for side, link_name in link_from_side.items():
         observed = ho.get_link_pose_from_name(link_name)
@@ -1716,13 +1720,15 @@ def _live_trajectory_time(monitor):
     return float(monitor.trajectory_time)
 
 
-def _path_motion_summary(planned_arm_trajectory):
-    """How long and how large a planned dual-arm move is.
+def _path_motion_summary(planned_arm_trajectory, n_arms: int = 2):
+    """How long and how large a planned move is.
 
     Args:
         planned_arm_trajectory: The monitor's ``planned_arm_trajectory`` pair;
             each entry is a ``(path, ..., ..., ...)`` tuple whose path is the
             list of 6-joint waypoints for that arm (``None`` when unplanned).
+        n_arms (int): How many of the entries are arms of the connected robot
+            (2 on Cindy, 1 on a support robot).
 
     Returns:
         tuple[int, float, float]: ``(n_waypoints, net_delta_deg,
@@ -1742,16 +1748,15 @@ def _path_motion_summary(planned_arm_trajectory):
     # both python lists and numpy arrays -- so neither trips the "truth value
     # of an array is ambiguous" error. The len guard also prevents an
     # IndexError on the [0] / [-1] accesses below.
-    left_path, right_path = planned_arm_trajectory[0][0], planned_arm_trajectory[1][0]
-    if (left_path is None or len(left_path) == 0
-            or right_path is None or len(right_path) == 0):
+    paths = [planned_arm_trajectory[i][0] for i in range(n_arms)]
+    if any(path is None or len(path) == 0 for path in paths):
         # Three values, like every other return here: callers unpack by position.
         return 0, 0.0, 0.0
     # Max joint delta between start (first waypoint) and end (last waypoint)
     max_delta_rad = max(
         float(np.max(np.abs(np.asarray(path[-1], dtype=float)
                             - np.asarray(path[0], dtype=float))))
-        for path in (left_path, right_path)
+        for path in paths
     )
     # Same subtraction, but against EVERY waypoint rather than only the last:
     # `path` is (n_waypoints x 6), so `path - path[0]` gives each joint's offset
@@ -1761,9 +1766,9 @@ def _path_motion_summary(planned_arm_trajectory):
     excursion_rad = max(
         float(np.max(np.abs(np.asarray(path, dtype=float)
                             - np.asarray(path[0], dtype=float))))
-        for path in (left_path, right_path)
+        for path in paths
     )
-    return (len(left_path), float(np.rad2deg(max_delta_rad)),
+    return (len(paths[0]), float(np.rad2deg(max_delta_rad)),
             float(np.rad2deg(excursion_rad)))
 
 
@@ -2263,9 +2268,11 @@ def _save_servoing_data(monitor, data, planner_mode='free',
 
     iters = [d['iter'] for d in data]
     axis_names = ('x', 'y', 'z')
-    # Left arm = red shades, right arm = green shades (per axis), matching the
+    # The arms the record has: left / right on Cindy, one 'arm' on a support robot.
+    sides = list(data[0]['tool0'].keys())
+    # First arm = red shades, second arm = green shades (per axis), matching the
     # DPG live tracker. Convert the shared 0-255 tuples to matplotlib 0-1.
-    side_rgb = {'left': SERVO_LEFT_ARM_RGB, 'right': SERVO_RIGHT_ARM_RGB}
+    side_rgb = dict(zip(sides, (SERVO_LEFT_ARM_RGB, SERVO_RIGHT_ARM_RGB)))
     def _arm_color(side, a):
         return tuple(v / 255.0 for v in side_rgb[side][a])
     def _base_color(a):
@@ -2275,8 +2282,8 @@ def _save_servoing_data(monitor, data, planner_mode='free',
     FigureCanvasAgg(fig)
     axes = fig.subplots(2, 2)
 
-    # Tool0 position error, per axis + euclidean norm, both arms (mm).
-    for side in ('left', 'right'):
+    # Tool0 position error, per axis + euclidean norm, every arm (mm).
+    for side in sides:
         for a, ax_name in enumerate(axis_names):
             axes[0, 0].plot(iters, [d['tool0'][side]['pos_err_mm'][a] for d in data],
                             'o-', color=_arm_color(side, a),
@@ -2288,8 +2295,8 @@ def _save_servoing_data(monitor, data, planner_mode='free',
     axes[0, 0].set_xlabel('iteration'); axes[0, 0].set_ylabel('mm')
     axes[0, 0].legend(fontsize=7, ncol=2); axes[0, 0].grid(True)
 
-    # Tool0 orientation error, per axis, both arms (deg).
-    for side in ('left', 'right'):
+    # Tool0 orientation error, per axis, every arm (deg).
+    for side in sides:
         for a, ax_name in enumerate(axis_names):
             axes[0, 1].plot(iters, [d['tool0'][side]['rot_err_deg'][a] for d in data],
                             'o-', color=_arm_color(side, a),
@@ -2928,40 +2935,101 @@ def _state_with_seed(state, seed_conf: Configuration) -> RobotCellState:
     return seeded
 
 
-# * Which ssik arm solves which of Cindy's planning groups ('left' / 'right').
-# * ssik solvers are built for Cindy's two arms only (husky_assembly_tamp
-# * asset/ssik, from her calibrated URDF); a support robot's 'manipulator' group
-# * has none and keeps PyBullet's built-in IK.
+# * Which ssik arm solves which planning group (husky_assembly_tamp asset/ssik,
+# * each built from that robot's calibrated URDF): Cindy's two arm groups ->
+# * 'left' / 'right'; a support robot's 'manipulator' group -> Alice's arm
+# * ('alice', built 2026-10-12). Belle shares the group name but not Alice's
+# * calibration, so 'alice' is only used on a robot body whose kinematics match
+# * it (_ssik_solver_fits_robot); otherwise PyBullet's built-in IK runs.
 _SSIK_ARM_OF_GROUP = dict(zip(robot_by_name('Cindy').planning_groups,
                               robot_by_name('Cindy').side_keys))
+_SSIK_ARM_OF_GROUP['manipulator'] = 'alice'
 # Most solutions ssik returns per arm (a UR arm has at most 8).
 SSIK_MAX_SOLUTIONS = 8
 # The ssik-unavailable warning is printed once per process, not on every solve.
 _ssik_fallback_warned = False
+# How close the solver's FK must be to the robot body's FK to use the solver on it.
+SSIK_FIT_TOL_M = 1e-6
+SSIK_FIT_TOL_RAD = 1e-6
+# (robot body id, arm) -> whether that solver fits that body (checked once).
+_ssik_fit_cache = {}
 
 
-def _ssik_arms_for(targets: dict) -> Optional[dict]:
+def _ssik_solver_fits_robot(robot: int, arm: str) -> bool:
+    """Whether an ssik solver was built from this robot body's kinematics.
+
+    Compares the solver's forward kinematics with PyBullet's (arm base link ->
+    tool0) at a few joint sets, once per body. A robot without the arm's joints
+    or links, or with another calibration (Belle vs Alice's solver), does not fit.
+
+    Args:
+        robot (int): PyBullet body id of the planner's robot.
+        arm (str): ssik arm name, e.g. ``'alice'``.
+
+    Returns:
+        bool: True when the solver reproduces the body's FK.
+    """
+    key = (robot, arm)
+    if key not in _ssik_fit_cache:
+        fits = False
+        try:
+            joints = pp.joints_from_names(robot, ssik_inprocess.joint_names(arm))
+            base_link, ee_link, _module = SSIK_ARM_BUILD[arm]
+            base = pp.link_from_name(robot, base_link)
+            tool0 = pp.link_from_name(robot, ee_link)
+            saved = pp.get_joint_positions(robot, joints)
+            try:
+                fits = True
+                for q in (np.zeros(6), np.full(6, 0.5), np.array([1.0, -1.2, 1.4, -0.8, 0.6, -0.4])):
+                    pp.set_joint_positions(robot, joints, q)
+                    body = pp.tform_from_pose(pp.multiply(
+                        pp.invert(pp.get_link_pose(robot, base)), pp.get_link_pose(robot, tool0)))
+                    solver = ssik_inprocess.fk(arm, q)
+                    gap_m = float(np.linalg.norm(body[:3, 3] - solver[:3, 3]))
+                    gap_rad = float(np.linalg.norm(R.from_matrix(body[:3, :3].T @ solver[:3, :3]).as_rotvec()))
+                    if gap_m > SSIK_FIT_TOL_M or gap_rad > SSIK_FIT_TOL_RAD:
+                        fits = False
+                        break
+            finally:
+                pp.set_joint_positions(robot, joints, saved)
+        except Exception:
+            fits = False  # the body has no such joints / links (another robot)
+        _ssik_fit_cache[key] = fits
+        if arm == 'alice':
+            print(f"[goal IK] ssik solver '{arm}' {'fits' if fits else 'does NOT fit'} the planner's "
+                  f"robot{'' if fits else ' (not Alice, or another calibration): PyBullet IK instead'}.")
+    return _ssik_fit_cache[key]
+
+
+def _ssik_arms_for(targets: dict, robot: Optional[int] = None) -> Optional[dict]:
     """Which ssik arm solves each target group, or None when ssik cannot solve them all.
 
     Args:
         targets (dict): ``{planning group: Frame}``, as ``solve_goal_ik_generic`` takes.
+        robot (int | None): PyBullet body id of the planner's robot. Needed for a
+            support robot's group: Alice's solver is used only on a body it fits.
 
     Returns:
-        dict | None: ``{planning group: 'left' | 'right'}`` when every group is
-        one of Cindy's arms and ssik is usable here; None otherwise (a support
-        robot, ``HUSKY_IK_BACKEND=gradient``, or ssik not installed), and the
+        dict | None: ``{planning group: 'left' | 'right' | 'alice'}`` when every
+        group has a solver that fits and ssik is usable here; None otherwise
+        (Belle, ``HUSKY_IK_BACKEND=gradient``, or ssik not installed), and the
         caller falls back to PyBullet's built-in IK.
     """
     global _ssik_fallback_warned
     arms = {group: _SSIK_ARM_OF_GROUP.get(group) for group in targets}
     if not arms or None in arms.values():
-        return None  # a support robot: no ssik solver built for its arm
-    if ssik_ik.ik_backend() == 'ssik' and ssik_inprocess.available():
+        return None  # no ssik solver built for this group
+    usable = ssik_ik.ik_backend() == 'ssik' and ssik_inprocess.available()
+    if usable and 'alice' in arms.values():
+        # ! Only on a body with Alice's kinematics (not Belle's).
+        if robot is None or not _ssik_solver_fits_robot(robot, 'alice'):
+            return None
+    if usable:
         return arms
     if not _ssik_fallback_warned:
         why = ('HUSKY_IK_BACKEND=gradient' if ssik_ik.ik_backend() != 'ssik'
                else "ssik is not installed in this Python ('pip install \"ssik>=4.1,<5\"')")
-        print(f"[goal IK] ! {why}: Cindy's goal IK falls back to PyBullet's built-in IK "
+        print(f"[goal IK] ! {why}: the goal IK falls back to PyBullet's built-in IK "
               f"(stops within 1 mm / 0.01 rad, random restarts).")
         _ssik_fallback_warned = True
     return None
@@ -2970,7 +3038,7 @@ def _ssik_arms_for(targets: dict) -> Optional[dict]:
 def _solve_goal_ik_ssik(planner, start_state, targets: dict, arms: dict, *,
                         check_collision: bool, cc_options: dict,
                         report: dict) -> Optional[Configuration]:
-    """Cindy's goal IK with ssik: every exact solution, the nearest collision-free pair.
+    """Goal IK with ssik (Cindy's two arms, Alice's one): every exact solution, the nearest collision-free set.
 
     ssik solves each arm in closed form on the calibrated URDF, so every
     solution is exact (no 1 mm tolerance) and all of them are listed (up to 8
@@ -2991,7 +3059,7 @@ def _solve_goal_ik_ssik(planner, start_state, targets: dict, arms: dict, *,
         start_state (RobotCellState): The reference configuration and the
             template every candidate goal state is copied from.
         targets (dict): ``{planning group: Frame}``, world-frame tool0 targets.
-        arms (dict): ``{planning group: 'left' | 'right'}`` (``_ssik_arms_for``).
+        arms (dict): ``{planning group: 'left' | 'right' | 'alice'}`` (``_ssik_arms_for``).
         check_collision (bool): Collision-check each candidate pair.
         cc_options (dict): Options for ``planner.check_collision``.
         report (dict): Filled like ``solve_goal_ik_generic``'s ``report``.
@@ -3137,8 +3205,9 @@ def solve_goal_ik_generic(planner, start_state, targets: dict, *, seed_confs=(),
             opts["_skip_cc4"] = True
             opts["_skip_cc5"] = True
 
-    # * Cindy's two arms: ssik (exact, deterministic). Everything else: PyBullet IK below.
-    arms = _ssik_arms_for(targets)
+    # * Cindy's two arms and Alice's arm: ssik (exact, deterministic). Everything
+    # * else (Belle): PyBullet IK below.
+    arms = _ssik_arms_for(targets, planner.client.robot_puid)
     if arms is not None and start_state.robot_configuration is not None:
         return _solve_goal_ik_ssik(planner, start_state, targets, arms,
                                    check_collision=check_collision,
@@ -5076,6 +5145,232 @@ def execute_transfer_then_servo(monitor):
     monitor._adopt_servo_corrected_end(transfer_idx, planned_end12, as_free_move=as_free_move)
 
 
+def _single_arm_tool0_at(monitor, conf6) -> tuple:
+    """World tool0 pose of a support robot's arm at ``conf6``, on the live mocap base.
+
+    Uses the grey live robot (same calibrated URDF as the planner) and puts it
+    back on the live joints afterwards.
+
+    Args:
+        monitor (HuskyMonitor): Provides the live robot body and its base pose.
+        conf6 (Sequence[float]): The 6 arm joint values.
+
+    Returns:
+        tuple: pybullet (point, quat) world pose of tool0.
+    """
+    h = monitor.huskies[monitor.selected_robot_id]
+    base = (h.interface.position, h.interface.rotation)
+    h.object.set_pose(base, [np.asarray(conf6, dtype=float)])
+    pose = h.object.get_link_pose_from_name(monitor._connected_robot().flange_links[0])
+    h.object.set_pose(base, h.interface.arm_joint_pose)
+    return pose
+
+
+def servo_single_arm_to_target_live(monitor, mv, max_iters: int = 8, pos_tol_mm: float = 0.2,
+                                    settle_seconds: float = SERVO_SETTLE_SECONDS,
+                                    confirm_first_iter: bool = True, log_data: bool = True,
+                                    log_dir: str = BAR_ACTION_LIVE_REPLAN_EXE_DIR,
+                                    log_label: str = 'servoing'):
+    """Visual servo of a support robot's tool0 onto its movement's target pose (one arm).
+
+    The single-arm twin of ``servo_to_movement_start_live`` (Cindy), with the
+    same rules: the error is tool0 by FK at the LIVE mocap base and the live
+    joints vs the authored world target (``mv.target_ee_frames``); each pass
+    solves IK at the live base (ssik on Alice: exact, nearest the live arm),
+    stops when the flange would move less than ``pos_tol_mm`` ('nothing left to
+    plan') or is within it ('converged'), else sends a 2-point joint move from
+    the live arm to that solution. The first move is previewed and waits for
+    'Confirm Exec'; a later one only when it travels more than
+    ``SERVO_EXCURSION_CONFIRM_DEG`` (SAFEGUARD). The duration follows the
+    travel (``_apply_recommended_traj_time``), re-read from the slider at send
+    time. Every pass waits out the move plus ``settle_seconds`` (the base
+    settles under the arm's new centre of mass) before it measures. Feeds the
+    'Servoing Live Tracker' and saves a JSON + PNG record.
+
+    Args:
+        monitor (HuskyMonitor): Its loaded movement is ``mv``.
+        mv (Movement): The support robot's movement whose target tool0 pose is
+            servoed to (its free approach: the approach pose).
+        max_iters (int): Hard cap on correction moves.
+        pos_tol_mm (float): Position tolerance of both stop checks, mm.
+        settle_seconds (float): Wait after each move before measuring, s.
+        confirm_first_iter (bool): Preview the first move and wait for 'Confirm Exec'.
+        log_data (bool): Save the record when at least one move ran.
+        log_dir (str): Root folder of the record (a dated ``-servoing`` subfolder).
+        log_label (str): File name prefix of the record.
+
+    Yields:
+        None: One yield per monitor tick.
+    """
+    log = monitor.get_logger()
+    spec = monitor._connected_robot()
+    side, group = spec.side_keys[0], spec.planning_groups[0]
+    names = list(spec.arm_joint_names[0])
+    hi = monitor.huskies[monitor.selected_robot_id].interface
+    target = (mv.target_ee_frames or {}).get(side)
+    if target is None:
+        log.warn(f"[servo] {mv.movement_id} has no target_ee_frames[{side!r}]; nothing to servo to.")
+        return
+    targets = {side: target}
+    start_base_pose = (copy.copy(hi.position), copy.copy(hi.rotation))
+    monitor.reset_servoing_tracker()
+    monitor.show_servoing_tracker()
+    monitor._servo_abort = False
+
+    def _aborted() -> bool:
+        return getattr(monitor, '_servo_abort', False)
+
+    data = []
+
+    def _record(iter_i: int) -> float:
+        """Measure, log, plot and store the residual; return its position norm in mm."""
+        err = measure_servo_tool0_error(monitor, targets)
+        base = measure_base_pose_diff(monitor, start_base_pose)
+        data.append({'iter': iter_i, 'tool0': err, 'base': base, 'wrench': None})
+        monitor.push_servoing_tracker(iter_i, err, base)
+        rot = max(abs(v) for v in err[side]['rot_err_deg'])
+        log.info(f"[servo {iter_i}] tool0 pos {err[side]['pos_norm_mm']:.2f} mm, rot {rot:.2f} deg")
+        return err[side]['pos_norm_mm']
+
+    pos_mm = _record(0)
+    for it in range(1, max_iters + 1):
+        if _aborted():
+            break
+        if pos_mm < pos_tol_mm:
+            log.info(f'### SERVOING converged at iter {it - 1} (< {pos_tol_mm} mm)')
+            break
+        log.info(f'### SERVOING iteration {it}/{max_iters}')
+        # * IK at the live base, nearest the live arm.
+        live = np.asarray(hi.arm_joint_pose[0], dtype=float)
+        state = mv.start_state.copy()
+        monitor._inject_live_conf_into_state(state)   # live mocap base + live joints
+        report = {}
+        conf = solve_goal_ik_generic(monitor.cfab.planner, state, {group: target},
+                                     check_collision=True, report=report)
+        if conf is None:
+            log.warn(f"Servoing: live-base IK failed ({report.get('last_error')}); stopping.")
+            break
+        goal = np.array([float(conf[n]) for n in names])
+        # * Anything left to ask for? How far the flange would move, in mm.
+        correction_mm = 1e3 * float(np.linalg.norm(
+            np.subtract(_single_arm_tool0_at(monitor, goal)[0], _single_arm_tool0_at(monitor, live)[0])))
+        if correction_mm < pos_tol_mm:
+            log.info(f'### SERVOING stopped at iter {it}: nothing left to plan '
+                     f'(correction {correction_mm:.2f} mm, under {pos_tol_mm} mm).')
+            break
+        # * The correction: a straight joint move from the live arm to the IK goal.
+        monitor.planned_arm_trajectory = [(np.array([live, goal]), None, monitor.trajectory_time, None),
+                                          (None, None, None, None)]
+        monitor._refresh_preview_attached_bodies('free', mv.start_state)
+        monitor.set_to_show_traj_state()
+        n_waypoints, net_delta_deg, excursion_deg = _path_motion_summary(
+            monitor.planned_arm_trajectory, n_arms=1)
+        _apply_recommended_traj_time(monitor, excursion_deg)
+        if it == 1 and confirm_first_iter:
+            yield from wait_for_operator_confirm(
+                monitor,
+                f"[servo] First move planned: tool0 {correction_mm:.1f} mm, joints "
+                f"{excursion_deg:.2f} deg, over {_live_trajectory_time(monitor):.0f} s. Preview "
+                f"it with the traj viz slider; drag 'traj time' now if that is too fast (it is "
+                f"re-read when you confirm), then click 'Confirm Exec' to execute.")
+        elif excursion_deg > SERVO_EXCURSION_CONFIRM_DEG:
+            yield from wait_for_operator_confirm(
+                monitor,
+                f'[servo] SAFEGUARD iter {it}: this path travels {excursion_deg:.1f}° '
+                f'(over {_live_trajectory_time(monitor):.0f} s). Scrub "Traj viz time" to see '
+                f'it, adjust "traj time" if needed, then click "Confirm Exec" -- or '
+                f'"Cancel Exec" to stop and record instead.', warn=True)
+        if _aborted():
+            break
+        traj_time = _live_trajectory_time(monitor)
+        execute_arm_trajectory_all(monitor, traj_time)
+        for _ in range(int(np.ceil((traj_time + settle_seconds) / MONITOR_TICK_S))):
+            if _aborted():
+                break
+            yield
+        if _aborted():
+            break
+        yield  # one more tick for a fresh joint state
+        track_mm = 1e3 * float(np.linalg.norm(np.subtract(
+            _single_arm_tool0_at(monitor, hi.arm_joint_pose[0])[0], _single_arm_tool0_at(monitor, goal)[0])))
+        log.info(f'[servo {it}] arm vs last commanded waypoint: {track_mm:.2f} mm')
+        pos_mm = _record(it)
+    else:
+        if pos_mm < pos_tol_mm:
+            log.info(f'### SERVOING converged at iter {max_iters} (< {pos_tol_mm} mm)')
+    if _aborted():
+        log.info('### SERVOING cancelled by user.')
+    # A correction path must not be replayed by 'Exec'.
+    monitor._reset_planned_arm_trajectory()
+    if log_data and len(data) > 1:
+        # ! A missing drive must not raise inside the task: an exception there
+        # ! stops the monitor tick.
+        try:
+            _save_servoing_data(monitor, data, planner_mode='single_arm_joint',
+                                root_dir=log_dir, label=log_label, movement_id=mv.movement_id)
+        except Exception as e:
+            log.warn(f'[servo] could not save the servoing record: {e}')
+
+
+def execute_free_approach_then_servo(monitor):
+    """Run a support robot's free approach, then servo its tool0 onto the approach pose.
+
+    The single-arm counterpart of ``execute_transfer_then_servo``: the arm's
+    motion shifts the base's centre of mass, so tool0 lands a few mm off the
+    approach pose the straight approach to the grasp starts from. After the
+    motion, ``servo_single_arm_to_target_live`` corrects it; then where the arm
+    really is becomes the start of the steps after it (the gripper step, the
+    straight approach) and a straight approach planned earlier is dropped.
+
+    Without real hardware or a mocap-tracked base the servo is skipped with a
+    log line. 'Cancel Exec' at a pause ends the task (a trajectory already sent
+    still finishes).
+
+    Args:
+        monitor (HuskyMonitor): The free approach loaded and planned, its
+            trajectory in ``planned_arm_trajectory``.
+
+    Yields:
+        None: One yield per monitor tick.
+    """
+    log = monitor.get_logger()
+    mv, idx = monitor.current_movement, monitor.current_movement_index
+    tag = f'[approach {mv.movement_id}]'
+    # Read before anything rebuilds the panel (the servo rewrites the slider).
+    traj_time = float(monitor.trajectory_time) or 5.0
+
+    # * 1. The free approach itself.
+    execute_arm_trajectory_all(monitor, traj_time)
+    for _ in range(int(np.ceil((traj_time + SERVO_SETTLE_SECONDS) / MONITOR_TICK_S))):
+        yield
+    if monitor.FAKE_HARDWARE or not monitor._base_pose_is_tracked():
+        why = 'FAKE_HARDWARE' if monitor.FAKE_HARDWARE else 'the base is not tracked by mocap'
+        log.info(f"{tag} servo skipped ({why}); the next steps start where the approach ended.")
+        return
+
+    # * 2. The correction onto the approach pose.
+    try:
+        yield from servo_single_arm_to_target_live(
+            monitor, mv, max_iters=8, pos_tol_mm=0.2, settle_seconds=SERVO_SETTLE_SECONDS,
+            confirm_first_iter=True, log_data=True, log_dir=BAR_ACTION_LIVE_REPLAN_EXE_DIR,
+            log_label=f'{mv.movement_id}_servoing')
+    except Exception as e:
+        # ! The task loop catches StopIteration only: any other exception would
+        # ! stop the monitor tick.
+        log.error(f"{tag} servo loop failed: {e}")
+
+    # * 3. Where the arm really is becomes the start of the next steps.
+    live = [float(v) for v in monitor.huskies[monitor.selected_robot_id].interface.arm_joint_pose[0]]
+    monitor._carry_configuration_forward(idx, live, source='Servo')
+    for later in monitor._loaded_movements[idx + 1:]:
+        if monitor._kind_of(later) not in STATIONARY_KINDS:
+            if later.trajectory is not None:
+                later.trajectory = None
+                log.info(f"{tag} the plan of {later.movement_id} was made before the correction; "
+                         f"dropped (plan it again).")
+            break
+
+
 MOVE_TO_MOVEMENT_START_MAX_DELTA_RAD = np.pi / 3.0
 
 
@@ -5432,24 +5727,48 @@ def jog_tool0_target(monitor: 'HuskyMonitor', arm_index: int, start_pose: tuple,
     return conf, travelled, ''
 
 
+def _plain_gripper_close(monitor: 'HuskyMonitor', close_pos: float, effort: float, arm_index: int,
+                         tag: str) -> Generator[None, None, bool]:
+    """Close the gripper with the arm left as it is (stiff), and wait for the result.
+
+    Args:
+        monitor (HuskyMonitor): Provides the active husky's interface and the logger.
+        close_pos (float): Gripper target position.
+        effort (float): Gripper max effort.
+        arm_index (int): Arm whose gripper closes.
+        tag (str): Log prefix.
+
+    Yields:
+        None: One yield per monitor tick while waiting.
+
+    Returns:
+        bool: True when the gripper answered in time.
+    """
+    hi = monitor.huskies[monitor.selected_robot_id].interface
+    if not hi.send_gripper_cmd(close_pos, effort, arm_index):
+        return False
+    result = yield from _wait_for_gripper_result(monitor, arm_index, GRIPPER_RESULT_TIMEOUT_S, tag)
+    return result is not None
 
 
 # * Compliant gripper handoff limits.
 # How far the live tool0 may move from the pose where the arm went compliant
 # before the hold is ended (the arm then goes back to joint tracking).
-GRIP_HANDOFF_MAX_DRIFT_M = 0.02  # ? tune on hardware
-# ! Must match HuskyRobotInterface.send_arm_cmd_cartesian: it drops (with a
-# ! warning) every target further than this from the arm-reported TCP, per
-# ! position axis (m) and per quaternion component.
-CARTESIAN_TARGET_GUARD_TOL = 0.05
+# ? Tune on hardware: a bar off-centre in the open jaws moves the arm a few mm.
+GRIP_HANDOFF_MAX_DRIFT_M = 0.01
+# How far the FK tool0 (the anchor the hold sends) may be from the TCP the arm
+# reports before the arm goes compliant. The compliant arm pulls straight to the
+# anchor, so any gap here is a jump. On Alice they agree to 0.0 mm (2026-10-12).
+GRIP_HANDOFF_ANCHOR_TOL_M = 0.01
+GRIP_HANDOFF_ANCHOR_TOL_DEG = 2.0
 # Wait after zeroing the F/T sensor so the zero is done before the fingers move.
 GRIP_FT_ZERO_SETTLE_S = 0.5
 
 
 def grip_with_compliant_handoff(monitor: 'HuskyMonitor', close_pos: float = GRIPPER_CLOSE_FOR_BAR_POS,
-                                effort: float = GRIPPER_EFFORT, switch_fraction: float = 0.8,
-                                timeout_s: float = 30.0, arm_index: int = 0) -> Generator[None, None, bool]:
-    """Close the support gripper on the bar, the arm going compliant for the end of the stroke.
+                                effort: float = GRIPPER_EFFORT, timeout_s: float = 30.0,
+                                arm_index: int = 0) -> Generator[None, None, bool]:
+    """Close the support gripper on the bar with the arm compliant for the whole close.
 
     As the fingers close they pull the bar -- and so the arm -- into their
     centre. A stiff arm fights that; a compliant one gives way like a spring.
@@ -5457,35 +5776,36 @@ def grip_with_compliant_handoff(monitor: 'HuskyMonitor', close_pos: float = GRIP
 
       1. make sure the arm is under scaled_joint_trajectory_controller, then
          zero its F/T sensor (the fingers are still open and touch nothing);
-      2. send the close goal and watch the gripper's feedback position;
-      3. once the fingers have covered ``switch_fraction`` of the stroke, capture
-         the arm's tool0 pose while it is still stiff (the ANCHOR), check it
-         against the TCP the arm itself reports, and switch the arm to
-         cartesian_compliance_controller (no handoff if either step fails);
-      4. every tick, publish the ANCHOR as the compliance target and a zero
-         wrench, so the arm springs around that pose instead of pushing back,
-         until the gripper's result arrives (stalled on the bar or goal
-         reached). The hold ends early if the arm moves more than
-         ``GRIP_HANDOFF_MAX_DRIFT_M`` from the anchor;
-      5. ``finally``: ALWAYS switch back to scaled_joint_trajectory_controller,
+      2. capture the arm's tool0 pose while it is still stiff (the ANCHOR),
+         check it against the TCP the arm itself reports, and switch the arm to
+         cartesian_compliance_controller BEFORE anything closes;
+      3. send the close goal and, every tick, publish the ANCHOR as the
+         compliance target and a zero wrench, so the arm springs around that
+         pose instead of pushing back, until the gripper's result arrives
+         (stalled on the bar or goal reached). The hold ends early if the arm
+         moves more than ``GRIP_HANDOFF_MAX_DRIFT_M`` from the anchor;
+      4. ``finally``: ALWAYS switch back to scaled_joint_trajectory_controller,
          with a loud error if that fails.
 
-    Without CONNECT_COMPLIANT_CONTROLLER, with FAKE_HARDWARE, or when no
-    gripper server answers, this is a plain close with a warning. 'Cancel Exec'
-    (``_servo_abort``) ends the wait early; the gripper goal is NOT cancelled
-    (it keeps closing with the arm stiff) and the finally still restores the
-    joint controller.
+    * Why compliant first: switching partway through the close needs to see the
+    * fingers move (Alice's humble gripper_action_controller sends no action
+    * feedback) and to fire before they touch the bar, whose contact position
+    * depends on the bar diameter and the gripper speed. Going compliant before
+    * the close covers the whole contact whatever those are.
+
+    Without CONNECT_COMPLIANT_CONTROLLER, with FAKE_HARDWARE, when no gripper
+    server answers, or when the FK tool0 and the arm-reported TCP disagree, this
+    is a plain close with the arm stiff (logged). When the switch to compliance
+    fails, nothing is closed. 'Cancel Exec' (``_servo_abort``) ends the hold
+    early; the gripper goal is NOT cancelled (it keeps closing with the arm
+    stiff) and the finally still restores the joint controller.
 
     Args:
         monitor (HuskyMonitor): Provides the husky interface, the ghost robot
             for the FK, the flags and the logger.
         close_pos (float): Gripper target position ('Close Gripper for Bar').
         effort (float): Gripper max effort.
-        switch_fraction (float): Share of the stroke (from the start position to
-            ``close_pos``, by feedback position) after which the arm goes compliant.
-            ? Tune on hardware: it must trigger BEFORE the fingers touch the bar,
-            ? or the gripper stalls first and no handoff happens.
-        timeout_s (float): Ceiling on the whole grip, from the close command.
+        timeout_s (float): Ceiling on the compliant hold, from the close command.
         arm_index (int): Arm whose gripper closes (0 for a support robot).
 
     Yields:
@@ -5512,13 +5832,10 @@ def grip_with_compliant_handoff(monitor: 'HuskyMonitor', close_pos: float = GRIP
             why = 'no gripper action server is ready'
         log.warn(f'{tag} {why}: plain close WITHOUT the compliant handoff '
                  f'(the arm stays stiff under {joint_ctrl}).')
-        if not hi.send_gripper_cmd(close_pos, effort, arm_index):
-            return False
-        result = yield from _wait_for_gripper_result(monitor, arm_index, GRIPPER_RESULT_TIMEOUT_S, tag)
-        return result is not None
+        return (yield from _plain_gripper_close(monitor, close_pos, effort, arm_index, tag))
 
     # * Phase 1: the arm starts under the joint controller.
-    log.info(f'{tag} phase 1/4: ensuring {joint_ctrl} on arm {arm_index}.')
+    log.info(f'{tag} phase 1/3: ensuring {joint_ctrl} on arm {arm_index}.')
     if not (yield from switch_arm_controllers(monitor, joint_ctrl, arm_indices=[arm_index])):
         log.error(f'{tag} the arm is NOT under {joint_ctrl}; nothing sent. '
                   f"Close by hand with 'Close Gripper for Bar' if needed.")
@@ -5530,88 +5847,69 @@ def grip_with_compliant_handoff(monitor: 'HuskyMonitor', close_pos: float = GRIP
     zero_ft_sensor = getattr(hi, 'zero_ft_sensor', None)
     if zero_ft_sensor is not None and zero_ft_sensor(arm_index):
         log.info(f'{tag} F/T sensor zeroed (fingers open, touching nothing); '
-                 f'closing in {GRIP_FT_ZERO_SETTLE_S:.1f}s.')
+                 f'going compliant in {GRIP_FT_ZERO_SETTLE_S:.1f}s.')
         t_zero = time.time()
         while time.time() - t_zero < GRIP_FT_ZERO_SETTLE_S:
             yield
 
-    compliance_requested = False  # the phase-3 switch request went out
+    # The anchor: tool0 where the arm is NOW, still stiff. The hold keeps it there.
+    anchor = _live_tool0_in_arm_base(monitor, arm_index)
+    # ! The compliant arm pulls straight to the anchor, so the anchor must be
+    # ! where the arm really is: check it against the TCP the arm reports
+    # ! (hi.arm_tcp_pose, same arm base frame) before going compliant.
+    tcp = hi.arm_tcp_pose[arm_index]
+    apart_mm = 1000.0 * float(np.linalg.norm(np.subtract(tcp[0], anchor[0])))
+    # Rotation angle between the two orientations (q and -q are the same rotation).
+    dot = abs(float(np.dot(tcp[1], anchor[1]) / (np.linalg.norm(tcp[1]) * np.linalg.norm(anchor[1]))))
+    apart_deg = float(np.degrees(2.0 * np.arccos(min(dot, 1.0))))
+    log.info(f'{tag} anchor check: FK tool0 vs the arm-reported TCP {apart_mm:.1f} mm, {apart_deg:.2f} deg.')
+    if apart_mm > GRIP_HANDOFF_ANCHOR_TOL_M * 1000.0 or apart_deg > GRIP_HANDOFF_ANCHOR_TOL_DEG:
+        log.error(f'{tag} FK tool0 and the arm-reported TCP disagree by {apart_mm:.1f} mm / '
+                  f'{apart_deg:.2f} deg (limit {GRIP_HANDOFF_ANCHOR_TOL_M * 1000.0:.0f} mm / '
+                  f'{GRIP_HANDOFF_ANCHOR_TOL_DEG:.0f} deg): '
+                  f'FK {np.round(anchor[0], 3).tolist()} / {np.round(anchor[1], 3).tolist()} vs '
+                  f'TCP {np.round(tcp[0], 3).tolist()} / {np.round(tcp[1], 3).tolist()}. '
+                  f'No handoff, the gripper closes with the arm stiff.')
+        yield from _plain_gripper_close(monitor, close_pos, effort, arm_index, tag)
+        return False
+
+    compliance_requested = False  # the phase-2 switch request went out
     switched = False              # ... and was acknowledged in time
     closing = False               # the task was closed from outside (GeneratorExit)
     try:
-        # * Phase 2: close, the arm still stiff.
-        # Where the fingers are now: the previous goal's final position, else
-        # the last feedback, else fully open. Read before sending: the send
-        # clears both.
+        # * Phase 2: hand the arm over to compliance, the fingers still open.
+        log.info(f'{tag} phase 2/3: switching arm {arm_index} {joint_ctrl} -> {compliance_ctrl} '
+                 f'BEFORE the close (fingers still open).')
+        compliance_requested = True
+        switched = yield from switch_arm_controllers(monitor, compliance_ctrl, arm_indices=[arm_index])
+        if not switched:
+            log.error(f'{tag} switch to {compliance_ctrl} FAILED: the gripper was NOT closed. '
+                      f"Check the controllers ('Switch to Joint (BOTH)' if needed), then run the "
+                      f"step again, or close it with the arm stiff with 'Close Gripper for Bar'.")
+            return False
+
+        # * Phase 3: close, holding the anchor with zero wrench until the gripper is done.
+        # Where the fingers are now (for the log): the previous goal's final
+        # position, else the last feedback, else fully open. Read before
+        # sending: the send clears both.
         start = GRIPPER_OPEN_POS
         for known in (hi.gripper_result[arm_index], hi.gripper_feedback[arm_index]):
             if known and known.get('position') is not None:
                 start = known['position']
                 break
         if not hi.send_gripper_cmd(close_pos, effort, arm_index):
-            log.error(f'{tag} the close goal was not sent; nothing to hand over.')
+            log.error(f'{tag} the close goal was not sent; nothing closed.')
             return False
         deadline = time.time() + float(timeout_s)
-        span = close_pos - start
-        log.info(f'{tag} phase 2/4: close goal sent (position {start:.3f} -> {close_pos:.3f}, '
-                 f'effort {effort}); arm under {joint_ctrl} until {switch_fraction:.0%} of the stroke.')
-        while True:
-            fb = hi.gripper_feedback[arm_index]
-            if fb is not None and fb.get('position') is not None:
-                # A zero-length stroke (already at close_pos) counts as done.
-                frac = (fb['position'] - start) / span if abs(span) > 1e-6 else 1.0
-                if frac >= switch_fraction:
-                    break
-            if hi.gripper_result[arm_index] is not None:
-                log.warn(f'{tag} the gripper finished before {switch_fraction:.0%} of its stroke '
-                         f'({_gripper_result_text(hi.gripper_result[arm_index])}); '
-                         f'no compliant handoff happened.')
-                return True
-            if time.time() > deadline:
-                log.warn(f'{tag} no gripper feedback past {switch_fraction:.0%} of the stroke '
-                         f'within {timeout_s:.1f}s; no compliant handoff.')
-                return False
-            if getattr(monitor, '_servo_abort', False):
-                log.warn(f'{tag} cancelled by the operator before the handoff; the gripper goal '
-                         f'is NOT cancelled and keeps closing with the arm stiff.')
-                return False
-            yield
-
-        # * Phase 3: hand the arm over to compliance.
-        # The anchor: tool0 where the arm is NOW, still stiff. Phase 4 holds it.
-        anchor = _live_tool0_in_arm_base(monitor, arm_index)
-        # ! send_arm_cmd_cartesian drops every target that is off the arm-reported
-        # ! TCP (hi.arm_tcp_pose, same arm base frame) by more than the guard
-        # ! tolerance. If FK and the arm disagree that much, every target of the
-        # ! hold would be dropped -- so do not go compliant at all.
-        tcp = hi.arm_tcp_pose[arm_index]
-        if not (np.isclose(tcp[0], anchor[0], atol=CARTESIAN_TARGET_GUARD_TOL).all()
-                and np.isclose(tcp[1], anchor[1], atol=CARTESIAN_TARGET_GUARD_TOL).all()):
-            apart_mm = 1000.0 * float(np.linalg.norm(np.subtract(tcp[0], anchor[0])))
-            log.error(f'{tag} FK tool0 and the arm-reported TCP disagree by more than 5 cm '
-                      f'(or 0.05 in a quaternion component): position {apart_mm:.0f} mm apart, '
-                      f'FK {np.round(anchor[0], 3).tolist()} / {np.round(anchor[1], 3).tolist()} vs '
-                      f'TCP {np.round(tcp[0], 3).tolist()} / {np.round(tcp[1], 3).tolist()}. '
-                      f'No handoff, the gripper closes with the arm stiff.')
-            return False
-        log.info(f"{tag} phase 3/4: gripper at {fb['position']:.3f} ({frac:.0%} of the stroke); "
-                 f'switching arm {arm_index} {joint_ctrl} -> {compliance_ctrl}.')
-        compliance_requested = True
-        switched = yield from switch_arm_controllers(monitor, compliance_ctrl, arm_indices=[arm_index])
-        if not switched:
-            log.error(f'{tag} switch to {compliance_ctrl} FAILED: no handoff, the gripper '
-                      f'keeps closing with the arm stiff.')
-            return False
-
-        # * Phase 4: hold the anchor, zero wrench, until the gripper is done.
         # ! The target stays FIXED at the anchor. Re-reading the live pose every
         # ! tick would move the target along with the arm, so the controller's
         # ! stiffness would never pull back and the arm would drift along any
         # ! force it senses.
         limit_mm = GRIP_HANDOFF_MAX_DRIFT_M * 1000.0
-        log.info(f'{tag} phase 4/4: arm under {compliance_ctrl} (target = tool0 pose captured at '
-                 f'the switch, zero wrench) until the gripper stalls or reaches its goal; the hold '
-                 f'ends if the arm moves more than {limit_mm:.0f} mm from that pose.')
+        log.info(f'{tag} phase 3/3: close goal sent (position {start:.3f} -> {close_pos:.3f}, '
+                 f'effort {effort}); arm under {compliance_ctrl} (target = tool0 pose captured '
+                 f'before the switch, zero wrench) until the gripper stalls or reaches its goal; '
+                 f'the hold ends if the arm moves more than {limit_mm:.0f} mm from that pose.')
         while True:
             live = _live_tool0_in_arm_base(monitor, arm_index)
             drift = float(np.linalg.norm(np.subtract(live[0], anchor[0])))
@@ -5713,7 +6011,7 @@ def exec_gripper_tool_movement(monitor: 'HuskyMonitor',
         elif tool_action == 'close':
             compliant = monitor.CONNECT_COMPLIANT_CONTROLLER and not monitor.FAKE_HARDWARE
             what = (f'CLOSE the gripper on the bar (position {GRIPPER_CLOSE_FOR_BAR_POS}), '
-                    + ('the arm going compliant for the end of the stroke' if compliant
+                    + ('the arm going compliant BEFORE the close' if compliant
                        else 'plain close: CONNECT_COMPLIANT_CONTROLLER is 0 or FAKE_HARDWARE is 1, '
                             'the arm stays stiff'))
         else:

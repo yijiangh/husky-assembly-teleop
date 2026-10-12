@@ -1302,13 +1302,15 @@ class HuskyMonitor(Node):
         if self._servoing_plots() is None:
             return
         # Position pushes end each arm's / the base's block with the |d| norm,
-        # matching the group_size=4 (x, y, z, |d|) layout of these plots.
+        # matching the group_size=4 (x, y, z, |d|) layout of these plots. One
+        # block per arm of the connected robot (left, right / arm).
+        sides = self._connected_robot().side_keys
         self.servoing_pos_plot.push(
-            list(tool0_err['left']['pos_err_mm']) + [tool0_err['left']['pos_norm_mm']]
-            + list(tool0_err['right']['pos_err_mm']) + [tool0_err['right']['pos_norm_mm']],
+            [v for side in sides
+             for v in list(tool0_err[side]['pos_err_mm']) + [tool0_err[side]['pos_norm_mm']]],
             x=iter_i)
         self.servoing_rot_plot.push(
-            list(tool0_err['left']['rot_err_deg']) + list(tool0_err['right']['rot_err_deg']),
+            [v for side in sides for v in tool0_err[side]['rot_err_deg']],
             x=iter_i)
         self.servoing_base_pos_plot.push(
             list(base_diff['pos_diff_mm']) + [base_diff['pos_norm_mm']], x=iter_i)
@@ -4147,9 +4149,10 @@ class HuskyMonitor(Node):
           to ``target_configuration``. When mocap tracks the base, that goal is
           first re-solved by IK for the approach pose at the live base
           (``_resolve_single_arm_goal_live``); otherwise the exported one is used.
-        - SINGLE_LINEAR (e.g. ``H_M2``): straight flange line from the movement's
-          start configuration (the previous movement's end, chained by
-          ``_accept_trajectory``) to ``target_ee_frames['arm']``.
+        - SINGLE_LINEAR (e.g. ``H_M2``): straight flange line from the LIVE arm
+          joints (``_resync_start_state_to_live``; the chained start, the
+          previous movement's end, is only required to exist) to
+          ``target_ee_frames['arm']``.
         Tool / manual steps: nothing to plan (no arm moves).
         Every plan runs at the live base with the other robots posed from
         their beliefs (``_apply_live_base_to_movement``).
@@ -4261,6 +4264,10 @@ class HuskyMonitor(Node):
                 return
             if not self._apply_live_base_to_movement(mv):
                 return
+            # * Start from where the arm really is (the IK of each step is seeded
+            # * from the step before), not from the chained configuration, which
+            # * may sit on another IK branch than the arm.
+            self._resync_start_state_to_live(mv, mv.movement_id)
             with pp.LockRenderer():
                 jt = plan_linear_motion(self.cfab.planner, mv.start_state, target, group=group)
 
@@ -4280,6 +4287,21 @@ class HuskyMonitor(Node):
                 f"previously loaded movement, not {mv.movement_id!r}.")
             return
         self._accept_trajectory(mv, jt, source='Plan')
+
+    def _is_hold_approach(self, mv: Movement) -> bool:
+        """Whether ``mv`` is a support robot's free approach to a hold (servoed after its motion).
+
+        Args:
+            mv (Movement): A loaded single-arm free movement.
+
+        Returns:
+            bool: True in a hold entry (``H``) when the movement has an approach
+            pose (``target_ee_frames`` for the robot's arm) to servo to.
+        """
+        entry = getattr(self, '_loaded_entry', None)
+        side = self._connected_robot().side_keys[0]
+        return (entry is not None and entry.kind == 'H'
+                and (mv.target_ee_frames or {}).get(side) is not None)
 
     def _resolve_single_arm_goal_live(self, mv: Movement) -> bool:
         """Re-solve a support robot's free-move goal by IK at the live base.
@@ -5704,6 +5726,11 @@ class HuskyMonitor(Node):
         # ! check (headless_schedule_smoke) replaces these module attributes.
         if kind in COMPLIANT_KINDS:
             self.tasks.append(world.execute_planned_trajectory_compliant(self))
+        elif kind is MovementKind.SINGLE_FREE and self._is_hold_approach(mv):
+            # * A support robot's free approach to a hold: joint tracking, then the
+            # * visual-servo correction of tool0 onto the approach pose (like the
+            # * correction after Cindy's transfer).
+            self.tasks.append(world.execute_free_approach_then_servo(self))
         elif kind in SINGLE_ARM_KINDS:
             world.execute_arm_trajectory_all(self)
         elif kind is MovementKind.DUAL_FREE and not self._is_free_home(mv):
@@ -7483,6 +7510,10 @@ class HuskyMonitor(Node):
         keeps starting from the stale propagated conf, so the gap survives every
         replan.
 
+        Also used for a support robot's linear approach (one arm): its IK is
+        seeded step by step from the start, so starting from the live arm keeps
+        the path on the IK branch the arm is really on.
+
         Args:
             mv: The movement whose ``start_state`` is resynced in place.
             tag (str): Log tag (the movement id).
@@ -7490,13 +7521,15 @@ class HuskyMonitor(Node):
         Returns:
             None.
         """
+        # The connected robot's arm joints (12 on Cindy, 6 on a support robot).
+        names = [n for arm_names in self._arm_joint_name_sets() for n in arm_names]
         before = None
         if mv.start_state is not None and mv.start_state.robot_configuration is not None:
-            before = vec12_from_conf(mv.start_state.robot_configuration)
+            before = np.array([float(mv.start_state.robot_configuration[n]) for n in names])
         self._inject_live_conf_into_state(mv.start_state)
         if before is not None:
-            after = vec12_from_conf(mv.start_state.robot_configuration)
-            drift = float(np.abs(np.asarray(after) - np.asarray(before)).max())
+            after = np.array([float(mv.start_state.robot_configuration[n]) for n in names])
+            drift = float(np.abs(after - before).max())
             print(f"[{tag}] start_state resynced to the live arms "
                   f"(max joint drift from the propagated conf: "
                   f"{np.degrees(drift):.2f} deg).")
@@ -11021,24 +11054,27 @@ class HuskyMonitor(Node):
         # error [mm], tool0 orientation error [deg], mobile-base position drift
         # [mm], mobile-base orientation drift [deg]). Fed one point per servoing
         # iteration by world.servo_to_movement_start_live via push_servoing_tracker.
-        # Dear PyGui only, dual-arm only: the accuracy test's loop and the
-        # correction after the schedule's transfer (world.execute_transfer_then_servo).
-        if (self.USE_DPG_UI and self.BAR_ACTION_LIVE_REPLAN_EXE
-                and self._connected_robot().dual_arm):
+        # Dear PyGui only: the accuracy test's loop, the correction after the
+        # schedule's transfer (world.execute_transfer_then_servo) and, on a
+        # support robot, the correction after its free approach
+        # (world.execute_free_approach_then_servo). One block per arm.
+        if self.USE_DPG_UI and self.BAR_ACTION_LIVE_REPLAN_EXE:
             visible = getattr(self, '_servoing_tracker_visible', False)
             _common._global_backend.add_window(
                 "Servoing Live Tracker", tag="servoing_tracker_window",
                 width=620, height=900, show=visible)
             # Position plots carry an extra |d| euclidean-norm curve (group_size=4);
-            # rotation plots are per-axis only (group_size=3). Left arm = reds,
-            # right arm = greens, base = blues (see world.SERVO_*_RGB); within each
+            # rotation plots are per-axis only (group_size=3). First arm = reds,
+            # second arm = greens, base = blues (see world.SERVO_*_RGB); within each
             # family the 4th shade is the |d| line.
-            arm_labels_xyz = [f'{side} {ax}' for side in ('Left', 'Right')
+            sides = self._connected_robot().side_keys
+            arm_rgb = (world.SERVO_LEFT_ARM_RGB, world.SERVO_RIGHT_ARM_RGB)[:len(sides)]
+            arm_labels_xyz = [f'{side.capitalize()} {ax}' for side in sides
                               for ax in ('x', 'y', 'z')]
-            arm_labels_xyzd = [f'{side} {ax}' for side in ('Left', 'Right')
+            arm_labels_xyzd = [f'{side.capitalize()} {ax}' for side in sides
                                for ax in ('x', 'y', 'z', '|d|')]
-            arm_pal_xyz = world.SERVO_LEFT_ARM_RGB[:3] + world.SERVO_RIGHT_ARM_RGB[:3]
-            arm_pal_xyzd = world.SERVO_LEFT_ARM_RGB + world.SERVO_RIGHT_ARM_RGB
+            arm_pal_xyz = [c for rgb in arm_rgb for c in rgb[:3]]
+            arm_pal_xyzd = [c for rgb in arm_rgb for c in rgb]
             self.servoing_pos_plot = HistoryPlot(
                 "tool0 pos err", arm_labels_xyzd, "tool0 pos err [mm]",
                 parent="servoing_tracker_window", group_size=4, palette=arm_pal_xyzd)
@@ -11430,10 +11466,9 @@ class HuskyMonitor(Node):
             # 2026-09-30 failure and runs the real gate. Sends nothing, ever.
             self.buttons.append(Button('Safeguard Drill (sends nothing)',
                 lambda: self.tasks.append(world.servo_safeguard_drill(self))))
-            # The servo tracker window: the accuracy test's loop and the
-            # correction after each transfer feed it (dual-arm only).
-            if self._connected_robot().dual_arm:
-                self.buttons.append(Button('Toggle Servoing Tracker', self.toggle_servoing_tracker))
+            # The servo tracker window: the accuracy test's loop, the correction
+            # after each transfer (Cindy) and after the free approach (support robot).
+            self.buttons.append(Button('Toggle Servoing Tracker', self.toggle_servoing_tracker))
 
             if show_assembly_knobs:
                 # The insert hands over from the rigid joint controller to compliance this

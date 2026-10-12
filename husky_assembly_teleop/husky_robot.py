@@ -139,6 +139,11 @@ class HuskyRobotInterface:
         self.name = name
         self.dual_arm = dual_arm
         self.connect_compliant_controller = connect_compliant_controller
+        # * Arm base frames. The arm reports its TCP in UR's `base` frame; the
+        # * monitor's FK frame (the calibrated URDF's ur_arm_base_link) is that frame
+        # * turned about z by this angle (found by matching the two: -180 deg on
+        # * Cindy, -90 deg on the single-arm huskies). See _to_controller_frame.
+        self.arm_base_from_ur_base_yaw = np.deg2rad(-180 if dual_arm else -90)
 
         # ! Viz-only husky: stop before anything touches self.node (which may be None).
         if not connect_ros:
@@ -713,7 +718,7 @@ class HuskyRobotInterface:
         for name in ['position.x', 'position.y', 'position.z', 'orientation.x', 'orientation.y', 'orientation.z', 'orientation.w']:
             reorder.append(tcp_interface_value._interface_names.index(name))
         
-        correction_transform = pp.Pose(pp.Point(), pp.Euler(0, 0, np.deg2rad(-180 if self.dual_arm else -90)))
+        correction_transform = pp.Pose(pp.Point(), pp.Euler(0, 0, self.arm_base_from_ur_base_yaw))
         
         data = np.array(tcp_interface_value.values)[reorder]
         self.arm_tcp_pose[index] = pp.multiply(correction_transform, pp.Pose(data[0:3], pp.euler_from_quat(data[3:7])))
@@ -799,17 +804,54 @@ class HuskyRobotInterface:
         msg.wrench.force.z = force[2]
         self.force_services[index].call_async(msg)
         
+    def _to_controller_frame(self, pose_arm_local: tuple) -> tuple:
+        """A pose in the monitor's arm base frame, in the cartesian controllers' frame.
+
+        The controllers take targets in UR's ``base_link`` (their
+        ``robot_base_link``), which is UR's ``base`` frame turned 180 deg about z
+        (ur_description). The monitor's arm base frame is ``base`` turned by
+        ``arm_base_from_ur_base_yaw``. On Cindy the two frames are the same, so
+        the pose is returned unchanged; on Alice they are 90 deg apart.
+
+        ! Without this, Alice's grip handoff (2026-10-12) sent a tool0 target
+        ! 559 mm away (the live pose turned 90 deg about the arm base) and the
+        ! arm jumped 21 mm before the drift check stopped it.
+
+        Args:
+            pose_arm_local (tuple): pybullet (point, quat) pose in the monitor's
+                arm base frame (what ``arm_tcp_pose`` and the FK use).
+
+        Returns:
+            tuple: The same pose in UR's ``base_link`` frame.
+        """
+        yaw = np.pi - self.arm_base_from_ur_base_yaw
+        yaw = np.arctan2(np.sin(yaw), np.cos(yaw))
+        if np.isclose(yaw, 0.0):
+            return pose_arm_local
+        return pp.multiply(pp.Pose(euler=pp.Euler(yaw=yaw)), pose_arm_local)
+
     def send_arm_cmd_cartesian(self, pose_arm_local, index=0):
+        """Publish a compliance / motion controller target for one arm's tool0.
+
+        Args:
+            pose_arm_local (tuple): pybullet (point, quat) tool0 pose in the
+                monitor's arm base frame. Dropped (with a warning) when further
+                than 5 cm (or 0.05 per quaternion component) from the TCP the
+                arm reports; converted to the controller's frame before sending.
+            index (int): Arm index.
+        """
         msg = PoseStamped()
         msg.header.frame_id = "base_link"
-        
+
         if (not np.isclose(self.arm_tcp_pose[index][0], pose_arm_local[0], atol=0.05).all()) or (not np.isclose(self.arm_tcp_pose[index][1], pose_arm_local[1], atol=0.05).all()):
             self.node.get_logger().warn(f'Arm {index} of husky {self.name} is not in correct start pose!')
             self.node.get_logger().warn(f'{self.arm_tcp_pose[index]} vs {pose_arm_local}')
             return
-        
-        point = pp.point_from_pose(pose_arm_local)
-        quat = pp.quat_from_pose(pose_arm_local)
+
+        # * The guard above compares in the monitor's frame; the controller reads UR's base_link.
+        pose_controller = self._to_controller_frame(pose_arm_local)
+        point = pp.point_from_pose(pose_controller)
+        quat = pp.quat_from_pose(pose_controller)
         msg.pose.position.x = point[0]
         msg.pose.position.y = point[1]
         msg.pose.position.z = point[2]
@@ -820,6 +862,9 @@ class HuskyRobotInterface:
         self.pub_cmd_arm_cartesian[index].publish(msg)
         
     def send_arm_cmd_cartesian_force(self, force_arm_local, index=0):
+        # ! Not turned into the controller's frame like send_arm_cmd_cartesian: only
+        # ! a zero wrench is ever sent, and the frame the controller reads a non-zero
+        # ! one in (hand_frame_control) has not been checked. Do that before sending one.
         msg = WrenchStamped()
         msg.header.frame_id = "base_link"
         
