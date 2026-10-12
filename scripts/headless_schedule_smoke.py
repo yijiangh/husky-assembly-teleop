@@ -226,9 +226,11 @@ INSERT_TRAJ_TIME_S = 0.5
 GROUNDED_INSERT_MAX_S = 5.0
 # * Transfer servo check: the stub base settles this far (x, metres) off its
 # * authored pose after the transfer, and the correction must bring tool0 within
-# * this of the authored targets (the goal IK solves to 1 mm).
+# * the servo's own convergence tolerance of the authored targets. Cindy's goal
+# * IK is ssik (exact); PyBullet IK, the fallback, stops within 1 mm and would
+# * fail this, so a silent fallback shows up here.
 TRANSFER_SERVO_BASE_SHIFT_M = 0.01
-TRANSFER_SERVO_TOL_MM = 1.5
+TRANSFER_SERVO_TOL_MM = 0.2
 
 
 # * ---------------------------------------------------------------------------
@@ -1835,7 +1837,7 @@ def transfer_servo_check(results: Results, problem: str, root: str, schedule) ->
             f"prefer_linear {replans}")
 
         iterations = log.since(n_log, 'info', '### SERVOING iteration')
-        err = husky_world.measure_servo_tool0_error(monitor, monitor._authored_ik_target_ee_frames)
+        err = husky_world.measure_servo_tool0_error(monitor, monitor._last_ik_target_ee_frames)
         worst = max(err[side]['pos_norm_mm'] for side in cindy.side_keys)
         insert = monitor._loaded_movements[ii]
         results.check(

@@ -18,9 +18,8 @@ Related:
 - When a bar is mounted in both tools, the joint-to-tool seat is about **5 mm off**. The grasp
   screw pulls it in anyway, so the bar is **forced** into the two tools. Both force sensors then
   read roughly **40 N** of push/pull, and the arms bend a little. The joint encoders do not move.
-- Because the bend is not in the encoders, **the robot cannot see it**. The tool0 servo, the
-  grasp-mismatch split and the bar-held planners all keep the stressed flange-to-flange relation
-  exactly as it is.
+- Because the bend is not in the encoders, **the robot cannot see it**. The tool0 servo and the
+  bar-held planners keep the stressed flange-to-flange relation exactly as it is.
 - The stored bending is released when the arms go compliant or let go:
   - On a **male-female** joint the joint takes up the release; the bar still seats.
   - A **foundation (ground) bar** has no joint. The operator tapes it to the floor and its
@@ -73,24 +72,25 @@ plus, along the whole arm: elastic bending in gears, links and tools (not in the
   mocap base pose.
 - **Target**: the Rhino tool0 frames (the transfer's `target_ee_frames`).
 - **Error**: position difference (mm) and per-axis angle (deg). Convergence: both arms under 0.2 mm
-  of position error, or less than 0.5 mm left to plan, or 8 iterations.
+  of position error, or less than 0.2 mm left to plan, or 8 iterations.
 
 The loop can always drive this number down, because it compares two quantities it computes
 itself. The accuracy-test manual calls it *precise, but not accurate*.
 
-**One more limit, found 2026-10-09.** The live-base IK inside the loop is PyBullet's built-in IK
-(through compas_fab), which stops within 1 mm / 0.01 rad. That is why the headless test leaves
-about 0.7 mm and why the 0.2 mm test rarely ends the loop. ssik (analytic, exact on the same
-calibrated URDF) would remove that floor. This is a separate, smaller issue; see section 8.
+**One more limit, found and fixed 2026-10-09.** The live-base IK inside the loop was PyBullet's
+built-in IK (through compas_fab), which stops within 1 mm / 0.01 rad. The headless test was left
+with about 0.7 mm, and the 0.2 mm test rarely ended the loop. It is now ssik (analytic, exact on
+the same calibrated URDF), and the same test converges in one pass to 0.000 mm. This is a
+separate, smaller issue; see section 8.
 
 ### Why the planners keep the preload
 
-- The **grasp-mismatch split** (`split_grasp_mismatch`) and the **bar-held straight-line planner**
-  (`plan_constrained_dual_arm_linear`) both read the left-to-right flange relation from the live
-  joints.
-- Under preload the joints hold the **commanded** relation, not the bar's natural one, so both
-  faithfully keep the stressed relation.
-- They never add preload and never remove it. The servo corrections and the insert carry the
+- The **bar-held straight-line planner** (`plan_constrained_dual_arm_linear`) reads the
+  left-to-right flange relation from the live joints. (So did the grasp-mismatch split,
+  `split_grasp_mismatch`, until it was removed on 2026-10-12.)
+- Under preload the joints hold the **commanded** relation, not the bar's natural one, so the
+  planner faithfully keeps the stressed relation.
+- It never adds preload and never removes it. The servo corrections and the insert carry the
   bar's stress along unchanged.
 
 ---
@@ -176,8 +176,7 @@ would let it sag by centimetres. That is the same reason the insert is not fully
 
 **Why one unload is enough:** afterwards the encoders hold the bar's **natural** relation. Every
 bar-held move after it (the servo corrections, the insert) keeps that relation exactly, so nothing
-reloads, nothing springs back at compliance or release, and the grasp split starts seeing the real
-grasp.
+reloads, and nothing springs back at compliance or release.
 
 **Thresholds to set from Exp 1:** stop below about 5 N (above the sensor noise at rest); at most
 1 mm per step.
@@ -287,22 +286,34 @@ Decision rules:
 
 ## 8. Related: the servo's own precision (IK engine)
 
-Checked 2026-10-09:
+Checked 2026-10-09; the first two rows were PyBullet built-in IK (compas_fab, 1 mm / 0.01 rad)
+and are **ssik since 2026-10-09**:
 
 | path | IK engine |
 |---|---|
-| `ik_live_base_for_selected_movement` (every servo pass) | PyBullet built-in IK via compas_fab, tolerance 1 mm / 0.01 rad |
-| transfer IK check, workaround box ticked | PyBullet built-in IK (same function) |
+| `ik_live_base_for_selected_movement` (every servo pass) | ssik (`husky_world.solve_goal_ik_generic` → `_solve_goal_ik_ssik`) |
+| transfer IK check, workaround box ticked | ssik (same function) |
 | transfer IK check, box unticked | ssik (tamp `solve_endpoint_dual_arm_ik`) |
 | servo corrections, insert / retreat straight lines, bar-held RRT | ssik at every waypoint |
+| support robots' goal IK (Alice, Belle) | PyBullet built-in IK (no ssik solver built for their arms) |
 
 - Every model is the same calibrated URDF, `husky_dual_ur5_e_no_base_joint_All_Calibrated.urdf`:
   - the planner robot (from the problem's `RobotCell.json`, joint origins identical);
   - the drawn live robot and the green goal robot;
   - the ssik solvers (FK agrees with PyBullet within 0.0001 mm).
-- Proposed: move the two PyBullet-IK paths to ssik (`ssik_ik.ssik_arm_branches`, the call the
-  straight-line planner already makes). Keep PyBullet IK only as a logged fallback, and for the
-  single-arm support robots, which have no ssik solver built.
+- Done 2026-10-09: `solve_goal_ik_generic` solves Cindy's two arms with
+  `ssik_ik.ssik_arm_branches`, the call the straight-line planner already makes.
+  - Every solution is listed (up to 8 per arm) and moved to the turn of each joint nearest the
+    start configuration.
+  - Pairs are tried nearest first; the first that passes the collision check wins.
+  - PyBullet IK remains a fallback, printed once if ssik is unavailable
+    (`HUSKY_IK_BACKEND=gradient`, or ssik not installed), and for the support robots.
+- Measured on the 260920 export, with the base moved 10 mm and turned 0.5° (the servo's case):
+  - ssik: tool0 error 0.0000–0.0004 mm;
+  - PyBullet IK: 0.32–0.89 mm;
+  - same solution branch and similar time.
+- The headless transfer-servo check now converges in one pass, to 0.000 mm (was two passes,
+  0.735 mm). Its tolerance is the servo's own 0.2 mm, so a silent fallback would fail it.
 
 This removes the 1 mm floor of the servo's own residual. It does **not** touch errors A or B, which
 the servo cannot see at all.
@@ -317,7 +328,7 @@ the servo cannot see at all.
 | 2 | Which markers will the real foundation bars carry? The export puts a marker set on `joint_J20-21_mocap` (B20's female half). Does Motive track it as a rigid body, or do we fit it like `bar_rig`? | open |
 | 3 | In which frame does the UR driver publish the wrench (`ft_sensor_wrench`)? Needed to put both arms in one frame. | to check |
 | 4 | OK to aim the bar loop (Fix 2) at "live flange + measured correction" (exception to "targets never from FK")? | open |
-| 5 | Move the servo's live-base IK to ssik (section 8)? | open |
+| 5 | Move the servo's live-base IK to ssik (section 8)? | **done** 2026-10-09 |
 
 Results log (add below as experiments run):
 

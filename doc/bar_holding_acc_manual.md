@@ -471,31 +471,24 @@ Repeat for each bar-action. Nothing here dismounts the bar.
      and the bar attached, so you can go straight to Record + Fit + Viz. A
      trajectory already sent still finishes.
    - The loop also stops by itself, reporting `nothing left to plan`, once the
-     correction it would ask for is under 0.5 mm at both flanges — at that point
-     the arms are as close as this grasp allows and further iterations would only
-     ask the planner for a zero-length move.
+     correction it would ask for is under 0.2 mm at both flanges (the same
+     tolerance as the converged check) — further iterations would only ask the
+     planner for a zero-length move.
    - Watch progress with **Toggle Servoing Tracker**. The loop stops when both
      arms are under 0.2 mm or after 8 iterations, and auto-saves
      `servoing_data_<ts>.json` + `servoing_performance_<ts>.png` under
      `<YYYYMMDD>-servoing/` — the four panels are explained under
      [The figures](#the-figures-and-what-each-one-answers). A typical good run:
      iteration 1 leaves a few mm, by iteration 3–5 both arms sit at 0.2–0.5 mm.
-   - If the mounted grasp does not match the authored one, the log says so and
-     **splits the difference between the arms** (`~X mm per flange`) instead of
-     leaving the left perfect and the right carrying all of it. A second residual
-     line then appears per iteration — *vs AUTHORED (bar placement)*, the honest
-     bar-placement error, which will not drop below half the mismatch — beside
-     the usual tool0 line, which is measured against the *aimed* (split) pair.
-     > A third pair of lines, labelled *vs aimed targets* **and** *vs AUTHORED
-     > targets*, prints only on the `nothing left to plan` early exit, not every
-     > iteration.
-     >
-     > ⚠️ **None of this reaches the saved file.** `servoing_data_*.json` records
-     > the residual against the *aimed* pair only — no authored residual, no
-     > mismatch magnitude, no flag saying a split happened. So a clean mount and
-     > a 16 mm mismatch halved between the arms look identical on disk. The
-     > honest number exists only in the terminal. See the next note for how to
-     > tell them apart anyway.
+   - Every residual — the `[servo N] tool0 pos` log line, the tracker and
+     `servoing_data_*.json` — is measured against the **authored** tool0
+     targets; the IK aims at them too, so there is one target and one error.
+     If the mounted grasp does not match the authored one, the two targets
+     cannot both be met: the bar-held planner places the bar from the left
+     target, so the left converges and the right sits on a flat plateau the size
+     of the mismatch, and the run uses every iteration. Check D of the transfer
+     verification (`Mounted grasp differs from the authored one by X mm`) gives
+     the size.
 5. **Record + Fit + Viz (shared)** once per take — take at least 3, watching
    `max_resid` (a few mm or less) and `bar_len` (≈ 1.400 m). A bad fit can be
    thrown out with **Discard unsaved takes** (it drops *all* takes recorded
@@ -570,33 +563,21 @@ Repeat for each bar-action. Nothing here dismounts the bar.
 - **Right arm plateaus around 3 mm / 0.2°** — that is the left/right calibration
   discrepancy described in the pre-flight checklist, not something servoing can
   remove.
-- **`mounted grasp differs from authored by X mm`** — the bar sits in the tools
-  differently from the authored grasp, so both tool0 targets cannot be met at
-  once. The loop splits it, ~X/2 mm per flange, and the `vs AUTHORED` residual
-  settles there. More iterations will not help: re-mount the bar if X is large
-  enough to matter for the measurement.
-  > ⚠️ Since the split landed, **check D can no longer catch this.** It feeds the
-  > split pair back into `grasp_mismatch`, which is consistent with the held
-  > grasp by construction, so it reports ≈0 mm and its warning never fires. The
-  > warning quoted above comes from the servo loop, not from check D. Check C's
-  > label says "vs AUTHORED target" while also comparing against the split pair.
-
-- **Was the split on for this run?** The saved file does not say, so read the
-  shape of the run instead — in `servoing_performance_*.png` or in the
-  `tool0 pos L=… R=…` log lines:
-
-  | what you see | what it means |
-  |---|---|
-  | both wrists fall together towards zero | either the grasp matched, or the split did its job |
-  | **one wrist near zero, the other on a flat plateau** that never drops, and the run burns every iteration | **no split was applied** — the whole mismatch is parked on one arm |
-
-  With the split on, the aimed pair is consistent with the grasp actually held
-  by construction, so both flanges are reachable at once and both residuals
-  converge. A standing plateau on one arm alone is the *un-split* signature.
-  > **Dating note.** `split_grasp_mismatch` was committed on **2026-10-02**, so
-  > every run before that date is un-split. Session 20261001 is: on 12 of its
-  > 20 runs the left sits at 0.09 mm while the right holds a flat 0.94 mm.
-  > **Servo residuals are therefore not comparable across that date.**
+- **`Mounted grasp differs from the authored one by X mm`** (transfer verify
+  check D) — the bar sits in the tools differently from the authored grasp, so
+  both tool0 targets cannot be met at once. The bar is placed from the left
+  target, so the left converges and the right settles near X: **one wrist near
+  zero, the other on a flat plateau**, and the run burns every iteration. More
+  iterations will not help: re-mount the bar if X is large enough to matter for
+  the measurement.
+  > **Dating note.** From **2026-10-02 to 2026-10-12** the loop split such a
+  > mismatch between the arms (`split_grasp_mismatch`, since removed) and
+  > recorded the residual against that split pair, not the authored one. Runs
+  > from that window can show both wrists converged while each flange sat
+  > ~X/2 mm off its authored target. Runs before and after it are measured
+  > against the authored targets (session 20261001: on 12 of its 20 runs the
+  > left sits at 0.09 mm while the right holds a flat 0.94 mm). **Servo
+  > residuals from that window are not comparable with the others.**
 - **The safeguard pauses on a plan that looks like nothing** — read the
   *travels* figure. `travels 180 deg (ends 0 deg from where it starts)` is the
   known planner fault in **Known hazard** below: cancel and replan rather
@@ -641,7 +622,7 @@ asks for such a plan, and no longer sends one unseen.
 
 | | |
 |---|---|
-| the loop stops before asking | when the correction it would request is under 0.5 mm at both flanges |
+| the loop stops before asking | when the correction it would request is under 0.2 mm at both flanges (the convergence tolerance) |
 | the goal is written the short way round | a joint reported a full turn off is rewritten before planning |
 | the safeguard measures the journey | *how far the path travels*, not where it ends — a 360° loop reads 360°, not 0° |
 | the preview works | **Traj viz time** scrubs the real path and logs `[traj viz] waypoint i/N` |
@@ -735,8 +716,8 @@ the iteration number**:
 - *one near zero and the other stuck on a flat plateau* — the two authored
   flange targets cannot both be reached with the bar as it is actually gripped.
   Iterating will not fix it; the grasp has to change. This is the single most
-  useful shape in the whole pipeline, and it is what the "is the split on?" note
-  in Troubleshooting turns on.
+  useful shape in the whole pipeline (see the `Mounted grasp differs` entry in
+  Troubleshooting).
 - *a rising blue curve* — the husky moved under the arms. Expected at a
   millimetre or so (the arms' weight on the suspension); metres means something
   physically moved, or the run was restarted.
@@ -1236,11 +1217,11 @@ Three things follow, and the third is the useful one:
    > +0.51 collapses to **+0.15** once recording order is held still. Only the
    > rotation link survives that test (+0.49 → +0.47).
    > `3_session_report.py` prints both columns for exactly this reason.
-   > Two more caveats on the wrist numbers: they are measured against the pair
-   > of targets the IK actually aimed at, which since 2026-10-02 may be the
-   > *split* pair rather than the authored one (see the split note in
-   > Troubleshooting); and the split landed after the 20261001 session, so
-   > those runs show the older "left exact, right carries it" behaviour.
+   > One more caveat on the wrist numbers: runs from 2026-10-02 to 2026-10-12
+   > were measured against a *split* target pair rather than the authored one
+   > (see the dating note under `Mounted grasp differs` in Troubleshooting).
+   > The 20261001 session predates that window, so it shows the "left exact,
+   > right carries it" behaviour, which is also how the loop behaves again now.
 3. **It is mostly a tilt, not a shift.** A pure rotation of the bar about its far
    end would move the measured tip by `L · sin(θ)`. *In this sample the mean
    rotation of 0.125° over a 1.40 m bar gives 3.06 mm against a measured 4.32 mm

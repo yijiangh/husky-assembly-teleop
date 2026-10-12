@@ -227,7 +227,9 @@ on the transfer therefore runs, after the motion (`world.execute_transfer_then_s
    transfer's Rhino targets, a straight-line bar-held correction (the sampling planner
    only as fallback), first move previewed + `Confirm Exec`, later ones alone unless a
    path travels more than 5 deg (`SAFEGUARD`), up to 8 iterations, stop below 0.2 mm or
-   when less than 0.5 mm is left to plan. `Cancel Exec` stops it between steps.
+   when less than 0.2 mm is left to plan. `Cancel Exec` stops it between steps. The
+   `Servoing Live Tracker` window opens when the servo starts and plots the residuals
+   per iteration, as in the accuracy test.
 3. Where the arms ended up becomes the transfer's end and the insert's start
    (`[Servo] propagated arm configuration -> ...`), also after reloading the transfer;
    a stale insert plan is dropped. The record goes to

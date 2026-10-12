@@ -8776,8 +8776,6 @@ class HuskyMonitor(Node):
         # physical grasp, so the two authored targets can only BOTH be reached
         # if they imply that same relative transform. Whatever is left over
         # here is a residual the transfer servo loop can never null out.
-        # Same helper the servo loop splits with, so the number reported here
-        # and the one acted on there can never drift apart.
         start_state = _state_at(np.asarray(path12[0], dtype=float))
         mismatch = world.grasp_mismatch(
             targets['left'], targets['right'],
@@ -8792,9 +8790,9 @@ class HuskyMonitor(Node):
             self.get_logger().warn(
                 f"[transfer verify] Mounted grasp differs from the authored one "
                 f"by {d_pos * 1000:.1f} mm, so both tool0 targets cannot be met "
-                f"at once. The servo loop splits it: ~{d_pos * 1000 / 2:.1f} mm "
-                f"per flange. The remainder is the grasp, not the servoing -- "
-                f"more iterations will not remove it."
+                f"at once. The bar is placed from the LEFT target, so the right "
+                f"flange carries it all. That residual is the grasp, not the "
+                f"servoing -- more iterations will not remove it."
             )
 
     def _check_inter_ee_invariance(self, jt, template_state):
@@ -9014,25 +9012,12 @@ class HuskyMonitor(Node):
         } or None
         missing = [side for side, src in sources.items() if src is None]
 
-        # ! One rigid bar in two grippers fixes the transform between the
-        # ! flanges, so authored targets that disagree with the mounted grasp
-        # ! cannot BOTH be met. Left alone the IK satisfies the left and dumps
-        # ! the whole discrepancy on the right, pivoting the bar about the left
-        # ! grasp. Share it instead: the split pair is reachable, so the loop
-        # ! converges on it and the bar lands as close to its authored place as
-        # ! a rigid bar allows.
-        self._authored_ik_target_ee_frames = start_ee_frames
-        # A support robot has one arm ('arm'): no bar between two grippers to split.
-        if spec.dual_arm and start_ee_frames is not None and not missing:
-            start_ee_frames, mismatch_m = world.split_grasp_mismatch(
-                self, start_ee_frames['left'], start_ee_frames['right'])
-            if mismatch_m * 1e3 >= world.SERVO_GRASP_SPLIT_MM:
-                self.get_logger().warn(
-                    f"[servo] mounted grasp differs from authored by "
-                    f"{mismatch_m * 1e3:.1f} mm; split between the arms "
-                    f"(~{mismatch_m * 1e3 / 2:.1f} mm per flange).")
-        # Cache the targets this IK actually solved to, so the endpoint
+        # Cache the authored targets this IK solves to, so the endpoint
         # verification and the servo tracker compare against the same pair.
+        # ! Always the authored pair, never shifted to fit the mounted grasp: a
+        # ! grasp that disagrees with it shows up as residual on the right arm
+        # ! (the bar-held planner places the bar from the LEFT target), and
+        # ! check D of _verify_transfer_endpoint reports how big it is.
         self._last_ik_target_ee_frames = start_ee_frames
         if missing:
             # No authored data to aim at -- warn and do nothing rather than
@@ -9052,10 +9037,11 @@ class HuskyMonitor(Node):
         # 2) IK at live base using the derived start EE frames. Inject the
         # live base + live arm conf so IK is warm-started from where the
         # robot actually is now (not the movement's authored start conf).
-        # Trac_ik may return joint values that are 2*pi-offset from the
-        # nearest branch when the seed is far from the target; the
-        # composite free plan step downstream unwraps the goal to
-        # +/- pi of the start conf so the BiRRT can still connect.
+        # The IK is ssik for Cindy (solve_goal_ik_generic): every exact
+        # solution, moved to the turn nearest these live joints, the nearest
+        # collision-free pair first. The composite free plan step downstream
+        # still unwraps the goal to +/- pi of the start conf (within the joint
+        # limits) so the BiRRT can connect.
         live_state = mv.start_state.copy()
         hi = self.huskies[self.selected_robot_id].interface
         self._inject_live_conf_into_state(live_state)
@@ -9063,10 +9049,11 @@ class HuskyMonitor(Node):
         self._apply_obstacle_beliefs(live_state)
         self.cfab.planner.set_robot_cell_state(live_state)
         # Also pass mv.start_state.robot_configuration as an alternate IK
-        # seed: it's a bar-holding pose whose FK produces the very target
-        # frames, so trac_ik seeded there converges to that (or a nearby)
-        # collision-free branch, escaping the self-colliding branches
-        # trac_ik lands on when seeded from the extended-arm HOME conf.
+        # seed (used by the PyBullet IK fallback only): it's a bar-holding pose
+        # whose FK produces the very target frames, so the IK seeded there
+        # converges to that (or a nearby) collision-free branch, escaping the
+        # self-colliding branches it lands on when seeded from the
+        # extended-arm HOME conf.
         if spec.dual_arm:
             # Override target_ee_frames so _solve_bar_action_goal_ik uses the
             # start-state derived frames (it reads monitor.target_ee_frames).

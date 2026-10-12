@@ -27,7 +27,7 @@ from husky_assembly_teleop.schedule_io import load_schedule, problem_root
 from husky_assembly_teleop.progress_io import PARKED_BASE_FRAME, RobotBelief, load_progress
 import husky_assembly_teleop.husky_planning as planning
 import husky_assembly_teleop.husky_control as control
-from husky_assembly_teleop.utils import HUSKY_DUAL_UR5e_JOINT_NAMES, HUSKY_DUAL_ARM_HOME_CONF_12, UR5E_JOINT_NAMES, MOCAP_SET_RIG_RB_NAME, conf_from_12vec, frame_from_pose, get_arm_ik_for_grasp_bar, get_custom_limits, notify, plan_transit_motion, pose_from_frame
+from husky_assembly_teleop.utils import HUSKY_DUAL_UR5e_JOINT_NAMES, HUSKY_DUAL_ARM_HOME_CONF_12, UR5E_JOINT_NAMES, MOCAP_SET_RIG_RB_NAME, conf_from_12vec, get_arm_ik_for_grasp_bar, get_custom_limits, notify, plan_transit_motion, pose_from_frame
 from husky_assembly_teleop.scaffolding import parse_mt_geometric, create_collision_bodies, create_couplers, flatten_list
 from husky_assembly_teleop.cfab_session import CfabSession, build_default_robot_cell
 from husky_assembly_teleop.cc_diagnosis import visualize_goal_ik_collision
@@ -1569,17 +1569,6 @@ SERVO_EXCURSION_CONFIRM_DEG = 5.0
 SERVO_RECOMMENDED_DEG_PER_S = 3.0
 SERVO_MIN_TRAJ_TIME_S = 3.0
 
-# Below this the arms are already where the plan would put them, so there is
-# nothing to plan: asking a randomised planner for a zero-length path is what
-# produces 360 deg sweeps that start and end in the same place.
-SERVO_MIN_CORRECTION_MM = 0.5
-
-# A held bar fixes the transform between the two flanges, so authored targets
-# that disagree with it by more than this cannot BOTH be met; the difference is
-# split between the arms instead of being dumped entirely on the right one.
-# Matches the threshold `_verify_transfer_endpoint` already warns at.
-SERVO_GRASP_SPLIT_MM = 2.0
-
 
 def recommended_traj_time(excursion_deg, max_time):
     """How long the next move should take, from how far it actually travels.
@@ -1659,36 +1648,6 @@ def _planned_correction_mm(monitor, goal12):
         'right': float(np.linalg.norm(
             np.asarray(goal_right[0]) - np.asarray(live_right[0]))) * 1e3,
     }
-
-
-def _log_residuals(monitor, aim_frames, authored_frames, tag='servo'):
-    """Report the flange error against what the loop aims at AND the authored pose.
-
-    When a grasp mismatch has been split between the arms these differ, and both
-    matter: the first is what servoing can still null out, the second is the
-    honest bar-placement error the take will be scored against. Logging only the
-    first would hide the split; only the second would look like a loop that
-    never converges.
-
-    Args:
-        monitor: The HuskyMonitor node.
-        aim_frames (dict): The targets the IK actually solved to.
-        authored_frames (dict): The movement's authored targets.
-        tag (str): Prefix for the log lines.
-    """
-    try:
-        aim = measure_servo_tool0_error(monitor, aim_frames)
-        monitor.get_logger().info(
-            f"[{tag}] vs aimed targets: L={aim['left']['pos_norm_mm']:.2f} "
-            f"R={aim['right']['pos_norm_mm']:.2f} mm")
-        if authored_frames is not None and authored_frames is not aim_frames:
-            authored = measure_servo_tool0_error(monitor, authored_frames)
-            monitor.get_logger().info(
-                f"[{tag}] vs AUTHORED targets (bar placement): "
-                f"L={authored['left']['pos_norm_mm']:.2f} "
-                f"R={authored['right']['pos_norm_mm']:.2f} mm")
-    except Exception as e:
-        monitor.get_logger().warn(f"[{tag}] could not measure residuals: {e}")
 
 
 def _apply_recommended_traj_time(monitor, excursion_deg):
@@ -1880,6 +1839,7 @@ def servo_to_movement_start_live(monitor, max_iters=8, pos_tol_mm=0.2,
                                  settle_seconds=SERVO_SETTLE_SECONDS,
                                  confirm_first_iter=True, use_transfer=False,
                                  prefer_linear_from_iter: int = 2,
+                                 show_tracker_at_start: bool = False,
                                  log_data=True,
                                  log_dir: str = BAR_HOLDING_ACC_EXPERIMENT_DIR,
                                  log_label: str = 'servoing'):
@@ -1912,7 +1872,9 @@ def servo_to_movement_start_live(monitor, max_iters=8, pos_tol_mm=0.2,
     Args:
         monitor: The HuskyMonitor node.
         max_iters (int): Hard cap on servoing iterations.
-        pos_tol_mm (float): Stop once both arms' tool0 position error is below this.
+        pos_tol_mm (float): Stop once both arms' tool0 position error is below
+            this ('converged'), or before a move once the correction the IK
+            asks for is below it at both flanges ('nothing left to plan').
         settle_seconds (float): Extra time to wait after each trajectory finishes so
             the centre-of-gravity-shifted base settles in the mocap stream before we
             measure. Added on top of the trajectory's own duration.
@@ -1929,6 +1891,12 @@ def servo_to_movement_start_live(monitor, max_iters=8, pos_tol_mm=0.2,
             planner only as fallback). 2 for the accuracy test, whose first move
             is the long one from the bar-loading pose; 1 right after the
             schedule's transfer, where every correction is already mm-scale.
+        show_tracker_at_start (bool): Open the 'Servoing Live Tracker' window
+            when the loop starts (its baseline point included), not only when
+            the first move runs. False for the accuracy test, so the window does
+            not cover the preview of its long first move; True after the
+            schedule's transfer, where a run that stops at iteration 1 (nothing
+            to correct) would otherwise never show it.
         log_data (bool): Save a JSON + PNG record of the run when done.
         log_dir (str): Root folder of that record (a dated ``-servoing``
             subfolder is made in it).
@@ -1969,8 +1937,11 @@ def servo_to_movement_start_live(monitor, max_iters=8, pos_tol_mm=0.2,
     # Reference base pose for the base-difference metrics (this run's start pose).
     start_base_pose = (copy.copy(hi.position), copy.copy(hi.rotation))
 
-    # Blank + show the live DPG tracker window for this run.
+    # Blank the live DPG tracker window for this run. It stays hidden until the
+    # first move runs, unless asked to open right away.
     monitor.reset_servoing_tracker()
+    if show_tracker_at_start:
+        monitor.show_servoing_tracker()
 
     # Clear any stale abort request so a leftover click can't cancel this run.
     # The 'Cancel Servo Loop' button sets this True; we poll it at each yield.
@@ -1981,7 +1952,6 @@ def servo_to_movement_start_live(monitor, max_iters=8, pos_tol_mm=0.2,
 
     data = []
     target = None
-    authored_target = None
     # Iteration-0 readings every later iteration is reported against. A dict so
     # the nested _record can write it without a nonlocal declaration.
     baseline = {'wrench': None}
@@ -2011,15 +1981,6 @@ def servo_to_movement_start_live(monitor, max_iters=8, pos_tol_mm=0.2,
                 f"iter 0) | R={wrench['right']['force_N']:.1f} N / "
                 f"{wrench['right']['torque_Nm']:.2f} Nm "
                 f"({wrench['right']['force_N'] - b['right']['force_N']:+.1f} N)")
-        # When a grasp mismatch was split, `target` is the reachable pair the
-        # loop drives to zero; the authored pair is the bar placement the take
-        # is scored against. Report both so the split is never silent.
-        if authored_target is not None and authored_target is not target:
-            auth = measure_servo_tool0_error(monitor, authored_target)
-            monitor.get_logger().info(
-                f"[servo {iter_i}] vs AUTHORED (bar placement) "
-                f"L={auth['left']['pos_norm_mm']:.2f} "
-                f"R={auth['right']['pos_norm_mm']:.2f} mm")
         return err
 
     # * the visual servoing iterations
@@ -2042,8 +2003,19 @@ def servo_to_movement_start_live(monitor, max_iters=8, pos_tol_mm=0.2,
             monitor.get_logger().warn('Servoing: live-base IK failed; stopping.')
             break
 
+        # Capture the constant target once (the authored frames the IK just
+        # solved to) and record the pre-execution baseline as iteration 0. Before
+        # the stop check below, so a stop at iteration 1 still reports its residual.
+        if target is None:
+            target = copy.deepcopy(monitor._last_ik_target_ee_frames)
+            if not target or 'left' not in target or 'right' not in target:
+                monitor.get_logger().warn('Servoing: no target EE frames; stopping.')
+                break
+            _record(0)
+
         # Step 1b: is there anything left to ask for? Compare the flanges at the
-        # IK goal with the flanges right now. Below half a millimetre the arms
+        # IK goal with the flanges right now. Below the convergence tolerance
+        # (pos_tol_mm, the same as the 'converged' check after a move) the arms
         # are already where the plan would put them, and handing a randomised
         # planner a zero-length problem is exactly what produced 127-waypoint
         # sweeps of the bar that began and ended in the same place. Stop instead,
@@ -2051,12 +2023,11 @@ def servo_to_movement_start_live(monitor, max_iters=8, pos_tol_mm=0.2,
         # Viz' works straight away.
         goal12 = np.concatenate([monitor.goal_arm_pose[0], monitor.goal_arm_pose[1]])
         correction_mm = _planned_correction_mm(monitor, goal12)
-        if correction_mm is not None and max(correction_mm.values()) < SERVO_MIN_CORRECTION_MM:
+        if correction_mm is not None and max(correction_mm.values()) < pos_tol_mm:
             monitor.get_logger().info(
                 f'### SERVOING stopped at iter {it}: nothing left to plan '
                 f'(correction L={correction_mm["left"]:.2f} R={correction_mm["right"]:.2f} mm, '
-                f'under {SERVO_MIN_CORRECTION_MM} mm).')
-            _log_residuals(monitor, target, authored_target, tag=f'servo {it}')
+                f'under {pos_tol_mm} mm).')
             break
 
         # Step 2: replan the move to that goal — a bar-held constrained transfer
@@ -2084,20 +2055,6 @@ def servo_to_movement_start_live(monitor, max_iters=8, pos_tol_mm=0.2,
                 or right_path is None or len(right_path) == 0):
             monitor.get_logger().warn('Servoing: replan produced no trajectory; stopping.')
             break
-
-        # Capture the constant target once (the frames the IK just solved to) and
-        # record the pre-execution baseline as iteration 0.
-        if target is None:
-            target = copy.deepcopy(monitor._last_ik_target_ee_frames)
-            if not target or 'left' not in target or 'right' not in target:
-                monitor.get_logger().warn('Servoing: no target EE frames; stopping.')
-                break
-            # The authored pair, kept separately: when a grasp mismatch has been
-            # split between the arms, `target` is the reachable pair the loop
-            # converges on and this is the one the bar is finally scored against.
-            authored_target = copy.deepcopy(
-                getattr(monitor, '_authored_ik_target_ee_frames', None)) or target
-            _record(0)
 
         # The first transit is a big move from wherever the arms are now: pause
         # (while still yielding, so the traj viz slider keeps previewing the
@@ -2807,7 +2764,7 @@ def plan_both_arms_to_goal(monitor, use_composite=False, debug=False,
         monitor._inject_live_conf_into_state(state)
 
         # * Unwrap the goal joint values to be within +/- pi of the start
-        # conf. Trac_IK can return goal joints that are 2*pi-offset from the
+        # conf. The goal IK can return goal joints that are 2*pi-offset from the
         # nearest branch (e.g. right_shoulder ~ -4.12 rad when +2.16 rad
         # yields the same tool0 pose). BiRRT then has to traverse > pi in
         # that joint, which the 12-DOF free sampler almost never solves in
@@ -3252,8 +3209,11 @@ def _solve_bar_action_goal_ik(monitor, start_state,
             produces the target frames by construction. It is never accepted as
             a goal in its own right: it is authored against the movement's own
             base, so at a different live base its tool0s miss the targets by
-            the base offset. When trac_ik plus the collision check cannot find
-            a valid branch, this returns None.
+            the base offset. When the IK plus the collision check cannot find
+            a valid solution, this returns None.
+            ! With ssik (Cindy's default, see solve_goal_ik_generic) every
+            ! solution is listed from the start state, so the seeds below only
+            ! matter for the PyBullet IK fallback.
 
     Returns:
         np.ndarray | None: The 12-vector goal conf, or None on failure.
@@ -3268,10 +3228,11 @@ def _solve_bar_action_goal_ik(monitor, start_state,
     }
     all_names = list(HUSKY_DUAL_UR5e_JOINT_NAMES[0]) + list(HUSKY_DUAL_UR5e_JOINT_NAMES[1])
 
-    # * Build a list of seed configurations to try across outer attempts.
-    # Trac_ik's descent is deterministic in the neighbourhood of its seed,
-    # so retrying with only different numpy state does not escape a
-    # colliding local minimum. This list gives trac_ik a shot at each of:
+    # * Build a list of seed configurations to try across outer attempts
+    # * (PyBullet IK fallback only; ssik lists every solution and needs none).
+    # PyBullet IK's descent stays in the neighbourhood of its seed, so
+    # retrying with only different numpy state does not escape a colliding
+    # local minimum. This list gives it a shot at each of:
     # the caller-supplied seed (usually the "live" pose, often HOME with
     # extended arms, tried first by solve_goal_ik_generic), the known-good
     # dual-arm home, an optional user-supplied `alt_seed_conf12` (typically
@@ -3284,9 +3245,9 @@ def _solve_bar_action_goal_ik(monitor, start_state,
     seed_confs = [conf_from_12vec(HUSKY_DUAL_ARM_HOME_CONF_12)]   # 2. known-good home
     # Small random perturbations. When alt_seed_conf12 is provided we
     # perturb around IT (a bar-holding pose whose FK produces the target
-    # frames by construction) so trac_ik stays in the neighbourhood of a
+    # frames by construction) so the IK stays in the neighbourhood of a
     # valid IK branch. Perturbing around the caller seed instead was
-    # letting trac_ik jump to wildly-wrapped IK branches that unwrap
+    # letting the IK jump to wildly-wrapped IK branches that unwrap
     # couldn't fully correct, leaving huge composite-plan deltas.
     perturb_center = (
         np.asarray(alt_seed_conf12, dtype=float)
@@ -4003,11 +3964,8 @@ def grasp_mismatch(authored_left, authored_right, held_left, held_right):
     Both grippers hold ONE rigid bar, so the transform between the flanges is
     fixed by the physical grasp. If the authored pair implies a different
     transform, the two targets cannot both be reached, and this is the size of
-    that impossibility.
-
-    The single implementation behind two users: the servo loop splits the
-    discrepancy between the arms before solving IK, and
-    ``_verify_transfer_endpoint``'s check D reports it after planning.
+    that impossibility. ``_verify_transfer_endpoint``'s check D reports it after
+    planning.
 
     Args:
         authored_left (Frame): Authored world tool0 target, left arm.
@@ -4040,50 +3998,6 @@ def grasp_mismatch(authored_left, authored_right, held_left, held_right):
         'pos': float(np.linalg.norm(offset)),
         'ang': ang,
     }
-
-
-def split_grasp_mismatch(monitor, authored_left, authored_right):
-    """Share an impossible target pair between the two arms instead of one.
-
-    Left alone, the IK satisfies the left target and leaves the whole
-    discrepancy on the right: the bar pivots about the left grasp, so one end is
-    perfect and the far end carries everything (16.7 mm at the grasp became
-    ~24 mm at the bar tip on B37). Moving both targets half way gives a pair
-    consistent with the bar actually held, so the IK can meet BOTH and the bar
-    lands as close to its authored place as a rigid bar allows.
-
-    Args:
-        monitor: The HuskyMonitor node.
-        authored_left (Frame): Authored world tool0 target, left arm.
-        authored_right (Frame): Authored world tool0 target, right arm.
-
-    Returns:
-        tuple[dict, float]: ``({'left': Frame, 'right': Frame}, mismatch_m)``.
-        The authored pair comes back unchanged when the mismatch is under
-        ``SERVO_GRASP_SPLIT_MM`` or the live poses cannot be read.
-    """
-    authored = {'left': authored_left, 'right': authored_right}
-    try:
-        live_left, live_right = _live_tool0_poses(monitor)
-    except Exception as e:
-        monitor.get_logger().warn(
-            f"[servo] cannot read the held grasp ({e}); aiming at the authored "
-            f"targets unchanged.")
-        return authored, 0.0
-
-    m = grasp_mismatch(authored_left, authored_right, live_left, live_right)
-    if m['pos'] < SERVO_GRASP_SPLIT_MM * 1e-3:
-        return authored, m['pos']
-
-    # Meet in the middle: shift the left target half way toward the authored
-    # right, then derive the right from the bar actually held, so the pair is
-    # reachable by construction.
-    left_pose = pose_from_frame(authored_left)
-    split_left = ((np.asarray(left_pose[0], dtype=float) + m['offset'] / 2.0).tolist(),
-                  left_pose[1])
-    split_right = pp.multiply(split_left, m['held_rel'])
-    return ({'left': frame_from_pose(split_left),
-             'right': frame_from_pose(split_right)}, m['pos'])
 
 
 def _execute_rigid_chunk(monitor, rigid_path12, t_rigid, on_tick=None,
@@ -5156,6 +5070,7 @@ def execute_transfer_then_servo(monitor):
         yield from servo_to_movement_start_live(
             monitor, max_iters=8, pos_tol_mm=0.2, settle_seconds=SERVO_SETTLE_SECONDS,
             confirm_first_iter=True, use_transfer=True, prefer_linear_from_iter=1,
+            show_tracker_at_start=True,
             log_data=True, log_dir=BAR_ACTION_LIVE_REPLAN_EXE_DIR,
             log_label=f'{insert.movement_id}_servoing')
     except Exception as e:
