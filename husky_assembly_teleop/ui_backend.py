@@ -64,7 +64,8 @@ class UIBackend:
     """Abstract UI backend; do NOT instantiate. See PyBulletBackend / DearPyGuiBackend."""
 
     def add_button(self, label: str, on_click: Callable[[], None],
-                   color: Optional[Sequence[int]] = None) -> int:
+                   color: Optional[Sequence[int]] = None, *,
+                   width: int = 0, height: int = 0) -> int:
         """Add a push button.
 
         Args:
@@ -72,11 +73,27 @@ class UIBackend:
             on_click (Callable[[], None]): Called on each click.
             color (Sequence[int] | None): Optional RGB (0-255) fill colour to make
                 the button stand out; None keeps the default look.
+            width (int): Button width in pixels; 0 fits the text.
+            height (int): Button height in pixels; 0 fits the text.
 
         Returns:
             int: The widget handle.
         """
         raise NotImplementedError
+
+    def is_active(self, handle: int) -> bool:
+        """Whether a widget is being held down with the mouse right now.
+
+        Lets a button act for as long as it is held (the Teleop jog buttons)
+        instead of once per click. Backends that cannot tell say False.
+
+        Args:
+            handle (int): The widget handle.
+
+        Returns:
+            bool: True while the mouse button is held on the widget.
+        """
+        return False
 
     def add_slider_float(self, label: str, vmin: float, vmax: float,
                          default: float, on_change: Callable[[float], None]) -> int:
@@ -160,7 +177,17 @@ class UIBackend:
         """
         return
 
-    def begin_group(self, label: str, *, collapsible: bool = True) -> None:
+    def begin_group(self, label: str, *, collapsible: bool = True,
+                    horizontal: bool = False) -> None:
+        raise NotImplementedError
+
+    def begin_window(self, label: str, *, tag: str, width: int = 600,
+                     height: int = 800, show: bool = True) -> int:
+        """Like ``add_window``, and the next widgets go into it until ``end_group()``.
+
+        Returns:
+            int: A handle for ``set_visible`` (show / hide the window).
+        """
         raise NotImplementedError
 
     def end_group(self) -> None:
@@ -216,8 +243,8 @@ class PyBulletBackend(UIBackend):
             self._warned_legacy_widgets.add(key)
             logger.warning(msg)
 
-    def add_button(self, label, on_click, color=None):
-        # PyBullet debug buttons cannot be coloured; ``color`` is ignored.
+    def add_button(self, label, on_click, color=None, *, width=0, height=0):
+        # PyBullet debug buttons cannot be coloured or sized; ``color`` and the size are ignored.
         dbg = p.addUserDebugParameter(label, 1.0, 0.0, 0.0)
         prev = p.readUserDebugParameter(dbg)
         h = self._new_handle()
@@ -318,9 +345,13 @@ class PyBulletBackend(UIBackend):
         self._handles[h] = {"kind": "separator", "dbg": dbg}
         return h
 
-    def begin_group(self, label, *, collapsible=True):
+    def begin_group(self, label, *, collapsible=True, horizontal=False):
         # legacy: just a decorative separator
         self.add_separator(label)
+
+    def begin_window(self, label, *, tag, width=600, height=800, show=True):
+        raise NotImplementedError(
+            "separate windows not supported by PyBulletBackend; set USE_DPG_UI=1")
 
     def end_group(self):
         # legacy: nothing to do
@@ -498,9 +529,10 @@ class DearPyGuiBackend(UIBackend):
     def _current_parent(self):
         return self._parent_stack[-1]
 
-    def add_button(self, label, on_click, color=None):
+    def add_button(self, label, on_click, color=None, *, width=0, height=0):
         dpg = self.dpg
         tag = dpg.add_button(label=label, parent=self._current_parent,
+                             width=width, height=height,
                              callback=lambda *a: on_click())
         if color is not None:
             dpg.bind_item_theme(tag, self._button_theme(color))
@@ -1015,8 +1047,29 @@ class DearPyGuiBackend(UIBackend):
         self._handles[h] = {"kind": "separator", "tag": text_tag}
         return h
 
-    def begin_group(self, label, *, collapsible=True):
+    def is_active(self, handle):
+        rec = self._handles.get(handle)
+        tag = rec.get("tag") if rec else None
+        if tag is None or not self.dpg.does_item_exist(tag):
+            return False
+        return bool(self.dpg.is_item_active(tag))
+
+    def begin_window(self, label, *, tag, width=600, height=800, show=True):
+        self.add_window(label, tag=tag, width=width, height=height, show=show)
+        # * No close button: a window closed with its 'x' would be out of step with
+        # * the button that shows / hides it. Collapse it with its title-bar arrow.
+        self.dpg.configure_item(tag, no_close=True)
+        self._parent_stack.append(tag)
+        h = self._new_handle()
+        self._handles[h] = {"kind": "window", "tag": tag}
+        return h
+
+    def begin_group(self, label, *, collapsible=True, horizontal=False):
         dpg = self.dpg
+        if horizontal:
+            # A row: the widgets that follow sit side by side; the label is not drawn.
+            self._parent_stack.append(dpg.add_group(horizontal=True, parent=self._current_parent))
+            return
         if collapsible:
             tag = dpg.add_collapsing_header(label=label, default_open=True,
                                             parent=self._current_parent)

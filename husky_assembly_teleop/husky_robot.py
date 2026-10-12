@@ -1061,7 +1061,42 @@ class HuskyRobotInterface:
             self.is_arm_executing[index] = True
             send_goal_future = self.act_arms[index].send_goal_async(goal)
             send_goal_future.add_done_callback(lambda fut: self.goal_response_callback(index, fut))
-    
+
+    def send_arm_jog_point(self, arm_joint_positions, time_from_start: float, index: int = 0) -> bool:
+        """Send one arm a single target configuration to reach in ``time_from_start`` seconds.
+
+        * Used by the monitor's Teleop panel, which sends one of these every tick
+        * while a jog button is held. The joint trajectory controller drops what it
+        * was doing and moves from wherever it is now to this point. So the arm
+        * keeps moving while new points keep coming, and it stops by itself once
+        * they stop.
+
+        Unlike ``send_arm_cmd`` there is no start waypoint: the controller starts
+        from its own current position, so a stream of these has no jumps.
+
+        Args:
+            arm_joint_positions (Sequence[float]): The 6 arm joint values, in
+                ``ARM_JOINT_NAMES`` order.
+            time_from_start (float): Seconds the arm gets to reach them.
+            index (int): Arm index (0 = left or the only arm, 1 = right).
+
+        Returns:
+            bool: True if it was published. False for a husky that is not
+            connected to ROS (only drawn in the viewer).
+        """
+        publishers = getattr(self, 'pub_cmd_arm', None)
+        if not publishers or index >= len(publishers):
+            return False
+        point = JointTrajectoryPoint()
+        point.positions = [float(q) for q in arm_joint_positions]
+        sec = int(np.floor(time_from_start))
+        point.time_from_start = Duration(sec=sec, nanosec=int((time_from_start - sec) * 1e9))
+        trajectory = JointTrajectory()
+        trajectory.joint_names = ARM_JOINT_NAMES
+        trajectory.points.append(point)
+        publishers[index].publish(trajectory)
+        return True
+
     def goal_response_callback(self, index, future):
         goal_handle = future.result()
         if not goal_handle.accepted:

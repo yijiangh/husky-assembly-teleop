@@ -502,7 +502,7 @@ class HuskyObject():
         return pp.get_link_pose(self.robot, pp.link_from_name(self.robot, link_name))
 
 class Button:
-    def __init__(self, name, action, color=None):
+    def __init__(self, name, action, color=None, *, width: int = 0, height: int = 0):
         """A push button.
 
         Args:
@@ -510,15 +510,27 @@ class Button:
             action (Callable[[], None]): Called on each click.
             color (Sequence[int] | None): Optional RGB (0-255) fill colour (Dear
                 PyGui only) for the buttons that matter most; None = default look.
+            width (int): Width in pixels (Dear PyGui only); 0 fits the text.
+            height (int): Height in pixels (Dear PyGui only); 0 fits the text.
         """
         self.name = name
         self.action = action
-        self._handle = _backend().add_button(name, action, color=color)
+        self._handle = _backend().add_button(name, action, color=color,
+                                             width=width, height=height)
 
     def update(self):
         # In DPG mode this is a no-op (callback already fired). In PyBullet
         # legacy mode, this polls the debug param and dispatches on toggle.
         _backend().poll(self._handle, "button", self.action)
+
+    @property
+    def held(self) -> bool:
+        """Whether the mouse button is held down on this button right now.
+
+        For buttons that act while held (the Teleop jog buttons). Dear PyGui
+        only: always False on the PyBullet backend.
+        """
+        return _backend().is_active(self._handle)
 
 class Slider:
     def __init__(self, name, action, min_val=0.0, max_val=1.0, current_val=0.0, *,
@@ -786,17 +798,73 @@ class Group:
             Button(...)
             Slider(...)
     """
-    def __init__(self, label, *, collapsible=True):
+    def __init__(self, label, *, collapsible=True, horizontal=False):
+        """Start a section.
+
+        Args:
+            label (str): Section title (not drawn for a horizontal row).
+            collapsible (bool): A header that folds the section away.
+            horizontal (bool): A row: the widgets sit side by side (Dear PyGui only).
+        """
         self.label = label
         self.collapsible = collapsible
+        self.horizontal = horizontal
 
     def __enter__(self):
-        _backend().begin_group(self.label, collapsible=self.collapsible)
+        _backend().begin_group(self.label, collapsible=self.collapsible,
+                               horizontal=self.horizontal)
         return self
 
     def __exit__(self, exc_type, exc, tb):
         _backend().end_group()
         return False  # don't suppress exceptions
+
+
+class Window:
+    """Context manager that puts widgets into a floating window (Dear PyGui only).
+
+    The window survives UI rebuilds (reset_ui) where the user left it; only its
+    widgets are rebuilt. It has no close button: hide it with ``set_visible``.
+
+    Usage:
+        with Window("Teleop", tag="teleop_window", width=300, height=400) as win:
+            Button(...)
+        win.set_visible(False)
+    """
+    def __init__(self, label: str, *, tag: str, width: int = 600, height: int = 800,
+                 show: bool = True):
+        """Remember the window settings; the window is made on ``with``.
+
+        Args:
+            label (str): Title bar text.
+            tag (str): Stable id, so a rebuild finds the same window.
+            width (int): Initial width in pixels.
+            height (int): Initial height in pixels.
+            show (bool): Whether the window is shown.
+        """
+        self.label = label
+        self.tag = tag
+        self.width = width
+        self.height = height
+        self.show = show
+        self._handle = None
+
+    def __enter__(self):
+        self._handle = _backend().begin_window(
+            self.label, tag=self.tag, width=self.width, height=self.height, show=self.show)
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        _backend().end_group()
+        return False  # don't suppress exceptions
+
+    def set_visible(self, visible: bool) -> None:
+        """Show or hide the window.
+
+        Args:
+            visible (bool): True shows it.
+        """
+        _backend().set_visible(self._handle, visible)
 
 
 class Separator:

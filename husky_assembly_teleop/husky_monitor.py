@@ -42,7 +42,7 @@ from husky_assembly_teleop.mocap_experiment import (
 from husky_assembly_teleop.husky_robot import GRIPPER_MOTOR, JOINT_MOTOR, UR5e_HOME_STATE
 from husky_assembly_teleop.common import (
     Button, Slider, SliderGroup, Toggle, StatusText, Separator, TextInput, LiveMultiPlot, HistoryPlot, Husky, TrackedObject, HuskyObject, AssemblyObject, HUSKY_UR5e_JOINT_NAMES, lerp, load_gripper,
-    Group,
+    Group, Window,
 )
 from husky_assembly_teleop.cc_diagnosis import (
     clear_collision_diagnosis, visualize_goal_ik_collision,
@@ -243,6 +243,20 @@ LIVE_BELIEF_MAX_AGE_S = 1.0
 # * preview slider steps through a waypoint per pixel, so this keeps the drag
 # * to a few readable lines instead of one per waypoint.
 TRAJ_VIZ_REPORT_INTERVAL_S = 0.5
+
+# * Teleop panel speed slider [mm/s] (see world.jog_tool0_target). Every monitor
+# * start begins at the slow default; the turn buttons use
+# * world.JOG_DEG_PER_S_PER_MM_S deg/s per mm/s.
+JOG_SPEED_MIN_MM_S = 1.0
+JOG_SPEED_MAX_MM_S = 50.0
+JOG_SPEED_DEFAULT_MM_S = 5.0
+# The jog buttons, row by row: (axis, sign, label). Axis 0-2 = move along
+# tool0's x / y / z, 3-5 = turn about them (world.jog_offset_pose).
+JOG_BUTTON_ROWS = (
+    ((0, -1, '-X'), (0, +1, '+X'), (3, -1, '-Rx'), (3, +1, '+Rx')),
+    ((1, -1, '-Y'), (1, +1, '+Y'), (4, -1, '-Ry'), (4, +1, '+Ry')),
+    ((2, -1, '-Z'), (2, +1, '+Z'), (5, -1, '-Rz'), (5, +1, '+Rz')),
+)
 
 # Legend for the "planned joint values" preview plot. A BarAction trajectory
 # waypoint is always a 12-vec (left arm's 6 joints, then the right arm's), in
@@ -1008,6 +1022,221 @@ class HuskyMonitor(Node):
             return
         self._joint_stream_visible = not getattr(self, '_joint_stream_visible', False)
         self.joint_stream_plot.set_visible(self._joint_stream_visible)
+
+    # --- --- Teleop panel: jog one arm in its tool0 frame (like the pendant's Move tab) --- ---
+    def toggle_teleop_panel(self):
+        """Show or hide the Teleop window. Dear PyGui only (warns otherwise)."""
+        window = getattr(self, 'teleop_window', None)
+        if window is None:
+            self.get_logger().warn("The Teleop panel needs the Dear PyGui UI (set USE_DPG_UI=1).")
+            return
+        self._teleop_visible = not getattr(self, '_teleop_visible', False)
+        window.set_visible(self._teleop_visible)
+
+    def _build_teleop_panel(self):
+        """Build the Teleop window: arm, speed slider, jog buttons and status lines.
+
+        Rebuilt by every reset_ui; the window keeps its place and its shown /
+        hidden state. Hold a jog button and the arm's tool0 moves along, or
+        turns about, its own x / y / z at the slider's speed until the button is
+        let go (_service_tool0_jog). Dear PyGui only: PyBullet buttons cannot
+        tell when they are held.
+
+        ! Moves ONE arm (the 'arm id' one). On Cindy with a bar in both grippers
+        ! the other arm stays where it is, so the bar gets pulled.
+        """
+        self.teleop_window = None
+        self.jog_buttons = {}
+        if not self.USE_DPG_UI or not self.huskies:
+            return
+        self.teleop_window = Window("Teleop (tool0 jog)", tag="teleop_window", width=440, height=470,
+                                    show=getattr(self, '_teleop_visible', False))
+        with self.teleop_window:
+            if self.get_active_arm_count() == 2:
+                # Same setting as the main panel's 'arm id' slider (it rebuilds the UI).
+                Slider("jog arm (0:L, 1:R)", self.update_selected_arm_id,
+                       0, 1, self.selected_arm_index, integer=True)
+                arm_line = (f"jogs {self._connected_robot().name}'s "
+                            f"{world.arm_index_to_name(self.selected_arm_index).upper()} arm")
+            else:
+                arm_line = f"jogs {self._connected_robot().name}'s arm"
+            StatusText("jog arm", arm_line)
+            # * Starts slow on every monitor start; a rebuild keeps the chosen speed.
+            self.jog_speed_slider = Slider(
+                "speed [mm/s]", lambda v: setattr(self, 'jog_speed_mm_s', float(v)),
+                JOG_SPEED_MIN_MM_S, JOG_SPEED_MAX_MM_S,
+                getattr(self, 'jog_speed_mm_s', JOG_SPEED_DEFAULT_MM_S))
+            self.jog_speed_text = StatusText("jog speed", "")
+            StatusText("jog hint", "Hold a button. Axes are tool0's own.",
+                       color=(210, 210, 210, 255))
+            # ! Filled in a local dict and published only when complete: a rebuild
+            # ! runs on Dear PyGui's callback thread (e.g. 'Load Movement'), while
+            # ! the monitor tick reads jog_buttons on the ROS thread
+            # ! (_service_tool0_jog). Filling self.jog_buttons in place crashed
+            # ! the tick with "dictionary changed size during iteration".
+            jog_buttons = {}
+            for row in JOG_BUTTON_ROWS:
+                with Group("", horizontal=True):
+                    for axis, sign, label in row:
+                        # Clicking does nothing; holding does (see _service_tool0_jog).
+                        jog_buttons[(axis, sign)] = Button(
+                            label, lambda: None, color=BUTTON_MOVE_RGB, width=90, height=40)
+            self.jog_buttons = jog_buttons
+            self.jog_status_text = StatusText("jog status", getattr(self, '_jog_status', 'idle'))
+            self.jog_problem_text = StatusText("jog problem", getattr(self, '_jog_problem', ''),
+                                               color=(255, 90, 90, 255))
+            if self.get_active_arm_count() == 2:
+                StatusText("jog warning", "! ONE arm only: a two-arm bar gets pulled",
+                           color=(255, 170, 60, 255))
+
+    def _jog_speed_mm_s(self) -> float:
+        """The Teleop speed slider's value [mm/s], read live from the widget.
+
+        Read live (not from the callback) because a slider rebuilt by reset_ui
+        can miss the next drag's callback.
+
+        Returns:
+            float: The jog speed, within the slider's range.
+        """
+        slider = getattr(self, 'jog_speed_slider', None)
+        value = slider.value if slider is not None else None
+        if value is not None:
+            self.jog_speed_mm_s = float(np.clip(value, JOG_SPEED_MIN_MM_S, JOG_SPEED_MAX_MM_S))
+        return getattr(self, 'jog_speed_mm_s', JOG_SPEED_DEFAULT_MM_S)
+
+    def _set_jog_status(self, status: str, problem: str = '') -> None:
+        """Show the jog's state in the Teleop window (kept across rebuilds).
+
+        Args:
+            status (str): What the jog is doing, e.g. 'jogging +X: +3.1 mm'.
+            problem (str): Why it stopped or was refused; '' for none.
+        """
+        self._jog_status = status
+        self._jog_problem = problem
+        for name, text in (('jog_status_text', status), ('jog_problem_text', problem)):
+            widget = getattr(self, name, None)
+            if widget is not None:
+                widget.set_text(text)
+
+    @staticmethod
+    def _jog_distance_text(jog: SimpleNamespace) -> str:
+        """How far a jog has gone along its axis, e.g. '+3.1 mm' or '-2.0 deg'.
+
+        Args:
+            jog (SimpleNamespace): The jog state (_start_tool0_jog).
+
+        Returns:
+            str: The signed distance (mm) or angle (deg) from where it started.
+        """
+        if jog.axis < 3:
+            return f"{jog.travelled * 1e3:+.1f} mm"
+        return f"{np.degrees(jog.travelled):+.1f} deg"
+
+    def _start_tool0_jog(self, axis: int, sign: int, label: str) -> Optional[SimpleNamespace]:
+        """Check a new jog press and remember where tool0 starts.
+
+        ! Refused while a step / execution runs or waits for 'Confirm Exec', and
+        ! while the arm is on the compliance controller (the jog sends joint
+        ! targets, which only the joint trajectory controller follows).
+
+        Args:
+            axis (int): 0 / 1 / 2 move along tool0's x / y / z, 3 / 4 / 5 turn about them.
+            sign (int): +1 or -1, the direction.
+            label (str): The button text, e.g. '+X'.
+
+        Returns:
+            SimpleNamespace | None: The jog state, or None when refused (the
+            Teleop window and the terminal say why).
+        """
+        arm = self.selected_arm_index
+        if self._refuse_while_tasks_run(f'Teleop jog {label}'):
+            self._set_jog_status(f"refused {label}", "a step / execution is running")
+            return None
+        hi = self.huskies[self.selected_robot_id].interface
+        controller = hi.active_controller[arm]
+        if controller and controller != 'scaled_joint_trajectory_controller':
+            problem = f"arm {arm} runs {controller}: 'Switch to Joint (BOTH)' first"
+            self.get_logger().warn(f"[teleop] jog {label} refused: {problem}")
+            self._set_jog_status(f"refused {label}", problem)
+            return None
+        print(f"[teleop] jog {label} (arm {arm}) at {self._jog_speed_mm_s():.0f} mm/s")
+        return SimpleNamespace(axis=axis, sign=sign, label=label, arm=arm,
+                               start_pose=world._live_tool0_in_arm_base(self, arm),
+                               travelled=0.0, last_t=time.monotonic())
+
+    def _stop_tool0_jog(self, problem: str = '') -> None:
+        """End the running jog: hold the arm where it was last measured.
+
+        Args:
+            problem (str): Why the jog stopped; '' when the button was let go.
+        """
+        jog = getattr(self, '_jog', None)
+        self._jog = None
+        if jog is None:
+            return
+        hi = self.huskies[self.selected_robot_id].interface
+        if not self.FAKE_HARDWARE:
+            hi.send_arm_jog_point(hi.arm_joint_pose[jog.arm], world.JOG_STOP_S, jog.arm)
+        status = f"stopped {jog.label} at {self._jog_distance_text(jog)}"
+        print(f"[teleop] {status}" + (f": {problem}" if problem else ""))
+        self._set_jog_status(status, problem)
+
+    def _service_tool0_jog(self):
+        """Run the Teleop jog for one monitor tick.
+
+        While a jog button is held, send the arm its next target
+        (world.jog_tool0_target); once it is let go, stop the arm. A press that
+        was refused, or a jog that hit a problem, stays stopped until the
+        button is let go.
+        """
+        buttons = getattr(self, 'jog_buttons', None)
+        if not buttons:
+            return
+        speed_mm_s = self._jog_speed_mm_s()
+        self.jog_speed_text.set_text(
+            f"move {speed_mm_s:.0f} mm/s, turn {speed_mm_s * world.JOG_DEG_PER_S_PER_MM_S:.1f} deg/s")
+
+        # A snapshot: the panel may be rebuilt on the UI thread meanwhile.
+        held = next((key for key, button in list(buttons.items()) if button.held), None)
+        jog = getattr(self, '_jog', None)
+        if jog is not None and held != (jog.axis, jog.sign):
+            self._stop_tool0_jog()
+            jog = None
+        if held is None:
+            self._jog_refused = False
+            return
+        if jog is None:
+            if getattr(self, '_jog_refused', False):
+                return
+            label = next(lbl for row in JOG_BUTTON_ROWS for a, s, lbl in row if (a, s) == held)
+            jog = self._jog = self._start_tool0_jog(*held, label)
+            if jog is None:
+                self._jog_refused = True
+                return
+
+        # * Signed speed along the axis: m/s for a move, rad/s for a turn.
+        if jog.axis < 3:
+            speed = jog.sign * speed_mm_s * 1e-3
+        else:
+            speed = jog.sign * np.deg2rad(speed_mm_s * world.JOG_DEG_PER_S_PER_MM_S)
+        now = time.monotonic()
+        # Fake hardware: the joints are set straight away, one tick's worth of travel.
+        lead_s = (float(np.clip(now - jog.last_t, 0.01, world.JOG_LOOKAHEAD_S))
+                  if self.FAKE_HARDWARE else world.JOG_LOOKAHEAD_S)
+        jog.last_t = now
+        conf, jog.travelled, problem = world.jog_tool0_target(
+            self, jog.arm, jog.start_pose, jog.axis, speed, lead_s, jog.travelled)
+        if conf is None:
+            self.get_logger().warn(f"[teleop] jog {jog.label} stopped: {problem}")
+            self._stop_tool0_jog(problem)
+            self._jog_refused = True
+            return
+        hi = self.huskies[self.selected_robot_id].interface
+        if self.FAKE_HARDWARE:
+            hi.arm_joint_pose[jog.arm] = conf
+        else:
+            hi.send_arm_jog_point(conf, lead_s, jog.arm)
+        self._set_jog_status(f"jogging {jog.label}: {self._jog_distance_text(jog)}")
 
     # --- Visual-servoing live tracker (per-iteration tool0 error + base drift) ---
     def _servoing_plots(self):
@@ -10770,6 +10999,10 @@ class HuskyMonitor(Node):
         # + degrees) plus a continually-recording scrolling plot. The window is
         # hidden until toggled and only records while shown. Dear PyGui only.
         self.buttons.append(Button("Toggle Joint Live Stream", self.toggle_joint_live_stream))
+        # Teleop: a small floating window to jog one arm in its tool0 frame, like
+        # the pendant's Move tab (see _build_teleop_panel). Dear PyGui only.
+        self.buttons.append(Button("Toggle Teleop Panel", self.toggle_teleop_panel))
+        self._build_teleop_panel()
         if self.USE_DPG_UI:
             # Restore the last shown/hidden choice across UI rebuilds (reset_ui).
             visible = getattr(self, '_joint_stream_visible', False)
@@ -11676,6 +11909,9 @@ class HuskyMonitor(Node):
                 h.object.set_pose(self.goal_base_pose, hi.arm_joint_pose)
 
         # pp.draw_pose(self.goal_model.get_link_pose_from_name("ur_arm_base_link"))
+
+        # Teleop panel: keep a held jog button moving the arm, stop on release.
+        self._service_tool0_jog()
 
         self.arm_slider.update()
         self.trajectory_time_slider.update()

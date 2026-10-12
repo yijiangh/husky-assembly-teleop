@@ -5,11 +5,12 @@ This module contains the world definition and high level actions or sequences of
 import os, time
 import contextlib
 from itertools import product
-from typing import TYPE_CHECKING, Generator, Optional
+from typing import TYPE_CHECKING, Callable, Generator, Iterator, Optional, Tuple
 import asyncio.runners
 import asyncio
 from matplotlib.pyplot import bar
 import numpy as np
+from scipy.spatial.transform import Rotation as R
 import copy
 from husky_assembly_teleop.husky_robot import GRIPPER_MOTOR, JOINT_MOTOR, HuskyRobotInterface
 import rclpy
@@ -5226,18 +5227,52 @@ def _wait_for_gripper_result(monitor: 'HuskyMonitor', arm_index: int, timeout_s:
     return result
 
 
-def _live_tool0_in_arm_base(monitor: 'HuskyMonitor', arm_index: int) -> tuple:
-    """The arm's live tool0 pose in its arm base frame (what ``send_arm_cmd_cartesian`` takes).
+@contextlib.contextmanager
+def _ghost_tool0_fk(monitor: 'HuskyMonitor', arm_index: int) -> Iterator[Callable[[np.ndarray], tuple]]:
+    """Forward kinematics of one arm's tool0 in its arm base frame, on the ghost robot.
 
-    FK on the ghost robot (``monitor.goal_model``, same calibrated URDF as the
-    real robot) at the LIVE arm joints ``hi.arm_joint_pose[arm_index]``; the
-    ghost's joints are put back afterwards.
+    Gives ``fk(conf)`` for the length of the with-block, then puts the ghost's
+    arm joints back where they were. The ghost (``monitor.goal_model``) has the
+    same calibrated URDF as the real robot.
 
     ! Both links are read from the SAME body. tool0-in-arm-base depends only on
     ! the arm joints, so where the ghost's base sits does not matter -- but
     ! mixing bodies does: the ghost stands at the movement's base while the live
     ! robot stands at the mocap base, so tool0 from one and the arm base from the
     ! other would shift the target by the difference between the two bases.
+
+    Args:
+        monitor (HuskyMonitor): Provides the ghost and the connected robot's
+            joint / link names.
+        arm_index (int): Arm index (0 = left or the only arm, 1 = right).
+
+    Yields:
+        Callable[[np.ndarray], tuple]: ``fk(conf)``, the pybullet (point, quat)
+        pose of tool0 in the arm base frame at the 6 arm joint values ``conf``.
+    """
+    spec = monitor._connected_robot()
+    ghost = monitor.goal_model.robot
+    joints = pp.joints_from_names(ghost, spec.arm_joint_names[arm_index])
+    arm_base_link = pp.link_from_name(ghost, spec.arm_base_links[arm_index])
+    tool0_link = pp.link_from_name(ghost, spec.flange_links[arm_index])
+    saved = pp.get_joint_positions(ghost, joints)
+
+    def fk(conf: np.ndarray) -> tuple:
+        pp.set_joint_positions(ghost, joints, np.asarray(conf, dtype=float))
+        return pp.multiply(pp.invert(pp.get_link_pose(ghost, arm_base_link)),
+                           pp.get_link_pose(ghost, tool0_link))
+
+    try:
+        yield fk
+    finally:
+        pp.set_joint_positions(ghost, joints, saved)
+
+
+def _live_tool0_in_arm_base(monitor: 'HuskyMonitor', arm_index: int) -> tuple:
+    """The arm's live tool0 pose in its arm base frame (what ``send_arm_cmd_cartesian`` takes).
+
+    FK on the ghost robot (see ``_ghost_tool0_fk``) at the LIVE arm joints
+    ``hi.arm_joint_pose[arm_index]``; the ghost's joints are put back afterwards.
 
     Args:
         monitor (HuskyMonitor): Provides the ghost, the live joints and the
@@ -5248,17 +5283,155 @@ def _live_tool0_in_arm_base(monitor: 'HuskyMonitor', arm_index: int) -> tuple:
         tuple: pybullet (point, quat) pose of tool0 in the arm base frame.
     """
     hi: HuskyRobotInterface = monitor.huskies[monitor.selected_robot_id].interface
-    spec = monitor._connected_robot()
+    with _ghost_tool0_fk(monitor, arm_index) as fk:
+        return fk(hi.arm_joint_pose[arm_index])
+
+
+# --- --- --- Teleop jog (the monitor's 'Teleop' panel) --- --- ---
+# * Hold a jog button and the arm's tool0 moves along, or turns about, one of its
+# * own axes, like the Move tab on the UR pendant. Every monitor tick sends the arm
+# * ONE target JOG_LOOKAHEAD_S ahead of where it is, so the arm stops by itself at
+# * most that long after the button is let go -- or after the monitor freezes.
+JOG_LOOKAHEAD_S = 0.2
+# On release the arm gets this long to settle on its last measured position.
+JOG_STOP_S = 0.15
+# The speed slider is in mm/s. A turn button turns tool0 at this many deg/s per
+# mm/s (5 mm/s -> 1 deg/s): a point ~29 cm from the turning axis then moves at
+# the slider's speed.
+JOG_DEG_PER_S_PER_MM_S = 0.2
+# ! The jog stops when a joint would have to turn faster than this. Away from a
+# ! singularity even the fastest jog needs well under 10 deg/s.
+JOG_MAX_JOINT_SPEED_DEG_S = 30.0
+# ! The jog stops when the IK cannot put tool0 this close to the straight line
+# ! (a singularity, or the edge of the arm's reach).
+JOG_IK_POS_TOL_M = 0.1e-3
+JOG_IK_ROT_TOL_DEG = 0.05
+# Solver settings for solve_jog_ik.
+JOG_IK_ITERS = 6
+JOG_IK_DAMPING = 1e-3
+JOG_JACOBIAN_STEP_RAD = 1e-5
+
+
+def _pose_difference(pose_a: tuple, pose_b: tuple) -> np.ndarray:
+    """The move from ``pose_a`` to ``pose_b``, seen from ``pose_a``'s own axes.
+
+    Args:
+        pose_a (tuple): pybullet (point, quat) pose.
+        pose_b (tuple): pybullet (point, quat) pose, in the same frame.
+
+    Returns:
+        np.ndarray: ``[dx, dy, dz, rx, ry, rz]``, the translation [m] and the
+        rotation vector [rad] of ``pose_b`` relative to ``pose_a``.
+    """
+    rel = pp.multiply(pp.invert(pose_a), pose_b)
+    return np.concatenate([rel[0], R.from_quat(rel[1]).as_rotvec()])
+
+
+def jog_offset_pose(axis: int, amount: float) -> tuple:
+    """A move along, or a turn about, one tool0 axis.
+
+    Args:
+        axis (int): 0 / 1 / 2 move along x / y / z; 3 / 4 / 5 turn about x / y / z.
+        amount (float): Signed, metres for a move and radians for a turn.
+
+    Returns:
+        tuple: pybullet (point, quat) pose, multiplied on the RIGHT of a tool0
+        pose so the move is along tool0's own axes.
+    """
+    vector = np.eye(3)[axis % 3] * amount
+    return pp.Pose(point=vector) if axis < 3 else pp.Pose(euler=vector)
+
+
+def solve_jog_ik(fk: Callable[[np.ndarray], tuple], conf_start, target_pose: tuple) -> Tuple[np.ndarray, float, float]:
+    """Arm joints that put tool0 on ``target_pose``, found in small steps from ``conf_start``.
+
+    Damped least squares: each step moves the joints as little as possible to
+    remove the pose error left, using a Jacobian found by nudging each joint.
+    ? Starting from the live joints keeps the arm on the IK branch it is on. A
+    ? fresh IK solve (ssik / PyBullet) could pick another branch and flip the arm.
+
+    Args:
+        fk (Callable[[np.ndarray], tuple]): ``fk(conf)`` -> tool0 pose (``_ghost_tool0_fk``).
+        conf_start (Sequence[float]): The 6 arm joint values to start from.
+        target_pose (tuple): pybullet (point, quat) tool0 target, in fk's frame.
+
+    Returns:
+        tuple: ``(conf, position_error_m, rotation_error_rad)``: the joints found
+        and how far tool0 there still is from the target.
+    """
+    conf = np.asarray(conf_start, dtype=float).copy()
+    for _ in range(JOG_IK_ITERS):
+        pose = fk(conf)
+        error = _pose_difference(pose, target_pose)
+        if np.max(np.abs(error)) < 1e-7:
+            break
+        jacobian = np.empty((6, len(conf)))
+        for j in range(len(conf)):
+            nudged = conf.copy()
+            nudged[j] += JOG_JACOBIAN_STEP_RAD
+            jacobian[:, j] = _pose_difference(pose, fk(nudged)) / JOG_JACOBIAN_STEP_RAD
+        conf = conf + jacobian.T @ np.linalg.solve(
+            jacobian @ jacobian.T + JOG_IK_DAMPING ** 2 * np.eye(6), error)
+    error = _pose_difference(fk(conf), target_pose)
+    return conf, float(np.linalg.norm(error[:3])), float(np.linalg.norm(error[3:]))
+
+
+def jog_tool0_target(monitor: 'HuskyMonitor', arm_index: int, start_pose: tuple, axis: int,
+                     speed: float, lead_s: float, travelled_before: float = 0.0
+                     ) -> Tuple[Optional[np.ndarray], float, str]:
+    """The joints to send next while a jog button is held.
+
+    The jog follows a straight line (or a pure turn) from ``start_pose``, the
+    tool0 pose when the button went down, so the path does not wander however
+    much the arm lags. The target is the point on that line ``speed * lead_s``
+    beyond where tool0 is now, which makes the arm move at ``speed``.
+
+    Args:
+        monitor (HuskyMonitor): Provides the ghost robot and the live joints.
+        arm_index (int): Arm index (0 = left or the only arm, 1 = right).
+        start_pose (tuple): tool0 pose in the arm base frame when the jog started.
+        axis (int): 0 / 1 / 2 move along tool0's x / y / z, 3 / 4 / 5 turn about them.
+        speed (float): Signed speed, m/s for a move and rad/s for a turn.
+        lead_s (float): How far ahead in time the target is [s].
+        travelled_before (float): ``travelled`` returned by the previous tick.
+            Only used to keep counting a turn past 180 deg.
+
+    Returns:
+        tuple: ``(conf, travelled, problem)``. ``conf`` is the 6 arm joint values
+        to send, or None when the jog must stop. ``travelled`` is how far tool0
+        is along the line now (m, or rad for a turn). ``problem`` says why the
+        jog must stop ('' when it may go on).
+    """
+    hi: HuskyRobotInterface = monitor.huskies[monitor.selected_robot_id].interface
+    conf_now = np.asarray(hi.arm_joint_pose[arm_index], dtype=float)
+    with _ghost_tool0_fk(monitor, arm_index) as fk:
+        travelled = float(_pose_difference(start_pose, fk(conf_now))[axis])
+        if axis >= 3:
+            # A rotation vector wraps at 180 deg: add back the whole turns.
+            travelled += 2.0 * np.pi * np.round((travelled_before - travelled) / (2.0 * np.pi))
+        target_pose = pp.multiply(start_pose, jog_offset_pose(axis, travelled + speed * lead_s))
+        conf, pos_err, rot_err = solve_jog_ik(fk, conf_now, target_pose)
+
+    if pos_err > JOG_IK_POS_TOL_M or np.degrees(rot_err) > JOG_IK_ROT_TOL_DEG:
+        return None, travelled, (
+            f"IK misses by {pos_err * 1e3:.2f} mm / {np.degrees(rot_err):.2f} deg "
+            f"(singularity or edge of reach)")
+    joint_speed = float(np.degrees(np.max(np.abs(conf - conf_now)))) / lead_s
+    if joint_speed > JOG_MAX_JOINT_SPEED_DEG_S:
+        return None, travelled, (
+            f"a joint would turn {joint_speed:.0f} deg/s (max "
+            f"{JOG_MAX_JOINT_SPEED_DEG_S:.0f}): near a singularity")
     ghost = monitor.goal_model.robot
-    joints = pp.joints_from_names(ghost, spec.arm_joint_names[arm_index])
-    saved = pp.get_joint_positions(ghost, joints)
-    try:
-        pp.set_joint_positions(ghost, joints, np.asarray(hi.arm_joint_pose[arm_index], dtype=float))
-        world_from_arm_base = pp.get_link_pose(ghost, pp.link_from_name(ghost, spec.arm_base_links[arm_index]))
-        world_from_tool0 = pp.get_link_pose(ghost, pp.link_from_name(ghost, spec.flange_links[arm_index]))
-        return pp.multiply(pp.invert(world_from_arm_base), world_from_tool0)
-    finally:
-        pp.set_joint_positions(ghost, joints, saved)
+    names = monitor._connected_robot().arm_joint_names[arm_index]
+    for name, q in zip(names, conf):
+        lower, upper = pp.get_joint_limits(ghost, pp.joint_from_name(ghost, name))
+        if not lower <= q <= upper:
+            return None, travelled, (
+                f"{name} at its limit ({np.degrees(q):.0f} deg, "
+                f"range {np.degrees(lower):.0f} to {np.degrees(upper):.0f})")
+    return conf, travelled, ''
+
+
 
 
 # * Compliant gripper handoff limits.
