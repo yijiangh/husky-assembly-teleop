@@ -313,7 +313,7 @@ Before collecting data, verify these settings in the code match your setup.
 |------|-------|------|
 | base `mocap_id` (Streaming IDs) | [`husky_world.py:184/191/198`](../husky_assembly_teleop/husky_world.py#L184) | per ROS domain (see [§0.2](#02-robot-reference-table)) ; match Motive **properties > Streaming ID** (see [§0.2](#02-robot-reference-table)) |
 | calib-tool IDs `1862` L / `1861` R | [`husky_world.py:329/333`](../husky_assembly_teleop/husky_world.py#L329) | match Motive (see [§0.2](#02-robot-reference-table)) . **Which arm is calibrated = which `calib_tool_*` block is enabled** — comment out the unused arm for a single-arm run |
-| `CALIBRATION_DATE` + `CALIBRATION_ANALYSIS_DATE` | [`__init__.py:80`](../husky_assembly_teleop/__init__.py#L80) and [`:85`](../husky_assembly_teleop/__init__.py#L85) | both sit next to each other in **one file**; set both to today's date folder, which must exist on the gdrive (`data_experiment/calibration_data/YYYYMMDD/`, [§4.3](#43-data-folder-structure)) with a `config.yaml`. Nothing to edit in `config_loader.py` — its `DEFAULT_DATE_FOLDER` just re-exports `CALIBRATION_ANALYSIS_DATE` |
+| `CALIBRATION_DATE` + `CALIBRATION_ANALYSIS_DATE` | [`__init__.py:80`](../husky_assembly_teleop/__init__.py#L80) and [`:85`](../husky_assembly_teleop/__init__.py#L85) | both sit next to each other in **one file**; set both to today's date folder, which must exist on the gdrive (`data_experiment/calibration_data/YYYYMMDD/`, [§4.3](#43-data-folder-structure)) with a `config.yaml`. A robot whose base calibration lives in another folder gets an entry in `BASE_CALIBRATION_DATE_BY_ROBOT` (same file, [§7.2](#72-set-the-date-folder)). Nothing to edit in `config_loader.py` — its `DEFAULT_DATE_FOLDER` just re-exports `CALIBRATION_ANALYSIS_DATE` |
 | `CALIBRATION_STATE_SETS` (per arm idx) | [`husky_monitor.py:245`](../husky_assembly_teleop/husky_monitor.py#L245) | verify the calib traj-state folder for your arm exists |
 
 
@@ -646,6 +646,22 @@ Normally set **both** to the same folder. Keep them different only when you
 deliberately want the live app recording into a new folder while you re-analyse
 an older capture.
 
+The monitor reads each robot's base calibration
+(`calibrated_transformation_<serial>_rhino.json`) from `CALIBRATION_DATE`, unless
+the robot has its own folder in `BASE_CALIBRATION_DATE_BY_ROBOT` (same file, just
+below). The robots are calibrated on different days, so after calibrating one
+robot, point its entry at the new folder (or remove the entry when the new folder
+is `CALIBRATION_DATE`):
+
+```python
+BASE_CALIBRATION_DATE_BY_ROBOT = {
+    'Alice': '20260623',  # 0804, the newest Alice calibration
+}
+```
+
+At start-up the monitor prints the file it loaded for every robot, e.g.
+`Base calibration of Alice (0804): 20260623/calibrated_transformation_0804_rhino.json`.
+
 There is nothing to edit in `config_loader.py` — its `DEFAULT_DATE_FOLDER` is a
 re-export of `CALIBRATION_ANALYSIS_DATE`. Every script prints the folder it is
 working on when it starts:
@@ -839,5 +855,5 @@ BAR_ACTION_MOCAP_ACCURACY_TEST = 0
 - `Config file not found: ...` → the date folder is missing on this machine: check Insync has finished syncing `data_experiment/calibration_data/`, and that `EXPERIMENT_DATA_DIRECTORY` ([§0.1](#01-new-workstation-setup-one-time)) points at this machine's gdrive mount
 
 ### Monitor warns "Base calibration file not found"
-- The monitor loads `calibrated_transformation_<robot>_rhino.json` from `$CALIB/<CALIBRATION_DATE>/` on the gdrive. If it is missing, the base pose runs **uncalibrated**
+- The monitor loads `calibrated_transformation_<robot>_rhino.json` from `$CALIB/<CALIBRATION_DATE>/` on the gdrive, or from the robot's own folder in `BASE_CALIBRATION_DATE_BY_ROBOT` (`__init__.py`, [§7.2](#72-set-the-date-folder)); the warning names the folder it looked in. If it is missing, the base pose runs **uncalibrated**
 - Check that the folder exists and holds that file, that Insync has synced it, and that `EXPERIMENT_DATA_DIRECTORY` ([§0.1](#01-new-workstation-setup-one-time)) is right for this machine

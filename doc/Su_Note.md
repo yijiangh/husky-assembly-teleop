@@ -413,6 +413,9 @@ rest builds on them.
   calibrated transform and punch TCP offsets from it, and the Record/Save buttons write new data into
   it. Every part of the app imports this one name, so bumping it repoints everything at a new capture
   (after a restart — it is read once at launch).
+- **`BASE_CALIBRATION_DATE_BY_ROBOT`** (just below it): a robot listed there (e.g. `'Alice': '20260623'`)
+  reads its base calibration file from its own date folder instead of `CALIBRATION_DATE`, since the
+  huskies are calibrated on different days. Recording and `config.yaml` stay on `CALIBRATION_DATE`.
 - **`CALIBRATION_ANALYSIS_DATE`** (`~line 85`): the dated dataset the **offline scripts** in
   `data/calibration_data/` use (they read/write it under `CALIBRATION_DATA_DIRECTORY` via
   `config_loader.CALIB_DATA_DIR`); `config_loader.DEFAULT_DATE_FOLDER` re-exports it. It sits directly

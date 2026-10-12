@@ -357,12 +357,13 @@ plugged in), then `ros2 daemon stop` once. Delete `~/husky_dryrun` when done.
       list`, the sync is incomplete (use `..._backup` instead).
 - [ ] No leftover `progress.json` from earlier tests in that folder (unless you mean to continue).
 
-**Calibration (base mocap ↔ robot)** — read from `<EXPERIMENT_DATA_DIRECTORY>/calibration_data/<CALIBRATION_DATE>/`
-(`CALIBRATION_DATE = '20260916'` in `husky_assembly_teleop/__init__.py`).
-- [ ] Cindy: `calibrated_transformation_0806_rhino.json` — present in `20260916`.
-- [ ] **Alice: missing in `20260916`.** Her newest file is `20260623/calibrated_transformation_0804_rhino.json`.
-      Either recalibrate Alice (`doc/calibration_manual.md`), or — only if her base markers have not
-      moved since June — copy that file into `20260916/` and validate it in B4.2.
+**Calibration (base mocap ↔ robot)** — read from `<EXPERIMENT_DATA_DIRECTORY>/calibration_data/<date>/`,
+where `<date>` is the robot's entry in `BASE_CALIBRATION_DATE_BY_ROBOT`, else `CALIBRATION_DATE`
+(both in `husky_assembly_teleop/__init__.py`).
+- [ ] Cindy: `calibrated_transformation_0806_rhino.json` — in `20260916` (`CALIBRATION_DATE`).
+- [ ] Alice: `calibrated_transformation_0804_rhino.json` — in `20260623` (her entry
+      `'Alice': '20260623'`). Valid only if her base markers have not moved since June: check it in
+      B3.5. Start-up prints `Base calibration of Alice (0804): 20260623/...`.
       Without a file, Alice's mocap base is off by her marker offset, and she never appears as a
       live obstacle in Cindy's runs (she falls back to `progress.json`, which is fine).
 - [ ] Belle has never been calibrated: keep her out of the mocap volume or ignore her (she is parked

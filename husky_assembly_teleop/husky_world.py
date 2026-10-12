@@ -17,7 +17,7 @@ import rclpy
 import pybullet as p
 import pybullet_planning as pp
 
-from husky_assembly_teleop import DATA_DIRECTORY, CALIBRATION_DATE, EXPERIMENT_DATA_DIRECTORY, CALIBRATION_DATA_DIRECTORY, DESIGN_PROBLEM_NAME
+from husky_assembly_teleop import DATA_DIRECTORY, CALIBRATION_DATE, BASE_CALIBRATION_DATE_BY_ROBOT, EXPERIMENT_DATA_DIRECTORY, CALIBRATION_DATA_DIRECTORY, DESIGN_PROBLEM_NAME
 from husky_assembly_teleop.common import Husky, TrackedObject, AssemblyObject
 from husky_assembly_teleop.robot_registry import RobotSpec, other_robots, robot_by_name, robot_from_env
 from husky_assembly_teleop.bar_action_io import (
@@ -225,8 +225,12 @@ def _base_calibration_file_for(monitor, spec: RobotSpec) -> Optional[str]:
     the tag just makes the active convention explicit. Falls back to the
     untagged file if the tagged one is missing.
 
+    The date folder is the robot's own entry in BASE_CALIBRATION_DATE_BY_ROBOT
+    (huskies are calibrated on different days), else CALIBRATION_DATE.
+
     Args:
-        monitor: The HuskyMonitor (reads MOCAP_AXIS_CONVENTION, logs warnings).
+        monitor: The HuskyMonitor (reads MOCAP_AXIS_CONVENTION, logs which file
+            it loads and warnings).
         spec (RobotSpec): The husky.
 
     Returns:
@@ -234,11 +238,15 @@ def _base_calibration_file_for(monitor, spec: RobotSpec) -> Optional[str]:
         no file exists -- the husky is then drawn without base calibration.
     """
     convention = getattr(monitor, 'MOCAP_AXIS_CONVENTION', 'rotated')
+    date_folder = BASE_CALIBRATION_DATE_BY_ROBOT.get(spec.name, CALIBRATION_DATE)
     base_calibration_file = os.path.join(
-        CALIB_DATA_DIR, CALIBRATION_DATE, spec.base_calibration_filename(convention))
+        CALIB_DATA_DIR, date_folder, spec.base_calibration_filename(convention))
     if os.path.exists(base_calibration_file):
+        monitor.get_logger().info(
+            f'Base calibration of {spec.name} ({spec.serial}): '
+            f'{date_folder}/{os.path.basename(base_calibration_file)}')
         return base_calibration_file
-    fallback = os.path.join(CALIB_DATA_DIR, CALIBRATION_DATE, spec.base_calibration_filename())
+    fallback = os.path.join(CALIB_DATA_DIR, date_folder, spec.base_calibration_filename())
     if convention == 'rhino' and os.path.exists(fallback):
         monitor.get_logger().warn(
             f'Rhino-tagged calibration not found ({base_calibration_file}); '

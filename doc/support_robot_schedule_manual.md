@@ -64,9 +64,13 @@ and restart the monitor with that robot's domain; progress survives the restart.
    toggle OFF. Use `Reopen entry (reload clean)`, or delete that sidecar, before
    relying on the built-bar display.
 3. **Base calibration files.** Each robot's
-   `calibrated_transformation_<0804|0805|0806>.json` must exist in the
-   `CALIBRATION_DATE` folder. A robot without one never gets a live obstacle
-   pose (it falls back to `progress.json`).
+   `calibrated_transformation_<0804|0805|0806>_rhino.json` must exist in its date
+   folder: the robot's entry in `BASE_CALIBRATION_DATE_BY_ROBOT` (Alice:
+   `20260623`), else `CALIBRATION_DATE` (both in `husky_assembly_teleop/__init__.py`).
+   At start-up the monitor prints `Base calibration of <robot> (<serial>): <date>/<file>`
+   per robot, or a `Base calibration file not found` warning. A robot without one
+   never gets a live obstacle pose (it falls back to `progress.json`), and as the
+   connected robot it plans at the marker body instead of its base.
 4. **Mocap.** All three huskies stream (ids 1840 Alice, 1850 Belle, 1860 Cindy).
 
 ---
