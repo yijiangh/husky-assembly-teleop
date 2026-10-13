@@ -16,3 +16,6 @@
 [submodule "external/rs_data_structure"]
 	path = external/rs_data_structure
 	url = https://github.com/yijiangh/rs_data_structure
+[submodule "external/bar_assembly_core"]
+	path = external/bar_assembly_core
+	url = git@github.com:jeliag/bar_assembly_core.git

@@ -65,13 +65,15 @@ python3 -m pip install -e src/husky-assembly-teleop/external/rs_data_structure
 # --no-deps: husky_assembly_tamp pins compas_fab and rs_data_structure to git URLs,
 # and pip would replace the editable copies above with those
 python3 -m pip install --no-deps -e src/husky-assembly-teleop/external/husky_assembly_tamp
+# The shared core (private repository: needs access to jeliag/bar_assembly_core)
+python3 -m pip install --no-deps -e src/husky-assembly-teleop/external/bar_assembly_core
 
 # The monitor's dependencies (versions as in requirements.txt); matplotlib is for husky_assembly_tamp
 python3 -m pip install "viser==1.1.1" "yourdfpy==0.0.60" "trimesh==4.12.2" "async-timeout>=4.0" "compas_robots>=0.6" \
     "scipy>=1.8" "pybullet>=3.2" "compas>=2.0" "matplotlib==3.10.3"
 
-# Check: all four should list a location under src/husky-assembly-teleop/external
-python3 -m pip list | grep -iE "pybullet.planning|compas.fab|rs.data.structure|husky.assembly.tamp"
+# Check: all five should list a location under src/husky-assembly-teleop/external
+python3 -m pip list | grep -iE "pybullet.planning|compas.fab|rs.data.structure|husky.assembly.tamp|bar.assembly.core"
 ```
 
 Set up Zenoh as described in crl-husky's README ([Zenoh](../crl-husky/README.md#zenoh)): `export RMW_IMPLEMENTATION=rmw_zenoh_cpp ROS_DOMAIN_ID=80` in `~/.bashrc`, and the router once.
@@ -164,7 +166,7 @@ The monitor is a small core that ticks and owns the shared state; every feature 
 | `ui/` | The viser web UI and shared widgets. |
 | `old/` | The old monitor, for reference only. |
 
-`bar_assembly_core/` (next to the package) is the core shared with the Rhino plugin and the planners: the design file format (`design/`), robots and scenes, and their mirrors in PyBullet and compas_fab. Its layers are listed in `bar_assembly_core/__init__.py`.
+`external/bar_assembly_core/` is the core shared with the Rhino plugin and the planners, a submodule of [jeliag/bar_assembly_core](https://github.com/jeliag/bar_assembly_core): the design file format (`design/`), robots and scenes, and their mirrors in PyBullet and compas_fab. Its layers are listed in its `bar_assembly_core/__init__.py`; the design format is in its `doc/design_format.md`.
 
 ## Documentation
 
@@ -173,7 +175,7 @@ The monitor is a small core that ticks and owns the shared state; every feature 
 | `AGENTS.md` | Conventions, build and test commands; for coding agents and people alike. |
 | `doc/refactor_rationale.md` | Why the core is built the way it is. |
 | `doc/plugin_roadmap.md` | Which plugins exist, and which old features are still to be ported. |
-| `doc/scene_refactor_plan.md`, `doc/design_format.md`, `doc/ur_frames.md` | The scene, the design file format, the UR arm frames. |
+| `doc/scene_refactor_plan.md`, `doc/ur_frames.md` | The scene, the UR arm frames. The design file format is in the core's `doc/design_format.md`. |
 | `tasks/` | Specs written while building a feature. |
 | `doc/calibration_manual.md` and the other manuals | **Outdated**, written for the old monitor; each says at the top what is missing or different now. |
 | `DOCKER.md` | **Unknown state**, not tested with the new monitor. |
