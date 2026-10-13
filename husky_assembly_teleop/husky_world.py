@@ -2935,15 +2935,16 @@ def _state_with_seed(state, seed_conf: Configuration) -> RobotCellState:
     return seeded
 
 
-# * Which ssik arm solves which planning group (husky_assembly_tamp asset/ssik,
+# * Which ssik arms may solve which planning group (husky_assembly_tamp asset/ssik,
 # * each built from that robot's calibrated URDF): Cindy's two arm groups ->
 # * 'left' / 'right'; a support robot's 'manipulator' group -> Alice's arm
-# * ('alice', built 2026-10-12). Belle shares the group name but not Alice's
-# * calibration, so 'alice' is only used on a robot body whose kinematics match
-# * it (_ssik_solver_fits_robot); otherwise PyBullet's built-in IK runs.
-_SSIK_ARM_OF_GROUP = dict(zip(robot_by_name('Cindy').planning_groups,
-                              robot_by_name('Cindy').side_keys))
-_SSIK_ARM_OF_GROUP['manipulator'] = 'alice'
+# * ('alice', built 2026-10-12) or Belle's ('belle', built 2026-10-13). Both
+# * robots share the group name, so the solver whose kinematics match the
+# * planner's robot body is used (_ssik_solver_fits_robot); when none matches,
+# * PyBullet's built-in IK runs.
+_SSIK_ARMS_OF_GROUP = {group: (side,) for group, side in zip(robot_by_name('Cindy').planning_groups,
+                                                             robot_by_name('Cindy').side_keys)}
+_SSIK_ARMS_OF_GROUP['manipulator'] = ('alice', 'belle')
 # Most solutions ssik returns per arm (a UR arm has at most 8).
 SSIK_MAX_SOLUTIONS = 8
 # The ssik-unavailable warning is printed once per process, not on every solve.
@@ -2953,6 +2954,8 @@ SSIK_FIT_TOL_M = 1e-6
 SSIK_FIT_TOL_RAD = 1e-6
 # (robot body id, arm) -> whether that solver fits that body (checked once).
 _ssik_fit_cache = {}
+# Robot body ids already told that no ssik solver fits them (said once, not per solve).
+_ssik_no_fit_warned = set()
 
 
 def _ssik_solver_fits_robot(robot: int, arm: str) -> bool:
@@ -2960,11 +2963,11 @@ def _ssik_solver_fits_robot(robot: int, arm: str) -> bool:
 
     Compares the solver's forward kinematics with PyBullet's (arm base link ->
     tool0) at a few joint sets, once per body. A robot without the arm's joints
-    or links, or with another calibration (Belle vs Alice's solver), does not fit.
+    or links, or with another calibration (Belle's body vs Alice's solver), does not fit.
 
     Args:
         robot (int): PyBullet body id of the planner's robot.
-        arm (str): ssik arm name, e.g. ``'alice'``.
+        arm (str): ssik arm name, e.g. ``'alice'`` or ``'belle'``.
 
     Returns:
         bool: True when the solver reproduces the body's FK.
@@ -2995,9 +2998,8 @@ def _ssik_solver_fits_robot(robot: int, arm: str) -> bool:
         except Exception:
             fits = False  # the body has no such joints / links (another robot)
         _ssik_fit_cache[key] = fits
-        if arm == 'alice':
-            print(f"[goal IK] ssik solver '{arm}' {'fits' if fits else 'does NOT fit'} the planner's "
-                  f"robot{'' if fits else ' (not Alice, or another calibration): PyBullet IK instead'}.")
+        print(f"[goal IK] ssik solver '{arm}' {'fits' if fits else 'does not fit'} the planner's "
+              f"robot{'' if fits else ' (built from another robot or calibration)'}.")
     return _ssik_fit_cache[key]
 
 
@@ -3007,24 +3009,37 @@ def _ssik_arms_for(targets: dict, robot: Optional[int] = None) -> Optional[dict]
     Args:
         targets (dict): ``{planning group: Frame}``, as ``solve_goal_ik_generic`` takes.
         robot (int | None): PyBullet body id of the planner's robot. Needed for a
-            support robot's group: Alice's solver is used only on a body it fits.
+            support robot's group: Alice's or Belle's solver is used only on a
+            body it fits.
 
     Returns:
-        dict | None: ``{planning group: 'left' | 'right' | 'alice'}`` when every
-        group has a solver that fits and ssik is usable here; None otherwise
-        (Belle, ``HUSKY_IK_BACKEND=gradient``, or ssik not installed), and the
-        caller falls back to PyBullet's built-in IK.
+        dict | None: ``{planning group: 'left' | 'right' | 'alice' | 'belle'}``
+        when every group has a solver that fits and ssik is usable here; None
+        otherwise (no solver fits the body, ``HUSKY_IK_BACKEND=gradient``, or ssik
+        not installed), and the caller falls back to PyBullet's built-in IK.
     """
     global _ssik_fallback_warned
-    arms = {group: _SSIK_ARM_OF_GROUP.get(group) for group in targets}
-    if not arms or None in arms.values():
+    candidates = {group: _SSIK_ARMS_OF_GROUP.get(group, ()) for group in targets}
+    if not candidates or not all(candidates.values()):
         return None  # no ssik solver built for this group
     usable = ssik_ik.ik_backend() == 'ssik' and ssik_inprocess.available()
-    if usable and 'alice' in arms.values():
-        # ! Only on a body with Alice's kinematics (not Belle's).
-        if robot is None or not _ssik_solver_fits_robot(robot, 'alice'):
-            return None
     if usable:
+        arms = {}
+        for group, names in candidates.items():
+            if len(names) == 1:
+                arms[group] = names[0]  # Cindy's arms: one solver per group
+                continue
+            # ! A group several robots share ('manipulator': Alice, Belle): the
+            # ! solver built from THIS body's calibration, never another robot's.
+            fitting = next((arm for arm in names
+                            if robot is not None and _ssik_solver_fits_robot(robot, arm)), None)
+            if fitting is None:
+                if robot not in _ssik_no_fit_warned:
+                    print(f"[goal IK] no ssik solver ({', '.join(names)}) fits the planner's "
+                          f"robot: PyBullet IK instead (stops within 1 mm / 0.01 rad).")
+                    _ssik_no_fit_warned.add(robot)
+                return None
+            arms[group] = fitting
         return arms
     if not _ssik_fallback_warned:
         why = ('HUSKY_IK_BACKEND=gradient' if ssik_ik.ik_backend() != 'ssik'
@@ -3038,7 +3053,7 @@ def _ssik_arms_for(targets: dict, robot: Optional[int] = None) -> Optional[dict]
 def _solve_goal_ik_ssik(planner, start_state, targets: dict, arms: dict, *,
                         check_collision: bool, cc_options: dict,
                         report: dict) -> Optional[Configuration]:
-    """Goal IK with ssik (Cindy's two arms, Alice's one): every exact solution, the nearest collision-free set.
+    """Goal IK with ssik (Cindy's two arms, Alice's or Belle's one): every exact solution, the nearest collision-free set.
 
     ssik solves each arm in closed form on the calibrated URDF, so every
     solution is exact (no 1 mm tolerance) and all of them are listed (up to 8
@@ -3059,7 +3074,7 @@ def _solve_goal_ik_ssik(planner, start_state, targets: dict, arms: dict, *,
         start_state (RobotCellState): The reference configuration and the
             template every candidate goal state is copied from.
         targets (dict): ``{planning group: Frame}``, world-frame tool0 targets.
-        arms (dict): ``{planning group: 'left' | 'right' | 'alice'}`` (``_ssik_arms_for``).
+        arms (dict): ``{planning group: 'left' | 'right' | 'alice' | 'belle'}`` (``_ssik_arms_for``).
         check_collision (bool): Collision-check each candidate pair.
         cc_options (dict): Options for ``planner.check_collision``.
         report (dict): Filled like ``solve_goal_ik_generic``'s ``report``.
@@ -3205,8 +3220,8 @@ def solve_goal_ik_generic(planner, start_state, targets: dict, *, seed_confs=(),
             opts["_skip_cc4"] = True
             opts["_skip_cc5"] = True
 
-    # * Cindy's two arms and Alice's arm: ssik (exact, deterministic). Everything
-    # * else (Belle): PyBullet IK below.
+    # * Cindy's two arms, Alice's and Belle's arm: ssik (exact, deterministic).
+    # * A robot body no solver fits: PyBullet IK below.
     arms = _ssik_arms_for(targets, planner.client.robot_puid)
     if arms is not None and start_state.robot_configuration is not None:
         return _solve_goal_ik_ssik(planner, start_state, targets, arms,
@@ -5176,7 +5191,7 @@ def servo_single_arm_to_target_live(monitor, mv, max_iters: int = 8, pos_tol_mm:
     The single-arm twin of ``servo_to_movement_start_live`` (Cindy), with the
     same rules: the error is tool0 by FK at the LIVE mocap base and the live
     joints vs the authored world target (``mv.target_ee_frames``); each pass
-    solves IK at the live base (ssik on Alice: exact, nearest the live arm),
+    solves IK at the live base (ssik on Alice and Belle: exact, nearest the live arm),
     stops when the flange would move less than ``pos_tol_mm`` ('nothing left to
     plan') or is within it ('converged'), else sends a 2-point joint move from
     the live arm to that solution. The first move is previewed and waits for

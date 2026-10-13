@@ -253,9 +253,10 @@ gripper step and the linear approach after it:
 When the base is not tracked, the exported goal is used
 (`[live goal] ...: base not tracked; ...`). When no collision-free IK exists at the
 live base, nothing is planned (`... not planning.`, the collision drawn if there is one).
-On Alice the IK is her own exact ssik solver (`asset/ssik/alice_ur_arm_ik.py` in
-husky_assembly_tamp, built 2026-10-12 from her calibrated URDF), used only once a
-check finds the planner's robot has those kinematics; Belle keeps PyBullet IK.
+The IK is the robot's own exact ssik solver (`asset/ssik/alice_ur_arm_ik.py` /
+`belle_ur_arm_ik.py` in husky_assembly_tamp, built 2026-10-12 / 2026-10-13 from each
+robot's calibrated URDF). Both serve the same planning group, so the one whose forward
+kinematics match the planner's robot is used; when none matches, PyBullet IK runs.
 
 In a hold entry, `Exec Selected Mv Traj (auto)` on the free approach then servos
 tool0 onto the approach pose (`world.execute_free_approach_then_servo` ->
