@@ -4,17 +4,20 @@ Quick debug tool: click any scene body with a world pose, drag it with a gizmo, 
 Clicking in the 3D view picks the nearest movable body under the cursor; the dropdown does the same.
 Position and roll, pitch, yaw can also be typed in. "Add" puts temporary boxes and cylinders into the scene, which
 planners avoid like any obstacle; they are resized with a second gizmo on one corner, or by typing their size.
+They are kept in SAVE_FILE, so they are back after a restart.
 Untick "Active" to hide the gizmos and stop picking by click; viser does not tell the server whether a folder is open.
 
 ! Writes other plugins' live bodies directly, which plugins normally must not do. Debug only: the owner may put
-  the body back at any time, and nothing is saved.
+  the body back at any time, and only the temporary obstacles are saved.
 
 Run with:  -p plugins:="['obstacles', 'debug_gizmo']"
 """
 
 from __future__ import annotations
 
+import json
 from html import escape
+from pathlib import Path
 
 import numpy as np
 import viser
@@ -36,6 +39,8 @@ TMP_SIZE = (0.5, 0.5, 1.0)
 TMP_MIN = 0.01
 #: Colour of temporary obstacles, (r, g, b, a) from 0 to 1.
 TMP_COLOR = (0.6, 0.35, 0.9, 1.0)
+#: Where the temporary obstacles are kept between runs.
+SAVE_FILE = Path.home() / "husky_debug_gizmo.json"
 
 
 def _rpy(pose: Pose) -> tuple[float, float, float]:
@@ -82,11 +87,13 @@ class DebugGizmoPlugin(HuskyPlugin):
         # Temporary obstacles by id: ("box" or "cylinder", size).
         self._tmp: dict[str, tuple[str, tuple[float, float, float]]] = {}
         self._tmp_count = 0
+        # The temporary obstacles as last written to SAVE_FILE.
+        self._saved: list[dict] = []
         # World point the corner gizmo resizes against: the corner opposite it, fixed while dragging.
         self._anchor = np.zeros(3)
 
     def setup(self, ctx: PluginContext) -> None:
-        """Build the widgets and the (hidden) gizmos.
+        """Build the widgets and the (hidden) gizmos, and put back the saved temporary obstacles.
 
         Args:
             ctx: This plugin's context.
@@ -150,6 +157,16 @@ class DebugGizmoPlugin(HuskyPlugin):
             body_id, position = self._select.value, np.array(event.target.position)
             ctx.submit("resize body", lambda: self._resize(ctx, body_id, position))
 
+        self._load(ctx)
+
+    def update(self, ctx: PluginContext) -> None:
+        """Save the temporary obstacles when they changed.
+
+        Args:
+            ctx: This plugin's context.
+        """
+        self._save(ctx)
+
     def teardown(self, ctx: PluginContext) -> None:
         """Remove the scene click callback; the core removes the temporary obstacles.
 
@@ -183,13 +200,19 @@ class DebugGizmoPlugin(HuskyPlugin):
 
     def _add(self, ctx: PluginContext, kind: str) -> None:
         """Add a temporary "box" or "cylinder" standing at the origin, and select it."""
-        self._tmp_count += 1
-        body_id = f"{self.name}/tmp/{kind}_{self._tmp_count}"
-        ctx.scene.put(Body(body_id, _tmp_geometry(kind, TMP_SIZE), Pose((0.0, 0.0, TMP_SIZE[2] / 2)),
-                           label=f"tmp {kind} {self._tmp_count}", color=TMP_COLOR))
-        self._tmp[body_id] = (kind, TMP_SIZE)
+        body_id = self._put_tmp(ctx, kind, self._tmp_count + 1, TMP_SIZE, Pose((0.0, 0.0, TMP_SIZE[2] / 2)))
         self._sync_options(ctx)
         self._select.value = body_id
+
+    def _put_tmp(self, ctx: PluginContext, kind: str, number: int, size: tuple[float, float, float],
+                 pose: Pose) -> str:
+        """Put temporary "box" or "cylinder" `number` into the scene, and return its id."""
+        body_id = f"{self.name}/tmp/{kind}_{number}"
+        ctx.scene.put(Body(body_id, _tmp_geometry(kind, size), pose, label=f"tmp {kind} {number}", color=TMP_COLOR))
+        self._tmp[body_id] = (kind, size)
+        # * Numbers are never reused, so a new obstacle cannot take a saved one's id.
+        self._tmp_count = max(self._tmp_count, number)
+        return body_id
 
     def _remove(self, ctx: PluginContext) -> None:
         """Remove the selected body if it is a temporary obstacle."""
@@ -292,6 +315,37 @@ class DebugGizmoPlugin(HuskyPlugin):
         if self._pose(ctx, body_id) is not None and body_id in self._original:
             ctx.scene.bodies[body_id].placement = self._original[body_id]
             self._place_gizmo(ctx, body_id)
+
+    # --- --- --- --- --- SAVE AND LOAD --- --- --- --- ---
+
+    def _load(self, ctx: PluginContext) -> None:
+        """Put back the temporary obstacles in SAVE_FILE; a missing file means none, a broken one is logged."""
+        if not SAVE_FILE.exists():
+            return
+        try:
+            for shape in json.loads(SAVE_FILE.read_text())["shapes"]:
+                self._put_tmp(ctx, shape["kind"], int(shape["number"]), tuple(float(v) for v in shape["size"]),
+                              Pose.from_arrays(shape["position"], shape["orientation"]))
+        except (OSError, ValueError, KeyError, TypeError) as error:  # * json.JSONDecodeError is a ValueError
+            ctx.log_warn(f"temporary obstacles in {SAVE_FILE} not loaded: {error!r}")
+
+    def _save(self, ctx: PluginContext) -> None:
+        """Write the temporary obstacles to SAVE_FILE if they changed since the last write."""
+        shapes = []
+        for body_id, (kind, size) in self._tmp.items():
+            pose = ctx.scene.bodies[body_id].placement
+            shapes.append({"kind": kind, "number": int(body_id.rsplit("_", 1)[1]), "size": [float(v) for v in size],
+                           "position": list(pose.position), "orientation": list(pose.orientation)})
+        if shapes == self._saved:
+            return
+        self._saved = shapes
+        try:
+            # * Written beside the file, then swapped in: a kill mid-write cannot leave half a file.
+            temporary = SAVE_FILE.with_suffix(".tmp")
+            temporary.write_text(json.dumps({"shapes": shapes}, indent=2))
+            temporary.replace(SAVE_FILE)
+        except OSError as error:
+            ctx.log_warn(f"temporary obstacles not saved to {SAVE_FILE}: {error!r}")
 
     # --- --- --- --- --- DRAW --- --- --- --- ---
 
