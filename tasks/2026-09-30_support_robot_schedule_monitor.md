@@ -1,4 +1,4 @@
-# 2026-09-30 — Support robots in the live monitor (ActionSchedule-driven, one robot per run)
+# 2026-09-30 — Support robots in the live monitor (PlanSkeleton-driven, one robot per run)
 
 Master spec for implementer / reviewer subagents. The approved high-level plan (context, ground
 truth, locked decisions, exporter-defect note) is in
@@ -40,9 +40,9 @@ truth, locked decisions, exporter-defect note) is in
 - `ActionSchedule.json`: `schema_version 1`, `robots {Cindy:{robot_id:'dual-arm_husky_Cindy',role:'assembly'},
   Alice:{robot_id:'single-arm_husky_Alice',role:'support'}, Belle:{...support}}`, `assembly_seq` (20 bars:
   B1,B3,B4,B5,B7,B8,B9,B10,B12,B13,B15,B16,B17,B18,B19,B20,B21,B22,B24,B23), `holds` [{B3,Alice,B9},{B7,Belle,B9},
-  {B12,Alice,B21},{B15,Belle,B21}], `schedule` 48 entries `{index, action_id, type, bar_id, robot, file}` with
-  `file` like `BarActions/B3__H.json`. Entries 0..8: `B1_J, B1_R, B3_J, B3_H(Alice), B3_R, B4_J, B4_R, B5_J, B5_R`.
-  Alice's entries: 3, 16, 21, 40. Belle's: 10, 17, 26, 41. Entry 16 = `B3_HR`.
+  {B12,Alice,B21},{B15,Belle,B21}], `skeleton` 48 actions `{index, action_id, type, bar_id, robot, file}` with
+  `file` like `BarActions/B3__H.json`. Actions 0..8: `B1_J, B1_R, B3_J, B3_H(Alice), B3_R, B4_J, B4_R, B5_J, B5_R`.
+  Alice's actions: 3, 16, 21, 40. Belle's: 10, 17, 26, 41. Action 16 = `B3_HR`.
 - JSON dtypes: `rs_data_structure.bar_action/BarAssemblyJointingAction`, `.../BarAssemblyReleaseAction`,
   `rs_data_structure.hold_action/BarHoldingAction`, `.../BarHoldingReleaseAction`. Load with the existing
   `bar_action_io.parse_bar_action` (compas `json_load`).
@@ -64,9 +64,9 @@ truth, locked decisions, exporter-defect note) is in
   `B3__R` parks Alice (exporter defect D1) — the monitor's belief must override it.
 - Pitfall: `movement_role('B3_H_M2_LM_to_grasp') == 'M2'` today (legacy regex fallback).
 
-## 2. WP1 — data / schedule layer (pure python; no ROS, no PyBullet)
+## 2. WP1 — data / plan skeleton layer (pure python; no ROS, no PyBullet)
 
-Files: NEW `husky_assembly_teleop/robot_registry.py`, `husky_assembly_teleop/schedule_io.py`,
+Files: NEW `husky_assembly_teleop/robot_registry.py`, `husky_assembly_teleop/plan_skeleton_io.py`,
 `husky_assembly_teleop/progress_io.py`; EDIT `husky_assembly_teleop/bar_action_io.py`;
 NEW tests `test/test_robot_registry.py`, `test/test_schedule_io.py`, `test/test_progress_io.py`;
 EXTEND `test/test_bar_action_io.py`. Nothing else.
@@ -77,7 +77,7 @@ Imports only stdlib + `from husky_assembly_teleop import DATA_DIRECTORY` (no com
 @dataclass(frozen=True)
 class RobotSpec:
     name: str                 # 'Cindy'
-    robot_id: str             # 'dual-arm_husky_Cindy'  (Action.robot_id / ActionSchedule robots{}.robot_id)
+    robot_id: str             # 'dual-arm_husky_Cindy'  (Action.robot_id / PlanSkeleton robots{}.robot_id)
     role: str                 # 'assembly' | 'support'
     namespace: str            # '/a200_0806'
     domain_id: str            # '86' (str: env vars are str)
@@ -142,7 +142,7 @@ etc.); after this WP, `cfab_session.py` does NOT change yet (WP2 switches it to 
   ```
 - **Hold-id guard**: at the top of `movement_role(mv)`: `if re.search(r'_HR?_M[0-9]_', movement_id): return None`.
   `CINDY_ACTION_TYPES = (BarAssemblyJointingAction, BarAssemblyReleaseAction, BarAssemblyAction)`;
-  `roles_for_action(action) -> list` = `cycle_roles([(action, None)])` for Cindy actions else `[None]*n`; add the same
+  `roles_for_action(bar_action) -> list` = `cycle_roles([(bar_action, None)])` for Cindy actions else `[None]*n`; add the same
   isinstance guard per slot inside `cycle_roles` so its id-vs-class mismatch print never fires for H/HR.
 - `cycle_start_ee_sources(movements, side_keys=('left','right'))`: only change = carried dict keyed by `side_keys`.
 - Rigid-body naming: `BUILT_ASSEMBLY_RB_PREFIXES = ('bar_','joint_','env_bar_','env_joint_')`,
@@ -150,73 +150,73 @@ etc.); after this WP, `cfab_session.py` does NOT change yet (WP2 switches it to 
   `find_bar_body(rb_names, bar_id) -> str|None` (tries 'bar_<id>' and 'env_bar_<id>'), `bar_id_of_body(name) -> str|None`.
   (Monitor keeps its own constant until WP3 switches the import.)
 
-### 2.3 `schedule_io.py`
+### 2.3 `plan_skeleton_io.py`
 ```python
-SCHEDULE_FILENAME='ActionSchedule.json'; KIND_BY_TYPE={'BarAssemblyJointingAction':'J','BarAssemblyReleaseAction':'R',
+SKELETON_FILENAME='ActionSchedule.json'; KIND_BY_TYPE={'BarAssemblyJointingAction':'J','BarAssemblyReleaseAction':'R',
   'BarHoldingAction':'H','BarHoldingReleaseAction':'HR'}; PREDECESSOR_KIND={'R':'J','HR':'H'}
-@dataclass(frozen=True) class ScheduleEntry(index:int, action_id:str, type:str, bar_id:str, robot:str, file:str)
+@dataclass(frozen=True) class SkeletonAction(index:int, action_id:str, type:str, bar_id:str, robot:str, file:str)
     kind -> str (from type, never from ids); is_support -> bool; from_dict / to_dict
 @dataclass(frozen=True) class HoldWindow(bar_id, robot, release_after_bar_id, hold_start_seq, release_after_seq,
-                                         hold_entry_index, release_entry_index: int|None)
-@dataclass class ActionSchedule(problem_root, schema_version, robots, assembly_seq, holds, entries)
-    problem_name; entry(i); entries_for_robot(robot); entries_for_bar(bar); find_entry(bar, kind); predecessor(entry)
+                                         hold_action_index, release_action_index: int|None)
+@dataclass class PlanSkeleton(problem_root, schema_version, robots, assembly_seq, holds, actions)
+    problem_name; action(i); actions_for_robot(robot); actions_for_bar(bar); find_action(bar, kind); predecessor(action)
     seq_position(bar); hold_window(bar); hold_end_index(hold)  # HR index if present else (R index of release_after_bar)+1
-    robots_holding_at(entry) -> {robot: bar}   # hold_entry_index < entry.index < hold_end_index
+    robots_holding_at(action) -> {robot: bar}   # hold_action_index < action.index < hold_end_index
     held_bar_ids(hold) -> list                 # assembly_seq[hold_start_seq : release_after_seq+1]
-    executable_by(robot) -> list[ScheduleEntry]   # KeyError on unknown robot
-    action_path(entry, prefer_sidecar=True) -> str   # normpath(join(problem_root, entry.file)) then preferred_action_path
-    load_action(entry, prefer_sidecar=True)          # parse_bar_action + checks type name == entry.type and robot matches (ValueError)
-is_executable_by(entry, robot_name) -> bool          # entry.robot == robot_name
-schedule_path(problem_root); problem_root(problem_name, design_dir=DESIGN_DATA_DIRECTORY)
-load_schedule(problem_root) -> ActionSchedule | None # None when the file does not exist (legacy problem); validates otherwise
-@dataclass class LoadedEntry(entry, action, path, spec, predecessor: 'LoadedEntry'|None, roles, kinds, start_ee_sources)
+    executable_by(robot) -> list[SkeletonAction]   # KeyError on unknown robot
+    action_path(action, prefer_sidecar=True) -> str   # normpath(join(problem_root, action.file)) then preferred_action_path
+    load_bar_action(action, prefer_sidecar=True)          # parse_bar_action + checks type name == action.type and robot matches (ValueError)
+is_executable_by(action, robot_name) -> bool          # action.robot == robot_name
+skeleton_path(problem_root); problem_root(problem_name, design_dir=DESIGN_DATA_DIRECTORY)
+load_plan_skeleton(problem_root) -> PlanSkeleton | None # None when the file does not exist (legacy problem); validates otherwise
+@dataclass class LoadedAction(action, action, path, spec, predecessor: 'LoadedAction'|None, roles, kinds, start_ee_sources)
     movements; start_ee_source(idx, side) -> Movement|None; start_ee_frames(idx) -> {side: Frame}; missing_start_sides(idx)
-load_entry(schedule, entry, *, prefer_sidecar=True, with_predecessor=True) -> LoadedEntry
-    # spec = robot_by_name(entry.robot); pred = predecessor loaded with with_predecessor=False (must be same robot_id);
+load_skeleton_action(plan skeleton, action, *, prefer_sidecar=True, with_predecessor=True) -> LoadedAction
+    # spec = robot_by_name(action.robot); pred = predecessor loaded with with_predecessor=False (must be same robot_id);
     # sources = cycle_start_ee_sources(pred.movements + action.movements, spec.side_keys)[len(pred.movements):]
 ```
-Expected: `load_entry(entry 4 = B3_R).start_ee_source(2,'left').movement_id == 'B3_J_M5_LM_insert'` (also for idx 0,1);
-`load_entry(entry 16 = B3_HR).start_ee_source(1,'arm').movement_id == 'B3_H_M2_LM_to_grasp'` (also idx 0);
-`load_entry(entry 3).start_ee_source(0,'arm') is None`, `(2,'arm').movement_id == 'B3_H_M0_free_to_approach'`.
-Hold rule on the fixture: Alice holds B3 during entries 4..15, not at 3 (she is the actor) and not at 16 (releasing);
+Expected: `load_skeleton_action(action 4 = B3_R).start_ee_source(2,'left').movement_id == 'B3_J_M5_LM_insert'` (also for idx 0,1);
+`load_skeleton_action(action 16 = B3_HR).start_ee_source(1,'arm').movement_id == 'B3_H_M2_LM_to_grasp'` (also idx 0);
+`load_skeleton_action(action 3).start_ee_source(0,'arm') is None`, `(2,'arm').movement_id == 'B3_H_M0_free_to_approach'`.
+Hold rule on the fixture: Alice holds B3 during actions 4..15, not at 3 (she is the actor) and not at 16 (releasing);
 `held_bar_ids(B3) == ['B3','B4','B5','B7','B8','B9']`.
 
 ### 2.4 `progress_io.py`
 `<problem_root>/progress.json`, schema v1:
 ```json
-{"schema_version":1,"problem":"260920_RobArch_demo_revamp_backup","schedule_fingerprint":"48:<sha1 of action_ids>",
+{"schema_version":1,"problem":"260920_RobArch_demo_revamp_backup","skeleton_fingerprint":"48:<sha1 of action_ids>",
  "updated_at":"...","current_index":4,
- "entries":{"0":{"status":"done","marked_at":"...","marked_by_robot":"Cindy","run_id":"Cindy-20260930T135501"}},
+ "actions":{"0":{"status":"done","marked_at":"...","marked_by_robot":"Cindy","run_id":"Cindy-20260930T135501"}},
  "robots":{"Alice":{"base_frame":{compas Frame data},"configuration":{compas Configuration data},
-                    "source":"action_end_state","at":"...","after_entry":3}},
+                    "source":"action_end_state","at":"...","after_action":3}},
  "holds":{"B3":{"robot":"Alice","state":"holding","since_index":3,"released_at_index":null}}}
 ```
 ```python
 STATUS_PENDING/DONE/SKIPPED; BELIEF_LIVE='live', BELIEF_ACTION_END='action_end_state', BELIEF_ASSUMED='assumed',
 BELIEF_EXPORTED='exported', BELIEF_PARKED='parked'; HOLD_PENDING/HOLDING/RELEASED
 PARKED_BASE_FRAME = Frame((50.0, 50.0, 0.0), (1,0,0), (0,1,0))
-@dataclass EntryStatus(status='pending', marked_at=None, marked_by_robot=None, run_id=None)
-@dataclass RobotBelief(base_frame: Frame, configuration: Configuration, source: str, at: str, after_entry: int|None=None)
+@dataclass ActionStatus(status='pending', marked_at=None, marked_by_robot=None, run_id=None)
+@dataclass RobotBelief(base_frame: Frame, configuration: Configuration, source: str, at: str, after_action: int|None=None)
 @dataclass HoldState(bar_id, robot, state, since_index=None, released_at_index=None)
-@dataclass class Progress(problem, schema_version, schedule_fingerprint, current_index, updated_at, entries, robots, holds)
-    status(i); is_done(i); next_pending_index() -> int|None; mark_done(entry, robot, run_id, belief=None)
-    # mark_done: status done + stamps; belief -> robots[entry.robot] with after_entry=index; H -> holds[bar]=holding(since=index);
+@dataclass class Progress(problem, schema_version, skeleton_fingerprint, current_index, updated_at, actions, robots, holds)
+    status(i); is_done(i); next_pending_index() -> int|None; mark_done(action, robot, run_id, belief=None)
+    # mark_done: status done + stamps; belief -> robots[action.robot] with after_action=index; H -> holds[bar]=holding(since=index);
     #            HR -> the hold of that bar = released(released_at_index=index); current_index = next_pending_index() (or len)
-    skip(entry, robot, run_id); reopen(entry)   # reopen: pending; H -> hold pending; HR -> holding; current_index=min(current, index);
-                                                 # drop robots[entry.robot] if its after_entry == entry.index
+    skip(action, robot, run_id); reopen(action)   # reopen: pending; H -> hold pending; HR -> holding; current_index=min(current, index);
+                                                 # drop robots[action.robot] if its after_action == action.index
     set_belief(robot, belief); belief(robot); hold_state(bar); holding_bars() -> {robot: bar_id} (state holding)
     released_robots() -> set; to_dict(); from_dict()
-progress_path(root); schedule_fingerprint(schedule); new_progress(schedule)
-load_progress(root, schedule) -> Progress   # missing -> new; problem mismatch -> ValueError; fingerprint mismatch -> one printed warning, keep statuses
+progress_path(root); skeleton_fingerprint(plan skeleton); new_progress(plan skeleton)
+load_progress(root, plan skeleton) -> Progress   # missing -> new; problem mismatch -> ValueError; fingerprint mismatch -> one printed warning, keep statuses
 save_progress(progress, root) -> str        # compas json_dumps(pretty) -> path+'.tmp' -> os.replace (pattern dashboard/run_writer.py write_run)
 new_run_id(robot, now=None); now_iso()
 arm_configuration(conf, spec) -> Configuration   # only the arm joints, in spec.all_arm_joint_names order
-belief_after(action, spec, entry_index=None, source=BELIEF_ACTION_END) -> RobotBelief
+belief_after(action, spec, action_index=None, source=BELIEF_ACTION_END) -> RobotBelief
     # last movement: target_configuration or else start_state.robot_configuration; base = its start_state.robot_base_frame; ValueError if missing
-belief_from_live(spec, base_pose, arm_joint_values, entry_index=None) -> RobotBelief   # base_pose=(pos, quat_xyzw); one 6-list per arm
+belief_from_live(spec, base_pose, arm_joint_values, action_index=None) -> RobotBelief   # base_pose=(pos, quat_xyzw); one 6-list per arm
 belief_from_exported(action, spec) -> RobotBelief|None   # movement 0 start_state.tool_states[spec.obstacle_tool_name] (frame, configuration)
 parked_belief(spec) -> RobotBelief
-recompute_belief(progress, schedule, robot) -> RobotBelief|None   # from that robot's last DONE entry
+recompute_belief(progress, plan skeleton, robot) -> RobotBelief|None   # from that robot's last DONE action
 obstacle_tool_states(progress, active_robot, exported_action=None) -> {obstacle_tool_name: (Frame, Configuration)}
     # for each other robot: released (its hold released and no later H) -> parked; elif belief -> belief;
     # elif exported tool_state in exported_action -> exported; else parked
@@ -232,13 +232,13 @@ side/link helpers, calibration filename, `other_robots`, `robot_name_from_id`, A
 every class (build bare instances), `kind_fits_robot`, `step_kind`, `movement_controller` warning (capsys), `default_trajectory_time`,
 path helpers with `tmp_path`, RB naming helpers, `cycle_start_ee_sources(side_keys=('arm',))` carry/clear,
 `roles_for_action` on real B3__J/B3__R (`['M0',None,None,'M1',None,'M2']`, `[None,None,'M3','M4']`) and B3__H/HR (all None, nothing printed).
-`test_schedule_io.py`: see 2.3 expectations + synthetic schedule without HR (fallback end index), sidecar preference in a tmp copy,
-type mismatch -> ValueError, `load_schedule(tmp_dir_without_file) is None`.
+`test_schedule_io.py`: see 2.3 expectations + synthetic plan skeleton without HR (fallback end index), sidecar preference in a tmp copy,
+type mismatch -> ValueError, `load_plan_skeleton(tmp_dir_without_file) is None`.
 `test_progress_io.py`: new/round-trip/atomic save (no .tmp left), problem mismatch, fingerprint warning, mark/reopen/skip/hold states,
 `belief_after(B3__H, Alice)` == B4__J exported Alice tool_state (joint names 6 `ur_arm_*`, values and base point ≈ 1e-6),
 `belief_after(B3__R, Cindy)` 12 joints, `belief_from_live`, `belief_from_exported(B3__R, Alice)` point (50,50,0),
 `parked_belief`, `obstacle_tool_states(progress_after_entry3_done, 'Cindy', exported_action=B3__R)` Alice from belief not parked,
-Belle parked, sources map; after marking entry 16 done Alice -> parked; `recompute_belief`.
+Belle parked, sources map; after marking action 16 done Alice -> parked; `recompute_belief`.
 
 ## 3. WP2a — `HuskyRobotInterface` instance state + gripper feedback (parallel with WP1)
 
@@ -285,7 +285,7 @@ WP2b (world):
   for the connected robot). Factor the base-calibration-file lookup into `_base_calibration_file_for(monitor, spec)` and call
   it per robot (a missing file for a viz-only robot = warn and continue). Set `monitor.connected_robot = spec` and
   `monitor.husky_by_name = {spec.name: husky}`. Assert `monitor.huskies[0].name == spec.namespace`. Seed the viz-only huskies'
-  `arm_joint_pose` / base from `progress_io` beliefs when the schedule exists (else `UR5e_HOME_STATE`, base stays at origin until
+  `arm_joint_pose` / base from `progress_io` beliefs when the plan skeleton exists (else `UR5e_HOME_STATE`, base stays at origin until
   mocap arrives). `build_default_robot_cell` stays for the connected robot only.
 - A `common.load_robot` fix: pick the URDF from the registry by the husky's namespace/serial (today every single arm loads Alice's).
 - `husky_monitor.update()` draw loop: only `i == self.selected_robot_id` falls back to `goal_base_pose` when untracked; others
@@ -304,7 +304,7 @@ WP2b (world):
   `bar_<id>` and `env_bar_<id>` via `bar_action_io.find_bar_body`). Mirrors Rhino `configure_robot_obstacle` /
   `whitelist_frozen_contact`.
 - Monitor `_obstacle_beliefs(self) -> dict` = `progress_io.obstacle_tool_states(self._progress, self.connected_robot.name,
-  exported_action=self._loaded_action)` (empty dict when there is no schedule/progress) overlaid with the LIVE mocap base of
+  exported_action=self._loaded_bar_action)` (empty dict when there is no plan skeleton/progress) overlaid with the LIVE mocap base of
   any other husky that is currently tracked (its name is in the mocap rigid-body cache); when a live base is used for a robot
   with no belief, use its home configuration (UR5e_HOME_STATE / dual home 12). Call `apply_obstacle_robot_beliefs` in
   `_apply_live_base_to_movement` right before `set_robot_cell_state`, and in the per-movement load path so the GUI shows
@@ -348,7 +348,7 @@ WP3 (single-arm planning):
 - Monitor helpers now available: `_connected_robot()` (RobotSpec with Cindy fallback for headless harnesses),
   `_cfab_needs_design_session()`, `_active_bar_body_name()`, `_movement_starts_live()`, `_obstacle_beliefs_with_sources()`,
   `_obstacle_beliefs()`, `_apply_obstacle_beliefs()`, `_plan_by_kind()`, `_merge_arm_values()`, `_accept_single_arm_trajectory()`,
-  `_finish_action_load(action, path, loaded=None, *, slots=None)`; attribute `self._progress` (None until WP5 sets it).
+  `_finish_action_load(bar_action, path, loaded=None, *, slots=None)`; attribute `self._progress` (None until WP5 sets it).
   World: `create_registry_huskies(...)`, `_base_calibration_file_for(...)`, `_seed_viz_huskies_from_progress(...)`,
   `solve_goal_ik_generic(...)`. cfab_session: `inject_ground_rigid_body_state`, `apply_obstacle_robot_beliefs`,
   `plan_linear_motion`, `GROUND_TOUCH_LINKS`. Use `_connected_robot().n_arms` (not `.dual_arm` on the husky) to branch.
@@ -363,7 +363,7 @@ WP3 (single-arm planning):
       → H_M0/H_M2 start states collide (`ObstacleRobotCindy <-> env_bar_B5`). DECIDED: keep the exported scene as-is (no
       monitor-side visibility rule). With `BAR_ACTION_MOCAP_ACCURACY_TEST=1` the built assembly is hidden and these plan.
 - ! Another robot's action can NOT be pushed into the connected robot's cell (joint names differ). WP5's display-only
-  loading of a non-executable entry must NOT call `_finish_action_load` / `set_robot_cell_state`; show the entry's movement
+  loading of a non-executable entry must NOT call `_finish_action_load` / `set_robot_cell_state`; show the action's movement
   list and flags only, and allow Mark done.
 - The DPG planned-joint plot has 12 series; 6-value single-arm rows are dropped → WP5 must size it by `n_arms`.
 - `BAR_ACTION_MOCAP_ACCURACY_TEST=1` (default) hides the built assembly (now incl. `env_*` bars) from collision; the real
@@ -407,19 +407,19 @@ Files: `husky_world.py`, `husky_monitor.py`. Depends on WP2a + WP2b/WP3.
 - Monitor `exec_selected_movement_step()`: dispatch by `step_kind(mv)`: gripper/manual/scaffold -> append the generator to
   `self.tasks`; arm -> `exec_selected_movement_traj()`. (The UI button is WP5.)
 
-## 6. WP5 — schedule UI + operator flow
+## 6. WP5 — plan skeleton UI + operator flow
 
-Files: NEW `husky_assembly_teleop/schedule_ui.py`, NEW `test/test_schedule_ui.py`; EDIT `husky_monitor.py`, `common.py`,
+Files: NEW `husky_assembly_teleop/plan_skeleton_ui.py`, NEW `test/test_schedule_ui.py`; EDIT `husky_monitor.py`, `common.py`,
 `ui_backend.py`. Depends on WP1..WP4.
 
 - ! Amendments after WP2b/WP3/WP4 (these override anything below that disagrees):
-  - **Schedule mode is only for COMPLETE schedules.** Legacy/accuracy-test problems also ship an `ActionSchedule.json`
-    (e.g. `260929_phase1_retest`: 180 entries, only 16 action files exported). New monitor class flag `USE_ACTION_SCHEDULE = 1`;
-    schedule mode iff the flag is on AND `load_schedule` returns a schedule AND every entry's file exists (clean export or
+  - **Plan skeleton mode is only for COMPLETE plan skeletons.** Legacy/accuracy-test problems also ship an `ActionSchedule.json`
+    (e.g. `260929_phase1_retest`: 180 actions, only 16 action files exported). New monitor class flag `USE_PLAN_SKELETON = 1`;
+    plan skeleton mode iff the flag is on AND `load_plan_skeleton` returns a plan skeleton AND every action's file exists (clean export or
     sidecar). Otherwise keep the legacy file slider + `Load BarAction` exactly as today and log ONE line saying why
-    (e.g. "ActionSchedule.json lists 180 entries but 164 files are missing -- using the legacy BarAction list").
-  - **Other robots' entries are display-only and must NOT be pushed into the connected robot's cell** (joint names differ).
-    `load_schedule_entry` on a non-executable entry: set `_loaded_entry` / `_loaded_entry_bundle`, print the movement list
+    (e.g. "ActionSchedule.json lists 180 actions but 164 files are missing -- using the legacy BarAction list").
+  - **Other robots' actions are display-only and must NOT be pushed into the connected robot's cell** (joint names differ).
+    `load_action` on a non-executable entry: set `_loaded_action` / `_loaded_action_bundle`, print the movement list
     (`id [kind] ctrl=...`), update the readouts, and DO NOT call `_finish_action_load` / `set_robot_cell_state`; Plan/Exec/Step
     stay gated. Mark done works through the Confirm Exec pause with belief source 'assumed'.
   - The DPG planned-joint plot (grep the plot series creation in `build_ui` / the floating windows) must size its series by
@@ -429,53 +429,53 @@ Files: NEW `husky_assembly_teleop/schedule_ui.py`, NEW `test/test_schedule_ui.py
   - Use `self._connected_robot()` (not `self.connected_robot`) for the connected RobotSpec (it has the headless fallback).
 - DPG callbacks run inside `backend.step()` on the rclpy timer thread (no `manual_callback_management`), so callbacks may
   change monitor state and call `reset_ui`, but must not block — anything that waits is a generator appended to `self.tasks`.
-- `schedule_ui.py` (pure, no DPG): `EntryFlags(n_arm, n_ik, n_traj, sidecar)`; `scan_entry_flags(action_path)` (plain
+- `plan_skeleton_ui.py` (pure, no DPG): `ActionFlags(n_arm, n_ik, n_traj, sidecar)`; `scan_action_flags(action_path)` (plain
   `json.load`, count arm movements = dtype not Manual/Tool*, how many have `target_configuration` / `trajectory`);
   `step_button_label(mv) -> str|None` (arm -> None; gripper -> 'Exec gripper step: OPEN' | 'Exec gripper step: CLOSE +
   compliant handoff'; manual -> 'Operator done (manual step) -> then Confirm Exec'; scaffold -> 'Tool step: <action>' or,
   when overlaps_next / ungrasp, 'Mark tool step done (<action> runs with the next movement)');
-  `entry_row_text(entry, flags, status, *, executable, selected)` e.g. `> [03] H   B3   Alice   IK 2/2  TRJ 0/2  done`
-  (fixed widths, ' (other robot)' suffix when not executable); `now_line_text(entry, mv_idx, n_mv, mv)` e.g.
-  `Now: entry 3 — H B3 by Alice — movement 3/4 B3_H_M2_LM_to_grasp [single_linear] ctrl=joint_tracking`;
+  `action_row_text(action, flags, status, *, executable, selected)` e.g. `> [03] H   B3   Alice   IK 2/2  TRJ 0/2  done`
+  (fixed widths, ' (other robot)' suffix when not executable); `now_line_text(action, mv_idx, n_mv, mv)` e.g.
+  `Now: action 3 — H B3 by Alice — movement 3/4 B3_H_M2_LM_to_grasp [single_linear] ctrl=joint_tracking`;
   `visible_row_window(n, selected, size) -> (lo, hi)` ((48,0,12)->(0,12), (48,47,12)->(36,48), (48,20,12)->(14,26));
-  `knobs_for_assembly_robot(entry, connected_spec) -> bool` ((None,Cindy) True, (None,Alice) False, (entry3,Cindy) False,
+  `knobs_for_assembly_robot(action, connected_spec) -> bool` ((None,Cindy) True, (None,Alice) False, (entry3,Cindy) False,
   (entry0,Cindy) True).
 - Wrappers: `StatusText(name, default='', *, color=None)` -> backend `add_status_text(label, default, color=None)` (DPG uses it,
   PyBullet ignores); `Slider.set_value(v)` mirroring `TextInput.set_value`.
-- Monitor state (init next to `_loaded_action`): `_schedule, _progress, _schedule_flags, _selected_entry_idx, _loaded_entry,
-  _loaded_entry_bundle (LoadedEntry), schedule_entry_slider, schedule_entry_text, schedule_now_text, schedule_rows`.
+- Monitor state (init next to `_loaded_bar_action`): `_skeleton, _progress, _skeleton_flags, _selected_action_idx, _loaded_action,
+  _loaded_action_bundle (LoadedAction), skeleton_action_slider, skeleton_action_text, skeleton_now_text, skeleton_rows`.
   Every new method reads them with `getattr(self, name, default)` (the headless harness builds the monitor with `object.__new__`).
-- `_load_schedule_state()` called in `__init__` right after `_load_available_bar_actions()`: `load_schedule(problem_dir)`; if a
-  schedule exists: `load_progress`, `_selected_entry_idx = progress.current_index`, `_rescan_schedule_flags()`, print the roster.
-- `build_ui`: inside the bar-action live-replan block, when `_schedule` is not None build `_build_schedule_section()` INSTEAD of
+- `_load_skeleton_state()` called in `__init__` right after `_load_available_bar_actions()`: `load_plan_skeleton(problem_dir)`; if a
+  plan skeleton exists: `load_progress`, `_selected_action_idx = progress.current_index`, `_rescan_skeleton_flags()`, print the roster.
+- `build_ui`: inside the bar-action live-replan block, when `_skeleton` is not None build `_build_skeleton_section()` INSTEAD of
   the file slider + `Load BarAction` (legacy path unchanged otherwise): header `StatusText` (robot + domain, problem, progress
-  k/n done), `Schedule entry (idx)` integer slider, `-> entry` readout, `Prev entry`, `Next entry`, `Load entry`,
-  `Mark entry done`, `Reopen entry (reload clean)`, `Rescan schedule status`, `Now:` line, collapsible group of 12 row
+  k/n done), `Action (idx)` integer slider, `-> action` readout, `Prev action`, `Next action`, `Load action`,
+  `Mark action done`, `Reopen action (reload clean)`, `Rescan plan skeleton status`, `Now:` line, collapsible group of 12 row
   StatusTexts (grey = other robot, green = done, yellow = selected, default = pending). Under `Exec Selected Mv Traj (auto)`
   add ONE button labelled by `step_button_label(current_movement)` (only when not None) -> `exec_selected_movement_step`.
   Hide Cindy-only knobs (M1 anchor/manual sliders + Confirm/Derive/Adopt + adopt toggle, `Save M0 Plan`, `M2 split`,
-  `M2 rigid only`) when `not knobs_for_assembly_robot(self._loaded_entry, self.connected_robot)`, setting their attributes to None.
-- Methods: `_problem_dir`, `_load_schedule_state`, `_rescan_schedule_flags(indices=None)`, `_selected_schedule_index` (live
-  slider read, same rule as `_slider_index`), `_refresh_schedule_readouts` (per tick, next to `_refresh_bar_action_readouts`),
-  `select_prev_entry`, `select_next_entry` (clamp + `slider.set_value`, no rebuild), `load_schedule_entry(index=None)`,
-  `_finish_action_load(action, path, loaded=None)` (the tail of `load_bar_action_file` factored out and shared by both loaders:
-  cfab session for the connected robot's cell, `_loaded_action/_current_action_path/_loaded_action_slots=[(action,path)]`,
-  `_loaded_movements`, roles/kinds/start-EE sources from the `LoadedEntry` when given else the legacy cycle functions,
-  live-conf injection, ground body, obstacle beliefs, `reset_ui`, load movement 0), `mark_entry_done` (appends
-  `_mark_entry_done_task()`), `reopen_entry`, `_entry_is_executable_here(entry=None)` (True in legacy mode), `exec_selected_movement_step`.
-- `load_schedule_entry`: `entry = schedule.entry(idx)`; not executable here -> warn "entry k belongs to <robot>; loaded for display
-  only — Plan/Exec are disabled"; `loaded = load_entry(schedule, entry)`; `_loaded_entry = entry`; `_finish_action_load(loaded.action,
+  `M2 rigid only`) when `not knobs_for_assembly_robot(self._loaded_action, self.connected_robot)`, setting their attributes to None.
+- Methods: `_problem_dir`, `_load_skeleton_state`, `_rescan_skeleton_flags(indices=None)`, `_selected_skeleton_index` (live
+  slider read, same rule as `_slider_index`), `_refresh_skeleton_readouts` (per tick, next to `_refresh_bar_action_readouts`),
+  `select_prev_action`, `select_next_action` (clamp + `slider.set_value`, no rebuild), `load_action(index=None)`,
+  `_finish_action_load(bar_action, path, loaded=None)` (the tail of `load_bar_action_file` factored out and shared by both loaders:
+  cfab session for the connected robot's cell, `_loaded_bar_action/_current_bar_action_path/_loaded_bar_action_slots=[(bar_action,path)]`,
+  `_loaded_movements`, roles/kinds/start-EE sources from the `LoadedAction` when given else the legacy cycle functions,
+  live-conf injection, ground body, obstacle beliefs, `reset_ui`, load movement 0), `mark_action_done` (appends
+  `_mark_action_done_task()`), `reopen_action`, `_action_is_executable_here(action=None)` (True in legacy mode), `exec_selected_movement_step`.
+- `load_action`: `action = skeleton.action(idx)`; not executable here -> warn "action k belongs to <robot>; loaded for display
+  only — Plan/Exec are disabled"; `loaded = load_skeleton_action(skeleton, action)`; `_loaded_action = action`; `_finish_action_load(loaded.action,
   loaded.path, loaded)`.
 - Gating: `plan_selected_movement`, `exec_selected_movement_traj`, `exec_selected_movement_step`, `plan_movement_chain_live`,
-  `move arms to movement start`, and IK-live-base refuse with one warning when `not _entry_is_executable_here()`.
-- `_mark_entry_done_task()` generator: refuse without a loaded entry; if not executable here -> confirm gate "Entry k belongs to
+  `move arms to movement start`, and IK-live-base refuse with one warning when `not _action_is_executable_here()`.
+- `_mark_action_done_task()` generator: refuse without a loaded action; if not executable here -> confirm gate "Action k belongs to
   <robot>. Confirm Exec to mark it done with the EXPORTED end state (belief 'assumed'); Cancel Exec to abort." -> belief =
-  `belief_after(action, spec, idx, source=BELIEF_ASSUMED)`; if executable here -> belief = `belief_from_live(spec, live base
-  (mocap-tracked) or the action's base, live arm joints, idx)`; `progress.mark_done(entry, connected.name, run_id, belief)`;
-  `save_progress`; write the entry's live-solved sidecar only when the in-memory action carries planned trajectories
-  (via the existing sidecar writer / `write_path_for`; the clean export is never overwritten); `_rescan_schedule_flags([idx])`;
+  `belief_after(bar_action, spec, idx, source=BELIEF_ASSUMED)`; if executable here -> belief = `belief_from_live(spec, live base
+  (mocap-tracked) or the action's base, live arm joints, idx)`; `progress.mark_done(action, connected.name, run_id, belief)`;
+  `save_progress`; write the action's live-solved sidecar only when the in-memory action carries planned trajectories
+  (via the existing sidecar writer / `write_path_for`; the clean export is never overwritten); `_rescan_skeleton_flags([idx])`;
   select `progress.current_index`; `reset_ui`.
-- `reopen_entry()`: `progress.reopen(entry)`; save; reload the CLEAN export (`prefer_sidecar=False`) through `_finish_action_load`;
+- `reopen_action()`: `progress.reopen(action)`; save; reload the CLEAN export (`prefer_sidecar=False`) through `_finish_action_load`;
   sidecar stays on disk; rescan; rebuild.
 - `test/test_schedule_ui.py`: flags on B1__J (n_arm 3, n_ik 2 — verify the real counts and pin them), B3__H, B1__R, a tmp sidecar with
   one trajectory; `step_kind` sequences for B1__J/B1__R/B3__H/B3__HR (`arm,manual,scaffold,arm,scaffold,arm` /
@@ -487,11 +487,11 @@ Files: NEW `husky_assembly_teleop/schedule_ui.py`, NEW `test/test_schedule_ui.py
   (measured: 3.0 s load, 1.07 GB peak RSS from the local Insync copy; groups `base_arm_manipulator` + `manipulator`; `SupportGripper` frame = identity); `B3__H` movement 2 -> `inject_ground_rigid_body_state` -> `plan_linear_motion(..., group='manipulator')` (expect
   ≈ 20 points at 5 mm for the ≈ 0.10 m approach, end ≈ `target_configuration`); movement 0 from `UR5e_HOME_STATE` ->
   `plan_free_motion`; `apply_obstacle_robot_beliefs` + `check_collision` before/after. Print a PASS/FAIL summary.
-- `scripts/headless_schedule_smoke.py`: `object.__new__(HuskyMonitor)` harness like `scripts/headless_live_monitor_test.py` with the stub
+- `scripts/headless_plan_skeleton_smoke.py`: `object.__new__(HuskyMonitor)` harness like `scripts/headless_live_monitor_test.py` with the stub
   interface extended (gripper feedback/result filled over ticks by a stub `send_gripper_cmd`, stub `switch_controller`, cartesian sends,
   scaffolding sends); scratch copy of the problem dir (copy only `ActionSchedule.json`, `WalkableGround.json`, `BarActions/`; point the
-  cell load at the fixture cells read-only); Alice run: load entry 3, plan H_M0/H_M2, drive `grip_with_compliant_handoff` and assert the
-  controller sequence joint -> compliance -> joint, mark done -> belief ≈ B3__H end; Cindy run: load entry 4 -> movement start state's
+  cell load at the fixture cells read-only); Alice run: load action 3, plan H_M0/H_M2, drive `grip_with_compliant_handoff` and assert the
+  controller sequence joint -> compliance -> joint, mark done -> belief ≈ B3__H end; Cindy run: load action 4 -> movement start state's
   `ObstacleRobotAlice` frame ≈ belief (not (50,50,0)) and == B4__J's exported frame; reopen 3.
 
 ## 8. Status
@@ -499,7 +499,7 @@ Files: NEW `husky_assembly_teleop/schedule_ui.py`, NEW `test/test_schedule_ui.py
 - [x] WP0 — FF `a602bb7`; `setup.py` pin 8912325; env-overridable data dirs + problem name; exporter note written to
       `bar_joint_rhino_design_workflow/docs/support_export_issues_from_monitor.md` (the repo is the Dropbox copy:
       `/home/yijiangh/Insync/yijiang94817@gmail.com/Dropbox/0_Projects/2025_husky_assembly/Code/bar_joint_rhino_design_workflow`).
-- [x] WP1 — robot_registry / schedule_io / progress_io + bar_action_io additions; 74 tests pass. Review: PASS WITH FIXES (nits).
+- [x] WP1 — robot_registry / plan_skeleton_io / progress_io + bar_action_io additions; 74 tests pass. Review: PASS WITH FIXES (nits).
 - [x] WP2a — per-instance HuskyRobotInterface state, connect_ros=False, gripper feedback/result. Review: should-fix = per-goal
       sequence guard in the gripper callbacks (applied in the fix pass), plus `server_is_ready()` check.
 - [x] WP2b+WP3 — legacy Cindy flow verified identical; belief re-posing verified (Alice == B4__J export);
@@ -510,12 +510,12 @@ Files: NEW `husky_assembly_teleop/schedule_ui.py`, NEW `test/test_schedule_ui.py
       check before switching, F/T zero before the close, GeneratorExit-safe finally, late-ack switch-back, STOP before the
       grasp drive, `_servo_abort` reset after each step, "Exec Selected Mv Traj" refuses non-arm steps.
       User decision: R_M0 'untighten' is MARK-ONLY (joint motor never reversed; operator uses 'Loosen Joint' by hand).
-- [x] WP5 — schedule panel, display-only entries, Mark done / Reopen / Rescan, step button, knob hiding, gating.
-      Review: PASS WITH FIXES → fixed (one task at a time incl. the servo buttons; planned path cleared on entry /
-      movement load; Reset All reloads the entry; Reopen targets the loaded entry, confirms when the slider shows another
+- [x] WP5 — plan skeleton panel, display-only actions, Mark done / Reopen / Rescan, step button, knob hiding, gating.
+      Review: PASS WITH FIXES → fixed (one task at a time incl. the servo buttons; planned path cleared on action /
+      movement load; Reset All reloads the action; Reopen targets the loaded action, confirms when the slider shows another
       one, restores the previous belief; other huskies follow mocap only while seen; guard ignores the running task).
 - [x] WP6 — `scripts/smoke_single_arm_plan.py` (7/7 required exported, 9/9 whitelist/off),
-      `scripts/headless_schedule_smoke.py` (34/34, incl. Cindy's R entry: R_M2 12 pts, R_M3 75 pts with Alice from belief).
+      `scripts/headless_plan_skeleton_smoke.py` (34/34, incl. Cindy's R action: R_M2 12 pts, R_M3 75 pts with Alice from belief).
 - Final state (2026-09-30): pytest 96 passed / 4 skipped (m1 dashboard needs a run on disk); legacy harness (B6 M2,
-      B3__J M3) identical to baseline; colcon build OK. Operator manual: `doc/support_robot_schedule_manual.md`.
+      B3__J M3) identical to baseline; colcon build OK. Operator manual: `doc/support_robot_plan_skeleton_manual.md`.
 - Hardware-only checks and follow-ups: see the manual's "To confirm on hardware" and "Known limits".

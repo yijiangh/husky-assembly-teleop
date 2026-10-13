@@ -646,7 +646,7 @@ class StatusText:
             color (tuple | None): RGBA 0-255 text colour (DPG only; None keeps
                 the backend's readout colour, and PyBullet ignores it).
             on_click (Callable[[], None] | None): Called when the line is
-                left-clicked (DPG only), e.g. a schedule row selecting its entry.
+                left-clicked (DPG only), e.g. a plan skeleton row selecting its action.
         """
         self.name = name
         self._handle = _backend().add_status_text(name, default, color=color)

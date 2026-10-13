@@ -3,7 +3,7 @@
 Session: support robots in the live monitor ("multi-robot monitor rebuild").
 Spec + full change log: `tasks/2026-09-30_support_robot_schedule_monitor.md`.
 Approved plan + exporter-defect note: `~/.claude/plans/i-am-about-to-clever-lerdorf.md`.
-Operator manual: `doc/support_robot_schedule_manual.md`. Test manual: `doc/support_robot_test_manual.md`.
+Operator manual: `doc/support_robot_plan_skeleton_manual.md`. Test manual: `doc/support_robot_test_manual.md`.
 
 ## 0. Update (2026-10-01 evening) — role removal + dry-run fixes landed; read this first
 
@@ -11,7 +11,7 @@ Branch `yh/multi-robot-monitor`. Spec + change log: `tasks/2026-10-01_drop_legac
 plan: `~/.claude/plans/i-realize-that-you-iterative-token.md`. Committed in order: dispatch check (smoke),
 F4 floor allows ground joints, F5a–c built-bar switch, F6 state carry-over + small items, stage 1 (M0–M4
 roles removed; kind-keyed), stage 2 (carry rule, F5e), F3 support live goal, F1 combined button, F2 operator
-steps. Checks: pytest 126 / 1 skipped, schedule smoke 75/75, single-arm smoke 7/7. Manuals updated for Part A.
+steps. Checks: pytest 126 / 1 skipped, plan skeleton smoke 75/75, single-arm smoke 7/7. Manuals updated for Part A.
 ! `husky_monitor.py` still carries the uncommitted dry-run flags (`USE_MOCAP = 0`, `FAKE_HARDWARE = 1`).
 
 Next:
@@ -20,8 +20,8 @@ Next:
    monitor set when built bars were ignored, so reloading it hides the built bars (planner ignores them)
    even with the switch OFF. Seen in `~/husky_dryrun/design/260920_dryrun/BarActions/B4__J.live-solved.json`
    (92 of 93 bodies hidden vs 72 of 92 in the clean export). GPU render: `~/husky_dryrun/probe/roles_refactor_render.png`.
-3. Stage 4 (rename by meaning) after the GUI gate; stage 3 (schedule-only) after the Rhino re-export (D5–D8;
-   D8 = complete schedule for `260929_phase1_retest`, added to the Rhino repo's issue list).
+3. Stage 4 (rename by meaning) after the GUI gate; stage 3 (plan skeleton-only) after the Rhino re-export (D5–D8;
+   D8 = complete plan skeleton for `260929_phase1_retest`, added to the Rhino repo's issue list).
 4. F8 planning failures, together with the user.
 
 ## 1. State of the code
@@ -29,15 +29,15 @@ Next:
 - Repo `husky-assembly-teleop`, branch `yh/mocap_bar_reaching_acc_test`. Committed on 2026-10-01 on top of
   Su's `a602bb7` (not pushed): data layer → robot interface → monitor → dry-run tooling → docs
   (`git log --oneline a602bb7..`). Only uncommitted change: the dry-run flag values below.
-- New modules: `robot_registry.py`, `schedule_io.py`, `progress_io.py`, `schedule_ui.py`.
+- New modules: `robot_registry.py`, `plan_skeleton_io.py`, `progress_io.py`, `plan_skeleton_ui.py`.
   Heavily edited: `husky_monitor.py`, `husky_world.py`, `husky_robot.py`, `cfab_session.py`,
   `bar_action_io.py`, `common.py`, `utils.py`, `ui_backend.py`.
 - New support files: `config/cyclonedds_localhost.xml`, `config/dryrun_env.sh`,
-  `scripts/smoke_single_arm_plan.py`, `scripts/headless_schedule_smoke.py`, tests in `test/`.
+  `scripts/smoke_single_arm_plan.py`, `scripts/headless_plan_skeleton_smoke.py`, tests in `test/`.
 - ! `husky_monitor.py` class flags are currently set for the dry run: `FAKE_HARDWARE = 1`,
   `USE_MOCAP = 0`. Put back `FAKE_HARDWARE = 0`, `USE_MOCAP = 1` before any hardware run.
 - Automated checks last green before the GUI session (2026-09-30 evening): 96 pytest passed /
-  4 skipped, `headless_schedule_smoke.py` 34/34, `smoke_single_arm_plan.py` 7/7, legacy harness
+  4 skipped, `headless_plan_skeleton_smoke.py` 34/34, `smoke_single_arm_plan.py` 7/7, legacy harness
   identical to baseline.
 - Design repo (the Rhino repo lives in Dropbox, synced with the Windows PC where it is developed;
   ignore any copy under `~/Code/`): `/home/yijiangh/Insync/yijiang94817@gmail.com/Dropbox/0_Projects/2025_husky_assembly/Code/bar_joint_rhino_design_workflow/docs/support_export_issues_from_monitor.md`
@@ -46,7 +46,7 @@ Next:
 ## 2. User decisions (do not re-litigate)
 
 One robot ROS-connected per monitor run (by `ROS_DOMAIN_ID`, Zenoh later) · unit of work = one
-ActionSchedule entry · progress in `<problem>/progress.json` · Mark done + Reopen only (no redo) ·
+PlanSkeleton action · progress in `<problem>/progress.json` · Mark done + Reopen only (no redo) ·
 grip handoff triggered by GripperCommand feedback fraction · compas_fab FK bug worked around only
 inside `cfab_session.plan_linear_motion` · keep the exported H scenes (release-time geometry) ·
 R_M0 untighten is mark-only · Cindy's M2/M3 compliance stays role-keyed · test manuals contain only
@@ -75,11 +75,11 @@ monitor/visual steps (Claude runs pytest/smoke scripts itself).
 
 ## 4. Where Part A (dry run) stands
 
-- Monitor (restarted after the ghost fix, running in tmux `husky` pane 0) starts as Cindy over loopback: schedule panel + roster, header
+- Monitor (restarted after the ghost fix, running in tmux `husky` pane 0) starts as Cindy over loopback: plan skeleton panel + roster, header
   `robot Cindy (domain 86) | problem 260920_dryrun | progress 0/48 done`, ROS node listening with
   no robot publishing. The user stopped it with Ctrl-C (pane 0 of tmux `husky`).
-- The user did: Load entry 0 → Movement 3 → `M1: Confirm manual start pose (IK check)`.
-  Correct entry-0 order (fixed in both manuals): movement 3 + M1 Confirm FIRST (gives J_M0 its
+- The user did: Load action 0 → Movement 3 → `M1: Confirm manual start pose (IK check)`.
+  Correct action-0 order (fixed in both manuals): movement 3 + M1 Confirm FIRST (gives J_M0 its
   goal), then movement 0 Plan/Exec.
 
 ## 5. Open issues (next steps)
@@ -97,7 +97,7 @@ implemented yet). Rhino-side problems D5–D7 were added to the Dropbox repo's
    `pybullet.connect`). Verified with GPU renders (`~/husky_dryrun/probe/gui_capacity_probe.py`,
    variants: current / no_extra / only_alice_urdf / cap512 ...). A 1024 MB request did not take
    effect. Note: `getVisualShapeData` returns [] for every body in a GUI client — useless as a check.
-2. **Planning failures to debug together** (user's request): with default M1 sliders on entry 0,
+2. **Planning failures to debug together** (user's request): with default M1 sliders on action 0,
    J_M0 `plan_free_dual_arm` → `birrt_failed` (59 s); J_M3 transfer found no path in 4 × 2-min
    attempts. Gradient IK backend (no ssik) may matter. Exported hold scenes collide
    (`ObstacleRobotCindy <-> env_bar_B5`) unless `BAR_ACTION_MOCAP_ACCURACY_TEST=1` (user decision).

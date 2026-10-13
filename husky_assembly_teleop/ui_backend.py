@@ -1011,7 +1011,7 @@ class DearPyGuiBackend(UIBackend):
     def add_status_text(self, label, default="", color=None):
         dpg = self.dpg
         # Greenish by default so it reads as a derived readout rather than a
-        # control; a caller colour (e.g. the schedule rows' done / other-robot
+        # control; a caller colour (e.g. the plan skeleton rows' done / other-robot
         # colours) replaces it.
         tag = dpg.add_text(default, parent=self._current_parent,
                            color=tuple(color) if color is not None else (150, 200, 150, 255))

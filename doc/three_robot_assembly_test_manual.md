@@ -12,16 +12,16 @@
 > | internet | Wi-Fi `wlp9s0` (+ Tailscale); ROS does not use them |
 
 A standalone checklist for the design problem **`261006_3bar_holding_test`** (re-exported
-2026-10-13 as the range **B20–B37**, 18 entries). Three robots:
+2026-10-13 as the range **B20–B37**, 18 actions). Three robots:
 - **Cindy** (dual-arm husky `/a200_0806`, ROS domain 86) joints and releases the seven bars.
 - **Alice** (single-arm husky `/a200_0804`, domain 84, Robotiq 2F-85 gripper) grabs **B21** after
   Cindy has inserted it.
 - **Belle** (single-arm husky `/a200_0805`, domain 85, Robotiq 2F-85 gripper) grabs **B35** after
   Cindy has inserted it.
 
-Both support robots hold their bar until B37 is in, then let go (entries 16 and 17).
+Both support robots hold their bar until B37 is in, then let go (actions 16 and 17).
 
-| entry | action | who | operator steps |
+| # | action | who | operator steps |
 |---|---|---|---|
 | 0 | `B20_J_joint` | Cindy | B20 jointing (ground bar): transfer → mount → grasp → insert (rigid, no tighten) → **fix foundation** (manual) |
 | 1 | `B20_R_release` | Cindy | B20 release: retreat (the ungrasp runs with it) → free move home |
@@ -33,7 +33,7 @@ Both support robots hold their bar until B37 is in, then let go (entries 16 and 
 | 7 | `B34_J_joint` | Cindy | B34 jointing (ground bar, like B20): rigid insert, no tighten → **fix foundation** |
 | 8 | `B34_R_release` | Cindy | B34 release |
 | 9 | `B35_J_joint` | Cindy | B35 jointing (one-sided, the **left** joint mates, into B34) |
-| 10 | `B35_H_hold` | **Belle** | Belle grabs B35: the same four steps as entry 3 |
+| 10 | `B35_H_hold` | **Belle** | Belle grabs B35: the same four steps as action 3 |
 | 11 | `B35_R_release` | Cindy | B35 release, Belle holding B35 |
 | 12 | `B36_J_joint` | Cindy | B36 jointing (both joints mate, to B35 and B34) |
 | 13 | `B36_R_release` | Cindy | B36 release |
@@ -46,7 +46,7 @@ Both support robots hold their bar until B37 is in, then let go (entries 16 and 
 It draws the other two from their live mocap base, or from what `progress.json` remembers. So the
 session runs seven monitor runs in turn:
 
-| run | robot | entries | section |
+| run | robot | actions | section |
 |---|---|---|---|
 | 1 | Cindy | 0–2 | 7 |
 | 2 | Alice | 3 | 8 |
@@ -62,11 +62,11 @@ holding. Before the assembly, Belle's and Alice's gripper and handoff are checke
 
 **How the runs hand over.** After every step that runs, the robot's real state (measured arm
 joints, mocap base) is saved to `progress.json` (log
-`[Schedule] <robot>'s live state after <step> saved for the next entries ...`), and the next
-monitor run draws and plans around it, also without `Mark entry done`. A hold is recorded once
+`[Plan skeleton] <robot>'s live state after <step> saved for the next actions ...`), and the next
+monitor run draws and plans around it, also without `Mark action done`. A hold is recorded once
 the gripper close (the hold's last step) has run, a release once the release's retreat has run.
-`Mark entry done` still marks the entry done (the `progress k/18 done` counts below assume you
-click it) and saves its planned trajectories. Within an entry, each step's real end becomes the
+`Mark action done` still marks the action done (the `progress k/18 done` counts below assume you
+click it) and saves its planned trajectories. Within an action, each step's real end becomes the
 next step's start (`[Exec] propagated arm configuration -> ...`).
 
 > **! Transfer workaround in use** (until the bar-held transfer planner is ready). The transfer
@@ -79,13 +79,13 @@ next step's start (`[Exec] propagated arm configuration -> ...`).
 > - The `Transfer start:` sliders (the bar-loading pose) are not used; they disappear from the
 >   panel while the box is ticked.
 >
-> Order of a jointing entry: **transfer** (empty tools, from the live arms to the insertion start)
+> Order of a jointing action: **transfer** (empty tools, from the live arms to the insertion start)
 > → **manual mount** (mount the bar by hand there) → **tool grasp** → **insert** (→ **fix
 > foundation** for the ground bars B20 and B34). The travel to load is skipped.
 
 Every code block below is meant to be pasted as is. Tick the boxes as you go; anything that does
 not match "expect" is worth a note (log lines + what you did). What the buttons do in detail:
-`doc/support_robot_schedule_manual.md`.
+`doc/support_robot_plan_skeleton_manual.md`.
 
 ---
 
@@ -148,7 +148,7 @@ ls "$C"/*/calibrated_transformation_0805*.json 2>/dev/null || echo "Belle: NO ca
 | Alice (0804) | `20260623` | her entry `'Alice': '20260623'` (her newest calibration) |
 | Belle (0805) | **none yet** (no `0805` file in any date folder on 2026-10-13) | add `'Belle': '<YYYYMMDD>'` after calibrating her |
 
-- ! **Belle must be calibrated before her hold (entry 10).** Follow `doc/calibration_manual.md`:
+- ! **Belle must be calibrated before her hold (action 10).** Follow `doc/calibration_manual.md`:
   - single arm, serial `0805`, domain 85, Motive id 1850; her calibration launch is in its
     section 2.3, and `config.yaml` takes `robot_name: "0805"`;
   - run `data/calibration_data/convert_to_rhino.py`, so the folder holds
@@ -172,7 +172,7 @@ BASE_CALIBRATION_DATE_BY_ROBOT = {
 ### 0.2 The problem folder (shared Insync folder)
 
 The monitor reads and writes the design problem directly in the shared Insync folder.
-`Mark entry done` writes `progress.json` and `*.live-solved.json` (saved plans) there, and they
+`Mark action done` writes `progress.json` and `*.live-solved.json` (saved plans) there, and they
 sync to the shared drive. All three robots' runs read and write the same `progress.json`: that is
 how each run knows where the other robots stand. Check that the folder is complete and see what an
 earlier run left behind:
@@ -187,7 +187,7 @@ ls "$P"/progress.json "$P"/BarActions/*.live-solved.json 2>/dev/null   # left ov
 ```
 
 If `progress.json` or saved plans are left over and you want to start fresh, use
-`Reset schedule to the Rhino export` once Cindy's monitor is up (section 14): it moves them to
+`Reset plan skeleton to the Rhino export` once Cindy's monitor is up (section 14): it moves them to
 `$P/archive/<time>/` (nothing is deleted).
 
 ### 0.3 Robot bring-up (robot side)
@@ -445,8 +445,8 @@ For Alice use `ROS_DOMAIN_ID=84` and replace `/a200_0806` with **`/a200_0804`**;
   publish; the Husky e-stop locks out everything.
 - ! Hand on the e-stop; drive slowly near the structure. After driving, plan again (the monitor
   plans at the live base).
-- ! Never drive Alice while she holds B21 (entries 3–16), nor Belle while she holds B35
-  (entries 10–17).
+- ! Never drive Alice while she holds B21 (actions 3–16), nor Belle while she holds B35
+  (actions 10–17).
 
 Where a base should stand: on `Load Movement` the monitor logs
 `[LoadMovement] cfab planning robot is correctly placed at [x y z], but: live husky [...] (err E m)`
@@ -529,16 +529,16 @@ ros2 run husky_assembly_teleop husky_monitor
   - `Base calibration of Belle (0805): <her date>/calibrated_transformation_0805_rhino.json`
 
   `Base calibration file not found for robot 0805: ...` = Belle is not calibrated yet (0.1): stop
-  before entry 10.
-- [ ] `[Schedule] robot <Cindy (domain 86) | Alice (domain 84) | Belle (domain 85)> | problem 261006_3bar_holding_test | progress k/18 done`,
-      `[Schedule] others: ...`, the 18-entry roster, and `mocap client connected: True`
+  before action 10.
+- [ ] `[Plan skeleton] robot <Cindy (domain 86) | Alice (domain 84) | Belle (domain 85)> | problem 261006_3bar_holding_test | progress k/18 done`,
+      `[Plan skeleton] others: ...`, the 18-action roster, and `mocap client connected: True`
       (`False`: `CLIENT_IP`, see 0.1).
-- [ ] Panel: a **Schedule** section, with:
+- [ ] Panel: a **Plan skeleton** section, with:
   - `Ignore built-bar collisions (bars drawn faint)` unticked;
   - the slider above `Load Movement` called `Step`;
-  - a `Schedule entries` list. Clicking a row selects that entry: the
-    `Schedule entry (idx)` slider jumps there, and nothing is loaded until `Load entry`. The other
-    robots' entries are grey, `(other robot)`.
+  - an `Actions` list. Clicking a row selects that action: the
+    `Action (idx)` slider jumps there, and nothing is loaded until `Load action`. The other
+    robots' actions are grey, `(other robot)`.
 - [ ] PyBullet:
   - the connected robot drawn at its real base (mocap) with its real arm poses
     (`Toggle Joint Live Stream` follows the joints);
@@ -546,18 +546,18 @@ ros2 run husky_assembly_teleop husky_monitor
 
 ---
 
-## 6. Support robots — gripper and handoff checks in the air (before entry 0; no bar, clear workspace)
+## 6. Support robots — gripper and handoff checks in the air (before action 0; no bar, clear workspace)
 
 **Belle's** grip handoff has never run on hardware. **Alice's** ran on 2026-10-12; its tuning is
 still open (`tasks/2026-10-12_alice_grip_handoff_tuning.md`). Check both once before the assembly,
-so a problem shows up before Cindy holds a bar for them. **Do not `Mark entry done` here** — these
+so a problem shows up before Cindy holds a bar for them. **Do not `Mark action done` here** — these
 are tests. Run the checks below once per robot, **Belle first**, with that robot's values:
 
 | | Belle | Alice |
 |---|---|---|
 | monitor env (1.1) | Belle block | Alice block |
 | namespace, checks-pane domain | `/a200_0805`, 85 | `/a200_0804`, 84 |
-| hold entry, its close step | 10, `B35_H_M3_gripper_close` | 3, `B21_H_M3_gripper_close` |
+| hold action, its close step | 10, `B35_H_M3_gripper_close` | 3, `B21_H_M3_gripper_close` |
 
 Start the robot's monitor (its 1.1 block, then `ros2 run husky_assembly_teleop husky_monitor`):
 
@@ -580,7 +580,7 @@ Start the robot's monitor (its 1.1 block, then `ros2 run husky_assembly_teleop h
       `scaled_joint_trajectory_controller`.
 - [ ] **The handoff in the air** (the jaws close on nothing):
   1. `Open Gripper Full`.
-  2. Select the hold entry (10 for Belle, 3 for Alice) → `Load entry` → `Step` → 3 (readout
+  2. Select the hold action (10 for Belle, 3 for Alice) → `Load action` → `Step` → 3 (readout
      `step 4/4: <close step> ...`) → `Load Movement`.
   3. `Exec gripper step: CLOSE + compliant handoff` → log
      `[gripper step <close step>] CLOSE the gripper on the bar (position 0.8), the arm going compliant BEFORE the close [SupportGripper]. Click 'Confirm Exec' ...`
@@ -613,7 +613,7 @@ Start the robot's monitor (its 1.1 block, then `ros2 run husky_assembly_teleop h
 
 ---
 
-## 7. Cindy's run 1 — entries 0–2
+## 7. Cindy's run 1 — actions 0–2
 
 ### 7.1 Start Cindy's monitor (monitor pane, after the 1.1 Cindy block)
 
@@ -621,19 +621,19 @@ Start the robot's monitor (its 1.1 block, then `ros2 run husky_assembly_teleop h
 ros2 run husky_assembly_teleop husky_monitor
 ```
 
-- [ ] Section 5's lines with `[Schedule] robot Cindy (domain 86) | problem 261006_3bar_holding_test | progress 0/18 done`
-      and `[Schedule] others: Alice <- parked | Belle <- parked`.
+- [ ] Section 5's lines with `[Plan skeleton] robot Cindy (domain 86) | problem 261006_3bar_holding_test | progress 0/18 done`
+      and `[Plan skeleton] others: Alice <- parked | Belle <- parked`.
 - [ ] Tick `Workaround: plan the transfer as a free move (no bar, from the live arms)` (under
       `Plan Movement`) → the five `Transfer start:` sliders above it disappear (they come back
       when it is unticked).
 
-### 7.2 Entry 0 — B20 jointing (ground bar)
+### 7.2 Action 0 — B20 jointing (ground bar)
 
-Select entry 0 → `Load entry`. Six steps: travel to load (skipped), manual mount, tool grasp,
+Select action 0 → `Load action`. Six steps: travel to load (skipped), manual mount, tool grasp,
 transfer, insert, fix foundation (manual). B20 stands on its two ground joints
 (`joint_G20-T20-0_ground`, `joint_G20-T20-1_ground`) and has no tighten step.
 
-- [ ] **Transfer** (`B20_J_M3_CDFM_transfer_to_approach`): `Load entry` opens on it, already loaded
+- [ ] **Transfer** (`B20_J_M3_CDFM_transfer_to_approach`): `Load action` opens on it, already loaded
       (readout `step 4/6: B20_J_M3_CDFM_transfer_to_approach ...`, `traj time` 10 s). To come back
       to it later: `Step` → 3 → `Load Movement`.
   - [ ] **IK check** (workaround box ticked): `Transfer start: Confirm manual pose (IK check)` →
@@ -732,12 +732,12 @@ transfer, insert, fix foundation (manual). B20 stands on its two ground joints
 - [ ] **Fix foundation** (`B20_J_M5_manual_fix_foundation`): `Step` → 5 → `Load Movement` →
       `Operator done (manual step) -> then Confirm Exec` → fix B20 to the foundation by hand →
       `Confirm Exec`.
-- [ ] `Mark entry done` → `[Schedule] entry 0 B20_J_joint marked done by Cindy; Cindy's belief <- live. Saved ...`,
+- [ ] `Mark action done` → `[Plan skeleton] action 0 B20_J_joint marked done by Cindy; Cindy's belief <- live. Saved ...`,
       header `1/18`.
 
-### 7.3 Entry 1 — B20 release
+### 7.3 Action 1 — B20 release
 
-`Load entry` (slider on 1). Two steps; it opens on the retreat.
+`Load action` (slider on 1). Two steps; it opens on the retreat.
 
 - [ ] Readout `step 1/2: B20_R_M1_LM_retreat  (+ B20_R_M0_tool_ungrasp_bar runs with it)`.
 - [ ] B20 and its joints drawn solid (built, collision-checked).
@@ -762,21 +762,21 @@ transfer, insert, fix foundation (manual). B20 stands on its two ground joints
   - Joint controller restored afterwards.
 - [ ] **Free move home** (`B20_R_M2_free_home`): `Step` → 1 → `Load Movement` → `Plan Movement` →
       preview → `Exec Selected Mv Traj (auto)`. It may be skipped: the retreat's end is already
-      saved, and the next jointing entry's transfer plans from where the arms are (collision
+      saved, and the next jointing action's transfer plans from where the arms are (collision
       checked).
-- [ ] `Mark entry done` → header `2/18`.
+- [ ] `Mark action done` → header `2/18`.
 
-### 7.4 Entry 2 — B21 jointing (one-sided: the left joint mates)
+### 7.4 Action 2 — B21 jointing (one-sided: the left joint mates)
 
-`Load entry` (slider on 2). Five steps: travel to load (skipped), manual mount, tool grasp,
-transfer, insert (the tighten runs with the insert). Same workflow as entry 0, with these step
+`Load action` (slider on 2). Five steps: travel to load (skipped), manual mount, tool grasp,
+transfer, insert (the tighten runs with the insert). Same workflow as action 0, with these step
 numbers:
 
 - [ ] Built B20 and its joints drawn solid; the transfer's preview clears them.
-- [ ] **Transfer** (`B21_J_M3_CDFM_transfer_to_approach`): already loaded by `Load entry` (readout
+- [ ] **Transfer** (`B21_J_M3_CDFM_transfer_to_approach`): already loaded by `Load action` (readout
       `step 4/5: ...`) → `Transfer start: Confirm manual pose (IK check)` → `Plan Movement` →
       preview → `Exec Selected Mv Traj (auto)` → mount pause: mount B21, clamp it with the tool
-      buttons → `Confirm Exec` → the servo correction as in entry 0 (first move: preview,
+      buttons → `Confirm Exec` → the servo correction as in action 0 (first move: preview,
       `Confirm Exec`) → `### SERVOING converged ...` / `stopped ...`. Manual mount and tool grasp
       are done in that pause (box unticked: `Step` → 1 → `Confirm Exec`; `Step` → 2 → `Confirm Exec`).
 - [ ] **Insert** (`B21_J_M5_LM_insert`): already loaded after the servo (else `Step` → 4).
@@ -793,23 +793,23 @@ numbers:
     restored.
 - [ ] After the insert: Cindy holds B21 at its assembled pose, **joint controller active**
       (section 2's controller check).
-- [ ] `Mark entry done` → header `3/18`. Cindy's live base and arms were already saved to
+- [ ] `Mark action done` → header `3/18`. Cindy's live base and arms were already saved to
       `progress.json` when the insert ended (Alice's run plans around them).
 - [ ] **Quit Cindy's monitor** (`Ctrl-C`). Cindy keeps holding B21 (her driver keeps running). Do
       not touch her launch window.
 
 ---
 
-## 8. Alice's run 2 — entry 3: Alice grabs B21
+## 8. Alice's run 2 — action 3: Alice grabs B21
 
 Monitor pane: 1.1 **Alice** block, then `ros2 run husky_assembly_teleop husky_monitor`.
 
 - [ ] Section 5's lines with `robot Alice (domain 84) ... progress 3/18 done` and
-      `others: Cindy <- live (entry 2) | Belle <- parked`; the slider on entry 3, its row not grey.
+      `others: Cindy <- live (action 2) | Belle <- parked`; the slider on action 3, its row not grey.
 - [ ] PyBullet: Cindy drawn holding B21 at her real base (mocap; her arms from `progress.json`).
       She may show twice at the same pose: the solid husky and the red obstacle robot — the red
       one is what the planner checks.
-- [ ] Select 3 → `Load entry` →
+- [ ] Select 3 → `Load action` →
       `[obstacle robots] posed from: ObstacleRobotBelle <- exported, ObstacleRobotCindy <- live`
       (from `progress.json`; a fresh mocap base still overrides it). The export parks Belle far
       away. B21 is drawn in Cindy's tools.
@@ -875,42 +875,42 @@ Monitor pane: 1.1 **Alice** block, then `ros2 run husky_assembly_teleop husky_mo
       on B21, then
       `gripper done: position ..., stalled True, ...` and the joint controller is back.
       Watch Cindy's tools: they must not be pulled.
-- [ ] `Mark entry done` → `[Schedule] entry 3 B21_H_hold marked done by Alice; Alice's belief <- live. Saved ...`,
+- [ ] `Mark action done` → `[Plan skeleton] action 3 B21_H_hold marked done by Alice; Alice's belief <- live. Saved ...`,
       header `4/18`. (`Mocap has not seen Alice in the last 1 s; ...` = her base was not tracked: the
       authored base is stored instead; note it.)
 - [ ] **Quit Alice's monitor** (`Ctrl-C`). Alice stays clamped on B21 (her driver keeps running).
 
 ---
 
-## 9. Cindy's run 3 — entries 4–9
+## 9. Cindy's run 3 — actions 4–9
 
 ### 9.1 Restart Cindy's monitor
 
 Monitor pane: 1.1 **Cindy** block, then `ros2 run husky_assembly_teleop husky_monitor`.
 
-- [ ] Start-up: `[Schedule] Cindy starts from the progress.json state (after entry 2, live).`
+- [ ] Start-up: `[Plan skeleton] Cindy starts from the progress.json state (after action 2, live).`
       (her real joints take over at once), header `4/18`,
-      `others: Alice <- live (entry 3) | Belle <- parked`.
+      `others: Alice <- live (action 3) | Belle <- parked`.
 - [ ] PyBullet: Alice drawn on B21 at her hold pose (mocap base).
 - [ ] **Tick the transfer workaround box again** (it starts unticked).
 
-### 9.2 Entry 4 — B21 release (Alice holding B21)
+### 9.2 Action 4 — B21 release (Alice holding B21)
 
-- [ ] `Load entry` (slider on 4) → `[obstacle robots] posed from: ObstacleRobotAlice <- live, ObstacleRobotBelle <- exported`;
+- [ ] `Load action` (slider on 4) → `[obstacle robots] posed from: ObstacleRobotAlice <- live, ObstacleRobotBelle <- exported`;
       it opens on the retreat (`step 1/2: B21_R_M1_LM_retreat  (+ B21_R_M0_tool_ungrasp_bar runs with it)`).
 - [ ] **B21 is clamped by Alice** (the ungrasp releases Cindy's tools from it).
-- [ ] **Retreat** and **free move home** as in entry 1 (`B21_R_M1_LM_retreat`, then
+- [ ] **Retreat** and **free move home** as in action 1 (`B21_R_M1_LM_retreat`, then
       `B21_R_M2_free_home`), both planned with Alice in the scene. Check in the retreat's preview
       that both tools back off clear of Alice's gripper.
-- [ ] `Mark entry done` → header `5/18`.
+- [ ] `Mark action done` → header `5/18`.
 
-### 9.3 Entry 5 — B22 jointing (both joints mate)
+### 9.3 Action 5 — B22 jointing (both joints mate)
 
-`Load entry` (slider on 5). Five steps, as entry 2. B22's left male (`joint_J21-22_male`) screws
+`Load action` (slider on 5). Five steps, as action 2. B22's left male (`joint_J21-22_male`) screws
 into B21, which Alice still holds; its right male (`joint_J20-22_male`) into B20.
 
 - [ ] Built B20, B21 and Alice (red obstacle robot) drawn; the transfer's preview clears them all.
-- [ ] **Transfer** (`B22_J_M3_CDFM_transfer_to_approach`): as entry 2 (IK check → `Plan Movement` →
+- [ ] **Transfer** (`B22_J_M3_CDFM_transfer_to_approach`): as action 2 (IK check → `Plan Movement` →
       preview → Exec → mount pause: mount B22, clamp → `Confirm Exec` → servo).
       A warning
       `Plan end of 'B22_J_M3_CDFM_transfer_to_approach' differs from existing 'B22_J_M5_LM_insert'.start by max 6.2832 rad/m; overwriting (carry rule).`
@@ -924,53 +924,53 @@ into B21, which Alice still holds; its right male (`joint_J20-22_male`) into B20
   - Rigid approach, then compliance for the last mm. Both joint motors tighten; the insert ends
     when **both** have stalled, then the joint controller is restored.
   - [ ] Watch B21 while B22 screws in: Alice holds it; it must not be pushed out of her jaws.
-- [ ] `Mark entry done` → header `6/18`.
+- [ ] `Mark action done` → header `6/18`.
 
-### 9.4 Entry 6 — B22 release
+### 9.4 Action 6 — B22 release
 
-- [ ] `Load entry` (slider on 6) → opens on `step 1/2: B22_R_M1_LM_retreat  (+ B22_R_M0_tool_ungrasp_bar runs with it)`.
-- [ ] **Retreat** and **free move home** as in entry 1 (`B22_R_M1_LM_retreat`, `B22_R_M2_free_home`),
+- [ ] `Load action` (slider on 6) → opens on `step 1/2: B22_R_M1_LM_retreat  (+ B22_R_M0_tool_ungrasp_bar runs with it)`.
+- [ ] **Retreat** and **free move home** as in action 1 (`B22_R_M1_LM_retreat`, `B22_R_M2_free_home`),
       Alice in the scene.
-- [ ] `Mark entry done` → header `7/18`.
+- [ ] `Mark action done` → header `7/18`.
 
-### 9.5 Entry 7 — B34 jointing (ground bar, like entry 0)
+### 9.5 Action 7 — B34 jointing (ground bar, like action 0)
 
-`Load entry` (slider on 7). Six steps, as entry 0. B34 is the second ground bar: it stands on its
+`Load action` (slider on 7). Six steps, as action 0. B34 is the second ground bar: it stands on its
 ground joints `joint_G34-T20-0_ground` and `joint_G34-T20-1_ground`, has no tighten step, and ends
 with a manual foundation fix. The base drives about 1.1 m from where it stood for B22.
 
 - [ ] Built B20–B22 and Alice drawn; the transfer's preview clears them.
 - [ ] **Transfer** (`B34_J_M3_CDFM_transfer_to_approach`): IK check → `Plan Movement` → preview →
-      Exec → mount pause: mount B34, clamp → `Confirm Exec` → servo, as in entry 0.
-- [ ] **Insert, grounded bar** (`B34_J_M4_LM_insert`): as entry 0 → `[B34_J_M4_LM_insert] grounded bar (holds joint_G34-T20-0_ground, joint_G34-T20-1_ground): rigid insert ...`
+      Exec → mount pause: mount B34, clamp → `Confirm Exec` → servo, as in action 0.
+- [ ] **Insert, grounded bar** (`B34_J_M4_LM_insert`): as action 0 → `[B34_J_M4_LM_insert] grounded bar (holds joint_G34-T20-0_ground, joint_G34-T20-1_ground): rigid insert ...`
       and `... rigid insert done (no tighten).` The joint motors do not turn.
 - [ ] **Fix foundation** (`B34_J_M5_manual_fix_foundation`): `Step` → 5 → `Load Movement` →
       `Operator done (manual step) -> then Confirm Exec` → fix B34 by hand → `Confirm Exec`.
-- [ ] `Mark entry done` → header `8/18`.
+- [ ] `Mark action done` → header `8/18`.
 
-### 9.6 Entry 8 — B34 release
+### 9.6 Action 8 — B34 release
 
-- [ ] `Load entry` (slider on 8) → `step 1/2: B34_R_M1_LM_retreat  (+ B34_R_M0_tool_ungrasp_bar runs with it)`.
-- [ ] **Retreat** and **free move home** as in entry 1 (`B34_R_M1_LM_retreat`, `B34_R_M2_free_home`).
-- [ ] `Mark entry done` → header `9/18`.
+- [ ] `Load action` (slider on 8) → `step 1/2: B34_R_M1_LM_retreat  (+ B34_R_M0_tool_ungrasp_bar runs with it)`.
+- [ ] **Retreat** and **free move home** as in action 1 (`B34_R_M1_LM_retreat`, `B34_R_M2_free_home`).
+- [ ] `Mark action done` → header `9/18`.
 
-### 9.7 Entry 9 — B35 jointing (one-sided: the left joint mates)
+### 9.7 Action 9 — B35 jointing (one-sided: the left joint mates)
 
-`Load entry` (slider on 9). Five steps, as entry 2. B35 is **one-sided**, like B21:
+`Load action` (slider on 9). Five steps, as action 2. B35 is **one-sided**, like B21:
 - its left male (`joint_J34-35_male`) screws into B34;
 - the right tool holds `joint_J162-35_male`, whose female sits on B162, outside this export;
 - the export names only `AT3L` for the tighten.
 
-- [ ] **Transfer** (`B35_J_M3_CDFM_transfer_to_approach`): as entry 2 (mount B35 in the pause).
-- [ ] **Insert** (`B35_J_M5_LM_insert`): as entry 2 → `[B35_J_M5_LM_insert] one-sided bar: the left joint mates, so only the L joint motor TIGHTENs ...`
+- [ ] **Transfer** (`B35_J_M3_CDFM_transfer_to_approach`): as action 2 (mount B35 in the pause).
+- [ ] **Insert** (`B35_J_M5_LM_insert`): as action 2 → `[B35_J_M5_LM_insert] one-sided bar: the left joint mates, so only the L joint motor TIGHTENs ...`
       and `[scaffolding] B35_J_M5_LM_insert: TIGHTEN joint motor on L arm (arm 0)` (no R line).
 - [ ] After the insert: Cindy holds B35 at its assembled pose, **joint controller active**.
-- [ ] `Mark entry done` → header `10/18` (Belle's run plans around Cindy's stored pose).
+- [ ] `Mark action done` → header `10/18` (Belle's run plans around Cindy's stored pose).
 - [ ] **Quit Cindy's monitor** (`Ctrl-C`). Cindy keeps holding B35.
 
 ---
 
-## 10. Belle's run 4 — entry 10: Belle grabs B35
+## 10. Belle's run 4 — action 10: Belle grabs B35
 
 The same four steps as Alice's hold (section 8); only the differences are spelled out here.
 Belle's base calibration must be in place (0.1); the start-up prints her calibration line.
@@ -978,10 +978,10 @@ Belle's base calibration must be in place (0.1); the start-up prints her calibra
 Monitor pane: 1.1 **Belle** block, then `ros2 run husky_assembly_teleop husky_monitor`.
 
 - [ ] Section 5's lines with `robot Belle (domain 85) ... progress 10/18 done` and
-      `others: Cindy <- live (entry 9) | Alice <- live (entry 3)`; the slider on entry 10, its row
+      `others: Cindy <- live (action 9) | Alice <- live (action 3)`; the slider on action 10, its row
       not grey.
 - [ ] PyBullet: Cindy drawn holding B35, Alice clamped on B21.
-- [ ] Select 10 → `Load entry` →
+- [ ] Select 10 → `Load action` →
       `[obstacle robots] posed from: ObstacleRobotAlice <- live, ObstacleRobotCindy <- live`.
       B36 and B37 may be drawn although not built yet (as in section 8). Readout
       `step 1/4: B35_H_M0_free_to_approach ...`, `traj time` 15 s.
@@ -1018,81 +1018,81 @@ Monitor pane: 1.1 **Belle** block, then `ros2 run husky_assembly_teleop husky_mo
 - [ ] **Gripper close + handoff** (`B35_H_M3_gripper_close`): `Step` → 3 → `Load Movement` →
       `Exec gripper step: CLOSE + compliant handoff` → `Confirm Exec` → the phase lines of
       section 6, hand on Belle's e-stop. Watch Cindy's tools: they must not be pulled.
-- [ ] `Mark entry done` → `[Schedule] entry 10 B35_H_hold marked done by Belle; Belle's belief <- live. Saved ...`,
+- [ ] `Mark action done` → `[Plan skeleton] action 10 B35_H_hold marked done by Belle; Belle's belief <- live. Saved ...`,
       header `11/18`.
 - [ ] **Quit Belle's monitor** (`Ctrl-C`). Belle stays clamped on B35.
 
 ---
 
-## 11. Cindy's run 5 — entries 11–15
+## 11. Cindy's run 5 — actions 11–15
 
 ### 11.1 Restart Cindy's monitor
 
 Monitor pane: 1.1 **Cindy** block, then `ros2 run husky_assembly_teleop husky_monitor`.
 
-- [ ] Start-up: `[Schedule] Cindy starts from the progress.json state (after entry 9, live).`,
-      header `11/18`, `others: Alice <- live (entry 3) | Belle <- live (entry 10)`.
+- [ ] Start-up: `[Plan skeleton] Cindy starts from the progress.json state (after action 9, live).`,
+      header `11/18`, `others: Alice <- live (action 3) | Belle <- live (action 10)`.
 - [ ] PyBullet: Alice on B21 and Belle on B35, at their hold poses (mocap bases).
 - [ ] **Tick the transfer workaround box again.**
 
-### 11.2 Entry 11 — B35 release (Belle holding B35)
+### 11.2 Action 11 — B35 release (Belle holding B35)
 
-- [ ] `Load entry` (slider on 11) → `[obstacle robots] posed from: ObstacleRobotAlice <- live, ObstacleRobotBelle <- live`;
+- [ ] `Load action` (slider on 11) → `[obstacle robots] posed from: ObstacleRobotAlice <- live, ObstacleRobotBelle <- live`;
       it opens on `step 1/2: B35_R_M1_LM_retreat  (+ B35_R_M0_tool_ungrasp_bar runs with it)`.
 - [ ] **B35 is clamped by Belle** (the ungrasp releases Cindy's tools from it).
-- [ ] **Retreat** and **free move home** as in entry 1 (`B35_R_M1_LM_retreat`, `B35_R_M2_free_home`).
+- [ ] **Retreat** and **free move home** as in action 1 (`B35_R_M1_LM_retreat`, `B35_R_M2_free_home`).
       Check in the retreat's preview that both tools back off clear of Belle's gripper.
-- [ ] `Mark entry done` → header `12/18`.
+- [ ] `Mark action done` → header `12/18`.
 
-### 11.3 Entry 12 — B36 jointing (both joints mate)
+### 11.3 Action 12 — B36 jointing (both joints mate)
 
-`Load entry` (slider on 12). Five steps, as entry 5. B36's left male (`joint_J35-36_male`) screws
+`Load action` (slider on 12). Five steps, as action 5. B36's left male (`joint_J35-36_male`) screws
 into B35, which Belle holds; its right male (`joint_J34-36_male`) into B34.
 
-- [ ] **Transfer** (`B36_J_M3_CDFM_transfer_to_approach`): as entry 5. Two messages seen headless:
+- [ ] **Transfer** (`B36_J_M3_CDFM_transfer_to_approach`): as action 5. Two messages seen headless:
   - the same 2π warning as B22's (`... differs from existing 'B36_J_M5_LM_insert'.start by max 6.2832 ...`):
     harmless;
   - once, `[free validation] ... SWEPT COLLISION ... hits ['ground_WG0']` and
     `plan REJECTED: it sweeps through the scene between waypoints`. The insertion start is close
     to the floor and one random path grazed it: `Plan Movement` again.
-- [ ] **Insert** (`B36_J_M5_LM_insert`): as entry 5, **both** joint motors tighten.
+- [ ] **Insert** (`B36_J_M5_LM_insert`): as action 5, **both** joint motors tighten.
   - [ ] Watch B35 while B36 screws in: Belle holds it; it must not be pushed out of her jaws.
-- [ ] `Mark entry done` → header `13/18`.
+- [ ] `Mark action done` → header `13/18`.
 
-### 11.4 Entry 13 — B36 release
+### 11.4 Action 13 — B36 release
 
-- [ ] `Load entry` (slider on 13) → `step 1/2: B36_R_M1_LM_retreat ...` → **retreat** and **free
-      move home** as in entry 1, Alice and Belle in the scene.
-- [ ] `Mark entry done` → header `14/18`.
+- [ ] `Load action` (slider on 13) → `step 1/2: B36_R_M1_LM_retreat ...` → **retreat** and **free
+      move home** as in action 1, Alice and Belle in the scene.
+- [ ] `Mark action done` → header `14/18`.
 
-### 11.5 Entry 14 — B37 jointing (both joints mate, into the two held bars)
+### 11.5 Action 14 — B37 jointing (both joints mate, into the two held bars)
 
-`Load entry` (slider on 14). Five steps, as entry 5. The base drives about 1.5 m from where it
+`Load action` (slider on 14). Five steps, as action 5. The base drives about 1.5 m from where it
 stood for B36. B37's left male (`joint_J21-37_male`) screws into **B21 (Alice)**; its right male
 (`joint_J35-37_male`) into **B35 (Belle)**.
 
-- [ ] **Transfer** (`B37_J_M3_CDFM_transfer_to_approach`): as entry 5; the 2π warning may show here
+- [ ] **Transfer** (`B37_J_M3_CDFM_transfer_to_approach`): as action 5; the 2π warning may show here
       too (harmless).
-- [ ] **Insert** (`B37_J_M5_LM_insert`): as entry 5, **both** joint motors tighten.
+- [ ] **Insert** (`B37_J_M5_LM_insert`): as action 5, **both** joint motors tighten.
   - [ ] Watch B21 and B35 while B37 screws in: neither may be pushed out of its support robot's
         jaws.
-- [ ] `Mark entry done` → header `15/18`.
+- [ ] `Mark action done` → header `15/18`.
 
-### 11.6 Entry 15 — B37 release
+### 11.6 Action 15 — B37 release
 
-- [ ] `Load entry` (slider on 15) → `step 1/2: B37_R_M1_LM_retreat ...` → **retreat** as in entry 1.
+- [ ] `Load action` (slider on 15) → `step 1/2: B37_R_M1_LM_retreat ...` → **retreat** as in action 1.
 - [ ] **Free move home** (`B37_R_M2_free_home`). Headless, the first `Plan Movement` failed twice
       out of two (`plan_free_dual_arm failed: birrt_failed` and its diag block). The second try
       planned. ! Expect that and **plan again**.
   - The home goal turns the right shoulder (`right_ur_arm_shoulder_pan_joint`) by about
     **5.05 rad (≈ 290°)**, past B36.
   - Preview it through, raise `traj time`, hand on Cindy's e-stop.
-- [ ] `Mark entry done` → header `16/18`.
+- [ ] `Mark action done` → header `16/18`.
 - [ ] **Quit Cindy's monitor** (`Ctrl-C`).
 
 ---
 
-## 12. Alice's run 6 — entry 16: Alice lets go of B21
+## 12. Alice's run 6 — action 16: Alice lets go of B21
 
 B21 now hangs in the structure (jointed to B20, B22 and B37); Alice opens her jaws and backs out
 100 mm along her approach line.
@@ -1100,8 +1100,8 @@ B21 now hangs in the structure (jointed to B20, B22 and B37); Alice opens her ja
 Monitor pane: 1.1 **Alice** block, then `ros2 run husky_assembly_teleop husky_monitor`.
 
 - [ ] Section 5's lines with `robot Alice (domain 84) ... progress 16/18 done` and
-      `others: Cindy <- live (entry 15) | Belle <- live (entry 10)`.
-- [ ] Select 16 → `Load entry` → readout `step 1/2: B21_HR_M0_gripper_open ...`.
+      `others: Cindy <- live (action 15) | Belle <- live (action 10)`.
+- [ ] Select 16 → `Load action` → readout `step 1/2: B21_HR_M0_gripper_open ...`.
 - [ ] **Gripper open** (`B21_HR_M0_gripper_open`): `Exec gripper step: OPEN` → `Confirm Exec` →
       `gripper 0 done: position 0.426, ...`. B21 must stay where it is.
 - [ ] **Retreat** (`B21_HR_M1_LM_retreat`): `Step` → 1 → `Load Movement` (`traj time` 5 s) →
@@ -1112,43 +1112,43 @@ Monitor pane: 1.1 **Alice** block, then `ros2 run husky_assembly_teleop husky_mo
 
   Preview: the open jaws slide off B21 → `Exec Selected Mv Traj` (plain joint tracking, no
   servo). Watch the jaws clear the bar.
-- [ ] `Mark entry done` → `[Schedule] entry 16 B21_HR_hold_release marked done by Alice; Alice's belief <- live. Saved ...`,
+- [ ] `Mark action done` → `[Plan skeleton] action 16 B21_HR_hold_release marked done by Alice; Alice's belief <- live. Saved ...`,
       header `17/18`.
 - [ ] **Quit Alice's monitor**, then drive Alice away from the structure (section 3, domain 84).
       The export assumes she leaves the scene, and Belle's run draws her parked.
 
-## 13. Belle's run 7 — entry 17: Belle lets go of B35
+## 13. Belle's run 7 — action 17: Belle lets go of B35
 
 The same as section 12, with Belle's values.
 
 Monitor pane: 1.1 **Belle** block, then `ros2 run husky_assembly_teleop husky_monitor`.
 
 - [ ] `robot Belle (domain 85) ... progress 17/18 done`.
-- [ ] Select 17 → `Load entry` →
+- [ ] Select 17 → `Load action` →
       `[obstacle robots] posed from: ObstacleRobotAlice <- parked, ObstacleRobotCindy <- live`
       (Alice released). Readout `step 1/2: B35_HR_M0_gripper_open ...`.
 - [ ] **Gripper open** (`B35_HR_M0_gripper_open`) → `Confirm Exec` → B35 stays where it is.
 - [ ] **Retreat** (`B35_HR_M1_LM_retreat`): `Step` → 1 → `Load Movement` → `Plan Movement` →
       `[Plan] 'B35_HR_M1_LM_retreat': ≈ 21 waypoints stored.` → preview → `Exec Selected Mv Traj`.
       Watch the jaws clear B35.
-- [ ] `Mark entry done` → header `18/18`.
+- [ ] `Mark action done` → header `18/18`.
 - [ ] Quit Belle's monitor; drive Belle away.
 
 ---
 
-## 14. Starting over / redoing an entry
+## 14. Starting over / redoing an action
 
-- **Redo one entry:** load it → `Reopen entry (reload clean)` (pending again, clean export loaded,
-  the robot's previous end state restored). Reopen a support robot's entry (3, 10, 16, 17) from
+- **Redo one action:** load it → `Reopen action (reload clean)` (pending again, clean export loaded,
+  the robot's previous end state restored). Reopen a support robot's action (3, 10, 16, 17) from
   that robot's monitor.
-- **Start the whole test over:** `Reset schedule to the Rhino export` → `Confirm Exec`. The log
-  shows `[Schedule] reset to the Rhino export: moved N file(s) (...) to .../archive/<time>.`;
-  every entry is pending, entry 0 loaded clean.
+- **Start the whole test over:** `Reset plan skeleton to the Rhino export` → `Confirm Exec`. The log
+  shows `[Plan skeleton] reset to the Rhino export: moved N file(s) (...) to .../archive/<time>.`;
+  every action is pending, action 0 loaded clean.
   - Nothing is deleted: the old `progress.json` and saved plans are in
     `~/Insync/2025-03 Husky Assembly/data_design_study/261006_3bar_holding_test/archive/<time>/`.
   - A monitor of another robot that is running keeps its old progress: restart it.
-- **A support robot must let go early:** run its release entry (16 / 17) from its monitor (gripper
-  open, then the retreat), and note why. Do not mark the later entries.
+- **A support robot must let go early:** run its release action (16 / 17) from its monitor (gripper
+  open, then the retreat), and note why. Do not mark the later actions.
 
 ## 15. If something goes wrong
 
@@ -1162,11 +1162,11 @@ Monitor pane: 1.1 **Belle** block, then `ros2 run husky_assembly_teleop husky_mo
 | `[transfer workaround] ... no collision-free IK for the insertion start` (IK check or plan) | the base is too far from / too close to the Rhino pose, or the drawn colliding pair is in the way (a support robot?): move the base (section 3), IK check again; note it in the log |
 | the IK check passes although the base is far from the Rhino pose; it prints `[M1 manual] ...` lines | the workaround box is unticked (the `Transfer start:` sliders are showing): the button then checks the bar-loading start next to the robot, not the insertion start. Tick it and check again |
 | `[free validation] ... SWEPT COLLISION ...` / `plan REJECTED: it sweeps through the scene between waypoints` | the random path grazed something between two waypoints (B36: the floor, `ground_WG0`): `Plan Movement` again |
-| a plan fails with "start ... in collision" | read the pair in the log. A support robot's run with `ObstacleRobotCindy`, or the support robot against a built bar: tick `Ignore built-bar collisions (bars drawn faint)` (it reloads the entry; the built bars are then ignored, Rhino note D5), plan again. Cindy's run with `ObstacleRobotAlice` / `ObstacleRobotBelle` in the pair: note it (the stored hold pose overlaps the scene); check the robot is drawn where it really stands |
+| a plan fails with "start ... in collision" | read the pair in the log. A support robot's run with `ObstacleRobotCindy`, or the support robot against a built bar: tick `Ignore built-bar collisions (bars drawn faint)` (it reloads the action; the built bars are then ignored, Rhino note D5), plan again. Cindy's run with `ObstacleRobotAlice` / `ObstacleRobotBelle` in the pair: note it (the stored hold pose overlaps the scene); check the robot is drawn where it really stands |
 | `not planning: joint value(s) outside the URDF limits` (right away, no search) | the start or goal has a joint the arm cannot reach (the UR5e elbow turns only +/- pi); the message names it. Should not happen for the transfer any more (its goal keeps every joint in range): note the line in the log |
 | `Plan for '..._LM_retreat'` / `'..._LM_insert' ... FAILED` (a straight-line plan) | read the `[<movement> diag]` block after it (details below this table). A START collision the ACM does not allow = an export gap or the arms are not where the export expects: note the pair in the log. The retreat's replan during exec prints the same block, then runs the planned tail instead (its first step jumps; no pause) |
 | the retreat's rigid part ran with `N check(s) FAILED` | the checks only report (no pause); note the `check FAIL` lines (details below this table). Remote e-stop if the arms pull on the bar |
-| `plan_free_dual_arm failed: birrt_failed` (both ends collision-free, no path found) | read the `[... diag]` lines after it (details below this table). A tight pocket at the GOAL: drive the base to give the arms room, IK check, plan again. Otherwise plan again (entry 15's free move home: expected on the first try) |
+| `plan_free_dual_arm failed: birrt_failed` (both ends collision-free, no path found) | read the `[... diag]` lines after it (details below this table). A tight pocket at the GOAL: drive the base to give the arms room, IK check, plan again. Otherwise plan again (action 15's free move home: expected on the first try) |
 | `Plan end of '..._transfer_to_approach' differs from existing '..._LM_insert'.start by max 6.2832 rad/m` | one joint a full turn from the export's: same tool poses, harmless |
 | `Cancel Exec` at the transfer's mount pause | no correction; the insert starts where the transfer ended (re-running the transfer is refused: the arms stand at its end, not its start). Mount and clamp the bar, then plan and run the insert as usual |
 | `servo skipped (FAKE_HARDWARE)` / `(the base is not tracked by mocap)` after the transfer or a free approach | `FAKE_HARDWARE = 1`, or `USE_MOCAP = 0` / `USE_CELL_STATE_BASE_POSE = 1` (section 0.1): the servo needs the real arms and the mocap base |
@@ -1182,8 +1182,8 @@ Monitor pane: 1.1 **Belle** block, then `ros2 run husky_assembly_teleop husky_mo
 | no topics / `Unknown topic` | `eno1` on `192.168.0.x` and the robot pings (0.4), the right domain + CycloneDDS in this pane (1.1 / 1.2), the robot's launch still running with its domain + CycloneDDS (0.3) |
 | no tool status (section 2) / grasp steps get no answer | `... ScaffoldingToolStatus' is invalid`: the checks pane did not source the workspace (1.2), the tools are fine. `NO MESSAGES`: Cindy's launch is missing `gripper:=scaffolding_v3` (0.3) |
 | `mocap client connected: False` | `CLIENT_IP` is not this PC's `eno1` address (0.1), or the Motive PC is no longer `192.168.0.28` (`doc/calibration_manual.md` 1.4) |
-| marked an entry done by mistake | load it, `Reopen entry (reload clean)` (a support robot's entry from its own monitor) |
-| progress is wrong beyond repair | `Reset schedule to the Rhino export` (section 14) |
+| marked an action done by mistake | load it, `Reopen action (reload clean)` (a support robot's action from its own monitor) |
+| progress is wrong beyond repair | `Reset plan skeleton to the Rhino export` (section 14) |
 
 **Reading the diagnosis blocks:**
 - **A failed straight-line plan** (`[<movement> diag]`) shows:
@@ -1210,17 +1210,17 @@ Monitor pane: 1.1 **Belle** block, then `ros2 run husky_assembly_teleop husky_mo
 - The monitor log (`~/husky_real/monitor.log`, or copy the terminal); it holds all seven monitor
   runs.
 - `~/Insync/2025-03 Husky Assembly/data_design_study/261006_3bar_holding_test/progress.json` after the run.
-- **Per jointing entry:**
+- **Per jointing action:**
   - the `[transfer workaround] ... max |goal - stored goal|` line;
   - the `[tool0 check] ... minus target (Rhino)` line from `Draw tool0: ...` after the transfer;
   - whether the mounted bar sat in the tools at the insertion start;
   - how the insert finished (stall time, any rigid / compliant warnings).
-- **Per release entry:** the `[..._LM_retreat] check ...` lines (which passed, the numbers of any
-  FAIL), and whether the arms backed off cleanly (entries 4, 11: clear of the support robot's
+- **Per release action:** the `[..._LM_retreat] check ...` lines (which passed, the numbers of any
+  FAIL), and whether the arms backed off cleanly (actions 4, 11: clear of the support robot's
   gripper).
-- **Entries 0 and 7:** how the rigid insert ended (the `grounded bar` lines; the bar's final fit
+- **Actions 0 and 7:** how the rigid insert ended (the `grounded bar` lines; the bar's final fit
   before fixing the foundation).
-- **Entry 15:** how many tries the free move home took.
+- **Action 15:** how many tries the free move home took.
 - **Alice and Belle** (sections 6, 8, 10, 12, 13):
   - the phase lines and any "no handoff" warning;
   - how the arm behaved while compliant (Belle: did it stay still when going compliant?);

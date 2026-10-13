@@ -13,7 +13,7 @@ Rhino-side problems from the same notes are described (not planned) in
 | # | Note (worklog) | Belongs to | Item |
 |---|---|---|---|
 | 1 | "M3 cdfm start plan and M0 plan can be combined into one button" | teleop | F1 |
-| 2 | "excessive tool acknowledgement … combined together in the schedule" | teleop | F2 |
+| 2 | "excessive tool acknowledgement … combined together in the plan skeleton" | teleop | F2 |
 | 3 | "support robot's FM M0 should adopt the M3-start → M0-target structure" (`B3_H_M2_LM_to_grasp`) | teleop | F3 |
 | 4 | "ACM needed": `joint_G1-T20Ground-1_ground` vs `obstacle_ground` at `B1_J_M5_LM_insert` | teleop now (the floor body is created by the monitor) + Rhino note D6 | F4 |
 | 5 | "existing built bars (B1 + joints) are not displayed properly" (B1_R screenshot) | teleop (two monitor causes) | F5 |
@@ -51,7 +51,7 @@ monitor / planner.
   flange ends elsewhere and `H_M2` starts from the wrong place.
 - **State after a restart (fake hardware).** `_seed_viz_huskies_from_progress` poses only the OTHER
   huskies from `progress.json`. The connected robot's simulated arms restart at home, although its own
-  belief (e.g. Cindy holding B3 after entry 2) is on disk.
+  belief (e.g. Cindy holding B3 after action 2) is on disk.
 - **Planning** (log): `B3_J_M0` `plan_free_dual_arm failed: birrt_failed` twice; `B4_J_M3` BiRRT 5/5
   "no path found" (2 min each); M1 manual start prints "the branch nearest the goal collided; another
   IK branch was taken", start↔goal joint delta 4.6–5.5 rad. `ssik` is not installed in the venv, so
@@ -68,15 +68,15 @@ stay green).
 
 a. **Split the flag.** New class flag `IGNORE_BUILT_ASSEMBLY_COLLISIONS` (comment: planner/IK ignore the
    built bars; they are drawn faint). Default `0`. Legacy keeps its behaviour:
-   `_ignore_built_assembly()` returns the new flag in schedule mode, and
-   `BAR_ACTION_MOCAP_ACCURACY_TEST` when no schedule is active (accuracy test unchanged).
+   `_ignore_built_assembly()` returns the new flag in plan skeleton mode, and
+   `BAR_ACTION_MOCAP_ACCURACY_TEST` when no plan skeleton is active (accuracy test unchanged).
    Replace the `BAR_ACTION_MOCAP_ACCURACY_TEST` test at the two call sites of
    `_hide_built_assembly_for_mocap` (in `_finish_action_load` / `load_selected_movement`) with it.
    The accuracy-test UI block stays keyed on `BAR_ACTION_MOCAP_ACCURACY_TEST`.
-b. **Panel toggle** (schedule section, DPG `Toggle`): "Ignore built-bar collisions (bars drawn
+b. **Panel toggle** (plan skeleton section, DPG `Toggle`): "Ignore built-bar collisions (bars drawn
    faint)". Changing it clears `_mocap_hide_applied`, restores the flags on the loaded movements
-   (reload the entry through `load_schedule_entry(self._loaded_entry.index)`), and logs one line.
-   Needed today for Alice's hold entries (Rhino note D5); the operator sees that it is on.
+   (reload the action through `load_action(self._loaded_action.index)`), and logs one line.
+   Needed today for Alice's hold actions (Rhino note D5); the operator sees that it is on.
 c. **Faint, not invisible.** `_hide_built_assembly_for_mocap` records the bodies IT hid in
    `self._collision_ignored_bodies` (set of names). `_sync_pp_visibility_to_hidden` draws those with
    `BUILT_IGNORED_RGBA = (0.6, 0.6, 0.6, 0.25)` and keeps `TRANSPARENT` for bodies the export itself
@@ -100,7 +100,7 @@ e. **Stationary steps need a configuration to be drawn at.** `J_M1`/`J_M2` expor
 
 `cfab_session.inject_ground_rigid_body_state`: add to the ground's `touch_bodies` every rigid body of
 the state whose name is a ground joint (`joint_*_ground` / `env_joint_*_ground`; helper
-`bar_action_io.is_ground_joint_body(name)`), both when creating the entry and when merging into an
+`bar_action_io.is_ground_joint_body(name)`), both when creating the action and when merging into an
 existing one. A ground joint stands on the floor by construction, attached or built.
 - Check: unit test on `B1__J.json` movement 5 (state only, no cell) for the allowance; smoke: with
   the built-bar switch OFF, `B1_J_M5_LM_insert` start state has no `obstacle_ground` pair in
@@ -110,9 +110,9 @@ existing one. A ground joint stands on the floor by construction, attached or bu
 ### F6 — state propagation between actions (answer to the worklog question)
 
 Today: only the ROS-connected robot has live joints; multi-robot ROS is deferred (Zenoh). The
-mechanism asked for exists as the **belief** in `progress.json`: `Mark entry done` stores the acting
+mechanism asked for exists as the **belief** in `progress.json`: `Mark action done` stores the acting
 robot's end state (`live` for the connected robot, `assumed` = exported end state for another
-robot's entry), and every load poses the other robots' `ObstacleRobot<Name>` and drawn huskies from
+robot's action), and every load poses the other robots' `ObstacleRobot<Name>` and drawn huskies from
 it; a fresh mocap base overrides the stored base. Gaps to close:
 
 a. **The connected robot's own state at start-up.** In `husky_world.init`, after
@@ -120,17 +120,17 @@ a. **The connected robot's own state at start-up.** In `husky_world.init`, after
    from its own belief — generalise `_seed_viz_huskies_from_progress(monitor, connected,
    include_connected=True)`. ROS overwrites it with the first `joint_states` message; in fake hardware
    it is the state the simulation continues from (e.g. Cindy still holding B3 after Alice's run).
-   Log: `[Schedule] Cindy starts from her progress.json state (entry 2, live)`.
-b. **Entry start = previous end.** At `load_schedule_entry` (executable entry): when the connected
-   robot has NO live joint source (fake hardware) and its belief's `after_entry` is the entry's
+   Log: `[Plan skeleton] Cindy starts from her progress.json state (action 2, live)`.
+b. **Action start = previous end.** At `load_action` (executable entry): when the connected
+   robot has NO live joint source (fake hardware) and its belief's `after_action` is the action's
    predecessor in that robot's own sequence, write the belief into movement 0's start configuration
    (already what `_movement_starts_live` + the seeded interface give — verify with the smoke test).
    With ROS the live joints win, as now.
-c. **Readout.** Schedule header gets a second line: `others: Alice <- live (entry 3) | Belle <- parked`
+c. **Readout.** Plan skeleton header gets a second line: `others: Alice <- live (action 3) | Belle <- parked`
    from `progress_io.obstacle_sources`, so the source of each robot's pose is visible without the log.
 d. Double drawing: a robot now appears as the solid viz husky AND the red obstacle tool at the same
    pose. Keep both (the red one is what the planner checks); note it in the manual.
-- Check: headless smoke: mark entry 2 done → new monitor object for Cindy → her simulated arms equal
+- Check: headless smoke: mark action 2 done → new monitor object for Cindy → her simulated arms equal
   the stored belief; header line names the sources.
 
 ### F3 — support robot: resolve the approach IK at the live base and back-fill (M1-start → M0-goal structure)
@@ -159,27 +159,27 @@ Cartesian space from their start, so they follow automatically.
 3. select the M0-role movement, `load_selected_movement()`, `plan_selected_movement()`;
 4. leave M0 loaded with its trajectory preview; log what to do next (`Exec`).
 Button `M1: Confirm start + Plan M0` next to the existing confirm button (kept, for adjusting the pose
-without replanning). Works straight after `Load entry` (uses the current slider values).
-- Check: smoke: after `Load entry 0` one call leaves movement 0 loaded with a goal configuration;
+without replanning). Works straight after `Load action` (uses the current slider values).
+- Check: smoke: after `Load action 0` one call leaves movement 0 loaded with a goal configuration;
   with a failing IK nothing is planned and the M1 movement stays loaded.
 
 ### F2 — steps instead of movements: no stop for tool actions that run with the next motion
 
 a. `bar_action_io.tool_runs_with_next_motion(mv) -> bool`: scaffolding step with `overlaps_next`, or
    `tool_action in ('ungrasp', 'untighten')` — the one rule already used by
-   `world.run_scaffolding_tool_step` (mark-only) and `schedule_ui.step_button_label`; both call it.
+   `world.run_scaffolding_tool_step` (mark-only) and `plan_skeleton_ui.step_button_label`; both call it.
 b. `bar_action_io.operator_steps(movements) -> list[OperatorStep]`,
    `OperatorStep(primary: int, absorbed: tuple[int, ...])`: an absorbed tool step is merged into the
    next arm movement. `B1__J` → `[0] [1] [2] [3] [4+5]`; `B1__R` → `[0+1+2] [3]`; `B3__H`/`HR` unchanged.
-c. Monitor, schedule mode only (legacy slider 0..9 of the accuracy manual unchanged):
+c. Monitor, plan skeleton mode only (legacy slider 0..9 of the accuracy manual unchanged):
    `self._loaded_steps`; the Movement slider is labelled `Step (idx)` and ranges over steps;
    `_selected_movement_index()` maps step → primary movement index (single place; used by
    `load_selected_movement`, the readouts, `_now_line`); the `-> movement` readout shows
    `B1_J_M5_LM_insert  (+ J_M4 tool_tighten runs with it)`; the `Now:` line counts steps.
 d. Exec on a merged step logs which tool action the compliant flow issues; nothing else changes
    (the M2/M3 flows already send tighten / loosen).
-- Check: unit tests for `operator_steps` on the four fixture actions; smoke: entry 0 has 5 steps,
-  entry 1 has 2; no "Mark tool step done" button appears any more.
+- Check: unit tests for `operator_steps` on the four fixture actions; smoke: action 0 has 5 steps,
+  action 1 has 2; no "Mark tool step done" button appears any more.
 
 ### F7 — prepare for the release action without "untighten" (Rhino note D7)
 
@@ -211,17 +211,17 @@ Outcome of each goes into `doc/m1_planner_changelog.md`.
 ### Small items
 
 - `traj time` shows 90 s before any movement is loaded (slider maximum as initial value): initialise
-  it to the first movement's default at `Load entry`.
+  it to the first movement's default at `Load action`.
 - `Move Arms to Movement Start (offline target)` publishes even with `FAKE_HARDWARE = 1`: add the
   same simulated branch `execute_arm_trajectory_all` has (move the simulated arms).
-- Update `doc/support_robot_test_manual.md` + `doc/support_robot_schedule_manual.md`: steps instead
+- Update `doc/support_robot_test_manual.md` + `doc/support_robot_plan_skeleton_manual.md`: steps instead
   of movements, the combined M1 button, the built-bar toggle (replaces "set
   `BAR_ACTION_MOCAP_ACCURACY_TEST`"), state line in the header.
 
 ## 3. Verification (whole change)
 
-`pytest` (registry, bar_action_io, schedule_io, progress_io, schedule_ui) · `scripts/smoke_single_arm_plan.py`
-· `scripts/headless_schedule_smoke.py` (extended as listed per item) · legacy harness
+`pytest` (registry, bar_action_io, plan_skeleton_io, progress_io, plan_skeleton_ui) · `scripts/smoke_single_arm_plan.py`
+· `scripts/headless_plan_skeleton_smoke.py` (extended as listed per item) · legacy harness
 (`scripts/headless_live_monitor_test.py`, B6 M2 and B3__J M3) identical to the baseline logs ·
 GPU renders with `~/husky_dryrun/probe/gui_visibility_probe.py` in the shared tmux session · then the
 user's Part A walk-through.

@@ -160,7 +160,7 @@ def cycle_roles(slots: list) -> list:
 def roles_for_action(action: BarSceneAction) -> list:
     """Classic role of every movement in ONE loaded action.
 
-    The schedule loads one file per entry, so this is ``cycle_roles`` for a
+    The plan skeleton loads one file per action, so this is ``cycle_roles`` for a
     single action. Only Cindy's actions carry roles; a support robot's hold or
     hold-release action gives None for every movement (and nothing is printed).
 

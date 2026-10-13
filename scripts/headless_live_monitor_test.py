@@ -75,7 +75,7 @@ def _bypass_init_monitor():
     monitor.bar_from_extra = []
 
     monitor.cfab = None
-    monitor.current_action = None
+    monitor.current_bar_action = None
     monitor.current_movement = None
     monitor.current_movement_index = None
     monitor.movement_start_state = None
@@ -112,8 +112,8 @@ def _bypass_init_monitor():
     monitor._selected_action_file_idx = 0
     monitor._selected_movement_idx = 0
     monitor._loaded_movements = []
-    monitor._loaded_action = None
-    monitor._current_action_path = None
+    monitor._loaded_bar_action = None
+    monitor._current_bar_action_path = None
     monitor._traj_ghost_bodies = []
     monitor._traj_ghost_orig_colors = {}
     monitor._ee_target_pose_uids = []

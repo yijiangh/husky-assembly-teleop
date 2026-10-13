@@ -59,7 +59,7 @@ def _make_monitor(problem, use_gui):
     monitor._bar_action_cfab_id = None
     monitor._bar_action_scrub = None
 
-    monitor.current_action = None
+    monitor.current_bar_action = None
     monitor.current_movement = None
     monitor.current_movement_index = None
     monitor.movement_start_state = None

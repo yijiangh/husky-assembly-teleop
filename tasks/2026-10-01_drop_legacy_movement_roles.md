@@ -31,40 +31,40 @@ Background: `tasks/2026-09-30_support_robot_schedule_monitor.md` (§0 rules), `t
       --ignore=src/husky-assembly-teleop/test/test_flake8.py \
       --ignore=src/husky-assembly-teleop/test/test_pep257.py \
       --ignore=src/husky-assembly-teleop/test/test_copyright.py
-  python src/husky-assembly-teleop/scripts/headless_schedule_smoke.py     # ~1-2 min, ~1 GB RAM per cell
+  python src/husky-assembly-teleop/scripts/headless_plan_skeleton_smoke.py     # ~1-2 min, ~1 GB RAM per cell
   python src/husky-assembly-teleop/scripts/smoke_single_arm_plan.py
   ```
   Run long scripts with output redirected to a log file under `~/husky_dryrun/roles_refactor/` and read
   the summary lines; do not paste whole logs.
 - Baseline before any change (commit 3a1abd8): pytest 99 passed / 1 skipped; `smoke_single_arm_plan.py`
-  7/7; `headless_schedule_smoke.py` 34/34 (log `~/husky_dryrun/roles_refactor/baseline_schedule_smoke.log`).
+  7/7; `headless_plan_skeleton_smoke.py` 34/34 (log `~/husky_dryrun/roles_refactor/baseline_schedule_smoke.log`).
 - Report at the end: files changed, what each change does, the commands you ran and their summary lines,
   anything you could not do or decided differently from the spec (with the reason).
 
 ## 1. Step 0b — dispatch check (gate for every later step)
 
-File: `scripts/headless_schedule_smoke.py` only.
+File: `scripts/headless_plan_skeleton_smoke.py` only.
 
-New run function `dispatch_check(results, problem, root, schedule)` (its own Cindy monitor via the
+New run function `dispatch_check(results, problem, root, skeleton)` (its own Cindy monitor via the
 existing `make_monitor`, like `cindy_run`), called FIRST in `main` (before `cindy_run`, `alice_run`).
-For entry 0 (`B1_J`) and entry 1 (`B1_R`) of the fixture (use `schedule.entry(i)`; assert their kinds are
-J and R), load the entry (`monitor.load_schedule_entry`) and, for EVERY movement index of the loaded action,
+For action 0 (`B1_J`) and action 1 (`B1_R`) of the fixture (use `skeleton.action(i)`; assert their kinds are
+J and R), load the action (`monitor.load_action`) and, for EVERY movement index of the loaded action,
 `select_movement(monitor, idx)` and record:
 
 | Field | How |
 |---|---|
-| `planner` | Before `plan_selected_movement()`, replace on the monitor INSTANCE `_plan_M0_dispatch`, `_plan_M1_dispatch`, `_plan_M2_dispatch`, `_plan_M3_dispatch`, `_plan_M4_dispatch` with recorders that note a label (`free_to_load`, `transfer`, `insert`, `retreat`, `free_home`) and return None (no real planning). A step where none is called records `none`. Keep the label↔method table in ONE dict at the top of the function (stage 4 renames the methods; only that dict changes). Reload the entry after the planner sweep (a failed plan may clear state). |
+| `planner` | Before `plan_selected_movement()`, replace on the monitor INSTANCE `_plan_M0_dispatch`, `_plan_M1_dispatch`, `_plan_M2_dispatch`, `_plan_M3_dispatch`, `_plan_M4_dispatch` with recorders that note a label (`free_to_load`, `transfer`, `insert`, `retreat`, `free_home`) and return None (no real planning). A step where none is called records `none`. Keep the label↔method table in ONE dict at the top of the function (stage 4 renames the methods; only that dict changes). Reload the action after the planner sweep (a failed plan may clear state). |
 | `exec` | For arm movements only: give the monitor a short fake planned trajectory so `exec_selected_movement_traj` passes its preconditions (e.g. two waypoints at the movement's start configuration; reuse whatever helper the monitor uses to stamp `planned_arm_trajectory`), replace `world.execute_planned_trajectory_compliant`, `world.execute_trajectory_and_zero_ft`, `world.execute_arm_trajectory_both`, `world.execute_arm_trajectory_all` (monkeypatch on the `husky_assembly_teleop.husky_world` module, restored in a `finally`) with recorders (generator ones return an empty generator), call `exec_selected_movement_traj()`, record `compliant` / `zero_ft` / `arm_both` / `arm_all`. Stationary steps record `-`. |
 | `tool_cmd` | Only for movements whose `exec` is `compliant`: run the REAL `world.execute_planned_trajectory_compliant(monitor)` generator with the stub interface until the first `send_scaffolding_cmd` calls are seen (give `StubInterface` a `send_scaffolding_cmd(direction, motor, index)` recorder if it has none) or 50 steps, then `close()` it. Record e.g. `tighten` (direction +1 on the joint motor, both arms) / `loosen_gripper` (direction -1 on the gripper motor, both arms). Use the motor constants the world module uses. If the generator cannot reach the commands headless, report why instead of faking it. |
 | `traj_time` | `monitor.trajectory_time` right after `select_movement` (load sets it from the default). Record `None` when the movement has no default (stationary): compare with the value before the load. |
-| `starts_live` | `idx in monitor._live_start_indices` after the entry load. |
+| `starts_live` | `idx in monitor._live_start_indices` after the action load. |
 | `preview` | `monitor._authored_motion_type(mv)`. |
 
 Expected table (today's behaviour = the plan's mapping table), as ONE dict in the script keyed by
 `(entry_kind, movement_index)`; each row checked with `results.check('dispatch: <movement_id> ...', ...)`
 showing the recorded values:
 
-| entry, idx | movement | planner | exec | tool_cmd | traj_time | starts_live | preview |
+| action, idx | movement | planner | exec | tool_cmd | traj_time | starts_live | preview |
 |---|---|---|---|---|---|---|---|
 | J 0 | J_M0_free_to_load | free_to_load | zero_ft | - | 30 | True | free |
 | J 1 | J_M1_manual_mount_bar | none | - | - | None | False | free |
@@ -89,12 +89,12 @@ Update the module docstring's flow description (one paragraph for the dispatch c
 Files: `husky_assembly_teleop/cfab_session.py`, `husky_assembly_teleop/bar_action_io.py` (helper
 `is_ground_joint_body(name) -> bool`: `joint_*_ground` or `env_joint_*_ground`), tests in
 `test/test_bar_action_io.py` (helper) and a new state-only test for the allowance (no cell): build the
-ground entry the way `inject_ground_rigid_body_state` does on the fixture's `B1__J.json` movement 5 start
+ground action the way `inject_ground_rigid_body_state` does on the fixture's `B1__J.json` movement 5 start
 state and assert both ground joints are in the ground's `touch_bodies`. If `inject_ground_rigid_body_state`
 needs the cell, factor the touch-list computation into a small pure function and test that.
 
 ### A-F5 built structure visible; collision ignore is a separate switch (F5a–c)
-Files: `husky_monitor.py`, `scripts/headless_schedule_smoke.py`.
+Files: `husky_monitor.py`, `scripts/headless_plan_skeleton_smoke.py`.
 As in the dry-run plan F5 a–c, plus the F4 smoke check (with the switch OFF, `B1_J_M5_LM_insert` start
 state has no `obstacle_ground` pair in the full collision report). The switch defaults to 0; the smoke's
 Alice / Cindy hold-scene runs need it ON — set it explicitly where the smoke relied on
@@ -103,12 +103,12 @@ F5d and F5e are NOT part of this step (they land in stage 1 and stage 2).
 
 ### A-F6 state propagation between actions
 Files: `husky_world.py` (`_seed_viz_huskies_from_progress` / `init`), `husky_monitor.py`
-(`load_schedule_entry`, schedule header), `progress_io.py` (only if `obstacle_sources` needs a small
-addition), `scripts/headless_schedule_smoke.py`, manual note (F6 d) goes with the docs step at the end.
+(`load_action`, plan skeleton header), `progress_io.py` (only if `obstacle_sources` needs a small
+addition), `scripts/headless_plan_skeleton_smoke.py`, manual note (F6 d) goes with the docs step at the end.
 As in the dry-run plan F6 a–c.
 
 ### A-small
-- `traj time` initial value: set to the first movement's default at `Load entry`.
+- `traj time` initial value: set to the first movement's default at `Load action`.
 - `Move Arms to Movement Start (offline target)`: with `FAKE_HARDWARE = 1` move the simulated arms
   (same simulated branch `execute_arm_trajectory_all` has) instead of publishing.
 
@@ -141,8 +141,8 @@ Stage 1 replaces every role lookup with a lookup by **movement kind** plus **`is
 - **`build/husky_assembly_teleop/husky_assembly_teleop` is a symlink to `src`.** A new module is importable without rebuilding.
 
 **Assumptions:**
-1. Phase A (the `IGNORE_BUILT_ASSEMBLY_COLLISIONS` switch, faint drawing, connected-robot seeding, the "traj time initial value at Load entry" item) has landed before Stage 1.
-   - Phase A may add new calls to `default_trajectory_time(mv, role, MOVEMENT_TRAJECTORY_TIME_S)` or `_match_movement_role` (for example the initial value at Load entry). They must be converted too; the grep gate in §1.6 catches them.
+1. Phase A (the `IGNORE_BUILT_ASSEMBLY_COLLISIONS` switch, faint drawing, connected-robot seeding, the "traj time initial value at Load action" item) has landed before Stage 1.
+   - Phase A may add new calls to `default_trajectory_time(mv, role, MOVEMENT_TRAJECTORY_TIME_S)` or `_match_movement_role` (for example the initial value at Load action). They must be converted too; the grep gate in §1.6 catches them.
 2. **Legacy single-file rule (decided):** `check_action_kinds` *does* check the legacy `BarAssemblyAction`: exactly 1 transfer, 1 insert, 1 retreat and 2 `DUAL_FREE`. It is verified on about 100 files, and it makes `is_free_home` ("the last `DUAL_FREE`") unambiguous.
 3. **Log text scope for Stage 1:**
    - Must change: every `role` variable or parameter, and every user-facing hint that tells the operator to navigate by role or index. These are wrong today for split exports (for example "Movement slider 1" should be 3).
@@ -171,13 +171,13 @@ The monitor still turns every movement into an M0..M4 role through `_match_movem
      - Comment: these are the insert (tightens the joint screws) and the retreat (loosens the grippers), both run under the Cartesian compliance controller.
    - `FREE_HOME_TRAJECTORY_TIME_S = 10.0`
      - Comment: the free move home is shorter than the travel out; the kind table says 30 s.
-   - `is_free_home(action: BarSceneAction, mv: Movement) -> bool`
+   - `is_free_home(bar_action: BarSceneAction, mv: Movement) -> bool`
      - Docstring: "Whether a `DUAL_FREE` movement is the free move HOME (not the travel out to the loading pose)."
      - False when the class kind is not `DUAL_FREE`. Use `_KIND_BY_CLASS.get(type(mv))` so an unknown class does not raise.
-     - True when `isinstance(action, BarAssemblyReleaseAction)`.
-     - For `isinstance(action, _bar_action_module.BarAssemblyAction)` (the legacy single file): True when `mv` is the **last** `DUAL_FREE` movement of `action.movements`, compared by identity. This is what `cycle_roles` did.
+     - True when `isinstance(bar_action, BarAssemblyReleaseAction)`.
+     - For `isinstance(bar_action, _bar_action_module.BarAssemblyAction)` (the legacy single file): True when `mv` is the **last** `DUAL_FREE` movement of `bar_action.movements`, compared by identity. This is what `cycle_roles` did.
      - False for everything else: Jointing, Hold and HoldRelease actions.
-   - `check_action_kinds(action: BarSceneAction, source: Optional[str] = None) -> None`
+   - `check_action_kinds(bar_action: BarSceneAction, source: Optional[str] = None) -> None`
      - Use a module table `_REQUIRED_KIND_COUNTS`:
        - Jointing: `{DUAL_CONSTRAINED_FREE: 1, DUAL_CONSTRAINED_LINEAR: 1}`
        - Release: `{DUAL_INDEPENDENT_LINEAR: 1}`
@@ -203,11 +203,11 @@ The monitor still turns every movement into an M0..M4 role through `_match_movem
   - `from husky_assembly_teleop.bar_action_io import CINDY_ACTION_TYPES` (importing it also registers the legacy dtype).
 - **Body:** the moved code, byte-identical, with **one change (F7)**. In `cycle_roles`' cross-check loop, also `continue` when `_SPLIT_ROLE_RE.search(mv.movement_id)` matches. This means no mismatch print for split ids; legacy ids still print.
 
-##### C. `husky_assembly_teleop/schedule_io.py`
+##### C. `husky_assembly_teleop/plan_skeleton_io.py`
 - **Import:** replace `roles_for_action` with `check_action_kinds`.
-- **`LoadedEntry`:** delete the `roles: list` field and its docstring line.
-- **`load_entry`:**
-  - Directly after `action = _load_checked(entry, path)`, call `check_action_kinds(action, os.path.basename(path))`. The predecessor goes through the same recursive call, so it is checked too.
+- **`LoadedAction`:** delete the `roles: list` field and its docstring line.
+- **`load_skeleton_action`:**
+  - Directly after `bar_action = _load_checked(action, path)`, call `check_action_kinds(bar_action, os.path.basename(path))`. The predecessor goes through the same recursive call, so it is checked too.
   - Drop `roles=...` from the constructor.
   - Docstring: "derive kinds, start poses"; `Raises` gains "an action holds two (or no) transfer / insert / retreat movements".
 
@@ -225,12 +225,12 @@ The monitor still turns every movement into an M0..M4 role through `_match_movem
 - `_match_movement_role`.
 - In the `__init__` comment near `m2_compliant_split_mm`: "See MOVEMENT_TRAJECTORY_TIME_S's neighbourhood" becomes "See M2_COMPLIANT_SPLIT_MM".
 
-**New helpers.** Put them in the "PER-MOVEMENT BARACTION FLOW" section where `_match_movement_role` was. Google docstrings throughout. Read `_loaded_movements` and `_loaded_action_slots` through `getattr(..., [])`, because the headless harnesses skip `__init__`.
+**New helpers.** Put them in the "PER-MOVEMENT BARACTION FLOW" section where `_match_movement_role` was. Google docstrings throughout. Read `_loaded_movements` and `_loaded_bar_action_slots` through `getattr(..., [])`, because the headless harnesses skip `__init__`.
 
 | Helper | Behaviour |
 |---|---|
 | `_kind_of(self, mv) -> Optional[MovementKind]` | `movement_kind(mv)`. Returns None for `mv is None` or an unknown class (catch `TypeError`). |
-| `_is_free_home(self, mv) -> bool` | Find the slot action in `_loaded_action_slots` whose `movements` contains `mv` **by identity**, then return `is_free_home(action, mv)`. False when `mv` is not loaded. Works for the schedule (one slot), the legacy J+R list (two slots) and the legacy single file. |
+| `_is_free_home(self, mv) -> bool` | Find the slot action in `_loaded_bar_action_slots` whose `movements` contains `mv` **by identity**, then return `is_free_home(bar_action, mv)`. False when `mv` is not loaded. Works for the plan skeleton (one slot), the legacy J+R list (two slots) and the legacy single file. |
 | `_is_free_to_load(self, mv) -> bool` | `self._kind_of(mv) is MovementKind.DUAL_FREE and not self._is_free_home(mv)` |
 | `_loaded_index_of(self, kind: MovementKind, free_home: Optional[bool] = None) -> Optional[int]` | First index in `_loaded_movements` with that kind. When `free_home` is given, the movement's `_is_free_home(m)` must also equal it. |
 | `_loaded_movement_of(self, kind, free_home=None) -> Optional[Movement]` | One-line wrapper over `_loaded_index_of`. |
@@ -241,14 +241,14 @@ The monitor still turns every movement into an M0..M4 role through `_match_movem
 
 | Symbol | Now | Stage 1 |
 |---|---|---|
-| `_movement_starts_live` | `role == 'M0' or (idx == 0 and conf None)` | `self._is_free_to_load(mv) or (...)`. The schedule J/H idx-0 rule is unchanged. Docstring: "the travel to the loading pose". |
+| `_movement_starts_live` | `role == 'M0' or (idx == 0 and conf None)` | `self._is_free_to_load(mv) or (...)`. The plan skeleton J/H idx-0 rule is unchanged. Docstring: "the travel to the loading pose". |
 | `_finish_action_load` | sets `_loaded_movement_roles` from `loaded.roles` or `cycle_roles`; roster print `role=` | Drop both role assignments. Keep the `start_ee_sources` lines. Roster line: `f"  [{i}] {mv.movement_id!r} kind={(self._kind_of(mv) or type(mv).__name__)}"` (print `.value` when there is a kind). Docstring: drop "roles". |
-| `load_bar_action_file` (legacy list) | `slots = load_action_cycle(...)` then `_finish_action_load` | After `load_action_cycle`, for each `(action, p)` in slots call `check_action_kinds(action, os.path.basename(p))`. Catch `(ValueError, TypeError)`: `self.get_logger().error(f"Not loading {fname}: {e}")` and return. |
+| `load_bar_action_file` (legacy list) | `slots = load_action_cycle(...)` then `_finish_action_load` | After `load_action_cycle`, for each `(action, p)` in slots call `check_action_kinds(bar_action, os.path.basename(p))`. Catch `(ValueError, TypeError)`: `self.get_logger().error(f"Not loading {fname}: {e}")` and return. |
 | `_hide_unmounted_active_bar` | `!= 'M0'` | `if not self._is_free_to_load(mv): return`. Log prefix `[M0]` becomes `[{mv.movement_id}]`. |
 | `_authored_motion_type` (**F5d**) | `'bar_held' if role in (M1, M2)` | Returns `'bar_held'` when `mv.start_state` is not None and any `name, rb` in `rigid_body_states` has `is_built_assembly_body(name)` and `(rb.attached_to_link or rb.attached_to_tool)`; otherwise `'free'`. Docstring: the rule plus the fact that it covers tool and manual steps (bar drawn in the tools). |
 | `_refresh_bar_action_readouts` | `f"[{idx}] {role}  {mv.movement_id}"` | `f"{mv.movement_id}  ({kind_text})"`, where `kind_text = kind.value`, or `type(mv).__name__` for an unknown class. The slider shows the index itself (both backends display the value). |
 | `load_selected_movement` | `default_trajectory_time(mv, role, MOVEMENT_TRAJECTORY_TIME_S)`; prints `role=` | `free_home = self._is_free_home(mv)`; `default_trajectory_time(mv, free_home=free_home)`, keeping the `TypeError` try/except. Print `(default for {kind}{', free move home' if free_home else ''})`. Final print: `kind=` instead of `role=`. Comments "this role's default" become "this movement's default". |
-| `plan_selected_movement` | role None → `_plan_by_kind`, else role dict | Keep the three guards (`_refuse_while_tasks_run`, `_refuse_display_only_entry`, no movement), then `self._plan_by_kind(self.current_movement)`. Docstring updated. |
+| `plan_selected_movement` | role None → `_plan_by_kind`, else role dict | Keep the three guards (`_refuse_while_tasks_run`, `_refuse_display_only_action`, no movement), then `self._plan_by_kind(self.current_movement)`. Docstring updated. |
 | `_plan_by_kind` (**only dispatcher**) | single-arm only | See the pseudo-code below. |
 | `_CHAIN_ROLE_ORDER` / `plan_movement_chain_live` | role order M1, M2, M3, M0, M4; first movement per role | See below. Logs: `{kind.value} idx= id=`; `stopped_at_role` becomes `stopped_at` (the movement id). Docstrings: "transfer -> insert -> retreat -> travel to load -> free move home". |
 | `replan_free_to_movement_start_live`, `replan_transfer_to_movement_start_live` | `role not in ('M2','M3')` | `self._kind_of(mv) not in COMPLIANT_KINDS`. Warning: `"... only works on the insert or the retreat; {id} is a {kind}."` |
@@ -382,7 +382,7 @@ Also update the comments next to these (`# * Button 1: plan the M1->M2->M3->M0->
 
 ##### F. Scripts and offline tools
 
-- **`scripts/headless_schedule_smoke.py`:**
+- **`scripts/headless_plan_skeleton_smoke.py`:**
   - `DISPATCH_EXPECTED` rows `('J',1)`, `('J',2)`, `('J',4)`, `('R',0)`: `preview` becomes `'bar_held'`. Reword the comment above to "since stage 1 (F5d) …".
   - `plan_release`: in the two labels, `(role {monitor._match_movement_role(mv)})` becomes `({movement_kind(mv).value})`; import `movement_kind`.
   - Also F7: find the retreat and the free move home by kind instead of `_loaded_movements[2]` / `select_movement(monitor, 3)`, using `monitor._loaded_index_of(DUAL_INDEPENDENT_LINEAR)` and `monitor._loaded_index_of(DUAL_FREE, free_home=True)`.
@@ -412,7 +412,7 @@ Also update the comments next to these (`# * Button 1: plan the M1->M2->M3->M0->
   - Docstring usage: `--movement 0` and `--movement J_M5`.
 - **`scripts/derive_m1_headless.py`:**
   - Drop the `movement_role` import; import `MovementKind`, `movement_kind` and `is_free_home`.
-  - Replace `roles_of` with `transfer_steps(action, release=None) -> dict` keyed by `MovementKind` (the first of each kind over action then release).
+  - Replace `roles_of` with `transfer_steps(bar_action, release=None) -> dict` keyed by `MovementKind` (the first of each kind over action then release).
   - `free_home`: `next((m for m in owner.movements if is_free_home(owner, m)), None)` over `(release, action)`.
   - `stamp_keyframes`: `confs` keyed by `MovementKind`, matched with `movement_kind(mv)`.
   - `prepare_state(session, stub, transfer, insert, hide_built=True)`.
@@ -433,7 +433,7 @@ Also update the comments next to these (`# * Button 1: plan the M1->M2->M3->M0->
     - `test_roles_legacy_ids`, `test_roles_split_ids`
     - `test_unchanged_bar_gives_the_same_reference_pose_in_both_exports`, `test_legacy_only_bar_loads_as_one_cycle`, `test_new_only_bar_loads_both_halves`, `test_start_ee_source_is_cleared_by_an_arm_movement`, `test_sidecar_falls_back_to_the_clean_release_half` (all of these use `cycle_roles` through `_role_index` / `_start_ee_source`)
     - `test_hold_ids_have_no_role`, `test_roles_for_real_actions`
-    - Copy the small helpers and constants they need into the new file (`_actions_dir`, `_mv`, `_role_index`, `_start_ee_source`, `_load_schedule_action`, `needs_exports`, `needs_schedule_export`, the problem/bar constants). Do not import between test modules.
+    - Copy the small helpers and constants they need into the new file (`_actions_dir`, `_mv`, `_role_index`, `_start_ee_source`, `_load_skeleton_bar_action`, `needs_exports`, `needs_skeleton_export`, the problem/bar constants). Do not import between test modules.
   - **Delete** `test_movement_controller_warns_on_disagreement`.
   - **Rewrite** `test_default_trajectory_time`:
     - `DUAL_FREE` 30, and 10 with `free_home=True`
@@ -448,9 +448,9 @@ Also update the comments next to these (`# * Button 1: plan the M1->M2->M3->M0->
     - Release `DUAL_FREE` → True; a release retreat → False.
     - Legacy `BarAssemblyAction([free0, dcf, dcl, dil, free1])`: free0 False, free1 True.
     - A `BarHoldingAction`'s `SingleArmFree` → False.
-  - `test_is_free_home_on_fixture` (`@needs_schedule_export`): B1__J has no free-home movement. In B1__R exactly the one with id `B1_R_M3_free_home` is free home (test data may use real ids).
+  - `test_is_free_home_on_fixture` (`@needs_skeleton_export`): B1__J has no free-home movement. In B1__R exactly the one with id `B1_R_M3_free_home` is free home (test data may use real ids).
   - `test_is_free_home_on_legacy_export` (`@needs_exports`): in 260715 `B1.json` only the last movement is free home.
-  - `test_check_action_kinds_accepts_real_exports`: the fixture's `B1__J`, `B1__R`, `B3__H`, `B3__HR` (`@needs_schedule_export`) and 260715 `B1.json`, `B4.json` (`@needs_exports`) raise nothing.
+  - `test_check_action_kinds_accepts_real_exports`: the fixture's `B1__J`, `B1__R`, `B3__H`, `B3__HR` (`@needs_skeleton_export`) and 260715 `B1.json`, `B4.json` (`@needs_exports`) raise nothing.
   - `test_check_action_kinds_rejects_bad_counts` (in memory), each raising `ValueError` with the `source` string in the message:
     - a Jointing action with two DCF and no DCL
     - a Release action with no DIL
@@ -463,19 +463,19 @@ Also update the comments next to these (`# * Button 1: plan the M1->M2->M3->M0->
     - `kinds[-2:] == [DIL, DUAL_FREE]` and every earlier kind is `SCAFFOLDING_TOOL`
     - loop the start-source check over `range(len(kinds) - 1)`
     - check the retreat index via `kinds.index(DIL)`
-  - New `test_load_entry_refuses_two_transfers(tmp_path)`:
+  - New `test_load_skeleton_action_refuses_two_transfers(tmp_path)`:
     - `_copy_problem(tmp_path, ['B1__J.json'])`.
     - In the copy's text, replace `EndEffectorConstrainedDualArmLinearMovement` with `EndEffectorConstrainedDualArmFreeMovement`. There is exactly one occurrence, and both classes have the same fields.
-    - `pytest.raises(ValueError, match='B1__J.json')` on `load_entry(load_schedule(root), copy.entry(0))`.
+    - `pytest.raises(ValueError, match='B1__J.json')` on `load_skeleton_action(load_plan_skeleton(root), copy.action(0))`.
 - **`test/test_schedule_ui.py` (F7):** in `test_step_kind_sequences` the B1_R row becomes a structural check: the last two are `'arm'`, all earlier are `'scaffold'`. Keep the B1_J row.
 
 #### 1.3 Tasks (Stage 1)
 | # | Task | Files | Depends on |
 |---|---|---|---|
-| S1-A | Data layer + legacy module + tests | `bar_action_io.py`, NEW `legacy_bar_action_io.py`, `schedule_io.py`, `test/test_bar_action_io.py`, NEW `test/test_legacy_bar_action_io.py`, `test/test_schedule_io.py`, `test/test_schedule_ui.py` | none |
+| S1-A | Data layer + legacy module + tests | `bar_action_io.py`, NEW `legacy_bar_action_io.py`, `plan_skeleton_io.py`, `test/test_bar_action_io.py`, NEW `test/test_legacy_bar_action_io.py`, `test/test_schedule_io.py`, `test/test_schedule_ui.py` | none |
 | S1-B | Monitor | `husky_monitor.py` | the S1-A API (names and signatures fixed above), so it can run in parallel; verify after S1-A |
 | S1-C | World | `husky_world.py` | the S1-A names; parallel |
-| S1-D | Scripts | `headless_schedule_smoke.py`, `headless_live_monitor_test.py`, `movement_collision_inspector.py`, `derive_m1_headless.py`, `data/bar_holding_acc_data/1_compare_to_cell_state.py` | the monitor helper names from S1-B (`_kind_of`, `_loaded_index_of`, `_loaded_movement_of`, `_is_free_to_load`, `_chain_sequence`); start after S1-B, or in parallel against this spec |
+| S1-D | Scripts | `headless_plan_skeleton_smoke.py`, `headless_live_monitor_test.py`, `movement_collision_inspector.py`, `derive_m1_headless.py`, `data/bar_holding_acc_data/1_compare_to_cell_state.py` | the monitor helper names from S1-B (`_kind_of`, `_loaded_index_of`, `_loaded_movement_of`, `_is_free_to_load`, `_chain_sequence`); start after S1-B, or in parallel against this spec |
 
 One person should own `husky_monitor.py` (10k lines). Do not split it.
 
@@ -488,7 +488,7 @@ Identical to today except `preview` = `bar_held` for `J_M1_manual_mount_bar`, `J
 2. **`_fill_missing_start_conf` must run for dual-arm kinds only.** Running it for `SINGLE_LINEAR` makes the "no start configuration" refusal dead, so a support linear move would sweep from home.
 3. **New behaviour on a single-arm robot with a Cindy file loaded through the legacy list.** Previously the role path ran Cindy's planners; now the `kind_fits_robot` guard refuses it. This is intended, but it is a change.
 4. **F5d plus the accuracy test.** After `_ensure_bar_attached_for_mocap`, the retreat previews as `bar_held`. That is correct for mount-once, so I kept `show_transfer_validation` keyed on the two constrained kinds to avoid a bogus drift check on the retreat.
-5. **Loading errors.** `load_schedule_entry` does not catch `ValueError` from `load_entry`; it behaves exactly like today's type/robot mismatch. The legacy list loader catches and logs.
+5. **Loading errors.** `load_action` does not catch `ValueError` from `load_skeleton_action`; it behaves exactly like today's type/robot mismatch. The legacy list loader catches and logs.
 6. **Phase A call sites.** Code added by Phase A that still calls the old `default_trajectory_time` signature or `_match_movement_role` breaks at import or at runtime. Run the grep gate in §1.6.
 
 #### 1.6 Verification (Stage 1)
@@ -500,7 +500,7 @@ export HUSKY_IK_BACKEND=gradient
 mkdir -p ~/husky_dryrun/roles_refactor
 R=src/husky-assembly-teleop
 # 1. imports + compile
-python -c "import husky_assembly_teleop.husky_monitor, husky_assembly_teleop.husky_world, husky_assembly_teleop.schedule_io, husky_assembly_teleop.legacy_bar_action_io"
+python -c "import husky_assembly_teleop.husky_monitor, husky_assembly_teleop.husky_world, husky_assembly_teleop.plan_skeleton_io, husky_assembly_teleop.legacy_bar_action_io"
 python -m py_compile $R/scripts/*.py $R/data/bar_holding_acc_data/1_compare_to_cell_state.py
 # 2. grep gates (expected output in comments)
 grep -rnE "_match_movement_role|_loaded_movement_roles|MOVEMENT_TRAJECTORY_TIME_S|movement_controller|_CINDY_CONTROLLER_BY_ROLE|_CHAIN_ROLE_ORDER|role_table" $R/husky_assembly_teleop $R/scripts $R/test     # -> nothing
@@ -510,7 +510,7 @@ grep -nE "['\"]M[0-4]['\"]" $R/scripts/*.py                 # -> only derive_m1_
 # 3. pytest  (expect: previous total - 1 deleted test + new tests, 0 failed)
 python -m pytest $R/test -q -p no:cacheprovider --ignore=$R/test/test_flake8.py --ignore=$R/test/test_pep257.py --ignore=$R/test/test_copyright.py
 # 4. smokes (read summary lines only)
-python $R/scripts/headless_schedule_smoke.py > ~/husky_dryrun/roles_refactor/stage1_schedule_smoke.log 2>&1; grep -E "dispatch:|passed|failed|FAIL" ~/husky_dryrun/roles_refactor/stage1_schedule_smoke.log | tail -30
+python $R/scripts/headless_plan_skeleton_smoke.py > ~/husky_dryrun/roles_refactor/stage1_schedule_smoke.log 2>&1; grep -E "dispatch:|passed|failed|FAIL" ~/husky_dryrun/roles_refactor/stage1_schedule_smoke.log | tail -30
 python $R/scripts/smoke_single_arm_plan.py > ~/husky_dryrun/roles_refactor/stage1_single_arm.log 2>&1; tail -5 ~/husky_dryrun/roles_refactor/stage1_single_arm.log   # 7/7
 # 5. scripts parse their args
 python $R/scripts/headless_live_monitor_test.py --help >/dev/null && python $R/scripts/movement_collision_inspector.py --help >/dev/null && python $R/scripts/derive_m1_headless.py --help >/dev/null
@@ -566,7 +566,7 @@ backward check: prev = self._previous_arm_index(idx); compare movements[prev].tr
 - **Decision on the old "M2 → M3 drop" rule:** keep it by kind, and apply it to the next **arm** movement the carry reaches.
   - Legacy single file: the retreat directly follows the insert.
   - Legacy J+R list: the retreat follows after `R_M0` and `R_M1`. The insert's end now reaches the retreat; that is new and correct (physically the retreat starts where the insert ended).
-  - Schedule mode: the insert is the last movement of J, so nothing is carried and the rule never fires. The R entry is loaded separately.
+  - Plan skeleton mode: the insert is the last movement of J, so nothing is carried and the rule never fires. The R action is loaded separately.
 
 **F5e in the adopt path (`adopt_m1_derived_start`; `confirm_m1_manual_start` reaches it).** After writing the transfer's start:
 - `ti = self._loaded_index_of(DUAL_CONSTRAINED_FREE)`; `prev = self._previous_arm_index(ti)`.
@@ -577,10 +577,10 @@ backward check: prev = self._previous_arm_index(idx); compare movements[prev].tr
 - `load_selected_movement` (preview pose): now the transfer's end, which is the intended F5e drawing.
 - `world.move_arms_to_movement_start`: moves to that end, which is fine.
 - The sidecar save.
-- Not read by `progress_io.belief_after` (it uses only the last movement), not by `scan_entry_flags` (target confs), not by `run_scaffolding_tool_step` (mark-only), not by `_movement_starts_live` (cached at load, index 0 only).
+- Not read by `progress_io.belief_after` (it uses only the last movement), not by `scan_action_flags` (target confs), not by `run_scaffolding_tool_step` (mark-only), not by `_movement_starts_live` (cached at load, index 0 only).
 
-**Smoke (`scripts/headless_schedule_smoke.py`):** new `carry_check(results, problem, root, schedule)`, called in `main` after `dispatch_check`:
-- Cindy monitor via `make_monitor` / `add_viz_huskies`; `_load_schedule_state()`; `load_schedule_entry(0)`.
+**Smoke (`scripts/headless_plan_skeleton_smoke.py`):** new `carry_check(results, problem, root, skeleton)`, called in `main` after `dispatch_check`:
+- Cindy monitor via `make_monitor` / `add_viz_huskies`; `_load_skeleton_state()`; `load_action(0)`.
 - Indices: `ti`, `ii` (insert) and `fi` (travel to load) from `_loaded_index_of`.
 - (a) Adopt:
   - Set `monitor._m1_adopt_writes_file = False` (the harness skips `__init__`).
@@ -595,7 +595,7 @@ backward check: prev = self._previous_arm_index(idx); compare movements[prev].tr
 - Close the cfab session in `finally`.
 
 #### 2.3 Tasks (Stage 2)
-One task, `husky_monitor.py` plus `headless_schedule_smoke.py`. It runs after the Stage 1 commit (it uses `_kind_of` and `_loaded_index_of`).
+One task, `husky_monitor.py` plus `headless_plan_skeleton_smoke.py`. It runs after the Stage 1 commit (it uses `_kind_of` and `_loaded_index_of`).
 
 #### 2.4 Dispatch check after Stage 2
 No change from the Stage 1 table. The planner recorders return None and the exec sweep stamps its path with `set_arm_trajectory`, so nothing passes through `_accept_trajectory`.
@@ -614,16 +614,16 @@ The same commands as §1.6 points 1–5, with logs to `stage2_*.log`. In additio
 ---
 
 #### Things I could not settle (for the main session)
-1. **`load_schedule_entry` does not catch `ValueError`.** A bad file raises into the button callback, exactly like today's type/robot mismatch. Should it log one error line and return instead? That is in the spirit of Stage 3's "refused with one clear error". It is not done in this spec.
+1. **`load_action` does not catch `ValueError`.** A bad file raises into the button callback, exactly like today's type/robot mismatch. Should it log one error line and return instead? That is in the spirit of Stage 3's "refused with one clear error". It is not done in this spec.
 2. **Pre-existing bug, not fixed (your rule: discuss, don't patch).** `headless_live_monitor_test._install_tree_drawing._patched_m1` imports `M1_POSITION_RES` and `M1_ROTATION_RES`, which no longer exist in `husky_monitor` (they are now `CDFM_*`), and reads `self_.constrained_planner_stage`. So `--draw-tree` with a transfer in the sequence crashes today.
 3. **Stage 4 grep gate scope.** It does not catch the log prefixes `[M1 manual]`, `[M2 inter-EE invariance]` and similar, or the CLI choice strings. Decide whether Stage 4 renames them.
-4. **Index numbering in legacy J+R list mode.** `--only-movement N` and the new slider label ("index in this action file") count across both files (0..9). This is only true per file in schedule mode, until Stage 3 removes the list.
+4. **Index numbering in legacy J+R list mode.** `--only-movement N` and the new slider label ("index in this action file") count across both files (0..9). This is only true per file in plan skeleton mode, until Stage 3 removes the list.
 5. **Saved takes.** `movement_index` is the index inside `action_file`, while `_resolve_take_movement` reads an int key as a cycle index. That only matters for takes with no `movement_id`, and those also have no index.
 
 #### Where this spec deviates from the request
 - **`show_transfer_validation` gate:** stays on the two constrained kinds, not on F5d's motion type. Otherwise the retreat in the accuracy test would be checked after the bar is injected.
 - **`--button replan-m2/replan-m3`:** renamed to `replan-insert/replan-retreat` in Stage 1. These are role literals in a script, and `--only-movement` changes anyway.
-- **Exec of an unknown movement class:** refused with a warning instead of today's fallback to `arm_both`. Unreachable for loaded files after `check_action_kinds` and `LoadedEntry.kinds`.
+- **Exec of an unknown movement class:** refused with a warning instead of today's fallback to `arm_both`. Unreachable for loaded files after `check_action_kinds` and `LoadedAction.kinds`.
 - **Controller mismatch:** warned once per movement per run. The old single-arm "compliant requested" warning folds into it; it used to repeat on every click.
 - **Stage 2 free moves:** `DUAL_FREE` acceptance still carries nothing forward. Travel to load's end is the transfer's own start; the mount and grasp steps get it through the adopt path and the transfer's own accept.
 - **Reused helper:** `RobotSpec.all_arm_joint_names` gives the joint names for the carry. I found no existing "first movement of kind" or "warn once" helper, so `_loaded_index_of` and `_warn_controller_mismatch` are new.
@@ -631,10 +631,10 @@ The same commands as §1.6 points 1–5, with logs to `stage2_*.log`. In additio
 Relevant files:
 - /home/yijiangh/Code/ros2_ws/src/husky-assembly-teleop/husky_assembly_teleop/bar_action_io.py
 - /home/yijiangh/Code/ros2_ws/src/husky-assembly-teleop/husky_assembly_teleop/legacy_bar_action_io.py (new)
-- /home/yijiangh/Code/ros2_ws/src/husky-assembly-teleop/husky_assembly_teleop/schedule_io.py
+- /home/yijiangh/Code/ros2_ws/src/husky-assembly-teleop/husky_assembly_teleop/plan_skeleton_io.py
 - /home/yijiangh/Code/ros2_ws/src/husky-assembly-teleop/husky_assembly_teleop/husky_monitor.py
 - /home/yijiangh/Code/ros2_ws/src/husky-assembly-teleop/husky_assembly_teleop/husky_world.py
-- /home/yijiangh/Code/ros2_ws/src/husky-assembly-teleop/scripts/headless_schedule_smoke.py
+- /home/yijiangh/Code/ros2_ws/src/husky-assembly-teleop/scripts/headless_plan_skeleton_smoke.py
 - /home/yijiangh/Code/ros2_ws/src/husky-assembly-teleop/scripts/headless_live_monitor_test.py
 - /home/yijiangh/Code/ros2_ws/src/husky-assembly-teleop/scripts/movement_collision_inspector.py
 - /home/yijiangh/Code/ros2_ws/src/husky-assembly-teleop/scripts/derive_m1_headless.py
@@ -642,7 +642,7 @@ Relevant files:
 - /home/yijiangh/Code/ros2_ws/src/husky-assembly-teleop/test/test_bar_action_io.py, test_legacy_bar_action_io.py (new), test_schedule_io.py, test_schedule_ui.py
 
 ### Main-session decisions on the spec's open points (2026-10-01)
-1. `load_schedule_entry` catches `ValueError` from `load_entry` (bad file, kind counts, type/robot mismatch):
+1. `load_action` catches `ValueError` from `load_skeleton_action` (bad file, kind counts, type/robot mismatch):
    one `get_logger().error` line naming the file and the reason, then return (nothing loaded). Stage 1.
 2. `headless_live_monitor_test._install_tree_drawing._patched_m1` imports names that no longer exist
    (`M1_POSITION_RES`, `M1_ROTATION_RES`): pre-existing, reported to the user, not patched here.
@@ -671,7 +671,7 @@ Smoke checks that need "base tracked" set `USE_MOCAP` / `USE_CELL_STATE_BASE_POS
 - `_plan_by_kind` SINGLE_FREE: after the `target_configuration is None` guard, `_inject_live_conf_into_state`, `_apply_live_base_to_movement` → `if not self._resolve_single_arm_goal_live(mv): return` → `plan_free_motion` unchanged. Docstring bullet updated.
 - Smoke `alice_live_goal_check(results, monitor, iface, log, hold)` called as the last statement inside `alice_run`'s try (reuses Alice's monitor):
   (a) USE_MOCAP=0 on the instance → returns True, target == exported, log `base not tracked`;
-  (b) USE_MOCAP=1, USE_CELL_STATE_BASE_POSE=0, base shifted +3 cm in x, arms home, reload the hold entry, plan H_M0 (by kind) → trajectory, start base == iface position, FK of the end flange (`husky_assembly_tamp.motion_planner.api._fk_link_frame`) within 1 mm / 0.01 rad of `target_ee_frames['arm']`, target differs from exported by > 1e-3;
+  (b) USE_MOCAP=1, USE_CELL_STATE_BASE_POSE=0, base shifted +3 cm in x, arms home, reload the hold action, plan H_M0 (by kind) → trajectory, start base == iface position, FK of the end flange (`husky_assembly_tamp.motion_planner.api._fk_link_frame`) within 1 mm / 0.01 rad of `target_ee_frames['arm']`, target differs from exported by > 1e-3;
   (c) the gripper step and H_M2 start == the H_M0 end; (d) H_M2 plans; (e) base +2 m → no trajectory, warning `not planning`.
   Restore instance flags / iface position in `finally`. If the real IK fails for planning reasons: report, do not tune (F8).
 
@@ -679,7 +679,7 @@ Smoke checks that need "base tracked" set `USE_MOCAP` / `USE_CELL_STATE_BASE_POS
 - `load_selected_movement(self, index: Optional[int] = None)`: an explicit movement index wins over the slider (in the GUI the slider widget wins over `_selected_movement_idx`); out of range → warn, return.
 - `adopt_m1_derived_start(self) -> bool`; `confirm_m1_manual_start(self) -> bool` (every early return False; success → adopt's result).
 - New `confirm_transfer_start_and_plan_free_to_load(self) -> bool` after `confirm_m1_manual_start`: guards like `plan_selected_movement`
-  (`_refuse_while_tasks_run(what, schedule_only=True)`, `_refuse_display_only_entry`); needs movements; `ti` = transfer, `fi` = travel to load
+  (`_refuse_while_tasks_run(what, skeleton_only=True)`, `_refuse_display_only_action`); needs movements; `ti` = transfer, `fi` = travel to load
   (`_loaded_index_of`, free_home=False), missing → warn; read the transfer-start sliders first (`_m1_manual_offsets()`, `_m1_home_anchor()`)
   because loading the transfer rebuilds them from the caches; load the transfer by index if needed; `confirm_m1_manual_start()` False →
   warn "transfer start not adopted; nothing planned", return False; `load_selected_movement(index=fi)`; `plan_selected_movement()`;
@@ -687,46 +687,46 @@ Smoke checks that need "base tracked" set `USE_MOCAP` / `USE_CELL_STATE_BASE_POS
 - build_ui: `Button('Confirm transfer start + plan travel to load', ...)` right after the existing confirm button (kept).
 - Main-session decision: also fix `plan_movement_chain_live` to call `self.load_selected_movement(index=idx)` (pre-existing: in the GUI it
   planned the slider's movement each round; F2's step slider would make it worse).
-- Smoke `transfer_start_check(results, problem, root, schedule)` after `carry_check` (own Cindy monitor; instance setup of the `_m1_*`
+- Smoke `transfer_start_check(results, problem, root, skeleton)` after `carry_check` (own Cindy monitor; instance setup of the `_m1_*`
   caches, `_build_trajectory_waypoint_sliders = lambda: None`, `_plan_M0_dispatch` recorder returning None):
   (a) perp shift 3 m → False, nothing planned, the transfer stays loaded, travel-to-load target None, warning about no arm configuration;
-  (b) default sliders from a fresh `load_schedule_entry(0)` → recorder called once with the travel to load, which is loaded, and its target == the transfer start.
+  (b) default sliders from a fresh `load_action(0)` → recorder called once with the travel to load, which is loaded, and its target == the transfer start.
   If the real manual-start IK fails (no_ik / collision): report, do not tune.
 
-### F2 — operator steps instead of movements, schedule mode only
+### F2 — operator steps instead of movements, plan skeleton mode only
 Absorbed = exactly today's mark-only rule (each such step's own button sends nothing; the compliant insert sends the tighten, the
 compliant retreat sends the gripper loosen, untighten is never sent). Grasp, manual, gripper steps stay their own steps.
 Groupings: B1__J → [0] [1] [2] [3] [5(+4)]; B1__R → [2(+0,1)] [3] (after the D7 re-export: [1(+0)] [2]); B3__H / HR one step per movement.
 Nothing depends on an absorbed step being visited (checked: mark-only writes no state; progress/beliefs/flags; carry writes their starts).
-- T3a pure layer (files: bar_action_io.py, schedule_ui.py, husky_world.py, test_bar_action_io.py, test_schedule_ui.py):
+- T3a pure layer (files: bar_action_io.py, plan_skeleton_ui.py, husky_world.py, test_bar_action_io.py, test_schedule_ui.py):
   - `bar_action_io.tool_runs_with_next_motion(mv) -> bool` (scaffolding tool step with `overlaps_next`, or `ungrasp` / `untighten`);
     `@dataclass(frozen=True) OperatorStep(primary: int, absorbed: tuple = ())`; `operator_steps(movements) -> list[OperatorStep]`
     (pending absorbed indices join the next ARM movement; any other step flushes pending as own steps first; trailing pending → own steps);
     `step_index_of(steps, movement_index) -> Optional[int]`.
-  - `schedule_ui.step_button_label` uses the helper (same strings); new `step_readout_text(step_idx, n_steps, primary, absorbed=())`
+  - `plan_skeleton_ui.step_button_label` uses the helper (same strings); new `step_readout_text(step_idx, n_steps, primary, absorbed=())`
     → `step 5/5: B1_J_M5_LM_insert  (+ B1_J_M4_tool_tighten_joint runs with it)` or `step 4/5: <id>  (<kind>)`;
-    new `absorbed_tool_note(mv)`; `now_line_text(entry, step_idx, n_steps, mv)` counts steps (`-- step i/n <id> [kind] ctrl=…`).
+    new `absorbed_tool_note(mv)`; `now_line_text(action, step_idx, n_steps, mv)` counts steps (`-- step i/n <id> [kind] ctrl=…`).
   - `husky_world.run_scaffolding_tool_step`: one `if tool_runs_with_next_motion(mv):` block (same two log texts), behaviour identical.
   - Tests: `test_tool_runs_with_next_motion`, `test_operator_steps_in_memory` (J, R, D7 R, untighten+manual+retreat, trailing, empty),
     `test_operator_steps_on_fixture` (B1__J pinned, B1__R derived from the file, B3__H/HR one per movement), `test_step_index_of`,
-    `test_step_readout_text`, `test_absorbed_tool_note`, `test_step_primaries_never_get_a_mark_only_button` (entries 0, 1, 3, 16),
+    `test_step_readout_text`, `test_absorbed_tool_note`, `test_step_primaries_never_get_a_mark_only_button` (actions 0, 1, 3, 16),
     updated `test_now_line_text`.
 - T3b monitor + smoke (after F1 and T3a; one F2 commit with T3a):
   - helpers next to `_shown_movements`: `_shown_steps()` (None in legacy mode; computed on demand), `_selected_movement_index()` (THE single
-    place the slider becomes a movement index; schedule mode + widget → `steps[round(value)].primary`; headless → `_selected_movement_idx`
-    which stays a MOVEMENT index), `_on_step_slider(value)`, `_default_movement_index()` (schedule: first step's primary — an R entry opens on its retreat).
-  - readers/writers: `_finish_action_load` + `load_schedule_entry` use `_default_movement_index()`; `load_selected_movement` uses
-    `_selected_movement_index()` when `index` is None; `_refresh_bar_action_readouts` uses `step_readout_text` in schedule mode;
-    `_now_line` passes the step index/count; build_ui schedule mode: `Slider("Step", self._on_step_slider, 0, max(1, len(steps)-1), …, integer=True)`,
+    place the slider becomes a movement index; plan skeleton mode + widget → `steps[round(value)].primary`; headless → `_selected_movement_idx`
+    which stays a MOVEMENT index), `_on_step_slider(value)`, `_default_movement_index()` (plan skeleton: first step's primary — an R action opens on its retreat).
+  - readers/writers: `_finish_action_load` + `load_action` use `_default_movement_index()`; `load_selected_movement` uses
+    `_selected_movement_index()` when `index` is None; `_refresh_bar_action_readouts` uses `step_readout_text` in plan skeleton mode;
+    `_now_line` passes the step index/count; build_ui plan skeleton mode: `Slider("Step", self._on_step_slider, 0, max(1, len(steps)-1), …, integer=True)`,
     readout label `"  -> step"`; legacy unchanged. Scripts keep movement indices (no slider headless).
   - `exec_selected_movement_traj`: after `_warn_controller_mismatch`, one info line per absorbed step (`absorbed_tool_note`). Routing unchanged.
-  - Smoke `operator_steps_check` after `transfer_start_check`: 5 / 2 steps; fake slider value 4 on entry 0 → insert loaded, readout and
+  - Smoke `operator_steps_check` after `transfer_start_check`: 5 / 2 steps; fake slider value 4 on action 0 → insert loaded, readout and
     now line as above; `select_movement(monitor, tighten_idx)` still loads the tighten step (movement index); exec log lines name the absorbed
-    ids (compliant exec patched with a recorder); entry 1 opens on the retreat.
+    ids (compliant exec patched with a recorder); action 1 opens on the retreat.
 - Dispatch check rows unchanged after every commit.
 
 ### Open questions left for the user (not implemented)
-- HR (and later entries of a robot that already moved) start from the exported configuration, not live: with a tracked base that differs
+- HR (and later actions of a robot that already moved) start from the exported configuration, not live: with a tracked base that differs
   from the authored one, the linear retreat's exec start check refuses it. Live start for HR?
 - Should F3 also require that mocap saw the connected husky recently before trusting the live base?
 - F2 side effect: the R_M0 tool step (bar drawn in the tools) is no longer a slider position in the GUI.
@@ -735,21 +735,21 @@ Nothing depends on an absorbed step being visited (checked: mark-only writes no 
 (appended by the main session after each reviewed step)
 
 - `11eac94` A-F4: the floor allows ground joints (`is_ground_joint_body`, `cfab_session.ground_touch_bodies`). pytest 103 / 1 skipped.
-- `465b7bf` Step 0b: dispatch check in `headless_schedule_smoke.py`; today's code matches all 10 rows. Smoke 46/46.
+- `465b7bf` Step 0b: dispatch check in `headless_plan_skeleton_smoke.py`; today's code matches all 10 rows. Smoke 46/46.
   Found (not fixed, outside scope): `husky_world.split_path_by_distance_to_goal` returns 3 values on its
   short-path early exit; both callers unpack 4.
 - `b19010d` A-F5a–c: `IGNORE_BUILT_ASSEMBLY_COLLISIONS` + `_ignore_built_assembly()`, panel toggle (reloads the
-  entry), ignored built bodies drawn faint at their state frame; preview bodies set up before the hidden ones are
+  action), ignored built bodies drawn faint at their state frame; preview bodies set up before the hidden ones are
   drawn. Smoke 54/54. Hold scenes still need the switch ON (Rhino note D5).
 - `7938c32` A-F6 + small items: connected robot seeded from its own belief at start-up; header line
-  "others: …"; traj time of an entry that opens with tool steps; fake-hardware Move Arms to Movement Start.
-  Smoke 60/60, pytest 104 passed. (b) answer: J/H entries already start from the seeded arms; R/HR entries open
+  "others: …"; traj time of an action that opens with tool steps; fake-hardware Move Arms to Movement Start.
+  Smoke 60/60, pytest 104 passed. (b) answer: J/H actions already start from the seeded arms; R/HR actions open
   with a tool step whose exported start is not live (same as with ROS) — left unchanged.
 - Stage 1 (roles out, + F5d, F7 tests): reviewer APPROVE WITH NITS (no defect; every insert/retreat branch of the
   compliant exec maps 1:1; probe over ~870 movements of 8 problems: F5d rule = old preview on every arm movement,
   `is_free_home` = old M4 on every DUAL_FREE). Nits fixed in the main session. pytest 116 / 1 skipped, smoke 60/60,
   single-arm 7/7. Known leftovers: `scripts/inspect_bar_action_collision_geometry.py` `DEFAULT_MOVEMENT = "M1"`
-  (correct for its legacy default problem; stage 3 moves it to schedule entries); pre-existing
+  (correct for its legacy default problem; stage 3 moves it to actions); pre-existing
   `husky_world.py` `DATA_FOLDER` undefined in the kissing-probe branch; pre-existing `headless_live_monitor_test`
   `--draw-tree` imports `M1_POSITION_RES`.
 - Stage 2 (carry rule + F5e): `_next_arm_index`, `_previous_arm_index`, `_carry_configuration_forward`; used by

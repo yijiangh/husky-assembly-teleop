@@ -3,7 +3,7 @@
 Only one robot is connected per monitor run, and the operator restarts the
 monitor on the next robot. What must survive that restart lives here:
 
-- each schedule entry's status (pending / done / skipped) and who marked it;
+- each action's status (pending / done / skipped) and who marked it;
 - each robot's last known state (a ``RobotBelief``: base frame + arm joints),
   used to draw and collision-check the robots that are NOT connected;
 - each support robot's hold (pending / holding / released).
@@ -11,10 +11,10 @@ monitor on the next robot. What must survive that restart lives here:
 File layout (schema v1)::
 
     {"schema_version": 1, "problem": "260920_RobArch_demo_revamp_backup",
-     "schedule_fingerprint": "48:<sha1 of the action ids>", "updated_at": "...", "current_index": 4,
-     "entries": {"0": {"status": "done", "marked_at": "...", "marked_by_robot": "Cindy", "run_id": "..."}},
+     "skeleton_fingerprint": "48:<sha1 of the action ids>", "updated_at": "...", "current_index": 4,
+     "actions": {"0": {"status": "done", "marked_at": "...", "marked_by_robot": "Cindy", "run_id": "..."}},
      "robots": {"Alice": {"base_frame": <compas Frame>, "configuration": <compas Configuration>,
-                          "source": "action_end_state", "at": "...", "after_entry": 3}},
+                          "source": "action_end_state", "at": "...", "after_action": 3}},
      "holds": {"B3": {"bar_id": "B3", "robot": "Alice", "state": "holding",
                       "since_index": 3, "released_at_index": null}}}
 
@@ -40,14 +40,14 @@ from rs_data_structure.bar_action import BarSceneAction
 
 from husky_assembly_teleop.bar_action_io import LIVE_SOLVED_TAG
 from husky_assembly_teleop.robot_registry import RobotSpec, other_robots, robot_by_name
-from husky_assembly_teleop.schedule_io import ActionSchedule, ScheduleEntry
+from husky_assembly_teleop.plan_skeleton_io import PlanSkeleton, SkeletonAction
 
 PROGRESS_FILENAME = 'progress.json'
-# Where 'Reset schedule to the Rhino export' moves the progress and the saved plans.
+# Where 'Reset plan skeleton to the Rhino export' moves the progress and the saved plans.
 ARCHIVE_DIRNAME = 'archive'
 SCHEMA_VERSION = 1
 
-# * Entry statuses.
+# * Action statuses.
 STATUS_PENDING = 'pending'
 STATUS_DONE = 'done'
 STATUS_SKIPPED = 'skipped'
@@ -69,8 +69,8 @@ PARKED_BASE_FRAME = Frame((50.0, 50.0, 0.0), (1, 0, 0), (0, 1, 0))
 
 
 @dataclass
-class EntryStatus:
-    """Status of one schedule entry.
+class ActionStatus:
+    """Status of one action.
 
     Attributes:
         status (str): ``'pending'``, ``'done'`` or ``'skipped'``.
@@ -95,14 +95,14 @@ class RobotBelief:
             ``all_arm_joint_names`` order.
         source (str): One of the ``BELIEF_*`` values.
         at (str): When the belief was made (ISO time).
-        after_entry (int | None): The schedule entry whose end this describes.
+        after_action (int | None): The action whose end this describes.
     """
 
     base_frame: Frame
     configuration: Configuration
     source: str
     at: str
-    after_entry: Optional[int] = None
+    after_action: Optional[int] = None
 
     def to_dict(self) -> dict:
         """The belief as a dict (Frame / Configuration kept as compas objects).
@@ -110,20 +110,23 @@ class RobotBelief:
         Returns:
             dict: Ready for ``compas.data.json_dumps``.
         """
+        # ! The file key stays 'after_entry' (progress.json from before the rename).
         return {'base_frame': self.base_frame, 'configuration': self.configuration,
-                'source': self.source, 'at': self.at, 'after_entry': self.after_entry}
+                'source': self.source, 'at': self.at, 'after_entry': self.after_action}
 
     @classmethod
     def from_dict(cls, data: dict) -> 'RobotBelief':
         """Build a belief from ``to_dict``'s output (after ``json_load``).
 
         Args:
-            data (dict): The belief dict.
+            data (dict): The belief dict (its action index under the file key
+                ``after_entry``).
 
         Returns:
             RobotBelief: The belief.
         """
-        return cls(**data)
+        data = dict(data)
+        return cls(after_action=data.pop('after_entry', None), **data)
 
 
 @dataclass
@@ -134,8 +137,8 @@ class HoldState:
         bar_id (str): The held bar.
         robot (str): The support robot.
         state (str): ``'pending'``, ``'holding'`` or ``'released'``.
-        since_index (int | None): The hold entry that started the hold.
-        released_at_index (int | None): The hold release entry that ended it.
+        since_index (int | None): The hold action that started the hold.
+        released_at_index (int | None): The hold release action that ended it.
     """
 
     bar_id: str
@@ -152,40 +155,40 @@ class Progress:
     Attributes:
         problem (str): Design problem name.
         schema_version (int): File schema version (1).
-        schedule_fingerprint (str): Identifies the schedule it was written for.
-        current_index (int): The entry the operator is at (the first pending one).
+        skeleton_fingerprint (str): Identifies the plan skeleton it was written for.
+        current_index (int): The action the operator is at (the first pending one).
         updated_at (str): Last save (ISO time).
-        entries (dict): ``{index: EntryStatus}`` for every schedule entry.
+        actions (dict): ``{index: ActionStatus}`` for every action.
         robots (dict): ``{robot name: RobotBelief}``.
         holds (dict): ``{bar_id: HoldState}``.
     """
 
     problem: str
     schema_version: int
-    schedule_fingerprint: str
+    skeleton_fingerprint: str
     current_index: int
     updated_at: str
-    entries: dict = field(default_factory=dict)
+    actions: dict = field(default_factory=dict)
     robots: dict = field(default_factory=dict)
     holds: dict = field(default_factory=dict)
 
-    # * --------------------------------------------------------- entries
+    # * --------------------------------------------------------- actions
     def status(self, i: int) -> str:
-        """Status of entry ``i``.
+        """Status of action ``i``.
 
         Args:
-            i (int): Schedule index.
+            i (int): Plan skeleton index.
 
         Returns:
             str: ``'pending'``, ``'done'`` or ``'skipped'``.
         """
-        return self.entries[i].status
+        return self.actions[i].status
 
     def is_done(self, i: int) -> bool:
-        """Whether entry ``i`` is done.
+        """Whether action ``i`` is done.
 
         Args:
-            i (int): Schedule index.
+            i (int): Plan skeleton index.
 
         Returns:
             bool: True when done.
@@ -193,101 +196,101 @@ class Progress:
         return self.status(i) == STATUS_DONE
 
     def next_pending_index(self) -> Optional[int]:
-        """The first entry still pending.
+        """The first action still pending.
 
         Returns:
             int | None: Its index, or None when nothing is pending.
         """
-        pending = [i for i, s in self.entries.items() if s.status == STATUS_PENDING]
+        pending = [i for i, s in self.actions.items() if s.status == STATUS_PENDING]
         return min(pending) if pending else None
 
-    def mark_done(self, entry: ScheduleEntry, robot: str, run_id: str,
+    def mark_done(self, action: SkeletonAction, robot: str, run_id: str,
                   belief: Optional[RobotBelief] = None) -> None:
-        """Mark an entry done and record what that changes.
+        """Mark an action done and record what that changes.
 
         Args:
-            entry (ScheduleEntry): The finished entry.
+            action (SkeletonAction): The finished action.
             robot (str): The robot whose monitor marks it (may differ from the
-                entry's robot when the operator marks another robot's step).
+                action's robot when the operator marks another robot's step).
             run_id (str): The monitor run that marks it.
             belief (RobotBelief | None): The acting robot's state at the end of
-                the entry; stored for ``entry.robot``, stamped with this entry.
+                the action; stored for ``action.robot``, stamped with this action.
         """
-        self._mark(entry, STATUS_DONE, robot, run_id)
+        self._mark(action, STATUS_DONE, robot, run_id)
         if belief is not None:
-            self.robots[entry.robot] = replace(belief, after_entry=entry.index)
-        self.record_hold(entry)
+            self.robots[action.robot] = replace(belief, after_action=action.index)
+        self.record_hold(action)
         self._advance()
 
-    def record_hold(self, entry: ScheduleEntry) -> None:
+    def record_hold(self, action: SkeletonAction) -> None:
         """Record what a finished hold or hold release changes; nothing for the other kinds.
 
-        Called by ``mark_done`` and when the monitor has run an entry's last step
-        (the entry itself is then not marked done).
+        Called by ``mark_done`` and when the monitor has run an action's last step
+        (the action itself is then not marked done).
 
         Args:
-            entry (ScheduleEntry): The finished entry: ``H`` starts holding its
+            action (SkeletonAction): The finished action: ``H`` starts holding its
                 bar, ``HR`` releases it.
         """
-        if entry.kind == 'H':
-            self.holds[entry.bar_id] = HoldState(entry.bar_id, entry.robot, HOLD_HOLDING,
-                                                 since_index=entry.index)
-        elif entry.kind == 'HR':
+        if action.kind == 'H':
+            self.holds[action.bar_id] = HoldState(action.bar_id, action.robot, HOLD_HOLDING,
+                                                  since_index=action.index)
+        elif action.kind == 'HR':
             hold = self.holds.setdefault(
-                entry.bar_id, HoldState(entry.bar_id, entry.robot, HOLD_RELEASED))
+                action.bar_id, HoldState(action.bar_id, action.robot, HOLD_RELEASED))
             hold.state = HOLD_RELEASED
-            hold.released_at_index = entry.index
+            hold.released_at_index = action.index
 
-    def skip(self, entry: ScheduleEntry, robot: str, run_id: str) -> None:
-        """Mark an entry skipped (no belief or hold change).
+    def skip(self, action: SkeletonAction, robot: str, run_id: str) -> None:
+        """Mark an action skipped (no belief or hold change).
 
         Args:
-            entry (ScheduleEntry): The skipped entry.
+            action (SkeletonAction): The skipped action.
             robot (str): The robot whose monitor marks it.
             run_id (str): The monitor run that marks it.
         """
-        self._mark(entry, STATUS_SKIPPED, robot, run_id)
+        self._mark(action, STATUS_SKIPPED, robot, run_id)
         self._advance()
 
-    def reopen(self, entry: ScheduleEntry) -> None:
-        """Put an entry back to pending and undo what marking it recorded.
+    def reopen(self, action: SkeletonAction) -> None:
+        """Put an action back to pending and undo what marking it recorded.
 
         A reopened hold goes back to pending, a reopened hold release back to
         holding. The acting robot's belief is dropped when it came from this
-        entry (``recompute_belief`` can rebuild it from the entry before).
+        action (``recompute_belief`` can rebuild it from the action before).
 
         Args:
-            entry (ScheduleEntry): The entry to reopen.
+            action (SkeletonAction): The action to reopen.
         """
-        self.entries[entry.index] = EntryStatus()
-        hold = self.holds.get(entry.bar_id)
-        if hold is not None and entry.kind == 'H':
+        self.actions[action.index] = ActionStatus()
+        hold = self.holds.get(action.bar_id)
+        if hold is not None and action.kind == 'H':
             hold.state = HOLD_PENDING
             hold.since_index = None
             hold.released_at_index = None
-        elif hold is not None and entry.kind == 'HR':
+        elif hold is not None and action.kind == 'HR':
             hold.state = HOLD_HOLDING
             hold.released_at_index = None
-        self.current_index = min(self.current_index, entry.index)
-        belief = self.robots.get(entry.robot)
-        if belief is not None and belief.after_entry == entry.index:
-            del self.robots[entry.robot]
+        self.current_index = min(self.current_index, action.index)
+        belief = self.robots.get(action.robot)
+        if belief is not None and belief.after_action == action.index:
+            del self.robots[action.robot]
 
-    def _mark(self, entry: ScheduleEntry, status: str, robot: str, run_id: str) -> None:
-        """Stamp an entry with a status.
+    def _mark(self, action: SkeletonAction, status: str, robot: str, run_id: str) -> None:
+        """Stamp an action with a status.
 
         Args:
-            entry (ScheduleEntry): The entry.
+            action (SkeletonAction): The action.
             status (str): The new status.
             robot (str): The robot whose monitor marks it.
             run_id (str): The monitor run that marks it.
         """
-        self.entries[entry.index] = EntryStatus(status, now_iso(), robot, run_id)
+        self.actions[action.index] = ActionStatus(status, now_iso(), robot, run_id)
 
     def _advance(self) -> None:
-        """Move ``current_index`` to the first pending entry (past the end when none)."""
+        """Move ``current_index`` to the first pending action (past the end when none)."""
         pending = self.next_pending_index()
-        self.current_index = pending if pending is not None else len(self.entries)
+        self.current_index = pending if pending is not None else len(self.actions)
 
     # * --------------------------------------------------------- robots / holds
     def set_belief(self, robot: str, belief: RobotBelief) -> None:
@@ -349,10 +352,10 @@ class Progress:
         return {
             'schema_version': self.schema_version,
             'problem': self.problem,
-            'schedule_fingerprint': self.schedule_fingerprint,
+            'schedule_fingerprint': self.skeleton_fingerprint,
             'updated_at': self.updated_at,
             'current_index': self.current_index,
-            'entries': {str(i): asdict(s) for i, s in sorted(self.entries.items())},
+            'entries': {str(i): asdict(s) for i, s in sorted(self.actions.items())},
             'robots': {name: b.to_dict() for name, b in self.robots.items()},
             'holds': {bar: asdict(h) for bar, h in self.holds.items()},
         }
@@ -370,10 +373,10 @@ class Progress:
         return cls(
             problem=data['problem'],
             schema_version=data['schema_version'],
-            schedule_fingerprint=data['schedule_fingerprint'],
+            skeleton_fingerprint=data['schedule_fingerprint'],
             current_index=data['current_index'],
             updated_at=data['updated_at'],
-            entries={int(i): EntryStatus(**s) for i, s in data.get('entries', {}).items()},
+            actions={int(i): ActionStatus(**s) for i, s in data.get('entries', {}).items()},
             robots={name: RobotBelief.from_dict(b) for name, b in data.get('robots', {}).items()},
             holds={bar: HoldState(**h) for bar, h in data.get('holds', {}).items()},
         )
@@ -392,50 +395,50 @@ def progress_path(problem_root: str) -> str:
     return os.path.join(problem_root, PROGRESS_FILENAME)
 
 
-def schedule_fingerprint(schedule: ActionSchedule) -> str:
-    """Short id of a schedule's content, to notice a re-exported schedule.
+def skeleton_fingerprint(skeleton: PlanSkeleton) -> str:
+    """Short id of a plan skeleton's content, to notice a re-exported plan skeleton.
 
     Args:
-        schedule (ActionSchedule): The schedule.
+        skeleton (PlanSkeleton): The plan skeleton.
 
     Returns:
-        str: ``'<number of entries>:<sha1 of the action ids in order>'``.
+        str: ``'<number of actions>:<sha1 of the action ids in order>'``.
     """
-    ids = [e.action_id for e in schedule.entries]
+    ids = [e.action_id for e in skeleton.actions]
     digest = sha1('\n'.join(ids).encode('utf-8')).hexdigest()
     return f"{len(ids)}:{digest}"
 
 
-def new_progress(schedule: ActionSchedule) -> Progress:
-    """A fresh progress: every entry pending, no beliefs, every hold pending.
+def new_progress(skeleton: PlanSkeleton) -> Progress:
+    """A fresh progress: every action pending, no beliefs, every hold pending.
 
     Args:
-        schedule (ActionSchedule): The schedule.
+        skeleton (PlanSkeleton): The plan skeleton.
 
     Returns:
         Progress: The new progress (not saved).
     """
     return Progress(
-        problem=schedule.problem_name,
+        problem=skeleton.problem_name,
         schema_version=SCHEMA_VERSION,
-        schedule_fingerprint=schedule_fingerprint(schedule),
+        skeleton_fingerprint=skeleton_fingerprint(skeleton),
         current_index=0,
         updated_at=now_iso(),
-        entries={e.index: EntryStatus() for e in schedule.entries},
+        actions={e.index: ActionStatus() for e in skeleton.actions},
         robots={},
-        holds={h.bar_id: HoldState(h.bar_id, h.robot, HOLD_PENDING) for h in schedule.holds},
+        holds={h.bar_id: HoldState(h.bar_id, h.robot, HOLD_PENDING) for h in skeleton.holds},
     )
 
 
-def load_progress(problem_root: str, schedule: ActionSchedule) -> Progress:
+def load_progress(problem_root: str, skeleton: PlanSkeleton) -> Progress:
     """Load a problem's progress, or start a new one when there is none.
 
     Args:
         problem_root (str): The design problem folder.
-        schedule (ActionSchedule): The problem's schedule.
+        skeleton (PlanSkeleton): The problem's plan skeleton.
 
     Returns:
-        Progress: The progress. Entries / holds the file does not mention are
+        Progress: The progress. Actions / holds the file does not mention are
         added as pending.
 
     Raises:
@@ -443,23 +446,23 @@ def load_progress(problem_root: str, schedule: ActionSchedule) -> Progress:
     """
     path = progress_path(problem_root)
     if not os.path.isfile(path):
-        return new_progress(schedule)
+        return new_progress(skeleton)
     progress = Progress.from_dict(json_load(path))
-    if progress.problem != schedule.problem_name:
+    if progress.problem != skeleton.problem_name:
         raise ValueError(f"{path} is for problem {progress.problem!r}, "
-                         f"not {schedule.problem_name!r}")
-    if progress.schedule_fingerprint != schedule_fingerprint(schedule):
-        # ! The schedule was re-exported since this was written; the statuses are
+                         f"not {skeleton.problem_name!r}")
+    if progress.skeleton_fingerprint != skeleton_fingerprint(skeleton):
+        # ! The plan skeleton was re-exported since this was written; the statuses are
         # ! kept by index, so the operator must check they still make sense.
         print(f"[Progress] {PROGRESS_FILENAME} was written for another version of "
-              f"{schedule.problem_name}'s schedule ({progress.schedule_fingerprint} vs "
-              f"{schedule_fingerprint(schedule)}); keeping its statuses -- check them.")
-        # Adopt the current schedule's fingerprint, so the warning shows once and
-        # the next save records which schedule the statuses now refer to.
-        progress.schedule_fingerprint = schedule_fingerprint(schedule)
-    for e in schedule.entries:
-        progress.entries.setdefault(e.index, EntryStatus())
-    for h in schedule.holds:
+              f"{skeleton.problem_name}'s plan skeleton ({progress.skeleton_fingerprint} vs "
+              f"{skeleton_fingerprint(skeleton)}); keeping its statuses -- check them.")
+        # Adopt the current plan skeleton's fingerprint, so the warning shows once and
+        # the next save records which plan skeleton the statuses now refer to.
+        progress.skeleton_fingerprint = skeleton_fingerprint(skeleton)
+    for e in skeleton.actions:
+        progress.actions.setdefault(e.index, ActionStatus())
+    for h in skeleton.holds:
         progress.holds.setdefault(h.bar_id, HoldState(h.bar_id, h.robot, HOLD_PENDING))
     return progress
 
@@ -569,14 +572,14 @@ def arm_configuration(conf: Configuration, spec: RobotSpec) -> Configuration:
     return Configuration([values[n] for n in names], [types[n] for n in names], names)
 
 
-def belief_after(action: BarSceneAction, spec: RobotSpec, entry_index: Optional[int] = None,
+def belief_after(bar_action: BarSceneAction, spec: RobotSpec, action_index: Optional[int] = None,
                  source: str = BELIEF_ACTION_END) -> RobotBelief:
     """Where the acting robot is at the end of an action, as authored.
 
     Args:
         action (BarSceneAction): The loaded action.
         spec (RobotSpec): The robot that runs it.
-        entry_index (int | None): The schedule entry it belongs to.
+        action_index (int | None): The action it belongs to.
         source (str): Belief source to record.
 
     Returns:
@@ -586,7 +589,7 @@ def belief_after(action: BarSceneAction, spec: RobotSpec, entry_index: Optional[
     Raises:
         ValueError: The last movement has neither configuration, or no base frame.
     """
-    last = action.movements[-1]
+    last = bar_action.movements[-1]
     state = last.start_state
     conf = last.target_configuration
     if conf is None and state is not None:
@@ -595,18 +598,18 @@ def belief_after(action: BarSceneAction, spec: RobotSpec, entry_index: Optional[
     if conf is None or base is None:
         raise ValueError(f"{last.movement_id}: no configuration or base frame to "
                          f"take {spec.name}'s end state from")
-    return RobotBelief(base.copy(), arm_configuration(conf, spec), source, now_iso(), entry_index)
+    return RobotBelief(base.copy(), arm_configuration(conf, spec), source, now_iso(), action_index)
 
 
 def belief_from_live(spec: RobotSpec, base_pose: tuple, arm_joint_values: list,
-                     entry_index: Optional[int] = None) -> RobotBelief:
+                     action_index: Optional[int] = None) -> RobotBelief:
     """A belief from the live robot: mocap base pose and measured arm joints.
 
     Args:
         spec (RobotSpec): The robot.
         base_pose (tuple): ``(position xyz, quaternion xyzw)`` of the base.
         arm_joint_values (list): One 6-value list per arm, in ``spec.side_keys`` order.
-        entry_index (int | None): The schedule entry this describes the end of.
+        action_index (int | None): The action this describes the end of.
 
     Returns:
         RobotBelief: Source ``'live'``.
@@ -616,10 +619,10 @@ def belief_from_live(spec: RobotSpec, base_pose: tuple, arm_joint_values: list,
     frame = Frame.from_quaternion([qw, qx, qy, qz], point=list(position))
     values = [float(v) for arm in arm_joint_values for v in arm]
     conf = Configuration.from_revolute_values(values, joint_names=spec.all_arm_joint_names)
-    return RobotBelief(frame, conf, BELIEF_LIVE, now_iso(), entry_index)
+    return RobotBelief(frame, conf, BELIEF_LIVE, now_iso(), action_index)
 
 
-def belief_from_exported(action: BarSceneAction, spec: RobotSpec) -> Optional[RobotBelief]:
+def belief_from_exported(bar_action: BarSceneAction, spec: RobotSpec) -> Optional[RobotBelief]:
     """Where the exporter put a robot in ANOTHER robot's action.
 
     Each action's states carry the other robots as obstacle tools
@@ -633,7 +636,7 @@ def belief_from_exported(action: BarSceneAction, spec: RobotSpec) -> Optional[Ro
         RobotBelief | None: Source ``'exported'``, or None when the action does
         not carry that robot.
     """
-    tool_state = action.movements[0].start_state.tool_states.get(spec.obstacle_tool_name)
+    tool_state = bar_action.movements[0].start_state.tool_states.get(spec.obstacle_tool_name)
     if tool_state is None or tool_state.frame is None or tool_state.configuration is None:
         return None
     return RobotBelief(tool_state.frame.copy(), arm_configuration(tool_state.configuration, spec),
@@ -654,23 +657,23 @@ def parked_belief(spec: RobotSpec) -> RobotBelief:
     return RobotBelief(PARKED_BASE_FRAME.copy(), conf, BELIEF_PARKED, now_iso())
 
 
-def recompute_belief(progress: Progress, schedule: ActionSchedule, robot: str) -> Optional[RobotBelief]:
-    """Rebuild a robot's belief from the last entry it has DONE (e.g. after a reopen).
+def recompute_belief(progress: Progress, skeleton: PlanSkeleton, robot: str) -> Optional[RobotBelief]:
+    """Rebuild a robot's belief from the last action it has DONE (e.g. after a reopen).
 
     Args:
         progress (Progress): The progress.
-        schedule (ActionSchedule): The schedule.
+        skeleton (PlanSkeleton): The plan skeleton.
         robot (str): Short robot name.
 
     Returns:
-        RobotBelief | None: The end state of its last done entry, or None when
+        RobotBelief | None: The end state of its last done action, or None when
         it has done nothing yet.
     """
-    done = [e for e in schedule.entries_for_robot(robot) if progress.is_done(e.index)]
+    done = [e for e in skeleton.actions_for_robot(robot) if progress.is_done(e.index)]
     if not done:
         return None
     last = done[-1]
-    return belief_after(schedule.load_action(last), robot_by_name(robot), entry_index=last.index)
+    return belief_after(skeleton.load_bar_action(last), robot_by_name(robot), action_index=last.index)
 
 
 def _obstacle_beliefs(progress: Progress, active_robot: str,
@@ -737,7 +740,7 @@ def obstacle_sources_line(progress: Progress, active_robot: str,
                           exported_action: Optional[BarSceneAction] = None) -> str:
     """Where each other robot's pose comes from, as one readout line.
 
-    Same rule as ``obstacle_sources``; a belief stamped with an entry names it.
+    Same rule as ``obstacle_sources``; a belief stamped with an action names it.
 
     Args:
         progress (Progress): The progress.
@@ -745,13 +748,13 @@ def obstacle_sources_line(progress: Progress, active_robot: str,
         exported_action (BarSceneAction | None): The connected robot's loaded action.
 
     Returns:
-        str: e.g. ``'Alice <- live (entry 3) | Belle <- parked'``, robots in
+        str: e.g. ``'Alice <- live (action 3) | Belle <- parked'``, robots in
         registry order.
     """
     beliefs = _obstacle_beliefs(progress, active_robot, exported_action)
     parts = []
     for spec in other_robots(active_robot):
         belief = beliefs[spec.obstacle_tool_name]
-        entry = f" (entry {belief.after_entry})" if belief.after_entry is not None else ''
-        parts.append(f"{spec.name} <- {belief.source}{entry}")
+        action = f" (action {belief.after_action})" if belief.after_action is not None else ''
+        parts.append(f"{spec.name} <- {belief.source}{action}")
     return ' | '.join(parts)

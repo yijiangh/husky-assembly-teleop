@@ -452,10 +452,10 @@ Repeat for each bar-action. Nothing here dismounts the bar.
    sent.
 4. **3b) Servo to Mv Start (transfer loop)** — every iteration plans a *bar-held
    constrained transfer*, so both tool0s stay rigidly locked to the mounted bar.
-   (The schedule monitor runs this same loop by itself at the end of every
+   (The plan skeleton monitor runs this same loop by itself at the end of every
    transfer, with straight-line corrections from iteration 1 and its records under
    `bar_action_live_replan_exe/` instead: see "Visual-servo correction after the
-   transfer" in `doc/support_robot_schedule_manual.md`.)
+   transfer" in `doc/support_robot_plan_skeleton_manual.md`.)
    - Iteration 1 = live-base IK + constrained plan (up to 120 s; the GUI is
      deliberately frozen during the search), then a **confirm pause** reading
      `N waypoints, travels X deg (ends Y deg from where it starts), over T s`.

@@ -1,6 +1,6 @@
-# Testing the support-robot schedule monitor
+# Testing the support-robot plan skeleton monitor
 
-A step-by-step test plan for the 2026-09-30 changes (ActionSchedule panel, Alice's
+A step-by-step test plan for the 2026-09-30 changes (PlanSkeleton panel, Alice's
 hold flow, the gripper → compliant handoff, obstacle robots from `progress.json`) and
 the 2026-10-01 dry-run fixes (operator steps instead of movements, one click for the
 transfer start, the built-bar switch, state carried over between runs).
@@ -8,15 +8,15 @@ transfer start, the built-bar switch, state carried over between runs).
 - **Part A — without robots** (`FAKE_HARDWARE=1`): ~1 h at the workstation.
 - **Part B — with the robots**: staged checks on Alice first, then the four-bar run.
 
-What the buttons do is explained in `doc/support_robot_schedule_manual.md`; this
+What the buttons do is explained in `doc/support_robot_plan_skeleton_manual.md`; this
 document only says what to click and **what you should see**. Tick the boxes as you
 go; anything that does not match "Expect" is worth a note (log lines + what you did).
 
 > **! Transfer workaround in use (since 2026-10-06, until the bar-held transfer planner is ready).**
-> The bar-held transfer planner rarely finds a path, so every J entry runs the transfer as a
+> The bar-held transfer planner rarely finds a path, so every J action runs the transfer as a
 > plain free move **without the bar**: tick
 > `Workaround: plan the transfer as a free move (no bar, from the live arms)` (under
-> `Plan Movement`) once per monitor run. Order of a J entry: **transfer** (empty tools, from the
+> `Plan Movement`) once per monitor run. Order of a J action: **transfer** (empty tools, from the
 > live arms to the insertion start) → **manual mount** (mount the bar by hand there) →
 > **tool grasp** → **insert**. The travel to load is skipped. The flow without the box is kept
 > below under "Later, without the workaround".
@@ -104,8 +104,8 @@ you see every keystroke and can take over at any time.
 
 ## A2. A scratch copy of the problem (so the real folder stays clean)
 
-`Mark entry done` writes `progress.json` and `*.live-solved.json` next to the
-schedule. Use a copy outside Insync so nothing syncs to the shared drive:
+`Mark action done` writes `progress.json` and `*.live-solved.json` next to the
+plan skeleton. Use a copy outside Insync so nothing syncs to the shared drive:
 
 ```bash
 SRC="$GD/data_design_study/260920_RobArch_demo_revamp_backup"
@@ -129,32 +129,32 @@ Monitor flags for Part A:
 |---|---|
 | `FAKE_HARDWARE` | **1** |
 | `USE_MOCAP` | **0** (no mocap PC; bases come from the exported poses) |
-| `USE_ACTION_SCHEDULE` | 1 |
+| `USE_PLAN_SKELETON` | 1 |
 | `BAR_ACTION_LIVE_REPLAN_EXE` | 1 |
 | `IGNORE_BUILT_ASSEMBLY_COLLISIONS` | 0 (the panel toggle below changes it while the monitor runs) |
 | `CONNECT_COMPLIANT_CONTROLLER`, `LIST_CONTROLLER_SERVICES` | 0 |
 
-**Built bars.** The schedule panel's toggle `Ignore built-bar collisions (bars drawn faint)`
+**Built bars.** The plan skeleton panel's toggle `Ignore built-bar collisions (bars drawn faint)`
 replaces "set `BAR_ACTION_MOCAP_ACCURACY_TEST = 1`" for these runs:
 
 - OFF (start value) — the built bars and joints are obstacles for the planner and IK and
-  are drawn as usual. Use it for Cindy's entries.
+  are drawn as usual. Use it for Cindy's actions.
 - ON — the planner and IK ignore them and they are drawn faint grey. Alice's exported
   hold scene still needs it ON (Rhino note D5), see A4.
-- Changing it reloads the loaded entry (planned paths not yet saved are dropped).
+- Changing it reloads the loaded action (planned paths not yet saved are dropped).
 
-`BAR_ACTION_MOCAP_ACCURACY_TEST` no longer decides collisions in schedule mode; leave it
+`BAR_ACTION_MOCAP_ACCURACY_TEST` no longer decides collisions in plan skeleton mode; leave it
 as it is (1 only adds the accuracy-test buttons and a pink line at the bar's assembled pose).
 
 ! Known issue (not fixed yet): a `*.live-solved.json` written while the built bars were
 ignored keeps them hidden when it is reloaded, even with the toggle OFF. The sidecars left
 in `$DRY/BarActions` by the 2026-10-01 dry run are such files, so **start over (next line)
-before this walk-through**; later, use `Reopen entry (reload clean)` or delete the sidecar
+before this walk-through**; later, use `Reopen action (reload clean)` or delete the sidecar
 before checking the built-bar display.
 
 To start over at any time: quit the monitor, `rm "$DRY/progress.json" "$DRY"/BarActions/*.live-solved.json`.
 
-## A3. Cindy's run (entries 0–2)
+## A3. Cindy's run (actions 0–2)
 
 ```bash
 source ~/Code/ros2_ws/src/husky-assembly-teleop/config/dryrun_env.sh 86
@@ -162,21 +162,21 @@ ros2 run husky_assembly_teleop husky_monitor
 ```
 
 **Start-up**
-- [ ] Terminal prints `[Schedule] robot Cindy (domain 86) | problem 260920_dryrun | progress 0/48 done`,
-      then `[Schedule] others: Alice <- parked | Belle <- parked`, and the 48-entry roster.
+- [ ] Terminal prints `[Plan skeleton] robot Cindy (domain 86) | problem 260920_dryrun | progress 0/48 done`,
+      then `[Plan skeleton] others: Alice <- parked | Belle <- parked`, and the 48-action roster.
       Warnings `Base calibration file not found for robot 0804 / 0805`
       are expected (only Cindy has a file in the current calibration folder).
-- [ ] DPG panel: a **Schedule** section (no "BarAction file" slider) with the same two header
-      lines, rows `[00]..`; entry `[03] H B3 Alice` is grey with `(other robot)`; the toggle
+- [ ] DPG panel: a **Plan skeleton** section (no "BarAction file" slider) with the same two header
+      lines, rows `[00]..`; action `[03] H B3 Alice` is grey with `(other robot)`; the toggle
       `Ignore built-bar collisions (bars drawn faint)` is unticked. Further down, the slider
       above `Load Movement` is called `Step`.
 - [ ] PyBullet: Cindy only near the origin — Alice and Belle are parked far away
       (50 m, 50 m), not stacked on Cindy.
 
-**Entry 0 — B1 jointing.** Select 0 → `Load entry`. The `Step` slider walks the 5 operator
+**Action 0 — B1 jointing.** Select 0 → `Load action`. The `Step` slider walks the 5 operator
 steps: travel to load, manual mount, tool grasp, transfer, insert. The tighten has no step of
 its own: it runs with the insert.
-- [ ] Only bar B1 shows; the `now` line reads `Now: entry 0 -- J B1 by Cindy -- step 1/5 B1_J_M0_free_to_load [dual_free] ctrl=joint_tracking`;
+- [ ] Only bar B1 shows; the `now` line reads `Now: action 0 -- J B1 by Cindy -- step 1/5 B1_J_M0_free_to_load [dual_free] ctrl=joint_tracking`;
       the readout under the `Step` slider reads `step 1/5: B1_J_M0_free_to_load  (dual_free)`.
 - [ ] `traj time` shows the travel to load's default (log `[Movement] traj time -> ...s (default for dual_free)`),
       not 90 s.
@@ -198,7 +198,7 @@ its own: it runs with the insert.
       the tools **at the insertion start** (where the transfer ended — this is where you mount
       it). A new button **`Operator done (manual step) -> then Confirm Exec`** appears. Click it →
       log asks for Confirm.
-  - [ ] *One-task rule:* while it waits, click `Mark entry done` and `Load entry` → both
+  - [ ] *One-task rule:* while it waits, click `Mark action done` and `Load action` → both
         **refused** ("still running or waiting for 'Confirm Exec'").
   - [ ] `Confirm Exec` → `confirmed done by the operator`.
 - [ ] Tool grasp (`B1_J_M2_tool_grasp_bar`): `Step` → 2 → `Load Movement`; the bar is again drawn in
@@ -212,9 +212,9 @@ its own: it runs with the insert.
       (`joint_G1-T20Ground-..._ground`) and the floor (`obstacle_ground`).
       **Do not Exec in Part A** — the compliant insert needs the real controllers (in fake mode
       it would only publish and wait 30 s for a screw stall).
-- [ ] `Mark entry done` → `[Schedule] entry 0 B1_J_joint marked done by Cindy; Cindy's belief <- live.`
+- [ ] `Mark action done` → `[Plan skeleton] action 0 B1_J_joint marked done by Cindy; Cindy's belief <- live.`
       Row 0 turns green, header `1/48`, the slider jumps to 1, and
-      `cat "$DRY/progress.json"` shows entry `"0"` = done. A `B1__J.live-solved.json` appears in
+      `cat "$DRY/progress.json"` shows action `"0"` = done. A `B1__J.live-solved.json` appears in
       `$DRY/BarActions/` (it holds the trajectories you planned).
 
 *Later, without the workaround (once the bar-held transfer planner is ready; box unticked).* The
@@ -228,48 +228,48 @@ If no arm configuration holds the bar there, it says so and plans nothing;
 `Transfer start: Confirm manual pose (IK check)` checks a pose without planning. The see-through
 orange bar follows the sliders only while the transfer is loaded.
 
-**Entry 1 — B1 release.** `Load entry`. Two steps: retreat, free move home.
+**Action 1 — B1 release.** `Load action`. Two steps: retreat, free move home.
 - [ ] It opens on the retreat: readout
       `step 1/2: B1_R_M2_LM_retreat  (+ B1_R_M1_tool_ungrasp_bar runs with it; B1_R_M0_tool_untighten_joint not sent: 'Loosen Joint' by hand if needed)`;
       no `Mark tool step done` button.
 - [ ] Built structure visible: bar B1 and its joints are drawn solid (not faint, not missing).
 - [ ] Step 1, retreat: `Plan Movement` → ≈ 12 waypoints; **no Exec in Part A** (compliant).
 - [ ] Step 2, free move home (`B1_R_M3_free_home`): `Step` → 1 → `Load Movement` → `Plan Movement` → `Exec`.
-- [ ] `Mark entry done` → `2/48`.
+- [ ] `Mark action done` → `2/48`.
 
-**Entry 2 — B3 jointing.** `Load entry`.
+**Action 2 — B3 jointing.** `Load action`.
 - [ ] The built B1 and its joints are drawn solid during the travel to load (the planner checks them).
 - [ ] Built-bar switch, before planning anything: tick `Ignore built-bar collisions (bars drawn faint)`
-      → `[built bars] ignore built-bar collisions: ON -- reloading entry 2`, then
+      → `[built bars] ignore built-bar collisions: ON -- reloading action 2`, then
       `[built bars] collisions with N built bodies ignored (drawn faint)`; B1 and its joints turn
-      faint grey. Untick it → the entry reloads and they are solid again. Leave it unticked for
-      Cindy's entries.
-- [ ] Then the same steps as entry 0 (transfer as a free move, manual mount, tool grasp, insert;
-      mount and grasp may be skipped in Part A), then `Mark entry done` → `3/48`, slider on 3.
+      faint grey. Untick it → the action reloads and they are solid again. Leave it unticked for
+      Cindy's actions.
+- [ ] Then the same steps as action 0 (transfer as a free move, manual mount, tool grasp, insert;
+      mount and grasp may be skipped in Part A), then `Mark action done` → `3/48`, slider on 3.
 
-**Entry 3 — Alice's hold, seen from Cindy.** `Load entry`.
-- [ ] Warning `Entry 3 belongs to Alice; loaded for display only`; its four movements are listed.
+**Action 3 — Alice's hold, seen from Cindy.** `Load action`.
+- [ ] Warning `Action 3 belongs to Alice; loaded for display only`; its four movements are listed.
 - [ ] `Plan Movement` and `Exec ...` → **refused** ("display only"); no step button is shown.
-- [ ] `Mark entry done` → log asks to confirm marking with the EXPORTED end state → click
-      `Cancel Exec` → entry 3 stays pending. (In the real run Alice marks it herself.)
+- [ ] `Mark action done` → log asks to confirm marking with the EXPORTED end state → click
+      `Cancel Exec` → action 3 stays pending. (In the real run Alice marks it herself.)
 - [ ] Quit the monitor (Ctrl-C).
 
-## A4. Alice's run (entry 3)
+## A4. Alice's run (action 3)
 
 ```bash
 source ~/Code/ros2_ws/src/husky-assembly-teleop/config/dryrun_env.sh 84
 ros2 run husky_assembly_teleop husky_monitor
 ```
 
-- [ ] Header `robot Alice (domain 84) ... 3/48 done` and `others: Cindy <- live (entry 2) | Belle <- parked`;
-      slider on entry 3, its row not grey.
-- [ ] PyBullet: **Cindy is drawn where her simulated arms were when you marked entry 2 done**
+- [ ] Header `robot Alice (domain 84) ... 3/48 done` and `others: Cindy <- live (action 2) | Belle <- parked`;
+      slider on action 3, its row not grey.
+- [ ] PyBullet: **Cindy is drawn where her simulated arms were when you marked action 2 done**
       (from `progress.json`; in Part A that is the end of the last movement you executed, since
       the insert is not executed here), Belle parked. Cindy may show twice at the same pose: the
       solid husky and the red obstacle robot — the red one is what the planner checks.
 - [ ] Tick `Ignore built-bar collisions (bars drawn faint)` (Alice's exported hold scene needs it,
       Rhino note D5) → `[built bars] ignore built-bar collisions: ON`.
-- [ ] `Load entry` → loads `RobotCell_Alice.json` (a few seconds), then
+- [ ] `Load action` → loads `RobotCell_Alice.json` (a few seconds), then
       `[built bars] collisions with N built bodies ignored (drawn faint)`; the built bars are faint.
       The `Transfer start: ...` sliders and buttons and the `Insert: ...` knobs are **hidden**;
       the joint plot has 6 traces. One step per movement: `step 1/4: B3_H_M0_free_to_approach ...`.
@@ -286,51 +286,51 @@ ros2 run husky_assembly_teleop husky_monitor
 - [ ] Step 4 (`B3_H_M3_gripper_close`): `Step` → 3 → `Load Movement` → button
       `Exec gripper step: CLOSE + compliant handoff` → `Confirm Exec` → log says
       **plain close** (`FAKE_HARDWARE is 1`), no controller switch. Correct for fake mode.
-- [ ] `Mark entry done` → `Alice's belief <- live`, `3` done in `progress.json`, hold `B3` =
+- [ ] `Mark action done` → `Alice's belief <- live`, `3` done in `progress.json`, hold `B3` =
       `holding`, and `B3__H.live-solved.json` written. A warning `Mocap has not seen Alice ...;
       its belief stores the base B3_H_hold was authored at` is expected with `USE_MOCAP=0`.
 - [ ] Quit.
 
-## A5. Cindy again (entries 4–8)
+## A5. Cindy again (actions 4–8)
 
 `source .../config/dryrun_env.sh 86`, start the monitor.
 
-- [ ] Start-up: `[Schedule] Cindy starts from the progress.json state (after entry 2, live).` —
-      her simulated arms start where they were when you marked entry 2 done (not at home).
-      Header `others: Alice <- live (entry 3) | Belle <- parked`. The built-bar toggle is unticked again.
+- [ ] Start-up: `[Plan skeleton] Cindy starts from the progress.json state (after action 2, live).` —
+      her simulated arms start where they were when you marked action 2 done (not at home).
+      Header `others: Alice <- live (action 3) | Belle <- parked`. The built-bar toggle is unticked again.
 - [ ] PyBullet: **Alice now stands at her hold pose next to B3** (not parked); like Cindy in A4
       she may show twice (solid husky + red obstacle robot).
-- [ ] `Load entry` 4 (B3_R) → terminal line
+- [ ] `Load action` 4 (B3_R) → terminal line
       `[obstacle robots] posed from: ObstacleRobotAlice <- live, ObstacleRobotBelle <- exported`
       (Alice from what her run recorded — **not** the parked pose the B3__R file contains).
       It opens on the retreat (`step 1/2: B3_R_M2_LM_retreat ...`).
 - [ ] Retreat `Plan Movement` → ≈ 12 waypoints with Alice in the scene; step 2 (free move home)
       plan → ≈ 75; Exec the free move home.
-- [ ] `Mark entry done`; then entries 5–8 (B4, B5): each J entry as entry 0 (tick the transfer
+- [ ] `Mark action done`; then actions 5–8 (B4, B5): each J action as action 0 (tick the transfer
       workaround again after a restart: transfer as a free move → mount → grasp → insert); plan each
       arm step; Exec all but the insert and the retreat (compliant); mark done → header `9/48`.
 
 ## A6. Recovery buttons
 
-- [ ] **Reopen**: move the slider to 8, `Load entry`, then `Reopen entry (reload clean)` →
-      `entry 8 ... reopened (pending)`, row 8 not green, trajectories cleared.
-- [ ] **Reopen confirm**: slider to 7, `Load entry`, then move the slider to 2 (don't load) and click
-      `Reopen` → it asks to confirm reopening the **LOADED entry 7, not the slider's entry 2** →
-      `Cancel Exec` → nothing changes. (After `Mark entry done` the slider jumps to the next pending
-      entry, so a Reopen right after marking also asks this question — that is intended.)
-- [ ] **Reset All Mvs to Clean** → reloads the loaded entry from its clean export (log names the
+- [ ] **Reopen**: move the slider to 8, `Load action`, then `Reopen action (reload clean)` →
+      `action 8 ... reopened (pending)`, row 8 not green, trajectories cleared.
+- [ ] **Reopen confirm**: slider to 7, `Load action`, then move the slider to 2 (don't load) and click
+      `Reopen` → it asks to confirm reopening the **LOADED action 7, not the slider's action 2** →
+      `Cancel Exec` → nothing changes. (After `Mark action done` the slider jumps to the next pending
+      action, so a Reopen right after marking also asks this question — that is intended.)
+- [ ] **Reset All Mvs to Clean** → reloads the loaded action from its clean export (log names the
       `.json` without `.live-solved`).
-- [ ] **Rescan schedule status** → roster printed again, matching `progress.json`.
-- [ ] **Reset schedule to the Rhino export** (do this last in Part A): click it → the log asks to
-      confirm resetting the WHOLE schedule → `Cancel Exec` → `[Schedule] reset cancelled; nothing changed.`
+- [ ] **Rescan plan skeleton status** → roster printed again, matching `progress.json`.
+- [ ] **Reset plan skeleton to the Rhino export** (do this last in Part A): click it → the log asks to
+      confirm resetting the WHOLE plan skeleton → `Cancel Exec` → `[Plan skeleton] reset cancelled; nothing changed.`
       Click it again → `Confirm Exec` →
-      `[Schedule] reset to the Rhino export: moved N file(s) (progress.json, BarActions/...live-solved.json, ...) to .../archive/<time>.`
+      `[Plan skeleton] reset to the Rhino export: moved N file(s) (progress.json, BarActions/...live-solved.json, ...) to .../archive/<time>.`
       Header `0/48 done`, every row pending, `others: Alice <- parked | Belle <- parked`, Alice and
-      Belle drawn parked, entry 0 loaded from its clean export. `ls "$DRY/archive/"` shows the
+      Belle drawn parked, action 0 loaded from its clean export. `ls "$DRY/archive/"` shows the
       folder; nothing was deleted (moving the files back restores the old state).
 - [ ] **Legacy problem still works**: quit, `export DESIGN_PROBLEM_NAME=260929_phase1_retest` and
       `DESIGN_DATA_DIRECTORY="$GD/data_design_study"`, start → one line
-      `ActionSchedule.json lists 180 entries but ... files are missing -- using the legacy BarAction list`
+      `ActionSchedule.json lists 180 actions but ... files are missing -- using the legacy BarAction list`
       and the old `BarAction file (idx)` slider. (Don't Mark anything here — it is the real folder.)
 
 **Before Part B:** restore the Part A flags (`FAKE_HARDWARE`, `USE_MOCAP`) and use **fresh
@@ -353,7 +353,7 @@ plugged in), then `ros2 daemon stop` once. Delete `~/husky_dryrun` when done.
 
 **Data**
 - [ ] The real problem folder `260920_RobArch_demo_revamp` is complete. Starting the monitor
-      shows the schedule panel; if it prints `... files are missing -- using the legacy BarAction
+      shows the plan skeleton panel; if it prints `... files are missing -- using the legacy BarAction
       list`, the sync is incomplete (use `..._backup` instead).
 - [ ] No leftover `progress.json` from earlier tests in that folder (unless you mean to continue).
 
@@ -378,9 +378,9 @@ where `<date>` is the robot's entry in `BASE_CALIBRATION_DATE_BY_ROBOT`, else `C
 | `USE_CELL_STATE_BASE_POSE` | 0 | 0 |
 | `CONNECT_COMPLIANT_CONTROLLER` | **1** | **1** |
 | `LIST_CONTROLLER_SERVICES` | **1** | **1** |
-| `IGNORE_BUILT_ASSEMBLY_COLLISIONS` (= panel toggle `Ignore built-bar collisions (bars drawn faint)`) | 0 / unticked (built bars collision-checked; R entries were verified to plan with them) | **1** / ticked (required with this export) |
+| `IGNORE_BUILT_ASSEMBLY_COLLISIONS` (= panel toggle `Ignore built-bar collisions (bars drawn faint)`) | 0 / unticked (built bars collision-checked; R actions were verified to plan with them) | **1** / ticked (required with this export) |
 
-The toggle replaces `BAR_ACTION_MOCAP_ACCURACY_TEST` for collisions in schedule mode (see A2,
+The toggle replaces `BAR_ACTION_MOCAP_ACCURACY_TEST` for collisions in plan skeleton mode (see A2,
 including the ! known issue about sidecars).
 
 ## B2. Bring-up and connectivity (per robot)
@@ -472,7 +472,7 @@ shows `data: true` while the e-stop is engaged (then nothing moves).
 ## B3. Alice — hardware checks before the assembly (no bar, clear workspace)
 
 Start the monitor as Alice (`ROS_DOMAIN_ID=84`) with the Part B flags (built-bar toggle
-ticked). **Do not `Mark entry done` in B3** — these are tests.
+ticked). **Do not `Mark action done` in B3** — these are tests.
 
 **B3.1 Startup**
 - [ ] Header `robot Alice (domain 84)`; Joint Live Stream (`Toggle Joint Live Stream`) shows 6 joints
@@ -491,7 +491,7 @@ ticked). **Do not `Mark entry done` in B3** — these are tests.
 - [ ] `Switch to Joint (BOTH)` → back to `scaled_joint_trajectory_controller`.
 
 **B3.4 The handoff in the air** (no bar — the jaws close on nothing)
-- [ ] `Open Gripper Full`. `Load entry` 3, `Step` slider → 3 (readout
+- [ ] `Open Gripper Full`. `Load action` 3, `Step` slider → 3 (readout
       `step 4/4: B3_H_M3_gripper_close ...`) → `Load Movement`.
 - [ ] Click `Exec gripper step: CLOSE + compliant handoff` → `Confirm Exec`. Expect, in order:
   - `phase 1/3: ensuring scaled_joint_trajectory_controller`
@@ -523,23 +523,23 @@ ticked). **Do not `Mark entry done` in B3** — these are tests.
 
 ## B4. Cindy — new steps check (optional)
 
-With a bar mounted on Cindy's tools: load entry 0, `Step` → 2 (`B1_J_M2_tool_grasp_bar`) →
+With a bar mounted on Cindy's tools: load action 0, `Step` → 2 (`B1_J_M2_tool_grasp_bar`) →
 `Load Movement` → `Tool step: grasp` →
 `Confirm Exec` → `STOP`, gripper motors `TIGHTEN`, `every gripper motor STALLED after N s: bar clamped`,
 `STOP sent`. (The same as the manual `L/R Tighten Gripper` buttons, plus the stall wait.)
 
-## B5. The four-bar run (entries 0–8)
+## B5. The four-bar run (actions 0–8)
 
-Follow the table in `doc/support_robot_schedule_manual.md` ("Four-bar test"). Checkpoints:
+Follow the table in `doc/support_robot_plan_skeleton_manual.md` ("Four-bar test"). Checkpoints:
 
-**Cindy, entries 0–2** (`ROS_DOMAIN_ID=86`)
-- [ ] J entries with the transfer workaround ticked (see the note at the top): the transfer moves
+**Cindy, actions 0–2** (`ROS_DOMAIN_ID=86`)
+- [ ] J actions with the transfer workaround ticked (see the note at the top): the transfer moves
       the **empty tools** from the live arms to the insertion start, right next to the built
       structure. Before `Exec`, check in the preview that the tools stop short of the bar's
       assembled pose and clear the built bars. After it: mount the bar by hand in the tools at that
       pose (`Operator done (manual step)` → `Confirm Exec`), run the tool grasp, then plan the
       insert (it starts where the transfer ended) and run it.
-- [ ] Each entry ends with `Mark entry done` → `Cindy's belief <- live`; header count goes up.
+- [ ] Each action ends with `Mark action done` → `Cindy's belief <- live`; header count goes up.
 - [ ] The insert (`B*_J_M5_LM_insert`) and the retreat (`B*_R_M2_LM_retreat`) run the compliant
       flow; afterwards the log says the joint controller is restored. At `Exec` the log names the
       tool steps that run with them, e.g.
@@ -553,25 +553,25 @@ Follow the table in `doc/support_robot_schedule_manual.md` ("Four-bar test"). Ch
       staging bar) tighten only the mating arm's joint motor and end when it stalls
       (`... LEFT joint motor TIGHTENING only ...`, plus a `tightens only ['AT3L']` warning until the
       Rhino re-export, note D10).
-- [ ] After entry 2: Cindy is holding B3 at the assembled pose, **under the joint controller**
+- [ ] After action 2: Cindy is holding B3 at the assembled pose, **under the joint controller**
       (check `ros2 control list_controllers -c /a200_0806/left_ur5e/controller_manager` and `right_ur5e`).
       Then quit the monitor — Cindy keeps holding (her driver keeps running).
 
-**Alice, entry 3** (`ROS_DOMAIN_ID=84`)
+**Alice, action 3** (`ROS_DOMAIN_ID=84`)
 - [ ] PyBullet: Cindy drawn at her real pose holding B3 (live mocap base + her recorded joints).
 - [ ] Built-bar toggle ticked (hold scene).
 - [ ] Free approach (`[live goal]` line as in B3.5) → **calibration check from B3.5** (jaws centred
       on B3, 10 cm out) before going on.
 - [ ] Gripper open → linear approach → gripper close + handoff (jaws around B3, the arm yields
       briefly while the jaws finish, then stiff again).
-- [ ] `Mark entry done` → `Alice's belief <- live`. Quit. Alice stays clamped on B3.
+- [ ] `Mark action done` → `Alice's belief <- live`. Quit. Alice stays clamped on B3.
 
-**Cindy, entries 4–8**
-- [ ] `Load entry` 4 → `[obstacle robots] posed from: ObstacleRobotAlice <- live ...` and Alice drawn
-      on B3. The entry opens on the retreat (compliant; the ungrasp runs with it, the untighten is
+**Cindy, actions 4–8**
+- [ ] `Load action` 4 → `[obstacle robots] posed from: ObstacleRobotAlice <- live ...` and Alice drawn
+      on B3. The action opens on the retreat (compliant; the ungrasp runs with it, the untighten is
       not sent — `Loosen Joint` by hand if needed), then the free move home; both plan and run with
       Alice in the scene.
-- [ ] Entries 5–8 (B4, B5) as entries 0/1. B3 stays held by Alice throughout (her release, entry 16,
+- [ ] Actions 5–8 (B4, B5) as actions 0/1. B3 stays held by Alice throughout (her release, action 16,
       is after B9 — out of scope).
 
 ## B6. If something goes wrong
@@ -581,10 +581,10 @@ Follow the table in `doc/support_robot_schedule_manual.md` ("Four-bar test"). Ch
 | a step waits and you want out | `Cancel Exec` |
 | "refused: a step / execution is still running" | finish it or `Cancel Exec`, then retry |
 | arm may be left compliant (loud error in the log) | `Switch to Joint (BOTH)` or the `ros2 control switch_controllers` line in B0 |
-| marked an entry done by mistake | load it, `Reopen entry (reload clean)` (the robot's previous end state is restored) |
-| progress is wrong beyond repair / start over from the Rhino export | `Reset schedule to the Rhino export` → `Confirm Exec` (progress.json and the saved plans go to `<problem>/archive/<time>/`; restart any other robot's monitor too) |
+| marked an action done by mistake | load it, `Reopen action (reload clean)` (the robot's previous end state is restored) |
+| progress is wrong beyond repair / start over from the Rhino export | `Reset plan skeleton to the Rhino export` → `Confirm Exec` (progress.json and the saved plans go to `<problem>/archive/<time>/`; restart any other robot's monitor too) |
 | a plan fails with "start ... in collision" | read the pair in the log; for `ObstacleRobotCindy <-> env_bar_*` in Alice's run check that `Ignore built-bar collisions (bars drawn faint)` is ticked |
-| built bars missing although the toggle is OFF | a sidecar written while they were ignored (! known issue, A2): `Reopen entry (reload clean)` |
+| built bars missing although the toggle is OFF | a sidecar written while they were ignored (! known issue, A2): `Reopen action (reload clean)` |
 | the transfer plans with the bar held / tries the bar-held planner | the workaround box is unticked (it starts unticked after every restart): tick `Workaround: plan the transfer as a free move ...` and plan again |
 | `[transfer workaround] ... no collision-free IK for the insertion start` | read the drawn colliding pair; note it and send the log |
 

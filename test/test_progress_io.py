@@ -19,29 +19,29 @@ from husky_assembly_teleop.progress_io import (
     STATUS_SKIPPED, archive_progress_and_saved_plans, arm_configuration, belief_after, belief_from_exported, belief_from_live,
     load_progress, new_progress, new_run_id, obstacle_sources, obstacle_sources_line,
     obstacle_tool_states, parked_belief, progress_path, recompute_belief, save_progress,
-    schedule_fingerprint,
+    skeleton_fingerprint,
 )
 from husky_assembly_teleop.robot_registry import ROBOTS
-from husky_assembly_teleop.schedule_io import SCHEDULE_FILENAME, load_schedule
+from husky_assembly_teleop.plan_skeleton_io import SKELETON_FILENAME, load_plan_skeleton
 
-SCHEDULE_PROBLEM = '260920_RobArch_demo_revamp_backup'
-FIXTURE_ROOT = os.path.join(DESIGN_DATA_DIRECTORY, SCHEDULE_PROBLEM)
+SKELETON_PROBLEM = '260920_RobArch_demo_revamp_backup'
+FIXTURE_ROOT = os.path.join(DESIGN_DATA_DIRECTORY, SKELETON_PROBLEM)
 ALICE, BELLE, CINDY = ROBOTS['Alice'], ROBOTS['Belle'], ROBOTS['Cindy']
 
-# * Alice's end state after holding B3 (entry 3), as exported in B4__J.
+# * Alice's end state after holding B3 (action 3), as exported in B4__J.
 ALICE_HOLD_B3_BASE = (-4.5075, 1.7620, -0.0156)
 ALICE_HOLD_B3_CONF = [1.035, -1.612, 2.393, -0.793, 0.331, 0.012]
 
 pytestmark = pytest.mark.skipif(
-    not os.path.isfile(os.path.join(FIXTURE_ROOT, SCHEDULE_FILENAME)),
+    not os.path.isfile(os.path.join(FIXTURE_ROOT, SKELETON_FILENAME)),
     reason='the multi-robot design-study export is not on this machine',
 )
 
 
 @pytest.fixture(scope='module')
-def schedule():
-    """The fixture problem's schedule, loaded once."""
-    return load_schedule(FIXTURE_ROOT)
+def skeleton():
+    """The fixture problem's plan skeleton, loaded once."""
+    return load_plan_skeleton(FIXTURE_ROOT)
 
 
 @pytest.fixture
@@ -50,66 +50,66 @@ def tmp_problem(tmp_path) -> str:
 
     Named like the real problem, so progress files match it.
     """
-    root = tmp_path / SCHEDULE_PROBLEM
+    root = tmp_path / SKELETON_PROBLEM
     root.mkdir()
-    shutil.copy(os.path.join(FIXTURE_ROOT, SCHEDULE_FILENAME), root / SCHEDULE_FILENAME)
+    shutil.copy(os.path.join(FIXTURE_ROOT, SKELETON_FILENAME), root / SKELETON_FILENAME)
     return str(root)
 
 
-def _mark_done_up_to(progress, schedule, last_index: int):
-    """Mark entries 0..last_index done, each with its authored end state as belief.
+def _mark_done_up_to(progress, skeleton, last_index: int):
+    """Mark actions 0..last_index done, each with its authored end state as belief.
 
     Args:
         progress (Progress): Progress to update.
-        schedule (ActionSchedule): The schedule.
-        last_index (int): Last entry to mark.
+        skeleton (PlanSkeleton): The plan skeleton.
+        last_index (int): Last action to mark.
     """
     for i in range(last_index + 1):
-        entry = schedule.entry(i)
-        belief = belief_after(schedule.load_action(entry), ROBOTS[entry.robot])
-        progress.mark_done(entry, 'Cindy', 'Cindy-test', belief=belief)
+        action = skeleton.action(i)
+        belief = belief_after(skeleton.load_bar_action(action), ROBOTS[action.robot])
+        progress.mark_done(action, 'Cindy', 'Cindy-test', belief=belief)
 
 
 # * ------------------------------------------------------------- the file
 
-def test_new_progress(schedule):
-    """A fresh progress: every entry pending, no beliefs, every hold pending."""
-    progress = new_progress(schedule)
-    assert progress.problem == SCHEDULE_PROBLEM and progress.schema_version == 1
-    assert progress.schedule_fingerprint == schedule_fingerprint(schedule)
-    assert progress.schedule_fingerprint.startswith('48:')
+def test_new_progress(skeleton):
+    """A fresh progress: every action pending, no beliefs, every hold pending."""
+    progress = new_progress(skeleton)
+    assert progress.problem == SKELETON_PROBLEM and progress.schema_version == 1
+    assert progress.skeleton_fingerprint == skeleton_fingerprint(skeleton)
+    assert progress.skeleton_fingerprint.startswith('48:')
     assert progress.current_index == 0 and progress.next_pending_index() == 0
-    assert len(progress.entries) == 48
+    assert len(progress.actions) == 48
     assert all(progress.status(i) == STATUS_PENDING for i in range(48))
     assert progress.robots == {}
     assert {bar: h.state for bar, h in progress.holds.items()} == {
         'B3': HOLD_PENDING, 'B7': HOLD_PENDING, 'B12': HOLD_PENDING, 'B15': HOLD_PENDING}
 
 
-def test_missing_file_gives_a_new_progress(schedule, tmp_problem):
+def test_missing_file_gives_a_new_progress(skeleton, tmp_problem):
     """No progress.json on disk means a fresh progress, not an error."""
     assert not os.path.exists(progress_path(tmp_problem))
-    assert load_progress(tmp_problem, schedule).current_index == 0
+    assert load_progress(tmp_problem, skeleton).current_index == 0
 
 
-def test_save_and_load_round_trip(schedule, tmp_problem):
+def test_save_and_load_round_trip(skeleton, tmp_problem):
     """Statuses, holds and beliefs survive a save and load; no temporary file is left."""
-    progress = new_progress(schedule)
-    _mark_done_up_to(progress, schedule, 3)
+    progress = new_progress(skeleton)
+    _mark_done_up_to(progress, skeleton, 3)
     path = save_progress(progress, tmp_problem)
 
     assert path == os.path.join(tmp_problem, PROGRESS_FILENAME)
     # Written through a temporary file that is renamed into place: none is left.
-    assert set(os.listdir(tmp_problem)) == {SCHEDULE_FILENAME, PROGRESS_FILENAME}
+    assert set(os.listdir(tmp_problem)) == {SKELETON_FILENAME, PROGRESS_FILENAME}
 
-    loaded = load_progress(tmp_problem, load_schedule(tmp_problem))
+    loaded = load_progress(tmp_problem, load_plan_skeleton(tmp_problem))
     assert loaded.current_index == 4
     assert [loaded.status(i) for i in range(5)] == [STATUS_DONE] * 4 + [STATUS_PENDING]
-    assert loaded.entries[3].marked_by_robot == 'Cindy' and loaded.entries[3].run_id == 'Cindy-test'
+    assert loaded.actions[3].marked_by_robot == 'Cindy' and loaded.actions[3].run_id == 'Cindy-test'
     assert loaded.holds['B3'].state == HOLD_HOLDING and loaded.holds['B3'].since_index == 3
 
     belief = loaded.belief('Alice')
-    assert belief.source == BELIEF_ACTION_END and belief.after_entry == 3
+    assert belief.source == BELIEF_ACTION_END and belief.after_action == 3
     assert list(belief.base_frame.point) == pytest.approx(
         list(progress.belief('Alice').base_frame.point), abs=1e-9)
     assert belief.configuration.joint_names == ALICE.all_arm_joint_names
@@ -118,41 +118,41 @@ def test_save_and_load_round_trip(schedule, tmp_problem):
     assert len(loaded.belief('Cindy').configuration.joint_values) == 12
 
 
-def test_file_of_another_problem_is_refused(schedule, tmp_problem):
+def test_file_of_another_problem_is_refused(skeleton, tmp_problem):
     """A progress.json written for another design problem is a ValueError."""
-    progress = new_progress(schedule)
+    progress = new_progress(skeleton)
     progress.problem = 'some_other_problem'
     save_progress(progress, tmp_problem)
     with pytest.raises(ValueError, match='some_other_problem'):
-        load_progress(tmp_problem, schedule)
+        load_progress(tmp_problem, skeleton)
 
 
-def test_changed_schedule_warns_once_and_keeps_statuses(schedule, tmp_problem, capsys):
-    """A re-exported schedule prints one warning, keeps the statuses and adopts the new fingerprint."""
-    progress = new_progress(schedule)
-    progress.mark_done(schedule.entry(0), 'Cindy', 'Cindy-test')
-    progress.schedule_fingerprint = '47:not-this-schedule'
+def test_changed_skeleton_warns_once_and_keeps_statuses(skeleton, tmp_problem, capsys):
+    """A re-exported plan skeleton prints one warning, keeps the statuses and adopts the new fingerprint."""
+    progress = new_progress(skeleton)
+    progress.mark_done(skeleton.action(0), 'Cindy', 'Cindy-test')
+    progress.skeleton_fingerprint = '47:not-this-plan skeleton'
     save_progress(progress, tmp_problem)
 
-    loaded = load_progress(tmp_problem, schedule)
+    loaded = load_progress(tmp_problem, skeleton)
     out = capsys.readouterr().out
-    assert out.count('\n') == 1 and '47:not-this-schedule' in out
+    assert out.count('\n') == 1 and '47:not-this-plan skeleton' in out
     assert loaded.is_done(0) and loaded.current_index == 1
     # The current fingerprint is adopted, so the next save records it.
-    assert loaded.schedule_fingerprint == schedule_fingerprint(schedule)
+    assert loaded.skeleton_fingerprint == skeleton_fingerprint(skeleton)
 
 
 # * ------------------------------------------------------------- statuses and holds
 
-def test_archive_progress_and_saved_plans(schedule, tmp_problem):
-    """'Reset schedule to the Rhino export': progress and saved plans move aside, nothing else."""
-    progress = new_progress(schedule)
-    _mark_done_up_to(progress, schedule, 3)
+def test_archive_progress_and_saved_plans(skeleton, tmp_problem):
+    """'Reset plan skeleton to the Rhino export': progress and saved plans move aside, nothing else."""
+    progress = new_progress(skeleton)
+    _mark_done_up_to(progress, skeleton, 3)
     save_progress(progress, tmp_problem)
-    actions = os.path.join(tmp_problem, 'BarActions')
-    os.makedirs(actions)
+    actions_dir = os.path.join(tmp_problem, 'BarActions')
+    os.makedirs(actions_dir)
     for name in ('B1__J.json', 'B1__J.live-solved.json', 'B3__H.live-solved.json'):
-        with open(os.path.join(actions, name), 'w') as handle:
+        with open(os.path.join(actions_dir, name), 'w') as handle:
             handle.write('{}')
     older = os.path.join(tmp_problem, ARCHIVE_DIRNAME, 'older', 'BarActions')
     os.makedirs(older)
@@ -168,14 +168,14 @@ def test_archive_progress_and_saved_plans(schedule, tmp_problem):
     for rel in moved:
         assert os.path.isfile(os.path.join(folder, rel)), rel
         assert not os.path.exists(os.path.join(tmp_problem, rel)), rel
-    # The clean export, the schedule and an earlier archive stay where they are.
-    assert os.path.isfile(os.path.join(actions, 'B1__J.json'))
-    assert os.path.isfile(os.path.join(tmp_problem, SCHEDULE_FILENAME))
+    # The clean export, the plan skeleton and an earlier archive stay where they are.
+    assert os.path.isfile(os.path.join(actions_dir, 'B1__J.json'))
+    assert os.path.isfile(os.path.join(tmp_problem, SKELETON_FILENAME))
     assert os.path.isfile(os.path.join(older, 'B1__R.live-solved.json'))
 
-    # Loading again starts over: every entry pending, no beliefs.
-    fresh = load_progress(tmp_problem, schedule)
-    assert all(fresh.status(e.index) == STATUS_PENDING for e in schedule.entries)
+    # Loading again starts over: every action pending, no beliefs.
+    fresh = load_progress(tmp_problem, skeleton)
+    assert all(fresh.status(e.index) == STATUS_PENDING for e in skeleton.actions)
     assert fresh.current_index == 0 and not fresh.robots
 
     # Nothing left to move: nothing moved, no folder created.
@@ -183,68 +183,68 @@ def test_archive_progress_and_saved_plans(schedule, tmp_problem):
     assert moved2 == [] and not os.path.exists(folder2)
 
 
-def test_mark_skip_reopen_and_holds(schedule):
-    """Marking, skipping and reopening entries moves the current index and the hold states."""
-    progress = new_progress(schedule)
-    _mark_done_up_to(progress, schedule, 3)
+def test_mark_skip_reopen_and_holds(skeleton):
+    """Marking, skipping and reopening actions moves the current index and the hold states."""
+    progress = new_progress(skeleton)
+    _mark_done_up_to(progress, skeleton, 3)
     assert progress.current_index == 4
     assert progress.holding_bars() == {'Alice': 'B3'}
     assert progress.released_robots() == set()
     assert progress.hold_state('B3').since_index == 3
     assert progress.hold_state('B1') is None
 
-    progress.skip(schedule.entry(4), 'Cindy', 'Cindy-test')
+    progress.skip(skeleton.action(4), 'Cindy', 'Cindy-test')
     assert progress.status(4) == STATUS_SKIPPED and progress.current_index == 5
-    progress.reopen(schedule.entry(4))
+    progress.reopen(skeleton.action(4))
     assert progress.status(4) == STATUS_PENDING and progress.current_index == 4
 
-    # Alice releases B3 (entry 16) -- out of order is allowed, the pointer stays at 4.
-    hr_belief = belief_after(schedule.load_action(schedule.entry(16)), ALICE)
-    progress.mark_done(schedule.entry(16), 'Alice', 'Alice-test', belief=hr_belief)
+    # Alice releases B3 (action 16) -- out of order is allowed, the pointer stays at 4.
+    hr_belief = belief_after(skeleton.load_bar_action(skeleton.action(16)), ALICE)
+    progress.mark_done(skeleton.action(16), 'Alice', 'Alice-test', belief=hr_belief)
     assert progress.current_index == 4
     assert progress.hold_state('B3').state == HOLD_RELEASED
     assert progress.hold_state('B3').released_at_index == 16
     assert progress.holding_bars() == {} and progress.released_robots() == {'Alice'}
-    assert progress.belief('Alice').after_entry == 16
+    assert progress.belief('Alice').after_action == 16
 
     # Reopening the release: holding again, and the belief it wrote is dropped.
-    progress.reopen(schedule.entry(16))
+    progress.reopen(skeleton.action(16))
     assert progress.hold_state('B3').state == HOLD_HOLDING
     assert progress.hold_state('B3').released_at_index is None
     assert progress.belief('Alice') is None
 
     # Reopening the hold: pending, pointer back to 3.
-    progress.reopen(schedule.entry(3))
+    progress.reopen(skeleton.action(3))
     assert progress.hold_state('B3').state == HOLD_PENDING
     assert progress.hold_state('B3').since_index is None
     assert progress.current_index == 3
 
 
-def test_reopen_keeps_a_belief_from_another_entry(schedule):
-    """Reopening drops a belief only when it came from the reopened entry."""
-    progress = new_progress(schedule)
-    _mark_done_up_to(progress, schedule, 3)
-    assert progress.belief('Cindy').after_entry == 2   # her last done entry, B3_J
-    progress.reopen(schedule.entry(1))                  # an older entry: belief stays
-    assert progress.belief('Cindy').after_entry == 2
-    progress.reopen(schedule.entry(2))                  # the entry it came from: dropped
+def test_reopen_keeps_a_belief_from_another_action(skeleton):
+    """Reopening drops a belief only when it came from the reopened action."""
+    progress = new_progress(skeleton)
+    _mark_done_up_to(progress, skeleton, 3)
+    assert progress.belief('Cindy').after_action == 2   # her last done action, B3_J
+    progress.reopen(skeleton.action(1))                  # an older action: belief stays
+    assert progress.belief('Cindy').after_action == 2
+    progress.reopen(skeleton.action(2))                  # the action it came from: dropped
     assert progress.belief('Cindy') is None
-    assert progress.belief('Alice').after_entry == 3
+    assert progress.belief('Alice').after_action == 3
 
 
-def test_recompute_belief(schedule):
-    """After a reopen, the belief is rebuilt from the robot's last done entry."""
-    progress = new_progress(schedule)
-    _mark_done_up_to(progress, schedule, 3)
-    progress.mark_done(schedule.entry(16), 'Alice', 'Alice-test',
-                       belief=belief_after(schedule.load_action(schedule.entry(16)), ALICE))
-    progress.reopen(schedule.entry(16))
+def test_recompute_belief(skeleton):
+    """After a reopen, the belief is rebuilt from the robot's last done action."""
+    progress = new_progress(skeleton)
+    _mark_done_up_to(progress, skeleton, 3)
+    progress.mark_done(skeleton.action(16), 'Alice', 'Alice-test',
+                       belief=belief_after(skeleton.load_bar_action(skeleton.action(16)), ALICE))
+    progress.reopen(skeleton.action(16))
     assert progress.belief('Alice') is None
 
-    rebuilt = recompute_belief(progress, schedule, 'Alice')
-    assert rebuilt.after_entry == 3 and rebuilt.source == BELIEF_ACTION_END
+    rebuilt = recompute_belief(progress, skeleton, 'Alice')
+    assert rebuilt.after_action == 3 and rebuilt.source == BELIEF_ACTION_END
     assert rebuilt.configuration.joint_values == pytest.approx(ALICE_HOLD_B3_CONF, abs=1e-3)
-    assert recompute_belief(progress, schedule, 'Belle') is None
+    assert recompute_belief(progress, skeleton, 'Belle') is None
 
 
 def test_new_run_id():
@@ -255,13 +255,13 @@ def test_new_run_id():
 
 # * ------------------------------------------------------------- beliefs
 
-def test_belief_after_hold_matches_the_next_export(schedule):
+def test_belief_after_hold_matches_the_next_export(skeleton):
     """Alice's end state after B3_H is exactly what B4_J exports for her."""
-    belief = belief_after(schedule.load_action(schedule.entry(3)), ALICE, entry_index=3)
-    exported = schedule.load_action(schedule.entry(5)).movements[0] \
+    belief = belief_after(skeleton.load_bar_action(skeleton.action(3)), ALICE, action_index=3)
+    exported = skeleton.load_bar_action(skeleton.action(5)).movements[0] \
         .start_state.tool_states['ObstacleRobotAlice']
 
-    assert belief.source == BELIEF_ACTION_END and belief.after_entry == 3
+    assert belief.source == BELIEF_ACTION_END and belief.after_action == 3
     assert belief.configuration.joint_names == ALICE.all_arm_joint_names
     assert belief.configuration.joint_values == pytest.approx(
         list(exported.configuration.joint_values), abs=1e-6)
@@ -271,9 +271,9 @@ def test_belief_after_hold_matches_the_next_export(schedule):
     assert belief.configuration.joint_values == pytest.approx(ALICE_HOLD_B3_CONF, abs=1e-3)
 
 
-def test_belief_after_release_is_cindys_twelve_joints(schedule):
+def test_belief_after_release_is_cindys_twelve_joints(skeleton):
     """Cindy's belief after a release is the last movement's 12-joint target."""
-    release = schedule.load_action(schedule.entry(4))
+    release = skeleton.load_bar_action(skeleton.action(4))
     belief = belief_after(release, CINDY)
     assert belief.configuration.joint_names == CINDY.all_arm_joint_names
     assert len(belief.configuration.joint_values) == 12
@@ -297,8 +297,8 @@ def test_belief_from_live():
     # A 90 degree turn about z: quaternion (x, y, z, w) = (0, 0, sin 45, cos 45).
     half = 2 ** -0.5
     belief = belief_from_live(ALICE, ((1.0, 2.0, 0.0), (0.0, 0.0, half, half)),
-                              [[0.1, 0.2, 0.3, 0.4, 0.5, 0.6]], entry_index=3)
-    assert belief.source == BELIEF_LIVE and belief.after_entry == 3
+                              [[0.1, 0.2, 0.3, 0.4, 0.5, 0.6]], action_index=3)
+    assert belief.source == BELIEF_LIVE and belief.after_action == 3
     assert list(belief.base_frame.point) == pytest.approx([1.0, 2.0, 0.0])
     assert list(belief.base_frame.xaxis) == pytest.approx([0.0, 1.0, 0.0], abs=1e-9)
     assert belief.configuration.joint_names == ALICE.all_arm_joint_names
@@ -309,15 +309,15 @@ def test_belief_from_live():
     assert two_arms.configuration.joint_values == [1.0] * 6 + [2.0] * 6
 
 
-def test_belief_from_exported_and_parked(schedule):
+def test_belief_from_exported_and_parked(skeleton):
     """Exported beliefs come from the obstacle tool states; parked is far away with zero joints."""
     # ! B3_R parks Alice even though she is holding B3 (exporter defect D1);
     # ! this is exactly why the persisted belief has to win over the export.
-    exported = belief_from_exported(schedule.load_action(schedule.entry(4)), ALICE)
+    exported = belief_from_exported(skeleton.load_bar_action(skeleton.action(4)), ALICE)
     assert exported.source == BELIEF_EXPORTED
     assert list(exported.base_frame.point) == pytest.approx([50.0, 50.0, 0.0])
     # Cindy's own action does not carry Cindy as an obstacle.
-    assert belief_from_exported(schedule.load_action(schedule.entry(4)), CINDY) is None
+    assert belief_from_exported(skeleton.load_bar_action(skeleton.action(4)), CINDY) is None
 
     parked = parked_belief(BELLE)
     assert parked.source == BELIEF_PARKED
@@ -327,11 +327,11 @@ def test_belief_from_exported_and_parked(schedule):
     assert parked.configuration.joint_values == [0.0] * 6
 
 
-def test_obstacle_robots_after_the_hold(schedule):
+def test_obstacle_robots_after_the_hold(skeleton):
     """While Cindy runs B3_R: Alice drawn from her belief, Belle from the export (parked)."""
-    progress = new_progress(schedule)
-    _mark_done_up_to(progress, schedule, 3)
-    release = schedule.load_action(schedule.entry(4))
+    progress = new_progress(skeleton)
+    _mark_done_up_to(progress, skeleton, 3)
+    release = skeleton.load_bar_action(skeleton.action(4))
 
     states = obstacle_tool_states(progress, 'Cindy', exported_action=release)
     assert set(states) == {'ObstacleRobotAlice', 'ObstacleRobotBelle'}
@@ -346,30 +346,30 @@ def test_obstacle_robots_after_the_hold(schedule):
         'ObstacleRobotAlice': BELIEF_ACTION_END, 'ObstacleRobotBelle': BELIEF_EXPORTED}
     assert obstacle_sources(progress, 'Cindy') == {
         'ObstacleRobotAlice': BELIEF_ACTION_END, 'ObstacleRobotBelle': BELIEF_PARKED}
-    # From Alice's monitor, Cindy is drawn from her belief after B3_J (entry 2).
+    # From Alice's monitor, Cindy is drawn from her belief after B3_J (action 2).
     assert obstacle_sources(progress, 'Alice')['ObstacleRobotCindy'] == BELIEF_ACTION_END
 
 
-def test_obstacle_sources_line(schedule):
-    """The header's 'others' line: each other robot's source, with the entry of a stamped belief."""
-    progress = new_progress(schedule)
+def test_obstacle_sources_line(skeleton):
+    """The header's 'others' line: each other robot's source, with the action of a stamped belief."""
+    progress = new_progress(skeleton)
     assert obstacle_sources_line(progress, 'Cindy') == 'Alice <- parked | Belle <- parked'
 
-    _mark_done_up_to(progress, schedule, 3)
-    release = schedule.load_action(schedule.entry(4))
+    _mark_done_up_to(progress, skeleton, 3)
+    release = skeleton.load_bar_action(skeleton.action(4))
     assert obstacle_sources_line(progress, 'Cindy', exported_action=release) == \
-        'Alice <- action_end_state (entry 3) | Belle <- exported'
+        'Alice <- action_end_state (action 3) | Belle <- exported'
     assert obstacle_sources_line(progress, 'Alice') == \
-        'Cindy <- action_end_state (entry 2) | Belle <- parked'
+        'Cindy <- action_end_state (action 2) | Belle <- parked'
 
 
-def test_released_robot_is_parked(schedule):
+def test_released_robot_is_parked(skeleton):
     """A robot that released its hold is drawn parked, whatever its belief."""
-    progress = new_progress(schedule)
-    _mark_done_up_to(progress, schedule, 3)
-    progress.mark_done(schedule.entry(16), 'Alice', 'Alice-test',
-                       belief=belief_after(schedule.load_action(schedule.entry(16)), ALICE))
-    release = schedule.load_action(schedule.entry(4))
+    progress = new_progress(skeleton)
+    _mark_done_up_to(progress, skeleton, 3)
+    progress.mark_done(skeleton.action(16), 'Alice', 'Alice-test',
+                       belief=belief_after(skeleton.load_bar_action(skeleton.action(16)), ALICE))
+    release = skeleton.load_bar_action(skeleton.action(4))
     assert obstacle_sources(progress, 'Cindy', exported_action=release)['ObstacleRobotAlice'] \
         == BELIEF_PARKED
     frame, conf = obstacle_tool_states(progress, 'Cindy', exported_action=release)['ObstacleRobotAlice']

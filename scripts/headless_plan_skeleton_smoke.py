@@ -1,10 +1,10 @@
-"""Smoke test: the ActionSchedule operator flow through the real HuskyMonitor methods.
+"""Smoke test: the PlanSkeleton operator flow through the real HuskyMonitor methods.
 
 No ROS, no hardware, no window. The monitor is built without its ``__init__``
 (same trick as ``headless_live_monitor_test.py``) and talks to a stub robot
 interface that records every command and answers like ROS would, one monitor
-tick later. The buttons are the monitor's own methods ('Load entry' =
-``load_schedule_entry``, 'Mark entry done' = ``mark_entry_done``, ...).
+tick later. The buttons are the monitor's own methods ('Load action' =
+``load_action``, 'Mark action done' = ``mark_action_done``, ...).
 
 ! It ALWAYS runs on a scratch copy of the problem folder in a temp dir
 ! (ActionSchedule.json, WalkableGround.json and the clean BarActions/ are copied,
@@ -13,7 +13,7 @@ tick later. The buttons are the monitor's own methods ('Load entry' =
 ! folder -- the last check confirms the real folder is untouched.
 
 First, the dispatch check (its own Cindy monitor): for every movement of the
-fixture's entry 0 (B1_J) and entry 1 (B1_R) it records which planner method
+fixture's action 0 (B1_J) and action 1 (B1_R) it records which planner method
 'Plan Movement' calls, which ``husky_world`` exec function 'Exec Selected Mv
 Traj' calls, the scaffolding tool command a compliant exec sends (tighten /
 gripper loosen; none for the insert of B1, a grounded bar), the traj time
@@ -23,27 +23,27 @@ functions are replaced by recorders (nothing is planned or moved); only the
 compliant exec runs for real on the stub, up to its tool command. It does not
 check planning outcomes.
 
-Then the carry check (its own Cindy monitor, entry 0, fake configurations,
+Then the carry check (its own Cindy monitor, action 0, fake configurations,
 nothing planned): adopting a transfer start writes it into the steps where no
 arm moves before the transfer (the manual mount, the tool grasp) and into the
 travel to load's goal; accepting a transfer plan writes its last waypoint into
 the insert's start and into the tighten step before it.
 
-Then the transfer start check (its own Cindy monitor, entry 0, the real
+Then the transfer start check (its own Cindy monitor, action 0, the real
 manual-start IK, the travel to load's planner replaced by a recorder): 'Confirm
 transfer start + plan travel to load' with the bar 3 m away plans nothing and
-leaves the transfer loaded; with the default sliders right after 'Load entry'
+leaves the transfer loaded; with the default sliders right after 'Load action'
 it loads the travel to load and plans it, its goal being the adopted start.
 
-Then the operator steps check (its own Cindy monitor, entries 0 and 1, the
-compliant exec replaced by a recorder): entry 0 has 5 steps, entry 1 has 2; a
+Then the operator steps check (its own Cindy monitor, actions 0 and 1, the
+compliant exec replaced by a recorder): action 0 has 5 steps, action 1 has 2; a
 'Step' slider at 4 loads the insert and the '-> step' readout and 'Now:' line
 count steps; without a slider widget an index still means a movement (the
 tighten loads); exec of the insert names the tighten that runs with it, exec
-of the retreat names the untighten and the ungrasp; entry 1 opens on its
+of the retreat names the untighten and the ungrasp; action 1 opens on its
 retreat.
 
-Then the transfer free move check (its own Cindy monitor, entry 0, the
+Then the transfer free move check (its own Cindy monitor, action 0, the
 workaround box ``TRANSFER_AS_FREE_MOVE`` ticked, the free planner replaced by a
 recorder that returns [start, goal]): the goal puts both flanges on the
 transfer's target frames; the planner gets a state with the bar and its joints
@@ -51,7 +51,7 @@ hidden and not attached; after acceptance the manual mount, the tool grasp,
 the tighten and the insert start at the goal; unticked, the bar-held planner
 is called as before. One real free plan is reported as INFO (not a check).
 
-Then the grounded insert check (its own Cindy monitor, entries 0 and 2, a
+Then the grounded insert check (its own Cindy monitor, actions 0 and 2, a
 straight joint path stamped for each insert, nothing planned): the REAL
 compliant exec runs on the stub. B1's insert (a grounded bar: ground joints in
 the tools) through 'Exec Selected Mv Traj' to its end: one joint trajectory for
@@ -59,7 +59,7 @@ both arms with the whole path, only the motor stops, no compliance controller,
 no wait for the joint motors to stall, the 'grounded bar' lines, and its
 tighten step logged as not sent (Rhino note D9).
 
-Then the one-sided insert check (its own Cindy monitor, entry 2): B3's insert
+Then the one-sided insert check (its own Cindy monitor, action 2): B3's insert
 mates on the left arm only (the right male's female sits on staging bar B2).
 Through 'Exec Selected Mv Traj', pumped tick by tick: its tighten step is
 logged as driving the LEFT joint motor only (and a warning while the export
@@ -72,33 +72,33 @@ start state the insert refuses to run.
 Then the flow, on the fixture's first hold (Alice holds B3):
 
   Cindy's run (domain 86)
-    - the built-structure switch first (``built_bars_check``), on entries 0 and 1:
+    - the built-structure switch first (``built_bars_check``), on actions 0 and 1:
       switch OFF (default) -> B1_J_M5_LM_insert's start and end states have no
       pair with the floor ``obstacle_ground`` in the full collision report (the
       ground joints may stand on it), B1_R never hides B1 or its joints; the panel
-      toggle ON -> the entry reloads, the built joints are ignored and drawn
+      toggle ON -> the action reloads, the built joints are ignored and drawn
       faint where they stand, bodies not built yet stay blanked; OFF again ->
       the reload brings clean states back (also for a joint that rode in a
       held-bar preview in between)
-    - entry 0 (B1_J): load; while its manual step waits for 'Confirm Exec',
-      Mark entry done and Load entry are refused (one task at a time); Mark
-      entry done -> progress.json, Cindy's belief 'live'
-    - entry 3 (B3_H, Alice's): Load entry drops the previous planned path;
+    - action 0 (B1_J): load; while its manual step waits for 'Confirm Exec',
+      Mark action done and Load action are refused (one task at a time); Mark
+      action done -> progress.json, Cindy's belief 'live'
+    - action 3 (B3_H, Alice's): Load action drops the previous planned path;
       display only, Plan / Exec step refused, Mark done waits at the Confirm
       Exec gate -> Alice's belief 'assumed' = B3__H's end; the drawn Alice moves
       to it, a husky mocap sees keeps its base
-    - entry 4 (B3_R): ObstacleRobotAlice posed from that belief (not parked at
-      (50, 50, 0)), equal to what B4__J exports; Reopen of this pending entry is
+    - action 4 (B3_R): ObstacleRobotAlice posed from that belief (not parked at
+      (50, 50, 0)), equal to what B4__J exports; Reopen of this pending action is
       refused; the retreat and the free move home plan with Alice
       posed from her belief; Load Movement of a step drops the planned path;
-      Reset All reloads the entry from its clean export
-    - entry 16 (B3_HR, Alice's): Mark done -> Alice released and drawn parked;
-      Reopen (no index) reopens the LOADED entry, not the slider's
-    - reopen entry 3 -> pending again, Alice's belief dropped
+      Reset All reloads the action from its clean export
+    - action 16 (B3_HR, Alice's): Mark done -> Alice released and drawn parked;
+      Reopen (no index) reopens the LOADED action, not the slider's
+    - reopen action 3 -> pending again, Alice's belief dropped
   Alice's run (domain 84)
-    - entry 3 is hers: plan + exec H_M0 (free), gripper OPEN step, plan + exec
+    - action 3 is hers: plan + exec H_M0 (free), gripper OPEN step, plan + exec
       H_M2 (linear), gripper CLOSE step with the compliant handoff (controllers
-      joint -> compliance -> joint), Mark entry done -> belief 'live' at B3__H's
+      joint -> compliance -> joint), Mark action done -> belief 'live' at B3__H's
       end, trajectories saved to B3__H.live-solved.json
     - the live goal (``alice_live_goal_check``, F3): base not tracked -> the free
       approach keeps its exported goal; base tracked and moved 3 cm -> its goal
@@ -107,14 +107,14 @@ Then the flow, on the fixture's first hold (Alice holds B3):
       plans; base 2 m away -> nothing planned, one 'not planning' warning
   Cindy's restart (domain 86, a new monitor object)
     - start-up: her simulated arms take her own progress.json belief (after
-      entry 0), one log line
-    - Load entry sets the traj time to the entry's first default (B1_R: its
+      action 0), one log line
+    - Load action sets the traj time to the action's first default (B1_R: its
       retreat's, as the release opens with tool steps); her next jointing
-      entry's movement 0 starts from the believed configuration
+      action's movement 0 starts from the believed configuration
     - 'Move Arms to Movement Start' with FAKE_HARDWARE moves the simulated arms
       to the start and sends no command
     - after Alice's hold is marked done, the header's second line reads
-      'others: Alice <- assumed (entry 3) | Belle <- ...'
+      'others: Alice <- assumed (action 3) | Belle <- ...'
 
 ? Why do H_M0 / H_M2 plan here when ``smoke_single_arm_plan.py --collisions
 ? exported`` says the exported hold scene collides? Alice's run turns the
@@ -129,7 +129,7 @@ Usage:
     cd /home/yijiangh/Code/ros2_ws && source venv/bin/activate && source install/setup.bash
     export DESIGN_DATA_DIRECTORY="/home/yijiangh/Insync/yijiang94817@gmail.com/Google Drive - Shared with me/2025-03 Husky Assembly/data_design_study"
     export DESIGN_PROBLEM_NAME=260920_RobArch_demo_revamp_backup
-    python src/husky-assembly-teleop/scripts/headless_schedule_smoke.py [--keep]
+    python src/husky-assembly-teleop/scripts/headless_plan_skeleton_smoke.py [--keep]
 
     --keep leaves the temp dir (its path is printed) to inspect progress.json
     and the sidecar. (If an IK call complains that ``ssik`` is not installed,
@@ -179,7 +179,7 @@ from husky_assembly_teleop.progress_io import (
     obstacle_sources,
 )
 from husky_assembly_teleop.robot_registry import other_robots, robot_by_name
-from husky_assembly_teleop.schedule_io import load_schedule, problem_root
+from husky_assembly_teleop.plan_skeleton_io import load_plan_skeleton, problem_root
 from husky_assembly_teleop.utils import (
     frame_from_pose, joint_trajectory_from_path, path_from_joint_trajectory, pose_from_frame,
     vec12_from_conf,
@@ -187,7 +187,7 @@ from husky_assembly_teleop.utils import (
 from husky_assembly_tamp.motion_planner.api import _fk_link_frame
 from rs_data_structure.bar_action import CONTROLLER_JOINT_TRACKING
 
-# * The fixture's first hold: Alice holds B3 (entry B3_H); B3_R is Cindy's
+# * The fixture's first hold: Alice holds B3 (action B3_H); B3_R is Cindy's
 # * release of B3 and B4_J the jointing whose export poses Alice correctly.
 SUPPORT_ROBOT = 'Alice'
 OTHER_SUPPORT_ROBOT = 'Belle'
@@ -506,7 +506,7 @@ def sha1(path: str) -> str:
 
 
 def make_scratch_problem(real_root: str, scratch_design: str, problem: str) -> str:
-    """Copy what the schedule flow writes next to into a scratch problem folder.
+    """Copy what the plan skeleton flow writes next to into a scratch problem folder.
 
     Clean exports only (no ``.live-solved.json``, no ``progress.json``), so
     the smoke starts from the exported state whatever the real folder holds.
@@ -540,7 +540,7 @@ def point_package_at(scratch_design: str) -> None:
     Args:
         scratch_design (str): The scratch design data directory.
     """
-    husky_monitor.DESIGN_DATA_DIRECTORY = scratch_design   # schedule, progress.json, sidecars
+    husky_monitor.DESIGN_DATA_DIRECTORY = scratch_design   # plan skeleton, progress.json, sidecars
     cfab_session.DESIGN_DATA_DIRECTORY = scratch_design    # RobotCell (symlink), WalkableGround
 
 
@@ -693,13 +693,13 @@ def select_movement(monitor, idx: int):
 # * Dispatch check: which planner / exec / tool command each movement reaches
 # * ---------------------------------------------------------------------------
 
-# * What today's monitor does with every movement of the fixture's entry 0 (J)
-# * and entry 1 (R), keyed by (entry kind, movement index in the file). The
+# * What today's monitor does with every movement of the fixture's action 0 (J)
+# * and action 1 (R), keyed by (action kind, movement index in the file). The
 # * movement id is written without its bar prefix ('B1_'). '-' = not run for
 # * this movement; traj_time None = the movement has no default traj time.
 # ! Since stage 1 (F5d) the stationary steps whose start state has the bar
 # ! attached (J 1, J 2, J 4, R 0) preview as 'bar_held': the bar is drawn in the tools.
-# ! B1 (entry 0) is a GROUNDED bar (held on its ground joints at the insert): its
+# ! B1 (action 0) is a GROUNDED bar (held on its ground joints at the insert): its
 # ! insert runs rigid and never tightens, so J 5 sends no tool command; the
 # ! exported tighten step (J 4) is an export defect (Rhino note D9).
 # ! grounded_insert_check covers the grounded insert; one_sided_insert_check a
@@ -781,10 +781,10 @@ def ready_for_compliant_exec(monitor) -> None:
     monitor.huskies[0].object = SimpleNamespace(robot=None)
 
 
-def dispatch_check(results: Results, problem: str, root: str, schedule) -> None:
+def dispatch_check(results: Results, problem: str, root: str, skeleton) -> None:
     """Record which planner, exec function and tool command each Cindy movement reaches.
 
-    For every movement of entry 0 (J) and entry 1 (R): 'Plan Movement' with the
+    For every movement of action 0 (J) and action 1 (R): 'Plan Movement' with the
     planner methods replaced by recorders (nothing is planned), then 'Exec
     Selected Mv Traj' with the ``husky_world`` exec functions replaced by
     recorders (nothing runs), and for a compliant exec the REAL compliant exec
@@ -795,7 +795,7 @@ def dispatch_check(results: Results, problem: str, root: str, schedule) -> None:
         results (Results): Where the checks go.
         problem (str): Problem folder name.
         root (str): The scratch problem folder (unused; same signature as the other runs).
-        schedule (ActionSchedule): The scratch schedule.
+        skeleton (PlanSkeleton): The scratch plan skeleton.
     """
     # * Planner method on the monitor -> label. Stage 4 renames the methods;
     # * only this dict changes then.
@@ -820,11 +820,11 @@ def dispatch_check(results: Results, problem: str, root: str, schedule) -> None:
     no_default = -1.0
 
     cindy = robot_by_name(ASSEMBLY_ROBOT)
-    entries = [schedule.entry(0), schedule.entry(1)]
-    assert [e.kind for e in entries] == ['J', 'R'], \
-        f"the dispatch check needs a J then an R entry first, got {[e.action_id for e in entries]}"
+    actions = [skeleton.action(0), skeleton.action(1)]
+    assert [e.kind for e in actions] == ['J', 'R'], \
+        f"the dispatch check needs a J then an R action first, got {[e.action_id for e in actions]}"
     print(f"\n{'=' * 30} DISPATCH CHECK {'=' * 30}")
-    base = schedule.load_action(entries[0], prefer_sidecar=False).movements[-1].start_state.robot_base_frame
+    base = skeleton.load_bar_action(actions[0], prefer_sidecar=False).movements[-1].start_state.robot_base_frame
     monitor, iface, _log = make_monitor(cindy, base, problem)
     add_viz_huskies(monitor, cindy)
     ready_for_compliant_exec(monitor)
@@ -842,10 +842,10 @@ def dispatch_check(results: Results, problem: str, root: str, schedule) -> None:
     try:
         for name, (label, queued) in exec_labels.items():
             setattr(husky_world, name, recorder(label, queued))
-        monitor._load_schedule_state()
-        for entry in entries:
+        monitor._load_skeleton_state()
+        for action in actions:
             # * --- planner sweep
-            monitor.load_schedule_entry(entry.index)
+            monitor.load_action(action.index)
             n_mv = len(monitor._loaded_movements)
             planners = []
             for name, label in planner_labels.items():
@@ -860,7 +860,7 @@ def dispatch_check(results: Results, problem: str, root: str, schedule) -> None:
 
             # * --- exec sweep, on a fresh load: a "failed" plan (the recorders
             # * --- return None) clears state, e.g. the transfer's start configuration
-            monitor.load_schedule_entry(entry.index)
+            monitor.load_action(action.index)
             for idx in range(n_mv):
                 monitor.trajectory_time = no_default
                 mv = select_movement(monitor, idx)
@@ -882,15 +882,15 @@ def dispatch_check(results: Results, problem: str, root: str, schedule) -> None:
                 recorded = (mv.movement_id.split('_', 1)[1], planners[idx], exec_label, tool_cmd,
                             traj_time, idx in monitor._live_start_indices,
                             monitor._authored_motion_type(mv))
-                expected = DISPATCH_EXPECTED.get((entry.kind, idx))
+                expected = DISPATCH_EXPECTED.get((action.kind, idx))
                 shown = ' '.join(f'{k}={v}' for k, v in zip(DISPATCH_FIELDS[1:], recorded[1:]))
                 diff = ('no expected row' if expected is None else ', '.join(
                     f'{k} expected {e}' for k, r, e in zip(DISPATCH_FIELDS, recorded, expected)
                     if r != e))
                 results.check(f'dispatch: {mv.movement_id} {shown}', recorded == expected, diff)
-            n_rows = sum(kind == entry.kind for kind, _ in DISPATCH_EXPECTED)
-            results.check(f"dispatch: entry {entry.index} ({entry.action_id}) has the table's "
-                          f"{n_rows} {entry.kind} movements", n_mv == n_rows, f"{n_mv} loaded")
+            n_rows = sum(kind == action.kind for kind, _ in DISPATCH_EXPECTED)
+            results.check(f"dispatch: action {action.index} ({action.action_id}) has the table's "
+                          f"{n_rows} {action.kind} movements", n_mv == n_rows, f"{n_mv} loaded")
     finally:
         for name, fn in originals.items():
             setattr(husky_world, name, fn)
@@ -901,8 +901,8 @@ def dispatch_check(results: Results, problem: str, root: str, schedule) -> None:
 # * Carry check: a configuration reaches the steps where no arm moves
 # * ---------------------------------------------------------------------------
 
-def carry_check(results: Results, problem: str, root: str, schedule) -> None:
-    """Check the carry rule on entry 0 (J): adopting a transfer start, then accepting a transfer plan.
+def carry_check(results: Results, problem: str, root: str, skeleton) -> None:
+    """Check the carry rule on action 0 (J): adopting a transfer start, then accepting a transfer plan.
 
     (a) Adopting a transfer start (what 'Transfer start: Confirm manual pose'
     ends with) writes it into every step where no arm moves between the travel
@@ -917,17 +917,17 @@ def carry_check(results: Results, problem: str, root: str, schedule) -> None:
         results (Results): Where the checks go.
         problem (str): Problem folder name.
         root (str): The scratch problem folder (unused; same signature as the other runs).
-        schedule (ActionSchedule): The scratch schedule.
+        skeleton (PlanSkeleton): The scratch plan skeleton.
     """
     cindy = robot_by_name(ASSEMBLY_ROBOT)
-    first = schedule.entry(0)
+    first = skeleton.action(0)
     print(f"\n{'=' * 30} CARRY CHECK {'=' * 30}")
-    base = schedule.load_action(first, prefer_sidecar=False).movements[-1].start_state.robot_base_frame
+    base = skeleton.load_bar_action(first, prefer_sidecar=False).movements[-1].start_state.robot_base_frame
     monitor, _iface, _log = make_monitor(cindy, base, problem)
     add_viz_huskies(monitor, cindy)
     try:
-        monitor._load_schedule_state()
-        monitor.load_schedule_entry(first.index)
+        monitor._load_skeleton_state()
+        monitor.load_action(first.index)
         movements = monitor._loaded_movements
         fi = monitor._loaded_index_of(MovementKind.DUAL_FREE, free_home=False)
         ti = monitor._loaded_index_of(MovementKind.DUAL_CONSTRAINED_FREE)
@@ -984,15 +984,15 @@ def carry_check(results: Results, problem: str, root: str, schedule) -> None:
 # * Transfer start: confirm it and plan the travel to load in one click (F1)
 # * ---------------------------------------------------------------------------
 
-def transfer_start_check(results: Results, problem: str, root: str, schedule) -> None:
-    """The 'Confirm transfer start + plan travel to load' button on entry 0 (J).
+def transfer_start_check(results: Results, problem: str, root: str, skeleton) -> None:
+    """The 'Confirm transfer start + plan travel to load' button on action 0 (J).
 
     Runs the real manual-start IK (``confirm_m1_manual_start``); the travel to
     load's planner is replaced by a recorder that plans nothing. (a) A bar
     pose 3 m away (perpendicular shift 1): the button returns False, the
     recorder is not called, the transfer stays loaded, the travel to load has
     no goal, and the warning says no arm configuration holds the bar. (b) The
-    sliders at their defaults, right after a fresh 'Load entry': the recorder
+    sliders at their defaults, right after a fresh 'Load action': the recorder
     is called once with the travel to load, which is left loaded, and its goal
     is the adopted transfer start.
 
@@ -1000,12 +1000,12 @@ def transfer_start_check(results: Results, problem: str, root: str, schedule) ->
         results (Results): Where the checks go.
         problem (str): Problem folder name.
         root (str): The scratch problem folder (unused; same signature as the other runs).
-        schedule (ActionSchedule): The scratch schedule.
+        skeleton (PlanSkeleton): The scratch plan skeleton.
     """
     cindy = robot_by_name(ASSEMBLY_ROBOT)
-    first = schedule.entry(0)
+    first = skeleton.action(0)
     print(f"\n{'=' * 30} TRANSFER START CHECK {'=' * 30}")
-    base = schedule.load_action(first, prefer_sidecar=False).movements[-1].start_state.robot_base_frame
+    base = skeleton.load_bar_action(first, prefer_sidecar=False).movements[-1].start_state.robot_base_frame
     monitor, _iface, log = make_monitor(cindy, base, problem)
     add_viz_huskies(monitor, cindy)
     # The monitor's __init__ (skipped by the harness) sets the transfer-start caches.
@@ -1024,10 +1024,10 @@ def transfer_start_check(results: Results, problem: str, root: str, schedule) ->
 
     monitor._plan_M0_dispatch = record_free_to_load
     try:
-        monitor._load_schedule_state()
+        monitor._load_skeleton_state()
 
         # * --- (a) a bar pose out of reach: nothing planned, the transfer stays loaded
-        monitor.load_schedule_entry(first.index)
+        monitor.load_action(first.index)
         movements = monitor._loaded_movements
         ti = monitor._loaded_index_of(MovementKind.DUAL_CONSTRAINED_FREE)
         fi = monitor._loaded_index_of(MovementKind.DUAL_FREE, free_home=False)
@@ -1046,9 +1046,9 @@ def transfer_start_check(results: Results, problem: str, root: str, schedule) ->
                       f"loaded {monitor.current_movement_index}, "
                       f"warning {no_conf[0] if no_conf else 'none'!r}")
 
-        # * --- (b) default sliders after a fresh Load entry: the travel to load is planned
+        # * --- (b) default sliders after a fresh Load action: the travel to load is planned
         monitor._m1_manual_perp1_m = 0.0
-        monitor.load_schedule_entry(first.index)
+        monitor.load_action(first.index)
         movements = monitor._loaded_movements
         ok = monitor.confirm_transfer_start_and_plan_free_to_load()
         free_to_load = movements[fi]
@@ -1071,17 +1071,17 @@ def transfer_start_check(results: Results, problem: str, root: str, schedule) ->
 # * Operator steps: a tool step that runs with the next arm movement is no stop (F2)
 # * ---------------------------------------------------------------------------
 
-def operator_steps_check(results: Results, problem: str, root: str, schedule) -> None:
-    """The 'Step' slider on entry 0 (J) and entry 1 (R): operator steps instead of movements.
+def operator_steps_check(results: Results, problem: str, root: str, skeleton) -> None:
+    """The 'Step' slider on action 0 (J) and action 1 (R): operator steps instead of movements.
 
-    (a) Entry 0 has 5 steps; the last one is the insert, with the joint tighten
+    (a) Action 0 has 5 steps; the last one is the insert, with the joint tighten
     running with it. (b) A fake 'Step' slider widget at 4 (the last step):
     'Load Movement' loads the insert, the '-> step' readout names the insert
     and the tighten, the 'Now:' line says step 5/5. (c) Without a widget (the
     headless scripts) the selected index is still a MOVEMENT index:
     ``select_movement`` on the tighten loads the tighten. (d) 'Exec Selected
     Mv Traj' on the insert (the compliant exec replaced by a recorder) logs
-    one line naming the tighten. (e) Entry 1, loaded the way the GUI does,
+    one line naming the tighten. (e) Action 1, loaded the way the GUI does,
     has 2 steps and opens on its retreat; the retreat's exec logs one line
     each for the untighten and the ungrasp.
 
@@ -1089,12 +1089,12 @@ def operator_steps_check(results: Results, problem: str, root: str, schedule) ->
         results (Results): Where the checks go.
         problem (str): Problem folder name.
         root (str): The scratch problem folder (unused; same signature as the other runs).
-        schedule (ActionSchedule): The scratch schedule.
+        skeleton (PlanSkeleton): The scratch plan skeleton.
     """
     cindy = robot_by_name(ASSEMBLY_ROBOT)
-    first, release = schedule.entry(0), schedule.entry(1)
+    first, release = skeleton.action(0), skeleton.action(1)
     print(f"\n{'=' * 30} OPERATOR STEPS CHECK {'=' * 30}")
-    base = schedule.load_action(first, prefer_sidecar=False).movements[-1].start_state.robot_base_frame
+    base = skeleton.load_bar_action(first, prefer_sidecar=False).movements[-1].start_state.robot_base_frame
     monitor, iface, log = make_monitor(cindy, base, problem)
     add_viz_huskies(monitor, cindy)
     compliant_calls = []  # the movement loaded at each compliant exec
@@ -1118,7 +1118,7 @@ def operator_steps_check(results: Results, problem: str, root: str, schedule) ->
         n = len(log.msgs)
         monitor.exec_selected_movement_traj()
         run_tasks(monitor, iface)
-        # B1 (entry 0) is a grounded bar: the line for its tighten says it is not
+        # B1 (action 0) is a grounded bar: the line for its tighten says it is not
         # sent (its wording is checked in grounded_insert_check).
         return (log.since(n, 'info', 'runs with this movement')
                 + log.since(n, 'info', 'not sent: grounded bar'))
@@ -1126,16 +1126,16 @@ def operator_steps_check(results: Results, problem: str, root: str, schedule) ->
     real_compliant = husky_world.execute_planned_trajectory_compliant
     husky_world.execute_planned_trajectory_compliant = record_compliant
     try:
-        monitor._load_schedule_state()
+        monitor._load_skeleton_state()
 
-        # * --- (a) entry 0: five steps, the tighten runs with the insert
-        monitor.load_schedule_entry(first.index)
+        # * --- (a) action 0: five steps, the tighten runs with the insert
+        monitor.load_action(first.index)
         movements = monitor._loaded_movements
         steps = monitor._shown_steps()
         ii = monitor._loaded_index_of(MovementKind.DUAL_CONSTRAINED_LINEAR)
         tool_idx = [i for i, mv in enumerate(movements) if tool_runs_with_next_motion(mv)]
         insert, tighten = movements[ii], movements[tool_idx[0]]
-        results.check(f"steps: entry 0 has 5 steps, the last = {insert.movement_id} "
+        results.check(f"steps: action 0 has 5 steps, the last = {insert.movement_id} "
                       f"with {tighten.movement_id}",
                       len(steps) == 5 and steps[-1] == OperatorStep(ii, (tool_idx[0],)),
                       f"{steps}")
@@ -1172,19 +1172,19 @@ def operator_steps_check(results: Results, problem: str, root: str, schedule) ->
                       and tighten.movement_id in notes[0],
                       f"compliant exec calls {len(compliant_calls)}, lines {notes}")
 
-        # * --- (e) entry 1 as the GUI loads it: two steps, opens on the retreat
+        # * --- (e) action 1 as the GUI loads it: two steps, opens on the retreat
         # The live monitor opens a loaded action on its first step; the pink
         # assembled-bar line of the accuracy test is left out headless.
         monitor._is_live_monitor = True
         monitor.BAR_ACTION_MOCAP_ACCURACY_TEST = 0
-        monitor.load_schedule_entry(release.index)
+        monitor.load_action(release.index)
         movements = monitor._loaded_movements
         steps = monitor._shown_steps()
         ri = monitor._loaded_index_of(MovementKind.DUAL_INDEPENDENT_LINEAR)
         tool_idx = [i for i, mv in enumerate(movements) if tool_runs_with_next_motion(mv)]
         retreat = movements[ri]
         ids = [movements[j].movement_id for j in tool_idx]
-        results.check(f"steps: entry 1 has 2 steps and opens on {retreat.movement_id} "
+        results.check(f"steps: action 1 has 2 steps and opens on {retreat.movement_id} "
                       f"(with {ids})",
                       len(steps) == 2 and steps[0] == OperatorStep(ri, tuple(tool_idx))
                       and monitor.current_movement is retreat
@@ -1204,8 +1204,8 @@ def operator_steps_check(results: Results, problem: str, root: str, schedule) ->
 # * Transfer workaround: the transfer planned as a free move without the bar
 # * ---------------------------------------------------------------------------
 
-def transfer_free_move_check(results: Results, problem: str, root: str, schedule) -> None:
-    """The transfer workaround box (``TRANSFER_AS_FREE_MOVE``) on entry 0 (J).
+def transfer_free_move_check(results: Results, problem: str, root: str, skeleton) -> None:
+    """The transfer workaround box (``TRANSFER_AS_FREE_MOVE``) on action 0 (J).
 
     With the box ticked, 'Plan Movement' on the transfer (loaded by kind) runs
     with the free planner (``plan_free_dual_arm``, replaced where husky_monitor
@@ -1228,12 +1228,12 @@ def transfer_free_move_check(results: Results, problem: str, root: str, schedule
         results (Results): Where the checks go.
         problem (str): Problem folder name.
         root (str): The scratch problem folder (unused; same signature as the other runs).
-        schedule (ActionSchedule): The scratch schedule.
+        skeleton (PlanSkeleton): The scratch plan skeleton.
     """
     cindy = robot_by_name(ASSEMBLY_ROBOT)
-    first = schedule.entry(0)
+    first = skeleton.action(0)
     print(f"\n{'=' * 30} TRANSFER FREE MOVE CHECK {'=' * 30}")
-    base = schedule.load_action(first, prefer_sidecar=False).movements[-1].start_state.robot_base_frame
+    base = skeleton.load_bar_action(first, prefer_sidecar=False).movements[-1].start_state.robot_base_frame
     monitor, iface, log = make_monitor(cindy, base, problem)
     add_viz_huskies(monitor, cindy)
     free_plans = []    # (state, goal 12-vec) the free planner was called with
@@ -1256,8 +1256,8 @@ def transfer_free_move_check(results: Results, problem: str, root: str, schedule
 
     real_free_plan = husky_monitor.plan_free_dual_arm
     try:
-        monitor._load_schedule_state()
-        monitor.load_schedule_entry(first.index)
+        monitor._load_skeleton_state()
+        monitor.load_action(first.index)
         movements = monitor._loaded_movements
         fi = monitor._loaded_index_of(MovementKind.DUAL_FREE, free_home=False)
         ti = monitor._loaded_index_of(MovementKind.DUAL_CONSTRAINED_FREE)
@@ -1328,7 +1328,7 @@ def transfer_free_move_check(results: Results, problem: str, root: str, schedule
 
         # * --- (d) box unticked: the bar-held planner, as before
         monitor.TRANSFER_AS_FREE_MOVE = 0
-        monitor.load_schedule_entry(first.index)
+        monitor.load_action(first.index)
         monitor.load_selected_movement(index=ti)
         n_free = len(free_plans)
         monitor.plan_selected_movement()
@@ -1343,7 +1343,7 @@ def transfer_free_move_check(results: Results, problem: str, root: str, schedule
         husky_monitor.plan_free_dual_arm = real_free_plan
         delattr(monitor, '_validate_free_planned_path')  # back to the monitor's own method
         monitor.TRANSFER_AS_FREE_MOVE = 1
-        monitor.load_schedule_entry(first.index)
+        monitor.load_action(first.index)
         monitor.load_selected_movement(index=ti)
         mv = monitor.current_movement
         n = len(log.msgs)
@@ -1367,18 +1367,18 @@ def transfer_free_move_check(results: Results, problem: str, root: str, schedule
 # * Inserts on the stub: grounded bars (Rhino note D9), one-sided bars (D10)
 # * ---------------------------------------------------------------------------
 
-def load_insert(monitor, iface: StubInterface, entry) -> tuple:
-    """'Load entry', load its insert, stamp a straight joint path, stand the stub arms at its start.
+def load_insert(monitor, iface: StubInterface, action) -> tuple:
+    """'Load action', load its insert, stamp a straight joint path, stand the stub arms at its start.
 
     Args:
         monitor (HuskyMonitor): The headless monitor.
         iface (StubInterface): The stub; its arms are put at the insert's start.
-        entry (ScheduleEntry): One of Cindy's jointing entries.
+        action (SkeletonAction): One of Cindy's jointing actions.
 
     Returns:
         tuple: ``(the insert, its (n, 12) path)``.
     """
-    monitor.load_schedule_entry(entry.index)
+    monitor.load_action(action.index)
     mv = select_movement(monitor, monitor._loaded_index_of(MovementKind.DUAL_CONSTRAINED_LINEAR))
     path = np.linspace(vec12_from_conf(mv.start_state.robot_configuration),
                        vec12_from_conf(mv.target_configuration), INSERT_PATH_WAYPOINTS)
@@ -1416,10 +1416,10 @@ def compliance_requests(iface: StubInterface, n: int) -> list:
     return [c for c in iface.calls[n:] if c[0] == 'switch' and c[2] == COMPLIANCE_CTRL]
 
 
-def grounded_insert_check(results: Results, problem: str, root: str, schedule) -> None:
+def grounded_insert_check(results: Results, problem: str, root: str, skeleton) -> None:
     """A grounded bar's insert runs rigid and never tightens.
 
-    The fixture's entry 0 is B1, a GROUNDED bar (its insert's start state holds
+    The fixture's action 0 is B1, a GROUNDED bar (its insert's start state holds
     two ground joints in the tools). Its insert (loaded by kind) gets a straight
     joint path from its start to its target configuration (nothing planned),
     the stub arms at its start and a short traj time, and runs the REAL
@@ -1437,20 +1437,20 @@ def grounded_insert_check(results: Results, problem: str, root: str, schedule) -
         results (Results): Where the checks go.
         problem (str): Problem folder name.
         root (str): The scratch problem folder (unused; same signature as the other runs).
-        schedule (ActionSchedule): The scratch schedule.
+        skeleton (PlanSkeleton): The scratch plan skeleton.
     """
     cindy = robot_by_name(ASSEMBLY_ROBOT)
-    grounded = schedule.entry(0)
+    grounded = skeleton.action(0)
     assert grounded.kind == 'J', \
-        f"the grounded insert check needs jointing entry 0, got {grounded.action_id}"
+        f"the grounded insert check needs jointing action 0, got {grounded.action_id}"
     print(f"\n{'=' * 30} GROUNDED INSERT CHECK {'=' * 30}")
-    base = schedule.load_action(grounded, prefer_sidecar=False).movements[-1].start_state.robot_base_frame
+    base = skeleton.load_bar_action(grounded, prefer_sidecar=False).movements[-1].start_state.robot_base_frame
     monitor, iface, log = make_monitor(cindy, base, problem)
     add_viz_huskies(monitor, cindy)
     ready_for_compliant_exec(monitor)
 
     try:
-        monitor._load_schedule_state()
+        monitor._load_skeleton_state()
 
         # * --- (a)-(c) B1: the whole insert through the exec button, to its end
         mv, path = load_insert(monitor, iface, grounded)
@@ -1504,10 +1504,10 @@ def grounded_insert_check(results: Results, problem: str, root: str, schedule) -
         monitor.cfab.close()
 
 
-def one_sided_insert_check(results: Results, problem: str, root: str, schedule) -> None:
+def one_sided_insert_check(results: Results, problem: str, root: str, skeleton) -> None:
     """A one-sided bar's insert tightens and waits for its MATING arm only (Rhino note D10).
 
-    The fixture's entry 2 is B3, a ONE-SIDED bar: at its insert the left male's
+    The fixture's action 2 is B3, a ONE-SIDED bar: at its insert the left male's
     female (on built B1) is in the start state, the right male's (on the staging
     bar B2) is not. Its insert gets a straight joint path (``load_insert``) and
     runs the REAL ``husky_world.execute_planned_trajectory_compliant`` on the
@@ -1529,14 +1529,14 @@ def one_sided_insert_check(results: Results, problem: str, root: str, schedule) 
         results (Results): Where the checks go.
         problem (str): Problem folder name.
         root (str): The scratch problem folder (unused; same signature as the other runs).
-        schedule (ActionSchedule): The scratch schedule.
+        skeleton (PlanSkeleton): The scratch plan skeleton.
     """
     cindy = robot_by_name(ASSEMBLY_ROBOT)
-    entry = schedule.entry(2)
-    assert entry.kind == 'J', \
-        f"the one-sided insert check needs jointing entry 2, got {entry.action_id}"
+    action = skeleton.action(2)
+    assert action.kind == 'J', \
+        f"the one-sided insert check needs jointing action 2, got {action.action_id}"
     print(f"\n{'=' * 30} ONE-SIDED INSERT CHECK {'=' * 30}")
-    base = schedule.load_action(entry, prefer_sidecar=False).movements[-1].start_state.robot_base_frame
+    base = skeleton.load_bar_action(action, prefer_sidecar=False).movements[-1].start_state.robot_base_frame
     monitor, iface, log = make_monitor(cindy, base, problem)
     add_viz_huskies(monitor, cindy)
     ready_for_compliant_exec(monitor)
@@ -1572,8 +1572,8 @@ def one_sided_insert_check(results: Results, problem: str, root: str, schedule) 
         return SimpleNamespace(state_m1='IDLE', state_m2=state_m2)
 
     try:
-        monitor._load_schedule_state()
-        mv, _path = load_insert(monitor, iface, entry)
+        monitor._load_skeleton_state()
+        mv, _path = load_insert(monitor, iface, action)
         sides = mating_arm_sides(mv.start_state)
         assert len(sides) == 1, f"{mv.movement_id} is not one-sided: mating sides {sides}"
         side = sides[0]
@@ -1711,8 +1711,8 @@ class StubHuskyObject:
         return pose_from_frame(_fk_link_frame(self.monitor.cfab.planner, state, link))
 
 
-def transfer_servo_check(results: Results, problem: str, root: str, schedule) -> None:
-    """The visual-servo correction that runs after the transfer, on entry 0 (J).
+def transfer_servo_check(results: Results, problem: str, root: str, skeleton) -> None:
+    """The visual-servo correction that runs after the transfer, on action 0 (J).
 
     The transfer gets an accepted two-point trajectory standing at the insert's
     exported start; the stub base is moved ``TRANSFER_SERVO_BASE_SHIFT_M`` off
@@ -1739,13 +1739,13 @@ def transfer_servo_check(results: Results, problem: str, root: str, schedule) ->
         results (Results): Where the checks go.
         problem (str): Problem folder name.
         root (str): The scratch problem folder (unused; same signature as the other runs).
-        schedule (ActionSchedule): The scratch schedule.
+        skeleton (PlanSkeleton): The scratch plan skeleton.
     """
     cindy = robot_by_name(ASSEMBLY_ROBOT)
-    first = schedule.entry(0)
-    assert first.kind == 'J', f"the transfer servo check needs jointing entry 0, got {first.action_id}"
+    first = skeleton.action(0)
+    assert first.kind == 'J', f"the transfer servo check needs jointing action 0, got {first.action_id}"
     print(f"\n{'=' * 30} TRANSFER SERVO CHECK {'=' * 30}")
-    base = schedule.load_action(first, prefer_sidecar=False).movements[-1].start_state.robot_base_frame
+    base = skeleton.load_bar_action(first, prefer_sidecar=False).movements[-1].start_state.robot_base_frame
     monitor, iface, log = make_monitor(cindy, base, problem)
     add_viz_huskies(monitor, cindy)
     ready_for_compliant_exec(monitor)
@@ -1769,7 +1769,7 @@ def transfer_servo_check(results: Results, problem: str, root: str, schedule) ->
         records.append((label, movement_id, root_dir))
 
     def stage(ticked: bool) -> tuple:
-        """Load entry 0 fresh and stand everything where a just-run transfer leaves it.
+        """Load action 0 fresh and stand everything where a just-run transfer leaves it.
 
         Args:
             ticked (bool): The workaround box.
@@ -1778,7 +1778,7 @@ def transfer_servo_check(results: Results, problem: str, root: str, schedule) ->
             tuple: ``(transfer index, insert index, the transfer's end 12-vec)``.
         """
         monitor.TRANSFER_AS_FREE_MOVE = int(ticked)
-        monitor.load_schedule_entry(first.index)
+        monitor.load_action(first.index)
         ti = monitor._loaded_index_of(MovementKind.DUAL_CONSTRAINED_FREE)
         ii = monitor._loaded_index_of(MovementKind.DUAL_CONSTRAINED_LINEAR)
         q = vec12_from_conf(monitor._loaded_movements[ii].start_state.robot_configuration)
@@ -1813,7 +1813,7 @@ def transfer_servo_check(results: Results, problem: str, root: str, schedule) ->
 
     real_save = husky_world._save_servoing_data
     try:
-        monitor._load_schedule_state()
+        monitor._load_skeleton_state()
         monitor.replan_transfer_to_movement_start_live = record_replan
         husky_world._save_servoing_data = record_save
 
@@ -1957,15 +1957,15 @@ def body_color(monitor, name: str) -> list:
     return list(p.getVisualShapeData(body, physicsClientId=pp.CLIENT)[0][7])
 
 
-def built_bars_check(results: Results, monitor, log: RecordingLogger, schedule) -> None:
-    """The built-bar switch (IGNORE_BUILT_ASSEMBLY_COLLISIONS) on Cindy's entries 0 and 1.
+def built_bars_check(results: Results, monitor, log: RecordingLogger, skeleton) -> None:
+    """The built-bar switch (IGNORE_BUILT_ASSEMBLY_COLLISIONS) on Cindy's actions 0 and 1.
 
-    Switch OFF (its default): the start and end states of entry 0's insert
+    Switch OFF (its default): the start and end states of action 0's insert
     (movement 5, ``B1_J_M5_LM_insert``) have no pair with the floor
     ``obstacle_ground`` in the full collision report -- the ground joints may
-    stand on it -- and entry 1
+    stand on it -- and action 1
     (B1_R) never hides B1 or its joints. Then the panel toggle's method turns it
-    ON: the entry reloads, the built bodies are ignored and drawn faint where
+    ON: the action reloads, the built bodies are ignored and drawn faint where
     they stand (even after something moved one: compas_fab does not move hidden
     bodies, the monitor places them), bodies the export hides (not built yet)
     stay blanked. OFF again: the reload brings clean states back. Last, a joint
@@ -1974,16 +1974,16 @@ def built_bars_check(results: Results, monitor, log: RecordingLogger, schedule) 
 
     Args:
         results (Results): Where the checks go.
-        monitor (HuskyMonitor): Cindy's monitor in schedule mode, switch OFF.
+        monitor (HuskyMonitor): Cindy's monitor in plan skeleton mode, switch OFF.
         log (RecordingLogger): The monitor's logger.
-        schedule (ActionSchedule): The scratch schedule.
+        skeleton (PlanSkeleton): The scratch plan skeleton.
     """
-    joint_entry, release = schedule.entry(0), schedule.entry(1)
-    results.check('Built bars: the switch is OFF by default in schedule mode',
+    joint_action, release = skeleton.action(0), skeleton.action(1)
+    results.check('Built bars: the switch is OFF by default in plan skeleton mode',
                   not monitor._ignore_built_assembly())
 
     # * --- the ground joints may stand on the floor during the insert
-    monitor.load_schedule_entry(joint_entry.index)
+    monitor.load_action(joint_action.index)
     mv = select_movement(monitor, 5)
     # ! The ground joints reach the floor only at the insert's END (bar assembled):
     # ! its start state is clean even without the allowance. So the end state --
@@ -2004,7 +2004,7 @@ def built_bars_check(results: Results, monitor, log: RecordingLogger, schedule) 
                       else '; '.join(ground))
 
     # * --- the release: B1 (bar + joints) is never hidden
-    monitor.load_schedule_entry(release.index)
+    monitor.load_action(release.index)
     mv = select_movement(monitor, 0)
     held = sorted(n for n, rb in mv.start_state.rigid_body_states.items()
                   if is_built_assembly_body(n) and (rb.attached_to_link or rb.attached_to_tool))
@@ -2021,7 +2021,7 @@ def built_bars_check(results: Results, monitor, log: RecordingLogger, schedule) 
                   f"{len(held)} bodies held at {mv.movement_id}")
 
     # * --- the panel toggle ON: reload, the built joints ignored and drawn faint
-    clean = schedule.load_action(release, prefer_sidecar=False).movements
+    clean = skeleton.load_bar_action(release, prefer_sidecar=False).movements
     # What the monitor must ignore: every static built body of the action that
     # the export does not hide, except the action's own bar.
     built = {n for m in clean for n, rb in m.start_state.rigid_body_states.items()
@@ -2033,9 +2033,9 @@ def built_bars_check(results: Results, monitor, log: RecordingLogger, schedule) 
     ignored = set(monitor._collision_ignored_bodies)
     logged = log.since(n, 'info', f"[built bars] collisions with {len(built)} built bodies "
                                   f"ignored (drawn faint)")
-    results.check(f"Built bars ON (toggle): entry {release.index} reloaded, its built bodies "
+    results.check(f"Built bars ON (toggle): action {release.index} reloaded, its built bodies "
                   f"ignored, one log line",
-                  monitor._loaded_entry.index == release.index and built and ignored == built
+                  monitor._loaded_action.index == release.index and built and ignored == built
                   and len(logged) == 1, f"{len(ignored)} ignored: {sorted(ignored)}")
 
     # Something moves a built joint away; the next Load Movement puts it back.
@@ -2057,7 +2057,7 @@ def built_bars_check(results: Results, monitor, log: RecordingLogger, schedule) 
     # * --- OFF again: clean states, drawn as usual
     monitor.set_ignore_built_assembly_collisions(False)
     select_movement(monitor, 2)
-    results.check(f"Built bars OFF again (toggle): entry {release.index} reloaded clean, "
+    results.check(f"Built bars OFF again (toggle): action {release.index} reloaded clean, "
                   f"nothing ignored, {joint} drawn as usual",
                   not monitor._collision_ignored_bodies and not hidden_somewhere(held)
                   and body_color(monitor, joint)[3] > BUILT_IGNORED_RGBA[3],
@@ -2065,7 +2065,7 @@ def built_bars_check(results: Results, monitor, log: RecordingLogger, schedule) 
 
     # * --- the same joint stands in J_M0 (faint when ON) and rides in J_M3's
     # * --- preview: switched OFF, the faint colour must not come back
-    monitor.load_schedule_entry(joint_entry.index)
+    monitor.load_action(joint_action.index)
     monitor.set_ignore_built_assembly_collisions(True)
     select_movement(monitor, 0)
     faint_on = np.allclose(body_color(monitor, joint), BUILT_IGNORED_RGBA)
@@ -2082,82 +2082,82 @@ def built_bars_check(results: Results, monitor, log: RecordingLogger, schedule) 
 # * The two runs
 # * ---------------------------------------------------------------------------
 
-def cindy_run(results: Results, problem: str, root: str, schedule) -> None:
-    """Cindy's monitor: her own entry, Alice's entries (display only), the next release, reopen.
+def cindy_run(results: Results, problem: str, root: str, skeleton) -> None:
+    """Cindy's monitor: her own action, Alice's actions (display only), the next release, reopen.
 
     Args:
         results (Results): Where the checks go.
         problem (str): Problem folder name.
         root (str): The scratch problem folder.
-        schedule (ActionSchedule): The scratch schedule.
+        skeleton (PlanSkeleton): The scratch plan skeleton.
     """
     cindy, alice, belle = (robot_by_name(ASSEMBLY_ROBOT), robot_by_name(SUPPORT_ROBOT),
                            robot_by_name(OTHER_SUPPORT_ROBOT))
-    first = schedule.entry(0)
-    hold = schedule.find_entry(HELD_BAR, 'H')
-    release = schedule.find_entry(HELD_BAR, 'R')
-    hold_release = schedule.find_entry(HELD_BAR, 'HR')
-    oracle_entry = schedule.find_entry(NEXT_BAR, 'J')
+    first = skeleton.action(0)
+    hold = skeleton.find_action(HELD_BAR, 'H')
+    release = skeleton.find_action(HELD_BAR, 'R')
+    hold_release = skeleton.find_action(HELD_BAR, 'HR')
+    oracle_action = skeleton.find_action(NEXT_BAR, 'J')
     parked = np.asarray(list(PARKED_BASE_FRAME.point), dtype=float)
     print(f"\n{'=' * 30} CINDY RUN {'=' * 30}")
     # Cindy's "mocap" puts her where her first action was authored.
-    base = schedule.load_action(first, prefer_sidecar=False).movements[-1].start_state.robot_base_frame
+    base = skeleton.load_bar_action(first, prefer_sidecar=False).movements[-1].start_state.robot_base_frame
     monitor, iface, log = make_monitor(cindy, base, problem)
     add_viz_huskies(monitor, cindy)
     try:
-        monitor._load_schedule_state()
-        results.check('Cindy: schedule mode ON, first pending entry selected',
-                      monitor._schedule is not None and monitor._selected_entry_idx == 0,
-                      f"{len(monitor._schedule.entries) if monitor._schedule else 0} entries")
+        monitor._load_skeleton_state()
+        results.check('Cindy: plan skeleton mode ON, first pending action selected',
+                      monitor._skeleton is not None and monitor._selected_action_idx == 0,
+                      f"{len(monitor._skeleton.actions) if monitor._skeleton else 0} actions")
 
-        # * --- the built-bar switch on her first two entries (OFF again afterwards)
-        built_bars_check(results, monitor, log, schedule)
+        # * --- the built-bar switch on her first two actions (OFF again afterwards)
+        built_bars_check(results, monitor, log, skeleton)
 
-        # * --- her own entry: load + Mark entry done
-        monitor.load_schedule_entry(first.index)
-        results.check(f'Cindy: entry {first.index} ({first.action_id}) loads for execution',
-                      monitor._entry_is_executable_here()
-                      and monitor._loaded_action.action_id == first.action_id)
+        # * --- her own action: load + Mark action done
+        monitor.load_action(first.index)
+        results.check(f'Cindy: action {first.index} ({first.action_id}) loads for execution',
+                      monitor._action_is_executable_here()
+                      and monitor._loaded_bar_action.action_id == first.action_id)
 
         # * --- one task at a time: while the manual step waits for 'Confirm Exec',
-        # * --- neither Mark entry done nor Load entry may queue / change anything
+        # * --- neither Mark action done nor Load action may queue / change anything
         mv = select_movement(monitor, 1)
         monitor.exec_selected_movement_step()
         next(monitor.tasks[0])    # one tick: the step now waits at its confirm gate
         n = len(log.msgs)
-        monitor.mark_entry_done()
-        monitor.load_schedule_entry(hold.index)
+        monitor.mark_action_done()
+        monitor.load_action(hold.index)
         refused = log.since(n, 'warn', 'still running or waiting')
-        results.check(f"Cindy: while {mv.movement_id} waits, Mark entry done and Load entry "
+        results.check(f"Cindy: while {mv.movement_id} waits, Mark action done and Load action "
                       f"are refused", len(monitor.tasks) == 1 and len(refused) == 2
-                      and monitor._loaded_entry.index == first.index, f"{len(refused)} refusal(s)")
+                      and monitor._loaded_action.index == first.index, f"{len(refused)} refusal(s)")
         monitor._servo_abort = True    # 'Cancel Exec': the manual step ends
         run_tasks(monitor, iface, confirm=False)
         results.check("Cindy: 'Cancel Exec' ends the step, nothing marked",
                       not monitor.tasks and not monitor._progress.is_done(first.index))
 
-        monitor.mark_entry_done()
+        monitor.mark_action_done()
         run_tasks(monitor, iface)
-        progress = load_progress(root, load_schedule(root))
+        progress = load_progress(root, load_plan_skeleton(root))
         belief = progress.belief(cindy.name)
-        results.check(f"Cindy: entry {first.index} done in progress.json, her belief 'live'",
+        results.check(f"Cindy: action {first.index} done in progress.json, her belief 'live'",
                       progress.is_done(first.index) and belief is not None
-                      and belief.source == 'live' and belief.after_entry == first.index)
+                      and belief.source == 'live' and belief.after_action == first.index)
         results.check('Cindy: Alice and Belle (no belief yet) drawn parked',
                       np.allclose(drawn_base(monitor, alice.name), parked)
                       and np.allclose(drawn_base(monitor, belle.name), parked))
 
-        # * --- Alice's hold entry: the previous planned path is dropped, display only,
+        # * --- Alice's hold action: the previous planned path is dropped, display only,
         # * --- refused, marked through the confirm gate
         path = np.array([UR5e_HOME_STATE, UR5e_HOME_STATE])
         monitor.planned_arm_trajectory = [(path, None, 5.0, None), (path, None, 5.0, None)]
-        monitor.load_schedule_entry(hold.index)
-        results.check(f'Cindy: Load entry {hold.index} drops the loaded movement and planned path',
+        monitor.load_action(hold.index)
+        results.check(f'Cindy: Load action {hold.index} drops the loaded movement and planned path',
                       monitor.current_movement is None
                       and all(slot[0] is None for slot in monitor.planned_arm_trajectory))
         shown = [mv.movement_id for mv in monitor._shown_movements()]
-        results.check(f'Cindy: entry {hold.index} ({hold.action_id}) is display only',
-                      not monitor._entry_is_executable_here() and len(shown) == 4
+        results.check(f'Cindy: action {hold.index} ({hold.action_id}) is display only',
+                      not monitor._action_is_executable_here() and len(shown) == 4
                       and all(m.startswith(f'{HELD_BAR}_H_M') for m in shown), ', '.join(shown))
         n = len(log.msgs)
         monitor.plan_selected_movement()
@@ -2165,10 +2165,10 @@ def cindy_run(results: Results, problem: str, root: str, schedule) -> None:
         refused = log.since(n, 'warn', 'refused')
         results.check('Cindy: Plan Movement and Exec step refused on it',
                       len(refused) == 2 and not monitor.tasks, f"{len(refused)} refusal(s)")
-        monitor.mark_entry_done()
+        monitor.mark_action_done()
         # One tick without clicking Confirm Exec: the task waits at the gate.
         next(monitor.tasks[0])
-        results.check(f"Cindy: Mark entry done on entry {hold.index} waits for 'Confirm Exec'",
+        results.check(f"Cindy: Mark action done on action {hold.index} waits for 'Confirm Exec'",
                       not monitor._progress.is_done(hold.index) and len(monitor.tasks) == 1)
         # Mocap sees Belle right now: her drawn base must stay where mocap put it.
         belle_hi = monitor.husky_by_name[belle.name].interface
@@ -2176,16 +2176,16 @@ def cindy_run(results: Results, problem: str, root: str, schedule) -> None:
         monitor._mocap_rigidbody_stamp = {belle.namespace: time.monotonic()}
         run_tasks(monitor, iface, confirm=True)
         monitor._mocap_rigidbody_stamp = {}
-        progress = load_progress(root, load_schedule(root))
+        progress = load_progress(root, load_plan_skeleton(root))
         belief = progress.belief(alice.name)
-        oracle = belief_after(schedule.load_action(hold, prefer_sidecar=False), alice, hold.index)
+        oracle = belief_after(skeleton.load_bar_action(hold, prefer_sidecar=False), alice, hold.index)
         ok = (progress.is_done(hold.index) and belief is not None
               and belief.source == 'assumed'
               and frame_dist(belief.base_frame, oracle.base_frame) < SAME_TOL
               and np.allclose(belief.configuration.joint_values, oracle.configuration.joint_values,
                               atol=SAME_TOL)
               and progress.hold_state(HELD_BAR).state == 'holding')
-        results.check(f"Cindy: after Confirm Exec entry {hold.index} is done, Alice's belief "
+        results.check(f"Cindy: after Confirm Exec action {hold.index} is done, Alice's belief "
                       f"'assumed' = {hold.action_id}'s end, {HELD_BAR} held", ok,
                       f"base {pt(belief.base_frame) if belief else None}")
         alice_hi = monitor.husky_by_name[alice.name].interface
@@ -2198,64 +2198,64 @@ def cindy_run(results: Results, problem: str, root: str, schedule) -> None:
                       f"Alice at {np.round(drawn_base(monitor, alice.name), 4).tolist()}")
 
         # * --- the release: Alice posed from her belief
-        monitor.load_schedule_entry(release.index)
+        monitor.load_action(release.index)
         tool = alice.obstacle_tool_name
         posed = monitor._loaded_movements[0].start_state.tool_states[tool].frame
-        exported = schedule.load_action(oracle_entry, prefer_sidecar=False) \
+        exported = skeleton.load_bar_action(oracle_action, prefer_sidecar=False) \
             .movements[0].start_state.tool_states[tool].frame
-        results.check(f"Cindy: entry {release.index} ({release.action_id}) movement 0 poses {tool} "
-                      f"from the belief, == {oracle_entry.action_id}'s export",
+        results.check(f"Cindy: action {release.index} ({release.action_id}) movement 0 poses {tool} "
+                      f"from the belief, == {oracle_action.action_id}'s export",
                       frame_dist(posed, PARKED_BASE_FRAME) > 1.0
                       and frame_dist(posed, belief.base_frame) < SAME_TOL
                       and frame_dist(posed, exported) < SAME_TOL, f"at {pt(posed)}")
         n = len(log.msgs)
-        monitor.reopen_entry()
-        results.check(f"Cindy: Reopen of the loaded, still pending entry {release.index} is refused",
+        monitor.reopen_action()
+        results.check(f"Cindy: Reopen of the loaded, still pending action {release.index} is refused",
                       len(log.since(n, 'warn', 'still pending')) == 1
                       and monitor._progress.status(release.index) == 'pending')
 
         # * --- plan the release with Alice posed from her belief: the retreat, then the free move home
         plan_release(results, monitor, iface, alice, belief)
 
-        # * --- Reset All in schedule mode: the loaded ENTRY again, from its clean export
+        # * --- Reset All in plan skeleton mode: the loaded ACTION again, from its clean export
         monitor.reset_all_movements_to_clean()
-        results.check(f"Cindy: Reset All reloads entry {release.index} from its clean export",
-                      monitor._loaded_entry.index == release.index
-                      and monitor._current_action_path == schedule.action_path(release, prefer_sidecar=False)
+        results.check(f"Cindy: Reset All reloads action {release.index} from its clean export",
+                      monitor._loaded_action.index == release.index
+                      and monitor._current_bar_action_path == skeleton.action_path(release, prefer_sidecar=False)
                       and all(mv.trajectory is None for mv in monitor._loaded_movements),
-                      os.path.basename(monitor._current_action_path))
+                      os.path.basename(monitor._current_bar_action_path))
 
         # * --- Alice's hold release: she leaves the scene (drawn parked)
-        monitor.load_schedule_entry(hold_release.index)
-        monitor.mark_entry_done()
+        monitor.load_action(hold_release.index)
+        monitor.mark_action_done()
         run_tasks(monitor, iface, confirm=True)
-        results.check(f"Cindy: entry {hold_release.index} ({hold_release.action_id}) done -> Alice "
+        results.check(f"Cindy: action {hold_release.index} ({hold_release.action_id}) done -> Alice "
                       f"released and drawn parked",
                       monitor._progress.is_done(hold_release.index)
                       and alice.name in monitor._progress.released_robots()
                       and np.allclose(drawn_base(monitor, alice.name), parked))
-        # The slider now points at the first pending entry, not at the loaded one.
-        n = monitor._selected_entry_idx
-        monitor.reopen_entry()
-        # The slider shows another entry, so the reopen first waits for 'Confirm Exec'.
-        results.check(f"Cindy: Reopen (no index) of the LOADED entry {hold_release.index} while the "
+        # The slider now points at the first pending action, not at the loaded one.
+        n = monitor._selected_action_idx
+        monitor.reopen_action()
+        # The slider shows another action, so the reopen first waits for 'Confirm Exec'.
+        results.check(f"Cindy: Reopen (no index) of the LOADED action {hold_release.index} while the "
                       f"slider shows {n} waits for 'Confirm Exec'",
                       n != hold_release.index and len(monitor.tasks) == 1
                       and monitor._progress.is_done(hold_release.index))
         run_tasks(monitor, iface, confirm=True)
         restored = monitor._progress.belief(alice.name)
-        results.check(f"Cindy: after Confirm Exec the LOADED entry {hold_release.index} is reopened, "
-                      f"Alice holds {HELD_BAR} again with her belief restored from entry {hold.index}",
+        results.check(f"Cindy: after Confirm Exec the LOADED action {hold_release.index} is reopened, "
+                      f"Alice holds {HELD_BAR} again with her belief restored from action {hold.index}",
                       monitor._progress.status(hold_release.index) == 'pending'
                       and monitor._progress.hold_state(HELD_BAR).state == 'holding'
-                      and monitor._loaded_entry.index == hold_release.index
-                      and restored is not None and restored.after_entry == hold.index,
-                      f"belief after_entry={getattr(restored, 'after_entry', None)}")
+                      and monitor._loaded_action.index == hold_release.index
+                      and restored is not None and restored.after_action == hold.index,
+                      f"belief after_action={getattr(restored, 'after_action', None)}")
 
-        # * --- reopen the hold entry
-        monitor.reopen_entry(hold.index)
-        progress = load_progress(root, load_schedule(root))
-        results.check(f"Cindy: reopen entry {hold.index} -> pending, Alice's belief dropped, hold pending",
+        # * --- reopen the hold action
+        monitor.reopen_action(hold.index)
+        progress = load_progress(root, load_plan_skeleton(root))
+        results.check(f"Cindy: reopen action {hold.index} -> pending, Alice's belief dropped, hold pending",
                       progress.status(hold.index) == 'pending' and progress.belief(alice.name) is None
                       and progress.hold_state(HELD_BAR).state == 'pending')
     finally:
@@ -2263,7 +2263,7 @@ def cindy_run(results: Results, problem: str, root: str, schedule) -> None:
 
 
 def plan_release(results: Results, monitor, iface: StubInterface, alice, belief) -> None:
-    """Plan Cindy's release movements with the loaded release entry, Alice posed from her belief.
+    """Plan Cindy's release movements with the loaded release action, Alice posed from her belief.
 
     The retreat (independent dual-arm linear) plans from the live arms, so the
     stub arms first stand at its exported start (where the insert leaves them on
@@ -2273,17 +2273,17 @@ def plan_release(results: Results, monitor, iface: StubInterface, alice, belief)
 
     Args:
         results (Results): Where the checks go.
-        monitor (HuskyMonitor): Cindy's monitor with the release entry loaded.
+        monitor (HuskyMonitor): Cindy's monitor with the release action loaded.
         iface (StubInterface): Cindy's stub robot.
         alice (RobotSpec): The support robot holding the bar.
-        belief (RobotBelief): Alice's belief after her hold entry.
+        belief (RobotBelief): Alice's belief after her hold action.
     """
     tool = alice.obstacle_tool_name
     retreat_idx = monitor._loaded_index_of(MovementKind.DUAL_INDEPENDENT_LINEAR)
     home_idx = monitor._loaded_index_of(MovementKind.DUAL_FREE, free_home=True)
-    # ! The loaded retreat already starts at the live arms (Load entry injects
+    # ! The loaded retreat already starts at the live arms (Load action injects
     # ! them), so its EXPORTED start comes from the clean file.
-    retreat = monitor._schedule.load_action(monitor._loaded_entry, prefer_sidecar=False).movements[retreat_idx]
+    retreat = monitor._skeleton.load_bar_action(monitor._loaded_action, prefer_sidecar=False).movements[retreat_idx]
     # Cindy's "mocap" now sees her where the release was authored.
     iface.position, iface.rotation = [np.asarray(v, dtype=float) for v in
                                       pose_from_frame(retreat.start_state.robot_base_frame)]
@@ -2320,8 +2320,8 @@ def plan_release(results: Results, monitor, iface: StubInterface, alice, belief)
                   f"{len(jt.points) if jt else 0} points")
 
 
-def alice_run(results: Results, problem: str, root: str, schedule) -> None:
-    """Alice's monitor: run her hold entry end to end, with the compliant gripper handoff.
+def alice_run(results: Results, problem: str, root: str, skeleton) -> None:
+    """Alice's monitor: run her hold action end to end, with the compliant gripper handoff.
 
     Ends with ``alice_live_goal_check`` on the same monitor.
 
@@ -2329,26 +2329,26 @@ def alice_run(results: Results, problem: str, root: str, schedule) -> None:
         results (Results): Where the checks go.
         problem (str): Problem folder name.
         root (str): The scratch problem folder.
-        schedule (ActionSchedule): The scratch schedule.
+        skeleton (PlanSkeleton): The scratch plan skeleton.
     """
     alice = robot_by_name(SUPPORT_ROBOT)
-    hold = schedule.find_entry(HELD_BAR, 'H')
-    clean = schedule.load_action(hold, prefer_sidecar=False)
-    clean_path = schedule.action_path(hold, prefer_sidecar=False)
+    hold = skeleton.find_action(HELD_BAR, 'H')
+    clean = skeleton.load_bar_action(hold, prefer_sidecar=False)
+    clean_path = skeleton.action_path(hold, prefer_sidecar=False)
     clean_sha = sha1(clean_path)
     print(f"\n{'=' * 30} ALICE RUN {'=' * 30}")
     # Alice's "mocap" puts her where B3__H was authored; her arm starts at UR5e home.
     monitor, iface, log = make_monitor(alice, clean.movements[-1].start_state.robot_base_frame, problem)
     # ! Alice's exported hold scene collides with the built structure (frozen Cindy
     # ! vs future bar B5, Rhino note D5), so her plans need the built-bar switch ON
-    # ! (the panel's "Ignore built-bar collisions"). Set before her entry is loaded.
+    # ! (the panel's "Ignore built-bar collisions"). Set before her action is loaded.
     monitor.IGNORE_BUILT_ASSEMBLY_COLLISIONS = 1
     try:
-        monitor._load_schedule_state()
-        monitor.load_schedule_entry(hold.index)
-        results.check(f'Alice: entry {hold.index} ({hold.action_id}) is hers, loaded on her cell',
-                      monitor._entry_is_executable_here()
-                      and monitor._loaded_action.action_id == hold.action_id
+        monitor._load_skeleton_state()
+        monitor.load_action(hold.index)
+        results.check(f'Alice: action {hold.index} ({hold.action_id}) is hers, loaded on her cell',
+                      monitor._action_is_executable_here()
+                      and monitor._loaded_bar_action.action_id == hold.action_id
                       and monitor.cfab.cell_filename == alice.cell_file)
 
         # * --- M0: free move from the live joints, then execute
@@ -2416,42 +2416,42 @@ def alice_run(results: Results, problem: str, root: str, schedule) -> None:
         results.check(f'Alice: {mv.movement_id} gripper stalled on the bar',
                       res is not None and res['stalled'], f"fingers at {iface.finger_pos:.3f}")
 
-        # * --- Mark entry done: live belief, sidecar with the planned trajectories
-        monitor.mark_entry_done()
+        # * --- Mark action done: live belief, sidecar with the planned trajectories
+        monitor.mark_action_done()
         run_tasks(monitor, iface)
-        progress = load_progress(root, load_schedule(root))
+        progress = load_progress(root, load_plan_skeleton(root))
         belief = progress.belief(alice.name)
         oracle = belief_after(clean, alice, hold.index)
         conf_err = max(abs(belief.configuration[n] - oracle.configuration[n])
                        for n in oracle.configuration.joint_names) if belief else np.inf
-        results.check(f"Alice: entry {hold.index} done, belief 'live' at {hold.action_id}'s end, "
+        results.check(f"Alice: action {hold.index} done, belief 'live' at {hold.action_id}'s end, "
                       f"{HELD_BAR} held",
                       progress.is_done(hold.index) and belief is not None and belief.source == 'live'
                       and frame_dist(belief.base_frame, oracle.base_frame) < SAME_TOL
                       and conf_err < CONF_TOL and progress.hold_state(HELD_BAR).state == 'holding',
                       f"|conf - exported end| {conf_err:.1e} rad")
-        sidecar = schedule.action_path(hold)
+        sidecar = skeleton.action_path(hold)
         results.check('Alice: trajectories saved to the sidecar, clean export untouched',
                       sidecar.endswith('.live-solved.json') and os.path.isfile(sidecar)
                       and sha1(clean_path) == clean_sha, os.path.basename(sidecar))
 
         # * --- reload from the sidecar: H_M0 still starts from the LIVE arm, not
         # * --- the start configuration the sidecar stored
-        monitor.load_schedule_entry(hold.index)
+        monitor.load_action(hold.index)
         start = monitor._loaded_movements[0].start_state.robot_configuration
         live_err = np.abs(np.subtract([start[n] for n in alice.arm_joint_names[0]],
                                       iface.arm_joint_pose[0])).max()
-        results.check('Alice: Load entry opens the sidecar; H_M0 re-snapshots the live arm',
-                      monitor._loaded_entry_bundle.path == sidecar
+        results.check('Alice: Load action opens the sidecar; H_M0 re-snapshots the live arm',
+                      monitor._loaded_action_bundle.path == sidecar
                       and 0 in monitor._live_start_indices and live_err < SAME_TOL,
                       f"|start - live| {live_err:.1e} rad")
 
         # * --- Reopen: the clean export, and it stays clean for the rest of this run
-        monitor.reopen_entry()
-        monitor.load_schedule_entry(hold.index)
-        results.check('Alice: after Reopen, Load entry keeps opening the clean export this run',
-                      monitor._loaded_entry_bundle.path == clean_path and os.path.isfile(sidecar)
-                      and not monitor._schedule_flags[hold.index].sidecar
+        monitor.reopen_action()
+        monitor.load_action(hold.index)
+        results.check('Alice: after Reopen, Load action keeps opening the clean export this run',
+                      monitor._loaded_action_bundle.path == clean_path and os.path.isfile(sidecar)
+                      and not monitor._skeleton_flags[hold.index].sidecar
                       and all(mv.trajectory is None for mv in monitor._loaded_movements))
 
         # * --- F3: the free approach's goal re-solved by IK at a tracked base
@@ -2475,15 +2475,15 @@ def alice_live_goal_check(results: Results, monitor, iface: StubInterface,
 
     Args:
         results (Results): Where the checks go.
-        monitor (HuskyMonitor): Alice's monitor, her hold entry loaded from the clean export.
+        monitor (HuskyMonitor): Alice's monitor, her hold action loaded from the clean export.
         iface (StubInterface): Alice's stub robot.
         log (RecordingLogger): Alice's logger.
-        hold (ScheduleEntry): Her hold entry.
+        hold (SkeletonAction): Her hold action.
     """
     alice = monitor._connected_robot()
     side = alice.side_keys[0]
     names = list(alice.arm_joint_names[0])
-    exported = monitor._schedule.load_action(hold, prefer_sidecar=False)
+    exported = monitor._skeleton.load_bar_action(hold, prefer_sidecar=False)
     free_idx = monitor._loaded_index_of(MovementKind.SINGLE_FREE)
     linear_idx = monitor._loaded_index_of(MovementKind.SINGLE_LINEAR)
     exported_goal = np.array([exported.movements[free_idx].target_configuration[n] for n in names])
@@ -2522,7 +2522,7 @@ def alice_live_goal_check(results: Results, monitor, iface: StubInterface,
         iface.position = np.asarray(authored_pos, dtype=float) + [LIVE_BASE_SHIFT_M, 0.0, 0.0]
         iface.rotation = np.asarray(authored_rot, dtype=float)
         iface.arm_joint_pose = [np.asarray(UR5e_HOME_STATE, dtype=float).copy()]
-        monitor.load_schedule_entry(hold.index)
+        monitor.load_action(hold.index)
         mv = select_movement(monitor, free_idx)
         monitor.plan_selected_movement()
         jt = mv.trajectory
@@ -2565,7 +2565,7 @@ def alice_live_goal_check(results: Results, monitor, iface: StubInterface,
 
         # * --- (e) base 2 m away: no collision-free IK, nothing planned
         iface.position = np.asarray(authored_pos, dtype=float) + [OUT_OF_REACH_SHIFT_M, 0.0, 0.0]
-        monitor.load_schedule_entry(hold.index)
+        monitor.load_action(hold.index)
         mv = select_movement(monitor, free_idx)
         n = len(log.msgs)
         monitor.plan_selected_movement()
@@ -2584,52 +2584,52 @@ def alice_live_goal_check(results: Results, monitor, iface: StubInterface,
 
 
 def first_default_traj_time(kind: str) -> float:
-    """The first default traj time of an entry kind, from ``DISPATCH_EXPECTED``.
+    """The first default traj time of an action kind, from ``DISPATCH_EXPECTED``.
 
     Movements without a default (tool and manual steps) are skipped.
 
     Args:
-        kind (str): Entry kind, ``'J'`` or ``'R'``.
+        kind (str): Action kind, ``'J'`` or ``'R'``.
 
     Returns:
-        float: Seconds (the J entry's free move to load, the R entry's retreat).
+        float: Seconds (the J action's free move to load, the R action's retreat).
     """
     return next(row[4] for (k, _idx), row in sorted(DISPATCH_EXPECTED.items())
                 if k == kind and row[4] is not None)
 
 
-def cindy_restart_run(results: Results, problem: str, root: str, schedule) -> None:
+def cindy_restart_run(results: Results, problem: str, root: str, skeleton) -> None:
     """Cindy's monitor started again: she continues from her progress.json state.
 
-    A NEW monitor object goes through the start-up path (``_load_schedule_state``
+    A NEW monitor object goes through the start-up path (``_load_skeleton_state``
     seeds the connected robot from its own belief, here the one Cindy's run
-    stored when it marked entry 0 done); the stub arms start elsewhere, so the
-    seeding shows. Then: Load entry sets the traj time to the entry's first
-    default; her next jointing entry's movement 0 starts from the believed
+    stored when it marked action 0 done); the stub arms start elsewhere, so the
+    seeding shows. Then: Load action sets the traj time to the action's first
+    default; her next jointing action's movement 0 starts from the believed
     configuration (it starts live, from the seeded arms); 'Move Arms to Movement
     Start' with FAKE_HARDWARE moves the simulated arms and sends no command; and
     after Alice's hold is marked done the header's second line names where
-    Alice's and Belle's poses come from. Last, 'Reset schedule to the Rhino
+    Alice's and Belle's poses come from. Last, 'Reset plan skeleton to the Rhino
     export': with 'Cancel Exec' nothing changes; confirmed, progress.json and the
-    saved plans move to archive/, every entry is pending and entry 0 loads its
+    saved plans move to archive/, every action is pending and action 0 loads its
     clean export.
 
     Args:
         results (Results): Where the checks go.
         problem (str): Problem folder name.
         root (str): The scratch problem folder.
-        schedule (ActionSchedule): The scratch schedule.
+        skeleton (PlanSkeleton): The scratch plan skeleton.
     """
     cindy, alice, belle = (robot_by_name(ASSEMBLY_ROBOT), robot_by_name(SUPPORT_ROBOT),
                            robot_by_name(OTHER_SUPPORT_ROBOT))
-    first = schedule.entry(0)
-    release = schedule.entry(1)
-    joint_entry = next(e for e in schedule.entries_for_robot(cindy.name)
-                       if e.index > release.index and e.kind == 'J')
-    hold = schedule.find_entry(HELD_BAR, 'H')
-    belief = load_progress(root, schedule).belief(cindy.name)
+    first = skeleton.action(0)
+    release = skeleton.action(1)
+    joint_action = next(e for e in skeleton.actions_for_robot(cindy.name)
+                        if e.index > release.index and e.kind == 'J')
+    hold = skeleton.find_action(HELD_BAR, 'H')
+    belief = load_progress(root, skeleton).belief(cindy.name)
     print(f"\n{'=' * 30} CINDY RESTART {'=' * 30}")
-    base = schedule.load_action(first, prefer_sidecar=False).movements[-1].start_state.robot_base_frame
+    base = skeleton.load_bar_action(first, prefer_sidecar=False).movements[-1].start_state.robot_base_frame
     monitor, iface, log = make_monitor(cindy, base, problem)
     add_viz_huskies(monitor, cindy)
     # The stub arms start at zeros, away from the belief, so the seeding is visible.
@@ -2637,26 +2637,26 @@ def cindy_restart_run(results: Results, problem: str, root: str, schedule) -> No
     try:
         # * --- start-up: the simulated arms take her own belief
         n = len(log.msgs)
-        monitor._load_schedule_state()
+        monitor._load_skeleton_state()
         believed = np.array([belief.configuration[name] for name in cindy.all_arm_joint_names]) \
             if belief is not None else None
         err = (float(np.abs(np.concatenate(iface.arm_joint_pose) - believed).max())
                if belief is not None else np.inf)
-        started = log.since(n, 'info', f"[Schedule] {cindy.name} starts from the progress.json state")
+        started = log.since(n, 'info', f"[Plan skeleton] {cindy.name} starts from the progress.json state")
         results.check(f"Cindy restart: her simulated arms start from her progress.json belief "
-                      f"(after entry {first.index}), one log line",
-                      belief is not None and belief.after_entry == first.index
+                      f"(after action {first.index}), one log line",
+                      belief is not None and belief.after_action == first.index
                       and err < SEED_TOL and len(started) == 1,
                       f"|arms - belief| {err:.1e} rad")
 
-        # * --- Load entry: traj time = the entry's first default (not the slider's
+        # * --- Load action: traj time = the action's first default (not the slider's
         # * --- start-up maximum); the release keeps its exported start (info only)
-        for entry in (release, joint_entry):
+        for action in (release, joint_action):
             monitor.trajectory_time = monitor.trajectory_time_max
-            monitor.load_schedule_entry(entry.index)
-            expected = first_default_traj_time(entry.kind)
-            results.check(f"Cindy restart: Load entry {entry.index} ({entry.action_id}) sets traj "
-                          f"time to the entry's first default",
+            monitor.load_action(action.index)
+            expected = first_default_traj_time(action.kind)
+            results.check(f"Cindy restart: Load action {action.index} ({action.action_id}) sets traj "
+                          f"time to the action's first default",
                           monitor.trajectory_time == expected,
                           f"{monitor.trajectory_time} s, expected {expected} s")
             mv0 = monitor._loaded_movements[0]
@@ -2665,9 +2665,9 @@ def cindy_restart_run(results: Results, problem: str, root: str, schedule) -> No
                       for name in cindy.all_arm_joint_names) if belief is not None else np.inf
             print(f"  {mv0.movement_id}: starts live {0 in monitor._live_start_indices}, "
                   f"|start - belief| {err:.1e} rad")
-            if entry is joint_entry:
-                # * F6 b: the jointing entry's movement 0 starts where she is believed to be
-                results.check(f"Cindy restart: entry {entry.index} ({entry.action_id}) "
+            if action is joint_action:
+                # * F6 b: the jointing action's movement 0 starts where she is believed to be
+                results.check(f"Cindy restart: action {action.index} ({action.action_id}) "
                               f"{mv0.movement_id} starts from the believed configuration",
                               0 in monitor._live_start_indices and err < SEED_TOL,
                               f"|start - belief| {err:.1e} rad")
@@ -2697,31 +2697,31 @@ def cindy_restart_run(results: Results, problem: str, root: str, schedule) -> No
                       f"|arms - start| {err:.1e} rad, {len(iface.calls) - n_calls} command(s)")
 
         # * --- the header's second line: where Alice's and Belle's poses come from
-        monitor.load_schedule_entry(hold.index)
-        monitor.mark_entry_done()
+        monitor.load_action(hold.index)
+        monitor.mark_action_done()
         run_tasks(monitor, iface, confirm=True)
-        lines = monitor._schedule_header_text().split('\n')
+        lines = monitor._skeleton_header_text().split('\n')
         sources = obstacle_sources(monitor._progress, cindy.name,
-                                   exported_action=monitor._loaded_action)
+                                   exported_action=monitor._loaded_bar_action)
         print('  header: ' + '\n          '.join(lines))
         results.check("Cindy restart: the header's second line names Alice's and Belle's sources",
                       len(lines) == 2 and lines[1].startswith('others: ')
-                      and f"{alice.name} <- assumed (entry {hold.index})" in lines[1]
+                      and f"{alice.name} <- assumed (action {hold.index})" in lines[1]
                       and f"{belle.name} <- {sources[belle.obstacle_tool_name]}" in lines[1],
                       lines[-1])
 
-        # * --- 'Reset schedule to the Rhino export': cancelled first, then confirmed
+        # * --- 'Reset plan skeleton to the Rhino export': cancelled first, then confirmed
         before = folder_snapshot(root)
-        monitor.reset_schedule_to_export()
+        monitor.reset_skeleton_to_export()
         next(monitor.tasks[0])    # one tick: the reset now waits at its confirm gate
         monitor._servo_abort = True    # 'Cancel Exec'
         run_tasks(monitor, iface, confirm=False)
-        results.check("Cindy restart: 'Reset schedule to the Rhino export' + 'Cancel Exec' "
+        results.check("Cindy restart: 'Reset plan skeleton to the Rhino export' + 'Cancel Exec' "
                       "changes nothing", folder_snapshot(root) == before
                       and monitor._progress.is_done(hold.index))
 
         saved_plans = sorted(rel for rel in before if rel.endswith('.live-solved.json'))
-        monitor.reset_schedule_to_export()
+        monitor.reset_skeleton_to_export()
         run_tasks(monitor, iface, confirm=True)
         after = folder_snapshot(root)
         archived = sorted(rel for rel in after if rel.startswith(ARCHIVE_DIRNAME + os.sep))
@@ -2730,14 +2730,14 @@ def cindy_restart_run(results: Results, problem: str, root: str, schedule) -> No
         progress = monitor._progress
         parked = np.asarray(list(PARKED_BASE_FRAME.point), dtype=float)
         results.check("Cindy restart: after 'Confirm Exec' the reset moves progress.json and the "
-                      "saved plans to archive/, every entry is pending, entry 0 loads its clean "
+                      "saved plans to archive/, every action is pending, action 0 loads its clean "
                       "export, Alice and Belle are drawn parked",
                       'progress.json' not in after and not left and len(saved_plans) > 0
                       and len(archived) == len(saved_plans) + 1
-                      and all(progress.status(e.index) == STATUS_PENDING for e in schedule.entries)
+                      and all(progress.status(e.index) == STATUS_PENDING for e in skeleton.actions)
                       and not progress.robots and progress.current_index == 0
-                      and monitor._loaded_entry is not None and monitor._loaded_entry.index == 0
-                      and '.live-solved' not in os.path.basename(monitor._current_action_path)
+                      and monitor._loaded_action is not None and monitor._loaded_action.index == 0
+                      and '.live-solved' not in os.path.basename(monitor._current_bar_action_path)
                       and all(np.allclose(drawn_base(monitor, spec.name), parked)
                               for spec in (alice, belle)),
                       f"{len(saved_plans)} saved plan(s) + progress.json -> "
@@ -2751,26 +2751,26 @@ def cindy_restart_run(results: Results, problem: str, root: str, schedule) -> No
 # * ---------------------------------------------------------------------------
 
 # * ---------------------------------------------------------------------------
-# * Propagation after a step RAN: within the entry, progress.json, the next entry
+# * Propagation after a step RAN: within the action, progress.json, the next action
 # * ---------------------------------------------------------------------------
 
-def exec_propagation_check(results: Results, problem: str, root: str, schedule) -> None:
+def exec_propagation_check(results: Results, problem: str, root: str, skeleton) -> None:
     """After a step runs, where the robot really is becomes the start of what follows.
 
     Runs last, on a fresh ``progress.json`` (the flow checks' one is removed first).
 
-    Cindy, entry 1 (R), mocap tracking her stub base:
-    (a) Load entry: every step up to the retreat starts at the live arms on the
+    Cindy, action 1 (R), mocap tracking her stub base:
+    (a) Load action: every step up to the retreat starts at the live arms on the
         live base, also when the export stored another start.
     (b) The retreat runs (the compliant exec replaced by a fake that ends 0.01 rad
         off the plan and moves the base 5 mm): the free move home starts there,
         on the live base; a free-home plan made before is dropped; progress.json
-        holds Cindy's belief 'live' after entry 1 at those arms, entry 1 pending.
+        holds Cindy's belief 'live' after action 1 at those arms, action 1 pending.
     (c) 'Cancel Exec' during the free move home: nothing carried, progress.json
         unchanged.
     (d) A free move home that stops short of its end: nothing carried.
-    Alice, her hold entry: the gripper close (plain close) is the entry's last
-    step -> progress.json records her live belief and her hold of B3, the entry
+    Alice, her hold action: the gripper close (plain close) is the action's last
+    step -> progress.json records her live belief and her hold of B3, the action
     still pending. Cindy again (a new monitor), the release of B3:
     ObstacleRobotAlice is posed from that belief ('live').
 
@@ -2778,20 +2778,20 @@ def exec_propagation_check(results: Results, problem: str, root: str, schedule) 
         results (Results): Where the checks go.
         problem (str): Problem folder name.
         root (str): The scratch problem folder.
-        schedule (ActionSchedule): The scratch schedule.
+        skeleton (PlanSkeleton): The scratch plan skeleton.
     """
     cindy, alice = robot_by_name(ASSEMBLY_ROBOT), robot_by_name(SUPPORT_ROBOT)
-    release = schedule.entry(1)
-    hold = schedule.find_entry(HELD_BAR, 'H')
-    hold_release_cindy = schedule.find_entry(HELD_BAR, 'R')
-    assert release.kind == 'R', f"the propagation check needs a release at entry 1, got {release.action_id}"
+    release = skeleton.action(1)
+    hold = skeleton.find_action(HELD_BAR, 'H')
+    hold_release_cindy = skeleton.find_action(HELD_BAR, 'R')
+    assert release.kind == 'R', f"the propagation check needs a release at action 1, got {release.action_id}"
     print(f"\n{'=' * 30} EXEC PROPAGATION CHECK {'=' * 30}")
     progress_file = os.path.join(root, 'progress.json')
     if os.path.isfile(progress_file):
         os.remove(progress_file)
 
     def saved():
-        return load_progress(root, load_schedule(root))
+        return load_progress(root, load_plan_skeleton(root))
 
     def live_base(iface):
         return frame_from_pose((iface.position, iface.rotation))
@@ -2801,8 +2801,8 @@ def exec_propagation_check(results: Results, problem: str, root: str, schedule) 
         return np.array([conf[n] for n in spec.all_arm_joint_names])
 
     # * --- Cindy: the release of B1
-    action = schedule.load_action(release, prefer_sidecar=False)
-    retreat_exported = next(mv for mv in action.movements
+    bar_action = skeleton.load_bar_action(release, prefer_sidecar=False)
+    retreat_exported = next(mv for mv in bar_action.movements
                             if movement_kind(mv) is MovementKind.DUAL_INDEPENDENT_LINEAR)
     monitor, iface, log = make_monitor(cindy, retreat_exported.start_state.robot_base_frame, problem)
     add_viz_huskies(monitor, cindy)
@@ -2814,14 +2814,14 @@ def exec_propagation_check(results: Results, problem: str, root: str, schedule) 
     real_compliant = husky_world.execute_planned_trajectory_compliant
     real_wait = husky_world.execute_arm_trajectory_all_and_wait
     try:
-        monitor._load_schedule_state()
-        monitor.load_schedule_entry(release.index, prefer_sidecar=False)
+        monitor._load_skeleton_state()
+        monitor.load_action(release.index, prefer_sidecar=False)
         ri = monitor._loaded_index_of(MovementKind.DUAL_INDEPENDENT_LINEAR)
         hi_ = monitor._loaded_index_of(MovementKind.DUAL_FREE, free_home=True)
         diffs = [float(np.abs(start_of(monitor, i, cindy) - q0).max()) for i in range(ri + 1)]
         bases = [frame_dist(monitor._loaded_movements[i].start_state.robot_base_frame, live_base(iface))
                  for i in range(ri + 1)]
-        results.check(f"propagation: Load entry {release.action_id} -> steps 0..{ri} (up to the "
+        results.check(f"propagation: Load action {release.action_id} -> steps 0..{ri} (up to the "
                       f"retreat) start at the live arms on the live base",
                       monitor._live_start_indices == set(range(ri + 1))
                       and max(diffs) < SAME_TOL and max(bases) < SAME_TOL,
@@ -2852,12 +2852,12 @@ def exec_propagation_check(results: Results, problem: str, root: str, schedule) 
                       float(np.abs(start_of(monitor, hi_, cindy) - q1).max()) < SAME_TOL
                       and frame_dist(home.start_state.robot_base_frame, live_base(iface)) < SAME_TOL
                       and home.trajectory is None)
-        results.check(f"propagation: progress.json holds Cindy's belief 'live' after entry "
-                      f"{release.index} at those arms, the entry not marked done",
+        results.check(f"propagation: progress.json holds Cindy's belief 'live' after action "
+                      f"{release.index} at those arms, the action not marked done",
                       belief is not None and belief.source == BELIEF_LIVE
-                      and belief.after_entry == release.index and conf_err < SAME_TOL
+                      and belief.after_action == release.index and conf_err < SAME_TOL
                       and progress.status(release.index) == STATUS_PENDING,
-                      f"belief {belief.source if belief else None} after {belief.after_entry if belief else None}, "
+                      f"belief {belief.source if belief else None} after {belief.after_action if belief else None}, "
                       f"|conf - live| {conf_err:.1e}")
 
         # * (c) 'Cancel Exec' during the free move home: nothing carried
@@ -2904,15 +2904,15 @@ def exec_propagation_check(results: Results, problem: str, root: str, schedule) 
         monitor.tasks.clear()
         monitor.cfab.close()
 
-    # * --- Alice: the gripper close is her hold entry's last step
-    clean = schedule.load_action(hold, prefer_sidecar=False)
+    # * --- Alice: the gripper close is her hold action's last step
+    clean = skeleton.load_bar_action(hold, prefer_sidecar=False)
     monitor, iface, log = make_monitor(alice, clean.movements[-1].start_state.robot_base_frame, problem)
     add_viz_huskies(monitor, alice)
     monitor.FAKE_HARDWARE, monitor.USE_MOCAP, monitor.USE_CELL_STATE_BASE_POSE = False, 1, 0
     monitor.CONNECT_COMPLIANT_CONTROLLER = 0   # a plain close: the handoff is alice_run's
     try:
-        monitor._load_schedule_state()
-        monitor.load_schedule_entry(hold.index, prefer_sidecar=False)
+        monitor._load_skeleton_state()
+        monitor.load_action(hold.index, prefer_sidecar=False)
         select_movement(monitor, len(monitor._loaded_movements) - 1)
         monitor.exec_selected_movement_step()
         run_tasks(monitor, iface)
@@ -2920,9 +2920,9 @@ def exec_propagation_check(results: Results, problem: str, root: str, schedule) 
         belief = progress.belief(alice.name)
         held = progress.hold_state(HELD_BAR)
         results.check(f"propagation: Alice's gripper close (the last step of {hold.action_id}) -> "
-                      f"progress.json: her belief 'live', {HELD_BAR} held, the entry not marked done",
+                      f"progress.json: her belief 'live', {HELD_BAR} held, the action not marked done",
                       belief is not None and belief.source == BELIEF_LIVE
-                      and belief.after_entry == hold.index
+                      and belief.after_action == hold.index
                       and held is not None and held.state == HOLD_HOLDING and held.robot == alice.name
                       and progress.status(hold.index) == STATUS_PENDING,
                       f"belief {belief.source if belief else None}, hold {held.state if held else None}")
@@ -2931,12 +2931,12 @@ def exec_propagation_check(results: Results, problem: str, root: str, schedule) 
         monitor.cfab.close()
 
     # * --- Cindy again: the release of the held bar poses Alice from that belief
-    action = schedule.load_action(hold_release_cindy, prefer_sidecar=False)
-    monitor, iface, log = make_monitor(cindy, action.movements[0].start_state.robot_base_frame, problem)
+    bar_action = skeleton.load_bar_action(hold_release_cindy, prefer_sidecar=False)
+    monitor, iface, log = make_monitor(cindy, bar_action.movements[0].start_state.robot_base_frame, problem)
     add_viz_huskies(monitor, cindy)
     try:
-        monitor._load_schedule_state()
-        monitor.load_schedule_entry(hold_release_cindy.index, prefer_sidecar=False)
+        monitor._load_skeleton_state()
+        monitor.load_action(hold_release_cindy.index, prefer_sidecar=False)
         sources = monitor._obstacle_beliefs_with_sources()[1]
         posed = monitor._loaded_movements[0].start_state.tool_states[alice.obstacle_tool_name].frame
         results.check(f"propagation: Cindy's {hold_release_cindy.action_id} poses "
@@ -2967,7 +2967,7 @@ def main(argv: Optional[list] = None) -> int:
 
     problem = DESIGN_PROBLEM_NAME
     real_root = problem_root(problem, DESIGN_DATA_DIRECTORY)
-    if load_schedule(real_root) is None:
+    if load_plan_skeleton(real_root) is None:
         print(f"{problem} has no ActionSchedule.json; this smoke needs the support-robot fixture.")
         return 1
     before = folder_snapshot(real_root)
@@ -2979,14 +2979,14 @@ def main(argv: Optional[list] = None) -> int:
     try:
         root = make_scratch_problem(real_root, scratch_design, problem)
         point_package_at(scratch_design)
-        schedule = load_schedule(root)
+        skeleton = load_plan_skeleton(root)
         for run in (dispatch_check, carry_check, transfer_start_check, operator_steps_check,
                     transfer_free_move_check, grounded_insert_check, one_sided_insert_check,
                     transfer_servo_check,
                     cindy_run, alice_run,
                     cindy_restart_run, exec_propagation_check):
             try:
-                run(results, problem, root, schedule)
+                run(results, problem, root, skeleton)
             except Exception as e:  # keep going: the summary shows where it stopped
                 traceback.print_exc()
                 results.check(f'{run.__name__} ran to the end', False, f"{type(e).__name__}: {e}")

@@ -25,7 +25,7 @@ from husky_assembly_teleop.bar_action_io import (
     COMPLIANT_KINDS, MovementKind, held_ground_joints, mating_arm_sides, tool_event,
     tool_runs_with_next_motion,
 )
-from husky_assembly_teleop.schedule_io import load_schedule, problem_root
+from husky_assembly_teleop.plan_skeleton_io import load_plan_skeleton, problem_root
 from husky_assembly_teleop.progress_io import PARKED_BASE_FRAME, RobotBelief, load_progress
 import husky_assembly_teleop.husky_planning as planning
 import husky_assembly_teleop.husky_control as control
@@ -63,7 +63,7 @@ DATA_DIR = DATA_DIRECTORY
 CALIB_DATA_DIR = CALIBRATION_DATA_DIRECTORY
 BAR_HOLDING_ACC_DATA_DIR = os.path.join(DATA_DIR, "bar_holding_acc_data")
 BAR_HOLDING_ACC_EXPERIMENT_DIR = os.path.join(EXPERIMENT_DATA_DIRECTORY, "bar_holding_acc_data")
-# * The real assembly runs (schedule monitor): the servo records of the
+# * The real assembly runs (plan skeleton monitor): the servo records of the
 # * correction after each transfer land here, apart from the accuracy test's.
 BAR_ACTION_LIVE_REPLAN_EXE_DIR = os.path.join(EXPERIMENT_DATA_DIRECTORY, "bar_action_live_replan_exe")
 # Extra wait after an arm move before measuring: the base, shifted by the arms'
@@ -231,7 +231,7 @@ def _base_calibration_file_for(monitor, spec: RobotSpec) -> Optional[str]:
     the tag just makes the active convention explicit. Falls back to the
     untagged file if the tagged one is missing.
 
-    The date folder is the robot's own entry in BASE_CALIBRATION_DATE_BY_ROBOT
+    The date folder is the robot's own action in BASE_CALIBRATION_DATE_BY_ROBOT
     (huskies are calibrated on different days), else CALIBRATION_DATE.
 
     Args:
@@ -322,7 +322,7 @@ def create_registry_huskies(monitor, connected: RobotSpec, *, ee_types: list,
 
 def _seed_viz_huskies_from_progress(monitor, connected: RobotSpec, *,
                                     mocap_tracked: frozenset = frozenset()) -> None:
-    """Draw the not-connected huskies where the schedule progress puts them.
+    """Draw the not-connected huskies where the plan skeleton progress puts them.
 
     Same rule as the collision scene (``progress_io.obstacle_tool_states``): a
     husky that released its hold (``Progress.released_robots``) has left the
@@ -335,9 +335,9 @@ def _seed_viz_huskies_from_progress(monitor, connected: RobotSpec, *,
     Called at start-up (reads ``progress.json``) and by the monitor whenever the
     progress changes (then its in-memory ``_progress`` is used).
 
-    ! Never raises: a missing, unreadable or malformed schedule / progress file
+    ! Never raises: a missing, unreadable or malformed plan skeleton / progress file
     ! (or a monitor without huskies, headless) only logs a warning, so it can not
-    ! stop the monitor from starting nor the tick that marks an entry done.
+    ! stop the monitor from starting nor the tick that marks an action done.
 
     Args:
         monitor: The HuskyMonitor (after create_registry_huskies).
@@ -356,8 +356,8 @@ def _seed_viz_huskies_from_progress(monitor, connected: RobotSpec, *,
         progress = getattr(monitor, '_progress', None)
         if progress is None:
             root = problem_root(DESIGN_PROBLEM_NAME)
-            schedule = load_schedule(root)
-            progress = load_progress(root, schedule) if schedule is not None else None
+            skeleton = load_plan_skeleton(root)
+            progress = load_progress(root, skeleton) if skeleton is not None else None
         if progress is None:
             return
         released = progress.released_robots()
@@ -371,10 +371,10 @@ def _seed_viz_huskies_from_progress(monitor, connected: RobotSpec, *,
             _pose_husky_at_belief(hi, spec, belief, keep_base=spec.name in mocap_tracked)
             where = "base from mocap" if spec.name in mocap_tracked else "until mocap sees it"
             print(f"[world] {spec.name} drawn at its {belief.source} belief "
-                  f"(after entry {belief.after_entry}; {where}).")
+                  f"(after action {belief.after_action}; {where}).")
     except Exception as e:
         monitor.get_logger().warn(
-            f"Could not read the schedule / progress of {DESIGN_PROBLEM_NAME}: {e}; "
+            f"Could not read the plan skeleton / progress of {DESIGN_PROBLEM_NAME}: {e}; "
             "the other huskies stay parked until mocap sees them.")
 
 
@@ -409,8 +409,8 @@ def _seed_connected_husky_from_progress(monitor, connected: RobotSpec) -> None:
     * the drawing then reads ``monitor.goal_base_pose``, so that is set too
     * (the first 'Load Movement' replaces it with the movement's base).
 
-    Only in schedule mode (the monitor's in-memory ``_progress`` is set by
-    ``_load_schedule_state``); does nothing when the robot has no belief yet.
+    Only in plan skeleton mode (the monitor's in-memory ``_progress`` is set by
+    ``_load_skeleton_state``); does nothing when the robot has no belief yet.
 
     Args:
         monitor: The HuskyMonitor (after create_registry_huskies).
@@ -426,8 +426,8 @@ def _seed_connected_husky_from_progress(monitor, connected: RobotSpec) -> None:
     if not tracked:
         monitor.goal_base_pose = (hi.position, hi.rotation)
     monitor.get_logger().info(
-        f"[Schedule] {connected.name} starts from the progress.json state "
-        f"(after entry {belief.after_entry}, {belief.source}).")
+        f"[Plan skeleton] {connected.name} starts from the progress.json state "
+        f"(after action {belief.after_action}, {belief.source}).")
 
 
 def init(monitor):
@@ -1205,10 +1205,10 @@ def save_markerset_data(monitor, filename_suffix="", use_experiment_dir=False):
 
     # Name the file this movement actually came from: a split export keeps the
     # cycle in two files and the monitor loads both, so the retreat is usually
-    # in the release half while _current_action_path names the jointing one.
+    # in the release half while _current_bar_action_path names the jointing one.
     # movement_index is the index INSIDE that file (action_file), not the index
     # in the monitor's concatenated list.
-    action_path = getattr(monitor, '_current_action_path', None)
+    action_path = getattr(monitor, '_current_bar_action_path', None)
     slot = monitor._slot_of_movement(getattr(monitor, 'current_movement_index', None))
     if slot is not None:
         action_path = slot[1]
@@ -1239,7 +1239,7 @@ def save_markerset_data(monitor, filename_suffix="", use_experiment_dir=False):
 
     # Warn loudly if nothing was loaded: the fields below would be null and the
     # take couldn't be matched to a movement later.
-    if not getattr(monitor, '_current_action_path', None) or mv is None:
+    if not getattr(monitor, '_current_bar_action_path', None) or mv is None:
         monitor.get_logger().warn(
             "Save markerset: no BarAction / movement is loaded, so "
             "bar_action_path / movement_id / bar pose will be null. Click "
@@ -1728,9 +1728,9 @@ def _path_motion_summary(planned_arm_trajectory, n_arms: int = 2):
 
     Args:
         planned_arm_trajectory: The monitor's ``planned_arm_trajectory`` pair;
-            each entry is a ``(path, ..., ..., ...)`` tuple whose path is the
+            each action is a ``(path, ..., ..., ...)`` tuple whose path is the
             list of 6-joint waypoints for that arm (``None`` when unplanned).
-        n_arms (int): How many of the entries are arms of the connected robot
+        n_arms (int): How many of the actions are arms of the connected robot
             (2 on Cindy, 1 on a support robot).
 
     Returns:
@@ -1907,12 +1907,12 @@ def servo_to_movement_start_live(monitor, max_iters=8, pos_tol_mm=0.2,
             iteration that carries the bar on a straight line (the sampling
             planner only as fallback). 2 for the accuracy test, whose first move
             is the long one from the bar-loading pose; 1 right after the
-            schedule's transfer, where every correction is already mm-scale.
+            plan skeleton's transfer, where every correction is already mm-scale.
         show_tracker_at_start (bool): Open the 'Servoing Live Tracker' window
             when the loop starts (its baseline point included), not only when
             the first move runs. False for the accuracy test, so the window does
             not cover the preview of its long first move; True after the
-            schedule's transfer, where a run that stops at iteration 1 (nothing
+            plan skeleton's transfer, where a run that stops at iteration 1 (nothing
             to correct) would otherwise never show it.
         log_data (bool): Save a JSON + PNG record of the run when done.
         log_dir (str): Root folder of that record (a dated ``-servoing``
@@ -2241,7 +2241,7 @@ def _save_servoing_data(monitor, data, planner_mode='free',
 
     Args:
         monitor: The HuskyMonitor node (for logging only).
-        data (list[dict]): One entry per recorded iteration, each with keys
+        data (list[dict]): One action per recorded iteration, each with keys
             'iter', 'tool0' (per-side pos/rot error) and 'base' (base drift).
         planner_mode (str): 'free' (transit, no bar) or 'transfer' (bar-held
             constrained) — recorded in the JSON so offline analysis can tell
@@ -2340,7 +2340,7 @@ def move_base_to_goal(monitor):
 #################################
 
 # * Robotiq gripper (support robots) command values, shared by the buttons below
-# and the schedule's gripper steps (exec_gripper_tool_movement).
+# and the plan skeleton's gripper steps (exec_gripper_tool_movement).
 GRIPPER_OPEN_POS = 0.426          # 'Open Gripper Full'
 GRIPPER_CLOSE_FOR_BAR_POS = 0.8   # 'Close Gripper for Bar'
 GRIPPER_EFFORT = 0.1
@@ -4192,7 +4192,7 @@ LINEAR_SETTLE_SECONDS = 0.0
 LINEAR_ARRIVAL_TOL_M = 0.002
 
 # Ceiling on any wait for the scaffolding tool's motors to report STALLED (M2's
-# screw tightening, the schedule's grasp step), for firmware that never reports it.
+# screw tightening, the plan skeleton's grasp step), for firmware that never reports it.
 HOLD_FOR_STALL_TIMEOUT_S = 30.0
 
 
@@ -4271,7 +4271,7 @@ def _tool0_pose_errors(monitor, cartesian_trajectories):
             handed to ``execute_cartesian_linear_dual``.
 
     Returns:
-        list[dict]: One entry per arm with ``travel_mm`` (the commanded
+        list[dict]: One action per arm with ``travel_mm`` (the commanded
         distance), ``achieved_mm`` (how far it actually got from the start) and
         ``remaining_mm`` (distance still to the commanded end pose).
     """
@@ -5457,7 +5457,7 @@ def move_arms_to_movement_start(monitor: 'HuskyMonitor') -> None:
 
 
 # ---------------------------------------------------------------------------
-# * Schedule steps where no arm path is planned: gripper, scaffolding tool, manual
+# * Plan skeleton steps where no arm path is planned: gripper, scaffolding tool, manual
 # ---------------------------------------------------------------------------
 # Each one is a generator for monitor.tasks (the monitor tick pumps it): every
 # one waits -- for the operator's 'Confirm Exec', the gripper's answer or the

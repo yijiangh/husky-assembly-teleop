@@ -2,7 +2,7 @@
 
 Planning only -- no ROS, no monitor, nothing written to disk. It opens the
 robot cells in a hidden (DIRECT) PyBullet world and checks, on the fixture's
-first hold (Alice holds bar B3, schedule entry B3_H):
+first hold (Alice holds bar B3, action B3_H):
 
   1. FK workaround. compas_fab's forward kinematics applies the robot base
      twice (see ``cfab_session._world_frame_forward_kinematics``). Prints the
@@ -70,10 +70,10 @@ from husky_assembly_teleop.progress_io import (
     PARKED_BASE_FRAME, belief_after, new_progress, obstacle_sources, obstacle_tool_states,
 )
 from husky_assembly_teleop.robot_registry import ROBOTS, robot_by_name
-from husky_assembly_teleop.schedule_io import load_schedule, problem_root
+from husky_assembly_teleop.plan_skeleton_io import load_plan_skeleton, problem_root
 from husky_assembly_teleop.utils import path_from_joint_trajectory
 
-# * The fixture's first hold: Alice holds B3 (entry B3_H) until Cindy has built
+# * The fixture's first hold: Alice holds B3 (action B3_H) until Cindy has built
 # * B4..B9; B3_R is Cindy's release of B3 and B4_J the next jointing after it.
 SUPPORT_ROBOT = 'Alice'
 ASSEMBLY_ROBOT = 'Cindy'
@@ -200,7 +200,7 @@ def whitelist_frozen_contacts(planner, robot_cell, state) -> list:
     Args:
         planner: The session's PyBulletPlanner.
         robot_cell (RobotCell): The session's cell (to name the colliding models).
-        state (RobotCellState): Edited in place: the bars get ``touch_bodies`` entries.
+        state (RobotCellState): Edited in place: the bars get ``touch_bodies`` actions.
 
     Returns:
         list[str]: ``'<tool> <-> <body>'`` for every allowance added.
@@ -361,31 +361,31 @@ def plan_h_m0(results: Results, session: CfabSession, spec, mv, mode: str, requi
                   required=required)
 
 
-def check_obstacle_beliefs(results: Results, problem: str, schedule) -> None:
+def check_obstacle_beliefs(results: Results, problem: str, skeleton) -> None:
     """Re-pose the support robot in the assembly robot's cell from its belief.
 
-    Marks the hold entry done in an IN-MEMORY progress (nothing is saved), then
+    Marks the hold action done in an IN-MEMORY progress (nothing is saved), then
     applies the resulting beliefs to the release's first state and compares the
     support robot's obstacle tool with what the next jointing exports.
 
     Args:
         results (Results): Where the checks go.
         problem (str): Design problem folder name.
-        schedule (ActionSchedule): The problem's schedule.
+        skeleton (PlanSkeleton): The problem's plan skeleton.
     """
     support, assembly = robot_by_name(SUPPORT_ROBOT), robot_by_name(ASSEMBLY_ROBOT)
     tool = support.obstacle_tool_name
-    hold = schedule.find_entry(HELD_BAR, 'H')
-    release = schedule.find_entry(HELD_BAR, 'R')
-    oracle_entry = schedule.find_entry(NEXT_BAR, 'J')
-    print(f"\n--- 4. {tool} in {assembly.name}'s cell: entry {release.index} {release.action_id}, "
+    hold = skeleton.find_action(HELD_BAR, 'H')
+    release = skeleton.find_action(HELD_BAR, 'R')
+    oracle_action = skeleton.find_action(NEXT_BAR, 'J')
+    print(f"\n--- 4. {tool} in {assembly.name}'s cell: action {release.index} {release.action_id}, "
           f"movement 0 ---")
 
-    progress = new_progress(schedule)  # in memory only
-    held_action = schedule.load_action(hold, prefer_sidecar=False)
+    progress = new_progress(skeleton)  # in memory only
+    held_action = skeleton.load_bar_action(hold, prefer_sidecar=False)
     progress.mark_done(hold, support.name, 'smoke', belief_after(held_action, support, hold.index))
-    release_action = schedule.load_action(release, prefer_sidecar=False)
-    oracle = schedule.load_action(oracle_entry, prefer_sidecar=False).movements[0].start_state.tool_states[tool]
+    release_action = skeleton.load_bar_action(release, prefer_sidecar=False)
+    oracle = skeleton.load_bar_action(oracle_action, prefer_sidecar=False).movements[0].start_state.tool_states[tool]
 
     session = open_session(problem, assembly.cell_file)
     try:
@@ -406,13 +406,13 @@ def check_obstacle_beliefs(results: Results, problem: str, schedule) -> None:
         conf_err = max(abs(after.configuration[n] - oracle.configuration[n])
                        for n in oracle.configuration.joint_names)
         print(f"  {tool} before {pt(before)} -> after {pt(after.frame)}; "
-              f"{oracle_entry.action_id} exports {pt(oracle.frame)}")
+              f"{oracle_action.action_id} exports {pt(oracle.frame)}")
         results.check(f'{tool} re-posed from belief_after({hold.action_id}) (not parked)',
                       frame_dist(after.frame, PARKED_BASE_FRAME) > 1.0, f"at {pt(after.frame)}")
-        results.check(f"{tool} frame == {oracle_entry.action_id}'s export",
+        results.check(f"{tool} frame == {oracle_action.action_id}'s export",
                       frame_dist(after.frame, oracle.frame) < SAME_TOL,
                       f"max diff {frame_dist(after.frame, oracle.frame):.1e}")
-        results.check(f"{tool} arm joints == {oracle_entry.action_id}'s export (by joint name)",
+        results.check(f"{tool} arm joints == {oracle_action.action_id}'s export (by joint name)",
                       conf_err < SAME_TOL, f"max diff {conf_err:.1e} rad")
         bar_name = find_bar_body(state.rigid_body_states, HELD_BAR)
         bar_rb = state.rigid_body_states.get(bar_name) if bar_name else None
@@ -464,17 +464,17 @@ def main(argv: Optional[list] = None) -> int:
     args = parser.parse_args(argv)
 
     results = Results()
-    schedule = load_schedule(problem_root(args.problem))
-    if schedule is None:
+    skeleton = load_plan_skeleton(problem_root(args.problem))
+    if skeleton is None:
         print(f"{args.problem} has no ActionSchedule.json; this smoke needs the support-robot fixture.")
         return 1
     support = robot_by_name(SUPPORT_ROBOT)
-    hold = schedule.find_entry(HELD_BAR, 'H')
-    held_action = schedule.load_action(hold, prefer_sidecar=False)
+    hold = skeleton.find_action(HELD_BAR, 'H')
+    held_action = skeleton.load_bar_action(hold, prefer_sidecar=False)
     mv0, mv2 = held_action.movements[0], held_action.movements[2]
     plans_required = args.collisions != 'exported'
     print(f"problem {args.problem} | {support.name} on {support.cell_file} | "
-          f"entry {hold.index} {hold.action_id} | --collisions {args.collisions}")
+          f"action {hold.index} {hold.action_id} | --collisions {args.collisions}")
 
     session = open_session(args.problem, support.cell_file)
     try:
@@ -485,7 +485,7 @@ def main(argv: Optional[list] = None) -> int:
     finally:
         session.close()
 
-    check_obstacle_beliefs(results, args.problem, schedule)
+    check_obstacle_beliefs(results, args.problem, skeleton)
 
     results.print_summary()
     return 1 if results.n_failed() else 0

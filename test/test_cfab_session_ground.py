@@ -19,12 +19,12 @@ from husky_assembly_teleop.cfab_session import (
 )
 
 # The multi-robot export: Cindy's __J/__R plus the support robots' __H/__HR.
-SCHEDULE_PROBLEM = '260920_RobArch_demo_revamp_backup'
-ACTIONS_DIR = os.path.join(DESIGN_DATA_DIRECTORY, SCHEDULE_PROBLEM, 'BarActions')
+SKELETON_PROBLEM = '260920_RobArch_demo_revamp_backup'
+ACTIONS_DIR = os.path.join(DESIGN_DATA_DIRECTORY, SKELETON_PROBLEM, 'BarActions')
 # * B1 is a ground bar: both of its ground joints ride with it while it is inserted.
 B1_GROUND_JOINTS = ('joint_G1-T20Ground-0_ground', 'joint_G1-T20Ground-1_ground')
 
-needs_schedule_export = pytest.mark.skipif(
+needs_skeleton_export = pytest.mark.skipif(
     not os.path.isdir(ACTIONS_DIR),
     reason='the multi-robot design-study export is not on this machine',
 )
@@ -57,7 +57,7 @@ def _stand_in_cell(obstacle_tools: tuple = ()) -> types.SimpleNamespace:
     )
 
 
-@needs_schedule_export
+@needs_skeleton_export
 def test_touch_list_holds_the_ground_joints():
     """The pure touch-list: ground joints and obstacle robots, each once, nothing else."""
     state = _b1_insert_start_state()
@@ -70,7 +70,7 @@ def test_touch_list_holds_the_ground_joints():
     assert 'bar_B1' not in touch
 
 
-@needs_schedule_export
+@needs_skeleton_export
 def test_new_floor_entry_allows_the_ground_joints():
     """Injecting the floor into the B1 insert start state allows both ground joints."""
     state = _b1_insert_start_state()
@@ -83,7 +83,7 @@ def test_new_floor_entry_allows_the_ground_joints():
     assert sorted(ground.touch_links) == sorted(GROUND_TOUCH_LINKS)
 
 
-@needs_schedule_export
+@needs_skeleton_export
 def test_existing_floor_entry_gains_the_ground_joints():
     """An older floor entry (no ground joints) gets them added, without duplicates."""
     state = _b1_insert_start_state()

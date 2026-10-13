@@ -46,7 +46,7 @@ from husky_assembly_teleop.bar_action_io import (
 LEGACY_PROBLEM = '260715_phase1_test'
 SPLIT_PROBLEM = '260929_phase1_retest'
 # The multi-robot export: Cindy's __J/__R plus the support robots' __H/__HR.
-SCHEDULE_PROBLEM = '260920_RobArch_demo_revamp_backup'
+SKELETON_PROBLEM = '260920_RobArch_demo_revamp_backup'
 # The newer multi-robot export: its grounded bars have no tighten step and end
 # with a manual foundation fix instead.
 HOLDING_TEST_PROBLEM = '261006_3bar_holding_test'
@@ -157,8 +157,8 @@ def test_every_legacy_bar_still_exported():
 
 # * ================================================ support robots (hold export)
 
-needs_schedule_export = pytest.mark.skipif(
-    not os.path.isdir(_actions_dir(SCHEDULE_PROBLEM)),
+needs_skeleton_export = pytest.mark.skipif(
+    not os.path.isdir(_actions_dir(SKELETON_PROBLEM)),
     reason='the multi-robot design-study export is not on this machine',
 )
 needs_holding_test_export = pytest.mark.skipif(
@@ -167,7 +167,7 @@ needs_holding_test_export = pytest.mark.skipif(
 )
 
 
-def _load_schedule_action(name: str):
+def _load_skeleton_bar_action(name: str):
     """Load one action file of the multi-robot export.
 
     Args:
@@ -176,7 +176,7 @@ def _load_schedule_action(name: str):
     Returns:
         BarSceneAction: The loaded action.
     """
-    return parse_bar_action(os.path.join(_actions_dir(SCHEDULE_PROBLEM), f'{name}.json'))
+    return parse_bar_action(os.path.join(_actions_dir(SKELETON_PROBLEM), f'{name}.json'))
 
 
 # * ------------------------------------------------- movement kinds
@@ -294,12 +294,12 @@ def test_is_free_home_in_memory():
     assert not is_free_home(BarHoldingAction(movements=[approach]), approach)
 
 
-@needs_schedule_export
+@needs_skeleton_export
 def test_is_free_home_on_fixture():
     """B1__J only travels out; in B1__R exactly the free move home is home."""
-    jointing = _load_schedule_action('B1__J')
+    jointing = _load_skeleton_bar_action('B1__J')
     assert not any(is_free_home(jointing, mv) for mv in jointing.movements)
-    release = _load_schedule_action('B1__R')
+    release = _load_skeleton_bar_action('B1__R')
     assert [mv.movement_id for mv in release.movements if is_free_home(release, mv)] == [
         'B1_R_M3_free_home']
 
@@ -313,10 +313,10 @@ def test_is_free_home_on_legacy_export():
 
 
 @pytest.mark.parametrize('problem, name', [
-    pytest.param(SCHEDULE_PROBLEM, 'B1__J', marks=needs_schedule_export),
-    pytest.param(SCHEDULE_PROBLEM, 'B1__R', marks=needs_schedule_export),
-    pytest.param(SCHEDULE_PROBLEM, 'B3__H', marks=needs_schedule_export),
-    pytest.param(SCHEDULE_PROBLEM, 'B3__HR', marks=needs_schedule_export),
+    pytest.param(SKELETON_PROBLEM, 'B1__J', marks=needs_skeleton_export),
+    pytest.param(SKELETON_PROBLEM, 'B1__R', marks=needs_skeleton_export),
+    pytest.param(SKELETON_PROBLEM, 'B3__H', marks=needs_skeleton_export),
+    pytest.param(SKELETON_PROBLEM, 'B3__HR', marks=needs_skeleton_export),
     pytest.param(LEGACY_PROBLEM, 'B1', marks=needs_exports),
     pytest.param(LEGACY_PROBLEM, 'B4', marks=needs_exports),
 ])
@@ -479,7 +479,7 @@ def test_held_ground_joints_in_memory():
 
 
 @pytest.mark.parametrize('problem', [
-    pytest.param(SCHEDULE_PROBLEM, marks=needs_schedule_export),
+    pytest.param(SKELETON_PROBLEM, marks=needs_skeleton_export),
     pytest.param(HOLDING_TEST_PROBLEM, marks=needs_holding_test_export),
 ])
 def test_held_ground_joints_on_exports(problem):
@@ -526,7 +526,7 @@ def test_mating_arm_sides_in_memory():
 
 
 @pytest.mark.parametrize('problem', [
-    pytest.param(SCHEDULE_PROBLEM, marks=needs_schedule_export),
+    pytest.param(SKELETON_PROBLEM, marks=needs_skeleton_export),
     pytest.param(HOLDING_TEST_PROBLEM, marks=needs_holding_test_export),
 ])
 def test_mating_arm_sides_on_exports(problem):
@@ -540,16 +540,16 @@ def test_mating_arm_sides_on_exports(problem):
         assert mating_arm_sides(_insert_start_state(problem, bar)) == want, bar
 
 
-@needs_schedule_export
+@needs_skeleton_export
 def test_kinds_and_tool_events_of_real_hold_actions():
     """The hold export's classes and tool fields, as the exporter writes them."""
-    hold = _load_schedule_action('B3__H')
+    hold = _load_skeleton_bar_action('B3__H')
     assert [movement_kind(mv) for mv in hold.movements] == [
         MovementKind.SINGLE_FREE, MovementKind.GRIPPER_TOOL,
         MovementKind.SINGLE_LINEAR, MovementKind.GRIPPER_TOOL]
     assert tool_event(hold.movements[1]) == ('open', ['SupportGripper'], False)
     assert tool_event(hold.movements[3]) == ('close', ['SupportGripper'], False)
-    jointing = _load_schedule_action('B3__J')
+    jointing = _load_skeleton_bar_action('B3__J')
     assert tool_event(jointing.movements[4]) == ('tighten', ['AT3L', 'AT3R'], True)
 
 
@@ -620,25 +620,25 @@ def test_operator_steps_in_memory():
     assert operator_steps([]) == []
 
 
-@needs_schedule_export
+@needs_skeleton_export
 def test_operator_steps_on_fixture():
     """B1__J folds its tighten into the insert, B1__R its screw steps into the retreat.
 
     The support robots' hold and hold release keep one step per movement.
     """
-    jointing = _load_schedule_action('B1__J').movements
+    jointing = _load_skeleton_bar_action('B1__J').movements
     assert operator_steps(jointing) == [
         OperatorStep(0), OperatorStep(1), OperatorStep(2), OperatorStep(3), OperatorStep(5, (4,))]
 
     # * The release's screw steps may change with a re-export (Rhino note D7), so
     # * the layout is read from the file: every step before the retreat joins it.
-    release = _load_schedule_action('B1__R').movements
+    release = _load_skeleton_bar_action('B1__R').movements
     n = len(release)
     assert all(tool_runs_with_next_motion(mv) for mv in release[:n - 2])
     assert operator_steps(release) == [OperatorStep(n - 2, tuple(range(n - 2))), OperatorStep(n - 1)]
 
     for name in ('B3__H', 'B3__HR'):
-        movements = _load_schedule_action(name).movements
+        movements = _load_skeleton_bar_action(name).movements
         assert operator_steps(movements) == [OperatorStep(i) for i in range(len(movements))], name
 
 

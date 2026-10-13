@@ -6,7 +6,7 @@ results and the decisions to section 9 as they come in.
 
 Related:
 - `doc/bar_holding_acc_manual.md`: the bar-holding accuracy test, the servo loop, marker takes.
-- `doc/support_robot_schedule_manual.md`, section "Visual-servo correction after the transfer":
+- `doc/support_robot_plan_skeleton_manual.md`, section "Visual-servo correction after the transfer":
   the servo that now runs at the end of every transfer.
 - Session report 20261001: `<drive>/data_experiment/bar_holding_acc_data/20261001-result/RESULTS.md`
   (`<drive>` = `~/Insync/2025-03 Husky Assembly`).

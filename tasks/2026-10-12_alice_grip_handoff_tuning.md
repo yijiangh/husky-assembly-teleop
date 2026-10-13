@@ -6,7 +6,7 @@ It was tried in the air and on a bar on Alice on 2026-10-12. Two problems remain
 **Nothing below is implemented yet; the user wants to decide first.**
 
 Operator manual for the run: `doc/three_robot_assembly_test_manual.md` (section 6: air checks;
-section 8: Alice's hold of B21, section 10: Belle's hold of B35). Handoff description: `doc/support_robot_schedule_manual.md`
+section 8: Alice's hold of B21, section 10: Belle's hold of B35). Handoff description: `doc/support_robot_plan_skeleton_manual.md`
 ("The grip handoff").
 
 ---

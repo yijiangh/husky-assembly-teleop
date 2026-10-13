@@ -758,7 +758,7 @@ def apply_obstacle_robot_beliefs(state: RobotCellState, robot_cell: RobotCell,
     Each robot appears in the other robots' cells as a frozen tool
     ``ObstacleRobot<Name>``: its ``frame`` is the robot base in the world and its
     ``configuration`` the arm joints. The exporter writes one guess per state;
-    the monitor knows better (live mocap, or the end state of the entry that
+    the monitor knows better (live mocap, or the end state of the action that
     robot last finished), so this overwrites it. Mirrors the Rhino side's
     ``configure_robot_obstacle`` and ``whitelist_frozen_contact``
     (``bar_joint_rhino_design_workflow/scripts/core/robot_obstacles.py``).

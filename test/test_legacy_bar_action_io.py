@@ -26,7 +26,7 @@ from husky_assembly_teleop.legacy_bar_action_io import (
 LEGACY_PROBLEM = '260715_phase1_test'
 SPLIT_PROBLEM = '260929_phase1_retest'
 # The multi-robot export: Cindy's __J/__R plus the support robots' __H/__HR.
-SCHEDULE_PROBLEM = '260920_RobArch_demo_revamp_backup'
+SKELETON_PROBLEM = '260920_RobArch_demo_revamp_backup'
 
 # * Three bars, picked for how they sit across the two exports:
 # *   B1  -- in both, and its poses and configurations are identical, so the
@@ -91,8 +91,8 @@ needs_exports = pytest.mark.skipif(
 )
 
 
-needs_schedule_export = pytest.mark.skipif(
-    not os.path.isdir(_actions_dir(SCHEDULE_PROBLEM)),
+needs_skeleton_export = pytest.mark.skipif(
+    not os.path.isdir(_actions_dir(SKELETON_PROBLEM)),
     reason='the multi-robot design-study export is not on this machine',
 )
 
@@ -101,7 +101,7 @@ def _mv(movement_id):
     return types.SimpleNamespace(movement_id=movement_id)
 
 
-def _load_schedule_action(name: str):
+def _load_skeleton_bar_action(name: str):
     """Load one action file of the multi-robot export.
 
     Args:
@@ -110,7 +110,7 @@ def _load_schedule_action(name: str):
     Returns:
         BarSceneAction: The loaded action.
     """
-    return parse_bar_action(os.path.join(_actions_dir(SCHEDULE_PROBLEM), f'{name}.json'))
+    return parse_bar_action(os.path.join(_actions_dir(SKELETON_PROBLEM), f'{name}.json'))
 
 
 # * ------------------------------------------------- roles read off the ids
@@ -247,12 +247,12 @@ def test_sidecar_falls_back_to_the_clean_release_half(tmp_path):
 
 # * ------------------------------------------------- roles from the classes
 
-@needs_schedule_export
+@needs_skeleton_export
 def test_roles_for_real_actions(capsys):
     """Cindy's halves keep their roles; a support robot's actions have none, silently."""
-    assert roles_for_action(_load_schedule_action('B3__J')) == ['M0', None, None, 'M1', None, 'M2']
-    assert roles_for_action(_load_schedule_action('B3__R')) == [None, None, 'M3', 'M4']
-    hold, hold_release = _load_schedule_action('B3__H'), _load_schedule_action('B3__HR')
+    assert roles_for_action(_load_skeleton_bar_action('B3__J')) == ['M0', None, None, 'M1', None, 'M2']
+    assert roles_for_action(_load_skeleton_bar_action('B3__R')) == [None, None, 'M3', 'M4']
+    hold, hold_release = _load_skeleton_bar_action('B3__H'), _load_skeleton_bar_action('B3__HR')
     assert roles_for_action(hold) == [None] * 4
     assert roles_for_action(hold_release) == [None] * 2
     # The multi-file form must not print a role mismatch for them either.

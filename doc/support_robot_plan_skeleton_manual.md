@@ -1,9 +1,9 @@
 # Support robots in the live monitor — operator manual
 
 How to run an assembly that uses the support robots (Alice, Belle) from the live
-monitor, one `ActionSchedule.json` entry at a time. Written for the first test:
+monitor, one `ActionSchedule.json` action at a time. Written for the first test:
 **bars B1, B3 (held by Alice), B4, B5 of `260920_RobArch_demo_revamp`**
-(schedule entries 0..8).
+(actions 0..8).
 
 Design notes and the full change log: `tasks/2026-09-30_support_robot_schedule_monitor.md`;
 the 2026-10-01 dry-run fixes: `tasks/2026-10-01_drop_legacy_movement_roles.md` (§5).
@@ -13,12 +13,12 @@ the 2026-10-01 dry-run fixes: `tasks/2026-10-01_drop_legacy_movement_roles.md` (
 ## What changed, in one paragraph
 
 The monitor now reads the problem's `ActionSchedule.json` and steps through its
-entries: `J` (Cindy joints a bar), `H` (a support robot grabs a bar), `R` (Cindy
+actions: `J` (Cindy joints a bar), `H` (a support robot grabs a bar), `R` (Cindy
 releases), `HR` (the support robot releases). **One robot is connected per
 monitor run** — the one whose `ROS_DOMAIN_ID` you start with (84 Alice,
 85 Belle, 86 Cindy). The other two are drawn and collision-checked from their
 **live mocap base** (when tracked and calibrated) or from what the monitor
-remembers they did last (`progress.json`). To run another robot's entry you quit
+remembers they did last (`progress.json`). To run another robot's action you quit
 and restart the monitor with that robot's domain; progress survives the restart.
 
 ---
@@ -27,7 +27,7 @@ and restart the monitor with that robot's domain; progress survives the restart.
 
 1. **Data.** The problem folder must hold `ActionSchedule.json`, `RobotCell.json`,
    `RobotCell_Alice.json`, `RobotCell_Belle.json`, `WalkableGround.json` and
-   **every** file the schedule lists under `BarActions/`. If any is missing the
+   **every** file the plan skeleton lists under `BarActions/`. If any is missing the
    monitor falls back to the old BarAction list and says why in one line.
    Point the monitor at it (no code edit needed):
    ```bash
@@ -39,29 +39,29 @@ and restart the monitor with that robot's domain; progress survives the restart.
 
    | flag | set to | why |
    |---|---|---|
-   | `USE_ACTION_SCHEDULE` | 1 | schedule panel instead of the BarAction file list |
+   | `USE_PLAN_SKELETON` | 1 | plan skeleton panel instead of the BarAction file list |
    | `CONNECT_COMPLIANT_CONTROLLER` | 1 | Cindy's compliant insert/retreat AND Alice's grip handoff need the switch service |
    | `LIST_CONTROLLER_SERVICES` | 1 | reads which controller is active at start-up; with 0 the first switch can fail |
    | `IGNORE_BUILT_ASSEMBLY_COLLISIONS` | 0 for Cindy, 1 for Alice's hold | start value of the panel toggle below |
    | `FAKE_HARDWARE` | 0 on robots, 1 for a dry run | |
 
    **Built bars: the panel toggle `Ignore built-bar collisions (bars drawn faint)`**
-   (Schedule section). OFF: the built bars and joints are obstacles for the
+   (Plan skeleton section). OFF: the built bars and joints are obstacles for the
    planner and IK and are drawn as usual. ON: the planner and IK ignore them and
    they are drawn faint grey, so you can see that the switch is on. Changing it
-   reloads the loaded entry (planned paths not yet saved are dropped). It
-   replaces `BAR_ACTION_MOCAP_ACCURACY_TEST = 1`, which schedule mode no longer
+   reloads the loaded action (planned paths not yet saved are dropped). It
+   replaces `BAR_ACTION_MOCAP_ACCURACY_TEST = 1`, which plan skeleton mode no longer
    reads for collisions (the legacy BarAction list still does).
 
-   ! Alice's hold entries need it ON: the exported hold scenes (`B*__H.json`)
+   ! Alice's hold actions need it ON: the exported hold scenes (`B*__H.json`)
    show the bars that exist when the hold ENDS (B4..B9 for B3's hold) while Cindy
    stands at her B3 assembled pose, which overlaps future bar B5 — so Alice's
    approach plans report "start in collision" otherwise (Rhino note D5). Cindy's
-   J/R entries plan fine with it OFF.
+   J/R actions plan fine with it OFF.
 
    ! Known issue (not fixed yet): a `.live-solved.json` sidecar written while the
    built bars were ignored keeps them hidden when it is reloaded, even with the
-   toggle OFF. Use `Reopen entry (reload clean)`, or delete that sidecar, before
+   toggle OFF. Use `Reopen action (reload clean)`, or delete that sidecar, before
    relying on the built-bar display.
 3. **Base calibration files.** Each robot's
    `calibrated_transformation_<0804|0805|0806>_rhino.json` must exist in its date
@@ -98,33 +98,33 @@ ros2 run husky_assembly_teleop husky_monitor
 
 ---
 
-## The Schedule panel
+## The Plan skeleton panel
 
 | widget | what it does |
 |---|---|
-| header line | connected robot, problem, `k/48 done`; a second line `others: Alice <- live (entry 3) \| Belle <- parked` says where each other robot's pose comes from (`live`, `assumed`, `exported` or `parked`; a fresh mocap base still overrides it) |
-| `Schedule entry (idx)` + `Prev entry` / `Next entry` | pick an entry (the readout under it shows type, bar, robot, IK/TRJ counts, status) |
-| `Load entry` | loads the entry. Another robot's entry loads **display only**: you see its movements, but Plan / Exec refuse and no step button is shown |
-| `Mark entry done` | records the entry as done and remembers where the robot ended (see below) |
-| `Reopen entry (reload clean)` | sets the LOADED entry back to pending, restores that robot's end state from its previous done entry, and reloads the clean export. If the slider shows a different entry it first asks for `Confirm Exec`, naming both |
-| `Rescan schedule status` | re-reads `progress.json` and the IK/trajectory flags |
-| `Reset schedule to the Rhino export` | after `Confirm Exec`: moves `progress.json` and every saved plan (`*.live-solved.json`) to `<problem>/archive/<time>/` (nothing deleted; move them back to undo), then every entry is pending, no robot beliefs (others drawn parked), entry 0 loads its clean export. A monitor of another robot that is running keeps its old progress in memory: restart it too |
-| `Ignore built-bar collisions (bars drawn faint)` | OFF = built bars are obstacles; ON = ignored by planner and IK, drawn faint (see Pre-flight 2). Changing it reloads the loaded entry |
-| `now` line | `Now: entry k -- <type> <bar> by <robot> -- step i/n <movement id> [<kind>] ctrl=<controller>` |
+| header line | connected robot, problem, `k/48 done`; a second line `others: Alice <- live (action 3) \| Belle <- parked` says where each other robot's pose comes from (`live`, `assumed`, `exported` or `parked`; a fresh mocap base still overrides it) |
+| `Action (idx)` + `Prev action` / `Next action` | pick an action (the readout under it shows type, bar, robot, IK/TRJ counts, status) |
+| `Load action` | loads the action. Another robot's action loads **display only**: you see its movements, but Plan / Exec refuse and no step button is shown |
+| `Mark action done` | records the action as done and remembers where the robot ended (see below) |
+| `Reopen action (reload clean)` | sets the LOADED action back to pending, restores that robot's end state from its previous done action, and reloads the clean export. If the slider shows a different action it first asks for `Confirm Exec`, naming both |
+| `Rescan plan skeleton status` | re-reads `progress.json` and the IK/trajectory flags |
+| `Reset plan skeleton to the Rhino export` | after `Confirm Exec`: moves `progress.json` and every saved plan (`*.live-solved.json`) to `<problem>/archive/<time>/` (nothing deleted; move them back to undo), then every action is pending, no robot beliefs (others drawn parked), action 0 loads its clean export. A monitor of another robot that is running keeps its old progress in memory: restart it too |
+| `Ignore built-bar collisions (bars drawn faint)` | OFF = built bars are obstacles; ON = ignored by planner and IK, drawn faint (see Pre-flight 2). Changing it reloads the loaded action |
+| `now` line | `Now: action k -- <type> <bar> by <robot> -- step i/n <movement id> [<kind>] ctrl=<controller>` |
 | row list | grey = other robot, green = done, yellow = selected |
 
 ### Steps, not movements
 
-The `Step` slider (above `Load Movement`) walks the entry's **operator steps**, not
+The `Step` slider (above `Load Movement`) walks the action's **operator steps**, not
 its movements. A scaffolding tool step that the next compliant movement sends by
 itself has no step of its own: it runs with that movement.
 
-| entry | steps |
+| action | steps |
 |---|---|
-| J (e.g. `B1_J`) | 5: travel to load · manual mount · tool grasp · transfer · insert (+ the tighten runs with it). The entry opens on its transfer (loaded right away). After the transfer's motion its exec corrects the tool0 placement with the accuracy test's visual servo (see "Visual-servo correction after the transfer" below) and leaves the insert loaded |
+| J (e.g. `B1_J`) | 5: travel to load · manual mount · tool grasp · transfer · insert (+ the tighten runs with it). The action opens on its transfer (loaded right away). After the transfer's motion its exec corrects the tool0 placement with the accuracy test's visual servo (see "Visual-servo correction after the transfer" below) and leaves the insert loaded |
 | J of a **grounded bar** (held on its ground joints, e.g. `B1`, `B5` in the 2026-10-06 export) | 6: travel to load · manual mount · tool grasp · transfer · insert · manual fix foundation. The insert runs **rigid only** (joint tracking) and **never tightens**, whatever the export says (an exported tighten step is ignored; Rhino note D9) |
 | J of a **one-sided bar** (one held male joint has no female in the insert's start state: its female sits on a staging bar; e.g. `B3`, `B7` mate left, `B12`, `B15` mate right in the 2026-10-06 export) | 5, as a normal J. The insert TIGHTENs only the **mating** arm's joint motor and ends when that motor stalls; both arms still run the rigid approach and the compliant last mm. The export's tighten step still names both tools: a warning says so until the Rhino re-export (note D10) |
-| R (e.g. `B1_R`) | 2: retreat (+ the ungrasp runs with it; the untighten is **not sent** — `Loosen Joint` by hand if needed) · free move home. The entry opens on its retreat. The retreat is planned from the live arms: each tool0 backs off the export's `lm_distance_mm` (50 mm) along its `retreat_axes_world`, scene collisions checked; a failed straight-line plan prints a `[<movement> diag]` block and draws the collision. After its compliant part, the rigid part runs at once, no `Confirm Exec`; its checks are printed first as a report (`husky_world.retreat_guardrails`: replan, start, compliant part, contact, grippers open, tool0 paths, joints, speed) |
+| R (e.g. `B1_R`) | 2: retreat (+ the ungrasp runs with it; the untighten is **not sent** — `Loosen Joint` by hand if needed) · free move home. The action opens on its retreat. The retreat is planned from the live arms: each tool0 backs off the export's `lm_distance_mm` (50 mm) along its `retreat_axes_world`, scene collisions checked; a failed straight-line plan prints a `[<movement> diag]` block and draws the collision. After its compliant part, the rigid part runs at once, no `Confirm Exec`; its checks are printed first as a report (`husky_world.retreat_guardrails`: replan, start, compliant part, contact, grippers open, tool0 paths, joints, speed) |
 | H, HR (support robot) | one step per movement |
 
 The readout under the slider names the step and what runs with it, e.g.
@@ -149,16 +149,16 @@ Start` moves the simulated arms). `traj time` starts at the loaded movement's
 default. The traj button refuses tool / manual steps.
 
 **Only one thing waits at a time.** While a step or an execution is running or
-waiting for `Confirm Exec`, `Load entry`, `Mark entry done`, `Reopen`, `Rescan`,
-another step, and (in schedule mode) Plan / Exec / Load Movement / Reset are
+waiting for `Confirm Exec`, `Load action`, `Mark action done`, `Reopen`, `Rescan`,
+another step, and (in plan skeleton mode) Plan / Exec / Load Movement / Reset are
 refused. Finish it or click `Cancel Exec`.
 
-### The transfer start (J entries)
+### The transfer start (J actions)
 
 The travel to load ends where the transfer starts (the bar-loading pose), and the
 export leaves that pose open, so it is chosen here:
 
-1. `Load entry` (it opens on the transfer, already loaded);
+1. `Load action` (it opens on the transfer, already loaded);
 2. set the `Transfer start: home anchor (0:all,1:horiz,2:vert,3:back)`,
    `Transfer start: slide along bar (m)`, `Transfer start: roll about bar (deg)`,
    `Transfer start: shift perp. 1 (m)` and `Transfer start: shift perp. 2 (m)`
@@ -177,7 +177,7 @@ travel-to-load goal` are the automatic alternative.
 
 ### Transfer workaround (temporary): the transfer as a free move, no bar
 
-! **In use for every J entry since 2026-10-06, until the bar-held transfer planner is
+! **In use for every J action since 2026-10-06, until the bar-held transfer planner is
 ready** (then the section above applies again).
 
 The transfer's bar-held planner rarely finds a path yet. To test the live replan
@@ -190,7 +190,7 @@ in the tools during that move: you mount it by hand at the insertion start
 afterwards. Log: `[transfer workaround] free move (no bar) from the live arms to the
 insertion start; max |goal - stored goal| = ... rad`.
 
-1. `Load entry` (a J entry). The travel to load is not needed: skip it.
+1. `Load action` (a J action). The travel to load is not needed: skip it.
 2. `Step` → the transfer step → `Load Movement`.
 3. `Transfer start: Confirm manual pose (IK check)` → can the arms reach the insertion
    start (the Rhino pose) from where the base stands? `[transfer workaround] insertion
@@ -258,7 +258,7 @@ The IK is the robot's own exact ssik solver (`asset/ssik/alice_ur_arm_ik.py` /
 robot's calibrated URDF). Both serve the same planning group, so the one whose forward
 kinematics match the planner's robot is used; when none matches, PyBullet IK runs.
 
-In a hold entry, `Exec Selected Mv Traj (auto)` on the free approach then servos
+In a hold action, `Exec Selected Mv Traj (auto)` on the free approach then servos
 tool0 onto the approach pose (`world.execute_free_approach_then_servo` ->
 `servo_single_arm_to_target_live`), the single-arm twin of the correction after
 Cindy's transfer: live-base IK nearest the live arm, a joint move per pass, first
@@ -292,68 +292,68 @@ with the arm stiff (logged). When the switch to compliance fails, nothing is clo
 
 ---
 
-## Four-bar test (entries 0..8)
+## Four-bar test (actions 0..8)
 
-| run (`ROS_DOMAIN_ID`) | entry | what to do |
+| run (`ROS_DOMAIN_ID`) | action | what to do |
 |---|---|---|
-| 86 Cindy | 0 `B1_J` | Load entry · tick the transfer workaround (once per run) · transfer Plan (free move, no bar) + Exec · manual mount step (mount the bar at the insertion start) · tool grasp step · insert Plan + Exec (compliant insert; the tighten runs with it) · **Mark entry done**. (Without the workaround, later: travel to load via `Confirm transfer start + plan travel to load` first, transfer with the bar held after the grasp.) |
+| 86 Cindy | 0 `B1_J` | Load action · tick the transfer workaround (once per run) · transfer Plan (free move, no bar) + Exec · manual mount step (mount the bar at the insertion start) · tool grasp step · insert Plan + Exec (compliant insert; the tighten runs with it) · **Mark action done**. (Without the workaround, later: travel to load via `Confirm transfer start + plan travel to load` first, transfer with the bar held after the grasp.) |
 | 86 | 1 `B1_R` | opens on the retreat: Plan + Exec (compliant retreat; the ungrasp runs with it, the untighten is not sent) · free move home Plan + Exec · Mark done |
-| 86 | 2 `B3_J` | as entry 0 |
+| 86 | 2 `B3_J` | as action 0 |
 | 86 | 3 `B3_H` | grey (Alice's). **Quit.** |
 | 84 Alice | 3 `B3_H` | tick `Ignore built-bar collisions (bars drawn faint)` · free approach Plan (goal re-solved at the live base) + Exec · gripper open step · linear approach Plan + Exec · gripper close step (close + handoff) · Mark done · **Quit.** |
-| 86 Cindy | 4 `B3_R` | Alice is now an obstacle at her hold pose. As entry 1 |
-| 86 | 5..8 | B4 J/R, B5 J/R as entries 0/1 |
+| 86 Cindy | 4 `B3_R` | Alice is now an obstacle at her hold pose. As action 1 |
+| 86 | 5..8 | B4 J/R, B5 J/R as actions 0/1 |
 
-Entry 16 (`B3_HR`, Alice lets go) comes after B9 and is out of scope for this test.
+Action 16 (`B3_HR`, Alice lets go) comes after B9 and is out of scope for this test.
 
 ---
 
-## How the state is carried forward, and what "Mark entry done" remembers
+## How the state is carried forward, and what "Mark action done" remembers
 
 **After every step that runs** (`Exec Selected Mv Traj`, the step button; not after
 `Cancel Exec`, nor when a joint move stopped short of its end), where the robot
 really is (measured arm joints, mocap base when tracked) becomes the start of what
 follows:
 
-- in the entry: the steps where no arm moves and the next arm movement start
+- in the action: the steps where no arm moves and the next arm movement start
   there (`[Exec] propagated arm configuration -> ...`); a plan of that movement
   made before is dropped (plan it again). After a servo run that is the
   corrected pose (`[Servo] propagated ...`);
-- for the next entries: the robot's **live** state is saved to `progress.json`
-  at once, without marking the entry done
-  (`[Schedule] <robot>'s live state after <step> saved for the next entries ...`).
-  So a skipped free move home or a skipped `Mark entry done` never leaves an
-  older state there. After an entry's LAST step a hold entry also records the
+- for the next actions: the robot's **live** state is saved to `progress.json`
+  at once, without marking the action done
+  (`[Plan skeleton] <robot>'s live state after <step> saved for the next actions ...`).
+  So a skipped free move home or a skipped `Mark action done` never leaves an
+  older state there. After an action's LAST step a hold action also records the
   hold (e.g. Alice holds B3 once her gripper closed) and a hold release the
   release;
-- `Load entry` puts the live state into every step up to the entry's first arm
-  movement (any entry kind), so it starts where the robot is.
+- `Load action` puts the live state into every step up to the action's first arm
+  movement (any action kind), so it starts where the robot is.
 
-`<problem>/progress.json` (next to `ActionSchedule.json`) keeps each entry's status
-and, per robot, the base frame + arm joints it ended in. `Mark entry done` marks
-the entry done and stores:
+`<problem>/progress.json` (next to `ActionSchedule.json`) keeps each action's status
+and, per robot, the base frame + arm joints it ended in. `Mark action done` marks
+the action done and stores:
 
-- your own robot's entry: the **live** state (mocap base if tracked within 1 s,
+- your own robot's action: the **live** state (mocap base if tracked within 1 s,
   else the authored base; live joints);
-- another robot's entry: allowed only after `Confirm Exec`; its **exported** end
+- another robot's action: allowed only after `Confirm Exec`; its **exported** end
   state is recorded as `assumed`.
 
 The other robots' obstacle poses come, in order, from: live mocap (fresh < 0.5 s
 and calibrated) → `progress.json` → the exported file. The header's `others:` line
 shows which of the last two (or `parked`) each robot uses; a fresh mocap base
-still overrides it. A support robot whose hold was released (its HR entry done) is
+still overrides it. A support robot whose hold was released (its HR action done) is
 parked out of the scene. A robot can appear twice at the same pose: the solid
 husky and the red obstacle robot — the red one is what the planner checks.
 
 At start-up the connected robot starts from its own `progress.json` state (one
-log line, e.g. `[Schedule] Cindy starts from the progress.json state (after entry 2, live).`).
+log line, e.g. `[Plan skeleton] Cindy starts from the progress.json state (after action 2, live).`).
 With `FAKE_HARDWARE=1` this is where the simulated arms continue from; on the
 robot the first joint state message overwrites the arms.
 
 Planned trajectories are saved to `<bar>__<kind>.live-solved.json` next to the
-clean export (never overwritten) by `Mark entry done`. `Load entry` prefers that
+clean export (never overwritten) by `Mark action done`. `Load action` prefers that
 file; after `Reopen` the clean export is used for the rest of the run. Every step
-up to an entry's first arm movement always starts from the live arm.
+up to an action's first arm movement always starts from the live arm.
 
 ---
 
