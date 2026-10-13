@@ -11158,7 +11158,7 @@ class HuskyMonitor(Node):
         self.skeleton_action_text = StatusText("  -> action", "")
         self.buttons.append(Button('Prev action', self.select_prev_action))
         self.buttons.append(Button('Next action', self.select_next_action))
-        self.buttons.append(Button('Load action', self.load_action))
+        self.buttons.append(Button('Load action', self.load_action, color=BUTTON_LOAD_RGB))
         self.buttons.append(Button('Mark action done', self.mark_action_done))
         self.buttons.append(Button('Reopen action (reload clean)', self.reopen_action))
         self.buttons.append(Button('Rescan plan skeleton status', self.rescan_skeleton_status))
