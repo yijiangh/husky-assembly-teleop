@@ -37,8 +37,8 @@ can be moved between experiments.
 
 **Conditions** are recorded with every run from `CONDITIONS` in `plugins/base_exp/record.py` (base, arm, floor).
 ! They are not in the panel: before collecting under a new condition, edit `CONDITIONS`, set up the robot to match,
-and rebuild. The analysis loads only runs under the current `CONDITIONS`, so leave it set when analysing that
-experiment.
+and restart the monitor. For path runs the analysis takes the experiment's conditions from its own runs (the ones
+most were recorded under) and leaves the others out; constant-command runs are all loaded.
 
 **Speed of the path runs:** 0.2 m/s with a 30°/s turn-rate cap, geometric (`auto.SPEED`, `auto.MODE`); the follower
 slows only to stop at the ends of pieces. ! Not in the panel: for another speed, edit `auto.SPEED`, rebuild, and use
@@ -248,4 +248,4 @@ The reports hold numbers only; how they are built: `doc/experiment_report_guide.
 | "auto not started: no lab border" | Add `obstacles` to the monitor's plugins. |
 | The real robot does not move, or a run ends "not driven" | The velocity controller is off: switch it on in `robot_control`, also after every soft stop. |
 | The monitor logs "cannot decode messages" | A follower with an older message definition still runs somewhere: rebuild and restart it. |
-| A report leaves runs out "under other conditions" | `CONDITIONS` differs from when they were recorded: set it back for this experiment. |
+| A report leaves path runs out "under other conditions" | The experiment holds path runs recorded under different `CONDITIONS`; the path reports use the ones most have. Use one experiment name per condition for A and C. |

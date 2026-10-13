@@ -19,7 +19,6 @@ from matplotlib.lines import Line2D
 
 from ..auto import MODE, SPEED
 from ..identify import SOURCES, identify
-from ..record import CONDITIONS
 from ..replay import HORIZON, IDEAL, Errors, Model, free_run, score, synthetic
 from ..replay import errors as run_errors
 from .common import (ERRORS, TEMPLATES, Experiment, markdown, parameters, robots, run_track, save, scenario_row,
@@ -73,7 +72,7 @@ def write(experiment: Experiment) -> None:
 
     tick = any(response.clock == "tick" for response in found.values())
     fixed = ", ".join([f"{SPEED[0]} m/s and {SPEED[1]:.0f}°/s", MODE.lower()]
-                      + [f"{key} {value}" for key, value in CONDITIONS.items()])
+                      + [f"{key} {value}" for key, value in experiment.conditions.items()])
     tolerance = ", ".join(f"{_short(key)} {value * VALUES[key][1]:g}{_unit(key)}" for key, value in TOLERANCE.items())
     lines = [f"# Robot model: {experiment.name}\n",
              experiment.intro() + "\n",

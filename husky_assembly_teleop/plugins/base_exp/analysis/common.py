@@ -6,8 +6,11 @@ What the reports share: the runs of an experiment, loaded once, with their robot
 - Its **scenario** is "<robot> · <controller and the model it assumes>", e.g. "sim alice_tiles · PP ideal".
 - An experiment's runs are the run folders in its folder, whatever name they were recorded under, so runs can be
   moved between experiments.
-- Only path runs at the fixed speed and mode, and runs under the fixed conditions, are loaded; the others are counted
-  in `left_out`. So are e-stopped runs, and runs listed in the experiment folder's EXCLUDED file, which stay on disk.
+- Only path runs at the fixed speed and mode and under the experiment's conditions (the ones most of its path runs
+  were recorded under, not the current `record.CONDITIONS`) are loaded; the others are counted in `left_out`. So
+  are e-stopped runs, and runs listed in the experiment folder's EXCLUDED file, which stay on disk.
+- Constant-command runs are loaded under every condition, each with its own (`conditions`): the condition is one of
+  the things their report compares.
 """
 
 from __future__ import annotations
@@ -15,6 +18,7 @@ from __future__ import annotations
 import json
 import math
 import os
+from collections import Counter
 from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
@@ -77,6 +81,11 @@ class Experiment:
         """The same experiment with only the runs of one kind (PATHS or COMMANDS)."""
         return replace(self, runs=self.runs[self.runs.kind == kind])
 
+    @property
+    def conditions(self) -> dict:
+        """The conditions the loaded runs were recorded under (base, arm, floor); see `load_runs`."""
+        return json.loads(self.runs.conditions.iloc[0]) if len(self.runs) else dict(CONDITIONS)
+
     def intro(self) -> str:
         """One line: runs of each kind, dates, how many done, what was left out."""
         started = self.runs.started[self.runs.started != ""]
@@ -94,6 +103,7 @@ def load_runs(recordings: Path, experiment: str | None) -> tuple[pd.DataFrame, d
         tuple[pd.DataFrame, dict, str]: The runs; their profiles (see `Experiment`); what was left out.
     """
     rows, profiles = [], {}
+    fixed = _conditions(recordings, experiment)
     skipped = {"e-stopped": 0, f"listed in {EXCLUDED}": 0, "without the monitor's tracking": 0,
                "at another speed or mode": 0, "under other conditions": 0}
     for data in sorted(recordings.glob("**/experiment.json")):
@@ -120,11 +130,13 @@ def load_runs(recordings: Path, experiment: str | None) -> tuple[pd.DataFrame, d
                              or not math.isclose(settings["linear_speed"], SPEED[0], abs_tol=1e-6)):
             skipped["at another speed or mode"] += 1
             continue
-        if description.get("conditions", CONDITIONS) != CONDITIONS:
+        conditions = description.get("conditions", CONDITIONS)
+        if not commands and conditions != fixed:
             skipped["under other conditions"] += 1
             continue
         row = {
             "kind": COMMANDS if commands else PATHS, "run": data.parent.name, "folder": str(data.parent),
+            "conditions": json.dumps(conditions, sort_keys=True),
             "started": description.get("started", ""),
             "environment": environment_label(description), "model": _model_text(description),
             "sim_model_name": (description.get("sim_model") or {}).get("model") or "",
@@ -169,6 +181,19 @@ def _excluded(folder: Path) -> frozenset[str]:
         return frozenset()
     names = (line.split("#")[0].strip() for line in listing.read_text().splitlines())
     return frozenset(name for name in names if name)
+
+
+def _conditions(recordings: Path, experiment: str | None) -> dict:
+    """The conditions most of the experiment's path runs were recorded under; `record.CONDITIONS` if it has none."""
+    found: Counter = Counter()
+    for data in recordings.glob("**/experiment.json"):
+        parts = data.relative_to(recordings).parts
+        if any(part.startswith("_") for part in parts) or (experiment is not None and parts[0] != experiment):
+            continue
+        description = json.loads(data.read_text())
+        if cell_of(description.get("template") or {}) is None:
+            found[json.dumps(description.get("conditions", CONDITIONS), sort_keys=True)] += 1
+    return json.loads(found.most_common(1)[0][0]) if found else dict(CONDITIONS)
 
 
 def scenarios(runs: pd.DataFrame) -> list[str]:

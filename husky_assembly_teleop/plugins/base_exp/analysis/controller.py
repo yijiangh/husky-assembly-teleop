@@ -21,7 +21,6 @@ from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
 
 from ..auto import MODE, SPEED, STANDARD_SET
-from ..record import CONDITIONS
 from .common import (ERRORS, NUMBERS, PROGRESS_BINS, TEMPLATES, Experiment, link, markdown, robots, save,
                      scenario_row, scenarios, shared_paths)
 
@@ -95,7 +94,7 @@ def write(experiment: Experiment) -> None:
                          _outcomes(shown, out)) if p]
 
     fixed = ", ".join([f"{SPEED[0]} m/s and {SPEED[1]:.0f}°/s", MODE.lower()]
-                      + [f"{key} {value}" for key, value in CONDITIONS.items()])
+                      + [f"{key} {value}" for key, value in experiment.conditions.items()])
     which = (f"the standard paths, the same {len(STANDARD_SET)} in every scenario" if not standard.empty
              else "every path (no standard-path runs)")
     errors = dict(lower=ERRORS, higher=("success [%]",))
