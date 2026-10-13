@@ -27,12 +27,16 @@ from .plan import Plan
 TWIST = "Twist"
 #: Seconds each command is held: the platform's ramp and delay, then a steady part long enough to average.
 SEGMENT = 4.0
-#: Commanded speeds (m/s) and turn rates (rad/s) of the grid; every pair of them, both turn directions.
-SPEEDS = (0.0, 0.1, 0.2, 0.3)
-TURN_RATES = (0.15, 0.3, 0.5, 0.8)
-#: Extra cells: straights (speed efficiency alone) and reversing (is it the same backwards?).
-STRAIGHTS = (0.1, 0.2, 0.3)
-REVERSE = (-0.2, (0.3, 0.8))
+#: The grid's core: every pair of these speeds (m/s) and turn rates (rad/s; 5, 15 and 30°/s), both turn directions.
+#: They span what the follower sends at `auto.SPEED`: turns on the spot, its slow approach to a goal (0.03 m/s, where
+#: a third of its commands lie) and driving at 0.2 m/s; turns from its slowest (4.6°/s) to its cap (30°/s).
+SPEEDS = (0.0, 0.03, 0.2)
+TURN_RATES = tuple(round(math.radians(rate), 3) for rate in (5.0, 15.0, 30.0))
+#: The middle turn rate, for the cells off the core.
+MIDDLE = TURN_RATES[1]
+#: Further cells (v, ω), each turn also the other way: a speed between and one above the core's (is the trend
+#: smooth; does it go on?), straights (speed efficiency alone), and reversing (is it the same backwards?).
+FURTHER = ((0.1, MIDDLE), (0.3, MIDDLE), (0.03, 0.0), (0.1, 0.0), (0.2, 0.0), (0.3, 0.0), (-0.2, MIDDLE), (-0.2, 0.0))
 #: Wheel track and the fastest a wheel may go (m/s), as the follower's limit: cells beyond it are left out.
 WHEEL_BASE, MAX_WHEEL_SPEED = 0.555, 0.5
 #: Prediction step for the segment's drawing, seconds.
@@ -41,10 +45,8 @@ STEP = 0.05
 
 def grid() -> list[tuple[float, float]]:
     """Every cell (v, ω) of the command grid, within the wheel speed limit."""
-    cells = [(v, sign * w) for v in SPEEDS for w in TURN_RATES for sign in (1.0, -1.0)]
-    cells += [(v, 0.0) for v in STRAIGHTS]
-    reverse, rates = REVERSE
-    cells += [(reverse, sign * w) for w in rates for sign in (1.0, -1.0)]
+    cells = [(v, w) for v in SPEEDS for w in TURN_RATES] + list(FURTHER)
+    cells = [(v, sign * w) for v, w in cells for sign in ((1.0, -1.0) if w else (1.0,))]
     return [(v, w) for v, w in cells if abs(v) + abs(w) * WHEEL_BASE / 2 <= MAX_WHEEL_SPEED + 1e-9]
 
 

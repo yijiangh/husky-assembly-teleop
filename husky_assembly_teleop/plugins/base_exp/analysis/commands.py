@@ -35,7 +35,7 @@ STEADY_AFTER = 1.2
 #: A steady window shorter than this leaves the run out, seconds.
 SHORTEST_STEADY = 1.5
 #: Commands that excite a channel: speed (m/s) and turn rate (rad/s) above these.
-DRIVING, TURNING = 0.05, 0.1
+DRIVING, TURNING = 0.02, 0.05
 #: The values per run, with label, factor to the unit, and how many decimals.
 QUANTITIES = {"speed_efficiency": ("speed efficiency", 1.0, 2), "steering_efficiency": ("steering efficiency", 1.0, 2),
               "x_icr": ("xICR [cm]", 100.0, 1), "delay": ("delay [ms]", 1000.0, 0),

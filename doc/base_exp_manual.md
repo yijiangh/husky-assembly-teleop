@@ -152,7 +152,9 @@ In the `base_exp` folder:
    - `Controller: standard paths`: the same 10 paths in every scenario (straight, spot turn, wide and tight arc,
      sine, drive-turn-drive; mostly both directions). One round takes 2–3 min.
    - `Robot: constant commands`: no controller; each run stands 0.5 s, holds one command (v, ω) for 4 s open loop,
-     stops. 37 cells: v 0–0.3 m/s, ω 9–46°/s both ways, straights, reversing. One round takes 9–12 min.
+     stops. 29 commands (`twist.py`): every pair of v 0, 0.03, 0.2 m/s and ω 5, 15, 30°/s, both ways (what the
+     follower sends: spot turns, its slow approach to a goal, driving); v 0.1 and 0.3 m/s at 15°/s; straights at
+     0.03–0.3 m/s; reversing at 0.2 m/s. One round takes 7–9 min.
    - `Controller: random paths`: any of 44 paths; extra coverage for the breakdowns only, optional.
 4. **Auto runs** is set to one round; `0` runs until Stop. For standard paths and constant commands it is the
    **total** for this experiment and setup, earlier runs included: after a stop, Start auto runs only the rest
@@ -183,7 +185,7 @@ Under the A and C name, e.g. `alice_tiles_stowed_v020`:
 
 Per condition, under its own name (e.g. `alice_tiles_stowed_commands`; `CONDITIONS` edited, robot set up to match):
 
-1. **Real robot: constant commands**, 3 rounds (about 110 runs, 30–40 min). Start in the middle of the open floor,
+1. **Real robot: constant commands**, 3 rounds (87 runs, 20–30 min). Start in the middle of the open floor,
    battery full; the robot drives back once it is 0.75 m from the start. The follower must run, for the drives back.
 2. Analyse. In `constant_commands.md`, "Does the model change over the grid?" answers it for speed and turn rate: a
    ratio well above 1 means the value depends on the command, the last two columns say by how much.
