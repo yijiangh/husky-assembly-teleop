@@ -9,6 +9,7 @@ import pytest
 from husky_assembly_teleop.config import robot_config_from_serial
 from bar_assembly_core.geometry import box_geometry
 from husky_assembly_teleop.plugins.base_planner.planner import PlanningWorld, plan_birrt
+from husky_assembly_teleop.plugins.planning.panel import with_guesses
 from bar_assembly_core.robot import RobotObject
 from bar_assembly_core.scene import Body, Scene
 from bar_assembly_core.ids import robot_id
@@ -103,3 +104,16 @@ def test_sync_puts_the_searched_robot_back(world, robots, alice):
     assert world.hit_by(alice, (2.0, 0.0, 0.0)) is not None  # moved into Cindy
     world.sync(_snapshot(robots))
     assert world.mirror.collisions(alice, 0.0) == []
+
+
+def test_untracked_robot_is_planned_from_a_guess(world, robots, alice):
+    """An untracked base and unknown joints are guessed, with the problems named; the shared snapshot is untouched."""
+    snapshot = _snapshot(robots)
+    robot = snapshot.robots[alice]
+    robot.base_tracked, robot.unmeasured = False, frozenset({"left_ur_arm_elbow_joint"})
+    guessed_snapshot, guessed = with_guesses(snapshot, alice)
+    assert len(guessed) == 2 and snapshot.robots[alice].acting_problems() == guessed
+    world.sync(guessed_snapshot)
+    assert plan_birrt(world, alice, (0.0, 0.0, 0.0), (0.0, -2.0, 1.0), threading.Event()).path is not None
+    snapshot.robots[alice].enabled = False
+    assert with_guesses(snapshot, alice) == (snapshot, [])

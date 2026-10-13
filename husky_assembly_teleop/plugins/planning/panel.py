@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from html import escape
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Protocol
 
@@ -28,6 +28,7 @@ from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, block, chip, note, s
 from .path import TimedPath
 
 if TYPE_CHECKING:
+    from bar_assembly_core.scene import Scene
     from ...config import RobotConfig
     from .search import PlanResult
 
@@ -69,6 +70,23 @@ class Search:
     time_limit: float
     accepted: Callable[[PlanResult], tuple[str, bool]]
     finished: Callable[[], None] = lambda: None
+
+
+def with_guesses(snapshot: Scene, object_id: str) -> tuple[Scene, list[str]]:
+    """The snapshot with a robot's untracked base and unknown joints taken as known, and what that guessed.
+
+    The guesses are the last mocap fix, else the default pose, and the stow joints, else 0. An absent robot is left
+    as it is, so planning still refuses it.
+
+    Returns:
+        tuple[Scene, list[str]]: The snapshot, a copy only if something was guessed; the robot's problems guessed past.
+    """
+    robot = snapshot.robots[object_id]
+    guessed = robot.acting_problems() if robot.enabled else []
+    if not guessed:
+        return snapshot, []
+    known = replace(robot, base_tracked=True, unmeasured=frozenset())
+    return replace(snapshot, robots={**snapshot.robots, object_id: known}), guessed
 
 
 class PlannerPlugin(HuskyPlugin):

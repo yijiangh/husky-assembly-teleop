@@ -197,5 +197,5 @@ Rules shared by every mirror:
 3. **Attachments.** Static and set by `cell` for now. Decide later whether planners take over while they plan.
 4. **pinocchio layout.** One model per robot, or all appended into one.
 5. **Drawing budget.** N meshes per tick (start at 50); simplified visual meshes for very large cells?
-6. ✅ **Snapshot freshness.** Mirrors and planners refuse an acting robot with `base_tracked=False` or `unmeasured` movable joints. ? A limit on the base/joint time skew is still open.
+6. ✅ **Snapshot freshness.** Mirrors and planners refuse an acting robot with `base_tracked=False` or `unmeasured` movable joints. The monitor's base and arm planners plan anyway from the guessed values, with a warning (`planning.panel.with_guesses`). ? A limit on the base/joint time skew is still open.
 7. ✅ **`pp.CLIENT`.** pybullet_planning's modules copy the client at import, so `pp.set_client` alone does not move them; `mirrors/pp_client.pp_client` sets it in every module (`PyBulletMirror.active()`, `CompasFabMirror.lend()`). Still one `pp` user at a time in the process.

@@ -17,7 +17,7 @@ import numpy as np
 
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import register
-from ..planning.panel import WAIT_MARGIN, PlannerPlugin, Search
+from ..planning.panel import WAIT_MARGIN, PlannerPlugin, Search, with_guesses
 from ..planning.search import TIME_LIMIT, PlanResult
 from ...robot_interface.arm import UR_JOINT_LIMITS
 from ...ui.ghost import RobotGhost
@@ -205,12 +205,15 @@ class ArmPlannerPlugin(PlannerPlugin):
         """Search from where the arm is in the tick's snapshot to the slider target."""
         serial, arm, goal = self.serial, self.arm, self._target()
         # * Take the snapshot here, on the main thread; the arm starts where it is in it.
-        snapshot = ctx.scene.snapshot
+        snapshot, guessed = with_guesses(ctx.scene.snapshot, robot_id(serial))
+        guess = f" (guessed: {'; '.join(guessed)})" if guessed else ""
+        if guessed:
+            ctx.log_warn(f"planning for {serial} {arm} from a guess: {'; '.join(guessed)}")
         base = np.array(snapshot.robots[robot_id(serial)].base.position)
         loading = serial not in self._loaded
 
         def work() -> PlanResult:
-            # ! Refuse a robot whose base is not tracked or whose joints are not known: the plan would be a guess.
+            # * Only an absent robot is left with problems; an untracked base or unknown joints were guessed.
             problems = snapshot.robots[robot_id(serial)].acting_problems()
             if problems:
                 return PlanResult(None, f"{serial} can't be planned for: {'; '.join(problems)}", 0.0)
@@ -220,10 +223,11 @@ class ArmPlannerPlugin(PlannerPlugin):
             self._path_arm, self._path_base = arm, base
             how = "straight" if result.direct else "RRT"
             return (f"{how}: {len(self.path.points)} waypoints, {self.path.duration:.1f} s, "
-                    f"found in {result.seconds:.1f} s"), False
+                    f"found in {result.seconds:.1f} s{guess}"), bool(guessed)
 
         return Search(serial=serial, label=f"plan {serial} {arm}",
-                      message=f"planning for {serial} {arm}…" + (" (loading the models first)" if loading else ""),
+                      message=f"planning for {serial} {arm}…{guess}"
+                      + (" (loading the models first)" if loading else ""),
                       work=work, time_limit=TIME_LIMIT + WAIT_MARGIN + (LOAD_ALLOWANCE if loading else 0.0),
                       accepted=accepted, finished=lambda: self._loaded.add(serial))
 

@@ -17,7 +17,7 @@ import viser
 
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import register
-from ..planning.panel import WAIT_MARGIN, PlannerPlugin, Search
+from ..planning.panel import WAIT_MARGIN, PlannerPlugin, Search, with_guesses
 from ..planning.search import TIME_LIMIT, PlanResult
 from ...ui.ghost import RobotGhost
 from ...ui.pose_input import PlanarPoseInput, yaw_from_xyzw
@@ -162,10 +162,13 @@ class BasePlannerPlugin(PlannerPlugin):
         """Search from the robot's current pose to the target, in the tick's snapshot."""
         serial, start, goal = self.serial, self._current_pose(ctx), self._target.pose
         # * Take the snapshot here, on the main thread; the worker syncs from it.
-        snapshot = ctx.scene.snapshot
+        snapshot, guessed = with_guesses(ctx.scene.snapshot, robot_id(serial))
+        guess = f" (guessed: {'; '.join(guessed)})" if guessed else ""
+        if guessed:
+            ctx.log_warn(f"planning for {serial} from a guess: {'; '.join(guessed)}")
 
         def work() -> PlanResult:
-            # ! Refuse a robot whose base is not tracked or whose joints are not known: the plan would be a guess.
+            # * Only an absent robot is left with problems; an untracked base or unknown joints were guessed.
             problems = snapshot.robots[robot_id(serial)].acting_problems()
             if problems:
                 return PlanResult(None, f"{serial} can't be planned for: {'; '.join(problems)}", 0.0)
@@ -176,9 +179,9 @@ class BasePlannerPlugin(PlannerPlugin):
             self._stale_line = True
             how = "straight" if result.direct else "RRT"
             return (f"{how}: {self.path.length:.2f} m, {self.path.duration:.1f} s, "
-                    f"found in {result.seconds:.1f} s"), False
+                    f"found in {result.seconds:.1f} s{guess}"), bool(guessed)
 
-        return Search(serial=serial, label=f"plan {serial}", message=f"planning for {serial}…", work=work,
+        return Search(serial=serial, label=f"plan {serial}", message=f"planning for {serial}…{guess}", work=work,
                       time_limit=TIME_LIMIT + WAIT_MARGIN, accepted=accepted)
 
     def stale_reason(self, ctx: PluginContext) -> str:
@@ -221,7 +224,7 @@ class BasePlannerPlugin(PlannerPlugin):
     def _current_pose(self, ctx: PluginContext) -> tuple[float, float, float]:
         """Where the chosen robot's base is now: x, y in metres and yaw in radians, world frame.
 
-        ? From kinematics (last mocap fix, else the default pose), for drawing; planning refuses an untracked base.
+        ? From kinematics (last mocap fix, else the default pose), for drawing and as the plan's start.
         """
         base = ctx.kinematics.base_pose(self.serial)
         return float(base.position[0]), float(base.position[1]), yaw_from_xyzw(base.orientation)
