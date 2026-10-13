@@ -4,6 +4,8 @@ What the reports share: the runs of an experiment, loaded once, with their robot
 - A run drove a **path** (standard or random paths, with the follower) or one **constant command** (`twist.py`).
 - Its **robot** is "real", "sim ideal", "sim <model name>" (or "sim model A", B, ... for unnamed models).
 - Its **scenario** is "<robot> · <controller and the model it assumes>", e.g. "sim alice_tiles · PP ideal".
+- An experiment's runs are the run folders in its folder, whatever name they were recorded under, so runs can be
+  moved between experiments.
 - Only path runs at the fixed speed and mode, and runs under the fixed conditions, are loaded; the others are counted
   in `left_out`. So are e-stopped runs, and runs listed in the experiment folder's EXCLUDED file, which stay on disk.
 """
@@ -97,9 +99,9 @@ def load_runs(recordings: Path, experiment: str | None) -> tuple[pd.DataFrame, d
     for data in sorted(recordings.glob("**/experiment.json")):
         if any(part.startswith("_") for part in data.relative_to(recordings).parts):
             continue  # _analysis, _archive
-        description = json.loads(data.read_text())
-        if experiment is not None and description.get("experiment_name") != experiment:
+        if experiment is not None and data.relative_to(recordings).parts[0] != experiment:
             continue
+        description = json.loads(data.read_text())
         # * The robot stood while the follower still commanded: neither the controller's result nor the robot's.
         if description.get("outcome", "").startswith("e-stopped"):
             skipped["e-stopped"] += 1

@@ -32,7 +32,8 @@ Runs and reports live on the project's Google Drive:
 
 **Experiment names:** A and C together under one name per condition and speed, e.g. `alice_tiles_stowed_v020`; B
 under its own name per condition, e.g. `alice_tiles_stowed_commands`, so each experiment's reports cover one
-question (`robot_model.md` uses the path runs only).
+question (`robot_model.md` uses the path runs only). An experiment's runs are the run folders in its folder, so runs
+can be moved between experiments.
 
 **Conditions** are recorded with every run from `CONDITIONS` in `plugins/base_exp/record.py` (base, arm, floor).
 ! They are not in the panel: before collecting under a new condition, edit `CONDITIONS`, set up the robot to match,
