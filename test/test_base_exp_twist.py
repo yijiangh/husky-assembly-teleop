@@ -8,8 +8,8 @@ import numpy as np
 import pytest
 from crl_husky.base_model import BaseModel
 
-from husky_assembly_teleop.plugins.base_exp.analysis.commands import responses, steady
-from husky_assembly_teleop.plugins.base_exp.analysis.common import COMMANDS, EXCLUDED, load_runs
+from husky_assembly_teleop.plugins.base_exp.analysis.commands import responses, steady, write
+from husky_assembly_teleop.plugins.base_exp.analysis.common import COMMANDS, EXCLUDED, Experiment, load_runs
 from husky_assembly_teleop.plugins.base_exp.twist import (MAX_WHEEL_SPEED, SEGMENT, WHEEL_BASE, TwistGrid, cell_of,
                                                           grid, settings_of, twist_plan)
 
@@ -131,3 +131,42 @@ def test_stall_is_cut_out_of_the_steady_part():
     found = steady(run)
     assert found.stalled == pytest.approx(0.3, abs=0.1) and 1.5 < found.steady < 2.2
     assert math.isnan(found.delay) and found.steering_efficiency == pytest.approx(0.95, abs=0.02)
+
+
+def test_conditions_that_differ_name_the_groups(tmp_path):
+    """Constant-command runs of every condition are loaded; the report groups them by what differs, largest first."""
+    for name, arm in (("a", "stowed"), ("b", "stowed"), ("c", "forward")):
+        folder = tmp_path / "exp" / name
+        folder.mkdir(parents=True)
+        (folder / "experiment.json").write_text(json.dumps(
+            {"experiment_name": "recorded_elsewhere", "template": settings_of(0.2, 0.5), "outcome": "done",
+             "environment": "real", "conditions": {"arm": arm, "floor": "tiles"}}))
+        arrays = {f"x_{k}" if k == "floor_pose" else k: value for k, value in _segment_run(0.2, 0.5).items()}
+        np.savez(folder / "recording.npz", **arrays)
+    runs, _, left_out = load_runs(tmp_path, "exp")
+    assert len(runs) == 3 and left_out == "none"
+    assert list(responses(runs).robot) == ["stowed", "stowed", "forward"]
+
+
+def test_report_tables_render(tmp_path):
+    """Every table of constant_commands.md keeps its columns (no "|" inside a cell) and shows missing values as "—"."""
+    commands = ((0.2, 0.5), (0.2, -0.5), (0.0, 0.5), (0.2, 0.0), (0.3, 0.0))
+    for arm, cells in (("stowed", commands + commands), ("forward", commands[:2])):
+        for i, (v, w) in enumerate(cells):
+            folder = tmp_path / "exp" / f"{arm}_{i}"
+            folder.mkdir(parents=True)
+            (folder / "experiment.json").write_text(json.dumps(
+                {"experiment_name": "exp", "template": settings_of(v, w), "outcome": "done", "environment": "real",
+                 "conditions": {"arm": arm, "floor": "tiles"}}))
+            arrays = {f"x_{k}" if k == "floor_pose" else k: value for k, value in _segment_run(v, w).items()}
+            np.savez(folder / "recording.npz", **arrays)
+    runs, profiles, left_out = load_runs(tmp_path, "exp")
+    out = tmp_path / "out"
+    out.mkdir()
+    assert write(Experiment("exp", runs, profiles, left_out, out)) == len(runs)
+    report = (out / "constant_commands.md").read_text()
+    assert "the 2 every condition drove" in report and "nan" not in report
+    width = None
+    for line in report.splitlines():
+        width = (width or line.count("|")) if line.startswith("|") else None
+        assert width is None or line.count("|") == width, line

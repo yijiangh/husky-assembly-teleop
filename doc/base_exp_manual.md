@@ -17,7 +17,7 @@
 | | Question | Tests | Runs to collect | Report |
 |---|---|---|---|---|
 | **A. Robot model** | What is the model of this robot at this speed, under these conditions? | basis for C | standard paths at one speed: real robot; simulator with the new model; ideal simulator | `robot_model.md` |
-| **B. Model over conditions** | Does the model change with speed and turn rate, arm and floor? | hypothesis 1 | real robot: constant commands, 3 rounds, once per condition | `constant_commands.md` |
+| **B. Model over conditions** | Does the model change with speed and turn rate, arm and floor? | hypothesis 1 | real robot: constant commands, 3 rounds per condition, all in one experiment | `constant_commands.md` |
 | **C. Controllers** | How well does pure pursuit follow paths with the ideal and with the adapted model? | hypotheses 2, 3 | standard paths at A's speed, 3 rounds, per scenario: simulator and real robot, each with both controller models | `summary.md` |
 
 **A and C use only paths at one speed**, so the model they fit and test holds for that speed. B shows whether it
@@ -31,14 +31,13 @@ Runs and reports live on the project's Google Drive:
 - reports: `$HUSKY_DRIVE_ROOT/data_experiment/base_exp/<experiment name>/_analysis/`.
 
 **Experiment names:** A and C together under one name per condition and speed, e.g. `alice_tiles_stowed_v020`; B
-under its own name per condition, e.g. `alice_tiles_stowed_commands`, so each experiment's reports cover one
-question (`robot_model.md` uses the path runs only). An experiment's runs are the run folders in its folder, so runs
-can be moved between experiments.
+under one name for all conditions of a robot and floor, e.g. `alice_tiles_commands`: its report compares them. An
+experiment's runs are the run folders in its folder, so runs can be moved between experiments.
 
 **Conditions** are recorded with every run from `CONDITIONS` in `plugins/base_exp/record.py` (base, arm, floor).
 ! They are not in the panel: before collecting under a new condition, edit `CONDITIONS`, set up the robot to match,
 and restart the monitor. For path runs the analysis takes the experiment's conditions from its own runs (the ones
-most were recorded under) and leaves the others out; constant-command runs are all loaded.
+most were recorded under) and leaves the others out; constant-command runs are all loaded and grouped by condition.
 
 **Speed of the path runs:** 0.2 m/s with a 30°/s turn-rate cap, geometric (`auto.SPEED`, `auto.MODE`); the follower
 slows only to stop at the ends of pieces. ! Not in the panel: for another speed, edit `auto.SPEED`, rebuild, and use
@@ -184,13 +183,20 @@ Under the A and C name, e.g. `alice_tiles_stowed_v020`:
 
 ## B. Model over conditions
 
-Per condition, under its own name (e.g. `alice_tiles_stowed_commands`; `CONDITIONS` edited, robot set up to match):
+One experiment for every condition of a robot and floor, e.g. `alice_tiles_commands`. Per condition (an arm pose):
+edit `CONDITIONS`, set the robot up to match, restart the monitor, then:
 
-1. **Real robot: constant commands**, 3 rounds (87 runs, 20–30 min). Start in the middle of the open floor,
-   battery full; the robot drives back once it is 0.75 m from the start. The follower must run, for the drives back.
-2. Analyse. In `constant_commands.md`, "Does the model change over the grid?" answers it for speed and turn rate: a
-   ratio well above 1 means the value depends on the command, the last two columns say by how much.
-3. Across conditions, compare the `constant_commands.md` of each experiment.
+1. **Real robot: constant commands**, 3 rounds (87 runs, 20–30 min); the rounds count per condition. Start in the middle of the open floor,
+   battery full; the robot drives back once it is 0.75 m from the start. The follower must run, for the drives back
+   (with the robot's model, so they end at the start instead of circling it). The first time on a robot or after
+   changes: 5 runs while watching, then analyse and check `constant_commands.md` has a wheel rise.
+2. Analyse. `constant_commands.md` answers one question per section: section 1, speed and turn rate (per condition:
+   the values at each speed and turn rate, and the change per m/s with its standard error); section 2, the condition
+   (each condition's model, on the commands every condition drove and on all); section 3, the response to a command
+   step. `commands_axes.png` shows sections 1 and 2: a line per condition against speed and turn rate. The details
+   (per command, per run, runs with a stall, the split at the wheels) are in the CSV files beside it.
+3. A new arm pose can change the turn gain a lot (1.6 with the arm fully forward): watch the first runs, and start
+   with a few.
 4. Where a value changes with speed, the model at A's speed holds only there: repeat **A and C per speed** the
    controller will drive at (`auto.SPEED`, a new name and model per speed, e.g. `..._v010`, `..._v030`). Where it
    changes with arm or floor, the same per condition.
@@ -229,13 +235,13 @@ It writes to `$HUSKY_DRIVE_ROOT/data_experiment/base_exp/$EXP/_analysis/`, each 
 |---|---|---|
 | `summary.md` | path runs | why (hypotheses 2, 3), what was measured, scenarios; headline per robot, path by path, by template, failures, largest end errors |
 | `robot_model.md` | path runs | why, what was measured, robots and what is missing; the real robot's model, one model for every run?, prediction 1 s ahead, simulator against real, checks, timing through the wheels, the model for crl-husky |
-| `constant_commands.md` | constant-command runs | per cell, change over the grid, left/right and forward/reverse, wheels |
+| `constant_commands.md` | constant-command runs, every condition | why (hypothesis 1), what was measured, what was run; speed and turn rate; the condition (arm pose); response to a command step |
 
 **A bad run** (e.g. something went wrong that the plugin did not notice) stays on disk: list its folder name in
 `_excluded.txt` in the experiment folder, one per line with the reason after `#`, and every report leaves it out.
 
 The reports hold numbers only; how they are built: `doc/experiment_report_guide.md`. For written results, ask Claude Code: "Run a subagent with the prompt in
-`$HUSKY_DRIVE_ROOT/data_experiment/base_exp/$EXP/_analysis/results_prompt.md`". It writes `results.md` there.
+`$HUSKY_DRIVE_ROOT/data_experiment/base_exp/$EXP/_analysis/results_prompt.md`". It writes `results.md` there. Constant commands have their own: `commands_results_prompt.md`, which gives `commands_results.md`.
 
 ## Troubleshooting
 
@@ -248,4 +254,5 @@ The reports hold numbers only; how they are built: `doc/experiment_report_guide.
 | "auto not started: no lab border" | Add `obstacles` to the monitor's plugins. |
 | The real robot does not move, or a run ends "not driven" | The velocity controller is off: switch it on in `robot_control`, also after every soft stop. |
 | The monitor logs "cannot decode messages" | A follower with an older message definition still runs somewhere: rebuild and restart it. |
-| A report leaves path runs out "under other conditions" | The experiment holds path runs recorded under different `CONDITIONS`; the path reports use the ones most have. Use one experiment name per condition for A and C. |
+| A report leaves path runs out "under other conditions" | The experiment holds path runs recorded under different `CONDITIONS`; the path reports use the ones most have. Use one experiment name per condition for A and C. Constant commands are compared across conditions instead. |
+| `constant_commands.md` counts runs with a stall | The robot briefly stopped during a constant command (seen with commands sent over Wi-Fi). Only the part without it is used; nothing to do unless most runs stall. `commands_stalls.csv` lists them. |
