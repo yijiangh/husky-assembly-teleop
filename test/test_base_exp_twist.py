@@ -121,3 +121,13 @@ def test_two_models_under_one_name_are_numbered(tmp_path):
     runs, _, _ = load_runs(tmp_path, "exp")
     assert list(runs.robot) == ["sim m", "sim m #2"]
     assert list(runs.scenario) == ["sim m · constant commands", "sim m #2 · constant commands"]
+
+
+def test_stall_is_cut_out_of_the_steady_part():
+    """A run whose wheels stop for a moment is judged on its longest stretch without the stop."""
+    run = _segment_run(0.2, 0.5)
+    t = run["wheel_odometry"][:, 1]
+    run["wheel_odometry"][(t > 1.9) & (t < 2.3), 2:] = 0.0
+    found = steady(run)
+    assert found.stalled == pytest.approx(0.3, abs=0.1) and 1.5 < found.steady < 2.2
+    assert math.isnan(found.delay) and found.steering_efficiency == pytest.approx(0.95, abs=0.02)

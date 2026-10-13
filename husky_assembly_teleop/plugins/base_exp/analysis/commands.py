@@ -6,6 +6,9 @@ Each constant-command run holds one command (v, ω) open loop, a cell of the com
 - Steady state, from STEADY_AFTER seconds after the step to the stop: mean forward speed, sideways speed and turn rate
   of the tracked point (mocap), so speed efficiency = forward / v, steering efficiency = turn / ω, xICR = sideways / ω.
   With wheel odometry, the same through the wheels.
+- Stalls: where the wheels fall below STALL of the command inside the steady part (the robot briefly stops; seen
+  with commands sent over Wi-Fi), only the longest stall-free stretch counts; a run without SHORTEST_STEADY seconds of
+  it is left out.
 - Step response, of the turn (or of the distance on a straight):
   - delay (mocap): where the steady line of the angle turned (or distance driven), extended back, meets the start.
     That is the delay a pure-delay model needs: exact for a pure delay, plus τ for a lag, plus half the ramp for an
@@ -34,6 +37,9 @@ from .common import Experiment, markdown, robots, save
 STEADY_AFTER = 1.2
 #: A steady window shorter than this leaves the run out, seconds.
 SHORTEST_STEADY = 1.5
+#: A stall: the wheels below this share of the command for two odometry messages or more; the steady stretch keeps
+#: STALL_MARGIN seconds away from it (the motion lags the wheels' readings).
+STALL, STALL_MARGIN = 0.6, 0.3
 #: Commands that excite a channel: speed (m/s) and turn rate (rad/s) above these.
 DRIVING, TURNING = 0.02, 0.05
 #: The values per run, with label, factor to the unit, and how many decimals.
@@ -54,7 +60,8 @@ class Steady:
         wheel_v, wheel_w: Steady wheel odometry, m/s and rad/s; NaN without odometry.
         delay: The delay a pure-delay model needs, from mocap (see the module), seconds.
         wheel_delay, wheel_rise: From the wheel odometry: seconds to 10 % of the steady speed, and from 10 % to 90 %.
-        steady: Seconds of the steady window.
+        steady: Seconds of the steady stretch used.
+        stalled: Seconds the wheels stalled inside the steady part (0 without wheel odometry).
     """
 
     forward: float
@@ -69,6 +76,7 @@ class Steady:
     wheel_delay: float
     wheel_rise: float
     steady: float
+    stalled: float
 
 
 def write(experiment: Experiment) -> int:
@@ -126,7 +134,8 @@ def responses(runs: pd.DataFrame) -> pd.DataFrame:
                "outcome": run.outcome}
         found = steady(load(Path(run.folder) / "recording.npz")) if run.success else None
         row["used"] = found is not None
-        row["why"] = "" if found is not None else ("not done" if not run.success else "too short or no mocap")
+        row["why"] = "" if found is not None else ("not done" if not run.success else
+                                                   "stalled, too short or no mocap")
         row.update(asdict(found) if found is not None else {})
         rows.append(row)
     found = pd.DataFrame(rows)
@@ -154,8 +163,9 @@ def steady(run: dict[str, np.ndarray]) -> Steady | None:
     vx, vy, turn = (np.gradient(c, t) for c in (tr.pose[:, 0], tr.pose[:, 1], yaw))
     forward = np.cos(yaw) * vx + np.sin(yaw) * vy
     sideways = -np.sin(yaw) * vx + np.cos(yaw) * vy
-    window = (t >= step_at + STEADY_AFTER) & (t <= stop_at)
-    if window.sum() < 5:
+    begin, end, stalled = _stall_free(tr, step_at + STEADY_AFTER, stop_at, v, w)
+    window = (t >= begin) & (t <= end)
+    if end - begin < SHORTEST_STEADY or window.sum() < 5:
         return None
     mean_forward, mean_sideways = float(forward[window].mean()), float(sideways[window].mean())
     mean_turn = float(np.polyfit(t[window], yaw[window], 1)[0])
@@ -164,7 +174,7 @@ def steady(run: dict[str, np.ndarray]) -> Steady | None:
     wheel_delay = wheel_rise = math.nan
     turning = abs(w) > TURNING
     if len(tr.odometry_time):
-        steady = (tr.odometry_time >= step_at + STEADY_AFTER) & (tr.odometry_time <= stop_at)
+        steady = (tr.odometry_time >= begin) & (tr.odometry_time <= end)
         if steady.sum() >= 3:
             wheel_v, wheel_w = (float(x) for x in tr.odometry[steady].mean(axis=0))
             channel = tr.odometry[:, 1] if turning else tr.odometry[:, 0]
@@ -180,14 +190,35 @@ def steady(run: dict[str, np.ndarray]) -> Steady | None:
     else:
         progress = (tr.pose[:, 0] - first[0]) * math.cos(first[2]) + (tr.pose[:, 1] - first[1]) * math.sin(first[2])
     slope, offset = np.polyfit(t[window], progress[window], 1)
-    delay = float(-offset / slope - step_at) if abs(slope) > 1e-9 else math.nan
+    # * After a stall the line no longer starts at the step.
+    delay = float(-offset / slope - step_at) if abs(slope) > 1e-9 and stalled == 0.0 else math.nan
     return Steady(
         forward=mean_forward, sideways=mean_sideways, turn=mean_turn,
         speed_efficiency=mean_forward / v if abs(v) > DRIVING else math.nan,
         steering_efficiency=mean_turn / w if turning else math.nan,
         x_icr=mean_sideways / w if turning else math.nan,
         wheel_v=wheel_v, wheel_w=wheel_w, delay=delay, wheel_delay=wheel_delay, wheel_rise=wheel_rise,
-        steady=float(stop_at - step_at - STEADY_AFTER))
+        steady=float(end - begin), stalled=stalled)
+
+
+def _stall_free(tr, start: float, end: float, v: float, w: float) -> tuple[float, float, float]:
+    """The longest stretch of [start, end] without a stall, and the seconds stalled; all of it without odometry."""
+    inside = (tr.odometry_time >= start) & (tr.odometry_time <= end)
+    if inside.sum() < 3:
+        return start, end, 0.0
+    turning = abs(w) > TURNING
+    times = tr.odometry_time[inside]
+    slow = tr.odometry[inside, 1 if turning else 0] / (w if turning else v) < STALL
+    # * One low reading is noise at slow commands: a stall is two in a row or more.
+    slow &= np.r_[slow[1:], False] | np.r_[False, slow[:-1]]
+    if not slow.any():
+        return start, end, 0.0
+    edges = np.flatnonzero(np.diff(np.r_[False, slow, False].astype(int)))
+    stalls = [(times[a], times[b - 1]) for a, b in zip(edges[::2], edges[1::2])]
+    starts = [start] + [last + STALL_MARGIN for _, last in stalls]
+    ends = [first - STALL_MARGIN for first, _ in stalls] + [end]
+    longest = max(zip(starts, ends), key=lambda stretch: stretch[1] - stretch[0])
+    return float(longest[0]), float(longest[1]), float(sum(last - first for first, last in stalls) + 0.0)
 
 
 def _step(t: np.ndarray, values: np.ndarray, step_at: float, steady: float) -> tuple[float, float]:
