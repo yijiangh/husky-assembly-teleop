@@ -63,7 +63,7 @@ from husky_assembly_teleop.utils import (
 from husky_assembly_teleop.bar_action_io import (
     parse_bar_action, list_bar_actions, find_movement,
     load_action_cycle, slot_of_index, cycle_start_ee_sources,
-    MovementKind, STATIONARY_KINDS, SINGLE_ARM_KINDS, DUAL_ARM_KINDS, COMPLIANT_KINDS,
+    MovementKind, STATIONARY_KINDS, DUAL_ARM_KINDS, COMPLIANT_KINDS,
     movement_kind, step_kind, kind_fits_robot, is_free_home, check_action_kinds,
     default_trajectory_time, is_built_assembly_body, bar_body_name, find_bar_body,
     clean_action_path, operator_steps, step_index_of, held_ground_joints, mating_arm_sides,
@@ -2660,12 +2660,15 @@ class HuskyMonitor(Node):
         """Whether a movement's start is wherever the robot is right now.
 
         True for Cindy's travel to the loading pose (its authored
-        robot_configuration is null), for
-        the first movement of any action whose start configuration is null
-        (a support robot's ``H_M0``), and for movement 0 of a schedule entry of
-        kind 'J' or 'H': those always start wherever the robot is, even when a
-        ``.live-solved.json`` sidecar stored the start of an earlier run. Such a
-        start_state gets the LIVE arm joints (and tracked base) injected at load.
+        robot_configuration is null), for the first movement of any action
+        whose start configuration is null (a support robot's ``H_M0``), and, in
+        a schedule entry of any kind, for every step up to and including its
+        FIRST arm movement: an entry always starts wherever the robot is (where
+        its previous entry left it, or where it was driven since), even when a
+        ``.live-solved.json`` sidecar stored the start of an earlier run. E.g. a
+        release's ungrasp step and its retreat start at the arms the insert left
+        behind. Such a start_state gets the LIVE arm joints (and tracked base)
+        injected at load and again at each 'Load Movement' of it.
 
         ! Only meaningful on freshly parsed movements: after the first injection
         ! the configuration is no longer null. ``_finish_action_load`` therefore
@@ -2682,9 +2685,10 @@ class HuskyMonitor(Node):
             return False
         # load_schedule_entry sets _loaded_entry before the load that asks this.
         entry = getattr(self, '_loaded_entry', None)
-        if (idx == 0 and getattr(self, '_schedule', None) is not None
-                and entry is not None and entry.kind in ('J', 'H')):
-            return True
+        if getattr(self, '_schedule', None) is not None and entry is not None:
+            first_arm = self._next_arm_index(-1)
+            if first_arm is None or idx <= first_arm:
+                return True
         return (self._is_free_to_load(mv)
                 or (idx == 0 and mv.start_state.robot_configuration is None))
 
@@ -3237,6 +3241,18 @@ class HuskyMonitor(Node):
             bool: True if the base pose is measured, False if it is assumed.
         """
         return bool(self.USE_MOCAP) and not self.USE_CELL_STATE_BASE_POSE
+
+    def _tracked_base_frame(self) -> Optional[Frame]:
+        """The live mocap base as a Frame, or None when nothing tracks the base.
+
+        Returns:
+            Frame | None: Where the connected husky's base stands now (world
+            frame); None without mocap (see ``_base_pose_is_tracked``).
+        """
+        if not self._base_pose_is_tracked():
+            return None
+        hi = self.huskies[self.selected_robot_id].interface
+        return frame_from_pose((hi.position, hi.rotation))
 
     def _live_base_pose(self):
         """Base pose to pair with live or planned arm configurations.
@@ -5724,23 +5740,34 @@ class HuskyMonitor(Node):
                         self._warn_tighten_tool_mismatch(tool_mv, sides)
         # ! Always call through the world module (world.execute_*): the dispatch
         # ! check (headless_schedule_smoke) replaces these module attributes.
+        # * Every execution ends by carrying where the robot really is into what
+        # * follows (_exec_then_propagate -> _propagate_live_end); after a servo
+        # * run that is the corrected pose.
+        idx = self.current_movement_index
         if kind in COMPLIANT_KINDS:
-            self.tasks.append(world.execute_planned_trajectory_compliant(self))
+            self.tasks.append(self._exec_then_propagate(
+                idx, world.execute_planned_trajectory_compliant(self), check_end=False))
         elif kind is MovementKind.SINGLE_FREE and self._is_hold_approach(mv):
             # * A support robot's free approach to a hold: joint tracking, then the
             # * visual-servo correction of tool0 onto the approach pose (like the
             # * correction after Cindy's transfer).
-            self.tasks.append(world.execute_free_approach_then_servo(self))
-        elif kind in SINGLE_ARM_KINDS:
-            world.execute_arm_trajectory_all(self)
+            self.tasks.append(self._exec_then_propagate(
+                idx, world.execute_free_approach_then_servo(self), check_end=False, source='Servo'))
         elif kind is MovementKind.DUAL_FREE and not self._is_free_home(mv):
-            self.tasks.append(world.execute_trajectory_and_zero_ft(self))
+            self.tasks.append(self._exec_then_propagate(
+                idx, world.execute_trajectory_and_zero_ft(self), check_end=True))
         elif kind is MovementKind.DUAL_CONSTRAINED_FREE:
             # * The transfer: joint tracking, then the visual-servo correction at
             # * its end (the base's centre of mass shifts under the carried bar).
-            self.tasks.append(world.execute_transfer_then_servo(self))
+            self.tasks.append(self._exec_then_propagate(
+                idx, world.execute_transfer_then_servo(self), check_end=False, source='Servo'))
         else:
-            world.execute_arm_trajectory_both(self)
+            # * A support robot's other moves, Cindy's free move home: plain joint
+            # * tracking, waited for so its end can be carried forward.
+            self.tasks.append(self._exec_then_propagate(
+                idx, world.execute_arm_trajectory_all_and_wait(
+                    self, self.trajectory_time, world.EXEC_END_SETTLE_SECONDS),
+                check_end=True))
 
     def exec_selected_movement_step(self) -> None:
         """Run the loaded movement, whatever kind of step it is (the schedule's one exec button).
@@ -5784,7 +5811,10 @@ class HuskyMonitor(Node):
             'scaffold': world.run_scaffolding_tool_step,
         }[kind]
         self.get_logger().info(f"Queued {kind} step {mv.movement_id!r}.")
-        self.tasks.append(run_step(self, mv))
+        # The gripper close moves a support arm (compliant handoff); every step
+        # carries where the robot is into what follows, like an arm movement.
+        self.tasks.append(self._exec_then_propagate(
+            self.current_movement_index, run_step(self, mv), check_end=False))
 
     def move_arms_to_movement_start(self) -> None:
         """'Move Arms to Movement Start' button: ``world.move_arms_to_movement_start``.
@@ -6037,7 +6067,8 @@ class HuskyMonitor(Node):
                 return i
         return None
 
-    def _carry_configuration_forward(self, idx: int, values, *, source: str = 'carry') -> None:
+    def _carry_configuration_forward(self, idx: int, values, *, source: str = 'carry',
+                                     base_frame: Optional[Frame] = None) -> None:
         """Write an arm configuration into the start state of every stationary step after ``idx`` and of the next arm movement, then stop.
 
         ``idx = -1`` starts at the first movement. The values are written by
@@ -6051,28 +6082,176 @@ class HuskyMonitor(Node):
             values (Sequence[float]): One value per arm joint, in
                 ``RobotSpec.all_arm_joint_names`` order.
             source (str): Log tag, e.g. ``'Plan'``, ``'LoadTraj'`` or ``'Adopt'``.
+            base_frame (Frame | None): Also write this base into the same
+                start states (the live mocap base after a servo correction, so
+                the measured arms and the measured base go together). None
+                leaves each start state's base as it is.
         """
         names = self._connected_robot().all_arm_joint_names
         for next_mv in self._loaded_movements[idx + 1:]:
             if next_mv.start_state is not None:
                 self._merge_arm_values(next_mv.start_state, names, values)
+                fields = 'robot_configuration'
+                if base_frame is not None:
+                    next_mv.start_state.robot_base_frame = base_frame.copy()
+                    fields += ' + robot_base_frame (live mocap)'
                 print(f"[{source}] propagated arm configuration -> "
-                      f"{next_mv.movement_id!r}.start_state.robot_configuration.")
+                      f"{next_mv.movement_id!r}.start_state.{fields}.")
             if self._kind_of(next_mv) not in STATIONARY_KINDS:
                 break  # an arm moves here: whatever follows starts from its end
+
+    # * ---------------------------------------------------------------------
+    # * Forward propagation after a step RAN: the live robot (measured arm
+    # * joints, mocap base) becomes the start of what follows -- in this entry,
+    # * and in the next entries (progress.json), whatever steps are skipped.
+    # * ---------------------------------------------------------------------
+
+    def _propagate_live_end(self, idx: int, *, source: str = 'Exec') -> None:
+        """After a step of the loaded entry ran: where the robot really is becomes the start of what follows.
+
+        Reads the connected robot's measured arm joints and, when mocap tracks
+        it, its base (``_tracked_base_frame``), then:
+
+        1. Within the entry: writes them into the start states of the steps
+           where no arm moves after ``idx`` and of the next arm movement
+           (``_carry_configuration_forward``). A plan of that next movement
+           that starts elsewhere is dropped first (plan it again).
+        2. For the next entries: saves the robot's live state to
+           ``progress.json`` (``_save_live_belief``). After EVERY step, not only
+           the entry's last arm movement, so a skipped step (e.g. the free move
+           home after the retreat) or a skipped 'Mark entry done' never leaves
+           an older state there.
+
+        Args:
+            idx (int): Index in ``_loaded_movements`` of the step that just ran.
+            source (str): Log tag, e.g. ``'Exec'`` or ``'Servo'``.
+        """
+        spec = self._connected_robot()
+        hi = self.huskies[self.selected_robot_id].interface
+        live = np.concatenate([np.asarray(hi.arm_joint_pose[i], dtype=float)
+                               for i in range(spec.n_arms)])
+        nxt = self._next_arm_index(idx)
+        if nxt is not None:
+            later = self._loaded_movements[nxt]
+            jt = getattr(later, 'trajectory', None)
+            path = None
+            if jt is not None:
+                path = (path_12_from_joint_trajectory(jt) if spec.n_arms == 2
+                        else path_from_joint_trajectory(jt, list(spec.arm_joint_names[0])))
+            if path:
+                off = float(np.abs(np.asarray(path[0], dtype=float) - live).max())
+                # ! Before the carry: dropping a transfer's plan also clears its start.
+                if off > 1e-3:
+                    self._drop_movement_trajectory(
+                        later, f"planned from {off:.4f} rad away from where "
+                               f"{self._loaded_movements[idx].movement_id} left the arms; plan it again.")
+        self._carry_configuration_forward(idx, live, source=source,
+                                          base_frame=self._tracked_base_frame())
+        self._save_live_belief(idx)
+
+    def _save_live_belief(self, idx: int) -> None:
+        """Save the connected robot's live state to progress.json for the next entries, without marking this one done.
+
+        The next entries then start from where the robot really is: this
+        robot's own next entry injects its live state at 'Load entry' anyway,
+        and the other robots' monitors pose it (``ObstacleRobot<Name>``) from
+        this belief. After the entry's LAST step a hold entry also records the
+        hold, a hold release the release (``Progress.record_hold``): e.g. Alice
+        holds B21 only once her gripper has closed. 'Mark entry done' still
+        marks the entry done (and stores the belief again).
+
+        Args:
+            idx (int): Index in ``_loaded_movements`` of the step that just ran.
+        """
+        progress = getattr(self, '_progress', None)
+        entry = getattr(self, '_loaded_entry', None)
+        loaded = getattr(self, '_loaded_entry_bundle', None)
+        if (progress is None or entry is None or loaded is None
+                or not self._entry_is_executable_here(entry)):
+            return
+        mv_id = self._loaded_movements[idx].movement_id
+        try:
+            belief = self._live_belief(loaded)
+        except Exception as e:
+            # ! Runs on the monitor tick, which does not catch exceptions.
+            self.get_logger().error(f"[Schedule] {entry.robot}'s state after {mv_id} NOT saved: {e}")
+            return
+        progress.set_belief(entry.robot, belief)
+        hold = None
+        if idx == len(self._loaded_movements) - 1 and entry.kind in ('H', 'HR'):
+            progress.record_hold(entry)
+            hold = progress.hold_state(entry.bar_id)
+        try:
+            path = save_progress(progress, self._problem_dir())
+        except Exception as e:
+            self.get_logger().error(
+                f"[Schedule] {entry.robot}'s state after {mv_id} kept in this run only: "
+                f"progress.json could not be saved ({e}).")
+            return
+        print(f"[Schedule] {entry.robot}'s live state after {mv_id} saved for the next entries "
+              f"(belief 'live' after entry {entry.index}; the entry is not marked done)"
+              + (f"; {hold.bar_id} {hold.state} by {hold.robot}" if hold is not None else "")
+              + f". Saved {path}.")
+
+    def _exec_then_propagate(self, idx: int, run, *, check_end: bool,
+                             source: str = 'Exec') -> Generator[None, None, None]:
+        """Run one step's execution, then carry where the robot really is forward (``_propagate_live_end``).
+
+        Nothing is carried after 'Cancel Exec' (``_cancel_exec``), nor, with
+        ``check_end``, when the arms did not reach the end of the trajectory that
+        was sent (a motion that failed or was stopped).
+
+        Args:
+            idx (int): Index in ``_loaded_movements`` of the step being run.
+            run (Generator): The execution, as a queued task's generator.
+            check_end (bool): Also require the arms at the end of the sent
+                trajectory, within ``EXEC_START_CONF_TOLERANCE_RAD``. For plain
+                joint moves; a compliant move ends off its plan on purpose and a
+                tool step has no trajectory.
+            source (str): Log tag of the carry lines (``'Servo'`` after a servo run).
+
+        Yields:
+            None: One yield per monitor tick.
+        """
+        self._exec_cancelled = False
+        n_arms = self._connected_robot().n_arms
+        # Read before the run: an execution may clear the staged trajectory.
+        ends = ([np.asarray(self.planned_arm_trajectory[i][0][-1], dtype=float) for i in range(n_arms)]
+                if check_end else None)
+        yield from run
+        mv_id = self._loaded_movements[idx].movement_id
+        if self._exec_cancelled:
+            self.get_logger().info(f"[Exec] {mv_id}: 'Cancel Exec' -- nothing carried forward.")
+            return
+        if ends is not None:
+            hi = self.huskies[self.selected_robot_id].interface
+            off = max(float(np.abs(np.asarray(hi.arm_joint_pose[i], dtype=float) - ends[i]).max())
+                      for i in range(n_arms))
+            if off > self.EXEC_START_CONF_TOLERANCE_RAD:
+                self.get_logger().warn(
+                    f"[Exec] {mv_id}: the arms stopped {off:.3f} rad from the end of its "
+                    f"trajectory -- nothing carried forward.")
+                return
+        self._propagate_live_end(idx, source=source)
+
+    def _cancel_exec(self) -> None:
+        """'Cancel Exec' button: stop the waiting step at its next pause, and carry nothing forward from it."""
+        self._servo_abort = True
+        self._exec_cancelled = True
 
     def _adopt_servo_corrected_end(self, transfer_idx: int, planned_end12, *,
                                    as_free_move: bool) -> None:
         """After the servo at the transfer's end: the live arms become its end and the insert's start.
 
         The servo loop already wrote the live joints into the insert's start
-        state. This also carries them into the steps between (the tighten) and,
-        with the workaround ticked, into the steps before the transfer (the
-        manual mount, the tool grasp), which stand where the bar was mounted --
-        the same carry ``_accept_trajectory`` does for a planned transfer. The
-        stale insert trajectory is dropped and the last correction path cleared,
-        so 'Exec' cannot replay it. Nothing changes when the arms did not move
-        (servo skipped, cancelled before a move, or already on target).
+        state. With the workaround ticked, this carries them into the steps
+        before the transfer (the manual mount, the tool grasp), which stand
+        where the bar was mounted -- the same carry ``_accept_trajectory`` does
+        for a planned transfer. The steps after it (the tighten, the insert) get
+        them, with the live base, when the task ends (``_exec_then_propagate``).
+        The stale insert trajectory is dropped and the last correction path
+        cleared, so 'Exec' cannot replay it. Nothing changes when the arms did
+        not move (servo skipped, cancelled before a move, or already on target).
 
         ! The live configuration is also added to the transfer's trajectory as
         ! its last waypoint. 'Load Movement' on the transfer (also the automatic
@@ -6100,15 +6279,22 @@ class HuskyMonitor(Node):
         if self._trajectory_has_waypoints(transfer):
             transfer.trajectory = joint_trajectory_from_path(
                 path_12_from_joint_trajectory(transfer.trajectory) + [live12])
-        self._carry_configuration_forward(transfer_idx, live12, source='Servo')
+        # * The forward carry (insert, tighten) with the live base follows when
+        # * the task ends (_exec_then_propagate); the steps BEFORE the transfer
+        # * are this function's: the live arms were measured on the live base.
+        live_base = self._tracked_base_frame()
         if as_free_move and transfer.start_state is not None:
             # The walk also writes into the transfer itself; its start stays
-            # where the free move started (as in _accept_trajectory).
+            # where the free move started (as in _accept_trajectory), on the
+            # base it was planned at.
             # ! A copy: the walk edits the configuration in place.
             start_conf = transfer.start_state.robot_configuration.copy()
+            start_base = transfer.start_state.robot_base_frame
             prev = self._previous_arm_index(transfer_idx)
-            self._carry_configuration_forward(-1 if prev is None else prev, live12, source='Servo')
+            self._carry_configuration_forward(-1 if prev is None else prev, live12, source='Servo',
+                                              base_frame=live_base)
             transfer.start_state.robot_configuration = start_conf
+            transfer.start_state.robot_base_frame = start_base
         self._drop_m2_m3_after_m1_chain_break(
             f"Servo moved {transfer.movement_id}'s end by max {moved:.4f} rad")
 
@@ -11449,8 +11635,7 @@ class HuskyMonitor(Node):
             # Stop at the next yield (a confirm pause / between servo iterations).
             # A trajectory already sent to the robot still finishes; this only
             # prevents anything further being sent.
-            self.buttons.append(Button('Cancel Exec',
-                lambda: setattr(self, '_servo_abort', True),
+            self.buttons.append(Button('Cancel Exec', self._cancel_exec,
                 color=BUTTON_CANCEL_RGB))
 
             # ! Tare with the tool EMPTY -- zeroing while the bar is gripped

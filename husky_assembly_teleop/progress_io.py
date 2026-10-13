@@ -216,6 +216,19 @@ class Progress:
         self._mark(entry, STATUS_DONE, robot, run_id)
         if belief is not None:
             self.robots[entry.robot] = replace(belief, after_entry=entry.index)
+        self.record_hold(entry)
+        self._advance()
+
+    def record_hold(self, entry: ScheduleEntry) -> None:
+        """Record what a finished hold or hold release changes; nothing for the other kinds.
+
+        Called by ``mark_done`` and when the monitor has run an entry's last step
+        (the entry itself is then not marked done).
+
+        Args:
+            entry (ScheduleEntry): The finished entry: ``H`` starts holding its
+                bar, ``HR`` releases it.
+        """
         if entry.kind == 'H':
             self.holds[entry.bar_id] = HoldState(entry.bar_id, entry.robot, HOLD_HOLDING,
                                                  since_index=entry.index)
@@ -224,7 +237,6 @@ class Progress:
                 entry.bar_id, HoldState(entry.bar_id, entry.robot, HOLD_RELEASED))
             hold.state = HOLD_RELEASED
             hold.released_at_index = entry.index
-        self._advance()
 
     def skip(self, entry: ScheduleEntry, robot: str, run_id: str) -> None:
         """Mark an entry skipped (no belief or hold change).

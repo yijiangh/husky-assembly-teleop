@@ -175,7 +175,7 @@ from husky_assembly_teleop.husky_world import (
     GRIPPER_CLOSE_FOR_BAR_POS, GRIPPER_OPEN_POS, HOLD_FOR_STALL_TIMEOUT_S, _live_tool0_in_arm_base,
 )
 from husky_assembly_teleop.progress_io import (
-    ARCHIVE_DIRNAME, PARKED_BASE_FRAME, STATUS_PENDING, belief_after, load_progress,
+    ARCHIVE_DIRNAME, BELIEF_LIVE, HOLD_HOLDING, PARKED_BASE_FRAME, STATUS_PENDING, belief_after, load_progress,
     obstacle_sources,
 )
 from husky_assembly_teleop.robot_registry import other_robots, robot_by_name
@@ -712,10 +712,10 @@ DISPATCH_EXPECTED = {
     ('J', 3): ('J_M3_CDFM_transfer_to_approach', 'transfer', 'transfer_servo', '-', 10, False, 'bar_held'),
     ('J', 4): ('J_M4_tool_tighten_joint', 'none', '-', '-', None, False, 'bar_held'),
     ('J', 5): ('J_M5_LM_insert', 'insert', 'compliant', 'none sent', 5, False, 'bar_held'),
-    ('R', 0): ('R_M0_tool_untighten_joint', 'none', '-', '-', None, False, 'bar_held'),
-    ('R', 1): ('R_M1_tool_ungrasp_bar', 'none', '-', '-', None, False, 'free'),
-    ('R', 2): ('R_M2_LM_retreat', 'retreat', 'compliant', 'loosen_gripper', 5, False, 'free'),
-    ('R', 3): ('R_M3_free_home', 'free_home', 'arm_both', '-', 10, False, 'free'),
+    ('R', 0): ('R_M0_tool_untighten_joint', 'none', '-', '-', None, True, 'bar_held'),
+    ('R', 1): ('R_M1_tool_ungrasp_bar', 'none', '-', '-', None, True, 'free'),
+    ('R', 2): ('R_M2_LM_retreat', 'retreat', 'compliant', 'loosen_gripper', 5, True, 'free'),
+    ('R', 3): ('R_M3_free_home', 'free_home', 'arm_wait', '-', 10, False, 'free'),
 }
 
 
@@ -814,6 +814,7 @@ def dispatch_check(results: Results, problem: str, root: str, schedule) -> None:
         'execute_transfer_then_servo': ('transfer_servo', True),
         'execute_arm_trajectory_both': ('arm_both', False),
         'execute_arm_trajectory_all': ('arm_all', False),
+        'execute_arm_trajectory_all_and_wait': ('arm_wait', True),
     }
     # Set before each Load Movement; no default can give it (defaults are at least 1 s).
     no_default = -1.0
@@ -1725,8 +1726,8 @@ def transfer_servo_check(results: Results, problem: str, root: str, schedule) ->
     ``prefer_linear``; (b) at most 2 iterations, tool0 within
     ``TRANSFER_SERVO_TOL_MM`` of the authored targets, the record labelled with
     the insert; (c) the insert and the steps around the transfer (tighten;
-    mount + grasp, ticked) start at the corrected arms, the transfer's own start
-    unchanged; (d) the transfer's trajectory ends at the corrected arms (one more
+    mount + grasp, ticked) start at the corrected arms on the live mocap base,
+    the transfer's own start (arms and base) unchanged; (d) the transfer's trajectory ends at the corrected arms (one more
     waypoint), the insert's stale trajectory is dropped, nothing is staged for
     'Exec'; (e) reloading the transfer keeps the insert at the corrected arms.
     Box unticked: (f) no mount pause, the correction runs, the mount + grasp
@@ -1820,6 +1821,7 @@ def transfer_servo_check(results: Results, problem: str, root: str, schedule) ->
         ti, ii, q = stage(ticked=True)
         transfer = monitor._loaded_movements[ti]
         transfer_start = start_of(ti)
+        transfer_base = transfer.start_state.robot_base_frame.copy()
         n_waypoints = len(path_from_joint_trajectory(transfer.trajectory))
         n_calls, n_log = len(iface.calls), len(log.msgs)
         monitor.exec_selected_movement_traj()
@@ -1851,12 +1853,20 @@ def transfer_servo_check(results: Results, problem: str, root: str, schedule) ->
         around = stationary_between(-1, ti) + stationary_between(ti, ii) + [ii]
         diffs = [float(np.abs(start_of(i) - live).max()) for i in around]
         moved = float(np.abs(live - q).max())
+        # The arms were measured on the live (shifted) base: both go into the start states.
+        live_base = frame_from_pose((iface.position, iface.rotation))
+        base_diffs = [frame_dist(monitor._loaded_movements[i].start_state.robot_base_frame, live_base)
+                      for i in around]
         results.check(
             f"transfer servo: {[monitor._loaded_movements[i].movement_id for i in around]} start at "
-            f"the corrected arms, {transfer.movement_id}'s own start unchanged",
+            f"the corrected arms on the live mocap base, {transfer.movement_id}'s own start "
+            f"(arms and base) unchanged",
             moved > 1e-3 and len(around) >= 3 and max(diffs) < SEED_TOL
-            and float(np.abs(start_of(ti) - transfer_start).max()) < SEED_TOL,
-            f"arms moved {moved:.4f} rad, max diffs {np.round(diffs, 9).tolist()}")
+            and max(base_diffs) < SAME_TOL
+            and float(np.abs(start_of(ti) - transfer_start).max()) < SEED_TOL
+            and frame_dist(transfer.start_state.robot_base_frame, transfer_base) < SAME_TOL,
+            f"arms moved {moved:.4f} rad, max diffs {np.round(diffs, 9).tolist()}, "
+            f"base diffs {np.round(base_diffs, 9).tolist()}")
 
         path = path_from_joint_trajectory(transfer.trajectory)
         results.check(
@@ -2271,8 +2281,10 @@ def plan_release(results: Results, monitor, iface: StubInterface, alice, belief)
     tool = alice.obstacle_tool_name
     retreat_idx = monitor._loaded_index_of(MovementKind.DUAL_INDEPENDENT_LINEAR)
     home_idx = monitor._loaded_index_of(MovementKind.DUAL_FREE, free_home=True)
+    # ! The loaded retreat already starts at the live arms (Load entry injects
+    # ! them), so its EXPORTED start comes from the clean file.
+    retreat = monitor._schedule.load_action(monitor._loaded_entry, prefer_sidecar=False).movements[retreat_idx]
     # Cindy's "mocap" now sees her where the release was authored.
-    retreat = monitor._loaded_movements[retreat_idx]
     iface.position, iface.rotation = [np.asarray(v, dtype=float) for v in
                                       pose_from_frame(retreat.start_state.robot_base_frame)]
     # The insert "ran": the arms stand at the retreat's exported start.
@@ -2738,6 +2750,204 @@ def cindy_restart_run(results: Results, problem: str, root: str, schedule) -> No
 # * Main
 # * ---------------------------------------------------------------------------
 
+# * ---------------------------------------------------------------------------
+# * Propagation after a step RAN: within the entry, progress.json, the next entry
+# * ---------------------------------------------------------------------------
+
+def exec_propagation_check(results: Results, problem: str, root: str, schedule) -> None:
+    """After a step runs, where the robot really is becomes the start of what follows.
+
+    Runs last, on a fresh ``progress.json`` (the flow checks' one is removed first).
+
+    Cindy, entry 1 (R), mocap tracking her stub base:
+    (a) Load entry: every step up to the retreat starts at the live arms on the
+        live base, also when the export stored another start.
+    (b) The retreat runs (the compliant exec replaced by a fake that ends 0.01 rad
+        off the plan and moves the base 5 mm): the free move home starts there,
+        on the live base; a free-home plan made before is dropped; progress.json
+        holds Cindy's belief 'live' after entry 1 at those arms, entry 1 pending.
+    (c) 'Cancel Exec' during the free move home: nothing carried, progress.json
+        unchanged.
+    (d) A free move home that stops short of its end: nothing carried.
+    Alice, her hold entry: the gripper close (plain close) is the entry's last
+    step -> progress.json records her live belief and her hold of B3, the entry
+    still pending. Cindy again (a new monitor), the release of B3:
+    ObstacleRobotAlice is posed from that belief ('live').
+
+    Args:
+        results (Results): Where the checks go.
+        problem (str): Problem folder name.
+        root (str): The scratch problem folder.
+        schedule (ActionSchedule): The scratch schedule.
+    """
+    cindy, alice = robot_by_name(ASSEMBLY_ROBOT), robot_by_name(SUPPORT_ROBOT)
+    release = schedule.entry(1)
+    hold = schedule.find_entry(HELD_BAR, 'H')
+    hold_release_cindy = schedule.find_entry(HELD_BAR, 'R')
+    assert release.kind == 'R', f"the propagation check needs a release at entry 1, got {release.action_id}"
+    print(f"\n{'=' * 30} EXEC PROPAGATION CHECK {'=' * 30}")
+    progress_file = os.path.join(root, 'progress.json')
+    if os.path.isfile(progress_file):
+        os.remove(progress_file)
+
+    def saved():
+        return load_progress(root, load_schedule(root))
+
+    def live_base(iface):
+        return frame_from_pose((iface.position, iface.rotation))
+
+    def start_of(monitor, i: int, spec) -> np.ndarray:
+        conf = monitor._loaded_movements[i].start_state.robot_configuration
+        return np.array([conf[n] for n in spec.all_arm_joint_names])
+
+    # * --- Cindy: the release of B1
+    action = schedule.load_action(release, prefer_sidecar=False)
+    retreat_exported = next(mv for mv in action.movements
+                            if movement_kind(mv) is MovementKind.DUAL_INDEPENDENT_LINEAR)
+    monitor, iface, log = make_monitor(cindy, retreat_exported.start_state.robot_base_frame, problem)
+    add_viz_huskies(monitor, cindy)
+    ready_for_compliant_exec(monitor)
+    monitor.FAKE_HARDWARE, monitor.USE_MOCAP, monitor.USE_CELL_STATE_BASE_POSE = False, 1, 0
+    # The insert "ran" and left the arms 0.02 rad off the retreat's exported start.
+    q0 = vec12_from_conf(retreat_exported.start_state.robot_configuration) + 0.02
+    iface.arm_joint_pose = [q0[:6].copy(), q0[6:].copy()]
+    real_compliant = husky_world.execute_planned_trajectory_compliant
+    real_wait = husky_world.execute_arm_trajectory_all_and_wait
+    try:
+        monitor._load_schedule_state()
+        monitor.load_schedule_entry(release.index, prefer_sidecar=False)
+        ri = monitor._loaded_index_of(MovementKind.DUAL_INDEPENDENT_LINEAR)
+        hi_ = monitor._loaded_index_of(MovementKind.DUAL_FREE, free_home=True)
+        diffs = [float(np.abs(start_of(monitor, i, cindy) - q0).max()) for i in range(ri + 1)]
+        bases = [frame_dist(monitor._loaded_movements[i].start_state.robot_base_frame, live_base(iface))
+                 for i in range(ri + 1)]
+        results.check(f"propagation: Load entry {release.action_id} -> steps 0..{ri} (up to the "
+                      f"retreat) start at the live arms on the live base",
+                      monitor._live_start_indices == set(range(ri + 1))
+                      and max(diffs) < SAME_TOL and max(bases) < SAME_TOL,
+                      f"live starts {sorted(monitor._live_start_indices)}, arm diffs {np.round(diffs, 9).tolist()}")
+
+        # * (b) the retreat runs; it ends off its plan and the base moves
+        home = monitor._loaded_movements[hi_]
+        home.trajectory = joint_trajectory_from_path([q0, q0])   # planned before the retreat ran
+        select_movement(monitor, ri)
+        for i in range(2):
+            monitor.set_arm_trajectory((np.asarray([q0[6 * i:6 * (i + 1)]] * 2), None, 1.0, None), i)
+
+        def fake_compliant(_monitor):
+            iface.arm_joint_pose = [a + 0.01 for a in iface.arm_joint_pose]
+            iface.position = np.asarray(iface.position, dtype=float) + np.array([0.005, 0.0, 0.0])
+            yield
+
+        husky_world.execute_planned_trajectory_compliant = fake_compliant
+        monitor.exec_selected_movement_traj()
+        run_tasks(monitor, iface)
+        q1 = np.concatenate(iface.arm_joint_pose)
+        progress = saved()
+        belief = progress.belief(cindy.name)
+        conf_err = (max(abs(belief.configuration[n] - v) for n, v in zip(cindy.all_arm_joint_names, q1))
+                    if belief is not None else np.inf)
+        results.check(f"propagation: after the retreat ran, {home.movement_id} starts at the live "
+                      f"arms on the live base, its earlier plan dropped",
+                      float(np.abs(start_of(monitor, hi_, cindy) - q1).max()) < SAME_TOL
+                      and frame_dist(home.start_state.robot_base_frame, live_base(iface)) < SAME_TOL
+                      and home.trajectory is None)
+        results.check(f"propagation: progress.json holds Cindy's belief 'live' after entry "
+                      f"{release.index} at those arms, the entry not marked done",
+                      belief is not None and belief.source == BELIEF_LIVE
+                      and belief.after_entry == release.index and conf_err < SAME_TOL
+                      and progress.status(release.index) == STATUS_PENDING,
+                      f"belief {belief.source if belief else None} after {belief.after_entry if belief else None}, "
+                      f"|conf - live| {conf_err:.1e}")
+
+        # * (c) 'Cancel Exec' during the free move home: nothing carried
+        select_movement(monitor, hi_)
+        for i in range(2):
+            monitor.set_arm_trajectory((np.asarray([q1[6 * i:6 * (i + 1)]] * 2), None, 1.0, None), i)
+
+        def fake_cancelled(_monitor, _t, _settle):
+            monitor._cancel_exec()
+            iface.arm_joint_pose = [a + 0.01 for a in iface.arm_joint_pose]
+            yield
+
+        husky_world.execute_arm_trajectory_all_and_wait = fake_cancelled
+        monitor.exec_selected_movement_traj()
+        run_tasks(monitor, iface)
+        after = saved().belief(cindy.name)
+        results.check("propagation: 'Cancel Exec' during the free move home -> nothing carried, "
+                      "progress.json unchanged",
+                      after is not None and max(abs(after.configuration[n] - v) for n, v
+                                                in zip(cindy.all_arm_joint_names, q1)) < SAME_TOL)
+
+        # * (d) a free move home that stops short of its end: nothing carried
+        q2 = np.concatenate(iface.arm_joint_pose)
+        for i in range(2):
+            monitor.set_arm_trajectory((np.asarray([q2[6 * i:6 * (i + 1)], q2[6 * i:6 * (i + 1)] + 0.5]),
+                                        None, 1.0, None), i)
+
+        def fake_short(_monitor, _t, _settle):
+            yield  # the arms never move
+
+        n_log = len(log.msgs)
+        husky_world.execute_arm_trajectory_all_and_wait = fake_short
+        monitor.exec_selected_movement_traj()
+        run_tasks(monitor, iface)
+        after = saved().belief(cindy.name)
+        results.check("propagation: a free move home that stopped short of its end -> nothing "
+                      "carried (warned)",
+                      bool(log.since(n_log, 'warn', 'from the end of its trajectory'))
+                      and max(abs(after.configuration[n] - v) for n, v
+                              in zip(cindy.all_arm_joint_names, q1)) < SAME_TOL)
+    finally:
+        husky_world.execute_planned_trajectory_compliant = real_compliant
+        husky_world.execute_arm_trajectory_all_and_wait = real_wait
+        monitor.tasks.clear()
+        monitor.cfab.close()
+
+    # * --- Alice: the gripper close is her hold entry's last step
+    clean = schedule.load_action(hold, prefer_sidecar=False)
+    monitor, iface, log = make_monitor(alice, clean.movements[-1].start_state.robot_base_frame, problem)
+    add_viz_huskies(monitor, alice)
+    monitor.FAKE_HARDWARE, monitor.USE_MOCAP, monitor.USE_CELL_STATE_BASE_POSE = False, 1, 0
+    monitor.CONNECT_COMPLIANT_CONTROLLER = 0   # a plain close: the handoff is alice_run's
+    try:
+        monitor._load_schedule_state()
+        monitor.load_schedule_entry(hold.index, prefer_sidecar=False)
+        select_movement(monitor, len(monitor._loaded_movements) - 1)
+        monitor.exec_selected_movement_step()
+        run_tasks(monitor, iface)
+        progress = saved()
+        belief = progress.belief(alice.name)
+        held = progress.hold_state(HELD_BAR)
+        results.check(f"propagation: Alice's gripper close (the last step of {hold.action_id}) -> "
+                      f"progress.json: her belief 'live', {HELD_BAR} held, the entry not marked done",
+                      belief is not None and belief.source == BELIEF_LIVE
+                      and belief.after_entry == hold.index
+                      and held is not None and held.state == HOLD_HOLDING and held.robot == alice.name
+                      and progress.status(hold.index) == STATUS_PENDING,
+                      f"belief {belief.source if belief else None}, hold {held.state if held else None}")
+    finally:
+        monitor.tasks.clear()
+        monitor.cfab.close()
+
+    # * --- Cindy again: the release of the held bar poses Alice from that belief
+    action = schedule.load_action(hold_release_cindy, prefer_sidecar=False)
+    monitor, iface, log = make_monitor(cindy, action.movements[0].start_state.robot_base_frame, problem)
+    add_viz_huskies(monitor, cindy)
+    try:
+        monitor._load_schedule_state()
+        monitor.load_schedule_entry(hold_release_cindy.index, prefer_sidecar=False)
+        sources = monitor._obstacle_beliefs_with_sources()[1]
+        posed = monitor._loaded_movements[0].start_state.tool_states[alice.obstacle_tool_name].frame
+        results.check(f"propagation: Cindy's {hold_release_cindy.action_id} poses "
+                      f"{alice.obstacle_tool_name} from Alice's saved belief ('live')",
+                      sources.get(alice.obstacle_tool_name) == BELIEF_LIVE
+                      and frame_dist(posed, belief.base_frame) < SAME_TOL,
+                      f"source {sources.get(alice.obstacle_tool_name)}")
+    finally:
+        monitor.cfab.close()
+
+
 def main(argv: Optional[list] = None) -> int:
     """Build the scratch problem, run dispatch, carry, transfer start, operator steps, transfer free move and grounded insert checks, Cindy, Alice, Cindy's restart; print the summary.
 
@@ -2774,7 +2984,7 @@ def main(argv: Optional[list] = None) -> int:
                     transfer_free_move_check, grounded_insert_check, one_sided_insert_check,
                     transfer_servo_check,
                     cindy_run, alice_run,
-                    cindy_restart_run):
+                    cindy_restart_run, exec_propagation_check):
             try:
                 run(results, problem, root, schedule)
             except Exception as e:  # keep going: the summary shows where it stopped

@@ -22,7 +22,7 @@ from husky_assembly_teleop import DATA_DIRECTORY, CALIBRATION_DATE, BASE_CALIBRA
 from husky_assembly_teleop.common import Husky, TrackedObject, AssemblyObject
 from husky_assembly_teleop.robot_registry import RobotSpec, other_robots, robot_by_name, robot_from_env
 from husky_assembly_teleop.bar_action_io import (
-    COMPLIANT_KINDS, STATIONARY_KINDS, MovementKind, held_ground_joints, mating_arm_sides, tool_event,
+    COMPLIANT_KINDS, MovementKind, held_ground_joints, mating_arm_sides, tool_event,
     tool_runs_with_next_motion,
 )
 from husky_assembly_teleop.schedule_io import load_schedule, problem_root
@@ -69,6 +69,9 @@ BAR_ACTION_LIVE_REPLAN_EXE_DIR = os.path.join(EXPERIMENT_DATA_DIRECTORY, "bar_ac
 # Extra wait after an arm move before measuring: the base, shifted by the arms'
 # centre of mass, settles in the mocap stream (the servo loop's default).
 SERVO_SETTLE_SECONDS = 2.0
+# Extra wait after a plain joint move before its end state is read and carried
+# forward into the next steps (monitor._propagate_live_end).
+EXEC_END_SETTLE_SECONDS = 1.0
 # The monitor tick that pumps the tasks (20 Hz).
 MONITOR_TICK_S = 0.05
 
@@ -5013,8 +5016,11 @@ def execute_planned_trajectory_compliant(monitor):
 FT_ZERO_SETTLE_SECONDS = 2.0
 
 
-def execute_arm_trajectory_both_and_wait(monitor, traj_time: float, settle_seconds: float):
-    """Send both arms' planned trajectory, then wait until it has run plus a settle margin.
+def execute_arm_trajectory_all_and_wait(monitor, traj_time: float, settle_seconds: float):
+    """Send every arm's planned trajectory, then wait until it has run plus a settle margin.
+
+    Cindy's two arms go out together; a support robot's one arm alone
+    (``execute_arm_trajectory_all``).
 
     ! Waits by TIME, not by hi.is_arm_executing: that flag clears after only
     ! ARM_NOT_EXECUTING_TIME (1 s) of no joint change, so a controller slow to
@@ -5028,7 +5034,7 @@ def execute_arm_trajectory_both_and_wait(monitor, traj_time: float, settle_secon
     Yields:
         None: One yield per monitor tick while the motion runs.
     """
-    execute_arm_trajectory_both(monitor, traj_time)
+    execute_arm_trajectory_all(monitor, traj_time)
     for _ in range(int(np.ceil((traj_time + settle_seconds) / MONITOR_TICK_S))):
         yield
 
@@ -5059,7 +5065,7 @@ def execute_trajectory_and_zero_ft(monitor):
     """
     traj_time = float(monitor.trajectory_time) or 5.0
     # Tare only once the arms stand still (waited by time, see the helper).
-    yield from execute_arm_trajectory_both_and_wait(monitor, traj_time, FT_ZERO_SETTLE_SECONDS)
+    yield from execute_arm_trajectory_all_and_wait(monitor, traj_time, FT_ZERO_SETTLE_SECONDS)
 
     if monitor.FAKE_HARDWARE:
         monitor.get_logger().info(
@@ -5117,7 +5123,7 @@ def execute_transfer_then_servo(monitor):
         np.asarray(monitor.planned_arm_trajectory[i][0][-1], dtype=float) for i in range(2)])
 
     # * 1. The transfer itself, exactly as before.
-    yield from execute_arm_trajectory_both_and_wait(monitor, traj_time, SERVO_SETTLE_SECONDS)
+    yield from execute_arm_trajectory_all_and_wait(monitor, traj_time, SERVO_SETTLE_SECONDS)
 
     # * 2. Workaround: the tools are empty -- the operator mounts the bar now.
     if as_free_move:
@@ -5333,13 +5339,14 @@ def execute_free_approach_then_servo(monitor):
     The single-arm counterpart of ``execute_transfer_then_servo``: the arm's
     motion shifts the base's centre of mass, so tool0 lands a few mm off the
     approach pose the straight approach to the grasp starts from. After the
-    motion, ``servo_single_arm_to_target_live`` corrects it; then where the arm
-    really is becomes the start of the steps after it (the gripper step, the
-    straight approach) and a straight approach planned earlier is dropped.
+    motion, ``servo_single_arm_to_target_live`` corrects it. When the task ends
+    the monitor carries where the arm and the base really are into the steps
+    after it (the gripper step, the straight approach) and drops a straight
+    approach planned earlier (``monitor._exec_then_propagate``).
 
     Without real hardware or a mocap-tracked base the servo is skipped with a
     log line. 'Cancel Exec' at a pause ends the task (a trajectory already sent
-    still finishes).
+    still finishes) and nothing is carried forward.
 
     Args:
         monitor (HuskyMonitor): The free approach loaded and planned, its
@@ -5349,7 +5356,7 @@ def execute_free_approach_then_servo(monitor):
         None: One yield per monitor tick.
     """
     log = monitor.get_logger()
-    mv, idx = monitor.current_movement, monitor.current_movement_index
+    mv = monitor.current_movement
     tag = f'[approach {mv.movement_id}]'
     # Read before anything rebuilds the panel (the servo rewrites the slider).
     traj_time = float(monitor.trajectory_time) or 5.0
@@ -5373,17 +5380,6 @@ def execute_free_approach_then_servo(monitor):
         # ! The task loop catches StopIteration only: any other exception would
         # ! stop the monitor tick.
         log.error(f"{tag} servo loop failed: {e}")
-
-    # * 3. Where the arm really is becomes the start of the next steps.
-    live = [float(v) for v in monitor.huskies[monitor.selected_robot_id].interface.arm_joint_pose[0]]
-    monitor._carry_configuration_forward(idx, live, source='Servo')
-    for later in monitor._loaded_movements[idx + 1:]:
-        if monitor._kind_of(later) not in STATIONARY_KINDS:
-            if later.trajectory is not None:
-                later.trajectory = None
-                log.info(f"{tag} the plan of {later.movement_id} was made before the correction; "
-                         f"dropped (plan it again).")
-            break
 
 
 MOVE_TO_MOVEMENT_START_MAX_DELTA_RAD = np.pi / 3.0

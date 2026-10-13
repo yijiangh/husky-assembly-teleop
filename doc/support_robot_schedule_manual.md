@@ -308,10 +308,30 @@ Entry 16 (`B3_HR`, Alice lets go) comes after B9 and is out of scope for this te
 
 ---
 
-## What "Mark entry done" remembers
+## How the state is carried forward, and what "Mark entry done" remembers
+
+**After every step that runs** (`Exec Selected Mv Traj`, the step button; not after
+`Cancel Exec`, nor when a joint move stopped short of its end), where the robot
+really is (measured arm joints, mocap base when tracked) becomes the start of what
+follows:
+
+- in the entry: the steps where no arm moves and the next arm movement start
+  there (`[Exec] propagated arm configuration -> ...`); a plan of that movement
+  made before is dropped (plan it again). After a servo run that is the
+  corrected pose (`[Servo] propagated ...`);
+- for the next entries: the robot's **live** state is saved to `progress.json`
+  at once, without marking the entry done
+  (`[Schedule] <robot>'s live state after <step> saved for the next entries ...`).
+  So a skipped free move home or a skipped `Mark entry done` never leaves an
+  older state there. After an entry's LAST step a hold entry also records the
+  hold (e.g. Alice holds B3 once her gripper closed) and a hold release the
+  release;
+- `Load entry` puts the live state into every step up to the entry's first arm
+  movement (any entry kind), so it starts where the robot is.
 
 `<problem>/progress.json` (next to `ActionSchedule.json`) keeps each entry's status
-and, per robot, the base frame + arm joints it ended in:
+and, per robot, the base frame + arm joints it ended in. `Mark entry done` marks
+the entry done and stores:
 
 - your own robot's entry: the **live** state (mocap base if tracked within 1 s,
   else the authored base; live joints);
@@ -331,9 +351,9 @@ With `FAKE_HARDWARE=1` this is where the simulated arms continue from; on the
 robot the first joint state message overwrites the arms.
 
 Planned trajectories are saved to `<bar>__<kind>.live-solved.json` next to the
-clean export (never overwritten). `Load entry` prefers that file; after `Reopen`
-the clean export is used for the rest of the run. The first movement of J and H
-entries (the travel to load, the free approach) always starts from the live arm.
+clean export (never overwritten) by `Mark entry done`. `Load entry` prefers that
+file; after `Reopen` the clean export is used for the rest of the run. Every step
+up to an entry's first arm movement always starts from the live arm.
 
 ---
 
