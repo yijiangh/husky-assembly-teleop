@@ -1,5 +1,5 @@
 """
-The cell's overlay: what the core's 3D view cannot draw of one process state.
+The process plugin's overlay: what the core's 3D view cannot draw of one process state.
 
 Drawn from the process alone, with forward kinematics from each robot's yourdfpy model.
 
@@ -24,7 +24,7 @@ from scaffolding_assembly_core.process.relations import is_present, placement
 from scaffolding_assembly_core.geometry import Geometry, Pose, compose, shape_mesh
 from scaffolding_assembly_core.ids import split_link_id
 from ...ui.visualization import FastViserUrdf, add_simple_urdf, joints_changed, load_urdf, quaternion_to_wxyz
-from .process import body_color, stands
+from .steps import body_color, stands
 
 #: Colours, RGB 0-255. Held bodies stand out; other bodies use `process.body_color`.
 ATTACHED_COLOR = (240, 120, 30)

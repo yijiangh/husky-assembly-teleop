@@ -91,9 +91,9 @@ class BasePlannerPlugin(PlannerPlugin):
             gui.add_html(section("target", SECTION_TOOL))
             self._target = PlanarPoseInput(ctx, gui, f"{root}/target_gizmo", label="Target",
                                            on_change=self._target_changed)
-            load = gui.add_button_group("Load", ["Robot", "Cell"],
+            load = gui.add_button_group("Load", ["Robot", "Step"],
                                         hint="Set the target to where the robot is now, or to its base "
-                                             "pose in the step selected in the cell plugin")
+                                             "pose in the step selected in the process plugin")
 
             self._add_path_controls(ctx, gui,
                                     plan_hint="Plan around the other robots from the robot's current pose to "
@@ -127,11 +127,11 @@ class BasePlannerPlugin(PlannerPlugin):
         self._has_target = True
 
     def _load_target(self, ctx: PluginContext, label: str) -> None:
-        """Set the target from the robot's current pose, or from the cell's selected step.
+        """Set the target from the robot's current pose, or from the process plugin's selected step.
 
         Args:
             ctx: This plugin's context.
-            label: "Robot" or "Cell".
+            label: "Robot" or "Step".
         """
         self._used.touch()
         if label == "Robot":
@@ -141,7 +141,7 @@ class BasePlannerPlugin(PlannerPlugin):
             self._say(f"target set to where {self.serial} is now")
             return
 
-        found = self._cell_step(ctx)
+        found = self._process_step(ctx)
         if found is None:
             return
         step, serial, robot_name = found
@@ -236,7 +236,7 @@ class BasePlannerPlugin(PlannerPlugin):
         if self.idle:
             return
         self._status.content = self._status_html(ctx)
-        # Loading a target from the cell can switch the robot; show that here.
+        # Loading a target from the step can switch the robot; show that here.
         self._robot.value = self.serial
         self._details.content = self._details_html()
         self._draw_slider()

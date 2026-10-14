@@ -15,7 +15,7 @@ Read this first if you are picking it up:
 
 ## 1. Goals
 
-1. **One scene of collision objects**, owned by the core and free of any physics or collision backend. Plugins (`obstacles`, `cell`) add their objects to it.
+1. **One scene of collision objects**, owned by the core and free of any physics or collision backend. Plugins (`obstacles`, `process`) add their objects to it.
 2. **Planners get a consistent copy of the whole world**: measured robots and tracked objects plus every scene object, all from the same moment. They mirror it into their own backend: PyBullet (`base_planner`), later compas_fab, pinocchio + coal.
 3. **The core draws the scene** (robots, tracked objects and scene objects); viser's debug view toggles visibility.
 4. **Syncing a mirror is cheap.** Geometry is converted once and uploaded once per backend. Afterwards a sync only moves what moved.
@@ -77,10 +77,10 @@ Each object has **exactly one id**, a string path we assign. Backend ids exist o
 ```
 robots/a200-0806                    measured robot  (monitor; a planned one is robots/cindy)
 robots/a200-0806/left_ur_arm_tool0  one link of it  (for attachments and touches)
-tools/a200-0806/left_ur_arm         a mounted tool  (for touches; a design's is tools/AT3L)
+tools/a200-0806/left_ur_arm         a mounted tool  (for touches; a process's is tools/cindy/AT3L)
 tracked/probe                       tracked object  (monitor)
 obstacles/tables/operator_table_A   scene body, owner = plugin "obstacles"
-cell/bars/B1                        scene body, owner = plugin "cell"
+process/bars/B1                     scene body, owner = plugin "process"
 ```
 
 - **Allowed characters:** `[A-Za-z0-9_.-]` and `/`. Display text goes in `label`.
@@ -186,15 +186,15 @@ Rules shared by every mirror:
 1. ✅ **Kinematics.** `kinematics.py`, `ctx.kinematics`; `robot_control` and `base_planner` stop reading PyBullet.
 2. ✅ **Scene and drawing.** `geometry.py`, `scene.py`, `ctx.scene`, `take_snapshot` in the tick, core drawing; `mocap_probe` tracks without drawing its own frame.
 3. ✅ **`PyBulletMirror` and the switch.** `obstacles` and `base_planner` move to the scene together; `example_pybullet` rewritten; `robot_scene.py` deleted.
-4. ✅ **Cell objects.** The cell plugin puts the selected movement's design scene (`Process.scene_at`, `cell/process.scene_bodies`): design ids prefixed (`bars/B1` → `cell/bars/B1`) through an explicit `IdMap`; bodies held in the plan follow the configured real robot (`ids.retarget`, `robots/cindy` → `robots/a200-0806` by the design's `serial`), and touches name the real robots and their tools. Planned robots stay an overlay.
+4. ✅ **Process objects.** The process plugin puts the selected movement's process scene (`Process.scene_at`, `process/steps.scene_bodies`): process ids prefixed (`bars/B1` → `process/bars/B1`) through an explicit `IdMap`; bodies held in the plan follow the configured real robot (`ids.retarget`, `robots/cindy` → `robots/a200-0806` by the design's `serial`), and touches name the real robots and their tools. Planned robots stay an overlay.
 5. ✅ **`CompasFabMirror`.** Same collision pairs as the design's `RobotCell` on 10 authored Cindy states and 5 with the held bar pushed into the robot (`test/test_compas_fab_mirror.py`, needs `HUSKY_DESIGN_DIRECTORY` pointing to an old-format export with `RobotCell.json`; ! update it to schema 1 later). First user: the `arm_planner` plugin (joint-space RRT-Connect, `plugins.planning.search.connect`; commit is a stub).
 6. **Published copies.** A planner publishes a modified snapshot for the view (`/worlds/<name>/…`, see-through robots); `base_planner` publishes instead of drawing its own ghost.
 
 ## 10. Open questions
 
 1. ✅ **Design naming.** Answered by `design_format.md`: `legacy/export.py` converts `env_` / `bar_` / `joint_` names to path ids (`bars/B1`), and each design robot has a `serial` field. Measured robots' ids use serials (`robots/a200-0806`): serials for all machine use, names only for humans; user-facing inputs accept both.
-2. ✅ **Tool mapping.** Tools are separate objects in every planning cell; a design tool maps to the configured robot's tool on the same flange (`cell/design.scene_bodies`).
-3. **Attachments.** Static and set by `cell` for now. Decide later whether planners take over while they plan.
+2. ✅ **Tool mapping.** Tools are separate objects in every planning cell; a design tool maps to the configured robot's tool on the same flange (`process/steps.scene_bodies`).
+3. **Attachments.** Static and set by `process` for now. Decide later whether planners take over while they plan.
 4. **pinocchio layout.** One model per robot, or all appended into one.
 5. **Drawing budget.** N meshes per tick (start at 50); simplified visual meshes for very large cells?
 6. ✅ **Snapshot freshness.** Mirrors and planners refuse an acting robot with `base_tracked=False` or `unmeasured` movable joints. The monitor's base and arm planners plan anyway from the guessed values, with a warning (`planning.panel.with_guesses`). ? A limit on the base/joint time skew is still open.

@@ -104,9 +104,9 @@ class ArmPlannerPlugin(PlannerPlugin):
             self._sliders = [gui.add_slider(f"{name} °", min=-math.degrees(limit), max=math.degrees(limit),
                                             step=0.5, initial_value=0.0)
                              for name, limit in zip(SLIDER_NAMES, UR_JOINT_LIMITS)]
-            load = gui.add_button_group("Load", ["Now", "Stow", "Cell"],
+            load = gui.add_button_group("Load", ["Now", "Stow", "Step"],
                                         hint="Set the target to where the arm is now, to its stow pose, or to "
-                                             "the arm's target in the step selected in the cell plugin")
+                                             "the arm's target in the step selected in the process plugin")
 
             self._add_path_controls(ctx, gui,
                                     plan_hint="Plan around the robot itself, the other robots and the scene, from "
@@ -153,11 +153,11 @@ class ArmPlannerPlugin(PlannerPlugin):
         self._has_target = True
 
     def _load_target(self, ctx: PluginContext, label: str) -> None:
-        """Set the target to the arm now, its stow pose, or the cell's selected step.
+        """Set the target to the arm now, its stow pose, or the process plugin's selected step.
 
         Args:
             ctx: This plugin's context.
-            label: "Now", "Stow" or "Cell".
+            label: "Now", "Stow" or "Step".
         """
         self._used.touch()
         if label == "Now":
@@ -172,13 +172,13 @@ class ArmPlannerPlugin(PlannerPlugin):
             self._load = np.array(arm.stow_joints)
             self._say(f"target set to the stow pose of {self.arm}")
         else:
-            self._load_from_cell(ctx)
+            self._load_from_step(ctx)
             return
         self._has_target = True
 
-    def _load_from_cell(self, ctx: PluginContext) -> None:
-        """Set robot, arm and target from the cell's selected step: its target, else its start."""
-        found = self._cell_step(ctx)
+    def _load_from_step(self, ctx: PluginContext) -> None:
+        """Set robot, arm and target from the process plugin's selected step: its target, else its start."""
+        found = self._process_step(ctx)
         if found is None:
             return
         step, serial, robot_name = found
@@ -302,7 +302,7 @@ class ArmPlannerPlugin(PlannerPlugin):
         if self.idle:
             return
         self._status.content = block(chip(escape(f"{self.serial} {self.arm}"), SECTION_CTRL) + self._plan_chip())
-        # Loading a target from the cell can switch the robot or arm; show that here.
+        # Loading a target from the step can switch the robot or arm; show that here.
         self._robot.value = self.serial
         if tuple(self._arm.options) != tuple(self._arms[self.serial]):
             self._arm.options = self._arms[self.serial]

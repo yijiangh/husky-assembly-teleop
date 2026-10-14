@@ -1,5 +1,5 @@
 """
-A process (doc/process_format.md) as the cell plugin steps through it.
+A process (doc/process_format.md) as the process plugin steps through it.
 
 Every movement is a step, with the joints to draw each robot at. A movement without authored start joints is
 drawn where its robot last was.
@@ -62,7 +62,7 @@ class Step:
 
 
 @dataclass(frozen=True)
-class CellProcess:
+class LoadedProcess:
     """A loaded process and its steps.
 
     Attributes:
@@ -89,7 +89,7 @@ class CellProcess:
 
 
 def load_process(folder: Path, data_directory: Path, report: Callable[[str], None] = lambda _text: None,
-                 watch: Stopwatch | None = None) -> CellProcess:
+                 watch: Stopwatch | None = None) -> LoadedProcess:
     """Read a process folder; an old compas_fab export is first converted into `<export>_process`.
 
     The converted copy is reused while it is newer than the export.
@@ -101,7 +101,7 @@ def load_process(folder: Path, data_directory: Path, report: Callable[[str], Non
         watch: Gets a lap per step, if given.
 
     Returns:
-        CellProcess: The process and its steps; `source` is the converted copy for an old export.
+        LoadedProcess: The process and its steps; `source` is the converted copy for an old export.
 
     Raises:
         FileNotFoundError: If the folder is neither a process nor an old export.
@@ -119,7 +119,7 @@ def load_process(folder: Path, data_directory: Path, report: Callable[[str], Non
     watch.lap("read process")
     steps = _steps(process)
     watch.lap("steps")
-    return CellProcess(source=folder, process=process, steps=steps)
+    return LoadedProcess(source=folder, process=process, steps=steps)
 
 
 def _steps(process: Process) -> tuple[Step, ...]:
@@ -174,12 +174,12 @@ def body_color(body_id: str) -> tuple[int, int, int]:
 def stands(process: Process, state: State, body_id: str) -> bool:
     """Whether a body stands in a state on its own: present, and not an attached, unbuilt bar or one of its halves.
 
-    * Standing bodies go into the scene enabled; the cell's overlay draws the rest.
+    * Standing bodies go into the scene enabled; the plugin's overlay (`drawing.py`) draws the rest.
     """
     return is_present(process, state, body_id) and not isinstance(placement(process, state, body_id), Holder)
 
 
-def scene_bodies(cell: CellProcess, step: Step, robots: tuple[RobotConfig, ...], prefix: str) -> list[Body]:
+def scene_bodies(loaded: LoadedProcess, step: Step, robots: tuple[RobotConfig, ...], prefix: str) -> list[Body]:
     """Every body of a step's process scene, as a scene body "<prefix><body id>".
 
     The scene is edited for the live world:
@@ -191,7 +191,7 @@ def scene_bodies(cell: CellProcess, step: Step, robots: tuple[RobotConfig, ...],
       the 3D view: it only moves, enables and disables them.
 
     Args:
-        cell: The loaded process.
+        loaded: The loaded process.
         step: The step; its movement's start is the state.
         robots: The configured robots, `ctx.config.robots`.
         prefix: Id prefix, the owning plugin's "<name>/".
@@ -202,11 +202,11 @@ def scene_bodies(cell: CellProcess, step: Step, robots: tuple[RobotConfig, ...],
     Raises:
         ValueError: If a configured robot lacks a link the plan holds a body by.
     """
-    scene = cell.process.scene_at(step.movement)
+    scene = loaded.process.scene_at(step.movement)
     configured = {config.serial[-4:]: config for config in robots if config.model is not None}
     # * Small explicit maps: planned robot -> real robot, and each planned tool -> the real tool on the same flange.
     pairs, models = {}, {}
-    for planned, spec in cell.process.robots.items():
+    for planned, spec in loaded.process.robots.items():
         config = configured.get(spec.serial or "")
         if config is None:
             continue
@@ -225,7 +225,7 @@ def scene_bodies(cell: CellProcess, step: Step, robots: tuple[RobotConfig, ...],
     bodies = []
     for body_id, body in scene.bodies.items():
         placement = moved.get(body_id) or scene.world_poses.get(body_id,
-                                                                cell.process.bodies[body_id].assembly_pose)
+                                                                loaded.process.bodies[body_id].assembly_pose)
         enabled = body.enabled and (body_id not in held or body_id in moved)
         bodies.append(Body(ids(body_id), body.geometry, placement,
                            touches=tuple(ids(other) for other in body.touches if other in ids),

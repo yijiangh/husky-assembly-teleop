@@ -226,7 +226,7 @@ Example: `mocap_probe` shows the probe state in a **Probe** panel, collapsed on 
 | `robots` | none | Robots to connect to, by serial or name: `0804`, `alice`, `a200-0806`, `Cindy`. `"[]"` runs without robots. |
 | `plugins` | none | Plugins to load, see below. `health` is always added, unless `no_default_plugins:=true`. |
 | `tools` | per robot | Only where the mounted tools differ from the defaults: `'<robot>:<tool>[,<tool>...]'`, one tool per arm in arm order. Tools: `robotiq`, `scaffolding_v1`, `scaffolding_v3`, `none`. Defaults: Alice and Belle `robotiq`, Cindy `scaffolding_v3,scaffolding_v3`. |
-| `process_directory` | none | Process folder (with `process.json`) or old compas_fab export the `cell` plugin loads at startup, relative to `drive_root` (e.g. `data_design_study/260814_RobArch_support_ik`) or absolute; without it, pick one in its panel. An export is converted into `<export>_process` next to it. |
+| `process_directory` | none | Process folder (with `process.json`) or old compas_fab export the `process` plugin loads at startup, relative to `drive_root` (e.g. `data_design_study/260814_RobArch_support_ik`) or absolute; without it, pick one in its panel. An export is converted into `<export>_process` next to it. |
 | `data_directory` | `data/` of this repo | Root for meshes, URDFs and processes. |
 | `drive_root` | `$HUSKY_DRIVE_ROOT` | Local copy of the project's Google Drive folder (`2025-03 Husky Assembly`), for experiment data; see [Experiment data](#experiment-data-google-drive). |
 | `no_default_plugins` | `false` | `true` skips the default plugins (`health`). |
@@ -245,7 +245,7 @@ ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['alice']" -
     -p drive_root:="$HOME/Insync/<account>/Google Drive - Shared with me/2025-03 Husky Assembly"
 ```
 
-Paths are given relative to this folder, e.g. `data_design_study/260814_RobArch_support_ik`; absolute paths still work, for data elsewhere. `base_exp` does not start without the root and its `data_experiment/base_exp/` folder; `cell` needs the root to load a relative design folder.
+Paths are given relative to this folder, e.g. `data_design_study/260814_RobArch_support_ik`; absolute paths still work, for data elsewhere. `base_exp` does not start without the root and its `data_experiment/base_exp/` folder; `process` needs the root to load a relative process folder.
 
 **Folders under the root are never created by the code.** Create them in Google Drive and sync them instead. The reason: with selective sync, a folder can exist in Drive but be missing on your PC, because it is not synced there. If the code then created it locally, Insync would upload it as a new folder, and Google Drive, unlike a normal file system, allows several folders with the same name side by side. You would end up with two `base_exp` folders, the runs split between them. The code only creates new folders inside an existing one (e.g. a folder per run), which cannot clash.
 
@@ -258,7 +258,7 @@ Paths are given relative to this folder, e.g. `data_design_study/260814_RobArch_
 | `obstacles` | Adds the fixed lab furniture to the scene as collision obstacles for the planners. |
 | `debug_gizmo` | Debug only. Click any scene body with a world pose (e.g. an obstacle) in the 3D view, or pick it from the dropdown, then drag it with a gizmo or type its position and roll/pitch/yaw. **Add** puts temporary boxes and cylinders into the scene (planners avoid them); resize them with the small corner gizmo or by typing **Size**, and **Remove** them. **Log** prints position, quaternion, roll/pitch/yaw (and size), **Reset** puts a body back. Nothing is saved. |
 | `mocap_probe` | Tracks the probe and records points with it, e.g. obstacle corners; exports JSON and loads it back. Shows its state in a separate panel, see [Panels](#panels). **Map coverage** walks a 15 × 15 m grid of 1 m cells, centred on the mocap origin, and colours each on the floor by how often the probe was tracked there (grey: not visited, red → green), with the mean ± std marker error per cell; export and load as JSON. |
-| `cell` | Loads a process and shows the cell state of one movement at a time. Experimental. |
+| `process` | Loads a process and shows the state at one movement at a time; the planners load their targets from its selected step. Experimental. |
 | `base_planner` | Plans a collision-free path for a base. Experimental: Commit only logs the path. |
 | `arm_planner` | Plans a collision-free arm motion to a joint target. Experimental: Commit only logs the path. |
 | `example_plot`, `example_ui`, `example_sequence`, `example_pybullet`, `example_recording`, `example_robot_state` | Minimal plugins, as templates for new ones. |
@@ -281,7 +281,7 @@ ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="[]" -p plugi
 
 # Assembly: a process, the lab obstacles and the base planner
 ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['alice','cindy']" \
-    -p plugins:="['robot_control', 'cell', 'obstacles', 'base_planner']" -p process_directory:=data_design_study/260814_RobArch_support_ik
+    -p plugins:="['robot_control', 'process', 'obstacles', 'base_planner']" -p process_directory:=data_design_study/260814_RobArch_support_ik
 
 # Plan arm motions too
 ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['cindy']" \

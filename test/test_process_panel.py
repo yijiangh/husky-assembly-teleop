@@ -1,8 +1,8 @@
-"""The cell panel's action list: a window of the schedule that keeps the selected action in its middle row."""
+"""The process panel's action list: a window of the schedule that keeps the selected action in its middle row."""
 
 from __future__ import annotations
 
-from husky_assembly_teleop.plugins.cell.plugin import action_window
+from husky_assembly_teleop.plugins.process.plugin import action_window
 
 
 def test_action_window_centres_the_selection():

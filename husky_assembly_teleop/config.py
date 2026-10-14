@@ -110,8 +110,8 @@ class MonitorConfig:
     Attributes:
         robots: The robots to connect to, in display order.
         data_directory: Root for meshes, URDFs and process data.
-        process_directory: Process folder the `cell` plugin loads at startup, relative to `drive_root`, or None to pick
-            one in its panel.
+        process_directory: Process folder the `process` plugin loads at startup, relative to `drive_root`, or None
+            to pick one in its panel.
         drive_root: The project's Google Drive folder, for experiment data (see `drive.py`), or None if not given.
         tick_period: Seconds between ticks.
         viser_port: Port the viser web UI listens on.
@@ -284,7 +284,7 @@ def config_from_ros_parameters(node: Node) -> MonitorConfig:
 
     Example:
         ros2 run husky_assembly_teleop husky_monitor --ros-args \
-            -p robots:="['0804','cindy']" -p plugins:="['cell']" \
+            -p robots:="['0804','cindy']" -p plugins:="['process']" \
             -p tools:="['0804:scaffolding_v3', '0806:scaffolding_v3,none']" \
             -p process_directory:=data_design_study/260814_RobArch_support_ik
     """

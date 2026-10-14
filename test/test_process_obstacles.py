@@ -1,4 +1,4 @@
-"""The cell plugin puts every body of a step's process scene into the scene; held ones follow the real robot."""
+"""The process plugin puts every body of a step's process scene into the scene; held ones follow the real robot."""
 
 from __future__ import annotations
 
@@ -18,28 +18,29 @@ from scaffolding_assembly_core.robot import robot_model
 from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.scene import Attachment
 from husky_assembly_teleop.config import robot_config_from_serial
-from husky_assembly_teleop.plugins.cell.process import CellProcess, Step, displayed_joints, load_process, scene_bodies
-from husky_assembly_teleop.plugins.cell.drawing import GHOST_OPACITY, ProcessDrawing, load_robot_models
-from husky_assembly_teleop.plugins.cell.plugin import BY_HAND_LABEL, CellPlugin
+from husky_assembly_teleop.plugins.process.steps import (LoadedProcess, Step, displayed_joints, load_process,
+                                                         scene_bodies)
+from husky_assembly_teleop.plugins.process.drawing import GHOST_OPACITY, ProcessDrawing, load_robot_models
+from husky_assembly_teleop.plugins.process.plugin import BY_HAND_LABEL, ProcessPlugin
 from scaffolding_assembly_core.scene import Scene
 from husky_assembly_teleop.world.scene import PluginScene
 
 
 @pytest.fixture
-def cell(tmp_path) -> CellProcess:
+def loaded(tmp_path) -> LoadedProcess:
     """The fixture process, written and loaded the way the plugin loads it."""
     write(build_process(tmp_path), tmp_path / "process")
     return load_process(tmp_path / "process", tmp_path)
 
 
-def _by_id(cell: CellProcess, step_index: int, robots=()) -> dict:
+def _by_id(loaded: LoadedProcess, step_index: int, robots=()) -> dict:
     """The scene bodies of one step, by scene id, with `robots` configured."""
-    return {body.id: body for body in scene_bodies(cell, cell.steps[step_index], robots, "cell/")}
+    return {body.id: body for body in scene_bodies(loaded, loaded.steps[step_index], robots, "process/")}
 
 
-def _real_cindy(cell: CellProcess) -> SimpleNamespace:
+def _real_cindy(loaded: LoadedProcess) -> SimpleNamespace:
     """A configured robot standing in for Cindy (serial 0806): the process's URDF, with its own tool on left_tool0."""
-    spec = cell.process.robots["robots/cindy"]
+    spec = loaded.process.robots["robots/cindy"]
     tool = Tool("tools/a200-0806/left", box_geometry((0.05, 0.05, 0.05)), Pose(), "scaffolding_v3")
     return SimpleNamespace(serial="a200-0806", model=robot_model("a200-0806", spec.urdf, spec.srdf,
                                                                  {"left_tool0": tool}))
@@ -50,84 +51,84 @@ def _enabled(bodies: dict) -> set[str]:
     return {body_id for body_id, body in bodies.items() if body.enabled}
 
 
-def test_every_body_every_step(cell):
+def test_every_body_every_step(loaded):
     """The same ids in every step, whatever stands: switching steps never adds or removes a body."""
-    expected = {f"cell/{body_id}" for body_id in cell.process.bodies}
-    assert all(set(_by_id(cell, index)) == expected for index in range(len(cell.steps)))
+    expected = {f"process/{body_id}" for body_id in loaded.process.bodies}
+    assert all(set(_by_id(loaded, index)) == expected for index in range(len(loaded.steps)))
 
 
-def test_held_bodies_disabled_robot_touches_dropped(cell):
+def test_held_bodies_disabled_robot_touches_dropped(loaded):
     """B1_M1, no robot configured: B1 and its halves are held by cindy, so only B2 (on its rack), J1 and WG0 stand."""
-    bodies = _by_id(cell, 1)
-    assert _enabled(bodies) == {"cell/bars/B2", "cell/joints/J1_male", "cell/ground/WG0"}
-    assert bodies["cell/ground/WG0"].touches == ("cell/joints/G1_ground",)
+    bodies = _by_id(loaded, 1)
+    assert _enabled(bodies) == {"process/bars/B2", "process/joints/J1_male", "process/ground/WG0"}
+    assert bodies["process/ground/WG0"].touches == ("process/joints/G1_ground",)
 
 
-def test_placed_bodies_poses_and_derived_touches(cell):
+def test_placed_bodies_poses_and_derived_touches(loaded):
     """B1_H_M0: B1 is built, so it and its halves stand at their assembly poses; a half may touch its bar."""
-    bodies = _by_id(cell, 3)
-    assert _enabled(bodies) == {f"cell/{body_id}" for body_id in cell.process.bodies}
-    assert bodies["cell/joints/J1_female"].placement == cell.process.bodies["joints/J1_female"].assembly_pose
-    assert bodies["cell/joints/J1_female"].touches == ("cell/bars/B1",)
+    bodies = _by_id(loaded, 3)
+    assert _enabled(bodies) == {f"process/{body_id}" for body_id in loaded.process.bodies}
+    assert bodies["process/joints/J1_female"].placement == loaded.process.bodies["joints/J1_female"].assembly_pose
+    assert bodies["process/joints/J1_female"].touches == ("process/bars/B1",)
 
 
-def test_process_geometry_and_fixed_colour_every_step(cell):
+def test_process_geometry_and_fixed_colour_every_step(loaded):
     """The process's own geometry object and one colour per body in every step, so nothing is ever rebuilt."""
-    first, later = _by_id(cell, 1), _by_id(cell, 3)
-    assert first["cell/bars/B2"].geometry is cell.process.bodies["bars/B2"].geometry
-    assert first["cell/bars/B2"].geometry is later["cell/bars/B2"].geometry
-    assert first["cell/bars/B2"].color == later["cell/bars/B2"].color == (205 / 255, 170 / 255, 110 / 255, 1.0)
-    assert first["cell/bars/B2"].label == "bars/B2"  # no label in the process: its process id
-    assert later["cell/bars/B1"].label == "first bar" and later["cell/bars/B1"].enabled
+    first, later = _by_id(loaded, 1), _by_id(loaded, 3)
+    assert first["process/bars/B2"].geometry is loaded.process.bodies["bars/B2"].geometry
+    assert first["process/bars/B2"].geometry is later["process/bars/B2"].geometry
+    assert first["process/bars/B2"].color == later["process/bars/B2"].color == (205 / 255, 170 / 255, 110 / 255, 1.0)
+    assert first["process/bars/B2"].label == "bars/B2"  # no label in the process: its process id
+    assert later["process/bars/B1"].label == "first bar" and later["process/bars/B1"].enabled
 
 
-def test_held_body_follows_the_configured_robot(cell):
+def test_held_body_follows_the_configured_robot(loaded):
     """With Cindy configured, B1 is held by her real link, and touches name the real robot and its tool."""
-    bodies = _by_id(cell, 1, (_real_cindy(cell),))
-    grasp = cell.steps[1].movement.start.attached["bars/B1"][0].grasp
-    assert bodies["cell/bars/B1"].enabled
-    assert bodies["cell/bars/B1"].placement == Attachment("robots/a200-0806", "left_tool0", grasp)
-    assert "tools/a200-0806/left" in bodies["cell/joints/G1_ground"].touches
-    assert bodies["cell/ground/WG0"].touches == ("cell/joints/G1_ground", "robots/a200-0806/wheel_link")
+    bodies = _by_id(loaded, 1, (_real_cindy(loaded),))
+    grasp = loaded.steps[1].movement.start.attached["bars/B1"][0].grasp
+    assert bodies["process/bars/B1"].enabled
+    assert bodies["process/bars/B1"].placement == Attachment("robots/a200-0806", "left_tool0", grasp)
+    assert "tools/a200-0806/left" in bodies["process/joints/G1_ground"].touches
+    assert bodies["process/ground/WG0"].touches == ("process/joints/G1_ground", "robots/a200-0806/wheel_link")
 
 
-def test_robot_without_the_held_link_is_refused(cell):
+def test_robot_without_the_held_link_is_refused(loaded):
     """The real Cindy's URDF has no `left_tool0`: retargeting the grasp is refused, not guessed."""
     real = robot_config_from_serial("0806", Path(__file__).resolve().parent.parent / "data")
     with pytest.raises(ValueError, match="left_tool0"):
-        _by_id(cell, 1, (real,))
+        _by_id(loaded, 1, (real,))
 
 
-def test_scene_accepts_them(cell):
-    """Every id is valid and owned by "cell/"; each has collision shapes, so nothing is warned about."""
+def test_scene_accepts_them(loaded):
+    """Every id is valid and owned by "process/"; each has collision shapes, so nothing is warned about."""
     warnings = []
-    PluginScene(Scene(), "cell", warnings.append, Scene).put_many(_by_id(cell, 2).values())
+    PluginScene(Scene(), "process", warnings.append, Scene).put_many(_by_id(loaded, 2).values())
     assert warnings == []
 
 
 @pytest.mark.slow
 def test_arm_planner_mirror_sees_a_cell_obstacle(mirror, configs, tmp_path):  # noqa: F811
-    """A process body at Alice's tool0 collides in the arm planner's compas_fab mirror, under its cell id."""
+    """A process body at Alice's tool0 collides in the arm planner's compas_fab mirror, under its scene id."""
     mirror.sync(world(configs))
     process = replace(build_process(tmp_path), bodies={
         "obstacles/box": BodySpec("obstacles/box", tool0(mirror), box_geometry((0.1, 0.1, 0.1)))})
-    cell = CellProcess(tmp_path, process, ())
+    loaded = LoadedProcess(tmp_path, process, ())
     movement = Movement("M0", State(robots={}, present=frozenset({"obstacles/box"})), ends_on="operator")
     step = Step(Action("A0", "bar_jointing", "robots/cindy", "bars/B1", (movement,)), 0, 0, movement)
 
-    mirror.sync(world(configs, scene_bodies(cell, step, (), "cell/")))
-    assert any("cell/obstacles/box" in pair for pair in mirror.collisions(full_report=True))
+    mirror.sync(world(configs, scene_bodies(loaded, step, (), "process/")))
+    assert any("process/obstacles/box" in pair for pair in mirror.collisions(full_report=True))
 
 
-def test_overlay_draws_only_what_the_core_does_not(cell):
+def test_overlay_draws_only_what_the_core_does_not(loaded):
     """Standing bodies are left to the core, held ones are drawn, absent ones only with `everything`."""
     server = viser.ViserServer(port=0, verbose=False)
     try:
-        drawing = ProcessDrawing(server, "/process", cell.process, load_robot_models(cell.process))
+        drawing = ProcessDrawing(server, "/process", loaded.process, load_robot_models(loaded.process))
         for _ in drawing.build():
             pass
         shown = lambda: {body_id for body_id, (frame, _) in drawing._bodies.items() if frame.visible}  # noqa: E731
-        held, absent = cell.steps[1], cell.steps[0]
+        held, absent = loaded.steps[1], loaded.steps[0]
         b1 = {"bars/B1", "joints/G1_ground", "joints/J1_female"}
         drawing.show(held.movement.start, displayed_joints(held, False))
         assert shown() == b1
@@ -151,9 +152,9 @@ def test_bar_placed_by_hand(tmp_path):
     process = replace(process, schedule=(*process.schedule, placing.id), bodies={**process.bodies, bar.id: bar},
                       actions={**process.actions, placing.id: placing})
     write(process, tmp_path / "process")
-    cell = load_process(tmp_path / "process", tmp_path)
-    step = cell.steps[-1]
+    loaded = load_process(tmp_path / "process", tmp_path)
+    step = loaded.steps[-1]
     assert step.action.robot == "" and "robots/cindy" in displayed_joints(step, True)
-    assert "cell/bars/B3" in {body.id for body in scene_bodies(cell, step, (), "cell/") if body.enabled}
-    panel = SimpleNamespace(process=cell, index=len(cell.steps) - 1, at_target=False)
-    assert BY_HAND_LABEL in CellPlugin._details_html(panel, step)
+    assert "process/bars/B3" in {body.id for body in scene_bodies(loaded, step, (), "process/") if body.enabled}
+    panel = SimpleNamespace(loaded=loaded, index=len(loaded.steps) - 1, at_target=False)
+    assert BY_HAND_LABEL in ProcessPlugin._details_html(panel, step)

@@ -4,7 +4,7 @@ The format is in doc/process_format.md; the plan checks' errors and warnings are
 
     python scripts/convert_process.py <export folder> [<process folder>]
 
-The process folder defaults to `<export>_process` next to the export, where the cell plugin also
+The process folder defaults to `<export>_process` next to the export, where the process plugin also
 puts and finds it. Robot files come from this repository's `data/` (scaffolding_assembly_core.legacy.conversion).
 """
 

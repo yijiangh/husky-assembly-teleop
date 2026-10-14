@@ -1,4 +1,4 @@
-"""The cell plugin warns when a process's tools differ from the ones configured on the same robot."""
+"""The process plugin warns when a process's tools differ from the ones configured on the same robot."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from husky_assembly_teleop.config import ArmConfig, RobotConfig
-from husky_assembly_teleop.plugins.cell.plugin import tool_mismatches
+from husky_assembly_teleop.plugins.process.plugin import tool_mismatches
 
 
 def _process(kind_left: str, kind_right: str):

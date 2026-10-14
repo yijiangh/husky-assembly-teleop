@@ -92,7 +92,7 @@ def with_guesses(snapshot: Scene, object_id: str) -> tuple[Scene, list[str]]:
 class PlannerPlugin(HuskyPlugin):
     """Target, plan on a worker thread, preview, commit. Subclass it; do not register it."""
 
-    requires = ("cell",)
+    requires = ("process",)
     #: Prefix of the worker thread's name, e.g. "base-plan".
     worker_name = "plan"
 
@@ -302,22 +302,22 @@ class PlannerPlugin(HuskyPlugin):
         self._t, self._playing = 0.0, False
         self.forget_plan()
 
-    def _cell_step(self, ctx: PluginContext) -> tuple[Any, str, str] | None:
-        """The cell plugin's selected step, and the configured robot it is for.
+    def _process_step(self, ctx: PluginContext) -> tuple[Any, str, str] | None:
+        """The process plugin's selected step, and the configured robot it is for.
 
         Returns:
             tuple[Any, str, str] | None: The step, the robot's serial and its process name;
                 None if there is none, after saying why in the panel.
         """
-        cell = ctx.require("cell")
-        step = cell.step
+        plugin = ctx.require("process")
+        step = plugin.step
         if step is None:
-            self._say("no process loaded in the cell plugin", failed=True)
+            self._say("no process loaded in the process plugin", failed=True)
             return None
         if not step.action.robot:
             self._say(f"{step.label} is placed by hand: no robot to plan for", failed=True)
             return None
-        robot = cell.process.process.robots[step.action.robot]
+        robot = plugin.loaded.process.robots[step.action.robot]
         serial = find_robot_serial(ctx.config.robots, robot.serial or "")
         if serial is None:
             self._say(f"{step.label} is for {robot.name}, which is not configured", failed=True)

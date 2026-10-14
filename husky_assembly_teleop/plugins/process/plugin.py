@@ -1,10 +1,10 @@
 """
-The cell plugin: loads an authored process and draws one movement's cell state at a time.
+The process plugin: loads an authored process and draws the state at one movement at a time.
 
-It serves the selected step to plugins that declare `requires = ("cell",)`.
+It serves the selected step to plugins that declare `requires = ("process",)`.
 
-Every body of the selected movement's process scene (`Process.scene_at`) goes into the scene as "cell/<body id>"
-(`process.scene_bodies`): the core draws it and planners avoid it. A body the plan holds follows the configured real
+Every body of the selected movement's process scene (`Process.scene_at`) goes into the scene as "process/<body id>"
+(`steps.scene_bodies`): the core draws it and planners avoid it. A body the plan holds follows the configured real
 robot. The planned robots, and the bodies they hold, are drawn as an overlay (`drawing.ProcessDrawing`), with the other
 bodies on request. The plugin only reads processes: it never edits one.
 
@@ -34,7 +34,7 @@ from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
 from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, block, chip, note, section, values
 from scaffolding_assembly_core.legacy.timing import Stopwatch
-from .process import CellProcess, Step, displayed_joints, load_process, scene_bodies
+from .steps import LoadedProcess, Step, displayed_joints, load_process, scene_bodies
 from .drawing import ProcessDrawing, load_robot_models
 
 if TYPE_CHECKING:
@@ -64,7 +64,7 @@ def action_window(current: int, count: int, rows: int = ACTION_ROWS) -> int:
     return max(0, min(current - rows // 2, count - rows))
 
 
-def _load_in_background(folder: Path, data_directory: Path, report) -> tuple[CellProcess, dict, Stopwatch]:
+def _load_in_background(folder: Path, data_directory: Path, report) -> tuple[LoadedProcess, dict, Stopwatch]:
     """Load a process, converting an old export first, and read its robots' URDFs with their meshes.
 
     Runs on the worker thread.
@@ -78,26 +78,26 @@ def _load_in_background(folder: Path, data_directory: Path, report) -> tuple[Cel
         tuple: The process, each robot's yourdfpy model by robot id, and the stopwatch.
     """
     watch = Stopwatch()
-    process = load_process(folder, data_directory, report, watch)
+    loaded = load_process(folder, data_directory, report, watch)
     report("reading the robots' URDFs and meshes")
-    models = load_robot_models(process.process)
+    models = load_robot_models(loaded.process)
     watch.lap("robot URDFs and meshes")
-    return process, models, watch
+    return loaded, models, watch
 
 
 @register
-class CellPlugin(HuskyPlugin):
-    """Shows one authored robot cell state at a time and steps through the schedule."""
+class ProcessPlugin(HuskyPlugin):
+    """Shows the authored state at one movement at a time and steps through the schedule."""
 
-    name = "cell"
+    name = "process"
     experimental = True
 
     def __init__(self):
         """Start with nothing loaded."""
         #: The loaded process, or None. Replaced on load, never edited.
-        self.process: CellProcess | None = None
+        self.loaded: LoadedProcess | None = None
 
-        #: Index of the selected step in `process.steps`.
+        #: Index of the selected step in `loaded.steps`.
         self.index = 0
 
         #: Show the robot at the movement's target instead of its start.
@@ -134,9 +134,9 @@ class CellPlugin(HuskyPlugin):
     @property
     def step(self) -> Step | None:
         """Step | None: The selected movement, or None before a process is loaded. ! Copy before modifying."""
-        if self.process is None or not self.process.steps:
+        if self.loaded is None or not self.loaded.steps:
             return None
-        return self.process.steps[self.index]
+        return self.loaded.steps[self.index]
 
     # --- --- --- --- --- SETUP --- --- --- --- ---
 
@@ -198,10 +198,10 @@ class CellPlugin(HuskyPlugin):
         self._load_task = ctx.spawn(f"load {folder.name}", self._load(ctx, folder))
 
     def select(self, index: int) -> None:
-        """Select a step by index into `process.steps`, clamped; ignored before a process is loaded."""
-        if self.process is None or not self.process.steps:
+        """Select a step by index into `loaded.steps`, clamped; ignored before a process is loaded."""
+        if self.loaded is None or not self.loaded.steps:
             return
-        index = max(0, min(int(index), len(self.process.steps) - 1))
+        index = max(0, min(int(index), len(self.loaded.steps) - 1))
         # ! Keep this check: draw writes the slider back, which would otherwise loop.
         if index == self.index:
             return
@@ -226,17 +226,17 @@ class CellPlugin(HuskyPlugin):
         elif label == "◀ action":
             # First movement of this action, or of the previous one if already there.
             action = step.action_index - (1 if step.movement_index == 0 else 0)
-            self.select(self.process.first_step_of(max(action, 0)))
-        elif label == "action ▶" and step.action_index + 1 < self.process.action_count:
-            self.select(self.process.first_step_of(step.action_index + 1))
+            self.select(self.loaded.first_step_of(max(action, 0)))
+        elif label == "action ▶" and step.action_index + 1 < self.loaded.action_count:
+            self.select(self.loaded.first_step_of(step.action_index + 1))
 
     def _on_action_row(self, row: int) -> None:
         """Jump to the first movement of the action shown in a row of the list; empty rows do nothing."""
-        if self.process is None:
+        if self.loaded is None:
             return
         action = self._window_start + row
-        if action < self.process.action_count:
-            self.select(self.process.first_step_of(action))
+        if action < self.loaded.action_count:
+            self.select(self.loaded.first_step_of(action))
 
     def _on_view(self, label: str) -> None:
         """Toggle hiding or ghosting the overlay, or overlaying every body."""
@@ -261,7 +261,7 @@ class CellPlugin(HuskyPlugin):
         self._error, self._progress = "", f"loading {folder}"
         try:
             async with timeout(LOAD_TIMEOUT):
-                process, models, watch = await ctx.run_in_thread(
+                loaded, models, watch = await ctx.run_in_thread(
                     _load_in_background, folder, ctx.config.data_directory,
                     lambda text: setattr(self, "_progress", text))
         except asyncio.TimeoutError:
@@ -281,15 +281,15 @@ class CellPlugin(HuskyPlugin):
         if self._drawing is not None:
             self._drawing.remove()
             self._drawing = None
-        self.process, self._models, self.index = process, models, 0
+        self.loaded, self._models, self.index = loaded, models, 0
         # The converted copy, for an old export.
         root = ctx.config.drive_root
-        self._folder.value = str(process.source.relative_to(root) if root and process.source.is_relative_to(root)
-                                 else process.source)
+        self._folder.value = str(loaded.source.relative_to(root) if root and loaded.source.is_relative_to(root)
+                                 else loaded.source)
         self._changed()
-        ctx.log_info(f"loaded {process.source} in {watch.summary()}; "
-                     f"{process.action_count} actions, {len(process.steps)} movements")
-        self._tool_mismatch = tool_mismatches(process, ctx.config.robots)
+        ctx.log_info(f"loaded {loaded.source} in {watch.summary()}; "
+                     f"{loaded.action_count} actions, {len(loaded.steps)} movements")
+        self._tool_mismatch = tool_mismatches(loaded, ctx.config.robots)
         for line in self._tool_mismatch:
             ctx.log_warn(f"process tools differ from the configured ones: {line}")
 
@@ -297,7 +297,7 @@ class CellPlugin(HuskyPlugin):
         """Add the process's viser nodes, spread over ticks."""
         self._progress = "drawing the process"
         watch = Stopwatch()
-        drawing = ProcessDrawing(ctx.view, f"{ctx.view.scene_root}/process", self.process.process, self._models)
+        drawing = ProcessDrawing(ctx.view, f"{ctx.view.scene_root}/overlay", self.loaded.process, self._models)
         drawing.set_ghost(self._ghost)
         try:
             for _ in drawing.build():
@@ -321,13 +321,13 @@ class CellPlugin(HuskyPlugin):
         if self._drawing is not None:
             self._drawing.set_ghost(self._ghost)
             return
-        if self.process is None:
+        if self.loaded is None:
             return
         if self._build_task is None or self._build_task.done():
             self._build_task = ctx.spawn("draw the process", self._build(ctx))
 
     def _put_obstacles(self, ctx: PluginContext) -> None:
-        """Replace the scene's cell bodies with the selected step's process scene; held bodies follow the real robot.
+        """Replace this plugin's scene bodies with the selected step's process scene; held bodies follow the real robot.
 
         ! Runs only when `revision` changes: `scene_at` is too slow for every tick.
         """
@@ -337,16 +337,16 @@ class CellPlugin(HuskyPlugin):
             return
         # ? Same ids and geometry objects every step: mirrors only move and switch bodies, never rebuild.
         try:
-            bodies = scene_bodies(self.process, step, ctx.config.robots, f"{self.name}/")
+            bodies = scene_bodies(self.loaded, step, ctx.config.robots, f"{self.name}/")
         except ValueError as refused:
             # ! A grasp the real robot can't take is a data problem: report it, put the bodies without the robots.
             self._error = f"held bodies left where planned: {refused}"
             ctx.log_error(self._error)
-            bodies = scene_bodies(self.process, step, (), f"{self.name}/")
+            bodies = scene_bodies(self.loaded, step, (), f"{self.name}/")
         ctx.scene.put_many(bodies)
 
     def draw(self, ctx: PluginContext) -> None:
-        """Pose the drawn cell from the selected state, and fill the panel."""
+        """Pose the overlay from the selected state, and fill the panel."""
         self._status.content = self._status_html()
         step = self.step
         self._error_text.content = block(values(escape(self._error))) if self._error else ""
@@ -354,7 +354,7 @@ class CellPlugin(HuskyPlugin):
         if step is None:
             self._details.content = note("no process loaded")
             return
-        self._slider.max = max(len(self.process.steps) - 1, 1)
+        self._slider.max = max(len(self.loaded.steps) - 1, 1)
         self._slider.value = self.index
         self._details.content = self._details_html(step)
 
@@ -381,7 +381,7 @@ class CellPlugin(HuskyPlugin):
 
         ? viser sends only props that changed, so assigning every row each draw is cheap.
         """
-        count = self.process.action_count if self.process is not None else 0
+        count = self.loaded.action_count if self.loaded is not None else 0
         current = step.action_index if step is not None else 0
         self._window_start = action_window(current, count)
         self._actions_title.content = section("actions", SECTION_CTRL, f"{current + 1}/{count}" if count else "")
@@ -391,8 +391,8 @@ class CellPlugin(HuskyPlugin):
                 # ! Never hide a row: that would shift the buttons below it.
                 button.label, button.color = "·", "gray"
                 continue
-            action = self.process.process.actions[self.process.process.schedule[index]]
-            robot = self.process.process.robots[action.robot].name if action.robot else BY_HAND_LABEL
+            action = self.loaded.process.actions[self.loaded.process.schedule[index]]
+            robot = self.loaded.process.robots[action.robot].name if action.robot else BY_HAND_LABEL
             button.label = f"{index + 1}. {action.id} · {robot} · {len(action.movements)} mv"
             button.color = "blue" if index == current else "gray"
     # ! Keep every row one line tall (`_one_line`) and the chip set fixed, so nothing shifts between steps.
@@ -401,9 +401,9 @@ class CellPlugin(HuskyPlugin):
         """One line of chips: load progress or process, plus any error."""
         if self._progress:
             chips = chip(escape(self._progress), BUSY)
-        elif self.process is not None:
-            chips = chip(escape(self.process.source.name), OK, str(self.process.source))
-            chips += chip(f"{self.process.action_count} actions · {len(self.process.steps)} movements", NONE)
+        elif self.loaded is not None:
+            chips = chip(escape(self.loaded.source.name), OK, str(self.loaded.source))
+            chips += chip(f"{self.loaded.action_count} actions · {len(self.loaded.steps)} movements", NONE)
             if self._tool_mismatch:
                 chips += chip("tools differ", BUSY, "; ".join(self._tool_mismatch))
         else:
@@ -415,9 +415,9 @@ class CellPlugin(HuskyPlugin):
     def _details_html(self, step: Step) -> str:
         """Two rows of chips and three of text describing the selected step."""
         movement, action = step.movement, step.action
-        which = chip(f"{self.index + 1}/{len(self.process.steps)}", OK)
+        which = chip(f"{self.index + 1}/{len(self.loaded.steps)}", OK)
         if action.robot:
-            which += chip(escape(self.process.process.robots[action.robot].name), SECTION_CTRL, action.robot)
+            which += chip(escape(self.loaded.process.robots[action.robot].name), SECTION_CTRL, action.robot)
         else:
             which += chip(BY_HAND_LABEL, SECTION_CTRL, "a bar_placing action: the operator places the bar")
         which += chip(escape(movement_kind(movement)), NONE, movement.label)
@@ -444,7 +444,7 @@ class CellPlugin(HuskyPlugin):
         moves = [arm.split("/")[-1] for arm in movement.arms] + [
             f"{tool.split('/')[-1]} grip {grip}" for tool, grip in movement.grip_change.items()] + [
             f"{tool.split('/')[-1]} {direction}" for tool, direction in movement.drives.items()]
-        lines = [f"action   {step.action_index + 1}/{self.process.action_count}  {action.id}",
+        lines = [f"action   {step.action_index + 1}/{self.loaded.action_count}  {action.id}",
                  f"movement {step.movement_index + 1}/{len(action.movements)}  {movement.id}",
                  f"moves    {', '.join(moves) or '-'}"]
         text = values(*(_one_line(escape(line)) for line in lines))
@@ -460,11 +460,11 @@ def movement_kind(movement) -> str:
     return " + ".join(part for part in (arms, tools) if part)
 
 
-def tool_mismatches(process: CellProcess, robots: tuple[RobotConfig, ...]) -> list[str]:
+def tool_mismatches(loaded: LoadedProcess, robots: tuple[RobotConfig, ...]) -> list[str]:
     """Where the process's tools differ from the configured (mounted) ones, for robots known to both by serial.
 
     Args:
-        process: The loaded process.
+        loaded: The loaded process.
         robots: The configured robots, `ctx.config.robots`.
 
     Returns:
@@ -473,11 +473,11 @@ def tool_mismatches(process: CellProcess, robots: tuple[RobotConfig, ...]) -> li
     """
     by_digits = {robot.serial[-4:]: robot for robot in robots}
     lines = []
-    for spec in process.process.robots.values():
+    for spec in loaded.process.robots.values():
         config = by_digits.get(spec.serial or "")
         if config is None:
             continue
-        planned = {link[:-len("_tool0")]: process.process.tools[tool].kind
+        planned = {link[:-len("_tool0")]: loaded.process.tools[tool].kind
                    for link, tool in spec.tools.items() if link.endswith("_tool0")}
         mounted = {arm.name: arm.end_effector for arm in config.arms}
         differences = [f"{arm} {planned.get(arm) or 'none'} in the process, {mounted.get(arm) or 'none'} configured"
