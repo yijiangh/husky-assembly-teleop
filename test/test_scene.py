@@ -2,10 +2,10 @@
 
 import pytest
 
-from bar_assembly_core.geometry import Geometry, box_geometry
-from bar_assembly_core.scene import Body, Scene
+from scaffolding_assembly_core.geometry import Geometry, box_geometry
+from scaffolding_assembly_core.scene import Body, Scene
 from husky_assembly_teleop.world.scene import PluginScene
-from bar_assembly_core.geometry import Pose
+from scaffolding_assembly_core.geometry import Pose
 
 
 def test_only_own_ids():

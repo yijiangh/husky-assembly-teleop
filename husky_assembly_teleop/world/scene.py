@@ -1,7 +1,7 @@
 """
 The monitor's live scene, and the copy of it each tick that planners and the 3D view read.
 
-Both are `Scene`s (`bar_assembly_core.scene`): plugins edit the live one through `PluginScene`; `take_snapshot`
+Both are `Scene`s (`scaffolding_assembly_core.scene`): plugins edit the live one through `PluginScene`; `take_snapshot`
 copies it.
 
 The copy is taken before plugins run, so it holds one ROS pump's measurements and every plugin's complete writes of
@@ -17,10 +17,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Callable, Iterable
 
-from bar_assembly_core.geometry import Geometry, Pose
-from bar_assembly_core.ids import ROBOTS, TRACKED, robot_id, tracked_id
-from bar_assembly_core.robot import RobotObject
-from bar_assembly_core.scene import Attachment, Body, Scene, world_poses
+from scaffolding_assembly_core.geometry import Geometry, Pose
+from scaffolding_assembly_core.ids import ROBOTS, TRACKED, robot_id, tracked_id
+from scaffolding_assembly_core.robot import RobotObject
+from scaffolding_assembly_core.scene import Attachment, Body, Scene, world_poses
 
 if TYPE_CHECKING:
     from .kinematics import Kinematics

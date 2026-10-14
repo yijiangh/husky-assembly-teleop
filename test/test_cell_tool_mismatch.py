@@ -1,4 +1,4 @@
-"""The cell plugin warns when a design's tools differ from the ones configured on the same robot."""
+"""The cell plugin warns when a process's tools differ from the ones configured on the same robot."""
 
 from __future__ import annotations
 
@@ -9,13 +9,13 @@ from husky_assembly_teleop.config import ArmConfig, RobotConfig
 from husky_assembly_teleop.plugins.cell.plugin import tool_mismatches
 
 
-def _design(kind_left: str, kind_right: str):
-    """A stand-in for a loaded design: one dual-arm robot "0806" with two tools."""
+def _process(kind_left: str, kind_right: str):
+    """A stand-in for a loaded process: one dual-arm robot "0806" with two tools."""
     robots = {"robots/cindy": SimpleNamespace(id="robots/cindy", serial="0806",
                                               tools={"left_ur_arm_tool0": "tools/L", "right_ur_arm_tool0": "tools/R"}),
               "robots/ghost": SimpleNamespace(id="robots/ghost", serial=None, tools={})}
     tools = {"tools/L": SimpleNamespace(kind=kind_left), "tools/R": SimpleNamespace(kind=kind_right)}
-    return SimpleNamespace(design=SimpleNamespace(robots=robots, tools=tools))
+    return SimpleNamespace(process=SimpleNamespace(robots=robots, tools=tools))
 
 
 def _configured(left: str | None, right: str | None) -> tuple[RobotConfig, ...]:
@@ -27,19 +27,19 @@ def _configured(left: str | None, right: str | None) -> tuple[RobotConfig, ...]:
 
 def test_same_tools_give_no_warning():
     """Equal kinds on every flange: nothing to report."""
-    assert tool_mismatches(_design("scaffolding_v3", "scaffolding_v3"),
+    assert tool_mismatches(_process("scaffolding_v3", "scaffolding_v3"),
                            _configured("scaffolding_v3", "scaffolding_v3")) == []
 
 
 def test_different_or_missing_tool_is_reported():
     """Another kind on one arm and a bare arm on the other: one line naming both."""
-    lines = tool_mismatches(_design("scaffolding_v3", "scaffolding_v3"), _configured("robotiq", None))
+    lines = tool_mismatches(_process("scaffolding_v3", "scaffolding_v3"), _configured("robotiq", None))
     assert len(lines) == 1
     assert "robots/cindy (a200-0806)" in lines[0]
-    assert "left_ur_arm scaffolding_v3 in the design, robotiq configured" in lines[0]
-    assert "right_ur_arm scaffolding_v3 in the design, none configured" in lines[0]
+    assert "left_ur_arm scaffolding_v3 in the process, robotiq configured" in lines[0]
+    assert "right_ur_arm scaffolding_v3 in the process, none configured" in lines[0]
 
 
 def test_robots_not_configured_are_skipped():
-    """A design robot without a serial, or not loaded, is not compared."""
-    assert tool_mismatches(_design("robotiq", "robotiq"), ()) == []
+    """A process robot without a serial, or not loaded, is not compared."""
+    assert tool_mismatches(_process("robotiq", "robotiq"), ()) == []

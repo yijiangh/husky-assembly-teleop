@@ -14,8 +14,8 @@ from xml.etree.ElementTree import Element, SubElement, parse
 
 from yourdfpy import URDF
 
-from bar_assembly_core.geometry import Geometry, Pose, TriMesh
-from bar_assembly_core.robot import Tool
+from scaffolding_assembly_core.geometry import Geometry, Pose, TriMesh
+from scaffolding_assembly_core.robot import Tool
 
 #: Where the tool URDFs live, under the data directory.
 TOOL_URDF_DIRECTORY = "tool_urdf"

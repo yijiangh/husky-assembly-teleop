@@ -15,8 +15,8 @@ from typing import TYPE_CHECKING, Callable, Mapping
 
 from yourdfpy import URDF
 
-from bar_assembly_core.geometry import Pose, compose
-from bar_assembly_core.urdf import UR_JOINT_NAMES
+from scaffolding_assembly_core.geometry import Pose, compose
+from scaffolding_assembly_core.urdf import UR_JOINT_NAMES
 
 if TYPE_CHECKING:
     from ..config import RobotConfig

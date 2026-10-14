@@ -14,10 +14,10 @@ from dataclasses import dataclass
 
 import viser
 
-from bar_assembly_core.geometry import BoxShape, CylinderShape, Geometry, Shape
-from bar_assembly_core.ids import TRACKED
-from bar_assembly_core.scene import Scene
-from bar_assembly_core.geometry import Pose
+from scaffolding_assembly_core.geometry import BoxShape, CylinderShape, Geometry, Shape
+from scaffolding_assembly_core.ids import TRACKED
+from scaffolding_assembly_core.scene import Scene
+from scaffolding_assembly_core.geometry import Pose
 from .quaternion import quaternion_to_wxyz
 
 #: Colour of a body without one of its own, (r, g, b, a) from 0 to 1.

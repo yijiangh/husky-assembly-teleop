@@ -27,14 +27,14 @@ from rclpy.signals import SignalHandlerOptions
 from .plugin_api.concurrency import TickTimer
 from .config import MonitorConfig, config_from_ros_parameters
 from .plugin_api.context import PluginContext
-from bar_assembly_core.geometry import Geometry
+from scaffolding_assembly_core.geometry import Geometry
 from .world.kinematics import Kinematics
 from .plugin_api.plugin import HuskyPlugin, load_plugins
 from .robot_interface.robot import HuskyRobotInterface
 from .robot_interface.connections import RosConnections
 from .robot_interface.mocap import subscribe_mocap
-from bar_assembly_core.ids import tracked_id
-from bar_assembly_core.scene import Scene
+from scaffolding_assembly_core.ids import tracked_id
+from scaffolding_assembly_core.scene import Scene
 from .world.scene import PluginScene, take_snapshot, tracked_body
 from .ui.visualization import Visualization
 from .world.measured import TrackedObject, WorldState

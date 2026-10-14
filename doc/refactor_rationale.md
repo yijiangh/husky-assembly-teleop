@@ -174,7 +174,7 @@ flicker.
 The first version of this rewrite had no abstraction over PyBullet: one shared
 PyBullet client with the live robots, raw body ids handed to every plugin, and
 `RobotScene.active()` (now `PyBulletMirror.active()` in
-`bar_assembly_core/mirrors/pybullet.py`) as the only wrapper (it fixed the old code's scattered
+`scaffolding_assembly_core/mirrors/pybullet.py`) as the only wrapper (it fixed the old code's scattered
 `saved = pp.CLIENT; pp.CLIENT = ...`, which corrupted the global on early returns).
 Of the old code's PyBullet calls, ~160 were forward-kinematics plumbing and only
 15 were collision or planning, so wrapping "the scene" looked unjustified.
@@ -193,9 +193,9 @@ It stopped fitting once planners came in (`base_planner` first):
 - **The forward-kinematics plumbing needs no physics engine.** `kinematics.py`
   does it with yourdfpy, once per tick.
 
-So the core now keeps a plain-Python scene (`bar_assembly_core/scene.py`, filled by the monitor's `world/scene.py`) that plugins put bodies
+So the core now keeps a plain-Python scene (`scaffolding_assembly_core/scene.py`, filled by the monitor's `world/scene.py`) that plugins put bodies
 into, and copies the whole world once per tick, right after the ROS pump and
-forward kinematics. Planners sync their own mirror (`bar_assembly_core/mirrors/pybullet.py`) from
+forward kinematics. Planners sync their own mirror (`scaffolding_assembly_core/mirrors/pybullet.py`) from
 that copy on their own thread; the 3D view draws the same copy. The design, its
 alternatives and measurements: `scene_refactor_plan.md`.
 
@@ -221,6 +221,6 @@ The core is grouped by what a module is about, not by who calls it:
   the panel widgets (`style.py`, formerly `ui_style.py`; `ghost.py`,
   `pose_input.py`, `checklist.py`, `pybullet_window.py`); `quaternion.py` holds
   the quaternion order at the viser boundary.
-- `bar_assembly_core/` (next to the package): the core shared with the Rhino plugin
-  and the planners: the design format, robots, scenes and mirrors; it imports
-  nothing of the monitor, since it moves to its own repository later.
+- `external/scaffolding_assembly_core/` (a submodule): the core shared with the Rhino plugin
+  and the planners: the process format, robots, scenes and mirrors; it imports
+  nothing of the monitor.

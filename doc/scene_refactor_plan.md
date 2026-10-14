@@ -1,12 +1,12 @@
 # Scene refactor plan: one backend-free scene, copied once per tick, mirrored into each planner
 
 Status: **phases 0–5 implemented** (see §9); phase 6 open. The scene types, forward kinematics and the mirrors now live
-in the shared core `bar_assembly_core` (`tasks/2026-10-08_shared_core.md`); the monitor keeps the live `Scene`, the tick
+in the shared core `scaffolding_assembly_core` (`tasks/2026-10-08_shared_core.md`); the monitor keeps the live `Scene`, the tick
 and the drawing. It replaces the shared PyBullet scene
 (`robot_scene.py`); the reasons are in `refactor_rationale.md` ("Why the scene is backend-free, and copied once per tick").
 
 Read this first if you are picking it up:
-- `bar_assembly_core/`: `geometry.py` (poses, shapes), `ids.py`, `robot.py`, `scene.py`, `kinematics.py`, `mirrors/pybullet.py`, `mirrors/compas_fab.py`
+- `scaffolding_assembly_core/`: `geometry.py` (poses, shapes), `ids.py`, `robot.py`, `scene.py`, `kinematics.py`, `mirrors/pybullet.py`, `mirrors/compas_fab.py`
 - `husky_assembly_teleop/world/`: `scene.py` (`take_snapshot`, `PluginScene`), `kinematics.py` (live forward kinematics); `ui/scene_view.py`
 - `monitor.py` (`_tick`), `plugin_api/context.py` (`ctx.scene`, `ctx.kinematics`)
 - `husky_assembly_teleop/old/cfab_session.py` and `husky_assembly_teleop/old/husky_monitor.py::_bridge_cfab_to_pp_for_bar_action` (how compas_fab was used before)
@@ -90,7 +90,7 @@ cell/bars/B1                        scene body, owner = plugin "cell"
 
 ## 5. Data model
 
-### 5.1 `bar_assembly_core/scene.py`, `robot.py`; monitor `world/scene.py`
+### 5.1 `scaffolding_assembly_core/scene.py`, `robot.py`; monitor `world/scene.py`
 - `Pose`, `compose` (`geometry.py`): `Pose(position, orientation)` is frozen, compared by value; `compose(a, b)`, `Pose.from_matrix`, `Pose.matrix()`.
 - `Attachment(parent, link, offset)`: held by a robot (link, or None for the base) or fixed to another body (`tracked/<name>`).
 - `Body(id, geometry, placement: Pose | Attachment, touches, label, color, enabled)`: **mutable**. `touches` lists ids allowed to touch it (bodies, `robots/<name>` for the whole robot, `robots/<name>/<link>`, mounted tools by tool id); it is symmetric.
@@ -98,7 +98,7 @@ cell/bars/B1                        scene body, owner = plugin "cell"
 - `Scene(tick, time, bodies, world_poses, robots)`: `bodies` are copies (sharing geometry), tracked objects included as `tracked/<name>`; `world_poses` holds every body's resolved world pose (`world_poses(bodies, robots, link_pose)`); `robots` are `RobotObject`s by id.
 - Monitor only: one live `Scene` plugins edit, and each tick's copy of it. `take_snapshot(scene, world, kinematics, tick, time)` sets the measured robots, moves tracked bodies (`tracked/<name>`, put by `ctx.track_object`, disabled until the first fix), resolves world poses and returns the copy. `PluginScene` (`ctx.scene`): owner-checked `put`, `put_many`, `remove`, `remove_prefix`; `bodies` (live); `snapshot` (the copy). ! The live scene never reaches a plugin or a thread directly.
 
-### 5.2 `bar_assembly_core/geometry.py`
+### 5.2 `scaffolding_assembly_core/geometry.py`
 - A **shape** is `TriMesh | BoxShape | CylinderShape`, in the body's frame. Later maybe more primitives, or a URDF.
   - `TriMesh(vertices, faces, convex)`: read-only numpy arrays, `convex` computed once. Compared by identity.
   - `BoxShape(size, origin)`, `CylinderShape(radius, height, origin)` (along Z, centred): frozen, compared by value. `origin` places the shape inside the body, as a URDF `<origin>` does.
@@ -110,9 +110,9 @@ cell/bars/B1                        scene body, owner = plugin "cell"
 
 ### 5.3 `kinematics.py`
 - Monitor `world/kinematics.py`: `Kinematics(robots, log_warn)` parses each stitched URDF once without meshes. `update(world)`: base from mocap when tracked, else the last one (the default at start); joints from the latest measurement, else the last value; then one `update_cfg` per robot. `base_pose`, `joints`, `unmeasured`, `joint_names`, `link_names`, `link_pose(serial, link)`. Plugins use `ctx.kinematics`.
-- Core `bar_assembly_core/kinematics.py`: `link_pose(urdf, base, joints, link)` in numpy (revolute, prismatic, mimic joints; tested equal to yourdfpy), for scenes built from designs. The monitor's per-tick `Kinematics` keeps yourdfpy.
+- Core `scaffolding_assembly_core/kinematics.py`: `link_pose(urdf, base, joints, link)` in numpy (revolute, prismatic, mimic joints; tested equal to yourdfpy), for scenes built from designs. The monitor's per-tick `Kinematics` keeps yourdfpy.
 
-## 6. Mirrors (`bar_assembly_core/mirrors/`)
+## 6. Mirrors (`scaffolding_assembly_core/mirrors/`)
 
 Rules shared by every mirror:
 - It keeps what it built, by our id, together with the `Geometry` (or `RobotModel`) object and the pose it last applied.
@@ -186,7 +186,7 @@ Rules shared by every mirror:
 1. ✅ **Kinematics.** `kinematics.py`, `ctx.kinematics`; `robot_control` and `base_planner` stop reading PyBullet.
 2. ✅ **Scene and drawing.** `geometry.py`, `scene.py`, `ctx.scene`, `take_snapshot` in the tick, core drawing; `mocap_probe` tracks without drawing its own frame.
 3. ✅ **`PyBulletMirror` and the switch.** `obstacles` and `base_planner` move to the scene together; `example_pybullet` rewritten; `robot_scene.py` deleted.
-4. ✅ **Cell objects.** The cell plugin puts the selected movement's design scene (`Design.scene_at`, `cell/design.scene_bodies`): design ids prefixed (`bars/B1` → `cell/bars/B1`) through an explicit `IdMap`; bodies held in the plan follow the configured real robot (`ids.retarget`, `robots/cindy` → `robots/a200-0806` by the design's `serial`), and touches name the real robots and their tools. Planned robots stay an overlay.
+4. ✅ **Cell objects.** The cell plugin puts the selected movement's design scene (`Process.scene_at`, `cell/process.scene_bodies`): design ids prefixed (`bars/B1` → `cell/bars/B1`) through an explicit `IdMap`; bodies held in the plan follow the configured real robot (`ids.retarget`, `robots/cindy` → `robots/a200-0806` by the design's `serial`), and touches name the real robots and their tools. Planned robots stay an overlay.
 5. ✅ **`CompasFabMirror`.** Same collision pairs as the design's `RobotCell` on 10 authored Cindy states and 5 with the held bar pushed into the robot (`test/test_compas_fab_mirror.py`, needs `HUSKY_DESIGN_DIRECTORY` pointing to an old-format export with `RobotCell.json`; ! update it to schema 1 later). First user: the `arm_planner` plugin (joint-space RRT-Connect, `plugins.planning.search.connect`; commit is a stub).
 6. **Published copies.** A planner publishes a modified snapshot for the view (`/worlds/<name>/…`, see-through robots); `base_planner` publishes instead of drawing its own ghost.
 

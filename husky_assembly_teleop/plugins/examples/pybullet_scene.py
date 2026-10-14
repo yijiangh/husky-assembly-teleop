@@ -26,11 +26,11 @@ import numpy as np
 import viser
 
 from ...plugin_api.context import PluginContext
-from bar_assembly_core.geometry import box_geometry
-from bar_assembly_core.mirrors.pybullet import PyBulletMirror
+from scaffolding_assembly_core.geometry import box_geometry
+from scaffolding_assembly_core.mirrors.pybullet import PyBulletMirror
 from ...plugin_api.plugin import HuskyPlugin, register
-from bar_assembly_core.scene import Body, Scene
-from bar_assembly_core.geometry import Pose
+from scaffolding_assembly_core.scene import Body, Scene
+from scaffolding_assembly_core.geometry import Pose
 from ...ui.style import FAIL, NONE, OK, SECTION_CTRL, block, chip, numbers, section, values
 from ...ui.quaternion import quaternion_to_wxyz
 

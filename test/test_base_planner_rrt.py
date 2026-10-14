@@ -7,13 +7,13 @@ import numpy as np
 import pytest
 
 from husky_assembly_teleop.config import robot_config_from_serial
-from bar_assembly_core.geometry import box_geometry
+from scaffolding_assembly_core.geometry import box_geometry
 from husky_assembly_teleop.plugins.base_planner.planner import PlanningWorld, plan_birrt
 from husky_assembly_teleop.plugins.planning.panel import with_guesses
-from bar_assembly_core.robot import RobotObject
-from bar_assembly_core.scene import Body, Scene
-from bar_assembly_core.ids import robot_id
-from bar_assembly_core.geometry import Pose
+from scaffolding_assembly_core.robot import RobotObject
+from scaffolding_assembly_core.scene import Body, Scene
+from scaffolding_assembly_core.ids import robot_id
+from scaffolding_assembly_core.geometry import Pose
 
 DATA = Path(__file__).resolve().parent.parent / "data"
 

@@ -12,10 +12,10 @@ import re
 from dataclasses import dataclass
 
 from ..plugin_api.context import PluginContext
-from bar_assembly_core.geometry import BoxShape, Geometry, Shape, box_geometry, cylinder_geometry
+from scaffolding_assembly_core.geometry import BoxShape, Geometry, Shape, box_geometry, cylinder_geometry
 from ..plugin_api.plugin import HuskyPlugin, register
-from bar_assembly_core.scene import Body
-from bar_assembly_core.geometry import Pose
+from scaffolding_assembly_core.scene import Body
+from scaffolding_assembly_core.geometry import Pose
 
 #: Muted grey, so the obstacles read as furniture.
 BOX_COLOR = (150, 150, 160)

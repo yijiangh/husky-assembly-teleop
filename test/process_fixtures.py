@@ -1,16 +1,16 @@
-"""Shared builders for the design tests: tiny robot files and a small valid two-robot design."""
+"""Shared builders for the process tests: tiny robot files and a small valid two-robot process."""
 
 from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
 
-from bar_assembly_core.design import (Action, BodySpec, Design, Holder, LineSpec, Movement, Producer, RobotSpec,
-                                      RobotState, State, Target, ToolState, Writer)
-from bar_assembly_core.geometry import BoxShape, CylinderShape, Geometry, Pose, TriMesh, compose, invert
-from bar_assembly_core.kinematics import link_pose
-from bar_assembly_core.robot import Tool
-from bar_assembly_core.design.meshes import write_mesh
+from scaffolding_assembly_core.process import (Action, BodySpec, Holder, LineSpec, Movement, Process, Producer,
+                                               RobotSpec, RobotState, State, Target, ToolState, Writer)
+from scaffolding_assembly_core.geometry import BoxShape, CylinderShape, Geometry, Pose, TriMesh, compose, invert
+from scaffolding_assembly_core.kinematics import link_pose
+from scaffolding_assembly_core.robot import Tool
+from scaffolding_assembly_core.process.meshes import write_mesh
 
 WRITER = Writer(2, "design_io", "test", False)
 #: Joints a state must list for the fake robot (the wheel is passive, the tool0 joints fixed).
@@ -102,8 +102,8 @@ def rounded(pose: Pose) -> Pose:
     return Pose(tuple(round(v, 12) for v in pose.position), tuple(round(v, 12) for v in pose.orientation))
 
 
-def build_design(folder: Path) -> Design:
-    """A small schema 2 design in memory that passes every file and plan check; robot files go to `folder/source/`.
+def build_process(folder: Path) -> Process:
+    """A small schema 2 process in memory that passes every file and plan check; robot files go to `folder/source/`.
 
     * The plan: Cindy mounts, grasps and inserts B1 on its ground half (G1 on WG0); Alice closes her gripper on the
       built B1 before Cindy ungrasps and retreats, so B1 has two holders; Cindy mounts B2 from a rack and inserts its
@@ -117,31 +117,35 @@ def build_design(folder: Path) -> Design:
         folder: A scratch folder (e.g. pytest's tmp_path).
 
     Returns:
-        Design: Robots `robots/alice` and `robots/cindy`, five actions.
+        Process: Robots `robots/alice` and `robots/cindy`, five actions.
     """
     urdf, srdf = write_robot_files(folder / "source")
     robots = {
-        "robots/alice": RobotSpec("robots/alice", urdf, srdf, None, {"left_tool0": "tools/Grip"}, ("wheel_link",)),
-        "robots/cindy": RobotSpec("robots/cindy", urdf, srdf, "0806", {"left_tool0": "tools/AT3L"}, ("wheel_link",)),
+        "robots/alice": RobotSpec("robots/alice", urdf, srdf, None, {"left_tool0": "tools/alice/Grip"},
+                                  ("wheel_link",)),
+        "robots/cindy": RobotSpec("robots/cindy", urdf, srdf, "0806", {"left_tool0": "tools/cindy/AT3L"},
+                                  ("wheel_link",)),
     }
     tool_mesh = TriMesh.from_arrays(TETRA.vertices * 2, TETRA.faces)
     tcp = Pose((0.0, 0.0, 0.12))
     tools = {
-        "tools/AT3L": Tool("tools/AT3L", Geometry((tool_mesh,), (tool_mesh,)), tcp, "scaffolding_v3",
-                           mount_contacts=("robots/cindy/left_link2",)),
-        "tools/Grip": Tool("tools/Grip", Geometry((BoxShape((0.1, 0.1, 0.2)),), (BoxShape((0.1, 0.1, 0.2)),)),
-                           Pose((0.0, 0.0, 0.2)), "robotiq"),
+        "tools/cindy/AT3L": Tool("tools/cindy/AT3L", Geometry((tool_mesh,), (tool_mesh,)), tcp, "scaffolding_v3"),
+        "tools/alice/Grip": Tool("tools/alice/Grip",
+                                 Geometry((BoxShape((0.1, 0.1, 0.2)),), (BoxShape((0.1, 0.1, 0.2)),)),
+                                 Pose((0.0, 0.0, 0.2)), "robotiq"),
     }
     base_a, base_c = Pose((-1.0, 0.0, 0.0)), turned(0.7071, 0.7071)
     flange, grip_flange = "robots/cindy/left_tool0", "robots/alice/left_tool0"
     inserted = {**joints(0.25), "left_joint1": 0.5}
 
     # * Poses that agree with the geometry (plan check B14): the bars' grasps follow from the tool's TCP, the part
-    #   seat and the mount offset; B1's design pose is where Cindy's flange holds it at the end of the insert.
+    #   seat and the mount offset; B1's assembly pose is where Cindy's flange holds it at the end of the insert.
     on_g1, on_j1 = Pose((0.0, 0.0, 0.05)), Pose((0.0, 0.0, 0.0))
     ground_seat = Pose(orientation=(0.0, 0.0, 1.0, 0.0))
     grasp_b1 = rounded(compose(compose(tcp, ground_seat), invert(on_g1)))
     grasp_b2 = rounded(compose(tcp, invert(on_j1)))
+    # * The insert's flange target is where its target joints put the flange (plan check B15).
+    flange_inserted = rounded(link_pose(urdf, base_c, inserted, "left_tool0"))
     b1 = rounded(compose(link_pose(urdf, base_c, inserted, "left_tool0"), grasp_b1))
     b2 = rounded(compose(link_pose(urdf, base_c, joints(0.35), "left_tool0"), grasp_b2))
     grasp_a = rounded(compose(invert(link_pose(urdf, base_a, joints(1.0), "left_tool0")), b1))
@@ -153,12 +157,12 @@ def build_design(folder: Path) -> Design:
         "bars/B1": BodySpec("bars/B1", b1, Geometry((bar, box), (bar,)), label="first bar"),
         "bars/B2": BodySpec("bars/B2", b2, Geometry((bar,), (bar,))),
         "joints/G1_ground": BodySpec("joints/G1_ground", rounded(compose(b1, on_g1)), Geometry((TETRA,), (TETRA,)),
-                                     part="T20/Ground", mount="bars/B1"),
+                                     part="T20/Ground", mount="bars/B1", pose_in_tcp=ground_seat),
         "joints/J1_female": BodySpec("joints/J1_female", rounded(compose(b1, Pose((0.0, 0.0, 0.85)))),
                                      Geometry((TETRA,), (TETRA,)), part="T20/Female", mount="bars/B1",
                                      markers={"m1": (0.01, 0.0, 0.02)}),
         "joints/J1_male": BodySpec("joints/J1_male", rounded(compose(b2, on_j1)), Geometry((TETRA,), (TETRA,)),
-                                   part="T20/Male", mount="bars/B2"),
+                                   part="T20/Male", mount="bars/B2", pose_in_tcp=Pose()),
         "ground/WG0": BodySpec("ground/WG0", Pose(), Geometry((slab,), (slab,))),
     }
     mates = frozenset({("ground/WG0", "joints/G1_ground"), ("joints/J1_female", "joints/J1_male")})
@@ -173,7 +177,7 @@ def build_design(folder: Path) -> Design:
         return State(robots={"robots/alice": alice, "robots/cindy": cindy},
                      present=frozenset({"ground/WG0", "bars/B2", *attached, *built}),
                      attached=attached, built=frozenset(built), poses=rack if poses is None else poses,
-                     tools={"tools/AT3L": at3l, "tools/Grip": grip})
+                     tools={"tools/cindy/AT3L": at3l, "tools/alice/Grip": grip})
 
     cindy_at = lambda values, base=base_c: RobotState(base, values)  # noqa: E731
     alice_at = lambda values: RobotState(base_a, values)  # noqa: E731
@@ -186,15 +190,15 @@ def build_design(folder: Path) -> Design:
         movements=(
             Movement(id="B1_M0_mount", ends_on="operator", label="operator mounts B1",
                      start=state(cindy_at(None), None, ToolState(None, None), grip_open, {}),
-                     target=Target(attached=held_c, on={"tools/AT3L": "joints/G1_ground"})),
+                     target=Target(attached=held_c, on={"tools/cindy/AT3L": "joints/G1_ground"})),
             Movement(id="B1_M1_grasp", ends_on="tools", start=state(cindy_at(joints(0.25)), None, on_g1_open, grip_open,
                                                                     held_c),
-                     target=Target(tools={"tools/AT3L": "closed"})),
+                     target=Target(tools={"tools/cindy/AT3L": "closed"})),
             Movement(id="B1_M2_insert", arms=(flange,), path="linear", controller="compliant", ends_on="tools",
-                     line=linear_down, drives={"tools/AT3L": "tighten"},
+                     line=linear_down, drives={"tools/cindy/AT3L": "tighten"},
                      start=state(cindy_at(joints(0.25)), None, on_g1_closed, grip_open, held_c),
-                     target=Target(joints={"robots/cindy": {"left_joint1": 0.5}},
-                                   links={flange: Pose((0.3, 0.2, 0.6))}, built=frozenset({"bars/B1"})),
+                     target=Target.of(joints={"robots/cindy": {"left_joint1": 0.5}},
+                                      link_poses={flange: flange_inserted}, built=frozenset({"bars/B1"})),
                      notes={"approach_axis": "walkable_ground_normal", "approach_offset_mm": 15.0}),
         ))
     b1_hold = Action(
@@ -203,20 +207,20 @@ def build_design(folder: Path) -> Design:
         movements=(
             Movement(id="B1_H_M0_approach", arms=(grip_flange,), path="free", controller="position",
                      start=state(cindy_at(inserted), alice_at(None), on_g1_closed, grip_open, held_c, ("bars/B1",)),
-                     target=Target(joints={"robots/alice": joints(1.0)}, on={"tools/Grip": "bars/B1"})),
+                     target=Target.of(joints={"robots/alice": joints(1.0)}, on={"tools/alice/Grip": "bars/B1"})),
             Movement(id="B1_H_M1_close", ends_on="tools",
                      start=state(cindy_at(inserted), alice_at(joints(1.0)), on_g1_closed, ToolState("open", "bars/B1"),
                                  held_c, ("bars/B1",)),
-                     target=Target(tools={"tools/Grip": "closed"}, attached=held_ca)),
+                     target=Target(tools={"tools/alice/Grip": "closed"}, attached=held_ca)),
         ))
     grip_on_b1 = ToolState("closed", "bars/B1")
     b1_release = Action(
         id="B1_R_release", type="bar_release", robot="robots/cindy", bar="bars/B1",
         movements=(
-            Movement(id="B1_R_M0_ungrasp", ends_on="tools", drives={"tools/AT3L": "loosen"},
+            Movement(id="B1_R_M0_ungrasp", ends_on="tools", drives={"tools/cindy/AT3L": "loosen"},
                      start=state(cindy_at(inserted), alice_at(joints(1.0)), on_g1_closed, grip_on_b1, held_ca,
                                  ("bars/B1",)),
-                     target=Target(tools={"tools/AT3L": "open"}, attached=held_a)),
+                     target=Target(tools={"tools/cindy/AT3L": "open"}, attached=held_a)),
             Movement(id="B1_R_M1_retreat", arms=(flange,), path="linear", controller="position",
                      line={flange: LineSpec((0.0, 1.0, 0.0), 0.05)}, label="back off",
                      start=state(cindy_at(inserted, None), alice_at(joints(1.0)), on_g1_open, grip_on_b1, held_a,
@@ -229,20 +233,20 @@ def build_design(folder: Path) -> Design:
             Movement(id="B2_M0_mount", ends_on="operator",
                      start=state(cindy_at(joints(0.0)), alice_at(joints(1.0)), released, grip_on_b1, held_a,
                                  ("bars/B1",)),
-                     target=Target(attached=b2_held, on={"tools/AT3L": "joints/J1_male"})),
+                     target=Target(attached=b2_held, on={"tools/cindy/AT3L": "joints/J1_male"})),
             Movement(id="B2_M1_grasp", ends_on="tools",
                      start=state(cindy_at(joints(0.0)), alice_at(joints(1.0)), on_j1_open, grip_on_b1, b2_held,
                                  ("bars/B1",), {}),
-                     target=Target(tools={"tools/AT3L": "closed"})),
+                     target=Target(tools={"tools/cindy/AT3L": "closed"})),
             Movement(id="B2_M2_transfer", arms=(flange,), path="free", controller="position",
                      start=state(cindy_at(joints(0.0)), alice_at(joints(1.0)), on_j1_closed, grip_on_b1, b2_held,
                                  ("bars/B1",), {}),
-                     target=Target(joints={"robots/cindy": joints(0.3)})),
+                     target=Target.of(joints={"robots/cindy": joints(0.3)})),
             Movement(id="B2_M3_insert", arms=(flange,), path="linear", controller="compliant", ends_on="tools",
-                     line=linear_down, drives={"tools/AT3L": "tighten"},
+                     line=linear_down, drives={"tools/cindy/AT3L": "tighten"},
                      start=state(cindy_at(joints(0.3)), alice_at(joints(1.0)), on_j1_closed, grip_on_b1, b2_held,
                                  ("bars/B1",), {}),
-                     target=Target(joints={"robots/cindy": joints(0.35)}, built=frozenset({"bars/B1", "bars/B2"}))),
+                     target=Target.of(joints={"robots/cindy": joints(0.35)}, built=frozenset({"bars/B1", "bars/B2"}))),
         ))
     b2_held_c = {"bars/B2": b2_held["bars/B2"]}
     b1_hold_release = Action(
@@ -251,34 +255,34 @@ def build_design(folder: Path) -> Design:
             Movement(id="B1_HR_M0_open", ends_on="tools",
                      start=state(cindy_at(joints(0.35)), alice_at(joints(1.0)), on_j1_closed, grip_on_b1, b2_held,
                                  ("bars/B1", "bars/B2"), {}),
-                     target=Target(tools={"tools/Grip": "open"}, attached=b2_held_c)),
+                     target=Target(tools={"tools/alice/Grip": "open"}, attached=b2_held_c)),
             Movement(id="B1_HR_M1_retreat", arms=(grip_flange,), path="linear", controller="position",
                      line={grip_flange: LineSpec((0.0, 0.0, 1.0), 0.1)},
                      start=state(cindy_at(joints(0.35)), alice_at(joints(1.0)), on_j1_closed,
                                  ToolState("open", "bars/B1"), b2_held_c, ("bars/B1", "bars/B2"), {}),
-                     target=Target(joints={"robots/alice": joints(0.9)}, on={"tools/Grip": None})),
+                     target=Target.of(joints={"robots/alice": joints(0.9)}, on={"tools/alice/Grip": None})),
         ))
     actions = (b1_joint, b1_hold, b1_release, b2_joint, b1_hold_release)
-    return Design(folder=None, writer=WRITER, robots=robots, tools=tools, bodies=bodies,
-                  schedule=tuple(action.id for action in actions), actions={a.id: a for a in actions},
-                  mates=mates, producer=Producer("rhino", "abc123", False, "RSExportAllBarActions"))
+    return Process(folder=None, writer=WRITER, robots=robots, tools=tools, bodies=bodies,
+                   schedule=tuple(action.id for action in actions), actions={a.id: a for a in actions},
+                   mates=mates, producer=Producer("rhino", "abc123", False, "RSExportAllBarActions"))
 
 
-# --- --- --- --- --- CHANGING A DESIGN --- --- --- --- ---
+# --- --- --- --- --- CHANGING A PROCESS --- --- --- --- ---
 
-def with_action(design: Design, action_id: str, **changes) -> Design:
-    """The design with one action changed (`dataclasses.replace` fields)."""
-    return replace(design, actions={**design.actions, action_id: replace(design.actions[action_id], **changes)})
+def with_action(process: Process, action_id: str, **changes) -> Process:
+    """The process with one action changed (`dataclasses.replace` fields)."""
+    return replace(process, actions={**process.actions, action_id: replace(process.actions[action_id], **changes)})
 
 
-def with_movement(design: Design, action_id: str, index: int, **changes) -> Design:
-    """The design with one movement changed."""
-    movements = list(design.actions[action_id].movements)
+def with_movement(process: Process, action_id: str, index: int, **changes) -> Process:
+    """The process with one movement changed."""
+    movements = list(process.actions[action_id].movements)
     movements[index] = replace(movements[index], **changes)
-    return with_action(design, action_id, movements=tuple(movements))
+    return with_action(process, action_id, movements=tuple(movements))
 
 
-def with_start(design: Design, action_id: str, index: int, **changes) -> Design:
-    """The design with one movement's start state changed."""
-    start = design.actions[action_id].movements[index].start
-    return with_movement(design, action_id, index, start=replace(start, **changes))
+def with_start(process: Process, action_id: str, index: int, **changes) -> Process:
+    """The process with one movement's start state changed."""
+    start = process.actions[action_id].movements[index].start
+    return with_movement(process, action_id, index, start=replace(start, **changes))

@@ -9,11 +9,11 @@ import numpy as np
 import pytest
 from yourdfpy import URDF
 
-from bar_assembly_core.geometry import box_geometry
-from bar_assembly_core.geometry import Pose, compose
-from bar_assembly_core.kinematics import link_pose
-from bar_assembly_core.robot import RobotObject, robot_model
-from bar_assembly_core.scene import Attachment, Body, Scene, world_poses
+from scaffolding_assembly_core.geometry import box_geometry
+from scaffolding_assembly_core.geometry import Pose, compose
+from scaffolding_assembly_core.kinematics import link_pose
+from scaffolding_assembly_core.robot import RobotObject, robot_model
+from scaffolding_assembly_core.scene import Attachment, Body, Scene, world_poses
 from husky_assembly_teleop.config import robot_config_from_serial
 from husky_assembly_teleop.world.kinematics import Kinematics
 from husky_assembly_teleop.world.scene import take_snapshot, tracked_body

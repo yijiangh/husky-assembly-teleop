@@ -1,12 +1,12 @@
 """
-The cell's overlay: what the core's 3D view cannot draw of one design state.
+The cell's overlay: what the core's 3D view cannot draw of one process state.
 
-Drawn from the design alone, with forward kinematics from each robot's yourdfpy model.
+Drawn from the process alone, with forward kinematics from each robot's yourdfpy model.
 
 - * Bodies that `stand` are scene bodies, drawn by the core. The overlay draws the robots, their tools and the
   bodies they carry, and, when asked, every other body (absent ones), always see-through.
 - `load_robot_models` is slow: run it on the loading thread.
-- `DesignDrawing` is main thread only; a new state only changes poses, joint values and colours.
+- `ProcessDrawing` is main thread only; a new state only changes poses, joint values and colours.
 - ? Robots are single-colour meshes (`add_simple_urdf`), so "Ghost" only changes their opacity.
 """
 
@@ -19,27 +19,27 @@ import numpy as np
 import viser
 import yourdfpy
 
-from bar_assembly_core.design import Design, Holder, State
-from bar_assembly_core.design.relations import is_present, placement
-from bar_assembly_core.geometry import Geometry, Pose, compose, shape_mesh
-from bar_assembly_core.ids import split_link_id
+from scaffolding_assembly_core.process import Holder, Process, State
+from scaffolding_assembly_core.process.relations import is_present, placement
+from scaffolding_assembly_core.geometry import Geometry, Pose, compose, shape_mesh
+from scaffolding_assembly_core.ids import split_link_id
 from ...ui.visualization import FastViserUrdf, add_simple_urdf, joints_changed, load_urdf, quaternion_to_wxyz
-from .design import body_color, stands
+from .process import body_color, stands
 
-#: Colours, RGB 0-255. Held bodies stand out; other bodies use `design.body_color`.
+#: Colours, RGB 0-255. Held bodies stand out; other bodies use `process.body_color`.
 ATTACHED_COLOR = (240, 120, 30)
 TOOL_COLOR = (70, 70, 80)
 
 #: Opacity of robots, tools and held bodies when "Ghost" is on, and always of bodies that do not stand.
 GHOST_OPACITY = 0.4
 
-#: Bodies added per tick while building, so a large design never stalls one tick.
+#: Bodies added per tick while building, so a large process never stalls one tick.
 BODIES_PER_TICK = 20
 
 
-def load_robot_models(design: Design) -> dict[str, yourdfpy.URDF]:
+def load_robot_models(process: Process) -> dict[str, yourdfpy.URDF]:
     """Read every robot's URDF with its visual meshes, by robot id. Any thread."""
-    return {robot_id: load_urdf(robot.urdf) for robot_id, robot in design.robots.items()}
+    return {robot_id: load_urdf(robot.urdf) for robot_id, robot in process.robots.items()}
 
 
 @dataclass
@@ -61,19 +61,19 @@ class _Robot:
     values: np.ndarray | None = None
 
 
-class DesignDrawing:
-    """Every robot, tool and body of a design in viser, posed from one state at a time."""
+class ProcessDrawing:
+    """Every robot, tool and body of a process in viser, posed from one state at a time."""
 
-    def __init__(self, view, root: str, design: Design, models: Mapping[str, yourdfpy.URDF]):
+    def __init__(self, view, root: str, process: Process, models: Mapping[str, yourdfpy.URDF]):
         """Create the root node; `build` adds the rest.
 
         Args:
             view: The plugin's view (PluginView); ViserUrdf adds the robot meshes through it.
             root: Scene path of the drawing, below the plugin's scene root.
-            design: The design.
+            process: The process.
             models: Robot id -> model, from `load_robot_models`.
         """
-        self._view, self._root_path, self._design, self._models = view, root, design, models
+        self._view, self._root_path, self._process, self._models = view, root, process, models
         self._root = view.scene.add_frame(root, show_axes=False)
         self._robots: dict[str, _Robot] = {}
         #: Tool or body id -> (frame, meshes).
@@ -98,10 +98,10 @@ class DesignDrawing:
                     mesh.opacity = GHOST_OPACITY
             self._robots[robot_id] = _Robot(frame, urdf, model, tuple(urdf.get_actuated_joint_names()))
             yield
-        for tool_id, tool in self._design.tools.items():
+        for tool_id, tool in self._process.tools.items():
             self._tools[tool_id] = self._add(f"{self._root_path}/{tool_id}", tool.geometry, TOOL_COLOR)
         yield
-        for count, (body_id, body) in enumerate(self._design.bodies.items(), start=1):
+        for count, (body_id, body) in enumerate(self._process.bodies.items(), start=1):
             # ? Coloured by `show`, which knows whether the body is held.
             self._bodies[body_id] = self._add(f"{self._root_path}/bodies/{body_id}", body.geometry,
                                               body_color(body_id))
@@ -139,16 +139,16 @@ class DesignDrawing:
 
         Args:
             state: Which robots are there and where, which bodies are present, held or moved.
-            joints: Robot id -> joint values to draw it at (`design.displayed_joints`);
+            joints: Robot id -> joint values to draw it at (`process.displayed_joints`);
                 joints not given are drawn at zero.
             everything: Also draw the bodies that neither stand nor move with a robot (absent ones).
         """
         # * Robots first: tools and held bodies read their links from the posed models.
         for robot_id, robot in self._robots.items():
             robot_state = state.robots.get(robot_id)
-            tools = self._design.robots[robot_id].tools
+            tools = self._process.robots[robot_id].tools
             if robot_state is None or robot_state.base is None:
-                # ? Absent, or its base not decided by the design: there is nowhere to draw it.
+                # ? Absent, or its base not decided by the process: there is nowhere to draw it.
                 robot.frame.visible = False
                 for tool_id in tools.values():
                     self._tools[tool_id][0].visible = False
@@ -167,8 +167,8 @@ class DesignDrawing:
                 frame.visible = True
 
         for body_id, (frame, meshes) in self._bodies.items():
-            where = placement(self._design, state, body_id)
-            if isinstance(where, Holder) and is_present(self._design, state, body_id):
+            where = placement(self._process, state, body_id)
+            if isinstance(where, Holder) and is_present(self._process, state, body_id):
                 holder, link = split_link_id(where.to)
                 holder_state = state.robots.get(holder)
                 if holder_state is None or holder_state.base is None:
@@ -176,8 +176,8 @@ class DesignDrawing:
                     continue
                 pose = compose(self._link_pose(holder, link, holder_state.base), where.grasp)
                 look = (ATTACHED_COLOR, GHOST_OPACITY if self._ghost else None)
-            elif everything and not stands(self._design, state, body_id):
-                pose = where if isinstance(where, Pose) else self._design.bodies[body_id].pose
+            elif everything and not stands(self._process, state, body_id):
+                pose = where if isinstance(where, Pose) else self._process.bodies[body_id].assembly_pose
                 look = (body_color(body_id), GHOST_OPACITY)
             else:
                 frame.visible = False  # standing: the core draws it; or not asked for

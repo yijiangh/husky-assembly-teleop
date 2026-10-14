@@ -9,11 +9,11 @@ import pybullet as p
 import pybullet_planning as pp
 import pytest
 
-from bar_assembly_core.geometry import Pose
-from bar_assembly_core.mirrors.compas_fab import CompasFabMirror
-from bar_assembly_core.robot import RobotObject
-from bar_assembly_core.scene import Scene
-from bar_assembly_core.urdf import UR_JOINT_NAMES
+from scaffolding_assembly_core.geometry import Pose
+from scaffolding_assembly_core.mirrors.compas_fab import CompasFabMirror
+from scaffolding_assembly_core.robot import RobotObject
+from scaffolding_assembly_core.scene import Scene
+from scaffolding_assembly_core.urdf import UR_JOINT_NAMES
 from husky_assembly_teleop.config import robot_config_from_serial
 
 DATA = Path(__file__).resolve().parent.parent / "data"

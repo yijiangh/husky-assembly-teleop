@@ -18,7 +18,7 @@ from crl_husky.config_resolver import get_primary_mocap_id_for_robot_serial
 from rclpy.exceptions import ParameterUninitializedException
 from rclpy.node import Node
 
-from bar_assembly_core.robot import RobotModel, robot_model
+from scaffolding_assembly_core.robot import RobotModel, robot_model
 from .drive import drive_root
 from .tool_urdfs import stitch_tools, tool_spec
 
@@ -109,8 +109,8 @@ class MonitorConfig:
 
     Attributes:
         robots: The robots to connect to, in display order.
-        data_directory: Root for meshes, URDFs and design data.
-        design_directory: Design folder the `cell` plugin loads at startup, relative to `drive_root`, or None to pick
+        data_directory: Root for meshes, URDFs and process data.
+        process_directory: Process folder the `cell` plugin loads at startup, relative to `drive_root`, or None to pick
             one in its panel.
         drive_root: The project's Google Drive folder, for experiment data (see `drive.py`), or None if not given.
         tick_period: Seconds between ticks.
@@ -127,7 +127,7 @@ class MonitorConfig:
 
     robots: tuple[RobotConfig, ...]
     data_directory: Path
-    design_directory: Path | None = None
+    process_directory: Path | None = None
     drive_root: Path | None = None
     tick_period: float = 0.05
     viser_port: int = 8080
@@ -286,13 +286,13 @@ def config_from_ros_parameters(node: Node) -> MonitorConfig:
         ros2 run husky_assembly_teleop husky_monitor --ros-args \
             -p robots:="['0804','cindy']" -p plugins:="['cell']" \
             -p tools:="['0804:scaffolding_v3', '0806:scaffolding_v3,none']" \
-            -p design_directory:=data_design_study/260814_RobArch_support_ik
+            -p process_directory:=data_design_study/260814_RobArch_support_ik
     """
     node.declare_parameter("robots", [""])
     node.declare_parameter("tools", [""])
     node.declare_parameter("plugins", [""])
     node.declare_parameter("data_directory", "")
-    node.declare_parameter("design_directory", "")
+    node.declare_parameter("process_directory", "")
     node.declare_parameter("drive_root", "")
     node.declare_parameter("no_default_plugins", False)
     node.declare_parameter("ghost_timeout", MonitorConfig.ghost_timeout)
@@ -314,13 +314,13 @@ def config_from_ros_parameters(node: Node) -> MonitorConfig:
     data_directory = (Path(data_text).expanduser() if data_text
                       else Path(__file__).resolve().parent.parent / "data")
 
-    design_text = node.get_parameter("design_directory").get_parameter_value().string_value.strip()
+    process_text = node.get_parameter("process_directory").get_parameter_value().string_value.strip()
 
     no_default_plugins = node.get_parameter("no_default_plugins").get_parameter_value().bool_value
     return MonitorConfig(
         robots=_robots_in_a_row(string_list("robots"), data_directory, _parse_tools(string_list("tools"))),
         data_directory=data_directory,
-        design_directory=Path(design_text) if design_text else None,
+        process_directory=Path(process_text) if process_text else None,
         drive_root=drive_root(node.get_parameter("drive_root").get_parameter_value().string_value),
         enabled_plugins=_enabled_plugins(string_list("plugins"), not no_default_plugins),
         ghost_timeout=node.get_parameter("ghost_timeout").value,

@@ -16,12 +16,12 @@ import pytest
 
 from husky_assembly_teleop.config import robot_config_from_serial
 from husky_assembly_teleop.robot_interface.arm import UR_JOINT_NAMES
-from bar_assembly_core.geometry import Geometry, box_geometry
-from bar_assembly_core.mirrors import HIDDEN_POSITION
-from bar_assembly_core.mirrors.compas_fab import CompasFabMirror
-from bar_assembly_core.robot import RobotObject
-from bar_assembly_core.scene import Attachment, Body, Scene
-from bar_assembly_core.geometry import Pose
+from scaffolding_assembly_core.geometry import Geometry, box_geometry
+from scaffolding_assembly_core.mirrors import HIDDEN_POSITION
+from scaffolding_assembly_core.mirrors.compas_fab import CompasFabMirror
+from scaffolding_assembly_core.robot import RobotObject
+from scaffolding_assembly_core.scene import Attachment, Body, Scene
+from scaffolding_assembly_core.geometry import Pose
 
 DATA = Path(__file__).resolve().parent.parent / "data"
 ALICE, BELLE = "0804", "0805"
@@ -237,7 +237,7 @@ def test_same_result_as_the_design_cell():
     from compas_fab.backends import CollisionCheckError, PyBulletClient, PyBulletPlanner
     import rs_data_structure  # noqa: F401  registers the Action types for json_load
 
-    from bar_assembly_core.mirrors.compas import filled
+    from scaffolding_assembly_core.mirrors.compas import filled
 
     folder = Path(DESIGN)
     design_cell = json_load(str(folder / "RobotCell.json"))

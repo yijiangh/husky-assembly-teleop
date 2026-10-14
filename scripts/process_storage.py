@@ -1,8 +1,8 @@
-"""Size on disk, export cell composition and the design round trip, for one old compas_fab export.
+"""Size on disk, export cell composition and the process round trip, for one old compas_fab export.
 
-    python scripts/design_storage.py <export folder> [--json results.json]
+    python scripts/process_storage.py <export folder> [--json results.json]
 
-* Converts into a temporary folder; the export and its `<export>_design` copy are not touched.
+* Converts into a temporary folder; the export and its `<export>_process` copy are not touched.
 * Loader timing and the loader equality check are in `legacy_equivalence.py`.
 ! Parsing each export cell takes ~2 s and a few GB of memory.
 """
@@ -29,19 +29,19 @@ def quiet(_text: str) -> None:
 
 # --- --- --- --- --- STEPS (each runs in its own process) --- --- --- --- ---
 
-def step_convert(export: str, design: str) -> dict:
-    """Convert the export into a design folder."""
-    from bar_assembly_core.legacy.conversion import convert_export
-    convert_export(Path(export), Path(design), DATA, quiet)
+def step_convert(export: str, process: str) -> dict:
+    """Convert the export into a process folder."""
+    from scaffolding_assembly_core.legacy.conversion import convert_export
+    convert_export(Path(export), Path(process), DATA, quiet)
     return {}
 
 
-def step_roundtrip(design: str, tmp: str) -> dict:
-    """Validate, then read -> write -> read twice: equal designs, same files, same bytes."""
+def step_roundtrip(process: str, tmp: str) -> dict:
+    """Validate, then read -> write -> read twice: equal processes, same files, same bytes."""
     from test_design_roundtrip import _comparable
 
-    from bar_assembly_core.design import read, validate, write
-    first = read(Path(design))
+    from scaffolding_assembly_core.process import read, validate, write
+    first = read(Path(process))
     a, b = Path(tmp) / "a", Path(tmp) / "b"
     second = write(first, a, package_dirs=[DATA / "husky_urdf"])
     third = write(read(a), b, package_dirs=[DATA / "husky_urdf"])
@@ -118,7 +118,7 @@ def sizes(folder: Path) -> dict:
 def print_report(result: dict) -> None:
     """Print the measurements as plain tables."""
     print(f"\n{result['export']}")
-    for name in ("export", "design"):
+    for name in ("export", "process"):
         folder = result["sizes"][name]
         print(f"\n{name}: {folder['total'] / 1e6:.1f} MB in {folder['files']} files")
         for key, group in sorted(folder["groups"].items(), key=lambda item: -item[1]["bytes"]):
@@ -144,12 +144,12 @@ def main() -> None:
 
     result = {"export": export.name}
     with TemporaryDirectory() as tmp:
-        design = Path(tmp) / "design"
-        run_step("convert", str(export), str(design))
-        result["sizes"] = {"export": sizes(export), "design": sizes(design)}
+        process = Path(tmp) / "process"
+        run_step("convert", str(export), str(process))
+        result["sizes"] = {"export": sizes(export), "process": sizes(process)}
         result["composition"] = [run_step("composition", str(cell)) for cell in sorted(export.glob("RobotCell*.json"))]
         (Path(tmp) / "roundtrip").mkdir()
-        result["roundtrip"] = run_step("roundtrip", str(design), str(Path(tmp) / "roundtrip"))
+        result["roundtrip"] = run_step("roundtrip", str(process), str(Path(tmp) / "roundtrip"))
 
     print_report(result)
     if options.json:

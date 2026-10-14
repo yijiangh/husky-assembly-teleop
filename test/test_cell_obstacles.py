@@ -1,4 +1,4 @@
-"""The cell plugin puts every body of a step's design scene into the scene; held ones follow the real robot."""
+"""The cell plugin puts every body of a step's process scene into the scene; held ones follow the real robot."""
 
 from __future__ import annotations
 
@@ -8,37 +8,38 @@ from types import SimpleNamespace
 
 import pytest
 import viser
-from design_fixtures import build_design
+from process_fixtures import build_process
 from test_compas_fab_mirror import configs, mirror, tool0, world  # noqa: F401 (fixtures)
 
-from bar_assembly_core.design import Action, BodySpec, Movement, State, write
-from bar_assembly_core.robot import Tool
-from bar_assembly_core.geometry import box_geometry
-from bar_assembly_core.robot import robot_model
-from bar_assembly_core.geometry import Pose
-from bar_assembly_core.scene import Attachment
+from scaffolding_assembly_core.process import Action, BodySpec, Movement, State, Target, write
+from scaffolding_assembly_core.robot import Tool
+from scaffolding_assembly_core.geometry import box_geometry, cylinder_geometry
+from scaffolding_assembly_core.robot import robot_model
+from scaffolding_assembly_core.geometry import Pose
+from scaffolding_assembly_core.scene import Attachment
 from husky_assembly_teleop.config import robot_config_from_serial
-from husky_assembly_teleop.plugins.cell.design import CellDesign, Step, displayed_joints, load_design, scene_bodies
-from husky_assembly_teleop.plugins.cell.drawing import GHOST_OPACITY, DesignDrawing, load_robot_models
-from bar_assembly_core.scene import Scene
+from husky_assembly_teleop.plugins.cell.process import CellProcess, Step, displayed_joints, load_process, scene_bodies
+from husky_assembly_teleop.plugins.cell.drawing import GHOST_OPACITY, ProcessDrawing, load_robot_models
+from husky_assembly_teleop.plugins.cell.plugin import BY_HAND_LABEL, CellPlugin
+from scaffolding_assembly_core.scene import Scene
 from husky_assembly_teleop.world.scene import PluginScene
 
 
 @pytest.fixture
-def cell(tmp_path) -> CellDesign:
-    """The fixture design, written and loaded the way the plugin loads it."""
-    write(build_design(tmp_path), tmp_path / "design")
-    return load_design(tmp_path / "design", tmp_path)
+def cell(tmp_path) -> CellProcess:
+    """The fixture process, written and loaded the way the plugin loads it."""
+    write(build_process(tmp_path), tmp_path / "process")
+    return load_process(tmp_path / "process", tmp_path)
 
 
-def _by_id(cell: CellDesign, step_index: int, robots=()) -> dict:
+def _by_id(cell: CellProcess, step_index: int, robots=()) -> dict:
     """The scene bodies of one step, by scene id, with `robots` configured."""
     return {body.id: body for body in scene_bodies(cell, cell.steps[step_index], robots, "cell/")}
 
 
-def _real_cindy(cell: CellDesign) -> SimpleNamespace:
-    """A configured robot standing in for Cindy (serial 0806): the design's URDF, with its own tool on left_tool0."""
-    spec = cell.design.robots["robots/cindy"]
+def _real_cindy(cell: CellProcess) -> SimpleNamespace:
+    """A configured robot standing in for Cindy (serial 0806): the process's URDF, with its own tool on left_tool0."""
+    spec = cell.process.robots["robots/cindy"]
     tool = Tool("tools/a200-0806/left", box_geometry((0.05, 0.05, 0.05)), Pose(), "scaffolding_v3")
     return SimpleNamespace(serial="a200-0806", model=robot_model("a200-0806", spec.urdf, spec.srdf,
                                                                  {"left_tool0": tool}))
@@ -51,7 +52,7 @@ def _enabled(bodies: dict) -> set[str]:
 
 def test_every_body_every_step(cell):
     """The same ids in every step, whatever stands: switching steps never adds or removes a body."""
-    expected = {f"cell/{body_id}" for body_id in cell.design.bodies}
+    expected = {f"cell/{body_id}" for body_id in cell.process.bodies}
     assert all(set(_by_id(cell, index)) == expected for index in range(len(cell.steps)))
 
 
@@ -63,20 +64,20 @@ def test_held_bodies_disabled_robot_touches_dropped(cell):
 
 
 def test_placed_bodies_poses_and_derived_touches(cell):
-    """B1_H_M0: B1 is built, so it and its halves stand at their design poses; a half may touch its bar."""
+    """B1_H_M0: B1 is built, so it and its halves stand at their assembly poses; a half may touch its bar."""
     bodies = _by_id(cell, 3)
-    assert _enabled(bodies) == {f"cell/{body_id}" for body_id in cell.design.bodies}
-    assert bodies["cell/joints/J1_female"].placement == cell.design.bodies["joints/J1_female"].pose
+    assert _enabled(bodies) == {f"cell/{body_id}" for body_id in cell.process.bodies}
+    assert bodies["cell/joints/J1_female"].placement == cell.process.bodies["joints/J1_female"].assembly_pose
     assert bodies["cell/joints/J1_female"].touches == ("cell/bars/B1",)
 
 
-def test_design_geometry_and_fixed_colour_every_step(cell):
-    """The design's own geometry object and one colour per body in every step, so nothing is ever rebuilt."""
+def test_process_geometry_and_fixed_colour_every_step(cell):
+    """The process's own geometry object and one colour per body in every step, so nothing is ever rebuilt."""
     first, later = _by_id(cell, 1), _by_id(cell, 3)
-    assert first["cell/bars/B2"].geometry is cell.design.bodies["bars/B2"].geometry
+    assert first["cell/bars/B2"].geometry is cell.process.bodies["bars/B2"].geometry
     assert first["cell/bars/B2"].geometry is later["cell/bars/B2"].geometry
     assert first["cell/bars/B2"].color == later["cell/bars/B2"].color == (205 / 255, 170 / 255, 110 / 255, 1.0)
-    assert first["cell/bars/B2"].label == "bars/B2"  # no label in the design: its design id
+    assert first["cell/bars/B2"].label == "bars/B2"  # no label in the process: its process id
     assert later["cell/bars/B1"].label == "first bar" and later["cell/bars/B1"].enabled
 
 
@@ -106,12 +107,12 @@ def test_scene_accepts_them(cell):
 
 @pytest.mark.slow
 def test_arm_planner_mirror_sees_a_cell_obstacle(mirror, configs, tmp_path):  # noqa: F811
-    """A design body at Alice's tool0 collides in the arm planner's compas_fab mirror, under its cell id."""
+    """A process body at Alice's tool0 collides in the arm planner's compas_fab mirror, under its cell id."""
     mirror.sync(world(configs))
-    design = replace(build_design(tmp_path), bodies={
+    process = replace(build_process(tmp_path), bodies={
         "obstacles/box": BodySpec("obstacles/box", tool0(mirror), box_geometry((0.1, 0.1, 0.1)))})
-    cell = CellDesign(tmp_path, design, ())
-    movement = Movement("M0", State(robots={}, present=frozenset()), ends_on="operator")
+    cell = CellProcess(tmp_path, process, ())
+    movement = Movement("M0", State(robots={}, present=frozenset({"obstacles/box"})), ends_on="operator")
     step = Step(Action("A0", "bar_jointing", "robots/cindy", "bars/B1", (movement,)), 0, 0, movement)
 
     mirror.sync(world(configs, scene_bodies(cell, step, (), "cell/")))
@@ -122,7 +123,7 @@ def test_overlay_draws_only_what_the_core_does_not(cell):
     """Standing bodies are left to the core, held ones are drawn, absent ones only with `everything`."""
     server = viser.ViserServer(port=0, verbose=False)
     try:
-        drawing = DesignDrawing(server, "/design", cell.design, load_robot_models(cell.design))
+        drawing = ProcessDrawing(server, "/process", cell.process, load_robot_models(cell.process))
         for _ in drawing.build():
             pass
         shown = lambda: {body_id for body_id, (frame, _) in drawing._bodies.items() if frame.visible}  # noqa: E731
@@ -137,3 +138,22 @@ def test_overlay_draws_only_what_the_core_does_not(cell):
         assert all(mesh.opacity == GHOST_OPACITY for mesh in drawing._bodies["bars/B1"][1])
     finally:
         server.stop()
+
+
+def test_bar_placed_by_hand(tmp_path):
+    """A `bar_placing` action has no robot: it loads, its scene builds, and the panel says "by hand"."""
+    process = build_process(tmp_path)
+    last = process.actions[process.schedule[-1]].movements[-1].start
+    start = replace(last, present=last.present | {"bars/B3"})
+    placing = Action("B3_P", "bar_placing", "", "bars/B3", (
+        Movement("B3_P_place", start, ends_on="operator", target=Target.of(built=start.built | {"bars/B3"})),))
+    bar = BodySpec("bars/B3", Pose((1.0, 0.0, 0.1)), cylinder_geometry(0.01, 0.5))
+    process = replace(process, schedule=(*process.schedule, placing.id), bodies={**process.bodies, bar.id: bar},
+                      actions={**process.actions, placing.id: placing})
+    write(process, tmp_path / "process")
+    cell = load_process(tmp_path / "process", tmp_path)
+    step = cell.steps[-1]
+    assert step.action.robot == "" and "robots/cindy" in displayed_joints(step, True)
+    assert "cell/bars/B3" in {body.id for body in scene_bodies(cell, step, (), "cell/") if body.enabled}
+    panel = SimpleNamespace(process=cell, index=len(cell.steps) - 1, at_target=False)
+    assert BY_HAND_LABEL in CellPlugin._details_html(panel, step)

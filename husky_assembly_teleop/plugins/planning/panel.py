@@ -28,7 +28,7 @@ from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, block, chip, note, s
 from .path import TimedPath
 
 if TYPE_CHECKING:
-    from bar_assembly_core.scene import Scene
+    from scaffolding_assembly_core.scene import Scene
     from ...config import RobotConfig
     from .search import PlanResult
 
@@ -306,15 +306,18 @@ class PlannerPlugin(HuskyPlugin):
         """The cell plugin's selected step, and the configured robot it is for.
 
         Returns:
-            tuple[Any, str, str] | None: The step, the robot's serial and its design name;
+            tuple[Any, str, str] | None: The step, the robot's serial and its process name;
                 None if there is none, after saying why in the panel.
         """
         cell = ctx.require("cell")
         step = cell.step
         if step is None:
-            self._say("no design loaded in the cell plugin", failed=True)
+            self._say("no process loaded in the cell plugin", failed=True)
             return None
-        robot = cell.design.design.robots[step.action.robot]
+        if not step.action.robot:
+            self._say(f"{step.label} is placed by hand: no robot to plan for", failed=True)
+            return None
+        robot = cell.process.process.robots[step.action.robot]
         serial = find_robot_serial(ctx.config.robots, robot.serial or "")
         if serial is None:
             self._say(f"{step.label} is for {robot.name}, which is not configured", failed=True)

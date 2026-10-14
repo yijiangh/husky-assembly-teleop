@@ -13,7 +13,7 @@ from typing import Callable
 import viser
 
 from ..plugin_api.context import PluginContext
-from bar_assembly_core.scene import Scene
+from scaffolding_assembly_core.scene import Scene
 
 
 def add_pybullet_window_toggle(ctx: PluginContext, gui: viser.GuiApi, executor: Executor,

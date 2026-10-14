@@ -37,8 +37,8 @@ When briefing a subagent to write or edit comments, paste this section into its 
 ## Where things are
 
 - `README.md`: install, run, parameters, plugins.
-- `external/bar_assembly_core/`: the core shared with the Rhino plugin and the planners: the design format (`design/`), robots, scenes and their mirrors; layers in its `bar_assembly_core/__init__.py`, the design format in its `doc/design_format.md`. A submodule of `jeliag/bar_assembly_core`, installed editable in the venv.
-  - ! It imports nothing from `husky_assembly_teleop`, ROS or viser, and runs on Python 3.9: change it in the submodule, run its own tests there (`cd external/bar_assembly_core && python3 -m pytest`), commit and push it, then commit the new submodule pointer here.
+- `external/scaffolding_assembly_core/`: the core shared with the Rhino plugin and the planners: the process format (`process/`, schema 2.1), robots, scenes and their mirrors; layers in its `scaffolding_assembly_core/__init__.py`, the process format in its `doc/process_format.md`. A submodule of `yijiangh/scaffolding_assembly_core`, installed editable in the venv.
+  - ! It imports nothing from `husky_assembly_teleop`, ROS or viser, and runs on Python 3.9: change it in the submodule following its own `AGENTS.md`, run its own tests there (`cd external/scaffolding_assembly_core && python3 -m pytest`), commit and push it, then commit the new submodule pointer here.
 - `husky_assembly_teleop/plugins/__init__.py`: the rules every plugin follows. `plugins/robot_control/` is the reference plugin, `plugins/examples/` the templates.
 - `doc/refactor_rationale.md`: why the core is built the way it is. `doc/plugin_roadmap.md`: which old features are still to be ported. `doc/scene_refactor_plan.md`: the scene.
 - `husky_assembly_teleop/old/`: the old monitor, reference only. It does not run; never import it from new code.

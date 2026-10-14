@@ -1,20 +1,20 @@
 """
-The cell plugin: loads an authored design and draws one movement's cell state at a time.
+The cell plugin: loads an authored process and draws one movement's cell state at a time.
 
 It serves the selected step to plugins that declare `requires = ("cell",)`.
 
-Every body of the selected movement's design scene (`Design.scene_at`) goes into the scene as "cell/<body id>"
-(`design.scene_bodies`): the core draws it and planners avoid it. A body the plan holds follows the configured real
-robot. The planned robots, and the bodies they hold, are drawn as an overlay (`drawing.DesignDrawing`), with the other
-bodies on request. The plugin only reads designs: it never edits one.
+Every body of the selected movement's process scene (`Process.scene_at`) goes into the scene as "cell/<body id>"
+(`process.scene_bodies`): the core draws it and planners avoid it. A body the plan holds follows the configured real
+robot. The planned robots, and the bodies they hold, are drawn as an overlay (`drawing.ProcessDrawing`), with the other
+bodies on request. The plugin only reads processes: it never edits one.
 
 The panel lists a window of the schedule's actions around the selected one (`action_window`); click a row to jump.
 
-Design folders are given relative to the Drive root (`drive.py`), e.g. "data_design_study/<design>", or absolute.
-Loading an old compas_fab export converts it into `<export>_design` (reused while up to date) and loads that.
-The panel warns when the design's tools differ from the configured ones.
+Process folders are given relative to the Drive root (`drive.py`), e.g. "data_design_study/<process>", or absolute.
+Loading an old compas_fab export converts it into `<export>_process` (reused while up to date) and loads that.
+The panel warns when the process's tools differ from the configured ones.
 
-! EXPERIMENTAL: how designs load, and what planners read, may still change.
+! EXPERIMENTAL: how processes load, and what planners read, may still change.
 ! Loading a relative folder needs the Drive root (HUSKY_DRIVE_ROOT or `drive_root`).
 ! Loading runs on a worker thread that only returns a result; viser nodes are added on the main thread.
 """
@@ -33,9 +33,9 @@ from ...drive import drive_folder
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
 from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, block, chip, note, section, values
-from bar_assembly_core.legacy.timing import Stopwatch
-from .design import CellDesign, Step, displayed_joints, load_design, scene_bodies
-from .drawing import DesignDrawing, load_robot_models
+from scaffolding_assembly_core.legacy.timing import Stopwatch
+from .process import CellProcess, Step, displayed_joints, load_process, scene_bodies
+from .drawing import ProcessDrawing, load_robot_models
 
 if TYPE_CHECKING:
     from ...config import RobotConfig
@@ -45,6 +45,9 @@ LOAD_TIMEOUT = 300.0
 
 #: Rows in the action list: a window of the schedule, the selected action in the middle row.
 ACTION_ROWS = 7
+
+#: Shown in place of the robot for a `bar_placing` action, which no robot acts in.
+BY_HAND_LABEL = "by hand"
 
 
 def action_window(current: int, count: int, rows: int = ACTION_ROWS) -> int:
@@ -61,25 +64,25 @@ def action_window(current: int, count: int, rows: int = ACTION_ROWS) -> int:
     return max(0, min(current - rows // 2, count - rows))
 
 
-def _load_in_background(folder: Path, data_directory: Path, report) -> tuple[CellDesign, dict, Stopwatch]:
-    """Load a design, converting an old export first, and read its robots' URDFs with their meshes.
+def _load_in_background(folder: Path, data_directory: Path, report) -> tuple[CellProcess, dict, Stopwatch]:
+    """Load a process, converting an old export first, and read its robots' URDFs with their meshes.
 
     Runs on the worker thread.
 
     Args:
-        folder: Design folder, or an old export.
+        folder: Process folder, or an old export.
         data_directory: The monitor's data directory, for converting an old export.
         report: Called with a progress string.
 
     Returns:
-        tuple: The design, each robot's yourdfpy model by robot id, and the stopwatch.
+        tuple: The process, each robot's yourdfpy model by robot id, and the stopwatch.
     """
     watch = Stopwatch()
-    design = load_design(folder, data_directory, report, watch)
+    process = load_process(folder, data_directory, report, watch)
     report("reading the robots' URDFs and meshes")
-    models = load_robot_models(design.design)
+    models = load_robot_models(process.process)
     watch.lap("robot URDFs and meshes")
-    return design, models, watch
+    return process, models, watch
 
 
 @register
@@ -91,16 +94,16 @@ class CellPlugin(HuskyPlugin):
 
     def __init__(self):
         """Start with nothing loaded."""
-        #: The loaded design, or None. Replaced on load, never edited.
-        self.design: CellDesign | None = None
+        #: The loaded process, or None. Replaced on load, never edited.
+        self.process: CellProcess | None = None
 
-        #: Index of the selected step in `design.steps`.
+        #: Index of the selected step in `process.steps`.
         self.index = 0
 
         #: Show the robot at the movement's target instead of its start.
         self.at_target = False
 
-        #: Goes up whenever the design or selected step changes, so dependents can poll it.
+        #: Goes up whenever the process or selected step changes, so dependents can poll it.
         self.revision = 0
 
         self._load_task: asyncio.Task | None = None
@@ -108,13 +111,13 @@ class CellPlugin(HuskyPlugin):
         # Written by the worker thread, read by draw; plain assignment, so no lock.
         self._progress = ""
         self._error = ""
-        # Where the design's tools differ from the monitor's configured ones, one line per robot.
+        # Where the process's tools differ from the monitor's configured ones, one line per robot.
         self._tool_mismatch: list[str] = []
 
         #: Robot id -> its yourdfpy model, for the drawing.
         self._models: dict = {}
-        #: The design's viser nodes, built after a load; None until built.
-        self._drawing: DesignDrawing | None = None
+        #: The process's viser nodes, built after a load; None until built.
+        self._drawing: ProcessDrawing | None = None
         self._visible = True
         self._ghost = False
         # Overlay the bodies that do not stand in the state (absent ones) too.
@@ -130,25 +133,25 @@ class CellPlugin(HuskyPlugin):
 
     @property
     def step(self) -> Step | None:
-        """Step | None: The selected movement, or None before a design is loaded. ! Copy before modifying."""
-        if self.design is None or not self.design.steps:
+        """Step | None: The selected movement, or None before a process is loaded. ! Copy before modifying."""
+        if self.process is None or not self.process.steps:
             return None
-        return self.design.steps[self.index]
+        return self.process.steps[self.index]
 
     # --- --- --- --- --- SETUP --- --- --- --- ---
 
     def setup(self, ctx: PluginContext) -> None:
-        """Build the panel, with the configured design folder filled in; nothing loads until Load is clicked."""
-        folder = ctx.config.design_directory
+        """Build the panel, with the configured process folder filled in; nothing loads until Load is clicked."""
+        folder = ctx.config.process_directory
         with ctx.view.ui() as gui:
             self._status = gui.add_html("")
             self._folder = gui.add_text("Folder", initial_value=str(folder or ""),
-                                        hint="Design folder relative to the Drive root, e.g. "
-                                             "data_design_study/<design>, or absolute: with design.json "
-                                             "(doc/design_format.md), or an export in the old compas_fab format, "
-                                             "converted into <export>_design next to it")
+                                        hint="Process folder relative to the Drive root, e.g. "
+                                             "data_design_study/<process>, or absolute: with process.json "
+                                             "(doc/process_format.md), or an export in the old compas_fab format, "
+                                             "converted into <export>_process next to it")
             load = gui.add_button("Load", hint="Load the folder; an old export is converted first (about 15 s) "
-                                               "unless its <export>_design copy is up to date")
+                                               "unless its <export>_process copy is up to date")
             self._actions_title = gui.add_html(section("actions", SECTION_CTRL))
             # * A window of the schedule that follows the selection: click a row to jump to that action.
             self._action_rows = [gui.add_button("·", color="gray") for _ in range(ACTION_ROWS)]
@@ -167,7 +170,7 @@ class CellPlugin(HuskyPlugin):
             self._error_text = gui.add_html("")
 
         # ! Route every viser callback through defer so it runs on the main thread.
-        load.on_click(ctx.defer("load design", lambda: self.load(ctx, Path(self._folder.value.strip()))))
+        load.on_click(ctx.defer("load process", lambda: self.load(ctx, Path(self._folder.value.strip()))))
         self._slider.on_update(ctx.defer_value("select step", lambda value: self.select(int(value))))
         go.on_click(ctx.defer_value("step button", self._on_go))
         show.on_click(ctx.defer_value("show", lambda label: self._set_at_target(label == "Target")))
@@ -178,14 +181,14 @@ class CellPlugin(HuskyPlugin):
     # --- --- --- --- --- COMMANDS (intents, on the main thread) --- --- --- --- ---
 
     def load(self, ctx: PluginContext, folder: Path) -> None:
-        """Start loading a design folder, replacing the current design when done.
+        """Start loading a process folder, replacing the current process when done.
 
         Args:
             ctx: This plugin's context.
-            folder: The design folder (relative to the Drive root, or absolute), or an old export to convert first.
+            folder: The process folder (relative to the Drive root, or absolute), or an old export to convert first.
         """
         if self._load_task is not None and not self._load_task.done():
-            ctx.log_info("load ignored: a design is already loading")
+            ctx.log_info("load ignored: a process is already loading")
             return
         try:
             folder = drive_folder(ctx.config.drive_root, folder)
@@ -195,10 +198,10 @@ class CellPlugin(HuskyPlugin):
         self._load_task = ctx.spawn(f"load {folder.name}", self._load(ctx, folder))
 
     def select(self, index: int) -> None:
-        """Select a step by index into `design.steps`, clamped; ignored before a design is loaded."""
-        if self.design is None or not self.design.steps:
+        """Select a step by index into `process.steps`, clamped; ignored before a process is loaded."""
+        if self.process is None or not self.process.steps:
             return
-        index = max(0, min(int(index), len(self.design.steps) - 1))
+        index = max(0, min(int(index), len(self.process.steps) - 1))
         # ! Keep this check: draw writes the slider back, which would otherwise loop.
         if index == self.index:
             return
@@ -223,17 +226,17 @@ class CellPlugin(HuskyPlugin):
         elif label == "◀ action":
             # First movement of this action, or of the previous one if already there.
             action = step.action_index - (1 if step.movement_index == 0 else 0)
-            self.select(self.design.first_step_of(max(action, 0)))
-        elif label == "action ▶" and step.action_index + 1 < self.design.action_count:
-            self.select(self.design.first_step_of(step.action_index + 1))
+            self.select(self.process.first_step_of(max(action, 0)))
+        elif label == "action ▶" and step.action_index + 1 < self.process.action_count:
+            self.select(self.process.first_step_of(step.action_index + 1))
 
     def _on_action_row(self, row: int) -> None:
         """Jump to the first movement of the action shown in a row of the list; empty rows do nothing."""
-        if self.design is None:
+        if self.process is None:
             return
         action = self._window_start + row
-        if action < self.design.action_count:
-            self.select(self.design.first_step_of(action))
+        if action < self.process.action_count:
+            self.select(self.process.first_step_of(action))
 
     def _on_view(self, label: str) -> None:
         """Toggle hiding or ghosting the overlay, or overlaying every body."""
@@ -246,23 +249,23 @@ class CellPlugin(HuskyPlugin):
         self._stale = True
 
     def _changed(self) -> None:
-        """Note that the design or the selection changed."""
+        """Note that the process or the selection changed."""
         self.revision += 1
         self._stale = True
 
     # --- --- --- --- --- TASKS --- --- --- --- ---
 
     async def _load(self, ctx: PluginContext, folder: Path) -> None:
-        """Load a design on the worker thread, then swap it in; failures go to the panel and log, not raised."""
+        """Load a process on the worker thread, then swap it in; failures go to the panel and log, not raised."""
         folder = Path(folder).expanduser()
         self._error, self._progress = "", f"loading {folder}"
         try:
             async with timeout(LOAD_TIMEOUT):
-                design, models, watch = await ctx.run_in_thread(
+                process, models, watch = await ctx.run_in_thread(
                     _load_in_background, folder, ctx.config.data_directory,
                     lambda text: setattr(self, "_progress", text))
         except asyncio.TimeoutError:
-            self._error = f"timed out after {LOAD_TIMEOUT}s waiting for the design to load"
+            self._error = f"timed out after {LOAD_TIMEOUT}s waiting for the process to load"
             ctx.log_error(self._error)
             return
         except Exception as failure:
@@ -278,23 +281,23 @@ class CellPlugin(HuskyPlugin):
         if self._drawing is not None:
             self._drawing.remove()
             self._drawing = None
-        self.design, self._models, self.index = design, models, 0
+        self.process, self._models, self.index = process, models, 0
         # The converted copy, for an old export.
         root = ctx.config.drive_root
-        self._folder.value = str(design.source.relative_to(root) if root and design.source.is_relative_to(root)
-                                 else design.source)
+        self._folder.value = str(process.source.relative_to(root) if root and process.source.is_relative_to(root)
+                                 else process.source)
         self._changed()
-        ctx.log_info(f"loaded {design.source} in {watch.summary()}; "
-                     f"{design.action_count} actions, {len(design.steps)} movements")
-        self._tool_mismatch = tool_mismatches(design, ctx.config.robots)
+        ctx.log_info(f"loaded {process.source} in {watch.summary()}; "
+                     f"{process.action_count} actions, {len(process.steps)} movements")
+        self._tool_mismatch = tool_mismatches(process, ctx.config.robots)
         for line in self._tool_mismatch:
-            ctx.log_warn(f"design tools differ from the configured ones: {line}")
+            ctx.log_warn(f"process tools differ from the configured ones: {line}")
 
     async def _build(self, ctx: PluginContext) -> None:
-        """Add the design's viser nodes, spread over ticks."""
-        self._progress = "drawing the design"
+        """Add the process's viser nodes, spread over ticks."""
+        self._progress = "drawing the process"
         watch = Stopwatch()
-        drawing = DesignDrawing(ctx.view, f"{ctx.view.scene_root}/design", self.design.design, self._models)
+        drawing = ProcessDrawing(ctx.view, f"{ctx.view.scene_root}/process", self.process.process, self._models)
         drawing.set_ghost(self._ghost)
         try:
             for _ in drawing.build():
@@ -306,25 +309,25 @@ class CellPlugin(HuskyPlugin):
             self._progress = ""
         self._drawing = drawing
         self._stale = True
-        ctx.log_info(f"drew the design in {watch.summary()} (spread over ticks)")
+        ctx.log_info(f"drew the process in {watch.summary()} (spread over ticks)")
 
     # --- --- --- --- --- TICK --- --- --- --- ---
 
     def update(self, ctx: PluginContext) -> None:
-        """Put the selected step's obstacles into the scene, and start building the design's viser nodes."""
+        """Put the selected step's obstacles into the scene, and start building the process's viser nodes."""
         if self._scene_revision != self.revision:
             self._scene_revision = self.revision
             self._put_obstacles(ctx)
         if self._drawing is not None:
             self._drawing.set_ghost(self._ghost)
             return
-        if self.design is None:
+        if self.process is None:
             return
         if self._build_task is None or self._build_task.done():
-            self._build_task = ctx.spawn("draw the design", self._build(ctx))
+            self._build_task = ctx.spawn("draw the process", self._build(ctx))
 
     def _put_obstacles(self, ctx: PluginContext) -> None:
-        """Replace the scene's cell bodies with the selected step's design scene; held bodies follow the real robot.
+        """Replace the scene's cell bodies with the selected step's process scene; held bodies follow the real robot.
 
         ! Runs only when `revision` changes: `scene_at` is too slow for every tick.
         """
@@ -334,12 +337,12 @@ class CellPlugin(HuskyPlugin):
             return
         # ? Same ids and geometry objects every step: mirrors only move and switch bodies, never rebuild.
         try:
-            bodies = scene_bodies(self.design, step, ctx.config.robots, f"{self.name}/")
+            bodies = scene_bodies(self.process, step, ctx.config.robots, f"{self.name}/")
         except ValueError as refused:
             # ! A grasp the real robot can't take is a data problem: report it, put the bodies without the robots.
             self._error = f"held bodies left where planned: {refused}"
             ctx.log_error(self._error)
-            bodies = scene_bodies(self.design, step, (), f"{self.name}/")
+            bodies = scene_bodies(self.process, step, (), f"{self.name}/")
         ctx.scene.put_many(bodies)
 
     def draw(self, ctx: PluginContext) -> None:
@@ -349,9 +352,9 @@ class CellPlugin(HuskyPlugin):
         self._error_text.content = block(values(escape(self._error))) if self._error else ""
         self._draw_action_list(step)
         if step is None:
-            self._details.content = note("no design loaded")
+            self._details.content = note("no process loaded")
             return
-        self._slider.max = max(len(self.design.steps) - 1, 1)
+        self._slider.max = max(len(self.process.steps) - 1, 1)
         self._slider.value = self.index
         self._details.content = self._details_html(step)
 
@@ -365,7 +368,7 @@ class CellPlugin(HuskyPlugin):
         try:
             drawing.show(step.movement.start, displayed_joints(step, self.at_target), self._everything)
         except Exception as failure:
-            # ! A state that does not fit its design is a data problem: report it, do not raise.
+            # ! A state that does not fit its process is a data problem: report it, do not raise.
             self._error = f"cannot draw {step.label}: {type(failure).__name__}: {failure}"
             ctx.log_error(f"{self._error}\n{traceback.format_exc()}")
         else:
@@ -378,7 +381,7 @@ class CellPlugin(HuskyPlugin):
 
         ? viser sends only props that changed, so assigning every row each draw is cheap.
         """
-        count = self.design.action_count if self.design is not None else 0
+        count = self.process.action_count if self.process is not None else 0
         current = step.action_index if step is not None else 0
         self._window_start = action_window(current, count)
         self._actions_title.content = section("actions", SECTION_CTRL, f"{current + 1}/{count}" if count else "")
@@ -388,23 +391,23 @@ class CellPlugin(HuskyPlugin):
                 # ! Never hide a row: that would shift the buttons below it.
                 button.label, button.color = "·", "gray"
                 continue
-            action = self.design.design.actions[self.design.design.schedule[index]]
-            robot = self.design.design.robots[action.robot].name
+            action = self.process.process.actions[self.process.process.schedule[index]]
+            robot = self.process.process.robots[action.robot].name if action.robot else BY_HAND_LABEL
             button.label = f"{index + 1}. {action.id} · {robot} · {len(action.movements)} mv"
             button.color = "blue" if index == current else "gray"
     # ! Keep every row one line tall (`_one_line`) and the chip set fixed, so nothing shifts between steps.
 
     def _status_html(self) -> str:
-        """One line of chips: load progress or design, plus any error."""
+        """One line of chips: load progress or process, plus any error."""
         if self._progress:
             chips = chip(escape(self._progress), BUSY)
-        elif self.design is not None:
-            chips = chip(escape(self.design.source.name), OK, str(self.design.source))
-            chips += chip(f"{self.design.action_count} actions · {len(self.design.steps)} movements", NONE)
+        elif self.process is not None:
+            chips = chip(escape(self.process.source.name), OK, str(self.process.source))
+            chips += chip(f"{self.process.action_count} actions · {len(self.process.steps)} movements", NONE)
             if self._tool_mismatch:
                 chips += chip("tools differ", BUSY, "; ".join(self._tool_mismatch))
         else:
-            chips = chip("no design", NONE)
+            chips = chip("no process", NONE)
         if self._error:
             chips += chip("error", FAIL, self._error)
         return block(_one_line(chips))
@@ -412,14 +415,19 @@ class CellPlugin(HuskyPlugin):
     def _details_html(self, step: Step) -> str:
         """Two rows of chips and three of text describing the selected step."""
         movement, action = step.movement, step.action
-        robot = self.design.design.robots[action.robot]
-        which = chip(f"{self.index + 1}/{len(self.design.steps)}", OK)
-        which += chip(escape(robot.name), SECTION_CTRL, action.robot)
+        which = chip(f"{self.index + 1}/{len(self.process.steps)}", OK)
+        if action.robot:
+            which += chip(escape(self.process.process.robots[action.robot].name), SECTION_CTRL, action.robot)
+        else:
+            which += chip(BY_HAND_LABEL, SECTION_CTRL, "a bar_placing action: the operator places the bar")
         which += chip(escape(movement_kind(movement)), NONE, movement.label)
 
         # ! Say so when the drawn start is not authored.
         target = movement.target.joints.get(action.robot) if movement.target is not None else None
-        if movement.start.robots[action.robot].joints is not None:
+        start = movement.start.robots.get(action.robot)
+        if not action.robot:
+            carries = chip("no robot acts", NONE)
+        elif start is not None and start.joints is not None:
             carries = chip("start conf", OK)
         elif step.assumed_start is not None:
             carries = chip(f"start conf from {escape(step.assumed_from)}", BUSY,
@@ -436,7 +444,7 @@ class CellPlugin(HuskyPlugin):
         moves = [arm.split("/")[-1] for arm in movement.arms] + [
             f"{tool.split('/')[-1]} grip {grip}" for tool, grip in movement.grip_change.items()] + [
             f"{tool.split('/')[-1]} {direction}" for tool, direction in movement.drives.items()]
-        lines = [f"action   {step.action_index + 1}/{self.design.action_count}  {action.id}",
+        lines = [f"action   {step.action_index + 1}/{self.process.action_count}  {action.id}",
                  f"movement {step.movement_index + 1}/{len(action.movements)}  {movement.id}",
                  f"moves    {', '.join(moves) or '-'}"]
         text = values(*(_one_line(escape(line)) for line in lines))
@@ -452,27 +460,27 @@ def movement_kind(movement) -> str:
     return " + ".join(part for part in (arms, tools) if part)
 
 
-def tool_mismatches(design: CellDesign, robots: tuple[RobotConfig, ...]) -> list[str]:
-    """Where the design's tools differ from the configured (mounted) ones, for robots known to both by serial.
+def tool_mismatches(process: CellProcess, robots: tuple[RobotConfig, ...]) -> list[str]:
+    """Where the process's tools differ from the configured (mounted) ones, for robots known to both by serial.
 
     Args:
-        design: The loaded design.
+        process: The loaded process.
         robots: The configured robots, `ctx.config.robots`.
 
     Returns:
         list[str]: One line per robot that differs, e.g. "robots/cindy (a200-0806): left_ur_arm
-            scaffolding_v3 in the design, robotiq configured".
+            scaffolding_v3 in the process, robotiq configured".
     """
     by_digits = {robot.serial[-4:]: robot for robot in robots}
     lines = []
-    for spec in design.design.robots.values():
+    for spec in process.process.robots.values():
         config = by_digits.get(spec.serial or "")
         if config is None:
             continue
-        planned = {link[:-len("_tool0")]: design.design.tools[tool].kind
+        planned = {link[:-len("_tool0")]: process.process.tools[tool].kind
                    for link, tool in spec.tools.items() if link.endswith("_tool0")}
         mounted = {arm.name: arm.end_effector for arm in config.arms}
-        differences = [f"{arm} {planned.get(arm) or 'none'} in the design, {mounted.get(arm) or 'none'} configured"
+        differences = [f"{arm} {planned.get(arm) or 'none'} in the process, {mounted.get(arm) or 'none'} configured"
                        for arm in sorted(set(planned) | set(mounted)) if planned.get(arm) != mounted.get(arm)]
         if differences:
             lines.append(f"{spec.id} ({config.serial}): " + "; ".join(differences))

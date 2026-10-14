@@ -1,9 +1,9 @@
 """
-A design (doc/design_format.md) as the cell plugin steps through it.
+A process (doc/process_format.md) as the cell plugin steps through it.
 
 Every movement is a step, with the joints to draw each robot at. A movement without authored start joints is
 drawn where its robot last was.
-`scene_bodies` turns a step's design scene (`Design.scene_at`) into scene bodies: the core draws them, and planners
+`scene_bodies` turns a step's process scene (`Process.scene_at`) into scene bodies: the core draws them, and planners
 avoid them. Bodies the plan holds follow the configured real robot.
 
 ! Runs on a worker thread: nothing here may touch viser, PyBullet or a PluginContext.
@@ -15,16 +15,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
-from bar_assembly_core.legacy.conversion import (DESIGN_FILE, OLD_EXPORT_FILE, convert_export, converted_folder,
-                                                 is_old_export, is_up_to_date)
-from bar_assembly_core.design import Action, Design, Holder, Movement, State, read
-from bar_assembly_core.design.carry import assumed_start_all
-from bar_assembly_core.design.relations import is_present, placement
-from bar_assembly_core.legacy.timing import Stopwatch
-from bar_assembly_core.ids import IdMap
-from bar_assembly_core.scene import retarget
-from bar_assembly_core.scene import Attachment, Body
-from bar_assembly_core.ids import robot_id as scene_robot_id
+from scaffolding_assembly_core.legacy.conversion import (OLD_EXPORT_FILE, PROCESS_FILE, convert_export,
+                                                         converted_folder, is_old_export, is_up_to_date)
+from scaffolding_assembly_core.process import Action, Holder, Movement, Process, State, read
+from scaffolding_assembly_core.process.carry import assumed_start_all
+from scaffolding_assembly_core.process.relations import is_present, placement
+from scaffolding_assembly_core.legacy.timing import Stopwatch
+from scaffolding_assembly_core.ids import IdMap
+from scaffolding_assembly_core.scene import retarget
+from scaffolding_assembly_core.scene import Attachment, Body
+from scaffolding_assembly_core.ids import robot_id as scene_robot_id
 
 if TYPE_CHECKING:
     from ...config import RobotConfig
@@ -62,23 +62,23 @@ class Step:
 
 
 @dataclass(frozen=True)
-class CellDesign:
-    """A loaded design and its steps.
+class CellProcess:
+    """A loaded process and its steps.
 
     Attributes:
         source: The folder it was loaded from.
-        design: The design, as read.
+        process: The process, as read.
         steps: Every movement of every action, in schedule order.
     """
 
     source: Path
-    design: Design
+    process: Process
     steps: tuple[Step, ...]
 
     @property
     def action_count(self) -> int:
         """int: How many actions the schedule has."""
-        return len(self.design.schedule)
+        return len(self.process.schedule)
 
     def first_step_of(self, action_index: int) -> int:
         """Index into `steps` of the first movement of the action at `action_index` in the schedule."""
@@ -88,23 +88,23 @@ class CellDesign:
         raise IndexError(f"no action {action_index} in the schedule")
 
 
-def load_design(folder: Path, data_directory: Path, report: Callable[[str], None] = lambda _text: None,
-                watch: Stopwatch | None = None) -> CellDesign:
-    """Read a design folder; an old compas_fab export is first converted into `<export>_design`.
+def load_process(folder: Path, data_directory: Path, report: Callable[[str], None] = lambda _text: None,
+                 watch: Stopwatch | None = None) -> CellProcess:
+    """Read a process folder; an old compas_fab export is first converted into `<export>_process`.
 
     The converted copy is reused while it is newer than the export.
 
     Args:
-        folder: The design folder (holding design.json), or an old export (holding ActionSchedule.json).
+        folder: The process folder (holding process.json), or an old export (holding ActionSchedule.json).
         data_directory: The monitor's data directory, for converting an old export's robots.
         report: Told what is being done, for the panel. Called from the loading thread.
         watch: Gets a lap per step, if given.
 
     Returns:
-        CellDesign: The design and its steps; `source` is the converted copy for an old export.
+        CellProcess: The process and its steps; `source` is the converted copy for an old export.
 
     Raises:
-        FileNotFoundError: If the folder is neither a design nor an old export.
+        FileNotFoundError: If the folder is neither a process nor an old export.
     """
     folder = Path(folder).expanduser()
     watch = watch if watch is not None else Stopwatch()
@@ -112,22 +112,22 @@ def load_design(folder: Path, data_directory: Path, report: Callable[[str], None
         export, folder = folder, converted_folder(folder)
         if not is_up_to_date(export):
             convert_export(export, folder, data_directory, report, watch)
-    if not (folder / DESIGN_FILE).is_file():
-        raise FileNotFoundError(f"no {DESIGN_FILE} or {OLD_EXPORT_FILE} in {folder}")
+    if not (folder / PROCESS_FILE).is_file():
+        raise FileNotFoundError(f"no {PROCESS_FILE} or {OLD_EXPORT_FILE} in {folder}")
     report(f"reading {folder.name}")
-    design = read(folder)
-    watch.lap("read design")
-    steps = _steps(design)
+    process = read(folder)
+    watch.lap("read process")
+    steps = _steps(process)
     watch.lap("steps")
-    return CellDesign(source=folder, design=design, steps=steps)
+    return CellProcess(source=folder, process=process, steps=steps)
 
 
-def _steps(design: Design) -> tuple[Step, ...]:
+def _steps(process: Process) -> tuple[Step, ...]:
     """Every movement of the schedule as a step, in order, with its assumed start joints."""
-    assumed = assumed_start_all(design)
+    assumed = assumed_start_all(process)
     steps = []
-    for action_index, action_id in enumerate(design.schedule):
-        action = design.actions[action_id]
+    for action_index, action_id in enumerate(process.schedule):
+        action = process.actions[action_id]
         for movement_index, movement in enumerate(action.movements):
             joints, source = assumed.get((action_id, movement.id), (None, ""))
             steps.append(Step(action, action_index, movement_index, movement, joints, source))
@@ -171,16 +171,16 @@ def body_color(body_id: str) -> tuple[int, int, int]:
     return JOINT_COLOR
 
 
-def stands(design: Design, state: State, body_id: str) -> bool:
+def stands(process: Process, state: State, body_id: str) -> bool:
     """Whether a body stands in a state on its own: present, and not an attached, unbuilt bar or one of its halves.
 
     * Standing bodies go into the scene enabled; the cell's overlay draws the rest.
     """
-    return is_present(design, state, body_id) and not isinstance(placement(design, state, body_id), Holder)
+    return is_present(process, state, body_id) and not isinstance(placement(process, state, body_id), Holder)
 
 
-def scene_bodies(cell: CellDesign, step: Step, robots: tuple[RobotConfig, ...], prefix: str) -> list[Body]:
-    """Every body of a step's design scene, as a scene body "<prefix><body id>".
+def scene_bodies(cell: CellProcess, step: Step, robots: tuple[RobotConfig, ...], prefix: str) -> list[Body]:
+    """Every body of a step's process scene, as a scene body "<prefix><body id>".
 
     The scene is edited for the live world:
     - a held body is attached to the configured robot with the planned robot's serial (`retarget`); held by a robot
@@ -191,22 +191,22 @@ def scene_bodies(cell: CellDesign, step: Step, robots: tuple[RobotConfig, ...], 
       the 3D view: it only moves, enables and disables them.
 
     Args:
-        cell: The loaded design.
+        cell: The loaded process.
         step: The step; its movement's start is the state.
         robots: The configured robots, `ctx.config.robots`.
         prefix: Id prefix, the owning plugin's "<name>/".
 
     Returns:
-        list[Body]: One scene body per design body.
+        list[Body]: One scene body per process body.
 
     Raises:
         ValueError: If a configured robot lacks a link the plan holds a body by.
     """
-    scene = cell.design.scene_at(step.movement)
+    scene = cell.process.scene_at(step.movement)
     configured = {config.serial[-4:]: config for config in robots if config.model is not None}
     # * Small explicit maps: planned robot -> real robot, and each planned tool -> the real tool on the same flange.
     pairs, models = {}, {}
-    for planned, spec in cell.design.robots.items():
+    for planned, spec in cell.process.robots.items():
         config = configured.get(spec.serial or "")
         if config is None:
             continue
@@ -224,7 +224,8 @@ def scene_bodies(cell: CellDesign, step: Step, robots: tuple[RobotConfig, ...], 
 
     bodies = []
     for body_id, body in scene.bodies.items():
-        placement = moved.get(body_id) or scene.world_poses.get(body_id, cell.design.bodies[body_id].pose)
+        placement = moved.get(body_id) or scene.world_poses.get(body_id,
+                                                                cell.process.bodies[body_id].assembly_pose)
         enabled = body.enabled and (body_id not in held or body_id in moved)
         bodies.append(Body(ids(body_id), body.geometry, placement,
                            touches=tuple(ids(other) for other in body.touches if other in ids),

@@ -65,15 +65,15 @@ python3 -m pip install -e src/husky-assembly-teleop/external/rs_data_structure
 # --no-deps: husky_assembly_tamp pins compas_fab and rs_data_structure to git URLs,
 # and pip would replace the editable copies above with those
 python3 -m pip install --no-deps -e src/husky-assembly-teleop/external/husky_assembly_tamp
-# The shared core (private repository: needs access to jeliag/bar_assembly_core)
-python3 -m pip install --no-deps -e src/husky-assembly-teleop/external/bar_assembly_core
+# The shared core (github.com/yijiangh/scaffolding_assembly_core)
+python3 -m pip install --no-deps -e src/husky-assembly-teleop/external/scaffolding_assembly_core
 
 # The monitor's dependencies (versions as in requirements.txt); matplotlib is for husky_assembly_tamp
 python3 -m pip install "viser==1.1.1" "yourdfpy==0.0.60" "trimesh==4.12.2" "async-timeout>=4.0" "compas_robots>=0.6" \
     "scipy>=1.8" "pybullet>=3.2" "compas>=2.0" "matplotlib==3.10.3"
 
 # Check: all five should list a location under src/husky-assembly-teleop/external
-python3 -m pip list | grep -iE "pybullet.planning|compas.fab|rs.data.structure|husky.assembly.tamp|bar.assembly.core"
+python3 -m pip list | grep -iE "pybullet.planning|compas.fab|rs.data.structure|husky.assembly.tamp|scaffolding.assembly.core"
 ```
 
 Set up Zenoh as described in crl-husky's README ([Zenoh](../crl-husky/README.md#zenoh)): `export RMW_IMPLEMENTATION=rmw_zenoh_cpp ROS_DOMAIN_ID=80` in `~/.bashrc`, and the router once.
@@ -166,7 +166,7 @@ The monitor is a small core that ticks and owns the shared state; every feature 
 | `ui/` | The viser web UI and shared widgets. |
 | `old/` | The old monitor, for reference only. |
 
-`external/bar_assembly_core/` is the core shared with the Rhino plugin and the planners, a submodule of [jeliag/bar_assembly_core](https://github.com/jeliag/bar_assembly_core): the design file format (`design/`), robots and scenes, and their mirrors in PyBullet and compas_fab. Its layers are listed in its `bar_assembly_core/__init__.py`; the design format is in its `doc/design_format.md`.
+`external/scaffolding_assembly_core/` is the core shared with the Rhino plugin and the planners, a submodule of [yijiangh/scaffolding_assembly_core](https://github.com/yijiangh/scaffolding_assembly_core): the process file format (`process/`, schema 2.1), robots and scenes, and their mirrors in PyBullet and compas_fab. Its layers are listed in its `scaffolding_assembly_core/__init__.py`; the process format is in its `doc/process_format.md`.
 
 ## Documentation
 
@@ -175,7 +175,7 @@ The monitor is a small core that ticks and owns the shared state; every feature 
 | `AGENTS.md` | Conventions, build and test commands; for coding agents and people alike. |
 | `doc/refactor_rationale.md` | Why the core is built the way it is. |
 | `doc/plugin_roadmap.md` | Which plugins exist, and which old features are still to be ported. |
-| `doc/scene_refactor_plan.md`, `doc/ur_frames.md` | The scene, the UR arm frames. The design file format is in the core's `doc/design_format.md`. |
+| `doc/scene_refactor_plan.md`, `doc/ur_frames.md` | The scene, the UR arm frames. The process file format is in the core's `doc/process_format.md`. |
 | `tasks/` | Specs written while building a feature. |
 | `doc/calibration_manual.md` and the other manuals | **Outdated**, written for the old monitor; each says at the top what is missing or different now. |
 | `DOCKER.md` | **Unknown state**, not tested with the new monitor. |
@@ -226,8 +226,8 @@ Example: `mocap_probe` shows the probe state in a **Probe** panel, collapsed on 
 | `robots` | none | Robots to connect to, by serial or name: `0804`, `alice`, `a200-0806`, `Cindy`. `"[]"` runs without robots. |
 | `plugins` | none | Plugins to load, see below. `health` is always added, unless `no_default_plugins:=true`. |
 | `tools` | per robot | Only where the mounted tools differ from the defaults: `'<robot>:<tool>[,<tool>...]'`, one tool per arm in arm order. Tools: `robotiq`, `scaffolding_v1`, `scaffolding_v3`, `none`. Defaults: Alice and Belle `robotiq`, Cindy `scaffolding_v3,scaffolding_v3`. |
-| `design_directory` | none | Design folder the `cell` plugin loads at startup, relative to `drive_root` (e.g. `data_design_study/260814_RobArch_support_ik`) or absolute; without it, pick one in its panel. |
-| `data_directory` | `data/` of this repo | Root for meshes, URDFs and designs. |
+| `process_directory` | none | Process folder (with `process.json`) or old compas_fab export the `cell` plugin loads at startup, relative to `drive_root` (e.g. `data_design_study/260814_RobArch_support_ik`) or absolute; without it, pick one in its panel. An export is converted into `<export>_process` next to it. |
+| `data_directory` | `data/` of this repo | Root for meshes, URDFs and processes. |
 | `drive_root` | `$HUSKY_DRIVE_ROOT` | Local copy of the project's Google Drive folder (`2025-03 Husky Assembly`), for experiment data; see [Experiment data](#experiment-data-google-drive). |
 | `no_default_plugins` | `false` | `true` skips the default plugins (`health`). |
 | `ghost_timeout` | `20.0` | Seconds a plugin's ghost robots stay after the last input in it; 0 keeps them. |
@@ -258,7 +258,7 @@ Paths are given relative to this folder, e.g. `data_design_study/260814_RobArch_
 | `obstacles` | Adds the fixed lab furniture to the scene as collision obstacles for the planners. |
 | `debug_gizmo` | Debug only. Click any scene body with a world pose (e.g. an obstacle) in the 3D view, or pick it from the dropdown, then drag it with a gizmo or type its position and roll/pitch/yaw. **Add** puts temporary boxes and cylinders into the scene (planners avoid them); resize them with the small corner gizmo or by typing **Size**, and **Remove** them. **Log** prints position, quaternion, roll/pitch/yaw (and size), **Reset** puts a body back. Nothing is saved. |
 | `mocap_probe` | Tracks the probe and records points with it, e.g. obstacle corners; exports JSON and loads it back. Shows its state in a separate panel, see [Panels](#panels). **Map coverage** walks a 15 × 15 m grid of 1 m cells, centred on the mocap origin, and colours each on the floor by how often the probe was tracked there (grey: not visited, red → green), with the mean ± std marker error per cell; export and load as JSON. |
-| `cell` | Loads a design and shows the cell state of one movement at a time. Experimental. |
+| `cell` | Loads a process and shows the cell state of one movement at a time. Experimental. |
 | `base_planner` | Plans a collision-free path for a base. Experimental: Commit only logs the path. |
 | `arm_planner` | Plans a collision-free arm motion to a joint target. Experimental: Commit only logs the path. |
 | `example_plot`, `example_ui`, `example_sequence`, `example_pybullet`, `example_recording`, `example_robot_state` | Minimal plugins, as templates for new ones. |
@@ -279,9 +279,9 @@ ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['alice','ci
 # Measure obstacles with the mocap probe (no robots needed)
 ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="[]" -p plugins:="['mocap_probe']"
 
-# Assembly: a design, the lab obstacles and the base planner
+# Assembly: a process, the lab obstacles and the base planner
 ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['alice','cindy']" \
-    -p plugins:="['robot_control', 'cell', 'obstacles', 'base_planner']" -p design_directory:=data_design_study/260814_RobArch_support_ik
+    -p plugins:="['robot_control', 'cell', 'obstacles', 'base_planner']" -p process_directory:=data_design_study/260814_RobArch_support_ik
 
 # Plan arm motions too
 ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['cindy']" \

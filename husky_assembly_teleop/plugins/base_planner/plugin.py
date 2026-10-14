@@ -23,8 +23,8 @@ from ...ui.ghost import RobotGhost
 from ...ui.pose_input import PlanarPoseInput, yaw_from_xyzw
 from ...ui.pybullet_window import add_pybullet_window_toggle
 from ...ui.style import BUSY, OK, SECTION_CTRL, SECTION_TOOL, block, chip, section, values
-from bar_assembly_core.geometry import Pose
-from bar_assembly_core.ids import robot_id
+from scaffolding_assembly_core.geometry import Pose
+from scaffolding_assembly_core.ids import robot_id
 from .path import BasePath
 from .planner import PlanningWorld, plan_birrt
 
@@ -147,7 +147,7 @@ class BasePlannerPlugin(PlannerPlugin):
         step, serial, robot_name = found
         # * The step says which robot it is for; plan for that one.
         self._choose_robot(serial)
-        # ? The design's base pose is the URDF root (base_footprint), as in mocap and PyBullet.
+        # ? The process's base pose is the URDF root (base_footprint), as in mocap and PyBullet.
         base = step.movement.start.robots[step.action.robot].base
         if base is None:
             self._say(f"{step.label} leaves {robot_name}'s base to the planner: no target to load", failed=True)

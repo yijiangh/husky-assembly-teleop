@@ -20,13 +20,13 @@ import numpy as np
 import viser
 from scipy.spatial.transform import Rotation
 
-from bar_assembly_core.geometry import Geometry, box_geometry, cylinder_geometry, shape_mesh
-from bar_assembly_core.geometry import Pose
+from scaffolding_assembly_core.geometry import Geometry, box_geometry, cylinder_geometry, shape_mesh
+from scaffolding_assembly_core.geometry import Pose
 from ..plugin_api.context import PluginContext
 from ..plugin_api.plugin import HuskyPlugin, register
 from ..ui.quaternion import quaternion_to_wxyz
 from ..ui.style import SECTION_CTRL, block, note, numbers, section, values
-from bar_assembly_core.scene import Body
+from scaffolding_assembly_core.scene import Body
 
 #: Dropdown entry while no body can be moved.
 NONE_ENTRY = "(none)"

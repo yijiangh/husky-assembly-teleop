@@ -11,10 +11,9 @@ base_link (doc/ur_frames.md). Quaternions are (x, y, z, w).
 from __future__ import annotations
 
 from pathlib import Path
-from xml.etree.ElementTree import parse
 
-from bar_assembly_core.geometry import Pose, compose
-from bar_assembly_core.urdf import joint_origin
+from scaffolding_assembly_core.geometry import Pose, compose
+from scaffolding_assembly_core.urdf import load_urdf
 
 #: Frame of husky Cartesian targets (the URDF's husky base_link).
 HUSKY_FRAME = "base_link"
@@ -28,16 +27,17 @@ def fixed_transform(urdf_file: Path, parent: str, child: str) -> Pose:
     Raises:
         ValueError: If `child` is not below `parent`, or a movable joint lies between them.
     """
-    by_child = {j.find("child").get("link"): j for j in parse(urdf_file).getroot().findall("joint")}
+    by_child = {joint.child: joint for joint in load_urdf(urdf_file).robot.joints}
     pose = Pose()
     link = child
     while link != parent:
         joint = by_child.get(link)
         if joint is None:
             raise ValueError(f"{urdf_file.name}: {child} is not below {parent}")
-        if joint.get("type") != "fixed":
-            raise ValueError(f"{urdf_file.name}: joint {joint.get('name')} between {parent} and {child} moves")
-        xyz, rotation = joint_origin(joint)
-        pose = compose(Pose.from_arrays(xyz, rotation.as_quat()), pose)
-        link = joint.find("parent").get("link")
+        if joint.type != "fixed":
+            raise ValueError(f"{urdf_file.name}: joint {joint.name} between {parent} and {child} moves")
+        # ? A joint without <origin> has none in yourdfpy: its child sits on its parent.
+        if joint.origin is not None:
+            pose = compose(Pose.from_matrix(joint.origin), pose)
+        link = joint.parent
     return pose
