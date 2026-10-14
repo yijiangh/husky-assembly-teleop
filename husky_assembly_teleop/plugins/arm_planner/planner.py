@@ -85,7 +85,7 @@ class ArmPlanningWorld:
             CompasFabMirror: Its mirror, synced.
         """
         mirror = self._mirror(serial)
-        if self.gui and serial != self.serial:
+        if self.gui and self.serial is not None and serial != self.serial:
             # ? One window per process: it follows the robot being planned for.
             self._mirrors[self.serial].set_gui(False)
             mirror.set_gui(True)

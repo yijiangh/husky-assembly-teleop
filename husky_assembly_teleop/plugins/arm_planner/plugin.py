@@ -115,8 +115,11 @@ class ArmPlannerPlugin(PlannerPlugin):
                                     commit_hint="Send the path to the arm (stub: logs only)")
             # * Debugging: watch the search in the chosen robot's planning world.
             # ? `self.serial` is read on the worker; at worst it is the robot chosen a moment later.
-            add_pybullet_window_toggle(ctx, gui, self._executor,
-                                       lambda gui, snapshot: self._world.set_gui(gui, snapshot, self.serial))
+            # * Guessed like a plan is, so an untracked robot still shows.
+            add_pybullet_window_toggle(
+                ctx, gui, self._executor,
+                lambda gui, snapshot: self._world.set_gui(
+                    gui, with_guesses(snapshot, robot_id(self.serial))[0], self.serial))
             # ! Keep changing content BELOW the buttons, so nothing moves under the cursor.
             self._details = gui.add_html("")
 
