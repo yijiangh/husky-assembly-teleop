@@ -1,7 +1,8 @@
 """
 The process plugin: loads an authored process and draws the state at one movement at a time.
 
-It serves the selected step to plugins that declare `requires = ("process",)`.
+It serves the selected step to plugins that declare `requires = ("process",)`, and the maps between process ids and
+live scene ids (`ids`, `process_ids`).
 
 Every body of the selected movement's process scene (`Process.scene_at`) goes into the scene as "process/<body id>"
 (`steps.scene_bodies`): the core draws it and planners avoid it. A body the plan holds follows the configured real
@@ -34,10 +35,11 @@ from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
 from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, block, chip, note, section, values
 from scaffolding_assembly_core.legacy.timing import Stopwatch
-from .steps import LoadedProcess, Step, displayed_joints, load_process, scene_bodies
+from .steps import LoadedProcess, Step, displayed_joints, live_ids, load_process, scene_bodies
 from .drawing import ProcessDrawing, load_robot_models
 
 if TYPE_CHECKING:
+    from scaffolding_assembly_core.ids import IdMap
     from ...config import RobotConfig
 
 #: Give up on a load after this many seconds (converting an old export takes about 15).
@@ -105,6 +107,12 @@ class ProcessPlugin(HuskyPlugin):
 
         #: Goes up whenever the process or selected step changes, so dependents can poll it.
         self.revision = 0
+
+        #: Process id -> live scene id ("bars/B1" -> "process/bars/B1", planned robot -> real robot), as the scene
+        #: bodies were put; None until they are.
+        self.ids: IdMap | None = None
+        #: Live scene id -> process id: the way back, e.g. for a body a planner reports.
+        self.process_ids: IdMap | None = None
 
         self._load_task: asyncio.Task | None = None
         self._build_task: asyncio.Task | None = None
@@ -331,19 +339,24 @@ class ProcessPlugin(HuskyPlugin):
 
         ! Runs only when `revision` changes: `scene_at` is too slow for every tick.
         """
-        ctx.scene.remove_prefix(f"{self.name}/")
+        prefix = f"{self.name}/"
+        ctx.scene.remove_prefix(prefix)
+        self.ids = self.process_ids = None
         step = self.step
         if step is None:
             return
         # ? Same ids and geometry objects every step: mirrors only move and switch bodies, never rebuild.
+        robots = ctx.config.robots
         try:
-            bodies = scene_bodies(self.loaded, step, ctx.config.robots, f"{self.name}/")
+            bodies = scene_bodies(self.loaded, step, robots, prefix)
         except ValueError as refused:
             # ! A grasp the real robot can't take is a data problem: report it, put the bodies without the robots.
             self._error = f"held bodies left where planned: {refused}"
             ctx.log_error(self._error)
-            bodies = scene_bodies(self.loaded, step, (), f"{self.name}/")
+            robots = ()
+            bodies = scene_bodies(self.loaded, step, robots, prefix)
         ctx.scene.put_many(bodies)
+        self.ids, self.process_ids = live_ids(self.loaded.process, robots, prefix)
 
     def draw(self, ctx: PluginContext) -> None:
         """Pose the overlay from the selected state, and fill the panel."""

@@ -18,7 +18,7 @@ from scaffolding_assembly_core.robot import robot_model
 from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.scene import Attachment
 from husky_assembly_teleop.config import robot_config_from_serial
-from husky_assembly_teleop.plugins.process.steps import (LoadedProcess, Step, displayed_joints, load_process,
+from husky_assembly_teleop.plugins.process.steps import (LoadedProcess, Step, displayed_joints, live_ids, load_process,
                                                          scene_bodies)
 from husky_assembly_teleop.plugins.process.drawing import GHOST_OPACITY, ProcessDrawing, load_robot_models
 from husky_assembly_teleop.plugins.process.plugin import BY_HAND_LABEL, ProcessPlugin
@@ -90,6 +90,24 @@ def test_held_body_follows_the_configured_robot(loaded):
     assert bodies["process/bars/B1"].placement == Attachment("robots/a200-0806", "left_tool0", grasp)
     assert "tools/a200-0806/left" in bodies["process/joints/G1_ground"].touches
     assert bodies["process/ground/WG0"].touches == ("process/joints/G1_ground", "robots/a200-0806/wheel_link")
+
+
+def test_live_ids_both_ways(loaded):
+    """Bodies get the prefix, Cindy and her links and tool become the real ones; unconfigured Alice is not mapped."""
+    ids, back = live_ids(loaded.process, (_real_cindy(loaded),), "process/")
+    tool = loaded.process.robots["robots/cindy"].tools["left_tool0"]
+    assert ids("bars/B1") == "process/bars/B1" and back("process/bars/B1") == "bars/B1"
+    assert ids("robots/cindy/left_tool0") == "robots/a200-0806/left_tool0"
+    assert back("robots/a200-0806/wheel_link") == "robots/cindy/wheel_link"
+    assert ids(tool) == "tools/a200-0806/left" and back("tools/a200-0806/left") == tool
+    assert "robots/alice" not in ids and "tracked/probe" not in back
+
+
+def test_live_ids_refuse_two_robots_on_one_serial(loaded):
+    """Two planned robots with one serial would make the way back ambiguous: refused."""
+    robots = {robot_id: replace(spec, serial="0806") for robot_id, spec in loaded.process.robots.items()}
+    with pytest.raises(ValueError, match="both map to 'robots/a200-0806'"):
+        live_ids(replace(loaded.process, robots=robots), (_real_cindy(loaded),), "process/")
 
 
 def test_robot_without_the_held_link_is_refused(loaded):

@@ -4,7 +4,7 @@ A process (doc/process_format.md) as the process plugin steps through it.
 Every movement is a step, with the joints to draw each robot at. A movement without authored start joints is
 drawn where its robot last was.
 `scene_bodies` turns a step's process scene (`Process.scene_at`) into scene bodies: the core draws them, and planners
-avoid them. Bodies the plan holds follow the configured real robot.
+avoid them. Bodies the plan holds follow the configured real robot. `live_ids` maps process ids to scene ids and back.
 
 ! Runs on a worker thread: nothing here may touch viser, PyBullet or a PluginContext.
 """
@@ -179,6 +179,40 @@ def stands(process: Process, state: State, body_id: str) -> bool:
     return is_present(process, state, body_id) and not isinstance(placement(process, state, body_id), Holder)
 
 
+def live_ids(process: Process, robots: tuple[RobotConfig, ...], prefix: str) -> tuple[IdMap, IdMap]:
+    """Map process ids to live scene ids, and back.
+
+    A body becomes "<prefix><body id>"; a planned robot (and its links) becomes the configured robot with its serial,
+    and each planned tool the real tool on the same flange. Robots not configured are not mapped.
+
+    Args:
+        process: The process.
+        robots: The configured robots, `ctx.config.robots`.
+        prefix: Id prefix, the owning plugin's "<name>/".
+
+    Returns:
+        tuple[IdMap, IdMap]: Process id -> live id, and live id -> process id.
+
+    Raises:
+        ValueError: If two process ids map to the same live id (e.g. two planned robots with one serial).
+    """
+    configured = {config.serial[-4:]: config for config in robots if config.model is not None}
+    pairs = {body_id: f"{prefix}{body_id}" for body_id in process.bodies}
+    for planned, spec in process.robots.items():
+        config = configured.get(spec.serial or "")
+        if config is None:
+            continue
+        pairs[planned] = scene_robot_id(config.serial)
+        for flange, tool_id in spec.tools.items():
+            if flange in config.model.tools:
+                pairs[process.tools[tool_id].id] = config.model.tools[flange].id
+    back: dict[str, str] = {}
+    for own, live in pairs.items():
+        if back.setdefault(live, own) != own:
+            raise ValueError(f"{back[live]!r} and {own!r} both map to {live!r}: the way back would be ambiguous")
+    return IdMap(pairs), IdMap(back)
+
+
 def scene_bodies(loaded: LoadedProcess, step: Step, robots: tuple[RobotConfig, ...], prefix: str) -> list[Body]:
     """Every body of a step's process scene, as a scene body "<prefix><body id>".
 
@@ -200,27 +234,15 @@ def scene_bodies(loaded: LoadedProcess, step: Step, robots: tuple[RobotConfig, .
         list[Body]: One scene body per process body.
 
     Raises:
-        ValueError: If a configured robot lacks a link the plan holds a body by.
+        ValueError: If a configured robot lacks a link the plan holds a body by, or two process ids map to one
+            live id (`live_ids`).
     """
     scene = loaded.process.scene_at(step.movement)
-    configured = {config.serial[-4:]: config for config in robots if config.model is not None}
-    # * Small explicit maps: planned robot -> real robot, and each planned tool -> the real tool on the same flange.
-    pairs, models = {}, {}
-    for planned, spec in loaded.process.robots.items():
-        config = configured.get(spec.serial or "")
-        if config is None:
-            continue
-        real = pairs[planned] = scene_robot_id(config.serial)
-        models[real] = config.model
-        for flange, tool in scene.robots[planned].model.tools.items():
-            if flange in config.model.tools:
-                pairs[tool.id] = config.model.tools[flange].id
-    robot_map = IdMap(pairs)
-    ids = IdMap({**pairs, **{body_id: f"{prefix}{body_id}" for body_id in scene.bodies}})
+    ids, _ = live_ids(loaded.process, robots, prefix)
+    models = {scene_robot_id(config.serial): config.model for config in robots if config.model is not None}
     held = {body_id: body.placement for body_id, body in scene.bodies.items()
             if isinstance(body.placement, Attachment)}
-    moved = retarget({body_id: held[body_id] for body_id in held if held[body_id].parent in robot_map},
-                     robot_map, models)
+    moved = retarget({body_id: held[body_id] for body_id in held if held[body_id].parent in ids}, ids, models)
 
     bodies = []
     for body_id, body in scene.bodies.items():
