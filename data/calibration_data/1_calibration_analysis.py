@@ -496,8 +496,43 @@ def compute_plane_plane_intersection(plane1_point, plane1_normal, plane2_point, 
     return intersection_line
 
 
+def joint_axis_from_motion(takes: list, joint_index: int) -> np.ndarray:
+    """Positive joint axis, in the base_mocap frame, from how the tool actually turned.
+
+    * For each take, the circle normal is flipped so that turning the joint to a
+    * LARGER angle moves the tool counter-clockwise around it (right-hand rule),
+    * which is exactly the joint's positive axis. It does not depend on how the
+    * base tracker is mounted on the robot, unlike comparing with URDF axes.
+
+    Args:
+        takes (list): Takes from <batch>_analysis.json, each with 'raw_data',
+            'center' and 'normal' (base_mocap frame).
+        joint_index (int): 0 for the J0 batch, 1 for the J1 batch.
+
+    Returns:
+        np.ndarray: Unit vector, the mean of the oriented per-take normals.
+    """
+    axes = []
+    for take in takes:
+        entries = [e for e in take['raw_data']
+                   if e.get('flange_mocap_pose') and e.get('base_mocap_pose')]
+        # Tool positions in the base_mocap frame, as in 0_circle_fitting.py.
+        points = np.array([pp.multiply(pp.invert(e['base_mocap_pose']), e['flange_mocap_pose'])[0]
+                           for e in entries])
+        angles = np.array([e['joint_conf'][joint_index] for e in entries])
+        center = np.array(take['center'])
+        normal = np.array(take['normal']) / np.linalg.norm(take['normal'])
+        # Vote over consecutive points: turning sense around the normal x sign of the angle step.
+        votes = sum(np.sign(np.cross(points[i] - center, points[i + 1] - center) @ normal)
+                    * np.sign(angles[i + 1] - angles[i]) for i in range(len(points) - 1))
+        axes.append(normal if votes > 0 else -normal)
+    axis = np.mean(axes, axis=0)
+    return axis / np.linalg.norm(axis)
+
+
 def compute_base_frame(j0_line, j1_line, base_offset, robot_name, arm,
-                       nominal_j0=None, nominal_j1=None):
+                       nominal_j0=None, nominal_j1=None,
+                       motion_j0=None, motion_j1=None):
     """
     Compute robot base frame from j0 and j1 fitted lines.
 
@@ -557,6 +592,27 @@ def compute_base_frame(j0_line, j1_line, base_offset, robot_name, arm,
         if np.dot(v1, nominal_j1) < 0:
             v1 = -v1
             logger.info('  Sign fix: flipped v1 to match nominal j1 axis')
+
+    # ------------------------------------------------------------------
+    # ! ACTIVE (2026-10-14): sign from the measured joint MOTION, overriding the
+    # ! nominal test above. That test compares v0/v1 (base_mocap axes) with URDF
+    # ! axes (base_footprint axes), so it only works when the tracker happens to
+    # ! be mounted turned like Alice's. Belle's tracker is turned 180 deg, the
+    # ! test kept the wrong v1 sign and her whole base frame came out rotated
+    # ! 180 deg about Z (validation offsets of metres instead of ~22 mm).
+    # * In every validated calibration (Alice 20260623, Cindy 20260622/20260625)
+    # * the arm base frame has +J0 = +Z and +J1 = -Y. The construction below uses
+    # * Z = v0 and Y = -v1 (single arm) or Y = +v1 (dual arm), so orient
+    # * v0 = +J0, and v1 = +J1 (single arm) or -J1 (dual arm).
+    if motion_j0 is not None:
+        if np.dot(v0, motion_j0) < 0:
+            v0 = -v0
+        logger.info('  Sign from motion: v0 = +J0 axis')
+    if motion_j1 is not None:
+        wanted = -motion_j1 if robot_name == '0806' else motion_j1
+        if np.dot(v1, wanted) < 0:
+            v1 = -v1
+        logger.info('  Sign from motion: v1 = %s J1 axis', '-' if robot_name == '0806' else '+')
     # ------------------------------------------------------------------
 
     # # Get the expected joint axes from URDF
@@ -995,7 +1051,9 @@ def main():
     logger.info('=' * 80)
     base_frame_tf, base_origin, base_axes, intersection_info = compute_base_frame(
         j0_line, j1_line, BASE_OFFSET, robot_name, arm,
-        nominal_j0=nominal_j0, nominal_j1=nominal_j1
+        nominal_j0=nominal_j0, nominal_j1=nominal_j1,
+        motion_j0=joint_axis_from_motion(j0_data['takes'], 0),
+        motion_j1=joint_axis_from_motion(j1_data['takes'], 1),
     )
     
     # Convert to pose (position, quaternion)

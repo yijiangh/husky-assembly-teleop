@@ -13,7 +13,7 @@ data_batches:
 validation_data_batch: "validation"  # Use j0 data for validation (no separate validation folder)
 
 # Robot settings
-robot_name: "0804"  # Options: "0806" (dual arm), "0804" (single arm)
+robot_name: "0804"  # Options: "0806" Cindy (dual arm), "0804" Alice / "0805" Belle (single arm)
 arm: "left"         # Options: "left", "right" (only used for dual arm robot)
 
 # Export settings

@@ -13,6 +13,7 @@ constant across all configurations, representing the fixed offset between the tw
 
 import os
 import re
+import sys
 import json
 import numpy as np
 import matplotlib.pyplot as plt
@@ -612,7 +613,16 @@ def main():
     # Compute tool0-flange offsets
     results = compute_tool0_flange_offset(robot, arm_joints, tool0_link_name, calibration_data, VALIDATION_DATA_FOLDER)
     logger.info('Processed %d samples', len(results))
-    
+
+    # ! Nothing to verify yet (e.g. the validation batch is not collected):
+    # ! stop with a clear message instead of a numpy error in the plots below.
+    if not results:
+        logger.error('No calibration_*.json samples in %s -- collect the "%s" batch first '
+                     '(manual section 5), then re-run this step.',
+                     VALIDATION_DATA_FOLDER, VALIDATION_DATA_BATCH)
+        pp.disconnect()
+        sys.exit(1)
+
     if USE_GUI:
         pp.wait_if_gui('Processing complete')
 

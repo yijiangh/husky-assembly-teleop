@@ -33,6 +33,7 @@ if _REPO_ROOT not in sys.path:
     sys.path.append(_REPO_ROOT)
 
 from husky_assembly_teleop import CALIBRATION_ANALYSIS_DATE, CALIBRATION_DATA_DIRECTORY, EXPERIMENT_DATA_DIRECTORY
+from husky_assembly_teleop.robot_registry import robot_by_serial
 
 # * Root holding the dated calibration datasets (gdrive). Build every dataset
 # * path as os.path.join(CALIB_DATA_DIR, <date>, ...), never from HERE.
@@ -87,23 +88,21 @@ def get_data_folder(date_folder=None):
     return os.path.join(CALIB_DATA_DIR, date_folder)
 
 
-def get_robot_urdf(robot_name):
-    """Get the URDF path for the specified robot."""
-    base_path = os.path.join(HERE, '..')
-    
-    if robot_name == '0806':
-        urdf_path = os.path.join(
-            base_path, 
-            'husky_urdf', 'mt_husky_dual_ur5_e_moveit_config', 'urdf', 
-            'husky_dual_ur5_e_no_base_joint_All_Calibrated.urdf'
-        )
-    else:
-        urdf_path = os.path.join(
-            base_path,
-            'husky_urdf', 'mt_husky_moveit_config', 'urdf', 
-            'husky_ur5_e_no_base_joint_Alice_Calibrated.urdf'
-        )
-    
+def get_robot_urdf(robot_name: str) -> str:
+    """Get the URDF path for the specified robot.
+
+    * Each husky has its own kinematically calibrated URDF (Alice and Belle
+    * differ by up to ~0.5 mm per link), so look it up in the robot registry
+    * instead of using Alice's file for every single-arm robot.
+
+    Args:
+        robot_name (str): Serial number from config.yaml, e.g. '0805'.
+
+    Returns:
+        str: Path of the robot's URDF.
+    """
+    urdf_path = robot_by_serial(robot_name).urdf_path
+
     if not os.path.exists(urdf_path):
         raise FileNotFoundError(f"URDF file not found: {urdf_path}")
     
