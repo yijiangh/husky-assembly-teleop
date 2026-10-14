@@ -86,21 +86,22 @@ RECORD_DIRECTORY = os.path.join(DATA_DIRECTORY, '..', 'recorded_data')
 #   * husky_monitor reads the punch-tool TCP offsets from <date>/config.yaml
 #   * the Record/Save buttons WRITE new j0 / j1 / validation / punch_validation
 #     data into <date>/
-CALIBRATION_DATE = '20260916' # or 20260622
+CALIBRATION_DATE = '20261013' # Belle (0805) calibration; Cindy's is 20260916
 
 # * Base (mocap) calibration folder per robot, by registry name. The huskies are
 # * calibrated on different days, so each one reads its own newest
 # * calibrated_transformation_<serial>_rhino.json. A robot not listed here reads
-# * CALIBRATION_DATE (Cindy today). Only the base calibration file is read from
+# * CALIBRATION_DATE (Belle today). Only the base calibration file is read from
 # * these folders; recording and config.yaml stay on CALIBRATION_DATE.
 BASE_CALIBRATION_DATE_BY_ROBOT = {
     'Alice': '20260623',  # 0804, the newest Alice calibration
+    'Cindy': '20260916',  # 0806, the newest Cindy calibration
 }
 
 # Used by the OFFLINE SCRIPTS in data/calibration_data/ (0_ ... 4_ and the
 # export/visualise helpers). config_loader.py re-exports this as its
 # DEFAULT_DATE_FOLDER, which is the folder every load_config() call reads.
-CALIBRATION_ANALYSIS_DATE = '20260916'
+CALIBRATION_ANALYSIS_DATE = '20261013'
 
 CALIBRATION_BATCHES = ['j0', 'j1', 'validation', 'punch_validation']
 
