@@ -25,15 +25,14 @@ This manual walks you through the complete extrinsic calibration procedure for t
 
 ### 0.1 New Workstation Setup (one-time)
 
-If you are running on a **new workstation (PC)** for the first time, update these
-absolute paths in the code. Currently it hard-code the gdrive (Insync) mount
-location, which differ per machine.
+If you are running on a **new workstation (PC)** for the first time, point the code
+at this machine's gdrive (Insync) mount, which differs per machine.
 
 | What | Where | Note |
 |------|-------|------|
-| `DESIGN_DATA_DIRECTORY`, `EXPERIMENT_DATA_DIRECTORY` | [`__init__.py:55-56`](../husky_assembly_teleop/__init__.py#L55) | gdrive (Insync) mount paths. |
-| `CALIBRATION_DATA_DIRECTORY` | [`__init__.py:60`](../husky_assembly_teleop/__init__.py#L60) | where the dated calibration datasets live (`EXPERIMENT_DATA_DIRECTORY/calibration_data`, see [§4.3](#43-data-folder-structure)). Derived -- nothing to edit once the mount path above is right. |
-| `MOCAP_CAMERA_EXPORT_DIR` | [`husky_monitor.py:239`](../husky_assembly_teleop/husky_monitor.py#L239) | where the `collect cameras data` button drops JSON+CSV (`EXPERIMENT_DATA_DIRECTORY/visualise_mocap_camera`). Derived. |
+| `DESIGN_DATA_DIRECTORY`, `EXPERIMENT_DATA_DIRECTORY` | [`__init__.py:59-64`](../husky_assembly_teleop/__init__.py#L59) | gdrive (Insync) mount paths. The defaults are the robot-control PC's; on another PC **set the environment variables of the same names** instead of editing the file. |
+| `CALIBRATION_DATA_DIRECTORY` | [`__init__.py:68`](../husky_assembly_teleop/__init__.py#L68) | where the dated calibration datasets live (`EXPERIMENT_DATA_DIRECTORY/calibration_data`, see [§4.3](#43-data-folder-structure)). Derived -- nothing to edit once the mount path above is right. |
+| `MOCAP_CAMERA_EXPORT_DIR` | [`husky_monitor.py:296`](../husky_assembly_teleop/husky_monitor.py#L296) | where the `collect cameras data` button drops JSON+CSV (`EXPERIMENT_DATA_DIRECTORY/visualise_mocap_camera`). Derived. |
 | gdrive root in standalone scripts | `export_mocap_cameras.py`, `rhino8_import_outliers.py`, `robot_skeleton_viewer.py` in `data/calibration_data/` | these do not import the package (they also run inside Rhino), so the gdrive path is a plain string -- edit it by hand. |
 
 > **Where things live**: the calibration **scripts** stay in the repo under
@@ -47,15 +46,20 @@ serials, and Motive Streaming IDs.
 
 | Name | Serial | IP | ROS Domain | Motive ID (base) | Calib-tool ID |
 |------|--------|-----|-----------|------------------|---------------|
-| Alice | 0804 | 192.168.0.113 | 84 | 1840 | — |
-| Belle | 0805 | 192.168.0.114 | 85 | 1850 | — |
+| Alice | 0804 | 192.168.0.113 | 84 | 1840 | 1862 (arm 0) |
+| Belle | 0805 | 192.168.0.114 | 85 | 1850 | 1866 (arm 0) |
 | Cindy | 0806 | 192.168.0.115 | 86 | 1860 | right 1861 / left 1862 |
 
-1. **ROS Domain** selects the robot at launch via `ROS_DOMAIN_ID` (see [§2.4](#24-verify-ros2-connection))
-   - this drives namespace, base `mocap_id`, gripper and EE.
+1. **ROS Domain** selects the robot at launch: the monitor reads `ROS_DOMAIN_ID` from the
+   terminal it is started in (see [§2.4](#24-verify-ros2-connection) and [§3.1](#31-launch-the-monitor-node))
+   - this drives namespace, base `mocap_id`, gripper and EE. The other two huskies are
+     drawn too, but only moved by mocap (no ROS connection).
 2. **Motive ID** = the rigid-body **Streaming ID** set in Motive (see [§1.3](#13-create--verify-rigid-bodies)).
-   - These must match the `mocap_id` base-tracker values in `husky_world.py` `ROBOT_CONFIGS` [L184/L191/L198](../husky_assembly_teleop/husky_world.py#L184)
-   - and the calib-tool `husky_world.py` `TrackedObject` IDs at [L329/L333](../husky_assembly_teleop/husky_world.py#L329) (`1862` left / `1861` right).
+   - These must match the base-tracker `mocap_id` values in the robot registry,
+     [`robot_registry.py:312-314`](../husky_assembly_teleop/robot_registry.py#L312)
+   - and the calib-tool IDs: arm `0` (left / single arm) = `1862` unless the robot is listed in `CALIB_TOOL_ARM0_ID_BY_ROBOT` at [`husky_world.py:66`](../husky_assembly_teleop/husky_world.py#L66) (Belle: `1866`); arm `1` (Cindy's right) = `1861`.
+   - A single-arm robot (Alice, Belle) only has arm `0`, so it always uses its
+     arm-0 calib tool -- `1862` on Alice, `1866` on Belle. Mount that tracker on its flange.
 
 ---
 
@@ -88,9 +92,9 @@ If you need to create a new rigid body (e.g., for the robot base or flange track
 1. In Motive, select the markers that form the rigid body.
 2. Right-click and choose **Create Rigid Body**.
 3. Note the **Rigid Body ID** assigned by Motive -- you will need this for the PyBullet configuration.
-4. In the code, the rigid body IDs are configured in two places in [`husky_world.py`](../husky_assembly_teleop/husky_world.py):
-   - **Robot base tracker**: the `mocap_id` in `ROBOT_CONFIGS`, keyed by ROS domain — Alice `1840` / Belle `1850` / Cindy `1860` at [L184/L191/L198](../husky_assembly_teleop/husky_world.py#L184).
-   - **Flange/calib-tool tracker**: the ID argument to `TrackedObject` (e.g., `1862` left / `1861` right) at [L329/L333](../husky_assembly_teleop/husky_world.py#L329).
+4. In the code, the rigid body IDs are configured in two places:
+   - **Robot base tracker**: the `mocap_id` in the robot registry — Cindy `1860` / Alice `1840` / Belle `1850` at [`robot_registry.py:312-314`](../husky_assembly_teleop/robot_registry.py#L312).
+   - **Flange/calib-tool tracker**: arm `0` = `1862`, or the robot's entry in `CALIB_TOOL_ARM0_ID_BY_ROBOT` at [`husky_world.py:66`](../husky_assembly_teleop/husky_world.py#L66) (Belle `1866`); arm `1` = `1861` ([`husky_world.py:529`](../husky_assembly_teleop/husky_world.py#L529)).
 
    Make sure the IDs you see in Motive match the IDs in these two locations (and the Motive ID column in the [Robot Reference Table (§0.2)](#02-robot-reference-table)).
 
@@ -108,7 +112,7 @@ The workstation must be on the same network as the OptiTrack PC to receive strea
 | Workstation (your PC) | your own IP (e.g. `192.168.0.25`) |
 | OptiTrack PC (`DESKTOP-T1HDH98`) | `192.168.0.28` |
 
-These are configured in the code at [`husky_monitor.py:233-236`](../husky_assembly_teleop/husky_monitor.py#L233-L236):
+These are configured in the code at [`husky_monitor.py:289-293`](../husky_assembly_teleop/husky_monitor.py#L289-L293):
 ```python
 CLIENT_IP = '192.168.0.25'
 MOCAP_IP = '192.168.0.28'
@@ -197,7 +201,7 @@ This section covers starting up the Husky robot and the UR5e arm ROS2 drivers. M
 
    # For Belle (single-arm, serial 0805):
    ssh administrator@192.168.0.114
-   # Password: clearpath
+   # Password: 12345678
 
    # For Alice (single-arm, serial 0804):
    ssh administrator@192.168.0.113
@@ -209,7 +213,18 @@ This section covers starting up the Husky robot and the UR5e arm ROS2 drivers. M
    # For Cindy (dual arm):
    ros2 launch crl_husky crl_dual_ur5e.launch.py namespace:='/a200_0806' gripper:=none
 
-   # For Belle (single arm):
+   # For Belle (single arm) -- two variants, pick by how Belle is connected
+   # (see "Belle: which launch" below):
+
+   # (a) ORIGINAL launch -- Cyclone left to choose the network interface itself.
+   #     Use when Belle is on the lab network by cable, or whenever the
+   #     workstation already sees her topics with it.
+   ros2 launch crl_husky crl_single_ur5e.launch.py namespace:='/a200_0805' gripper:=none
+
+   # (b) CURRENT launch (since 2026-10-13) -- Belle on Wi-Fi (wlp2s0).
+   #     Pins Cyclone to the Wi-Fi interface; the export must come first, in the
+   #     same terminal as the launch.
+   export CYCLONEDDS_URI='<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="wlp2s0"/></Interfaces></General></Domain></CycloneDDS>'
    ros2 launch crl_husky crl_single_ur5e.launch.py namespace:='/a200_0805' gripper:=none
 
    # For Alice (single arm):
@@ -222,36 +237,86 @@ This section covers starting up the Husky robot and the UR5e arm ROS2 drivers. M
    gripper:=scaffolding_v3
    ```
 
+   > **Belle: which launch.** Belle has two networks: the robot-internal `br0`
+   > (192.168.131.x, to the UR controller) and the lab network, which on
+   > 2026-10-13 she reached over **Wi-Fi (`wlp2s0`)**. Run `ip -br addr | grep 192.168`
+   > on Belle to see which interface holds `192.168.0.114`:
+   >
+   > | `192.168.0.114` is on | Use | Why |
+   > |---|---|---|
+   > | a cable interface, and the workstation sees Belle's topics | **(a) original** | Cyclone finds the lab network by itself |
+   > | `wlp2s0` (Wi-Fi) | **(b) current** | without it Cyclone picks `br0`: Belle sees her own topics, but the workstation sees **nothing** (`ros2 topic list` shows only `/parameter_events` and `/rosout`) |
+   >
+   > When unsure, start with (a) and check from the workstation ([§2.4](#24-verify-ros2-connection)).
+   > If nothing arrives, stop the driver and relaunch with (b). If (b) still shows
+   > nothing, Wi-Fi is dropping the discovery multicast; give Belle the
+   > workstation's address as well:
+   > `...</Interfaces></General><Discovery><Peers><Peer address="192.168.0.25"/></Peers></Discovery></Domain></CycloneDDS>`.
+   > The export only lasts for that terminal; nothing is changed on Belle permanently.
+
+   > For calibration use `gripper:=none`, also on Alice and Belle (the calib tool
+   > replaces the Robotiq gripper). The monitor still looks for the Robotiq
+   > gripper of a single-arm robot, gives up after 2.5 s and carries on -- that
+   > warning is expected.
+
    > To use a **virtual robot** (no real arm, for testing), do NOT change the launch
    > command. Instead set `FAKE_HARDWARE=1` on the workstation in
-   > [`husky_monitor.py:256`](../husky_assembly_teleop/husky_monitor.py#L256).
+   > [`husky_monitor.py:313`](../husky_assembly_teleop/husky_monitor.py#L313).
 
 ### 2.4 Verify ROS2 Connection
 
-On your workstation, set the correct ROS2 domain and middleware:
+On your **workstation** (a new local terminal, not the SSH one -- the prompt
+should read `su@CRLRobotxPC`), set the correct ROS2 domain and middleware. The
+workstation's `~/.bashrc` does not set these two, so every new terminal needs them:
 
 ```bash
-export ROS_DOMAIN_ID=86   # 86 for Cindy, 84 for Alice, 85 for Belle
+export ROS_DOMAIN_ID=85   # 85 for Belle, 84 for Alice, 86 for Cindy
 export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+ros2 daemon stop          # drop the topic list cached from an earlier domain
 ```
 
-Verify the connection:
+> **Workstation Cyclone config (already set, nothing to type).** Since
+> 2026-07-22 the workstation's `~/.bashrc` sets
+> `export CYCLONEDDS_URI=file://$HOME/.cyclonedds.xml`, which pins Cyclone to
+> `eno1`, the wired lab network (192.168.0.25). Check it with
+> `echo $CYCLONEDDS_URI`. This is the workstation half; the robot half is the
+> `CYCLONEDDS_URI` export in Belle's launch (b) ([§2.3](#23-start-the-ur5e-ros2-driver-on-the-husky)).
+>
+> ```xml
+> <!-- ~/.cyclonedds.xml on the workstation -->
+> <CycloneDDS><Domain><General>
+>   <Interfaces><NetworkInterface name="eno1"/></Interfaces>
+>   <AllowMulticast>default</AllowMulticast>
+> </General></Domain></CycloneDDS>
+> ```
+
+Quick check -- this one line is enough (should print ~500 Hz):
+
+```bash
+ros2 topic hz /a200_0805/ur5e/rate_limiter/joint_states
+```
+
+If it prints nothing, see *Workstation sees no topics from the robot* in
+[§9](#9-troubleshooting). More checks:
 
 ```bash
 # List all available topics
 ros2 topic list
 
 # Check if joint states are streaming (should see data at ~500Hz)
-   # single arm:
-   ros2 topic echo /a200_0804/ur5e/joint_states
+   # single arm (Belle 0805; Alice is 0804):
+   ros2 topic echo /a200_0805/ur5e/joint_states
    # dual arm:
    ros2 topic echo /a200_0806/left_ur5e/joint_states
 
 # Check the frequency
    # single arm:
-   ros2 topic hz /a200_0804/ur5e/joint_states
+   ros2 topic hz /a200_0805/ur5e/joint_states
    # dual arm:
    ros2 topic hz /a200_0806/left_ur5e/joint_states
+
+# The monitor itself listens to the rate-limited copy, so check that one too:
+   ros2 topic hz /a200_0805/ur5e/rate_limiter/joint_states
 
 # Visualize the full node graph
 rqt
@@ -272,16 +337,34 @@ The monitor is the PyBullet-based GUI that you use to plan motions, execute traj
 
 ### 3.1 Launch the Monitor Node
 
-Open a terminal on your workstation and run:
+In a **workstation** terminal (not the SSH session on the robot -- the robot
+does not have this package, so it answers `Package 'husky_assembly_teleop' not
+found`), for example the one from [§2.4](#24-verify-ros2-connection), run:
 
 ```bash
 cd ~/ros2_ws
 source venv/bin/activate
 source install/setup.bash
+export ROS_DOMAIN_ID=85   # picks the robot: 85 Belle, 84 Alice, 86 Cindy
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 ros2 run husky_assembly_teleop husky_monitor
 ```
 
-This will open the **PyBullet monitor window**.
+> **The domain picks the robot.** The monitor connects to the robot whose
+> ROS domain is in `ROS_DOMAIN_ID` (see [§0.2](#02-robot-reference-table)). If the
+> variable is missing it silently falls back to **Cindy** (86), so always export
+> it in the same terminal. Check the start-up log for the robot name.
+
+> **Expected warning while calibrating a robot for the first time**:
+> `Base calibration file not found for robot 0805: .../20261013/calibrated_transformation_0805_rhino.json. Continuing without base calibration.`
+> That file is the *output* of this calibration ([§7.3](#73-run-the-pipeline)),
+> so it cannot exist yet. Data collection does not need it -- every point stores
+> the raw mocap poses. The warning disappears on the first launch after the
+> pipeline has run. The other two robots must still report a file each
+> (`Base calibration of Cindy (0806): 20260916/...`).
+
+This will open the **PyBullet monitor window** (the 3D view) and the **Dear PyGui
+control panel** (the sliders and buttons of [§4.1](#41-understanding-the-gui-controls)).
 
 <!-- SCREENSHOT: PyBullet monitor window after startup, showing the grey robot model -->
 
@@ -293,7 +376,7 @@ If the ROS2 connection is working correctly, the **grey robot model** in PyBulle
 
 **If the robot model does NOT match the real robot**, check:
 1. Is the ROS2 driver running on the Husky side? ([§2.3](#23-start-the-ur5e-ros2-driver-on-the-husky))
-2. Is the robot powered on and in **External Control** mode? ([§ .2](#22-power-on-the-ur5e-arm))
+2. Is the robot powered on and in **External Control** mode? ([§2.2](#22-power-on-the-ur5e-arm))
 3. Are the ROS2 domain ID and middleware set correctly? ([§2.4](#24-verify-ros2-connection))
 4. Try running `rqt` to verify topics are visible.
 
@@ -307,32 +390,49 @@ This is the main calibration data collection procedure. You will collect data fo
 
 Before collecting data, verify these settings in the code match your setup.
 
+> **Current settings (2026-10-13): Belle (0805).** The code is set up for Belle's
+> calibration: both dates = `20261013` (the folder exists on the gdrive with a
+> `config.yaml`, `robot_name: "0805"`), Cindy keeps reading her base calibration
+> from `20260916` through `BASE_CALIBRATION_DATE_BY_ROBOT`, Belle's calib tool is
+> Motive ID `1866`, the calibration mode flags below are set, and the monitor must be launched with `ROS_DOMAIN_ID=85`
+> ([§3.1](#31-launch-the-monitor-node)). Belle uses the same joint-space
+> trajectories as Alice (`260630_calib_trajs_Alice`): both robots mount the arm
+> the same way, so the reference set works for either.
+
 **Values, IDs & IPs** — set to match your robot / network / session:
 
 | What | Where | Note |
 |------|-------|------|
-| base `mocap_id` (Streaming IDs) | [`husky_world.py:184/191/198`](../husky_assembly_teleop/husky_world.py#L184) | per ROS domain (see [§0.2](#02-robot-reference-table)) ; match Motive **properties > Streaming ID** (see [§0.2](#02-robot-reference-table)) |
-| calib-tool IDs `1862` L / `1861` R | [`husky_world.py:329/333`](../husky_assembly_teleop/husky_world.py#L329) | match Motive (see [§0.2](#02-robot-reference-table)) . **Which arm is calibrated = which `calib_tool_*` block is enabled** — comment out the unused arm for a single-arm run |
-| `CALIBRATION_DATE` + `CALIBRATION_ANALYSIS_DATE` | [`__init__.py:80`](../husky_assembly_teleop/__init__.py#L80) and [`:85`](../husky_assembly_teleop/__init__.py#L85) | both sit next to each other in **one file**; set both to today's date folder, which must exist on the gdrive (`data_experiment/calibration_data/YYYYMMDD/`, [§4.3](#43-data-folder-structure)) with a `config.yaml`. A robot whose base calibration lives in another folder gets an entry in `BASE_CALIBRATION_DATE_BY_ROBOT` (same file, [§7.2](#72-set-the-date-folder)). Nothing to edit in `config_loader.py` — its `DEFAULT_DATE_FOLDER` just re-exports `CALIBRATION_ANALYSIS_DATE` |
-| `CALIBRATION_STATE_SETS` (per arm idx) | [`husky_monitor.py:245`](../husky_assembly_teleop/husky_monitor.py#L245) | verify the calib traj-state folder for your arm exists |
+| `ROS_DOMAIN_ID` | the monitor's terminal ([§3.1](#31-launch-the-monitor-node)) | **picks the robot** being calibrated (85 = Belle) |
+| base `mocap_id` (Streaming IDs) | [`robot_registry.py:312-314`](../husky_assembly_teleop/robot_registry.py#L312) | one per robot (see [§0.2](#02-robot-reference-table)); match Motive **properties > Streaming ID** |
+| calib-tool IDs | [`husky_world.py:66`](../husky_assembly_teleop/husky_world.py#L66) | match Motive (see [§0.2](#02-robot-reference-table)). **Which tool is used = the `arm id` slider**: arm `0` → `1862` (or the robot's `CALIB_TOOL_ARM0_ID_BY_ROBOT` entry: Belle `1866`), arm `1` → `1861`. A single-arm robot only has arm `0`; nothing to comment out. The start-up log prints `Calib tool of <robot> arm 0: Motive ID ...` |
+| `CALIBRATION_DATE` + `CALIBRATION_ANALYSIS_DATE` | [`__init__.py:89`](../husky_assembly_teleop/__init__.py#L89) and [`:104`](../husky_assembly_teleop/__init__.py#L104) | both sit in **one file**; set both to today's date folder, which must exist on the gdrive (`data_experiment/calibration_data/YYYYMMDD/`, [§4.3](#43-data-folder-structure)) with a `config.yaml` whose `robot_name` is the robot you calibrate ([§7.1](#71-prepare-the-config-file)). Every robot whose base calibration lives in another folder needs an entry in `BASE_CALIBRATION_DATE_BY_ROBOT` ([`__init__.py:96`](../husky_assembly_teleop/__init__.py#L96), [§7.2](#72-set-the-date-folder)). Nothing to edit in `config_loader.py` — its `DEFAULT_DATE_FOLDER` just re-exports `CALIBRATION_ANALYSIS_DATE` |
+| `CALIBRATION_STATE_SETS` (per arm idx) | [`husky_monitor.py:302`](../husky_assembly_teleop/husky_monitor.py#L302) | the reference cell states + trajectories, a folder under `DESIGN_DATA_DIRECTORY`. Arm `0` (left arm and single-arm robots) = `260630_calib_trajs_Alice`, arm `1` = `260225_extrinsic_calib_trajs_Cindy_Right`. The monitor prints `Found N calib RobotCellState files under ...` at start-up |
 
 
 **Mode flags** — class `HuskyMonitor` switches, each set to `0` or `1`:
 
 | Flag | Where | Set to | Note |
 |------|-------|--------|------|
-| `USE_MOCAP` | [`husky_monitor.py:255`](../husky_assembly_teleop/husky_monitor.py#L255) | `1` | `0` = simulated; `1` = stream real mocap|
-| `FAKE_HARDWARE` | [`husky_monitor.py:256`](../husky_assembly_teleop/husky_monitor.py#L256) | `0` | `0` = real robot; `1` = virtual robot. Keep consistent with `USE_MOCAP` by hand |
-| `USE_CELL_STATE_BASE_POSE` | [`husky_monitor.py:287`](../husky_assembly_teleop/husky_monitor.py#L287) | `0` | `0` = base tracks mocap (normal); `1` = pin base to loaded cell state |
-| `CALIBRATION` | [`husky_monitor.py:291`](../husky_assembly_teleop/husky_monitor.py#L291) | `1` | `1` = calibration mode enabled |
-| `PUNCH_CALIB_VALIDATION` | [`husky_monitor.py:362`](../husky_assembly_teleop/husky_monitor.py#L362) | `0` | `1` only for a punch-validation session (switches EE to punch tips) |
+| `USE_MOCAP` | [`husky_monitor.py:312`](../husky_assembly_teleop/husky_monitor.py#L312) | `1` | `0` = simulated; `1` = stream real mocap|
+| `FAKE_HARDWARE` | [`husky_monitor.py:313`](../husky_assembly_teleop/husky_monitor.py#L313) | `0` | `0` = real robot; `1` = virtual robot. Keep consistent with `USE_MOCAP` by hand |
+| `USE_CELL_STATE_BASE_POSE` | [`husky_monitor.py:344`](../husky_assembly_teleop/husky_monitor.py#L344) | `0` | `0` = base tracks mocap (normal); `1` = pin base to loaded cell state |
+| `CALIBRATION` | [`husky_monitor.py:354`](../husky_assembly_teleop/husky_monitor.py#L354) | `1` | `1` = calibration mode enabled |
+| `BAR_ACTION_LIVE_REPLAN_EXE` | [`husky_monitor.py:356`](../husky_assembly_teleop/husky_monitor.py#L356) | `0` | `1` adds the bar-assembly panel (plan skeleton, movements); not used for calibration |
+| `BAR_ACTION_MOCAP_ACCURACY_TEST` | [`husky_monitor.py:373`](../husky_assembly_teleop/husky_monitor.py#L373) | `0` | `1` adds the bar-holding accuracy test (bar rig tracker, markerset buttons); not used for calibration |
+| `PUNCH_CALIB_VALIDATION` | [`husky_monitor.py:451`](../husky_assembly_teleop/husky_monitor.py#L451) | `0` | `1` only for a punch-validation session (switches EE to punch tips) |
+
+> **Going back to assembly work afterwards**: set `CALIBRATION = 0` and the two
+> `BAR_ACTION_*` flags back to `1` (the mocap accuracy test setting), and point
+> both dates back at the folder you want the live app to use.
 
 ### 4.1 Understanding the GUI Controls
 
-The monitor GUI has several sliders and buttons. The **When shown** column marks which
-controls only appear in a specific mode (Calibration = `CALIBRATION=1`, Punch =
-`PUNCH_CALIB_VALIDATION=1`). Many other controls (dual-arm constrained planner, gripper,
-scaffolding, bar-action, debug) appear in other modes but are not used during calibration.
+The sliders and buttons live in the Dear PyGui control panel. The **When shown** column
+marks which controls only appear in a specific mode (Calibration = `CALIBRATION=1`, Punch =
+`PUNCH_CALIB_VALIDATION=1`). A few general tools (joint live stream, teleop panel) are
+always there but are not needed for calibration; the bar-assembly controls only appear
+when `BAR_ACTION_LIVE_REPLAN_EXE=1`.
 
 **Sliders:**
 
@@ -350,16 +450,15 @@ scaffolding, bar-action, debug) appear in other modes but are not used during ca
 
 | Button | When shown | Description |
 |--------|-----------|-------------|
-| `Toggle Goal/Trajectory` | always | Switch the ghost model between goal (blue) and trajectory (green) |
-| `Reset Goal State` | always | Reset the goal/ghost back to the current configuration |
-| `Plan S.Arm to conf target` | always | Plan a motion from the current configuration to the goal |
-| `Exec S.Arm Traj` | always | Execute the planned single-arm trajectory on the real robot |
+| `Toggle Goal / Trajectory view` | always | Switch the ghost model between goal (blue) and trajectory (green) |
 | `Load Calib RobotCellState` | Calibration | Load the selected cell state as the arm goal configuration |
+| `Plan S.Arm to conf target` | Calibration | Plan a motion from the current configuration to the goal (the arm picked by `arm id`) |
+| `Exec S.Arm Traj` | Calibration | Execute that planned motion on the real robot, over `traj time` seconds |
 | `Load Calib JointTrajectory` | Calibration | Load the selected calibration trajectory for execution |
-| `Execute calib traj` | Calibration | Execute the loaded calibration trajectory with move-stop-record |
+| `Execute calib traj` | Calibration | Execute the loaded calibration trajectory with move-stop-record. **Starts with a 1 s move to its first waypoint** -- the arm must already be at the cell state |
 | `Record current calib conf` | Calibration | Record one configuration (joint conf + mocap poses); used for validation batch |
 | `Export calib data to json` | Calibration | Save collected calibration data to a JSON file |
-| `collect cameras data` | Calibration | **(new)** Export the current mocap camera inventory (poses) to JSON+CSV in `MOCAP_CAMERA_EXPORT_DIR` |
+| `collect cameras data` | Calibration | Export the current mocap camera inventory (poses) to JSON+CSV in `MOCAP_CAMERA_EXPORT_DIR` |
 | `Record Punch Take` | Punch | Record one punch take (joint conf, base mocap pose, FK world-frame punch-tip position) |
 | `Save Punch Validation Data` | Punch | Save all recorded punch takes to a JSON file |
 
@@ -397,7 +496,7 @@ For each calibration batch (J0 and J1), you will:
 1. Set the **"traj time"** slider to a reasonable duration. For calibration, a longer time (e.g., **20-40 seconds**) is recommended so the robot moves slowly.
 2. Click **"Plan S.Arm to conf target"** to plan a motion from the current configuration to the goal.
 3. Use the **"Traj viz time"** slider to scrub through the planned trajectory and preview the motion.
-   - Click **"Toggle Goal/Trajectory"** if needed to switch to the green trajectory visualization.
+   - Click **"Toggle Goal / Trajectory view"** if needed to switch to the green trajectory visualization.
 4. Verify the trajectory looks safe and collision-free.
 
 <!-- SCREENSHOT: PyBullet showing green trajectory visualization with Traj viz time slider -->
@@ -412,12 +511,13 @@ For each calibration batch (J0 and J1), you will:
 
 #### Step 5: Load and Execute the Calibration Trajectory
 
-1. Use the **"Calib JointTrajectory (idx)"** slider to select the appropriate calibration trajectory file for the current cell state.
+1. Use the **"Calib JointTrajectory (idx)"** slider to select the calibration trajectory that belongs to the current cell state -- the file names pair up, e.g. `ext_calib_0804_J0_traj2_RobotCellState.json` ↔ `ext_calib_0804_J0_traj2_JointTrajectory.json` (the terminal lists both with their index at start-up). The `0804` in the names is the robot the set was made on; the same files are used for Belle.
 2. Click **"Load Calib JointTrajectory"** to load it.
-3. Click **"Execute calib traj"** to start the calibration trajectory.
+3. Check the arm is **at** the cell state from Step 4. **"Execute calib traj"** moves to the first waypoint in about 1 s, so starting from anywhere else gives a fast, unplanned jump.
+4. Click **"Execute calib traj"** to start the calibration trajectory.
    - This will automatically perform **move-stop-record** for each waypoint in the trajectory.
    - At the end, it will **automatically save** the recorded data to a JSON file.
-4. You should see the data being saved in the terminal output.
+5. You should see the data being saved in the terminal output.
 
 <!-- SCREENSHOT: Terminal showing calibration data being recorded and saved -->
 <!-- SCREENSHOT: PyBullet during calibration trajectory execution -->
@@ -439,7 +539,7 @@ Then switch the **Batch slider to `1` (J1)** and repeat the entire process for a
 ### 4.3 Data Folder Structure
 
 The collected data is **not** stored in the repo. It goes to the gdrive (Insync)
-folder `CALIBRATION_DATA_DIRECTORY` ([`__init__.py:60`](../husky_assembly_teleop/__init__.py#L60)):
+folder `CALIBRATION_DATA_DIRECTORY` ([`__init__.py:68`](../husky_assembly_teleop/__init__.py#L68)):
 
 ```
 /home/su/Insync/2025-03 Husky Assembly/data_experiment/calibration_data/
@@ -471,6 +571,11 @@ $CALIB/
 ```
 
 The batch slider controls which subfolder (`j0`, `j1`, `validation`, `punch_validation`) the data is saved into.
+
+> The serial in a recorded file's name comes from the **trajectory** file, not
+> the robot: Belle's data is saved as `..._ext_calib_0804_J0_traj0_...json`.
+> That is harmless -- the scripts take the robot from `robot_name` in the
+> folder's `config.yaml`, so one date folder must only hold one robot's data.
 
 ---
 
@@ -594,7 +699,7 @@ After collecting all J0 and J1 data (and optionally validation data), run the ca
    (or start from the template kept in the repo):
    ```bash
    mkdir -p YYYYMMDD
-   cp 20260126/config.yaml YYYYMMDD/config.yaml
+   cp 20260623/config.yaml YYYYMMDD/config.yaml   # Alice's (single arm); 20260916 is Cindy's
    # or: cp ~/ros2_ws/src/husky-assembly-teleop/data/calibration_data/_data_template/config.yaml YYYYMMDD/config.yaml
    ```
 
@@ -614,8 +719,8 @@ After collecting all J0 and J1 data (and optionally validation data), run the ca
    validation_data_batch: "validation"   # "j0" / "j1" / "validation"
 
    # Robot settings - make sure these match your robot
-   robot_name: "0806"   # "0806" Cindy (dual-arm), "0804" Alice (single-arm)
-   arm: "right"         # "left" or "right" (dual-arm only)
+   robot_name: "0805"   # "0806" Cindy (dual-arm), "0804" Alice / "0805" Belle (single-arm)
+   arm: "left"          # "left" or "right" (dual-arm only)
 
    # Punch tool TCP offset tool0->tip (meters), per arm, from UR 4-point calibration
    punch_tool:
@@ -629,9 +734,18 @@ After collecting all J0 and J1 data (and optionally validation data), run the ca
      arm: null            # "left" / "right" / null
    ```
 
+   `robot_name` also picks the robot's own kinematically calibrated URDF for the
+   scripts (from the robot registry, `RobotSpec.urdf_path`), so a wrong serial
+   here gives slightly wrong forward kinematics, not an error.
+
+   > **Belle, 2026-10-13**: `$CALIB/20261013/config.yaml` is already in place
+   > with `robot_name: "0805"`. Its `punch_tool` offsets are copied from Alice
+   > (20260623) -- re-do the 4-point TCP on Belle ([§6.1](#61-hardware-setup))
+   > and update them before punch validation.
+
 ### 7.2 Set the Date Folder
 
-Both calibration dates live in **one file** — [`husky_assembly_teleop/__init__.py`](../husky_assembly_teleop/__init__.py#L80):
+Both calibration dates live in **one file** — [`husky_assembly_teleop/__init__.py`](../husky_assembly_teleop/__init__.py#L89):
 
 ```bash
 nano ~/ros2_ws/src/husky-assembly-teleop/husky_assembly_teleop/__init__.py
@@ -656,8 +770,16 @@ is `CALIBRATION_DATE`):
 ```python
 BASE_CALIBRATION_DATE_BY_ROBOT = {
     'Alice': '20260623',  # 0804, the newest Alice calibration
+    'Cindy': '20260916',  # 0806, the newest Cindy calibration
 }
 ```
+
+Belle has no entry, so she reads `CALIBRATION_DATE` (`20261013`). Until the
+pipeline has written `calibrated_transformation_0805_rhino.json` there, the
+monitor warns *Base calibration file not found* for Belle and draws her base
+uncalibrated. That is expected during data collection: the recorded data uses
+the raw mocap poses. Once `CALIBRATION_DATE` moves on to another folder, add
+`'Belle': '20261013'` here.
 
 At start-up the monitor prints the file it loaded for every robot, e.g.
 `Base calibration of Alice (0804): 20260623/calibrated_transformation_0804_rhino.json`.
@@ -697,7 +819,7 @@ The pipeline runs 4 steps in sequence:
 | 4 | `3_verify_calibration.py` | Verify calibration quality using validation data |
 
 After completion, you should see:
-- `calibrated_transformation_<robot>_rhino.json` (e.g. `..._0806_rhino.json`) in
+- `calibrated_transformation_<robot>_rhino.json` (e.g. `..._0805_rhino.json` for Belle) in
   the gdrive date folder `$CALIB/YYYYMMDD/` -- the main output, and the file the
   monitor loads for `CALIBRATION_DATE`
 - Various analysis plots (`.png` files) and logs, next to the data they came from
@@ -718,7 +840,7 @@ python 4_punch_validation.py
 ```
 
 The script uses the active date folder from `CALIBRATION_ANALYSIS_DATE`
-([`__init__.py:85`](../husky_assembly_teleop/__init__.py#L85)) — it prints it on
+([`__init__.py:104`](../husky_assembly_teleop/__init__.py#L104)) — it prints it on
 the first line — and reads
 `$CALIB/YYYYMMDD/punch_validation/` on the gdrive ([§4.3](#43-data-folder-structure)).
 The plots are written into that same folder. If both arms have punch
@@ -757,7 +879,50 @@ The output includes:
 - Check that the ROS2 driver is running on the Husky (Section 2.3)
 - Check ROS domain ID: `echo $ROS_DOMAIN_ID`
 - Check that topics are visible: `ros2 topic list`
-- Verify joint states are streaming: `ros2 topic hz /a200_0806/ur5e/joint_states`
+- Verify joint states are streaming: `ros2 topic hz /a200_0805/ur5e/rate_limiter/joint_states` (Belle; `/a200_0806/left_ur5e/...` on Cindy)
+- Check the start-up log names the robot you expect -- without `ROS_DOMAIN_ID` the monitor connects to Cindy ([§3.1](#31-launch-the-monitor-node))
+
+### Workstation sees no topics from the robot
+
+Symptom: `ros2 topic echo /a200_0805/ur5e/joint_states` says *does not appear to
+be published yet*, and `ros2 topic list` on the workstation shows only
+`/parameter_events` and `/rosout`. Narrow it down in this order (it took the
+whole of the first Belle session, 2026-10-13, to find):
+
+1. **Workstation terminal**: `ROS_DOMAIN_ID` and `RMW_IMPLEMENTATION` exported,
+   then `ros2 daemon stop` and list again ([§2.4](#24-verify-ros2-connection)).
+2. **Is the robot reachable?** `ping 192.168.0.114`. Slow replies (tens of ms)
+   mean the robot is on Wi-Fi.
+3. **On the robot** (SSH), does the robot see its own topics, and with which settings?
+   ```bash
+   echo "DOMAIN=$ROS_DOMAIN_ID RMW=$RMW_IMPLEMENTATION CYCLONE=$CYCLONEDDS_URI"
+   ros2 topic list | grep ur5e
+   ip -br addr | grep 192.168
+   ```
+   - no `ur5e` topics → the driver is not running; relaunch it ([§2.3](#23-start-the-ur5e-ros2-driver-on-the-husky)).
+   - `DOMAIN` / `RMW` differ from the workstation → export them on the robot and relaunch.
+   - both match and `CYCLONE` is empty, with two interfaces listed (e.g. `br0`
+     and `wlp2s0`) → Cyclone is on the wrong interface. Relaunch the driver
+     with `CYCLONEDDS_URI` set to the `192.168.0.x` interface (launch (b) in [§2.3](#23-start-the-ur5e-ros2-driver-on-the-husky), "Belle: which launch").
+
+### Arm topics listed, but no data arrives
+
+Symptom: `ros2 topic list` on the workstation shows the `/a200_0805/ur5e/...`
+topics, yet `ros2 topic hz .../ur5e/rate_limiter/joint_states` keeps saying *does
+not appear to be published yet*. First tell the network apart from the arm:
+
+```bash
+ros2 topic echo --once /a200_0805/platform/joint_states   # the husky platform, not the arm
+```
+
+- **Platform data arrives, arm data does not** (seen 2026-10-14) → the network is
+  fine; the UR driver is running but not talking to the arm. Check the launch
+  terminal on the robot for `Connected to reverse interface. Ready to receive
+  control commands.`, then the pendant: arm powered, brakes released, **Remote /
+  External Control**, program running (a protective stop or e-stop stops it).
+  If still nothing, Ctrl+C the driver and relaunch it ([§2.3](#23-start-the-ur5e-ros2-driver-on-the-husky)).
+- **Nothing arrives at all** → network side; see *Workstation sees no topics
+  from the robot* above.
 
 ### MoCap not connecting
 
@@ -820,7 +985,7 @@ Work through these in order -- each step tells you whether to stop or continue:
 **To keep working without mocap**, switch the monitor to robot-centric mode --
 the base then comes from each movement's authored `start_state.robot_base_frame`
 instead of being measured. Flip all three flags together in
-[`husky_monitor.py`](../husky_assembly_teleop/husky_monitor.py#L255):
+[`husky_monitor.py`](../husky_assembly_teleop/husky_monitor.py#L312):
 ```python
 USE_MOCAP = 0
 USE_CELL_STATE_BASE_POSE = 1
@@ -850,10 +1015,11 @@ BAR_ACTION_MOCAP_ACCURACY_TEST = 0
 ### Pipeline fails at a specific step
 - Check the terminal output for error messages
 - Make sure the `config.yaml` has the correct settings
-- Make sure `CALIBRATION_ANALYSIS_DATE` in [`husky_assembly_teleop/__init__.py`](../husky_assembly_teleop/__init__.py#L85) matches your data folder — every script prints `[config_loader] Using calibration date folder: ...` at startup, so check that line first
+- Make sure `CALIBRATION_ANALYSIS_DATE` in [`husky_assembly_teleop/__init__.py`](../husky_assembly_teleop/__init__.py#L104) matches your data folder — every script prints `[config_loader] Using calibration date folder: ...` at startup, so check that line first
 - Verify that the data files exist in the expected subfolders (j0/, j1/) of the **gdrive** date folder `$CALIB/YYYYMMDD/` ([§4.3](#43-data-folder-structure)), not in the repo
 - `Config file not found: ...` → the date folder is missing on this machine: check Insync has finished syncing `data_experiment/calibration_data/`, and that `EXPERIMENT_DATA_DIRECTORY` ([§0.1](#01-new-workstation-setup-one-time)) points at this machine's gdrive mount
 
 ### Monitor warns "Base calibration file not found"
+- **For the robot you are calibrating right now this is expected**: the file is what the pipeline produces ([§3.1](#31-launch-the-monitor-node)). Only act on it for a robot that has been calibrated before
 - The monitor loads `calibrated_transformation_<robot>_rhino.json` from `$CALIB/<CALIBRATION_DATE>/` on the gdrive, or from the robot's own folder in `BASE_CALIBRATION_DATE_BY_ROBOT` (`__init__.py`, [§7.2](#72-set-the-date-folder)); the warning names the folder it looked in. If it is missing, the base pose runs **uncalibrated**
 - Check that the folder exists and holds that file, that Insync has synced it, and that `EXPERIMENT_DATA_DIRECTORY` ([§0.1](#01-new-workstation-setup-one-time)) is right for this machine
