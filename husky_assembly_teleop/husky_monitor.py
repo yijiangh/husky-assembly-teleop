@@ -54,7 +54,7 @@ from husky_assembly_teleop.optitrack.NatNetClient import NatNetClient
 from husky_assembly_teleop.utils import (
     pose_from_frame, frame_from_pose, pose_from_transformation, transformation_from_pose,
     mocap_pos_y_up_to_z_up, mocap_quat_y_up_to_z_up,
-    vec12_from_conf, conf_from_12vec, conf_from_6vec,
+    vec12_from_conf, conf_from_12vec,
     joint_trajectory_from_path, path_12_from_joint_trajectory, path_from_joint_trajectory,
     HUSKY_DUAL_ARM_HOME_CONF_12, HUSKY_DUAL_UR5e_JOINT_NAMES, MOCAP_SET_RIG_RB_NAME,
 )
@@ -801,6 +801,11 @@ class HuskyMonitor(Node):
 
     def append_calibration_data(self, data):
         self.calibration_data.append(data)
+        # * Recording only keeps the point in memory; say so, since nothing else
+        # * tells the operator that a file still has to be written.
+        self.get_logger().info(
+            f"Calib point {len(self.calibration_data)} recorded (in memory only; "
+            f"'Export calib data to json' writes it to {self.selected_calib_batch}/)")
 
     def _get_selected_trajectory_filename_suffix(self) -> str:
         """
@@ -2264,10 +2269,12 @@ class HuskyMonitor(Node):
         self._inject_live_conf_into_state(state)
         # * Pass a compas Configuration as the goal so cfab_session.plan_free_motion
         # takes its dict-style path — keeps the tamp-API contract uniform.
-        # For single-arm husky (index 0), we always use the arm-index-0 joint names.
-        goal6 = conf_from_6vec(
-            np.asarray(self.goal_arm_pose[self.selected_arm_index], dtype=float),
-            arm_index=arm_idx,
+        # ! Use the loaded cell's own joint names: conf_from_6vec always gives
+        # ! Cindy's 'left_'/'right_' names, which a single-arm cell (Alice /
+        # ! Belle, plain 'ur_arm_*' joints) does not have.
+        goal6 = Configuration.from_revolute_values(
+            [float(v) for v in self.goal_arm_pose[self.selected_arm_index]],
+            joint_names=list(name_sets[arm_idx]),
         )
         # Pause GUI rendering during the search (no-op when headless).
         with pp.LockRenderer():
@@ -11855,6 +11862,12 @@ class HuskyMonitor(Node):
 
             # self.buttons.append(Button('Sample calib path', self.sample_calib_traj))
             # self.buttons.append(Button('Execute transit to calib traj', self.execute_free_trajectory))
+            # ! Move the arm to the loaded calib RobotCellState BEFORE 'Execute calib traj':
+            # ! that button sends the first waypoint in 1 s from wherever the arm is.
+            # * These two were removed from the general panel (Aug 2026); calibration
+            # * still needs them, so they come back in calibration mode only.
+            self.buttons.append(Button('Plan S.Arm to conf target', self.plan_single_arm_to_goal_action))
+            self.buttons.append(Button('Exec S.Arm Traj', self.execute_arm_trajectory))
             self.buttons.append(Button('Execute calib traj', self.execute_calib_traj))
             self.buttons.append(Button('Record current calib conf',
                                        lambda: world.calibrate_button(self, self.active_calib_tool_name)))

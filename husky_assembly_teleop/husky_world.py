@@ -61,6 +61,14 @@ DATA_DIR = DATA_DIRECTORY
 
 # Dated calibration datasets live on the gdrive (see CALIBRATION_DATA_DIRECTORY).
 CALIB_DATA_DIR = CALIBRATION_DATA_DIRECTORY
+# * Motive Streaming ID of the arm-0 calib tool, per robot (registry name). A
+# * robot not listed uses 1862; Cindy's right arm always uses 1861.
+CALIB_TOOL_ARM0_ID_BY_ROBOT = {
+    'Belle': 1866,  # Belle's calib tool (2026-10-13; 1863 was the wrong rigid body)
+}
+# * A calib point is only recorded when the base and tool rigid bodies both
+# * arrived from mocap within this many seconds (see calibrate_button).
+CALIB_MOCAP_MAX_AGE_S = 0.5
 BAR_HOLDING_ACC_DATA_DIR = os.path.join(DATA_DIR, "bar_holding_acc_data")
 BAR_HOLDING_ACC_EXPERIMENT_DIR = os.path.join(EXPERIMENT_DATA_DIRECTORY, "bar_holding_acc_data")
 # * The real assembly runs (plan skeleton monitor): the servo records of the
@@ -512,8 +520,12 @@ def init(monitor):
     # * add tracked obstacles
     # TODO use one tracked box to indicate where to put the assembly
     if monitor.CALIBRATION:
+        # * Arm 0 (Cindy's left arm, or the only arm of a single-arm robot) uses
+        # * the 1862 calib tool, except robots listed in CALIB_TOOL_ARM0_ID_BY_ROBOT.
         left_tool_name = 'calib_tool_left'
-        TrackedObject(monitor, left_tool_name, 1862, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
+        left_tool_id = CALIB_TOOL_ARM0_ID_BY_ROBOT.get(spec.name, 1862)
+        monitor.get_logger().info(f'Calib tool of {spec.name} arm 0: Motive ID {left_tool_id}')
+        TrackedObject(monitor, left_tool_name, left_tool_id, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
         monitor.assign_calibration_tool_to_robot(0, 0, left_tool_name)
 
         right_tool_name = 'calib_tool_right'
@@ -847,6 +859,21 @@ def calibrate_button(monitor, tool_mocap_name, index=0):
             flange_mocap_pose = monitor._mocap_rigidbody_cache[tool_mocap_name]
         else:
             monitor.get_logger().warn(f"Flange mocap pose for '{tool_mocap_name}' not found in mocap cache!")
+        # ! The cache keeps a rigid body's LAST pose when Motive stops streaming
+        # ! it (occluded tool, body lost), so a lost tool is silently recorded
+        # ! at an old pose. Belle's first validation (2026-10-14) was ruined this
+        # ! way. Refuse to record unless both bodies arrived just now.
+        now = time.monotonic()
+        stamps = getattr(monitor, '_mocap_rigidbody_stamp', {})
+        stale = [f"{name} (last seen {now - stamps[name]:.1f} s ago)" if name in stamps
+                 else f"{name} (never seen)"
+                 for name in (h.name, tool_mocap_name)
+                 if now - stamps.get(name, -1e9) > CALIB_MOCAP_MAX_AGE_S]
+        if stale:
+            monitor.get_logger().error(
+                f"NOT recorded: mocap is not tracking {', '.join(stale)}. "
+                f"Check in Motive that the rigid body is tracked, then record again.")
+            return
     else:
         pass
         # base_mocap_pose = ho.get_link_pose_from_name("base_footprint")
