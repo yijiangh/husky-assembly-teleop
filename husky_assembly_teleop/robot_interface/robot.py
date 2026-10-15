@@ -20,6 +20,7 @@ from .arm import ArmInterface, ArmState
 from .base import BaseInterface, BaseState
 from .frames import HUSKY_FRAME, MOCAP_FRAME, fixed_transform
 from scaffolding_assembly_core.geometry import Pose, compose, invert
+from scaffolding_assembly_core.robot import FLANGE_SUFFIX
 from .ur_frames import stock_frame_problem
 from .connections import RosConnections
 
@@ -78,13 +79,16 @@ class HuskyRobotInterface:
         self.base = BaseInterface(node, config)
         # ! A non-stock URDF frame makes the arm refuse Cartesian targets: it would look right but move wrong.
         self.arms = {}
+        tools = config.model.tools if config.model is not None else {}
         for arm in config.arms:
             problem = stock_frame_problem(config.urdf_file, arm.name)
             if problem is not None:
                 node.get_logger().error(problem)
+            tool = tools.get(f"{arm.name}{FLANGE_SUFFIX}")
             self.arms[arm.name] = ArmInterface(
                 node, config.ros_namespace, arm,
-                fixed_transform(config.urdf_file, HUSKY_FRAME, f"{arm.name}_base_link"), urdf_problem=problem)
+                fixed_transform(config.urdf_file, HUSKY_FRAME, f"{arm.name}_base_link"), urdf_problem=problem,
+                tool_tcp=Pose() if tool is None else tool.tcp)
         #: The husky frame in the mocap-tracked frame (fixed, from the URDF).
         self._husky_in_mocap_frame = fixed_transform(config.urdf_file, MOCAP_FRAME, HUSKY_FRAME)
         self.state = RobotState(serial=config.serial, base=self.base.state,

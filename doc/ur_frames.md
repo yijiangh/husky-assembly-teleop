@@ -24,6 +24,12 @@ swung 0804 (e-stop, 2026-09-29).
   stock 180° (`robot_interface/ur_frames.py`), never through our URDF. Targets
   reach that frame from the husky frame through the URDF's fixed mount chain,
   which is only right because `<arm>_base_link` is stock (the rule above).
+- The pendant's TCP is set to the mounted tool's TCP, so the driver reports the
+  tool tip. The compliance controller moves `tool0` (`end_effector_link` in
+  crl-husky's `ur_controllers.yaml`), so `arm.flange_from_reported` takes the
+  tool's TCP (`Tool.tcp`, the `tcp` link of its URDF in `data/tool_urdf/`) off
+  again before anything commands from it. A pendant TCP that differs from the
+  tool's shows up as an offset between the reported and the computed `tool0`.
 - `config.py` uses the fixed `*_StockUrFrames.urdf` files, written by
   `scripts/fix_ur_base_frames.py` (every link except a mis-set `<arm>_base`
   stays where it was). Run it again after a calibration rewrites the
@@ -36,7 +42,7 @@ swung 0804 (e-stop, 2026-09-29).
 **Chain from the world to the TCP** (`robot_interface/frames.py`):
 
 ```
-world ─(mocap)─► base_footprint ─(URDF fixed)─► base_link [husky] ─(URDF fixed, mount calibration)─► <arm>_base_link ─(reported TCP)─► tool0
+world ─(mocap)─► base_footprint ─(URDF fixed)─► base_link [husky] ─(URDF fixed, mount calibration)─► <arm>_base_link ─(reported TCP)─► tool tip ─(tool TCP, inverted)─► tool0
 ```
 
 The Cartesian sliders are in the husky's `base_link`. `arm.to_husky` /

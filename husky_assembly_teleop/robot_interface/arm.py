@@ -178,15 +178,37 @@ def joint_move(start: Sequence[float], target: Sequence[float],
     return positions, velocities, duration
 
 
+def flange_from_reported(position: Sequence[float], quaternion: Sequence[float],
+                         tool_tcp: Pose) -> tuple[np.ndarray, np.ndarray]:
+    """Where tool0 is, in the controller's base_link, from the TCP the driver reports in UR Base.
+
+    The report includes the pendant's TCP; the compliance controller moves tool0, so the tool's TCP comes off.
+
+    Args:
+        position: Reported TCP position, metres, UR Base frame.
+        quaternion: Its unit quaternion (x, y, z, w).
+        tool_tcp: The mounted tool's TCP in tool0, as set on the pendant.
+
+    Returns:
+        tuple[np.ndarray, np.ndarray]: tool0's position and quaternion (x, y, z, w) in base_link.
+    """
+    reported = Pose.from_arrays(BASE_LINK_FROM_UR_BASE.apply(position),
+                                (BASE_LINK_FROM_UR_BASE * Rotation.from_quat(quaternion)).as_quat())
+    flange = compose(reported, invert(tool_tcp))
+    return np.array(flange.position), np.array(flange.orientation)
+
+
 @dataclass
 class ArmState:
     """Measured state of one arm.
 
     Attributes:
         joint_positions: URDF joint name to position, radians. Empty until the first message.
-        tcp_position: TCP position, metres, in the compliance controller's `base_link`, the frame commands use.
-        tcp_orientation: TCP quaternion (x, y, z, w), same frame.
-        tcp_raw_position: The TCP as the driver reports it, in the UR Base frame.
+        tcp_position: Position of tool0, the link the compliance controller moves, metres, in its `base_link`:
+            the reported TCP with the mounted tool's TCP taken off (`flange_from_reported`). Commands use it.
+        tcp_orientation: Its quaternion (x, y, z, w), same frame.
+        tcp_raw_position: The TCP as the driver reports it, in the UR Base frame; the pendant's TCP setting,
+            which must be the mounted tool's, is applied.
         tcp_raw_orientation: Its quaternion (x, y, z, w).
         tcp_update_time: ROS time of the last valid TCP pose, seconds.
         sent_target_position: Last Cartesian target sent (commanded, not measured), same frame as `tcp_position`.
@@ -258,7 +280,7 @@ class ArmInterface:
     """
 
     def __init__(self, node: Node, robot_namespace: str, config: ArmConfig, base_in_husky: Pose,
-                 urdf_problem: str | None = None):
+                 urdf_problem: str | None = None, tool_tcp: Pose = Pose()):
         """Create every subscription, publisher and client of one arm.
 
         Args:
@@ -267,11 +289,14 @@ class ArmInterface:
             config: This arm.
             base_in_husky: This arm's base_link in the husky frame.
             urdf_problem: Why the URDF breaks the stock UR frames, or None. If set, Cartesian targets are refused.
+            tool_tcp: The mounted tool's TCP in tool0 (`Tool.tcp`); tool0 itself for a bare arm or a tool
+                without a model. ! The pendant's TCP must be set to the same.
         """
         self._node = node
         self.config = config
         #: This arm's base_link (the controller's target frame) in the husky frame.
         self.base_in_husky = base_in_husky
+        self.tool_tcp = tool_tcp
         self.urdf_problem = urdf_problem
         self.state = ArmState()
         #: When each test-mode banner was last logged, ROS time.
@@ -616,7 +641,7 @@ class ArmInterface:
         return np.array(pose.position), np.array(pose.orientation)
 
     def target_vs_reported(self, position: np.ndarray, orientation: np.ndarray) -> str:
-        """Compare a target with the raw reported TCP, both in UR Base, as one log line.
+        """Compare a target with the reported TCP less the tool's TCP, both tool0 in UR Base, as one log line.
 
         For a move's first target, which starts at the TCP, any difference is a frame error.
 
@@ -624,12 +649,14 @@ class ArmInterface:
             position: The target, metres, in the compliance controller's base_link.
             orientation: Its quaternion (x, y, z, w).
         """
-        raw_p = self.state.tcp_raw_position
+        reported = compose(Pose.from_arrays(self.state.tcp_raw_position, self.state.tcp_raw_orientation),
+                           invert(self.tool_tcp))
+        raw_p = np.array(reported.position)
         target_p = BASE_LINK_FROM_UR_BASE.inv().apply(position)
         target_q = BASE_LINK_FROM_UR_BASE.inv() * Rotation.from_quat(orientation)
         distance = float(np.linalg.norm(target_p - raw_p)) * 1e3
-        angle = float(np.degrees((Rotation.from_quat(self.state.tcp_raw_orientation).inv() * target_q).magnitude()))
-        return (f"arm {self.config.name}: first target vs reported TCP, both in UR Base: "
+        angle = float(np.degrees((Rotation.from_quat(reported.orientation).inv() * target_q).magnitude()))
+        return (f"arm {self.config.name}: first target vs reported tool0, both in UR Base: "
                 f"target p {np.round(target_p * 1e3, 1)} mm, reported p {np.round(raw_p * 1e3, 1)} mm, "
                 f"difference {distance:.2f} mm {angle:.3f} deg")
 
@@ -778,9 +805,9 @@ class ArmInterface:
         # ! An all-zero quaternion means "no pose yet" (startup, fake hardware): keep the last good one.
         if not np.linalg.norm(quaternion) > 1e-6:
             return
-        self.state.tcp_raw_position, self.state.tcp_raw_orientation = position, quaternion / np.linalg.norm(quaternion)
-        self.state.tcp_position = BASE_LINK_FROM_UR_BASE.apply(position)
-        self.state.tcp_orientation = (BASE_LINK_FROM_UR_BASE * Rotation.from_quat(quaternion)).as_quat()
+        quaternion = quaternion / np.linalg.norm(quaternion)
+        self.state.tcp_raw_position, self.state.tcp_raw_orientation = position, quaternion
+        self.state.tcp_position, self.state.tcp_orientation = flange_from_reported(position, quaternion, self.tool_tcp)
         self.state.tcp_update_time = self._now()
 
     def _on_io_states(self, message: IOStates) -> None:
