@@ -14,33 +14,32 @@ from husky_assembly_teleop.plugins.base_planner.algorithms.lattice import (MIN_D
                                                                            _to_centre, plan)
 from husky_assembly_teleop.plugins.base_planner.follow import followed, thinned
 from husky_assembly_teleop.plugins.base_planner.path import MAX_ANGULAR_SPEED, MAX_LINEAR_SPEED, SETTLE_DISTANCE
-from scaffolding_assembly_core.geometry import Pose, box_geometry
+from husky_assembly_teleop.plugins.base_planner.tasks import PASSAGE_ANGLE, WHEELS, Task, along, passage, to_lab
 from scaffolding_assembly_core.scene import Body
 from test_base_planner_rrt import _snapshot, alice, robots, world  # noqa: F401  (fixtures)
 
-#: The passages run along ALONG through CENTRE, slanted off the grid.
-ANGLE = math.radians(17.0)
-CENTRE = np.array((0.0, -3.0))
+#: The passages are the tasks' (`tasks.passage`), with the task frame at ORIGIN: they run along ALONG through CENTRE,
+#: slanted off the grid.
+ORIGIN = (0.0, -3.0, 0.0)
+ANGLE = PASSAGE_ANGLE
+CENTRE = np.array(ORIGIN[:2])
 ALONG = np.array([math.cos(ANGLE), math.sin(ANGLE)])
 ACROSS = np.array([-ALONG[1], ALONG[0]])
-#: Alice's width at wheel height, and her arm and other side's reach from base_footprint, metres.
-WHEELS = 0.70
+#: Alice's arm and other side's reach from base_footprint, metres.
 ARM, OTHER_SIDE = 0.885, 0.346
 #: How far alice_tiles puts the turning centre ahead of base_footprint, metres.
 AHEAD = -load_model("alice_tiles")["xICR"]
 
 
-def _passage(gap: float, depth: float = 1.0, height: float = 0.2) -> list[Body]:
-    """Two blocks 5 m long across the way, `gap` apart: the only way past is the passage between them."""
-    orientation = (0.0, 0.0, math.sin(ANGLE / 2.0), math.cos(ANGLE / 2.0))
-    return [Body(f"test/block{side}", box_geometry((depth, 5.0, height)),
-                 Pose((*(CENTRE + side * (gap / 2.0 + 2.5) * ACROSS), height / 2.0), orientation), label=f"block{side}")
-            for side in (1, -1)]
+def _passage(gap: float, depth: float = 1.0, height: float = 0.2, length: float = 5.0) -> list[Body]:
+    """Two blocks `length` long across the way, `gap` apart: the only way past is the passage between them."""
+    blocks = passage(gap, depth, height, length)
+    return Task("block", "", "passages", (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), blocks).bodies("test/block", ORIGIN)
 
 
-def _at(along: float, across: float, yaw: float = ANGLE) -> tuple[float, float, float]:
+def _at(along_: float, across: float, yaw: float = ANGLE) -> tuple[float, float, float]:
     """A pose in the passage's frame: metres along and across it from its centre."""
-    return (*(CENTRE + along * ALONG + across * ACROSS), yaw)
+    return to_lab(along(along_, across, yaw), ORIGIN)
 
 
 def _follower_pieces(path) -> list:
@@ -195,12 +194,7 @@ def test_goes_around_a_gap_that_only_looks_wide_enough(world, robots, alice):  #
 
     The coarse guide sees a way through it at first.
     """
-    gap, length = WHEELS + 2.0 * Settings().margin - 0.01, 2.0
-    orientation = (0.0, 0.0, math.sin(ANGLE / 2.0), math.cos(ANGLE / 2.0))
-    walls = [Body(f"test/wall{side}", box_geometry((0.6, length, 0.2)),
-                  Pose((*(CENTRE + side * (gap + length) / 2.0 * ACROSS), 0.1), orientation), label=f"wall{side}")
-             for side in (1, -1)]
-    world.sync(_snapshot(robots, walls))
+    world.sync(_snapshot(robots, _passage(WHEELS + 2.0 * Settings().margin - 0.01, depth=0.6, length=2.0)))
     debug = Debug(on=True)
     result = plan(world, alice, _at(-2.0, 0.4, 0.0), _at(2.0, 0.0), threading.Event(), debug=debug)
     assert result.path is not None, result.reason

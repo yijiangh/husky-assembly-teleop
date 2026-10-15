@@ -96,7 +96,7 @@ def to_lab(pose, origin=TASK_ORIGIN) -> tuple[float, float, float]:
     return (ox + x * math.cos(oyaw) - y * math.sin(oyaw), oy + x * math.sin(oyaw) + y * math.cos(oyaw), yaw + oyaw)
 
 
-def _along(along: float, across: float, yaw: float = PASSAGE_ANGLE) -> tuple[float, float, float]:
+def along(along: float, across: float, yaw: float = PASSAGE_ANGLE) -> tuple[float, float, float]:
     """A task-frame pose given along and across the passage axis from its centre."""
     u = np.array([math.cos(PASSAGE_ANGLE), math.sin(PASSAGE_ANGLE)])
     v = np.array([-u[1], u[0]])
@@ -104,9 +104,9 @@ def _along(along: float, across: float, yaw: float = PASSAGE_ANGLE) -> tuple[flo
     return float(x), float(y), yaw
 
 
-def _passage(gap: float, depth: float = 1.0, height: float = 0.2, length: float = 5.0) -> tuple:
+def passage(gap: float, depth: float = 1.0, height: float = 0.2, length: float = 5.0) -> tuple:
     """Two blocks `length` long across the way, `gap` apart, along the passage axis."""
-    return tuple(((depth, length, height), _along(0.0, side * (gap + length) / 2.0)) for side in (1, -1))
+    return tuple(((depth, length, height), along(0.0, side * (gap + length) / 2.0)) for side in (1, -1))
 
 
 #: Gaps, by the room each side beyond the margin.
@@ -123,23 +123,23 @@ TASKS = (
     Task("beside_wall", "Target facing a wall, 5 cm short of it", "obstacles", (-2.0, 1.25, 0.0),
          (0.0, -0.25, -math.pi / 2), (((2.0, 0.3, 1.0), (0.0, -1.25, 0.0)),)),
     Task("looks_wide", "Gap 1 cm too narrow for the margin; walls short enough to go around", "obstacles",
-         _along(-2.0, 0.4, 0.0), _along(2.0, 0.0), _passage(TOO_NARROW_FOR_MARGIN, depth=0.6, length=2.0), -0.005),
-    Task("passage", "Through a passage 1 m deep, 4 cm to spare", "passages", _along(-2.0, 0.3, 0.0),
-         _along(2.0, 0.0), _passage(LOW_4CM), 0.04),
+         along(-2.0, 0.4, 0.0), along(2.0, 0.0), passage(TOO_NARROW_FOR_MARGIN, depth=0.6, length=2.0), -0.005),
+    Task("passage", "Through a passage 1 m deep, 4 cm to spare", "passages", along(-2.0, 0.3, 0.0),
+         along(2.0, 0.0), passage(LOW_4CM), 0.04),
     Task("narrow_passage", "Through a passage 1.5 m deep, 3 cm to spare, starting beside it facing across",
-         "passages", _along(-2.0, 1.0, math.pi / 2), _along(2.2, -0.5, PASSAGE_ANGLE - 0.5),
-         _passage(LOW_3CM, depth=1.5), 0.03),
+         "passages", along(-2.0, 1.0, math.pi / 2), along(2.2, -0.5, PASSAGE_ANGLE - 0.5),
+         passage(LOW_3CM, depth=1.5), 0.03),
     Task("tall_walls", "Between walls taller than Alice, 4 cm to spare, starting off-centre", "passages",
-         _along(-2.2, -0.27, 0.0), _along(2.2, 0.0), _passage(LOW_4CM, height=1.2), 0.04),
-    Task("into_passage", "Into the middle of the narrow passage", "passages", _along(-2.0, 1.0, math.pi / 2),
-         _along(0.2, 0.0), _passage(LOW_3CM, depth=1.5), 0.03),
+         along(-2.2, -0.27, 0.0), along(2.2, 0.0), passage(LOW_4CM, height=1.2), 0.04),
+    Task("into_passage", "Into the middle of the narrow passage", "passages", along(-2.0, 1.0, math.pi / 2),
+         along(0.2, 0.0), passage(LOW_3CM, depth=1.5), 0.03),
     Task("into_facing_out", "Into the narrow passage, ending facing back out", "passages",
-         _along(-2.0, 1.0, math.pi / 2), _along(0.2, 0.0, PASSAGE_ANGLE + math.pi), _passage(LOW_3CM, depth=1.5),
+         along(-2.0, 1.0, math.pi / 2), along(0.2, 0.0, PASSAGE_ANGLE + math.pi), passage(LOW_3CM, depth=1.5),
          0.03),
-    Task("out_of_passage", "Out of the middle of the narrow passage", "passages", _along(0.2, 0.0),
-         _along(2.2, -0.5, PASSAGE_ANGLE - 0.5), _passage(LOW_3CM, depth=1.5), 0.03),
-    Task("too_narrow", "Passage narrower than Alice, no way around", "passages", _along(-2.0, 0.0), _along(2.0, 0.0),
-         _passage(WHEELS - 0.1), -0.1, solvable=False),
+    Task("out_of_passage", "Out of the middle of the narrow passage", "passages", along(0.2, 0.0),
+         along(2.2, -0.5, PASSAGE_ANGLE - 0.5), passage(LOW_3CM, depth=1.5), 0.03),
+    Task("too_narrow", "Passage narrower than Alice, no way around", "passages", along(-2.0, 0.0), along(2.0, 0.0),
+         passage(WHEELS - 0.1), -0.1, solvable=False),
     Task(f"step_{PROCESS_STEP}", f"Into the bar structure at process step {PROCESS_STEP}", "process", PROCESS_START,
          PROCESS_TARGET, process_step=PROCESS_STEP),
     Task(f"step_{PROCESS_STEP}_out", f"Out of the bar structure at process step {PROCESS_STEP}", "process",
