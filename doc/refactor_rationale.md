@@ -93,15 +93,19 @@ per-configuration constant tables (`HUSKY_UR5e_JOINT_NAMES` versus
 `HUSKY_DUAL_UR5e_JOINT_NAMES`), selected by that same boolean.
 
 **What the rewrite does about it.** The kinematic configuration comes from the
-URDF and only from the URDF. Which tool is mounted is configuration (the
-`tools` parameter), and the tool's own URDF (`data/tool_urdf/`) is stitched onto
-the arm's `tool0` at load time (`tool_urdfs.py`). One combined URDF is written
-and everything reads that one, so the robot and its tools cannot disagree.
+URDF. Which tool is mounted is configuration (the `tools` parameter); the
+tool's own URDF (`data/tool_urdf/`) is read into the core's `Tool` (visual and
+collision shapes, TCP) and mounted on the robot's `RobotModel` at its flange
+(`tool_urdfs.py`). Kinematics, drawing, mirrors and planners all read that one
+model, so the robot and its tools cannot disagree. Which arms, namespaces and
+default tools a robot has still comes from the per-serial table in `config.py`.
 
-Stitching rather than one full URDF per robot and tool combination, because the
-tools change from run to run and per arm, and every full copy of a robot is one
-more file a calibration change has to reach -- the multiplication the next
-section is about.
+A tool apart rather than one full URDF per robot and tool combination, because
+the tools change from run to run and per arm, and every full copy of a robot is
+one more file a calibration change has to reach -- the multiplication the next
+section is about. Apart rather than joined onto the robot's URDF (as the first
+version did), because the process format, the planners and the mirrors already
+keep tools apart: a joined copy was a second description of the same tool.
 
 ## Calibration baked into filenames
 
