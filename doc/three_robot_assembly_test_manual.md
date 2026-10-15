@@ -815,6 +815,10 @@ Monitor pane: 1.1 **Alice** block, then `ros2 run husky_assembly_teleop husky_mo
     the bars that stand when it ends (Rhino note D5); the planner just avoids them.
   - Readout `step 1/4: B21_H_M0_free_to_approach ...`, `traj time` 15 s. The `Transfer start:`
     and `Insert: ...` controls are hidden.
+  - The blue goal ghost stands where Rhino puts Alice, with her arm at the approach pose
+    (`[goal ghost] 'B21_H_M0_free_to_approach': Rhino's base and target pose (drive the base there); ...`).
+    Drive the base towards it (section 3) before planning. The plan itself starts from her live
+    base and arm.
 - [ ] **Free approach** (`B21_H_M0_free_to_approach`): `Plan Movement` → the goal is re-solved by IK
       at Alice's live base, with her own exact ssik solver (built from her calibrated URDF, like
       Cindy's). Expect:
@@ -983,7 +987,8 @@ Monitor pane: 1.1 **Belle** block, then `ros2 run husky_assembly_teleop husky_mo
 - [ ] Select 10 → `Load action` →
       `[obstacle robots] posed from: ObstacleRobotAlice <- live, ObstacleRobotCindy <- live`.
       B36 and B37 may be drawn although not built yet (as in section 8). Readout
-      `step 1/4: B35_H_M0_free_to_approach ...`, `traj time` 15 s.
+      `step 1/4: B35_H_M0_free_to_approach ...`, `traj time` 15 s. The blue goal ghost stands
+      where Rhino puts Belle, at her approach pose: drive the base towards it (as in section 8).
 - [ ] **Free approach** (`B35_H_M0_free_to_approach`): `Plan Movement`. The goal is re-solved
       with Belle's own exact ssik solver (built 2026-10-13 from her calibrated URDF, like
       Alice's). Once per run:

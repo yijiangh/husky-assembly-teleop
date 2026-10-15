@@ -534,6 +534,7 @@ class HuskyMonitor(Node):
         self._loaded_movements = []             # list[Movement]; every movement across those halves
         self._loaded_start_ee_sources = []      # per movement: {side: movement authoring its START pose}
         self._live_start_indices = set()        # movements whose start is the live robot pose
+        self._exported_ghost_poses = {}         # live starts: Rhino's (base, target conf) for the goal ghost
         # PlanSkeleton progress (progress_io.Progress) of the design problem, or
         # None (legacy problem / not loaded yet). Set by the plan skeleton UI; read via
         # getattr everywhere because the headless harnesses skip __init__.
@@ -2701,6 +2702,46 @@ class HuskyMonitor(Node):
         return (self._is_free_to_load(mv)
                 or (idx == 0 and mv.start_state.robot_configuration is None))
 
+    def _exported_ghost_poses_of_live_starts(self) -> dict:
+        """Rhino's base and target joints for each live start that Rhino exports without joints.
+
+        Such a movement (a support robot's free approach ``H_M0``, Cindy's travel
+        to load) starts wherever the robot is, so its start state gets the LIVE
+        pose, and a goal ghost drawn from it would sit on the robot itself. The
+        ghost shows this instead (``load_selected_movement``): the base Rhino put
+        the robot at, with the arms at the movement's exported target
+        configuration -- the pose to drive the base towards. Movements whose
+        export has start joints (e.g. Cindy's retreat) keep their live ghost.
+
+        * Read from the clean export: a ``.live-solved.json`` sidecar stores an
+        * earlier run's live start, not Rhino's.
+        ! Call before the live injection, which fills the null start joints.
+
+        Returns:
+            dict: ``{movement index: (base Frame, target Configuration)}``, copies.
+        """
+        movements = self._loaded_movements
+        skeleton = getattr(self, '_skeleton', None)
+        action = getattr(self, '_loaded_action', None)
+        if (skeleton is not None and action is not None
+                and self._current_bar_action_path != skeleton.action_path(action, prefer_sidecar=False)):
+            try:
+                movements = skeleton.load_bar_action(action, prefer_sidecar=False).movements
+            except (OSError, ValueError) as e:
+                print(f"[goal ghost] could not read the clean export ({e}); "
+                      f"the ghost shows the loaded file's starts.")
+        exported = {mv.movement_id: mv for mv in movements}
+        poses = {}
+        for i in sorted(getattr(self, '_live_start_indices', set())):
+            mv = exported.get(self._loaded_movements[i].movement_id)
+            state = getattr(mv, 'start_state', None)
+            target = getattr(mv, 'target_configuration', None)
+            if (state is None or state.robot_configuration is not None
+                    or state.robot_base_frame is None or target is None):
+                continue
+            poses[i] = (state.robot_base_frame.copy(), target.copy())
+        return poses
+
     def _mocap_sees_husky(self, husky, max_age_s: float = LIVE_OBSTACLE_MAX_AGE_S) -> bool:
         """Whether mocap reported a husky's rigid body within the last ``max_age_s`` seconds.
 
@@ -3477,6 +3518,9 @@ class HuskyMonitor(Node):
         self._live_start_indices = {
             i for i, mv in enumerate(self._loaded_movements)
             if self._movement_starts_live(i, mv)}
+        # Where Rhino wants the robot, for the goal ghost: read before the
+        # injection below writes the live pose into those starts.
+        self._exported_ghost_poses = self._exported_ghost_poses_of_live_starts()
         beliefs, sources = self._obstacle_beliefs_with_sources()
         for i, mv in enumerate(self._loaded_movements):
             if mv.start_state is None:
@@ -4095,27 +4139,38 @@ class HuskyMonitor(Node):
         # load brings it back.
         self._sync_pp_visibility_to_hidden(mv.start_state)
 
-        if mv.start_state.robot_configuration is not None:
-            rc = mv.start_state.robot_configuration
+        # * The goal ghost: the movement's start, or -- for a live start Rhino
+        # * exports without joints (a hold's free approach) -- Rhino's base with
+        # * the target joints, so it shows where to drive the base instead of
+        # * sitting on the robot (see _exported_ghost_poses_of_live_starts).
+        ghost_base = mv.start_state.robot_base_frame
+        ghost_conf = mv.start_state.robot_configuration
+        exported = (getattr(self, '_exported_ghost_poses', None) or {}).get(idx)
+        if exported is not None:
+            ghost_base, ghost_conf = exported
+            print(f"[goal ghost] {mv.movement_id!r}: Rhino's base and target pose "
+                  f"(drive the base there); the plan starts from the live robot.")
+        if ghost_conf is not None:
             try:
-                # One action per arm of the loaded cell (2 for Cindy, 1 otherwise).
+                # One entry per arm of the loaded cell (2 for Cindy, 1 otherwise).
                 for i, names in enumerate(self._arm_joint_name_sets()):
-                    self.goal_arm_pose[i] = np.array([rc[n] for n in names])
+                    self.goal_arm_pose[i] = np.array([ghost_conf[n] for n in names])
             except (KeyError, AttributeError) as e:
                 print(f"WARN: could not extract arm joint values: {e}")
-        if mv.start_state.robot_base_frame is not None:
-            self.goal_base_pose = pose_from_frame(mv.start_state.robot_base_frame)
+        if ghost_base is not None:
+            self.goal_base_pose = pose_from_frame(ghost_base)
             if self.BAR_ACTION_LIVE_REPLAN_EXE:
                 self.goal_base_pose_frozen = True
 
-            # In FAKE_HARDWARE mode, teleport the real-robot base exactly to
-            # the movement's start_state base. With FAKE_HARDWARE=0, leave
-            # the live mocap reading to drive the real-robot base via
-            # receive_mocap_frame.
-            if self.FAKE_HARDWARE:
-                hi = self.huskies[self.selected_robot_id].interface
-                hi.position = np.asarray(self.goal_base_pose[0], dtype=float)
-                hi.rotation = np.asarray(self.goal_base_pose[1], dtype=float)
+        # In FAKE_HARDWARE mode, teleport the real-robot base exactly to
+        # the movement's start_state base. With FAKE_HARDWARE=0, leave
+        # the live mocap reading to drive the real-robot base via
+        # receive_mocap_frame.
+        if self.FAKE_HARDWARE and mv.start_state.robot_base_frame is not None:
+            hi = self.huskies[self.selected_robot_id].interface
+            start_pos, start_rot = pose_from_frame(mv.start_state.robot_base_frame)
+            hi.position = np.asarray(start_pos, dtype=float)
+            hi.rotation = np.asarray(start_rot, dtype=float)
 
         for uid in self._ee_target_pose_uids:
             try:
