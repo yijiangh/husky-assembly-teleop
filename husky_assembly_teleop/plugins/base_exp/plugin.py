@@ -40,6 +40,7 @@ from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
 from ...plugin_api.trace import Signal, Trace
 from ...robot_interface.base import PLATFORM_VELOCITY_CONTROLLER, FollowerState
+from ...ui.base_markers import Markers
 from ...ui.pose_input import yaw_from_xyzw
 from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, SECTION_TOOL, block, chip, section, values, warning
 from ...ui.trace_plot import TracePlot
@@ -48,7 +49,6 @@ from ...world.checks import STALE_AFTER
 from ...world.follower import live_report
 from . import record
 from .auto import PATH_CLEARANCE, SPEED, STANDARD_SET, STOP_DISTANCE, Clearance, Sampler, StandardSet
-from .markers import Markers
 from .plan import Plan, plan_from
 from .report import write_report
 from .templates import PARAMETERS, TEMPLATES, timing
@@ -761,7 +761,8 @@ class BaseExperimentPlugin(HuskyPlugin):
         if self.serial is None:
             return
         self._robot.value = self.serial
-        self._markers.paths(None if self.running else self._preview, self._sent)
+        preview = None if self.running or self._preview is None else self._preview.path
+        self._markers.paths(preview, None if self._sent is None else self._sent.path)
         trail = None if self._record is None or self._sent is None else \
             self._record.values(f"{self._sent.serial}_floor_pose")[:, :2]
         self._markers.trail(trail)

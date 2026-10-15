@@ -1,5 +1,5 @@
 """
-The base experiment's 3D view: path lines with heading ticks, the robot's trail, and the follower's points.
+A base path on the floor as the onboard follower drives it: lines, heading ticks, trail, and the follower's points.
 
 ! Main thread only, like every scene call; build in `setup`, update in `draw`.
 """
@@ -9,13 +9,13 @@ from __future__ import annotations
 import math
 
 import numpy as np
+from crl_husky.follower_path import FollowerPath
 
-from ...plugin_api.context import PluginContext
-from ...robot_interface.base import FollowerState
-from .plan import Plan
+from ..plugin_api.context import PluginContext
+from ..robot_interface.base import FollowerState
 
 #: Colours (r, g, b).
-PREVIEW_COLOR = (66, 99, 235)      # blue: what Start would send
+PREVIEW_COLOR = (66, 99, 235)      # blue: what would be sent
 SENT_COLOR = (47, 158, 68)         # green: the path being followed
 TRAIL_COLOR = (232, 89, 12)        # orange: where the robot went
 LOOKAHEAD_COLOR = (224, 49, 49)
@@ -44,7 +44,7 @@ class Markers:
         self._reference = ctx.view.scene.add_icosphere(f"{root}/reference", radius=0.02, color=SENT_COLOR,
                                                        visible=False)
 
-    def paths(self, preview: Plan | None, sent: Plan | None) -> None:
+    def paths(self, preview: FollowerPath | None, sent: FollowerPath | None) -> None:
         """Show the preview in blue and the path sent in green; None removes one."""
         if preview is self._paths[0] and sent is self._paths[1]:
             return
@@ -78,13 +78,13 @@ class Markers:
         if ref:
             self._reference.position = (*follower.reference[:2], FLOOR * 4)
 
-    def _path(self, key: str, plan: Plan | None, color) -> None:
+    def _path(self, key: str, path: FollowerPath | None, color) -> None:
         """Replace one path's line and heading ticks, or remove them."""
         self._remove(key)
         self._remove(f"{key}_ticks")
-        if plan is None:
+        if path is None:
             return
-        poses = plan.path.polyline()
+        poses = path.polyline()
         self._add(key, floor_segments(poses[:, :2]), color, LINE)
         self._add(f"{key}_ticks", ticks(poses), color, LINE / 2)
 

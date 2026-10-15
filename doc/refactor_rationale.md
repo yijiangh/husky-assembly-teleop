@@ -219,8 +219,9 @@ The core is grouped by what a module is about, not by who calls it:
 - `robot_interface/`: the only package that talks to a robot.
 - `ui/`: the viser server (`visualization.py`), the 3D view (`scene_view.py`) and
   the panel widgets (`style.py`, formerly `ui_style.py`; `ghost.py`,
-  `pose_input.py`, `checklist.py`, `pybullet_window.py`); `quaternion.py` holds
-  the quaternion order at the viser boundary.
+  `pose_input.py`, `checklist.py`, `pybullet_window.py`, `trace_plot.py`), and drawings of a robot
+  feature that more than one plugin shows (`base_markers.py`: the base follower's path and trail);
+  `quaternion.py` holds the quaternion order at the viser boundary.
 - `external/scaffolding_assembly_core/` (a submodule): the core shared with the Rhino plugin
   and the planners: the process format, robots, scenes and mirrors; it imports
   nothing of the monitor.
