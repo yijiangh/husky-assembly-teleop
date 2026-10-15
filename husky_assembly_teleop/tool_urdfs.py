@@ -30,6 +30,9 @@ TOOL_URDFS: dict[str, str | dict[str, str]] = {
                        "right_ur_arm": "scaffolding_v3_right.urdf"},
 }
 
+#: The tool URDF link at the tool centre point; set the pendant's TCP to its pose in tool0.
+TCP_LINK = "tcp"
+
 #: `package://<pkg>/...` resolves three levels above the URDF (<root>/<package>/urdf/<file>.urdf).
 _PACKAGE_PREFIX = "package://"
 _FILE_PREFIX = "file://"
@@ -74,7 +77,9 @@ def tool_urdf(kind: str, arm_name: str, data_directory: Path) -> Path | None:
 
 
 def tool_spec(kind: str, arm_name: str, data_directory: Path, tool_id: str) -> Tool | None:
-    """A tool for planning cells: its URDF's collision meshes at zero joints, in the tool0 frame; TCP at tool0.
+    """A tool as the core describes it: its URDF's visual and collision meshes at zero joints, and its TCP.
+
+    All in the tool0 frame, the tool URDF's root link. The TCP is the link TCP_LINK, or tool0 if there is none.
 
     Args:
         kind: The end effector kind (config.EndEffectorKind).
@@ -96,11 +101,14 @@ def tool_spec(kind: str, arm_name: str, data_directory: Path, tool_id: str) -> T
         """Turn one mesh reference into an absolute path. ! Keep the name `fname`: yourdfpy passes it as a keyword."""
         return resolve_mesh_path(fname, tool_file)
 
-    model = URDF.load(str(tool_file), build_scene_graph=False, load_meshes=False, build_collision_scene_graph=True,
+    model = URDF.load(str(tool_file), build_scene_graph=True, load_meshes=True, build_collision_scene_graph=True,
                       load_collision_meshes=True, filename_handler=resolve)
-    shapes = tuple(TriMesh.from_arrays(mesh.vertices, mesh.faces)
-                   for mesh in model.collision_scene.dump(concatenate=False))
-    return Tool(id=tool_id, geometry=Geometry(shapes, shapes), tcp=Pose(), kind=kind)
+    visual = tuple(TriMesh.from_arrays(mesh.vertices, mesh.faces) for mesh in model.scene.dump(concatenate=False))
+    collision = tuple(TriMesh.from_arrays(mesh.vertices, mesh.faces)
+                      for mesh in model.collision_scene.dump(concatenate=False))
+    tcp = (Pose.from_matrix(model.get_transform(frame_to=TCP_LINK, frame_from=model.base_link))
+           if TCP_LINK in model.link_map else Pose())
+    return Tool(id=tool_id, geometry=Geometry(visual, collision), tcp=tcp, kind=kind)
 
 
 def stitch_tools(robot_urdf: Path, tools: dict[str, str | None], data_directory: Path, out_file: Path) -> Path:
