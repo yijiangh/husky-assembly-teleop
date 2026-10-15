@@ -28,9 +28,12 @@ planners, the pendant, the monitor's tool0 conversion (`arm.flange_from_reported
 **Values (decide first)**
 - [ ] TCP of each tool, in its tool0 frame: Cindy's `scaffolding_v3` left/right are (∓0.07, 0, 0.08) m in both
       local processes; confirm against the CAD or by measuring.
-- [ ] The Robotiq's TCP: the processes disagree (tool0 in `260814_RobArch_support_ik`; 166.1 mm out with a 180° turn
-      in `261008_2ModulesDemo`). Pick one, and check the orientation convention (which axis points out of the
-      tool, which across the fingers) against the pendant's.
+- [ ] The Robotiq's TCP: the processes disagree because the old export (`260814_RobArch_support_ik`) put it at the
+      flange; the new design (`261008_2ModulesDemo`) puts it 166.1 mm out on the held bar's axis (to 0.007 mm, see
+      the "Support Gripper TCP Check" artifact). Take the new design's: pendant X 0, Y 0, Z 166.1 mm, rotation vector
+      (0, 2.2214, 2.2214) rad. Its z axis runs along the bar: confirm that convention for tool-frame jogging.
+- [ ] Should an amber health `tcp` chip refuse Cartesian commands? Today it only warns, so a pendant changed before
+      the tool URDFs lets Hold drive tool0 166 mm (see the "Arm Frames and the TCP" artifact).
 - [ ] Single-arm robots get the *left* v3 tool (`tool_urdfs.TOOL_URDFS`): confirm its TCP holds there.
 - [ ] `scaffolding_v1` has no model, so no TCP: Cartesian commands on such an arm assume TCP = tool0. Refuse them
       instead, or give it a model.
