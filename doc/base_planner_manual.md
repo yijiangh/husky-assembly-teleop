@@ -21,7 +21,7 @@ one on a metric is bold in the report (rules in the report's "What we measured")
 |---|---|---|---|---|
 | **A. Benchmark** | Which planner solves which task, how fast, with what margin; how does the follower drive its paths in simulation? | 1, 2, 3 | every task offline, by script: the lattice once (it is deterministic), the RRT 5 times | `<experiment>/_analysis/summary.md` |
 | **B. Robot** | How does the robot drive each planner's paths? | 1, 2 | the virtual tasks on the real robot in a clean lab, each planner 3 times per task; the live simulator first, once | the same report |
-| **C. Step 110** | Can each planner drive into the bar structure, on the robot? | 3 | task `step_110` with the process at step 110, each planner 3 times | the same report |
+| **C. Step 110** | Can each planner drive into the bar structure and back out, on the robot? | 3 | tasks `step_110` and `step_110_out` with the process at step 110, each planner 3 times | the same report |
 
 One experiment name per collection, e.g. `benchmark_1015` (A) and `robot_1016` (B and C together): a report covers
 one experiment.
@@ -45,13 +45,14 @@ obstacles in the way:
 | out_of_passage | 1 | out of the middle of the narrow passage |
 | too_narrow | 1 | narrower than Alice: must fail (a check) |
 | step_110 | 3 | into the bar structure at process step 110 |
+| step_110_out | 3 | back out of it, to step_110's start |
 
-**Virtual obstacles:** all tasks but `step_110` put their obstacles into the scene as virtual bodies (purple): the
+**Virtual obstacles:** all tasks but the step 110 ones put their obstacles into the scene as virtual bodies (purple): the
 planner avoids them, the floor stays empty. They are placed with the task frame at `TASK_ORIGIN` in `tasks.py`.
 ! Set `TASK_ORIGIN` to the middle of a clear area about 5 m by 3.5 m before collecting; it is recorded with every
 attempt.
 
-**step_110** uses the process plugin's scene at step 110 (`PROCESS`, `PROCESS_STEP`). Its start and target are
+**step_110** and **step_110_out** use the process plugin's scene at step 110 (`PROCESS`, `PROCESS_STEP`). Their ends are
 `PROCESS_START` and `PROCESS_TARGET` in `tasks.py`; the target is inside the bar structure (confirmed 15 Oct).
 
 ### The method

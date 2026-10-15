@@ -3,8 +3,8 @@ The base planner experiment's tasks: a start and a target for Alice, and the obs
 
 - Virtual tasks put their obstacles into the scene as virtual bodies, so they run in a clean lab as well as offline.
   They are defined in a task frame placed in the lab at TASK_ORIGIN, around a passage 17 degrees off its axes.
-- The process task drives into the bar structure of a process step: its scene comes from the process plugin (live)
-  or from the process folder (offline); its start and target are in the lab frame.
+- The process tasks drive into the bar structure of a process step and back out: their scene comes from the process
+  plugin (live) or from the process folder (offline); their start and target are in the lab frame.
 
 `TASKS` is the standard set, in report order. doc/base_planner_manual.md says what each tests.
 """
@@ -28,7 +28,7 @@ PASSAGE_ANGLE = math.radians(17.0)
 #: margin, metres: the passages are sized from them.
 WHEELS = 0.70
 MARGIN = 0.05
-#: The process task: its process folder (under the Drive root), step, and start and target in the lab frame.
+#: The process tasks: the process folder (under the Drive root), step, and start and target in the lab frame.
 PROCESS = "data_design_study/261008_2ModulesDemo_purged_process"
 PROCESS_STEP = 110
 PROCESS_START = (-2.75, -3.32, math.radians(76.61))
@@ -48,7 +48,7 @@ class Task:
         start: (x, y, yaw) where Alice starts: in the task frame for a virtual task, the lab frame for the process.
         target: (x, y, yaw) to reach, likewise.
         obstacles: Virtual obstacles as (size (x, y, z), pose (x, y, yaw) of their centre at floor level) in the task
-            frame; empty for the process task.
+            frame; empty for a process task.
         room: Room each side of the narrowest place beyond the margin, metres (negative: too narrow); None if open.
         solvable: Whether a path exists.
         process_step: The process step whose scene the task drives in; None for a virtual task.
@@ -141,6 +141,8 @@ TASKS = (
          _passage(WHEELS - 0.1), -0.1, solvable=False),
     Task(f"step_{PROCESS_STEP}", f"Into the bar structure at process step {PROCESS_STEP}", "process", PROCESS_START,
          PROCESS_TARGET, process_step=PROCESS_STEP),
+    Task(f"step_{PROCESS_STEP}_out", f"Out of the bar structure at process step {PROCESS_STEP}", "process",
+         PROCESS_TARGET, PROCESS_START, process_step=PROCESS_STEP),
 )
 
 #: Tasks by name.

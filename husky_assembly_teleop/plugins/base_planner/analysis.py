@@ -32,6 +32,9 @@ OPERATOR = ("stopped", "replaced by a new commit")
 #: Better-than rules per metric: which way is better, and the least gap that counts (beside the spread).
 BETTER = {"success": (+1, 0.0), "seconds": (-1, 0.2), "length": (-1, 0.10), "clearance": (+1, 1.0),
           "deviation": (-1, 1.0), "end": (-1, 1.0), "drift": (-1, 1.0), "ratio": (-1, 0.05)}
+#: A plan from within this far of its target, metres and radians, is left out of the pooled numbers: already there.
+THERE_POSITION = 0.05
+THERE_YAW = math.radians(5.0)
 #: Decimals per metric, the same in every table.
 DECIMALS = {"seconds": 1, "length": 2, "clearance": 1, "deviation": 1, "end": 1, "drift": 1, "ratio": 2}
 
@@ -127,6 +130,7 @@ def analyse(experiment: Path) -> Path:
     charts = draw_all(counted, planners, out)
     lines = _header(experiment, attempts, planners)
     lines += _overview(counted, planners, out)
+    lines += _pooled(attempts, planners, out)
     lines += _planning(counted, planners, out)
     lines += _charts(charts, ("success.png", "Which tasks each planner solves."),
                      ("plan_time.png", "How long each attempt planned; × found no path."),
@@ -235,6 +239,8 @@ def _header(experiment: Path, attempts: list[Attempt], planners: list[str]) -> l
         "[Driving, live simulator](#driving-live-simulator)",
         "5. How do they do at process step 110? → [Process step 110](#process-step-110)",
         "6. Why did attempts fail? → [Failures](#failures)",
+        "7. Over every plan and run, tasks or not, how does each planner do? → "
+        "[All plans and runs, per planner](#all-plans-and-runs-per-planner)",
         "",
         "## What we measured",
         "",
@@ -332,6 +338,66 @@ def _overview(attempts: list[Attempt], planners: list[str], out: Path) -> list[s
     return lines
 
 
+def _pooled(attempts: list[Attempt], planners: list[str], out: Path) -> list[str]:
+    """Every plan and run per planner, task or not (drives to a task's start too): more numbers, mixed problems."""
+    pooled = [attempt for attempt in attempts if not attempt.left_out.startswith("excluded")
+              and not _already_there(attempt)]
+    columns = (("Attempts", "count"), ("Success", "success"), ("Plan time s", "seconds"), ("Length m", "length"),
+               ("Clearance cm", "clearance"), ("Runs", "count"), ("Done", "done"), ("Deviation cm", "deviation"),
+               ("End cm", "end"), ("Drift after done cm", "drift"), ("Drive / planned", "ratio"))
+    header = ["Planner", "Where"] + [title for title, _ in columns]
+    lines = ["## All plans and runs, per planner", "",
+             "Every attempt pooled per planner, with or without a task, so drives to a task's start count too; only "
+             f"attempts excluded by hand and plans already at their target (within {THERE_POSITION * 100:.0f} cm and "
+             f"{math.degrees(THERE_YAW):.0f}°) are left out. The problems differ between planners, so this is about "
+             "how each does in general, not a comparison on equal tasks. Mean ± sd over attempts; runs as in "
+             "Driving.", "", "| " + " | ".join(header) + " |", "| " + " | ".join("---" for _ in header) + " |"]
+    rows = []
+    for environment in ENVIRONMENTS:
+        group = {name: [a for a in pooled if a.planner == name and a.environment == environment] for name in planners}
+        if not any(group.values()):
+            continue
+        runs = {name: [a for a in members if a.run is not None and not a.run_left_out]
+                for name, members in group.items()}
+        stats = []
+        for title, metric in columns:
+            values = {}
+            for name in planners:
+                members = runs[name] if metric in ("done", "deviation", "end", "drift", "ratio") else group[name]
+                if metric == "count":
+                    values[name] = (float(len(runs[name] if title == "Runs" else group[name])), 0.0)
+                    continue
+                found = [(1.0 if a.description["run"]["outcome"] == "done" else 0.0) if metric == "done"
+                         else a.run_value(metric) if metric in ("deviation", "end", "drift", "ratio")
+                         else a.value(metric) for a in members]
+                found = [value for value in found if value is not None]
+                values[name] = (float(np.mean(found)), float(np.std(found))) if found else (None, 0.0)
+            kind = "success" if metric == "done" else metric
+            stats.append((kind, values, None if metric == "count" else _best(kind, values)))
+        if rows:
+            lines.append("| " + " | ".join("" for _ in header) + " |")
+        for name in planners:
+            if not group[name]:
+                continue
+            cells = [f"{values[name][0]:.0f}" if kind == "count" else
+                     _cell(values[name][0], kind, best == name, spread=values[name][1], percent=kind == "success")
+                     for kind, values, best in stats]
+            row = [name, environment] + cells
+            rows.append(row)
+            lines.append("| " + " | ".join(row) + " |")
+    _csv(out / "pooled.csv", header, [[_strip(cell) for cell in row] for row in rows])
+    return lines + [""]
+
+
+def _already_there(attempt: Attempt) -> bool:
+    """Whether the attempt planned from where it already was: within THERE_POSITION and THERE_YAW of its target."""
+    start, goal = attempt.description.get("start"), attempt.description.get("goal")
+    if not start or not goal:
+        return False
+    return (math.hypot(start[0] - goal[0], start[1] - goal[1]) < THERE_POSITION
+            and abs(math.remainder(start[2] - goal[2], math.tau)) < THERE_YAW)
+
+
 def _planning(attempts: list[Attempt], planners: list[str], out: Path) -> list[str]:
     metrics_ = (("Success", "success"), ("Plan time s", "seconds"), ("Length m", "length"),
                 ("Clearance cm", "clearance"))
@@ -383,21 +449,22 @@ def _runs(attempts: list[Attempt], planners: list[str], environment: str, out: P
 
 
 def _process(attempts: list[Attempt], planners: list[str], out: Path) -> list[str]:
-    task = next(task for task in TASKS if not task.virtual)
-    mine = [attempt for attempt in attempts if attempt.task == task.name]
-    lines = [f"## Process step {task.process_step}", ""]
-    if not mine:
-        return lines + ["Not run: no attempts on this task yet.", ""]
+    tasks = [task for task in TASKS if not task.virtual]
+    lines = [f"## Process step {tasks[0].process_step}", ""]
+    if not any(attempt.task == task.name for attempt in attempts for task in tasks):
+        return lines + ["Not run: no attempts on these tasks yet.", ""]
     columns = (("Success", "success", "plan"), ("Plan time s", "seconds", "plan"), ("Length m", "length", "plan"),
                ("Clearance cm", "clearance", "plan"), ("Deviation exact cm", "deviation", EXACT),
                ("End exact cm", "end", EXACT), ("Deviation deviated cm", "deviation", DEVIATED),
                ("End deviated cm", "end", DEVIATED), ("Deviation run cm", "deviation", "run"),
                ("End run cm", "end", "run"))
-    header = ["Planner", "Where", "Attempts"] + [title for title, _, _ in columns]
-    lines += [f"Every number of the ultimate test, {task.title.lower()}, per planner and where it was attempted.",
-              "", "| " + " | ".join(header) + " |", "| " + " | ".join("---" for _ in header) + " |"]
+    header = ["Task", "Planner", "Where", "Attempts"] + [title for title, _, _ in columns]
+    lines += ["Every number of the ultimate test, into the bar structure and back out, per task, planner and where "
+              "it was attempted.", "",
+              "| " + " | ".join(header) + " |", "| " + " | ".join("---" for _ in header) + " |"]
     rows = []
-    for environment in ENVIRONMENTS:
+    for task, environment in ((task, environment) for task in tasks for environment in ENVIRONMENTS):
+        mine = [attempt for attempt in attempts if attempt.task == task.name]
         group = {name: [a for a in mine if a.planner == name and a.environment == environment] for name in planners}
         if not any(group.values()):
             continue
@@ -417,7 +484,7 @@ def _process(attempts: list[Attempt], planners: list[str], out: Path) -> list[st
                 continue
             cells = [_cell(values[name][0], metric, best == name, spread=values[name][1],
                            percent=metric == "success") for metric, values, best in stats]
-            row = [name, environment, str(len(group[name]))] + cells
+            row = [task.name, name, environment, str(len(group[name]))] + cells
             rows.append(row)
             lines.append("| " + " | ".join(row) + " |")
     _csv(out / "process.csv", header, [[_strip(cell) for cell in row] for row in rows])
@@ -498,7 +565,7 @@ def _plots(attempts: list[Attempt], planners: list[str], out: Path) -> list[str]
     (out / "metrics.png").unlink(missing_ok=True)  # replaced by the charts above
     return ["## Where the paths go", "", "Each planner's paths over the floor of the task's first attempt.", "",
             "![Each planner's paths per task](tasks.png)", "",
-            "## Files", "", "- One CSV per table: overview, planning, simulation_exact, simulation_deviated, "
+            "## Files", "", "- One CSV per table: overview, pooled, planning, simulation_exact, simulation_deviated, "
             "runs_real, runs_sim, process, "
             "failures, attempts.", "- `results_prompt.md`: the prompt for results.md.", ""]
 

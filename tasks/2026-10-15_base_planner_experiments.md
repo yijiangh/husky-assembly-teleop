@@ -35,6 +35,7 @@ Spec: `doc/base_planner_manual.md`. Code: `plugins/base_planner/{tasks,recording
   harder, lopsided case.
 - **Step 110 target** (user, 15 Oct): (0.43, −2.785, 0°), inside the bar structure; the first target was outside.
   Re-run as `benchmark_1016`.
+- **step_110_out**: the way back out of the bar structure, its own task.
 
 ## Open
 
