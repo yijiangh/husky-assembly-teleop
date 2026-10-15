@@ -24,9 +24,11 @@ PATIENCE = 3.0
 GRACE = 10.0
 #: Seconds simulated after the follower is done, as the plugin records them: the last commands still act.
 SETTLE = 2.0
-#: The deviated models: the follower's model with the true xICR at each of these, metres (the planners' default
-#: xICR range, its ends and middle).
-DEVIATED_XICRS = (-0.20, -0.15, -0.10)
+#: Where the turning centre may be along the body, metres, as crl_husky's xICR (negative: ahead of base_footprint);
+#: around Alice's fitted -0.13 m (config/base_models in crl_husky). The planners' default range.
+XICR_RANGE = (-0.20, -0.10)
+#: The deviated models: the follower's model with the true xICR at the ends and middle of XICR_RANGE, metres.
+DEVIATED_XICRS = (XICR_RANGE[0], sum(XICR_RANGE) / 2.0, XICR_RANGE[1])
 #: The model groups, in report order.
 EXACT, DEVIATED = "exact model", "deviated models"
 

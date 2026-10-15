@@ -7,9 +7,14 @@ What every base planning algorithm provides, and `Debug`, the record of a search
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
+from ament_index_python.packages import get_package_share_directory
+
+from ..follow import XICR_RANGE
+from ..world import COLLISION_MARGIN
 
 if TYPE_CHECKING:
     import threading
@@ -19,6 +24,17 @@ if TYPE_CHECKING:
     from ...planning.search import PlanResult
     from ..path import BasePath
     from ..world import PlanningWorld
+
+
+#: Largest gap between the xICR values a path is checked with, metres.
+XICR_STEP = 0.025
+#: The robot model the onboard follower runs with (its `model:=`), from crl_husky config/base_models.
+FOLLOWER_MODEL = "alice_tiles"
+#: Straight drive onto the target (and off the start, for the RRT), metres: no turn on the spot there.
+LEAD = 0.5
+#: Collision-checking resolution along a move: metres driven, radians turned.
+POSITION_STEP = 0.05
+YAW_STEP = 0.05
 
 
 @dataclass
@@ -112,3 +128,30 @@ class Algorithm:
             PlanResult[BasePath]: The path, or why there is none.
         """
         raise NotImplementedError
+
+
+def follower_models() -> list[str]:
+    """Names of the robot models in crl_husky config/base_models, "ideal" first."""
+    try:
+        folder = Path(get_package_share_directory("crl_husky")) / "config" / "base_models"
+    except LookupError:
+        return ["ideal"]
+    return sorted((path.stem for path in folder.glob("*.yaml")), key=lambda name: (name != "ideal", name))
+
+
+def add_follower_settings(gui: viser.GuiApi) -> tuple:
+    """Add the xICR range and follower model widgets every algorithm checks its path with, in that order."""
+    models = follower_models()
+    return (gui.add_multi_slider("xICR m", min=-0.30, max=0.10, step=0.01, initial_value=XICR_RANGE,
+                                 hint="Where the turning centre may really be, as crl_husky's xICR (negative: ahead "
+                                      "of base_footprint); the path is checked for all of them"),
+            gui.add_dropdown("Follower model", options=models,
+                             initial_value=FOLLOWER_MODEL if FOLLOWER_MODEL in models else models[0],
+                             hint="The robot model the onboard follower runs with (its model:=), from crl_husky "
+                                  "config/base_models; the path is checked as that follower drives it"))
+
+
+def add_margin_setting(gui: viser.GuiApi):
+    """Add the margin slider: how far every algorithm keeps from everything else."""
+    return gui.add_slider("Margin m", min=0.0, max=0.3, step=0.01, initial_value=COLLISION_MARGIN,
+                          hint="Keep at least this far from the other robots and bodies")

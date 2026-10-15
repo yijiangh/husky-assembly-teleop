@@ -30,12 +30,12 @@ from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import dijkstra
 
 from ...planning.search import TIME_LIMIT, PlanResult
-from ..follow import followed, thinned
+from ..follow import XICR_RANGE, followed, thinned
 from ..path import (MAX_ANGULAR_SPEED, MAX_LINEAR_SPEED, SETTLE_DISTANCE, BasePath, densify, driven, steer,
                     timed_path)
 from ..world import COLLISION_MARGIN, PlanningWorld
-from .base import Algorithm, Debug
-from .rrt_arcs import FOLLOWER_MODEL, LEAD, POSITION_STEP, XICR_RANGE, XICR_STEP, YAW_STEP, follower_models
+from .base import (FOLLOWER_MODEL, LEAD, POSITION_STEP, XICR_STEP, YAW_STEP, Algorithm, Debug, add_follower_settings,
+                   add_margin_setting)
 
 #: Search grid: the first pose to reach a cell and heading bin keeps it. Cell size, metres (also of the guide's fine
 #: maps), and heading bin, radians.
@@ -177,21 +177,13 @@ class Lattice(Algorithm):
 
     def add_settings(self, gui) -> None:
         """Add the xICR range, follower model, lead, turn weight, margin and curves."""
-        models = follower_models()
         self._widgets = (
-            gui.add_multi_slider("xICR m", min=-0.30, max=0.10, step=0.01, initial_value=XICR_RANGE,
-                                 hint="Where the turning centre may really be, as crl_husky's xICR (negative: ahead "
-                                      "of base_footprint); the path is checked for all of them"),
-            gui.add_dropdown("Follower model", options=models,
-                             initial_value=FOLLOWER_MODEL if FOLLOWER_MODEL in models else models[0],
-                             hint="The robot model the onboard follower runs with (its model:=), from crl_husky "
-                                  "config/base_models; the path is checked as that follower drives it"),
+            *add_follower_settings(gui),
             gui.add_slider("Lead m", min=0.0, max=1.5, step=0.05, initial_value=LEAD,
                            hint="Straight drive onto the target; in a narrow place, this much more than its length"),
             gui.add_slider("Turn cost m/rad", min=0.0, max=2.0, step=0.1, initial_value=TURN_WEIGHT,
                            hint="Metres of driving one radian of turning on the spot is worth"),
-            gui.add_slider("Margin m", min=0.0, max=0.3, step=0.01, initial_value=COLLISION_MARGIN,
-                           hint="Keep at least this far from the other robots and bodies"),
+            add_margin_setting(gui),
             gui.add_checkbox("Curves", initial_value=True,
                              hint="Drive curves where they fit; off: turn on the spot only"))
 

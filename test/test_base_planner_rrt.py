@@ -9,7 +9,8 @@ import pytest
 from husky_assembly_teleop.config import robot_config_from_serial
 from scaffolding_assembly_core.geometry import box_geometry
 from husky_assembly_teleop.plugins.base_planner.algorithms import ALGORITHMS, Debug
-from husky_assembly_teleop.plugins.base_planner.algorithms.rrt_arcs import LEAD, plan
+from husky_assembly_teleop.plugins.base_planner.algorithms.base import LEAD
+from husky_assembly_teleop.plugins.base_planner.algorithms.rrt_arcs import plan
 from husky_assembly_teleop.plugins.base_planner.world import PlanningWorld, stowed
 from husky_assembly_teleop.plugins.planning.panel import with_guesses
 from scaffolding_assembly_core.robot import RobotObject
