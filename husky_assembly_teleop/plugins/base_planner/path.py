@@ -14,6 +14,7 @@ import numpy as np
 from crl_husky.follower_path import SAME_SPOT
 from crl_husky.pure_pursuit import PurePursuitParams, turning_centre_poses
 
+from ..base_exp.templates import timing
 from ..planning.path import TimedPath
 
 #: Planning speeds; low, since the onboard follower sets its own speed.
@@ -283,14 +284,8 @@ def timed_path(poses, linear_speed: float = MAX_LINEAR_SPEED, angular_speed: flo
     """
     poses = np.array(poses, dtype=float)
     poses[:, 2] = np.unwrap(poses[:, 2])
-    times, kept = [0.0], [poses[0]]
-    for pose in poses[1:]:
-        last = kept[-1]
-        seconds = max(math.hypot(*(pose[:2] - last[:2])) / linear_speed, abs(pose[2] - last[2]) / angular_speed)
-        if seconds > 1e-6:
-            times.append(times[-1] + seconds)
-            kept.append(pose)
-    return BasePath(times=np.array(times), points=np.array(kept))
+    kept = poses[np.concatenate([[True], np.diff(timing(poses, linear_speed, angular_speed)) > 1e-6])]
+    return BasePath(times=timing(kept, linear_speed, angular_speed), points=kept)
 
 
 def _angle(angle: float) -> float:
