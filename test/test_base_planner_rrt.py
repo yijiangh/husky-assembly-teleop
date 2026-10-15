@@ -1,4 +1,4 @@
-"""Tests for the base planner's RRT, with a second robot and a scene body in the way."""
+"""Tests for the base planner's RRT (algorithms.rrt_arcs), with a second robot and a scene body in the way."""
 
 import threading
 from pathlib import Path
@@ -8,7 +8,9 @@ import pytest
 
 from husky_assembly_teleop.config import robot_config_from_serial
 from scaffolding_assembly_core.geometry import box_geometry
-from husky_assembly_teleop.plugins.base_planner.planner import PlanningWorld, plan_birrt
+from husky_assembly_teleop.plugins.base_planner.algorithms import ALGORITHMS, Debug
+from husky_assembly_teleop.plugins.base_planner.algorithms.rrt_arcs import LEAD, plan
+from husky_assembly_teleop.plugins.base_planner.world import PlanningWorld
 from husky_assembly_teleop.plugins.planning.panel import with_guesses
 from scaffolding_assembly_core.robot import RobotObject
 from scaffolding_assembly_core.scene import Body, Scene
@@ -56,7 +58,7 @@ def world(robots):
 def test_goes_around_a_robot_in_the_way(world, robots, alice):
     """The straight line runs through Cindy, so the path must detour, and never touch her."""
     world.sync(_snapshot(robots))
-    result = plan_birrt(world, alice, (0.0, 0.0, 0.0), (4.0, 0.0, 0.0), threading.Event())
+    result = plan(world, alice, (0.0, 0.0, 0.0), (4.0, 0.0, 0.0), threading.Event())
     assert result.path is not None, result.reason
     assert not result.direct
     for t in np.linspace(0.0, result.path.duration, 1000):
@@ -67,14 +69,14 @@ def test_goes_around_a_robot_in_the_way(world, robots, alice):
 def test_free_line_is_direct(world, robots, alice):
     """Nothing in the way: the straight move, no search."""
     world.sync(_snapshot(robots))
-    result = plan_birrt(world, alice, (0.0, 0.0, 0.0), (0.0, -2.0, 1.0), threading.Event())
+    result = plan(world, alice, (0.0, 0.0, 0.0), (0.0, -2.0, 1.0), threading.Event())
     assert result.path is not None and result.direct
 
 
 def test_target_inside_a_robot_is_refused_with_a_reason(world, robots, alice):
     """A target in collision is reported as such, without searching."""
     world.sync(_snapshot(robots))
-    result = plan_birrt(world, alice, (0.0, 0.0, 0.0), (2.0, 0.2, 0.0), threading.Event())
+    result = plan(world, alice, (0.0, 0.0, 0.0), (2.0, 0.2, 0.0), threading.Event())
     assert result.path is None and "target" in result.reason
 
 
@@ -82,12 +84,12 @@ def test_target_inside_a_robot_is_refused_with_a_reason(world, robots, alice):
 def test_goes_around_a_body(world, robots, alice):
     """A wall across the straight line: the path detours, never touches it, and a blocked target names it."""
     world.sync(_snapshot(robots, [WALL]))
-    result = plan_birrt(world, alice, (0.0, -1.0, -1.57), (0.0, -4.0, -1.57), threading.Event())
+    result = plan(world, alice, (0.0, -1.0, -1.57), (0.0, -4.0, -1.57), threading.Event())
     assert result.path is not None, result.reason
     assert not result.direct
     for t in np.linspace(0.0, result.path.duration, 1000):
         assert world.hit_by(alice, result.path.sample(t)) is None
-    blocked = plan_birrt(world, alice, (0.0, -1.0, 0.0), (0.0, -2.5, 0.0), threading.Event())
+    blocked = plan(world, alice, (0.0, -1.0, 0.0), (0.0, -2.5, 0.0), threading.Event())
     assert blocked.path is None and "wall" in blocked.reason
 
 
@@ -114,6 +116,51 @@ def test_untracked_robot_is_planned_from_a_guess(world, robots, alice):
     guessed_snapshot, guessed = with_guesses(snapshot, alice)
     assert len(guessed) == 2 and snapshot.robots[alice].acting_problems() == guessed
     world.sync(guessed_snapshot)
-    assert plan_birrt(world, alice, (0.0, 0.0, 0.0), (0.0, -2.0, 1.0), threading.Event()).path is not None
+    assert plan(world, alice, (0.0, 0.0, 0.0), (0.0, -2.0, 1.0), threading.Event()).path is not None
     snapshot.robots[alice].enabled = False
     assert with_guesses(snapshot, alice) == (snapshot, [])
+
+
+@pytest.mark.slow
+def test_target_beside_a_body_is_reached_driving_straight(world, robots, alice):
+    """Facing the wall 5 cm short of it there is no room to turn on the spot: the last LEAD metres drive straight in."""
+    world.sync(_snapshot(robots, [WALL]))
+    goal = (0.0, -1.5, -np.pi / 2)
+    result = plan(world, alice, (-2.0, 0.0, 0.0), goal, threading.Event())
+    assert result.path is not None, result.reason
+    np.testing.assert_allclose(result.path.goal[:2], goal[:2], atol=1e-6)
+    # Distance driven from each waypoint to the target, along the path.
+    steps = np.linalg.norm(np.diff(result.path.points[:, :2], axis=0), axis=1)
+    to_go = np.concatenate([np.cumsum(steps[::-1])[::-1], [0.0]])
+    np.testing.assert_allclose(np.cos(result.path.points[to_go < LEAD - 1e-6, 2] - goal[2]), 1.0, atol=1e-9)
+
+
+def test_every_algorithm_plans_a_free_line(world, robots, alice):
+    """Each algorithm in the dropdown, with its default settings, plans the free straight move; labels differ.
+
+    The path starts exactly where the robot is (else the panel calls the plan stale at once) and ends on the target.
+    """
+    world.sync(_snapshot(robots))
+    assert len({algorithm.label for algorithm in ALGORITHMS}) == len(ALGORITHMS)
+    for kind in ALGORITHMS:
+        algorithm = kind()
+        result = algorithm.plan(world, alice, (0.0, 0.0, 0.0), (0.0, -2.0, 1.0), threading.Event(),
+                                algorithm.settings(), Debug())
+        assert result.path is not None, f"{algorithm.label}: {result.reason}"
+        np.testing.assert_allclose(result.path.start, (0.0, 0.0, 0.0), atol=1e-9, err_msg=algorithm.label)
+        np.testing.assert_allclose(result.path.goal[:2], (0.0, -2.0), atol=1e-9, err_msg=algorithm.label)
+
+
+@pytest.mark.slow
+def test_debug_records_the_search(world, robots, alice):
+    """With debug on, the detour around Cindy leaves its samples, moves, corners and driven paths, and notes."""
+    world.sync(_snapshot(robots))
+    debug = Debug(on=True)
+    result = plan(world, alice, (0.0, 0.0, 0.0), (4.0, 0.0, 0.0), threading.Event(), debug=debug)
+    assert result.path is not None, result.reason
+    for name in ("samples", "moves tried, as far as clear", "search's corners", "path as driven, per xICR"):
+        assert debug.layers[name].segments or debug.layers[name].points, name
+    assert any(text.startswith("search 1") for text in debug.notes)
+    off = Debug()
+    plan(world, alice, (0.0, 0.0, 0.0), (4.0, 0.0, 0.0), threading.Event(), debug=off)
+    assert not off.layers and off.notes, "off, nothing is drawn but the notes are kept"

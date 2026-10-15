@@ -1,0 +1,16 @@
+"""
+The base planner's algorithms, offered in its Algorithm dropdown.
+
+  base.py      what every algorithm provides (`Algorithm`), and `Debug`, the record of a search's inner workings
+  rrt_arcs.py  RRT-Connect, corners rounded into arcs, checked for a range of turning centres
+
+* To add one: subclass `Algorithm` in a file of its own here, and add it to ALGORITHMS.
+"""
+
+from .base import Algorithm, Debug, Layer
+from .rrt_arcs import RrtArcs
+
+#: Every algorithm, the first being the default.
+ALGORITHMS: tuple[type[Algorithm], ...] = (RrtArcs,)
+
+__all__ = ["ALGORITHMS", "Algorithm", "Debug", "Layer"]
