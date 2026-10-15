@@ -23,10 +23,13 @@ from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
 from matplotlib.patches import Circle, FancyBboxPatch, Rectangle
 
-from ..obstacles import BORDER, BOXES, CYLINDERS, TRUSSES
+from ..obstacles.lab import DEFAULT_LAB, TRUSS_PLATE, lab_file, read_lab
 from .follow import DEVIATED, EXACT
 from .report import FOLLOWING, load
 from .tasks import TASKS
+
+#: The repository's data folder, where the lab files are (`config.MonitorConfig.data_directory`'s default).
+LAB_DATA = Path(__file__).resolve().parents[3] / "data"
 
 #: Planner colours, fixed per planner (reference palette slots 1 and 2), and the rest in order.
 PLANNER_COLORS = {"Lattice (hybrid A*)": "#2a78d6", "RRT + arcs": "#eb6834"}
@@ -112,18 +115,20 @@ def draw_lab(attempts: list, planners: list[str], out: Path, environment: str) -
 
 
 def _lab(axis) -> None:
-    """The lab's fixed obstacles (`obstacles`) in grey and its floor border."""
-    for item in BOXES:
+    """The default lab's obstacles (`obstacles`, its lab file) in grey and its floor border."""
+    lab = read_lab(lab_file(LAB_DATA, DEFAULT_LAB))
+    for item in lab.shapes:
         (cx, cy, _), (sx, sy, _) = item.center, item.size
+        if item.type == "cylinder":
+            axis.add_patch(Circle((cx, cy), sx / 2, color=GRID, zorder=1))
+            continue
+        if item.type == "truss":
+            sx = sy = TRUSS_PLATE
         corner = np.array([cx, cy]) - _turned(np.array([sx, sy]) / 2, item.yaw)
         axis.add_patch(Rectangle(corner, sx, sy, angle=math.degrees(item.yaw), color=GRID, zorder=1))
-    for item in CYLINDERS:
-        axis.add_patch(Circle(item.center[:2], item.radius, color=GRID, zorder=1))
-    for item in TRUSSES:
-        axis.add_patch(Rectangle(np.array(item.center[:2]) - item.plate / 2, item.plate, item.plate, color=GRID,
-                                 zorder=1))
-    (x0, x1), (y0, y1) = BORDER.x, BORDER.y
-    axis.plot([x0, x1, x1, x0, x0], [y0, y0, y1, y1, y0], color=AXIS, linewidth=1.2, zorder=1)
+    if lab.border is not None:
+        (x0, x1), (y0, y1) = lab.border.x, lab.border.y
+        axis.plot([x0, x1, x1, x0, x0], [y0, y0, y1, y1, y0], color=AXIS, linewidth=1.2, zorder=1)
 
 
 def _turned(xy: np.ndarray, yaw: float) -> np.ndarray:

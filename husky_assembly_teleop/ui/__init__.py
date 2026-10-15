@@ -6,6 +6,7 @@ The operator's view, served by viser.
   style.py          the shared look of panels: chips, section bars, number rows
   checklist.py      a selectable list widget
   pose_input.py     a floor-pose input: number fields plus a 3D gizmo
+  body_gizmo.py     move and resize gizmos for one scene body, and picking a body by clicking it
   ghost.py          see-through robot copies for targets and plans, shown while in use
   pybullet_window.py  a debug checkbox showing a plugin's PyBullet mirror in its own window
   trace_plot.py     a live plot of recorded signals

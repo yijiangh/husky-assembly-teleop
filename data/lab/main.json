@@ -1,0 +1,19 @@
+{
+  "format": "husky_lab",
+  "version": 1,
+  "units": "world frame (mocap, Z-up), metres; yaw in degrees about Z. size: box sides; cylinder (diameter, diameter, height); truss column (side, side, height) on a 0.8 m ground plate",
+  "obstacles": [
+    {"type": "box", "name": "building cabinet", "center": [1.6895, 2.308, 0.5553], "size": [4.207, 0.608, 1.1107], "yaw": 0.0, "source": "probe 2026-09-30"},
+    {"type": "box", "name": "main pc table", "center": [-1.927, 1.251, 0.365], "size": [0.8, 1.6, 0.73], "yaw": 0.0, "source": "probe 2026-09-30, three corners"},
+    {"type": "box", "name": "pc table 2", "center": [-1.218, 2.404, 0.365], "size": [1.6, 0.8, 0.73], "yaw": 0.0, "source": "by hand 2026-10-06"},
+    {"type": "box", "name": "pc table 3", "center": [-2.816, 2.4, 0.365], "size": [1.6, 0.8, 0.73], "yaw": 0.0, "source": "by hand 2026-10-06"},
+    {"type": "box", "name": "bar table 1", "center": [-3.232, -3.332, 0.365], "size": [0.8, 1.6, 0.73], "yaw": 0.0, "source": "probe 2026-09-30, room-side edge"},
+    {"type": "box", "name": "bar table 2", "center": [-3.258, -0.675, 0.365], "size": [0.8, 1.6, 0.73], "yaw": 0.0, "source": "probe 2026-09-30, room-side edge"},
+    {"type": "cylinder", "name": "tripod ada", "center": [3.5867, -1.7795, 1.0], "size": [0.9876, 0.9876, 2.0], "yaw": 0.0, "source": "probe 2026-09-30, three feet"},
+    {"type": "cylinder", "name": "tripod net", "center": [-3.499, -1.857, 1.0], "size": [0.9876, 0.9876, 2.0], "yaw": 0.0, "source": "by hand 2026-10-06, ada's radius"},
+    {"type": "cylinder", "name": "tripod 3", "center": [-3.389, -4.58, 1.0], "size": [0.9876, 0.9876, 2.0], "yaw": 0.0, "source": "by hand 2026-10-06, ada's radius"},
+    {"type": "truss", "name": "truss 1", "center": [3.844, -4.974, 1.0], "size": [0.3, 0.3, 2.0], "yaw": 0.0, "source": "by hand 2026-10-06"},
+    {"type": "truss", "name": "truss 2", "center": [3.928, 5.744, 1.0], "size": [0.3, 0.3, 2.0], "yaw": 0.0, "source": "by hand 2026-10-06"}
+  ],
+  "border": {"x": [-3.7, 3.8], "y": [-4.8, 5.6], "width": 0.2, "height": 2.0, "source": "usable floor area, 2026-10-06"}
+}

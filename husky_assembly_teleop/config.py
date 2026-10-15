@@ -122,6 +122,8 @@ class MonitorConfig:
             `tick_period` late.
         late_tick_warn_period: Seconds between two late-tick warnings; the worst tick in between is reported.
         shutdown_grace: Seconds each plugin's cancelled tasks get to clean up at shutdown.
+        lab: The lab file the `obstacles` plugin loads: a name under `data_directory/lab/`, or a .json path;
+            empty for its default.
         ghost_timeout: Seconds a plugin's ghost robots stay shown after the last input in it;
             0 keeps them. Ghosts appear only after an input in their plugin.
     """
@@ -137,6 +139,7 @@ class MonitorConfig:
     late_tick_warn_ratio: float = 0.2
     late_tick_warn_period: float = 5.0
     shutdown_grace: float = 2.0
+    lab: str = ""
     ghost_timeout: float = 20.0
 
 
@@ -158,7 +161,7 @@ _LEFT_ARM_STOW = tuple(math.radians(d) for d in (-88.4, -2.2, -161.3, -108.8, -0
 _RIGHT_ARM_STOW = tuple(math.radians(d) for d in (87.0, -179.8, 159.3, -74.7, 1.9, -90.2))
 
 # Parked base poses, (x, y, yaw) in the mocap frame, metres and radians: in a row along the front of the building
-# cabinet (obstacles.py, front face at y 2.00), facing -y, 15 cm between the stowed robot's back and the cabinet.
+# cabinet (data/lab/main.json, front face at y 2.00), facing -y, 15 cm between the stowed robot's back and the cabinet.
 _PARK_Y = 1.35
 _ALICE_PARK = (0.3, _PARK_Y, math.pi / 2)
 _BELLE_PARK = (1.7, _PARK_Y, math.pi / 2)
@@ -277,6 +280,7 @@ def config_from_ros_parameters(node: Node) -> MonitorConfig:
     node.declare_parameter("drive_root", "")
     node.declare_parameter("no_default_plugins", False)
     node.declare_parameter("ghost_timeout", MonitorConfig.ghost_timeout)
+    node.declare_parameter("lab", "")
 
     shutil.rmtree(ROBOT_URDF_DIRECTORY, ignore_errors=True)
 
@@ -305,6 +309,7 @@ def config_from_ros_parameters(node: Node) -> MonitorConfig:
         drive_root=drive_root(node.get_parameter("drive_root").get_parameter_value().string_value),
         enabled_plugins=_enabled_plugins(string_list("plugins"), not no_default_plugins),
         ghost_timeout=node.get_parameter("ghost_timeout").value,
+        lab=node.get_parameter("lab").get_parameter_value().string_value.strip(),
     )
 
 

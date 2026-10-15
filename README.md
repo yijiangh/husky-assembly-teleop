@@ -233,6 +233,7 @@ Example: `mocap_probe` shows the probe state in a **Probe** panel, collapsed on 
 | `drive_root` | `$HUSKY_DRIVE_ROOT` | Local copy of the project's Google Drive folder (`2025-03 Husky Assembly`), for experiment data; see [Experiment data](#experiment-data-google-drive). |
 | `no_default_plugins` | `false` | `true` skips the default plugins (`health`). |
 | `ghost_timeout` | `20.0` | Seconds a plugin's ghost robots stay after the last input in it; 0 keeps them. |
+| `lab` | `main` | The lab file `obstacles` loads: a name in `data/lab/`, or a path to a .json file. |
 
 ### Experiment data (Google Drive)
 
@@ -257,8 +258,8 @@ Paths are given relative to this folder, e.g. `data_design_study/260814_RobArch_
 |---|---|
 | `health` | Loaded by default. Shows the status of each robot and tracked object, with Unlock, Resume and Reconnect. |
 | `robot_control` | One tab per robot: drives the base, moves the arms (joint targets or compliance), stows them, operates the tools. |
-| `obstacles` | Adds the fixed lab furniture to the scene as collision obstacles for the planners. |
-| `debug_gizmo` | Debug only. Click any scene body with a world pose (e.g. an obstacle) in the 3D view, or pick it from the dropdown, then drag it with a gizmo or type its position and roll/pitch/yaw. **Add** puts temporary boxes and cylinders into the scene (planners avoid them); resize them with the small corner gizmo or by typing **Size**, and **Remove** them. **Log** prints position, quaternion, roll/pitch/yaw (and size), **Reset** puts a body back. The temporary obstacles are kept in `~/husky_debug_gizmo.json` and are back after a restart; nothing else is saved. |
+| `obstacles` | The lab's obstacles as collision bodies for the planners: tables, cabinets, tripods and trusses, and walls around the usable floor, from the lab file `data/lab/<lab>.json` (in git; `-p lab:=<name>`). Click an obstacle in the 3D view or pick it, then drag it with the gizmo (only yaw is kept), resize it with the corner gizmo, or type position, yaw and size; rename and remove it, and set the border's x and y range. Edits stay unsaved (amber chip) until **Save** writes the lab file; **Revert** goes back to it. **Add** puts temporary boxes and cylinders (purple) into the scene, kept in `~/husky_obstacles_temporary.json` across restarts and never in the lab file; **Promote** moves one into the lab. |
+| `debug_gizmo` | Debug only. Click any scene body with a world pose in the 3D view, or pick it from the dropdown, then drag it with a gizmo or type its position and roll/pitch/yaw; **Log** prints its pose, **Reset** puts it back. Nothing is saved; to change the lab's obstacles for good, use `obstacles`. |
 | `mocap_probe` | Tracks the probe and records points with it, e.g. obstacle corners; exports JSON and loads it back. Shows its state in a separate panel, see [Panels](#panels). **Map coverage** walks a 15 × 15 m grid of 1 m cells, centred on the mocap origin, and colours each on the floor by how often the probe was tracked there (grey: not visited, red → green), with the mean ± std marker error per cell; export and load as JSON. |
 | `mocap_accuracy` | Fits a process bar's CAD markers (from the markers on its connector halves) to the Motive rigid body made of them, without Motive's labels, and shows the fit's residuals and how far the bar is from where the selected step plans it (across and along its axis, tilt); **Record take** saves the fit to `data_experiment/mocap_accuracy/<experiment>/` on the Drive. Loads `process`. Experimental. |
 | `process` | Loads a process and shows the state at one movement at a time; the planners load their targets from its selected step. Experimental. |
