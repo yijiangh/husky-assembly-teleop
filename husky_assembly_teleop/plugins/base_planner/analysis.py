@@ -2,8 +2,8 @@
 The base planner experiment's report (doc/base_planner_manual.md): the planners side by side on the standard tasks.
 
 Reads every attempt folder of one experiment (`recording.py`) and writes into its `_analysis/`: summary.md, one CSV per
-table, tasks.png and metrics.png, and results_prompt.md; per attempt plan.png, and per run overview.png and
-report.json. No ROS. Follows doc/experiment_report_guide.md: numbers only, no interpretation.
+table, the charts (`figures.py`) and tasks.png, and results_prompt.md; per attempt plan.png, and per run overview.png
+and report.json. No ROS. Follows doc/experiment_report_guide.md: numbers only, no interpretation.
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ from pathlib import Path
 import numpy as np
 from matplotlib.figure import Figure
 
+from .figures import colour, draw_all
 from .follow import DEVIATED, DEVIATED_XICRS, EXACT
 from .path import densify
 from .recording import load_description, load_plan_arrays
@@ -33,8 +34,6 @@ BETTER = {"success": (+1, 0.0), "seconds": (-1, 0.2), "length": (-1, 0.10), "cle
           "deviation": (-1, 1.0), "end": (-1, 1.0), "drift": (-1, 1.0), "ratio": (-1, 0.05)}
 #: Decimals per metric, the same in every table.
 DECIMALS = {"seconds": 1, "length": 2, "clearance": 1, "deviation": 1, "end": 1, "drift": 1, "ratio": 2}
-#: Colours of the planners in the plots, in planner order.
-COLORS = ("tab:orange", "tab:blue", "tab:green", "tab:red")
 
 
 @dataclass
@@ -125,10 +124,16 @@ def analyse(experiment: Path) -> Path:
     out.mkdir(exist_ok=True)
     planners = sorted({attempt.planner for attempt in attempts if not attempt.left_out})
     counted = [attempt for attempt in attempts if not attempt.left_out]
+    charts = draw_all(counted, planners, out)
     lines = _header(experiment, attempts, planners)
     lines += _overview(counted, planners, out)
     lines += _planning(counted, planners, out)
+    lines += _charts(charts, ("success.png", "Which tasks each planner solves."),
+                     ("plan_time.png", "How long each attempt planned; × found no path."),
+                     ("paths.png", "How long and how roomy the paths found are."))
     lines += _simulation(counted, planners, out)
+    lines += _charts(charts, ("driving.png", "How closely the simulated follower drives the paths found, and how "
+                                             "close it ends, with the exact and with deviated robot models."))
     for environment in ("real", "sim"):
         lines += _runs(counted, planners, environment, out)
     lines += _process(counted, planners, out)
@@ -139,6 +144,15 @@ def analyse(experiment: Path) -> Path:
     (out / "summary.md").write_text("\n".join(lines) + "\n")
     (out / "results_prompt.md").write_text(RESULTS_PROMPT)
     return out / "summary.md"
+
+
+def _charts(written: list[str], *charts: tuple[str, str]) -> list[str]:
+    """Embed the charts written, each under the one line it answers."""
+    lines = []
+    for name, question in charts:
+        if name in written:
+            lines += [question, "", f"![{question}]({name})", ""]
+    return lines
 
 
 def load_attempts(experiment: Path) -> list[Attempt]:
@@ -481,11 +495,9 @@ def _checks(attempts: list[Attempt]) -> list[str]:
 
 def _plots(attempts: list[Attempt], planners: list[str], out: Path) -> list[str]:
     _tasks_plot(attempts, planners, out / "tasks.png")
-    _metrics_plot(attempts, planners, out / "metrics.png")
-    return ["## Plots", "",
-            "- `tasks.png`: where each planner's paths go, per task, over the floor of its first attempt.",
-            "- `metrics.png`: how the planners compare per task: success, plan time, clearance, and the simulated "
-            "drives' finishing and deviation per model group; mean with sd; a missing bar is labelled \"none\".", "",
+    (out / "metrics.png").unlink(missing_ok=True)  # replaced by the charts above
+    return ["## Where the paths go", "", "Each planner's paths over the floor of the task's first attempt.", "",
+            "![Each planner's paths per task](tasks.png)", "",
             "## Files", "", "- One CSV per table: overview, planning, simulation_exact, simulation_deviated, "
             "runs_real, runs_sim, process, "
             "failures, attempts.", "- `results_prompt.md`: the prompt for results.md.", ""]
@@ -593,7 +605,8 @@ def _tasks_plot(attempts: list[Attempt], planners: list[str], out: Path) -> None
         axis = figure.add_subplot(rows, columns, k + 1)
         members = [attempt for attempt in attempts if attempt.task == task.name]
         draw_floor(axis, load_plan_arrays(members[0].folder))
-        for name, color in zip(planners, COLORS):
+        for name in planners:
+            color = colour(name, planners)
             for attempt in members:
                 arrays = load_plan_arrays(attempt.folder) if attempt.planner == name else None
                 if arrays is not None and len(arrays["path_poses"]):
@@ -608,40 +621,6 @@ def _tasks_plot(attempts: list[Attempt], planners: list[str], out: Path) -> None
         if k == 0:
             axis.legend(fontsize=7, loc="best")
     figure.suptitle("Paths per task: start ●, target ×, planners by colour", fontsize=11)
-    figure.savefig(out, dpi=110)
-
-
-def _metrics_plot(attempts: list[Attempt], planners: list[str], out: Path) -> None:
-    tasks = [task.name for task in TASKS if any(attempt.task == task.name for attempt in attempts)]
-    if not tasks:
-        return
-    panels = (("Success %", "success", "plan"), ("Plan time s", "seconds", "plan"),
-              ("Clearance cm", "clearance", "plan"), ("Finished, deviated models %", "finished", DEVIATED),
-              ("Deviation, exact model cm", "deviation", EXACT),
-              ("Deviation, deviated models cm", "deviation", DEVIATED))
-    figure = Figure(figsize=(16, 9), layout="constrained")
-    width = 0.8 / max(len(planners), 1)
-    x = np.arange(len(tasks))
-    for k, (title, metric, source) in enumerate(panels):
-        axis = figure.add_subplot(2, 3, k + 1)
-        for j, (name, color) in enumerate(zip(planners, COLORS)):
-            means, spreads = [], []
-            for task in tasks:
-                values = [_value(a, metric, source) for a in attempts if a.task == task and a.planner == name]
-                values = [value for value in values if value is not None]
-                means.append(np.mean(values) * (100 if metric in ("success", "finished") else 1) if values else np.nan)
-                spreads.append(np.std(values) * (100 if metric in ("success", "finished") else 1) if values else 0.0)
-            positions = x + (j - (len(planners) - 1) / 2) * width
-            axis.bar(positions, np.nan_to_num(means), width, yerr=spreads, color=color, label=_short(name),
-                     capsize=2)
-            for position, mean in zip(positions, means):
-                if not np.isfinite(mean):
-                    axis.text(position, 0, "none", rotation=90, ha="center", va="bottom", fontsize=7, color=color)
-        axis.set_xticks(x, tasks, rotation=45, ha="right", fontsize=8)
-        axis.set_title(title, fontsize=10)
-        axis.grid(True, axis="y", alpha=0.35)
-        if k == 0:
-            axis.legend(fontsize=8)
     figure.savefig(out, dpi=110)
 
 
