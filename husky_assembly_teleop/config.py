@@ -77,6 +77,8 @@ class RobotConfig:
         srdf_file: The robot's SRDF, or None. Needed by compas_fab planners.
         default_position: Where the robot is drawn before the first mocap fix, (x, y, z) metres.
         default_yaw: Which way it faces there, radians about Z.
+        park_pose: Where the robot parks on the floor, (x, y, yaw) metres and radians, or None. The base planner's
+            Park button loads it, and the robot starts there until the first mocap fix.
         arms: The arms, in the multi-arm trajectory's order (the first is `trajectory1`).
         mocap_id: Rigid-body id of the base in the mocap system, or None if the robot is not tracked.
         calibration_file: Joint-origin overlay for the URDF, or None. Nothing reads it yet.
@@ -92,6 +94,7 @@ class RobotConfig:
     mocap_id: int | None = None
     default_position: tuple[float, float, float] = (0.0, 0.0, 0.0)
     default_yaw: float = 0.0
+    park_pose: tuple[float, float, float] | None = None
     # TODO: wire up calibration_file and drop the calibrated URDFs in `_ROBOTS_BY_SERIAL`, or remove it.
     calibration_file: Path | None = None
     model: RobotModel | None = None
@@ -139,30 +142,6 @@ class MonitorConfig:
     ghost_timeout: float = 20.0
 
 
-# --- --- --- --- --- WHERE ROBOTS STAND BEFORE MOCAP --- --- --- --- ---
-#: Metres between neighbouring robots in the startup layout.
-ROBOT_LAYOUT_SPACING = 2.0
-
-
-def row_layout_position(index: int, count: int,
-                        spacing: float = ROBOT_LAYOUT_SPACING) -> tuple[float, float, float]:
-    """Lay `count` robots out in a row along Y, centred on the origin, so they don't overlap before mocap.
-
-    Args:
-        index: Which robot this is, from 0.
-        count: How many robots are being placed.
-        spacing: Metres between neighbours.
-
-    Returns:
-        tuple[float, float, float]: Position as (x, y, z), on the floor.
-
-    Example:
-        >>> [row_layout_position(i, 3)[1] for i in range(3)]
-        [-2.0, 0.0, 2.0]
-    """
-    return (0.0, (index - (count - 1) / 2.0) * spacing, 0.0)
-
-
 # --- --- --- --- --- WHAT EACH ROBOT IS --- --- --- --- ---
 # TODO move this table to crl_husky once it ships robot URDFs.
 # ! Calibrated URDFs: arm kinematics differ per machine, so each robot must get its own.
@@ -180,6 +159,13 @@ _SINGLE_ARM_STOW = (1.569, -2.973, 2.705, -2.958, 1.572, 0.0)
 _LEFT_ARM_STOW = tuple(math.radians(d) for d in (-88.4, -2.2, -161.3, -108.8, -0.8, 90.7))
 _RIGHT_ARM_STOW = tuple(math.radians(d) for d in (87.0, -179.8, 159.3, -74.7, 1.9, -90.2))
 
+# Parked base poses, (x, y, yaw) in the mocap frame, metres and radians: in a row along the front of the building
+# cabinet (obstacles.py, front face at y 2.00), facing -y, 15 cm between the stowed robot's back and the cabinet.
+_PARK_Y = 1.35
+_ALICE_PARK = (0.3, _PARK_Y, math.pi / 2)
+_BELLE_PARK = (1.7, _PARK_Y, math.pi / 2)
+_CINDY_PARK = (3.1, _PARK_Y, math.pi / 2)
+
 _SINGLE_ARM_WITH_ROBOTIQ = (
     ArmConfig(name="ur_arm", ros_namespace="ur5e",
               end_effector="robotiq", end_effector_namespace="gripper", stow_joints=_SINGLE_ARM_STOW),
@@ -193,10 +179,10 @@ _DUAL_ARM_WITH_SCAFFOLDING_V3 = (
 
 _ROBOTS_BY_SERIAL = {
     "0804": dict(urdf=_SINGLE_ARM_URDF.format("Alice"), srdf=_SINGLE_ARM_SRDF.format("husky"),
-                 arms=_SINGLE_ARM_WITH_ROBOTIQ),
+                 arms=_SINGLE_ARM_WITH_ROBOTIQ, park=_ALICE_PARK),
     "0805": dict(urdf=_SINGLE_ARM_URDF.format("Belle"), srdf=_SINGLE_ARM_SRDF.format("belle"),
-                 arms=_SINGLE_ARM_WITH_ROBOTIQ),
-    "0806": dict(urdf=_DUAL_ARM_URDF, srdf=_DUAL_ARM_SRDF, arms=_DUAL_ARM_WITH_SCAFFOLDING_V3),
+                 arms=_SINGLE_ARM_WITH_ROBOTIQ, park=_BELLE_PARK),
+    "0806": dict(urdf=_DUAL_ARM_URDF, srdf=_DUAL_ARM_SRDF, arms=_DUAL_ARM_WITH_SCAFFOLDING_V3, park=_CINDY_PARK),
 }
 
 #: The robots' names, accepted anywhere a serial is, in any letter case.
@@ -204,8 +190,8 @@ _ROBOT_NAMES = {"alice": "0804", "belle": "0805", "cindy": "0806"}
 
 
 def robot_config_from_serial(token: str, data_directory: Path,
-                             default_position: tuple[float, float, float] = (0.0, 0.0, 0.0),
-                             default_yaw: float = 0.0,
+                             default_position: tuple[float, float, float] | None = None,
+                             default_yaw: float | None = None,
                              tools: tuple[EndEffectorKind | None, ...] | None = None) -> RobotConfig:
     """Build one RobotConfig from a serial ("0806", "a200-0806", "/a200_0806") or name ("cindy").
 
@@ -214,8 +200,8 @@ def robot_config_from_serial(token: str, data_directory: Path,
     Args:
         token: The serial or name as typed on the command line.
         data_directory: Root the URDF path is resolved against.
-        default_position: Where to draw it until the first mocap fix.
-        default_yaw: Which way it faces there, radians about Z.
+        default_position: Where to draw it until the first mocap fix, or None for its parked pose.
+        default_yaw: Which way it faces there, radians about Z, or None for its parked yaw.
         tools: The end effector per arm, in arm order (None for a bare arm), or None for the defaults.
 
     Returns:
@@ -241,7 +227,7 @@ def robot_config_from_serial(token: str, data_directory: Path,
         raise FileNotFoundError(f"URDF for robot {number!r} not found at {urdf_file}; "
                                 f"check the data_directory parameter")
 
-    arms = spec["arms"]
+    arms, park = spec["arms"], spec["park"]
     if tools is not None:
         if len(tools) != len(arms):
             raise ValueError(f"robot {number!r} has {len(arms)} arm(s) ({', '.join(a.name for a in arms)}), "
@@ -262,8 +248,9 @@ def robot_config_from_serial(token: str, data_directory: Path,
         srdf_file=data_directory / spec["srdf"],
         arms=arms,
         mocap_id=get_primary_mocap_id_for_robot_serial(number),
-        default_position=default_position,
-        default_yaw=default_yaw,
+        default_position=(park[0], park[1], 0.0) if default_position is None else default_position,
+        default_yaw=park[2] if default_yaw is None else default_yaw,
+        park_pose=park,
         model=robot_model(f"a200-{number}", bare, data_directory / spec["srdf"],
                           {flange: tool for flange, tool in tools.items() if tool is not None}),
     )
@@ -318,7 +305,7 @@ def config_from_ros_parameters(node: Node) -> MonitorConfig:
 
     no_default_plugins = node.get_parameter("no_default_plugins").get_parameter_value().bool_value
     return MonitorConfig(
-        robots=_robots_in_a_row(string_list("robots"), data_directory, _parse_tools(string_list("tools"))),
+        robots=_robots(string_list("robots"), data_directory, _parse_tools(string_list("tools"))),
         data_directory=data_directory,
         process_directory=Path(process_text) if process_text else None,
         drive_root=drive_root(node.get_parameter("drive_root").get_parameter_value().string_value),
@@ -365,9 +352,9 @@ def _parse_tools(entries: tuple[str, ...]) -> dict[str, tuple[EndEffectorKind | 
     return tools
 
 
-def _robots_in_a_row(serials: tuple[str, ...], data_directory: Path,
-                     tools: dict[str, tuple[EndEffectorKind | None, ...]]) -> tuple[RobotConfig, ...]:
-    """Build a RobotConfig per serial, spaced out along Y in the order given.
+def _robots(serials: tuple[str, ...], data_directory: Path,
+            tools: dict[str, tuple[EndEffectorKind | None, ...]]) -> tuple[RobotConfig, ...]:
+    """Build a RobotConfig per serial, each starting at its parked pose.
 
     Args:
         serials: Robot serials as typed on the command line.
@@ -381,12 +368,8 @@ def _robots_in_a_row(serials: tuple[str, ...], data_directory: Path,
     unused = set(tools) - {_serial_digits(serial) for serial in serials}
     if unused:
         raise ValueError(f"tools given for robot(s) {', '.join(sorted(unused))}, which are not in `robots`")
-    return tuple(
-        robot_config_from_serial(serial, data_directory,
-                                 default_position=row_layout_position(index, len(serials)),
-                                 tools=tools.get(_serial_digits(serial)))
-        for index, serial in enumerate(serials)
-    )
+    return tuple(robot_config_from_serial(serial, data_directory, tools=tools.get(_serial_digits(serial)))
+                 for serial in serials)
 
 
 def _serial_digits(token: str) -> str | None:

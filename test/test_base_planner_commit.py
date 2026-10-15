@@ -247,3 +247,15 @@ def test_process_task_counts_only_at_its_step():
     for index, counts in ((110, True), (109, False)):
         ctx = SimpleNamespace(require=lambda _name, index=index: SimpleNamespace(loaded=object(), index=index))
         assert (plugin._task_of(ctx, task.start, task.target) == "step_110") == counts
+
+
+@pytest.mark.parametrize("park", [(1.0, -2.0, 0.5), None])
+def test_park_loads_the_robots_parked_pose(park):
+    """Load → Park targets the robot's parked pose, or says it has none."""
+    plugin, targets, said = BasePlannerPlugin(), [], []
+    plugin.serial, plugin._used = SERIAL, SimpleNamespace(touch=lambda: None)
+    plugin._target = SimpleNamespace(set=lambda *pose: targets.append(pose))
+    plugin._say = lambda message, failed=False: said.append(failed)
+    ctx = SimpleNamespace(config=SimpleNamespace(robots=[SimpleNamespace(serial=SERIAL, park_pose=park)]))
+    plugin._load_target(ctx, "Park")
+    assert targets == ([park] if park else []) and said == [park is None]

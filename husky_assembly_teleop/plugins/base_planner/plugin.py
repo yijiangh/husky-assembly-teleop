@@ -139,9 +139,10 @@ class BasePlannerPlugin(PlannerPlugin):
                                           initial_value=NO_TASK,
                                           hint="A task of the standard set: puts its virtual obstacles into the "
                                                "scene and sets the target; Load its start to drive there first")
-            load = gui.add_button_group("Load", ["Robot", "Step", "Task start", "Task target"],
-                                        hint="Set the target to where the robot is now, to its base pose in the step "
-                                             "selected in the process plugin, or to the task's start or target")
+            load = gui.add_button_group("Load", ["Robot", "Park", "Step", "Task start", "Task target"],
+                                        hint="Set the target to where the robot is now, to its parked pose, to its "
+                                             "base pose in the step selected in the process plugin, or to the task's "
+                                             "start or target")
 
             self._add_path_controls(ctx, gui,
                                     plan_hint="Plan around the other robots from the robot's current pose to "
@@ -224,11 +225,11 @@ class BasePlannerPlugin(PlannerPlugin):
         self._has_target = True
 
     def _load_target(self, ctx: PluginContext, label: str) -> None:
-        """Set the target from the robot's current pose, or from the process plugin's selected step.
+        """Set the target from the robot's current or parked pose, the process plugin's selected step, or the task.
 
         Args:
             ctx: This plugin's context.
-            label: "Robot", "Step", "Task start" or "Task target".
+            label: "Robot", "Park", "Step", "Task start" or "Task target".
         """
         self._used.touch()
         if label.startswith("Task"):
@@ -246,6 +247,15 @@ class BasePlannerPlugin(PlannerPlugin):
             self._target.set(x, y, yaw)
             self._has_target = True
             self._say(f"target set to where {self.serial} is now")
+            return
+        if label == "Park":
+            park = next(robot for robot in ctx.config.robots if robot.serial == self.serial).park_pose
+            if park is None:
+                self._say(f"{self.serial} has no parked pose configured", failed=True)
+                return
+            self._target.set(*park)
+            self._has_target = True
+            self._say(f"target set to the parked pose of {self.serial}")
             return
 
         found = self._process_step(ctx)
