@@ -33,6 +33,7 @@ import pybullet_planning as pp
 from husky_assembly_teleop import DATA_DIRECTORY, DESIGN_DATA_DIRECTORY, EXPERIMENT_DATA_DIRECTORY, CALIBRATION_DATA_DIRECTORY, CALIBRATION_BATCHES, DESIGN_PROBLEM_NAME, CALIBRATION_DATE
 import husky_assembly_teleop.husky_world as world
 from husky_assembly_teleop.husky_world import (
+    M2_SPIRAL_DURATION_S_DEFAULT, M2_SPIRAL_MAX_RADIUS_MM, M2_SPIRAL_TURNS_DEFAULT,
     _solve_bar_action_goal_ik, arm_joint_limits, solve_goal_ik_generic, unwrap_to_nearest,
 )
 import husky_assembly_teleop.mocap_experiment as mocap_experiment
@@ -211,6 +212,14 @@ TRANSFER_EE_ROT_THRESHOLD_DEG = float(np.degrees(1e-2))  # ~0.573 deg
 # the old behaviour. Clamped at runtime to whatever the loaded M2 travels.
 M2_COMPLIANT_SPLIT_MM = 5.0
 M2_COMPLIANT_SPLIT_MM_MAX = 30.0
+
+# The compliant chunk's spiral search (checkbox, unticked = the straight line):
+# the bar circles the planned insertion line, radius 0 -> M2_SPIRAL_MAX_RADIUS_MM
+# (husky_world) as it goes in, so a thread the residual misalignment hides can
+# still catch. Slider ceilings for its duration and its number of turns; the
+# defaults come from husky_world.
+M2_SPIRAL_DURATION_S_MAX = 60.0
+M2_SPIRAL_TURNS_MAX = 10
 
 # Cartesian path density for M3's replanned retreat -- how finely the straight
 # line from the arms' ACTUAL tool0 poses to the movement's authored goal frames
@@ -696,6 +705,12 @@ class HuskyMonitor(Node):
         #     accepts plans unverified (each skip is warned about).
         self.m2_exec_rigid_only = False
         self.fm_swept_validation_enabled = True
+        # The insert's compliant part: a spiral search around the planned line
+        # (checkbox) instead of the straight line, with its own duration and
+        # number of turns (sliders). See M2_SPIRAL_* and world._execute_spiral_search.
+        self.m2_spiral_search = False
+        self.m2_spiral_duration_s = M2_SPIRAL_DURATION_S_DEFAULT
+        self.m2_spiral_turns = M2_SPIRAL_TURNS_DEFAULT
         self.traj_viz_time = 1.0  # trajectory preview scrub position (0..1)
 
         # list of conf, velocity, total time, attachment other than the ee
@@ -865,6 +880,7 @@ class HuskyMonitor(Node):
         # from its flag.
         self._transfer_as_free_move()
         self._visual_diagnosis()
+        self._m2_spiral_search()
         if _common._global_backend is not None:
             _common._global_backend.clear()
         self.buttons.clear()
@@ -4476,6 +4492,23 @@ class HuskyMonitor(Node):
             self.TRANSFER_AS_FREE_MOVE = int(ticked)
         return bool(getattr(self, 'TRANSFER_AS_FREE_MOVE', 0))
 
+    def _m2_spiral_search(self) -> bool:
+        """Whether the insert's spiral-search box is ticked (compliant part spirals, not straight).
+
+        Same shape as ``_transfer_as_free_move``: the widget is read ONCE and
+        the flag re-synced, because a checkbox rebuilt by reset_ui can miss its
+        next click's callback. The flag is read with a default because headless
+        harnesses build the monitor without its __init__.
+
+        Returns:
+            bool: True when the insert's compliant part runs the spiral search.
+        """
+        toggle = getattr(self, 'm2_spiral_toggle', None)
+        ticked = toggle.value if toggle is not None else None
+        if ticked is not None:
+            self.m2_spiral_search = bool(ticked)
+        return bool(getattr(self, 'm2_spiral_search', False))
+
     def _plan_transfer_as_free_move(self, mv: Movement) -> Optional[JointTrajectory]:
         """Workaround: plan the transfer as a plain dual-arm free move, without the bar.
 
@@ -5754,6 +5787,23 @@ class HuskyMonitor(Node):
                 self.m2_exec_rigid_only = bool(round(float(v)))
                 print(f"[Exec] insert mode from slider: "
                       f"{'RIGID ONLY' if self.m2_exec_rigid_only else 'rigid+compliant split'}")
+
+        # The spiral search is another execution mode for the compliant part, with
+        # its own duration and number of turns: read all three live, same reason.
+        if self._m2_spiral_search():
+            print("[Exec] insert compliant part: SPIRAL search (box ticked)")
+        sld = getattr(self, 'm2_spiral_duration_slider', None)
+        if sld is not None:
+            v = sld.value
+            if v is not None and float(v) != self.m2_spiral_duration_s:
+                self.m2_spiral_duration_s = float(v)
+                print(f"[Exec] insert spiral duration from slider: {self.m2_spiral_duration_s:.1f}s")
+        sld = getattr(self, 'm2_spiral_turns_slider', None)
+        if sld is not None:
+            v = sld.value
+            if v is not None and int(round(float(v))) != self.m2_spiral_turns:
+                self.m2_spiral_turns = int(round(float(v)))
+                print(f"[Exec] insert spiral turns from slider: {self.m2_spiral_turns}")
 
         deviations = self._arms_at_trajectory_start()
         if deviations and not self.FAKE_HARDWARE:
@@ -11734,9 +11784,35 @@ class HuskyMonitor(Node):
                     lambda v: setattr(self, 'm2_exec_rigid_only', bool(round(float(v)))),
                     0, 1, int(bool(self.m2_exec_rigid_only)), integer=True,
                 )
+                # The compliant part as a spiral search around the planned line
+                # (ticked) or the straight line (unticked, today's behaviour), so
+                # the two can be compared run by run. Read live at execution time.
+                self.m2_spiral_toggle = Toggle(
+                    f"Insert compliant part: SPIRAL search (unticked = straight line; "
+                    f"radius 0->{M2_SPIRAL_MAX_RADIUS_MM:.0f} mm, bar-centric)",
+                    lambda v: setattr(self, 'm2_spiral_search', bool(v)),
+                    bool(self.m2_spiral_search),
+                )
+                # How long the spiral takes to reach full radius (it replaces the
+                # compliant part's share of the traj time), and how many turns it
+                # makes on the way: 15 mm / turns = the pitch, keep it under the
+                # joint's ~5 mm catch capability.
+                self.m2_spiral_duration_slider = Slider(
+                    "Insert spiral: duration (s)",
+                    lambda v: setattr(self, 'm2_spiral_duration_s', float(v)),
+                    1.0, M2_SPIRAL_DURATION_S_MAX, float(self.m2_spiral_duration_s),
+                )
+                self.m2_spiral_turns_slider = Slider(
+                    f"Insert spiral: turns (while growing 0->{M2_SPIRAL_MAX_RADIUS_MM:.0f} mm)",
+                    lambda v: setattr(self, 'm2_spiral_turns', int(round(float(v)))),
+                    1, M2_SPIRAL_TURNS_MAX, int(self.m2_spiral_turns), integer=True,
+                )
             else:
                 self.m2_split_slider = None
                 self.m2_rigid_only_slider = None
+                self.m2_spiral_toggle = None
+                self.m2_spiral_duration_slider = None
+                self.m2_spiral_turns_slider = None
             # 0 disables the dense swept collision re-check that gates the free moves'
             # plans. Faster planning, unverified paths.
             self.fm_swept_validation_slider = Slider(
@@ -12271,6 +12347,10 @@ class HuskyMonitor(Node):
                 self.m2_split_slider.update()
             if hasattr(self, 'm2_rigid_only_slider') and self.m2_rigid_only_slider:
                 self.m2_rigid_only_slider.update()
+            for name in ('m2_spiral_toggle', 'm2_spiral_duration_slider', 'm2_spiral_turns_slider'):
+                widget = getattr(self, name, None)
+                if widget:
+                    widget.update()
             tgl = getattr(self, 'visual_diagnosis_toggle', None)
             if tgl:
                 tgl.update()

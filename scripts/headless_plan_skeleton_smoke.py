@@ -144,12 +144,14 @@ import argparse
 import hashlib
 import io
 import os
+import re
 import shutil
 import sys
 import tempfile
 import time
 import traceback
 from contextlib import redirect_stdout
+from functools import partial
 from types import SimpleNamespace
 from typing import Optional
 
@@ -1416,6 +1418,35 @@ def compliance_requests(iface: StubInterface, n: int) -> list:
     return [c for c in iface.calls[n:] if c[0] == 'switch' and c[2] == COMPLIANCE_CTRL]
 
 
+def pump_exec(iface: StubInterface, task, until, max_ticks: int = 3000) -> bool:
+    """Run an exec one monitor tick at a time, the stub answering between ticks.
+
+    Args:
+        iface (StubInterface): The stub, ticked after every monitor tick.
+        task: The exec generator.
+        until (callable): Stop early (the exec still running) once this returns True.
+        max_ticks (int): Give up after this many ticks.
+
+    Returns:
+        bool: True if the exec ended on its own.
+    """
+    for _ in range(max_ticks):
+        try:
+            next(task)
+        except StopIteration:
+            return True
+        if until():
+            return False
+        iface.tick()
+        time.sleep(TICK_S)
+    return False
+
+
+def motor_status(state_m2: str) -> SimpleNamespace:
+    """A scaffolding tool status message with the joint motor in ``state_m2``."""
+    return SimpleNamespace(state_m1='IDLE', state_m2=state_m2)
+
+
 def grounded_insert_check(results: Results, problem: str, root: str, skeleton) -> None:
     """A grounded bar's insert runs rigid and never tightens.
 
@@ -1545,31 +1576,7 @@ def one_sided_insert_check(results: Results, problem: str, root: str, skeleton) 
     monitor.huskies[0].object = SimpleNamespace(robot=monitor.cfab.client.robot_puid)
     all_stops = {(0, motor, arm) for motor in (GRIPPER_MOTOR, JOINT_MOTOR) for arm in (0, 1)}
 
-    def pump(task, until, max_ticks: int = 3000) -> bool:
-        """Run an exec one monitor tick at a time, the stub answering between ticks.
-
-        Args:
-            task: The exec generator.
-            until (callable): Stop early (the exec still running) once this returns True.
-            max_ticks (int): Give up after this many ticks.
-
-        Returns:
-            bool: True if the exec ended on its own.
-        """
-        for _ in range(max_ticks):
-            try:
-                next(task)
-            except StopIteration:
-                return True
-            if until():
-                return False
-            iface.tick()
-            time.sleep(TICK_S)
-        return False
-
-    def motor_status(state_m2: str) -> SimpleNamespace:
-        """A scaffolding tool status message with the joint motor in ``state_m2``."""
-        return SimpleNamespace(state_m1='IDLE', state_m2=state_m2)
+    pump = partial(pump_exec, iface)   # pump(task, until, max_ticks=...)
 
     try:
         monitor._load_skeleton_state()
@@ -1656,6 +1663,219 @@ def one_sided_insert_check(results: Results, problem: str, root: str, skeleton) 
             ended and len(errors) == 1 and not iface.calls[n_calls:],
             f"ended {ended}, errors {errors}, commands {iface.calls[n_calls:]}")
     finally:
+        monitor.tasks.clear()
+        monitor.cfab.close()
+
+
+# The spiral search's timing in the smoke: 20 s and 2 s on the robot, shortened
+# so the check runs in a couple of seconds.
+SPIRAL_SMOKE_S = 0.5
+SPIRAL_SMOKE_RETURN_S = 0.2
+# A compliance target goes world -> arm base (the executor) -> world again (the
+# check) through pybullet's transform math, which runs in single precision:
+# about 1 um of noise on a point 1-2 m from the origin. Tolerances above it.
+POSE_NOISE_MM = 5e-3
+FRAC_NOISE = 1e-3     # the same noise over a ~10 mm compliant segment
+
+
+def spiral_insert_check(results: Results, problem: str, root: str, skeleton) -> None:
+    """The insert's spiral search: one sideways offset on both arms, hold for Confirm Exec, return.
+
+    Same fixture and flow as ``one_sided_insert_check`` (action 2, the one-sided
+    B3, a straight 11-waypoint joint path) with the spiral box ticked
+    (``m2_spiral_search``), a 0.5 s spiral and a 0.2 s return so the run stays
+    short. The REAL ``husky_world.execute_planned_trajectory_compliant`` runs
+    on the stub, pumped tick by tick:
+    (a) a stall mid-spiral ends the insert like the straight line does: every
+        motor stopped, the joint controller back, and the log says where the
+        spiral stood (radius under 15 mm, under 4 turns) and that it was the
+        spiral mode;
+    (b) without a stall, both arms get the SAME sideways offset every tick (the
+        grasp is kept), perpendicular to the planned insertion axis, growing
+        monotonically to 15 mm while the bar advances along the line;
+    (c) the complete spiral then HOLDS its last pose (targets keep going out,
+        unchanged) until 'Confirm Exec', after which the targets lerp back onto
+        the nominal end pose (offset shrinking to 0); a stall there ends the
+        insert as in (a).
+
+    Args:
+        results (Results): Where the checks go.
+        problem (str): Problem folder name.
+        root (str): The scratch problem folder (unused; same signature as the other runs).
+        skeleton (PlanSkeleton): The scratch plan skeleton.
+    """
+    cindy = robot_by_name(ASSEMBLY_ROBOT)
+    action = skeleton.action(2)
+    assert action.kind == 'J', \
+        f"the spiral insert check needs jointing action 2, got {action.action_id}"
+    print(f"\n{'=' * 30} SPIRAL INSERT CHECK {'=' * 30}")
+    base = skeleton.load_bar_action(action, prefer_sidecar=False).movements[-1].start_state.robot_base_frame
+    monitor, iface, log = make_monitor(cindy, base, problem)
+    add_viz_huskies(monitor, cindy)
+    ready_for_compliant_exec(monitor)
+    # The compliant part places its cartesian targets with the drawn husky's
+    # body; headless, the planner's robot (Cindy's URDF) stands in for it.
+    robot = monitor.cfab.client.robot_puid
+    monitor.huskies[0].object = SimpleNamespace(robot=robot)
+    all_stops = {(0, motor, arm) for motor in (GRIPPER_MOTOR, JOINT_MOTOR) for arm in (0, 1)}
+    pump = partial(pump_exec, iface)
+    monitor.m2_spiral_search = True
+    monitor.m2_spiral_duration_s = SPIRAL_SMOKE_S
+    monitor.m2_spiral_turns = 4
+    saved_return_s = husky_world.M2_SPIRAL_RETURN_S
+    husky_world.M2_SPIRAL_RETURN_S = SPIRAL_SMOKE_RETURN_S
+    radius_mm = husky_world.M2_SPIRAL_MAX_RADIUS_MM
+
+    def world_targets(calls, arm: int) -> list:
+        """One arm's recorded compliance targets, back in the world frame (metres)."""
+        world_from_base = pp.get_link_pose(robot, pp.link_from_name(robot, cindy.arm_base_links[arm]))
+        return [np.asarray(pp.tform_point(world_from_base, c[3]), dtype=float)
+                for c in calls if c[0] == 'cartesian' and c[1] == arm]
+
+    def spiral_parts(points, start, end, axis) -> tuple:
+        """Split each target into its progress along the lerp line and its sideways offset.
+
+        The executor's target is ``start + f * (end - start) + d`` with ``d``
+        perpendicular to ``axis``, so ``f`` falls out of the dot product with
+        the axis and ``d`` is what remains.
+
+        Returns:
+            tuple: ``(fractions, offsets)``, the offsets as world vectors (metres).
+        """
+        line = end - start
+        fracs, offsets = [], []
+        for pt in points:
+            f = float(np.dot(pt - start, axis)) / float(np.dot(line, axis))
+            fracs.append(f)
+            offsets.append(pt - start - f * line)
+        return fracs, offsets
+
+    def monotone(values, rising: bool, tol: float = 1e-6) -> bool:
+        """True when ``values`` never step the wrong way by more than ``tol``."""
+        return all((b >= a - tol) if rising else (b <= a + tol)
+                   for a, b in zip(values, values[1:]))
+
+    def planned_geometry() -> tuple:
+        """The planned insertion axis as the executor takes it, and each arm's nominal end.
+
+        The axis is first -> last waypoint of the planned path, both arms summed,
+        read from the monitor's stored trajectory exactly as the executor does.
+
+        Returns:
+            tuple: ``(unit axis, [left end point, right end point])``, world metres.
+        """
+        stored = [monitor.planned_arm_trajectory[i][0] for i in range(2)]
+        first = husky_world._tool0_poses_at_conf(monitor, np.concatenate([stored[0][0], stored[1][0]]))
+        last = husky_world._tool0_poses_at_conf(monitor, np.concatenate([stored[0][-1], stored[1][-1]]))
+        axis = sum(np.asarray(l[0], dtype=float) - np.asarray(f[0], dtype=float)
+                   for f, l in zip(first, last))
+        return axis / np.linalg.norm(axis), [np.asarray(pose[0], dtype=float) for pose in last]
+
+    try:
+        monitor._load_skeleton_state()
+        mv, path = load_insert(monitor, iface, action)
+        arm = cindy.side_keys.index(mating_arm_sides(mv.start_state)[0])
+
+        # * --- (a) a stall mid-spiral ends the insert; the log says where the spiral stood
+        iface.scaffolding_status[arm] = motor_status('RUNNING')
+        n_calls, n_log = len(iface.calls), len(log.msgs)
+        monitor.exec_selected_movement_traj()
+        assert len(monitor.tasks) == 1, f"exec queued {len(monitor.tasks)} tasks"
+        task = monitor.tasks[0]
+        pump(task, lambda: len(world_targets(iface.calls[n_calls:], 0)) >= 10)
+        iface.scaffolding_status[arm] = motor_status('STALLED')
+        ended = pump(task, lambda: False)
+        where = log.since(n_log, 'info', 'STALLED at spiral')
+        found = re.search(r'radius ([\d.]+) mm, ([\d.]+) of', where[0]) if where else None
+        stops = {c[1:] for c in iface.calls[n_calls:] if c[0] == 'scaffolding' and c[1] == 0}
+        done = log.since(n_log, 'info', 'Compliant exec done')
+        results.check(
+            f"spiral insert: a stall mid-spiral ends {mv.movement_id} like the straight line "
+            f"(motors stopped, {JOINT_CTRL} back) and the log says where the spiral stood",
+            ended and len(log.since(n_log, 'info', 'SPIRAL search for the compliant part')) == 1
+            and found is not None and 0.0 < float(found.group(1)) < radius_mm
+            and float(found.group(2)) < 4.0
+            and not log.since(n_log, 'info', 'returning from the spiral end')
+            and stops == all_stops and iface.active_controller == [JOINT_CTRL] * cindy.n_arms
+            and len(done) == 1 and '[spiral mode]' in done[0],
+            f"ended {ended}, stall lines {where}, done {done}, stops {sorted(stops)}, "
+            f"controllers {iface.active_controller}")
+        monitor.tasks.clear()
+
+        # * --- (b) no stall: the same offset on both arms, growing to 15 mm along the line
+        mv, path = load_insert(monitor, iface, action)   # the start may have moved: re-read the geometry
+        axis, ends = planned_geometry()
+        iface.scaffolding_status[arm] = motor_status('RUNNING')
+        n_calls, n_log = len(iface.calls), len(log.msgs)
+        monitor.exec_selected_movement_traj()
+        task = monitor.tasks[0]
+        ended = pump(task, lambda: bool(log.since(n_log, 'warn', 'spiral complete')))
+        # The compliant part starts where the stub arms stand after the rigid chunk.
+        starts = [np.asarray(pose[0], dtype=float) for pose in husky_world._live_tool0_poses(monitor)]
+        parts = [spiral_parts(world_targets(iface.calls[n_calls:], i), starts[i], ends[i], axis)
+                 for i in range(2)]
+        n = min(len(parts[0][1]), len(parts[1][1]))
+        same_mm = max(float(np.linalg.norm(dl - dr))
+                      for dl, dr in zip(parts[0][1][:n], parts[1][1][:n])) * 1000.0 if n else float('nan')
+        fracs, offsets = parts[0]
+        radii = [float(np.linalg.norm(d)) * 1000.0 for d in offsets]
+        results.check(
+            f"spiral insert: without a stall both arms get the SAME sideways offset every tick "
+            f"(grasp kept), growing monotonically to {radius_mm:.0f} mm while the bar advances "
+            f"along the planned line",
+            not ended and n >= 10 and same_mm < POSE_NOISE_MM
+            and monotone(radii, rising=True, tol=POSE_NOISE_MM)
+            and monotone(fracs, rising=True, tol=FRAC_NOISE)
+            and max(radii) <= radius_mm + POSE_NOISE_MM
+            and abs(radii[-1] - radius_mm) < POSE_NOISE_MM
+            and abs(fracs[-1] - 1.0) < FRAC_NOISE,
+            f"ended {ended}, {n} target pairs, L/R offset difference {same_mm:.2e} mm, radii "
+            f"{radii[0]:.2f}..{max(radii):.2f} mm (last {radii[-1]:.4f}, monotone "
+            f"{monotone(radii, rising=True)}), fractions {fracs[0]:.3f}..{fracs[-1]:.6f} "
+            f"(monotone {monotone(fracs, rising=True)})")
+
+        # * --- (c) hold until Confirm Exec, then lerp back to the nominal end; a stall there ends it
+        n_hold = len(iface.calls)
+        still = pump(task, lambda: False, max_ticks=20)
+        held = world_targets(iface.calls[n_hold:], 0)
+        last_target = world_targets(iface.calls[n_calls:n_hold], 0)[-1]
+        held_spread_mm = max(float(np.linalg.norm(pt - last_target)) for pt in held) * 1000.0 \
+            if held else float('nan')
+        results.check(
+            "spiral insert: the complete spiral HOLDS its last pose (targets keep going out, "
+            "unchanged) and waits for 'Confirm Exec'",
+            not still and monitor._servo_exec_confirmed is False and len(held) >= 15
+            and held_spread_mm < 1e-6,
+            f"ended {still}, confirmed {monitor._servo_exec_confirmed}, {len(held)} held targets, "
+            f"spread {held_spread_mm:.2e} mm")
+
+        monitor._servo_exec_confirmed = True
+        n_back = len(iface.calls)
+        pump(task, lambda: bool(log.since(n_log, 'info', 'returning from the spiral end')))
+        pump(task, lambda: False, max_ticks=int(3 * SPIRAL_SMOKE_RETURN_S / TICK_S))
+        back_fracs, back_offsets = spiral_parts(world_targets(iface.calls[n_back:], 0),
+                                                starts[0], ends[0], axis)
+        back_radii = [float(np.linalg.norm(d)) * 1000.0 for d in back_offsets]
+        iface.scaffolding_status[arm] = motor_status('STALLED')
+        ended = pump(task, lambda: False)
+        stops = {c[1:] for c in iface.calls[n_calls:] if c[0] == 'scaffolding' and c[1] == 0}
+        results.check(
+            f"spiral insert: after 'Confirm Exec' the targets lerp back onto the nominal end "
+            f"pose (offset {radius_mm:.0f} -> 0 mm at full depth); a stall there ends the insert",
+            len(back_radii) >= 10 and monotone(back_radii, rising=False, tol=POSE_NOISE_MM)
+            and back_radii[-1] < POSE_NOISE_MM
+            and all(abs(f - 1.0) < FRAC_NOISE for f in back_fracs)
+            and ended and len(log.since(n_log, 'info', 'STALLED after the return')) == 1
+            and stops == all_stops and iface.active_controller == [JOINT_CTRL] * cindy.n_arms,
+            f"{len(back_radii)} return targets, radii {back_radii[0] if back_radii else float('nan'):.2f} "
+            f"-> {back_radii[-1] if back_radii else float('nan'):.2e} mm (monotone "
+            f"{monotone(back_radii, rising=False)}), fractions "
+            f"{min(back_fracs) if back_fracs else float('nan'):.6f}..{max(back_fracs) if back_fracs else float('nan'):.6f}, "
+            f"ended {ended}, stall-after-return lines "
+            f"{len(log.since(n_log, 'info', 'STALLED after the return'))}, "
+            f"controllers {iface.active_controller}")
+    finally:
+        husky_world.M2_SPIRAL_RETURN_S = saved_return_s
         monitor.tasks.clear()
         monitor.cfab.close()
 
@@ -2982,7 +3202,7 @@ def main(argv: Optional[list] = None) -> int:
         skeleton = load_plan_skeleton(root)
         for run in (dispatch_check, carry_check, transfer_start_check, operator_steps_check,
                     transfer_free_move_check, grounded_insert_check, one_sided_insert_check,
-                    transfer_servo_check,
+                    spiral_insert_check, transfer_servo_check,
                     cindy_run, alice_run,
                     cindy_restart_run, exec_propagation_check):
             try:

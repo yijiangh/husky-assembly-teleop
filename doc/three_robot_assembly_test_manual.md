@@ -789,6 +789,25 @@ numbers:
   - Rigid approach, then compliance for the last mm on **both** arms. The **left** joint motor
     tightens until it stalls (the right one is never driven), then the joint controller is
     restored.
+  - **Spiral search (optional, to compare with the straight line).** Tick
+    `Insert compliant part: SPIRAL search (unticked = straight line; radius 0->15 mm, bar-centric)`
+    before `Exec Selected Mv Traj`: the compliant part then circles the bar around the planned
+    insertion line instead of driving straight along it. One sideways offset goes to both arms
+    (the grasp is kept, the bar only translates), its radius growing from 0 at the handover to
+    15 mm at the assembled depth over `Insert spiral: duration (s)` (default 20) with
+    `Insert spiral: turns` revolutions (default 4, i.e. 3.75 mm per turn, under the joint's
+    ~5 mm catch range). The rigid approach and the split slider are unchanged.
+    - Log: `SPIRAL search for the compliant part: radius 0 -> 15 mm over 20.0s and 4 turns ...`,
+      then on success `L joint motor STALLED at spiral 63% (12.6/20.0 s, radius 9.4 mm, 2.5 of 4 turns).`
+      Note those numbers for the comparison; the `Compliant exec done ... [spiral mode]` /
+      `[linear mode]` line names the mode of each run.
+    - Spiral complete with **no** stall: WARN `spiral complete ... HOLDING the last spiral pose under
+      compliance`. The arms hold there (still compliant, screw still tightening) until you click
+      `Confirm Exec` (-> `returning from the spiral end to the nominal end pose over 2.0s`, then the
+      usual hold for the stall with the 30 s ceiling) or `Cancel Exec` (ends the insert there:
+      motors stopped, joint controller back).
+    - The `arms did NOT reach the commanded end pose [spiral mode]` warning is expected after a
+      mid-spiral stall: it is measured against the straight-line end, so it reads the spiral's radius.
 - [ ] After the insert: Cindy holds B21 at its assembled pose, **joint controller active**
       (section 2's controller check).
 - [ ] `Mark action done` → header `3/18`. Cindy's live base and arms were already saved to

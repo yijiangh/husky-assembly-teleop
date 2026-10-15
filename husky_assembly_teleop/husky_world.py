@@ -3513,7 +3513,8 @@ def compute_bar_pose_from_EE_poses(left, right):
     
     return (middle_pose, to_left, to_right)
 
-def execute_linear_cartesian_move(robot, hi, start_time, cartesian_trajectory, index, arm_base_link: str = None):
+def execute_linear_cartesian_move(robot, hi, start_time, cartesian_trajectory, index, arm_base_link: str = None,
+                                  lateral_offset=None):
     """Publish one tick of a linear cartesian move as the arm's compliance target.
 
     Args:
@@ -3524,6 +3525,9 @@ def execute_linear_cartesian_move(robot, hi, start_time, cartesian_trajectory, i
         index (int): Arm index (0 = left or the only arm, 1 = right).
         arm_base_link (str): The arm's base link (``RobotSpec.arm_base_links[index]``).
             None keeps Cindy's ``left_/right_ur_arm_base_link`` by index.
+        lateral_offset (Sequence[float] | None): World-frame vector (metres) added
+            to the lerped position -- the insert's spiral search. The orientation
+            is untouched. None = the plain straight line.
 
     Returns:
         bool: False once the move (plus its wait) is over, else True.
@@ -3539,16 +3543,24 @@ def execute_linear_cartesian_move(robot, hi, start_time, cartesian_trajectory, i
     
     start_pose_world = cartesian_trajectory[0]
     end_pose_world = cartesian_trajectory[1]
-    
-    offset = pp.multiply(end_pose_world,pp.invert(start_pose_world))
-    
-    linear_offset = pp.point_from_pose(offset)
+
+    # ! The straight line from the start POINT to the end POINT. It used to be
+    # ! the translation of the pose product end * inv(start), which only equals
+    # ! this when the two orientations are the same; with any orientation change
+    # ! the old line drifted and never reached the end point.
+    linear_offset = (np.array(pp.point_from_pose(end_pose_world))
+                     - np.array(pp.point_from_pose(start_pose_world)))
     quat_1 = pp.quat_from_pose(start_pose_world)
     quat_2 = pp.quat_from_pose(end_pose_world)
     
     t = min(time_elapsed / cartesian_trajectory[2], 1.0)
-    
-    lerped = pp.Pose(np.array(pp.point_from_pose(start_pose_world)) + np.array(linear_offset) * t, pp.euler_from_quat(pp.quaternion_slerp(quat_1, quat_2, t)))
+
+    point = np.array(pp.point_from_pose(start_pose_world)) + np.array(linear_offset) * t
+    if lateral_offset is not None:
+        # * The spiral search: execute_cartesian_linear_dual hands BOTH arms the
+        # * same vector, so the bar only translates and the grasp is kept.
+        point = point + np.asarray(lateral_offset, dtype=float)
+    lerped = pp.Pose(point, pp.euler_from_quat(pp.quaternion_slerp(quat_1, quat_2, t)))
     arm_base_from_tool0 = pp.multiply(pp.invert(world_from_arm_base), lerped)
     
     #pp.draw_pose(lerped)
@@ -3650,7 +3662,7 @@ switch_dual_arm_controller = switch_arm_controllers
 
 
 def execute_cartesian_linear_dual(monitor, cartesian_trajectories,
-                                  on_tick=None, should_continue=None):
+                                  on_tick=None, should_continue=None, lateral_offset_fn=None):
     """Drive both arms along a per-arm linear cartesian segment.
 
     cartesian_trajectories = [[L_start_pose, L_end_pose, t_move, t_wait],
@@ -3658,6 +3670,11 @@ def execute_cartesian_linear_dual(monitor, cartesian_trajectories,
     on_tick(hi, robot): optional per-tick callback (log wrench/pose, etc).
     should_continue(): optional bool; if returns False, loop exits early.
                        Default: True (run until time budget exhausts).
+    lateral_offset_fn(elapsed_s) -> vec3: optional world-frame offset (metres)
+                       added to BOTH arms' targets -- the insert's spiral
+                       search. Evaluated ONCE per tick and handed to both arms
+                       as the same vector, so the tool0-to-tool0 transform (the
+                       grasp on the bar) is kept: the bar translates, nothing else.
     """
     hi: HuskyRobotInterface = monitor.huskies[monitor.selected_robot_id].interface
     robot = monitor.huskies[monitor.selected_robot_id].object.robot
@@ -3665,10 +3682,14 @@ def execute_cartesian_linear_dual(monitor, cartesian_trajectories,
     start_time = time.time()
 
     def _step():
+        lateral = (lateral_offset_fn(time.time() - start_time)
+                   if lateral_offset_fn is not None else None)
         l = execute_linear_cartesian_move(robot, hi, start_time,
-                                          cartesian_trajectories[0], 0, arm_base_links[0])
+                                          cartesian_trajectories[0], 0, arm_base_links[0],
+                                          lateral_offset=lateral)
         r = execute_linear_cartesian_move(robot, hi, start_time,
-                                          cartesian_trajectories[1], 1, arm_base_links[1])
+                                          cartesian_trajectories[1], 1, arm_base_links[1],
+                                          lateral_offset=lateral)
         return l or r
 
     cont = should_continue if should_continue is not None else (lambda: True)
@@ -4222,6 +4243,127 @@ LINEAR_ARRIVAL_TOL_M = 0.002
 # screw tightening, the plan skeleton's grasp step), for firmware that never reports it.
 HOLD_FOR_STALL_TIMEOUT_S = 30.0
 
+# * --- The insert's spiral search: the compliant part's alternative to the straight line ---
+# Radius of the spiral at the assembled depth. It grows from 0 at the
+# rigid->compliant handover, so the first turns stay inside the joint's catch
+# range and the search widens as the bar goes in. Keep it well under the 5 cm
+# target guard of send_arm_cmd_cartesian (a farther target is dropped).
+M2_SPIRAL_MAX_RADIUS_MM = 15.0
+# Slider defaults (the monitor imports them): how long the spiral takes and how
+# many turns it makes while growing to the radius above. 4 turns over 15 mm is a
+# pitch of 3.75 mm per turn, under the joint's ~5 mm catch capability, so the
+# search cannot step over the hole. 20 s keeps the sideways tool speed near
+# 19 mm/s on the widest turn, which the compliance controller can follow.
+M2_SPIRAL_DURATION_S_DEFAULT = 20.0
+M2_SPIRAL_TURNS_DEFAULT = 4
+# After a spiral that found no stall and the operator's Confirm Exec: how long
+# the lerp back from the spiral's end to the nominal (straight-line) end takes.
+M2_SPIRAL_RETURN_S = 2.0
+
+
+def lateral_basis(axis) -> Tuple[np.ndarray, np.ndarray]:
+    """Two unit vectors spanning the plane perpendicular to ``axis``.
+
+    ``u`` = axis x world-z (world-x when the axis is vertical), ``v`` = axis x u,
+    so (u, v, axis) is right-handed. Which pair comes back only sets where the
+    spiral's angle starts, which does not matter for a search.
+
+    Args:
+        axis (Sequence[float]): Any non-zero 3-vector (not necessarily unit length).
+
+    Returns:
+        tuple: ``(u, v)`` unit numpy vectors, both perpendicular to ``axis``.
+
+    Raises:
+        ValueError: On a zero axis.
+    """
+    a = np.asarray(axis, dtype=float)
+    n = float(np.linalg.norm(a))
+    if n < 1e-12:
+        raise ValueError('lateral_basis: the axis is a zero vector')
+    a = a / n
+    u = np.cross(a, [0.0, 0.0, 1.0])
+    if np.linalg.norm(u) < 1e-6:          # the axis is (anti)parallel to world z
+        u = np.cross(a, [1.0, 0.0, 0.0])
+    u = u / np.linalg.norm(u)
+    v = np.cross(a, u)
+    return u, v
+
+
+class SpiralSearch:
+    """Bar-centric spiral offset for the insert's compliant part.
+
+    Gives ONE world-frame vector per tick that ``execute_cartesian_linear_dual``
+    adds to BOTH tool0 targets. Both arms move by the same vector, so the
+    tool0-to-tool0 transform (the grasp on the bar) and the bar's orientation
+    are untouched: the bar translates sideways around the planned insertion
+    line, nothing else.
+
+    Radius and angle grow linearly with the SAME clamped fraction the linear
+    lerp uses (``elapsed / t_move``, clamped to 1), so the radius follows the
+    axial progress: 0 at the rigid->compliant handover, ``max_radius_m`` when
+    the bar reaches the assembled depth, and that last offset is held
+    afterwards (the hold for the stall / Confirm Exec).
+
+    ``offset`` remembers the last elapsed time it was asked for, so the
+    executor can ask ``done()`` and ``text()`` without owning the clock.
+    """
+
+    def __init__(self, axis, t_move: float, turns: float = M2_SPIRAL_TURNS_DEFAULT,
+                 max_radius_m: float = M2_SPIRAL_MAX_RADIUS_MM / 1000.0):
+        """Set the spiral up around ``axis``.
+
+        Args:
+            axis (Sequence[float]): The insertion direction, world frame (any length).
+            t_move (float): Seconds the spiral takes to reach full radius (the
+                compliant part's duration).
+            turns (float): Revolutions made while the radius grows 0 -> max.
+            max_radius_m (float): Radius at the assembled depth, metres.
+        """
+        self.u, self.v = lateral_basis(axis)
+        self.t_move = max(float(t_move), 1e-6)
+        self.turns = float(turns)
+        self.max_radius_m = float(max_radius_m)
+        self.elapsed_s = 0.0   # the last tick asked for
+
+    def frac(self, elapsed_s: float) -> float:
+        """Progress along the spiral, 0..1 (clamped like the lerp's ``t``).
+
+        Args:
+            elapsed_s (float): Seconds since the compliant part started.
+
+        Returns:
+            float: ``elapsed_s / t_move`` clamped to [0, 1].
+        """
+        return min(max(float(elapsed_s) / self.t_move, 0.0), 1.0)
+
+    def offset(self, elapsed_s: float) -> np.ndarray:
+        """The bar's sideways offset from the planned line at ``elapsed_s``.
+
+        Args:
+            elapsed_s (float): Seconds since the compliant part started.
+
+        Returns:
+            numpy.ndarray: World-frame vector (metres), perpendicular to the axis:
+            radius ``frac * max_radius``, angle ``2 pi * turns * frac``.
+        """
+        self.elapsed_s = float(elapsed_s)
+        f = self.frac(elapsed_s)
+        radius = f * self.max_radius_m
+        angle = 2.0 * np.pi * self.turns * f
+        return radius * (np.cos(angle) * self.u + np.sin(angle) * self.v)
+
+    def done(self) -> bool:
+        """bool: True once the last offset asked for was at full radius (``t_move`` reached)."""
+        return self.elapsed_s >= self.t_move
+
+    def text(self) -> str:
+        """str: Where the spiral stands at the last tick, e.g. ``'spiral 63% (12.6/20.0 s, radius 9.4 mm, 2.5 of 4 turns)'``."""
+        f = self.frac(self.elapsed_s)
+        return (f'spiral {100.0 * f:.0f}% ({min(self.elapsed_s, self.t_move):.1f}/{self.t_move:.1f} s, '
+                f'radius {1000.0 * f * self.max_radius_m:.1f} mm, '
+                f'{self.turns * f:.1f} of {self.turns:g} turns)')
+
 
 def wait_for_operator_confirm(monitor, prompt, warn=False):
     """Hold here, yielding, until the operator confirms or cancels.
@@ -4358,6 +4500,98 @@ def _hold_until_joint_motors_stall(monitor, timeout_s, stall_gate: _JointStallGa
     monitor.get_logger().warn(
         f'[{label}] rigid-only hold hit its {timeout_s:.0f}s ceiling without the '
         f'{stall_gate.text} reporting STALLED.')
+
+
+def _execute_spiral_search(monitor, cartesian_trajectories, spiral: SpiralSearch,
+                           stall_gate: _JointStallGate, on_tick=None, label: str = 'insert'):
+    """Run the insert's compliant part as a spiral search instead of a straight line.
+
+    Two segments, both under ``cartesian_compliance_controller`` (the caller
+    switched already) and both through ``execute_cartesian_linear_dual``:
+
+      A. The straight lerp to the assembled depth, plus the spiral's sideways
+         offset on both arms (``spiral.offset``). Once ``t_move`` has passed the
+         lerp sits at the depth and the offset at full radius, republished every
+         tick: that IS the hold. It ends when every mating joint motor stalls
+         (the thread caught), on 'Cancel Exec', or -- once the spiral is
+         complete without a stall -- on the operator's 'Confirm Exec'. The hold
+         for that click has no ceiling: the operator is in the loop.
+      B. After Confirm Exec: a plain lerp from the last COMMANDED pose (the
+         spiral's end, not the sagged live pose, so the compliance target does
+         not jump) back to the nominal straight-line end, over
+         ``M2_SPIRAL_RETURN_S``, then today's hold for the stall with its
+         ``HOLD_FOR_STALL_TIMEOUT_S`` ceiling.
+
+    ! The wait for Confirm Exec lives in segment A's ``should_continue``, not in
+    ! ``wait_for_operator_confirm``: that helper publishes nothing, and the
+    ! compliance target must keep going out (and the wrench keep being
+    ! recorded) while the arms hold the spiral's end.
+
+    Args:
+        monitor: The HuskyMonitor node.
+        cartesian_trajectories (list): ``[[L_start, L_end, t_move, t_wait], [R...]]``
+            as the executor built them: live start, nominal end, the spiral's
+            duration. ``t_wait`` is ignored for segment A (no ceiling).
+        spiral (SpiralSearch): The spiral around the planned insertion axis.
+        stall_gate (_JointStallGate): The insert's gate (the mating arms' joint motors).
+        on_tick (callable): Optional ``fn(hi, robot)`` called every tick (the wrench recorder).
+        label (str): Log tag (the movement id).
+
+    Yields:
+        None: One yield per monitor tick.
+    """
+    log = monitor.get_logger()
+
+    # * Segment A: the spiral, then the hold at its end until Confirm / Cancel / stall.
+    seg_a = [[start, end, t_move, float('inf')] for start, end, t_move, _ in cartesian_trajectories]
+    prompted = {'done': False}
+
+    def _spiral_continue():
+        if stall_gate.all_stalled() or getattr(monitor, '_servo_abort', False):
+            return False
+        if not spiral.done():
+            return True
+        if not prompted['done']:
+            prompted['done'] = True
+            # A stale click must not wave the return through (as wait_for_operator_confirm).
+            monitor._servo_exec_confirmed = False
+            log.warn(
+                f"[{label}] spiral complete ({spiral.text()}) without a stall: HOLDING the "
+                f"last spiral pose under compliance. 'Confirm Exec' = lerp back to the nominal "
+                f"end pose and hold there for the stall; 'Cancel Exec' = end the insert here.")
+        return not getattr(monitor, '_servo_exec_confirmed', False)
+
+    yield from execute_cartesian_linear_dual(
+        monitor, seg_a, on_tick=on_tick, should_continue=_spiral_continue,
+        lateral_offset_fn=spiral.offset)
+
+    if stall_gate.all_stalled():
+        log.info(f'[{label}] {stall_gate.text} STALLED at {spiral.text()}.')
+        return
+    if getattr(monitor, '_servo_abort', False):
+        log.warn(f"[{label}] 'Cancel Exec' at {spiral.text()}; ending the insert here.")
+        return
+
+    # * Segment B: Confirm Exec -> back to the nominal end, then today's hold.
+    log.info(
+        f'[{label}] Confirm Exec: returning from the spiral end to the nominal end pose over '
+        f'{M2_SPIRAL_RETURN_S:.1f}s, then holding for the stall (ceiling '
+        f'{HOLD_FOR_STALL_TIMEOUT_S:.0f}s).')
+    back = spiral.offset(spiral.t_move)
+    seg_b = [[(tuple(np.asarray(end[0], dtype=float) + back), end[1]), end,
+              M2_SPIRAL_RETURN_S, HOLD_FOR_STALL_TIMEOUT_S]
+             for _, end, _, _ in cartesian_trajectories]
+    yield from execute_cartesian_linear_dual(
+        monitor, seg_b, on_tick=on_tick,
+        should_continue=lambda: not (stall_gate.all_stalled()
+                                     or getattr(monitor, '_servo_abort', False)))
+    if stall_gate.all_stalled():
+        log.info(f'[{label}] {stall_gate.text} STALLED after the return to the nominal end pose.')
+    elif getattr(monitor, '_servo_abort', False):
+        log.warn(f"[{label}] 'Cancel Exec' during the return / hold at the nominal end pose.")
+    else:
+        log.warn(f'[{label}] no stall within {HOLD_FOR_STALL_TIMEOUT_S:.0f}s of the return to '
+                 f'the nominal end pose; ending the insert (the straight line\'s ceiling).')
 
 
 # * Retreat checks (retreat_guardrails): printed right before the rigid part,
@@ -4591,7 +4825,11 @@ def execute_planned_trajectory_compliant(monitor):
          exactly on the planned line, and the joint motor (already tightening) can
          catch its first thread against a bar that is where it should be.
       2. COMPLIANT chunk -- the last ``monitor.m2_compliant_split_mm`` millimetres,
-         where the screw needs the arms free to pull the bar in.
+         where the screw needs the arms free to pull the bar in. A straight
+         line by default; with the operator's spiral-search box ticked
+         (``monitor.m2_spiral_search``) the bar instead spirals around that
+         line, radius 0 -> M2_SPIRAL_MAX_RADIUS_MM as it goes in, to find a
+         thread the residual misalignment hides (``_execute_spiral_search``).
 
     The handover point is the operator's slider, measured as tool0 distance from
     the final assembled pose. It moves to compliance early if every mating joint
@@ -4732,6 +4970,38 @@ def execute_planned_trajectory_compliant(monitor):
                     "screw never gets compliant control. Raise the slider unless "
                     "this is deliberate.")
 
+    # * Spiral search (operator checkbox): the compliant part circles the bar
+    # * around the planned insertion line instead of driving straight along it,
+    # * radius 0 -> M2_SPIRAL_MAX_RADIUS_MM as the bar goes in. Its duration
+    # * replaces the compliant part's share of the traj time (the rigid chunk
+    # * keeps its own). Rigid-only and grounded inserts ignore the box, like
+    # * they ignore the split slider.
+    spiral = None
+    if is_insert and not rigid_only and getattr(monitor, 'm2_spiral_search', False):
+        # ! The axis is the PLANNED straight segment (first -> last waypoint,
+        # ! both arms), never the live re-derived start taken after the rigid
+        # ! chunk: an early stall there can leave that one ~0 mm long.
+        axis = ((np.asarray(L_end[0], dtype=float) - np.asarray(L_start[0], dtype=float))
+                + (np.asarray(R_end[0], dtype=float) - np.asarray(R_start[0], dtype=float)))
+        if float(np.linalg.norm(axis)) < 1e-6:
+            monitor.get_logger().warn(
+                f"[{tag}] spiral search asked for, but the planned insert has no travel "
+                f"to spiral around; running the straight line instead.")
+        else:
+            t_total = float(getattr(monitor, 'm2_spiral_duration_s', M2_SPIRAL_DURATION_S_DEFAULT))
+            turns = float(getattr(monitor, 'm2_spiral_turns', M2_SPIRAL_TURNS_DEFAULT))
+            spiral = SpiralSearch(axis, t_total, turns=turns)
+            monitor.get_logger().info(
+                f"[{tag}] SPIRAL search for the compliant part: radius 0 -> "
+                f"{M2_SPIRAL_MAX_RADIUS_MM:.0f} mm over {t_total:.1f}s and {turns:g} turns "
+                f"about the planned insertion axis (pure translation: the grasp and the "
+                f"bar's orientation are kept; this duration replaces the compliant part's "
+                f"share of the traj time). A spiral with no stall holds its end until "
+                f"'Confirm Exec', then returns to the nominal end pose.")
+    # Tags the end-of-move lines so linear and spiral runs can be told apart.
+    mode_note = ('' if not is_insert
+                 else ' [spiral mode]' if spiral is not None else ' [linear mode]')
+
     # M3 is the SAME split MIRRORED. The compliant zone is the stretch nearest
     # the ASSEMBLED pose in both movements -- for M2 that is the end of the
     # motion, for M3 (the retreat) it is the beginning. So M3 runs compliant
@@ -4848,6 +5118,9 @@ def execute_planned_trajectory_compliant(monitor):
         print(f'[scaffolding] {tag}: LOOSEN gripper motor on R arm (arm 1)')
         hi.send_scaffolding_cmd(-1, GRIPPER_MOTOR, 1)
 
+    # * 'Cancel Exec' ends the spiral search's hold (nothing else here reads it):
+    # * clear a stale click first, as every executor that reads the flag does.
+    monitor._servo_abort = False
     switched_to_compliance = False
     try:
         # --- Chunk 1: the rigid approach (M2 only) ---
@@ -4902,9 +5175,14 @@ def execute_planned_trajectory_compliant(monitor):
                 f'commanded. Fix the controller switch and re-run this movement.')
             return
 
-        yield from execute_cartesian_linear_dual(
-            monitor, cartesian_trajectories, on_tick=_record_wrench,
-            should_continue=should_continue_fn)
+        if spiral is None:
+            yield from execute_cartesian_linear_dual(
+                monitor, cartesian_trajectories, on_tick=_record_wrench,
+                should_continue=should_continue_fn)
+        else:
+            yield from _execute_spiral_search(
+                monitor, cartesian_trajectories, spiral, stall_gate,
+                on_tick=_record_wrench, label=tag)
 
         # Measure where compliance actually left each arm, BEFORE the finally
         # restores the joint controller (which freezes whatever it finds). The
@@ -4922,8 +5200,10 @@ def execute_planned_trajectory_compliant(monitor):
             worst = max(e['remaining_mm'] for e in errs)
             spread = abs(errs[0]['achieved_mm'] - errs[1]['achieved_mm'])
             if worst > LINEAR_ARRIVAL_TOL_M * 1000.0:
+                # Measured against the NOMINAL straight-line end in both modes: a
+                # stall mid-spiral legitimately reads "short" by the spiral's radius.
                 monitor.get_logger().warn(
-                    f"[{tag}] arms did NOT reach the commanded end pose: worst "
+                    f"[{tag}] arms did NOT reach the commanded end pose{mode_note}: worst "
                     f"{worst:.1f} mm short, L/R differ by {spread:.1f} mm. The "
                     f"joint controller is about to freeze them there.")
         except Exception as exc:
@@ -5003,6 +5283,7 @@ def execute_planned_trajectory_compliant(monitor):
     finally:
         # Always stop motors first, then restore the joint controller.
         _stop_all_both_arms()
+        monitor._servo_abort = False   # consumed here; nothing after us may read it
 
         # Only worth restoring if we actually left the joint controller. If this
         # one fails there is nothing left to abort -- the move is over -- but the
@@ -5032,7 +5313,7 @@ def execute_planned_trajectory_compliant(monitor):
 
     monitor.get_logger().info(
         f"Compliant exec done for {monitor.current_movement.movement_id} "
-        f"({kind.value}); {len(wrench_profile_left)} wrench samples, "
+        f"({kind.value}){mode_note}; {len(wrench_profile_left)} wrench samples, "
         f"peak |F| L={_peak_force(wrench_profile_left):.1f} N / "
         f"R={_peak_force(wrench_profile_right):.1f} N")
 
