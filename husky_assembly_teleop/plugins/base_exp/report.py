@@ -172,11 +172,11 @@ def plot(path: str | Path, out: str | Path | None = None) -> Path:
     # * Top view.
     line = followed.polyline()
     top.plot(line[:, 0], line[:, 1], "--", color=PATH_COLOR, label="path sent")
-    _arrows(top, line, PATH_COLOR)
+    heading_arrows(top, line, PATH_COLOR)
     known = pose[np.isfinite(pose).all(axis=1)]
     if len(known):
         top.plot(known[:, 0], known[:, 1], "-", color=ROBOT_COLOR, label="robot")
-        _arrows(top, known, ROBOT_COLOR)
+        heading_arrows(top, known, ROBOT_COLOR)
         top.plot(*known[0, :2], "o", color=ROBOT_COLOR, label="start")
         top.plot(*known[-1, :2], "s", color=ROBOT_COLOR, label="end")
     top.plot(*poses[-1, :2], "x", color=PATH_COLOR, markersize=10, label="goal")
@@ -218,9 +218,9 @@ def plot(path: str | Path, out: str | Path | None = None) -> Path:
     for axis in (error, yaw, command):
         axis.grid(True, alpha=0.35)
         axis.axhline(0.0, color="0.3", linewidth=0.8)
-        for start, end in _spans(t, (context[:, 0] > 0.5) & (context[:, 5] == FOLLOWING)):
+        for start, end in time_spans(t, (context[:, 0] > 0.5) & (context[:, 5] == FOLLOWING)):
             axis.axvspan(start, end, color=TURN_SHADE, zorder=0)
-        for start, end in _spans(t, context[:, 5] == SETTLING):
+        for start, end in time_spans(t, context[:, 5] == SETTLING):
             axis.axvspan(start, end, color=SETTLE_SHADE, zorder=0)
 
     out = Path(out) if out is not None else path.with_suffix(".png")
@@ -250,7 +250,7 @@ def _plain(value):
     return value.item() if isinstance(value, np.generic) else np.asarray(value).tolist()
 
 
-def _arrows(axis, poses: np.ndarray, color: str) -> None:
+def heading_arrows(axis, poses: np.ndarray, color: str) -> None:
     """About ARROWS heading arrows along `poses` (n x 3)."""
     pick = np.unique(np.linspace(0, len(poses) - 1, min(ARROWS, len(poses))).astype(int))
     span = np.ptp(poses[:, :2], axis=0).max() if len(poses) > 1 else 0.0
@@ -259,7 +259,7 @@ def _arrows(axis, poses: np.ndarray, color: str) -> None:
                 color=color, alpha=0.6, angles="xy", scale_units="xy", scale=1.0, width=0.004)
 
 
-def _spans(t: np.ndarray, flags: np.ndarray) -> list[tuple[float, float]]:
+def time_spans(t: np.ndarray, flags: np.ndarray) -> list[tuple[float, float]]:
     """Time spans where `flags` holds."""
     spans, start = [], None
     for time, flag in zip(t, flags):
