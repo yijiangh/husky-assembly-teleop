@@ -24,6 +24,8 @@ COLLISION_MARGIN = 0.05
 #: `clearance` measures up to CLEARANCE_LIMIT, to CLEARANCE_STEP, metres.
 CLEARANCE_LIMIT = 0.30
 CLEARANCE_STEP = 0.005
+#: Things lower than this, metres, are floor: the floor maps leave them out.
+FLOOR_BOTTOM = 0.05
 #: Rays per PyBullet call, below its batch limit.
 RAY_BATCH = 8192
 #: Where the planned robot is moved out of the way, metres along x and y.

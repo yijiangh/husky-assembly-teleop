@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 import numpy as np
+from crl_husky.follower_path import SAME_SPOT
 from crl_husky.pure_pursuit import PurePursuitParams, turning_centre_poses
 
 from ..planning.path import TimedPath
@@ -21,8 +22,6 @@ MAX_ANGULAR_SPEED = 0.3  # rad/s
 
 #: Closer than this counts as already there; the move only turns.
 POSITION_TOLERANCE = 0.005  # m
-#: A step shorter than this only turns, as in the follower (crl_husky `follower_path.SAME_SPOT`).
-SAME_SPOT = 1e-3  # m
 #: Spacing of the poses along an arc, metres.
 ARC_STEP = 0.05
 #: Drive after a turn on the spot over which the follower brings the base back onto the path, metres.

@@ -33,7 +33,7 @@ from ...planning.search import TIME_LIMIT, PlanResult
 from ..follow import XICR_RANGE, followed, thinned
 from ..path import (MAX_ANGULAR_SPEED, MAX_LINEAR_SPEED, SETTLE_DISTANCE, BasePath, densify, driven, steer,
                     timed_path)
-from ..world import COLLISION_MARGIN, PlanningWorld
+from ..world import CLEARANCE_LIMIT, CLEARANCE_STEP, COLLISION_MARGIN, FLOOR_BOTTOM, PlanningWorld
 from .base import (FOLLOWER_MODEL, LEAD, POSITION_STEP, XICR_STEP, YAW_STEP, Algorithm, Debug, add_follower_settings,
                    add_margin_setting)
 
@@ -106,18 +106,14 @@ ROUGH = (np.arange(-36.0, 36.1, 3.0), np.linspace(-0.09, 0.09, 10))
 FINE = (np.arange(-2.0, 2.1, 0.5), np.linspace(-0.04, 0.04, 17))
 PORTAL_ROOM = 0.10            # m
 PORTAL_STEP = 0.05            # m, along the line
-#: Things at least FLOOR_BOTTOM high count. Ones lower than BAND only hit parts of the robot that reach below BAND
-#: (chassis, wheels), so an arm passes over them; higher ones hit every part.
-FLOOR_BOTTOM = 0.05  # m
-BAND = 0.30          # m
+#: Things at least FLOOR_BOTTOM high count (`world`). Ones lower than BAND only hit parts of the robot that reach
+#: below BAND (chassis, wheels), so an arm passes over them; higher ones hit every part.
+BAND = 0.30  # m
 #: Give shortening the path at most this long, seconds; it joins poses about ANCHOR_SPACING metres apart.
 SHORTEN_TIME = 1.5
 ANCHOR_SPACING = 0.3
-#: Clearances are checked in steps of this, rounded up, metres.
-CLEARANCE_STEP = 0.005
-#: Diagnostics: room is measured up to ROOM_LIMIT metres; where the search got stuck, hits within NEAR metres count.
-#: At most TOUCHES_DRAWN touch points and FINISHES_DRAWN refused finishes (the last) are drawn.
-ROOM_LIMIT = 0.3
+#: Diagnostics: where the search got stuck, hits within NEAR metres count. At most TOUCHES_DRAWN touch points and
+#: FINISHES_DRAWN refused finishes (the last) are drawn.
 NEAR = 0.5
 TOUCHES_DRAWN = 300
 FINISHES_DRAWN = 40
@@ -324,19 +320,11 @@ def plan(world: PlanningWorld, own: str, start, goal, abort: threading.Event, se
 
     def room(pose) -> str:
         """How much room the robot has at `pose`: centimetres to the nearest thing and what it is, as text."""
+        clear, near = world.clearance(own, [pose])
+        if near is None:
+            return f"over {CLEARANCE_LIMIT * 100:.0f} cm"
         touching = hit_by(pose, 0.0)
-        if touching is not None:
-            return f"touches {touching}"
-        if hit_by(pose, ROOM_LIMIT) is None:
-            return f"over {ROOM_LIMIT * 100:.0f} cm"
-        clear, blocked = 0.0, ROOM_LIMIT
-        while blocked - clear > CLEARANCE_STEP:
-            middle = (clear + blocked) / 2.0
-            if hit_by(pose, middle) is None:
-                clear = middle
-            else:
-                blocked = middle
-        return f"{clear * 100:.0f} cm to {hit_by(pose, blocked)}"
+        return f"touches {touching}" if touching else f"{clear * 100:.0f} cm to {hit_by(pose, clear + CLEARANCE_STEP)}"
 
     def found(poses, direct: bool = False) -> PlanResult[BasePath]:
         for trace in traces:
