@@ -1,6 +1,8 @@
 """
-The robot model report, robot_model.md: the real robot's model, whether one fits all runs, how well it predicts, how
-close the simulator with it comes, and checks of the method.
+The robot model report, robot_model.md.
+
+The real robot's model, whether one fits all runs, how well it predicts, how close the simulator with it comes, and
+checks of the method.
 
 It reads why, what was measured, then numbers only. Each robot's path runs are pooled over controllers, since the
 response belongs to the robot; constant-command runs are not here (constant_commands.md).
@@ -190,8 +192,10 @@ def wheel_table(found: dict) -> pd.DataFrame:
 
 
 def replay_errors(runs: pd.DataFrame, known: dict) -> dict[tuple[str, str], list[tuple[str, Errors]]]:
-    """Per (robot, model), each run's template and replay errors. Models: ideal, identified (cross-validated), sim
-    settings."""
+    """Per (robot, model), each run's template and replay errors.
+
+    Models: ideal, identified (cross-validated), sim settings.
+    """
     replays = {}
     for robot in robots(runs):
         pairs = [(row.template, track) for row in runs[runs.robot == robot].itertuples()
@@ -209,8 +213,10 @@ def replay_errors(runs: pd.DataFrame, known: dict) -> dict[tuple[str, str], list
 
 
 def _crossed(pairs: list) -> list[tuple[str, Errors]] | None:
-    """Each run's errors under the model identified on the other half of the runs (alternate runs); None if a half
-    is empty or identifies nothing."""
+    """Each run's errors under the model identified on the other half of the runs (alternate runs).
+
+    None if a half is empty or identifies nothing.
+    """
     halves = (pairs[0::2], pairs[1::2])
     if not all(halves):
         return None
@@ -262,8 +268,10 @@ def open_loop_table(replays: dict, twin: str | None) -> pd.DataFrame:
 
 
 def closed_loop_table(runs: pd.DataFrame, twin: str | None) -> pd.DataFrame:
-    """Per controller run on both the twin simulator and the real robot, per template: success and errors on the
-    paths both finished."""
+    """Per controller run on both the twin simulator and the real robot, per template.
+
+    Success, and errors on the paths both finished.
+    """
     if twin is None:
         return pd.DataFrame()
     rows = []
@@ -327,8 +335,10 @@ def per_run(runs: pd.DataFrame) -> pd.DataFrame:
 
 
 def stability_table(runs: pd.DataFrame, single: pd.DataFrame, found: dict, noise: str | None) -> pd.DataFrame:
-    """The real robot per value: all runs together, run by run (median, spread, n), the spread in the `noise`
-    simulator, and by halves in time."""
+    """The real robot per value.
+
+    All runs together, run by run (median, spread, n), the spread in the `noise` simulator, and by halves in time.
+    """
     if runs.empty:
         return pd.DataFrame()
     response = found.get(("real", MOTION))
