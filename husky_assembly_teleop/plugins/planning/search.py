@@ -62,7 +62,7 @@ class Corners:
 
 def connect(start: State, goal: State, distance: Callable[[State, State], float], sample: Callable[[], State],
             extend: Callable[[State, State], Sequence[State]], collides: Callable[[State], bool],
-            abort: threading.Event) -> Corners:
+            abort: threading.Event, time_limit: float = TIME_LIMIT) -> Corners:
     """Find a collision-free path from `start` to `goal`, trying the straight move first.
 
     Args:
@@ -74,6 +74,7 @@ def connect(start: State, goal: State, distance: Callable[[State, State], float]
             close enough together that checking each checks the move.
         collides: Whether a state is in collision.
         abort: Set from the main thread to end the search early.
+        time_limit: Give up searching after this long, seconds.
 
     Returns:
         Corners: The path's corners, or why there is none ("cancelled" when aborted).
@@ -87,12 +88,17 @@ def connect(start: State, goal: State, distance: Callable[[State, State], float]
     try:
         direct = not any(collision_fn(q) for q in extend(start, goal))
         path = [start, goal] if direct else birrt(
-            start, goal, distance, sample, extend, collision_fn, max_time=TIME_LIMIT,
+            start, goal, distance, sample, extend, collision_fn, max_time=time_limit,
             max_iterations=MAX_ITERATIONS, restarts=RESTARTS, smooth=SMOOTHING)
+        # * birrt gives up at once when start or goal itself collides (a planner's checks may grow near them).
+        blocked = [] if path is not None else [name for name, q in (("start", start), ("target", goal))
+                                               if collision_fn(q)]
     except PlanningAborted:
         return Corners(None, "cancelled")
+    if blocked:
+        return Corners(None, f"the {' and the '.join(blocked)} is too close to something for the search's checks")
     if path is None:
-        return Corners(None, f"no path found in {TIME_LIMIT:.0f} s")
+        return Corners(None, f"no path found in {time_limit:.0f} s")
 
     # birrt returns every small step, maybe without the start: keep the corners, ending exactly at the goal.
     if tuple(path[0]) != tuple(start):
