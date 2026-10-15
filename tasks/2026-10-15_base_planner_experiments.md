@@ -29,9 +29,16 @@ Spec: `doc/base_planner_manual.md`. Code: `plugins/base_planner/{tasks,recording
   "short" in the first benchmark was the simulation cutting the commands still in flight; runs and simulation now
   go 2 s past done, and the report shows the drift after done.
 
+- **Arm stowed** (user): every plan, live and offline, is made with the planned robot's arms at their stow pose;
+  the panel warns when the live arm is more than 5° from it, and the ghosts show it stowed. Stowed, Alice is 0.68 m
+  wide at every height, so `tall_walls` is sized from that. The planner unit tests keep the arm out (joints 0): the
+  harder, lopsided case.
+- **Step 110 target** (user, 15 Oct): (0.43, −2.785, 0°), inside the bar structure; the first target was outside.
+  Re-run as `benchmark_1016`.
+
 ## Open
 
-- Confirm `PROCESS_TARGET` (hand-placed 15 Oct) and the process folder; set `TASK_ORIGIN` to the clean lab area.
+- Set `TASK_ORIGIN` to the clean lab area.
 - The 9 pilot runs of 15 Oct (`data_experiment/base_planner/2026…_real`, run.json only) predate tasks and
   experiment.json: the report does not read them (`report.py` still draws them one by one).
 - Automation (drive to each task's start, plan with each planner, commit, repeat) is not built: the panel flow is

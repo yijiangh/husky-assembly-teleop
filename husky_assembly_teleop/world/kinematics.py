@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Mapping
+from typing import TYPE_CHECKING, Callable, Container, Mapping
 
 from yourdfpy import URDF
 
@@ -60,7 +60,7 @@ class Kinematics:
             urdf = _load_urdf(config.urdf_file)
             names = urdf.actuated_joint_names
             joints = dict.fromkeys(names, 0.0)
-            joints.update(_stow_joints(config, joints))
+            joints.update(stow_joints(config, joints))
             self._robots[config.serial] = _Robot(
                 urdf=urdf, base=Pose.from_arrays(config.default_position, config.default_orientation),
                 joints=joints, unmeasured=frozenset(names))
@@ -168,8 +168,8 @@ class Kinematics:
         return robot
 
 
-def _stow_joints(config: RobotConfig, joints: Mapping[str, float]) -> dict[str, float]:
-    """Each arm's `stow_joints` by URDF joint name, for arms that have them; names the URDF lacks are left out."""
+def stow_joints(config: RobotConfig, joints: Container[str]) -> dict[str, float]:
+    """Each arm's `stow_joints` by URDF joint name, for arms that have them; names not in `joints` are left out."""
     stowed = {}
     for arm in config.arms:
         if arm.stow_joints is not None:

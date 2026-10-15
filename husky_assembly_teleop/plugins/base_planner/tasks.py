@@ -24,16 +24,15 @@ from scaffolding_assembly_core.scene import Body
 TASK_ORIGIN = (0.5, -0.6, 0.0)
 #: The passages run along PASSAGE_ANGLE in the task frame.
 PASSAGE_ANGLE = math.radians(17.0)
-#: Alice's width at wheel height, her arm's and her other side's reach from base_footprint, and the planners'
-#: default margin, metres: the passages are sized from them.
+#: Alice's width, the same at every height with her arm stowed (as she is planned), and the planners' default
+#: margin, metres: the passages are sized from them.
 WHEELS = 0.70
-ARM, OTHER_SIDE = 0.885, 0.346
 MARGIN = 0.05
 #: The process task: its process folder (under the Drive root), step, and start and target in the lab frame.
 PROCESS = "data_design_study/261008_2ModulesDemo_purged_process"
 PROCESS_STEP = 110
 PROCESS_START = (-2.75, -3.32, math.radians(76.61))
-PROCESS_TARGET = (-1.196, -1.121, math.radians(76.61))
+PROCESS_TARGET = (0.43, -2.785, 0.0)
 #: Colour of virtual obstacles, (r, g, b, a) from 0 to 1.
 VIRTUAL_COLOR = (0.85, 0.45, 0.85, 0.6)
 
@@ -109,10 +108,9 @@ def _passage(gap: float, depth: float = 1.0, height: float = 0.2, length: float 
     return tuple(((depth, length, height), _along(0.0, side * (gap + length) / 2.0)) for side in (1, -1))
 
 
-#: Gaps: low blocks leave room beside the wheels; tall ones beside the arm and the other side.
+#: Gaps, by the room each side beyond the margin.
 LOW_4CM = WHEELS + 2 * MARGIN + 2 * 0.04
 LOW_3CM = WHEELS + 2 * MARGIN + 2 * 0.03
-TALL_4CM = ARM + OTHER_SIDE + 2 * MARGIN + 2 * 0.04
 TOO_NARROW_FOR_MARGIN = WHEELS + 2 * MARGIN - 0.01
 #: A parked Husky without its arm, (x, y, z) metres.
 PARKED = (1.0, 0.7, 0.5)
@@ -130,8 +128,8 @@ TASKS = (
     Task("narrow_passage", "Through a passage 1.5 m deep, 3 cm to spare, starting beside it facing across",
          "passages", _along(-2.0, 1.0, math.pi / 2), _along(2.2, -0.5, PASSAGE_ANGLE - 0.5),
          _passage(LOW_3CM, depth=1.5), 0.03),
-    Task("tall_walls", "Between walls taller than the arm, off-centre", "passages", _along(-2.2, -0.27, 0.0),
-         _along(2.2, -0.27), _passage(TALL_4CM, height=1.2), 0.04),
+    Task("tall_walls", "Between walls taller than Alice, 4 cm to spare, starting off-centre", "passages",
+         _along(-2.2, -0.27, 0.0), _along(2.2, 0.0), _passage(LOW_4CM, height=1.2), 0.04),
     Task("into_passage", "Into the middle of the narrow passage", "passages", _along(-2.0, 1.0, math.pi / 2),
          _along(0.2, 0.0), _passage(LOW_3CM, depth=1.5), 0.03),
     Task("into_facing_out", "Into the narrow passage, ending facing back out", "passages",

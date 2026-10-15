@@ -41,6 +41,7 @@ from ...ui.style import BUSY, OK, SECTION_CTRL, SECTION_TOOL, block, check_chip,
 from ...world import signals
 from ...world.checks import WARN, Check
 from ...world.follower import live_report, path_check
+from ...world.kinematics import stow_joints
 from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.ids import robot_id
 from .path import MAX_ANGULAR_SPEED, MAX_LINEAR_SPEED, BasePath
@@ -48,7 +49,7 @@ from .algorithms import ALGORITHMS, Algorithm, Debug
 from .debug_view import DebugView
 from .recording import RECORDING_FOLDER, attempt_folder, load_description, save_plan, write_description
 from .tasks import BY_NAME, TASK_ORIGIN, TASKS
-from .world import PlanningWorld
+from .world import PlanningWorld, stowed
 
 #: The plan goes stale once the base moves this far from its planned start.
 STALE_POSITION = 0.05              # m
@@ -66,6 +67,8 @@ DEFAULT_EXPERIMENT = "default"
 #: An attempt counts for its task when it starts this close to the task's start and aims at the task's target.
 TASK_POSITION = 0.10           # m
 TASK_YAW = math.radians(10.0)  # rad
+#: The base plans with the arms stowed; an arm further than this from its stow pose is warned about.
+STOW_TOLERANCE = math.radians(5.0)  # rad
 
 
 def send_to_onboard_follower(base: BaseInterface, path: BasePath) -> int:
@@ -269,6 +272,10 @@ class BasePlannerPlugin(PlannerPlugin):
         settings, debug = algorithm.settings(), Debug(on=self._debug_on.value)
         # * Take the snapshot here, on the main thread; the worker syncs from it.
         snapshot, guessed = with_guesses(ctx.scene.snapshot, robot_id(serial))
+        config = next(robot for robot in ctx.config.robots if robot.serial == serial)
+        snapshot, away = stowed(snapshot, robot_id(serial), config)
+        if away > STOW_TOLERANCE:
+            guessed = guessed + [f"arm planned as stowed, {math.degrees(away):.0f}° away from it: stow it first"]
         guess = f" (guessed: {'; '.join(guessed)})" if guessed else ""
         if guessed:
             ctx.log_warn(f"planning for {serial} from a guess: {'; '.join(guessed)}")
@@ -277,6 +284,7 @@ class BasePlannerPlugin(PlannerPlugin):
         setup = {"experiment": self._experiment_name(), "task": task, "robot": serial, "environment": environment,
                  "started": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
                  "conditions": {"task_origin": list(TASK_ORIGIN), "process_step": self._process_index(ctx),
+                                "arm_from_stow": math.degrees(away),
                                 "speed_caps": {"linear": MAX_LINEAR_SPEED, "angular": MAX_ANGULAR_SPEED}},
                  "algorithm": algorithm.label, "settings": asdict(settings), "start": list(start),
                  "goal": list(goal), "guessed": guessed}
@@ -353,18 +361,21 @@ class BasePlannerPlugin(PlannerPlugin):
         self._plan_record = None
 
     def show_target(self, ctx: PluginContext, ghost: RobotGhost) -> None:
-        """The robot at the target pose, arms as they are now."""
+        """The robot at the target pose, arms stowed."""
         self._show_at(ctx, ghost, self.serial, self._target.pose)
 
     def show_path(self, ctx: PluginContext, ghost: RobotGhost) -> None:
-        """The robot on the path at the slider time, arms as they are now."""
+        """The robot on the path at the slider time, arms stowed."""
         self._show_at(ctx, ghost, self._path_serial, self.path.sample(self._t))
 
     def _show_at(self, ctx: PluginContext, ghost: RobotGhost, serial: str, pose) -> None:
-        """Show `ghost` at floor pose (x, y, yaw), height and arms from the live robot."""
+        """Show `ghost` at floor pose (x, y, yaw), height from the live robot, arms stowed as planned."""
         x, y, yaw = (float(v) for v in pose)
         z = float(ctx.kinematics.base_pose(serial).position[2])
-        ghost.show(Pose((x, y, z), (0.0, 0.0, math.sin(yaw / 2), math.cos(yaw / 2))), ctx.kinematics.joints(serial))
+        config = next(robot for robot in ctx.config.robots if robot.serial == serial)
+        joints = ctx.kinematics.joints(serial)
+        ghost.show(Pose((x, y, z), (0.0, 0.0, math.sin(yaw / 2), math.cos(yaw / 2))),
+                   {**joints, **stow_joints(config, joints)})
 
     # --- --- --- --- --- RUN (task) --- --- --- --- ---
 

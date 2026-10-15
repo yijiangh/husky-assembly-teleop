@@ -39,7 +39,7 @@ obstacles in the way:
 | looks_wide | 2 | a gap 1 cm too narrow for the margin; walls short enough to go around |
 | passage | 1 | through a passage 1 m deep, 4 cm to spare |
 | narrow_passage | 1 | through 1.5 m with 3 cm to spare, starting beside it facing across |
-| tall_walls | 1 | between walls taller than the arm, off-centre |
+| tall_walls | 1 | between walls taller than Alice, 4 cm to spare, starting off-centre |
 | into_passage | 1 | into the middle of the narrow passage |
 | into_facing_out | 1 | into it, ending facing back out |
 | out_of_passage | 1 | out of the middle of the narrow passage |
@@ -52,13 +52,13 @@ planner avoids them, the floor stays empty. They are placed with the task frame 
 attempt.
 
 **step_110** uses the process plugin's scene at step 110 (`PROCESS`, `PROCESS_STEP`). Its start and target are
-`PROCESS_START` and `PROCESS_TARGET` in `tasks.py`. ? The target is the one placed by hand on 15 Oct; confirm it, and
-that the process is `261008_2ModulesDemo_purged_process`.
+`PROCESS_START` and `PROCESS_TARGET` in `tasks.py`; the target is inside the bar structure (confirmed 15 Oct).
 
 ### The method
 
-- **Varies:** the planner. **Held fixed:** the tasks, the planners' default settings, the planning speeds, the task
-  origin, the follower model (`alice_tiles`). All are recorded with every attempt.
+- **Varies:** the planner. **Held fixed:** the tasks, Alice's arm stowed (`ArmConfig.stow_joints`), the planners'
+  default settings, the planning speeds, the task origin, the follower model (`alice_tiles`). All are recorded with
+  every attempt.
 - **Measured independently of the planner:** clearance in the planning world; deviation and end from mocap (robot)
   or the simulated pose against the path sent, the same for both planners.
 - **Model groups (offline):** each path found is driven by the simulated follower (crl_husky pure pursuit with
@@ -83,10 +83,10 @@ that the process is `261008_2ModulesDemo_purged_process`.
 
 `$HUSKY_DRIVE_ROOT/data_experiment/base_planner/<experiment>/<date>_<time>_<robot>_<task|free>_<real|sim|offline>/`:
 
-- `experiment.json`: experiment, task, robot, environment, conditions (task origin, process step, speed caps),
-  planner and settings, start, target; the plan (found or why not, time, length, clearance, notes); the run
-  (outcome, controller) once committed; offline, the simulated drives (model group, true xICR, finished or why
-  not).
+- `experiment.json`: experiment, task, robot, environment, conditions (task origin, process step, the arm's angle
+  from stow, speed caps), planner and settings, start, target; the plan (found or why not, time, length, clearance,
+  notes); the run (outcome, controller) once committed; offline, the simulated drives (model group, true xICR,
+  finished or why not).
 - `plan.npz`: the path and the floor around it. `recording.npz`: the run's samples. `simulated.npz`: offline
   follower traces.
 - The report writes `plan.png` per attempt, `overview.png` and `report.json` per run, and `_analysis/`.
@@ -145,7 +145,8 @@ Switch Alice's `platform_velocity_controller` on in `robot_control`.
 
 ## Collecting attempts (the panel)
 
-1. Type the experiment name into **Experiment**, tick **Record**.
+1. Type the experiment name into **Experiment**, tick **Record**. Stow Alice's arm (**Stow** in `robot_control`):
+   the planners plan with it stowed, and the panel warns when it is not.
 2. Choose a **Task**: its virtual obstacles appear, the target is set. For `step_110`, select step 110 in the process
    plugin first, and leave the process unloaded for every other task (a loaded process makes a virtual task's scene
    unclean, and the attempt is left out).
