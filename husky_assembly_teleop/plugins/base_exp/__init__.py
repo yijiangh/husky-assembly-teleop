@@ -7,8 +7,7 @@ The base experiment: test paths for the onboard pure pursuit follower, sent by h
   twist.py      constant commands: the command grid (v, ω), driven open loop, for how the response changes with it
   record.py     a run's setup (sim or real, controller) read from ROS, and its recording folder
   report.py     a run's experiment.json and overview.png; matplotlib, no ROS
-  markers.py    the 3D view: path lines, trail, the follower's points
-  plugin.py     the plugin: panel, runs, automation and guard
+  plugin.py     the plugin: panel, runs, automation and guard; its 3D view is ui/base_markers.py
   identify.py, replay.py  how the robot responds to commands, and how well a model predicts it; plain numpy
   analysis/     offline reports over an experiment's runs (scripts/analyze_base_exp.py)
 """

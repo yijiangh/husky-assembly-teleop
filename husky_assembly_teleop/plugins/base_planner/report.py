@@ -43,8 +43,6 @@ STILL, TURNING = 0.01, 0.05
 STOP_TIME = 0.2
 #: Spacing of the path the robot is measured against, metres and radians.
 STEP = 0.01
-#: Colour of what is on the floor, from a plan's floor map.
-FLOOR_COLOR = "0.75"
 
 
 @dataclass
