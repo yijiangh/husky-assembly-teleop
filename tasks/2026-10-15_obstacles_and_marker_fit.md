@@ -1,7 +1,7 @@
 # Obstacles editing and bar marker fitting (2026-10-15)
 
-Status: **marker fitting done** (2026-10-15, `jg/viser-cleanup`, not run on the lab yet); **obstacles part not
-started.** Two plugin refactors agreed in discussion: the lab layout moves into a file that
+Status: **both done** (2026-10-15, `jg/viser-cleanup`), not run in the lab yet. Open: "Fit from probe points", and
+measuring whether a live marker fit is needed. Two plugin refactors agreed in discussion: the lab layout moves into a file that
 `obstacles` edits, `debug_gizmo` shrinks to a pure debug tool, and the bar marker fit leaves `mocap_probe` for its own
 plugin.
 
@@ -40,20 +40,24 @@ and resizes temporary boxes and cylinders, saves them to `~/husky_debug_gizmo.js
 
 ### Obstacles / debug_gizmo
 
-- [ ] Lab file schema and loader: `data/lab/<name>.json`, `lab` parameter in `config.py` (default the current lab).
-- [ ] Write the current `BOXES`, `CYLINDERS`, `TRUSSES` and `BORDER` from `obstacles.py` into the file; `obstacles`
+- [x] Lab file schema and loader: `data/lab/<name>.json`, `lab` parameter in `config.py` (default the current lab).
+- [x] Write the current `BOXES`, `CYLINDERS`, `TRUSSES` and `BORDER` from `obstacles.py` into the file; `obstacles`
       loads it and keeps the same ids.
-- [ ] Move picking (`ray_distance`, the scene click callback), the move gizmo and the corner resize gizmo from
+- [x] Move picking (`ray_distance`, the scene click callback), the move gizmo and the corner resize gizmo from
       `debug_gizmo.py` into one reusable widget in `ui/`, used by both plugins.
-- [ ] Obstacles panel: select, move, resize, add, remove, rename; for lab obstacles Save, Revert and a dirty chip;
+- [x] Obstacles panel: select, move, resize, add, remove, rename; for lab obstacles Save, Revert and a dirty chip;
       for temporary ones Promote to lab.
-- [ ] Temporary obstacles in `obstacles`: `obstacles/temporary/<n>`, saved automatically to
+- [x] Temporary obstacles in `obstacles`: `obstacles/temporary/<n>`, saved automatically to
       `~/husky_obstacles_temporary.json`; read `~/husky_debug_gizmo.json` once if the new file is missing.
-- [ ] Shrink `debug_gizmo` to move anything, Log and Reset.
-- [ ] Tests: lab file round trip, ids unchanged, temporary file migration, `base_exp` still finds the border
+- [x] Shrink `debug_gizmo` to move anything, Log and Reset.
+- [x] Tests: lab file round trip, ids unchanged, temporary file migration, `base_exp` still finds the border
       (`OBSTACLES_PREFIX`).
-- [ ] Docs: both plugins' docstrings, README plugin table, `doc/plugin_roadmap.md` (add a `debug_gizmo` row; the
+- [x] Docs: both plugins' docstrings, README plugin table, `doc/plugin_roadmap.md` (add a `debug_gizmo` row; the
       `obstacles` row lists only boxes and tripods).
+- Done as: `plugins/obstacles/` (`lab.py` data and files, `plugin.py`), `data/lab/main.json` (one obstacle per line,
+  the same 15 ids), `ui/body_gizmo.py`, `config.MonitorConfig.lab`. A drag keeps only the yaw: lab shapes are
+  upright. Temporary obstacles are boxes and cylinders; Add puts them at the origin. `base_planner/figures.py` draws
+  the lab from the file.
 - [ ] Later, optional: "Fit from probe points" in obstacles, reading `mocap_probe` exports
       (`Box.from_top_points`, `Cylinder.around_points`).
 
