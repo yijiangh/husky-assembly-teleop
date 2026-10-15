@@ -18,5 +18,5 @@ DATA = Path(__file__).resolve().parent.parent / "data"
 def test_urdf_keeps_stock_ur_frames(serial):
     """No arm of any configured robot may have non-stock joints below its base_link."""
     config = robot_config_from_serial(serial, DATA)
-    problems = [p for arm in config.arms if (p := stock_frame_problem(config.urdf_file, arm.name)) is not None]
+    problems = [p for arm in config.arms if (p := stock_frame_problem(config.model.urdf, arm.name)) is not None]
     assert not problems, "\n".join(problems)

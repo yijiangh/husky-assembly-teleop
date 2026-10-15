@@ -26,7 +26,7 @@ ROBOT = "robots/a200-0804"
 
 @pytest.fixture(scope="module")
 def config():
-    """The single-arm robot's stitched config, loaded once."""
+    """The single-arm robot's config, loaded once."""
     return robot_config_from_serial(SERIAL, DATA)
 
 

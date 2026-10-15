@@ -48,7 +48,7 @@ def angle_between(a: Pose, b: Pose) -> float:
 
 @pytest.fixture(scope="module", params=["0804", "0806"])
 def config(request):
-    """A stitched robot config, single-arm (0804) and dual-arm (0806)."""
+    """A robot config, single-arm (0804) and dual-arm (0806)."""
     return robot_config_from_serial(request.param, DATA)
 
 
@@ -61,7 +61,7 @@ def test_matches_pybullet(config):
 
     client = p.connect(p.DIRECT)
     try:
-        body = p.loadURDF(str(config.urdf_file), useFixedBase=False, physicsClientId=client)
+        body = p.loadURDF(str(config.model.urdf), useFixedBase=False, physicsClientId=client)
         joint_index, link_index = {}, {}
         for i in range(p.getNumJoints(body, physicsClientId=client)):
             info = p.getJointInfo(body, i, physicsClientId=client)

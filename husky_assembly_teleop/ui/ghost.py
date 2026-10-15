@@ -64,14 +64,15 @@ class RobotGhost:
 
         Args:
             ctx: The owning plugin's context; the ghost lives in its view.
-            config: The robot; its stitched URDF is drawn.
+            config: The robot; its model is drawn, tools on their flanges.
             kind: A key of KIND_COLORS: "target" or "path". Sets the colour.
         """
         path = f"{ctx.view.scene_root}/ghosts/{kind}/{config.serial}"
         color = KIND_COLORS[kind]
         self._frame = ctx.view.scene.add_frame(path, show_axes=False, visible=False)
-        self._urdf = FastViserUrdf(ctx.view, shared_urdf(config.urdf_file), root_node_name=path,
+        self._urdf = FastViserUrdf(ctx.view, shared_urdf(config.model.urdf), root_node_name=path,
                                    mesh_color_override=color)
+        self._urdf.add_tools(config.model.tools, color=color)
         self._names = self._urdf.get_actuated_joint_names()
         # What is shown now: (position, orientation, joint values), or None while hidden.
         self._shown: tuple | None = None

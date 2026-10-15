@@ -49,7 +49,7 @@ class Kinematics:
         """Parse every robot's URDF once and start each at its default pose, arms stowed, other joints at 0.
 
         Args:
-            robots: The robots' configurations; `urdf_file` is the stitched URDF.
+            robots: The robots' configurations; each is posed from its model's URDF.
             log_warn: Reports a robot whose measurements do not match its URDF.
         """
         self._log_warn = log_warn
@@ -57,7 +57,7 @@ class Kinematics:
         # (serial, joint name) pairs already warned about, so each is reported once.
         self._unknown_joints: set[tuple[str, str]] = set()
         for config in robots:
-            urdf = _load_urdf(config.urdf_file)
+            urdf = _load_urdf(config.model.urdf)
             names = urdf.actuated_joint_names
             joints = dict.fromkeys(names, 0.0)
             joints.update(_stow_joints(config, joints))

@@ -18,9 +18,9 @@ from crl_husky.config_resolver import get_primary_mocap_id_for_robot_serial
 from rclpy.exceptions import ParameterUninitializedException
 from rclpy.node import Node
 
-from scaffolding_assembly_core.robot import RobotModel, robot_model
+from scaffolding_assembly_core.robot import FLANGE_SUFFIX, RobotModel, robot_model
 from .drive import drive_root
-from .tool_urdfs import stitch_tools, tool_spec
+from .tool_urdfs import absolute_mesh_urdf, tool_spec
 
 
 #: End effectors the monitor can drive (classes in robot_interface/end_effectors.py).
@@ -32,8 +32,8 @@ END_EFFECTOR_KINDS: tuple[str, ...] = get_args(EndEffectorKind)
 #: Extra names the `tools` parameter accepts: crl_husky's "robotiq_2F_85", and "none" for a bare arm.
 _TOOL_ALIASES: dict[str, str | None] = {"robotiq_2F_85": "robotiq", "none": None}
 
-#: Robot URDFs with tools stitched on; wiped and rewritten on every start.
-STITCHED_URDF_DIRECTORY = Path(tempfile.gettempdir()) / "husky_stitched_urdf"
+#: Robot URDFs with absolute mesh paths (`RobotModel.urdf`); wiped and rewritten on every start.
+ROBOT_URDF_DIRECTORY = Path(tempfile.gettempdir()) / "husky_robot_urdf"
 
 #: Plugins loaded before the requested ones; `-p no_default_plugins:=true` skips them.
 DEFAULT_PLUGINS: tuple[str, ...] = ("health",)
@@ -66,27 +66,26 @@ class ArmConfig:
 class RobotConfig:
     """Everything needed to talk to, and draw, one physical robot.
 
-    The URDF says what the robot is (kinematics, meshes); the config says which drivers and tools it has.
-    `urdf_file` has the tools stitched on, for drawing and live kinematics; `model` keeps them separate, for planning
-    scenes and mirrors. Anything that changes while running lives in RobotState.
+    `model` says what the robot is: its URDF (kinematics, meshes), SRDF and mounted tools, read by kinematics,
+    drawing and mirrors alike. The config says which drivers it has. Anything that changes while running lives in
+    RobotState.
 
     Attributes:
         serial: Clearpath serial such as "a200-0806".
         ros_namespace: ROS2 namespace the robot publishes under, e.g. "a200_0806".
-        urdf_file: The robot's URDF with the mounted tools stitched on (tool_urdfs.stitch_tools).
+        model: The robot as the core describes it: its URDF without tools (mesh paths absolute), its SRDF, and each
+            mounted tool as a `Tool` on its flange.
         srdf_file: The robot's SRDF, or None. Needed by compas_fab planners.
         default_position: Where the robot is drawn before the first mocap fix, (x, y, z) metres.
         default_yaw: Which way it faces there, radians about Z.
         arms: The arms, in the multi-arm trajectory's order (the first is `trajectory1`).
         mocap_id: Rigid-body id of the base in the mocap system, or None if the robot is not tracked.
         calibration_file: Joint-origin overlay for the URDF, or None. Nothing reads it yet.
-        model: What mirrors build the live robot from: the URDF without tools, the SRDF, and each tool as a
-            separate `Tool`. None for a config made by hand without one.
     """
 
     serial: str
     ros_namespace: str
-    urdf_file: Path
+    model: RobotModel
     srdf_file: Path | None = None
     arms: tuple[ArmConfig, ...] = ()
     mocap_id: int | None = None
@@ -94,7 +93,6 @@ class RobotConfig:
     default_yaw: float = 0.0
     # TODO: wire up calibration_file and drop the calibrated URDFs in `_ROBOTS_BY_SERIAL`, or remove it.
     calibration_file: Path | None = None
-    model: RobotModel | None = None
 
     @property
     def default_orientation(self) -> tuple[float, float, float, float]:
@@ -219,7 +217,7 @@ def robot_config_from_serial(token: str, data_directory: Path,
         tools: The end effector per arm, in arm order (None for a bare arm), or None for the defaults.
 
     Returns:
-        RobotConfig: The robot, with its tools stitched onto the URDF.
+        RobotConfig: The robot, its model holding its tools.
 
     Raises:
         ValueError: If `token` names no known robot, or `tools` does not give one tool per arm.
@@ -247,25 +245,21 @@ def robot_config_from_serial(token: str, data_directory: Path,
             raise ValueError(f"robot {number!r} has {len(arms)} arm(s) ({', '.join(a.name for a in arms)}), "
                              f"but {len(tools)} tool(s) were given")
         arms = tuple(replace(arm, end_effector=tool) for arm, tool in zip(arms, tools))
-    stitched = stitch_tools(urdf_file, {arm.name: arm.end_effector for arm in arms}, data_directory,
-                            STITCHED_URDF_DIRECTORY / f"a200_{number}.urdf")
-    # * The same URDF without tools (mesh paths made absolute), and the tools apart, for planning.
-    bare = stitch_tools(urdf_file, {}, data_directory, STITCHED_URDF_DIRECTORY / f"a200_{number}_model.urdf")
-    tools = {f"{arm.name}_tool0": tool_spec(arm.end_effector, arm.name, data_directory,
-                                            f"tools/a200-{number}/{arm.name}")
+    urdf = absolute_mesh_urdf(urdf_file, ROBOT_URDF_DIRECTORY / f"a200_{number}.urdf")
+    tools = {f"{arm.name}{FLANGE_SUFFIX}": tool_spec(arm.end_effector, arm.name, data_directory,
+                                                     f"tools/a200-{number}/{arm.name}")
              for arm in arms if arm.end_effector is not None}
 
     return RobotConfig(
         serial=f"a200-{number}",
         ros_namespace=f"a200_{number}",
-        urdf_file=stitched,
+        model=robot_model(f"a200-{number}", urdf, data_directory / spec["srdf"],
+                          {flange: tool for flange, tool in tools.items() if tool is not None}),
         srdf_file=data_directory / spec["srdf"],
         arms=arms,
         mocap_id=get_primary_mocap_id_for_robot_serial(number),
         default_position=default_position,
         default_yaw=default_yaw,
-        model=robot_model(f"a200-{number}", bare, data_directory / spec["srdf"],
-                          {flange: tool for flange, tool in tools.items() if tool is not None}),
     )
 
 
@@ -297,7 +291,7 @@ def config_from_ros_parameters(node: Node) -> MonitorConfig:
     node.declare_parameter("no_default_plugins", False)
     node.declare_parameter("ghost_timeout", MonitorConfig.ghost_timeout)
 
-    shutil.rmtree(STITCHED_URDF_DIRECTORY, ignore_errors=True)
+    shutil.rmtree(ROBOT_URDF_DIRECTORY, ignore_errors=True)
 
     def string_list(name: str) -> tuple[str, ...]:
         """Read a string-array parameter, dropping the empty-string default.

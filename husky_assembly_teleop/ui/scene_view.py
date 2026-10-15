@@ -112,30 +112,30 @@ class SceneView:
         # ! Distinct names per mode: viser keeps a removed node's pose for a new node of the same name, so a
         #   collision shape would inherit an offset visual's position (e.g. floor marks, drawn 1 m underground).
         kind, shapes = ("collision", geometry.collision) if self._collision else ("visual", geometry.visual)
-        return [self._add_shape(f"{parent}/{kind}_{i}", shape, color or DEFAULT_COLOR)
+        return [add_shape(self._server.scene, f"{parent}/{kind}_{i}", shape, color or DEFAULT_COLOR)
                 for i, shape in enumerate(shapes)]
 
-    def _add_shape(self, name: str, shape: Shape,
-                   color: tuple[float, float, float, float]) -> viser.SceneNodeHandle:
-        """Add one shape: primitives natively (exact, lit correctly), meshes as triangles.
 
-        Args:
-            name: Scene node name.
-            shape: What to draw, in its parent frame's coordinates.
-            color: (r, g, b, a) from 0 to 1.
+def add_shape(scene, name: str, shape: Shape, color: tuple[float, ...]) -> viser.SceneNodeHandle:
+    """Add one shape: primitives natively (exact, lit correctly), meshes as triangles.
 
-        Returns:
-            viser.SceneNodeHandle: Its handle.
-        """
-        r, g, b, a = color
-        look = dict(color=(r, g, b), opacity=None if a >= 1.0 else a)
-        scene = self._server.scene
-        if isinstance(shape, BoxShape):
-            return scene.add_box(name, dimensions=shape.size, position=shape.origin.position,
-                                 wxyz=quaternion_to_wxyz(shape.origin.orientation), **look)
-        if isinstance(shape, CylinderShape):
-            # ? viser turns its cylinders onto Z, as PyBullet and trimesh do.
-            return scene.add_cylinder(name, radius=shape.radius, height=shape.height,
-                                      position=shape.origin.position,
-                                      wxyz=quaternion_to_wxyz(shape.origin.orientation), **look)
-        return scene.add_mesh_simple(name, shape.vertices, shape.faces, **look)
+    Args:
+        scene: A viser scene API (`server.scene`, or a PluginView's `scene`).
+        name: Scene node name.
+        shape: What to draw, in its parent frame's coordinates.
+        color: (r, g, b) or (r, g, b, a), from 0 to 1.
+
+    Returns:
+        viser.SceneNodeHandle: Its handle; its `color` and `opacity` can be changed later.
+    """
+    r, g, b, a = (*color, 1.0)[:4]
+    look = dict(color=(r, g, b), opacity=None if a >= 1.0 else a)
+    if isinstance(shape, BoxShape):
+        return scene.add_box(name, dimensions=shape.size, position=shape.origin.position,
+                             wxyz=quaternion_to_wxyz(shape.origin.orientation), **look)
+    if isinstance(shape, CylinderShape):
+        # ? viser turns its cylinders onto Z, as PyBullet and trimesh do.
+        return scene.add_cylinder(name, radius=shape.radius, height=shape.height,
+                                  position=shape.origin.position,
+                                  wxyz=quaternion_to_wxyz(shape.origin.orientation), **look)
+    return scene.add_mesh_simple(name, shape.vertices, shape.faces, **look)

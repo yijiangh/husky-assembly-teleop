@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from types import SimpleNamespace
 
-from husky_assembly_teleop.config import ArmConfig, RobotConfig
+from husky_assembly_teleop.config import ArmConfig
 from husky_assembly_teleop.plugins.process.plugin import tool_mismatches
 
 
@@ -18,11 +17,12 @@ def _process(kind_left: str, kind_right: str):
     return SimpleNamespace(process=SimpleNamespace(robots=robots, tools=tools))
 
 
-def _configured(left: str | None, right: str | None) -> tuple[RobotConfig, ...]:
+def _configured(left: str | None, right: str | None) -> tuple:
     """The configured robot a200-0806 with these end effectors."""
     arms = (ArmConfig(name="left_ur_arm", ros_namespace="left_ur5e", end_effector=left),
             ArmConfig(name="right_ur_arm", ros_namespace="right_ur5e", end_effector=right))
-    return (RobotConfig(serial="a200-0806", ros_namespace="a200_0806", urdf_file=Path("robot.urdf"), arms=arms),)
+    # ? tool_mismatches reads only the serial and the arms.
+    return (SimpleNamespace(serial="a200-0806", arms=arms),)
 
 
 def test_same_tools_give_no_warning():

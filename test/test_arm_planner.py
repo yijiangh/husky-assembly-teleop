@@ -26,7 +26,7 @@ NAMES = arm_joint_names(ARM)
 
 @pytest.fixture(scope="module")
 def config():
-    """Alice's stitched config, loaded once."""
+    """Alice's config, loaded once."""
     return robot_config_from_serial(ALICE, DATA)
 
 

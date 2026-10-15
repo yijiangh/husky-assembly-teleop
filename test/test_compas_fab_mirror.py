@@ -31,7 +31,7 @@ ALICE_ID, BELLE_ID, GRIPPER = "robots/a200-0804", "robots/a200-0805", "tools/a20
 
 @pytest.fixture(scope="module")
 def configs():
-    """Alice's and Belle's stitched configs, loaded once."""
+    """Alice's and Belle's configs, loaded once."""
     return {ALICE: robot_config_from_serial(ALICE, DATA), BELLE: robot_config_from_serial(BELLE, DATA)}
 
 

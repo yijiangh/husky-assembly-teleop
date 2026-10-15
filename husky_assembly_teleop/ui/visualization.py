@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from functools import cache
 from html import escape
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, Mapping
 
 import numpy as np
 import trimesh
@@ -23,9 +23,10 @@ import viser.transforms
 import yourdfpy
 
 from ..config import RobotConfig
+from scaffolding_assembly_core.robot import Tool
 from scaffolding_assembly_core.scene import Scene
 from .quaternion import quaternion_to_wxyz
-from .scene_view import SceneView
+from .scene_view import SceneView, add_shape
 from ..tool_urdfs import resolve_mesh_path
 from .style import FAIL
 
@@ -41,6 +42,9 @@ _DEFAULT_MESH_COLOR = (0.8, 0.8, 0.8, 1.0)
 
 #: Colour of the robots' collision meshes, RGB 0-1, when the view shows collision shapes.
 COLLISION_COLOR = (0.9, 0.35, 0.35)
+
+#: Colour of the mounted tools, RGB 0-1; their models carry none.
+TOOL_COLOR = (0.27, 0.27, 0.31)
 
 #: Joint change (rad or m) below which a robot is not re-posed.
 JOINT_TOLERANCE = 1e-4
@@ -129,6 +133,33 @@ class FastViserUrdf(viser.extras.ViserUrdf):
                                     w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
                                     w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
                                     w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2)
+
+    def add_tools(self, tools: Mapping[str, Tool], color: tuple[float, ...] = TOOL_COLOR,
+                  collision_color: tuple[float, ...] = COLLISION_COLOR) -> None:
+        """Hang each mounted tool's shapes on its flange's frame, so they move with the arm in the same update.
+
+        Visual shapes go below the visual tree's flange and collision shapes below the collision tree's, so
+        `show_visual` / `show_collision` switch them with the links. Their handles join `_meshes`.
+
+        Args:
+            tools: Flange link -> mounted tool, as in `RobotModel.tools`.
+            color: Colour of the visual shapes, (r, g, b) or (r, g, b, a) from 0 to 1.
+            collision_color: Colour of the collision shapes, the same way.
+        """
+        visual_root = f"{self._root_node_name}/visual".replace("//", "/")
+        flanges: dict[tuple[str, str], viser.SceneNodeHandle] = {}
+        for joint, frame in zip(self._joint_map_values, self._joint_frames):
+            if joint.child in tools:
+                tree = "visual" if frame.name.startswith(f"{visual_root}/") else "collision"
+                flanges[(tree, joint.child)] = frame
+        for flange, tool in tools.items():
+            for tree, shapes, look in (("visual", tool.geometry.visual, color),
+                                       ("collision", tool.geometry.collision, collision_color)):
+                frame = flanges.get((tree, flange))
+                if frame is None:
+                    continue  # that tree is not drawn
+                self._meshes.extend(add_shape(self._target.scene, f"{frame.name}/tool_{index}", shape, look)
+                                    for index, shape in enumerate(shapes))
 
 
 def make_matte(mesh: trimesh.Trimesh) -> None:
@@ -304,10 +335,10 @@ class Visualization:
         self._server.scene.add_frame("/origin", show_axes=True)
 
     def load_robot(self, config: RobotConfig) -> None:
-        """Add one robot's meshes to the scene at its default pose. Called once at startup: loading is slow.
+        """Add one robot's meshes, its tools on their flanges, at its default pose. Once at startup: loading is slow.
 
         Args:
-            config: Identity, URDF and default pose for this robot.
+            config: Identity, model and default pose for this robot.
         """
         # The base pose goes on a parent frame, so `draw` writes one pose plus one joint vector.
         root = f"/robots/{config.serial}"
@@ -315,9 +346,10 @@ class Visualization:
         base.position = config.default_position
         base.wxyz = quaternion_to_wxyz(config.default_orientation)
 
-        model = shared_urdf(config.urdf_file)
+        model = shared_urdf(config.model.urdf)
         drawn = FastViserUrdf(self._server, model, root_node_name=root, load_collision_meshes=True,
                               collision_mesh_color_override=COLLISION_COLOR)
+        drawn.add_tools(config.model.tools)
         self._show_robot_collision(drawn, self._collision_shown)
         self._robots[config.serial] = _DrawnRobot(
             base=base, urdf=drawn, joint_names=tuple(drawn.get_actuated_joint_names()))
@@ -399,9 +431,12 @@ class Visualization:
                                  "Buttons still act; the robots in the 3D view stay live.")
 
     def draw(self, snapshot: Scene) -> None:
-        """Draw this tick's copy of the world: robots, tracked objects and scene bodies.
+        """Draw this tick's copy of the world: robots with their tools, tracked objects and scene bodies.
 
         Called once per tick inside `atomic()`, also while frozen.
+
+        ! Only the snapshot taken this tick: the real robots and their tools must always show the newest
+          measurement, never a copy a planner kept.
 
         Args:
             snapshot: The tick's copy of the world.

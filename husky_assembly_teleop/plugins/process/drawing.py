@@ -76,15 +76,14 @@ class ProcessDrawing:
         self._view, self._root_path, self._process, self._models = view, root, process, models
         self._root = view.scene.add_frame(root, show_axes=False)
         self._robots: dict[str, _Robot] = {}
-        #: Tool or body id -> (frame, meshes).
-        self._tools: dict[str, tuple[viser.FrameHandle, list[viser.MeshHandle]]] = {}
+        #: Body id -> (frame, meshes).
         self._bodies: dict[str, tuple[viser.FrameHandle, list[viser.MeshHandle]]] = {}
         #: Body id -> (colour, opacity) its meshes have, so unchanged ones are not sent again.
         self._looks: dict[str, tuple[tuple[int, int, int], float | None]] = {}
         self._ghost = False
 
     def build(self) -> Iterator[None]:
-        """Add every node: one robot per tick, then the tools, then BODIES_PER_TICK bodies per tick.
+        """Add every node: one robot with its tools per tick, then BODIES_PER_TICK bodies per tick.
 
         Yields:
             None: When a tick's share is done.
@@ -93,14 +92,14 @@ class ProcessDrawing:
             path = f"{self._root_path}/{robot_id}"
             frame = self._view.scene.add_frame(path, show_axes=False, visible=False)
             urdf = add_simple_urdf(self._view, model, path)
+            # * Tools hang on their flanges, so they move, hide and fade with their robot.
+            urdf.add_tools({flange: self._process.tools[tool_id]
+                            for flange, tool_id in self._process.robots[robot_id].tools.items()}, color=TOOL_COLOR)
             if self._ghost:
                 for mesh in urdf._meshes:
                     mesh.opacity = GHOST_OPACITY
             self._robots[robot_id] = _Robot(frame, urdf, model, tuple(urdf.get_actuated_joint_names()))
             yield
-        for tool_id, tool in self._process.tools.items():
-            self._tools[tool_id] = self._add(f"{self._root_path}/{tool_id}", tool.geometry, TOOL_COLOR)
-        yield
         for count, (body_id, body) in enumerate(self._process.bodies.items(), start=1):
             # ? Coloured by `show`, which knows whether the body is held.
             self._bodies[body_id] = self._add(f"{self._root_path}/bodies/{body_id}", body.geometry,
@@ -143,15 +142,12 @@ class ProcessDrawing:
                 joints not given are drawn at zero.
             everything: Also draw the bodies that neither stand nor move with a robot (absent ones).
         """
-        # * Robots first: tools and held bodies read their links from the posed models.
+        # * Robots first: held bodies read their links from the posed models.
         for robot_id, robot in self._robots.items():
             robot_state = state.robots.get(robot_id)
-            tools = self._process.robots[robot_id].tools
             if robot_state is None or robot_state.base is None:
                 # ? Absent, or its base not decided by the process: there is nowhere to draw it.
                 robot.frame.visible = False
-                for tool_id in tools.values():
-                    self._tools[tool_id][0].visible = False
                 continue
             _place(robot.frame, robot_state.base)
             given = joints.get(robot_id, {})
@@ -161,10 +157,6 @@ class ProcessDrawing:
                 robot.model.update_cfg(values)
                 robot.values = values
             robot.frame.visible = True
-            for flange, tool_id in tools.items():
-                frame = self._tools[tool_id][0]
-                _place(frame, self._link_pose(robot_id, flange, robot_state.base))
-                frame.visible = True
 
         for body_id, (frame, meshes) in self._bodies.items():
             where = placement(self._process, state, body_id)
@@ -202,9 +194,6 @@ class ProcessDrawing:
         opacity = GHOST_OPACITY if ghost else None
         for robot in self._robots.values():
             for mesh in robot.urdf._meshes:
-                mesh.opacity = opacity
-        for _, meshes in self._tools.values():
-            for mesh in meshes:
                 mesh.opacity = opacity
 
     def remove(self) -> None:
