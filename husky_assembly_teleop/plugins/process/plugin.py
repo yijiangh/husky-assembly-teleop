@@ -13,7 +13,7 @@ The panel lists a window of the schedule's actions around the selected one (`act
 
 Process folders are given relative to the Drive root (`drive.py`), e.g. "data_design_study/<process>", or absolute.
 Loading an old compas_fab export converts it into `<export>_process` (reused while up to date) and loads that.
-The panel warns when the process's tools differ from the configured ones.
+The panel warns where a process robot or its tools differ from the configured real robot (`world/model_check.py`).
 
 ! EXPERIMENTAL: how processes load, and what planners read, may still change.
 ! Loading a relative folder needs the Drive root (HUSKY_DRIVE_ROOT or `drive_root`).
@@ -34,7 +34,10 @@ from ...drive import drive_folder
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
 from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, block, chip, note, section, values
+from ...world.model_check import model_differences
+from scaffolding_assembly_core.ids import robot_id
 from scaffolding_assembly_core.legacy.timing import Stopwatch
+from scaffolding_assembly_core.process.scenes import process_model
 from .steps import LoadedProcess, Step, displayed_joints, live_ids, load_process, scene_bodies
 from .drawing import ProcessDrawing, load_robot_models
 
@@ -119,8 +122,8 @@ class ProcessPlugin(HuskyPlugin):
         # Written by the worker thread, read by draw; plain assignment, so no lock.
         self._progress = ""
         self._error = ""
-        # Where the process's tools differ from the monitor's configured ones, one line per robot.
-        self._tool_mismatch: list[str] = []
+        # Where the process's robots differ from the configured ones, one line per robot (`robot_differences`).
+        self._robot_differences: list[str] = []
 
         #: Robot id -> its yourdfpy model, for the drawing.
         self._models: dict = {}
@@ -272,6 +275,7 @@ class ProcessPlugin(HuskyPlugin):
                 loaded, models, watch = await ctx.run_in_thread(
                     _load_in_background, folder, ctx.config.data_directory,
                     lambda text: setattr(self, "_progress", text))
+                differences = await ctx.run_in_thread(robot_differences, loaded, ctx.config.robots)
         except asyncio.TimeoutError:
             self._error = f"timed out after {LOAD_TIMEOUT}s waiting for the process to load"
             ctx.log_error(self._error)
@@ -297,9 +301,9 @@ class ProcessPlugin(HuskyPlugin):
         self._changed()
         ctx.log_info(f"loaded {loaded.source} in {watch.summary()}; "
                      f"{loaded.action_count} actions, {len(loaded.steps)} movements")
-        self._tool_mismatch = tool_mismatches(loaded, ctx.config.robots)
-        for line in self._tool_mismatch:
-            ctx.log_warn(f"process tools differ from the configured ones: {line}")
+        self._robot_differences = differences
+        for line in differences:
+            ctx.log_warn(f"a process robot differs from the configured one: {line}")
 
     async def _build(self, ctx: PluginContext) -> None:
         """Add the process's viser nodes, spread over ticks."""
@@ -417,8 +421,8 @@ class ProcessPlugin(HuskyPlugin):
         elif self.loaded is not None:
             chips = chip(escape(self.loaded.source.name), OK, str(self.loaded.source))
             chips += chip(f"{self.loaded.action_count} actions · {len(self.loaded.steps)} movements", NONE)
-            if self._tool_mismatch:
-                chips += chip("tools differ", BUSY, "; ".join(self._tool_mismatch))
+            if self._robot_differences:
+                chips += chip("robots differ", BUSY, "; ".join(self._robot_differences))
         else:
             chips = chip("no process", NONE)
         if self._error:
@@ -473,30 +477,28 @@ def movement_kind(movement) -> str:
     return " + ".join(part for part in (arms, tools) if part)
 
 
-def tool_mismatches(loaded: LoadedProcess, robots: tuple[RobotConfig, ...]) -> list[str]:
-    """Where the process's tools differ from the configured (mounted) ones, for robots known to both by serial.
+def robot_differences(loaded: LoadedProcess, robots: tuple[RobotConfig, ...]) -> list[str]:
+    """Where each process robot differs from the configured real robot it stands for (`live_ids`). Any thread.
 
     Args:
         loaded: The loaded process.
         robots: The configured robots, `ctx.config.robots`.
 
     Returns:
-        list[str]: One line per robot that differs, e.g. "robots/cindy (a200-0806): left_ur_arm
+        list[str]: One line per robot that differs, e.g. "robots/cindy (a200-0806): left_ur_arm_tool0:
             scaffolding_v3 in the process, robotiq configured".
     """
-    by_digits = {robot.serial[-4:]: robot for robot in robots}
+    process = loaded.process
+    ids, _ = live_ids(process, robots, "")
+    configured = {robot_id(config.serial): config for config in robots}
     lines = []
-    for spec in loaded.process.robots.values():
-        config = by_digits.get(spec.serial or "")
+    for planned_id in process.robots:
+        config = configured.get(ids.get(planned_id))
         if config is None:
-            continue
-        planned = {link[:-len("_tool0")]: loaded.process.tools[tool].kind
-                   for link, tool in spec.tools.items() if link.endswith("_tool0")}
-        mounted = {arm.name: arm.end_effector for arm in config.arms}
-        differences = [f"{arm} {planned.get(arm) or 'none'} in the process, {mounted.get(arm) or 'none'} configured"
-                       for arm in sorted(set(planned) | set(mounted)) if planned.get(arm) != mounted.get(arm)]
+            continue  # stands for no configured robot
+        differences = model_differences(process_model(process, planned_id), config.model)
         if differences:
-            lines.append(f"{spec.id} ({config.serial}): " + "; ".join(differences))
+            lines.append(f"{planned_id} ({config.serial}): " + "; ".join(differences))
     return lines
 
 
