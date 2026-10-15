@@ -7,6 +7,7 @@ Each function draws one PNG into the report's `_analysis/` from the report's att
 - plan_time.png: how long each attempt planned, failures marked.
 - paths.png: length and clearance of the paths found.
 - driving.png: the simulated follower's deviation and end, exact and deviated models.
+- drives_real.png, drives_sim.png: every committed run in the lab, path sent and as driven (`draw_lab`).
 
 ! Uses matplotlib's `Figure` directly, not pyplot, so it is safe on a worker thread.
 """
@@ -15,12 +16,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import math
+
 import numpy as np
 from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
-from matplotlib.patches import FancyBboxPatch
+from matplotlib.patches import Circle, FancyBboxPatch, Rectangle
 
+from ..obstacles import BORDER, BOXES, CYLINDERS, TRUSSES
 from .follow import DEVIATED, EXACT
+from .report import FOLLOWING, load
 from .tasks import TASKS
 
 #: Planner colours, fixed per planner (reference palette slots 1 and 2), and the rest in order.
@@ -31,6 +36,8 @@ SURFACE, INK, INK_2, MUTED, GRID, AXIS = "#fcfcfb", "#0b0b0b", "#52514e", "#8987
 #: Gap between goal groups, in rows; vertical offset of the planners within a row.
 GROUP_GAP = 0.8
 OFFSET = 0.17
+#: Lab shown around the runs in `draw_lab`, metres.
+LAB_MARGIN = 1.0
 #: The planners' planning budget, seconds (planning.search.TIME_LIMIT).
 BUDGET = 10.0
 
@@ -51,6 +58,76 @@ def draw_all(attempts: list, planners: list[str], out: Path) -> list[str]:
         if draw(attempts, planners, out / name):
             written.append(name)
     return written
+
+
+def draw_lab(attempts: list, planners: list[str], out: Path, environment: str) -> bool:
+    """Every committed run of one environment on the lab floor: path sent dashed, driven solid, target ×, by planner.
+
+    Returns:
+        bool: Whether there was a run to draw.
+    """
+    runs = [a for a in attempts if a.environment == environment and a.run is not None and not a.run_left_out]
+    if not runs:
+        return False
+    figure = Figure(figsize=(9, 8), layout="constrained")
+    axis = figure.add_subplot()
+    axis.set_facecolor(SURFACE)
+    _lab(axis)
+    seen = []
+    for attempt in runs:
+        run = load(attempt.folder)
+        color = colour(attempt.planner, planners)
+        following = np.flatnonzero(run["follower_progress"][:, 2] == FOLLOWING)
+        driven = run["floor_pose"][following[0]:] if len(following) else run["floor_pose"]
+        axis.plot(*run["path_poses"][:, :2].T, "--", color=color, linewidth=1.0, alpha=0.7, zorder=3)
+        axis.plot(*driven[:, :2].T, "-", color=color, linewidth=1.6, zorder=4)
+        seen += [driven[:, :2], run["path_poses"][:, :2]]
+        target = run["path_poses"][-1]
+        axis.plot(*target[:2], "x", color=color, ms=8, mew=2, zorder=5)
+        axis.annotate(str(attempt.number), target[:2], xytext=(4, 4), textcoords="offset points", fontsize=7,
+                      color=INK_2, zorder=6)
+    # * Zoomed to where the runs went, with LAB_MARGIN metres of the lab around them.
+    low, high = np.vstack(seen).min(axis=0) - LAB_MARGIN, np.vstack(seen).max(axis=0) + LAB_MARGIN
+    axis.set_xlim(low[0], high[0])
+    axis.set_ylim(low[1], high[1])
+    axis.set_aspect("equal")
+    axis.grid(True, color=GRID, linewidth=0.6)
+    axis.set_axisbelow(True)
+    for side in axis.spines.values():
+        side.set_color(AXIS)
+    axis.tick_params(colors=INK_2, labelsize=8)
+    axis.set_xlabel("x [m]", color=INK_2)
+    axis.set_ylabel("y [m]", color=INK_2)
+    where = "on the robot (mocap)" if environment == "real" else "in the live simulator"
+    axis.set_title(f"Every run {where}, numbered as in All attempts", fontsize=10, color=INK)
+    handles = [Line2D([], [], color=colour(name, planners), linewidth=2, label=_short(name)) for name in planners
+               if any(a.planner == name for a in runs)]
+    handles += [Line2D([], [], color=MUTED, linestyle="--", linewidth=1, label="path sent"),
+                Line2D([], [], color=MUTED, linewidth=1.6, label="driven"),
+                Line2D([], [], color=MUTED, marker="x", linestyle="", ms=7, mew=2, label="target")]
+    figure.legend(handles=handles, loc="outside lower center", ncol=len(handles), frameon=False, fontsize=8,
+                  labelcolor=INK_2)
+    figure.savefig(out, dpi=110, facecolor=SURFACE)
+    return True
+
+
+def _lab(axis) -> None:
+    """The lab's fixed obstacles (`obstacles`) in grey and its floor border."""
+    for item in BOXES:
+        (cx, cy, _), (sx, sy, _) = item.center, item.size
+        corner = np.array([cx, cy]) - _turned(np.array([sx, sy]) / 2, item.yaw)
+        axis.add_patch(Rectangle(corner, sx, sy, angle=math.degrees(item.yaw), color=GRID, zorder=1))
+    for item in CYLINDERS:
+        axis.add_patch(Circle(item.center[:2], item.radius, color=GRID, zorder=1))
+    for item in TRUSSES:
+        axis.add_patch(Rectangle(np.array(item.center[:2]) - item.plate / 2, item.plate, item.plate, color=GRID,
+                                 zorder=1))
+    (x0, x1), (y0, y1) = BORDER.x, BORDER.y
+    axis.plot([x0, x1, x1, x0, x0], [y0, y0, y1, y1, y0], color=AXIS, linewidth=1.2, zorder=1)
+
+
+def _turned(xy: np.ndarray, yaw: float) -> np.ndarray:
+    return np.array([xy[0] * math.cos(yaw) - xy[1] * math.sin(yaw), xy[0] * math.sin(yaw) + xy[1] * math.cos(yaw)])
 
 
 # --- --- --- --- --- CHARTS --- --- --- --- ---

@@ -17,7 +17,7 @@ from pathlib import Path
 import numpy as np
 from matplotlib.figure import Figure
 
-from .figures import colour, draw_all
+from .figures import colour, draw_all, draw_lab
 from .follow import DEVIATED, DEVIATED_XICRS, EXACT
 from .path import densify
 from .recording import load_description, load_plan_arrays
@@ -140,6 +140,11 @@ def analyse(experiment: Path) -> Path:
                                              "close it ends, with the exact and with deviated robot models."))
     for environment in ("real", "sim"):
         lines += _runs(counted, planners, environment, out)
+        name = f"drives_{environment}.png"
+        if draw_lab([a for a in attempts if not a.left_out.startswith("excluded")], planners, out / name,
+                    environment):
+            lines += _charts([name], (name, "Where every committed run went in the lab, tasks or not: the path sent "
+                                            "and the path driven."))
     lines += _process(counted, planners, out)
     lines += _failures(counted, out)
     lines += _all(attempts, out)
