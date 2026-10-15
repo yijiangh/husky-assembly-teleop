@@ -13,14 +13,18 @@ from __future__ import annotations
 
 import math
 
+import numpy as np
 import viser
+from scipy.spatial.transform import Rotation
 from sensor_msgs.msg import BatteryState
 from ur_dashboard_msgs.msg import RobotMode, SafetyMode
 
 from ..plugin_api.context import PluginContext
 from ..world.mocap import mocap_check
 from ..plugin_api.plugin import HuskyPlugin, register
-from ..robot_interface.arm import ArmInterface
+from ..robot_interface.arm import STILL_AFTER, ArmInterface
+from scaffolding_assembly_core.geometry import Pose, compose, invert
+from scaffolding_assembly_core.robot import FLANGE_SUFFIX
 from ..robot_interface.end_effectors import RobotiqGripper, ScaffoldingV1, ScaffoldingV3
 from ..robot_interface.robot import HuskyRobotInterface
 from ..robot_interface.arm import JOINT_STATES_RATE as ARM_RATE
@@ -55,6 +59,11 @@ SIGNAL_DELAY_WARN = 0.03
 SIGNAL_DELAY_BAD = 0.1
 SIGNAL_AHEAD_WARN = -0.005
 SIGNAL_AHEAD_BAD = -0.02
+
+#: Largest offset, metres, and turn, radians, between reported and computed tool0 that counts as agreeing.
+#: ? Guesses: a calibrated URDF should agree with the UR's own kinematics to about a millimetre.
+TCP_POSITION_TOLERANCE = 2e-3
+TCP_ANGLE_TOLERANCE = math.radians(0.5)
 
 #: BMS health values that are fine; anything else is red.
 BATTERY_HEALTH_OK = (BatteryState.POWER_SUPPLY_HEALTH_UNKNOWN, BatteryState.POWER_SUPPLY_HEALTH_GOOD)
@@ -93,6 +102,8 @@ class HealthPlugin(HuskyPlugin):
         self._object_checks: list[Check] = []
         #: Last level per (row, chip position), to log when a chip changes colour.
         self._levels: dict[tuple[str, int], int] = {}
+        #: Each arm's last TCP verdict by (serial, arm name), kept while the arm moves (`tcp_check`).
+        self._tcp_checks: dict[tuple[str, str], Check] = {}
 
     def setup(self, ctx: PluginContext) -> None:
         """Build the banner, one chip row and action buttons per robot, and the objects row.
@@ -124,7 +135,15 @@ class HealthPlugin(HuskyPlugin):
             ctx: This plugin's context.
         """
         now = ctx.now()
-        self._robot_checks = {serial: robot_checks(robot, now) for serial, robot in ctx.world.robots.items()}
+        for serial, robot in ctx.world.robots.items():
+            for name, arm in robot.arms.items():
+                expected = compose(invert(ctx.kinematics.link_pose(serial, f"{name}_base_link")),
+                                   ctx.kinematics.link_pose(serial, f"{name}{FLANGE_SUFFIX}"))
+                check = tcp_check(arm, expected, now)
+                if check is not None:
+                    self._tcp_checks[(serial, name)] = check
+        self._robot_checks = {serial: robot_checks(robot, now, self._tcp_checks)
+                              for serial, robot in ctx.world.robots.items()}
         self._object_checks = [mocap_check(obj.name, obj.mocap_id, obj, now)
                                for obj in ctx.world.tracked_objects.values()]
         lines = [(f"{serial} {name}", checks) for serial, robot_lines in self._robot_checks.items()
@@ -179,12 +198,14 @@ LEVEL_NAMES = {GOOD: "green", WARN: "amber", BAD: "red"}
 
 # --- --- --- --- --- CHECKS (`now` is ROS time, seconds) --- --- --- --- ---
 
-def robot_checks(robot: HuskyRobotInterface, now: float) -> list[tuple[str, list[Check]]]:
-    """Every check for one robot: a line for the base, then one per arm with its tool.
+def robot_checks(robot: HuskyRobotInterface, now: float,
+                 tcp_checks: dict[tuple[str, str], Check] | None = None) -> list[tuple[str, list[Check]]]:
+    """Every check for one robot: a line for the base, then one per arm with its tool and TCP.
 
     Args:
         robot: The robot to check.
         now: Current ROS time, seconds.
+        tcp_checks: Each arm's latest `tcp_check` by (serial, arm name); an arm without one gets an amber chip.
 
     Returns:
         list[tuple[str, list[Check]]]: (line name, one check per chip), in display order.
@@ -203,8 +224,50 @@ def robot_checks(robot: HuskyRobotInterface, now: float) -> list[tuple[str, list
         tool = tool_check(arm, now)
         if tool is not None:
             checks.append(tool)
+        checks.append((tcp_checks or {}).get((robot.config.serial, arm.config.name),
+                                             Check("tcp", WARN, "not checked yet: waiting for the arm to be still")))
         lines.append((arm.config.name, checks))
     return lines
+
+
+def tcp_check(arm: ArmInterface, expected: Pose, now: float) -> Check | None:
+    """Whether the TCP the arm reports, less the tool's TCP, is tool0 where the URDF's kinematics put it.
+
+    Off means the pendant's TCP is not the mounted tool's, or the URDF or its calibration is off.
+    ! Judged only while the arm has been still for STILL_AFTER: joints and TCP arrive in separate messages.
+
+    Args:
+        arm: The arm.
+        expected: tool0 in the arm's base_link, by forward kinematics of this tick's joints.
+        now: Current ROS time, seconds.
+
+    Returns:
+        Check | None: The verdict, or None while the arm moves (keep the last one).
+    """
+    state = arm.state
+    if state.tcp_position is None:
+        return Check("tcp", WARN, "no tcp_pose yet")
+    if now - state.tcp_update_time > STALE_AFTER:
+        return Check("tcp", WARN, f"no tcp_pose for over {STALE_AFTER:g}s")
+    if state.last_motion_time is not None and now - state.last_motion_time < STILL_AFTER:
+        return None
+    distance = float(np.linalg.norm(np.subtract(state.tcp_position, expected.position)))
+    angle = float((Rotation.from_quat(state.tcp_orientation).inv() * Rotation.from_quat(expected.orientation))
+                  .magnitude())
+    limits = f"{TCP_POSITION_TOLERANCE * 1e3:g} mm / {np.degrees(TCP_ANGLE_TOLERANCE):g}°"
+    if distance > TCP_POSITION_TOLERANCE or angle > TCP_ANGLE_TOLERANCE:
+        # ? Whole millimetres and degrees: the tooltip text changes only when the offset does.
+        return Check("TCP", WARN, f"reported tool0 {distance * 1e3:.0f} mm / {np.degrees(angle):.0f}° from the "
+                                  f"kinematics (over {limits}): is the pendant's TCP the mounted tool's "
+                                  f"({_tcp_text(arm.tool_tcp)})? Else the URDF or its calibration is off")
+    return Check("tcp", GOOD, f"reported tool0 within {limits} of the kinematics")
+
+
+def _tcp_text(tcp: Pose) -> str:
+    """A tool TCP as the pendant takes it: position in mm and rotation vector in degrees."""
+    position = np.round(np.asarray(tcp.position) * 1e3, 1)
+    rotation = np.round(np.degrees(Rotation.from_quat(tcp.orientation).as_rotvec()), 1)
+    return f"xyz {position.tolist()} mm, rotation vector {rotation.tolist()}°"
 
 
 def stream_check(label: str, quality: StreamQuality, rate: float = ARM_RATE) -> Check:
