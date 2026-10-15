@@ -121,7 +121,7 @@ def _attempt(world: PlanningWorld, own: str, task, algorithm, experiment: str, r
 def simulate(folder: Path) -> None:
     """Drive an attempt's path with the follower's model exact and deviated (`follow.model_groups`), and save it."""
     description = load_description(folder)
-    model_name = description.get("settings", {}).get("follower_model", "alice_tiles")
+    model_name = description["settings"]["follower_model"]
     poses = load_plan_arrays(folder)["path_poses"]
     save_simulated(folder, model_name,
                    model_groups(poses, load_model(model_name), MAX_LINEAR_SPEED, MAX_ANGULAR_SPEED))

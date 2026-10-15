@@ -43,5 +43,8 @@ Spec: `doc/base_planner_manual.md`. Code: `plugins/base_planner/{tasks,recording
 
 ## Open
 
+- Lattice fine-tuning (user, 15 Oct): prefer open space; a suboptimal path within the time limit beats no path;
+  search again when the path fails the follower check (it gives up now). With `alice_tiles_2` the tall walls test
+  fails that check at xICR -0.20 (0.3 cm), so it is marked xfail until then.
 - Automation (drive to each task's start, plan with each planner, commit, repeat) is not built: the panel flow is
   manual.

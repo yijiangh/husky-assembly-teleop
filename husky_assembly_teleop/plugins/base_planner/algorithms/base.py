@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 #: Largest gap between the xICR values a path is checked with, metres.
 XICR_STEP = 0.025
 #: The robot model the onboard follower runs with (its `model:=`), from crl_husky config/base_models.
-FOLLOWER_MODEL = "alice_tiles"
+FOLLOWER_MODEL = "alice_tiles_2"
 #: Straight drive onto the target (and off the start, for the RRT), metres: no turn on the spot there.
 LEAD = 0.5
 #: Collision-checking resolution along a move: metres driven, radians turned.
