@@ -3,14 +3,21 @@ Fit a known marker layout, e.g. a bar's CAD markers, to raw mocap markers withou
 
 Which model marker each measured marker is comes from pairwise distances, so the measured markers may be any
 subset of the model's. Of all matchings that keep the distances, the one with the smallest fit error wins.
+A bar's layout comes from the process: the markers of the connector halves mounted on it (`bar_markers`).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import numpy as np
 from pybullet_planning.utils.transformations import superimposition_matrix
+
+from scaffolding_assembly_core.geometry import Pose, compose, invert
+
+if TYPE_CHECKING:
+    from scaffolding_assembly_core.process import Process
 
 #: Two pairwise distances match when they differ by less than this, metres: CAD and marker placement tolerance.
 DISTANCE_TOLERANCE = 0.01
@@ -35,26 +42,38 @@ class MarkerFit:
         """float: Root mean square of the residuals, metres."""
         return float(np.sqrt(np.mean(self.residuals ** 2)))
 
+    @property
+    def pose(self) -> Pose:
+        """Pose: The model frame in the world, e.g. the fitted bar's pose."""
+        return Pose.from_matrix(self.world_from_model)
+
     def transform(self, points: np.ndarray) -> np.ndarray:
         """Model-frame points, shape (k, 3), in the world frame."""
         return points @ self.world_from_model[:3, :3].T + self.world_from_model[:3, 3]
 
 
-def bar_markers_from_prefab(data: dict) -> dict[str, np.ndarray]:
-    """The mocap markers of each bar in a prefab file that has any, in the bar frame, metres, shape (m, 3).
+def bar_markers(process: Process) -> dict[str, tuple[tuple[str, ...], np.ndarray]]:
+    """Each bar's mocap markers, from the halves mounted on it, in the bar's frame; bars with fewer than 3 left out.
 
-    Raises:
-        ValueError: If `data` is not a prefab file (no bars list).
+    Args:
+        process: The process; `BodySpec.markers` of each half, its `mount` bar and both assembly poses.
+
+    Returns:
+        dict[str, tuple[tuple[str, ...], np.ndarray]]: Bar id -> (marker names "<half id>/<label>", positions in
+            metres, shape (m, 3)), in a fixed order.
     """
-    if not isinstance(data, dict) or not isinstance(data.get("bars"), list):
-        raise ValueError("not a prefab file (no bars list)")
-    bars = {}
-    for bar in data["bars"]:
-        markers = [position for joint in bar.get("joints", [])
-                   for position in joint.get("mocap", {}).get("markers_mm", {}).values()]
-        if markers:
-            bars[str(bar["bar_id"])] = np.array(markers, dtype=float) * 1e-3
-    return bars
+    names: dict[str, list[str]] = {}
+    points: dict[str, list[np.ndarray]] = {}
+    for half_id in sorted(process.bodies):
+        half = process.bodies[half_id]
+        if not half.markers or half.mount not in process.bodies:
+            continue
+        # * Mounted halves stay where they sit on their bar, so the assembly poses give the offset.
+        bar_from_half = compose(invert(process.bodies[half.mount].assembly_pose), half.assembly_pose).matrix()
+        for label in sorted(half.markers):
+            names.setdefault(half.mount, []).append(f"{half_id}/{label}")
+            points.setdefault(half.mount, []).append(bar_from_half[:3, :3] @ half.markers[label] + bar_from_half[:3, 3])
+    return {bar: (tuple(names[bar]), np.array(points[bar])) for bar in sorted(names) if len(names[bar]) >= 3}
 
 
 def fit_markers(model: np.ndarray, measured: np.ndarray, tolerance: float = DISTANCE_TOLERANCE) -> MarkerFit | None:
@@ -94,3 +113,28 @@ def _fit(model: np.ndarray, measured: np.ndarray, model_index: np.ndarray) -> Ma
     fit = MarkerFit(world_from_model, model_index, np.zeros(len(measured)))
     residuals = np.linalg.norm(fit.transform(model[model_index]) - measured, axis=1)
     return MarkerFit(world_from_model, model_index, residuals)
+
+
+@dataclass(frozen=True)
+class BarDeviation:
+    """How far a fitted bar is from where it should be, in the planned bar's frame (its axis is z).
+
+    ? Roll about the bar axis is left out: markers a few centimetres off the axis leave it uncertain.
+
+    Attributes:
+        across: Distance of the fitted origin from the planned axis, metres.
+        along: Offset of the fitted origin along the planned axis, metres.
+        tilt: Angle between the fitted and the planned axis, radians.
+    """
+
+    across: float
+    along: float
+    tilt: float
+
+
+def bar_deviation(fitted: Pose, planned: Pose) -> BarDeviation:
+    """The fitted bar's offset and tilt from the planned bar."""
+    offset = invert(planned).matrix()[:3, :3] @ (np.asarray(fitted.position) - np.asarray(planned.position))
+    fitted_axis, planned_axis = fitted.matrix()[:3, 2], planned.matrix()[:3, 2]
+    tilt = float(np.arccos(np.clip(fitted_axis @ planned_axis, -1.0, 1.0)))
+    return BarDeviation(across=float(np.hypot(offset[0], offset[1])), along=float(offset[2]), tilt=tilt)

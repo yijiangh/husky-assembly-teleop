@@ -10,10 +10,6 @@ Coverage map: with "Map coverage" ticked, walk the probe around; each mocap mess
 under the probe, as tracked or not. Cells are drawn on the floor, grey until visited, then red (never tracked)
 to green (always tracked). Export and Load keep a map across runs; loading then mapping adds to it.
 
-Raw markers (temporary debug check of the relay's markers): the tracked body's markers are drawn green when
-measured, orange when filled in by Motive. "Load prefab" reads a design's bars; with "Fit bar" ticked, the chosen
-bar's CAD markers are fitted to the measured markers and drawn blue, with the bar axis and a line per residual.
-
 ! The recorded point is the rigid body's origin: set the pivot in Motive to the probe tip.
 ! Recording is refused while the mocap chip is red; amber records, with its marker error.
 ! A lost probe has no position: its misses count in the cell of its last fix, so walk slowly through gaps.
@@ -41,7 +37,6 @@ from ..plugin_api.plugin import HuskyPlugin, register
 from ..ui.style import (LEVEL_COLORS, NONE, OK, SECTION_CTRL, SECTION_SENSOR, block, check_chip, chip, note, numbers,
                         section, values)
 from ..world.checks import BAD, GOOD, WARN, Check
-from ..world.marker_fit import MarkerFit, bar_markers_from_prefab, fit_markers
 from ..world.measured import TrackedObject
 
 #: Name of the probe in `world.tracked_objects` and on the health panel.
@@ -73,14 +68,6 @@ UNCOVERED_COLOR = (140, 140, 140)
 COVERAGE_Z = 0.004
 #: File name prefix of exported coverage maps.
 COVERAGE_PREFIX = "mocap_coverage"
-#: Colours of raw markers: measured, filled in by Motive; and of the fitted bar.
-MEASURED_COLOR = (40, 190, 80)
-FILLED_COLOR = (250, 140, 30)
-FIT_COLOR = (40, 120, 230)
-#: Size of the drawn markers, metres.
-MARKER_POINT_SIZE = 0.02
-#: Bar dropdown entry before a prefab is loaded.
-NO_BAR = "–"
 
 
 @dataclass
@@ -289,12 +276,6 @@ class MocapProbePlugin(HuskyPlugin):
         self._counted_update: float | None = None
         # Cell under the probe at its last counted message, or None outside the grid.
         self._probe_cell: tuple[int, int] | None = None
-        # Mocap markers per bar of the loaded prefab, bar frame; the bar fit and the message it was made from.
-        self._bars: dict[str, np.ndarray] = {}
-        self._fit: MarkerFit | None = None
-        self._fitted_update: float | None = None
-        # The (markers, fit) the scene last showed, so the marker nodes are only resent when they change.
-        self._drawn_markers: tuple[object, object] | None = None
 
     def setup(self, ctx: PluginContext) -> None:
         """Build the widgets and start tracking DEFAULT_MOCAP_ID.
@@ -334,27 +315,6 @@ class MocapProbePlugin(HuskyPlugin):
                                          hint="Replace the map with an exported one; mapping then adds to it.")
             self._coverage_status: viser.GuiHtmlHandle = gui.add_html("")
 
-            gui.add_html(section("raw markers (debug)", SECTION_SENSOR))
-            self._show_markers = gui.add_checkbox("Show markers", initial_value=True,
-                                                  hint="Raw markers of the tracked body: green measured, "
-                                                       "orange filled in by Motive.")
-            load_prefab = gui.add_upload_button("Load prefab", mime_type="application/json", icon=viser.Icon.UPLOAD,
-                                                hint="Read the mocap markers of a design's bars.")
-            self._bar = gui.add_dropdown("Bar", options=[NO_BAR])
-            self._fit_bar = gui.add_checkbox("Fit bar", initial_value=False,
-                                             hint="Fit the bar's CAD markers to the measured markers (blue).")
-            self._markers_status: viser.GuiHtmlHandle = gui.add_html("")
-        # * Always float32: the default float16 rounds world positions to millimetres.
-        self._marker_cloud = ctx.view.scene.add_point_cloud(
-            f"{ctx.view.scene_root}/raw_markers", points=np.zeros((0, 3)), colors=MEASURED_COLOR,
-            point_size=MARKER_POINT_SIZE, point_shape="circle", precision="float32", visible=False)
-        self._fit_cloud = ctx.view.scene.add_point_cloud(
-            f"{ctx.view.scene_root}/bar_fit/markers", points=np.zeros((0, 3)), colors=FIT_COLOR,
-            point_size=MARKER_POINT_SIZE, point_shape="circle", precision="float32", visible=False)
-        self._fit_lines = ctx.view.scene.add_line_segments(
-            f"{ctx.view.scene_root}/bar_fit/lines", points=np.zeros((1, 2, 3)), colors=FIT_COLOR, thickness=0.003,
-            visible=False)
-
         # * Big status in its own panel, so it can be floated and enlarged. Raw gui api: ui() would use our folder.
         panel = ctx.view.panel()
         with panel.add_tab("Probe", icon=viser.Icon.CROSSHAIR):
@@ -372,7 +332,6 @@ class MocapProbePlugin(HuskyPlugin):
         coverage_actions.on_click(ctx.defer_value("coverage", lambda clicked: (
             self._export_coverage(ctx) if clicked == "Export" else self._clear_coverage(ctx))))
         load.on_upload(ctx.defer_value("load coverage", lambda file: self._load_coverage(ctx, file)))
-        load_prefab.on_upload(ctx.defer_value("load prefab", lambda file: self._load_prefab(ctx, file)))
 
         self._track(ctx)
 
@@ -540,24 +499,6 @@ class MocapProbePlugin(HuskyPlugin):
         self._message = f"loaded coverage of {int(np.count_nonzero(grid.samples))} cells from {file.name}"
         ctx.log_info(self._message)
 
-    def _load_prefab(self, ctx: PluginContext, file: viser.UploadedFile) -> None:
-        """Read the mocap markers of a prefab file's bars and offer them in the Bar dropdown."""
-        try:
-            bars = bar_markers_from_prefab(json.loads(file.content))
-        except ValueError as error:  # * json.JSONDecodeError is a ValueError
-            self._message = f"not loaded {file.name}: {error}"
-            ctx.log_warn(self._message)
-            return
-        if not bars:
-            self._message = f"no bar in {file.name} has mocap markers"
-            ctx.log_warn(self._message)
-            return
-        self._bars = bars
-        self._bar.options = list(bars)
-        self._bar.value = next(iter(bars))
-        self._message = f"loaded bars {', '.join(f'{name} ({len(m)} markers)' for name, m in bars.items())}"
-        ctx.log_info(self._message)
-
     # --- --- --- --- --- UPDATE --- --- --- --- ---
 
     def update(self, ctx: PluginContext) -> None:
@@ -566,7 +507,6 @@ class MocapProbePlugin(HuskyPlugin):
         Args:
             ctx: This plugin's context.
         """
-        self._update_fit()
         probe = self._probe
         if not self._mapping.value or probe is None or probe.position is None:
             return
@@ -579,18 +519,6 @@ class MocapProbePlugin(HuskyPlugin):
         self._probe_cell = self.coverage.add(probe.position[0], probe.position[1], error)
         if self._probe_cell is not None:
             self._dirty.add(self._probe_cell)
-
-    def _update_fit(self) -> None:
-        """Refit the chosen bar to the probe's measured markers, once per mocap message, while Fit bar is ticked."""
-        probe = self._probe
-        model = self._bars.get(self._bar.value)
-        if not self._fit_bar.value or model is None or probe is None or probe.markers is None:
-            self._fit, self._fitted_update = None, None
-            return
-        if probe.last_update_time == self._fitted_update:
-            return
-        self._fitted_update = probe.last_update_time
-        self._fit = fit_markers(model, probe.markers.positions[probe.markers.measured])
 
     # --- --- --- --- --- HELPERS --- --- --- --- ---
 
@@ -643,53 +571,6 @@ class MocapProbePlugin(HuskyPlugin):
         if self._coverage_root is not None:
             self._coverage_root.remove()
             self._coverage_root = None
-
-    def _draw_markers(self) -> None:
-        """Show the probe's raw markers and the bar fit, resending them only when they changed."""
-        probe = self._probe
-        markers = probe.markers if probe is not None and self._show_markers.value else None
-        # ? Identity, not id(): a freed sample's id can be reused by the next one.
-        if self._drawn_markers is not None and self._drawn_markers[0] is markers \
-                and self._drawn_markers[1] is self._fit:
-            return
-        self._drawn_markers = (markers, self._fit)
-        self._marker_cloud.visible = markers is not None and len(markers.ids) > 0
-        if self._marker_cloud.visible:
-            self._marker_cloud.points = markers.positions.astype(np.float32)
-            self._marker_cloud.colors = np.where(markers.measured[:, None], MEASURED_COLOR,
-                                                 FILLED_COLOR).astype(np.uint8)
-        fit = self._fit
-        self._fit_cloud.visible = self._fit_lines.visible = fit is not None
-        if fit is None:
-            return
-        model = self._bars[self._bar.value]
-        self._fit_cloud.points = fit.transform(model).astype(np.float32)
-        # * The bar axis over the markers' span, then one line from each measured marker to its fitted CAD marker.
-        span = model[:, 2].min(), model[:, 2].max()
-        axis = fit.transform(np.array([[0.0, 0.0, span[0]], [0.0, 0.0, span[1]]]))
-        measured = probe.markers.positions[probe.markers.measured]
-        residuals = np.stack([measured, fit.transform(model[fit.model_index])], axis=1)
-        self._fit_lines.points = np.concatenate([axis[None], residuals]).astype(np.float32)
-        self._fit_lines.colors = np.full((len(residuals) + 1, 2, 3), FIT_COLOR, dtype=np.uint8)
-
-    def _markers_html(self) -> str:
-        """The raw markers section's summary: marker counts and the bar fit's error."""
-        markers = self._probe.markers if self._probe is not None else None
-        if markers is None:
-            return note("no mocap message yet")
-        measured = int(markers.measured.sum())
-        lines = [f"markers {len(markers.ids)}, measured {measured}, ids {list(markers.ids)}"]
-        if self._fit_bar.value:
-            bar = self._bar.value
-            if bar not in self._bars:
-                lines.append("load a prefab to fit a bar")
-            elif self._fit is None:
-                lines.append(f"{bar}: no fit; needs 3+ measured markers, all at CAD distances")
-            else:
-                fit = self._fit
-                lines.append(f"{bar}: {len(fit.residuals)}/{len(self._bars[bar])} markers, "
-                             f"rms {fit.rms * 1e3:.2f} mm, max {fit.residuals.max() * 1e3:.2f} mm")
-        return block(values(*lines))
 
     def _coverage_html(self) -> str:
         """The coverage section's summary: visited cells, overall rate and the cell under the probe."""
@@ -781,7 +662,5 @@ class MocapProbePlugin(HuskyPlugin):
                 self._tiles[cell].color = coverage_color(self.coverage.rate(*cell))
         self._dirty.clear()
         self._coverage_status.content = self._coverage_html()
-        self._draw_markers()
-        self._markers_status.content = self._markers_html()
         # ? Plain wrapping text, not `values`: an export path is long.
         self._result.content = note(escape(self._message)) if self._message else ""
