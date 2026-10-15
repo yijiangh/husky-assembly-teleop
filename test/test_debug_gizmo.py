@@ -6,10 +6,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from husky_assembly_teleop.design_io.pose import Pose
+from scaffolding_assembly_core.geometry import Pose
+from scaffolding_assembly_core.scene import Scene
 from husky_assembly_teleop.plugins import debug_gizmo
 from husky_assembly_teleop.plugins.debug_gizmo import DebugGizmoPlugin
-from husky_assembly_teleop.world.scene import PluginScene, Scene
+from husky_assembly_teleop.world.scene import PluginScene
 
 
 @pytest.fixture
@@ -23,7 +24,7 @@ def save_file(tmp_path, monkeypatch):
 def _context() -> SimpleNamespace:
     """The part of a plugin context that saving and loading use, with an empty scene."""
     warnings: list[str] = []
-    scene = PluginScene(Scene(), DebugGizmoPlugin.name, log_warn=warnings.append)
+    scene = PluginScene(Scene(), DebugGizmoPlugin.name, log_warn=warnings.append, snapshot=Scene)
     return SimpleNamespace(scene=scene, log_warn=warnings.append, warnings=warnings)
 
 
