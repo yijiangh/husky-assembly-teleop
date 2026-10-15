@@ -13,34 +13,22 @@ import math
 import threading
 import time
 from dataclasses import dataclass
-from pathlib import Path
 
 import numpy as np
-from ament_index_python.packages import get_package_share_directory
 from crl_husky.base_model import load_model
 
 from ...planning.search import TIME_LIMIT, PlanResult, connect
+from ..follow import XICR_RANGE
 from ..path import (ARC_STEP, BasePath, densify, driven, move_margins, round_corners, steer, steer_cost, steer_points,
                     timed_path)
 from ..world import COLLISION_MARGIN, PlanningWorld
-from .base import Algorithm, Debug
+from .base import (FOLLOWER_MODEL, LEAD, POSITION_STEP, XICR_STEP, YAW_STEP, Algorithm, Debug, add_follower_settings,
+                   add_margin_setting)
 
-#: Where the turning centre may be along the body, metres, as crl_husky's xICR (negative: ahead of base_footprint);
-#: around Alice's fitted -0.13 m (config/base_models in crl_husky).
-XICR_RANGE = (-0.20, -0.10)
-#: Largest gap between the xICR values a path is checked with, metres.
-XICR_STEP = 0.025
-#: The robot model the onboard follower runs with (its `model:=`), from crl_husky config/base_models.
-FOLLOWER_MODEL = "alice_tiles"
 #: Arc radii tried in place of a turn on the spot, widest first, metres.
 ARC_RADII = (2.0, 1.0, 0.5)
-#: Straight drive off the start and onto the target, metres, so the robot does not turn on the spot beside them.
-LEAD = 0.5
 #: Samples are drawn from the box around start and goal, grown by this much per side, metres.
 SAMPLE_PADDING = 3.0
-#: Collision-checking resolution along a move: metres driven, radians turned.
-POSITION_STEP = 0.05
-YAW_STEP = 0.05
 
 #: Debug layers, back to front: name and colour (r, g, b).
 SAMPLED = "samples", (173, 181, 189)
@@ -84,20 +72,12 @@ class RrtArcs(Algorithm):
 
     def add_settings(self, gui) -> None:
         """Add the xICR range, follower model, lead, arcs and margin."""
-        models = follower_models()
         self._widgets = (
-            gui.add_multi_slider("xICR m", min=-0.30, max=0.10, step=0.01, initial_value=XICR_RANGE,
-                                 hint="Where the turning centre may really be, as crl_husky's xICR (negative: ahead "
-                                      "of base_footprint); the path is checked for all of them"),
-            gui.add_dropdown("Follower model", options=models,
-                             initial_value=FOLLOWER_MODEL if FOLLOWER_MODEL in models else models[0],
-                             hint="The robot model the onboard follower runs with (its model:=), from crl_husky "
-                                  "config/base_models; the path is checked as that follower drives it"),
+            *add_follower_settings(gui),
             gui.add_slider("Lead m", min=0.0, max=1.5, step=0.05, initial_value=LEAD,
                            hint="Straight drive off the start and onto the target, where there is room"),
             gui.add_checkbox("Arcs", initial_value=True, hint="Round corners into arcs where they fit"),
-            gui.add_slider("Margin m", min=0.0, max=0.3, step=0.01, initial_value=COLLISION_MARGIN,
-                           hint="Keep at least this far from the other robots and bodies"))
+            add_margin_setting(gui))
 
     def settings(self) -> Settings:
         """The widgets' values, or the defaults."""
@@ -281,15 +261,6 @@ def plan(world: PlanningWorld, own: str, start, goal, abort: threading.Event, se
             debug.points(FAILED_AT[0], [failure[0]], FAILED_AT[1])
     finally:
         _draw_search(debug, sampled, moves, checked)
-
-
-def follower_models() -> list[str]:
-    """Names of the robot models in crl_husky config/base_models, "ideal" first."""
-    try:
-        folder = Path(get_package_share_directory("crl_husky")) / "config" / "base_models"
-    except LookupError:
-        return ["ideal"]
-    return sorted((path.stem for path in folder.glob("*.yaml")), key=lambda name: (name != "ideal", name))
 
 
 def _draw_search(debug: Debug, sampled, moves, checked) -> None:

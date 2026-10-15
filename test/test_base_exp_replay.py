@@ -5,7 +5,8 @@ import pytest
 from base_exp_fixtures import model_run
 
 from husky_assembly_teleop.plugins.base_exp.identify import cross_validated, identify
-from husky_assembly_teleop.plugins.base_exp.replay import HORIZON, IDEAL, Model, errors, free_run, synthetic, track
+from husky_assembly_teleop.plugins.base_exp.replay import (HORIZON, IDEAL, Errors, Model, errors, free_run, synthetic,
+                                                           track)
 
 TRUE = Model.of(-0.1, 0.9, 0.95, 0.2)
 
@@ -28,8 +29,8 @@ def test_errors_grow_with_the_horizon():
 
 def test_cross_validated_model_is_close_to_the_truth():
     """Fitted on the other runs, the model still predicts within millimetres."""
-    runs = [model_run(seed=seed) for seed in range(4)]
-    position, _ = cross_validated(runs).at(HORIZON)
+    pairs = [(seed, track(model_run(seed=seed))) for seed in range(4)]
+    position, _ = Errors.join([found for _, found in cross_validated(pairs)]).at(HORIZON)
     assert np.median(position) < 0.005
 
 

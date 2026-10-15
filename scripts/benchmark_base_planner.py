@@ -32,7 +32,7 @@ from husky_assembly_teleop.plugins.base_planner.recording import (RECORDING_FOLD
                                                                   load_description, load_plan_arrays, save_plan,
                                                                   save_simulated)
 from husky_assembly_teleop.plugins.base_planner.tasks import PROCESS, TASK_ORIGIN, TASKS
-from husky_assembly_teleop.plugins.base_planner.world import PlanningWorld
+from husky_assembly_teleop.plugins.base_planner.world import PlanningWorld, stowed
 from husky_assembly_teleop.plugins.planning.panel import with_guesses
 from husky_assembly_teleop.plugins.process.steps import load_process
 from scaffolding_assembly_core.geometry import Pose
@@ -87,17 +87,18 @@ def main() -> None:
 
 
 def _scene(task, config, root: Path) -> tuple[Scene, str]:
-    """The task's world and the planned robot's id: Alice with the virtual obstacles, or the process step's scene."""
+    """The task's world, arms stowed, and the planned robot's id: Alice and virtual obstacles, or the step's scene."""
     if task.virtual:
         own = robot_id(config.serial)
         bodies = task.bodies("task/")
         robots = {own: RobotObject(own, config.model, Pose((*task.start_in_lab()[:2], 0.0)), {})}
-        return Scene(bodies={body.id: body for body in bodies},
-                     world_poses={body.id: body.placement for body in bodies}, robots=robots), own
-    loaded = load_process(root / PROCESS, DATA)
-    own = "robots/alice"
-    scene, _ = with_guesses(loaded.process.scene_at(loaded.steps[task.process_step].movement), own)
-    return scene, own
+        scene = Scene(bodies={body.id: body for body in bodies},
+                      world_poses={body.id: body.placement for body in bodies}, robots=robots)
+    else:
+        loaded = load_process(root / PROCESS, DATA)
+        own = "robots/alice"
+        scene, _ = with_guesses(loaded.process.scene_at(loaded.steps[task.process_step].movement), own)
+    return stowed(scene, own, config)[0], own
 
 
 def _attempt(world: PlanningWorld, own: str, task, algorithm, experiment: str, recordings: Path) -> Path:
@@ -106,7 +107,7 @@ def _attempt(world: PlanningWorld, own: str, task, algorithm, experiment: str, r
     start, goal = task.start_in_lab(), task.target_in_lab()
     result = algorithm.plan(world, own, start, goal, threading.Event(), settings, debug)
     setup = {"experiment": experiment, "task": task.name, "robot": "a200-0804", "environment": "offline",
-             "conditions": {"task_origin": list(TASK_ORIGIN), "process_step": task.process_step,
+             "conditions": {"task_origin": list(TASK_ORIGIN), "process_step": task.process_step, "arm_from_stow": 0.0,
                             "speed_caps": {"linear": MAX_LINEAR_SPEED, "angular": MAX_ANGULAR_SPEED}},
              "algorithm": algorithm.label, "settings": asdict(settings), "start": list(start), "goal": list(goal),
              "guessed": []}
@@ -120,7 +121,7 @@ def _attempt(world: PlanningWorld, own: str, task, algorithm, experiment: str, r
 def simulate(folder: Path) -> None:
     """Drive an attempt's path with the follower's model exact and deviated (`follow.model_groups`), and save it."""
     description = load_description(folder)
-    model_name = description.get("settings", {}).get("follower_model", "alice_tiles")
+    model_name = description["settings"]["follower_model"]
     poses = load_plan_arrays(folder)["path_poses"]
     save_simulated(folder, model_name,
                    model_groups(poses, load_model(model_name), MAX_LINEAR_SPEED, MAX_ANGULAR_SPEED))

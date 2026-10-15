@@ -21,7 +21,7 @@ one on a metric is bold in the report (rules in the report's "What we measured")
 |---|---|---|---|---|
 | **A. Benchmark** | Which planner solves which task, how fast, with what margin; how does the follower drive its paths in simulation? | 1, 2, 3 | every task offline, by script: the lattice once (it is deterministic), the RRT 5 times | `<experiment>/_analysis/summary.md` |
 | **B. Robot** | How does the robot drive each planner's paths? | 1, 2 | the virtual tasks on the real robot in a clean lab, each planner 3 times per task; the live simulator first, once | the same report |
-| **C. Step 110** | Can each planner drive into the bar structure, on the robot? | 3 | task `step_110` with the process at step 110, each planner 3 times | the same report |
+| **C. Step 110** | Can each planner drive into the bar structure and back out, on the robot? | 3 | tasks `step_110` and `step_110_out` with the process at step 110, each planner 3 times | the same report |
 
 One experiment name per collection, e.g. `benchmark_1015` (A) and `robot_1016` (B and C together): a report covers
 one experiment.
@@ -39,30 +39,31 @@ obstacles in the way:
 | looks_wide | 2 | a gap 1 cm too narrow for the margin; walls short enough to go around |
 | passage | 1 | through a passage 1 m deep, 4 cm to spare |
 | narrow_passage | 1 | through 1.5 m with 3 cm to spare, starting beside it facing across |
-| tall_walls | 1 | between walls taller than the arm, off-centre |
+| tall_walls | 1 | between walls taller than Alice, 4 cm to spare, starting off-centre |
 | into_passage | 1 | into the middle of the narrow passage |
 | into_facing_out | 1 | into it, ending facing back out |
 | out_of_passage | 1 | out of the middle of the narrow passage |
 | too_narrow | 1 | narrower than Alice: must fail (a check) |
 | step_110 | 3 | into the bar structure at process step 110 |
+| step_110_out | 3 | back out of it, to step_110's start |
 
-**Virtual obstacles:** all tasks but `step_110` put their obstacles into the scene as virtual bodies (purple): the
+**Virtual obstacles:** all tasks but the step 110 ones put their obstacles into the scene as virtual bodies (purple): the
 planner avoids them, the floor stays empty. They are placed with the task frame at `TASK_ORIGIN` in `tasks.py`.
-! Set `TASK_ORIGIN` to the middle of a clear area about 5 m by 3.5 m before collecting; it is recorded with every
-attempt.
+`TASK_ORIGIN` is (0.4, −0.8, 180°), in the middle of the lab, fitted on 15 Oct so every task's paths clear the
+furniture, the tripods and Belle parked at (1.7, 1.3). ! Keep that area clear; it is recorded with every attempt.
 
-**step_110** uses the process plugin's scene at step 110 (`PROCESS`, `PROCESS_STEP`). Its start and target are
-`PROCESS_START` and `PROCESS_TARGET` in `tasks.py`. ? The target is the one placed by hand on 15 Oct; confirm it, and
-that the process is `261008_2ModulesDemo_purged_process`.
+**step_110** and **step_110_out** use the process plugin's scene at step 110 (`PROCESS`, `PROCESS_STEP`). Their ends are
+`PROCESS_START` and `PROCESS_TARGET` in `tasks.py`; the target is inside the bar structure (confirmed 15 Oct).
 
 ### The method
 
-- **Varies:** the planner. **Held fixed:** the tasks, the planners' default settings, the planning speeds, the task
-  origin, the follower model (`alice_tiles`). All are recorded with every attempt.
+- **Varies:** the planner. **Held fixed:** the tasks, Alice's arm stowed (`ArmConfig.stow_joints`), the planners'
+  default settings, the planning speeds, the task origin, the follower model (`alice_tiles_2`; `alice_tiles` before 16 Oct). All are recorded with
+  every attempt.
 - **Measured independently of the planner:** clearance in the planning world; deviation and end from mocap (robot)
   or the simulated pose against the path sent, the same for both planners.
 - **Model groups (offline):** each path found is driven by the simulated follower (crl_husky pure pursuit with
-  `alice_tiles`) twice over: **exact model**, the simulated robot exactly as the follower's model (xICR −0.129 m),
+  `alice_tiles_2`) twice over: **exact model**, the simulated robot exactly as the follower's model (xICR −0.126 m),
   and **deviated models**, the same with the true xICR at −0.20, −0.15 and −0.10 m (the planners' xICR range). The
   report gives finished, deviation and end per group; a deviated group's numbers are the worst of its drives.
 - **Unit:** one attempt = one plan from the task's start. An attempt counts for a task only when it starts within
@@ -83,10 +84,10 @@ that the process is `261008_2ModulesDemo_purged_process`.
 
 `$HUSKY_DRIVE_ROOT/data_experiment/base_planner/<experiment>/<date>_<time>_<robot>_<task|free>_<real|sim|offline>/`:
 
-- `experiment.json`: experiment, task, robot, environment, conditions (task origin, process step, speed caps),
-  planner and settings, start, target; the plan (found or why not, time, length, clearance, notes); the run
-  (outcome, controller) once committed; offline, the simulated drives (model group, true xICR, finished or why
-  not).
+- `experiment.json`: experiment, task, robot, environment, conditions (task origin, process step, the arm's angle
+  from stow, speed caps), planner and settings, start, target; the plan (found or why not, time, length, clearance,
+  notes); the run (outcome, controller) once committed; offline, the simulated drives (model group, true xICR,
+  finished or why not).
 - `plan.npz`: the path and the floor around it. `recording.npz`: the run's samples. `simulated.npz`: offline
   follower traces.
 - The report writes `plan.png` per attempt, `overview.png` and `report.json` per run, and `_analysis/`.
@@ -123,7 +124,7 @@ Its own ROS domain, this computer only. ! Never on the fleet's domain 80: the re
 ```bash
 export RMW_IMPLEMENTATION=rmw_fastrtps_cpp ROS_DOMAIN_ID=70 ROS_LOCALHOST_ONLY=1
 ros2 launch crl_husky pure_pursuit_sim.launch.py namespace:=a200_0804 mocap_id:=1840 \
-  controller_model:=alice_tiles sim_model:=alice_tiles xICR:=-0.15
+  controller_model:=alice_tiles_2 sim_model:=alice_tiles_2 xICR:=-0.15
 ```
 
 and the monitor, in the same domain:
@@ -139,13 +140,14 @@ ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['alice']" \
 > `TASK_ORIGIN`, keep the e-stop in reach, watch every run.
 
 Fleet settings (`rmw_zenoh_cpp`, `ROS_DOMAIN_ID=80`). On the robot, the follower with Alice's model:
-`ros2 launch crl_husky pure_pursuit.launch.py model:=alice_tiles`. On the control PC, the mocap relay and the
+`ros2 launch crl_husky pure_pursuit.launch.py model:=alice_tiles_2`. On the control PC, the mocap relay and the
 monitor with `plugins:="['robot_control', 'base_planner']"`; for C also `-p process_directory:=` the process folder.
 Switch Alice's `platform_velocity_controller` on in `robot_control`.
 
 ## Collecting attempts (the panel)
 
-1. Type the experiment name into **Experiment**, tick **Record**.
+1. Type the experiment name into **Experiment**, tick **Record**. Stow Alice's arm (**Stow** in `robot_control`):
+   the planners plan with it stowed, and the panel warns when it is not.
 2. Choose a **Task**: its virtual obstacles appear, the target is set. For `step_110`, select step 110 in the process
    plugin first, and leave the process unloaded for every other task (a loaded process makes a virtual task's scene
    unclean, and the attempt is left out).

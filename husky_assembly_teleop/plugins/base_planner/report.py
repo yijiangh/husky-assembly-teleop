@@ -7,7 +7,7 @@ The report of one recorded base planner run, and the picture of one plan attempt
 
 Measured by mocap (or the simulated pose) against the path sent, the same for every planner and controller:
 
-- report.json: the attempt's description (experiment.json, or run.json before it), and the run's metrics.
+- report.json: the attempt's description (experiment.json) and the run's metrics.
 - overview.png: the path sent and where the robot went, then its distance from the path, its heading error, and the
   commands over time; turns on the spot are shaded grey.
 
@@ -29,7 +29,7 @@ from pathlib import Path
 import numpy as np
 from matplotlib.figure import Figure
 
-from ..base_exp.report import _arrows, _spans
+from ..base_exp.report import heading_arrows, time_spans
 from .path import densify
 from .recording import load_description, load_plan_arrays
 
@@ -43,8 +43,6 @@ STILL, TURNING = 0.01, 0.05
 STOP_TIME = 0.2
 #: Spacing of the path the robot is measured against, metres and radians.
 STEP = 0.01
-#: Colour of what is on the floor, from a plan's floor map.
-FLOOR_COLOR = "0.75"
 
 
 @dataclass
@@ -128,9 +126,8 @@ def load(folder: str | Path) -> dict:
         prefix = pose_key[:-len("floor_pose")]
         run = {key.removeprefix(prefix): data[key] for key in data.files}
     description = load_description(folder)
-    if description is None:  # recorded before experiment.json: run.json only
-        run["run"], run["plan"], run["plan_arrays"] = json.loads((folder / "run.json").read_text()), None, None
-        return run
+    if description is None:
+        raise FileNotFoundError(f"{folder} has no experiment.json")
     poses, times = run["path_poses"], run["path_t"]
     length = float(np.sum(np.hypot(*np.diff(poses[:, :2], axis=0).T)))
     run["run"] = {**description, **(description.get("run") or {}), "length": length,
@@ -185,7 +182,7 @@ def plot_plan(folder: str | Path) -> Path:
     poses = arrays["path_poses"]
     if len(poses):
         axis.plot(poses[:, 0], poses[:, 1], "-", color=PATH_COLOR, label="path")
-        _arrows(axis, poses, PATH_COLOR)
+        heading_arrows(axis, poses, PATH_COLOR)
     for pose, marker, label in ((record["start"], "o", "start"), (record["goal"], "x", "target")):
         axis.plot(*pose[:2], marker, color=ROBOT_COLOR, markersize=9, label=label)
         axis.annotate("", (pose[0] + 0.3 * math.cos(pose[2]), pose[1] + 0.3 * math.sin(pose[2])), pose[:2],
@@ -217,7 +214,7 @@ def plot_plan(folder: str | Path) -> Path:
 
 
 def settings_line(settings: dict) -> str:
-    """A plan's settings as one short line, e.g. "x_icr -0.2..-0.1  follower_model alice_tiles  margin 0.05"."""
+    """A plan's settings as one short line, e.g. "x_icr -0.2..-0.1  follower_model alice_tiles_2  margin 0.05"."""
     def value(item):
         if isinstance(item, (list, tuple)):
             return "..".join(f"{part:g}" if isinstance(part, float) else str(part) for part in item)
@@ -262,7 +259,7 @@ def metrics(run: dict) -> RunMetrics:
         planned_duration=float(run["run"]["planned_duration"]),
         duration=_span(t[following]),
         pieces=int(np.nanmax(run["follower_progress"][:, 1])) + 1,
-        stops=sum(1 for start, end in _spans(t, following & still) if end - start >= STOP_TIME),
+        stops=sum(1 for start, end in time_spans(t, following & still) if end - start >= STOP_TIME),
         spot_turn_time=float(np.sum(dt[following & spot])),
         mean_deviation=_mean(distances[moving]),
         p95_deviation=float(np.percentile(distances[moving], 95)) if moving.any() else math.nan,
@@ -324,11 +321,11 @@ def plot(run: dict, numbers: RunMetrics, out: Path, title: str) -> Path:
     # * Top view, over the floor as the plan saw it.
     draw_floor(top, run.get("plan_arrays"))
     top.plot(poses[:, 0], poses[:, 1], "--", color=PATH_COLOR, label="path sent")
-    _arrows(top, poses, PATH_COLOR)
+    heading_arrows(top, poses, PATH_COLOR)
     known = pose[np.isfinite(pose).all(axis=1)]
     if len(known):
         top.plot(known[:, 0], known[:, 1], "-", color=ROBOT_COLOR, label="robot (mocap)")
-        _arrows(top, known, ROBOT_COLOR)
+        heading_arrows(top, known, ROBOT_COLOR)
         top.plot(*known[0, :2], "o", color=ROBOT_COLOR, label="start")
         top.plot(*known[-1, :2], "s", color=ROBOT_COLOR, label="end")
     top.plot(*poses[-1, :2], "x", color=PATH_COLOR, markersize=10, label="target")
@@ -373,7 +370,7 @@ def plot(run: dict, numbers: RunMetrics, out: Path, title: str) -> Path:
     for axis in (error, yaw, command):
         axis.grid(True, alpha=0.35)
         axis.axhline(0.0, color="0.3", linewidth=0.8)
-        for start, end in _spans(t, spot):
+        for start, end in time_spans(t, spot):
             axis.axvspan(start, end, color=TURN_SHADE, zorder=0)
 
     figure.savefig(out, dpi=150)

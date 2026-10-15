@@ -8,6 +8,7 @@ The planning world: a private PyBullet copy of the scene, for the base planner's
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 
 import numpy as np
 import pybullet as p
@@ -15,15 +16,35 @@ import pybullet as p
 from scaffolding_assembly_core.mirrors.pybullet import PyBulletMirror
 from scaffolding_assembly_core.scene import Scene
 
+from ...config import RobotConfig
+from ...world.kinematics import stow_joints
+
 #: Keep at least this far from every other robot and body, metres.
 COLLISION_MARGIN = 0.05
 #: `clearance` measures up to CLEARANCE_LIMIT, to CLEARANCE_STEP, metres.
 CLEARANCE_LIMIT = 0.30
 CLEARANCE_STEP = 0.005
+#: Things lower than this, metres, are floor: the floor maps leave them out.
+FLOOR_BOTTOM = 0.05
 #: Rays per PyBullet call, below its batch limit.
 RAY_BATCH = 8192
 #: Where the planned robot is moved out of the way, metres along x and y.
 PARK = -1000.0
+
+
+def stowed(snapshot: Scene, object_id: str, config: RobotConfig) -> tuple[Scene, float]:
+    """The snapshot with the robot's arms at their stow pose, as the base drives; and how far the arms are from it.
+
+    Returns:
+        tuple[Scene, float]: The snapshot, a copy; the largest joint's distance from its stow angle, radians, or 0 for
+        joints not measured.
+    """
+    robot = snapshot.robots[object_id]
+    stow = stow_joints(config, robot.model.movable_joints)
+    away = max((abs(math.remainder(robot.joints.get(name, 0.0) - value, math.tau)) for name, value in stow.items()
+                if name not in robot.unmeasured), default=0.0)
+    robot = replace(robot, joints={**robot.joints, **stow}, unmeasured=robot.unmeasured.difference(stow))
+    return replace(snapshot, robots={**snapshot.robots, object_id: robot}), away
 
 
 class PlanningWorld:

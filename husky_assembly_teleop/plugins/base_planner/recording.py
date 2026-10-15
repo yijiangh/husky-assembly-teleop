@@ -22,15 +22,14 @@ import numpy as np
 
 from ..planning.search import PlanResult
 from .path import densify
-from .world import PlanningWorld
+from .world import FLOOR_BOTTOM, PlanningWorld
 
 #: Recorded attempts, under the Drive root (`drive.py`); ! create it in Drive, it is never created here.
 RECORDING_FOLDER = Path("data_experiment/base_planner")
 #: The floor map saved with a plan: the box around start, target and path grown by FLOOR_PADDING metres, in cells of
-#: FLOOR_CELL metres, of things from FLOOR_BOTTOM metres up.
+#: FLOOR_CELL metres, of things from FLOOR_BOTTOM metres up (`world`).
 FLOOR_PADDING = 1.5
 FLOOR_CELL = 0.05
-FLOOR_BOTTOM = 0.05
 #: The path's clearance is measured at poses this far apart, metres and radians.
 CLEARANCE_SPACING = 0.05
 #: The description file of an attempt.

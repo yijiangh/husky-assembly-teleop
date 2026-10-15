@@ -30,12 +30,12 @@ from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import dijkstra
 
 from ...planning.search import TIME_LIMIT, PlanResult
-from ..follow import followed, thinned
+from ..follow import XICR_RANGE, followed, thinned
 from ..path import (MAX_ANGULAR_SPEED, MAX_LINEAR_SPEED, SETTLE_DISTANCE, BasePath, densify, driven, steer,
                     timed_path)
-from ..world import COLLISION_MARGIN, PlanningWorld
-from .base import Algorithm, Debug
-from .rrt_arcs import FOLLOWER_MODEL, LEAD, POSITION_STEP, XICR_RANGE, XICR_STEP, YAW_STEP, follower_models
+from ..world import CLEARANCE_LIMIT, CLEARANCE_STEP, COLLISION_MARGIN, FLOOR_BOTTOM, PlanningWorld
+from .base import (FOLLOWER_MODEL, LEAD, POSITION_STEP, XICR_STEP, YAW_STEP, Algorithm, Debug, add_follower_settings,
+                   add_margin_setting)
 
 #: Search grid: the first pose to reach a cell and heading bin keeps it. Cell size, metres (also of the guide's fine
 #: maps), and heading bin, radians.
@@ -106,18 +106,14 @@ ROUGH = (np.arange(-36.0, 36.1, 3.0), np.linspace(-0.09, 0.09, 10))
 FINE = (np.arange(-2.0, 2.1, 0.5), np.linspace(-0.04, 0.04, 17))
 PORTAL_ROOM = 0.10            # m
 PORTAL_STEP = 0.05            # m, along the line
-#: Things at least FLOOR_BOTTOM high count. Ones lower than BAND only hit parts of the robot that reach below BAND
-#: (chassis, wheels), so an arm passes over them; higher ones hit every part.
-FLOOR_BOTTOM = 0.05  # m
-BAND = 0.30          # m
+#: Things at least FLOOR_BOTTOM high count (`world`). Ones lower than BAND only hit parts of the robot that reach
+#: below BAND (chassis, wheels), so an arm passes over them; higher ones hit every part.
+BAND = 0.30  # m
 #: Give shortening the path at most this long, seconds; it joins poses about ANCHOR_SPACING metres apart.
 SHORTEN_TIME = 1.5
 ANCHOR_SPACING = 0.3
-#: Clearances are checked in steps of this, rounded up, metres.
-CLEARANCE_STEP = 0.005
-#: Diagnostics: room is measured up to ROOM_LIMIT metres; where the search got stuck, hits within NEAR metres count.
-#: At most TOUCHES_DRAWN touch points and FINISHES_DRAWN refused finishes (the last) are drawn.
-ROOM_LIMIT = 0.3
+#: Diagnostics: where the search got stuck, hits within NEAR metres count. At most TOUCHES_DRAWN touch points and
+#: FINISHES_DRAWN refused finishes (the last) are drawn.
 NEAR = 0.5
 TOUCHES_DRAWN = 300
 FINISHES_DRAWN = 40
@@ -125,8 +121,6 @@ FINISHES_DRAWN = 40
 #: plan; a turn on the spot is sent as base_footprint's arc about the turning centre.
 SEND_STEP = 0.05
 SEND_TURN = 0.05
-#: Seconds kept back from the search for checking the path as followed.
-FOLLOW_RESERVE = 3.0
 
 #: Debug layers, back to front: name and colour (r, g, b).
 FLOOR = "guide: no heading fits", (206, 212, 218)
@@ -179,21 +173,13 @@ class Lattice(Algorithm):
 
     def add_settings(self, gui) -> None:
         """Add the xICR range, follower model, lead, turn weight, margin and curves."""
-        models = follower_models()
         self._widgets = (
-            gui.add_multi_slider("xICR m", min=-0.30, max=0.10, step=0.01, initial_value=XICR_RANGE,
-                                 hint="Where the turning centre may really be, as crl_husky's xICR (negative: ahead "
-                                      "of base_footprint); the path is checked for all of them"),
-            gui.add_dropdown("Follower model", options=models,
-                             initial_value=FOLLOWER_MODEL if FOLLOWER_MODEL in models else models[0],
-                             hint="The robot model the onboard follower runs with (its model:=), from crl_husky "
-                                  "config/base_models; the path is checked as that follower drives it"),
+            *add_follower_settings(gui),
             gui.add_slider("Lead m", min=0.0, max=1.5, step=0.05, initial_value=LEAD,
                            hint="Straight drive onto the target; in a narrow place, this much more than its length"),
             gui.add_slider("Turn cost m/rad", min=0.0, max=2.0, step=0.1, initial_value=TURN_WEIGHT,
                            hint="Metres of driving one radian of turning on the spot is worth"),
-            gui.add_slider("Margin m", min=0.0, max=0.3, step=0.01, initial_value=COLLISION_MARGIN,
-                           hint="Keep at least this far from the other robots and bodies"),
+            add_margin_setting(gui),
             gui.add_checkbox("Curves", initial_value=True,
                              hint="Drive curves where they fit; off: turn on the spot only"))
 
@@ -334,19 +320,11 @@ def plan(world: PlanningWorld, own: str, start, goal, abort: threading.Event, se
 
     def room(pose) -> str:
         """How much room the robot has at `pose`: centimetres to the nearest thing and what it is, as text."""
+        clear, near = world.clearance(own, [pose])
+        if near is None:
+            return f"over {CLEARANCE_LIMIT * 100:.0f} cm"
         touching = hit_by(pose, 0.0)
-        if touching is not None:
-            return f"touches {touching}"
-        if hit_by(pose, ROOM_LIMIT) is None:
-            return f"over {ROOM_LIMIT * 100:.0f} cm"
-        clear, blocked = 0.0, ROOM_LIMIT
-        while blocked - clear > CLEARANCE_STEP:
-            middle = (clear + blocked) / 2.0
-            if hit_by(pose, middle) is None:
-                clear = middle
-            else:
-                blocked = middle
-        return f"{clear * 100:.0f} cm to {hit_by(pose, blocked)}"
+        return f"touches {touching}" if touching else f"{clear * 100:.0f} cm to {hit_by(pose, clear + CLEARANCE_STEP)}"
 
     def found(poses, direct: bool = False) -> PlanResult[BasePath]:
         for trace in traces:
@@ -467,15 +445,14 @@ def plan(world: PlanningWorld, own: str, start, goal, abort: threading.Event, se
         return (float(lead_in[0]), float(lead_in[1]), heading), (float(past[0]), float(past[1]), heading)
 
     corners, reason = _search(start_c, arrive_c, tail_c, ahead, guide, centred, hits, failure, touched, ends, swing,
-                              settings, started + TIME_LIMIT - FOLLOW_RESERVE, abort, debug)
+                              settings, started + TIME_LIMIT, abort, debug)
     if corners is None:
         return failed(f"{reason}. Target: {target_room}, {approach}")
     corners = _merged(corners)
     debug.path(SEARCHED[0], [_to_base(pose, ahead) for pose in corners], SEARCHED[1])
     lap(f"search: {reason}; {len(corners)} waypoints")
 
-    shortened = _shortened(corners, bool(tail), hits, ends, swing, settings,
-                           min(time.time() + SHORTEN_TIME, started + TIME_LIMIT - FOLLOW_RESERVE))
+    shortened = _shortened(corners, bool(tail), hits, ends, swing, settings, time.time() + SHORTEN_TIME)
     debug.path(SHORTENED[0], [_to_base(pose, ahead) for pose in shortened], SHORTENED[1])
     lap(f"shortened to {len(shortened)} waypoints")
 
@@ -828,7 +805,7 @@ def _search(start, arrive, tail, ahead: float, guide: _Guide, centred, hits, fai
             if abort.is_set():
                 return None, "cancelled"
             if time.time() > deadline:
-                return None, stuck(f"no path found in {TIME_LIMIT - FOLLOW_RESERVE:.0f} s")
+                return None, stuck(f"no path found in {TIME_LIMIT:.0f} s")
             _, cost, _, parent_index, move, version = heapq.heappop(heap)
             node = nodes[0] if parent_index < 0 else child(nodes[parent_index], parent_index, move)
             if version != guide.version:

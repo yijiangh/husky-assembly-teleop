@@ -20,10 +20,11 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 
-from .replay import HORIZONS, Errors, Model, Track, score, track
+from .replay import Errors, Model, Track, errors, track
 
 #: Delays tried, seconds; the one that fits best is taken. From the wheels also negative ones: odometry that arrives
 #: after the motion it measures (filtered or stamped late) shows as a negative delay.
@@ -98,23 +99,27 @@ def identify(runs: list, source: str = "commands → motion") -> Response | None
                     clock="stamps" if all(t.clock == "stamps" for t in tracks) else "tick")
 
 
-def cross_validated(runs: list, horizons=HORIZONS) -> Errors | None:
-    """Replay errors of models identified on the other half of the runs (alternate runs), so no run scores its own fit.
+def cross_validated(pairs: list) -> list[tuple[Any, Errors]] | None:
+    """Each run's replay errors under the model identified on the other half of the runs (alternate runs).
+
+    No run scores its own fit.
+
+    Args:
+        pairs: (label, Track) per run; the label (e.g. its template) is passed through.
 
     Returns:
-        Errors | None: Both halves' errors; None with fewer than two runs or when a half identifies nothing.
+        list[tuple[Any, Errors]] | None: (label, errors) per run; None if a half is empty or identifies nothing.
     """
-    tracks = _tracks(runs)
-    halves = (tracks[0::2], tracks[1::2])
+    halves = (pairs[0::2], pairs[1::2])
     if not all(halves):
         return None
-    parts = []
+    out = []
     for scored, fitted in (halves, halves[::-1]):
-        found = identify(fitted)
+        found = identify([track for _, track in fitted])
         if found is None:
             return None
-        parts.append(score(scored, found.model, horizons))
-    return Errors.join(parts, horizons)
+        out += [(label, errors(track, found.model)) for label, track in scored]
+    return out
 
 
 def _tracks(runs: list) -> list[Track]:

@@ -3,7 +3,7 @@ What the reports share: the runs of an experiment, loaded once, with their robot
 
 - A run drove a **path** (standard or random paths, with the follower) or one **constant command** (`twist.py`).
 - Its **robot** is "real", "sim ideal", "sim <model name>" (or "sim model A", B, ... for unnamed models).
-- Its **scenario** is "<robot> · <controller and the model it assumes>", e.g. "sim alice_tiles · PP ideal".
+- Its **scenario** is "<robot> · <controller and the model it assumes>", e.g. "sim alice_tiles_2 · PP ideal".
 - An experiment's runs are the run folders in its folder, whatever name they were recorded under, so runs can be
   moved between experiments.
 - Only path runs at the fixed speed and mode and under the experiment's conditions (the ones most of its path runs
@@ -36,7 +36,7 @@ from ..twist import cell_of
 #: Robots in table order, with their short label.
 ENVIRONMENTS = {"sim ideal": "sim ideal", "sim model": "sim", "real": "real"}
 #: Short controller labels; others keep their node name.
-CONTROLLERS = {"pure_pursuit": "PP", "husky_mpc": "MPC", "mpc": "MPC"}
+CONTROLLERS = {"pure_pursuit": "PP"}
 #: A controller's robot-model parameters, with the ideal values (crl_husky PurePursuitParams).
 CONTROLLER_MODEL = {"x_icr": 0.0, "speed_efficiency": 1.0, "steering_efficiency": 1.0, "cmd_delay_sec": 0.0}
 TEMPLATES = list(GRID)
@@ -356,7 +356,7 @@ def _robot_labels(runs: pd.DataFrame) -> pd.Series:
     """What the robot was: "real", "sim ideal", "sim <model name>", or "sim model A", B, ... for unnamed models.
 
     A run without a model name takes the name another run gave the same values. Two different models under one
-    name are numbered like scenarios: "sim alice_tiles", "sim alice_tiles #2".
+    name are numbered like scenarios: "sim alice_tiles_2", "sim alice_tiles_2 #2".
     """
     sims = runs[runs.environment == "sim model"]
     named = sims[~sims.sim_model_name.isin(["", "ideal"])]
@@ -371,7 +371,7 @@ def _robot_labels(runs: pd.DataFrame) -> pd.Series:
 
 
 def _scenario_labels(runs: pd.DataFrame) -> pd.Series:
-    """Scenario labels "<robot> · <controller>", e.g. "sim alice_tiles · PP ideal"; numbered if two share one.
+    """Scenario labels "<robot> · <controller>", e.g. "sim alice_tiles_2 · PP ideal"; numbered if two share one.
 
     Constant-command runs use no controller: "<robot> · constant commands".
     """
@@ -384,7 +384,7 @@ def _scenario_labels(runs: pd.DataFrame) -> pd.Series:
 
 
 def _controller_label(description: dict) -> str:
-    """Short controller label with the robot model it assumes, e.g. "PP ideal" or "PP alice_tiles"."""
+    """Short controller label with the robot model it assumes, e.g. "PP ideal" or "PP alice_tiles_2"."""
     controller = description.get("controller", {})
     name = controller.get("name", "?")
     label = CONTROLLERS.get(name, name)
@@ -406,7 +406,7 @@ def _controller_model(description: dict) -> dict[str, float] | None:
 
 
 def _controller_model_text(description: dict) -> str:
-    """The controller's assumed model, e.g. "ideal" or "alice_tiles: xICR -0.129 m, ..., command delay 220 ms"."""
+    """The controller's assumed model, e.g. "ideal" or "alice_tiles_2: xICR -0.126 m, ..., command delay 200 ms"."""
     assumed = _controller_model(description)
     if assumed is None:
         return "unknown"

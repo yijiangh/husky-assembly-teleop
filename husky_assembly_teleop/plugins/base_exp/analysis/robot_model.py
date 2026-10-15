@@ -20,7 +20,7 @@ from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
 
 from ..auto import MODE, SPEED
-from ..identify import SOURCES, identify
+from ..identify import SOURCES, cross_validated, identify
 from ..replay import HORIZON, IDEAL, Errors, Model, free_run, score, synthetic
 from ..replay import errors as run_errors
 from .common import (ERRORS, TEMPLATES, Experiment, markdown, parameters, robots, run_track, save, scenario_row,
@@ -203,30 +203,13 @@ def replay_errors(runs: pd.DataFrame, known: dict) -> dict[tuple[str, str], list
         if not pairs:
             continue
         replays[robot, "ideal"] = [(template, run_errors(track, IDEAL)) for template, track in pairs]
-        crossed = _crossed(pairs)
+        crossed = cross_validated(pairs)
         if crossed is not None:
             replays[robot, "identified"] = crossed
         if known[robot] is not None:
             model = _model(known[robot])
             replays[robot, "sim settings"] = [(template, run_errors(track, model)) for template, track in pairs]
     return replays
-
-
-def _crossed(pairs: list) -> list[tuple[str, Errors]] | None:
-    """Each run's errors under the model identified on the other half of the runs (alternate runs).
-
-    None if a half is empty or identifies nothing.
-    """
-    halves = (pairs[0::2], pairs[1::2])
-    if not all(halves):
-        return None
-    out = []
-    for scored, fitted in (halves, halves[::-1]):
-        found = identify([track for _, track in fitted])
-        if found is None:
-            return None
-        out += [(template, run_errors(track, found.model)) for template, track in scored]
-    return out
 
 
 def _joined(parts: list[tuple[str, Errors]], template: str | None = None) -> Errors:

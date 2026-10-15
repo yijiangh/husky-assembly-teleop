@@ -91,6 +91,12 @@ def test_matches_pybullet(config):
         p.disconnect(client)
 
 
+def test_default_pose_is_the_parked_pose(config):
+    """A robot starts at its parked pose, on the floor."""
+    x, y, yaw = config.park_pose
+    assert config.default_position == (x, y, 0.0) and config.default_yaw == yaw
+
+
 def test_starts_at_default_pose_with_joints_unmeasured(config):
     """Before any measurement: default base pose, arms stowed, other joints 0, every joint unmeasured."""
     kinematics = Kinematics((config,), log_warn=print)
@@ -130,6 +136,7 @@ def test_link_pose_follows_update(config):
     kinematics = Kinematics((config,), log_warn=print)
     serial = config.serial
     link = f"{config.arms[0].name}_tool0"
+    kinematics.update(fake_world(serial))
     before = kinematics.link_pose(serial, link)
     kinematics.update(fake_world(serial, position=(1.0, 0.0, 0.0)))
     after = kinematics.link_pose(serial, link)

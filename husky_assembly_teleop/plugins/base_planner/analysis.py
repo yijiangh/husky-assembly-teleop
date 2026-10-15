@@ -2,8 +2,8 @@
 The base planner experiment's report (doc/base_planner_manual.md): the planners side by side on the standard tasks.
 
 Reads every attempt folder of one experiment (`recording.py`) and writes into its `_analysis/`: summary.md, one CSV per
-table, tasks.png and metrics.png, and results_prompt.md; per attempt plan.png, and per run overview.png and
-report.json. No ROS. Follows doc/experiment_report_guide.md: numbers only, no interpretation.
+table, the charts (`figures.py`) and tasks.png, and results_prompt.md; per attempt plan.png, and per run overview.png
+and report.json. No ROS. Follows doc/experiment_report_guide.md: numbers only, no interpretation.
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ from pathlib import Path
 import numpy as np
 from matplotlib.figure import Figure
 
+from .figures import colour, draw_all, draw_lab
 from .follow import DEVIATED, DEVIATED_XICRS, EXACT
 from .path import densify
 from .recording import load_description, load_plan_arrays
@@ -31,10 +32,11 @@ OPERATOR = ("stopped", "replaced by a new commit")
 #: Better-than rules per metric: which way is better, and the least gap that counts (beside the spread).
 BETTER = {"success": (+1, 0.0), "seconds": (-1, 0.2), "length": (-1, 0.10), "clearance": (+1, 1.0),
           "deviation": (-1, 1.0), "end": (-1, 1.0), "drift": (-1, 1.0), "ratio": (-1, 0.05)}
+#: A plan from within this far of its target, metres and radians, is left out of the pooled numbers: already there.
+THERE_POSITION = 0.05
+THERE_YAW = math.radians(5.0)
 #: Decimals per metric, the same in every table.
 DECIMALS = {"seconds": 1, "length": 2, "clearance": 1, "deviation": 1, "end": 1, "drift": 1, "ratio": 2}
-#: Colours of the planners in the plots, in planner order.
-COLORS = ("tab:orange", "tab:blue", "tab:green", "tab:red")
 
 
 @dataclass
@@ -125,12 +127,24 @@ def analyse(experiment: Path) -> Path:
     out.mkdir(exist_ok=True)
     planners = sorted({attempt.planner for attempt in attempts if not attempt.left_out})
     counted = [attempt for attempt in attempts if not attempt.left_out]
+    charts = draw_all(counted, planners, out)
     lines = _header(experiment, attempts, planners)
     lines += _overview(counted, planners, out)
+    lines += _pooled(attempts, planners, out)
     lines += _planning(counted, planners, out)
+    lines += _charts(charts, ("success.png", "Which tasks each planner solves."),
+                     ("plan_time.png", "How long each attempt planned; × found no path."),
+                     ("paths.png", "How long and how roomy the paths found are."))
     lines += _simulation(counted, planners, out)
+    lines += _charts(charts, ("driving.png", "How closely the simulated follower drives the paths found, and how "
+                                             "close it ends, with the exact and with deviated robot models."))
     for environment in ("real", "sim"):
         lines += _runs(counted, planners, environment, out)
+        name = f"drives_{environment}.png"
+        if draw_lab([a for a in attempts if not a.left_out.startswith("excluded")], planners, out / name,
+                    environment):
+            lines += _charts([name], (name, "Where every committed run went in the lab, tasks or not: the path sent "
+                                            "and the path driven."))
     lines += _process(counted, planners, out)
     lines += _failures(counted, out)
     lines += _all(attempts, out)
@@ -139,6 +153,15 @@ def analyse(experiment: Path) -> Path:
     (out / "summary.md").write_text("\n".join(lines) + "\n")
     (out / "results_prompt.md").write_text(RESULTS_PROMPT)
     return out / "summary.md"
+
+
+def _charts(written: list[str], *charts: tuple[str, str]) -> list[str]:
+    """Embed the charts written, each under the one line it answers."""
+    lines = []
+    for name, question in charts:
+        if name in written:
+            lines += [question, "", f"![{question}]({name})", ""]
+    return lines
 
 
 def load_attempts(experiment: Path) -> list[Attempt]:
@@ -163,11 +186,7 @@ def load_attempts(experiment: Path) -> list[Attempt]:
                 attempt.run_left_out = f"run {outcome}"
         if (folder / "simulated.npz").is_file():
             arrays = load_plan_arrays(folder)
-            info = description.get("simulated") or {}
-            # * Before model groups, only deviated xICR values were simulated.
-            attempt.drives = info.get("drives") or [{"group": DEVIATED, "xicr": x_icr, "not_finished": why}
-                                                    for x_icr, why in zip(info.get("xicr", []),
-                                                                          info.get("not_finished", []))]
+            attempt.drives = (description.get("simulated") or {}).get("drives", [])
             with np.load(folder / "simulated.npz") as data:
                 traces = [data[f"trace_{k}"] for k in range(len(attempt.drives))]
             for drive, trace in zip(attempt.drives, traces):
@@ -221,6 +240,8 @@ def _header(experiment: Path, attempts: list[Attempt], planners: list[str]) -> l
         "[Driving, live simulator](#driving-live-simulator)",
         "5. How do they do at process step 110? → [Process step 110](#process-step-110)",
         "6. Why did attempts fail? → [Failures](#failures)",
+        "7. Over every plan and run, tasks or not, how does each planner do? → "
+        "[All plans and runs, per planner](#all-plans-and-runs-per-planner)",
         "",
         "## What we measured",
         "",
@@ -318,6 +339,66 @@ def _overview(attempts: list[Attempt], planners: list[str], out: Path) -> list[s
     return lines
 
 
+def _pooled(attempts: list[Attempt], planners: list[str], out: Path) -> list[str]:
+    """Every plan and run per planner, task or not (drives to a task's start too): more numbers, mixed problems."""
+    pooled = [attempt for attempt in attempts if not attempt.left_out.startswith("excluded")
+              and not _already_there(attempt)]
+    columns = (("Attempts", "count"), ("Success", "success"), ("Plan time s", "seconds"), ("Length m", "length"),
+               ("Clearance cm", "clearance"), ("Runs", "count"), ("Done", "done"), ("Deviation cm", "deviation"),
+               ("End cm", "end"), ("Drift after done cm", "drift"), ("Drive / planned", "ratio"))
+    header = ["Planner", "Where"] + [title for title, _ in columns]
+    lines = ["## All plans and runs, per planner", "",
+             "Every attempt pooled per planner, with or without a task, so drives to a task's start count too; only "
+             f"attempts excluded by hand and plans already at their target (within {THERE_POSITION * 100:.0f} cm and "
+             f"{math.degrees(THERE_YAW):.0f}°) are left out. The problems differ between planners, so this is about "
+             "how each does in general, not a comparison on equal tasks. Mean ± sd over attempts; runs as in "
+             "Driving.", "", "| " + " | ".join(header) + " |", "| " + " | ".join("---" for _ in header) + " |"]
+    rows = []
+    for environment in ENVIRONMENTS:
+        group = {name: [a for a in pooled if a.planner == name and a.environment == environment] for name in planners}
+        if not any(group.values()):
+            continue
+        runs = {name: [a for a in members if a.run is not None and not a.run_left_out]
+                for name, members in group.items()}
+        stats = []
+        for title, metric in columns:
+            values = {}
+            for name in planners:
+                members = runs[name] if metric in ("done", "deviation", "end", "drift", "ratio") else group[name]
+                if metric == "count":
+                    values[name] = (float(len(runs[name] if title == "Runs" else group[name])), 0.0)
+                    continue
+                found = [(1.0 if a.description["run"]["outcome"] == "done" else 0.0) if metric == "done"
+                         else a.run_value(metric) if metric in ("deviation", "end", "drift", "ratio")
+                         else a.value(metric) for a in members]
+                found = [value for value in found if value is not None]
+                values[name] = (float(np.mean(found)), float(np.std(found))) if found else (None, 0.0)
+            kind = "success" if metric == "done" else metric
+            stats.append((kind, values, None if metric == "count" else _best(kind, values)))
+        if rows:
+            lines.append("| " + " | ".join("" for _ in header) + " |")
+        for name in planners:
+            if not group[name]:
+                continue
+            cells = [f"{values[name][0]:.0f}" if kind == "count" else
+                     _cell(values[name][0], kind, best == name, spread=values[name][1], percent=kind == "success")
+                     for kind, values, best in stats]
+            row = [name, environment] + cells
+            rows.append(row)
+            lines.append("| " + " | ".join(row) + " |")
+    _csv(out / "pooled.csv", header, [[_strip(cell) for cell in row] for row in rows])
+    return lines + [""]
+
+
+def _already_there(attempt: Attempt) -> bool:
+    """Whether the attempt planned from where it already was: within THERE_POSITION and THERE_YAW of its target."""
+    start, goal = attempt.description.get("start"), attempt.description.get("goal")
+    if not start or not goal:
+        return False
+    return (math.hypot(start[0] - goal[0], start[1] - goal[1]) < THERE_POSITION
+            and abs(math.remainder(start[2] - goal[2], math.tau)) < THERE_YAW)
+
+
 def _planning(attempts: list[Attempt], planners: list[str], out: Path) -> list[str]:
     metrics_ = (("Success", "success"), ("Plan time s", "seconds"), ("Length m", "length"),
                 ("Clearance cm", "clearance"))
@@ -369,21 +450,22 @@ def _runs(attempts: list[Attempt], planners: list[str], environment: str, out: P
 
 
 def _process(attempts: list[Attempt], planners: list[str], out: Path) -> list[str]:
-    task = next(task for task in TASKS if not task.virtual)
-    mine = [attempt for attempt in attempts if attempt.task == task.name]
-    lines = [f"## Process step {task.process_step}", ""]
-    if not mine:
-        return lines + ["Not run: no attempts on this task yet.", ""]
+    tasks = [task for task in TASKS if not task.virtual]
+    lines = [f"## Process step {tasks[0].process_step}", ""]
+    if not any(attempt.task == task.name for attempt in attempts for task in tasks):
+        return lines + ["Not run: no attempts on these tasks yet.", ""]
     columns = (("Success", "success", "plan"), ("Plan time s", "seconds", "plan"), ("Length m", "length", "plan"),
                ("Clearance cm", "clearance", "plan"), ("Deviation exact cm", "deviation", EXACT),
                ("End exact cm", "end", EXACT), ("Deviation deviated cm", "deviation", DEVIATED),
                ("End deviated cm", "end", DEVIATED), ("Deviation run cm", "deviation", "run"),
                ("End run cm", "end", "run"))
-    header = ["Planner", "Where", "Attempts"] + [title for title, _, _ in columns]
-    lines += [f"Every number of the ultimate test, {task.title.lower()}, per planner and where it was attempted.",
-              "", "| " + " | ".join(header) + " |", "| " + " | ".join("---" for _ in header) + " |"]
+    header = ["Task", "Planner", "Where", "Attempts"] + [title for title, _, _ in columns]
+    lines += ["Every number of the ultimate test, into the bar structure and back out, per task, planner and where "
+              "it was attempted.", "",
+              "| " + " | ".join(header) + " |", "| " + " | ".join("---" for _ in header) + " |"]
     rows = []
-    for environment in ENVIRONMENTS:
+    for task, environment in ((task, environment) for task in tasks for environment in ENVIRONMENTS):
+        mine = [attempt for attempt in attempts if attempt.task == task.name]
         group = {name: [a for a in mine if a.planner == name and a.environment == environment] for name in planners}
         if not any(group.values()):
             continue
@@ -403,7 +485,7 @@ def _process(attempts: list[Attempt], planners: list[str], out: Path) -> list[st
                 continue
             cells = [_cell(values[name][0], metric, best == name, spread=values[name][1],
                            percent=metric == "success") for metric, values, best in stats]
-            row = [name, environment, str(len(group[name]))] + cells
+            row = [task.name, name, environment, str(len(group[name]))] + cells
             rows.append(row)
             lines.append("| " + " | ".join(row) + " |")
     _csv(out / "process.csv", header, [[_strip(cell) for cell in row] for row in rows])
@@ -481,12 +563,10 @@ def _checks(attempts: list[Attempt]) -> list[str]:
 
 def _plots(attempts: list[Attempt], planners: list[str], out: Path) -> list[str]:
     _tasks_plot(attempts, planners, out / "tasks.png")
-    _metrics_plot(attempts, planners, out / "metrics.png")
-    return ["## Plots", "",
-            "- `tasks.png`: where each planner's paths go, per task, over the floor of its first attempt.",
-            "- `metrics.png`: how the planners compare per task: success, plan time, clearance, and the simulated "
-            "drives' finishing and deviation per model group; mean with sd; a missing bar is labelled \"none\".", "",
-            "## Files", "", "- One CSV per table: overview, planning, simulation_exact, simulation_deviated, "
+    (out / "metrics.png").unlink(missing_ok=True)  # replaced by the charts above
+    return ["## Where the paths go", "", "Each planner's paths over the floor of the task's first attempt.", "",
+            "![Each planner's paths per task](tasks.png)", "",
+            "## Files", "", "- One CSV per table: overview, pooled, planning, simulation_exact, simulation_deviated, "
             "runs_real, runs_sim, process, "
             "failures, attempts.", "- `results_prompt.md`: the prompt for results.md.", ""]
 
@@ -593,7 +673,8 @@ def _tasks_plot(attempts: list[Attempt], planners: list[str], out: Path) -> None
         axis = figure.add_subplot(rows, columns, k + 1)
         members = [attempt for attempt in attempts if attempt.task == task.name]
         draw_floor(axis, load_plan_arrays(members[0].folder))
-        for name, color in zip(planners, COLORS):
+        for name in planners:
+            color = colour(name, planners)
             for attempt in members:
                 arrays = load_plan_arrays(attempt.folder) if attempt.planner == name else None
                 if arrays is not None and len(arrays["path_poses"]):
@@ -608,40 +689,6 @@ def _tasks_plot(attempts: list[Attempt], planners: list[str], out: Path) -> None
         if k == 0:
             axis.legend(fontsize=7, loc="best")
     figure.suptitle("Paths per task: start ●, target ×, planners by colour", fontsize=11)
-    figure.savefig(out, dpi=110)
-
-
-def _metrics_plot(attempts: list[Attempt], planners: list[str], out: Path) -> None:
-    tasks = [task.name for task in TASKS if any(attempt.task == task.name for attempt in attempts)]
-    if not tasks:
-        return
-    panels = (("Success %", "success", "plan"), ("Plan time s", "seconds", "plan"),
-              ("Clearance cm", "clearance", "plan"), ("Finished, deviated models %", "finished", DEVIATED),
-              ("Deviation, exact model cm", "deviation", EXACT),
-              ("Deviation, deviated models cm", "deviation", DEVIATED))
-    figure = Figure(figsize=(16, 9), layout="constrained")
-    width = 0.8 / max(len(planners), 1)
-    x = np.arange(len(tasks))
-    for k, (title, metric, source) in enumerate(panels):
-        axis = figure.add_subplot(2, 3, k + 1)
-        for j, (name, color) in enumerate(zip(planners, COLORS)):
-            means, spreads = [], []
-            for task in tasks:
-                values = [_value(a, metric, source) for a in attempts if a.task == task and a.planner == name]
-                values = [value for value in values if value is not None]
-                means.append(np.mean(values) * (100 if metric in ("success", "finished") else 1) if values else np.nan)
-                spreads.append(np.std(values) * (100 if metric in ("success", "finished") else 1) if values else 0.0)
-            positions = x + (j - (len(planners) - 1) / 2) * width
-            axis.bar(positions, np.nan_to_num(means), width, yerr=spreads, color=color, label=_short(name),
-                     capsize=2)
-            for position, mean in zip(positions, means):
-                if not np.isfinite(mean):
-                    axis.text(position, 0, "none", rotation=90, ha="center", va="bottom", fontsize=7, color=color)
-        axis.set_xticks(x, tasks, rotation=45, ha="right", fontsize=8)
-        axis.set_title(title, fontsize=10)
-        axis.grid(True, axis="y", alpha=0.35)
-        if k == 0:
-            axis.legend(fontsize=8)
     figure.savefig(out, dpi=110)
 
 

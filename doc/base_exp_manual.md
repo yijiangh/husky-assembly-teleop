@@ -93,8 +93,8 @@ ros2 launch crl_husky pure_pursuit_sim.launch.py namespace:=a200_0804 mocap_id:=
 ```
 
 - `sim_model`: how the simulated robot moves. `controller_model`: what pure pursuit assumes.
-- Models are `crl_husky/config/base_models/<name>.yaml` in crl-husky: `ideal`, and `alice_tiles` (Alice, tiles,
-  arm stowed). Single values override the sim model, e.g. `xICR:=-0.10`.
+- Models are `crl_husky/config/base_models/<name>.yaml` in crl-husky: `ideal`, and `alice_tiles_2` (Alice, tiles,
+  arm stowed; `alice_tiles` is the earlier fit). Single values override the sim model, e.g. `xICR:=-0.10`.
 
 **Terminal 2: monitor**, then open <http://localhost:8095>:
 
@@ -128,7 +128,7 @@ cd ~/workspace && colcon build --packages-select crl_husky_msgs crl_husky
 ```bash
 ssh administrator@192.168.0.113
 cd ~/workspace && source install/setup.bash
-ros2 launch crl_husky pure_pursuit.launch.py model:=ideal        # or model:=alice_tiles
+ros2 launch crl_husky pure_pursuit.launch.py model:=ideal        # or model:=alice_tiles_2
 ```
 
 **Terminal 3 (control PC): monitor**, then open <http://localhost:8080>. The other robots are listed so they are

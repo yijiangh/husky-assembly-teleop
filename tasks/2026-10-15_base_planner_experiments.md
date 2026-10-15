@@ -29,10 +29,22 @@ Spec: `doc/base_planner_manual.md`. Code: `plugins/base_planner/{tasks,recording
   "short" in the first benchmark was the simulation cutting the commands still in flight; runs and simulation now
   go 2 s past done, and the report shows the drift after done.
 
+- **Arm stowed** (user): every plan, live and offline, is made with the planned robot's arms at their stow pose;
+  the panel warns when the live arm is more than 5° from it, and the ghosts show it stowed. Stowed, Alice is 0.68 m
+  wide at every height, so `tall_walls` is sized from that. The planner unit tests keep the arm out (joints 0): the
+  harder, lopsided case.
+- **Step 110 target** (user, 15 Oct): (0.43, −2.785, 0°), inside the bar structure; the first target was outside.
+  Re-run as `benchmark_1016`.
+- **Task origin** (user, 15 Oct): (0.4, −0.8, 180°), fitted so the benchmark's paths clear the lab (10 cm
+  at the tightest, at the ada tripod and Belle).
+- **step_110_out**: the way back out of the bar structure, its own task.
+- **Pilot runs** (15 Oct, run.json only, before tasks and experiment.json): archived to
+  `data_experiment/base_planner/_archive/pilot_1015/`; the report reads experiment runs only.
+
 ## Open
 
-- Confirm `PROCESS_TARGET` (hand-placed 15 Oct) and the process folder; set `TASK_ORIGIN` to the clean lab area.
-- The 9 pilot runs of 15 Oct (`data_experiment/base_planner/2026…_real`, run.json only) predate tasks and
-  experiment.json: the report does not read them (`report.py` still draws them one by one).
+- Lattice fine-tuning (user, 15 Oct): prefer open space; a suboptimal path within the time limit beats no path;
+  search again when the path fails the follower check (it gives up now). With `alice_tiles_2` the tall walls test
+  fails that check at xICR -0.20 (0.3 cm), so it is marked xfail until then.
 - Automation (drive to each task's start, plan with each planner, commit, repeat) is not built: the panel flow is
   manual.

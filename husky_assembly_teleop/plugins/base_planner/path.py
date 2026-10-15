@@ -11,8 +11,10 @@ from dataclasses import dataclass
 from typing import Callable
 
 import numpy as np
+from crl_husky.follower_path import SAME_SPOT
 from crl_husky.pure_pursuit import PurePursuitParams, turning_centre_poses
 
+from ..base_exp.templates import timing
 from ..planning.path import TimedPath
 
 #: Planning speeds; low, since the onboard follower sets its own speed.
@@ -21,8 +23,6 @@ MAX_ANGULAR_SPEED = 0.3  # rad/s
 
 #: Closer than this counts as already there; the move only turns.
 POSITION_TOLERANCE = 0.005  # m
-#: A step shorter than this only turns, as in the follower (crl_husky `follower_path.SAME_SPOT`).
-SAME_SPOT = 1e-3  # m
 #: Spacing of the poses along an arc, metres.
 ARC_STEP = 0.05
 #: Drive after a turn on the spot over which the follower brings the base back onto the path, metres.
@@ -284,14 +284,8 @@ def timed_path(poses, linear_speed: float = MAX_LINEAR_SPEED, angular_speed: flo
     """
     poses = np.array(poses, dtype=float)
     poses[:, 2] = np.unwrap(poses[:, 2])
-    times, kept = [0.0], [poses[0]]
-    for pose in poses[1:]:
-        last = kept[-1]
-        seconds = max(math.hypot(*(pose[:2] - last[:2])) / linear_speed, abs(pose[2] - last[2]) / angular_speed)
-        if seconds > 1e-6:
-            times.append(times[-1] + seconds)
-            kept.append(pose)
-    return BasePath(times=np.array(times), points=np.array(kept))
+    kept = poses[np.concatenate([[True], np.diff(timing(poses, linear_speed, angular_speed)) > 1e-6])]
+    return BasePath(times=timing(kept, linear_speed, angular_speed), points=kept)
 
 
 def _angle(angle: float) -> float:

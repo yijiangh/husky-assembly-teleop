@@ -10,6 +10,7 @@ from crl_husky.base_model import load_model
 from husky_assembly_teleop.plugins.base_planner.algorithms import ALGORITHMS, Debug
 from husky_assembly_teleop.plugins.base_planner.algorithms.lattice import Settings, plan
 from husky_assembly_teleop.plugins.base_planner.analysis import analyse
+from husky_assembly_teleop.plugins.base_planner.algorithms.base import FOLLOWER_MODEL
 from husky_assembly_teleop.plugins.base_planner.follow import DEVIATED, DEVIATED_XICRS, EXACT, model_groups
 from husky_assembly_teleop.plugins.base_planner.recording import (attempt_folder, load_description,
                                                                   load_plan_arrays, save_plan)
@@ -93,7 +94,7 @@ def test_report_compares_the_planners_on_a_task(tmp_path, world, robots, alice):
 
 def test_model_groups_drive_the_exact_model_first_then_the_deviated_ones():
     """One drive with the follower's own xICR, then one per deviated xICR; a straight drive finishes in all."""
-    model = load_model("alice_tiles")
+    model = load_model(FOLLOWER_MODEL)
     drives = model_groups([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0)], model, 0.2, 0.3)
     assert [(group, x_icr) for group, x_icr, _, _ in drives] == \
         [(EXACT, model["xICR"])] + [(DEVIATED, x_icr) for x_icr in DEVIATED_XICRS]

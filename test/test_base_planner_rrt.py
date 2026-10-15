@@ -9,12 +9,14 @@ import pytest
 from husky_assembly_teleop.config import robot_config_from_serial
 from scaffolding_assembly_core.geometry import box_geometry
 from husky_assembly_teleop.plugins.base_planner.algorithms import ALGORITHMS, Debug
-from husky_assembly_teleop.plugins.base_planner.algorithms.rrt_arcs import LEAD, plan
-from husky_assembly_teleop.plugins.base_planner.world import PlanningWorld
+from husky_assembly_teleop.plugins.base_planner.algorithms.base import LEAD
+from husky_assembly_teleop.plugins.base_planner.algorithms.rrt_arcs import plan
+from husky_assembly_teleop.plugins.base_planner.world import PlanningWorld, stowed
 from husky_assembly_teleop.plugins.planning.panel import with_guesses
 from scaffolding_assembly_core.robot import RobotObject
 from scaffolding_assembly_core.scene import Body, Scene
 from scaffolding_assembly_core.ids import robot_id
+from scaffolding_assembly_core.urdf import UR_JOINT_NAMES
 from scaffolding_assembly_core.geometry import Pose
 
 DATA = Path(__file__).resolve().parent.parent / "data"
@@ -119,6 +121,19 @@ def test_untracked_robot_is_planned_from_a_guess(world, robots, alice):
     assert plan(world, alice, (0.0, 0.0, 0.0), (0.0, -2.0, 1.0), threading.Event()).path is not None
     snapshot.robots[alice].enabled = False
     assert with_guesses(snapshot, alice) == (snapshot, [])
+
+
+def test_stowed_puts_the_arm_at_its_stow_pose_and_says_how_far_it_was(robots, alice):
+    """Measured joints count towards the distance, unmeasured ones do not; the shared snapshot is untouched."""
+    snapshot = _snapshot(robots)
+    robot = snapshot.robots[alice]
+    stow = {f"ur_arm_{name}": value for name, value in zip(UR_JOINT_NAMES, robots[0].arms[0].stow_joints)}
+    live = {**stow, "ur_arm_elbow_joint": 0.5, "ur_arm_wrist_1_joint": 0.0}
+    robot.joints, robot.unmeasured = dict(live), frozenset({"ur_arm_wrist_1_joint"})
+    stowed_snapshot, away = stowed(snapshot, alice, robots[0])
+    assert away == pytest.approx(abs(stow["ur_arm_elbow_joint"] - 0.5))
+    assert stowed_snapshot.robots[alice].joints == {**live, **stow}
+    assert not stowed_snapshot.robots[alice].unmeasured and robot.joints == live
 
 
 @pytest.mark.slow
