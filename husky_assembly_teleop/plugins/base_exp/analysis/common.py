@@ -36,7 +36,7 @@ from ..twist import cell_of
 #: Robots in table order, with their short label.
 ENVIRONMENTS = {"sim ideal": "sim ideal", "sim model": "sim", "real": "real"}
 #: Short controller labels; others keep their node name.
-CONTROLLERS = {"pure_pursuit": "PP", "husky_mpc": "MPC", "mpc": "MPC"}
+CONTROLLERS = {"pure_pursuit": "PP"}
 #: A controller's robot-model parameters, with the ideal values (crl_husky PurePursuitParams).
 CONTROLLER_MODEL = {"x_icr": 0.0, "speed_efficiency": 1.0, "steering_efficiency": 1.0, "cmd_delay_sec": 0.0}
 TEMPLATES = list(GRID)
