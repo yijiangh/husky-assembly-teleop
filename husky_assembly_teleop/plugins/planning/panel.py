@@ -372,7 +372,8 @@ class PlannerPlugin(HuskyPlugin):
         return chip(*_STATE_CHIPS[self.plan_state])
 
     def _message_html(self) -> str:
-        """The last message, one line, red if it was a failure."""
-        return (f'<div style="font-size:11px;color:{FAIL if self._message_failed else NONE};'
+        """The last message, one line, red if it was a failure; the full text on hover."""
+        return (f'<div title="{escape(self._message, quote=True)}" '
+                f'style="font-size:11px;color:{FAIL if self._message_failed else NONE};'
                 f'white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'
                 f'{escape(self._message) or "&nbsp;"}</div>')
