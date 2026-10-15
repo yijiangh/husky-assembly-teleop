@@ -43,21 +43,6 @@ class BasePath(TimedPath):
         """float: Distance driven, metres, turns not counted."""
         return float(np.sum(np.linalg.norm(np.diff(self.points[:, :2], axis=0), axis=1)))
 
-    def floor_points(self, samples_per_metre: float = 20.0) -> np.ndarray:
-        """Points along the path on the floor, for drawing it as a line.
-
-        Args:
-            samples_per_metre: Density of the points along straight parts.
-
-        Returns:
-            np.ndarray: (M, 2) x, y points, including every waypoint.
-        """
-        points = [self.points[0, :2]]
-        for a, b in zip(self.points[:-1, :2], self.points[1:, :2]):
-            count = max(int(np.linalg.norm(b - a) * samples_per_metre), 1)
-            points.extend(a + (b - a) * (i / count) for i in range(1, count + 1))
-        return np.array(points)
-
 
 def steer(q1, q2) -> list[tuple[float, float, float]]:
     """The corner poses of the move from `q1` to `q2`: turn, drive forwards or backwards (less turning), turn.
