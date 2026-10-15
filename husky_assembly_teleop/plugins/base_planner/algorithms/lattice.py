@@ -125,8 +125,6 @@ FINISHES_DRAWN = 40
 #: plan; a turn on the spot is sent as base_footprint's arc about the turning centre.
 SEND_STEP = 0.05
 SEND_TURN = 0.05
-#: Seconds kept back from the search for checking the path as followed.
-FOLLOW_RESERVE = 3.0
 
 #: Debug layers, back to front: name and colour (r, g, b).
 FLOOR = "guide: no heading fits", (206, 212, 218)
@@ -467,15 +465,14 @@ def plan(world: PlanningWorld, own: str, start, goal, abort: threading.Event, se
         return (float(lead_in[0]), float(lead_in[1]), heading), (float(past[0]), float(past[1]), heading)
 
     corners, reason = _search(start_c, arrive_c, tail_c, ahead, guide, centred, hits, failure, touched, ends, swing,
-                              settings, started + TIME_LIMIT - FOLLOW_RESERVE, abort, debug)
+                              settings, started + TIME_LIMIT, abort, debug)
     if corners is None:
         return failed(f"{reason}. Target: {target_room}, {approach}")
     corners = _merged(corners)
     debug.path(SEARCHED[0], [_to_base(pose, ahead) for pose in corners], SEARCHED[1])
     lap(f"search: {reason}; {len(corners)} waypoints")
 
-    shortened = _shortened(corners, bool(tail), hits, ends, swing, settings,
-                           min(time.time() + SHORTEN_TIME, started + TIME_LIMIT - FOLLOW_RESERVE))
+    shortened = _shortened(corners, bool(tail), hits, ends, swing, settings, time.time() + SHORTEN_TIME)
     debug.path(SHORTENED[0], [_to_base(pose, ahead) for pose in shortened], SHORTENED[1])
     lap(f"shortened to {len(shortened)} waypoints")
 
@@ -828,7 +825,7 @@ def _search(start, arrive, tail, ahead: float, guide: _Guide, centred, hits, fai
             if abort.is_set():
                 return None, "cancelled"
             if time.time() > deadline:
-                return None, stuck(f"no path found in {TIME_LIMIT - FOLLOW_RESERVE:.0f} s")
+                return None, stuck(f"no path found in {TIME_LIMIT:.0f} s")
             _, cost, _, parent_index, move, version = heapq.heappop(heap)
             node = nodes[0] if parent_index < 0 else child(nodes[parent_index], parent_index, move)
             if version != guide.version:
