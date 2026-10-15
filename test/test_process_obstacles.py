@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 import viser
-from process_fixtures import build_process
+from process_fixtures import build_process, with_start
 from test_compas_fab_mirror import configs, mirror, tool0, world  # noqa: F401 (fixtures)
 
 from scaffolding_assembly_core.process import Action, BodySpec, Movement, State, Target, write
@@ -62,6 +62,22 @@ def test_held_bodies_disabled_robot_touches_dropped(loaded):
     bodies = _by_id(loaded, 1)
     assert _enabled(bodies) == {"process/bars/B2", "process/joints/J1_male", "process/ground/WG0"}
     assert bodies["process/ground/WG0"].touches == ("process/joints/G1_ground",)
+
+
+def test_configured_robot_may_stand_on_the_ground_where_the_plan_has_it_absent(tmp_path):
+    """A step whose plan has Cindy absent: the real Cindy still stands on the floor, so her wheel may touch WG0."""
+    process = build_process(tmp_path)
+    step = next(index for index, (action_id, action) in enumerate(process.actions.items())
+                if action.robot == "robots/alice")
+    action_id = list(process.actions)[step]
+    start = process.actions[action_id].movements[0].start
+    process = with_start(process, action_id, 0, robots={**start.robots, "robots/cindy": None})
+    write(process, tmp_path / "process")
+    loaded = load_process(tmp_path / "process", tmp_path)
+    index = next(i for i, each in enumerate(loaded.steps) if each.action.id == action_id)
+    assert loaded.steps[index].movement.start.robots["robots/cindy"] is None
+    ground = _by_id(loaded, index, (_real_cindy(loaded),))["process/ground/WG0"]
+    assert "robots/a200-0806/wheel_link" in ground.touches
 
 
 def test_placed_bodies_poses_and_derived_touches(loaded):
