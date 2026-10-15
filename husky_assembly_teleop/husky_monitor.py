@@ -117,12 +117,14 @@ GOAL_BLUE = [0, 0.2, 0.5, 0.7]
 # * Panel colours (RGB 0-255) of the buttons used on every step, by what a click
 # * does: load (nothing moves) = blue, compute without moving (plan, IK check) =
 # * teal, start a robot motion = orange, let a waiting step go on = green,
-# * stop = red.
+# * stop = red, record an action as done = yellow.
 BUTTON_LOAD_RGB = (45, 95, 170)
 BUTTON_PLAN_RGB = (20, 125, 125)
 BUTTON_MOVE_RGB = (205, 110, 20)
 BUTTON_CONFIRM_RGB = (40, 145, 60)
 BUTTON_CANCEL_RGB = (180, 40, 40)
+# A darker yellow, so the button's white label stays readable.
+BUTTON_DONE_RGB = (185, 150, 15)
 TRAJECTORY_GREEN = [0, 0.5, 0.2, 0.7]
 TRANSPARENT = [0, 0.0, 0.0, 0.0]
 # Faint grey for built bars / joints the planner ignores (IGNORE_BUILT_ASSEMBLY_COLLISIONS):
@@ -11166,7 +11168,7 @@ class HuskyMonitor(Node):
         self.buttons.append(Button('Prev action', self.select_prev_action))
         self.buttons.append(Button('Next action', self.select_next_action))
         self.buttons.append(Button('Load action', self.load_action, color=BUTTON_LOAD_RGB))
-        self.buttons.append(Button('Mark action done', self.mark_action_done))
+        self.buttons.append(Button('Mark action done', self.mark_action_done, color=BUTTON_DONE_RGB))
         self.buttons.append(Button('Reopen action (reload clean)', self.reopen_action))
         self.buttons.append(Button('Rescan plan skeleton status', self.rescan_skeleton_status))
         # ! Start over: every action pending, every saved plan set aside (asks for 'Confirm Exec').
