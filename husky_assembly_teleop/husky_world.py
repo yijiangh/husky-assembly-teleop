@@ -239,7 +239,7 @@ def _base_calibration_file_for(monitor, spec: RobotSpec) -> Optional[str]:
     the tag just makes the active convention explicit. Falls back to the
     untagged file if the tagged one is missing.
 
-    The date folder is the robot's own action in BASE_CALIBRATION_DATE_BY_ROBOT
+    The date folder is the robot's own entry in BASE_CALIBRATION_DATE_BY_ROBOT
     (huskies are calibrated on different days), else CALIBRATION_DATE.
 
     Args:

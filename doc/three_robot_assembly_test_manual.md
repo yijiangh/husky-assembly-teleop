@@ -100,6 +100,7 @@ The same values serve all three robots' runs.
 ```bash
 F=~/ros2_ws/src/husky-assembly-teleop/husky_assembly_teleop/husky_monitor.py
 grep -nE "^    (FAKE_HARDWARE|USE_MOCAP|USE_CELL_STATE_BASE_POSE|CONNECT_COMPLIANT_CONTROLLER|LIST_CONTROLLER_SERVICES|IGNORE_BUILT_ASSEMBLY_COLLISIONS|TRANSFER_AS_FREE_MOVE) *=" "$F"
+grep -nE "^    (CALIBRATION|PUNCH_CALIB_VALIDATION|BAR_ACTION_LIVE_REPLAN_EXE|BAR_ACTION_MOCAP_ACCURACY_TEST) *=" "$F"
 grep -nE "^(CLIENT_IP|MOCAP_IP) *=" "$F"
 ip -4 -brief addr show eno1        # this PC's address on the robot network
 ```
@@ -113,6 +114,9 @@ ip -4 -brief addr show eno1        # this PC's address on the robot network
 | `LIST_CONTROLLER_SERVICES` | **1** |
 | `IGNORE_BUILT_ASSEMBLY_COLLISIONS` | 0 (built bars are obstacles; leave the panel toggle unticked, also for Alice and Belle: both holds plan with them, checked headless on this export) |
 | `TRANSFER_AS_FREE_MOVE` | 0 (tick the workaround box in the panel instead) |
+| `CALIBRATION`, `PUNCH_CALIB_VALIDATION` | **0** (1 only for a calibration session; Belle's on 2026-10-13/14 had both at 1) |
+| `BAR_ACTION_LIVE_REPLAN_EXE` | **1** (0 hides the whole bar-assembly panel, the plan skeleton included) |
+| `BAR_ACTION_MOCAP_ACCURACY_TEST` | 1 (the value before Belle's calibration; its extra buttons are not used in this test) |
 | `CLIENT_IP` (module level) | **this PC's `eno1` address** (`192.168.0.25` on 2026-10-07) |
 | `MOCAP_IP` (module level) | `192.168.0.28` (the Motive PC) |
 
@@ -138,30 +142,24 @@ Both addresses are DHCP leases and can move: see `doc/calibration_manual.md` sec
 I=~/ros2_ws/src/husky-assembly-teleop/husky_assembly_teleop/__init__.py
 grep -nE "^CALIBRATION_DATE|^BASE_CALIBRATION_DATE_BY_ROBOT|^    '(Alice|Belle|Cindy)'" "$I"
 C="$HOME/Insync/2025-03 Husky Assembly/data_experiment/calibration_data"
-ls "$C"/20260916/calibrated_transformation_0806_rhino.json "$C"/20260623/calibrated_transformation_0804_rhino.json
-ls "$C"/*/calibrated_transformation_0805*.json 2>/dev/null || echo "Belle: NO calibration yet"
+ls "$C"/20260916/calibrated_transformation_0806_rhino.json "$C"/20260623/calibrated_transformation_0804_rhino.json \
+   "$C"/20261013/calibrated_transformation_0805_rhino.json
 ```
 
 | robot | calibration | where it is set |
 |---|---|---|
-| Cindy (0806) | `20260916` | `CALIBRATION_DATE` |
+| Cindy (0806) | `20260916` | her entry `'Cindy': '20260916'` |
 | Alice (0804) | `20260623` | her entry `'Alice': '20260623'` (her newest calibration) |
-| Belle (0805) | **none yet** (no `0805` file in any date folder on 2026-10-13) | add `'Belle': '<YYYYMMDD>'` after calibrating her |
+| Belle (0805) | `20261013` (recorded 2026-10-14) | her entry `'Belle': '20261013'` |
 
-- ! **Belle must be calibrated before her hold (action 10).** Follow `doc/calibration_manual.md`:
-  - single arm, serial `0805`, domain 85, Motive id 1850; her calibration launch is in its
-    section 2.3, and `config.yaml` takes `robot_name: "0805"`;
-  - run `data/calibration_data/convert_to_rhino.py`, so the folder holds
-    `calibrated_transformation_0805_rhino.json`;
-  - then add her line to `BASE_CALIBRATION_DATE_BY_ROBOT` (calibration manual section 7.2):
+All three robots have their own entry, so `CALIBRATION_DATE` (`20261013`, the newest calibration
+session) decides no robot's base; it only matters for a calibration session's recordings.
 
-```python
-BASE_CALIBRATION_DATE_BY_ROBOT = {
-    'Alice': '20260623',  # 0804, the newest Alice calibration
-    'Belle': 'YYYYMMDD',  # 0805, the folder of her new calibration
-}
-```
-
+- **Belle's calibration (2026-10-14)**, folder `20261013`: validation over 17 poses, the tool
+  tracker's offset found again within 1.6 mm (std 0.7 mm) and 0.5°; punch test, 5 takes from
+  different base poses, the punch tip within 1.5 mm of its mean (pairwise at most 3.0 mm).
+  Her mocap body sits 180° turned compared with Alice's (tracker mounting), so her
+  `base_mocap_from_base_footprint` turns by +90° where Alice's turns by −90°: expected.
 - ! Alice's June calibration holds only if her base markers have not moved since. The first check
   of each support robot's calibration is where its open jaws end after the free approach
   (sections 8 and 10).
@@ -526,10 +524,10 @@ ros2 run husky_assembly_teleop husky_monitor
 - [ ] One base calibration line per robot (all three huskies are created):
   - `Base calibration of Cindy (0806): 20260916/calibrated_transformation_0806_rhino.json`
   - `Base calibration of Alice (0804): 20260623/calibrated_transformation_0804_rhino.json`
-  - `Base calibration of Belle (0805): <her date>/calibrated_transformation_0805_rhino.json`
+  - `Base calibration of Belle (0805): 20261013/calibrated_transformation_0805_rhino.json`
 
-  `Base calibration file not found for robot 0805: ...` = Belle is not calibrated yet (0.1): stop
-  before action 10.
+  `Base calibration file not found for robot ...` = that robot's file is missing or not synced
+  yet (0.1): stop before that robot's actions.
 - [ ] `[Plan skeleton] robot <Cindy (domain 86) | Alice (domain 84) | Belle (domain 85)> | problem 261006_3bar_holding_test | progress k/18 done`,
       `[Plan skeleton] others: ...`, the 18-action roster, and `mocap client connected: True`
       (`False`: `CLIENT_IP`, see 0.1).
@@ -973,7 +971,8 @@ with a manual foundation fix. The base drives about 1.1 m from where it stood fo
 ## 10. Belle's run 4 — action 10: Belle grabs B35
 
 The same four steps as Alice's hold (section 8); only the differences are spelled out here.
-Belle's base calibration must be in place (0.1); the start-up prints her calibration line.
+Her start-up prints `Base calibration of Belle (0805): 20261013/...` (0.1); the calibration check
+after the free approach below is the first test of it on an assembly.
 
 Monitor pane: 1.1 **Belle** block, then `ros2 run husky_assembly_teleop husky_monitor`.
 
@@ -1008,7 +1007,7 @@ Monitor pane: 1.1 **Belle** block, then `ros2 run husky_assembly_teleop husky_mo
   - [ ] It ends with `### SERVOING converged at iter N (< 0.2 mm)` (headless, a 10 mm base
         shift: one move, 10 → 0.00 mm; or it stops after 8), the
         `B35_H_M0_free_to_approach_servoing_*` record and the `[Servo] propagated ...` lines.
-- [ ] **Calibration check** (Belle's new calibration): the jaws stand ≈ 100 mm in front of B35,
+- [ ] **Calibration check** (Belle's 2026-10-14 calibration, 0.1): the jaws stand ≈ 100 mm in front of B35,
       centred on the bar. Off by more than ~1–2 cm sideways: stop, her base calibration is wrong.
 - [ ] **Gripper open** (`B35_H_M1_gripper_open`): `Step` → 1 → `Load Movement` →
       `Exec gripper step: OPEN` → `Confirm Exec` → `gripper 0 done: position 0.426, ...`.
@@ -1178,7 +1177,7 @@ Monitor pane: 1.1 **Belle** block, then `ros2 run husky_assembly_teleop husky_mo
 | Alice / Belle: `switch to cartesian_compliance_controller FAILED: the gripper was NOT closed` | nothing closed: check the robot's controllers (section 2; `Switch to Joint (BOTH)` if needed), then run the close step again |
 | Belle's arm moves when the handoff goes compliant | e-stop; her controller frame may differ from Alice's (section 6). Note how far and which way, close stiff with `Close Gripper for Bar` instead |
 | the jaws not centred on the bar after the free approach | that robot's base calibration is off (0.1): stop before the straight approach; recalibrate it |
-| `Base calibration file not found for robot 0805` (Belle) / `0804` (Alice) | the robot's file is not in the folder its `BASE_CALIBRATION_DATE_BY_ROBOT` entry names (0.1), Belle has no entry yet, or Insync has not synced it |
+| `Base calibration file not found for robot 0805` (Belle) / `0804` (Alice) | the robot's file is not in the folder its `BASE_CALIBRATION_DATE_BY_ROBOT` entry names (0.1), or Insync has not synced it |
 | no topics / `Unknown topic` | `eno1` on `192.168.0.x` and the robot pings (0.4), the right domain + CycloneDDS in this pane (1.1 / 1.2), the robot's launch still running with its domain + CycloneDDS (0.3) |
 | no tool status (section 2) / grasp steps get no answer | `... ScaffoldingToolStatus' is invalid`: the checks pane did not source the workspace (1.2), the tools are fine. `NO MESSAGES`: Cindy's launch is missing `gripper:=scaffolding_v3` (0.3) |
 | `mocap client connected: False` | `CLIENT_IP` is not this PC's `eno1` address (0.1), or the Motive PC is no longer `192.168.0.28` (`doc/calibration_manual.md` 1.4) |

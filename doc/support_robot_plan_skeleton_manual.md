@@ -66,7 +66,8 @@ and restart the monitor with that robot's domain; progress survives the restart.
 3. **Base calibration files.** Each robot's
    `calibrated_transformation_<0804|0805|0806>_rhino.json` must exist in its date
    folder: the robot's entry in `BASE_CALIBRATION_DATE_BY_ROBOT` (Alice:
-   `20260623`), else `CALIBRATION_DATE` (both in `husky_assembly_teleop/__init__.py`).
+   `20260623`, Belle: `20261013`, Cindy: `20260916`), else `CALIBRATION_DATE` (both in
+   `husky_assembly_teleop/__init__.py`).
    At start-up the monitor prints `Base calibration of <robot> (<serial>): <date>/<file>`
    per robot, or a `Base calibration file not found` warning. A robot without one
    never gets a live obstacle pose (it falls back to `progress.json`), and as the

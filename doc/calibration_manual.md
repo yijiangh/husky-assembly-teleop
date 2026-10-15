@@ -355,7 +355,8 @@ ros2 run husky_assembly_teleop husky_monitor
 > variable is missing it silently falls back to **Cindy** (86), so always export
 > it in the same terminal. Check the start-up log for the robot name.
 
-> **Expected warning while calibrating a robot for the first time**:
+> **Expected warning while calibrating a robot for the first time** (here from Belle's
+> first session, 2026-10-13; her file exists since 2026-10-14):
 > `Base calibration file not found for robot 0805: .../20261013/calibrated_transformation_0805_rhino.json. Continuing without base calibration.`
 > That file is the *output* of this calibration ([§7.3](#73-run-the-pipeline)),
 > so it cannot exist yet. Data collection does not need it -- every point stores
@@ -390,14 +391,16 @@ This is the main calibration data collection procedure. You will collect data fo
 
 Before collecting data, verify these settings in the code match your setup.
 
-> **Current settings (2026-10-13): Belle (0805).** The code is set up for Belle's
-> calibration: both dates = `20261013` (the folder exists on the gdrive with a
-> `config.yaml`, `robot_name: "0805"`), Cindy keeps reading her base calibration
-> from `20260916` through `BASE_CALIBRATION_DATE_BY_ROBOT`, Belle's calib tool is
-> Motive ID `1866`, the calibration mode flags below are set, and the monitor must be launched with `ROS_DOMAIN_ID=85`
-> ([§3.1](#31-launch-the-monitor-node)). Belle uses the same joint-space
-> trajectories as Alice (`260630_calib_trajs_Alice`): both robots mount the arm
-> the same way, so the reference set works for either.
+> **Current settings (2026-10-15): assembly mode.** Belle's (0805) calibration is
+> done (folder `20261013`, recorded 2026-10-14, results in [§7.2](#72-set-the-date-folder)) and the
+> code is back in assembly mode: the mode flags below are at their assembly values
+> (`CALIBRATION = 0`, `PUNCH_CALIB_VALIDATION = 0`, both `BAR_ACTION_*` = `1`).
+> Both dates still point at `20261013`, and every robot reads its base calibration
+> from its own `BASE_CALIBRATION_DATE_BY_ROBOT` entry. For the next session set the
+> flags and both dates as below. For Belle again: her calib tool is Motive ID
+> `1866`, launch the monitor with `ROS_DOMAIN_ID=85` ([§3.1](#31-launch-the-monitor-node)),
+> and she uses the same joint-space trajectories as Alice (`260630_calib_trajs_Alice`):
+> both robots mount the arm the same way, so the reference set works for either.
 
 **Values, IDs & IPs** — set to match your robot / network / session:
 
@@ -422,9 +425,11 @@ Before collecting data, verify these settings in the code match your setup.
 | `BAR_ACTION_MOCAP_ACCURACY_TEST` | [`husky_monitor.py:373`](../husky_assembly_teleop/husky_monitor.py#L373) | `0` | `1` adds the bar-holding accuracy test (bar rig tracker, markerset buttons); not used for calibration |
 | `PUNCH_CALIB_VALIDATION` | [`husky_monitor.py:451`](../husky_assembly_teleop/husky_monitor.py#L451) | `0` | `1` only for a punch-validation session (switches EE to punch tips) |
 
-> **Going back to assembly work afterwards**: set `CALIBRATION = 0` and the two
-> `BAR_ACTION_*` flags back to `1` (the mocap accuracy test setting), and point
-> both dates back at the folder you want the live app to use.
+> **Going back to assembly work afterwards**: set `CALIBRATION = 0` and
+> `PUNCH_CALIB_VALIDATION = 0`, the two `BAR_ACTION_*` flags back to `1` (the mocap
+> accuracy test setting) and `CONNECT_COMPLIANT_CONTROLLER = 1` (Belle's session ran
+> with it at `0`). Point the calibrated robot's `BASE_CALIBRATION_DATE_BY_ROBOT` entry at
+> the new folder ([§7.2](#72-set-the-date-folder)); the two dates can then stay.
 
 ### 4.1 Understanding the GUI Controls
 
@@ -738,10 +743,12 @@ After collecting all J0 and J1 data (and optionally validation data), run the ca
    scripts (from the robot registry, `RobotSpec.urdf_path`), so a wrong serial
    here gives slightly wrong forward kinematics, not an error.
 
-   > **Belle, 2026-10-13**: `$CALIB/20261013/config.yaml` is already in place
-   > with `robot_name: "0805"`. Its `punch_tool` offsets are copied from Alice
-   > (20260623) -- re-do the 4-point TCP on Belle ([§6.1](#61-hardware-setup))
-   > and update them before punch validation.
+   > **Belle, 2026-10-14**: `$CALIB/20261013/config.yaml` has `robot_name: "0805"`
+   > and her own 4-point TCP, `[0.58, 1.58, 110.54]` mm → `offset_xyz: [0.00058, 0.00158, 0.11054]`.
+   > ! Check the metres twice: her first five punch takes were recorded with
+   > `1.1054` (a digit slipped), which puts the punch tip a metre off. They were
+   > recomputed with `0.11054`; the originals are in
+   > `punch_validation/archive_wrong_offset_1.1054m/`.
 
 ### 7.2 Set the Date Folder
 
@@ -764,22 +771,30 @@ The monitor reads each robot's base calibration
 (`calibrated_transformation_<serial>_rhino.json`) from `CALIBRATION_DATE`, unless
 the robot has its own folder in `BASE_CALIBRATION_DATE_BY_ROBOT` (same file, just
 below). The robots are calibrated on different days, so after calibrating one
-robot, point its entry at the new folder (or remove the entry when the new folder
-is `CALIBRATION_DATE`):
+robot, point its entry at the new folder. Since 2026-10-15 every robot has one,
+so `CALIBRATION_DATE` decides no robot's base:
 
 ```python
 BASE_CALIBRATION_DATE_BY_ROBOT = {
     'Alice': '20260623',  # 0804, the newest Alice calibration
+    'Belle': '20261013',  # 0805, the newest Belle calibration (recorded 2026-10-14)
     'Cindy': '20260916',  # 0806, the newest Cindy calibration
 }
 ```
 
-Belle has no entry, so she reads `CALIBRATION_DATE` (`20261013`). Until the
-pipeline has written `calibrated_transformation_0805_rhino.json` there, the
-monitor warns *Base calibration file not found* for Belle and draws her base
-uncalibrated. That is expected during data collection: the recorded data uses
-the raw mocap poses. Once `CALIBRATION_DATE` moves on to another folder, add
-`'Belle': '20261013'` here.
+During a robot's first session its file does not exist yet, so the monitor warns
+*Base calibration file not found* for it and draws its base uncalibrated. That is
+expected during data collection: the recorded data uses the raw mocap poses.
+
+**Belle's calibration (2026-10-14, folder `20261013`)**, for comparison with the
+next one:
+- Validation (`3_verify_calibration.py`, 17 poses): the calib tool's offset from
+  tool0 is 22.8–24.7 mm long (mean `[17.3, -1.8, 16.1]` mm), each pose within
+  1.6 mm of the mean (std 0.7 mm), axes within 0.5°.
+- Punch validation (`4_punch_validation.py`, 5 takes): the tip within 1.5 mm of its
+  mean (std 0.3 mm), pairwise at most 3.0 mm.
+- `base_mocap_from_base_footprint` turns by +90° about z where Alice's turns by
+  −90°: Belle's base tracker is mounted 180° turned compared with Alice's. Expected.
 
 At start-up the monitor prints the file it loaded for every robot, e.g.
 `Base calibration of Alice (0804): 20260623/calibrated_transformation_0804_rhino.json`.

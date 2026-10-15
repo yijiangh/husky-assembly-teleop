@@ -360,14 +360,16 @@ plugged in), then `ros2 daemon stop` once. Delete `~/husky_dryrun` when done.
 **Calibration (base mocap ↔ robot)** — read from `<EXPERIMENT_DATA_DIRECTORY>/calibration_data/<date>/`,
 where `<date>` is the robot's entry in `BASE_CALIBRATION_DATE_BY_ROBOT`, else `CALIBRATION_DATE`
 (both in `husky_assembly_teleop/__init__.py`).
-- [ ] Cindy: `calibrated_transformation_0806_rhino.json` — in `20260916` (`CALIBRATION_DATE`).
+- [ ] Cindy: `calibrated_transformation_0806_rhino.json` — in `20260916` (her entry
+      `'Cindy': '20260916'`).
 - [ ] Alice: `calibrated_transformation_0804_rhino.json` — in `20260623` (her entry
       `'Alice': '20260623'`). Valid only if her base markers have not moved since June: check it in
       B3.5. Start-up prints `Base calibration of Alice (0804): 20260623/...`.
       Without a file, Alice's mocap base is off by her marker offset, and she never appears as a
       live obstacle in Cindy's runs (she falls back to `progress.json`, which is fine).
-- [ ] Belle has never been calibrated: keep her out of the mocap volume or ignore her (she is parked
-      in all four-bar planning).
+- [ ] Belle: `calibrated_transformation_0805_rhino.json` — in `20261013` (her entry
+      `'Belle': '20261013'`, calibrated 2026-10-14). She is parked in all four-bar planning, so
+      keep her out of the mocap volume or ignore her.
 
 **Monitor flags for Part B**
 
