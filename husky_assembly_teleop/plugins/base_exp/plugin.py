@@ -44,6 +44,8 @@ from ...ui.pose_input import yaw_from_xyzw
 from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, SECTION_TOOL, block, chip, section, values, warning
 from ...ui.trace_plot import TracePlot
 from ...world import signals
+from ...world.checks import STALE_AFTER
+from ...world.follower import live_report
 from . import record
 from .auto import PATH_CLEARANCE, SPEED, STANDARD_SET, STOP_DISTANCE, Clearance, Sampler, StandardSet
 from .markers import Markers
@@ -57,8 +59,6 @@ from .twist import TWIST, TwistGrid, grid, twist_plan
 LIVE_SAMPLES = 1200
 #: Smallest y span of each live plot (m, °, m/s, °/s), so a run with no error keeps a readable axis.
 LIVE_MIN_SPANS = (0.02, 2.0, 0.05, 5.0)
-#: The follower counts as running while its last report is younger than this, seconds.
-FOLLOWER_FRESH = 1.0
 #: Seconds to wait for the follower to take a path.
 ACK_TIMEOUT = 2.0
 #: The command and odometry logs saved with a run start this many seconds before the path was sent.
@@ -358,7 +358,7 @@ class BaseExperimentPlugin(HuskyPlugin):
         def ended() -> bool:
             follower = base.state.follower
             return (bool(self._alert) or bool(base.state.estopped) or follower.path_id != path_id
-                    or follower.state != "following" or ctx.now() - follower.update_time > 2 * FOLLOWER_FRESH)
+                    or follower.state != "following" or ctx.now() - follower.update_time > 2 * STALE_AFTER)
 
         try:
             more = {"experiment_name": _slug(self._experiment.value), "clearance": {"path": PATH_CLEARANCE,
@@ -746,9 +746,7 @@ class BaseExperimentPlugin(HuskyPlugin):
 
     def _follower(self, ctx: PluginContext) -> FollowerState | None:
         """The chosen robot's follower report if it is recent, else None."""
-        follower = ctx.world.robots[self.serial].base.state.follower
-        fresh = follower is not None and ctx.now() - follower.update_time < FOLLOWER_FRESH
-        return follower if fresh else None
+        return live_report(ctx.world.robots[self.serial].base.state.follower, ctx.now())
 
     def _enable_numbers(self) -> None:
         """Enable the numbers the chosen template uses, disable the rest."""

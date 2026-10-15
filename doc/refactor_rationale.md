@@ -214,8 +214,8 @@ The core is grouped by what a module is about, not by who calls it:
   shared base for the planner plugins and registers none itself.
 - `world/`: what is in the world and where. `measured.py` (formerly `world_state.py`)
   holds what sensors report; `scene.py` what we put there; `kinematics.py` the
-  link poses; `mirrors/` the planners' private copies; `checks.py` and `mocap.py`
-  verdicts on a sensor or mocap fix, as data.
+  link poses; `mirrors/` the planners' private copies; `checks.py`, `mocap.py` and `follower.py`
+  verdicts on a sensor, a mocap fix or the base's path follower, as data.
 - `robot_interface/`: the only package that talks to a robot.
 - `ui/`: the viser server (`visualization.py`), the 3D view (`scene_view.py`) and
   the panel widgets (`style.py`, formerly `ui_style.py`; `ghost.py`,
