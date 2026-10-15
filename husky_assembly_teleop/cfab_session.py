@@ -30,7 +30,7 @@ from compas.data import json_load
 from compas.datastructures import Mesh
 from compas.geometry import Frame
 from compas_fab.backends import (
-    BackendError, PyBulletClient, PyBulletPlanner,
+    BackendError, CollisionCheckError, PyBulletClient, PyBulletPlanner,
 )
 from compas_fab.robots import (
     FrameWaypoints, JointTrajectory, RigidBody, RigidBodyState, RobotCell, RobotCellState,
@@ -333,6 +333,9 @@ class CfabSession:
             self.client._cache_dir = tempfile.TemporaryDirectory(prefix="compas_fab")
         try:
             self.planner = PyBulletPlanner(self.client)
+            # Every caller of this planner's check_collision also gets the
+            # tool-against-tool step compas_fab lacks (see _check_collision_with_tool_pairs).
+            self.planner.check_collision = MethodType(_check_collision_with_tool_pairs, self.planner)
             if robot_cell is None:
                 robot_cell_path = os.path.join(
                     DESIGN_DATA_DIRECTORY, problem_name, cell_filename
@@ -617,6 +620,76 @@ def plan_free_motion(planner, start_state: RobotCellState, goal_conf, *,
 # * compas_fab forward-kinematics workaround (used by plan_linear_motion only)
 # ============================================================================
 # ! The pinned compas_fab (external/compas_fab @ 995122d) has a bug in
+# ! compas_fab's check_collision (PyBulletCheckCollision, steps CC.1 to CC.5) never
+# ! checks a tool against another tool. The other robots stand in a cell as frozen
+# ! tools (ObstacleRobot<Name>), and the planning robot's own tools (Cindy's AT3L /
+# ! AT3R) are tools too, so a plan could drive Cindy's tool straight through Belle
+# ! (B36 transfer, 2026-10-15: her links were kept clear, her tools were not).
+# ? TODO: drop this once compas_fab checks tool pairs upstream and the pin is bumped.
+
+def _check_collision_with_tool_pairs(planner, state: RobotCellState,
+                                     options: Optional[dict] = None) -> None:
+    """compas_fab's check_collision plus CC.6: the robot's own tools against the other tools.
+
+    Bound on the planner of a CfabSession, so every caller of its
+    ``check_collision`` gets it: the free and bar-held planners, the goal IK,
+    the linear plans, the swept-path check and the collision diagnosis.
+
+    * An "own" tool is attached to a planning group (Cindy's AT3L / AT3R); the
+    * others stand free in the cell (the other robots, ObstacleRobot<Name>).
+    * Hidden tools are skipped. CC.6 belongs with CC.2 (robot against tool): a
+    * caller that skips CC.2 (``_skip_cc2``) skips it too.
+
+    Args:
+        planner: The PyBulletPlanner this is bound to.
+        state (RobotCellState): The state to check (compas_fab pushes it into
+            PyBullet unless ``_skip_set_robot_cell_state`` says it is already there).
+        options (dict | None): compas_fab's check_collision options
+            (``full_report``, ``verbose``, ``_skip_cc1`` ... ``_skip_cc5``).
+
+    Raises:
+        CollisionCheckError: When anything collides. The message lists the pairs
+            in compas_fab's style, e.g. ``CC.6 between tool 'AT3L' and tool
+            'ObstacleRobotBelle' - COLLISION``.
+    """
+    options = options or {}
+    full_report = options.get("full_report", False)
+    found = None
+    try:
+        PyBulletPlanner.check_collision(planner, state, options)
+    except CollisionCheckError as e:
+        # Without a full report the first collision is enough.
+        if not full_report:
+            raise
+        found = e
+    if options.get("_skip_cc2", False):
+        if found is not None:
+            raise found
+        return
+
+    # The scene now stands at `state` (compas_fab pushed it, or the caller had).
+    client = planner.client
+    tool_states = client.robot_cell_state.tool_states
+    shown = {name: puid for name, puid in client.tools_puids.items()
+             if not tool_states[name].is_hidden}
+    own = [name for name in shown if tool_states[name].attached_to_group]
+    others = [name for name in shown if not tool_states[name].attached_to_group]
+    messages = [found.message] if found is not None else []
+    pairs = list(found.collision_pairs) if found is not None else []
+    for name_a in own:
+        for name_b in others:
+            try:
+                client._check_collision(shown[name_a], name_a, shown[name_b], name_b)
+            except CollisionCheckError:
+                messages.append(f"CC.6 between tool '{name_a}' and tool '{name_b}' - COLLISION")
+                pairs.append((client.robot_cell.tool_models[name_a],
+                              client.robot_cell.tool_models[name_b]))
+                if not full_report:
+                    raise CollisionCheckError("\n".join(messages), pairs)
+    if messages:
+        raise CollisionCheckError("\n".join(messages), pairs)
+
+
 # ! PyBulletForwardKinematics.forward_kinematics
 # ! (backends/pybullet/backend_features/pybullet_forward_kinematics.py:99-102):
 # ! set_robot_cell_state already places the robot base at robot_base_frame in
