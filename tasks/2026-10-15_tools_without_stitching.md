@@ -20,6 +20,67 @@ What the check reports for the two local processes (`data_design_study/`, 2026-1
 - The Robotiq: TCP at tool0 in `260814_RobArch_support_ik`, at 166.1 mm with a 180° turn in `261008_2ModulesDemo`.
 - The Robotiq's collision bounds differ by 37 mm from `data/tool_urdf/robotiq_2f_85.urdf`.
 
+## Before the TCP works: problems, settings, to-dos
+
+Decided 2026-10-15: the pendant's TCP is the tool's real TCP (not the flange). `Tool.tcp` is the one value for
+planners, the pendant, the monitor's tool0 conversion (`arm.flange_from_reported`) and the health `tcp` chip.
+
+**Values (decide first)**
+- [ ] TCP of each tool, in its tool0 frame: Cindy's `scaffolding_v3` left/right are (∓0.07, 0, 0.08) m in both
+      local processes; confirm against the CAD or by measuring.
+- [ ] The Robotiq's TCP: the processes disagree (tool0 in `260814_RobArch_support_ik`; 166.1 mm out with a 180° turn
+      in `261008_2ModulesDemo`). Pick one, and check the orientation convention (which axis points out of the
+      tool, which across the fingers) against the pendant's.
+- [ ] Single-arm robots get the *left* v3 tool (`tool_urdfs.TOOL_URDFS`): confirm its TCP holds there.
+- [ ] `scaffolding_v1` has no model, so no TCP: Cartesian commands on such an arm assume TCP = tool0. Refuse them
+      instead, or give it a model.
+- [ ] The Robotiq's collision shape: ours (static, closed to 20 mm) or the processes' (37 mm apart)?
+- [ ] Payload mass and centre of gravity per tool: not modelled anywhere yet, needed for the pendant (below).
+
+**Data in this repo**
+- [ ] Add a `tcp` link on a fixed joint to `data/tool_urdf/robotiq_2f_85.urdf`, `scaffolding_v3_left.urdf` and
+      `scaffolding_v3_right.urdf` (`tool_urdfs.TCP_LINK`). ! Before any pendant is changed: until then the monitor
+      assumes TCP = tool0.
+- [ ] Fix the TCPs in the process sources (Rhino side) where they differ, so the process check goes green.
+
+**On each robot (Alice, Belle, Cindy left and right)**
+- [ ] Set the pendant's active TCP to the mounted tool's, one named TCP per tool in the installation.
+- [ ] Set the payload and its centre of gravity to the mounted tool's: the F/T reading, compliance and protective
+      stops depend on it.
+- [ ] Check the safety configuration's tool settings (tool position, tool speed and force limits): confirm on the
+      pendant that they follow the active TCP, and update them if they are set per tool.
+- [ ] Swapping a tool (`-p tools:=...`) means switching the pendant's TCP and payload too. Option: the monitor sets
+      both at startup from the model (URScript `set_tcp` / `set_payload` through the driver). ? Test first that it
+      works while `ros_control.urp` runs without stopping it.
+
+**Monitor**
+- [ ] `ArmState.tcp_*` now holds tool0, not the tool tip: rename to `flange_*` (readers: `robot_control`
+      plugin, arm panel, markers, status, `world/signals.py`), or keep the name and document it.
+- [ ] `robot_control` labels say "TCP" but show and command tool0. Decide what the operator sees: the tool tip
+      (compose with `Tool.tcp` on display, invert on command), or tool0 named as such.
+- [ ] Cartesian moves turn about tool0 (`cartesian_move` interpolates tool0): to turn about the tool tip, plan the
+      move at the tip and convert each sample to tool0.
+- [ ] Recorded signals `<arm>_tcp` and `<arm>_tcp_error` now mean tool0: rename them or say so in their
+      docstrings. Old recordings were made with pendant TCP zero, so they are tool0 too.
+- [ ] `ArmConfig.cartesian_test_mode` docstring: add "after changing the pendant's TCP" to when to use it.
+- [ ] Health `tcp` chip: confirm on each robot that it is green at several still poses; the tolerances
+      (2 mm / 0.5°) are guesses. ? Pairing joint_states and tcp_pose by stamp would let it judge while moving.
+- [ ] Fake hardware publishes no TCP (the monitor ignores an all-zero pose), so the chip stays amber and Cartesian
+      commands are refused in the simulator, as before.
+
+**Onboard controller (crl-husky, decision)**
+- [ ] The compliance controller's `end_effector_link`, `compliance_ref_link` and `ft_sensor_ref_link` are tool0
+      (`config/ur_controllers.yaml`): stiffness and compliance act about tool0, not the tool tip. Insertion may want
+      compliance at the TCP, which needs a TCP link in the onboard robot description. Decide before compliant
+      execution (`bar_action`).
+
+**First run on a robot**
+1. Tool URDFs have their `tcp` links; the pendant has the same TCP and payload.
+2. Start with `cartesian_test_mode` on that arm; the health `tcp` chip must be green at three or more still poses.
+3. Log line of the first Cartesian target ("first target vs reported tool0"): difference under 1 mm.
+4. Jog in the pendant's tool frame: it must turn about the tool tip.
+5. Turn test mode off; a short Cartesian move, then Hold.
+
 ## Goal
 
 A mounted tool is described once, as the core's `Tool` on the robot's `RobotModel`, and everything reads that:
