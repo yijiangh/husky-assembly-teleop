@@ -19,9 +19,10 @@ import numpy as np
 from scaffolding_assembly_core.geometry import Pose, box_geometry
 from scaffolding_assembly_core.scene import Body
 
-#: Where the task frame lies in the lab: (x, y, yaw), metres and radians. ! Set it to the middle of a clear area
-#: about 5 m by 3.5 m before collecting; it is recorded with every attempt.
-TASK_ORIGIN = (0.5, -0.6, 0.0)
+#: Where the task frame lies in the lab: (x, y, yaw), metres and radians; it is recorded with every attempt.
+#: ! Every task's paths need about 6 m by 5 m around it, clear (fitted to the lab of 15 Oct, Belle parked at
+#:   (1.7, 1.3)).
+TASK_ORIGIN = (0.4, -0.8, math.pi)
 #: The passages run along PASSAGE_ANGLE in the task frame.
 PASSAGE_ANGLE = math.radians(17.0)
 #: Alice's width, the same at every height with her arm stowed (as she is planned), and the planners' default

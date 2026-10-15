@@ -35,11 +35,12 @@ Spec: `doc/base_planner_manual.md`. Code: `plugins/base_planner/{tasks,recording
   harder, lopsided case.
 - **Step 110 target** (user, 15 Oct): (0.43, −2.785, 0°), inside the bar structure; the first target was outside.
   Re-run as `benchmark_1016`.
+- **Task origin** (user, 15 Oct): (0.4, −0.8, 180°), fitted so the benchmark's paths clear the lab (10 cm
+  at the tightest, at the ada tripod and Belle).
 - **step_110_out**: the way back out of the bar structure, its own task.
 
 ## Open
 
-- Set `TASK_ORIGIN` to the clean lab area.
 - The 9 pilot runs of 15 Oct (`data_experiment/base_planner/2026…_real`, run.json only) predate tasks and
   experiment.json: the report does not read them (`report.py` still draws them one by one).
 - Automation (drive to each task's start, plan with each planner, commit, repeat) is not built: the panel flow is

@@ -49,8 +49,8 @@ obstacles in the way:
 
 **Virtual obstacles:** all tasks but the step 110 ones put their obstacles into the scene as virtual bodies (purple): the
 planner avoids them, the floor stays empty. They are placed with the task frame at `TASK_ORIGIN` in `tasks.py`.
-! Set `TASK_ORIGIN` to the middle of a clear area about 5 m by 3.5 m before collecting; it is recorded with every
-attempt.
+`TASK_ORIGIN` is (0.4, −0.8, 180°), in the middle of the lab, fitted on 15 Oct so every task's paths clear the
+furniture, the tripods and Belle parked at (1.7, 1.3). ! Keep that area clear; it is recorded with every attempt.
 
 **step_110** and **step_110_out** use the process plugin's scene at step 110 (`PROCESS`, `PROCESS_STEP`). Their ends are
 `PROCESS_START` and `PROCESS_TARGET` in `tasks.py`; the target is inside the bar structure (confirmed 15 Oct).
