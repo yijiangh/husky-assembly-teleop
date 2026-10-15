@@ -7,7 +7,7 @@ The report of one recorded base planner run, and the picture of one plan attempt
 
 Measured by mocap (or the simulated pose) against the path sent, the same for every planner and controller:
 
-- report.json: the attempt's description (experiment.json, or run.json before it), and the run's metrics.
+- report.json: the attempt's description (experiment.json) and the run's metrics.
 - overview.png: the path sent and where the robot went, then its distance from the path, its heading error, and the
   commands over time; turns on the spot are shaded grey.
 
@@ -128,9 +128,8 @@ def load(folder: str | Path) -> dict:
         prefix = pose_key[:-len("floor_pose")]
         run = {key.removeprefix(prefix): data[key] for key in data.files}
     description = load_description(folder)
-    if description is None:  # recorded before experiment.json: run.json only
-        run["run"], run["plan"], run["plan_arrays"] = json.loads((folder / "run.json").read_text()), None, None
-        return run
+    if description is None:
+        raise FileNotFoundError(f"{folder} has no experiment.json")
     poses, times = run["path_poses"], run["path_t"]
     length = float(np.sum(np.hypot(*np.diff(poses[:, :2], axis=0).T)))
     run["run"] = {**description, **(description.get("run") or {}), "length": length,

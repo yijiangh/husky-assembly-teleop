@@ -186,11 +186,7 @@ def load_attempts(experiment: Path) -> list[Attempt]:
                 attempt.run_left_out = f"run {outcome}"
         if (folder / "simulated.npz").is_file():
             arrays = load_plan_arrays(folder)
-            info = description.get("simulated") or {}
-            # * Before model groups, only deviated xICR values were simulated.
-            attempt.drives = info.get("drives") or [{"group": DEVIATED, "xicr": x_icr, "not_finished": why}
-                                                    for x_icr, why in zip(info.get("xicr", []),
-                                                                          info.get("not_finished", []))]
+            attempt.drives = (description.get("simulated") or {}).get("drives", [])
             with np.load(folder / "simulated.npz") as data:
                 traces = [data[f"trace_{k}"] for k in range(len(attempt.drives))]
             for drive, trace in zip(attempt.drives, traces):
