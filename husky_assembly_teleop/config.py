@@ -161,7 +161,8 @@ _LEFT_ARM_STOW = tuple(math.radians(d) for d in (-88.4, -2.2, -161.3, -108.8, -0
 _RIGHT_ARM_STOW = tuple(math.radians(d) for d in (87.0, -179.8, 159.3, -74.7, 1.9, -90.2))
 
 # Parked base poses, (x, y, yaw) in the mocap frame, metres and radians: in a row along the front of the building
-# cabinet (data/lab/main.json, front face at y 2.00), facing -y, 15 cm between the stowed robot's back and the cabinet.
+# cabinet (data/lab/main.json, front face at y 2.00), facing +y with the battery and screen at the back towards the
+# open lab, 15 cm between the stowed robot's front and the cabinet.
 _PARK_Y = 1.35
 _ALICE_PARK = (0.3, _PARK_Y, math.pi / 2)
 _BELLE_PARK = (1.7, _PARK_Y, math.pi / 2)
