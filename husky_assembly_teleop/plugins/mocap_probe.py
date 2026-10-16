@@ -5,6 +5,8 @@ Points are numbered per label ("table_1", ...) and shown in the 3D view. Delete 
 Export act on the selected points, so one session can give one file per obstacle.
 "Load points" adds the points of an exported file, unselected; a name already taken is renumbered.
 A big "Probe" status panel (minimized on the right) is readable from across the room.
+The phone's Mocap tab has the same big status, Label, Record point, Map coverage, a top-down map while mapping
+(coverage cells, obstacles, robots, points, probe) and the last points.
 
 Coverage map: with "Map coverage" ticked, walk the probe around; each mocap message counts in the floor cell
 under the probe, as tracked or not. Cells are drawn on the floor, grey until visited, then red (never tracked)
@@ -19,18 +21,22 @@ Run with:  -p plugins:="['mocap_probe']"
 
 from __future__ import annotations
 
+import asyncio
 import colorsys
 import json
 import time
 from dataclasses import asdict, dataclass, field
 from html import escape
 from pathlib import Path
+from typing import Iterable
 
 import numpy as np
 import viser
 from scipy.spatial.transform import Rotation
 
 from ..ui.checklist import CheckList
+from ..ui.phone import big_buttons, phone_text
+from ..ui.top_down import Dot, FloorGrid, render_top_down, scene_footprints
 from ..plugin_api.context import PluginContext
 from ..world.mocap import MARKER_ERROR_WARN, mocap_check
 from ..plugin_api.plugin import HuskyPlugin, register
@@ -51,6 +57,12 @@ EXPORT_FOLDER = Path.home() / "husky_probe"
 SAMPLE_COLOR = (230, 60, 150)
 #: Colour of the selected recorded points.
 SELECTED_COLOR = (250, 200, 30)
+#: Points listed on the phone, newest last.
+PHONE_POINTS = 5
+#: Seconds between redraws of the phone's top-down map; each redraw is sent as a PNG over the robot WiFi.
+MAP_PERIOD = 0.5
+#: The probe on the map: white while tracked, grey without a fix.
+PROBE_DOT_COLOR, PROBE_LOST_COLOR = (255, 255, 255), (150, 150, 150)
 #: How long the big status panel flashes blue after a point is recorded, seconds.
 FLASH_SECONDS = 0.8
 #: Blue of that flash.
@@ -276,6 +288,9 @@ class MocapProbePlugin(HuskyPlugin):
         self._counted_update: float | None = None
         # Cell under the probe at its last counted message, or None outside the grid.
         self._probe_cell: tuple[int, int] | None = None
+        # ROS time the phone's map was last drawn, and the task drawing it.
+        self._map_time = -np.inf
+        self._map_task: asyncio.Task | None = None
 
     def setup(self, ctx: PluginContext) -> None:
         """Build the widgets and start tracking DEFAULT_MOCAP_ID.
@@ -322,9 +337,25 @@ class MocapProbePlugin(HuskyPlugin):
         panel.dock_right()
         panel.minimize()
 
+        # * The phone: record while walking with the probe. Tracking, export and the list stay on the laptop.
+        with ctx.view.phone("Mocap", viser.Icon.CROSSHAIR) as phone:
+            phone.add_html(f"<style>{big_buttons([viser.Icon.MAP_PIN], 64, 28)}</style>")
+            self._phone_big = phone.add_html("")
+            self._phone_label = phone.add_text("Label", initial_value="")
+            phone_record = phone.add_button("Record point", color="green", icon=viser.Icon.MAP_PIN)
+            self._phone_result = phone.add_html("")
+            self._phone_mapping = phone.add_checkbox("Map coverage", initial_value=False)
+            # * Shown and drawn only while mapping: it costs a PNG over the robot WiFi twice a second.
+            self._phone_map = phone.add_image(render_top_down(*self._map_inputs(None)), format="png", visible=False)
+            self._phone_points = phone.add_html("")
+
         # ! Callbacks run on a viser thread: hand every action to the main thread.
         track.on_click(ctx.defer("track probe", lambda: self._track(ctx)))
-        record.on_click(ctx.defer("record point", lambda: self._record(ctx)))
+        record.on_click(ctx.defer("record point", lambda: self._record(ctx, self._label.value)))
+        phone_record.on_click(ctx.defer("record point (phone)", lambda: self._record(ctx, self._phone_label.value)))
+        # * One map switch: the phone's checkbox sets the desktop one, whose callback runs `_set_mapping`.
+        self._phone_mapping.on_update(ctx.defer_value("map coverage (phone)",
+                                                      lambda on: setattr(self._mapping, "value", on)))
         actions.on_click(ctx.defer_value("selected points", lambda clicked: (
             self._delete(ctx) if clicked == "Delete" else self._export(ctx))))
         load_points.on_upload(ctx.defer_value("load points", lambda file: self._load_points(ctx, file)))
@@ -358,11 +389,12 @@ class MocapProbePlugin(HuskyPlugin):
         self._message = f"tracking mocap id {mocap_id}"
         ctx.log_info(self._message)
 
-    def _record(self, ctx: PluginContext) -> None:
+    def _record(self, ctx: PluginContext, label: str) -> None:
         """Record the probe position as a new, selected sample, unless the mocap check is red.
 
         Args:
             ctx: This plugin's context.
+            label: The Label field of the page that asked, desktop or phone.
         """
         check = self._check(ctx)
         if check is None or check.level == BAD:
@@ -370,7 +402,7 @@ class MocapProbePlugin(HuskyPlugin):
             self._message = f"not recorded: {check.detail if check else 'probe not tracked'}"
             ctx.log_warn(self._message)
             return
-        label = self._label.value.strip() or DEFAULT_LABEL
+        label = label.strip() or DEFAULT_LABEL
         self._label_counts[label] = self._label_counts.get(label, 0) + 1
         sample = Sample(id=0, name=f"{label}_{self._label_counts[label]}", label=label,
                         position=self._probe.position.tolist(), orientation=self._probe.orientation.tolist(),
@@ -452,6 +484,10 @@ class MocapProbePlugin(HuskyPlugin):
 
     def _set_mapping(self, ctx: PluginContext, on: bool) -> None:
         """Start or stop counting probe messages into the coverage map; shows the map on start."""
+        # Unchanged values fire no callback, so this ends the round trip with the phone's checkbox.
+        self._phone_mapping.value = on
+        self._phone_map.visible = on
+        self._map_time = -np.inf  # draw at once, not from the last time it was mapping
         if on:
             self._build_tiles(ctx)
             self._show_map.value = True
@@ -588,7 +624,39 @@ class MocapProbePlugin(HuskyPlugin):
         return block(state + values(f"cells {visited}/{grid.shape[0] * grid.shape[1]}, tracked {rate}",
                                     f"err {_error_mm(grid.total_error())}", here))
 
-    def _big_status(self, ctx: PluginContext, check: Check | None) -> str:
+    def _map_inputs(self, ctx: PluginContext | None) -> tuple[FloorGrid, np.ndarray, Iterable, list[Dot]]:
+        """What the phone's map shows: coverage cells, every footprint in the scene, the recorded points and the probe.
+
+        Args:
+            ctx: This plugin's context; None leaves out the scene and the probe (before the first tick).
+
+        Returns:
+            The arguments of `render_top_down`; the footprints are computed lazily, so on its thread.
+        """
+        grid = self.coverage
+        colors = np.array([[coverage_color(grid.rate(i, j)) for j in range(grid.shape[1])]
+                           for i in range(grid.shape[0])])
+        dots = [Dot(*sample.position[:2], SAMPLE_COLOR) for sample in self.samples]
+        probe = self._probe
+        if ctx is not None and probe is not None and probe.position is not None:
+            check = self._check(ctx)
+            lost = check is None or check.level == BAD
+            dots.append(Dot(*probe.position[:2], PROBE_LOST_COLOR if lost else PROBE_DOT_COLOR, radius=7,
+                            outline=(0, 0, 0)))
+        footprints = () if ctx is None else scene_footprints(ctx.scene.snapshot)
+        return FloorGrid(grid.origin, grid.cell_size, grid.shape), colors, footprints, dots
+
+    async def _draw_map(self, ctx: PluginContext) -> None:
+        """Draw the phone's map on a worker thread, then show it; a robot's first footprints take about a second."""
+        try:
+            picture = await ctx.run_in_thread(render_top_down, *self._map_inputs(ctx))
+            # * Assigning sends the PNG; skip it when nothing moved.
+            if not np.array_equal(picture, self._phone_map.image):
+                self._phone_map.image = picture
+        finally:
+            self._map_task = None
+
+    def _big_status(self, ctx: PluginContext, check: Check | None, min_height: str = "40vh") -> str:
         """The big status panel's HTML: one colour and one word, readable at a distance, and the probe's x y z.
 
         ! Any text change re-renders it: the only live numbers are x y z, rounded to the millimetre.
@@ -596,6 +664,7 @@ class MocapProbePlugin(HuskyPlugin):
         Args:
             ctx: This plugin's context.
             check: The probe's mocap check, or None when nothing is tracked.
+            min_height: The block's least height; lower on the phone, so Record point stays on screen.
         """
         # * No check detail here (the side panel's chip has it): only the recorded point's name.
         detail = ""
@@ -616,7 +685,7 @@ class MocapProbePlugin(HuskyPlugin):
             position = (f'<div style="font:700 clamp(20px,5vw,64px)/1.2 monospace;white-space:pre;'
                         f'margin-top:8px;{dim}">{rows}</div>')
         # ? vh units, so the box grows with a floated, enlarged panel.
-        return (f'<div style="background:{color};color:#fff;border-radius:8px;min-height:40vh;'
+        return (f'<div style="background:{color};color:#fff;border-radius:8px;min-height:{min_height};'
                 f'display:flex;flex-direction:column;align-items:center;justify-content:center;'
                 f'text-align:center;padding:12px;margin:0 8px 8px">'
                 f'<div style="font-size:clamp(32px,9vw,120px);font-weight:800;line-height:1.1">{word}</div>'
@@ -644,6 +713,7 @@ class MocapProbePlugin(HuskyPlugin):
             rpy = Rotation.from_quat(probe.orientation).as_euler("xyz", degrees=True)
             error_mm = (probe.marker_error * 1e3,)
         self._big.content = self._big_status(ctx, check)
+        self._phone_big.content = self._big_status(ctx, check, min_height="24vh")
         self._status.content = block(state + values(f"xyz {numbers(probe.position if has_pose else None, 3, 8, 4)} m",
                                                     f"rpy {numbers(rpy, 3, 8, 1)} °",
                                                     f"err {numbers(error_mm, 1, 8, 2)} mm",
@@ -664,3 +734,11 @@ class MocapProbePlugin(HuskyPlugin):
         self._coverage_status.content = self._coverage_html()
         # ? Plain wrapping text, not `values`: an export path is long.
         self._result.content = note(escape(self._message)) if self._message else ""
+        self._phone_result.content = phone_text(note(escape(self._message))) if self._message else ""
+        if self._mapping.value and self._map_task is None and ctx.now() - self._map_time >= MAP_PERIOD:
+            self._map_time = ctx.now()
+            self._map_task = ctx.spawn("phone map", self._draw_map(ctx))
+        recent = self.samples[-PHONE_POINTS:]
+        self._phone_points.content = (section("points", SECTION_CTRL, f"{len(self.samples)} recorded")
+                                      + block(values(*(f"{sample.name:<10} {numbers(sample.position, 3, 7, 3)}"
+                                                       for sample in recent))) if recent else "")

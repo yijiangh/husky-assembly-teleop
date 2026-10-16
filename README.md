@@ -227,6 +227,7 @@ A phone page for walking next to the robots: open `http://<host-ip>:8081` on a p
 
 - **Control** (`robot_control`): a tab per robot with a speed slider and a D-pad that drives while held. It drives only while the base runs its velocity controller; switching controllers stays on the laptop. Below it, per arm: **Open** and **Close** for the gripper, and **Free drive (hold)**: the arm can be pushed by hand while you hold it, and the joint controller holds it where it is when you let go (or when the phone drops off).
 - **Health**: the same chips as the health panel. Unlock, Resume and Reconnect stay on the laptop.
+- **Mocap** (`mocap_probe`): the big probe status, a Label and **Record point**, **Map coverage** (the same switch as on the laptop), a top-down map (only while mapping) and the last points. The map shows the floor in 1 m cells (grey until visited, then red to green by how often the probe was tracked there), obstacles in dark grey, robots in blue, recorded points in pink and the probe as a white dot (grey without a fix); +x right, +y up. It is redrawn at most twice a second. Choosing the rigid body, export and delete stay on the laptop.
 
 Plugins add their own tab with `ctx.view.phone()`; see `plugins/__init__.py`.
 
