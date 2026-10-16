@@ -32,7 +32,7 @@ from .world.kinematics import Kinematics
 from .plugin_api.plugin import HuskyPlugin, load_plugins
 from .robot_interface.robot import HuskyRobotInterface
 from .robot_interface.connections import RosConnections
-from .robot_interface.mocap import subscribe_mocap
+from .robot_interface.mocap import subscribe_markers, subscribe_mocap
 from scaffolding_assembly_core.ids import tracked_id
 from scaffolding_assembly_core.scene import Scene
 from .world.scene import PluginScene, take_snapshot, tracked_body
@@ -98,6 +98,8 @@ class HuskyMonitor(Node):
         self._loaded: dict[str, _LoadedPlugin] = {}
         # The mocap subscription of each tracked object, by object name.
         self._object_connections: dict[str, RosConnections] = {}
+        # * Every marker the cameras see, for plugins that fit their own layouts to them (`world.markers`).
+        subscribe_markers(RosConnections(self), self._world, self.now)
 
         # Monotonic tick counter.
         self._tick_index = 0

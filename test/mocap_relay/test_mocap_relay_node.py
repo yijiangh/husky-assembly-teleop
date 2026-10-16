@@ -32,6 +32,8 @@ def relay(calibrations=None, exclude=(), frequency: int = 0) -> MocapRelay:
     node.exclude_ids, node._calibrations, node._logged_uncalibrated = set(exclude), dict(calibrations or {}), set()
     node._pending_samples, node._samples, node._samples_lock, node._rb_publishers = {}, {}, threading.Lock(), {}
     node._warned_no_markers = node._warned_no_hires_stamps = node._logged_latency = False
+    node._pending_cloud = node._cloud = node._published_cloud = None
+    node._logged_cloud, node._markers_publisher = False, Publisher()
     node.mocap_client = SimpleNamespace(get_high_res_clock_frequency=lambda: frequency)
     node.topic_prefix, node.frame_id = "/mocap/rigid_body", "mocap_world"
     node.streaming_stale_timeout_sec, node.marker_error_valid_threshold = STALE_AFTER, 0.005
@@ -162,3 +164,34 @@ def test_markers_are_turned_to_z_up_and_flagged_when_filled_in():
     assert list(message.marker_ids) == [1, 2, 3]
     assert [(p.x, p.y, p.z) for p in message.marker_positions][1] == (0.0, -2.0, 1.0)
     assert list(message.marker_measured) == [False, True, False]
+
+
+def test_every_visible_marker_of_any_asset_or_none_goes_into_the_cloud():
+    """Markers of any asset and unlabeled ones go into the cloud, Z-up; occluded ones do not."""
+    node = relay()
+    node._receive_labeled_markers({
+        1020: {1: {"pos": (1.0, 2.0, 3.0), "error": 0.001, "param": MARKER_POINT_CLOUD_SOLVED},
+               2: {"pos": (9.0, 9.0, 9.0), "error": 0.0, "param": MARKER_OCCLUDED}},
+        0: {7: {"pos": (4.0, 5.0, 6.0), "error": 0.002, "param": MARKER_POINT_CLOUD_SOLVED}},
+    })
+    cloud = node._pending_cloud
+    assert cloud.positions == (1.0, -3.0, 2.0, 4.0, -6.0, 5.0)
+    assert cloud.asset_ids == (1020, 0)
+    assert cloud.member_ids == (1, 7)
+    assert cloud.residuals == (0.001, 0.002)
+
+
+def test_each_frame_cloud_is_published_once():
+    """The cloud goes out with the frame's capture stamp, and not again until the next frame."""
+    node = relay()
+    markers = {1: {"pos": (1.0, 2.0, 3.0), "error": 0.001, "param": MARKER_POINT_CLOUD_SOLVED}}
+    frame(node, 7, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0), markers=markers)
+    node._publish_cached_poses()
+    node._publish_cached_poses()
+    sent = node._markers_publisher.sent
+    assert len(sent) == 1
+    assert list(sent[0].positions) == [1.0, -3.0, 2.0]
+    assert sent[0].header.stamp.sec > 0
+    frame(node, 7, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0), markers=markers)
+    node._publish_cached_poses()
+    assert len(sent) == 2

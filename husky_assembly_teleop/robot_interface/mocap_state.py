@@ -36,6 +36,27 @@ class RawMarkers:
     measured: np.ndarray
 
 
+@dataclass(frozen=True)
+class MarkerCloud:
+    """Every marker the cameras saw in one mocap frame, labeled or not: world frame (Z-up), metres, not calibrated.
+
+    ! Motive's labels are only a hint: it mixes up similar assets. Fit known layouts to `positions` instead.
+
+    Attributes:
+        positions: Shape (n, 3).
+        asset_ids: Asset Motive labeled each marker to, 0 when unlabeled, shape (n,).
+        member_ids: Member number in that asset, shape (n,).
+        capture_time: ROS time the frame was captured, seconds.
+        arrival_time: ROS time it arrived, seconds.
+    """
+
+    positions: np.ndarray
+    asset_ids: np.ndarray
+    member_ids: np.ndarray
+    capture_time: float
+    arrival_time: float
+
+
 class MocapBody(Protocol):
     """The measured fields every mocap-tracked body has (BaseState, TrackedObject).
 

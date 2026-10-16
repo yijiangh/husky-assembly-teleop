@@ -4,7 +4,8 @@ ROS2 node that relays OptiTrack rigid body data into ROS topics.
 It consumes NatNet rigid body callbacks at mocap frequency and republishes the latest pose of each rigid body at a
 lower, timer-driven rate, with the raw markers Motive labeled to it in the same frame. Each pose is stamped with when
 the cameras captured it, on this PC's clock, and a robot's rigid body is turned into its base_footprint pose with
-its base calibration (`calibration.py`).
+its base calibration (`calibration.py`). Every marker the cameras saw, labeled or not, goes out once per frame on
+`/mocap/markers` (MocapMarkers).
 
 - Services: `/mocap/get_streaming_ids` (which ids stream), `~/reload_calibration` (apply the newest calibrations).
 - `~/calibrations` (latched): what is applied to each rigid body, with its source and hash.
@@ -25,7 +26,7 @@ from typing import Dict, List, Optional, Tuple
 import rclpy
 from builtin_interfaces.msg import Time
 from crl_husky.optitrack.NatNetClient import NatNetClient
-from crl_husky_msgs.msg import MocapRigidBodyPose
+from crl_husky_msgs.msg import MocapMarkers, MocapRigidBodyPose
 from crl_husky_msgs.srv import GetStreamingMocapIds
 from geometry_msgs.msg import Point
 from rclpy.executors import ExternalShutdownException
@@ -95,6 +96,25 @@ class BodySample:
     received_mono_sec: float = 0.0
 
 
+@dataclasses.dataclass(frozen=True)
+class MarkerCloud:
+    """Every marker the cameras saw in one mocap frame, labeled or not, in the Z-up world frame (not calibrated).
+
+    Attributes:
+        positions: x, y, z of each marker, one after the other, metres.
+        asset_ids: Asset Motive labeled each marker to; 0 when unlabeled.
+        member_ids: Member number in that asset.
+        residuals: Residual of each reconstruction, metres.
+        capture_time_ns: As in BodySample.
+    """
+
+    positions: Tuple[float, ...]
+    asset_ids: Tuple[int, ...]
+    member_ids: Tuple[int, ...]
+    residuals: Tuple[float, ...]
+    capture_time_ns: int = 0
+
+
 def quat_multiply_xyzw(q1: QuatXyzw, q2: QuatXyzw) -> QuatXyzw:
     """The product q1 * q2 of two quaternions (x, y, z, w)."""
     x1, y1, z1, w1 = q1
@@ -140,6 +160,7 @@ class MocapRelay(Node):
         self.declare_parameter("server_ip", "192.168.0.117")
         self.declare_parameter("publish_rate_hz", 50.0)
         self.declare_parameter("topic_prefix", "/mocap/rigid_body")
+        self.declare_parameter("markers_topic", "/mocap/markers")
         self.declare_parameter("frame_id", "mocap_world")
         self.declare_parameter("streaming_stale_timeout_sec", 1.0)
         self.declare_parameter("marker_error_valid_threshold", 1.0)
@@ -179,9 +200,17 @@ class MocapRelay(Node):
         self._pending_samples: Dict[int, BodySample] = {}
         self._warned_no_hires_stamps = False
         self._warned_no_markers = False
+        # Every visible marker of the frame being received, then of the latest complete one, and the one last
+        # published, so each frame's cloud goes out once.
+        self._pending_cloud: Optional[MarkerCloud] = None
+        self._cloud: Optional[MarkerCloud] = None
+        self._published_cloud: Optional[MarkerCloud] = None
+        self._logged_cloud = False
         self._logged_latency = False
         # Avoid clashing with rclpy Node internals (Node already uses _publishers).
         self._rb_publishers: Dict[int, object] = {}
+        self._markers_publisher = self.create_publisher(
+            MocapMarkers, str(self.get_parameter("markers_topic").value), 10)
         self._last_frame_mono_sec = time.monotonic()
         self._last_reconnect_attempt_mono = 0.0
         # Reconnects since frames last arrived, so recovery can be reported.
@@ -351,10 +380,19 @@ class MocapRelay(Node):
             self.get_logger().warn(wrap(
                 "Motive streams no labeled markers; poses are published without raw markers. "
                 "Enable 'Labeled Markers' in Motive's streaming settings to get them."))
+        cloud, self._pending_cloud = self._pending_cloud, None
+        if cloud is not None and not self._logged_cloud:
+            self._logged_cloud = True
+            unlabeled = sum(1 for asset in cloud.asset_ids if asset == 0)
+            self.get_logger().info(wrap(
+                f"Marker cloud: {len(cloud.asset_ids)} markers, {unlabeled} unlabeled. Markers of no asset (e.g. "
+                "bars without one) only come with 'Unlabeled Markers' on in Motive's streaming settings."))
         with self._samples_lock:
             for rb_id, sample in pending.items():
                 self._samples[rb_id] = dataclasses.replace(
                     sample, capture_time_ns=capture_time_ns, received_mono_sec=now_mono)
+            if cloud is not None:
+                self._cloud = dataclasses.replace(cloud, capture_time_ns=capture_time_ns)
 
     def _capture_time_ns(self, data_dict) -> int:
         """Mid-exposure time of a frame on this PC's wall clock, in ns.
@@ -456,8 +494,17 @@ class MocapRelay(Node):
         """Attach the frame's labeled markers to its rigid bodies held until the frame completes.
 
         NatNet sends them after the rigid bodies; markers of bodies not held (e.g. excluded) are dropped.
-        Positions get the same Y-up to Z-up remap as poses, but no calibration.
+        Positions get the same Y-up to Z-up remap as poses, but no calibration. Every visible marker, of any asset
+        or none, also goes into the frame's cloud.
         """
+        visible = [(int(model_id), int(member_id), marker)
+                   for model_id, markers in labeled_marker_from_model_id.items()
+                   for member_id, marker in sorted(markers.items()) if not marker["param"] & MARKER_OCCLUDED]
+        self._pending_cloud = MarkerCloud(
+            positions=tuple(float(v) for _, _, m in visible for v in (m["pos"][0], -m["pos"][2], m["pos"][1])),
+            asset_ids=tuple(model_id for model_id, _, _ in visible),
+            member_ids=tuple(member_id for _, member_id, _ in visible),
+            residuals=tuple(float(m["error"]) for _, _, m in visible))
         for rigid_body_id, markers in labeled_marker_from_model_id.items():
             sample = self._pending_samples.get(int(rigid_body_id))
             if sample is None:
@@ -509,6 +556,24 @@ class MocapRelay(Node):
             msg.marker_residuals = [marker.residual for marker in sample.markers]
             msg.marker_measured = [marker.measured for marker in sample.markers]
             publisher.publish(msg)
+        self._publish_cloud()
+
+    def _publish_cloud(self) -> None:
+        """Publish the latest frame's markers, once per frame."""
+        with self._samples_lock:
+            cloud = self._cloud
+        if cloud is None or cloud is self._published_cloud:
+            return
+        self._published_cloud = cloud
+        msg = MocapMarkers()
+        msg.header.stamp = Time(sec=cloud.capture_time_ns // 1_000_000_000,
+                                nanosec=cloud.capture_time_ns % 1_000_000_000)
+        msg.header.frame_id = self.frame_id
+        msg.positions = list(cloud.positions)
+        msg.asset_ids = list(cloud.asset_ids)
+        msg.member_ids = list(cloud.member_ids)
+        msg.residuals = list(cloud.residuals)
+        self._markers_publisher.publish(msg)
 
     def _handle_get_streaming_ids(self, request, response):
         del request

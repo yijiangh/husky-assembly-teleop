@@ -1,18 +1,24 @@
 """
-Mocap on the ROS side: the relay topic of a rigid body, and how a sample is stored (bases and objects alike).
+Mocap on the ROS side: a rigid body's relay topic, how its samples are stored, and the cloud of every marker.
 
 ! Keep this the only reader of MocapRigidBodyPose, so bases and objects agree on what "tracked" means.
 """
 
 from __future__ import annotations
 
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 import numpy as np
-from crl_husky_msgs.msg import MocapRigidBodyPose
+from crl_husky_msgs.msg import MocapMarkers, MocapRigidBodyPose
 
 from .connections import RosConnections
-from .mocap_state import MARKER_ERROR_WINDOW, MocapBody, RawMarkers
+from .mocap_state import MARKER_ERROR_WINDOW, MarkerCloud, MocapBody, RawMarkers
+
+if TYPE_CHECKING:
+    from ..world.measured import WorldState
+
+#: The relay's topic with every marker of each frame (its `markers_topic` parameter).
+MARKERS_TOPIC = "/mocap/markers"
 
 
 def mocap_topic(mocap_id: int) -> str:
@@ -63,3 +69,29 @@ def store_sample(body: MocapBody, message: MocapRigidBodyPose, now: float) -> No
     while body.marker_errors and body.marker_errors[0][0] < now - MARKER_ERROR_WINDOW:
         body.marker_errors.popleft()
     body.last_update_time = now
+
+
+def subscribe_markers(ros: RosConnections, world: WorldState, now: Callable[[], float]) -> None:
+    """Keep `world.markers` at the relay's latest marker cloud.
+
+    Args:
+        ros: The connections the subscription belongs to.
+        world: The measured state to write into.
+        now: Current ROS time in seconds, for when a cloud arrived.
+    """
+    ros.subscription(MocapMarkers, MARKERS_TOPIC, lambda message: store_markers(world, message, now()))
+
+
+def store_markers(world: WorldState, message: MocapMarkers, now: float) -> None:
+    """Replace `world.markers` with one cloud from the relay.
+
+    Args:
+        world: The measured state, changed in place.
+        message: The relay's cloud, stamped with when the cameras captured it.
+        now: ROS time of arrival, seconds; also the capture time of a cloud without a stamp.
+    """
+    stamp = message.header.stamp.sec + 1e-9 * message.header.stamp.nanosec
+    world.markers = MarkerCloud(positions=np.asarray(message.positions, dtype=float).reshape(-1, 3),
+                                asset_ids=np.asarray(message.asset_ids, dtype=int),
+                                member_ids=np.asarray(message.member_ids, dtype=int),
+                                capture_time=stamp if stamp > 0.0 else now, arrival_time=now)
