@@ -200,7 +200,7 @@ Open a separate tmux window per robot (`Ctrl-b c`; `Ctrl-b n` cycles windows) an
 This PC's ssh key is accepted on Cindy; on the single-arm huskies the password is `clearpath` if
 asked (`doc/husky_ros2.md`).
 
-**Cindy**
+#### 0.3 Cindy
 
 - [ ] Both arms powered on, teach pendants in **external control** mode (`doc/husky_ros2.md`; do
       not start `ros_control.urp` by hand).
@@ -221,7 +221,7 @@ echo "[cindy] domain $ROS_DOMAIN_ID | $RMW_IMPLEMENTATION"   # expect: domain 86
 ros2 launch crl_husky crl_dual_ur5e.launch.py namespace:='/a200_0806' gripper:=scaffolding_v3
 ```
 
-**Alice**
+#### 0.3 Alice
 
 - [ ] Arm powered on, teach pendant in **external control** mode; her own remote e-stop paired
       and in reach (pair one husky at a time, `doc/husky_ros2.md` troubleshooting).
@@ -240,7 +240,7 @@ echo "[alice] domain $ROS_DOMAIN_ID | $RMW_IMPLEMENTATION"   # expect: domain 84
 ros2 launch crl_husky crl_single_ur5e.launch.py namespace:='/a200_0804' gripper:=robotiq_2F_85
 ```
 
-**Belle**
+#### 0.3 Belle
 
 - [ ] Arm powered on, teach pendant in **external control** mode; her own remote e-stop paired
       and in reach (pair one husky at a time).
@@ -306,11 +306,34 @@ the monitor). New files, new entry points or `setup.py` changes do.
 
 ## 1. Terminals
 
+The terminal app on this PC is **Ghostty**. **tmux** ("terminal multiplexer") runs inside it and
+adds a **session** that lives on its own: the shells in it keep running when the Ghostty window
+closes or an ssh connection drops, and any other terminal can attach to the same session and see
+and type into the same panes.
+
+? tmux is **not strictly needed**. Ghostty's own splits do the job for a person alone
+(`Ctrl-Shift-O` splits right, `Ctrl-Shift-E` splits down, `Ctrl-Alt-arrow` moves between them).
+Use tmux when you want a **lasting session that a coding agent (Claude Code) and you share**: the
+agent reads a pane's output (`tmux capture-pane`) and types into it (`tmux send-keys`) while you
+watch the same pane. The monitor log of 1.1 (`tmux pipe-pane`) also needs tmux.
+
 Use one tmux session with two panes: the **monitor** pane and a **checks / base** pane.
 
 ```bash
-tmux new -A -s husky_real     # -A: attach if the session already exists. Ctrl-b "  splits it; Ctrl-b o switches pane
+tmux new -A -s husky_real     # -A: attach if the session already exists (tmux ls lists the sessions)
 ```
+
+tmux keys: press `Ctrl-b` (the "prefix"), let go, then the key.
+
+| keys | does |
+|---|---|
+| `Ctrl-b %` | split **left / right** (the new pane opens on the right) |
+| `Ctrl-b "` | split **up / down** (the new pane opens below) |
+| `Ctrl-b` arrow, or `Ctrl-b o` | go to the pane in that direction / the next pane |
+| `Ctrl-b z` | zoom the current pane to the whole window, and back |
+| `Ctrl-b x` | close the current pane (answer `y`) |
+| `Ctrl-b c` / `Ctrl-b n` | new window / next window (the robot logins of 0.3) |
+| `Ctrl-b d` | detach: the session keeps running in the background; `tmux new -A -s husky_real` comes back to it |
 
 The mouse works in tmux on this PC (`~/.tmux.conf`):
 - The wheel scrolls back through a pane's output (`q` returns to the live end); a click picks a
@@ -326,7 +349,14 @@ The mouse works in tmux on this PC (`~/.tmux.conf`):
 The domain decides which robot the monitor drives. Paste the block of the robot you start next.
 The monitors run one after the other in the same pane; quit one with `Ctrl-C` before the next.
 
-**Cindy** (runs 1, 3, 5):
+! Run `ros2 daemon stop` in the monitor pane **right before every** `ros2 run ... husky_monitor`,
+even when the robot's block below was pasted already (the blocks stop it too). Without it the
+monitor pane often does not pick up the robot's topics. Every run section (7–13) starts with both
+lines.
+
+#### 1.1 Cindy
+
+Runs 1, 3, 5:
 
 ```bash
 cd ~/ros2_ws && source venv/bin/activate && source install/setup.bash
@@ -338,7 +368,9 @@ ros2 daemon stop >/dev/null 2>&1
 echo "[cindy env] domain $ROS_DOMAIN_ID via $(ip -4 -brief addr show eno1 | awk '{print $1, $2, $3}') | problem $DESIGN_PROBLEM_NAME"
 ```
 
-**Alice** (her air checks in section 6, runs 2 and 6):
+#### 1.1 Alice
+
+Her air checks in section 6, runs 2 and 6:
 
 ```bash
 cd ~/ros2_ws && source venv/bin/activate && source install/setup.bash
@@ -350,7 +382,9 @@ ros2 daemon stop >/dev/null 2>&1
 echo "[alice env] domain $ROS_DOMAIN_ID via $(ip -4 -brief addr show eno1 | awk '{print $1, $2, $3}') | problem $DESIGN_PROBLEM_NAME"
 ```
 
-**Belle** (her air checks in section 6, runs 4 and 7):
+#### 1.1 Belle
+
+Her air checks in section 6, runs 4 and 7:
 
 ```bash
 cd ~/ros2_ws && source venv/bin/activate && source install/setup.bash
@@ -394,11 +428,14 @@ cannot read them (`The message type ... is invalid`) even when the tools publish
 
 ## 2. Connectivity checks (checks pane, after 1.2)
 
-The controller checks call each controller manager's service directly.
+The controller checks call each controller manager's service directly. Each robot's block sets
+its own domain, so it can be pasted as is.
 
-**Cindy** (`export ROS_DOMAIN_ID=86; ros2 daemon stop`):
+### 2.1 Cindy
 
 ```bash
+export ROS_DOMAIN_ID=86
+ros2 daemon stop >/dev/null 2>&1
 for t in /a200_0806/left_ur5e/rate_limiter/joint_states /a200_0806/right_ur5e/rate_limiter/joint_states \
          /a200_0806/left_gripper/tool_status /a200_0806/right_gripper/tool_status; do
   # the last rate reading (the first one can be low while the subscriber starts), or the error
@@ -418,10 +455,10 @@ done
       only `/opt/ros/humble`: paste 1.2 again.
 - [ ] Both arms: `scaled_joint_trajectory_controller` **active**, `cartesian_compliance_controller` **inactive**.
 
-**Alice and Belle** (one block; set `NS` and the domain to the robot you check):
+### 2.2 Alice
 
 ```bash
-export ROS_DOMAIN_ID=84; NS=/a200_0804     # Alice. Belle: export ROS_DOMAIN_ID=85; NS=/a200_0805
+export ROS_DOMAIN_ID=84; NS=/a200_0804     # Alice
 ros2 daemon stop >/dev/null 2>&1
 echo "--- joint states"; r=$(timeout 6 ros2 topic hz $NS/ur5e/rate_limiter/joint_states --window 20 2>&1 | grep 'average rate' | tail -1); echo "${r:-NO MESSAGES}"
 echo "--- gripper action"; ros2 action list | grep gripper_cmd || echo "NO GRIPPER ACTION"
@@ -431,10 +468,26 @@ timeout 15 ros2 service call $NS/ur5e/controller_manager/list_controllers \
     | grep -oE "name='[a-z_]+'|state='[a-z]+'" | paste - - | grep -E 'scaled_joint|cartesian_compliance'
 ```
 
-- [ ] Joint states publish; the gripper action `<NS>/gripper/robotiq_gripper_controller/gripper_cmd`
+- [ ] Joint states publish; the gripper action `/a200_0804/gripper/robotiq_gripper_controller/gripper_cmd`
       is listed (`NO GRIPPER ACTION`: the launch is missing `gripper:=robotiq_2F_85`, 0.3).
 - [ ] `scaled_joint_trajectory_controller` **active**, `cartesian_compliance_controller` **inactive**.
-- [ ] Done for **both** Alice and Belle.
+
+### 2.3 Belle
+
+```bash
+export ROS_DOMAIN_ID=85; NS=/a200_0805     # Belle
+ros2 daemon stop >/dev/null 2>&1
+echo "--- joint states"; r=$(timeout 6 ros2 topic hz $NS/ur5e/rate_limiter/joint_states --window 20 2>&1 | grep 'average rate' | tail -1); echo "${r:-NO MESSAGES}"
+echo "--- gripper action"; ros2 action list | grep gripper_cmd || echo "NO GRIPPER ACTION"
+echo "--- controllers"
+timeout 15 ros2 service call $NS/ur5e/controller_manager/list_controllers \
+    controller_manager_msgs/srv/ListControllers 2>&1 | tr ',' '\n' \
+    | grep -oE "name='[a-z_]+'|state='[a-z]+'" | paste - - | grep -E 'scaled_joint|cartesian_compliance'
+```
+
+- [ ] Joint states publish; the gripper action `/a200_0805/gripper/robotiq_gripper_controller/gripper_cmd`
+      is listed (`NO GRIPPER ACTION`: the launch is missing `gripper:=robotiq_2F_85`, 0.3).
+- [ ] `scaled_joint_trajectory_controller` **active**, `cartesian_compliance_controller` **inactive**.
 
 ---
 
@@ -568,7 +621,7 @@ are tests. Run the checks below once per robot, **Belle first**, with that robot
 | namespace, checks-pane domain | `/a200_0805`, 85 | `/a200_0804`, 84 |
 | hold action, its close step | 10, `B35_H_M3_gripper_close` | 3, `B21_H_M3_gripper_close` |
 
-Start the robot's monitor (its 1.1 block, then `ros2 run husky_assembly_teleop husky_monitor`):
+Start the robot's monitor (its 1.1 block, `ros2 daemon stop`, then `ros2 run husky_assembly_teleop husky_monitor`):
 
 - [ ] Section 5's lines with `robot <Belle (domain 85) | Alice (domain 84)> ... progress 0/18 done`
       and both others `<- parked` (nothing done yet).
@@ -624,13 +677,16 @@ Start the robot's monitor (its 1.1 block, then `ros2 run husky_assembly_teleop h
 
 ## 7. Cindy's run 1 — actions 0–2
 
-### 7.1 Start Cindy's monitor (monitor pane, after the 1.1 Cindy block)
+### 7.1 Start Cindy's monitor
+
+**Set up:** Cindy launched ([0.3 Cindy](#03-cindy)) and checked ([2.1 Cindy](#21-cindy)). Monitor pane: the [1.1 Cindy](#11-cindy) block, then:
 
 ```bash
+ros2 daemon stop      # ! every time, or the monitor may miss the robot's topics
 ros2 run husky_assembly_teleop husky_monitor
 ```
 
-- [ ] Section 5's lines with `[Plan skeleton] robot Cindy (domain 86) | problem 261006_3bar_holding_test | progress 0/18 done`
+- [ ] [Section 5](#5-what-every-monitor-start-prints)'s lines with `[Plan skeleton] robot Cindy (domain 86) | problem 261006_3bar_holding_test | progress 0/18 done`
       and `[Plan skeleton] others: Alice <- parked | Belle <- parked`.
 - [ ] Tick `Workaround: plan the transfer as a free move (no bar, from the live arms)` (under
       `Plan Movement`) → the five `Transfer start:` sliders above it disappear (they come back
@@ -675,7 +731,7 @@ transfer, insert, fix foundation (manual). B20 stands on its two ground joints
     bar), so a right `plan end` gap means the two exported targets disagree.
   - `... no collision-free IK for the insertion start at the live base ...`: the base stands too
     far from (or too close to) B20's Rhino pose, or the drawn colliding pair is in the way. Drive
-    the base (section 3) and click the IK check again.
+    the base ([section 3](#3-driving-a-base-from-the-command-line-when-the-joystick-does-not-connect)) and click the IK check again.
   - [ ] `Plan Movement` → three lines:
         - `[transfer workaround] B20_J_M3_CDFM_transfer_to_approach: goal from the last IK check (the base moved ... mm since).`
         - `[transfer workaround] free move (no bar) from the live arms to the insertion start; max |goal - stored goal| = ... rad`
@@ -755,7 +811,7 @@ transfer, insert, fix foundation (manual). B20 stands on its two ground joints
   - `[B20_R_M1_LM_retreat] start_state resynced to the live arms (max joint drift ... deg)` and
     `[retreat live] B20_R_M1_LM_retreat: goals = the live tool0 poses moved 50 mm back: left along (...), N mm from the exported goal; right ...`.
     Each tool0 backs off 50 mm along its exported retreat axis, orientation kept; scene
-    collisions are checked. No path → the `[B20_R_M1_LM_retreat diag]` block (section 15).
+    collisions are checked. No path → the `[B20_R_M1_LM_retreat diag]` block ([section 15](#15-if-something-goes-wrong)).
   - Then preview (starts at the live arms) → `Exec Selected Mv Traj (auto)`. The log shows the
     ungrasp running with it (gripper motors LOOSENING), and once
     `'B20_R_M1_LM_retreat': the export asks for the joint_tracking controller; the monitor runs this dual_independent_linear movement under ...`
@@ -767,7 +823,7 @@ transfer, insert, fix foundation (manual). B20 stands on its two ground joints
     `[B20_R_M1_LM_retreat] check PASS / FAIL ...` (replan, start, compliant part, contact,
     grippers, left / right tool0 path, joints, speed). It then runs the rigid part at once,
     **no `Confirm Exec`**: `running the rigid part now (N waypoints over T s); every check passed.`
-    Or `N check(s) FAILED, see the "check FAIL" lines above`: note them in the log (section 15).
+    Or `N check(s) FAILED, see the "check FAIL" lines above`: note them in the log ([section 15](#15-if-something-goes-wrong)).
   - Joint controller restored afterwards.
 - [ ] **Free move home** (`B20_R_M2_free_home`): `Step` → 1 → `Load Movement` → `Plan Movement` →
       preview → `Exec Selected Mv Traj (auto)`. It may be skipped: the retreat's end is already
@@ -820,7 +876,7 @@ numbers:
     - The `arms did NOT reach the commanded end pose [spiral mode]` warning is expected after a
       mid-spiral stall: it is measured against the straight-line end, so it reads the spiral's radius.
 - [ ] After the insert: Cindy holds B21 at its assembled pose, **joint controller active**
-      (section 2's controller check).
+      ([section 2](#2-connectivity-checks-checks-pane-after-12)'s controller check).
 - [ ] `Mark action done` → header `3/18`. Cindy's live base and arms were already saved to
       `progress.json` when the insert ended (Alice's run plans around them).
 - [ ] **Quit Cindy's monitor** (`Ctrl-C`). Cindy keeps holding B21 (her driver keeps running). Do
@@ -830,9 +886,14 @@ numbers:
 
 ## 8. Alice's run 2 — action 3: Alice grabs B21
 
-Monitor pane: 1.1 **Alice** block, then `ros2 run husky_assembly_teleop husky_monitor`.
+**Set up:** Alice launched ([0.3 Alice](#03-alice)) and checked ([2.2 Alice](#22-alice)). Monitor pane: the [1.1 Alice](#11-alice) block, then:
 
-- [ ] Section 5's lines with `robot Alice (domain 84) ... progress 3/18 done` and
+```bash
+ros2 daemon stop      # ! every time, or the monitor may miss the robot's topics
+ros2 run husky_assembly_teleop husky_monitor
+```
+
+- [ ] [Section 5](#5-what-every-monitor-start-prints)'s lines with `robot Alice (domain 84) ... progress 3/18 done` and
       `others: Cindy <- live (action 2) | Belle <- parked`; the slider on action 3, its row not grey.
 - [ ] PyBullet: Cindy drawn holding B21 at her real base (mocap; her arms from `progress.json`).
       She may show twice at the same pose: the solid husky and the red obstacle robot — the red
@@ -847,7 +908,7 @@ Monitor pane: 1.1 **Alice** block, then `ros2 run husky_assembly_teleop husky_mo
     and `Insert: ...` controls are hidden.
   - The blue goal ghost stands where Rhino puts Alice, with her arm at the approach pose
     (`[goal ghost] 'B21_H_M0_free_to_approach': Rhino's base and target pose (drive the base there); ...`).
-    Drive the base towards it (section 3) before planning. The plan itself starts from her live
+    Drive the base towards it ([section 3](#3-driving-a-base-from-the-command-line-when-the-joystick-does-not-connect)) before planning. The plan itself starts from her live
     base and arm.
 - [ ] **Free approach** (`B21_H_M0_free_to_approach`): `Plan Movement` → the goal is re-solved by IK
       at Alice's live base, with her own exact ssik solver (built from her calibrated URDF, like
@@ -862,8 +923,8 @@ Monitor pane: 1.1 **Alice** block, then `ros2 run husky_assembly_teleop husky_mo
   only; note it.
   - `... no collision-free IK for its approach pose at the live base (...); not planning.` (the
     collision drawn if there is one): Alice stands where the approach pose cannot be reached —
-    drive her base (section 3, domain 84, `/a200_0804`) and plan again.
-  - `[live goal] ...: base not tracked; ...` = mocap does not see Alice (Motive 1840, 0.3).
+    drive her base ([section 3](#3-driving-a-base-from-the-command-line-when-the-joystick-does-not-connect), domain 84, `/a200_0804`) and plan again.
+  - `[live goal] ...: base not tracked; ...` = mocap does not see Alice (Motive 1840, [0.3](#03-robot-bring-up-robot-side)).
   - [ ] Preview (`Traj viz time`): ends with the open jaws 100 mm in front of B21, clear of
         Cindy's arms and tools. Raise `traj time` → `Exec Selected Mv Traj (auto)` → the arm goes
         there. The exec then stays running and **servos tool0 onto the approach pose**, the same
@@ -886,7 +947,7 @@ Monitor pane: 1.1 **Alice** block, then `ros2 run husky_assembly_teleop husky_mo
 
         `[approach ...] servo skipped (FAKE_HARDWARE / the base is not tracked by mocap)` = no
         correction.
-- [ ] **Calibration check** (Alice's June calibration, 0.1): the jaws now stand ≈ 100 mm in front of
+- [ ] **Calibration check** (Alice's June calibration, [0.1](#01-monitor-flags-the-mocap-address-and-the-base-calibrations)): the jaws now stand ≈ 100 mm in front of
       B21, centred on the bar. Off by more than ~1–2 cm sideways: stop, the base calibration is
       wrong (recalibrate Alice, `doc/calibration_manual.md`, and point her
       `BASE_CALIBRATION_DATE_BY_ROBOT` entry at the new folder).
@@ -918,7 +979,12 @@ Monitor pane: 1.1 **Alice** block, then `ros2 run husky_assembly_teleop husky_mo
 
 ### 9.1 Restart Cindy's monitor
 
-Monitor pane: 1.1 **Cindy** block, then `ros2 run husky_assembly_teleop husky_monitor`.
+**Set up:** Cindy launched ([0.3 Cindy](#03-cindy)) and checked ([2.1 Cindy](#21-cindy)). Monitor pane: the [1.1 Cindy](#11-cindy) block, then:
+
+```bash
+ros2 daemon stop      # ! every time, or the monitor may miss the robot's topics
+ros2 run husky_assembly_teleop husky_monitor
+```
 
 - [ ] Start-up: `[Plan skeleton] Cindy starts from the progress.json state (after action 2, live).`
       (her real joints take over at once), header `4/18`,
@@ -1004,21 +1070,26 @@ with a manual foundation fix. The base drives about 1.1 m from where it stood fo
 
 ## 10. Belle's run 4 — action 10: Belle grabs B35
 
-The same four steps as Alice's hold (section 8); only the differences are spelled out here.
-Her start-up prints `Base calibration of Belle (0805): 20261013/...` (0.1); the calibration check
+The same four steps as Alice's hold ([section 8](#8-alices-run-2--action-3-alice-grabs-b21)); only the differences are spelled out here.
+Her start-up prints `Base calibration of Belle (0805): 20261013/...` ([0.1](#01-monitor-flags-the-mocap-address-and-the-base-calibrations)); the calibration check
 after the free approach below is the first test of it on an assembly.
 
-Monitor pane: 1.1 **Belle** block, then `ros2 run husky_assembly_teleop husky_monitor`.
+**Set up:** Belle launched ([0.3 Belle](#03-belle)) and checked ([2.3 Belle](#23-belle)). Monitor pane: the [1.1 Belle](#11-belle) block, then:
 
-- [ ] Section 5's lines with `robot Belle (domain 85) ... progress 10/18 done` and
+```bash
+ros2 daemon stop      # ! every time, or the monitor may miss the robot's topics
+ros2 run husky_assembly_teleop husky_monitor
+```
+
+- [ ] [Section 5](#5-what-every-monitor-start-prints)'s lines with `robot Belle (domain 85) ... progress 10/18 done` and
       `others: Cindy <- live (action 9) | Alice <- live (action 3)`; the slider on action 10, its row
       not grey.
 - [ ] PyBullet: Cindy drawn holding B35, Alice clamped on B21.
 - [ ] Select 10 → `Load action` →
       `[obstacle robots] posed from: ObstacleRobotAlice <- live, ObstacleRobotCindy <- live`.
-      B36 and B37 may be drawn although not built yet (as in section 8). Readout
+      B36 and B37 may be drawn although not built yet (as in [section 8](#8-alices-run-2--action-3-alice-grabs-b21)). Readout
       `step 1/4: B35_H_M0_free_to_approach ...`, `traj time` 15 s. The blue goal ghost stands
-      where Rhino puts Belle, at her approach pose: drive the base towards it (as in section 8).
+      where Rhino puts Belle, at her approach pose: drive the base towards it (as in [section 8](#8-alices-run-2--action-3-alice-grabs-b21)).
 - [ ] **Free approach** (`B35_H_M0_free_to_approach`): `Plan Movement`. The goal is re-solved
       with Belle's own exact ssik solver (built 2026-10-13 from her calibrated URDF, like
       Alice's). Once per run:
@@ -1034,15 +1105,15 @@ Monitor pane: 1.1 **Belle** block, then `ros2 run husky_assembly_teleop husky_mo
   `[goal IK] no ssik solver (alice, belle) fits the planner's robot: PyBullet IK instead ...` =
   the planning cell is not Belle's calibrated model; note it.
 
-  Errors as for Alice: no IK at the live base → drive Belle (section 3, domain 85, `/a200_0805`);
+  Errors as for Alice: no IK at the live base → drive Belle ([section 3](#3-driving-a-base-from-the-command-line-when-the-joystick-does-not-connect), domain 85, `/a200_0805`);
   `base not tracked` → Motive 1850.
   - [ ] Preview: ends with the open jaws 100 mm in front of B35, clear of Cindy's arms and tools.
         Raise `traj time` → `Exec Selected Mv Traj (auto)` → the servo onto the approach pose as
-        in section 8 (first move: preview, `Confirm Exec`).
+        in [section 8](#8-alices-run-2--action-3-alice-grabs-b21) (first move: preview, `Confirm Exec`).
   - [ ] It ends with `### SERVOING converged at iter N (< 0.2 mm)` (headless, a 10 mm base
         shift: one move, 10 → 0.00 mm; or it stops after 8), the
         `B35_H_M0_free_to_approach_servoing_*` record and the `[Servo] propagated ...` lines.
-- [ ] **Calibration check** (Belle's 2026-10-14 calibration, 0.1): the jaws stand ≈ 100 mm in front of B35,
+- [ ] **Calibration check** (Belle's 2026-10-14 calibration, [0.1](#01-monitor-flags-the-mocap-address-and-the-base-calibrations)): the jaws stand ≈ 100 mm in front of B35,
       centred on the bar. Off by more than ~1–2 cm sideways: stop, her base calibration is wrong.
 - [ ] **Gripper open** (`B35_H_M1_gripper_open`): `Step` → 1 → `Load Movement` →
       `Exec gripper step: OPEN` → `Confirm Exec` → `gripper 0 done: position 0.426, ...`.
@@ -1051,7 +1122,7 @@ Monitor pane: 1.1 **Belle** block, then `ros2 run husky_assembly_teleop husky_mo
       → preview: the open jaws slide onto B35 → `Exec Selected Mv Traj (auto)`.
 - [ ] **Gripper close + handoff** (`B35_H_M3_gripper_close`): `Step` → 3 → `Load Movement` →
       `Exec gripper step: CLOSE + compliant handoff` → `Confirm Exec` → the phase lines of
-      section 6, hand on Belle's e-stop. Watch Cindy's tools: they must not be pulled.
+      [section 6](#6-support-robots--gripper-and-handoff-checks-in-the-air-before-action-0-no-bar-clear-workspace), hand on Belle's e-stop. Watch Cindy's tools: they must not be pulled.
 - [ ] `Mark action done` → `[Plan skeleton] action 10 B35_H_hold marked done by Belle; Belle's belief <- live. Saved ...`,
       header `11/18`.
 - [ ] **Quit Belle's monitor** (`Ctrl-C`). Belle stays clamped on B35.
@@ -1062,7 +1133,12 @@ Monitor pane: 1.1 **Belle** block, then `ros2 run husky_assembly_teleop husky_mo
 
 ### 11.1 Restart Cindy's monitor
 
-Monitor pane: 1.1 **Cindy** block, then `ros2 run husky_assembly_teleop husky_monitor`.
+**Set up:** Cindy launched ([0.3 Cindy](#03-cindy)) and checked ([2.1 Cindy](#21-cindy)). Monitor pane: the [1.1 Cindy](#11-cindy) block, then:
+
+```bash
+ros2 daemon stop      # ! every time, or the monitor may miss the robot's topics
+ros2 run husky_assembly_teleop husky_monitor
+```
 
 - [ ] Start-up: `[Plan skeleton] Cindy starts from the progress.json state (after action 9, live).`,
       header `11/18`, `others: Alice <- live (action 3) | Belle <- live (action 10)`.
@@ -1131,9 +1207,14 @@ stood for B36. B37's left male (`joint_J21-37_male`) screws into **B21 (Alice)**
 B21 now hangs in the structure (jointed to B20, B22 and B37); Alice opens her jaws and backs out
 100 mm along her approach line.
 
-Monitor pane: 1.1 **Alice** block, then `ros2 run husky_assembly_teleop husky_monitor`.
+**Set up:** Alice launched ([0.3 Alice](#03-alice)) and checked ([2.2 Alice](#22-alice)). Monitor pane: the [1.1 Alice](#11-alice) block, then:
 
-- [ ] Section 5's lines with `robot Alice (domain 84) ... progress 16/18 done` and
+```bash
+ros2 daemon stop      # ! every time, or the monitor may miss the robot's topics
+ros2 run husky_assembly_teleop husky_monitor
+```
+
+- [ ] [Section 5](#5-what-every-monitor-start-prints)'s lines with `robot Alice (domain 84) ... progress 16/18 done` and
       `others: Cindy <- live (action 15) | Belle <- live (action 10)`.
 - [ ] Select 16 → `Load action` → readout `step 1/2: B21_HR_M0_gripper_open ...`.
 - [ ] **Gripper open** (`B21_HR_M0_gripper_open`): `Exec gripper step: OPEN` → `Confirm Exec` →
@@ -1148,14 +1229,19 @@ Monitor pane: 1.1 **Alice** block, then `ros2 run husky_assembly_teleop husky_mo
   servo). Watch the jaws clear the bar.
 - [ ] `Mark action done` → `[Plan skeleton] action 16 B21_HR_hold_release marked done by Alice; Alice's belief <- live. Saved ...`,
       header `17/18`.
-- [ ] **Quit Alice's monitor**, then drive Alice away from the structure (section 3, domain 84).
+- [ ] **Quit Alice's monitor**, then drive Alice away from the structure ([section 3](#3-driving-a-base-from-the-command-line-when-the-joystick-does-not-connect), domain 84).
       The export assumes she leaves the scene, and Belle's run draws her parked.
 
 ## 13. Belle's run 7 — action 17: Belle lets go of B35
 
-The same as section 12, with Belle's values.
+The same as [section 12](#12-alices-run-6--action-16-alice-lets-go-of-b21), with Belle's values.
 
-Monitor pane: 1.1 **Belle** block, then `ros2 run husky_assembly_teleop husky_monitor`.
+**Set up:** Belle launched ([0.3 Belle](#03-belle)) and checked ([2.3 Belle](#23-belle)). Monitor pane: the [1.1 Belle](#11-belle) block, then:
+
+```bash
+ros2 daemon stop      # ! every time, or the monitor may miss the robot's topics
+ros2 run husky_assembly_teleop husky_monitor
+```
 
 - [ ] `robot Belle (domain 85) ... progress 17/18 done`.
 - [ ] Select 17 → `Load action` →
