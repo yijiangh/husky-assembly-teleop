@@ -13,11 +13,13 @@ Calibration goes elsewhere: how the arm sits on the husky into the mount joint
 *above* `<arm>_base_link` (`arm_mount_joint`, `right_arm_mount_joint`, ...),
 the UR's own calibration into the six revolute joints.
 
-**Why:** the original Alice/Belle URDFs had the 90° mount turn in the two
-joints below `<arm>_base_link` instead (Cindy's right arm in its `base`
-joint). The arm was still drawn in the right place, but `ur_arm_base_link`
-was 90° off the controller's `base_link`. Cartesian commands computed in it
-swung 0804 (e-stop, 2026-09-29).
+**Why:** `husky_urdf` had the 90° mount turn in the joints below
+`<arm>_base_link` instead: on Alice and Belle in both (`bcd5c07`, 2023-07-05),
+on Cindy's right arm in its `base` joint (`2aababb`, 2025-06-26). The arm was
+still drawn in the right place, but `ur_arm_base_link` was 90° off the
+controller's `base_link`. Cartesian commands computed in it swung 0804
+(e-stop, 2026-09-29). The old monitor never noticed: it rotated the reported
+TCP by a hard-coded −90° (one arm) or −180° (Cindy).
 
 **Now:**
 - The reported TCP (UR Base frame) is turned into the controller's frame by the
@@ -30,14 +32,27 @@ swung 0804 (e-stop, 2026-09-29).
   tool's TCP (`Tool.tcp`, the `tcp` link of its URDF in `data/tool_urdf/`) off
   again before anything commands from it. A pendant TCP that differs from the
   tool's shows up as an offset between the reported and the computed `tool0`.
-- `config.py` uses the fixed `*_StockUrFrames.urdf` files, written by
-  `scripts/fix_ur_base_frames.py` (every link except a mis-set `<arm>_base`
-  stays where it was). Run it again after a calibration rewrites the
-  originals.
+- Every URDF in `husky_urdf` is fixed in place (16 Oct 2026), with
+  `scripts/fix_ur_base_frames.py`: every link except a mis-set `<arm>_base`
+  stays where it was. Run it again if a file comes back turned, e.g. after a
+  calibration rewrites one. ! Old process exports still carry the turned
+  frames; never bump `husky_urdf` on `master` (the old monitor's −90° assumes
+  the turned files).
 - A URDF that breaks the rule still *looks* right in the viewer but moves wrong.
-  So it is caught twice: `test/test_ur_frames.py` fails for every configured
-  URDF that breaks it (`colcon test`), and at startup the monitor logs an error
-  and refuses that arm's Cartesian targets (Hold still works).
+  So it is caught three times: `test/test_ur_frames.py` fails for every arm
+  URDF in `husky_urdf` that breaks it, at startup the monitor logs an error and
+  refuses that arm's Cartesian targets (Hold still works), and while connected
+  the health `tcp` chip would show tool0 90° off.
+- **The arm's own controller has its own URDF**: the stock `ur_description`
+  built on the robot with that arm's UR factory calibration (`kinematics_params_file`).
+  It starts at `base_link` and ends at `tool0`, knows nothing of the husky,
+  and is fixed. Ours must agree with it from `<arm>_base_link` down: the two
+  180° joints above, and the six joint origins, which hold the same factory
+  calibration. The monitor applies the arm's calibration file from crl-husky
+  (`config/robots/<serial>/ur_calibration*.yaml`) to its copy of the URDF at
+  startup: nothing changes if the URDF is up to date, otherwise it logs the
+  difference boldly, shows a `URDF` chip on the health panel, and uses the
+  calibration.
 
 **Chain from the world to the TCP** (`robot_interface/frames.py`):
 

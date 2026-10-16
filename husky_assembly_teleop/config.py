@@ -147,13 +147,13 @@ class MonitorConfig:
 
 # --- --- --- --- --- WHAT EACH ROBOT IS --- --- --- --- ---
 # TODO move this table to crl_husky once it ships robot URDFs.
-# ! Calibrated URDFs: arm kinematics differ per machine, so each robot must get its own.
-#   "_StockUrFrames" means the stock UR base joints are restored (scripts/fix_ur_base_frames.py).
+# ! Calibrated URDFs: arm kinematics differ per machine, so each robot must get its own. Their stock UR base frames
+#   are checked by test (doc/ur_frames.md).
 _URDF_ROOT = "husky_urdf"
 _SINGLE_ARM_URDF = (_URDF_ROOT + "/mt_husky_moveit_config/urdf/"
-                    "husky_ur5_e_no_base_joint_{}_Calibrated_StockUrFrames.urdf")
+                    "husky_ur5_e_no_base_joint_{}_Calibrated.urdf")
 _DUAL_ARM_URDF = (_URDF_ROOT + "/mt_husky_dual_ur5_e_moveit_config/urdf/"
-                  "husky_dual_ur5_e_no_base_joint_All_Calibrated_StockUrFrames.urdf")
+                  "husky_dual_ur5_e_no_base_joint_All_Calibrated.urdf")
 _SINGLE_ARM_SRDF = _URDF_ROOT + "/mt_husky_moveit_config/config/{}.srdf"
 _DUAL_ARM_SRDF = _URDF_ROOT + "/mt_husky_dual_ur5_e_moveit_config/config/dual_arm_husky.srdf"
 

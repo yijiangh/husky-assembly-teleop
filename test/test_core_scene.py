@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -19,13 +20,26 @@ from husky_assembly_teleop.world.kinematics import Kinematics
 from husky_assembly_teleop.world.scene import take_snapshot, tracked_body
 
 DATA = Path(__file__).resolve().parent.parent / "data"
-#: Robot -> (serial, the design copy's URDF variant, the one link it turns 90 degrees against the stock UR frames).
+#: Robot -> (serial, the joints old exports turned to rpy 0 0 -pi/2 (and the mount turned back to pi), the one
+#: link that leaves at 90 degrees). How husky_urdf had them before 16 Oct 2026, and old process exports still do.
 NOT_STOCK = {
-    "cindy": ("0806", "mt_husky_dual_ur5_e_moveit_config/urdf/husky_dual_ur5_e_no_base_joint_All_Calibrated.urdf",
-              "right_ur_arm_base"),
-    "alice": ("0804", "mt_husky_moveit_config/urdf/husky_ur5_e_no_base_joint_Alice_Calibrated.urdf",
-              "ur_arm_base_link"),
+    "cindy": ("0806", ("right_ur_arm_base_link-base_fixed_joint",), None, "right_ur_arm_base"),
+    "alice": ("0804", ("ur_arm_base_link-base_link_inertia", "ur_arm_base_link-base_fixed_joint"),
+              "arm_mount_joint", "ur_arm_base_link"),
 }
+
+
+def _turned_copy(urdf: Path, joints: tuple[str, ...], mount: str | None, out: Path) -> Path:
+    """The URDF with the old turned UR base frames: `joints` at rpy 0 0 -pi/2, `mount` at 0 0 pi."""
+    text = urdf.read_text()
+    for name, rpy in [*((j, "0 0 -1.570796326795") for j in joints), *(((mount, "0 0 3.1415927"),) if mount else ())]:
+        # ? Comments blanked first: the files keep old origins and whole transmission blocks commented out.
+        live = re.sub(r"<!--.*?-->", lambda m: " " * len(m.group(0)), text, flags=re.S)
+        start = live.index(f'<joint name="{name}"')
+        tag = re.compile(r'rpy="[^"]*"').search(live, start, live.index("</joint>", start))
+        text = text[:tag.start()] + f'rpy="{rpy}"' + text[tag.end():]
+    out.write_text(text)
+    return out
 
 
 @pytest.fixture(scope="module")
@@ -45,11 +59,11 @@ def test_live_model_keeps_tools_apart(cindy):
 
 
 @pytest.mark.parametrize("robot", sorted(NOT_STOCK))
-def test_frame_convention_and_fk_comparison(robot):
-    """The design's URDF variant is not stock, yet every link but one gives the same pose: compare by FK, not file."""
-    serial, urdf, turned = NOT_STOCK[robot]
+def test_frame_convention_and_fk_comparison(robot, tmp_path):
+    """An old export's turned URDF is not stock, yet every link but one gives the same pose: compare by FK, not file."""
+    serial, joints, mount, turned = NOT_STOCK[robot]
     live = robot_config_from_serial(serial, DATA).model
-    other = robot_model(robot, DATA / "husky_urdf" / urdf, live.srdf)
+    other = robot_model(robot, _turned_copy(live.urdf, joints, mount, tmp_path / "turned.urdf"), live.srdf)
     assert live.stock_ur_frames and not other.stock_ur_frames
     assert other.links == live.links and other.flanges == live.flanges
     joints = dict(zip(live.movable_joints, np.random.default_rng(1).uniform(-2.0, 2.0, len(live.movable_joints))))

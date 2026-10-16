@@ -1,14 +1,12 @@
 """
-Write a copy of a husky URDF whose UR arms use the stock base frames.
+Fix a husky URDF in place so its UR arms use the stock base frames.
 
 Usage:
-    python scripts/fix_ur_base_frames.py <in.urdf> [...]
+    python scripts/fix_ur_base_frames.py <file.urdf> [...]
 
-Writes `<in>_StockUrFrames.urdf`. For each arm, the joints below
-`<arm>_base_link` are set to the stock rpy 0 0 pi, and the rotation that was
-there moves into the mount joint above, so every link except a mis-set
-`<arm>_base` stays where it was.
-Why: doc/ur_frames.md.
+For each arm, the joints below `<arm>_base_link` are set to the stock rpy 0 0 pi, and the rotation that was
+there moves into the mount joint above, so every link except a mis-set `<arm>_base` stays where it was.
+Files that are already stock are left untouched. Why: doc/ur_frames.md.
 """
 
 from __future__ import annotations
@@ -44,10 +42,10 @@ def set_rpy(text: str, joint_name: str, rpy: str) -> str:
     return text[:block.start()] + body + text[block.end():]
 
 
-def fix_file(path: Path) -> None:
-    """Write the stock-frames copy of one URDF."""
+def fix_file(path: Path) -> bool:
+    """Fix one URDF in place; return whether anything changed."""
     by_child = {j.find("child").get("link"): j for j in parse(path).getroot().findall("joint")}
-    text = path.read_text()
+    text = original = path.read_text()
     for child in by_child:
         if not child.endswith("_base_link_inertia"):
             continue
@@ -62,9 +60,10 @@ def fix_file(path: Path) -> None:
             if (STOCK.inv() * origin_rotation(joint)).magnitude() > 1e-6:
                 text = set_rpy(text, joint.get("name"), STOCK_RPY)
                 print(f"{path.name} {arm}: {joint.get('name')} set to stock")
-    out = path.with_name(path.stem + "_StockUrFrames" + path.suffix)
-    out.write_text(text)
-    print(f"  -> {out}")
+    if text == original:
+        return False
+    path.write_text(text)
+    return True
 
 
 if __name__ == "__main__":

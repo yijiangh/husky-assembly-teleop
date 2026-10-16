@@ -32,7 +32,7 @@ def alice():
 def test_model_urdf_has_no_tool_links(alice):
     """The robot's URDF is copied with the links it has, no tool joined on: the tool is only in `model.tools`."""
     original = (DATA / "husky_urdf/mt_husky_moveit_config/urdf"
-                / "husky_ur5_e_no_base_joint_Alice_Calibrated_StockUrFrames.urdf")
+                / "husky_ur5_e_no_base_joint_Alice_Calibrated.urdf")
     assert alice.model.links == urdf_links(original)
     assert "ur_arm_tool0" in alice.model.tools
 
