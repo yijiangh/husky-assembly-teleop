@@ -1,6 +1,8 @@
 """
 The health panel: a banner, a row per robot (with Unlock, Resume, Reconnect) and one for tracked objects.
 
+The banner sits above every plugin's folder (`ctx.view.header()`), so it shows while folders are collapsed.
+
 A robot's row has a line of chips for its base and one for each arm with its tool.
 
 Green is fine, amber needs a look, red is broken or silent; hover a chip for detail.
@@ -33,6 +35,7 @@ from ..robot_interface.base import JOINT_STATES_RATE as BASE_RATE
 from ..robot_interface.base import BaseState
 from ..robot_interface.controller_manager import REFRESH_PERIOD, ControllerManagerState
 from ..robot_interface.stream_stats import WINDOW, StreamQuality
+from ..ui.phone import phone_text
 from ..ui.style import BUSY, LEVEL_COLORS, NONE, OK, block, check_chip, chip, section
 from ..world.checks import BAD, GOOD, STALE_AFTER, WARN, Check
 
@@ -97,6 +100,9 @@ class HealthPlugin(HuskyPlugin):
         self._robot_rows: dict[str, viser.GuiHtmlHandle] = {}
         #: One row for all tracked objects.
         self._objects_row: viser.GuiHtmlHandle | None = None
+        #: On the phone: the banner above the tabs, and every row in one html in the Health tab.
+        self._phone_banner: viser.GuiHtmlHandle | None = None
+        self._phone_rows: viser.GuiHtmlHandle | None = None
         #: This tick's checks per robot (by serial), as (line name, checks), and for tracked objects.
         self._robot_checks: dict[str, list[tuple[str, list[Check]]]] = {}
         self._object_checks: list[Check] = []
@@ -106,13 +112,15 @@ class HealthPlugin(HuskyPlugin):
         self._tcp_checks: dict[tuple[str, str], Check] = {}
 
     def setup(self, ctx: PluginContext) -> None:
-        """Build the banner, one chip row and action buttons per robot, and the objects row.
+        """Build the banner, one chip row and action buttons per robot, the objects row, and the same on the phone.
 
         Args:
             ctx: This plugin's context.
         """
-        with ctx.view.ui() as gui:
+        # * The banner sits above every plugin's folder, so a problem shows while folders are collapsed.
+        with ctx.view.header() as gui:
             self._banner = gui.add_html("")
+        with ctx.view.ui() as gui:
             for serial in ctx.world.robots:
                 self._robot_rows[serial] = gui.add_html("")
                 # ? A button group: the only way in viser 1.1 to put buttons side by side.
@@ -127,6 +135,11 @@ class HealthPlugin(HuskyPlugin):
                     f"robot action {serial}",
                     lambda clicked, serial=serial: getattr(ctx.world.robots[serial], ROBOT_ACTIONS[clicked])()))
             self._objects_row = gui.add_html("")
+        # * The phone shows the same banner and rows, without the actions: those stay on the laptop.
+        with ctx.view.phone_header() as phone:
+            self._phone_banner = phone.add_html("")
+        with ctx.view.phone("Health", viser.Icon.HEART_RATE_MONITOR) as phone:
+            self._phone_rows = phone.add_html("")
 
     def update(self, ctx: PluginContext) -> None:
         """Run every check against this tick's state.
@@ -183,13 +196,19 @@ class HealthPlugin(HuskyPlugin):
             ctx: This plugin's context.
         """
         every_check = [check for lines in self._robot_checks.values() for _name, checks in lines for check in checks]
-        self._banner.content = render_banner(every_check + self._object_checks)
+        banner = render_banner(every_check + self._object_checks)
+        self._banner.content = banner
+        rows = []
         for serial, lines in self._robot_checks.items():
             robot = [check for _name, checks in lines for check in checks]
-            self._robot_rows[serial].content = (section(serial, LEVEL_COLORS[worst_level(robot)])
-                                                + "".join(render_line(name, checks) for name, checks in lines))
-        self._objects_row.content = (section("objects", LEVEL_COLORS[worst_level(self._object_checks)])
-                                     + render_chips(self._object_checks)) if self._object_checks else ""
+            rows.append(section(serial, LEVEL_COLORS[worst_level(robot)])
+                        + "".join(render_line(name, checks) for name, checks in lines))
+            self._robot_rows[serial].content = rows[-1]
+        rows.append((section("objects", LEVEL_COLORS[worst_level(self._object_checks)])
+                     + render_chips(self._object_checks)) if self._object_checks else "")
+        self._objects_row.content = rows[-1]
+        self._phone_banner.content = phone_text(banner)
+        self._phone_rows.content = phone_text("".join(rows))
 
 
 #: Chip colours by level, for the log.

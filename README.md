@@ -223,7 +223,9 @@ Example: `mocap_probe` shows the probe state in a **Probe** panel, collapsed on 
 
 ### Phone
 
-A phone page for walking next to the robots: open `http://<host-ip>:8081` on a phone in portrait, joined to the robot WiFi (the control PC's firewall must let port 8081 in). It shows **Stop all** (the same soft stop as on the laptop) and a tab per plugin.
+A phone page for walking next to the robots: open `http://<host-ip>:8081` on a phone in portrait, joined to the robot WiFi (the control PC's firewall must let port 8081 in). It shows **Stop all** (the same soft stop as on the laptop), the health banner, and a tab per plugin:
+
+- **Health**: the same chips as the health panel. Unlock, Resume and Reconnect stay on the laptop.
 
 Plugins add their own tab with `ctx.view.phone()`; see `plugins/__init__.py`.
 

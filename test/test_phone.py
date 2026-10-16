@@ -1,4 +1,4 @@
-"""Tests for the phone page: pinned ports, a plugin's tab and header, and Stop all."""
+"""Tests for the phone page: pinned ports, a plugin's tab and headers, and Stop all."""
 
 from __future__ import annotations
 
@@ -39,7 +39,7 @@ def test_taken_port_refuses_to_start(taken_port, which):
 
 
 def test_phone_tab_on_first_use_and_removed_by_clear(viz):
-    """A plugin gets one phone tab, made when first used; teardown removes the tab and the header."""
+    """A plugin gets one phone tab, made when first used; teardown removes the tab and both headers."""
     tabs = viz._phone.tabs
     view = viz.view_for("demo")
     assert tabs._tab_labels == ()
@@ -49,11 +49,13 @@ def test_phone_tab_on_first_use_and_removed_by_clear(viz):
         gui.add_button("Again")
     with view.phone_header() as gui:
         gui.add_html("status")
+    with view.header() as gui:
+        gui.add_html("desktop status")
     assert tabs._tab_labels == ("Demo",)
-    header = view._phone_header
+    headers = (view._phone_header, view._header)
     view.clear()
     assert tabs._tab_labels == ()
-    assert header._impl.removed
+    assert all(header._impl.removed for header in headers)
 
 
 def test_phone_stop_all_raises_the_soft_stop(viz):

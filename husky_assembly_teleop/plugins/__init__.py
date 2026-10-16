@@ -15,6 +15,7 @@ Add a file with @register and list it in `enabled_plugins` to run it.
     from it on your own worker thread. Report results with our ids.
   - Measured objects never go in the scene: use `ctx.track_object`.
 
+* Header: `ctx.view.header()` puts a short status above every plugin's folder, e.g. health's banner.
 * Phone: a plugin may add a tab to the phone page with `ctx.view.phone()` (and a short status above the tabs with
   `ctx.view.phone_header()`). Keep it to what an operator needs next to the robots; the rest stays on the laptop.
 """

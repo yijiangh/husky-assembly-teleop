@@ -356,6 +356,9 @@ class Visualization:
                  "scene bodies and tracked objects in their own colour.")
         self._collision_shown = False
 
+        #: Plugins' header folders (`PluginView.header`), above every plugin's folder. Unlabelled: no title or border.
+        self._header = self._server.gui.add_folder(None)
+
         # Per-robot handles by serial, built once in load_robot.
         self._robots: dict[str, _DrawnRobot] = {}
 
@@ -400,7 +403,7 @@ class Visualization:
         Returns:
             PluginView: The plugin's slice of the UI.
         """
-        return PluginView(self._server, plugin_name, self._phone)
+        return PluginView(self._server, plugin_name, self._header, self._phone)
 
     def atomic(self) -> AbstractContextManager[None]:
         """Batch every scene change made inside the block into one update.
@@ -502,16 +505,19 @@ class Visualization:
 class PluginView:
     """One plugin's private scene subtree and GUI folder in viser, and its tab on the phone, as `ctx.view`."""
 
-    def __init__(self, server: viser.ViserServer, plugin_name: str, phone: PhonePage):
-        """Create the plugin's scene root; its GUI folder and phone tab come on first use.
+    def __init__(self, server: viser.ViserServer, plugin_name: str, header: viser.GuiFolderHandle, phone: PhonePage):
+        """Create the plugin's scene root; its GUI folder, header and phone tab come on first use.
 
         Args:
             server: The shared viser server.
             plugin_name: Unique plugin name.
+            header: The desktop's header folder, above every plugin's folder.
             phone: The phone page.
         """
         self._server = server
         self._name = plugin_name
+        self._header_parent = header
+        self._header: viser.GuiFolderHandle | None = None
         self._phone = phone
         self._phone_tab: viser.GuiTabHandle | None = None
         self._phone_header: viser.GuiFolderHandle | None = None
@@ -559,6 +565,21 @@ class PluginView:
         return panel
 
     @contextmanager
+    def header(self) -> Iterator[viser.GuiApi]:
+        """Add widgets under Stop all, above every plugin's folder, so they show while folders are collapsed.
+
+        ! For a short status only, like health's banner: everything else belongs in `ui()`.
+
+        Yields:
+            viser.GuiApi: The GUI api, with this plugin's header folder as parent.
+        """
+        if self._header is None:
+            with self._header_parent:
+                self._header = self._server.gui.add_folder(None)
+        with self._header:
+            yield self._server.gui
+
+    @contextmanager
     def phone(self, label: str | None = None, icon: viser.IconName | None = None) -> Iterator[viser.GuiApi]:
         """Add widgets inside this plugin's tab on the phone page; the first call creates the tab.
 
@@ -590,13 +611,13 @@ class PluginView:
             yield self._phone.server.gui
 
     def clear(self) -> None:
-        """Remove everything this plugin added: scene nodes, its folder, its panels, its phone tab and header."""
+        """Remove everything this plugin added: scene nodes, its folder, header and panels, its phone tab and header."""
         self._root.remove()
         if self._folder is not None:
             self._folder.remove()
         for panel in self._panels:
             panel.remove()
         self._panels.clear()
-        for handle in (self._phone_tab, self._phone_header):
+        for handle in (self._header, self._phone_tab, self._phone_header):
             if handle is not None:
                 handle.remove()
