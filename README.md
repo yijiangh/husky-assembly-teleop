@@ -178,6 +178,7 @@ The monitor is a small core that ticks and owns the shared state; every feature 
 | `doc/scene_refactor_plan.md`, `doc/ur_frames.md` | The scene, the UR arm frames. The process file format is in the core's `doc/process_format.md`. |
 | `tasks/` | Specs written while building a feature. |
 | `doc/base_exp_manual.md` | Base controller experiments: goal and hypotheses, the three experiments (robot model, model over conditions, controllers), how to run them and where the results are. |
+| `doc/phone_manual.md` | The phone page: connecting a phone, every tab and button, what to do after a stop, troubleshooting. |
 | `doc/calibration_manual.md` and the other manuals | **Outdated**, written for the old monitor; each says at the top what is missing or different now. |
 | `DOCKER.md` | **Unknown state**, not tested with the new monitor. |
 
@@ -226,13 +227,7 @@ Example: `mocap_probe` shows the probe state in a **Probe** panel, collapsed on 
 
 ### Phone
 
-A phone page for walking next to the robots: open `http://<host-ip>:8081` on a phone in portrait, joined to the robot WiFi (the control PC's firewall must let port 8081 in). It shows **Stop all** (the same soft stop as on the laptop), the health banner, and a tab per plugin:
-
-- **Control** (`robot_control`): a tab per robot with a speed slider and a D-pad that drives while held. It drives only while the base runs its velocity controller; switching controllers stays on the laptop. Below it, per arm: **Open** and **Close** for the gripper, and **Free drive (hold)**: the arm can be pushed by hand while you hold it, and the joint controller holds it where it is when you let go (or when the phone drops off).
-- **Health**: the same chips as the health panel. Unlock, Resume and Reconnect stay on the laptop.
-- **Mocap** (`mocap_probe`): the big probe status, a Label and **Record point**, **Map coverage** (the same switch as on the laptop), a top-down map (only while mapping) and the last points. The map shows the floor in 1 m cells (grey until visited, then red to green by how often the probe was tracked there), obstacles in dark grey, robots in blue, recorded points in pink and the probe as a white dot (grey without a fix); +x right, +y up. It is redrawn at most twice a second. Choosing the rigid body, export and delete stay on the laptop.
-
-Plugins add their own tab with `ctx.view.phone()`; see `plugins/__init__.py`.
+A phone page for walking next to the robots: open `http://<laptop's 192.168.0.x address>:8081` on a phone on the robot WiFi, held upright. It has **Stop all**, the health banner, and a tab per plugin: **Control** (D-pad, gripper Open/Close, Free drive while held), **Health** and **Mocap**. Setup, every button and troubleshooting: [doc/phone_manual.md](doc/phone_manual.md). Plugins add a tab with `ctx.view.phone()` (`plugins/__init__.py`).
 
 ### Parameters
 

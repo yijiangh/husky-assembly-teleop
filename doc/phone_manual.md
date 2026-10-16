@@ -1,0 +1,124 @@
+# Phone manual
+
+The monitor serves a second page for a phone, for walking next to the robots: **Stop all**, the health banner, and a
+tab per plugin to drive a base, open or close a gripper, free drive an arm, or record mocap points. Everything else
+stays on the laptop.
+
+> **Safety.** **Stop all** on the phone is the monitor's soft stop, not an emergency stop: keep the e-stop in reach.
+> Every hold button (D-pad, Free drive) acts only while you hold it; when you let go, or the phone loses the page,
+> the robot stops within 0.25 s.
+
+## 1. Once per laptop
+
+The phone reaches the laptop over the offline network (the robot WiFi is bridged to the wired lab LAN, 192.168.0.x).
+If the laptop runs a firewall, let that network in (and keep everything else out, e.g. eduroam):
+
+```bash
+sudo ufw default deny incoming
+sudo ufw default allow outgoing
+sudo ufw allow from 192.168.0.0/24
+sudo ufw enable
+```
+
+## 2. Start the monitor
+
+Start it as usual (README, "Start the monitor"). The tabs come from the plugins you load:
+
+| Tab | Needs |
+|---|---|
+| **Control** | `robot_control` |
+| **Health** | always there (`health` is a default plugin) |
+| **Mocap** | `mocap_probe` |
+
+The ports are fixed so a bookmark keeps working: desktop **8080**, phone **8081**. If one is taken, usually by a
+monitor that is still running, the monitor refuses to start and says which port. A second monitor on purpose:
+`-p viser_port:=8095` (its phone page is then 8096).
+
+## 3. Open the page on the phone
+
+1. Join the robot WiFi.
+2. Find the laptop's address on the offline network, the one starting with `192.168.0.`:
+
+   ```bash
+   ip -4 -br addr
+   ```
+
+   Not the eduroam address (10.x): the robot WiFi does not reach it, and it changes from day to day.
+3. On the phone, open `http://192.168.0.<n>:8081`. Type the `http://`: some browsers try `https://` first and fail
+   without saying why.
+4. Hold the phone upright. The phone layout needs a narrow screen; turned sideways, the page shows the laptop
+   layout.
+5. Bookmark it.
+
+The robot WiFi has no internet. If the phone asks whether to stay connected, say yes, and if the page does not load,
+turn off mobile data: phones send everything over mobile data when the WiFi has no internet.
+
+## 4. The page
+
+From top to bottom:
+
+- **Husky Phone** (top left): a green cloud means the page is linked to the monitor. Red dots mean the link is lost:
+  nothing you press reaches the robots then, and the page reconnects by itself.
+- **Stop all**: stops every arm's program, switches every base controller off and cancels every plugin task, as the
+  laptop's Stop all and Esc do.
+- **Health banner**: "ALL GREEN", or how many problems there are; shown on every tab.
+- **Tabs**: one per plugin, below.
+
+### Control
+
+One sub-tab per robot, labelled with its serial (`0804`, `0805`, `0806`).
+
+- **Status line**: "D-pad drives" in green, or the running base controller and "D-pad off: switch on the laptop".
+- **Speed**: a fraction of the full speed (0.3 m/s, 0.5 rad/s). Separate from the laptop's slider.
+- **D-pad**: forward, back, turn left, turn right; drives while held. It drives only while the base runs its
+  velocity controller (**Vel**); switch to it in the laptop's robot panel.
+- One folder per arm (**Arm**, or **Left** and **Right**):
+  - The running arm controller: **Joint**, **Cart**, **Free**, or "no ctrl".
+  - **Gripper**: **Open** and **Close**, one command per press. Stop, the screw and Reactivate are on the laptop.
+  - **Free drive (hold)**: while you hold it, the arm can be pushed by hand (its chip shows **Free**). When you let
+    go, the joint controller takes over and holds the arm where it is; it does not go back to the Cartesian
+    controller. Check the payload on the pendant first: a wrong one makes the arm sag or rise. Free drive interrupts
+    a move the arm is running.
+
+### Health
+
+The same chips as the laptop's health panel: one row per robot (base and arms) and one for the tracked objects.
+Phones have no hover, so a chip's detail is only on the laptop. Unlock, Resume and Reconnect are on the laptop too.
+
+### Mocap
+
+For recording points with the mocap probe (`mocap_probe`); choose its rigid body on the laptop.
+
+- **Big status**: one colour and one word (TRACKED, NOISY, NO FIX) and the probe's x y z; it flashes RECORDED
+  with the point's name.
+- **Label** and **Record point**: points are numbered per label (`table_1`, `table_2`, …). Refused while the probe
+  has no fix; a noisy fix records, with its marker error.
+- **Map coverage**: the same switch as on the laptop. While it is on, a top-down map shows the floor in 1 m cells
+  (grey until visited, then red to green by how often the probe was tracked there), obstacles in dark grey, robots
+  in blue, recorded points in pink and the probe as a white dot (grey without a fix); +x right, +y up. It is redrawn
+  at most twice a second.
+- The last points. Export and delete them on the laptop.
+
+## 5. After a stop
+
+- **Stop all**: the arms' programs are stopped and the base controllers are off. Resume the arms in the laptop's
+  health panel and switch the base back to **Vel** in its robot panel; the phone cannot. Letting go of a hold button
+  after Stop all starts nothing again.
+- **E-stop**: the same, and the Robotiq gripper may stay dead even after the arm runs again (crl-husky README,
+  "Restart"). Wait until the arm runs, press Reactivate on the laptop, and only then use Open and Close: presses while
+  the gripper is dead are queued on the robot and may all run at once when it comes back.
+
+Several people can drive at once, from the laptop and from phones: there is no lock. Each press drives for only
+0.25 s after its last report, so talk to each other.
+
+## 6. When something does not work
+
+| What you see | Likely cause | What to do |
+|---|---|---|
+| The page does not load | Wrong address (eduroam, or it changed), mobile data, firewall | Section 3; check the address on the laptop; turn off mobile data; section 1 |
+| The page shows the laptop layout | The phone is sideways, or the screen is wider than 576 px | Hold it upright |
+| Red dots instead of the green cloud | The phone lost the WiFi, or the monitor stopped | Wait for it to reconnect; check the monitor's terminal |
+| D-pad does nothing | The base does not run **Vel** (status line amber) | Switch it in the laptop's robot panel |
+| Free drive does nothing | The arm's controller manager is not reachable (arm chip "no ctrl") | Check Health; the monitor asks again every second while you hold |
+| Gripper does not react | After a stop or e-stop the gripper link is down | Section 5 |
+| Nothing changes on the page | The laptop's panels are frozen (its **Live** button shows **Frozen**) | Press it on the laptop: freezing stops the phone's updates too |
