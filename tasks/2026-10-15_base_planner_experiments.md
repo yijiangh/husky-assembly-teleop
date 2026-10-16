@@ -41,10 +41,23 @@ Spec: `doc/base_planner_manual.md`. Code: `plugins/base_planner/{tasks,recording
 - **Pilot runs** (15 Oct, run.json only, before tasks and experiment.json): archived to
   `data_experiment/base_planner/_archive/pilot_1015/`; the report reads experiment runs only.
 
+- **Lattice prefers room** (user, 16 Oct): the guide checks fits with the margin (squeezes the margin closes no
+  longer pull the search in), its way costs up to 3× where few headings fit, and portals found to have no way
+  through are skipped (they took the tries from good ones: `passage` failed at the 180° task origin). Checked
+  offline against the old lattice on every task and yesterday's live failures: none worse, `passage` and the
+  retreat north of step 110 now found.
+- **Thin bars** (user, 16 Oct): the 2 cm bars fell between the floor map's rays (one per 5 cm cell), so the guide
+  sent the search across the step 110 south row. `floor_heights` casts 3 × 3 rays per cell, the cell taking the
+  highest hit (0.8 s instead of 0.1 s per plan); the attempt that failed now plans in 5 s.
+- **Follow check faster** (user, 16 Oct): the follower simulation spent its time in crl_husky's command-delay
+  prediction (`PurePursuit._predict`, numpy on 3 numbers ~20 times a cycle); now plain floats, ~3× faster, traces
+  identical. Next, if needed: line up portals on the fit map (rough stage only, 4 s of 10 near the bar structure),
+  a raster "surely clear" test before PyBullet checks, the planner in its own process (live is ~2.4× slower).
+
 ## Open
 
-- Lattice fine-tuning (user, 15 Oct): prefer open space; a suboptimal path within the time limit beats no path;
-  search again when the path fails the follower check (it gives up now). With `alice_tiles_2` the tall walls test
-  fails that check at xICR -0.20 (0.3 cm), so it is marked xfail until then.
+- Lattice: search again when the path fails the follower check (it gives up now). With `alice_tiles_2` the tall
+  walls test fails that check at xICR -0.20 (0.3 cm), so it is marked xfail until then. The follower check takes up
+  to 3 s of the budget (`looks_wide`).
 - Automation (drive to each task's start, plan with each planner, commit, repeat) is not built: the panel flow is
   manual.

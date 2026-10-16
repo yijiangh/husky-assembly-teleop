@@ -26,6 +26,9 @@ CLEARANCE_LIMIT = 0.30
 CLEARANCE_STEP = 0.005
 #: Things lower than this, metres, are floor: the floor maps leave them out.
 FLOOR_BOTTOM = 0.05
+#: Rays per floor cell along x and y in `floor_heights`, spread evenly over it: FLOOR_SAMPLES rays across a 5 cm cell
+#: leave gaps narrower than the 2 cm bars, so no bar falls between them.
+FLOOR_SAMPLES = 3
 #: Rays per PyBullet call, below its batch limit.
 RAY_BATCH = 8192
 #: Where the planned robot is moved out of the way, metres along x and y.
@@ -177,8 +180,9 @@ class PlanningWorld:
     def floor_heights(self, own: str, low, cell: float, shape: tuple[int, int], bottom: float) -> np.ndarray:
         """How high the other robots and bodies reach above each floor cell, from `bottom` up.
 
-        One ray per cell centre, from above everything down, so only the topmost surface counts: something above the
-        robot hides what is under it. Bodies `own` may touch are left out, and `own` is moved out of the way.
+        FLOOR_SAMPLES by FLOOR_SAMPLES rays per cell, from above everything down, and the cell takes the highest hit:
+        anything over part of a cell counts for all of it. Only the topmost surface counts: something above the robot
+        hides what is under it. Bodies `own` may touch are left out, and `own` is moved out of the way.
 
         Args:
             own: The robot being planned for, by id.
@@ -198,8 +202,13 @@ class PlanningWorld:
         top = max((p.getAABB(body, link, physicsClientId=client)[1][2] for body in others
                    for link in range(-1, p.getNumJoints(body, physicsClientId=client))), default=bottom) + 0.1
         x, y = np.meshgrid(low[0] + cell * np.arange(shape[0]), low[1] + cell * np.arange(shape[1]), indexing="ij")
-        heights = self._rays(np.column_stack([x.ravel(), y.ravel()]), top, bottom, others)
-        return np.where(np.isnan(heights), -np.inf, heights).reshape(shape)
+        offsets = cell * ((np.arange(FLOOR_SAMPLES) + 0.5) / FLOOR_SAMPLES - 0.5)
+        heights = np.full(shape, -np.inf)
+        for dx in offsets:
+            for dy in offsets:
+                hit = self._rays(np.column_stack([x.ravel() + dx, y.ravel() + dy]), top, bottom, others)
+                heights = np.fmax(heights, np.where(np.isnan(hit), -np.inf, hit).reshape(shape))
+        return heights
 
     def robot_heights(self, own: str, cell: float, bottom: float) -> tuple[np.ndarray, np.ndarray]:
         """How high and how low robot `own`, as it stands now, reaches above each cell around its base, at yaw 0.

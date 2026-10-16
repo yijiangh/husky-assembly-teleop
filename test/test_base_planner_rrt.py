@@ -123,6 +123,17 @@ def test_untracked_robot_is_planned_from_a_guess(world, robots, alice):
     assert with_guesses(snapshot, alice) == (snapshot, [])
 
 
+def test_floor_map_sees_a_bar_thinner_than_its_cells(world, robots, alice):
+    """A 2 cm bar lying between two rows of cell centres: one ray per cell misses it, several per cell do not."""
+    bar = Body("test/bar", box_geometry((1.0, 0.02, 0.02)), Pose((0.0, -1.975, 0.15)), label="bar")
+    world.sync(_snapshot(robots, [bar]))
+    heights = world.floor_heights(alice, (-1.0, -2.5), 0.05, (41, 21), 0.05)
+    xs = -1.0 + 0.05 * np.arange(41)
+    along = (xs > -0.45) & (xs < 0.45)
+    seen = np.isfinite(heights[along]).any(axis=1)
+    assert seen.all()
+
+
 def test_stowed_puts_the_arm_at_its_stow_pose_and_says_how_far_it_was(robots, alice):
     """Measured joints count towards the distance, unmeasured ones do not; the shared snapshot is untouched."""
     snapshot = _snapshot(robots)
