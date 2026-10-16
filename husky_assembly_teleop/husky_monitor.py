@@ -354,7 +354,7 @@ class HuskyMonitor(Node):
     # are not built. The FT *subscription* is created unconditionally, so the
     # live force plot works either way.
     # ! Set 1 for any session that executes M2/M3 (cartesian compliance).
-    CONNECT_COMPLIANT_CONTROLLER = 1
+    CONNECT_COMPLIANT_CONTROLLER = 0
 
     # When USE_MOCAP=1, by default the husky base in PyBullet tracks mocap.
     # Set USE_CELL_STATE_BASE_POSE=1 to override that and pin the base to
@@ -372,9 +372,9 @@ class HuskyMonitor(Node):
     # ! request did not take effect on this machine.
     PYBULLET_GUI_MESH_BUFFER_MB = 512
 
-    CALIBRATION = 0
+    CALIBRATION = 1
 
-    BAR_ACTION_LIVE_REPLAN_EXE = 1    # show Load BarAction / Load Movement / replan buttons
+    BAR_ACTION_LIVE_REPLAN_EXE = 0    # show Load BarAction / Load Movement / replan buttons
     # * Set 0 to always use the legacy BarAction file list. With 1, a design
     # * problem whose ActionSchedule.json is COMPLETE (every action's file,
     # * clean export or .live-solved sidecar, is on disk) is driven action by action
@@ -395,7 +395,7 @@ class HuskyMonitor(Node):
     # !   mocap accuracy test  : USE_MOCAP=1, BAR_ACTION_LIVE_REPLAN_EXE = 1, USE_CELL_STATE_BASE_POSE=0, BAR_ACTION_MOCAP_ACCURACY_TEST=1
     # !   robot-centric demo   : USE_MOCAP=0, BAR_ACTION_LIVE_REPLAN_EXE = 1, USE_CELL_STATE_BASE_POSE=1, BAR_ACTION_MOCAP_ACCURACY_TEST=0
     # (see doc/bar_holding_acc_manual.md, "Pre-flight checklist")
-    BAR_ACTION_MOCAP_ACCURACY_TEST = 1  # show Record + Fit + Viz / Save markerset data
+    BAR_ACTION_MOCAP_ACCURACY_TEST = 0  # show Record + Fit + Viz / Save markerset data
     # * Plan skeleton mode: 1 = the planner and IK ignore collisions with the already-built
     # * bars and joints, which are then drawn faint (BUILT_IGNORED_RGBA) so it shows
     # * that they do not count. 0 = the built structure is a real obstacle, drawn

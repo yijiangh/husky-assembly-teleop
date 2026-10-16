@@ -148,13 +148,13 @@ Both addresses are DHCP leases and can move: see `doc/calibration_manual.md` sec
 I=~/ros2_ws/src/husky-assembly-teleop/husky_assembly_teleop/__init__.py
 grep -nE "^CALIBRATION_DATE|^BASE_CALIBRATION_DATE_BY_ROBOT|^    '(Alice|Belle|Cindy)'" "$I"
 C="$HOME/Insync/2025-03 Husky Assembly/data_experiment/calibration_data"
-ls "$C"/20260916/calibrated_transformation_0806_rhino.json "$C"/20260623/calibrated_transformation_0804_rhino.json \
+ls "$C"/20261016/calibrated_transformation_0806_rhino.json "$C"/20260623/calibrated_transformation_0804_rhino.json \
    "$C"/20261013/calibrated_transformation_0805_rhino.json
 ```
 
 | robot | calibration | where it is set |
 |---|---|---|
-| Cindy (0806) | `20260916` | her entry `'Cindy': '20260916'` |
+| Cindy (0806) | `20261016` (left arm re-calibrated; fallback `20260916`) | her entry `'Cindy': '20261016'` |
 | Alice (0804) | `20260623` | her entry `'Alice': '20260623'` (her newest calibration) |
 | Belle (0805) | `20261013` (recorded 2026-10-14) | her entry `'Belle': '20261013'` |
 
@@ -581,7 +581,7 @@ ros2 run husky_assembly_teleop husky_monitor
 ```
 
 - [ ] One base calibration line per robot (all three huskies are created):
-  - `Base calibration of Cindy (0806): 20260916/calibrated_transformation_0806_rhino.json`
+  - `Base calibration of Cindy (0806): 20261016/calibrated_transformation_0806_rhino.json`
   - `Base calibration of Alice (0804): 20260623/calibrated_transformation_0804_rhino.json`
   - `Base calibration of Belle (0805): 20261013/calibrated_transformation_0805_rhino.json`
 

@@ -362,7 +362,7 @@ ros2 run husky_assembly_teleop husky_monitor
 > so it cannot exist yet. Data collection does not need it -- every point stores
 > the raw mocap poses. The warning disappears on the first launch after the
 > pipeline has run. The other two robots must still report a file each
-> (`Base calibration of Cindy (0806): 20260916/...`).
+> (`Base calibration of Cindy (0806): 20261016/...`).
 
 This will open the **PyBullet monitor window** (the 3D view) and the **Dear PyGui
 control panel** (the sliders and buttons of [§4.1](#41-understanding-the-gui-controls)).
@@ -391,16 +391,24 @@ This is the main calibration data collection procedure. You will collect data fo
 
 Before collecting data, verify these settings in the code match your setup.
 
-> **Current settings (2026-10-15): assembly mode.** Belle's (0805) calibration is
-> done (folder `20261013`, recorded 2026-10-14, results in [§7.2](#72-set-the-date-folder)) and the
-> code is back in assembly mode: the mode flags below are at their assembly values
-> (`CALIBRATION = 0`, `PUNCH_CALIB_VALIDATION = 0`, both `BAR_ACTION_*` = `1`).
-> Both dates still point at `20261013`, and every robot reads its base calibration
-> from its own `BASE_CALIBRATION_DATE_BY_ROBOT` entry. For the next session set the
-> flags and both dates as below. For Belle again: her calib tool is Motive ID
-> `1866`, launch the monitor with `ROS_DOMAIN_ID=85` ([§3.1](#31-launch-the-monitor-node)),
-> and she uses the same joint-space trajectories as Alice (`260630_calib_trajs_Alice`):
-> both robots mount the arm the same way, so the reference set works for either.
+> **Current settings (2026-10-16): calibration mode (validation batch), Cindy (0806) left arm.** The
+> mode flags below are at their calibration values (`CALIBRATION = 1`,
+> `PUNCH_CALIB_VALIDATION = 0`, both `BAR_ACTION_*` = `0`, `CONNECT_COMPLIANT_CONTROLLER = 0`);
+> the punch test ran before this with `PUNCH_CALIB_VALIDATION = 1`. Cindy's new
+> left punch TCP (4-point, 2026-10-16) is `[-0.93, -4.05, 110.5]` mm →
+> `punch_tool.left.offset_xyz: [-0.00093, -0.00405, 0.1105]` in `20261016/config.yaml`.
+> * The calib tool was taken off after j0/j1 and put back without knowing its old
+> direction. That is fine: the base calibration only uses the circles the tool traces,
+> and `3_verify_calibration.py` only checks that `tool0_from_flange_mocap` stays the same
+> *within* the validation batch. ! Do not take the tool off during the validation batch.
+> Both dates point at `20261016` (its `config.yaml` was copied from Cindy's `20260916`:
+> `robot_name "0806"`, `arm "left"`). Cindy's left calib tool is now Motive ID `1866`;
+> launch the monitor with `ROS_DOMAIN_ID=86` ([§3.1](#31-launch-the-monitor-node)) and keep
+> `arm id` = `0`, which loads Cindy's own `260108_extrinsic_calib_trajs` (`ext_calib_0806_*`;
+> j0 traj0 was recorded with Alice's set before the switch, which is fine for the circle fit). `BASE_CALIBRATION_DATE_BY_ROBOT['Cindy']` now points at `20261016`
+> (validated: 1.6 mm RMS on 15 validation points, punch 0.7 mm RMS); the old `20260916`
+> (a copy of the June `20260622` result) agrees within 0.8 mm / 0.02° and is the fallback. Belle again: calib tool `1866`, `ROS_DOMAIN_ID=85`,
+> same `260630_calib_trajs_Alice` set.
 
 **Values, IDs & IPs** — set to match your robot / network / session:
 
@@ -704,7 +712,7 @@ After collecting all J0 and J1 data (and optionally validation data), run the ca
    (or start from the template kept in the repo):
    ```bash
    mkdir -p YYYYMMDD
-   cp 20260623/config.yaml YYYYMMDD/config.yaml   # Alice's (single arm); 20260916 is Cindy's
+   cp 20260623/config.yaml YYYYMMDD/config.yaml   # Alice's (single arm); 20261016 is Cindy's
    # or: cp ~/ros2_ws/src/husky-assembly-teleop/data/calibration_data/_data_template/config.yaml YYYYMMDD/config.yaml
    ```
 
@@ -778,7 +786,7 @@ so `CALIBRATION_DATE` decides no robot's base:
 BASE_CALIBRATION_DATE_BY_ROBOT = {
     'Alice': '20260623',  # 0804, the newest Alice calibration
     'Belle': '20261013',  # 0805, the newest Belle calibration (recorded 2026-10-14)
-    'Cindy': '20260916',  # 0806, the newest Cindy calibration
+    'Cindy': '20261016',  # 0806 left arm, re-calibrated 2026-10-16 (fallback: '20260916')
 }
 ```
 

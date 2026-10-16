@@ -86,7 +86,7 @@ RECORD_DIRECTORY = os.path.join(DATA_DIRECTORY, '..', 'recorded_data')
 #   * husky_monitor reads the punch-tool TCP offsets from <date>/config.yaml
 #   * the Record/Save buttons WRITE new j0 / j1 / validation / punch_validation
 #     data into <date>/
-CALIBRATION_DATE = '20261013' # the newest session: Belle (0805), 2026-10-13/14
+CALIBRATION_DATE = '20261016' # the newest session: Cindy (0806) left arm, 2026-10-16
 
 # * Base (mocap) calibration folder per robot, by registry name. The huskies are
 # * calibrated on different days, so each one reads its own newest
@@ -96,13 +96,17 @@ CALIBRATION_DATE = '20261013' # the newest session: Belle (0805), 2026-10-13/14
 BASE_CALIBRATION_DATE_BY_ROBOT = {
     'Alice': '20260623',  # 0804, the newest Alice calibration
     'Belle': '20261013',  # 0805, the newest Belle calibration (recorded 2026-10-14)
-    'Cindy': '20260916',  # 0806, the newest Cindy calibration
+    # 0806 left arm, re-calibrated 2026-10-16 (validation 1.6 mm RMS, punch 0.7 mm RMS).
+    # * Fallback: '20260916' (a copy of the June 20260622 result; every session from
+    # * September to 2026-10-15 ran under it). The two agree within 0.8 mm / 0.02 deg,
+    # * so switching back is safe.
+    'Cindy': '20261016',
 }
 
 # Used by the OFFLINE SCRIPTS in data/calibration_data/ (0_ ... 4_ and the
 # export/visualise helpers). config_loader.py re-exports this as its
 # DEFAULT_DATE_FOLDER, which is the folder every load_config() call reads.
-CALIBRATION_ANALYSIS_DATE = '20261013'
+CALIBRATION_ANALYSIS_DATE = '20261016'
 
 CALIBRATION_BATCHES = ['j0', 'j1', 'validation', 'punch_validation']
 

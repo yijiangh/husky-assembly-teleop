@@ -217,10 +217,12 @@ see [`calibration_manual.md` §4.3](calibration_manual.md#43-data-folder-structu
 | `20260623` | Alice 0804, single arm | `calibrated_transformation_0804_rhino.json` |
 | `20260625` | Cindy 0806, **right** arm | `calibrated_transformation_0806_rhino.json` |
 
-**In use now: `20260916`** — a newer Cindy dataset, set in
-[`__init__.py:80`](../husky_assembly_teleop/__init__.py#L80) since 2026-09-21,
-and the one both the 20260928 and 20260929 sessions ran under. Keep it unless
-you deliberately re-calibrate, so the takes stay comparable.
+**In use now: `20261016`** — Cindy's left arm re-calibrated on 2026-10-16, set in
+`BASE_CALIBRATION_DATE_BY_ROBOT` ([`__init__.py:96`](../husky_assembly_teleop/__init__.py#L96)).
+Before it, `20260916` was in use (2026-09-21 to 2026-10-15, incl. the 20260928 and
+20260929 sessions); that folder only holds a copy of the `20260622` result. The two
+agree within 0.8 mm / 0.02°, so takes under either stay comparable, and
+`20260916` is the fallback.
 
 The table above still explains the earlier folders, and the reasoning behind
 them still applies. The monitor consumes only `base_mocap_from_base_footprint`

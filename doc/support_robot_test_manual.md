@@ -360,8 +360,8 @@ plugged in), then `ros2 daemon stop` once. Delete `~/husky_dryrun` when done.
 **Calibration (base mocap ↔ robot)** — read from `<EXPERIMENT_DATA_DIRECTORY>/calibration_data/<date>/`,
 where `<date>` is the robot's entry in `BASE_CALIBRATION_DATE_BY_ROBOT`, else `CALIBRATION_DATE`
 (both in `husky_assembly_teleop/__init__.py`).
-- [ ] Cindy: `calibrated_transformation_0806_rhino.json` — in `20260916` (her entry
-      `'Cindy': '20260916'`).
+- [ ] Cindy: `calibrated_transformation_0806_rhino.json` — in `20261016` (her entry
+      `'Cindy': '20261016'`; fallback `20260916`).
 - [ ] Alice: `calibrated_transformation_0804_rhino.json` — in `20260623` (her entry
       `'Alice': '20260623'`). Valid only if her base markers have not moved since June: check it in
       B3.5. Start-up prints `Base calibration of Alice (0804): 20260623/...`.
