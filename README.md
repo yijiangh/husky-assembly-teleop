@@ -204,7 +204,7 @@ Without a relay, no mocap is available. Details in crl-husky's `MOCAP_SETUP.md`.
 ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['alice']" -p plugins:="['robot_control']"
 ```
 
-The UI is served at http://localhost:8080, or the next free port (8081, ...) if 8080 is in use; the log states the port. Other PCs on the network reach it at `http://<host-ip>:8080`.
+The UI is served at http://localhost:8080; other PCs on the network reach it at `http://<host-ip>:8080`. The port is fixed, so bookmarks keep working: if 8080 is taken (another monitor?), the monitor refuses to start and says so. Run a second monitor with `-p viser_port:=8095`.
 
 **Quit:** press Ctrl-C once and wait. During shutdown the plugins send their final hold commands; a second Ctrl-C skips them.
 
@@ -234,6 +234,7 @@ Example: `mocap_probe` shows the probe state in a **Probe** panel, collapsed on 
 | `no_default_plugins` | `false` | `true` skips the default plugins (`health`). |
 | `ghost_timeout` | `20.0` | Seconds a plugin's ghost robots stay after the last input in it; 0 keeps them. |
 | `lab` | `main` | The lab file `obstacles` loads: a name in `data/lab/`, or a path to a .json file. |
+| `viser_port` | `8080` | Port of the desktop page. Fixed: the monitor refuses to start if it is taken. |
 
 ### Experiment data (Google Drive)
 

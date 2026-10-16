@@ -115,7 +115,7 @@ class MonitorConfig:
             to pick one in its panel.
         drive_root: The project's Google Drive folder, for experiment data (see `drive.py`), or None if not given.
         tick_period: Seconds between ticks.
-        viser_port: Port the viser web UI listens on.
+        viser_port: Port the desktop page listens on. Pinned: the monitor refuses to start if it is taken.
         enabled_plugins: Plugins to load: DEFAULT_PLUGINS, then the requested ones.
         max_plugin_errors: Consecutive ticks a plugin may raise in before it is stopped.
         late_tick_warn_ratio: Warn, with where the time went, when a tick starts more than this fraction of
@@ -263,6 +263,7 @@ def config_from_ros_parameters(node: Node) -> MonitorConfig:
     - `no_default_plugins:=true` skips DEFAULT_PLUGINS.
     - `drive_root`: the project's Google Drive folder; empty falls back to HUSKY_DRIVE_ROOT (`drive.py`).
     - Robots may be named instead of numbered, in `robots` and `tools` alike. `robots:="[]"` runs without robots.
+    - `viser_port` (8080): a second monitor needs `viser_port:=8095`.
 
     Args:
         node: The monitor node, whose parameters are read.
@@ -282,6 +283,7 @@ def config_from_ros_parameters(node: Node) -> MonitorConfig:
     node.declare_parameter("no_default_plugins", False)
     node.declare_parameter("ghost_timeout", MonitorConfig.ghost_timeout)
     node.declare_parameter("lab", "")
+    node.declare_parameter("viser_port", MonitorConfig.viser_port)
 
     shutil.rmtree(ROBOT_URDF_DIRECTORY, ignore_errors=True)
 
@@ -311,6 +313,7 @@ def config_from_ros_parameters(node: Node) -> MonitorConfig:
         enabled_plugins=_enabled_plugins(string_list("plugins"), not no_default_plugins),
         ghost_timeout=node.get_parameter("ghost_timeout").value,
         lab=node.get_parameter("lab").get_parameter_value().string_value.strip(),
+        viser_port=node.get_parameter("viser_port").value,
     )
 
 

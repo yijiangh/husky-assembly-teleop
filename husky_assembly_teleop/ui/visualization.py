@@ -282,6 +282,25 @@ class _DrawnRobot:
     values: np.ndarray | None = None
 
 
+def pinned_server(port: int, parameter: str, label: str) -> viser.ViserServer:
+    """Start a viser server on exactly `port`, so bookmarks keep working; 0 takes any free port.
+
+    Args:
+        port: The port.
+        parameter: The ROS parameter that sets it, for the error message.
+        label: The server's label.
+
+    Raises:
+        RuntimeError: The port is taken. viser would have moved to the next free port without a word.
+    """
+    server = viser.ViserServer(port=port, label=label, verbose=False)
+    if port and server.get_port() != port:
+        server.stop()
+        raise RuntimeError(f"Port {port} is taken: is another monitor running? Stop it, or pick another port "
+                           f"with -p {parameter}:=<port>.")
+    return server
+
+
 class Visualization:
     """Owns the viser server and the robot and scene nodes. Plugins get a PluginView, never the server."""
 
@@ -290,8 +309,11 @@ class Visualization:
 
         Args:
             port: Port the web UI listens on.
+
+        Raises:
+            RuntimeError: The port is taken.
         """
-        self._server = viser.ViserServer(port=port, label=PAGE_TITLE, verbose=False)
+        self._server = pinned_server(port, "viser_port", PAGE_TITLE)
         # * Widest panel: fixed-width number rows wrap at the default.
         self._server.gui.configure_theme(control_width="large")
         # ? Sets the browser tab title (the first <title> on the page wins). HTML, not markdown,
