@@ -13,7 +13,7 @@ The calibration pipeline (`data/calibration_data/`, Drive sessions) is unchanged
   - Cindy's right arm `base` joint, from `2aababb` (2025-06-26): `husky_dual_ur5_e_no_base_joint`,
     `_All_Calibrated`, `_Arm_Calibrated`, `_All_Calibrated_objs`, `husky_dual_ur5e_vamp.urdf`.
   - Checked: only `ur_arm_base_link` (one arm) or `right_ur_arm_base` (Cindy) moved; the fixed `_Calibrated` files
-    are byte-identical to the former `_StockUrFrames` copies.
+    match the former `_StockUrFrames` copies apart from the added comments (same XML, 0 mm / 0° FK).
 - The 3 `_StockUrFrames` copies are deleted.
 - `husky_ur_description/urdf/husky_ur5_e_description.urdf.xacro`: mount default `0 0 -π/2` (was `π`, which with the
   stock joints below put the arm 90° off its real mounting).
