@@ -3,14 +3,17 @@ Bar marker fitting: how far a bar the mocap sees is from where the process plans
 
 Pick a bar of the loaded process and the Motive rigid body made of its markers, and press Track. On every mocap
 message the bar's CAD markers are fitted to the measured ones without Motive's labels (`world/marker_fit.py`).
-The view shows the measured markers (green measured, orange filled in by Motive), the fitted bar (blue: markers,
-axis, a line per residual) and the planned markers (grey). The planned bar is the process body in the live scene
-(`process/bars/<id>`): a built bar at its assembly pose, a held one on the real robot's flange.
+The view shows the real bar (blue, the process bar and its mounted halves at the fitted pose) next to the planned
+one, and with "Show markers" the measured markers (green measured, orange filled in by Motive), the fitted markers
+(blue: markers, axis, a line per residual) and the planned markers (grey). The planned bar is the process body in
+the live scene (`process/bars/<id>`): a built bar at its assembly pose, a held one on the real robot's flange.
 Record writes a take of the fit, its residuals and the deviation to the Drive (`data_experiment/mocap_bars/`).
 
 - ! Marker layouts come only from the process (`BodySpec.markers` of the halves mounted on a bar); old compas_fab
   exports converted on load have none.
 - ! The matching search grows quickly with the number of markers and runs on the main thread, once per message.
+- * The real bar and its halves are drawn only, in this plugin's view: not scene bodies, so they never collide (the
+  planned ones already do), and hidden while there is no fit.
 
 Run with:  -p plugins:="['mocap_bars']"  (loads `process`)
 """
@@ -29,11 +32,13 @@ from ..drive import drive_folder
 from ..plugin_api.context import PluginContext
 from ..plugin_api.plugin import HuskyPlugin, register
 from ..plugin_api.trace import Signal
+from ..ui.quaternion import quaternion_to_wxyz
+from ..ui.scene_view import add_shape
 from ..ui.style import BUSY, NONE, SECTION_CTRL, SECTION_SENSOR, block, check_chip, chip, note, section, values
 from ..world.marker_fit import BarDeviation, MarkerFit, bar_deviation, bar_markers, fit_markers
 from ..world.measured import TrackedObject
 from ..world.mocap import mocap_check
-from scaffolding_assembly_core.geometry import Pose
+from scaffolding_assembly_core.geometry import Pose, compose, invert
 
 #: Name of the tracked rigid body in `world.tracked_objects` and on the health panel.
 TRACKED_NAME = "fitted_bar"
@@ -46,6 +51,9 @@ MEASURED_COLOR = (40, 190, 80)
 FILLED_COLOR = (250, 140, 30)
 FIT_COLOR = (40, 120, 230)
 PLANNED_COLOR = (150, 150, 150)
+#: The real bar's colour and its mounted halves', (r, g, b) from 0 to 1.
+FIT_COLOR_UNIT = tuple(c / 255 for c in FIT_COLOR)
+HALF_COLOR_UNIT = (0.1, 0.27, 0.6)
 #: Size of the drawn markers, metres.
 MARKER_POINT_SIZE = 0.02
 
@@ -73,6 +81,9 @@ class MocapBarsPlugin(HuskyPlugin):
         self._deviation: BarDeviation | None = None
         #: What the scene last showed, so marker nodes are only resent when they change.
         self._drawn: tuple | None = None
+        #: Nodes of the real bar and its halves, and the bar and process they were built from.
+        self._bar_nodes: list[viser.SceneNodeHandle] = []
+        self._bar_built: tuple | None = None
         self._take: asyncio.Task | None = None
         self._message = ""
 
@@ -106,6 +117,7 @@ class MocapBarsPlugin(HuskyPlugin):
             self._result: viser.GuiHtmlHandle = gui.add_html("")
 
         scene, root = ctx.view.scene, ctx.view.scene_root
+        self._bar_frame = scene.add_frame(f"{root}/real_bar", show_axes=False, visible=False)
         # * Always float32: the default float16 rounds world positions to millimetres.
         self._measured_cloud = scene.add_point_cloud(f"{root}/measured", points=np.zeros((0, 3)), colors=MEASURED_COLOR,
                                                      point_size=MARKER_POINT_SIZE, point_shape="circle",
@@ -262,6 +274,7 @@ class MocapBarsPlugin(HuskyPlugin):
         running = self._take is not None and not self._take.done()
         self._result.content = (chip("recording", BUSY) if running else "") + (
             note(escape(self._message)) if self._message else "")
+        self._draw_bar(ctx)
         self._draw_markers()
 
     def _status_lines(self) -> list[str]:
@@ -283,6 +296,37 @@ class MocapBarsPlugin(HuskyPlugin):
                      f"across {deviation.across * 1e3:.1f}  along {deviation.along * 1e3:+.1f} mm  "
                      f"tilt {np.degrees(deviation.tilt):.2f}°")
         return lines
+
+    def _draw_bar(self, ctx: PluginContext) -> None:
+        """Show the chosen bar and its mounted halves at the fitted pose, rebuilt when the bar or process changes."""
+        process = self._layouts_of
+        if self._bar_built is None or self._bar_built[0] != self._bar_id or self._bar_built[1] is not process:
+            self._bar_built = (self._bar_id, process)
+            for node in self._bar_nodes:
+                node.remove()
+            self._bar_nodes = []
+            bar = process.bodies.get(self._bar_id) if process is not None and self._bar_id else None
+            if bar is not None:
+                scene, root = ctx.view.scene, self._bar_frame.name
+                self._bar_nodes = [add_shape(scene, f"{root}/{index}", shape, FIT_COLOR_UNIT)
+                                   for index, shape in enumerate(bar.geometry.visual)]
+                # * Mounted halves stay where they sit on their bar, so the assembly poses give the offset.
+                for half_id in sorted(process.bodies):
+                    half = process.bodies[half_id]
+                    if half.mount != self._bar_id:
+                        continue
+                    offset = compose(invert(bar.assembly_pose), half.assembly_pose)
+                    frame = scene.add_frame(f"{root}/{half_id.replace('/', '_')}", show_axes=False,
+                                            position=offset.position, wxyz=quaternion_to_wxyz(offset.orientation))
+                    for index, shape in enumerate(half.geometry.visual):
+                        add_shape(scene, f"{frame.name}/{index}", shape, HALF_COLOR_UNIT)
+                    self._bar_nodes.append(frame)
+        fit = self._fit
+        self._bar_frame.visible = fit is not None and bool(self._bar_nodes)
+        if self._bar_frame.visible:
+            pose = fit.pose
+            self._bar_frame.position = pose.position
+            self._bar_frame.wxyz = quaternion_to_wxyz(pose.orientation)
 
     def _draw_markers(self) -> None:
         """Show the measured markers, the fitted and the planned bar, resending them only when they changed."""
