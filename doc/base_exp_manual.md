@@ -96,7 +96,7 @@ ros2 launch crl_husky pure_pursuit_sim.launch.py namespace:=a200_0804 mocap_id:=
 - Models are `crl_husky/config/base_models/<name>.yaml` in crl-husky: `ideal`, and `alice_tiles_2` (Alice, tiles,
   arm stowed; `alice_tiles` is the earlier fit). Single values override the sim model, e.g. `xICR:=-0.10`.
 
-**Terminal 2: monitor**, then open <http://localhost:8095>:
+**Terminal 2: monitor**, then open <http://localhost:8095> (its phone page is on 8096):
 
 ```bash
 ros2 run husky_assembly_teleop husky_monitor --ros-args \

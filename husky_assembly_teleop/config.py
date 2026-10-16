@@ -116,6 +116,7 @@ class MonitorConfig:
         drive_root: The project's Google Drive folder, for experiment data (see `drive.py`), or None if not given.
         tick_period: Seconds between ticks.
         viser_port: Port the desktop page listens on. Pinned: the monitor refuses to start if it is taken.
+        phone_port: Port the phone page listens on. Pinned too.
         enabled_plugins: Plugins to load: DEFAULT_PLUGINS, then the requested ones.
         max_plugin_errors: Consecutive ticks a plugin may raise in before it is stopped.
         late_tick_warn_ratio: Warn, with where the time went, when a tick starts more than this fraction of
@@ -134,6 +135,7 @@ class MonitorConfig:
     drive_root: Path | None = None
     tick_period: float = 0.05
     viser_port: int = 8080
+    phone_port: int = 8081
     enabled_plugins: tuple[str, ...] = ()
     max_plugin_errors: int = 3
     late_tick_warn_ratio: float = 0.2
@@ -263,7 +265,7 @@ def config_from_ros_parameters(node: Node) -> MonitorConfig:
     - `no_default_plugins:=true` skips DEFAULT_PLUGINS.
     - `drive_root`: the project's Google Drive folder; empty falls back to HUSKY_DRIVE_ROOT (`drive.py`).
     - Robots may be named instead of numbered, in `robots` and `tools` alike. `robots:="[]"` runs without robots.
-    - `viser_port` (8080): a second monitor needs `viser_port:=8095`.
+    - `viser_port` (8080) and `phone_port` (default the next port): a second monitor needs `viser_port:=8095`.
 
     Args:
         node: The monitor node, whose parameters are read.
@@ -284,6 +286,8 @@ def config_from_ros_parameters(node: Node) -> MonitorConfig:
     node.declare_parameter("ghost_timeout", MonitorConfig.ghost_timeout)
     node.declare_parameter("lab", "")
     node.declare_parameter("viser_port", MonitorConfig.viser_port)
+    # * 0: the port after viser_port, so a second monitor needs only -p viser_port:=8095.
+    node.declare_parameter("phone_port", 0)
 
     shutil.rmtree(ROBOT_URDF_DIRECTORY, ignore_errors=True)
 
@@ -305,6 +309,7 @@ def config_from_ros_parameters(node: Node) -> MonitorConfig:
     process_text = node.get_parameter("process_directory").get_parameter_value().string_value.strip()
 
     no_default_plugins = node.get_parameter("no_default_plugins").get_parameter_value().bool_value
+    viser_port = node.get_parameter("viser_port").value
     return MonitorConfig(
         robots=_robots(string_list("robots"), data_directory, _parse_tools(string_list("tools"))),
         data_directory=data_directory,
@@ -313,7 +318,8 @@ def config_from_ros_parameters(node: Node) -> MonitorConfig:
         enabled_plugins=_enabled_plugins(string_list("plugins"), not no_default_plugins),
         ghost_timeout=node.get_parameter("ghost_timeout").value,
         lab=node.get_parameter("lab").get_parameter_value().string_value.strip(),
-        viser_port=node.get_parameter("viser_port").value,
+        viser_port=viser_port,
+        phone_port=node.get_parameter("phone_port").value or viser_port + 1,
     )
 
 

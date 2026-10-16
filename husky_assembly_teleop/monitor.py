@@ -127,8 +127,10 @@ class HuskyMonitor(Node):
         """Construct the kinematics, the UI and the plugins. Called once, by __init__."""
         with self._timed("kinematics"):
             self._kinematics = Kinematics(self._config.robots, log_warn=self.log_warn)
-        with self._timed("viser server"):
-            self._viz = Visualization(port=self._config.viser_port)
+        with self._timed("viser servers"):
+            self._viz = Visualization(port=self._config.viser_port, phone_port=self._config.phone_port)
+        port, phone_port = self._viz.ports
+        self.log_info(f"UI at http://localhost:{port}, phone page at http://<this PC's IP>:{phone_port}")
 
         for robot_config in self._config.robots:
             with self._timed(f"robot {robot_config.serial} interface"):

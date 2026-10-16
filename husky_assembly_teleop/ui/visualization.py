@@ -1,5 +1,5 @@
 """
-The user interface: a viser server, the world drawn from each tick's snapshot, and one private corner for each plugin.
+The user interface: the desktop and phone pages, the world drawn each tick, and one private corner per plugin.
 
 - ! Build viser nodes once and keep the handles: re-adding them every tick leaks and flickers.
 - ! viser callbacks run on viser's threads: they must not touch world state, the scene or ROS, only
@@ -25,6 +25,7 @@ import yourdfpy
 from ..config import RobotConfig
 from scaffolding_assembly_core.robot import Tool
 from scaffolding_assembly_core.scene import Scene
+from .phone import PHONE_TITLE, PhonePage
 from .quaternion import quaternion_to_wxyz
 from .scene_view import SceneView, add_shape
 from ..tool_urdfs import resolve_mesh_path
@@ -302,18 +303,25 @@ def pinned_server(port: int, parameter: str, label: str) -> viser.ViserServer:
 
 
 class Visualization:
-    """Owns the viser server and the robot and scene nodes. Plugins get a PluginView, never the server."""
+    """Owns the viser servers (desktop and phone) and the robot and scene nodes. Plugins get a PluginView."""
 
-    def __init__(self, port: int):
-        """Start the viser server.
+    def __init__(self, port: int, phone_port: int):
+        """Start the desktop and the phone server.
 
         Args:
-            port: Port the web UI listens on.
+            port: Port the desktop page listens on.
+            phone_port: Port the phone page listens on.
 
         Raises:
-            RuntimeError: The port is taken.
+            RuntimeError: A port is taken; no server is left running.
         """
         self._server = pinned_server(port, "viser_port", PAGE_TITLE)
+        try:
+            self._phone = PhonePage(pinned_server(phone_port, "phone_port", PHONE_TITLE), self._request_stop)
+        except Exception:
+            # ! The monitor only releases a Visualization that finished constructing.
+            self._server.stop()
+            raise
         # * Widest panel: fixed-width number rows wrap at the default.
         self._server.gui.configure_theme(control_width="large")
         # ? Sets the browser tab title (the first <title> on the page wins). HTML, not markdown,
@@ -392,7 +400,7 @@ class Visualization:
         Returns:
             PluginView: The plugin's slice of the UI.
         """
-        return PluginView(self._server, plugin_name)
+        return PluginView(self._server, plugin_name, self._phone)
 
     def atomic(self) -> AbstractContextManager[None]:
         """Batch every scene change made inside the block into one update.
@@ -480,23 +488,33 @@ class Visualization:
                 drawn.values = values
         self._scene_view.sync(snapshot, collision)
 
+    @property
+    def ports(self) -> tuple[int, int]:
+        """tuple[int, int]: The ports the desktop and the phone page listen on."""
+        return self._server.get_port(), self._phone.server.get_port()
+
     def stop(self) -> None:
-        """Shut the server down and join its thread."""
+        """Shut both servers down and join their threads."""
         self._server.stop()
+        self._phone.server.stop()
 
 
 class PluginView:
-    """One plugin's private scene subtree and GUI folder in viser, handed to it as `ctx.view`."""
+    """One plugin's private scene subtree and GUI folder in viser, and its tab on the phone, as `ctx.view`."""
 
-    def __init__(self, server: viser.ViserServer, plugin_name: str):
-        """Create the plugin's scene root and GUI folder.
+    def __init__(self, server: viser.ViserServer, plugin_name: str, phone: PhonePage):
+        """Create the plugin's scene root; its GUI folder and phone tab come on first use.
 
         Args:
             server: The shared viser server.
             plugin_name: Unique plugin name.
+            phone: The phone page.
         """
         self._server = server
         self._name = plugin_name
+        self._phone = phone
+        self._phone_tab: viser.GuiTabHandle | None = None
+        self._phone_header: viser.GuiFolderHandle | None = None
 
         #: Scene path owned by this plugin, e.g. "/plugins/calibration". Everything it adds hangs below it.
         self.scene_root = f"/plugins/{plugin_name}"
@@ -540,11 +558,45 @@ class PluginView:
         self._panels.append(panel)
         return panel
 
+    @contextmanager
+    def phone(self, label: str | None = None, icon: viser.IconName | None = None) -> Iterator[viser.GuiApi]:
+        """Add widgets inside this plugin's tab on the phone page; the first call creates the tab.
+
+        ! Keep it to what an operator needs next to the robots. Callbacks run on viser's threads, as on the desktop.
+
+        Args:
+            label: The tab's label, default the plugin name; read on the first call only.
+            icon: The tab's icon; read on the first call only.
+
+        Yields:
+            viser.GuiApi: The phone server's GUI api, with this plugin's tab as parent.
+        """
+        if self._phone_tab is None:
+            self._phone_tab = self._phone.tabs.add_tab(label or self._name, icon)
+        with self._phone_tab:
+            yield self._phone.server.gui
+
+    @contextmanager
+    def phone_header(self) -> Iterator[viser.GuiApi]:
+        """Add widgets above the phone page's tabs, shown on every tab; for a short status only.
+
+        Yields:
+            viser.GuiApi: The phone server's GUI api, with this plugin's header folder as parent.
+        """
+        if self._phone_header is None:
+            with self._phone.header:
+                self._phone_header = self._phone.server.gui.add_folder(None)
+        with self._phone_header:
+            yield self._phone.server.gui
+
     def clear(self) -> None:
-        """Remove everything this plugin added: scene nodes, its folder, its panels."""
+        """Remove everything this plugin added: scene nodes, its folder, its panels, its phone tab and header."""
         self._root.remove()
         if self._folder is not None:
             self._folder.remove()
         for panel in self._panels:
             panel.remove()
         self._panels.clear()
+        for handle in (self._phone_tab, self._phone_header):
+            if handle is not None:
+                handle.remove()

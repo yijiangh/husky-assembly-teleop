@@ -7,6 +7,7 @@ from typing import Callable
 import viser
 
 from ...plugin_api.context import PluginContext
+from ...ui.phone import grid_css
 
 #: Base speed at a Speed of 1. Kept low: this is a test panel.
 MAX_LINEAR_SPEED = 0.3   # m/s
@@ -19,27 +20,10 @@ HOLD_BUTTONS = (("", viser.Icon.ARROW_UP, 1.0, 0.0),
 #: Each hold button's D-pad cell, (row, column), in HOLD_BUTTONS order.
 DPAD_CELLS = ((1, 2), (2, 1), (2, 2), (2, 3))
 
-
-def _dpad_css() -> str:
-    """CSS that lays out the hold buttons as a D-pad in every folder holding all four of them.
-
-    ? viser has no grid container; buttons are found by their icon class (`icon-tabler-<name>`).
-
-    Returns:
-        str: A <style> element, for an html widget outside the Drive folder (inside, it takes a grid cell).
-    """
-    def button(icon: str) -> str:
-        return f"button .icon-tabler-{icon}"
-
-    folder = "div" + "".join(f":has(> div > {button(icon)})" for _, icon, _, _ in HOLD_BUTTONS)
-    grid = f"{folder} {{ display: grid; grid-template-columns: repeat(3, 1fr); }}"
-    # ! Give every button an explicit cell, or Left fills the empty cell beside Forward.
-    cells = "".join(f"div:has(> {button(icon)}) {{ grid-area: {row} / {column}; }}"
-                    for (_, icon, _, _), (row, column) in zip(HOLD_BUTTONS, DPAD_CELLS))
-    return f"<style>{grid}{cells}</style>"
-
-
-DPAD_STYLE = _dpad_css()
+_ICONS = [icon for _, icon, _, _ in HOLD_BUTTONS]
+_GRID = tuple((icon, row, column) for icon, (row, column) in zip(_ICONS, DPAD_CELLS))
+#: Lays out the hold buttons as a D-pad, for an html widget outside the Drive folder (inside, it takes a grid cell).
+DPAD_STYLE = f"<style>{grid_css(_GRID, 3)}</style>"
 #: How often the browser reports a held button, Hz. Matches the 20 Hz tick.
 HOLD_CALLBACK_HZ = 20.0
 #: A hold counts as released after this long without a report, seconds.

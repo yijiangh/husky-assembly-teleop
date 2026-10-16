@@ -204,7 +204,7 @@ Without a relay, no mocap is available. Details in crl-husky's `MOCAP_SETUP.md`.
 ros2 run husky_assembly_teleop husky_monitor --ros-args -p robots:="['alice']" -p plugins:="['robot_control']"
 ```
 
-The UI is served at http://localhost:8080; other PCs on the network reach it at `http://<host-ip>:8080`. The port is fixed, so bookmarks keep working: if 8080 is taken (another monitor?), the monitor refuses to start and says so. Run a second monitor with `-p viser_port:=8095`.
+The UI is served at http://localhost:8080; other PCs on the network reach it at `http://<host-ip>:8080`. The ports are fixed, so bookmarks keep working: if 8080 or 8081 is taken (another monitor?), the monitor refuses to start and says so. Run a second monitor with `-p viser_port:=8095` (its phone page is then 8096).
 
 **Quit:** press Ctrl-C once and wait. During shutdown the plugins send their final hold commands; a second Ctrl-C skips them.
 
@@ -221,6 +221,12 @@ Some plugins show content in panels separate from the main control panel. Panels
 Example: `mocap_probe` shows the probe state in a **Probe** panel, collapsed on the right at start. Floated and enlarged, its text scales with the panel and is readable from a distance.
 `base_exp` shows its live error and command plots in a **Base tracking** panel, docked on the left.
 
+### Phone
+
+A phone page for walking next to the robots: open `http://<host-ip>:8081` on a phone in portrait, joined to the robot WiFi (the control PC's firewall must let port 8081 in). It shows **Stop all** (the same soft stop as on the laptop) and a tab per plugin.
+
+Plugins add their own tab with `ctx.view.phone()`; see `plugins/__init__.py`.
+
 ### Parameters
 
 | Parameter | Default | Meaning |
@@ -235,6 +241,7 @@ Example: `mocap_probe` shows the probe state in a **Probe** panel, collapsed on 
 | `ghost_timeout` | `20.0` | Seconds a plugin's ghost robots stay after the last input in it; 0 keeps them. |
 | `lab` | `main` | The lab file `obstacles` loads: a name in `data/lab/`, or a path to a .json file. |
 | `viser_port` | `8080` | Port of the desktop page. Fixed: the monitor refuses to start if it is taken. |
+| `phone_port` | `viser_port + 1` | Port of the [phone page](#phone). Fixed too. |
 
 ### Experiment data (Google Drive)
 
