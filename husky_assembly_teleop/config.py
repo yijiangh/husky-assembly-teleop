@@ -15,7 +15,8 @@ from pathlib import Path
 from typing import Literal, get_args
 
 import yaml
-from crl_husky.config_resolver import get_primary_mocap_id_for_robot_serial, get_ur_calibration_file
+from crl_husky.config_resolver import (get_primary_mocap_id_for_robot_serial, get_robot_model, get_robot_models,
+                                       get_ur_calibration_file)
 from rclpy.exceptions import ParameterUninitializedException
 from rclpy.node import Node
 
@@ -179,17 +180,13 @@ class MonitorConfig:
 
 
 # --- --- --- --- --- WHAT EACH ROBOT IS --- --- --- --- ---
-# TODO move this table to crl_husky once it ships robot URDFs.
-# ! Calibrated URDFs: arm kinematics differ per machine, so each robot must get its own. Each is checked against the
-#   arm's UR calibration in crl-husky at startup (`_apply_ur_calibrations`); the stock UR base frames by test
-#   (doc/ur_frames.md).
+# * Name, URDF and SRDF come from crl-husky (`get_robot_model`, its config/robots/<serial>/model.yaml); the arms,
+#   tools and poses the monitor uses are here. Each arm of the URDF is checked against its UR calibration in crl-husky
+#   at startup (`_apply_ur_calibrations`), its stock UR base frames by test (doc/ur_frames.md).
+# ? TODO consolidate a robot's config further: it is spread over crl-husky's robot.yaml, env/setup.bash,
+#   mocap_config.json, model.yaml and this table.
+#: Where crl-husky's model paths start, below the data directory.
 _URDF_ROOT = "husky_urdf"
-_SINGLE_ARM_URDF = (_URDF_ROOT + "/mt_husky_moveit_config/urdf/"
-                    "husky_ur5_e_no_base_joint_{}_Calibrated.urdf")
-_DUAL_ARM_URDF = (_URDF_ROOT + "/mt_husky_dual_ur5_e_moveit_config/urdf/"
-                  "husky_dual_ur5_e_no_base_joint_All_Calibrated.urdf")
-_SINGLE_ARM_SRDF = _URDF_ROOT + "/mt_husky_moveit_config/config/{}.srdf"
-_DUAL_ARM_SRDF = _URDF_ROOT + "/mt_husky_dual_ur5_e_moveit_config/config/dual_arm_husky.srdf"
 
 _SINGLE_ARM_STOW = (1.569, -2.973, 2.705, -2.958, 1.572, 0.0)
 # Measured parking poses on Cindy (0806), entered in degrees as the status panel shows them.
@@ -216,15 +213,10 @@ _DUAL_ARM_WITH_SCAFFOLDING_V3 = (
 )
 
 _ROBOTS_BY_SERIAL = {
-    "0804": dict(urdf=_SINGLE_ARM_URDF.format("Alice"), srdf=_SINGLE_ARM_SRDF.format("husky"),
-                 arms=_SINGLE_ARM_WITH_ROBOTIQ, park=_ALICE_PARK),
-    "0805": dict(urdf=_SINGLE_ARM_URDF.format("Belle"), srdf=_SINGLE_ARM_SRDF.format("belle"),
-                 arms=_SINGLE_ARM_WITH_ROBOTIQ, park=_BELLE_PARK),
-    "0806": dict(urdf=_DUAL_ARM_URDF, srdf=_DUAL_ARM_SRDF, arms=_DUAL_ARM_WITH_SCAFFOLDING_V3, park=_CINDY_PARK),
+    "0804": dict(arms=_SINGLE_ARM_WITH_ROBOTIQ, park=_ALICE_PARK),
+    "0805": dict(arms=_SINGLE_ARM_WITH_ROBOTIQ, park=_BELLE_PARK),
+    "0806": dict(arms=_DUAL_ARM_WITH_SCAFFOLDING_V3, park=_CINDY_PARK),
 }
-
-#: The robots' names, accepted anywhere a serial is, in any letter case.
-_ROBOT_NAMES = {"alice": "0804", "belle": "0805", "cindy": "0806"}
 
 
 def robot_config_from_serial(token: str, data_directory: Path,
@@ -233,7 +225,7 @@ def robot_config_from_serial(token: str, data_directory: Path,
                              tools: tuple[EndEffectorKind | None, ...] | None = None) -> RobotConfig:
     """Build one RobotConfig from a serial ("0806", "a200-0806", "/a200_0806") or name ("cindy").
 
-    URDF and arms come from `_ROBOTS_BY_SERIAL`, the mocap id from crl_husky's config_resolver.
+    Arms and poses come from `_ROBOTS_BY_SERIAL`; URDF, SRDF and mocap id from crl_husky's config_resolver.
 
     Args:
         token: The serial or name as typed on the command line.
@@ -246,7 +238,8 @@ def robot_config_from_serial(token: str, data_directory: Path,
         RobotConfig: The robot, its model holding its tools.
 
     Raises:
-        ValueError: If `token` names no known robot, or `tools` does not give one tool per arm.
+        ValueError: If `token` names no known robot, crl-husky has no model.yaml for it, or `tools` does not give
+            one tool per arm.
         FileNotFoundError: If the URDF is missing (usually a wrong `data_directory`), or crl_husky has no
             mocap_config.json for the robot.
     """
@@ -260,7 +253,11 @@ def robot_config_from_serial(token: str, data_directory: Path,
         known = ", ".join(sorted(_ROBOTS_BY_SERIAL))
         raise ValueError(f"no configuration known for robot {number!r}; known robots are {known}")
 
-    urdf_file = data_directory / spec["urdf"]
+    model = get_robot_model(number)
+    if model is None:
+        raise ValueError(f"crl-husky has no model.yaml for robot {number!r} (config/robots/{number}/)")
+    urdf_file = data_directory / _URDF_ROOT / model["urdf"]
+    srdf_file = data_directory / _URDF_ROOT / model["srdf"]
     if not urdf_file.is_file():
         raise FileNotFoundError(f"URDF for robot {number!r} not found at {urdf_file}; "
                                 f"check the data_directory parameter")
@@ -280,9 +277,9 @@ def robot_config_from_serial(token: str, data_directory: Path,
     return RobotConfig(
         serial=f"a200-{number}",
         ros_namespace=f"a200_{number}",
-        model=robot_model(f"a200-{number}", urdf, data_directory / spec["srdf"],
+        model=robot_model(f"a200-{number}", urdf, srdf_file,
                           {flange: tool for flange, tool in tools.items() if tool is not None}),
-        srdf_file=data_directory / spec["srdf"],
+        srdf_file=srdf_file,
         arms=arms,
         mocap_id=get_primary_mocap_id_for_robot_serial(number),
         default_position=(park[0], park[1], 0.0) if default_position is None else default_position,
@@ -451,8 +448,10 @@ def _robots(serials: tuple[str, ...], data_directory: Path,
 def _serial_digits(token: str) -> str | None:
     """The four-digit serial in "0806", "a200-0806", "/a200_0806", "Cindy" and the like, or None."""
     name = token.strip().strip("/")
-    if name.lower() in _ROBOT_NAMES:
-        return _ROBOT_NAMES[name.lower()]
+    # The robots' names (crl-husky's CRL_HUSKY_NAME) work anywhere a serial does, in any letter case.
+    for serial, model in get_robot_models().items():
+        if model["name"] and model["name"].lower() == name.lower():
+            return serial[-4:]
     digits = re.search(r"(\d{4})\s*$", name)
     return None if digits is None else digits.group(1)
 
