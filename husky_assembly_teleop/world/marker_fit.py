@@ -1,8 +1,9 @@
 """
 Fit a known marker layout, e.g. a bar's CAD markers, to raw mocap markers without Motive's labels.
 
-Which model marker each measured marker is comes from pairwise distances, so the measured markers may be any
-subset of the model's. Of all matchings that keep the distances, the one with the smallest fit error wins.
+Only measured markers near where a prior pose expects the model count; which model marker each is, or whether it
+is a stray, comes from pairwise distances. Of all matchings that keep the distances, the one matching the most
+markers wins, then the one with the smallest fit error.
 A bar's layout comes from the process: the markers of the connector halves mounted on it (`bar_markers`).
 """
 
@@ -12,7 +13,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import numpy as np
-from pybullet_planning.utils.transformations import superimposition_matrix
 
 from scaffolding_assembly_core.geometry import Pose, compose, invert
 
@@ -21,6 +21,12 @@ if TYPE_CHECKING:
 
 #: Two pairwise distances match when they differ by less than this, metres: CAD and marker placement tolerance.
 DISTANCE_TOLERANCE = 0.01
+#: A fit with a residual above this is refused, metres, so a stray never counts as a match by bending the fit.
+RESIDUAL_LIMIT = 0.004
+#: Measured markers farther than this from every model marker where the prior puts it are ignored, metres.
+SEARCH_RADIUS = 0.08
+#: Steps of the matching search at most per fit, so a crowded cloud never stalls the caller; the best so far wins.
+MAX_SEARCH_STEPS = 20000
 
 
 @dataclass(frozen=True)
@@ -31,11 +37,13 @@ class MarkerFit:
         world_from_model: 4x4 transform from the model frame to the world frame.
         model_index: Model marker matched to each measured marker, shape (n,).
         residuals: Distance of each measured marker to its fitted model marker, metres, shape (n,).
+        points: The matched measured markers, shape (n, 3).
     """
 
     world_from_model: np.ndarray
     model_index: np.ndarray
     residuals: np.ndarray
+    points: np.ndarray
 
     @property
     def rms(self) -> float:
@@ -76,43 +84,85 @@ def bar_markers(process: Process) -> dict[str, tuple[tuple[str, ...], np.ndarray
     return {bar: (tuple(names[bar]), np.array(points[bar])) for bar in sorted(names) if len(names[bar]) >= 3}
 
 
-def fit_markers(model: np.ndarray, measured: np.ndarray, tolerance: float = DISTANCE_TOLERANCE) -> MarkerFit | None:
-    """The best rigid fit of `model` onto `measured`, or None with fewer than 3 measured markers or no matching.
+def fit_near(model: np.ndarray, cloud: np.ndarray, prior: np.ndarray, radius: float = SEARCH_RADIUS,
+             tolerance: float = DISTANCE_TOLERANCE, limit: float = RESIDUAL_LIMIT) -> MarkerFit | None:
+    """The best rigid fit of `model` onto the measured markers near where `prior` puts it, or None below 3 matches.
+
+    Each measured marker within `radius` of a model marker placed by `prior` is one of those model markers or a
+    stray; a matching must keep every pairwise distance within `tolerance`. The most matched markers win, then the
+    smallest error. The search then starts again from the fit while that matches more markers, so a prior a few
+    degrees off still reaches the far end of a long bar. Labels play no part.
 
     Args:
-        model: Model markers, shape (m, 3).
-        measured: Measured markers, shape (n, 3), n <= m; each must be one of the model's.
+        model: Model markers in the model frame, shape (m, 3).
+        cloud: Every measured marker, shape (n, 3), in any order, strays included.
+        prior: 4x4 transform from the model frame to the world where the model is expected, e.g. the planned bar.
+        radius: See SEARCH_RADIUS.
         tolerance: See DISTANCE_TOLERANCE.
+        limit: See RESIDUAL_LIMIT.
     """
-    if len(measured) < 3 or len(measured) > len(model):
-        return None
-    model_distances = np.linalg.norm(model[:, None] - model[None], axis=-1)
-    measured_distances = np.linalg.norm(measured[:, None] - measured[None], axis=-1)
-    best: MarkerFit | None = None
+    fit = _match_near(model, cloud, prior, radius, tolerance, limit)
+    while fit is not None:
+        again = _match_near(model, cloud, fit.world_from_model, radius, tolerance, limit)
+        if again is None or len(again.residuals) <= len(fit.residuals):
+            return fit
+        fit = again
+    return None
 
-    def extend(matched: list[int]) -> None:
-        nonlocal best
-        i = len(matched)
-        if i == len(measured):
-            fit = _fit(model, measured, np.array(matched))
-            if best is None or fit.rms < best.rms:
+
+def _match_near(model: np.ndarray, cloud: np.ndarray, prior: np.ndarray, radius: float, tolerance: float,
+                limit: float) -> MarkerFit | None:
+    """One search of `fit_near`, from one prior: each model marker in turn gets a nearby measured marker or none."""
+    expected = model @ prior[:3, :3].T + prior[:3, 3]
+    distances = np.linalg.norm(cloud[:, None] - expected[None], axis=-1).reshape(len(cloud), len(model))
+    near = np.flatnonzero(distances.min(axis=1, initial=np.inf) <= radius)
+    points, distances = cloud[near], distances[near]
+    # * Nearest first, so the first matchings found are good ones and prune the rest.
+    options = [[int(j) for j in np.argsort(distances[:, k]) if distances[j, k] <= radius] for k in range(len(model))]
+    model_distances = np.linalg.norm(model[:, None] - model[None], axis=-1)
+    point_distances = np.linalg.norm(points[:, None] - points[None], axis=-1)
+    best: MarkerFit | None = None
+    steps = 0
+
+    def extend(k: int, matched: list[tuple[int, int]], fit: MarkerFit | None) -> None:
+        """Match model markers k onwards, given `matched` (point, model marker) and its fit from 3 on."""
+        nonlocal best, steps
+        steps += 1
+        least = max(3, len(best.residuals) if best is not None else 0)
+        if steps > MAX_SEARCH_STEPS or len(matched) + len(model) - k < least:
+            return
+        if k == len(model):
+            if fit is not None and (best is None or len(matched) > len(best.residuals) or fit.rms < best.rms):
                 best = fit
             return
-        for j in range(len(model)):
-            if j not in matched and all(abs(model_distances[j, k] - measured_distances[i, a]) < tolerance
-                                        for a, k in enumerate(matched)):
-                extend(matched + [j])
+        choices = options[k]
+        if fit is not None:
+            # * From 3 matches on, the fit says where this marker is: only markers there can be it.
+            choices = [j for j in choices if np.linalg.norm(points[j] - fit.transform(model[k])) < tolerance]
+        for j in choices:
+            if all(j != used and abs(point_distances[j, used] - model_distances[k, i]) < tolerance
+                   for used, i in matched):
+                grown = matched + [(j, k)]
+                grown_fit = (_fit(model, points[[p for p, _ in grown]], np.array([i for _, i in grown]))
+                             if len(grown) >= 3 else None)
+                if grown_fit is None or grown_fit.residuals.max() < limit:
+                    extend(k + 1, grown, grown_fit)
+        extend(k + 1, matched, fit)  # * Or it is hidden.
 
-    extend([])
+    extend(0, [], None)
     return best
 
 
 def _fit(model: np.ndarray, measured: np.ndarray, model_index: np.ndarray) -> MarkerFit:
-    """The least-squares rigid fit for one matching; rotations only, never mirrored."""
-    world_from_model = superimposition_matrix(model[model_index].T, measured.T)
-    fit = MarkerFit(world_from_model, model_index, np.zeros(len(measured)))
-    residuals = np.linalg.norm(fit.transform(model[model_index]) - measured, axis=1)
-    return MarkerFit(world_from_model, model_index, residuals)
+    """The least-squares rigid fit for one matching (Kabsch); rotations only, never mirrored."""
+    source = model[model_index]
+    source_mean, measured_mean = source.mean(axis=0), measured.mean(axis=0)
+    u, _, vt = np.linalg.svd((source - source_mean).T @ (measured - measured_mean))
+    rotation = vt.T @ np.diag([1.0, 1.0, np.sign(np.linalg.det(vt.T @ u.T))]) @ u.T
+    world_from_model = np.eye(4)
+    world_from_model[:3, :3], world_from_model[:3, 3] = rotation, measured_mean - rotation @ source_mean
+    fitted = source @ rotation.T + world_from_model[:3, 3]
+    return MarkerFit(world_from_model, model_index, np.linalg.norm(fitted - measured, axis=1), measured)
 
 
 @dataclass(frozen=True)

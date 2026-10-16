@@ -82,8 +82,9 @@ and resizes temporary boxes and cylinders, saves them to `~/husky_debug_gizmo.js
       chip, `tracked/<name>` in the scene). Match once, keep a Motive member id → model marker map, refit by least
       squares per sample, re-match only when the residual jumps (the matching search is exponential and runs on the
       main thread).
-- [ ] Only if bars must be tracked without a Motive asset: propose an unlabelled-marker topic for the relay in
-      crl-husky.
+- [x] Bars tracked without a Motive asset (16 Oct): the relay publishes every visible marker on `/mocap/markers`
+      (`crl_husky_msgs/MocapMarkers`), the monitor keeps it in `world.markers`, and `mocap_bars` fits near the last
+      fit or the planned bar (`marker_fit.fit_near`), without Motive's rigid bodies or labels.
 
 ## Open
 
