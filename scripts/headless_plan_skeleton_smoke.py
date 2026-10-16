@@ -2330,6 +2330,24 @@ def cindy_run(results: Results, problem: str, root: str, skeleton) -> None:
                       monitor._skeleton is not None and monitor._selected_action_idx == 0,
                       f"{len(monitor._skeleton.actions) if monitor._skeleton else 0} actions")
 
+        # * --- start-up auto-load (armed by __init__): it waits for her joint states
+        # * --- and her mocap base, then loads the first pending action
+        monitor._auto_load_deadline = time.monotonic() + 60.0
+        iface.arm_joint_stamp = [None] * iface.n_arms
+        monitor._mocap_rigidbody_stamp = {}
+        monitor._service_auto_load()
+        waited = getattr(monitor, '_loaded_action', None) is None
+        iface.arm_joint_stamp = [time.monotonic()] * iface.n_arms
+        monitor._mocap_rigidbody_stamp = {monitor.huskies[0].name: time.monotonic()}
+        monitor._service_auto_load()
+        monitor._mocap_rigidbody_stamp = {}
+        loaded = getattr(monitor, '_loaded_action', None)
+        results.check(f"Cindy: start-up auto-load waits for her joints and mocap base, then loads "
+                      f"the first pending action {first.index}",
+                      waited and loaded is not None and loaded.index == first.index
+                      and monitor._auto_load_deadline is None,
+                      f"loaded {getattr(loaded, 'action_id', None)}")
+
         # * --- the built-bar switch on her first two actions (OFF again afterwards)
         built_bars_check(results, monitor, log, skeleton)
 
@@ -2363,6 +2381,10 @@ def cindy_run(results: Results, problem: str, root: str, skeleton) -> None:
         results.check(f"Cindy: action {first.index} done in progress.json, her belief 'live'",
                       progress.is_done(first.index) and belief is not None
                       and belief.source == 'live' and belief.after_action == first.index)
+        nxt = monitor._progress.next_pending_index()
+        results.check(f"Cindy: after Mark action done the next pending action {nxt} loads by itself",
+                      nxt == first.index + 1 and monitor._loaded_action.index == nxt,
+                      f"loaded {monitor._loaded_action.action_id}")
         results.check('Cindy: Alice and Belle (no belief yet) drawn parked',
                       np.allclose(drawn_base(monitor, alice.name), parked)
                       and np.allclose(drawn_base(monitor, belle.name), parked))
@@ -2454,8 +2476,14 @@ def cindy_run(results: Results, problem: str, root: str, skeleton) -> None:
                       monitor._progress.is_done(hold_release.index)
                       and alice.name in monitor._progress.released_robots()
                       and np.allclose(drawn_base(monitor, alice.name), parked))
-        # The slider now points at the first pending action, not at the loaded one.
+        # The first pending action loaded by itself (AUTO_LOAD_ACTION). Load the
+        # release again and point the slider elsewhere, as an operator who moved it.
         n = monitor._selected_action_idx
+        results.check(f"Cindy: after Mark action done of {hold_release.index} the first pending "
+                      f"action {n} loads by itself",
+                      n == monitor._progress.next_pending_index() and monitor._loaded_action.index == n)
+        monitor.load_action(hold_release.index)
+        monitor._selected_action_idx = n
         monitor.reopen_action()
         # The slider shows another action, so the reopen first waits for 'Confirm Exec'.
         results.check(f"Cindy: Reopen (no index) of the LOADED action {hold_release.index} while the "

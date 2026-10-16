@@ -97,6 +97,21 @@ export ROS_DOMAIN_ID=86          # 86 = Cindy, 84 = Alice, 85 = Belle
 ros2 run husky_assembly_teleop husky_monitor
 ```
 
+**The current action loads by itself** (`AUTO_LOAD_ACTION = 1`, top of `class HuskyMonitor`):
+
+- at start-up, the first pending action of `progress.json` loads once the robot's
+  arm joints (and, with mocap, its base) have arrived:
+  `[Plan skeleton] auto-load at start-up: action k (<id>, <robot>), the first pending one.`
+  Its live start is the real robot. If they have not arrived after 15 s it loads
+  anyway with a warning (`no arm joint states ... from <robot> after 15 s ...`):
+  check the driver / mocap, then click `Load action`;
+- after `Mark action done`, the next pending action loads the same way
+  (`auto-load after 'Mark action done': ...`).
+
+It is whatever action the `Action (idx)` slider jumps to, so it can be another
+robot's (display only, as with the button). `AUTO_LOAD_ACTION = 0` brings back
+the manual `Load action`.
+
 ---
 
 ## The Plan skeleton panel
@@ -105,8 +120,8 @@ ros2 run husky_assembly_teleop husky_monitor
 |---|---|
 | header line | connected robot, problem, `k/48 done`; a second line `others: Alice <- live (action 3) \| Belle <- parked` says where each other robot's pose comes from (`live`, `assumed`, `exported` or `parked`; a fresh mocap base still overrides it) |
 | `Action (idx)` + `Prev action` / `Next action` | pick an action (the readout under it shows type, bar, robot, IK/TRJ counts, status) |
-| `Load action` | loads the action. Another robot's action loads **display only**: you see its movements, but Plan / Exec refuse and no step button is shown |
-| `Mark action done` | records the action as done and remembers where the robot ended (see below) |
+| `Load action` | loads the action. Another robot's action loads **display only**: you see its movements, but Plan / Exec refuse and no step button is shown. Usually not needed: the first pending action loads by itself at start-up and after `Mark action done` (see below) |
+| `Mark action done` | records the action as done, remembers where the robot ended (see below), then loads the next pending action |
 | `Reopen action (reload clean)` | sets the LOADED action back to pending, restores that robot's end state from its previous done action, and reloads the clean export. If the slider shows a different action it first asks for `Confirm Exec`, naming both |
 | `Rescan plan skeleton status` | re-reads `progress.json` and the IK/trajectory flags |
 | `Reset plan skeleton to the Rhino export` | after `Confirm Exec`: moves `progress.json` and every saved plan (`*.live-solved.json`) to `<problem>/archive/<time>/` (nothing deleted; move them back to undo), then every action is pending, no robot beliefs (others drawn parked), action 0 loads its clean export. A monitor of another robot that is running keeps its old progress in memory: restart it too |

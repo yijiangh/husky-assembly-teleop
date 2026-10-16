@@ -249,6 +249,9 @@ LIVE_OBSTACLE_MAX_AGE_S = 0.5
 # * 'Mark action done' stores the connected robot's mocap base as its belief only
 # * when mocap saw it this recently (seconds); otherwise the action's authored base.
 LIVE_BELIEF_MAX_AGE_S = 1.0
+# * Start-up auto-load (AUTO_LOAD_ACTION): how long to wait for the connected
+# * robot's joint states (and its mocap base) before loading the action anyway.
+AUTO_LOAD_WAIT_S = 15.0
 
 # * Shortest gap between two "[traj viz] waypoint i/N" lines. Dragging the
 # * preview slider steps through a waypoint per pixel, so this keeps the drag
@@ -371,6 +374,10 @@ class HuskyMonitor(Node):
     # * from the plan skeleton panel instead (see _load_skeleton_state). Incomplete
     # * plan skeletons (e.g. an accuracy-test export) keep the legacy list.
     USE_PLAN_SKELETON = 1
+    # * Plan skeleton mode: load the first pending action by itself, at start-up
+    # * (once the robot reports, see _service_auto_load) and after every 'Mark
+    # * action done'. Set 0 to load every action with 'Load action' by hand.
+    AUTO_LOAD_ACTION = 1
     # Set 1 for the mocap bar-holding accuracy experiment: adds the markerset
     # record/save buttons + the servoing tracker, hides the already-built
     # assembly (so its bars are ignored by collision checks; legacy BarAction
@@ -558,6 +565,7 @@ class HuskyMonitor(Node):
         self._loaded_action_bundle = None        # its plan_skeleton_io.LoadedAction
         self._skeleton_row_window = (0, 0)      # (lo, hi) actions shown as rows
         self._clean_actions = set()             # actions reopened this run: load their clean export
+        self._auto_load_deadline = None         # start-up auto-load pending until (time.monotonic())
         self.skeleton_header_text = None
         self.skeleton_action_slider = None
         self.skeleton_action_text = None
@@ -763,7 +771,11 @@ class HuskyMonitor(Node):
         self.build_ui()
         self.update_partial_assembly()
         self.update_goal_model_and_color()
-        
+        # * Plan skeleton mode: the first pending action loads by itself once the
+        # * robot reports (the monitor tick runs _service_auto_load).
+        if self.AUTO_LOAD_ACTION and getattr(self, '_skeleton', None) is not None:
+            self._auto_load_deadline = time.monotonic() + AUTO_LOAD_WAIT_S
+
     def add_tracked_object(self, obstacle: TrackedObject):
         """Registers an object to be tracked by mocap"""
         self.tracked_objects.append(obstacle)
@@ -10478,6 +10490,88 @@ class HuskyMonitor(Node):
             self._selected_movement_idx = self._default_movement_index()
         self.reset_ui(self.goal_arm_pose)
 
+    # * ------------------------------------------------------------------
+    # * Auto-load (AUTO_LOAD_ACTION): the first pending action loads by itself
+    # * at start-up and after every 'Mark action done', as if 'Load action'
+    # * were clicked with the slider on it. Another robot's action loads for
+    # * display only, exactly like the button.
+    # * ------------------------------------------------------------------
+
+    def _auto_load_pending_action(self, when: str) -> bool:
+        """Load the first pending action of ``progress.json`` (no-op with AUTO_LOAD_ACTION off).
+
+        Args:
+            when (str): When this happens, for the log line (e.g. ``'at start-up'``).
+
+        Returns:
+            bool: True when the action is now loaded (its load rebuilt the panel).
+        """
+        progress = getattr(self, '_progress', None)
+        if not self.AUTO_LOAD_ACTION or progress is None:
+            return False
+        idx = progress.next_pending_index()
+        if idx is None:
+            print(f"[Plan skeleton] every action is done; nothing to load {when}.")
+            return False
+        action = self._skeleton.action(idx)
+        print(f"[Plan skeleton] auto-load {when}: action {idx} ({action.action_id}, "
+              f"{action.robot}), the first pending one.")
+        try:
+            self.load_action(idx)
+        except Exception as e:
+            # ! Runs on the monitor tick, which does not catch exceptions (one
+            # ! would stop the monitor), so a failed load only logs.
+            traceback.print_exc()
+            self.get_logger().error(f"[Plan skeleton] auto-load of action {idx} failed ({e}); "
+                                    f"click 'Load action' to try again.")
+            return False
+        return getattr(self, '_loaded_action', None) is action
+
+    def _robot_not_reporting(self) -> list:
+        """What the connected robot has not reported yet: its arm joints, its mocap base.
+
+        Returns:
+            list: Empty when everything a live start reads has arrived (always
+            with FAKE_HARDWARE); else e.g. ``['arm joint states', 'mocap base']``.
+        """
+        if self.FAKE_HARDWARE or not getattr(self, 'huskies', None):
+            return []
+        husky = self.huskies[self.selected_robot_id]
+        stamps = getattr(husky.interface, 'arm_joint_stamp', None) or [None]
+        missing = []
+        if any(stamp is None for stamp in stamps):
+            missing.append('arm joint states')
+        if self._base_pose_is_tracked() and not self._mocap_sees_husky(husky, LIVE_BELIEF_MAX_AGE_S):
+            missing.append('mocap base')
+        return missing
+
+    def _service_auto_load(self) -> None:
+        """Monitor tick: the start-up auto-load, once the connected robot reports.
+
+        Waits (at most ``AUTO_LOAD_WAIT_S`` from start-up) for the robot's arm
+        joints and, when mocap drives the base, its mocap base: the load writes
+        them into the movements that start live. After the wait it loads anyway
+        with a warning. Dropped when the operator loaded an action first; held
+        while a queued step runs.
+        """
+        deadline = getattr(self, '_auto_load_deadline', None)
+        if deadline is None:
+            return
+        if getattr(self, '_loaded_action', None) is not None:
+            self._auto_load_deadline = None    # the operator clicked 'Load action' first
+            return
+        missing = self._robot_not_reporting()
+        if (missing and time.monotonic() < deadline) or getattr(self, 'tasks', None):
+            return
+        self._auto_load_deadline = None
+        if missing:
+            self.get_logger().warn(
+                f"[Plan skeleton] no {' and no '.join(missing)} from {self._connected_robot().name} "
+                f"after {AUTO_LOAD_WAIT_S:.0f} s; loading the action anyway, so its live start is "
+                f"NOT where the robot is. Click 'Load action' again once the robot is up.")
+        # The panel was built with the slider on this action already.
+        self._auto_load_pending_action('at start-up')
+
     def set_ignore_built_assembly_collisions(self, on: bool) -> None:
         """'Ignore built-bar collisions' toggle: set the switch and reload the loaded action.
 
@@ -10532,8 +10626,9 @@ class HuskyMonitor(Node):
           belief is that robot's EXPORTED end state, recorded as 'assumed'.
 
         Then the drawn other huskies move to their new beliefs, the action's flags
-        are rescanned, the slider moves to the first pending action and the panel
-        is rebuilt.
+        are rescanned, the slider moves to the first pending action and, with
+        ``AUTO_LOAD_ACTION`` on, that action is loaded (else the panel is only
+        rebuilt).
 
         ! Runs on the monitor tick, which does not catch exceptions (one would
         ! stop the monitor), so reading the belief and saving only log errors.
@@ -10595,7 +10690,10 @@ class HuskyMonitor(Node):
                       f"{', '.join(os.path.basename(w) for w in written)}.")
         self._rescan_skeleton_flags([action.index])
         self._selected_action_idx = min(progress.current_index, len(self._skeleton.actions) - 1)
-        self.reset_ui(self.goal_arm_pose)
+        # * The next pending action loads by itself (AUTO_LOAD_ACTION); its load
+        # * rebuilds the panel.
+        if not self._auto_load_pending_action("after 'Mark action done'"):
+            self.reset_ui(self.goal_arm_pose)
 
     def _live_belief(self, loaded: LoadedAction) -> RobotBelief:
         """The connected robot's belief right now, for marking its own action done.
@@ -12343,6 +12441,7 @@ class HuskyMonitor(Node):
             # Display-only, so it is refreshed here rather than polled.
             self._refresh_bar_action_readouts()
             self._refresh_skeleton_readouts()
+            self._service_auto_load()
             if hasattr(self, 'm2_split_slider') and self.m2_split_slider:
                 self.m2_split_slider.update()
             if hasattr(self, 'm2_rigid_only_slider') and self.m2_rigid_only_slider:

@@ -457,6 +457,9 @@ class HuskyRobotInterface:
 
         # * per-arm state, one entry per arm
         self.arm_joint_pose = [UR5e_HOME_STATE.copy() for _ in range(n_arms)]
+        # When each arm's joint states last arrived (time.monotonic(); None = never yet),
+        # so the monitor can tell the home values above from measured ones.
+        self.arm_joint_stamp = [None] * n_arms
         # TODO: This value reported bz UR5e does not correspond to world position nor to local position (relative to base link). Its something weird in between, probably accounting for mounting orientation set in ur5e.
         self.arm_tcp_pose = [pp.Pose() for _ in range(n_arms)]
         self.arm_ft_sensor = [[0, 0, 0, 0, 0, 0] for _ in range(n_arms)]
@@ -701,6 +704,7 @@ class HuskyRobotInterface:
             reorder.append(msg.name.index(name))
         old_pose = self.arm_joint_pose[index]
         self.arm_joint_pose[index] = np.array(arm_pos)[reorder]
+        self.arm_joint_stamp[index] = time.monotonic()
         if USE_TRAJECTORY_TOPIC_INTERFACE == 1:
             if not np.isclose(old_pose, self.arm_joint_pose[index], atol=1e-2).all():
                 if not self.is_arm_executing[index]:

@@ -69,6 +69,11 @@ the gripper close (the hold's last step) has run, a release once the release's r
 click it) and saves its planned trajectories. Within an action, each step's real end becomes the
 next step's start (`[Exec] propagated arm configuration -> ...`).
 
+**Actions load by themselves.** At every monitor start the first pending action loads once
+the robot's joints and mocap base have arrived, and `Mark action done` loads the next one
+(log `[Plan skeleton] auto-load ...`). Where a section below says `Load action` (slider on k),
+check that the `Now:` line already names action k; click `Load action` only when it does not.
+
 > **! Transfer workaround in use** (until the bar-held transfer planner is ready). The transfer
 > runs as a plain free move **without the bar**:
 > - Tick `Workaround: plan the transfer as a free move (no bar, from the live arms)` (under
@@ -99,7 +104,7 @@ The same values serve all three robots' runs.
 
 ```bash
 F=~/ros2_ws/src/husky-assembly-teleop/husky_assembly_teleop/husky_monitor.py
-grep -nE "^    (FAKE_HARDWARE|USE_MOCAP|USE_CELL_STATE_BASE_POSE|CONNECT_COMPLIANT_CONTROLLER|LIST_CONTROLLER_SERVICES|IGNORE_BUILT_ASSEMBLY_COLLISIONS|TRANSFER_AS_FREE_MOVE) *=" "$F"
+grep -nE "^    (FAKE_HARDWARE|USE_MOCAP|USE_CELL_STATE_BASE_POSE|CONNECT_COMPLIANT_CONTROLLER|LIST_CONTROLLER_SERVICES|IGNORE_BUILT_ASSEMBLY_COLLISIONS|TRANSFER_AS_FREE_MOVE|AUTO_LOAD_ACTION) *=" "$F"
 grep -nE "^    (CALIBRATION|PUNCH_CALIB_VALIDATION|BAR_ACTION_LIVE_REPLAN_EXE|BAR_ACTION_MOCAP_ACCURACY_TEST) *=" "$F"
 grep -nE "^(CLIENT_IP|MOCAP_IP) *=" "$F"
 ip -4 -brief addr show eno1        # this PC's address on the robot network
@@ -114,6 +119,7 @@ ip -4 -brief addr show eno1        # this PC's address on the robot network
 | `LIST_CONTROLLER_SERVICES` | **1** |
 | `IGNORE_BUILT_ASSEMBLY_COLLISIONS` | 0 (built bars are obstacles; leave the panel toggle unticked, also for Alice and Belle: both holds plan with them, checked headless on this export) |
 | `TRANSFER_AS_FREE_MOVE` | 0 (tick the workaround box in the panel instead) |
+| `AUTO_LOAD_ACTION` | **1** (the first pending action loads by itself at start-up and after `Mark action done`; 0 = click `Load action` every time) |
 | `CALIBRATION`, `PUNCH_CALIB_VALIDATION` | **0** (1 only for a calibration session; Belle's on 2026-10-13/14 had both at 1) |
 | `BAR_ACTION_LIVE_REPLAN_EXE` | **1** (0 hides the whole bar-assembly panel, the plan skeleton included) |
 | `BAR_ACTION_MOCAP_ACCURACY_TEST` | 1 (the value before Belle's calibration; its extra buttons are not used in this test) |
@@ -531,11 +537,16 @@ ros2 run husky_assembly_teleop husky_monitor
 - [ ] `[Plan skeleton] robot <Cindy (domain 86) | Alice (domain 84) | Belle (domain 85)> | problem 261006_3bar_holding_test | progress k/18 done`,
       `[Plan skeleton] others: ...`, the 18-action roster, and `mocap client connected: True`
       (`False`: `CLIENT_IP`, see 0.1).
+- [ ] Within a few seconds: `[Plan skeleton] auto-load at start-up: action k (<id>, <robot>), the first pending one.`,
+      then the action's movement roster; the `Now:` line names action k. After 15 s without the
+      robot's joints or mocap base it loads anyway with a warning
+      (`no arm joint states ... after 15 s; loading the action anyway ...`): fix the driver /
+      mocap (section 2), then `Load action`.
 - [ ] Panel: a **Plan skeleton** section, with:
   - `Ignore built-bar collisions (bars drawn faint)` unticked;
   - the slider above `Load Movement` called `Step`;
   - an `Actions` list. Clicking a row selects that action: the
-    `Action (idx)` slider jumps there, and nothing is loaded until `Load action`. The other
+    `Action (idx)` slider jumps there; it loads only with `Load action`. The other
     robots' actions are grey, `(other robot)`.
 - [ ] PyBullet:
   - the connected robot drawn at its real base (mocap) with its real arm poses
