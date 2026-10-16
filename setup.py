@@ -1,3 +1,5 @@
+from glob import glob
+
 from setuptools import find_packages, setup
 
 package_name = 'husky_assembly_teleop'
@@ -10,6 +12,7 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
+        ('share/' + package_name + '/launch', glob('launch/*.launch.py')),
     ],
     install_requires=[
         'setuptools',
@@ -29,6 +32,7 @@ setup(
     entry_points={
         'console_scripts': [
             'husky_monitor = husky_assembly_teleop.monitor:main',
+            'husky_mocap_relay = husky_assembly_teleop.mocap_relay.node:main',
         ],
     },
 )

@@ -187,16 +187,19 @@ The monitor is a small core that ticks and owns the shared state; every feature 
 
 ## 1. Start the mocap relay
 
-The monitor does not connect to Motive. The `mocap_relay` node from crl-husky receives the OptiTrack stream and publishes each rigid body as a ROS topic, calibrated and in the Z-up world frame. The monitor and all other mocap consumers subscribe to these topics.
+The monitor does not connect to Motive. The mocap relay (`husky_mocap_relay`, in this package, its own process) receives the OptiTrack stream and publishes each rigid body as a ROS topic, in the Z-up world frame; a robot's rigid body as its base pose. The monitor, the robots' onboard follower and all other mocap consumers subscribe to these topics.
+
+**Base calibration.** Each robot's rigid body gets crl-husky's default calibration (`config/robots/<serial>/mocap_config.json`), or the newest calibration session on the Drive (`data_experiment/calibration_data/<YYYYMMDD>/`, found through `HUSKY_DRIVE_ROOT` or `drive_root:=`) if it is within 5 cm / 5° of the default. The relay logs what it applies with its hash, and publishes it on `/mocap_relay/calibrations`. A newer session appearing while it runs is only logged; apply it with `ros2 service call /mocap_relay/reload_calibration std_srvs/srv/Trigger` while no robot drives.
 
 > ⚠️ Exactly one relay must run per ROS domain, and it must stay running while mocap is in use. Two relays in one domain would publish interleaved poses with different delays and possibly different calibrations. A relay therefore refuses to start if another one already runs in its domain. Stopping the relay stops mocap for every consumer in that domain.
 
 ```shell
-ros2 launch crl_husky mocap.launch.py                           # Motive PC at 192.168.0.28 (default)
-ros2 launch crl_husky mocap.launch.py server_ip:=192.168.0.117  # another Motive PC
+ros2 launch husky_assembly_teleop mocap.launch.py                           # Motive PC at 192.168.0.28 (default)
+ros2 launch husky_assembly_teleop mocap.launch.py server_ip:=192.168.0.117  # another Motive PC
+ros2 launch husky_assembly_teleop mocap.launch.py use_drive:=false          # crl-husky's defaults only
 ```
 
-Without a relay, no mocap is available. Details in crl-husky's `MOCAP_SETUP.md`.
+Without a relay, no mocap is available. Details in [doc/mocap_relay.md](doc/mocap_relay.md).
 
 ## 2. Start the monitor
 
