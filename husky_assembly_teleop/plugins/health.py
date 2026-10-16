@@ -245,6 +245,10 @@ def robot_checks(robot: HuskyRobotInterface, now: float,
             checks.append(tool)
         checks.append((tcp_checks or {}).get((robot.config.serial, arm.config.name),
                                              Check("tcp", WARN, "not checked yet: waiting for the arm to be still")))
+        # * Only when out of date: the monitor uses the calibration, but the URDF file other tools read does not.
+        stale = [c for c in robot.config.ur_calibration if c.arm == arm.config.name and c.out_of_date]
+        if stale:
+            checks.append(Check("URDF", WARN, stale[0].describe()))
         lines.append((arm.config.name, checks))
     return lines
 

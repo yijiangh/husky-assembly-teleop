@@ -77,6 +77,15 @@ class HuskyRobotInterface:
         self._node = node
         self.config = config
         self.base = BaseInterface(node, config)
+        # * The model already has each arm's UR calibration applied; an out-of-date URDF file is loud, not fatal.
+        for check in config.ur_calibration:
+            if check.out_of_date:
+                node.get_logger().error(f"!!! robot {config.serial} {check.describe()}")
+            elif check.file is None:
+                # TODO: copy each arm's calibration.yaml from the robot into crl-husky config/robots/<serial>/.
+                node.get_logger().warning(f"robot {config.serial} {check.describe()}")
+            else:
+                node.get_logger().info(f"robot {config.serial} {check.describe()}")
         # ! A non-stock URDF frame makes the arm refuse Cartesian targets: it would look right but move wrong.
         self.arms = {}
         for arm in config.arms:

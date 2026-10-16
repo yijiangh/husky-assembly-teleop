@@ -14,11 +14,13 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal, get_args
 
-from crl_husky.config_resolver import get_primary_mocap_id_for_robot_serial
+import yaml
+from crl_husky.config_resolver import get_primary_mocap_id_for_robot_serial, get_ur_calibration_file
 from rclpy.exceptions import ParameterUninitializedException
 from rclpy.node import Node
 
 from scaffolding_assembly_core.robot import FLANGE_SUFFIX, RobotModel, robot_model
+from scaffolding_assembly_core.urdf import JointOriginChange, apply_ur_calibration
 from .drive import drive_root
 from .tool_urdfs import absolute_mesh_urdf, tool_spec
 
@@ -63,6 +65,37 @@ class ArmConfig:
 
 
 @dataclass(frozen=True)
+class UrCalibrationCheck:
+    """Whether one arm's joints in our URDF are the UR factory calibration its driver runs with (crl-husky's copy).
+
+    Attributes:
+        arm: The arm's name, e.g. "left_ur_arm".
+        file: The calibration file in crl-husky, or None if it is not there yet (then nothing was checked).
+        changes: The joints the calibration moved, with how far; empty when the URDF already had it.
+    """
+
+    arm: str
+    file: Path | None
+    changes: tuple[JointOriginChange, ...] = ()
+
+    @property
+    def out_of_date(self) -> bool:
+        """bool: The URDF's joints differ from the calibration (the robot is built with the calibration)."""
+        return bool(self.changes)
+
+    def describe(self) -> str:
+        """One line for the log and the health panel."""
+        if self.file is None:
+            return f"{self.arm}: no UR calibration in crl-husky, so the URDF's arm joints are not checked"
+        if not self.changes:
+            return f"{self.arm}: URDF matches its UR calibration ({self.file.name})"
+        worst = max(self.changes, key=lambda change: (change.distance, change.angle))
+        return (f"{self.arm}: URDF OUT OF DATE with its UR calibration {self.file}: {len(self.changes)} joint(s) "
+                f"differ, up to {worst.distance * 1e3:.2f} mm / {math.degrees(worst.angle):.3f}° "
+                f"({worst.joint}). The monitor uses the calibration; update the URDF in husky_urdf.")
+
+
+@dataclass(frozen=True)
 class RobotConfig:
     """Everything needed to talk to, and draw, one physical robot.
 
@@ -82,7 +115,8 @@ class RobotConfig:
             Park button loads it, and the robot starts there until the first mocap fix.
         arms: The arms, in the multi-arm trajectory's order (the first is `trajectory1`).
         mocap_id: Rigid-body id of the base in the mocap system, or None if the robot is not tracked.
-        calibration_file: Joint-origin overlay for the URDF, or None. Nothing reads it yet.
+        ur_calibration: Per arm, whether the URDF's arm joints match the UR calibration in crl-husky. The model is
+            built with the calibration applied, so it always matches the robot's driver.
     """
 
     serial: str
@@ -94,8 +128,7 @@ class RobotConfig:
     default_position: tuple[float, float, float] = (0.0, 0.0, 0.0)
     default_yaw: float = 0.0
     park_pose: tuple[float, float, float] | None = None
-    # TODO: wire up calibration_file and drop the calibrated URDFs in `_ROBOTS_BY_SERIAL`, or remove it.
-    calibration_file: Path | None = None
+    ur_calibration: tuple[UrCalibrationCheck, ...] = ()
 
     @property
     def default_orientation(self) -> tuple[float, float, float, float]:
@@ -147,8 +180,9 @@ class MonitorConfig:
 
 # --- --- --- --- --- WHAT EACH ROBOT IS --- --- --- --- ---
 # TODO move this table to crl_husky once it ships robot URDFs.
-# ! Calibrated URDFs: arm kinematics differ per machine, so each robot must get its own. Their stock UR base frames
-#   are checked by test (doc/ur_frames.md).
+# ! Calibrated URDFs: arm kinematics differ per machine, so each robot must get its own. Each is checked against the
+#   arm's UR calibration in crl-husky at startup (`_apply_ur_calibrations`); the stock UR base frames by test
+#   (doc/ur_frames.md).
 _URDF_ROOT = "husky_urdf"
 _SINGLE_ARM_URDF = (_URDF_ROOT + "/mt_husky_moveit_config/urdf/"
                     "husky_ur5_e_no_base_joint_{}_Calibrated.urdf")
@@ -238,6 +272,7 @@ def robot_config_from_serial(token: str, data_directory: Path,
                              f"but {len(tools)} tool(s) were given")
         arms = tuple(replace(arm, end_effector=tool) for arm, tool in zip(arms, tools))
     urdf = absolute_mesh_urdf(urdf_file, ROBOT_URDF_DIRECTORY / f"a200_{number}.urdf")
+    checks = _apply_ur_calibrations(urdf, number, arms)
     tools = {f"{arm.name}{FLANGE_SUFFIX}": tool_spec(arm.end_effector, arm.name, data_directory,
                                                      f"tools/a200-{number}/{arm.name}")
              for arm in arms if arm.end_effector is not None}
@@ -253,7 +288,39 @@ def robot_config_from_serial(token: str, data_directory: Path,
         default_position=(park[0], park[1], 0.0) if default_position is None else default_position,
         default_yaw=park[2] if default_yaw is None else default_yaw,
         park_pose=park,
+        ur_calibration=checks,
     )
+
+
+def _arm_side(arm_name: str) -> str | None:
+    """An arm's side as crl-husky names its calibration file: "left", "right", or None for a one-arm robot."""
+    side = arm_name.split("_", 1)[0]
+    return side if side in ("left", "right") else None
+
+
+def _apply_ur_calibrations(urdf: Path, number: str, arms: tuple[ArmConfig, ...]) -> tuple[UrCalibrationCheck, ...]:
+    """Apply each arm's UR calibration from crl-husky to the robot's URDF copy, in place, and say what changed.
+
+    With up-to-date URDFs nothing changes. If something does, the URDF in husky_urdf is out of date: the copy gets
+    the calibration anyway, so the monitor matches the robot's driver.
+
+    Args:
+        urdf: The robot's URDF copy (`absolute_mesh_urdf`); rewritten only if a calibration changes it.
+        number: The robot's four serial digits.
+        arms: The robot's arms.
+    """
+    text = original = urdf.read_text()
+    checks = []
+    for arm in arms:
+        file = get_ur_calibration_file(number, _arm_side(arm.name))
+        if file is None:
+            checks.append(UrCalibrationCheck(arm.name, None))
+            continue
+        text, changes = apply_ur_calibration(text, arm.name, yaml.safe_load(file.read_text()))
+        checks.append(UrCalibrationCheck(arm.name, file, tuple(changes)))
+    if text != original:
+        urdf.write_text(text)
+    return tuple(checks)
 
 
 # --- --- --- --- --- READING ONE RUN OFF THE COMMAND LINE --- --- --- --- ---
