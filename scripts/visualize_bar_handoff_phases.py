@@ -6,7 +6,7 @@ Visualize bar handoff mocap logs by phase.
 
 The input is the console output of crl-husky's `mocap_logger` launch, with `--- <PHASE> ---` lines
 typed in between to mark the phases (first used for the 2026-04-29 Alice/Cindy bar handoff test).
-! Offline analysis for the old bar-holding tests: port into the `mocap_accuracy` plugin's recordings
+! Offline analysis for the old bar-holding tests: port into the `mocap_bars` plugin's recordings
   (`ctx.record`, doc/plugin_roadmap.md) once that exists.
 
 Requested plots:

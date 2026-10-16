@@ -87,5 +87,5 @@ and resizes temporary boxes and cylinders, saves them to `~/husky_debug_gizmo.js
 
 ## Open
 
-- Name of the marker-fitting plugin (`mocap_accuracy` is a working name).
+- Name of the marker-fitting plugin: renamed `mocap_bars` (16 Oct).
 - Whether temporary obstacles need a "clear all".

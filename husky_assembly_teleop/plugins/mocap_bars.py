@@ -6,13 +6,13 @@ message the bar's CAD markers are fitted to the measured ones without Motive's l
 The view shows the measured markers (green measured, orange filled in by Motive), the fitted bar (blue: markers,
 axis, a line per residual) and the planned markers (grey). The planned bar is the process body in the live scene
 (`process/bars/<id>`): a built bar at its assembly pose, a held one on the real robot's flange.
-Record writes a take of the fit, its residuals and the deviation to the Drive (`data_experiment/mocap_accuracy/`).
+Record writes a take of the fit, its residuals and the deviation to the Drive (`data_experiment/mocap_bars/`).
 
 - ! Marker layouts come only from the process (`BodySpec.markers` of the halves mounted on a bar); old compas_fab
   exports converted on load have none.
 - ! The matching search grows quickly with the number of markers and runs on the main thread, once per message.
 
-Run with:  -p plugins:="['mocap_accuracy']"  (loads `process`)
+Run with:  -p plugins:="['mocap_bars']"  (loads `process`)
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ from scaffolding_assembly_core.geometry import Pose
 #: Name of the tracked rigid body in `world.tracked_objects` and on the health panel.
 TRACKED_NAME = "fitted_bar"
 #: Takes go into a folder per experiment under this one, below the Drive root; create it in Drive first.
-RECORDING_FOLDER = "data_experiment/mocap_accuracy"
+RECORDING_FOLDER = "data_experiment/mocap_bars"
 #: Bar dropdown entry while the process has no bar with markers.
 NO_BAR = "–"
 #: Colours: measured markers, markers filled in by Motive, the fitted bar, the planned markers.
@@ -51,10 +51,10 @@ MARKER_POINT_SIZE = 0.02
 
 
 @register
-class MocapAccuracyPlugin(HuskyPlugin):
+class MocapBarsPlugin(HuskyPlugin):
     """Fits a process bar's markers to a tracked Motive rigid body and measures its deviation from the plan."""
 
-    name = "mocap_accuracy"
+    name = "mocap_bars"
     requires = ("process",)
     experimental = True
 
