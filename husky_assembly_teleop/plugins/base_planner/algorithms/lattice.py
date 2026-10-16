@@ -80,11 +80,16 @@ SHAPE_HEADINGS = 72
 GUIDE_HEADINGS = 36
 GUIDE_CELL = 0.10    # m
 BLOCKED = 10.0
+#: Room: where the robot fits at fewer than ROOMY_FITS of the SHAPE_HEADINGS headings, the guide's way costs more, up
+#: to TIGHT times where it fits at one. So the guide leads round a squeeze when a way with room is not much longer (the
+#: search finds that sooner, and the follower drives it more surely); a passage that is the only way costs only TIGHT.
+ROOMY_FITS = 36
+TIGHT = 3.0
 #: The shape fits where it overlaps things in fewer than this many search-grid cells: rasterizing it is that rough.
 OVERLAP = 3
 #: The guide learns from the search: every move that hits makes its guide cell LEARN_STEP times dearer (up to BLOCKED),
 #: and after every RELEARN_HITS such hits the cost to go is worked out again. So a way the guide wrongly thinks fits
-#: (it is coarse, and leaves out the margin) stops pulling the search in.
+#: (it is coarse, and leaves out the follower's swing) stops pulling the search in.
 LEARN_STEP = 1.0
 RELEARN_HITS = 300
 #: Guide moves: grid steps (one way; the other is the same edge), used at headings within GUIDE_SLIP of their direction.
@@ -386,7 +391,7 @@ def plan(world: PlanningWorld, own: str, start, goal, abort: threading.Event, se
     shape = tuple(int(math.ceil(size / CELL)) + 1 for size in np.maximum.reduce(
         [start[:2], arrive[:2], goal[:2]]) + PADDING - low)
     guide = _Guide(world, own, low, shape, arrive,
-                   min(settings.turn_weight, CURVE_WEIGHT) if settings.curves else settings.turn_weight)
+                   min(settings.turn_weight, CURVE_WEIGHT) if settings.curves else settings.turn_weight, margin)
     debug.points(FLOOR[0], guide.nowhere(), FLOOR[1])
     debug.points(PORTALS[0], guide.portals, PORTALS[1])
     way = guide.way(start)
@@ -473,7 +478,8 @@ class _Guide:
     GUIDE_SLIP of the heading, never sideways, but may skip a cell (knight moves).
     """
 
-    def __init__(self, world: PlanningWorld, own: str, low, shape: tuple[int, int], target, turn_weight: float):
+    def __init__(self, world: PlanningWorld, own: str, low, shape: tuple[int, int], target, turn_weight: float,
+                 margin: float = 0.0):
         """Map where the robot fits, and run Dijkstra over (x, y, heading) from the target.
 
         Args:
@@ -483,13 +489,15 @@ class _Guide:
             shape: The search grid's cells along x and y (CELL apart).
             target: (x, y, yaw) to measure to.
             turn_weight: Metres of driving one radian of turning is worth.
+            margin: Grow the robot's shape by this much, metres, to the search-grid cell: as the search checks it.
         """
         heights = world.floor_heights(own, low, CELL, shape, FLOOR_BOTTOM)
         high, low_only = heights >= BAND, np.isfinite(heights) & (heights < BAND)
         top, under = world.robot_heights(own, CELL, FLOOR_BOTTOM)
         centre = top.shape[0] // 2
-        shapes = [np.argwhere(np.isfinite(top)) - centre, np.argwhere(under < BAND) - centre]
-        size = int(math.ceil(centre * math.sqrt(2.0))) + 1
+        shapes = [_grown(np.argwhere(np.isfinite(top)) - centre, margin),
+                  _grown(np.argwhere(under < BAND) - centre, margin)]
+        size = int(math.ceil(max(np.abs(np.vstack(shapes)).max(), centre) * math.sqrt(2.0))) + 1
         # Fine: whether the robot hits something, per heading sample and search-grid cell.
         hit = np.zeros((SHAPE_HEADINGS, *shape), dtype=bool)
         for n in range(SHAPE_HEADINGS):
@@ -502,6 +510,8 @@ class _Guide:
                 # The robot at a cell hits whatever lies under its shape there: correlate the map with the shape.
                 hit[n] |= fftconvolve(things.astype(float), mask[::-1, ::-1], mode="same") > OVERLAP - 0.5
         self.portals = _portals(~hit, low)
+        # Room: how much more driving costs, per search-grid cell, from how many headings fit there.
+        room = 1.0 + (TIGHT - 1.0) * np.clip(1.0 - (~hit).sum(axis=0) / ROOMY_FITS, 0.0, 1.0)
         # Coarse: fits at a guide heading if it fits at a sample within one sample of it, and in a coarse cell if it
         # fits in one of the search-grid cells there.
         per = SHAPE_HEADINGS // GUIDE_HEADINGS
@@ -511,6 +521,9 @@ class _Guide:
         nx, ny = (-(-size // step) for size in shape)
         hit = np.pad(hit, ((0, 0), (0, nx * step - shape[0]), (0, ny * step - shape[1])), constant_values=True)
         hit = hit.reshape(GUIDE_HEADINGS, nx, step, ny, step).all(axis=(2, 4)).transpose(1, 2, 0)
+        # A coarse cell has the room of its roomiest search-grid cell, as it fits if one of them fits.
+        room = np.pad(room, ((0, nx * step - shape[0]), (0, ny * step - shape[1])), constant_values=TIGHT)
+        room = room.reshape(nx, step, ny, step).min(axis=(1, 3))
         self._low, self._shape, self._hit = np.asarray(low, dtype=float) + (step - 1) * CELL / 2.0, (nx, ny), hit
 
         index = np.arange(nx * ny * GUIDE_HEADINGS).reshape(nx, ny, GUIDE_HEADINGS)
@@ -539,8 +552,9 @@ class _Guide:
         headings = 2.0 * math.pi * np.arange(GUIDE_HEADINGS) / GUIDE_HEADINGS
         self._source = (np.full(GUIDE_HEADINGS, index.size), index[i, j],
                         turn_weight * np.abs(np.angle(np.exp(1j * (headings - target[2])))) + 1e-6)
-        # Where the robot does not fit counts BLOCKED times; where the search's moves hit, more as they hit.
-        self._fits = np.where(hit, BLOCKED, 1.0)
+        # Where the robot does not fit counts BLOCKED times, where it fits with little room more as it has less, and
+        # where the search's moves hit, more as they hit.
+        self._fits = np.where(hit, BLOCKED, room[:, :, None])
         self._hits = np.zeros((nx, ny))
         #: Goes up each time the cost to go is worked out again.
         self.version = 0
@@ -606,6 +620,16 @@ class _Guide:
     def nowhere(self) -> np.ndarray:
         """(x, y) of the coarse cells where the robot fits at no heading."""
         return self._low + GUIDE_CELL * np.argwhere(self._hit.all(axis=2))
+
+
+def _grown(cells: np.ndarray, margin: float) -> np.ndarray:
+    """Search-grid cells (offsets) of a shape grown by `margin` metres, to the nearest cell."""
+    reach = int(round(margin / CELL))
+    if reach <= 0 or not len(cells):
+        return cells
+    disk = np.array([(i, j) for i in range(-reach, reach + 1) for j in range(-reach, reach + 1)
+                     if i * i + j * j <= reach * reach])
+    return np.unique((cells[:, None, :] + disk[None, :, :]).reshape(-1, 2), axis=0)
 
 
 def _portals(fits: np.ndarray, low) -> list[tuple[float, float, float]]:
@@ -760,7 +784,9 @@ def _search(start, arrive, tail, ahead: float, guide: _Guide, centred, hits, fai
             lead_in = (x - (PORTAL_LEAD + 0.5) * math.cos(yaw), y - (PORTAL_LEAD + 0.5) * math.sin(yaw))
             past = (x + (PORTAL_PAST + 0.5) * math.cos(yaw), y + (PORTAL_PAST + 0.5) * math.sin(yaw), yaw)
             near = math.dist(base(node.pose)[:2], lead_in)
-            if near < PORTAL_REACH and (index, k) not in tried and guide(*past) < here:
+            # ! Skip portals already found to have no way through: they would take the tries from the good ones.
+            if (near < PORTAL_REACH and (index, k) not in tried and through.get(k, True) is not None
+                    and guide(*past) < here):
                 options.append((guide(*past) + near, k))
         out = []
         for _, k in sorted(options)[:PORTAL_TRIES]:
