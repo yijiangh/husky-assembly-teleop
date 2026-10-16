@@ -108,6 +108,18 @@ Message content:
 ! Raw markers need "Labeled Markers" enabled in Motive's streaming settings; without it the
 arrays are empty and the relay warns once.
 
+Every marker of each frame, once per frame:
+
+- `/mocap/markers` (parameter `markers_topic`)
+- Message: `crl_husky_msgs/msg/MocapMarkers`
+- `positions` (x, y, z one after the other), `asset_ids`, `member_ids`, `residuals`: every marker
+  the cameras saw (not occluded), labeled to any asset or none (`asset_ids` 0), in the Z-up world
+  frame, not calibrated. Motive's labels are only a hint: it can mix up similar assets. The
+  monitor keeps the latest cloud in `world.markers`; `mocap_bars` fits bars to it.
+
+! Markers of no asset need "Unlabeled Markers" enabled in Motive's streaming settings. The relay
+logs the first cloud's marker counts.
+
 Streaming IDs service:
 
 - `/mocap/get_streaming_ids`
@@ -122,6 +134,7 @@ Most important:
 - `auto_detect_client_ip`: detect `client_ip` automatically from route to `server_ip`.
 - `publish_rate_hz`: relay publish frequency.
 - `topic_prefix`: prefix for topic generation.
+- `markers_topic`: topic of every marker of each frame (default `/mocap/markers`).
 - `frame_id`: output frame name.
 
 Robustness and validity:
@@ -179,7 +192,7 @@ Use this checklist when migrating older direct-NatNet code.
 
 ## Known Differences And Gaps vs Old Direct NatNet
 
-- Relay publishes rigid body poses with their labeled markers. Unlabeled markers, model descriptions (marker names, Motive's marker offsets) and camera metadata are not relayed.
+- Relay publishes rigid body poses with their labeled markers, and every visible marker on `/mocap/markers`. Model descriptions (marker names, Motive's marker offsets) and camera metadata are not relayed.
 - Only one relay runs per ROS domain (checked in the ROS graph at start), so consumers never receive interleaved poses from two relays.
 
 ## Source Files

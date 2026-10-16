@@ -32,7 +32,7 @@ from .world.kinematics import Kinematics
 from .plugin_api.plugin import HuskyPlugin, load_plugins
 from .robot_interface.robot import HuskyRobotInterface
 from .robot_interface.connections import RosConnections
-from .robot_interface.mocap import subscribe_mocap
+from .robot_interface.mocap import subscribe_markers, subscribe_mocap
 from scaffolding_assembly_core.ids import tracked_id
 from scaffolding_assembly_core.scene import Scene
 from .world.scene import PluginScene, take_snapshot, tracked_body
@@ -132,6 +132,8 @@ class HuskyMonitor(Node):
         port, phone_port = self._viz.ports
         self.log_info(f"UI at http://localhost:{port}, phone page at http://<this PC's IP>:{phone_port}")
 
+        # * Every marker the cameras see, for plugins that fit their own layouts to them (`world.markers`).
+        subscribe_markers(RosConnections(self), self._world, self.now)
         for robot_config in self._config.robots:
             with self._timed(f"robot {robot_config.serial} interface"):
                 self._world.add_robot(HuskyRobotInterface(self, robot_config))

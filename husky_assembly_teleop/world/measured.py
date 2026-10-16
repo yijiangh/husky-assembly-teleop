@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from ..robot_interface.robot import HuskyRobotInterface
-from .mocap import RawMarkers
+from .mocap import MarkerCloud, RawMarkers
 
 
 @dataclass
@@ -57,10 +57,12 @@ class WorldState:
         robots: Connected robots, keyed by serial. Each owns its own RobotState.
         tracked_objects: Mocap-observed non-robot bodies, keyed by name. Changed only through
             PluginContext.track_object / untrack_object.
+        markers: Every marker of the latest mocap frame, or None before the relay sent one.
     """
 
     robots: dict[str, HuskyRobotInterface] = field(default_factory=dict)
     tracked_objects: dict[str, TrackedObject] = field(default_factory=dict)
+    markers: MarkerCloud | None = None
 
     def add_robot(self, robot: HuskyRobotInterface) -> None:
         """Register a robot.
