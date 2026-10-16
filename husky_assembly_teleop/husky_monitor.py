@@ -311,12 +311,19 @@ MOCAP_CAMERA_EXPORT_DIR = os.path.join(EXPERIMENT_DATA_DIRECTORY, 'visualise_moc
 
 # Folder under DESIGN_DATA_DIRECTORY (gdrive)/<...>/RobotCellStates/
 # from which CALIBRATION-mode state + trajectory loaders pull files.
-# Keyed by selected_arm_index (0=left, 1=right); see _calibration_state_dir().
+# Picked by the connected robot and selected_arm_index; see _calibration_state_dir().
 # Full design-study archive lives on GitHub: yijiangh/husky_assembly_design_study.
-CALIBRATION_STATE_SETS = {
-    0: '260630_calib_trajs_Alice',              # left arm & single arm
-    1: '260225_extrinsic_calib_trajs_Cindy_Right',  # right arm for Cindy
+# * Arm 0 (Cindy's left arm, or the only arm of a single-arm robot), per robot
+# * (registry name). Every robot must be listed: there is no default set.
+# ! Alice's set breaks Cindy's wrist_1 limit (-240 deg) in J0 traj1 and J1 traj4,
+# ! so Cindy's left arm uses its own 0806 set (12 joints: the right arm is parked too).
+CALIBRATION_STATE_SET_ARM0_BY_ROBOT = {
+    'Alice': '260630_calib_trajs_Alice',
+    'Belle': '260630_calib_trajs_Alice',  # same arm mounting as Alice, so her set fits
+    'Cindy': '260108_extrinsic_calib_trajs',
 }
+# * Arm 1 exists only on Cindy (her right arm).
+CALIBRATION_STATE_SET_ARM1 = '260225_extrinsic_calib_trajs_Cindy_Right'
 
 class HuskyMonitor(Node):
     # * Set 0 for the robot-centric experiment: replay a pre-planned BarAction
@@ -10952,9 +10959,23 @@ class HuskyMonitor(Node):
         return trajectory_files
 
     # --- CALIBRATION state/trajectory loaders (CALIBRATION_STATE_SET) ---
-    def _calibration_state_dir(self):
-        state_set = CALIBRATION_STATE_SETS.get(
-            self.selected_arm_index, CALIBRATION_STATE_SETS[0])
+    def _calibration_state_dir(self) -> str:
+        """Folder of the calib cell states + trajectories for the selected arm.
+
+        Arm 1 is Cindy's right arm; arm 0 is looked up by the connected robot
+        in CALIBRATION_STATE_SET_ARM0_BY_ROBOT.
+
+        Returns:
+            str: The RobotCellStates folder under DESIGN_DATA_DIRECTORY.
+
+        Raises:
+            KeyError: The connected robot has no entry in
+                CALIBRATION_STATE_SET_ARM0_BY_ROBOT (add one, there is no default).
+        """
+        if self.selected_arm_index == 1:
+            state_set = CALIBRATION_STATE_SET_ARM1
+        else:
+            state_set = CALIBRATION_STATE_SET_ARM0_BY_ROBOT[self._connected_robot().name]
         return os.path.join(
             DESIGN_DATA_DIRECTORY, state_set, 'RobotCellStates',
         )

@@ -65,6 +65,7 @@ CALIB_DATA_DIR = CALIBRATION_DATA_DIRECTORY
 # * robot not listed uses 1862; Cindy's right arm always uses 1861.
 CALIB_TOOL_ARM0_ID_BY_ROBOT = {
     'Belle': 1866,  # Belle's calib tool (2026-10-13; 1863 was the wrong rigid body)
+    'Cindy': 1866,  # Cindy's left-arm calib tool (2026-10-16)
 }
 # * A calib point is only recorded when the base and tool rigid bodies both
 # * arrived from mocap within this many seconds (see calibrate_button).

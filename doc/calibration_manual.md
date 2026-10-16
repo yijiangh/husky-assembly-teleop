@@ -48,7 +48,7 @@ serials, and Motive Streaming IDs.
 |------|--------|-----|-----------|------------------|---------------|
 | Alice | 0804 | 192.168.0.113 | 84 | 1840 | 1862 (arm 0) |
 | Belle | 0805 | 192.168.0.114 | 85 | 1850 | 1866 (arm 0) |
-| Cindy | 0806 | 192.168.0.115 | 86 | 1860 | right 1861 / left 1862 |
+| Cindy | 0806 | 192.168.0.115 | 86 | 1860 | right 1861 / left 1866 (since 2026-10-16) |
 
 1. **ROS Domain** selects the robot at launch: the monitor reads `ROS_DOMAIN_ID` from the
    terminal it is started in (see [§2.4](#24-verify-ros2-connection) and [§3.1](#31-launch-the-monitor-node))
@@ -57,7 +57,7 @@ serials, and Motive Streaming IDs.
 2. **Motive ID** = the rigid-body **Streaming ID** set in Motive (see [§1.3](#13-create--verify-rigid-bodies)).
    - These must match the base-tracker `mocap_id` values in the robot registry,
      [`robot_registry.py:312-314`](../husky_assembly_teleop/robot_registry.py#L312)
-   - and the calib-tool IDs: arm `0` (left / single arm) = `1862` unless the robot is listed in `CALIB_TOOL_ARM0_ID_BY_ROBOT` at [`husky_world.py:66`](../husky_assembly_teleop/husky_world.py#L66) (Belle: `1866`); arm `1` (Cindy's right) = `1861`.
+   - and the calib-tool IDs: arm `0` (left / single arm) = `1862` unless the robot is listed in `CALIB_TOOL_ARM0_ID_BY_ROBOT` at [`husky_world.py:66`](../husky_assembly_teleop/husky_world.py#L66) (Belle and Cindy: `1866`); arm `1` (Cindy's right) = `1861`.
    - A single-arm robot (Alice, Belle) only has arm `0`, so it always uses its
      arm-0 calib tool -- `1862` on Alice, `1866` on Belle. Mount that tracker on its flange.
 
@@ -408,9 +408,9 @@ Before collecting data, verify these settings in the code match your setup.
 |------|-------|------|
 | `ROS_DOMAIN_ID` | the monitor's terminal ([§3.1](#31-launch-the-monitor-node)) | **picks the robot** being calibrated (85 = Belle) |
 | base `mocap_id` (Streaming IDs) | [`robot_registry.py:312-314`](../husky_assembly_teleop/robot_registry.py#L312) | one per robot (see [§0.2](#02-robot-reference-table)); match Motive **properties > Streaming ID** |
-| calib-tool IDs | [`husky_world.py:66`](../husky_assembly_teleop/husky_world.py#L66) | match Motive (see [§0.2](#02-robot-reference-table)). **Which tool is used = the `arm id` slider**: arm `0` → `1862` (or the robot's `CALIB_TOOL_ARM0_ID_BY_ROBOT` entry: Belle `1866`), arm `1` → `1861`. A single-arm robot only has arm `0`; nothing to comment out. The start-up log prints `Calib tool of <robot> arm 0: Motive ID ...` |
+| calib-tool IDs | [`husky_world.py:66`](../husky_assembly_teleop/husky_world.py#L66) | match Motive (see [§0.2](#02-robot-reference-table)). **Which tool is used = the `arm id` slider**: arm `0` → `1862` (or the robot's `CALIB_TOOL_ARM0_ID_BY_ROBOT` entry: Belle and Cindy `1866`), arm `1` → `1861`. A single-arm robot only has arm `0`; nothing to comment out. The start-up log prints `Calib tool of <robot> arm 0: Motive ID ...` |
 | `CALIBRATION_DATE` + `CALIBRATION_ANALYSIS_DATE` | [`__init__.py:89`](../husky_assembly_teleop/__init__.py#L89) and [`:104`](../husky_assembly_teleop/__init__.py#L104) | both sit in **one file**; set both to today's date folder, which must exist on the gdrive (`data_experiment/calibration_data/YYYYMMDD/`, [§4.3](#43-data-folder-structure)) with a `config.yaml` whose `robot_name` is the robot you calibrate ([§7.1](#71-prepare-the-config-file)). Every robot whose base calibration lives in another folder needs an entry in `BASE_CALIBRATION_DATE_BY_ROBOT` ([`__init__.py:96`](../husky_assembly_teleop/__init__.py#L96), [§7.2](#72-set-the-date-folder)). Nothing to edit in `config_loader.py` — its `DEFAULT_DATE_FOLDER` just re-exports `CALIBRATION_ANALYSIS_DATE` |
-| `CALIBRATION_STATE_SETS` (per arm idx) | [`husky_monitor.py:302`](../husky_assembly_teleop/husky_monitor.py#L302) | the reference cell states + trajectories, a folder under `DESIGN_DATA_DIRECTORY`. Arm `0` (left arm and single-arm robots) = `260630_calib_trajs_Alice`, arm `1` = `260225_extrinsic_calib_trajs_Cindy_Right`. The monitor prints `Found N calib RobotCellState files under ...` at start-up |
+| `CALIBRATION_STATE_SET_ARM0_BY_ROBOT` + `CALIBRATION_STATE_SET_ARM1` | [`husky_monitor.py:320`](../husky_assembly_teleop/husky_monitor.py#L320) | the reference cell states + trajectories, a folder under `DESIGN_DATA_DIRECTORY`. Arm `0` is picked per robot and **every robot must be listed** (no default; a missing one raises `KeyError`): Alice and Belle = `260630_calib_trajs_Alice`, Cindy = `260108_extrinsic_calib_trajs` (Alice's set breaks Cindy's −240° wrist_1 limit in J0 traj1 / J1 traj4). Arm `1` (Cindy's right) = `260225_extrinsic_calib_trajs_Cindy_Right`. The monitor prints `Found N calib RobotCellState files under ...` at start-up |
 
 
 **Mode flags** — class `HuskyMonitor` switches, each set to `0` or `1`:
