@@ -1,6 +1,8 @@
 """
 The robot control panel: a tab per robot, with inline tabs per part showing state and basic control.
 
+On the phone, a Control tab per robot: the base's D-pad, and per arm its gripper and free drive while held.
+
 * The pattern to copy when writing a plugin:
   - `setup` builds every widget once; `draw` only copies state into them.
   - ! Widget callbacks go through `ctx.defer` / `ctx.defer_value`: viser calls them
@@ -28,12 +30,15 @@ from ...robot_interface.arm import (CARTESIAN_COMPLIANCE_CONTROLLER, FREE_DRIVE_
                                     ArmInterface, cartesian_move)
 from ...robot_interface.base import PLATFORM_VELOCITY_CONTROLLER, BaseInterface
 from ...ui.ghost import RecentUse, RobotGhost, robot_ghosts
+from ...ui.phone import big_buttons, phone_text
 from ...ui.style import SECTION_SENSOR, block, numbers, section, values
-from .arm_panel import (ComplianceInputs, JointInputs, build_compliance_inputs, build_free_drive_inputs,
-                        build_joint_inputs, build_tool_inputs, joint_plan_line, pose_from_sliders, pose_plan_line)
-from .dpad import HOLD_TIMEOUT, MAX_ANGULAR_SPEED, MAX_LINEAR_SPEED, build_velocity_inputs
+from .arm_panel import (FREE_DRIVE_ICON, ComplianceInputs, JointInputs, build_compliance_inputs,
+                        build_free_drive_inputs, build_joint_inputs, build_phone_arm_inputs, build_tool_inputs,
+                        joint_plan_line, pose_from_sliders, pose_plan_line)
+from .dpad import HOLD_TIMEOUT, MAX_ANGULAR_SPEED, MAX_LINEAR_SPEED, PHONE_DPAD_STYLE, build_velocity_inputs
 from .markers import add_force_arrows, add_frame_markers, draw_markers, place_markers
-from .status import ControllerPanel, arm_status, base_status, build_controller_panel, show_only_running, tool_status
+from .status import (ControllerPanel, arm_status, base_status, build_controller_panel, phone_arm_status,
+                     phone_base_status, show_only_running, tool_status)
 
 #: A move has arrived when every joint is this close to its target, degrees.
 ARRIVED_TOLERANCE = 0.5
@@ -41,6 +46,8 @@ ARRIVED_TOLERANCE = 0.5
 ARRIVE_TIMEOUT_MARGIN = 5.0
 #: Starting panel width, pixels. Fits the arm's joint row, the widest line.
 PANEL_WIDTH = 420
+#: Seconds to wait before asking again after a refused free drive switch, so a dead service is not asked every tick.
+FREE_DRIVE_RETRY = 1.0
 #: Tab labels for arms, by ArmConfig.name.
 ARM_LABELS = {"ur_arm": "Arm", "left_ur_arm": "Left", "right_ur_arm": "Right"}
 
@@ -54,6 +61,9 @@ class _BaseWidgets:
     panel: ControllerPanel
     status: viser.GuiHtmlHandle
     speed: viser.GuiSliderHandle
+    #: The same on the phone's Control tab, set once that tab is built.
+    phone_status: viser.GuiHtmlHandle | None = None
+    phone_speed: viser.GuiSliderHandle | None = None
 
 
 @dataclass
@@ -69,6 +79,8 @@ class _ArmWidgets:
     compliance: ComplianceInputs
     frames: dict[str, viser.FrameHandle]
     arrows: dict[str, viser.ArrowsHandle]
+    #: The arm's status line on the phone's Control tab, set once that tab is built.
+    phone_status: viser.GuiHtmlHandle | None = None
 
 
 @register
@@ -85,8 +97,15 @@ class RobotControlPlugin(HuskyPlugin):
         #: Bases whose twist was streamed last tick, so update sends one stop on release.
         self._driving: set[str] = set()
 
-        #: Last hold report per base serial: (linear sign, angular sign, arrival time).
-        self._held: dict[str, tuple[float, float, float]] = {}
+        #: Last hold report per base serial: (linear sign, angular sign, arrival time, from the phone).
+        self._held: dict[str, tuple[float, float, float, bool]] = {}
+
+        #: Last report of each arm's held free drive button on the phone, by (serial, arm name).
+        self._free_drive_held: dict[tuple[str, str], float] = {}
+        #: Arms this plugin switched to free drive for a held button, so a release switches them back.
+        self._free_driving: set[tuple[str, str]] = set()
+        #: Per arm, the time before which a refused free drive switch is not asked again.
+        self._free_drive_retry: dict[tuple[str, str], float] = {}
 
         #: Running move task per arm, keyed by (serial, arm name).
         self._trajectory_tasks: dict[tuple[str, str], asyncio.Task] = {}
@@ -114,7 +133,7 @@ class RobotControlPlugin(HuskyPlugin):
     # --- --- --- --- --- SETUP --- --- --- --- ---
 
     def setup(self, ctx: PluginContext) -> None:
-        """Build one panel with a tab per robot, holding inline tabs for its base and arms.
+        """Build one panel with a tab per robot, holding inline tabs for its base and arms, and the phone's Control tab.
 
         Args:
             ctx: This plugin's context.
@@ -133,6 +152,22 @@ class RobotControlPlugin(HuskyPlugin):
                         self._arms.append(self._build_arm(ctx, gui, serial, arm))
         panel.dock_right()
         panel.set_width(PANEL_WIDTH)
+        # * The phone's Control tab: a sub-tab per robot with its own speed slider and the same D-pad.
+        #   Below it, a folder per arm: Open and Close, and free drive while held.
+        with ctx.view.phone("Control", viser.Icon.DEVICE_GAMEPAD_2) as phone:
+            phone.add_html(PHONE_DPAD_STYLE + f"<style>{big_buttons([FREE_DRIVE_ICON], 64, 28)}</style>")
+            robots = phone.add_tab_group()
+            for widgets in self._bases:
+                with robots.add_tab(widgets.serial.split("-")[-1], icon=viser.Icon.ROBOT):
+                    widgets.phone_status = phone.add_html("")
+                    widgets.phone_speed = build_velocity_inputs(
+                        ctx, phone, widgets.serial, partial(self._on_hold, ctx, widgets.serial, True))
+                    for arm_widgets in (arm for arm in self._arms if arm.serial == widgets.serial):
+                        name = arm_widgets.arm.config.name
+                        with phone.add_folder(ARM_LABELS.get(name, name)):
+                            arm_widgets.phone_status = build_phone_arm_inputs(
+                                ctx, phone, f"{widgets.serial} {name}", arm_widgets.arm,
+                                partial(self._on_free_drive_hold, ctx, (widgets.serial, name)))
         # ? Built here: loading meshes is too slow for a tick.
         self._target_ghosts = robot_ghosts(ctx, ctx.config.robots, "target")
 
@@ -150,7 +185,7 @@ class RobotControlPlugin(HuskyPlugin):
             _BaseWidgets: The handles.
         """
         status = gui.add_html("")
-        velocity_inputs = partial(build_velocity_inputs, ctx, gui, serial, partial(self._on_hold, ctx, serial))
+        velocity_inputs = partial(build_velocity_inputs, ctx, gui, serial, partial(self._on_hold, ctx, serial, False))
         panel, built = build_controller_panel(ctx, gui, base.controllers,
                                               {PLATFORM_VELOCITY_CONTROLLER: velocity_inputs})
         return _BaseWidgets(serial=serial, base=base, panel=panel, status=status,
@@ -216,16 +251,21 @@ class RobotControlPlugin(HuskyPlugin):
 
     # --- --- --- --- --- INTENTS (widget callbacks, run on the main thread) --- --- --- --- ---
 
-    def _on_hold(self, ctx: PluginContext, serial: str, linear: float, angular: float) -> None:
+    def _on_hold(self, ctx: PluginContext, serial: str, phone: bool, linear: float, angular: float) -> None:
         """Record that a hold button is still pressed.
 
         Args:
             ctx: This plugin's context.
             serial: The base's robot serial.
+            phone: Whether the button is on the phone, whose speed slider then applies.
             linear: Sign of the linear speed the button asks for.
             angular: Sign of the angular speed the button asks for.
         """
-        self._held[serial] = (linear, angular, ctx.now())
+        self._held[serial] = (linear, angular, ctx.now(), phone)
+
+    def _on_free_drive_hold(self, ctx: PluginContext, key: tuple[str, str]) -> None:
+        """Record that an arm's free drive button on the phone is still held."""
+        self._free_drive_held[key] = ctx.now()
 
     def _request_joint_load(self, key: tuple[str, str], angles: np.ndarray | None) -> None:
         """Ask update to set one arm's joint sliders to `angles` (radians), or to the measured joints for None."""
@@ -253,13 +293,14 @@ class RobotControlPlugin(HuskyPlugin):
                 del self._held[widgets.serial]
                 held = None
             if held is not None:
-                speed = widgets.speed.value
+                speed = (widgets.phone_speed if held[3] else widgets.speed).value
                 widgets.base.send_twist(held[0] * speed * MAX_LINEAR_SPEED, held[1] * speed * MAX_ANGULAR_SPEED)
                 self._driving.add(widgets.serial)
             elif widgets.serial in self._driving:
                 # Just released: send one stop now.
                 widgets.base.send_twist(0.0, 0.0)
                 self._driving.discard(widgets.serial)
+        self._update_free_drive(now)
         for widgets in self._arms:
             key = (widgets.serial, widgets.arm.config.name)
             self._load_joint_sliders(widgets)
@@ -268,6 +309,38 @@ class RobotControlPlugin(HuskyPlugin):
             force = np.array([slider.value for slider in widgets.compliance.force])
             self._markers[key] = place_markers(ctx, widgets.serial, widgets.arm, target, force,
                                                self._applied_force.get(key))
+
+    def _update_free_drive(self, now: float) -> None:
+        """Free drive each arm while its phone button is held; on release the joint controller holds the arm.
+
+        ! On release, switch back only while free drive still runs: after Stop all or a switch on the laptop, a
+          release must not start a controller. If the switch back fails, free drive still ends within 1 s, since
+          its heartbeat stops (`ArmInterface._keep_free_drive`).
+
+        Args:
+            now: This tick's time, as the hold reports use.
+        """
+        for widgets in self._arms:
+            key = (widgets.serial, widgets.arm.config.name)
+            controllers = widgets.arm.controllers
+            # Decide only once a pending switch is answered, and not straight after a refused one.
+            if controllers.state.switch_in_flight is not None or now < self._free_drive_retry.get(key, now):
+                continue
+            last = self._free_drive_held.get(key)
+            held = last is not None and now - last <= HOLD_TIMEOUT
+            if held and key not in self._free_driving:
+                switched = controllers.switch(FREE_DRIVE_CONTROLLER)
+                if switched:
+                    self._free_driving.add(key)
+            elif not held and key in self._free_driving:
+                switched = (not controllers.is_active(FREE_DRIVE_CONTROLLER)
+                            or controllers.switch(SCALED_JOINT_TRAJECTORY_CONTROLLER))
+                if switched:
+                    self._free_driving.discard(key)
+            else:
+                continue
+            if not switched:
+                self._free_drive_retry[key] = now + FREE_DRIVE_RETRY
 
     def draw(self, ctx: PluginContext) -> None:
         """Copy every robot's state into the widgets.
@@ -279,6 +352,8 @@ class RobotControlPlugin(HuskyPlugin):
         for widgets in self._bases:
             show_only_running(widgets.panel)
             widgets.status.content = base_status(widgets.base, now)
+            if widgets.phone_status is not None:
+                widgets.phone_status.content = phone_text(phone_base_status(widgets.base))
         for widgets in self._arms:
             key = (widgets.serial, widgets.arm.config.name)
             show_only_running(widgets.panel)
@@ -291,6 +366,8 @@ class RobotControlPlugin(HuskyPlugin):
                 f"applied {numbers(applied, 3, 6, 1)} N ({TARGET_WRENCH_FRAME})"))
             if widgets.tool_status is not None:
                 widgets.tool_status.content = tool_status(widgets.arm.state.end_effector, now)
+            if widgets.phone_status is not None:
+                widgets.phone_status.content = phone_text(phone_arm_status(widgets.arm))
         self._draw_ghosts(ctx)
 
     def _draw_ghosts(self, ctx: PluginContext) -> None:

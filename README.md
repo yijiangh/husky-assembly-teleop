@@ -225,6 +225,7 @@ Example: `mocap_probe` shows the probe state in a **Probe** panel, collapsed on 
 
 A phone page for walking next to the robots: open `http://<host-ip>:8081` on a phone in portrait, joined to the robot WiFi (the control PC's firewall must let port 8081 in). It shows **Stop all** (the same soft stop as on the laptop), the health banner, and a tab per plugin:
 
+- **Control** (`robot_control`): a tab per robot with a speed slider and a D-pad that drives while held. It drives only while the base runs its velocity controller; switching controllers stays on the laptop. Below it, per arm: **Open** and **Close** for the gripper, and **Free drive (hold)**: the arm can be pushed by hand while you hold it, and the joint controller holds it where it is when you let go (or when the phone drops off).
 - **Health**: the same chips as the health panel. Unlock, Resume and Reconnect stay on the laptop.
 
 Plugins add their own tab with `ctx.view.phone()`; see `plugins/__init__.py`.

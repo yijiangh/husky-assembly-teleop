@@ -20,6 +20,7 @@ from ...robot_interface.arm import (CARTESIAN_MOVE_MAX_ROTATION_SPEED, CARTESIAN
 from ...robot_interface.end_effectors import RobotiqGripper, ScaffoldingV1, ScaffoldingV3
 from ...ui.ghost import RecentUse
 from ...ui.style import FAIL, SECTION_CTRL, SECTION_TOOL, block, note, section, values, warning
+from .dpad import HOLD_CALLBACK_HZ
 from .markers import marker_legend
 
 #: Slider label and range (degrees) per UR joint, in UR_JOINT_NAMES order.
@@ -31,6 +32,8 @@ POSE_SLIDERS = (("x m", "p"), ("y m", "p"), ("z m", "p"), ("roll °", "a"), ("pi
 FORCE_STEP = 0.5
 #: Short names for end effector kinds, shown next to the TOOL section label.
 TOOL_LABELS = {"robotiq": "robotiq", "scaffolding_v1": "v1", "scaffolding_v3": "v3"}
+#: Icon of the phone's free drive button; the phone CSS finds the button by it.
+FREE_DRIVE_ICON = viser.Icon.HAND_GRAB
 #: Hint on the Grip buttons, per end effector kind.
 GRIP_HINTS = {"robotiq": "Stop holds the fingers where they are.",
               "scaffolding_v1": "The gripper is only ever open or closed.",
@@ -228,6 +231,33 @@ def build_tool_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, arm: Ar
                                           "motor runs at a time, so starting this stops the gripper. Stop "
                                           "halts both.")
         screw.on_click(ctx.defer_value(f"screw {label}", lambda clicked: tool.drive_screw(directions[clicked])))
+    return status
+
+
+def build_phone_arm_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, arm: ArmInterface,
+                           on_free_drive: Callable[[], None]) -> viser.GuiHtmlHandle:
+    """Add an arm's inputs on the phone: its status line, Open and Close for its tool, and free drive while held.
+
+    Args:
+        ctx: The plugin's context.
+        gui: The phone's GUI api, inside the robot's tab.
+        label: "<serial> <arm name>", for intent names.
+        arm: The arm.
+        on_free_drive: Called on the main thread at every report of the held free drive button.
+
+    Returns:
+        viser.GuiHtmlHandle: The arm's status line.
+    """
+    status = gui.add_html("")
+    tool = arm.end_effector
+    if tool is not None:
+        commands = {"Open": tool.open, "Close": tool.close}
+        grip = gui.add_button_group("Gripper", list(commands))
+        grip.on_click(ctx.defer_value(f"grip {label}", lambda clicked: commands[clicked]()))
+    free = gui.add_button("Free drive (hold)", icon=FREE_DRIVE_ICON,
+                          hint="The arm can be pushed by hand while you hold this; on release the joint controller "
+                               "holds it where it is. Check the payload on the pendant first.")
+    free.on_hold(ctx.defer(f"free drive {label}", on_free_drive), callback_hz=HOLD_CALLBACK_HZ)
     return status
 
 

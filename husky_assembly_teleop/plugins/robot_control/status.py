@@ -100,6 +100,18 @@ def _controller_chip(controllers: ControllerManagerInterface) -> str:
     return chip(CONTROLLER_LABELS.get(state.active, state.active), OK)
 
 
+def phone_base_status(base: BaseInterface) -> str:
+    """The phone's line for a base: whether its D-pad drives; if not, switching is done on the laptop."""
+    if base.controllers.is_active(PLATFORM_VELOCITY_CONTROLLER):
+        return block(chip("D-pad drives", OK))
+    return block(_controller_chip(base.controllers) + chip("D-pad off: switch on the laptop", BUSY))
+
+
+def phone_arm_status(arm: ArmInterface) -> str:
+    """The phone's line for an arm: its running controller ("Free" while free driving)."""
+    return block(_controller_chip(arm.controllers))
+
+
 def base_status(base: BaseInterface, now: float) -> str:
     """Status HTML for a base: chips, then its pose (placeholders before the first fix) and wifi."""
     state = base.state

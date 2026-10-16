@@ -7,7 +7,7 @@ from typing import Callable
 import viser
 
 from ...plugin_api.context import PluginContext
-from ...ui.phone import grid_css
+from ...ui.phone import big_buttons, grid_css
 
 #: Base speed at a Speed of 1. Kept low: this is a test panel.
 MAX_LINEAR_SPEED = 0.3   # m/s
@@ -24,6 +24,8 @@ _ICONS = [icon for _, icon, _, _ in HOLD_BUTTONS]
 _GRID = tuple((icon, row, column) for icon, (row, column) in zip(_ICONS, DPAD_CELLS))
 #: Lays out the hold buttons as a D-pad, for an html widget outside the Drive folder (inside, it takes a grid cell).
 DPAD_STYLE = f"<style>{grid_css(_GRID, 3)}</style>"
+#: Add to DPAD_STYLE on the phone page: big, icon-only buttons.
+PHONE_DPAD_STYLE = f"<style>{big_buttons(_ICONS, 84, 40, labels=False)}</style>"
 #: How often the browser reports a held button, Hz. Matches the 20 Hz tick.
 HOLD_CALLBACK_HZ = 20.0
 #: A hold counts as released after this long without a report, seconds.
