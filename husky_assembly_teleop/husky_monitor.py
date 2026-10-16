@@ -2321,9 +2321,13 @@ class HuskyMonitor(Node):
                 max_time=30.0, max_iterations=100,
             )
         if path is None:
+            reason = info.get('failure_reason')
             self.get_logger().warn(
-                f"[single-arm cfab] planning failed: {info.get('failure_reason')}; "
+                f"[single-arm cfab] planning failed: {reason}; "
                 "falling back to pp planner.")
+            if reason == 'start_or_goal_in_collision':
+                # The planner only says "start or goal"; name the touching pairs.
+                self._diagnose_single_arm_endpoints(state, goal6)
             return False
         self.set_arm_trajectory(
             (np.asarray(path), None, self.trajectory_time, None),
@@ -2331,6 +2335,38 @@ class HuskyMonitor(Node):
         self.set_to_show_traj_state()
         print(f"[single-arm cfab] OK: group={group}, {len(path)} waypoints.")
         return True
+
+    def _diagnose_single_arm_endpoints(self, start: RobotCellState, goal: Configuration) -> None:
+        """Print (and draw) the colliding pairs of a single-arm plan's start and goal.
+
+        Same idea as _diagnose_free_plan_endpoints for the dual-arm planner: the
+        planner only says "start or goal in collision", so this re-checks both ends
+        with the same cfab collision setup and prints every touching pair, deepest
+        first. The first colliding end is drawn in the PyBullet window (cleared on
+        the next diagnosis or by 'Remove all drawing').
+
+        Args:
+            start (RobotCellState): The state the plan started from (live arms + base).
+            goal (Configuration): The goal arm conf (only the planned arm's joints).
+        """
+        planner = self.cfab.planner
+        try:
+            goal_state = _state_with_conf12(start, goal.joint_values, goal.joint_names)
+            clear_collision_diagnosis(self)
+            first_hit = None  # (label, records, state) of the first colliding end
+            for label, state in (('START (live arms)', start), ('GOAL', goal_state)):
+                records = collect_collision_contacts(planner, state)
+                print_collision_contacts(records, header=f"[single-arm cfab diag] {label}:")
+                if records and first_hit is None:
+                    first_hit = (label, records, state)
+            if first_hit is not None and pp.has_gui():
+                label, records, state = first_hit
+                # * the check left the scene at the last end; put the colliding one back
+                planner.set_robot_cell_state(state)
+                draw_collision_contacts(self, records)
+                print(f"[single-arm cfab diag] drawn: the {label} pairs (deepest first).")
+        except Exception as exc:  # ! a diagnosis must never crash the planning button
+            print(f"[single-arm cfab diag] diagnosis failed: {exc!r}")
 
     def plan_both_arms_to_goal_action(self, use_composite=True, debug=False):
         """Plan both arms, then cache it as manual staging if applicable."""
