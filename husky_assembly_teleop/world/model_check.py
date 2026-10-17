@@ -1,9 +1,10 @@
 """
 Whether two models of one robot agree, e.g. the robot a process planned with and the configured real robot.
 
-Compared by what matters for planning, never by file: links, joints and flanges, the pose of every link with shapes
-and of every flange by forward kinematics at a few joint values (URDF variants differ in single frames), and each
-tool's kind, TCP and collision bounds. Pure functions on core types; any thread.
+Compared by what matters for planning, never by file: links, joints and flanges, whether the arm base frames are the
+stock UR ones, the pose of every link with shapes and of every flange by forward kinematics at a few joint values
+(URDF variants differ in single frames), and each tool's kind, TCP and collision bounds. Pure functions on core
+types; any thread.
 """
 
 from __future__ import annotations
@@ -47,6 +48,11 @@ def model_differences(planned: RobotModel, live: RobotModel,
                                ("movable joints", set(planned.movable_joints), set(live.movable_joints)),
                                ("flanges", set(planned.flanges), set(live.flanges))):
         differences += _only_in(kind, ours - theirs, planned_name) + _only_in(kind, theirs - ours, live_name)
+    for model, name in ((planned, planned_name), (live, live_name)):
+        if not model.stock_ur_frames:
+            # * Not caught by the link poses below: `<arm>_base_link` has no shapes. Joint-space plans hold.
+            differences.append(f"arm base frames turned in {name} (an old URDF): a pose in <arm>_base_link is 90° "
+                               f"off the robot's; re-export with the fixed husky_urdf")
     worst = _worst_link(planned, live)
     if worst is not None:
         differences.append(worst)

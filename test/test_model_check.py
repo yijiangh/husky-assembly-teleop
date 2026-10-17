@@ -15,9 +15,9 @@ from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.robot import robot_model
 from process_fixtures import build_process
 
+from test_core_scene import NOT_STOCK, _turned_copy
+
 DATA = Path(__file__).resolve().parent.parent / "data"
-#: Alice's URDF before the stock UR base frames were restored: only ur_arm_base_link is turned, by 90°.
-NOT_STOCK_ALICE = DATA / "husky_urdf/mt_husky_moveit_config/urdf/husky_ur5_e_no_base_joint_Alice_Calibrated.urdf"
 
 
 @pytest.fixture(scope="module")
@@ -51,10 +51,13 @@ def test_a_tcp_offset_is_measured(alice):
     assert model_differences(moved, alice.model) == ["ur_arm_tool0: TCP off by 150.0 mm / 0.00°"]
 
 
-def test_a_turned_frame_without_shapes_does_not_count(alice):
-    """The non-stock URDF turns only ur_arm_base_link, which has no shapes: nothing a planner would see."""
-    variant = robot_model("alice", NOT_STOCK_ALICE, alice.model.srdf, alice.model.tools)
-    assert model_differences(variant, alice.model) == []
+def test_a_turned_arm_base_is_named_once(alice, tmp_path):
+    """An old export's turned ur_arm_base_link has no shapes, so no link pose differs; the frame flag names it."""
+    _, joints, mount, _ = NOT_STOCK["alice"]
+    variant = robot_model("alice", _turned_copy(alice.model.urdf, joints, mount, tmp_path / "turned.urdf"),
+                          alice.model.srdf, alice.model.tools)
+    (line,) = model_differences(variant, alice.model)
+    assert line.startswith("arm base frames turned in the process")
 
 
 def test_a_moved_arm_mount_is_found_by_its_kinematics(alice, tmp_path):
