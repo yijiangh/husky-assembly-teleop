@@ -20,6 +20,7 @@ from crl_husky.config_resolver import (get_primary_mocap_id_for_robot_serial, ge
 from rclpy.exceptions import ParameterUninitializedException
 from rclpy.node import Node
 
+from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.robot import FLANGE_SUFFIX, RobotModel, robot_model
 from scaffolding_assembly_core.urdf import JointOriginChange, apply_ur_calibration
 from .drive import drive_root
@@ -55,6 +56,10 @@ class ArmConfig:
             ! Use it after any change to the arm's URDF, calibration or pendant mounting: a wrong frame
               sends the arm off-target. Turn it off only when the startup log shows no URDF frame error.
         stow_joints: Parking joint angles, radians, UR driver order, or None. The Stow button loads them.
+        pendant_tcp: The TCP set on this arm's teach pendant, in tool0: the reported TCP includes it, so the monitor
+            takes it off to get tool0. tool0 itself (zero) by decision, whatever tool is mounted; the tool's own
+            TCP is `Tool.tcp`, for planners. ! Must equal the pendant's active TCP, or every Cartesian command
+            starts from the wrong point (the health `tcp` chip turns amber).
     """
 
     name: str
@@ -63,6 +68,7 @@ class ArmConfig:
     end_effector_namespace: str = ""
     stow_joints: tuple[float, ...] | None = None
     cartesian_test_mode: bool = False
+    pendant_tcp: Pose = Pose()
 
 
 @dataclass(frozen=True)

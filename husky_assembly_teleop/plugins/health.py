@@ -254,9 +254,9 @@ def robot_checks(robot: HuskyRobotInterface, now: float,
 
 
 def tcp_check(arm: ArmInterface, expected: Pose, now: float) -> Check | None:
-    """Whether the TCP the arm reports, less the tool's TCP, is tool0 where the URDF's kinematics put it.
+    """Whether the TCP the arm reports, less the pendant's TCP, is tool0 where the URDF's kinematics put it.
 
-    Off means the pendant's TCP is not the mounted tool's, or the URDF or its calibration is off.
+    Off means the pendant's active TCP is not `ArmConfig.pendant_tcp` (tool0), or the URDF or its calibration is off.
     ! Judged only while the arm has been still for STILL_AFTER: joints and TCP arrive in separate messages.
 
     Args:
@@ -281,13 +281,15 @@ def tcp_check(arm: ArmInterface, expected: Pose, now: float) -> Check | None:
     if distance > TCP_POSITION_TOLERANCE or angle > TCP_ANGLE_TOLERANCE:
         # ? Whole millimetres and degrees: the tooltip text changes only when the offset does.
         return Check("TCP", WARN, f"reported tool0 {distance * 1e3:.0f} mm / {np.degrees(angle):.0f}° from the "
-                                  f"kinematics (over {limits}): is the pendant's TCP the mounted tool's "
-                                  f"({_tcp_text(arm.tool_tcp)})? Else the URDF or its calibration is off")
+                                  f"kinematics (over {limits}): is the pendant's active TCP "
+                                  f"{_tcp_text(arm.pendant_tcp)}? Else the URDF or its calibration is off")
     return Check("tcp", GOOD, f"reported tool0 within {limits} of the kinematics")
 
 
 def _tcp_text(tcp: Pose) -> str:
-    """A tool TCP as the pendant takes it: position in mm and rotation vector in degrees."""
+    """A TCP as the pendant takes it: position in mm and rotation vector in degrees; "zero" for tool0."""
+    if np.allclose(tcp.position, 0.0) and np.allclose(np.abs(tcp.orientation), (0.0, 0.0, 0.0, 1.0)):
+        return "zero, i.e. tool0"
     position = np.round(np.asarray(tcp.position) * 1e3, 1)
     rotation = np.round(np.degrees(Rotation.from_quat(tcp.orientation).as_rotvec()), 1)
     return f"xyz {position.tolist()} mm, rotation vector {rotation.tolist()}°"

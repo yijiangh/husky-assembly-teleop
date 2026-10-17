@@ -21,7 +21,7 @@ def arm(position=EXPECTED.position, updated=NOW, moved=NOW - 2 * STILL_AFTER):
     state = SimpleNamespace(tcp_position=None if position is None else np.array(position, dtype=float),
                             tcp_orientation=np.array([0.0, 0.0, 0.0, 1.0]), tcp_update_time=updated,
                             last_motion_time=moved)
-    return SimpleNamespace(state=state, tool_tcp=Pose((0.0, 0.0, 0.15)))
+    return SimpleNamespace(state=state, pendant_tcp=Pose((0.0, 0.0, 0.15)))
 
 
 def test_agreeing_tcp_is_good():

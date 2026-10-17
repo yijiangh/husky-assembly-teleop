@@ -26,13 +26,19 @@ TCP by a hard-coded −90° (one arm) or −180° (Cindy).
   stock 180° (`robot_interface/ur_frames.py`), never through our URDF. Targets
   reach that frame from the husky frame through the URDF's fixed mount chain,
   which is only right because `<arm>_base_link` is stock (the rule above).
-- The pendant's TCP is set to the mounted tool's TCP, so the driver reports the
-  tool tip. The compliance controller moves `tool0` (`end_effector_link` in
-  crl-husky's `ur_controllers.yaml`), so `arm.flange_from_reported` takes the
-  tool's TCP (`Tool.tcp`, the `tcp` link of its URDF in `data/tool_urdf/`) off
-  again before anything commands from it. A pendant TCP that differs from the
-  tool's shows up as an offset between the reported and the computed `tool0`.
-- Every URDF in `husky_urdf` is fixed in place (16 Oct 2026), with
+- **The pendant's TCP stays at `tool0` (zero) on every arm**, so the driver's
+  `tcp_pose` is `tool0` itself, which is what the compliance controller moves
+  (`end_effector_link` in crl-husky's `ur_controllers.yaml`) and what the force
+  reading is labelled in (`ft_sensor_ref_link`). `arm.flange_from_reported`
+  takes the pendant's TCP (`ArmConfig.pendant_tcp`, zero by default) off the
+  report. The tool's own TCP, `Tool.tcp` (the `tcp` link of its URDF in
+  `data/tool_urdf/`), is for planners and the process check only; it never
+  touches robot I/O.
+  ! A TCP set on a pendant without changing `pendant_tcp` puts every Cartesian
+  command off by that TCP: the health `tcp` chip turns amber. Before anyone
+  sets one, check whether the UR reports the force about the TCP (open
+  question in `tasks/2026-10-15_tools_without_stitching.md`).
+- Every URDF in `husky_urdf` is fixed in place, with
   `scripts/fix_ur_base_frames.py`: every link except a mis-set `<arm>_base`
   stays where it was. Run it again if a file comes back turned, e.g. after a
   calibration rewrites one. ! Old process exports still carry the turned
@@ -57,7 +63,7 @@ TCP by a hard-coded −90° (one arm) or −180° (Cindy).
 **Chain from the world to the TCP** (`robot_interface/frames.py`):
 
 ```
-world ─(mocap)─► base_footprint ─(URDF fixed)─► base_link [husky] ─(URDF fixed, mount calibration)─► <arm>_base_link ─(reported TCP)─► tool tip ─(tool TCP, inverted)─► tool0
+world ─(mocap)─► base_footprint ─(URDF fixed)─► base_link [husky] ─(URDF fixed, mount calibration)─► <arm>_base_link ─(reported TCP)─► tool0 (pendant TCP zero) ─(Tool.tcp, planners only)─► tool tip
 ```
 
 The Cartesian sliders are in the husky's `base_link`. `arm.to_husky` /

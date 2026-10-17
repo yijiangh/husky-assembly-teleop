@@ -20,7 +20,6 @@ from .arm import ArmInterface, ArmState
 from .base import BaseInterface, BaseState
 from .frames import HUSKY_FRAME, MOCAP_FRAME, fixed_transform
 from scaffolding_assembly_core.geometry import Pose, compose, invert
-from scaffolding_assembly_core.robot import FLANGE_SUFFIX
 from .ur_frames import stock_frame_problem
 from .connections import RosConnections
 
@@ -92,11 +91,9 @@ class HuskyRobotInterface:
             problem = stock_frame_problem(config.model.urdf, arm.name)
             if problem is not None:
                 node.get_logger().error(problem)
-            tool = config.model.tools.get(f"{arm.name}{FLANGE_SUFFIX}")
             self.arms[arm.name] = ArmInterface(
                 node, config.ros_namespace, arm,
-                fixed_transform(config.model.urdf, HUSKY_FRAME, f"{arm.name}_base_link"), urdf_problem=problem,
-                tool_tcp=Pose() if tool is None else tool.tcp)
+                fixed_transform(config.model.urdf, HUSKY_FRAME, f"{arm.name}_base_link"), urdf_problem=problem)
         #: The husky frame in the mocap-tracked frame (fixed, from the URDF).
         self._husky_in_mocap_frame = fixed_transform(config.model.urdf, MOCAP_FRAME, HUSKY_FRAME)
         self.state = RobotState(serial=config.serial, base=self.base.state,
