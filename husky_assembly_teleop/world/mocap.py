@@ -19,6 +19,8 @@ from .checks import BAD, GOOD, STALE_AFTER, WARN, Check
 MARKER_ERROR_WARN = 2e-3
 #: Seconds of valid samples whose mean marker error the chip judges.
 MARKER_ERROR_WINDOW = 1.0
+#: Seconds without a valid pose after which nothing may drive from it; the onboard follower's `mocap_timeout_sec`.
+POSE_TIMEOUT = 0.3
 
 
 @dataclass(frozen=True)
@@ -96,6 +98,26 @@ def mocap_check(label: str, mocap_id: int | None, body: MocapBody, now: float) -
         return Check(label, WARN, f"mean marker error over {MARKER_ERROR_WINDOW:g}s above {warn_mm:g} mm; "
                                   f"check the markers and the rigid body definition")
     return Check(label, GOOD, f"rigid body {mocap_id}, mean marker error under {warn_mm:g} mm")
+
+
+def pose_lost(mocap_id: int | None, body: MocapBody, now: float) -> str:
+    """Why a body's pose is too old to drive from (no valid sample for POSE_TIMEOUT, or none yet), or "".
+
+    ! Check this, not `tracked`, before and while driving from the pose: `tracked` stays True if the relay goes silent.
+
+    Args:
+        mocap_id: The body's rigid-body id, or None if it has none configured.
+        body: The body's measured state.
+        now: Current ROS time, seconds.
+
+    Returns:
+        str: The reason, or "" while the pose is live.
+    """
+    # * marker_errors holds the arrival time of each valid sample, so its newest entry is the last valid one.
+    if mocap_id is not None and body.marker_errors and now - body.marker_errors[-1][0] <= POSE_TIMEOUT:
+        return ""
+    check = mocap_check("mocap", mocap_id, body, now)
+    return check.detail if check.level != GOOD else f"no valid mocap pose for over {POSE_TIMEOUT:g}s"
 
 
 def mean_marker_error(body: MocapBody, now: float) -> float | None:

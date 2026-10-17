@@ -40,6 +40,7 @@ from ...world import signals
 from ...world.checks import WARN, Check
 from ...world.follower import live_report, path_check
 from ...world.kinematics import stow_joints
+from ...world.mocap import pose_lost
 from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.ids import robot_id
 from .path import MAX_ANGULAR_SPEED, MAX_LINEAR_SPEED, BasePath
@@ -80,6 +81,9 @@ def send_to_onboard_follower(base: BaseInterface, path: BasePath) -> int:
 
     Returns:
         int: The path's id, as in the follower's reports.
+
+    Raises:
+        ValueError: If the path holds a value that is not finite; nothing is sent.
     """
     return base.send_path(*path.points.T, None, MAX_LINEAR_SPEED, MAX_ANGULAR_SPEED)
 
@@ -344,19 +348,23 @@ class BasePlannerPlugin(PlannerPlugin):
         return ""
 
     def send_plan(self, ctx: PluginContext) -> tuple[bool, str]:
-        """Send the plan to the onboard follower; refused while untracked, e-stopped, or with no follower running."""
+        """Send the plan to the follower; refused without a live mocap pose, while e-stopped, or with no follower."""
         serial = self._path_serial
         base = ctx.world.robots[serial].base
-        if not base.state.tracked:
-            return False, f"not committed: {serial} is not tracked by mocap"
+        if lost := pose_lost(base.mocap_id, base.state, ctx.now()):
+            return False, f"not committed: {serial} has no mocap pose: {lost}"
         if base.state.estopped:
             return False, f"not committed: {serial} is e-stopped"
         if live_report(base.state.follower, ctx.now()) is None:
             return False, f"not committed: no follower on {serial}; start crl_husky pure_pursuit"
+        try:
+            sent_id = send_to_onboard_follower(base, self.path)
+        except ValueError as error:
+            return False, f"not committed: {error}"
         if self._run_task is not None:
             self._run_task.cancel()  # the old run is saved as replaced
         self._sent_serial, self._sent = serial, self._preview
-        self._sent_id, self._sent_at = send_to_onboard_follower(base, self.path), ctx.now()
+        self._sent_id, self._sent_at = sent_id, ctx.now()
         self._run_task = ctx.spawn(f"follow {serial}", self._follow(ctx, serial, self.path, self._plan_record))
         ctx.log_info(f"base path {self._sent_id} sent to {serial}: {self.path.length:.2f} m, "
                      f"{len(self.path.points)} waypoints")

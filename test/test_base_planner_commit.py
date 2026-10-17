@@ -3,6 +3,7 @@
 import asyncio
 import json
 import math
+from collections import deque
 from contextlib import contextmanager
 from types import SimpleNamespace
 
@@ -49,14 +50,26 @@ def test_follower_drives_what_the_preview_shows(corners):
 class FakeBase:
     """A base that keeps the paths sent to it."""
 
-    def __init__(self, tracked=True, estopped=False, follower_age=0.1):
-        """A base at ROS time 10 s, with a follower report `follower_age` seconds old (None: no follower)."""
+    def __init__(self, pose_age=0.02, estopped=False, follower_age=0.1, refuses=False):
+        """A base at ROS time 10 s.
+
+        Its last valid mocap sample arrived `pose_age` seconds ago (None: never), its follower report is
+        `follower_age` seconds old (None: no follower), and `refuses` makes `send_path` reject the path.
+        """
         follower = None if follower_age is None else SimpleNamespace(update_time=10.0 - follower_age)
-        self.state = SimpleNamespace(tracked=tracked, estopped=estopped, follower=follower)
+        errors = deque() if pose_age is None else deque([(10.0 - pose_age, 0.0)])
+        self.mocap_id = 1
+        seen = pose_age is not None
+        self.state = SimpleNamespace(tracked=seen, tracking_valid=seen, marker_errors=errors,
+                                     last_update_time=10.0 - pose_age if seen else None,
+                                     estopped=estopped, follower=follower)
+        self.refuses = refuses
         self.sent = []
 
     def send_path(self, *args):
         """Keep the path; its id is always 7."""
+        if self.refuses:
+            raise ValueError("the path holds a value that is not finite")
         self.sent.append(args)
         return 7
 
@@ -82,13 +95,18 @@ def test_commit_sends_a_geometric_path_capped_at_the_planning_speeds():
 
 
 @pytest.mark.parametrize("base, why", [
-    (FakeBase(tracked=False), "not tracked"),
+    (FakeBase(pose_age=None), "no mocap pose"),
+    (FakeBase(pose_age=0.5), "no mocap pose"),
+    (FakeBase(refuses=True), "not finite"),
     (FakeBase(estopped=True), "e-stopped"),
     (FakeBase(follower_age=None), "no follower"),
     (FakeBase(follower_age=5.0), "no follower"),
 ])
 def test_commit_refused(base, why):
-    """Nothing goes out while the base is untracked or e-stopped, or no follower reports."""
+    """Nothing goes out without a live mocap pose, while e-stopped, with no follower, or when the base refuses it.
+
+    A relay silent for 0.5 s counts as no pose, though the last sample was valid.
+    """
     (sent, message), _ = commit(base)
     assert not sent and why in message and not base.sent
 

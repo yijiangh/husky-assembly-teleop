@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import itertools
+import math
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -108,7 +109,8 @@ class BaseState:
         joint_states_stats: Rate, gaps and delay of the platform's joint_states, to judge the wifi link and the
             robot's clock. Published from boot, also with the velocity controller off; none in the simulator.
 
-    ! `tracked` False means the pose is stale: grey it out and don't plan or control from it.
+    ! `tracked` False means the pose is stale: grey it out. Drive from it only while `world.mocap.pose_lost` is "":
+      `tracked` stays True when the relay goes silent.
     """
 
     position: np.ndarray | None = None
@@ -208,8 +210,12 @@ class BaseInterface:
                 or for a stop.
 
         Returns:
-            bool: True if sent. False if the velocity controller is not running.
+            bool: True if sent. False if a speed is not finite or the velocity controller is not running.
         """
+        if not (math.isfinite(linear_x) and math.isfinite(angular_z)):
+            self._node.get_logger().error(f"{self.controllers.namespace}: not driving, the twist is not finite "
+                                          f"({linear_x}, {angular_z})")
+            return False
         if require_controller and not self.controllers.is_active(PLATFORM_VELOCITY_CONTROLLER):
             self._node.get_logger().warning(
                 f"{self.controllers.namespace}: not driving, {PLATFORM_VELOCITY_CONTROLLER} "
@@ -246,15 +252,23 @@ class BaseInterface:
 
         Returns:
             int: The path's id, as in `state.follower.path_id`.
+
+        Raises:
+            ValueError: If x, y, yaw (and t) differ in length or hold a value that is not finite; nothing is sent.
         """
+        columns = [[float(v) for v in values] for values in (x, y, yaw) + (() if t is None else (t,))]
+        caps = [float(max_linear_speed), float(max_angular_speed)]
+        if len({len(column) for column in columns}) != 1:
+            raise ValueError("x, y, yaw and t differ in length")
+        if not all(math.isfinite(v) for v in caps + [v for column in columns for v in column]):
+            raise ValueError("the path holds a value that is not finite")
         message = BasePath()
         message.header.stamp = self._node.get_clock().now().to_msg()
         message.header.frame_id = "mocap_world"
         message.id = self._path_id = next(self._path_ids)
-        message.x, message.y, message.yaw = ([float(v) for v in values] for values in (x, y, yaw))
-        message.t = [] if t is None else [float(v) for v in t]
-        message.max_linear_speed = float(max_linear_speed)
-        message.max_angular_speed = float(max_angular_speed)
+        message.x, message.y, message.yaw = columns[:3]
+        message.t = columns[3] if t is not None else []
+        message.max_linear_speed, message.max_angular_speed = caps
         self._base_path.publish(message)
         return message.id
 

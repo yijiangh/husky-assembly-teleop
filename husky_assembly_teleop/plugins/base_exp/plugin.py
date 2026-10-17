@@ -47,6 +47,7 @@ from ...ui.trace_plot import TracePlot
 from ...world import signals
 from ...world.checks import STALE_AFTER
 from ...world.follower import live_report
+from ...world.mocap import pose_lost
 from . import record
 from .auto import PATH_CLEARANCE, SPEED, STANDARD_SET, STOP_DISTANCE, Clearance, Sampler, StandardSet
 from .plan import Plan, plan_from
@@ -322,8 +323,8 @@ class BaseExperimentPlugin(HuskyPlugin):
         base = ctx.world.robots[self.serial].base
         if self.running:
             return "a run is going on"
-        if not base.state.tracked:
-            return f"{self.serial} is not tracked by mocap"
+        if lost := pose_lost(base.mocap_id, base.state, ctx.now()):
+            return f"{self.serial} has no mocap pose: {lost}"
         if self._follower(ctx) is None:
             return f"no follower on {self.serial}: start crl_husky pure_pursuit"
         if base.state.estopped:
@@ -348,7 +349,7 @@ class BaseExperimentPlugin(HuskyPlugin):
         self._tracker, self._sample, self._phase, self._measured_fix = Tracker(plan.path), None, SENT, None
         self._live.clear()
         experiment: dict = {}
-        path_id, sent_at, guard, timed_out, estopped = None, math.inf, None, False, False
+        path_id, sent_at, guard, timed_out, estopped, lost = None, math.inf, None, False, False, ""
 
         def report() -> FollowerState | None:
             follower = base.state.follower
@@ -356,8 +357,11 @@ class BaseExperimentPlugin(HuskyPlugin):
             return follower if ok else None
 
         def ended() -> bool:
+            nonlocal lost
+            # * Without its pose the guard is blind: stop, though the follower also aborts on its own.
+            lost = pose_lost(base.mocap_id, base.state, ctx.now())
             follower = base.state.follower
-            return (bool(self._alert) or bool(base.state.estopped) or follower.path_id != path_id
+            return (bool(self._alert) or bool(base.state.estopped) or bool(lost) or follower.path_id != path_id
                     or follower.state != "following" or ctx.now() - follower.update_time > 2 * STALE_AFTER)
 
         try:
@@ -387,6 +391,8 @@ class BaseExperimentPlugin(HuskyPlugin):
                     timed_out, finished = True, True
                     base.stop_path()
                 follower, estopped = base.state.follower, bool(base.state.estopped)
+                if lost:
+                    base.stop_path()
                 self._phase = SETTLING
                 experiment["settled"] = await self._settle(ctx, plan.serial)
             # * An e-stop is no controller failure: the robot stood while the follower still commanded.
@@ -396,6 +402,8 @@ class BaseExperimentPlugin(HuskyPlugin):
                 self._outcome = "timed out: did not finish"
             elif self._alert:
                 self._outcome = "soft stopped: too close"
+            elif lost:
+                self._outcome = f"aborted: mocap lost ({lost})"
             elif follower.path_id != path_id:
                 self._outcome, finished = "aborted: another path replaced it", True
             elif follower.state == "following":
@@ -405,6 +413,8 @@ class BaseExperimentPlugin(HuskyPlugin):
         except WaitTimeout as timeout:
             self._outcome = "timed out: no answer from the follower"
             ctx.log_warn(str(timeout))
+        except ValueError as error:
+            self._outcome = f"not sent: {error}"
         except asyncio.CancelledError:
             self._outcome = "stopped"
             raise
@@ -458,6 +468,10 @@ class BaseExperimentPlugin(HuskyPlugin):
                 step_at = ctx.now() + TWIST_LEAD
                 end = step_at + plan.expected
                 while ctx.now() < end and not self._alert and not base.state.estopped:
+                    if lost := pose_lost(base.mocap_id, base.state, ctx.now()):
+                        # * Open loop, but the guard needs the pose: stop.
+                        self._outcome = f"aborted: mocap lost ({lost})"
+                        return
                     command = (v, w) if ctx.now() >= step_at else (0.0, 0.0)
                     if not send(*command, checked):
                         # * No controller failure: automation pauses for the operator.

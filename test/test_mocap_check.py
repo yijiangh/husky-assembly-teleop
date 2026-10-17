@@ -1,4 +1,4 @@
-"""The mocap chip: loss turns it red at once, amber follows the rolling mean marker error."""
+"""The mocap chip (loss turns it red at once, amber follows the mean marker error), and when a pose is lost."""
 
 from __future__ import annotations
 
@@ -7,7 +7,8 @@ from crl_husky_msgs.msg import MocapRigidBodyPose
 from husky_assembly_teleop.robot_interface.mocap import store_sample
 from husky_assembly_teleop.world.checks import BAD, GOOD, WARN
 from husky_assembly_teleop.world.measured import TrackedObject
-from husky_assembly_teleop.world.mocap import MARKER_ERROR_WARN, MARKER_ERROR_WINDOW, mocap_check
+from husky_assembly_teleop.world.mocap import (MARKER_ERROR_WARN, MARKER_ERROR_WINDOW, POSE_TIMEOUT, mocap_check,
+                                               pose_lost)
 
 
 def _level(body: TrackedObject, valid: bool, marker_error: float, now: float) -> int:
@@ -42,3 +43,29 @@ def test_loss_turns_red_at_once():
     assert _level(body, True, 0.0, 10.0) == GOOD
     assert _level(body, False, 0.0, 10.01) == BAD
     assert _level(body, True, 0.0, 10.02) == GOOD
+
+
+def _store(body: TrackedObject, valid: bool, now: float) -> None:
+    """Store one sample arriving at `now`."""
+    store_sample(body, MocapRigidBodyPose(pose_valid=valid, tracking_valid=valid), now)
+
+
+def test_pose_lost_after_the_timeout_without_a_valid_sample():
+    """A dropped frame is forgiven; invalid samples or a silent relay for over POSE_TIMEOUT lose the pose."""
+    body = TrackedObject(name="probe", mocap_id=1)
+    assert "no message" in pose_lost(1, body, 10.0)
+    _store(body, True, 10.0)
+    assert pose_lost(1, body, 10.0) == ""
+    _store(body, False, 10.01)
+    assert pose_lost(1, body, 10.01) == ""
+    _store(body, False, 10.0 + POSE_TIMEOUT + 0.01)
+    assert "lost by mocap" in pose_lost(1, body, 10.0 + POSE_TIMEOUT + 0.01)
+    _store(body, True, 11.0)
+    assert body.tracked and "no valid mocap pose" in pose_lost(1, body, 11.0 + POSE_TIMEOUT + 0.01)
+
+
+def test_pose_lost_without_a_mocap_id():
+    """A body with no rigid body configured never has a pose to drive from."""
+    body = TrackedObject(name="probe", mocap_id=None)
+    _store(body, True, 10.0)
+    assert "no mocap id" in pose_lost(None, body, 10.0)
