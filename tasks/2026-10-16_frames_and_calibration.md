@@ -1,6 +1,6 @@
 # Arm frames, UR calibration and the mocap relay (2026-10-16)
 
-Status: **committed 16 Oct, not pushed.** Four repos touched; quick, slow and linter tests pass in teleop,
+Status: **committed and pushed 16 Oct.** Four repos touched; quick, slow and linter tests pass in teleop,
 the core's tests pass, crl-husky's linter findings went down (its 2 failing linter tests failed before too).
 The calibration pipeline (`data/calibration_data/`, Drive sessions) is unchanged.
 
