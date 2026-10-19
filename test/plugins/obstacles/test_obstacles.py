@@ -10,8 +10,8 @@ from types import SimpleNamespace
 import pytest
 
 from repo_paths import DATA
-from husky_assembly_teleop.plugins.base_exp.plugin import OBSTACLES_PREFIX
 from husky_assembly_teleop.plugins.obstacles.plugin import ObstaclesPlugin
+from husky_assembly_teleop.shared.obstacles_contract import ObstaclesContract
 from husky_assembly_teleop.world import lab as lab_module
 from husky_assembly_teleop.world.lab import (Shape, border_bodies, read_lab, read_temporary, shape_id, write_lab,
                                              write_temporary)
@@ -60,7 +60,18 @@ def test_main_lab_keeps_the_ids(files):
     """The lab file gives the same bodies, under the same ids, as the constants it replaced."""
     plugin, ctx = _loaded(files)
     assert sorted(ctx.scene.bodies) == IDS
-    assert all(body_id.startswith(OBSTACLES_PREFIX) for body_id in ctx.scene.bodies), "base_exp finds the border so"
+    assert all(body_id.startswith("obstacles/") for body_id in ctx.scene.bodies)
+
+
+def test_offers_the_lab_with_its_border(files):
+    """Through its contract the plugin offers the lab as loaded, border included; an edit replaces it."""
+    plugin, ctx = _loaded(files)
+    obstacles: ObstaclesContract = plugin
+    before = obstacles.lab
+    assert before.border is not None and before.shapes
+    plugin.remove(ctx, shape_id(plugin.name, before.shapes[0]))
+    assert obstacles.lab is not before and len(obstacles.lab.shapes) == len(before.shapes) - 1
+    assert obstacles.lab.border == before.border
 
 
 def test_lab_file_round_trip(tmp_path):

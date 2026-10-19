@@ -8,7 +8,7 @@ Base experiment: drive test paths from where the robot stands with the onboard p
     the same setup), or random paths from the grid; geometric at one fixed speed (`auto.py`).
   - Robot: constant commands, one cell (v, ω) of the command grid per run, sent from here open loop (`twist.py`);
     for how the robot's response changes with speed and turn rate.
-  Each run is checked against the other robots and every scene body (load `obstacles` for the lab's border) first.
+  Each run is checked against the other robots and every scene body (`obstacles` loads with it: the lab's border).
 - Guard: during every run the robot is soft-stopped, and automation paused, once it comes within STOP_DISTANCE of
   anything; the operator switches the velocity controller back on, drives it clear and starts again.
 - Errors are measured here, the same for every controller (`tracking.py`): each new mocap pose against the path
@@ -41,6 +41,7 @@ from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
 from ...plugin_api.trace import Signal, Trace
 from ...robot_interface.base import PLATFORM_VELOCITY_CONTROLLER, FollowerState
+from ...shared.obstacles_contract import ObstaclesContract
 from ...shared.planner.timed_path import timing
 from ...ui.base_markers import Markers
 from ...ui.pose_input import yaw_from_xyzw
@@ -93,8 +94,6 @@ RETURN_SPEED = (0.2, math.radians(30.0))
 #: Clearance the way back must keep, metres; less than PATH_CLEARANCE, so a robot that ended a run near a wall can
 #: still get away from it.
 RETURN_CLEARANCE = 0.2
-#: Scene ids of the obstacles plugin's bodies; automation needs them for the lab's border.
-OBSTACLES_PREFIX = "obstacles/"
 #: Settling: the robot counts as standing once it stayed within SETTLE_POSITION and SETTLE_YAW for SETTLE_FOR
 #: seconds; recording gives up waiting after SETTLE_TIMEOUT.
 SETTLE_POSITION, SETTLE_YAW, SETTLE_FOR, SETTLE_TIMEOUT = 0.01, math.radians(1.0), 0.5, 3.0
@@ -112,6 +111,8 @@ class BaseExperimentPlugin(HuskyPlugin):
 
     name = "base_exp"
     experimental = True
+    #: Automation needs the lab's border (`ObstaclesContract.lab`).
+    requires = ("obstacles",)
 
     def __init__(self):
         """Start with no robot, no preview and no run."""
@@ -310,8 +311,9 @@ class BaseExperimentPlugin(HuskyPlugin):
     def _on_auto(self, ctx: PluginContext) -> None:
         """Start automated runs, unless something keeps them from starting."""
         problem = self._start_problem(ctx)
-        if not problem and not any(key.startswith(OBSTACLES_PREFIX) for key in ctx.scene.snapshot.bodies):
-            problem = "no lab border: load the obstacles plugin"
+        obstacles: ObstaclesContract = ctx.require("obstacles")
+        if not problem and obstacles.lab.border is None:
+            problem = "no lab border: set one in the obstacles plugin"
         if problem:
             self._auto_note = f"auto not started: {problem}"
             return
