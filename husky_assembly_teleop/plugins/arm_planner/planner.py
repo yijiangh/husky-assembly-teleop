@@ -14,9 +14,10 @@ from typing import Callable, Sequence
 
 import numpy as np
 
+from ...shared.planning.joints import arm_joint_names
 from ...shared.planning.path import TimedPath
 from ...shared.planning.search import PlanResult, connect
-from ...robot_interface.arm import JOINT_MOVE_MAX_SPEED, UR_JOINT_LIMITS, UR_JOINT_NAMES
+from ...robot_interface.arm import JOINT_MOVE_MAX_SPEED, UR_JOINT_LIMITS
 from scaffolding_assembly_core.mirrors.compas_fab import CompasFabMirror
 from scaffolding_assembly_core.scene import Scene
 from scaffolding_assembly_core.ids import robot_id
@@ -25,11 +26,6 @@ from scaffolding_assembly_core.ids import robot_id
 JOINT_STEP = 0.05
 #: Joint speed of the preview, rad/s: the same as robot_control's joint moves.
 PREVIEW_SPEED = JOINT_MOVE_MAX_SPEED
-
-
-def arm_joint_names(arm_name: str) -> list[str]:
-    """The URDF names of one arm's six joints (e.g. arm "left_ur_arm"), in the UR driver's order."""
-    return [f"{arm_name}_{name}" for name in UR_JOINT_NAMES]
 
 
 @dataclass(frozen=True)

@@ -7,6 +7,7 @@ For plugins to share code, share data and offer services to each other; nothing 
 - What plugin `<name>` offers others is a Protocol named `<Name>PluginApi`, e.g. `ProcessPluginApi`; its users type
   `ctx.require("<name>")` with it: `process: ProcessPluginApi = ctx.require("process")`.
 
-  planning/  the planner plugins' base class, search and timed path
+  planning/  the planner plugins' base class, search and timed path; process movements, steps, planning scenes,
+             collision checks and IK for the process planners
   process.py a process and its steps as data, and what the process plugin offers (`ProcessPluginApi`)
 """
