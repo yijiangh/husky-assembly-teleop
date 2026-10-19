@@ -10,10 +10,10 @@ from types import SimpleNamespace
 import pytest
 
 from husky_assembly_teleop.plugins.base_exp.plugin import OBSTACLES_PREFIX
-from husky_assembly_teleop.plugins.obstacles import lab as lab_module
-from husky_assembly_teleop.plugins.obstacles.lab import (Shape, border_bodies, read_lab, read_temporary, shape_id,
-                                                         write_lab, write_temporary)
 from husky_assembly_teleop.plugins.obstacles.plugin import ObstaclesPlugin
+from husky_assembly_teleop.world import lab as lab_module
+from husky_assembly_teleop.world.lab import (Shape, border_bodies, read_lab, read_temporary, shape_id, write_lab,
+                                             write_temporary)
 from husky_assembly_teleop.world.scene import PluginScene
 from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.scene import Scene

@@ -277,28 +277,3 @@ def border_bodies(plugin: str, border: Border | None) -> list[Body]:
         return []
     return [Body(border_id(plugin, name), geometry, pose, label=name, color=BORDER_COLOR)
             for name, geometry, pose in border.walls()]
-
-
-# --- --- --- --- --- FITTING FROM PROBE POINTS --- --- --- --- ---
-
-def box_from_top_points(name: str, points: tuple[tuple[float, float, float], ...], source: str = "") -> Shape:
-    """Fit an axis-aligned box from the floor up to points measured on its top surface (`mocap_probe` points).
-
-    The footprint is the points' bounding rectangle (so take opposite corners); the height is their mean Z.
-    """
-    xs, ys, zs = zip(*points)
-    height = sum(zs) / len(zs)
-    return Shape("box", name, ((min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2, height / 2),
-                 (max(xs) - min(xs), max(ys) - min(ys), height), source=source)
-
-
-def cylinder_around_points(name: str, points: tuple[tuple[float, float, float], ...], height: float,
-                           source: str = "") -> Shape:
-    """Fit the upright cylinder whose circle passes through three floor points, e.g. tripod feet; Z is ignored."""
-    (ax, ay, _), (bx, by, _), (cx, cy, _) = points
-    d = 2 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by))
-    a2, b2, c2 = ax * ax + ay * ay, bx * bx + by * by, cx * cx + cy * cy
-    x = (a2 * (by - cy) + b2 * (cy - ay) + c2 * (ay - by)) / d
-    y = (a2 * (cx - bx) + b2 * (ax - cx) + c2 * (bx - ax)) / d
-    diameter = 2 * math.hypot(ax - x, ay - y)
-    return Shape("cylinder", name, (x, y, height / 2), (diameter, diameter, height), source=source)

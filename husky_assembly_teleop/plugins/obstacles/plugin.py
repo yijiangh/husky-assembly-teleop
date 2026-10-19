@@ -5,8 +5,8 @@ Furniture and floor border come from the lab file; temporary obstacles are for a
 
 - Lab obstacles come from `data/lab/<lab>.json` (`-p lab:=<name>`, default "main"), in git and the same for everyone.
   Edits stay in memory until Save; Revert goes back to the file; an amber chip shows unsaved changes.
-- Temporary obstacles (purple, "obstacles/temporary/<n>") are kept in a local file (`lab.TEMPORARY_FILE`), written at
-  once, never in the lab file. Promote moves one into the lab, saved with the next Save.
+- Temporary obstacles (purple, "obstacles/temporary/<n>") are kept in a local file (`world/lab.TEMPORARY_FILE`),
+  written at once, never in the lab file. Promote moves one into the lab, saved with the next Save.
 - Select by clicking in the 3D view or in the dropdown. Drag with the gizmo (only the yaw of a turn is kept), resize
   with the corner gizmo, or type position, yaw and size.
 
@@ -30,8 +30,8 @@ from ...ui.body_gizmo import BodyGizmo
 from ...ui.style import BUSY, NONE, OK, SECTION_CTRL, block, chip, note, section, values
 from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.scene import Body
-from .lab import (DEFAULT_LAB, GROUPS, LAB_COLOR, TEMPORARY_COLOR, Border, Lab, Shape, border_bodies, lab_file,
-                  read_lab, read_temporary, shape_id, slug, write_lab, write_temporary)
+from ...world.lab import (DEFAULT_LAB, GROUPS, LAB_COLOR, TEMPORARY_COLOR, Border, Lab, Shape, border_bodies,
+                          lab_file, read_lab, read_temporary, shape_id, slug, write_lab, write_temporary)
 
 #: Dropdown entry while there is nothing to edit.
 NONE_ENTRY = "(none)"

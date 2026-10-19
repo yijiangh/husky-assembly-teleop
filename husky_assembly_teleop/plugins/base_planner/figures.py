@@ -23,7 +23,7 @@ from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
 from matplotlib.patches import Circle, FancyBboxPatch, Rectangle
 
-from ..obstacles.lab import DEFAULT_LAB, TRUSS_PLATE, lab_file, read_lab
+from ...world.lab import DEFAULT_LAB, TRUSS_PLATE, lab_file, read_lab
 from .follow import DEVIATED, EXACT
 from .report import FOLLOWING, load
 from .tasks import TASKS

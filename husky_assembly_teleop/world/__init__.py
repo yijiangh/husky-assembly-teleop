@@ -7,5 +7,7 @@ What is in the world, and where.
   follower.py   how the onboard path follower's reports are judged: running, and how a sent path goes
   kinematics.py each robot's link poses, fixed once per tick
   scene.py      collision objects we don't measure, and the per-tick snapshot
-  mirrors/      private copies of a snapshot in one collision backend each
+  lab.py        the lab's obstacles and floor border as data, and their files
+  model_check.py  whether two models of one robot agree (planned and real, URDF and UR calibration)
+  marker_fit.py   fitting known marker layouts to raw mocap markers
 """
