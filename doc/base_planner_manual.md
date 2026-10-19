@@ -119,10 +119,11 @@ About 10 minutes: every RRT attempt that finds no path takes the full 10 s. Name
 
 ## Simulator (B, first)
 
-Its own ROS domain, this computer only. ! Never on the fleet's domain 80: the real base obeys the same `cmd_vel`.
+A ROS domain of its own, on zenoh like the fleet. ! Never the fleet's domain 80: the real base obeys the same
+`cmd_vel` (the simulation launches refuse it).
 
 ```bash
-export RMW_IMPLEMENTATION=rmw_fastrtps_cpp ROS_DOMAIN_ID=70 ROS_LOCALHOST_ONLY=1
+export ROS_DOMAIN_ID=70
 ros2 launch crl_husky pure_pursuit_sim.launch.py namespace:=a200_0804 mocap_id:=1840 \
   controller_model:=alice_tiles_2 sim_model:=alice_tiles_2 xICR:=-0.15
 ```

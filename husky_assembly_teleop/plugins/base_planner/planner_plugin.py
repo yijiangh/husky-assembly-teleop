@@ -330,8 +330,8 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
         return selection.index if selection is not None else None
 
     def _environment(self, ctx: PluginContext, serial: str) -> str:
-        """Whether `serial` is the simulator ("sim") or a robot ("real")."""
-        return "sim" if "husky_sim" in ctx.world.robots[serial].base.node_names() else "real"
+        """Whether `serial`'s base is simulated ("sim": its simulator announces itself) or real ("real")."""
+        return "sim" if ctx.world.robots[serial].base.simulation is not None else "real"
 
 
 def floor_pose(ctx: PluginContext, serial: str) -> tuple[float, float, float]:

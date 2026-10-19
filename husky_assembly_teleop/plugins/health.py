@@ -29,6 +29,7 @@ from scaffolding_assembly_core.geometry import Pose, compose, invert
 from scaffolding_assembly_core.robot import FLANGE_SUFFIX
 from ..robot_interface.end_effectors import RobotiqGripper, ScaffoldingV1, ScaffoldingV3
 from ..robot_interface.robot import HuskyRobotInterface
+from ..robot_interface.simulated_parts import SimulatedPart
 from ..robot_interface.arm import JOINT_STATES_RATE as ARM_RATE
 from ..robot_interface.arm import SYNC_STATUS_MAX_AGE, ArmState
 from ..robot_interface.base import JOINT_STATES_RATE as BASE_RATE
@@ -236,9 +237,10 @@ def robot_checks(robot: HuskyRobotInterface, now: float,
                        mocap_check("mocap", robot.config.mocap_id, state, now),
                        estop_check(state),
                        battery_check(state, now),
-                       controller_check("ctrl", state.controllers, now)])]
+                       controller_check("ctrl", state.controllers, now)] + simulated_check(robot.base.simulation))]
     for arm in robot.arms.values():
         checks = [stream_check("signal", arm.state.joint_states_stats.quality(now), ARM_RATE), arm_check(arm, now)]
+        checks += simulated_check(arm.simulation)
         # * The tool gets its own chip: its driver fails independently of the arm.
         tool = tool_check(arm, now)
         if tool is not None:
@@ -251,6 +253,13 @@ def robot_checks(robot: HuskyRobotInterface, now: float,
             checks.append(Check("URDF", WARN, stale[0].describe()))
         lines.append((arm.config.name, checks))
     return lines
+
+
+def simulated_check(simulation: SimulatedPart | None) -> list[Check]:
+    """An amber SIM chip while a part announces itself as simulated, else none: checks on it are relaxed."""
+    if simulation is None:
+        return []
+    return [Check("SIM", WARN, f"{simulation.kind} ({simulation.node}): simulated, so some safety checks are skipped")]
 
 
 def tcp_check(arm: ArmInterface, expected: Pose, now: float) -> Check | None:
@@ -348,8 +357,8 @@ def arm_check(arm: ArmInterface, now: float) -> Check:
     """
     state = arm.state
     parts = [sync_check(state, now)]
-    # Dashboard parts are known only while the sync's status is fresh.
-    if parts[0].level < BAD:
+    # Dashboard parts are known only while the sync's status is fresh; a simulated arm has none (its SIM chip says so).
+    if parts[0].level < BAD and arm.simulation is None:
         parts += [dashboard_check(state)]
         if state.dashboard_up:
             parts += [safety_check(state.safety_mode), running_check(state)]
@@ -436,7 +445,8 @@ def dashboard_check(state: ArmState) -> Check:
         state: The arm's measured state.
     """
     if not state.dashboard_up:
-        return Check("NO DASHBOARD", WARN, "no dashboard_client; fake hardware, or the driver is down")
+        return Check("NO DASHBOARD", BAD, "no dashboard_client: the driver is down, so the arm does not move; "
+                                          "for fake hardware, launch with use_fake_hardware:=true")
     if not state.dashboard_connected:
         return Check("DASHBOARD", BAD, state.problem or "dashboard not connected to the arm")
     return Check("dash", GOOD, "connected")

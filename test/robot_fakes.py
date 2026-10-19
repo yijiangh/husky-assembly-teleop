@@ -12,6 +12,7 @@ from husky_assembly_teleop.config import ArmConfig
 from husky_assembly_teleop.robot_interface.arm import (SCALED_JOINT_TRAJECTORY_CONTROLLER, UR_JOINT_NAMES, ArmInterface,
                                                        ArmState)
 from husky_assembly_teleop.robot_interface.controller_manager import ControllerManagerInterface
+from husky_assembly_teleop.robot_interface.simulated_parts import SimulatedPart
 from husky_assembly_teleop.robot_interface.ur_frames import BASE_LINK_FROM_UR_BASE
 from scaffolding_assembly_core.geometry import Pose
 
@@ -128,7 +129,7 @@ class Controllers:
 
 
 def fake_arm(controller: str | None = SCALED_JOINT_TRAJECTORY_CONTROLLER, joints=None, now: float = 100.0,
-             **config) -> ArmInterface:
+             simulated: SimulatedPart | None = None, **config) -> ArmInterface:
     """An operational arm at rest at `joints` (all zero by default), measured at `now`, with `controller` running.
 
     Its tool0 is at TCP_POSITION, TCP_ORIENTATION; `config` goes to its ArmConfig.
@@ -137,6 +138,7 @@ def fake_arm(controller: str | None = SCALED_JOINT_TRAJECTORY_CONTROLLER, joints
     arm._node, arm.config = Node(now), ArmConfig(name="ur_arm", ros_namespace="ur5e", **config)
     arm.base_in_husky, arm.pendant_tcp, arm.urdf_problem, arm.end_effector = Pose(), Pose(), None, None
     arm.state, arm._test_mode_logged, arm._motion_reference, arm._free_drive_on = ArmState(), {}, {}, False
+    arm._simulated = lambda: simulated
     arm.controllers = Controllers(arm.state.controllers, "/a200_0804/ur5e", arm._node)
     arm._trajectory, arm._target_frame, arm._target_wrench = Publisher(), Publisher(), Publisher()
     state = arm.state

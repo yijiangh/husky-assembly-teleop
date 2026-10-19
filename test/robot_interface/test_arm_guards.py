@@ -14,6 +14,7 @@ from husky_assembly_teleop.robot_interface.arm import (CARTESIAN_COMPLIANCE_CONT
                                                        TRAJECTORY_MAX_JOINT_SPEED, TRAJECTORY_MAX_WAYPOINTS,
                                                        UR_JOINT_LIMITS, joint_move)
 from husky_assembly_teleop.robot_interface.controller_manager import CONTROLLER_STATE_MAX_AGE
+from husky_assembly_teleop.robot_interface.simulated_parts import SimulatedPart
 
 pytestmark = pytest.mark.safety
 
@@ -134,12 +135,26 @@ def test_trajectory_velocities_refused(velocities, why):
     assert why in refused(arm, *line(arm), velocities)
 
 
-def test_trajectory_without_safety_state_goes_out_with_a_warning():
-    """No status from the safety sync (fake hardware): sent, but the log says safety was not checked."""
+@pytest.mark.parametrize("unknown", [
+    lambda arm: setattr(arm.state, "status_update_time", arm.state.status_update_time - SYNC_STATUS_MAX_AGE - 0.1),
+    lambda arm: setattr(arm.state, "dashboard_up", False),
+])
+def test_a_real_arm_whose_safety_is_unknown_is_refused(unknown):
+    """No recent safety-sync status, or no dashboard: a real arm does not move."""
     arm = fake_arm()
-    arm.state.status_update_time -= SYNC_STATUS_MAX_AGE + 0.1
+    unknown(arm)
+    assert "safety is not known" in refused(arm, *line(arm))
+
+
+def test_fake_hardware_moves_without_a_dashboard_but_not_without_the_sync():
+    """A simulated arm has no dashboard, which is fine; it still needs the safety sync's recent, operational status."""
+    simulated = SimulatedPart("ur5e", "ur5e/controller_manager", "ur fake hardware", 100.0)
+    arm = fake_arm(simulated=simulated)
+    arm.state.dashboard_up = False
     assert arm.send_joint_trajectory(*line(arm))
-    assert "safety not checked" in arm._node.log.text("warning")
+    silent = fake_arm(simulated=simulated)
+    silent.state.status_update_time -= SYNC_STATUS_MAX_AGE + 0.1
+    assert "safety is not known" in refused(silent, *line(silent))
 
 
 # --- --- --- --- --- hold --- --- --- --- ---

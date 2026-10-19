@@ -7,6 +7,7 @@ import math
 import time
 from collections import deque
 from dataclasses import dataclass, field
+from typing import Callable
 
 import numpy as np
 from crl_husky_msgs.msg import BaseFollowerState, BasePath
@@ -24,6 +25,7 @@ from .connections import RosConnections
 from .controller_manager import ControllerManagerInterface, ControllerManagerState
 from .mocap import subscribe_mocap
 from .mocap_state import RawMarkers, pose_lost
+from .simulated_parts import SimulatedPart
 from .stream_stats import StreamStats
 
 #: The base's only controller for now. cmd_vel goes through it.
@@ -144,15 +146,18 @@ class BaseInterface:
     ! Mocap is the only source of the base pose; do not add a second one.
     """
 
-    def __init__(self, node: Node, config: RobotConfig):
+    def __init__(self, node: Node, config: RobotConfig,
+                 simulated: Callable[[], SimulatedPart | None] = lambda: None):
         """Subscribe to mocap and create the velocity publisher.
 
         Args:
             node: The monitor node.
             config: The robot this base belongs to.
+            simulated: The base's simulator announcement while it is simulated, else None (`SimulatedParts.get`).
         """
         self._node = node
         self._config = config
+        self._simulated = simulated
         self.state = BaseState()
         self._ros = RosConnections(node)
         # * Path ids start somewhere new each run, so a report on an earlier run's path never matches a new one.
@@ -201,6 +206,11 @@ class BaseInterface:
         self._ros.destroy_all()
         self._connect()
         self.controllers.reconnect()
+
+    @property
+    def simulation(self) -> SimulatedPart | None:
+        """The base simulator's announcement (`SimulatedPart`) while this base is simulated, else None: a real base."""
+        return self._simulated()
 
     def follow_problem(self) -> str:
         """Why the onboard follower may not be handed a path now, or "": no live mocap pose, e-stop, or no follower.

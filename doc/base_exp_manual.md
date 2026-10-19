@@ -76,13 +76,12 @@ source install/setup.bash
 
 ## Simulator
 
-Its own ROS domain, this computer only. ! Never on the fleet's domain 80 or on a robot: the real base obeys the same
-`cmd_vel`. In every simulator terminal, also:
+A ROS domain of its own, on zenoh like the fleet. ! Never the fleet's domain 80 or a robot: the real base obeys the
+same `cmd_vel`. The simulation launches refuse domain 80. Others simulating at the same time pick another number. In
+every simulator terminal, also:
 
 ```bash
-export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
 export ROS_DOMAIN_ID=70          # the simulation domain; never 80
-export ROS_LOCALHOST_ONLY=1
 ```
 
 **Terminal 1: simulator and follower** (Alice, mocap id 1840, starting in open floor):
@@ -93,6 +92,9 @@ ros2 launch crl_husky pure_pursuit_sim.launch.py namespace:=a200_0804 mocap_id:=
 ```
 
 - `sim_model`: how the simulated robot moves. `controller_model`: what pure pursuit assumes.
+- To simulate the arms too (fake hardware, with the safety sync), start the whole robot instead:
+  `ros2 launch crl_husky sim_robot.launch.py robot:=0804 start_x:=1.0 start_y:=-1.5`; or every robot with
+  `sim_all.launch.py`.
 - Models are `crl_husky/config/base_models/<name>.yaml` in crl-husky: `ideal`, and `alice_tiles_2` (Alice, tiles,
   arm stowed; `alice_tiles` is the earlier fit). Single values override the sim model, e.g. `xICR:=-0.10`.
 
@@ -110,7 +112,7 @@ Stop with Ctrl-C, monitor first.
 > **Safety.** Clear the floor, keep the e-stop in reach, watch every run. The guard soft-stops the robot within
 > 10 cm of anything in the scene, but it runs over Wi-Fi and is no emergency stop.
 
-Use the fleet's settings (`rmw_zenoh_cpp`, `ROS_DOMAIN_ID=80`, no `ROS_LOCALHOST_ONLY`), not the simulator's.
+Use the fleet's domain (`ROS_DOMAIN_ID=80`), not the simulator's.
 
 **After a crl-husky change, put the code on the robot.** `upload.sh` copies only files git tracks, so commit or
 `git add` new files first:
@@ -146,7 +148,8 @@ open floor, at least 1 m from anything.
 
 In the `base_exp` folder:
 
-1. Status: `tracked` and `follower idle` ("velocity controller off" is fine in the simulator).
+1. Status: `tracked` and `follower idle` ("velocity controller off" is fine in the simulator). In the simulator the
+   health panel shows an amber `SIM` chip on the base: `husky_sim` announces itself, and runs are recorded as `sim`.
 2. **Experiment:** `$EXP`.
 3. **Automation:**
    - `Controller: standard paths`: the same 10 paths in every scenario (straight, spot turn, wide and tight arc,

@@ -172,7 +172,7 @@ def _saving(tmp_path):
     rec = Trace([Signal(f"{SERIAL}_floor_pose", lambda: None, ("x", "y", "yaw"), "m, rad")])
     rec.add(1.0, (0.0, 0.0, 0.0))
     rec.add(2.0, (0.5, 0.4, 0.7))
-    base = SimpleNamespace(state=SimpleNamespace(follower=None), node_names=lambda: ["husky_sim"],
+    base = SimpleNamespace(state=SimpleNamespace(follower=None), simulation=SimpleNamespace(node="husky_sim"),
                            follower_history=lambda _since: np.zeros((3, 5)),
                            odometry_history=lambda _since: np.zeros((2, 4)))
     ctx = SimpleNamespace(world=SimpleNamespace(robots={SERIAL: SimpleNamespace(base=base)}),
@@ -272,7 +272,7 @@ def test_run_is_recorded_until_the_follower_is_done(tmp_path):
                              yaw_error=0.0, command=np.zeros(2), update_time=10.0, stamp=10.0)
     base = SimpleNamespace(state=SimpleNamespace(position=np.zeros(3), orientation=np.array([0.0, 0.0, 0.0, 1.0]),
                                                  follower=follower),
-                           node_names=lambda: ["husky_sim", "pure_pursuit"],
+                           simulation=SimpleNamespace(node="husky_sim"),
                            follower_history=lambda _since: np.zeros((0, 5)),
                            odometry_history=lambda _since: np.zeros((0, 4)))
     robot = SimpleNamespace(base=base, config=SimpleNamespace(serial=SERIAL))

@@ -7,10 +7,11 @@ Only what concerns all arms at once lives here: the multi-arm trajectory and the
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from functools import partial
 from typing import Sequence
 
 import numpy as np
-from crl_husky_msgs.msg import MultiArmTrajectory, SafetySyncStatus
+from crl_husky_msgs.msg import MultiArmTrajectory, SafetySyncStatus, SimulatedPart
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_srvs.srv import Trigger
@@ -22,6 +23,8 @@ from .frames import HUSKY_FRAME, MOCAP_FRAME, fixed_transform
 from scaffolding_assembly_core.geometry import Pose, compose, invert
 from .ur_frames import stock_frame_problem
 from .connections import RosConnections
+from .simulated_parts import TOPIC as SIMULATED_TOPIC
+from .simulated_parts import SimulatedParts
 
 #: On-board node that runs or stops all arms together.
 SAFETY_SYNC = "MultiArmSafetySync"
@@ -75,7 +78,9 @@ class HuskyRobotInterface:
         """
         self._node = node
         self.config = config
-        self.base = BaseInterface(node, config)
+        #: The parts of this robot announced as simulated (`simulated_parts.py`).
+        self.simulated = SimulatedParts(lambda: node.get_clock().now().nanoseconds * 1e-9)
+        self.base = BaseInterface(node, config, simulated=partial(self.simulated.get, "base"))
         # * The model already has each arm's UR calibration applied; an out-of-date URDF file is loud, not fatal.
         for check in config.ur_calibration:
             if check.out_of_date:
@@ -93,7 +98,8 @@ class HuskyRobotInterface:
                 node.get_logger().error(problem)
             self.arms[arm.name] = ArmInterface(
                 node, config.ros_namespace, arm,
-                fixed_transform(config.model.urdf, HUSKY_FRAME, f"{arm.name}_base_link"), urdf_problem=problem)
+                fixed_transform(config.model.urdf, HUSKY_FRAME, f"{arm.name}_base_link"), urdf_problem=problem,
+                simulated=partial(self.simulated.get, arm.ros_namespace))
         #: The husky frame in the mocap-tracked frame (fixed, from the URDF).
         self._husky_in_mocap_frame = fixed_transform(config.model.urdf, MOCAP_FRAME, HUSKY_FRAME)
         self.state = RobotState(serial=config.serial, base=self.base.state,
@@ -108,6 +114,7 @@ class HuskyRobotInterface:
         status_qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                                 durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self._ros.subscription(SafetySyncStatus, f"{sync}/status", self._on_sync_status, status_qos)
+        self._ros.subscription(SimulatedPart, f"/{self.config.ros_namespace}/{SIMULATED_TOPIC}", self.simulated.heard)
         self._unlock = self._ros.client(Trigger, f"{sync}/unlock_protective_stop")
         self._stop_arms = self._ros.client(Trigger, f"{sync}/stop")
         self._resume_arms = self._ros.client(Trigger, f"{sync}/resume")

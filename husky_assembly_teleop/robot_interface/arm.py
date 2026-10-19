@@ -7,7 +7,7 @@ Each command checks the running controller and its inputs itself before sending.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Sequence
+from typing import Callable, Sequence
 
 import numpy as np
 from builtin_interfaces.msg import Duration
@@ -29,6 +29,7 @@ from .controller_manager import ControllerManagerInterface, ControllerManagerSta
 from .end_effectors import EndEffector, EndEffectorState, make_end_effector
 from scaffolding_assembly_core.geometry import Pose, compose, invert
 from scaffolding_assembly_core.urdf import UR_JOINT_NAMES
+from .simulated_parts import SimulatedPart
 from .ur_frames import BASE_LINK_FROM_UR_BASE
 
 # ? qos_profile_sensor_data but deeper, to hold one tick of samples: 100 covers 500 Hz for 200 ms.
@@ -320,7 +321,7 @@ class ArmInterface:
     """
 
     def __init__(self, node: Node, robot_namespace: str, config: ArmConfig, base_in_husky: Pose,
-                 urdf_problem: str | None = None):
+                 urdf_problem: str | None = None, simulated: Callable[[], SimulatedPart | None] = lambda: None):
         """Create every subscription, publisher and client of one arm.
 
         Args:
@@ -329,9 +330,11 @@ class ArmInterface:
             config: This arm.
             base_in_husky: This arm's base_link in the husky frame.
             urdf_problem: Why the URDF breaks the stock UR frames, or None. If set, Cartesian targets are refused.
+            simulated: The arm's fake hardware announcement while it runs on it, else None (`SimulatedParts.get`).
         """
         self._node = node
         self.config = config
+        self._simulated = simulated
         #: This arm's base_link (the controller's target frame) in the husky frame.
         self.base_in_husky = base_in_husky
         #: The TCP set on the pendant, in tool0: what the reported TCP includes (not the tool's own `Tool.tcp`).
@@ -510,15 +513,19 @@ class ArmInterface:
         if problem is not None:
             return problem
         updated = self.state.status_update_time
-        if updated is None or self._now() - updated > SYNC_STATUS_MAX_AGE or not self.state.dashboard_up:
-            # ? Not refused: fake hardware has no dashboard and the robot enforces safety itself.
-            self._node.get_logger().warning(
-                f"arm {self.config.name}: no dashboard state from multi_arm_safety_sync, safety not checked",
-                throttle_duration_sec=5.0)
-            return None
+        if updated is None or self._now() - updated > SYNC_STATUS_MAX_AGE:
+            return "its safety is not known: no recent status from multi_arm_safety_sync; start it on the robot"
+        # * Only fake hardware runs without a dashboard; the sync announces such an arm (`simulation`).
+        if not self.state.dashboard_up and self.simulation is None:
+            return "its safety is not known: the sync reaches no dashboard for this arm; is the driver running?"
         if not self.state.operational:
             return f"the arm is not operational: {self.state.problem}"
         return None
+
+    @property
+    def simulation(self) -> SimulatedPart | None:
+        """The fake hardware's announcement (`SimulatedPart`) while this arm runs on it, else None: a real arm."""
+        return self._simulated()
 
     def hold(self) -> bool:
         """Stop the arm at its measured joints or TCP, under whichever controller is running.
