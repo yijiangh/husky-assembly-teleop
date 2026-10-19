@@ -201,6 +201,17 @@ def test_collisions_and_touches(mirror, config):
     assert mirror.collisions(ROBOT, margin=0.01) == ["t/pad"]
 
 
+def test_body_is_checked_with_every_mesh(mirror):
+    """A body is checked like a robot: only its second mesh reaches the box, and that counts."""
+    cube = shape_mesh(BoxShape((0.2, 0.2, 0.2)))
+    far = TriMesh.from_arrays(cube.vertices + (1.0, 0.0, 0.0), cube.faces)
+    pair = Body("t/pair", Geometry((cube, far), (cube, far)), Pose())
+    mirror.sync(snapshot((pair, Body("t/box", box_geometry((0.2, 0.2, 0.2)), Pose((1.1, 0.0, 0.0))))))
+    assert mirror.collisions("t/pair") == ["t/box"]
+    mirror.sync(snapshot((pair, Body("t/box", box_geometry((0.2, 0.2, 0.2)), Pose((3.0, 0.0, 0.0))))))
+    assert mirror.collisions("t/pair") == []
+
+
 def test_tool_is_a_link_of_its_robot(mirror, config):
     """A mounted tool collides as part of its robot, and `touches` may name it by its tool id."""
     robots = {ROBOT: robot_entry(config)}
