@@ -30,6 +30,7 @@ from ...robot_interface.arm import (CARTESIAN_COMPLIANCE_CONTROLLER, FREE_DRIVE_
                                     ArmInterface, cartesian_move)
 from ...robot_interface.base import PLATFORM_VELOCITY_CONTROLLER, BaseInterface
 from ...ui.ghost import RecentUse, RobotGhost, robot_ghosts
+from ...ui.joint_sliders import joint_slider_angles, set_joint_sliders
 from ...ui.phone import big_buttons, phone_text
 from ...ui.style import SECTION_SENSOR, block, numbers, section, values
 from .arm_panel import (FREE_DRIVE_ICON, ComplianceInputs, JointInputs, build_compliance_inputs,
@@ -126,9 +127,6 @@ class RobotControlPlugin(HuskyPlugin):
         self._target_ghosts: dict[str, RobotGhost] = {}
         #: Per arm, when the operator last used its joint inputs; the ghost shows only while recent.
         self._joints_used: dict[tuple[str, str], RecentUse] = {}
-        #: Per arm, the joint slider values we wrote last. ! Writing a slider fires its callback
-        #: too; a callback that finds these values was ours, not the operator's.
-        self._written: dict[tuple[str, str], tuple[float, ...]] = {}
 
     # --- --- --- --- --- SETUP --- --- --- --- ---
 
@@ -213,7 +211,6 @@ class RobotControlPlugin(HuskyPlugin):
         status = gui.add_html("")
         hold = partial(self._hold_arm, serial, arm)
         joint_inputs = partial(build_joint_inputs, ctx, gui, label, arm, used=self._joints_used[key],
-                               written=partial(self._written.get, key),
                                load=partial(self._request_joint_load, key),
                                start=partial(self._start_move, ctx, serial, arm, "move", self._execute_move),
                                hold=hold)
@@ -384,7 +381,7 @@ class RobotControlPlugin(HuskyPlugin):
                 if widgets.serial != serial or not self._joints_used[(serial, name)].active:
                     continue  # another robot's arm, or sliders not in use
                 parts.append(f"{name}_")
-                target = np.radians([slider.value for slider in widgets.joint.joints])
+                target = joint_slider_angles(widgets.joint.joints)
                 joints.update(zip((f"{name}_{joint}" for joint in UR_JOINT_NAMES), target))
             if parts:
                 ghost.show(ctx.kinematics.base_pose(serial), joints, parts=tuple(parts))
@@ -421,9 +418,7 @@ class RobotControlPlugin(HuskyPlugin):
         # None means the measured joints, which need joint data first.
         angles = widgets.arm.joint_vector() if self._load_sliders[key] is None else self._load_sliders[key]
         if angles is not None:
-            for slider, value in zip(widgets.joint.joints, np.degrees(angles)):
-                slider.value = round(float(value) * 2) / 2  # the sliders' 0.5 deg step
-            self._written[key] = tuple(slider.value for slider in widgets.joint.joints)
+            set_joint_sliders(widgets.joint.joints, angles)
             del self._load_sliders[key]
 
     # --- --- --- --- --- MOVE TASKS --- --- --- --- ---

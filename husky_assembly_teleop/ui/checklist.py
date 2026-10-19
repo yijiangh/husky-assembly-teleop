@@ -42,7 +42,9 @@ class CheckList:
         style.content = _tight_style(self._all._impl.uuid)
         #: Item checkboxes, in the order they were added.
         self._boxes: dict[Hashable, viser.GuiCheckboxHandle] = {}
-        self._all.on_update(self._on_select_all)
+        # ! Operator clicks only: `sync` also writes this box, and acting on that would untick the list.
+        self._all.on_update(self._ctx.defer_value("select all", lambda value: self._set_all(bool(value)),
+                                                  operator_only=True))
 
     def add(self, key: Hashable, label: str, hint: str = "", selected: bool = False) -> None:
         """Append an item at the bottom of the list. Call on the main thread.
@@ -81,13 +83,6 @@ class CheckList:
         # * Assigning an unchanged value sends nothing and runs no callback.
         self._all.value = bool(self._boxes) and all(box.value for box in self._boxes.values())
         self._empty.visible = not self._boxes
-
-    async def _on_select_all(self, event: viser.GuiEvent) -> None:
-        """Tick or untick every item when the operator clicks "Select all". Runs on a viser thread."""
-        if event.client is None:
-            return  # ! viser also fires on our own assignment in `sync`; acting on it would untick the list
-        value = bool(event.target.value)
-        self._ctx.submit("select all" if value else "select none", lambda: self._set_all(value))
 
     def _set_all(self, value: bool) -> None:
         """Set every item checkbox to `value`. Runs as an intent."""

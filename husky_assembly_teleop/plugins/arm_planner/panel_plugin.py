@@ -15,20 +15,17 @@ import numpy as np
 
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import register
-from ...robot_interface.arm import UR_JOINT_LIMITS
 from ...shared.arm_planner_contract import ArmPlanRequest
 from ...shared.planner.planner_panel import PlannerPanel
 from ...shared.planner.plan import Plan
 from ...shared.planner.planner_search import with_guesses
 from ...ui.ghost import RobotGhost
+from ...ui.joint_sliders import add_joint_sliders, joint_slider_angles, set_joint_sliders
 from ...ui.pybullet_window import add_pybullet_window_toggle
 from ...ui.style import SECTION_CTRL, SECTION_TOOL, block, chip, section, values
 from scaffolding_assembly_core.ids import robot_id
 from .planner import arm_joint_names
 from .planner_plugin import STALE_JOINT
-
-#: Short joint names for the sliders, UR driver order.
-SLIDER_NAMES = ("pan", "lift", "elbow", "w1", "w2", "w3")
 
 
 @register
@@ -48,8 +45,6 @@ class ArmPlannerPanel(PlannerPanel):
         self._load: np.ndarray | None = None
         #: Load the sliders from the arm's current joints on the next update, unless `_load` is set.
         self._load_now = True
-        #: The slider values update wrote last, so their callback is not taken for the operator's.
-        self._written: tuple[float, ...] | None = None
 
     # --- --- --- --- --- SETUP --- --- --- --- ---
 
@@ -70,9 +65,7 @@ class ArmPlannerPanel(PlannerPanel):
             self._arm = gui.add_dropdown("Arm", options=arms[self.serial], initial_value=self.arm)
 
             gui.add_html(section("target", SECTION_TOOL))
-            self._sliders = [gui.add_slider(f"{name} °", min=-math.degrees(limit), max=math.degrees(limit),
-                                            step=0.5, initial_value=0.0)
-                             for name, limit in zip(SLIDER_NAMES, UR_JOINT_LIMITS)]
+            self._sliders = add_joint_sliders(gui)
             load = gui.add_button_group("Load", ["Now", "Stow", "Step"],
                                         hint="Set the target to where the arm is now, to its stow pose, or to "
                                              "the arm's target in the step selected in the process plugin")
@@ -98,7 +91,7 @@ class ArmPlannerPanel(PlannerPanel):
         self._robot.on_update(ctx.defer_value("choose robot", lambda serial: self._choose(str(serial), None)))
         self._arm.on_update(ctx.defer_value("choose arm", lambda arm: self._choose(self.serial, str(arm))))
         for slider in self._sliders:
-            slider.on_update(ctx.defer_value("target", lambda _value: self._target_changed()))
+            slider.on_update(ctx.defer("target", self._target_changed, operator_only=True))
         load.on_click(ctx.defer_value("load target", lambda label: self._load_target(ctx, label)))
 
         self._add_ghosts(ctx, (config for config in ctx.config.robots if config.serial in arms))
@@ -121,9 +114,7 @@ class ArmPlannerPanel(PlannerPanel):
         self._has_target, self._load_now = False, True
 
     def _target_changed(self) -> None:
-        """A target slider moved: by the operator, unless update just wrote these values."""
-        if tuple(slider.value for slider in self._sliders) == self._written:
-            return
+        """The operator moved a target slider."""
         self._used.touch()
         self._has_target = True
 
@@ -207,7 +198,7 @@ class ArmPlannerPanel(PlannerPanel):
 
     def _target(self) -> np.ndarray:
         """The target from the sliders, radians."""
-        return np.radians([slider.value for slider in self._sliders])
+        return joint_slider_angles(self._sliders)
 
     def _joints_now(self, ctx: PluginContext) -> np.ndarray:
         """Where the chosen arm's joints are now, radians, UR driver order."""
@@ -225,9 +216,7 @@ class ArmPlannerPanel(PlannerPanel):
             if self._load is None:
                 self._load = self._joints_now(ctx)
         if self._load is not None:
-            for slider, value in zip(self._sliders, np.degrees(self._load)):
-                slider.value = round(float(value) * 2) / 2  # the sliders' 0.5 deg step
-            self._written = tuple(slider.value for slider in self._sliders)
+            set_joint_sliders(self._sliders, self._load)
             self._load = None
         super().update(ctx)
 

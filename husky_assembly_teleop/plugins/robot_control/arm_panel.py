@@ -19,12 +19,11 @@ from ...robot_interface.arm import (CARTESIAN_MOVE_MAX_ROTATION_SPEED, CARTESIAN
                                     MAX_TARGET_FORCE, TARGET_WRENCH_FRAME, ArmInterface, cartesian_move, joint_move)
 from ...robot_interface.end_effectors import RobotiqGripper, ScaffoldingV1, ScaffoldingV3
 from ...ui.ghost import RecentUse
+from ...ui.joint_sliders import add_joint_sliders, joint_slider_angles
 from ...ui.style import FAIL, SECTION_CTRL, SECTION_TOOL, block, note, section, values, warning
 from .dpad import HOLD_CALLBACK_HZ
 from .markers import marker_legend
 
-#: Slider label and range (degrees) per UR joint, in UR_JOINT_NAMES order.
-JOINT_SLIDERS = (("pan", 360), ("lift", 360), ("elbow", 180), ("w1", 360), ("w2", 360), ("w3", 360))
 #: TCP position slider range (metres, around the arm's base) and step.
 POSITION_RANGE, POSITION_STEP = 1.5, 0.001
 POSE_SLIDERS = (("x m", "p"), ("y m", "p"), ("z m", "p"), ("roll °", "a"), ("pitch °", "a"), ("yaw °", "a"))
@@ -62,7 +61,6 @@ class ComplianceInputs:
 # --- --- --- --- --- BUILDERS --- --- --- --- ---
 
 def build_joint_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, arm: ArmInterface, used: RecentUse,
-                       written: Callable[[], tuple[float, ...] | None],
                        load: Callable[[np.ndarray | None], None],
                        start: Callable[[np.ndarray], None], hold: Callable[[], None]) -> JointInputs:
     """Add the inputs for the joint trajectory controller: a target per joint, Load and Move.
@@ -73,7 +71,6 @@ def build_joint_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, arm: A
         label: "<serial> <arm name>", for intent names.
         arm: The arm.
         used: Touched whenever the operator works these inputs; the target ghost shows while recent.
-        written: The slider values the plugin wrote last, so their callbacks are not taken for the operator's.
         load: Asks to set the sliders to these angles (radians), or to the measured joints for None.
         start: Starts a move to these joint angles (radians).
         hold: Holds the arm where it is.
@@ -83,19 +80,13 @@ def build_joint_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, arm: A
     """
     gui.add_html(warning("no collision checking · raw joint trajectories"))
     gui.add_html(note("yellow ghost: the arm at the sliders"))
-    joints = [gui.add_slider(f"{name} °", min=-limit, max=limit, step=0.5, initial_value=0.0)
-              for name, limit in JOINT_SLIDERS]
+    joints = add_joint_sliders(gui)
     plan = gui.add_html("")
     load_group = gui.add_button_group("Load", ["Current", "Stow"],
                                       hint="Set the sliders to where the arm is, or to its stow pose.")
     move_group = gui.add_button_group("Move", ["Start", "Hold"],
                                       hint="Start: move to the sliders, smoothly, in 5 s or more. "
                                            "Hold: brake to a standstill where the arm is.")
-
-    def on_slider(_value: object) -> None:
-        """Mark the joints as used, unless the values are the ones the plugin just wrote (intent)."""
-        if tuple(slider.value for slider in joints) != written():
-            used.touch()
 
     def on_load(clicked: str) -> None:
         """Load the sliders from the arm or its stow pose (intent)."""
@@ -114,10 +105,10 @@ def build_joint_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, arm: A
             hold()
         else:
             # ! Read sliders here, when the intent runs: the operator commits on Start.
-            start(np.radians([slider.value for slider in joints]))
+            start(joint_slider_angles(joints))
 
     for slider in joints:
-        slider.on_update(ctx.defer_value(f"joint slider {label}", on_slider))
+        slider.on_update(ctx.defer(f"joint slider {label}", used.touch, operator_only=True))
     load_group.on_click(ctx.defer_value(f"load sliders {label}", on_load))
     move_group.on_click(ctx.defer_value(f"move {label}", on_move))
     return JointInputs(joints=joints, plan=plan)
@@ -303,7 +294,7 @@ def joint_plan_line(arm: ArmInterface, joints: list[viser.GuiSliderHandle]) -> s
     here = arm.joint_vector()
     if here is None:
         return note("no joint state yet")
-    target = np.radians([slider.value for slider in joints])
+    target = joint_slider_angles(joints)
     _, _, duration = joint_move(here, target)
     largest = float(np.degrees(np.max(np.abs(target - here))))
     return block(values(f"Δmax {largest:6.1f} °   T {duration:5.1f} s   "
