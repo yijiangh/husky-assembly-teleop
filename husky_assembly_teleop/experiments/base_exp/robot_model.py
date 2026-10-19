@@ -19,10 +19,10 @@ import pandas as pd
 from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
 
-from ..auto import MODE, SPEED
-from ..identify import SOURCES, cross_validated, identify
-from ..replay import HORIZON, IDEAL, Errors, Model, free_run, score, synthetic
-from ..replay import errors as run_errors
+from ...plugins.base_exp.auto import MODE, SPEED
+from .identify import SOURCES, cross_validated, identify
+from .replay import HORIZON, IDEAL, Errors, Model, free_run, score, synthetic
+from .replay import errors as run_errors
 from .common import (ERRORS, TEMPLATES, Experiment, markdown, parameters, robots, run_track, save, scenario_row,
                      scenarios, shared_paths, tracks)
 

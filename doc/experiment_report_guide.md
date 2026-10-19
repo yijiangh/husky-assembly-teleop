@@ -2,7 +2,7 @@
 
 How the generated reports of an experiment are written, for anyone (human or agent) who writes or changes a report
 generator. Part 1 (`experiment_design_guide.md`) covers the question, the method, the collection and the analysis
-script. Examples come from `plugins/base_exp/analysis/` (`summary.md`, `robot_model.md`).
+script. Examples come from `experiments/base_exp/` (`summary.md`, `robot_model.md`).
 
 ## Two layers, kept apart
 

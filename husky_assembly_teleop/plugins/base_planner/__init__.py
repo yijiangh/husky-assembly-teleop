@@ -9,8 +9,8 @@ The base planner: a target for a husky base, a path to it, and committing it.
   plugin.py      the plugin: target input, algorithm choice, floor drawing, and the shared `planning.panel` flow
   tasks.py       the experiment's standard tasks: starts, targets and virtual obstacles
   recording.py   saving plan attempts and their runs to the Drive
-  report.py      one run's report and one attempt's picture; matplotlib, no ROS
-  analysis.py    an experiment's report over all its attempts (scripts/analyze_base_planner.py), with figures.py
+
+The experiment's reports are in `experiments/base_planner/`.
 """
 
 from . import plugin  # noqa: F401  registers BasePlannerPlugin

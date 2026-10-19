@@ -36,10 +36,10 @@ from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
 from matplotlib.patches import Rectangle
 
-from ..replay import track
-from ..report import load
-from ..twist import SEGMENT, grid
+from ...plugins.base_exp.report import load
+from ...plugins.base_exp.twist import SEGMENT, grid
 from .common import Experiment, markdown, save
+from .replay import track
 
 #: Seconds after the step before the steady window starts: delay (~0.25 s) and the ramp, with a margin.
 STEADY_AFTER = 1.2

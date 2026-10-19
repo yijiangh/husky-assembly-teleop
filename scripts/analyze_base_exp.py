@@ -3,7 +3,7 @@ Analyse an experiment's base runs: the controllers, the robot, and its response 
 
 Reads every run folder under --recordings (default: record.RECORDING_FOLDER under the Drive root, HUSKY_DRIVE_ROOT;
 folders starting with "_", such as _analysis and _archive, are skipped) and writes to the experiment's _analysis
-folder (`plugins/base_exp/analysis/`):
+folder (`experiments/base_exp/`):
 
   summary.md             the controllers, from the path runs: the standard-path headline, by path and template,
                          failures
@@ -24,8 +24,8 @@ import argparse
 from pathlib import Path
 
 from husky_assembly_teleop.drive import drive_folder, drive_root
-from husky_assembly_teleop.plugins.base_exp.analysis import commands, controller, robot_model
-from husky_assembly_teleop.plugins.base_exp.analysis.common import COMMANDS, PATHS, Experiment, load_runs
+from husky_assembly_teleop.experiments.base_exp import commands, controller, robot_model
+from husky_assembly_teleop.experiments.base_exp.common import COMMANDS, PATHS, Experiment, load_runs
 from husky_assembly_teleop.plugins.base_exp.record import RECORDING_FOLDER
 
 

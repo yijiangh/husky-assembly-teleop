@@ -19,7 +19,7 @@ from dataclasses import dataclass, field, replace
 import numpy as np
 from crl_husky.base_model import BaseModel
 
-from .report import segment_types
+from ...plugins.base_exp.report import segment_types
 
 #: Integration step, seconds.
 STEP = 0.01

@@ -8,8 +8,8 @@ import numpy as np
 import pytest
 from crl_husky.base_model import BaseModel
 
-from husky_assembly_teleop.plugins.base_exp.analysis.commands import responses, steady, write
-from husky_assembly_teleop.plugins.base_exp.analysis.common import COMMANDS, EXCLUDED, Experiment, load_runs
+from husky_assembly_teleop.experiments.base_exp.commands import responses, steady, write
+from husky_assembly_teleop.experiments.base_exp.common import COMMANDS, EXCLUDED, Experiment, load_runs
 from husky_assembly_teleop.plugins.base_exp.twist import (MAX_WHEEL_SPEED, SEGMENT, WHEEL_BASE, TwistGrid, cell_of,
                                                           grid, settings_of, twist_plan)
 

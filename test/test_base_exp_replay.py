@@ -4,9 +4,9 @@ import numpy as np
 import pytest
 from base_exp_fixtures import model_run
 
-from husky_assembly_teleop.plugins.base_exp.identify import cross_validated, identify
-from husky_assembly_teleop.plugins.base_exp.replay import (HORIZON, IDEAL, Errors, Model, errors, free_run, synthetic,
-                                                           track)
+from husky_assembly_teleop.experiments.base_exp.identify import cross_validated, identify
+from husky_assembly_teleop.experiments.base_exp.replay import (HORIZON, IDEAL, Errors, Model, errors, free_run,
+                                                               synthetic, track)
 
 TRUE = Model.of(-0.1, 0.9, 0.95, 0.2)
 

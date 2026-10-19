@@ -9,7 +9,7 @@ from crl_husky.base_model import load_model
 
 from husky_assembly_teleop.plugins.base_planner.algorithms import ALGORITHMS, Debug
 from husky_assembly_teleop.plugins.base_planner.algorithms.lattice import Settings, plan
-from husky_assembly_teleop.plugins.base_planner.analysis import analyse
+from husky_assembly_teleop.experiments.base_planner.analysis import analyse
 from husky_assembly_teleop.plugins.base_planner.algorithms.base import FOLLOWER_MODEL
 from husky_assembly_teleop.plugins.base_planner.follow import DEVIATED, DEVIATED_XICRS, EXACT, model_groups
 from husky_assembly_teleop.plugins.base_planner.recording import (attempt_folder, load_description,

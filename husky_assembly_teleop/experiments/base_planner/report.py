@@ -13,7 +13,7 @@ Measured by mocap (or the simulated pose) against the path sent, the same for ev
 
 ! Uses matplotlib's `Figure` directly, not pyplot, so it is safe on a worker thread.
 
-Redo reports by hand:  python3 -m husky_assembly_teleop.plugins.base_planner.report <run folder>...
+Redo reports by hand:  python3 -m husky_assembly_teleop.experiments.base_planner.report <run folder>...
 """
 
 from __future__ import annotations
@@ -29,9 +29,9 @@ from pathlib import Path
 import numpy as np
 from matplotlib.figure import Figure
 
-from ..base_exp.report import heading_arrows, time_spans
-from .path import densify
-from .recording import load_description, load_plan_arrays
+from ...plots import heading_arrows, time_spans
+from ...plugins.base_planner.path import densify
+from ...plugins.base_planner.recording import load_description, load_plan_arrays
 
 PATH_COLOR, ROBOT_COLOR = "tab:blue", "tab:orange"
 TURN_SHADE = "0.9"

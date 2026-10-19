@@ -17,13 +17,13 @@ from pathlib import Path
 import numpy as np
 from matplotlib.figure import Figure
 
+from ...plugins.base_planner.follow import DEVIATED, DEVIATED_XICRS, EXACT
+from ...plugins.base_planner.path import densify
+from ...plugins.base_planner.recording import load_description, load_plan_arrays
+from ...plugins.base_planner.tasks import BY_NAME, TASK_ORIGIN, TASKS
 from .figures import colour, draw_all, draw_lab
-from .follow import DEVIATED, DEVIATED_XICRS, EXACT
-from .path import densify
-from .recording import load_description, load_plan_arrays
 from .report import (SimulatedMetrics, RunMetrics, draw_floor, load, metrics, plot, plot_plan, planner,
                      settings_line, simulated_metrics)
-from .tasks import BY_NAME, TASK_ORIGIN, TASKS
 
 #: Where attempts were made, in report order.
 ENVIRONMENTS = ("offline", "sim", "real")

@@ -2,7 +2,7 @@
 Report one base planner experiment (doc/base_planner_manual.md): the planners side by side on the standard tasks.
 
 Reads every attempt folder of the experiment under --recordings (default: the base planner's RECORDING_FOLDER under the
-Drive root, HUSKY_DRIVE_ROOT) and writes its `_analysis/` (`plugins/base_planner/analysis.py`): summary.md, one CSV
+Drive root, HUSKY_DRIVE_ROOT) and writes its `_analysis/` (`experiments/base_planner/analysis.py`): summary.md, one CSV
 per table, tasks.png, metrics.png and results_prompt.md; and per attempt plan.png, per run overview.png and report.json.
 
 Run with the venv and ROS sourced (it imports crl_husky):
@@ -16,7 +16,7 @@ import argparse
 from pathlib import Path
 
 from husky_assembly_teleop.drive import drive_folder, drive_root
-from husky_assembly_teleop.plugins.base_planner.analysis import analyse
+from husky_assembly_teleop.experiments.base_planner.analysis import analyse
 from husky_assembly_teleop.plugins.base_planner.recording import RECORDING_FOLDER
 
 

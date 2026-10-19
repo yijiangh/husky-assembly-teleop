@@ -5,7 +5,7 @@ import math
 import pytest
 from base_exp_fixtures import model_run
 
-from husky_assembly_teleop.plugins.base_exp.identify import identify
+from husky_assembly_teleop.experiments.base_exp.identify import identify
 
 
 def test_recovers_a_known_model():

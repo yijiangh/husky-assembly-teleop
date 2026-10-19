@@ -20,7 +20,7 @@ import pandas as pd
 from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
 
-from ..auto import MODE, SPEED, STANDARD_SET
+from ...plugins.base_exp.auto import MODE, SPEED, STANDARD_SET
 from .common import (ERRORS, NUMBERS, PROGRESS_BINS, TEMPLATES, Experiment, link, markdown, robots, save,
                      scenario_row, scenarios, shared_paths)
 

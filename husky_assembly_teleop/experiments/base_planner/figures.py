@@ -23,10 +23,10 @@ from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
 from matplotlib.patches import Circle, FancyBboxPatch, Rectangle
 
+from ...plugins.base_planner.follow import DEVIATED, EXACT
+from ...plugins.base_planner.tasks import TASKS
 from ...world.lab import DEFAULT_LAB, TRUSS_PLATE, lab_file, read_lab
-from .follow import DEVIATED, EXACT
 from .report import FOLLOWING, load
-from .tasks import TASKS
 
 #: The repository's data folder, where the lab files are (`config.MonitorConfig.data_directory`'s default).
 LAB_DATA = Path(__file__).resolve().parents[3] / "data"

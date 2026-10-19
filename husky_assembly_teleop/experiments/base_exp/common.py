@@ -27,11 +27,11 @@ import numpy as np
 import pandas as pd
 from matplotlib.figure import Figure
 
-from ..auto import GRID, MODE, SPEED, cell_key, standard_set
-from ..record import CONDITIONS, MODEL_PARAMETERS, environment_label, setup_key, sim_model
-from ..replay import Track, track
-from ..report import FOLLOWING, load, metrics
-from ..twist import cell_of
+from ...plugins.base_exp.auto import GRID, MODE, SPEED, cell_key, standard_set
+from ...plugins.base_exp.record import CONDITIONS, MODEL_PARAMETERS, environment_label, setup_key, sim_model
+from ...plugins.base_exp.report import FOLLOWING, load, metrics
+from ...plugins.base_exp.twist import cell_of
+from .replay import Track, track
 
 #: Robots in table order, with their short label.
 ENVIRONMENTS = {"sim ideal": "sim ideal", "sim model": "sim", "real": "real"}
