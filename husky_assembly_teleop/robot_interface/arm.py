@@ -101,6 +101,8 @@ JOINT_MOVE_MAX_SPEED = np.radians(20.0)
 JOINT_MOVE_MIN_DURATION = 5.0
 #: Seconds between waypoints of a joint move.
 JOINT_MOVE_WAYPOINT_SPACING = 0.2
+#: Default peak acceleration of `joint_path_move` on any joint, rad/s^2: half the trajectory limit, for margin.
+JOINT_PATH_MAX_ACCELERATION = TRAJECTORY_MAX_JOINT_ACCELERATION / 2
 
 
 #: Defaults for `cartesian_move`: TCP speed, m/s ...
@@ -176,6 +178,46 @@ def joint_move(start: Sequence[float], target: Sequence[float],
     positions = start + (1.0 - np.cos(phase)) / 2.0 * delta
     velocities = np.pi / (2.0 * duration) * np.sin(phase) * delta
     return positions, velocities, duration
+
+
+def joint_path_move(waypoints: Sequence[Sequence[float]], max_speed: float = JOINT_MOVE_MAX_SPEED,
+                    max_acceleration: float = JOINT_PATH_MAX_ACCELERATION) -> tuple[np.ndarray, np.ndarray, float]:
+    """A move along straight joint-space segments that stops at every waypoint, each segment on `joint_move`'s profile.
+
+    Stopping keeps the arm on the segments a planner checked: corners are never cut. Each segment lasts a whole
+    number of JOINT_MOVE_WAYPOINT_SPACING steps, so every waypoint is sampled exactly.
+
+    Args:
+        waypoints: Joint angles (n x 6), radians, UR_JOINT_NAMES order; the first is where the arm is now.
+        max_speed: Peak speed allowed on any joint, rad/s.
+        max_acceleration: Peak acceleration allowed on any joint, rad/s^2.
+
+    Returns:
+        tuple[np.ndarray, np.ndarray, float]: Positions (N x 6) evenly spaced in time, their velocities (N x 6),
+            and the duration in seconds.
+
+    Raises:
+        ValueError: If the waypoints never move.
+    """
+    waypoints = np.asarray(waypoints, dtype=float)
+    deltas = np.diff(waypoints, axis=0)
+    spans = np.max(np.abs(deltas), axis=1) if len(deltas) else np.zeros(0)
+    moving = spans > 0.0
+    if not np.any(moving):
+        raise ValueError("the path does not move")
+    starts, deltas, spans = waypoints[:-1][moving], deltas[moving], spans[moving]
+    # * The cosine profile peaks at pi/2 span/T in speed and pi^2/2 span/T^2 in acceleration.
+    seconds = np.maximum(np.pi / 2 * spans / max_speed, np.pi * np.sqrt(spans / (2 * max_acceleration)))
+    steps = np.maximum(np.ceil(seconds / JOINT_MOVE_WAYPOINT_SPACING - 1e-9).astype(int), 1)
+    ends = np.cumsum(steps)
+    index = np.arange(ends[-1] + 1)
+    segment = np.minimum(np.searchsorted(ends, index, side="left"), len(steps) - 1)
+    phase = np.pi * (index - (ends - steps)[segment]) / steps[segment]
+    positions = starts[segment] + ((1.0 - np.cos(phase)) / 2.0)[:, None] * deltas[segment]
+    durations = steps * JOINT_MOVE_WAYPOINT_SPACING
+    velocities = (np.pi / (2.0 * durations[segment]) * np.sin(phase))[:, None] * deltas[segment]
+    velocities[-1] = 0.0
+    return positions, velocities, float(ends[-1] * JOINT_MOVE_WAYPOINT_SPACING)
 
 
 def flange_from_reported(position: Sequence[float], quaternion: Sequence[float],

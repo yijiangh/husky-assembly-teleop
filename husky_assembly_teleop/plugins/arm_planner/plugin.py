@@ -4,7 +4,7 @@ Pick a joint target for one arm, plan a collision-free path to it, scrub through
 The flow is `shared.planning.panel.PlannerPlugin`; this adds the joint sliders, the arm choice and a compas_fab
 world per robot. The first plan for a robot loads the models (several seconds).
 
-! EXPERIMENTAL, not yet tested thoroughly: Commit only logs (`send_to_arm`).
+! EXPERIMENTAL, not yet tested on a robot: Commit sends the path as one joint trajectory (`send_to_arm`).
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ import numpy as np
 
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import register
-from ...robot_interface.arm import UR_JOINT_LIMITS
+from ...robot_interface.arm import UR_JOINT_LIMITS, joint_path_move
 from ...shared.planning.panel import WAIT_MARGIN, PlannerPlugin, Search, with_guesses
 from ...shared.planning.search import TIME_LIMIT, PlanResult
 from ...ui.ghost import RobotGhost
@@ -37,21 +37,26 @@ SLIDER_NAMES = ("pan", "lift", "elbow", "w1", "w2", "w3")
 
 
 def send_to_arm(ctx: PluginContext, serial: str, arm_name: str, path: ArmPath) -> bool:
-    """Hand a path to an arm. STUB: only logs.
-
-    TODO Resample with a smooth speed profile and send via `ArmInterface.send_joint_trajectory`.
+    """Send a path to an arm as one joint trajectory that stops at every waypoint (`joint_path_move`).
 
     Args:
-        ctx: The plugin's context, for logging.
+        ctx: The plugin's context, for the world and logging.
         serial: Which robot.
         arm_name: Which arm.
-        path: The path to follow.
+        path: The path to follow; its first waypoint must be where the arm is now.
 
     Returns:
-        bool: Whether the arm took the path. Always True for the stub.
+        bool: Whether the arm took the path; if not, the log says why.
     """
-    ctx.log_warn(f"[STUB] would send a {len(path.points)}-waypoint path ({path.duration:.1f} s) "
-                 f"to {serial} {arm_name}; nothing was sent")
+    order = [path.joint_names.index(name) for name in arm_joint_names(arm_name)]
+    try:
+        positions, velocities, duration = joint_path_move(path.points[:, order])
+    except ValueError as error:
+        ctx.log_warn(f"{serial} {arm_name}: nothing sent: {error}")
+        return False
+    if not ctx.world.robots[serial].arms[arm_name].send_joint_trajectory(positions, duration, velocities):
+        return False
+    ctx.log_info(f"{serial} {arm_name}: sent a {len(path.points)}-waypoint path, {duration:.1f} s")
     return True
 
 
@@ -112,7 +117,7 @@ class ArmPlannerPlugin(PlannerPlugin):
                                     plan_hint="Plan around the robot itself, the other robots and the scene, from "
                                               "where the arm is to the target; play or pause the preview; remove "
                                               "the plan (or stop planning)",
-                                    commit_hint="Send the path to the arm (stub: logs only)")
+                                    commit_hint="Send the path to the arm; it stops at every waypoint")
             # * Debugging: watch the search in the chosen robot's planning world.
             # ? `self.serial` is read on the worker; at worst it is the robot chosen a moment later.
             # * Guessed like a plan is, so an untracked robot still shows.
@@ -251,8 +256,8 @@ class ArmPlannerPlugin(PlannerPlugin):
         """Send the plan to the arm."""
         serial, arm = self._path_serial, self._path_arm
         if send_to_arm(ctx, serial, arm, self.path):
-            return True, f"sent to {serial} {arm} (stub: nothing was sent)"
-        return False, f"{serial} {arm} refused the path"
+            return True, f"sent to {serial} {arm}"
+        return False, f"{serial} {arm} refused the path (the log says why)"
 
     def forget_plan(self) -> None:
         """Drop the arm and base position the plan was for."""

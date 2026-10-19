@@ -40,7 +40,7 @@ WAIT_MARGIN = 5.0
 
 #: Chip text and colour of each plan state.
 _STATE_CHIPS = {"none": ("no plan", NONE), "planning": ("planning…", BUSY), "ready": ("plan ready", OK),
-                "stale": ("plan stale: replan", BUSY), "sent": ("sent (stub)", OK)}
+                "stale": ("plan stale: replan", BUSY), "sent": ("sent", OK)}
 
 
 class PlanningWorld(Protocol):
