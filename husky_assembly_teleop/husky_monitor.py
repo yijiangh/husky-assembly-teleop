@@ -73,8 +73,8 @@ from husky_assembly_teleop.bar_action_io import (
     bar_id_of_body, joints_on_bar,
 )
 from husky_assembly_teleop.bar_mocap_fit import (
-    MOCAP_MARKERS_FILENAME, BarFit, BarMarkers, MoCapMarkersError, PoseDeviation, fake_sensed_markers,
-    fit_bar_from_cache, load_mocap_markers, pose_deviation,
+    MOCAP_MARKERS_FILENAME, BarFit, BarMarkers, MoCapMarkersError, PoseDeviation, apply_authored_move,
+    fake_sensed_markers, fit_bar_from_cache, load_mocap_markers, pose_deviation,
 )
 from husky_assembly_teleop.mocap_bar_viz import (
     GHOST_HIDDEN_POSE, bar_end_points, bar_z_range, build_bar_joint_ghost, draw_bar_fit,
@@ -569,6 +569,12 @@ class HuskyMonitor(Node):
         self._mocap_bar_follow_stamp = 0.0      # time.monotonic() of the last live re-fit
         self._mocap_bar_live_notes = {}         # topic (a bar, or '') -> the last message printed following live
         self.mocap_bar_follow_toggle = None
+        # * Servo on the MoCap bar (husky_world.servo_to_movement_start_live). Read via getattr too.
+        self._servo_ee_target_override = None   # side -> bar-corrected tool0 target Frame, while a bar loop runs
+        self._servo_bar_feedback = False        # 'Servo: aim grounded bar by MoCap' ticked
+        self._servo_bar_carry = None            # movement id of the insert whose plan carries the bar correction
+        self._mocap_bar_reference = {}          # bar name -> 4x4 pose the running servo aims at (the pink copy)
+        self.servo_bar_feedback_toggle = None
         # * The pink Rhino bar lines ('Rhino bar lines (pink)'). Read via getattr too.
         self._assembled_bar_lines = {}          # bar name -> its pink assembled-pose line (every bar loaded)
         self._assembled_bar_lines_client = None  # the PyBullet client those lines were drawn in
@@ -3635,6 +3641,10 @@ class HuskyMonitor(Node):
         # * The last 'MoCap bar' drawing belongs to the previous action. Removed
         # * before the cfab session below may be replaced (its bodies live there).
         self.clear_mocap_bar_drawing()
+        # * So does the servo's MoCap-bar state (a carried correction, a target).
+        self._servo_bar_carry = None
+        self._mocap_bar_reference = {}
+        self._servo_ee_target_override = None
 
         # Init the per-problem cfab session + robot cell now so 'Load
         # Movement' is just a state push afterwards. The startup default
@@ -4657,6 +4667,23 @@ class HuskyMonitor(Node):
             self.m2_spiral_search = bool(ticked)
         return bool(getattr(self, 'm2_spiral_search', False))
 
+    def servo_bar_feedback_ticked(self) -> bool:
+        """Whether the 'Servo: aim grounded bar by MoCap' box is ticked (aim the bar, not tool0).
+
+        Same shape as ``_transfer_as_free_move``: the widget is read ONCE and
+        the flag re-synced, because a checkbox rebuilt by reset_ui can miss its
+        next click's callback. The flag is read with a default because headless
+        harnesses build the monitor without its __init__.
+
+        Returns:
+            bool: True when the servo loop of a grounded bar aims the MoCap bar.
+        """
+        toggle = getattr(self, 'servo_bar_feedback_toggle', None)
+        ticked = toggle.value if toggle is not None else None
+        if ticked is not None:
+            self._servo_bar_feedback = bool(ticked)
+        return bool(getattr(self, '_servo_bar_feedback', False))
+
     def _plan_transfer_as_free_move(self, mv: Movement) -> Optional[JointTrajectory]:
         """Workaround: plan the transfer as a plain dual-arm free move, without the bar.
 
@@ -5401,8 +5428,41 @@ class HuskyMonitor(Node):
             f"from {donor_mv.movement_id!r}: {injected}.")
         return bool(bar_rb.attached_to_link)
 
+    def _servo_target_ok(self, mv, idx: Optional[int] = None) -> bool:
+        """Whether the servo loop (and 'Replan Transfer -> Mv Start') may aim at a movement's start.
+
+        The insert and the retreat, as always. And the step RIGHT after a
+        GROUNDED insert: a stationary step (e.g. the manual fix of the
+        foundation) whose flanges start where that insert ended, i.e. on the
+        bar's assembled pose. The servo after a grounded insert aims there.
+        ! Only the very next step: a later stationary step (e.g. the release's
+        ! untighten, with the bar already fixed to its foundation) shares the
+        ! insert as its start source, but the arms must not servo the bar there.
+
+        Args:
+            mv (Movement | None): The movement.
+            idx (int | None): Its index in ``_loaded_movements``; None = the
+                loaded movement's index.
+
+        Returns:
+            bool: True when the servo can aim at its start.
+        """
+        kind = self._kind_of(mv)
+        if kind in COMPLIANT_KINDS:
+            return True
+        if kind not in STATIONARY_KINDS:
+            return False
+        idx = self.current_movement_index if idx is None else idx
+        movements = getattr(self, '_loaded_movements', None) or []
+        if idx is None or idx < 1 or idx > len(movements) - 1:
+            return False
+        src = self._start_ee_source(idx, 'left')
+        return (src is not None and src is movements[idx - 1]
+                and self._kind_of(src) is MovementKind.DUAL_CONSTRAINED_LINEAR
+                and bool(held_ground_joints(src.start_state)))
+
     def replan_transfer_to_movement_start_live(self, show_validation=True,
-                                               prefer_linear=False):
+                                               prefer_linear=False, linear_only=False):
         """Fresh live-base IK to the movement's start EE targets, then a
         CONSTRAINED dual-arm ("transfer") plan from the live conf to that
         IK-solved conf, keeping the mounted bar's rigid grasp intact.
@@ -5418,7 +5478,8 @@ class HuskyMonitor(Node):
         derives the rigid grasps by FK, and plans a bar-constrained path
         to the bar pose implied by the IK-solved goal conf.
 
-        Only supports M2 / M3 (same reason as Button 2), and requires the
+        Only supports M2 / M3 (same reason as Button 2), or the step right
+        after a grounded insert (``_servo_target_ok``), and requires the
         bar to be attached in the movement's start_state — that attachment
         is what makes the planner treat the bar as held.
 
@@ -5428,11 +5489,15 @@ class HuskyMonitor(Node):
         bar STRAIGHT to its target, solving each fragment's IK from the previous
         one -- right for the small corrections that follow, where exploring
         produces a long detour back to almost where it started. If the straight
-        line cannot be solved, this warns and falls back to the sampling planner.
+        line cannot be solved, this warns and falls back to the sampling planner
+        -- unless ``linear_only``, which then warns and plans nothing.
 
         Args:
             prefer_linear (bool): Try the straight-line bar move first. The
                 servo loop sets this for every iteration after the first.
+            linear_only (bool): The straight line or nothing: no sampling
+                fallback. The servo after a grounded insert, whose bar stands
+                on the floor, sets it; on that step it is always on.
             show_validation (bool): When True (button default), draw the
                 pre-execution safeguard curves (joint continuity + bar-hold
                 EE drift) in the "Movement Preview" DPG window and log a
@@ -5447,13 +5512,17 @@ class HuskyMonitor(Node):
             return
         mv = self.current_movement
         kind = self._kind_of(mv)
-        if kind not in COMPLIANT_KINDS:
+        if not self._servo_target_ok(mv):
             self.get_logger().warn(
-                f"Replan Transfer -> Mv Start only works on the insert or the retreat; "
-                f"{mv.movement_id} is a "
+                f"Replan Transfer -> Mv Start only works on the insert, the retreat, or the "
+                f"step right after a grounded insert; {mv.movement_id} is a "
                 f"{kind.value if kind is not None else type(mv).__name__}."
             )
             return
+        # ! The step right after a grounded insert: the bar stands on the floor, so
+        # ! only a straight line, also from button 2b (the sampling planner explores).
+        if kind in STATIONARY_KINDS:
+            linear_only = True
         # ! The bar must be attached in the start_state: the constrained
         # planner derives the rigid grasp from it, and set_robot_cell_state
         # makes the bar follow the live arm conf.
@@ -5528,7 +5597,7 @@ class HuskyMonitor(Node):
                 # * on a near-zero correction means a long detour back to where
                 # * it started (60 deg travelled to close 0.6 deg).
                 path = None
-                if prefer_linear:
+                if prefer_linear or linear_only:
                     jt = plan_constrained_dual_arm_linear(
                         self.cfab.planner, state,
                         active_bar_id=self.active_bar_name,
@@ -5539,6 +5608,14 @@ class HuskyMonitor(Node):
                     if path:
                         print(f"[transfer plan] OK ({len(path)} waypoints, "
                               f"bar-held, LINEAR).")
+                    elif linear_only:
+                        # ! No sampling fallback here: it explores, which with the
+                        # ! bar on the floor means dragging it across the ground.
+                        self.get_logger().warn(
+                            "[transfer plan] the straight-line bar move could not "
+                            "be solved (IK or collision along the line); straight "
+                            "lines only here, so nothing is planned.")
+                        return
                     else:
                         self.get_logger().warn(
                             "[transfer plan] the straight-line bar move could not "
@@ -6006,7 +6083,12 @@ class HuskyMonitor(Node):
         # * follows (_exec_then_propagate -> _propagate_live_end); after a servo
         # * run that is the corrected pose.
         idx = self.current_movement_index
-        if kind in COMPLIANT_KINDS:
+        if kind in COMPLIANT_KINDS and grounded:
+            # * A grounded bar's insert: the rigid insert, then the visual-servo
+            # * correction of the bar onto its assembled pose (the next step's start).
+            self.tasks.append(self._exec_then_propagate(
+                idx, world.execute_grounded_insert_then_servo(self), check_end=False, source='Servo'))
+        elif kind in COMPLIANT_KINDS:
             self.tasks.append(self._exec_then_propagate(
                 idx, world.execute_planned_trajectory_compliant(self), check_end=False))
         elif kind is MovementKind.SINGLE_FREE and self._is_hold_approach(mv):
@@ -9321,6 +9403,10 @@ class HuskyMonitor(Node):
         if goal_ee is None and goal_conf is None:
             self.get_logger().warn("M2: missing target_configuration / target_ee_frames.")
             return None
+        # * The servo before this insert stood its start on the MoCap bar: make the
+        # * authored move from where the flanges really are (see _carried_insert_goal).
+        if goal_ee is not None and getattr(self, '_servo_bar_carry', None) == mv.movement_id:
+            goal_ee = self._carried_insert_goal(mv, goal_ee)
         # Pause GUI rendering during the IK loop (no-op when headless).
         report = {}
         with pp.LockRenderer():
@@ -9339,6 +9425,55 @@ class HuskyMonitor(Node):
             self._diagnose_cartesian_plan_failure(mv.movement_id, mv.start_state, report)
         self._record_cartesian_viz(mv, mv.movement_id, report)
         return jt
+
+    def _carried_insert_goal(self, mv, goal_ee: dict) -> dict:
+        """The insert's goal flanges after a MoCap-bar servo: the authored move, made from the actual start.
+
+        The servo before the insert stood the flanges where the MoCap bar sits
+        on its target, a few mm off the authored start. The insert must still
+        make its authored move (e.g. 15 mm straight down) from there, so each
+        flange's goal is ``T_end_authored @ inv(T_start_authored) @ T_start_actual``
+        (``bar_mocap_fit.apply_authored_move``). The authored start is the
+        flange target of the step before (``_start_ee_source``); the actual
+        start is FK at the insert's start state (the live arms on the live base,
+        carried in after the servo).
+
+        Args:
+            mv (Movement): The insert (one of ``_loaded_movements``).
+            goal_ee (dict): Its authored ``target_ee_frames``, side -> Frame.
+
+        Returns:
+            dict: side -> the carried goal Frame; ``goal_ee`` itself, with a
+            warning, when anything needed is missing.
+        """
+        idx = next((i for i, m in enumerate(getattr(self, '_loaded_movements', None) or []) if m is mv), None)
+        spec = self._connected_robot()
+        sources = {side: self._start_ee_source(idx, side) for side in spec.side_keys}
+        missing = [side for side, src in sources.items() if src is None or side not in goal_ee]
+        if idx is None or missing:
+            self.get_logger().warn(
+                f"[insert plan] MoCap-bar correction NOT carried into {mv.movement_id}: no authored "
+                f"start for {missing or 'it'}; planning to the authored end.")
+            return goal_ee
+        try:
+            carried = {}
+            for side, src in sources.items():
+                T_start_authored = pp.tform_from_pose(pose_from_frame(src.target_ee_frames[side]))
+                T_end_authored = pp.tform_from_pose(pose_from_frame(goal_ee[side]))
+                T_start_actual = pp.tform_from_pose(pose_from_frame(
+                    _fk_link_frame(self.cfab.planner, mv.start_state, spec.flange_for_side(side))))
+                carried[side] = frame_from_pose(pp.pose_from_tform(
+                    apply_authored_move(T_start_authored, T_end_authored, T_start_actual)))
+        except Exception as e:
+            self.get_logger().warn(
+                f"[insert plan] MoCap-bar correction NOT carried into {mv.movement_id} ({e}); "
+                f"planning to the authored end.")
+            return goal_ee
+        side = spec.side_keys[0]
+        d_pos, d_ang = self._frame_pose_residual(carried[side], goal_ee[side])
+        print(f"[insert plan] MoCap-bar correction carried: {mv.movement_id} {side} goal "
+              f"{d_pos * 1000:.2f} mm / {np.degrees(d_ang):.3f} deg from the authored end.")
+        return carried
 
     def _bar_hold_ee_drift(self, path12, template_state):
         """Per-waypoint drift of the left_from_right relative EE pose.
@@ -9536,11 +9671,15 @@ class HuskyMonitor(Node):
         targets = getattr(self, '_last_ik_target_ee_frames', None)
         if not targets or 'left' not in targets or 'right' not in targets:
             return
+        # While the servo aims a grounded bar by MoCap, the targets are its
+        # bar-corrected ones (_servo_ee_target_override), not the authored ones.
+        target_kind = ('BAR-CORRECTED' if getattr(self, '_servo_ee_target_override', None) is not None
+                       else 'AUTHORED')
         for side, label in (("left", "L"), ("right", "R")):
             d_pos, d_ang = self._frame_pose_residual(
                 _tool0(end_state, side), targets[side])
             print(
-                f"[transfer verify C] {label} path-end tool0 vs AUTHORED target: "
+                f"[transfer verify C] {label} path-end tool0 vs {target_kind} target: "
                 f"pos={d_pos * 1000:.2f} mm ang={np.degrees(d_ang):.3f} deg"
             )
 
@@ -9555,7 +9694,7 @@ class HuskyMonitor(Node):
             _tool0(start_state, 'left'), _tool0(start_state, 'right'))
         d_pos, d_ang = mismatch['pos'], mismatch['ang']
         print(
-            f"[transfer verify D] authored left->right relative tool0 vs the "
+            f"[transfer verify D] {target_kind.lower()} left->right relative tool0 vs the "
             f"one physically held: pos={d_pos * 1000:.2f} mm "
             f"ang={np.degrees(d_ang):.3f} deg"
         )
@@ -9748,6 +9887,14 @@ class HuskyMonitor(Node):
         would drift with the robot instead of staying at the authored pose. If
         the authored frames are missing this warns and does nothing.
 
+        ! One scoped exception: while the servo loop aims a grounded bar by
+        ! MoCap (``husky_world.servo_to_movement_start_live`` with its bar
+        ! feedback), it sets ``_servo_ee_target_override`` to the bar-corrected
+        ! targets (the live flanges moved by the correction that carries the
+        ! MoCap bar onto its target) and clears it in a ``finally`` when the run
+        ! ends. While set, and only when the authored frames exist, the IK aims
+        ! there instead.
+
         Returns:
             bool: True on success (goal_arm_pose updated), False on any
             precondition miss (including missing authored start EE frames) or IK
@@ -9806,6 +9953,13 @@ class HuskyMonitor(Node):
             return False
         print(f"[IK Live Base] start EE frames from "
               f"{ {side: src.movement_id for side, src in sources.items()} }.")
+        # * The servo loop on the MoCap bar: aim the bar-corrected targets (see the docstring).
+        override = getattr(self, '_servo_ee_target_override', None)
+        if override is not None:
+            start_ee_frames = dict(override)
+            self._last_ik_target_ee_frames = start_ee_frames
+            print("[IK Live Base] target is BAR-CORRECTED (servo on the MoCap bar): both flanges "
+                  "moved by the correction that carries the MoCap bar onto its target.")
 
         # 2) IK at live base using the derived start EE frames. Inject the
         # live base + live arm conf so IK is warm-started from where the
@@ -10335,7 +10489,10 @@ class HuskyMonitor(Node):
                     if is_loaded:   # _measure_bar_pose says why it cannot be measured
                         to_measure.append((bar, None, 'held in every step, no Rhino pose'))
                     continue
-                snapshot = self._mocap_bar_snapshot(design, pp.tform_from_pose(designed[0]), fallback=is_loaded)
+                # * While a servo runs, its target pose stands in for the Rhino pose.
+                reference = self._own_dict('_mocap_bar_reference').get(bar)
+                T_reference = reference if reference is not None else pp.tform_from_pose(designed[0])
+                snapshot = self._mocap_bar_snapshot(design, T_reference, fallback=is_loaded)
                 cache, age_s, source = snapshot
                 fresh = source == 'fake' or (bool(cache) and age_s <= MOCAP_BAR_MAX_AGE_S)
                 if not (is_loaded or fresh):
@@ -10386,7 +10543,8 @@ class HuskyMonitor(Node):
                     fits[bar] = fit
             return fits
 
-    def measure_bar_pose(self, bar_name: Optional[str] = None, *, log: bool = True) -> Optional[BarFit]:
+    def measure_bar_pose(self, bar_name: Optional[str] = None, *, log: bool = True,
+                         T_hint: Optional[np.ndarray] = None) -> Optional[BarFit]:
         """Fit ONE bar's pose from its MoCap markers (default: the loaded bar) and draw it.
 
         The panel's button measures every streaming bar (`measure_mocap_bars`);
@@ -10398,12 +10556,14 @@ class HuskyMonitor(Node):
         Args:
             bar_name (str | None): The bar's rigid-body name; None = the loaded bar.
             log (bool): Print the full report (a click) or only changes (following live).
+            T_hint (np.ndarray | None): 4x4 pose to match around first (the servo
+                loop hands in the bar where FK puts it).
 
         Returns:
             BarFit | None: See `_measure_bar_pose`.
         """
         with self._mocap_bar_lock:
-            return self._measure_bar_pose(bar_name, log=log)
+            return self._measure_bar_pose(bar_name, log=log, T_hint=T_hint)
 
     def _measure_bar_pose(self, bar_name: Optional[str] = None, *, log: bool = True,
                           snapshot: Optional[tuple] = None, T_hint: Optional[np.ndarray] = None) -> Optional[BarFit]:
@@ -10456,7 +10616,11 @@ class HuskyMonitor(Node):
                                  log=log, warn=True)
             return None
         design_pose, state = designed
-        T_design = pp.tform_from_pose(design_pose)
+        # * While a servo runs, the pink copy and the deviation are against the servo's
+        # * target (_mocap_bar_reference, set by husky_world.servo_to_movement_start_live);
+        # * the joints are still placed from the resting state.
+        reference = self._own_dict('_mocap_bar_reference').get(bar_name)
+        T_design = reference if reference is not None else pp.tform_from_pose(design_pose)
 
         if snapshot is None:
             self._register_mocap_bar_assets()
@@ -11223,7 +11387,8 @@ class HuskyMonitor(Node):
         """
         if self._refuse_while_tasks_run('Servo to Mv Start', skeleton_only=True):
             return
-        self.tasks.append(world.servo_to_movement_start_live(self, use_transfer=use_transfer))
+        self.tasks.append(world.servo_to_movement_start_live(
+            self, use_transfer=use_transfer, bar_feedback=self.servo_bar_feedback_ticked()))
 
     def _load_hint(self) -> str:
         """Name of the button that loads an action, for the "click ... first" messages.
@@ -13000,8 +13165,18 @@ class HuskyMonitor(Node):
             )
             self.buttons.append(Button('MoCap bar: clear drawing', self.clear_mocap_bar_drawing))
             self.buttons.append(Button('MoCap bar: record take', self.record_mocap_bar_take))
+            # * Ticked: the servo after a grounded bar's transfer and after its insert
+            # * aims the bar by its MoCap fit; unticked: tool0 on the authored targets
+            # * (the MoCap bar is recorded alongside either way). Read once per run
+            # * (servo_bar_feedback_ticked). Seeded from the flag so a reset_ui rebuild keeps the tick.
+            self.servo_bar_feedback_toggle = Toggle(
+                'Servo: aim grounded bar by MoCap (else tool0)',
+                lambda v: setattr(self, '_servo_bar_feedback', bool(v)),
+                bool(getattr(self, '_servo_bar_feedback', False)),
+            )
         else:
             self.mocap_bar_follow_toggle = None
+            self.servo_bar_feedback_toggle = None
 
         if self.CONNECT_COMPLIANT_CONTROLLER:
             # self.dump_sep_sliders.append(Slider("----------CONTROLLERS", lambda: None))

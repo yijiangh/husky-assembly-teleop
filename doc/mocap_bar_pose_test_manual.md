@@ -30,7 +30,8 @@ You compare three things:
 - **pink vs the real bar**: where you put the bar compared with where Rhino wants it.
 
 **No robot is needed.** The monitor runs with `FAKE_HARDWARE = 1`: it connects to no arm,
-gripper or tool, and nothing moves. Motive must stream.
+gripper or tool, and nothing moves. Motive must stream. The exception is section 10, which runs on
+Cindy: the visual servo of a grounded bar aims the bar by this MoCap fit instead of tool0.
 
 **B20 at its Rhino pose** (from the export; the monitor prints the same numbers):
 
@@ -272,7 +273,8 @@ ros2 run husky_assembly_teleop husky_monitor
 - [ ] Panel, section **`MoCap bar (joint markers)`** (above `CONTROLLERS`):
       `Rhino bar lines (pink)` (a checkbox, ticked), `MoCap bar: measure + draw (streaming bars)`,
       `MoCap bar: follow live (10 Hz)` (a checkbox), `MoCap bar: clear drawing`,
-      `MoCap bar: record take`.
+      `MoCap bar: record take`, `Servo: aim grounded bar by MoCap (else tool0)` (a checkbox, only
+      used with Cindy in section 10).
 
 ! Do not click `Mark action done` in this test: it would record B20 as built in
 `progress.json`.
@@ -458,3 +460,167 @@ another PC's address.
   - whether the asset's balls arrive unlabelled when the asset is disabled (section 6);
   - the largest residual seen with all 8 balls in view (if above 2 mm, the matcher's 2 mm side
     tolerance should go up).
+
+---
+
+## 10. With Cindy: the servo on the MoCap bar (grounded B20)
+
+Sections 0–9 run without a robot. This section runs **action 0, `B20_J_joint`, on Cindy**, twice:
+once with the servo aiming the **bar** by its MoCap fit, once aiming **tool0** as before. Both runs
+print, and save, the same comparison of three bar poses:
+
+| name in the log | what it is |
+|---|---|
+| **design** | where Rhino wants the bar at that moment: the insert's start (15 mm above B20's assembled pose) during the first servo, the assembled pose during the second |
+| **FK** | where the robot thinks the bar is: mocap base + arm joints (FK) → tool0, composed with the Rhino grasp (tool0 → bar) |
+| **MoCap** | where the bar is: the fit of its 8 joint balls (sections 4–5) |
+
+`MoCap-vs-FK` is the error the tool0 servo cannot see. It is the sum of the base calibration, the
+arm, the tool mount on the flange and the joint mount on the bar. With the box ticked the servo
+moves both flanges by the one rigid correction that puts the MoCap bar on its design pose, so
+`MoCap-vs-design` goes under 0.5 mm / 0.1°. Unticked, `FK-vs-design` goes under 0.2 mm (tool0)
+and `MoCap-vs-design` stays what the 20261001 test measured.
+
+Only a **grounded** bar (held on its ground joints, nothing to mate with) is aimed by MoCap. Every
+other bar keeps the tool0 servo, with the MoCap bar recorded alongside when it has a marker table.
+In this export only B20 and B21 have one. B34, the other grounded bar (action 7), has none, so on
+B34 the box falls back to tool0 and says so.
+
+### 10.1 Set up
+
+- [ ] The robot as for `doc/three_robot_assembly_test_manual.md`:
+  - Cindy brought up (its 0.3 Cindy) and checked (2.1 Cindy);
+  - safety as in its section 4;
+  - the flags of its 0.1, **except** that `DESIGN_PROBLEM_NAME` stays `261016_2ModulesDemo_YH`
+    (this manual's PC block, with `HUSKY_PC=robotpc` on the robot-control PC).
+- [ ] Flags (section 0.1 of this manual) differ from the by-eye test:
+
+| flag | value for this section |
+|---|---|
+| `FAKE_HARDWARE` | **0** (Cindy moves) |
+| `USE_MOCAP` | **1** |
+| `MOCAP_BAR_FAKE_MARKERS` | **0** (with 1 the servo is told `fake markers ... never steered on` whenever Motive misses a ball) |
+| `CONNECT_COMPLIANT_CONTROLLER`, `LIST_CONTROLLER_SERVICES` | 1 |
+
+```bash
+F="$HUSKY_MONITOR_PY"
+sed -i 's/^    FAKE_HARDWARE = 1/    FAKE_HARDWARE = 0/; s/^    MOCAP_BAR_FAKE_MARKERS = 1/    MOCAP_BAR_FAKE_MARKERS = 0/' "$F"
+grep -nE "^    (FAKE_HARDWARE|USE_MOCAP|MOCAP_BAR_FAKE_MARKERS) *=" "$F"     # expect 0, 1, 0
+```
+
+- [ ] Motive streams B20's asset (1020) with its 8 balls (0.3). B20 is on its loading spot, its four
+      mocap plates mounted (0.4), and nothing will cover the balls while the arms hold it.
+- [ ] Start the monitor (section 3). The `MoCap bar (joint markers)` panel section now also has the
+      checkbox **`Servo: aim grounded bar by MoCap (else tool0)`**, unticked by default.
+- [ ] Tick `Workaround: plan the transfer as a free move (no bar, from the live arms)`, as in the
+      three-robot manual's 7.1.
+
+### 10.2 Run 1: box ticked (the servo aims the bar)
+
+Tick `Servo: aim grounded bar by MoCap (else tool0)`, then run action 0 as the three-robot manual's
+7.2 describes: IK check, `Plan Movement`, `Exec Selected Mv Traj (auto)` on the transfer, then the
+mount pause. What is new:
+
+- [ ] At the exec: `[transfer B20_J_M3_CDFM_transfer_to_approach] servo feedback: MoCap bar`.
+- [ ] After the mount pause, the insert is loaded and the servo starts with
+      `[servo] feedback: the MoCap bar bar_B20 (converges at 0.5 mm / 0.1 deg).`
+- [ ] Every reading prints one bar line next to the tool0 line, e.g.
+      `[servo 0] bar bar_B20: FK-vs-design 0.05 mm/0.002°, MoCap-vs-design 4.31 mm/0.125°, MoCap-vs-FK 4.29 mm/0.124° (fit 8/8, rms 0.6 mm, asset)`.
+      After it: `[IK Live Base] target is BAR-CORRECTED (servo on the MoCap bar): ...`.
+- [ ] PyBullet: the **pink** B20 copy stands at the insert's start (15 mm above its assembled
+      pose) while the servo runs. The **cyan** copy (the MoCap fit) is redrawn at every reading
+      and closes on the pink one.
+- [ ] The first move pauses for `Confirm Exec` as before (a few mm, the bar held). Later passes
+      run alone unless a path travels more than 5°.
+- [ ] The `Servoing Live Tracker`'s tool0 curves level off at the FK-vs-MoCap gap instead of going
+      to 0. That is expected: tool0 is moved off its Rhino target on purpose. Read the bar lines.
+- [ ] It ends with one of:
+      - `### SERVOING converged on the MoCap bar at iter N: dpos 0.31 mm, dang 0.042 deg (< 0.5 mm / 0.1 deg)`;
+      - `### SERVOING stopped at iter 1: the MoCap bar is already on its target (...)`;
+      - `### SERVOING ran all 8 iterations without converging.` (note the last bar line; the bar
+        stays where the last pass put it).
+
+      Then **the line this test is about**:
+      `### bar pose at termination (bar_B20): FK-vs-design ..., MoCap-vs-design ..., MoCap-vs-FK ...`,
+      followed by `[servo] the MoCap-bar correction is carried into the plan of B20_J_M4_LM_insert.`
+- [ ] **Insert**: `Plan Movement` →
+      `[insert plan] MoCap-bar correction carried: B20_J_M4_LM_insert left goal X mm / Y deg from the authored end.`
+      X is about the `MoCap-vs-FK` gap: the insert makes Rhino's 15 mm move down from where the
+      servo put the bar, not from the Rhino start.
+- [ ] `Exec Selected Mv Traj (auto)` → the rigid insert as in 7.2 (`grounded bar ... rigid insert done (no tighten).`). Then, new:
+      `[insert B20_J_M4_LM_insert] servo to the start of B20_J_M5_manual_fix_foundation (the insert's end), feedback: MoCap bar; straight-line corrections only.`
+      The manual step `B20_J_M5_manual_fix_foundation` is now loaded, and the **second servo** runs
+      on the assembled pose (the pink copy moves down to it):
+  - [ ] The first correction pauses for `Confirm Exec`: scrub `Traj viz time` (sub-mm to a few mm
+        with B20 on the floor), then confirm.
+  - [ ] Watch the load lines
+        `[servo N] load L=... N / ... Nm (+... N vs iter 0) | R=... | force change since iter 0 L=... R=... N`.
+        The **force change** is what counts. Pressing on the floor can make the printed load
+        *smaller*, because the floor takes the bar's weight, while the change still grows. The servo
+        stops by itself when the change at either flange passes 20 N:
+        `### SERVOING stopped at iter N: the force on an arm changed by ... N since iter 0 (limit 20 N); the bar may be pushed against something.`
+        `Cancel Exec` stops it any time. The insert had finished, so where the arms are is still
+        carried forward:
+        `[insert B20_J_M4_LM_insert] 'Cancel Exec' during the servo after the insert: the insert itself had finished, so where the arms are now is carried forward.`
+  - [ ] It ends with `converged on the MoCap bar` (or `already on its target`), then the
+        `### bar pose at termination (bar_B20): ...` line for the **placed** bar.
+  - `[transfer plan] the straight-line bar move could not be solved (IK or collision along the line); straight lines only here, so nothing is planned.`
+    then `Servoing: replan produced no trajectory; stopping.`: the correction on the floor could
+    not be planned. Note the lines; B20 stays where the insert put it.
+  - `[insert B20_J_M4_LM_insert] no force reading: the servo's load guard is OFF. ...`: the force
+    sensors are not streaming. Watch the arms closely, or `Cancel Exec`.
+- [ ] **Fix foundation** as in 7.2. Before `Mark action done`, keep the two records (10.4).
+
+### 10.3 Run 2: box unticked (tool0, as before)
+
+Redo action 0: un-mount B20 and put it back on its loading spot, then `Reopen action (reload clean)`
+(three-robot manual section 14). Untick the box and run it exactly as in 10.2.
+
+- [ ] `[transfer ...] servo feedback: tool0`, then
+      `[servo] feedback: tool0 (0.2 mm); the MoCap bar bar_B20 is recorded alongside.`
+- [ ] The bar lines are printed at every reading as in run 1, but the loop aims tool0. It ends with
+      `### SERVOING converged at iter N (< 0.2 mm)` (or `nothing left to plan`), then the
+      `### bar pose at termination (bar_B20): ...` line.
+- [ ] No `correction carried` line: the insert plans to Rhino's end.
+- [ ] After the insert the second servo runs too, on tool0 (`feedback: tool0`).
+
+### 10.4 Reading and keeping the numbers
+
+| in run 1 (bar) | in run 2 (tool0) |
+|---|---|
+| `MoCap-vs-design` < 0.5 mm / 0.1° | `MoCap-vs-design` = the old placement error (about 4 mm in 20261001) |
+| `FK-vs-design` ≈ the gap: the robot believes the bar is off | `FK-vs-design` < 0.2 mm: the robot believes the bar is on target |
+| `MoCap-vs-FK`: the robot's own error, unchanged | `MoCap-vs-FK`: about the same value |
+
+`MoCap-vs-FK` should come out about the same in both runs and both servos: it is a property of
+the robot (calibration, arm, tool and joint mounts), not of the loop. If it changes a lot between
+the servo at the insert's start and the one on the floor, the bar moved in the grippers when its
+feet touched down.
+
+Records, under `$EXPERIMENT_DATA_DIRECTORY/bar_action_live_replan_exe/<date>-servoing/`:
+- `B20_J_M4_LM_insert_servoing_data_<ts>.json` / `_performance_<ts>.png`: the servo before the insert;
+- `B20_J_M4_LM_insert_end_servoing_data_<ts>.json` / `_performance_<ts>.png`: the servo after it.
+
+Each JSON names its mode (`servo_feedback`: `mocap_bar` or `tool0`) and its bar (`bar_name`). Each
+reading in `servoing_data` carries a `bar` entry:
+- `fk_vs_design`, `mocap_vs_design`, `mocap_vs_fk`, each as `dpos_mm`, `dang_deg`, and the same
+  split in the bar's frame;
+- the three 4x4 poses `T_design`, `T_fk`, `T_mocap`;
+- the fit;
+- `usable` and `reason`.
+
+The PNG adds the bar's distance from its design pose, dashed for MoCap and dotted for FK.
+
+### 10.5 If something goes wrong
+
+| the log says | do |
+|---|---|
+| `'Servo: aim grounded bar by MoCap' is ticked, but this run aims tool0: bar_B20 carries no MoCap markers.` | wrong problem (`DESIGN_PROBLEM_NAME` must be `261016_2ModulesDemo_YH`) or no `MoCapMarkers.json` (0.2) |
+| `... aims tool0: B20_J_M4_LM_insert does not hold a grounded bar ...` | not a grounded bar's action; expected for every bar but B20 / B34 |
+| `[servo N] bar bar_B20: ... not usable: fit failed: only k of 8 design markers matched (need 6)` | balls hidden by the arms or the tools: look at Motive; the loop aims tool0 until the fit is good |
+| `... not usable: fake markers (desk rehearsal; Motive does not stream the bar), never steered on` | `MOCAP_BAR_FAKE_MARKERS` is 1 and Motive's B20 balls are missing: set it to 0 (10.1), check the asset |
+| `... not usable: MoCap-vs-design ... is beyond the 30 mm / 3 deg gate ...` | the fit found another bar, or B20 sits far off its target (e.g. a wrong mount): check the cyan copy against the real bar (4.2) |
+| `### SERVOING stopped at iter N: the MoCap bar fit is lost (...); the arms stay at the last bar-corrected pose.` | the balls went out of view after the loop had started on them: free them, then `Load Movement` on the step and re-run, or carry on |
+| `### SERVOING converged at iter N on tool0 (< 0.2 mm): the MoCap bar fit was never usable, so the loop aimed tool0.` | the bar was never measured well enough: this run is a tool0 run (its record says `servo_feedback: tool0`), redo it |
+| `### SERVOING stopped at iter N: nothing left to plan (...); the MoCap bar is ... from its target` | the correction left is too small to move the flanges (a turn about the bar's own axis barely moves them): fine, the bar line says where the bar is |
+| `[insert ...] the flanges stopped X mm from the end of the insert (limit 3.0 mm): no servo after it.` | the insert did not run to its end (e.g. the arms were not under `scaled_joint_trajectory_controller`): look at the insert's own lines above it |
