@@ -80,6 +80,8 @@ class _ArmWidgets:
     compliance: ComplianceInputs
     frames: dict[str, viser.FrameHandle]
     arrows: dict[str, viser.ArrowsHandle]
+    #: Keep on, in the free drive controller's folder.
+    free_drive_keep: viser.GuiCheckboxHandle | None = None
     #: The arm's status line on the phone's Control tab, set once that tab is built.
     phone_status: viser.GuiHtmlHandle | None = None
 
@@ -101,9 +103,9 @@ class RobotControlPlugin(HuskyPlugin):
         #: Last hold report per base serial: (linear sign, angular sign, arrival time, from the phone).
         self._held: dict[str, tuple[float, float, float, bool]] = {}
 
-        #: Last report of each arm's held free drive button on the phone, by (serial, arm name).
-        self._free_drive_held: dict[tuple[str, str], float] = {}
-        #: Arms this plugin switched to free drive for a held button, so a release switches them back.
+        #: Last report of each arm's held free drive button, by (serial, arm name): (arrival time, from the phone).
+        self._free_drive_held: dict[tuple[str, str], tuple[float, bool]] = {}
+        #: Arms this plugin switched to free drive for a held phone button, so a release switches them back.
         self._free_driving: set[tuple[str, str]] = set()
         #: Per arm, the time before which a refused free drive switch is not asked again.
         self._free_drive_retry: dict[tuple[str, str], float] = {}
@@ -165,7 +167,7 @@ class RobotControlPlugin(HuskyPlugin):
                         with phone.add_folder(ARM_LABELS.get(name, name)):
                             arm_widgets.phone_status = build_phone_arm_inputs(
                                 ctx, phone, f"{widgets.serial} {name}", arm_widgets.arm,
-                                partial(self._on_free_drive_hold, ctx, (widgets.serial, name)))
+                                partial(self._on_free_drive_hold, ctx, (widgets.serial, name), True))
         # ? Built here: loading meshes is too slow for a tick.
         self._target_ghosts = robot_ghosts(ctx, ctx.config.robots, "target")
 
@@ -222,7 +224,8 @@ class RobotControlPlugin(HuskyPlugin):
         panel, built = build_controller_panel(ctx, gui, arm.controllers, {
             SCALED_JOINT_TRAJECTORY_CONTROLLER: joint_inputs,
             CARTESIAN_COMPLIANCE_CONTROLLER: compliance_inputs,
-            FREE_DRIVE_CONTROLLER: partial(build_free_drive_inputs, gui),
+            FREE_DRIVE_CONTROLLER: partial(build_free_drive_inputs, ctx, gui, label,
+                                           partial(self._on_free_drive_hold, ctx, key, False)),
         })
 
         # Independent of the running controller.
@@ -234,6 +237,7 @@ class RobotControlPlugin(HuskyPlugin):
         return _ArmWidgets(serial=serial, arm=arm, panel=panel, status=status, tool_status=tool,
                            joint=built[SCALED_JOINT_TRAJECTORY_CONTROLLER],
                            compliance=built[CARTESIAN_COMPLIANCE_CONTROLLER],
+                           free_drive_keep=built[FREE_DRIVE_CONTROLLER],
                            frames=add_frame_markers(ctx, serial, arm), arrows=add_force_arrows(ctx, serial, arm))
 
     def teardown(self, ctx: PluginContext) -> None:
@@ -265,9 +269,9 @@ class RobotControlPlugin(HuskyPlugin):
         """
         self._held[serial] = (linear, angular, ctx.now(), phone)
 
-    def _on_free_drive_hold(self, ctx: PluginContext, key: tuple[str, str]) -> None:
-        """Record that an arm's free drive button on the phone is still held."""
-        self._free_drive_held[key] = ctx.now()
+    def _on_free_drive_hold(self, ctx: PluginContext, key: tuple[str, str], phone: bool) -> None:
+        """Record that an arm's free drive button is still held; on the phone it also switches the controller."""
+        self._free_drive_held[key] = (ctx.now(), phone)
 
     def _request_joint_load(self, key: tuple[str, str], angles: np.ndarray | None) -> None:
         """Ask update to set one arm's joint sliders to `angles` (radians), or to the measured joints for None."""
@@ -313,11 +317,13 @@ class RobotControlPlugin(HuskyPlugin):
                                                self._applied_force.get(key))
 
     def _update_free_drive(self, now: float) -> None:
-        """Free drive each arm while its phone button is held; on release the joint controller holds the arm.
+        """Keep free drive on while a free drive button is held or Keep on is ticked; the phone's button also switches.
 
+        - Laptop: the Free controller button switches; holding its button, or Keep on, frees the arm.
+        - Phone: holding switches to free drive and frees the arm; on release the joint controller holds it.
         ! On release, switch back only while free drive still runs: after Stop all or a switch on the laptop, a
           release must not start a controller. If the switch back fails, free drive still ends within 1 s, since
-          its heartbeat stops (`ArmInterface._keep_free_drive`).
+          the requests stop (`ArmInterface.request_free_drive`).
 
         Args:
             now: This tick's time, as the hold reports use.
@@ -325,16 +331,22 @@ class RobotControlPlugin(HuskyPlugin):
         for widgets in self._arms:
             key = (widgets.serial, widgets.arm.config.name)
             controllers = widgets.arm.controllers
-            # Decide only once a pending switch is answered, and not straight after a refused one.
+            last = self._free_drive_held.get(key)
+            held = last is not None and now - last[0] <= HOLD_TIMEOUT
+            keep = widgets.free_drive_keep
+            if keep is not None and keep.value and controllers.state.requested != FREE_DRIVE_CONTROLLER:
+                keep.value = False  # another controller was chosen: Keep on must be ticked again
+            if held or (keep is not None and keep.value):
+                widgets.arm.request_free_drive()
+            # Switch for the phone only once a pending switch is answered, and not straight after a refused one.
+            phone_held = held and last[1]
             if controllers.state.switch_in_flight is not None or now < self._free_drive_retry.get(key, now):
                 continue
-            last = self._free_drive_held.get(key)
-            held = last is not None and now - last <= HOLD_TIMEOUT
-            if held and key not in self._free_driving:
+            if phone_held and key not in self._free_driving:
                 switched = controllers.switch(FREE_DRIVE_CONTROLLER)
                 if switched:
                     self._free_driving.add(key)
-            elif not held and key in self._free_driving:
+            elif not phone_held and key in self._free_driving:
                 switched = (not controllers.is_active(FREE_DRIVE_CONTROLLER)
                             or controllers.switch(SCALED_JOINT_TRAJECTORY_CONTROLLER))
                 if switched:

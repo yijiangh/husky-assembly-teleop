@@ -7,6 +7,7 @@ One ros2_control controller manager (of the base or an arm), and which of its co
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Callable
 
 from controller_manager_msgs.srv import ListControllers, SwitchController
 from rclpy.node import Node
@@ -48,7 +49,7 @@ class ControllerManagerInterface:
     """
 
     def __init__(self, node: Node, namespace: str, switchable: tuple[str, ...],
-                 state: ControllerManagerState):
+                 state: ControllerManagerState, guard: Callable[[str], str | None] | None = None):
         """Create the service clients and start polling the controller list.
 
         Args:
@@ -56,11 +57,13 @@ class ControllerManagerInterface:
             namespace: Namespace of the controller manager, e.g. "/a200_0806/left_ur5e".
             switchable: Controllers this part may run, one at a time.
             state: Where answers are written.
+            guard: Why a controller may not be started now, or None; `switch` refuses while it gives a reason.
         """
         self._node = node
         self.namespace = namespace
         self.switchable = switchable
         self.state = state
+        self._guard = guard
         self._ros = RosConnections(node)
         # Set once the missing service is logged, so it is not logged every poll.
         self._reported_unavailable = False
@@ -133,6 +136,10 @@ class ControllerManagerInterface:
         if controller not in self.switchable:
             self.state.switch_error = (f"{controller!r} is not one of {self.switchable} "
                                        f"on {self.namespace}")
+            self._node.get_logger().error(self.state.switch_error)
+            return False
+        if self._guard is not None and (problem := self._guard(controller)):
+            self.state.switch_error = f"{self.namespace}: not starting {controller}: {problem}"
             self._node.get_logger().error(self.state.switch_error)
             return False
         if self.state.active == controller:

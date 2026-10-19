@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from robot_fakes import TCP_ORIENTATION, TCP_POSITION, fake_arm
+from robot_fakes import TCP_ORIENTATION, TCP_POSITION, Publisher, fake_arm
 from scipy.spatial.transform import Rotation
 
 from husky_assembly_teleop.robot_interface.arm import (CARTESIAN_COMPLIANCE_CONTROLLER, CARTESIAN_MAX_STEP,
-                                                       CARTESIAN_STEP_WINDOW, FREE_DRIVE_CONTROLLER, HOLD_DURATION,
+                                                       CARTESIAN_STEP_WINDOW, FREE_DRIVE_CONTROLLER,
+                                                       FREE_DRIVE_REQUEST_TTL, HOLD_DURATION,
                                                        JOINT_STATE_MAX_AGE, SCALED_JOINT_TRAJECTORY_CONTROLLER,
                                                        TRAJECTORY_MAX_JOINT_ACCELERATION, UR_JOINT_NAMES,
                                                        MAX_TARGET_FORCE, MAX_TARGET_TORQUE, MOVING_WITHIN,
@@ -163,6 +164,40 @@ def test_fake_hardware_moves_without_a_dashboard_but_not_without_the_sync():
     silent = fake_arm(simulated=simulated)
     silent.state.status_update_time -= SYNC_STATUS_MAX_AGE + 0.1
     assert "safety is not known" in refused(silent, *line(silent))
+
+
+@pytest.mark.parametrize("unsafe", [
+    lambda arm: setattr(arm.state, "status_update_time", arm.state.status_update_time - SYNC_STATUS_MAX_AGE - 0.1),
+    lambda arm: setattr(arm.state, "operational", False),
+    lambda arm: setattr(arm.state, "program_playing", False),
+])
+def test_free_drive_needs_the_safety_sync(unsafe):
+    """Not started, and its heartbeat stops (free drive ends within 1 s), while the sync does not vouch for the arm."""
+    arm = fake_arm(FREE_DRIVE_CONTROLLER)
+    arm.state.controllers.requested, arm._free_drive = FREE_DRIVE_CONTROLLER, Publisher()
+    arm.request_free_drive()
+    arm._keep_free_drive()
+    assert len(arm._free_drive.sent) == 1 and arm._switch_refusal(FREE_DRIVE_CONTROLLER) is None
+    unsafe(arm)
+    arm.request_free_drive()
+    arm._keep_free_drive()
+    assert len(arm._free_drive.sent) == 1 and "ending free drive" in arm._node.log.text("error")
+    assert arm._switch_refusal(FREE_DRIVE_CONTROLLER)
+    assert arm._switch_refusal(SCALED_JOINT_TRAJECTORY_CONTROLLER) is None
+
+
+def test_free_drive_runs_only_while_requested():
+    """Running the controller alone keeps the arm stiff; a request frees it for FREE_DRIVE_REQUEST_TTL."""
+    arm = fake_arm(FREE_DRIVE_CONTROLLER)
+    arm.state.controllers.requested, arm._free_drive = FREE_DRIVE_CONTROLLER, Publisher()
+    arm._keep_free_drive()
+    assert not arm._free_drive.sent
+    arm.request_free_drive()
+    arm._keep_free_drive()
+    arm._node.now += FREE_DRIVE_REQUEST_TTL + 0.01
+    arm.state.status_update_time = arm.state.controllers.last_update_time = arm._node.now
+    arm._keep_free_drive()
+    assert len(arm._free_drive.sent) == 1
 
 
 # --- --- --- --- --- paths --- --- --- --- ---

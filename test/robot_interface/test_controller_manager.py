@@ -24,7 +24,7 @@ def manager(active: str | None = None, others: dict[str, str] | None = None, rea
     interface.state.controllers = {name: "inactive" for name in interface.switchable} | (others or {})
     if active is not None:
         interface.state.controllers[active] = "active"
-    interface._reported_unavailable = False
+    interface._reported_unavailable, interface._guard = False, None
     interface._list_client, interface._switch_client = Client(ready), Client(ready)
     return interface
 
@@ -77,6 +77,15 @@ def test_switch_refused(controller, active, ready, in_flight, why):
     interface.state.switch_in_flight = in_flight
     assert not interface.switch(controller)
     assert not interface._switch_client.calls and why in interface.state.switch_error
+
+
+def test_a_guard_refuses_only_what_it_names():
+    """The arm's guard keeps free drive off while the safety sync does not vouch for the arm; others still switch."""
+    interface = manager(JOINTS)
+    interface._guard = lambda controller: "no recent sync status" if controller == FREE else None
+    assert not interface.switch(FREE) and not interface._switch_client.calls
+    assert "no recent sync status" in interface.state.switch_error
+    assert interface.switch(CARTESIAN)
 
 
 def test_switching_to_the_running_controller_sends_nothing():

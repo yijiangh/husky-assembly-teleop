@@ -17,7 +17,7 @@ from ...plugin_api.context import PluginContext
 from ...robot_interface.arm import (CARTESIAN_MOVE_MAX_ROTATION_SPEED, CARTESIAN_MOVE_MAX_SPEED,
                                     CARTESIAN_MOVE_MIN_DURATION, JOINT_MOVE_MAX_SPEED, JOINT_MOVE_MIN_DURATION,
                                     MAX_TARGET_FORCE, TARGET_WRENCH_FRAME, ArmInterface, cartesian_move, joint_move)
-from ...robot_interface.end_effectors import RobotiqGripper, ScaffoldingV1, ScaffoldingV3
+from ...robot_interface.end_effectors import EndEffector, RobotiqGripper, ScaffoldingV1, ScaffoldingV3
 from ...ui.ghost import RecentUse
 from ...ui.joint_sliders import add_joint_sliders, joint_slider_angles
 from ...ui.style import FAIL, SECTION_CTRL, SECTION_TOOL, block, note, section, values, warning
@@ -31,7 +31,7 @@ POSE_SLIDERS = (("x m", "p"), ("y m", "p"), ("z m", "p"), ("roll °", "a"), ("pi
 FORCE_STEP = 0.5
 #: Short names for end effector kinds, shown next to the TOOL section label.
 TOOL_LABELS = {"robotiq": "robotiq", "scaffolding_v1": "v1", "scaffolding_v3": "v3"}
-#: Icon of the phone's free drive button; the phone CSS finds the button by it.
+#: Icon of the free drive button; the phone CSS finds the button by it.
 FREE_DRIVE_ICON = viser.Icon.HAND_GRAB
 #: Hint on the Grip buttons, per end effector kind.
 GRIP_HINTS = {"robotiq": "Stop holds the fingers where they are.",
@@ -182,14 +182,36 @@ def build_compliance_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, a
     return ComplianceInputs(pose=pose, pose_plan=pose_plan, force=force, wrench_line=wrench_line)
 
 
-def build_free_drive_inputs(gui: viser.GuiApi) -> None:
-    """Add the free drive controller's folder: no inputs, only how to use it.
+def build_free_drive_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str,
+                            on_hold: Callable[[], None]) -> viser.GuiCheckboxHandle:
+    """Add the free drive controller's inputs: the arm is free while the button is held, or while Keep on is ticked.
 
     Args:
+        ctx: The plugin's context.
         gui: The GUI api, inside the controller's folder.
+        label: "<serial> <arm name>", for intent names.
+        on_hold: Called on the main thread at every report of the held button.
+
+    Returns:
+        viser.GuiCheckboxHandle: Keep on; robot_control unticks it once another controller is chosen.
     """
-    gui.add_html(note("The arm can be pushed by hand. Switch to Joint to hold it where it is. "
-                      "Check the payload on the pendant first: a wrong one makes the arm sag or rise."))
+    gui.add_html(note("Running this controller keeps the arm stiff until you hold the button or tick Keep on; then "
+                      "it can be pushed by hand. Check the payload on the pendant first: a wrong one makes the arm "
+                      "sag or rise."))
+    free = gui.add_button("Free drive (hold)", icon=FREE_DRIVE_ICON,
+                          hint="The arm can be pushed by hand while you hold this.")
+    free.on_hold(ctx.defer(f"free drive {label}", on_hold), callback_hz=HOLD_CALLBACK_HZ)
+    return gui.add_checkbox("Keep on", initial_value=False,
+                            hint="Free drive without holding the button, until unticked or another controller runs. "
+                                 "Only with someone at the arm.")
+
+
+def tool_commands(tool: EndEffector) -> dict[str, Callable[[], None]]:
+    """The gripper buttons, the same on the laptop and the phone: Open, Close, and Stop where the tool can stop."""
+    commands = {"Open": tool.open, "Close": tool.close}
+    if not isinstance(tool, ScaffoldingV1):  # its gripper cannot stop halfway
+        commands["Stop"] = tool.stop
+    return commands
 
 
 def build_tool_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, arm: ArmInterface) -> viser.GuiHtmlHandle:
@@ -208,9 +230,7 @@ def build_tool_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, arm: Ar
     gui.add_html(section("tool", SECTION_TOOL, TOOL_LABELS.get(kind, kind)))
     status = gui.add_html("")
     tool = arm.end_effector
-    commands = {"Open": tool.open, "Close": tool.close}
-    if not isinstance(tool, ScaffoldingV1):  # its gripper cannot stop halfway
-        commands["Stop"] = tool.stop
+    commands = tool_commands(tool)
     grip = gui.add_button_group("Grip", list(commands), hint=GRIP_HINTS.get(kind))
     grip.on_click(ctx.defer_value(f"grip {label}", lambda clicked: commands[clicked]()))
     if isinstance(tool, RobotiqGripper):
@@ -227,14 +247,15 @@ def build_tool_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, arm: Ar
 
 def build_phone_arm_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, arm: ArmInterface,
                            on_free_drive: Callable[[], None]) -> viser.GuiHtmlHandle:
-    """Add an arm's inputs on the phone: its status line, Open and Close for its tool, and free drive while held.
+    """Add an arm's inputs on the phone: its status line, the gripper buttons, and free drive while held.
 
     Args:
         ctx: The plugin's context.
         gui: The phone's GUI api, inside the robot's tab.
         label: "<serial> <arm name>", for intent names.
         arm: The arm.
-        on_free_drive: Called on the main thread at every report of the held free drive button.
+        on_free_drive: Called on the main thread at every report of the held free drive button; it switches to
+            the free drive controller and keeps free drive on.
 
     Returns:
         viser.GuiHtmlHandle: The arm's status line.
@@ -242,7 +263,7 @@ def build_phone_arm_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, ar
     status = gui.add_html("")
     tool = arm.end_effector
     if tool is not None:
-        commands = {"Open": tool.open, "Close": tool.close}
+        commands = tool_commands(tool)
         grip = gui.add_button_group("Gripper", list(commands))
         grip.on_click(ctx.defer_value(f"grip {label}", lambda clicked: commands[clicked]()))
     free = gui.add_button("Free drive (hold)", icon=FREE_DRIVE_ICON,

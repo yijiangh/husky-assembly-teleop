@@ -74,7 +74,8 @@ One sub-tab per robot, labelled with its serial (`0804`, `0805`, `0806`).
   velocity controller (**Vel**); switch to it in the laptop's robot panel.
 - One folder per arm (**Arm**, or **Left** and **Right**):
   - The running arm controller: **Joint**, **Cart**, **Free**, or "no ctrl".
-  - **Gripper**: **Open** and **Close**, one command per press. Stop, the screw and Reactivate are on the laptop.
+  - **Gripper**: **Open**, **Close** and **Stop** (no Stop on the v1 tool, which cannot stop halfway), one command
+    per press, the same as on the laptop. The screw and Reactivate are on the laptop.
   - **Free drive (hold)**: while you hold it, the arm can be pushed by hand (its chip shows **Free**). When you let
     go, the joint controller takes over and holds the arm where it is; it does not go back to the Cartesian
     controller. Check the payload on the pendant first: a wrong one makes the arm sag or rise. Free drive interrupts
@@ -118,6 +119,6 @@ Several people can drive at once, from the laptop and from phones: there is no l
 | The page shows the laptop layout | The phone is sideways, or the screen is wider than 576 px | Hold it upright |
 | Red dots instead of the green cloud | The phone lost the WiFi, or the monitor stopped | Wait for it to reconnect; check the monitor's terminal |
 | D-pad does nothing | The base does not run **Vel** (status line amber) | Switch it in the laptop's robot panel |
-| Free drive does nothing | The arm's controller manager is not reachable (arm chip "no ctrl") | Check Health; the monitor asks again every second while you hold |
+| Free drive does nothing | The arm's controller manager is not reachable (arm chip "no ctrl"), or the safety sync does not vouch for the arm (no status, not operational, program stopped) | Check Health; the monitor asks again every second while you hold |
 | Gripper does not react | After a stop or e-stop the gripper link is down | Section 5 |
 | Nothing changes on the page | The laptop's panels are frozen (its **Live** button shows **Frozen**) | Press it on the laptop: freezing stops the phone's updates too |

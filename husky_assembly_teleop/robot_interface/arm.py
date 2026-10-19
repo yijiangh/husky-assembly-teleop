@@ -47,10 +47,12 @@ CARTESIAN_COMPLIANCE_CONTROLLER = "cartesian_compliance_controller"
 FREE_DRIVE_CONTROLLER = "free_drive_controller"
 #: The controllers an arm switches between, only one at a time.
 ARM_CONTROLLERS = (SCALED_JOINT_TRAJECTORY_CONTROLLER, CARTESIAN_COMPLIANCE_CONTROLLER, FREE_DRIVE_CONTROLLER)
-#: Seconds between "keep free drive on" messages while the free drive controller runs. It ends free drive
+#: Seconds between "keep free drive on" messages while free drive is requested. The controller ends free drive
 #: after 1 s without one (inactive_timeout in crl_husky ur_controllers.yaml), so a lost link or a dead
 #: monitor ends it too.
 FREE_DRIVE_HEARTBEAT = 0.2
+#: How long one `request_free_drive` keeps free drive on, seconds: a held button reports at 20 Hz.
+FREE_DRIVE_REQUEST_TTL = 0.25
 #: multi_arm_safety_sync status older than this, seconds, counts as unknown.
 SYNC_STATUS_MAX_AGE = 3.0
 
@@ -351,11 +353,13 @@ class ArmInterface:
         self._motion_reference: dict[str, float] = {}
         #: Whether free drive was being kept on at the last heartbeat, to log the change.
         self._free_drive_on = False
+        #: ROS time until which free drive is requested (`request_free_drive`).
+        self._free_drive_until = float("-inf")
         self._namespace = f"/{robot_namespace}/{config.ros_namespace}"
         self._ros = RosConnections(node)
 
         self.controllers = ControllerManagerInterface(
-            node, self._namespace, ARM_CONTROLLERS, self.state.controllers)
+            node, self._namespace, ARM_CONTROLLERS, self.state.controllers, guard=self._switch_refusal)
         self.end_effector: EndEffector | None = make_end_effector(node, robot_namespace, config)
         self.state.end_effector = self.end_effector.state if self.end_effector else None
         self._connect()
@@ -505,7 +509,7 @@ class ArmInterface:
         return None
 
     def _motion_refusal(self, controller: str) -> str | None:
-        """Run the checks every motion command shares.
+        """Run the checks every motion command shares: `controller` runs, and `safety_problem`.
 
         Args:
             controller: The controller the command is for.
@@ -513,9 +517,17 @@ class ArmInterface:
         Returns:
             str | None: Why it is refused, or None if it may go ahead.
         """
-        problem = self.controllers.running_problem(controller)
-        if problem is not None:
-            return problem
+        return self.controllers.running_problem(controller) or self.safety_problem()
+
+    def _switch_refusal(self, controller: str) -> str | None:
+        """Why `controller` may not be started now: free drive needs `safety_problem` to be None; else None."""
+        return self.safety_problem() if controller == FREE_DRIVE_CONTROLLER else None
+
+    def safety_problem(self) -> str | None:
+        """Why the safety sync does not vouch for this arm moving now, or None.
+
+        No recent sync status, no dashboard on a real arm, not operational, or its program stopped.
+        """
         updated = self.state.status_update_time
         if updated is None or self._now() - updated > SYNC_STATUS_MAX_AGE:
             return "its safety is not known: no recent status from multi_arm_safety_sync; start it on the robot"
@@ -827,14 +839,30 @@ class ArmInterface:
         self._zero_ft.call_async(Trigger.Request())
         return True
 
+    def request_free_drive(self) -> None:
+        """Keep free drive on for FREE_DRIVE_REQUEST_TTL more, if the free drive controller runs.
+
+        ! Call it at every report of a held button, or every tick while free drive should stay on. Running the
+          controller alone does not free the arm: without requests it stays stiff.
+        """
+        self._free_drive_until = self._now() + FREE_DRIVE_REQUEST_TTL
+
     def _keep_free_drive(self) -> None:
-        """While the free drive controller runs because we switched to it, keep free drive on; log on and off.
+        """While free drive is requested and its controller runs because we switched to it, keep it on; log on and off.
 
         ! Only after our own switch: a controller left active by another tool or an earlier monitor run must not
-          start free drive by itself. Switching away, the soft stop or a switch from outside ends it.
+          start free drive by itself. No request, switching away, the soft stop, a switch from outside or a
+          `safety_problem` ends it.
         """
         state = self.controllers.state
-        on = self.controllers.is_active(FREE_DRIVE_CONTROLLER) and state.requested == FREE_DRIVE_CONTROLLER
+        on = (self.controllers.is_active(FREE_DRIVE_CONTROLLER) and state.requested == FREE_DRIVE_CONTROLLER
+              and self._now() <= self._free_drive_until)
+        problem = self.safety_problem() if on else None
+        if problem is not None:
+            # * Without the heartbeat the controller ends free drive within 1 s.
+            if self._free_drive_on:
+                self._node.get_logger().error(f"arm {self.config.name}: ending free drive: {problem}")
+            on = False
         if on != self._free_drive_on:
             self._node.get_logger().info(f"arm {self.config.name}: free drive {'on' if on else 'off'}")
             self._free_drive_on = on

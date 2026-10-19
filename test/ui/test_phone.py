@@ -100,7 +100,7 @@ class _FakeControllers:
     """A controller manager whose switches answer at once, or are refused while `refuse` is set."""
 
     def __init__(self):
-        self.state = SimpleNamespace(switch_in_flight=None)
+        self.state = SimpleNamespace(switch_in_flight=None, requested=None)
         self.active = SCALED_JOINT_TRAJECTORY_CONTROLLER
         self.switches = []
         self.refuse = False
@@ -112,18 +112,22 @@ class _FakeControllers:
         self.switches.append(controller)
         if self.refuse:
             return False
-        self.active = controller
+        self.active = self.state.requested = controller
         return True
 
 
 def _free_drive_plugin():
-    """robot_control with one arm on a fake controller manager, and a clock to move by hand."""
+    """robot_control with one arm on a fake controller manager, and a clock to move by hand.
+
+    The arm counts its free drive requests in `requests`; the laptop's Keep on is `plugin._arms[0].free_drive_keep`.
+    """
     controllers = _FakeControllers()
     clock = [0.0]
     ctx = SimpleNamespace(now=lambda: clock[0])
     plugin = RobotControlPlugin()
-    arm = SimpleNamespace(controllers=controllers, config=SimpleNamespace(name="ur_arm"))
-    plugin._arms = [SimpleNamespace(serial=SERIAL, arm=arm)]
+    arm = SimpleNamespace(controllers=controllers, config=SimpleNamespace(name="ur_arm"), requests=[])
+    arm.request_free_drive = lambda: arm.requests.append(clock[0])
+    plugin._arms = [SimpleNamespace(serial=SERIAL, arm=arm, free_drive_keep=SimpleNamespace(value=False))]
     return plugin, ctx, clock, controllers
 
 
@@ -133,7 +137,7 @@ def test_free_drive_while_held_then_joint_holds_the_arm():
     key = (SERIAL, "ur_arm")
     for t in (0.0, 0.05, 0.1):
         clock[0] = t
-        plugin._on_free_drive_hold(ctx, key)
+        plugin._on_free_drive_hold(ctx, key, True)
         plugin._update_free_drive(t)
     assert controllers.switches == [FREE_DRIVE_CONTROLLER]
     plugin._update_free_drive(0.1 + 2 * HOLD_TIMEOUT)
@@ -144,7 +148,7 @@ def test_free_drive_while_held_then_joint_holds_the_arm():
 def test_free_drive_release_after_stop_all_starts_nothing():
     """After Stop all ended free drive, letting go must not start a controller again."""
     plugin, ctx, clock, controllers = _free_drive_plugin()
-    plugin._on_free_drive_hold(ctx, (SERIAL, "ur_arm"))
+    plugin._on_free_drive_hold(ctx, (SERIAL, "ur_arm"), True)
     plugin._update_free_drive(0.0)
     controllers.active = None  # the soft stop deactivated every controller
     plugin._update_free_drive(2 * HOLD_TIMEOUT)
@@ -158,10 +162,50 @@ def test_free_drive_refused_switch_waits_before_asking_again():
     controllers.refuse = True
     for t in (0.0, 0.05, 0.1):
         clock[0] = t
-        plugin._on_free_drive_hold(ctx, (SERIAL, "ur_arm"))
+        plugin._on_free_drive_hold(ctx, (SERIAL, "ur_arm"), True)
         plugin._update_free_drive(t)
     assert controllers.switches == [FREE_DRIVE_CONTROLLER]
     clock[0] = FREE_DRIVE_RETRY
-    plugin._on_free_drive_hold(ctx, (SERIAL, "ur_arm"))
+    plugin._on_free_drive_hold(ctx, (SERIAL, "ur_arm"), True)
     plugin._update_free_drive(FREE_DRIVE_RETRY)
     assert controllers.switches == [FREE_DRIVE_CONTROLLER] * 2
+
+
+def test_the_phone_button_switches_and_frees_the_arm_while_held():
+    """Every tick the button is held asks the arm for free drive; once released, none."""
+    plugin, ctx, clock, controllers = _free_drive_plugin()
+    arm = plugin._arms[0].arm
+    for t in (0.0, 0.05, 0.1):
+        clock[0] = t
+        plugin._on_free_drive_hold(ctx, (SERIAL, "ur_arm"), True)
+        plugin._update_free_drive(t)
+    plugin._update_free_drive(0.1 + 2 * HOLD_TIMEOUT)
+    assert arm.requests == [0.0, 0.05, 0.1] and controllers.switches[0] == FREE_DRIVE_CONTROLLER
+
+
+def test_the_laptop_button_frees_the_arm_without_switching():
+    """On the laptop the Free controller button switches; holding the button in its folder only frees the arm."""
+    plugin, ctx, clock, controllers = _free_drive_plugin()
+    controllers.switch(FREE_DRIVE_CONTROLLER)
+    for t in (0.0, 0.05):
+        clock[0] = t
+        plugin._on_free_drive_hold(ctx, (SERIAL, "ur_arm"), False)
+        plugin._update_free_drive(t)
+    plugin._update_free_drive(0.05 + 2 * HOLD_TIMEOUT)
+    assert plugin._arms[0].arm.requests == [0.0, 0.05] and controllers.switches == [FREE_DRIVE_CONTROLLER]
+
+
+def test_keep_on_frees_the_arm_every_tick_until_another_controller_runs():
+    """Ticked, every tick asks for free drive; choosing another controller unticks it, so it is never left on."""
+    plugin, ctx, clock, controllers = _free_drive_plugin()
+    widgets = plugin._arms[0]
+    controllers.switch(FREE_DRIVE_CONTROLLER)
+    widgets.free_drive_keep.value = True
+    for t in (0.0, 1.0, 2.0, 3.0):
+        if t == 2.0:
+            controllers.switch(SCALED_JOINT_TRAJECTORY_CONTROLLER)
+        elif t == 3.0:
+            controllers.switch(FREE_DRIVE_CONTROLLER)
+        clock[0] = t
+        plugin._update_free_drive(t)
+    assert widgets.arm.requests == [0.0, 1.0] and not widgets.free_drive_keep.value

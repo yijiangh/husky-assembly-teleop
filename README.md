@@ -227,7 +227,7 @@ Example: `mocap_probe` shows the probe state in a **Probe** panel, collapsed on 
 
 ### Phone
 
-A phone page for walking next to the robots: open `http://<laptop's 192.168.0.x address>:8081` on a phone on the robot WiFi, held upright. It has **Stop all**, the health banner, and a tab per plugin: **Control** (D-pad, gripper Open/Close, Free drive while held), **Health** and **Mocap**. Setup, every button and troubleshooting: [doc/phone_manual.md](doc/phone_manual.md). Plugins add a tab with `ctx.view.phone()` (`plugins/__init__.py`).
+A phone page for walking next to the robots: open `http://<laptop's 192.168.0.x address>:8081` on a phone on the robot WiFi, held upright. It has **Stop all**, the health banner, and a tab per plugin: **Control** (D-pad, gripper Open/Close/Stop, Free drive while held), **Health** and **Mocap**. Setup, every button and troubleshooting: [doc/phone_manual.md](doc/phone_manual.md). Plugins add a tab with `ctx.view.phone()` (`plugins/__init__.py`).
 
 ### Parameters
 
