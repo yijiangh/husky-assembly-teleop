@@ -209,17 +209,18 @@ class BasePlannerPanel(PlannerPanel):
         found = self._process_step(ctx)
         if found is None:
             return
-        step, serial, robot_name = found
-        # * The step says which robot it is for; plan for that one.
+        selection, serial, robot_name = found
+        label = selection.movement.id
+        # * The movement says which robot it is for; plan for that one.
         self._choose_robot(serial)
         # ? The process's base pose is the URDF root (base_footprint), as in mocap and PyBullet.
-        base = step.movement.start.robots[step.action.robot].base
+        base = selection.movement.start.robots[selection.action.robot].base
         if base is None:
-            self._say(f"{step.label} leaves {robot_name}'s base to the planner: no target to load", failed=True)
+            self._say(f"{label} leaves {robot_name}'s base to the planner: no target to load", failed=True)
             return
         self._target.set(float(base.position[0]), float(base.position[1]), yaw_from_xyzw(base.orientation))
         self._has_target = True
-        self._say(f"target from {step.label} ({robot_name})")
+        self._say(f"target from {label} ({robot_name})")
 
     # --- --- --- --- --- PLANNER PANEL --- --- --- --- ---
 

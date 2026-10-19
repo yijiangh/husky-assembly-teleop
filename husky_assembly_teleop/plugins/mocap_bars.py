@@ -185,8 +185,8 @@ class MocapBarsPlugin(HuskyPlugin):
         process: ProcessContract = ctx.require("process")
         selection = process.selection
         description = {"bar": bar_id, "mocap_id": self._object.mocap_id if self._object else None,
-                       "process": str(selection.loaded.source) if selection is not None else None,
-                       "step": selection.step.movement.id if selection is not None else None, "seconds": seconds,
+                       "process": str(selection.process.folder) if selection is not None else None,
+                       "step": selection.movement.id if selection is not None else None, "seconds": seconds,
                        "frame": "world (mocap, Z-up), metres; quaternions (x, y, z, w); deviation in the planned "
                                 "bar's frame, its axis z"}
         path = self._folder / experiment / f"{time.strftime('%Y%m%d_%H%M%S')}_{bar_id.split('/')[-1]}.npz"
@@ -243,7 +243,7 @@ class MocapBarsPlugin(HuskyPlugin):
         """
         process: ProcessContract = ctx.require("process")
         selection = process.selection
-        loaded = selection.loaded.process if selection is not None else None
+        loaded = selection.process if selection is not None else None
         if loaded is not self._layouts_of:
             self._layouts_of = loaded
             self._layouts = bar_markers(loaded) if loaded is not None else {}

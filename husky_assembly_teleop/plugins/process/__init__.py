@@ -1,10 +1,13 @@
 """
 The process plugin: an authored process, the selected movement, and a view of its state.
 
-  drawing.py   one process state in viser, from forward kinematics
-  plugin.py    the plugin: owns the selected step and serves it to other plugins (`selection`)
+  plugin.py        the plugin: owns the selected movement and serves it to other plugins (`selection`)
+  loading.py       reading a process folder; an old compas_fab export is converted first
+  scene_bodies.py  the process scene at a movement as live scene bodies, and the process <-> live id maps
+  drawing.py       one process state in viser, from forward kinematics
+  colors.py        colours of process bodies
 
-A process and its steps as data are `shared/loaded_process.py`; what this plugin offers others is
+The process itself is the core's (`scaffolding_assembly_core.process`); what this plugin offers others is
 `shared/process_contract.py`.
 """
 

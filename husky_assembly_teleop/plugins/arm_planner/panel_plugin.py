@@ -156,23 +156,23 @@ class ArmPlannerPanel(PlannerPanel):
         found = self._process_step(ctx)
         if found is None:
             return
-        step, serial, robot_name = found
+        selection, serial, robot_name = found
+        movement, robot, label = selection.movement, selection.action.robot, selection.movement.id
         if serial not in self._arms:
-            self._say(f"{step.label} is for {robot_name}, which has no arms configured", failed=True)
+            self._say(f"{label} is for {robot_name}, which has no arms configured", failed=True)
             return
-        movement = step.movement
-        target = movement.target.joints.get(step.action.robot) if movement.target is not None else None
-        given = target or movement.start.robots[step.action.robot].joints or {}
+        target = movement.target.joints.get(robot) if movement.target is not None else None
+        given = target or movement.start.robots[robot].joints or {}
         # * The arm the step moves: the first of the robot's arms it names every joint of.
         arm = next((arm for arm in self._arms[serial] if all(name in given for name in arm_joint_names(arm))), None)
         if arm is None:
-            self._say(f"{step.label} has no joint values for an arm of {robot_name}", failed=True)
+            self._say(f"{label} has no joint values for an arm of {robot_name}", failed=True)
             return
         self._choose(serial, arm)
         self._load = np.array([given[name] for name in arm_joint_names(arm)])
         self._has_target = True
         which = "target" if target else "start"
-        self._say(f"target from the {which} of {step.label} ({arm})")
+        self._say(f"target from the {which} of {label} ({arm})")
 
     # --- --- --- --- --- PLANNER PANEL --- --- --- --- ---
 

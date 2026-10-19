@@ -24,9 +24,9 @@ from scaffolding_assembly_core.process.relations import is_present, placement
 from scaffolding_assembly_core.geometry import Geometry, Pose, compose, shape_mesh
 from scaffolding_assembly_core.ids import split_link_id
 from ...ui.visualization import FastViserUrdf, add_simple_urdf, joints_changed, load_urdf, quaternion_to_wxyz
-from ...shared.loaded_process import body_color, stands
+from .colors import body_color
 
-#: Colours, RGB 0-255. Held bodies stand out; other bodies use `shared.loaded_process.body_color`.
+#: Colours, RGB 0-255. Held bodies stand out; other bodies use `colors.body_color`.
 ATTACHED_COLOR = (240, 120, 30)
 TOOL_COLOR = (70, 70, 80)
 
@@ -138,7 +138,7 @@ class ProcessDrawing:
 
         Args:
             state: Which robots are there and where, which bodies are present, held or moved.
-            joints: Robot id -> joint values to draw it at (`process.displayed_joints`);
+            joints: Robot id -> joint values to draw it at (the core's `process.joints_at`);
                 joints not given are drawn at zero.
             everything: Also draw the bodies that neither stand nor move with a robot (absent ones).
         """
@@ -168,7 +168,7 @@ class ProcessDrawing:
                     continue
                 pose = compose(self._link_pose(holder, link, holder_state.base), where.grasp)
                 look = (ATTACHED_COLOR, GHOST_OPACITY if self._ghost else None)
-            elif everything and not stands(self._process, state, body_id):
+            elif everything and not _stands(self._process, state, body_id):
                 pose = where if isinstance(where, Pose) else self._process.bodies[body_id].assembly_pose
                 look = (body_color(body_id), GHOST_OPACITY)
             else:
@@ -199,6 +199,14 @@ class ProcessDrawing:
     def remove(self) -> None:
         """Remove every node of the drawing."""
         self._root.remove()
+
+
+def _stands(process: Process, state: State, body_id: str) -> bool:
+    """Whether a body stands on its own in a state: present, and not an attached, unbuilt bar or one of its halves.
+
+    * Standing bodies are scene bodies, drawn by the core; the overlay draws the rest.
+    """
+    return is_present(process, state, body_id) and not isinstance(placement(process, state, body_id), Holder)
 
 
 def _place(frame: viser.FrameHandle, pose: Pose) -> None:

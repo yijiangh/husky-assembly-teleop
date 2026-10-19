@@ -26,8 +26,7 @@ from .planner_contract import Plan, PlannerContract
 
 if TYPE_CHECKING:
     from ...config import RobotConfig
-    from ..loaded_process import Step
-    from ..process_contract import ProcessContract
+    from ..process_contract import ProcessContract, Selection
 
 #: Time slider resolution, seconds.
 SLIDER_STEP = 0.05
@@ -189,11 +188,11 @@ class PlannerPanel(HuskyPlugin):
         taken, message = await sent
         self._say(message, failed=not taken)
 
-    def _process_step(self, ctx: PluginContext) -> tuple[Step, str, str] | None:
-        """The process plugin's selected step, and the configured robot it is for.
+    def _process_step(self, ctx: PluginContext) -> tuple[Selection, str, str] | None:
+        """The process plugin's selected movement, and the configured robot it is for.
 
         Returns:
-            tuple[Step, str, str] | None: The step, the robot's serial and its process name;
+            tuple[Selection, str, str] | None: The selection, the robot's serial and its process name;
                 None if there is none, after saying why in the panel.
         """
         process: ProcessContract = ctx.require("process")
@@ -201,16 +200,16 @@ class PlannerPanel(HuskyPlugin):
         if selection is None:
             self._say("no process loaded in the process plugin", failed=True)
             return None
-        step = selection.step
-        if not step.action.robot:
-            self._say(f"{step.label} is placed by hand: no robot to plan for", failed=True)
+        label = selection.movement.id
+        if not selection.action.robot:
+            self._say(f"{label} is placed by hand: no robot to plan for", failed=True)
             return None
-        robot = selection.loaded.process.robots[step.action.robot]
+        robot = selection.process.robots[selection.action.robot]
         serial = find_robot_serial(ctx.config.robots, robot.serial or "")
         if serial is None:
-            self._say(f"{step.label} is for {robot.name}, which is not configured", failed=True)
+            self._say(f"{label} is for {robot.name}, which is not configured", failed=True)
             return None
-        return step, serial, robot.name
+        return selection, serial, robot.name
 
     def _say(self, message: str, failed: bool = False) -> None:
         """Set the one line of feedback under the buttons."""

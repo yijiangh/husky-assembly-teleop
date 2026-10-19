@@ -18,12 +18,12 @@ from process_fixtures import build_process
 from repo_paths import DATA
 from husky_assembly_teleop.config import robot_config_from_serial
 from husky_assembly_teleop.robot_interface.arm import UR_JOINT_NAMES
-from husky_assembly_teleop.shared.loaded_process import LoadedProcess, Step, scene_bodies
+from husky_assembly_teleop.plugins.process.scene_bodies import scene_bodies
 from scaffolding_assembly_core.geometry import Geometry, box_geometry
 from scaffolding_assembly_core.mirrors import HIDDEN_POSITION
 from scaffolding_assembly_core.mirrors.compas_fab import CompasFabMirror
 from scaffolding_assembly_core.robot import RobotObject
-from scaffolding_assembly_core.process import Action, BodySpec, Movement, State
+from scaffolding_assembly_core.process import BodySpec, Movement, State
 from scaffolding_assembly_core.scene import Attachment, Body, Scene
 from scaffolding_assembly_core.geometry import Pose
 
@@ -314,9 +314,7 @@ def test_arm_planner_mirror_sees_a_cell_obstacle(mirror, configs, tmp_path):
     mirror.sync(world(configs))
     process = replace(build_process(tmp_path), bodies={
         "obstacles/box": BodySpec("obstacles/box", tool0(mirror), box_geometry((0.1, 0.1, 0.1)))})
-    loaded = LoadedProcess(tmp_path, process, ())
     movement = Movement("M0", State(robots={}, present=frozenset({"obstacles/box"})), ends_on="operator")
-    step = Step(Action("A0", "bar_jointing", "robots/cindy", "bars/B1", (movement,)), 0, 0, movement)
 
-    mirror.sync(world(configs, scene_bodies(loaded, step, (), "process/")))
+    mirror.sync(world(configs, scene_bodies(process, movement, (), "process/")))
     assert any("process/obstacles/box" in pair for pair in mirror.collisions(full_report=True))

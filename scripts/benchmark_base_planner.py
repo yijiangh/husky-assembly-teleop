@@ -34,7 +34,7 @@ from husky_assembly_teleop.plugins.base_planner.recording import (RECORDING_FOLD
 from husky_assembly_teleop.plugins.base_planner.tasks import PROCESS, TASK_ORIGIN, TASKS
 from husky_assembly_teleop.plugins.base_planner.world import PlanningWorld, stowed
 from husky_assembly_teleop.shared.planning.planner_search import with_guesses
-from husky_assembly_teleop.shared.loaded_process import load_process
+from husky_assembly_teleop.plugins.process.loading import load_process
 from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.ids import robot_id
 from scaffolding_assembly_core.robot import RobotObject
@@ -95,9 +95,9 @@ def _scene(task, config, root: Path) -> tuple[Scene, str]:
         scene = Scene(bodies={body.id: body for body in bodies},
                       world_poses={body.id: body.placement for body in bodies}, robots=robots)
     else:
-        loaded = load_process(root / PROCESS, DATA)
+        process = load_process(root / PROCESS, DATA)
         own = "robots/alice"
-        scene, _ = with_guesses(loaded.process.scene_at(loaded.steps[task.process_step].movement), own)
+        scene, _ = with_guesses(process.scene_at(list(process.movements())[task.process_step][1]), own)
     return stowed(scene, own, config)[0], own
 
 

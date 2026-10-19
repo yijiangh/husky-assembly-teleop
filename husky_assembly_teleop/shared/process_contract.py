@@ -1,7 +1,8 @@
 """
-What the process plugin offers others: its selected step (`Selection`), read through `ProcessContract`.
+What the process plugin offers others: its selected movement (`Selection`), read through `ProcessContract`.
 
-Users type `ctx.require("process")` with it: `process: ProcessContract = ctx.require("process")`.
+Users type `ctx.require("process")` with it: `process: ProcessContract = ctx.require("process")`. The process, its
+actions and movements are the core's types (`scaffolding_assembly_core.process`).
 """
 
 from __future__ import annotations
@@ -10,26 +11,27 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from scaffolding_assembly_core.ids import IdMap
-
-from .loaded_process import LoadedProcess, Step
+from scaffolding_assembly_core.process import Action, Movement, Process
 
 
 @dataclass(frozen=True)
 class Selection:
-    """The process plugin's selected step, as other plugins read it; replaced whenever any field changes, never edited.
+    """The process plugin's selected movement, as other plugins read it; replaced whenever any field changes, never edited.
 
     Attributes:
-        loaded: The loaded process.
-        index: Position of `step` in `loaded.steps`.
-        step: The selected movement.
+        process: The loaded process; `process.folder` is where it was read from (the converted copy of an old export).
+        index: Position of `movement` in `process.movements()`, from 0.
+        action: The action the movement belongs to; its `robot` is "" for a `bar_placing` action.
+        movement: The selected movement.
         ids: Process id -> live scene id ("bars/B1" -> "process/bars/B1", planned robot -> real robot), or None
-            until the step's scene bodies are put.
+            until the movement's scene bodies are put.
         process_ids: Live scene id -> process id, or None likewise.
     """
 
-    loaded: LoadedProcess
+    process: Process
     index: int
-    step: Step
+    action: Action
+    movement: Movement
     ids: IdMap | None = None
     process_ids: IdMap | None = None
 
@@ -39,4 +41,4 @@ class ProcessContract(Protocol):
 
     @property
     def selection(self) -> Selection | None:
-        """Selection | None: The selected step, or None while no process with steps is loaded."""
+        """Selection | None: The selected movement, or None while no process with movements is loaded."""
