@@ -226,6 +226,44 @@ def test_soft_stop_stops_every_robot_before_plugins_act_and_cancels_their_tasks(
     assert task.cancelled()
 
 
+@pytest.mark.safety
+def test_soft_stop_drops_what_was_clicked_before_it(monkeypatch):
+    """A Start queued before Stop all never runs (it would run after the stop, in the same tick); later ones do."""
+    calls = []
+    monitor = build(monkeypatch, Recorder("a", calls))
+    ctx = monitor._loaded["a"].ctx
+    ctx.submit("start run", lambda: calls.append(("a", "start run")))
+    monitor._viz.stop_requested = True
+    ticks(monitor)
+    assert ("a", "start run") not in calls and "'start run'" in monitor.get_logger().text("warning")
+    ctx.submit("start run", lambda: calls.append(("a", "start run")))
+    ticks(monitor)
+    assert ("a", "start run") in calls
+
+
+@pytest.mark.safety
+def test_a_robot_failing_to_stop_does_not_keep_the_others_from_stopping(monkeypatch):
+    """One robot's soft stop raising is logged; the next robot still stops, tasks are cancelled, the tick goes on."""
+    calls = []
+
+    def broken():
+        raise RuntimeError("publisher destroyed")
+
+    robots = [SimpleNamespace(soft_stop=broken), SimpleNamespace(soft_stop=lambda: calls.append(("r1", "soft stop")))]
+    monitor = build(monkeypatch, Recorder("a", calls), robots=robots)
+
+    async def run():
+        task = monitor._loaded["a"].ctx.spawn("move", asyncio.sleep(60.0))
+        monitor._viz.stop_requested = True
+        await monitor._tick()
+        await asyncio.sleep(0)
+        return task
+
+    assert asyncio.run(run()).cancelled()
+    assert ("r1", "soft stop") in calls and ("a", "draw") in calls
+    assert "publisher destroyed" in monitor.get_logger().text("error")
+
+
 def test_shutdown_tears_down_in_reverse_order_once_and_waits_for_cleanup(monkeypatch):
     """Teardown runs last plugin first, after its tasks finished cleaning up; a second shutdown does nothing."""
     calls = []

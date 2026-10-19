@@ -67,6 +67,17 @@ def test_pose_lost_after_the_timeout_without_a_valid_sample():
     assert body.tracked and "no valid mocap pose" in pose_lost(1, body, 11.0 + POSE_TIMEOUT + 0.01)
 
 
+def test_pose_lost_once_the_newest_pose_was_captured_too_long_ago():
+    """The relay republishes a frozen frame as valid after the stream stops: arriving now, it is still lost."""
+    body = TrackedObject(name="probe", mocap_id=1)
+    message = MocapRigidBodyPose(pose_valid=True, tracking_valid=True)
+    message.header.stamp.sec = 10
+    store_sample(body, message, 10.0 + POSE_TIMEOUT - 0.01)
+    assert pose_lost(1, body, 10.0 + POSE_TIMEOUT - 0.01) == ""
+    store_sample(body, message, 10.0 + POSE_TIMEOUT + 0.01)
+    assert "captured" in pose_lost(1, body, 10.0 + POSE_TIMEOUT + 0.01)
+
+
 def test_pose_lost_without_a_mocap_id():
     """A body with no rigid body configured never has a pose to drive from."""
     body = TrackedObject(name="probe", mocap_id=None)

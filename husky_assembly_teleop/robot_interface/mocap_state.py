@@ -86,9 +86,10 @@ def mocap_problem(mocap_id: int | None, body: MocapBody, now: float) -> str:
 
 
 def pose_lost(mocap_id: int | None, body: MocapBody, now: float) -> str:
-    """Why a body's pose is too old to drive from (no valid sample for POSE_TIMEOUT, or none yet), or "".
+    """Why a body's pose is too old to drive from (none valid arrived, or was captured, within POSE_TIMEOUT), or "".
 
     ! Check this, not `tracked`, before and while driving from the pose: `tracked` stays True if the relay goes silent.
+    ! Relies on synced clocks (chrony) for the capture time, as the onboard follower does.
 
     Args:
         mocap_id: The body's rigid-body id, or None if it has none configured.
@@ -100,5 +101,9 @@ def pose_lost(mocap_id: int | None, body: MocapBody, now: float) -> str:
     """
     # * marker_errors holds the arrival time of each valid sample, so its newest entry is the last valid one.
     if mocap_id is not None and body.marker_errors and now - body.marker_errors[-1][0] <= POSE_TIMEOUT:
-        return ""
+        # * The relay republishes its last frame as valid for 1 s after the stream stops; its capture time shows it.
+        age = now - body.last_fix_time
+        if age <= POSE_TIMEOUT:
+            return ""
+        return f"the newest mocap pose was captured {age:.1f}s ago (stream stopped, or clocks out of sync?)"
     return mocap_problem(mocap_id, body, now) or f"no valid mocap pose for over {POSE_TIMEOUT:g}s"

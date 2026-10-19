@@ -66,6 +66,7 @@ class FakeBase:
         seen = pose_age is not None
         self.state = SimpleNamespace(tracked=seen, tracking_valid=seen, marker_errors=errors,
                                      last_update_time=10.0 - pose_age if seen else None,
+                                     last_fix_time=10.0 - pose_age if seen else None,
                                      estopped=estopped, follower=follower)
         self._node = Node(10.0)
         self.refuses = refuses

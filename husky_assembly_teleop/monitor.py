@@ -402,14 +402,23 @@ class HuskyMonitor(Node):
         return taken
 
     def _soft_stop(self) -> None:
-        """Stop every robot and cancel every plugin task.
+        """Stop every robot, drop every plugin's queued intents and cancel every plugin task.
 
-        In the core so it works whichever plugins are loaded.
+        - In the core so it works whichever plugins are loaded.
+        - Intents are dropped: a Start clicked just before Stop would otherwise run after it, in this tick's step 5.
+        - ! A robot that raises is logged; the other robots are still stopped, and the tick goes on.
         """
         self.log_warn("SOFT STOP: stopping every robot and cancelling every plugin task")
-        for robot in self._world.robots.values():
-            robot.soft_stop()
+        for serial, robot in self._world.robots.items():
+            try:
+                robot.soft_stop()
+            except Exception:
+                self.log_error(f"SOFT STOP: stopping {serial} failed:\n{traceback.format_exc()}")
         for loaded in self._loaded.values():
+            dropped = loaded.ctx._drop_intents()
+            if dropped:
+                queued = ", ".join(repr(label) for label in dropped)
+                self.log_warn(f"SOFT STOP: dropped {loaded.name}'s queued {queued}")
             loaded.ctx._cancel_all_tasks()
 
     def _step_plugin(self, loaded: _LoadedPlugin) -> None:

@@ -101,9 +101,8 @@ For recording points with the mocap probe (`mocap_probe`); choose its rigid body
 
 ## 5. After a stop
 
-- **Stop all**: the arms' programs are stopped and the base controllers are off. Resume the arms in the laptop's
-  health panel and switch the base back to **Vel** in its robot panel; the phone cannot. Letting go of a hold button
-  after Stop all starts nothing again.
+- **Stop all**: the arms' programs are stopped and the base controllers are off. **Resume** in the laptop's health
+  panel starts both again; the phone cannot. Letting go of a hold button after Stop all starts nothing again.
 - **E-stop**: the same, and the Robotiq gripper may stay dead even after the arm runs again (crl-husky README,
   "Restart"). Wait until the arm runs, press Reactivate on the laptop, and only then use Open and Close: presses while
   the gripper is dead are queued on the robot and may all run at once when it comes back.

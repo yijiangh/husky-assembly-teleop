@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import math
 import re
-import shutil
 import tempfile
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -36,8 +35,10 @@ END_EFFECTOR_KINDS: tuple[str, ...] = get_args(EndEffectorKind)
 #: Extra names the `tools` parameter accepts: crl_husky's "robotiq_2F_85", and "none" for a bare arm.
 _TOOL_ALIASES: dict[str, str | None] = {"robotiq_2F_85": "robotiq", "none": None}
 
-#: Robot URDFs with absolute mesh paths (`RobotModel.urdf`); wiped and rewritten on every start.
-ROBOT_URDF_DIRECTORY = Path(tempfile.gettempdir()) / "husky_robot_urdf"
+#: Robot URDFs with absolute mesh paths (`RobotModel.urdf`), in a folder of this process's own, removed when it exits.
+#: ? Per process: two monitors, or a monitor and the tests, must not delete each other's copies.
+_ROBOT_URDF_FOLDER = tempfile.TemporaryDirectory(prefix="husky_robot_urdf_")
+ROBOT_URDF_DIRECTORY = Path(_ROBOT_URDF_FOLDER.name)
 
 #: Plugins loaded before the requested ones; `-p no_default_plugins:=true` skips them.
 DEFAULT_PLUGINS: tuple[str, ...] = ("health",)
@@ -358,8 +359,6 @@ def config_from_ros_parameters(node: Node) -> MonitorConfig:
     node.declare_parameter("viser_port", MonitorConfig.viser_port)
     # * 0: the port after viser_port, so a second monitor needs only -p viser_port:=8095.
     node.declare_parameter("phone_port", 0)
-
-    shutil.rmtree(ROBOT_URDF_DIRECTORY, ignore_errors=True)
 
     def string_list(name: str) -> tuple[str, ...]:
         """Read a string-array parameter, dropping the empty-string default.

@@ -26,7 +26,7 @@ def _base() -> BaseInterface:
     base = BaseInterface.__new__(BaseInterface)
     base._node, base._config = Node(NOW), SimpleNamespace(mocap_id=1)
     base.state = BaseState(tracked=True, tracking_valid=True, marker_errors=deque([(NOW, 0.0)]),
-                           last_update_time=NOW, estopped=False)
+                           last_update_time=NOW, last_fix_time=NOW, estopped=False)
     base.state.follower = FollowerState(
         controller="pure_pursuit", state="idle", reason="", path_id=0, timed=False, piece=0, piece_count=0,
         turning=False, progress=0.0, reference=np.zeros(3), lookahead=np.zeros(2), cross_track_error=0.0,

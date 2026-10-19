@@ -12,7 +12,7 @@ from husky_assembly_teleop.robot_interface.arm import (CARTESIAN_COMPLIANCE_CONT
                                                        MAX_TARGET_FORCE, MAX_TARGET_TORQUE, MOVING_WITHIN,
                                                        START_TOLERANCE, SYNC_STATUS_MAX_AGE, TRAJECTORY_MAX_DURATION,
                                                        TRAJECTORY_MAX_JOINT_SPEED, TRAJECTORY_MAX_WAYPOINTS,
-                                                       UR_JOINT_LIMITS, joint_move)
+                                                       UR_JOINT_LIMITS, joint_move, joint_path_move)
 from husky_assembly_teleop.robot_interface.controller_manager import CONTROLLER_STATE_MAX_AGE
 from husky_assembly_teleop.robot_interface.simulated_parts import SimulatedPart
 
@@ -74,6 +74,11 @@ def _no_joint_state(arm):
     return np.zeros((2, 6)), 10.0
 
 
+def _program_stopped(arm):
+    arm.state.program_playing = False
+    return line(arm)
+
+
 def _old_joint_state(arm):
     arm.state.last_update_time -= JOINT_STATE_MAX_AGE + 0.1
     return line(arm)
@@ -99,6 +104,7 @@ def _past_the_elbow_limit(arm):
     (_not_active, "is not active"),
     (_controllers_silent, "has not answered"),
     (_not_operational, "not operational: protective stop"),
+    (_program_stopped, "program is stopped"),
     (lambda arm: (np.zeros((2, 5)), 10.0), "at least two waypoints"),
     (lambda arm: (np.zeros((1, 6)), 10.0), "at least two waypoints"),
     (lambda arm: ([[0.0] * 6, [0.0] * 5], 10.0), "not a list of equal-length lists"),
@@ -155,6 +161,19 @@ def test_fake_hardware_moves_without_a_dashboard_but_not_without_the_sync():
     silent = fake_arm(simulated=simulated)
     silent.state.status_update_time -= SYNC_STATUS_MAX_AGE + 0.1
     assert "safety is not known" in refused(silent, *line(silent))
+
+
+# --- --- --- --- --- paths --- --- --- --- ---
+
+def test_a_path_planned_a_degree_away_from_the_arm_is_refused():
+    """Its first point runs at time 0, so the arm would jump the gap: the path must start where the arm is."""
+    arm = fake_arm()
+    here = arm.joint_vector()
+    positions, velocities, duration = joint_path_move([here, here + DELTA])
+    assert arm.send_joint_trajectory(positions, duration, velocities)
+    away = fake_arm()
+    positions, velocities, duration = joint_path_move([here + np.radians(1.0), here + DELTA])
+    assert "not at the first waypoint" in refused(away, positions, duration, velocities)
 
 
 # --- --- --- --- --- hold --- --- --- --- ---

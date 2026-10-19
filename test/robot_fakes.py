@@ -146,7 +146,7 @@ def fake_arm(controller: str | None = SCALED_JOINT_TRAJECTORY_CONTROLLER, joints
     joints = np.zeros(len(UR_JOINT_NAMES)) if joints is None else np.asarray(joints, dtype=float)
     state.joint_positions = {f"ur_arm_{name}": float(value) for name, value in zip(UR_JOINT_NAMES, joints)}
     state.last_update_time = now
-    state.status_update_time, state.dashboard_up, state.operational = now, True, True
+    state.status_update_time, state.dashboard_up, state.operational, state.program_playing = now, True, True, True
     state.tcp_position, state.tcp_orientation, state.tcp_update_time = TCP_POSITION.copy(), TCP_ORIENTATION.copy(), now
     state.tcp_raw_position = BASE_LINK_FROM_UR_BASE.inv().apply(TCP_POSITION)
     state.tcp_raw_orientation = (BASE_LINK_FROM_UR_BASE.inv() * Rotation.from_quat(TCP_ORIENTATION)).as_quat()

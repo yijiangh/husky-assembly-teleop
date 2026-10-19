@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+from collections import deque
 from types import SimpleNamespace
 
 import numpy as np
@@ -26,19 +27,30 @@ PATH = ArmPath.at_preview_speed(NAMES, np.array([START, GOAL]))
 REQUEST = ArmPlanRequest(SERIAL, ARM, tuple(GOAL))
 
 
+def pose(x: float, y: float, yaw: float) -> SimpleNamespace:
+    """A world pose on the floor; orientation (x, y, z, w)."""
+    return SimpleNamespace(position=(x, y, 0.0), orientation=(0.0, 0.0, math.sin(yaw / 2), math.cos(yaw / 2)))
+
+
 class FakeCtx:
-    """A plugin context: the arm at `joints`, the base at `base`, intents run at once, an arm that records its path."""
+    """A plugin context: the arm at `joints`, the base at `base` (x, y, yaw), an arm that records its path.
+
+    Mocap tracks the base until `clock` passes 0.3 s; intents run at once.
+    """
 
     def __init__(self):
-        """The arm at START, the base at the origin, and an arm that accepts."""
-        self.joints, self.base, self.sent = dict(zip(NAMES, START)), (0.0, 0.0, 0.0), []
+        """The arm at START, the base at the origin with a live mocap pose, and an arm that accepts."""
+        self.joints, self.base, self.sent, self.clock = dict(zip(NAMES, START)), (0.0, 0.0, 0.0), [], 0.0
         arm = SimpleNamespace(send_joint_trajectory=lambda positions, duration, velocities: self.sent.append(positions)
                               or True)
-        self.world = SimpleNamespace(robots={SERIAL: SimpleNamespace(arms={ARM: arm})})
-        robot = SimpleNamespace(enabled=False, acting_problems=lambda: [], base=SimpleNamespace(position=(0, 0, 0)))
+        mocap = SimpleNamespace(marker_errors=deque([(0.0, 0.001)]), last_update_time=0.0, last_fix_time=0.0,
+                                tracking_valid=True, tracked=True)
+        self.world = SimpleNamespace(robots={SERIAL: SimpleNamespace(
+            arms={ARM: arm}, base=SimpleNamespace(mocap_id=5, state=mocap))})
+        robot = SimpleNamespace(enabled=False, acting_problems=lambda: [], base=pose(0.0, 0.0, 0.0), base_tracked=True)
         self.scene = SimpleNamespace(snapshot=SimpleNamespace(robots={robot_id(SERIAL): robot}))
         self.kinematics = SimpleNamespace(joints=lambda _serial: self.joints,
-                                          base_pose=lambda _serial: SimpleNamespace(position=self.base))
+                                          base_pose=lambda _serial: pose(*self.base))
 
     def submit(self, _label, run):
         """Run the intent now."""
@@ -49,8 +61,8 @@ class FakeCtx:
         return asyncio.get_running_loop().create_task(work)
 
     def now(self):
-        """A fixed clock."""
-        return 0.0
+        """The clock, set by the test."""
+        return self.clock
 
     def log_info(self, _text):
         """Ignore the line."""
@@ -93,22 +105,50 @@ def test_the_planner_is_an_arm_planner_api():
     assert isinstance(ArmPlannerPlugin(), PlannerContract)
 
 
+def plan_from(ctx: FakeCtx, planner: ArmPlannerPlugin) -> Plan:
+    """A ready plan made from where `ctx` is now."""
+    async def scenario():
+        return await planner.request_plan(REQUEST)
+
+    plan = run(planner, ctx, scenario)
+    assert plan.state == "ready" and planner.stale_reason(ctx, plan) == ""
+    return plan
+
+
+@pytest.mark.safety
 def test_a_plan_is_stale_once_the_arm_or_base_moves(found_path):
-    """The arm moving past 2 degrees or the base past 5 cm since planning marks the plan; the start is fine."""
+    """The arm past 2 degrees, the base past 5 cm or a turn past 3 degrees since planning mark the plan."""
     ctx = FakeCtx()
     planner = make_planner(ctx)
-
-    async def scenario():
-        plan = await planner.request_plan(REQUEST)
-        return plan, planner.stale_reason(ctx, plan)
-
-    plan, at_start = run(planner, ctx, scenario)
-    assert plan.state == "ready" and at_start == ""
+    plan = plan_from(ctx, planner)
     ctx.joints = {**ctx.joints, NAMES[0]: math.radians(3.0)}
     assert planner.stale_reason(ctx, plan) == "the arm moved since planning"
     ctx.joints = dict(zip(NAMES, START))
     ctx.base = (0.1, 0.0, 0.0)
     assert planner.stale_reason(ctx, plan) == "the base moved since planning"
+    ctx.base = (0.0, 0.0, math.radians(2.0))
+    assert planner.stale_reason(ctx, plan) == ""
+    ctx.base = (0.0, 0.0, math.radians(-4.0))
+    assert planner.stale_reason(ctx, plan) == "the base moved since planning"
+
+
+@pytest.mark.safety
+def test_a_plan_from_a_tracked_base_is_stale_once_mocap_loses_it(found_path):
+    """The last fix stays put while an untracked base moves, so losing the pose marks the plan.
+
+    A plan made from a guessed base is not judged by tracking.
+    """
+    ctx = FakeCtx()
+    planner = make_planner(ctx)
+    plan = plan_from(ctx, planner)
+    ctx.clock = 0.5
+    assert planner.stale_reason(ctx, plan).startswith("mocap lost the base since planning")
+    ctx.clock = 0.0
+    ctx.scene.snapshot.robots[robot_id(SERIAL)].base_tracked = False
+    other = make_planner(ctx)
+    guessed = plan_from(ctx, other)
+    ctx.clock = 0.5
+    assert other.stale_reason(ctx, guessed) == ""
 
 
 def test_the_start_base_belongs_to_the_plan_it_was_made_for(found_path):

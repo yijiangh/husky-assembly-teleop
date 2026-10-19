@@ -4,7 +4,8 @@ PlannerService: the base class of a headless planner plugin, which plans, cancel
 * A planner plugin subclasses it and supplies `make_search`, `stale_reason` and `send`; it offers others its
   `PlannerContract` (`plan.py`), and its panel is a separate plugin (`planner_panel.PlannerPanel`).
 ! Requests run in the planner's own context (`ctx.submit`), so soft stop, teardown and its errors apply to them, and
-  every future resolves: a cancelled search gives a plan in state "cancelled".
+  every future resolves: a cancelled search gives a plan in state "cancelled". Only a request a soft stop drops
+  before it ran stays pending; that stop cancels every task that could be waiting for it.
 """
 
 from __future__ import annotations

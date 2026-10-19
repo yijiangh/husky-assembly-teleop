@@ -83,7 +83,7 @@ SAFETY_MODE_NAMES = {getattr(SafetyMode, name): name.lower().replace("_", " ")
 #: Robot button label -> HuskyRobotInterface method it calls.
 ROBOT_ACTIONS = {
     "Unlock": "unlock_protective_stop",
-    "Resume": "resume_arms",
+    "Resume": "resume",
     "Reconnect": "reconnect",
 }
 
@@ -128,8 +128,8 @@ class HealthPlugin(HuskyPlugin):
                 actions = gui.add_button_group(
                     "Robot", list(ROBOT_ACTIONS),
                     hint="Unlock: like 'Enable robot' on the teach pendant; clear the cause first. "
-                         "Resume: undo 'Stop all' for this robot's arms (the base comes back with its "
-                         "controller button in the robot panel). "
+                         "Resume: undo 'Stop all' for this robot: its arms' programs play again and its "
+                         "base's velocity controller is switched on. "
                          "Reconnect: rebuild every topic, service and action of this robot.")
                 # ! Bind this loop's serial as a default argument.
                 actions.on_click(ctx.defer_value(

@@ -403,6 +403,15 @@ class PluginContext:
         failures, self._task_failures = self._task_failures, 0
         return failures
 
+    def _drop_intents(self) -> list[str]:
+        """Forget every queued intent without running it, and return their labels. For soft stop."""
+        labels = []
+        while True:
+            try:
+                labels.append(self._intents.get_nowait().label)
+            except queue.Empty:
+                return labels
+
     def _cancel_all_tasks(self) -> list[asyncio.Task]:
         """Cancel every running task, and return them so the caller can wait for their cleanup."""
         tasks = list(self._tasks)

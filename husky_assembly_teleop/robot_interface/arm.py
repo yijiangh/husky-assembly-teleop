@@ -54,8 +54,9 @@ FREE_DRIVE_HEARTBEAT = 0.2
 #: multi_arm_safety_sync status older than this, seconds, counts as unknown.
 SYNC_STATUS_MAX_AGE = 3.0
 
-#: Largest gap, radians per joint, between the arm and a trajectory's first waypoint (it runs at time 0).
-START_TOLERANCE = 0.1
+#: Largest gap, radians per joint, between the arm and a trajectory's first waypoint: it runs at time 0, so any gap
+#: is a jump. Start from `joint_vector()`, as `send_joint_move` does.
+START_TOLERANCE = 0.01
 #: Largest gap, metres, between the TCP and a cartesian target.
 CARTESIAN_START_TOLERANCE = 0.05
 #: Largest turn, radians, between the TCP and a cartesian target; more means a wrong frame.
@@ -520,6 +521,9 @@ class ArmInterface:
             return "its safety is not known: the sync reaches no dashboard for this arm; is the driver running?"
         if not self.state.operational:
             return f"the arm is not operational: {self.state.problem}"
+        # * Stopped, the driver switches the controllers off (and drops what they get); the poll may not show it yet.
+        if not self.state.program_playing:
+            return "its program is stopped (Stop all, or the sync stopped it); press Resume"
         return None
 
     @property

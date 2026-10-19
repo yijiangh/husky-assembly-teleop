@@ -18,7 +18,7 @@ from std_srvs.srv import Trigger
 
 from ..config import RobotConfig
 from .arm import ArmInterface, ArmState
-from .base import BaseInterface, BaseState
+from .base import PLATFORM_VELOCITY_CONTROLLER, BaseInterface, BaseState
 from .frames import HUSKY_FRAME, MOCAP_FRAME, fixed_transform
 from scaffolding_assembly_core.geometry import Pose, compose, invert
 from .ur_frames import stock_frame_problem
@@ -182,23 +182,35 @@ class HuskyRobotInterface:
     def soft_stop(self) -> None:
         """Stop the whole robot until an operator resumes it.
 
-        - Arms: stay stopped until `resume_arms`.
-        - Base: see BaseInterface.stop; resume by switching its controller on.
+        - Arms: stay stopped until `resume`.
+        - Base: see BaseInterface.stop; `resume` switches its velocity controller on again.
 
         ! Not an emergency stop: it needs wifi and the on-board nodes. Use the pendant or platform e-stop.
+        ! Each part is stopped even if another raises; the error is logged.
         """
-        self._node.get_logger().warning(f"robot {self.config.serial}: SOFT STOP")
-        self.base.stop()
+        log = self._node.get_logger()
+        log.warning(f"robot {self.config.serial}: SOFT STOP")
+        try:
+            self.base.stop()
+        except Exception as error:
+            log.error(f"robot {self.config.serial}: SOFT STOP of the base failed: {error!r}")
         if self.arms:
-            self._call_sync(self._stop_arms, "stop arms")
+            try:
+                self._call_sync(self._stop_arms, "stop arms")
+            except Exception as error:
+                log.error(f"robot {self.config.serial}: SOFT STOP of the arms failed: {error!r}")
 
-    def resume_arms(self) -> bool:
-        """Lift the arms' soft stop; they restart once all are operational.
+    def resume(self) -> bool:
+        """Undo a soft stop: switch the base's velocity controller on, and lift the arms' stop.
+
+        The arms restart once all are operational; the base moves again only when sent a twist or a path.
 
         Returns:
-            bool: True if the request went out. False if the sync is not reachable.
+            bool: True if every request went out. False if the controller manager or the sync is not reachable.
         """
-        return self._call_sync(self._resume_arms, "resume arms")
+        base = self.base.controllers.switch(PLATFORM_VELOCITY_CONTROLLER)
+        arms = self._call_sync(self._resume_arms, "resume arms") if self.arms else True
+        return base and arms
 
     def _call_sync(self, client, what: str) -> bool:
         """Call a multi_arm_safety_sync service and log its answer.
