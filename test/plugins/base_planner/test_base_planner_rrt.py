@@ -12,7 +12,7 @@ from husky_assembly_teleop.plugins.base_planner.algorithms import ALGORITHMS, De
 from husky_assembly_teleop.plugins.base_planner.algorithms.base import LEAD
 from husky_assembly_teleop.plugins.base_planner.algorithms.rrt_arcs import plan
 from husky_assembly_teleop.plugins.base_planner.world import PlanningWorld, stowed
-from husky_assembly_teleop.shared.planning.panel import with_guesses
+from husky_assembly_teleop.shared.planning.service import with_guesses
 from scaffolding_assembly_core.robot import RobotObject
 from scaffolding_assembly_core.scene import Body, Scene
 from scaffolding_assembly_core.ids import robot_id

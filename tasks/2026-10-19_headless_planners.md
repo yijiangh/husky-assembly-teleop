@@ -1,7 +1,7 @@
 # Headless planners with a panel on their public API (2026-10-19)
 
-Status: **contract done** (`shared/planning/service.py`, `PlannerPanel` in `shared/planning/panel.py`, tests in
-`test/shared/test_planner_service.py`); arm and base planners being ported in parallel, one agent each.
+Status: **done 19 Oct, not pushed**: contract (400bb66), arm planner (3f66fd6), base planner (07b7ff0), the old
+`PlannerPlugin` removed. All tests and linters pass; not yet run on a robot.
 
 ## Why
 
@@ -64,8 +64,12 @@ its settings as (name, value) pairs, debug on/off, and the recording inputs: tas
 panel owns the tasks' virtual obstacles (`base_planner_panel/task/…`): choosing a task is an operator's scene setup.
 Record now follows the plan's request: a run is saved only when its plan was requested with `record`.
 
-Then (me): merge both, delete `PlannerPlugin` and the old `Search` from `panel.py`, and
-`test/shared/test_planner_panel.py`'s tests of the old class (its two strict xfails are fixed by the service).
+**Arm planner (done):** `ArmPlanRequest` holds serial, arm and goal joints; the planner keeps the base position the
+latest plan started from. The panel reaches inside only for the PyBullet window toggle.
+
+**Merge (done):** both ported in parallel and cherry-picked; `PlannerPlugin`, the old `Search` and its tests removed
+(the service's tests cover them, and its "cancelled" plans fix the "stuck at planning" bug). A ready plan whose target
+the panel moved away from shows "target moved: replan" (`PlannerPanel.update`), as "stale" did before the split.
 
 ## Tests
 

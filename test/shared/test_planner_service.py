@@ -253,3 +253,32 @@ def test_the_panel_plans_and_commits_through_the_api():
     found, refused, committed, plan = run(planner, scenario)
     assert found == "found" and "target changed" in refused and committed == "sent"
     assert plan.state == "sent" and plan.request == Request("alice", 1.0) and planner.sent == [plan.id]
+
+
+@pytest.mark.safety
+def test_a_refused_send_leaves_the_plan_ready():
+    """The robot refusing keeps the plan ready, so it can be committed again once the robot is ready."""
+    async def scenario(planner, ctx):
+        plan = await planner.request_plan(Request("alice"))
+        planner.taken = False
+        return await planner.commit(plan.id), planner.plan
+
+    (sent, message), latest = run(Planner(), scenario)
+    assert not sent and message == "refused" and latest.state == "ready"
+
+
+def test_the_panel_asks_for_a_replan_once_its_target_moves():
+    """A ready plan whose target the panel moved away from shows "target moved" and says how, once."""
+    async def scenario(planner, ctx):
+        panel = Panel()
+        panel._api = planner
+        ctx.now = lambda: 0.0
+        await planner.request_plan(Request("alice"))
+        panel.update(ctx)
+        before = panel._plan_chip()
+        panel.change = "the target changed since planning"
+        panel.update(ctx)
+        return before, panel._plan_chip(), panel._message
+
+    before, after, message = run(Planner(), scenario)
+    assert "plan ready" in before and "target moved" in after and message == "the target changed since planning"

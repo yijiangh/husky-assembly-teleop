@@ -31,15 +31,14 @@ replaces. See `doc/refactor_rationale.md` for why the old flags had to go, and
 
 ## Planner plugins share one panel
 
-`base_planner` is a headless `shared.planning.service.PlannerService`, driven through its API by its panel
-`base_planner_panel` (`shared.planning.panel.PlannerPanel`); `arm_planner` is a subclass of
-`shared.planning.panel.PlannerPlugin`,
-which holds the flow every planner has: target → Plan on a worker thread →
-preview with a time slider and ghosts → stale when the robot or target moves →
-Commit. It declares `requires = ("process",)`, so both need `process` loaded. A subclass supplies the problem (`make_search`, `stale_reason`,
-`send_plan`, `show_target`, `show_path`) and its own collision world; the base
-knows no PyBullet or compas_fab. `shared.planning.search.connect` runs RRT-Connect
-(`birrt`) for any state space, and `shared.planning.path.TimedPath` is the shared timed path.
+Each planner is two plugins. The planner (`base_planner`, `arm_planner`) is a headless
+`shared.planning.service.PlannerService`: it plans on a worker thread in its own collision world, keeps the latest
+`Plan`, judges when the robot has moved away from it, and commits it. Other plugins use it through its
+`PlannerPluginApi` (`request_plan`, `cancel`, `clear`, `commit`, `plan`). Its panel (`base_planner_panel`,
+`arm_planner_panel`) is a `shared.planning.panel.PlannerPanel`: target, Plan/Play/Clear, time slider, ghosts and
+Commit, all through that API; it reads the planner's internals only for debug drawing. The base knows no PyBullet
+or compas_fab. `shared.planning.search.connect` runs RRT-Connect (`birrt`) for any state space, and
+`shared.planning.path.TimedPath` is the shared timed path.
 `bar_action` should start from the same base.
 
 ## Per tick, or as a task
