@@ -14,11 +14,11 @@ from __future__ import annotations
 
 import asyncio
 import json
-import time
 from pathlib import Path
 
 import numpy as np
 
+from ...drive import stamped_name, started_at
 from ...plugin_api.context import PluginContext
 from ...plugin_api.trace import Trace
 from ...robot_interface.base import BaseInterface, parameter_value
@@ -67,7 +67,7 @@ async def describe(ctx: PluginContext, base: BaseInterface, plan: Plan, **more) 
     """
     linear, angular = plan.speed_caps
     battery = {"percentage": base.state.battery_percentage, "voltage": base.state.battery_voltage}
-    return {"started": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "robot": plan.serial, "conditions": dict(CONDITIONS),
+    return {"started": started_at(), "robot": plan.serial, "conditions": dict(CONDITIONS),
             "battery": battery,
             **await setup(ctx, base),
             "template": plan.settings, "speed_caps": {"linear": linear, "angular": angular},
@@ -149,7 +149,7 @@ def save(recordings: Path, rec: Trace, plan: Plan, experiment: dict, outcome: st
         OSError: If it cannot be written.
     """
     folder = (recordings / experiment.get("experiment_name", "default")
-              / f"{time.strftime('%Y%m%d_%H%M%S')}_{plan.serial}_{plan.slug}_{experiment['environment']}")
+              / stamped_name(plan.serial, plan.slug, experiment['environment']))
     extra = {"path_poses": plan.poses, "path_t": np.array([]) if plan.t is None else plan.t,
              "path_label": np.array(plan.label), "outcome": np.array(outcome),
              "speed_caps": np.array(plan.speed_caps), "expected_duration": np.array(plan.expected),

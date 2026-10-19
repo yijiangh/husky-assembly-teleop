@@ -34,7 +34,7 @@ import numpy as np
 import viser
 from crl_husky.follower_path import FollowerPath, wrap
 
-from ...drive import drive_folder
+from ...drive import drive_folder, folder_name
 from ...plugin_api import signals
 from ...plugin_api.concurrency import WaitTimeout
 from ...plugin_api.context import PluginContext
@@ -368,8 +368,8 @@ class BaseExperimentPlugin(HuskyPlugin):
                     or follower.state != "following" or ctx.now() - follower.update_time > 2 * STALE_AFTER)
 
         try:
-            more = {"experiment_name": _slug(self._experiment.value), "clearance": {"path": PATH_CLEARANCE,
-                                                                                    "stop": STOP_DISTANCE}}
+            more = {"experiment_name": folder_name(self._experiment.value),
+                    "clearance": {"path": PATH_CLEARANCE, "stop": STOP_DISTANCE}}
             if automation is not None:
                 more["automation"] = automation
             if recorded:
@@ -456,7 +456,7 @@ class BaseExperimentPlugin(HuskyPlugin):
 
         try:
             experiment = await record.describe(
-                ctx, base, plan, experiment_name=_slug(self._experiment.value),
+                ctx, base, plan, experiment_name=folder_name(self._experiment.value),
                 clearance={"path": PATH_CLEARANCE, "stop": STOP_DISTANCE}, automation=automation,
                 # ? Sent from the monitor over the network: the delay includes it; its stamps are the monitor's clock.
                 command_source="monitor")
@@ -558,7 +558,7 @@ class BaseExperimentPlugin(HuskyPlugin):
         """
         done, failures, started, before = 0, 0, ctx.now(), 0
         home = self._robot_pose(ctx, serial)
-        name = _slug(self._experiment.value)
+        name = folder_name(self._experiment.value)
         if paths in (STANDARD, TWIST_GRID):
             # * Resumed from this experiment's earlier attempts with the same setup, so every path gets as many.
             key = record.current_key(await record.setup(ctx, ctx.world.robots[serial].base))
@@ -921,12 +921,6 @@ def _minutes(seconds: float) -> str:
     """A duration as minutes and seconds, e.g. "4 min 05 s"."""
     minutes, seconds = divmod(int(round(seconds)), 60)
     return f"{minutes} min {seconds:02d} s"
-
-
-def _slug(name: str) -> str:
-    """A name for a folder: letters, digits, dashes and underscores; "default" if empty."""
-    slug = "".join(c if c.isalnum() or c in "-_" else "_" for c in name.strip())
-    return slug or "default"
 
 
 def _moved(pose, anchor) -> bool:

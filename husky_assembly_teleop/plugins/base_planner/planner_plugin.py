@@ -15,13 +15,12 @@ from __future__ import annotations
 import asyncio
 import math
 import threading
-import time
 from dataclasses import asdict, replace
 from typing import TYPE_CHECKING, Any
 
 from crl_husky.follower_path import FollowerPath
 
-from ...drive import drive_folder
+from ...drive import drive_folder, folder_name, started_at
 from ...plugin_api import signals
 from ...plugin_api.concurrency import WaitTimeout
 from ...plugin_api.context import PluginContext
@@ -146,8 +145,8 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
             ctx.log_warn(f"planning for {serial} from a guess: {'; '.join(guessed)}")
         # * With `record`, the attempt gets its folder now; the worker saves it, found or not.
         environment, task = self._environment(ctx, serial), self._task_of(ctx, request.task, start, goal)
-        setup = {"experiment": experiment_name(request.experiment), "task": task, "robot": serial,
-                 "environment": environment, "started": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        setup = {"experiment": folder_name(request.experiment, DEFAULT_EXPERIMENT), "task": task, "robot": serial,
+                 "environment": environment, "started": started_at(),
                  "conditions": {"task_origin": list(TASK_ORIGIN), "process_step": self._process_index(ctx),
                                 "arm_from_stow": math.degrees(away),
                                 "speed_caps": {"linear": MAX_LINEAR_SPEED, "angular": MAX_ANGULAR_SPEED}},
@@ -232,7 +231,7 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
         """
         serial = request.serial
         robot = ctx.world.robots[serial]
-        sent_id, sent_at, started = self._sent_id, self._sent_at, time.strftime("%Y-%m-%dT%H:%M:%S%z")
+        sent_id, sent_at, started = self._sent_id, self._sent_at, started_at()
         outcome, rec = "stopped", None
         try:
             with ctx.record(signals.base_floor_pose(robot), signals.follower_position_error(robot),
@@ -274,8 +273,9 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
         description = load_description(folder) if folder is not None and folder.is_dir() else None
         try:
             if description is None or description.get("run") is not None:
-                setup = plan.get("setup") or {"experiment": experiment_name(request.experiment), "task": None,
-                                              "robot": serial, "environment": self._environment(ctx, serial)}
+                setup = plan.get("setup") or {"experiment": folder_name(request.experiment, DEFAULT_EXPERIMENT),
+                                              "task": None, "robot": serial,
+                                              "environment": self._environment(ctx, serial)}
                 known = description["plan"] if description is not None else {
                     "found": True, "seconds": plan.get("seconds"), "length": path.length, "duration": path.duration}
                 description = {**setup, "plan": known, "plan_folder": folder.name if folder is not None else None}
@@ -346,12 +346,6 @@ def floor_pose(ctx: PluginContext, serial: str) -> tuple[float, float, float]:
     """
     base = ctx.kinematics.base_pose(serial)
     return float(base.position[0]), float(base.position[1]), yaw_from_xyzw(base.orientation)
-
-
-def experiment_name(text: str) -> str:
-    """An experiment name made safe for a folder name; DEFAULT_EXPERIMENT if empty."""
-    name = "".join(char if char.isalnum() or char in "-_" else "_" for char in str(text).strip())
-    return name or DEFAULT_EXPERIMENT
 
 
 def differs(pose, reference) -> bool:

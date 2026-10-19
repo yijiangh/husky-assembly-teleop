@@ -24,7 +24,6 @@ from __future__ import annotations
 import asyncio
 import colorsys
 import json
-import time
 from dataclasses import asdict, dataclass, field
 from html import escape
 from pathlib import Path
@@ -34,6 +33,7 @@ import numpy as np
 import viser
 from scipy.spatial.transform import Rotation
 
+from ..drive import drive_folder, folder_name, stamped_name, started_at
 from ..ui.checklist import CheckList
 from ..ui.phone import big_buttons, phone_text
 from ..ui.top_down import Dot, FloorGrid, render_top_down, scene_footprints
@@ -52,7 +52,7 @@ DEFAULT_MOCAP_ID = 1863
 #: Label used when the Label field is empty.
 DEFAULT_LABEL = "p"
 #: Where "Export" writes its files.
-EXPORT_FOLDER = Path.home() / "husky_probe"
+EXPORT_FOLDER = Path("data_experiment/mocap_probe")
 #: Colour of unselected recorded points in the 3D view.
 SAMPLE_COLOR = (230, 60, 150)
 #: Colour of the selected recorded points.
@@ -313,7 +313,7 @@ class MocapProbePlugin(HuskyPlugin):
             # * Actions on the selection sit above the list, which grows at the bottom.
             gui.add_html(section("selected points", SECTION_CTRL))
             self._file_name = gui.add_text("File name", initial_value="probe_points",
-                                           hint=f"Saved as {EXPORT_FOLDER}/<name>_<date>_<time>.json")
+                                           hint=f"Saved on the Drive as {EXPORT_FOLDER}/<date>_<time>_<name>.json")
             actions = gui.add_button_group("Selected", ["Delete", "Export"])
             load_points = gui.add_upload_button("Load points", mime_type="application/json", icon=viser.Icon.UPLOAD,
                                                 hint="Add the points of an exported file, unselected.")
@@ -461,7 +461,7 @@ class MocapProbePlugin(HuskyPlugin):
         ctx.log_info(self._message)
 
     def _export(self, ctx: PluginContext) -> None:
-        """Write the selected samples to a timestamped JSON file in EXPORT_FOLDER.
+        """Write the selected samples to a timestamped JSON file in the Drive's EXPORT_FOLDER.
 
         Args:
             ctx: This plugin's context.
@@ -470,12 +470,12 @@ class MocapProbePlugin(HuskyPlugin):
         if not chosen:
             self._message = "nothing selected to export"
             return
-        name = self._file_name.value.strip() or "probe_points"
-        EXPORT_FOLDER.mkdir(parents=True, exist_ok=True)
-        path = EXPORT_FOLDER / f"{name}_{time.strftime('%Y%m%d_%H%M%S')}.json"
+        path = self._export_path(ctx, folder_name(self._file_name.value, "probe_points"))
+        if path is None:
+            return
         data = {
             "frame": "world (mocap, Z-up), metres; quaternions are (x, y, z, w)",
-            "exported_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "exported_at": started_at(),
             "samples": [asdict(sample) for sample in chosen],
         }
         path.write_text(json.dumps(data, indent=2))
@@ -495,15 +495,25 @@ class MocapProbePlugin(HuskyPlugin):
         self._message = "coverage mapping " + ("started" if on else "stopped")
         ctx.log_info(self._message)
 
+    def _export_path(self, ctx: PluginContext, name: str) -> Path | None:
+        """A new file "<date>_<time>_<name>.json" in the Drive's EXPORT_FOLDER; None (and why) if that is missing."""
+        try:
+            return drive_folder(ctx.config.drive_root, EXPORT_FOLDER) / f"{stamped_name(name)}.json"
+        except FileNotFoundError as error:
+            self._message = f"not exported: {error}"
+            ctx.log_warn(self._message)
+            return None
+
     def _export_coverage(self, ctx: PluginContext) -> None:
-        """Write the coverage map to a timestamped JSON file in EXPORT_FOLDER."""
+        """Write the coverage map to a timestamped JSON file in the Drive's EXPORT_FOLDER."""
         if not self.coverage.samples.any():
             self._message = "coverage map is empty; tick Map coverage and walk the probe around"
             return
-        EXPORT_FOLDER.mkdir(parents=True, exist_ok=True)
-        path = EXPORT_FOLDER / f"{COVERAGE_PREFIX}_{time.strftime('%Y%m%d_%H%M%S')}.json"
+        path = self._export_path(ctx, COVERAGE_PREFIX)
+        if path is None:
+            return
         data = {"frame": "world (mocap, Z-up), metres; cells cover [origin, origin + shape * cell_size)",
-                "exported_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "exported_at": started_at(),
                 "mocap_id": self._probe.mocap_id if self._probe else None,
                 "rate": "tracked / samples; good: tracked with marker error under "
                         f"{MARKER_ERROR_WARN * 1e3:g} mm",
