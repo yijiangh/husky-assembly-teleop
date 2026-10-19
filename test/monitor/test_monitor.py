@@ -133,6 +133,7 @@ def build(monkeypatch, *plugins: HuskyPlugin, robots=()) -> HuskyMonitor:
     monitor._kinematics, monitor._scene, monitor._snapshot, monitor._viz = None, Scene(), Scene(), None
     monitor._timer, monitor._stop_reasons, monitor._undecodable, monitor._shut_down = FakeTimer(), {}, set(), False
     monitor._pump_ros = lambda: 0
+    monitor._startup_started, monitor._startup_times = 0.0, {}
     for index, robot in enumerate(robots):
         monitor._world.robots[f"r{index}"] = robot
     monitor._build()

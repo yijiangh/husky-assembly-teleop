@@ -41,6 +41,8 @@ from .world.measured import TrackedObject, WorldState
 
 #: Most ROS callbacks run in one tick; the rest wait, so a flood cannot starve the plugins.
 ROS_CALLBACKS_PER_TICK = 5000
+#: Seconds a startup step must take to be named in the startup line.
+STARTUP_SLOW_STEP = 0.2
 
 
 @dataclass
@@ -87,6 +89,9 @@ class HuskyMonitor(Node):
     def __init__(self):
         """Bring up state, scene, UI and plugins. `run` then starts ticking."""
         super().__init__("husky_monitor")
+        # When startup began, and how long each timed step took; logged as one line after the first tick.
+        self._startup_started = time.perf_counter()
+        self._startup_times: dict[str, float] = {}
 
         self._config = config_from_ros_parameters(self)
         self._world = WorldState()
@@ -141,9 +146,10 @@ class HuskyMonitor(Node):
         # Create plugins in dependency order
         with self._timed("plugin import and construction"):
             plugins = load_plugins(self._config.enabled_plugins, self.log_error)
+        experimental = [plugin.name for plugin in plugins if plugin.experimental]
+        if experimental:
+            self.log_warn(f"experimental plugins, their behaviour and API may change: {', '.join(experimental)}")
         for plugin in plugins:
-            if plugin.experimental:
-                self.log_warn(f"plugin {plugin.name!r} is experimental: its behaviour and API may change")
             ctx = PluginContext(
                 name=plugin.name,
                 monitor=self,
@@ -170,12 +176,19 @@ class HuskyMonitor(Node):
 
     @contextmanager
     def _timed(self, what: str):
-        """Log how long the body took, to see where startup time goes."""
+        """Record how long the body took, for `_log_startup`."""
         started = time.perf_counter()
         try:
             yield
         finally:
-            self.log_info(f"startup: {what} took {(time.perf_counter() - started) * 1e3:.0f} ms")
+            self._startup_times[what] = time.perf_counter() - started
+
+    def _log_startup(self) -> None:
+        """Log how long startup took, naming the steps slower than STARTUP_SLOW_STEP."""
+        slow = sorted(((seconds, what) for what, seconds in self._startup_times.items()
+                       if seconds >= STARTUP_SLOW_STEP), reverse=True)
+        steps = "; slowest: " + ", ".join(f"{what} {seconds * 1e3:.0f} ms" for seconds, what in slow) if slow else ""
+        self.log_info(f"started in {(time.perf_counter() - self._startup_started) * 1e3:.0f} ms{steps}")
 
     # --- --- --- --- --- FOR PluginContext (documented there) --- --- --- --- ---
 
@@ -265,6 +278,7 @@ class HuskyMonitor(Node):
                 if self._tick_index == 0:
                     with self._timed("first tick"):
                         await self._tick()
+                    self._log_startup()
                 else:
                     await self._tick()
                 due = max(due, started) + self._config.tick_period
@@ -543,9 +557,7 @@ GIL_SWITCH_INTERVAL = 0.001
 
 async def _run_monitor() -> None:
     """Build the monitor, tick until stopped, then shut it down cleanly."""
-    started = time.perf_counter()
     monitor = HuskyMonitor()
-    monitor.log_info(f"startup: monitor built in {(time.perf_counter() - started) * 1e3:.0f} ms")
     try:
         await monitor.run()
     finally:
