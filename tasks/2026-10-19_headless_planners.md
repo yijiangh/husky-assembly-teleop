@@ -58,6 +58,12 @@ Subclasses set `planner`, put it in `requires`, call `_connect(ctx)` first in se
 5. README, `doc/plugin_roadmap.md`, the planner's manual and launch examples: the panel's plugin name.
 6. Behaviour for the operator unchanged apart from the plugin name.
 
+**Base planner (done):** `BasePlanRequest` holds serial, goal (x, y, yaw), algorithm label ("" for the default) and
+its settings as (name, value) pairs, debug on/off, and the recording inputs: task name, record on/off, experiment name
+(the planner keeps the start pose in the plan's path). The planner requires `process` for the step it records. The
+panel owns the tasks' virtual obstacles (`base_planner_panel/task/…`): choosing a task is an operator's scene setup.
+Record now follows the plan's request: a run is saved only when its plan was requested with `record`.
+
 Then (me): merge both, delete `PlannerPlugin` and the old `Search` from `panel.py`, and
 `test/shared/test_planner_panel.py`'s tests of the old class (its two strict xfails are fixed by the service).
 
