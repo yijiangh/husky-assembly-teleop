@@ -80,8 +80,8 @@ class ArmPlannerPanel(PlannerPanel):
             self._details = gui.add_html("")
 
             # Everything beyond plan and commit, folded away until wanted (as in the base planner's panel).
-            with gui.add_folder("Advanced", expand_by_default=False), \
-                    gui.add_folder("Debug", expand_by_default=False):
+            with gui.add_folder("Advanced", expand_by_default=False):
+                gui.add_html(section("debug", SECTION_TOOL))
                 # * Watch the search in the chosen robot's planning world.
                 # ! The one reach into the planner (the concrete plugin, not its API): the window runs on the
                 #   planner's worker (`_executor`) and shows its world (`_world`).

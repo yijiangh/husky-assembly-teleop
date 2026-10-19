@@ -100,45 +100,42 @@ class BasePlannerPanel(PlannerPanel):
 
             # Everything beyond plan and commit, folded away until wanted.
             with gui.add_folder("Advanced", expand_by_default=False):
-                with gui.add_folder("Experiment", expand_by_default=False):
-                    self._experiment = gui.add_text("Experiment", initial_value=DEFAULT_EXPERIMENT,
-                                                    hint="Name of this data collection: recorded attempts are saved "
-                                                         "under it")
-                    self._task = gui.add_dropdown("Task", options=[NO_TASK] + [task.name for task in TASKS],
-                                                  initial_value=NO_TASK,
-                                                  hint="A task of the standard set: puts its virtual obstacles into "
-                                                       "the scene and sets the target; Load its start to drive there "
-                                                       "first")
-                    try:
-                        recordings, problem = drive_folder(ctx.config.drive_root, RECORDING_FOLDER), ""
-                    except FileNotFoundError as error:
-                        recordings, problem = None, str(error)
-                    self._recording = gui.add_checkbox("Record", initial_value=False, disabled=bool(problem),
-                                                       hint=problem or f"Save every plan attempt, found or not, and "
-                                                                       f"the run of each committed plan to "
-                                                                       f"{recordings}")
+                gui.add_html(section("experiment", SECTION_TOOL))
+                self._experiment = gui.add_text("Experiment", initial_value=DEFAULT_EXPERIMENT,
+                                                hint="Name of this data collection: recorded attempts are saved "
+                                                     "under it")
+                self._task = gui.add_dropdown("Task", options=[NO_TASK] + [task.name for task in TASKS],
+                                              initial_value=NO_TASK,
+                                              hint="A task of the standard set: puts its virtual obstacles into the "
+                                                   "scene and sets the target; Load its start to drive there first")
+                try:
+                    recordings, problem = drive_folder(ctx.config.drive_root, RECORDING_FOLDER), ""
+                except FileNotFoundError as error:
+                    recordings, problem = None, str(error)
+                self._recording = gui.add_checkbox("Record", initial_value=False, disabled=bool(problem),
+                                                   hint=problem or f"Save every plan attempt, found or not, and the "
+                                                                   f"run of each committed plan to {recordings}")
 
-                with gui.add_folder("Algorithm", expand_by_default=False):
-                    labels = [algorithm.label for algorithm in self._algorithms]
-                    self._algorithm = gui.add_dropdown("Algorithm", options=labels, initial_value=labels[0],
-                                                       hint="How the next plan is searched; its settings are below")
-                    # Each algorithm's settings in a folder of their own, shown while it is chosen.
-                    self._settings = []
-                    for algorithm in self._algorithms:
-                        with gui.add_folder(f"{algorithm.label} settings") as folder:
-                            algorithm.add_settings(gui)
-                        folder.visible = algorithm is self._algorithms[0]
-                        self._settings.append(folder)
+                gui.add_html(section("algorithm", SECTION_TOOL))
+                labels = [algorithm.label for algorithm in self._algorithms]
+                self._algorithm = gui.add_dropdown("Algorithm", options=labels, initial_value=labels[0],
+                                                   hint="How the next plan is searched; its settings are below")
+                # Each algorithm's settings in a folder of their own, shown while it is chosen.
+                self._settings = []
+                for algorithm in self._algorithms:
+                    with gui.add_folder(f"{algorithm.label} settings", expand_by_default=False) as folder:
+                        algorithm.add_settings(gui)
+                    folder.visible = algorithm is self._algorithms[0]
+                    self._settings.append(folder)
 
                 # * Watch the planning world, and the search moving the robot around in it.
-                with gui.add_folder("Debug", expand_by_default=False):
-                    add_pybullet_window_toggle(ctx, gui, self._planner._executor, self._planner._world.set_gui)
-                    self._debug_on = gui.add_checkbox("Debug view", initial_value=False,
-                                                      hint="Record how the next search works, and draw it on the "
-                                                           "floor")
-                    self._debug_legend = gui.add_html("")
-                    self._debug_layers = gui.add_folder("Debug layers")
-                    self._debug_notes = gui.add_html("")
+                gui.add_html(section("debug", SECTION_TOOL))
+                add_pybullet_window_toggle(ctx, gui, self._planner._executor, self._planner._world.set_gui)
+                self._debug_on = gui.add_checkbox("Debug view", initial_value=False,
+                                                  hint="Record how the next search works, and draw it on the floor")
+                self._debug_legend = gui.add_html("")
+                self._debug_layers = gui.add_folder("Debug layers")
+                self._debug_notes = gui.add_html("")
 
         self._robot.on_update(ctx.defer_value("choose robot", lambda serial: self._choose_robot(str(serial))))
         self._task.on_update(ctx.defer_value("choose task", lambda name: self._choose_task(ctx, str(name))))
