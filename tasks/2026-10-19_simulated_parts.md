@@ -1,7 +1,7 @@
 # Simulated parts announce themselves (2026-10-19)
 
-Status: **built, not committed**. A whole robot simulated on a laptop works (`sim_robot.launch.py robot:=0806`,
-checked 19 Oct); not tried yet on a robot.
+Status: **built** (teleop 397f174, crl-husky f22c4bc, both pushed). A whole robot simulated on a laptop works
+(`sim_robot.launch.py robot:=0806`, checked 19 Oct); not tried yet on a robot.
 
 ## Decisions (user, 19 Oct)
 
@@ -42,4 +42,5 @@ checked 19 Oct); not tried yet on a robot.
 - [ ] The monitor against `sim_robot.launch.py`: `SIM` chips, a joint move and a base path go out.
 - [ ] On a robot: the arms start with the repo's calibration (CRL_HUSKY_SN set) and the sync is not simulated.
 - [ ] A real arm with `multi_arm_safety_sync` stopped: motion refused with "its safety is not known".
-- [ ] Rebuild crl-husky everywhere a simulator, fake arm or the sync runs; push crl-husky first.
+- [x] Push crl-husky first, then teleop.
+- [ ] Rebuild crl-husky everywhere a simulator, fake arm or the sync runs.

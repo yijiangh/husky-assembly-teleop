@@ -31,7 +31,8 @@ TOOL_URDFS: dict[str, str | dict[str, str]] = {
                        "right_ur_arm": "scaffolding_v3_right.urdf"},
 }
 
-#: The tool URDF link at the tool centre point; set the pendant's TCP to its pose in tool0.
+#: The tool URDF link at the tool centre point; it becomes `Tool.tcp`, for planners. Not set on the pendant,
+#: which stays at tool0 (`ArmConfig.pendant_tcp`).
 TCP_LINK = "tcp"
 
 #: `package://<pkg>/...` resolves three levels above the URDF (<root>/<package>/urdf/<file>.urdf).

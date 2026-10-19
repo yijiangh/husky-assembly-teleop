@@ -1,7 +1,9 @@
 # Headless planners with a panel on their public API (2026-10-19)
 
-Status: **done 19 Oct, not pushed**: contract (400bb66), arm planner (3f66fd6), base planner (07b7ff0), the old
-`PlannerPlugin` removed. All tests and linters pass; not yet run on a robot.
+Status: **done**: contract (400bb66), arm planner (3f66fd6), base planner (07b7ff0), the old `PlannerPlugin`
+removed; not yet run on a robot. Paths below are as built; since then `shared/planning/` is `shared/planner/`, each
+contract has its own file (`shared/<name>_contract.py`), and the planner plugins are `planner_plugin.py` and
+`panel_plugin.py`.
 
 ## Why
 

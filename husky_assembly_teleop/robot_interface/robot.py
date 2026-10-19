@@ -86,7 +86,6 @@ class HuskyRobotInterface:
             if check.out_of_date:
                 node.get_logger().error(f"!!! robot {config.serial} {check.describe()}")
             elif check.file is None:
-                # TODO: copy each arm's calibration.yaml from the robot into crl-husky config/robots/<serial>/.
                 node.get_logger().warning(f"robot {config.serial} {check.describe()}")
             else:
                 node.get_logger().info(f"robot {config.serial} {check.describe()}")

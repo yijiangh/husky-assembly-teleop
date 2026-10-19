@@ -65,7 +65,7 @@ The calibration pipeline (`data/calibration_data/`, Drive sessions) is unchanged
   (`test_ur_frames.py`), the turned-frame FK test rebuilt from a temporary copy (`test_core_scene.py`).
 - Docs: README (relay section), `doc/ur_frames.md`.
 
-Checked live (isolated domain 70, fastrtps, localhost, no Motive): the relay starts, applies the Drive sessions
+Checked live (isolated domain 70, localhost, no Motive): the relay starts, applies the Drive sessions
 (0804 and 0805 equal their defaults by hash; 0806 takes today's 20261016 session, 0.8 mm from the default),
 publishes and reloads; a session added to a temporary Drive copy while running is logged once, not applied.
 

@@ -1,8 +1,10 @@
 # Shared layer for plugins, and plugin dependency chains (2026-10-19)
 
-Status: **done 19 Oct, not pushed**: phase 0 (3275f2b..38984b5), 1 (dda698f), 2 (2c17184), 4 (d729adc); phase 3
-left as is (see there). Scope was refactoring only, with one exception: arm_planner's `send_to_arm` is implemented.
-All tests and linters pass; the arm path send is not yet tried on a robot.
+Status: **done**: phase 0 (3275f2b..38984b5), 1 (dda698f), 2 (2c17184), 4 (d729adc); phase 3 left as is (see
+there). Scope was refactoring only, with one exception: arm_planner's `send_to_arm` is implemented; not yet tried on
+a robot. Paths below are as built; since then `shared/planning/` is `shared/planner/`, `ProcessPluginApi` is
+`ProcessContract` (`shared/process_contract.py`), the process plugin's own code is in `plugins/process/`, and the
+services rule gave way to contracts (`shared/__init__.py`).
 
 ## Decisions
 

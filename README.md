@@ -10,7 +10,7 @@ Install this library from source by cloning this repo to local and install from 
 ```
 git clone --recursive git@github.com:yijiangh/husky-assembly-teleop.git
 ```
-> ⚠️ The monitor depends on [crl-husky](https://gitlab.inf.ethz.ch/crl/robot-control/crl-husky) (mocap relay, robot configs, `crl_husky_msgs`), cloned next to this repo as `src/crl-husky`. **Whenever you pull this repo, pull and rebuild crl-husky too**: the two change together.
+> ⚠️ The monitor depends on [crl-husky](https://gitlab.inf.ethz.ch/crl/robot-control/crl-husky) (robot configs, the onboard launch files with the safety sync, `crl_husky_msgs`), cloned next to this repo as `src/crl-husky`. **Whenever you pull this repo, pull and rebuild crl-husky too**: the two change together.
 
 The `--recursive` flag when cloning above is used for initializing all the git submodules. You can learn more about submodules [here](https://github.com/CGAL/cgal-swig-bindings/wiki/Installation).
 
@@ -43,7 +43,7 @@ If you use the `--system-site-packages` flag when creating your venv, you can us
 
 ### One-time setup
 
-All commands in this README run in the workspace root, the folder that holds `src/`, `venv/` and `install/`. The monitor also needs [crl-husky](https://gitlab.inf.ethz.ch/crl/robot-control/crl-husky) in `src/crl-husky`: it provides the mocap relay, the robot configs and `crl_husky_msgs`.
+All commands in this README run in the workspace root, the folder that holds `src/`, `venv/` and `install/`. The monitor also needs [crl-husky](https://gitlab.inf.ethz.ch/crl/robot-control/crl-husky) in `src/crl-husky`: it provides the robot configs, the onboard launch files with the safety sync, and `crl_husky_msgs`.
 
 ```bash
 # ROS packages
@@ -70,7 +70,7 @@ python3 -m pip install --no-deps -e src/husky-assembly-teleop/external/scaffoldi
 
 # The monitor's dependencies (versions as in requirements.txt); matplotlib is for husky_assembly_tamp
 python3 -m pip install "viser==1.1.1" "yourdfpy==0.0.60" "trimesh==4.12.2" "async-timeout>=4.0" "compas_robots>=0.6" \
-    "scipy>=1.8" "pybullet>=3.2" "compas>=2.0" "matplotlib==3.10.3"
+    "scipy>=1.8" "pybullet>=3.2" "compas>=2.0" "matplotlib==3.10.3" "pandas>=2.0"
 
 # Check: all five should list a location under src/husky-assembly-teleop/external
 python3 -m pip list | grep -iE "pybullet.planning|compas.fab|rs.data.structure|husky.assembly.tamp|scaffolding.assembly.core"
@@ -161,9 +161,13 @@ The monitor is a small core that ticks and owns the shared state; every feature 
 | `monitor.py`, `config.py` | The ROS node and its tick; the run configuration, read from the ROS parameters. |
 | `plugin_api/` | What a plugin is (`HuskyPlugin`, `@register`) and what it gets (`PluginContext`). |
 | `plugins/` | One module or package per feature. Start from `robot_control/` or `examples/` when writing one. |
+| `shared/` | What plugins share: each plugin's contract (`<name>_contract.py`), base classes and helpers. |
 | `robot_interface/` | The only code that talks to robots: base, arms, tools, mocap subscriptions. |
 | `world/` | Measured state, mocap checks, kinematics, the scene planners read. |
-| `ui/` | The viser web UI and shared widgets. |
+| `ui/` | The viser web UI, the phone page and shared widgets. |
+| `mocap_relay/` | The mocap relay, its own process (section 1 below). |
+| `experiments/` | Offline analysis of recorded experiments, run from `scripts/`. |
+| `drive.py`, `plots.py`, `tool_urdfs.py` | Experiment folders on the Drive; plot helpers; tool URDFs and mesh paths. |
 | `old/` | The old monitor, for reference only. |
 
 `external/scaffolding_assembly_core/` is the core shared with the Rhino plugin and the planners, a submodule of [yijiangh/scaffolding_assembly_core](https://github.com/yijiangh/scaffolding_assembly_core): the process file format (`process/`, schema 2.1), robots and scenes, and their mirrors in PyBullet and compas_fab. Its layers are listed in its `scaffolding_assembly_core/__init__.py`; the process format is in its `doc/process_format.md`.
@@ -212,7 +216,13 @@ The UI is served at http://localhost:8080; other PCs on the network reach it at 
 
 **Quit:** press Ctrl-C once and wait. During shutdown the plugins send their final hold commands; a second Ctrl-C skips them.
 
-**Stop all (Esc):** stops every robot and cancels every plugin task. The monitor keeps running.
+**Stop all (Esc):** stops every robot (bases, arms through their safety sync, tools), drops clicks queued before
+it and cancels every plugin task. **Resume** in the health panel starts the arms and the base controller again. The
+monitor keeps running. Not an emergency stop.
+
+**Arms need the safety sync.** Arm moves and free drive go out only while the robot's `multi_arm_safety_sync` (crl-husky's
+onboard arm launch) reports the arm operational with its program playing; otherwise they are refused and the log says
+why. Arms on fake hardware are announced as simulated and need no dashboard.
 
 ### Panels
 
@@ -267,14 +277,14 @@ Paths are given relative to this folder, e.g. `data_design_study/260814_RobArch_
 | Plugin | What it does |
 |---|---|
 | `health` | Loaded by default. Shows the status of each robot and tracked object, with Unlock, Resume and Reconnect. |
-| `robot_control` | One tab per robot: drives the base, moves the arms (joint targets or compliance), stows them, operates the tools. |
+| `robot_control` | One tab per robot: drives the base, moves the arms (joint targets or compliance), holds and stows them, operates the tools. Free drive is the arm's **Free** controller: the arm can be pushed by hand only while its **Free drive (hold)** button is held or **Keep on** is ticked. |
 | `obstacles` | The lab's obstacles as collision bodies for the planners: tables, cabinets, tripods and trusses, and walls around the usable floor, from the lab file `data/lab/<lab>.json` (in git; `-p lab:=<name>`). Click an obstacle in the 3D view or pick it, then drag it with the gizmo (only yaw is kept), resize it with the corner gizmo, or type position, yaw and size; rename and remove it, and set the border's x and y range. Edits stay unsaved (amber chip) until **Save** writes the lab file; **Revert** goes back to it. **Add** puts temporary boxes and cylinders (purple) into the scene, kept in `~/husky_obstacles_temporary.json` across restarts and never in the lab file; **Promote** moves one into the lab. |
 | `debug_gizmo` | Debug only. Click any scene body with a world pose in the 3D view, or pick it from the dropdown, then drag it with a gizmo or type its position and roll/pitch/yaw; **Log** prints its pose, **Reset** puts it back. Nothing is saved; to change the lab's obstacles for good, use `obstacles`. |
 | `mocap_probe` | Tracks the probe and records points with it, e.g. obstacle corners; exports JSON and loads it back. Shows its state in a separate panel, see [Panels](#panels). **Map coverage** walks a 15 × 15 m grid of 1 m cells, centred on the mocap origin, and colours each on the floor by how often the probe was tracked there (grey: not visited, red → green), with the mean ± std marker error per cell; export and load as JSON. |
 | `mocap_bars` | Fits a process bar's CAD markers (from the markers on its connector halves) to the Motive rigid body made of them, without Motive's labels, draws the real bar at the fitted pose next to the planned one, and shows the fit's residuals and how far the bar is from where the selected step plans it (across and along its axis, tilt); **Record take** saves the fit to `data_experiment/mocap_bars/<experiment>/` on the Drive. Loads `process`. Experimental. |
 | `process` | Loads a process and shows the state at one movement at a time; the planners load their targets from its selected step. Experimental. |
-| `base_planner_panel` | Plans a collision-free path for a base around the other robots and scene bodies, with the algorithm chosen in its panel (each with its settings, and a Debug view that draws how the search worked); Commit sends it to the onboard pure pursuit follower (`crl_husky pure_pursuit`, or `pure_pursuit_sim.launch.py` to test), which drives it at once if the velocity controller is active. The floor shows the path as the follower cuts it and the robot's trail; with Record ticked each run is saved to `data_experiment/base_planner/` on the Drive (`drive_root`, create the folder in Drive first). Loads `base_planner`, the headless planner it drives (other plugins can request and commit plans through it too), and `process`. Experimental. |
-| `arm_planner_panel` | Plans a collision-free arm motion to a joint target and sends it as one joint trajectory that stops at every waypoint. The panel for the headless `arm_planner` plugin (loaded with it), which others can use through `ArmPlannerPluginApi`. Experimental. |
+| `base_planner_panel` | Plans a collision-free path for a base around the other robots and scene bodies, with the algorithm chosen in its panel (each with its settings, and a Debug view that draws how the search worked); Commit sends it to the onboard pure pursuit follower (`crl_husky pure_pursuit`, or `pure_pursuit_sim.launch.py` to test, in your own ROS domain, never 80), which drives it at once if the velocity controller is active. The floor shows the path as the follower cuts it and the robot's trail; with Record ticked each run is saved to `data_experiment/base_planner/` on the Drive (`drive_root`, create the folder in Drive first). Loads `base_planner`, the headless planner it drives (other plugins can request and commit plans through it too), and `process`. Experimental. |
+| `arm_planner_panel` | Plans a collision-free arm motion to a joint target and sends it as one joint trajectory that stops at every waypoint. The panel for the headless `arm_planner` plugin (loaded with it), which others can use through `ArmPlannerContract`. Experimental. |
 | `base_exp` | Drives test paths (straight, turn, arc, sine, drive-turn-drive; geometric or timed) from where the base stands with the onboard pure pursuit follower, with live error plots; the monitor measures every run's errors itself, the same for every controller, and keeps recording until the robot settles; each run gets its own folder under `data_experiment/base_exp/<experiment name>/` on the Drive (`drive_root`) with the recording (.npz), its setup (sim or real, sim model, controller and parameters) and numbers (experiment.json), and an overview plot (.png). **Start auto** runs paths at one fixed speed, the standard paths (the same 10 in every scenario, resumed per experiment and setup) or random paths from a grid of distances and angles, or constant commands open loop over a grid of speeds and turn rates; each run is checked to keep 0.3 m from every robot and scene body (`obstacles` loads with it, for the lab border); during any run the robot is soft-stopped and automation paused if it comes within 0.1 m of anything. Experimental; needs `crl_husky pure_pursuit` on the robot, or `pure_pursuit_sim.launch.py` to test. Analyse the runs with `scripts/analyze_base_exp.py`: `summary.md` compares the controllers, `robot_model.md` fits a model of the robot, `constant_commands.md` shows how it changes with speed and turn rate. How to run: [doc/base_exp_manual.md](doc/base_exp_manual.md). |
 | `example_plot`, `example_ui`, `example_sequence`, `example_pybullet`, `example_recording`, `example_robot_state` | Minimal plugins, as templates for new ones. |
 
