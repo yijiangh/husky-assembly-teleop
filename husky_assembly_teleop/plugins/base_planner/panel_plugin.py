@@ -1,8 +1,8 @@
 """
 The base planner's panel: pick a target for a husky base, ask `base_planner` for a path, scrub through it, commit it.
 
-The flow is `shared.planning.panel.PlannerPanel`; this adds the planar target, the choice of algorithm (`algorithms`)
-with its settings and debug view, the experiment's task and recording inputs, and the floor drawing.
+The flow is `shared.planning.planner_panel.PlannerPanel`; this adds the planar target, the choice of algorithm
+(`algorithms`) with its settings and debug view, the experiment's task and recording inputs, and the floor drawing.
 
 - The floor shows the plan as the follower will cut it, the sent path, and the robot's trail until the next Commit.
 - A task of the experiment's standard set (`tasks`) puts its virtual obstacles into the scene, under this panel's
@@ -22,9 +22,9 @@ from crl_husky.follower_path import FollowerPath
 from ...drive import drive_folder
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import register
-from ...shared.planning.base import BasePlanRequest
-from ...shared.planning.panel import PlannerPanel
-from ...shared.planning.service import Plan
+from ...shared.planning.planner_contract import BasePlanRequest
+from ...shared.planning.planner_panel import PlannerPanel
+from ...shared.planning.planner_contract import Plan
 from ...ui.base_markers import Markers
 from ...ui.ghost import RobotGhost
 from ...ui.pose_input import PlanarPoseInput, yaw_from_xyzw
@@ -35,7 +35,7 @@ from ...world.kinematics import stow_joints
 from scaffolding_assembly_core.geometry import Pose
 from .algorithms import ALGORITHMS, Algorithm
 from .debug_view import DebugView
-from .plugin import DEFAULT_EXPERIMENT, BasePlannerPlugin, differs, floor_pose
+from .planner_plugin import DEFAULT_EXPERIMENT, BasePlannerPlugin, differs, floor_pose
 from .recording import RECORDING_FOLDER
 from .tasks import BY_NAME, TASKS
 

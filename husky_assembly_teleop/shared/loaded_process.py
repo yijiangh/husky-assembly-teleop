@@ -1,5 +1,5 @@
 """
-A process (doc/process_format.md) as the process plugin steps through it, and what it offers other plugins.
+A process (doc/process_format.md) loaded for the monitor: its steps, and what each step puts in the scene.
 
 Every movement is a step, with the joints to draw each robot at. A movement without authored start joints is
 drawn where its robot last was.
@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Protocol
+from typing import TYPE_CHECKING, Callable
 
 from scaffolding_assembly_core.legacy.conversion import (OLD_EXPORT_FILE, PROCESS_FILE, convert_export,
                                                          converted_folder, is_old_export, is_up_to_date)
@@ -86,34 +86,6 @@ class LoadedProcess:
             if step.action_index == action_index:
                 return index
         raise IndexError(f"no action {action_index} in the schedule")
-
-
-@dataclass(frozen=True)
-class Selection:
-    """The process plugin's selected step, as other plugins read it; replaced whenever any field changes, never edited.
-
-    Attributes:
-        loaded: The loaded process.
-        index: Position of `step` in `loaded.steps`.
-        step: The selected movement.
-        ids: Process id -> live scene id ("bars/B1" -> "process/bars/B1", planned robot -> real robot), or None
-            until the step's scene bodies are put.
-        process_ids: Live scene id -> process id, or None likewise.
-    """
-
-    loaded: LoadedProcess
-    index: int
-    step: Step
-    ids: IdMap | None = None
-    process_ids: IdMap | None = None
-
-
-class ProcessPluginApi(Protocol):
-    """What the process plugin offers other plugins: type `ctx.require("process")` as this."""
-
-    @property
-    def selection(self) -> Selection | None:
-        """Selection | None: The selected step, or None while no process with steps is loaded."""
 
 
 def load_process(folder: Path, data_directory: Path, report: Callable[[str], None] = lambda _text: None,

@@ -8,41 +8,19 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass
-from typing import Callable, Generic, Sequence, TypeVar
+from typing import Callable, Sequence
 
 from pybullet_planning.motion_planners.rrt_connect import birrt
 from pybullet_planning.motion_planners.utils import waypoints_from_path
 
-#: Give up searching after this long, seconds.
-TIME_LIMIT = 10.0
+from .planner_search import TIME_LIMIT, PlanningAborted
+
 #: RRT-Connect iterations per attempt, extra attempts, and smoothing iterations.
 MAX_ITERATIONS = 2000
 RESTARTS = 2
 SMOOTHING = 100
 
 State = tuple[float, ...]
-P = TypeVar("P")
-
-
-class PlanningAborted(Exception):
-    """Raised inside a search to end it early."""
-
-
-@dataclass
-class PlanResult(Generic[P]):
-    """What a search came back with.
-
-    Attributes:
-        path: The path, or None if none was found.
-        reason: Why not, when `path` is None; empty otherwise.
-        seconds: How long it took, syncing the world included.
-        direct: Whether the straight move was already free.
-    """
-
-    path: P | None
-    reason: str = ""
-    seconds: float = 0.0
-    direct: bool = False
 
 
 @dataclass

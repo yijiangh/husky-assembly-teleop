@@ -18,7 +18,8 @@ All tests and linters pass; the arm path send is not yet tried on a robot.
     request with `ctx.submit`, so its errors, soft stop and teardown apply. Results go back through the future or
     the provider's state; no callbacks registered by consumers.
 - **Consumers type a required plugin against a Protocol in `shared/`**, not its concrete class, so the provider can
-  change everything else. Plugin `<name>` offers `<Name>PluginApi`, e.g. `ProcessPluginApi`. Concrete classes may still appear under `TYPE_CHECKING`.
+  change everything else. Plugin `<name>` offers `<Name>Contract` in a `*_contract.py` file, e.g. `ProcessContract`
+  (named `<Name>PluginApi` until 19 Oct). Concrete classes may still appear under `TYPE_CHECKING`.
 
 ## Layers
 

@@ -1,7 +1,7 @@
 """
 The headless arm planner: plans a collision-free path for one arm to a joint goal and sends it as one trajectory.
 
-Others use it through `ArmPlannerPluginApi`; its panel is `arm_planner_panel`. The first plan for a robot loads its
+Others use it through `ArmPlannerContract`; its panel is `arm_planner_panel`. The first plan for a robot loads its
 models in a compas_fab world (several seconds).
 
 ! EXPERIMENTAL, not yet tested on a robot: Commit sends the path as one joint trajectory (`send_to_arm`).
@@ -17,9 +17,11 @@ import numpy as np
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import register
 from ...robot_interface.arm import joint_path_move
-from ...shared.planning.arm import ArmPlanRequest
-from ...shared.planning.search import TIME_LIMIT, PlanResult
-from ...shared.planning.service import WAIT_MARGIN, Plan, PlannerService, Search, with_guesses
+from ...shared.planning.planner_contract import ArmPlanRequest
+from ...shared.planning.planner_search import PlanResult, TIME_LIMIT
+from ...shared.planning.planner_contract import Plan
+from ...shared.planning.planner_search import Search, WAIT_MARGIN, with_guesses
+from ...shared.planning.planner_service import PlannerService
 from scaffolding_assembly_core.ids import robot_id
 from .planner import ArmPath, ArmPlanningWorld, arm_joint_names, plan_arm
 

@@ -1,7 +1,7 @@
 """
 Planner panels: target, Plan/Play/Clear, a time slider, Commit and ghosts.
 
-`PlannerPanel` is a separate plugin that drives a headless planner (`service.PlannerService`) through its API.
+`PlannerPanel` is a separate plugin that drives a headless planner (`planner_service.PlannerService`) through its API.
 Subclasses set `planner`, supply `make_request`, `target_change`, `show_target` and `show_path`, and build their
 panel from `_add_path_controls`, `_add_ghosts` and the `_draw_*` helpers.
 ! The planning world is the planner's, created on the worker thread; the base only closes it at teardown.
@@ -22,11 +22,12 @@ from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin
 from ...ui.ghost import RecentUse, RobotGhost, robot_ghosts
 from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, block, chip, note, section
-from .service import Plan, PlannerPluginApi
+from .planner_contract import Plan, PlannerContract
 
 if TYPE_CHECKING:
     from ...config import RobotConfig
-    from ..process import ProcessPluginApi, Step
+    from ..loaded_process import Step
+    from ..process_contract import ProcessContract
 
 #: Time slider resolution, seconds.
 SLIDER_STEP = 0.05
@@ -41,7 +42,7 @@ _PLAN_CHIPS = {None: ("no plan", NONE), "planning": ("planning…", BUSY), "read
 class PlannerPanel(HuskyPlugin):
     """A planner's panel: target, Plan/Play/Clear, time slider, Commit and ghosts. Subclass it; do not register it.
 
-    Plan, Clear and Commit go through the planner's public API (`PlannerPluginApi`); debug drawing may read the
+    Plan, Clear and Commit go through the planner's public API (`PlannerContract`); debug drawing may read the
     planner itself.
     """
 
@@ -68,7 +69,7 @@ class PlannerPanel(HuskyPlugin):
         self._used: RecentUse | None = None
         #: Nothing to plan for (e.g. no robots configured): the panel says why, and the hooks do nothing.
         self.idle = False
-        self._api: PlannerPluginApi | None = None
+        self._api: PlannerContract | None = None
 
     # --- --- --- --- --- FOR THE SUBCLASS TO SUPPLY --- --- --- --- ---
 
@@ -195,7 +196,7 @@ class PlannerPanel(HuskyPlugin):
             tuple[Step, str, str] | None: The step, the robot's serial and its process name;
                 None if there is none, after saying why in the panel.
         """
-        process: ProcessPluginApi = ctx.require("process")
+        process: ProcessContract = ctx.require("process")
         selection = process.selection
         if selection is None:
             self._say("no process loaded in the process plugin", failed=True)

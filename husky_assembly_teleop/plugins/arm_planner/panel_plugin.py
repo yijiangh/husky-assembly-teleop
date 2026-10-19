@@ -1,8 +1,8 @@
 """
 The arm planner's panel: pick a joint target for one arm, plan to it, scrub through the path, and commit it.
 
-The flow is `shared.planning.panel.PlannerPanel`; this adds the joint sliders and the arm choice.
-! Drive the planner through its public API (`ArmPlannerPluginApi`: set target, plan, cancel, results) wherever you can,
+The flow is `shared.planning.planner_panel.PlannerPanel`; this adds the joint sliders and the arm choice.
+! Drive the planner through its public API (`ArmPlannerContract`: set target, plan, cancel, results) wherever you can,
   so those paths stay ready for other users such as an executor; only debug drawing and internal state reach inside.
 """
 
@@ -16,15 +16,16 @@ import numpy as np
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import register
 from ...robot_interface.arm import UR_JOINT_LIMITS
-from ...shared.planning.arm import ArmPlanRequest
-from ...shared.planning.panel import PlannerPanel
-from ...shared.planning.service import Plan, with_guesses
+from ...shared.planning.planner_contract import ArmPlanRequest
+from ...shared.planning.planner_panel import PlannerPanel
+from ...shared.planning.planner_contract import Plan
+from ...shared.planning.planner_search import with_guesses
 from ...ui.ghost import RobotGhost
 from ...ui.pybullet_window import add_pybullet_window_toggle
 from ...ui.style import SECTION_CTRL, SECTION_TOOL, block, chip, section, values
 from scaffolding_assembly_core.ids import robot_id
 from .planner import arm_joint_names
-from .plugin import STALE_JOINT
+from .planner_plugin import STALE_JOINT
 
 #: Short joint names for the sliders, UR driver order.
 SLIDER_NAMES = ("pan", "lift", "elbow", "w1", "w2", "w3")

@@ -1,11 +1,8 @@
 """
-The headless planner service: plan, cancel and commit on request; panels and other plugins use it through its API.
+PlannerService: the base class of a headless planner plugin, which plans, cancels and commits on request.
 
-A plan goes planning -> ready -> stale or sent, or planning -> failed or cancelled; every change replaces `plan`.
-
-* A planner plugin subclasses `PlannerService` and supplies `make_search`, `stale_reason` and `send`; its panel is a
-  separate plugin (`panel.PlannerPanel`) that requires it.
-* Users type `ctx.require("<planner>")` as `PlannerPluginApi[<its request type>]`.
+* A planner plugin subclasses it and supplies `make_search`, `stale_reason` and `send`; it offers others its
+  `PlannerContract` (`planner_contract.py`), and its panel is a separate plugin (`planner_panel.PlannerPanel`).
 ! Requests run in the planner's own context (`ctx.submit`), so soft stop, teardown and its errors apply to them, and
   every future resolves: a cancelled search gives a plan in state "cancelled".
 """
@@ -16,121 +13,15 @@ import asyncio
 import itertools
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Callable, Generic, Protocol, TypeVar, runtime_checkable
+from dataclasses import replace
+from typing import Generic
 
 from async_timeout import timeout
 
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin
-from .path import TimedPath
-
-if TYPE_CHECKING:
-    from scaffolding_assembly_core.scene import Scene
-    from .search import PlanResult
-
-#: Seconds to wait for the worker beyond the search's own time limit.
-WAIT_MARGIN = 5.0
-#: Every plan state.
-STATES = ("planning", "ready", "stale", "sent", "failed", "cancelled")
-
-
-class PlanRequest(Protocol):
-    """What every planner's request has; each planner defines its own frozen request type in `shared/planning/`."""
-
-    @property
-    def serial(self) -> str:
-        """str: The robot to plan for."""
-
-
-R = TypeVar("R", bound=PlanRequest)
-
-
-@dataclass(frozen=True)
-class Plan(Generic[R]):
-    """One plan as it stands; replaced, never edited, on every change.
-
-    Attributes:
-        id: Unique per planner, counting from 1; `commit` takes it.
-        request: What was asked.
-        state: One of STATES.
-        path: The path once found, else None.
-        message: What happens or happened: progress, what was found, why it failed or went stale.
-        warning: Whether `message` is a warning, e.g. planned from a guessed robot pose.
-    """
-
-    id: int
-    request: R
-    state: str
-    path: TimedPath | None = None
-    message: str = ""
-    warning: bool = False
-
-
-@runtime_checkable
-class PlannerPluginApi(Protocol[R]):
-    """What a planner plugin offers others: request, cancel, clear and commit plans, and read the latest one."""
-
-    @property
-    def plan(self) -> Plan[R] | None:
-        """Plan | None: The latest plan, replaced on every change; None before the first request or after `clear`."""
-
-    def request_plan(self, request: R) -> asyncio.Future[Plan[R]]:
-        """Plan for `request`, ending a search in progress; resolves once the plan is ready, failed or cancelled."""
-
-    def cancel(self) -> None:
-        """End a search in progress; its plan becomes "cancelled". Nothing else changes."""
-
-    def clear(self) -> None:
-        """End a search in progress and forget the plan. ! A sent plan's motion goes on: stop it on the robot."""
-
-    def commit(self, plan_id: int) -> asyncio.Future[tuple[bool, str]]:
-        """Send plan `plan_id` to the robot if it is still the latest and ready; resolves with (sent, message)."""
-
-
-class PlanningWorld(Protocol):
-    """A planner's private planning world, as far as the service needs it."""
-
-    def close(self) -> None:
-        """Disconnect the world. On the worker, once no search is running."""
-
-
-@dataclass
-class Search:
-    """One search, built by the planner on the main thread (`make_search`).
-
-    Attributes:
-        label: Task name, e.g. "plan a200-0806".
-        message: The plan's message while planning.
-        work: Syncs the world and searches, on the worker; must stop soon after its `abort` is set.
-        time_limit: Seconds to wait for `work`, margin included.
-        accepted: Main thread, when a path was found: the plan's message and whether it is a warning.
-        finished: Main thread, after `work` returned, path or not.
-    """
-
-    label: str
-    message: str
-    work: Callable[[], PlanResult]
-    time_limit: float
-    accepted: Callable[[PlanResult], tuple[str, bool]]
-    finished: Callable[[], None] = lambda: None
-
-
-def with_guesses(snapshot: Scene, object_id: str) -> tuple[Scene, list[str]]:
-    """The snapshot with a robot's untracked base and unknown joints taken as known, and what that guessed.
-
-    The guesses are the last mocap fix, else the default pose, and the stow joints, else 0. An absent robot is left
-    as it is, so planning still refuses it.
-
-    Returns:
-        tuple[Scene, list[str]]: The snapshot, a copy only if something was guessed; the robot's problems guessed past.
-    """
-    robot = snapshot.robots[object_id]
-    guessed = robot.acting_problems() if robot.enabled else []
-    if not guessed:
-        return snapshot, []
-    known = replace(robot, base_tracked=True, unmeasured=frozenset())
-    return replace(snapshot, robots={**snapshot.robots, object_id: known}), guessed
+from .planner_contract import Plan, R
+from .planner_search import PlanningWorld, Search
 
 
 class PlannerService(HuskyPlugin, Generic[R]):
@@ -175,7 +66,7 @@ class PlannerService(HuskyPlugin, Generic[R]):
     def forget(self, plan: Plan[R]) -> None:
         """Drop anything kept about `plan` besides the plan itself (`Search.accepted`). Optional."""
 
-    # --- --- --- --- --- API (PlannerPluginApi) --- --- --- --- ---
+    # --- --- --- --- --- API (PlannerContract) --- --- --- --- ---
 
     @property
     def plan(self) -> Plan[R] | None:

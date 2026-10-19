@@ -20,7 +20,7 @@ from pathlib import Path
 
 import numpy as np
 
-from ...shared.planning.search import PlanResult
+from ...shared.planning.planner_search import PlanResult
 from .path import densify
 from .world import FLOOR_BOTTOM, PlanningWorld
 

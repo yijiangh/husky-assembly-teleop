@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from husky_assembly_teleop.plugins.arm_planner.planner import ArmPath, arm_joint_names
-from husky_assembly_teleop.plugins.arm_planner.plugin import send_to_arm
+from husky_assembly_teleop.plugins.arm_planner.planner_plugin import send_to_arm
 from husky_assembly_teleop.robot_interface.arm import (JOINT_MOVE_MAX_SPEED, JOINT_MOVE_WAYPOINT_SPACING,
                                                        JOINT_PATH_MAX_ACCELERATION, joint_path_move)
 

@@ -15,10 +15,10 @@ from husky_assembly_teleop.plugin_api.concurrency import WaitTimeout
 from husky_assembly_teleop.plugin_api.trace import Signal, Trace
 from husky_assembly_teleop.robot_interface.base import FollowerState
 from husky_assembly_teleop.plugins.base_planner.path import MAX_ANGULAR_SPEED, MAX_LINEAR_SPEED, steer, timed_path
-from husky_assembly_teleop.plugins.base_planner.plugin import BasePlannerPlugin
+from husky_assembly_teleop.plugins.base_planner.planner_plugin import BasePlannerPlugin
 from husky_assembly_teleop.plugins.base_planner.tasks import BY_NAME
-from husky_assembly_teleop.shared.planning.base import BasePlanRequest
-from husky_assembly_teleop.shared.planning.service import Plan, PlannerPluginApi
+from husky_assembly_teleop.shared.planning.planner_contract import BasePlanRequest
+from husky_assembly_teleop.shared.planning.planner_contract import Plan, PlannerContract
 
 SERIAL = "alice"
 
@@ -78,8 +78,8 @@ class FakeBase:
 
 
 def test_the_planner_offers_the_planner_api():
-    """Other plugins can drive the base planner as a PlannerPluginApi."""
-    assert isinstance(BasePlannerPlugin(), PlannerPluginApi)
+    """Other plugins can drive the base planner as a PlannerContract."""
+    assert isinstance(BasePlannerPlugin(), PlannerContract)
 
 
 def commit(base: FakeBase):

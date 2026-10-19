@@ -7,12 +7,14 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from husky_assembly_teleop.plugins.base_planner.panel import NO_TASK, BasePlannerPanel
-from husky_assembly_teleop.plugins.base_planner.plugin import BasePlannerPlugin
-from husky_assembly_teleop.shared.planning.base import BasePlanRequest
-from husky_assembly_teleop.shared.planning.path import TimedPath
-from husky_assembly_teleop.shared.planning.search import PlanResult
-from husky_assembly_teleop.shared.planning.service import Plan, PlannerService, Search
+from husky_assembly_teleop.plugins.base_planner.panel_plugin import NO_TASK, BasePlannerPanel
+from husky_assembly_teleop.plugins.base_planner.planner_plugin import BasePlannerPlugin
+from husky_assembly_teleop.shared.planning.planner_contract import BasePlanRequest
+from husky_assembly_teleop.shared.planning.timed_path import TimedPath
+from husky_assembly_teleop.shared.planning.planner_search import PlanResult
+from husky_assembly_teleop.shared.planning.planner_contract import Plan
+from husky_assembly_teleop.shared.planning.planner_search import Search
+from husky_assembly_teleop.shared.planning.planner_service import PlannerService
 
 SERIAL = "alice"
 GOAL = (1.0, 2.0, 0.5)

@@ -1,7 +1,7 @@
 """
 The headless base planner: plans a base path on request, sends it to the onboard follower, and records both.
 
-Its panel is `panel.BasePlannerPanel`; other plugins use it as `BasePlannerPluginApi`.
+Its panel is `panel.BasePlannerPanel`; other plugins use it as `BasePlannerContract`.
 
 - Commit sends the path to the robot's onboard path follower (crl_husky `pure_pursuit`), geometric, capped at the
   planning speeds, and follows the run until the follower is done.
@@ -28,9 +28,11 @@ from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import register
 from ...plugin_api.trace import Trace
 from ...robot_interface.base import BaseInterface
-from ...shared.planning.base import BasePlanRequest
-from ...shared.planning.search import TIME_LIMIT, PlanResult
-from ...shared.planning.service import WAIT_MARGIN, Plan, PlannerService, Search, with_guesses
+from ...shared.planning.planner_contract import BasePlanRequest
+from ...shared.planning.planner_search import PlanResult, TIME_LIMIT
+from ...shared.planning.planner_contract import Plan
+from ...shared.planning.planner_search import Search, WAIT_MARGIN, with_guesses
+from ...shared.planning.planner_service import PlannerService
 from ...ui.pose_input import yaw_from_xyzw
 from ...world.checks import WARN, Check
 from ...world.follower import live_report, path_check
@@ -43,7 +45,7 @@ from .tasks import BY_NAME, TASK_ORIGIN
 from .world import PlanningWorld, stowed
 
 if TYPE_CHECKING:
-    from ...shared.process import ProcessPluginApi
+    from ...shared.process_contract import ProcessContract
 
 #: The plan goes stale once the base moves this far from its planned start.
 STALE_POSITION = 0.05              # m
@@ -328,7 +330,7 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
 
     def _process_index(self, ctx: PluginContext) -> int | None:
         """The step selected in the process plugin; None if no process is loaded."""
-        process: ProcessPluginApi = ctx.require("process")
+        process: ProcessContract = ctx.require("process")
         selection = process.selection
         return selection.index if selection is not None else None
 

@@ -8,7 +8,7 @@ from dataclasses import dataclass
 import numpy as np
 from crl_husky.follower_path import FollowerPath
 
-from ...shared.planning.path import timing
+from ...shared.planning.timed_path import timing
 from .templates import TEMPLATES, place
 
 

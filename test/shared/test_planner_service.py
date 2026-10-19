@@ -9,10 +9,12 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from husky_assembly_teleop.shared.planning.panel import PlannerPanel
-from husky_assembly_teleop.shared.planning.path import TimedPath
-from husky_assembly_teleop.shared.planning.search import PlanResult
-from husky_assembly_teleop.shared.planning.service import PlannerPluginApi, PlannerService, Search
+from husky_assembly_teleop.shared.planning.planner_panel import PlannerPanel
+from husky_assembly_teleop.shared.planning.timed_path import TimedPath
+from husky_assembly_teleop.shared.planning.planner_search import PlanResult
+from husky_assembly_teleop.shared.planning.planner_contract import PlannerContract
+from husky_assembly_teleop.shared.planning.planner_search import Search
+from husky_assembly_teleop.shared.planning.planner_service import PlannerService
 
 PATH = TimedPath(times=np.array([0.0, 1.0]), points=np.array([[0.0], [1.0]]))
 
@@ -90,8 +92,8 @@ def run(planner: Planner, scenario):
 
 
 def test_the_service_offers_the_planner_api():
-    """A planner is a PlannerPluginApi, so users can rely on that interface."""
-    assert isinstance(Planner(), PlannerPluginApi)
+    """A planner is a PlannerContract, so users can rely on that interface."""
+    assert isinstance(Planner(), PlannerContract)
 
 
 def test_a_found_path_makes_a_ready_plan():

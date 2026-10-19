@@ -29,7 +29,7 @@ from scipy.signal import fftconvolve
 from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import dijkstra
 
-from ....shared.planning.search import TIME_LIMIT, PlanResult
+from ....shared.planning.planner_search import PlanResult, TIME_LIMIT
 from ..follow import XICR_RANGE, followed, thinned
 from ..path import (MAX_ANGULAR_SPEED, MAX_LINEAR_SPEED, SETTLE_DISTANCE, BasePath, densify, driven, steer,
                     timed_path)

@@ -14,8 +14,9 @@ from typing import Callable, Sequence
 
 import numpy as np
 
-from ...shared.planning.path import TimedPath
-from ...shared.planning.search import PlanResult, connect
+from ...shared.planning.timed_path import TimedPath
+from ...shared.planning.planner_search import PlanResult
+from ...shared.planning.rrt_connect import connect
 from ...robot_interface.arm import JOINT_MOVE_MAX_SPEED, UR_JOINT_LIMITS, UR_JOINT_NAMES
 from scaffolding_assembly_core.mirrors.compas_fab import CompasFabMirror
 from scaffolding_assembly_core.scene import Scene

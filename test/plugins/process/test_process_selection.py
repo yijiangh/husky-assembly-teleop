@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from husky_assembly_teleop.plugins.process.plugin import ProcessPlugin
-from husky_assembly_teleop.shared.process import LoadedProcess, Step
+from husky_assembly_teleop.shared.loaded_process import LoadedProcess, Step
 
 
 def _loaded(steps: int) -> LoadedProcess:

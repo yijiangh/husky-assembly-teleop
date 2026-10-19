@@ -42,7 +42,7 @@ from ..world.mocap import mocap_check
 from scaffolding_assembly_core.geometry import Pose, compose, invert
 
 if TYPE_CHECKING:
-    from ..shared.process import ProcessPluginApi
+    from ..shared.process_contract import ProcessContract
 
 #: Name of the tracked rigid body in `world.tracked_objects` and on the health panel.
 TRACKED_NAME = "fitted_bar"
@@ -182,7 +182,7 @@ class MocapBarsPlugin(HuskyPlugin):
         self._message = f"recording {bar_id} for {seconds:g} s"
         with ctx.record(*self._signals(model)) as take:
             await ctx.sleep(seconds)
-        process: ProcessPluginApi = ctx.require("process")
+        process: ProcessContract = ctx.require("process")
         selection = process.selection
         description = {"bar": bar_id, "mocap_id": self._object.mocap_id if self._object else None,
                        "process": str(selection.loaded.source) if selection is not None else None,
@@ -241,7 +241,7 @@ class MocapBarsPlugin(HuskyPlugin):
         Args:
             ctx: This plugin's context.
         """
-        process: ProcessPluginApi = ctx.require("process")
+        process: ProcessContract = ctx.require("process")
         selection = process.selection
         loaded = selection.loaded.process if selection is not None else None
         if loaded is not self._layouts_of:

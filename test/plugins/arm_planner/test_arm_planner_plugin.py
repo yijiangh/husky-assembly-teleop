@@ -9,13 +9,13 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from husky_assembly_teleop.plugins.arm_planner import plugin as arm_plugin
-from husky_assembly_teleop.plugins.arm_planner.panel import ArmPlannerPanel
+from husky_assembly_teleop.plugins.arm_planner import planner_plugin as arm_plugin
+from husky_assembly_teleop.plugins.arm_planner.panel_plugin import ArmPlannerPanel
 from husky_assembly_teleop.plugins.arm_planner.planner import ArmPath, arm_joint_names
-from husky_assembly_teleop.plugins.arm_planner.plugin import ArmPlannerPlugin
-from husky_assembly_teleop.shared.planning.arm import ArmPlanRequest
-from husky_assembly_teleop.shared.planning.search import PlanResult
-from husky_assembly_teleop.shared.planning.service import Plan, PlannerPluginApi
+from husky_assembly_teleop.plugins.arm_planner.planner_plugin import ArmPlannerPlugin
+from husky_assembly_teleop.shared.planning.planner_contract import ArmPlanRequest
+from husky_assembly_teleop.shared.planning.planner_search import PlanResult
+from husky_assembly_teleop.shared.planning.planner_contract import Plan, PlannerContract
 from scaffolding_assembly_core.ids import robot_id
 
 SERIAL, ARM = "0806", "left_ur_arm"
@@ -89,8 +89,8 @@ def ready_plan() -> Plan:
 
 
 def test_the_planner_is_an_arm_planner_api():
-    """Other plugins can rely on the planner API (`ArmPlannerPluginApi` is it, typed with the arm request)."""
-    assert isinstance(ArmPlannerPlugin(), PlannerPluginApi)
+    """Other plugins can rely on the planner API (`ArmPlannerContract` is it, typed with the arm request)."""
+    assert isinstance(ArmPlannerPlugin(), PlannerContract)
 
 
 def test_a_plan_is_stale_once_the_arm_or_base_moves(found_path):

@@ -2,7 +2,7 @@
 The process plugin: loads an authored process and draws the state at one movement at a time.
 
 It serves the selected step, and the maps between process ids and live scene ids, to plugins that declare
-`requires = ("process",)`: they read `selection` (`shared.process.ProcessPluginApi`).
+`requires = ("process",)`: they read `selection` (`shared.process_contract.ProcessContract`).
 
 Every body of the selected movement's process scene (`Process.scene_at`) goes into the scene as "process/<body id>"
 (`steps.scene_bodies`): the core draws it and planners avoid it. A body the plan holds follows the configured real
@@ -38,7 +38,8 @@ from ...world.model_check import model_differences
 from scaffolding_assembly_core.ids import robot_id
 from scaffolding_assembly_core.legacy.timing import Stopwatch
 from scaffolding_assembly_core.process.scenes import process_model
-from ...shared.process import LoadedProcess, Selection, Step, displayed_joints, live_ids, load_process, scene_bodies
+from ...shared.loaded_process import LoadedProcess, Step, displayed_joints, live_ids, load_process, scene_bodies
+from ...shared.process_contract import Selection
 from .drawing import ProcessDrawing, load_robot_models
 
 if TYPE_CHECKING:
@@ -146,7 +147,7 @@ class ProcessPlugin(HuskyPlugin):
 
     @property
     def selection(self) -> Selection | None:
-        """Selection | None: The selected step (`shared.process.ProcessPluginApi`); a new object whenever it changes."""
+        """Selection | None: The selected step (`ProcessContract`); a new object whenever it changes."""
         if self.loaded is None or not self.loaded.steps:
             return None
         last = self._selection

@@ -18,7 +18,7 @@ from process_fixtures import build_process
 from repo_paths import DATA
 from husky_assembly_teleop.config import robot_config_from_serial
 from husky_assembly_teleop.robot_interface.arm import UR_JOINT_NAMES
-from husky_assembly_teleop.shared.process import LoadedProcess, Step, scene_bodies
+from husky_assembly_teleop.shared.loaded_process import LoadedProcess, Step, scene_bodies
 from scaffolding_assembly_core.geometry import Geometry, box_geometry
 from scaffolding_assembly_core.mirrors import HIDDEN_POSITION
 from scaffolding_assembly_core.mirrors.compas_fab import CompasFabMirror
