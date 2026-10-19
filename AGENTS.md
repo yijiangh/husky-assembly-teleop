@@ -65,9 +65,9 @@ python3 -m pytest -m ""                       # everything (~1 min), before ever
 ```
 
 - ! Run everything (`-m ""`) before every commit, and commit only when it passes.
-- `test/` mirrors the package: `test/<area>/` for `robot_interface`, `world`, `ui`, `plugin_api`, `config`, `mocap_relay`, `core` (the core's mirrors as used here), `experiments`, and `test/plugins/<plugin>/`. `test/structure/` holds the layer test and the linters.
+- `test/` mirrors the package: `test/<area>/` for `monitor`, `robot_interface`, `world`, `ui`, `plugin_api`, `shared`, `config`, `mocap_relay`, `core` (the core's mirrors as used here), `experiments`, and `test/plugins/<plugin>/`. `test/structure/` holds the layer test and the linters.
 - Mark a test `safety` when it guards a command to a real robot, or the frames and models commands rely on. Mark it `slow` when it takes over a second or checks offline analysis; every test under `test/experiments/` is slow.
-- Helpers for several folders (`repo_paths.py`, `*_fixtures.py`) sit in `test/` itself and import by name.
+- Helpers for several folders sit in `test/` itself and import by name: `repo_paths.py`, `*_fixtures.py`, and `robot_fakes.py` (a node with a settable clock, service clients and publishers that keep what they get, an arm with its real checks, all without ROS).
 
 ## Task notes
 
