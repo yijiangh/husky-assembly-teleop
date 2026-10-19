@@ -48,11 +48,12 @@ from ...ui.trace_plot import TracePlot
 from ...world.checks import STALE_AFTER
 from ...world.follower import live_report
 from ...world.mocap import pose_lost
+from ..planning.path import timing
 from . import record
 from .auto import PATH_CLEARANCE, SPEED, STANDARD_SET, STOP_DISTANCE, Clearance, Sampler, StandardSet
 from .plan import Plan, plan_from
 from .report import write_report
-from .templates import PARAMETERS, TEMPLATES, timing
+from .templates import PARAMETERS, TEMPLATES
 from .tracking import Sample, Tracker
 from .twist import TWIST, TwistGrid, grid, twist_plan
 

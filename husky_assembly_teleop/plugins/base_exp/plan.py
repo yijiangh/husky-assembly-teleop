@@ -8,7 +8,8 @@ from dataclasses import dataclass
 import numpy as np
 from crl_husky.follower_path import FollowerPath
 
-from .templates import TEMPLATES, place, timing
+from ..planning.path import timing
+from .templates import TEMPLATES, place
 
 
 @dataclass(eq=False)

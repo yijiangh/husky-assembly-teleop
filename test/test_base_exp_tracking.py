@@ -6,7 +6,8 @@ import numpy as np
 import pytest
 from crl_husky.follower_path import FollowerPath
 
-from husky_assembly_teleop.plugins.base_exp.templates import arc, drive_turn_drive, timing, turn
+from husky_assembly_teleop.plugins.base_exp.templates import arc, drive_turn_drive, turn
+from husky_assembly_teleop.plugins.planning.path import timing
 from husky_assembly_teleop.plugins.base_exp.tracking import Tracker
 
 

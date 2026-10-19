@@ -9,7 +9,8 @@ from crl_husky.follower_path import FollowerPath
 
 from husky_assembly_teleop.plugin_api.trace import Signal, Trace
 from husky_assembly_teleop.plugins.base_exp.templates import (PARAMETERS, TEMPLATES, arc, drive_turn_drive, place,
-                                                              straight, timing, turn)
+                                                              straight, turn)
+from husky_assembly_teleop.plugins.planning.path import timing
 
 DEFAULTS = {p.name: (math.radians(p.default) if p.name == "angle" else p.default) for p in PARAMETERS}
 

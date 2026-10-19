@@ -1,7 +1,7 @@
 """
 The base experiment: test paths for the onboard pure pursuit follower, sent by hand or automated, shown and recorded.
 
-  templates.py  the test paths: poses in the start frame, placed and timed; plain math
+  templates.py  the test paths: poses in the start frame, placed; plain math
   plan.py       a path ready to send (Plan) and building one from settings; plain math
   auto.py       which paths automated runs drive (standard or random paths), and clearance checks in a PyBullet mirror
   twist.py      constant commands: the command grid (v, ω), driven open loop, for how the response changes with it

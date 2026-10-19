@@ -44,3 +44,19 @@ class TimedPath:
             np.ndarray: One state, shape (D,).
         """
         return np.array([np.interp(t, self.times, column) for column in self.points.T])
+
+
+def timing(poses: np.ndarray, linear_speed: float, angular_speed: float) -> np.ndarray:
+    """Time of each pose when every step takes as long as its slower part, driving or turning.
+
+    Args:
+        poses: Poses (n x 3).
+        linear_speed: m/s.
+        angular_speed: rad/s.
+
+    Returns:
+        np.ndarray: Seconds from the first pose.
+    """
+    steps = np.diff(poses, axis=0)
+    seconds = np.maximum(np.hypot(steps[:, 0], steps[:, 1]) / linear_speed, np.abs(steps[:, 2]) / angular_speed)
+    return np.concatenate([[0.0], np.cumsum(seconds)])
