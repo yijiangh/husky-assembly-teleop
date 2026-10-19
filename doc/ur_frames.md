@@ -45,7 +45,7 @@ TCP by a hard-coded −90° (one arm) or −180° (Cindy).
   frames; never bump `husky_urdf` on `master` (the old monitor's −90° assumes
   the turned files).
 - A URDF that breaks the rule still *looks* right in the viewer but moves wrong.
-  So it is caught three times: `test/test_ur_frames.py` fails for every arm
+  So it is caught three times: `test/robot_interface/test_ur_frames.py` fails for every arm
   URDF in `husky_urdf` that breaks it, at startup the monitor logs an error and
   refuses that arm's Cartesian targets (Hold still works), and while connected
   the health `tcp` chip would show tool0 90° off.

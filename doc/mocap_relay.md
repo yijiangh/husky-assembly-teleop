@@ -186,7 +186,7 @@ Use this checklist when migrating older direct-NatNet code.
 
 - Relay node: `husky_assembly_teleop/mocap_relay/node.py`, calibration choice in `calibration.py`
 - Relay launch: `launch/mocap.launch.py`
-- Tests: `test/test_mocap_relay_calibration.py`
+- Tests: `test/mocap_relay/test_mocap_relay_calibration.py`
 - Pose message: crl-husky `crl_husky_msgs/msg/MocapRigidBodyPose.msg`
 - Streaming IDs service: crl-husky `crl_husky_msgs/srv/GetStreamingMocapIds.srv`
 - Robot config, default calibrations: crl-husky `crl_husky/config/robots/README.md`
