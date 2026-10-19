@@ -237,7 +237,9 @@ class RobotControlPlugin(HuskyPlugin):
                            frames=add_frame_markers(ctx, serial, arm), arrows=add_force_arrows(ctx, serial, arm))
 
     def teardown(self, ctx: PluginContext) -> None:
-        """At shutdown, stop any base this plugin was driving.
+        """At shutdown, stop any base this plugin was driving, and hold any arm it left a force on.
+
+        Moves still running hold their arm as they are cancelled.
 
         Args:
             ctx: This plugin's context.
@@ -245,6 +247,9 @@ class RobotControlPlugin(HuskyPlugin):
         for widgets in self._bases:
             if widgets.serial in self._driving:
                 widgets.base.send_twist(0.0, 0.0)
+        for widgets in self._arms:
+            if (widgets.serial, widgets.arm.config.name) in self._applied_force:
+                self._hold_arm(widgets.serial, widgets.arm)
 
     # --- --- --- --- --- INTENTS (widget callbacks, run on the main thread) --- --- --- --- ---
 
@@ -454,12 +459,15 @@ class RobotControlPlugin(HuskyPlugin):
             arm: The arm to hold.
         """
         arm.hold()
+        self._applied_force.pop((serial, arm.config.name), None)  # hold zeroes the target wrench
         running = self._trajectory_tasks.get((serial, arm.config.name))
         if running is not None and not running.done():
             running.cancel()
 
     async def _execute_move(self, ctx: PluginContext, serial: str, arm: ArmInterface, target: np.ndarray) -> None:
         """Send a smooth joint move and wait until the time is up and every joint is within ARRIVED_TOLERANCE.
+
+        ! Cancelled (Hold, Stop all, the plugin stopping, shutdown), it holds the arm: the trajectory would run on.
 
         Args:
             ctx: This plugin's context.
@@ -486,6 +494,9 @@ class RobotControlPlugin(HuskyPlugin):
         except WaitTimeout as timeout:
             # Logged, not raised: a raising task counts as a plugin failure.
             ctx.log_warn(str(timeout))
+        except asyncio.CancelledError:
+            arm.hold()
+            raise
         # ! Sliders are never touched here: only Current or Stow change them.
 
     async def _stream_cartesian_move(self, ctx: PluginContext, serial: str, arm: ArmInterface,
@@ -493,6 +504,7 @@ class RobotControlPlugin(HuskyPlugin):
         """Move the TCP by sending the next point of a smooth `cartesian_move` each tick.
 
         ? Streamed because the compliance controller jumps straight to its target.
+        ! Cancelled, it holds the arm at its TCP.
 
         Args:
             ctx: This plugin's context.
@@ -515,14 +527,18 @@ class RobotControlPlugin(HuskyPlugin):
             return
         ctx.log_info(f"{name}: cartesian move, {duration:.1f} s")
         start = ctx.now()
-        while True:
-            elapsed = ctx.now() - start
-            if not arm.send_cartesian_target(*sample(elapsed)):
-                # The arm logged why; hold so it settles where it is.
-                ctx.log_warn(f"{name}: cartesian move stopped early")
-                arm.hold()
-                return
-            if elapsed >= duration:
-                break
-            await ctx.next_tick()
+        try:
+            while True:
+                elapsed = ctx.now() - start
+                if not arm.send_cartesian_target(*sample(elapsed)):
+                    # The arm logged why; hold so it settles where it is.
+                    ctx.log_warn(f"{name}: cartesian move stopped early")
+                    arm.hold()
+                    return
+                if elapsed >= duration:
+                    break
+                await ctx.next_tick()
+        except asyncio.CancelledError:
+            arm.hold()
+            raise
         ctx.log_info(f"{name}: cartesian move done")

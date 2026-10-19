@@ -20,6 +20,7 @@ from husky_assembly_teleop.plugins.base_planner.planner_plugin import BasePlanne
 from husky_assembly_teleop.plugins.base_planner.tasks import BY_NAME
 from husky_assembly_teleop.shared.base_planner_contract import BasePlanRequest
 from husky_assembly_teleop.shared.planner.plan import Plan, PlannerContract
+from husky_assembly_teleop.world.checks import WARN
 
 SERIAL = "alice"
 
@@ -309,6 +310,48 @@ def test_run_is_recorded_until_the_follower_is_done(tmp_path):
     assert poses[-1, 0] == pytest.approx(1.0) and data["t"][-1] - data["t"][0] >= 5.0
     assert str(data["outcome"]) == "done"
     assert json.loads((folder / "experiment.json").read_text())["environment"] == "sim"
+
+
+@pytest.mark.safety
+@pytest.mark.parametrize("how", ["timeout", "cancel", "replaced", "other robot"])
+def test_a_run_that_ends_before_the_follower_stops_the_path(how):
+    """Timed out, or cancelled (Stop all, shutdown): the follower is stopped.
+
+    A new commit, to this robot or another, only ends the old run's recording; the old path is left alone.
+    """
+    path = planned((0.0, 0.0, 0.0), (1.0, 0.0, 0.0))
+    follower = FollowerState(controller="pure_pursuit", state="following", reason="", path_id=7, timed=False,
+                             piece=0, piece_count=1, turning=False, progress=0.0, reference=np.zeros(3),
+                             lookahead=np.full(2, np.nan), cross_track_error=0.0, along_track_error=np.nan,
+                             yaw_error=0.0, command=np.zeros(2), update_time=10.0, stamp=10.0)
+    stops = []
+    base = SimpleNamespace(state=SimpleNamespace(position=np.zeros(3), orientation=np.array([0.0, 0.0, 0.0, 1.0]),
+                                                 follower=follower),
+                           stop_path=lambda: stops.append(how))
+    robot = SimpleNamespace(base=base, config=SimpleNamespace(serial=SERIAL))
+
+    def step(t):
+        follower.update_time = t  # still following, for ever
+
+    ctx = FakeClock(robot, step)
+    plugin = BasePlannerPlugin()
+    plugin._recordings, plugin._sent_serial, plugin._sent_id, plugin._sent_at = None, SERIAL, 7, ctx.now()
+    plugin._path_check = lambda *_args: SimpleNamespace(level=WARN, label="following", detail="")
+
+    async def scenario():
+        task = asyncio.create_task(plugin._follow(ctx, REQUEST, path, None))
+        if how == "timeout":
+            await task
+            return
+        await asyncio.sleep(0)
+        if how != "cancel":
+            plugin._sent_serial, plugin._sent_id = (SERIAL, 8) if how == "replaced" else ("bob", 8)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(scenario())
+    assert stops == ([] if how in ("replaced", "other robot") else [how])
 
 
 def test_attempt_counts_for_its_task_only_from_its_start_to_its_target():

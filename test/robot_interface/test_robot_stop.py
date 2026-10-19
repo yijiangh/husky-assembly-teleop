@@ -20,7 +20,11 @@ def robot(arms: int = 1, ready: bool = True):
     interface.base = SimpleNamespace(stops=0, switched=[])
     interface.base.stop = lambda: setattr(interface.base, "stops", interface.base.stops + 1)
     interface.base.controllers = SimpleNamespace(switch=lambda name: interface.base.switched.append(name) or ready)
-    interface.arms = {f"arm{index}": object() for index in range(arms)}
+    interface.arms = {f"arm{index}": SimpleNamespace(config=SimpleNamespace(name=f"arm{index}"),
+                                                     end_effector=SimpleNamespace(stops=0))
+                      for index in range(arms)}
+    for arm in interface.arms.values():
+        arm.end_effector.stop = lambda tool=arm.end_effector: setattr(tool, "stops", tool.stops + 1)
     interface._unlock, interface._stop_arms, interface._resume_arms = Client(ready), Client(ready), Client(ready)
     return interface
 
@@ -31,6 +35,18 @@ def test_soft_stop_stops_the_base_and_asks_the_sync_to_stop_the_arms():
     interface.soft_stop()
     assert interface.base.stops == 1 and len(interface._stop_arms.calls) == 1
     assert "SOFT STOP" in interface._node.log.text("warning")
+
+
+def test_soft_stop_stops_every_tool_even_with_the_sync_down():
+    """A running screw motor or gripper move stops with the robot; one tool raising does not keep the next going."""
+    interface = robot(arms=2, ready=False)
+
+    def broken():
+        raise RuntimeError("driver gone")
+
+    interface.arms["arm0"].end_effector.stop = broken
+    interface.soft_stop()
+    assert interface.arms["arm1"].end_effector.stops == 1 and "driver gone" in interface._node.log.text("error")
 
 
 def test_soft_stop_without_arms_only_stops_the_base():

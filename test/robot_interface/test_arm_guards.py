@@ -8,7 +8,9 @@ from robot_fakes import TCP_ORIENTATION, TCP_POSITION, fake_arm
 from scipy.spatial.transform import Rotation
 
 from husky_assembly_teleop.robot_interface.arm import (CARTESIAN_COMPLIANCE_CONTROLLER, CARTESIAN_MAX_STEP,
-                                                       CARTESIAN_STEP_WINDOW, HOLD_DURATION, JOINT_STATE_MAX_AGE,
+                                                       CARTESIAN_STEP_WINDOW, FREE_DRIVE_CONTROLLER, HOLD_DURATION,
+                                                       JOINT_STATE_MAX_AGE, SCALED_JOINT_TRAJECTORY_CONTROLLER,
+                                                       TRAJECTORY_MAX_JOINT_ACCELERATION, UR_JOINT_NAMES,
                                                        MAX_TARGET_FORCE, MAX_TARGET_TORQUE, MOVING_WITHIN,
                                                        START_TOLERANCE, SYNC_STATUS_MAX_AGE, TRAJECTORY_MAX_DURATION,
                                                        TRAJECTORY_MAX_JOINT_SPEED, TRAJECTORY_MAX_WAYPOINTS,
@@ -178,50 +180,93 @@ def test_a_path_planned_a_degree_away_from_the_arm_is_refused():
 
 # --- --- --- --- --- hold --- --- --- --- ---
 
-def test_hold_under_the_trajectory_controller_stops_at_the_measured_joints():
-    """One point at the measured joints, at rest, HOLD_DURATION from now."""
+def _stop(arm) -> tuple[np.ndarray, float]:
+    """The one point of the hold trajectory sent: positions and time from start."""
+    point, = arm._trajectory.sent[-1].points
+    assert list(point.velocities) == [0.0] * 6
+    return np.array(point.positions), point.time_from_start.sec + point.time_from_start.nanosec * 1e-9
+
+
+def test_hold_at_rest_stays_at_the_measured_joints():
+    """At rest, the hold point is where the arm is, HOLD_DURATION from now, and the target wrench is zeroed."""
     joints = np.radians([10.0, -80.0, 90.0, -100.0, -90.0, 30.0])
     arm = fake_arm(joints=joints)
     assert arm.hold()
-    point, = arm._trajectory.sent[0].points
-    np.testing.assert_allclose(point.positions, joints)
-    assert list(point.velocities) == [0.0] * 6
-    assert point.time_from_start.sec + point.time_from_start.nanosec * 1e-9 == pytest.approx(HOLD_DURATION)
+    positions, duration = _stop(arm)
+    np.testing.assert_allclose(positions, joints)
+    assert duration == pytest.approx(HOLD_DURATION)
+    wrench, = arm._target_wrench.sent
+    assert (wrench.wrench.force.x, wrench.wrench.force.y, wrench.wrench.force.z) == (0.0, 0.0, 0.0)
 
 
-@pytest.mark.parametrize("controller, stale, why", [
-    ("free_drive_controller", False, "neither motion controller is active"),
-    (None, False, "neither motion controller is active"),
-    ("scaled_joint_trajectory_controller", True, "HOLD NOT SENT"),
-    (CARTESIAN_COMPLIANCE_CONTROLLER, True, "HOLD NOT SENT"),
+def test_hold_of_a_moving_arm_brakes_evenly_ahead_of_it_never_back():
+    """From speed v, measured `age` ago, the arm rests v (age + T / 2) on, T at the trajectory deceleration."""
+    arm = fake_arm()
+    speed = np.radians([60.0, -20.0, 0.0, 0.0, 0.0, 10.0])
+    arm.state.joint_velocities = {f"ur_arm_{name}": float(v) for name, v in zip(UR_JOINT_NAMES, speed)}
+    arm.state.last_update_time -= 0.05
+    assert arm.hold()
+    positions, duration = _stop(arm)
+    assert duration == pytest.approx(np.radians(60.0) / TRAJECTORY_MAX_JOINT_ACCELERATION)
+    np.testing.assert_allclose(positions, speed * (0.05 + duration / 2))
+
+
+@pytest.mark.parametrize("unknown", [
+    lambda arm: setattr(arm.state, "status_update_time", None),
+    lambda arm: setattr(arm.state, "program_playing", False),
+    lambda arm: setattr(arm.state.controllers, "last_update_time", arm._node.now - 60.0),
+    lambda arm: setattr(arm.state.controllers, "active", None),
 ])
-def test_hold_refused(controller, stale, why):
-    """Without a motion controller, or on a stale measurement, Hold sends nothing and says so."""
+def test_hold_is_sent_whatever_the_sync_program_or_controller_state(unknown):
+    """Stopping is always allowed: no sync status, a stopped program, an old or unknown controller state."""
+    arm = fake_arm()
+    unknown(arm)
+    assert arm.hold() and arm._trajectory.sent
+
+
+def test_hold_in_free_drive_switches_to_the_trajectory_controller():
+    """The trajectory controller holds the arm where it is once it runs."""
+    arm = fake_arm(FREE_DRIVE_CONTROLLER)
+    switched = []
+    arm.controllers.switch = lambda name: switched.append(name) or True
+    assert arm.hold() and switched == [SCALED_JOINT_TRAJECTORY_CONTROLLER] and not arm._trajectory.sent
+
+
+@pytest.mark.parametrize("controller, broken", [
+    (SCALED_JOINT_TRAJECTORY_CONTROLLER, "stale"),
+    (SCALED_JOINT_TRAJECTORY_CONTROLLER, "nan"),
+    (CARTESIAN_COMPLIANCE_CONTROLLER, "stale"),
+])
+def test_hold_refused_on_a_stale_or_broken_measurement(controller, broken):
+    """Only then: the target could be far from the arm. Nothing is sent and the log says so."""
     arm = fake_arm(controller)
-    if stale:
+    if broken == "stale":
         arm.state.last_update_time -= JOINT_STATE_MAX_AGE + 0.1
         arm.state.tcp_update_time -= JOINT_STATE_MAX_AGE + 0.1
+    else:
+        arm.state.joint_positions["ur_arm_elbow_joint"] = np.nan
     assert not arm.hold()
     assert not arm._trajectory.sent and not arm._target_frame.sent
-    assert why in arm._node.log.text()
+    assert "HOLD NOT SENT" in arm._node.log.text()
 
 
 def test_hold_under_compliance_targets_the_tcp():
-    """The target is the measured tool0, even with a URDF that breaks the stock frames."""
+    """The target is the measured tool0, even with a URDF that breaks the stock frames, and the wrench is zeroed."""
     arm = fake_arm(CARTESIAN_COMPLIANCE_CONTROLLER)
     arm.urdf_problem = "turned base"
     assert arm.hold()
     target, = arm._target_frame.sent
     np.testing.assert_allclose([target.pose.position.x, target.pose.position.y, target.pose.position.z],
                                TCP_POSITION)
+    assert arm._target_wrench.sent[-1].wrench.force.z == 0.0
 
 
-@pytest.mark.xfail(strict=True, reason="Hold runs the step check against the last target (review: Fix first)")
 def test_hold_under_compliance_right_after_a_target_far_from_the_tcp():
-    """The arm lags a target sent just now by more than a step (contact): Hold must still go out."""
+    """The arm lags a target sent just now by more than a step (contact): Hold still goes out."""
     arm = fake_arm(CARTESIAN_COMPLIANCE_CONTROLLER)
     arm.state.sent_target_position = TCP_POSITION + [2 * CARTESIAN_MAX_STEP, 0.0, 0.0]
     arm.state.sent_target_orientation, arm.state.sent_target_time = TCP_ORIENTATION, arm._node.now
+    arm.state.program_playing = False
     assert arm.hold()
 
 

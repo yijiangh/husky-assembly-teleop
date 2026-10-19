@@ -134,6 +134,29 @@ def test_a_joint_move_waits_for_the_arm_and_never_raises(arrives):
     assert ("arrived" in ctx.text()) is arrives and ("timed out" in ctx.text()) is not arrives
 
 
+@pytest.mark.parametrize("controller", [SCALED_JOINT_TRAJECTORY_CONTROLLER, CARTESIAN_COMPLIANCE_CONTROLLER])
+def test_a_cancelled_move_holds_the_arm(controller):
+    """Stop all, the plugin stopping or shutdown cancel the task: the trajectory or the targets must not run on."""
+    arm = fake_arm(controller)
+    ctx = Context(arm, tracking(arm))
+    plugin = RobotControlPlugin()
+
+    async def run():
+        if controller == CARTESIAN_COMPLIANCE_CONTROLLER:
+            move = plugin._stream_cartesian_move(ctx, "0804", arm, TCP_POSITION + [0.05, 0.0, 0.0], TCP_ORIENTATION)
+        else:
+            move = plugin._execute_move(ctx, "0804", arm, np.radians([20.0, 0.0, 0.0, 0.0, 0.0, 0.0]))
+        task = asyncio.create_task(move)
+        for _ in range(3):
+            await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run())
+    assert "hold sent" in arm._node.log.text("info")
+
+
 def test_one_move_per_arm_at_a_time_and_hold_cancels_it():
     """A second Start while a move runs is ignored; Hold cancels the running move and holds the arm."""
     arm, plugin = fake_arm(), RobotControlPlugin()
@@ -156,7 +179,6 @@ def test_one_move_per_arm_at_a_time_and_hold_cancels_it():
     assert "already running" in ctx.text() and task.cancelled() and len(arm._trajectory.sent) == 1
 
 
-@pytest.mark.xfail(strict=True, reason="Hold leaves the target wrench applied (review: Fix first)")
 def test_hold_also_removes_an_applied_force():
     """After Hold the compliance controller must no longer push with the force set before."""
     arm, plugin = fake_arm(CARTESIAN_COMPLIANCE_CONTROLLER), RobotControlPlugin()

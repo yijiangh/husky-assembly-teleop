@@ -88,8 +88,9 @@ TARGET_WRENCH_FRAME = "tool0"
 #: Largest target force (N) and torque (N m) `send_target_wrench` sends.
 MAX_TARGET_FORCE = 50.0
 MAX_TARGET_TORQUE = 5.0
-#: How long `hold` takes to brake to a standstill, seconds.
-HOLD_DURATION = 0.5
+#: Shortest time `hold` takes to brake to a standstill, seconds; faster joints brake longer, at
+#: TRAJECTORY_MAX_JOINT_ACCELERATION.
+HOLD_DURATION = 0.2
 #: A joint that moved further than this, radians, since motion was last seen counts as motion.
 MOTION_THRESHOLD = 1e-2
 #: Seconds without motion after which the arm counts as done executing.
@@ -246,6 +247,7 @@ class ArmState:
 
     Attributes:
         joint_positions: URDF joint name to position, radians. Empty until the first message.
+        joint_velocities: URDF joint name to velocity, rad/s, where joint_states carry one.
         tcp_position: Position of tool0, the link the compliance controller moves, metres, in its `base_link`:
             the reported TCP with the pendant's TCP taken off (`flange_from_reported`). Commands use it.
         tcp_orientation: Its quaternion (x, y, z, w), same frame.
@@ -283,6 +285,7 @@ class ArmState:
     """
 
     joint_positions: dict[str, float] = field(default_factory=dict)
+    joint_velocities: dict[str, float] = field(default_factory=dict)
     tcp_position: np.ndarray | None = None
     tcp_orientation: np.ndarray | None = None
     tcp_raw_position: np.ndarray | None = None
@@ -532,16 +535,22 @@ class ArmInterface:
         return self._simulated()
 
     def hold(self) -> bool:
-        """Stop the arm at its measured joints or TCP, under whichever controller is running.
+        """Stop the arm where it is and keep it there, under whichever controller runs; zero the target wrench.
 
-        - Under Cartesian compliance, the caller must stop sending new targets.
-        - Refused on stale measurements (an old position could mean a jump); use the teach pendant then.
-        ! A target wrench stays applied; zero it separately.
+        - Trajectory controller: a smooth stop from the measured joint speeds, braking at
+          TRAJECTORY_MAX_JOINT_ACCELERATION. Also sent while the controller state is unknown: an inactive
+          controller drops it.
+        - Cartesian compliance: a target at the measured TCP. The caller must stop sending new targets.
+        - Free drive: switch to the trajectory controller, which holds the arm where it is.
+        - ! Never refused for the safety sync, the program or the last target: stopping is always allowed. Only a
+          missing or stale measurement refuses it, since the target could be far from the arm; use the pendant then.
 
         Returns:
-            bool: True if sent. False (reason logged) if neither controller runs or the measurement is stale.
+            bool: True if sent. False (reason logged) if the measurement is missing or stale.
         """
         log = self._node.get_logger()
+        if not self.config.cartesian_test_mode:
+            self._publish_wrench(np.zeros(3), np.zeros(3))
         if self.controllers.is_active(CARTESIAN_COMPLIANCE_CONTROLLER):
             if self.state.tcp_position is None or \
                     self._now() - self.state.tcp_update_time > JOINT_STATE_MAX_AGE:
@@ -549,25 +558,43 @@ class ArmInterface:
                           f"stop the arm from the teach pendant")
                 return False
             sent = self.send_cartesian_target(self.state.tcp_position, self.state.tcp_orientation, hold=True)
-            if sent:
-                log.info(f"arm {self.config.name}: hold sent")
-            return sent
-        if not self.controllers.is_active(SCALED_JOINT_TRAJECTORY_CONTROLLER):
-            log.warning(f"arm {self.config.name}: hold not sent, neither motion controller is active")
-            return False
+        elif self.controllers.is_active(FREE_DRIVE_CONTROLLER):
+            sent = self.controllers.switch(SCALED_JOINT_TRAJECTORY_CONTROLLER)
+        else:
+            stop = self._stop_point()
+            if stop is None:
+                log.error(f"arm {self.config.name}: HOLD NOT SENT, joint state missing, stale or not finite; "
+                          f"stop the arm from the teach pendant")
+                return False
+            positions, duration = stop
+            point = JointTrajectoryPoint()
+            point.positions = [float(value) for value in positions]
+            point.velocities = [0.0] * len(UR_JOINT_NAMES)
+            point.time_from_start = Duration(sec=int(duration), nanosec=int((duration % 1.0) * 1e9))
+            self._trajectory.publish(JointTrajectory(joint_names=list(UR_JOINT_NAMES), points=[point]))
+            sent = True
+        if sent:
+            log.info(f"arm {self.config.name}: hold sent")
+        return sent
+
+    def _stop_point(self) -> tuple[np.ndarray, float] | None:
+        """Where the arm comes to rest braking evenly from its measured speed, and how long that takes, seconds.
+
+        The controller starts the stop from where the arm is now, so from the measurement it is extrapolated by the
+        measurement's age. Braking evenly from speed v over T seconds covers v T / 2. None if the joint state is
+        missing, stale or not finite.
+        """
         here = self.joint_vector()
-        if here is None or self._now() - self.state.last_update_time > JOINT_STATE_MAX_AGE:
-            log.error(f"arm {self.config.name}: HOLD NOT SENT, joint state missing or stale; "
-                      f"stop the arm from the teach pendant")
-            return False
-        point = JointTrajectoryPoint()
-        point.positions = [float(value) for value in here]
-        point.velocities = [0.0] * len(UR_JOINT_NAMES)
-        point.time_from_start = Duration(sec=int(HOLD_DURATION), nanosec=int((HOLD_DURATION % 1.0) * 1e9))
-        trajectory = JointTrajectory(joint_names=list(UR_JOINT_NAMES), points=[point])
-        self._trajectory.publish(trajectory)
-        log.info(f"arm {self.config.name}: hold sent")
-        return True
+        if here is None or not np.all(np.isfinite(here)):
+            return None
+        age = self._now() - self.state.last_update_time
+        if age > JOINT_STATE_MAX_AGE:
+            return None
+        prefix = f"{self.config.name}_"
+        speed = np.array([self.state.joint_velocities.get(prefix + name, 0.0) for name in UR_JOINT_NAMES])
+        speed = np.where(np.isfinite(speed), speed, 0.0)
+        duration = max(HOLD_DURATION, float(np.max(np.abs(speed))) / TRAJECTORY_MAX_JOINT_ACCELERATION)
+        return np.clip(here + speed * (age + duration / 2), -UR_JOINT_LIMITS, UR_JOINT_LIMITS), duration
 
     def send_joint_trajectory(self, positions: Sequence[Sequence[float]], duration: float,
                               velocities: Sequence[Sequence[float]] | None = None) -> bool:
@@ -611,7 +638,8 @@ class ArmInterface:
         Args:
             position: Target position in the arm's base_link frame, metres.
             orientation: Target orientation, quaternion (x, y, z, w).
-            hold: True only from `hold`; its target is the reported TCP, so a URDF problem does not stop it.
+            hold: True only from `hold`; its target is the reported TCP, so neither a URDF problem, the safety sync,
+                the program nor the start, reach and step checks stop it.
 
         ! The controller does not interpolate: send bigger moves as many close targets, one per tick
           (`cartesian_move`).
@@ -622,7 +650,7 @@ class ArmInterface:
         log = self._node.get_logger()
         position = np.asarray(position, dtype=float)
         orientation = np.asarray(orientation, dtype=float)
-        refusal = self._motion_refusal(CARTESIAN_COMPLIANCE_CONTROLLER)
+        refusal = None if hold else self._motion_refusal(CARTESIAN_COMPLIANCE_CONTROLLER)
         if refusal is not None:
             pass
         elif self.urdf_problem is not None and not hold:
@@ -636,6 +664,8 @@ class ArmInterface:
             refusal = "no TCP pose yet"
         elif self._now() - self.state.tcp_update_time > JOINT_STATE_MAX_AGE:
             refusal = f"TCP pose is {self._now() - self.state.tcp_update_time:.1f} s old"
+        elif hold:
+            pass  # the target is where the TCP is
         elif not np.allclose(self.state.tcp_position, position, atol=CARTESIAN_START_TOLERANCE):
             refusal = (f"target too far from the TCP: {np.round(self.state.tcp_position, 3)} "
                        f"vs {np.round(position, 3)}")
@@ -747,7 +777,7 @@ class ArmInterface:
         """Send a target wrench to the compliance controller.
 
         ! In the tool frame (tool0), not the arm's base, so it turns with the tool.
-        ! Stays applied until another wrench is sent, even through a hold. Send zeros to remove it.
+        ! Stays applied until another wrench is sent or `hold` zeroes it.
 
         Args:
             force: Force in tool0, newtons.
@@ -772,12 +802,16 @@ class ArmInterface:
         if self.config.cartesian_test_mode:
             self._log_test_mode("target force", f"F {np.round(force, 2)} N  T {np.round(torque, 3)} N m (tool0)")
             return False
+        self._publish_wrench(force, torque)
+        return True
+
+    def _publish_wrench(self, force: np.ndarray, torque: np.ndarray) -> None:
+        """Publish a target wrench in tool0, unchecked."""
         message = WrenchStamped()
         message.header.frame_id = TARGET_WRENCH_FRAME
         message.wrench.force.x, message.wrench.force.y, message.wrench.force.z = map(float, force)
         message.wrench.torque.x, message.wrench.torque.y, message.wrench.torque.z = map(float, torque)
         self._target_wrench.publish(message)
-        return True
 
     def zero_ft_sensor(self) -> bool:
         """Re-zero the force/torque sensor, taring the current reading.
@@ -828,6 +862,8 @@ class ArmInterface:
         now = self._now()
         prefix = f"{self.config.name}_"
         moved = False
+        for name, velocity in zip(message.name, message.velocity):
+            self.state.joint_velocities[prefix + name] = float(velocity)
         for name, position in zip(message.name, message.position):
             key = prefix + name
             self.state.joint_positions[key] = float(position)

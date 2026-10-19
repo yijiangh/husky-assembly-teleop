@@ -184,6 +184,7 @@ class HuskyRobotInterface:
 
         - Arms: stay stopped until `resume`.
         - Base: see BaseInterface.stop; `resume` switches its velocity controller on again.
+        - Tools: every motor stops (`EndEffector.stop`); nothing restarts them.
 
         ! Not an emergency stop: it needs wifi and the on-board nodes. Use the pendant or platform e-stop.
         ! Each part is stopped even if another raises; the error is logged.
@@ -199,6 +200,12 @@ class HuskyRobotInterface:
                 self._call_sync(self._stop_arms, "stop arms")
             except Exception as error:
                 log.error(f"robot {self.config.serial}: SOFT STOP of the arms failed: {error!r}")
+        for arm in self.arms.values():
+            if arm.end_effector is not None:
+                try:
+                    arm.end_effector.stop()
+                except Exception as error:
+                    log.error(f"robot {self.config.serial}: SOFT STOP of {arm.config.name}'s tool failed: {error!r}")
 
     def resume(self) -> bool:
         """Undo a soft stop: switch the base's velocity controller on, and lift the arms' stop.

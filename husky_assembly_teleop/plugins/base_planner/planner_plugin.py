@@ -224,7 +224,7 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
         return True, f"sent to {serial}'s follower (path {sent_id})"
 
     def forget(self, plan: Plan[BasePlanRequest]) -> None:
-        """The debug record goes with the plan; a sent path keeps driving (soft stop stops it), and stays drawn."""
+        """The debug record goes with the plan; a sent path keeps driving (Stop all stops it), and stays drawn."""
         self._debug = None
         self._plan_record = None
         self._start_joints = None
@@ -254,9 +254,14 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
                     outcome = check.label + (f": {check.detail}" if check.detail else "")
                 except WaitTimeout:
                     outcome = "timed out: still following"
+                    robot.base.stop_path()
                 await ctx.sleep(SETTLE)
         except asyncio.CancelledError:
-            outcome = "replaced by a new commit" if self._sent_id != sent_id else "stopped"
+            # ! Stop the path, unless a new commit replaced this run: then it only ends the recording.
+            replaced = (self._sent_serial, self._sent_id) != (serial, sent_id)
+            outcome = "replaced by a new commit" if replaced else "stopped"
+            if not replaced:
+                robot.base.stop_path()
             raise
         finally:
             ctx.log_info(f"base path {sent_id} on {serial}: {outcome}")

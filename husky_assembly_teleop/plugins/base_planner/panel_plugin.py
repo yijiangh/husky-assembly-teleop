@@ -97,7 +97,7 @@ class BasePlannerPanel(PlannerPanel):
             self._add_path_controls(ctx, gui,
                                     plan_hint="Plan around the other robots from the robot's current pose to "
                                               "the target; play or pause the preview; remove the plan (or stop "
-                                              "planning)",
+                                              "planning); a sent path keeps driving: Stop all stops it",
                                     commit_hint="Send the path to the robot's onboard path follower; it drives at once "
                                                 "if the velocity controller is active")
             try:

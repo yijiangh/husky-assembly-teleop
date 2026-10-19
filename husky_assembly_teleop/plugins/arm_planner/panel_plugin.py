@@ -73,7 +73,8 @@ class ArmPlannerPanel(PlannerPanel):
             self._add_path_controls(ctx, gui,
                                     plan_hint="Plan around the robot itself, the other robots and the scene, from "
                                               "where the arm is to the target; play or pause the preview; remove "
-                                              "the plan (or stop planning)",
+                                              "the plan (or stop planning); a sent path keeps moving: Hold or Stop all "
+                                              "stop it",
                                     commit_hint="Send the path to the arm; it stops at every waypoint")
             # * Debugging: watch the search in the chosen robot's planning world.
             # ! The one reach into the planner (the concrete plugin, not its API): the window runs on the planner's
