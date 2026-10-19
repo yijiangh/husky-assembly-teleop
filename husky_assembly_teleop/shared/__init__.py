@@ -6,4 +6,5 @@ For plugins to share code, share data and offer services to each other; nothing 
 - ! Holds types, interfaces and helpers, never a plugin's live state, and imports nothing from `plugins/`.
 
   planning/  the planner plugins' base class, search and timed path
+  process.py a process and its steps as data, and what the process plugin offers (`ProcessSource`)
 """

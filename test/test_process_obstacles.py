@@ -18,8 +18,8 @@ from scaffolding_assembly_core.robot import robot_model
 from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.scene import Attachment
 from husky_assembly_teleop.config import robot_config_from_serial
-from husky_assembly_teleop.plugins.process.steps import (LoadedProcess, Step, displayed_joints, live_ids, load_process,
-                                                         scene_bodies)
+from husky_assembly_teleop.shared.process import (LoadedProcess, Step, displayed_joints, live_ids, load_process,
+                                                  scene_bodies)
 from husky_assembly_teleop.plugins.process.drawing import GHOST_OPACITY, ProcessDrawing, load_robot_models
 from husky_assembly_teleop.plugins.process.plugin import BY_HAND_LABEL, ProcessPlugin
 from scaffolding_assembly_core.scene import Scene

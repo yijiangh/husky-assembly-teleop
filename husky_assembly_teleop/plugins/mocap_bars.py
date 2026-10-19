@@ -24,6 +24,7 @@ import asyncio
 import json
 import time
 from html import escape
+from typing import TYPE_CHECKING
 
 import numpy as np
 import viser
@@ -39,6 +40,9 @@ from ..world.marker_fit import BarDeviation, MarkerFit, bar_deviation, bar_marke
 from ..world.measured import TrackedObject
 from ..world.mocap import mocap_check
 from scaffolding_assembly_core.geometry import Pose, compose, invert
+
+if TYPE_CHECKING:
+    from ..shared.process import ProcessSource
 
 #: Name of the tracked rigid body in `world.tracked_objects` and on the health panel.
 TRACKED_NAME = "fitted_bar"
@@ -178,11 +182,11 @@ class MocapBarsPlugin(HuskyPlugin):
         self._message = f"recording {bar_id} for {seconds:g} s"
         with ctx.record(*self._signals(model)) as take:
             await ctx.sleep(seconds)
-        process = ctx.require("process")
-        step = process.step
+        source: ProcessSource = ctx.require("process")
+        selection = source.selection
         description = {"bar": bar_id, "mocap_id": self._object.mocap_id if self._object else None,
-                       "process": str(process.loaded.source) if process.loaded else None,
-                       "step": step.movement.id if step is not None else None, "seconds": seconds,
+                       "process": str(selection.loaded.source) if selection is not None else None,
+                       "step": selection.step.movement.id if selection is not None else None, "seconds": seconds,
                        "frame": "world (mocap, Z-up), metres; quaternions (x, y, z, w); deviation in the planned "
                                 "bar's frame, its axis z"}
         path = self._folder / experiment / f"{time.strftime('%Y%m%d_%H%M%S')}_{bar_id.split('/')[-1]}.npz"
@@ -237,8 +241,9 @@ class MocapBarsPlugin(HuskyPlugin):
         Args:
             ctx: This plugin's context.
         """
-        process = ctx.require("process")
-        loaded = process.loaded.process if process.loaded is not None else None
+        source: ProcessSource = ctx.require("process")
+        selection = source.selection
+        loaded = selection.loaded.process if selection is not None else None
         if loaded is not self._layouts_of:
             self._layouts_of = loaded
             self._layouts = bar_markers(loaded) if loaded is not None else {}
@@ -252,7 +257,8 @@ class MocapBarsPlugin(HuskyPlugin):
         elif obj.last_update_time != self._fitted_update:
             self._fitted_update = obj.last_update_time
             self._fit = fit_markers(self._layouts[self._bar_id][1], obj.markers.positions[obj.markers.measured])
-        live_id = process.ids.get(self._bar_id) if process.ids is not None and self._bar_id else None
+        ids = selection.ids if selection is not None else None
+        live_id = ids.get(self._bar_id) if ids is not None and self._bar_id else None
         self._planned = ctx.scene.snapshot.world_poses.get(live_id) if live_id else None
         self._deviation = (bar_deviation(self._fit.pose, self._planned)
                            if self._fit is not None and self._planned is not None else None)

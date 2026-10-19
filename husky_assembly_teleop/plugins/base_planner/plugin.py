@@ -20,6 +20,7 @@ import threading
 import time
 from dataclasses import asdict
 from html import escape
+from typing import TYPE_CHECKING
 
 from crl_husky.follower_path import FollowerPath
 
@@ -48,6 +49,9 @@ from .algorithms import ALGORITHMS, Algorithm, Debug
 from .debug_view import DebugView
 from .recording import RECORDING_FOLDER, attempt_folder, load_description, save_plan, write_description
 from .tasks import BY_NAME, TASK_ORIGIN, TASKS
+
+if TYPE_CHECKING:
+    from ...shared.process import ProcessSource
 from .world import PlanningWorld, stowed
 
 #: The plan goes stale once the base moves this far from its planned start.
@@ -488,8 +492,9 @@ class BasePlannerPlugin(PlannerPlugin):
 
     def _process_index(self, ctx: PluginContext) -> int | None:
         """The step selected in the process plugin; None if no process is loaded."""
-        process = ctx.require("process")
-        return process.index if process.loaded is not None else None
+        source: ProcessSource = ctx.require("process")
+        selection = source.selection
+        return selection.index if selection is not None else None
 
     def _environment(self, ctx: PluginContext, serial: str) -> str:
         """Whether `serial` is the simulator ("sim") or a robot ("real")."""

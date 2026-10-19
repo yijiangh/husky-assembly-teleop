@@ -24,9 +24,9 @@ from scaffolding_assembly_core.process.relations import is_present, placement
 from scaffolding_assembly_core.geometry import Geometry, Pose, compose, shape_mesh
 from scaffolding_assembly_core.ids import split_link_id
 from ...ui.visualization import FastViserUrdf, add_simple_urdf, joints_changed, load_urdf, quaternion_to_wxyz
-from .steps import body_color, stands
+from ...shared.process import body_color, stands
 
-#: Colours, RGB 0-255. Held bodies stand out; other bodies use `process.body_color`.
+#: Colours, RGB 0-255. Held bodies stand out; other bodies use `shared.process.body_color`.
 ATTACHED_COLOR = (240, 120, 30)
 TOOL_COLOR = (70, 70, 80)
 

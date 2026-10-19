@@ -263,7 +263,8 @@ def test_process_task_counts_only_at_its_step():
     plugin._task = SimpleNamespace(value="step_110")
     task = BY_NAME["step_110"]
     for index, counts in ((110, True), (109, False)):
-        ctx = SimpleNamespace(require=lambda _name, index=index: SimpleNamespace(loaded=object(), index=index))
+        selection = SimpleNamespace(index=index)
+        ctx = SimpleNamespace(require=lambda _name, selection=selection: SimpleNamespace(selection=selection))
         assert (plugin._task_of(ctx, task.start, task.target) == "step_110") == counts
 
 

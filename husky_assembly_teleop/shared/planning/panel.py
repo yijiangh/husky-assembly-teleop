@@ -15,7 +15,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from html import escape
-from typing import TYPE_CHECKING, Any, Callable, Iterable, Protocol
+from typing import TYPE_CHECKING, Callable, Iterable, Protocol
 
 import viser
 
@@ -30,6 +30,7 @@ from .path import TimedPath
 if TYPE_CHECKING:
     from scaffolding_assembly_core.scene import Scene
     from ...config import RobotConfig
+    from ..process import ProcessSource, Step
     from .search import PlanResult
 
 #: Time slider resolution, seconds.
@@ -302,22 +303,23 @@ class PlannerPlugin(HuskyPlugin):
         self._t, self._playing = 0.0, False
         self.forget_plan()
 
-    def _process_step(self, ctx: PluginContext) -> tuple[Any, str, str] | None:
+    def _process_step(self, ctx: PluginContext) -> tuple[Step, str, str] | None:
         """The process plugin's selected step, and the configured robot it is for.
 
         Returns:
-            tuple[Any, str, str] | None: The step, the robot's serial and its process name;
+            tuple[Step, str, str] | None: The step, the robot's serial and its process name;
                 None if there is none, after saying why in the panel.
         """
-        plugin = ctx.require("process")
-        step = plugin.step
-        if step is None:
+        source: ProcessSource = ctx.require("process")
+        selection = source.selection
+        if selection is None:
             self._say("no process loaded in the process plugin", failed=True)
             return None
+        step = selection.step
         if not step.action.robot:
             self._say(f"{step.label} is placed by hand: no robot to plan for", failed=True)
             return None
-        robot = plugin.loaded.process.robots[step.action.robot]
+        robot = selection.loaded.process.robots[step.action.robot]
         serial = find_robot_serial(ctx.config.robots, robot.serial or "")
         if serial is None:
             self._say(f"{step.label} is for {robot.name}, which is not configured", failed=True)
