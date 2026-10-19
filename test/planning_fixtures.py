@@ -14,7 +14,10 @@ import pytest
 from husky_assembly_teleop.config import RobotConfig, robot_config_from_serial
 from husky_assembly_teleop.drive import drive_root
 from husky_assembly_teleop.shared.process import LoadedProcess, Step, load_process
+from scaffolding_assembly_core.ids import robot_id
 from scaffolding_assembly_core.process import Action, Movement
+from scaffolding_assembly_core.robot import RobotObject
+from scaffolding_assembly_core.scene import Scene
 
 DATA = Path(__file__).resolve().parent.parent / "data"
 #: The purged process, under the Drive root.
@@ -55,3 +58,23 @@ def movement(loaded: LoadedProcess, movement_id: str) -> tuple[Action, Movement]
 def step(loaded: LoadedProcess, movement_id: str) -> Step:
     """The step of one movement by id."""
     return next(each for each in loaded.steps if each.movement.id == movement_id)
+
+
+def design_scene(loaded: LoadedProcess, movement_id: str, serials: tuple[str, ...] = (ALICE, BELLE, CINDY)) -> Scene:
+    """A snapshot of the real robots measured where the design has them at a movement's start.
+
+    Robots absent from the start, or without a base there, are left out; null joints are the acting robot's assumed
+    start, else empty.
+    """
+    current = step(loaded, movement_id)
+    planned = {spec.serial: robot for robot, spec in loaded.process.robots.items()}
+    robots = {}
+    for serial in serials:
+        config = robot_config(serial)
+        state = current.movement.start.robots.get(planned.get(serial))
+        if state is None or state.base is None:
+            continue
+        assumed = current.assumed_start if planned[serial] == current.action.robot else None
+        robots[robot_id(config.serial)] = RobotObject(robot_id(config.serial), config.model, state.base,
+                                                      dict(state.joints or assumed or {}))
+    return Scene(robots=robots)

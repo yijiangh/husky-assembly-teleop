@@ -128,14 +128,31 @@ def test_arm_sides(purged):
 
 
 def test_unknown_shapes_raise(purged):
-    """A linear coupled movement that neither tightens nor builds, and one moving both base and arms, raise."""
-    each, insert = movement(purged, "B21_J_insert")
-    unbuilt = replace(insert, drives={}, target=replace(insert.target, built=None))
-    with pytest.raises(UnknownMovement, match="coupled True"):
-        classify(purged.process, each, unbuilt)
+    """A movement moving both base and arms raises."""
     each, load = movement(purged, "B21_J_load")
     with pytest.raises(UnknownMovement, match="base"):
         classify(purged.process, each, replace(load, base=("robots/cindy",)))
+
+
+def test_straight_move_holding_a_bar_is_an_insert(purged):
+    """A linear coupled movement that neither tightens nor builds is an insert; outside a jointing action, warned."""
+    each, insert = movement(purged, "B21_J_insert")
+    unbuilt = replace(insert, drives={}, target=replace(insert.target, built=None))
+    spec = classify(purged.process, each, unbuilt)
+    assert spec.routine is R.INSERT and spec.goal is GoalSource.LINE and not spec.warnings
+    elsewhere = classify(purged.process, replace(each, type="bar_release"), unbuilt)
+    assert elsewhere.routine is R.INSERT and "insert" in elsewhere.warnings[0]
+
+
+def test_ground_insert_without_drives(purged):
+    """A ground bar's insert as newer exports give it, no drives and not built yet: an insert, run rigid."""
+    each, insert = movement(purged, "B20_J_insert")
+    ground = replace(insert, drives={}, target=replace(insert.target, built=None))
+    spec = classify(purged.process, each, ground)
+    assert spec.routine is R.INSERT
+    assert (spec.drives.kept, spec.drives.dropped, spec.drives.grounded) == ({}, {}, True)
+    one_sided = replace(movement(purged, "B21_J_insert")[1], drives={})
+    assert not mating_drives(purged.process, one_sided).grounded
 
 
 def test_mating_drives_from_the_mates(purged):

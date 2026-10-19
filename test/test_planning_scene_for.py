@@ -200,6 +200,20 @@ def test_ignore_built_keeps_the_actions_own_bar(purged, movement_id):
     assert not bodies["process/bars/B20"].enabled
 
 
+def test_end_contacts_let_the_gripper_touch_its_bar(purged):
+    """Alice's B21_H_to_grasp ends on B21: with end_contacts B21 may touch her real gripper, without it may not.
+
+    Only the bar the gripper ends on: the halves mounted on it still may not touch the gripper.
+    """
+    gripper = robot_config(ALICE).model.tools["ur_arm_tool0"].id
+    bodies = _alice_at(purged, "B21_H_to_grasp", end_contacts=True).scene.bodies
+    assert gripper in bodies[B21].touches
+    assert gripper not in _alice_at(purged, "B21_H_to_grasp").scene.bodies[B21].touches
+    halves = purged.process.halves_of("bars/B21")
+    assert "joints/J21-22_mocap" in halves
+    assert not any(gripper in bodies[f"process/{half}"].touches for half in halves)
+
+
 def test_only_obstacles_come_from_the_snapshot(purged):
     """The snapshot's obstacle is kept; its tracked object and stale process body are not."""
     planning = _cindy_at(purged, "B21_J_transfer")

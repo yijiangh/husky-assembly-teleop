@@ -101,7 +101,8 @@ class MatingDrives:
     Attributes:
         kept: Tool id -> "tighten" or "loosen", to send.
         dropped: Tool id -> why its drive is not sent.
-        grounded: A tighten was dropped because its half stands on the ground: the insert runs rigid.
+        grounded: The insert's bar stands on the ground: a tighten was dropped for a ground half, or a straight
+            coupled move has a tool on a ground half. The insert runs rigid.
         warnings: Diagnostics only, e.g. a kept tighten on a half that is not a male one.
     """
 
@@ -224,7 +225,8 @@ def mating_drives(process: Process, movement: Movement) -> MatingDrives:
     """The drives the monitor sends for a movement, read from the process mates, not body names.
 
     - A tighten is kept only when its tool is on a joint half mated to another half whose bar is built and present.
-      A half mated to the ground is never tightened, and makes the insert run rigid (`grounded`).
+      A half mated to the ground is never tightened, and makes the insert run rigid (`grounded`), also when the
+      insert has no drives at all.
     - A loosen is kept only when the movement unbuilds the bar the tool is on; on a release it is never sent.
 
     Args:
@@ -255,7 +257,22 @@ def mating_drives(process: Process, movement: Movement) -> MatingDrives:
             kept[tool] = drive
         else:
             dropped[tool] = reason
+    if not grounded and movement.coupled and movement.path == "linear":
+        # * An insert without drives (a ground bar in newer exports): its tools' halves tell the ground.
+        on = [start.tools[tool].on for tool in _flange_tools(process, movement) if start.tools.get(tool) is not None]
+        grounded = any(_tighten_problem(process, start, body) == GROUND_HALF for body in on if body is not None)
     return MatingDrives(kept, dropped, grounded, tuple(warnings))
+
+
+def _flange_tools(process: Process, movement: Movement) -> list[str]:
+    """The tools mounted on a movement's moving flanges."""
+    tools = []
+    for flange in movement.arms:
+        robot, link = split_link_id(flange)
+        spec = process.robots.get(robot)
+        if spec is not None and link in spec.tools:
+            tools.append(spec.tools[link])
+    return tools
 
 
 def _tighten_problem(process: Process, start: State, on: str | None) -> str | None:
@@ -294,7 +311,8 @@ def _routine(action: Action, movement: Movement, transfer_as_free: bool) -> Rout
         return Routine.BASE_ONLY
     if not arms and movement.has_tool_part:
         return Routine.TOOL_ONLY
-    if linear and coupled and ("tighten" in movement.drives.values() or builds):
+    # * Any straight move holding a bar is an insert: a ground bar's has no drives and is built only later.
+    if linear and coupled:
         return Routine.INSERT
     if linear and not coupled:
         return Routine.RETREAT_LINEAR if arms >= 2 else Routine.SUPPORT_LINEAR

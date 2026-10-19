@@ -310,9 +310,9 @@ python3 -m pytest test -q -p no:cacheprovider -m linter -k "flake8 or pep257"
 
 ## Status (2026-10-19)
 
-Tasks A, B, D, E and F done on `yh/core-port`; task C (core CC.6) is not started. Its test
-(`test_planning_collision.py::test_tool_against_another_robots_tool`) is xfail, strict, and fails loudly once the
-core fix lands; `test_only_the_tools_overlap` keeps its scene honest meanwhile.
+Tasks A, B, D, E and F done on `yh/core-port`. Task C (core CC.6) is in: the core pointer is at 439bc18 (core branch
+`yh/cc6-tool-pairs`, 7cd5a8a + 439bc18), so `test_planning_collision.py::test_tool_against_another_robots_tool` passes
+(no longer xfail); `test_only_the_tools_overlap` keeps its scene honest.
 
 Review fixes; these replace the body above on two points:
 - **Mount pause order.** With the transfer workaround the transfer runs first, with empty tools; the operator mounts

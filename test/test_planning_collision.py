@@ -145,7 +145,6 @@ def test_only_the_tools_overlap(mirror):
 
 
 @pytest.mark.slow
-@pytest.mark.xfail(strict=True, reason="needs core CC.6 (M2 task C)")
 def test_tool_against_another_robots_tool(mirror):
     """Belle's gripper in Cindy's left tool, nothing else touching: `collisions` names Cindy's tool against Belle."""
     _belle_at_cindys_tool(mirror)

@@ -75,7 +75,7 @@ def collisions(mirror: CompasFabMirror, joints: Mapping[str, float] | None = Non
                full_report: bool = False) -> list[tuple[str, str]]:
     """What the acting robot or its tools collide with at the synced state, some joints changed (`mirror.collisions`).
 
-    ? A tool against another robot's tool (CC.6) is found only once the core checks it; until then it is missed.
+    Its tools against other robots and each other (CC.6) included: the core's mirror checks them.
 
     Args:
         mirror: A synced mirror.

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from itertools import chain
 
 import pytest
 from planning_fixtures import action, purged_process
 
+from husky_assembly_teleop.shared.planning.movement import Routine, classify
 from husky_assembly_teleop.shared.planning.steps import OperatorStep, operator_steps, step_index_of
 from scaffolding_assembly_core.process import Action, Movement, State, Target
 
@@ -48,6 +50,18 @@ def test_bar_placing_is_one_step(purged):
         Movement("B99_P_place", start=State(start.robots, start.present), ends_on="operator",
                  target=Target(built=frozenset({"bars/B99"}))),))
     assert operator_steps(purged.process, placing) == [OperatorStep(0)]
+
+
+def test_fixing_the_foundation_is_its_own_step(purged):
+    """A ground bar built by the operator after its insert: an operator movement, its own step after the insert."""
+    jointing = action(purged, "B20_J")
+    insert = jointing.movements[-1]
+    fix = Movement("B20_J_fix_foundation", start=insert.start, ends_on="operator",
+                   target=Target(built=frozenset({*insert.start.built, "bars/B20"})))
+    fixed = replace(jointing, movements=(*jointing.movements, fix))
+    assert classify(purged.process, fixed, fix).routine is Routine.OPERATOR
+    assert operator_steps(purged.process, fixed)[-2:] == [OperatorStep(4), OperatorStep(5)]
+    assert operator_steps(purged.process, fixed, transfer_as_free=True)[-2:] == [OperatorStep(4), OperatorStep(5)]
 
 
 def test_every_index_once(purged):

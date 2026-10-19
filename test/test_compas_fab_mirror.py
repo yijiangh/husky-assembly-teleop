@@ -18,7 +18,7 @@ from husky_assembly_teleop.config import robot_config_from_serial
 from husky_assembly_teleop.robot_interface.arm import UR_JOINT_NAMES
 from scaffolding_assembly_core.geometry import Geometry, box_geometry
 from scaffolding_assembly_core.mirrors import HIDDEN_POSITION
-from scaffolding_assembly_core.mirrors.compas_fab import CompasFabMirror
+from scaffolding_assembly_core.mirrors.compas_fab import CompasFabMirror, with_tool_pairs
 from scaffolding_assembly_core.robot import RobotObject
 from scaffolding_assembly_core.scene import Attachment, Body, Scene
 from scaffolding_assembly_core.geometry import Pose
@@ -265,7 +265,8 @@ def test_same_result_as_the_design_cell():
         pushed.append((f"{label} pushed", state))
 
     with PyBulletClient("direct", verbose=False) as client:
-        planner = PyBulletPlanner(client)
+        # * Like for like: the mirror's planner adds tools against tools (CC.6) to compas_fab's CC.1 to CC.5.
+        planner = with_tool_pairs(PyBulletPlanner(client))
         planner.set_robot_cell(design_cell)
         expected = {}
         for label, state in states + pushed:

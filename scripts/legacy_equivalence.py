@@ -58,7 +58,7 @@ from scaffolding_assembly_core.mirrors.compas import PARKED_POSITION  # noqa: E4
 from scaffolding_assembly_core.legacy.conversion import convert_export  # noqa: E402
 from scaffolding_assembly_core.legacy.export import body_id, load_export  # noqa: E402
 from scaffolding_assembly_core.legacy.timing import Stopwatch  # noqa: E402
-from scaffolding_assembly_core.mirrors.compas_fab import CompasFabMirror  # noqa: E402
+from scaffolding_assembly_core.mirrors.compas_fab import CompasFabMirror, with_tool_pairs  # noqa: E402
 
 #: Tolerances: joints (rad or m), frame positions (m) and rotations (rad), mesh points (m), areas/volumes (relative).
 JOINT_TOL, FRAME_TOL, MESH_TOL, RELATIVE_TOL = 1e-9, 1e-6, 1e-6, 1e-6
@@ -824,7 +824,7 @@ def compare_kinematics(report: Report, pair, a: Loaded, b: Loaded, key) -> None:
 # --- --- --- --- --- COLLISIONS --- --- --- --- ---
 
 def collision_pairs(loaded: Loaded, robot: str, keys: List[Tuple[str, str]]) -> Dict[Tuple[str, str], set]:
-    """compas_fab's colliding pairs (`check_collision`, full report) per movement, as process ids.
+    """compas_fab's colliding pairs (`check_collision`, full report, with CC.6) per movement, as process ids.
 
     ? Movements without a configuration (M0 starts) are left out: compas_fab cannot place the robot.
     """
@@ -837,7 +837,8 @@ def collision_pairs(loaded: Loaded, robot: str, keys: List[Tuple[str, str]]) -> 
 
     result = {}
     with PyBulletClient("direct", verbose=False) as client:
-        planner = PyBulletPlanner(client)
+        # * Like for like with the mirror: tools against tools (CC.6) on top of compas_fab's CC.1 to CC.5.
+        planner = with_tool_pairs(PyBulletPlanner(client))
         planner.set_robot_cell(cell)
         for key in keys:
             state = loaded.states[key][1]
