@@ -37,7 +37,7 @@ from husky_assembly_teleop.bar_action_io import (
     ARM_KINDS, STATIONARY_KINDS, LIVE_SOLVED_TAG, clean_action_path, _clean_action_path,
     sidecar_action_path, preferred_action_path, write_path_for,
     BUILT_ASSEMBLY_RB_PREFIXES, is_built_assembly_body, bar_body_name, find_bar_body,
-    bar_id_of_body, is_ground_joint_body, held_ground_joints, mating_arm_sides,
+    bar_id_of_body, joints_on_bar, is_ground_joint_body, held_ground_joints, mating_arm_sides,
     tool_runs_with_next_motion, OperatorStep, operator_steps, step_index_of,
 )
 
@@ -432,6 +432,47 @@ def test_ground_joint_naming():
         assert is_ground_joint_body(name), name
     for name in ('joint_J1-12_female', 'bar_B1', 'obstacle_ground'):
         assert not is_ground_joint_body(name), name
+
+
+# Rigid-body names of the 261016_2ModulesDemo_YH cell around B20 and B21
+# (from B20__R's first state), plus bodies that are not joints of these bars.
+DEMO_RB_NAMES = [
+    'bar_B20', 'bar_B21', 'bar_B22', 'ground_WG0', 'obstacle_env1',
+    'joint_G20-T20-0_ground', 'joint_G20-T20-1_ground',
+    'joint_J20-169_male', 'joint_J20-169_mocap', 'joint_J20-21_male', 'joint_J20-21_mocap',
+    'joint_J20-22_male', 'joint_J20-22_mocap', 'joint_J20-25_male', 'joint_J20-25_mocap',
+    'joint_J20-42_female', 'joint_J20-42_male', 'joint_J20-44_female', 'joint_J20-44_male',
+    'joint_J157-21_male', 'joint_J21-165_female', 'joint_J21-165_male',
+    'joint_J21-22_male', 'joint_J21-22_mocap', 'joint_J21-26_male', 'joint_J21-26_mocap',
+    'joint_J21-37_male', 'joint_J21-37_mocap', 'joint_J21-38_male', 'joint_J21-38_mocap',
+    'joint_J22-20_female', 'joint_B20_male',
+]
+
+
+def test_joints_on_bar():
+    """Case 17: which joint bodies sit on B20 / B21, from the Rhino joint names alone.
+
+    'joint_J<a>-<b>_male' sits on bar b, every other half of the pair on bar a;
+    'joint_G<a>-...' and 'joint_M<a>-...' sit on bar a; 'env_' is allowed.
+    """
+    assert joints_on_bar(DEMO_RB_NAMES, 'B20') == sorted([
+        'joint_J20-22_mocap', 'joint_J20-21_mocap', 'joint_J20-169_mocap', 'joint_J20-25_mocap',
+        'joint_J20-42_female', 'joint_J20-44_female',
+        'joint_G20-T20-0_ground', 'joint_G20-T20-1_ground',
+    ])
+    assert joints_on_bar(DEMO_RB_NAMES, 'B21') == sorted([
+        'joint_J20-21_male', 'joint_J157-21_male', 'joint_J21-165_female',
+        'joint_J21-22_mocap', 'joint_J21-26_mocap', 'joint_J21-37_mocap', 'joint_J21-38_mocap',
+    ])
+    # The male half of 'J21-22' is on B22, the female of 'J22-20' too.
+    assert joints_on_bar(DEMO_RB_NAMES, 'B22') == [
+        'joint_J20-22_male', 'joint_J21-22_male', 'joint_J22-20_female']
+    # Support cells prefix 'env_'; a standalone mocap plate 'M<bar>-<Type>-<i>'.
+    assert joints_on_bar(['env_joint_G20-T20-0_ground', 'env_joint_J21-20_male', 'env_bar_B20',
+                          'joint_M20-T20-0_mocap', 'joint_M2-T20-0_mocap'], 'B20') == [
+        'env_joint_G20-T20-0_ground', 'env_joint_J21-20_male', 'joint_M20-T20-0_mocap']
+    assert joints_on_bar(DEMO_RB_NAMES, 'B2') == []
+    assert joints_on_bar(DEMO_RB_NAMES, bar_id_of_body('bar_B20')) == joints_on_bar(DEMO_RB_NAMES, 'B20')
 
 
 # * ------------------------------------------------- grounded bars
