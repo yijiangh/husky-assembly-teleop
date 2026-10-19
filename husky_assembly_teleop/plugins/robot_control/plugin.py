@@ -49,8 +49,6 @@ ARRIVE_TIMEOUT_MARGIN = 5.0
 PANEL_WIDTH = 420
 #: Seconds to wait before asking again after a refused free drive switch, so a dead service is not asked every tick.
 FREE_DRIVE_RETRY = 1.0
-#: Tab labels for arms, by ArmConfig.name.
-ARM_LABELS = {"ur_arm": "Arm", "left_ur_arm": "Left", "right_ur_arm": "Right"}
 
 
 @dataclass
@@ -147,8 +145,8 @@ class RobotControlPlugin(HuskyPlugin):
                 parts = gui.add_tab_group()
                 with parts.add_tab("Base", icon=viser.Icon.CAR):
                     self._bases.append(self._build_base(ctx, gui, serial, robot.base))
-                for arm_name, arm in robot.arms.items():
-                    with parts.add_tab(ARM_LABELS.get(arm_name, arm_name), icon=viser.Icon.ROBOT):
+                for arm in robot.arms.values():
+                    with parts.add_tab(arm.config.label, icon=viser.Icon.ROBOT):
                         self._arms.append(self._build_arm(ctx, gui, serial, arm))
         panel.dock_right()
         panel.set_width(PANEL_WIDTH)
@@ -164,7 +162,7 @@ class RobotControlPlugin(HuskyPlugin):
                         ctx, phone, widgets.serial, partial(self._on_hold, ctx, widgets.serial, True))
                     for arm_widgets in (arm for arm in self._arms if arm.serial == widgets.serial):
                         name = arm_widgets.arm.config.name
-                        with phone.add_folder(ARM_LABELS.get(name, name)):
+                        with phone.add_folder(arm_widgets.arm.config.label):
                             arm_widgets.phone_status = build_phone_arm_inputs(
                                 ctx, phone, f"{widgets.serial} {name}", arm_widgets.arm,
                                 partial(self._on_free_drive_hold, ctx, (widgets.serial, name), True))

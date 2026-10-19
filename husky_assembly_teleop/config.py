@@ -51,6 +51,7 @@ class ArmConfig:
     Attributes:
         name: URDF joint-name prefix without the trailing underscore, e.g. "ur_arm"; the arm's key everywhere.
         ros_namespace: The arm's namespace under the robot's, e.g. "ur5e".
+        label: Short name for tabs and health rows, e.g. "Left".
         end_effector: What is mounted on the flange, or None for a bare arm.
         end_effector_namespace: The tool driver's namespace under the robot's, e.g. "gripper".
         cartesian_test_mode: Cartesian commands run every check and show in the 3D view, but are not sent.
@@ -65,6 +66,7 @@ class ArmConfig:
 
     name: str
     ros_namespace: str
+    label: str = "Arm"
     end_effector: EndEffectorKind | None = None
     end_effector_namespace: str = ""
     stow_joints: tuple[float, ...] | None = None
@@ -213,9 +215,9 @@ _SINGLE_ARM_WITH_ROBOTIQ = (
               end_effector="robotiq", end_effector_namespace="gripper", stow_joints=_SINGLE_ARM_STOW),
 )
 _DUAL_ARM_WITH_SCAFFOLDING_V3 = (
-    ArmConfig(name="left_ur_arm", ros_namespace="left_ur5e",
+    ArmConfig(name="left_ur_arm", ros_namespace="left_ur5e", label="Left",
               end_effector="scaffolding_v3", end_effector_namespace="left_gripper", stow_joints=_LEFT_ARM_STOW),
-    ArmConfig(name="right_ur_arm", ros_namespace="right_ur5e",
+    ArmConfig(name="right_ur_arm", ros_namespace="right_ur5e", label="Right",
               end_effector="scaffolding_v3", end_effector_namespace="right_gripper", stow_joints=_RIGHT_ARM_STOW),
 )
 

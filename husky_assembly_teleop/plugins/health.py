@@ -251,7 +251,7 @@ def robot_checks(robot: HuskyRobotInterface, now: float,
         stale = [c for c in robot.config.ur_calibration if c.arm == arm.config.name and c.out_of_date]
         if stale:
             checks.append(Check("URDF", WARN, stale[0].describe()))
-        lines.append((arm.config.name, checks))
+        lines.append((arm.config.label.lower(), checks))
     return lines
 
 
