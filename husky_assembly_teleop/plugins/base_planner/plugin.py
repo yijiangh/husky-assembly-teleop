@@ -10,6 +10,8 @@ with its settings and debug view, the floor drawing and the PyBullet world.
   its start (to drive there) or its target. An attempt counts for the task when it starts at the task's start.
 - With Record ticked, every plan attempt is saved under the experiment's name, found or not, and a committed plan's
   run is added to it once the follower is done (`recording`, doc/base_planner_manual.md).
+! Drive the planner through its public API (set target, plan, cancel, results) from the panel wherever you can,
+  so those paths stay ready for other users such as an executor; only debug drawing and internal state reach inside.
 """
 
 from __future__ import annotations

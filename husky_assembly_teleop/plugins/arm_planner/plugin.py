@@ -5,6 +5,8 @@ The flow is `shared.planning.panel.PlannerPlugin`; this adds the joint sliders, 
 world per robot. The first plan for a robot loads the models (several seconds).
 
 ! EXPERIMENTAL, not yet tested on a robot: Commit sends the path as one joint trajectory (`send_to_arm`).
+! Drive the planner through its public API (set target, plan, cancel, results) from the panel wherever you can,
+  so those paths stay ready for other users such as an executor; only debug drawing and internal state reach inside.
 """
 
 from __future__ import annotations
