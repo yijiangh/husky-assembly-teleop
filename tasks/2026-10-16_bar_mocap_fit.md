@@ -319,15 +319,24 @@ the first live fit shows `max_residual_m` above 2 mm (jig placement), raise it t
 
 ## B4. Follow-ups (context only, not in this round)
 
-- **Grounded-bar visual servo.** `servo_to_movement_start_live` (`husky_world.py:1882`) targets
-  authored tool0 frames copied from `monitor._last_ik_target_ee_frames` (`:2053-2058`) and closes
-  the loop on the mocap base + arm FK; the bar is never measured. For a bar whose receiving /
-  grounded partner bar is instrumented: measure that partner once before the loop,
-  `T_corr = T_meas @ inv(T_design)` (world → world), apply it to each authored tool0 frame
-  (`Frame.from_transformation(Transformation.from_matrix(T_corr) * Transformation.from_frame(f))`)
-  before the IK / replan steps; refuse if `dpos > 30 mm` or `dang > 3°` (that points at a wrong
-  match, not an as-built offset); behind an operator checkbox. This is the "close the loop on the
-  bar" exception discussed in `doc/bar_mount_preload_report.md:183-193`.
+- **Grounded-bar visual servo: shipped 2026-10-19**, in a different form from the one sketched here.
+  - **Which bar.** The HELD grounded bar itself is measured (B20 / B34: held on ground joints,
+    nothing to mate with), not a partner bar.
+  - **The loop.** `husky_world.servo_to_movement_start_live(bar_feedback=...)`, behind the panel
+    checkbox `Servo: aim grounded bar by MoCap (else tool0)`. Every pass:
+    - `measure_bar_servo_feedback` fits the bar;
+    - `T_corr = T_design @ inv(T_mocap)` (`bar_mocap_fit.bar_servo_correction`) is applied to both
+      LIVE FK flanges (`monitor._servo_ee_target_override`, read by `ik_live_base_for_selected_movement`);
+    - it converges at 0.5 mm / 0.1° of the bar's pose;
+    - it refuses fits beyond 30 mm / 3° or with an rms over 3 mm, and never steers on fake markers.
+  - **Carry into the insert.** The insert then makes the authored move from where the flanges
+    actually stand (`monitor._carried_insert_goal`).
+  - **Servo after the insert.** `husky_world.execute_grounded_insert_then_servo` runs a second servo
+    onto the assembled pose: straight lines only, with a +20 N load guard.
+  - **Comparison.** Every servo with an instrumented held bar records FK vs MoCap vs design per
+    reading (`rec['bar']`).
+  - Lab steps: `doc/mocap_bar_pose_test_manual.md` section 10. A partner-bar correction (for
+    bars that mate) is still open.
 - **As-built logging.** After each assembly / hold action is marked done, `measure_bar_pose` for
   every visible instrumented bar → append `{movement_id, bar, fit, deviation, timestamp}` to
   `<problem>/as_built.jsonl` next to `progress.json`; add a dashboard run kind in the style of

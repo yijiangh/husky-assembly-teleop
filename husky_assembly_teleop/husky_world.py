@@ -22,14 +22,15 @@ from husky_assembly_teleop import DATA_DIRECTORY, CALIBRATION_DATE, BASE_CALIBRA
 from husky_assembly_teleop.common import Husky, TrackedObject, AssemblyObject
 from husky_assembly_teleop.robot_registry import RobotSpec, other_robots, robot_by_name, robot_from_env
 from husky_assembly_teleop.bar_action_io import (
-    COMPLIANT_KINDS, MovementKind, held_ground_joints, mating_arm_sides, tool_event,
+    COMPLIANT_KINDS, STATIONARY_KINDS, MovementKind, held_ground_joints, mating_arm_sides, tool_event,
     tool_runs_with_next_motion,
 )
+from husky_assembly_teleop.bar_mocap_fit import bar_servo_correction, pose_deviation
 from husky_assembly_teleop.plan_skeleton_io import load_plan_skeleton, problem_root
 from husky_assembly_teleop.progress_io import PARKED_BASE_FRAME, RobotBelief, load_progress
 import husky_assembly_teleop.husky_planning as planning
 import husky_assembly_teleop.husky_control as control
-from husky_assembly_teleop.utils import HUSKY_DUAL_UR5e_JOINT_NAMES, HUSKY_DUAL_ARM_HOME_CONF_12, UR5E_JOINT_NAMES, MOCAP_SET_RIG_RB_NAME, conf_from_12vec, get_arm_ik_for_grasp_bar, get_custom_limits, notify, plan_transit_motion, pose_from_frame
+from husky_assembly_teleop.utils import HUSKY_DUAL_UR5e_JOINT_NAMES, HUSKY_DUAL_ARM_HOME_CONF_12, UR5E_JOINT_NAMES, MOCAP_SET_RIG_RB_NAME, conf_from_12vec, frame_from_pose, get_arm_ik_for_grasp_bar, get_custom_limits, notify, plan_transit_motion, pose_from_frame
 from husky_assembly_teleop.scaffolding import parse_mt_geometric, create_collision_bodies, create_couplers, flatten_list
 from husky_assembly_teleop.cfab_session import CfabSession, build_default_robot_cell
 from husky_assembly_teleop.cc_diagnosis import visualize_goal_ik_collision
@@ -1638,6 +1639,25 @@ def measure_base_pose_diff(monitor, start_base_pose):
 # out and comes back.
 SERVO_EXCURSION_CONFIRM_DEG = 5.0
 
+# * --- servo on the MoCap bar (a grounded bar: its design pose IS the goal)
+# The bar loop stops once the MoCap bar is this close to the servo's target pose.
+SERVO_BAR_POS_TOL_MM = 0.5
+SERVO_BAR_ANG_TOL_DEG = 0.1
+# ! A MoCap bar further than this from the target is a wrong match (another
+# ! bar, a stray marker), not an as-built offset: the loop never steers on it.
+SERVO_BAR_GATE_MM = 30.0
+SERVO_BAR_GATE_DEG = 3.0
+# A fit whose markers sit further than this (rms) from the design markers is not trusted.
+SERVO_BAR_MAX_FIT_RMS_MM = 3.0
+# ? The servo after a grounded insert (bar on the floor): it stops when the force
+# ? measured at either flange has changed by more than this since its first
+# ? reading (the change of the force VECTOR: see _force_vectors). A starting
+# ? point, to be tuned in the lab.
+SERVO_CONTACT_MAX_LOAD_RISE_N = 20.0
+# A grounded insert counts as finished when both flanges stand within this of
+# its planned end; only then does the servo after it run.
+GROUNDED_INSERT_END_TOL_MM = 3.0
+
 # Commanded joint speed the recommended duration aims for. 3 deg/s puts a 60 deg
 # first transfer at 20 s, which is what the manual asks for by hand.
 SERVO_RECOMMENDED_DEG_PER_S = 3.0
@@ -1689,6 +1709,160 @@ def _wrench_magnitudes(monitor):
         return out
     except Exception:
         return None
+
+
+def _force_vectors(monitor) -> Optional[dict]:
+    """The force each tool flange measures right now, as a vector in its sensor frame.
+
+    ! For the servo's load guard, which watches how this vector CHANGES. Its
+    ! magnitude cannot do that job: the sensors are not zeroed while the bar is
+    ! held, so it carries the tool + bar weight, and pressing the bar onto the
+    ! floor makes it SMALLER (the floor takes the weight). A correction turns the
+    ! sensor by well under a degree, so the frame itself barely moves.
+
+    Args:
+        monitor: The HuskyMonitor node.
+
+    Returns:
+        dict | None: ``{'left': (3,) array, 'right': (3,) array}`` in newtons, or
+        None when no FT reading is available.
+    """
+    try:
+        hi = monitor.huskies[monitor.selected_robot_id].interface
+        return {side: np.asarray(hi.arm_ft_sensor[i], dtype=float)[:3].copy()
+                for i, side in enumerate(('left', 'right'))}
+    except Exception:
+        return None
+
+
+def _servo_bar_unavailable(monitor, mv) -> str:
+    """Why the servo loop cannot measure the held bar by MoCap at this step ('' when it can).
+
+    The bar must carry MoCap markers (``MoCapMarkers.json``), rest somewhere in
+    the loaded action (the drawing's pink copy is built from that state), and be
+    held by an arm in the step's start state with a known grasp
+    (``monitor.grasp_link_from_bar``, set by 'Load Movement').
+
+    Args:
+        monitor (HuskyMonitor): The monitor, the step loaded.
+        mv (Movement): The loaded step.
+
+    Returns:
+        str: '' when the bar can be measured, else the reason in plain words.
+    """
+    bar_name = getattr(monitor, 'active_bar_name', None)
+    if not bar_name:
+        return 'no bar is loaded'
+    if monitor._mocap_bar_design(bar_name) is None:
+        return f'{bar_name} carries no MoCap markers'
+    if monitor._designed_bar_frame(bar_name) is None:
+        return f'{bar_name} rests nowhere in the loaded action (no Rhino pose to draw)'
+    rb_states = (mv.start_state.rigid_body_states or {}) if mv.start_state is not None else {}
+    rb = rb_states.get(bar_name)
+    if rb is None or not rb.attached_to_link or getattr(monitor, 'grasp_link_from_bar', None) is None:
+        return f'{bar_name} is not held by an arm at the start of {mv.movement_id}'
+    return ''
+
+
+def _bar_dev_text(dev: Optional[dict]) -> str:
+    """A bar pose deviation (``PoseDeviation.to_json``) as ``'1.23 mm/0.045°'``.
+
+    Args:
+        dev (dict | None): The deviation; None when there is no MoCap fit.
+
+    Returns:
+        str: The text, or ``'n/a'``.
+    """
+    return 'n/a' if dev is None else f"{dev['dpos_mm']:.2f} mm/{dev['dang_deg']:.3f}°"
+
+
+def measure_bar_servo_feedback(monitor, fk_err: dict, T_design_bar: np.ndarray,
+                               iter_i: int = 0) -> Optional[dict]:
+    """The held bar as MoCap and FK see it, against the pose the servo aims at.
+
+    * FK bar = FK tool0 of the grasping arm (mocap base + live joints, the
+    * ``observed_pose`` of ``fk_err``) composed with the grasp. MoCap bar = the
+    * fit of the bar's joint markers (``monitor.measure_bar_pose``, matched
+    * around the FK bar first). Both are compared with the design pose
+    * (``pose_deviation``) and with each other; the correction ``T_corr`` would
+    * carry the MoCap bar onto the design (``bar_servo_correction``).
+
+    The loop may steer on it (``usable``) only with a good fit of REAL markers
+    (never the desk rehearsal's made-up ones), an rms under
+    ``SERVO_BAR_MAX_FIT_RMS_MM``, and the MoCap bar within ``SERVO_BAR_GATE_MM``
+    / ``SERVO_BAR_GATE_DEG`` of the design. Logs one line.
+
+    Args:
+        monitor (HuskyMonitor): The monitor, the servo's step loaded.
+        fk_err (dict): ``measure_servo_tool0_error`` of this reading.
+        T_design_bar (np.ndarray): 4x4 bar pose the servo aims at, world.
+        iter_i (int): The servo iteration, for the log line.
+
+    Returns:
+        dict | None: None when the bar cannot be measured at this step
+        (``_servo_bar_unavailable``). Else only plain lists, numbers and
+        strings (JSON-safe): ``bar``, ``grounded``, ``source`` (where the
+        markers came from; None without a fit), ``fit`` (``BarFit.to_json``;
+        None without a fit), ``T_design``, ``T_fk``, ``T_mocap``, ``T_corr``
+        (4x4 lists; the last two None without a good fit), ``fk_vs_design``,
+        ``mocap_vs_design``, ``mocap_vs_fk`` (``PoseDeviation.to_json``; the last
+        two None without a good fit), ``usable`` and ``reason`` (why it is not
+        usable; '' when it is).
+    """
+    mv = monitor.current_movement
+    if _servo_bar_unavailable(monitor, mv):
+        return None
+    bar_name = monitor.active_bar_name
+    side = monitor._connected_robot().side_of_link(mv.start_state.rigid_body_states[bar_name].attached_to_link)
+    T_design = np.asarray(T_design_bar, dtype=float)
+    T_fk = (pp.tform_from_pose(fk_err[side]['observed_pose'])
+            @ pp.tform_from_pose(pose_from_frame(monitor.grasp_link_from_bar)))
+    fit = monitor.measure_bar_pose(bar_name, log=False, T_hint=T_fk)
+    # Where the markers came from: the record measure_bar_pose has just written
+    # (only when it returns a fit). A click on the panel's thread may have
+    # replaced it since; then the source is unknown and the fit is not steered on.
+    last = monitor._own_dict('_mocap_bar_last').get(bar_name) if fit is not None else None
+    source = last['source'] if last is not None and last.get('fit') is fit else None
+    T_mocap = T_corr = mocap_vs_design = mocap_vs_fk = None
+    if fit is not None and fit.ok:
+        T_mocap = np.asarray(fit.T_world_from_bar, dtype=float)
+        mocap_vs_design = pose_deviation(T_mocap, T_design).to_json()
+        mocap_vs_fk = pose_deviation(T_mocap, T_fk).to_json()
+        T_corr = bar_servo_correction(T_mocap, T_design)
+
+    # * Steer on it only when it can be trusted.
+    if fit is None:
+        reason = 'the bar could not be measured (see the [mocap bar] line)'
+    elif not fit.ok:
+        reason = f'fit failed: {fit.reason}'
+    elif source is None:
+        reason = 'the marker record changed while it was read (another measurement); not steered on'
+    elif source == 'fake':
+        reason = 'fake markers (desk rehearsal; Motive does not stream the bar), never steered on'
+    elif fit.rms_m is None or fit.rms_m * 1000.0 >= SERVO_BAR_MAX_FIT_RMS_MM:
+        reason = f'fit rms {(fit.rms_m or 0.0) * 1000.0:.1f} mm (not under {SERVO_BAR_MAX_FIT_RMS_MM} mm)'
+    elif mocap_vs_design['dpos_mm'] > SERVO_BAR_GATE_MM or mocap_vs_design['dang_deg'] > SERVO_BAR_GATE_DEG:
+        reason = (f'MoCap-vs-design {_bar_dev_text(mocap_vs_design)} is beyond the {SERVO_BAR_GATE_MM:.0f} mm / '
+                  f'{SERVO_BAR_GATE_DEG:.0f} deg gate (a wrong match, not an as-built offset)')
+    else:
+        reason = ''
+    fb = {
+        'bar': bar_name, 'grounded': bool(held_ground_joints(mv.start_state)), 'source': source,
+        'fit': fit.to_json() if fit is not None else None,
+        'T_design': T_design.tolist(), 'T_fk': T_fk.tolist(),
+        'T_mocap': None if T_mocap is None else T_mocap.tolist(),
+        'T_corr': None if T_corr is None else T_corr.tolist(),
+        'fk_vs_design': pose_deviation(T_fk, T_design).to_json(),
+        'mocap_vs_design': mocap_vs_design, 'mocap_vs_fk': mocap_vs_fk,
+        'usable': not reason, 'reason': reason,
+    }
+    fit_text = ('no fit' if fit is None or fit.rms_m is None else
+                f"fit {fit.n_matched}/{fit.n_design}, rms {fit.rms_m * 1000.0:.1f} mm, {source}")
+    monitor.get_logger().info(
+        f"[servo {iter_i}] bar {bar_name}: FK-vs-design {_bar_dev_text(fb['fk_vs_design'])}, "
+        f"MoCap-vs-design {_bar_dev_text(mocap_vs_design)}, MoCap-vs-FK {_bar_dev_text(mocap_vs_fk)} "
+        f"({fit_text})" + ('' if not reason else f"; not usable: {reason}"))
+    return fb
 
 
 def _planned_correction_mm(monitor, goal12):
@@ -1917,7 +2091,10 @@ def servo_to_movement_start_live(monitor, max_iters=8, pos_tol_mm=0.2,
                                  show_tracker_at_start: bool = False,
                                  log_data=True,
                                  log_dir: str = BAR_HOLDING_ACC_EXPERIMENT_DIR,
-                                 log_label: str = 'servoing'):
+                                 log_label: str = 'servoing',
+                                 bar_feedback: bool = False,
+                                 linear_only: bool = False,
+                                 max_load_rise_N: Optional[float] = None):
     """Iterative visual-servoing loop to the current M2/M3 movement start pose.
 
     One iteration mirrors the manual three clicks: (1) live-base IK from the latest
@@ -1943,6 +2120,19 @@ def servo_to_movement_start_live(monitor, max_iters=8, pos_tol_mm=0.2,
     This is a generator run as a monitor task (``monitor.tasks``); it yields between
     steps so the 20 Hz tick keeps flowing mocap while the arms move. Progress is
     logged per iteration and saved as a static plot + JSON at the end.
+
+    * The held bar, measured by MoCap: when the loaded bar carries MoCap markers
+    * and is held at this step, every reading also records the bar as MoCap and
+    * FK see it against its target pose (``measure_bar_servo_feedback``, the
+    * record's ``'bar'``), whatever the loop aims at. With ``bar_feedback`` on a
+    * GROUNDED bar (its design pose is the goal) the loop aims the BAR instead
+    * of tool0: each pass moves both flanges by the one rigid correction that
+    * carries the MoCap bar onto its target (``monitor._servo_ee_target_override``,
+    * read by ``ik_live_base_for_selected_movement``), and it converges on the
+    * bar (``SERVO_BAR_POS_TOL_MM`` / ``SERVO_BAR_ANG_TOL_DEG``). Until the first
+    * usable fit it drives tool0 to the authored target as usual; a fit lost
+    * after that stops the loop. A bar-aimed insert start is carried into the
+    * insert's plan (``monitor._servo_bar_carry``).
 
     Args:
         monitor: The HuskyMonitor node.
@@ -1977,6 +2167,19 @@ def servo_to_movement_start_live(monitor, max_iters=8, pos_tol_mm=0.2,
             subfolder is made in it).
         log_label (str): File name prefix of that record, e.g.
             ``'B3_J_M5_LM_insert_servoing'``.
+        bar_feedback (bool): Aim the held bar by MoCap instead of tool0 (the
+            panel's 'Servo: aim grounded bar by MoCap' box). Only with
+            ``use_transfer`` on a grounded bar's step whose bar can be measured;
+            otherwise the loop says why and aims tool0.
+        linear_only (bool): With ``use_transfer``, every correction is a straight
+            line or nothing (no sampling planner): for the servo after a grounded
+            insert, where the bar stands on the floor. Forced on that step,
+            whoever starts the loop (the insert's exec, or button 3b).
+        max_load_rise_N (float | None): Stop once the force vector at either
+            flange has changed by more than this since the first reading (the
+            bar pushed against something; see ``_force_vectors``); None = no
+            such guard. Always on (``SERVO_CONTACT_MAX_LOAD_RISE_N`` unless
+            given) on the step right after a grounded insert.
 
     Yields:
         None: cooperative yields so the monitor tick keeps running.
@@ -1995,12 +2198,58 @@ def servo_to_movement_start_live(monitor, max_iters=8, pos_tol_mm=0.2,
     if mv is None or mv.start_state is None:
         monitor.get_logger().warn('Load the insert or the retreat movement first.')
         return
-    kind = monitor._kind_of(mv)
-    if kind not in COMPLIANT_KINDS:
+    # The insert / retreat, or the step right after a grounded insert (its start is the insert's end).
+    if not monitor._servo_target_ok(mv):
+        kind = monitor._kind_of(mv)
         monitor.get_logger().warn(
-            f'Servoing loop only supports the insert / retreat; {mv.movement_id} is a '
-            f'{getattr(kind, "value", type(mv).__name__)}.')
+            f'Servoing loop only supports the insert / retreat, or the step right after a '
+            f'grounded insert; {mv.movement_id} is a {getattr(kind, "value", type(mv).__name__)}.')
         return
+    # ! The step right after a grounded insert: the bar stands on the floor, so every
+    # ! correction is a straight line (never the sampling planner, which explores)
+    # ! under the load guard, whoever started the loop (the insert's exec, button 3b).
+    if monitor._kind_of(mv) in STATIONARY_KINDS:
+        linear_only = True
+        if max_load_rise_N is None:
+            max_load_rise_N = SERVO_CONTACT_MAX_LOAD_RISE_N
+
+    # * The held bar by MoCap: can it be measured here, and does the loop aim it?
+    # * Decided once for the run. T_design_bar is the bar's pose at this step's
+    # * start (the authored flange before it, composed with the grasp).
+    log = monitor.get_logger()
+    bar_name = getattr(monitor, 'active_bar_name', None)
+    T_design_bar = None
+    why_no_bar = _servo_bar_unavailable(monitor, mv)
+    if not why_no_bar:
+        # ! A failure here must not raise inside the task (it would stop the monitor tick).
+        try:
+            start_pose = monitor.get_movement_start_bar_pose()
+        except Exception as e:
+            start_pose, why_no_bar = None, f'no target pose for {bar_name} ({e})'
+        if start_pose is not None:
+            T_design_bar = pp.tform_from_pose(start_pose)
+        elif not why_no_bar:
+            why_no_bar = f'no target pose for {bar_name} at the start of {mv.movement_id}'
+    bar_fb = False
+    if bar_feedback:
+        if not use_transfer:
+            why_off = 'this loop plans free moves (no bar held)'
+        elif not held_ground_joints(mv.start_state):
+            why_off = f'{mv.movement_id} does not hold a grounded bar (a normal bar must mate with its joints)'
+        elif T_design_bar is None:
+            why_off = why_no_bar
+        else:
+            bar_fb = True
+        if not bar_fb:
+            log.warn(f"[servo] 'Servo: aim grounded bar by MoCap' is ticked, but this run aims "
+                     f"tool0: {why_off}.")
+    if bar_fb:
+        log.info(f"[servo] feedback: the MoCap bar {bar_name} (converges at {SERVO_BAR_POS_TOL_MM} mm / "
+                 f"{SERVO_BAR_ANG_TOL_DEG} deg).")
+    elif T_design_bar is not None:
+        log.info(f"[servo] feedback: tool0 ({pos_tol_mm} mm); the MoCap bar {bar_name} is recorded alongside.")
+    else:
+        log.info(f"[servo] feedback: tool0 ({pos_tol_mm} mm); no MoCap bar recorded ({why_no_bar}).")
 
     # ! Keep the reference target constant across iterations. Button 2 mutates
     # mv.start_state.robot_base_frame to the live base (via
@@ -2029,14 +2278,29 @@ def servo_to_movement_start_live(monitor, max_iters=8, pos_tol_mm=0.2,
     target = None
     # Iteration-0 readings every later iteration is reported against. A dict so
     # the nested _record can write it without a nonlocal declaration.
-    baseline = {'wrench': None}
+    baseline = {'wrench': None, 'force': None}
+    # * Bar loop: 'engaged' once a usable MoCap fit has set a bar-corrected target.
+    bar_loop = {'engaged': False}
 
     def _record(iter_i):
-        """Measure the residuals, log them, push to the live tracker, store them."""
+        """Measure the residuals, log them, push to the live tracker, store them.
+
+        With the bar measurable, also the MoCap bar (``rec['bar']``); in the bar
+        loop, that reading sets the next pass's bar-corrected target.
+        """
         err = measure_servo_tool0_error(monitor, target)
         base = measure_base_pose_diff(monitor, start_base_pose)
         wrench = _wrench_magnitudes(monitor)
-        data.append({'iter': iter_i, 'tool0': err, 'base': base, 'wrench': wrench})
+        rec = {'iter': iter_i, 'tool0': err, 'base': base, 'wrench': wrench}
+        # How much the force vector at each flange has changed since the first
+        # reading: what the load guard reads (see _force_vectors).
+        force = _force_vectors(monitor)
+        if force is not None:
+            if baseline.get('force') is None:
+                baseline['force'] = force
+            rec['force_change_N'] = {side: float(np.linalg.norm(force[side] - baseline['force'][side]))
+                                     for side in force}
+        data.append(rec)
         monitor.push_servoing_tracker(iter_i, err, base)
         monitor.get_logger().info(
             f"[servo {iter_i}] tool0 pos L={err['left']['pos_norm_mm']:.2f} "
@@ -2049,222 +2313,334 @@ def servo_to_movement_start_live(monitor, max_iters=8, pos_tol_mm=0.2,
             if baseline.get('wrench') is None:
                 baseline['wrench'] = wrench
             b = baseline['wrench']
+            # The force VECTOR's change since iter 0 too: what the load guard reads
+            # (pressing on something can make the magnitude smaller, see _force_vectors).
+            change = rec.get('force_change_N')
+            change_text = ('' if not change else
+                           f" | force change since iter 0 L={change['left']:.1f} R={change['right']:.1f} N")
             monitor.get_logger().info(
                 f"[servo {iter_i}] load L={wrench['left']['force_N']:.1f} N / "
                 f"{wrench['left']['torque_Nm']:.2f} Nm "
                 f"({wrench['left']['force_N'] - b['left']['force_N']:+.1f} N vs "
                 f"iter 0) | R={wrench['right']['force_N']:.1f} N / "
                 f"{wrench['right']['torque_Nm']:.2f} Nm "
-                f"({wrench['right']['force_N'] - b['right']['force_N']:+.1f} N)")
+                f"({wrench['right']['force_N'] - b['right']['force_N']:+.1f} N){change_text}")
+        # * The held bar by MoCap, next to tool0 (both modes).
+        if T_design_bar is None:
+            return err
+        # ! A fit or drawing error must not raise inside the task (it would stop the monitor tick).
+        try:
+            fb = measure_bar_servo_feedback(monitor, err, T_design_bar, iter_i)
+        except Exception as e:
+            log.warn(f"[servo {iter_i}] could not measure the MoCap bar: {e}")
+            fb = None
+        if fb is not None:
+            rec['bar'] = fb
+        if not bar_fb:
+            return err
+        if fb is not None and fb['usable']:
+            # * One rigid correction for both flanges: the live flanges (FK) moved
+            # * by what carries the MoCap bar onto its target.
+            T_corr = np.asarray(fb['T_corr'], dtype=float)
+            monitor._servo_ee_target_override = {
+                side: frame_from_pose(pp.pose_from_tform(T_corr @ pp.tform_from_pose(err[side]['observed_pose'])))
+                for side in err}
+            bar_loop['engaged'] = True
+        elif not bar_loop['engaged']:
+            # No usable fit yet: aim tool0 at the authored target, as the tool0 loop does.
+            # Said once per run; the bar line above repeats the reason at every reading.
+            monitor._servo_ee_target_override = None
+            if not bar_loop.get('warned'):
+                bar_loop['warned'] = True
+                log.warn(f"[servo {iter_i}] the MoCap bar is not usable "
+                         f"({fb['reason'] if fb is not None else 'not measured'}); the loop aims tool0 "
+                         f"at the authored target until a fit is usable.")
         return err
 
+    # * Run state: no bar-corrected target yet. A carry of an earlier run into
+    # * this step's plan is redone by this run (set again at the end when due).
+    if getattr(monitor, '_servo_bar_carry', None) == mv.movement_id:
+        monitor._servo_bar_carry = None
+    monitor._servo_ee_target_override = None
+    if T_design_bar is not None:
+        # The pink copy (and the fit's deviation) show the servo's target while it runs.
+        monitor._own_dict('_mocap_bar_reference')[bar_name] = T_design_bar
+
     # * the visual servoing iterations
-    for it in range(1, max_iters + 1):
-        if _aborted():
-            break
-        monitor.get_logger().info(f'### SERVOING iteration {it}/{max_iters}')
-        # Clear any stale plan first so a failed replan (which returns without
-        # updating the trajectory) is detected below instead of re-executing the
-        # previous iteration's path.
-        monitor.planned_arm_trajectory[0] = (None, None, None, None)
-        monitor.planned_arm_trajectory[1] = (None, None, None, None)
-        # Restore the authored base so both the IK below and the replan derive the
-        # fixed authored target (Button 2's live-base step mutates it each pass).
-        mv.start_state.robot_base_frame = copy.deepcopy(authored_base)
-        # Step 1: recompute IK from the LATEST mocap pose (Button 1:
-        # ik_live_base_for_selected_movement) so the arm goal is re-solved for
-        # wherever the base has settled this pass. Then Step 2 plans the transit.
-        if not monitor.ik_live_base_for_selected_movement():
-            monitor.get_logger().warn('Servoing: live-base IK failed; stopping.')
-            break
-
-        # Capture the constant target once (the authored frames the IK just
-        # solved to) and record the pre-execution baseline as iteration 0. Before
-        # the stop check below, so a stop at iteration 1 still reports its residual.
-        if target is None:
-            target = copy.deepcopy(monitor._last_ik_target_ee_frames)
-            if not target or 'left' not in target or 'right' not in target:
-                monitor.get_logger().warn('Servoing: no target EE frames; stopping.')
-                break
-            _record(0)
-
-        # Step 1b: is there anything left to ask for? Compare the flanges at the
-        # IK goal with the flanges right now. Below the convergence tolerance
-        # (pos_tol_mm, the same as the 'converged' check after a move) the arms
-        # are already where the plan would put them, and handing a randomised
-        # planner a zero-length problem is exactly what produced 127-waypoint
-        # sweeps of the bar that began and ended in the same place. Stop instead,
-        # leaving the movement loaded and the bar attached so 'Record + Fit +
-        # Viz' works straight away.
-        goal12 = np.concatenate([monitor.goal_arm_pose[0], monitor.goal_arm_pose[1]])
-        correction_mm = _planned_correction_mm(monitor, goal12)
-        if correction_mm is not None and max(correction_mm.values()) < pos_tol_mm:
-            monitor.get_logger().info(
-                f'### SERVOING stopped at iter {it}: nothing left to plan '
-                f'(correction L={correction_mm["left"]:.2f} R={correction_mm["right"]:.2f} mm, '
-                f'under {pos_tol_mm} mm).')
-            break
-
-        # Step 2: replan the move to that goal — a bar-held constrained transfer
-        # (Button 2b) when the bar is mounted, else a free transit (Button 2).
-        # The transfer safeguard plot is only worth showing on the first (large)
-        # move; later iterations are tiny near-target corrections, so suppress
-        # the validation plot there (it == 1 only).
-        if use_transfer:
-            # In the accuracy test iteration 1 is the long move onto the bar's
-            # target and may have to go around something, so it explores (the
-            # sampling planner). Every small correction is carried straight
-            # there, with both flanges locked to the bar.
-            monitor.replan_transfer_to_movement_start_live(
-                show_validation=(it == 1),
-                prefer_linear=(it >= prefer_linear_from_iter))
-        else:
-            monitor.replan_free_to_movement_start_live()
-
-        # Bail if IK / plan produced no usable trajectory. A path is missing when
-        # it is None OR empty. Use `is None` + `len(...)` (never bool(array)) so a
-        # numpy path never trips the "truth value of an array is ambiguous" error.
-        pat = monitor.planned_arm_trajectory
-        left_path, right_path = pat[0][0], pat[1][0]
-        if (left_path is None or len(left_path) == 0
-                or right_path is None or len(right_path) == 0):
-            monitor.get_logger().warn('Servoing: replan produced no trajectory; stopping.')
-            break
-
-        # The first transit is a big move from wherever the arms are now: pause
-        # (while still yielding, so the traj viz slider keeps previewing the
-        # planned path) until the operator clicks 'Confirm Servo Exec'. Later
-        # iterations are short near-target corrections and run unattended.
-        # Set the 'traj time' slider to a duration that suits how far this path
-        # really travels, before any pause, so a forgotten slider still runs at a
-        # sane speed -- and a drag during the pause still wins (the value is
-        # re-read live at send time).
-        n_waypoints, net_delta_deg, excursion_deg = _path_motion_summary(
-            monitor.planned_arm_trajectory)
-        _apply_recommended_traj_time(monitor, excursion_deg)
-
-        if it == 1 and confirm_first_iter:
-            yield from wait_for_operator_confirm(
-                monitor,
-                f"[servo] First move planned: {n_waypoints} waypoints, travels "
-                f"{excursion_deg:.1f} deg (ends {net_delta_deg:.1f} deg from "
-                f"where it starts), over {_live_trajectory_time(monitor):.0f} s. "
-                f"Preview it with the traj viz slider; drag 'traj time' now if "
-                f"that is too fast (it is re-read when you confirm), then click "
-                f"'Confirm Exec' to execute.")
-
-        # Abort requested during the confirm pause (or otherwise): stop before
-        # sending the first move to the robot.
-        if _aborted():
-            break
-
-        # * Safeguard: a plan that TRAVELS more than SERVO_EXCURSION_CONFIRM_DEG
-        # * needs operator confirmation. Judged on the excursion, never on the
-        # * waypoint count (a dense path can be harmless) nor on the first-to-last
-        # * delta (a path that swings out and returns reads 0 and is not).
-        if n_waypoints:
-            if excursion_deg > SERVO_EXCURSION_CONFIRM_DEG and (it > 1 or not confirm_first_iter):
-                yield from wait_for_operator_confirm(
-                    monitor,
-                    f'[servo] SAFEGUARD iter {it}: this path travels '
-                    f'{excursion_deg:.1f}° and ends {net_delta_deg:.1f}° from where '
-                    f'it starts ({n_waypoints} waypoints, over '
-                    f'{_live_trajectory_time(monitor):.0f} s). Scrub "Traj viz time" '
-                    f'to see it, adjust "traj time" if needed, then click '
-                    f'"Confirm Exec" -- or "Cancel Exec" to stop and record instead.',
-                    warn=True,
-                )
-                if _aborted():
-                    break
-
-        # Execution is starting now (the first move was confirmed above): expand
-        # the live tracker, which was kept collapsed during the preview. Later
-        # iterations stay visible across UI rebuilds via _servoing_tracker_visible.
-        if it == 1:
-            monitor.show_servoing_tracker()
-
-        # Every iteration uses the slider, re-read here so a drag made during the
-        # confirm pause counts. It was set to this path's recommended time above,
-        # so forgetting to touch it is safe; dragging it overrides.
-        traj_time = _live_trajectory_time(monitor)
-
-        # Execute both arms, then wait out the whole motion + a settle margin.
-        # ! We wait by TIME, not by hi.is_arm_executing: that flag clears after
-        # only ARM_NOT_EXECUTING_TIME (1 s) of no joint change, so a controller
-        # that is slow to start a motion trips it and the next iteration would
-        # fire while the arm is still moving. The trajectory was sent over
-        # traj_time, so waiting that long (+ settle) is reliable.
-        execute_arm_trajectory_both(monitor, traj_time)
-        tick_dt = 0.05  # matches the 20 Hz monitor tick that pumps this task
-        wait_ticks = int(np.ceil((traj_time + settle_seconds) / tick_dt))
-        for _ in range(wait_ticks):
-            # Abort stops the loop, but the trajectory already sent to the robot
-            # keeps running to completion (there is no in-flight cancel here).
+    # ! try/finally: the bar-corrected target and the drawing's reference pose
+    # ! must never outlive this run (a cancel, a stop, an error).
+    try:
+        for it in range(1, max_iters + 1):
             if _aborted():
                 break
-            yield
-        if _aborted():
-            break
+            monitor.get_logger().info(f'### SERVOING iteration {it}/{max_iters}')
+            # Clear any stale plan first so a failed replan (which returns without
+            # updating the trajectory) is detected below instead of re-executing the
+            # previous iteration's path.
+            monitor.planned_arm_trajectory[0] = (None, None, None, None)
+            monitor.planned_arm_trajectory[1] = (None, None, None, None)
+            # Restore the authored base so both the IK below and the replan derive the
+            # fixed authored target (Button 2's live-base step mutates it each pass).
+            mv.start_state.robot_base_frame = copy.deepcopy(authored_base)
+            # Step 1: recompute IK from the LATEST mocap pose (Button 1:
+            # ik_live_base_for_selected_movement) so the arm goal is re-solved for
+            # wherever the base has settled this pass. Then Step 2 plans the transit.
+            if not monitor.ik_live_base_for_selected_movement():
+                monitor.get_logger().warn('Servoing: live-base IK failed; stopping.')
+                break
 
-        # * Read the actual robot config from the live Husky interface, then
-        # * safeguard-check it against the executed trajectory's final point.
-        yield  # let monitor tick to ensure fresh joint state
-        try:
-            hi = monitor.huskies[monitor.selected_robot_id].interface
-            # Update start_state from live arm pose (same pattern as _apply_live_base_to_movement)
-            for i, names in enumerate(monitor._arm_joint_name_sets()):
-                values = hi.arm_joint_pose[i] if len(hi.arm_joint_pose) > i else hi.arm_joint_pose[0]
-                for n, v in zip(names, values):
-                    mv.start_state.robot_configuration[n] = float(v)
+            # Capture the constant target once (the authored frames the IK just
+            # solved to) and record the pre-execution baseline as iteration 0. Before
+            # the stop check below, so a stop at iteration 1 still reports its residual.
+            if target is None:
+                target = copy.deepcopy(monitor._last_ik_target_ee_frames)
+                if not target or 'left' not in target or 'right' not in target:
+                    monitor.get_logger().warn('Servoing: no target EE frames; stopping.')
+                    break
+                _record(0)
+                # * Bar loop: the MoCap bar already sits on its target -- nothing to
+                # * correct. The same stop test as after a move, so a bar that starts
+                # * within tolerance is never moved.
+                fb0 = data[-1].get('bar')
+                if bar_fb and fb0 is not None and fb0['usable']:
+                    dev0 = fb0['mocap_vs_design']
+                    if dev0['dpos_mm'] < SERVO_BAR_POS_TOL_MM and dev0['dang_deg'] < SERVO_BAR_ANG_TOL_DEG:
+                        log.info(f"### SERVOING stopped at iter {it}: the MoCap bar is already on its "
+                                 f"target (dpos {dev0['dpos_mm']:.2f} mm, dang {dev0['dang_deg']:.3f} deg, "
+                                 f"under {SERVO_BAR_POS_TOL_MM} mm / {SERVO_BAR_ANG_TOL_DEG} deg).")
+                        break
+                # * Bar loop: the first reading has just set a bar-corrected
+                # * target. Solve the IK again for it, so the check below and
+                # * this pass's plan already aim the bar.
+                if getattr(monitor, '_servo_ee_target_override', None) is not None:
+                    if not monitor.ik_live_base_for_selected_movement():
+                        log.warn('Servoing: live-base IK to the bar-corrected target failed; stopping.')
+                        break
 
-            # Safeguard: check numerical consistency with the executed trajectory.
-            # No "does a path exist?" guard here -- we only reach this point after
-            # the plan passed the checks above and was sent to the robot, so both
-            # arm paths are known to be present and non-empty. (The old guard did
-            # `if pat[0][0] ...`, which called bool() on a numpy path and raised
-            # "truth value of an array with more than one element is ambiguous".)
-            pat = monitor.planned_arm_trajectory
-            final_left = np.asarray(pat[0][0][-1], dtype=float)
-            final_right = np.asarray(pat[1][0][-1], dtype=float)
-            live_left = np.asarray(hi.arm_joint_pose[0], dtype=float)
-            live_right = np.asarray(hi.arm_joint_pose[1] if len(hi.arm_joint_pose) > 1 else hi.arm_joint_pose[0], dtype=float)
-
-            left_error = float(np.max(np.abs(final_left - live_left)))
-            right_error = float(np.max(np.abs(final_right - live_right)))
-            tol_rad = 0.05  # ~3 degrees; warning if larger
-
-            if left_error > tol_rad or right_error > tol_rad:
-                monitor.get_logger().warn(
-                    f'[servo] WARNING: execution mismatch iter {it}: '
-                    f'left {np.rad2deg(left_error):.1f}°, right {np.rad2deg(right_error):.1f}° '
-                    f'(traj vs live interface)'
-                )
-            else:
+            # Step 1b: is there anything left to ask for? Compare the flanges at the
+            # IK goal with the flanges right now. Below the convergence tolerance
+            # (pos_tol_mm, the same as the 'converged' check after a move) the arms
+            # are already where the plan would put them, and handing a randomised
+            # planner a zero-length problem is exactly what produced 127-waypoint
+            # sweeps of the bar that began and ended in the same place. Stop instead,
+            # leaving the movement loaded and the bar attached so 'Record + Fit +
+            # Viz' works straight away.
+            goal12 = np.concatenate([monitor.goal_arm_pose[0], monitor.goal_arm_pose[1]])
+            correction_mm = _planned_correction_mm(monitor, goal12)
+            if correction_mm is not None and max(correction_mm.values()) < pos_tol_mm:
+                # In the bar loop, also where the MoCap bar is: a small turn about the
+                # bar's own axis barely moves the flanges, so this stop can come before
+                # the bar's own tolerance is met.
+                last_fb = data[-1].get('bar') if data else None
+                bar_note = (f"; the MoCap bar is {_bar_dev_text(last_fb['mocap_vs_design'])} from its target"
+                            if bar_fb and bar_loop['engaged'] and last_fb is not None else '')
                 monitor.get_logger().info(
-                    f'[servo] Synced to live pose; consistency check OK '
-                    f'(L {np.rad2deg(left_error):.1f}°, R {np.rad2deg(right_error):.1f}°)'
+                    f'### SERVOING stopped at iter {it}: nothing left to plan '
+                    f'(correction L={correction_mm["left"]:.2f} R={correction_mm["right"]:.2f} mm, '
+                    f'under {pos_tol_mm} mm){bar_note}.')
+                break
+
+            # Step 2: replan the move to that goal — a bar-held constrained transfer
+            # (Button 2b) when the bar is mounted, else a free transit (Button 2).
+            # The transfer safeguard plot is only worth showing on the first (large)
+            # move; later iterations are tiny near-target corrections, so suppress
+            # the validation plot there (it == 1 only).
+            if use_transfer:
+                # In the accuracy test iteration 1 is the long move onto the bar's
+                # target and may have to go around something, so it explores (the
+                # sampling planner). Every small correction is carried straight
+                # there, with both flanges locked to the bar.
+                # ! linear_only is passed only when set: the plan skeleton smoke
+                # ! replaces this method with a stand-in of the old signature.
+                linear_kwargs = {'linear_only': True} if linear_only else {}
+                monitor.replan_transfer_to_movement_start_live(
+                    show_validation=(it == 1),
+                    prefer_linear=(it >= prefer_linear_from_iter), **linear_kwargs)
+            else:
+                monitor.replan_free_to_movement_start_live()
+
+            # Bail if IK / plan produced no usable trajectory. A path is missing when
+            # it is None OR empty. Use `is None` + `len(...)` (never bool(array)) so a
+            # numpy path never trips the "truth value of an array is ambiguous" error.
+            pat = monitor.planned_arm_trajectory
+            left_path, right_path = pat[0][0], pat[1][0]
+            if (left_path is None or len(left_path) == 0
+                    or right_path is None or len(right_path) == 0):
+                monitor.get_logger().warn('Servoing: replan produced no trajectory; stopping.')
+                break
+
+            # The first transit is a big move from wherever the arms are now: pause
+            # (while still yielding, so the traj viz slider keeps previewing the
+            # planned path) until the operator clicks 'Confirm Servo Exec'. Later
+            # iterations are short near-target corrections and run unattended.
+            # Set the 'traj time' slider to a duration that suits how far this path
+            # really travels, before any pause, so a forgotten slider still runs at a
+            # sane speed -- and a drag during the pause still wins (the value is
+            # re-read live at send time).
+            n_waypoints, net_delta_deg, excursion_deg = _path_motion_summary(
+                monitor.planned_arm_trajectory)
+            _apply_recommended_traj_time(monitor, excursion_deg)
+
+            if it == 1 and confirm_first_iter:
+                yield from wait_for_operator_confirm(
+                    monitor,
+                    f"[servo] First move planned: {n_waypoints} waypoints, travels "
+                    f"{excursion_deg:.1f} deg (ends {net_delta_deg:.1f} deg from "
+                    f"where it starts), over {_live_trajectory_time(monitor):.0f} s. "
+                    f"Preview it with the traj viz slider; drag 'traj time' now if "
+                    f"that is too fast (it is re-read when you confirm), then click "
+                    f"'Confirm Exec' to execute.")
+
+            # Abort requested during the confirm pause (or otherwise): stop before
+            # sending the first move to the robot.
+            if _aborted():
+                break
+
+            # * Safeguard: a plan that TRAVELS more than SERVO_EXCURSION_CONFIRM_DEG
+            # * needs operator confirmation. Judged on the excursion, never on the
+            # * waypoint count (a dense path can be harmless) nor on the first-to-last
+            # * delta (a path that swings out and returns reads 0 and is not).
+            if n_waypoints:
+                if excursion_deg > SERVO_EXCURSION_CONFIRM_DEG and (it > 1 or not confirm_first_iter):
+                    yield from wait_for_operator_confirm(
+                        monitor,
+                        f'[servo] SAFEGUARD iter {it}: this path travels '
+                        f'{excursion_deg:.1f}° and ends {net_delta_deg:.1f}° from where '
+                        f'it starts ({n_waypoints} waypoints, over '
+                        f'{_live_trajectory_time(monitor):.0f} s). Scrub "Traj viz time" '
+                        f'to see it, adjust "traj time" if needed, then click '
+                        f'"Confirm Exec" -- or "Cancel Exec" to stop and record instead.',
+                        warn=True,
+                    )
+                    if _aborted():
+                        break
+
+            # Execution is starting now (the first move was confirmed above): expand
+            # the live tracker, which was kept collapsed during the preview. Later
+            # iterations stay visible across UI rebuilds via _servoing_tracker_visible.
+            if it == 1:
+                monitor.show_servoing_tracker()
+
+            # Every iteration uses the slider, re-read here so a drag made during the
+            # confirm pause counts. It was set to this path's recommended time above,
+            # so forgetting to touch it is safe; dragging it overrides.
+            traj_time = _live_trajectory_time(monitor)
+
+            # Execute both arms, then wait out the whole motion + a settle margin.
+            # ! We wait by TIME, not by hi.is_arm_executing: that flag clears after
+            # only ARM_NOT_EXECUTING_TIME (1 s) of no joint change, so a controller
+            # that is slow to start a motion trips it and the next iteration would
+            # fire while the arm is still moving. The trajectory was sent over
+            # traj_time, so waiting that long (+ settle) is reliable.
+            execute_arm_trajectory_both(monitor, traj_time)
+            tick_dt = 0.05  # matches the 20 Hz monitor tick that pumps this task
+            wait_ticks = int(np.ceil((traj_time + settle_seconds) / tick_dt))
+            for _ in range(wait_ticks):
+                # Abort stops the loop, but the trajectory already sent to the robot
+                # keeps running to completion (there is no in-flight cancel here).
+                if _aborted():
+                    break
+                yield
+            if _aborted():
+                break
+
+            # * Read the actual robot config from the live Husky interface, then
+            # * safeguard-check it against the executed trajectory's final point.
+            yield  # let monitor tick to ensure fresh joint state
+            try:
+                hi = monitor.huskies[monitor.selected_robot_id].interface
+                # Update start_state from live arm pose (same pattern as _apply_live_base_to_movement)
+                for i, names in enumerate(monitor._arm_joint_name_sets()):
+                    values = hi.arm_joint_pose[i] if len(hi.arm_joint_pose) > i else hi.arm_joint_pose[0]
+                    for n, v in zip(names, values):
+                        mv.start_state.robot_configuration[n] = float(v)
+
+                # Safeguard: check numerical consistency with the executed trajectory.
+                # No "does a path exist?" guard here -- we only reach this point after
+                # the plan passed the checks above and was sent to the robot, so both
+                # arm paths are known to be present and non-empty. (The old guard did
+                # `if pat[0][0] ...`, which called bool() on a numpy path and raised
+                # "truth value of an array with more than one element is ambiguous".)
+                pat = monitor.planned_arm_trajectory
+                final_left = np.asarray(pat[0][0][-1], dtype=float)
+                final_right = np.asarray(pat[1][0][-1], dtype=float)
+                live_left = np.asarray(hi.arm_joint_pose[0], dtype=float)
+                live_right = np.asarray(hi.arm_joint_pose[1] if len(hi.arm_joint_pose) > 1 else hi.arm_joint_pose[0], dtype=float)
+
+                left_error = float(np.max(np.abs(final_left - live_left)))
+                right_error = float(np.max(np.abs(final_right - live_right)))
+                tol_rad = 0.05  # ~3 degrees; warning if larger
+
+                if left_error > tol_rad or right_error > tol_rad:
+                    monitor.get_logger().warn(
+                        f'[servo] WARNING: execution mismatch iter {it}: '
+                        f'left {np.rad2deg(left_error):.1f}°, right {np.rad2deg(right_error):.1f}° '
+                        f'(traj vs live interface)'
+                    )
+                else:
+                    monitor.get_logger().info(
+                        f'[servo] Synced to live pose; consistency check OK '
+                        f'(L {np.rad2deg(left_error):.1f}°, R {np.rad2deg(right_error):.1f}°)'
+                    )
+
+                # * The same check expressed at the TOOL FLANGE, in millimetres, at
+                # * the live base. Read this next to the '[servo N] tool0 pos' line
+                # * that follows: a small gap here with a large tool0-vs-target
+                # * error means the arms tracked their command and the world moved
+                # * under them (base / mocap), while a large gap here means the
+                # * arms simply did not arrive.
+                track = measure_arm_tracking_tool0_error(
+                    monitor, [final_left, final_right])
+                monitor.get_logger().info(
+                    f"[servo {it}] arms vs last commanded waypoint: "
+                    f"L={track['left']:.2f} R={track['right']:.2f} mm"
                 )
+            except Exception as e:
+                monitor.get_logger().warn(f'[servo] Failed to sync live config: {e}')
 
-            # * The same check expressed at the TOOL FLANGE, in millimetres, at
-            # * the live base. Read this next to the '[servo N] tool0 pos' line
-            # * that follows: a small gap here with a large tool0-vs-target
-            # * error means the arms tracked their command and the world moved
-            # * under them (base / mocap), while a large gap here means the
-            # * arms simply did not arrive.
-            track = measure_arm_tracking_tool0_error(
-                monitor, [final_left, final_right])
-            monitor.get_logger().info(
-                f"[servo {it}] arms vs last commanded waypoint: "
-                f"L={track['left']:.2f} R={track['right']:.2f} mm"
-            )
-        except Exception as e:
-            monitor.get_logger().warn(f'[servo] Failed to sync live config: {e}')
-
-        err = _record(it)
-        if max(err['left']['pos_norm_mm'], err['right']['pos_norm_mm']) < pos_tol_mm:
-            monitor.get_logger().info(
-                f'### SERVOING converged at iter {it} (< {pos_tol_mm} mm)')
-            break
+            err = _record(it)
+            fb = data[-1].get('bar')
+            # * 1. Load guard: a force at a flange that has changed since the first
+            # * reading means the arms push the bar against something (the floor,
+            # * after a grounded insert). The change of the force VECTOR, whichever
+            # * way it points (see _force_vectors for why not the magnitude).
+            change = data[-1].get('force_change_N')
+            if max_load_rise_N is not None and change:
+                worst = max(change.values())
+                if worst > max_load_rise_N:
+                    log.warn(f'### SERVOING stopped at iter {it}: the force on an arm changed by '
+                             f'{worst:.1f} N since iter 0 (limit {max_load_rise_N:.0f} N); the bar may '
+                             f'be pushed against something.')
+                    break
+            # * 2. Bar loop: converged on the MoCap bar, or its fit is lost.
+            if bar_fb and bar_loop['engaged']:
+                if fb is None or not fb['usable']:
+                    log.warn(f"### SERVOING stopped at iter {it}: the MoCap bar fit is lost "
+                             f"({fb['reason'] if fb is not None else 'not measured'}); the arms stay at "
+                             f"the last bar-corrected pose.")
+                    break
+                dev = fb['mocap_vs_design']
+                if dev['dpos_mm'] < SERVO_BAR_POS_TOL_MM and dev['dang_deg'] < SERVO_BAR_ANG_TOL_DEG:
+                    log.info(f"### SERVOING converged on the MoCap bar at iter {it}: dpos "
+                             f"{dev['dpos_mm']:.2f} mm, dang {dev['dang_deg']:.3f} deg (< "
+                             f"{SERVO_BAR_POS_TOL_MM} mm / {SERVO_BAR_ANG_TOL_DEG} deg)")
+                    break
+            # * 3. Otherwise tool0 on the authored target, as before.
+            elif max(err['left']['pos_norm_mm'], err['right']['pos_norm_mm']) < pos_tol_mm:
+                if bar_fb:
+                    log.info(f'### SERVOING converged at iter {it} on tool0 (< {pos_tol_mm} mm): '
+                             f'the MoCap bar fit was never usable, so the loop aimed tool0.')
+                else:
+                    monitor.get_logger().info(
+                        f'### SERVOING converged at iter {it} (< {pos_tol_mm} mm)')
+                break
+        else:
+            # Every iteration ran and none of the stops above fired.
+            log.info(f'### SERVOING ran all {max_iters} iterations without converging.')
+    finally:
+        monitor._servo_ee_target_override = None
+        if bar_name:
+            monitor._own_dict('_mocap_bar_reference').pop(bar_name, None)
 
     if _aborted():
         monitor.get_logger().info('### SERVOING cancelled by user.')
@@ -2272,15 +2648,34 @@ def servo_to_movement_start_live(monitor, max_iters=8, pos_tol_mm=0.2,
     # Leave the movement's authored base restored (clean) for downstream users.
     mv.start_state.robot_base_frame = authored_base
 
+    # * Where the bar ended up, as FK and MoCap see it (the last reading of it).
+    last_bar = next((d['bar'] for d in reversed(data) if 'bar' in d), None)
+    if last_bar is not None:
+        log.info(f"### bar pose at termination ({last_bar['bar']}): FK-vs-design "
+                 f"{_bar_dev_text(last_bar['fk_vs_design'])}, MoCap-vs-design "
+                 f"{_bar_dev_text(last_bar['mocap_vs_design'])}, MoCap-vs-FK "
+                 f"{_bar_dev_text(last_bar['mocap_vs_fk'])}")
+    # * The bar loop stood the insert's start on the MoCap bar: its plan makes the
+    # * authored move from there (monitor._carried_insert_goal).
+    if bar_fb and bar_loop['engaged'] and monitor._kind_of(mv) is MovementKind.DUAL_CONSTRAINED_LINEAR:
+        monitor._servo_bar_carry = mv.movement_id
+        log.info(f"[servo] the MoCap-bar correction is carried into the plan of {mv.movement_id}.")
+
     # Save only when at least one move ran (baseline + >=1 executed iteration).
     # A run cancelled during the confirm pause has just the baseline point and
-    # isn't worth a record.
-    if log_data and len(data) > 1:
+    # isn't worth a record -- unless the MoCap bar was measured: that one reading
+    # is still the FK-vs-MoCap comparison of where the run left the bar.
+    if log_data and (len(data) > 1 or any('bar' in d for d in data)):
+        planner_mode = 'transfer' if use_transfer else 'free'
+        # * The bar-mode label only when the loop really aimed the bar (a usable fit
+        # * came): a run whose fit never came aimed tool0 and belongs with those.
+        if bar_fb and bar_loop['engaged']:
+            planner_mode = 'transfer+mocap_bar'
         # ! A missing drive must not raise inside the task: an exception there
         # ! stops the monitor tick.
         try:
             _save_servoing_data(monitor, data,
-                                planner_mode='transfer' if use_transfer else 'free',
+                                planner_mode=planner_mode,
                                 root_dir=log_dir, label=log_label,
                                 movement_id=mv.movement_id)
         except Exception as e:
@@ -2303,7 +2698,11 @@ def _save_servoing_data(monitor, data, planner_mode='free',
             'iter', 'tool0' (per-side pos/rot error) and 'base' (base drift).
         planner_mode (str): 'free' (transit, no bar) or 'transfer' (bar-held
             constrained) — recorded in the JSON so offline analysis can tell
-            the two run kinds apart.
+            the two run kinds apart; 'transfer+mocap_bar' when the loop aimed
+            the MoCap bar (the JSON's ``servo_feedback`` is then
+            ``'mocap_bar'``, else ``'tool0'``). Records carrying ``'bar'`` (the
+            MoCap bar reading) also name the bar (``bar_name``) and add the
+            bar's deviation curves to the top two panels.
         root_dir (str): Folder the dated subfolder goes in.
         label (str): File name prefix: ``<label>_data_<ts>.json`` and
             ``<label>_performance_<ts>.png``.
@@ -2314,8 +2713,12 @@ def _save_servoing_data(monitor, data, planner_mode='free',
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
 
     data_filename = os.path.join(subfolder, f'{label}_data_{timestamp}.json')
+    # * The MoCap bar readings, when the run had them (servo_to_movement_start_live's rec['bar']).
+    bar_records = [d for d in data if 'bar' in d]
     with open(data_filename, 'w') as f:
         json.dump({'planner_mode': planner_mode, 'movement_id': movement_id,
+                   'servo_feedback': 'mocap_bar' if planner_mode.endswith('+mocap_bar') else 'tool0',
+                   'bar_name': bar_records[0]['bar']['bar'] if bar_records else None,
                    'servoing_data': data}, f, indent=2)
     monitor.get_logger().info(f'Servoing data saved to {data_filename}')
 
@@ -2338,6 +2741,18 @@ def _save_servoing_data(monitor, data, planner_mode='free',
         return tuple(v / 255.0 for v in side_rgb[side][a])
     def _base_color(a):
         return tuple(v / 255.0 for v in SERVO_BASE_RGB[a])
+    def _bar_curve(key: str, field: str) -> list:
+        """One number of a bar deviation per bar reading, for a plot line.
+
+        Args:
+            key (str): The deviation, e.g. ``'mocap_vs_design'``.
+            field (str): Its number, ``'dpos_mm'`` or ``'dang_deg'``.
+
+        Returns:
+            list: One float per bar reading; NaN (a gap in the line) without a MoCap fit.
+        """
+        return [d['bar'][key][field] if d['bar'].get(key) is not None else np.nan for d in bar_records]
+    bar_iters = [d['iter'] for d in bar_records]
 
     fig = Figure(figsize=(13, 9))
     FigureCanvasAgg(fig)
@@ -2352,6 +2767,12 @@ def _save_servoing_data(monitor, data, planner_mode='free',
         axes[0, 0].plot(iters, [d['tool0'][side]['pos_norm_mm'] for d in data],
                         'o-', linewidth=2.2, color=_arm_color(side, 3),
                         label=f'{side.capitalize()} |d|')
+    # * The held bar vs its target pose: MoCap dashed, FK dotted.
+    if bar_records:
+        axes[0, 0].plot(bar_iters, _bar_curve('mocap_vs_design', 'dpos_mm'), 'o--', color='k',
+                        label='bar dpos (MoCap vs design)')
+        axes[0, 0].plot(bar_iters, _bar_curve('fk_vs_design', 'dpos_mm'), 'o:', color='0.45',
+                        label='bar dpos (FK vs design)')
     axes[0, 0].set_title('Tool0 position error (per axis + |d|)')
     axes[0, 0].set_xlabel('iteration'); axes[0, 0].set_ylabel('mm')
     axes[0, 0].legend(fontsize=7, ncol=2); axes[0, 0].grid(True)
@@ -2362,6 +2783,11 @@ def _save_servoing_data(monitor, data, planner_mode='free',
             axes[0, 1].plot(iters, [d['tool0'][side]['rot_err_deg'][a] for d in data],
                             'o-', color=_arm_color(side, a),
                             label=f'{side.capitalize()} {ax_name}')
+    if bar_records:
+        axes[0, 1].plot(bar_iters, _bar_curve('mocap_vs_design', 'dang_deg'), 'o--', color='k',
+                        label='bar dang (MoCap vs design)')
+        axes[0, 1].plot(bar_iters, _bar_curve('fk_vs_design', 'dang_deg'), 'o:', color='0.45',
+                        label='bar dang (FK vs design)')
     axes[0, 1].set_title('Tool0 orientation error (per axis)')
     axes[0, 1].set_xlabel('iteration'); axes[0, 1].set_ylabel('deg')
     axes[0, 1].legend(fontsize=7, ncol=2); axes[0, 1].grid(True)
@@ -5457,9 +5883,15 @@ def execute_transfer_then_servo(monitor):
     # ! (_apply_recommended_traj_time).
     traj_time = float(monitor.trajectory_time) or 5.0
     as_free_move = monitor._transfer_as_free_move()
+    bar_feedback = monitor.servo_bar_feedback_ticked()
     insert_idx = monitor._loaded_index_of(MovementKind.DUAL_CONSTRAINED_LINEAR)
+    # ! A new transfer moves the insert's start: a MoCap-bar correction carried from
+    # ! an earlier servo no longer applies (the servo below carries it again when it
+    # ! aims the bar).
+    monitor._servo_bar_carry = None
     planned_end12 = np.concatenate([
         np.asarray(monitor.planned_arm_trajectory[i][0][-1], dtype=float) for i in range(2)])
+    log.info(f"{tag} servo feedback: {'MoCap bar' if bar_feedback else 'tool0'}")
 
     # * 1. The transfer itself, exactly as before.
     yield from execute_arm_trajectory_all_and_wait(monitor, traj_time, SERVO_SETTLE_SECONDS)
@@ -5494,7 +5926,7 @@ def execute_transfer_then_servo(monitor):
             confirm_first_iter=True, use_transfer=True, prefer_linear_from_iter=1,
             show_tracker_at_start=True,
             log_data=True, log_dir=BAR_ACTION_LIVE_REPLAN_EXE_DIR,
-            log_label=f'{insert.movement_id}_servoing')
+            log_label=f'{insert.movement_id}_servoing', bar_feedback=bar_feedback)
     except Exception as e:
         # ! The task loop catches StopIteration only: any other exception would
         # ! stop the monitor tick.
@@ -5503,6 +5935,107 @@ def execute_transfer_then_servo(monitor):
     # * 4. Where the arms really are becomes the transfer's end and the insert's
     # * start (also after a cancel: a partial correction is still carried).
     monitor._adopt_servo_corrected_end(transfer_idx, planned_end12, as_free_move=as_free_move)
+
+
+def execute_grounded_insert_then_servo(monitor):
+    """Run a grounded bar's insert, then servo the bar onto its assembled pose.
+
+    A grounded bar (B1, B20, ...) stands on the floor at the end of its insert:
+    there is no joint to mate with, so its design pose IS the goal. After the
+    insert (``execute_planned_trajectory_compliant``: rigid, no tighten) this
+    loads the next step, whose start is the insert's authored end, and runs
+    the servo loop on it (``servo_to_movement_start_live``): straight-line
+    corrections only, and a load guard (``SERVO_CONTACT_MAX_LOAD_RISE_N``)
+    because the bar touches the floor. It aims the MoCap bar when the panel's
+    'Servo: aim grounded bar by MoCap' box is ticked, else tool0.
+
+    The servo is skipped, with a log line, after 'Cancel Exec', when the flanges
+    stopped more than ``GROUNDED_INSERT_END_TOL_MM`` from the insert's end,
+    without real hardware or a mocap-tracked base, and when no step right after
+    the insert starts at its end. The caller (``_exec_then_propagate``) then
+    carries where the arms really are forward; nothing after a cancel of the
+    insert itself, but after a cancel during the servo it does (the insert had
+    finished).
+
+    Args:
+        monitor (HuskyMonitor): The grounded insert loaded and planned (the exec
+            button checked it), its trajectory in ``planned_arm_trajectory``.
+
+    Yields:
+        None: One yield per monitor tick.
+    """
+    log = monitor.get_logger()
+    insert, insert_idx = monitor.current_movement, monitor.current_movement_index
+    tag = f'[insert {insert.movement_id}]'
+    # ! Read these BEFORE anything rebuilds the panel (the servo's IK does) or
+    # ! clears the staged trajectory.
+    bar_feedback = monitor.servo_bar_feedback_ticked()
+    planned_end12 = np.concatenate([
+        np.asarray(monitor.planned_arm_trajectory[i][0][-1], dtype=float) for i in range(2)])
+
+    # * 1. The insert itself, exactly as before.
+    yield from execute_planned_trajectory_compliant(monitor)
+
+    # * 2. Servo only after an insert that finished, on a real robot whose base mocap tracks.
+    if getattr(monitor, '_exec_cancelled', False):
+        log.info(f"{tag} 'Cancel Exec': no servo after the insert.")
+        return
+    if monitor.FAKE_HARDWARE or not monitor._base_pose_is_tracked():
+        why = 'FAKE_HARDWARE' if monitor.FAKE_HARDWARE else 'the base is not tracked by mocap'
+        log.info(f"{tag} servo after the insert skipped ({why}).")
+        return
+    next_idx = insert_idx + 1
+    movements = monitor._loaded_movements
+    next_mv = movements[next_idx] if next_idx < len(movements) else None
+    if next_mv is None or not monitor._servo_target_ok(next_mv, next_idx):
+        log.info(f"{tag} servo after the insert skipped: no step after it in this action "
+                 f"starts at the insert's end.")
+        return
+    # ! "Finished" is judged at the flanges, in mm: the insert is only 15 mm, a
+    # ! few hundredths of a radian at the joints, so a joint tolerance cannot tell
+    # ! an insert that never ran (e.g. the wrong controller) from one that did.
+    # ! Checked last: it needs the drawn live robot, as the servo itself does.
+    try:
+        gap = measure_arm_tracking_tool0_error(monitor, [planned_end12[:6], planned_end12[6:]])
+        off_mm = max(gap.values())
+    except Exception as e:
+        log.warn(f"{tag} could not check where the insert ended ({e}): no servo after it.")
+        return
+    if off_mm > GROUNDED_INSERT_END_TOL_MM:
+        log.warn(f"{tag} the flanges stopped {off_mm:.1f} mm from the end of the insert (limit "
+                 f"{GROUNDED_INSERT_END_TOL_MM} mm): no servo after it.")
+        return
+
+    # * 3. The servo works on the LOADED movement: load the step after the insert.
+    monitor.load_selected_movement(index=next_idx)   # not refused: this task is the running one
+    log.info(f"{tag} servo to the start of {next_mv.movement_id} (the insert's end), feedback: "
+             f"{'MoCap bar' if bar_feedback else 'tool0'}; straight-line corrections only.")
+    if _wrench_magnitudes(monitor) is None:
+        log.warn(f"{tag} no force reading: the servo's load guard is OFF. Watch the arms and use "
+                 f"'Cancel Exec' if the bar pushes on the floor.")
+    try:
+        yield from servo_to_movement_start_live(
+            monitor, max_iters=8, pos_tol_mm=0.2, settle_seconds=SERVO_SETTLE_SECONDS,
+            confirm_first_iter=True, use_transfer=True, prefer_linear_from_iter=1,
+            show_tracker_at_start=True,
+            log_data=True, log_dir=BAR_ACTION_LIVE_REPLAN_EXE_DIR,
+            log_label=f'{insert.movement_id}_end_servoing',
+            bar_feedback=bar_feedback, linear_only=True,
+            max_load_rise_N=SERVO_CONTACT_MAX_LOAD_RISE_N)
+    except Exception as e:
+        # ! The task loop catches StopIteration only: any other exception would
+        # ! stop the monitor tick.
+        log.error(f"{tag} servo after the insert failed: {e}")
+
+    # * 4. Nothing staged is left for 'Exec' to replay (the last correction path).
+    monitor._reset_planned_arm_trajectory()
+    # ! A 'Cancel Exec' during this servo stops the servo, not the insert, which had
+    # ! finished: where the arms are now is still carried forward by the caller
+    # ! (_exec_then_propagate carries nothing after a cancel).
+    if getattr(monitor, '_exec_cancelled', False):
+        monitor._exec_cancelled = False
+        log.info(f"{tag} 'Cancel Exec' during the servo after the insert: the insert itself had "
+                 f"finished, so where the arms are now is carried forward.")
 
 
 def _single_arm_tool0_at(monitor, conf6) -> tuple:

@@ -57,7 +57,9 @@ compliant exec runs on the stub. B1's insert (a grounded bar: ground joints in
 the tools) through 'Exec Selected Mv Traj' to its end: one joint trajectory for
 both arms with the whole path, only the motor stops, no compliance controller,
 no wait for the joint motors to stall, the 'grounded bar' lines, and its
-tighten step logged as not sent (Rhino note D9).
+tighten step logged as not sent (Rhino note D9). The exec goes through
+``husky_world.execute_grounded_insert_then_servo``, whose servo after the
+insert is skipped here (no step after B1's insert in its action), said once.
 
 Then the one-sided insert check (its own Cindy monitor, action 2): B3's insert
 mates on the left arm only (the right male's female sits on staging bar B2).
@@ -703,7 +705,8 @@ def select_movement(monitor, idx: int):
 # ! attached (J 1, J 2, J 4, R 0) preview as 'bar_held': the bar is drawn in the tools.
 # ! B1 (action 0) is a GROUNDED bar (held on its ground joints at the insert): its
 # ! insert runs rigid and never tightens, so J 5 sends no tool command; the
-# ! exported tighten step (J 4) is an export defect (Rhino note D9).
+# ! exported tighten step (J 4) is an export defect (Rhino note D9). Its exec
+# ! runs the insert, then the servo after it (execute_grounded_insert_then_servo).
 # ! grounded_insert_check covers the grounded insert; one_sided_insert_check a
 # ! one-sided one (B3: only the mating arm's joint motor tightens, Rhino note D10).
 DISPATCH_FIELDS = ('movement', 'planner', 'exec', 'tool_cmd', 'traj_time', 'starts_live', 'preview')
@@ -713,7 +716,7 @@ DISPATCH_EXPECTED = {
     ('J', 2): ('J_M2_tool_grasp_bar', 'none', '-', '-', None, False, 'bar_held'),
     ('J', 3): ('J_M3_CDFM_transfer_to_approach', 'transfer', 'transfer_servo', '-', 10, False, 'bar_held'),
     ('J', 4): ('J_M4_tool_tighten_joint', 'none', '-', '-', None, False, 'bar_held'),
-    ('J', 5): ('J_M5_LM_insert', 'insert', 'compliant', 'none sent', 5, False, 'bar_held'),
+    ('J', 5): ('J_M5_LM_insert', 'insert', 'grounded_insert_servo', 'none sent', 5, False, 'bar_held'),
     ('R', 0): ('R_M0_tool_untighten_joint', 'none', '-', '-', None, True, 'bar_held'),
     ('R', 1): ('R_M1_tool_ungrasp_bar', 'none', '-', '-', None, True, 'free'),
     ('R', 2): ('R_M2_LM_retreat', 'retreat', 'compliant', 'loosen_gripper', 5, True, 'free'),
@@ -812,6 +815,7 @@ def dispatch_check(results: Results, problem: str, root: str, skeleton) -> None:
     # * monitor queues what it returns as a task).
     exec_labels = {
         'execute_planned_trajectory_compliant': ('compliant', True),
+        'execute_grounded_insert_then_servo': ('grounded_insert_servo', True),
         'execute_trajectory_and_zero_ft': ('zero_ft', True),
         'execute_transfer_then_servo': ('transfer_servo', True),
         'execute_arm_trajectory_both': ('arm_both', False),
@@ -879,7 +883,8 @@ def dispatch_check(results: Results, problem: str, root: str, skeleton) -> None:
                     monitor.exec_selected_movement_traj()
                     run_tasks(monitor, iface)
                     exec_label = '+'.join(called) or 'none'
-                    if exec_label == 'compliant':
+                    # A grounded insert's wrapper runs this same compliant exec first.
+                    if exec_label in ('compliant', 'grounded_insert_servo'):
                         tool_cmd = tool_command_sent(monitor, iface, real_compliant)
                 recorded = (mv.movement_id.split('_', 1)[1], planners[idx], exec_label, tool_cmd,
                             traj_time, idx in monitor._live_start_indices,
@@ -1461,8 +1466,11 @@ def grounded_insert_check(results: Results, problem: str, root: str, skeleton) -
     compliance controller; (b) it ends with its motion (no wait for the joint
     motors to stall) and logs both 'grounded bar' lines; (c) the exec says the
     absorbed tighten step is not sent (Rhino note D9) and, when the export asks
-    for another controller, that it runs joint tracking. A normal bar's insert
-    is checked by ``one_sided_insert_check``.
+    for another controller, that it runs joint tracking; (d) the exec goes
+    through ``husky_world.execute_grounded_insert_then_servo``, whose servo
+    after the insert is skipped with one line (no step after B1's insert in
+    its action) and never starts. A normal bar's insert is checked by
+    ``one_sided_insert_check``.
 
     Args:
         results (Results): Where the checks go.
@@ -1531,6 +1539,17 @@ def grounded_insert_check(results: Results, problem: str, root: str, skeleton) -
             and len(ctrl_warns) == want_warns
             and all(w.endswith(f"under {CONTROLLER_JOINT_TRACKING}.") for w in ctrl_warns),
             f"notes {notes}, tool step lines {tool_lines}, controller warnings {ctrl_warns}")
+
+        # * --- (d) the servo after the insert: skipped, B1's insert is its action's last step
+        skipped = log.since(n_log, 'info', 'servo after the insert skipped')
+        servo_runs = log.since(n_log, 'info', '### SERVOING iteration')
+        results.check(
+            f"grounded insert: after {mv.movement_id} the servo after the insert is skipped "
+            f"(no step after it in {grounded.action_id}), said once, no servo iteration",
+            len(skipped) == 1 and 'no step after it' in skipped[0] and not servo_runs
+            and monitor.current_movement is mv,
+            f"skip lines {skipped}, servo iterations {len(servo_runs)}, loaded "
+            f"{monitor.current_movement.movement_id if monitor.current_movement else None}")
     finally:
         monitor.cfab.close()
 

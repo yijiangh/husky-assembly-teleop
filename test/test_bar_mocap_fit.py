@@ -15,9 +15,9 @@ import pytest
 
 from husky_assembly_teleop import DESIGN_DATA_DIRECTORY, EXPERIMENT_DATA_DIRECTORY
 from husky_assembly_teleop.bar_mocap_fit import (
-    MOCAP_MARKERS_FILENAME, BarMarkers, DesignMarker, MoCapMarkersError, bar_slide_roll, design_bar_axis_endpoints,
-    fake_sensed_markers, fit_bar_from_cache, kabsch, load_mocap_markers, match_and_fit, pose_deviation,
-    transform_points,
+    MOCAP_MARKERS_FILENAME, BarMarkers, DesignMarker, MoCapMarkersError, apply_authored_move, bar_servo_correction,
+    bar_slide_roll, design_bar_axis_endpoints, fake_sensed_markers, fit_bar_from_cache, kabsch, load_mocap_markers,
+    match_and_fit, pose_deviation, transform_points,
 )
 
 # * The real B20 (1.8 m) of 261016_2ModulesDemo_YH: four T20_MoCap joints, two
@@ -561,6 +561,78 @@ def test_axis_endpoints():
     ends = design_bar_axis_endpoints(T, 1.8)
     assert ends[0] == pytest.approx(T[:3, 3])
     assert ends[1] == pytest.approx(T[:3, 3] + 1.8 * T[:3, 2])
+
+
+# * ------------------------------------------------- servo on the MoCap bar
+
+def small_rigid(offset_mm: float, angle_deg: float, seed: int) -> np.ndarray:
+    """A small rigid move: ``offset_mm`` along a random direction, ``angle_deg`` about a random axis.
+
+    Args:
+        offset_mm (float): Length of the translation, mm.
+        angle_deg (float): Rotation angle, degrees.
+        seed (int): Random seed.
+
+    Returns:
+        np.ndarray: 4x4 proper rigid transform.
+    """
+    rng = np.random.default_rng(seed)
+    axis, direction = rng.normal(size=3), rng.normal(size=3)
+    axis, direction = axis / np.linalg.norm(axis), direction / np.linalg.norm(direction)
+    # Rodrigues: R = I + sin(a) K + (1 - cos(a)) K^2, K the cross-product matrix of the axis.
+    K = np.array([[0.0, -axis[2], axis[1]], [axis[2], 0.0, -axis[0]], [-axis[1], axis[0], 0.0]])
+    angle = np.radians(angle_deg)
+    T = np.eye(4)
+    T[:3, :3] = np.eye(3) + np.sin(angle) * K + (1.0 - np.cos(angle)) * K @ K
+    T[:3, 3] = direction * offset_mm / 1000.0
+    return T
+
+
+def test_bar_servo_correction_carries_the_measured_bar_onto_the_design():
+    """``T_corr @ T_mocap`` is the design pose."""
+    T_mocap, T_design = random_rigid(21), random_rigid(22)
+    T_corr = bar_servo_correction(T_mocap, T_design)
+    assert T_corr @ T_mocap == pytest.approx(T_design, abs=1e-12)
+
+
+def test_apply_authored_move():
+    """From the authored start it lands on the authored end; a pure translation stays one."""
+    T_start, T_end = random_rigid(31), random_rigid(32)
+    assert apply_authored_move(T_start, T_end, T_start) == pytest.approx(T_end, abs=1e-12)
+
+    # The insert: 15 mm straight down in world, from a flange 3 mm / 0.1 deg off the authored start.
+    down = np.eye(4)
+    down[2, 3] = -0.015
+    T_actual = small_rigid(3.0, 0.1, 33) @ T_start
+    moved = apply_authored_move(T_start, down @ T_start, T_actual)
+    assert moved[:3, :3] == pytest.approx(T_actual[:3, :3], abs=1e-12)
+    assert moved[:3, 3] - T_actual[:3, 3] == pytest.approx([0.0, 0.0, -0.015], abs=1e-12)
+
+
+def test_one_servo_step_closes_on_the_bar():
+    """One step: flanges moved by ``T_corr`` put the held bar on its design pose, the grasp kept.
+
+    The model (FK) is off by an unknown flange error E per arm (tool mount, grasp):
+    the real flange is ``T_fk @ E``, so MoCap reads the bar at ``T_fk_left @ E_left @ A``.
+    The IK puts the model flanges on ``T_corr @ T_fk``; the real bar then lands on the design.
+    """
+    T_design = random_rigid(41)
+    A = random_rigid(42)                                      # left tool0 -> bar (the grasp)
+    E_left, E_right = small_rigid(3.0, 0.1, 43), small_rigid(2.0, 0.2, 44)
+    # Where the model puts the flanges now: 20 mm / 1 deg off the design, the right one 1.4 m away.
+    T_fk_left = small_rigid(20.0, 1.0, 45) @ T_design @ np.linalg.inv(A)
+    T_fk_right = T_fk_left @ random_rigid(46)
+    T_mocap = T_fk_left @ E_left @ A
+    assert pose_deviation(T_mocap, T_design).dpos_mm > 5.0
+
+    T_corr = bar_servo_correction(T_mocap, T_design)
+    new_left, new_right = T_corr @ T_fk_left, T_corr @ T_fk_right
+    after = pose_deviation(new_left @ E_left @ A, T_design)
+    assert after.dpos_mm == pytest.approx(0.0, abs=1e-9) and after.dang_deg == pytest.approx(0.0, abs=1e-6)
+    # The real right flange seen from the real left one: unchanged (the bar is not strained).
+    held_before = np.linalg.inv(T_fk_left @ E_left) @ (T_fk_right @ E_right)
+    held_after = np.linalg.inv(new_left @ E_left) @ (new_right @ E_right)
+    assert held_after == pytest.approx(held_before, abs=1e-9)
 
 
 # * ------------------------------------------------- the real 2ModulesDemo sidecar (case 16)

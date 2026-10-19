@@ -30,6 +30,8 @@ What is here:
   bar moved too far for that
 - `pose_deviation(T_meas, T_design)` -> how far the measured bar is from its
   designed pose, in the designed bar's frame (x, y across the bar, z along it)
+- `bar_servo_correction(T_mocap, T_design)`, `apply_authored_move(...)` -> the
+  servo loop's correction on the MoCap bar, and the insert carried from it
 - `fake_sensed_markers(...)` -> a made-up marker snapshot for a desk rehearsal
 - `kabsch`, `transform_points`, `design_bar_axis_endpoints`, `bar_slide_roll`
   -> small geometry helpers
@@ -472,6 +474,43 @@ def pose_deviation(T_meas: np.ndarray, T_design: np.ndarray) -> PoseDeviation:
                          dang_deg=float(np.linalg.norm(rotvec_bar_deg)),
                          dpos_world_mm=dpos_world_mm, dpos_bar_mm=T_rel[:3, 3] * 1000.0,
                          rotvec_bar_deg=rotvec_bar_deg)
+
+
+def bar_servo_correction(T_mocap_bar: np.ndarray, T_design_bar: np.ndarray) -> np.ndarray:
+    """The world-frame move that carries the measured bar onto its design pose.
+
+    * The servo loop applies it to both flanges (``T_corr @ T_flange``): one
+    * rigid move for the whole held bar, so the grasp actually held is kept.
+
+    Args:
+        T_mocap_bar (np.ndarray): 4x4 bar pose measured by MoCap, in world.
+        T_design_bar (np.ndarray): 4x4 bar pose the servo aims at, in world.
+
+    Returns:
+        np.ndarray: 4x4 ``T_corr = T_design @ inv(T_mocap)``, so ``T_corr @ T_mocap == T_design``.
+    """
+    return np.asarray(T_design_bar, dtype=float) @ np.linalg.inv(np.asarray(T_mocap_bar, dtype=float))
+
+
+def apply_authored_move(T_start_authored: np.ndarray, T_end_authored: np.ndarray,
+                        T_start_actual: np.ndarray) -> np.ndarray:
+    """The authored world-frame move of a flange, done from where the flange actually starts.
+
+    * The insert after a MoCap-bar servo: the flanges stand where the servo put
+    * them (not on the authored start), and the insert must still make the
+    * authored move (e.g. 15 mm straight down) from there.
+
+    Args:
+        T_start_authored (np.ndarray): 4x4 authored start pose, in world.
+        T_end_authored (np.ndarray): 4x4 authored end pose, in world.
+        T_start_actual (np.ndarray): 4x4 actual start pose, in world.
+
+    Returns:
+        np.ndarray: 4x4 ``T_end_authored @ inv(T_start_authored) @ T_start_actual``;
+        equal to ``T_end_authored`` when the actual start is the authored one.
+    """
+    T_move = np.asarray(T_end_authored, dtype=float) @ np.linalg.inv(np.asarray(T_start_authored, dtype=float))
+    return T_move @ np.asarray(T_start_actual, dtype=float)
 
 
 # * ================================================================ matcher
