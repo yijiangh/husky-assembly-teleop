@@ -167,7 +167,7 @@ class PluginContext:
         Sampled after every plugin's update and task step, stamped with the tick's ROS time.
 
         Args:
-            signals: What to sample, e.g. from `world/signals.py`.
+            signals: What to sample, e.g. from `plugin_api/signals.py`.
             max_samples: Cap; past it the oldest sample is dropped for each new one.
 
         Returns:

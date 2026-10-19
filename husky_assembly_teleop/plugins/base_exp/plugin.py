@@ -35,6 +35,7 @@ import viser
 from crl_husky.follower_path import FollowerPath, wrap
 
 from ...drive import drive_folder
+from ...plugin_api import signals
 from ...plugin_api.concurrency import WaitTimeout
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
@@ -44,7 +45,6 @@ from ...ui.base_markers import Markers
 from ...ui.pose_input import yaw_from_xyzw
 from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, SECTION_TOOL, block, chip, section, values, warning
 from ...ui.trace_plot import TracePlot
-from ...world import signals
 from ...world.checks import STALE_AFTER
 from ...world.follower import live_report
 from ...world.mocap import pose_lost

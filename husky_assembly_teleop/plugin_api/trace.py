@@ -3,7 +3,7 @@ Named values sampled once per tick, for live plots and recordings.
 
 A `Signal` reads a few numbers from live state; a `Trace` keeps a time series of some signals. `ctx.trace`
 and `ctx.record` sample one every tick, after every plugin's update and task step, so a signal sees this
-tick's measurements, link poses and commands alike. `world/signals.py` has the common ones.
+tick's measurements, link poses and commands alike. `signals.py` has the common ones.
 
 ! One sample per tick, stamped with the tick's ROS time: a late tick leaves a gap, and a stream faster than
   the tick shows only its newest value. For anything faster, `ros2 bag record` on the robot.

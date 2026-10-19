@@ -24,6 +24,7 @@ from html import escape
 from crl_husky.follower_path import FollowerPath
 
 from ...drive import drive_folder
+from ...plugin_api import signals
 from ...plugin_api.concurrency import WaitTimeout
 from ...plugin_api.context import PluginContext
 from ...plugin_api.trace import Trace
@@ -36,7 +37,6 @@ from ...ui.ghost import RobotGhost
 from ...ui.pose_input import PlanarPoseInput, yaw_from_xyzw
 from ...ui.pybullet_window import add_pybullet_window_toggle
 from ...ui.style import BUSY, OK, SECTION_CTRL, SECTION_TOOL, block, check_chip, chip, section, values
-from ...world import signals
 from ...world.checks import WARN, Check
 from ...world.follower import live_report, path_check
 from ...world.kinematics import stow_joints

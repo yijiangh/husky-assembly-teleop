@@ -10,16 +10,16 @@ import math
 from typing import TYPE_CHECKING
 
 import numpy as np
+from scaffolding_assembly_core.urdf import UR_JOINT_NAMES
 
-from ..plugin_api.trace import Signal
-from ..robot_interface.arm import UR_JOINT_NAMES
 from ..robot_interface.base import FOLLOWER_STATES
+from .trace import Signal
 
 if TYPE_CHECKING:
     from ..robot_interface.arm import ArmInterface
     from ..robot_interface.robot import HuskyRobotInterface
-    from .kinematics import Kinematics
-    from .measured import TrackedObject
+    from ..world.kinematics import Kinematics
+    from ..world.measured import TrackedObject
 
 XYZ = ("x", "y", "z")
 QUATERNION = ("qx", "qy", "qz", "qw")

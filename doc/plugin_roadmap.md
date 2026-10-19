@@ -57,7 +57,7 @@ A `Signal` (`plugin_api/trace.py`) is any function of live state, so derived
 values (FK, tracking errors) record like measurements. `ctx.trace(...)` samples
 signals every tick for a live `ui/trace_plot.TracePlot`; `with ctx.record(...)`
 does the same for the length of a block, then `rec.save(path)`. Common signals
-are in `world/signals.py`. Recording at the full stream rate was dropped: the
+are in `plugin_api/signals.py`. Recording at the full stream rate was dropped: the
 rate limiter only forwards 50 Hz, and what needs more than 20 Hz (contact
 transients, controller tuning) needs the driver's 500 Hz, i.e. `ros2 bag
 record` on the robot.

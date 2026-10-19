@@ -21,11 +21,11 @@ from pathlib import Path
 import numpy as np
 import viser
 
+from ...plugin_api import signals
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
 from ...ui.style import BUSY, NONE, OK, SECTION_SENSOR, block, chip, section, values
 from ...ui.trace_plot import TracePlot
-from ...world import signals
 
 RECORD_SECONDS = 5.0
 RECORDING_FOLDER = Path("/tmp/husky_recordings")
