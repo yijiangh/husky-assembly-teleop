@@ -30,7 +30,7 @@ from .path import TimedPath
 if TYPE_CHECKING:
     from scaffolding_assembly_core.scene import Scene
     from ...config import RobotConfig
-    from ..process import ProcessSource, Step
+    from ..process import ProcessPluginApi, Step
     from .search import PlanResult
 
 #: Time slider resolution, seconds.
@@ -310,8 +310,8 @@ class PlannerPlugin(HuskyPlugin):
             tuple[Step, str, str] | None: The step, the robot's serial and its process name;
                 None if there is none, after saying why in the panel.
         """
-        source: ProcessSource = ctx.require("process")
-        selection = source.selection
+        process: ProcessPluginApi = ctx.require("process")
+        selection = process.selection
         if selection is None:
             self._say("no process loaded in the process plugin", failed=True)
             return None

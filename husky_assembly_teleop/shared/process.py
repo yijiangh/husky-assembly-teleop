@@ -108,8 +108,8 @@ class Selection:
     process_ids: IdMap | None = None
 
 
-class ProcessSource(Protocol):
-    """What the process plugin offers: type `ctx.require("process")` as this."""
+class ProcessPluginApi(Protocol):
+    """What the process plugin offers other plugins: type `ctx.require("process")` as this."""
 
     @property
     def selection(self) -> Selection | None:

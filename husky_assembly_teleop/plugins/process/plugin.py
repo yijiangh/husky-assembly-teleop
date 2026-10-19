@@ -2,7 +2,7 @@
 The process plugin: loads an authored process and draws the state at one movement at a time.
 
 It serves the selected step, and the maps between process ids and live scene ids, to plugins that declare
-`requires = ("process",)`: they read `selection` (`shared.process.ProcessSource`).
+`requires = ("process",)`: they read `selection` (`shared.process.ProcessPluginApi`).
 
 Every body of the selected movement's process scene (`Process.scene_at`) goes into the scene as "process/<body id>"
 (`steps.scene_bodies`): the core draws it and planners avoid it. A body the plan holds follows the configured real
@@ -146,7 +146,7 @@ class ProcessPlugin(HuskyPlugin):
 
     @property
     def selection(self) -> Selection | None:
-        """Selection | None: The selected step (`shared.process.ProcessSource`); a new object whenever it changes."""
+        """Selection | None: The selected step (`shared.process.ProcessPluginApi`); a new object whenever it changes."""
         if self.loaded is None or not self.loaded.steps:
             return None
         last = self._selection

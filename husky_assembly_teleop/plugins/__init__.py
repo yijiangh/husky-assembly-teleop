@@ -6,7 +6,8 @@ Add a file with @register and list it in `enabled_plugins` to run it.
 ! Everything that is not a real robot lives here; the core knows nothing about
   bars, racks or assembly steps. Plugins draw only into their own PluginView.
 ! Plugins never import each other (test/test_layers.py): shared code, data types and service interfaces go in
-  `shared/`, and another plugin's live data comes only from `ctx.require`, for names in `requires`.
+  `shared/`, and another plugin's live data comes only from `ctx.require`, for names in `requires`, typed by its
+  `<Name>PluginApi` Protocol in `shared/`.
 
 * Scene rules:
   - Put collision objects in `ctx.scene` under "<plugin name>/…"; the core draws

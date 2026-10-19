@@ -18,7 +18,7 @@ All tests and linters pass; the arm path send is not yet tried on a robot.
     request with `ctx.submit`, so its errors, soft stop and teardown apply. Results go back through the future or
     the provider's state; no callbacks registered by consumers.
 - **Consumers type a required plugin against a Protocol in `shared/`**, not its concrete class, so the provider can
-  change everything else. Concrete classes may still appear under `TYPE_CHECKING`.
+  change everything else. Plugin `<name>` offers `<Name>PluginApi`, e.g. `ProcessPluginApi`. Concrete classes may still appear under `TYPE_CHECKING`.
 
 ## Layers
 
@@ -47,7 +47,7 @@ Mocap sample types into `robot_interface/mocap_state.py`, `signals.py` into `plu
   plugin-to-plugin import fails.
 - `plugins/__init__.py` and `AGENTS.md`: one line each pointing to the rule.
 
-### 2. Process data: `shared/process.py` and `ProcessSource` (done, 2c17184)
+### 2. Process data: `shared/process.py` and `ProcessPluginApi` (done, 2c17184)
 
 Today the planners and `mocap_bars` read the process plugin through untyped attribute chains (`step`, `index`,
 `loaded.process.robots`, `ids`; `_process_step` returns `tuple[Any, str, str]`), so a renamed field breaks them only
@@ -57,7 +57,7 @@ at runtime.
   `scene_bodies`, …) into `shared/process.py`.
 - Add a frozen `Selection`: the loaded process, the selected step and its index, the acting robot's configured serial
   (or None and why), and the `ids`/`process_ids` maps.
-- `ProcessSource` Protocol: `selection: Selection | None`.
+- `ProcessPluginApi` Protocol: `selection: Selection | None`.
 - `ProcessPlugin` implements it; `planning/panel.py:_process_step`, both planners and `mocap_bars` read `selection`.
   Same behaviour, same messages, except for a loaded process without movements: it now counts as nothing
   selected (base_planner records no process step instead of 0).

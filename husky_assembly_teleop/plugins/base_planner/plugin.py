@@ -51,7 +51,7 @@ from .recording import RECORDING_FOLDER, attempt_folder, load_description, save_
 from .tasks import BY_NAME, TASK_ORIGIN, TASKS
 
 if TYPE_CHECKING:
-    from ...shared.process import ProcessSource
+    from ...shared.process import ProcessPluginApi
 from .world import PlanningWorld, stowed
 
 #: The plan goes stale once the base moves this far from its planned start.
@@ -492,8 +492,8 @@ class BasePlannerPlugin(PlannerPlugin):
 
     def _process_index(self, ctx: PluginContext) -> int | None:
         """The step selected in the process plugin; None if no process is loaded."""
-        source: ProcessSource = ctx.require("process")
-        selection = source.selection
+        process: ProcessPluginApi = ctx.require("process")
+        selection = process.selection
         return selection.index if selection is not None else None
 
     def _environment(self, ctx: PluginContext, serial: str) -> str:
