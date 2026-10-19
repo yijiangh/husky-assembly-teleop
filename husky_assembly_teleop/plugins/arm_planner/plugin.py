@@ -1,7 +1,7 @@
 """
 Pick a joint target for one arm, plan a collision-free path to it, scrub through the path, and commit it.
 
-The flow is `plugins.planning.panel.PlannerPlugin`; this adds the joint sliders, the arm choice and a compas_fab
+The flow is `shared.planning.panel.PlannerPlugin`; this adds the joint sliders, the arm choice and a compas_fab
 world per robot. The first plan for a robot loads the models (several seconds).
 
 ! EXPERIMENTAL, not yet tested thoroughly: Commit only logs (`send_to_arm`).
@@ -17,9 +17,9 @@ import numpy as np
 
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import register
-from ..planning.panel import WAIT_MARGIN, PlannerPlugin, Search, with_guesses
-from ..planning.search import TIME_LIMIT, PlanResult
 from ...robot_interface.arm import UR_JOINT_LIMITS
+from ...shared.planning.panel import WAIT_MARGIN, PlannerPlugin, Search, with_guesses
+from ...shared.planning.search import TIME_LIMIT, PlanResult
 from ...ui.ghost import RobotGhost
 from ...ui.pybullet_window import add_pybullet_window_toggle
 from ...ui.style import SECTION_CTRL, SECTION_TOOL, block, chip, section, values

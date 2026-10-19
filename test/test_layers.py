@@ -18,12 +18,11 @@ LAYERS = (
     ("world",),
     ("ui",),
     ("plugin_api",),
+    ("shared",),
     ("plugins",),
     ("monitor", "experiments", "mocap_relay"),
 )
 LAYER = {name: rank for rank, names in enumerate(LAYERS) for name in names}
-#: The shared base every plugin may import; it imports no plugin itself.
-SHARED_PLUGIN = "planning"
 #: Allowed on purpose: (importing module, imported package).
 EXCEPTIONS = {
     # * Plugin discovery imports every plugin to run its @register.
@@ -80,8 +79,8 @@ def _problem(module: str, target: str) -> str | None:
         return f"{source[1]} is below {imported[1]}"
     if source[1] == imported[1] == "plugins" and len(source) > 2 and len(imported) > 2:
         mine, theirs = source[2], imported[2]
-        if mine != theirs and theirs != SHARED_PLUGIN:
-            return f"plugin {mine} imports plugin {theirs}; use ctx.require"
+        if mine != theirs:
+            return f"plugin {mine} imports plugin {theirs}: share code through shared/, data through ctx.require"
     return None
 
 

@@ -1,7 +1,7 @@
 """
 Pick a target for a husky base, plan a path to it, scrub through the path, and commit it.
 
-The flow is `plugins.planning.panel.PlannerPlugin`; this adds the planar target, the choice of algorithm (`algorithms`)
+The flow is `shared.planning.panel.PlannerPlugin`; this adds the planar target, the choice of algorithm (`algorithms`)
 with its settings and debug view, the floor drawing and the PyBullet world.
 
 - Commit sends the path to the robot's onboard path follower (crl_husky `pure_pursuit`), geometric, capped at the
@@ -27,11 +27,11 @@ from ...drive import drive_folder
 from ...plugin_api import signals
 from ...plugin_api.concurrency import WaitTimeout
 from ...plugin_api.context import PluginContext
+from ...plugin_api.plugin import register
 from ...plugin_api.trace import Trace
 from ...robot_interface.base import BaseInterface
-from ...plugin_api.plugin import register
-from ..planning.panel import WAIT_MARGIN, PlannerPlugin, Search, with_guesses
-from ..planning.search import TIME_LIMIT, PlanResult
+from ...shared.planning.panel import WAIT_MARGIN, PlannerPlugin, Search, with_guesses
+from ...shared.planning.search import TIME_LIMIT, PlanResult
 from ...ui.base_markers import Markers
 from ...ui.ghost import RobotGhost
 from ...ui.pose_input import PlanarPoseInput, yaw_from_xyzw

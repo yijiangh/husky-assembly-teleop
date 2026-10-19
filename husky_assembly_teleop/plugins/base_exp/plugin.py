@@ -41,6 +41,7 @@ from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
 from ...plugin_api.trace import Signal, Trace
 from ...robot_interface.base import PLATFORM_VELOCITY_CONTROLLER, FollowerState
+from ...shared.planning.path import timing
 from ...ui.base_markers import Markers
 from ...ui.pose_input import yaw_from_xyzw
 from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, SECTION_TOOL, block, chip, section, values, warning
@@ -48,7 +49,6 @@ from ...ui.trace_plot import TracePlot
 from ...world.checks import STALE_AFTER
 from ...world.follower import live_report
 from ...world.mocap import pose_lost
-from ..planning.path import timing
 from . import record
 from .auto import PATH_CLEARANCE, SPEED, STANDARD_SET, STOP_DISTANCE, Clearance, Sampler, StandardSet
 from .plan import Plan, plan_from

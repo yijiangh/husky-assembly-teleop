@@ -214,8 +214,9 @@ The core is grouped by what a module is about, not by who calls it:
 - `monitor.py`, `config.py`, `tool_urdfs.py` stay at the top: the entry point
   and the run configuration everything else is built from.
 - `plugin_api/`: what a plugin is (`plugin.py`) and what it is handed (`context.py`, `concurrency.py`).
-- `plugins/`: one module or package per feature; `plugins/planning/` is the
-  shared base for the planner plugins and registers none itself.
+- `plugins/`: one module or package per feature; plugins never import each other.
+- `shared/`: for plugins to share code, data and services, e.g. `shared/planning/`, the
+  planner plugins' base, which registers no plugin itself.
 - `world/`: what is in the world and where. `measured.py` (formerly `world_state.py`)
   holds what sensors report; `scene.py` what we put there; `kinematics.py` the
   link poses; `mirrors/` the planners' private copies; `checks.py`, `mocap.py` and `follower.py`
