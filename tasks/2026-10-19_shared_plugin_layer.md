@@ -1,7 +1,8 @@
 # Shared layer for plugins, and plugin dependency chains (2026-10-19)
 
-Status: **phase 0 committed (3275f2b..38984b5), phase 1 next.** Scope is refactoring only: no plugin gains or loses
-a feature, with one exception: arm_planner's `send_to_arm` stub is implemented (phase 4).
+Status: **done 19 Oct, not pushed**: phase 0 (3275f2b..38984b5), 1 (dda698f), 2 (2c17184), 4 (d729adc); phase 3
+left as is (see there). Scope was refactoring only, with one exception: arm_planner's `send_to_arm` is implemented.
+All tests and linters pass; the arm path send is not yet tried on a robot.
 
 ## Decisions
 
@@ -37,7 +38,7 @@ Mocap sample types into `robot_interface/mocap_state.py`, `signals.py` into `plu
 `timing` into `planning/path.py`, `world/lab.py`, `plots.py`, offline code into `experiments/`, and
 `test/test_layers.py`. All tests and linters pass; every commit fails no test the commit before it passed.
 
-### 1. The `shared/` layer, with `planning/`
+### 1. The `shared/` layer, with `planning/` (done, dda698f)
 
 - `husky_assembly_teleop/shared/__init__.py`: the purpose above, and the rules (imports nothing from `plugins/`;
   holds types, interfaces and helpers, never a plugin's live state).
@@ -46,7 +47,7 @@ Mocap sample types into `robot_interface/mocap_state.py`, `signals.py` into `plu
   plugin-to-plugin import fails.
 - `plugins/__init__.py` and `AGENTS.md`: one line each pointing to the rule.
 
-### 2. Process data: `shared/process.py` and `ProcessSource`
+### 2. Process data: `shared/process.py` and `ProcessSource` (done, 2c17184)
 
 Today the planners and `mocap_bars` read the process plugin through untyped attribute chains (`step`, `index`,
 `loaded.process.robots`, `ids`; `_process_step` returns `tuple[Any, str, str]`), so a renamed field breaks them only
@@ -58,19 +59,31 @@ at runtime.
   (or None and why), and the `ids`/`process_ids` maps.
 - `ProcessSource` Protocol: `selection: Selection | None`.
 - `ProcessPlugin` implements it; `planning/panel.py:_process_step`, both planners and `mocap_bars` read `selection`.
-  Same behaviour, same messages.
+  Same behaviour, same messages, except for a loaded process without movements: it now counts as nothing
+  selected (base_planner records no process step instead of 0).
+- `revision` stays: only the process plugin itself uses it.
 
-### 3. Duplicated base path code (only if it is really the same)
+### 3. Duplicated base path code (only if it is really the same): left as is
 
 `base_exp/plugin.py:376-394` and `base_planner/plugin.py:413-416` both send a path and wait on the follower, with
 different checks and timeouts. Compare them; if one helper can serve both without changing either plugin's behaviour,
 put it in `shared/`. Otherwise leave them and note why.
 
-### 4. arm_planner sends its path (the one feature change)
+Not the same. What they share, judging the follower against a sent path, is already `world/follower.path_check`,
+which base_planner uses. base_exp's run adds an acknowledgement timeout, the clearance guard, e-stop and mocap-loss
+ends, a settling phase, and outcome texts the offline analysis reads back from recorded runs; merging would change
+what base_exp records.
+
+### 4. arm_planner sends its path (the one feature change; done, d729adc)
 
 `send_to_arm` (`plugins/arm_planner/plugin.py`) is a stub that only logs and reports success. Implement its TODO:
 resample the planned path with a smooth speed profile and send it with `ArmInterface.send_joint_trajectory`; report
 failure when the arm refuses. If robot_control's move code is needed for it, it goes into `shared/`, not imported.
+
+Done as `robot_interface.arm.joint_path_move`: straight joint segments, each on `joint_move`'s cosine profile and
+stopping at every waypoint (so the arm stays on the checked segments), each lasting whole sampling steps, at
+`JOINT_MOVE_MAX_SPEED` and half the trajectory acceleration limit. robot_control's code was not needed.
+To try on a robot: a short plan in sim, then on an arm with a hand on the pendant stop.
 
 ## Tests
 
