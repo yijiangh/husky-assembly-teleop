@@ -7,6 +7,7 @@ The only package that talks to a robot; callers read state and call commands, ne
   end_effectors.py       one class per tool kind, picked by configuration
   controller_manager.py  one per base and per arm
   mocap.py               mocap samples for bases and tracked objects
+  mocap_state.py         what a mocap-tracked body stores, without ROS (world/mocap.py judges it)
 
 ! A measured value is None until measured, then keeps the last value. Never use stand-ins (zero
   position, identity quaternion), so a forgotten check fails with TypeError instead of using made-up data.

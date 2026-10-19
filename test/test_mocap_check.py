@@ -5,10 +5,10 @@ from __future__ import annotations
 from crl_husky_msgs.msg import MocapRigidBodyPose
 
 from husky_assembly_teleop.robot_interface.mocap import store_sample
+from husky_assembly_teleop.robot_interface.mocap_state import MARKER_ERROR_WINDOW
 from husky_assembly_teleop.world.checks import BAD, GOOD, WARN
 from husky_assembly_teleop.world.measured import TrackedObject
-from husky_assembly_teleop.world.mocap import (MARKER_ERROR_WARN, MARKER_ERROR_WINDOW, POSE_TIMEOUT, mocap_check,
-                                               pose_lost)
+from husky_assembly_teleop.world.mocap import MARKER_ERROR_WARN, POSE_TIMEOUT, mocap_check, pose_lost
 
 
 def _level(body: TrackedObject, valid: bool, marker_error: float, now: float) -> int:

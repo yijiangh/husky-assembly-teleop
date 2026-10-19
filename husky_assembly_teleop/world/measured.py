@@ -13,8 +13,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from ..robot_interface.mocap_state import RawMarkers
 from ..robot_interface.robot import HuskyRobotInterface
-from .mocap import RawMarkers
 
 
 @dataclass

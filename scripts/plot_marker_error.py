@@ -25,7 +25,8 @@ from crl_husky_msgs.msg import MocapRigidBodyPose
 from matplotlib.animation import FuncAnimation
 
 from husky_assembly_teleop.robot_interface.mocap import mocap_topic
-from husky_assembly_teleop.world.mocap import MARKER_ERROR_WARN, MARKER_ERROR_WINDOW
+from husky_assembly_teleop.robot_interface.mocap_state import MARKER_ERROR_WINDOW
+from husky_assembly_teleop.world.mocap import MARKER_ERROR_WARN
 
 #: Seconds to wait for topics when looking up which rigid bodies the relay publishes.
 DISCOVERY_SEC = 2.0

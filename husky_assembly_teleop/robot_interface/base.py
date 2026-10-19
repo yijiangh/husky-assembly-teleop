@@ -20,10 +20,10 @@ from sensor_msgs.msg import BatteryState, JointState
 from std_msgs.msg import Bool
 
 from ..config import RobotConfig
-from ..world.mocap import RawMarkers
 from .connections import RosConnections
 from .controller_manager import ControllerManagerInterface, ControllerManagerState
 from .mocap import subscribe_mocap
+from .mocap_state import RawMarkers
 from .stream_stats import StreamStats
 
 #: The base's only controller for now. cmd_vel goes through it.

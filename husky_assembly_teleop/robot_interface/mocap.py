@@ -11,8 +11,8 @@ from typing import Callable
 import numpy as np
 from crl_husky_msgs.msg import MocapRigidBodyPose
 
-from ..world.mocap import MARKER_ERROR_WINDOW, MocapBody, RawMarkers
 from .connections import RosConnections
+from .mocap_state import MARKER_ERROR_WINDOW, MocapBody, RawMarkers
 
 
 def mocap_topic(mocap_id: int) -> str:
