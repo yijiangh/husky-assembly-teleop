@@ -175,7 +175,10 @@ class TickTimer:
         if other >= self.SMALL_PART:
             lines.append(f"  {other * 1e3:6.1f} ms  other")
         hint = ""
-        if parts and parts[0][0].startswith(("plugin", "task")):
+        # * Idle at least as long as the delay: the work fitted in the tick period, the loop just woke late.
+        if self._idle >= late:
+            hint = "\n? The loop woke up late, not busy: a worker thread (planning, loading) probably held the GIL."
+        elif parts and parts[0][0].startswith(("plugin", "task")):
             hint = ("\n! A slow plugin hook or task blocks every robot and plugin: "
                     "move slow work to `ctx.run_in_thread`.")
         return (f"tick {index} started {late * 1e3:.0f} ms late; the {cycle * 1e3:.0f} ms since the previous tick "
