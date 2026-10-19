@@ -69,6 +69,31 @@ CALIB_TOOL_ARM0_ID_BY_ROBOT = {
 # * A calib point is only recorded when the base and tool rigid bodies both
 # * arrived from mocap within this many seconds (see calibrate_button).
 CALIB_MOCAP_MAX_AGE_S = 0.5
+# * Motive Streaming ID of an instrumented bar's own rigid-body asset. Lab
+# * convention: bar Bxx streams as 10xx, i.e. 1000 + the bar number (B20 = 1020,
+# * B21 = 1021; see mocap_bar_streaming_id). An asset named like the bar ('B20',
+# * as Motive's are, or 'bar_B20') is also found by its name at connect, and this dict overrides
+# * both, by bar name, e.g. {'bar_B20': 1020} (see
+# * HuskyMonitor._register_mocap_bar_assets). Without an asset, the bar's
+# * markers are read from Motive's unlabelled markers. Must not reuse a tracked
+# * body's id (e.g. 1002 = bar_rig below).
+MOCAP_BAR_STREAMING_ID_BASE = 1000
+MOCAP_BAR_STREAMING_IDS = {}
+
+
+def mocap_bar_streaming_id(bar_id: str) -> Optional[int]:
+    """The Motive streaming ID of a bar's own asset by the lab convention (Bxx -> 10xx).
+
+    Args:
+        bar_id (str): e.g. ``'B20'``.
+
+    Returns:
+        int | None: e.g. 1020; None when the id has no bar number.
+    """
+    number = bar_id[1:] if bar_id and bar_id[0] == 'B' else ''
+    return MOCAP_BAR_STREAMING_ID_BASE + int(number) if number.isdigit() else None
+
+
 BAR_HOLDING_ACC_DATA_DIR = os.path.join(DATA_DIR, "bar_holding_acc_data")
 BAR_HOLDING_ACC_EXPERIMENT_DIR = os.path.join(EXPERIMENT_DATA_DIRECTORY, "bar_holding_acc_data")
 # * The real assembly runs (plan skeleton monitor): the servo records of the
@@ -532,6 +557,7 @@ def init(monitor):
         TrackedObject(monitor, right_tool_name, 1861, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
         monitor.assign_calibration_tool_to_robot(0, 1, right_tool_name)
 
+    # (The instrumented bars' own Motive assets: MOCAP_BAR_STREAMING_IDS at the top.)
     if monitor.BAR_ACTION_MOCAP_ACCURACY_TEST:
         bar_rig = TrackedObject(monitor, MOCAP_SET_RIG_RB_NAME, 1002, np.zeros(3), np.array((0, 0, 0, 1)), 0.2)
         bar_rig.body = pp.create_cylinder(radius=0.01, height=1, color=(1, 0, 0, 0.2))
@@ -1136,12 +1162,11 @@ def request_marketset_button(monitor, rb_mocap_name):
 
     # print(monitor._mocap_labeled_marker_cache)
 
-    if rb_mocap_name not in monitor._mocap_labeled_marker_cache:
+    labeled_marker_data, _age_s = monitor.labeled_markers_snapshot(rb_mocap_name)
+    if not labeled_marker_data:
         monitor.get_logger().warn(f'Mocap {rb_mocap_name} not found!')
         return
     else:
-        labeled_marker_data = monitor._mocap_labeled_marker_cache[rb_mocap_name]
-
         for marker_name, marker_data in labeled_marker_data.items():
             pp.draw_point(marker_data['pos'])
 
@@ -1264,6 +1289,11 @@ def save_markerset_data(monitor, filename_suffix="", use_experiment_dir=False):
     except Exception:
         bar_dims = None
 
+    # * MoCap bar takes ('MoCap bar: record take') carry their own bar's marker
+    # * table and Rhino pose (design_markers, design_T_world_from_bar); the file
+    # * only names the MoCapMarkers.json they came from.
+    mocap_markers = getattr(monitor, '_mocap_markers', None)
+
     # Warn loudly if nothing was loaded: the fields below would be null and the
     # take couldn't be matched to a movement later.
     if not getattr(monitor, '_current_bar_action_path', None) or mv is None:
@@ -1287,6 +1317,7 @@ def save_markerset_data(monitor, filename_suffix="", use_experiment_dir=False):
             'bar_start_position': bar_pose[0] if bar_pose is not None else None,
             'bar_start_quaternion': bar_pose[1] if bar_pose is not None else None,
             'bar_dimensions': bar_dims,
+            'mocap_markers_file': mocap_markers.path if mocap_markers is not None else None,
             'raw_data': monitor.marker_set_data,
         }
         json.dump(payload, f, indent=4)

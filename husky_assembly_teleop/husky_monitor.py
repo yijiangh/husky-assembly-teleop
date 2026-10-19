@@ -11,6 +11,7 @@ from collections import Counter, defaultdict, deque
 from contextlib import nullcontext
 import os
 import time, copy
+import tempfile
 import threading
 import traceback
 import json
@@ -68,6 +69,15 @@ from husky_assembly_teleop.bar_action_io import (
     movement_kind, step_kind, kind_fits_robot, is_free_home, check_action_kinds,
     default_trajectory_time, is_built_assembly_body, bar_body_name, find_bar_body,
     clean_action_path, operator_steps, step_index_of, held_ground_joints, mating_arm_sides,
+    bar_id_of_body, joints_on_bar,
+)
+from husky_assembly_teleop.bar_mocap_fit import (
+    MOCAP_MARKERS_FILENAME, BarFit, BarMarkers, MoCapMarkersError, PoseDeviation, fake_sensed_markers,
+    fit_bar_from_cache, load_mocap_markers, pose_deviation,
+)
+from husky_assembly_teleop.mocap_bar_viz import (
+    GHOST_HIDDEN_POSE, bar_end_points, bar_z_range, build_bar_joint_ghost, draw_bar_fit,
+    remove_debug_items, remove_ghost, rendering_paused, set_ghost_pose,
 )
 from rs_data_structure.bar_action import CONTROLLER_CARTESIAN_COMPLIANT, CONTROLLER_JOINT_TRACKING, Movement
 from husky_assembly_teleop.cfab_session import (
@@ -134,7 +144,26 @@ BUILT_IGNORED_RGBA = (0.6, 0.6, 0.6, 0.25)
 # See-through bar that follows the manual M1 start sliders in PyBullet.
 MANUAL_BAR_ORANGE = [1.0, 0.55, 0.0, 0.6]
 # See-through bar at the loaded action's assembled pose (M3 start), the target to drive to.
+# Also the Rhino copy of the bar + joints in the 'MoCap bar' drawing.
 ASSEMBLED_BAR_PINK = [1.0, 0.3, 0.7, 0.5]
+# See-through copy of the bar + joints at the pose measured from its MoCap markers ('MoCap bar').
+MOCAP_BAR_CYAN = [0.0, 0.8, 0.9, 0.5]
+# * 'MoCap bar: follow live': how often the bars are re-fitted and redrawn, seconds
+# * (every other tick of the monitor's 20 Hz timer).
+MOCAP_BAR_FOLLOW_PERIOD_S = 0.1
+# * Following live, a bar's last good fit younger than this is where its next
+# * fit starts looking (the quick match around the last pose, ~1 ms instead of
+# * the ~20 ms full search; bar_mocap_fit.fit_bar_from_cache's T_hint), seconds.
+MOCAP_BAR_HINT_MAX_AGE_S = 1.0
+# * A live marker snapshot older than this is refused by the fit, seconds. A bar
+# * other than the loaded one is measured only while its own asset is this fresh.
+MOCAP_BAR_MAX_AGE_S = 0.5
+# A Motive asset named like a bar ('B34' or 'bar_B34'), to tell the operator when
+# such an asset streams but MoCapMarkers.json has no marker table for it.
+MOCAP_BAR_ASSET_NAME_RE = re.compile(r"^(bar_)?B\d+$")
+# ! At action load, a marker of MoCapMarkers.json farther than this from where the
+# ! action's joint frames put it means the table is stale against these BarActions, mm.
+MOCAP_MARKER_TABLE_TOL_MM = 1.0
 # * 'Visual diagnosis' on: the alpha of the grey live robots and their tools, so the
 # * drawn tool0 frames inside them stay visible.
 VISUAL_DIAG_ROBOT_ALPHA = 0.3
@@ -302,6 +331,9 @@ DEFAULT_BAR_POS = pp.Point(0.8, 0, 1.3)
 
 CLIENT_IP = '192.168.0.25' # husky PC Set to your own IP
 # CLIENT_IP = '192.168.0.29' # Razor laptop Set to your own IP
+# * Any PC can set its own address without editing this file: export MOCAP_CLIENT_IP
+# * (doc/mocap_bar_pose_test_manual.md section 1 reads it off the mocap network port).
+CLIENT_IP = os.environ.get('MOCAP_CLIENT_IP') or CLIENT_IP
 # ! Both are DHCP leases and do move. If mocap logs "connected: False", see
 # ! doc/calibration_manual.md section 1.4 before touching anything else.
 MOCAP_IP = '192.168.0.28' # set to the mocap PC's IP, get this from Motive Settings>Streaming pane->Local interface
@@ -389,6 +421,24 @@ class HuskyMonitor(Node):
     # !   robot-centric demo   : USE_MOCAP=0, BAR_ACTION_LIVE_REPLAN_EXE = 1, USE_CELL_STATE_BASE_POSE=1, BAR_ACTION_MOCAP_ACCURACY_TEST=0
     # (see doc/bar_holding_acc_manual.md, "Pre-flight checklist")
     BAR_ACTION_MOCAP_ACCURACY_TEST = 1  # show Record + Fit + Viz / Save markerset data
+    # * Desk rehearsal of the 'MoCap bar' panel without Motive: 1 = when no live
+    # * markers are there, the marker snapshot is made up from the loaded bar's
+    # * design markers (MoCapMarkers.json) at its Rhino pose, moved 30 mm along
+    # * the bar and rolled 2 deg about it, plus one stray marker. The fit should
+    # * then read dz(along) ~30 mm and dang ~2 deg.
+    # ! Never 1 with a real bar: whenever Motive drops out, the made-up markers
+    # ! would silently take over (and could be recorded as a take).
+    MOCAP_BAR_FAKE_MARKERS = 0
+    # One 'MoCap bar' measurement at a time: button clicks run on the panel's
+    # thread, 'follow live' on the monitor's tick. Re-entrant: 'record take'
+    # measures while holding it. On the class so harnesses without __init__ have it.
+    _mocap_bar_lock = threading.RLock()
+    # * 1 = the pink Rhino bar lines are drawn: the assembled-pose line + label of
+    # * every bar loaded this session (a ruler of the Rhino poses, see
+    # * _show_assembled_bar_ghost) and the Rhino centre line + label of each
+    # * 'MoCap bar' drawing. The panel checkbox "Rhino bar lines (pink)" changes
+    # * it while the monitor runs (the see-through pink bar copies stay).
+    SHOW_RHINO_BAR_LINES = 1
     # * Plan skeleton mode: 1 = the planner and IK ignore collisions with the already-built
     # * bars and joints, which are then drawn faint (BUILT_IGNORED_RGBA) so it shows
     # * that they do not count. 0 = the built structure is a real obstacle, drawn
@@ -492,7 +542,28 @@ class HuskyMonitor(Node):
         # cache above keeps a body's last pose forever, so this says how fresh it is.
         self._mocap_rigidbody_stamp = {}
         self._mocap_rigidbody_id_from_name = {}
+        # Labelled markers of the last frame each model was in: {key: {marker id:
+        # {'pos', 'size', 'error'}}}, key = the asset's name, or '_unlabeled' for
+        # Motive's unlabelled bucket (model id 0). Read via labeled_markers_snapshot.
         self._mocap_labeled_marker_cache = defaultdict(dict)
+        # time.monotonic() of the last frame per key above (how fresh its markers are).
+        self._mocap_labeled_marker_stamp = {}
+        # * MoCap bar (joint markers). Read via getattr: the headless harnesses skip __init__.
+        self._mocap_markers = None              # bar_mocap_fit.MoCapMarkerSet of the problem, or None
+        self._mocap_bar_asset_from_id = {}      # Motive streaming id -> bar asset name ('bar_B20')
+        self._mocap_bar_asset_note = None       # the asset mapping last logged (log once per change)
+        self._mocap_bar_last = {}               # bar name -> its last measurement (redraw, live start pose)
+        self._mocap_bar_draws = {}              # bar name -> its ghosts + debug items now drawn
+        self._mocap_bar_mesh_dir = None         # temp folder of the ghosts' OBJ files
+        self._mocap_bar_follow = False          # 'MoCap bar: follow live' ticked
+        self._mocap_bar_follow_stamp = 0.0      # time.monotonic() of the last live re-fit
+        self._mocap_bar_live_notes = {}         # topic (a bar, or '') -> the last message printed following live
+        self.mocap_bar_follow_toggle = None
+        # * The pink Rhino bar lines ('Rhino bar lines (pink)'). Read via getattr too.
+        self._assembled_bar_lines = {}          # bar name -> its pink assembled-pose line (every bar loaded)
+        self._assembled_bar_lines_client = None  # the PyBullet client those lines were drawn in
+        self._rhino_bar_lines_applied = bool(self.SHOW_RHINO_BAR_LINES)  # the checkbox state last applied
+        self.rhino_bar_lines_toggle = None
         self.mocap_experiment_recording = None
         self.mocap_experiment_last_output_path = None
 
@@ -911,6 +982,12 @@ class HuskyMonitor(Node):
         pp.remove_all_debug()
         clear_collision_diagnosis(self)
         self._cartesian_viz_handles = []   # already removed above
+        # The pink assembled lines and the 'MoCap bar' lines are gone too: forget
+        # their ids, so the next redraw makes new ones instead of replacing dead ones.
+        for line in (getattr(self, '_assembled_bar_lines', None) or {}).values():
+            line['ids'] = {}
+        for draw in (getattr(self, '_mocap_bar_draws', None) or {}).values():
+            draw['items'] = {}
 
     def toggle_show_goal_state(self):
         """Flip the ghost robot between the goal conf and the planned trajectory.
@@ -3508,6 +3585,9 @@ class HuskyMonitor(Node):
         # re-applies it for the whole action.
         self._mocap_hide_applied = False
         self._collision_ignored_bodies = set()
+        # * The last 'MoCap bar' drawing belongs to the previous action. Removed
+        # * before the cfab session below may be replaced (its bodies live there).
+        self.clear_mocap_bar_drawing()
 
         # Init the per-problem cfab session + robot cell now so 'Load
         # Movement' is just a state push afterwards. The startup default
@@ -3592,6 +3672,15 @@ class HuskyMonitor(Node):
         # compas json_load when a `.live-solved.json` sidecar is opened via
         # this same Load BarAction button). Print the initial roster.
         self._print_movement_roster(tag='LoadBarAction')
+
+        # * MoCap bars: the problem's marker table, checked against this action's joints.
+        # ! Any error here must not stop the action from loading (every robot loads it).
+        try:
+            self._load_mocap_markers(bar_action)
+        except Exception as e:
+            self._mocap_markers = None
+            self.get_logger().warn(f"[mocap bars] the marker table could not be loaded ({e!r}); "
+                                   "the 'MoCap bar' buttons will not work for this problem.")
 
         # Push the first movement's state into the cfab / PyBullet scene so the
         # visualizer reflects the NEWLY selected action right away. The cfab
@@ -8139,16 +8228,18 @@ class HuskyMonitor(Node):
                     return pp.multiply(pose_from_frame(frame), pose_from_frame(rb.attachment_frame))
         return None
 
-    def _show_assembled_bar_ghost(self):
-        """Pink line along the loaded action's bar at its assembled pose, kept until the next Load BarAction.
+    def _show_assembled_bar_ghost(self) -> None:
+        """Pink line along the loaded action's bar at its assembled pose; the lines of earlier bars stay.
 
         The guide for parking the base in the mount-once mocap test: the bar in
-        the grippers has to end up on it after the transfer loop. Drawn as a
-        debug line (bodies created at run time do not show in this viewer),
-        and re-issued once a second by ``update`` so a debug wipe elsewhere
-        (``clear_all_debug_drawing``) does not lose it.
+        the grippers has to end up on it after the transfer loop. Every bar
+        loaded this session keeps its line (``_assembled_bar_lines``), so
+        together they are a ruler of the Rhino poses; the checkbox 'Rhino bar
+        lines (pink)' shows or hides them all. Drawn as debug lines (bodies
+        created at run time do not show in this viewer), and re-issued once a
+        second by ``update`` so a debug wipe elsewhere (``clear_all_debug_drawing``)
+        does not lose them.
         """
-        self._assembled_bar_line = None
         if self.cfab is None or not self.active_bar_name:
             return
         pose = self._assembled_bar_pose()
@@ -8160,43 +8251,123 @@ class HuskyMonitor(Node):
         # The bar's long axis is its own z (only the sign varies per export --
         # irrelevant for a line).
         half = 0.5 * length * np.array([0.0, 0.0, 1.0])
-        self._assembled_bar_line = {
+        lines = self._session_assembled_bar_lines()
+        old = lines.get(self.active_bar_name)
+        lines[self.active_bar_name] = {
             'bar': self.active_bar_name,
             'a': tuple(pp.tform_point(pose, tuple((centre_local - half).tolist()))),
             'b': tuple(pp.tform_point(pose, tuple((centre_local + half).tolist()))),
             'centre': tuple(pp.tform_point(pose, tuple(centre_local.tolist()))),
-            'ids': {},
-            'stamp': 0.0,
+            # The bar loaded again: its drawn items are moved in place.
+            'ids': old['ids'] if old is not None else {},
         }
-        self._redraw_assembled_bar_line(force=True)
+        self._redraw_assembled_bar_lines(force=True)
         print(f"[BarAction] pink line = {self.active_bar_name} at its assembled pose "
-              f"(M3 start), centre {np.round(self._assembled_bar_line['centre'], 3).tolist()}; "
-              "it stays until the next Load BarAction.")
+              f"(M3 start), centre {np.round(lines[self.active_bar_name]['centre'], 3).tolist()}; "
+              f"the pink lines of all {len(lines)} bar(s) loaded so far stay "
+              "('Rhino bar lines (pink)' shows / hides them).")
 
-    def _redraw_assembled_bar_line(self, force=False):
-        """(Re)issue the pink assembled-bar line; at most once a second unless forced."""
-        line = getattr(self, '_assembled_bar_line', None)
-        if line is None or self.cfab is None:
-            return
-        now = time.time()
-        if not force and now - line['stamp'] < 1.0:
-            return
-        line['stamp'] = now
+    def _session_assembled_bar_lines(self) -> dict:
+        """The pink assembled-bar lines of this cfab session.
+
+        Emptied when the PyBullet client changed (a new session: the old lines
+        died with the old client).
+
+        Returns:
+            dict: ``{bar name: line}``, line = ``{'bar', 'a', 'b', 'centre', 'ids'}``
+            (the two ends, the middle, and the drawn debug item ids).
+        """
         client = self.cfab.client.client_id
-        ids = line['ids']
+        if (getattr(self, '_assembled_bar_lines', None) is None
+                or getattr(self, '_assembled_bar_lines_client', None) != client):
+            self._assembled_bar_lines = {}
+            self._assembled_bar_lines_client = client
+        return self._assembled_bar_lines
+
+    def _redraw_assembled_bar_lines(self, force: bool = False) -> None:
+        """(Re)issue every pink assembled-bar line; at most once a second unless forced.
+
+        Nothing is drawn while 'Rhino bar lines (pink)' is unticked.
+
+        Args:
+            force (bool): Draw now, not waiting for the second to pass.
+        """
+        if getattr(self, 'cfab', None) is None or not self._show_rhino_bar_lines():
+            return
+        lines = self._session_assembled_bar_lines()
+        now = time.time()
+        if not lines or (not force and now - getattr(self, '_assembled_bar_lines_stamp', 0.0) < 1.0):
+            return
+        self._assembled_bar_lines_stamp = now
+        client = self.cfab.client.client_id
         try:
-            ids['axis'] = p.addUserDebugLine(
-                line['a'], line['b'], lineColorRGB=ASSEMBLED_BAR_PINK[:3], lineWidth=8.0,
-                lifeTime=0, replaceItemUniqueId=ids.get('axis', -1), physicsClientId=client)
-            ids['text'] = p.addUserDebugText(
-                f"{line['bar']} assembled (M3 start)",
-                (np.asarray(line['centre']) + np.array([0.0, 0.0, 0.12])).tolist(),
-                textColorRGB=ASSEMBLED_BAR_PINK[:3], textSize=1.4, lifeTime=0,
-                replaceItemUniqueId=ids.get('text', -1), physicsClientId=client)
+            for line in lines.values():
+                ids = line['ids']
+                ids['axis'] = p.addUserDebugLine(
+                    line['a'], line['b'], lineColorRGB=ASSEMBLED_BAR_PINK[:3], lineWidth=8.0,
+                    lifeTime=0, replaceItemUniqueId=ids.get('axis', -1), physicsClientId=client)
+                ids['text'] = p.addUserDebugText(
+                    f"{line['bar']} assembled (M3 start)",
+                    (np.asarray(line['centre']) + np.array([0.0, 0.0, 0.12])).tolist(),
+                    textColorRGB=ASSEMBLED_BAR_PINK[:3], textSize=1.4, lifeTime=0,
+                    replaceItemUniqueId=ids.get('text', -1), physicsClientId=client)
         except Exception as exc:  # drawing must never break the UI loop
             if not getattr(self, '_assembled_bar_line_warned', False):
                 self._assembled_bar_line_warned = True
                 self.get_logger().warn(f"[BarAction] pink bar line unavailable: {exc!r}")
+
+    def _remove_assembled_bar_lines(self) -> None:
+        """Remove every pink assembled-bar line from the view (they are kept, to be drawn again)."""
+        if getattr(self, 'cfab', None) is None:
+            return
+        client = self.cfab.client.client_id
+        for line in self._session_assembled_bar_lines().values():
+            remove_debug_items(line['ids'], client)
+            line['ids'] = {}
+
+    def _show_rhino_bar_lines(self) -> bool:
+        """Whether 'Rhino bar lines (pink)' is on.
+
+        Reads the panel checkbox live, once (see ``_transfer_as_free_move``).
+
+        Returns:
+            bool: True when the box is ticked (or, without the box, the class flag is 1).
+        """
+        toggle = getattr(self, 'rhino_bar_lines_toggle', None)
+        ticked = toggle.value if toggle is not None else None
+        if ticked is not None:
+            self.SHOW_RHINO_BAR_LINES = int(ticked)
+        return bool(getattr(self, 'SHOW_RHINO_BAR_LINES', 1))
+
+    def _service_rhino_bar_lines(self) -> None:
+        """Apply a change of the 'Rhino bar lines (pink)' checkbox right away.
+
+        Called from ``update``. Ticked: every bar's pink assembled line is drawn
+        and every 'MoCap bar' drawing gets its pink Rhino centre line + label
+        back. Unticked: all of them removed. The 'MoCap bar' drawings are redrawn
+        from their last measurement, so this works with 'follow live' off too.
+        A drawing error is logged and never stops the monitor's tick.
+        """
+        tgl = getattr(self, 'rhino_bar_lines_toggle', None)
+        if tgl is not None:
+            tgl.update()
+        on = self._show_rhino_bar_lines()
+        if on == getattr(self, '_rhino_bar_lines_applied', True):
+            return
+        # A click is measuring (panel thread): try again on the next tick rather than wait.
+        if not self._mocap_bar_lock.acquire(blocking=False):
+            return
+        self._rhino_bar_lines_applied = on
+        try:
+            if on:
+                self._redraw_assembled_bar_lines(force=True)
+            else:
+                self._remove_assembled_bar_lines()
+            self._redraw_mocap_bars()
+        except Exception as e:  # a drawing error must never stop the monitor's tick
+            self.get_logger().warn(f"[mocap bar] the Rhino bar lines could not be redrawn: {e!r}")
+        finally:
+            self._mocap_bar_lock.release()
 
     def _draw_m1_manual_bar_lines(self, world, geom):
         """Draw the manual bar preview as thick debug lines + a label at the given pose.
@@ -9703,31 +9874,12 @@ class HuskyMonitor(Node):
         visuals match.
         """
         rb_mocap_name = MOCAP_SET_RIG_RB_NAME
-        if rb_mocap_name not in self._mocap_labeled_marker_cache:
+        labeled, _age_s = self.labeled_markers_snapshot(rb_mocap_name)
+        if not labeled:
             self.get_logger().warn(f'Mocap {rb_mocap_name} not found!')
             return
-        labeled = copy.deepcopy(self._mocap_labeled_marker_cache[rb_mocap_name])
         # Minimal take payload; matches the field offline analysis reads.
-        take = {rb_mocap_name: labeled}
-        # Tool-flange load at the instant of the take. With one bar held by both
-        # grippers, a take made while the arms strain it is not the same
-        # measurement as one made on a clean hold -- and once the session is over
-        # the saved numbers are the only way to tell them apart. Raw wrenches so
-        # nothing is lost, magnitudes alongside for reading at a glance.
-        try:
-            hi = self.huskies[self.selected_robot_id].interface
-            mags = world._wrench_magnitudes(self) or {}
-            take['tool_ft'] = {
-                'left_raw': [float(v) for v in hi.arm_ft_sensor[0]],
-                'right_raw': [float(v) for v in hi.arm_ft_sensor[1]],
-                'left_force_N': mags.get('left', {}).get('force_N'),
-                'left_torque_Nm': mags.get('left', {}).get('torque_Nm'),
-                'right_force_N': mags.get('right', {}).get('force_N'),
-                'right_torque_Nm': mags.get('right', {}).get('torque_Nm'),
-            }
-        except Exception as e:
-            take['tool_ft'] = None
-            self.get_logger().warn(f"take recorded without a force reading: {e}")
+        take = {rb_mocap_name: labeled, 'tool_ft': self._tool_ft_reading()}
         self.marker_set_data.append(take)
 
         try:
@@ -9747,6 +9899,35 @@ class HuskyMonitor(Node):
             f"max_resid={fit['center_to_line_dist_max_m']*1000:.2f} mm | "
             f"bar_len={fit['bar_length_observed']:.4f} m{load}"
         )
+
+    def _tool_ft_reading(self) -> Optional[dict]:
+        """The force/torque at both tool flanges right now, for a marker take.
+
+        With one bar held by both grippers, a take made while the arms strain
+        it is not the same measurement as one made on a clean hold -- and once
+        the session is over the saved numbers are the only way to tell them
+        apart. Raw wrenches so nothing is lost, magnitudes alongside for
+        reading at a glance.
+
+        Returns:
+            dict | None: ``{'left_raw', 'right_raw', 'left_force_N', 'left_torque_Nm',
+            'right_force_N', 'right_torque_Nm'}``, or None (with a warning) when
+            there is no reading.
+        """
+        try:
+            hi = self.huskies[self.selected_robot_id].interface
+            mags = world._wrench_magnitudes(self) or {}
+            return {
+                'left_raw': [float(v) for v in hi.arm_ft_sensor[0]],
+                'right_raw': [float(v) for v in hi.arm_ft_sensor[1]],
+                'left_force_N': mags.get('left', {}).get('force_N'),
+                'left_torque_Nm': mags.get('left', {}).get('torque_Nm'),
+                'right_force_N': mags.get('right', {}).get('force_N'),
+                'right_torque_Nm': mags.get('right', {}).get('torque_Nm'),
+            }
+        except Exception as e:
+            self.get_logger().warn(f"take recorded without a force reading: {e}")
+            return None
 
     def save_bar_holding_marker_data(self):
         """Save accumulated marker takes to the gdrive experiment dir; clear viz."""
@@ -9776,6 +9957,713 @@ class HuskyMonitor(Node):
         self._bar_holding_fit_line_uids = []
         if n:
             self.get_logger().info(f"[bar take] discarded {n} unsaved take(s).")
+
+    # * ------------------------------------------------------------------
+    # * MoCap bar (joint markers): a bar's 6-DoF pose from the Motive balls on
+    # * its T20_MoCap joints, matched to MoCapMarkers.json without Motive's
+    # * marker ids (bar_mocap_fit), compared with the bar's Rhino pose and drawn
+    # * next to it (mocap_bar_viz). Everything reads its state via getattr: the
+    # * headless harnesses build the monitor without __init__.
+    # * ------------------------------------------------------------------
+
+    def labeled_markers_snapshot(self, key: str) -> tuple:
+        """A copy of the labelled markers last received under one key, and how old they are.
+
+        Args:
+            key (str): A Motive asset name (``'bar_rig'``, ``'bar_B20'``) or
+                ``'_unlabeled'`` (Motive's unlabelled markers).
+
+        Returns:
+            tuple: ``(markers, age_s)``: ``{marker id: {'pos', 'size', 'error'}}``
+            (a deep copy, safe to keep) and its age in seconds; ``({}, None)``
+            when nothing was ever received under that key.
+        """
+        with getattr(self, '_mocap_cache_lock', None) or nullcontext():
+            markers = copy.deepcopy((getattr(self, '_mocap_labeled_marker_cache', None) or {}).get(key) or {})
+            stamp = (getattr(self, '_mocap_labeled_marker_stamp', None) or {}).get(key)
+        return markers, (None if stamp is None else time.monotonic() - stamp)
+
+    def _load_mocap_markers(self, bar_action) -> None:
+        """Load the problem's ``MoCapMarkers.json`` and check the action's bar against it.
+
+        Called at every action load. A problem without the file gets one quiet
+        line (most problems have no MoCap joints); a file that cannot be used
+        gets a warning. The check (`_check_mocap_marker_table`) runs for the
+        action's own bar when it carries markers.
+
+        Args:
+            bar_action: The loaded action (its ``active_bar_id`` names the bar).
+        """
+        self._mocap_markers = None
+        path = os.path.join(self._problem_dir(), MOCAP_MARKERS_FILENAME)
+        if not os.path.isfile(path):
+            # Said once per design problem, not at every action load.
+            if getattr(self, '_mocap_markers_missing_note', None) != path:
+                self._mocap_markers_missing_note = path
+                print(f"[mocap bars] this design problem has no {MOCAP_MARKERS_FILENAME}; "
+                      "no bar can be measured with MoCap.")
+            return
+        try:
+            markers = load_mocap_markers(self._problem_dir())
+        except MoCapMarkersError as e:
+            self.get_logger().warn(f"[mocap bars] {e}")
+            return
+        self._mocap_markers = markers
+        listed = ", ".join(f"{name} ({len(bar.markers)})" for name, bar in markers.bars.items())
+        print(f"[mocap bars] {len(markers.bars)} instrumented bar(s): {listed or 'none'} | {markers.path}")
+        for warning in markers.warnings:
+            self.get_logger().warn(f"[mocap bars] {warning}")
+        self._register_mocap_bar_assets()
+        first_state = self._loaded_movements[0].start_state if self._loaded_movements else None
+        bar_name = self._active_bar_body_name(first_state, getattr(bar_action, 'active_bar_id', None))
+        if self._mocap_bar_design(bar_name) is not None:
+            self._check_mocap_marker_table(bar_name)
+
+    def _mocap_bar_design(self, bar_name: Optional[str]) -> Optional[BarMarkers]:
+        """The design markers of a bar, from the loaded ``MoCapMarkers.json``.
+
+        The file names bars as Cindy's cell does (``bar_B20``); a support
+        robot's cell calls the same bar ``env_bar_B20``, so that name finds it too.
+
+        Args:
+            bar_name (str | None): The bar's rigid-body name in the loaded cell.
+
+        Returns:
+            BarMarkers | None: None when no file is loaded or the bar carries no markers.
+        """
+        markers = getattr(self, '_mocap_markers', None)
+        if markers is None or not bar_name:
+            return None
+        bar_id = bar_id_of_body(bar_name)
+        return markers.bars.get(bar_name) or (markers.bars.get(f"bar_{bar_id}") if bar_id else None)
+
+    def _designed_bar_frame(self, bar_name: str) -> Optional[tuple]:
+        """The bar's Rhino pose: where it rests (not held) in the loaded action.
+
+        The first loaded movement whose start state has the bar not attached
+        (to a robot link or a tool) and with a world frame. For a J or R action
+        of the bar this is its assembled pose; another bar of the action rests
+        at its own (its frame is there even when it is hidden).
+
+        Args:
+            bar_name (str): The bar's rigid-body name.
+
+        Returns:
+            tuple | None: ``(pose, state)``: pybullet ``(pos, quat_xyzw)`` of the
+            bar frame and the start state it came from (the joints' frames in it
+            place the joints on the bar); None when the bar is held in every
+            loaded state.
+        """
+        for mv in getattr(self, '_loaded_movements', None) or []:
+            state = mv.start_state
+            rb = ((state.rigid_body_states or {}) if state is not None else {}).get(bar_name)
+            if rb is not None and not (rb.attached_to_link or rb.attached_to_tool) and rb.frame is not None:
+                return pose_from_frame(rb.frame), state
+        return None
+
+    def _check_mocap_marker_table(self, bar_name: str) -> None:
+        """Check a bar's marker table against the loaded action's joint frames.
+
+        Each design marker is its joint's frame (in the bar's resting state)
+        times the ball's point on the joint block, expressed in the bar frame;
+        it must agree with the table's ``bar_m``. Logs the largest gap; warns
+        above ``MOCAP_MARKER_TABLE_TOL_MM`` (the table is stale against these
+        BarActions, so the markers would not sit on the drawn plates).
+
+        Args:
+            bar_name (str): The bar's rigid-body name; must carry markers.
+        """
+        design = self._mocap_bar_design(bar_name)
+        designed = self._designed_bar_frame(bar_name)
+        if designed is None:
+            self.get_logger().warn(f"[mocap bars] {bar_name} is held in every step of this action; "
+                                   "its marker table is not checked.")
+            return
+        bar_pose, state = designed
+        # 'env_' in a support robot's cell, where the joints carry it too.
+        prefix = bar_name[:len(bar_name) - len(design.bar_name)]
+        bar_from_world = pp.invert(bar_pose)
+        rb_states = state.rigid_body_states or {}
+        gaps_mm, unchecked = [], []
+        for marker in design.markers:
+            rb = rb_states.get(prefix + marker.joint)
+            block_point = ((self._mocap_markers.blocks.get(marker.block) or {})
+                           .get('points_block_m', {}).get(marker.label))
+            if rb is None or rb.frame is None or block_point is None:
+                unchecked.append(marker.name)
+                continue
+            bar_point = pp.tform_point(pp.multiply(bar_from_world, pose_from_frame(rb.frame)), block_point)
+            gaps_mm.append(1000.0 * float(np.linalg.norm(np.subtract(bar_point, marker.bar_m))))
+        if unchecked:
+            self.get_logger().warn(f"[mocap bars] {bar_name}: no joint frame (or block point) in this action "
+                                   f"for {', '.join(unchecked)}; those markers are not checked.")
+        if not gaps_mm:
+            return
+        worst = max(gaps_mm)
+        if worst > MOCAP_MARKER_TABLE_TOL_MM:
+            self.get_logger().warn(
+                f"[mocap bars] {bar_name}: the marker table is off this action's joint frames by up to "
+                f"{worst:.3f} mm (over {len(gaps_mm)} markers), so the markers would not sit on the drawn "
+                "plates. Re-export MoCapMarkers.json from Rhino.")
+        else:
+            print(f"[mocap bars] {bar_name}: the marker table agrees with this action's joint frames "
+                  f"(max {worst:.3f} mm over {len(gaps_mm)} markers).")
+
+    def _register_mocap_bar_assets(self) -> None:
+        """Find the Motive assets of the instrumented bars, so their markers are cached by bar name.
+
+        A bar's own Motive rigid-body asset streams its markers under the
+        asset's id; without one, the markers come with Motive's unlabelled
+        markers. The id of each instrumented bar, first found wins: an asset
+        named like the bar (``B20`` or ``bar_B20``) in the descriptions Motive sent
+        at connect, then ``husky_world.MOCAP_BAR_STREAMING_IDS``, then the lab
+        convention Bxx -> 10xx (``husky_world.mocap_bar_streaming_id``). Kept apart from
+        ``name_from_mocap_id`` (that map also drives the tracked rigid bodies);
+        an id already used there under another name (e.g. 1002 = ``bar_rig``)
+        is refused with a warning. Motive assets named like a bar (``B34``) that
+        have no marker table are named once too: they cannot be measured.
+        Cheap: called at action load and at every measurement; logs only when
+        the mapping changes.
+        """
+        markers = getattr(self, '_mocap_markers', None)
+        if markers is None:
+            return
+        client = getattr(self, 'mocap_client', None)
+        descriptions = client.get_latest_data_descriptions() if client is not None else None
+        found, no_table = {}, {}
+        for rb in getattr(descriptions, 'rigid_body_list', None) or []:
+            # Motive sends the asset name as bytes; the lab names the assets by bar id ('B20').
+            name = rb.sz_name.decode('utf-8') if isinstance(rb.sz_name, bytes) else str(rb.sz_name)
+            for bar_name in (name, f"bar_{name}"):
+                if bar_name in markers.bars:
+                    found[int(rb.id_num)] = bar_name
+            if int(rb.id_num) not in found and MOCAP_BAR_ASSET_NAME_RE.match(name):
+                no_table[int(rb.id_num)] = name
+        for name, mocap_id in world.MOCAP_BAR_STREAMING_IDS.items():
+            if name in markers.bars and name not in found.values():
+                found[int(mocap_id)] = name
+        # * Every other instrumented bar: the lab convention Bxx -> 10xx (B20 = 1020).
+        for name in markers.bars:
+            mocap_id = world.mocap_bar_streaming_id(bar_id_of_body(name) or '')
+            if mocap_id is not None and name not in found.values() and mocap_id not in found:
+                found[mocap_id] = name
+        taken = getattr(self, 'name_from_mocap_id', None) or {}
+        clashes = {mocap_id: name for mocap_id, name in found.items() if taken.get(mocap_id, name) != name}
+        for mocap_id in clashes:
+            del found[mocap_id]
+        self._mocap_bar_asset_from_id = found
+        note = (found, clashes, no_table)
+        if note == getattr(self, '_mocap_bar_asset_note', None) or (client is None and not found and not clashes):
+            return
+        self._mocap_bar_asset_note = note
+        for mocap_id, name in clashes.items():
+            self.get_logger().warn(
+                f"[mocap bar] the Motive asset {name} streams as id {mocap_id}, which is already "
+                f"{taken[mocap_id]!r}; not used. Give {name} another streaming ID in Motive.")
+        listed = ", ".join(f"{name} = id {mocap_id}" for mocap_id, name in sorted(found.items()))
+        print(f"[mocap bar] Motive streaming IDs of the instrumented bars: {listed or 'none'} "
+              "(a bar whose asset does not stream is read from the unlabelled markers)")
+        if no_table:
+            listed = ", ".join(f"{name} (id {mocap_id})" for mocap_id, name in sorted(no_table.items()))
+            print(f"[mocap bar] Motive also streams {listed}, but {MOCAP_MARKERS_FILENAME} has no marker table "
+                  "for them (no T20_MoCap joints in the Rhino export): they cannot be measured.")
+
+    def _own_dict(self, name: str) -> dict:
+        """A dict attribute of this monitor, made empty the first time it is asked for.
+
+        The headless harnesses build the monitor without ``__init__``, so the
+        'MoCap bar' dicts (``_mocap_bar_draws``, ...) may not exist yet.
+
+        Args:
+            name (str): The attribute name, e.g. ``'_mocap_bar_draws'``.
+
+        Returns:
+            dict: The attribute itself (changes to it are kept).
+        """
+        return self.__dict__.setdefault(name, {})
+
+    def _mocap_bar_snapshot(self, design: BarMarkers, T_design: np.ndarray, *, fallback: bool = True) -> tuple:
+        """The marker snapshot to fit a bar from, and where it came from.
+
+        The bar's own Motive asset when its markers are fresh, else (with
+        ``fallback``) Motive's unlabelled markers when fresh, else
+        (``MOCAP_BAR_FAKE_MARKERS``) made-up markers at the Rhino pose. Without
+        any of these, the freshest old snapshot, which the fit then refuses
+        saying how old it is.
+
+        Args:
+            design (BarMarkers): The bar's design markers.
+            T_design (np.ndarray): 4x4 Rhino pose of the bar (for the made-up markers).
+            fallback (bool): Also try the unlabelled and the made-up markers. Only
+                for the loaded bar: any other bar is read from its own asset alone,
+                else every bar out of view would report a failed fit.
+
+        Returns:
+            tuple: ``(markers, age_s, source)``, source ``'asset'``, ``'unlabeled'``,
+            ``'fake'``, or ``'none'`` when no marker ever arrived.
+        """
+        keys = [(design.bar_name, 'asset')] + ([('_unlabeled', 'unlabeled')] if fallback else [])
+        old = []
+        for key, source in keys:
+            markers, age_s = self.labeled_markers_snapshot(key)
+            if markers and age_s <= MOCAP_BAR_MAX_AGE_S:
+                return markers, age_s, source
+            if markers:
+                old.append((markers, age_s, source))
+        if fallback and self.MOCAP_BAR_FAKE_MARKERS:
+            return fake_sensed_markers(T_design, design.points()), 0.0, 'fake'
+        return min(old, key=lambda snapshot: snapshot[1]) if old else ({}, 0.0, 'none')
+
+    def _mocap_bar_note(self, key: str, msg: str, *, log: bool, warn: bool = False, topic: str = '') -> None:
+        """Print a 'MoCap bar' message: always after a click, only on a change while following live.
+
+        Args:
+            key (str): What the message is about; following live, a message
+                with the same key as the last one of its topic is not printed again.
+            msg (str): The message.
+            log (bool): True for a click (always printed).
+            warn (bool): A warning rather than an info line.
+            topic (str): Whose message it is: a bar's name, or ``''`` for the
+                messages about all bars. Each topic remembers its own last
+                message, so bars followed together do not reprint each other's lines.
+        """
+        notes = self._own_dict('_mocap_bar_live_notes')
+        if not log and notes.get(topic) == key:
+            return
+        notes[topic] = key
+        (self.get_logger().warn if warn else self.get_logger().info)(msg)
+
+    def measure_mocap_bars(self, *, log: bool = True) -> dict:
+        """'MoCap bar: measure + draw (streaming bars)': fit and draw every instrumented bar Motive streams.
+
+        Measured, the loaded bar first:
+
+        - the loaded action's bar when it carries markers, always, with every
+          marker fallback (its asset, else the unlabelled markers, else the
+          made-up ones, see `_mocap_bar_snapshot`);
+        - every other bar of ``MoCapMarkers.json`` with a Rhino pose in the
+          loaded action, while its own Motive asset streams fresh markers.
+
+        A bar other than the loaded one that was drawn and whose asset stopped
+        streaming loses its drawing (said once). With ``log`` (a click) a header
+        line names the bars and their marker source, then each bar prints its
+        three report lines and is searched in full. Without (following live)
+        only changes are printed, and each fit starts from the bar's last good
+        pose when that is younger than ``MOCAP_BAR_HINT_MAX_AGE_S`` (the quick
+        match, ~1 ms instead of ~20 ms). One measurement at a time (``_mocap_bar_lock``).
+
+        Args:
+            log (bool): Print the full report (a click) or only changes (following live).
+
+        Returns:
+            dict: ``{bar name: BarFit}`` of the bars measured; a bar that could
+            not be measured at all is left out (with a message).
+        """
+        with self._mocap_bar_lock:
+            markers = getattr(self, '_mocap_markers', None)
+            loaded = getattr(self, 'active_bar_name', None)
+            if markers is None:
+                self._mocap_bar_note('no table', f"[mocap bar] no {MOCAP_MARKERS_FILENAME} is loaded for this design "
+                                     "problem; export it from Rhino, then load the action again.", log=log, warn=True)
+                return {}
+            if getattr(self, 'cfab', None) is None:
+                self._mocap_bar_note('no cell', "[mocap bar] no design cell is loaded; load an action first.",
+                                     log=log, warn=True)
+                return {}
+            self._register_mocap_bar_assets()
+            loaded_design = self._mocap_bar_design(loaded)
+            asset_id_of = {name: mocap_id for mocap_id, name
+                           in (getattr(self, '_mocap_bar_asset_from_id', None) or {}).items()}
+            movements = getattr(self, '_loaded_movements', None) or []
+            first_state = movements[0].start_state if movements else None
+
+            # * Which bars, each with its marker snapshot and how the header names its source.
+            to_measure, silent = [], []
+            for design in markers.bars.values():
+                is_loaded = design is loaded_design
+                # The bar's name in this cell ('env_bar_B20' in a support robot's cell).
+                bar = loaded if is_loaded else self._active_bar_body_name(first_state, bar_id_of_body(design.bar_name))
+                designed = self._designed_bar_frame(bar) if bar else None
+                if designed is None:
+                    if is_loaded:   # _measure_bar_pose says why it cannot be measured
+                        to_measure.append((bar, None, 'held in every step, no Rhino pose'))
+                    continue
+                snapshot = self._mocap_bar_snapshot(design, pp.tform_from_pose(designed[0]), fallback=is_loaded)
+                cache, age_s, source = snapshot
+                fresh = source == 'fake' or (bool(cache) and age_s <= MOCAP_BAR_MAX_AGE_S)
+                if not (is_loaded or fresh):
+                    silent.append(bar)
+                    continue
+                label = {'asset': f"asset {asset_id_of.get(design.bar_name, '-')}", 'unlabeled': 'unlabelled',
+                         'fake': 'fake markers', 'none': 'no markers yet'}[source]
+                if source != 'fake' and cache and not fresh:
+                    label += f", {age_s:.1f} s old"
+                to_measure.append((bar, snapshot, label))
+            # The loaded bar first, the others in the file's order.
+            to_measure.sort(key=lambda item: item[0] != loaded)
+
+            # * A bar drawn before whose asset stopped streaming: its drawing goes.
+            for bar in silent:
+                if bar in self._own_dict('_mocap_bar_draws'):
+                    self._remove_mocap_bar_drawing(bar)
+                    self._mocap_bar_note(f"{bar} stopped", f"[mocap bar] {bar}: its Motive asset stopped streaming; "
+                                         "its drawing is removed.", log=log, topic=bar)
+            if not to_measure:
+                if not loaded:
+                    self._mocap_bar_note('no bar', "[mocap bar] no bar is loaded; load an action first.",
+                                         log=log, warn=True)
+                else:
+                    self._mocap_bar_note(
+                        'nothing', f"[mocap bar] nothing to measure: {loaded} carries no MoCap markers and no "
+                        f"instrumented bar streams from Motive (instrumented: {', '.join(markers.bars) or 'none'}).",
+                        log=log, warn=True)
+                return {}
+            if log:
+                listed = ", ".join(f"{bar} ({label})" for bar, _snapshot, label in to_measure)
+                self.get_logger().info(f"[mocap bar] measuring {len(to_measure)} bar(s): {listed} | "
+                                       f"instrumented but not streaming: {', '.join(silent) or 'none'}")
+
+            now = time.monotonic()
+            last = self._own_dict('_mocap_bar_last')
+            fits = {}
+            for bar, snapshot, _label in to_measure:
+                # Following live: start from the bar's last good pose when it is recent
+                # (a click always runs the full search, with its ambiguity check).
+                record = last.get(bar)
+                hint = None
+                if (not log and record is not None and record['fit'].ok
+                        and now - record['stamp'] <= MOCAP_BAR_HINT_MAX_AGE_S):
+                    hint = record['fit'].T_world_from_bar
+                fit = self._measure_bar_pose(bar, log=log, snapshot=snapshot, T_hint=hint)
+                if fit is not None:
+                    fits[bar] = fit
+            return fits
+
+    def measure_bar_pose(self, bar_name: Optional[str] = None, *, log: bool = True) -> Optional[BarFit]:
+        """Fit ONE bar's pose from its MoCap markers (default: the loaded bar) and draw it.
+
+        The panel's button measures every streaming bar (`measure_mocap_bars`);
+        this measures one, with every marker fallback of `_mocap_bar_snapshot`.
+        One measurement at a time (``_mocap_bar_lock``): the panel's buttons run
+        on the panel's thread, 'follow live' on the monitor's tick. See
+        `_measure_bar_pose` for what it does.
+
+        Args:
+            bar_name (str | None): The bar's rigid-body name; None = the loaded bar.
+            log (bool): Print the full report (a click) or only changes (following live).
+
+        Returns:
+            BarFit | None: See `_measure_bar_pose`.
+        """
+        with self._mocap_bar_lock:
+            return self._measure_bar_pose(bar_name, log=log)
+
+    def _measure_bar_pose(self, bar_name: Optional[str] = None, *, log: bool = True,
+                          snapshot: Optional[tuple] = None, T_hint: Optional[np.ndarray] = None) -> Optional[BarFit]:
+        """Fit a bar's pose from its MoCap markers, compare it with the Rhino pose and draw both.
+
+        Takes one marker snapshot (`_mocap_bar_snapshot`, every fallback) unless
+        the caller hands one in, matches it to the bar's design markers and fits
+        the pose (``fit_bar_from_cache``, around ``T_hint`` first when given),
+        compares it with the Rhino pose (``pose_deviation``) and draws both
+        (`_draw_mocap_bar`). With ``log`` it prints three lines: the verdict,
+        the per-marker residuals, and the bar's ends in world (for a tape
+        measure); without (following live) one line when the fit turns ok or failed.
+        The measurement is kept in ``_mocap_bar_last[bar_name]``: what a redraw
+        needs, the start pose of the next live fit, and 'MoCap bar: record take'.
+
+        Args:
+            bar_name (str | None): The bar's rigid-body name; None = the loaded bar.
+            log (bool): Print the full report (a click) or only changes (following live).
+            snapshot (tuple | None): ``(markers, age_s, source)`` from
+                `_mocap_bar_snapshot`, taken by the caller; None = take one here.
+            T_hint (np.ndarray | None): 4x4 pose to match around first (following live).
+
+        Returns:
+            BarFit | None: The fit (``ok`` False with a ``reason`` when it cannot be
+            trusted); None with a warning when the bar cannot be measured at all.
+        """
+        bar_name = bar_name or getattr(self, 'active_bar_name', None)
+        markers = getattr(self, '_mocap_markers', None)
+        if not bar_name:
+            self._mocap_bar_note('no bar', "[mocap bar] no bar is loaded; load an action first.", log=log, warn=True)
+            return None
+        if markers is None:
+            self._mocap_bar_note('no table', f"[mocap bar] no {MOCAP_MARKERS_FILENAME} is loaded for this design "
+                                 "problem; export it from Rhino, then load the action again.", log=log, warn=True)
+            return None
+        design = self._mocap_bar_design(bar_name)
+        if design is None:
+            self._mocap_bar_note(f"{bar_name} untracked", f"[mocap bar] {bar_name} carries no MoCap markers; "
+                                 f"instrumented bars: {', '.join(markers.bars) or 'none'}.", log=log, warn=True,
+                                 topic=bar_name)
+            return None
+        designed = self._designed_bar_frame(bar_name)
+        if designed is None:
+            self._mocap_bar_note(f"{bar_name} no pose", f"[mocap bar] {bar_name} is held in every loaded step, so "
+                                 "there is no Rhino pose to compare with; load its J or R action.", log=log, warn=True,
+                                 topic=bar_name)
+            return None
+        if getattr(self, 'cfab', None) is None:
+            self._mocap_bar_note('no cell', "[mocap bar] no design cell is loaded; load an action first.",
+                                 log=log, warn=True)
+            return None
+        design_pose, state = designed
+        T_design = pp.tform_from_pose(design_pose)
+
+        if snapshot is None:
+            self._register_mocap_bar_assets()
+            snapshot = self._mocap_bar_snapshot(design, T_design)
+        cache, age_s, source = snapshot
+        if source == 'none':
+            asset_ids = [str(mocap_id) for mocap_id, name in getattr(self, '_mocap_bar_asset_from_id', {}).items()
+                         if name == design.bar_name]
+            self._mocap_bar_note(
+                'no markers', f"[mocap bar] no markers from Motive yet, neither from {bar_name}'s asset "
+                f"(id {', '.join(asset_ids) or '-'}) nor unlabelled: is Motive streaming to this PC "
+                "('mocap client connected: True' at start-up), with the asset or 'Unlabeled Markers' on?",
+                log=log, warn=True, topic=bar_name)
+            return None
+        max_age_s = None if source == 'fake' else MOCAP_BAR_MAX_AGE_S
+        fit = fit_bar_from_cache(cache, design, age_s=age_s, max_age_s=max_age_s, T_hint=T_hint)
+        deviation = pose_deviation(fit.T_world_from_bar, T_design) if fit.ok else None
+        sensed_points = np.array([cache[marker_id]['pos'] for marker_id in fit.sensed_ids], dtype=float)
+        self._own_dict('_mocap_bar_last')[bar_name] = {
+            'bar': bar_name, 'fit': fit, 'deviation': deviation, 'source': source, 'age_s': age_s,
+            'snapshot': cache,
+            # What a redraw needs ('Rhino bar lines (pink)' changed), and when it was measured
+            # (a recent good fit is where the next live fit starts).
+            'design': design, 'state': state, 'T_design': T_design, 'sensed_points': sensed_points,
+            'stamp': time.monotonic(),
+        }
+        z_range = self._draw_mocap_bar(bar_name, design, state, T_design, fit, sensed_points)
+
+        verdict = f"{bar_name} {'ok' if fit.ok else 'failed'}"
+        if not log:
+            if fit.ok:
+                msg = (f"[mocap bar] {bar_name} live: fit ok ({fit.n_matched}/{fit.n_design} matched, "
+                       f"rms {fit.rms_m * 1000:.1f} mm, dpos {deviation.dpos_mm:.1f} mm, "
+                       f"dang {deviation.dang_deg:.2f} deg)")
+            else:
+                msg = f"[mocap bar] {bar_name} live: fit FAILED: {fit.reason}"
+            self._mocap_bar_note(verdict, msg, log=False, warn=not fit.ok, topic=bar_name)
+            return fit
+        self._own_dict('_mocap_bar_live_notes')[bar_name] = verdict
+        self._log_mocap_bar_fit(bar_name, design, fit, deviation, source, age_s, T_design, z_range)
+        return fit
+
+    def _log_mocap_bar_fit(self, bar_name: str, design: BarMarkers, fit: BarFit,
+                           deviation: Optional[PoseDeviation], source: str, age_s: float,
+                           T_design: np.ndarray, z_range: tuple) -> None:
+        """Print the three report lines of a 'MoCap bar: measure + draw' click.
+
+        (1) the verdict: marker source and age, how many matched, rms / max
+        residual, the deviation from the Rhino pose (also in the bar frame:
+        dz is along the bar); (2) every matched marker's residual by name, the
+        missing names and the number of stray markers; (3) the bar's two ends
+        in world, Rhino and MoCap (z = height above the floor), for a tape measure.
+
+        Args:
+            bar_name (str): The bar's rigid-body name.
+            design (BarMarkers): Its design markers.
+            fit (BarFit): The fit.
+            deviation (PoseDeviation | None): From the Rhino pose; None when the fit failed.
+            source (str): ``'asset'``, ``'unlabeled'`` or ``'fake'``.
+            age_s (float): Age of the marker snapshot, seconds.
+            T_design (np.ndarray): 4x4 Rhino pose.
+            z_range (tuple): The bar's ``(z_min, z_max)`` along its axis (bar start and end).
+        """
+        parts = [f"[mocap bar] {bar_name}", f"source {source} (age {age_s * 1000:.0f} ms)",
+                 f"{fit.n_matched}/{fit.n_design} matched"]
+        if fit.rms_m is not None:
+            parts.append(f"rms {fit.rms_m * 1000:.1f} mm, max {fit.max_residual_m * 1000:.1f} mm")
+        if deviation is not None:
+            dx, dy, dz = deviation.dpos_bar_mm
+            parts.append(f"dpos {deviation.dpos_mm:.1f} mm, dang {deviation.dang_deg:.2f} deg")
+            parts.append(f"in the bar frame: dx {dx:.1f}, dy {dy:.1f}, dz(along) {dz:.1f} mm")
+        parts.append('ok' if fit.ok else f"FAILED: {fit.reason}")
+        if fit.ambiguous:
+            parts.append('AMBIGUOUS')
+        self.get_logger().info(" | ".join(parts))
+
+        names = design.names()
+        by_design = sorted(fit.correspondences.items(), key=lambda pair: pair[1])
+        residuals = ", ".join(f"{names[d]} {fit.residuals_m[s] * 1000:.1f}" for s, d in by_design)
+        missing = ", ".join(names[d] for d in fit.missing_design)
+        self.get_logger().info(f"[mocap bar] residuals (mm): {residuals or 'none'} | missing: {missing or 'none'} "
+                               f"| stray sensed: {len(fit.unmatched_sensed)}")
+
+        def ends(T: np.ndarray) -> str:
+            """The bar's start and end in world, mm, for the log line."""
+            start, end = bar_end_points(T, z_range) * 1000.0
+            return (f"start [{start[0]:.0f} {start[1]:.0f} {start[2]:.0f}] "
+                    f"end [{end[0]:.0f} {end[1]:.0f} {end[2]:.0f}]")
+        mocap_ends = ends(fit.T_world_from_bar) if fit.ok else '-'
+        self.get_logger().info(f"[mocap bar] bar ends (world, mm): Rhino {ends(T_design)} | MoCap {mocap_ends}")
+
+    def _draw_mocap_bar(self, bar_name: str, design: BarMarkers, state: RobotCellState,
+                        T_design: np.ndarray, fit: BarFit,
+                        sensed_points: np.ndarray) -> tuple:
+        """Draw a bar fit: the Rhino and MoCap copies of the bar + joints, and the debug lines.
+
+        The two see-through copies (``mocap_bar_viz.build_bar_joint_ghost``) are
+        built once per bar: pink at the Rhino pose, cyan at the fitted pose
+        (hidden while the fit fails). The debug lines and text
+        (``mocap_bar_viz.draw_bar_fit``) are redrawn in place every time; the
+        pink Rhino centre line + label only while 'Rhino bar lines (pink)' is
+        ticked. Each bar has its own drawing (``_mocap_bar_draws``).
+
+        Args:
+            bar_name (str): The bar's rigid-body name.
+            design (BarMarkers): Its design markers.
+            state (RobotCellState): The state the bar rests in (places the joints on the bar).
+            T_design (np.ndarray): 4x4 Rhino pose.
+            fit (BarFit): The fit.
+            sensed_points (np.ndarray): (N, 3) the fit's sensed markers, by sensed index.
+
+        Returns:
+            tuple: The bar's ``(z_min, z_max)`` along its axis.
+        """
+        client = self.cfab.client.client_id
+        draws = self._own_dict('_mocap_bar_draws')
+        # ! Draw with the GUI's rendering paused: otherwise every debug line waits
+        # ! for a frame, and one redraw stalls the monitor's tick for ~100 ms
+        # ! (measured 2026-10-16 on the 2ModulesDemo cell; ~1 ms paused). Not
+        # ! pp.LockRenderer: see mocap_bar_viz.rendering_paused.
+        with rendering_paused(client):
+            draw = draws.get(bar_name)
+            if draw is not None and draw['client'] != client:
+                self._remove_mocap_bar_drawing(bar_name)
+                draw = None
+            if draw is None:
+                if getattr(self, '_mocap_bar_mesh_dir', None) is None:
+                    self._mocap_bar_mesh_dir = tempfile.mkdtemp(prefix='husky_mocap_bar_')
+                cell = self.cfab.robot_cell
+                joints = joints_on_bar(state.rigid_body_states or {}, bar_id_of_body(bar_name))
+                draw = {'bar': bar_name, 'client': client, 'items': {}, 'z_range': bar_z_range(cell, bar_name)}
+                for key, rgba in (('rhino', ASSEMBLED_BAR_PINK), ('mocap', MOCAP_BAR_CYAN)):
+                    draw[key] = build_bar_joint_ghost(cell, state, bar_name, joints, rgba,
+                                                      self._mocap_bar_mesh_dir, client)
+                draws[bar_name] = draw
+            set_ghost_pose(draw['rhino'], pp.pose_from_tform(T_design), client)
+            set_ghost_pose(draw['mocap'], pp.pose_from_tform(fit.T_world_from_bar) if fit.ok else GHOST_HIDDEN_POSE,
+                           client)
+            draw['items'] = draw_bar_fit(
+                draw['items'], client, bar_label=bar_id_of_body(bar_name) or bar_name, z_range=draw['z_range'],
+                T_design=T_design, fit=fit, sensed_points=sensed_points, design=design,
+                rhino_rgb=ASSEMBLED_BAR_PINK[:3], mocap_rgb=MOCAP_BAR_CYAN[:3],
+                show_rhino_lines=self._show_rhino_bar_lines())
+        return draw['z_range']
+
+    def _redraw_mocap_bars(self) -> None:
+        """Redraw every bar now drawn from its last measurement (no new fit).
+
+        For a change of 'Rhino bar lines (pink)', also while 'follow live' is off.
+        """
+        last = self._own_dict('_mocap_bar_last')
+        for bar_name in list(self._own_dict('_mocap_bar_draws')):
+            record = last.get(bar_name)
+            if record is not None:
+                self._draw_mocap_bar(bar_name, record['design'], record['state'], record['T_design'],
+                                     record['fit'], record['sensed_points'])
+
+    def _remove_mocap_bar_drawing(self, bar_name: str) -> None:
+        """Remove one bar's two copies and its debug lines / text.
+
+        Args:
+            bar_name (str): The bar's rigid-body name; nothing happens when it is not drawn.
+        """
+        draw = self._own_dict('_mocap_bar_draws').pop(bar_name, None)
+        if draw is None:
+            return
+        remove_ghost(draw['rhino'], draw['client'])
+        remove_ghost(draw['mocap'], draw['client'])
+        remove_debug_items(draw['items'], draw['client'])
+
+    def clear_mocap_bar_drawing(self) -> None:
+        """'MoCap bar: clear drawing': remove every bar's two copies and the debug lines / text.
+
+        Also done at every action load. While 'follow live' is ticked the next
+        re-fit draws again.
+        """
+        with self._mocap_bar_lock:
+            for bar_name in list(self._own_dict('_mocap_bar_draws')):
+                self._remove_mocap_bar_drawing(bar_name)
+
+    def _service_mocap_bar_follow(self) -> None:
+        """While 'MoCap bar: follow live (10 Hz)' is ticked, re-fit and redraw every streaming bar 10 times a second.
+
+        Called from ``update`` (every other tick of its 20 Hz timer). Each fit
+        starts from the bar's last pose (``measure_mocap_bars(log=False)``), so a
+        bar costs ~1 ms to fit and ~1 ms to draw. Prints only when a fit turns
+        ok or failed, or a bar stops streaming. Unticking keeps the last drawing.
+        A fit or drawing error is logged once and never stops the monitor's tick.
+        """
+        tgl = getattr(self, 'mocap_bar_follow_toggle', None)
+        if tgl is None:
+            return
+        tgl.update()
+        # Read live, not from the click callback, which a rebuilt checkbox can miss.
+        ticked = tgl.value
+        if ticked is not None:
+            self._mocap_bar_follow = bool(ticked)
+        now = time.monotonic()
+        # 0.9: the tick comes every 50 ms, so a re-fit due at 99.9 ms must not wait until 150 ms.
+        if not self._mocap_bar_follow or now - self._mocap_bar_follow_stamp < 0.9 * MOCAP_BAR_FOLLOW_PERIOD_S:
+            return
+        # A click is measuring (panel thread): skip this frame rather than hold up the tick.
+        if not self._mocap_bar_lock.acquire(blocking=False):
+            return
+        self._mocap_bar_follow_stamp = now
+        try:
+            self.measure_mocap_bars(log=False)
+        except Exception as e:  # a fit or drawing error must never stop the monitor's tick
+            self._mocap_bar_note(f"error {e!r}", f"[mocap bar] live fit error: {e!r}", log=False, warn=True)
+        finally:
+            self._mocap_bar_lock.release()
+
+    def record_mocap_bar_take(self) -> None:
+        """'MoCap bar: record take': measure every streaming bar now and keep one take per bar.
+
+        Measures like the 'measure + draw' button (`measure_mocap_bars`, full
+        search, full report). Like 'Record + Fit + Viz (shared)', each take
+        joins ``marker_set_data`` (unsaved) with the bar's marker snapshot under
+        its name, the fit, the deviation from the Rhino pose, where the markers
+        came from, their age and the tool force/torque, plus the bar's own
+        marker table (``design_markers``) and Rhino pose
+        (``design_T_world_from_bar``), so each take can be re-fitted from the
+        saved file alone. 'Save markerset data' writes them.
+        """
+        # The lock keeps a follow-live re-fit from replacing the measurements in between.
+        with self._mocap_bar_lock:
+            fits = self.measure_mocap_bars()
+            records = [self._mocap_bar_last[bar_name] for bar_name in fits]
+        if not records:
+            return
+        tool_ft = self._tool_ft_reading()
+        for record in records:
+            fit, design = record['fit'], record['design']
+            take = {
+                record['bar']: record['snapshot'],
+                'markerset_key': record['bar'],
+                'bar_fit': fit.to_json(),
+                'deviation': record['deviation'].to_json() if record['deviation'] is not None else None,
+                'marker_source': record['source'],
+                'marker_age_s': record['age_s'],
+                'tool_ft': tool_ft,
+                'design_markers': [{'name': m.name, 'joint': m.joint, 'label': m.label, 'bar_m': list(m.bar_m)}
+                                   for m in design.markers],
+                'design_T_world_from_bar': np.asarray(record['T_design']).tolist(),
+            }
+            self.marker_set_data.append(take)
+            msg = (f"[mocap bar] take {len(self.marker_set_data)} recorded: {record['bar']} "
+                   "(unsaved; 'Save markerset data' writes it)")
+            if not fit.ok:
+                msg += "; its fit FAILED (see above)"
+            if not self.BAR_ACTION_MOCAP_ACCURACY_TEST:
+                msg += ("; ! the 'Save markerset data' button is only on the panel with "
+                        "BAR_ACTION_MOCAP_ACCURACY_TEST = 1")
+            self.get_logger().info(msg)
 
     def _build_trajectory_waypoint_sliders(self):
         """Add up to two "step through waypoints" sliders on the cfab PyBullet
@@ -11980,6 +12868,38 @@ class HuskyMonitor(Node):
             self.buttons.append(Button('3b) Servo to Mv Start (transfer loop)',
                 lambda: self.queue_servo_to_movement_start(use_transfer=True)))
 
+        # * MoCap bar (joint markers): every streaming bar's pose from the Motive balls
+        # * on its T20_MoCap joints, drawn next to its Rhino pose (pink = Rhino, cyan =
+        # * MoCap). Desk rehearsal without Motive: MOCAP_BAR_FAKE_MARKERS = 1.
+        show_mocap_bar = self.USE_MOCAP or self.MOCAP_BAR_FAKE_MARKERS
+        # The pink assembled-bar lines are drawn in the mocap accuracy mode too
+        # (BAR_ACTION_MOCAP_ACCURACY_TEST), so their checkbox shows then as well.
+        if show_mocap_bar or self.BAR_ACTION_MOCAP_ACCURACY_TEST:
+            self.dump_sep_sliders.append(Separator("MoCap bar (joint markers)"))
+            # * Ticked: the pink Rhino lines + labels (every loaded bar's assembled
+            # * pose, and each MoCap drawing's Rhino centre line). update() applies a
+            # * change. Seeded from the flag so a reset_ui rebuild keeps the tick.
+            self.rhino_bar_lines_toggle = Toggle(
+                'Rhino bar lines (pink)',
+                lambda v: setattr(self, 'SHOW_RHINO_BAR_LINES', int(bool(v))),
+                bool(self.SHOW_RHINO_BAR_LINES),
+            )
+        else:
+            self.rhino_bar_lines_toggle = None
+        if show_mocap_bar:
+            self.buttons.append(Button('MoCap bar: measure + draw (streaming bars)', self.measure_mocap_bars,
+                                       color=BUTTON_PLAN_RGB))
+            # Seeded from the flag so a reset_ui rebuild keeps the tick; update() reads it live.
+            self.mocap_bar_follow_toggle = Toggle(
+                'MoCap bar: follow live (10 Hz)',
+                lambda v: setattr(self, '_mocap_bar_follow', bool(v)),
+                bool(getattr(self, '_mocap_bar_follow', False)),
+            )
+            self.buttons.append(Button('MoCap bar: clear drawing', self.clear_mocap_bar_drawing))
+            self.buttons.append(Button('MoCap bar: record take', self.record_mocap_bar_take))
+        else:
+            self.mocap_bar_follow_toggle = None
+
         if self.CONNECT_COMPLIANT_CONTROLLER:
             # self.dump_sep_sliders.append(Slider("----------CONTROLLERS", lambda: None))
             self.dump_sep_sliders.append(Separator("CONTROLLERS"))
@@ -12194,8 +13114,8 @@ class HuskyMonitor(Node):
 
         self.mocap_client.rigid_body_listener = self.receive_rigid_body_frame
         self.mocap_client.new_frame_listener = self.receive_mocap_frame
-        if self.BAR_ACTION_MOCAP_ACCURACY_TEST:
-            self.mocap_client.labeled_marker_listener = self.receive_labeled_marker
+        # Labelled markers: the bar_rig takes and the 'MoCap bar' panel.
+        self.mocap_client.labeled_marker_listener = self.receive_labeled_marker
 
         if self.mocap_client.run():
             start_connect = time.time()
@@ -12205,7 +13125,8 @@ class HuskyMonitor(Node):
                     break
             connected = self.mocap_client.connected()
             color = self._ANSI_GREEN if connected else self._ANSI_RED
-            self.get_logger().info(f"{color}mocap client connected: {connected}{self._ANSI_RESET}")
+            self.get_logger().info(f"{color}mocap client connected: {connected}{self._ANSI_RESET} "
+                                   f"(this PC {CLIENT_IP}, Motive {MOCAP_IP})")
             if connected:
                 self.mocap_client.request_model_definitions()
         else:
@@ -12299,30 +13220,49 @@ class HuskyMonitor(Node):
             o.mocap_callback(pos, rot, ts)
         # self._mocap_rigidbody_cache.clear()
 
-    def receive_labeled_marker(self, labeled_marker_from_model_id):
-        # print('Received labeled marker data:', labeled_marker_from_model_id)
-        # name = self.name_from_mocap_id[id]
-        # if name not in self._mocap_rigidbody_cache:
-        #     self.get_logger().warn(f'Mocap {name} not found in rb cache!')
-        #     return
-        # rb_pose = self._mocap_rigidbody_cache[name]
+    def receive_labeled_marker(self, labeled_marker_from_model_id: dict) -> None:
+        """Cache one mocap frame's labelled markers, per model (runs in the NatNet thread).
 
+        A model's markers are REPLACED by this frame's, so a marker that is no
+        longer seen disappears instead of lingering; the time stamp says how
+        fresh they are (a model missing from a frame keeps its last markers,
+        growing old). The key is the model's tracked-body name
+        (``name_from_mocap_id``, e.g. ``'bar_rig'``), an instrumented bar's own
+        asset (``_mocap_bar_asset_from_id``, e.g. ``'bar_B20'``), or
+        ``'_unlabeled'`` for model id 0, Motive's unlabelled markers. Other
+        models are skipped. Read with ``labeled_markers_snapshot``.
+
+        Args:
+            labeled_marker_from_model_id (dict): ``{model id: {marker id: {'pos':
+                y-up position, 'size': 1-tuple, 'error': float, 'flags': int}}}`` from NatNet.
+        """
+        now = time.monotonic()
+        bar_assets = getattr(self, '_mocap_bar_asset_from_id', None) or {}
+        fresh = {}
         for model_id, marker_datas in labeled_marker_from_model_id.items():
-            if model_id not in self.name_from_mocap_id:
+            if model_id == 0:
+                key = '_unlabeled'
+            else:
+                key = self.name_from_mocap_id.get(model_id) or bar_assets.get(model_id)
+            if key is None:
                 continue
-
-            name = self.name_from_mocap_id[model_id]
-            if name not in self._mocap_labeled_marker_cache:
-                self._mocap_labeled_marker_cache[name] = {}
-
-            for marker_id, marker_data in marker_datas.items():
-                pos = mocap_pos_y_up_to_z_up(marker_data['pos'], self.MOCAP_AXIS_CONVENTION)
-                self._mocap_labeled_marker_cache[name][marker_id] = {
-                    'pos': pos,
-                    'size': marker_data['size'],
+            fresh[key] = {
+                marker_id: {
+                    'pos': mocap_pos_y_up_to_z_up(marker_data['pos'], self.MOCAP_AXIS_CONVENTION),
+                    # NatNet hands a 1-tuple; a list keeps saved takes as before ([0.0188]).
+                    'size': (list(marker_data['size']) if isinstance(marker_data['size'], (list, tuple))
+                             else marker_data['size']),
                     'error': marker_data['error'],
+                    # Motive's marker flags (0x01 = occluded: the position is then Motive's
+                    # guess from the asset, which the bar fit drops); 0 when not sent.
+                    'flags': marker_data.get('flags', 0),
                 }
-            # print(f'Received marker set data for {name}:', self._mocap_labeled_marker_cache[name])
+                for marker_id, marker_data in marker_datas.items()
+            }
+        with self._mocap_cache_lock:
+            self._mocap_labeled_marker_cache.update(fresh)
+            for key in fresh:
+                self._mocap_labeled_marker_stamp[key] = now
      
     # --- --- --- --- --- UPDATE --- --- --- --- --- 
     def update(self):
@@ -12416,7 +13356,7 @@ class HuskyMonitor(Node):
                 if sld:
                     sld.update()
             self._poll_m1_manual_preview()
-            self._redraw_assembled_bar_line()
+            self._redraw_assembled_bar_lines()
             if hasattr(self, 'm1_adopt_save_toggle') and self.m1_adopt_save_toggle:
                 self.m1_adopt_save_toggle.update()
             tgl = getattr(self, 'transfer_free_move_toggle', None)
@@ -12460,6 +13400,11 @@ class HuskyMonitor(Node):
                     self._apply_visual_diagnosis(ticked)
             if hasattr(self, 'fm_swept_validation_slider') and self.fm_swept_validation_slider:
                 self.fm_swept_validation_slider.update()
+
+        # 'Rhino bar lines (pink)': a change shows / hides the pink Rhino lines right away.
+        self._service_rhino_bar_lines()
+        # 'MoCap bar: follow live (10 Hz)': re-fit + redraw every streaming bar while ticked.
+        self._service_mocap_bar_follow()
 
         if not self.USE_MOCAP:
             pass

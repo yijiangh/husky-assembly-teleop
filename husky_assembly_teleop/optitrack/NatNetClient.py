@@ -570,6 +570,9 @@ class NatNetClient:
                     'pos' : pos,
                     'size' : size,
                     'error' : residual,
+                    # bit 0x01 = occluded (pos is then Motive's guess from the asset),
+                    # 0x02 = point-cloud solved, 0x04 = model solved
+                    'flags' : param,
                 }
 
                 labeled_marker = MoCapData.LabeledMarker(tmp_id,pos,size,param, residual)

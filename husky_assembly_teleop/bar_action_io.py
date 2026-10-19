@@ -28,6 +28,8 @@ The data classes live in `rs_data_structure.bar_action`. compas's
 - `step_index_of(steps, movement_index)` → which step holds a movement
 - `bar_body_name` / `find_bar_body` / `is_built_assembly_body` → the built
   bars' rigid-body names, which differ between Cindy's and the support cells
+- `joints_on_bar(rb_names, bar_id)` → the joint bodies mounted on a bar, from
+  the Rhino joint names
 - `held_ground_joints(state)` → the ground joints held in the tools: a GROUNDED
   bar (its insert runs rigid and never tightens)
 - `mating_arm_sides(state)` → the arms whose held male joint has a female to
@@ -54,7 +56,7 @@ import os
 import re
 from dataclasses import dataclass
 from enum import Enum
-from typing import Container, Optional, Union
+from typing import Container, Iterable, Optional, Union
 
 from compas.data import json_load
 
@@ -968,3 +970,54 @@ def bar_id_of_body(name: str) -> Optional[str]:
     if name.startswith(_SUPPORT_RB_PREFIX):
         name = name[len(_SUPPORT_RB_PREFIX):]
     return name[len("bar_"):] if name.startswith("bar_") else None
+
+
+# * Joint ids after the Rhino naming (joint_name_conventions.py in the Rhino repo):
+# * a pair joint is 'J<receiver bar>-<male bar>', a one-bar joint is
+# * 'G<bar>-<Type>-<i>' (ground) or 'M<bar>-<Type>-<i>' (a standalone mocap
+# * plate). The body name adds the role: 'joint_J20-21_male' sits on the male
+# * bar B21, every other half of that pair ('_female', '_mocap') on the
+# * receiving bar B20; 'joint_G20-T20-0_ground' sits on B20.
+_PAIR_JOINT_ID_RE = re.compile(r"^J([^-]+)-([^-]+)$")
+_SINGLE_JOINT_ID_RE = re.compile(r"^[GM]([^-]+)-.+-\d+$")
+
+
+def _bar_id_of_joint_body(name: str) -> Optional[str]:
+    """The bar a joint body sits on, read from its name alone.
+
+    Args:
+        name (str): e.g. ``'joint_J20-21_mocap'`` or ``'env_joint_G20-T20-0_ground'``.
+
+    Returns:
+        str | None: e.g. ``'B20'``; None when the body is not a joint of that naming.
+    """
+    if name.startswith(_SUPPORT_RB_PREFIX):
+        name = name[len(_SUPPORT_RB_PREFIX):]
+    if not name.startswith("joint_"):
+        return None
+    joint_id, _, role = name[len("joint_"):].rpartition("_")
+    pair = _PAIR_JOINT_ID_RE.match(joint_id)
+    if pair:
+        # Group 1 is the receiving bar, group 2 the male bar.
+        return "B" + pair.group(2 if role == "male" else 1)
+    single = _SINGLE_JOINT_ID_RE.match(joint_id)
+    return "B" + single.group(1) if single else None
+
+
+def joints_on_bar(rb_names: Iterable[str], bar_id: str) -> list[str]:
+    """The joint bodies mounted on a bar, from the names alone.
+
+    For B20 this is the set held with B20 in its J action: its mocap and female
+    halves (``joint_J20-*_mocap`` / ``_female``), the male halves of pairs it
+    screws into (``joint_J*-20_male``) and its ground / standalone mocap joints
+    (``joint_G20-*`` / ``joint_M20-*``).
+
+    Args:
+        rb_names (Iterable[str]): Rigid-body names, e.g. the keys of
+            ``rigid_body_states``; non-joint names are ignored.
+        bar_id (str): e.g. ``'B20'`` (use `bar_id_of_body` for ``'bar_B20'``).
+
+    Returns:
+        list[str]: The joint body names on that bar, sorted.
+    """
+    return sorted(name for name in rb_names if _bar_id_of_joint_body(name) == bar_id)
