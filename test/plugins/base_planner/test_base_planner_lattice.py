@@ -17,7 +17,7 @@ from husky_assembly_teleop.plugins.base_planner.follow import followed, thinned
 from husky_assembly_teleop.plugins.base_planner.path import MAX_ANGULAR_SPEED, MAX_LINEAR_SPEED, SETTLE_DISTANCE
 from husky_assembly_teleop.plugins.base_planner.tasks import PASSAGE_ANGLE, WHEELS, Task, along, passage, to_lab
 from scaffolding_assembly_core.scene import Body
-from test_base_planner_rrt import _snapshot, alice, robots, world  # noqa: F401  (fixtures)
+from test_base_planner_rrt import POST, _holding_bar, _snapshot, alice, robots, world  # noqa: F401  (fixtures)
 
 #: The passages are the tasks' (`tasks.passage`), with the task frame at ORIGIN: they run along ALONG through CENTRE,
 #: slanted off the grid.
@@ -77,6 +77,18 @@ def test_target_inside_a_robot_is_refused_with_a_reason(world, robots, alice):  
     world.sync(_snapshot(robots))
     result = plan(world, alice, (0.0, 0.0, 0.0), (2.0, 0.2, 0.0), threading.Event())
     assert result.path is None and "target" in result.reason
+
+
+@pytest.mark.slow
+def test_plans_around_what_the_robot_holds(world, robots, alice):  # noqa: F811
+    """The move west passes the post, but the bar Alice holds would hit it: the path keeps the bar clear too."""
+    start, goal = (0.0, 0.0, np.pi), (-1.6, 0.0, np.pi)
+    world.sync(_snapshot(robots, [POST]))
+    assert plan(world, alice, start, goal, threading.Event()).direct
+    world.sync(_holding_bar(robots, alice))
+    result = plan(world, alice, start, goal, threading.Event())
+    assert result.path is not None and not result.direct, result.reason
+    _assert_followed_clear(world, alice, result.path)
 
 
 def test_drives_in_one_direction_merge_and_turns_on_one_spot_merge():

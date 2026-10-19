@@ -9,15 +9,16 @@ from repo_paths import DATA
 from husky_assembly_teleop.config import robot_config_from_serial
 from scaffolding_assembly_core.geometry import box_geometry
 from husky_assembly_teleop.plugins.base_planner.algorithms import ALGORITHMS, Debug
-from husky_assembly_teleop.plugins.base_planner.algorithms.base import LEAD
+from husky_assembly_teleop.plugins.base_planner.algorithms.base import LEAD, POSITION_STEP, YAW_STEP, yaw_step
 from husky_assembly_teleop.plugins.base_planner.algorithms.rrt_arcs import plan
 from husky_assembly_teleop.plugins.base_planner.world import PlanningWorld, stowed
 from husky_assembly_teleop.shared.planner.planner_search import with_guesses
 from scaffolding_assembly_core.robot import RobotObject
-from scaffolding_assembly_core.scene import Body, Scene
+from scaffolding_assembly_core.kinematics import link_pose
+from scaffolding_assembly_core.scene import Attachment, Body, Scene
 from scaffolding_assembly_core.ids import robot_id
 from scaffolding_assembly_core.urdf import UR_JOINT_NAMES
-from scaffolding_assembly_core.geometry import Pose
+from scaffolding_assembly_core.geometry import Pose, compose
 
 
 # ? 2 m wide: at 3 m the detour barely fits the sampled area (SAMPLE_PADDING) next to Cindy; half the searches failed.
@@ -189,3 +190,40 @@ def test_debug_records_the_search(world, robots, alice):
     off = Debug()
     plan(world, alice, (0.0, 0.0, 0.0), (4.0, 0.0, 0.0), threading.Event(), debug=off)
     assert not off.layers and off.notes, "off, nothing is drawn but the notes are kept"
+
+
+def test_stowed_moves_what_the_arm_holds_with_it(robots, alice):
+    """A body held at the tool follows the arm to its stow pose; others stay where they are."""
+    snapshot = _snapshot(robots, [WALL])
+    held = Body("test/held", box_geometry((0.1, 0.1, 0.1)), Attachment(alice, "ur_arm_tool0", Pose((0.0, 0.0, 0.1))))
+    snapshot.bodies[held.id] = held
+    snapshot.world_poses[held.id] = Pose((9.0, 9.0, 9.0))  # wherever the live arm had it
+    stowed_snapshot, _ = stowed(snapshot, alice, robots[0])
+    robot = stowed_snapshot.robots[alice]
+    expected = compose(link_pose(robot.model.urdf, robot.base, robot.joints, "ur_arm_tool0"), held.placement.offset)
+    np.testing.assert_allclose(stowed_snapshot.world_poses[held.id].position, expected.position, atol=1e-9)
+    assert stowed_snapshot.world_poses[WALL.id] == WALL.placement
+    assert snapshot.world_poses[held.id] == Pose((9.0, 9.0, 9.0))
+
+
+#: A post beside the drive west from Alice (away from Cindy), clear of her but not of a bar held across her
+#: (`_holding_bar`).
+POST = Body("test/post", box_geometry((0.1, 0.1, 2.0)), Pose((-1.0, 1.1, 1.0)), label="post")
+
+
+def _holding_bar(robots, alice) -> Scene:
+    """`_snapshot` with POST, and Alice holding a 2.4 m bar across her, 1 m up: it hits POST driving west past it."""
+    snapshot = _snapshot(robots, [POST])
+    bar = Body("test/bar", box_geometry((0.1, 2.4, 0.1)), Attachment(alice, None, Pose((0.0, 0.0, 1.0))), label="bar")
+    snapshot.bodies[bar.id] = bar
+    snapshot.world_poses[bar.id] = compose(snapshot.robots[alice].base, bar.placement.offset)
+    return snapshot
+
+
+def test_turns_are_checked_finer_the_further_the_robot_reaches(world, robots, alice):
+    """Stowed, checks turn by YAW_STEP; holding a 2.4 m bar, by so little that its ends move at most POSITION_STEP."""
+    world.sync(stowed(_snapshot(robots), alice, robots[0])[0])
+    assert yaw_step(world, alice, (-0.2, -0.1)) == YAW_STEP
+    world.sync(_holding_bar(robots, alice))
+    step = yaw_step(world, alice, (-0.2, -0.1))
+    assert step < YAW_STEP and step * (1.2 + 0.2) <= POSITION_STEP + 1e-9

@@ -148,6 +148,18 @@ def test_plan_goes_stale_once_the_robot_moves_from_its_start(x, stale):
     assert ("moved" in planner.plan.message) == stale
 
 
+@pytest.mark.parametrize("elbow, stale", [(0.01, False), (0.1, True)])
+def test_plan_goes_stale_once_an_arm_moves(elbow, stale):
+    """The plan is for the arm as it was: it goes stale once a joint moves beyond STALE_JOINT."""
+    _, planner = commit(FakeBase(follower_age=None))
+    planner._start_joints = (planner.plan.path, {"ur_arm_elbow_joint": 0.0, "ur_arm_wrist_1_joint": 1.0})
+    pose = SimpleNamespace(position=np.zeros(3), orientation=np.array([0.0, 0.0, 0.0, 1.0]))
+    planner.update(SimpleNamespace(kinematics=SimpleNamespace(base_pose=lambda _serial: pose, joints=lambda _serial: {
+        "ur_arm_elbow_joint": elbow, "ur_arm_wrist_1_joint": 1.0})))
+    assert planner.plan.state == ("stale" if stale else "ready")
+    assert ("arm moved" in planner.plan.message) == stale
+
+
 def test_request_settings_become_the_algorithms_settings():
     """The request's (name, value) pairs replace the defaults; an unknown algorithm or setting is refused."""
     planner = BasePlannerPlugin()

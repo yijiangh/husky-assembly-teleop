@@ -32,7 +32,7 @@ XICR_STEP = 0.025
 FOLLOWER_MODEL = "alice_tiles_2"
 #: Straight drive onto the target (and off the start, for the RRT), metres: no turn on the spot there.
 LEAD = 0.5
-#: Collision-checking resolution along a move: metres driven, radians turned.
+#: Collision-checking resolution along a move: metres driven, and at most radians turned (`yaw_step`).
 POSITION_STEP = 0.05
 YAW_STEP = 0.05
 
@@ -128,6 +128,14 @@ class Algorithm:
             PlanResult[BasePath]: The path, or why there is none.
         """
         raise NotImplementedError
+
+
+def yaw_step(world: PlanningWorld, own: str, x_icrs) -> float:
+    """The turn between checked poses: YAW_STEP, or less where the robot or what it holds reaches far.
+
+    Turning by it about any turning centre in `x_icrs` (crl_husky xICR, metres) moves no part more than POSITION_STEP.
+    """
+    return min(YAW_STEP, POSITION_STEP / (world.reach(own) + max(abs(x_icr) for x_icr in x_icrs)))
 
 
 def follower_models() -> list[str]:

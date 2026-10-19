@@ -23,8 +23,8 @@ from ..follow import XICR_RANGE
 from ..path import (ARC_STEP, BasePath, densify, driven, move_margins, round_corners, steer, steer_cost, steer_points,
                     timed_path)
 from ..world import COLLISION_MARGIN, PlanningWorld
-from .base import (FOLLOWER_MODEL, LEAD, POSITION_STEP, XICR_STEP, YAW_STEP, Algorithm, Debug, add_follower_settings,
-                   add_margin_setting)
+from .base import (FOLLOWER_MODEL, LEAD, POSITION_STEP, XICR_STEP, Algorithm, Debug, add_follower_settings,
+                   add_margin_setting, yaw_step)
 
 #: Arc radii tried in place of a turn on the spot, widest first, metres.
 ARC_RADII = (2.0, 1.0, 0.5)
@@ -135,13 +135,14 @@ def plan(world: PlanningWorld, own: str, start, goal, abort: threading.Event, se
     icrs = np.linspace(low_icr, high_icr, max(int(math.ceil((high_icr - low_icr) / XICR_STEP)), 1) + 1)
     # The worst case, for the search: the farthest the turning centre may be from base_footprint.
     farthest = max(abs(low_icr), abs(high_icr))
+    turn_step = yaw_step(world, own, (low_icr, high_icr, x_model))
     # Where the last failed `clear` hit, as driven with which xICR, and what.
     failure: list = []
 
     def clear(poses) -> bool:
         """Whether driving through `poses` (yaw unwrapped) stays clear, for every xICR in the range."""
         for icr in icrs:
-            for pose in driven(poses, icr, x_model, POSITION_STEP, YAW_STEP):
+            for pose in driven(poses, icr, x_model, POSITION_STEP, turn_step):
                 if abort.is_set():
                     return False
                 other = world.hit_by(own, pose, margin)
@@ -155,7 +156,7 @@ def plan(world: PlanningWorld, own: str, start, goal, abort: threading.Event, se
 
     def found(poses, direct: bool = False) -> PlanResult[BasePath]:
         for icr in icrs:
-            debug.path(DRIVEN[0], driven(poses, icr, x_model, POSITION_STEP, YAW_STEP), DRIVEN[1])
+            debug.path(DRIVEN[0], driven(poses, icr, x_model, POSITION_STEP, turn_step), DRIVEN[1])
         lap(f"found: {len(poses)} waypoints, checked for {len(icrs)} xICR values, {low_icr:+.3f} to {high_icr:+.3f} m, "
             f"follower model {settings.follower_model} (xICR {x_model:+.3f} m)")
         # `densify` gives the poses after the first: put the start back, or the plan starts past it.
@@ -207,7 +208,7 @@ def plan(world: PlanningWorld, own: str, start, goal, abort: threading.Event, se
     checked: dict[tuple, bool] = {}
 
     def extend(q1, q2):
-        points = steer_points(q1, q2, POSITION_STEP, YAW_STEP)
+        points = steer_points(q1, q2, POSITION_STEP, turn_step)
         for point, extra_margin in zip(points, move_margins(q1, points, farthest)):
             extra[point] = max(extra.get(point, 0.0), extra_margin)
         if debug.on:

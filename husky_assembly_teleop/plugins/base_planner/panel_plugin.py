@@ -32,7 +32,6 @@ from ...ui.pybullet_window import add_pybullet_window_toggle
 from ...ui.style import BUSY, OK, SECTION_CTRL, SECTION_TOOL, block, check_chip, chip, section, values
 from ...robot_interface.base import live_report
 from ...world.follower import path_check
-from ...world.kinematics import stow_joints
 from scaffolding_assembly_core.geometry import Pose
 from .algorithms import ALGORITHMS, Algorithm
 from .debug_view import DebugView
@@ -239,21 +238,18 @@ class BasePlannerPanel(PlannerPanel):
         return "the target changed since planning" if differs(self._target.pose, plan.request.goal) else ""
 
     def show_target(self, ctx: PluginContext, ghost: RobotGhost) -> None:
-        """The robot at the target pose, arms stowed."""
+        """The robot at the target pose, arms as they are."""
         self._show_at(ctx, ghost, self.serial, self._target.pose)
 
     def show_path(self, ctx: PluginContext, ghost: RobotGhost, plan: Plan[BasePlanRequest]) -> None:
-        """The robot on the path at the slider time, arms stowed."""
+        """The robot on the path at the slider time, arms as they are."""
         self._show_at(ctx, ghost, plan.request.serial, plan.path.sample(self._t))
 
     def _show_at(self, ctx: PluginContext, ghost: RobotGhost, serial: str, pose) -> None:
-        """Show `ghost` at floor pose (x, y, yaw), height from the live robot, arms stowed as planned."""
+        """Show `ghost` at floor pose (x, y, yaw), height and arms from the live robot, as planned."""
         x, y, yaw = (float(v) for v in pose)
         z = float(ctx.kinematics.base_pose(serial).position[2])
-        config = next(robot for robot in ctx.config.robots if robot.serial == serial)
-        joints = ctx.kinematics.joints(serial)
-        ghost.show(Pose((x, y, z), (0.0, 0.0, math.sin(yaw / 2), math.cos(yaw / 2))),
-                   {**joints, **stow_joints(config, joints)})
+        ghost.show(Pose((x, y, z), (0.0, 0.0, math.sin(yaw / 2), math.cos(yaw / 2))), ctx.kinematics.joints(serial))
 
     # --- --- --- --- --- DRAW --- --- --- --- ---
 

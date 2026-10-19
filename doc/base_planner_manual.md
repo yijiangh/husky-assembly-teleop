@@ -148,7 +148,8 @@ Switch Alice's `platform_velocity_controller` on in `robot_control`.
 ## Collecting attempts (the panel)
 
 1. Type the experiment name into **Experiment**, tick **Record**. Stow Alice's arm (**Stow** in `robot_control`):
-   the planners plan with it stowed, and the panel warns when it is not.
+   the planners plan the arm as it is, so the experiments hold it stowed, and the panel warns when a recorded attempt's
+   arm is not.
 2. Choose a **Task**: its virtual obstacles appear, the target is set. For `step_110`, select step 110 in the process
    plugin first, and leave the process unloaded for every other task (a loaded process makes a virtual task's scene
    unclean, and the attempt is left out).

@@ -40,7 +40,7 @@ from .path import MAX_ANGULAR_SPEED, MAX_LINEAR_SPEED, BasePath
 from .algorithms import ALGORITHMS, Algorithm, Debug
 from .recording import RECORDING_FOLDER, attempt_folder, load_description, save_plan, write_description
 from .tasks import BY_NAME, TASK_ORIGIN
-from .world import PlanningWorld, stowed
+from .world import PlanningWorld, from_stow
 
 if TYPE_CHECKING:
     from ...shared.process_contract import ProcessContract
@@ -48,6 +48,8 @@ if TYPE_CHECKING:
 #: The plan goes stale once the base moves this far from its planned start.
 STALE_POSITION = 0.05              # m
 STALE_YAW = math.radians(3.0)      # rad
+#: The plan is for the arms as they are: it goes stale once a joint moves this far from where it was planned.
+STALE_JOINT = math.radians(2.0)    # rad
 
 #: A run ends after the planned duration times RUN_FACTOR plus RUN_MARGIN seconds, done or not; the recording then
 #: goes on for SETTLE seconds, while the robot comes to a stop.
@@ -60,7 +62,7 @@ DEFAULT_EXPERIMENT = "default"
 #: An attempt counts for its task when it starts this close to the task's start and aims at the task's target.
 TASK_POSITION = 0.10           # m
 TASK_YAW = math.radians(10.0)  # rad
-#: The base plans with the arms stowed; an arm further than this from its stow pose is warned about.
+#: Experiments hold the arms stowed: a recorded attempt with an arm further than this from it is warned about.
 STOW_TOLERANCE = math.radians(5.0)  # rad
 
 
@@ -109,6 +111,8 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
         self._debug: Debug | None = None
         # The ready plan's setup, planning time and recorded folder (None if not recorded), for its run.
         self._plan_record: dict | None = None
+        # The ready plan's path and the joints it was planned with, for `stale_reason`; `forget` drops them.
+        self._start_joints: tuple[BasePath, dict[str, float]] | None = None
         # Where attempts are recorded; None if the Drive folder is missing.
         self._recordings = None
 
@@ -134,11 +138,12 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
                           accepted=lambda _result: ("", False))
         debug = Debug(on=request.debug)
         # * Take the snapshot here, on the main thread; the worker syncs from it.
+        # * The robot is planned as it is: its arms, and what it holds.
         snapshot, guessed = with_guesses(ctx.scene.snapshot, robot_id(serial))
         config = next(robot for robot in ctx.config.robots if robot.serial == serial)
-        snapshot, away = stowed(snapshot, robot_id(serial), config)
-        if away > STOW_TOLERANCE:
-            guessed = guessed + [f"arm planned as stowed, {math.degrees(away):.0f}° away from it: stow it first"]
+        away = from_stow(snapshot.robots[robot_id(serial)], config)
+        if request.record and away > STOW_TOLERANCE:
+            guessed = guessed + [f"arm {math.degrees(away):.0f}° from its stow pose, where experiments hold it"]
         guess = f" (guessed: {'; '.join(guessed)})" if guessed else ""
         if guessed:
             ctx.log_warn(f"planning for {serial} from a guess: {'; '.join(guessed)}")
@@ -179,6 +184,7 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
 
         def accepted(result: PlanResult) -> tuple[str, bool]:
             self._plan_record = {"folder": folder, "setup": setup, "seconds": result.seconds}
+            self._start_joints = (result.path, dict(snapshot.robots[robot_id(serial)].joints))
             path, how = result.path, algorithm.label + (" (straight)" if result.direct else "")
             return (f"{how}: {path.length:.2f} m, {path.duration:.1f} s, "
                     f"found in {result.seconds:.1f} s{guess}"), bool(guessed)
@@ -187,11 +193,16 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
                       time_limit=TIME_LIMIT + WAIT_MARGIN, accepted=accepted, finished=finished)
 
     def stale_reason(self, ctx: PluginContext, plan: Plan[BasePlanRequest]) -> str:
-        """Stale once the base moves away from the plan's start."""
+        """Stale once the base moves away from the plan's start, or an arm moves from where it was planned."""
         moved, turned = _offset(floor_pose(ctx, plan.request.serial), plan.path.start)
         if moved > STALE_POSITION or turned > STALE_YAW:
             return (f"the robot moved {moved * 100:.1f} cm, {math.degrees(turned):.1f}° since planning (replans beyond "
                     f"{STALE_POSITION * 100:.0f} cm or {math.degrees(STALE_YAW):.0f}°)")
+        if self._start_joints is not None and self._start_joints[0] is plan.path:
+            now = ctx.kinematics.joints(plan.request.serial)
+            if any(abs(math.remainder(now[name] - value, math.tau)) > STALE_JOINT
+                   for name, value in self._start_joints[1].items() if name in now):
+                return f"the arm moved since planning (replans beyond {math.degrees(STALE_JOINT):.0f}°)"
         return ""
 
     def send(self, ctx: PluginContext, plan: Plan[BasePlanRequest]) -> tuple[bool, str]:
@@ -216,6 +227,7 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
         """The debug record goes with the plan; a sent path keeps driving (soft stop stops it), and stays drawn."""
         self._debug = None
         self._plan_record = None
+        self._start_joints = None
 
     # --- --- --- --- --- RUN (task) --- --- --- --- ---
 
