@@ -76,18 +76,22 @@ class ArmPlannerPanel(PlannerPanel):
                                               "the plan (or stop planning); a sent path keeps moving: Hold or Stop all "
                                               "stop it",
                                     commit_hint="Send the path to the arm; it stops at every waypoint")
-            # * Debugging: watch the search in the chosen robot's planning world.
-            # ! The one reach into the planner (the concrete plugin, not its API): the window runs on the planner's
-            #   worker (`_executor`) and shows its world (`_world`).
-            # ? `self.serial` is read on the worker; at worst it is the robot chosen a moment later.
-            # * Guessed like a plan is, so an untracked robot still shows.
-            planner = ctx.require(self.planner)
-            add_pybullet_window_toggle(
-                ctx, gui, planner._executor,
-                lambda gui, snapshot: planner._world.set_gui(
-                    gui, with_guesses(snapshot, robot_id(self.serial))[0], self.serial))
             # ! Keep changing content BELOW the buttons, so nothing moves under the cursor.
             self._details = gui.add_html("")
+
+            # Everything beyond plan and commit, folded away until wanted (as in the base planner's panel).
+            with gui.add_folder("Advanced", expand_by_default=False), \
+                    gui.add_folder("Debug", expand_by_default=False):
+                # * Watch the search in the chosen robot's planning world.
+                # ! The one reach into the planner (the concrete plugin, not its API): the window runs on the
+                #   planner's worker (`_executor`) and shows its world (`_world`).
+                # ? `self.serial` is read on the worker; at worst it is the robot chosen a moment later.
+                # * Guessed like a plan is, so an untracked robot still shows.
+                planner = ctx.require(self.planner)
+                add_pybullet_window_toggle(
+                    ctx, gui, planner._executor,
+                    lambda gui, snapshot: planner._world.set_gui(
+                        gui, with_guesses(snapshot, robot_id(self.serial))[0], self.serial))
 
         self._robot.on_update(ctx.defer_value("choose robot", lambda serial: self._choose(str(serial), None)))
         self._arm.on_update(ctx.defer_value("choose arm", lambda arm: self._choose(self.serial, str(arm))))
