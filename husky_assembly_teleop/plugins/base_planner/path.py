@@ -14,7 +14,7 @@ import numpy as np
 from crl_husky.follower_path import SAME_SPOT
 from crl_husky.pure_pursuit import PurePursuitParams, turning_centre_poses
 
-from ...shared.planning.timed_path import TimedPath, timing
+from ...shared.planner.timed_path import TimedPath, timing
 
 #: Planning speeds; low, since the onboard follower sets its own speed.
 MAX_LINEAR_SPEED = 0.2   # m/s

@@ -109,3 +109,52 @@ def test_imports_go_down_the_layers():
                 if problem:
                     problems.append(f"{path.relative_to(ROOT.parent)}:{node.lineno} imports {target}: {problem}")
     assert not problems, "\n".join(problems)
+
+
+def _registered_plugin_names() -> set[str]:
+    """The `name` of every class decorated with `@register` under plugins/, read from the source."""
+    names = set()
+    for path in (ROOT / "plugins").rglob("*.py"):
+        for node in ast.walk(ast.parse(path.read_text(), str(path))):
+            if not isinstance(node, ast.ClassDef) or not any(
+                    isinstance(d, ast.Name) and d.id == "register" for d in node.decorator_list):
+                continue
+            for statement in node.body:
+                if (isinstance(statement, ast.Assign) and isinstance(statement.value, ast.Constant)
+                        and any(isinstance(t, ast.Name) and t.id == "name" for t in statement.targets)):
+                    names.add(statement.value.value)
+    return names
+
+
+def test_shared_holds_contracts_and_subfolders_only():
+    """Each file in shared/ is `<plugin>_contract.py` for a registered plugin and defines `<Plugin>Contract`."""
+    plugins, problems = _registered_plugin_names(), []
+    for path in sorted((ROOT / "shared").glob("*.py")):
+        if path.name == "__init__.py":
+            continue
+        plugin = path.stem.removesuffix("_contract")
+        if not path.stem.endswith("_contract"):
+            problems.append(f"{path.name}: only contract files sit in shared/; put the rest in a subfolder")
+        elif plugin not in plugins:
+            problems.append(f"{path.name}: no registered plugin is called {plugin!r}")
+        else:
+            contract = "".join(part.title() for part in plugin.split("_")) + "Contract"
+            tree = ast.parse(path.read_text(), str(path))
+            defined = {node.name for node in tree.body if isinstance(node, ast.ClassDef)} | {
+                target.id for node in tree.body if isinstance(node, ast.Assign)
+                for target in node.targets if isinstance(target, ast.Name)}
+            if contract not in defined:
+                problems.append(f"{path.name}: defines no {contract}")
+    assert not problems, "\n".join(problems)
+
+
+def test_shared_subfolders_never_import_contracts():
+    """Base classes and helpers in shared/ subfolders import no contract file, except for type hints."""
+    problems = []
+    for path in sorted((ROOT / "shared").glob("*/**/*.py")):
+        module = _module_name(path)
+        for node in _imports(ast.parse(path.read_text(), str(path))):
+            for target in _targets(module, path.name == "__init__.py", node):
+                if target.startswith(f"{PACKAGE}.shared.") and target.endswith("_contract"):
+                    problems.append(f"{path.relative_to(ROOT.parent)}:{node.lineno} imports {target}")
+    assert not problems, "\n".join(problems)

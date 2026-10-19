@@ -2,7 +2,7 @@
 Test paths for the base: poses in the robot's start frame, placed in the world. Plain math.
 
 Poses are (n x 3) arrays of x, y in metres and unwrapped yaw in radians, as `BaseInterface.send_path` takes;
-`shared.planning.timed_path.timing` times them. A negative length drives backwards; a negative angle turns clockwise.
+`shared.planner.timed_path.timing` times them. A negative length drives backwards; a negative angle turns clockwise.
 """
 
 from __future__ import annotations

@@ -2,7 +2,7 @@
 PlannerService: the base class of a headless planner plugin, which plans, cancels and commits on request.
 
 * A planner plugin subclasses it and supplies `make_search`, `stale_reason` and `send`; it offers others its
-  `PlannerContract` (`planner_contract.py`), and its panel is a separate plugin (`planner_panel.PlannerPanel`).
+  `PlannerContract` (`plan.py`), and its panel is a separate plugin (`planner_panel.PlannerPanel`).
 ! Requests run in the planner's own context (`ctx.submit`), so soft stop, teardown and its errors apply to them, and
   every future resolves: a cancelled search gives a plan in state "cancelled".
 """
@@ -20,7 +20,7 @@ from async_timeout import timeout
 
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin
-from .planner_contract import Plan, R
+from .plan import Plan, R
 from .planner_search import PlanningWorld, Search
 
 

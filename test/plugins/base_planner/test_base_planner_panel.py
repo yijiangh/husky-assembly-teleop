@@ -9,12 +9,12 @@ import pytest
 
 from husky_assembly_teleop.plugins.base_planner.panel_plugin import NO_TASK, BasePlannerPanel
 from husky_assembly_teleop.plugins.base_planner.planner_plugin import BasePlannerPlugin
-from husky_assembly_teleop.shared.planning.planner_contract import BasePlanRequest
-from husky_assembly_teleop.shared.planning.timed_path import TimedPath
-from husky_assembly_teleop.shared.planning.planner_search import PlanResult
-from husky_assembly_teleop.shared.planning.planner_contract import Plan
-from husky_assembly_teleop.shared.planning.planner_search import Search
-from husky_assembly_teleop.shared.planning.planner_service import PlannerService
+from husky_assembly_teleop.shared.base_planner_contract import BasePlanRequest
+from husky_assembly_teleop.shared.planner.timed_path import TimedPath
+from husky_assembly_teleop.shared.planner.planner_search import PlanResult
+from husky_assembly_teleop.shared.planner.plan import Plan
+from husky_assembly_teleop.shared.planner.planner_search import Search
+from husky_assembly_teleop.shared.planner.planner_service import PlannerService
 
 SERIAL = "alice"
 GOAL = (1.0, 2.0, 0.5)

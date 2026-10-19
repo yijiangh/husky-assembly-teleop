@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 
     import viser
 
-    from ....shared.planning.planner_search import PlanResult
+    from ....shared.planner.planner_search import PlanResult
     from ..path import BasePath
     from ..world import PlanningWorld
 

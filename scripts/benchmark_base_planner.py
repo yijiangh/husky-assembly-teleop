@@ -33,7 +33,7 @@ from husky_assembly_teleop.plugins.base_planner.recording import (RECORDING_FOLD
                                                                   save_simulated)
 from husky_assembly_teleop.plugins.base_planner.tasks import PROCESS, TASK_ORIGIN, TASKS
 from husky_assembly_teleop.plugins.base_planner.world import PlanningWorld, stowed
-from husky_assembly_teleop.shared.planning.planner_search import with_guesses
+from husky_assembly_teleop.shared.planner.planner_search import with_guesses
 from husky_assembly_teleop.plugins.process.loading import load_process
 from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.ids import robot_id

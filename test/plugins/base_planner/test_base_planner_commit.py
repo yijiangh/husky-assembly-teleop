@@ -17,8 +17,8 @@ from husky_assembly_teleop.robot_interface.base import FollowerState
 from husky_assembly_teleop.plugins.base_planner.path import MAX_ANGULAR_SPEED, MAX_LINEAR_SPEED, steer, timed_path
 from husky_assembly_teleop.plugins.base_planner.planner_plugin import BasePlannerPlugin
 from husky_assembly_teleop.plugins.base_planner.tasks import BY_NAME
-from husky_assembly_teleop.shared.planning.planner_contract import BasePlanRequest
-from husky_assembly_teleop.shared.planning.planner_contract import Plan, PlannerContract
+from husky_assembly_teleop.shared.base_planner_contract import BasePlanRequest
+from husky_assembly_teleop.shared.planner.plan import Plan, PlannerContract
 
 SERIAL = "alice"
 

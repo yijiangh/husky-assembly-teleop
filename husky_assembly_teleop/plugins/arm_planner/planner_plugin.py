@@ -17,11 +17,11 @@ import numpy as np
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import register
 from ...robot_interface.arm import joint_path_move
-from ...shared.planning.planner_contract import ArmPlanRequest
-from ...shared.planning.planner_search import PlanResult, TIME_LIMIT
-from ...shared.planning.planner_contract import Plan
-from ...shared.planning.planner_search import Search, WAIT_MARGIN, with_guesses
-from ...shared.planning.planner_service import PlannerService
+from ...shared.arm_planner_contract import ArmPlanRequest
+from ...shared.planner.planner_search import PlanResult, TIME_LIMIT
+from ...shared.planner.plan import Plan
+from ...shared.planner.planner_search import Search, WAIT_MARGIN, with_guesses
+from ...shared.planner.planner_service import PlannerService
 from scaffolding_assembly_core.ids import robot_id
 from .planner import ArmPath, ArmPlanningWorld, arm_joint_names, plan_arm
 

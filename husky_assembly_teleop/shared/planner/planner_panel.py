@@ -22,7 +22,7 @@ from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin
 from ...ui.ghost import RecentUse, RobotGhost, robot_ghosts
 from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, block, chip, note, section
-from .planner_contract import Plan, PlannerContract
+from .plan import Plan, PlannerContract
 
 if TYPE_CHECKING:
     from ...config import RobotConfig

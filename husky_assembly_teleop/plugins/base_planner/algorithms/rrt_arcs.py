@@ -17,8 +17,8 @@ from dataclasses import dataclass
 import numpy as np
 from crl_husky.base_model import load_model
 
-from ....shared.planning.planner_search import PlanResult, TIME_LIMIT
-from ....shared.planning.rrt_connect import connect
+from ....shared.planner.planner_search import PlanResult, TIME_LIMIT
+from ....shared.planner.rrt_connect import connect
 from ..follow import XICR_RANGE
 from ..path import (ARC_STEP, BasePath, densify, driven, move_margins, round_corners, steer, steer_cost, steer_points,
                     timed_path)

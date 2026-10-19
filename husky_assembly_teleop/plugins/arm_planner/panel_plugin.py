@@ -1,7 +1,7 @@
 """
 The arm planner's panel: pick a joint target for one arm, plan to it, scrub through the path, and commit it.
 
-The flow is `shared.planning.planner_panel.PlannerPanel`; this adds the joint sliders and the arm choice.
+The flow is `shared.planner.planner_panel.PlannerPanel`; this adds the joint sliders and the arm choice.
 ! Drive the planner through its public API (`ArmPlannerContract`: set target, plan, cancel, results) wherever you can,
   so those paths stay ready for other users such as an executor; only debug drawing and internal state reach inside.
 """
@@ -16,10 +16,10 @@ import numpy as np
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import register
 from ...robot_interface.arm import UR_JOINT_LIMITS
-from ...shared.planning.planner_contract import ArmPlanRequest
-from ...shared.planning.planner_panel import PlannerPanel
-from ...shared.planning.planner_contract import Plan
-from ...shared.planning.planner_search import with_guesses
+from ...shared.arm_planner_contract import ArmPlanRequest
+from ...shared.planner.planner_panel import PlannerPanel
+from ...shared.planner.plan import Plan
+from ...shared.planner.planner_search import with_guesses
 from ...ui.ghost import RobotGhost
 from ...ui.pybullet_window import add_pybullet_window_toggle
 from ...ui.style import SECTION_CTRL, SECTION_TOOL, block, chip, section, values
