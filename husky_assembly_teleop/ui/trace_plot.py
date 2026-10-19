@@ -10,12 +10,14 @@ Build it in `setup` inside `ctx.view.ui()`, call `draw` from the plugin's `draw`
 from __future__ import annotations
 
 import math
+from typing import TYPE_CHECKING
 
 import numpy as np
 import viser
 import viser.uplot
 
-from ..plugin_api.trace import Trace
+if TYPE_CHECKING:
+    from ..plugin_api.trace import Trace
 
 #: Line colour per channel, in order; x, y, z are red, green, blue as in the 3D view.
 COLORS = ("#e03131", "#2f9e44", "#4263eb", "#f08c00", "#ae3ec9", "#1098ad", "#868e96")

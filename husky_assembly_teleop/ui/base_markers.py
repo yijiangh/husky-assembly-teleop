@@ -7,12 +7,15 @@ A base path on the floor as the onboard follower drives it: lines, heading ticks
 from __future__ import annotations
 
 import math
+from typing import TYPE_CHECKING
 
 import numpy as np
-from crl_husky.follower_path import FollowerPath
 
-from ..plugin_api.context import PluginContext
-from ..robot_interface.base import FollowerState
+if TYPE_CHECKING:
+    from crl_husky.follower_path import FollowerPath
+
+    from ..plugin_api.context import PluginContext
+    from ..robot_interface.base import FollowerState
 
 #: Colours (r, g, b).
 PREVIEW_COLOR = (66, 99, 235)      # blue: what would be sent

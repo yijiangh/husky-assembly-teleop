@@ -8,12 +8,14 @@ from __future__ import annotations
 
 import asyncio
 from concurrent.futures import Executor
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 import viser
 
-from ..plugin_api.context import PluginContext
-from scaffolding_assembly_core.scene import Scene
+if TYPE_CHECKING:
+    from scaffolding_assembly_core.scene import Scene
+
+    from ..plugin_api.context import PluginContext
 
 
 def add_pybullet_window_toggle(ctx: PluginContext, gui: viser.GuiApi, executor: Executor,

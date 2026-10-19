@@ -7,12 +7,14 @@ viser 1.1 has no multi-select widget. Build one in `setup`, `add` / `remove` ite
 
 from __future__ import annotations
 
-from typing import Hashable
+from typing import TYPE_CHECKING, Hashable
 
 import viser
 
-from ..plugin_api.context import PluginContext
 from .style import note
+
+if TYPE_CHECKING:
+    from ..plugin_api.context import PluginContext
 
 
 class CheckList:

@@ -7,12 +7,13 @@ Build one in `setup` and read `pose` when needed; it is written on the main thre
 from __future__ import annotations
 
 import math
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 import numpy as np
 import viser
 
-from ..plugin_api.context import PluginContext
+if TYPE_CHECKING:
+    from ..plugin_api.context import PluginContext
 
 #: Poses closer than this (metres, radians) count as equal, so writing one widget doesn't bounce back.
 SAME_POSE_TOLERANCE = 1e-3
