@@ -2,7 +2,7 @@
 Plan one process movement on the real robots: tamp's dual-arm planners, or one arm's search or line, by its routine.
 
 The movement is classified, its planning scene made from the snapshot with the contacts of its end allowed, the goal
-solved at the live base, and every searched path checked between its waypoints.
+solved at the live base, and every searched path checked between its waypoints. `check_goal` only solves the goal.
 
 - ! Worker thread only, on the thread that created the mirror; the mirror plans for the movement's robot.
 - ! tamp and compas_fab borrow the mirror (`lend`) and leave it anywhere: it is synced again after each borrow, after
@@ -33,7 +33,7 @@ from .collision import collisions, world_frame_fk
 from .ik import solve_ik
 from .joints import arm_joint_names, joint_limits, unwrap_to_nearest
 from .movement import GoalSource, MovementSpec, Routine, classify
-from .route_result import RouteResult, aims_at_line, line_goal, pose_error
+from .route_result import GoalCheck, RouteResult, aims_at_line, line_goal, pose_error
 from .route_search import ATTEMPTS, Refused, RouteSearch, pairs_text
 from .scene_for import RobotBelief, scene_for
 from .single_arm import plan_linear
@@ -53,6 +53,8 @@ GRASP_MISMATCH = 0.002
 #: Routines no arm moves in, and the linear ones, whose start may touch (warned, not refused).
 _NO_ARM = (Routine.TOOL_ONLY, Routine.OPERATOR, Routine.BASE_ONLY)
 _LINEAR = (Routine.INSERT, Routine.RETREAT_LINEAR, Routine.SUPPORT_LINEAR)
+#: Routines whose goal is solved by IK at the live base (`check_goal`).
+IK_GOALS = (Routine.TRANSFER_FREE, Routine.TRANSFER_HELD, Routine.SUPPORT_APPROACH)
 
 
 def plan_movement(mirror: CompasFabMirror, loaded: LoadedProcess, step: Step, snapshot: Scene,
@@ -87,6 +89,79 @@ def plan_movement(mirror: CompasFabMirror, loaded: LoadedProcess, step: Step, sn
         return _not_planned(spec, "no arm moves", started)
     if spec.routine is Routine.FREE_TO_LOAD and goal_joints is None and spec.goal_joints is None:
         return _not_planned(spec, "needs the transfer start, after M3", started)
+    route = _route(mirror, loaded, step, snapshot, robots, spec, beliefs=beliefs, ignore_built=ignore_built,
+                   goal_joints=goal_joints, abort=abort or threading.Event(), log=log)
+    try:
+        result = route.run()
+    except Refused as refused:
+        result = route.failed(str(refused))
+    except Exception as error:
+        # ! Fail closed: whatever went wrong, nothing is solved.
+        result = route.failed(f"{route.planner or spec.routine.value} raised {error!r}")
+        problem = _sync_again(route)
+        if problem:
+            result = replace(result, warnings=(*result.warnings, problem))
+    return replace(result, seconds=time.monotonic() - started)
+
+
+def check_goal(mirror: CompasFabMirror, loaded: LoadedProcess, step: Step, snapshot: Scene,
+               robots: tuple[RobotConfig, ...], *, transfer_as_free: bool = False,
+               beliefs: Mapping[str, RobotBelief] | None = None, ignore_built: bool = False,
+               log: Callable[[str], None] = print) -> GoalCheck:
+    """Solve a movement's goal by IK at the live base, as `plan_movement` would before searching, and plan nothing.
+
+    Only the transfers and a support robot's approach have a goal solved by IK. Fails closed: any error gives a
+    failed check with its text.
+
+    Args:
+        mirror: The acting robot's mirror, on this thread.
+        loaded: The loaded process.
+        step: The movement's step.
+        snapshot: The world; the acting robot's base and joints in it are the base and the start.
+        robots: The configured robots.
+        transfer_as_free: The transfer workaround (`classify`).
+        beliefs: Live robot id -> where an unmeasured robot is believed to be (`scene_for`).
+        ignore_built: Solve as if the built bars were not there (`scene_for`).
+        log: Gets the IK fallback line.
+
+    Returns:
+        GoalCheck: The goal and how it was found, or why there is none.
+    """
+    started = time.monotonic()
+    movement, route = step.movement.id, None
+    try:
+        spec = classify(loaded.process, step.action, step.movement, transfer_as_free)
+        if spec.routine not in IK_GOALS:
+            return GoalCheck(movement, spec.routine, False, "goal not solved by IK", seconds=time.monotonic() - started)
+        route = _route(mirror, loaded, step, snapshot, robots, spec, beliefs=beliefs, ignore_built=ignore_built,
+                       goal_joints=None, abort=threading.Event(), log=log)
+        route.prepare()
+        goal, reason = route.ik_goal(unwrap=spec.routine is not Routine.SUPPORT_APPROACH), ""
+    except Refused as refused:
+        goal, reason = None, str(refused)
+    except Exception as error:
+        # ! Fail closed: whatever went wrong, there is no goal.
+        goal, reason = None, f"the goal check raised {error!r}"
+        problem = _sync_again(route) if route is not None else ""
+        reason += f"; {problem}" if problem else ""
+    if route is None:
+        return GoalCheck(movement, None, False, reason, seconds=time.monotonic() - started)
+    authored = route.spec.goal_joints or {}
+    return GoalCheck(movement, route.spec.routine, goal is not None, reason, route.planning.acting, route.robot.base,
+                     dict(route.start) or None, route.ik, goal,
+                     {name: float(authored[name]) for name in route.names if name in authored} or None,
+                     dict(route.planning.sources), tuple(route.warnings), time.monotonic() - started)
+
+
+def _route(mirror: CompasFabMirror, loaded: LoadedProcess, step: Step, snapshot: Scene,
+           robots: tuple[RobotConfig, ...], spec: MovementSpec, *, beliefs: Mapping[str, RobotBelief] | None,
+           ignore_built: bool, goal_joints: Mapping[str, float] | None, abort: threading.Event,
+           log: Callable[[str], None]) -> _Route:
+    """A movement's route: its planning scene, and the scene its searches run in (without the bar for the workaround).
+
+    Raises:
+        ValueError: If the mirror plans for another robot than the movement's, or `scene_for` refuses the step.
+    """
     options = {"beliefs": beliefs, "ignore_built": ignore_built, "end_contacts": True}
     planning = scene_for(loaded, step, snapshot, robots, **options)
     if mirror.robot_id != planning.acting:
@@ -95,20 +170,16 @@ def plan_movement(mirror: CompasFabMirror, loaded: LoadedProcess, step: Step, sn
     search = scene_for(loaded, step, snapshot, robots, hide_held=True, **options).scene \
         if spec.routine is Routine.TRANSFER_FREE else planning.scene
     config = next(config for config in robots if robot_id(config.serial) == planning.acting)
-    route = _Route(mirror, loaded.process, step, spec, planning, search, config, goal_joints,
-                   abort or threading.Event(), log)
+    return _Route(mirror, loaded.process, step, spec, planning, search, config, goal_joints, abort, log)
+
+
+def _sync_again(route: _Route) -> str:
+    """Sync a route's mirror after an error left it anywhere; why it failed, or "" if it synced."""
     try:
-        result = route.run()
-    except Refused as refused:
-        result = route.failed(str(refused))
-    except Exception as error:
-        # ! Fail closed: whatever went wrong, nothing is solved.
-        result = route.failed(f"{route.planner or spec.routine.value} raised {error!r}")
-        try:
-            mirror.sync(search)
-        except Exception as again:
-            result = replace(result, warnings=(*result.warnings, f"the mirror did not sync again: {again!r}"))
-    return replace(result, seconds=time.monotonic() - started)
+        route.mirror.sync(route.scene)
+    except Exception as again:
+        return f"the mirror did not sync again: {again!r}"
+    return ""
 
 
 def _not_planned(spec: MovementSpec, reason: str, started: float) -> RouteResult:
@@ -122,6 +193,15 @@ class _Route(RouteSearch):
 
     # --- --- --- --- --- ROUTINES --- --- --- --- ---
 
+    def prepare(self) -> None:
+        """Sync the mirror to the search scene, and take the planned joints' names and their start values."""
+        self.mirror.sync(self.scene)
+        dual = self.spec.routine not in (Routine.SUPPORT_APPROACH, Routine.SUPPORT_LINEAR, Routine.SUPPORT_LEAVE)
+        # ? tamp's 12-joint order: left arm, then right.
+        self.names = [name for arm in _arm_joint_names(self.mirror.cell) for name in arm] if dual \
+            else arm_joint_names(self.spec.arms[0].arm)
+        self.start = {name: float(self.robot.joints[name]) for name in self.names}
+
     def run(self) -> RouteResult:
         """Check the start once, then plan by the routine.
 
@@ -131,12 +211,7 @@ class _Route(RouteSearch):
         Raises:
             Refused: Why it is not: a free move's start collides, or the routine's own reason.
         """
-        self.mirror.sync(self.scene)
-        dual = self.spec.routine not in (Routine.SUPPORT_APPROACH, Routine.SUPPORT_LINEAR, Routine.SUPPORT_LEAVE)
-        # ? tamp's 12-joint order: left arm, then right.
-        self.names = [name for arm in _arm_joint_names(self.mirror.cell) for name in arm] if dual \
-            else arm_joint_names(self.spec.arms[0].arm)
-        self.start = {name: float(self.robot.joints[name]) for name in self.names}
+        self.prepare()
         hits = self.terms(collisions(self.mirror, full_report=True))
         if hits:
             if self.spec.routine not in _LINEAR:

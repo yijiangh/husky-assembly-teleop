@@ -124,6 +124,8 @@ class RobotConfig:
         mocap_id: Rigid-body id of the base in the mocap system, or None if the robot is not tracked.
         ur_calibration: Per arm, whether the URDF's arm joints match the UR calibration in crl-husky. The model is
             built with the calibration applied, so it always matches the robot's driver.
+        source_urdf: The URDF in the data directory the model's copy was made from (relative mesh paths, the same
+            file on every PC), or None.
     """
 
     serial: str
@@ -136,6 +138,7 @@ class RobotConfig:
     default_yaw: float = 0.0
     park_pose: tuple[float, float, float] | None = None
     ur_calibration: tuple[UrCalibrationCheck, ...] = ()
+    source_urdf: Path | None = None
 
     @property
     def default_orientation(self) -> tuple[float, float, float, float]:
@@ -292,6 +295,7 @@ def robot_config_from_serial(token: str, data_directory: Path,
         default_yaw=park[2] if default_yaw is None else default_yaw,
         park_pose=park,
         ur_calibration=checks,
+        source_urdf=urdf_file,
     )
 
 

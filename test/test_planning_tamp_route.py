@@ -16,7 +16,7 @@ from husky_assembly_teleop.shared.planning import route_search, tamp_route
 from husky_assembly_teleop.shared.planning.ik import ssik_unavailable
 from husky_assembly_teleop.shared.planning.movement import Routine, classify
 from husky_assembly_teleop.shared.planning.route_result import aims_at_line, line_goal, pose_error
-from husky_assembly_teleop.shared.planning.tamp_route import plan_movement
+from husky_assembly_teleop.shared.planning.tamp_route import check_goal, plan_movement
 from husky_assembly_teleop.world.kinematics import stow_joints
 from scaffolding_assembly_core.geometry import Pose, box_geometry
 from scaffolding_assembly_core.ids import robot_id
@@ -24,7 +24,7 @@ from scaffolding_assembly_core.kinematics import link_pose
 from scaffolding_assembly_core.mirrors.compas_fab import CompasFabMirror
 from scaffolding_assembly_core.process import LineSpec, read
 from scaffolding_assembly_core.process.solutions import is_stale, read_solutions
-from scaffolding_assembly_core.scene import Body
+from scaffolding_assembly_core.scene import Body, Scene
 
 POSE = Pose((0.4, -1.2, 0.9), tuple(Rotation.from_euler("xyz", (0.2, -0.4, 1.1)).as_quat()))
 
@@ -58,6 +58,12 @@ def test_aims_at_line(purged):
     for movement_id, along in (("B21_H_to_grasp", False), ("B21_HR_retreat", True)):
         action, moving = movement(purged, movement_id)
         assert aims_at_line(purged.process, moving, classify(purged.process, action, moving)) is along
+
+
+def test_check_goal_refuses_a_movement_without_an_ik_goal(purged):
+    """An insert's goal is its line: refused as not solved by IK, before any mirror or scene is made."""
+    check = check_goal(None, purged, step(purged, "B20_J_insert"), Scene(), ())
+    assert (check.ok, check.routine, check.reason, check.ik) == (False, Routine.INSERT, "goal not solved by IK", None)
 
 
 # --- --- --- --- --- PLANNED ON THE PURGED PROCESS (slow) --- --- --- --- ---
@@ -325,3 +331,18 @@ def test_the_workaround_searches_without_the_bar(purged, configs, mirrors, monke
     assert seen["ik"] == (False, "left_ur_arm_tool0")
     assert len(seen["search"]) > 1 and all(seen["search"])
     assert row.status == "failed" and row.route.attempts == 3 and row.route.ik.joints is not None
+
+
+@pytest.mark.slow
+def test_check_goal_of_a_support_approach(purged, configs, mirrors):
+    """Alice's approach: her goal by her own ssik solver at her base, reaching the target pose, nothing planned."""
+    alice = robot_id(f"a200-{ALICE}")
+    mirror = mirrors.setdefault(alice, CompasFabMirror(alice))
+    check = check_goal(mirror, purged, step(purged, "B21_H_approach"), design_scene(purged, "B21_H_approach"), configs,
+                       log=lambda _line: None)
+    assert check.ok and check.routine is Routine.SUPPORT_APPROACH and check.acting == alice, check.reason
+    assert check.ik.solvers == ("alice",) and check.ik.backend == "ssik"
+    assert check.goal_joints == check.ik.joints and set(check.authored) == set(check.goal_joints)
+    target, = movement(purged, "B21_H_approach")[1].target.link_poses.values()
+    reached = link_pose(robot_config(ALICE).model.urdf, check.base, check.goal_joints, "ur_arm_tool0")
+    assert pose_error(reached, target)[0] <= POSE_TOL[0] and pose_error(reached, target)[1] <= POSE_TOL[1]

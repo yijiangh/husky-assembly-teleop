@@ -25,8 +25,9 @@ if TYPE_CHECKING:
 #: Colours (r, g, b, alpha from 0 to 1) shared by the plugins.
 TARGET_COLOR = (1.0, 0.78, 0.0, 0.35)   # yellow: where it should go
 PATH_COLOR = (0.35, 0.6, 1.0, 0.35)     # blue: where the plan has it at the slider time
+GOAL_COLOR = (0.1, 0.25, 0.9, 0.45)     # dark blue: a goal solved at the live base
 #: Colour per kind; the kind is also the scene subcategory.
-KIND_COLORS = {"target": TARGET_COLOR, "path": PATH_COLOR}
+KIND_COLORS = {"target": TARGET_COLOR, "path": PATH_COLOR, "goal": GOAL_COLOR}
 
 
 class RecentUse:
@@ -65,7 +66,7 @@ class RobotGhost:
         Args:
             ctx: The owning plugin's context; the ghost lives in its view.
             config: The robot; its model is drawn, tools on their flanges.
-            kind: A key of KIND_COLORS: "target" or "path". Sets the colour.
+            kind: A key of KIND_COLORS: "target", "path" or "goal". Sets the colour.
         """
         path = f"{ctx.view.scene_root}/ghosts/{kind}/{config.serial}"
         color = KIND_COLORS[kind]
@@ -116,7 +117,7 @@ def robot_ghosts(ctx: PluginContext, robots: Iterable[RobotConfig], kind: str) -
     Args:
         ctx: The owning plugin's context.
         robots: The robots to build a ghost for.
-        kind: A key of KIND_COLORS: "target" or "path".
+        kind: A key of KIND_COLORS: "target", "path" or "goal".
 
     Returns:
         dict[str, RobotGhost]: The ghosts, hidden, by robot serial.

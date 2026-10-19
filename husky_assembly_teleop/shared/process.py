@@ -5,6 +5,7 @@ Every movement is a step, with the joints to draw each robot at. A movement with
 drawn where its robot last was.
 `scene_bodies` turns a step's process scene (`Process.scene_at`) into scene bodies: the core draws them, and planners
 avoid them. Bodies the plan holds follow the configured real robot. `live_ids` maps process ids to scene ids and back.
+`action_window` is the window of the schedule a panel's action list shows.
 
 ! Runs on a worker thread: nothing here may touch viser, PyBullet or a PluginContext.
 """
@@ -28,6 +29,9 @@ from scaffolding_assembly_core.ids import robot_id as scene_robot_id
 
 if TYPE_CHECKING:
     from ..config import RobotConfig
+
+#: Rows in a panel's action list: a window of the schedule, the selected action in the middle row.
+ACTION_ROWS = 7
 
 #: Colours of bodies nobody holds, RGB 0-255.
 BAR_COLOR = (205, 170, 110)
@@ -87,6 +91,18 @@ class LoadedProcess:
                 return index
         raise IndexError(f"no action {action_index} in the schedule")
 
+    def index_of(self, action_id: str, movement_index: int = 0) -> int:
+        """Index into `steps` of an action's movement.
+
+        Raises:
+            ValueError: If the action is not scheduled.
+            IndexError: If the action has no such movement.
+        """
+        count = len(self.process.actions[action_id].movements)
+        if not 0 <= movement_index < count:
+            raise IndexError(f"{action_id} has no movement {movement_index}: it has {count}")
+        return self.first_step_of(self.process.schedule.index(action_id)) + movement_index
+
 
 @dataclass(frozen=True)
 class Selection:
@@ -114,6 +130,23 @@ class ProcessPluginApi(Protocol):
     @property
     def selection(self) -> Selection | None:
         """Selection | None: The selected step, or None while no process with steps is loaded."""
+
+    def request_select(self, index: int) -> None:
+        """Select a step by index into `loaded.steps`, clamped; ignored while no process is loaded. Main thread."""
+
+
+def action_window(current: int, count: int, rows: int = ACTION_ROWS) -> int:
+    """The first action shown in an action list: `current` in the middle row, except near either end of the schedule.
+
+    Args:
+        current: Index of the selected action in the schedule.
+        count: How many actions the schedule has.
+        rows: How many rows the list has.
+
+    Returns:
+        int: Schedule index of the top row.
+    """
+    return max(0, min(current - rows // 2, count - rows))
 
 
 def load_process(folder: Path, data_directory: Path, report: Callable[[str], None] = lambda _text: None,

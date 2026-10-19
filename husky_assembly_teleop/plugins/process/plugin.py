@@ -2,7 +2,8 @@
 The process plugin: loads an authored process and draws the state at one movement at a time.
 
 It serves the selected step, and the maps between process ids and live scene ids, to plugins that declare
-`requires = ("process",)`: they read `selection` (`shared.process.ProcessPluginApi`).
+`requires = ("process",)`: they read `selection` and may select a step with `request_select`
+(`shared.process.ProcessPluginApi`).
 
 Every body of the selected movement's process scene (`Process.scene_at`) goes into the scene as "process/<body id>"
 (`steps.scene_bodies`): the core draws it and planners avoid it. A body the plan holds follows the configured real
@@ -38,7 +39,8 @@ from ...world.model_check import model_differences
 from scaffolding_assembly_core.ids import robot_id
 from scaffolding_assembly_core.legacy.timing import Stopwatch
 from scaffolding_assembly_core.process.scenes import process_model
-from ...shared.process import LoadedProcess, Selection, Step, displayed_joints, live_ids, load_process, scene_bodies
+from ...shared.process import (ACTION_ROWS, LoadedProcess, Selection, Step, action_window, displayed_joints, live_ids,
+                               load_process, scene_bodies)
 from .drawing import ProcessDrawing, load_robot_models
 
 if TYPE_CHECKING:
@@ -48,25 +50,8 @@ if TYPE_CHECKING:
 #: Give up on a load after this many seconds (converting an old export takes about 15).
 LOAD_TIMEOUT = 300.0
 
-#: Rows in the action list: a window of the schedule, the selected action in the middle row.
-ACTION_ROWS = 7
-
 #: Shown in place of the robot for a `bar_placing` action, which no robot acts in.
 BY_HAND_LABEL = "by hand"
-
-
-def action_window(current: int, count: int, rows: int = ACTION_ROWS) -> int:
-    """The first action shown in the list: `current` in the middle row, except near either end of the schedule.
-
-    Args:
-        current: Index of the selected action in the schedule.
-        count: How many actions the schedule has.
-        rows: How many rows the list has.
-
-    Returns:
-        int: Schedule index of the top row.
-    """
-    return max(0, min(current - rows // 2, count - rows))
 
 
 def _load_in_background(folder: Path, data_directory: Path, report) -> tuple[LoadedProcess, dict, Stopwatch]:
@@ -221,6 +206,10 @@ class ProcessPlugin(HuskyPlugin):
             self._error = str(error)
             return
         self._load_task = ctx.spawn(f"load {folder.name}", self._load(ctx, folder))
+
+    def request_select(self, index: int) -> None:
+        """Select a step for another plugin (`shared.process.ProcessPluginApi`): `select`."""
+        self.select(index)
 
     def select(self, index: int) -> None:
         """Select a step by index into `loaded.steps`, clamped; ignored before a process is loaded."""

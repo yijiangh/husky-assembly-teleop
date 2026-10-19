@@ -17,7 +17,7 @@ from typing import Sequence
 
 from scaffolding_assembly_core.process import Action, Process
 
-from .movement import MovementSpec, Routine, classify_action
+from .movement import MovementSpec, Routine, UnknownMovement, classify_action
 
 #: Routines done in the pause after a free transfer (mounting the bar by hand, closing the tools).
 _PAUSE = (Routine.OPERATOR, Routine.TOOL_ONLY)
@@ -82,6 +82,25 @@ def operator_steps(process: Process, action: Action, transfer_as_free: bool = Fa
             folded.update(after_motion[index], skipped.get(index, ()))
     return [OperatorStep(index, with_motion.get(index, ()), after_motion.get(index, ()), skipped.get(index, ()))
             for index in range(len(specs)) if index not in folded]
+
+
+def first_step(process: Process, action: Action, transfer_as_free: bool) -> int:
+    """The movement an action starts at: its first operator step's (with the workaround, B20_J starts at the transfer).
+
+    An action whose movements can't be classified starts at its first movement.
+
+    Args:
+        process: The process.
+        action: The action.
+        transfer_as_free: The transfer workaround.
+
+    Returns:
+        int: A movement index in the action.
+    """
+    try:
+        return operator_steps(process, action, transfer_as_free)[0].primary
+    except UnknownMovement:
+        return 0
 
 
 def step_index_of(steps: Sequence[OperatorStep], movement_index: int | None) -> int | None:

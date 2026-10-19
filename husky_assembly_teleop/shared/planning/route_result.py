@@ -1,5 +1,5 @@
 """
-What planning one process movement gave (`RouteResult`), and the pure pose helpers its goals are made with.
+What planning a movement gave (`RouteResult`), what checking its goal gave (`GoalCheck`), and pose helpers for goals.
 
 Pure: any thread.
 """
@@ -27,7 +27,7 @@ class RouteResult:
 
     Attributes:
         result: The core's result, in process ids: status "solved", "failed" or "not_planned".
-        routine: How the movement was planned.
+        routine: How the movement was planned; None: it failed before it was classified.
         planner: Which planner ran, e.g. "tamp.plan_free_dual_arm" or "single_arm.plan_linear/ssik".
         attempts: How many tries ran.
         seconds: Time taken: scenes, syncs, IK, searches and checks.
@@ -42,7 +42,7 @@ class RouteResult:
     """
 
     result: MovementResult
-    routine: Routine
+    routine: Routine | None
     planner: str = ""
     attempts: int = 0
     seconds: float = 0.0
@@ -59,6 +59,64 @@ class RouteResult:
     def ok(self) -> bool:
         """bool: Whether the movement was solved."""
         return self.result.status == "solved"
+
+
+@dataclass(frozen=True)
+class GoalCheck:
+    """A movement's goal solved by IK at the live base, without planning to it.
+
+    Attributes:
+        movement: The movement's id.
+        routine: How the movement would be planned; None: it failed before it was classified.
+        ok: Whether IK found a collision-free goal within the joint limits.
+        reason: Why not, when not ok.
+        acting: The acting robot's live id.
+        base: Its base the goal was solved at.
+        start: Its arm joints now, the start the goal is turned next to.
+        ik: The IK result, where IK ran.
+        goal_joints: The goal a plan would go to: IK's, turned by whole turns next to the start where the routine does.
+        authored: The movement's target joints, the reference IK stays near.
+        sources: Live id of each other robot -> where its base and joints came from (`scene_for`).
+        warnings: Robots and bodies left out of the scene, and why.
+        seconds: Time taken: scenes, syncs and IK.
+    """
+
+    movement: str
+    routine: Routine | None
+    ok: bool
+    reason: str = ""
+    acting: str = ""
+    base: Pose | None = None
+    start: dict[str, float] | None = None
+    ik: IkResult | None = None
+    goal_joints: dict[str, float] | None = None
+    authored: dict[str, float] | None = None
+    sources: dict[str, str] = field(default_factory=dict)
+    warnings: tuple[str, ...] = ()
+    seconds: float = 0.0
+
+    @property
+    def max_from_authored(self) -> float | None:
+        """The largest gap between IK's joints (before any turn) and the authored ones, radians; None without both."""
+        if self.ik is None or self.ik.joints is None or not self.authored:
+            return None
+        gaps = [abs(value - self.authored[name]) for name, value in self.ik.joints.items() if name in self.authored]
+        return max(gaps) if gaps else None
+
+    def as_record(self) -> dict:
+        """The check as JSON values, for a run's events: enough to solve it again offline."""
+        ik = self.ik
+        return {"movement": self.movement, "routine": self.routine.value if self.routine is not None else None,
+                "ok": self.ok, "reason": self.reason, "acting": self.acting,
+                "base": [*self.base.position, *self.base.orientation] if self.base is not None else None,
+                "start": self.start, "goal_joints": self.goal_joints, "authored": self.authored,
+                "max_from_authored": self.max_from_authored,
+                "ik": None if ik is None else {"joints": ik.joints, "max_change": ik.max_change, "rank": ik.rank,
+                                               "combinations": ik.combinations, "backend": ik.backend,
+                                               "solvers": list(ik.solvers),
+                                               "colliding": list(ik.colliding) if ik.colliding else None,
+                                               "reason": ik.reason},
+                "sources": dict(self.sources), "warnings": list(self.warnings), "seconds": self.seconds}
 
 
 def pose_error(a: Pose, b: Pose) -> tuple[float, float]:

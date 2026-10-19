@@ -8,6 +8,8 @@ For plugins to share code, share data and offer services to each other; nothing 
   `ctx.require("<name>")` with it: `process: ProcessPluginApi = ctx.require("process")`.
 
   planning/  the planner plugins' base class, search and timed path; process movements, steps, planning scenes,
-             collision checks and IK for the process planners
+             collision checks and IK for the process planners; the motion planner service (`MotionPlannerPluginApi`)
   process.py a process and its steps as data, and what the process plugin offers (`ProcessPluginApi`)
+  runs.py    the `runs/` record of an assembly: actions done, where robots were left, settings
+  assembly_run.py  what the assembly_run plugin offers (`AssemblyRunPluginApi`), and the rules it marks actions by
 """
