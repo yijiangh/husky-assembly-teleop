@@ -10,10 +10,11 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 from crl_husky.follower_path import FollowerPath
+from robot_fakes import Node
 
 from husky_assembly_teleop.plugin_api.concurrency import WaitTimeout
 from husky_assembly_teleop.plugin_api.trace import Signal, Trace
-from husky_assembly_teleop.robot_interface.base import FollowerState
+from husky_assembly_teleop.robot_interface.base import BaseInterface, FollowerState
 from husky_assembly_teleop.plugins.base_planner.path import MAX_ANGULAR_SPEED, MAX_LINEAR_SPEED, steer, timed_path
 from husky_assembly_teleop.plugins.base_planner.planner_plugin import BasePlannerPlugin
 from husky_assembly_teleop.plugins.base_planner.tasks import BY_NAME
@@ -66,8 +67,12 @@ class FakeBase:
         self.state = SimpleNamespace(tracked=seen, tracking_valid=seen, marker_errors=errors,
                                      last_update_time=10.0 - pose_age if seen else None,
                                      estopped=estopped, follower=follower)
+        self._node = Node(10.0)
         self.refuses = refuses
         self.sent = []
+
+    #: The base's own gate, as the real base has it.
+    follow_problem = BaseInterface.follow_problem
 
     def send_path(self, *args):
         """Keep the path; its id is always 7."""

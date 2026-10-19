@@ -34,8 +34,7 @@ from ...shared.planner.planner_search import Search, WAIT_MARGIN, with_guesses
 from ...shared.planner.planner_service import PlannerService
 from ...ui.pose_input import yaw_from_xyzw
 from ...world.checks import WARN, Check
-from ...world.follower import live_report, path_check
-from ...world.mocap import pose_lost
+from ...world.follower import path_check
 from scaffolding_assembly_core.ids import robot_id
 from .path import MAX_ANGULAR_SPEED, MAX_LINEAR_SPEED, BasePath
 from .algorithms import ALGORITHMS, Algorithm, Debug
@@ -196,15 +195,11 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
         return ""
 
     def send(self, ctx: PluginContext, plan: Plan[BasePlanRequest]) -> tuple[bool, str]:
-        """Send the plan to the follower and follow its run; refused without mocap pose or follower, or e-stopped."""
+        """Send the plan to the follower and follow its run; refused while the base may not follow a path."""
         serial, path = plan.request.serial, plan.path
         base = ctx.world.robots[serial].base
-        if lost := pose_lost(base.mocap_id, base.state, ctx.now()):
-            return False, f"not committed: {serial} has no mocap pose: {lost}"
-        if base.state.estopped:
-            return False, f"not committed: {serial} is e-stopped"
-        if live_report(base.state.follower, ctx.now()) is None:
-            return False, f"not committed: no follower on {serial}; start crl_husky pure_pursuit"
+        if problem := base.follow_problem():
+            return False, f"not committed: {serial}: {problem}"
         try:
             sent_id = send_to_onboard_follower(base, path)
         except ValueError as error:

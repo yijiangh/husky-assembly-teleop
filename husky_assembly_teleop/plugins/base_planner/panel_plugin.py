@@ -30,7 +30,8 @@ from ...ui.ghost import RobotGhost
 from ...ui.pose_input import PlanarPoseInput, yaw_from_xyzw
 from ...ui.pybullet_window import add_pybullet_window_toggle
 from ...ui.style import BUSY, OK, SECTION_CTRL, SECTION_TOOL, block, check_chip, chip, section, values
-from ...world.follower import live_report, path_check
+from ...robot_interface.base import live_report
+from ...world.follower import path_check
 from ...world.kinematics import stow_joints
 from scaffolding_assembly_core.geometry import Pose
 from .algorithms import ALGORITHMS, Algorithm

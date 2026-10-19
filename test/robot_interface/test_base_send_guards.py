@@ -1,37 +1,39 @@
-"""The base refuses commands that are not finite, before anything goes out."""
+"""The base's own guards: no command that is not finite, no path it may not follow, no twist on a stale controller."""
 
 import itertools
 import math
+from collections import deque
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
-from builtin_interfaces.msg import Time
+from robot_fakes import Controllers, Node, Publisher
 
-from husky_assembly_teleop.robot_interface.base import BaseInterface
+from husky_assembly_teleop.robot_interface.base import (FOLLOWER_SILENT_AFTER, PLATFORM_VELOCITY_CONTROLLER,
+                                                        BaseInterface, BaseState, FollowerState)
+from husky_assembly_teleop.robot_interface.controller_manager import CONTROLLER_STATE_MAX_AGE
+from husky_assembly_teleop.robot_interface.mocap_state import POSE_TIMEOUT
 
 pytestmark = pytest.mark.safety
 
-
-class _Publisher:
-    """Keeps what is published."""
-
-    def __init__(self):
-        """Nothing published yet."""
-        self.sent = []
-
-    def publish(self, message):
-        """Keep the message."""
-        self.sent.append(message)
+NOW = 100.0
+#: A path every guard lets through.
+PATH = ([0.0, 1.0], [0.0, 0.0], [0.0, 0.0], [0.0, 2.0], 0.3, 0.5)
 
 
 def _base() -> BaseInterface:
-    """A base with recording publishers and a running velocity controller, without ROS."""
+    """A base ready to follow at ROS time NOW: a live mocap pose, a live follower, the velocity controller running."""
     base = BaseInterface.__new__(BaseInterface)
-    clock = SimpleNamespace(now=lambda: SimpleNamespace(to_msg=Time))
-    base._node = SimpleNamespace(get_logger=lambda: SimpleNamespace(error=lambda *_a, **_k: None),
-                                 get_clock=lambda: clock)
-    base.controllers = SimpleNamespace(namespace="alice", is_active=lambda _name: True)
-    base._cmd_vel, base._base_path, base._path_ids = _Publisher(), _Publisher(), itertools.count(1)
+    base._node, base._config = Node(NOW), SimpleNamespace(mocap_id=1)
+    base.state = BaseState(tracked=True, tracking_valid=True, marker_errors=deque([(NOW, 0.0)]),
+                           last_update_time=NOW, estopped=False)
+    base.state.follower = FollowerState(
+        controller="pure_pursuit", state="idle", reason="", path_id=0, timed=False, piece=0, piece_count=0,
+        turning=False, progress=0.0, reference=np.zeros(3), lookahead=np.zeros(2), cross_track_error=0.0,
+        along_track_error=math.nan, yaw_error=0.0, command=np.zeros(2), update_time=NOW, stamp=NOW)
+    base.state.controllers.active, base.state.controllers.last_update_time = PLATFORM_VELOCITY_CONTROLLER, NOW
+    base.controllers = Controllers(base.state.controllers, "/a200_0804", base._node)
+    base._cmd_vel, base._base_path, base._path_ids = Publisher(), Publisher(), itertools.count(1)
     return base
 
 
@@ -41,6 +43,15 @@ def test_twist_not_finite_is_refused(twist):
     base = _base()
     assert not base.send_twist(*twist)
     assert not base._cmd_vel.sent
+
+
+def test_twist_refused_while_the_controller_state_is_stale():
+    """A controller manager silent for over CONTROLLER_STATE_MAX_AGE keeps its last answer: no twist goes out."""
+    base = _base()
+    base._node.now += CONTROLLER_STATE_MAX_AGE + 0.1
+    assert not base.send_twist(0.2, 0.0)
+    assert base.send_twist(0.0, 0.0, require_controller=False), "a stop always goes out"
+    assert len(base._cmd_vel.sent) == 1
 
 
 @pytest.mark.parametrize("path, why", [
@@ -58,9 +69,36 @@ def test_path_not_finite_or_ragged_is_refused(path, why):
     assert not base._base_path.sent and next(base._path_ids) == 1
 
 
-def test_finite_commands_go_out():
-    """A finite twist and a finite path are published."""
+@pytest.mark.parametrize("change, why", [
+    (lambda base: setattr(base.state, "estopped", True), "e-stopped"),
+    (lambda base: setattr(base._node, "now", NOW + POSE_TIMEOUT + 0.01), "no mocap pose"),
+    (lambda base: setattr(base.state, "follower", None), "no follower"),
+])
+def test_path_refused_while_the_base_may_not_follow(change, why):
+    """An e-stopped base, a lost pose or no follower: `follow_problem` says why and send_path sends nothing.
+
+    * An e-stopped base matters most: a path taken now would drive as soon as the e-stop is released.
+    """
     base = _base()
+    change(base)
+    assert why in base.follow_problem()
+    with pytest.raises(ValueError, match=why):
+        base.send_path(*PATH)
+    assert not base._base_path.sent
+
+
+def test_a_silent_follower_counts_as_none():
+    """A follower report older than FOLLOWER_SILENT_AFTER means no follower runs."""
+    base = _base()
+    base.state.follower.update_time -= FOLLOWER_SILENT_AFTER
+    base.state.marker_errors.append((NOW, 0.0))
+    assert "no follower" in base.follow_problem()
+
+
+def test_finite_commands_go_out():
+    """A finite twist and a finite path are published while the base may drive."""
+    base = _base()
+    assert base.follow_problem() == ""
     assert base.send_twist(0.2, -0.1)
-    assert base.send_path([0.0, 1.0], [0.0, 0.0], [0.0, 0.0], [0.0, 2.0], 0.3, 0.5) == 1
+    assert base.send_path(*PATH) == 1
     assert len(base._cmd_vel.sent) == 1 and list(base._base_path.sent[0].t) == [0.0, 2.0]

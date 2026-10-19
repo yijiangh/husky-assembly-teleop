@@ -11,6 +11,7 @@ from scipy.spatial.transform import Rotation
 from husky_assembly_teleop.config import ArmConfig
 from husky_assembly_teleop.robot_interface.arm import (SCALED_JOINT_TRAJECTORY_CONTROLLER, UR_JOINT_NAMES, ArmInterface,
                                                        ArmState)
+from husky_assembly_teleop.robot_interface.controller_manager import ControllerManagerInterface
 from husky_assembly_teleop.robot_interface.ur_frames import BASE_LINK_FROM_UR_BASE
 from scaffolding_assembly_core.geometry import Pose
 
@@ -116,15 +117,14 @@ class Node:
 
 
 class Controllers:
-    """Stands in for ControllerManagerInterface: reports `state.active` and nothing else."""
+    """Stands in for ControllerManagerInterface: `state`, judged by the real `is_active` and `running_problem`."""
 
-    def __init__(self, state, namespace: str):
-        """Read `state`, a ControllerManagerState."""
-        self.state, self.namespace = state, namespace
+    is_active = ControllerManagerInterface.is_active
+    running_problem = ControllerManagerInterface.running_problem
 
-    def is_active(self, controller: str) -> bool:
-        """Whether `controller` is the reported one."""
-        return self.state.active == controller
+    def __init__(self, state, namespace: str, node: Node | None = None):
+        """Read `state`, a ControllerManagerState, at the time of `node`."""
+        self.state, self.namespace, self._node = state, namespace, node or Node()
 
 
 def fake_arm(controller: str | None = SCALED_JOINT_TRAJECTORY_CONTROLLER, joints=None, now: float = 100.0,
@@ -137,7 +137,7 @@ def fake_arm(controller: str | None = SCALED_JOINT_TRAJECTORY_CONTROLLER, joints
     arm._node, arm.config = Node(now), ArmConfig(name="ur_arm", ros_namespace="ur5e", **config)
     arm.base_in_husky, arm.pendant_tcp, arm.urdf_problem, arm.end_effector = Pose(), Pose(), None, None
     arm.state, arm._test_mode_logged, arm._motion_reference, arm._free_drive_on = ArmState(), {}, {}, False
-    arm.controllers = Controllers(arm.state.controllers, "/a200_0804/ur5e")
+    arm.controllers = Controllers(arm.state.controllers, "/a200_0804/ur5e", arm._node)
     arm._trajectory, arm._target_frame, arm._target_wrench = Publisher(), Publisher(), Publisher()
     state = arm.state
     state.controllers.active, state.controllers.last_update_time = controller, now

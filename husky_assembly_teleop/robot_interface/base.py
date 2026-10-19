@@ -23,7 +23,7 @@ from ..config import RobotConfig
 from .connections import RosConnections
 from .controller_manager import ControllerManagerInterface, ControllerManagerState
 from .mocap import subscribe_mocap
-from .mocap_state import RawMarkers
+from .mocap_state import RawMarkers, pose_lost
 from .stream_stats import StreamStats
 
 #: The base's only controller for now. cmd_vel goes through it.
@@ -36,6 +36,8 @@ FOLLOWER_STATES = ("idle", "following", "done", "aborted")
 
 #: Entries kept in each log (`follower_log`, `odometry_log`): over 15 minutes at the follower's 30 Hz.
 LOG_LENGTH = 30_000
+#: A follower silent for this long, seconds, is not running.
+FOLLOWER_SILENT_AFTER = 1.0
 
 
 @dataclass
@@ -200,6 +202,20 @@ class BaseInterface:
         self._connect()
         self.controllers.reconnect()
 
+    def follow_problem(self) -> str:
+        """Why the onboard follower may not be handed a path now, or "": no live mocap pose, e-stop, or no follower.
+
+        ! Check it before a path goes out and while one is followed; `send_path` refuses a path while it holds.
+        """
+        now = self._node.get_clock().now().nanoseconds * 1e-9
+        if lost := pose_lost(self.mocap_id, self.state, now):
+            return f"no mocap pose: {lost}"
+        if self.state.estopped:
+            return "e-stopped"
+        if live_report(self.state.follower, now) is None:
+            return "no follower: start crl_husky pure_pursuit"
+        return ""
+
     def send_twist(self, linear_x: float, angular_z: float, require_controller: bool = True) -> bool:
         """Drive the base.
 
@@ -210,16 +226,17 @@ class BaseInterface:
                 or for a stop.
 
         Returns:
-            bool: True if sent. False if a speed is not finite or the velocity controller is not running.
+            bool: True if sent. False if a speed is not finite, or (with `require_controller`) the velocity controller
+                is not running or its manager has not answered lately.
         """
         if not (math.isfinite(linear_x) and math.isfinite(angular_z)):
             self._node.get_logger().error(f"{self.controllers.namespace}: not driving, the twist is not finite "
                                           f"({linear_x}, {angular_z})")
             return False
-        if require_controller and not self.controllers.is_active(PLATFORM_VELOCITY_CONTROLLER):
-            self._node.get_logger().warning(
-                f"{self.controllers.namespace}: not driving, {PLATFORM_VELOCITY_CONTROLLER} "
-                f"is not active", throttle_duration_sec=2.0)
+        problem = self.controllers.running_problem(PLATFORM_VELOCITY_CONTROLLER) if require_controller else None
+        if problem is not None:
+            self._node.get_logger().warning(f"{self.controllers.namespace}: not driving, {problem}",
+                                            throttle_duration_sec=2.0)
             return False
         message = Twist()
         message.linear.x = float(linear_x)
@@ -254,7 +271,8 @@ class BaseInterface:
             int: The path's id, as in `state.follower.path_id`.
 
         Raises:
-            ValueError: If x, y, yaw (and t) differ in length or hold a value that is not finite; nothing is sent.
+            ValueError: If x, y, yaw (and t) differ in length or hold a value that is not finite, or the follower may
+                not take a path now (`follow_problem`); nothing is sent.
         """
         columns = [[float(v) for v in values] for values in (x, y, yaw) + (() if t is None else (t,))]
         caps = [float(max_linear_speed), float(max_angular_speed)]
@@ -262,6 +280,8 @@ class BaseInterface:
             raise ValueError("x, y, yaw and t differ in length")
         if not all(math.isfinite(v) for v in caps + [v for column in columns for v in column]):
             raise ValueError("the path holds a value that is not finite")
+        if problem := self.follow_problem():
+            raise ValueError(problem)
         message = BasePath()
         message.header.stamp = self._node.get_clock().now().to_msg()
         message.header.frame_id = "mocap_world"
@@ -390,3 +410,10 @@ def parameter_value(value):
         return None
     result = getattr(value, field_name)
     return list(result) if not isinstance(result, (bool, int, float, str)) else result
+
+
+def live_report(follower: FollowerState | None, now: float) -> FollowerState | None:
+    """The follower's last report if it came within FOLLOWER_SILENT_AFTER seconds, else None: no follower runs."""
+    if follower is None or now - follower.update_time >= FOLLOWER_SILENT_AFTER:
+        return None
+    return follower

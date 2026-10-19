@@ -74,8 +74,6 @@ TRAJECTORY_MAX_DURATION = 300.0
 TRAJECTORY_MAX_WAYPOINTS = 10_000
 #: A trajectory is refused if the arm moved within this many seconds (it would jump in velocity).
 MOVING_WITHIN = 0.5
-#: Controller state older than this, seconds, is too old to trust "active".
-CONTROLLER_STATE_MAX_AGE = 3.0
 #: Largest step, metres and radians, between Cartesian targets sent within CARTESIAN_STEP_WINDOW seconds.
 CARTESIAN_MAX_STEP = 0.01
 CARTESIAN_MAX_STEP_ANGLE = np.radians(3.0)
@@ -508,12 +506,9 @@ class ArmInterface:
         Returns:
             str | None: Why it is refused, or None if it may go ahead.
         """
-        state = self.state.controllers
-        if not self.controllers.is_active(controller):
-            return f"{controller} is not active (active: {state.active!r})"
-        if state.last_update_time is None or self._now() - state.last_update_time > CONTROLLER_STATE_MAX_AGE:
-            return ("the controller manager has not answered for a while, so which controller "
-                    "runs is not known")
+        problem = self.controllers.running_problem(controller)
+        if problem is not None:
+            return problem
         updated = self.state.status_update_time
         if updated is None or self._now() - updated > SYNC_STATUS_MAX_AGE or not self.state.dashboard_up:
             # ? Not refused: fake hardware has no dashboard and the robot enforces safety itself.

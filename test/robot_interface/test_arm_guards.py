@@ -8,12 +8,12 @@ from robot_fakes import TCP_ORIENTATION, TCP_POSITION, fake_arm
 from scipy.spatial.transform import Rotation
 
 from husky_assembly_teleop.robot_interface.arm import (CARTESIAN_COMPLIANCE_CONTROLLER, CARTESIAN_MAX_STEP,
-                                                       CARTESIAN_STEP_WINDOW, CONTROLLER_STATE_MAX_AGE,
-                                                       HOLD_DURATION, JOINT_STATE_MAX_AGE, MAX_TARGET_FORCE,
-                                                       MAX_TARGET_TORQUE, MOVING_WITHIN, START_TOLERANCE,
-                                                       SYNC_STATUS_MAX_AGE, TRAJECTORY_MAX_DURATION,
+                                                       CARTESIAN_STEP_WINDOW, HOLD_DURATION, JOINT_STATE_MAX_AGE,
+                                                       MAX_TARGET_FORCE, MAX_TARGET_TORQUE, MOVING_WITHIN,
+                                                       START_TOLERANCE, SYNC_STATUS_MAX_AGE, TRAJECTORY_MAX_DURATION,
                                                        TRAJECTORY_MAX_JOINT_SPEED, TRAJECTORY_MAX_WAYPOINTS,
                                                        UR_JOINT_LIMITS, joint_move)
+from husky_assembly_teleop.robot_interface.controller_manager import CONTROLLER_STATE_MAX_AGE
 
 pytestmark = pytest.mark.safety
 

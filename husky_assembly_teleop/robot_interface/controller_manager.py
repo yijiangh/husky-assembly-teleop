@@ -15,6 +15,8 @@ from .connections import RosConnections
 
 #: Seconds between list_controllers polls.
 REFRESH_PERIOD = 1.0
+#: Controller state older than this, seconds, is too old to trust "active".
+CONTROLLER_STATE_MAX_AGE = 3.0
 
 
 @dataclass
@@ -86,6 +88,18 @@ class ControllerManagerInterface:
     def is_active(self, controller: str) -> bool:
         """Whether `controller` is the one running right now, as last reported."""
         return self.state.active == controller
+
+    def running_problem(self, controller: str) -> str | None:
+        """Why a command for `controller` must not go out: it is not active, or the last answer is too old; else None.
+
+        ! Check this, not `is_active`, before a motion command: a silent controller manager keeps its last answer.
+        """
+        if not self.is_active(controller):
+            return f"{controller} is not active (active: {self.state.active!r})"
+        now = self._node.get_clock().now().nanoseconds * 1e-9
+        if self.state.last_update_time is None or now - self.state.last_update_time > CONTROLLER_STATE_MAX_AGE:
+            return "the controller manager has not answered for a while, so which controller runs is not known"
+        return None
 
     def refresh(self) -> bool:
         """Ask the controller manager which controllers are running.

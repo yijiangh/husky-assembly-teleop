@@ -7,9 +7,9 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-from husky_assembly_teleop.robot_interface.base import FollowerState
-from husky_assembly_teleop.world.checks import BAD, GOOD, STALE_AFTER, WARN
-from husky_assembly_teleop.world.follower import live_report, path_check
+from husky_assembly_teleop.robot_interface.base import FOLLOWER_SILENT_AFTER, FollowerState, live_report
+from husky_assembly_teleop.world.checks import BAD, GOOD, WARN
+from husky_assembly_teleop.world.follower import path_check
 
 pytestmark = pytest.mark.safety
 
@@ -21,9 +21,9 @@ REPORT = FollowerState(controller="pure_pursuit", state="following", reason="", 
 
 
 def test_report_counts_while_fresh():
-    """A report is live for STALE_AFTER seconds; none is never live."""
-    assert live_report(REPORT, 10.0 + STALE_AFTER / 2) is REPORT
-    assert live_report(REPORT, 10.0 + STALE_AFTER) is None
+    """A report is live for FOLLOWER_SILENT_AFTER seconds; none is never live."""
+    assert live_report(REPORT, 10.0 + FOLLOWER_SILENT_AFTER / 2) is REPORT
+    assert live_report(REPORT, 10.0 + FOLLOWER_SILENT_AFTER) is None
     assert live_report(None, 10.0) is None
 
 

@@ -1,24 +1,13 @@
 """
-Judging the onboard path follower's reports: whether one runs, and how it does with a path it was sent.
+Judging how the onboard path follower does with a path it was sent, as a chip (`path_check`).
 
-Only reads stored fields, so it needs no ROS; receiving the reports is robot_interface/base.py's job.
+Whether a follower runs at all is `robot_interface.base.live_report`; receiving the reports is the base's job.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
-from .checks import BAD, GOOD, STALE_AFTER, WARN, Check
-
-if TYPE_CHECKING:
-    from ..robot_interface.base import FollowerState
-
-
-def live_report(follower: FollowerState | None, now: float) -> FollowerState | None:
-    """The follower's last report if it came within STALE_AFTER seconds, else None: no follower runs."""
-    if follower is None or now - follower.update_time >= STALE_AFTER:
-        return None
-    return follower
+from ..robot_interface.base import FOLLOWER_SILENT_AFTER, FollowerState, live_report
+from .checks import BAD, GOOD, WARN, Check
 
 
 def path_check(follower: FollowerState | None, path_id: int, sent_at: float, now: float) -> Check:
@@ -35,10 +24,10 @@ def path_check(follower: FollowerState | None, path_id: int, sent_at: float, now
     """
     follower = live_report(follower, now)
     if follower is None:
-        return Check("follower silent", BAD, f"no report from the follower for over {STALE_AFTER:g}s")
+        return Check("follower silent", BAD, f"no report from the follower for over {FOLLOWER_SILENT_AFTER:g}s")
     if follower.path_id != path_id:
         # * Until its first report on the new path, the follower may still report the old one.
-        if follower.update_time < sent_at + STALE_AFTER:
+        if follower.update_time < sent_at + FOLLOWER_SILENT_AFTER:
             return Check("sent", WARN, "waiting for the follower to take the path")
         return Check("replaced", BAD, f"the follower is on path {follower.path_id}, not ours")
     if follower.state == "following":

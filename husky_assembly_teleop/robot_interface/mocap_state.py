@@ -1,7 +1,8 @@
 """
 What every mocap-tracked body stores (bases and tracked objects alike), without ROS.
 
-`mocap.py` fills it from the relay; `world/mocap.py` judges it.
+`mocap.py` fills it from the relay; `mocap_problem` and `pose_lost` say when a pose cannot be used, and
+`world/mocap.py` grades it for the chips.
 """
 
 from __future__ import annotations
@@ -14,6 +15,10 @@ import numpy as np
 
 #: Seconds of valid samples whose mean marker error the chip judges.
 MARKER_ERROR_WINDOW = 1.0
+#: A relay silent for this long, seconds, is down.
+RELAY_SILENT_AFTER = 1.0
+#: Seconds without a valid pose after which nothing may drive from it; the onboard follower's `mocap_timeout_sec`.
+POSE_TIMEOUT = 0.3
 
 
 @dataclass(frozen=True)
@@ -56,3 +61,44 @@ class MocapBody(Protocol):
     last_update_time: float | None
     last_fix_time: float | None
     markers: RawMarkers | None
+
+
+def mocap_problem(mocap_id: int | None, body: MocapBody, now: float) -> str:
+    """Why a body's pose is unusable now: no rigid body, no message yet, a silent relay, lost or invalid; else "".
+
+    Args:
+        mocap_id: The body's rigid-body id, or None if it has none configured.
+        body: The body's measured state.
+        now: Current ROS time, seconds.
+    """
+    if mocap_id is None:
+        return "no mocap id configured; the pose is never measured"
+    if body.last_update_time is None:
+        return f"no message for rigid body {mocap_id} yet; is mocap_relay running?"
+    if now - body.last_update_time > RELAY_SILENT_AFTER:
+        return f"relay silent for over {RELAY_SILENT_AFTER:g}s (rigid body {mocap_id})"
+    # * Reasons the relay marks a pose invalid: body lost, error past its threshold, or stale.
+    if not body.tracking_valid:
+        return f"rigid body {mocap_id} lost by mocap; markers hidden?"
+    if not body.tracked:
+        return "relay marks the pose invalid (marker error past its threshold, or stale)"
+    return ""
+
+
+def pose_lost(mocap_id: int | None, body: MocapBody, now: float) -> str:
+    """Why a body's pose is too old to drive from (no valid sample for POSE_TIMEOUT, or none yet), or "".
+
+    ! Check this, not `tracked`, before and while driving from the pose: `tracked` stays True if the relay goes silent.
+
+    Args:
+        mocap_id: The body's rigid-body id, or None if it has none configured.
+        body: The body's measured state.
+        now: Current ROS time, seconds.
+
+    Returns:
+        str: The reason, or "" while the pose is live.
+    """
+    # * marker_errors holds the arrival time of each valid sample, so its newest entry is the last valid one.
+    if mocap_id is not None and body.marker_errors and now - body.marker_errors[-1][0] <= POSE_TIMEOUT:
+        return ""
+    return mocap_problem(mocap_id, body, now) or f"no valid mocap pose for over {POSE_TIMEOUT:g}s"

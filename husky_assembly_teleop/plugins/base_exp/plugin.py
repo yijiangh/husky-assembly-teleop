@@ -40,7 +40,8 @@ from ...plugin_api.concurrency import WaitTimeout
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
 from ...plugin_api.trace import Signal, Trace
-from ...robot_interface.base import PLATFORM_VELOCITY_CONTROLLER, FollowerState
+from ...robot_interface.base import PLATFORM_VELOCITY_CONTROLLER, FollowerState, live_report
+from ...robot_interface.mocap_state import pose_lost
 from ...shared.obstacles_contract import ObstaclesContract
 from ...shared.planner.timed_path import timing
 from ...ui.base_markers import Markers
@@ -48,8 +49,6 @@ from ...ui.pose_input import yaw_from_xyzw
 from ...ui.style import BUSY, FAIL, NONE, OK, SECTION_CTRL, SECTION_TOOL, block, chip, section, values, warning
 from ...ui.trace_plot import TracePlot
 from ...world.checks import STALE_AFTER
-from ...world.follower import live_report
-from ...world.mocap import pose_lost
 from . import record
 from .auto import PATH_CLEARANCE, SPEED, STANDARD_SET, STOP_DISTANCE, Clearance, Sampler, StandardSet
 from .plan import Plan, plan_from
@@ -326,13 +325,8 @@ class BaseExperimentPlugin(HuskyPlugin):
         base = ctx.world.robots[self.serial].base
         if self.running:
             return "a run is going on"
-        if lost := pose_lost(base.mocap_id, base.state, ctx.now()):
-            return f"{self.serial} has no mocap pose: {lost}"
-        if self._follower(ctx) is None:
-            return f"no follower on {self.serial}: start crl_husky pure_pursuit"
-        if base.state.estopped:
-            return f"{self.serial} is e-stopped"
-        return ""
+        problem = base.follow_problem()
+        return f"{self.serial}: {problem}" if problem else ""
 
     # --- --- --- --- --- RUNS (tasks) --- --- --- --- ---
 
