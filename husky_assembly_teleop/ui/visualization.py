@@ -50,6 +50,9 @@ TOOL_COLOR = (0.27, 0.27, 0.31)
 #: Joint change (rad or m) below which a robot is not re-posed.
 JOINT_TOLERANCE = 1e-4
 
+#: Starting width of the side panel, pixels. Fits an arm's joint row, the widest line.
+SIDE_PANEL_WIDTH = 420
+
 
 def joints_changed(values: np.ndarray, shown: np.ndarray | None) -> bool:
     """Whether joint values differ from those shown (None: nothing shown yet) by more than JOINT_TOLERANCE."""
@@ -302,6 +305,55 @@ def pinned_server(port: int, parameter: str, label: str) -> viser.ViserServer:
     return server
 
 
+class SidePanel:
+    """The panel docked on the right that plugins share: tabs found by their path of labels, made on first use."""
+
+    def __init__(self, server: viser.ViserServer):
+        """No panel until the first tab is asked for."""
+        self._server = server
+        self._panel: viser.PanelHandle | None = None
+        #: Tabs by their path of labels, and per tab the tab group holding the tabs nested in it.
+        self._tabs: dict[tuple[str, ...], viser.GuiTabHandle] = {}
+        self._groups: dict[tuple[str, ...], viser.GuiTabGroupHandle] = {}
+
+    def tab(self, path: tuple[tuple[str, viser.IconName | None], ...]) -> tuple[viser.GuiTabHandle, bool]:
+        """The tab at `path`, a (label, icon) per level, made with any missing parents; tabs keep the order made.
+
+        Returns:
+            tuple[viser.GuiTabHandle, bool]: The tab, and whether this call made it.
+        """
+        labels = tuple(label for label, _ in path)
+        made = labels not in self._tabs
+        for depth, (label, icon) in enumerate(path, 1):
+            if labels[:depth] not in self._tabs:
+                self._tabs[labels[:depth]] = self._add_tab(labels[:depth - 1], label, icon)
+        return self._tabs[labels], made
+
+    def remove(self, labels: tuple[str, ...]) -> None:
+        """Remove the tab at `labels`, with every tab nested in it."""
+        for key in [key for key in self._tabs if key[:len(labels)] == labels]:
+            self._groups.pop(key, None)
+            tab = self._tabs.pop(key)
+            if key == labels:
+                tab.remove()
+
+    def _add_tab(self, parent: tuple[str, ...], label: str, icon: viser.IconName | None) -> viser.GuiTabHandle:
+        """Add a tab to the panel, or to the tab group inside the parent tab; either is made when first needed."""
+        if not parent:
+            first = self._panel is None
+            if first:
+                self._panel = self._server.gui.add_panel()
+            tab = self._panel.add_tab(label, icon)
+            if first:
+                self._panel.dock_right()
+                self._panel.set_width(SIDE_PANEL_WIDTH)
+            return tab
+        if parent not in self._groups:
+            with self._tabs[parent]:
+                self._groups[parent] = self._server.gui.add_tab_group()
+        return self._groups[parent].add_tab(label, icon)
+
+
 class Visualization:
     """Owns the viser servers (desktop and phone) and the robot and scene nodes. Plugins get a PluginView."""
 
@@ -359,6 +411,8 @@ class Visualization:
 
         #: Plugins' header folders (`PluginView.header`), above every plugin's folder. Unlabelled: no title or border.
         self._header = self._server.gui.add_folder(None)
+        #: Plugins' tabs (`PluginView.tab`).
+        self._side = SidePanel(self._server)
 
         # Per-robot handles by serial, built once in load_robot.
         self._robots: dict[str, _DrawnRobot] = {}
@@ -404,7 +458,7 @@ class Visualization:
         Returns:
             PluginView: The plugin's slice of the UI.
         """
-        return PluginView(self._server, plugin_name, self._header, self._phone)
+        return PluginView(self._server, plugin_name, self._header, self._phone, self._side)
 
     def atomic(self) -> AbstractContextManager[None]:
         """Batch every scene change made inside the block into one update.
@@ -504,21 +558,26 @@ class Visualization:
 
 
 class PluginView:
-    """One plugin's private scene subtree and GUI folder in viser, and its tab on the phone, as `ctx.view`."""
+    """One plugin's private scene subtree, GUI folder and side panel tabs in viser, and its phone tab, as `ctx.view`."""
 
-    def __init__(self, server: viser.ViserServer, plugin_name: str, header: viser.GuiFolderHandle, phone: PhonePage):
-        """Create the plugin's scene root; its GUI folder, header and phone tab come on first use.
+    def __init__(self, server: viser.ViserServer, plugin_name: str, header: viser.GuiFolderHandle, phone: PhonePage,
+                 side: SidePanel):
+        """Create the plugin's scene root; its GUI folder, header, tabs and phone tab come on first use.
 
         Args:
             server: The shared viser server.
             plugin_name: Unique plugin name.
             header: The desktop's header folder, above every plugin's folder.
             phone: The phone page.
+            side: The side panel every plugin's tabs go in.
         """
         self._server = server
         self._name = plugin_name
         self._header_parent = header
         self._header: viser.GuiFolderHandle | None = None
+        self._side = side
+        #: Side panel tabs this plugin made, by their path of labels.
+        self._side_tabs: list[tuple[str, ...]] = []
         self._phone = phone
         self._phone_tab: viser.GuiTabHandle | None = None
         self._phone_header: viser.GuiFolderHandle | None = None
@@ -551,6 +610,25 @@ class PluginView:
         if self._folder is None:
             self._folder = self._server.gui.add_folder(self._name)
         with self._folder:
+            yield self._server.gui
+
+    @contextmanager
+    def tab(self, *path: tuple[str, viser.IconName | None]) -> Iterator[viser.GuiApi]:
+        """Add widgets inside a tab of the side panel, made on first use with any missing parents.
+
+        ! One plugin per tab: only the tab a plugin made is removed with it, never the parents it shares.
+
+        Args:
+            *path: (label, icon) per level, e.g. `("Plan", Icon.ROUTE), ("Arm", Icon.ROBOT)`; the first plugin to
+                name a tab sets its icon.
+
+        Yields:
+            viser.GuiApi: The GUI api, with the tab as parent.
+        """
+        tab, made = self._side.tab(path)
+        if made:
+            self._side_tabs.append(tuple(label for label, _ in path))
+        with tab:
             yield self._server.gui
 
     def panel(self) -> viser.PanelHandle:
@@ -612,13 +690,16 @@ class PluginView:
             yield self._phone.server.gui
 
     def clear(self) -> None:
-        """Remove everything this plugin added: scene nodes, its folder, header and panels, its phone tab and header."""
+        """Remove everything this plugin added: scene nodes, folder, header, panels and tabs, phone tab and header."""
         self._root.remove()
         if self._folder is not None:
             self._folder.remove()
         for panel in self._panels:
             panel.remove()
         self._panels.clear()
+        for labels in self._side_tabs:
+            self._side.remove(labels)
+        self._side_tabs.clear()
         for handle in (self._header, self._phone_tab, self._phone_header):
             if handle is not None:
                 handle.remove()

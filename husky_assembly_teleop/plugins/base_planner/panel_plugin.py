@@ -18,6 +18,7 @@ import math
 from dataclasses import asdict
 from html import escape
 
+import viser
 from crl_husky.follower_path import FollowerPath
 
 from ...drive import drive_folder
@@ -51,6 +52,7 @@ class BasePlannerPanel(PlannerPanel):
     name = "base_planner_panel"
     experimental = True
     planner = "base_planner"
+    tab = ("Base", viser.Icon.CAR)
     requires = ("base_planner", "process")
 
     def __init__(self):
@@ -77,7 +79,7 @@ class BasePlannerPanel(PlannerPanel):
         self.serial = serials[0]
         root = ctx.view.scene_root
 
-        with ctx.view.ui() as gui:
+        with self._ui(ctx) as gui:
             self._status = gui.add_html("")
             self._robot = gui.add_dropdown("Robot", options=serials, initial_value=self.serial)
 

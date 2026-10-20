@@ -1,5 +1,7 @@
 """
-The robot control panel: a tab per robot, with inline tabs per part showing state and basic control.
+The robot control panel: the side panel's Control tab, holding a tab per robot with a tab per part.
+
+Each part's tab shows its state and basic control.
 
 On the phone, a Control tab per robot: the base's D-pad, and per arm its gripper and free drive while held.
 
@@ -45,8 +47,8 @@ from .status import (ControllerPanel, arm_status, base_status, build_controller_
 ARRIVED_TOLERANCE = 0.5
 #: Seconds past the planned duration before an unfinished move is reported as timed out.
 ARRIVE_TIMEOUT_MARGIN = 5.0
-#: Starting panel width, pixels. Fits the arm's joint row, the widest line.
-PANEL_WIDTH = 420
+#: The side panel tab this plugin fills.
+CONTROL_TAB = ("Control", viser.Icon.DEVICE_GAMEPAD_2)
 #: Seconds to wait before asking again after a refused free drive switch, so a dead service is not asked every tick.
 FREE_DRIVE_RETRY = 1.0
 
@@ -131,25 +133,22 @@ class RobotControlPlugin(HuskyPlugin):
     # --- --- --- --- --- SETUP --- --- --- --- ---
 
     def setup(self, ctx: PluginContext) -> None:
-        """Build one panel with a tab per robot, holding inline tabs for its base and arms, and the phone's Control tab.
+        """Build the Control tab with a tab per robot, holding tabs for its base and arms, and the phone's Control tab.
 
         Args:
             ctx: This plugin's context.
         """
-        # Raw gui api, not ui(): ui() would leave an empty folder in the main panel.
-        gui = ctx.view.gui
-        panel = ctx.view.panel()
-        for serial, robot in ctx.world.robots.items():
-            # "a200-0806" -> "0806"
-            with panel.add_tab(serial.split("-")[-1], icon=viser.Icon.ROBOT):
-                parts = gui.add_tab_group()
-                with parts.add_tab("Base", icon=viser.Icon.CAR):
-                    self._bases.append(self._build_base(ctx, gui, serial, robot.base))
-                for arm in robot.arms.values():
-                    with parts.add_tab(arm.config.label, icon=viser.Icon.ROBOT):
-                        self._arms.append(self._build_arm(ctx, gui, serial, arm))
-        panel.dock_right()
-        panel.set_width(PANEL_WIDTH)
+        with ctx.view.tab(CONTROL_TAB) as gui:
+            robots = gui.add_tab_group()
+            for serial, robot in ctx.world.robots.items():
+                # "a200-0806" -> "0806"
+                with robots.add_tab(serial.split("-")[-1], icon=viser.Icon.ROBOT):
+                    parts = gui.add_tab_group()
+                    with parts.add_tab("Base", icon=viser.Icon.CAR):
+                        self._bases.append(self._build_base(ctx, gui, serial, robot.base))
+                    for arm in robot.arms.values():
+                        with parts.add_tab(arm.config.label, icon=viser.Icon.ROBOT):
+                            self._arms.append(self._build_arm(ctx, gui, serial, arm))
         # * The phone's Control tab: a sub-tab per robot with its own speed slider and the same D-pad.
         #   Below it, a folder per arm: Open and Close, and free drive while held.
         with ctx.view.phone("Control", viser.Icon.DEVICE_GAMEPAD_2) as phone:

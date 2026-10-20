@@ -23,6 +23,8 @@ Add a file with @register; run it with `-p plugins:="['<name>']"`.
   check `soft_stopped` before commanding: RobotStopped there skips the rest of the hook.
 
 * Header: `ctx.view.header()` puts a short status above every plugin's folder, e.g. health's banner.
+* Tabs: `ctx.view.tab(...)` puts a panel into the side panel's tabs: Control (robot_control) and Plan, with a tab
+  per planner panel.
 * Phone: a plugin may add a tab to the phone page with `ctx.view.phone()` (and a short status above the tabs with
   `ctx.view.phone_header()`). Keep it to what an operator needs next to the robots; the rest stays on the laptop.
 """
