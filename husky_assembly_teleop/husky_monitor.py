@@ -11,6 +11,7 @@ from collections import Counter, defaultdict, deque
 from contextlib import nullcontext
 import os
 import time, copy
+import subprocess
 import threading
 import traceback
 import json
@@ -77,7 +78,7 @@ from husky_assembly_teleop.cfab_session import (
     GROUND_RIGID_BODY_NAME,
     inject_ground_rigid_body_state, apply_obstacle_robot_beliefs,
 )
-from husky_assembly_teleop.robot_registry import RobotSpec, robot_by_name
+from husky_assembly_teleop.robot_registry import ROBOTS, RobotSpec, robot_by_name
 from husky_assembly_teleop.progress_io import (
     BELIEF_ASSUMED, BELIEF_LIVE, STATUS_PENDING, RobotBelief, archive_progress_and_saved_plans,
     belief_after, belief_from_live, load_progress, new_run_id, obstacle_tool_states,
@@ -126,6 +127,8 @@ BUTTON_CONFIRM_RGB = (40, 145, 60)
 BUTTON_CANCEL_RGB = (180, 40, 40)
 # A darker yellow, so the button's white label stays readable.
 BUTTON_DONE_RGB = (185, 150, 15)
+# * The 'Switch to <robot> (current)' button: red marks the robot this monitor drives.
+BUTTON_CURRENT_ROBOT_RGB = (180, 40, 40)
 TRAJECTORY_GREEN = [0, 0.5, 0.2, 0.7]
 TRANSPARENT = [0, 0.0, 0.0, 0.0]
 # Faint grey for built bars / joints the planner ignores (IGNORE_BUILT_ASSEMBLY_COLLISIONS):
@@ -573,6 +576,7 @@ class HuskyMonitor(Node):
         self._skeleton_row_window = (0, 0)      # (lo, hi) actions shown as rows
         self._clean_actions = set()             # actions reopened this run: load their clean export
         self._auto_load_deadline = None         # start-up auto-load pending until (time.monotonic())
+        self._switch_to = None                  # RobotSpec a 'Switch to <robot>' click asked for (main restarts)
         self.skeleton_header_text = None
         self.skeleton_action_slider = None
         self.skeleton_action_text = None
@@ -10284,6 +10288,40 @@ class HuskyMonitor(Node):
             f"'Confirm Exec'. Finish it or click 'Cancel Exec' first.")
         return True
 
+    def switch_robot(self, name: str) -> None:
+        """'Switch to <robot>' button: restart this monitor for another robot.
+
+        The monitor drives the robot its terminal's ROS_DOMAIN_ID names, fixed at
+        start-up. A switch therefore quits this monitor and starts a fresh one with
+        the other robot's domain (``main`` -> ``_restart_monitor_for``), the same as
+        Ctrl-C + a new 'ros2 run' by hand. Nothing is re-wired inside this run.
+
+        ! Refused while a step / execution runs or waits, and while an arm still
+        ! moves: quitting then would cut the step off half-way (the same checks as
+        ! 'Mark action done'). Quitting otherwise is safe: the robot's driver keeps
+        ! running and its arms hold.
+
+        Args:
+            name (str): The robot to switch to, e.g. ``'Alice'``.
+        """
+        spec = robot_by_name(name)
+        current = self._connected_robot()
+        if spec.name == current.name:
+            self.get_logger().info(f"[Switch] already on {current.name} (domain {current.domain_id}); nothing to do.")
+            return
+        what = f"'Switch to {spec.name}'"
+        if self._refuse_while_tasks_run(what):
+            return
+        hi = self.huskies[self.selected_robot_id].interface if getattr(self, 'huskies', None) else None
+        if hi is not None and any(bool(x) for x in getattr(hi, 'is_arm_executing', [])):
+            self.get_logger().warn(f"{what} refused: an arm is still moving. Wait until it stops.")
+            return
+        self.get_logger().info(
+            f"[Switch] restarting the monitor on {spec.name} (domain {spec.domain_id}): "
+            f"the windows close and reopen. {current.name}'s driver keeps running.")
+        # * Only a flag here (this runs on the UI thread); update() ends the spin.
+        self._switch_to = spec
+
     def queue_servo_to_movement_start(self, use_transfer: bool = False) -> None:
         """Queue the visual-servoing loop ('3) / 3b) Servo to Mv Start').
 
@@ -11417,6 +11455,14 @@ class HuskyMonitor(Node):
         n = len(skeleton.actions)
         selected = max(0, min(int(self._selected_action_idx), n - 1))
         self.skeleton_header_text = StatusText("  plan skeleton", self._skeleton_header_text())
+        # * One 'Switch to <robot>' button per robot: restarts the monitor for that
+        # * robot (switch_robot). A second way next to Ctrl-C + a new 'ros2 run'.
+        connected_name = self._connected_robot().name
+        for name in ROBOTS:
+            current = name == connected_name
+            label = f"Switch to {name} (current)" if current else f"Switch to {name}"
+            self.buttons.append(Button(label, lambda name=name: self.switch_robot(name),
+                                       color=BUTTON_CURRENT_ROBOT_RGB if current else None))
         # Never a single-value range: that segfaults pybullet's legacy slider
         # (same guard as the Movement slider).
         self.skeleton_action_slider = Slider(
@@ -12388,6 +12434,13 @@ class HuskyMonitor(Node):
                 # User closed the UI window - request a clean shutdown.
                 rclpy.shutdown()
                 return
+        if getattr(self, '_switch_to', None) is not None:
+            # * A 'Switch to <robot>' click (switch_robot): end the spin; main()
+            # * then restarts the monitor for that robot.
+            # ! An exception, not rclpy.shutdown(): called from inside a timer
+            # ! callback, Humble's shutdown waits for that very callback to end and
+            # ! hangs (tested 2026-10-19).
+            raise RestartMonitor(self._switch_to)
 
         self._pump_mocap_offset_window()
 
@@ -12710,15 +12763,61 @@ class HuskyMonitor(Node):
         super().destroy_node()
 
 # --- --- --- --- --- MAIN --- --- --- --- ---
+class RestartMonitor(Exception):
+    """Raised by ``HuskyMonitor.update`` after a 'Switch to <robot>' click; ends the spin.
+
+    Args:
+        spec (RobotSpec): The robot to restart the monitor for.
+    """
+
+    def __init__(self, spec: RobotSpec):
+        super().__init__(spec.name)
+        self.spec = spec
+
+
+def _restart_monitor_for(spec: RobotSpec) -> None:
+    """Replace this process with a fresh monitor for ``spec`` (the 'Switch to <robot>' buttons).
+
+    Same command line and environment, only ROS_DOMAIN_ID changed to ``spec``'s
+    domain. ``os.execv`` keeps the process id, so 'ros2 run' keeps waiting on it
+    and the terminal (and its tmux log) carries on.
+
+    ! Only this process gets the new domain: the shell that ran 'ros2 run' keeps
+    ! its own ROS_DOMAIN_ID. After Ctrl-C, paste the robot's block before the next
+    ! 'ros2 run', or the old robot starts again.
+
+    Args:
+        spec (RobotSpec): The robot to start the monitor for.
+    """
+    os.environ['ROS_DOMAIN_ID'] = spec.domain_id
+    # The manual's habit before every monitor start: stop the ros2 CLI daemon of
+    # the new domain. Best effort; the monitor itself does not use the daemon.
+    try:
+        subprocess.run(['ros2', 'daemon', 'stop'], timeout=10,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    print(f"[Switch] starting the monitor for {spec.name} (domain {spec.domain_id}) ...", flush=True)
+    sys.stderr.flush()
+    os.execv(sys.executable, [sys.executable] + sys.argv)
+
+
 def main(args=None):
     rclpy.init(args=args)
 
     husky_monitor = HuskyMonitor()
 
-    rclpy.spin(husky_monitor)
+    switch_to = None
+    try:
+        rclpy.spin(husky_monitor)
+    except RestartMonitor as restart:
+        # * A 'Switch to <robot>' click (switch_robot): clean up, then restart.
+        switch_to = restart.spec
 
     husky_monitor.destroy_node()
     rclpy.shutdown()
+    if switch_to is not None:
+        _restart_monitor_for(switch_to)
 
 if __name__ == '__main__':     
     main()
