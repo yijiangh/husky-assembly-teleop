@@ -1,0 +1,1022 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>Calibration in Husky Teleop</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap">
+<style>
+/* Layout: the same engineering reference sheet as doc/compas_structure.html. A title block
+   with the pinned dates, three drawn figures, then lookup tables. Ink colour says where a
+   transform comes from: teal = calibrated by our pipeline, ochre = calibrated by the vendor
+   or on the pendant, grey dashes = nominal (URDF / CAD, never calibrated), plain ink =
+   measured live. */
+:root {
+  --paper: #f3f5f6;
+  --sheet: #ffffff;
+  --ink: #162026;
+  --ink-2: #3d4a52;
+  --pencil: #5c6a72;
+  --rule: #d3dadd;
+  --lane: #f7f9f9;
+  --calib: #0b6a70;
+  --calib-wash: #e1efef;
+  --calib-line: #86bdbd;
+  --nominal: #848f96;
+  --nominal-wash: #edf0f1;
+  --vendor: #8c5d00;
+  --vendor-wash: #fbefd3;
+  --font-display: "IBM Plex Sans Condensed", "Roboto Condensed", "Arial Narrow", system-ui, sans-serif;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #0d1215; --sheet: #141b1f; --ink: #e0e6e9; --ink-2: #b3bec4; --pencil: #93a0a8;
+    --rule: #28323a; --lane: #11171b; --calib: #4ec6be; --calib-wash: #0f2e2d; --calib-line: #2d6b68;
+    --nominal: #7b878e; --nominal-wash: #172025; --vendor: #e3ad3c; --vendor-wash: #31270e;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #0d1215; --sheet: #141b1f; --ink: #e0e6e9; --ink-2: #b3bec4; --pencil: #93a0a8;
+  --rule: #28323a; --lane: #11171b; --calib: #4ec6be; --calib-wash: #0f2e2d; --calib-line: #2d6b68;
+  --nominal: #7b878e; --nominal-wash: #172025; --vendor: #e3ad3c; --vendor-wash: #31270e;
+  color-scheme: dark;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+body {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 15px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+.page {
+  max-width: 1140px;
+  margin: 0 auto;
+  padding-inline: 20px;
+  padding-block: 36px 72px;
+  display: grid;
+  gap: 56px;
+}
+h1, h2, h3 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  text-wrap: balance;
+  margin: 0;
+}
+h1 { font-size: clamp(2.1rem, 1.5rem + 2.6vw, 3.2rem); line-height: 1.04; letter-spacing: -0.01em; }
+h2 { font-size: 1.65rem; line-height: 1.15; }
+h3 { font-size: 1.02rem; line-height: 1.3; }
+p { margin: 0; max-width: 70ch; }
+code, .mono { font-family: var(--font-mono); font-size: 0.86em; }
+code { color: var(--ink); overflow-wrap: anywhere; }
+a { color: inherit; }
+a:focus-visible { outline: 2px solid var(--calib); outline-offset: 2px; border-radius: 2px; }
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--pencil);
+}
+
+/* * Title block */
+.titleblock {
+  display: grid;
+  grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr);
+  gap: 36px;
+  align-items: end;
+  padding-bottom: 28px;
+  border-bottom: 2px solid var(--ink);
+}
+.tb-main { display: grid; gap: 14px; min-width: 0; }
+.lede { font-size: 1.1rem; line-height: 1.55; max-width: 62ch; }
+.spec {
+  margin: 0;
+  display: grid;
+  border: 1px solid var(--rule);
+  background: var(--sheet);
+  font-size: 0.8rem;
+  min-width: 0;
+}
+.spec div {
+  display: grid;
+  grid-template-columns: 9.6rem minmax(0, 1fr);
+  gap: 12px;
+  padding: 7px 12px;
+  border-top: 1px solid var(--rule);
+}
+.spec div:first-child { border-top: 0; }
+.spec dt { font-family: var(--font-mono); color: var(--pencil); }
+.spec dd { margin: 0; font-family: var(--font-mono); min-width: 0; overflow-wrap: anywhere; }
+
+/* * Calibrated / not calibrated */
+.split {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  border: 1px solid var(--rule);
+  background: var(--sheet);
+}
+.split > div { padding: 22px 24px; display: grid; gap: 14px; align-content: start; min-width: 0; }
+.split > div + div { border-left: 1px solid var(--rule); }
+.split h2 { font-size: 1.15rem; display: flex; align-items: center; gap: 10px; }
+.split h2::before { content: ""; width: 16px; height: 12px; border-radius: 2px; flex: none; }
+.split .does h2::before { background: var(--calib-wash); border: 1.5px solid var(--calib); }
+.split .doesnt h2::before { background: var(--nominal-wash); border: 1.5px dashed var(--nominal); }
+.split ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 10px; }
+.split li b { font-weight: 600; }
+
+/* * Navigation + reference note */
+.navblock { display: grid; gap: 10px; margin-top: -24px; }
+.toc { display: flex; flex-wrap: wrap; gap: 6px 18px; align-items: baseline; font-size: 0.92rem; }
+.toc a { text-decoration: none; border-bottom: 1px solid var(--rule); }
+.toc a:hover { color: var(--calib); border-bottom-color: var(--calib); }
+.refnote { font-size: 0.84rem; color: var(--pencil); max-width: none; }
+
+/* * Sections and figures */
+section { display: grid; gap: 18px; min-width: 0; scroll-margin-top: 16px; }
+.sec-head { display: grid; gap: 8px; }
+.sec-head p { color: var(--ink-2); }
+figure { margin: 0; display: grid; gap: 12px; min-width: 0; }
+.fig-scroll {
+  overflow-x: auto;
+  background: var(--sheet);
+  border: 1px solid var(--rule);
+  padding: 14px;
+}
+.fig-scroll svg { display: block; width: 100%; height: auto; min-width: 900px; }
+.fig-scroll.narrow svg { max-width: 1000px; margin-inline: auto; }
+figcaption { font-size: 0.9rem; color: var(--ink-2); max-width: 86ch; }
+figcaption b { color: var(--ink); font-weight: 600; }
+.legend { display: flex; flex-wrap: wrap; gap: 8px 22px; font-size: 0.82rem; color: var(--ink-2); align-items: center; }
+.legend span { display: inline-flex; align-items: center; gap: 8px; }
+.sw { width: 18px; height: 12px; border-radius: 2px; display: inline-block; flex: none; }
+.sw-calib { background: var(--calib-wash); border: 1.5px solid var(--calib); }
+.sw-vendor { background: var(--vendor-wash); border: 1.5px solid var(--vendor); }
+.sw-nominal { background: var(--nominal-wash); border: 1.5px dashed var(--nominal); }
+.sw-live { background: var(--sheet); border: 1.5px solid var(--ink-2); }
+.sw-file { background: var(--sheet); border: 1.5px solid var(--calib-line); }
+
+/* * Inline SVG drawing styles (page-level, so they follow the theme tokens) */
+.dg text { font-family: var(--font-body); font-size: 11px; fill: var(--ink); }
+.dg .t-title { font-family: var(--font-display); font-weight: 600; font-size: 14px; }
+.dg .t-head { font-family: var(--font-display); font-weight: 600; font-size: 12.5px; }
+.dg .t-sub { font-size: 10.5px; fill: var(--pencil); }
+.dg .t-sub-s { font-size: 10px; fill: var(--pencil); }
+.dg .t-mono { font-family: var(--font-mono); font-size: 11px; }
+.dg .t-mono-s { font-family: var(--font-mono); font-size: 10px; }
+.dg .t-mono-b { font-family: var(--font-mono); font-size: 11px; font-weight: 600; }
+.dg .t-edge { font-size: 10.5px; fill: var(--pencil); }
+.dg .t-num { font-family: var(--font-mono); font-weight: 600; font-size: 12px; fill: var(--calib); }
+.dg .t-teal { fill: var(--calib); }
+.dg .t-ochre { fill: var(--vendor); }
+.dg .b-frame { fill: var(--sheet); stroke: var(--ink); stroke-width: 1.5; }
+.dg .b-motive { fill: var(--nominal-wash); stroke: var(--nominal); stroke-width: 1.3; }
+.dg .b-cal { fill: var(--calib-wash); stroke: var(--calib); stroke-width: 1.5; }
+.dg .b-vendor { fill: var(--vendor-wash); stroke: var(--vendor); stroke-width: 1.5; }
+.dg .b-nom { fill: var(--nominal-wash); stroke: var(--nominal); stroke-width: 1.3; stroke-dasharray: 5 4; }
+.dg .b-live { fill: var(--sheet); stroke: var(--ink-2); stroke-width: 1.3; }
+.dg .b-file { fill: var(--sheet); stroke: var(--calib-line); stroke-width: 1.4; }
+.dg .b-step { fill: var(--sheet); stroke: var(--calib); stroke-width: 1.5; }
+.dg .b-res { fill: var(--sheet); stroke: var(--rule); stroke-width: 1.2; }
+.dg .edge { fill: none; stroke: var(--pencil); stroke-width: 1.3; }
+.dg .leader { fill: none; stroke: var(--rule); stroke-width: 1.2; stroke-dasharray: 2 3; }
+.dg .ah { fill: var(--pencil); }
+.dg .ah-teal { fill: var(--calib); }
+.dg .lane { fill: var(--lane); }
+.dg .lane-cal { fill: var(--calib-wash); }
+.dg .gridline { stroke: var(--rule); stroke-width: 1; stroke-dasharray: 2 4; }
+.dg .axis-line { fill: none; stroke: var(--calib); stroke-width: 1.2; stroke-dasharray: 6 4; }
+.dg .circ { fill: none; stroke: var(--calib-line); stroke-width: 1.3; }
+.dg .pt { fill: var(--ink-2); }
+.dg .ctr { fill: var(--calib); }
+.dg .axis { fill: none; stroke: var(--calib); stroke-width: 2.4; }
+.dg .dim { fill: none; stroke: var(--pencil); stroke-width: 1; }
+
+/* * Step list under figure 2 */
+.stages {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  border: 1px solid var(--rule);
+  background: var(--sheet);
+  counter-reset: stage;
+}
+.stages li {
+  counter-increment: stage;
+  display: grid;
+  grid-template-columns: 1.6rem minmax(0, 1fr);
+  gap: 4px 10px;
+  padding: 16px 20px;
+  border-top: 1px solid var(--rule);
+  min-width: 0;
+  align-content: start;
+}
+.stages li:nth-child(-n+2) { border-top: 0; }
+.stages li:nth-child(even) { border-left: 1px solid var(--rule); }
+.stages li::before {
+  content: counter(stage);
+  font-family: var(--font-mono);
+  font-weight: 600;
+  color: var(--calib);
+  grid-row: span 3;
+  line-height: 1.35;
+}
+.stages p { font-size: 0.9rem; max-width: none; }
+.eq {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: var(--ink);
+  background: var(--lane);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  padding: 6px 9px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: 0;
+}
+
+/* * Tables */
+.table-scroll { overflow-x: auto; border: 1px solid var(--rule); background: var(--sheet); }
+table { border-collapse: collapse; width: 100%; min-width: 900px; font-size: 0.86rem; }
+th, td { text-align: left; vertical-align: top; padding: 10px 14px; border-top: 1px solid var(--rule); }
+thead th {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 0.78rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--pencil);
+  border-top: 0;
+}
+tbody th { font-weight: 600; }
+tr.grp th {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  font-size: 0.8rem;
+  padding-block: 6px;
+}
+tr.grp.calib th { color: var(--calib); background: var(--calib-wash); }
+tr.grp.vendor th { color: var(--vendor); background: var(--vendor-wash); }
+tr.grp.nominal th { color: var(--ink-2); background: var(--nominal-wash); }
+.where { display: grid; gap: 5px; }
+.ref {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--pencil);
+  overflow-wrap: anywhere;
+}
+.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.muted { color: var(--pencil); }
+.note { font-size: 0.86rem; color: var(--ink-2); }
+
+/* * Gotchas */
+.gotchas { list-style: none; margin: 0; padding: 0; display: grid; border: 1px solid var(--rule); background: var(--sheet); }
+.gotchas li {
+  display: grid;
+  grid-template-columns: 8.5rem minmax(0, 1fr);
+  gap: 6px 18px;
+  padding: 16px 20px;
+  border-top: 1px solid var(--rule);
+}
+.gotchas li:first-child { border-top: 0; }
+.tag {
+  justify-self: start;
+  align-self: start;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  padding: 2px 8px;
+  border-radius: 3px;
+  border: 1px solid var(--rule);
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+.tag.bug { border-color: var(--vendor); color: var(--vendor); background: var(--vendor-wash); }
+.gotchas h3 { font-size: 1rem; }
+.gotchas p { font-size: 0.9rem; max-width: 80ch; }
+.gotchas .body { display: grid; gap: 6px; min-width: 0; }
+
+footer { font-size: 0.82rem; color: var(--pencil); border-top: 1px solid var(--rule); padding-top: 16px; }
+
+@media (max-width: 760px) {
+  .page { gap: 44px; }
+  .titleblock { grid-template-columns: minmax(0, 1fr); gap: 22px; }
+  .split { grid-template-columns: minmax(0, 1fr); }
+  .split > div + div { border-left: 0; border-top: 1px solid var(--rule); }
+  .navblock { margin-top: -16px; }
+  .stages { grid-template-columns: minmax(0, 1fr); }
+  .stages li:nth-child(2) { border-top: 1px solid var(--rule); }
+  .stages li:nth-child(even) { border-left: 0; }
+  .gotchas li { grid-template-columns: minmax(0, 1fr); }
+  .spec div { grid-template-columns: 8.2rem minmax(0, 1fr); }
+}
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+@media (prefers-reduced-motion: no-preference) { html { scroll-behavior: smooth; } }
+</style>
+
+<main class="page">
+
+<header class="titleblock">
+  <div class="tb-main">
+    <p class="eyebrow">husky-assembly-teleop · structure note</p>
+    <h1>Calibration in Husky Teleop</h1>
+    <p class="lede">Every pose in this project lives in one world frame: the OptiTrack (Motive) origin, turned Z-up. To place a robot in it, the monitor multiplies a chain of transforms, from the Husky's mocap tracker down to the gripper tip. Our own pipeline calibrates exactly one link of that chain, <code>base_mocap_from_base_footprint</code>. The arm kinematics come from the UR factory, the punch tip from the teach pendant, and everything else from the URDF and the tool models.</p>
+  </div>
+  <dl class="spec" aria-label="Pinned calibration dates">
+    <div><dt>Alice 0804</dt><dd>20260623</dd></div>
+    <div><dt>Belle 0805</dt><dd>20261013 (recorded 2026-10-14)</dd></div>
+    <div><dt>Cindy 0806</dt><dd>20261016, left arm (fallback 20260916)</dd></div>
+    <div><dt>CALIBRATION_DATE</dt><dd>20261016 · records + config.yaml</dd></div>
+    <div><dt>data folder</dt><dd>data_experiment/calibration_data/&lt;date&gt;/ (gdrive)</dd></div>
+    <div><dt>read from</dt><dd>yh/multi-robot-monitor · c9e63b9 · 2026-10-19</dd></div>
+  </dl>
+</header>
+
+<section class="split" aria-label="What is calibrated and what is not">
+  <div class="does">
+    <h2>Measured and calibrated</h2>
+    <ul>
+      <li><b>Base tracker to robot.</b> Our pipeline: turn J0, then J1, with a mocap tool on the flange, fit circles, and build the arm base frame from the two axes. One file per robot and date.</li>
+      <li><b>Arm joints.</b> The UR factory calibration of each UR5e, copied by hand into the <code>*_Calibrated.urdf</code> joint origins. ssik is built from the same URDFs.</li>
+      <li><b>Cindy's right arm relative to her left.</b> Both probe tips touched the same 10 points (2025-08). The result sits in <code>right_arm_mount_joint</code>.</li>
+      <li><b>Punch tip.</b> The pendant's 4-point TCP wizard, saved per date in <code>config.yaml</code>. The punch only checks the base calibration.</li>
+    </ul>
+  </div>
+  <div class="doesnt">
+    <h2>Taken as drawn</h2>
+    <ul>
+      <li><b>Arm mount on the Husky.</b> URDF values. Mount errors cancel for the calibrated arm, because the pipeline measures that arm's base directly.</li>
+      <li><b>Tool and gripper tips.</b> AT3L/AT3R from their tool models, the Robotiq tip as a constant in <code>utils.py</code>.</li>
+      <li><b>The grasp.</b> Each bar's <code>attachment_frame</code> comes from the Rhino export.</li>
+      <li><b>The room.</b> The Rhino design world is assumed to be the mocap world, and the floor height comes from <code>WalkableGround.json</code>.</li>
+    </ul>
+  </div>
+</section>
+
+<div class="navblock">
+  <nav class="toc" aria-label="On this page">
+    <span class="eyebrow">On this page</span>
+    <a href="#chain">The frame chain</a>
+    <a href="#pipeline">Base calibration</a>
+    <a href="#geometry">Building the base frame</a>
+    <a href="#methods">Which method, which part</a>
+    <a href="#robots">Per robot</a>
+    <a href="#gotchas">Gotchas</a>
+  </nav>
+  <p class="refnote"><span class="mono">A_from_B</span> is the pose of frame B written in frame A, so <span class="mono">A_from_C = A_from_B · B_from_C</span>. References are <span class="mono">file:line</span> at c9e63b9. Plain file names are in <span class="mono">husky_assembly_teleop/</span>; <span class="mono">calibration_data/</span> and <span class="mono">dual-arm_intrinsic_calibration/</span> are under <span class="mono">data/</span>; <span class="mono">tamp/</span> means <span class="mono">external/husky_assembly_tamp/husky_assembly_tamp/</span>. <span class="mono">Cindy.urdf</span> is <span class="mono">data/husky_urdf/mt_husky_dual_ur5_e_moveit_config/urdf/husky_dual_ur5_e_no_base_joint_All_Calibrated.urdf</span> and <span class="mono">Alice.urdf</span> is <span class="mono">data/husky_urdf/mt_husky_moveit_config/urdf/husky_ur5_e_no_base_joint_Alice_Calibrated.urdf</span>. Datasets are on the gdrive, not in the repo.</p>
+</div>
+
+<!-- ======================================================================= -->
+<section id="chain">
+  <div class="sec-head">
+    <h2>The frame chain</h2>
+    <p>Read from top to bottom. Each box is a frame, each arrow one transform, and the card beside the arrow says where that transform's numbers come from.</p>
+  </div>
+  <figure>
+    <div class="fig-scroll narrow">
+      <svg class="dg" viewBox="0 0 1000 844" role="img" aria-label="Vertical chain of frames. Motive Y-up is turned Z-up into the world frame by a fixed convention. world_from_base_mocap is measured live by the Husky's tracker. base_mocap_from_base_footprint is the base calibration. base_footprint to ur_arm_base_link and on to base_link_inertia are fixed URDF joints; Cindy's right mount carries the inter-arm calibration. FK of the live joint angles, using the UR factory calibration, gives tool0. From tool0 five tips branch: the AT3 tool frame, the bar grasp, the Robotiq tip, the punch tip from the pendant, and the calibration tool marker, which is only checked.">
+        <defs>
+          <marker id="c1a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path class="ah" d="M0,0.5 L10,5 L0,9.5 z"/>
+          </marker>
+        </defs>
+
+        <!-- Frames -->
+        <rect class="b-motive" x="20" y="16" width="250" height="40" rx="5"/>
+        <text x="36" y="41"><tspan class="t-mono-b">Motive</tspan><tspan class="t-sub" dx="8">Y-up, as streamed</tspan></text>
+
+        <rect class="b-frame" x="20" y="120" width="250" height="40" rx="5"/>
+        <text x="36" y="145"><tspan class="t-mono-b">world</tspan><tspan class="t-sub" dx="8">Z-up, Motive origin</tspan></text>
+
+        <rect class="b-frame" x="20" y="224" width="250" height="40" rx="5"/>
+        <text x="36" y="249"><tspan class="t-mono-b">base_mocap</tspan><tspan class="t-sub" dx="8">tracker on the Husky</tspan></text>
+
+        <rect class="b-frame" x="20" y="328" width="250" height="40" rx="5"/>
+        <text x="36" y="353"><tspan class="t-mono-b">base_footprint</tspan><tspan class="t-sub" dx="8">URDF root</tspan></text>
+
+        <rect class="b-frame" x="20" y="432" width="250" height="40" rx="5"/>
+        <text x="36" y="457"><tspan class="t-mono-b">ur_arm_base_link</tspan><tspan class="t-sub" dx="8">arm mount</tspan></text>
+
+        <rect class="b-frame" x="20" y="536" width="250" height="40" rx="5"/>
+        <text x="36" y="561"><tspan class="t-mono-b">base_link_inertia</tspan><tspan class="t-sub" dx="8">= UR Base</tspan></text>
+
+        <rect class="b-frame" x="20" y="640" width="250" height="40" rx="5"/>
+        <text x="36" y="665"><tspan class="t-mono-b">ur_arm_tool0</tspan><tspan class="t-sub" dx="8">flange, zero tool</tspan></text>
+
+        <!-- Arrows between frames -->
+        <path class="edge" d="M145 56 V118" marker-end="url(#c1a)"/>
+        <path class="edge" d="M145 160 V222" marker-end="url(#c1a)"/>
+        <path class="edge" d="M145 264 V326" marker-end="url(#c1a)"/>
+        <path class="edge" d="M145 368 V430" marker-end="url(#c1a)"/>
+        <path class="edge" d="M145 472 V534" marker-end="url(#c1a)"/>
+        <path class="edge" d="M145 576 V638" marker-end="url(#c1a)"/>
+
+        <path class="leader" d="M150 88 H298"/>
+        <path class="leader" d="M150 192 H298"/>
+        <path class="leader" d="M150 296 H298"/>
+        <path class="leader" d="M150 400 H298"/>
+        <path class="leader" d="M150 504 H298"/>
+        <path class="leader" d="M150 608 H298"/>
+
+        <!-- Cards: where each transform comes from -->
+        <rect class="b-nom" x="300" y="62" width="680" height="52" rx="5"/>
+        <text x="316" y="78"><tspan class="t-mono-b">Y-up to Z-up</tspan><tspan class="t-sub" dx="10">fixed convention, applied to every rigid body</tspan></text>
+        <text class="t-sub" x="316" y="93">Position (x, −z, y), quaternion (qx, −qz, qy, qw). No translation, so the origin stays the Motive origin.</text>
+        <text class="t-sub" x="316" y="107">The calibration files and the Rhino design are all written in this frame.</text>
+
+        <rect class="b-live" x="300" y="166" width="680" height="52" rx="5"/>
+        <text x="316" y="182"><tspan class="t-mono-b">world_from_base_mocap</tspan><tspan class="t-sub" dx="10">measured live, every mocap frame</tspan></text>
+        <text class="t-sub" x="316" y="197">Rigid body on each Husky: Cindy 1860, Alice 1840, Belle 1850. The mocap cache keeps the raw pose.</text>
+        <text class="t-sub" x="316" y="211">A world-frame XYZ nudge from the UI (mocap_base_offset_xyz, normally zero) is added afterwards.</text>
+
+        <rect class="b-cal" x="300" y="270" width="680" height="52" rx="5"/>
+        <text x="316" y="286"><tspan class="t-mono-b t-teal">base_mocap_from_base_footprint</tspan><tspan class="t-sub" dx="10">our base calibration, one per robot and date</tspan></text>
+        <text class="t-sub" x="316" y="301">Turn J0, then J1, with a mocap tool on the flange. Fit circles, build the arm base frame, add the URDF.</text>
+        <text class="t-sub" x="316" y="315">Saved in calibrated_transformation_&lt;serial&gt;_rhino.json. It is the only calibration value the monitor reads.</text>
+
+        <rect class="b-nom" x="300" y="374" width="680" height="52" rx="5"/>
+        <text x="316" y="390"><tspan class="t-mono-b">base_footprint to ur_arm_base_link</tspan><tspan class="t-sub" dx="10">URDF mount, not calibrated</tspan></text>
+        <text class="t-sub" x="316" y="405">Alice and Belle: (0.3887, 0, 0.364) m, yaw π. Cindy: a V bracket, arm bases at z 0.490 m, 45° outward.</text>
+        <text class="t-sub t-ochre" x="316" y="419">Cindy's right_arm_mount_joint also holds the inter-arm calibration: (1.2, −0.6, 2.1) mm, up to 6 mrad.</text>
+
+        <rect class="b-nom" x="300" y="478" width="680" height="52" rx="5"/>
+        <text x="316" y="494"><tspan class="t-mono-b">ur_arm_base_link to base_link_inertia</tspan><tspan class="t-sub" dx="10">URDF, a fixed yaw</tspan></text>
+        <text class="t-sub" x="316" y="509">Yaw π on Cindy, −π/2 on Alice and Belle. base_link_inertia is the frame the UR controller calls Base.</text>
+        <text class="t-sub" x="316" y="523">husky_robot's arm_base_from_ur_base_yaw (−180° dual, −90° single) must match, or pendant TCP poses turn.</text>
+
+        <rect class="b-vendor" x="300" y="582" width="680" height="52" rx="5"/>
+        <text x="316" y="598"><tspan class="t-mono-b t-ochre">FK(q)</tspan><tspan class="t-sub" dx="10">UR factory calibration, with the live joint encoders</tspan></text>
+        <text class="t-sub" x="316" y="613">Joint origins from each arm's calibration.yaml, typed into *_Calibrated.urdf; ssik is built from those.</text>
+        <text class="t-sub" x="316" y="627">FK against the pendant's own reading: 0.04 to 0.05 mm. With the nominal URDF it was 1.9 to 2.3 mm.</text>
+
+        <!-- Tips that hang off tool0 -->
+        <path class="edge" d="M145 680 V712"/>
+        <path class="edge" d="M110 712 H890"/>
+        <path class="edge" d="M110 712 V738" marker-end="url(#c1a)"/>
+        <path class="edge" d="M305 712 V738" marker-end="url(#c1a)"/>
+        <path class="edge" d="M500 712 V738" marker-end="url(#c1a)"/>
+        <path class="edge" d="M695 712 V738" marker-end="url(#c1a)"/>
+        <path class="edge" d="M890 712 V738" marker-end="url(#c1a)"/>
+
+        <rect class="b-nom" x="20" y="740" width="180" height="88" rx="5"/>
+        <text class="t-head" x="32" y="760">AT3L / AT3R tool frame</text>
+        <text class="t-mono-s" x="32" y="778">(∓0.07, 0, 0.08) m</text>
+        <text class="t-sub" x="32" y="796">from the tool model (CAD)</text>
+        <text class="t-sub" x="32" y="812">Cindy's assembly tools</text>
+
+        <rect class="b-nom" x="215" y="740" width="180" height="88" rx="5"/>
+        <text class="t-head" x="227" y="760">Bar on the tool</text>
+        <text class="t-mono-s" x="227" y="778">attachment_frame</text>
+        <text class="t-sub" x="227" y="796">from the Rhino export</text>
+        <text class="t-sub" x="227" y="812">z 0.08 m on the AT3 tools</text>
+
+        <rect class="b-nom" x="410" y="740" width="180" height="88" rx="5"/>
+        <text class="t-head" x="422" y="760">Robotiq tip</text>
+        <text class="t-mono-s" x="422" y="778">(0, 0, 0.164) m, yaw π</text>
+        <text class="t-sub" x="422" y="796">0.152 + 0.012 m; the</text>
+        <text class="t-sub" x="422" y="812">12 mm has no source</text>
+
+        <rect class="b-vendor" x="605" y="740" width="180" height="88" rx="5"/>
+        <text class="t-head" x="617" y="760">Punch tip</text>
+        <text class="t-mono-s" x="617" y="778">offset_xyz, 0.11–0.12 m</text>
+        <text class="t-sub" x="617" y="796">pendant 4-point TCP</text>
+        <text class="t-sub" x="617" y="812">config.yaml, per date</text>
+
+        <rect class="b-live" x="800" y="740" width="180" height="88" rx="5"/>
+        <text class="t-head" x="812" y="760">Calib tool marker</text>
+        <text class="t-mono-s" x="812" y="778">tool0_from_flange_mocap</text>
+        <text class="t-sub" x="812" y="796">only checked, never solved</text>
+        <text class="t-sub" x="812" y="812">length 22–24 mm, constant</text>
+      </svg>
+    </div>
+    <div class="legend" aria-hidden="true">
+      <span><i class="sw sw-calib"></i>calibrated by our pipeline</span>
+      <span><i class="sw sw-vendor"></i>calibrated by the vendor or on the pendant</span>
+      <span><i class="sw sw-nominal"></i>nominal, from the URDF or CAD</span>
+      <span><i class="sw sw-live"></i>measured live</span>
+    </div>
+    <figcaption><b>Figure 1.</b> At run time the monitor computes <code>world_from_base_footprint = world_from_base_mocap · base_mocap_from_base_footprint</code> in <code>receive_mocap_frame</code> <span class="ref" data-sym="calibrated_pose">husky_monitor.py:12347</span> and puts the URDF root there. PyBullet (or ssik) adds the URDF mount and <code>FK(q)</code> to reach <code>tool0</code>, and the tool models add the tips. Only the teal link was measured by us. The Y-up to Z-up turn is <code>mocap_pos_y_up_to_z_up</code> <span class="ref" data-sym="mocap_pos_y_up_to_z_up">utils.py:43</span>, applied in <code>receive_rigid_body_frame</code> <span class="ref" data-sym="receive_rigid_body_frame">husky_monitor.py:12309</span>.</figcaption>
+  </figure>
+</section>
+
+<!-- ======================================================================= -->
+<section id="pipeline">
+  <div class="sec-head">
+    <h2>The base calibration, step by step</h2>
+    <p>Data is captured in the monitor, then five offline scripts in <code>data/calibration_data/</code> turn it into one transform. The middle lane is the code; the top lane is what it writes to the date folder, the bottom lane the frame math it does.</p>
+  </div>
+  <figure>
+    <div class="fig-scroll">
+      <svg class="dg" viewBox="0 0 1210 392" role="img" aria-label="Swimlane of six steps. 1 Capture: calibrate_button records world_from_base_mocap, world_from_flange_mocap and the joint angles into calibration json files. 2 Circle fit: 0_circle_fitting expresses the flange marker in the base_mocap frame and fits one circle per take into the batch analysis json. 3 Base frame: 1_calibration_analysis fits the J0 and J1 axis lines and builds base_mocap_from_ur_arm_base_link_inertia into base_frame_calibration.json. 4 Add the URDF: 2_convert_and_visualize_transformation multiplies by the fixed URDF joint to get base_mocap_from_base_footprint into calibrated_transformation serial rhino json. 5 Validate: 3_verify_calibration checks tool0_from_flange_mocap stays constant, 4_punch_validation checks the punch tip lands on one point. 6 Use at run time: the monitor reads the file of the pinned date and computes world_from_base_footprint every mocap frame.">
+        <defs>
+          <marker id="c2a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path class="ah" d="M0,0.5 L10,5 L0,9.5 z"/>
+          </marker>
+        </defs>
+
+        <!-- Lanes -->
+        <rect class="lane" x="0" y="40" width="1210" height="110"/>
+        <rect class="lane-cal" x="0" y="154" width="1210" height="110"/>
+        <rect class="lane" x="0" y="268" width="1210" height="110"/>
+
+        <text class="t-head" x="12" y="88">Date folder</text>
+        <text class="t-sub" x="12" y="104">on the gdrive</text>
+        <text class="t-head t-teal" x="12" y="202">Code</text>
+        <text class="t-sub" x="12" y="218">monitor, scripts</text>
+        <text class="t-head" x="12" y="316">Frame math</text>
+        <text class="t-sub" x="12" y="332">what comes out</text>
+
+        <!-- Column guides and headers -->
+        <line class="gridline" x1="293" y1="40" x2="293" y2="378"/>
+        <line class="gridline" x1="475" y1="40" x2="475" y2="378"/>
+        <line class="gridline" x1="657" y1="40" x2="657" y2="378"/>
+        <line class="gridline" x1="839" y1="40" x2="839" y2="378"/>
+        <line class="gridline" x1="1021" y1="40" x2="1021" y2="378"/>
+
+        <text x="202" y="26" text-anchor="middle"><tspan class="t-num">1</tspan><tspan class="t-head" dx="7">Capture</tspan></text>
+        <text x="384" y="26" text-anchor="middle"><tspan class="t-num">2</tspan><tspan class="t-head" dx="7">Circle fit</tspan></text>
+        <text x="566" y="26" text-anchor="middle"><tspan class="t-num">3</tspan><tspan class="t-head" dx="7">Base frame</tspan></text>
+        <text x="748" y="26" text-anchor="middle"><tspan class="t-num">4</tspan><tspan class="t-head" dx="7">Add the URDF</tspan></text>
+        <text x="930" y="26" text-anchor="middle"><tspan class="t-num">5</tspan><tspan class="t-head" dx="7">Validate</tspan></text>
+        <text x="1112" y="26" text-anchor="middle"><tspan class="t-num">6</tspan><tspan class="t-head" dx="7">Use at run time</tspan></text>
+
+        <!-- Files lane -->
+        <rect class="b-file" x="120" y="52" width="164" height="86" rx="4"/>
+        <text class="t-head" x="130" y="71">Raw takes</text>
+        <text class="t-mono-s" x="130" y="89">j0/ j1/ validation/</text>
+        <text class="t-mono-s" x="130" y="104">calibration_*.json</text>
+        <text class="t-mono-s" x="130" y="119">punch_validation/</text>
+
+        <rect class="b-file" x="302" y="52" width="164" height="86" rx="4"/>
+        <text class="t-head" x="312" y="71">Circle fits</text>
+        <text class="t-mono-s" x="312" y="89">&lt;batch&gt;_analysis.json</text>
+        <text class="t-sub" x="312" y="105">raw takes + centre and</text>
+        <text class="t-sub" x="312" y="120">normal per take</text>
+
+        <rect class="b-file" x="484" y="52" width="164" height="86" rx="4"/>
+        <text class="t-head" x="494" y="71">Base frame</text>
+        <text class="t-mono-s" x="494" y="89">base_frame_</text>
+        <text class="t-mono-s" x="494" y="104">calibration.json</text>
+        <text class="t-sub" x="494" y="120">+ the two axis lines</text>
+
+        <rect class="b-file" x="666" y="52" width="164" height="86" rx="4"/>
+        <text class="t-head" x="676" y="71">Calibration file</text>
+        <text class="t-mono-s" x="676" y="89">calibrated_</text>
+        <text class="t-mono-s" x="676" y="104">transformation_</text>
+        <text class="t-mono-s" x="676" y="119">&lt;serial&gt;_rhino.json</text>
+
+        <rect class="b-file" x="848" y="52" width="164" height="86" rx="4"/>
+        <text class="t-head" x="858" y="71">Checks</text>
+        <text class="t-mono-s" x="858" y="89">verification_log.txt</text>
+        <text class="t-mono-s" x="858" y="104">verification_*.png</text>
+        <text class="t-mono-s" x="858" y="119">punch_validation_*.png</text>
+
+        <rect class="b-file" x="1030" y="52" width="164" height="86" rx="4"/>
+        <text class="t-head" x="1040" y="71">Pinned date</text>
+        <text class="t-mono-s" x="1040" y="89">BASE_CALIBRATION_</text>
+        <text class="t-mono-s" x="1040" y="104">DATE_BY_ROBOT</text>
+        <text class="t-sub" x="1040" y="120">in __init__.py</text>
+
+        <!-- Code lane -->
+        <rect class="b-step" x="120" y="166" width="164" height="86" rx="4"/>
+        <text class="t-mono-b" x="130" y="185">calibrate_button</text>
+        <text class="t-sub" x="130" y="203">one sample per waypoint</text>
+        <text class="t-sub" x="130" y="218">or per click; base and</text>
+        <text class="t-sub" x="130" y="233">tool at most 0.5 s old</text>
+
+        <rect class="b-step" x="302" y="166" width="164" height="86" rx="4"/>
+        <text class="t-mono-b" x="312" y="185">0_circle_fitting</text>
+        <text class="t-sub" x="312" y="203">one 3D circle per take,</text>
+        <text class="t-sub" x="312" y="218">fitted in the base_mocap</text>
+        <text class="t-sub" x="312" y="233">frame (base sway removed)</text>
+
+        <rect class="b-step" x="484" y="166" width="164" height="86" rx="4"/>
+        <text class="t-mono-b" x="494" y="185">1_calibration_analysis</text>
+        <text class="t-sub" x="494" y="203">axis lines from centres,</text>
+        <text class="t-sub" x="494" y="218">signs from the motion,</text>
+        <text class="t-sub" x="494" y="233">origin from two planes</text>
+
+        <rect class="b-step" x="666" y="166" width="164" height="86" rx="4"/>
+        <text class="t-mono-b" x="676" y="185">2_convert_and_</text>
+        <text class="t-mono-s" x="676" y="200">visualize_transformation</text>
+        <text class="t-sub" x="676" y="218">multiply by the fixed</text>
+        <text class="t-sub" x="676" y="233">URDF joint</text>
+
+        <rect class="b-step" x="848" y="166" width="164" height="86" rx="4"/>
+        <text class="t-mono-b" x="858" y="185">3_verify_calibration</text>
+        <text class="t-mono-b" x="858" y="201">4_punch_validation</text>
+        <text class="t-sub" x="858" y="218">spread of things that</text>
+        <text class="t-sub" x="858" y="233">should not move</text>
+
+        <rect class="b-step" x="1030" y="166" width="164" height="86" rx="4"/>
+        <text class="t-mono-b" x="1040" y="185">receive_mocap_frame</text>
+        <text class="t-sub" x="1040" y="203">every mocap frame,</text>
+        <text class="t-sub" x="1040" y="218">every husky; reads the</text>
+        <text class="t-sub" x="1040" y="233">file once at start-up</text>
+
+        <!-- Order of the steps -->
+        <path class="edge" d="M284 209 H300" marker-end="url(#c2a)"/>
+        <path class="edge" d="M466 209 H482" marker-end="url(#c2a)"/>
+        <path class="edge" d="M648 209 H664" marker-end="url(#c2a)"/>
+        <path class="edge" d="M830 209 H846" marker-end="url(#c2a)"/>
+        <path class="edge" d="M1012 209 H1028" marker-end="url(#c2a)"/>
+
+        <!-- Code writes files (up), file 6 is read (down) -->
+        <path class="edge" d="M202 166 V140" marker-end="url(#c2a)"/>
+        <path class="edge" d="M384 166 V140" marker-end="url(#c2a)"/>
+        <path class="edge" d="M566 166 V140" marker-end="url(#c2a)"/>
+        <path class="edge" d="M748 166 V140" marker-end="url(#c2a)"/>
+        <path class="edge" d="M930 166 V140" marker-end="url(#c2a)"/>
+        <path class="edge" d="M1112 138 V164" marker-end="url(#c2a)"/>
+
+        <!-- Code produces frame math (down) -->
+        <path class="edge" d="M202 252 V278" marker-end="url(#c2a)"/>
+        <path class="edge" d="M384 252 V278" marker-end="url(#c2a)"/>
+        <path class="edge" d="M566 252 V278" marker-end="url(#c2a)"/>
+        <path class="edge" d="M748 252 V278" marker-end="url(#c2a)"/>
+        <path class="edge" d="M930 252 V278" marker-end="url(#c2a)"/>
+        <path class="edge" d="M1112 252 V278" marker-end="url(#c2a)"/>
+
+        <!-- Frame math lane -->
+        <rect class="b-res" x="120" y="280" width="164" height="86" rx="4"/>
+        <text class="t-mono-s" x="130" y="299">world_from_base_mocap</text>
+        <text class="t-mono-s" x="130" y="314">world_from_flange_mocap</text>
+        <text class="t-mono-s" x="130" y="329">q, 6 joints</text>
+        <text class="t-sub" x="130" y="346">commanded on j0 and j1</text>
+
+        <rect class="b-res" x="302" y="280" width="164" height="86" rx="4"/>
+        <text class="t-mono-s" x="312" y="299">base_mocap_from_</text>
+        <text class="t-mono-s" x="312" y="314">flange_mocap</text>
+        <text class="t-sub" x="312" y="331">= inverse(base) · flange</text>
+        <text class="t-sub" x="312" y="346">circle: centre, normal</text>
+
+        <rect class="b-res" x="484" y="280" width="164" height="86" rx="4"/>
+        <text class="t-mono-s" x="494" y="299">base_mocap_from_</text>
+        <text class="t-mono-s" x="494" y="314">ur_arm_base_link_inertia</text>
+        <text class="t-sub" x="494" y="331">Z = +J0, Y = −J1,</text>
+        <text class="t-sub" x="494" y="346">X = Y × Z</text>
+
+        <rect class="b-res" x="666" y="280" width="164" height="86" rx="4"/>
+        <text class="t-mono-s" x="676" y="299">base_mocap_from_</text>
+        <text class="t-mono-s" x="676" y="314">base_footprint</text>
+        <text class="t-sub" x="676" y="331">= step 3 · URDF joint</text>
+        <text class="t-sub" x="676" y="346">inertia_from_footprint</text>
+
+        <rect class="b-res" x="848" y="280" width="164" height="86" rx="4"/>
+        <text class="t-mono-s" x="858" y="299">tool0_from_flange_mocap</text>
+        <text class="t-sub" x="858" y="314">must stay constant</text>
+        <text class="t-mono-s" x="858" y="331">world_from_punch_tip</text>
+        <text class="t-sub" x="858" y="346">must stay on one point</text>
+
+        <rect class="b-res" x="1030" y="280" width="164" height="86" rx="4"/>
+        <text class="t-mono-s" x="1040" y="299">world_from_base_footprint</text>
+        <text class="t-sub" x="1040" y="316">= world_from_base_mocap</text>
+        <text class="t-sub" x="1040" y="331">· the step 4 result</text>
+      </svg>
+    </div>
+    <div class="legend" aria-hidden="true">
+      <span><i class="sw sw-file"></i>file in the date folder</span>
+      <span><i class="sw sw-calib"></i>code that does the calibration</span>
+    </div>
+    <figcaption><b>Figure 2.</b> <code>run_calibration_pipeline.py</code> runs steps 2 to 5 in order, without the punch check (<code>4_punch_validation.py</code> runs on its own), on the folder named by <code>CALIBRATION_ANALYSIS_DATE</code> <span class="ref" data-sym="CALIBRATION_ANALYSIS_DATE">__init__.py:109</span>. Step 6 is a separate pin per robot <span class="ref" data-sym="BASE_CALIBRATION_DATE_BY_ROBOT">__init__.py:96</span>, so a new calibration is not used until its robot's entry points at the new folder. <code>tool0_fk_pose</code>, which each sample also stores, is never used by the pipeline: it depends on whatever calibration the monitor had loaded when it recorded.</figcaption>
+  </figure>
+
+  <ol class="stages" aria-label="The six steps in code">
+    <li>
+      <h3>Capture</h3>
+      <p>The batch slider picks <code>j0</code>, <code>j1</code>, <code>validation</code> or <code>punch_validation</code> <span class="ref" data-sym="CALIBRATION_BATCHES">__init__.py:111</span>. For j0 and j1 the monitor plays 6 trajectories of 31 waypoints each and records one sample per waypoint after it settles <span class="ref" data-sym="execute_arm_trajectory_and_record_each_conf">husky_world.py:1419</span>. On J0 sweeps only J0 turns, about 360°; on J1 sweeps only J1 turns, about 190°, with J0 at 0. Validation samples are clicked by hand at varied base spots. <code>calibrate_button</code> <span class="ref" data-sym="calibrate_button">husky_world.py:834</span> refuses a sample unless both rigid bodies are fresher than <code>CALIB_MOCAP_MAX_AGE_S</code> <span class="ref" data-sym="CALIB_MOCAP_MAX_AGE_S">husky_world.py:72</span>.</p>
+      <p class="eq">sample = {joint_conf, base_mocap_pose, flange_mocap_pose}, poses in world</p>
+    </li>
+    <li>
+      <h3>Circle fit</h3>
+      <p>Each flange-marker position is first written in the Husky tracker's frame, which removes any sway of the base <span class="ref" data-sym="base_from_flange">calibration_data/0_circle_fitting.py:77</span>. <code>Circle3D</code> <span class="ref" data-sym="Circle3D">calibration_data/0_circle_fitting.py:83</span> fits a plane, then a circle in it, for each take.</p>
+      <p class="eq">base_mocap_from_flange_mocap = inverse(world_from_base_mocap) · world_from_flange_mocap
+take k → centre c_k, normal n_k, radius r_k (in base_mocap)</p>
+    </li>
+    <li>
+      <h3>Base frame</h3>
+      <p><code>fit_line_to_centers</code> <span class="ref" data-sym="fit_line_to_centers">calibration_data/1_calibration_analysis.py:430</span> turns the centres of one joint's takes into its axis line. A fitted line has no sign, so <code>joint_axis_from_motion</code> <span class="ref" data-sym="joint_axis_from_motion">calibration_data/1_calibration_analysis.py:499</span> picks it from how the tool turned as the joint angle grew (right-hand rule), and <code>compute_base_frame</code> <span class="ref" data-sym="compute_base_frame">calibration_data/1_calibration_analysis.py:533</span> builds the frame. The geometry is drawn in <a href="#geometry">Figure 3</a>.</p>
+      <p class="eq">v0 = mean n_k (J0 takes), p0 = mean c_k; v1, p1 likewise for J1
+Z = +J0, Y = −J1, X = Y × Z, origin p_b = p01 − base_offset · Z</p>
+    </li>
+    <li>
+      <h3>Add the URDF</h3>
+      <p>The result of step 3 is the pose of the arm's <code>base_link_inertia</code>. The monitor needs the URDF root, so the fixed URDF transform between the two is multiplied on <span class="ref" data-sym="base_mocap_from_base_footprint">calibration_data/2_convert_and_visualize_transformation.py:103</span>, taken from the robot's own calibrated URDF <span class="ref" data-sym="get_relative_pose">calibration_data/2_convert_and_visualize_transformation.py:98</span>.</p>
+      <p class="eq">base_mocap_from_base_footprint =
+  base_mocap_from_arm_base_link_inertia · arm_base_link_inertia_from_base_footprint (URDF)</p>
+    </li>
+    <li>
+      <h3>Validate</h3>
+      <p><code>3_verify_calibration.py</code> runs the validation batch through the new calibration <span class="ref" data-sym="world_from_footprint">calibration_data/3_verify_calibration.py:116</span>. If the calibration is right, the marker sits at the same place on the flange in every sample <span class="ref" data-sym="tool0_from_flange_mocap">calibration_data/3_verify_calibration.py:126</span>; the goal is 95 % under 5 mm and 0.3° <span class="ref" data-sym="percentile">calibration_data/3_verify_calibration.py:439</span>. <code>4_punch_validation.py</code> asks the same of the punch tip touching one fixed point from many base poses <span class="ref" data-sym="analyze_position_mismatch">calibration_data/4_punch_validation.py:127</span>.</p>
+      <p class="eq">tool0_from_flange_mocap = inverse(world_from_base_footprint · FK(q)) · world_from_flange_mocap
+world_from_punch_tip = world_from_base_footprint · FK(q) · tool0_from_punch_tip</p>
+    </li>
+    <li>
+      <h3>Use at run time</h3>
+      <p><code>_base_calibration_file_for</code> <span class="ref" data-sym="_base_calibration_file_for">husky_world.py:234</span> picks the file of the robot's pinned date. Only one key is read from it <span class="ref" data-sym="base_mocap_from_base_footprint">common.py:385</span>. Then every mocap frame places the robot <span class="ref" data-sym="calibrated_pose">husky_monitor.py:12347</span>. Tracked tools, such as the calib tool, get their raw world poses.</p>
+      <p class="eq">world_from_base_footprint = world_from_base_mocap · base_mocap_from_base_footprint</p>
+    </li>
+  </ol>
+</section>
+
+<!-- ======================================================================= -->
+<section id="geometry">
+  <div class="sec-head">
+    <h2>Building the base frame from two axes</h2>
+    <p>What step 3 does, drawn in the Husky tracker's frame. The circles are schematic; real takes have 31 points each.</p>
+  </div>
+  <figure>
+    <div class="fig-scroll narrow">
+      <svg class="dg" viewBox="0 0 1000 404" role="img" aria-label="Three panels. Panel 1: J0 sweeps give stacked horizontal circles whose centres lie on one vertical line, the J0 axis (p0, v0). Panel 2: J1 sweeps give upright circles whose centres lie on one horizontal line, the J1 axis (p1, v1). Panel 3: the two lines cross at p01; the origin p_b sits base_offset below p01 along the J0 line; the axes are Z = +J0, Y = −J1 and X = Y × Z.">
+        <defs>
+          <marker id="c3a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path class="ah-teal" d="M0,0.5 L10,5 L0,9.5 z"/>
+          </marker>
+        </defs>
+
+        <line class="gridline" x1="333" y1="10" x2="333" y2="394"/>
+        <line class="gridline" x1="666" y1="10" x2="666" y2="394"/>
+
+        <text x="20" y="28"><tspan class="t-num">1</tspan><tspan class="t-head" dx="7">J0 sweeps</tspan></text>
+        <text x="353" y="28"><tspan class="t-num">2</tspan><tspan class="t-head" dx="7">J1 sweeps</tspan></text>
+        <text x="686" y="28"><tspan class="t-num">3</tspan><tspan class="t-head" dx="7">Build the frame</tspan></text>
+
+        <!-- Panel 1: J0 -->
+        <path class="axis-line" d="M166 56 V334"/>
+        <text class="t-mono-s t-teal" x="174" y="66">J0 line (p0, v0)</text>
+        <ellipse class="circ" cx="166" cy="290" rx="120" ry="24"/>
+        <ellipse class="circ" cx="166" cy="225" rx="92" ry="19"/>
+        <ellipse class="circ" cx="166" cy="160" rx="108" ry="22"/>
+        <circle class="pt" cx="281.9" cy="296.2" r="2.6"/><circle class="pt" cx="226.0" cy="310.8" r="2.6"/><circle class="pt" cx="134.9" cy="313.2" r="2.6"/><circle class="pt" cx="62.1" cy="302.0" r="2.6"/><circle class="pt" cx="50.1" cy="283.8" r="2.6"/><circle class="pt" cx="106.0" cy="269.2" r="2.6"/><circle class="pt" cx="197.1" cy="266.8" r="2.6"/><circle class="pt" cx="269.9" cy="278.0" r="2.6"/>
+        <circle class="pt" cx="254.9" cy="229.9" r="2.6"/><circle class="pt" cx="212.0" cy="241.5" r="2.6"/><circle class="pt" cx="142.2" cy="243.4" r="2.6"/><circle class="pt" cx="86.3" cy="234.5" r="2.6"/><circle class="pt" cx="77.1" cy="220.1" r="2.6"/><circle class="pt" cx="120.0" cy="208.5" r="2.6"/><circle class="pt" cx="189.8" cy="206.6" r="2.6"/><circle class="pt" cx="245.7" cy="215.5" r="2.6"/>
+        <circle class="pt" cx="270.3" cy="165.7" r="2.6"/><circle class="pt" cx="220.0" cy="179.1" r="2.6"/><circle class="pt" cx="138.0" cy="181.3" r="2.6"/><circle class="pt" cx="72.5" cy="171.0" r="2.6"/><circle class="pt" cx="61.7" cy="154.3" r="2.6"/><circle class="pt" cx="112.0" cy="140.9" r="2.6"/><circle class="pt" cx="194.0" cy="138.7" r="2.6"/><circle class="pt" cx="259.5" cy="149.0" r="2.6"/>
+        <circle class="ctr" cx="166" cy="290" r="4"/>
+        <circle class="ctr" cx="166" cy="225" r="4"/>
+        <circle class="ctr" cx="166" cy="160" r="4"/>
+        <text class="t-sub" x="166" y="358" text-anchor="middle">each take: J0 turns alone, the other joints fixed</text>
+        <text class="t-sub" x="166" y="374" text-anchor="middle">circle fit gives centre c_k and normal n_k</text>
+        <text class="t-mono-s" x="166" y="390" text-anchor="middle">v0 = mean n_k   p0 = mean c_k</text>
+
+        <!-- Panel 2: J1 -->
+        <path class="axis-line" d="M360 190 H640"/>
+        <text class="t-mono-s t-teal" x="560" y="326">J1 line (p1, v1)</text>
+        <ellipse class="circ" cx="430" cy="190" rx="20" ry="96"/>
+        <ellipse class="circ" cx="500" cy="190" rx="16" ry="74"/>
+        <ellipse class="circ" cx="570" cy="190" rx="22" ry="104"/>
+        <circle class="pt" cx="448.8" cy="222.8" r="2.6"/><circle class="pt" cx="411.9" cy="230.6" r="2.6"/><circle class="pt" cx="411.2" cy="157.2" r="2.6"/><circle class="pt" cx="421.5" cy="103.0" r="2.6"/><circle class="pt" cx="436.8" cy="99.8" r="2.6"/><circle class="pt" cx="448.1" cy="149.4" r="2.6"/>
+        <circle class="pt" cx="515.0" cy="215.3" r="2.6"/><circle class="pt" cx="485.5" cy="221.3" r="2.6"/><circle class="pt" cx="485.0" cy="164.7" r="2.6"/><circle class="pt" cx="493.2" cy="122.9" r="2.6"/><circle class="pt" cx="505.5" cy="120.5" r="2.6"/><circle class="pt" cx="514.5" cy="158.7" r="2.6"/>
+        <circle class="pt" cx="590.7" cy="225.6" r="2.6"/><circle class="pt" cx="550.1" cy="234.0" r="2.6"/><circle class="pt" cx="549.3" cy="154.4" r="2.6"/><circle class="pt" cx="560.7" cy="95.7" r="2.6"/><circle class="pt" cx="577.5" cy="92.3" r="2.6"/><circle class="pt" cx="589.9" cy="146.0" r="2.6"/>
+        <circle class="ctr" cx="430" cy="190" r="4"/>
+        <circle class="ctr" cx="500" cy="190" r="4"/>
+        <circle class="ctr" cx="570" cy="190" r="4"/>
+        <text class="t-sub" x="500" y="358" text-anchor="middle">each take: J1 turns alone (about 190°), J0 at 0</text>
+        <text class="t-sub" x="500" y="374" text-anchor="middle">circle fit gives centre c_k and normal n_k</text>
+        <text class="t-mono-s" x="500" y="390" text-anchor="middle">v1 = mean n_k   p1 = mean c_k</text>
+
+        <!-- Panel 3: the frame -->
+        <path class="axis-line" d="M800 50 V330"/>
+        <text class="t-mono-s t-teal" x="808" y="62">J0 line</text>
+        <path class="axis-line" d="M690 140 H968"/>
+        <path class="axis" d="M920 140 H970" marker-end="url(#c3a)"/>
+        <text class="t-mono-s t-teal" x="930" y="130">+J1</text>
+        <circle class="ctr" cx="800" cy="140" r="4.5"/>
+        <text class="t-mono-s" x="810" y="130">p01, the crossing</text>
+
+        <path class="dim" d="M786 140 V280 M781 140 H791 M781 280 H791"/>
+        <text class="t-mono-s" x="780" y="206" text-anchor="end">base_offset</text>
+        <text class="t-sub-s" x="780" y="221" text-anchor="end">0.1626–0.1628 m</text>
+        <text class="t-sub-s" x="780" y="235" text-anchor="end">URDF shoulder z</text>
+
+        <path class="axis" d="M800 280 V222" marker-end="url(#c3a)"/>
+        <path class="axis" d="M800 280 H742" marker-end="url(#c3a)"/>
+        <path class="axis" d="M800 280 L838 312" marker-end="url(#c3a)"/>
+        <circle class="pt" cx="800" cy="280" r="4.5"/>
+        <text class="t-mono-s" x="810" y="252">Z = +J0</text>
+        <text class="t-mono-s" x="698" y="302">Y = −J1</text>
+        <text class="t-mono-s" x="846" y="322">X = Y × Z</text>
+        <text class="t-mono-s" x="810" y="284">p_b</text>
+
+        <text class="t-sub" x="833" y="358" text-anchor="middle">plane through p0 normal to v1, and plane through p1</text>
+        <text class="t-sub" x="833" y="374" text-anchor="middle">holding v0 and v1: they meet in a line along J0</text>
+        <text class="t-mono-s" x="833" y="390" text-anchor="middle">p01 = p1 on that line   p_b = p01 − base_offset·Z</text>
+      </svg>
+    </div>
+    <figcaption><b>Figure 3.</b> The two fitted lines almost never cross exactly, so the crossing point <code>p01</code> is taken as <code>p1</code> projected onto the line where the two planes meet (<code>plane0</code>, <span class="ref" data-sym="plane0">calibration_data/1_calibration_analysis.py:657</span>). The origin then drops by the shoulder height of the robot's own URDF to the arm base <span class="ref" data-sym="p_b = p01">calibration_data/1_calibration_analysis.py:767</span>. <b>The sign of each axis</b> comes from the motion: the tool turns counter-clockwise about +J as the joint angle grows <span class="ref" data-sym="wanted">calibration_data/1_calibration_analysis.py:612</span>. In every validated calibration this gives Z = +J0 and Y = −J1. The single-arm and dual-arm code branches look different (<span class="mono">y = −v1</span> and <span class="mono">y = v1</span>) only because the dual-arm branch flips <span class="mono">v1</span> first.</figcaption>
+  </figure>
+</section>
+
+<!-- ======================================================================= -->
+<section id="methods">
+  <div class="sec-head">
+    <h2>Which method calibrates which part</h2>
+    <p>Every link of the chain and the other things that get called calibration, grouped by who measured them. Accuracy is what the method's own check reported.</p>
+  </div>
+  <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th scope="col">Part</th><th scope="col">Method and data</th><th scope="col">Result, and where it lives</th><th scope="col">Read by</th><th scope="col">How good</th></tr>
+      </thead>
+      <tbody>
+        <tr class="grp calib"><th colspan="5" scope="colgroup">calibrated by our pipeline</th></tr>
+        <tr>
+          <th scope="row">Base tracker to robot</th>
+          <td>J0 and J1 sweeps with the calib tool marker on the flange (1862, 1866; Cindy right 1861), then circle fits and the two-axis construction above.</td>
+          <td><code>base_mocap_from_base_footprint</code> in <code>&lt;date&gt;/calibrated_transformation_&lt;serial&gt;_rhino.json</code>. One transform per robot: for Cindy it comes from the left arm alone.</td>
+          <td><div class="where"><span>start-up <span class="ref" data-sym="base_mocap_from_base_footprint">common.py:385</span></span><span>each frame <span class="ref" data-sym="receive_mocap_frame">husky_monitor.py:12323</span></span></div></td>
+          <td>marker offset spread 0.75–1.11 mm std, 1.6–2.4 mm max, under 0.5°; punch 0.8–1.3 mm RMS. See <a href="#robots">Per robot</a>.</td>
+        </tr>
+
+        <tr class="grp vendor"><th colspan="5" scope="colgroup">calibrated by the vendor, or on the pendant</th></tr>
+        <tr>
+          <th scope="row">Arm joint kinematics</th>
+          <td>UR factory calibration of each UR5e, read off the controller as <code>calibration.yaml</code> (per-joint x, y, z, roll, pitch, yaw). Files in <code>dual-arm_intrinsic_calibration/resources/</code>.</td>
+          <td>Typed by hand into the joint origins of each <code>*_Calibrated.urdf</code> (husky_urdf 79f08c3). The ssik solvers in <code>external/husky_assembly_tamp/asset/ssik/</code> are built from those URDFs.</td>
+          <td><div class="where"><span><code>load_robot</code> <span class="ref" data-sym="def load_robot">common.py:62</span></span><span>ssik <code>fk</code> <span class="ref" data-sym="def fk">tamp/keyframe/ssik_inprocess.py:137</span></span><span>fit check <span class="ref" data-sym="_ssik_solver_fits_robot">husky_world.py:2992</span></span></div></td>
+          <td>FK against the pendant 0.04–0.05 mm (nominal URDF 1.9–2.3 mm).</td>
+        </tr>
+        <tr>
+          <th scope="row">Cindy's right arm, relative to the left</th>
+          <td>Both probe tips touched the same 10 points (2025-08-22). A frame was fitted per point triplet, averaged, then refined with scipy <code>minimize</code> <span class="ref" data-sym="minimize">dual-arm_intrinsic_calibration/1_dual_arm_calibration.py:311</span>.</td>
+          <td>A new <code>right_arm_mount_joint</code> <span class="ref" data-sym="right_arm_mount_joint">dual-arm_intrinsic_calibration/2_compute_right_arm_mount_update.py:258</span>, pasted into <span class="ref" data-sym="right_arm_mount_joint">Cindy.urdf:423</span>: about 2.5 mm, up to 6 mrad per axis.</td>
+          <td>everything that uses Cindy's URDF</td>
+          <td>left tip vs right tip 0.47 mm mean, 0.67 mm max (2.36 mm before).</td>
+        </tr>
+        <tr>
+          <th scope="row">Punch tip</th>
+          <td>UR pendant 4-point TCP wizard, per arm.</td>
+          <td><code>punch_tool.&lt;arm&gt;.offset_xyz</code> in <code>&lt;CALIBRATION_DATE&gt;/config.yaml</code>, a translation only.</td>
+          <td><div class="where"><span><code>_load_punch_tool_config</code> <span class="ref" data-sym="_load_punch_tool_config">husky_monitor.py:1680</span></span><span><code>record_punch_reference</code> <span class="ref" data-sym="record_punch_reference">husky_world.py:1023</span></span></div></td>
+          <td>only used to check the base calibration</td>
+        </tr>
+
+        <tr class="grp nominal"><th colspan="5" scope="colgroup">not calibrated: taken from the URDF, CAD or the design</th></tr>
+        <tr>
+          <th scope="row">Arm mount on the Husky</th>
+          <td>URDF values. Single arm: <code>arm_mount_joint</code> <span class="ref" data-sym="arm_mount_joint">Alice.urdf:439</span>. Cindy: the bulkhead joints.</td>
+          <td>the URDF</td>
+          <td>PyBullet, compas_fab cell</td>
+          <td>Errors cancel for the calibrated arm. For Cindy's right arm the inter-arm calibration covers them.</td>
+        </tr>
+        <tr>
+          <th scope="row">Assembly tool frame (AT3L, AT3R)</th>
+          <td>Tool model frame, (∓0.07, 0, 0.08) m in tool0.</td>
+          <td><code>data/tool_models/AT3{L,R}.json</code> and the cell</td>
+          <td>planners, IK targets</td>
+          <td class="muted">CAD</td>
+        </tr>
+        <tr>
+          <th scope="row">Robotiq tip</th>
+          <td><code>TOOL0_FROM_GRIPPER_TCP</code> <span class="ref" data-sym="TOOL0_FROM_GRIPPER_TCP">utils.py:65</span>: 0.152 + 0.012 m, yaw π. Support-robot BarActions carry tool0 targets straight from the export, so they do not use it.</td>
+          <td><code>utils.py</code></td>
+          <td>the older grasp helpers <span class="ref" data-sym="TOOL0_FROM_GRIPPER_TCP">husky_planning.py:52</span></td>
+          <td class="muted">the 12 mm has no recorded source</td>
+        </tr>
+        <tr>
+          <th scope="row">The grasp (tool0 to bar)</th>
+          <td>Each bar's <code>attachment_frame</code> in the exported action.</td>
+          <td>the Rhino export</td>
+          <td>planners, servo targets</td>
+          <td class="muted">a ~5 mm tool–joint mismatch at mount is not seen by anything</td>
+        </tr>
+        <tr>
+          <th scope="row">Rhino world to the room</th>
+          <td>Assumed equal to the mocap world. The design is placed by hand from exported mocap camera positions.</td>
+          <td>the Rhino file</td>
+          <td>every exported target</td>
+          <td class="muted">open TODO</td>
+        </tr>
+        <tr>
+          <th scope="row">Floor height</th>
+          <td>Vertex height of the <code>WalkableGround.json</code> patches (e.g. −15.55 mm); a 40 × 40 m slab at z 0 when missing.</td>
+          <td>the Rhino export</td>
+          <td>collision checks</td>
+          <td class="muted">not measured</td>
+        </tr>
+
+        <tr class="grp nominal"><th colspan="5" scope="colgroup">not geometry</th></tr>
+        <tr>
+          <th scope="row">Force/torque zero</th>
+          <td>The UR <code>zero_ftsensor</code> service <span class="ref" data-sym="def zero_ft_sensor">husky_robot.py:749</span>, run with empty or open tools before compliant phases.</td>
+          <td>inside the UR controller</td>
+          <td>compliant moves</td>
+          <td class="muted">a tare, not a calibration</td>
+        </tr>
+        <tr>
+          <th scope="row">Visual servo</th>
+          <td>Re-solves IK at the fresh mocap base and re-executes until <code>tool0</code> FK matches the authored target <span class="ref" data-sym="measure_servo_tool0_error">husky_world.py:1491</span>.</td>
+          <td>nothing is saved</td>
+          <td>the transfer step</td>
+          <td class="muted">corrects nothing upstream: FK uses the same calibration it would need to check</td>
+        </tr>
+        <tr>
+          <th scope="row">Grasp force, pickup layout</th>
+          <td>Robotiq slip recorder; punch-tip touches on 4 printed crosses with a 2D rigid fit.</td>
+          <td colspan="3" class="muted">Only on branch <code>yh/fixtureless_assembly</code> (<code>grasp_calib_monitor.py</code>, <code>pickup_calib.py</code>), not on this branch.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ======================================================================= -->
+<section id="robots">
+  <div class="sec-head">
+    <h2>Per robot</h2>
+    <p>The values in use now. Validation and punch numbers come from each pinned date folder: the marker-offset spread is the logged deviation of <code>|tool0_from_flange_mocap|</code> from its mean, and the punch spread is each take's distance from the mean tip.</p>
+  </div>
+  <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th scope="col"></th><th scope="col">Alice 0804</th><th scope="col">Belle 0805</th><th scope="col">Cindy 0806</th></tr>
+      </thead>
+      <tbody>
+        <tr><th scope="row">Base tracker</th><td class="num">1840</td><td class="num">1850</td><td class="num">1860 <span class="ref" data-sym="_assembly_robot('Cindy'">robot_registry.py:312</span></td></tr>
+        <tr><th scope="row">Calib tool marker (arm 0)</th><td class="num">1862</td><td class="num">1866</td><td class="num">left 1866, right 1861 <span class="ref" data-sym="CALIB_TOOL_ARM0_ID_BY_ROBOT">husky_world.py:66</span></td></tr>
+        <tr><th scope="row">Base calibration date</th><td class="num">20260623</td><td class="num">20261013</td><td class="num">20261016, left arm; fallback 20260916</td></tr>
+        <tr><th scope="row">URDF</th><td><code>…_Alice_Calibrated.urdf</code></td><td><code>…_Belle_Calibrated.urdf</code></td><td><code>…_All_Calibrated.urdf</code> <span class="ref" data-sym="All_Calibrated">robot_registry.py:50</span></td></tr>
+        <tr><th scope="row">base_link to base_link_inertia</th><td class="num">yaw −π/2</td><td class="num">yaw −π/2</td><td class="num">yaw π <span class="ref" data-sym="arm_base_from_ur_base_yaw">husky_robot.py:146</span></td></tr>
+        <tr><th scope="row">ssik solver</th><td><code>alice_ur_arm_ik</code></td><td><code>belle_ur_arm_ik</code></td><td><code>left_ur_arm_ik</code>, <code>right_ur_arm_ik</code></td></tr>
+        <tr><th scope="row">Shoulder z (base_offset)</th><td class="num">0.162777 m</td><td class="num">0.162591 m</td><td class="num">0.162578 m (left)</td></tr>
+        <tr><th scope="row">Punch offset, mm</th><td class="num">(−0.32, −3.56, 117.71)</td><td class="num">(0.58, 1.58, 110.54)</td><td class="num">left (−0.93, −4.05, 110.50)<br>right (0.17, 3.63, 118.84)</td></tr>
+        <tr><th scope="row">Validation samples</th><td class="num">17</td><td class="num">17</td><td class="num">15</td></tr>
+        <tr><th scope="row">Mean marker offset |t|</th><td class="num">22.2 mm</td><td class="num">23.7 mm</td><td class="num">22.2 mm</td></tr>
+        <tr><th scope="row">Marker offset spread, std / max</th><td class="num">0.96 / 1.58 mm</td><td class="num">0.75 / 1.65 mm</td><td class="num">1.11 / 2.40 mm</td></tr>
+        <tr><th scope="row">Worst axis angle from mean</th><td class="num">0.47°</td><td class="num">0.50°</td><td class="num">0.28°</td></tr>
+        <tr><th scope="row">Punch spread, RMS / max</th><td class="num">1.13 / 1.47 mm (5 takes)</td><td class="num">1.30 / 1.54 mm (5 takes)</td><td class="num">0.79 / 0.99 mm (4 takes, left)</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="note">The base calibration is one transform for the whole Husky. On Cindy it is measured with the left arm; the right arm is placed through the URDF and the inter-arm calibration. 20260622 and 20260625 are Cindy's June left-arm and right-arm results; they differ by about (1.0, 2.9, 0.6) mm and 0.2°.</p>
+</section>
+
+<!-- ======================================================================= -->
+<section id="gotchas">
+  <div class="sec-head">
+    <h2>Gotchas</h2>
+    <p>Things that have broken a calibration before, or that are easy to get wrong.</p>
+  </div>
+  <ul class="gotchas">
+    <li>
+      <span class="tag bug">fixed three times</span>
+      <div class="body">
+        <h3>A fitted axis has no sign</h3>
+        <p>Each wrong sign rotated the whole base frame: a 90° roll on Cindy (2026-06-26, the robot lay on the floor in PyBullet), a 90° yaw on Alice (2026-07-02), a 180° yaw on Belle, whose tracker is mounted the other way round (2026-10-14). The yaw cases look clean in roll and pitch. The fast check for any new calibration is the mean marker offset on the J0/J1 data: it should be 22–24 mm. Metres mean a flipped axis.</p>
+      </div>
+    </li>
+    <li>
+      <span class="tag">capture</span>
+      <div class="body">
+        <h3>The mocap cache keeps the last pose of a lost body</h3>
+        <p>Belle's first validation set was ruined by a tool pose that had stopped updating. <code>calibrate_button</code> now refuses samples older than 0.5 s. There is still no time sync between the joint state and the mocap pose, so let the arm settle before each sample.</p>
+      </div>
+    </li>
+    <li>
+      <span class="tag">capture</span>
+      <div class="body">
+        <h3>j0/j1 store the commanded angles, validation the measured ones</h3>
+        <p>On the sweeps, <code>joint_conf</code> is the waypoint that was sent, written just before recording. On validation it is the live joint state.</p>
+      </div>
+    </li>
+    <li>
+      <span class="tag">pendant</span>
+      <div class="body">
+        <h3>The pendant TCP must be the zero tool</h3>
+        <p>The monitor compares the driver's <code>tcp_pose</code> with FK <code>tool0</code>. A pendant with the punch or gripper TCP active shows up as a constant offset along tool Z ("not in correct start pose!"). Check the pendant before hunting for a frame bug.</p>
+      </div>
+    </li>
+    <li>
+      <span class="tag">scope</span>
+      <div class="body">
+        <h3>The marker offset is checked, never solved</h3>
+        <p><code>tool0_from_flange_mocap</code> is only required to stay constant. Its mean is logged but not saved, and nothing downstream uses it. The calibration-tool visualisers that anchor the arm on the marker are therefore only approximate.</p>
+      </div>
+    </li>
+    <li>
+      <span class="tag">dates</span>
+      <div class="body">
+        <h3>Newer is not better: dates are per robot</h3>
+        <p>Recording uses <code>CALIBRATION_DATE</code>, the offline scripts use <code>CALIBRATION_ANALYSIS_DATE</code>, and each robot reads its own <code>BASE_CALIBRATION_DATE_BY_ROBOT</code> entry. After a new calibration, point that robot's entry at the new folder and turn calibration mode off again (<code>doc/calibration_manual.md</code> §4.0).</p>
+      </div>
+    </li>
+    <li>
+      <span class="tag">limits</span>
+      <div class="body">
+        <h3>The servo loop cannot see calibration error</h3>
+        <p>The visual servo compares FK with the target, and FK already uses the base calibration, the arm kinematics and the tool model. In session 20261001 the servo residual was 0.23–1.24 mm while the bars landed 2.6–6.6 mm off. Errors in this chain only show up in an outside measurement, such as the bar marker rig or the punch.</p>
+      </div>
+    </li>
+  </ul>
+</section>
+
+<footer>
+  Read from the code and the gdrive date folders on 2026-10-19, branch yh/multi-robot-monitor at c9e63b9. Companion page: <code>doc/compas_structure.html</code> (COMPAS in Husky Teleop). Operator steps are in <code>doc/calibration_manual.md</code>; the older mermaid sketch of the pipeline is <code>data/calibration_data/frames_tip.md</code>.
+</footer>
+
+</main>
+
+</body></html>

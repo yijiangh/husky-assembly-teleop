@@ -1,0 +1,1259 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>COMPAS in Husky Teleop</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap">
+<style>
+/* Layout: an engineering reference sheet. A title block with the versions, three drawn
+   figures, then lookup tables. Teal ink marks everything COMPAS owns, plain ink our own
+   code, grey dashes everything outside COMPAS, ochre the points where values convert. */
+:root {
+  --paper: #f3f5f6;
+  --sheet: #ffffff;
+  --ink: #162026;
+  --ink-2: #3d4a52;
+  --pencil: #5c6a72;
+  --rule: #d3dadd;
+  --lane: #f7f9f9;
+  --compas: #0b6a70;
+  --compas-wash: #e1efef;
+  --compas-line: #86bdbd;
+  --outside: #848f96;
+  --outside-wash: #edf0f1;
+  --convert: #8c5d00;
+  --convert-wash: #fbefd3;
+  --cfab-red: #c43a3a;
+  --font-display: "IBM Plex Sans Condensed", "Roboto Condensed", "Arial Narrow", system-ui, sans-serif;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #0d1215; --sheet: #141b1f; --ink: #e0e6e9; --ink-2: #b3bec4; --pencil: #93a0a8;
+    --rule: #28323a; --lane: #11171b; --compas: #4ec6be; --compas-wash: #0f2e2d; --compas-line: #2d6b68;
+    --outside: #7b878e; --outside-wash: #172025; --convert: #e3ad3c; --convert-wash: #31270e;
+    --cfab-red: #ef7272;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #0d1215; --sheet: #141b1f; --ink: #e0e6e9; --ink-2: #b3bec4; --pencil: #93a0a8;
+  --rule: #28323a; --lane: #11171b; --compas: #4ec6be; --compas-wash: #0f2e2d; --compas-line: #2d6b68;
+  --outside: #7b878e; --outside-wash: #172025; --convert: #e3ad3c; --convert-wash: #31270e;
+  --cfab-red: #ef7272;
+  color-scheme: dark;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+body {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 15px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+.page {
+  max-width: 1140px;
+  margin: 0 auto;
+  padding-inline: 20px;
+  padding-block: 36px 72px;
+  display: grid;
+  gap: 56px;
+}
+h1, h2, h3 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  text-wrap: balance;
+  margin: 0;
+}
+h1 { font-size: clamp(2.1rem, 1.5rem + 2.6vw, 3.2rem); line-height: 1.04; letter-spacing: -0.01em; }
+h2 { font-size: 1.65rem; line-height: 1.15; }
+h3 { font-size: 1.02rem; line-height: 1.3; }
+p { margin: 0; max-width: 70ch; }
+code, .mono { font-family: var(--font-mono); font-size: 0.86em; }
+code { color: var(--ink); overflow-wrap: anywhere; }
+a { color: inherit; }
+a:focus-visible { outline: 2px solid var(--compas); outline-offset: 2px; border-radius: 2px; }
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--pencil);
+}
+
+/* * Title block */
+.titleblock {
+  display: grid;
+  grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr);
+  gap: 36px;
+  align-items: end;
+  padding-bottom: 28px;
+  border-bottom: 2px solid var(--ink);
+}
+.tb-main { display: grid; gap: 14px; min-width: 0; }
+.lede { font-size: 1.1rem; line-height: 1.55; max-width: 62ch; }
+.spec {
+  margin: 0;
+  display: grid;
+  border: 1px solid var(--rule);
+  background: var(--sheet);
+  font-size: 0.8rem;
+  min-width: 0;
+}
+.spec div {
+  display: grid;
+  grid-template-columns: 9.6rem minmax(0, 1fr);
+  gap: 12px;
+  padding: 7px 12px;
+  border-top: 1px solid var(--rule);
+}
+.spec div:first-child { border-top: 0; }
+.spec dt { font-family: var(--font-mono); color: var(--pencil); }
+.spec dd { margin: 0; font-family: var(--font-mono); min-width: 0; overflow-wrap: anywhere; }
+
+/* * Does / does not */
+.split {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  border: 1px solid var(--rule);
+  background: var(--sheet);
+}
+.split > div { padding: 22px 24px; display: grid; gap: 14px; align-content: start; min-width: 0; }
+.split > div + div { border-left: 1px solid var(--rule); }
+.split h2 { font-size: 1.15rem; display: flex; align-items: center; gap: 10px; }
+.split h2::before { content: ""; width: 16px; height: 12px; border-radius: 2px; flex: none; }
+.split .does h2::before { background: var(--compas-wash); border: 1.5px solid var(--compas); }
+.split .doesnt h2::before { background: var(--outside-wash); border: 1.5px dashed var(--outside); }
+.split ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 10px; }
+.split li b { font-weight: 600; }
+
+/* * Navigation + reference note */
+.navblock { display: grid; gap: 10px; margin-top: -24px; }
+.toc { display: flex; flex-wrap: wrap; gap: 6px 18px; align-items: baseline; font-size: 0.92rem; }
+.toc a { text-decoration: none; border-bottom: 1px solid var(--rule); }
+.toc a:hover { color: var(--compas); border-bottom-color: var(--compas); }
+.refnote { font-size: 0.84rem; color: var(--pencil); max-width: none; }
+
+/* * Sections and figures */
+section { display: grid; gap: 18px; min-width: 0; scroll-margin-top: 16px; }
+.sec-head { display: grid; gap: 8px; }
+.sec-head p { color: var(--ink-2); }
+figure { margin: 0; display: grid; gap: 12px; min-width: 0; }
+.fig-scroll {
+  overflow-x: auto;
+  background: var(--sheet);
+  border: 1px solid var(--rule);
+  padding: 14px;
+}
+.fig-scroll svg { display: block; width: 100%; height: auto; min-width: 900px; }
+figcaption { font-size: 0.9rem; color: var(--ink-2); max-width: 86ch; }
+figcaption b { color: var(--ink); font-weight: 600; }
+.legend { display: flex; flex-wrap: wrap; gap: 8px 22px; font-size: 0.82rem; color: var(--ink-2); align-items: center; }
+.legend span { display: inline-flex; align-items: center; gap: 8px; }
+.sw { width: 18px; height: 12px; border-radius: 2px; display: inline-block; flex: none; }
+.sw-compas { background: var(--compas-wash); border: 1.5px solid var(--compas); }
+.sw-node { background: var(--sheet); border: 1.5px solid var(--compas); }
+.sw-file { background: var(--sheet); border: 1.5px solid var(--compas-line); }
+.sw-ours { background: var(--sheet); border: 1.5px solid var(--ink-2); }
+.sw-ext { background: var(--outside-wash); border: 1.5px dashed var(--outside); }
+.sw-conv { width: 10px; height: 10px; background: var(--convert); transform: rotate(45deg); border-radius: 1px; margin-inline: 4px; }
+
+/* * Inline SVG drawing styles (page-level, so they follow the theme tokens) */
+.dg text { font-family: var(--font-body); font-size: 11px; fill: var(--ink); }
+.dg .t-title { font-family: var(--font-display); font-weight: 600; font-size: 14px; }
+.dg .t-head { font-family: var(--font-display); font-weight: 600; font-size: 12.5px; }
+.dg .t-sub { font-size: 10.5px; fill: var(--pencil); }
+.dg .t-sub-s { font-size: 10px; fill: var(--pencil); }
+.dg .t-mono { font-family: var(--font-mono); font-size: 11px; }
+.dg .t-mono-s { font-family: var(--font-mono); font-size: 10px; }
+.dg .t-mono-b { font-family: var(--font-mono); font-size: 11px; font-weight: 600; }
+.dg .t-mono-bs { font-family: var(--font-mono); font-size: 10.5px; font-weight: 600; }
+.dg .t-cap { font-family: var(--font-mono); font-size: 10px; font-weight: 600; fill: var(--compas); letter-spacing: 0.02em; }
+.dg .t-edge { font-size: 10.5px; fill: var(--pencil); }
+.dg .t-edge-mono { font-family: var(--font-mono); font-size: 10px; fill: var(--pencil); }
+.dg .t-num { font-family: var(--font-mono); font-weight: 600; font-size: 12px; fill: var(--compas); }
+.dg .t-teal { fill: var(--compas); }
+.dg .b-ours { fill: var(--sheet); stroke: var(--ink-2); stroke-width: 1.3; }
+.dg .b-chip { fill: var(--lane); stroke: var(--rule); stroke-width: 1; }
+.dg .b-compas { fill: var(--compas-wash); stroke: var(--compas); stroke-width: 1.5; }
+.dg .b-comp { fill: var(--sheet); stroke: var(--compas-line); stroke-width: 1; }
+.dg .b-ext { fill: var(--outside-wash); stroke: var(--outside); stroke-width: 1.3; stroke-dasharray: 5 4; }
+.dg .b-file { fill: var(--sheet); stroke: var(--compas-line); stroke-width: 1.4; }
+.dg .n-compas { fill: var(--sheet); stroke: var(--compas); stroke-width: 1.5; }
+.dg .edge { fill: none; stroke: var(--pencil); stroke-width: 1.3; }
+.dg .ah { fill: var(--pencil); }
+.dg .conv { fill: var(--convert); stroke: var(--sheet); stroke-width: 1.5; }
+.dg .lane { fill: var(--lane); }
+.dg .lane-compas { fill: var(--compas-wash); }
+.dg .lane-ext { fill: var(--outside-wash); }
+.dg .gridline { stroke: var(--rule); stroke-width: 1; stroke-dasharray: 2 4; }
+.dg .sep { stroke: var(--compas-line); stroke-width: 1; }
+.dg .doc { fill: var(--compas-wash); stroke: var(--compas); stroke-width: 1.3; }
+.dg .doc-fold { fill: none; stroke: var(--compas); stroke-width: 1.3; }
+.dg .red-swatch { fill: var(--cfab-red); fill-opacity: 0.5; stroke: var(--cfab-red); stroke-width: 1; }
+
+/* * Stage list under figure 2 */
+.stages {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  border: 1px solid var(--rule);
+  background: var(--sheet);
+  counter-reset: stage;
+}
+.stages li {
+  counter-increment: stage;
+  display: grid;
+  grid-template-columns: 1.6rem minmax(0, 1fr);
+  gap: 4px 10px;
+  padding: 16px 20px;
+  border-top: 1px solid var(--rule);
+  min-width: 0;
+}
+.stages li:nth-child(-n+2) { border-top: 0; }
+.stages li:nth-child(even) { border-left: 1px solid var(--rule); }
+.stages li::before {
+  content: counter(stage);
+  font-family: var(--font-mono);
+  font-weight: 600;
+  color: var(--compas);
+  grid-row: span 2;
+  line-height: 1.35;
+}
+.stages p { font-size: 0.9rem; max-width: none; }
+
+/* * Tables */
+.table-scroll { overflow-x: auto; border: 1px solid var(--rule); background: var(--sheet); }
+table { border-collapse: collapse; width: 100%; min-width: 780px; font-size: 0.88rem; }
+th, td { text-align: left; vertical-align: top; padding: 10px 14px; border-top: 1px solid var(--rule); }
+thead th {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 0.78rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--pencil);
+  border-top: 0;
+}
+tr.grp th {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  font-size: 0.8rem;
+  color: var(--compas);
+  background: var(--compas-wash);
+  padding-block: 6px;
+}
+tr.grp.outside th { color: var(--ink-2); background: var(--outside-wash); }
+td.piece { width: 24%; }
+td.piece code { font-weight: 500; }
+td.what { width: 44%; }
+.where { display: grid; gap: 5px; }
+.ref {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--pencil);
+  overflow-wrap: anywhere;
+}
+.dtypes { display: grid; gap: 3px; font-family: var(--font-mono); font-size: 0.78rem; }
+.dtypes span { overflow-wrap: anywhere; }
+.num { font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+.muted { color: var(--pencil); }
+.note { font-size: 0.86rem; color: var(--ink-2); }
+
+/* * Gotchas */
+.gotchas { list-style: none; margin: 0; padding: 0; display: grid; border: 1px solid var(--rule); background: var(--sheet); }
+.gotchas li {
+  display: grid;
+  grid-template-columns: 8.5rem minmax(0, 1fr);
+  gap: 6px 18px;
+  padding: 16px 20px;
+  border-top: 1px solid var(--rule);
+}
+.gotchas li:first-child { border-top: 0; }
+.tag {
+  justify-self: start;
+  align-self: start;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  padding: 2px 8px;
+  border-radius: 3px;
+  border: 1px solid var(--rule);
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+.tag.bug { border-color: var(--convert); color: var(--convert); background: var(--convert-wash); }
+.gotchas h3 { font-size: 1rem; }
+.gotchas p { font-size: 0.9rem; max-width: 80ch; }
+.gotchas .body { display: grid; gap: 6px; min-width: 0; }
+
+footer { font-size: 0.82rem; color: var(--pencil); border-top: 1px solid var(--rule); padding-top: 16px; }
+
+@media (max-width: 760px) {
+  .page { gap: 44px; }
+  .titleblock { grid-template-columns: minmax(0, 1fr); gap: 22px; }
+  .split { grid-template-columns: minmax(0, 1fr); }
+  .split > div + div { border-left: 0; border-top: 1px solid var(--rule); }
+  .navblock { margin-top: -16px; }
+  .stages { grid-template-columns: minmax(0, 1fr); }
+  .stages li:nth-child(2) { border-top: 1px solid var(--rule); }
+  .stages li:nth-child(even) { border-left: 0; }
+  .gotchas li { grid-template-columns: minmax(0, 1fr); }
+  .spec div { grid-template-columns: 8.2rem minmax(0, 1fr); }
+}
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+@media (prefers-reduced-motion: no-preference) { html { scroll-behavior: smooth; } }
+</style>
+
+<main class="page">
+
+<header class="titleblock">
+  <div class="tb-main">
+    <p class="eyebrow">husky-assembly-teleop · structure note</p>
+    <h1>COMPAS in Husky Teleop</h1>
+    <p class="lede">In this project COMPAS is the data model and the collision checker. Every scene, robot state, target and saved plan is a COMPAS object stored as COMPAS JSON, and compas_fab's PyBullet backend runs every collision check. Path search, IK and everything that talks to the robots use other libraries. Values cross over to them as numpy arrays and pybullet_planning poses.</p>
+  </div>
+  <dl class="spec" aria-label="Versions read">
+    <div><dt>compas</dt><dd>2.15.1</dd></div>
+    <div><dt>compas_robots</dt><dd>0.6.0</dd></div>
+    <div><dt>compas_fab</dt><dd>1.1.0 fork · 995122d · copied install</dd></div>
+    <div><dt>rs_data_structure</dt><dd>8912325 · editable install</dd></div>
+    <div><dt>husky_assembly_tamp</dt><dd>de6ddc3 · editable install</dd></div>
+    <div><dt>read from</dt><dd>yh/multi-robot-monitor · f4c74f7 · 2026-10-15</dd></div>
+  </dl>
+</header>
+
+<section class="split" aria-label="What COMPAS does in this project">
+  <div class="does">
+    <h2>COMPAS does</h2>
+    <ul>
+      <li><b>Describe the scene.</b> A <code>RobotCell</code> holds the robot, its tools, every bar and the floor. A <code>RobotCellState</code> says where each one is, what is attached and what is allowed to touch.</li>
+      <li><b>Carry the data.</b> Actions, movements, targets and saved plans are COMPAS objects, read and written with <code>json_load</code> and <code>json_dump</code>.</li>
+      <li><b>Check collisions.</b> <code>check_collision</code> answers for every planner, ours and tamp's.</li>
+      <li><b>Plan support-robot straight lines.</b> <code>plan_cartesian_motion</code>, single arm only.</li>
+    </ul>
+  </div>
+  <div class="doesnt">
+    <h2>COMPAS does not</h2>
+    <ul>
+      <li><b>Search for paths.</b> pybullet_planning's BiRRT does. compas_fab's <code>plan_motion</code> is never called.</li>
+      <li><b>Solve most IK.</b> ssik's analytic solvers do. compas_fab IK is the fallback.</li>
+      <li><b>Compute FK while planning.</b> tamp reads link poses straight from PyBullet.</li>
+      <li><b>Talk to the robots.</b> <code>husky_robot.py</code> publishes numpy arrays on ROS2 topics, and mocap arrives as pybullet_planning poses.</li>
+    </ul>
+  </div>
+</section>
+
+<div class="navblock">
+  <nav class="toc" aria-label="On this page">
+    <span class="eyebrow">On this page</span>
+    <a href="#stack">The stack</a>
+    <a href="#flow">One movement</a>
+    <a href="#pybullet">Two robots in PyBullet</a>
+    <a href="#index">Index</a>
+    <a href="#planners">Planners</a>
+    <a href="#files">Files</a>
+    <a href="#conversions">Conversions</a>
+    <a href="#gotchas">Gotchas</a>
+  </nav>
+  <p class="refnote">References are <span class="mono">file:line</span> at f4c74f7. Plain file names are in <span class="mono">husky_assembly_teleop/</span>. <span class="mono">tamp/</span> means <span class="mono">external/husky_assembly_tamp/husky_assembly_tamp/</span>, <span class="mono">compas_fab/</span> means <span class="mono">external/compas_fab/src/compas_fab/</span>, and <span class="mono">rs_data_structure/</span> means <span class="mono">external/rs_data_structure/rs_data_structure/</span>. If a line has moved, search for the name next to it.</p>
+</div>
+
+<!-- ======================================================================= -->
+<section id="stack">
+  <div class="sec-head">
+    <h2>The stack</h2>
+    <p>Three COMPAS packages sit under our code. We use compas_fab in two ways: its <code>robots</code> module is our data model, and its PyBullet backend is our collision engine.</p>
+  </div>
+  <figure>
+    <div class="fig-scroll">
+      <svg class="dg" viewBox="0 0 1000 664" role="img" aria-label="Layer diagram. husky_assembly_teleop calls husky_assembly_tamp, rs_data_structure and compas_fab. tamp searches with pybullet_planning, solves IK with ssik and tests collisions with compas_fab. compas_fab is built on compas_robots, which is built on compas. compas_fab and pybullet_planning act on the same PyBullet server. compas reads and writes the JSON files. husky_robot sends only numpy arrays to ROS2.">
+        <defs>
+          <marker id="f1a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path class="ah" d="M0,0.5 L10,5 L0,9.5 z"/>
+          </marker>
+        </defs>
+
+        <!-- Row A: our ROS2 node and its modules -->
+        <rect class="b-ours" x="20" y="16" width="960" height="112" rx="6"/>
+        <text x="36" y="41"><tspan class="t-title">husky_assembly_teleop</tspan><tspan class="t-sub" dx="10">ROS2 node, this repo</tspan></text>
+
+        <rect class="b-chip" x="32" y="54" width="110" height="58" rx="4"/>
+        <text class="t-mono" x="87" y="79" text-anchor="middle">husky_monitor</text>
+        <text class="t-sub" x="87" y="97" text-anchor="middle">UI, dispatch</text>
+
+        <rect class="b-chip" x="150" y="54" width="110" height="58" rx="4"/>
+        <text class="t-mono" x="205" y="79" text-anchor="middle">husky_world</text>
+        <text class="t-sub" x="205" y="97" text-anchor="middle">IK, execution</text>
+
+        <rect class="b-chip" x="268" y="54" width="110" height="58" rx="4"/>
+        <text class="t-mono" x="323" y="79" text-anchor="middle">cfab_session</text>
+        <text class="t-sub" x="323" y="97" text-anchor="middle">cell + planner</text>
+
+        <rect class="b-chip" x="386" y="54" width="110" height="58" rx="4"/>
+        <text class="t-mono" x="441" y="79" text-anchor="middle">bar_action_io</text>
+        <text class="t-sub" x="441" y="97" text-anchor="middle">loads actions</text>
+
+        <rect class="b-chip" x="504" y="54" width="110" height="58" rx="4"/>
+        <text class="t-mono" x="559" y="79" text-anchor="middle">progress_io</text>
+        <text class="t-sub" x="559" y="97" text-anchor="middle">progress.json</text>
+
+        <rect class="b-chip" x="622" y="54" width="110" height="58" rx="4"/>
+        <text class="t-mono" x="677" y="79" text-anchor="middle">utils</text>
+        <text class="t-sub" x="677" y="97" text-anchor="middle">conversions</text>
+
+        <rect class="b-chip" x="740" y="54" width="110" height="58" rx="4"/>
+        <text class="t-mono" x="795" y="79" text-anchor="middle">dashboard/</text>
+        <text class="t-sub" x="795" y="97" text-anchor="middle">M1 viewer</text>
+
+        <rect class="b-ext" x="858" y="54" width="110" height="58" rx="4"/>
+        <text class="t-mono" x="913" y="79" text-anchor="middle">husky_robot</text>
+        <text class="t-sub" x="913" y="97" text-anchor="middle">ROS2 I/O</text>
+
+        <!-- Edges out of the teleop -->
+        <path class="edge" d="M390 128 V166" marker-end="url(#f1a)"/>
+        <text class="t-edge" x="398" y="151">plans with</text>
+        <path class="edge" d="M530 128 V314" marker-end="url(#f1a)"/>
+        <text class="t-edge" x="522" y="301" text-anchor="end">direct calls</text>
+        <path class="edge" d="M645 128 V166" marker-end="url(#f1a)"/>
+        <text class="t-edge" x="653" y="151">loads, saves</text>
+        <path class="edge" d="M913 112 V166" marker-start="url(#f1a)" marker-end="url(#f1a)"/>
+        <text class="t-edge" x="905" y="151" text-anchor="end">numpy only</text>
+
+        <!-- Row B: libraries we call -->
+        <rect class="b-ext" x="20" y="168" width="160" height="44" rx="5"/>
+        <text class="t-mono-b" x="34" y="186">ssik</text>
+        <text class="t-sub" x="34" y="202">analytic IK solvers</text>
+
+        <rect class="b-ext" x="20" y="222" width="160" height="44" rx="5"/>
+        <text class="t-mono-b" x="34" y="240">pybullet_planning</text>
+        <text class="t-sub" x="34" y="256">BiRRT, FK, pose math</text>
+
+        <rect class="b-ours" x="270" y="168" width="240" height="98" rx="5"/>
+        <text class="t-head" x="286" y="190">husky_assembly_tamp</text>
+        <text class="t-mono" x="286" y="210">motion_planner/api.py</text>
+        <text class="t-sub" x="286" y="228">dual-arm planners</text>
+        <text class="t-sub" x="286" y="246">submodule, editable install</text>
+
+        <rect class="b-ours" x="550" y="168" width="190" height="98" rx="5"/>
+        <text class="t-head" x="566" y="190">rs_data_structure</text>
+        <text class="t-mono" x="566" y="210">Movement, Action</text>
+        <text class="t-sub" x="566" y="228">subclasses compas Data</text>
+        <text class="t-sub" x="566" y="246">shared with Rhino, tamp</text>
+
+        <rect class="b-ext" x="820" y="168" width="160" height="98" rx="5"/>
+        <text class="t-head" x="836" y="190">ROS2 + OptiTrack</text>
+        <text class="t-sub" x="836" y="210">UR arms, grippers</text>
+        <text class="t-sub" x="836" y="228">joint_states in</text>
+        <text class="t-sub" x="836" y="246">trajectories out</text>
+
+        <path class="edge" d="M270 190 H182" marker-end="url(#f1a)"/>
+        <text class="t-edge" x="226" y="184" text-anchor="middle">IK</text>
+        <path class="edge" d="M270 244 H182" marker-end="url(#f1a)"/>
+        <text class="t-edge" x="226" y="238" text-anchor="middle">search, FK</text>
+        <path class="edge" d="M330 266 V314" marker-end="url(#f1a)"/>
+        <text class="t-edge" x="338" y="296">collision test</text>
+        <path class="edge" d="M645 266 V314" marker-end="url(#f1a)"/>
+        <text class="t-edge" x="653" y="296">embeds its types</text>
+
+        <!-- PyBullet server, shared -->
+        <rect class="b-ext" x="20" y="360" width="160" height="96" rx="5"/>
+        <text class="t-head" x="34" y="384">PyBullet server</text>
+        <text class="t-sub" x="34" y="404">one GUI connection,</text>
+        <text class="t-sub" x="34" y="420">shared by both</text>
+        <text class="t-sub" x="34" y="436">libraries</text>
+        <path class="edge" d="M100 266 V358" marker-end="url(#f1a)"/>
+        <text class="t-edge" x="108" y="318">same bodies</text>
+        <path class="edge" d="M270 410 H182" marker-end="url(#f1a)"/>
+        <text class="t-edge" x="226" y="404" text-anchor="middle">bodies, poses</text>
+        <text class="t-edge" x="226" y="425" text-anchor="middle">contacts</text>
+
+        <!-- Row C: compas_fab -->
+        <rect class="b-compas" x="270" y="316" width="470" height="178" rx="6"/>
+        <text x="286" y="339"><tspan class="t-title t-teal">compas_fab</tspan><tspan class="t-sub" dx="10">fork, external/compas_fab @ 995122d</tspan></text>
+
+        <rect class="b-comp" x="282" y="350" width="216" height="134" rx="4"/>
+        <text class="t-cap" x="294" y="368">backends.pybullet</text>
+        <text class="t-mono" x="294" y="386">PyBulletClient</text>
+        <text class="t-mono" x="294" y="400">PyBulletPlanner</text>
+        <line class="sep" x1="294" y1="409" x2="486" y2="409"/>
+        <text class="t-mono" x="294" y="422">.set_robot_cell</text>
+        <text class="t-mono" x="294" y="436">.set_robot_cell_state</text>
+        <text class="t-mono" x="294" y="450">.check_collision</text>
+        <text class="t-mono" x="294" y="464">.inverse_kinematics</text>
+        <text class="t-mono" x="294" y="478">.plan_cartesian_motion</text>
+
+        <rect class="b-comp" x="512" y="350" width="216" height="134" rx="4"/>
+        <text class="t-cap" x="524" y="368">robots</text>
+        <text class="t-mono" x="524" y="386">RobotCell</text>
+        <text class="t-mono" x="524" y="400">RigidBody</text>
+        <line class="sep" x1="524" y1="409" x2="716" y2="409"/>
+        <text class="t-mono" x="524" y="422">RobotCellState</text>
+        <text class="t-mono" x="524" y="436">ToolState</text>
+        <text class="t-mono" x="524" y="450">RigidBodyState</text>
+        <text class="t-mono" x="524" y="464">FrameTarget, FrameWaypoints</text>
+        <text class="t-mono" x="524" y="478">JointTrajectory</text>
+
+        <path class="edge" d="M505 494 V522" marker-end="url(#f1a)"/>
+        <text class="t-edge" x="513" y="512">built on</text>
+
+        <!-- Row D: compas_robots -->
+        <rect class="b-compas" x="270" y="524" width="470" height="56" rx="6"/>
+        <text class="t-title t-teal" x="286" y="557">compas_robots</text>
+        <text class="t-mono" x="430" y="548">RobotModel · ToolModel · Configuration</text>
+        <text class="t-mono" x="430" y="566">LocalPackageMeshLoader</text>
+
+        <path class="edge" d="M505 580 V598" marker-end="url(#f1a)"/>
+
+        <!-- Row E: compas core -->
+        <rect class="b-compas" x="270" y="600" width="470" height="56" rx="6"/>
+        <text class="t-title t-teal" x="286" y="633">compas</text>
+        <text class="t-mono" x="430" y="624">Frame · Transformation · Mesh · Box</text>
+        <text class="t-mono" x="430" y="642">Data · json_load · json_dump</text>
+
+        <!-- Files on disk -->
+        <path class="doc" d="M836 528 h20 l8 8 v26 h-28 z"/>
+        <path class="doc-fold" d="M856 528 v8 h8"/>
+        <text class="t-head" x="874" y="543">COMPAS JSON</text>
+        <text class="t-sub" x="874" y="559">files on disk</text>
+        <text class="t-mono-s" x="836" y="590">RobotCell*.json</text>
+        <text class="t-mono-s" x="836" y="605">BarActions/*.json</text>
+        <text class="t-mono-s" x="836" y="620">*.live-solved.json</text>
+        <text class="t-mono-s" x="836" y="635">WalkableGround.json</text>
+        <text class="t-mono-s" x="836" y="650">progress.json</text>
+        <path class="edge" d="M742 628 H826" marker-start="url(#f1a)" marker-end="url(#f1a)"/>
+        <text class="t-edge-mono" x="784" y="620" text-anchor="middle">json_load</text>
+        <text class="t-edge-mono" x="784" y="645" text-anchor="middle">json_dump</text>
+      </svg>
+    </div>
+    <div class="legend" aria-hidden="true">
+      <span><i class="sw sw-compas"></i>COMPAS package</span>
+      <span><i class="sw sw-ours"></i>our code</span>
+      <span><i class="sw sw-ext"></i>outside COMPAS</span>
+    </div>
+    <figcaption><b>Figure 1.</b> The planners in husky_assembly_tamp search with pybullet_planning and solve IK with ssik, but every collision test goes through compas_fab, and both libraries work on the same PyBullet bodies. No COMPAS object reaches ROS2: <code>husky_robot</code> publishes numpy arrays.</figcaption>
+  </figure>
+</section>
+
+<!-- ======================================================================= -->
+<section id="flow">
+  <div class="sec-head">
+    <h2>One movement, end to end</h2>
+    <p>What happens to one movement, from the exported file to the robot and back. The middle lane is where the movement's state lives between steps.</p>
+  </div>
+  <figure>
+    <div class="fig-scroll">
+      <svg class="dg" viewBox="0 0 1120 492" role="img" aria-label="Swimlane of one movement in six steps. 1 Load: json_load turns RobotCell.json and the BarActions file into a RobotCell and a Movement; set_robot_cell creates the PyBullet bodies. 2 Sync with live: joint_states and the OptiTrack base pose, plus the other robots from progress.json, are written into the RobotCellState. 3 Plan: the tamp planner takes the start state and the movement's targets, searches with BiRRT, solves IK with ssik and checks collisions with compas_fab. 4 Accept and save: the 12-value path becomes a JointTrajectory and is saved with json_dump. 5 Execute: it is converted to numpy and sent as a ROS2 MultiArmTrajectory. 6 Hand over: the live end state becomes the next start state and is saved to progress.json.">
+        <defs>
+          <marker id="f2a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path class="ah" d="M0,0.5 L10,5 L0,9.5 z"/>
+          </marker>
+        </defs>
+
+        <!-- Lanes -->
+        <rect class="lane" x="0" y="44" width="1120" height="108"/>
+        <rect class="lane-compas" x="0" y="156" width="1120" height="108"/>
+        <rect class="lane" x="0" y="268" width="1120" height="108"/>
+        <rect class="lane-ext" x="0" y="380" width="1120" height="108"/>
+
+        <text class="t-head" x="12" y="90">Files</text>
+        <text class="t-sub" x="12" y="106">COMPAS JSON</text>
+        <text class="t-sub" x="12" y="120">on the drive</text>
+
+        <text class="t-head t-teal" x="12" y="202">COMPAS objects</text>
+        <text class="t-sub" x="12" y="218">in memory</text>
+
+        <text class="t-head" x="12" y="314">Planning</text>
+        <text class="t-sub" x="12" y="330">compas_fab</text>
+        <text class="t-sub" x="12" y="344">+ tamp</text>
+
+        <text class="t-head" x="12" y="426">Robot + sensors</text>
+        <text class="t-sub" x="12" y="442">ROS2, OptiTrack</text>
+
+        <!-- Stage columns -->
+        <line class="gridline" x1="280" y1="44" x2="280" y2="488"/>
+        <line class="gridline" x1="448" y1="44" x2="448" y2="488"/>
+        <line class="gridline" x1="616" y1="44" x2="616" y2="488"/>
+        <line class="gridline" x1="784" y1="44" x2="784" y2="488"/>
+        <line class="gridline" x1="952" y1="44" x2="952" y2="488"/>
+
+        <text x="196" y="28" text-anchor="middle"><tspan class="t-num">1</tspan><tspan class="t-head" dx="7">Load</tspan></text>
+        <text x="364" y="28" text-anchor="middle"><tspan class="t-num">2</tspan><tspan class="t-head" dx="7">Sync with live</tspan></text>
+        <text x="532" y="28" text-anchor="middle"><tspan class="t-num">3</tspan><tspan class="t-head" dx="7">Plan</tspan></text>
+        <text x="700" y="28" text-anchor="middle"><tspan class="t-num">4</tspan><tspan class="t-head" dx="7">Accept + save</tspan></text>
+        <text x="868" y="28" text-anchor="middle"><tspan class="t-num">5</tspan><tspan class="t-head" dx="7">Execute</tspan></text>
+        <text x="1036" y="28" text-anchor="middle"><tspan class="t-num">6</tspan><tspan class="t-head" dx="7">Hand over</tspan></text>
+
+        <!-- 1 Load -->
+        <rect class="b-file" x="124" y="58" width="144" height="80" rx="4"/>
+        <text class="t-head" x="136" y="80">Rhino export</text>
+        <text class="t-mono-s" x="136" y="100">RobotCell.json</text>
+        <text class="t-mono-s" x="136" y="116">BarActions/*.json</text>
+
+        <path class="edge" d="M159 138 V168" marker-end="url(#f2a)"/>
+        <path class="edge" d="M233 138 V168" marker-end="url(#f2a)"/>
+        <text class="t-edge-mono" x="196" y="157" text-anchor="middle">json_load</text>
+
+        <rect class="n-compas" x="124" y="170" width="70" height="80" rx="4"/>
+        <text class="t-mono-bs" x="159" y="200" text-anchor="middle">RobotCell</text>
+        <text class="t-sub-s" x="159" y="218" text-anchor="middle">the scene</text>
+
+        <rect class="n-compas" x="198" y="170" width="70" height="80" rx="4"/>
+        <text class="t-mono-bs" x="233" y="200" text-anchor="middle">Movement</text>
+        <text class="t-sub-s" x="233" y="218" text-anchor="middle">a motion</text>
+        <text class="t-sub-s" x="233" y="232" text-anchor="middle">+ targets</text>
+
+        <path class="edge" d="M159 250 V280" marker-end="url(#f2a)"/>
+        <text class="t-edge-mono" x="167" y="270">set_robot_cell</text>
+
+        <rect class="n-compas" x="124" y="282" width="144" height="80" rx="4"/>
+        <text class="t-mono-b" x="136" y="304">PyBulletPlanner</text>
+        <text class="t-sub" x="136" y="322">creates every body</text>
+        <text class="t-sub" x="136" y="338">once per session</text>
+
+        <path class="edge" d="M268 210 H290" marker-end="url(#f2a)"/>
+
+        <!-- 2 Sync with live -->
+        <rect class="b-file" x="292" y="58" width="144" height="80" rx="4"/>
+        <text class="t-head" x="304" y="80">Other robots</text>
+        <text class="t-mono-s" x="304" y="100">progress.json</text>
+        <text class="t-sub" x="304" y="116">where they stand</text>
+
+        <path class="edge" d="M364 138 V168" marker-end="url(#f2a)"/>
+        <text class="t-edge" x="372" y="157">beliefs</text>
+
+        <rect class="n-compas" x="292" y="170" width="144" height="80" rx="4"/>
+        <text class="t-mono-b" x="304" y="192">RobotCellState</text>
+        <text class="t-sub" x="304" y="210">base Frame</text>
+        <text class="t-sub" x="304" y="225">joint Configuration</text>
+        <text class="t-sub" x="304" y="240">attached tools, bars</text>
+
+        <rect class="b-ext" x="292" y="394" width="144" height="80" rx="4"/>
+        <text class="t-head" x="304" y="416">Live robot</text>
+        <text class="t-sub" x="304" y="434">joint_states (ROS2)</text>
+        <text class="t-sub" x="304" y="450">base pose (OptiTrack)</text>
+
+        <path class="edge" d="M364 394 V252" marker-end="url(#f2a)"/>
+        <path class="conv" d="M364 270 l6 6 l-6 6 l-6 -6 z"/>
+        <text class="t-edge" x="372" y="322">live values</text>
+
+        <path class="edge" d="M436 236 H448 V302 H458" marker-end="url(#f2a)"/>
+        <text class="t-edge" x="442" y="290" text-anchor="end">start</text>
+
+        <!-- 3 Plan -->
+        <rect class="n-compas" x="460" y="170" width="144" height="80" rx="4"/>
+        <text class="t-head" x="472" y="192">Movement targets</text>
+        <text class="t-mono-s" x="472" y="212">target_ee_frames</text>
+        <text class="t-mono-s" x="472" y="228">target_configuration</text>
+
+        <path class="edge" d="M532 250 V280" marker-end="url(#f2a)"/>
+        <text class="t-edge" x="540" y="270">goal</text>
+
+        <rect class="b-ours" x="460" y="282" width="144" height="80" rx="4"/>
+        <text class="t-head" x="472" y="304">tamp planner</text>
+        <text class="t-sub-s" x="472" y="322">search: pp BiRRT</text>
+        <text class="t-sub-s" x="472" y="337">IK: ssik</text>
+        <text class="t-sub-s t-teal" x="472" y="352">collisions: compas_fab</text>
+
+        <!-- 4 Accept + save -->
+        <path class="edge" d="M604 322 H700 V252" marker-end="url(#f2a)"/>
+        <path class="conv" d="M700 270 l6 6 l-6 6 l-6 -6 z"/>
+        <text class="t-edge" x="612" y="314">12-value path</text>
+
+        <rect class="n-compas" x="628" y="170" width="144" height="80" rx="4"/>
+        <text class="t-mono-b" x="640" y="192">JointTrajectory</text>
+        <text class="t-sub" x="640" y="210">the plan, kept in</text>
+        <text class="t-mono-s" x="640" y="226">Movement.trajectory</text>
+
+        <path class="edge" d="M700 170 V140" marker-end="url(#f2a)"/>
+        <text class="t-edge-mono" x="692" y="158" text-anchor="end">json_dump</text>
+
+        <rect class="b-file" x="628" y="58" width="144" height="80" rx="4"/>
+        <text class="t-head" x="640" y="80">Saved plan</text>
+        <text class="t-mono-s" x="640" y="100">*.live-solved.json</text>
+        <text class="t-sub" x="640" y="116">export left clean</text>
+
+        <!-- 5 Execute -->
+        <path class="edge" d="M772 210 H868 V392" marker-end="url(#f2a)"/>
+        <path class="conv" d="M868 270 l6 6 l-6 6 l-6 -6 z"/>
+        <text class="t-edge" x="876" y="322">to numpy</text>
+
+        <rect class="b-ext" x="796" y="394" width="144" height="80" rx="4"/>
+        <text class="t-head" x="808" y="416">ROS2 command</text>
+        <text class="t-mono-s" x="808" y="435">MultiArmTrajectory</text>
+        <text class="t-sub" x="808" y="451">or PoseStamped</text>
+        <text class="t-sub" x="808" y="465">(compliant moves)</text>
+
+        <!-- 6 Hand over -->
+        <path class="edge" d="M940 434 H962" marker-end="url(#f2a)"/>
+
+        <rect class="b-ext" x="964" y="394" width="144" height="80" rx="4"/>
+        <text class="t-head" x="976" y="416">Robot at the end</text>
+        <text class="t-sub" x="976" y="434">live joints + base</text>
+
+        <path class="edge" d="M1036 394 V252" marker-end="url(#f2a)"/>
+        <path class="conv" d="M1036 270 l6 6 l-6 6 l-6 -6 z"/>
+        <text class="t-edge" x="1044" y="322">live end</text>
+
+        <rect class="n-compas" x="964" y="170" width="144" height="80" rx="4"/>
+        <text class="t-mono-b" x="976" y="192">next start_state</text>
+        <text class="t-sub" x="976" y="210">RobotCellState of</text>
+        <text class="t-sub" x="976" y="225">the next movement</text>
+
+        <path class="edge" d="M1036 170 V140" marker-end="url(#f2a)"/>
+        <text class="t-edge-mono" x="1028" y="158" text-anchor="end">json_dumps</text>
+
+        <rect class="b-file" x="964" y="58" width="144" height="80" rx="4"/>
+        <text class="t-head" x="976" y="80">Belief saved</text>
+        <text class="t-mono-s" x="976" y="100">progress.json</text>
+        <text class="t-sub" x="976" y="116">read by the other</text>
+        <text class="t-sub" x="976" y="130">robots in step 2</text>
+      </svg>
+    </div>
+    <div class="legend" aria-hidden="true">
+      <span><i class="sw sw-node"></i>COMPAS object</span>
+      <span><i class="sw sw-file"></i>COMPAS JSON file</span>
+      <span><i class="sw sw-ours"></i>our planner</span>
+      <span><i class="sw sw-ext"></i>outside COMPAS</span>
+      <span><i class="sw sw-conv"></i>converted to or from numpy / pp pose</span>
+    </div>
+    <figcaption><b>Figure 2.</b> Files go in and out as COMPAS JSON. The robot and the sensors only ever exchange numpy arrays and pybullet_planning poses, and the ochre diamonds mark where those are converted (the helpers in <code>utils.py</code>, see <a href="#conversions">Conversions</a>). progress.json links the robots: what one monitor saves in step 6, the others read in step 2.</figcaption>
+  </figure>
+
+  <ol class="stages" aria-label="The six steps in code">
+    <li>
+      <h3>Load</h3>
+      <p><code>CfabSession</code> <span class="ref" data-sym="CfabSession">cfab_session.py:284</span> loads the robot's own cell with <code>json_load</code>: <code>RobotCell.json</code> for Cindy, <code>RobotCell_&lt;Name&gt;.json</code> for a support robot <span class="ref" data-sym="cell_file">robot_registry.py:288</span>. It adds the floor as rigid body <code>obstacle_ground</code> <span class="ref" data-sym="build_ground_rigid_body">cfab_session.py:178</span> and calls <code>set_robot_cell</code> <span class="ref" data-sym="set_robot_cell">cfab_session.py:353</span>. <code>parse_bar_action</code> <span class="ref" data-sym="parse_bar_action">bar_action_io.py:118</span> rebuilds the action and its movements.</p>
+    </li>
+    <li>
+      <h3>Sync with live</h3>
+      <p>Joints arrive in <code>arm_callback</code> <span class="ref" data-sym="arm_callback">husky_robot.py:697</span>, the calibrated base pose in <code>receive_mocap_frame</code> <span class="ref" data-sym="receive_mocap_frame">husky_monitor.py:12035</span>. <code>_inject_live_conf_into_state</code> <span class="ref" data-sym="_inject_live_conf_into_state">husky_monitor.py:3288</span> writes both into the RobotCellState. <code>apply_obstacle_robot_beliefs</code> <span class="ref" data-sym="apply_obstacle_robot_beliefs">cfab_session.py:753</span> places the other robots, <code>inject_ground_rigid_body_state</code> <span class="ref" data-sym="inject_ground_rigid_body_state">cfab_session.py:237</span> adds the floor, and <code>load_selected_movement</code> <span class="ref" data-sym="load_selected_movement">husky_monitor.py:3930</span> applies the state with <code>set_robot_cell_state</code>.</p>
+    </li>
+    <li>
+      <h3>Plan</h3>
+      <p><code>_plan_by_kind</code> <span class="ref" data-sym="_plan_by_kind">husky_monitor.py:4159</span> picks the planner from the movement's class (see <a href="#planners">Planners</a>). The planner gets the compas_fab planner, the start RobotCellState and the goal. It searches with pybullet_planning, solves IK with ssik and tests every candidate with <code>check_collision</code>, wrapped by <code>_build_cfab_collision_fn</code> <span class="ref" data-sym="_build_cfab_collision_fn">tamp/motion_planner/api.py:128</span>.</p>
+    </li>
+    <li>
+      <h3>Accept + save</h3>
+      <p>The path, a list of 12 joint values per point, becomes a JointTrajectory through <code>joint_trajectory_from_path</code> <span class="ref" data-sym="joint_trajectory_from_path">utils.py:156</span>. <code>_accept_trajectory</code> <span class="ref" data-sym="_accept_trajectory">husky_monitor.py:5838</span> stores it and carries the end configuration into the next movement. <code>_write_action_halves_for</code> <span class="ref" data-sym="_write_action_halves_for">husky_monitor.py:6495</span> saves the action with <code>json_dump</code> to <code>*.live-solved.json</code>.</p>
+    </li>
+    <li>
+      <h3>Execute</h3>
+      <p><code>path_12_from_joint_trajectory</code> <span class="ref" data-sym="path_12_from_joint_trajectory">utils.py:238</span> turns the plan back into numpy. <code>execute_arm_trajectory_all</code> <span class="ref" data-sym="execute_arm_trajectory_all">husky_world.py:2412</span> calls <code>send_dual_arm_cmd</code> <span class="ref" data-sym="send_dual_arm_cmd">husky_robot.py:1005</span>, which publishes on <code>&lt;ns&gt;/multi_arm_joint_trajectory</code>. Single-arm robots use <code>send_arm_cmd</code> <span class="ref" data-sym="send_arm_cmd">husky_robot.py:1053</span>. Compliant moves send PoseStamped targets on <code>&lt;arm&gt;/target_frame</code> <span class="ref" data-sym="send_arm_cmd_cartesian">husky_robot.py:833</span>.</p>
+    </li>
+    <li>
+      <h3>Hand over</h3>
+      <p><code>_propagate_live_end</code> <span class="ref" data-sym="_propagate_live_end">husky_monitor.py:6116</span> copies the live joints and base into the next movement's start state and saves this robot's belief to progress.json with <code>save_progress</code> <span class="ref" data-sym="save_progress">progress_io.py:470</span>, which writes with <code>json_dumps</code>.</p>
+    </li>
+  </ol>
+</section>
+
+<!-- ======================================================================= -->
+<section id="pybullet">
+  <div class="sec-head">
+    <h2>Two robots in one PyBullet window</h2>
+    <p>The monitor window draws two copies of the robot on top of each other. Only one of them is what the planner checks.</p>
+  </div>
+  <figure>
+    <div class="fig-scroll">
+      <svg class="dg" viewBox="0 0 1000 330" role="img" aria-label="One PyBullet server holds two robots. The live robot, made of pybullet_planning bodies, is re-posed every 50 ms from ROS2 joint_states and the OptiTrack base pose. The planning robot, made of compas_fab cell bodies and drawn translucent red, moves only when set_robot_cell_state applies a RobotCellState. compas_fab's check_collision and pybullet_planning's BiRRT, FK and validators both act on the planning robot.">
+        <defs>
+          <marker id="f3a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path class="ah" d="M0,0.5 L10,5 L0,9.5 z"/>
+          </marker>
+        </defs>
+
+        <rect class="b-ext" x="320" y="16" width="380" height="300" rx="8"/>
+        <text x="336" y="40"><tspan class="t-title">PyBullet server</tspan><tspan class="t-sub" dx="10">one GUI window</tspan></text>
+        <text class="t-sub" x="336" y="58">opened by <tspan class="t-mono-s">start_pybullet</tspan>; CfabSession reuses it</text>
+
+        <rect class="b-ours" x="344" y="74" width="332" height="94" rx="5"/>
+        <text x="358" y="98"><tspan class="t-head">Live robot</tspan><tspan class="t-sub" dx="8">pybullet_planning bodies</tspan></text>
+        <text class="t-sub" x="358" y="118">loaded by <tspan class="t-mono-s">common.load_robot</tspan></text>
+        <text class="t-sub" x="358" y="136">re-posed every 50 ms in <tspan class="t-mono-s">update()</tspan></text>
+        <text class="t-sub" x="358" y="154">this is the robot you watch</text>
+
+        <rect class="n-compas" x="344" y="190" width="332" height="110" rx="5"/>
+        <text x="358" y="214"><tspan class="t-head t-teal">Planning robot</tspan><tspan class="t-sub" dx="8">compas_fab cell bodies</tspan></text>
+        <text class="t-sub" x="358" y="234">robot, tools, every bar and the floor</text>
+        <text class="t-sub" x="358" y="252">moves only when <tspan class="t-mono-s">set_robot_cell_state</tspan> runs</text>
+        <text class="t-sub" x="358" y="270">every collision check runs against it</text>
+        <rect class="red-swatch" x="358" y="279" width="12" height="11" rx="2"/>
+        <text class="t-sub" x="376" y="288">drawn translucent red by <tspan class="t-mono-s">_hide_cfab_robot</tspan></text>
+
+        <rect class="b-ext" x="20" y="94" width="160" height="54" rx="5"/>
+        <text class="t-head" x="34" y="116">ROS2 + OptiTrack</text>
+        <text class="t-sub" x="34" y="134">joint_states, base pose</text>
+        <path class="edge" d="M180 121 H342" marker-end="url(#f3a)"/>
+        <text class="t-edge" x="250" y="114" text-anchor="middle">every 50 ms</text>
+
+        <rect class="n-compas" x="20" y="218" width="160" height="54" rx="5"/>
+        <text class="t-mono-b" x="34" y="240">RobotCellState</text>
+        <text class="t-sub" x="34" y="258">of the current movement</text>
+        <path class="edge" d="M180 245 H342" marker-end="url(#f3a)"/>
+        <text class="t-edge-mono" x="250" y="238" text-anchor="middle">set_robot_cell_state</text>
+
+        <rect class="n-compas" x="800" y="196" width="180" height="46" rx="5"/>
+        <text class="t-mono-b" x="814" y="216">check_collision</text>
+        <text class="t-sub" x="814" y="232">compas_fab, CC.1 to CC.5</text>
+        <path class="edge" d="M800 219 H678" marker-end="url(#f3a)"/>
+        <text class="t-edge" x="739" y="212" text-anchor="middle">any contact?</text>
+
+        <rect class="b-ext" x="800" y="252" width="180" height="46" rx="5"/>
+        <text class="t-mono-b" x="814" y="272">pybullet_planning</text>
+        <text class="t-sub" x="814" y="288">BiRRT, FK, validators</text>
+        <path class="edge" d="M800 275 H678" marker-end="url(#f3a)"/>
+        <text class="t-edge" x="739" y="268" text-anchor="middle">by body id</text>
+      </svg>
+    </div>
+    <figcaption><b>Figure 3.</b> The solid robot follows the real one. The red robot is the compas_fab cell: it moves only when a RobotCellState is applied, and every collision check and every BiRRT edge is tested against it. <code>CfabSession</code> gives compas_fab the monitor's open connection (<code>existing_client_id</code> <span class="ref" data-sym="existing_client_id">cfab_session.py:332</span>), so both libraries work inside one server. The 50 ms tick is <code>create_timer(0.05, self.update)</code> <span class="ref" data-sym="create_timer">husky_monitor.py:457</span>.</figcaption>
+  </figure>
+</section>
+
+<!-- ======================================================================= -->
+<section id="index">
+  <div class="sec-head">
+    <h2>Index: every COMPAS piece we use</h2>
+    <p>Grouped by package. The last column is where to start reading.</p>
+  </div>
+  <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th scope="col">Piece</th><th scope="col">What it does for us</th><th scope="col">Where to look</th></tr>
+      </thead>
+      <tbody>
+        <tr class="grp"><th colspan="3" scope="colgroup">compas.data</th></tr>
+        <tr>
+          <td class="piece"><code>json_load</code></td>
+          <td class="what">Turns COMPAS JSON back into live objects. The <code>dtype</code> key in each object picks the class, so one call rebuilds a whole RobotCell or a whole action with its states and frames.</td>
+          <td><div class="where">
+            <span>cell <span class="ref" data-sym="json_load">cfab_session.py:340</span></span>
+            <span><code>parse_bar_action</code> <span class="ref" data-sym="parse_bar_action">bar_action_io.py:118</span></span>
+            <span>progress <span class="ref" data-sym="json_load">progress_io.py:450</span></span>
+          </div></td>
+        </tr>
+        <tr>
+          <td class="piece"><code>json_dump</code>, <code>json_dumps</code></td>
+          <td class="what">Write planned actions and progress back out.</td>
+          <td><div class="where">
+            <span>live-solved <span class="ref" data-sym="json_dump">husky_monitor.py:6522</span></span>
+            <span><code>save_progress</code> <span class="ref" data-sym="json_dumps">progress_io.py:484</span></span>
+            <span>solved_keyframe <span class="ref" data-sym="json_dump">scripts/derive_m1_headless.py:246</span></span>
+          </div></td>
+        </tr>
+        <tr>
+          <td class="piece"><code>Data</code></td>
+          <td class="what">Base class of the shared action schema. It gives every Movement and Action its JSON round trip.</td>
+          <td><div class="where">
+            <span><code>Movement</code> <span class="ref" data-sym="Movement">rs_data_structure/bar_action.py:67</span></span>
+            <span><code>Action</code> <span class="ref" data-sym="Action">rs_data_structure/bar_action.py:275</span></span>
+          </div></td>
+        </tr>
+
+        <tr class="grp"><th colspan="3" scope="colgroup">compas.geometry · compas.datastructures</th></tr>
+        <tr>
+          <td class="piece"><code>Frame</code></td>
+          <td class="what">Every pose: the robot base from mocap, the end-effector targets, the grasp (<code>attachment_frame</code>), the retreat goals. Always in metres.</td>
+          <td><div class="where">
+            <span><code>frame_from_pose</code> <span class="ref" data-sym="frame_from_pose">utils.py:111</span></span>
+            <span><code>_inject_live_conf_into_state</code> <span class="ref" data-sym="_inject_live_conf_into_state">husky_monitor.py:3288</span></span>
+          </div></td>
+        </tr>
+        <tr>
+          <td class="piece"><code>Transformation</code></td>
+          <td class="what">Only the dashboard uses it, to place the links of the other robots' tools.</td>
+          <td><div class="where">
+            <span><span class="ref" data-sym="Transformation">dashboard/run_writer.py:280</span></span>
+          </div></td>
+        </tr>
+        <tr>
+          <td class="piece"><code>Mesh</code>, <code>Box</code></td>
+          <td class="what">Tool and floor geometry. <code>Box</code> is the custom gripper's plate. The dashboard turns the cell's meshes into a glTF scene.</td>
+          <td><div class="where">
+            <span><code>Box</code> <span class="ref" data-sym="Box">cfab_session.py:520</span></span>
+            <span><code>build_ground_rigid_body</code> <span class="ref" data-sym="build_ground_rigid_body">cfab_session.py:178</span></span>
+            <span><code>export_scene_glb</code> <span class="ref" data-sym="export_scene_glb">dashboard/scene_export.py:306</span></span>
+          </div></td>
+        </tr>
+
+        <tr class="grp"><th colspan="3" scope="colgroup">compas_robots</th></tr>
+        <tr>
+          <td class="piece"><code>RobotModel</code>, <code>LocalPackageMeshLoader</code></td>
+          <td class="what">Read the URDF and its meshes. Used for the startup rig before any design is loaded, and for the dashboard's own forward kinematics.</td>
+          <td><div class="where">
+            <span><code>build_default_robot_cell</code> <span class="ref" data-sym="build_default_robot_cell">cfab_session.py:432</span></span>
+            <span><code>SceneKinematics</code> <span class="ref" data-sym="SceneKinematics">dashboard/kinematics.py:114</span></span>
+          </div></td>
+        </tr>
+        <tr>
+          <td class="piece"><code>ToolModel</code></td>
+          <td class="what">The assembly tools AT3L and AT3R, and the other robots, which each cell carries as a frozen <code>ObstacleRobot&lt;Name&gt;</code> tool.</td>
+          <td><div class="where">
+            <span>AT3L/AT3R <span class="ref" data-sym="json_load">cfab_session.py:491</span></span>
+            <span><code>apply_obstacle_robot_beliefs</code> <span class="ref" data-sym="apply_obstacle_robot_beliefs">cfab_session.py:753</span></span>
+          </div></td>
+        </tr>
+        <tr>
+          <td class="piece"><code>Configuration</code></td>
+          <td class="what">Every set of joint values: the state's <code>robot_configuration</code>, <code>target_configuration</code>, IK seeds and results, saved beliefs.</td>
+          <td><div class="where">
+            <span><code>vec12_from_conf</code> <span class="ref" data-sym="vec12_from_conf">utils.py:116</span></span>
+            <span><code>RobotBelief</code> <span class="ref" data-sym="RobotBelief">progress_io.py:89</span></span>
+          </div></td>
+        </tr>
+
+        <tr class="grp"><th colspan="3" scope="colgroup">compas_fab.robots</th></tr>
+        <tr>
+          <td class="piece"><code>RobotCell</code>, <code>RigidBody</code></td>
+          <td class="what">The static scene: robot model, SRDF groups, tools and rigid bodies (bars and the floor). One cell file per robot, exported from Rhino.</td>
+          <td><div class="where">
+            <span><span class="ref" data-sym="RobotCell">compas_fab/robots/robot_cell.py:28</span></span>
+            <span>floor added <span class="ref" data-sym="GROUND_RIGID_BODY_NAME">cfab_session.py:351</span></span>
+          </div></td>
+        </tr>
+        <tr>
+          <td class="piece"><code>RobotCellState</code></td>
+          <td class="what">Where everything is for one movement: base frame, joints, which tools and bars are attached or hidden, and which contacts are allowed. Every planner takes one.</td>
+          <td><div class="where">
+            <span><span class="ref" data-sym="RobotCellState">compas_fab/robots/state.py:22</span></span>
+            <span><code>_state_with_conf12</code> <span class="ref" data-sym="_state_with_conf12">tamp/motion_planner/api.py:116</span></span>
+          </div></td>
+        </tr>
+        <tr>
+          <td class="piece"><code>ToolState</code>, <code>RigidBodyState</code></td>
+          <td class="what"><code>attached_to_link</code>, <code>attachment_frame</code> (the grasp), <code>touch_links</code> and <code>touch_bodies</code> (contacts that are allowed), <code>is_hidden</code>.</td>
+          <td><div class="where">
+            <span><span class="ref" data-sym="RigidBodyState">compas_fab/robots/state.py:490</span></span>
+            <span><code>_hide_unmounted_active_bar</code> <span class="ref" data-sym="_hide_unmounted_active_bar">husky_monitor.py:3676</span></span>
+          </div></td>
+        </tr>
+        <tr>
+          <td class="piece"><code>FrameTarget</code>, <code>TargetMode</code>, <code>FrameWaypoints</code></td>
+          <td class="what">Targets for goal IK and for straight-line moves.</td>
+          <td><div class="where">
+            <span><code>solve_goal_ik_generic</code> <span class="ref" data-sym="solve_goal_ik_generic">husky_world.py:3159</span></span>
+            <span><code>FrameWaypoints</code> <span class="ref" data-sym="FrameWaypoints">cfab_session.py:724</span></span>
+          </div></td>
+        </tr>
+        <tr>
+          <td class="piece"><code>JointTrajectory</code></td>
+          <td class="what">The plan. Kept in <code>Movement.trajectory</code> and saved with the action.</td>
+          <td><div class="where">
+            <span><code>joint_trajectory_from_path</code> <span class="ref" data-sym="joint_trajectory_from_path">utils.py:156</span></span>
+            <span><code>_accept_trajectory</code> <span class="ref" data-sym="_accept_trajectory">husky_monitor.py:5838</span></span>
+          </div></td>
+        </tr>
+
+        <tr class="grp"><th colspan="3" scope="colgroup">compas_fab.backends.pybullet</th></tr>
+        <tr>
+          <td class="piece"><code>PyBulletClient</code></td>
+          <td class="what">The PyBullet connection. We give it the monitor's open window instead of letting it open a new one.</td>
+          <td><div class="where">
+            <span><span class="ref" data-sym="PyBulletClient">cfab_session.py:322</span></span>
+          </div></td>
+        </tr>
+        <tr>
+          <td class="piece"><code>PyBulletPlanner</code><br><code>.set_robot_cell</code></td>
+          <td class="what">Creates every body of the cell, once per session.</td>
+          <td><div class="where">
+            <span><span class="ref" data-sym="set_robot_cell">cfab_session.py:353</span></span>
+          </div></td>
+        </tr>
+        <tr>
+          <td class="piece"><code>.set_robot_cell_state</code></td>
+          <td class="what">Moves the bodies to a state. About 25 call sites.</td>
+          <td><div class="where">
+            <span><code>load_selected_movement</code> <span class="ref" data-sym="load_selected_movement">husky_monitor.py:3930</span></span>
+          </div></td>
+        </tr>
+        <tr>
+          <td class="piece"><code>.check_collision</code></td>
+          <td class="what">The collision test behind every planner. Five checks: link–link (SRDF), link–tool, link–body, attached body–body, tool–body, named CC.1 to CC.5. Raises <code>CollisionCheckError</code> with the touching pairs.</td>
+          <td><div class="where">
+            <span><code>_build_cfab_collision_fn</code> <span class="ref" data-sym="_build_cfab_collision_fn">tamp/motion_planner/api.py:128</span></span>
+            <span><span class="ref" data-sym="PyBulletCheckCollision">compas_fab/backends/pybullet/backend_features/pybullet_check_collision.py:17</span></span>
+            <span>draws the contacts <span class="ref" data-sym="check_collision">cc_diagnosis.py:152</span></span>
+          </div></td>
+        </tr>
+        <tr>
+          <td class="piece"><code>.inverse_kinematics</code></td>
+          <td class="what">Goal IK fallback when no ssik solver fits the robot.</td>
+          <td><div class="where">
+            <span><span class="ref" data-sym="inverse_kinematics">husky_world.py:3269</span></span>
+          </div></td>
+        </tr>
+        <tr>
+          <td class="piece"><code>.plan_cartesian_motion</code></td>
+          <td class="what">Straight-line moves for support robots only, run with our FK fix (see <a href="#gotchas">Gotchas</a>).</td>
+          <td><div class="where">
+            <span><code>plan_linear_motion</code> <span class="ref" data-sym="plan_cartesian_motion">cfab_session.py:741</span></span>
+          </div></td>
+        </tr>
+        <tr>
+          <td class="piece">Exceptions</td>
+          <td class="what"><code>CollisionCheckError</code>, <code>InverseKinematicsError</code> and <code>PlanningGroupNotSupported</code> mean "try the next IK seed". <code>BackendError</code> fails a straight-line plan.</td>
+          <td><div class="where">
+            <span><code>solve_goal_ik_generic</code> <span class="ref" data-sym="solve_goal_ik_generic">husky_world.py:3159</span></span>
+            <span><span class="ref" data-sym="BackendError">cfab_session.py:742</span></span>
+          </div></td>
+        </tr>
+        <tr>
+          <td class="piece muted">Not used</td>
+          <td class="what muted"><code>plan_motion</code> (free motion is pybullet_planning's BiRRT), <code>forward_kinematics</code> (planning reads link poses from PyBullet instead), <code>RobotCellLibrary</code>.</td>
+          <td><div class="where">
+            <span><code>_fk_link_frame</code> <span class="ref" data-sym="_fk_link_frame">tamp/motion_planner/api.py:181</span></span>
+          </div></td>
+        </tr>
+
+        <tr class="grp outside"><th colspan="3" scope="colgroup">rs_data_structure · ours, built on compas Data</th></tr>
+        <tr>
+          <td class="piece"><code>Movement</code> and its 10 subclasses</td>
+          <td class="what">One motion of one robot: <code>start_state</code>, <code>target_ee_frames</code>, <code>target_configuration</code>, <code>trajectory</code>, <code>controller</code>. Its class decides how it is planned.</td>
+          <td><div class="where">
+            <span><span class="ref" data-sym="Movement">rs_data_structure/bar_action.py:67</span></span>
+            <span><code>_plan_by_kind</code> <span class="ref" data-sym="_plan_by_kind">husky_monitor.py:4159</span></span>
+          </div></td>
+        </tr>
+        <tr>
+          <td class="piece"><code>BarSceneAction</code> and subclasses</td>
+          <td class="what">One robot's share of one bar: <code>BarAssemblyJointingAction</code> (<code>__J</code>), <code>BarAssemblyReleaseAction</code> (<code>__R</code>), <code>BarHoldingAction</code> (<code>__H</code>), <code>BarHoldingReleaseAction</code> (<code>__HR</code>).</td>
+          <td><div class="where">
+            <span><span class="ref" data-sym="BarSceneAction">rs_data_structure/bar_action.py:310</span></span>
+            <span><span class="ref" data-sym="BarHoldingAction">rs_data_structure/hold_action.py:22</span></span>
+          </div></td>
+        </tr>
+        <tr>
+          <td class="piece">Legacy <code>BarAssemblyAction</code></td>
+          <td class="what">Registered by us so exports from before the J/R split still load.</td>
+          <td><div class="where">
+            <span><span class="ref" data-sym="BarAssemblyAction">bar_action_io.py:94</span></span>
+          </div></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ======================================================================= -->
+<section id="planners">
+  <div class="sec-head">
+    <h2>Who plans which movement</h2>
+    <p>Every planner takes a RobotCellState and asks compas_fab about collisions. They differ in what does the search and what solves the IK. The M numbers are the classic roles the dispatch methods are named after.</p>
+  </div>
+  <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th scope="col">Movement class</th><th scope="col">Job</th><th scope="col">Planner</th><th scope="col">What COMPAS does inside</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>IndependentDualArmFreeMovement</code></td>
+          <td>Travel to the loading pose (M0) or home (M4)</td>
+          <td><code>plan_free_dual_arm</code><br><span class="ref" data-sym="plan_free_dual_arm">tamp/motion_planner/api.py:832</span></td>
+          <td><code>check_collision</code> on every BiRRT edge. Returns a list of 12-value vectors.</td>
+        </tr>
+        <tr>
+          <td><code>EndEffectorConstrainedDualArmFreeMovement</code></td>
+          <td>Carry the bar to the assembly pose (M1)</td>
+          <td><code>plan_constrained_dual_arm</code><br><span class="ref" data-sym="plan_constrained_dual_arm">tamp/motion_planner/api.py:909</span></td>
+          <td>Bar poses are sampled in task space and IK is ssik. <code>check_collision</code> tests the bar alone first, then the arms. Returns 12-value vectors.</td>
+        </tr>
+        <tr>
+          <td><code>EndEffectorConstrainedDualArmLinearMovement</code></td>
+          <td>Insert (M2)</td>
+          <td><code>plan_constrained_dual_arm_linear</code><br><span class="ref" data-sym="plan_constrained_dual_arm_linear">tamp/motion_planner/api.py:1610</span></td>
+          <td>compas_fab's <code>FrameInterpolator</code> <span class="ref" data-sym="FrameInterpolator">tamp/motion_planner/api.py:1700</span> steps the bar along the line, ssik per step, <code>check_collision</code>. Returns a <code>JointTrajectory</code>.</td>
+        </tr>
+        <tr>
+          <td><code>IndependentDualArmLinearMovement</code></td>
+          <td>Retreat (M3)</td>
+          <td><code>plan_dual_arm_linear_independent</code><br><span class="ref" data-sym="plan_dual_arm_linear_independent">tamp/motion_planner/api.py:1732</span></td>
+          <td>Same parts, each arm on its own line. Returns a <code>JointTrajectory</code>.</td>
+        </tr>
+        <tr>
+          <td><code>SingleArmFreeMovement</code></td>
+          <td>Support robot, free move</td>
+          <td><code>plan_free_motion</code><br><span class="ref" data-sym="plan_free_motion">cfab_session.py:548</span></td>
+          <td>pybullet_planning BiRRT <span class="ref" data-sym="solve_motion_plan">cfab_session.py:605</span>, <code>check_collision</code> per edge.</td>
+        </tr>
+        <tr>
+          <td><code>SingleArmLinearMovement</code></td>
+          <td>Support robot, straight line</td>
+          <td><code>plan_linear_motion</code><br><span class="ref" data-sym="plan_linear_motion">cfab_session.py:690</span></td>
+          <td>compas_fab <code>plan_cartesian_motion</code> end to end, with the FK fix.</td>
+        </tr>
+        <tr>
+          <td><code>ManualMovement</code>, <code>GripperToolMovement</code>, <code>ScaffoldingToolMovement</code></td>
+          <td class="muted">No arm motion</td>
+          <td class="muted">none</td>
+          <td class="muted">Nothing to plan.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ======================================================================= -->
+<section id="files">
+  <div class="sec-head">
+    <h2>COMPAS JSON on disk</h2>
+    <p>Each object in these files carries a <code>dtype</code> key, which is how <code>json_load</code> knows which class to build. The counts are from the <code>261006_3bar_holding_test</code> export, bar B21. Design-study files live in <code>data_design_study/&lt;problem&gt;/</code> on the shared drive.</p>
+  </div>
+  <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th scope="col">File</th><th scope="col">dtypes inside</th><th scope="col">Written by</th><th scope="col">Read by</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>RobotCell.json</code><br><code>RobotCell_&lt;Name&gt;.json</code><br><span class="muted">347 MB for Cindy's</span></td>
+          <td><div class="dtypes">
+            <span>1 × compas_fab.robots/RobotCell</span>
+            <span>268 × compas.datastructures/Mesh</span>
+            <span>98 × compas_robots.model/MeshDescriptor</span>
+            <span>12 × compas.geometry/Cylinder</span>
+            <span>4 × compas.geometry/Box</span>
+          </div></td>
+          <td>Rhino exporter</td>
+          <td><code>CfabSession</code><br><span class="ref" data-sym="json_load">cfab_session.py:340</span></td>
+        </tr>
+        <tr>
+          <td><code>BarActions/&lt;bar&gt;__J.json</code><br><span class="muted">also <code>__R</code>, <code>__H</code>, <code>__HR</code></span></td>
+          <td><div class="dtypes">
+            <span>1 × rs_data_structure.bar_action/BarAssemblyJointingAction</span>
+            <span>6 movements of 5 classes</span>
+            <span>6 × compas_fab.robots/RobotCellState</span>
+            <span>510 × compas_fab.robots/RigidBodyState</span>
+            <span>24 × compas_fab.robots/ToolState</span>
+            <span>544 × compas.geometry/Frame</span>
+            <span>16 × compas_robots/Configuration</span>
+          </div></td>
+          <td>Rhino exporter</td>
+          <td><code>parse_bar_action</code><br><span class="ref" data-sym="parse_bar_action">bar_action_io.py:118</span></td>
+        </tr>
+        <tr>
+          <td><code>&lt;bar&gt;__J.live-solved.json</code></td>
+          <td><div class="dtypes">
+            <span>the same, plus</span>
+            <span>compas_fab.robots/JointTrajectory per planned movement</span>
+          </div></td>
+          <td>Monitor<br><span class="ref" data-sym="json_dump">husky_monitor.py:6522</span></td>
+          <td><code>preferred_action_path</code><br><span class="ref" data-sym="preferred_action_path">bar_action_io.py:278</span></td>
+        </tr>
+        <tr>
+          <td><code>&lt;bar&gt;__J.solved_keyframe.json</code></td>
+          <td><div class="dtypes"><span>the same, with base frames and targets filled in</span></div></td>
+          <td><span class="ref" data-sym="json_dump">scripts/derive_m1_headless.py:246</span></td>
+          <td>the same script, on its next run</td>
+        </tr>
+        <tr>
+          <td><code>WalkableGround.json</code></td>
+          <td><div class="dtypes"><span>compas.datastructures/Mesh per walkable patch</span></div></td>
+          <td>Rhino exporter</td>
+          <td><code>build_ground_rigid_body</code> <span class="ref" data-sym="build_ground_rigid_body">cfab_session.py:178</span><br><code>load_walkable_grounds</code> <span class="ref" data-sym="load_walkable_grounds">tamp/keyframe/walkable_ground.py:156</span></td>
+        </tr>
+        <tr>
+          <td><code>progress.json</code></td>
+          <td><div class="dtypes">
+            <span>per robot: 1 × compas.geometry/Frame (base)</span>
+            <span>and 1 × compas_robots/Configuration (arms)</span>
+          </div></td>
+          <td><code>save_progress</code><br><span class="ref" data-sym="save_progress">progress_io.py:470</span></td>
+          <td><code>load_progress</code><br><span class="ref" data-sym="load_progress">progress_io.py:433</span></td>
+        </tr>
+        <tr>
+          <td><code>data/tool_models/AT3L.json</code>, <code>AT3R.json</code><br><span class="muted">in this repo</span></td>
+          <td><div class="dtypes">
+            <span>1 × compas_robots/ToolModel</span>
+            <span>2 × compas.datastructures/Mesh</span>
+            <span>2 × compas_robots.model/MeshDescriptor</span>
+          </div></td>
+          <td>exported once from a cell</td>
+          <td><code>build_default_robot_cell</code><br><span class="ref" data-sym="json_load">cfab_session.py:491</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="note">Two files are plain JSON on purpose. <code>ActionSchedule.json</code> lists which robot runs which action and is read by <code>load_plan_skeleton</code> <span class="ref" data-sym="load_plan_skeleton">plan_skeleton_io.py:524</span>. The M1 run files in <code>recorded_data/m1_derive_runs/</code> store poses as <code>{pos, quat_xyzw}</code> so the dashboard server needs no COMPAS to read them.</p>
+</section>
+
+<!-- ======================================================================= -->
+<section id="conversions">
+  <div class="sec-head">
+    <h2>Where COMPAS objects become numpy</h2>
+    <p>The shared helpers in <code>utils.py</code> sit on the ochre diamonds of Figure 2. "12 values" is the two arms' six joints each, in the cell's joint order. Call counts are for <code>husky_assembly_teleop/</code>.</p>
+  </div>
+  <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th scope="col">Helper</th><th scope="col">From</th><th scope="col">To</th><th scope="col" class="num">Calls</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>pose_from_frame</code> <span class="ref" data-sym="pose_from_frame">utils.py:108</span></td><td><code>Frame</code></td><td>pybullet_planning pose <code>(pos, quat)</code></td><td class="num">35</td></tr>
+        <tr><td><code>frame_from_pose</code> <span class="ref" data-sym="frame_from_pose">utils.py:111</span></td><td>pybullet_planning pose</td><td><code>Frame</code></td><td class="num">6</td></tr>
+        <tr><td><code>vec12_from_conf</code> <span class="ref" data-sym="vec12_from_conf">utils.py:116</span></td><td><code>Configuration</code></td><td>12 values (numpy)</td><td class="num">19</td></tr>
+        <tr><td><code>conf_from_12vec</code> <span class="ref" data-sym="conf_from_12vec">utils.py:124</span></td><td>12 values</td><td><code>Configuration</code></td><td class="num">11</td></tr>
+        <tr><td><code>joint_trajectory_from_path</code> <span class="ref" data-sym="joint_trajectory_from_path">utils.py:156</span></td><td>list of 12-value vectors</td><td><code>JointTrajectory</code>, no timing</td><td class="num">5</td></tr>
+        <tr><td><code>path_12_from_joint_trajectory</code> <span class="ref" data-sym="path_12_from_joint_trajectory">utils.py:238</span></td><td><code>JointTrajectory</code></td><td>list of 12-value vectors</td><td class="num">11</td></tr>
+        <tr><td><code>path_from_joint_trajectory</code> <span class="ref" data-sym="path_from_joint_trajectory">utils.py:188</span></td><td><code>JointTrajectory</code></td><td>vectors, picked by joint name</td><td class="num">3</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ======================================================================= -->
+<section id="gotchas">
+  <div class="sec-head">
+    <h2>Gotchas</h2>
+    <p>Things in the COMPAS layer that have caused trouble or will.</p>
+  </div>
+  <ul class="gotchas">
+    <li>
+      <span class="tag bug">upstream bug</span>
+      <div class="body">
+        <h3>compas_fab's forward kinematics applies the robot base twice</h3>
+        <p>It multiplies a link pose that is already in world coordinates by <code>robot_base_frame</code> again <span class="ref" data-sym="robot_base_frame">compas_fab/backends/pybullet/backend_features/pybullet_forward_kinematics.py:100</span>. Planning avoids it, because tamp's <code>_fk_link_frame</code> reads link poses from PyBullet. For <code>plan_cartesian_motion</code> we swap in a fixed copy with <code>_world_frame_forward_kinematics</code> <span class="ref" data-sym="_world_frame_forward_kinematics">cfab_session.py:665</span>. A second upstream bug reads the position tolerance from the orientation tolerance, which is why both are set equal <span class="ref" data-sym="tolerance">cfab_session.py:720</span>.</p>
+      </div>
+    </li>
+    <li>
+      <span class="tag">install</span>
+      <div class="body">
+        <h3>compas_fab is a copied install</h3>
+        <p>The venv's compas_fab was installed from <code>external/compas_fab</code> without <code>-e</code>. Editing the submodule changes nothing until you reinstall it. tamp and rs_data_structure are editable installs, so their edits apply at once.</p>
+      </div>
+    </li>
+    <li>
+      <span class="tag">invariant</span>
+      <div class="body">
+        <h3>The cell and every state must list the same rigid bodies</h3>
+        <p>compas_fab rejects a state that does not match its cell. <code>CfabSession</code> adds the floor to the cell <span class="ref" data-sym="GROUND_RIGID_BODY_NAME">cfab_session.py:351</span>, so every state needs <code>inject_ground_rigid_body_state</code> <span class="ref" data-sym="inject_ground_rigid_body_state">cfab_session.py:237</span> before it is applied.</p>
+      </div>
+    </li>
+    <li>
+      <span class="tag">private API</span>
+      <div class="body">
+        <h3>We depend on underscore names</h3>
+        <p>The teleop imports private functions from tamp (<code>_build_cfab_collision_fn</code>, <code>_state_with_conf12</code>, <code>_fk_link_frame</code>, <code>_derive_constrained_start_for_plan</code>). It passes the fork's private options <code>_skip_cc1</code> to <code>_skip_cc5</code> and <code>_skip_set_robot_cell_state</code> <span class="ref" data-sym="_skip_set_robot_cell_state">husky_monitor.py:2483</span>, and it replaces <code>_build_cfab_collision_fn</code> at runtime in <code>_free_planner_skip_env_collisions</code> <span class="ref" data-sym="_free_planner_skip_env_collisions">husky_world.py:2600</span>. An upgrade of compas_fab or tamp can break these without any import error.</p>
+      </div>
+    </li>
+    <li>
+      <span class="tag">dead code</span>
+      <div class="body">
+        <h3>COMPAS imports and helpers nobody calls</h3>
+        <p><code>Transformation</code> is imported but unused <span class="ref" data-sym="Transformation">husky_monitor.py:98</span>. <code>pose_from_transformation</code> and <code>transformation_from_pose</code> are imported <span class="ref" data-sym="pose_from_transformation">husky_monitor.py:55</span> but never called, and <code>conf_from_6vec</code> <span class="ref" data-sym="conf_from_6vec">utils.py:134</span> has no callers. <code>import compas</code> <span class="ref" data-sym="compas">husky_world.py:48</span> only serves <code>load_robotcellstate_and_update_goal</code> <span class="ref" data-sym="load_robotcellstate_and_update_goal">husky_world.py:2515</span>, whose button is commented out. tamp's <code>get_joint_collision_fn_cfab</code> <span class="ref" data-sym="get_joint_collision_fn_cfab">tamp/motion_planner/dual_arm_task_space_rrt/core.py:795</span> imports <code>husky_assembly_teleop.cfab_collision_adapter</code>, which does not exist.</p>
+      </div>
+    </li>
+  </ul>
+</section>
+
+<footer>
+  Read from the code on 2026-10-15, branch yh/multi-robot-monitor at f4c74f7, with the submodules at the commits in the title block. The dtype counts come from the files themselves. The README's older code-structure picture (<code>doc/husky_assembly_code_org.png</code>) predates the cfab session, rs_data_structure and ssik.
+</footer>
+
+</main>
+
+</body></html>
