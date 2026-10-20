@@ -30,7 +30,7 @@ from .plugin_api.context import PluginContext
 from scaffolding_assembly_core.geometry import Geometry
 from .world.clearance import ClearanceChecker
 from .world.kinematics import Kinematics
-from .plugin_api.plugin import HuskyPlugin, load_plugins
+from .plugin_api.plugin import HuskyPlugin, UnknownPluginError, load_plugins
 from .robot_interface.robot import HuskyRobotInterface
 from .robot_interface.connections import RosConnections
 from .robot_interface.mocap import subscribe_mocap
@@ -623,6 +623,10 @@ def main(args: list[str] | None = None) -> None:
     sys.setswitchinterval(GIL_SWITCH_INTERVAL)
     try:
         asyncio.run(_run_monitor())
+    except UnknownPluginError as error:
+        # * A config mistake: the message says what to fix, and a traceback would only bury it.
+        print(f"\n{error}", file=sys.stderr)
+        sys.exit(1)
     except KeyboardInterrupt:
         pass  # Ctrl-C during startup, or a second one during shutdown
     finally:

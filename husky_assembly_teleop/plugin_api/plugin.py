@@ -6,8 +6,11 @@ The plugin base class, and the registry that finds and orders plugins.
 
 from __future__ import annotations
 
+import difflib
 import importlib
+import os
 import pkgutil
+import sys
 import traceback
 from typing import Callable, Iterable
 
@@ -101,7 +104,7 @@ def load_plugins(enabled: Iterable[str],
         list[HuskyPlugin]: Constructed plugins, each after what it requires.
 
     Raises:
-        KeyError: If a requested or required name is not registered.
+        UnknownPluginError: If a requested or required name is not registered.
         ValueError: If the dependency graph contains a cycle.
     """
     discover(log_error)
@@ -114,7 +117,7 @@ def resolve_order(requested: Iterable[str]) -> list[str]:
     ? Order matters: a plugin sees an earlier plugin's effects this tick, a later one's next tick.
 
     Raises:
-        KeyError: If a name is not registered, including when its module failed to import (see the log).
+        UnknownPluginError: If a name is not registered, including when its module failed to import (see the log).
         ValueError: If a dependency cycle is found.
     """
     order: list[str] = []
@@ -129,7 +132,7 @@ def resolve_order(requested: Iterable[str]) -> list[str]:
             cycle = " -> ".join(visiting[visiting.index(name):] + [name])
             raise ValueError(f"plugin dependency cycle: {cycle}")
         if name not in PLUGIN_REGISTRY:
-            raise KeyError(f"no plugin registered under the name {name!r}")
+            raise UnknownPluginError(_unknown_name_message(name, required_by=visiting[-1] if visiting else None))
 
         visiting.append(name)
         for dependency in PLUGIN_REGISTRY[name].requires:
@@ -142,3 +145,38 @@ def resolve_order(requested: Iterable[str]) -> list[str]:
     for name in requested:
         visit(name)
     return order
+
+
+class UnknownPluginError(KeyError):
+    """A plugin name that is not registered; prints its message as written, unlike KeyError, which quotes it."""
+
+    def __str__(self) -> str:
+        """The message, with its line breaks and colours."""
+        return str(self.args[0])
+
+
+def _colour(code: str, text: str) -> str:
+    """Text in an ANSI colour where ROS colours its output too (forced by the variable, else a terminal)."""
+    forced = os.environ.get("RCUTILS_COLORIZED_OUTPUT")
+    on = forced == "1" if forced in ("0", "1") else sys.stderr.isatty()
+    return f"\033[{code}m{text}\033[0m" if on else text
+
+
+def _unknown_name_message(name: str, required_by: str | None) -> str:
+    """Say which name is unknown, the closest registered one, and every registered name in columns."""
+    message = f"no plugin registered under the name {_colour('1;31', repr(name))}"
+    if required_by is not None:
+        message += f", required by {required_by!r}"
+    available = sorted(PLUGIN_REGISTRY)
+    if not available:
+        return f"{message}\n\n    no plugins are registered; check the log for modules that failed to import\n"
+    best = difflib.get_close_matches(name, available, n=1, cutoff=0.0)[0]
+    # Pad before colouring, since escape codes would count towards the width.
+    width = max(len(n) for n in available) + 3
+    per_row = max(1, 96 // width)
+    rows = [available[i:i + per_row] for i in range(0, len(available), per_row)]
+    table = "\n".join("      " + "".join(_colour("2", n.ljust(width)) for n in row).rstrip() for row in rows)
+    return (f"{message}\n\n"
+            f"    did you mean   {_colour('1;32', best)}\n\n"
+            f"    registered plugins:\n{table}\n\n"
+            f"    {_colour('2', 'a plugin whose module failed to import is missing here; see the log above')}\n")
