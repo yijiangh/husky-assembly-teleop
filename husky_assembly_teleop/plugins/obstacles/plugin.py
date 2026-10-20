@@ -7,8 +7,8 @@ Furniture and floor border come from the lab file; temporary obstacles are for a
   Edits stay in memory until Save; Revert goes back to the file; an amber chip shows unsaved changes.
 - Temporary obstacles (purple, "obstacles/temporary/<n>") are kept in a local file (`world/lab.TEMPORARY_FILE`),
   written at once, never in the lab file. Promote moves one into the lab, saved with the next Save.
-- Select by clicking in the 3D view or in the dropdown. Drag with the gizmo (only the yaw of a turn is kept), resize
-  with the corner gizmo, or type position, yaw and size.
+- Select in the dropdown, or with Edit ticked by clicking in the 3D view. Edit (off at start, ticked by Add) shows the
+  gizmos: drag with them (only the yaw of a turn is kept), resize with the corner one, or type position, yaw and size.
 
 Ids: "obstacles/boxes/<name>", "obstacles/cylinders/<name>", "obstacles/trusses/<name>", and the border walls
 "obstacles/boxes/border_x_min" and so on. Planners see them in `ctx.scene.snapshot`. Other plugins read the lab through
@@ -60,8 +60,9 @@ class ObstaclesPlugin(HuskyPlugin):
         self._gizmo_on: str | None = None
         # Result of the last action.
         self._message = ""
-        # The obstacle dropdown; None until setup builds it.
+        # The obstacle dropdown and the Edit checkbox; None until setup builds them.
         self._select: viser.GuiDropdownHandle | None = None
+        self._edit: viser.GuiCheckboxHandle | None = None
 
     def setup(self, ctx: PluginContext) -> None:
         """Read the lab and temporary files, put every obstacle into the scene, and build the panel.
@@ -81,8 +82,7 @@ class ObstaclesPlugin(HuskyPlugin):
             self._border_y = gui.add_vector2("Border y m", border.y, step=0.01)
 
             gui.add_html(section("edit", SECTION_CTRL))
-            self._active = gui.add_checkbox("Active", True,
-                                            hint="Show the gizmos and pick obstacles by clicking in 3D.")
+            self._edit = gui.add_checkbox("Edit", False, hint="Show the gizmos and pick obstacles by clicking in 3D.")
             self._select = gui.add_dropdown("Obstacle", [NONE_ENTRY])
             self._name = gui.add_text("Name", initial_value="", hint="A lab obstacle's name; Rename applies it.")
             self._position = gui.add_vector3("Position m", (0.0, 0.0, 0.0), step=0.001, hint="Its centre.")
@@ -199,13 +199,15 @@ class ObstaclesPlugin(HuskyPlugin):
         return self.lab != self.saved
 
     def add(self, ctx: PluginContext, kind: str) -> str:
-        """Add a temporary "box" or "cylinder" standing at the origin, select it, and return its id."""
+        """Add a temporary "box" or "cylinder" standing at the origin, select it, tick Edit, and return its id."""
         number, self._next_number = self._next_number, self._next_number + 1
         shape = Shape(kind, f"tmp {kind} {number}", (0.0, 0.0, NEW_SIZE[2] / 2), NEW_SIZE, source="temporary")
         self.temporary[number] = shape
         body_id = self._temporary_id(number)
         ctx.scene.put(self._body(body_id, shape))
         self._choose(body_id)
+        if self._edit is not None:
+            self._edit.value = True
         return body_id
 
     def remove(self, ctx: PluginContext, body_id: str) -> None:
@@ -371,11 +373,11 @@ class ObstaclesPlugin(HuskyPlugin):
             self._select.options = options
         body_id = self._select.value
         shape = self.shapes().get(body_id)
-        self._gizmo.active = self._active.value
-        if body_id != self._gizmo_on or not self._active.value:
+        self._gizmo.active = self._edit.value
+        if body_id != self._gizmo_on or not self._edit.value:
             self._gizmo.place(body_id if shape else None, shape.pose if shape else None,
                               shape.size if shape else None, square=bool(shape and shape.square))
-            self._gizmo_on = body_id if self._active.value else None
+            self._gizmo_on = body_id if self._edit.value else None
             # * The name only when the selection changes, so typing in it is never overwritten.
             self._name.value = shape.name if shape else ""
         if shape is None:
