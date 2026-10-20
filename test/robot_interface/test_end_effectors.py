@@ -181,6 +181,8 @@ def test_robotiq_rejected_goal_stops_moving(answer):
     assert not gripper.state.moving and gripper.state.last_result_ok is False
 
 
+# ? EXPERIMENTAL (gripper hang): the watchdog's tests, down to the next test.
+
 def test_robotiq_watchdog_nudges_a_silent_driver_until_it_answers():
     """An unanswered goal gets a list_controllers nudge after ANSWER_TIMEOUT, then one every NUDGE_PERIOD.
 
