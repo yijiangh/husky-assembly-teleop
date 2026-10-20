@@ -15,7 +15,6 @@ from dataclasses import dataclass
 
 from action_msgs.msg import GoalStatus
 from control_msgs.action import GripperCommand
-from controller_manager_msgs.srv import ListControllers
 from crl_husky_msgs.msg import ScaffoldingToolCmd, ScaffoldingToolStatus
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
@@ -154,13 +153,7 @@ class EndEffector(ABC):
 
 
 class RobotiqGripper(EndEffector):
-    """Robotiq 2F-85, moved through the driver's GripperCommand action.
-
-    ? EXPERIMENTAL (gripper hang): a watchdog nudges the driver's controller manager with a harmless list_controllers
-    call when a goal or cancel goes unanswered. The driver's process sometimes sleeps through incoming requests until
-    another request wakes it; the watchdog's log tells whether the nudge is what wakes it. Remove every part marked
-    "EXPERIMENTAL (gripper hang)" once the cause is fixed or ruled out.
-    """
+    """Robotiq 2F-85, moved through the driver's GripperCommand action."""
 
     #: Knuckle angle in radians: 0.0 is fully open, 0.8 fully closed.
     OPEN_POSITION = 0.0
@@ -170,11 +163,6 @@ class RobotiqGripper(EndEffector):
     MAX_EFFORT = 1.0
     #: The joint the driver moves and reports; the other finger joints follow it.
     KNUCKLE_JOINT = "robotiq_85_left_knuckle_joint"
-    #: ? EXPERIMENTAL (gripper hang): seconds the driver gets to answer a goal or cancel, to deliver a result, and
-    #: between two nudges.
-    ANSWER_TIMEOUT = 1.0
-    RESULT_TIMEOUT = 3.0
-    NUDGE_PERIOD = 2.0
 
     def __init__(self, node: Node, robot_namespace: str, arm: ArmConfig, latch: SoftStopLatch | None = None):
         """Create the action client, joint state subscription and reactivate client."""
@@ -182,9 +170,6 @@ class RobotiqGripper(EndEffector):
         self.state = RobotiqState()
         #: The newest accepted goal, and whether `stop` came before the newest goal was accepted.
         self._goal, self._cancel_on_accept = None, False
-        #: ? EXPERIMENTAL (gripper hang): ROS time by which the driver must answer, and of the first nudge; or None.
-        self._answer_due: float | None = None
-        self._nudged_at: float | None = None
         self._connect()
 
     def _connect(self) -> None:
@@ -196,10 +181,6 @@ class RobotiqGripper(EndEffector):
                                qos_profile_sensor_data)
         self._reactivate = self._ros.client(
             Trigger, f"{self.namespace}/robotiq_activation_controller/reactivate_gripper")
-        # ? EXPERIMENTAL (gripper hang): the watchdog's nudge and its timer.
-        self._list_controllers = self._ros.client(
-            ListControllers, f"{self.namespace}/controller_manager/list_controllers")
-        self._ros.timer(0.25, self._watch)
 
     def reconnect(self) -> None:
         """Reconnect the action client, subscription and reactivate client.
@@ -210,7 +191,6 @@ class RobotiqGripper(EndEffector):
         self.state.moving = False
         self.state.reactivating = False
         self._goal, self._cancel_on_accept = None, False
-        self._answer_due = self._nudged_at = None
 
     def open(self) -> None:
         """Open fully."""
@@ -233,9 +213,7 @@ class RobotiqGripper(EndEffector):
             self._cancel_on_accept = True
             return
         self._log("gripper stop: cancelling the goal")
-        self._expect_answer(self.ANSWER_TIMEOUT)  # ? EXPERIMENTAL (gripper hang)
-        # ? EXPERIMENTAL (gripper hang): nudge unless the cancel is answered.
-        self._goal.cancel_goal_async().add_done_callback(lambda _: self._heard_from_driver())
+        self._goal.cancel_goal_async()
 
     def server_is_ready(self) -> bool:
         """Whether the gripper's action server is discovered and reachable."""
@@ -269,7 +247,6 @@ class RobotiqGripper(EndEffector):
         self.state.commanded_effort = effort
         self.state.moving = True
         self._goal, self._cancel_on_accept = None, False
-        self._expect_answer(self.ANSWER_TIMEOUT)  # ? EXPERIMENTAL (gripper hang)
         self._action.send_goal_async(goal).add_done_callback(self._on_goal_answer)
 
     def reactivate(self) -> None:
@@ -305,37 +282,6 @@ class RobotiqGripper(EndEffector):
         else:
             self._log("gripper reactivated")
 
-    # ? EXPERIMENTAL (gripper hang): the watchdog, down to `_watch`.
-
-    def _now(self) -> float:
-        """ROS time, seconds."""
-        return self._node.get_clock().now().nanoseconds * 1e-9
-
-    def _expect_answer(self, seconds: float) -> None:
-        """Have the watchdog nudge the driver unless it answers within `seconds`."""
-        self._answer_due = self._now() + seconds
-
-    def _heard_from_driver(self) -> None:
-        """Note that the driver answered: wait for the result next if a goal is running, else for nothing."""
-        if self._nudged_at is not None:
-            late = self._now() - self._nudged_at
-            self._node.get_logger().warning(f"{self.namespace}: gripper driver answered {late:.1f} s after the "
-                                            "first nudge")
-            self._nudged_at = None
-        self._answer_due = self._now() + self.RESULT_TIMEOUT if self.state.moving else None
-
-    def _watch(self) -> None:
-        """Nudge the driver's controller manager while an answer is overdue."""
-        if self._answer_due is None or self._now() < self._answer_due:
-            return
-        self._node.get_logger().warning(f"{self.namespace}: gripper driver is not answering; nudging its "
-                                        "controller manager with list_controllers")
-        if self._nudged_at is None:
-            self._nudged_at = self._now()
-        if self._list_controllers.service_is_ready():
-            self._list_controllers.call_async(ListControllers.Request())
-        self._answer_due = self._now() + self.NUDGE_PERIOD
-
     def _on_joint_state(self, message: JointState) -> None:
         """Copy the knuckle angle into state."""
         if self.KNUCKLE_JOINT not in message.name:
@@ -355,10 +301,8 @@ class RobotiqGripper(EndEffector):
             self.state.moving = False
             self.state.last_result_ok = False
             self._node.get_logger().warning(f"{self.namespace}: gripper goal rejected")
-            self._heard_from_driver()  # ? EXPERIMENTAL (gripper hang)
             return
         self._goal = handle
-        self._heard_from_driver()  # ? EXPERIMENTAL (gripper hang)
         handle.get_result_async().add_done_callback(lambda result: self._on_result(handle, result))
         if self._cancel_on_accept:
             self._cancel_on_accept = False
@@ -376,12 +320,10 @@ class RobotiqGripper(EndEffector):
             self._log("gripper goal cancelled" if newest else "gripper goal replaced")
             if newest:
                 self.state.moving = False
-                self._heard_from_driver()  # ? EXPERIMENTAL (gripper hang)
             return
         if not newest:
             return
         self.state.moving = False
-        self._heard_from_driver()  # ? EXPERIMENTAL (gripper hang)
         if response is None:
             self.state.last_result_ok = False
             return

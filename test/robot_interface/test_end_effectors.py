@@ -65,8 +65,6 @@ def robotiq(ready: bool = True) -> RobotiqGripper:
         ActionClient(ready)
     gripper._latch = SoftStopLatch("0804")
     gripper._goal, gripper._cancel_on_accept = None, False
-    gripper._answer_due = gripper._nudged_at = None
-    gripper._list_controllers = Client()
     return gripper
 
 
@@ -179,46 +177,6 @@ def test_robotiq_rejected_goal_stops_moving(answer):
     gripper.close()
     answer(gripper._action.goals[0])
     assert not gripper.state.moving and gripper.state.last_result_ok is False
-
-
-# ? EXPERIMENTAL (gripper hang): the watchdog's tests, down to the next test.
-
-def test_robotiq_watchdog_nudges_a_silent_driver_until_it_answers():
-    """An unanswered goal gets a list_controllers nudge after ANSWER_TIMEOUT, then one every NUDGE_PERIOD.
-
-    The late answer is logged with how long after the first nudge it came; then the watchdog waits for the result.
-    """
-    gripper = robotiq()
-    gripper.close()
-    gripper._node.now += RobotiqGripper.ANSWER_TIMEOUT - 0.1
-    gripper._watch()
-    assert not gripper._list_controllers.calls
-    gripper._node.now += 0.2
-    gripper._watch()
-    gripper._watch()
-    assert len(gripper._list_controllers.calls) == 1
-    gripper._node.now += RobotiqGripper.NUDGE_PERIOD
-    gripper._watch()
-    assert len(gripper._list_controllers.calls) == 2
-    result = accept(gripper._action.goals[0])
-    assert "answered 2.0 s after the first nudge" in gripper._node.log.text("warning")
-    gripper._node.now += RobotiqGripper.RESULT_TIMEOUT - 0.1
-    gripper._watch()
-    finish(result, reached=True)
-    gripper._node.now += 10.0
-    gripper._watch()
-    assert len(gripper._list_controllers.calls) == 2
-
-
-def test_robotiq_watchdog_waits_for_the_cancel_and_its_result():
-    """Stop: the cancel must be answered within ANSWER_TIMEOUT, else a nudge."""
-    gripper = robotiq()
-    gripper.close()
-    accept(gripper._action.goals[0])
-    gripper.stop()
-    gripper._node.now += RobotiqGripper.ANSWER_TIMEOUT + 0.1
-    gripper._watch()
-    assert len(gripper._list_controllers.calls) == 1
 
 
 def test_robotiq_preempted_goal_does_not_end_the_newer_one():
