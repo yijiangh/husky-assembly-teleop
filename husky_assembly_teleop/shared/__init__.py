@@ -18,4 +18,5 @@ What plugins share with each other: contracts, data types, base classes and help
   process_contract.py       what the process plugin offers: its selected movement (`Selection`, `ProcessContract`)
   base_collision/           what a robot base at a floor pose comes near (`BaseCollisionWorld`)
   planner/                  base classes and helpers for the planner plugins
+  recordings/               experiment runs on the Drive: run folders, descriptions, recordings read by label
 """

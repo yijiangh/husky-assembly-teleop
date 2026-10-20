@@ -12,6 +12,7 @@ from husky_assembly_teleop.config import ArmConfig
 from husky_assembly_teleop.robot_interface.arm import (SCALED_JOINT_TRAJECTORY_CONTROLLER, UR_JOINT_NAMES, ArmInterface,
                                                        ArmState)
 from husky_assembly_teleop.robot_interface.controller_manager import ControllerManagerInterface
+from husky_assembly_teleop.robot_interface.event import Event
 from husky_assembly_teleop.robot_interface.simulated_parts import SimulatedPart
 from husky_assembly_teleop.robot_interface.ur_frames import BASE_LINK_FROM_UR_BASE
 from scaffolding_assembly_core.geometry import Pose
@@ -142,6 +143,8 @@ def fake_arm(controller: str | None = SCALED_JOINT_TRAJECTORY_CONTROLLER, joints
     arm._simulated = lambda: simulated
     arm.controllers = Controllers(arm.state.controllers, "/a200_0804/ur5e", arm._node)
     arm._trajectory, arm._target_frame, arm._target_wrench = Publisher(), Publisher(), Publisher()
+    arm.trajectories_sent, arm.targets_sent, arm.wrenches_sent = Event("ur_arm_trajectory"), Event("ur_arm_target"), \
+        Event("ur_arm_wrench")
     state = arm.state
     state.controllers.active, state.controllers.last_update_time = controller, now
     joints = np.zeros(len(UR_JOINT_NAMES)) if joints is None else np.asarray(joints, dtype=float)

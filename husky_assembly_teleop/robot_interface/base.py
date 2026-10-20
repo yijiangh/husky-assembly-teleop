@@ -16,13 +16,14 @@ from nav_msgs.msg import Odometry
 from rcl_interfaces.msg import ParameterType
 from rcl_interfaces.srv import GetParameters, ListParameters
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from sensor_msgs.msg import BatteryState, JointState
 from std_msgs.msg import Bool
 
 from ..config import RobotConfig
 from .connections import RosConnections
 from .controller_manager import ControllerManagerInterface, ControllerManagerState
+from .event import MESSAGE_QUEUE, Event
 from .mocap import subscribe_mocap
 from .mocap_state import RawMarkers, pose_lost
 from .simulated_parts import SimulatedPart
@@ -36,8 +37,6 @@ JOINT_STATES_RATE = 28.0
 #: BaseFollowerState.state codes, by name.
 FOLLOWER_STATES = ("idle", "following", "done", "aborted")
 
-#: Entries kept in each log (`follower_log`, `odometry_log`): over 15 minutes at the follower's 30 Hz.
-LOG_LENGTH = 30_000
 #: A follower silent for this long, seconds, is not running.
 FOLLOWER_SILENT_AFTER = 1.0
 
@@ -62,7 +61,7 @@ class FollowerState:
         along_track_error: Metres behind schedule on a timed path, else NaN.
         yaw_error: Reference yaw minus measured, radians.
         command: Linear (m/s) and angular (rad/s) velocity it sent.
-        update_time: ROS time the report arrived, seconds.
+        update_time: ROS time the monitor handled the report, seconds.
         stamp: Time the follower sent the report, and the command in it, seconds on the robot's clock (time synced).
     """
 
@@ -86,6 +85,57 @@ class FollowerState:
 
 
 @dataclass
+class WheelOdometry:
+    """The platform's last wheel odometry (nav_msgs/Odometry): its velocity in the base frame.
+
+    Attributes:
+        velocity: Linear (m/s) and angular (rad/s) velocity.
+        update_time: ROS time the monitor handled the message, seconds.
+        stamp: Time the platform stamped it, seconds on the robot's clock (time synced).
+    """
+
+    velocity: np.ndarray
+    update_time: float
+    stamp: float
+
+
+@dataclass(frozen=True)
+class SentTwist:
+    """A velocity command the monitor sent the base: the record of `BaseInterface.twists_sent`.
+
+    Attributes:
+        command: Linear (m/s) and angular (rad/s) velocity.
+        update_time: ROS time it was sent, seconds.
+        stamp: The same; the monitor's clock.
+    """
+
+    command: np.ndarray
+    update_time: float
+    stamp: float
+
+
+@dataclass(frozen=True)
+class SentPath:
+    """A path the monitor sent the onboard follower: the record of `BaseInterface.paths_sent`.
+
+    Attributes:
+        path_id: Its id, as in the follower's reports; the stopped path's for a stop.
+        waypoints: Poses in it; 0 for a stop (an empty path).
+        timed: 1 for a timed path, else 0.
+        speed_caps: Linear (m/s) and angular (rad/s) caps sent with it; 0 keeps the follower's own.
+        update_time: ROS time it was sent, seconds.
+        stamp: The same; the monitor's clock, also in the message's header.
+    """
+
+    path_id: int
+    waypoints: int
+    timed: int
+    speed_caps: np.ndarray
+    update_time: float
+    stamp: float
+
+
+@dataclass
 class BaseState:
     """Measured state of the base. None means no message received yet.
 
@@ -104,6 +154,7 @@ class BaseState:
         battery_update_time: ROS time of the last battery message, seconds.
         controllers: The base controller manager's state.
         follower: The onboard path follower's last report.
+        odometry: The platform's last wheel odometry; none in the simulator.
         last_update_time: ROS time of the last mocap message, valid or not, seconds.
         last_fix_time: ROS time the last valid pose was captured, seconds.
         markers: Raw mocap markers of the last mocap message, valid or not, or None before one.
@@ -131,6 +182,7 @@ class BaseState:
     battery_update_time: float | None = None
     controllers: ControllerManagerState = field(default_factory=ControllerManagerState)
     follower: FollowerState | None = None
+    odometry: WheelOdometry | None = None
     last_update_time: float | None = None
     last_fix_time: float | None = None
     markers: RawMarkers | None = None
@@ -142,6 +194,13 @@ class BaseState:
 
 class BaseInterface:
     """ROS2 interface to one husky base.
+
+    Attributes:
+        follower_reports: Fired with each `FollowerState`, for message signals.
+        odometry_messages: Fired with each `WheelOdometry`, for message signals.
+        mocap_messages: Fired with each `MocapSample` of the base's rigid body, valid or not.
+        twists_sent: Fired with each `SentTwist`, the stop's zero twist included.
+        paths_sent: Fired with each `SentPath`, the empty path of a stop included.
 
     ! Mocap is the only source of the base pose; do not add a second one.
     """
@@ -165,10 +224,11 @@ class BaseInterface:
         self._path_id = 0
         #: (list, get) parameter clients per node, made on first use.
         self._parameter_clients: dict[str, tuple] = {}
-        #: Every follower report: (received, stamp, v, w, state code); the times in seconds, as in `FollowerState`.
-        self.follower_log: deque = deque(maxlen=LOG_LENGTH)
-        #: The platform's wheel odometry: (received, stamp, v, w), its velocities in the base frame.
-        self.odometry_log: deque = deque(maxlen=LOG_LENGTH)
+        self.follower_reports = Event(f"{config.serial}_follower")
+        self.odometry_messages = Event(f"{config.serial}_odometry")
+        self.mocap_messages = Event(f"{config.serial}_mocap")
+        self.twists_sent = Event(f"{config.serial}_twist")
+        self.paths_sent = Event(f"{config.serial}_path")
         self.controllers = ControllerManagerInterface(
             node, f"/{config.ros_namespace}", (PLATFORM_VELOCITY_CONTROLLER,), self.state.controllers)
         if config.mocap_id is None:
@@ -186,19 +246,22 @@ class BaseInterface:
         namespace = f"/{self._config.ros_namespace}"
         self._cmd_vel = self._ros.publisher(Twist, f"{namespace}/cmd_vel")
         self._base_path = self._ros.publisher(BasePath, f"{namespace}/base_path")
-        self._ros.subscription(BaseFollowerState, f"{namespace}/base_follower/state", self._on_follower)
+        self._ros.subscription(BaseFollowerState, f"{namespace}/base_follower/state", self._on_follower,
+                               MESSAGE_QUEUE)
         # ? Best effort QoS, since the platform's publisher QoS is unknown.
         self._ros.subscription(Bool, f"{namespace}/platform/emergency_stop", self._on_estop,
                                qos_profile_sensor_data)
         self._ros.subscription(BatteryState, f"{namespace}/platform/bms/state", self._on_battery,
                                qos_profile_sensor_data)
         # ? The velocity controller's odometry from the wheels (Clearpath's topic); none in the simulator.
-        self._ros.subscription(Odometry, f"{namespace}/platform/odom", self._on_odometry, qos_profile_sensor_data)
+        self._ros.subscription(Odometry, f"{namespace}/platform/odom", self._on_odometry,
+                               QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT, history=HistoryPolicy.KEEP_LAST,
+                                          depth=MESSAGE_QUEUE))
         self._ros.subscription(JointState, f"{namespace}/platform/joint_states", self._on_joint_states,
                                qos_profile_sensor_data)
         if self._config.mocap_id is not None:
             subscribe_mocap(self._ros, self._config.mocap_id, self.state,
-                            lambda: self._node.get_clock().now().nanoseconds * 1e-9)
+                            lambda: self._node.get_clock().now().nanoseconds * 1e-9, self.mocap_messages)
 
     def reconnect(self) -> None:
         """Recreate this base's topics and clients. Keeps `state`."""
@@ -248,10 +311,7 @@ class BaseInterface:
             self._node.get_logger().warning(f"{self.controllers.namespace}: not driving, {problem}",
                                             throttle_duration_sec=2.0)
             return False
-        message = Twist()
-        message.linear.x = float(linear_x)
-        message.angular.z = float(angular_z)
-        self._cmd_vel.publish(message)
+        self._publish_twist(float(linear_x), float(angular_z))
         return True
 
     def stop(self) -> bool:
@@ -261,7 +321,7 @@ class BaseInterface:
             bool: True if the deactivation went out. False if the controller manager is unreachable.
         """
         self.stop_path()
-        self._cmd_vel.publish(Twist())
+        self._publish_twist(0.0, 0.0)
         return self.controllers.deactivate_all()
 
     def send_path(self, x, y, yaw, t=None, max_linear_speed: float = 0.0, max_angular_speed: float = 0.0) -> int:
@@ -299,7 +359,7 @@ class BaseInterface:
         message.x, message.y, message.yaw = columns[:3]
         message.t = columns[3] if t is not None else []
         message.max_linear_speed, message.max_angular_speed = caps
-        self._base_path.publish(message)
+        self._publish_path(message, len(columns[0]), t is not None)
         return message.id
 
     def stop_path(self) -> None:
@@ -307,7 +367,22 @@ class BaseInterface:
         message = BasePath()
         message.header.stamp = self._node.get_clock().now().to_msg()
         message.id = self._path_id
+        self._publish_path(message, 0, False)
+
+    def _publish_twist(self, linear: float, angular: float) -> None:
+        """Publish a twist, unchecked, then fire `twists_sent`."""
+        message = Twist()
+        message.linear.x, message.angular.z = linear, angular
+        self._cmd_vel.publish(message)
+        now = self._node.get_clock().now().nanoseconds * 1e-9
+        self.twists_sent.fire(SentTwist(np.array([linear, angular]), now, now))
+
+    def _publish_path(self, message: BasePath, waypoints: int, timed: bool) -> None:
+        """Publish a path message, then fire `paths_sent`."""
         self._base_path.publish(message)
+        sent = message.header.stamp.sec + 1e-9 * message.header.stamp.nanosec
+        self.paths_sent.fire(SentPath(int(message.id), waypoints, int(timed),
+                                      np.array([message.max_linear_speed, message.max_angular_speed]), sent, sent))
 
     def _on_estop(self, message: Bool) -> None:
         """Store whether the platform's emergency stop is engaged."""
@@ -349,16 +424,8 @@ class BaseInterface:
                                              self._ros.client(GetParameters, f"{prefix}/get_parameters"))
         return self._parameter_clients[node]
 
-    def follower_history(self, since: float) -> np.ndarray:
-        """The follower reports received from `since` on (ROS time, s): an (N, 5) array of `follower_log` entries."""
-        return _history(self.follower_log, since, 5)
-
-    def odometry_history(self, since: float) -> np.ndarray:
-        """The wheel odometry received from `since` on (ROS time, s): an (N, 4) array of `odometry_log` entries."""
-        return _history(self.odometry_log, since, 4)
-
     def _on_follower(self, message: BaseFollowerState) -> None:
-        """Store the follower's report, and log it."""
+        """Store the follower's report, then fire `follower_reports`."""
         self.state.follower = FollowerState(
             controller=message.controller,
             state=FOLLOWER_STATES[message.state] if message.state < len(FOLLOWER_STATES) else "unknown",
@@ -372,14 +439,15 @@ class BaseInterface:
             command=np.array([message.linear_velocity, message.angular_velocity]),
             update_time=self._node.get_clock().now().nanoseconds * 1e-9,
             stamp=message.header.stamp.sec + 1e-9 * message.header.stamp.nanosec)
-        follower = self.state.follower
-        self.follower_log.append((follower.update_time, follower.stamp, *follower.command, message.state))
+        self.follower_reports.fire(self.state.follower)
 
     def _on_odometry(self, message: Odometry) -> None:
-        """Log the wheel odometry's velocities."""
-        stamp = message.header.stamp.sec + 1e-9 * message.header.stamp.nanosec
-        self.odometry_log.append((self._node.get_clock().now().nanoseconds * 1e-9, stamp,
-                                  message.twist.twist.linear.x, message.twist.twist.angular.z))
+        """Store the wheel odometry's velocities, then fire `odometry_messages`."""
+        self.state.odometry = WheelOdometry(
+            velocity=np.array([message.twist.twist.linear.x, message.twist.twist.angular.z]),
+            update_time=self._node.get_clock().now().nanoseconds * 1e-9,
+            stamp=message.header.stamp.sec + 1e-9 * message.header.stamp.nanosec)
+        self.odometry_messages.fire(self.state.odometry)
 
     def _on_joint_states(self, message: JointState) -> None:
         """Store the wheel joints, and note the message for the stream's rate, gaps and delay."""
@@ -397,12 +465,6 @@ class BaseInterface:
         self.state.battery_charging = message.power_supply_status == BatteryState.POWER_SUPPLY_STATUS_CHARGING
         self.state.battery_health = int(message.power_supply_health)
         self.state.battery_update_time = self._node.get_clock().now().nanoseconds * 1e-9
-
-
-def _history(log: deque, since: float, width: int) -> np.ndarray:
-    """The log's entries received from `since` on, one row each."""
-    rows = [entry for entry in tuple(log) if entry[0] >= since]
-    return np.array(rows, dtype=float).reshape(len(rows), width)
 
 
 def parameter_value(value):

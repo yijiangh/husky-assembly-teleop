@@ -82,8 +82,9 @@ Answer each of these in the manual:
 ### The plugin
 
 - **Record raw, decide later.** Each run gets its own folder (`<date>_<time>_<robot>_<kind>_<sim|real>/`) holding
-  the raw signals (`recording.npz`), a description (`experiment.json`: setup, conditions, parameters, outcome,
-  metrics) and an overview plot. The analysis recomputes everything from the raw data.
+  the raw signals (`recording.npz`), a description (`experiment.json`: setup, conditions, parameters, outcome) and,
+  from the analysis, its numbers (`report.json`) and an overview plot. The analysis recomputes everything from the
+  raw data (`shared/recordings/`).
 - **Record what defines the scenario, automatically.** Simulator or real, models, controller and its parameters,
   conditions, experiment name. Never rely on folder names or memory. Conditions that can't be set in the panel are
   code constants, recorded with every run (base_exp `CONDITIONS`).

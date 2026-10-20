@@ -11,13 +11,28 @@ from husky_assembly_teleop.experiments.base_exp.replay import (HORIZON, IDEAL, E
 TRUE = Model.of(-0.1, 0.9, 0.95, 0.2)
 
 
-def test_true_model_predicts_the_motion():
-    """One second ahead, the true model is within millimetres; the ideal one is centimetres off."""
-    run = track(model_run())
+@pytest.mark.parametrize("mocap", [True, False])
+def test_true_model_predicts_the_motion(mocap):
+    """One second ahead, the true model is within millimetres; the ideal one is centimetres off.
+
+    Poses per mocap sample (recorded now) or per tick with `times` (recorded before).
+    """
+    run = track(model_run(mocap=mocap))
     true, _ = errors(run, TRUE).at(HORIZON)
     ideal, _ = errors(run, IDEAL).at(HORIZON)
-    assert len(true) > 100
+    assert len(true) > 100 and run.clock == "stamps"
     assert np.median(true) < 0.005 and np.median(ideal) > 0.02
+
+
+def test_mocap_samples_are_every_pose_with_the_phase_of_the_tick_after():
+    """Every valid mocap sample is a pose at its capture time; it takes the phase of the tick that saw it."""
+    run = model_run(seconds=10.0, mocap=True)
+    context = run["tracking_context"]
+    context[run["t"] > 5.0, 5] = 2  # settling from 5 s
+    found = track(run)
+    seen = run["mocap.t"] <= run["t"][-1]  # the last ones came after the last tick
+    np.testing.assert_allclose(found.pose_time, run["mocap.stamp"][seen])
+    assert not found.moving[found.pose_time > 5.0].any() and found.moving[found.pose_time < 4.9].all()
 
 
 def test_errors_grow_with_the_horizon():

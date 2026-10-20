@@ -52,15 +52,22 @@ button, and cancelled with `task.cancel()` from another. The logic reads in the
 order it happens, and the task's `finally` block is where hardware is made safe.
 `plugins/examples/sequence.py` is the template.
 
-## Recording and live plots: once per tick
+## Recording and live plots: per tick or per message
 
 A `Signal` (`plugin_api/trace.py`) is any function of live state, so derived
-values (FK, tracking errors) record like measurements. `ctx.trace(...)` samples
-signals every tick for a live `ui/trace_plot.TracePlot`; `with ctx.record(...)`
-does the same for the length of a block, then `rec.save(path)`. Common signals
-are in `plugin_api/signals.py`. Recording at the full stream rate was dropped: the
-rate limiter only forwards 50 Hz, and what needs more than 20 Hz (contact
-transients, controller tuning) needs the driver's 500 Hz, i.e. `ros2 bag
+values (FK, tracking errors) record like measurements. Its trigger says when it
+is read: once per tick, after every plugin's update, or once per message of an
+interface's event (`robot_interface/event.py`), from that message's record.
+`ctx.trace(...)` records signals until untraced, e.g. for a live
+`ui/trace_plot.TracePlot`; `with ctx.record(...)` does the same for the length
+of a block, then `rec.save(path)` writes one .npz with a time axis per trigger;
+experiment runs are saved and read through `shared/recordings/` (a folder per run,
+its `experiment.json` beside `recording.npz`, channels read by label).
+A recording cannot look back: open its block before what it should record.
+Common signals are in `plugin_api/signals.py`; the base's mocap pose, follower reports and
+wheel odometry come per tick or, with `every_message`, per message. The monitor
+only sees what the robots forward (the arms' rate limiter: 50 Hz); what needs
+the driver's 500 Hz (contact transients, controller tuning) needs `ros2 bag
 record` on the robot.
 
 Still experimental: `process`, `base_planner` and `arm_planner`.

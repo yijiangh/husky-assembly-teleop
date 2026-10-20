@@ -41,7 +41,8 @@ class Markers:
         #: (preview, sent) last drawn.
         self._paths: tuple = (None, None)
         #: Trail samples last drawn.
-        self._trail_count = 0
+        # The trail drawn: its length and newest point, so a full trace that still moves is redrawn.
+        self._trail_shown: tuple | None = None
         self._lookahead = ctx.view.scene.add_icosphere(f"{root}/lookahead", radius=0.025, color=LOOKAHEAD_COLOR,
                                                        visible=False)
         self._reference = ctx.view.scene.add_icosphere(f"{root}/reference", radius=0.02, color=SENT_COLOR,
@@ -57,10 +58,10 @@ class Markers:
 
     def trail(self, xy: np.ndarray | None) -> None:
         """Show where the robot went (n x 2, NaN rows skipped); None removes it."""
-        count = 0 if xy is None else len(xy)
-        if count == self._trail_count:
+        shown = None if xy is None else (len(xy), xy[-1].tobytes() if len(xy) else b"")
+        if shown == self._trail_shown:
             return
-        self._trail_count = count
+        self._trail_shown = shown
         self._remove("trail")
         if xy is None:
             return

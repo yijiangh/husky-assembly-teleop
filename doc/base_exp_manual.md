@@ -27,7 +27,9 @@ Order: A, then C, at 0.2 m/s; B per condition, any time.
 Runs and reports live on the project's Google Drive:
 
 - runs: `$HUSKY_DRIVE_ROOT/data_experiment/base_exp/<experiment name>/<date>_<time>_<robot>_<path>_<sim|real>/`
-  (`recording.npz`, `experiment.json`, `overview.png`);
+  (`experiment.json`: setup and outcome; `recording.npz`; `report.json`: the run's numbers; `overview.png`). The
+  recording holds the tick's signals and every mocap sample, wheel odometry message, and follower report or command
+  sent (`mocap.*`, `odometry.*`, `follower.*` or `twist.*`, each with its own `t` and `stamp`);
 - reports: `$HUSKY_DRIVE_ROOT/data_experiment/base_exp/<experiment name>/_analysis/`.
 
 **Experiment names:** A and C together under one name per condition and speed, e.g. `alice_tiles_stowed_v020`; B

@@ -91,8 +91,11 @@ class PluginContext:
         self._tick_waiters: list[asyncio.Future] = []
         # Set once the plugin is stopped or torn down; no new tasks after that.
         self._closed = False
-        # Traces sampled every tick; see trace.
-        self._traces: list[Trace] = []
+        # Traces being filled, each with the (event, listener) pairs of its message signals; see trace.
+        self._traces: dict[Trace, list[tuple[Any, Callable[[Any], None]]]] = {}
+        # Message signals that raised since the monitor last asked, and the last traceback; see _take_signal_failures.
+        self._signal_failures = 0
+        self._signal_failure = ""
 
     # --- --- --- --- --- STATE --- --- --- --- ---
 
@@ -162,13 +165,13 @@ class PluginContext:
     # --- --- --- --- --- TRACES --- --- --- --- ---
 
     def trace(self, *signals: Signal, max_samples: int = MAX_SAMPLES) -> Trace:
-        """Sample `signals` once per tick from now on, until `untrace` or this plugin stops; for live plots.
+        """Record `signals` from now on, until `untrace` or this plugin stops; for live plots.
 
-        Sampled after every plugin's update and task step, stamped with the tick's ROS time.
+        Tick signals are sampled after every plugin's update and task step, message signals on each message.
 
         Args:
-            signals: What to sample, e.g. from `plugin_api/signals.py`.
-            max_samples: Cap; past it the oldest sample is dropped for each new one.
+            signals: What to record, tick and message signals in any mix, e.g. from `plugin_api/signals.py`.
+            max_samples: Cap of each trigger's samples; past it the oldest is dropped for each new one.
 
         Returns:
             Trace: The samples, growing each tick. Show it with `ui.trace_plot.TracePlot`.
@@ -177,20 +180,25 @@ class PluginContext:
             >>> self._trace = ctx.trace(signals.joints(arm), max_samples=600)
         """
         trace = Trace(signals, max_samples)
-        self._traces.append(trace)
+        listeners = [(event, partial(self._take, trace, event)) for event in trace.events]
+        for event, listener in listeners:
+            event.attach(listener)
+        self._traces[trace] = listeners
         return trace
 
     def untrace(self, trace: Trace) -> None:
-        """Stop sampling `trace`; it keeps its samples. Unknown traces are ignored."""
-        if trace in self._traces:
-            self._traces.remove(trace)
+        """Stop recording `trace`; it keeps its samples. Unknown traces are ignored."""
+        for event, listener in self._traces.pop(trace, ()):
+            event.detach(listener)
 
     @contextmanager
     def record(self, *signals: Signal, max_samples: int = MAX_SAMPLES) -> Iterator[Trace]:
-        """Sample `signals` once per tick while the `with` block runs; it stops even if the task is cancelled.
+        """Record `signals` while the `with` block runs, as `trace`; it stops even if the task is cancelled.
+
+        ! Open the block before what it should record starts, e.g. before sending a path: it cannot look back.
 
         Example:
-            >>> with ctx.record(signals.joints(arm), signals.force(arm)) as rec:
+            >>> with ctx.record(signals.joints(arm), signals.follower_command(robot, every_message=True)) as rec:
             ...     await ctx.sleep(5.0)
             >>> rec.save(path)
         """
@@ -387,7 +395,7 @@ class PluginContext:
                 waiter.set_result(None)
 
     def _sample_traces(self, now: float) -> None:
-        """Sample every trace at time `now`.
+        """Sample every trace's tick signals at time `now`.
 
         Raises:
             Exception: Whatever a signal raised; later traces miss this tick.
@@ -397,6 +405,21 @@ class PluginContext:
         with self._monitor.timer.part(f"plugin {self.name!r} traces"):
             for trace in list(self._traces):
                 trace.sample(now)
+
+    def _take(self, trace: Trace, event: Any, record: Any) -> None:
+        """Record one message's record in `trace`, inside the ROS callback; a signal that raises skips it."""
+        try:
+            trace.take(event, record)
+        except Exception:
+            self._signal_failures += 1
+            self._signal_failure = traceback.format_exc()
+
+    def _take_signal_failures(self) -> str | None:
+        """The last traceback of a message signal that raised since the last call, or None if none did."""
+        if not self._signal_failures:
+            return None
+        failures, self._signal_failures = self._signal_failures, 0
+        return f"{failures} messages skipped; the last:\n{self._signal_failure}"
 
     def _take_task_failures(self) -> int:
         """How many tasks raised since the last call."""
@@ -420,7 +443,8 @@ class PluginContext:
         return tasks
 
     def _close(self) -> list[asyncio.Task]:
-        """Refuse new tasks from now on, stop sampling traces and cancel the running tasks. Returns them."""
+        """Refuse new tasks from now on, stop recording traces and cancel the running tasks. Returns them."""
         self._closed = True
-        self._traces.clear()
+        for trace in list(self._traces):
+            self.untrace(trace)
         return self._cancel_all_tasks()

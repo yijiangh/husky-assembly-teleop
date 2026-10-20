@@ -12,6 +12,7 @@ from robot_fakes import Controllers, Node, Publisher
 from husky_assembly_teleop.robot_interface.base import (FOLLOWER_SILENT_AFTER, PLATFORM_VELOCITY_CONTROLLER,
                                                         BaseInterface, BaseState, FollowerState)
 from husky_assembly_teleop.robot_interface.controller_manager import CONTROLLER_STATE_MAX_AGE
+from husky_assembly_teleop.robot_interface.event import Event
 from husky_assembly_teleop.robot_interface.mocap_state import POSE_TIMEOUT
 
 pytestmark = pytest.mark.safety
@@ -34,15 +35,18 @@ def _base() -> BaseInterface:
     base.state.controllers.active, base.state.controllers.last_update_time = PLATFORM_VELOCITY_CONTROLLER, NOW
     base.controllers = Controllers(base.state.controllers, "/a200_0804", base._node)
     base._cmd_vel, base._base_path, base._path_ids = Publisher(), Publisher(), itertools.count(1)
+    base.twists_sent, base.paths_sent = Event("x_twist"), Event("x_path")
     return base
 
 
 @pytest.mark.parametrize("twist", [(math.nan, 0.0), (0.0, math.inf), (-math.inf, math.nan)])
 def test_twist_not_finite_is_refused(twist):
-    """send_twist returns False and publishes nothing."""
+    """send_twist returns False, publishes nothing and fires no `twists_sent`."""
     base = _base()
+    heard = []
+    base.twists_sent.attach(heard.append)
     assert not base.send_twist(*twist)
-    assert not base._cmd_vel.sent
+    assert not base._cmd_vel.sent and not heard
 
 
 def test_twist_refused_while_the_controller_state_is_stale():
@@ -96,9 +100,18 @@ def test_a_silent_follower_counts_as_none():
 
 
 def test_finite_commands_go_out():
-    """A finite twist and a finite path are published while the base may drive."""
+    """A finite twist and a finite path are published while the base may drive, and fired as sent; so is a stop."""
     base = _base()
+    twists, paths = [], []
+    base.twists_sent.attach(twists.append)
+    base.paths_sent.attach(paths.append)
     assert base.follow_problem() == ""
     assert base.send_twist(0.2, -0.1)
     assert base.send_path(*PATH) == 1
     assert len(base._cmd_vel.sent) == 1 and list(base._base_path.sent[0].t) == [0.0, 2.0]
+    base.stop_path()
+    twist, = twists
+    assert twist.command.tolist() == [0.2, -0.1] and twist.update_time == twist.stamp == NOW
+    sent, stopped = paths
+    assert (sent.path_id, sent.waypoints, sent.timed, sent.speed_caps.tolist()) == (1, 2, 1, [0.3, 0.5])
+    assert (stopped.path_id, stopped.waypoints) == (1, 0)

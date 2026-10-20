@@ -14,7 +14,7 @@ Base experiment: drive test paths from where the robot stands with the onboard p
 - Errors are measured here, the same for every controller (`tracking.py`): each new mocap pose against the path
   sent. After the follower ends, recording goes on until the robot stands still (SETTLE), for the error at the end.
 - Each run is saved to a folder of its own under the experiment's name (`record.py`), with experiment.json and
-  overview.png (`report.py`).
+  recording.npz; `report.py` adds report.json and overview.png.
 - ! Needs the Drive root (HUSKY_DRIVE_ROOT, `drive.py`) with record.RECORDING_FOLDER in it; setup fails without.
 
 ! The follower (`crl_husky pure_pursuit`) runs on the robot, or with `pure_pursuit_sim.launch.py` for a test.
@@ -63,8 +63,6 @@ LIVE_SAMPLES = 1200
 LIVE_MIN_SPANS = (0.02, 2.0, 0.05, 5.0)
 #: Seconds to wait for the follower to take a path.
 ACK_TIMEOUT = 2.0
-#: The command and odometry logs saved with a run start this many seconds before the path was sent.
-LOG_BEFORE = 1.0
 #: A run times out after its expected duration times this, plus RUN_MARGIN seconds.
 RUN_FACTOR, RUN_MARGIN = 2.0, 10.0
 #: Grid cells tried per automated run before giving up on finding a clear path, and per template before the next.
@@ -139,10 +137,6 @@ class BaseExperimentPlugin(HuskyPlugin):
         self._seed = random.randrange(2 ** 31)
         self._rng = random.Random(self._seed)
         self._clearance = Clearance()
-        #: The constant-command run's command now, when it was last sent, and every send: (time, time, v, w, 1).
-        self._twist = (0.0, 0.0)
-        self._twist_sent = math.nan
-        self._twist_log: list[tuple] = []
         #: The run's error measurement, its latest sample and phase, and the time of the mocap fix measured last.
         self._tracker: Tracker | None = None
         self._sample: Sample | None = None
@@ -222,7 +216,7 @@ class BaseExperimentPlugin(HuskyPlugin):
         self._live = ctx.trace(*live, max_samples=LIVE_SAMPLES)
         panel = ctx.view.panel()
         with panel.add_tab("Base tracking", icon=viser.Icon.CHART_LINE):
-            self._plots = [TracePlot(ctx.view.gui, self._live, signal.name, seconds=None, min_span=span)
+            self._plots = [TracePlot(ctx.view.gui, self._live, signal, seconds=None, min_span=span)
                            for signal, span in zip(live, LIVE_MIN_SPANS)]
         panel.dock_left()
         self._markers = Markers(ctx)
@@ -240,7 +234,11 @@ class BaseExperimentPlugin(HuskyPlugin):
         self._auto_runs.value = AUTO_RUNS[str(paths)]
 
     def _tracking_signals(self) -> list[Signal]:
-        """The monitor's tracking errors of the current run, and their context; unknown outside a run."""
+        """The monitor's tracking errors of the current run, and their context; unknown outside a run.
+
+        The context: turning (1 on a turn on the spot, else 0), path curvature, progress (0 to 1), path speed and turn
+        rate, phase (0 sent, 1 following, 2 settling).
+        """
         def read(pick):
             return lambda: None if self._sample is None else pick(self._sample)
 
@@ -249,7 +247,7 @@ class BaseExperimentPlugin(HuskyPlugin):
                 Signal("tracking_context",
                        read(lambda s: (s.turning, s.curvature, s.progress, s.speed, s.turn_rate, self._phase)),
                        ("turning", "curvature", "progress", "speed", "turn_rate", "phase"),
-                       "flag, 1/m, 0-1, m/s, rad/s, 0 sent 1 following 2 settling")]
+                       ("", "1/m", "", "m/s", "rad/s", ""))]
 
     def _live_signals(self, ctx: PluginContext) -> list:
         """The run's tracking errors and the chosen robot's follower commands, under fixed names for the plots."""
@@ -369,14 +367,16 @@ class BaseExperimentPlugin(HuskyPlugin):
             if recorded:
                 experiment = await record.describe(ctx, base, plan, **more)
             self._outcome = "running"
-            path_id = experiment["path_id"] = base.send_path(*plan.poses.T, plan.t, *plan.speed_caps)
-            sent_at = self._sent_at = ctx.now()
-            guard = ctx.spawn(f"guard {plan.serial}", self._guard(ctx, plan.serial))
-            # * The follower's own errors are kept as diagnostics; the tracking signals compare controllers.
-            with ctx.record(signals.base_floor_pose(robot), *self._tracking_signals(), _times(robot),
+            # * The follower's own errors are kept as diagnostics; the tracking signals compare controllers. Its
+            #   reports and the wheel odometry are kept per message too, from before the send.
+            with ctx.record(signals.base_floor_pose(robot), *self._tracking_signals(),
                             signals.follower_position_error(robot), signals.follower_yaw_error(robot),
-                            signals.follower_command(robot), signals.follower_progress(robot)) as rec:
+                            signals.follower_command(robot), signals.follower_progress(robot),
+                            *_message_signals(robot, follower=True)) as rec:
                 self._record = rec
+                path_id = experiment["path_id"] = base.send_path(*plan.poses.T, plan.t, *plan.speed_caps)
+                sent_at = self._sent_at = ctx.now()
+                guard = ctx.spawn(f"guard {plan.serial}", self._guard(ctx, plan.serial))
                 await ctx.wait_until(lambda: report() is not None, timeout_s=ACK_TIMEOUT,
                                      description="the follower to take the path")
                 self._phase = FOLLOWING
@@ -436,18 +436,9 @@ class BaseExperimentPlugin(HuskyPlugin):
         v, w = plan.settings["parameters"]["v"], plan.settings["parameters"]["w"]
         self._sent, self._record, self._outcome = plan, None, "reading the setup"
         self._tracker, self._sample, self._phase, self._measured_fix = Tracker(plan.path), None, SENT, None
-        self._twist, self._twist_sent, self._twist_log = (0.0, 0.0), math.nan, []
         self._live.clear()
         experiment: dict = {}
         guard, checked = None, True
-
-        def send(linear: float, angular: float, check: bool) -> bool:
-            if not base.send_twist(linear, angular, require_controller=check):
-                return False
-            self._twist, self._twist_sent = (linear, angular), ctx.now()
-            self._twist_log.append((self._twist_sent, self._twist_sent, linear, angular, 1.0))
-            return True
-
         try:
             experiment = await record.describe(
                 ctx, base, plan, experiment_name=folder_name(self._experiment.value),
@@ -458,8 +449,8 @@ class BaseExperimentPlugin(HuskyPlugin):
             self._outcome = "running"
             self._sent_at = ctx.now()
             guard = ctx.spawn(f"guard {plan.serial}", self._guard(ctx, plan.serial))
-            with ctx.record(signals.base_floor_pose(robot), *self._tracking_signals(), *self._twist_signals(robot),
-                            signals.follower_progress(robot)) as rec:
+            with ctx.record(signals.base_floor_pose(robot), *self._tracking_signals(), signals.follower_progress(robot),
+                            *_message_signals(robot, follower=False)) as rec:
                 self._record = rec
                 self._phase = FOLLOWING
                 step_at = ctx.now() + TWIST_LEAD
@@ -470,12 +461,12 @@ class BaseExperimentPlugin(HuskyPlugin):
                         self._outcome = f"aborted: mocap lost ({lost})"
                         return
                     command = (v, w) if ctx.now() >= step_at else (0.0, 0.0)
-                    if not send(*command, checked):
+                    if not base.send_twist(*command, require_controller=checked):
                         # * No controller failure: automation pauses for the operator.
                         self._outcome = f"not driven: {PLATFORM_VELOCITY_CONTROLLER} is not active"
                         return
                     await ctx.next_tick()
-                send(0.0, 0.0, False)
+                base.send_twist(0.0, 0.0, require_controller=False)
                 self._phase = SETTLING
                 experiment["settled"] = await self._settle(ctx, plan.serial)
             self._outcome = E_STOPPED if base.state.estopped else "soft stopped: too close" if self._alert else "done"
@@ -483,7 +474,7 @@ class BaseExperimentPlugin(HuskyPlugin):
             self._outcome = "stopped"
             raise
         finally:
-            send(0.0, 0.0, False)
+            base.send_twist(0.0, 0.0, require_controller=False)
             self._phase = SENT
             if guard is not None:
                 guard.cancel()
@@ -491,32 +482,13 @@ class BaseExperimentPlugin(HuskyPlugin):
                 self._save(ctx, plan, experiment)
             ctx.log_info(f"base experiment on {plan.serial}: {plan.label}: {self._outcome}")
 
-    def _twist_signals(self, robot) -> list[Signal]:
-        """The constant-command run's command and the times signal (pose capture, command send).
-
-        The command goes under the follower command's name, so reports and replays read it unchanged.
-        """
-        def times():
-            captured = robot.base.state.last_fix_time
-            return (math.nan if captured is None else captured, self._twist_sent)
-
-        serial = robot.config.serial
-        return [Signal(f"{serial}_follower_command", lambda: self._twist, ("v", "w"), "m/s, rad/s"),
-                Signal("times", times, ("pose", "command"), "s")]
-
     def _save(self, ctx: PluginContext, plan: Plan, experiment: dict) -> None:
         """Save the run, if recording is on, and write its report on a worker thread."""
         rec = self._record
         if rec is None or not self._recording.value or len(rec) == 0:
             return
         try:
-            base = ctx.world.robots[plan.serial].base
-            since = self._sent_at - LOG_BEFORE
-            # * A constant-command run's commands come from here, not from the follower.
-            commands = (np.array(self._twist_log).reshape(-1, 5) if plan.settings["name"] == TWIST
-                        else base.follower_history(since))
-            logs = {"commands": commands, "wheel_odometry": base.odometry_history(since)}
-            saved = record.save(self._recordings, rec, plan, experiment, self._outcome, logs)
+            saved = record.save(self._recordings, rec, plan, experiment, self._outcome, ctx.config.recording_format)
         except OSError as error:
             ctx.log_error(f"base experiment: recording not saved: {error}")
             return
@@ -529,7 +501,7 @@ class BaseExperimentPlugin(HuskyPlugin):
     async def _report(self, ctx: PluginContext, saved: Path) -> None:
         """Write the run's experiment.json and overview.png beside its recording."""
         try:
-            await ctx.run_in_thread(write_report, saved)
+            await ctx.run_in_thread(write_report, saved.parent)
         except Exception as error:  # a broken report must not count as a plugin failure
             ctx.log_warn(f"base experiment: report for {saved.parent.name} failed: {error}")
             return
@@ -858,13 +830,15 @@ def _controller_failure(outcome: str) -> bool:
             and reason not in ("another path replaced it", "the follower went silent"))
 
 
-def _times(robot) -> Signal:
-    """When the newest pose was captured and when the follower sent its newest command, seconds (both stamped)."""
-    def read():
-        captured, follower = robot.base.state.last_fix_time, robot.base.state.follower
-        return (math.nan if captured is None else captured, math.nan if follower is None else follower.stamp)
-
-    return Signal("times", read, ("pose", "command"), "s")
+def _message_signals(robot, follower: bool) -> list[Signal]:
+    """Every mocap sample and odometry message, and every path sent and follower report or else every twist sent."""
+    every = [signals.base_floor_pose(robot, every_message=True), signals.wheel_odometry(robot, every_message=True)]
+    if follower:
+        every += [signals.path_sent(robot), signals.follower_command(robot, every_message=True),
+                  signals.follower_state(robot, every_message=True)]
+    else:
+        every.append(signals.twist_sent(robot))
+    return every
 
 
 def _return_plan(serial: str, pose, home) -> Plan:

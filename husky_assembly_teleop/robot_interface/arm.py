@@ -27,6 +27,7 @@ from .stream_stats import StreamStats
 from .connections import RosConnections
 from .controller_manager import ControllerManagerInterface, ControllerManagerState
 from .end_effectors import EndEffector, EndEffectorState, make_end_effector
+from .event import Event
 from scaffolding_assembly_core.geometry import Pose, compose, invert
 from scaffolding_assembly_core.urdf import UR_JOINT_NAMES
 from .simulated_parts import SimulatedPart
@@ -316,6 +317,63 @@ class ArmState:
     joint_states_stats: StreamStats = field(default_factory=StreamStats)
 
 
+@dataclass(frozen=True)
+class SentTrajectory:
+    """A joint trajectory the monitor sent: the record of `ArmInterface.trajectories_sent`.
+
+    Attributes:
+        target: Joint angles it ends at, radians, UR_JOINT_NAMES order.
+        duration: Seconds it takes.
+        waypoints: Points in it.
+        hold: 1 for the braking trajectory of `hold`, else 0.
+        update_time: ROS time it was sent, seconds.
+        stamp: The same; the monitor's clock.
+    """
+
+    target: np.ndarray
+    duration: float
+    waypoints: int
+    hold: int
+    update_time: float
+    stamp: float
+
+
+@dataclass(frozen=True)
+class SentTarget:
+    """A TCP target the monitor sent the compliance controller: the record of `ArmInterface.targets_sent`.
+
+    Attributes:
+        position: In the arm's base_link, metres.
+        orientation: Quaternion (x, y, z, w).
+        hold: 1 for the target of `hold` (the measured TCP), else 0.
+        update_time: ROS time it was sent, seconds.
+        stamp: The same; the monitor's clock.
+    """
+
+    position: np.ndarray
+    orientation: np.ndarray
+    hold: int
+    update_time: float
+    stamp: float
+
+
+@dataclass(frozen=True)
+class SentWrench:
+    """A target wrench the monitor sent, in tool0: the record of `ArmInterface.wrenches_sent`.
+
+    Attributes:
+        force: Newtons.
+        torque: Newton-metres.
+        update_time: ROS time it was sent, seconds.
+        stamp: The same; the monitor's clock.
+    """
+
+    force: np.ndarray
+    torque: np.ndarray
+    update_time: float
+    stamp: float
+
+
 class ArmInterface:
     """ROS2 interface to one UR arm and the tool mounted on it.
 
@@ -324,6 +382,9 @@ class ArmInterface:
         state: Measured state, written only by callbacks.
         controllers: Tracks and switches this arm's controllers.
         end_effector: The mounted tool, or None for a bare arm.
+        trajectories_sent: Fired with each `SentTrajectory`, holds included.
+        targets_sent: Fired with each `SentTarget`, holds included; none in test mode, where nothing is sent.
+        wrenches_sent: Fired with each `SentWrench`, the zero wrench of a hold included.
     """
 
     def __init__(self, node: Node, robot_namespace: str, config: ArmConfig, base_in_husky: Pose,
@@ -357,6 +418,9 @@ class ArmInterface:
         self._free_drive_until = float("-inf")
         self._namespace = f"/{robot_namespace}/{config.ros_namespace}"
         self._ros = RosConnections(node)
+        self.trajectories_sent = Event(f"{config.name}_trajectory")
+        self.targets_sent = Event(f"{config.name}_target")
+        self.wrenches_sent = Event(f"{config.name}_wrench")
 
         self.controllers = ControllerManagerInterface(
             node, self._namespace, ARM_CONTROLLERS, self.state.controllers, guard=self._switch_refusal)
@@ -583,7 +647,7 @@ class ArmInterface:
             point.positions = [float(value) for value in positions]
             point.velocities = [0.0] * len(UR_JOINT_NAMES)
             point.time_from_start = Duration(sec=int(duration), nanosec=int((duration % 1.0) * 1e9))
-            self._trajectory.publish(JointTrajectory(joint_names=list(UR_JOINT_NAMES), points=[point]))
+            self._publish_trajectory(JointTrajectory(joint_names=list(UR_JOINT_NAMES), points=[point]), duration, True)
             sent = True
         if sent:
             log.info(f"arm {self.config.name}: hold sent")
@@ -618,9 +682,16 @@ class ArmInterface:
         trajectory = self.build_trajectory(positions, duration, velocities)
         if trajectory is None:
             return False
-        self._trajectory.publish(trajectory)
+        self._publish_trajectory(trajectory, duration, False)
         self.mark_executing()
         return True
+
+    def _publish_trajectory(self, trajectory: JointTrajectory, duration: float, hold: bool) -> None:
+        """Publish a joint trajectory, unchecked, then fire `trajectories_sent`."""
+        self._trajectory.publish(trajectory)
+        now = self._now()
+        self.trajectories_sent.fire(SentTrajectory(np.array(trajectory.points[-1].positions, dtype=float),
+                                                   float(duration), len(trajectory.points), int(hold), now, now))
 
     def send_joint_move(self, target: Sequence[float], max_speed: float = JOINT_MOVE_MAX_SPEED,
                         min_duration: float = JOINT_MOVE_MIN_DURATION) -> float | None:
@@ -708,7 +779,8 @@ class ArmInterface:
          message.pose.orientation.z, message.pose.orientation.w) = map(float, orientation)
         self._target_frame.publish(message)
         self.state.sent_target_position, self.state.sent_target_orientation = position, orientation
-        self.state.sent_target_time = self._now()
+        self.state.sent_target_time = now = self._now()
+        self.targets_sent.fire(SentTarget(position, orientation, int(hold), now, now))
         return True
 
     def to_husky(self, position: Sequence[float], orientation: Sequence[float]) -> tuple[np.ndarray, np.ndarray]:
@@ -818,12 +890,14 @@ class ArmInterface:
         return True
 
     def _publish_wrench(self, force: np.ndarray, torque: np.ndarray) -> None:
-        """Publish a target wrench in tool0, unchecked."""
+        """Publish a target wrench in tool0, unchecked, then fire `wrenches_sent`."""
         message = WrenchStamped()
         message.header.frame_id = TARGET_WRENCH_FRAME
         message.wrench.force.x, message.wrench.force.y, message.wrench.force.z = map(float, force)
         message.wrench.torque.x, message.wrench.torque.y, message.wrench.torque.z = map(float, torque)
         self._target_wrench.publish(message)
+        now = self._now()
+        self.wrenches_sent.fire(SentWrench(np.asarray(force, dtype=float), np.asarray(torque, dtype=float), now, now))
 
     def zero_ft_sensor(self) -> bool:
         """Re-zero the force/torque sensor, taring the current reading.

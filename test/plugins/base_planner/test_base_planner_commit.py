@@ -5,6 +5,8 @@ import json
 import math
 from collections import deque
 from contextlib import contextmanager
+from dataclasses import replace
+from functools import partial
 from types import SimpleNamespace
 
 import numpy as np
@@ -15,6 +17,7 @@ from robot_fakes import Node
 from husky_assembly_teleop.plugin_api.concurrency import WaitTimeout
 from husky_assembly_teleop.plugin_api.trace import Signal, Trace
 from husky_assembly_teleop.robot_interface.base import BaseInterface, FollowerState
+from husky_assembly_teleop.robot_interface.event import Event
 from husky_assembly_teleop.plugins.base_planner.path import MAX_ANGULAR_SPEED, MAX_LINEAR_SPEED, steer, timed_path
 from husky_assembly_teleop.plugins.base_planner.planner_plugin import BasePlannerPlugin
 from husky_assembly_teleop.plugins.base_planner.tasks import BY_NAME
@@ -180,24 +183,27 @@ REQUEST = BasePlanRequest(SERIAL, (1.0, 1.0, 0.0), record=True, experiment="tria
 
 
 def _saving(tmp_path):
-    """A plugin recording to `tmp_path`, a trace of two poses, and a context with a simulated base."""
+    """A plugin recording to `tmp_path`, a trace of two poses and three follower reports, and a simulated base."""
     plugin = BasePlannerPlugin()
     plugin._recordings = tmp_path
-    rec = Trace([Signal(f"{SERIAL}_floor_pose", lambda: None, ("x", "y", "yaw"), "m, rad")])
+    reports = Event(f"{SERIAL}_follower")
+    rec = Trace([Signal(f"{SERIAL}_floor_pose", lambda: None, ("x", "y", "yaw"), ("m", "m", "rad")),
+                 Signal("command", lambda report: report.command, ("v", "w"), on=reports)])
     rec.add(1.0, (0.0, 0.0, 0.0))
     rec.add(2.0, (0.5, 0.4, 0.7))
-    base = SimpleNamespace(state=SimpleNamespace(follower=None), simulation=SimpleNamespace(node="husky_sim"),
-                           follower_history=lambda _since: np.zeros((3, 5)),
-                           odometry_history=lambda _since: np.zeros((2, 4)))
+    for t in (1.0, 1.5, 2.0):
+        rec.take(reports, SimpleNamespace(update_time=t, stamp=t - 0.1, command=(0.2, 0.0)))
+    base = SimpleNamespace(state=SimpleNamespace(follower=None), simulation=SimpleNamespace(node="husky_sim"))
     ctx = SimpleNamespace(world=SimpleNamespace(robots={SERIAL: SimpleNamespace(base=base)}),
-                          log_info=lambda _message: None, log_error=pytest.fail)
+                          config=SimpleNamespace(recording_format="npz"), log_info=lambda _message: None,
+                          log_error=pytest.fail)
     return plugin, rec, ctx
 
 
 def test_unrecorded_plans_run_gets_an_attempt_of_its_own(tmp_path):
     """Planned with Record off: the run gets a folder of its own, with what is known of the plan.
 
-    It holds recording.npz (samples, path, follower log) and experiment.json.
+    It holds recording.npz (samples, every follower report, path) and experiment.json.
     """
     plugin, rec, ctx = _saving(tmp_path)
     path = planned((0.0, 0.0, 0.0), (1.0, 1.0, 0.0))
@@ -207,7 +213,7 @@ def test_unrecorded_plans_run_gets_an_attempt_of_its_own(tmp_path):
     assert folder.name.endswith(f"_{SERIAL}_free_sim")
     data = np.load(folder / "recording.npz")
     np.testing.assert_array_equal(data["path_poses"], path.points)
-    assert data[f"{SERIAL}_floor_pose"].shape == (2, 3) and data["commands"].shape == (3, 5)
+    assert data[f"{SERIAL}_floor_pose"].shape == (2, 3) and data[f"{SERIAL}_follower.command"].shape == (3, 2)
     description = json.loads((folder / "experiment.json").read_text())
     assert description["run"]["outcome"] == "done" and description["plan"]["length"] == pytest.approx(path.length)
 
@@ -238,6 +244,7 @@ class FakeClock:
         """Start at ROS time 10 s, with SERIAL being `robot`."""
         self.t, self.robot, self.step, self.traces, self.logs = 10.0, robot, step, [], []
         self.world = SimpleNamespace(robots={SERIAL: robot})
+        self.config = SimpleNamespace(recording_format="npz")
 
     def now(self) -> float:
         """ROS time, seconds."""
@@ -245,13 +252,18 @@ class FakeClock:
 
     @contextmanager
     def record(self, *signals):
-        """Sample `signals` every tick while the block runs."""
+        """Sample `signals` every tick, or on every message of their event, while the block runs."""
         trace = Trace(signals)
+        listeners = [(event, partial(trace.take, event)) for event in trace.events]
+        for event, listener in listeners:
+            event.attach(listener)
         self.traces.append(trace)
         try:
             yield trace
         finally:
             self.traces.remove(trace)
+            for event, listener in listeners:
+                event.detach(listener)
 
     async def wait_until(self, predicate, timeout_s=None, description=""):
         """Tick until `predicate` holds."""
@@ -287,16 +299,19 @@ def test_run_is_recorded_until_the_follower_is_done(tmp_path):
     base = SimpleNamespace(state=SimpleNamespace(position=np.zeros(3), orientation=np.array([0.0, 0.0, 0.0, 1.0]),
                                                  follower=follower),
                            simulation=SimpleNamespace(node="husky_sim"),
-                           follower_history=lambda _since: np.zeros((0, 5)),
-                           odometry_history=lambda _since: np.zeros((0, 4)))
+                           follower_reports=Event(f"{SERIAL}_follower"), odometry_messages=Event(f"{SERIAL}_odometry"),
+                           mocap_messages=Event(f"{SERIAL}_mocap"))
     robot = SimpleNamespace(base=base, config=SimpleNamespace(serial=SERIAL))
 
     def step(t):
-        """Drive along x at 0.2 m/s; the follower reports done at the end."""
+        """Drive along x at 0.2 m/s, reporting twice per tick; the follower reports done at the end."""
         x = min(0.2 * (t - 10.0), 1.0)
         base.state.position = np.array([x, 0.0, 0.0])
         follower.progress, follower.update_time = x, t
         follower.state = "done" if x >= 1.0 else "following"
+        for late in (0.05, 0.0):
+            base.follower_reports.fire(replace(follower, update_time=t - late, stamp=t - late - 0.01,
+                                               command=np.array([0.2, 0.0])))
 
     ctx = FakeClock(robot, step)
     plugin = BasePlannerPlugin()
@@ -308,7 +323,14 @@ def test_run_is_recorded_until_the_follower_is_done(tmp_path):
     data = np.load(folder / "recording.npz")
     poses = data[f"{SERIAL}_floor_pose"]
     assert poses[-1, 0] == pytest.approx(1.0) and data["t"][-1] - data["t"][0] >= 5.0
-    assert str(data["outcome"]) == "done"
+    assert json.loads((folder / "experiment.json").read_text())["run"]["outcome"] == "done"
+    assert str(data["robot"]) == SERIAL and "outcome" not in data
+    # * Every report, not one per tick, with its own times; no odometry in the simulator.
+    reports = data[f"{SERIAL}_follower.t"]
+    assert len(reports) == 2 * len(data["t"]) and np.all(np.diff(reports) > 0)
+    assert data[f"{SERIAL}_follower.command"][:, 0] == pytest.approx(0.2)
+    assert data[f"{SERIAL}_follower.stamp"] == pytest.approx(reports - 0.01)
+    assert data[f"{SERIAL}_odometry.velocity"].shape == (0, 2)
     assert json.loads((folder / "experiment.json").read_text())["environment"] == "sim"
 
 
@@ -327,7 +349,9 @@ def test_a_run_that_ends_before_the_follower_stops_the_path(how):
     stops = []
     base = SimpleNamespace(state=SimpleNamespace(position=np.zeros(3), orientation=np.array([0.0, 0.0, 0.0, 1.0]),
                                                  follower=follower),
-                           stop_path=lambda: stops.append(how))
+                           stop_path=lambda: stops.append(how),
+                           follower_reports=Event(f"{SERIAL}_follower"), odometry_messages=Event(f"{SERIAL}_odometry"),
+                           mocap_messages=Event(f"{SERIAL}_mocap"))
     robot = SimpleNamespace(base=base, config=SimpleNamespace(serial=SERIAL))
 
     def step(t):

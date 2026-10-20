@@ -147,6 +147,10 @@ class RobotConfig:
         return (0.0, 0.0, math.sin(half), math.cos(half))
 
 
+#: How a run's recording may be saved: the formats `Trace.save` writes (`plugin_api/trace.py` FORMATS).
+RECORDING_FORMATS = ("npz", "json")
+
+
 @dataclass(frozen=True)
 class MonitorConfig:
     """Everything the monitor and its plugins need to know about this run.
@@ -157,6 +161,8 @@ class MonitorConfig:
         process_directory: Process folder the `process` plugin loads at startup, relative to `drive_root`, or None
             to pick one in its panel.
         drive_root: The project's Google Drive folder, for experiment data (see `drive.py`), or None if not given.
+        recording_format: How plugins save a run's recording: "npz" (compact) or "json" (readable text, several times
+            larger); `shared/recordings/` reads both.
         tick_period: Seconds between ticks.
         viser_port: Port the desktop page listens on. Pinned: the monitor refuses to start if it is taken.
         phone_port: Port the phone page listens on. Pinned too.
@@ -176,6 +182,7 @@ class MonitorConfig:
     data_directory: Path
     process_directory: Path | None = None
     drive_root: Path | None = None
+    recording_format: str = "npz"
     tick_period: float = 0.05
     viser_port: int = 8080
     phone_port: int = 8081
@@ -337,6 +344,7 @@ def config_from_ros_parameters(node: Node) -> MonitorConfig:
       from `_ROBOTS_BY_SERIAL`.
     - `no_default_plugins:=true` skips DEFAULT_PLUGINS.
     - `drive_root`: the project's Google Drive folder; empty falls back to HUSKY_DRIVE_ROOT (`drive.py`).
+    - `recording_format`: "npz" (the default) or "json".
     - Robots may be named instead of numbered, in `robots` and `tools` alike. `robots:="[]"` runs without robots.
     - `viser_port` (8080) and `phone_port` (default the next port): a second monitor needs `viser_port:=8095`.
 
@@ -355,6 +363,7 @@ def config_from_ros_parameters(node: Node) -> MonitorConfig:
     node.declare_parameter("data_directory", "")
     node.declare_parameter("process_directory", "")
     node.declare_parameter("drive_root", "")
+    node.declare_parameter("recording_format", MonitorConfig.recording_format)
     node.declare_parameter("no_default_plugins", False)
     node.declare_parameter("ghost_timeout", MonitorConfig.ghost_timeout)
     node.declare_parameter("lab", "")
@@ -379,6 +388,10 @@ def config_from_ros_parameters(node: Node) -> MonitorConfig:
 
     process_text = node.get_parameter("process_directory").get_parameter_value().string_value.strip()
 
+    recording_format = node.get_parameter("recording_format").get_parameter_value().string_value.strip()
+    if recording_format not in RECORDING_FORMATS:
+        raise ValueError(f"recording_format must be one of {RECORDING_FORMATS}, not {recording_format!r}")
+
     no_default_plugins = node.get_parameter("no_default_plugins").get_parameter_value().bool_value
     viser_port = node.get_parameter("viser_port").value
     return MonitorConfig(
@@ -386,6 +399,7 @@ def config_from_ros_parameters(node: Node) -> MonitorConfig:
         data_directory=data_directory,
         process_directory=Path(process_text) if process_text else None,
         drive_root=drive_root(node.get_parameter("drive_root").get_parameter_value().string_value),
+        recording_format=recording_format,
         enabled_plugins=_enabled_plugins(string_list("plugins"), not no_default_plugins),
         ghost_timeout=node.get_parameter("ghost_timeout").value,
         lab=node.get_parameter("lab").get_parameter_value().string_value.strip(),

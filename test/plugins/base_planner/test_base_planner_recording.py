@@ -57,10 +57,10 @@ def test_failed_plan_is_saved_with_why(tmp_path, world, robots, alice):  # noqa:
 
 
 def test_attempt_folders_never_clash(tmp_path):
-    """Two attempts in the same second get two folders."""
+    """Two attempts in the same second get two folders, both made at once."""
     first = attempt_folder(tmp_path, "trial", "alice", "free", "real")
-    first.mkdir(parents=True)
-    assert attempt_folder(tmp_path, "trial", "alice", "free", "real") != first
+    second = attempt_folder(tmp_path, "trial", "alice", "free", "real")
+    assert first.is_dir() and second.is_dir() and second != first
 
 
 def test_tasks_are_unique_and_placed_in_the_lab():

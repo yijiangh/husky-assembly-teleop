@@ -1,6 +1,8 @@
 """
 A live uPlot of one signal of a trace: one line per channel, x in seconds since the trace started.
 
+Each signal is drawn on its own trigger's times: the tick's, or its event's messages'.
+
 Build it in `setup` inside `ctx.view.ui()`, call `draw` from the plugin's `draw`.
 
 ? Only the last `seconds` and at most MAX_POINTS points are sent: viser resends the whole plot on each change.
@@ -17,7 +19,7 @@ import viser
 import viser.uplot
 
 if TYPE_CHECKING:
-    from ..plugin_api.trace import Trace
+    from ..plugin_api.trace import Signal, Trace
 
 #: Line colour per channel, in order; x, y, z are red, green, blue as in the 3D view.
 COLORS = ("#e03131", "#2f9e44", "#4263eb", "#f08c00", "#ae3ec9", "#1098ad", "#868e96")
@@ -29,27 +31,30 @@ MAX_POINTS = 1000
 class TracePlot:
     """One signal of a trace, plotted; redrawn only when the trace has new samples."""
 
-    def __init__(self, gui: viser.GuiApi, trace: Trace, name: str, seconds: float | None = 30.0,
+    def __init__(self, gui: viser.GuiApi, trace: Trace, signal: Signal | str, seconds: float | None = 30.0,
                  y_range: tuple[float, float] | None = None, aspect: float = 2.0, min_span: float = 1e-6):
         """Add the plot to `gui`.
 
         Args:
             gui: Where to add it, e.g. from `with ctx.view.ui() as gui`.
             trace: The trace to show.
-            name: Which of its signals.
+            signal: Which of its signals: the signal itself, or its key (`Signal.key`).
             seconds: How far back to show; None shows everything kept.
             y_range: Fixed y axis, or None to fit the data.
             aspect: Width over height.
             min_span: Smallest fitted y span, so a flat or zero signal keeps a readable axis.
         """
         self._trace = trace
-        self._name = name
+        name = self._name = signal if isinstance(signal, str) else signal.key
         self._seconds = seconds
         signal = trace.signal(name)
-        unit = f" [{signal.unit}]" if signal.unit else ""
+        # * One unit for all channels goes into the title, mixed units onto each line.
+        shared = len(set(signal.units)) == 1
+        unit = f" [{signal.units[0]}]" if shared and signal.units[0] else ""
         series = (viser.uplot.Series(label="t s"),
-                  *(viser.uplot.Series(label=label, stroke=COLORS[i % len(COLORS)], width=1.5)
-                    for i, label in enumerate(signal.channels)))
+                  *(viser.uplot.Series(label=label if shared or not each else f"{label} [{each}]",
+                                       stroke=COLORS[i % len(COLORS)], width=1.5)
+                    for i, (label, each) in enumerate(zip(signal.channels, signal.units))))
         self._fixed = y_range is not None
         self._min_span = min_span
         self._y_range = tuple(y_range) if y_range else (-1.0, 1.0)
@@ -61,7 +66,7 @@ class TracePlot:
 
     def draw(self) -> None:
         """Send the trace's newest samples to the browser, if it changed."""
-        t = self._trace.times()
+        t = self._trace.times(self._name)
         shown = (len(t), float(t[-1]) if len(t) else None)
         if shown == self._shown:
             return

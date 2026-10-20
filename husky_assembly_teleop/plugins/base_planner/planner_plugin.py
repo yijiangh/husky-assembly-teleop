@@ -38,7 +38,8 @@ from ...world.follower import path_check
 from scaffolding_assembly_core.ids import robot_id
 from .path import MAX_ANGULAR_SPEED, MAX_LINEAR_SPEED, BasePath
 from .algorithms import ALGORITHMS, Algorithm, Debug
-from .recording import RECORDING_FOLDER, attempt_folder, load_description, save_plan, write_description
+from ...shared.recordings.runs import load_description, save_recording, write_description
+from .recording import RECORDING_FOLDER, attempt_folder, save_plan
 from .tasks import BY_NAME, TASK_ORIGIN
 from .world import PlanningWorld, from_stow
 
@@ -156,8 +157,12 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
                                 "speed_caps": {"linear": MAX_LINEAR_SPEED, "angular": MAX_ANGULAR_SPEED}},
                  "algorithm": algorithm.label, "settings": asdict(settings), "start": list(start),
                  "goal": list(goal), "guessed": guessed}
-        folder = attempt_folder(self._recordings, setup["experiment"], serial, task, environment) \
-            if request.record and self._recordings is not None else None
+        folder = None
+        if request.record and self._recordings is not None:
+            try:
+                folder = attempt_folder(self._recordings, setup["experiment"], serial, task, environment)
+            except OSError as error:
+                ctx.log_error(f"base planner: attempt not recorded: {error}")
         # The worker's error saving the attempt, for the main thread to log.
         not_saved: list[str] = []
 
@@ -241,9 +246,13 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
         sent_id, sent_at, started = self._sent_id, self._sent_at, started_at()
         outcome, rec = "stopped", None
         try:
+            # * Opened before the next tick's ROS callbacks, so before any follower report on the path.
             with ctx.record(signals.base_floor_pose(robot), signals.follower_position_error(robot),
                             signals.follower_yaw_error(robot), signals.follower_command(robot),
-                            signals.follower_progress(robot)) as rec:
+                            signals.follower_progress(robot), signals.follower_command(robot, every_message=True),
+                            signals.follower_state(robot, every_message=True),
+                            signals.base_floor_pose(robot, every_message=True),
+                            signals.wheel_odometry(robot, every_message=True)) as rec:
                 self._trace = rec
                 try:
                     # * Under way is WARN (sent or following); done, aborted, replaced or silent ends the run.
@@ -270,15 +279,14 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
 
     def _save(self, ctx: PluginContext, request: BasePlanRequest, path: BasePath, rec: Trace, outcome: str,
               started: str, sent_at: float, plan: dict) -> None:
-        """Add a run to its plan's attempt: recording.npz (samples, path, follower and wheel logs), and the run.
+        """Add a run to its plan's attempt: recording.npz (per tick and per message, and the path), and the run.
 
         The run goes into the attempt's experiment.json.
 
         A plan not recorded, or committed a second time, gets a folder of its own with what is known of the plan.
         """
         serial = request.serial
-        base = ctx.world.robots[serial].base
-        follower = base.state.follower
+        follower = ctx.world.robots[serial].base.state.follower
         run = {"started": started, "outcome": outcome, "sent_at": sent_at,
                "controller": follower.controller if follower is not None else "unknown"}
         folder = plan.get("folder")
@@ -293,10 +301,8 @@ class BasePlannerPlugin(PlannerService[BasePlanRequest]):
                 description = {**setup, "plan": known, "plan_folder": folder.name if folder is not None else None}
                 folder = attempt_folder(self._recordings, setup["experiment"], serial, setup["task"],
                                         setup["environment"])
-                folder.mkdir(parents=True)
-            extra = {"path_poses": path.points, "path_t": path.times, "outcome": outcome,
-                     "commands": base.follower_history(sent_at), "wheel_odometry": base.odometry_history(sent_at)}
-            rec.save(folder / "recording.npz", extra)
+            save_recording(folder, rec, serial, {"path_poses": path.points, "path_t": path.times},
+                           ctx.config.recording_format)
             write_description(folder, {**description, "run": run})
         except OSError as error:
             ctx.log_error(f"base planner: run not saved: {error}")

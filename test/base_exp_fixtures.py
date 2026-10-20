@@ -5,14 +5,28 @@ from __future__ import annotations
 import numpy as np
 from crl_husky.base_model import BaseModel
 
-#: Rates as on the robot: follower commands, the monitor's tick (poses), wheel odometry; Hz.
-COMMAND_RATE, TICK_RATE, ODOMETRY_RATE = 30.0, 20.0, 28.0
+from husky_assembly_teleop.shared.recordings.runs import Recording
+
+#: Rates as on the robot: follower commands, the monitor's tick (poses), wheel odometry, mocap; Hz.
+COMMAND_RATE, TICK_RATE, ODOMETRY_RATE, MOCAP_RATE = 30.0, 20.0, 28.0, 50.0
 #: Integration steps per command.
 FINE = 20
+#: The tracking context's channels, as base_exp records them.
+CONTEXT = ("turning", "curvature", "progress", "speed", "turn_rate", "phase")
+
+
+def labelled(run: dict) -> Recording:
+    """`run` as a loaded recording, with the tracking context's labels."""
+    return Recording({**run, "tracking_context.labels": np.array(CONTEXT)})
+
+
+def saved(run: dict, robot: str = "x") -> dict:
+    """`run`'s arrays as recording.npz keeps them: the robot's serial before the pose's key, and "robot"."""
+    return {**{f"{robot}_{k}" if k == "floor_pose" else k: value for k, value in run.items()}, "robot": np.array(robot)}
 
 
 def model_run(delay=0.2, speed=0.9, steering=0.95, x_icr=-0.1, seconds=60.0, seed=0, stamps=True,
-              wheel_delay=None) -> dict[str, np.ndarray]:
+              wheel_delay=None, mocap=False) -> Recording:
     """A run driven by smooth random commands through the simulator's model.
 
     The robot holds each command until the next one, `delay` seconds late; the recording samples it at the tick.
@@ -24,8 +38,11 @@ def model_run(delay=0.2, speed=0.9, steering=0.95, x_icr=-0.1, seconds=60.0, see
         x_icr: Turning-centre offset, metres.
         seconds: Length of the run.
         seed: Seed of the commands.
-        stamps: Whether the run has `times` and the follower's command log (`commands`).
+        stamps: Whether the run has its stamps: every follower report (`follower.*`), and `times` (runs recorded
+            before mocap was) or, with `mocap`, every mocap sample.
         wheel_delay: With a value, the run has wheel odometry: the commands this many seconds late, unscaled.
+        mocap: Whether poses come per mocap sample (`mocap.*`, MOCAP_RATE, handled 5 ms after capture) as recorded
+            now, instead of `times`.
     """
     rng = np.random.default_rng(seed)
     sent = np.arange(0.0, seconds, 1.0 / COMMAND_RATE)
@@ -52,10 +69,17 @@ def model_run(delay=0.2, speed=0.9, steering=0.95, x_icr=-0.1, seconds=60.0, see
     context = np.zeros((len(t), 6))
     context[:, 5] = 1
     run = {"t": t, "floor_pose": pose[at], "tracking_context": context, "follower_command": command[latest]}
-    if stamps:
+    if stamps and mocap:
+        captured = np.arange(0.0, seconds - 0.1, 1.0 / MOCAP_RATE)
+        run.update({"mocap.t": captured + 0.005, "mocap.stamp": captured,
+                    "mocap.floor_pose": pose[np.searchsorted(fine, captured, side="right") - 1]})
+    elif stamps:
         run["times"] = np.column_stack([fine[at], sent[latest]])
-        run["commands"] = np.column_stack([sent, sent, command, np.ones(len(sent))])
+    if stamps:
+        run.update({"follower.t": sent, "follower.stamp": sent, "follower.command": command,
+                    "follower.state": np.ones((len(sent), 1))})
     if wheel_delay is not None:
         odometry = np.arange(0.0, seconds, 1.0 / ODOMETRY_RATE)
-        run["wheel_odometry"] = np.column_stack([odometry, odometry, held(odometry, wheel_delay)])
-    return run
+        run.update({"odometry.t": odometry, "odometry.stamp": odometry,
+                    "odometry.velocity": held(odometry, wheel_delay)})
+    return labelled(run)

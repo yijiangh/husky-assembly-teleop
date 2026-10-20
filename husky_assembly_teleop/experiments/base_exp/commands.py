@@ -36,8 +36,9 @@ from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
 from matplotlib.patches import Rectangle
 
-from ...plugins.base_exp.report import load
 from ...plugins.base_exp.twist import SEGMENT, grid
+from ...shared.recordings.runs import load_recording
+from ...shared.recordings.series import within
 from .common import Experiment, markdown, save
 from .replay import track
 
@@ -301,7 +302,7 @@ def responses(runs: pd.DataFrame) -> pd.DataFrame:
         row = {"run": run.run, "folder": run.folder, "started": run.started, "robot": group,
                "v": round(float(run.p_v), 3), "w": round(float(run.p_w), 3), "battery": run.battery,
                "outcome": run.outcome}
-        found = steady(load(Path(run.folder) / "recording.npz")) if run.success else None
+        found = steady(load_recording(run.folder)) if run.success else None
         row["used"] = found is not None
         row["why"] = "" if found is not None else ("not done" if not run.success else
                                                    "stalled, too short or no mocap")
@@ -341,7 +342,7 @@ def steady(run: dict[str, np.ndarray]) -> Steady | None:
     forward = np.cos(yaw) * vx + np.sin(yaw) * vy
     sideways = -np.sin(yaw) * vx + np.cos(yaw) * vy
     begin, end, stalled = _stall_free(tr, step_at + STEADY_AFTER, stop_at, v, w)
-    window = (t >= begin) & (t <= end)
+    window = within(t, begin, end)
     if end - begin < SHORTEST_STEADY or window.sum() < 5:
         return None
     mean_forward, mean_sideways = float(forward[window].mean()), float(sideways[window].mean())
@@ -351,7 +352,7 @@ def steady(run: dict[str, np.ndarray]) -> Steady | None:
     wheel_delay = wheel_rise = math.nan
     turning = abs(w) > TURNING
     if len(tr.odometry_time):
-        steady = (tr.odometry_time >= begin) & (tr.odometry_time <= end)
+        steady = within(tr.odometry_time, begin, end)
         if steady.sum() >= 3:
             wheel_v, wheel_w = (float(x) for x in tr.odometry[steady].mean(axis=0))
             channel = tr.odometry[:, 1] if turning else tr.odometry[:, 0]
@@ -380,7 +381,7 @@ def steady(run: dict[str, np.ndarray]) -> Steady | None:
 
 def _stall_free(tr, start: float, end: float, v: float, w: float) -> tuple[float, float, float]:
     """The longest stretch of [start, end] without a stall, and the seconds stalled; all of it without odometry."""
-    inside = (tr.odometry_time >= start) & (tr.odometry_time <= end)
+    inside = within(tr.odometry_time, start, end)
     if inside.sum() < 3:
         return start, end, 0.0
     turning = abs(w) > TURNING

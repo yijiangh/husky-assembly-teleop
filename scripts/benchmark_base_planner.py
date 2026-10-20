@@ -28,9 +28,9 @@ from husky_assembly_teleop.drive import drive_folder, drive_root
 from husky_assembly_teleop.plugins.base_planner.algorithms import ALGORITHMS, Debug
 from husky_assembly_teleop.plugins.base_planner.follow import model_groups
 from husky_assembly_teleop.plugins.base_planner.path import MAX_ANGULAR_SPEED, MAX_LINEAR_SPEED
-from husky_assembly_teleop.plugins.base_planner.recording import (RECORDING_FOLDER, attempt_folder,
-                                                                  load_description, load_plan_arrays, save_plan,
-                                                                  save_simulated)
+from husky_assembly_teleop.plugins.base_planner.recording import (RECORDING_FOLDER, attempt_folder, load_plan_arrays,
+                                                                  save_plan, save_simulated)
+from husky_assembly_teleop.shared.recordings.runs import load_description
 from husky_assembly_teleop.plugins.base_planner.tasks import PROCESS, TASK_ORIGIN, TASKS
 from husky_assembly_teleop.plugins.base_planner.world import PlanningWorld, stowed
 from husky_assembly_teleop.shared.planner.planner_search import with_guesses

@@ -29,8 +29,9 @@ from matplotlib.figure import Figure
 
 from ...plugins.base_exp.auto import GRID, MODE, SPEED, cell_key, standard_set
 from ...plugins.base_exp.record import CONDITIONS, MODEL_PARAMETERS, environment_label, setup_key, sim_model
-from ...plugins.base_exp.report import FOLLOWING, load, metrics
+from ...plugins.base_exp.report import FOLLOWING, metrics
 from ...plugins.base_exp.twist import cell_of
+from ...shared.recordings.runs import DESCRIPTION, Recording, load_recording
 from .replay import Track, track
 
 #: Robots in table order, with their short label.
@@ -106,7 +107,7 @@ def load_runs(recordings: Path, experiment: str | None) -> tuple[pd.DataFrame, d
     fixed = _conditions(recordings, experiment)
     skipped = {"e-stopped": 0, f"listed in {EXCLUDED}": 0, "without the monitor's tracking": 0,
                "at another speed or mode": 0, "under other conditions": 0}
-    for data in sorted(recordings.glob("**/experiment.json")):
+    for data in sorted(recordings.glob(f"**/{DESCRIPTION}")):
         if any(part.startswith("_") for part in data.relative_to(recordings).parts):
             continue  # _analysis, _archive
         if experiment is not None and data.relative_to(recordings).parts[0] != experiment:
@@ -122,7 +123,7 @@ def load_runs(recordings: Path, experiment: str | None) -> tuple[pd.DataFrame, d
         settings = description.get("template")
         # * Constant-command runs follow no path: no tracking errors, and their own speeds.
         commands = settings is not None and cell_of(settings) is not None
-        run = load(data.with_name("recording.npz"))
+        run = load_recording(data.parent)
         if settings is None or (not commands and "tracking_position" not in run):
             skipped["without the monitor's tracking"] += 1
             continue
@@ -152,7 +153,7 @@ def load_runs(recordings: Path, experiment: str | None) -> tuple[pd.DataFrame, d
             **{f"p_{k}": v for k, v in settings["parameters"].items()},
         }
         if not commands:
-            numbers = metrics(run)
+            numbers = metrics(run, description.get("expected_duration", math.nan))
             row.update({k: v for k, v in numbers.__dict__.items() if k != "segments"})
             row["duration_ratio"] = row["duration"] / row["expected"] if row["expected"] else math.nan
             for kind, values in numbers.segments.items():
@@ -186,7 +187,7 @@ def _excluded(folder: Path) -> frozenset[str]:
 def _conditions(recordings: Path, experiment: str | None) -> dict:
     """The conditions most of the experiment's path runs were recorded under; `record.CONDITIONS` if it has none."""
     found: Counter = Counter()
-    for data in recordings.glob("**/experiment.json"):
+    for data in recordings.glob(f"**/{DESCRIPTION}"):
         parts = data.relative_to(recordings).parts
         if any(part.startswith("_") for part in parts) or (experiment is not None and parts[0] != experiment):
             continue
@@ -218,7 +219,7 @@ def parameters(row: pd.Series) -> str:
 @lru_cache(maxsize=None)
 def run_track(folder: str) -> Track | None:
     """One run folder's recording as a replay Track (loaded once)."""
-    return track(load(Path(folder) / "recording.npz"))
+    return track(load_recording(folder))
 
 
 def tracks(runs: pd.DataFrame) -> list[Track]:
@@ -423,12 +424,12 @@ def _model_text(description: dict) -> str:
     return "" if model is None else values_text(model)
 
 
-def _profile(run: dict[str, np.ndarray]) -> np.ndarray:
+def _profile(run: Recording) -> np.ndarray:
     """Mean |position| (m) and |heading| (°) error in PROGRESS_BINS bins of progress, while following."""
-    context = run["tracking_context"]
-    moving = context[:, 5] == FOLLOWING
-    values = (np.abs(run["tracking_position"][:, 0]), np.abs(np.degrees(run["tracking_heading"][:, 0])))
-    bins = np.clip((np.nan_to_num(context[:, 2]) * PROGRESS_BINS).astype(int), 0, PROGRESS_BINS - 1)
+    moving = run.channel("tracking_context", "phase") == FOLLOWING
+    values = (np.abs(run.channel("tracking_position", "position")), np.abs(np.degrees(run["tracking_heading"][:, 0])))
+    progress = np.nan_to_num(run.channel("tracking_context", "progress"))
+    bins = np.clip((progress * PROGRESS_BINS).astype(int), 0, PROGRESS_BINS - 1)
     profile = np.full((PROGRESS_BINS, 2), np.nan)
     for b in range(PROGRESS_BINS):
         for column, value in enumerate(values):

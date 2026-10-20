@@ -88,7 +88,8 @@ furniture, the tripods and Belle parked at (1.7, 1.3). ! Keep that area clear; i
   from stow, speed caps), planner and settings, start, target; the plan (found or why not, time, length, clearance,
   notes); the run (outcome, controller) once committed; offline, the simulated drives (model group, true xICR,
   finished or why not).
-- `plan.npz`: the path and the floor around it. `recording.npz`: the run's samples. `simulated.npz`: offline
+- `plan.npz`: the path and the floor around it. `recording.npz`: the run's samples, per tick and per follower report,
+  wheel odometry message and mocap sample (`follower.*`, `odometry.*`, `mocap.*`). `simulated.npz`: offline
   follower traces.
 - The report writes `plan.png` per attempt, `overview.png` and `report.json` per run, and `_analysis/`.
 

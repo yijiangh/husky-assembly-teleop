@@ -295,7 +295,8 @@ class HuskyMonitor(Node):
         """One tick. The order below is deliberate; see the comment on each step."""
         self._tick_index += 1
 
-        # 1. Run every ROS callback that is waiting, so the world is as fresh as it gets.
+        # 1. Run every ROS callback that is waiting, so the world is as fresh as it gets. Message signals record
+        #    here, inside the callbacks.
         with self._timer.part("ROS callbacks"):
             count = self._pump_ros()
         self._timer.note("ROS callbacks", f"{count} callbacks")
@@ -326,7 +327,7 @@ class HuskyMonitor(Node):
             loaded.ctx._wake_tick_waiters()
         await asyncio.sleep(0)
 
-        # 7. Sample traces last, so they see this tick's measurements, link poses and commands alike.
+        # 7. Sample tick signals last, so they see this tick's measurements, link poses and commands alike.
         for loaded in self._loaded.values():
             if not loaded.stopped:
                 try:
@@ -422,12 +423,14 @@ class HuskyMonitor(Node):
             loaded.ctx._cancel_all_tasks()
 
     def _step_plugin(self, loaded: _LoadedPlugin) -> None:
-        """Give one plugin its turn: count failed tasks, run intents, then update.
+        """Give one plugin its turn: count failed tasks and message signals, run intents, then update.
 
         Each part is caught on its own, so one failing still lets the others run unless the plugin got stopped.
         """
         if loaded.ctx._take_task_failures():
             self._plugin_failed(loaded, "a task", details="")
+        if (skipped := loaded.ctx._take_signal_failures()) is not None:
+            self._plugin_failed(loaded, "a message signal", details=skipped)
         # Intents first, so UI work is applied before the update that reacts to it.
         if not loaded.stopped:
             try:

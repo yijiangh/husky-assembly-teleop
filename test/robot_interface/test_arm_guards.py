@@ -41,12 +41,17 @@ def refused(arm, positions, duration, velocities=None) -> str:
 # --- --- --- --- --- trajectories --- --- --- --- ---
 
 def test_a_slow_trajectory_from_the_arm_goes_out():
-    """Waypoints spread evenly over the duration, and the arm counts as executing."""
+    """Waypoints spread evenly over the duration, the arm counts as executing, and the trajectory is fired as sent."""
     arm = fake_arm()
+    heard = []
+    arm.trajectories_sent.attach(heard.append)
     assert arm.send_joint_trajectory(*line(arm))
     trajectory, = arm._trajectory.sent
     assert len(trajectory.points) == 11 and trajectory.points[-1].time_from_start.sec == 10
     assert arm.state.is_executing and arm.state.last_motion_time == arm._node.now
+    sent, = heard
+    np.testing.assert_allclose(sent.target, trajectory.points[-1].positions)
+    assert (sent.duration, sent.waypoints, sent.hold, sent.update_time) == (10.0, 11, 0, arm._node.now)
 
 
 @pytest.mark.parametrize("big", [np.radians([170.0, -90.0, 150.0, 200.0, -300.0, 10.0]), np.full(6, 1e-4)])
@@ -226,7 +231,12 @@ def test_hold_at_rest_stays_at_the_measured_joints():
     """At rest, the hold point is where the arm is, HOLD_DURATION from now, and the target wrench is zeroed."""
     joints = np.radians([10.0, -80.0, 90.0, -100.0, -90.0, 30.0])
     arm = fake_arm(joints=joints)
+    trajectories, wrenches = [], []
+    arm.trajectories_sent.attach(trajectories.append)
+    arm.wrenches_sent.attach(wrenches.append)
     assert arm.hold()
+    assert trajectories[0].hold == 1 and np.allclose(trajectories[0].target, joints)
+    assert wrenches[0].force.tolist() == [0.0, 0.0, 0.0] and wrenches[0].torque.tolist() == [0.0, 0.0, 0.0]
     positions, duration = _stop(arm)
     np.testing.assert_allclose(positions, joints)
     assert duration == pytest.approx(HOLD_DURATION)
@@ -289,7 +299,10 @@ def test_hold_under_compliance_targets_the_tcp():
     """The target is the measured tool0, even with a URDF that breaks the stock frames, and the wrench is zeroed."""
     arm = fake_arm(CARTESIAN_COMPLIANCE_CONTROLLER)
     arm.urdf_problem = "turned base"
+    heard = []
+    arm.targets_sent.attach(heard.append)
     assert arm.hold()
+    assert heard[0].hold == 1 and np.allclose(heard[0].position, TCP_POSITION)
     target, = arm._target_frame.sent
     np.testing.assert_allclose([target.pose.position.x, target.pose.position.y, target.pose.position.z],
                                TCP_POSITION)
@@ -324,10 +337,12 @@ def test_a_close_target_goes_out_and_is_remembered():
 
 
 def test_test_mode_checks_and_records_but_never_sends():
-    """In cartesian_test_mode a good target returns False, is not published, but is kept for the 3D view."""
+    """In cartesian_test_mode a good target returns False, is not published or fired, but is kept for the 3D view."""
     arm = fake_arm(CARTESIAN_COMPLIANCE_CONTROLLER, cartesian_test_mode=True)
+    heard = []
+    arm.targets_sent.attach(heard.append)
     assert not arm.send_cartesian_target(TCP_POSITION, TCP_ORIENTATION)
-    assert not arm._target_frame.sent and arm.state.sent_target_time == arm._node.now
+    assert not arm._target_frame.sent and arm.state.sent_target_time == arm._node.now and not heard
     assert "TEST MODE" in arm._node.log.text("warning")
 
 
