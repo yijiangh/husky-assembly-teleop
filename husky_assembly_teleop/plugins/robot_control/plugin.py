@@ -12,6 +12,8 @@ On the phone, a Control tab per robot: the base's D-pad, and per arm its gripper
   - `update` does per-tick work; anything longer than a tick is a `ctx.spawn` task.
 * Robots are commanded and read only through their interfaces; no topic names here.
 * A robot is leased while in use (`teleop_lease.py`): a jog or drive is refused while another plugin holds it.
+* Base Clearance (ticked by default): while driving, the base is soft stopped once it comes too close to anything
+  in the scene (`ctx.clearance`).
 * ! Every button that does nothing says why: a refusal chip on its part's status line (`_refuse`, `refusal_chip`).
 """
 
@@ -37,6 +39,7 @@ from ...robot_interface.refusal import Refusal
 from ...robot_interface.soft_stop import MotionRefused
 from ...ui.phone import big_buttons, phone_text
 from ...ui.style import REFUSAL_SHOWN, SECTION_SENSOR, block, numbers, section, values
+from ...world.clearance import STOP_DISTANCE
 from scaffolding_assembly_core.geometry import Pose
 from .arm_panel import (FREE_DRIVE_ICON, ComplianceInputs, build_compliance_inputs, build_free_drive_inputs,
                         build_jog_inputs, build_phone_arm_inputs, build_tool_inputs, pose_from_sliders,
@@ -65,6 +68,8 @@ class _BaseWidgets:
     panel: ControllerPanel
     status: viser.GuiHtmlHandle
     speed: viser.GuiSliderHandle
+    #: Clearance: while ticked, driving soft stops the base once it comes too close to anything (`_guard_base`).
+    clearance: viser.GuiCheckboxHandle | None = None
     #: The same on the phone's Control tab, set once that tab is built.
     phone_status: viser.GuiHtmlHandle | None = None
     phone_speed: viser.GuiSliderHandle | None = None
@@ -139,6 +144,10 @@ class RobotControlPlugin(HuskyPlugin):
         #: Per (serial, part), the last of this plugin's commands that did nothing, and why; part is BASE or an arm.
         self._refusals: dict[tuple[str, str], Refusal] = {}
 
+        #: Per base serial, the task keeping a clearance while this plugin drives it, and why the last one tripped.
+        self._base_guards: dict[str, asyncio.Task] = {}
+        self._tripped: dict[str, str] = {}
+
     # --- --- --- --- --- SETUP --- --- --- --- ---
 
     def setup(self, ctx: PluginContext) -> None:
@@ -190,12 +199,20 @@ class RobotControlPlugin(HuskyPlugin):
             _BaseWidgets: The handles.
         """
         status = gui.add_html("")
-        velocity_inputs = partial(build_velocity_inputs, ctx, gui, serial, partial(self._on_hold, ctx, serial, False))
+
+        def velocity_inputs() -> tuple[viser.GuiSliderHandle, viser.GuiCheckboxHandle]:
+            speed = build_velocity_inputs(ctx, gui, serial, partial(self._on_hold, ctx, serial, False))
+            clearance = gui.add_checkbox(
+                "Clearance", initial_value=True,
+                hint=f"While driving, soft stop the base once it comes within {STOP_DISTANCE * 100:.0f} cm of anything "
+                     f"in the scene. Untick to drive out of a tight spot; the phone's D-pad follows it too.")
+            return speed, clearance
+
         panel, built = build_controller_panel(ctx, gui, base.controllers,
                                               {PLATFORM_VELOCITY_CONTROLLER: velocity_inputs},
                                               partial(self._leased, ctx, (serial, BASE)))
-        return _BaseWidgets(serial=serial, base=base, panel=panel, status=status,
-                            speed=built[PLATFORM_VELOCITY_CONTROLLER])
+        speed, clearance = built[PLATFORM_VELOCITY_CONTROLLER]
+        return _BaseWidgets(serial=serial, base=base, panel=panel, status=status, speed=speed, clearance=clearance)
 
     def _build_arm(self, ctx: PluginContext, gui: viser.GuiApi, serial: str,
                    arm: ArmInterface) -> _ArmWidgets:
@@ -315,6 +332,8 @@ class RobotControlPlugin(HuskyPlugin):
 
     def _drop_reason(self, ctx: PluginContext, serial: str, soft_stopped: bool) -> tuple[str, str] | None:
         """Why a held button on robot `serial` does nothing now, as (label, reason): soft stop or another's lease."""
+        if soft_stopped and serial in self._tripped:
+            return "too close", f"{self._tripped[serial]}: soft stopped; drive clear after Resume, or untick Clearance"
         if soft_stopped:
             return "soft stopped", f"robot {serial} is soft stopped; press Resume first"
         taken = self._leases.taken(ctx, serial)
@@ -330,6 +349,8 @@ class RobotControlPlugin(HuskyPlugin):
         """
         now = ctx.now()
         for widgets in self._bases:
+            if not widgets.base.soft_stopped:
+                self._tripped.pop(widgets.serial, None)
             held = self._held.get(widgets.serial)
             # Drop the hold if it timed out, the robot was soft stopped or leased, or the controller no longer runs.
             dropped = None if held is None else self._drop_reason(ctx, widgets.serial, widgets.base.soft_stopped)
@@ -342,6 +363,7 @@ class RobotControlPlugin(HuskyPlugin):
                 del self._held[widgets.serial]
                 held = None
             if held is not None:
+                self._keep_clear(ctx, widgets)
                 speed = (widgets.phone_speed if held[3] else widgets.speed).value
                 self._leased(ctx, (widgets.serial, BASE), lambda: widgets.base.send_twist(
                     held[0] * speed * MAX_LINEAR_SPEED, held[1] * speed * MAX_ANGULAR_SPEED))
@@ -363,6 +385,28 @@ class RobotControlPlugin(HuskyPlugin):
             self._markers[key] = place_markers(ctx, widgets.serial, widgets.arm, target, force,
                                                self._applied_force.get(key))
         self._leases.release_idle(ctx, partial(self._busy, now))
+
+    def _keep_clear(self, ctx: PluginContext, widgets: _BaseWidgets) -> None:
+        """While Clearance is ticked, have a clearance kept on the base this plugin is about to drive."""
+        guard = self._base_guards.get(widgets.serial)
+        if widgets.clearance is not None and widgets.clearance.value and (guard is None or guard.done()):
+            self._base_guards[widgets.serial] = ctx.spawn(f"clearance {widgets.serial}",
+                                                          self._guard_base(ctx, widgets))
+
+    async def _guard_base(self, ctx: PluginContext, widgets: _BaseWidgets) -> None:
+        """Keep a clearance on the base while this plugin holds its lease and Clearance stays ticked.
+
+        A trip soft stops the base (`ctx.clearance`); the status line then says what it came too close to.
+        """
+        serial, clearance = widgets.serial, None
+        try:
+            with ctx.clearance([serial]) as clearance:
+                await ctx.wait_until(lambda: not self._leases.held(serial) or not widgets.clearance.value)
+        except asyncio.CancelledError:
+            if clearance is not None and clearance.problem:
+                self._tripped[serial] = clearance.problem
+                self._refuse(ctx, (serial, BASE), "too close", f"{clearance.problem}: soft stopped")
+            raise
 
     def _busy(self, now: float, serial: str) -> bool:
         """Whether this plugin still uses robot `serial`: an input held, its own move or force, or a part moving."""

@@ -3,24 +3,26 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
 from functools import partial
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
-from robot_fakes import TCP_ORIENTATION, TCP_POSITION, FreeRobots, fake_arm, lease_context
+from robot_fakes import TCP_ORIENTATION, TCP_POSITION, FreeRobots, fake_arm, lease_context, wait_ticks_until
 from scipy.spatial.transform import Rotation
 
 from husky_assembly_teleop.plugin_api.concurrency import WaitTimeout
 from husky_assembly_teleop.plugins.robot_control.dpad import HOLD_TIMEOUT
 from husky_assembly_teleop.plugins.robot_control.markers import place_markers, target_from_world
-from husky_assembly_teleop.plugins.robot_control.plugin import RobotControlPlugin, _BaseWidgets
+from husky_assembly_teleop.plugins.robot_control.plugin import BASE, RobotControlPlugin, _BaseWidgets
 from husky_assembly_teleop.plugins.robot_control.status import refusal_chip
 from husky_assembly_teleop.plugins.robot_control.teleop_lease import IDLE_AFTER
 from husky_assembly_teleop.robot_interface.arm import (CARTESIAN_COMPLIANCE_CONTROLLER, MOVING_WITHIN,
                                                        SCALED_JOINT_TRAJECTORY_CONTROLLER, UR_JOINT_LIMITS)
 from husky_assembly_teleop.robot_interface.base import PLATFORM_VELOCITY_CONTROLLER
 from husky_assembly_teleop.robot_interface.robot_lease import Lease, take_lease
+from husky_assembly_teleop.world.clearance import STOP_DISTANCE, Clearance
 from scaffolding_assembly_core.geometry import Pose
 
 pytestmark = pytest.mark.safety
@@ -324,3 +326,81 @@ def test_teardown_stops_a_base_that_is_being_driven():
     plugin.update(ctx)
     plugin.teardown(ctx)
     assert sent[-1] == (0.0, 0.0)
+
+
+class BaseContext:
+    """A plugin context for driving a base: real tasks and leases, and clearances kept for the test to trip."""
+
+    def __init__(self):
+        """At ROS time 0; every robot's lease is free."""
+        self.world, self.clearances, self.lines = SimpleNamespace(robots=FreeRobots()), [], []
+
+    wait_until = staticmethod(wait_ticks_until)
+
+    def now(self) -> float:
+        """ROS time, seconds."""
+        return 0.0
+
+    def take_lease(self, serials, label):
+        """Lease robots of the fake world, as the monitor does."""
+        return take_lease([self.world.robots[serial].lease_slot for serial in serials], f"robot_control: {label}")
+
+    def spawn(self, label, work):
+        """Start `work` as a task."""
+        return asyncio.get_running_loop().create_task(work, name=label)
+
+    @contextmanager
+    def clearance(self, serials, margin=STOP_DISTANCE):
+        """Keep the clearance; the test trips it."""
+        self.clearances.append(Clearance(tuple(serials), margin))
+        yield self.clearances[-1]
+
+    def log_warn(self, message: str) -> None:
+        """Keep it."""
+        self.lines.append(message)
+
+
+def test_driving_with_clearance_keeps_one_on_the_base_until_it_is_unticked():
+    """Every tick of a hold drives under the same clearance; unticking Clearance ends it."""
+    plugin, sent, _controller = _driven_base()
+    plugin._bases[0].clearance = SimpleNamespace(value=True)
+    ctx = BaseContext()
+
+    async def drive() -> bool:
+        plugin._on_hold(ctx, "0804", False, 1.0, 0.0)
+        plugin.update(ctx)
+        await asyncio.sleep(0)
+        plugin.update(ctx)
+        await asyncio.sleep(0)
+        guard = plugin._base_guards["0804"]
+        guarding = not guard.done()
+        plugin._bases[0].clearance.value = False
+        await guard
+        return guarding
+
+    assert asyncio.run(drive()) and len(sent) == 2
+    assert [clearance.serials for clearance in ctx.clearances] == [("0804",)]
+
+
+def test_a_clearance_trip_says_on_the_base_why_driving_stopped():
+    """Tripped, the base is soft stopped and a held button is dropped with what the base came too close to."""
+    plugin, sent, _controller = _driven_base()
+    plugin._bases[0].clearance = SimpleNamespace(value=True)
+    base, ctx = plugin._bases[0].base, BaseContext()
+
+    async def drive() -> None:
+        plugin._on_hold(ctx, "0804", False, 1.0, 0.0)
+        plugin.update(ctx)
+        await asyncio.sleep(0)
+        ctx.clearances[0].problem = "robot 0804 came within 10 cm of wall"
+        base.soft_stopped = True  # as the monitor's trip does
+        guard = plugin._base_guards["0804"]
+        guard.cancel()
+        await asyncio.gather(guard, return_exceptions=True)
+        plugin._on_hold(ctx, "0804", False, 1.0, 0.0)
+        plugin.update(ctx)
+
+    asyncio.run(drive())
+    refusal = plugin._refusals[("0804", BASE)]
+    assert refusal.label == "too close" and "came within 10 cm of wall: soft stopped" in refusal.reason
+    assert "0804" not in plugin._held and sent[-1] == (0.0, 0.0)
