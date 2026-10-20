@@ -14,8 +14,8 @@ from pathlib import Path
 from typing import Literal, get_args
 
 import yaml
-from crl_husky.config_resolver import (get_primary_mocap_id_for_robot_serial, get_robot_model, get_robot_models,
-                                       get_ur_calibration_file)
+from crl_husky.config_resolver import (get_park, get_primary_mocap_id_for_robot_serial, get_robot_model,
+                                       get_robot_models, get_ur_calibration_file)
 from rclpy.exceptions import ParameterUninitializedException
 from rclpy.node import Node
 
@@ -57,7 +57,8 @@ class ArmConfig:
         cartesian_test_mode: Cartesian commands run every check and show in the 3D view, but are not sent.
             ! Use it after any change to the arm's URDF, calibration or pendant mounting: a wrong frame
               sends the arm off-target. Turn it off only when the startup log shows no URDF frame error.
-        stow_joints: Parking joint angles, radians, UR driver order, or None. The Stow button loads them.
+        stow_joints: Parking joint angles, radians, UR driver order, or None. The Stow button loads them; from
+            crl-husky's park.yaml, where the simulator starts the arm too.
         pendant_tcp: The TCP set on this arm's teach pendant, in tool0: the reported TCP includes it, so the monitor
             takes it off to get tool0. tool0 itself (zero) by decision, whatever tool is mounted; the tool's own
             TCP is `Tool.tcp`, for planners. ! Must equal the pendant's active TCP, or every Cartesian command
@@ -122,7 +123,8 @@ class RobotConfig:
         default_position: Where the robot is drawn before the first mocap fix, (x, y, z) metres.
         default_yaw: Which way it faces there, radians about Z.
         park_pose: Where the robot parks on the floor, (x, y, yaw) metres and radians, or None. The base planner's
-            Park button loads it, and the robot starts there until the first mocap fix.
+            Park button loads it, and the robot starts there until the first mocap fix; from crl-husky's park.yaml,
+            where the simulator starts the base too.
         arms: The arms, in the multi-arm trajectory's order (the first is `trajectory1`).
         mocap_id: Rigid-body id of the base in the mocap system, or None if the robot is not tracked.
         ur_calibration: Per arm, whether the URDF's arm joints match the UR calibration in crl-husky. The model is
@@ -196,42 +198,30 @@ class MonitorConfig:
 
 
 # --- --- --- --- --- WHAT EACH ROBOT IS --- --- --- --- ---
-# * Name, URDF and SRDF come from crl-husky (`get_robot_model`, its config/robots/<serial>/model.yaml); the arms,
-#   tools and poses the monitor uses are here. Each arm of the URDF is checked against its UR calibration in crl-husky
+# * Name, URDF and SRDF come from crl-husky (`get_robot_model`, its config/robots/<serial>/model.yaml), and so do the
+#   parked base pose and arm joints (`get_park`, park.yaml), which the simulators start from; the arms and tools are
+#   here. Each arm of the URDF is checked against its UR calibration in crl-husky
 #   at startup (`_apply_ur_calibrations`), its stock UR base frames by test (doc/ur_frames.md).
 # ? TODO consolidate a robot's config further: it is spread over crl-husky's robot.yaml, env/setup.bash,
 #   mocap_config.json, model.yaml and this table.
 #: Where crl-husky's model paths start, below the data directory.
 _URDF_ROOT = "husky_urdf"
 
-_SINGLE_ARM_STOW = (1.569, -2.973, 2.705, -2.958, 1.572, 0.0)
-# Measured parking poses on Cindy (0806), entered in degrees as the status panel shows them.
-_LEFT_ARM_STOW = tuple(math.radians(d) for d in (-88.4, -2.2, -161.3, -108.8, -0.8, 90.7))
-_RIGHT_ARM_STOW = tuple(math.radians(d) for d in (87.0, -179.8, 159.3, -74.7, 1.9, -90.2))
-
-# Parked base poses, (x, y, yaw) in the mocap frame, metres and radians: in a row along the front of the building
-# cabinet (data/lab/main.json, front face at y 2.00), facing +y with the battery and screen at the back towards the
-# open lab, 15 cm between the stowed robot's front and the cabinet.
-_PARK_Y = 1.35
-_ALICE_PARK = (0.3, _PARK_Y, math.pi / 2)
-_BELLE_PARK = (1.7, _PARK_Y, math.pi / 2)
-_CINDY_PARK = (3.1, _PARK_Y, math.pi / 2)
-
 _SINGLE_ARM_WITH_ROBOTIQ = (
     ArmConfig(name="ur_arm", ros_namespace="ur5e",
-              end_effector="robotiq", end_effector_namespace="gripper", stow_joints=_SINGLE_ARM_STOW),
+              end_effector="robotiq", end_effector_namespace="gripper"),
 )
 _DUAL_ARM_WITH_SCAFFOLDING_V3 = (
     ArmConfig(name="left_ur_arm", ros_namespace="left_ur5e", label="Left",
-              end_effector="scaffolding_v3", end_effector_namespace="left_gripper", stow_joints=_LEFT_ARM_STOW),
+              end_effector="scaffolding_v3", end_effector_namespace="left_gripper"),
     ArmConfig(name="right_ur_arm", ros_namespace="right_ur5e", label="Right",
-              end_effector="scaffolding_v3", end_effector_namespace="right_gripper", stow_joints=_RIGHT_ARM_STOW),
+              end_effector="scaffolding_v3", end_effector_namespace="right_gripper"),
 )
 
 _ROBOTS_BY_SERIAL = {
-    "0804": dict(arms=_SINGLE_ARM_WITH_ROBOTIQ, park=_ALICE_PARK),
-    "0805": dict(arms=_SINGLE_ARM_WITH_ROBOTIQ, park=_BELLE_PARK),
-    "0806": dict(arms=_DUAL_ARM_WITH_SCAFFOLDING_V3, park=_CINDY_PARK),
+    "0804": dict(arms=_SINGLE_ARM_WITH_ROBOTIQ),
+    "0805": dict(arms=_SINGLE_ARM_WITH_ROBOTIQ),
+    "0806": dict(arms=_DUAL_ARM_WITH_SCAFFOLDING_V3),
 }
 
 
@@ -241,7 +231,7 @@ def robot_config_from_serial(token: str, data_directory: Path,
                              tools: tuple[EndEffectorKind | None, ...] | None = None) -> RobotConfig:
     """Build one RobotConfig from a serial ("0806", "a200-0806", "/a200_0806") or name ("cindy").
 
-    Arms and poses come from `_ROBOTS_BY_SERIAL`; URDF, SRDF and mocap id from crl_husky's config_resolver.
+    Arms come from `_ROBOTS_BY_SERIAL`; URDF, SRDF, parked poses and mocap id from crl_husky's config_resolver.
 
     Args:
         token: The serial or name as typed on the command line.
@@ -254,8 +244,8 @@ def robot_config_from_serial(token: str, data_directory: Path,
         RobotConfig: The robot, its model holding its tools.
 
     Raises:
-        ValueError: If `token` names no known robot, crl-husky has no model.yaml for it, or `tools` does not give
-            one tool per arm.
+        ValueError: If `token` names no known robot, crl-husky has no model.yaml or park.yaml for it, park.yaml has
+            no joints for one of its arms, or `tools` does not give one tool per arm.
         FileNotFoundError: If the URDF is missing (usually a wrong `data_directory`), or crl_husky has no
             mocap_config.json for the robot.
     """
@@ -278,7 +268,14 @@ def robot_config_from_serial(token: str, data_directory: Path,
         raise FileNotFoundError(f"URDF for robot {number!r} not found at {urdf_file}; "
                                 f"check the data_directory parameter")
 
-    arms, park = spec["arms"], spec["park"]
+    park = get_park(number)
+    if park is None:
+        raise ValueError(f"crl-husky has no park.yaml for robot {number!r} (config/robots/{number}/)")
+    unparked = [arm.name for arm in spec["arms"] if _arm_side(arm.name) not in park["arms"]]
+    if unparked:
+        raise ValueError(f"crl-husky's park.yaml for robot {number!r} has no joints for {', '.join(unparked)}")
+    arms = tuple(replace(arm, stow_joints=park["arms"][_arm_side(arm.name)]) for arm in spec["arms"])
+    park = park["base"]
     if tools is not None:
         if len(tools) != len(arms):
             raise ValueError(f"robot {number!r} has {len(arms)} arm(s) ({', '.join(a.name for a in arms)}), "
