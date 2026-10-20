@@ -393,7 +393,7 @@ class HuskyMonitor(Node):
     # assembly (so its bars are ignored by collision checks; legacy BarAction
     # list only, plan skeleton mode uses IGNORE_BUILT_ASSEMBLY_COLLISIONS below), and
     # force-attaches the active bar for the transfer replan. Keep 0 for the robot-centric
-    # replay demo, where the built assembly should stay visible and collision-checked.b
+    # replay demo, where the built assembly should stay visible and collision-checked.
     # ! These three flags move together, so flip all of them when switching mode:
     # !   mocap accuracy test  : USE_MOCAP=1, BAR_ACTION_LIVE_REPLAN_EXE = 1, USE_CELL_STATE_BASE_POSE=0, BAR_ACTION_MOCAP_ACCURACY_TEST=1
     # !   robot-centric demo   : USE_MOCAP=0, BAR_ACTION_LIVE_REPLAN_EXE = 1, USE_CELL_STATE_BASE_POSE=1, BAR_ACTION_MOCAP_ACCURACY_TEST=0
