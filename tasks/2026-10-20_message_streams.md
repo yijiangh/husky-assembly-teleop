@@ -1,6 +1,6 @@
 # Message signals in the recording system (2026-10-20)
 
-Status: **built, not committed.** The runs under `HUSKY_DRIVE_ROOT` are converted (441: 261 path runs, 180
+Status: **built and committed** (cdff7a3, 0bb381a, 80ff534, 962b70b; not pushed). The runs under `HUSKY_DRIVE_ROOT` are converted (441: 261 path runs, 180
 constant-command runs, all three steps of `scripts/convert_recordings.py`); originals in
 `/home/jakob/ra/workspace/backups/recordings_before_message_groups_2026-10-20.tar`.
 
@@ -133,7 +133,8 @@ Following from these:
 - [ ] Run base_exp and base_planner once in the monitor with the simulator (isolated domain): the recording holds
       `<serial>_follower.*`; on the robot also `<serial>_odometry.*`.
 - [ ] `convert_recordings.py` on every other copy of the recordings (the real Drive if it is not this folder).
-- [ ] Commit (teleop only; propose grouping first).
+- [ ] Push `jg/viser-cleanup` (crl-husky is unchanged).
+- [x] Review pages marked up to 962b70b (19 Oct review, review panel).
 
 ## Found in the same scan, not part of this task
 
