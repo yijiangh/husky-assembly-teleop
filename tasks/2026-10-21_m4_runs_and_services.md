@@ -371,3 +371,23 @@ no "failed"; the only warnings are the experimental plugins and the robots' miss
 Re-run: default 457 passed, 2 skipped; `-m slow` 47 passed, 1 xpassed; flake8 and pep257 clean; monitor smoke
 (domain 70, localhost only) all five plugins set up, no "failed", clean teardown; the headless chain on a scratch
 copy of the purged process as before. Not done, pending the user: an owner or lock file for `runs/`.
+
+### Re-review (approve with nits) and its fixes (2026-10-20, on yh/core-port after M5)
+
+- "Newest" is now the run **used last**: `find_runs` orders by progress.json's `updated_at` (to the microsecond),
+  then the folder name; adopting a run (a restart, or Continue match) saves its progress, so after Continue match the
+  next restart continues that run without asking. While runs are offered nothing is made current or selected:
+  Continue or New run selects.
+- A second Continue while the first still runs (or while a run is being started) is refused ("a run is being
+  started: wait a moment").
+- A soft stop during the 15 s wait for the robot makes the first pending action current at once (a done callback on
+  the waiting task), so Mark done still has an action.
+- `new_run` builds everything that can fail before it makes the run folder: no empty `runs/<name>_2/` is left. A
+  carried movement that is no index ("1", true) becomes the action's first step, in `new_run` and in the plugin.
+- A run folder that can't be read and was made after the run on these files stops the silent continue: that run is
+  offered (offer = match), the panel says "newer run unreadable". `find_runs` returns (folder name, why) per problem.
+- Messages: Continue match with no match says "no run made on these files is offered"; an open that raises after
+  the read says "could not open the run (…)"; a run a setting started says "run <name> started"; `_scan` typed.
+- Tests: test_runs (+3: used-last order, a carried movement that is no index, a failed new run leaves no folder),
+  test_assembly_run (+5: Continue match then restart, a second Continue, a soft stop during the wait, an unreadable
+  newer run, the messages); each fails on the code before.

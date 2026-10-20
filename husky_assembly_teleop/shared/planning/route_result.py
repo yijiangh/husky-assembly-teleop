@@ -1,6 +1,8 @@
 """
 What planning a movement gave (`RouteResult`), what checking its goal gave (`GoalCheck`), and pose helpers for goals.
 
+`goal_line` puts a goal check into one log line.
+
 Pure: any thread.
 """
 
@@ -15,9 +17,11 @@ from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.ids import split_link_id
 from scaffolding_assembly_core.process import LineSpec, Movement, Process
 from scaffolding_assembly_core.process.solutions import MovementResult
+from scaffolding_assembly_core.urdf import UR_JOINT_NAMES
 
 from .collision import SweptReport
 from .ik import IkResult
+from .joints import arm_side
 from .movement import MovementSpec, Routine
 
 
@@ -117,6 +121,31 @@ class GoalCheck:
                                                "colliding": list(ik.colliding) if ik.colliding else None,
                                                "reason": ik.reason},
                 "sources": dict(self.sources), "warnings": list(self.warnings), "seconds": self.seconds}
+
+
+def goal_line(check: GoalCheck) -> str:
+    """A goal check as one log line: the largest gap to the authored goal, IK's goal per arm (radians) and the base.
+
+    Args:
+        check: The answer of `request_ik`.
+
+    Returns:
+        str: E.g. "B20_J_transfer at the live base: max |goal - authored goal| = 0.0004 rad; goal (rad) left [...]
+            right [...]; base 1.234 -0.567 m 90.0 deg".
+    """
+    if not check.ok:
+        return f"{check.movement}: no goal at the live base: {check.reason}"
+    arms: dict[str, list[float]] = {}
+    for name, value in check.ik.joints.items():
+        arm = next(name[:-len(joint) - 1] for joint in UR_JOINT_NAMES if name.endswith(f"_{joint}"))
+        arms.setdefault(arm_side(arm), []).append(value)
+    goal = " ".join(f"{side} [{', '.join(f'{value:+.4f}' for value in joints)}]" for side, joints in arms.items())
+    x, y, _z = check.base.position
+    qx, qy, qz, qw = check.base.orientation
+    yaw = math.degrees(math.atan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz)))
+    gap = check.max_from_authored
+    return (f"{check.movement} at the live base: max |goal - authored goal| = "
+            f"{'-' if gap is None else f'{gap:.4f}'} rad; goal (rad) {goal}; base {x:.3f} {y:.3f} m {yaw:.1f} deg")
 
 
 def pose_error(a: Pose, b: Pose) -> tuple[float, float]:

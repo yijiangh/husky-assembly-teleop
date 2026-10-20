@@ -63,7 +63,7 @@ class RunPanel:
             self._title = gui.add_html(section("actions", SECTION_CTRL))
             self._rows = [gui.add_button("·", color="gray") for _ in range(ACTION_ROWS)]
             run = gui.add_button_group("Run", [CONTINUE_NEWEST, CONTINUE_MATCH, NEW_RUN],
-                                       hint="Continue the newest run, made on another export of this process, in a "
+                                       hint="Continue the run used last, made on another export of this process, in a "
                                             "new run; or write on in an older run made on these very files; or start "
                                             "a new run, every action pending (asks first). Old runs are kept")
             action = gui.add_button_group("Action", ["Mark done", "Reopen"],
@@ -122,6 +122,9 @@ class RunPanel:
         done = sum(value == DONE for value in view.statuses.values())
         if status.run:
             chips = chip(escape(status.run), OK, str(view.folder))
+        elif view.offer and view.offer == view.match:
+            chips = chip("newer run unreadable", BUSY, f"a newer run folder can't be read (see the log); run "
+                                                       f"{view.match} was made on these files")
         elif view.offer:
             older = f"; run {view.match}, older, was made on these files" if view.match else ""
             chips = chip("export changed", BUSY, f"run {view.offer} was made on another export{older}")

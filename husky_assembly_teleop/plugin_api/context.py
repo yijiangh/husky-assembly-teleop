@@ -110,6 +110,14 @@ class PluginContext:
         """Current ROS time in seconds; follows simulated time and bag playback."""
         return self._monitor.now()
 
+    @property
+    def closed(self) -> bool:
+        """bool: Whether this plugin was stopped or torn down: its tasks are cancelled for good, no new one starts.
+
+        ? A task cancelled while this is False was cancelled by its own plugin or by the soft stop (Stop all).
+        """
+        return self._closed
+
     def log_info(self, message: str) -> None:
         """Log `message` at info level, tagged with this plugin's name."""
         self._monitor.log_info(f"[{self.name}] {message}")

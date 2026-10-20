@@ -12,4 +12,7 @@ For plugins to share code, share data and offer services to each other; nothing 
   process.py a process and its steps as data, and what the process plugin offers (`ProcessPluginApi`)
   runs.py    the `runs/` record of an assembly: actions done, where robots were left, settings
   assembly_run.py  what the assembly_run plugin offers (`AssemblyRunPluginApi`), and the rules it marks actions by
+  execution/ running a planned movement on the robots: timing, sending, tools, the operator's prompt, the robot lease
+             and when a plan goes stale
+  movement_exec.py what the movement_exec plugin offers (`MovementExecPluginApi`), its requests, and a step's parts
 """

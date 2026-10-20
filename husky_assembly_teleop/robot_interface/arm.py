@@ -94,6 +94,10 @@ HOLD_DURATION = 0.5
 MOTION_THRESHOLD = 1e-2
 #: Seconds without motion after which the arm counts as done executing.
 STILL_AFTER = 1.0
+#: Finer than MOTION_THRESHOLD, for telling whether an arm moves at all: a joint further than this, radians, from
+#: where slight motion was last seen, or a reported joint speed over SLIGHT_SPEED, rad/s (`last_slight_motion_time`).
+SLIGHT_MOTION = 1e-3
+SLIGHT_SPEED = 1e-2
 
 #: Defaults for `joint_move`: never faster than this on any joint, rad/s ...
 JOINT_MOVE_MAX_SPEED = np.radians(20.0)
@@ -278,6 +282,8 @@ class ArmState:
         stop_reason: Why the sync last stopped every arm, or "".
         end_effector: State of the mounted tool, or None for a bare arm.
         last_motion_time: ROS time the joints last moved or a trajectory was sent.
+        last_slight_motion_time: ROS time any joint last moved by SLIGHT_MOTION, or reported a speed over
+            SLIGHT_SPEED; catches the slow start and end of a move that `last_motion_time` misses.
         last_update_time: ROS time of the last joint_states.
         joint_states_stats: Rate and gaps of joint_states, to judge the wifi link.
     """
@@ -307,6 +313,7 @@ class ArmState:
     stop_reason: str = ""
     end_effector: EndEffectorState | None = None
     last_motion_time: float | None = None
+    last_slight_motion_time: float | None = None
     last_update_time: float | None = None
     joint_states_stats: StreamStats = field(default_factory=StreamStats)
 
@@ -342,8 +349,9 @@ class ArmInterface:
         self.state = ArmState()
         #: When each test-mode banner was last logged, ROS time.
         self._test_mode_logged: dict[str, float] = {}
-        #: Joint positions, by URDF name, where motion was last detected.
+        #: Joint positions, by URDF name, where motion (and slight motion) was last detected.
         self._motion_reference: dict[str, float] = {}
+        self._slight_reference: dict[str, float] = {}
         #: Whether free drive was being kept on at the last heartbeat, to log the change.
         self._free_drive_on = False
         self._namespace = f"/{robot_namespace}/{config.ros_namespace}"
@@ -639,7 +647,9 @@ class ArmInterface:
                        f"{np.degrees(CARTESIAN_START_ANGLE_TOLERANCE):.0f} deg")
         elif np.linalg.norm(position - [0.0, 0.0, UR5E_SHOULDER_HEIGHT]) > UR5E_REACH:
             refusal = f"target is out of reach ({UR5E_REACH} m from the shoulder)"
-        else:
+        elif not hold:
+            # ? Not for a hold: it targets the measured TCP, which under compliance can lag the last streamed target
+            #   by more than one step.
             refusal = self._cartesian_step_refusal(position, orientation)
         if refusal is not None:
             log.error(f"arm {self.config.name}: not sending a cartesian target: {refusal}")
@@ -818,16 +828,22 @@ class ArmInterface:
     # ! Only write into self.state here: no planning, drawing or file IO.
 
     def _on_joint_state(self, message: JointState) -> None:
-        """Store joint positions under URDF names and update `is_executing`."""
+        """Store joint positions under URDF names and update `is_executing` and the motion times."""
         now = self._now()
         prefix = f"{self.config.name}_"
         moved = False
+        slight = any(abs(speed) > SLIGHT_SPEED for speed in message.velocity)
         for name, position in zip(message.name, message.position):
             key = prefix + name
             self.state.joint_positions[key] = float(position)
             reference = self._motion_reference.setdefault(key, float(position))
             if abs(position - reference) > MOTION_THRESHOLD:
                 moved = True
+            if abs(position - self._slight_reference.setdefault(key, float(position))) > SLIGHT_MOTION:
+                slight = True
+        if slight:
+            self._slight_reference = {key: self.state.joint_positions[key] for key in self._slight_reference}
+            self.state.last_slight_motion_time = now
         # ? Compared with where motion was last seen, not the previous message, so slow moves count too.
         if moved:
             self._motion_reference = {key: self.state.joint_positions[key] for key in self._motion_reference}

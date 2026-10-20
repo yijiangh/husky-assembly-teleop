@@ -78,7 +78,7 @@ def commit(base: FakeBase):
     """Commit a ready plan for SERIAL on `base`; returns (sent, message) and the plugin. The run is not started."""
     plugin = BasePlannerPlugin()
     plugin.path, plugin._path_serial = planned((0.0, 0.0, 0.0), (1.0, 1.0, 0.0)), SERIAL
-    ctx = SimpleNamespace(world=SimpleNamespace(robots={SERIAL: SimpleNamespace(base=base)}),
+    ctx = SimpleNamespace(world=SimpleNamespace(robots={SERIAL: SimpleNamespace(base=base, lease=None)}),
                           now=lambda: 10.0, log_info=lambda _message: None, spawn=lambda _label, work: work.close())
     return plugin.send_plan(ctx), plugin
 

@@ -1,0 +1,95 @@
+"""
+The movement_exec panel and the phone's Exec tab: what runs, the prompt, Confirm and Cancel, and the dry run.
+
+! Never hide a row or a button, and keep every changing line one line tall, so nothing moves under the cursor.
+"""
+
+from __future__ import annotations
+
+from html import escape
+from typing import TYPE_CHECKING
+
+import viser
+
+from ...plugin_api.context import PluginContext
+from ...ui.phone import big_buttons, phone_text
+from ...ui.style import BUSY, FAIL, NONE, block, chip
+
+if TYPE_CHECKING:
+    from ...shared.execution.operator import Prompt
+    from .plugin import MovementExecPlugin
+
+#: The phone's Confirm and Cancel icons; the phone CSS makes these buttons big.
+CONFIRM_ICON, CANCEL_ICON = viser.Icon.CHECK, viser.Icon.X
+
+
+class ExecPanel:
+    """The panel's widgets, built once, and what `draw` writes into them. Main thread."""
+
+    def __init__(self, ctx: PluginContext, plugin: MovementExecPlugin):
+        """Build the panel and the phone tab; every click becomes one of the plugin's requests.
+
+        Args:
+            ctx: The plugin's context.
+            plugin: The plugin the buttons call.
+        """
+        # The dry run and refusal count the checkbox was last set to.
+        self._shown: tuple[bool, int] | None = None
+        with ctx.view.ui() as gui:
+            self._status = gui.add_html("")
+            self._prompt = gui.add_html("")
+            buttons = gui.add_button_group("Prompt", ["Confirm", "Cancel"],
+                                           hint="Confirm: do what the prompt says. Cancel: answer no; with no prompt "
+                                                "open, stop the running step, every arm held")
+            self._dry = gui.add_checkbox("Dry run (every check, nothing sent)", False,
+                                         hint="Exec runs every check and builds every trajectory, and sends nothing")
+            # ! Keep changing text BELOW the buttons.
+            self._details = gui.add_html("")
+        buttons.on_click(ctx.defer_value("exec prompt", lambda label: plugin.request_confirm()
+                                         if label == "Confirm" else plugin.request_cancel()))
+        self._dry.on_update(ctx.defer_value("dry run", lambda value: plugin.request_dry_run(bool(value))))
+        with ctx.view.phone("Exec", viser.Icon.PLAYER_PLAY) as phone:
+            phone.add_html(f"<style>{big_buttons([CONFIRM_ICON, CANCEL_ICON], 72, 30)}</style>")
+            self._phone_status = phone.add_html("")
+            self._phone_prompt = phone.add_html("")
+            confirm = phone.add_button("Confirm", color="green", icon=CONFIRM_ICON)
+            cancel = phone.add_button("Cancel", color="red", icon=CANCEL_ICON,
+                                      hint="Answer no; with no prompt open, stop the running step, every arm held")
+            self._phone_last = phone.add_html("")
+        confirm.on_click(ctx.defer("exec confirm (phone)", plugin.request_confirm))
+        cancel.on_click(ctx.defer("exec cancel (phone)", plugin.request_cancel))
+
+    def draw(self, active: str, prompt: Prompt | None, dry_run: bool, last: tuple[str, bool], refused: int) -> None:
+        """Write the state into the widgets.
+
+        Args:
+            active: "<robot> · <label>" while a request runs, else "".
+            prompt: The open prompt, or None.
+            dry_run: Whether the dry run is on.
+            last: The last result as one line, and whether it failed.
+            refused: How many dry-run changes were refused; a change puts the checkbox back.
+        """
+        chips = chip("DRY RUN", BUSY, "every check, nothing sent") if dry_run else ""
+        chips += chip(escape(active), BUSY) if active else chip("idle", NONE)
+        if prompt is not None:
+            chips += chip("waiting for Confirm", FAIL if prompt.warn else BUSY)
+        line = _one_line(escape(prompt.line) if prompt is not None else "no prompt",
+                         (FAIL if prompt.warn else BUSY) if prompt is not None else NONE)
+        self._status.content = block(chips)
+        self._prompt.content = block(line)
+        self._phone_status.content = phone_text(block(chips))
+        self._phone_prompt.content = phone_text(block(line))
+        if (dry_run, refused) != self._shown:
+            self._shown = (dry_run, refused)
+            self._dry.value = dry_run
+        message, failed = last
+        self._details.content = block(_one_line(escape(message) or "&nbsp;", FAIL if failed else NONE))
+        # * On the phone the whole line, wrapped: a HOLD NOT SENT must be read in full next to the robot.
+        self._phone_last.content = phone_text(block(f'<div style="color:{FAIL if failed else NONE}">'
+                                                    f'{escape(message) or "&nbsp;"}</div>'))
+
+
+def _one_line(html: str, color: str) -> str:
+    """Content on one line, cut with "…" when too wide; the whole line on hover."""
+    return (f'<div title="{html}" style="color:{color};font-size:12px;white-space:nowrap;overflow:hidden;'
+            f'text-overflow:ellipsis">{html}</div>')

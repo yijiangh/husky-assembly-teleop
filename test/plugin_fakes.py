@@ -2,6 +2,11 @@
 
 Run the plugin's tasks inside `asyncio.run`; `step(t)` changes the world each tick (e.g. the snapshot). Widgets are
 `FakeWidget`s: call a widget's `callback` to click it.
+
+Robots: `fake_arm` and `fake_robot` are the real `ArmInterface` and `HuskyRobotInterface` without ROS, so every check
+they run is the real one; their publishers keep what is sent (`Published`), and an `ArmDriver` moves an arm along what
+it was sent, feeding its joint states as the robot would. `fake_robotiq` and `fake_scaffolding` are the real tool
+interfaces, answered by a `RobotiqDriver` and a `ScaffoldingDriver`.
 """
 
 from __future__ import annotations
@@ -10,20 +15,39 @@ import asyncio
 from contextlib import nullcontext
 from functools import partial
 from types import SimpleNamespace
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
+import numpy as np
+from sensor_msgs.msg import JointState
+
+from husky_assembly_teleop.config import ArmConfig
 from husky_assembly_teleop.plugin_api.concurrency import WaitTimeout
+from husky_assembly_teleop.robot_interface.arm import SCALED_JOINT_TRAJECTORY_CONTROLLER, ArmInterface, ArmState
+from husky_assembly_teleop.robot_interface.base import BaseState
+from husky_assembly_teleop.robot_interface.controller_manager import ControllerManagerState
+from husky_assembly_teleop.robot_interface.end_effectors import (RobotiqGripper, RobotiqState, ScaffoldingV3,
+                                                                 ScaffoldingV3State)
+from husky_assembly_teleop.robot_interface.robot import HuskyRobotInterface
+from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.scene import Scene
+from scaffolding_assembly_core.urdf import UR_JOINT_NAMES
 
 
 class FakeWidget(SimpleNamespace):
     """A viser widget: what was given when it was added, what the plugin wrote into it, and its callback."""
 
-    def on_click(self, callback: Callable) -> None:
+    def on_click(self, callback: Callable, **_options: Any) -> None:
         """Keep the callback."""
         self.callback = callback
 
-    on_update = on_click
+    on_update = on_hold = on_click
+
+    def __enter__(self) -> FakeWidget:
+        """A folder or tab: widgets added inside land in the same list."""
+        return self
+
+    def __exit__(self, *_exc: Any) -> None:
+        """Leave the folder."""
 
 
 class FakeGui:
@@ -65,12 +89,15 @@ class FakeContext:
             drive_root: `config.drive_root`.
         """
         self.t, self.step = 10.0, step
+        #: Whether the plugin was stopped or torn down (`PluginContext.closed`).
+        self.closed = False
         self.config = SimpleNamespace(robots=tuple(robots), drive_root=drive_root)
         self.plugins = dict(plugins or {})
         self.scene = SimpleNamespace(snapshot=snapshot if snapshot is not None else Scene())
         self.world = SimpleNamespace(robots={})
         self.gui = FakeGui()
-        self.view = SimpleNamespace(ui=lambda: nullcontext(self.gui), scene_root="/plugin")
+        self.view = SimpleNamespace(ui=lambda: nullcontext(self.gui), phone=lambda *_tab: nullcontext(self.gui),
+                                    scene_root="/plugin")
         #: (level, message) per log line.
         self.logs: list[tuple[str, str]] = []
 
@@ -133,3 +160,227 @@ class FakeContext:
     def lines(self, level: str) -> list[str]:
         """The logged lines of one level."""
         return [message for kind, message in self.logs if kind == level]
+
+
+# --- --- --- --- --- ROBOTS --- --- --- --- ---
+
+class Published:
+    """A publisher that keeps every message."""
+
+    def __init__(self):
+        """Nothing published yet."""
+        self.messages: list = []
+
+    def publish(self, message) -> None:
+        """Keep the message."""
+        self.messages.append(message)
+
+
+def fake_node(clock: Callable[[], float], logs: list[tuple[str, str]]) -> SimpleNamespace:
+    """The part of the monitor node the robot interfaces use: a ROS clock and a logger keeping its lines.
+
+    Args:
+        clock: ROS time now, seconds (e.g. `FakeContext.now`).
+        logs: Gets (level, message) per line, like `FakeContext.logs`.
+    """
+    def line(level: str) -> Callable[..., None]:
+        return lambda message, **_options: logs.append((level, message))
+
+    logger = SimpleNamespace(info=line("info"), warning=line("warn"), error=line("error"))
+    return SimpleNamespace(get_logger=lambda: logger,
+                           get_clock=lambda: SimpleNamespace(now=lambda: SimpleNamespace(
+                               nanoseconds=int(round(clock() * 1e9)))))
+
+
+def fake_arm(node: SimpleNamespace, name: str, joints: Sequence[float],
+             active: str | None = SCALED_JOINT_TRAJECTORY_CONTROLLER, end_effector=None) -> ArmInterface:
+    """A real `ArmInterface` without ROS: measured now at `joints`, `active` running, publishers kept.
+
+    Args:
+        node: `fake_node`.
+        name: The arm's name, e.g. "left_ur_arm".
+        joints: Its six joint angles, UR order.
+        active: The running controller.
+        end_effector: The mounted tool's interface, or None.
+    """
+    arm = ArmInterface.__new__(ArmInterface)
+    arm._node, arm.config = node, ArmConfig(name=name, ros_namespace=name)
+    now = arm._now()
+    measured = {f"{name}_{joint}": float(value) for joint, value in zip(UR_JOINT_NAMES, joints)}
+    arm.state = ArmState(joint_positions=measured, last_update_time=now,
+                         controllers=ControllerManagerState(active=active, last_update_time=now))
+    arm.controllers = SimpleNamespace(state=arm.state.controllers,
+                                      is_active=lambda controller: arm.state.controllers.active == controller)
+    arm.urdf_problem, arm.pendant_tcp, arm.base_in_husky = None, Pose(), Pose()
+    arm._test_mode_logged, arm._motion_reference, arm._slight_reference, arm._free_drive_on = {}, {}, {}, False
+    arm._trajectory, arm._target_frame, arm._target_wrench = Published(), Published(), Published()
+    arm._zero_ft = SimpleNamespace(service_is_ready=lambda: True, calls=[])
+    arm._zero_ft.call_async = arm._zero_ft.calls.append
+    arm.end_effector = end_effector
+    arm.state.end_effector = end_effector.state if end_effector is not None else None
+    return arm
+
+
+def fake_robot(node: SimpleNamespace, serial: str, arms: Sequence[ArmInterface]) -> HuskyRobotInterface:
+    """A real `HuskyRobotInterface` without ROS around `arms`; a two-arm robot keeps its multi-arm messages."""
+    robot = HuskyRobotInterface.__new__(HuskyRobotInterface)
+    robot._node = node
+    robot.config = SimpleNamespace(serial=serial, arms=tuple(arm.config for arm in arms))
+    robot.arms = {arm.config.name: arm for arm in arms}
+    robot.base = SimpleNamespace(state=BaseState())  # never measured, as in the simulator
+    robot._multi_arm = Published() if len(arms) == 2 else None
+    return robot
+
+
+class ArmDriver:
+    """Moves a fake arm along the last trajectory it was sent (alone or in a multi-arm message), as its controller.
+
+    Each `tick(t)` feeds the arm a joint state, through the arm's own callback, so its motion detection runs.
+
+    Attributes:
+        follow: The fraction of each trajectory it runs before it stops dead (1: all of it).
+        silent_from: ROS time from which no joint state is fed any more, or None.
+        speed: How fast it runs a trajectory, 1 as timed.
+    """
+
+    def __init__(self, arm: ArmInterface, robot: HuskyRobotInterface | None = None, follow: float = 1.0,
+                 silent_from: float | None = None, speed: float = 1.0):
+        """Drive `arm`; `robot` is its robot, whose multi-arm messages it reads too."""
+        self.arm, self.robot, self.follow, self.silent_from, self.speed = arm, robot, follow, silent_from, speed
+        self._seen = (0, 0)
+        self._times = self._points = None
+        self._started = 0.0
+
+    def tick(self, t: float) -> None:
+        """Take a newly sent trajectory, move along it, and feed the joint state at time `t`.
+
+        The controller manager answers too, as its poll would (`ControllerManagerInterface.refresh`).
+        """
+        self.arm.state.controllers.last_update_time = t
+        single = self.arm._trajectory.messages
+        multi = self.robot._multi_arm.messages if self.robot is not None and self.robot._multi_arm else []
+        if (len(single), len(multi)) != self._seen:
+            if len(single) > self._seen[0]:
+                message = single[-1]
+            else:
+                first = next(iter(self.robot.arms)) == self.arm.config.name
+                message = multi[-1].trajectory1 if first else multi[-1].trajectory2
+            self._seen = (len(single), len(multi))
+            self._take(message, t)
+        if self.silent_from is not None and t >= self.silent_from:
+            return
+        here = self.arm.joint_vector()
+        if self._times is not None:
+            elapsed = min((t - self._started) * self.speed, self._times[-1] * self.follow)
+            here = np.array([np.interp(elapsed, self._times, column) for column in self._points.T])
+        state = JointState(name=list(UR_JOINT_NAMES), position=[float(value) for value in here])
+        state.header.stamp.sec, state.header.stamp.nanosec = int(t), int((t % 1.0) * 1e9)
+        self.arm._on_joint_state(state)
+
+    def _take(self, message, t: float) -> None:
+        """Start running a trajectory message from where the arm is (a hold has a single point, later than 0)."""
+        times = [point.time_from_start.sec + point.time_from_start.nanosec * 1e-9 for point in message.points]
+        points = [list(point.positions) for point in message.points]
+        if times[0] > 0.0:
+            times, points = [0.0, *times], [list(self.arm.joint_vector()), *points]
+        self._times, self._points, self._started = np.array(times), np.array(points), t
+
+
+# --- --- --- --- --- TOOLS --- --- --- --- ---
+
+class FakeAction:
+    """A GripperCommand action client: ready or not, keeping every goal sent."""
+
+    def __init__(self, ready: bool = True):
+        """Ready unless told otherwise."""
+        self.ready, self.goals = ready, []
+
+    def server_is_ready(self) -> bool:
+        """Whether the server answers."""
+        return self.ready
+
+    def send_goal_async(self, goal) -> SimpleNamespace:
+        """Keep the goal; the answer is the driver's."""
+        self.goals.append(goal)
+        return SimpleNamespace(add_done_callback=lambda _callback: None)
+
+
+def fake_robotiq(node: SimpleNamespace, namespace: str = "/a200_0804/gripper", position: float = 0.0) -> RobotiqGripper:
+    """A real `RobotiqGripper` without ROS, its fingers measured at `position`, its goals kept (`FakeAction`)."""
+    gripper = RobotiqGripper.__new__(RobotiqGripper)
+    gripper._node, gripper.namespace = node, namespace
+    gripper.state = RobotiqState(position=position)
+    gripper._action = FakeAction()
+    return gripper
+
+
+class RobotiqDriver:
+    """Answers a fake Robotiq's goals `delay` s after they are sent, its fingers ending at `reach(target)`.
+
+    Attributes:
+        answer: False: never answers (the action server hangs).
+    """
+
+    def __init__(self, gripper: RobotiqGripper, delay: float = 0.5, reach: Callable[[float], float] = lambda t: t,
+                 answer: bool = True):
+        """Answer `gripper`'s goals."""
+        self.gripper, self.delay, self.reach, self.answer = gripper, delay, reach, answer
+        self._answered, self._sent_at = 0, {}
+
+    def tick(self, t: float) -> None:
+        """Answer the goals whose time has come, in order."""
+        goals = self.gripper._action.goals
+        for index in range(self._answered, len(goals)):
+            self._sent_at.setdefault(index, t)
+        while self.answer and self._answered < len(goals) and t - self._sent_at[self._answered] >= self.delay:
+            target = goals[self._answered].command.position
+            self._answered += 1
+            reached = self.reach(target)
+            self.gripper._on_joint_state(JointState(name=[RobotiqGripper.KNUCKLE_JOINT], position=[reached]))
+            result = SimpleNamespace(reached_goal=abs(reached - target) < 1e-3, stalled=abs(reached - target) >= 1e-3,
+                                     position=reached)
+            self.gripper._on_result(SimpleNamespace(result=lambda result=result: SimpleNamespace(result=result)))
+
+
+def fake_scaffolding(node: SimpleNamespace, namespace: str = "/a200_0806/left_gripper") -> ScaffoldingV3:
+    """A real `ScaffoldingV3` without ROS: no status yet, its commands kept (`Published`)."""
+    tool = ScaffoldingV3.__new__(ScaffoldingV3)
+    tool._node, tool.namespace = node, namespace
+    tool.state = ScaffoldingV3State()
+    tool._command = Published()
+    return tool
+
+
+class ScaffoldingDriver:
+    """The tool's firmware: STOP clears a stall; a gripper tighten runs until it stalls `stall_after` s later.
+
+    A stalled motor ignores a start, as the firmware does. A status goes out every tick unless `silent`.
+
+    Attributes:
+        motor: The gripper motor's state now.
+        stall_after: Seconds a tighten runs before it stalls; None: never.
+        silent: No status is sent.
+    """
+
+    def __init__(self, tool: ScaffoldingV3, motor: str = ScaffoldingV3.IDLE, stall_after: float | None = 1.0,
+                 silent: bool = False):
+        """Run `tool`'s gripper motor, starting in state `motor`."""
+        self.tool, self.motor, self.stall_after, self.silent = tool, motor, stall_after, silent
+        self._seen, self._since = 0, 0.0
+
+    def tick(self, t: float) -> None:
+        """Take new commands, run the motor, and report."""
+        commands = self.tool._command.messages
+        for command in commands[self._seen:]:
+            if command.direction == 0:
+                self.motor = ScaffoldingV3.IDLE
+            elif command.motor == ScaffoldingV3.GRIPPER_MOTOR and self.motor != ScaffoldingV3.STALLED:
+                self.motor = ScaffoldingV3.TIGHTENING if command.direction > 0 else ScaffoldingV3.LOOSENING
+                self._since = t
+        self._seen = len(commands)
+        running = self.motor == ScaffoldingV3.TIGHTENING and self.stall_after is not None
+        if running and t - self._since >= self.stall_after:
+            self.motor = ScaffoldingV3.STALLED
+        if not self.silent:
+            self.tool._on_status(SimpleNamespace(state_m1=self.motor, state_m2=ScaffoldingV3.IDLE, current=0,
+                                                 pwm_pct=0, buttons_held=(), buttons_pressed=()))

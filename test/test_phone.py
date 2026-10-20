@@ -72,6 +72,11 @@ def test_phone_stop_all_raises_the_soft_stop(viz):
     assert viz.take_stop_request()
 
 
+def _free_robot() -> SimpleNamespace:
+    """The context robot_control keeps from setup, with SERIAL held by nobody."""
+    return SimpleNamespace(world=SimpleNamespace(robots={SERIAL: SimpleNamespace(lease=None)}), log_warn=print)
+
+
 def test_phone_hold_drives_at_the_phone_speed():
     """A hold drives at the speed slider of the page it came from, and stops once after the timeout."""
     sent = []
@@ -80,6 +85,7 @@ def test_phone_hold_drives_at_the_phone_speed():
     ctx = SimpleNamespace(now=lambda: clock[0])
     clock = [0.0]
     plugin = RobotControlPlugin()
+    plugin._ctx = _free_robot()
     plugin._bases = [_BaseWidgets(serial=SERIAL, base=base, panel=None, status=None,
                                   speed=SimpleNamespace(value=0.5), phone_speed=SimpleNamespace(value=1.0))]
 
@@ -122,6 +128,7 @@ def _free_drive_plugin():
     clock = [0.0]
     ctx = SimpleNamespace(now=lambda: clock[0])
     plugin = RobotControlPlugin()
+    plugin._ctx = _free_robot()
     arm = SimpleNamespace(controllers=controllers, config=SimpleNamespace(name="ur_arm"))
     plugin._arms = [SimpleNamespace(serial=SERIAL, arm=arm)]
     return plugin, ctx, clock, controllers

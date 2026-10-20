@@ -48,7 +48,7 @@ class ControllerPanel:
 
 
 def build_controller_panel(ctx: PluginContext, gui: viser.GuiApi, controllers: ControllerManagerInterface,
-                           input_builders: dict[str, Callable[[], object]],
+                           input_builders: dict[str, Callable[[], object]], allowed: Callable[[str], bool],
                            ) -> tuple[ControllerPanel, dict[str, object]]:
     """Build the CTRL section: one button per switchable controller, and a folder of inputs for each.
 
@@ -57,6 +57,7 @@ def build_controller_panel(ctx: PluginContext, gui: viser.GuiApi, controllers: C
         gui: The GUI api, inside the tab the panel goes in.
         controllers: The controller manager to show and switch.
         input_builders: Per controller, a function that adds its inputs; missing ones get a placeholder.
+        allowed: Whether a switch may go to the robot now, by name (it logs a refusal).
 
     Returns:
         tuple[ControllerPanel, dict[str, object]]: The handles, and what each input builder returned.
@@ -65,7 +66,8 @@ def build_controller_panel(ctx: PluginContext, gui: viser.GuiApi, controllers: C
     by_label = {CONTROLLER_LABELS.get(name, name): name for name in controllers.switchable}
     switch = gui.add_button_group("Run", list(by_label))
     switch.on_click(ctx.defer_value(f"switch controller {controllers.namespace}",
-                                    lambda clicked: controllers.switch(by_label[clicked])))
+                                    lambda clicked: allowed(f"switch to {by_label[clicked]}")
+                                    and controllers.switch(by_label[clicked])))
 
     panel = ControllerPanel(controllers=controllers)
     built: dict[str, object] = {}

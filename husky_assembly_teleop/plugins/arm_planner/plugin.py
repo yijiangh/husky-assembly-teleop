@@ -18,6 +18,7 @@ import numpy as np
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import register
 from ...robot_interface.arm import UR_JOINT_LIMITS, joint_path_move
+from ...shared.execution.interlock import held
 from ...shared.planning.panel import WAIT_MARGIN, PlannerPlugin, Search, with_guesses
 from ...shared.planning.search import TIME_LIMIT, PlanResult
 from ...ui.ghost import RobotGhost
@@ -253,8 +254,11 @@ class ArmPlannerPlugin(PlannerPlugin):
         return ""
 
     def send_plan(self, ctx: PluginContext) -> tuple[bool, str]:
-        """Send the plan to the arm."""
+        """Send the plan to the arm, unless another plugin holds a robot (one motion at a time)."""
         serial, arm = self._path_serial, self._path_arm
+        found = held(ctx.world)
+        if found is not None:
+            return False, f"not sent: {found[0]} is held by {found[1].holder} ({found[1].label}); Cancel it first"
         if send_to_arm(ctx, serial, arm, self.path):
             return True, f"sent to {serial} {arm}"
         return False, f"{serial} {arm} refused the path (the log says why)"

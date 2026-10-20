@@ -19,6 +19,7 @@ URDF as kept in the data folder (the same on every PC). Times are local ISO time
 
 - Pure functions return a new `Run`; `new_run`, `save_*` and `record_*` write. Files are replaced atomically, so a
   reader never sees half a file; a stray `.tmp` is ignored.
+- The run used last is the one whose progress changed last (`updated_at`, to the microsecond), not the newest folder.
 - ! A file with another `schema` is refused (`RunError`).
 """
 
@@ -176,8 +177,11 @@ def file_hashes(process: Process) -> tuple[str, dict[str, str]]:
                                                  for action_id in process.schedule}
 
 
-def find_runs(process_folder: Path) -> tuple[list[Run], list[str]]:
-    """Every run in a process folder, newest first, and one line per folder in `runs/` that can't be read."""
+def find_runs(process_folder: Path) -> tuple[list[Run], list[tuple[str, str]]]:
+    """Every run in a process folder, the one used last first, and (folder name, why) per folder that can't be read.
+
+    Used last: its progress changed last (`updated_at`, else `created_at`); on a tie, the newer folder.
+    """
     runs, problems = [], []
     folder = Path(process_folder) / RUNS
     for path in sorted(folder.iterdir()) if folder.is_dir() else ():
@@ -185,8 +189,13 @@ def find_runs(process_folder: Path) -> tuple[list[Run], list[str]]:
             try:
                 runs.append(read_run(path))
             except (RunError, OSError, ValueError, KeyError, TypeError) as error:
-                problems.append(f"{path.name}: {error}")
-    return sorted(runs, key=lambda run: _newness(run.folder.name), reverse=True), problems
+                problems.append((path.name, str(error)))
+    return sorted(runs, key=_last_used, reverse=True), problems
+
+
+def made_after(name: str, run: Run) -> bool:
+    """Whether a run folder, by its name, was made after a run's folder (its time, then its clash number)."""
+    return _newness(name) > _newness(run.folder.name)
 
 
 def read_run(folder: Path) -> Run:
@@ -245,7 +254,8 @@ def mark_done(run: Run, action_id: str, ends: Mapping[str, RobotRecord], assumed
     ends = {live: replace(end, after_action=action_id) for live, end in ends.items()}
     seq = max((other.seq for other in progress.actions.values()), default=0) + 1
     actions = {**progress.actions, action_id: ActionRecord(DONE, seq, at, assumed, ends)}
-    return replace(run, progress=replace(progress, actions=actions, robots={**progress.robots, **ends}, updated_at=at))
+    return replace(run, progress=replace(progress, actions=actions, robots={**progress.robots, **ends},
+                                         updated_at=stamp(now, precise=True)))
 
 
 def with_current(run: Run, current: tuple[str, int] | None, *, now: datetime | None = None) -> Run:
@@ -259,7 +269,7 @@ def with_current(run: Run, current: tuple[str, int] | None, *, now: datetime | N
     Returns:
         Run: The run with `progress.current` replaced.
     """
-    return replace(run, progress=replace(run.progress, current=current, updated_at=stamp(now)))
+    return replace(run, progress=replace(run.progress, current=current, updated_at=stamp(now, precise=True)))
 
 
 def reopen(run: Run, action_id: str, *, now: datetime | None = None) -> Run:
@@ -291,7 +301,7 @@ def reopen(run: Run, action_id: str, *, now: datetime | None = None) -> Run:
             robots[live] = max(earlier, key=lambda record: record.seq).ends[live]
         else:
             del robots[live]
-    return replace(run, progress=replace(progress, actions=actions, robots=robots, updated_at=stamp(now)))
+    return replace(run, progress=replace(progress, actions=actions, robots=robots, updated_at=stamp(now, precise=True)))
 
 
 # --- --- --- --- --- WRITING --- --- --- --- ---
@@ -315,17 +325,20 @@ def new_run(process: Process, robots: tuple[RobotConfig, ...], settings: RunSett
     Returns:
         Run: The new run, as written.
     """
+    # ! Everything that can fail on what was read comes before the folder is made: no empty run folder is left.
     now = now or datetime.now().astimezone()
     at = stamp(now)
     process_hash, action_hashes = file_hashes(process)
-    folder = _new_folder(Path(process.folder) / RUNS, now.strftime("%Y%m%d_%H%M%S"))
     actions = {action_id: ActionRecord() for action_id in process.schedule}
     current, beliefs, changed, event = None, {}, (), {}
     if continued_from is not None:
         old, old_info = continued_from.progress, continued_from.info
         actions.update((action_id, record) for action_id, record in old.actions.items() if action_id in actions)
         current = old.current if old.current is not None and old.current[0] in actions else None
-        if current is not None and not 0 <= current[1] < len(process.actions[current[0]].movements):
+        movement = current[1] if current is not None else None
+        # ? A hand-edited progress.json may hold "1" or true: not a movement index.
+        if current is not None and (isinstance(movement, bool) or not isinstance(movement, int)
+                                    or not 0 <= movement < len(process.actions[current[0]].movements)):
             action = process.actions[current[0]]
             current = (action.id, first_step(process, action, settings.transfer_as_free))
             event["current_moved"] = [list(old.current), list(current)]
@@ -339,9 +352,11 @@ def new_run(process: Process, robots: tuple[RobotConfig, ...], settings: RunSett
     entries = {robot_id(config.serial): {"serial": config.serial,
                                          "urdf_sha256": _file_sha(config.source_urdf or config.model.urdf),
                                          "relay_calibration": ""} for config in robots}
-    info = RunInfo(folder.name, at, _relative(Path(process.folder), root), process_hash, action_hashes, entries,
-                   commits(), settings, continued_from.info.name if continued_from is not None else None, changed)
-    run = Run(folder, info, Progress(actions, current, beliefs, at))
+    process_path, made_by = _relative(Path(process.folder), root), commits()
+    folder = _new_folder(Path(process.folder) / RUNS, now.strftime("%Y%m%d_%H%M%S"))
+    info = RunInfo(folder.name, at, process_path, process_hash, action_hashes, entries, made_by, settings,
+                   continued_from.info.name if continued_from is not None else None, changed)
+    run = Run(folder, info, Progress(actions, current, beliefs, stamp(now, precise=True)))
     save_info(run)
     save_progress(run)
     record_event(folder, "continue" if continued_from is not None else "new_run", None, **event)
@@ -452,9 +467,19 @@ def commits() -> dict[str, str]:
 
 # --- --- --- --- --- HELPERS --- --- --- --- ---
 
-def stamp(now: datetime | None = None) -> str:
-    """A local ISO time to the second, as runs record times; now if None."""
-    return (now or datetime.now().astimezone()).isoformat(timespec="seconds")
+def stamp(now: datetime | None = None, precise: bool = False) -> str:
+    """A local ISO time to the second (`precise`: to the microsecond), as runs record times; now if None."""
+    return (now or datetime.now().astimezone()).isoformat(timespec="microseconds" if precise else "seconds")
+
+
+def _last_used(run: Run) -> tuple[float, tuple[str, int]]:
+    """Sort key of a run: when its progress last changed (else when it was made), then its folder's newness."""
+    for at in (run.progress.updated_at, run.info.created_at):
+        try:
+            return datetime.fromisoformat(at).timestamp(), _newness(run.folder.name)
+        except (TypeError, ValueError):
+            continue
+    return 0.0, _newness(run.folder.name)
 
 
 def _newness(name: str) -> tuple[str, int]:

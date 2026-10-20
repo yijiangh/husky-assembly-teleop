@@ -35,7 +35,8 @@ class RunView:
         beliefs: Live robot id -> where it was last recorded, for planning scenes (`scene_for` uses them only for
             robots not measured).
         settings: The run's settings.
-        offer: The newest run's name while it is offered (made on another export, or newer than `match`), else "".
+        offer: The name of the run used last while it is offered (made on another export, or used after `match`;
+            `match` itself while a newer run folder can't be read), else "".
         match: An older run made on exactly these process files, offered beside `offer`, else "".
         revision: Goes up with every change.
     """
@@ -75,7 +76,7 @@ class AssemblyRunPluginApi(Protocol):
         """Start a new run after the operator confirms; the old one is kept."""
 
     def request_continue(self, run_name: str | None = None) -> None:
-        """Continue an offered run: the newest if None; one made on another export goes on in a new run."""
+        """Continue an offered run: the one used last if None; one made on another export goes on in a new run."""
 
     def request_settings(self, **changes: Any) -> None:
         """Change run settings (`RunSettings` fields); saved with the run."""

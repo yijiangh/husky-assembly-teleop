@@ -7,6 +7,7 @@ Builders add widgets and wire their callbacks; what a click does to the plugin's
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import partial
 from typing import Callable
 
 import numpy as np
@@ -201,7 +202,8 @@ def build_free_drive_inputs(gui: viser.GuiApi) -> None:
                       "Check the payload on the pendant first: a wrong one makes the arm sag or rise."))
 
 
-def build_tool_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, arm: ArmInterface) -> viser.GuiHtmlHandle:
+def build_tool_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, arm: ArmInterface,
+                      allowed: Callable[[str], bool]) -> viser.GuiHtmlHandle:
     """Add the TOOL section for the arm's end effector: its status line and buttons.
 
     Args:
@@ -209,6 +211,7 @@ def build_tool_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, arm: Ar
         gui: The GUI api, inside the arm's tab.
         label: "<serial> <arm name>", for intent names.
         arm: The arm; must have an end effector.
+        allowed: Whether a motion command may go out now, by name (it logs a refusal); Stop always may.
 
     Returns:
         viser.GuiHtmlHandle: The tool's status line.
@@ -221,21 +224,36 @@ def build_tool_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, arm: Ar
     if not isinstance(tool, ScaffoldingV1):  # its gripper cannot stop halfway
         commands["Stop"] = tool.stop
     grip = gui.add_button_group("Grip", list(commands), hint=GRIP_HINTS.get(kind))
-    grip.on_click(ctx.defer_value(f"grip {label}", lambda clicked: commands[clicked]()))
+    grip.on_click(ctx.defer_value(f"grip {label}", partial(_unless_refused, commands, allowed, "tool")))
     if isinstance(tool, RobotiqGripper):
-        _build_robotiq_inputs(ctx, gui, label, tool)
+        _build_robotiq_inputs(ctx, gui, label, tool, allowed)
     elif isinstance(tool, ScaffoldingV3):
-        directions = {"Tighten": 1, "Loosen": -1, "Stop": 0}
+        directions = {"Tighten": partial(tool.drive_screw, 1), "Loosen": partial(tool.drive_screw, -1),
+                      "Stop": partial(tool.drive_screw, 0)}
         screw = gui.add_button_group("Screw", list(directions),
                                      hint="Fixes the bar to the joint; stops by itself when tight. Only one "
                                           "motor runs at a time, so starting this stops the gripper. Stop "
                                           "halts both.")
-        screw.on_click(ctx.defer_value(f"screw {label}", lambda clicked: tool.drive_screw(directions[clicked])))
+        screw.on_click(ctx.defer_value(f"screw {label}", partial(_unless_refused, directions, allowed, "screw")))
     return status
 
 
+def _unless_refused(commands: dict[str, Callable[[], None]], allowed: Callable[[str], bool], what: str,
+                    clicked: str) -> None:
+    """Run a tool button's command unless the robot is held; Stop is never refused (intent).
+
+    Args:
+        commands: Button label -> its command.
+        allowed: Whether a command may go to the robot now, by name.
+        what: Names the buttons in a refusal, e.g. "tool".
+        clicked: The button clicked.
+    """
+    if clicked == "Stop" or allowed(f"{what} {clicked}"):
+        commands[clicked]()
+
+
 def build_phone_arm_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, arm: ArmInterface,
-                           on_free_drive: Callable[[], None]) -> viser.GuiHtmlHandle:
+                           on_free_drive: Callable[[], None], allowed: Callable[[str], bool]) -> viser.GuiHtmlHandle:
     """Add an arm's inputs on the phone: its status line, Open and Close for its tool, and free drive while held.
 
     Args:
@@ -244,6 +262,7 @@ def build_phone_arm_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, ar
         label: "<serial> <arm name>", for intent names.
         arm: The arm.
         on_free_drive: Called on the main thread at every report of the held free drive button.
+        allowed: Whether a command may go to the robot now, by name (it logs a refusal).
 
     Returns:
         viser.GuiHtmlHandle: The arm's status line.
@@ -253,7 +272,7 @@ def build_phone_arm_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, ar
     if tool is not None:
         commands = {"Open": tool.open, "Close": tool.close}
         grip = gui.add_button_group("Gripper", list(commands))
-        grip.on_click(ctx.defer_value(f"grip {label}", lambda clicked: commands[clicked]()))
+        grip.on_click(ctx.defer_value(f"grip {label}", partial(_unless_refused, commands, allowed, "tool")))
     free = gui.add_button("Free drive (hold)", icon=FREE_DRIVE_ICON,
                           hint="The arm can be pushed by hand while you hold this; on release the joint controller "
                                "holds it where it is. Check the payload on the pendant first.")
@@ -261,7 +280,8 @@ def build_phone_arm_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, ar
     return status
 
 
-def _build_robotiq_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, gripper: RobotiqGripper) -> None:
+def _build_robotiq_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, gripper: RobotiqGripper,
+                          allowed: Callable[[str], bool]) -> None:
     """Add the Robotiq-only inputs: a target opening with a force limit (Go only), and Reactivate.
 
     Args:
@@ -269,6 +289,7 @@ def _build_robotiq_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, gri
         gui: The GUI api, inside the arm's tab.
         label: "<serial> <arm name>", for intent names.
         gripper: The gripper to command.
+        allowed: Whether a command may go to the robot now, by name (it logs a refusal).
     """
     position = gui.add_slider("pos rad", min=gripper.OPEN_POSITION, max=gripper.CLOSED_POSITION, step=0.01,
                               initial_value=gripper.OPEN_POSITION,
@@ -276,11 +297,13 @@ def _build_robotiq_inputs(ctx: PluginContext, gui: viser.GuiApi, label: str, gri
     force = gui.add_slider("force", min=0.0, max=gripper.MAX_EFFORT, step=0.05, initial_value=gripper.DEFAULT_EFFORT,
                            hint="Force limit, as a fraction of the gripper's full force.")
     target = gui.add_button_group("Target", ["Go"], hint="Move the fingers to the slider position.")
-    target.on_click(ctx.defer(f"gripper target {label}", lambda: gripper.move(position.value, force.value)))
+    target.on_click(ctx.defer(f"gripper target {label}", lambda: allowed("gripper target Go")
+                              and gripper.move(position.value, force.value)))
     driver = gui.add_button_group("Driver", ["Reactivate"],
                                   hint="After a fault or power loss. The gripper opens and closes once: "
                                        "hold nothing in it.")
-    driver.on_click(ctx.defer(f"reactivate gripper {label}", gripper.reactivate))
+    driver.on_click(ctx.defer(f"reactivate gripper {label}", lambda: allowed("gripper Reactivate")
+                              and gripper.reactivate()))
 
 
 # --- --- --- --- --- READING THE SLIDERS --- --- --- --- ---

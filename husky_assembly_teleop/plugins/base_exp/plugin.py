@@ -41,6 +41,7 @@ from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
 from ...plugin_api.trace import Signal, Trace
 from ...robot_interface.base import PLATFORM_VELOCITY_CONTROLLER, FollowerState
+from ...shared.execution.interlock import held
 from ...shared.planning.path import timing
 from ...ui.base_markers import Markers
 from ...ui.pose_input import yaw_from_xyzw
@@ -324,6 +325,8 @@ class BaseExperimentPlugin(HuskyPlugin):
         base = ctx.world.robots[self.serial].base
         if self.running:
             return "a run is going on"
+        if found := held(ctx.world):
+            return f"{found[0]} is held by {found[1].holder} ({found[1].label}): one motion at a time"
         if lost := pose_lost(base.mocap_id, base.state, ctx.now()):
             return f"{self.serial} has no mocap pose: {lost}"
         if self._follower(ctx) is None:
@@ -373,6 +376,9 @@ class BaseExperimentPlugin(HuskyPlugin):
             if recorded:
                 experiment = await record.describe(ctx, base, plan, **more)
             self._outcome = "running"
+            if found := held(ctx.world):
+                # ! Checked again here: describing the run awaited, and a robot may have been held meanwhile.
+                raise ValueError(f"{found[0]} is held by {found[1].holder} ({found[1].label})")
             path_id = experiment["path_id"] = base.send_path(*plan.poses.T, plan.t, *plan.speed_caps)
             sent_at = self._sent_at = ctx.now()
             guard = ctx.spawn(f"guard {plan.serial}", self._guard(ctx, plan.serial))
@@ -474,6 +480,9 @@ class BaseExperimentPlugin(HuskyPlugin):
                         self._outcome = f"aborted: mocap lost ({lost})"
                         return
                     command = (v, w) if ctx.now() >= step_at else (0.0, 0.0)
+                    if found := held(ctx.world):
+                        self._outcome = f"stopped: {found[0]} is held by {found[1].holder} ({found[1].label})"
+                        return
                     if not send(*command, checked):
                         # * No controller failure: automation pauses for the operator.
                         self._outcome = f"not driven: {PLATFORM_VELOCITY_CONTROLLER} is not active"

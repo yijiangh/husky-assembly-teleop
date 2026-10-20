@@ -9,6 +9,10 @@ On the phone, a Control tab per robot: the base's D-pad, and per arm its gripper
     on its own threads, where touching robots or the scene is not safe.
   - `update` does per-tick work; anything longer than a tick is a `ctx.spawn` task.
 * Robots are commanded and read only through their interfaces; no topic names here.
+! While another plugin holds any robot for an automatic motion (a lease, `shared/execution/interlock.py`), every
+  motion command here, to any robot, is refused with a log line; never Hold, the tools' Stop or a zero force. Hold
+  on the held robot also cancels that motion. What sends every tick checks before every send: a lease taken
+  meanwhile ends the Cartesian stream (hold), the D-pad (one stop) and free drive (back to the joint controller).
 """
 
 from __future__ import annotations
@@ -29,6 +33,7 @@ from ...robot_interface.arm import (CARTESIAN_COMPLIANCE_CONTROLLER, FREE_DRIVE_
                                     SCALED_JOINT_TRAJECTORY_CONTROLLER, TARGET_WRENCH_FRAME, UR_JOINT_NAMES,
                                     ArmInterface, cartesian_move)
 from ...robot_interface.base import PLATFORM_VELOCITY_CONTROLLER, BaseInterface
+from ...shared.execution.interlock import held, lease_of, refuse_while_held
 from ...ui.ghost import RecentUse, RobotGhost, robot_ghosts
 from ...ui.phone import big_buttons, phone_text
 from ...ui.style import SECTION_SENSOR, block, numbers, section, values
@@ -91,6 +96,7 @@ class RobotControlPlugin(HuskyPlugin):
 
     def __init__(self):
         """Start with no widgets; setup builds them."""
+        self._ctx: PluginContext | None = None
         self._bases: list[_BaseWidgets] = []
         self._arms: list[_ArmWidgets] = []
 
@@ -129,6 +135,8 @@ class RobotControlPlugin(HuskyPlugin):
         #: Per arm, the joint slider values we wrote last. ! Writing a slider fires its callback
         #: too; a callback that finds these values was ours, not the operator's.
         self._written: dict[tuple[str, str], tuple[float, ...]] = {}
+        #: Per (serial, command) refused every tick while a robot is held (the D-pad, free drive), the lease logged.
+        self._refusals_said: dict[tuple[str, str], object] = {}
 
     # --- --- --- --- --- SETUP --- --- --- --- ---
 
@@ -138,6 +146,7 @@ class RobotControlPlugin(HuskyPlugin):
         Args:
             ctx: This plugin's context.
         """
+        self._ctx = ctx
         # Raw gui api, not ui(): ui() would leave an empty folder in the main panel.
         gui = ctx.view.gui
         panel = ctx.view.panel()
@@ -167,7 +176,8 @@ class RobotControlPlugin(HuskyPlugin):
                         with phone.add_folder(ARM_LABELS.get(name, name)):
                             arm_widgets.phone_status = build_phone_arm_inputs(
                                 ctx, phone, f"{widgets.serial} {name}", arm_widgets.arm,
-                                partial(self._on_free_drive_hold, ctx, (widgets.serial, name)))
+                                partial(self._on_free_drive_hold, ctx, (widgets.serial, name)),
+                                partial(self._allowed, widgets.serial))
         # ? Built here: loading meshes is too slow for a tick.
         self._target_ghosts = robot_ghosts(ctx, ctx.config.robots, "target")
 
@@ -187,7 +197,8 @@ class RobotControlPlugin(HuskyPlugin):
         status = gui.add_html("")
         velocity_inputs = partial(build_velocity_inputs, ctx, gui, serial, partial(self._on_hold, ctx, serial, False))
         panel, built = build_controller_panel(ctx, gui, base.controllers,
-                                              {PLATFORM_VELOCITY_CONTROLLER: velocity_inputs})
+                                              {PLATFORM_VELOCITY_CONTROLLER: velocity_inputs},
+                                              partial(self._allowed, serial))
         return _BaseWidgets(serial=serial, base=base, panel=panel, status=status,
                             speed=built[PLATFORM_VELOCITY_CONTROLLER])
 
@@ -226,14 +237,16 @@ class RobotControlPlugin(HuskyPlugin):
             SCALED_JOINT_TRAJECTORY_CONTROLLER: joint_inputs,
             CARTESIAN_COMPLIANCE_CONTROLLER: compliance_inputs,
             FREE_DRIVE_CONTROLLER: partial(build_free_drive_inputs, gui),
-        })
+        }, partial(self._allowed, serial))
 
         # Independent of the running controller.
         gui.add_html(section("sensor", SECTION_SENSOR))
         zero = gui.add_button_group("FT", ["Zero"], hint="Tares the current load. Only with nothing gripped.")
-        zero.on_click(ctx.defer(f"zero FT {label}", arm.zero_ft_sensor))
+        zero.on_click(ctx.defer(f"zero FT {label}", lambda: self._allowed(serial, f"{arm.config.name} FT Zero")
+                                and arm.zero_ft_sensor()))
 
-        tool = None if arm.end_effector is None else build_tool_inputs(ctx, gui, label, arm)
+        allowed = partial(self._allowed, serial)
+        tool = None if arm.end_effector is None else build_tool_inputs(ctx, gui, label, arm, allowed)
         return _ArmWidgets(serial=serial, arm=arm, panel=panel, status=status, tool_status=tool,
                            joint=built[SCALED_JOINT_TRAJECTORY_CONTROLLER],
                            compliance=built[CARTESIAN_COMPLIANCE_CONTROLLER],
@@ -272,9 +285,34 @@ class RobotControlPlugin(HuskyPlugin):
         self._load_sliders[key] = angles
 
     def _apply_force(self, key: tuple[str, str], arm: ArmInterface, force: np.ndarray) -> None:
-        """Send a target force (N, tool frame) to the arm and remember it if accepted."""
-        if arm.send_target_wrench(force):
+        """Send a target force (N, tool frame) to the arm and remember it if accepted; while a robot is held, only zero.
+
+        ? Zero removes a force, like a Stop: never refused.
+        """
+        if (not np.any(force) or self._allowed(key[0], f"{arm.config.name} force")) and arm.send_target_wrench(force):
             self._applied_force[key] = force
+
+    def _allowed(self, serial: str, what: str) -> bool:
+        """Whether a motion command may go out now: not while any robot is held (the refusal is logged).
+
+        Args:
+            serial: The robot it is for.
+            what: The command, for the log, e.g. "tool Open".
+        """
+        return not refuse_while_held(self._ctx.world, f"{serial} {what}", self._ctx.log_warn)
+
+    def _held_by_other(self, serial: str, what: str) -> bool:
+        """Whether any robot is held, for a command refused every tick; the refusal is logged once per lease.
+
+        Args:
+            serial: The robot the command is for.
+            what: The command, for the log, e.g. "D-pad".
+        """
+        found = held(self._ctx.world)
+        if found is not None and self._refusals_said.get((serial, what)) is not found[1]:
+            self._refusals_said[(serial, what)] = found[1]
+            refuse_while_held(self._ctx.world, f"{serial} {what}", self._ctx.log_warn)
+        return found is not None
 
     # --- --- --- --- --- EVERY TICK --- --- --- --- ---
 
@@ -287,9 +325,10 @@ class RobotControlPlugin(HuskyPlugin):
         now = ctx.now()
         for widgets in self._bases:
             held = self._held.get(widgets.serial)
-            # Drop the hold if it timed out or the controller is no longer running.
+            # Drop the hold if it timed out, the controller is no longer running, or another plugin holds the robot.
             if held is not None and (now - held[2] > HOLD_TIMEOUT
-                                     or not widgets.base.controllers.is_active(PLATFORM_VELOCITY_CONTROLLER)):
+                                     or not widgets.base.controllers.is_active(PLATFORM_VELOCITY_CONTROLLER)
+                                     or self._held_by_other(widgets.serial, "D-pad")):
                 del self._held[widgets.serial]
                 held = None
             if held is not None:
@@ -329,10 +368,14 @@ class RobotControlPlugin(HuskyPlugin):
             last = self._free_drive_held.get(key)
             held = last is not None and now - last <= HOLD_TIMEOUT
             if held and key not in self._free_driving:
+                if self._held_by_other(widgets.serial, f"{widgets.arm.config.name} free drive"):
+                    continue
                 switched = controllers.switch(FREE_DRIVE_CONTROLLER)
                 if switched:
                     self._free_driving.add(key)
-            elif not held and key in self._free_driving:
+            elif key in self._free_driving and (
+                    not held or self._held_by_other(widgets.serial, f"{widgets.arm.config.name} free drive")):
+                # Released, or a robot was taken for an automatic motion: the joint controller holds the arm.
                 switched = (not controllers.is_active(FREE_DRIVE_CONTROLLER)
                             or controllers.switch(SCALED_JOINT_TRAJECTORY_CONTROLLER))
                 if switched:
@@ -443,6 +486,8 @@ class RobotControlPlugin(HuskyPlugin):
             *args: The move's target, after (ctx, serial, arm).
         """
         key = (serial, arm.config.name)
+        if not self._allowed(serial, f"{arm.config.name} {kind}"):
+            return
         running = self._trajectory_tasks.get(key)
         if running is not None and not running.done():
             ctx.log_warn(f"{serial} {arm.config.name}: a move is already running; Start ignored")
@@ -450,7 +495,7 @@ class RobotControlPlugin(HuskyPlugin):
         self._trajectory_tasks[key] = ctx.spawn(f"{kind} {serial} {arm.config.name}", move(ctx, serial, arm, *args))
 
     def _hold_arm(self, serial: str, arm: ArmInterface) -> None:
-        """Hold the arm where it is and cancel its running move task.
+        """Hold the arm where it is and cancel its running move task, and any automatic motion holding the robot.
 
         ! Holds even when no task of ours runs: a trajectory may come from elsewhere.
 
@@ -462,6 +507,11 @@ class RobotControlPlugin(HuskyPlugin):
         running = self._trajectory_tasks.get((serial, arm.config.name))
         if running is not None and not running.done():
             running.cancel()
+        lease = lease_of(self._ctx.world.robots[serial])
+        if lease is not None:
+            # * Its own error handling holds every arm of the robot.
+            self._ctx.log_warn(f"Hold on {serial} {arm.config.name}: cancelling {lease.holder} ({lease.label})")
+            lease.stop()
 
     async def _execute_move(self, ctx: PluginContext, serial: str, arm: ArmInterface, target: np.ndarray) -> None:
         """Send a smooth joint move and wait until the time is up and every joint is within ARRIVED_TOLERANCE.
@@ -522,6 +572,13 @@ class RobotControlPlugin(HuskyPlugin):
         start = ctx.now()
         while True:
             elapsed = ctx.now() - start
+            found = held(ctx.world)
+            if found is not None:
+                # ! A robot was taken for an automatic motion mid-stream: one motion at a time, so stop here.
+                arm.hold()
+                ctx.log_warn(f"{name}: cartesian move stopped and held: {found[0]} is held by {found[1].holder} "
+                             f"({found[1].label}), one motion at a time")
+                return
             if not arm.send_cartesian_target(*sample(elapsed)):
                 # The arm logged why; hold so it settles where it is.
                 ctx.log_warn(f"{name}: cartesian move stopped early")

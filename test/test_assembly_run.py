@@ -78,7 +78,8 @@ class Lab:
     def moving(self, live: str, executing: bool) -> None:
         """Say whether a robot's arm runs a trajectory, as `world.robots[serial].arms[...].state.is_executing`."""
         state = SimpleNamespace(is_executing=executing)
-        self.ctx.world.robots[live.split("/", 1)[1]] = SimpleNamespace(arms={"arm": SimpleNamespace(state=state)})
+        self.ctx.world.robots[live.split("/", 1)[1]] = SimpleNamespace(arms={"arm": SimpleNamespace(state=state)},
+                                                                       lease=None)
 
     def plugin(self) -> tuple[AssemblyRunPlugin, FakeProcess]:
         """A new plugin, as after a restart, on the process loaded again."""
@@ -520,6 +521,50 @@ def test_a_moving_arm_is_never_recorded(tmp_path):
     assert set(read_run(plugin.view.folder).progress.actions["B1_J_joint"].ends) == {CINDY}
 
 
+def test_a_robot_held_for_a_motion_refuses_the_mark(tmp_path):
+    """While any robot is held by the executor, Mark done is refused, naming the holder."""
+    lab = Lab(tmp_path, alice=True)
+
+    async def scenario():
+        plugin, _process = await opened(lab)
+        lab.moving(ALICE, False)
+        lab.ctx.world.robots["a200-0804"].lease = SimpleNamespace(holder="movement_exec", label="B21_H_approach")
+        plugin.request_mark_done()
+        assert "a200-0804 is held by movement_exec (B21_H_approach)" in plugin._message and runs(lab) == []
+        lab.ctx.world.robots["a200-0804"].lease = None
+        plugin.request_mark_done()
+        await settle(plugin)
+        return plugin
+
+    plugin = asyncio.run(scenario())
+    assert plugin.view.statuses["B1_J_joint"] == DONE
+
+
+def test_a_held_robot_refuses_selecting_reopening_and_settings(tmp_path):
+    """While a robot is held for a step (an Exec runs), a row click, Reopen and a settings change are refused."""
+    lab = Lab(tmp_path, alice=True)
+
+    async def scenario():
+        plugin, process = await opened(lab)
+        lab.moving(ALICE, False)
+        plugin.request_mark_done()
+        await settle(plugin)
+        lab.ctx.world.robots["a200-0804"].lease = SimpleNamespace(holder="movement_exec", label="B21_H_approach")
+        current, selected = plugin.view.current, list(process.selected)
+        plugin.request_set_current("B1_J_joint")
+        assert "Select refused: a200-0804 is held by movement_exec" in plugin._message
+        plugin.request_reopen("B1_J_joint")
+        assert "Reopen refused: a200-0804 is held" in plugin._message
+        refused = plugin._settings_refused
+        plugin.request_settings(transfer_as_free=False)
+        assert "Settings refused: a200-0804 is held" in plugin._message and plugin._settings_refused == refused + 1
+        return plugin, process, current, selected
+
+    plugin, process, current, selected = asyncio.run(scenario())
+    assert plugin.view.current == current and process.selected == selected
+    assert plugin.view.statuses["B1_J_joint"] == DONE and plugin.view.settings.transfer_as_free
+
+
 def test_an_arm_moving_while_the_prompt_waits_refuses_the_confirmed_mark(tmp_path):
     """Cindy not live: the prompt waits; her arm starts moving meanwhile, so Confirm marks nothing."""
     lab = Lab(tmp_path, live_from=None)
@@ -608,3 +653,151 @@ def test_a_step_picked_while_waiting_stops_the_automatic_selection(tmp_path):
 
     process = asyncio.run(scenario())
     assert process.selected == [] and process.index == 4 and lab.ctx.t < 25.0
+
+
+# --- --- --- --- --- RE-REVIEW CASES --- --- --- --- ---
+
+async def reverted(lab: Lab, tmp_path: Path) -> tuple[Path, Path]:
+    """Run A on the first export (B1_J done), run B on a second export continuing it (B1_H done), back to the first."""
+    plugin, _process = await opened(lab)
+    plugin.request_mark_done()
+    await settle(plugin)
+    plugin.teardown(lab.ctx)
+    write(with_action(build_process(tmp_path), "B1_H_hold", label="tweak"), lab.folder / "p", overwrite=True)
+    newer, _process = await opened(lab)
+    newer.request_continue()
+    await settle(newer)
+    newer.request_mark_done("B1_H_hold")
+    await settle(newer)
+    newer.teardown(lab.ctx)
+    write(build_process(tmp_path), lab.folder / "p", overwrite=True)
+    first, second = runs(lab)
+    return first, second
+
+
+def test_after_continue_match_a_restart_continues_it_and_nothing_is_selected_while_offered(tmp_path):
+    """Continue match makes that run the one used last: the next restart continues it without asking.
+
+    While the runs are offered, no action is made current or selected.
+    """
+    lab = Lab(tmp_path)
+
+    async def scenario():
+        first, second = await reverted(lab, tmp_path)
+        back, process = await opened(lab)
+        assert (back.view.offer, back.view.match) == (second.name, first.name)
+        assert back.view.current is None and process.selected == []
+        back.request_continue(first.name)
+        await settle(back)
+        back.request_mark_done("B1_H_hold")
+        await settle(back)
+        back.teardown(lab.ctx)
+        again, _process = await opened(lab)
+        return first, again
+
+    first, again = asyncio.run(scenario())
+    assert again.view.folder == first and again.view.offer == "" and len(runs(lab)) == 2
+    assert again.view.statuses["B1_H_hold"] == DONE
+
+
+def test_a_second_continue_while_the_first_runs_is_refused(tmp_path):
+    """Continue, then at once Continue match: the second is refused; one new run, the matching run untouched."""
+    lab = Lab(tmp_path)
+
+    async def scenario():
+        first, second = await reverted(lab, tmp_path)
+        before = (first / "events.jsonl").read_bytes()
+        back, _process = await opened(lab)
+        back.request_continue()
+        back.request_continue(back.view.match)
+        refused = back._message
+        await settle(back)
+        return first, second, before, back, refused
+
+    first, second, before, back, refused = asyncio.run(scenario())
+    assert refused == "Continue refused: a run is being started: wait a moment"
+    assert len(runs(lab)) == 3 and read_run(back.view.folder).info.continued_from == second.name
+    assert (first / "events.jsonl").read_bytes() == before
+
+
+def test_a_soft_stop_while_waiting_for_the_robot_still_makes_the_action_current(tmp_path):
+    """Stop all while the run waits for Cindy to be live: the first pending action is made current at once."""
+    lab = Lab(tmp_path, live_from=None)
+
+    async def scenario():
+        plugin, process = lab.plugin()
+        plugin.update(lab.ctx)
+        while plugin._go_task is None:
+            await asyncio.sleep(0)
+        for task in list(plugin._tasks):  # what a soft stop does
+            task.cancel()
+        await settle(plugin)
+        return plugin, process
+
+    plugin, process = asyncio.run(scenario())
+    assert plugin.view.current[0] == "B1_J_joint" and process.selected == [first_index(process, "B1_J_joint")]
+    assert lab.ctx.t < 25.0
+
+
+def test_a_newer_run_that_cant_be_read_is_not_written_past(tmp_path):
+    """A newer run folder can't be read (half synced): the run made on these files is offered, not continued unasked."""
+    lab = Lab(tmp_path)
+
+    async def scenario():
+        plugin, _process = await opened(lab)
+        plugin.request_mark_done()
+        await settle(plugin)
+        plugin.teardown(lab.ctx)
+        first, = runs(lab)
+        broken = first.parent / f"{first.name}_2"
+        broken.mkdir()
+        (broken / "run.json").write_text('{"schema": "husky_run/1", "kind": "run", "na')
+        again, _process = await opened(lab)
+        offered = again.view.folder, again.view.offer, again.view.match
+        again._panel = RunPanel(lab.ctx, again)
+        again.draw(lab.ctx)
+        again.request_mark_done("B1_H_hold")
+        refused = again._message
+        again.request_continue()
+        await settle(again)
+        return first, again, offered, refused
+
+    first, again, offered, refused = asyncio.run(scenario())
+    assert offered == (None, first.name, first.name)
+    assert "a newer run folder can't be read" in refused and "Continue or New run first" in refused
+    assert again.view.folder == first and len([path for path in runs(lab) if (path / "run.json").is_file()]) == 2
+
+
+def test_the_re_review_messages(tmp_path, monkeypatch):
+    """Continue match without a match, an open raising after the read, true as a movement, a run a setting started."""
+    lab = Lab(tmp_path)
+
+    async def scenario():
+        plugin, _process = await opened(lab)
+        plugin.request_mark_done()
+        await settle(plugin)
+        plugin.teardown(lab.ctx)
+        write(with_action(build_process(tmp_path), "B1_H_hold", label="tweak"), lab.folder / "p", overwrite=True)
+        again, _process = await opened(lab)
+        again.request_continue(again.view.match)
+        assert again._message == "Continue refused: no run made on these files is offered"
+        again.request_continue()
+        await settle(again)
+        again.request_set_current("B1_H_hold", True)
+        assert again.view.current == ("B1_H_hold", 0)
+        assert any("no movement True" in line for line in lab.ctx.lines("warn"))
+
+        fresh = Lab(tmp_path / "fresh")
+        plugin, _process = await opened(fresh)
+        plugin.request_settings(spiral=True)
+        await settle(plugin)
+        assert plugin._message == f"run {plugin.view.folder.name} started"
+
+        def broken(*_args):
+            raise RuntimeError("bad hashes")
+
+        monkeypatch.setattr("husky_assembly_teleop.plugins.assembly_run.plugin.continue_run", broken)
+        failing, _process = await opened(fresh)
+        assert failing._message == "could not open the run (bad hashes): trying again in 5 s" and failing._failed
+
+    asyncio.run(scenario())

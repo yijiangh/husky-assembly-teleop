@@ -15,7 +15,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from html import escape
-from typing import TYPE_CHECKING, Callable, Iterable, Protocol
+from typing import TYPE_CHECKING, Awaitable, Callable, Iterable, Protocol
 
 import viser
 
@@ -54,23 +54,28 @@ class PlanningWorld(Protocol):
 class Search:
     """One planning request, built by the subclass on the main thread (`make_search`).
 
+    ! Set exactly one of `work` and `run`.
+
     Attributes:
         serial: The robot the plan is for.
         label: Task name, e.g. "plan a200-0806".
         message: Shown in the panel while planning.
-        work: Syncs the world and searches, on the worker; must stop soon after its `abort` is set.
-        time_limit: Seconds to wait for `work`, margin included.
+        work: Syncs the world and searches, on the worker; must stop soon after its `abort` is set. Or None.
+        time_limit: Seconds to wait for `work` or `run`, margin included.
         accepted: Main thread, when a path was found: returns the panel message and whether it is a warning.
-        finished: Main thread, after `work` returned, path or not.
+        finished: Main thread, after `work` or `run` returned, path or not.
+        run: Awaited on the main thread instead of `work`, e.g. a request to a planning service; cancelled when the
+            time limit passes or the plan is cleared. Or None.
     """
 
     serial: str
     label: str
     message: str
-    work: Callable[[], PlanResult]
+    work: Callable[[], PlanResult] | None
     time_limit: float
     accepted: Callable[[PlanResult], tuple[str, bool]]
     finished: Callable[[], None] = lambda: None
+    run: Callable[[], Awaitable[PlanResult]] | None = None
 
 
 def with_guesses(snapshot: Scene, object_id: str) -> tuple[Scene, list[str]]:
@@ -165,7 +170,8 @@ class PlannerPlugin(HuskyPlugin):
 
     # --- --- --- --- --- SETUP HELPERS --- --- --- --- ---
 
-    def _add_path_controls(self, ctx: PluginContext, gui: viser.GuiApi, plan_hint: str, commit_hint: str) -> None:
+    def _add_path_controls(self, ctx: PluginContext, gui: viser.GuiApi, plan_hint: str, commit_hint: str,
+                           commit_label: str = "Commit") -> None:
         """Add the "path" section: Plan/Play/Clear, the time slider and Commit, with their callbacks.
 
         Args:
@@ -173,12 +179,13 @@ class PlannerPlugin(HuskyPlugin):
             gui: GUI api, inside `ctx.view.ui()`.
             plan_hint: Hover text of the Plan/Play/Clear buttons.
             commit_hint: Hover text of Commit.
+            commit_label: The Commit button's label, e.g. "Exec".
         """
         gui.add_html(section("path", SECTION_CTRL))
         plan = gui.add_button_group("Path", ["Plan", "Play", "Clear"], hint=plan_hint)
         self._slider = gui.add_slider("t s", min=0.0, max=1.0, step=SLIDER_STEP, initial_value=0.0,
                                       hint="Scrub through the planned path")
-        commit = gui.add_button("Commit", color="blue", icon=viser.Icon.SEND, hint=commit_hint)
+        commit = gui.add_button(commit_label, color="blue", icon=viser.Icon.SEND, hint=commit_hint)
         plan.on_click(ctx.defer_value("path button", lambda label: self._on_path(ctx, label)))
         self._slider.on_update(ctx.defer_value("scrub", lambda value: self._scrub(float(value))))
         commit.on_click(ctx.defer("commit", lambda: self._commit(ctx)))
@@ -253,10 +260,16 @@ class PlannerPlugin(HuskyPlugin):
         self._plan_task = ctx.spawn(search.label, self._run(search, self._abort))
 
     async def _run(self, search: Search, abort: threading.Event) -> None:
-        """Run one search on the worker and take its result on the main thread; no path is reported, not raised."""
+        """Run one search (`run`, else `work` on the worker) and take its result on the main thread.
+
+        No path is reported, not raised.
+        """
         try:
             async with timeout(search.time_limit):
-                result = await asyncio.get_running_loop().run_in_executor(self._executor, search.work)
+                if search.run is not None:
+                    result = await search.run()
+                else:
+                    result = await asyncio.get_running_loop().run_in_executor(self._executor, search.work)
         except asyncio.TimeoutError:
             self.plan_state = "none"
             self._say(f"timed out after {search.time_limit:.0f}s waiting for the planner", failed=True)

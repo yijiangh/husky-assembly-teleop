@@ -17,7 +17,8 @@ from husky_assembly_teleop.shared.assembly_run import exported_end, first_pendin
 from husky_assembly_teleop.shared.process import LoadedProcess
 from husky_assembly_teleop.shared.runs import (ASSUMED, DONE, LIVE, PENDING, SCHEMA, RobotRecord, RunError, RunSettings,
                                                continue_run, file_hashes, find_runs, mark_done, new_run, read_events,
-                                               read_run, record_event, record_movement, reopen, save_progress)
+                                               read_run, record_event, record_movement, reopen, save_progress,
+                                               with_current)
 from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.process import RobotState, write
 from scaffolding_assembly_core.robot import RobotObject
@@ -73,7 +74,7 @@ def test_continue_run_picks_the_newest_matching(process, robots):
 
     found, problems = find_runs(process.folder)
     assert [run.info.name for run in found] == [other.info.name, newer.info.name, older.info.name]
-    assert len(problems) == 1 and problems[0].startswith("20261021_095500") and "husky_run/9" in problems[0]
+    assert len(problems) == 1 and problems[0][0] == "20261021_095500" and "husky_run/9" in problems[0][1]
     assert continue_run(found, file_hashes(process)) == newer
 
 
@@ -114,7 +115,7 @@ def test_reopen_restores_the_earlier_end_or_drops_it(process, robots):
 def test_new_run_keeps_the_old_folder(process, robots):
     """A new run leaves the old run's files as they were; one started in the same second is named `_2`."""
     old = new_run(process, robots, RunSettings(), now=NOW)
-    save_progress(mark_done(old, "B1_J_joint", {CINDY: record(1.0)}, False))
+    save_progress(mark_done(old, "B1_J_joint", {CINDY: record(1.0)}, False, now=NOW))
     before = {path.name: path.read_bytes() for path in old.folder.iterdir()}
     same_second = new_run(process, robots, RunSettings(), now=NOW)
     assert same_second.folder.name == "20261021_093000_2"
@@ -240,3 +241,30 @@ def test_a_carried_movement_the_action_lacks_becomes_its_first_step(process, rob
     carried = new_run(again, robots, RunSettings(), continued_from=read_run(run.folder), now=NOW.replace(hour=10))
     assert carried.progress.current == ("B1_H_hold", 0)
     assert read_events(carried.folder)[0]["current_moved"] == [["B1_H_hold", 1], ["B1_H_hold", 0]]
+
+
+def test_the_run_used_last_comes_first_not_the_newest_folder(process, robots):
+    """An older run whose progress changed after a newer one was made comes first; on a tie, the newer folder."""
+    older = new_run(process, robots, RunSettings(), now=NOW)
+    newer = new_run(process, robots, RunSettings(), now=NOW.replace(minute=40))
+    assert [run.folder for run in find_runs(process.folder)[0]] == [newer.folder, older.folder]
+    save_progress(with_current(older, ("B1_H_hold", 0), now=NOW.replace(minute=40, microsecond=1)))
+    assert [run.folder for run in find_runs(process.folder)[0]] == [older.folder, newer.folder]
+
+
+@pytest.mark.parametrize("movement", ["1", True])
+def test_a_carried_movement_that_is_no_index_becomes_the_first_step(process, robots, movement):
+    """A hand-edited current movement ("1", true) is not an index: the new run starts the action at its first step."""
+    run = new_run(process, robots, RunSettings(), now=NOW)
+    run = replace(run, progress=replace(run.progress, current=("B1_H_hold", movement)))
+    carried = new_run(process, robots, RunSettings(), continued_from=run, now=NOW.replace(hour=10))
+    assert carried.progress.current == ("B1_H_hold", 0)
+    assert read_events(carried.folder)[0]["current_moved"] == [["B1_H_hold", movement], ["B1_H_hold", 0]]
+
+
+def test_a_new_run_that_fails_leaves_no_folder(process, robots):
+    """A robot's URDF can't be read: the run is not started, and no empty run folder is left behind."""
+    broken = (SimpleNamespace(serial="a200-0804", model=SimpleNamespace(urdf=Path("/nowhere.urdf")), source_urdf=None),)
+    with pytest.raises(OSError):
+        new_run(process, broken, RunSettings(), now=NOW)
+    assert not (Path(process.folder) / "runs").exists() or not any((Path(process.folder) / "runs").iterdir())

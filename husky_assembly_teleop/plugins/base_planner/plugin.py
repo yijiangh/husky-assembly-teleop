@@ -31,6 +31,7 @@ from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import register
 from ...plugin_api.trace import Trace
 from ...robot_interface.base import BaseInterface
+from ...shared.execution.interlock import held
 from ...shared.planning.panel import WAIT_MARGIN, PlannerPlugin, Search, with_guesses
 from ...shared.planning.search import TIME_LIMIT, PlanResult
 from ...ui.base_markers import Markers
@@ -352,8 +353,12 @@ class BasePlannerPlugin(PlannerPlugin):
         return ""
 
     def send_plan(self, ctx: PluginContext) -> tuple[bool, str]:
-        """Send the plan to the follower; refused without a live mocap pose, while e-stopped, or with no follower."""
+        """Send the plan to the follower; refused while held, without a live mocap pose, e-stopped, or no follower."""
         serial = self._path_serial
+        found = held(ctx.world)
+        if found is not None:
+            return False, (f"not committed: {found[0]} is held by {found[1].holder} ({found[1].label}); "
+                           f"Cancel it first")
         base = ctx.world.robots[serial].base
         if lost := pose_lost(base.mocap_id, base.state, ctx.now()):
             return False, f"not committed: {serial} has no mocap pose: {lost}"

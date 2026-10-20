@@ -7,7 +7,7 @@ Only what concerns all arms at once lives here: the multi-arm trajectory and the
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Sequence
+from typing import Callable, Sequence
 
 import numpy as np
 from crl_husky_msgs.msg import MultiArmTrajectory, SafetySyncStatus
@@ -52,6 +52,26 @@ class RobotState:
         return merged
 
 
+@dataclass(frozen=True)
+class Lease:
+    """Who holds a robot for an automatic motion; other plugins refuse to command it meanwhile.
+
+    - ! Set and cleared only through `shared/execution/interlock.py`; robot_interface does not enforce it.
+    - Hold is always allowed, and calls `stop`, which cancels the holder's work.
+
+    Attributes:
+        holder: The plugin holding it, e.g. "movement_exec".
+        label: What it runs, e.g. "B20_R_home".
+        since: ROS time it was taken, seconds.
+        stop: Cancels the holder's work. Main thread.
+    """
+
+    holder: str
+    label: str
+    since: float
+    stop: Callable[[], None]
+
+
 class HuskyRobotInterface:
     """ROS2 interface to one husky: a base, its arms, and their tools.
 
@@ -64,7 +84,10 @@ class HuskyRobotInterface:
         base: The mobile base.
         arms: The arms, keyed by ArmConfig.name, in configuration order.
         state: Everything measured, for the scene and viewer.
+        lease: Who holds the robot for an automatic motion, or None (`Lease`).
     """
+
+    lease: Lease | None = None
 
     def __init__(self, node: Node, config: RobotConfig):
         """Build the base and one ArmInterface per configured arm, without waiting for the robot.
@@ -227,13 +250,14 @@ class HuskyRobotInterface:
         else:
             log.error(f"robot {self.config.serial}: {what}: {message}")
 
-    def send_multi_arm_trajectory(self, positions: dict[str, Sequence[Sequence[float]]],
-                                  duration: float) -> bool:
+    def send_multi_arm_trajectory(self, positions: dict[str, Sequence[Sequence[float]]], duration: float,
+                                  velocities: dict[str, Sequence[Sequence[float]]] | None = None) -> bool:
         """Send one trajectory to each arm, started together; nothing is sent unless both pass their checks.
 
         Args:
             positions: Waypoints per arm name, as for `ArmInterface.build_trajectory`.
             duration: Total time for both, seconds.
+            velocities: Waypoint velocities per arm name, the same arms as `positions`, or None.
 
         Returns:
             bool: True if sent. False (reason logged) if the robot lacks two arms or a trajectory is refused.
@@ -242,14 +266,18 @@ class HuskyRobotInterface:
             self._node.get_logger().error(f"robot {self.config.serial}: multi-arm trajectory "
                                           f"needs two arms, it has {len(self.arms)}")
             return False
-        if set(positions) != set(self.arms):
-            self._node.get_logger().error(f"robot {self.config.serial}: multi-arm trajectory needs "
-                                          f"waypoints for {sorted(self.arms)}, got {sorted(positions)}")
-            return False
+        for given, what in ((positions, "waypoints"), (velocities, "velocities")):
+            if given is not None and set(given) != set(self.arms):
+                self._node.get_logger().error(f"robot {self.config.serial}: multi-arm trajectory needs "
+                                              f"{what} for {sorted(self.arms)}, got {sorted(given)}")
+                return False
         # trajectory1 / trajectory2 follow the configured arm order.
         first, second = self.arms.values()
-        first_trajectory = first.build_trajectory(positions[first.config.name], duration)
-        second_trajectory = second.build_trajectory(positions[second.config.name], duration)
+        speeds = velocities or {}
+        first_trajectory = first.build_trajectory(positions[first.config.name], duration,
+                                                  speeds.get(first.config.name))
+        second_trajectory = second.build_trajectory(positions[second.config.name], duration,
+                                                    speeds.get(second.config.name))
         if first_trajectory is None or second_trajectory is None:
             return False
         message = MultiArmTrajectory()
