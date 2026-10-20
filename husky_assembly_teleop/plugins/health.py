@@ -233,7 +233,7 @@ def robot_checks(robot: HuskyRobotInterface, now: float,
     state = robot.base.state
     base = state.joint_states_stats.quality(now)
     lines = [("base", [stream_check("signal", base, BASE_RATE) if base.seen else
-                       Check("signal", WARN, "no platform joint_states yet; the simulator has none"),
+                       Check("signal", WARN, "no platform joint_states yet"),
                        mocap_check("mocap", robot.config.mocap_id, state, now),
                        estop_check(state),
                        battery_check(state, now),

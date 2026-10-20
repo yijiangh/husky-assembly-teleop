@@ -154,7 +154,7 @@ class BaseState:
         battery_update_time: ROS time of the last battery message, seconds.
         controllers: The base controller manager's state.
         follower: The onboard path follower's last report.
-        odometry: The platform's last wheel odometry; none in the simulator.
+        odometry: The platform's last wheel odometry.
         last_update_time: ROS time of the last mocap message, valid or not, seconds.
         last_fix_time: ROS time the last valid pose was captured, seconds.
         markers: Raw mocap markers of the last mocap message, valid or not, or None before one.
@@ -162,7 +162,7 @@ class BaseState:
         wheel_velocities: Wheel joint speeds from the platform's joint_states, rad/s, by joint name.
         joint_states_update_time: ROS time of the last platform joint_states, seconds.
         joint_states_stats: Rate, gaps and delay of the platform's joint_states, to judge the wifi link and the
-            robot's clock. Published from boot, also with the velocity controller off; none in the simulator.
+            robot's clock. Published from boot, also with the velocity controller off.
 
     ! `tracked` False means the pose is stale: grey it out. Drive from it only while `world.mocap.pose_lost` is "":
       `tracked` stays True when the relay goes silent.
@@ -253,7 +253,7 @@ class BaseInterface:
                                qos_profile_sensor_data)
         self._ros.subscription(BatteryState, f"{namespace}/platform/bms/state", self._on_battery,
                                qos_profile_sensor_data)
-        # ? The velocity controller's odometry from the wheels (Clearpath's topic); none in the simulator.
+        # ? The velocity controller's odometry from the wheels (Clearpath's topic).
         self._ros.subscription(Odometry, f"{namespace}/platform/odom", self._on_odometry,
                                QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT, history=HistoryPolicy.KEEP_LAST,
                                           depth=MESSAGE_QUEUE))
