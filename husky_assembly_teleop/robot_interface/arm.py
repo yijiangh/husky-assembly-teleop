@@ -106,6 +106,13 @@ JOINT_MOVE_MAX_SPEED = np.radians(20.0)
 JOINT_MOVE_MIN_DURATION = 5.0
 #: Seconds between waypoints of a joint move.
 JOINT_MOVE_WAYPOINT_SPACING = 0.2
+#: Defaults for `joint_jog`: fastest speed, rad/s, and the time to reach it from rest, seconds.
+JOG_MAX_SPEED = JOINT_MOVE_MAX_SPEED
+JOG_RAMP = 0.5
+#: Farthest one jog moves its joint, radians. ! Also how far it runs on if the monitor dies mid-press.
+JOG_DISTANCE = np.radians(30.0)
+#: A jog stops this short of its joint's limit, radians.
+JOG_LIMIT_MARGIN = np.radians(2.0)
 #: Default peak acceleration of `joint_path_move` on any joint, rad/s^2: half the trajectory limit, for margin.
 JOINT_PATH_MAX_ACCELERATION = TRAJECTORY_MAX_JOINT_ACCELERATION / 2
 
@@ -183,6 +190,46 @@ def joint_move(start: Sequence[float], target: Sequence[float],
     positions = start + (1.0 - np.cos(phase)) / 2.0 * delta
     velocities = np.pi / (2.0 * duration) * np.sin(phase) * delta
     return positions, velocities, duration
+
+
+def joint_jog(start: Sequence[float], joint: int, direction: float,
+              speed: float = JOG_MAX_SPEED) -> tuple[np.ndarray, np.ndarray, float]:
+    """A move of one joint that speeds up to `speed` in JOG_RAMP and comes to rest JOG_DISTANCE on; `hold` ends it early.
+
+    ! No collision checking. For held buttons only: release must hold the arm.
+
+    Args:
+        start: Joint angles now, radians, UR_JOINT_NAMES order.
+        joint: Index of the joint to move.
+        direction: +1 or -1.
+        speed: Top speed, rad/s.
+
+    Returns:
+        tuple[np.ndarray, np.ndarray, float]: Waypoint positions (N x 6) evenly spaced in time, their velocities
+            (N x 6), and the duration in seconds.
+
+    Raises:
+        ValueError: If the joint is already at its limit (less JOG_LIMIT_MARGIN) that way.
+    """
+    start = np.asarray(start, dtype=float)
+    distance = min(JOG_DISTANCE, UR_JOINT_LIMITS[joint] - JOG_LIMIT_MARGIN - direction * start[joint])
+    if distance <= 0.0:
+        raise ValueError(f"{UR_JOINT_NAMES[joint]} is at its limit")
+    acceleration = speed / JOG_RAMP
+    # * Too short to reach `speed`: speed up and slow down straight away.
+    speed = min(speed, float(np.sqrt(distance * acceleration)))
+    ramp = speed / acceleration
+    duration = distance / speed + ramp
+    t = np.linspace(0.0, duration, max(2, int(np.ceil(duration / JOINT_MOVE_WAYPOINT_SPACING)) + 1))
+    travelled = np.where(t < ramp, acceleration * t ** 2 / 2,
+                         np.where(t < duration - ramp, speed * (t - ramp / 2),
+                                  distance - acceleration * (duration - t) ** 2 / 2))
+    positions = np.tile(start, (len(t), 1))
+    positions[:, joint] += direction * travelled
+    velocities = np.zeros_like(positions)
+    velocities[:, joint] = direction * np.minimum.reduce([acceleration * t, np.full_like(t, speed),
+                                                          acceleration * (duration - t)])
+    return positions, velocities, float(duration)
 
 
 def joint_path_move(waypoints: Sequence[Sequence[float]], max_speed: float = JOINT_MOVE_MAX_SPEED,

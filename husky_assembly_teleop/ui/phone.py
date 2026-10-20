@@ -49,6 +49,22 @@ def grid_css(cells: tuple[tuple[str, int, int], ...], columns: int) -> str:
     return grid + places
 
 
+def columns_css(icon: str, columns: int) -> str:
+    """CSS that lays out, row by row in `columns` columns, the buttons of every folder holding a button with `icon`.
+
+    ! Keep only buttons in that folder: any other widget takes a cell too.
+
+    Args:
+        icon: An icon of one of the folder's buttons, e.g. viser.Icon.MINUS.
+        columns: How many columns.
+
+    Returns:
+        str: CSS rules, without the <style> element.
+    """
+    return (f"div:has(> div > button .icon-tabler-{icon}) "
+            f"{{ display: grid; grid-template-columns: repeat({columns}, minmax(0, 1fr)); column-gap: 8px; }}")
+
+
 def big_buttons(icons: list[str], height: int, icon_size: int, labels: bool = True) -> str:
     """CSS that makes the phone page's buttons with these icons `height` px high, with `icon_size` px icons.
 

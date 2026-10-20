@@ -269,7 +269,7 @@ class PluginContext:
 
         Args:
             label: Human-readable name, for logs.
-            work: The coroutine, e.g. `self._execute_move(ctx, arm, target)`.
+            work: The coroutine, e.g. `self._stream_cartesian_move(ctx, serial, arm, position, orientation)`.
             survives_soft_stop: Keep running through a soft stop, e.g. loading, drawing or writing a report.
                 ! Only for work that never commands a robot: it would raise RobotStopped, or move it after Resume.
 

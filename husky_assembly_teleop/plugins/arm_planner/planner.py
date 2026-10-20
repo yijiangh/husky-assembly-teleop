@@ -24,7 +24,7 @@ from scaffolding_assembly_core.ids import robot_id
 
 #: Collision-checking resolution along a move, radians per joint.
 JOINT_STEP = 0.05
-#: Joint speed of the preview, rad/s: the same as robot_control's joint moves.
+#: Joint speed of the preview, rad/s: the same as `joint_move`'s.
 PREVIEW_SPEED = JOINT_MOVE_MAX_SPEED
 
 

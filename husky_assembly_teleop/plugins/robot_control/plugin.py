@@ -1,7 +1,7 @@
 """
 The robot control panel: the side panel's Control tab, holding a tab per robot with a tab per part.
 
-Each part's tab shows its state and basic control.
+Each part's tab shows its state and basic control. Arms jog joint by joint; moving to a pose is the arm planner's job.
 
 On the phone, a Control tab per robot: the base's D-pad, and per arm its gripper and free drive while held.
 
@@ -24,29 +24,22 @@ import numpy as np
 import viser
 from scipy.spatial.transform import Rotation
 
-from ...plugin_api.concurrency import WaitTimeout
 from ...plugin_api.context import PluginContext
 from ...plugin_api.plugin import HuskyPlugin, register
-from ...robot_interface.arm import (CARTESIAN_COMPLIANCE_CONTROLLER, FREE_DRIVE_CONTROLLER,
-                                    SCALED_JOINT_TRAJECTORY_CONTROLLER, TARGET_WRENCH_FRAME, UR_JOINT_NAMES,
-                                    ArmInterface, cartesian_move)
+from ...robot_interface.arm import (CARTESIAN_COMPLIANCE_CONTROLLER, FREE_DRIVE_CONTROLLER, JOG_MAX_SPEED,
+                                    MOVING_WITHIN, SCALED_JOINT_TRAJECTORY_CONTROLLER, TARGET_WRENCH_FRAME,
+                                    ArmInterface, cartesian_move, joint_jog)
 from ...robot_interface.base import PLATFORM_VELOCITY_CONTROLLER, BaseInterface
-from ...ui.ghost import RecentUse, RobotGhost, robot_ghosts
-from ...ui.joint_sliders import joint_slider_angles, set_joint_sliders
 from ...ui.phone import big_buttons, phone_text
 from ...ui.style import SECTION_SENSOR, block, numbers, section, values
-from .arm_panel import (FREE_DRIVE_ICON, ComplianceInputs, JointInputs, build_compliance_inputs,
-                        build_free_drive_inputs, build_joint_inputs, build_phone_arm_inputs, build_tool_inputs,
-                        joint_plan_line, pose_from_sliders, pose_plan_line)
+from .arm_panel import (FREE_DRIVE_ICON, ComplianceInputs, build_compliance_inputs, build_free_drive_inputs,
+                        build_jog_inputs, build_phone_arm_inputs, build_tool_inputs, pose_from_sliders,
+                        pose_plan_line)
 from .dpad import HOLD_TIMEOUT, MAX_ANGULAR_SPEED, MAX_LINEAR_SPEED, PHONE_DPAD_STYLE, build_velocity_inputs
 from .markers import add_force_arrows, add_frame_markers, draw_markers, place_markers
 from .status import (ControllerPanel, arm_status, base_status, build_controller_panel, phone_arm_status,
                      phone_base_status, show_only_running, tool_status)
 
-#: A move has arrived when every joint is this close to its target, degrees.
-ARRIVED_TOLERANCE = 0.5
-#: Seconds past the planned duration before an unfinished move is reported as timed out.
-ARRIVE_TIMEOUT_MARGIN = 5.0
 #: The side panel tab this plugin fills.
 CONTROL_TAB = ("Control", viser.Icon.DEVICE_GAMEPAD_2)
 #: Seconds to wait before asking again after a refused free drive switch, so a dead service is not asked every tick.
@@ -76,7 +69,8 @@ class _ArmWidgets:
     panel: ControllerPanel
     status: viser.GuiHtmlHandle
     tool_status: viser.GuiHtmlHandle | None
-    joint: JointInputs
+    #: The jog speed slider, a fraction of JOG_MAX_SPEED.
+    jog_speed: viser.GuiSliderHandle
     compliance: ComplianceInputs
     frames: dict[str, viser.FrameHandle]
     arrows: dict[str, viser.ArrowsHandle]
@@ -110,11 +104,13 @@ class RobotControlPlugin(HuskyPlugin):
         #: Per arm, the time before which a refused free drive switch is not asked again.
         self._free_drive_retry: dict[tuple[str, str], float] = {}
 
-        #: Running move task per arm, keyed by (serial, arm name).
-        self._trajectory_tasks: dict[tuple[str, str], asyncio.Task] = {}
+        #: Last report of each arm's held jog button, by (serial, arm name): (joint index, direction, arrival time).
+        self._jog_held: dict[tuple[str, str], tuple[int, float, float]] = {}
+        #: Per arm, the press last answered: (joint index, direction, whether a jog was sent), until released.
+        self._jogging: dict[tuple[str, str], tuple[int, float, bool]] = {}
 
-        #: Arms whose joint sliders are set on the next update: angles (radians), or None for the measured joints.
-        self._load_sliders: dict[tuple[str, str], np.ndarray | None] = {}
+        #: Running Cartesian move task per arm, keyed by (serial, arm name).
+        self._trajectory_tasks: dict[tuple[str, str], asyncio.Task] = {}
 
         #: Arms whose pose sliders are set to the measured TCP on the next update.
         self._load_pose: set[tuple[str, str]] = set()
@@ -124,11 +120,6 @@ class RobotControlPlugin(HuskyPlugin):
 
         #: This tick's 3D marker poses and force-arrow segments per arm; None without the compliance controller.
         self._markers: dict[tuple[str, str], dict[str, tuple] | None] = {}
-
-        #: Per robot, a ghost at its arms' joint slider values.
-        self._target_ghosts: dict[str, RobotGhost] = {}
-        #: Per arm, when the operator last used its joint inputs; the ghost shows only while recent.
-        self._joints_used: dict[tuple[str, str], RecentUse] = {}
 
     # --- --- --- --- --- SETUP --- --- --- --- ---
 
@@ -165,8 +156,6 @@ class RobotControlPlugin(HuskyPlugin):
                             arm_widgets.phone_status = build_phone_arm_inputs(
                                 ctx, phone, f"{widgets.serial} {name}", arm_widgets.arm,
                                 partial(self._on_free_drive_hold, ctx, (widgets.serial, name), True))
-        # ? Built here: loading meshes is too slow for a tick.
-        self._target_ghosts = robot_ghosts(ctx, ctx.config.robots, "target")
 
     def _build_base(self, ctx: PluginContext, gui: viser.GuiApi, serial: str,
                     base: BaseInterface) -> _BaseWidgets:
@@ -203,23 +192,18 @@ class RobotControlPlugin(HuskyPlugin):
         """
         label = f"{serial} {arm.config.name}"
         key = (serial, arm.config.name)
-        self._load_sliders[key] = None
-        self._joints_used[key] = RecentUse(ctx.config.ghost_timeout)
         self._load_pose.add(key)
 
         status = gui.add_html("")
         hold = partial(self._hold_arm, serial, arm)
-        joint_inputs = partial(build_joint_inputs, ctx, gui, label, arm, used=self._joints_used[key],
-                               load=partial(self._request_joint_load, key),
-                               start=partial(self._start_move, ctx, serial, arm, "move", self._execute_move),
-                               hold=hold)
+        jog_inputs = partial(build_jog_inputs, ctx, gui, label, partial(self._on_jog_hold, ctx, key), hold)
         compliance_inputs = partial(build_compliance_inputs, ctx, gui, label, arm,
                                     load=partial(self._load_pose.add, key),
                                     start=partial(self._start_move, ctx, serial, arm, "cartesian move",
                                                   self._stream_cartesian_move),
                                     hold=hold, apply_force=partial(self._apply_force, key, arm))
         panel, built = build_controller_panel(ctx, gui, arm.controllers, {
-            SCALED_JOINT_TRAJECTORY_CONTROLLER: joint_inputs,
+            SCALED_JOINT_TRAJECTORY_CONTROLLER: jog_inputs,
             CARTESIAN_COMPLIANCE_CONTROLLER: compliance_inputs,
             FREE_DRIVE_CONTROLLER: partial(build_free_drive_inputs, ctx, gui, label,
                                            partial(self._on_free_drive_hold, ctx, key, False)),
@@ -232,13 +216,13 @@ class RobotControlPlugin(HuskyPlugin):
 
         tool = None if arm.end_effector is None else build_tool_inputs(ctx, gui, label, arm)
         return _ArmWidgets(serial=serial, arm=arm, panel=panel, status=status, tool_status=tool,
-                           joint=built[SCALED_JOINT_TRAJECTORY_CONTROLLER],
+                           jog_speed=built[SCALED_JOINT_TRAJECTORY_CONTROLLER],
                            compliance=built[CARTESIAN_COMPLIANCE_CONTROLLER],
                            free_drive_keep=built[FREE_DRIVE_CONTROLLER],
                            frames=add_frame_markers(ctx, serial, arm), arrows=add_force_arrows(ctx, serial, arm))
 
     def teardown(self, ctx: PluginContext) -> None:
-        """At shutdown, stop any base this plugin was driving, and hold any arm it left a force on.
+        """At shutdown, stop any base this plugin was driving, and hold any arm it jogs or left a force on.
 
         Moves still running hold their arm as they are cancelled.
 
@@ -249,7 +233,8 @@ class RobotControlPlugin(HuskyPlugin):
             if widgets.serial in self._driving:
                 widgets.base.send_twist(0.0, 0.0)
         for widgets in self._arms:
-            if (widgets.serial, widgets.arm.config.name) in self._applied_force:
+            key = (widgets.serial, widgets.arm.config.name)
+            if key in self._applied_force or (key in self._jogging and self._jogging[key][2]):
                 self._hold_arm(widgets.serial, widgets.arm)
 
     # --- --- --- --- --- INTENTS (widget callbacks, run on the main thread) --- --- --- --- ---
@@ -270,9 +255,9 @@ class RobotControlPlugin(HuskyPlugin):
         """Record that an arm's free drive button is still held; on the phone it also switches the controller."""
         self._free_drive_held[key] = (ctx.now(), phone)
 
-    def _request_joint_load(self, key: tuple[str, str], angles: np.ndarray | None) -> None:
-        """Ask update to set one arm's joint sliders to `angles` (radians), or to the measured joints for None."""
-        self._load_sliders[key] = angles
+    def _on_jog_hold(self, ctx: PluginContext, key: tuple[str, str], joint: int, direction: float) -> None:
+        """Record that an arm's jog button is still held."""
+        self._jog_held[key] = (joint, direction, ctx.now())
 
     def _apply_force(self, key: tuple[str, str], arm: ArmInterface, force: np.ndarray) -> None:
         """Send a target force (N, tool frame) to the arm and remember it if accepted."""
@@ -304,9 +289,9 @@ class RobotControlPlugin(HuskyPlugin):
                 widgets.base.send_twist(0.0, 0.0)
                 self._driving.discard(widgets.serial)
         self._update_free_drive(now)
+        self._update_jogs(ctx, now)
         for widgets in self._arms:
             key = (widgets.serial, widgets.arm.config.name)
-            self._load_joint_sliders(widgets)
             self._load_pose_sliders(widgets)
             target = widgets.arm.from_husky(*pose_from_sliders(widgets.compliance.pose))
             force = np.array([slider.value for slider in widgets.compliance.force])
@@ -353,6 +338,49 @@ class RobotControlPlugin(HuskyPlugin):
             if not switched:
                 self._free_drive_retry[key] = now + FREE_DRIVE_RETRY
 
+    def _update_jogs(self, ctx: PluginContext, now: float) -> None:
+        """Send one jog when a jog button is pressed, and hold the arm once it is released or another is pressed.
+
+        - A press waits until the arm has been still for MOVING_WITHIN, since the arm refuses a trajectory sooner.
+        - One jog per press: a refused one (the log says why) is not tried again until the next press.
+
+        Args:
+            ctx: This plugin's context.
+            now: This tick's time, as the hold reports use.
+        """
+        for widgets in self._arms:
+            key, arm = (widgets.serial, widgets.arm.config.name), widgets.arm
+            held = self._jog_held.get(key)
+            # Drop the press if it timed out, the robot was soft stopped or the controller is no longer running.
+            if held is not None and (now - held[2] > HOLD_TIMEOUT or arm.soft_stopped
+                                     or not arm.controllers.is_active(SCALED_JOINT_TRAJECTORY_CONTROLLER)):
+                del self._jog_held[key]
+                held = None
+            press = None if held is None else held[:2]
+            jogging = self._jogging.get(key)
+            if jogging is not None and jogging[:2] != press:
+                del self._jogging[key]
+                if jogging[2]:
+                    arm.hold()
+                jogging = None
+            moved = arm.state.last_motion_time
+            if press is not None and jogging is None and (moved is None or now - moved >= MOVING_WITHIN):
+                self._jogging[key] = (*press, self._send_jog(ctx, widgets, *press))
+
+    def _send_jog(self, ctx: PluginContext, widgets: _ArmWidgets, joint: int, direction: float) -> bool:
+        """Send a jog of one joint at the speed slider's speed; whether the arm took it (if not, the log says why)."""
+        here = widgets.arm.joint_vector()
+        if here is None:
+            ctx.log_warn(f"{widgets.serial} {widgets.arm.config.name}: no joint state yet, not jogging")
+            return False
+        try:
+            positions, velocities, duration = joint_jog(here, joint, direction,
+                                                        widgets.jog_speed.value * JOG_MAX_SPEED)
+        except ValueError as error:
+            ctx.log_warn(f"{widgets.serial} {widgets.arm.config.name}: not jogging: {error}")
+            return False
+        return widgets.arm.send_joint_trajectory(positions, duration, velocities)
+
     def draw(self, ctx: PluginContext) -> None:
         """Copy every robot's state into the widgets.
 
@@ -369,7 +397,6 @@ class RobotControlPlugin(HuskyPlugin):
             key = (widgets.serial, widgets.arm.config.name)
             show_only_running(widgets.panel)
             widgets.status.content = arm_status(widgets.arm, now)
-            widgets.joint.plan.content = joint_plan_line(widgets.arm, widgets.joint.joints)
             widgets.compliance.pose_plan.content = pose_plan_line(widgets.arm, widgets.compliance.pose)
             draw_markers(widgets.frames, widgets.arrows, self._markers.get(key) or {})
             applied = self._applied_force.get(key)
@@ -379,28 +406,6 @@ class RobotControlPlugin(HuskyPlugin):
                 widgets.tool_status.content = tool_status(widgets.arm.state.end_effector, now)
             if widgets.phone_status is not None:
                 widgets.phone_status.content = phone_text(phone_arm_status(widgets.arm))
-        self._draw_ghosts(ctx)
-
-    def _draw_ghosts(self, ctx: PluginContext) -> None:
-        """Show each arm (with its tool) at its joint sliders while they are in use, even on top of the arm.
-
-        Args:
-            ctx: This plugin's context.
-        """
-        for serial, ghost in self._target_ghosts.items():
-            joints = dict(ctx.kinematics.joints(serial))
-            parts = []
-            for widgets in self._arms:
-                name = widgets.arm.config.name
-                if widgets.serial != serial or not self._joints_used[(serial, name)].active:
-                    continue  # another robot's arm, or sliders not in use
-                parts.append(f"{name}_")
-                target = joint_slider_angles(widgets.joint.joints)
-                joints.update(zip((f"{name}_{joint}" for joint in UR_JOINT_NAMES), target))
-            if parts:
-                ghost.show(ctx.kinematics.base_pose(serial), joints, parts=tuple(parts))
-            else:
-                ghost.hide()
 
     def _load_pose_sliders(self, widgets: _ArmWidgets) -> None:
         """Set one arm's pose sliders to its TCP, if asked.
@@ -418,37 +423,18 @@ class RobotControlPlugin(HuskyPlugin):
             slider.value = round(float(value) / slider.step) * slider.step
         self._load_pose.discard(key)
 
-    def _load_joint_sliders(self, widgets: _ArmWidgets) -> None:
-        """Set one arm's joint sliders, if asked.
-
-        ! Call from update, not draw: draw is skipped while panels are frozen, leaving a stale target for Start.
-
-        Args:
-            widgets: One arm's handles.
-        """
-        key = (widgets.serial, widgets.arm.config.name)
-        if key not in self._load_sliders:
-            return
-        # None means the measured joints, which need joint data first.
-        angles = widgets.arm.joint_vector() if self._load_sliders[key] is None else self._load_sliders[key]
-        if angles is not None:
-            set_joint_sliders(widgets.joint.joints, angles)
-            del self._load_sliders[key]
-
     # --- --- --- --- --- MOVE TASKS --- --- --- --- ---
 
     def _start_move(self, ctx: PluginContext, serial: str, arm: ArmInterface, kind: str,
                     move: Callable[..., Coroutine[Any, Any, None]], *args: Any) -> None:
         """Start `move(ctx, serial, arm, *args)` as the arm's move task, unless one is already running.
 
-        ! Joint and Cartesian moves share `_trajectory_tasks`: one motion per arm at a time.
-
         Args:
             ctx: This plugin's context.
             serial: The robot's serial.
             arm: The arm to move.
-            kind: Task name prefix, e.g. "move".
-            move: `_execute_move` or `_stream_cartesian_move`.
+            kind: Task name prefix, e.g. "cartesian move".
+            move: The move, e.g. `_stream_cartesian_move`.
             *args: The move's target, after (ctx, serial, arm).
         """
         key = (serial, arm.config.name)
@@ -472,41 +458,6 @@ class RobotControlPlugin(HuskyPlugin):
         running = self._trajectory_tasks.get((serial, arm.config.name))
         if running is not None and not running.done():
             running.cancel()
-
-    async def _execute_move(self, ctx: PluginContext, serial: str, arm: ArmInterface, target: np.ndarray) -> None:
-        """Send a smooth joint move and wait until the time is up and every joint is within ARRIVED_TOLERANCE.
-
-        ! Cancelled (Hold, Stop all, the plugin stopping, shutdown), it holds the arm: the trajectory would run on.
-
-        Args:
-            ctx: This plugin's context.
-            serial: The robot's serial, for messages.
-            arm: The arm to move.
-            target: Joint angles to move to, radians, UR_JOINT_NAMES order.
-        """
-        name = f"{serial} {arm.config.name}"
-        duration = arm.send_joint_move(target)
-        if duration is None:
-            return  # the arm logged why it refused
-        ctx.log_info(f"{name}: moving, {duration:.1f} s")
-        end = ctx.now() + duration
-
-        def arrived() -> bool:
-            here = arm.joint_vector()
-            return (ctx.now() >= end and here is not None
-                    and bool(np.all(np.abs(here - target) < np.radians(ARRIVED_TOLERANCE))))
-
-        try:
-            await ctx.wait_until(arrived, timeout_s=duration + ARRIVE_TIMEOUT_MARGIN,
-                                 description=f"{name} to arrive")
-            ctx.log_info(f"{name}: arrived")
-        except WaitTimeout as timeout:
-            # Logged, not raised: a raising task counts as a plugin failure.
-            ctx.log_warn(str(timeout))
-        except asyncio.CancelledError:
-            arm.hold()
-            raise
-        # ! Sliders are never touched here: only Current or Stow change them.
 
     async def _stream_cartesian_move(self, ctx: PluginContext, serial: str, arm: ArmInterface,
                                      position: np.ndarray, orientation: np.ndarray) -> None:

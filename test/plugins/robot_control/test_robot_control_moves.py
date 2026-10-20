@@ -1,4 +1,4 @@
-"""robot_control's moves on an arm with its real checks: joint moves, streamed Cartesian moves, Hold and the D-pad."""
+"""robot_control's moves on an arm with its real checks: joint jogs, streamed Cartesian moves, Hold and the D-pad."""
 
 from __future__ import annotations
 
@@ -10,9 +10,10 @@ import pytest
 from robot_fakes import TCP_ORIENTATION, TCP_POSITION, fake_arm
 
 from husky_assembly_teleop.plugin_api.concurrency import WaitTimeout
+from husky_assembly_teleop.plugins.robot_control.dpad import HOLD_TIMEOUT
 from husky_assembly_teleop.plugins.robot_control.plugin import RobotControlPlugin, _BaseWidgets
-from husky_assembly_teleop.robot_interface.arm import (CARTESIAN_COMPLIANCE_CONTROLLER,
-                                                       SCALED_JOINT_TRAJECTORY_CONTROLLER, UR_JOINT_NAMES)
+from husky_assembly_teleop.robot_interface.arm import (CARTESIAN_COMPLIANCE_CONTROLLER, MOVING_WITHIN,
+                                                       SCALED_JOINT_TRAJECTORY_CONTROLLER, UR_JOINT_LIMITS)
 from husky_assembly_teleop.robot_interface.base import PLATFORM_VELOCITY_CONTROLLER
 
 pytestmark = pytest.mark.safety
@@ -116,36 +117,14 @@ def test_test_mode_checks_one_target_and_streams_nothing():
     assert not arm._target_frame.sent and "TEST MODE" in ctx.text()
 
 
-@pytest.mark.parametrize("arrives", [True, False])
-def test_a_joint_move_waits_for_the_arm_and_never_raises(arrives):
-    """The move goes out through every check; arrival is logged, and so is a timeout, without raising."""
-    arm = fake_arm()
-    target = np.radians([20.0, -30.0, 40.0, 0.0, 10.0, 0.0])
-
-    def follow():
-        arm.state.last_update_time = arm._node.now
-        if arrives:
-            for name, value in zip(UR_JOINT_NAMES, target):
-                arm.state.joint_positions[f"ur_arm_{name}"] = float(value)
-
-    ctx = Context(arm, follow)
-    asyncio.run(RobotControlPlugin()._execute_move(ctx, "0804", arm, target))
-    assert len(arm._trajectory.sent) == 1 and not arm._node.log.text("error")
-    assert ("arrived" in ctx.text()) is arrives and ("timed out" in ctx.text()) is not arrives
-
-
-@pytest.mark.parametrize("controller", [SCALED_JOINT_TRAJECTORY_CONTROLLER, CARTESIAN_COMPLIANCE_CONTROLLER])
-def test_a_cancelled_move_holds_the_arm(controller):
-    """Stop all, the plugin stopping or shutdown cancel the task: the trajectory or the targets must not run on."""
-    arm = fake_arm(controller)
+def test_a_cancelled_move_holds_the_arm():
+    """Stop all, the plugin stopping or shutdown cancel the task: the targets must not run on."""
+    arm = fake_arm(CARTESIAN_COMPLIANCE_CONTROLLER)
     ctx = Context(arm, tracking(arm))
     plugin = RobotControlPlugin()
 
     async def run():
-        if controller == CARTESIAN_COMPLIANCE_CONTROLLER:
-            move = plugin._stream_cartesian_move(ctx, "0804", arm, TCP_POSITION + [0.05, 0.0, 0.0], TCP_ORIENTATION)
-        else:
-            move = plugin._execute_move(ctx, "0804", arm, np.radians([20.0, 0.0, 0.0, 0.0, 0.0, 0.0]))
+        move = plugin._stream_cartesian_move(ctx, "0804", arm, TCP_POSITION + [0.05, 0.0, 0.0], TCP_ORIENTATION)
         task = asyncio.create_task(move)
         for _ in range(3):
             await asyncio.sleep(0)
@@ -185,6 +164,63 @@ def test_hold_also_removes_an_applied_force():
     plugin._apply_force(("0804", "ur_arm"), arm, np.array([0.0, 0.0, 10.0]))
     plugin._hold_arm("0804", arm)
     assert arm._target_wrench.sent[-1].wrench.force.z == 0.0 and not plugin._applied_force
+
+
+def _jogged_arm(joints=None):
+    """A plugin with one arm under the joint controller, at full jog speed, and a context sharing its clock."""
+    arm, plugin = fake_arm(joints=joints), RobotControlPlugin()
+    plugin._arms = [SimpleNamespace(serial="0804", arm=arm, jog_speed=SimpleNamespace(value=1.0))]
+    return arm, plugin, Context(arm)
+
+
+def _jog_ticks(arm, plugin, ctx, ticks: int, press=None) -> None:
+    """Run `ticks` ticks of jog updates, the arm measured fresh each tick, with `press` (joint, direction) held."""
+    for _ in range(ticks):
+        arm._node.now += TICK
+        arm.state.last_update_time = arm._node.now
+        if press is not None:
+            plugin._on_jog_hold(ctx, ("0804", "ur_arm"), *press)
+        plugin._update_jogs(ctx, ctx.now())
+
+
+def test_a_held_jog_button_sends_one_jog_and_its_release_holds():
+    """Holding sends one jog, not one per report; once the reports stop, one hold goes out."""
+    arm, plugin, ctx = _jogged_arm()
+    _jog_ticks(arm, plugin, ctx, 5, press=(0, 1.0))
+    assert len(arm._trajectory.sent) == 1 and len(arm._trajectory.sent[0].points) > 2
+    _jog_ticks(arm, plugin, ctx, int(2 * HOLD_TIMEOUT / TICK))
+    assert len(arm._trajectory.sent) == 2 and "hold sent" in arm._node.log.text("info")
+
+
+def test_another_jog_button_holds_the_arm_and_jogs_once_it_is_still():
+    """Switching buttons holds the arm; the new jog waits, quietly, until the arm could take it."""
+    arm, plugin, ctx = _jogged_arm()
+    _jog_ticks(arm, plugin, ctx, 2, press=(0, 1.0))
+    _jog_ticks(arm, plugin, ctx, int(MOVING_WITHIN / TICK) - 1, press=(1, -1.0))
+    assert [len(trajectory.points) == 1 for trajectory in arm._trajectory.sent] == [False, True]
+    _jog_ticks(arm, plugin, ctx, 3, press=(1, -1.0))
+    assert [len(trajectory.points) == 1 for trajectory in arm._trajectory.sent] == [False, True, False]
+    assert not arm._node.log.text("error")
+
+
+@pytest.mark.parametrize("stop", ["soft stop", "controller off"])
+def test_a_jog_is_held_when_the_robot_stops_or_the_controller_changes(stop):
+    """A soft stop or another controller ends the press at once, with a hold, and raises nothing."""
+    arm, plugin, ctx = _jogged_arm()
+    _jog_ticks(arm, plugin, ctx, 2, press=(0, 1.0))
+    if stop == "soft stop":
+        arm._latch.stopped = True
+    else:
+        arm.state.controllers.active = None
+    _jog_ticks(arm, plugin, ctx, 3, press=(0, 1.0))
+    assert len(arm._trajectory.sent) == 2 and "hold sent" in arm._node.log.text("info")
+
+
+def test_a_jog_at_the_joint_limit_is_refused_once_per_press():
+    """At the limit nothing is sent, and a held button warns once, not every tick."""
+    arm, plugin, ctx = _jogged_arm(joints=[UR_JOINT_LIMITS[0], 0.0, 0.0, 0.0, 0.0, 0.0])
+    _jog_ticks(arm, plugin, ctx, 5, press=(0, 1.0))
+    assert not arm._trajectory.sent and ctx.text().count("at its limit") == 1
 
 
 def _driven_base():

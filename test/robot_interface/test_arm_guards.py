@@ -15,7 +15,8 @@ from husky_assembly_teleop.robot_interface.arm import (CARTESIAN_COMPLIANCE_CONT
                                                        MAX_TARGET_FORCE, MAX_TARGET_TORQUE, MOVING_WITHIN,
                                                        START_TOLERANCE, SYNC_STATUS_MAX_AGE, TRAJECTORY_MAX_DURATION,
                                                        TRAJECTORY_MAX_JOINT_SPEED, TRAJECTORY_MAX_WAYPOINTS,
-                                                       UR_JOINT_LIMITS, joint_move, joint_path_move)
+                                                       UR_JOINT_LIMITS, JOG_DISTANCE, JOG_LIMIT_MARGIN,
+                                                       JOG_MAX_SPEED, joint_jog, joint_move, joint_path_move)
 from husky_assembly_teleop.robot_interface.controller_manager import CONTROLLER_STATE_MAX_AGE
 from husky_assembly_teleop.robot_interface.simulated_parts import SimulatedPart
 from husky_assembly_teleop.robot_interface.soft_stop import RobotStopped
@@ -218,6 +219,27 @@ def test_a_path_planned_a_degree_away_from_the_arm_is_refused():
     away = fake_arm()
     positions, velocities, duration = joint_path_move([here + np.radians(1.0), here + DELTA])
     assert "not at the first waypoint" in refused(away, positions, duration, velocities)
+
+
+@pytest.mark.parametrize("speed", [JOG_MAX_SPEED, 0.05 * JOG_MAX_SPEED])
+def test_a_jog_passes_every_check_and_rests_jog_distance_on(speed):
+    """Only the one joint moves, never faster than asked, and it comes to rest JOG_DISTANCE away."""
+    arm = fake_arm()
+    positions, velocities, duration = joint_jog(arm.joint_vector(), 1, -1.0, speed)
+    assert arm.send_joint_trajectory(positions, duration, velocities)
+    assert np.max(np.abs(velocities[:, 1])) == pytest.approx(speed)
+    np.testing.assert_allclose(positions[-1], [0.0, -JOG_DISTANCE, 0.0, 0.0, 0.0, 0.0], atol=1e-12)
+    assert not np.any(velocities[-1]) and not np.any(np.delete(positions, 1, axis=1))
+
+
+def test_a_jog_stops_short_of_the_joint_limit_and_refuses_at_it():
+    """Near the elbow's limit the jog ends JOG_LIMIT_MARGIN short of it; at the limit there is nothing to jog."""
+    near = UR_JOINT_LIMITS[2] - JOG_LIMIT_MARGIN - np.radians(5.0)
+    positions, velocities, duration = joint_jog([0.0, 0.0, near, 0.0, 0.0, 0.0], 2, 1.0)
+    assert positions[-1, 2] == pytest.approx(UR_JOINT_LIMITS[2] - JOG_LIMIT_MARGIN)
+    assert fake_arm(joints=positions[0]).send_joint_trajectory(positions, duration, velocities)
+    with pytest.raises(ValueError, match="elbow"):
+        joint_jog(positions[-1], 2, 1.0)
 
 
 # --- --- --- --- --- hold --- --- --- --- ---
